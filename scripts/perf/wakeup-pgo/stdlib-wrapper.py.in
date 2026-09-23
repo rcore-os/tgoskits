@@ -6,8 +6,8 @@ grants it the executable bit and points `RUSTC_WRAPPER` at that copy, so the exp
 profile path is always resolved next to the run that owns it.
 
 `core`, `alloc`, `compiler_builtins` and `profiler_builtins` come from the precompiled
-sysroot and are never instrumented. `ax_task` is intentionally not profiled in the
-selective candidate. The other crates keep the flags byte for byte. Each invocation
+sysroot and are never instrumented. `ax_task` and the remaining target crates keep
+the flags byte for byte. Each invocation
 that targets bare aarch64 is appended to `stdlib-wrapper.jsonl`; `build.py` reads that log
 to prove the `starryos` root crate really received `-Cprofile-use=<profile>`.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 DIRECTORY = Path(__file__).resolve().parent
 EXPECTED_PROFILE = DIRECTORY / "profile-use.profdata"
 LOG = DIRECTORY / "stdlib-wrapper.jsonl"
-UNPROFILED_CRATES = {"core", "alloc", "compiler_builtins", "profiler_builtins", "ax_task"}
+UNPROFILED_CRATES = {"core", "alloc", "compiler_builtins", "profiler_builtins"}
 PROFILE_USE_FLAG = "-Cprofile-use="
 PROFILE_GENERATE_FLAG = "-Cprofile-generate="
 PGO_LLVM_ARGS = ("-Cllvm-args=-disable-vp", "-Cllvm-args=-pgo-warn-missing-function")
