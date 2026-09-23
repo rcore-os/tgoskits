@@ -38,14 +38,20 @@ fi
 cd "$HOME" || cd /
 
 cat > /tmp/starry-shrc <<'EOF'
-starry_prompt_dir() {
+starry_update_prompt() {
+    PS1="${USER}@${HOSTNAME}:"
     case "$PWD" in
-        "$HOME") printf '~' ;;
-        "$HOME"/*) printf '~%s' "${PWD#"$HOME"}" ;;
-        *) printf '%s' "$PWD" ;;
+        "$HOME") PS1="${PS1}~" ;;
+        "$HOME"/*) PS1="${PS1}~${PWD#"$HOME"}" ;;
+        *) PS1="${PS1}${PWD}" ;;
     esac
+    export PS1="${PS1}# "
 }
-export PS1='${USER}@${HOSTNAME}:$(starry_prompt_dir)# '
+cd() {
+    command cd "$@" || return
+    starry_update_prompt
+}
+starry_update_prompt
 EOF
 export ENV=/tmp/starry-shrc
 exec /bin/sh -l -i
