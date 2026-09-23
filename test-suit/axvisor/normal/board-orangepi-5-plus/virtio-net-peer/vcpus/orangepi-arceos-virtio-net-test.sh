@@ -1,30 +1,44 @@
 #!/usr/bin/env bash
-# Build and run the OrangePi board case: the four ArceOS virtio-net peers that
-# AxVisor runs as guests, AxVisor itself, `axvisor.bin`, then the board test.
+# Build and run the OrangePi board case: AxVisor hosts the ArceOS virtio-net
+# peers that the generated vm configs describe, AxVisor itself (`axvisor.bin`),
+# then the board test.
 #
 # Every peer comes from the same package but bakes a different identity into the
 # binary (`AXVIRTIO_VM_TAG` / `AXVIRTIO_LOCAL_IP`, read with `option_env!`), and a
 # second build of the same package overwrites the first artifact. Each peer is
 # therefore built separately and copied to its own `${vm}.bin` name, which is the
-# path arceos-virtio-net-peer-${vm}.toml embeds into AxVisor via `include_bytes!`
+# path the generated vm config embeds into AxVisor via `include_bytes!`
 # (`image_location = "memory"`).
+#
+# The vm configs are generated at run time into `target/axvisor-vcpus-gen` by
+# `gen_configs` below. They only differ in the VM id, the identity baked into the
+# guest binary, the pinned host CPU and the MAC address, so keeping 24 near
+# identical files in the repository would be duplication without information.
+# The case-level build config lists those generated paths, and `verify_layout`
+# fails early when the script, the build config and the board test config
+# disagree about the number of VMs.
 #
 # The guest identity follows apps/arceos/virtio-net-peer/run.sh: the tag is the
 # upper-case VM name, and the address is the first address of the chain plus the
-# VM index, so vm1..vm4 use 10.0.2.15 .. 10.0.2.18. Each peer connects to its own
-# address plus one, which is why the guests form a chain of sessions.
+# VM index, so vm1..vm24 use 10.0.2.15 .. 10.0.2.38. Each peer connects to its
+# own address plus one, which is why the guests form a chain of sessions.
 #
-# Placement: every peer declares `phys_cpu_sets` in its vm{1..4}.toml. It is a
-# per-vCPU host bitmap where bit N selects logical host pCPU N, so 0b0001 pins
-# vm1/vm3 to pCPU0 and 0b0010 pins vm2/vm4 to pCPU1 -- the two RK3588 A55 cores
-# `/cpus/cpu@0` and `/cpus/cpu@100`. Four guest vCPUs therefore run on two
-# physical CPUs (vCPU over-subscription) with a fixed vCPU-to-pCPU assignment
-# that never migrates. With an explicit `phys_cpu_sets`, `phys_cpu_ids` only
-# carries the guest-visible vCPU id (MPIDR_EL1) and no longer has to name a host
-# CPU. Change the masks in all four TOMLs to move the guests.
+# Placement: every peer gets `phys_cpu_sets = [1 << ((n - 1) % 8)]`, so the 24
+# vCPUs spread over the eight RK3588 cores with a fixed single-core assignment,
+# three VMs per physical CPU, and a vCPU never migrates between cores. With an
+# explicit `phys_cpu_sets`, `phys_cpu_ids` only carries the guest-visible vCPU id
+# (MPIDR_EL1) and no longer has to name a host CPU.
+#
+# Memory: 24 x 128 MiB = 3 GiB of the 8 GiB board goes to guest RAM, leaving
+# about 5 GiB for AxVisor itself (including the 24 guest images it embeds).
 #
 # The guests are built first because AxVisor embeds them at build time, so a
 # guest rebuild always has to be followed by an AxVisor rebuild.
+#
+# Usage: orangepi-arceos-virtio-net-test.sh [gen|build|run]
+#   gen    generate the vm configs and check them against the case layout
+#   build  generate the configs, build every guest, then build axvisor.bin
+#   run    build, then run the board test (default)
 set -euo pipefail
 
 case_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -41,57 +55,209 @@ if [[ ! -x "$objcopy" ]]; then
     exit 1
 fi
 
-# Address of guest N is the first address plus N-1, same mapping as
-# apps/arceos/virtio-net-peer/run.sh. Keep this in sync with the chain documented
-# in arceos-virtio-net-peer-vm{1..4}.toml.
-local_ip_of_vm() {
-    case "$1" in
-        vm1) echo "10.0.2.15" ;;
-        vm2) echo "10.0.2.16" ;;
-        vm3) echo "10.0.2.17" ;;
-        vm4) echo "10.0.2.18" ;;
-        *)
-            echo "no AXVIRTIO_LOCAL_IP mapping for guest '$1'" >&2
-            return 1
-            ;;
-    esac
+# --- case layout -------------------------------------------------------------
+# Changing any of these means the case layout changed: `verify_layout` then
+# fails until the build config and the board test config agree again.
+vm_count=24
+host_cpu_count=8
+vms_per_cpu=$(( vm_count / host_cpu_count ))
+# 24 x 128 MiB = 3 GiB of the 8 GiB board.
+guest_memory_region="[0x8000_0000, 0x0800_0000, 0x7, 0]"
+guest_memory_mib=128
+board_memory_mib=8192
+# Guest N owns 10.0.2.<first_local_octet + N - 1> and talks to its own address
+# plus one.
+first_local_octet=15
+# Host CPU node ids of the RK3588 device tree, in logical CPU order: the four
+# A55 cores of cluster 0 followed by the four A76 cores of cluster 1.
+cpu_node_ids=(0x00 0x100 0x200 0x300 0x400 0x500 0x600 0x700)
+
+generated_dir="$workspace/target/axvisor-vcpus-gen"
+generated_prefix="target/axvisor-vcpus-gen"
+build_config="$case_dir/build-aarch64-unknown-none-softfloat.toml"
+board_config="$case_dir/smoke/board-orangepi-5-plus-virtio-net-peer-vcpus.toml"
+guest_manifest="apps/arceos/build-aarch64-virtio-net-peer.toml"
+artifact_dir="target/aarch64-unknown-linux-musl/release"
+
+log() { printf '[vcpus] %s\n' "$*"; }
+
+local_ip_of_vm() { printf '10.0.2.%s' "$(( first_local_octet + $1 - 1 ))"; }
+
+vm_config_path() {
+    printf '%s/arceos-virtio-net-peer-vm%s.toml' "$generated_dir" "$1"
 }
 
+# --- generated vm configs ----------------------------------------------------
+gen_vm_config() {
+    local n="$1"
+    local cpu_index=$(( (n - 1) % host_cpu_count ))
+    local cpu_mask cpu_node local_ip peer_ip mac_last
+    cpu_mask=$(printf '0x%x' $(( 1 << cpu_index )))
+    cpu_node="${cpu_node_ids[$cpu_index]}"
+    local_ip="$(local_ip_of_vm "$n")"
+    peer_ip="10.0.2.$(( first_local_octet + n ))"
+    mac_last=$(printf '0x%02x' "$n")
+
+    cat > "$(vm_config_path "$n")" <<EOF
+# AxVisor guest: ArceOS virtio-net peer VM${n} (${local_ip}).
+#
+# Generated by orangepi-arceos-virtio-net-test.sh; edit the script instead of
+# this file. This directory is build output and is not tracked.
+#
+# Every peer runs a server and a client; the client connects to its own address
+# plus one, so vm1..vm${vm_count} form the chain 10.0.2.${first_local_octet} ->
+# $(( first_local_octet + vm_count )). VM1 only has a client session (nothing
+# connects to it), and VM${vm_count}'s client keeps retrying ${peer_ip}:5001,
+# which has no listener.
+#
+# image_location = "memory" makes the AxVisor build embed the image with
+# include_bytes! (os/axvisor/build.rs), so the board needs no guest file of its
+# own.
+[base]
+id = ${n}
+name = "arceos-virtio-net-peer-vm${n}"
+guest_type = "virtualized"
+cpu_num = 1
+# Guest-visible virtual CPU id (the vCPU's MPIDR_EL1). With an explicit
+# phys_cpu_sets it no longer selects a host CPU, so it only names the vCPU on the
+# guest side and need not exist in the host FDT. It follows the host CPU node of
+# the pCPU this vCPU is pinned to (${cpu_node}).
+phys_cpu_ids = [${cpu_node}]
+# Per-vCPU host affinity bitmap: bit N selects logical host pCPU N. ${cpu_mask}
+# pins this vCPU to host pCPU${cpu_index} only, so the ${vm_count} vCPUs of this
+# case spread over the ${host_cpu_count} host cores with a fixed single-core
+# assignment that never migrates (${vms_per_cpu} VMs per pCPU).
+phys_cpu_sets = [${cpu_mask}]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "\${workspace}/${artifact_dir}/arceos-virtio-net-peer-vm${n}.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+# ${guest_memory_mib} MiB of guest RAM; ${vm_count} x ${guest_memory_mib} MiB =
+# $(( vm_count * guest_memory_mib )) MiB of the ${board_memory_mib} MiB board.
+memory_regions = [
+  ${guest_memory_region},
+]
+
+[devices]
+passthrough = []
+# Virtual platform devices (console/GIC/timer) are machine-owned; the PCIe
+# controllers stay out of the guest.
+disabled = [
+  { path = "/pcie@fe150000" },
+  { path = "/pcie@fe160000" },
+  { path = "/pcie@fe170000" },
+  { path = "/pcie@fe180000" },
+  { path = "/pcie@fe190000" },
+]
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x20, 0x01, ${mac_last}]
+EOF
+}
+
+# The script, the build config and the board test config describe the same case
+# from three sides; a mismatch would otherwise only show up as a missing VM or a
+# silently skipped console check.
+verify_layout() {
+    local n path listed steps
+    for (( n = 1; n <= vm_count; n++ )); do
+        path="${generated_prefix}/arceos-virtio-net-peer-vm${n}.toml"
+        if ! grep -qF "\"${path}\"" "$build_config"; then
+            echo "build config ${build_config} does not list ${path}" >&2
+            return 1
+        fi
+    done
+    listed=$(grep -cF "\"${generated_prefix}/" "$build_config")
+    if [[ "$listed" -ne "$vm_count" ]]; then
+        echo "build config ${build_config} lists ${listed} generated vm configs, expected ${vm_count}" >&2
+        return 1
+    fi
+    steps=$(grep -c '^\[\[shell_check_steps\]\]' "$board_config")
+    if [[ "$steps" -ne $(( 2 * vm_count )) ]]; then
+        echo "board config ${board_config} has ${steps} shell_check_steps, expected $(( 2 * vm_count ))" >&2
+        return 1
+    fi
+    log "case layout verified: ${vm_count} configs, ${host_cpu_count} host CPUs, ${vms_per_cpu} VMs per CPU"
+}
+
+gen_configs() {
+    mkdir -p "$generated_dir"
+    rm -f "$generated_dir"/arceos-virtio-net-peer-vm*.toml
+    local n
+    for (( n = 1; n <= vm_count; n++ )); do
+        gen_vm_config "$n"
+    done
+    verify_layout
+    log "generated ${vm_count} vm configs in ${generated_dir} (guest RAM $(( vm_count * guest_memory_mib )) MiB of ${board_memory_mib} MiB)"
+}
+
+# --- guest and hypervisor images --------------------------------------------
 # ArceOS apps with `ax-std` are built for the std/PIE target, so their artifacts
 # live under the musl target directory even though the config declares
 # `aarch64-unknown-none-softfloat`.
-artifact_dir="target/aarch64-unknown-linux-musl/release"
-
 build_guest() {
-    local vm="$1"
-    local tag="${vm^^}"
+    local n="$1"
+    local tag="VM${n}"
     local local_ip
-    local_ip="$(local_ip_of_vm "$vm")"
-    local config="apps/arceos/build-aarch64-virtio-net-peer.toml"
-    local output="${artifact_dir}/arceos-virtio-net-peer-${vm}.bin"
+    local_ip="$(local_ip_of_vm "$n")"
+    local output="${artifact_dir}/arceos-virtio-net-peer-vm${n}.bin"
 
     AXVIRTIO_VM_TAG="$tag" \
     AXVIRTIO_LOCAL_IP="$local_ip" \
-        cargo xtask arceos build -p arceos-virtio-net-peer -c "$config"
+        cargo xtask arceos build -p arceos-virtio-net-peer -c "$guest_manifest"
     "$objcopy" --strip-all -O binary \
         "${artifact_dir}/arceos-virtio-net-peer" \
         "$output"
-    echo "installed guest image: ${output} (tag=${tag} local_ip=${local_ip})"
+    log "installed guest image: ${output} (tag=${tag} local_ip=${local_ip})"
 }
 
-build_guest vm1
-build_guest vm2
-build_guest vm3
-build_guest vm4
+build_guests() {
+    local n
+    for (( n = 1; n <= vm_count; n++ )); do
+        build_guest "$n"
+    done
+}
 
-# AxVisor with the four guest images embedded (see the vm{1..4}.toml configs in
-# this directory; the case-level build config belongs to the Linux peers).
-cargo xtask axvisor build \
-    -c test-suit/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/vcpus/build-aarch64-unknown-none-softfloat.toml
-"$objcopy" --strip-all -O binary "${artifact_dir}/axvisor" "${artifact_dir}/axvisor.bin"
+# AxVisor with every generated guest image embedded (the case-level build config
+# lists all generated vm configs).
+build_axvisor() {
+    cargo xtask axvisor build -c "$build_config"
+    "$objcopy" --strip-all -O binary "${artifact_dir}/axvisor" "${artifact_dir}/axvisor.bin"
+    log "installed hypervisor image: ${artifact_dir}/axvisor.bin ($(du -h "${artifact_dir}/axvisor.bin" | cut -f1), 24 embedded guest images)"
+}
 
 # Build, upload and run on the board. The board name of this variant is
 # `orangepi-5-plus-virtio-net-peer-vcpus`: `<board>-<guest>` for the U-Boot flow,
 # `<board>` for the board-service flow.
+#
 # cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer-vcpus
-cargo xtask axvisor test uboot --board orangepi-5-plus --guest virtio-net-peer-vcpus
+run_board() {
+    cargo xtask axvisor test uboot --board orangepi-5-plus --guest virtio-net-peer-vcpus
+}
+
+mode="${1:-run}"
+case "$mode" in
+gen)
+    gen_configs
+    ;;
+build)
+    gen_configs
+    build_guests
+    build_axvisor
+    ;;
+run)
+    gen_configs
+    build_guests
+    build_axvisor
+    run_board
+    ;;
+*)
+    echo "usage: $(basename "$0") [gen|build|run]" >&2
+    exit 1
+    ;;
+esac
