@@ -382,16 +382,18 @@ fn flush_merges_adjacent_dirty_runs() {
     let mut cached = buffered(KEY_A + 3, device);
 
     let data = [0x11u8; 512];
-    cached.write_block(8, &data).unwrap();
-    cached.write_block(9, &data).unwrap();
-    cached.write_block(10, &data).unwrap();
-    cached.write_block(13, &data).unwrap();
+    for block in 8..24 {
+        cached.write_block(block, &data).unwrap();
+    }
+    cached.write_block(26, &data).unwrap();
+    cached.write_block(27, &data).unwrap();
+    cached.write_block(29, &data).unwrap();
 
     cached.flush().unwrap();
-    // Blocks 8..=10 merge into one write; block 13 stays separate.
-    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 3)), 1);
-    assert_eq!(count_ops(&state, |op| op.is_write_of(13, 1)), 1);
-    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 2);
+    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 16)), 1);
+    assert_eq!(count_ops(&state, |op| op.is_write_of(26, 2)), 1);
+    assert_eq!(count_ops(&state, |op| op.is_write_of(29, 1)), 1);
+    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 3);
 }
 
 #[test]
