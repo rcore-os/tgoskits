@@ -745,12 +745,14 @@ impl FsContext {
         constraints: &ResolveConstraints,
         follow_final: bool,
         check_search: impl Fn(&Location) -> VfsResult<()>,
+        depth0: usize,
     ) -> VfsResult<Location> {
         self.resolve_using_constrained(
             path.as_ref(),
             follow_final,
             constraints,
             Some(&check_search),
+            depth0,
         )
     }
 
@@ -763,10 +765,11 @@ impl FsContext {
         path: &'a Path,
         constraints: &ResolveConstraints,
         check_search: impl Fn(&Location) -> VfsResult<()>,
+        depth0: usize,
     ) -> VfsResult<(Location, Cow<'a, str>, usize)> {
         let entry_name = path.file_name().ok_or(VfsError::InvalidInput)?;
         let mut follow_count = 0;
-        let mut depth = 0;
+        let mut depth = depth0;
         let mut components = path.components();
         components.next_back();
         let walk = ConstrainedWalk {
@@ -794,9 +797,10 @@ impl FsContext {
         follow_final: bool,
         constraints: &ResolveConstraints,
         search: SearchCheck<'_>,
+        depth0: usize,
     ) -> VfsResult<Location> {
         let mut follow_count = 0;
-        let mut depth = 0;
+        let mut depth = depth0;
         match path.file_name() {
             Some(name) => {
                 let mut components = path.components();
