@@ -38,7 +38,14 @@ fi
 cd "$HOME" || cd /
 
 cat > /tmp/starry-shrc <<'EOF'
-export PS1='\u@\h:\w\$ '
+starry_prompt_dir() {
+    case "$PWD" in
+        "$HOME") printf '~' ;;
+        "$HOME"/*) printf '~%s' "${PWD#"$HOME"}" ;;
+        *) printf '%s' "$PWD" ;;
+    esac
+}
+export PS1='${USER}@${HOSTNAME}:$(starry_prompt_dir)# '
 EOF
 export ENV=/tmp/starry-shrc
 exec /bin/sh -l -i

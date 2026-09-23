@@ -468,7 +468,7 @@ bootm 0x82200000 - $fdtcontroladdr
 
 这块板子没有保存环境变量的地方，所以**每次重启都要重新敲这几条命令**。"重启之后又回到旧系统了"不是故障，是这条默认链路本身的行为。
 
-启动成功的标志是串口出现 shell 提示符 `root@starry:~#`——这个串来自内核内置的 `init.sh`（`os/StarryOS/starryos/src/init.sh`，里面的 `PS1` 写成 `\u@\h:\w\$ `），各块板子都一样。板级测试就是靠匹配它的前缀 `root@starry:` 来判断系统起来了，车板的 `os/StarryOS/configs/board/aka-00-sg2002-board.toml` 里的 `shell_prefix` 写的就是这个前缀。
+启动成功的标志是串口出现 shell 提示符 `root@starry:~#`——这个串来自内核内置的 `init.sh`（`os/StarryOS/starryos/src/init.sh`，里面的 `PS1` 把 `$HOME` 缩写为 `~`），各块板子都一样。板级测试就是靠匹配它的前缀 `root@starry:` 来判断系统起来了，车板的 `os/StarryOS/configs/board/aka-00-sg2002-board.toml` 里的 `shell_prefix` 写的就是这个前缀。
 
 ### 5.3 登录、配网与传文件
 
