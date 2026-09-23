@@ -72,21 +72,20 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 
 ### 3.1 `base`
 
-`VMBaseConfig` 描述 VM 身份、CPU 拓扑及虚拟串口来源，每个字段都有缺省值。`guest_type` 决定地址空间基线，其语义在 3.4 节展开；CPU 字段的转换目标集中在 `PhysCpuList`。
+`VMBaseConfig` 描述 VM 身份及 CPU 拓扑，每个字段都有缺省值。`guest_type` 决定地址空间基线，其语义在 3.4 节展开；CPU 字段的转换目标集中在 `PhysCpuList`。
 
 | 字段 | TOML 类型 | 缺省值 | 含义与约束 |
 | --- | --- | --- | --- |
 | `id` | 非负整数 | `0` | VM ID；注册阶段还会拒绝与现有 VM 重复的 ID |
 | `name` | 字符串 | 空字符串 | VM 名称 |
 | `guest_type` | `"virtualized"` 或 `"passthrough"` | `"virtualized"` | 决定地址空间的初始策略，见 3.4 节 |
-| `serial_source` | `"machine"` 或 `"host-firmware"` | `"machine"` | 选择架构默认虚拟串口，或使用宿主固件选定 UART 的型号、地址与中断来模拟客户机串口；不改变地址空间或启用物理直通 |
 | `cpu_num` | 非负整数 | `0` | vCPU 数量 |
 | `phys_cpu_ids` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 对客户机暴露的物理 CPU ID；未覆盖的位置保留 vCPU ID，多余项忽略 |
 | `phys_cpu_sets` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 的宿主 pCPU affinity 位图；未覆盖的位置保持无显式 affinity，多余项忽略 |
 
 `phys_cpu_ids` 和 `phys_cpu_sets` 是 CPU selector，不是设备资源。当前 `PhysCpuList::new()` 不校验数组长度；`phys_cpu_ids` 长度与 `cpu_num` 不同时只记录日志，`default_vcpu_affinities()` 仍按已有位置应用，缺项使用默认值，多余项忽略。配置方不能依赖长度或拓扑不匹配一定在 prepare 阶段被拒绝，应主动保证数组长度与 `cpu_num` 一致，并使用目标平台存在的 CPU ID 和 affinity 位。
 
-`serial_source = "host-firmware"` 适用于镜像内置宿主板卡 UART 地址的客户机，例如 Orange Pi 5 Plus 上按 RK3588 设备树编译的 Zephyr。该选项只支持使用宿主 FDT 的 AArch64 和 RISC-V；boot prepare 要求宿主 FDT 存在并选中可模拟的 UART，缺失或不支持时直接报错，不把无法匹配镜像的串口替换为架构默认地址。其他虚拟客户机继续使用架构默认虚拟 UART。
+默认 `console0` 模拟宿主调试串口的型号、地址、中断和固件身份：AArch64/RISC-V 从宿主 FDT 中选定的控制台读取，x86/LoongArch 从 ACPI SPCR 读取。没有选定串口时使用 machine profile 的固定资源；已经选定但描述无效时直接报错。镜像需要固定串口地址时，可在 `[[devices.virtual]]` 的串口 model 下指定 `address`。例如 Orange Pi 5 Plus 上使用 QEMU PL011 地址的 Linux 客户机配置 `model = "pl011-mmio"` 和 `address = 0x09000000`；此时串口地址优先于宿主，中断自动分配，固件描述使用最终资源。
 
 ### 3.2 `kernel`
 

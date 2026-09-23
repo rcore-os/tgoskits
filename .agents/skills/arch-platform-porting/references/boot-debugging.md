@@ -28,7 +28,7 @@
 
 调试设备或中断缺失时，从 `DeviceModel::requirements()` 的一个资源槽，追踪到 `ResolvedDeviceGraph`，再追踪到扁平设备树或高级配置与电源接口计划及 `DeviceBuildContext`。运行时设备必须使用已解析地址和 `IrqLine.input()`。图保留的同一动态模型执行构建，所有 `ResourceClaimSet` 槽都成为租约后才能封装运行时。对 `console0`，先确认最终模型和固定绑定来自机器后备、宿主固件快照还是同标识用户覆盖。内存映射输入输出或端口输入输出退出只能执行一次可选分派；先 `find_*` 再第二次分派说明仍有陈旧路由。
 
-AArch64/RISC-V 上，板卡固件内置串口地址的虚拟客户机可在 `[base]` 选择 `serial_source = "host-firmware"`：从宿主 FDT 的 `/chosen/stdout-path` 解析型号、寄存器和中断，以虚拟 UART 在相同客户机地址应答；地址空间仍保持 `virtualized`，物理控制台仍由宿主所有。缺少宿主 FDT、未选中可模拟的控制台或不支持该目标时应在启动准备阶段报错；不要把客户机换到架构默认 UART，也不要改为物理直通。核验 UART 修复时还要检查实际客户机内核来源：若 CI 构建了当前源码的 Starry 内核，测试配置必须使用对应 `image_location = "memory"` 和 `${workspace}` 路径，避免无版本板卡文件覆盖新内核。
+默认 `console0` 跟随宿主选定的调试串口：AArch64/RISC-V 从 FDT `/chosen/stdout-path`（或 earlycon）解析，x86/LoongArch 从 ACPI SPCR 解析，虚拟 UART 在客户机相同地址应答，物理串口仍归宿主。宿主未选定串口时使用 machine profile 的固定资源；已选定但描述无效时报错。`[[devices.virtual]]` 串口 model 的显式 `address` 优先：取消宿主节点身份和固定 IRQ，IRQ 由图分配；不同型号按显式 model 配置。核验 UART 修复时还要检查实际客户机内核来源：若 CI 构建了当前源码的 Starry 内核，测试配置必须使用对应 `image_location = "memory"` 和 `${workspace}` 路径，避免无版本板卡文件覆盖新内核。
 
 x86 直接启动 Linux 时，修改内核命令行策略前核验：
 

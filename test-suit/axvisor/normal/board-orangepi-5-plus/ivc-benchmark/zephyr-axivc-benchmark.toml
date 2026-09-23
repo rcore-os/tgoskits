@@ -2,7 +2,6 @@
 id = 2
 name = "zephyr-axivc-starry-benchmark"
 guest_type = "virtualized"
-serial_source = "host-firmware"
 cpu_num = 1
 phys_cpu_ids = [0x100]
 

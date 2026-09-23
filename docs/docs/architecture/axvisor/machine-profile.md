@@ -82,7 +82,7 @@ AArch64/RISC-V 在 `prepare_dtb_guest()` 开始时调用 `resolve_machine_resour
 
 - host FDT 字节不存在时直接保留 fallback；整个 FDT 无法解析时返回 `InvalidData`。
 - `host_selected_serial()` 只在 `/chosen/stdout-path` 确实选择 UART 时生成 `HostSerialSnapshot`。没有选择时返回 `None`；路径、`reg`、interrupt、clock、型号或传输已经出现但畸形/不支持时返回错误。
-- 默认只有物理直通地址空间的客户机跟随宿主选定的 UART。若客户机镜像将板卡 UART 地址编译在内，但地址空间仍为 `virtualized`，可在 `[base]` 设置 `serial_source = "host-firmware"`，让同一宿主 UART identity 驱动虚拟 16550 的资源图与固件描述；缺少宿主 FDT 或可用的固件控制台时拒绝启动，其他虚拟客户机仍使用架构默认串口。
+- 所有客户机的默认 `console0` 都跟随宿主选定的 UART 型号、地址、中断及固件身份，保留物理控制台的宿主所有权。宿主未选定时继续使用 machine profile 固定资源；已经选定但描述无效时拒绝启动。显式串口 `address` 优先于宿主地址，并取消继承的固定中断及宿主节点身份；型号不同时使用配置的 model。
 - `host_gic_profile()`、`host_plic_profile()` 没有发现相应控制器时保留 fallback；发现后必须通过几何和 firmware identity 校验。
 - AArch64 fallback 含 timer，因此 host FDT 路径要求得到有效 `arm,armv8-timer`；节点缺失或 PPI specifier 畸形是错误，不退回 QEMU 默认 PPI。
 
@@ -96,6 +96,7 @@ x86（启用 `host-fs` 时）和 LoongArch 从 host ACPI SPCR 取得控制台。
 [[devices.virtual]]
 id = "console0"
 model = "pl011-mmio"
+address = 0x09000000
 clock_hz = 48000000
 backend = { type = "host-console" }
 
@@ -105,7 +106,7 @@ model = "uart16550-mmio"
 backend = { type = "null" }
 ```
 
-若用户 model/transport 与当前 machine/host 串口兼容，`console0` 保留固定 MMIO/PIO、wired IRQ 和 FDT/ACPI identity，只替换 model options；不兼容时丢弃这些 fixed bindings 和 identity，成为从自动池分配的普通虚拟串口。第二个串口始终自动分配。每台 VM 最多一个 `host-console` backend owner，重复 owner 在图构建前报配置错误。
+若用户 model/transport 与当前 machine/host 串口兼容且未配置 `address`，`console0` 保留固定 MMIO/PIO、wired IRQ 和 FDT/ACPI identity；型号不兼容时丢弃这些 fixed bindings 和 identity，从自动池分配。显式 `address` 固定串口基址，无论型号是否兼容都取消继承的固定 IRQ 和宿主节点 identity；其他串口只有在未配置 `address` 时才自动分配地址。每台 VM 最多一个 `host-console` backend owner，重复 owner 在图构建前报配置错误。
 
 ## 3. 四架构平台参考
 

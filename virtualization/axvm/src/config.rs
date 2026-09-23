@@ -22,7 +22,7 @@ pub use axvm_types::{
     AddressSpacePolicy, GuestPhysAddr, HostAddressAssignment, HostDeviceAssignment,
     HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
-use axvmconfig::{SerialSource, VirtualDeviceRequest};
+use axvmconfig::VirtualDeviceRequest;
 
 use crate::{arch::current::CurrentArch, architecture::MachinePlatform, machine::*};
 
@@ -101,7 +101,6 @@ pub struct AxVMConfig {
     passthrough_irq_list: Vec<PassthroughInterrupt>,
     excluded_passthrough_irq_sources: Vec<u32>,
     serial_profile: GuestSerialProfile,
-    serial_source: SerialSource,
     serial_firmware_identity: Option<GuestSerialFirmwareIdentity>,
     gic_profile: Option<GuestGicProfile>,
     plic_profile: Option<GuestPlicProfile>,
@@ -129,8 +128,6 @@ pub struct AxVMConfigParams {
     pub boot_policy: GuestBootPolicy,
     /// Machine-owned virtual serial resources.
     pub serial_profile: Option<GuestSerialProfile>,
-    /// Select host-firmware serial identity even for an isolated guest.
-    pub serial_source: SerialSource,
     /// App-owned backend factory for the mandatory virtual serial device.
     pub serial_backend_factory: Option<Arc<dyn SerialBackendFactory>>,
     /// Open-ended virtual-device requests parsed from guest configuration.
@@ -160,7 +157,6 @@ impl AxVMConfig {
             passthrough_irq_list: Vec::new(),
             excluded_passthrough_irq_sources: Vec::new(),
             serial_profile,
-            serial_source: params.serial_source,
             serial_firmware_identity: None,
             gic_profile: machine.gic,
             plic_profile: machine.plic,
@@ -351,11 +347,6 @@ impl AxVMConfig {
     /// Returns whether the guest address space starts from host identity mappings.
     pub fn uses_passthrough_address_space(&self) -> bool {
         self.address_space_policy == AddressSpacePolicy::Passthrough
-    }
-
-    /// Returns whether this guest explicitly requires the host firmware UART.
-    pub(crate) fn requires_host_firmware_serial(&self) -> bool {
-        self.serial_source == SerialSource::HostFirmware
     }
 
     /// Returns the machine-owned virtual serial resources.

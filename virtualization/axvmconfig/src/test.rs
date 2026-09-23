@@ -74,19 +74,9 @@ fn parses_structured_guest_config() {
 }
 
 #[test]
-fn virtualized_guest_can_select_firmware_serial_without_passthrough() {
-    let config = GuestConfig::from_toml(
-        r#"
-[base]
-id = 2
-guest_type = "virtualized"
-serial_source = "host-firmware"
-"#,
-    )
-    .unwrap();
-    assert_eq!(config.base.guest_type, GuestType::Virtualized);
-    let encoded = toml::to_string(&config).unwrap();
-    assert!(encoded.contains("serial_source = \"host-firmware\""));
+fn obsolete_serial_source_is_rejected() {
+    let config = "[base]\nguest_type = \"virtualized\"\nserial_source = \"host-firmware\"\n";
+    assert!(GuestConfig::from_toml(config).is_err());
 }
 
 #[test]
@@ -306,7 +296,7 @@ fn serialization_has_no_raw_serial_or_device_fields() {
         assert!(!encoded.contains(removed), "{removed} leaked into schema");
     }
     assert!(encoded.contains("guest_type = \"virtualized\""));
-    assert!(encoded.contains("serial_source = \"machine\""));
+    assert!(!encoded.contains("serial_source"));
     assert!(encoded.contains("passthrough = []"));
     assert!(encoded.contains("disabled = []"));
 }

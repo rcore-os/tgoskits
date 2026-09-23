@@ -32,6 +32,7 @@ pub(super) fn register_devices(
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SerialOptions {
+    address: Option<u64>,
     clock_hz: Option<u32>,
     register_shift: Option<u8>,
     register_width: Option<u8>,
@@ -85,10 +86,29 @@ fn create_serial(
         None if context.host_console_by_default() => context.serial_backend_factory().create(),
         None => Arc::new(NullSerialBackend),
     };
+    let explicit_address = options
+        .address
+        .map(|address| {
+            let valid = match profile.transport {
+                GuestSerialTransport::Port { .. } => u16::try_from(address).is_ok(),
+                GuestSerialTransport::Mmio { .. } => usize::try_from(address).is_ok(),
+            };
+            if valid {
+                Ok(address)
+            } else {
+                Err(ConfiguredDeviceError::InvalidOptions {
+                    device: request.id.clone(),
+                    model: request.model.clone(),
+                    detail: "serial address exceeds the transport address range".into(),
+                })
+            }
+        })
+        .transpose()?;
     let model: Arc<dyn DeviceModel> = Arc::new(SerialDeviceModel {
         profile,
         controller,
         fixed: context.fixed_bindings().clone(),
+        explicit_address,
         backend,
     });
     let mut node = if matches!(context.firmware_binding(), DeviceFirmwareBinding::None) {
@@ -174,6 +194,7 @@ struct SerialDeviceModel {
     profile: GuestSerialProfile,
     controller: InterruptControllerId,
     fixed: crate::FixedDeviceBindings,
+    explicit_address: Option<u64>,
     backend: Arc<dyn SerialBackend>,
 }
 
@@ -186,21 +207,27 @@ impl DeviceModel for SerialDeviceModel {
                 registers.clone(),
                 length,
                 1,
-                self.fixed
-                    .pio(&registers)
-                    .map_or(ResourceRequest::Auto, |(base, _)| {
-                        ResourceRequest::Fixed(base)
-                    }),
+                self.explicit_address
+                    .map(|address| ResourceRequest::Fixed(address as u16))
+                    .or_else(|| {
+                        self.fixed
+                            .pio(&registers)
+                            .map(|(base, _)| ResourceRequest::Fixed(base))
+                    })
+                    .unwrap_or(ResourceRequest::Auto),
             )?,
             GuestSerialTransport::Mmio { length, .. } => DeviceRequirements::new().with_mmio(
                 registers.clone(),
                 u64::try_from(length).map_err(serial_declaration_range_error)?,
                 1,
-                self.fixed
-                    .mmio(&registers)
-                    .map_or(ResourceRequest::Auto, |(base, _)| {
-                        ResourceRequest::Fixed(base)
-                    }),
+                self.explicit_address
+                    .map(ResourceRequest::Fixed)
+                    .or_else(|| {
+                        self.fixed
+                            .mmio(&registers)
+                            .map(|(base, _)| ResourceRequest::Fixed(base))
+                    })
+                    .unwrap_or(ResourceRequest::Auto),
             )?,
         };
         let fixed_irq = self.fixed.wired(&irq);

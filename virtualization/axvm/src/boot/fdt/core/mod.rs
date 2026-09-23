@@ -51,12 +51,6 @@ fn resolve_machine_resources_from_host(
     host_fdt_bytes: Option<&[u8]>,
 ) -> AxVmResult {
     let Some(host_fdt_bytes) = host_fdt_bytes else {
-        if vm_config.requires_host_firmware_serial() {
-            return Err(ax_err_type!(
-                InvalidData,
-                "guest requests the host firmware UART, but no host FDT is available"
-            ));
-        }
         return Ok(());
     };
     let host_fdt = fdt_edit::Fdt::from_bytes(host_fdt_bytes).map_err(|err| {
@@ -67,32 +61,18 @@ fn resolve_machine_resources_from_host(
     })?;
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
     let current = vm_config.serial_profile();
-    if should_follow_host_serial(vm_config) {
-        if let Some(interrupt_encoding) = machine.serial_fdt_interrupt {
-            let resolved = serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?;
-            if vm_config.requires_host_firmware_serial() && resolved.is_none() {
-                return Err(ax_err_type!(
-                    InvalidData,
-                    "guest requests the host firmware UART, but no supported host console was \
-                     selected"
-                ));
-            }
-            if let Some(resolved) = resolved {
-                if resolved.profile != current {
-                    info!(
-                        "VM[{}] virtual UART follows the host-selected UART: {:?}",
-                        vm_config.id(),
-                        resolved.profile
-                    );
-                }
-                vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
-            }
-        } else if vm_config.requires_host_firmware_serial() {
-            return Err(ax_err_type!(
-                InvalidData,
-                "this machine cannot select a virtual UART from host FDT"
-            ));
+    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+        && let Some(resolved) =
+            serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
+    {
+        if resolved.profile != current {
+            info!(
+                "VM[{}] virtual UART follows the host-selected UART: {:?}",
+                vm_config.id(),
+                resolved.profile
+            );
         }
+        vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
     }
 
     if let Some(gic) = interrupt::host_gic_profile(&host_fdt)? {
@@ -125,10 +105,6 @@ fn resolve_machine_resources_from_host(
         vm_config.replace_machine_plic(plic)?;
     }
     Ok(())
-}
-
-fn should_follow_host_serial(vm_config: &AxVMConfig) -> bool {
-    vm_config.uses_passthrough_address_space() || vm_config.requires_host_firmware_serial()
 }
 
 pub(crate) fn selected_guest_fdt_policy() -> GuestFdtPolicy {
@@ -268,41 +244,17 @@ fn get_developer_provided_dtb(
 
 #[cfg(test)]
 mod tests {
-    use axvmconfig::SerialSource;
-
-    use super::{resolve_machine_resources_from_host, should_follow_host_serial};
+    use super::resolve_machine_resources_from_host;
     use crate::config::{AddressSpacePolicy, AxVMConfig, AxVMConfigParams};
 
     #[test]
-    fn virtualized_guest_keeps_the_architecture_serial_profile() {
-        let config = AxVMConfig::new(AxVMConfigParams {
-            address_space_policy: AddressSpacePolicy::Virtualized,
-            ..Default::default()
-        });
-
-        assert!(!should_follow_host_serial(&config));
-    }
-
-    #[test]
-    fn isolated_guest_can_request_the_host_firmware_uart() {
-        let config = AxVMConfig::new(AxVMConfigParams {
-            address_space_policy: AddressSpacePolicy::Virtualized,
-            serial_source: SerialSource::HostFirmware,
-            ..Default::default()
-        });
-
-        assert!(should_follow_host_serial(&config));
-        assert!(!config.uses_passthrough_address_space());
-    }
-
-    #[test]
-    fn firmware_serial_request_without_host_fdt_fails_before_guest_boot() {
+    fn virtualized_guest_without_host_debug_uart_keeps_machine_profile() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
             address_space_policy: AddressSpacePolicy::Virtualized,
-            serial_source: SerialSource::HostFirmware,
             ..Default::default()
         });
-
-        assert!(resolve_machine_resources_from_host(&mut config, None).is_err());
+        let original = config.serial_profile();
+        resolve_machine_resources_from_host(&mut config, None).unwrap();
+        assert_eq!(config.serial_profile(), original);
     }
 }
