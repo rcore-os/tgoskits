@@ -116,34 +116,73 @@ type FcntlLockState = Arc<RwLock<Vec<FLockEntry>>>;
 type FlockLockState = Arc<RwLock<Vec<FlockEntry>>>;
 
 // Index locks protect lookup, publication and empty-state removal. Operations
-// pin the state with an Arc; blocking waiters use the separately persistent
-// inode wait queue and look up the current state again on every retry.
+// pin the state with an Arc; empty states still pinned by another operation
+// are revisited before publishing a new inode state. Blocking waiters use the
+// separately persistent inode wait queue and look up the state on each retry.
 // Lock order: wait queue -> graph -> index -> inode state. A graph writer may
 // also hold POSIX_LOCK_WAITS while reading index and inode states.
-static FCNTL_LOCKS: RwLock<BTreeMap<InodeKey, FcntlLockState>> =
-    RwLock::new(BTreeMap::new());
+struct FcntlIndex {
+    states: BTreeMap<InodeKey, FcntlLockState>,
+    pending: Vec<InodeKey>,
+}
+
+impl FcntlIndex {
+    fn reap_pending(&mut self) {
+        let mut cursor = 0;
+        while cursor < self.pending.len() {
+            let key = self.pending[cursor];
+            let status = self
+                .states
+                .get(&key)
+                .map(|state| (state.read().is_empty(), Arc::strong_count(state)));
+            match status {
+                Some((true, 1)) => {
+                    self.states.remove(&key);
+                    self.pending.remove(cursor);
+                }
+                Some((false, _)) | None => {
+                    self.pending.remove(cursor);
+                }
+                Some((true, _)) => cursor += 1,
+            }
+        }
+    }
+}
+
+static FCNTL_LOCKS: RwLock<FcntlIndex> = RwLock::new(FcntlIndex {
+    states: BTreeMap::new(),
+    pending: Vec::new(),
+});
 
 // Readers permit independent inode updates; a writer freezes all record-lock
 // mutations while deadlock detection walks the wait-for graph.
 static POSIX_LOCK_GRAPH: RwLock<()> = RwLock::new(());
 
 fn fcntl_state(key: InodeKey) -> FcntlLockState {
-    if let Some(state) = FCNTL_LOCKS.read().get(&key) {
+    if let Some(state) = FCNTL_LOCKS.read().states.get(&key) {
         return state.clone();
     }
-    FCNTL_LOCKS.write().entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone()
+    let mut index = FCNTL_LOCKS.write();
+    index.reap_pending();
+    index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone()
 }
 
 fn existing_fcntl_state(key: InodeKey) -> Option<FcntlLockState> {
-    FCNTL_LOCKS.read().get(&key).cloned()
+    FCNTL_LOCKS.read().states.get(&key).cloned()
 }
 
 // An empty state may be removed only when no other operation or waiter has
 // acquired it. Index write exclusion prevents publishing a second state.
 fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
     let mut index = FCNTL_LOCKS.write();
-    if Arc::strong_count(state) == 2 && state.read().is_empty() {
-        index.remove(&key);
+    if !state.read().is_empty() {
+        return;
+    }
+    if Arc::strong_count(state) == 2 {
+        index.states.remove(&key);
+        index.pending.retain(|candidate| *candidate != key);
+    } else if !index.pending.contains(&key) {
+        index.pending.push(key);
     }
 }
 
@@ -241,9 +280,35 @@ struct FlockIndex {
     idle: Vec<InodeKey>,
 }
 
+impl FlockIndex {
+    fn reclaim_idle(&mut self) {
+        let mut cursor = 0;
+        while cursor < self.idle.len() {
+            let key = self.idle[cursor];
+            let status = self.states.get(&key).map(|state| {
+                let entries = state.read();
+                (entries.is_empty(), entries.capacity(), Arc::strong_count(state))
+            });
+            match status {
+                Some((true, capacity, 1))
+                    if capacity > FLOCK_CACHED_CAPACITY_LIMIT
+                        || self.idle.len() > FLOCK_IDLE_LIMIT =>
+                {
+                    self.states.remove(&key);
+                    self.idle.remove(cursor);
+                }
+                Some((false, _, _)) | None => {
+                    self.idle.remove(cursor);
+                }
+                _ => cursor += 1,
+            }
+        }
+    }
+}
+
 // A small cache avoids allocating a new state on every uncontended LOCK_SH /
-// LOCK_UN pair. Large vectors are never cached, and in-flight references pin
-// their state until the next opportunity to reclaim it.
+// LOCK_UN pair. Large vectors are not cached after their last reference;
+// temporarily pinned empty states are revisited on subsequent index writes.
 const FLOCK_IDLE_LIMIT: usize = 32;
 const FLOCK_CACHED_CAPACITY_LIMIT: usize = 8;
 static FLOCK_LOCKS: RwLock<FlockIndex> = RwLock::new(FlockIndex {
@@ -255,12 +320,9 @@ fn flock_state(key: InodeKey) -> FlockLockState {
     if let Some(state) = FLOCK_LOCKS.read().states.get(&key) {
         return state.clone();
     }
-    FLOCK_LOCKS
-        .write()
-        .states
-        .entry(key)
-        .or_insert_with(|| Arc::new(RwLock::new(Vec::new())))
-        .clone()
+    let mut index = FLOCK_LOCKS.write();
+    index.reclaim_idle();
+    index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone()
 }
 
 fn existing_flock_state(key: InodeKey) -> Option<FlockLockState> {
@@ -269,16 +331,13 @@ fn existing_flock_state(key: InodeKey) -> Option<FlockLockState> {
 
 fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
     let mut index = FLOCK_LOCKS.write();
-    if Arc::strong_count(state) != 2 {
-        return;
-    }
     let entries = state.read();
     if !entries.is_empty() {
         return;
     }
     let cacheable = entries.capacity() <= FLOCK_CACHED_CAPACITY_LIMIT;
     drop(entries);
-    if !cacheable {
+    if !cacheable && Arc::strong_count(state) == 2 {
         index.states.remove(&key);
         index.idle.retain(|cached| *cached != key);
         return;
@@ -286,23 +345,8 @@ fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
     if !index.idle.contains(&key) {
         index.idle.push(key);
     }
-    let mut cursor = 0;
-    while index.idle.len() > FLOCK_IDLE_LIMIT && cursor < index.idle.len() {
-        let cached = index.idle[cursor];
-        let status = index
-            .states
-            .get(&cached)
-            .map(|candidate| (candidate.read().is_empty(), Arc::strong_count(candidate)));
-        match status {
-            Some((true, 1)) => {
-                index.states.remove(&cached);
-                index.idle.remove(cursor);
-            }
-            Some((false, _)) | None => {
-                index.idle.remove(cursor);
-            }
-            Some((true, _)) => cursor += 1,
-        }
+    if index.idle.len() > FLOCK_IDLE_LIMIT {
+        index.reclaim_idle();
     }
 }
 
@@ -942,7 +986,7 @@ pub fn release_pid_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
         let _graph = POSIX_LOCK_GRAPH.read();
-        let states: Vec<_> = FCNTL_LOCKS.read().iter().map(|(key, state)| (*key, state.clone())).collect();
+        let states: Vec<_> = FCNTL_LOCKS.read().states.iter().map(|(key, state)| (*key, state.clone())).collect();
         for (inode, state) in states {
             let mut entries = state.write();
             let before = entries.len();
