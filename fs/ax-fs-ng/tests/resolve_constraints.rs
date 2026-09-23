@@ -14,6 +14,7 @@
 //!     ├── abs -> /b      (absolute symlink)
 //!     ├── up -> ..       (parent symlink)
 //!     ├── magic -> /secret (symlink flagged MAGIC_LINK)
+//!     ├── magic-rel -> b   (flagged MAGIC_LINK, in-base target)
 //!     └── mnt/           (mountpoint of the second filesystem)
 //! ```
 
@@ -75,6 +76,13 @@ fn fixture_tree() -> Tree {
                 "magic",
                 Tree::Symlink {
                     target: "/secret".into(),
+                    magic: true,
+                },
+            ),
+            (
+                "magic-rel",
+                Tree::Symlink {
+                    target: "b".into(),
                     magic: true,
                 },
             ),
@@ -458,6 +466,19 @@ mod beneath {
                 .ptr_eq(&b)
         );
     }
+
+    #[test]
+    fn magic_links_are_refused() {
+        let (context, _) = at_a();
+        // `magic-rel -> b` would stay inside the base as an ordinary symlink,
+        // but the magic-link object jump is refused under BENEATH (Linux
+        // `nd_jump_link` LOOKUP_IS_SCOPED -> EXDEV); the displayed target is
+        // never re-parsed.
+        assert_eq!(
+            error_of(&context, "magic-rel", &ResolveConstraints::new().beneath()),
+            VfsError::CrossesDevices
+        );
+    }
 }
 
 mod in_root {
@@ -499,6 +520,18 @@ mod in_root {
         let b = a.lookup_no_follow("b").unwrap();
         assert!(resolve(&context, "abs", &constraints).unwrap().ptr_eq(&b));
     }
+
+    #[test]
+    fn magic_links_are_refused() {
+        let (context, a) = at_a();
+        let constraints = ResolveConstraints::new().in_root(a.clone());
+        // The jump is refused under IN_ROOT instead of re-parsing the
+        // displayed target as `/a/b`.
+        assert_eq!(
+            error_of(&context, "magic-rel", &constraints),
+            VfsError::CrossesDevices
+        );
+    }
 }
 
 mod no_xdev {
@@ -532,6 +565,18 @@ mod no_xdev {
         // The same walk is fine without the constraint.
         let escaped = resolve(&inside, "..", &ResolveConstraints::new()).unwrap();
         assert!(escaped.ptr_eq(&a));
+    }
+
+    #[test]
+    fn magic_links_are_refused() {
+        let (context, _) = at_a();
+        // A magic-link jump goes to a kernel object, not to the displayed
+        // target, so the walker cannot prove the object shares the link's
+        // mount. NO_XDEV refuses the jump instead of fabricating a path.
+        assert_eq!(
+            error_of(&context, "magic-rel", &ResolveConstraints::new().no_xdev()),
+            VfsError::CrossesDevices
+        );
     }
 }
 

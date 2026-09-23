@@ -980,6 +980,11 @@ impl FsContext {
     /// `RESOLVE_IN_ROOT` root when one is set, at the filesystem root
     /// otherwise, and are rejected outright under `RESOLVE_BENEATH` alone —
     /// all matching Linux's `pick_link`/`link_path_walk` behavior.
+    ///
+    /// Magic links are handled first: `NO_SYMLINKS`/`NO_MAGICLINKS` reject
+    /// them with `ELOOP`, and a spatial restriction (`BENEATH`/`IN_ROOT`/
+    /// `NO_XDEV`) refuses the object jump with `EXDEV`, mirroring Linux's
+    /// `nd_jump_link`. Their displayed target is never re-parsed as a path.
     #[allow(clippy::too_many_arguments)]
     fn try_resolve_symlink_constrained(
         &self,
@@ -998,6 +1003,19 @@ impl FsContext {
         }
         if constraints.is_no_magiclinks() && loc.is_magic_link() {
             return Err(VfsError::FilesystemLoop);
+        }
+        // A magic link jumps to a kernel object, not to a pathname. Linux
+        // refuses that jump whenever the lookup is spatially scoped:
+        // `nd_jump_link()` fails `LOOKUP_NO_XDEV` when the object lives on
+        // another mount and `LOOKUP_IS_SCOPED` (BENEATH/IN_ROOT) outright,
+        // both with EXDEV. This walker cannot re-enter at a kernel object, and
+        // re-reading the displayed target (`pipe:[inode]`, `uts:[id]`, ...)
+        // as a pathname would fabricate a wrong resolution. Refuse the jump
+        // under any spatial restriction instead.
+        if loc.is_magic_link()
+            && (constraints.is_beneath() || constraints.is_in_root() || constraints.is_no_xdev())
+        {
+            return Err(VfsError::CrossesDevices);
         }
         if *follow_count >= SYMLINKS_MAX {
             return Err(VfsError::FilesystemLoop);
