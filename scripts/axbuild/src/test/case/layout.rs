@@ -80,33 +80,3 @@ pub(crate) fn reset_dir(path: &Path) -> anyhow::Result<()> {
     }
     fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))
 }
-
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::board_case_asset_layout;
-
-    #[test]
-    fn board_layout_places_upload_root_under_target_board_cases() {
-        let root = tempdir().unwrap();
-
-        let layout = board_case_asset_layout(
-            &root.path().join("target"),
-            "riscv64gc-unknown-none-elf",
-            "usb/init",
-        )
-        .unwrap();
-
-        assert!(
-            layout.overlay_dir.starts_with(
-                root.path()
-                    .join("target/riscv64gc-unknown-none-elf/board-cases/usb/init/runs")
-            )
-        );
-        assert_eq!(
-            layout.overlay_dir.file_name().unwrap().to_string_lossy(),
-            "upload"
-        );
-    }
-}

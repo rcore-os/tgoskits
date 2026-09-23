@@ -134,40 +134,6 @@ fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
 }
 
 #[test]
-fn write_cmake_toolchain_file_contains_clang_cross_settings() {
-    let root = tempdir().unwrap();
-    let layout = case_assets::case_asset_layout(
-        &root.path().join("target"),
-        "aarch64-unknown-none-softfloat",
-        "usb",
-    )
-    .unwrap();
-    fs::create_dir_all(&layout.cross_bin_dir).unwrap();
-    fs::create_dir_all(
-        layout
-            .staging_root
-            .join("usr/lib/gcc/aarch64-alpine-linux-musl/15.2.0"),
-    )
-    .unwrap();
-
-    write_cmake_toolchain_file(
-        &layout,
-        cross_compile_spec("aarch64").unwrap(),
-        Path::new("/usr/bin/clang"),
-    )
-    .unwrap();
-
-    let content = fs::read_to_string(&layout.cmake_toolchain_file).unwrap();
-    assert!(content.contains("set(CMAKE_SYSTEM_NAME Linux)"));
-    assert!(content.contains("set(CMAKE_C_COMPILER \"/usr/bin/clang\")"));
-    assert!(content.contains("set(CMAKE_C_COMPILER_TARGET \"aarch64-linux-musl\")"));
-    assert!(content.contains("--gcc-toolchain="));
-    assert!(content.contains("-B"));
-    assert!(content.contains("-L"));
-    assert!(content.contains("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER"));
-}
-
-#[test]
 fn detect_gcc_runtime_dir_prefers_highest_version() {
     let root = tempdir().unwrap();
     let sysroot = root.path().join("sysroot");

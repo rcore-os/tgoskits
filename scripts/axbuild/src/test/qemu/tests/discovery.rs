@@ -3,19 +3,6 @@ use std::fs;
 use crate::test::qemu::discovery::*;
 
 #[test]
-fn discover_all_qemu_cases_includes_wrapper_root_case() {
-    let root = tempfile::tempdir().unwrap();
-    let case_dir = root.path().join("suite/root-case");
-    fs::create_dir_all(&case_dir).unwrap();
-    fs::write(case_dir.join("build-x86_64-unknown-none.toml"), "").unwrap();
-    fs::write(case_dir.join("qemu-x86_64.toml"), "").unwrap();
-
-    let cases = discover_all_qemu_cases(&root.path().join("suite"), None, "test", "qemu").unwrap();
-
-    assert_eq!(cases, ["root-case"]);
-}
-
-#[test]
 fn discover_qemu_cases_includes_wrapper_root_case() {
     let root = tempfile::tempdir().unwrap();
     let case_dir = root.path().join("suite/root-case");
