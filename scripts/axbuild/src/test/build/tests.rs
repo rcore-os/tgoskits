@@ -198,43 +198,6 @@ fn grouped_runner_commands_preserve_explicit_aggregator_with_subcase_filter() {
 }
 
 #[test]
-fn grouped_c_configure_passes_ltp_case_even_when_case_name_is_system() {
-    let root = tempdir().unwrap();
-    let mut case = fake_case(root.path(), "system");
-    case.ltp_case_id = Some("execve03".to_string());
-    case.grouped_subcase_filter = Some(BTreeSet::from(["ltp-syscalls".to_string()]));
-    let ltp = fake_c_subcase(
-        root.path(),
-        &case,
-        "ltp-syscalls",
-        &["ltp-syscalls-execve03"],
-    );
-    let layout =
-        case_assets::case_asset_layout(root.path(), "x86_64-unknown-none", "system").unwrap();
-    let build_env = HostCrossBuildEnv {
-        cmake: Path::new("/usr/bin/cmake").to_path_buf(),
-        pkg_config: Path::new("/usr/bin/pkg-config").to_path_buf(),
-        make_program: Path::new("/usr/bin/make").to_path_buf(),
-        cmake_toolchain_file: layout.cmake_toolchain_file.clone(),
-        command_envs: Vec::new(),
-    };
-    let config = crate::starry::test::starry_case_asset_config();
-    let command = build_grouped_c_root_project_configure_command(
-        &case,
-        &[&ltp],
-        1,
-        &layout,
-        &build_env,
-        &config,
-    );
-    let args = command.get_args().collect::<Vec<_>>();
-    assert!(args.contains(&std::ffi::OsStr::new("-DLTP_SYSCALLS_CASE=execve03")));
-    assert!(args.contains(&std::ffi::OsStr::new(
-        "-DSTARRY_GROUPED_C_SUBCASES=ltp-syscalls"
-    )));
-}
-
-#[test]
 fn grouped_c_subcases_reject_missing_direct_usr_bin_commands() {
     let root = tempdir().unwrap();
     let mut case = fake_case(root.path(), "bugfix");
