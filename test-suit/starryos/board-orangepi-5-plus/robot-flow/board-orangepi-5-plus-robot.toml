@@ -10,11 +10,11 @@ fail_regex = [
 ]
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:~#"
 shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588; m=ROBOT_CI'
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:~#"
 # Fixed by this test configuration; change this argument to revise the FPS gate.
 shell_cmd = 'cd "$d" && FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0 || echo "[${m}] HARNESS=FAIL status=$?"'
 success_regex = ['(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12]\s*$']

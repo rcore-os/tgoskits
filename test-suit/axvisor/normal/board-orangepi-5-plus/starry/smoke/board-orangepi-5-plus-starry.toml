@@ -5,6 +5,6 @@ fail_regex = [
 ]
 shell_check_steps = [
   { shell_prefix = "axvisor:/$", shell_cmd = "vm console 1" },
-  { shell_prefix = "root@starry:/root #", shell_cmd = "pwd && echo 'starry guest test pass'", success_regex = ["(?m)^starry guest test pass\\s*$"], fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM"] },
+  { shell_prefix = "root@starry:", shell_cmd = "pwd && echo 'starry guest test pass'", success_regex = ["(?m)^starry guest test pass\\s*$"], fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM"] },
 ]
 timeout = 300

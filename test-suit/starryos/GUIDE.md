@@ -681,7 +681,7 @@ cargo xtask starry board \
   -b Rock-4D
 ```
 
-两条路径都必须进入 `root@starry:/root #` 并打印独立的
+两条路径都必须进入 `root@starry:~#` 并打印独立的
 `STARRY_ROCK4D_BOOT_OK` 成功行。RK3576 的固件、PSCI、CPU 拓扑和 CRU/PMU
 检查点见 `.claude/skills/arch-platform-porting/references/boot-debugging.md`。
 

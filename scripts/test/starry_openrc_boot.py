@@ -119,7 +119,7 @@ def boot(arch, image, directory, second_boot):
                             serial_buffer += data
                             if b"panic" in serial_buffer.lower() or b"STARRY_OPENRC_FAILED" in serial_buffer:
                                 raise RuntimeError("guest reported failure")
-                            if b"root@starry:/root # " in serial_buffer and not started and not outgoing:
+                            if b"root@starry:~# " in serial_buffer and not started and not outgoing:
                                 if not respawn_requested:
                                     outgoing = b"exit\n"
                                     respawn_requested = True
@@ -128,7 +128,7 @@ def boot(arch, image, directory, second_boot):
                                     started = True
                                 serial_buffer = b""
                             ready_at = serial_buffer.find(b"\nSTARRY_OPENRC_READY")
-                            if (ready_at >= 0 and b"root@starry:/root # " in serial_buffer[ready_at:]
+                            if (ready_at >= 0 and b"root@starry:~# " in serial_buffer[ready_at:]
                                     and not requested_power):
                                 outgoing = b"reboot\n" if second_boot else b"poweroff\n"
                                 requested_power = True

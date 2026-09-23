@@ -20,7 +20,7 @@ fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 120
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 shell_cmd = "printf 'start\\n' > /dev/memtrack && printf 'sample\\n' > /dev/memtrack && printf 'sample_hard\\n' > /dev/memtrack && printf 'symbolize\\n' > /dev/memtrack && printf 'end\\n' > /dev/memtrack && echo STARRY_MEMTRACK_BACKTRACE_OK"
 success_regex = [
     "(?m)^Memory allocation sample recorded\\s*$",

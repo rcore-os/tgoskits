@@ -106,7 +106,7 @@ AxVisor 的 `exit` 会先调用宿主文件系统关闭流程。StarryOS 用户�
 这些真实设备与时序无法仅由主机单元测试证明。AxVisor 提供 IVC 和设备隔离，StarryOS
 负责感知，Zephyr 独占 UART6，负责决策、底盘及机械臂。
 
-StarryOS 登录 Shell 出现 `root@starry:/root #` 提示符后，由本目录的 board 配置运行：
+StarryOS 登录 Shell 出现 `root@starry:` 前缀的提示符后，由本目录的 board 配置运行：
 
 ```sh
 /home/orangepi/robot/aka-rk3588/run_dual_pick_ci_once.sh --min-fps 28

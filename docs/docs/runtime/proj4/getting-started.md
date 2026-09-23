@@ -434,7 +434,7 @@ bootm 0x02000000 - 0x0a100000
 
 rootfs 的分区参数写在内核自带设备树的 `chosen` 节点里，值是 `root=/dev/mmcblk0p2`，指向卡上第二个分区。这块板子没有 eMMC，`/dev/mmcblk*` 这些节点指的就是 SD 卡本身，不要当成片上的内置存储。
 
-启动成功的标志是串口出现 shell 提示符 `root@starry:/root #`（这个提示符的出处见 5.2）。这三条命令不在自动启动脚本里，**板子每次重启都要重新敲一遍**。想确认应用那一层也通了，先跑一次只推理不动作的检查，具体命令见 6.2。
+启动成功的标志是串口出现 shell 提示符 `root@starry:~#`（这个提示符的出处见 5.2）。这三条命令不在自动启动脚本里，**板子每次重启都要重新敲一遍**。想确认应用那一层也通了，先跑一次只推理不动作的检查，具体命令见 6.2。
 
 ### 5.2 SG2002 启动
 
@@ -468,7 +468,7 @@ bootm 0x82200000 - $fdtcontroladdr
 
 这块板子没有保存环境变量的地方，所以**每次重启都要重新敲这几条命令**。"重启之后又回到旧系统了"不是故障，是这条默认链路本身的行为。
 
-启动成功的标志是串口出现 shell 提示符 `root@starry:/root #`——这个串来自内核内置的 `init.sh`（`os/StarryOS/starryos/src/init.sh`，里面的 `PS1` 写成 `${USER}@${HOSTNAME}:${PWD} # `），各块板子都一样。板级测试就是靠匹配它的前缀 `root@starry:` 来判断系统起来了，车板的 `os/StarryOS/configs/board/aka-00-sg2002-board.toml` 里的 `shell_prefix` 写的就是这个前缀。
+启动成功的标志是串口出现 shell 提示符 `root@starry:~#`——这个串来自内核内置的 `init.sh`（`os/StarryOS/starryos/src/init.sh`，里面的 `PS1` 写成 `\u@\h:\w\$ `），各块板子都一样。板级测试就是靠匹配它的前缀 `root@starry:` 来判断系统起来了，车板的 `os/StarryOS/configs/board/aka-00-sg2002-board.toml` 里的 `shell_prefix` 写的就是这个前缀。
 
 ### 5.3 登录、配网与传文件
 

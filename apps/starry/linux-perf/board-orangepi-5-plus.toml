@@ -8,7 +8,7 @@ fail_regex = [
 timeout = 900
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 shell_cmd = """
 export STARRY_LINUX_PERF_ARCHIVE_0_URL='${sessionFile:usr/share/linux-perf/runtime.tar.gz.part-0}'
 export STARRY_LINUX_PERF_ARCHIVE_1_URL='${sessionFile:usr/share/linux-perf/runtime.tar.gz.part-1}'

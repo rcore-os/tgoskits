@@ -9,6 +9,6 @@ fail_regex = [
 timeout = 300
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:~#"
 shell_cmd = "echo STARRY_ROCK4D_BOOT_OK"
 success_regex = ["(?m)^STARRY_ROCK4D_BOOT_OK\\s*$"]

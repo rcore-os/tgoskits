@@ -38,7 +38,7 @@ fi
 cd "$HOME" || cd /
 
 cat > /tmp/starry-shrc <<'EOF'
-export PS1='${USER}@${HOSTNAME}:${PWD} # '
+export PS1='\u@\h:\w\$ '
 EOF
 export ENV=/tmp/starry-shrc
 exec /bin/sh -l -i

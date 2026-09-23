@@ -27,7 +27,7 @@ args = [
 uefi = true
 to_bin = true
 shell_check_steps = [
-  { shell_prefix = "root@starry:", shell_cmd = "/usr/bin/openrc-test.sh", success_regex = ["(?m)^STARRY_OPENRC_PASSED\\s*$"] },
+  { shell_prefix = "root@starry:~#", shell_cmd = "/usr/bin/openrc-test.sh", success_regex = ["(?m)^STARRY_OPENRC_PASSED\\s*$"] },
   { shell_prefix = "root@starry:", shell_cmd = "exit", success_regex = ["Welcome to Starry OS!"] },
   { shell_prefix = "root@starry:", shell_cmd = "poweroff", success_regex = ["(?m)^STARRY_OPENRC_SERVICE_STOPPED\\s*$"] },
 ]
