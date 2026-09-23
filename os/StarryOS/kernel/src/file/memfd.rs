@@ -456,8 +456,25 @@ pub(crate) fn resync_shared_writable_counts_after_mprotect(
     }
 }
 
+/// Prepares the writable count for a fresh, non-overlapping mapping.
+/// The caller applies it only after publishing the new VMA.
+pub(crate) fn prepare_new_mapping_delta(
+    mm_id: AddressSpaceId,
+    flags: MappingFlags,
+    backend: &MappingOperation,
+) -> Option<SharedWritableDelta> {
+    if !flags.contains(MappingFlags::WRITE) {
+        return None;
+    }
+    memfd_from_file_backend(backend).map(|memfd| SharedWritableDelta {
+        memfd,
+        mm_id,
+        delta: 1,
+    })
+}
+
 /// Computes the old/new writable-count transition for a metadata replacement
-/// without publishing it.  The caller owns the commit ordering.
+/// without publishing it. The caller owns the commit ordering.
 pub(crate) fn prepare_aspace_replace_deltas(
     aspace: &AddrSpace,
     ustart: VirtAddr,
@@ -483,14 +500,10 @@ pub(crate) fn prepare_aspace_replace_deltas(
             });
         }
     }
-    if let Some(memfd) = memfd_from_file_backend(new_backend)
-        && new_flags.contains(MappingFlags::WRITE)
+    if let Some(delta) =
+        prepare_new_mapping_delta(aspace.address_space_id(), new_flags, new_backend)
     {
-        deltas.push(SharedWritableDelta {
-            memfd,
-            mm_id: aspace.address_space_id(),
-            delta: 1,
-        });
+        deltas.push(delta);
     }
     deltas
 }

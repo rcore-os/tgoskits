@@ -30,8 +30,8 @@ use super::{
     },
     FaultFallback, FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo,
     MappingMutationContext, MappingOperation, PopulateRequest, PreparedPteOwner,
-    ProviderPublication, PteMaterialization, RssKind, alloc_frame, occupied_leaf_ranges, pages_in,
-    rollback_live_mapped_pages, validate_occupied_leaf_range,
+    ProviderPublication, PteMaterialization, RssKind, alloc_frame, collect_occupied_leaves,
+    occupied_leaf_ranges, pages_in, rollback_live_mapped_pages, validate_occupied_leaf_range,
 };
 use crate::{StarryError, StarryResult, sync::IrqMutex};
 
@@ -1722,14 +1722,15 @@ impl MappingExecution for CowBackend {
         new_pt: &mut PageTable,
     ) -> StarryResult<(MappingOperation, PteMaterialization)> {
         let cow_flags = flags - MappingFlags::WRITE;
-        let leaves = occupied_leaf_ranges(range, old_pt)?;
+        let leaves = collect_occupied_leaves(range, old_pt, |vaddr, size, paddr, present| {
+            (vaddr, size, paddr, present)
+        })?;
         let capacity = leaves.len();
         let mut transaction = CowChildCloneTransaction::new(new_pt, capacity)?;
         let mut materialization = PteMaterialization::with_capacity(capacity)?;
-        for (vaddr, page_size) in leaves {
-            let (paddr, _, installed_size) = old_pt.query(vaddr)?;
-            if installed_size != page_size {
-                return Err(StarryError::BadState);
+        for (vaddr, page_size, paddr, present) in leaves {
+            if !present {
+                return Err(PagingError::not_mapped().into());
             }
             let page = self
                 .page_object_for_frame(paddr)

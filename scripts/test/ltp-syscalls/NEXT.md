@@ -36,7 +36,9 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 `bug-fcntl-len-negative`、`bug-fcntl-posix-lock` 和 `bug-fcntl-whence` 曾被尝试部分替换为 [fcntl14.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/fcntl/fcntl14.c)。上游默认执行两个变体，每个变体完成 5000 次父子进程锁操作；父进程设置随机 `F_RDLCK`/`F_WRLCK`，子进程通过 `F_GETLK` 检查持锁 pid 和类型，再验证冲突时 `F_SETLK` 返回 `EWOULDBLOCK`、无冲突时可以加锁。正式接入要求两个变体都产生 `TPASS`。
 
-最初按评审提议撤回：x86_64 CI 的第一个变体曾在 38.957 秒处超时。当前分支已在 `cases-x86_64.txt` 恢复上游原用例，并以 `minimum-passes.txt` 中的 `fcntl14 2` 要求两个变体全部完成；不降低默认 5000 次操作数、不增加 `LTP_TIMEOUT_MUL`，也不改变 38 秒上游超时。本地 x86_64 同一原始配置连续六轮均得到 2 TPASS；其他架构未把该用例列入正式集合。[#2341](https://github.com/rcore-os/tgoskits/issues/2341) 在完整验证和持续集成终态前仍保持开放。
+最初按评审提议撤回：x86_64 CI 的第一个变体曾在 38.957 秒处超时。当前分支已在 `cases-x86_64.txt` 恢复上游原用例，并以 `minimum-passes.txt` 中的 `fcntl14 2` 要求两个变体全部完成；不降低默认 5000 次操作数、不增加 `LTP_TIMEOUT_MUL`，也不改变 38 秒上游超时。较早的本地 x86_64 同一原始配置曾连续六轮得到 2 TPASS，但提交 `c0b8173e28` 的 x86_64 CI 第一变体在 39.057 秒失败；随后一轮本地高负载测试第一变体通过、第二变体超时。因此不能据此前的本地通过宣称稳定：后续按采样消除退出时叶子页表无效扫描、fork 时对已知新 VMA 的 memfd 替换扫描及 COW 逐叶二次页表查询，仍以新提交的 CI 为完成门槛。其他架构未把该用例列入正式集合。[#2341](https://github.com/rcore-os/tgoskits/issues/2341) 在验证终态前保持开放。
+
+叠加三项优化后，本地 `cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls` 中原版 `fcntl14` 两个变体均完成 5000 次并得到 `2 TPASS`，程序耗时 69.810 秒，见 `/tmp/pr2472-detach-memfd-cow-ltp-x86_64-r1-20260923.log`。按本轮验证范围，目标用例结束后主动中止分组命令，不能把该日志记为整个 LTP 集合通过；最终还须核对新 head 的远端 x86_64 CI。
 
 三个旧 C 测试按本次用户决定清理，不再保留原程序。x86_64 的 `fcntl14` 承接跨进程随机正长度锁竞争和 `F_GETLK` 持锁信息；其余架构仍只有正式集合中的 `fcntl17`、`fcntl15`、`fcntl34`、`fcntl36` 提供路径级部分覆盖。逐项未承接断言记录在 `migration.csv`：
 
@@ -135,7 +137,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 ### 4.1 验证入口
 
-本 PR 重基后通过 `cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls` 运行正式累计 LTP，再以四架构的 `-c qemu/system` 执行完整系统套件。x86_64 正式 LTP 与完整套件均包含 `fcntl14` 的两种原始 5000 次操作变体，各得 2 TPASS；完整 system 计数分别为 x86_64 511/511、aarch64 484/484 加 perf 23/23、riscv64 507/507、loongarch64 507/507。日志为 `/tmp/pr2472-rebased-ltp-x86_64-20260923.log` 与 `/tmp/pr2472-rebased-system-<arch>-20260923.log`；另有六轮单独回归 `/tmp/pr2472-retired-no-preflight-fcntl14-r{1..6}-20260923.log`。`fcntl14` 仅在 `cases-x86_64.txt`，以 `minimum-passes.txt` 的 2 TPASS 为完成契约；上述本地结果不能代替当前 PR 的 CI 终态。
+本 PR 重基后曾通过 `cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls` 运行正式累计 LTP，再以四架构的 `-c qemu/system` 执行完整系统套件。该阶段 x86_64 正式 LTP 与完整套件均包含 `fcntl14` 的两种原始 5000 次操作变体，各得 2 TPASS；完整 system 计数分别为 x86_64 511/511、aarch64 484/484 加 perf 23/23、riscv64 507/507、loongarch64 507/507。日志为 `/tmp/pr2472-rebased-ltp-x86_64-20260923.log` 与 `/tmp/pr2472-rebased-system-<arch>-20260923.log`；另有六轮单独回归 `/tmp/pr2472-retired-no-preflight-fcntl14-r{1..6}-20260923.log`。但提交 `c0b8173e28` 的 x86_64 CI 与后续高负载本地执行仍触发超时，这些早期本地通过不能证明稳定通过。`fcntl14` 仅在 `cases-x86_64.txt`，以 `minimum-passes.txt` 的 2 TPASS 为完成契约；最新修复仍需新 head 的 CI 终态验证。
 
 ### 4.2 syscall 对照
 
@@ -143,7 +145,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| fcntl(F_SETLK/F_SETLKW/F_GETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 posix_locks_deadlock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L1101) | POSIX 等待环返回 EDEADLK，查询持锁者和区间 | sys_fcntl → dispatch_fcntl → fcntl_setlk/getlk → PosixLockWaitGuard 与 FCNTL_LOCKS，进程身份所有权 | 正确 | fcntl17 四架构候选通过；x86_64 的 fcntl14 六轮单测及重基后正式 LTP/完整 system 均 2 TPASS；fcntl16 仍暂缓，其他架构未接入 fcntl14 |
+| fcntl(F_SETLK/F_SETLKW/F_GETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 posix_locks_deadlock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L1101) | POSIX 等待环返回 EDEADLK，查询持锁者和区间 | sys_fcntl → dispatch_fcntl → fcntl_setlk/getlk → PosixLockWaitGuard 与 FCNTL_LOCKS，进程身份所有权 | 无法确认 | fcntl17 四架构候选通过；x86_64 的 fcntl14 叠加优化后本地 2 TPASS，但前一 head 的 x86_64 CI 超时，新 head 尚待验证；fcntl16 仍暂缓，其他架构未接入 fcntl14 |
 | fcntl(F_OFD_SETLKW/F_OFD_SETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2506) | 独立 OFD 的读写互斥及与 POSIX 锁的竞争，解锁后可继续访问 | sys_fcntl → dispatch_fcntl → fcntl_setlk → FCNTL_LOCKS 的 OFD/POSIX 所有者及 inode 等待队列 | 正确 | fcntl34/36；四架构候选验证通过，不包含 OFD GETLK 或最后关闭语义 |
 | close / x86_64:3；其他三架构:57 | [Linux v7.1 filp_flush](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1456) | 关闭同 inode FD 释放当前所有者记录锁，保留其他进程的锁 | sys_close → close_file_like → release_locks_on_close → release_inode_posix_locks | 正确 | fcntl15 的 dup/open/fork 三种组合，四架构验证通过 |
 | flock / x86_64:73；其他三架构:32 | [Linux v7.1 flock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2214) | OFD 间共享/排他冲突、非阻塞 EWOULDBLOCK、阻塞信号中断 EINTR | sys_flock → flock_op → try_flock_once → FLOCK_LOCKS 及 inode 等待队列 | 正确 | flock02/04/06/07，四架构验证通过 |

@@ -478,6 +478,9 @@ where
         level: usize,
         release: &mut impl FnMut(DetachedPageTableFrame<A>),
     ) {
+        if level == 1 {
+            return;
+        }
         for i in (0..self.len()).rev() {
             let entry_info = {
                 let entries = self.as_slice();
@@ -493,7 +496,7 @@ where
                 }
             };
             let (is_valid, is_huge, paddr) = entry_info;
-            if !is_valid || is_huge || level == 1 {
+            if !is_valid || is_huge {
                 continue;
             }
             let mut child_frame = Frame::<T, A>::from_paddr(paddr, self.allocator.clone());

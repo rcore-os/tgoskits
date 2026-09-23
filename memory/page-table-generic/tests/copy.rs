@@ -125,6 +125,26 @@ fn detaching_borrower_reclaims_only_its_owned_root() {
 }
 
 #[test]
+fn detaching_owner_reclaims_leaf_tables_and_root() {
+    let allocator = TrackedFram4k::new();
+    let mut table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    map_page(&mut table, 0x20_0000, 0x40_0000);
+    map_page(&mut table, 0x40_0000, 0x80_0000);
+    let owned_frames = allocator.allocated_count();
+    assert!(owned_frames >= 4);
+
+    let mut detached = Vec::new();
+    // SAFETY: no other user can access this table and it was never installed
+    // in hardware, so each detached frame can be reclaimed immediately.
+    unsafe { table.detach(|token| detached.push(token)) };
+    assert_eq!(detached.len(), owned_frames);
+    for token in detached {
+        token.reclaim();
+    }
+    assert_eq!(allocator.allocated_count(), 0);
+}
+
+#[test]
 fn preallocated_root_entry_survives_empty_unmap_and_later_publication() {
     const FIRST_PAGE: usize = 0x20_0000;
     const SECOND_PAGE: usize = 0x40_0000;

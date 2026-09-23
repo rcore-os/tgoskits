@@ -11,7 +11,7 @@ use ax_memory_addr::{DynPageIter, MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, 
 use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{DeferredPageTableFrames, MappingFlags, PageTable},
+    paging::{DeferredPageTableFrames, MappingFlags, PageTable, PageTableEntry},
 };
 
 use crate::{StarryError, StarryResult};
@@ -291,6 +291,14 @@ fn occupied_leaf_ranges(
     range: VirtAddrRange,
     pt: &PageTable,
 ) -> StarryResult<Vec<(VirtAddr, usize)>> {
+    collect_occupied_leaves(range, pt, |vaddr, page_size, _, _| (vaddr, page_size))
+}
+
+fn collect_occupied_leaves<T>(
+    range: VirtAddrRange,
+    pt: &PageTable,
+    mut collect: impl FnMut(VirtAddr, usize, PhysAddr, bool) -> T,
+) -> StarryResult<Vec<T>> {
     if range.is_empty() || !range.start.is_aligned_4k() || !range.end.is_aligned_4k() {
         return Err(StarryError::InvalidInput);
     }
@@ -316,7 +324,12 @@ fn occupied_leaf_ranges(
             return Err(StarryError::OperationNotSupported);
         }
         leaves.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
-        leaves.push((entry.vaddr, leaf_size));
+        leaves.push(collect(
+            entry.vaddr,
+            leaf_size,
+            entry.pte.paddr(entry.level > 1),
+            entry.pte.present(),
+        ));
     }
     Ok(leaves)
 }

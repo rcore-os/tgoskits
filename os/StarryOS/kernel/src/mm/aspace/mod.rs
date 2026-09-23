@@ -6775,14 +6775,15 @@ impl AddrSpace {
                     self_modify,
                     &mut guard.pt,
                 )?;
-                let start = entry.start();
-                child_memfd_deltas.extend(crate::syscall::memfd_prepare_aspace_replace_deltas(
-                    &guard,
-                    start,
-                    entry.size(),
+                // Parent VMAs do not overlap, and the child is built from an
+                // empty root. No prior child mapping can be replaced here.
+                if let Some(delta) = crate::syscall::memfd_prepare_new_mapping_delta(
+                    guard.address_space_id(),
                     entry.rights(),
                     &new_backend,
-                ));
+                ) {
+                    child_memfd_deltas.push(delta);
+                }
 
                 let child_entry = guard
                     .vma_root
