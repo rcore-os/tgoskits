@@ -10,19 +10,6 @@ pub(super) fn write_case_file(root: &Path, case_name: &str, name: &str, body: &s
     path
 }
 
-pub(super) fn write_board_default(root: &Path, board_name: &str, target: &str) -> PathBuf {
-    let path = root
-        .join("os/StarryOS/configs/board")
-        .join(format!("{board_name}.toml"));
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(
-        &path,
-        format!("target = \"{target}\"\nenv = {{}}\nfeatures = []\nlog = \"Info\"\n"),
-    )
-    .unwrap();
-    path
-}
-
 pub(super) fn write_minimal_board_case(root: &Path, case_name: &str) {
     write_case_file(root, case_name, "init.sh", "echo hello\n");
     write_case_file(

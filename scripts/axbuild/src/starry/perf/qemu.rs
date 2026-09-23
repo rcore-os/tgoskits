@@ -363,11 +363,8 @@ fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{append_text_filter_params, prepare_uefi_boot};
-    use crate::{
-        starry::perf::symbols::{AddressRange, KernelTextRange},
-        support::ovmf::OvmfFirmware,
-    };
+    use super::prepare_uefi_boot;
+    use crate::support::ovmf::OvmfFirmware;
 
     #[tokio::test]
     async fn loongarch_uefi_rejects_unconverted_kernel_before_boot() {

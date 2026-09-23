@@ -12,18 +12,6 @@ fn patch_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode
     .unwrap();
 }
 
-fn patch_discard_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode) {
-    super::patch_rootfs(
-        qemu,
-        rootfs_path,
-        RootfsPatchOptions {
-            mode,
-            write_policy: RootfsWritePolicy::Discard,
-        },
-    )
-    .unwrap();
-}
-
 #[test]
 fn rewrite_drive_file_paths_replaces_selected_drive_files() {
     let mut qemu = QemuConfig {

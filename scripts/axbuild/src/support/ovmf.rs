@@ -80,8 +80,3 @@ fn parse_arch(value: &str) -> Result<Arch, String> {
         _ => Err(format!("unsupported OVMF architecture '{value}'")),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}

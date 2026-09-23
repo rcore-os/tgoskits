@@ -273,12 +273,7 @@ pub(crate) fn verify_qemu_success_contract(
 }
 #[cfg(test)]
 mod tests {
-    use ostool::run::qemu::QemuConfig;
-
-    use super::{
-        QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, append_configured_success_regex,
-        verify_qemu_success_contract,
-    };
+    use super::{QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, verify_qemu_success_contract};
 
     fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
         let patterns = patterns.iter().map(ToString::to_string).collect::<Vec<_>>();

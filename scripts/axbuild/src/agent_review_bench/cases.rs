@@ -380,8 +380,6 @@ fn git_status(workspace_root: &Path, args: &[&str]) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     fn sample_case() -> BenchCase {
@@ -436,42 +434,5 @@ description = "sample defect"
              \"cccccccccccccccccccccccccccccccccccccccc\"",
         );
         assert!(toml::from_str::<BenchCase>(&legacy_case).is_err());
-    }
-
-    fn case_with_file_change(
-        base_content: &str,
-        head_content: &str,
-        expected_line: usize,
-    ) -> (tempfile::TempDir, BenchCase) {
-        let repo = tempdir().unwrap();
-        initialize_repo(repo.path());
-        let base = commit_file(repo.path(), base_content, "base");
-        let head = commit_file(repo.path(), head_content, "change file");
-        let mut case = sample_case();
-        case.base = base;
-        case.head = head;
-        case.expected[0].path = "case.toml".into();
-        case.expected[0].line = expected_line;
-        (repo, case)
-    }
-
-    fn initialize_repo(repo: &Path) {
-        git_output(repo, &["init", "--quiet"]).unwrap();
-        git_output(repo, &["config", "user.name", "Agent Review Bench"]).unwrap();
-        git_output(
-            repo,
-            &["config", "user.email", "agent-review-bench@example.com"],
-        )
-        .unwrap();
-    }
-
-    fn commit_file(repo: &Path, content: &str, message: &str) -> String {
-        fs::write(repo.join("case.toml"), content).unwrap();
-        git_output(repo, &["add", "case.toml"]).unwrap();
-        git_output(repo, &["commit", "--quiet", "-m", message]).unwrap();
-        git_output(repo, &["rev-parse", "HEAD"])
-            .unwrap()
-            .trim()
-            .to_string()
     }
 }

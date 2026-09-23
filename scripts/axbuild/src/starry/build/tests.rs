@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use tempfile::tempdir;
 
@@ -14,17 +10,6 @@ use crate::{
 
 fn workspace() -> WorkspaceContext {
     WorkspaceContext::discover(None).unwrap()
-}
-
-fn write_minimal_package_manifest(path: &Path, name: &str) {
-    let src_dir = path.parent().unwrap().join("src");
-    fs::create_dir_all(&src_dir).unwrap();
-    fs::write(src_dir.join("lib.rs"), "").unwrap();
-    fs::write(
-        path,
-        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
-    )
-    .unwrap();
 }
 
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {

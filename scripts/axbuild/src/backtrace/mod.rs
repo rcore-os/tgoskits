@@ -10,8 +10,6 @@ mod symbolize;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-pub(crate) use capture::write_raw_blocks_from_output;
 pub(crate) use capture::{
     BacktraceBlockCapture, BacktraceQemuCapture, flush_pending_stream_symbolize,
 };
@@ -21,10 +19,7 @@ pub(crate) use symbolize::{
     maybe_symbolize_after_qemu, symbolize_captured_blocks_to_string,
 };
 #[cfg(test)]
-pub(crate) use symbolize::{
-    apply_qemu_log_retention, should_delete_qemu_log_after_symbolize,
-    should_persist_qemu_capture_log,
-};
+pub(crate) use symbolize::{apply_qemu_log_retention, should_persist_qemu_capture_log};
 
 pub(super) const HOST_SYMBOLIZE_HEADER: &str = "=== host backtrace symbolize ===";
 

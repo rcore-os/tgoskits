@@ -1,12 +1,10 @@
-use std::{fs, path::Path, process::Command};
+use std::process::Command;
 
 use ostool::{board::config::BoardRunConfig, run::ShellCheckStep};
 use tempfile::tempdir;
 
 use super::{configure_board_init_step, merge_board_init_command, resolve_board_case};
-use crate::starry::app::test_support::{
-    write_board_default, write_case_file, write_minimal_board_case,
-};
+use crate::starry::app::test_support::write_minimal_board_case;
 
 #[test]
 fn resolves_board_case_from_apps_dir() {

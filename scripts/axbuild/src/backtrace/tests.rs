@@ -1,21 +1,11 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::fs;
 
 use object::{Object, ObjectSymbol};
 
 use super::{
     BacktraceBlockCapture, BacktraceSymbolizeSession, SymbolizeAfterQemuOutcome,
-    apply_qemu_log_retention, flush_pending_stream_symbolize, maybe_symbolize_after_qemu,
-    parser::{infer_kind_filter, parse_blocks},
-    should_delete_qemu_log_after_symbolize, should_persist_qemu_capture_log, std_test_elf_path,
-    symbolize::{
-        HostSymbolizer, TextSymbol, is_compiler_local_symbol, write_captured_blocks_to_log,
-        write_symbolized_blocks,
-    },
-    write_raw_blocks_from_output,
+    apply_qemu_log_retention, maybe_symbolize_after_qemu, parser::parse_blocks,
+    should_persist_qemu_capture_log, symbolize::HostSymbolizer,
 };
 
 #[unsafe(no_mangle)]

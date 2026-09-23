@@ -1,6 +1,3 @@
-use ::std::fs;
-use tempfile::tempdir;
-
 use super::*;
 
 fn repo_metadata() -> cargo_metadata::Metadata {

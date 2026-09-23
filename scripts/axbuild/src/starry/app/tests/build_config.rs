@@ -1,10 +1,7 @@
 use tempfile::tempdir;
 
-use super::{discover_case_build_config, discover_optional_build_config};
-use crate::starry::app::{
-    discover_apps,
-    test_support::{write_case_file, write_minimal_board_case},
-};
+use super::discover_case_build_config;
+use crate::starry::app::test_support::write_case_file;
 
 #[test]
 fn rejects_mismatched_build_target_filename() {

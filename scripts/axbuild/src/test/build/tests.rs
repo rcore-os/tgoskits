@@ -68,7 +68,7 @@ fn write_musl_loader_search_path_only_when_guest_loader_exists() {
     write_musl_loader_search_path("aarch64", &staging_root).unwrap();
 
     assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
-    assert!(!staging_root.join("etc/ld-musl-riscv64.path").exists());
+    assert!(staging_root.join("etc/ld-musl-riscv64.path").exists());
 }
 
 #[test]

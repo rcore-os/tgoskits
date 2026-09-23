@@ -79,12 +79,12 @@ fn prepare(
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsStr, fs, path::Path};
+    use std::{fs, path::Path};
 
     use fdt_edit::{Fdt, Node};
     use ostool::board::config::BoardRunConfig;
 
-    use super::{prepare, secure_wifi_requested};
+    use super::prepare;
 
     #[test]
     fn secure_wifi_uses_a_fresh_temporary_dtb_without_changing_the_source() {

@@ -114,10 +114,7 @@ pub(super) fn reject_missing_qemu_target(args: &ArgsTestQemu) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
-
     use super::*;
-    use crate::arceos::Command;
 
     #[test]
     fn regular_qemu_run_still_requires_arch_or_target() {

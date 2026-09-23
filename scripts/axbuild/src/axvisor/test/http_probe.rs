@@ -307,19 +307,6 @@ mod tests {
         path
     }
 
-    #[cfg(unix)]
-    fn write_output_fixture_probe(dir: &Path, name: &str) -> PathBuf {
-        use std::{fs, os::unix::fs::PermissionsExt};
-        let path = dir.join(name);
-        fs::write(
-            &path,
-            "#!/bin/sh\nprintf 'probe stdout\\n'\nprintf 'probe stderr\\n' >&2\n",
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
     #[cfg(target_os = "linux")]
     fn write_large_output_fixture_probe(dir: &Path, name: &str) -> PathBuf {
         use std::{fs, os::unix::fs::PermissionsExt};

@@ -594,7 +594,7 @@ pub(super) fn plan_qemu_case_artifacts<'case, 'artifact, T>(
 
 #[cfg(test)]
 mod tests {
-    use super::{combine_results, load_axvisor_http_probe_config};
+    use super::combine_results;
 
     fn ok() -> anyhow::Result<()> {
         Ok(())

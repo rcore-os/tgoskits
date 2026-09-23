@@ -4,12 +4,8 @@ use tempfile::tempdir;
 
 use super::{
     ArgsTestNixos,
-    nixos::{
-        NixosAction, configure_p1_build_info, ensure_success, plan_nixos_action, validate_kernel,
-        validate_nar_hash,
-    },
+    nixos::{NixosAction, ensure_success, plan_nixos_action, validate_kernel, validate_nar_hash},
 };
-use crate::starry::build::{LogLevel, StarryBuildInfo};
 
 fn write_case(root: &Path, name: &str) {
     let cases = root.join("nixos-tests/starryos/cases");

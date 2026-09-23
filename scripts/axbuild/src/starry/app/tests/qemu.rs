@@ -3,12 +3,9 @@ use std::{fs, path::Path};
 use tempfile::tempdir;
 
 use super::{load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config};
-use crate::{
-    rootfs::qemu::RootfsWritePolicy,
-    starry::app::{
-        discover_apps,
-        test_support::{write_case_file, write_test_image_config},
-    },
+use crate::starry::app::{
+    discover_apps,
+    test_support::{write_case_file, write_test_image_config},
 };
 
 fn target_dir(root: &Path) -> std::path::PathBuf {

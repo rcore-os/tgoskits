@@ -375,10 +375,6 @@ fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt};
-
-    use tempfile::tempdir;
-
     use super::*;
 
     #[tokio::test]
@@ -394,14 +390,5 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("timed out"));
-    }
-
-    fn args(command: &Command) -> Vec<&str> {
-        command
-            .as_std()
-            .get_args()
-            .map(OsStr::to_str)
-            .collect::<Option<Vec<_>>>()
-            .unwrap()
     }
 }

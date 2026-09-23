@@ -930,42 +930,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn run_pci_bar_validator(
-        resource_line: &str,
-        aperture_start: &str,
-        aperture_end: &str,
-    ) -> std::process::Output {
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{PCI_BAR_VALIDATOR}\nvalidate_pci_bar_resource \"$1\" \"$2\" \"$3\" 65536"
-            ))
-            .arg("pci-bar-test")
-            .arg(resource_line)
-            .arg(aperture_start)
-            .arg(aperture_end)
-            .output()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
-    fn run_pci_capability_validator(config: &[u8]) -> std::process::Output {
-        let directory = tempdir().unwrap();
-        let config_path = directory.path().join("config");
-        fs::write(&config_path, config).unwrap();
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{PCI_CONFIG_READERS}\n{PCI_CAPABILITY_VALIDATOR}\nvalidate_pci_capabilities \
-                 \"$1\""
-            ))
-            .arg("pci-capability-test")
-            .arg(config_path)
-            .output()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
     fn run_virtio_capability_validator(config: &[u8]) -> std::process::Output {
         let directory = tempdir().unwrap();
         let config_path = directory.path().join("config");
@@ -976,24 +940,6 @@ mod tests {
                 "{PCI_CONFIG_READERS}\nvalidate_virtio_capabilities \"$1\""
             ))
             .arg("virtio-capability-test")
-            .arg(config_path)
-            .output()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
-    fn run_pci_command_parser(config: &[u8]) -> std::process::Output {
-        let directory = tempdir().unwrap();
-        let config_path = directory.path().join("config");
-        fs::write(&config_path, config).unwrap();
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{PCI_CONFIG_READERS}\ncommand=$(read_config_le16 \"$1\" 4) || exit \
-                 1\ncommand_value=$(parse_config_hex \"$command\") || exit 1\nprintf '%s\\n' \
-                 \"$command_value\""
-            ))
-            .arg("pci-command-test")
             .arg(config_path)
             .output()
             .unwrap()
