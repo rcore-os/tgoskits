@@ -1,8 +1,0 @@
-# The guest reads `AXVIRTIO_VM_TAG` / `AXVIRTIO_LOCAL_IP` at compile time; both
-# are exported per guest by apps/arceos/virtio-net-peer/run.sh. The peer address
-# is derived from the local address inside the app (last octet plus one).
-features = ["net", "ax-driver/virtio-net"]
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-max_cpu_num = 1
-to_bin = true

@@ -1,0 +1,54 @@
+board_type = "OrangePi-5-Plus"
+timeout = 300
+# Every peer runs a server and a client thread and keeps its session alive
+# forever, so a guest console never returns to the AxVisor shell on its own; each
+# assertion below detaches from the console with Ctrl-X h (`\u0018` is the
+# shortcut prefix) before attaching to the next one.
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  'Failed to initialize guest VM',
+  '(?m)^VM[1-4]_VIRTIO_NET_FAIL\s*$',
+]
+
+# VM1 (10.0.2.15) only has a client session towards VM2, so it proves the client
+# role.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ['VM1_VIRTIO_NET_PASS role=client']
+
+[[shell_check_steps]]
+shell_prefix = "VM1_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+# VM2 (10.0.2.16) answers VM1 and connects to VM3, so it covers both roles.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ['VM2_VIRTIO_NET_PASS role=server']
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+
+# VM3 (10.0.2.17) answers VM2 and connects to VM4.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+success_regex = ['VM3_VIRTIO_NET_PASS role=client']
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+# VM4 (10.0.2.18) closes the chain: it answers VM3 while its own client keeps
+# retrying 10.0.2.19, which has no listener.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 4"
+success_regex = ['VM4_VIRTIO_NET_PASS role=server']
+
+# The chain keeps exchanging heartbeats after the pass markers, so this asserts
+# the peer side of the last session is still alive.
+[[shell_check_steps]]
+success_regex = ['VM4_VIRTIO_NET_HB_RX']
