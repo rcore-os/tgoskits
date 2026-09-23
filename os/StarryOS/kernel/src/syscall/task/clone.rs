@@ -778,6 +778,9 @@ mod axtests {
             .unwrap();
             (reservation, thread)
         };
+        // The synthetic parent must not be global init, which rejects SIGKILL.
+        let _init_reservation =
+            PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
         let (_parent_reservation, parent) = make_thread();
         let (_child_reservation, child) = make_thread();
         child.set_seccomp_state(parent.seccomp_state());
