@@ -141,9 +141,6 @@ fn existing_fcntl_state(key: InodeKey) -> Option<FcntlLockState> {
 // An empty state may be removed only when no other operation or waiter has
 // acquired it. Index write exclusion prevents publishing a second state.
 fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
-    if !state.read().is_empty() {
-        return;
-    }
     let mut index = FCNTL_LOCKS.write();
     if Arc::strong_count(state) == 2 && state.read().is_empty() {
         index.remove(&key);
@@ -192,8 +189,11 @@ impl PosixLockWaitGuard {
         let still_blocked =
             find_conflict(&mut entries, owner, request.start, request.end, request.kind).is_some();
         if !still_blocked {
+            let empty = entries.is_empty();
             drop(entries);
-            reap_fcntl_state(request.key, &state);
+            if empty {
+                reap_fcntl_state(request.key, &state);
+            }
             return Ok(None);
         }
         drop(entries);
@@ -250,9 +250,6 @@ fn existing_flock_state(key: InodeKey) -> Option<FlockLockState> {
 }
 
 fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
-    if !state.read().is_empty() {
-        return;
-    }
     let mut index = FLOCK_LOCKS.write();
     if Arc::strong_count(state) == 2 && state.read().is_empty() {
         index.remove(&key);
@@ -638,8 +635,11 @@ fn try_setlk_once(
             }
         }
     };
+    let empty = entries.is_empty();
     drop(entries);
-    reap_fcntl_state(key, &state);
+    if empty {
+        reap_fcntl_state(key, &state);
+    }
     attempt
 }
 
@@ -789,21 +789,41 @@ pub fn fcntl_getlk(
 
     let report = {
         existing_fcntl_state(key).and_then(|state| {
-            let mut entries = state.write();
-            let report = find_conflict(&mut entries, &requester, start, end, req_kind).map(|e| {
-                (
-                    e.kind,
-                    e.owner.report_pid(observer),
-                    e.start,
-                    if e.end == i64::MAX {
-                        0
-                    } else {
-                        e.end - e.start
-                    },
-                )
-            });
+            let entries = state.read();
+            let mut stale = false;
+            let mut report = None;
+            for entry in entries.iter() {
+                if entry.owner.is_dead() {
+                    stale = true;
+                    continue;
+                }
+                if report.is_none()
+                    && !entry.owner.same_as(&requester)
+                    && ranges_overlap(entry.start, entry.end, start, end)
+                    && kinds_conflict(entry.kind, req_kind)
+                {
+                    report = Some((
+                        entry.kind,
+                        entry.owner.report_pid(observer),
+                        entry.start,
+                        if entry.end == i64::MAX {
+                            0
+                        } else {
+                            entry.end - entry.start
+                        },
+                    ));
+                }
+            }
             drop(entries);
-            reap_fcntl_state(key, &state);
+            if stale {
+                let mut entries = state.write();
+                entries.retain(|entry| !entry.owner.is_dead());
+                let empty = entries.is_empty();
+                drop(entries);
+                if empty {
+                    reap_fcntl_state(key, &state);
+                }
+            }
             report
         })
     };
@@ -883,8 +903,11 @@ pub fn release_pid_locks(owner: PidIdentityId) {
             if entries.len() != before {
                 affected.push(inode);
             }
+            let empty = entries.is_empty();
             drop(entries);
-            reap_fcntl_state(inode, &state);
+            if empty {
+                reap_fcntl_state(inode, &state);
+            }
         }
     }
     // Wake outside the graph and inode critical sections to keep lock order.
@@ -916,8 +939,11 @@ pub fn release_inode_posix_locks(owner: PidIdentityId, key: InodeKey) {
             FOwner::Ofd { .. } => true,
         });
         let changed = entries.len() != before;
+        let empty = entries.is_empty();
         drop(entries);
-        reap_fcntl_state(key, &state);
+        if empty {
+            reap_fcntl_state(key, &state);
+        }
         changed
     };
     if woke_someone {
@@ -998,8 +1024,11 @@ fn try_flock_once(
         }
     };
     let mutated = entries.len() != before;
+    let empty = entries.is_empty();
     drop(entries);
-    reap_flock_state(key, &state);
+    if empty {
+        reap_flock_state(key, &state);
+    }
     (outcome, mutated)
 }
 
@@ -1019,8 +1048,11 @@ pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
         let before = entries.len();
         entries.retain(|e| e.addr != addr);
         let changed = entries.len() != before;
+        let empty = entries.is_empty();
         drop(entries);
-        reap_flock_state(key, &state);
+        if empty {
+            reap_flock_state(key, &state);
+        }
         changed
     };
     if mutated {
@@ -1044,8 +1076,11 @@ pub fn release_pid_flock_locks(owner: PidIdentityId) {
             if entries.len() != before {
                 affected.push(inode);
             }
+            let empty = entries.is_empty();
             drop(entries);
-            reap_flock_state(inode, &state);
+            if empty {
+                reap_flock_state(inode, &state);
+            }
         }
     }
     for key in affected {
