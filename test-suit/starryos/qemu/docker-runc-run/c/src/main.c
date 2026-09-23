@@ -47,6 +47,7 @@
 
 /* enum bpf_cmd / bpf_attach_type values from Linux uapi/linux/bpf.h. */
 /* enum bpf_cmd values (uapi/linux/bpf.h). */
+#define DRR_BPF_MAP_CREATE 0
 #define DRR_BPF_PROG_LOAD 5
 #define DRR_BPF_PROG_ATTACH 8
 #define DRR_BPF_PROG_DETACH 9
@@ -57,6 +58,7 @@
 #define DRR_BPF_OBJ_GET_INFO_BY_FD 15
 #define DRR_BPF_ATTACH_CGROUP_DEVICE 6
 #define DRR_BPF_PROG_TYPE_CGROUP_DEVICE 15
+#define DRR_BPF_MAP_TYPE_ARRAY 2
 
 static int failures;
 
@@ -468,7 +470,8 @@ static long drr_bpf(uint32_t cmd)
 /* Device-controller stub lifecycle regression: load, query (count-only and
  * with a buffer), attach, close-the-loader-fd, fetch by id (the attachment
  * must keep the program alive), info-by-fd (short and zero buffers), detach,
- * link-create refusal, and the passthrough baseline for ordinary IDs. */
+ * link-create refusal, and the passthrough baseline for ordinary IDs and
+ * ordinary (non-placeholder) fds. */
 static int run_bpf_lifecycle(void)
 {
     section("bpf-lifecycle");
@@ -481,6 +484,34 @@ static int run_bpf_lifecycle(void)
         fail("empty-table GET_NEXT_ID falls through with EINVAL");
         return 1;
     }
+
+    /* OBJ_GET_INFO_BY_FD carries no prog_type, so the stub must claim it by
+     * object identity only: an ordinary map fd reaches the real dispatcher
+     * (baseline EINVAL) and its buffer is left untouched. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, DRR_BPF_MAP_TYPE_ARRAY);
+    drr_set_u32(4, 4);   /* key_size */
+    drr_set_u32(8, 8);   /* value_size */
+    drr_set_u32(12, 4);  /* max_entries */
+    errno = 0;
+    int map_fd = (int)drr_bpf(DRR_BPF_MAP_CREATE);
+    if (map_fd < 0) {
+        fail("create array map for OBJ_GET_INFO fall-through");
+        return 1;
+    }
+    uint32_t map_info[2] = { 0xAAAAAAAA, 0xAAAAAAAA };
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, (uint32_t)map_fd);
+    drr_set_u32(4, sizeof(map_info));
+    drr_set_u64(8, (uint64_t)(uintptr_t)map_info);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD) != -1 || errno != EINVAL ||
+        map_info[0] != 0xAAAAAAAA || map_info[1] != 0xAAAAAAAA) {
+        fail("OBJ_GET_INFO on an ordinary map fd falls through (EINVAL, no write)");
+        close(map_fd);
+        return 1;
+    }
+    close(map_fd);
 
     /* Load one cgroup-device program. */
     memset(drr_attr, 0, sizeof(drr_attr));

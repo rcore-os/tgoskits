@@ -25,7 +25,10 @@
 //!   fd mapping, so the caller's `prog_ids` buffer is left untouched;
 //! - `BPF_PROG_GET_NEXT_ID`/`BPF_PROG_GET_FD_BY_ID` carry no per-controller
 //!   attribute and are left to the real handlers, so ID enumeration for every
-//!   other program type is unaffected.
+//!   other program type is unaffected;
+//! - `BPF_OBJ_GET_INFO_BY_FD` is answered only when the referenced fd is a
+//!   live placeholder of this module (checked by object identity, not by fd
+//!   number), so ordinary program/map fds keep reaching the real dispatcher.
 //!
 //! Everything else — including other program types — falls through to the
 //! real handlers so the in-kernel eBPF subsystem keeps its behavior.
@@ -292,7 +295,22 @@ fn classify(
             if size < MIN_GET_INFO_ATTR_SIZE {
                 return Err(StarryError::InvalidInput);
             }
-            Ok(Some(DeviceCommand::GetInfoByFd))
+            // The attribute carries only `bpf_fd` and a user buffer, so the
+            // command must be claimed by object identity: only a live
+            // device-controller placeholder gets the synthetic info response.
+            // Ordinary program/map fds (and reused fd numbers) must fall
+            // through to the real dispatcher so their behavior is untouched.
+            let bpf_fd = read_attr_u32(current, uattr, ATTR_GET_INFO_FD_OFFSET)?;
+            match file::get_file_like(bpf_fd as i32) {
+                Ok(object)
+                    if object
+                        .downcast_ref::<BpfCgroupDeviceFile>()
+                        .is_some_and(|placeholder| device_prog_live(placeholder.id)) =>
+                {
+                    Ok(Some(DeviceCommand::GetInfoByFd))
+                }
+                _ => Ok(None),
+            }
         }
         _ => Ok(None),
     }
