@@ -14,6 +14,15 @@
 # VM index, so vm1..vm4 use 10.0.2.15 .. 10.0.2.18. Each peer connects to its own
 # address plus one, which is why the guests form a chain of sessions.
 #
+# Placement: every peer declares `phys_cpu_sets` in its vm{1..4}.toml. It is a
+# per-vCPU host bitmap where bit N selects logical host pCPU N, so 0b0001 pins
+# vm1/vm3 to pCPU0 and 0b0010 pins vm2/vm4 to pCPU1 -- the two RK3588 A55 cores
+# `/cpus/cpu@0` and `/cpus/cpu@100`. Four guest vCPUs therefore run on two
+# physical CPUs (vCPU over-subscription) with a fixed vCPU-to-pCPU assignment
+# that never migrates. With an explicit `phys_cpu_sets`, `phys_cpu_ids` only
+# carries the guest-visible vCPU id (MPIDR_EL1) and no longer has to name a host
+# CPU. Change the masks in all four TOMLs to move the guests.
+#
 # The guests are built first because AxVisor embeds them at build time, so a
 # guest rebuild always has to be followed by an AxVisor rebuild.
 set -euo pipefail

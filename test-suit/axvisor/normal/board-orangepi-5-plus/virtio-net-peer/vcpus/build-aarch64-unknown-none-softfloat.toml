@@ -6,6 +6,7 @@ features = [
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 2
 # All four guest images are embedded into this AxVisor build (`image_location =
 # "memory"`), so build them first with `orangepi-arceos-virtio-net-test.sh` in
 # this directory.
