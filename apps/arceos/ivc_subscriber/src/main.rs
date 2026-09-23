@@ -187,7 +187,13 @@ mod subscriber {
             }
 
             let highest = HIGHEST_RECV_SEQ.load(Ordering::Acquire);
-            while last_acked_sequence < highest {
+            // The publisher treats the final ACK as completion of all Data.
+            let ready_ack = if sent_data < SUBSCRIBE_DATA_COUNT {
+                highest.min(PUBLISH_COUNT - 1)
+            } else {
+                highest
+            };
+            while last_acked_sequence < ready_ack {
                 let sequence = last_acked_sequence + 1;
                 let payload = encode_ack(sequence);
                 if !send_payload(&mut sender, &payload, waiter, &mut publisher_ready) {
