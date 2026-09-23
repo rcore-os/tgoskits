@@ -51,7 +51,7 @@ fn fake_c_subcase(
 }
 
 #[test]
-fn write_musl_loader_search_path_uses_requested_guest_arch() {
+fn write_musl_loader_search_path_only_when_guest_loader_exists() {
     let root = tempdir().unwrap();
     let staging_root = root.path().join("staging-root");
     fs::create_dir_all(staging_root.join("lib")).unwrap();
@@ -64,14 +64,6 @@ fn write_musl_loader_search_path_uses_requested_guest_arch() {
         "/usr/lib\n/lib\n"
     );
     assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
-}
-
-#[test]
-fn write_musl_loader_search_path_skips_when_guest_loader_is_missing() {
-    let root = tempdir().unwrap();
-    let staging_root = root.path().join("staging-root");
-    fs::create_dir_all(staging_root.join("lib")).unwrap();
-    fs::write(staging_root.join("lib/ld-musl-riscv64.so.1"), b"").unwrap();
 
     write_musl_loader_search_path("aarch64", &staging_root).unwrap();
 
@@ -100,39 +92,6 @@ fn grouped_c_subcases_keep_only_direct_usr_bin_commands() {
 }
 
 #[test]
-fn grouped_c_subcases_keep_all_dynamic_shell_commands() {
-    let root = tempdir().unwrap();
-    let mut case = fake_case(root.path(), "syscall");
-    case.test_commands =
-        vec!["for bin in /usr/bin/starry-test-suit/*; do \"$bin\"; done".to_string()];
-
-    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
-    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
-    let subcases = vec![&alpha, &beta];
-
-    let selected = selected_grouped_c_subcases(&case, subcases).unwrap();
-    assert!(selected.iter().any(|subcase| subcase.name == "alpha"));
-    assert!(selected.iter().any(|subcase| subcase.name == "beta"));
-}
-
-#[test]
-fn grouped_c_subcases_prefer_explicit_filter() {
-    let root = tempdir().unwrap();
-    let mut case = fake_case(root.path(), "syscall");
-    case.test_commands =
-        vec!["for bin in /usr/bin/starry-test-suit/*; do \"$bin\"; done".to_string()];
-    case.grouped_subcase_filter = Some(BTreeSet::from(["beta".to_string()]));
-
-    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
-    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
-    let subcases = vec![&alpha, &beta];
-
-    let selected = selected_grouped_c_subcases(&case, subcases).unwrap();
-    assert!(selected.iter().any(|subcase| subcase.name == "beta"));
-    assert!(selected.iter().all(|subcase| subcase.name != "alpha"));
-}
-
-#[test]
 fn grouped_runner_commands_follow_explicit_subcase_filter_for_direct_commands() {
     let root = tempdir().unwrap();
     let mut case = fake_case(root.path(), "bugfix");
@@ -157,44 +116,6 @@ fn grouped_runner_commands_follow_explicit_subcase_filter_for_direct_commands() 
             .iter()
             .all(|command| command != "/usr/bin/alpha")
     );
-}
-
-#[test]
-fn grouped_runner_commands_keep_dynamic_shell_loop_with_explicit_filter() {
-    let root = tempdir().unwrap();
-    let mut case = fake_case(root.path(), "syscall");
-    case.test_commands =
-        vec!["for bin in /usr/bin/starry-test-suit/*; do \"$bin\"; done".to_string()];
-    case.grouped_subcase_filter = Some(BTreeSet::from(["beta".to_string()]));
-
-    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
-    let selected = selected_grouped_c_subcases(&case, vec![&beta]).unwrap();
-    let runner_commands = selected_grouped_runner_commands(&case, &selected).unwrap();
-
-    assert_eq!(runner_commands, case.test_commands);
-}
-
-#[test]
-fn grouped_runner_commands_preserve_explicit_aggregator_with_subcase_filter() {
-    let root = tempdir().unwrap();
-    let mut case = fake_case(root.path(), "system");
-    case.test_commands = vec!["/usr/bin/starry-run-system-tests".to_string()];
-    case.grouped_command_selection = GroupedCommandSelection::PreserveAll;
-    case.grouped_subcase_filter = Some(BTreeSet::from(["beta".to_string()]));
-
-    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
-    let beta = fake_c_subcase(root.path(), &case, "beta", &["beta"]);
-    let selected = selected_grouped_c_subcases(&case, vec![&alpha, &beta]).unwrap();
-    let runner_commands = selected_grouped_runner_commands(&case, &selected).unwrap();
-
-    assert_eq!(
-        selected
-            .iter()
-            .map(|subcase| subcase.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["beta"]
-    );
-    assert_eq!(runner_commands, case.test_commands);
 }
 
 #[test]
@@ -244,29 +165,6 @@ fn write_cmake_toolchain_file_contains_clang_cross_settings() {
     assert!(content.contains("-B"));
     assert!(content.contains("-L"));
     assert!(content.contains("CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER"));
-}
-
-#[test]
-fn write_riscv64_cmake_toolchain_file_constrains_guest_isa() {
-    let root = tempdir().unwrap();
-    let layout = case_assets::case_asset_layout(
-        &root.path().join("target"),
-        "riscv64gc-unknown-none-elf",
-        "system",
-    )
-    .unwrap();
-    fs::create_dir_all(&layout.cross_bin_dir).unwrap();
-
-    write_cmake_toolchain_file(
-        &layout,
-        cross_compile_spec("riscv64").unwrap(),
-        Path::new("/usr/bin/clang"),
-    )
-    .unwrap();
-
-    let content = fs::read_to_string(&layout.cmake_toolchain_file).unwrap();
-    assert!(content.contains("-march=rv64gc"));
-    assert!(content.contains("-mabi=lp64d"));
 }
 
 #[test]

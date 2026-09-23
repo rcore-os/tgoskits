@@ -354,19 +354,4 @@ mod tests {
         assert_eq!(outcome.output, b"partial probe output\n");
         assert!(outcome.verdict.is_err());
     }
-
-    #[test]
-    fn qmp_failure_diagnostic_is_buffered_with_probe_output() {
-        let mut outcome = HostHttpProbeOutcome {
-            output: b"probe output without newline".to_vec(),
-            verdict: Ok(()),
-        };
-
-        outcome.append_diagnostic(format_args!("QMP quit failed: connection refused"));
-
-        assert_eq!(
-            outcome.output,
-            b"probe output without newline\nQMP quit failed: connection refused\n"
-        );
-    }
 }

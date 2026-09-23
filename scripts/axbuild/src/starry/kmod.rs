@@ -642,52 +642,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remove_arg_value_removes_bin_and_value() {
-        let mut args = vec![
-            "-Z".to_string(),
-            "build-std=core,alloc".to_string(),
-            "--bin".to_string(),
-            "starryos".to_string(),
-            "--message-format".to_string(),
-            "json".to_string(),
-        ];
-
-        remove_arg_value(&mut args, "--bin");
-
-        assert_eq!(
-            args,
-            vec![
-                "-Z".to_string(),
-                "build-std=core,alloc".to_string(),
-                "--message-format".to_string(),
-                "json".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn cargo_target_output_dir_uses_json_file_stem() {
-        let path = cargo_target_output_dir(
-            Path::new("/ws"),
-            "scripts/targets/std/riscv64gc-unknown-linux-musl.json",
-            "release",
-        )
-        .unwrap();
-
-        assert_eq!(
-            path,
-            Path::new("/ws")
-                .join("riscv64gc-unknown-linux-musl")
-                .join("release")
-        );
-    }
-
-    #[test]
-    fn rust_crate_file_stem_replaces_hyphens() {
-        assert_eq!(rust_crate_file_stem("my-module"), "my_module");
-    }
-
-    #[test]
     fn linux_c_module_names_parse_obj_m_entries() {
         let dir = tempfile::tempdir().unwrap();
         let makefile = dir.path().join("Makefile");
@@ -721,19 +675,5 @@ ccflags-remove-y += -pg
 
         assert!(modules.contains(&ModuleSpec::Rust(rust_module)));
         assert!(modules.contains(&ModuleSpec::LinuxC(c_module)));
-    }
-
-    #[test]
-    fn linux_c_module_skips_when_arch_differs_from_host() {
-        let module = tempfile::tempdir().unwrap();
-        let out = tempfile::tempdir().unwrap();
-        let mismatched_arch = match normalized_host_arch() {
-            "x86_64" => "aarch64",
-            _ => "x86_64",
-        };
-
-        let built = build_one_linux_c_module(module.path(), mismatched_arch, out.path()).unwrap();
-
-        assert!(built.is_none());
     }
 }

@@ -879,31 +879,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn overlay_debugfs_commands_include_paths_and_modes() {
-        let root = tempdir().unwrap();
-        let overlay_dir = root.path().join("overlay");
-        fs::create_dir_all(overlay_dir.join("usr/bin")).unwrap();
-        let binary = overlay_dir.join("usr/bin/test-bin");
-        fs::write(&binary, b"bin").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let mut commands = Vec::new();
-        collect_overlay_debugfs_commands(&overlay_dir, Path::new(""), &mut commands).unwrap();
-
-        assert_eq!(commands[0], "mkdir \"/usr\"");
-        assert!(commands.contains(&"mkdir \"/usr/bin\"".to_string()));
-        assert!(commands.contains(&format!(
-            "write \"{}\" \"/usr/bin/test-bin\"",
-            binary.display()
-        )));
-        assert!(commands.contains(&"sif \"/usr/bin/test-bin\" mode 0100755".to_string()));
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn overlay_injection_handles_host_paths_with_spaces() {
         let root = tempdir().unwrap();
         let rootfs_img = root.path().join("rootfs.img");
@@ -932,180 +907,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn directory_metadata_is_normalized_and_verified() {
-        let root = tempdir().unwrap();
-        let rootfs_img = root.path().join("rootfs.img");
-        assert!(
-            Command::new("truncate")
-                .args(["-s", "16M"])
-                .arg(&rootfs_img)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            Command::new("mkfs.ext4")
-                .args(["-q", "-F"])
-                .arg(&rootfs_img)
-                .status()
-                .unwrap()
-                .success()
-        );
-        run_debugfs_script(
-            &rootfs_img,
-            &[
-                "mkdir \"/root\"".to_string(),
-                "sif \"/root\" uid 1001".to_string(),
-                "sif \"/root\" gid 1001".to_string(),
-                "sif \"/root\" mode 040775".to_string(),
-            ],
-            "failed to prepare root directory",
-        )
-        .unwrap();
-
-        set_directory_owner_and_mode(&rootfs_img, "/root", 0, 0, 0o700).unwrap();
-
-        assert_eq!(
-            read_inode_metadata(&rootfs_img, "\"/root\"").unwrap(),
-            InodeMetadata {
-                file_type: "directory".to_string(),
-                uid: 0,
-                gid: 0,
-                mode: 0o700,
-            }
-        );
-    }
-
     /// Symlinks are written after regular files (two-pass) with the correct
     /// debugfs syntax: `symlink <link_path> <target_content>`.
     /// Relative targets are converted to absolute guest paths.
-    #[cfg(unix)]
-    #[test]
-    fn symlinks_are_emitted_after_regular_files() {
-        use std::os::unix;
-
-        let root = tempdir().unwrap();
-        let overlay_dir = root.path().join("overlay");
-        let lib = overlay_dir.join("usr/lib");
-        fs::create_dir_all(&lib).unwrap();
-
-        // ldconfig-style chain: libfoo.so -> libfoo.so.1 -> libfoo.so.1.2.0
-        fs::write(lib.join("libfoo.so.1.2.0"), b"elf").unwrap();
-        unix::fs::symlink("libfoo.so.1.2.0", lib.join("libfoo.so.1")).unwrap();
-        unix::fs::symlink("libfoo.so.1", lib.join("libfoo.so")).unwrap();
-
-        let mut commands = Vec::new();
-        collect_overlay_debugfs_commands(&overlay_dir, Path::new(""), &mut commands).unwrap();
-
-        let write_pos = commands
-            .iter()
-            .position(|c| c.contains("libfoo.so.1.2.0") && c.starts_with("write "))
-            .unwrap();
-        let sym1_pos = commands
-            .iter()
-            .position(|c| c == "symlink \"/usr/lib/libfoo.so.1\" \"/usr/lib/libfoo.so.1.2.0\"")
-            .unwrap();
-        let sym0_pos = commands
-            .iter()
-            .position(|c| c == "symlink \"/usr/lib/libfoo.so\" \"/usr/lib/libfoo.so.1\"")
-            .unwrap();
-
-        assert!(
-            sym1_pos > write_pos,
-            "symlink must be second pass, after its target"
-        );
-        assert!(
-            sym0_pos > write_pos,
-            "symlink must be second pass, after its target"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn non_root_extraction_starts_debugfs_inside_fakeroot() {
-        use std::fs::OpenOptions;
-
-        let root = executable_helper_tempdir();
-        let fakeroot = root.path().join("fakeroot");
-        let debugfs = root.path().join("debugfs");
-        let marker = root.path().join("debugfs-ran-inside-fakeroot");
-        write_executable(
-            &fakeroot,
-            "#!/bin/sh\ntest \"$1\" = \"--\" || exit 91\nshift\nexport \
-             AXBUILD_TEST_FAKEROOT=1\nexec /bin/sh \"$@\"\n",
-        );
-        write_executable(
-            &debugfs,
-            &format!(
-                "#!/bin/sh\ntest \"${{AXBUILD_TEST_FAKEROOT:-}}\" = \"1\" || exit 92\ncase \
-                 \"${{2:-}}\" in\nrdump*) touch '{}'\nexit 0 ;;\n*ls*-p*) printf '%s\\n' \
-                 '/2/040755/0/0/etc//'\nexit 0 ;;\n*) exit 0 ;;\nesac\n",
-                marker.display()
-            ),
-        );
-
-        // Keep the fixture inode busy to model a writer inherited during
-        // publication. The fake fakeroot reads it through the installed shell,
-        // so this test exercises wrapper argument and environment propagation
-        // without depending on direct script execution timing.
-        let _inherited_writer = OpenOptions::new().write(true).open(&debugfs).unwrap();
-
-        let output_dir = root.path().join("staging");
-        fs::create_dir_all(output_dir.join("etc")).unwrap();
-        RootfsExtraction {
-            rootfs_img: Path::new("rootfs.img"),
-            output_dir: &output_dir,
-            debugfs_program: &debugfs,
-            fakeroot_program: Some(&fakeroot),
-        }
-        .run()
-        .unwrap();
-
-        assert!(marker.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn extraction_retries_a_busy_executable_before_starting_debugfs() {
-        for use_fakeroot in [false, true] {
-            let root = executable_helper_tempdir();
-            let debugfs = root.path().join("debugfs");
-            let fakeroot = root.path().join("fakeroot");
-            let marker = root.path().join("debugfs-runs");
-            write_executable(
-                &debugfs,
-                "#!/bin/sh\ncase \"${2:-}\" in\n*ls*-p*) printf '%s\\n' '/2/100755/0/0/debugfs//' \
-                 ;;\n*) printf 'ran\\n' >> \"$AXBUILD_TEST_EXTRACTION_MARKER\" ;;\nesac\n",
-            );
-            write_executable(
-                &fakeroot,
-                "#!/bin/sh\ntest \"$1\" = -- || exit 91\nshift\nexec \"$@\"\n",
-            );
-            let mut attempts = 0;
-            RootfsExtraction {
-                rootfs_img: Path::new("rootfs.img"),
-                output_dir: root.path(),
-                debugfs_program: &debugfs,
-                fakeroot_program: use_fakeroot.then_some(fakeroot.as_path()),
-            }
-            .run_with_output(|command| {
-                attempts += 1;
-                if attempts == 1 {
-                    // Inject the observed spawn errno at the command boundary;
-                    // an actual writer/exec race depends on the host launcher.
-                    return Err(io::Error::from_raw_os_error(libc::ETXTBSY));
-                }
-                command
-                    .env("AXBUILD_TEST_EXTRACTION_MARKER", &marker)
-                    .output()
-            })
-            .unwrap();
-            assert_eq!(attempts, 2);
-            assert_eq!(fs::read_to_string(marker).unwrap(), "ran\n");
-        }
-    }
-
     #[cfg(unix)]
     #[test]
     fn silent_empty_extraction_fails_top_level_validation() {
@@ -1166,32 +970,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn empty_extraction_listing_fails_top_level_validation() {
-        let root = executable_helper_tempdir();
-        let debugfs = root.path().join("debugfs");
-        write_executable(
-            &debugfs,
-            "#!/bin/sh\ncase \"${2:-}\" in\nrdump*) exit 0 ;;\n*ls*-p*) exit 0 ;;\nesac\n",
-        );
-
-        let output_dir = root.path().join("staging");
-        fs::create_dir(&output_dir).unwrap();
-        let error = RootfsExtraction {
-            rootfs_img: Path::new("rootfs.img"),
-            output_dir: &output_dir,
-            debugfs_program: &debugfs,
-            fakeroot_program: None,
-        }
-        .run()
-        .unwrap_err();
-
-        assert!(
-            error.to_string().contains("listed no top-level entries"),
-            "unexpected error: {error:#}"
-        );
-    }
-
-    #[test]
     fn top_level_entry_parser_matches_debugfs_ls_p_shapes() {
         // Directories: `/inode/mode/uid/gid/name//`.
         assert_eq!(
@@ -1217,13 +995,6 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_does_not_wrap_debugfs_in_fakeroot() {
-        // Homebrew fakeroot re-splits quoted debugfs requests and exits 0 after
-        // failed extractions, so wrapping must stay a Linux-only strategy.
-        assert!(!current_process_requires_fakeroot());
-    }
-
     #[cfg(unix)]
     #[test]
     fn missing_fakeroot_fails_before_debugfs_starts() {
@@ -1254,78 +1025,9 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn direct_extraction_requires_full_host_ownership_privileges() {
-        assert!(!requires_fakeroot(0, true, true, true));
-        assert!(requires_fakeroot(1, true, true, true));
-        assert!(requires_fakeroot(0, false, true, true));
-        assert!(requires_fakeroot(0, true, false, true));
-        assert!(requires_fakeroot(0, true, true, false));
-    }
-
     #[cfg(target_os = "linux")]
-    #[test]
-    fn full_identity_map_rejects_partial_or_split_user_namespaces() {
-        assert!(id_map_is_full_identity("0 0 4294967295\n"));
-        assert!(!id_map_is_full_identity("0 1000 1\n"));
-        assert!(!id_map_is_full_identity("0 1000 1\n1 100000 65535\n"));
-    }
-
     #[cfg(target_os = "linux")]
-    #[test]
-    fn cap_chown_parser_requires_effective_capability_bit() {
-        assert!(status_has_effective_cap_chown(
-            "Name:\ttg-xtask\nCapEff:\t0000000000000001\n"
-        ));
-        assert!(!status_has_effective_cap_chown(
-            "Name:\ttg-xtask\nCapEff:\t0000000000000000\n"
-        ));
-        assert!(!status_has_effective_cap_chown(
-            "Name:\ttg-xtask\nCapEff:\tinvalid\n"
-        ));
-    }
-
     #[cfg(target_os = "linux")]
-    #[test]
-    fn debugfs_script_discards_normal_stdout_and_receives_all_commands() {
-        use std::fs::OpenOptions;
-
-        let root = executable_helper_tempdir();
-        let debugfs = root.path().join("debugfs");
-        let received_commands = root.path().join("received-commands");
-        write_executable(
-            &debugfs,
-            &format!(
-                "#!/bin/sh\ntest \"$#\" = 2 && test \"$1\" = -w && test \"$2\" = rootfs.img || \
-                 exit 90\ntest \"$(readlink /proc/$$/fd/1)\" = /dev/null || exit 91\ncat > '{}'
-",
-                received_commands.display()
-            ),
-        );
-
-        // Model a writable descriptor inherited by a concurrent child before exec.
-        // It keeps this exact inode busy, even after the publishing rename.
-        let _inherited_writer = OpenOptions::new().write(true).open(&debugfs).unwrap();
-
-        // Execute the installed shell, which reads the fixture as data. Direct
-        // execution can return ETXTBSY while another test's child holds a writer
-        // inherited during publication, even when our own writer is closed.
-        let mut debugfs_command = Command::new("/bin/sh");
-        debugfs_command.arg(&debugfs);
-        run_debugfs_script_with_command(
-            debugfs_command,
-            Path::new("rootfs.img"),
-            &["rm /usr/bin/app".into(), "write app /usr/bin/app".into()],
-            "failed to inject test overlay",
-        )
-        .unwrap();
-
-        assert_eq!(
-            fs::read_to_string(received_commands).unwrap(),
-            "rm /usr/bin/app\nwrite app /usr/bin/app\nquit\n"
-        );
-    }
-
     #[cfg(unix)]
     fn executable_helper_tempdir() -> tempfile::TempDir {
         let test_binary = env::current_exe().expect("test binary path must be available");

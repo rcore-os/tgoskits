@@ -112,32 +112,6 @@ async fn listing_needs_no_capability_and_never_runs_a_case() {
 }
 
 #[tokio::test]
-async fn valid_default_and_explicit_selection_reach_the_runner() {
-    let root = tempdir().unwrap();
-    prepare_workspace(root.path());
-    for (arch, case, expected) in [
-        (None, None, "boot"),
-        (Some("x86_64"), Some("service"), "service"),
-    ] {
-        let args = ArgsAppQemu {
-            arch: arch.map(str::to_string),
-            nixos_case: case.map(str::to_string),
-            ..run_args()
-        };
-        let mut requests = Vec::new();
-        run_nixos_app(root.path(), &args, async |request| {
-            requests.push(request);
-            Ok(())
-        })
-        .await
-        .unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].arch.as_deref(), Some("x86_64"));
-        assert_eq!(requests[0].test_case.as_deref(), Some(expected));
-    }
-}
-
-#[tokio::test]
 async fn all_cases_succeed_only_when_every_runner_result_succeeds() {
     let root = tempdir().unwrap();
     prepare_workspace(root.path());

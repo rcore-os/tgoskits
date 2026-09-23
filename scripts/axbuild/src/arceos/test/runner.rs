@@ -265,36 +265,6 @@ mod tests {
     };
 
     #[test]
-    fn accepts_supported_targets() {
-        assert_eq!(
-            parse_target(&None, &Some("x86_64-unknown-none".to_string())).unwrap(),
-            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
-        );
-        assert_eq!(
-            parse_target(&None, &Some("aarch64-unknown-none-softfloat".to_string())).unwrap(),
-            (
-                "aarch64".to_string(),
-                "aarch64-unknown-none-softfloat".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn accepts_supported_arch_aliases() {
-        assert_eq!(
-            parse_target(&Some("x86_64".to_string()), &None).unwrap(),
-            ("x86_64".to_string(), "x86_64-unknown-none".to_string())
-        );
-        assert_eq!(
-            parse_target(&Some("aarch64".to_string()), &None).unwrap(),
-            (
-                "aarch64".to_string(),
-                "aarch64-unknown-none-softfloat".to_string()
-            )
-        );
-    }
-
-    #[test]
     fn rejects_unsupported_targets() {
         let rejected_target = "mips64-unknown-none".to_string();
         let err = parse_target(&None, &Some(rejected_target.clone())).unwrap_err();

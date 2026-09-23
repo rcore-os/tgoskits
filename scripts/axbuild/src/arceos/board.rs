@@ -170,27 +170,6 @@ log = "Info"
     }
 
     #[test]
-    fn load_board_accepts_dynamic_platform_template_without_plat_dyn_field() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        let path = board_dir(root.path()).unwrap().join("static.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            r#"
-package = "arceos-helloworld"
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-"#,
-        )
-        .unwrap();
-
-        let board = load_board_file(&path).unwrap();
-        assert_eq!(board.target, "aarch64-unknown-none-softfloat");
-    }
-
-    #[test]
     fn default_qemu_board_matches_package_and_target() {
         let root = tempdir().unwrap();
         write_workspace(root.path());

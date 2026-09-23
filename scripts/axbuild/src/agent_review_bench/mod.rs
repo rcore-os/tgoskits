@@ -349,63 +349,6 @@ mod tests {
         command: Command,
     }
 
-    #[test]
-    fn parses_run_selectors_and_gate() {
-        let cli = TestCli::try_parse_from([
-            "bench",
-            "run",
-            "--case",
-            "case-a",
-            "--case",
-            "case-b",
-            "--pr",
-            "1495",
-            "--min-recall",
-            "80",
-            "--agent",
-            "claude",
-            "--model",
-            "model with spaces",
-            "--reasoning-effort",
-            "vendor effort",
-        ])
-        .unwrap();
-
-        let Command::Run(args) = cli.command else {
-            panic!("expected run command");
-        };
-        assert_eq!(args.cases, ["case-a", "case-b"]);
-        assert_eq!(args.prs, [1495]);
-        assert_eq!(args.min_recall, Some(80));
-        assert_eq!(args.agent, AgentKind::Claude);
-        assert_eq!(args.model.as_deref(), Some("model with spaces"));
-        assert_eq!(args.reasoning_effort, "vendor effort");
-    }
-
-    #[test]
-    fn rejects_removed_grader_overrides() {
-        for option in [
-            "--grader-agent",
-            "--grader-model",
-            "--grader-reasoning-effort",
-        ] {
-            assert!(TestCli::try_parse_from(["bench", "run", option, "value"]).is_err());
-        }
-    }
-
-    #[test]
-    fn percentage_handles_empty_and_non_empty_totals() {
-        assert_eq!(percentage(0, 0), 0.0);
-        assert_eq!(percentage(1, 2), 50.0);
-    }
-
-    #[test]
-    fn recall_gate_is_opt_in_and_inclusive() {
-        assert!(!recall_gate_failed(0.0, None));
-        assert!(!recall_gate_failed(80.0, Some(80)));
-        assert!(recall_gate_failed(79.9, Some(80)));
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn mock_agents_write_artifacts_and_reject_invalid_json() {

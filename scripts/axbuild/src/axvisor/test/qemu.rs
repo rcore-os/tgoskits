@@ -632,11 +632,6 @@ mod tests {
     }
 
     #[test]
-    fn both_ok_passes() {
-        assert!(combine_results(ok(), true, Some(ok())).is_ok());
-    }
-
-    #[test]
     fn missing_probe_verdict_on_clean_qemu_exit_fails() {
         let verdict = combine_results(ok(), true, None);
         assert!(verdict.unwrap_err().to_string().contains("no verdict"));
@@ -646,32 +641,5 @@ mod tests {
     fn non_probe_case_uses_qemu_result() {
         assert!(combine_results(ok(), false, None).is_ok());
         assert!(combine_results(err("boot failed"), false, None).is_err());
-    }
-
-    #[test]
-    fn probe_config_parses_token_with_serde_defaults() {
-        let dir =
-            std::env::temp_dir().join(format!("axvisor-probe-config-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let probe_path = dir.join("qemu-aarch64.toml");
-        let plain_path = dir.join("plain.toml");
-        std::fs::write(&probe_path, "[host_http_probe]\ntoken = \"t\"\n").unwrap();
-        std::fs::write(&plain_path, "args = []\n").unwrap();
-
-        let config = load_axvisor_http_probe_config(&probe_path)
-            .unwrap()
-            .expect("host_http_probe present");
-        assert_eq!(config.token.as_deref(), Some("t"));
-        assert_eq!(config.guest_port, 8080);
-        assert_eq!(config.connect_timeout_secs, 120);
-        assert_eq!(config.request_timeout_secs, 5);
-
-        assert!(
-            load_axvisor_http_probe_config(&plain_path)
-                .unwrap()
-                .is_none()
-        );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

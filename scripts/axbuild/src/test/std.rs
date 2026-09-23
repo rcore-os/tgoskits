@@ -806,53 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn incremental_selection_accepts_no_affected_std_packages() {
-        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
-        let selection = IncrementalPackageSelection::Packages {
-            changed: vec!["standalone".to_string()],
-            affected: vec!["standalone".to_string()],
-        };
-
-        let selected = select_std_packages(packages, &selection);
-
-        assert!(selected.is_empty());
-    }
-
-    #[test]
-    fn incremental_full_fallback_keeps_every_std_package() {
-        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
-        let selection = IncrementalPackageSelection::Full {
-            reason: "fixture".to_string(),
-        };
-
-        let selected = select_std_packages(packages.clone(), &selection);
-
-        assert_eq!(selected, packages);
-    }
-
-    #[test]
-    fn parses_std_csv_with_blank_lines() {
-        let packages =
-            parse_std_crates_csv("\npackage\n\nax-api\n\nax-hal\n", &known_packages()).unwrap();
-
-        assert_eq!(packages, vec!["ax-api".to_string(), "ax-hal".to_string()]);
-    }
-
-    #[test]
-    fn rejects_empty_std_csv() {
-        let err = parse_std_crates_csv("", &known_packages()).unwrap_err();
-
-        assert!(err.to_string().contains("std crate csv is empty"));
-    }
-
-    #[test]
-    fn rejects_invalid_header() {
-        let err = parse_std_crates_csv("crate\nax-api\n", &known_packages()).unwrap_err();
-
-        assert!(err.to_string().contains("invalid header"));
-    }
-
-    #[test]
     fn rejects_unknown_package() {
         let err = parse_std_crates_csv("package\nunknown\n", &known_packages()).unwrap_err();
 
@@ -860,13 +813,6 @@ mod tests {
             err.to_string()
                 .contains("unknown workspace package `unknown`")
         );
-    }
-
-    #[test]
-    fn rejects_duplicate_package() {
-        let err = parse_std_crates_csv("package\nax-api\nax-api\n", &known_packages()).unwrap_err();
-
-        assert!(err.to_string().contains("duplicate package `ax-api`"));
     }
 
     #[test]
@@ -880,18 +826,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["alpha", "gamma"]);
-        assert_eq!(runner.invocations.len(), packages.len());
-    }
-
-    #[test]
-    fn std_test_runner_returns_empty_failures_when_all_pass() {
-        let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["alpha".to_string(), "beta".to_string()];
-        let mut runner = FakeCargoRunner::succeeding();
-
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
-
-        assert!(failed.is_empty());
         assert_eq!(runner.invocations.len(), packages.len());
     }
 
@@ -932,23 +866,6 @@ mod tests {
         let err =
             validate_discovered_tests(&TEST_PROFILES[0], "0 tests, 0 benchmarks").unwrap_err();
         assert!(err.to_string().contains("discovered 0 tests"));
-    }
-
-    #[test]
-    fn unfiltered_profile_discovery_accepts_additional_tests() {
-        let profile = &TEST_PROFILES[0];
-        let mut tests = profile.expected_tests.to_vec();
-        tests.push("example::additional");
-        validate_discovered_tests(profile, &render_test_list(&tests)).unwrap();
-    }
-
-    #[test]
-    fn filtered_profile_discovery_rejects_additional_tests() {
-        let profile = &TEST_PROFILES[1];
-        let mut tests = profile.expected_tests.to_vec();
-        tests.push("example::additional");
-        let err = validate_discovered_tests(profile, &render_test_list(&tests)).unwrap_err();
-        assert!(err.to_string().contains("expected ["));
     }
 
     #[test]

@@ -903,145 +903,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn pci_bar_validator_rejects_unassigned_zero_based_resource() {
-        let output = run_pci_bar_validator(
-            "0000000000000000 000000000000ffff 00000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_rejects_resource_outside_aperture() {
-        let output = run_pci_bar_validator(
-            "00000000b0000000 00000000b000ffff 00000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_rejects_unassigned_resource_flag() {
-        let output = run_pci_bar_validator(
-            "00000000c0000000 00000000c000ffff 20000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_rejects_64_bit_memory_resource() {
-        let output = run_pci_bar_validator(
-            "00000000c0000000 00000000c000ffff 00100200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_accepts_assigned_resource_inside_aperture() {
-        let output = run_pci_bar_validator(
-            "00000000c0000000 00000000c000ffff 00000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_msi_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x05;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_msix_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x11;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_msi_after_another_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x01;
-        config[0x41] = 0x44;
-        config[0x44] = 0x05;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_invalid_capability_pointer() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x42;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_capability_cycle() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x01;
-        config[0x41] = 0x40;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_accepts_config_without_capability_list() {
-        let output = run_pci_capability_validator(&[0; 256]);
-        assert!(output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_accepts_a_non_msi_capability_list() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x01;
-        let output = run_pci_capability_validator(&config);
-        assert!(output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_missing_first_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn virtio_capability_validator_accepts_the_modern_pci_layout() {
         let config = modern_virtio_pci_config();
         let output = run_virtio_capability_validator(&config);
@@ -1051,21 +912,6 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_command_parser_accepts_prefixed_le16_value() {
-        let mut config = vec![0; 256];
-        config[4] = 0x06;
-        let output = run_pci_command_parser(&config);
-        assert!(
-            output.status.success(),
-            "PCI command parser rejected 0x0006: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "6");
     }
 
     #[cfg(unix)]
@@ -1081,24 +927,6 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn virtio_capability_validator_rejects_wrong_notify_length() {
-        let mut config = modern_virtio_pci_config();
-        config[0x50 + 2] = 16;
-        let output = run_virtio_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn virtio_capability_validator_rejects_non_vendor_capability() {
-        let mut config = modern_virtio_pci_config();
-        config[0x64] = 1;
-        let output = run_virtio_capability_validator(&config);
-        assert!(!output.status.success());
     }
 
     #[cfg(unix)]

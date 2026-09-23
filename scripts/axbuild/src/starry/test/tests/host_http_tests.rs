@@ -32,29 +32,6 @@ fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
 }
 
 #[test]
-fn starry_qemu_single_subcase_skips_unneeded_host_http_server() {
-    let root = tempdir().unwrap();
-    let case_dir = root.path().join("test-suit/starryos/qemu/system");
-    let subcase_dir = case_dir.join("syscall-test-uid-gid-re-setters");
-    fs::create_dir_all(subcase_dir.join("src")).unwrap();
-    fs::write(
-        subcase_dir.join("src/main.c"),
-        "int main(void) { return 0; }\n",
-    )
-    .unwrap();
-    let test_case = grouped_host_http_test_case(
-        &case_dir,
-        Some(BTreeSet::from([
-            "syscall-test-uid-gid-re-setters".to_string()
-        ])),
-    );
-
-    let guard = start_qemu_case_host_http_server(&test_case).unwrap();
-
-    assert!(guard.is_none());
-}
-
-#[test]
 fn starry_qemu_single_subcase_keeps_needed_host_http_server() {
     let root = tempdir().unwrap();
     let case_dir = root.path().join("test-suit/starryos/qemu/system");

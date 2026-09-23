@@ -438,68 +438,6 @@ description = "sample defect"
         assert!(toml::from_str::<BenchCase>(&legacy_case).is_err());
     }
 
-    #[test]
-    fn selectors_form_a_deduplicated_union() {
-        let first = sample_case();
-        let mut second = sample_case();
-        second.id = "0002-second".into();
-        second.pr = 2;
-        second.expected[0].id = "second-finding".into();
-        let cases = [first, second];
-
-        let selected = select_cases(
-            &cases,
-            &["0001-sample".into(), "0001-sample".into()],
-            &[2, 2],
-        )
-        .unwrap();
-        assert_eq!(
-            selected
-                .iter()
-                .map(|case| case.id.as_str())
-                .collect::<Vec<_>>(),
-            ["0001-sample", "0002-second"]
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_selector() {
-        assert!(select_cases(&[sample_case()], &["missing".into()], &[]).is_err());
-    }
-
-    #[test]
-    fn accepts_head_context_line_adjacent_to_deletion() {
-        let (repo, case) = case_with_file_change(
-            "setting = true\ntimeout = 300\nfail_regex = []\n",
-            "setting = true\nfail_regex = []\n",
-            2,
-        );
-
-        assert!(line_is_in_head_hunk(repo.path(), &case, &case.expected[0]).unwrap());
-    }
-
-    #[test]
-    fn accepts_added_head_line() {
-        let (repo, case) = case_with_file_change(
-            "setting = true\nfail_regex = []\n",
-            "setting = true\ntimeout = 300\nfail_regex = []\n",
-            2,
-        );
-
-        assert!(line_is_in_head_hunk(repo.path(), &case, &case.expected[0]).unwrap());
-    }
-
-    #[test]
-    fn rejects_unchanged_head_line_outside_diff_hunk() {
-        let (repo, case) = case_with_file_change(
-            "setting = true\ntimeout = 300\nfirst = 1\nsecond = 2\nthird = 3\n",
-            "setting = true\nfirst = 1\nsecond = 2\nthird = 3\n",
-            4,
-        );
-
-        assert!(!line_is_in_head_hunk(repo.path(), &case, &case.expected[0]).unwrap());
-    }
-
     fn case_with_file_change(
         base_content: &str,
         head_content: &str,

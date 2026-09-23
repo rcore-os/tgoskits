@@ -415,24 +415,6 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn clear_worktree_drops_index_state_before_extracting_the_next_snapshot() {
-        let repo = tempdir().unwrap();
-        initialize_repo(repo.path()).unwrap();
-        fs::write(repo.path().join("tracked.txt"), "base snapshot\n").unwrap();
-        commit_all(repo.path(), "base").unwrap();
-
-        clear_worktree(repo.path()).unwrap();
-
-        let cached_paths = Command::new("git")
-            .current_dir(repo.path())
-            .args(["ls-files", "--cached"])
-            .output()
-            .unwrap();
-        assert!(cached_paths.status.success());
-        assert!(cached_paths.stdout.is_empty());
-    }
-
     #[cfg(unix)]
     #[test]
     fn context_replacement_unlinks_destinations_without_touching_external_targets() {

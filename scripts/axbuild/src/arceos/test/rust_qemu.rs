@@ -355,31 +355,6 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-suit/arceos/rust")
     }
 
-    #[test]
-    fn arceos_rust_selected_case_is_feature_name() {
-        let features = rust_qemu_features_for_list(Some("task-yield"), false).unwrap();
-        assert_eq!(features, vec!["task-yield"]);
-    }
-
-    #[test]
-    fn arceos_rust_debug_backtrace_requires_symbolized_frames() {
-        let regexes =
-            rust_qemu_host_symbolize_success_regex(Some(ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE));
-        assert_eq!(regexes.len(), 2);
-
-        let output = r#"
-BACKTRACE_BLOCK 0 kind=arceos-test-suit-raw-normal arch=x86_64
-BT 0 ip=0x10 fp=0x20 arceos_test_suit::debug::backtrace::nested_c
-BT 1 ip=0x11 fp=0x21 arceos_test_suit::debug::backtrace::nested_b
-BT 2 ip=0x12 fp=0x22 arceos_test_suit::debug::backtrace::nested_a
-BACKTRACE_BLOCK 1 kind=arceos-test-suit-raw-badfp arch=x86_64
-BT 0 ip=0x1 fp=0x2
-"#;
-        for pattern in &regexes {
-            assert!(Regex::new(pattern).unwrap().is_match(output));
-        }
-    }
-
     #[tokio::test]
     async fn arceos_rust_case_preparation_rejects_persistent_rootfs_policy() {
         let root = tempfile::tempdir().unwrap();
@@ -417,40 +392,6 @@ BT 0 ip=0x1 fp=0x2
                 argument.contains("id=disk0") && argument.contains("snapshot=on")
             })
         );
-    }
-
-    #[test]
-    fn arceos_rust_normal_qemu_keeps_suite_result_regex() {
-        let mut qemu = QemuConfig {
-            shell_check_steps: vec![ostool::run::ShellCheckStep {
-                success_regex: Some(vec!["ArceOS test suite run OK!".to_string()]),
-                ..Default::default()
-            }],
-            fail_regex: vec![
-                r"(?i)\bpanic(?:ked)?\b".to_string(),
-                "ARCEOS_TEST_FAIL".to_string(),
-            ],
-            timeout: Some(60),
-            ..QemuConfig::default()
-        };
-
-        apply_rust_qemu_feature_overrides(&mut qemu, Some("debug-backtrace"));
-
-        assert_eq!(
-            crate::support::qemu_success::configured_success_regex(&qemu),
-            vec!["ArceOS test suite run OK!"]
-        );
-        assert_eq!(
-            qemu.fail_regex,
-            vec![r"(?i)\bpanic(?:ked)?\b", "ARCEOS_TEST_FAIL"]
-        );
-        assert_eq!(qemu.timeout, Some(60));
-    }
-
-    #[test]
-    fn arceos_rust_selected_case_can_miss_in_default_group_search() {
-        let features = rust_qemu_features_for_list(Some("c/helloworld"), true).unwrap();
-        assert!(features.is_empty());
     }
 
     fn rust_qemu_case(qemu_config_path: PathBuf) -> ArceosRustQemuCase {

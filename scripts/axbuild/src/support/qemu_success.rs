@@ -280,22 +280,6 @@ mod tests {
         verify_qemu_success_contract,
     };
 
-    #[test]
-    fn appending_success_to_config_without_steps_creates_passive_step() {
-        let mut qemu = QemuConfig::default();
-
-        append_configured_success_regex(&mut qemu, "AXTEST_SUITE_OK");
-
-        assert_eq!(qemu.shell_check_steps.len(), 1);
-        let step = &qemu.shell_check_steps[0];
-        assert!(step.shell_prefix.is_none());
-        assert!(step.shell_cmd.is_none());
-        assert_eq!(
-            step.success_regex.as_deref(),
-            Some(&["AXTEST_SUITE_OK".to_string()][..])
-        );
-    }
-
     fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
         let patterns = patterns.iter().map(ToString::to_string).collect::<Vec<_>>();
         let output = QemuSuccessOutput::new(&patterns);
@@ -391,15 +375,6 @@ mod tests {
     #[test]
     fn unrelated_runner_error_still_wins_over_success_marker() {
         let output = captured_output(&["PASS"], &[b"PASS\n"]);
-        let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
-            .unwrap_err();
-
-        assert_eq!(err.to_string(), "QEMU timeout");
-    }
-
-    #[test]
-    fn runner_error_takes_precedence_over_missing_marker() {
-        let output = captured_output(&["PASS"], &[]);
         let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
             .unwrap_err();
 

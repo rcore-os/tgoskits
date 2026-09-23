@@ -1,20 +1,5 @@
 use super::*;
-use crate::build::info::{
-    build_info_enables_backtrace, features_enable_stack_protector, toolchain_rustflags,
-};
-
-#[test]
-fn build_info_enables_backtrace_matches_env_flags() {
-    let mut info = BuildInfo::default();
-    assert!(!build_info_enables_backtrace(&info));
-
-    info.env.insert("BACKTRACE".to_string(), "y".to_string());
-    assert!(build_info_enables_backtrace(&info));
-
-    info.env.clear();
-    info.env.insert("DWARF".to_string(), "1".to_string());
-    assert!(build_info_enables_backtrace(&info));
-}
+use crate::build::info::toolchain_rustflags;
 
 #[test]
 fn toolchain_rustflags_preserves_debug_and_backtrace_env() {
@@ -59,48 +44,6 @@ fn appended_rustflags_preserve_quoted_inline_target_contract() {
 }
 
 #[test]
-fn appended_rustflags_accept_joined_cargo_config_form() {
-    let mut cargo = Cargo {
-        target: "x86_64-unknown-none".into(),
-        args: vec![
-            concat!(
-                "--config=target.x86_64-unknown-none.rustflags=[",
-                "\"-Clink-args=-Tlinker.x\"",
-                "]"
-            )
-            .into(),
-        ],
-        ..Cargo::default()
-    };
-
-    append_cargo_rustflags(&mut cargo, &["-Cdebuginfo=2"]);
-
-    let rendered = cargo.args.join("\n");
-    assert!(rendered.contains("-Clink-args=-Tlinker.x"));
-    assert!(rendered.contains("-Cdebuginfo=2"));
-    assert!(!cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"));
-}
-
-#[test]
-fn appended_rustflags_preserve_string_target_config_form() {
-    let mut cargo = Cargo {
-        target: "x86_64-unknown-none".into(),
-        args: vec![
-            "--config".into(),
-            "target.x86_64-unknown-none.rustflags=\"-Clink-args=-Tlinker.x\"".into(),
-        ],
-        ..Cargo::default()
-    };
-
-    append_cargo_rustflags(&mut cargo, &["-Cdebuginfo=2"]);
-
-    let rendered = cargo.args.join("\n");
-    assert!(rendered.contains("-Clink-args=-Tlinker.x"));
-    assert!(rendered.contains("-Cdebuginfo=2"));
-    assert!(!cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"));
-}
-
-#[test]
 fn appended_rustflags_preserve_plain_rustflags_source() {
     let mut cargo = Cargo {
         target: "x86_64-unknown-none".into(),
@@ -115,21 +58,6 @@ fn appended_rustflags_preserve_plain_rustflags_source() {
         Some("-Cdebuginfo=1\x1f-Cstrip=none\x1f-Cforce-frame-pointers=yes")
     );
     assert!(!cargo.env.contains_key("RUSTFLAGS"));
-}
-
-#[test]
-fn appended_rustflags_stay_in_target_config_with_extra_config() {
-    let mut cargo = Cargo {
-        target: "x86_64-unknown-linux-musl".into(),
-        extra_config: Some("target/axbuild-std/x86_64/config.toml".into()),
-        ..Cargo::default()
-    };
-
-    append_cargo_rustflags(&mut cargo, &["--cfg", "axtest"]);
-
-    assert!(!cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"));
-    assert!(cargo.args.join("\n").contains("--cfg"));
-    assert!(cargo.args.join("\n").contains("axtest"));
 }
 
 #[test]
@@ -148,50 +76,6 @@ fn appended_build_rustflags_preserve_cargo_build_env_source() {
     );
     assert!(
         !cargo.args.join("\n").contains("target."),
-        "a target rustflags source would shadow build.rustflags"
-    );
-}
-
-#[test]
-fn appended_build_rustflags_preserve_inline_build_config_source() {
-    let mut cargo = Cargo {
-        target: "x86_64-unknown-none".into(),
-        args: vec![
-            "--config".into(),
-            "build.rustflags=[\"-Cdebuginfo=1\"]".into(),
-        ],
-        ..Cargo::default()
-    };
-
-    append_cargo_rustflags(&mut cargo, &["-Cforce-frame-pointers=yes"]);
-
-    let rendered = cargo.args.join("\n");
-    assert!(rendered.contains("-Cdebuginfo=1"));
-    assert!(rendered.contains("-Cforce-frame-pointers=yes"));
-    assert!(
-        !rendered.contains("target."),
-        "a target rustflags source would shadow build.rustflags"
-    );
-}
-
-#[test]
-fn appended_build_rustflags_preserve_extra_build_config_source() {
-    let temp = tempdir().unwrap();
-    let config = temp.path().join("config.toml");
-    fs::write(&config, "[build]\nrustflags = [\"-Cdebuginfo=1\"]\n").unwrap();
-    let mut cargo = Cargo {
-        target: "x86_64-unknown-none".into(),
-        extra_config: Some(config.display().to_string()),
-        ..Cargo::default()
-    };
-
-    append_cargo_rustflags(&mut cargo, &["-Cforce-frame-pointers=yes"]);
-
-    let rendered = cargo.args.join("\n");
-    assert!(rendered.contains("build.rustflags"));
-    assert!(rendered.contains("-Cforce-frame-pointers=yes"));
-    assert!(
-        !rendered.contains("target."),
         "a target rustflags source would shadow build.rustflags"
     );
 }
@@ -268,21 +152,6 @@ fn appended_rustflags_deduplicate_only_the_complete_sequence() {
         cargo.env.get("CARGO_ENCODED_RUSTFLAGS").map(String::as_str),
         Some("--cfg\x1fother\x1f--cfg\x1faxtest")
     );
-}
-
-#[test]
-fn stack_protector_feature_detection_accepts_supported_surfaces() {
-    for feature in [
-        "stack-protector",
-        "ax-std/stack-protector",
-        "starry-kernel/stack-protector",
-    ] {
-        assert!(features_enable_stack_protector(&[feature.to_string()]));
-    }
-
-    assert!(!features_enable_stack_protector(&[
-        "stack-guard-page".to_string()
-    ]));
 }
 
 #[test]

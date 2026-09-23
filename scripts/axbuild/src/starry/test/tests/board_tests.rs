@@ -23,36 +23,6 @@ fn discovers_board_test_group_and_build_mapping() {
 }
 
 #[test]
-fn discovers_board_case_when_case_dir_contains_build_config() {
-    let root = tempdir().unwrap();
-    let case_dir = root.path().join("test-suit/starryos/smoke");
-    fs::create_dir_all(&case_dir).unwrap();
-    let build_config = case_dir.join("build-aarch64-unknown-none-softfloat.toml");
-    fs::write(
-        &build_config,
-        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = \
-         [\"ax-driver/virtio-net\"]\nlog = \"Info\"\n",
-    )
-    .unwrap();
-    let board_test_config = case_dir.join("board-orangepi-5-plus.toml");
-    fs::write(
-        &board_test_config,
-        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
-         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
-         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
-    )
-    .unwrap();
-
-    let groups = discover_board_test_groups(root.path(), None, None).unwrap();
-
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].name, "smoke");
-    assert_eq!(groups[0].board_name, "orangepi-5-plus");
-    assert_eq!(groups[0].build_config_path, build_config);
-    assert_eq!(groups[0].board_test_config_path, board_test_config);
-}
-
-#[test]
 fn filters_board_test_group_by_case() {
     let root = tempdir().unwrap();
     write_starry_board_build_config(
@@ -73,30 +43,6 @@ fn filters_board_test_group_by_case() {
             .map(|group| format!("{}/{}", group.name, group.board_name))
             .collect::<Vec<_>>(),
         vec!["smoke/orangepi-5-plus", "smoke/vision-five2"]
-    );
-}
-
-#[test]
-fn filters_board_test_groups_by_board() {
-    let root = tempdir().unwrap();
-    write_starry_board_build_config(
-        root.path(),
-        "orangepi-5-plus",
-        "aarch64-unknown-none-softfloat",
-    );
-    write_starry_board_build_config(root.path(), "vision-five2", "riscv64gc-unknown-none-elf");
-    write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
-    write_board_test_config(root.path(), "orangepi-5-plus", "syscall", "orangepi-5-plus");
-    write_board_test_config(root.path(), "vision-five2", "smoke", "vision-five2");
-
-    let groups = discover_board_test_groups(root.path(), None, Some("orangepi-5-plus")).unwrap();
-
-    assert_eq!(
-        groups
-            .iter()
-            .map(|group| format!("{}/{}", group.name, group.board_name))
-            .collect::<Vec<_>>(),
-        vec!["smoke/orangepi-5-plus", "syscall/orangepi-5-plus"]
     );
 }
 

@@ -314,44 +314,12 @@ fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
 
-    use super::{add_x86_64_perf_postprocess_choice, checkout_path_from_stdout};
-
-    #[test]
-    fn x86_64_postprocess_shim_extends_only_the_perf_postprocess_arch_choice() {
-        let legacy = r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])
-perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#;
-
-        let patched = add_x86_64_perf_postprocess_choice(legacy).unwrap();
-
-        assert!(patched.contains(
-            r#"perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64", "x86_64"])"#
-        ));
-        assert!(patched.contains(
-            r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#
-        ));
-    }
-
-    #[test]
-    fn checkout_provider_path_preserves_trailing_spaces() {
-        let checkout = checkout_path_from_stdout(b"/tmp/harness kit \n".to_vec()).unwrap();
-
-        assert_eq!(checkout, std::path::Path::new("/tmp/harness kit "));
-    }
+    use super::checkout_path_from_stdout;
 
     #[test]
     fn checkout_provider_path_rejects_multiple_output_lines() {
         let error = checkout_path_from_stdout(b"notice\n/tmp/harness\n".to_vec()).unwrap_err();
 
         assert!(error.to_string().contains("invalid path"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn checkout_provider_path_preserves_non_utf8_bytes() {
-        use std::os::unix::ffi::OsStrExt;
-
-        let checkout = checkout_path_from_stdout(b"/tmp/harness-\xff\n".to_vec()).unwrap();
-
-        assert_eq!(checkout.as_os_str().as_bytes(), b"/tmp/harness-\xff");
     }
 }

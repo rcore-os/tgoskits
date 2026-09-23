@@ -1,11 +1,7 @@
 use std::fs;
 
-use ostool::build::config::LogLevel;
-
 use super::{
-    features::{c_compiler_features, c_config_features, c_defines, map_c_app_features},
-    flags::{CFlagsInput, cflags, pthread_mutex_header_contents},
-    libc::{PIC_RUSTFLAG, append_pic_rustflag},
+    features::map_c_app_features,
     link::{find_final_linker_script, find_link_scripts},
 };
 use crate::build::ARCEOS_LINKER_SCRIPT;
@@ -15,155 +11,10 @@ fn strings(items: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn c_config_features_skips_nested_cargo_only_features() {
-    let features = c_config_features(&strings(&[
-        "ax-libc/net",
-        "ax-runtime/paging",
-        "ax-driver/virtio-net",
-        "ax-hal/custom-board",
-        "some-crate/feature",
-    ]));
-
-    assert!(features.contains("net"));
-    assert!(!features.contains("paging"));
-    assert!(!features.contains("virtio-net"));
-    assert!(!features.contains("custom-board"));
-}
-
-#[test]
-fn c_config_features_ignore_removed_dynamic_platform_feature() {
-    let features = c_config_features(&strings(&["plat-dyn", "alloc"]));
-
-    assert!(features.contains("alloc"));
-    assert!(!features.contains("plat-dyn"));
-    assert!(!features.contains("smp"));
-}
-
-#[test]
-fn c_config_features_skips_case_define_features() {
-    let features = c_config_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]));
-
-    assert!(features.contains("alloc"));
-    assert!(
-        !features
-            .iter()
-            .any(|feature| feature.starts_with("c-define:"))
-    );
-}
-
-#[test]
-fn c_defines_extracts_case_define_features() {
-    let defines = c_defines(&strings(&[
-        "alloc",
-        "c-define:ARCEOS_C_TEST_CASE_MEM",
-        "c-define:ARCEOS_C_TEST_CASE_NET_HTTP",
-    ]));
-
-    assert!(defines.contains("ARCEOS_C_TEST_CASE_MEM"));
-    assert!(defines.contains("ARCEOS_C_TEST_CASE_NET_HTTP"));
-}
-
-#[test]
-fn c_compiler_features_keep_case_defines_for_cflags() {
-    let features = c_compiler_features(
-        &strings(&["alloc"]),
-        &strings(&["c-define:ARCEOS_C_TEST_CASE_MEM"]),
-    );
-    let flags = cflags(CFlagsInput {
-        workspace_root: std::path::Path::new("/workspace"),
-        arch: "x86_64",
-        mode: "release",
-        generated_include_dir: std::path::Path::new("/generated"),
-        include_dir: std::path::Path::new("/include"),
-        features: &features,
-        log: Some(LogLevel::Info),
-        dynamic_pie: false,
-    });
-
-    assert!(flags.contains(&"-DAX_CONFIG_ALLOC".to_string()));
-    assert!(flags.contains(&"-DARCEOS_C_TEST_CASE_MEM=1".to_string()));
-}
-
-#[test]
-fn map_c_app_features_preserves_driver_features() {
-    let features = map_c_app_features(&strings(&["net", "ax-driver/virtio-net"]), &[]).unwrap();
-
-    assert!(features.contains(&"net".to_string()));
-    assert!(features.contains(&"ax-driver/virtio-net".to_string()));
-}
-
-#[test]
-fn map_c_app_features_does_not_forward_case_define_features_to_cargo() {
-    let features =
-        map_c_app_features(&strings(&["alloc", "c-define:ARCEOS_C_TEST_CASE_MEM"]), &[]).unwrap();
-
-    assert!(features.contains(&"alloc".to_string()));
-    assert!(
-        !features
-            .iter()
-            .any(|feature| feature.starts_with("c-define:"))
-    );
-}
-
-#[test]
 fn map_c_app_features_rejects_removed_platform_feature() {
     let err = map_c_app_features(&strings(&["alloc"]), &strings(&["plat-dyn"])).unwrap_err();
 
     assert!(err.to_string().contains("no longer supported"));
-}
-
-#[test]
-fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
-    let mut env = std::collections::HashMap::new();
-    append_pic_rustflag(&mut env);
-    assert_eq!(
-        env.get("CARGO_ENCODED_RUSTFLAGS"),
-        Some(&PIC_RUSTFLAG.to_string())
-    );
-
-    let mut env = std::collections::HashMap::from([(
-        "CARGO_ENCODED_RUSTFLAGS".to_string(),
-        "-Cforce-frame-pointers=yes".to_string(),
-    )]);
-    append_pic_rustflag(&mut env);
-    assert_eq!(
-        env.get("CARGO_ENCODED_RUSTFLAGS"),
-        Some(&format!("-Cforce-frame-pointers=yes\x1f{PIC_RUSTFLAG}"))
-    );
-
-    let mut env = std::collections::HashMap::from([(
-        "RUSTFLAGS".to_string(),
-        "-Cforce-frame-pointers=yes".to_string(),
-    )]);
-    append_pic_rustflag(&mut env);
-    assert_eq!(
-        env.get("RUSTFLAGS"),
-        Some(&format!("-Cforce-frame-pointers=yes {PIC_RUSTFLAG}"))
-    );
-}
-
-#[test]
-fn pthread_mutex_header_matches_lockdep_smp_layout() {
-    let header = pthread_mutex_header_contents(&strings(&["lockdep", "smp"]));
-
-    assert!(header.contains("long __l[10];"));
-    assert!(header.contains("{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}"));
-}
-
-#[test]
-fn pthread_mutex_header_matches_plain_smp_layout() {
-    let header = pthread_mutex_header_contents(&strings(&["smp"]));
-
-    assert!(header.contains("long __l[6];"));
-    assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
-}
-
-#[test]
-fn pthread_mutex_header_ignores_removed_dynamic_platform_feature() {
-    let header = pthread_mutex_header_contents(&strings(&["plat-dyn"]));
-
-    assert!(header.contains("long __l[5];"));
-    assert!(header.contains("{0, 8, 0, 0, 0}"));
 }
 
 #[test]

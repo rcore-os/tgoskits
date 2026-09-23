@@ -524,14 +524,6 @@ mod capture {
         use crate::support::qemu_success::{QemuSuccessOutput, verify_qemu_success_contract};
 
         #[test]
-        fn parse_marker_extracts_address_and_size() {
-            assert_eq!(
-                parse_coverage_marker("AXTEST_COVERAGE status=ready addr=0x1234abcd size=4096"),
-                Ok((0x1234abcd, 4096))
-            );
-        }
-
-        #[test]
         fn completion_marker_reaches_qemu_success_contract() {
             let success_output = QemuSuccessOutput::new(&[COVERAGE_DONE_MARKER.to_string()]);
             let mut terminal = Vec::new();

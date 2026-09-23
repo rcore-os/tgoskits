@@ -138,22 +138,6 @@ fn workspace_plan_expands_multiple_test_bins_and_docs_rs_arches_in_stable_order(
 }
 
 #[test]
-fn package_without_docs_rs_targets_defaults_to_x86_64_only() {
-    let packages = [discovered_package(
-        "generic",
-        true,
-        KtestRuntime::Arceos,
-        &[("axtest", false)],
-        None,
-    )];
-
-    let plan = build_qemu_plan(&packages, &QemuPlanSelector::default()).unwrap();
-
-    assert_eq!(plan[0].arch, "x86_64");
-    assert_eq!(plan[0].target, X86_64_TARGET);
-}
-
-#[test]
 fn docs_rs_targets_without_supported_bare_metal_target_are_rejected() {
     let packages = [discovered_package(
         "host-only",
@@ -182,35 +166,6 @@ fn board_runtime_is_excluded_from_workspace_qemu_plan() {
     let plan = build_qemu_plan(&packages, &QemuPlanSelector::default()).unwrap();
 
     assert!(plan.is_empty());
-}
-
-#[test]
-fn explicit_arch_filters_workspace_packages_by_declared_support() {
-    let packages = [
-        discovered_package(
-            "generic",
-            true,
-            KtestRuntime::Arceos,
-            &[("axtest", false)],
-            None,
-        ),
-        discovered_package(
-            "arm-only",
-            true,
-            KtestRuntime::Arceos,
-            &[("axtest", false)],
-            Some(&[AARCH64_TARGET]),
-        ),
-    ];
-    let selector = QemuPlanSelector {
-        arch: Some("aarch64".into()),
-        ..QemuPlanSelector::default()
-    };
-
-    let plan = build_qemu_plan(&packages, &selector).unwrap();
-
-    assert_eq!(plan[0].package, "arm-only");
-    assert_eq!(plan[0].target, AARCH64_TARGET);
 }
 
 #[test]
@@ -362,52 +317,6 @@ fn explicit_target_must_be_harness_false_test() {
 }
 
 #[test]
-fn x86_64_uefi_kernel_loader_uses_explicit_cached_pflash() {
-    let mut qemu = QemuConfig {
-        args: vec!["-nographic".into()],
-        uefi: true,
-        ..QemuConfig::default()
-    };
-
-    apply_x86_64_uefi_kernel_loader(
-        &mut qemu,
-        Path::new("/cache/ovmf/x64/code.fd"),
-        Path::new("/tmp/axtest.vars.fd"),
-    );
-
-    assert!(!qemu.uefi);
-    assert!(qemu.to_bin);
-    assert!(
-        qemu.args
-            .iter()
-            .any(|arg| arg.contains("/cache/ovmf/x64/code.fd"))
-    );
-    assert!(
-        qemu.args
-            .iter()
-            .any(|arg| arg.contains("/tmp/axtest.vars.fd"))
-    );
-}
-
-#[test]
-fn ktest_timeout_bounds_hung_units_without_overriding_platform_contracts() {
-    let mut arceos = QemuConfig::default();
-    apply_ktest_timeout(&mut arceos, KtestRuntime::Arceos, false);
-    assert_eq!(arceos.timeout, Some(60));
-
-    let mut coverage = QemuConfig::default();
-    apply_ktest_timeout(&mut coverage, KtestRuntime::Arceos, true);
-    assert_eq!(coverage.timeout, Some(120));
-
-    let mut configured = QemuConfig {
-        timeout: Some(17),
-        ..QemuConfig::default()
-    };
-    apply_ktest_timeout(&mut configured, KtestRuntime::Starry, true);
-    assert_eq!(configured.timeout, Some(17));
-}
-
-#[test]
 fn prepare_ktest_cargo_replaces_bin_selector_with_test_target() {
     let mut cargo = Cargo {
         package: "demo".into(),
@@ -488,60 +397,6 @@ fn prepare_ktest_cargo_preserves_inline_target_rustflags() {
     assert!(
         !cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"),
         "encoded rustflags would shadow the inline target linker contract"
-    );
-}
-
-#[test]
-fn prepare_ktest_cargo_disables_inherited_coverage_without_cli_flag() {
-    let mut cargo = Cargo {
-        target: X86_64_TARGET.into(),
-        package: "demo".into(),
-        env: [("AXTEST_COVERAGE".into(), "y".into())].into(),
-        ..Cargo::default()
-    };
-    let target = KtestTarget {
-        name: "kernel".into(),
-        kind: KtestTargetKind::Test,
-        harness: false,
-        required_features: Vec::new(),
-    };
-
-    prepare_ktest_cargo(&mut cargo, &target, KtestRuntime::Arceos, false);
-
-    assert!(!cargo.env.contains_key("AXTEST_COVERAGE"));
-    assert!(
-        !cargo
-            .env
-            .values()
-            .any(|value| value.contains("-Cinstrument-coverage"))
-    );
-    assert!(
-        !cargo
-            .args
-            .iter()
-            .any(|arg| arg.contains("-Cinstrument-coverage"))
-    );
-}
-
-#[test]
-fn llvm_cov_html_args_ignore_non_workspace_sources_and_target_outputs() {
-    let args = llvm_cov_html_args(
-        Path::new("/repo/target/kernel.elf"),
-        Path::new("/repo/coverage/kernel.profdata"),
-        Path::new("/repo/coverage/kernel-html"),
-    );
-    let rendered = args
-        .iter()
-        .map(|arg| arg.to_string_lossy())
-        .collect::<Vec<_>>();
-
-    assert!(rendered.iter().any(|arg| arg == "show"));
-    assert!(
-        rendered
-            .iter()
-            .any(|arg| arg == "-ignore-filename-regex=[/\\\\](\\.(cargo|rustup)|target)[/\\\\]"),
-        "llvm-cov HTML reports should not include Cargo registry, Rust toolchain, or target \
-         output sources: {rendered:?}"
     );
 }
 

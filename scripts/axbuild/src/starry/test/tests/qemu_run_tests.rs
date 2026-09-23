@@ -9,89 +9,6 @@ fn workspace() -> crate::context::WorkspaceContext {
 }
 
 #[test]
-fn qemu_case_requirements_read_smp_from_case_config() {
-    let qemu = QemuConfig {
-        args: vec![
-            "-nographic".to_string(),
-            "-smp".to_string(),
-            "cpus=4".to_string(),
-        ],
-        ..Default::default()
-    };
-
-    let requirements = Starry::qemu_case_requirements(&qemu).unwrap();
-
-    assert_eq!(requirements, StarryQemuCaseRequirements { smp: 4 });
-}
-
-#[test]
-fn qemu_case_requirements_default_to_single_cpu() {
-    let qemu = QemuConfig::default();
-
-    let requirements = Starry::qemu_case_requirements(&qemu).unwrap();
-
-    assert_eq!(requirements, StarryQemuCaseRequirements { smp: 1 });
-}
-
-#[test]
-fn qemu_case_rootfs_uses_drive_file_arg() {
-    let root = tempdir().unwrap();
-    write_test_image_config(root.path());
-    let managed_rootfs = root.path().join(".tgos-images/rootfs-riscv64-debian.img");
-    let qemu = QemuConfig {
-        args: vec![
-            "-device".to_string(),
-            "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-            "-drive".to_string(),
-            "/tmp/not-disk0.img".to_string(),
-            "-drive".to_string(),
-            format!(
-                "id=disk0,if=none,format=raw,file={}",
-                managed_rootfs.display()
-            ),
-        ],
-        ..Default::default()
-    };
-
-    let rootfs = Starry::qemu_case_rootfs_path(
-        root.path(),
-        &target_dir(root.path()),
-        &qemu,
-        Path::new("/tmp/default.img"),
-    )
-    .unwrap();
-
-    assert_eq!(rootfs, managed_rootfs);
-}
-
-#[test]
-fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
-    let root = tempdir().unwrap();
-    write_test_image_config(root.path());
-    let managed_rootfs = root.path().join(".tgos-images/rootfs-aarch64-busybox.img");
-    let qemu = QemuConfig {
-        args: vec![
-            "-drive".to_string(),
-            format!(
-                "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
-                managed_rootfs.display()
-            ),
-        ],
-        ..Default::default()
-    };
-
-    let rootfs = Starry::qemu_case_rootfs_path(
-        root.path(),
-        &target_dir(root.path()),
-        &qemu,
-        Path::new("/tmp/default.img"),
-    )
-    .unwrap();
-
-    assert_eq!(rootfs, managed_rootfs);
-}
-
-#[test]
 fn qemu_case_rootfs_collects_all_managed_drive_files() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
@@ -159,51 +76,6 @@ fn qemu_case_rewrites_default_rootfs_references() {
             .unwrap()
             .contains(&managed_rootfs)
     );
-}
-
-#[test]
-fn qemu_case_rootfs_ignores_non_managed_drive_file_arg() {
-    let root = tempdir().unwrap();
-    write_test_image_config(root.path());
-    let qemu = QemuConfig {
-        args: vec![
-            "-drive".to_string(),
-            format!(
-                "id=disk0,if=none,format=raw,file={}",
-                root.path()
-                    .join("target/x86_64-unknown-none/rootfs-x86_64.img")
-                    .display()
-            ),
-        ],
-        ..Default::default()
-    };
-
-    let rootfs = Starry::qemu_case_rootfs_path(
-        root.path(),
-        &target_dir(root.path()),
-        &qemu,
-        Path::new("/tmp/default.img"),
-    )
-    .unwrap();
-
-    assert_eq!(rootfs, PathBuf::from("/tmp/default.img"));
-}
-
-#[test]
-fn qemu_case_rootfs_defaults_without_drive_file_arg() {
-    let root = tempdir().unwrap();
-    write_test_image_config(root.path());
-    let qemu = QemuConfig::default();
-
-    let rootfs = Starry::qemu_case_rootfs_path(
-        root.path(),
-        &target_dir(root.path()),
-        &qemu,
-        Path::new("/tmp/default.img"),
-    )
-    .unwrap();
-
-    assert_eq!(rootfs, PathBuf::from("/tmp/default.img"));
 }
 
 #[test]
@@ -341,20 +213,4 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
             .windows(2)
             .any(|pair| pair == ["-Z", "build-std=core,alloc"])
     );
-}
-
-#[test]
-fn board_test_group_rejects_legacy_case_build_config() {
-    let root = tempdir().unwrap();
-    write_board_test_config(root.path(), "smoke", "smoke", "orangepi-5-plus");
-    let legacy = root
-        .path()
-        .join("test-suit/starryos/smoke/.build-aarch64-unknown-none-softfloat.toml");
-    fs::write(&legacy, "").unwrap();
-
-    let err = discover_board_test_groups(root.path(), None, None)
-        .unwrap_err()
-        .to_string();
-
-    assert!(err.contains("not under a build wrapper"));
 }

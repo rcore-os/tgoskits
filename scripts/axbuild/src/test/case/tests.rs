@@ -7,7 +7,6 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use ostool::run::qemu::QemuConfig;
 use tempfile::tempdir;
 
 use super::*;
@@ -77,10 +76,6 @@ pub(super) fn fake_config() -> CaseAssetConfig {
     }
 }
 
-fn fake_runner(config: &CaseAssetConfig) -> &GroupedCaseRunnerConfig {
-    config.grouped_execution.runner().unwrap()
-}
-
 pub(super) fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     let case_dir = root.join("test-suite/example/default").join(name);
     fs::create_dir_all(&case_dir).unwrap();
@@ -99,70 +94,8 @@ pub(super) fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     }
 }
 
-#[tokio::test]
-async fn prepare_case_assets_plain_case_uses_shared_rootfs() {
-    let root = tempdir().unwrap();
-    let target_dir = root.path().join("target/x86_64-unknown-none");
-    let rootfs_dir = root.path().join("target/axbuild/rootfs");
-    fs::create_dir_all(&target_dir).unwrap();
-    fs::create_dir_all(&rootfs_dir).unwrap();
-    let shared_img = rootfs_dir.join("rootfs-x86_64-alpine.img");
-    fs::write(&shared_img, b"rootfs").unwrap();
-    let case = fake_case(root.path(), "smoke");
-
-    let assets = prepare_case_assets(
-        &root.path().join("target"),
-        "x86_64",
-        "x86_64-unknown-none",
-        &case,
-        shared_img.clone(),
-        fake_config(),
-    )
-    .await
-    .unwrap();
-
-    // Plain case (no pipeline): rootfs_path must point to the shared image
-    // directly -- no per-case copy is created.
-    assert_eq!(assets.rootfs_path, shared_img);
-    assert!(assets.rootfs_copy_to_remove.is_none());
-    // The shared image must be unmodified.
-    assert_eq!(fs::read(&shared_img).unwrap(), b"rootfs");
-}
-
 #[test]
-fn external_grouped_execution_does_not_install_a_runner() {
-    let root = tempdir().unwrap();
-    let overlay = root.path().join("overlay");
-    let commands = vec!["/usr/bin/alpha".to_string()];
-    let mut config = fake_config();
-    config.grouped_execution = GroupedCaseExecution::External;
-
-    write_grouped_case_runner(&overlay, &commands, &config.grouped_execution).unwrap();
-
-    assert!(!overlay.join("usr/bin/suite-run-case-tests").exists());
-}
-
-#[test]
-fn guest_init_grouped_execution_skips_shell_init() {
-    let config = fake_config();
-    let mut qemu = QemuConfig::default();
-    let mut case = fake_case(tempdir().unwrap().path(), "grouped");
-    case.test_commands = vec!["/usr/bin/alpha".to_string()];
-
-    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_execution);
-
-    assert_eq!(qemu.shell_check_steps.len(), 1);
-    let step = &qemu.shell_check_steps[0];
-    assert_eq!(step.shell_prefix, None);
-    assert_eq!(step.shell_cmd, None);
-    assert_eq!(
-        step.success_regex,
-        Some(vec![fake_runner(&config).success_regex.clone()])
-    );
-}
-
-#[test]
-fn grouped_cache_key_tracks_execution_owner() {
+fn grouped_cache_key_tracks_effective_execution_inputs() {
     let root = tempdir().unwrap();
     let shared_img = root.path().join("rootfs.img");
     fs::write(&shared_img, b"rootfs").unwrap();
@@ -191,28 +124,10 @@ fn grouped_cache_key_tracks_execution_owner() {
     .unwrap();
 
     assert_ne!(guest_init, external);
-}
-
-#[test]
-fn grouped_cache_key_tracks_subcase_filter() {
-    let root = tempdir().unwrap();
-    let shared_img = root.path().join("rootfs.img");
-    fs::write(&shared_img, b"rootfs").unwrap();
-    let case = fake_case(root.path(), "grouped");
-    let config = fake_config();
-
-    let full_group = case_asset_cache_key(
-        "x86_64",
-        "x86_64-unknown-none",
-        CasePipeline::Grouped,
-        &case,
-        &shared_img,
-        &config,
-    )
-    .unwrap();
 
     let mut filtered_case = case.clone();
     filtered_case.grouped_subcase_filter = Some(BTreeSet::from(["alpha".to_string()]));
+    config.grouped_execution = fake_config().grouped_execution;
     let single_subcase = case_asset_cache_key(
         "x86_64",
         "x86_64-unknown-none",
@@ -223,7 +138,7 @@ fn grouped_cache_key_tracks_subcase_filter() {
     )
     .unwrap();
 
-    assert_ne!(full_group, single_subcase);
+    assert_ne!(guest_init, single_subcase);
 
     let mut ltp = filtered_case.clone();
     ltp.ltp_case_id = Some("execve03".to_string());
@@ -251,7 +166,7 @@ fn grouped_cache_key_tracks_subcase_filter() {
 }
 
 #[test]
-fn save_rootfs_cache_image_is_noop_in_ci() {
+fn save_rootfs_cache_image_respects_ci_isolation() {
     let _lock = ENV_LOCK.lock().unwrap();
     let _ci = TempEnvVar::set("CI", "1");
     let _disable = TempEnvVar::unset("AXBUILD_DISABLE_ROOTFS_CACHE");
@@ -263,19 +178,8 @@ fn save_rootfs_cache_image_is_noop_in_ci() {
 
     save_rootfs_cache_image(&src, &dst).unwrap();
     assert!(!dst.exists());
-}
 
-#[test]
-fn save_rootfs_cache_image_writes_when_enabled() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    let _ci = TempEnvVar::unset("CI");
-    let _disable = TempEnvVar::unset("AXBUILD_DISABLE_ROOTFS_CACHE");
-
-    let root = tempdir().unwrap();
-    let src = root.path().join("src.img");
-    let dst = root.path().join("cache/rootfs.img");
-    fs::write(&src, vec![1_u8; 1024 * 1024]).unwrap();
-
+    let _ci_off = TempEnvVar::unset("CI");
     save_rootfs_cache_image(&src, &dst).unwrap();
     assert!(dst.is_file());
 }

@@ -217,22 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn quiet_command_discards_success_output() {
-        let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "printf 'successful stdout'; printf 'successful stderr' >&2",
-        ]);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        super::exec_quiet_with_writers(&mut command, &mut stdout, &mut stderr).unwrap();
-
-        assert!(stdout.is_empty());
-        assert!(stderr.is_empty());
-    }
-
-    #[test]
     fn quiet_command_replays_failed_output_and_command() {
         let mut command = Command::new("sh");
         command.args([

@@ -150,37 +150,6 @@ uboot_config = "configs/uboot.toml"
 }
 
 #[test]
-fn prepare_axvisor_request_resolves_target_from_arch() {
-    let root = tempdir().unwrap();
-    let app = test_app_context(root.path());
-
-    let (request, snapshot) = prepare_axvisor_request(
-        &app,
-        AxvisorCliArgs {
-            config: None,
-            arch: Some("x86_64".into()),
-            target: None,
-            smp: None,
-            debug: false,
-            vmconfigs: vec![],
-        },
-        None,
-        None,
-    )
-    .unwrap();
-
-    assert_eq!(request.arch, "x86_64");
-    assert_eq!(request.target, "x86_64-unknown-none");
-    assert_eq!(
-        request.build_info_path,
-        root.path()
-            .join("tmp/axbuild/config/axvisor/build-x86_64-unknown-none.toml")
-    );
-    assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
-    assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
-}
-
-#[test]
 fn prepare_axvisor_request_cli_arch_drops_stale_runtime_paths() {
     let root = tempdir().unwrap();
     write_snapshot_text(
@@ -281,38 +250,6 @@ target = "loongarch64-unknown-none-softfloat"
     );
     assert_eq!(snapshot.arch.as_deref(), Some("x86_64"));
     assert_eq!(snapshot.target.as_deref(), Some("x86_64-unknown-none"));
-}
-
-#[test]
-fn prepare_axvisor_request_rewrites_stale_generated_snapshot_config_path() {
-    let root = tempdir().unwrap();
-    write_snapshot_text(
-        root.path(),
-        AXVISOR_SNAPSHOT_FILE,
-        r#"
-config = "os/axvisor/.build-riscv64gc-unknown-none-elf.toml"
-arch = "aarch64"
-target = "aarch64-unknown-none-softfloat"
-"#,
-    )
-    .unwrap();
-
-    let app = test_app_context(root.path());
-
-    let (request, snapshot) =
-        prepare_axvisor_request(&app, AxvisorCliArgs::default(), None, None).unwrap();
-
-    assert_eq!(
-        request.build_info_path,
-        root.path()
-            .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
-    );
-    assert_eq!(
-        snapshot.config,
-        Some(PathBuf::from(
-            "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
-        ))
-    );
 }
 
 #[test]

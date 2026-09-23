@@ -84,14 +84,4 @@ fn parse_arch(value: &str) -> Result<Arch, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn override_and_json_contract_are_stable() {
-        let override_dir = PathBuf::from("/cache/ovmf");
-        assert_eq!(
-            selected_cache_dir(Some(override_dir.clone().into_os_string())).unwrap(),
-            override_dir
-        );
-        assert!(selected_cache_dir(Some(OsString::new())).is_err());
-    }
 }

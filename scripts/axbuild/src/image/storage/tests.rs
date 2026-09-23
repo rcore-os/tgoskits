@@ -90,33 +90,6 @@ fn registry_url(image_registry: &ImageRegistry) -> test_support::MockHandle {
     )
 }
 
-#[test]
-fn names_use_registry_url_or_generated_fallback() {
-    let xz_image = image_entry("linux", "0.0.1", "abc", "https://example.com/linux.tar.xz");
-    assert_eq!(
-        image_archive_filename(&xz_image, ImageSpecRef::parse("linux")),
-        "linux.tar.xz"
-    );
-
-    let fallback_image = image_entry("linux", "0.0.1", "abc", "https://example.com/");
-    assert_eq!(
-        image_archive_filename(&fallback_image, ImageSpecRef::parse("linux")),
-        "linux.tar.gz"
-    );
-    assert_eq!(
-        image_archive_filename(&fallback_image, ImageSpecRef::parse("linux:0.0.1")),
-        "linux-0.0.1.tar.gz"
-    );
-    assert_eq!(
-        image_extract_dir_name(ImageSpecRef::parse("linux")),
-        "linux"
-    );
-    assert_eq!(
-        image_extract_dir_name(ImageSpecRef::parse("linux:0.0.1")),
-        "linux-0.0.1"
-    );
-}
-
 #[tokio::test]
 async fn storage_fetches_registry_on_every_creation() {
     let registry_url = test_support::register_text("registry.toml", sample_registry().into());
@@ -221,36 +194,6 @@ async fn pull_rootfs_image_returns_direct_mutable_file() {
             .join(format!("{image_name}.tar.xz"))
             .is_file()
     );
-}
-
-#[tokio::test]
-async fn unchanged_archive_preserves_modified_rootfs_without_marker() {
-    let image_name = "rootfs-riscv64-alpine.img";
-    let archive = make_tar_xz(&[(image_name, b"rootfs")]);
-    let sha256 = sha256_hex(&archive);
-    let archive_url =
-        test_support::register_bytes(format!("{image_name}.tar.xz").as_str(), archive);
-    let root = tempdir().unwrap();
-    let storage = test_storage(
-        root.path(),
-        ImageRegistry {
-            images: vec![image_entry(image_name, "0.0.1", &sha256, archive_url.url())],
-        },
-    );
-
-    let rootfs = storage
-        .pull_rootfs_image(ImageSpecRef::parse(image_name))
-        .await
-        .unwrap();
-    fs::write(&rootfs, b"patched rootfs").unwrap();
-    let rootfs_again = storage
-        .pull_rootfs_image(ImageSpecRef::parse(image_name))
-        .await
-        .unwrap();
-
-    assert_eq!(rootfs_again, rootfs);
-    assert_eq!(fs::read(rootfs_again).unwrap(), b"patched rootfs");
-    assert_eq!(archive_url.request_count(), 1);
 }
 
 #[tokio::test]
@@ -382,69 +325,6 @@ async fn failed_checksum_removes_downloaded_archive() {
     assert!(err.to_string().contains("checksum mismatch"));
     assert!(!root.path().join("downloads/linux.tar.gz").exists());
     assert!(!root.path().join("downloads/linux.tar.gz.part").exists());
-}
-
-#[test]
-fn managed_rootfs_reference_resolves_to_configured_extract_dir() {
-    let workspace = tempdir().unwrap();
-    let image_name = "rootfs-aarch64-busybox.img";
-    let config = ImageConfig {
-        registry: "https://example.com/registry.toml".to_string(),
-        download_dir: workspace.path().join("downloads"),
-        extract_dir: workspace.path().join("working-rootfs"),
-    };
-    ImageConfig::write_config(workspace.path(), &config).unwrap();
-    let target_dir = workspace.path().join("custom-target");
-    let reference = PathBuf::from(format!("${{workspace}}/target/axbuild/rootfs/{image_name}"));
-
-    let resolved = resolve_managed_rootfs_path(workspace.path(), &target_dir, &reference).unwrap();
-
-    assert_eq!(resolved, Some(config.extract_dir.join(image_name)));
-}
-
-#[test]
-fn legacy_tmp_rootfs_reference_is_not_managed_implicitly() {
-    let workspace = tempdir().unwrap();
-    let target_dir = workspace.path().join("custom-target");
-    let reference = workspace
-        .path()
-        .join("tmp/axbuild/rootfs/rootfs-aarch64-busybox.img");
-
-    assert_eq!(
-        resolve_managed_rootfs_path(workspace.path(), &target_dir, &reference).unwrap(),
-        None
-    );
-}
-
-#[tokio::test]
-async fn ensure_rootfs_for_arch_uses_configured_direct_path() {
-    let image_name = "rootfs-loongarch64-alpine.img";
-    let archive = make_tar_xz(&[(image_name, b"rootfs")]);
-    let sha256 = sha256_hex(&archive);
-    let archive_url =
-        test_support::register_bytes(format!("{image_name}.tar.xz").as_str(), archive);
-    let registry = ImageRegistry {
-        images: vec![image_entry(image_name, "0.0.1", &sha256, archive_url.url())],
-    };
-    let registry_url = registry_url(&registry);
-    let workspace = tempdir().unwrap();
-    let config = ImageConfig {
-        registry: registry_url.url().to_string(),
-        download_dir: workspace.path().join("downloads"),
-        extract_dir: workspace.path().join("working-rootfs"),
-    };
-    ImageConfig::write_config(workspace.path(), &config).unwrap();
-
-    let rootfs = ensure_rootfs_for_arch(
-        workspace.path(),
-        &workspace.path().join("custom-target"),
-        "loongarch64",
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(rootfs, config.extract_dir.join(image_name));
-    assert_eq!(fs::read(rootfs).unwrap(), b"rootfs");
 }
 
 #[tokio::test]

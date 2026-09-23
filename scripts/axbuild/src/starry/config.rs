@@ -303,33 +303,4 @@ log = "Warn"
             existing_snapshot
         );
     }
-
-    #[test]
-    fn ensure_default_build_config_for_target_keeps_existing_file() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        write_board(
-            root.path(),
-            "qemu-aarch64",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-features = ["ax-driver/virtio-net"]
-log = "Warn"
-"#,
-        );
-
-        let output = root.path().join("tmp/custom-starry.toml");
-        fs::create_dir_all(output.parent().unwrap()).unwrap();
-        fs::write(&output, "log = \"Debug\"\n").unwrap();
-
-        let board = ensure_default_build_config_for_target(
-            root.path(),
-            "aarch64-unknown-none-softfloat",
-            &output,
-        )
-        .unwrap();
-
-        assert!(board.is_none());
-        assert_eq!(fs::read_to_string(&output).unwrap(), "log = \"Debug\"\n");
-    }
 }

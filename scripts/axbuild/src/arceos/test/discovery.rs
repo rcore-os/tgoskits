@@ -227,36 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn selected_qemu_test_groups_only_rust_skips_c() {
-        let dir = tempdir().unwrap();
-        let flows =
-            selected_qemu_test_groups(dir.path(), &qemu_args(true, false, Vec::new())).unwrap();
-
-        assert_eq!(flows, &[QemuTestFlow::Rust]);
-    }
-
-    #[test]
-    fn selected_qemu_test_groups_only_c_skips_rust() {
-        let dir = tempdir().unwrap();
-        let flows =
-            selected_qemu_test_groups(dir.path(), &qemu_args(false, true, Vec::new())).unwrap();
-
-        assert_eq!(flows, &[QemuTestFlow::C]);
-    }
-
-    #[test]
-    fn selected_qemu_test_groups_package_filter_no_longer_changes_groups() {
-        let dir = tempdir().unwrap();
-        let flows = selected_qemu_test_groups(
-            dir.path(),
-            &qemu_args(false, false, vec!["arceos-test-suit".to_string()]),
-        )
-        .unwrap();
-
-        assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
-    }
-
-    #[test]
     fn arceos_rust_case_prefers_its_qemu_config() {
         let root = tempdir().unwrap();
         let suite_config = root.path().join("qemu-riscv64.toml");

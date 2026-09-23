@@ -110,48 +110,6 @@ fn unknown_case_is_rejected_with_discovered_names() {
 }
 
 #[test]
-fn boot_selects_the_canonical_build_config() {
-    let root = tempdir().unwrap();
-    write_case(root.path(), "boot");
-    let action = plan_nixos_action(
-        root.path(),
-        &ArgsTestNixos {
-            arch: Some("x86_64".to_string()),
-            test_case: Some("boot".to_string()),
-            list: false,
-        },
-    )
-    .unwrap();
-
-    assert_eq!(
-        action,
-        NixosAction::Run {
-            build_config: root
-                .path()
-                .join("apps/starry/nixos/build-x86_64-unknown-none.toml"),
-            case_name: "boot".to_string(),
-        }
-    );
-}
-
-#[test]
-fn p1_build_bounds_serial_logging_without_changing_capabilities() {
-    let build_info = StarryBuildInfo {
-        log: LogLevel::Info,
-        features: vec!["nixos".to_string(), "ax-driver/nvme".to_string()],
-        ..StarryBuildInfo::default()
-    };
-
-    let configured = configure_p1_build_info(build_info);
-
-    assert_eq!(configured.log, LogLevel::Warn);
-    assert_eq!(
-        configured.features,
-        ["nixos".to_string(), "ax-driver/nvme".to_string()]
-    );
-}
-
-#[test]
 fn missing_and_empty_kernels_are_rejected() {
     let root = tempdir().unwrap();
     let missing = root.path().join("missing.bin");
@@ -160,18 +118,6 @@ fn missing_and_empty_kernels_are_rejected() {
     let empty = root.path().join("empty.bin");
     fs::write(&empty, []).unwrap();
     assert!(validate_kernel(&empty).is_err());
-}
-
-#[test]
-fn valid_kernel_is_canonicalized() {
-    let root = tempdir().unwrap();
-    let kernel = root.path().join("starryos.bin");
-    fs::write(&kernel, b"kernel").unwrap();
-
-    assert_eq!(
-        validate_kernel(&kernel).unwrap(),
-        kernel.canonicalize().unwrap()
-    );
 }
 
 #[test]

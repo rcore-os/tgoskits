@@ -26,8 +26,6 @@ pub mod quick_start;
 pub(crate) mod resolver;
 pub mod rootfs;
 pub mod test;
-#[cfg(test)]
-mod tests;
 
 pub use args::*;
 

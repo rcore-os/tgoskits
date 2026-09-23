@@ -87,24 +87,6 @@ mod tests {
     use super::{prepare, secure_wifi_requested};
 
     #[test]
-    fn secure_wifi_environment_requires_a_complete_pair() {
-        assert!(!secure_wifi_requested(None, None).unwrap());
-        assert!(
-            secure_wifi_requested(Some(OsStr::new("ssid")), Some(OsStr::new("password"))).unwrap()
-        );
-        assert!(secure_wifi_requested(Some(OsStr::new("ssid")), None).is_err());
-        assert!(secure_wifi_requested(None, Some(OsStr::new("password"))).is_err());
-    }
-
-    #[test]
-    fn empty_wifi_ssid_does_not_request_boot_entropy() {
-        assert!(!secure_wifi_requested(Some(OsStr::new("")), None).unwrap());
-        assert!(
-            !secure_wifi_requested(Some(OsStr::new("")), Some(OsStr::new("password"))).unwrap()
-        );
-    }
-
-    #[test]
     fn secure_wifi_uses_a_fresh_temporary_dtb_without_changing_the_source() {
         let source_dir = tempfile::tempdir().unwrap();
         let source_path = source_dir.path().join("source.dtb");

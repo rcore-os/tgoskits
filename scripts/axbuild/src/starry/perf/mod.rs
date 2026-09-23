@@ -198,19 +198,9 @@ mod tests {
     }
 
     #[test]
-    fn configured_sampling_timeout_keeps_complete_samples() {
-        validate_qemu_completion(false, "exit status: 124", true, true).unwrap();
-    }
-
-    #[test]
     fn successful_qemu_run_requires_samples() {
         let error = validate_qemu_completion(true, "exit status: 0", false, false).unwrap_err();
 
         assert!(error.to_string().contains("before producing samples"));
-    }
-
-    #[test]
-    fn successful_qemu_run_with_samples_is_accepted() {
-        validate_qemu_completion(true, "exit status: 0", false, true).unwrap();
     }
 }

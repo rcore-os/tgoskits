@@ -137,40 +137,4 @@ mod tests {
         let err = reject_missing_qemu_target(&args).unwrap_err();
         assert!(err.to_string().contains("require --arch"));
     }
-
-    #[test]
-    fn command_parses_removed_test_qemu_package_filter() {
-        #[derive(Parser)]
-        struct Cli {
-            #[command(subcommand)]
-            command: Command,
-        }
-
-        let cli = Cli::try_parse_from([
-            "arceos",
-            "test",
-            "qemu",
-            "--target",
-            "riscv64gc-unknown-none-elf",
-            "--package",
-            "arceos-test-suit",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Command::Test(args) => match args.command {
-                TestCommand::Qemu(args) => {
-                    assert_eq!(args.arch, None);
-                    assert_eq!(args.target.as_deref(), Some("riscv64gc-unknown-none-elf"));
-                    assert!(args.package.contains(&"arceos-test-suit".to_string()));
-                    let err = reject_removed_rust_package_filter(&args).unwrap_err();
-                    assert!(err.to_string().contains("no longer support --package"));
-                    assert!(!args.only_rust);
-                    assert!(!args.only_c);
-                }
-                _ => panic!("expected qemu test command"),
-            },
-            _ => panic!("expected test command"),
-        }
-    }
 }

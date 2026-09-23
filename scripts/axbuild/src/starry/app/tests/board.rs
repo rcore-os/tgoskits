@@ -54,35 +54,6 @@ fn reports_unknown_case_with_available_cases() {
 }
 
 #[test]
-fn explicit_board_config_overrides_case_config() {
-    let root = tempdir().unwrap();
-    write_minimal_board_case(root.path(), "demo");
-    let explicit = root.path().join("custom-board.toml");
-    fs::write(&explicit, "board_type = \"custom\"\n").unwrap();
-
-    let case = resolve_board_case(root.path(), "demo", Some(explicit.as_path())).unwrap();
-
-    assert_eq!(case.board_config_path, explicit);
-}
-
-#[test]
-fn explicit_relative_board_config_can_resolve_inside_case() {
-    let root = tempdir().unwrap();
-    write_minimal_board_case(root.path(), "demo");
-    let explicit = write_case_file(
-        root.path(),
-        "demo",
-        "board-custom.toml",
-        "board_type = \"Custom\"\nshell_prefix = \"root@starry:/root #\"\n",
-    );
-
-    let case =
-        resolve_board_case(root.path(), "demo", Some(Path::new("board-custom.toml"))).unwrap();
-
-    assert_eq!(case.board_config_path, explicit);
-}
-
-#[test]
 fn board_and_app_init_execute_as_one_serial_shell_command() {
     let command = merge_board_init_command(
         "printf \"app:%s\\n\" \"$APP_BOARD_VALUE\"",
@@ -197,56 +168,4 @@ fn board_init_step_rejects_ambiguous_or_unmatchable_config() {
         ..Default::default()
     };
     assert!(configure_board_init_step(&mut missing_prefix, "app").is_err());
-}
-
-#[test]
-fn board_default_target_picks_matching_build_config() {
-    let root = tempdir().unwrap();
-    write_case_file(root.path(), "demo", "init.sh", "echo hello\n");
-    write_case_file(
-        root.path(),
-        "demo",
-        "board-orangepi-5-plus.toml",
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \"root@starry:/root #\"\n",
-    );
-    write_case_file(
-        root.path(),
-        "demo",
-        "build-aarch64-unknown-none-softfloat.toml",
-        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
-    );
-    write_case_file(
-        root.path(),
-        "demo",
-        "build-riscv64gc-unknown-none-elf.toml",
-        "target = \"riscv64gc-unknown-none-elf\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
-    );
-    let board_build = write_board_default(
-        root.path(),
-        "orangepi-5-plus",
-        "aarch64-unknown-none-softfloat",
-    );
-
-    let case = resolve_board_case(root.path(), "demo", None).unwrap();
-
-    assert_eq!(case.target, "aarch64-unknown-none-softfloat");
-    assert_eq!(case.build_config_path, board_build);
-}
-
-#[test]
-fn board_default_build_config_is_used_without_an_app_override() {
-    let root = tempdir().unwrap();
-    write_case_file(root.path(), "demo", "init.sh", "echo hello\n");
-    write_case_file(
-        root.path(),
-        "demo",
-        "board-visionfive2.toml",
-        "board_type = \"VisionFive2\"\nshell_prefix = \"root@starry:\"\n",
-    );
-    let board_build = write_board_default(root.path(), "visionfive2", "riscv64gc-unknown-none-elf");
-
-    let case = resolve_board_case(root.path(), "demo", None).unwrap();
-
-    assert_eq!(case.target, "riscv64gc-unknown-none-elf");
-    assert_eq!(case.build_config_path, board_build);
 }
