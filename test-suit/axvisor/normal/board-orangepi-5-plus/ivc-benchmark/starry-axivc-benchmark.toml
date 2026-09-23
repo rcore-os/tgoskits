@@ -7,10 +7,10 @@ phys_cpu_ids = [0x00]
 
 [kernel]
 entry_point = 0x4008_0000
-image_location = "fs"
+image_location = "memory"
 kernel_load_addr = 0x4008_0000
-kernel_path = "/guest/starry/orangepi-5-plus-ivc"
-dtb_load_addr = 0x4000_0000
+kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+# DTB GPA is selected automatically from the prepared guest memory layout.
 cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M init=/usr/bin/ivc-starry-bench"
 
 memory_regions = [

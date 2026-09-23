@@ -1,0 +1,3 @@
+# Build the StarryOS perception guest from the current checkout so the dual-guest board
+# test is self-contained and no longer relies on a manual `cargo xtask starry build` step.
+starry_build_configs = ["starry-guest-build.toml"]

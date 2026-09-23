@@ -1,5 +1,4 @@
 use alloc::{
-    boxed::Box,
     format,
     string::String,
     sync::{Arc, Weak},
@@ -7,11 +6,11 @@ use alloc::{
 };
 use core::{
     any::Any,
-    cell::UnsafeCell,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
+use ax_alloc::GlobalPage;
 use ax_hal::mem::{DCacheOp, PhysAddr, VirtAddr, dcache_range, virt_to_phys};
 use ax_lazyinit::OnceLock;
 use ax_memory_addr::PhysAddrRange;
@@ -20,7 +19,9 @@ use ax_runtime::hal::irq::{
 };
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
-use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
+use axivc::{
+    IVC_REGION_SIZE, IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion,
+};
 use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use bytemuck::{AnyBitPattern, NoUninit};
@@ -198,6 +199,7 @@ impl AxivcRegistry {
         };
         let publisher_id = region.publisher_id();
         region.initialize();
+        sync_region_metadata(region, DCacheOp::Clean);
         let region: &'static IvcRegion = region;
         let (producer, consumer) = unsafe { region.publisher_endpoints() }.into_parts();
 
@@ -969,26 +971,48 @@ impl Pollable for AxivcChannel {
 struct HyperCallOutputSlot {
     // HVC writes through a guest physical pointer. Task stacks may use a
     // guarded vmap alias, which is not covered by direct-map virt_to_phys.
-    // Keep this single-word bounce buffer in the physical heap until return.
-    value: Box<UnsafeCell<usize>>,
+    // Keep this single-word bounce buffer in a page allocation until return.
+    page: GlobalPage,
 }
 
 impl HyperCallOutputSlot {
     fn new(value: usize) -> VfsResult<Self> {
-        Ok(Self {
-            value: Box::try_new(UnsafeCell::new(value)).map_err(|_| VfsError::NoMemory)?,
-        })
+        let mut slot = Self {
+            page: GlobalPage::alloc().map_err(|_| VfsError::NoMemory)?,
+        };
+        slot.write(value);
+        Ok(slot)
     }
 
     fn guest_phys_addr(&self) -> IvcGuestPhysAddr {
-        let vaddr = VirtAddr::from_usize(self.value.get().addr());
+        let vaddr = self.page.start_vaddr();
         IvcGuestPhysAddr::new(virt_to_phys(vaddr).as_usize())
     }
 
+    fn slot_ptr(&self) -> *mut usize {
+        self.page.start_vaddr().as_mut_ptr().cast()
+    }
+
+    fn write(&mut self, value: usize) {
+        // SAFETY: GlobalPage returns one exclusive, page-aligned allocation and
+        // the first word is within that allocation for this slot's lifetime.
+        unsafe { core::ptr::write_volatile(self.slot_ptr(), value) }
+        self.sync_for_hvc(DCacheOp::Clean);
+    }
+
     fn read(&self) -> usize {
-        // SAFETY: the aligned initialized word stays owned by this Box across
+        self.sync_for_hvc(DCacheOp::Invalidate);
+        // SAFETY: the aligned initialized word stays owned by this page across
         // the synchronous HVC; the host has finished writing before we read.
-        unsafe { core::ptr::read_volatile(self.value.get()) }
+        unsafe { core::ptr::read_volatile(self.slot_ptr()) }
+    }
+
+    fn sync_for_hvc(&self, op: DCacheOp) {
+        dcache_range(
+            op,
+            self.page.start_vaddr(),
+            core::mem::size_of::<usize>(),
+        );
     }
 }
 
@@ -1019,12 +1043,21 @@ fn check_shared_page_range(shm_base_gpa: usize, shm_size: usize) -> VfsResult<()
 
 fn wait_for_region_ready(region: &IvcRegion, publisher_id: usize, key: usize) -> VfsResult<()> {
     for _ in 0..REGION_READY_RETRIES {
+        sync_region_metadata(region, DCacheOp::Invalidate);
         if region.channel_header_matches(publisher_id, key) && region.protocol_header_matches() {
             return Ok(());
         }
         crate::task::sleep(Duration::from_millis(REGION_READY_DELAY_MS));
     }
     Err(VfsError::WouldBlock)
+}
+
+fn sync_region_metadata(region: &IvcRegion, op: DCacheOp) {
+    dcache_range(
+        op,
+        VirtAddr::from_usize(core::ptr::from_ref(region).addr()),
+        IVC_REGION_SIZE as usize,
+    );
 }
 
 fn write_device_name(buf: &mut [u8; 64], name: &str) {

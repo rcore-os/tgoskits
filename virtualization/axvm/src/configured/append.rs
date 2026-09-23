@@ -294,6 +294,61 @@ mod tests {
     }
 
     #[test]
+    fn serial_override_can_pin_board_uart_resources() {
+        let mut options = toml::Table::new();
+        options.insert("base".into(), toml::Value::Integer(0xfeb5_0000));
+        options.insert("length".into(), toml::Value::Integer(0x100));
+        options.insert("irq".into(), toml::Value::Integer(0x14d));
+        options.insert("register_shift".into(), toml::Value::Integer(2));
+        options.insert("register_width".into(), toml::Value::Integer(4));
+        options.insert(
+            "backend".into(),
+            toml::toml! {
+                type = "null"
+            }
+            .into(),
+        );
+        let config = AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
+            virtual_device_requests: vec![VirtualDeviceRequest {
+                id: "console0".into(),
+                model: "uart16550-mmio".into(),
+                options,
+            }],
+            ..Default::default()
+        });
+        let controller = DeviceNodeId::new("controller").unwrap();
+        let mut nodes = vec![test_interrupt_controller_node(controller.clone())];
+        append_configured_devices(
+            &config,
+            &mut nodes,
+            &controller,
+            InterruptControllerId::new(0),
+            None,
+        )
+        .unwrap();
+
+        let mut graph = DeviceGraphBuilder::new();
+        for node in nodes {
+            graph.add(node).unwrap();
+        }
+        let graph = graph
+            .declare()
+            .unwrap()
+            .resolve(ResourcePools::new())
+            .unwrap();
+        let registers = ResourceSlot::new("registers").unwrap();
+        let irq = ResourceSlot::new("irq").unwrap();
+        let console = graph
+            .resources_for(&DeviceNodeId::new("console0").unwrap())
+            .unwrap();
+
+        assert_eq!(console.mmio(&registers).unwrap(), (0xfeb5_0000, 0x100));
+        assert_eq!(console.wired_irq(&irq).unwrap().input().value(), 0x14d);
+    }
+
+    #[test]
     fn ivc_channel_uses_resolved_notify_irq_and_planned_mmio_aperture() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),

@@ -21,5 +21,16 @@ passthrough = []
 disabled = []
 
 [[devices.virtual]]
+id = "console0"
+model = "uart16550-mmio"
+base = 0xfeb5_0000
+length = 0x100
+irq = 0x14d
+clock_hz = 0xb71b00
+register_shift = 2
+register_width = 4
+backend = { type = "host-console" }
+
+[[devices.virtual]]
 id = "ivc0"
 model = "ivc-channel"

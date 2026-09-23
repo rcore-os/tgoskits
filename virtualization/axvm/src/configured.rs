@@ -51,8 +51,8 @@ pub struct FixedWiredBinding {
     pub sharing: InterruptSharing,
 }
 
-/// Planner-only fixed resources derived from a machine profile or host
-/// firmware. These values never cross the user configuration boundary.
+/// Planner-only fixed resources derived from a machine profile, host firmware,
+/// or typed device options.
 #[derive(Clone, Debug, Default)]
 pub struct FixedDeviceBindings {
     mmio: BTreeMap<ResourceSlot, (u64, u64)>,

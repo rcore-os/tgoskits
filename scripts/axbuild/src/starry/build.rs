@@ -11,13 +11,14 @@ use cargo_metadata::Metadata;
 use object::{Object as _, ObjectSection as _};
 use ostool::build::config::Cargo;
 
-use super::{Starry, board};
+use super::board;
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 use crate::{
     build::BareKernelLinkMode,
     context::{
-        ResolvedStarryRequest, STARRY_PACKAGE, WorkspaceContext, starry_arch_for_target_checked,
+        AppContext, ResolvedStarryRequest, STARRY_PACKAGE, WorkspaceContext,
+        starry_arch_for_target_checked,
     },
     support::process::ProcessExt,
 };
@@ -131,7 +132,7 @@ fn patch_starry_cargo_config(
 }
 
 pub(crate) async fn build_starry_artifact(
-    starry: &mut Starry,
+    app: &mut AppContext,
     request: &ResolvedStarryRequest,
     cargo: Cargo,
 ) -> anyhow::Result<ostool::build::CargoBuildOutput> {
@@ -141,18 +142,17 @@ pub(crate) async fn build_starry_artifact(
     ));
     let report_session = if request.arch == "aarch64" {
         Some(crate::build::start_future_incompat_report_session(
-            starry.app.target_dir(),
+            app.target_dir(),
         )?)
     } else {
         None
     };
-    let build_result = starry
-        .app
+    let build_result = app
         .build(cargo.clone(), request.build_info_path.clone())
         .await;
     let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     stage.done();
-    postprocess_starry_artifact(starry.app.workspace_root(), request, &cargo, &output)?;
+    postprocess_starry_artifact(app.workspace_root(), request, &cargo, &output)?;
     Ok(output)
 }
 

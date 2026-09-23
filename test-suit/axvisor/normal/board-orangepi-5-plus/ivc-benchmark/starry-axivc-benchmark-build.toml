@@ -1,0 +1,21 @@
+# Dedicated build config for the StarryOS guest of the AXIVC Zephyr-Starry benchmark.
+# It stays independent from the generic board config so benchmark measurements keep a
+# pinned feature set: the benchmark only measures IVC throughput, and the guest reaches
+# its measurement entry point through the `init=/usr/bin/ivc-starry-bench` kernel cmdline
+# declared in `starry-axivc-benchmark.toml`. Target and vCPU count match the deployed
+# `target/aarch64-unknown-none-softfloat/release/starryos.bin` artifact.
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-ehci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rk3588-cpufreq",
+  "rknpu",
+]
+log = "Error"
+max_cpu_num = 1

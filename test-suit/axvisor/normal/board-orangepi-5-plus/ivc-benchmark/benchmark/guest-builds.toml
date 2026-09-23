@@ -1,0 +1,3 @@
+# Build the StarryOS guest image for this board test from the current checkout so the
+# benchmark no longer depends on a manual `cargo xtask starry build` step.
+starry_build_configs = ["../starry-axivc-benchmark-build.toml"]

@@ -7,7 +7,10 @@ use axdevice_base::*;
 use axvmconfig::VirtualDeviceRequest;
 
 use super::*;
-use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
+use crate::{
+    ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext,
+    FixedDeviceBindings, FixedWiredBinding,
+};
 
 const REGISTERS_SLOT: &str = "registers";
 const IRQ_SLOT: &str = "irq";
@@ -32,6 +35,9 @@ pub(super) fn register_devices(
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SerialOptions {
+    base: Option<u64>,
+    length: Option<u64>,
+    irq: Option<usize>,
     clock_hz: Option<u32>,
     register_shift: Option<u8>,
     register_width: Option<u8>,
@@ -79,6 +85,13 @@ fn create_serial(
                 detail: "architecture has no default wired interrupt domain".into(),
             })?;
     let profile = configured_profile(request, options, context.serial_profile())?;
+    let fixed = configured_fixed_bindings(
+        request,
+        options,
+        profile,
+        context.fixed_bindings(),
+        controller,
+    )?;
     let backend = match options.backend {
         Some(SerialBackendOptions::Null) => Arc::new(NullSerialBackend) as Arc<dyn SerialBackend>,
         Some(SerialBackendOptions::HostConsole) => context.serial_backend_factory().create(),
@@ -88,7 +101,7 @@ fn create_serial(
     let model: Arc<dyn DeviceModel> = Arc::new(SerialDeviceModel {
         profile,
         controller,
-        fixed: context.fixed_bindings().clone(),
+        fixed,
         backend,
     });
     let mut node = if matches!(context.firmware_binding(), DeviceFirmwareBinding::None) {
@@ -103,6 +116,54 @@ fn create_serial(
     Ok(node)
 }
 
+fn configured_fixed_bindings(
+    request: &VirtualDeviceRequest,
+    options: SerialOptions,
+    profile: GuestSerialProfile,
+    defaults: &FixedDeviceBindings,
+    controller: InterruptControllerId,
+) -> Result<FixedDeviceBindings, ConfiguredDeviceError> {
+    let registers = ResourceSlot::new(REGISTERS_SLOT).map_err(|error| {
+        ConfiguredDeviceError::Instantiation {
+            device: request.id.clone(),
+            model: request.model.clone(),
+            detail: error.to_string(),
+        }
+    })?;
+    let irq =
+        ResourceSlot::new(IRQ_SLOT).map_err(|error| ConfiguredDeviceError::Instantiation {
+            device: request.id.clone(),
+            model: request.model.clone(),
+            detail: error.to_string(),
+        })?;
+    let mut fixed = defaults.clone();
+    if options.base.is_some() {
+        fixed = match profile.transport {
+            GuestSerialTransport::Port { base, length } => fixed.with_pio(registers, base, length),
+            GuestSerialTransport::Mmio { base, length, .. } => fixed.with_mmio(
+                registers,
+                u64::try_from(base).map_err(|_| serial_option_error(request, "base"))?,
+                u64::try_from(length).map_err(|_| serial_option_error(request, "length"))?,
+            ),
+        };
+    }
+    if let Some(input) = options.irq {
+        let controller = defaults
+            .wired(&irq)
+            .map_or(controller, |binding| binding.controller);
+        fixed = fixed.with_wired(
+            irq,
+            FixedWiredBinding {
+                controller,
+                input: ControllerInputId::new(input),
+                trigger: InterruptTrigger::LevelTriggered,
+                sharing: InterruptSharing::Exclusive,
+            },
+        );
+    }
+    Ok(fixed)
+}
+
 fn configured_profile(
     request: &VirtualDeviceRequest,
     options: SerialOptions,
@@ -114,27 +175,58 @@ fn configured_profile(
     if let Some(clock_hz) = options.clock_hz {
         profile.clock_hz = clock_hz;
     }
-    if let GuestSerialTransport::Mmio {
-        register_shift,
-        register_width,
-        ..
-    } = &mut profile.transport
-    {
-        if let Some(configured_shift) = options.register_shift {
-            *register_shift = configured_shift;
+    match &mut profile.transport {
+        GuestSerialTransport::Port { base, length } => {
+            if let Some(configured_base) = options.base {
+                *base = u16::try_from(configured_base)
+                    .map_err(|_| serial_option_error(request, "base"))?;
+            }
+            if let Some(configured_length) = options.length {
+                *length = u16::try_from(configured_length)
+                    .map_err(|_| serial_option_error(request, "length"))?;
+            }
         }
-        if let Some(configured_width) = options.register_width {
-            *register_width =
-                AccessWidth::try_from(usize::from(configured_width)).map_err(|()| {
-                    ConfiguredDeviceError::InvalidOptions {
-                        device: request.id.clone(),
-                        model: request.model.clone(),
-                        detail: "register_width must be one of 1, 2, 4 or 8 bytes".into(),
-                    }
-                })?;
+        GuestSerialTransport::Mmio {
+            base,
+            length,
+            register_shift,
+            register_width,
+        } => {
+            if let Some(configured_base) = options.base {
+                *base = usize::try_from(configured_base)
+                    .map_err(|_| serial_option_error(request, "base"))?;
+            }
+            if let Some(configured_length) = options.length {
+                *length = usize::try_from(configured_length)
+                    .map_err(|_| serial_option_error(request, "length"))?;
+            }
+            if let Some(configured_shift) = options.register_shift {
+                *register_shift = configured_shift;
+            }
+            if let Some(configured_width) = options.register_width {
+                *register_width =
+                    AccessWidth::try_from(usize::from(configured_width)).map_err(|()| {
+                        ConfiguredDeviceError::InvalidOptions {
+                            device: request.id.clone(),
+                            model: request.model.clone(),
+                            detail: "register_width must be one of 1, 2, 4 or 8 bytes".into(),
+                        }
+                    })?;
+            }
         }
     }
     Ok(profile)
+}
+
+fn serial_option_error(
+    request: &VirtualDeviceRequest,
+    option: &'static str,
+) -> ConfiguredDeviceError {
+    ConfiguredDeviceError::InvalidOptions {
+        device: request.id.clone(),
+        model: request.model.clone(),
+        detail: std::format!("{option} does not fit the selected serial transport"),
+    }
 }
 
 pub(crate) fn fallback_profile(model: &str) -> GuestSerialProfile {

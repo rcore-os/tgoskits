@@ -534,7 +534,7 @@ impl Starry {
         request: &ResolvedStarryRequest,
         cargo: Cargo,
     ) -> anyhow::Result<ostool::build::CargoBuildOutput> {
-        build::build_starry_artifact(self, request, cargo).await
+        build::build_starry_artifact(&mut self.app, request, cargo).await
     }
 
     pub(super) async fn run_qemu_artifact(
