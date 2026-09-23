@@ -23,6 +23,7 @@ fn starry_qemu_case_starts_host_http_server_from_loaded_config() {
         }),
         subcases: Vec::new(),
         grouped_subcase_filter: None,
+        ltp_case_id: None,
     };
 
     let guard = start_qemu_case_host_http_server(&test_case).unwrap();

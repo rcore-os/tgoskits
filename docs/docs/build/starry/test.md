@@ -20,6 +20,13 @@ cargo xtask starry test board --board <type> --server <host> --port <port> [--te
 
 `--arch` 与 `--target`/`--list` 三选一（`test qemu`）。
 
+`-c/--test-case` 可以选择 `qemu/system/ltp-syscalls/<id>`，例如
+`cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls/execve03`。
+`<id>` 必须出现在 `test-suit/starryos/qemu/system/ltp-syscalls/cases.txt` 或对应架构的
+`cases-<arch>.txt`；选择后只安装并运行这个 LTP wrapper，保留其完成数量和文件系统检查。
+使用 `-c qemu/system/ltp-syscalls` 仍执行整个 LTP 集合及 native 隔离回归；
+`--list` 仍列出 QEMU 用例与分组，具体 LTP ID 从这些清单读取。
+
 ## 2. 目录结构
 
 StarryOS 的测试目录组织为**平铺 + build wrapper**：

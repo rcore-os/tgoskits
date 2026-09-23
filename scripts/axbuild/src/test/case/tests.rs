@@ -95,6 +95,7 @@ pub(super) fn fake_case(root: &Path, name: &str) -> TestQemuCase {
         host_http_server: None,
         subcases: Vec::new(),
         grouped_subcase_filter: None,
+        ltp_case_id: None,
     }
 }
 
@@ -223,6 +224,30 @@ fn grouped_cache_key_tracks_subcase_filter() {
     .unwrap();
 
     assert_ne!(full_group, single_subcase);
+
+    let mut ltp = filtered_case.clone();
+    ltp.ltp_case_id = Some("execve03".to_string());
+    let execve_key = case_asset_cache_key(
+        "x86_64",
+        "x86_64-unknown-none",
+        CasePipeline::Grouped,
+        &ltp,
+        &shared_img,
+        &config,
+    )
+    .unwrap();
+    ltp.ltp_case_id = Some("futex_wait01".to_string());
+    let futex_key = case_asset_cache_key(
+        "x86_64",
+        "x86_64-unknown-none",
+        CasePipeline::Grouped,
+        &ltp,
+        &shared_img,
+        &config,
+    )
+    .unwrap();
+    assert_ne!(execve_key, futex_key);
+    assert_ne!(execve_key, single_subcase);
 }
 
 #[test]

@@ -662,5 +662,6 @@ pub(super) fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) ->
         host_http_server: case.host_http_server.clone(),
         subcases: Vec::new(),
         grouped_subcase_filter: None,
+        ltp_case_id: None,
     }
 }

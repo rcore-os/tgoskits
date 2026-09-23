@@ -336,6 +336,7 @@ mod tests {
                     host_http_server: None,
                     subcases: Vec::new(),
                     grouped_subcase_filter: None,
+                    ltp_case_id: None,
                 },
                 build_group: "std".to_string(),
                 build_config_path: build_config_path.to_path_buf(),

@@ -240,6 +240,11 @@ scripts/test/ltp-syscalls/generate-common.sh \
 `MIGRATION.md` 第 7、8 节。
 
 定向运行累计 LTP 集合使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system/ltp-syscalls`；
+只运行一个 LTP testcase 使用
+`cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls/execve03`。
+单项名称须位于 `cases.txt` 或对应架构的 `cases-<arch>.txt`；无效名称在构建前报错。
+单项运行仅安装该 testcase 的 wrapper，不执行整组专用的两个 native 隔离回归；
+wrapper 原有的 LTP 版本、`TPASS` 完成数量及文件系统检查仍然生效。
 完整系统验证使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system`。四个架构
 `x86_64`、`aarch64`、`riscv64`、`loongarch64` 在同一工作区串行执行，只有实际完成的
 测试结果才能计为通过。

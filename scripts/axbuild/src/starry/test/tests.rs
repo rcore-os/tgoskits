@@ -225,6 +225,7 @@ fn grouped_host_http_test_case(
             })
             .collect(),
         grouped_subcase_filter,
+        ltp_case_id: None,
     }
 }
 
@@ -241,6 +242,7 @@ fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQ
             host_http_server: None,
             subcases: Vec::new(),
             grouped_subcase_filter: None,
+            ltp_case_id: None,
         },
         qemu: QemuConfig::default(),
         build_group: "default".to_string(),

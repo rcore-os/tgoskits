@@ -301,6 +301,77 @@ fn starry_qemu_system_selector_keeps_full_group() {
 }
 
 #[test]
+fn starry_qemu_ltp_selector_checks_manifest_for_target_architecture() {
+    let root = tempdir().unwrap();
+    let system = root.path().join("test-suit/starryos/qemu/system");
+    let ltp = system.join("ltp-syscalls");
+    fs::create_dir_all(&ltp).unwrap();
+    fs::write(ltp.join("CMakeLists.txt"), "project(ltp-syscalls C)\n").unwrap();
+    fs::write(ltp.join("cases.txt"), "execve03\nfutex_wait01\n").unwrap();
+    fs::write(ltp.join("cases-x86_64.txt"), "epoll_create01\n").unwrap();
+
+    for arch in ["x86_64", "aarch64"] {
+        let target = format!("{arch}-unknown-none");
+        write_flat_qemu_build_config(root.path(), "qemu", &target);
+        write_flat_grouped_qemu_test_config(root.path(), "qemu", "system", arch);
+        let selected = discover_qemu_cases(
+            root.path(),
+            arch,
+            &target,
+            Some("qemu/system/ltp-syscalls/execve03"),
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].case.ltp_case_id.as_deref(), Some("execve03"));
+        assert_eq!(
+            selected[0].case.grouped_subcase_filter,
+            Some(BTreeSet::from(["ltp-syscalls".to_string()]))
+        );
+
+        let full =
+            discover_qemu_cases(root.path(), arch, &target, Some("qemu/system/ltp-syscalls"))
+                .unwrap();
+        assert_eq!(full[0].case.ltp_case_id, None);
+        assert!(full[0].case.grouped_subcase_filter.is_some());
+
+        let arch_only = discover_qemu_cases(
+            root.path(),
+            arch,
+            &target,
+            Some("qemu/system/ltp-syscalls/epoll_create01"),
+        );
+        if arch == "x86_64" {
+            assert_eq!(
+                arch_only.unwrap()[0].case.ltp_case_id.as_deref(),
+                Some("epoll_create01")
+            );
+        } else {
+            assert!(
+                arch_only
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown LTP testcase")
+            );
+        }
+
+        for id in ["missing", "../execve03", ""] {
+            let err = discover_qemu_cases(
+                root.path(),
+                arch,
+                &target,
+                Some(&format!("qemu/system/ltp-syscalls/{id}")),
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("LTP testcase")
+                    || err.to_string().contains("path traversal"),
+                "{err:#}"
+            );
+        }
+    }
+}
+
+#[test]
 fn starry_qemu_subcase_selector_reports_unknown_subcase() {
     let root = tempdir().unwrap();
     write_flat_qemu_build_config(root.path(), "qemu", "x86_64-unknown-none");

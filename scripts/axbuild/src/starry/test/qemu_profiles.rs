@@ -64,6 +64,7 @@ pub(super) fn expand(mut base: StarryQemuCase) -> anyhow::Result<Vec<StarryQemuC
             "Starry",
             true,
         )?;
+        variant.case.ltp_case_id = base.case.ltp_case_id.clone();
         if !variant.case.is_grouped() {
             bail!(
                 "grouped QEMU profile {} requires test_commands",

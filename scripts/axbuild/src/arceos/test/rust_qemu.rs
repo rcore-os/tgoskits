@@ -466,6 +466,7 @@ BT 0 ip=0x1 fp=0x2
                 host_http_server: None,
                 subcases: Vec::new(),
                 grouped_subcase_filter: None,
+                ltp_case_id: None,
             },
             build_group: "arceos-rust".to_string(),
             build_config_path: rust_test_suite_root().join("build-riscv64gc-unknown-none-elf.toml"),

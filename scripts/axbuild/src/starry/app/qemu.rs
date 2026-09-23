@@ -131,6 +131,7 @@ pub(crate) fn app_qemu_test_case(
         host_http_server: case.host_http_server.clone(),
         subcases: case.subcases.clone(),
         grouped_subcase_filter: None,
+        ltp_case_id: None,
     })
 }
 
