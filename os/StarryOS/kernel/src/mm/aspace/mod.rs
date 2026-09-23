@@ -6787,16 +6787,7 @@ impl AddrSpace {
 
                 let child_entry = guard
                     .vma_root
-                    .prepare_mapping_entry(
-                        entry.range(),
-                        entry.rights(),
-                        entry.reported_rights(),
-                        entry.max_rights(),
-                        entry.snapshot().huge_page_advice,
-                        VmaLockMode::Unlocked,
-                        entry.snapshot().advice_policy,
-                        new_backend.clone(),
-                    )
+                    .prepare_fork_mapping_entry(&entry, new_backend.clone())
                     .ok_or(StarryError::BadState)?;
                 let child_root = guard
                     .vma_root
