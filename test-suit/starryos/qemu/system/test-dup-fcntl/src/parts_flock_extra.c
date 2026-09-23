@@ -12,6 +12,65 @@
 #define FLOCK_EXTRA_FILE2 "/tmp/starry_test_flock_extra2"
 #define FLOCK_EXTRA_FILE3 "/tmp/starry_test_flock_extra3"
 #define FLOCK_EXTRA_FILE4 "/tmp/starry_test_flock_extra4"
+#define FLOCK_EXTRA_FILE5 "/tmp/starry_test_flock_extra5"
+
+static void test_flock_after_idle_eviction(void)
+{
+    enum { CHURN_FILES = 64 };
+    char paths[CHURN_FILES][96];
+    int held = open(FLOCK_EXTRA_FILE5, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (held < 0) {
+        CHECK(0, "Part 26: 打开持锁文件");
+        return;
+    }
+    int warmed = flock(held, LOCK_SH) == 0 && flock(held, LOCK_UN) == 0;
+    CHECK(warmed, "Part 26: 持锁 inode 曾进入空状态缓存");
+    int locked = warmed && flock(held, LOCK_EX) == 0;
+    CHECK(locked, "Part 26: 建立持久排他锁");
+
+    int prepared = 0;
+    int completed = 1;
+    if (locked) {
+        for (int i = 0; i < CHURN_FILES; i++) {
+            snprintf(paths[i], sizeof(paths[i]), "/tmp/starry_flock_churn_%d", i);
+            unlink(paths[i]);
+            int temporary = open(paths[i], O_RDWR | O_CREAT | O_EXCL, 0600);
+            if (temporary < 0) {
+                break;
+            }
+            prepared++;
+            int ok = flock(temporary, LOCK_SH | LOCK_NB) == 0
+                && flock(temporary, LOCK_UN) == 0;
+            close(temporary);
+            if (!ok) {
+                completed = 0;
+                break;
+            }
+        }
+    }
+    CHECK(prepared == CHURN_FILES && completed,
+          "Part 26: 独立 inode 锁状态轮换成功");
+
+    if (locked && prepared == CHURN_FILES && completed) {
+        int peer = open(FLOCK_EXTRA_FILE5, O_RDWR);
+        CHECK(peer >= 0, "Part 26: 打开独立描述符");
+        if (peer >= 0) {
+            errno = 0;
+            int result = flock(peer, LOCK_EX | LOCK_NB);
+            int saved_errno = errno;
+            CHECK(result == -1 && errno_is_wouldblock(saved_errno),
+                  "Part 26: 缓存淘汰后仍观察到排他锁冲突");
+            close(peer);
+        }
+    }
+
+    flock(held, LOCK_UN);
+    close(held);
+    unlink(FLOCK_EXTRA_FILE5);
+    for (int i = 0; i < prepared; i++) {
+        unlink(paths[i]);
+    }
+}
 
 int parts_flock_extra(void)
 {
@@ -133,22 +192,24 @@ int parts_flock_extra(void)
     close(fd2);
     unlink(FLOCK_EXTRA_FILE3);
 
-    /* PART 26: LOCK_SH -> EX 升级失败 — 观察项 */
+    test_flock_after_idle_eviction();
+
+    /* PART 27: LOCK_SH -> EX 升级失败 — 观察项 */
 
     unlink(FLOCK_EXTRA_FILE4);
     create_temp_file_with_data(FLOCK_EXTRA_FILE4, "flock_upgrade_data");
 
     fd = openat(AT_FDCWD, FLOCK_EXTRA_FILE4, O_RDWR);
-    CHECK(fd >= 0, "Part 26: 打开文件");
+    CHECK(fd >= 0, "Part 27: 打开文件");
     if (fd < 0) { unlink(FLOCK_EXTRA_FILE4); return 1; }
 
     /* 观察项 1: flock(LOCK_SH) 成功 */
     errno = 0;
     ret = flock(fd, LOCK_SH);
     if (ret == 0) {
-        TEST_OBSERVE("Part 26: flock(LOCK_SH) 成功");
+        TEST_OBSERVE("Part 27: flock(LOCK_SH) 成功");
     } else {
-        TEST_OBSERVE("Part 26: flock(LOCK_SH) 失败，需 baseline 验证");
+        TEST_OBSERVE("Part 27: flock(LOCK_SH) 失败，需 baseline 验证");
         close(fd);
         unlink(FLOCK_EXTRA_FILE4);
         return 0;
@@ -159,9 +220,9 @@ int parts_flock_extra(void)
     ret = flock(fd, LOCK_EX | LOCK_NB);
     int err2 = errno;
     if (ret == -1 && errno_is_wouldblock(err2)) {
-        TEST_OBSERVE("Part 26: LOCK_SH->EX 升级失败，符合预期");
+        TEST_OBSERVE("Part 27: LOCK_SH->EX 升级失败，符合预期");
     } else {
-        TEST_OBSERVE("Part 26: LOCK_SH->EX 升级结果与预期不同，需 baseline 验证");
+        TEST_OBSERVE("Part 27: LOCK_SH->EX 升级结果与预期不同，需 baseline 验证");
     }
 
     /* 清理 */
