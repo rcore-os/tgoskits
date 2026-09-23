@@ -5713,15 +5713,15 @@ impl AddrSpace {
 
     /// Releases user mappings after the caller has proved that this page table
     /// cannot be installed on a CPU. Unpublished images keep their root for
-    /// reuse; retired MMs detach the entire root after backend preflight.
+    /// reuse; retired MMs detach the entire root after lifecycle quiescence.
     /// This step does not publish an epoch or side-band event by itself.
     fn clear_quiescent_contents(&mut self, retired: bool) -> StarryResult {
         self.ensure_quiescent_for_content_clear()?;
         if retired {
             // No CPU or walker can reach this retired root, and MappingSlot
-            // owns each data frame. Like Linux's exit_mmap, a full teardown
-            // needs neither per-VMA preflight nor per-leaf unmap: the entire
-            // root and all owners will be released without reusing this MM.
+            // owns each data frame independently of its PTE. Unlike Linux's
+            // unmap_vmas/free_pgtables sequence, this teardown can release
+            // the root and all owners without per-VMA or per-leaf unmapping.
             // SAFETY: RetirePermit has quiesced all users, and the check above
             // excludes active CPUs, pending TLB receipts and retained owners.
             unsafe { self.pt.detach(|token| token.reclaim()) };

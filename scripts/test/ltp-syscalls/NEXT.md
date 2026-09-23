@@ -106,7 +106,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 ### 3.1 锁候选失败
 
-`02-lock-probe-x86_64.log` 与旧 CI 记录的是修复前失败：第一个变体曾在 38 秒内 0 TPASS、1 TBROK。旧任务栈缓存、子进程页表失效策略和 `F_GETLK` ABI 回写尝试已经撤回。当前实现由 `PageTableRef::walk_occupied_range()` 缩短稀疏页表扫描，由 `AddrSpace::clear_quiescent_contents()` 对已退休、无 CPU/页表使用者的 MM 一次性拆树并释放 `MappingSlot` 所有权。x86_64 原始 LTP 连续六轮均得到 2 TPASS；没有缩减 5000 次操作、放宽上游超时或降低通过门槛。其他架构仍需分别验证，不能外推本结果。
+`02-lock-probe-x86_64.log` 与旧 CI 记录的是修复前失败：第一个变体曾在 38 秒内 0 TPASS、1 TBROK。旧任务栈缓存、子进程页表失效策略和 `F_GETLK` ABI 回写尝试已经撤回。当前实现由 `PageTableRef::walk_occupied_range()` 缩短稀疏页表扫描，由 `AddrSpace::clear_quiescent_contents()` 对已退休、无 CPU/页表使用者的 MM 一次性拆树并释放 `MappingSlot` 所有权。x86_64 原始 LTP 连续六轮均得到 2 TPASS；没有缩减 5000 次操作、放宽上游超时或降低通过门槛。四架构完整 system 套件均已通过，但其他三架构的正式集合没有执行 `fcntl14`，不能外推 x86_64 的该用例结果。
 
 `fcntl16` 输出三段 TINFO PASSED，但固定源码没有 TPASS 成功报告，wrapper 以 `0 TPASS, expected at least 1` 返回 1。它实际包含部分解锁场景，纠正旧账本关于无部分释放覆盖的说法；但不能通过把 TINFO 当作 TPASS 接入。`bug-fcntl-partial-wake` 与 `bug-fcntl-setlkw-blocks` 保留，也不只选同一原程序的绿色 OFD 候选掩盖 POSIX 候选失败。
 
@@ -120,14 +120,14 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 | 问题 | 议题 | 保留的原程序 |
 | --- | --- | --- |
-| fcntl14 修复前超时 | [#2341](https://github.com/rcore-os/tgoskits/issues/2341) | x86_64 已恢复正式集合并完成六轮本地原始测试；完整套件与 CI 待确认，三个旧 C 程序按用户决定清理 |
+| fcntl14 修复前超时 | [#2341](https://github.com/rcore-os/tgoskits/issues/2341) | x86_64 已恢复正式集合并完成六轮本地原始测试；四架构完整 system 已通过，当前 PR 新 head 的 CI 待确认；三个旧 C 程序按用户决定清理 |
 | fcntl16 无 TPASS 完成报告 | [#2342](https://github.com/rcore-os/tgoskits/issues/2342) | bug-fcntl-partial-wake、bug-fcntl-setlkw-blocks |
 | ext4 SEEK_HOLE 返回 EINVAL | [#2343](https://github.com/rcore-os/tgoskits/issues/2343) | bug-fallocate-zero-punch |
 | fchmodat2 O_PATH 空路径返回 EBADF | [#2344](https://github.com/rcore-os/tgoskits/issues/2344) | bug-fchmodat2-flags |
 | IPV6_V6ONLY 状态与绑定约束 | [#2345](https://github.com/rcore-os/tgoskits/issues/2345) | bug-af-inet6-v4mapped |
 | 原生 ::1 端点身份丢失 | [#2346](https://github.com/rcore-os/tgoskits/issues/2346) | bug-af-inet6-v4mapped |
 
-其他议题未因本次修改而关闭；#2341 在完整系统套件与当前 PR 的 CI 终态核实前保持开放。后续新增暂缓项仍须记录复现输入、失败证据与对应议题，不以原程序保留代替问题跟踪。
+其他议题未因本次修改而关闭；#2341 在当前 PR 的 CI 终态核实前保持开放。后续新增暂缓项仍须记录复现输入、失败证据与对应议题，不以原程序保留代替问题跟踪。
 
 ## 4. 验证与兼容性
 
@@ -135,7 +135,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 ### 4.1 验证入口
 
-通过 `cargo xtask starry test qemu --arch <arch> -c qemu/system/ltp-syscalls` 在四架构串行运行累计集合，再运行完整 `qemu/system`，核对实际执行程序、已清理程序残留与失败候选误接入。`fcntl14` 目前仅在 `cases-x86_64.txt`，以 `minimum-passes.txt` 的 2 TPASS 为完成契约；定向六轮日志位于 `/tmp/pr2472-retired-no-preflight-fcntl14-r{1..6}-20260923.log`，不能代替正式集合与 CI。
+本 PR 重基后通过 `cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls` 运行正式累计 LTP，再以四架构的 `-c qemu/system` 执行完整系统套件。x86_64 正式 LTP 与完整套件均包含 `fcntl14` 的两种原始 5000 次操作变体，各得 2 TPASS；完整 system 计数分别为 x86_64 511/511、aarch64 484/484 加 perf 23/23、riscv64 507/507、loongarch64 507/507。日志为 `/tmp/pr2472-rebased-ltp-x86_64-20260923.log` 与 `/tmp/pr2472-rebased-system-<arch>-20260923.log`；另有六轮单独回归 `/tmp/pr2472-retired-no-preflight-fcntl14-r{1..6}-20260923.log`。`fcntl14` 仅在 `cases-x86_64.txt`，以 `minimum-passes.txt` 的 2 TPASS 为完成契约；上述本地结果不能代替当前 PR 的 CI 终态。
 
 ### 4.2 syscall 对照
 
@@ -143,7 +143,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| fcntl(F_SETLK/F_SETLKW/F_GETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 posix_locks_deadlock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L1101) | POSIX 等待环返回 EDEADLK，查询持锁者和区间 | sys_fcntl → dispatch_fcntl → fcntl_setlk/getlk → PosixLockWaitGuard 与 FCNTL_LOCKS，进程身份所有权 | 正确（已验证输入） | fcntl17 四架构候选通过；x86_64 的 fcntl14 六轮原始测试均 2 TPASS；fcntl16 仍暂缓，其他架构未接入 fcntl14 |
+| fcntl(F_SETLK/F_SETLKW/F_GETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 posix_locks_deadlock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L1101) | POSIX 等待环返回 EDEADLK，查询持锁者和区间 | sys_fcntl → dispatch_fcntl → fcntl_setlk/getlk → PosixLockWaitGuard 与 FCNTL_LOCKS，进程身份所有权 | 正确 | fcntl17 四架构候选通过；x86_64 的 fcntl14 六轮单测及重基后正式 LTP/完整 system 均 2 TPASS；fcntl16 仍暂缓，其他架构未接入 fcntl14 |
 | fcntl(F_OFD_SETLKW/F_OFD_SETLK) / x86_64:72；其他三架构:25 | [Linux v7.1 fcntl_setlk](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2506) | 独立 OFD 的读写互斥及与 POSIX 锁的竞争，解锁后可继续访问 | sys_fcntl → dispatch_fcntl → fcntl_setlk → FCNTL_LOCKS 的 OFD/POSIX 所有者及 inode 等待队列 | 正确 | fcntl34/36；四架构候选验证通过，不包含 OFD GETLK 或最后关闭语义 |
 | close / x86_64:3；其他三架构:57 | [Linux v7.1 filp_flush](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1456) | 关闭同 inode FD 释放当前所有者记录锁，保留其他进程的锁 | sys_close → close_file_like → release_locks_on_close → release_inode_posix_locks | 正确 | fcntl15 的 dup/open/fork 三种组合，四架构验证通过 |
 | flock / x86_64:73；其他三架构:32 | [Linux v7.1 flock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2214) | OFD 间共享/排他冲突、非阻塞 EWOULDBLOCK、阻塞信号中断 EINTR | sys_flock → flock_op → try_flock_once → FLOCK_LOCKS 及 inode 等待队列 | 正确 | flock02/04/06/07，四架构验证通过 |
