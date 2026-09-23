@@ -338,6 +338,7 @@ fn fua_bypasses_deferred_write_and_refreshes_cached_bytes() {
     let durable = [0x5au8; 512];
 
     cached.write_block(3, &old).unwrap();
+    cached.write_block(8, &[0x33; 8 * 512]).unwrap();
     cached.write_block_fua(3, &durable).unwrap();
 
     let log = state.lock().unwrap().log.clone();
@@ -353,6 +354,8 @@ fn fua_bypasses_deferred_write_and_refreshes_cached_bytes() {
     cached.read_block(3, &mut observed).unwrap();
     assert_eq!(observed, durable);
     assert_eq!(count_ops(&state, IoOp::is_read), reads_before);
+    cached.flush().unwrap();
+    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 8)), 1);
 }
 
 #[cfg(feature = "ext4")]
@@ -406,24 +409,23 @@ fn dirty_writeback_precedes_barrier_and_later_writes() {
     // barrier, then a "commit record" write, then another flush. The
     // deferred data must reach the device before the first barrier, and
     // the commit record must reach it only after that barrier.
-    let descriptor = [0x01u8; 512];
-    let commit = [0x02u8; 512];
-    let data = [0x03u8; 512];
-    cached.write_block(4, &data).unwrap();
+    let descriptor = [0x01u8; 8 * 512];
+    let commit = [0x02u8; 8 * 512];
+    let data = [0x03u8; 8 * 512];
+    cached.write_block(0, &data).unwrap();
     cached.write_block(8, &descriptor).unwrap();
     cached.flush().unwrap();
-    cached.write_block(12, &commit).unwrap();
+    cached.write_block(16, &commit).unwrap();
     cached.flush().unwrap();
 
     let log = state.lock().unwrap().log.clone();
     let position = |op: IoOp| log.iter().position(|entry| *entry == op).unwrap();
-    let data_write = position(IoOp::Write { lba: 4, blocks: 1 });
-    let descriptor_write = position(IoOp::Write { lba: 8, blocks: 1 });
+    let data_and_descriptor = position(IoOp::Write { lba: 0, blocks: 16 });
     let first_barrier = log.iter().position(IoOp::is_flush).unwrap();
-    let commit_write = position(IoOp::Write { lba: 12, blocks: 1 });
+    let commit_write = position(IoOp::Write { lba: 16, blocks: 8 });
     let barriers = count_ops(&state, IoOp::is_flush);
     assert_eq!(barriers, 2);
-    assert!(data_write < first_barrier && descriptor_write < first_barrier);
+    assert!(data_and_descriptor < first_barrier);
     assert!(commit_write > first_barrier);
 }
 
@@ -751,6 +753,22 @@ fn failed_writeback_retains_dirty_data_for_retry() {
     tree.writeback_dirty(&mut inner, None).unwrap();
     assert!(!tree.has_dirty());
     assert_eq!(&state.lock().unwrap().storage[7 * 512..8 * 512], &data);
+
+    // A merged request can persist its first folio before reporting failure.
+    // Neither folio has a known completion state until the entire run retries.
+    let first = [0x31; 8 * 512];
+    let second = [0x42; 8 * 512];
+    tree.write_buffered(&mut inner, 8, 8, &first).unwrap();
+    tree.write_buffered(&mut inner, 16, 8, &second).unwrap();
+    state.lock().unwrap().partially_commit_blocks = Some(8);
+    assert_eq!(tree.writeback_dirty(&mut inner, None), Err(BlockError::Io));
+    assert!(tree.has_dirty());
+    assert_eq!(&state.lock().unwrap().storage[8 * 512..16 * 512], &first);
+
+    tree.writeback_dirty(&mut inner, None).unwrap();
+    assert!(!tree.has_dirty());
+    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 16)), 1);
+    assert_eq!(&state.lock().unwrap().storage[16 * 512..24 * 512], &second);
 }
 
 #[test]
