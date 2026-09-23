@@ -107,9 +107,18 @@ int main(void)
     snprintf(pid_stat, sizeof(pid_stat), "/proc/%d/stat", (int)getpid());
     char pid_exe[64];
     snprintf(pid_exe, sizeof(pid_exe), "/proc/%d/exe", (int)getpid());
+    char sub_link_in[64];
+    char sub_link_out[64];
+    char created_in[64];
+    snprintf(sub_link_in, sizeof(sub_link_in), "%s/sub/link-in", root);
+    snprintf(sub_link_out, sizeof(sub_link_out), "%s/sub/link-out", root);
+    snprintf(created_in, sizeof(created_in), "%s/dangling-in", root);
 
     unlink(rel);
     unlink(abs);
+    unlink(sub_link_in);
+    unlink(sub_link_out);
+    unlink(created_in);
     rmdir(sub);
     rmdir(root);
 
@@ -139,6 +148,20 @@ int main(void)
                  RESOLVE_BENEATH, O_RDONLY | O_DIRECTORY | O_CLOEXEC, EXDEV);
     expect_open("BENEATH follows an in-base relative symlink", rootfd, "rel",
                 RESOLVE_BENEATH, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+
+    /* A dangling symlink whose target stays inside the base must be created
+     * through under BENEATH|O_CREAT (`sub/link-in -> ../dangling-in`
+     * resolves to base/dangling-in); one escaping the base stays EXDEV. */
+    CHECK(symlink("../dangling-in", sub_link_in) == 0,
+          "create in-base dangling link fixture");
+    expect_open("BENEATH creates through an in-base dangling symlink", rootfd,
+                "sub/link-in", RESOLVE_BENEATH,
+                O_CREAT | O_WRONLY | O_CLOEXEC);
+    CHECK(symlink("../../dangling-out", sub_link_out) == 0,
+          "create escaping dangling link fixture");
+    expect_errno("BENEATH rejects an escaping dangling symlink", rootfd,
+                 "sub/link-out", RESOLVE_BENEATH,
+                 O_CREAT | O_WRONLY | O_CLOEXEC, EXDEV);
 
     /* RESOLVE_IN_ROOT: the dirfd acts as a chroot root. */
     expect_open("IN_ROOT resolves an absolute path inside the root", rootfd,
