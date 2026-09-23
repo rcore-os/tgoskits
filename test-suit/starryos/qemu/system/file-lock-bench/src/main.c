@@ -11,8 +11,8 @@
 #include <unistd.h>
 
 #define THREADS 4
-#define SAMPLES 200
-#define RECORDS 32
+#define SAMPLES 1000
+#define RECORDS 256
 
 enum operation { POSIX, OFD, QUERY, FLOCK };
 
