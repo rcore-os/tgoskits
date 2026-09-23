@@ -13,7 +13,15 @@ id = 3
 name = "arceos-virtio-net-peer-vm3"
 guest_type = "virtualized"
 cpu_num = 1
+# Guest-visible virtual CPU id (the vCPU's MPIDR_EL1). With an explicit
+# `phys_cpu_sets` it no longer selects a host CPU, so it only names the vCPU on
+# the guest side and need not exist in the host FDT.
 phys_cpu_ids = [0x200]
+# Per-vCPU host affinity bitmap: bit N selects logical host pCPU N. 0b0001 pins
+# this vCPU to host pCPU0 only (the RK3588 A55 core `/cpus/cpu@0`). vm1 and vm3
+# are paired on pCPU0 while vm2 and vm4 share pCPU1, so four guest vCPUs run on
+# two physical CPUs with a fixed vCPU-to-pCPU assignment that never migrates.
+phys_cpu_sets = [0x1]
 
 [kernel]
 entry_point = 0x8020_0000
