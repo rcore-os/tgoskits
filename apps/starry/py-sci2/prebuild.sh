@@ -236,6 +236,12 @@ CONDA_ROOT="/opt/miniconda"
 # per-user cache (writable on any build host, persists across builds, never committed); override with
 # PYSCI2_CONDA_DL. Everything here is fetched from public URLs, so an empty/cleared cache just re-fetches.
 CONDA_DL="${PYSCI2_CONDA_DL:-${XDG_CACHE_HOME:-$HOME/.cache}/py-sci2-conda}"
+# Debian suite and mirror for the glibc runtime closure. The pool filenames rotate on point
+# releases (for example deb13u3 -> deb13u4), so stage_conda_glibc resolves the current Filename
+# and SHA256 from this suite's Packages.gz instead of hardcoding either.
+DEBIAN_SUITE="${PYSCI2_DEBIAN_SUITE:-trixie}"
+DEBIAN_MIRROR="${PYSCI2_DEBIAN_MIRROR:-https://deb.debian.org/debian}"
+DEBIAN_MIRROR="${DEBIAN_MIRROR%/}"
 
 provision_conda() {
     [[ "${PYSCI2_CONDA:-0}" == 1 ]] || return 0
@@ -327,28 +333,77 @@ provision_conda() {
 
 # Stage the Debian trixie libc6 closure so StarryOS can run the glibc Miniforge Python.
 stage_conda_glibc() {
-    local a ma deb deb_sha binbdeb binbdeb_sha
+    local a ma
     case "$arch" in
-        x86_64)
-            a=amd64; ma=x86_64-linux-gnu
-            deb=libc6_2.41-12+deb13u3_amd64.deb
-            deb_sha=8ffd13165b9ee3f067e2ee670df718e48c1bdaa18676ac93d1de761dbbb3913c
-            binbdeb=libc-bin_2.41-12+deb13u3_amd64.deb
-            binbdeb_sha=0105bbe1f317d8992bd73217ea9f3dd63e7f1195841f6aca346c570566628fb8
-            ;;
-        aarch64)
-            a=arm64; ma=aarch64-linux-gnu
-            deb=libc6_2.41-12+deb13u3_arm64.deb
-            deb_sha=ff529924782d3286181188fc265a6a92e7fe28975fb3a925dc0e05c0ca66e52f
-            binbdeb=libc-bin_2.41-12+deb13u3_arm64.deb
-            binbdeb_sha=02f366115bea79b87fe26c7dec4dc444f9fdcc76440905d88cc26dbef075511b
-            ;;
+        x86_64)  a=amd64; ma=x86_64-linux-gnu ;;
+        aarch64) a=arm64; ma=aarch64-linux-gnu ;;
         *) return 0 ;;
     esac
+    if [[ "$DEBIAN_MIRROR" != https://* ]]; then
+        echo "prebuild: PYSCI2_DEBIAN_MIRROR must be an HTTPS URL: $DEBIAN_MIRROR" >&2
+        return 1
+    fi
+    mkdir -p "$CONDA_DL/glibc"
+    # Resolve the current pooled .deb path and digest for a logical package name from the Debian
+    # package index. Do not stop the awk loop early: gzip can otherwise fail with SIGPIPE under
+    # `set -o pipefail` even though the package was found successfully.
+    fetch_debian_pkg_meta() {
+        local package="$1"
+        local meta_url="${DEBIAN_MIRROR}/dists/${DEBIAN_SUITE}/main/binary-${a}/Packages.gz"
+        local meta_file; meta_file="$(mktemp "$CONDA_DL/glibc/${package}.Packages.gz.XXXXXX")"
+        if ! curl -fsSL -o "$meta_file" "$meta_url"; then
+            rm -f "$meta_file"
+            echo "prebuild: failed to fetch Debian package metadata $meta_url" >&2
+            return 1
+        fi
+        local fields
+        if ! fields="$(gzip -dc "$meta_file" | awk -v want="$package" '
+            BEGIN { RS = ""; FS = "\n"; printed = 0 }
+            {
+                pkg = ""; filename = ""; sha = ""
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^Package: /) pkg = substr($i, 10)
+                    else if ($i ~ /^Filename: /) filename = substr($i, 11)
+                    else if ($i ~ /^SHA256: /) sha = substr($i, 9)
+                }
+                if (!printed && pkg == want && filename != "" && sha != "") {
+                    print filename "\t" sha
+                    printed = 1
+                }
+            }')"; then
+            rm -f "$meta_file"
+            echo "prebuild: failed to parse Debian package metadata $meta_url" >&2
+            return 1
+        fi
+        rm -f "$meta_file"
+        if [[ -z "$fields" ]]; then
+            echo "prebuild: package $package not found in Debian package metadata $meta_url" >&2
+            return 1
+        fi
+        printf '%s\n' "$fields"
+    }
+    local deb_fields bin_fields
+    if ! deb_fields="$(fetch_debian_pkg_meta libc6)"; then
+        echo "prebuild: failed to resolve Debian libc6 metadata" >&2
+        return 1
+    fi
+    IFS=$'\t' read -r deb_filename deb_sha <<< "$deb_fields"
+    if ! bin_fields="$(fetch_debian_pkg_meta libc-bin)"; then
+        echo "prebuild: failed to resolve Debian libc-bin metadata" >&2
+        return 1
+    fi
+    IFS=$'\t' read -r bin_filename bin_sha <<< "$bin_fields"
+    if [[ ! "$deb_sha" =~ ^[0-9a-fA-F]{64}$ || ! "$bin_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        echo "prebuild: invalid SHA256 in Debian package metadata for $DEBIAN_SUITE/$a" >&2
+        return 1
+    fi
+    echo "prebuild: resolved Debian $DEBIAN_SUITE packages: $deb_filename, $bin_filename"
     # Download with HTTPS and verify SHA256 before accepting into cache.
     deb_fetch() {
-        local file="$1" expected="$2" url="$3"
+        local name="$1" expected="$2" filename="$3"
+        local file; file="$(basename "$filename")"
         local cache="$CONDA_DL/glibc/$file"
+        local url="${DEBIAN_MIRROR}/${filename#/}"
         if [[ -f "$cache" ]]; then
             local got; got="$(sha256sum "$cache" | cut -d' ' -f1)"
             [[ "$got" == "$expected" ]] && return 0
@@ -356,23 +411,29 @@ stage_conda_glibc() {
             rm -f "$cache"
         fi
         local tmp; tmp="$(mktemp "$CONDA_DL/glibc/${file}.XXXXXX")"
-        curl -fsSL -o "$tmp" "https://deb.debian.org/debian/pool/main/g/glibc/$url" || { rm -f "$tmp"; return 1; }
+        curl -fsSL -o "$tmp" "$url" || {
+            rm -f "$tmp"
+            echo "prebuild: download failed for $name ($url)" >&2
+            return 1
+        }
         local got; got="$(sha256sum "$tmp" | cut -d' ' -f1)"
         if [[ "$got" != "$expected" ]]; then
-            echo "prebuild: SHA256 mismatch for $file: expected $expected got $got" >&2
+            echo "prebuild: SHA256 mismatch for $name ($url): expected $expected got $got" >&2
             rm -f "$tmp"; return 1
         fi
         mv "$tmp" "$cache"
     }
-    mkdir -p "$CONDA_DL/glibc"
-    deb_fetch "$deb" "$deb_sha" "$deb" || { echo "prebuild: failed to fetch $deb" >&2; return 1; }
-    local dp="$CONDA_DL/glibc/$deb"
+    deb_fetch libc6 "$deb_sha" "$deb_filename" || {
+        echo "prebuild: failed to fetch/verify libc6 ($deb_filename)" >&2
+        return 1
+    }
+    local dp="$CONDA_DL/glibc/$(basename "$deb_filename")"
     local t; t="$(mktemp -d)"
     ( cd "$t" && ar x "$dp" && tar xf data.tar.* )
     # Verify the expected Debian multiarch directory was unpacked; fail loudly if missing
     # so a wrong arch deb does not silently produce a partial/empty glibc closure.
     [[ -d "$t/usr/lib/$ma" ]] || {
-        echo "prebuild: $deb missing usr/lib/$ma - wrong arch deb or extraction failed" >&2
+        echo "prebuild: $deb_filename missing usr/lib/$ma - wrong arch deb or extraction failed" >&2
         rm -rf "$t"; return 1
     }
     # copy the glibc runtime (ld-linux + libc.so.6 + friends) into the overlay multiarch paths
@@ -396,11 +457,14 @@ stage_conda_glibc() {
     rm -rf "$t"
     # ldconfig (from libc-bin) is needed by ctypes.util.find_library inside StarryOS.
     # libc-bin runs in the guest, so its SHA256 must be verified just like libc6.
-    deb_fetch "$binbdeb" "$binbdeb_sha" "$binbdeb" || { echo "prebuild: failed to fetch/verify $binbdeb" >&2; return 1; }
+    deb_fetch libc-bin "$bin_sha" "$bin_filename" || {
+        echo "prebuild: failed to fetch/verify libc-bin ($bin_filename)" >&2
+        return 1
+    }
     local t2; t2="$(mktemp -d)"
-    ( cd "$t2" && ar x "$CONDA_DL/glibc/$binbdeb" && tar xf data.tar.* )
+    ( cd "$t2" && ar x "$CONDA_DL/glibc/$(basename "$bin_filename")" && tar xf data.tar.* )
     real="$(find "$t2" -name ldconfig -type f 2>/dev/null | head -1)"
-    [[ -n "$real" ]] || { echo "prebuild: ldconfig not found in $binbdeb" >&2; rm -rf "$t2"; return 1; }
+    [[ -n "$real" ]] || { echo "prebuild: ldconfig not found in $bin_filename" >&2; rm -rf "$t2"; return 1; }
     install -Dm0755 "$real" "$overlay_dir/sbin/ldconfig"
     rm -rf "$t2"
     mkdir -p "$overlay_dir/etc/ld.so.conf.d"
