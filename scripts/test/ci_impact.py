@@ -50,7 +50,6 @@ KNOWN_OS_CONFIG_PATHS = (
 )
 CI_OWNED_APP_INPUTS = (
     (Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),
-    (Path("apps/axvisor/triple-vm-test"), "axvisor:app:triple-vm"),
 )
 ARCH_PATH_ALIASES = {
     "aarch64": (
@@ -657,9 +656,7 @@ def _input_selection_targets(selection: str) -> set[str]:
     os_name, _, detail = selection.partition(":")
     if os_name not in OS_ROOT_PACKAGES:
         return set()
-    platform, _, value = detail.partition(":")
-    if platform == "app":
-        return set()
+    _, _, value = detail.partition(":")
     if value in ARCH_TARGETS:
         return {f"{os_name}:{value}"}
     arches = _arch_hints(Path(value))

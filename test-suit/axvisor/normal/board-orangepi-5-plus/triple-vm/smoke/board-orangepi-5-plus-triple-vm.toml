@@ -1,4 +1,13 @@
-# Appended to a temporary board config by run.sh. No board type is stored here.
+# Standalone AxVisor board run config for the three-guest Orange Pi 5 Plus case.
+# Automatic run:
+#   cargo xtask axvisor test board --board orangepi-5-plus-triple-vm --test-case smoke
+# The board type and every ordered shell check live here; no deployment server
+# address is stored. Two optional overrides are expanded by ostool from the
+# environment, and an unset variable expands to an empty string:
+#   TRIPLE_PING_TARGET  IPv4 address for the Linux ping check (default: the guest
+#                       default gateway selected by the guest itself)
+#   TRIPLE_APT_PROXY    HTTP proxy used only by the Linux APT steps
+board_type = "OrangePi-5-Plus"
 timeout = 1800
 fail_regex = ["(?i)kernel panic", "Failed to initialize guest VM"]
 
@@ -62,61 +71,54 @@ success_regex = ['Attached VM\[1\] console']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''grep -Eq '^processor[[:space:]]*:[[:space:]]*[0-9]+[[:space:]]*$' /proc/cpuinfo && printf 'TRIPLE_CPU_%s\n' PASS || printf 'TRIPLE_CPU_%s\n' FAIL'''
 success_regex = ['(?:^|\r|\n)TRIPLE_CPU_PASS\r?(?:\n|$)']
 fail_regex = ['(?:^|\r|\n)TRIPLE_CPU_FAIL\r?(?:\n|$)']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
-shell_cmd = '''bash <<'AXTRIPLE_NET'
-target='${env:TRIPLE_PING_TARGET}'
-for attempt in $(seq 1 30); do
-    [[ -n $target ]] || target=$(ip -4 route show default | awk 'NR==1 {print $3}')
-    [[ -n $target ]] && break
-    sleep 1
-done
-output=$(LC_ALL=C ping -n -c 5 -w 15 "$target" 2>&1); result=$?
-printf '%s\n' "$output"
-if (( result == 0 )) && grep -Eq '5 packets transmitted, 5 (packets )?received, 0% packet loss' <<< "$output"; then
-    printf 'TRIPLE_NET_%s\n' PASS
-else
-    printf 'TRIPLE_NET_%s\n' FAIL
-fi
-AXTRIPLE_NET'''
-success_regex = ['(?:^|\r|\n)TRIPLE_NET_PASS\r?(?:\n|$)']
-fail_regex = ['(?:^|\r|\n)TRIPLE_NET_FAIL\r?(?:\n|$)']
+shell_prefix = "orangepi@orangepi5plus:~$"
+shell_cmd = '''target='${env:TRIPLE_PING_TARGET}'; for attempt in $(seq 1 30); do [[ -n $target ]] || target=$(ip -4 route show default | awk 'NR==1 {print $3}'); [[ -z $target ]] || break; sleep 1; done; [[ -n $target ]] && printf 'TRIPLE_ROUTE_%s\n' PASS || printf 'TRIPLE_ROUTE_%s\n' FAIL'''
+success_regex = ['(?:^|\r|\n)TRIPLE_ROUTE_PASS\r?(?:\n|$)']
+fail_regex = ['(?:^|\r|\n)TRIPLE_ROUTE_FAIL\r?(?:\n|$)']
 timeout = 60
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
+shell_cmd = '''output=$(LC_ALL=C ping -n -c 5 -w 15 "$target" 2>&1); result=$?; printf '%s\n' "$output"; (( result == 0 )) && grep -Eq '5 packets transmitted, 5 (packets )?received, 0% packet loss' <<< "$output" && printf 'TRIPLE_NET_%s\n' PASS || printf 'TRIPLE_NET_%s\n' FAIL'''
+success_regex = ['(?:^|\r|\n)TRIPLE_NET_PASS\r?(?:\n|$)']
+fail_regex = ['(?:^|\r|\n)TRIPLE_NET_FAIL\r?(?:\n|$)']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''(dir=$(mktemp -d "$HOME/.axvisor-linux.XXXXXXXX") || exit; trap 'rm -f "$dir/probe"; rmdir "$dir"' EXIT; printf 'AXVISOR_FILE_RW\n' > "$dir/probe" && test "$(cat "$dir/probe")" = AXVISOR_FILE_RW && sync) && printf 'TRIPLE_FILE_%s\n' PASS || printf 'TRIPLE_FILE_%s\n' FAIL'''
 success_regex = ['(?:^|\r|\n)TRIPLE_FILE_PASS\r?(?:\n|$)']
 fail_regex = ['(?:^|\r|\n)TRIPLE_FILE_FAIL\r?(?:\n|$)']
 timeout = 60
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''original=$(dpkg-query -W -f='${Status} ${Version}' hello 2>/dev/null || :); printf 'TRIPLE_STATE_%s\n' CAPTURED'''
 success_regex = ['(?:^|\r|\n)TRIPLE_STATE_CAPTURED\r?(?:\n|$)']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''if [[ -z $original ]]; then package=hello; restore=purge; elif [[ $original == 'install ok installed '* && ${original##* } =~ ^[0-9][A-Za-z0-9.+:~-]*$ ]]; then package="hello=${original##* }"; restore=keep; else restore=invalid; fi; [[ $restore != invalid ]] && printf 'TRIPLE_STATE_%s\n' PASS || printf 'TRIPLE_STATE_%s\n' FAIL'''
 success_regex = ['(?:^|\r|\n)TRIPLE_STATE_PASS\r?(?:\n|$)']
 fail_regex = ['(?:^|\r|\n)TRIPLE_STATE_FAIL\r?(?:\n|$)']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''proxy='${env:TRIPLE_APT_PROXY}'; apt_options=(-o DPkg::Lock::Timeout=60); [[ -z $proxy ]] || apt_options+=(-o "Acquire::http::Proxy=$proxy"); [[ $restore == purge ]] && reinstall=() || reinstall=(--reinstall); printf 'TRIPLE_APT_SETUP_%s\n' PASS'''
 success_regex = ['(?:^|\r|\n)TRIPLE_APT_SETUP_PASS\r?(?:\n|$)']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''sudo -k -p "$(printf 'AXTRIPLE_%s:' SUDO)" -- env LC_ALL=C apt-get "${apt_options[@]}" --no-remove --no-install-recommends "${reinstall[@]}" install -y "$package" && printf 'TRIPLE_INSTALL_%s\n' PASS || printf 'TRIPLE_INSTALL_%s\n' FAIL'''
 success_regex = ['AXTRIPLE_SUDO']
 timeout = 30
@@ -126,17 +128,17 @@ shell_prefix = ':'
 shell_cmd = 'orangepi'
 success_regex = ['(?:^|\r|\n)TRIPLE_INSTALL_PASS\r?(?:\n|$)']
 fail_regex = ['(?:^|\r|\n)TRIPLE_INSTALL_FAIL\r?(?:\n|$)']
-timeout = TRIPLE_TIMEOUT
+timeout = 600
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''output=$(LC_ALL=C hello); printf '%s\n' "$output"; [[ $(dpkg-query -W -f='${Status}' hello) == 'install ok installed' && $output == 'Hello, world!' ]] && printf 'TRIPLE_HELLO_%s\n' PASS || printf 'TRIPLE_HELLO_%s\n' FAIL'''
 success_regex = ['(?:^|\r|\n)TRIPLE_HELLO_PASS\r?(?:\n|$)']
 fail_regex = ['(?:^|\r|\n)TRIPLE_HELLO_FAIL\r?(?:\n|$)']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = '''sudo -k -p "$(printf 'AXTRIPLE_%s:' SUDO)" -- bash -c 'if [[ $1 == purge ]]; then LC_ALL=C apt-get -o DPkg::Lock::Timeout=60 purge -y hello; fi' _ "$restore" && { if [[ $restore == purge ]]; then ! dpkg-query -W hello >/dev/null 2>&1; else [[ $(dpkg-query -W -f='${Status} ${Version}' hello) == "$original" ]]; fi; } && printf 'TRIPLE_RESTORE_%s\n' PASS || printf 'TRIPLE_RESTORE_%s\n' FAIL'''
 success_regex = ['AXTRIPLE_SUDO']
 timeout = 30
@@ -146,10 +148,10 @@ shell_prefix = ':'
 shell_cmd = 'orangepi'
 success_regex = ['(?:^|\r|\n)TRIPLE_RESTORE_PASS\r?(?:\n|$)']
 fail_regex = ['(?:^|\r|\n)TRIPLE_RESTORE_FAIL\r?(?:\n|$)']
-timeout = TRIPLE_TIMEOUT
+timeout = 600
 
 [[shell_check_steps]]
-shell_prefix = "${env:TRIPLE_LINUX_PROMPT}"
+shell_prefix = "orangepi@orangepi5plus:~$"
 shell_cmd = "\u0018hvm list"
 success_regex = ['(?ms)VM ID.*?^1[ \t]+linux-triple[ \t]+running[^\r\n]*\r?\n2[ \t]+arceos-triple[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr-triple[ \t]+running[^\r\n]*\r?\naxvisor:/\$']
 timeout = 30

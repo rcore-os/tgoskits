@@ -314,14 +314,18 @@ board = "orangepi-5-plus-dualguest-robot"
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-triple-vm"
-impact_inputs = ["axvisor:app:triple-vm"]
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · ArceOS + Zephyr + Linux"
 runner = "board"
 timeout_minutes = 90
 command = '''
-apps/axvisor/triple-vm-test/run.sh --ci --board-type OrangePi-5-Plus --server 127.0.0.1 --port 2999
+cargo xtask axvisor test board --board orangepi-5-plus-triple-vm --test-case smoke --board-type OrangePi-5-Plus --server 127.0.0.1 --port 2999 && echo TRIPLE_VM_TEST_PASS
 '''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-triple-vm"
+cases = ["smoke"]
 
 # Nightly-only checks.
 

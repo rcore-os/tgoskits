@@ -223,20 +223,6 @@ class CiImpactTests(unittest.TestCase):
             ("axvisor:qemu:aarch64",),
         )
 
-    def test_ci_owned_triple_vm_app_triggers_axvisor_aarch64(self) -> None:
-        impact = ci_impact.analyze_changed_paths(
-            self.workspace_root,
-            [Path("apps/axvisor/triple-vm-test/scripts/checks.toml")],
-            self.metadata_by_arch,
-        )
-
-        self.assertFalse(impact.full)
-        self.assertEqual(
-            impact.input_selections,
-            ("axvisor:app:triple-vm",),
-        )
-        self.assertEqual(impact.targets, ())
-
     def test_os_specific_config_without_arch_hint_selects_all_os_arches(self) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
