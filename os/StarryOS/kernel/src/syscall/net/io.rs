@@ -627,7 +627,7 @@ pub fn sys_recvmmsg(
     timeout: UserConstPtr<timespec>,
 ) -> StarryResult<isize> {
     let msgvec = msgvec.as_ptr();
-    let timeout = timeout.as_ptr();
+    let timeout_ptr = timeout.as_ptr();
     if vlen == 0 {
         return Ok(0);
     }
@@ -637,25 +637,17 @@ pub fn sys_recvmmsg(
     // progress, matching sendmmsg's UIO_MAXIOV clamp (net/socket.c:2796).
     let vlen = vlen.min(MMSG_MAX_VLEN);
 
-    let timeout = parse_recvmmsg_timeout(current, timeout)?;
+    let timeout = parse_recvmmsg_timeout(current, timeout_ptr)?;
     // TODO: deadline is only checked between recv_impl calls. If a single
     // recv_impl blocks waiting for data (socket has nothing to read), the
     // deadline cannot interrupt it. Needs a non-blocking recv path or
     // SO_RCVTIMEO support at the socket layer to fix.
-    let deadline = timeout.map(|t| monotonic_time() + t);
+    let deadline = timeout.map(|t| monotonic_time().saturating_add(t));
     let _socket = Socket::from_fd(fd)?;
     let mut received = 0;
+    let mut remaining = None;
     let mut flags = flags;
     for index in 0..vlen as usize {
-        if let Some(deadline) = deadline
-            && monotonic_time() >= deadline
-        {
-            if received == 0 {
-                return Err(StarryError::WouldBlock);
-            }
-            break;
-        }
-
         let slot = msgvec.wrapping_add(index);
         let result = (|| -> StarryResult<()> {
             // SAFETY: Linux `mmsghdr` contains only integer fields and raw
@@ -712,6 +704,13 @@ pub fn sys_recvmmsg(
                 if flags & MSG_WAITFORONE != 0 {
                     flags |= MSG_DONTWAIT;
                 }
+                if let Some(deadline) = deadline {
+                    let left = deadline.saturating_sub(monotonic_time());
+                    remaining = Some(left);
+                    if left.is_zero() {
+                        break;
+                    }
+                }
             }
             Err(e) => {
                 if received == 0 {
@@ -722,5 +721,16 @@ pub fn sys_recvmmsg(
         }
     }
 
+    if let Some(left) = remaining {
+        let ts = timespec::from_time_value(left);
+        UserPtr::from(timeout_ptr as *mut timespec).write_abi_fields(
+            current,
+            &mut [0; size_of::<timespec>()],
+            |writer| {
+                writer.put_field(core::mem::offset_of!(timespec, tv_sec), &ts.tv_sec)?;
+                writer.put_field(core::mem::offset_of!(timespec, tv_nsec), &ts.tv_nsec)
+            },
+        )?;
+    }
     Ok(received)
 }

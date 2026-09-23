@@ -93,6 +93,55 @@ static void mmsg_keeps_completed_prefix(size_t page_size, int receive)
     close(pair[1]);
 }
 
+static void recvmmsg_timeout_results(size_t page_size)
+{
+    int pair[2];
+    socket_pair(pair);
+    char byte = 0;
+    struct iovec iov = { .iov_base = &byte, .iov_len = 1 };
+    struct mmsghdr message = { .msg_hdr = { .msg_iov = &iov, .msg_iovlen = 1 } };
+    struct timespec zero = {0};
+
+    REQUIRE(send(pair[0], "z", 1, 0) == 1);
+    long result = syscall(SYS_recvmmsg, pair[1], &message, 1, 0, &zero);
+    CHECK(result == 1 && message.msg_len == 1 && byte == 'z',
+          "recvmmsg receives queued data with zero timeout");
+    CHECK(zero.tv_sec == 0 && zero.tv_nsec == 0,
+          "recvmmsg writes zero remaining timeout");
+
+    struct timespec finite = { .tv_sec = 30 };
+    byte = 0;
+    message.msg_len = 0;
+    REQUIRE(send(pair[0], "t", 1, 0) == 1);
+    result = syscall(SYS_recvmmsg, pair[1], &message, 1, 0, &finite);
+    CHECK(result == 1 && message.msg_len == 1 && byte == 't',
+          "recvmmsg receives queued data with finite timeout");
+    CHECK(finite.tv_sec >= 0 && finite.tv_sec < 30 &&
+          finite.tv_nsec >= 0 && finite.tv_nsec < 1000000000 &&
+          (finite.tv_sec > 0 || finite.tv_nsec > 0),
+          "recvmmsg writes valid nonincreasing remaining timeout");
+
+    struct timespec *readonly = two_pages(page_size);
+    *readonly = (struct timespec){ .tv_sec = 30 };
+    REQUIRE(mprotect(readonly, page_size, PROT_READ) == 0);
+    byte = 0;
+    message.msg_len = 0;
+    REQUIRE(send(pair[0], "f", 1, 0) == 1);
+    errno = 0;
+    result = syscall(SYS_recvmmsg, pair[1], &message, 1, 0, readonly);
+    CHECK(result == -1 && errno == EFAULT,
+          "recvmmsg reports timeout copyout fault after receiving");
+    CHECK(message.msg_len == 1 && byte == 'f',
+          "recvmmsg preserves message output after timeout fault");
+    errno = 0;
+    result = recv(pair[1], &byte, 1, MSG_DONTWAIT);
+    CHECK(result == -1 && errno == EAGAIN,
+          "recvmmsg timeout fault does not restore consumed datagram");
+    munmap(readonly, page_size * 2);
+    close(pair[0]);
+    close(pair[1]);
+}
+
 static void sendmmsg_writes_only_result(size_t page_size)
 {
     int pair[2];
@@ -236,6 +285,7 @@ int main(void)
     output_fault_follows_socket_operation();
     mmsg_keeps_completed_prefix(page_size, 0);
     mmsg_keeps_completed_prefix(page_size, 1);
+    recvmmsg_timeout_results(page_size);
     sendmmsg_writes_only_result(page_size);
     recvmsg_writes_only_results(page_size, 0);
     recvmsg_writes_only_results(page_size, 1);
