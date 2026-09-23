@@ -38,6 +38,8 @@ fi
 cd "$HOME" || cd /
 
 cat > /tmp/starry-shrc <<'EOF'
+# PS1 is interactive shell state, not part of child process environment.
+unset PS1
 starry_update_prompt() {
     PS1="${USER}@${HOSTNAME}:"
     case "$PWD" in
@@ -45,7 +47,7 @@ starry_update_prompt() {
         "$HOME"/*) PS1="${PS1}~${PWD#"$HOME"}" ;;
         *) PS1="${PS1}${PWD}" ;;
     esac
-    export PS1="${PS1}# "
+    PS1="${PS1}# "
 }
 cd() {
     command cd "$@" || return
