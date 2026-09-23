@@ -1,6 +1,7 @@
 board_type = "OrangePi-5-Plus"
-# The board Linux rootfs must contain the IVC payload from tgosimages
-# IMAGES/orangepi/ivc: /guest/starry, /guest/zephyr and /usr/bin/ivc-starry-bench.
+# The board Linux rootfs must contain the Zephyr IVC payload and Starry
+# userspace benchmark from tgosimages IMAGES/orangepi/ivc. The Starry
+# kernel is embedded from the current checkout by the Axvisor build.
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

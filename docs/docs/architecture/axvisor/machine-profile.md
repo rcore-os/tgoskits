@@ -82,6 +82,7 @@ AArch64/RISC-V 在 `prepare_dtb_guest()` 开始时调用 `resolve_machine_resour
 
 - host FDT 字节不存在时直接保留 fallback；整个 FDT 无法解析时返回 `InvalidData`。
 - `host_selected_serial()` 只在 `/chosen/stdout-path` 确实选择 UART 时生成 `HostSerialSnapshot`。没有选择时返回 `None`；路径、`reg`、interrupt、clock、型号或传输已经出现但畸形/不支持时返回错误。
+- 默认只有物理直通地址空间的客户机跟随宿主选定的 UART。若客户机镜像将板卡 UART 地址编译在内，但地址空间仍为 `virtualized`，可在 `[base]` 设置 `serial_source = "host-firmware"`，让同一宿主 UART identity 驱动虚拟 16550 的资源图与固件描述；缺少宿主 FDT 或可用的固件控制台时拒绝启动，其他虚拟客户机仍使用架构默认串口。
 - `host_gic_profile()`、`host_plic_profile()` 没有发现相应控制器时保留 fallback；发现后必须通过几何和 firmware identity 校验。
 - AArch64 fallback 含 timer，因此 host FDT 路径要求得到有效 `arm,armv8-timer`；节点缺失或 PPI specifier 畸形是错误，不退回 QEMU 默认 PPI。
 

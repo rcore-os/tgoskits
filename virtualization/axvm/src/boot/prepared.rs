@@ -49,6 +49,14 @@ pub fn prepare_guest_boot(
     mut config: GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<PreparedGuestBoot> {
+    if vm_config.requires_host_firmware_serial()
+        && !cfg!(any(target_arch = "aarch64", target_arch = "riscv64"))
+    {
+        return ax_err!(
+            InvalidData,
+            "host firmware UART selection requires an architecture with host FDT support"
+        );
+    }
     validate_kernel_image(&config, provider)?;
     let guest_dtb = crate::arch::current::prepare_guest_boot(vm_config, &mut config, provider)?;
     Ok(PreparedGuestBoot { config, guest_dtb })
@@ -77,8 +85,21 @@ fn validate_kernel_image(config: &GuestConfig, provider: &dyn BootImageProvider)
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
+    use axvmconfig::SerialSource;
+
     use super::*;
     use crate::{boot::StaticVmImage, config::AxVMConfigParams};
+
+    #[test]
+    fn host_firmware_serial_is_rejected_without_a_host_fdt_architecture() {
+        let mut vm_config = AxVMConfig::new(AxVMConfigParams {
+            serial_source: SerialSource::HostFirmware,
+            ..Default::default()
+        });
+        let error = prepare_guest_boot(&mut vm_config, GuestConfig::default(), &ImageProvider(&[]))
+            .expect_err("unsupported architectures must not silently ignore UART selection");
+        assert!(error.to_string().contains("host FDT support"));
+    }
 
     struct ImageProvider(&'static [StaticVmImage]);
 

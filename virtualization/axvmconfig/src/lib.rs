@@ -254,6 +254,20 @@ fn boot_protocol_name(protocol: VMBootProtocol) -> &'static str {
     }
 }
 
+/// Selects the identity of the emulated guest UART.
+///
+/// This does not change the guest's address-space or device-passthrough policy.
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SerialSource {
+    /// Use the architecture's virtual UART profile.
+    #[default]
+    Machine,
+    /// Emulate the host firmware-selected UART at its guest-visible address.
+    HostFirmware,
+}
+
 /// The configuration structure for the guest VM base info.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -267,6 +281,8 @@ pub struct VMBaseConfig {
     #[serde(alias = "vm_type", with = "guest_type_serde")]
     #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(with = "GuestType"))]
     pub guest_type: GuestType,
+    /// Select the guest UART identity independently of physical device passthrough.
+    pub serial_source: SerialSource,
     // Resources.
     /// The number of virtual CPUs.
     pub cpu_num: usize,
