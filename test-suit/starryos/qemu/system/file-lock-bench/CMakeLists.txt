@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(file-lock-bench C)
+add_executable(file-lock-bench src/main.c)
+target_compile_options(file-lock-bench PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(file-lock-bench PRIVATE pthread)
+install(TARGETS file-lock-bench RUNTIME DESTINATION usr/bin/starry-test-suit)
