@@ -125,10 +125,47 @@ p99.9 回退 54.53%，OTHER `sched_yield_no_peer` p50 回退 11.09%。
 不能用于接受候选或证明最终回退门。`check.py` 从原始 full20 日志复算
 样本完整性、20 项性能和上述回退。
 
+### 1.6 唤醒路径诊断（不作为性能验收）
+
+`resume799` 在 `dev@05175ca388` 加 `memset` 修复的源码上临时插入
+`qperf` 计时探针，原样压缩保存未采用的 `probe.patch.gz`、计数器快照及原始串口
+日志。OrangePi-5-Plus-1 的 FIFO/OTHER 跨核线程 futex 各两轮均为
+20000/20000 样本、零 `not_parked`；`notify_cpu` 真正发送 IPI 的
+探针均值分别为 FIFO 1469.83–1474.50 ns、OTHER 1701.55–1711.16 ns。
+这是带插桩的聚焦诊断，**其 p50 不能与无插桩 full20 或 Linux RT
+基线直接比较**；探针已撤回，没有 IPI 运行时改动。
+
+`resume801` 复用 `dev@05175ca388` 的另一张旧 `qperf` 镜像，只对
+同核线程 futex 读取前后计数器。FIFO 两轮和 OTHER 第二轮有效；
+OTHER 第一轮仅 19999/20000 样本、`not_parked=1`，已排除。有效轮次
+每样本 context switch 为 FIFO 2.1061–2.1298、OTHER 2.1969；
+owner scheduler-rq 事务为 FIFO 3.1623–3.2060、OTHER 3.2543，
+不支持“OTHER 多一次完整切换/事务”的解释。OTHER direct-wake
+preemption 为约 1.050/样本，FIFO 为 0.0026–0.0144/样本。
+这些都是全局探针计数，不能据此推出原生 p50 可获得的收益。
+两次诊断使用**不同镜像**，彼此的 p50 也不能配对。
+
+`resume802/status.md` 对照旧的 Fair 抢占分段探针：当前相关源码文件
+未变，但旧插桩均值既不是当前机器码成本，也不是可删除成本。
+F2 最差 OTHER 同核 futex 的 90% 上限是 9397 ns，距 16625 ns
+还差 7228 ns；目前没有证据支持跳过抢占语义或保留单点微优化。
+以上材料只定位下一步实验范围，**没有新增可保留的运行时优化**。
+
+### 1.7 提交前的精确 CI 边界
+
+原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
+中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
+`native-network-smoke` 的用户态 `iperf` 触发 SIGSEGV，读取地址
+`0x2e3836312e323941`。精确 `dev@05175ca388` 的
+[run 36025857970](https://github.com/rcore-os/tgoskits/actions/runs/36025857970)
+在同一用例出现相同失败签名。只能说明签名早于本次证据提交，
+不能证明根因相同、把失败计作通过，或代替新 head 的 CI 结果。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
-原始日志、状态、样本完整性及逐项性能和回退。未纳入仓库的
+原始日志、状态、样本完整性及逐项性能和回退；新归档的聚焦诊断
+还会核对原始单项日志、有效性与计数器前后差值。未纳入仓库的
 完整镜像哈希保存在状态文件，
 不能仅凭日志重建镜像身份。冻结 benchmark SHA256 为
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。

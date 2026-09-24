@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check archived full20 integrity and the rejected single-pair PGO screen."""
 
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -49,6 +50,66 @@ def read_full20(path, baseline, invalid_key=None):
                   for line in lines if line.startswith(marker)]
         assert {(row["policy"], row["case"]) for row in marked} == keys
     return {(row["policy"], row["case"]): row for row in rows}
+
+
+def read_counter_snapshot(path):
+    entries = [line.split() for line in path.read_text().splitlines()]
+    assert all(len(entry) == 2 for entry in entries)
+    counters = {key: int(value) for key, value in entries}
+    assert len(counters) == len(entries)
+    return counters
+
+
+def check_diagnostic(name, baseline, case, valid_rounds):
+    directory = ROOT / name
+    result = json.loads((directory / "results.json").read_text())
+    assert result["diagnostic_only"] is True
+    assert result["board_id"] == "OrangePi-5-Plus-1"
+    assert result["bench_sha256"] == baseline["bench_sha256"]
+    assert result["session_id"] == json.loads((directory / "session.json").read_text())["session_id"]
+    if name == "resume799":
+        patch = gzip.decompress((directory / "probe.patch.gz").read_bytes())
+        assert hashlib.sha256(patch).hexdigest() == result["source_patch_sha256"]
+        assert result["source_head"] == "69a33650763538692fafea27c869870ed0313642"
+    else:
+        assert result["source_head"] == "05175ca38823b631a73777b0130226ddfa558439"
+
+    assert len(result["rounds"]) == 4
+    assert [(row["policy"], row["round"]) for row in result["rounds"]] == [
+        ("fifo", 1), ("fifo", 2), ("other", 1), ("other", 2)
+    ]
+    for row in result["rounds"]:
+        policy, number = row["policy"], row["round"]
+        assert row["case"] == case
+        assert row["valid"] == ((policy, number) in valid_rounds)
+        prefix = f"{policy}-{case}-{number}"
+        raw_log = directory / f"{prefix}.log"
+        assert sha256(raw_log) == row["raw_log_sha256"]
+        lines = raw_log.read_text().splitlines()
+        assert lines.count("WAKEUP_LATENCY_PASSED") == 1
+        metadata = [json.loads(line.split(" ", 1)[1]) for line in lines
+                    if line.startswith("WAKEUP_LATENCY_METADATA ")]
+        assert len(metadata) == 1
+        assert {key: value for key, value in metadata[0].items()
+                if key != "clock_pair_min_ns"} == {
+                    key: value for key, value in baseline["metadata"][0].items()
+                    if key != "clock_pair_min_ns"}
+        rows = [json.loads(line.split(" ", 1)[1]) for line in lines
+                if line.startswith("WAKEUP_LATENCY_RESULT ")]
+        assert rows == [row["benchmark"]]
+        bench = row["benchmark"]
+        assert (bench["policy"], bench["case"]) == (policy, case)
+        assert bench["attempted"] == 20000
+        assert sum(bench["histogram_counts"]) == bench["samples"]
+        assert row["valid"] == (bench["samples"] == bench["attempted"]
+                                and bench["not_parked"] == 0
+                                and bench["missed_deadlines"] == 0)
+
+        before = read_counter_snapshot(directory / f"{prefix}-before")
+        after = read_counter_snapshot(directory / f"{prefix}-after")
+        assert before.keys() == after.keys() == row["delta"].keys()
+        assert {key: after[key] - before[key] for key in before} == row["delta"]
+    return result["rounds"]
 
 
 def main():
@@ -190,6 +251,32 @@ def main():
         ("p50_ns", ("other", "sched_yield_no_peer")),
     }
     print("resume795: valid A1/B1, 10/20 at 90%, three >=3% regressions; rejected")
+
+    ipi = check_diagnostic(
+        "resume799", baseline, "thread_futex_cross_cpu",
+        {("fifo", 1), ("fifo", 2), ("other", 1), ("other", 2)})
+    sent_means = [row["delta"]["switch_scheduler_detail_ipi_sent_total_ns"] /
+                  row["delta"]["switch_scheduler_detail_ipi_sent_count"] for row in ipi]
+    assert all(1469 < value < 1475 for value in sent_means[:2])
+    assert all(1701 < value < 1712 for value in sent_means[2:])
+    print("resume799: four valid focused qperf rounds; IPI timing is diagnostic only")
+
+    same_cpu = check_diagnostic(
+        "resume801", baseline, "thread_futex_same_cpu",
+        {("fifo", 1), ("fifo", 2), ("other", 2)})
+    invalid = same_cpu[2]["benchmark"]
+    assert (invalid["samples"], invalid["attempted"], invalid["not_parked"]) == (19999, 20000, 1)
+    fifo_switches = [row["delta"]["context_switches"] / 20000 for row in same_cpu[:2]]
+    other_switches = same_cpu[3]["delta"]["context_switches"] / 20000
+    fifo_rq = [row["delta"]["owner_rq_scheduler_transactions"] / 20000
+               for row in same_cpu[:2]]
+    other_rq = same_cpu[3]["delta"]["owner_rq_scheduler_transactions"] / 20000
+    assert 2.10 < min(fifo_switches) <= max(fifo_switches) < 2.14
+    assert 2.19 < other_switches < 2.20
+    assert 3.16 < min(fifo_rq) <= max(fifo_rq) < 3.21
+    assert 3.25 < other_rq < 3.26
+    assert 1.05 < same_cpu[3]["delta"]["direct_wake_preemptions"] / 20000 < 1.06
+    print("resume801: three valid focused qperf rounds; one OTHER round invalid")
 
 
 if __name__ == "__main__":
