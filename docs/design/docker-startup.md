@@ -42,7 +42,8 @@
 | `/proc/<pid>/stat` starttime | ✅ 已填充（`ThreadAccounting::start_time_ns` 捕获，渲染为 ticks，单测覆盖） | `task/stat.rs`、`task/thread.rs` |
 | `openat2(2)` RESOLVE_* 约束（BENEATH/IN_ROOT/NO_XDEV/NO_SYMLINKS/NO_MAGICLINKS） | ✅ 已强制执行（`RESOLVE_CACHED` 暂不支持 dcache-only 查找、统一返回 EAGAIN；错误优先级对齐 `link_path_walk`） | `fs/ax-fs-ng/src/fs_core/{constraints.rs,context.rs}`、`file/open.rs`、`syscall/fs/fd_ops.rs` |
 | `pivot_root(".", ".")` 惯用法（runc/docker 标准 pivot 流程） | ✅ 已支持（old root 堆叠于新根 `/`，`umount2(".", MNT_DETACH)` 收尾） | `fs/axfs-ng-vfs/src/mount/mod.rs` `pivot_mount`、`syscall/fs/mount.rs` |
-| `/proc/<pid>/exe` magic link 直连后备文件 | ✅ 已实现（memfd 执行显示 `/memfd: (deleted)` 也能打开） | `syscall/fs/fd_ops.rs` `try_open_proc_exe` + `task/process_image.rs` `exe_location` |
+| cgroup v2 设备控制器 `bpf(2)`（`BPF_PROG_TYPE_CGROUP_DEVICE` / `BPF_CGROUP_DEVICE`） | ❌ 不实现，整族显式返回 `EOPNOTSUPP`，不伪造设备策略生效；非 rootless runc 的探针据此禁用设备过滤 | `os/StarryOS/kernel/src/ebpf/device_controller.rs` |
+| `/proc/<pid>/exe` magic link 直连后备文件 | ✅ 已实现（memfd 执行显示 `/memfd: (deleted)` 也能打开）；跨进程打开按 `PTRACE_MODE_READ_FSCREDS` 校验 fsUID/fsGID 三元组，非 dumpable 目标需 `CAP_SYS_PTRACE` | `syscall/fs/fd_ops.rs` `try_open_proc_exe` + `task/process_image.rs` `exe_location` |
 | `prctl` PDEATHSIG / NO_NEW_PRIVS | ✅ 已实现 | `syscall/task/ctl.rs:407,578` |
 | `copy_file_range` | ✅ 有真实实现；syscall 走 async 运行时（`block_on`/`poll_io`），无 Go netpoll M 线程阻塞风险 | `syscall/fs/io.rs:841` |
 | ext4（`rsext4`）含 jbd2 | ✅ 可用（无 credit 机制，不存在 journal 中毒类问题） | `fs/rsext4` |
@@ -100,7 +101,7 @@
 ### Phase 2 — runc 单容器（已完成：`qemu/docker-runc-run`）
 
 - [x] 静态部署官方 runc 1.1.15（构建时下载 + sha256 钉死）+ busybox OCI bundle（空 capabilities、pid/mount/uts/ipc ns、仅 /proc 挂载）。
-- [x] 补齐 runc 依赖的内核缺口：starttime 渲染、`oom_score_adj` NUL 结尾写入、memfd 0777、匿名 fd `fchown/fchmod`、`/proc/<pid>/exe` magic link 直连后备文件、`bpf(2)` cgroup-device 命令 stub（PROG_LOAD/ATTACH/DETACH/QUERY/LINK_CREATE/ID 枚举）、`pivot_root(".", ".")`、`openat2` RESOLVE_* 约束强制（见 §2 表格）。
+- [x] 补齐 runc 依赖的内核缺口：starttime 渲染、`oom_score_adj` NUL 结尾写入、memfd 0777、匿名 fd `fchown/fchmod`、`/proc/<pid>/exe` magic link 直连后备文件、`bpf(2)` cgroup-device 命令显式拒绝（`EOPNOTSUPP`，不伪造设备策略生效）、`pivot_root(".", ".")`、`openat2` RESOLVE_* 约束强制（见 §2 表格）。
 - [x] `runc run` busybox 容器：`echo`、退出码传播、uts/pid/mount 隔离生效；Stage B 启用 cgroups 后 `pids.max=2` 超限 `fork` 返回 EAGAIN 可观察。
 
 验收：`cargo xtask starry test qemu --arch aarch64 -c qemu/docker-runc-run` 全绿（`DOCKER_RUNC_RUN_PASSED` + `DOCKER_RUNC_RUN_STAGE_B_OK`）。
@@ -131,7 +132,7 @@
 | 内核 | cgroup pids 限制 | `pids.max` 超限 fork 返回 EAGAIN，计数平衡 |
 | 内核 | seccomp FILTER | 白名单外 syscall 返回 `EPERM`/`SIGSYS` |
 | runc | busybox `runc run`（`qemu/docker-runc-run`） | init 起停正确，ns 隔离可见，pids.max EAGAIN 可观察 |
-| runc | 内核语义探针（starttime/oom NUL/memfd/pipe fchown/bpf stub） | `docker-runc-run-probe` 全部断言通过 |
+| runc | 内核语义探针（starttime/oom NUL/memfd/pipe fchown/bpf 设备控制器拒绝） | `docker-runc-run-probe` 全部断言通过 |
 | 内核 | openat2 RESOLVE_*（`qemu/system/bugfix-openat2-resolve-constraints`） | 合规路径成功，越界 EXDEV/ELOOP，错误优先级与 Linux 一致 |
 | containerd | `ctr run` | shim 生命周期完整 |
 | dockerd | `docker run --network=host` | 容器内进程对外可见、日志可回收 |
