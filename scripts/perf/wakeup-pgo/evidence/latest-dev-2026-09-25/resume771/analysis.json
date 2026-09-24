@@ -1,0 +1,703 @@
+{
+  "source_head": "c346962754ff7a96359a928f07ffaedbcfeb9ca5",
+  "valid_boots": [
+    "A1",
+    "F1"
+  ],
+  "p50_pass90": 0,
+  "worst": {
+    "policy": "other",
+    "case": "thread_futex_same_cpu",
+    "linux_rt_p50": 8458,
+    "ordinary_p50": 28000,
+    "candidate_p50": 20708,
+    "linux_rt_over_candidate_percent": 40.84411821518254,
+    "comparison": {
+      "p50_ns": {
+        "ordinary": 28000,
+        "candidate": 20708,
+        "regression_percent": -26.042857142857144
+      },
+      "p99_ns": {
+        "ordinary": 32958,
+        "candidate": 24791,
+        "regression_percent": -24.78002305965168
+      },
+      "p999_ns": {
+        "ordinary": 42292,
+        "candidate": 34708,
+        "regression_percent": -17.932469497777358
+      }
+    }
+  },
+  "regressions_ge_3_percent": {
+    "p50_ns": [
+      {
+        "policy": "other",
+        "case": "clock_pair",
+        "regression_percent": 66.62857142857143
+      },
+      {
+        "policy": "other",
+        "case": "getpid",
+        "regression_percent": 60.013717421124824
+      },
+      {
+        "policy": "other",
+        "case": "futex_wait_mismatch",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "other",
+        "case": "futex_wake_empty",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "other",
+        "case": "sched_yield_no_peer",
+        "regression_percent": 22.209523809523812
+      },
+      {
+        "policy": "fifo",
+        "case": "clock_pair",
+        "regression_percent": 66.62857142857143
+      },
+      {
+        "policy": "fifo",
+        "case": "getpid",
+        "regression_percent": 60.013717421124824
+      },
+      {
+        "policy": "fifo",
+        "case": "futex_wait_mismatch",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "fifo",
+        "case": "futex_wake_empty",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "fifo",
+        "case": "sched_yield_no_peer",
+        "regression_percent": 25.032147449635666
+      },
+      {
+        "policy": "fifo",
+        "case": "sched_yield_handoff",
+        "regression_percent": 5.889471561113346
+      }
+    ],
+    "p99_ns": [
+      {
+        "policy": "other",
+        "case": "clock_pair",
+        "regression_percent": 25.02142245072836
+      },
+      {
+        "policy": "other",
+        "case": "getpid",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "other",
+        "case": "futex_wait_mismatch",
+        "regression_percent": 66.68571428571428
+      },
+      {
+        "policy": "other",
+        "case": "futex_wake_empty",
+        "regression_percent": 42.80117531831537
+      },
+      {
+        "policy": "other",
+        "case": "sched_yield_no_peer",
+        "regression_percent": 19.986287281453553
+      },
+      {
+        "policy": "fifo",
+        "case": "clock_pair",
+        "regression_percent": 25.02142245072836
+      },
+      {
+        "policy": "fifo",
+        "case": "getpid",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "fifo",
+        "case": "futex_wait_mismatch",
+        "regression_percent": 66.68571428571428
+      },
+      {
+        "policy": "fifo",
+        "case": "futex_wake_empty",
+        "regression_percent": 42.80117531831537
+      },
+      {
+        "policy": "fifo",
+        "case": "sched_yield_no_peer",
+        "regression_percent": 37.489288774635824
+      },
+      {
+        "policy": "fifo",
+        "case": "sched_yield_handoff",
+        "regression_percent": 11.756402500504137
+      }
+    ],
+    "p999_ns": [
+      {
+        "policy": "other",
+        "case": "clock_pair",
+        "regression_percent": 25.02142245072836
+      },
+      {
+        "policy": "other",
+        "case": "getpid",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "other",
+        "case": "futex_wait_mismatch",
+        "regression_percent": 42.850146914789434
+      },
+      {
+        "policy": "other",
+        "case": "futex_wake_empty",
+        "regression_percent": 42.850146914789434
+      },
+      {
+        "policy": "other",
+        "case": "sched_yield_no_peer",
+        "regression_percent": 19.986287281453553
+      },
+      {
+        "policy": "fifo",
+        "case": "clock_pair",
+        "regression_percent": 25.02142245072836
+      },
+      {
+        "policy": "fifo",
+        "case": "getpid",
+        "regression_percent": 50.0
+      },
+      {
+        "policy": "fifo",
+        "case": "futex_wait_mismatch",
+        "regression_percent": 42.850146914789434
+      },
+      {
+        "policy": "fifo",
+        "case": "futex_wake_empty",
+        "regression_percent": 42.850146914789434
+      },
+      {
+        "policy": "fifo",
+        "case": "sched_yield_no_peer",
+        "regression_percent": 22.24761904761905
+      }
+    ]
+  },
+  "table": [
+    {
+      "policy": "other",
+      "case": "thread_futex_same_cpu",
+      "linux_rt_p50": 8458,
+      "ordinary_p50": 28000,
+      "candidate_p50": 20708,
+      "linux_rt_over_candidate_percent": 40.84411821518254,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 28000,
+          "candidate": 20708,
+          "regression_percent": -26.042857142857144
+        },
+        "p99_ns": {
+          "ordinary": 32958,
+          "candidate": 24791,
+          "regression_percent": -24.78002305965168
+        },
+        "p999_ns": {
+          "ordinary": 42292,
+          "candidate": 34708,
+          "regression_percent": -17.932469497777358
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_cross_cpu",
+      "linux_rt_p50": 16041,
+      "ordinary_p50": 32959,
+      "candidate_p50": 28000,
+      "linux_rt_over_candidate_percent": 57.28928571428571,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 32959,
+          "candidate": 28000,
+          "regression_percent": -15.045966200430838
+        },
+        "p99_ns": {
+          "ordinary": 42291,
+          "candidate": 32667,
+          "regression_percent": -22.756614882599134
+        },
+        "p999_ns": {
+          "ordinary": 93042,
+          "candidate": 84292,
+          "regression_percent": -9.404355022462973
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "process_futex_cross_cpu",
+      "linux_rt_p50": 17792,
+      "ordinary_p50": 35875,
+      "candidate_p50": 30625,
+      "linux_rt_over_candidate_percent": 58.096326530612245,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 35875,
+          "candidate": 30625,
+          "regression_percent": -14.634146341463417
+        },
+        "p99_ns": {
+          "ordinary": 41125,
+          "candidate": 34708,
+          "regression_percent": -15.603647416413368
+        },
+        "p999_ns": {
+          "ordinary": 90125,
+          "candidate": 56583,
+          "regression_percent": -37.21719833564494
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "absolute_timer_same_cpu",
+      "linux_rt_p50": 23920,
+      "ordinary_p50": 53417,
+      "candidate_p50": 47791,
+      "linux_rt_over_candidate_percent": 50.05126488250926,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 53417,
+          "candidate": 47791,
+          "regression_percent": -10.532227568002694
+        },
+        "p99_ns": {
+          "ordinary": 62000,
+          "candidate": 55916,
+          "regression_percent": -9.812903225806446
+        },
+        "p999_ns": {
+          "ordinary": 112709,
+          "candidate": 102166,
+          "regression_percent": -9.35417757233229
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "clock_pair",
+      "linux_rt_p50": 875,
+      "ordinary_p50": 875,
+      "candidate_p50": 1458,
+      "linux_rt_over_candidate_percent": 60.01371742112483,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 875,
+          "candidate": 1458,
+          "regression_percent": 66.62857142857143
+        },
+        "p99_ns": {
+          "ordinary": 1167,
+          "candidate": 1459,
+          "regression_percent": 25.02142245072836
+        },
+        "p999_ns": {
+          "ordinary": 1167,
+          "candidate": 1459,
+          "regression_percent": 25.02142245072836
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "getpid",
+      "linux_rt_p50": 1458,
+      "ordinary_p50": 1458,
+      "candidate_p50": 2333,
+      "linux_rt_over_candidate_percent": 62.49464209172739,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 1458,
+          "candidate": 2333,
+          "regression_percent": 60.013717421124824
+        },
+        "p99_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        },
+        "p999_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "futex_wait_mismatch",
+      "linux_rt_p50": 2333,
+      "ordinary_p50": 1750,
+      "candidate_p50": 2625,
+      "linux_rt_over_candidate_percent": 88.87619047619047,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        },
+        "p99_ns": {
+          "ordinary": 1750,
+          "candidate": 2917,
+          "regression_percent": 66.68571428571428
+        },
+        "p999_ns": {
+          "ordinary": 2042,
+          "candidate": 2917,
+          "regression_percent": 42.850146914789434
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "futex_wake_empty",
+      "linux_rt_p50": 1750,
+      "ordinary_p50": 1750,
+      "candidate_p50": 2625,
+      "linux_rt_over_candidate_percent": 66.66666666666667,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        },
+        "p99_ns": {
+          "ordinary": 2042,
+          "candidate": 2916,
+          "regression_percent": 42.80117531831537
+        },
+        "p999_ns": {
+          "ordinary": 2042,
+          "candidate": 2917,
+          "regression_percent": 42.850146914789434
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_no_peer",
+      "linux_rt_p50": 2625,
+      "ordinary_p50": 2625,
+      "candidate_p50": 3208,
+      "linux_rt_over_candidate_percent": 81.82668329177058,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 2625,
+          "candidate": 3208,
+          "regression_percent": 22.209523809523812
+        },
+        "p99_ns": {
+          "ordinary": 2917,
+          "candidate": 3500,
+          "regression_percent": 19.986287281453553
+        },
+        "p999_ns": {
+          "ordinary": 2917,
+          "candidate": 3500,
+          "regression_percent": 19.986287281453553
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_handoff",
+      "linux_rt_p50": 4667,
+      "ordinary_p50": 10791,
+      "candidate_p50": 8750,
+      "linux_rt_over_candidate_percent": 53.33714285714286,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 10791,
+          "candidate": 8750,
+          "regression_percent": -18.913909739597813
+        },
+        "p99_ns": {
+          "ordinary": 11375,
+          "candidate": 9333,
+          "regression_percent": -17.951648351648352
+        },
+        "p999_ns": {
+          "ordinary": 21000,
+          "candidate": 12250,
+          "regression_percent": -41.666666666666664
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_same_cpu",
+      "linux_rt_p50": 8458,
+      "ordinary_p50": 20709,
+      "candidate_p50": 14875,
+      "linux_rt_over_candidate_percent": 56.86050420168067,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 20709,
+          "candidate": 14875,
+          "regression_percent": -28.171326476411217
+        },
+        "p99_ns": {
+          "ordinary": 21292,
+          "candidate": 15167,
+          "regression_percent": -28.76667292879955
+        },
+        "p999_ns": {
+          "ordinary": 34125,
+          "candidate": 17208,
+          "regression_percent": -49.573626373626375
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_cross_cpu",
+      "linux_rt_p50": 13708,
+      "ordinary_p50": 30042,
+      "candidate_p50": 24500,
+      "linux_rt_over_candidate_percent": 55.95102040816327,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 30042,
+          "candidate": 24500,
+          "regression_percent": -18.447506823780046
+        },
+        "p99_ns": {
+          "ordinary": 33542,
+          "candidate": 28291,
+          "regression_percent": -15.654999701866313
+        },
+        "p999_ns": {
+          "ordinary": 87792,
+          "candidate": 81959,
+          "regression_percent": -6.644113358848191
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "process_futex_cross_cpu",
+      "linux_rt_p50": 15167,
+      "ordinary_p50": 32667,
+      "candidate_p50": 26542,
+      "linux_rt_over_candidate_percent": 57.14339537337051,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 32667,
+          "candidate": 26542,
+          "regression_percent": -18.749808675421676
+        },
+        "p99_ns": {
+          "ordinary": 35584,
+          "candidate": 31500,
+          "regression_percent": -11.477068345323737
+        },
+        "p999_ns": {
+          "ordinary": 90708,
+          "candidate": 79917,
+          "regression_percent": -11.896414869691762
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "absolute_timer_same_cpu",
+      "linux_rt_p50": 13211,
+      "ordinary_p50": 27625,
+      "candidate_p50": 21250,
+      "linux_rt_over_candidate_percent": 62.169411764705885,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 27625,
+          "candidate": 21250,
+          "regression_percent": -23.076923076923073
+        },
+        "p99_ns": {
+          "ordinary": 35250,
+          "candidate": 28542,
+          "regression_percent": -19.02978723404255
+        },
+        "p999_ns": {
+          "ordinary": 77667,
+          "candidate": 74083,
+          "regression_percent": -4.61457246964605
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "clock_pair",
+      "linux_rt_p50": 875,
+      "ordinary_p50": 875,
+      "candidate_p50": 1458,
+      "linux_rt_over_candidate_percent": 60.01371742112483,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 875,
+          "candidate": 1458,
+          "regression_percent": 66.62857142857143
+        },
+        "p99_ns": {
+          "ordinary": 1167,
+          "candidate": 1459,
+          "regression_percent": 25.02142245072836
+        },
+        "p999_ns": {
+          "ordinary": 1167,
+          "candidate": 1459,
+          "regression_percent": 25.02142245072836
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "getpid",
+      "linux_rt_p50": 1458,
+      "ordinary_p50": 1458,
+      "candidate_p50": 2333,
+      "linux_rt_over_candidate_percent": 62.49464209172739,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 1458,
+          "candidate": 2333,
+          "regression_percent": 60.013717421124824
+        },
+        "p99_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        },
+        "p999_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wait_mismatch",
+      "linux_rt_p50": 2333,
+      "ordinary_p50": 1750,
+      "candidate_p50": 2625,
+      "linux_rt_over_candidate_percent": 88.87619047619047,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        },
+        "p99_ns": {
+          "ordinary": 1750,
+          "candidate": 2917,
+          "regression_percent": 66.68571428571428
+        },
+        "p999_ns": {
+          "ordinary": 2042,
+          "candidate": 2917,
+          "regression_percent": 42.850146914789434
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wake_empty",
+      "linux_rt_p50": 1750,
+      "ordinary_p50": 1750,
+      "candidate_p50": 2625,
+      "linux_rt_over_candidate_percent": 66.66666666666667,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 1750,
+          "candidate": 2625,
+          "regression_percent": 50.0
+        },
+        "p99_ns": {
+          "ordinary": 2042,
+          "candidate": 2916,
+          "regression_percent": 42.80117531831537
+        },
+        "p999_ns": {
+          "ordinary": 2042,
+          "candidate": 2917,
+          "regression_percent": 42.850146914789434
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_no_peer",
+      "linux_rt_p50": 2333,
+      "ordinary_p50": 2333,
+      "candidate_p50": 2917,
+      "linux_rt_over_candidate_percent": 79.97943092218033,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 2333,
+          "candidate": 2917,
+          "regression_percent": 25.032147449635666
+        },
+        "p99_ns": {
+          "ordinary": 2334,
+          "candidate": 3209,
+          "regression_percent": 37.489288774635824
+        },
+        "p999_ns": {
+          "ordinary": 2625,
+          "candidate": 3209,
+          "regression_percent": 22.24761904761905
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_handoff",
+      "linux_rt_p50": 3791,
+      "ordinary_p50": 4958,
+      "candidate_p50": 5250,
+      "linux_rt_over_candidate_percent": 72.20952380952382,
+      "comparison": {
+        "p50_ns": {
+          "ordinary": 4958,
+          "candidate": 5250,
+          "regression_percent": 5.889471561113346
+        },
+        "p99_ns": {
+          "ordinary": 4959,
+          "candidate": 5542,
+          "regression_percent": 11.756402500504137
+        },
+        "p999_ns": {
+          "ordinary": 5542,
+          "candidate": 5542,
+          "regression_percent": 0.0
+        }
+      }
+    }
+  ]
+}

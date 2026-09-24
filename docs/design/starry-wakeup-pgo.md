@@ -163,3 +163,20 @@ OTHER `thread_futex_same_cpu`：Linux RT 8458 ns，普通 A 18958.5 ns，
 `.kallsyms`）一致的镜像；该构建只证明镜像身份，不补足缺失的板测启动。
 新 profile、原始日志、无效轮次、训练状态与构建审计保存在
 `scripts/perf/wakeup-pgo/evidence/current-dev-2026-09-24/`。
+
+### 3.4 最新 dev 后续记录
+
+PR 分支同步至 `dev@05175ca38823b631a73777b0130226ddfa558439` 后，
+`build.py` 仍以 `9a7b868bab` 的源码和旧 profile 为身份门禁；该 profile
+不属于新 `dev` 的候选验收。旧源码 `c3469627` 上另一次只对 `ax_task`、
+`ax_sched`、`ax_runtime` 使用原生 PGO 的 A1/F1 有效 full20 筛查中，
+F1 的 20 项均未达到 Linux RT p50 的 90%，且相对同源码 A1 有 11 项
+p50、11 项 p99、10 项 p99.9 回退至少 3%。该镜像已拒绝，单次配对
+不是验收样本。
+
+新 `dev` 的普通 release A1 已在 OrangePi-5-Plus-1 完成一轮有效、
+无插桩 full20：20 项、380000/380000 样本、零 `not_parked`；OTHER
+`thread_futex_same_cpu` p50 为 27125 ns。此轮仅作为新源码基线，
+尚无同源码候选可比较，既不证明优化收益，也不满足 issue #2308 的
+90% 最终门槛。两组原始日志、状态和哈希归档在
+`scripts/perf/wakeup-pgo/evidence/latest-dev-2026-09-25/`。
