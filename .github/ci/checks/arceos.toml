@@ -39,6 +39,7 @@ arch = "riscv64"
 id = "test-arceos-aarch64-qemu-app-suites"
 impact_targets = ["arceos:aarch64"]
 name = "QEMU aarch64 · GICv2 SMP4 boot + suites"
+runner = "ubuntu-base"
 command = '''
 echo "==> arceos aarch64 GICv2 SMP4 default app boot"
 cargo xtask arceos qemu --arch aarch64 --smp 4 \
