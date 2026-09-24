@@ -131,6 +131,10 @@ rmdir01
 rmdir02
 rt_sigprocmask01
 rt_tgsigqueueinfo01
+sched_get_priority_max01
+sched_get_priority_max02
+sched_get_priority_min01
+sched_get_priority_min02
 sched_getaffinity01
 sendmmsg01
 setresuid01

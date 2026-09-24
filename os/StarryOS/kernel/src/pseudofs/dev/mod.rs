@@ -9,6 +9,7 @@ pub(crate) mod card1;
 #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
 mod drm;
+mod vblank;
 pub mod event;
 mod fb;
 #[cfg(feature = "sg2002")]
