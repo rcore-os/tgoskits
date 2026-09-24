@@ -62,6 +62,48 @@ exporter 已撤回，未纳入 PR 源码。`resume781` 的 profile-use 构建因
 通过后因磁盘不足主动停止，**不能报告全量 clippy 通过**。普通 release
 尚未上板，未取得同源码 A/F full20，不能声称性能改善或 `<3%` 回退门通过。
 
+### 1.4 匹配 crate 身份的四 crate PGO 筛查
+
+`resume785` 和 `resume786` 基于 `dev@05175ca388` 加相同的 AArch64
+`memset` 修复（实验提交 `69a3365076`；对应 PR 提交 `34cb1a14a3` 的
+`kprint.rs` 内容相同），并在**两侧**应用相同的临时 debugfs exporter
+补丁（SHA256 `d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78`）。
+两侧均使用去掉 cpufreq 的十项 OrangePi feature 加
+`starry-kernel/board-profile-export`，保持 `starry_kernel` crate 身份一致。
+训练 profile SHA256 为
+`7d71a724fd5ce66e4faf15280995602392fc6ff8e6d41fc197cdbc0eb8e67156`；
+候选仅对 `ax_task`、`ax_sched`、`ax_runtime`、`starry_kernel` 使用它。
+普通与候选的 `.bin` SHA256 分别为
+`750589429f5afe81b16775dde50050fedb936614b78d7bbde999a51856618473`、
+`e48394c7ef55008d0badf2cd6dc841fa8fa6593e069720304e2400634614fd6d`。
+两侧 `AXTEST_COVERAGE=1` 只使链接器提供空的 profile 起止符号；
+镜像没有非空的 `__llvm_prf_*` 计数段，full20 无采样插桩。
+候选不再出现 `starry_kernel` 热路径缺失 profile 的警告，但
+`ax_runtime::run_idle` 仍有一项部分忽略警告。构建状态见 `resume785/`、
+`resume786/`；临时 exporter **没有进入 PR**，因此这些实验镜像不能
+直接由当前 PR 的生产构建入口复现或作为最终候选。
+
+`resume787` 在 OrangePi-5-Plus-1 按 A1→F1 运行冻结 full20。A1 有效：
+20 项、380000/380000 样本、零 `not_parked`。F1 的 OTHER
+`thread_futex_same_cpu` 只有 19999/20000 样本，`not_parked=1`，
+**整轮无效**；日志末尾的 `WAKEUP_LATENCY_PASSED` 不改变此判定。
+`resume788` 独立重启同一候选 F2，20 项、380000/380000 样本、零
+`not_parked` 和 `missed_deadlines`，是一次有效的候选 full20。
+
+只把有效的 A1/F2 作为**单次探索性对照**：F2 有 11/20 项达到冻结
+Linux RT p50 的 90%；最差 OTHER `thread_futex_same_cpu` 为 16625 ns，
+Linux RT 为 8458 ns，比例 **50.88%**（A1 为 27417 ns）。该单次对照的
+20 项 p50、p99、p99.9 均未见达到 3% 的回退，但缺少足够的有效启动，
+不能宣称回退门通过。包括 FIFO timer、四项跨核 futex、OTHER timer、
+OTHER yield handoff、OTHER 同核 futex 在内的九项仍低于 90%。F1 的
+部分行数据只供诊断，不拼接进 F2 验收。完整逐项数值在 `analysis.json`
+及原始日志中，`check.py` 逐项复算。
+
+本阶段仅归档了构建与板测筛查，**没有可保留的新运行时逻辑优化**。
+需先移除临时 exporter 对生产构建的依赖，重新建立可复现的同源码
+普通/PGO 对照，处理无效轮次和九项缺口，并完成既定三次有效候选
+full20 与 `<3%` 回退门；PR 保持草稿。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的

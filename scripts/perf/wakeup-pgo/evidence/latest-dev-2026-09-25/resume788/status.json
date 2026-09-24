@@ -1,0 +1,23 @@
+{
+  "experiment": "resume788",
+  "source_commit": "69a33650763538692fafea27c869870ed0313642",
+  "source_patch_sha256": "d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "board": "OrangePi-5-Plus-1",
+  "session_id": "c1f3747b-b2ba-4112-a231-bcee013c6558",
+  "sequence": ["F2"],
+  "pgo_image_sha256": "e48394c7ef55008d0badf2cd6dc841fa8fa6593e069720304e2400634614fd6d",
+  "ordinary_control": "resume787 A1 on same source/board, image 750589429f5afe81b16775dde50050fedb936614b78d7bbde999a51856618473",
+  "f2_result": "valid full20, 20 unique rows, 380000/380000 samples, not_parked=0 and missed_deadlines=0",
+  "source_matched_single_pair": {
+    "regressions_ge_3_percent_over_p50_p99_p999": 0,
+    "rows_at_90_percent_linux_rt_p50": 11,
+    "worst_case": "OTHER thread_futex_same_cpu",
+    "worst_case_p50_ns": {"linux_rt": 8458, "A1": 27417, "F2": 16625},
+    "worst_ratio_to_linux_rt_percent": 50.88
+  },
+  "raw_log_sha256": "6324c1655d73fb5a943f7bb681719dd445520bc2e986ee0871a3a4b9e35b0d3e",
+  "serial_sha256": "6c89d9f0938ae95048d017b8f2628aa24d1d411e0d9efaf372a192b8754ecd3f",
+  "board_released": true,
+  "decision": "F2 validates one exploratory A1/F2 screen but not final acceptance; F1 was invalid, only 11/20 rows reach 90%, and three valid candidate runs plus production-safe exporter removal remain"
+}

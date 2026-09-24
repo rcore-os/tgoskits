@@ -1,0 +1,487 @@
+{
+  "both_runs_valid": true,
+  "invalid_rows": {},
+  "complete_row_regressions_ge_3_percent": [],
+  "comparison_diagnostic_only": [
+    {
+      "policy": "fifo",
+      "case": "absolute_timer_same_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 13211,
+      "rt_over_f_p50_percent": 64.97,
+      "metrics": {
+        "p50_ns": {
+          "A1": 27541,
+          "F2": 20334,
+          "delta_percent": -26.17
+        },
+        "p99_ns": {
+          "A1": 34458,
+          "F2": 27584,
+          "delta_percent": -19.95
+        },
+        "p999_ns": {
+          "A1": 75666,
+          "F2": 66625,
+          "delta_percent": -11.95
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "clock_pair",
+      "valid": true,
+      "linux_rt_p50_ns": 875,
+      "rt_over_f_p50_percent": 100.0,
+      "metrics": {
+        "p50_ns": {
+          "A1": 875,
+          "F2": 875,
+          "delta_percent": 0.0
+        },
+        "p99_ns": {
+          "A1": 1167,
+          "F2": 875,
+          "delta_percent": -25.02
+        },
+        "p999_ns": {
+          "A1": 1167,
+          "F2": 875,
+          "delta_percent": -25.02
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wait_mismatch",
+      "valid": true,
+      "linux_rt_p50_ns": 2333,
+      "rt_over_f_p50_percent": 133.31,
+      "metrics": {
+        "p50_ns": {
+          "A1": 1750,
+          "F2": 1750,
+          "delta_percent": 0.0
+        },
+        "p99_ns": {
+          "A1": 1750,
+          "F2": 1750,
+          "delta_percent": 0.0
+        },
+        "p999_ns": {
+          "A1": 2042,
+          "F2": 1750,
+          "delta_percent": -14.3
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wake_empty",
+      "valid": true,
+      "linux_rt_p50_ns": 1750,
+      "rt_over_f_p50_percent": 120.03,
+      "metrics": {
+        "p50_ns": {
+          "A1": 1750,
+          "F2": 1458,
+          "delta_percent": -16.69
+        },
+        "p99_ns": {
+          "A1": 2042,
+          "F2": 1750,
+          "delta_percent": -14.3
+        },
+        "p999_ns": {
+          "A1": 2042,
+          "F2": 1750,
+          "delta_percent": -14.3
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "getpid",
+      "valid": true,
+      "linux_rt_p50_ns": 1458,
+      "rt_over_f_p50_percent": 100.0,
+      "metrics": {
+        "p50_ns": {
+          "A1": 1458,
+          "F2": 1458,
+          "delta_percent": 0.0
+        },
+        "p99_ns": {
+          "A1": 1750,
+          "F2": 1459,
+          "delta_percent": -16.63
+        },
+        "p999_ns": {
+          "A1": 1750,
+          "F2": 1459,
+          "delta_percent": -16.63
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "process_futex_cross_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 15167,
+      "rt_over_f_p50_percent": 61.18,
+      "metrics": {
+        "p50_ns": {
+          "A1": 31500,
+          "F2": 24791,
+          "delta_percent": -21.3
+        },
+        "p99_ns": {
+          "A1": 42583,
+          "F2": 28583,
+          "delta_percent": -32.88
+        },
+        "p999_ns": {
+          "A1": 95667,
+          "F2": 80792,
+          "delta_percent": -15.55
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_handoff",
+      "valid": true,
+      "linux_rt_p50_ns": 3791,
+      "rt_over_f_p50_percent": 92.83,
+      "metrics": {
+        "p50_ns": {
+          "A1": 4958,
+          "F2": 4084,
+          "delta_percent": -17.63
+        },
+        "p99_ns": {
+          "A1": 5250,
+          "F2": 4375,
+          "delta_percent": -16.67
+        },
+        "p999_ns": {
+          "A1": 5250,
+          "F2": 4667,
+          "delta_percent": -11.1
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_no_peer",
+      "valid": true,
+      "linux_rt_p50_ns": 2333,
+      "rt_over_f_p50_percent": 114.25,
+      "metrics": {
+        "p50_ns": {
+          "A1": 2333,
+          "F2": 2042,
+          "delta_percent": -12.47
+        },
+        "p99_ns": {
+          "A1": 2625,
+          "F2": 2042,
+          "delta_percent": -22.21
+        },
+        "p999_ns": {
+          "A1": 2625,
+          "F2": 2333,
+          "delta_percent": -11.12
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_cross_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 13708,
+      "rt_over_f_p50_percent": 60.25,
+      "metrics": {
+        "p50_ns": {
+          "A1": 29750,
+          "F2": 22750,
+          "delta_percent": -23.53
+        },
+        "p99_ns": {
+          "A1": 39375,
+          "F2": 25959,
+          "delta_percent": -34.07
+        },
+        "p999_ns": {
+          "A1": 89250,
+          "F2": 80500,
+          "delta_percent": -9.8
+        }
+      }
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_same_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 8458,
+      "rt_over_f_p50_percent": 72.5,
+      "metrics": {
+        "p50_ns": {
+          "A1": 19542,
+          "F2": 11667,
+          "delta_percent": -40.3
+        },
+        "p99_ns": {
+          "A1": 20125,
+          "F2": 11959,
+          "delta_percent": -40.58
+        },
+        "p999_ns": {
+          "A1": 32958,
+          "F2": 21291,
+          "delta_percent": -35.4
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "absolute_timer_same_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 23920,
+      "rt_over_f_p50_percent": 58.22,
+      "metrics": {
+        "p50_ns": {
+          "A1": 53625,
+          "F2": 41083,
+          "delta_percent": -23.39
+        },
+        "p99_ns": {
+          "A1": 61750,
+          "F2": 49208,
+          "delta_percent": -20.31
+        },
+        "p999_ns": {
+          "A1": 111375,
+          "F2": 95250,
+          "delta_percent": -14.48
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "clock_pair",
+      "valid": true,
+      "linux_rt_p50_ns": 875,
+      "rt_over_f_p50_percent": 100.0,
+      "metrics": {
+        "p50_ns": {
+          "A1": 875,
+          "F2": 875,
+          "delta_percent": 0.0
+        },
+        "p99_ns": {
+          "A1": 1167,
+          "F2": 875,
+          "delta_percent": -25.02
+        },
+        "p999_ns": {
+          "A1": 1167,
+          "F2": 875,
+          "delta_percent": -25.02
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "futex_wait_mismatch",
+      "valid": true,
+      "linux_rt_p50_ns": 2333,
+      "rt_over_f_p50_percent": 133.31,
+      "metrics": {
+        "p50_ns": {
+          "A1": 1750,
+          "F2": 1750,
+          "delta_percent": 0.0
+        },
+        "p99_ns": {
+          "A1": 1750,
+          "F2": 1750,
+          "delta_percent": 0.0
+        },
+        "p999_ns": {
+          "A1": 2042,
+          "F2": 1750,
+          "delta_percent": -14.3
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "futex_wake_empty",
+      "valid": true,
+      "linux_rt_p50_ns": 1750,
+      "rt_over_f_p50_percent": 120.03,
+      "metrics": {
+        "p50_ns": {
+          "A1": 1750,
+          "F2": 1458,
+          "delta_percent": -16.69
+        },
+        "p99_ns": {
+          "A1": 2042,
+          "F2": 1750,
+          "delta_percent": -14.3
+        },
+        "p999_ns": {
+          "A1": 2042,
+          "F2": 1750,
+          "delta_percent": -14.3
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "getpid",
+      "valid": true,
+      "linux_rt_p50_ns": 1458,
+      "rt_over_f_p50_percent": 100.0,
+      "metrics": {
+        "p50_ns": {
+          "A1": 1458,
+          "F2": 1458,
+          "delta_percent": 0.0
+        },
+        "p99_ns": {
+          "A1": 1750,
+          "F2": 1459,
+          "delta_percent": -16.63
+        },
+        "p999_ns": {
+          "A1": 1750,
+          "F2": 1459,
+          "delta_percent": -16.63
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "process_futex_cross_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 17792,
+      "rt_over_f_p50_percent": 64.21,
+      "metrics": {
+        "p50_ns": {
+          "A1": 35292,
+          "F2": 27708,
+          "delta_percent": -21.49
+        },
+        "p99_ns": {
+          "A1": 38500,
+          "F2": 31500,
+          "delta_percent": -18.18
+        },
+        "p999_ns": {
+          "A1": 103542,
+          "F2": 57167,
+          "delta_percent": -44.79
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_handoff",
+      "valid": true,
+      "linux_rt_p50_ns": 4667,
+      "rt_over_f_p50_percent": 59.26,
+      "metrics": {
+        "p50_ns": {
+          "A1": 11083,
+          "F2": 7875,
+          "delta_percent": -28.95
+        },
+        "p99_ns": {
+          "A1": 11666,
+          "F2": 8167,
+          "delta_percent": -29.99
+        },
+        "p999_ns": {
+          "A1": 15167,
+          "F2": 11083,
+          "delta_percent": -26.93
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_no_peer",
+      "valid": true,
+      "linux_rt_p50_ns": 2625,
+      "rt_over_f_p50_percent": 112.52,
+      "metrics": {
+        "p50_ns": {
+          "A1": 2916,
+          "F2": 2333,
+          "delta_percent": -19.99
+        },
+        "p99_ns": {
+          "A1": 2917,
+          "F2": 2334,
+          "delta_percent": -19.99
+        },
+        "p999_ns": {
+          "A1": 2917,
+          "F2": 2625,
+          "delta_percent": -10.01
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_cross_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 16041,
+      "rt_over_f_p50_percent": 63.95,
+      "metrics": {
+        "p50_ns": {
+          "A1": 33250,
+          "F2": 25084,
+          "delta_percent": -24.56
+        },
+        "p99_ns": {
+          "A1": 39667,
+          "F2": 29167,
+          "delta_percent": -26.47
+        },
+        "p999_ns": {
+          "A1": 78166,
+          "F2": 60666,
+          "delta_percent": -22.39
+        }
+      }
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_same_cpu",
+      "valid": true,
+      "linux_rt_p50_ns": 8458,
+      "rt_over_f_p50_percent": 50.88,
+      "metrics": {
+        "p50_ns": {
+          "A1": 27417,
+          "F2": 16625,
+          "delta_percent": -39.36
+        },
+        "p99_ns": {
+          "A1": 32666,
+          "F2": 20709,
+          "delta_percent": -36.6
+        },
+        "p999_ns": {
+          "A1": 41708,
+          "F2": 28875,
+          "delta_percent": -30.77
+        }
+      }
+    }
+  ]
+}
