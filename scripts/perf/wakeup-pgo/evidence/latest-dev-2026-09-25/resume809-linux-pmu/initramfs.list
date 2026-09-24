@@ -1,0 +1,5 @@
+dir /dev 755 0 0
+nod /dev/console 600 0 0 c 5 1
+file /init /home/zhourui/.codex/artifacts/issue2308-perf/resume809-linux-pmu/init 755 0 0
+file /bench /tmp/pr1775-orangepi/bench 755 0 0
+file /fixed-count /home/zhourui/.codex/artifacts/issue2308-perf/resume149-fixed-count 755 0 0

@@ -1,0 +1,729 @@
+pci enum; setenv autoload no; dhcp; setenv serverip 192.168.1.2; tftpboot 0x02000000 ostool/sessions/30941b98-0bc7-4f2b-9050-0c0823642877/linux-rt-Image; tftpboot 0x12000000 ostool/sessions/30941b98-0bc7-4f2b-9050-0c0823642877/linux-rt.dtb; tftpboot 0x14000000 ostool/sessions/30941b98-0bc7-4f2b-9050-0c0823642877/initramfs.cpio; setenv bootargs 'console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr'; booti 0x02000000 0x14000000:0x157c00 0x12000000
+pcie_dw_rockchip pcie@fe150000: PCIe-4 Link Fail
+pcie_dw_rockchip pcie@fe170000: PCIe-5 Link Fail
+
+Warning: eth_rtl8169 MAC addresses don't match:
+Address in DT is		c0:74:2b:fa:0d:96
+Address in environment is	4e:b0:d9:33:bb:d6
+BOOTP broadcast 1
+BOOTP broadcast 2
+BOOTP broadcast 3
+BOOTP broadcast 4
+BOOTP broadcast 5
+BOOTP broadcast 6
+BOOTP broadcast 7
+BOOTP broadcast 8
+DHCP client bound to address 192.168.1.216 (9759 ms)
+Using eth_rtl8169 device
+TFTP from server 192.168.1.2; our IP address is 192.168.1.216
+Filename 'ostool/sessions/30941b98-0bc7-4f2b-9050-0c0823642877/linux-rt-Image'.
+Load address: 0x2000000
+Loading: *#################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #################################################################
+	 #######
+	 4 MiB/s
+done
+Bytes transferred = 62114304 (3b3ca00 hex)
+Using eth_rtl8169 device
+TFTP from server 192.168.1.2; our IP address is 192.168.1.216
+Filename 'ostool/sessions/30941b98-0bc7-4f2b-9050-0c0823642877/linux-rt.dtb'.
+Load address: 0x12000000
+Loading: *########
+	 3.2 MiB/s
+done
+Bytes transferred = 103760 (19550 hex)
+Using eth_rtl8169 device
+TFTP from server 192.168.1.2; our IP address is 192.168.1.216
+Filename 'ostool/sessions/30941b98-0bc7-4f2b-9050-0c0823642877/initramfs.cpio'.
+Load address: 0x14000000
+Loading: *#################################################################
+	 ###############################
+	 3.9 MiB/s
+done
+Bytes transferred = 1408000 (157c00 hex)
+## Flattened Device Tree blob at 12000000
+   Booting using the fdt blob at 0x12000000
+Working FDT set to 12000000
+   Loading Ramdisk to eca83000, end ecbdac00 ... OK
+   Loading Device Tree to 00000000eca66000, end 00000000eca8254f ... OK
+Working FDT set to eca66000
+
+Starting kernel ...
+
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x412fd050]
+[    0.000000] Linux version 7.1.0 (zhourui@ZR-PC) (aarch64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #1 SMP PREEMPT_RT Mon Sep  7 18:13:03 CST 2026
+[    0.000000] KASLR disabled on command line
+[    0.000000] Machine model: Xunlong Orange Pi 5 Plus
+[    0.000000] earlycon: uart8250 at MMIO32 0x00000000feb50000 (options '')
+[    0.000000] printk: legacy bootconsole [uart8250] enabled
+[    0.000000] efi: UEFI not found.
+[    0.000000] Reserved memory: created DMA memory pool at 0x00000000e2a40000, size 160 MiB
+[    0.000000] OF: reserved mem: initialized node hdmi-receiver-cma, compatible id shared-dma-pool
+[    0.000000] OF: reserved mem: 0x00000000e2a40000..0x00000000eca3ffff (163840 KiB) nomap non-reusable hdmi-receiver-cma
+[    0.000000] OF: reserved mem: 0x000000000010f000..0x000000000010f0ff (0 KiB) nomap non-reusable shmem@10f000
+[    0.000000] NUMA: Faking a node at [mem 0x0000000000200000-0x00000004ffffffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x4fdfaf240-0x4fdfb197f]
+[    0.000000] cma: Reserved 32 MiB at 0x00000000ee000000
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.1 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: MIGRATE_INFO_TYPE not supported.
+[    0.000000] psci: SMC Calling Convention v1.5
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000000200000-0x00000000ffffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   [mem 0x0000000100000000-0x00000004ffffffff]
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000000200000-0x00000000e2a3ffff]
+[    0.000000]   node   0: [mem 0x00000000e2a40000-0x00000000eca3ffff]
+[    0.000000]   node   0: [mem 0x00000000eca40000-0x00000000efffffff]
+[    0.000000]   node   0: [mem 0x0000000100000000-0x00000003fbffffff]
+[    0.000000]   node   0: [mem 0x00000003fc500000-0x00000003ffefffff]
+[    0.000000]   node   0: [mem 0x00000004f0000000-0x00000004ffffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000000200000-0x00000004ffffffff]
+[    0.000000] On node 0, zone DMA: 512 pages in unavailable ranges
+[    0.000000] On node 0, zone Normal: 1280 pages in unavailable ranges
+[    0.000000] On node 0, zone Normal: 256 pages in unavailable ranges
+[    0.000000] percpu: Embedded 35 pages/cpu s104880 r8192 d30288 u143360
+[    0.000000] Detected VIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Virtualization Host Extensions
+[    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 2097152 (order: 12, 16777216 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 1048576 (order: 11, 8388608 bytes, linear)
+[    0.000000] software IO TLB: area num 8.
+[    0.000000] software IO TLB: mapped [mem 0x00000000dea40000-0x00000000e2a40000] (64MB)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 4192256
+[    0.000000] Policy zone: Normal
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=8, Nodes=1
+[    0.000000] ftrace: allocating 70851 entries in 278 pages
+[    0.000000] ftrace: allocated 278 pages with 4 groups
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU event tracing is enabled.
+[    0.000000] rcu: 	RCU priority boosting: priority 1 delay 500 ms.
+[    0.000000] rcu: 	RCU_SOFTIRQ processing moved to rcuc kthreads.
+[    0.000000] 	No expedited grace period (rcu_normal_after_boot).
+[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[    0.000000] 	Rude variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.
+[    0.000000] RCU Tasks: Setting shift to 3 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=8.
+[    0.000000] RCU Tasks Rude: Setting shift to 3 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=8.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GIC: enabling workaround for GICv3: non-coherent attribute
+[    0.000000] GICv3: GIC: Using split EOI/Deactivate mode
+[    0.000000] GICv3: 480 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] GICv3: MBI range [424:479]
+[    0.000000] GICv3: Using MBI frame 0x00000000fe610000
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs
+[    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000fe680000
+[    0.000000] ITS [mem 0xfe640000-0xfe65ffff]
+[    0.000000] GIC: enabling workaround for ITS: Rockchip erratum RK3588001
+[    0.000000] GIC: enabling workaround for ITS: non-coherent attribute
+[    0.000000] ITS@0x00000000fe640000: allocated 8192 Devices @1001b0000 (indirect, esz 8, psz 64K, shr 0)
+[    0.000000] ITS@0x00000000fe640000: allocated 32768 Interrupt Collections @1001c0000 (flat, esz 2, psz 64K, shr 0)
+[    0.000000] ITS: using cache flushing for cmd queue
+[    0.000000] ITS [mem 0xfe660000-0xfe67ffff]
+[    0.000000] GIC: enabling workaround for ITS: Rockchip erratum RK3588001
+[    0.000000] GIC: enabling workaround for ITS: non-coherent attribute
+[    0.000000] ITS@0x00000000fe660000: allocated 8192 Devices @1001e0000 (indirect, esz 8, psz 64K, shr 0)
+[    0.000000] ITS@0x00000000fe660000: allocated 32768 Interrupt Collections @1001f0000 (flat, esz 2, psz 64K, shr 0)
+[    0.000000] ITS: using cache flushing for cmd queue
+[    0.000000] GICv3: using LPI property table @0x0000000100200000
+[    0.000000] GIC: using cache flushing for LPI property table
+[    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000100210000
+[    0.000000] GICv3: GIC: PPI partition interrupt-partition-0[0] { /cpus/cpu@0[0] /cpus/cpu@100[1] /cpus/cpu@200[2] /cpus/cpu@300[3] }
+[    0.000000] GICv3: GIC: PPI partition interrupt-partition-1[1] { /cpus/cpu@400[4] /cpus/cpu@500[5] /cpus/cpu@600[6] /cpus/cpu@700[7] }
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] arch_timer: cp15 timer running at 24.00MHz (phys).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff max_cycles: 0x588fe9dc0, max_idle_ns: 440795202592 ns
+[    0.000000] sched_clock: 56 bits at 24MHz, resolution 41ns, wraps every 4398046511097ns
+[    0.004588] Console: colour dummy device 80x25
+[    0.004762] Calibrating delay loop (skipped), value calculated using timer frequency.. 48.00 BogoMIPS (lpj=24000)
+[    0.004776] pid_max: default: 32768 minimum: 301
+[    0.005178] Mount-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.005231] Mountpoint-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.005698] VFS: Finished mounting rootfs on nullfs
+[    0.011587] rcu: Hierarchical SRCU implementation.
+[    0.011601] rcu: 	Max phase no-delay instances is 400.
+[    0.043012] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.063523] fsl-mc MSI: msi-controller@fe640000 domain created
+[    0.063550] fsl-mc MSI: msi-controller@fe660000 domain created
+[    0.081125] EFI services will not be available.
+[    0.081697] smp: Bringing up secondary CPUs ...
+[    0.083834] Detected VIPT I-cache on CPU1
+[    0.084141] GICv3: CPU1: found redistributor 100 region 0:0x00000000fe6a0000
+[    0.084158] GICv3: CPU1: using allocated LPI pending table @0x0000000100220000
+[    0.084211] CPU1: Booted secondary processor 0x0000000100 [0x412fd050]
+[    0.087795] Detected VIPT I-cache on CPU2
+[    0.088084] GICv3: CPU2: found redistributor 200 region 0:0x00000000fe6c0000
+[    0.088099] GICv3: CPU2: using allocated LPI pending table @0x0000000100230000
+[    0.088145] CPU2: Booted secondary processor 0x0000000200 [0x412fd050]
+[    0.091816] Detected VIPT I-cache on CPU3
+[    0.092105] GICv3: CPU3: found redistributor 300 region 0:0x00000000fe6e0000
+[    0.092119] GICv3: CPU3: using allocated LPI pending table @0x0000000100240000
+[    0.092165] CPU3: Booted secondary processor 0x0000000300 [0x412fd050]
+[    0.095856] CPU features: detected: Spectre-v4
+[    0.095863] CPU features: detected: Spectre-BHB
+[    0.095869] CPU features: detected: SSBS not fully self-synchronizing
+[    0.095872] Detected PIPT I-cache on CPU4
+[    0.096000] GICv3: CPU4: found redistributor 400 region 0:0x00000000fe700000
+[    0.096009] GICv3: CPU4: using allocated LPI pending table @0x0000000100250000
+[    0.096038] CPU4: Booted secondary processor 0x0000000400 [0x414fd0b0]
+[    0.101107] Detected PIPT I-cache on CPU5
+[    0.101246] GICv3: CPU5: found redistributor 500 region 0:0x00000000fe720000
+[    0.101255] GICv3: CPU5: using allocated LPI pending table @0x0000000100260000
+[    0.101287] CPU5: Booted secondary processor 0x0000000500 [0x414fd0b0]
+[    0.104931] Detected PIPT I-cache on CPU6
+[    0.105066] GICv3: CPU6: found redistributor 600 region 0:0x00000000fe740000
+[    0.105075] GICv3: CPU6: using allocated LPI pending table @0x0000000100270000
+[    0.105104] CPU6: Booted secondary processor 0x0000000600 [0x414fd0b0]
+[    0.108729] Detected PIPT I-cache on CPU7
+[    0.108863] GICv3: CPU7: found redistributor 700 region 0:0x00000000fe760000
+[    0.108872] GICv3: CPU7: using allocated LPI pending table @0x0000000100280000
+[    0.108902] CPU7: Booted secondary processor 0x0000000700 [0x414fd0b0]
+[    0.109002] smp: Brought up 1 node, 8 CPUs
+[    0.110720] SMP: Total of 8 processors activated.
+[    0.110727] CPU: All CPU(s) started at EL2
+[    0.110732] CPU features: detected: 32-bit EL0 Support
+[    0.110737] CPU features: detected: Data cache clean to the PoU not required for I/D coherence
+[    0.110744] CPU features: detected: Common not Private translations
+[    0.110748] CPU features: detected: CRC32 instructions
+[    0.110758] CPU features: detected: RCpc load-acquire (LDAPR)
+[    0.110763] CPU features: detected: LSE atomic instructions
+[    0.110768] CPU features: detected: Privileged Access Never
+[    0.110772] CPU features: detected: PMUv3
+[    0.110776] CPU features: detected: RAS Extension Support
+[    0.110783] CPU features: detected: XNX
+[    0.110790] CPU features: detected: Speculative Store Bypassing Safe (SSBS)
+[    0.118484] alternatives: applying system-wide alternatives
+[    0.125037] CPU features: detected: ICV_DIR_EL1 trapping
+[    0.125047] CPU features: detected: Hardware dirty bit management on CPU4-7
+[    0.126881] Memory: 16113004K/16769024K available (21696K kernel code, 6642K rwdata, 15664K rodata, 16512K init, 541K bss, 613964K reserved, 32768K cma-reserved)
+[    0.133320] devtmpfs: initialized
+[    0.150321] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns
+[    0.150353] posixtimers hash table entries: 4096 (order: 6, 163840 bytes, linear)
+[    0.150447] futex hash table entries: 2048 (131072 bytes on 1 NUMA nodes, total 128 KiB, linear).
+[    0.150687] 17440 pages in range for non-PLT usage
+[    0.150690] 508960 pages in range for PLT usage
+[    0.153122] DMI: not present or invalid.
+[    0.155626] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.156280] DMA: preallocated 2048 KiB GFP_KERNEL pool for atomic allocations
+[    0.156469] DMA: preallocated 2048 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.156501] audit: initializing netlink subsys (disabled)
+[    0.156706] audit: type=2000 audit(0.142:1): state=initialized audit_enabled=0 res=1
+[    0.159516] thermal_sys: Registered thermal governor 'step_wise'
+[    0.159520] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.159672] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.159816] ASID allocator initialised with 65536 entries
+[    0.161765] Serial: AMBA PL011 UART driver
+[    0.185863] /vop@fdd90000: Fixed dependency cycle(s) with /hdmi@fde80000
+[    0.185907] /hdmi@fde80000: Fixed dependency cycle(s) with /vop@fdd90000
+[    0.196661] /pcie@fe180000: Fixed dependency cycle(s) with /pcie@fe180000/legacy-interrupt-controller
+[    0.197120] /pcie@fe190000: Fixed dependency cycle(s) with /pcie@fe190000/legacy-interrupt-controller
+[    0.202789] /i2c@fec80000/usb-typec@22/connector: Fixed dependency cycle(s) with /usb@fc000000
+[    0.204237] /i2c@fec80000/usb-typec@22/connector: Fixed dependency cycle(s) with /phy@fed80000
+[    0.204286] /usb@fc000000: Fixed dependency cycle(s) with /phy@fed80000
+[    0.204323] /phy@fed80000: Fixed dependency cycle(s) with /i2c@fec80000/usb-typec@22/connector
+[    0.208382] rockchip-gpio fd8a0000.gpio: probed /pinctrl/gpio@fd8a0000
+[    0.208821] rockchip-gpio fec20000.gpio: probed /pinctrl/gpio@fec20000
+[    0.209215] rockchip-gpio fec30000.gpio: probed /pinctrl/gpio@fec30000
+[    0.209664] rockchip-gpio fec40000.gpio: probed /pinctrl/gpio@fec40000
+[    0.210124] rockchip-gpio fec50000.gpio: probed /pinctrl/gpio@fec50000
+[    0.213476] /vop@fdd90000: Fixed dependency cycle(s) with /hdmi@fdea0000
+[    0.213523] /hdmi@fdea0000: Fixed dependency cycle(s) with /vop@fdd90000
+[    0.214684] /pcie@fe150000: Fixed dependency cycle(s) with /pcie@fe150000/legacy-interrupt-controller
+[    0.215231] /pcie@fe170000: Fixed dependency cycle(s) with /pcie@fe170000/legacy-interrupt-controller
+[    0.220512] /hdmi@fde80000: Fixed dependency cycle(s) with /hdmi0-con
+[    0.220565] /hdmi0-con: Fixed dependency cycle(s) with /hdmi@fde80000
+[    0.220810] /hdmi@fdea0000: Fixed dependency cycle(s) with /hdmi1-con
+[    0.220853] /hdmi1-con: Fixed dependency cycle(s) with /hdmi@fdea0000
+[    0.222479] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.222484] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.222487] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.222490] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    0.222493] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.222495] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.222498] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[    0.222500] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[    0.224460] ACPI: Interpreter disabled.
+[    0.229690] iommu: Default domain type: Translated
+[    0.229694] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.231017] SCSI subsystem initialized
+[    0.231365] usbcore: registered new interface driver usbfs
+[    0.231392] usbcore: registered new interface driver hub
+[    0.231412] usbcore: registered new device driver usb
+[    0.232983] pps_core: LinuxPPS API ver. 1 registered
+[    0.232986] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.232994] PTP clock support registered
+[    0.233164] EDAC MC: Ver: 3.0.0
+[    0.233634] scmi_core: SCMI protocol bus registered
+[    0.235052] FPGA manager framework
+[    0.238536] vgaarb: loaded
+[    0.238910] clocksource: Switched to clocksource arch_sys_counter
+[    0.239156] VFS: Disk quotas dquot_6.6.0
+[    0.239169] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.239475] pnp: PnP ACPI: disabled
+[    0.244089] NET: Registered PF_INET protocol family
+[    0.244392] IP idents hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.252933] tcp_listen_portaddr_hash hash table entries: 8192 (order: 7, 327680 bytes, linear)
+[    0.253105] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.253118] TCP established hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.254141] TCP bind hash table entries: 65536 (order: 11, 5242880 bytes, vmalloc hugepage)
+[    0.256399] TCP: Hash tables configured (established 131072 bind 65536)
+[    0.256527] UDP hash table entries: 8192 (order: 9, 1310720 bytes, linear)
+[    0.257238] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.257660] RPC: Registered named UNIX socket transport module.
+[    0.257665] RPC: Registered udp transport module.
+[    0.257667] RPC: Registered tcp transport module.
+[    0.257669] RPC: Registered tcp-with-tls transport module.
+[    0.257671] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    0.257679] PCI: CLS 0 bytes, default 64
+[    0.258101] Unpacking initramfs...
+[    0.262474] kvm [1]: nv: 570 coarse grained trap handlers
+[    0.262649] kvm [1]: nv: 710 fine grained trap handlers
+[    0.262689] Freeing initrd memory: 1372K
+[    0.262952] kvm [1]: IPA Size Limit: 40 bits
+[    0.262977] kvm [1]: GICv3: no GICV resource entry
+[    0.262980] kvm [1]: disabling GICv2 emulation
+[    0.263032] kvm [1]: GIC system register CPU interface enabled
+[    0.263048] kvm [1]: vgic interrupt IRQ9
+[    0.263079] kvm [1]: VHE mode initialized successfully
+[    0.265231] Initialise system trusted keyrings
+[    0.265413] workingset: timestamp_bits=42 (anon: 38) max_order=22 bucket_order=0 (anon: 0)
+[    0.265725] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[    0.265994] NFS: Registering the id_resolver key type
+[    0.266007] Key type id_resolver registered
+[    0.266009] Key type id_legacy registered
+[    0.266024] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[    0.266027] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[    0.266301] 9p: Installing v9fs 9p2000 file system support
+[    0.266429] Key type asymmetric registered
+[    0.266433] Asymmetric key parser 'x509' registered
+[    0.266479] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[    0.266483] io scheduler mq-deadline registered
+[    0.266486] io scheduler kyber registered
+[    0.266515] io scheduler bfq registered
+[    0.329672] dma-pl330 fea10000.dma-controller: Loaded driver for PL330 DMAC-241330
+[    0.329681] dma-pl330 fea10000.dma-controller: 	DBUFF-128x8bytes Num_Chans-8 Num_Peri-32 Num_Events-16
+[    0.331203] dma-pl330 fea30000.dma-controller: Loaded driver for PL330 DMAC-241330
+[    0.331208] dma-pl330 fea30000.dma-controller: 	DBUFF-128x8bytes Num_Chans-8 Num_Peri-32 Num_Events-16
+[    0.332637] dma-pl330 fed10000.dma-controller: Loaded driver for PL330 DMAC-241330
+[    0.332642] dma-pl330 fed10000.dma-controller: 	DBUFF-128x8bytes Num_Chans-8 Num_Peri-32 Num_Events-16
+[    0.351399] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.353716] printk: legacy console [ttyS2] disabled
+[    0.354402] feb50000.serial: ttyS2 at MMIO 0xfeb50000 (irq = 31, base_baud = 1500000) is a 16550A
+[    0.355305] printk: legacy console [ttyS2] enabled
+[    0.355305] printk: legacy console [ttyS2] enabled
+[    0.355310] printk: legacy bootconsole [uart8250] disabled
+[    0.355310] printk: legacy bootconsole [uart8250] disabled
+[    0.358730] febc0000.serial: ttyS0 at MMIO 0xfebc0000 (irq = 32, base_baud = 1500000) is a 16550A
+[    0.361554] msm_serial: driver initialized
+[    0.362341] SuperH (H)SCI(F) driver initialized
+[    0.362741] STM32 USART driver initialized
+[    0.366932] arm-smmu-v3 fc900000.iommu: oas 48-bit (features 0x001c1eaf)
+[    0.367435] arm-smmu-v3 fc900000.iommu: allocated 65536 entries for cmdq
+[    0.367781] arm-smmu-v3 fc900000.iommu: allocated 32768 entries for evtq
+[    0.368255] arm-smmu-v3 fc900000.iommu: msi_domain absent - falling back to wired irqs
+[    0.370680] platform fdb50000.video-codec: Adding to iommu group 0
+[    0.371829] platform fdba0000.video-codec: Adding to iommu group 1
+[    0.372960] platform fdba4000.video-codec: Adding to iommu group 2
+[    0.374068] platform fdba8000.video-codec: Adding to iommu group 3
+[    0.375165] platform fdbac000.video-codec: Adding to iommu group 4
+[    0.376291] platform fdd90000.vop: Adding to iommu group 5
+[    0.383122] loop: module loaded
+[    0.384445] megasas: 07.734.00.00-rc1
+[    0.390703] /spi@feb20000/pmic@0: Fixed dependency cycle(s) with /spi@feb20000/pmic@0/regulators/dcdc-reg6
+[    0.390717] /spi@feb20000/pmic@0: Fixed dependency cycle(s) with /spi@feb20000/pmic@0/regulators/dcdc-reg7
+[    0.390768] /spi@feb20000/pmic@0: Fixed dependency cycle(s) with /spi@feb20000/pmic@0/dvs3-null-pins
+[    0.390777] /spi@feb20000/pmic@0: Fixed dependency cycle(s) with /spi@feb20000/pmic@0/dvs2-null-pins
+[    0.390784] /spi@feb20000/pmic@0: Fixed dependency cycle(s) with /spi@feb20000/pmic@0/dvs1-null-pins
+[    0.401279] avdd_0v75_s0: Bringing 750000uV into 825000-825000uV
+[    0.406624] rockchip-pm-domain fd8d8000.power-management:power-controller: Failed to create device link (0x180) with supplier spi2.0 for /power-management@fd8d8000/power-controller/power-domain@12
+[    0.410314] tun: Universal TUN/TAP device driver, 1.6
+[    0.411851] thunder_xcv, ver 1.0
+[    0.411889] thunder_bgx, ver 1.0
+[    0.411954] nicpf, ver 1.0
+[    0.413871] e1000: Intel(R) PRO/1000 Network Driver
+[    0.413874] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[    0.413935] e1000e: Intel(R) PRO/1000 Network Driver
+[    0.413937] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    0.413967] igb: Intel(R) Gigabit Ethernet Network Driver
+[    0.413970] igb: Copyright (c) 2007-2014 Intel Corporation.
+[    0.413996] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[    0.413999] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[    0.414492] sky2: driver version 1.30
+[    0.416690] VFIO - User Level meta-driver version: 0.3
+[    0.423133] usbcore: registered new interface driver usb-storage
+[    0.427926] i2c_dev: i2c /dev entries driver
+[    0.431542] rockchip-pm-domain fd8d8000.power-management:power-controller: Failed to create device link (0x180) with supplier 1-0042 for /power-management@fd8d8000/power-controller/power-domain@8
+[    0.432261] fan53555-regulator 0-0042: FAN53555 Option[10] Rev[1] Detected!
+[    0.432518] /i2c@fec80000/usb-typec@22/connector: Fixed dependency cycle(s) with /phy@fed80000
+[    0.432560] /i2c@fec80000/usb-typec@22/connector: Fixed dependency cycle(s) with /usb@fc000000
+[    0.432757] fan53555-regulator 0-0043: FAN53555 Option[10] Rev[1] Detected!
+[    0.432934] fan53555-regulator 1-0042: FAN53555 Option[10] Rev[1] Detected!
+[    0.436930] rockchip-pm-domain fd8d8000.power-management:power-controller: Failed to create device link (0x180) with supplier 1-0042 for /power-management@fd8d8000/power-controller/power-domain@8
+[    0.445705] failed to register cpuidle driver
+[    0.445733] CPUidle PSCI: Failed to create psci-cpuidle device
+[    0.451844] mmc0: CQHCI version 5.10
+[    0.454285] arm-scmi arm-scmi.3.auto: Using scmi_smc_transport
+[    0.454292] arm-scmi arm-scmi.3.auto: SCMI max-rx-timeout: 30ms / max-msg-size: 104bytes / max-msg: 20
+[    0.454388] scmi_protocol scmi_dev.1: Enabled polling mode TX channel - prot_id:16
+[    0.454529] arm-scmi arm-scmi.3.auto: SCMI Notifications - Core Enabled.
+[    0.454575] arm-scmi arm-scmi.3.auto: SCMI Protocol v2.0 'rockchip:' Firmware version 0x0
+[    0.454615] arm-scmi arm-scmi.3.auto: Enabling SCMI Quirk [quirk_clock_rates_triplet_out_of_spec]
+[    0.456180] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[    0.457503] usbcore: registered new interface driver usbhid
+[    0.457507] usbhid: USB HID core driver
+[    0.462482] hw perfevents: enabled with armv8_cortex_a55 PMU driver, 7 (0,8000003f) counters available
+[    0.462830] hw perfevents: enabled with armv8_cortex_a76 PMU driver, 7 (0,8000003f) counters available
+[    0.471223] NET: Registered PF_INET6 protocol family
+[    0.471886] Segment Routing with IPv6
+[    0.471938] In-situ OAM (IOAM) with IPv6
+[    0.471987] NET: Registered PF_PACKET protocol family
+[    0.472055] 9pnet: Installing 9P2000 support
+[    0.472095] Key type dns_resolver registered
+[    0.472830] mmc0: SDHCI controller on fe2e0000.mmc [fe2e0000.mmc] using ADMA
+[    0.480230] registered taskstats version 1
+[    0.480400] Loading compiled-in X.509 certificates
+[    0.488709] Demotion targets for Node 0: null
+[    0.541321] rockchip-dw-pcie a40000000.pcie: host bridge /pcie@fe150000 ranges:
+[    0.541362] rockchip-dw-pcie a40000000.pcie:       IO 0x00f0100000..0x00f01fffff -> 0x00f0100000
+[    0.541389] rockchip-dw-pcie a40000000.pcie:      MEM 0x00f0200000..0x00f0ffffff -> 0x00f0200000
+[    0.541405] rockchip-dw-pcie a40000000.pcie:      MEM 0x0900000000..0x093fffffff -> 0x0900000000
+[    0.553221] rockchip-dw-pcie a40000000.pcie: iATU: unroll T, 8 ob, 8 ib, align 64K, limit 8G
+[    0.723505] sdhci-dwcmshc fe2e0000.mmc: Can't reduce the clock below 52MHz in HS200/HS400 mode
+[    0.724880] mmc0: Command Queue Engine enabled
+[    0.724970] mmc0: new HS400 Enhanced strobe MMC card at address 0001
+[    0.725803] mmcblk0: mmc0:0001 A3A551 28.9 GiB
+[    0.733747]  mmcblk0: p1 p2
+[    0.734656] mmcblk0boot0: mmc0:0001 A3A551 4.00 MiB
+[    0.737247] mmcblk0boot1: mmc0:0001 A3A551 4.00 MiB
+[    0.739799] mmcblk0rpmb: mmc0:0001 A3A551 16.0 MiB, chardev (511:0)
+[    1.613952] rockchip-dw-pcie a40000000.pcie: Device not found
+[    1.614433] rockchip-dw-pcie a40000000.pcie: PCI host bridge to bus 0000:00
+[    1.614451] pci_bus 0000:00: root bus resource [bus 00-0f]
+[    1.614465] pci_bus 0000:00: root bus resource [io  0x0000-0xfffff] (bus address [0xf0100000-0xf01fffff])
+[    1.614475] pci_bus 0000:00: root bus resource [mem 0xf0200000-0xf0ffffff]
+[    1.614485] pci_bus 0000:00: root bus resource [mem 0x900000000-0x93fffffff]
+[    1.614541] pci 0000:00:00.0: [1d87:3588] type 01 class 0x060400 PCIe Root Port
+[    1.614573] pci 0000:00:00.0: ROM [mem 0x00000000-0x0000ffff pref]
+[    1.614584] pci 0000:00:00.0: PCI bridge to [bus 01-ff]
+[    1.614598] pci 0000:00:00.0:   bridge window [io  0x0000-0x0fff]
+[    1.614608] pci 0000:00:00.0:   bridge window [mem 0x00000000-0x000fffff]
+[    1.614622] pci 0000:00:00.0:   bridge window [mem 0x00000000-0x000fffff 64bit pref]
+[    1.614699] pci 0000:00:00.0: supports D1 D2
+[    1.614707] pci 0000:00:00.0: PME# supported from D0 D1 D3hot
+[    1.616284] pci 0000:00:00.0: Adding to iommu group 6
+[    1.623320] pci_bus 0000:01: busn_res: can not insert [bus 01-ff] under [bus 00-0f] (conflicts with (null) [bus 00-0f])
+[    1.623578] pci 0000:00:00.0: ROM [mem 0xf0200000-0xf020ffff pref]: assigned
+[    1.623595] pci 0000:00:00.0: PCI bridge to [bus 01-ff]
+[    1.623613] pci_bus 0000:00: resource 4 [io  0x0000-0xfffff]
+[    1.623623] pci_bus 0000:00: resource 5 [mem 0xf0200000-0xf0ffffff]
+[    1.623631] pci_bus 0000:00: resource 6 [mem 0x900000000-0x93fffffff]
+[    1.629674] pcieport 0000:00:00.0: PME: Signaling with IRQ 78
+[    1.630288] pcieport 0000:00:00.0: AER: enabled with IRQ 79
+[    1.634128] random: crng init done
+[    1.638519] platform fdab0000.npu: Adding to iommu group 7
+[    1.644636] platform fdac0000.npu: Adding to iommu group 8
+[    1.650603] platform fdad0000.npu: Adding to iommu group 9
+[    1.656885] platform fdc38100.video-codec: Adding to iommu group 10
+[    1.662960] platform fdc40100.video-codec: Adding to iommu group 11
+[    1.680467] ehci-platform fc800000.usb: EHCI Host Controller
+[    1.680486] ehci-platform fc800000.usb: new USB bus registered, assigned bus number 1
+[    1.680734] ehci-platform fc800000.usb: irq 85, io mem 0xfc800000
+[    1.682990] ehci-platform fc880000.usb: EHCI Host Controller
+[    1.683009] ehci-platform fc880000.usb: new USB bus registered, assigned bus number 2
+[    1.683205] ehci-platform fc880000.usb: irq 86, io mem 0xfc880000
+[    1.685701] ohci-platform fc8c0000.usb: Generic Platform OHCI controller
+[    1.685728] ohci-platform fc8c0000.usb: new USB bus registered, assigned bus number 3
+[    1.685927] ehci-platform fc800000.usb: USB 2.0 started, EHCI 1.00
+[    1.686069] ohci-platform fc8c0000.usb: irq 87, io mem 0xfc8c0000
+[    1.686512] hub 1-0:1.0: USB hub found
+[    1.686528] hub 1-0:1.0: 1 port detected
+[    1.689223] ohci-platform fc840000.usb: Generic Platform OHCI controller
+[    1.689249] ohci-platform fc840000.usb: new USB bus registered, assigned bus number 4
+[    1.689523] ohci-platform fc840000.usb: irq 88, io mem 0xfc840000
+[    1.691920] ehci-platform fc880000.usb: USB 2.0 started, EHCI 1.00
+[    1.692365] hub 2-0:1.0: USB hub found
+[    1.692388] hub 2-0:1.0: 1 port detected
+[    1.693486] dwmmc_rockchip fe2c0000.mmc: IDMAC supports 32-bit address mode.
+[    1.693541] dwmmc_rockchip fe2c0000.mmc: Using internal DMA controller.
+[    1.693552] dwmmc_rockchip fe2c0000.mmc: Version ID is 270a
+[    1.693685] dwmmc_rockchip fe2c0000.mmc: DW MMC controller at irq 89,32 bit host data width,256 deep fifo
+[    1.694298] dwmmc_rockchip fe2c0000.mmc: Got CD GPIO
+[    1.699591] clk: Disabling unused clocks
+[    1.700463] PM: genpd: Disabling unused power domains
+[    1.700861] dw-apb-uart feb50000.serial: forbid DMA for kernel console
+[    1.704501] mmc_host mmc1: Bus speed = 400000Hz (req 400000Hz, actual 400000HZ div = 0)
+[    1.742040] hub 3-0:1.0: USB hub found
+[    1.742090] hub 3-0:1.0: 1 port detected
+[    1.744890] hub 4-0:1.0: USB hub found
+[    1.745006] hub 4-0:1.0: 1 port detected
+[    1.755680] Freeing unused kernel memory: 16512K
+[    1.755757] Run /init as init process
+RESUME810_LINUX_START
+RESUME810_CASE_START event=instructions policy=other round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"instructions","samples":20000,"raw_p50":6293,"read_p50":1301,"adjusted_p50":4992,"raw_p99":10322,"read_p99":1303}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":10009,"stddev_ns":1903,"p50_ns":9625,"p95_ns":13125,"p99_ns":23625,"p999_ns":27125,"max_ns":49292,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17802,1976,222,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=instructions policy=other round=1 exit=0
+RESUME810_CASE_START event=instructions policy=fifo round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"instructions","samples":20000,"raw_p50":6606,"read_p50":1301,"adjusted_p50":5305,"raw_p99":10766,"read_p99":1301}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8458,"mean_ns":9220,"stddev_ns":1509,"p50_ns":9042,"p95_ns":9334,"p99_ns":11959,"p999_ns":25959,"max_ns":27125,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19505,305,190,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=instructions policy=fifo round=1 exit=0
+RESUME810_CASE_START event=instructions policy=other round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"instructions","samples":20000,"raw_p50":6293,"read_p50":1301,"adjusted_p50":4992,"raw_p99":10343,"read_p99":1303}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":10324,"stddev_ns":2033,"p50_ns":9625,"p95_ns":13417,"p99_ns":23042,"p999_ns":28875,"max_ns":32375,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,16421,3372,207,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=instructions policy=other round=2 exit=0
+RESUME810_CASE_START event=instructions policy=fifo round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"instructions","samples":20000,"raw_p50":6606,"read_p50":1301,"adjusted_p50":5305,"raw_p99":10358,"read_p99":1301}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8458,"mean_ns":9169,"stddev_ns":1350,"p50_ns":9042,"p95_ns":9334,"p99_ns":11375,"p999_ns":23917,"max_ns":32667,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19561,250,189,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=instructions policy=fifo round=2 exit=0
+RESUME810_CASE_START event=cycles policy=other round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":291,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"cycles","samples":20000,"raw_p50":10862,"read_p50":2011,"adjusted_p50":8851,"raw_p99":23507,"read_p99":2231}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":10094,"stddev_ns":1963,"p50_ns":9625,"p95_ns":13416,"p99_ns":23333,"p999_ns":28000,"max_ns":85167,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17656,2128,215,1,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=cycles policy=other round=1 exit=0
+RESUME810_CASE_START event=cycles policy=fifo round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"cycles","samples":20000,"raw_p50":10088,"read_p50":1966,"adjusted_p50":8122,"raw_p99":19839,"read_p99":2135}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8458,"mean_ns":9166,"stddev_ns":1200,"p50_ns":9042,"p95_ns":9334,"p99_ns":11084,"p999_ns":22459,"max_ns":29166,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19578,261,161,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=cycles policy=fifo round=1 exit=0
+RESUME810_CASE_START event=cycles policy=other round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"cycles","samples":20000,"raw_p50":10811,"read_p50":2025,"adjusted_p50":8786,"raw_p99":23209,"read_p99":2231}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":9997,"stddev_ns":1874,"p50_ns":9625,"p95_ns":13125,"p99_ns":16917,"p999_ns":26833,"max_ns":56292,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17822,1979,197,2,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=cycles policy=other round=2 exit=0
+RESUME810_CASE_START event=cycles policy=fifo round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"cycles","samples":20000,"raw_p50":10072,"read_p50":1966,"adjusted_p50":8106,"raw_p99":20150,"read_p99":2131}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8458,"mean_ns":9154,"stddev_ns":1295,"p50_ns":9042,"p95_ns":9334,"p99_ns":11375,"p999_ns":23917,"max_ns":32083,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19576,252,172,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=cycles policy=fifo round=2 exit=0
+RESUME810_CASE_START event=l1i_refill policy=other round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"l1i_refill","samples":20000,"raw_p50":252,"read_p50":28,"adjusted_p50":224,"raw_p99":626,"read_p99":42}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":10094,"stddev_ns":1885,"p50_ns":9625,"p95_ns":13416,"p99_ns":23042,"p999_ns":27125,"max_ns":55709,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17516,2277,206,1,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1i_refill policy=other round=1 exit=0
+RESUME810_CASE_START event=l1i_refill policy=fifo round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"l1i_refill","samples":20000,"raw_p50":175,"read_p50":20,"adjusted_p50":155,"raw_p99":468,"read_p99":38}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8459,"mean_ns":9183,"stddev_ns":1323,"p50_ns":9042,"p95_ns":9334,"p99_ns":11375,"p999_ns":23916,"max_ns":32375,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19566,255,179,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1i_refill policy=fifo round=1 exit=0
+RESUME810_CASE_START event=l1i_refill policy=other round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"l1i_refill","samples":20000,"raw_p50":252,"read_p50":28,"adjusted_p50":224,"raw_p99":616,"read_p99":42}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":10128,"stddev_ns":1906,"p50_ns":9625,"p95_ns":13417,"p99_ns":23041,"p999_ns":28875,"max_ns":31208,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17340,2455,205,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1i_refill policy=other round=2 exit=0
+RESUME810_CASE_START event=l1i_refill policy=fifo round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"l1i_refill","samples":20000,"raw_p50":175,"read_p50":20,"adjusted_p50":155,"raw_p99":456,"read_p99":37}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8458,"mean_ns":9159,"stddev_ns":1265,"p50_ns":9042,"p95_ns":9334,"p99_ns":11375,"p999_ns":23334,"max_ns":31500,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19569,269,162,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1i_refill policy=fifo round=2 exit=0
+RESUME810_CASE_START event=l1d_refill policy=other round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_PMU_WINDOW {"event":"l1d_refill","samples":20000,"raw_p50":62,"read_p50":5,"adjusted_p50":57,"raw_p99":156,"read_p99":11}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":10173,"stddev_ns":1976,"p50_ns":9625,"p95_ns":13417,"p99_ns":23333,"p999_ns":28000,"max_ns":60667,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17205,2582,211,2,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1d_refill policy=other round=1 exit=0
+RESUME810_CASE_START event=l1d_refill policy=fifo round=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"l1d_refill","samples":20000,"raw_p50":29,"read_p50":6,"adjusted_p50":23,"raw_p99":99,"read_p99":12}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":9206,"stddev_ns":1253,"p50_ns":9042,"p95_ns":9334,"p99_ns":11667,"p999_ns":23042,"max_ns":24500,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19545,288,167,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1d_refill policy=fifo round=1 exit=0
+RESUME810_CASE_START event=l1d_refill policy=other round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+[   12.057259] platform fc400000.usb: deferred probe pending: dwc3: failed to initialize core
+[   12.057276] platform a40c00000.pcie: deferred probe pending: rockchip-dw-pcie: failed to initialize the phy
+[   12.057285] platform a41000000.pcie: deferred probe pending: rockchip-dw-pcie: failed to initialize the phy
+[   12.057294] platform a40800000.pcie: deferred probe pending: rockchip-dw-pcie: failed to initialize the phy
+[   12.057301] platform fc000000.usb: deferred probe pending: dwc3: failed to initialize core
+[   12.057326] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fc000000.usb
+[   12.057336] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fb000000.gpu
+[   12.057344] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdab0000.npu
+[   12.057356] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdac0000.npu
+[   12.057368] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdad0000.npu
+[   12.057378] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdb50000.video-codec
+[   12.057390] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdb80000.rga
+[   12.057400] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdba0000.video-codec
+[   12.057410] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdba4000.video-codec
+[   12.057421] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdba8000.video-codec
+[   12.057432] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdbac000.video-codec
+[   12.057443] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdc38100.video-codec
+[   12.057454] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdc40100.video-codec
+[   12.057464] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdc70000.video-codec
+[   12.057473] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdd90000.vop
+[   12.057485] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fddf0000.i2s
+[   12.057496] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fde80000.hdmi
+[   12.057506] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to a40c00000.pcie
+[   12.057515] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to a41000000.pcie
+[   12.057528] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fe470000.i2s
+[   12.057538] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fe490000.i2s
+[   12.057586] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fc400000.usb
+[   12.057598] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fddf4000.i2s
+[   12.057610] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdea0000.hdmi
+[   12.057623] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to fdee0000.hdmi_receiver
+[   12.057636] rockchip-pm-domain fd8d8000.power-management:power-controller: sync_state() pending due to a40800000.pcie
+WAKEUP_PMU_WINDOW {"event":"l1d_refill","samples":19999,"raw_p50":61,"read_p50":5,"adjusted_p50":56,"raw_p99":158,"read_p99":12}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":19999,"attempted":20000,"not_parked":1,"missed_deadlines":0,"min_ns":8750,"mean_ns":10184,"stddev_ns":2140,"p50_ns":9625,"p95_ns":13417,"p99_ns":23333,"p999_ns":29167,"max_ns":65916,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,17197,2592,204,6,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1d_refill policy=other round=2 exit=0
+RESUME810_CASE_START event=l1d_refill policy=fifo round=2
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_PMU_WINDOW {"event":"l1d_refill","samples":20000,"raw_p50":22,"read_p50":3,"adjusted_p50":19,"raw_p99":91,"read_p99":9}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":8750,"mean_ns":9170,"stddev_ns":1265,"p50_ns":9042,"p95_ns":9334,"p99_ns":11375,"p999_ns":23625,"max_ns":31792,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19566,276,158,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+RESUME810_CASE_DONE event=l1d_refill policy=fifo round=2 exit=0
+RESUME810_LINUX_DONE failures=0

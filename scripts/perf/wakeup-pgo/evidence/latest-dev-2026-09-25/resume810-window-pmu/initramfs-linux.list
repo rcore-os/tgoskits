@@ -1,0 +1,4 @@
+dir /dev 755 0 0
+nod /dev/console 600 0 0 c 5 1
+file /init /home/zhourui/.codex/artifacts/issue2308-perf/resume810-window-pmu/init-linux 755 0 0
+file /bench-window-pmu /home/zhourui/.codex/artifacts/issue2308-perf/resume810-window-pmu/bench-window-pmu 755 0 0

@@ -1,6 +1,6 @@
 # 唤醒性能后续实验记录
 
-本目录保存 PR #2477 之后的原始 full20 日志和实验状态。`resume771` 与
+本目录保存 PR #2477 之后的原始 full20 日志、实验状态和独立诊断。`resume771` 与
 `resume773` 使用不同源码，不能把两者的差值解释为优化收益。两组镜像均
 关闭 `ax-driver/rk3588-cpufreq` feature；独立 PLL 检查报告约 816 MHz。
 该频率检查不等于在每个 full20 计时窗口同步采频。
@@ -174,11 +174,58 @@ F2 的 OTHER 同核 futex 距 90% 上限 9397 ns 尚差 **7228 ns**。以上是
 私有 futex key 检查已是地址范围检查，`ThreadWakeBatch` 无每次分配，
 同一 mm 的切换也已跳过地址空间激活。旧分段数据来自插桩镜像，不能把
 其中某段耗时直接算作 F2 可删除的原生耗时。此次未找到有证据支持、且能
-覆盖多项缺口的多微秒单点改动；下一步需先取得计时窗口内可对照的
-PMU 指令数、周期和缓存事件，再判断瓶颈是工作量还是停顿。该测量尚未
-执行，本节不增加性能验收轮次。
+覆盖多项缺口的多微秒单点改动；后续 `resume808`–`resume810` 已开展
+PMU 诊断，见下节。本节不增加性能验收轮次。
 
-### 1.8 当前 CI 边界
+### 1.8 同板 PMU 诊断（不计入 full20）
+
+`resume808-current-pmu/` 在相同 `dev@05175ca388` 加 `memset` 修复上，
+使用 `resume788` 的同源码普通 A/PGO F 镜像，按 A1→F1→F2→A2 顺序运行。
+原冻结 benchmark SHA256 为
+`94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`；
+固定窗口 PMU 采集器 SHA256 为
+`47b89a6df65277ef7e0b3c26f6dc1c2a49d019219df7a92fbad2b39b135d1394`。
+每次仅运行 OTHER/FIFO 同核线程 futex，采集 CPU0 内核态指令、周期、L1I/L1D
+refill。24 次中有三次 OTHER 为 19999/20000、`not_parked=1`，已保留原始日志
+但排除；有效轮次的整段计数显示 F OTHER 约 16761 指令/attempt、CPI 1.589、
+每千指令 40.08 次 L1I refill，F FIFO 分别为 15577、1.368、20.20。
+
+`resume809-linux-pmu/` 在同一 OrangePi-5-Plus-1 上用冻结 Linux v7.1
+PREEMPT_RT 镜像和相同 benchmark/采集器完成三次 OTHER、三次 FIFO，均有效；
+整段 OTHER 为 15429 指令/attempt、CPI 1.449、每千指令 24.40 次 L1I
+refill。整段包含启动、反向交接和背景活动；F OTHER 诊断 p50 约为 Linux
+的 2.02 倍，但指令/attempt 仅为 1.09 倍，不能用整段计数归因正向唤醒。
+两轮的原始日志、镜像哈希、运行顺序、无效样本和复算分别见子目录的
+`status.json`、`decision.md`、`analyze.py`；一次性二进制与 initramfs 未入库。
+
+`resume810-window-pmu/` 改用同一个**诊断版** benchmark（SHA256
+`7ea6ace6192fb9ffafc2cd0ce13c2c5cc97ceb7eb6808e282c0a417e7ffa82b6`）
+比较 Linux RT 与 Starry A/F；这是修改了计数窗口的 benchmark，不是冻结
+full20。采集窗口从发送者写入时间戳前到接收者首次读时钟后，每轮只计一个
+CPU0 内核态事件，并用相邻 PMU read 估计读数开销。Starry 顺序仍为
+A1→F1→F2→A2。唯一无效轮次为 Linux L1D OTHER 第二次，
+19999/20000、`not_parked=1`，已排除。近似扣除相邻读数后，各有效轮次中位数：
+
+| 事件/attempt | Linux OTHER | Linux FIFO | Starry F OTHER | Starry F FIFO |
+|---|---:|---:|---:|---:|
+| retired instructions | 4992 | 5305 | 8889 | 7044 |
+| CPU cycles | 8818.5 | 8114 | 15444 | 10890 |
+| L1I refills | 224 | 155 | 456 | 257.5 |
+
+F 的 OTHER/FIFO 差值比 Linux 多约 2158 指令、3849.5 周期和 129.5 次
+L1I refill，提示继续检查 Fair 唤醒/抢占路径。首次 PMU read 与相邻校准
+read 的缓存状态不同、原始逐样本计数未导出、两侧背景活动不同，因此这些
+**不是精确可删成本，也不是新的 p50 性能收益**。`handoff.c` 仅是诊断副本，
+未改变生产 benchmark 或内核运行时源码。原始 80 次诊断调用、无效轮次、
+构建与镜像身份、复算脚本和完整串口记录均保存在三个子目录；
+`resume810-window-pmu/decision.md` 说明测量边界。
+
+最近一次有效、原 benchmark、无插桩 full20 仍是 `resume788` F2：
+**11/20** 项达到冻结 Linux RT p50 的 90%，最差 OTHER 同核 futex
+16625 ns / Linux RT 8458 ns，即 **50.88%**。三次有效候选启动、同源码
+`<3%` 回退门及生产构建复现仍未完成；当前没有新的可保留运行时优化。
+
+### 1.9 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
@@ -201,7 +248,11 @@ PMU 指令数、周期和缓存事件，再判断瓶颈是工作量还是停顿�
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
 原始日志、状态、样本完整性及逐项性能和回退；新归档的聚焦诊断
-还会核对原始单项日志、有效性与计数器前后差值。未纳入仓库的
+还会核对原始单项日志、有效性与计数器前后差值。新 PMU 诊断分别运行
+`python3 resume808-current-pmu/analyze.py`、
+`python3 resume809-linux-pmu/analyze.py` 和
+`python3 resume810-window-pmu/analyze.py` 复核原始日志与有效性；
+它们不参加 full20 验收。未纳入仓库的
 完整镜像哈希保存在状态文件，
 不能仅凭日志重建镜像身份。冻结 benchmark SHA256 为
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。

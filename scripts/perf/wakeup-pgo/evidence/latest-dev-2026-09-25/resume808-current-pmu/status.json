@@ -1,0 +1,169 @@
+{
+  "experiment": "resume808",
+  "source_commit": "69a33650763538692fafea27c869870ed0313642",
+  "source_patch_sha256": "d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78",
+  "board_id": "OrangePi-5-Plus-1",
+  "session_id": "68fc4b1f-a3e5-41dd-8459-f8d3480205b9",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "collector_sha256": "47b89a6df65277ef7e0b3c26f6dc1c2a49d019219df7a92fbad2b39b135d1394",
+  "guest_script_sha256": "7e2a0e0b3e23b05868ad71750eef241929945de7bf8b96a850d7be811b2ec054",
+  "image_sha256": {
+    "A": "750589429f5afe81b16775dde50050fedb936614b78d7bbde999a51856618473",
+    "F": "e48394c7ef55008d0badf2cd6dc841fa8fa6593e069720304e2400634614fd6d"
+  },
+  "order": [
+    "A1",
+    "F1",
+    "F2",
+    "A2"
+  ],
+  "diagnostic_only": true,
+  "limitations": [
+    "whole-case CPU0 EL1 counts include startup, reverse handoffs and background",
+    "not full20 or exclusive latency"
+  ],
+  "rounds": [
+    {
+      "tag": "A1",
+      "kind": "A",
+      "guest_exit": 0,
+      "logs": {
+        "sha256": {
+          "sha256": "8405af337371b0991fb5f7b6d23d0042aaf84ad4625631b4379ddfbbd3a52241",
+          "bytes": 186
+        },
+        "other-1.log": {
+          "sha256": "44ef7cf04744af571fc3c33950c917270901876513fa9b052f718b566a16d5c8",
+          "bytes": 1601
+        },
+        "other-2.log": {
+          "sha256": "a2e95f92e448c87baeee0b8edc93b406a2f6a26f77439038e816624b5fbab1cf",
+          "bytes": 1600
+        },
+        "other-3.log": {
+          "sha256": "f55c47e40357632d34297cf1b702a0a5fc4bc38ad2e646b9f334078198fb0211",
+          "bytes": 1600
+        },
+        "fifo-1.log": {
+          "sha256": "4045f285af3b97628d8d224b8a09dd1d78f15ec7e354dd6edd93dbfd00660564",
+          "bytes": 1590
+        },
+        "fifo-2.log": {
+          "sha256": "63b356e3a4cc5eb538716f130f213d762d57c92100f348d132961e3eec40abe7",
+          "bytes": 1591
+        },
+        "fifo-3.log": {
+          "sha256": "9b50a47fe3fa1993e8dfe145842c3b042b3d0ad101780d2b3e7595864da4fc52",
+          "bytes": 1591
+        }
+      }
+    },
+    {
+      "tag": "F1",
+      "kind": "F",
+      "guest_exit": 0,
+      "logs": {
+        "sha256": {
+          "sha256": "a837c440569e12165b625f081e691b4c423167f798e726f8d749871f83b8e6b2",
+          "bytes": 186
+        },
+        "other-1.log": {
+          "sha256": "09a2c1165dd5e55ed6eefc410386073523d976ed9675719ffba6e78e59ac50f7",
+          "bytes": 1593
+        },
+        "other-2.log": {
+          "sha256": "33148455aa73b0cf5278f49ac8e3ae53fa492fc2b7b66d3a3e3c9942cd3ca6dd",
+          "bytes": 1593
+        },
+        "other-3.log": {
+          "sha256": "3b476885b4750491f9a68681824bdda43de3ea3df16acd49f783b1d21dfb634b",
+          "bytes": 1593
+        },
+        "fifo-1.log": {
+          "sha256": "21b085eff01d1d4b6b46863998c60cb0b6fb0ff3d2bc76bdba1f7fd04e27f72a",
+          "bytes": 1588
+        },
+        "fifo-2.log": {
+          "sha256": "4d5880e74dfd818b49e241347b0a446e8b3591c52a0ed9a36a0888fa471c07b2",
+          "bytes": 1588
+        },
+        "fifo-3.log": {
+          "sha256": "afbf1bbf6d19cc7369546771f33a05f02eb5c547322907ef6a922f3e6b47f016",
+          "bytes": 1588
+        }
+      }
+    },
+    {
+      "tag": "F2",
+      "kind": "F",
+      "guest_exit": 0,
+      "logs": {
+        "sha256": {
+          "sha256": "599e6ac08bdd0887cfcfd6026a5ae81cce1db6b33099a2073c6cdc276e1de967",
+          "bytes": 186
+        },
+        "other-1.log": {
+          "sha256": "5f9ff73b3e50dd612a91d27b0d9e7cc04d726ed8dbb1b62a122224bfa4e0478d",
+          "bytes": 1593
+        },
+        "other-2.log": {
+          "sha256": "6b772d0eecad9fac7e39e90544dfa5532403d2af1390d0d1b2fa5af6766fcc76",
+          "bytes": 1593
+        },
+        "other-3.log": {
+          "sha256": "0a8b3f393c21c930b6ec9d2620334b3681d1cc4aba76c9e8a38cd2a316a540e5",
+          "bytes": 1593
+        },
+        "fifo-1.log": {
+          "sha256": "a72d590a6f388bae86bd9617d32533c7426a1534f1a3da3ff0f31cde54810def",
+          "bytes": 1588
+        },
+        "fifo-2.log": {
+          "sha256": "816a2af0652430fafea728b7f1931ef26c41ea67f54acb2f15483193b5f53be9",
+          "bytes": 1588
+        },
+        "fifo-3.log": {
+          "sha256": "d167d0000af4f76397d560d0cae46d4cacf4b9828d3d13695f03d86d4fd702f2",
+          "bytes": 1588
+        }
+      }
+    },
+    {
+      "tag": "A2",
+      "kind": "A",
+      "guest_exit": 0,
+      "logs": {
+        "sha256": {
+          "sha256": "21459970b99f203ec4c6731d725d886bc82710a68666571f65b9893fdd8ee465",
+          "bytes": 186
+        },
+        "other-1.log": {
+          "sha256": "bf2e8031c9d3e03dd0267e3c7911f3243ca3d0e8caf40053ae44ee82d608d24f",
+          "bytes": 1600
+        },
+        "other-2.log": {
+          "sha256": "c5557422781d05752019e128764ed45dfbba613179cd9360b3d7ae022293330d",
+          "bytes": 1601
+        },
+        "other-3.log": {
+          "sha256": "ac96fd3f0aca4eb560514948f8225a9412e70be6297dc7bfcd1bdf6c564f502d",
+          "bytes": 1600
+        },
+        "fifo-1.log": {
+          "sha256": "8fa73a03ecf9483db883a8373effd1deb713976b5a130f79a291fcaf8f4378c6",
+          "bytes": 1591
+        },
+        "fifo-2.log": {
+          "sha256": "e70ff102a24afd3516b20ad56e21e3f9753e574ca3a9910d022033fc9136ef47",
+          "bytes": 1590
+        },
+        "fifo-3.log": {
+          "sha256": "e90e6c85927e5bc4165e90a250db3db3cce2bc6e07aad1f047d12d70b9cd8430",
+          "bytes": 1591
+        }
+      }
+    }
+  ],
+  "board_released": true,
+  "state": "collected"
+}
