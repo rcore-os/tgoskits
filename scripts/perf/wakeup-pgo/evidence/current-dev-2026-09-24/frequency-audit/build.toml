@@ -1,0 +1,20 @@
+# resume746: 816 MHz frequency-control ordinary release build.
+#
+# Derived from resume710's ordinary OrangePi release configuration; only
+# rk3588-cpufreq is removed. The firmware boots A55 at 816 MHz. This leaves
+# the default board configuration untouched and does not use PGO or qperf.
+target = "aarch64-unknown-none-softfloat"
+log = "Info"
+max_cpu_num = 8
+features = [
+  "legacy-board-init",
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-ehci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "rknpu",
+]
