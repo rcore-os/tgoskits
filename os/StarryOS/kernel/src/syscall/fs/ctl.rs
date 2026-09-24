@@ -831,17 +831,13 @@ pub fn sys_fchownat(
         .map(|path| vm_load_path_string(current, path))
         .transpose()?;
     let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
-    // Linux chown_common() on an inode-less fd (pipe, socket, eventfd, ...)
-    // runs the usual permission checks against the inode metadata and then
-    // succeeds; runc fchowns its container stdio pipes. There is no backing
-    // inode to persist the update on, so the change is bookkeeping-only.
-    let (loc, meta, anon_owner) = match &resolved {
+    // Linux chown_common() updates the target inode, or the anonymous inode
+    // backing a pipe/socket. Kinds that cannot persist ownership (eventfd,
+    // epoll, timerfd, signalfd, ...) report EOPNOTSUPP instead of silently
+    // succeeding. runc fchowns its container stdio pipes.
+    let (loc, meta, anon) = match &resolved {
         ResolveAtResult::File(loc) => (Some(loc.clone()), Some(loc.metadata()?), None),
-        ResolveAtResult::Other(file_like) => {
-            let stat = file_like.stat()?;
-            let path = file_like.path().into_owned();
-            (None, None, Some((stat.uid, stat.gid, path)))
-        }
+        ResolveAtResult::Other(file_like) => (None, None, Some(file_like.clone())),
     };
 
     let cred = current.as_thread().cred();
@@ -851,12 +847,13 @@ pub fn sys_fchownat(
     // - Changing the file group (gid) without CAP_CHOWN is allowed only if
     //   the caller owns the file and the target group is one the caller
     //   belongs to.
-    let (owner_uid, owner_gid, anon_accepts) = match &anon_owner {
-        Some((uid, gid, path)) => (*uid, *gid, Some(path.as_str())),
-        None => {
-            let meta = meta.as_ref().expect("file resolutions carry metadata");
-            (meta.uid, meta.gid, None)
+    let (owner_uid, owner_gid) = match (&meta, &anon) {
+        (Some(meta), _) => (meta.uid, meta.gid),
+        (None, Some(file_like)) => {
+            let stat = file_like.stat()?;
+            (stat.uid, stat.gid)
         }
+        (None, None) => unreachable!("resolution is either a file or a file-like"),
     };
     let changing_owner = uid != -1 && uid as u32 != owner_uid;
     let changing_group = gid != -1 && gid as u32 != owner_gid;
@@ -873,19 +870,6 @@ pub fn sys_fchownat(
         if !cred.in_group(gid as u32) {
             return Err(StarryError::OperationNotPermitted);
         }
-    }
-
-    // Anonymous fds that do not model ownership (eventfd, epoll, timerfd,
-    // signalfd...) reject the change like Linux instead of silently
-    // succeeding; only pipe/socket style inodes accept it as a no-op.
-    // Only pipe/socket style anonymous inodes model ownership changes;
-    // other anon fds (eventfd, epoll, timerfd, signalfd...) reject the
-    // change like Linux instead of silently succeeding.
-    if let Some(path) = anon_accepts
-        && !path.starts_with("pipe:[")
-        && !path.starts_with("socket:[")
-    {
-        return Err(StarryError::OperationNotSupported);
     }
 
     let uid = if uid == -1 { owner_uid } else { uid as _ };
@@ -912,6 +896,8 @@ pub fn sys_fchownat(
             mode: Some(mode),
             ..Default::default()
         })?;
+    } else if let Some(file_like) = &anon {
+        file_like.set_inode_metadata(None, Some((uid, gid)))?;
     }
     Ok(0)
 }
@@ -970,21 +956,22 @@ pub fn sys_fchmodat(
     }
 
     let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
-    // Anonymous fds (pipes, sockets, eventfd, ...) have no persisted mode:
-    // like Linux, the ownership check runs against the fd's metadata and the
-    // chmod itself succeeds as a no-op. O_PATH fds were already rejected
-    // above; this branch only covers live anonymous FileLike fds.
-    let (loc, anon_owner) = match &resolved {
+    // Linux chmod_common() updates the target inode, or the anonymous inode
+    // backing a pipe/socket. Kinds that cannot persist a mode (eventfd, epoll,
+    // timerfd, signalfd, ...) report EOPNOTSUPP instead of silently
+    // succeeding. O_PATH fds were already rejected above.
+    let (loc, anon) = match &resolved {
         ResolveAtResult::File(loc) => (Some(loc.clone()), None),
-        ResolveAtResult::Other(file_like) => (None, Some(file_like.stat()?.uid)),
+        ResolveAtResult::Other(file_like) => (None, Some(file_like.clone())),
     };
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
     let cred = current.as_thread().cred();
     if !cred.has_cap_fowner() {
-        let owner_uid = match &loc {
-            Some(loc) => loc.metadata()?.uid,
-            None => anon_owner.expect("resolved to anonymous fd above"),
+        let owner_uid = match (&loc, &anon) {
+            (Some(loc), _) => loc.metadata()?.uid,
+            (None, Some(file_like)) => file_like.stat()?.uid,
+            (None, None) => unreachable!("resolution is either a file or a file-like"),
         };
         if cred.fsuid != owner_uid {
             return Err(StarryError::OperationNotPermitted);
@@ -996,6 +983,8 @@ pub fn sys_fchmodat(
             mode: Some(NodePermission::from_bits_truncate(mode as u16)),
             ..Default::default()
         })?;
+    } else if let Some(file_like) = &anon {
+        file_like.set_inode_metadata(Some(mode & 0o7777), None)?;
     }
     Ok(0)
 }

@@ -1,4 +1,4 @@
-use alloc::{format, string::ToString, sync::Arc, vec::Vec};
+use alloc::{format, string::{String, ToString}, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     mem::size_of,
@@ -373,6 +373,18 @@ fn try_open_proc_exe(
         Ok(proc_data) => proc_data,
         Err(err) => return Some(Err(err)),
     };
+    // The backing object is only reachable when the caller's current root and
+    // mount namespace actually expose the procfs magic link. A chroot/pivot
+    // root without `/proc`, or a tmpfs mounted over `/proc`, must observe the
+    // normal lookup result instead; fall through so the generic walk reports
+    // ENOENT/EACCES rather than opening the executable.
+    let procfs_visible = match with_fs(AT_FDCWD, |fs| Ok(fs.resolve_no_follow(path))) {
+        Ok(Ok(loc)) => loc.is_magic_link(),
+        _ => false,
+    };
+    if !procfs_visible {
+        return None;
+    }
     let cred = current.as_thread().cred();
     // /proc/<pid>/exe of another process requires ptrace-style read
     // permission (`PTRACE_MODE_READ_FSCREDS`, fs/proc/base.c
@@ -458,21 +470,34 @@ fn openat2_check_extra_bytes(
     Ok(())
 }
 
-/// Check whether `path` refers to a `/proc/<pid>/ns/<type>` entry.
-/// If so, create an [`NsFd`] and add it to the fd table instead of
-/// opening a regular file.
+/// Check whether the open targets a `/proc/<pid>/ns/<type>` entry. If so,
+/// create an [`NsFd`] and add it to the fd table instead of opening a regular
+/// file.
 ///
-/// Returns `Some(fd)` on success, `Some(Err(...))` on failure, or
-/// `None` if the path does not match (fall through to regular open).
+/// Both the absolute `/proc/<pid>/ns/<type>` spelling and a dirfd-relative
+/// open against a `/proc/<pid>/ns` directory (`openat(ns_dirfd, "mnt")`) are
+/// recognized: Linux resolves the namespace magic link after a real pathname
+/// lookup, so the dirfd-relative form must build the same descriptor.
+///
+/// Returns `Some(fd)` on success, `Some(Err(...))` on failure, or `None` if
+/// the open does not target a namespace entry (fall through to regular open).
 fn try_open_nsfd(
     current: &crate::task::UserTaskRef,
+    dirfd: c_int,
     path: &str,
     flags: u32,
 ) -> Option<crate::StarryResult<i32>> {
-    // Must be of the form /proc/<pid>/ns/<type>
-    if !path.starts_with("/proc/") {
-        return None;
-    }
+    let target = absolute_ns_target(current, path)
+        .or_else(|| dirfd_relative_ns_target(dirfd, path))?;
+    Some(target.and_then(|(task, ns_type)| ns_fd_from_task(&task, &ns_type, flags)))
+}
+
+/// Resolves the task and namespace type for an absolute `/proc/<pid>/ns/<type>`
+/// path. Returns `None` when the path does not have that shape.
+fn absolute_ns_target(
+    current: &crate::task::UserTaskRef,
+    path: &str,
+) -> Option<crate::StarryResult<(crate::task::UserTaskRef, String)>> {
     let rest = path.strip_prefix("/proc/")?;
     let (pid_str, ns_type_str) = rest.split_once("/ns/")?;
     if pid_str.is_empty() || ns_type_str.is_empty() {
@@ -484,23 +509,72 @@ fn try_open_nsfd(
     }
 
     let tgid = if pid_str == "self" {
-        current_pid_view().visible_process_number(&current.as_thread().proc_data.identity())?
+        match current_pid_view().visible_process_number(&current.as_thread().proc_data.identity()) {
+            Some(tgid) => tgid,
+            None => return Some(Err(StarryError::NotFound)),
+        }
     } else {
-        TgidNumber::try_from(pid_str.parse::<u32>().ok()?).ok()?
+        match pid_str
+            .parse::<u32>()
+            .ok()
+            .and_then(|pid| TgidNumber::try_from(pid).ok())
+        {
+            Some(tgid) => tgid,
+            None => return Some(Err(StarryError::NotFound)),
+        }
     };
 
-    let proc_data = match get_user_process_data_by_number(tgid) {
-        Ok(p) => p,
+    let task = match get_user_task_by_number(TidNumber::from(tgid.pid_number())) {
+        Ok(task) => task,
         Err(_) => return Some(Err(StarryError::NotFound)),
     };
+    Some(Ok((task, ns_type_str.to_string())))
+}
 
-    let mnt_fs_ns = if ns_type_str == "mnt" {
-        let task = match get_user_task_by_number(TidNumber::from(tgid.pid_number())) {
-            Ok(task) => task,
-            Err(_) => return Some(Err(StarryError::NotFound)),
-        };
+/// Resolves the task and namespace type for a dirfd-relative open whose dirfd
+/// is a `/proc/<pid>/ns` directory. Returns `None` when the dirfd does not
+/// reference such a directory.
+fn dirfd_relative_ns_target(
+    dirfd: c_int,
+    path: &str,
+) -> Option<crate::StarryResult<(crate::task::UserTaskRef, String)>> {
+    if dirfd == AT_FDCWD || path.is_empty() || path.contains('/') {
+        return None;
+    }
+    if !matches!(path, "uts" | "ipc" | "mnt" | "pid" | "net" | "user" | "cgroup") {
+        return None;
+    }
+
+    let parent = match with_fs(dirfd, |fs| Ok(fs.current_dir().clone())) {
+        Ok(location) => location,
+        // A bad dirfd must keep its own errno rather than falling through.
+        Err(err) => return Some(Err(err)),
+    };
+    let Ok(dir) = parent.entry().as_dir() else {
+        return None;
+    };
+    let Ok(ns_dir) =
+        dir.downcast::<crate::pseudofs::SimpleDir<crate::pseudofs::proc::NsDir>>()
+    else {
+        return None;
+    };
+    match ns_dir.ops().ns_task() {
+        Some(task) => Some(Ok((task, path.to_string()))),
+        None => Some(Err(StarryError::NotFound)),
+    }
+}
+
+/// Builds the [`NsFd`] for one `/proc/<pid>/ns/<type>` entry of `task`.
+fn ns_fd_from_task(
+    task: &crate::task::UserTaskRef,
+    ns_type: &str,
+    flags: u32,
+) -> crate::StarryResult<i32> {
+    let proc_data = &task.as_thread().proc_data;
+
+    let mnt_fs_ns = if ns_type == "mnt" {
         let Some(fs_context) = task.as_thread().clone_scope_item(&FS_CONTEXT) else {
-            return Some(Err(StarryError::NotFound));
+            return Err(StarryError::NotFound);
         };
         Some(fs_context.lock().mount_namespace().clone())
     } else {
@@ -509,7 +583,7 @@ fn try_open_nsfd(
 
     let nsproxy = proc_data.namespace_snapshot();
 
-    let nsfd: NsFd = match ns_type_str {
+    let nsfd: NsFd = match ns_type {
         "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
         "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
         "mnt" => NsFd::Mnt {
@@ -520,13 +594,12 @@ fn try_open_nsfd(
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
         "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
-        _ => return Some(Err(StarryError::NotFound)),
+        _ => return Err(StarryError::NotFound),
     };
 
     drop(nsproxy);
 
-    let fd = nsfd.add_to_fd_table(flags & O_CLOEXEC != 0);
-    Some(fd)
+    nsfd.add_to_fd_table(flags & O_CLOEXEC != 0)
 }
 
 ax_tracepoint::define_event_trace!(
@@ -628,7 +701,7 @@ pub fn sys_openat(
 
     // Intercept /proc/<pid>/ns/<type> opens: create an NsFd instead of
     // a regular file descriptor so that setns(2) receives a valid target.
-    if let Some(result) = try_open_nsfd(current, &path, uflags) {
+    if let Some(result) = try_open_nsfd(current, dirfd, &path, uflags) {
         return result.map(|fd| fd as isize);
     }
 
@@ -709,14 +782,6 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
-    // RESOLVE_CACHED cannot be honored: this kernel has no dcache-only
-    // lookup fast path, so any resolution may perform filesystem I/O. Linux
-    // fails such opens with EAGAIN and advises the caller to retry without
-    // the flag (fs/open.c build_open_flags).
-    if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
-        return Err(StarryError::WouldBlock);
-    }
-
     // Linux build_open_flags: "Scoping flags are mutually exclusive."
     if how_value.resolve & RESOLVE_BENEATH as u64 != 0
         && how_value.resolve & RESOLVE_IN_ROOT as u64 != 0
@@ -729,9 +794,33 @@ pub fn sys_openat2(
         return sys_openat(current, dirfd, path, flags, mode);
     };
 
+    // Copy the pathname before the RESOLVE_CACHED short-circuit: an invalid
+    // user pointer is EFAULT, not a retryable cache miss.
     let path = vm_load_path_string(current, path)?;
     if path.is_empty() {
         return Err(StarryError::NotFound);
+    }
+
+    // Linux ignores dirfd for absolute pathnames: only RESOLVE_IN_ROOT
+    // keeps using it, as the resolution root, and requires it to be valid.
+    let dirfd = if path.starts_with('/') && how_value.resolve & RESOLVE_IN_ROOT as u64 == 0 {
+        AT_FDCWD as _
+    } else {
+        dirfd
+    };
+    // Validate the dirfd before the RESOLVE_CACHED short-circuit and before
+    // any magic-link interception, so an invalid dirfd keeps its Linux EBADF
+    // instead of being reported as an unsupported dcache-only lookup.
+    if dirfd != AT_FDCWD {
+        Directory::from_fd(dirfd)?;
+    }
+
+    // RESOLVE_CACHED cannot be honored: this kernel has no dcache-only
+    // lookup fast path, so any resolution may perform filesystem I/O. Linux
+    // fails such opens with EAGAIN and advises the caller to retry without
+    // the flag (fs/open.c build_open_flags).
+    if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
+        return Err(StarryError::WouldBlock);
     }
 
     // Magic links are intercepted by pathname before the VFS walker ever
@@ -767,19 +856,13 @@ pub fn sys_openat2(
         if let Some(result) = try_open_proc_exe(current, &path, uflags) {
             return result.map(|fd| fd as isize);
         }
-        if let Some(result) = try_open_nsfd(current, &path, uflags) {
+        if let Some(result) = try_open_nsfd(current, dirfd, &path, uflags) {
             return result.map(|fd| fd as isize);
         }
     }
 
-    // Linux ignores dirfd for absolute pathnames: only RESOLVE_IN_ROOT
-    // keeps using it, as the resolution root, and requires it to be valid.
-    let dirfd = if path.starts_with('/') && how_value.resolve & RESOLVE_IN_ROOT as u64 == 0 {
-        AT_FDCWD as _
-    } else {
-        dirfd
-    };
-
+    // The resolved dirfd is only meaningful for RESOLVE_IN_ROOT; every other
+    // combination already normalized an absolute path to AT_FDCWD.
     let result = with_fs(dirfd, |fs| {
         // RESOLVE_IN_ROOT uses the dirfd as the resolution root; absolute
         // components and `..` at the root clamp there.
@@ -788,11 +871,6 @@ pub fn sys_openat2(
         } else {
             constraints
         };
-        if constraints.is_no_symlinks() {
-            // RESOLVE_NO_SYMLINKS subsumes O_NOFOLLOW: even the final
-            // component must not be a symlink.
-            options.no_follow(true);
-        }
         options.resolve(constraints);
         Ok(options.open_with_credentials(fs, path, &mutation_cred)?)
     })?;

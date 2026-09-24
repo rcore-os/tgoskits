@@ -153,6 +153,13 @@ impl<O: SimpleDirOps> SimpleDir<O> {
             )
         })
     }
+
+    /// Borrows the directory operations, letting callers downcast the node and
+    /// recover kind-specific state (for example a procfs namespace directory's
+    /// owning task).
+    pub fn ops(&self) -> &Arc<O> {
+        &self.ops
+    }
 }
 
 #[inherit_methods(from = "self.node")]
