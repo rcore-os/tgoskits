@@ -9,6 +9,8 @@ pub enum Gpu3dErrorKind {
     Unsupported,
     NotReady,
     InvalidParam,
+    /// A bounded wait for host completion expired (stalled host).
+    TimedOut,
     Other,
 }
 

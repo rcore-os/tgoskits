@@ -234,6 +234,30 @@ impl DisplayDevice for RdifDisplayDevice {
             .map_err(map_display_error)
     }
 
+    fn wait_fence(&mut self, fence_id: u64) -> Result<(), DisplayError> {
+        self.device.wait_fence(fence_id).map_err(map_display_error)
+    }
+
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        self.device.pump().map_err(map_display_error)
+    }
+
+    fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.device
+            .fence_completed(fence_id)
+            .map_err(map_display_error)
+    }
+
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        self.device
+            .fence_completed_no_pump(fence_id)
+            .map_err(map_display_error)
+    }
+
+    fn ctrl_notify(&mut self) {
+        self.device.ctrl_notify();
+    }
+
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
         self.device
             .get_capset_info(index)
@@ -272,6 +296,7 @@ fn map_display_error(error: RdifDisplayError) -> DisplayError {
                 RdifGpu3dErrorKind::Unsupported => Gpu3dErrorKind::Unsupported,
                 RdifGpu3dErrorKind::NotReady => Gpu3dErrorKind::NotReady,
                 RdifGpu3dErrorKind::InvalidParam => Gpu3dErrorKind::InvalidParam,
+                RdifGpu3dErrorKind::TimedOut => Gpu3dErrorKind::TimedOut,
                 RdifGpu3dErrorKind::Other => Gpu3dErrorKind::Other,
             };
             DisplayError::Gpu3dError(mapped)

@@ -28,8 +28,13 @@ crate::model_register!(
 
 #[cfg(feature = "pci")]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
-    let transport =
-        crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::GPU)?;
+    // INTx stays unmasked at probe time: the completion IRQ handler
+    // (`handle_irq`) pumps the used ring, which recycles fire-and-forget
+    // commands and advances the fence high-water mark that out-fence waiters
+    // poll. Masking it would leave fence signaling to the background
+    // refresher only (measured on the fire-and-forget model: the IRQ path
+    // halves fence-signal latency).
+    let transport = crate::pci::take_virtio_transport(probe.endpoint_mut(), DeviceType::GPU)?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }
@@ -67,7 +72,7 @@ unsafe impl<T: Transport + 'static> Send for VirtIoDisplay<T> {}
 
 impl<T: Transport + 'static> VirtIoDisplay<T> {
     fn new(transport: T, irq_num: Option<usize>) -> Result<Self, virtio_gpu::Error> {
-        let mut raw = VirtIoGpu::new(transport)?;
+        let mut raw = VirtIoGpu::new(transport, axklib::time::monotonic_nanos)?;
         let framebuffer = raw.setup_framebuffer()?;
         let fb_base = framebuffer.as_mut_ptr();
         let fb_size = framebuffer.len();
@@ -138,6 +143,11 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
 
     fn handle_irq(&mut self) -> Event {
         let irq = self.raw.ack_interrupt();
+        // Drain the control queue's used ring: async commands are
+        // fire-and-forget, so the completion IRQ is the prompt signal that
+        // their descriptors can be recycled and the fence level advanced
+        // (Linux `virtio_gpu_dequeue_ctrl_func`).
+        let _ = self.raw.pump_completions();
         display_irq_event(self.irq_enabled, irq)
     }
 
@@ -149,6 +159,8 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         width: u32,
         height: u32,
     ) -> Result<(), DisplayError> {
+        // Fire-and-forget: the caller's transaction ends with `ctrl_notify`,
+        // which delivers the accumulated batch with one kick.
         self.raw
             .resource_create_2d(resource_id, width, height)
             .map_err(map_gpu3d_err)
@@ -345,10 +357,38 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
     fn submit_cmd(&mut self, ctx_id: u32, cmds: &[u8]) -> Result<u64, DisplayError> {
         let fence_id = self.next_fence_id;
         self.next_fence_id = self.next_fence_id.wrapping_add(1).max(1);
+        // Fire-and-forget: the fence id is recorded on the enqueued command
+        // and signals when the host finished the batch; completion is
+        // observed through `wait_fence`/`fence_completed`.
         self.raw
             .submit_3d(ctx_id, fence_id, cmds)
             .map_err(map_gpu3d_err)?;
         Ok(fence_id)
+    }
+
+    fn wait_fence(&mut self, fence_id: u64) -> Result<(), DisplayError> {
+        self.raw.wait_fence(fence_id).map_err(map_gpu3d_err)
+    }
+
+    fn pump(&mut self) -> Result<(), DisplayError> {
+        self.raw.pump_completions().map_err(map_gpu3d_err)
+    }
+
+    fn fence_completed(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        // Drain the used ring before answering: the device's completion
+        // interrupt is not delivered in every environment, so the completion
+        // level only advances when some caller pumps. Every fence query
+        // pumping keeps a poll-blocked waiter's refresher able to observe
+        // completion.
+        self.raw.pump_completions().map_err(map_gpu3d_err)?;
+        Ok(self.raw.fence_completed(fence_id))
+    }
+
+    fn fence_completed_no_pump(&mut self, fence_id: u64) -> Result<bool, DisplayError> {
+        // Completion-level-only query for callers that have already drained
+        // the used ring (e.g. right after `handle_irq` pumped it): re-pumping
+        // per registered fence would double that path's cost.
+        Ok(self.raw.fence_completed(fence_id))
     }
 
     fn get_capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
@@ -367,6 +407,10 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         size: u32,
     ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
         self.raw.get_capset(id, ver, size).map_err(map_gpu3d_err)
+    }
+
+    fn ctrl_notify(&mut self) {
+        self.raw.ctrl_notify();
     }
 }
 
@@ -421,6 +465,14 @@ fn map_gpu3d_err(err: virtio_gpu::Error) -> DisplayError {
     let kind = match err {
         virtio_gpu::Error::Unsupported => Gpu3dErrorKind::Unsupported,
         virtio_gpu::Error::NotReady => Gpu3dErrorKind::NotReady,
+        // Queue exhaustion under a stalled host: retry semantics — the ioctl
+        // consumer sees EAGAIN instead of the whole guest spinning to death.
+        virtio_gpu::Error::QueueBusy => Gpu3dErrorKind::NotReady,
+        // Bounded wait expired on a stalled host: the caller sees ETIMEDOUT.
+        virtio_gpu::Error::TimedOut => Gpu3dErrorKind::TimedOut,
+        // A foreign completion leaves the queue unusable: a plain I/O error
+        // to the caller; the driver already logged the diagnostic.
+        virtio_gpu::Error::QueueBroken => Gpu3dErrorKind::IoError,
         virtio_gpu::Error::InvalidParam => Gpu3dErrorKind::InvalidParam,
         virtio_gpu::Error::VirtIo(virtio_drivers::Error::IoError) => Gpu3dErrorKind::IoError,
         _ => Gpu3dErrorKind::Other,

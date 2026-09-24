@@ -4,18 +4,16 @@ use alloc::{boxed::Box, vec::Vec};
 use core::mem::size_of;
 
 use virtio_drivers::{
-    BufferDirection, Hal, PAGE_SIZE,
-    queue::VirtQueue,
-    read_config,
+    BufferDirection, Hal, PAGE_SIZE, read_config,
     transport::{DeviceStatus, InterruptStatus, Transport},
     write_config,
 };
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::{
-    BLOB_FLAG_USE_CROSS_DEVICE, BLOB_FLAG_USE_MASK, BLOB_MEM_GUEST, BLOB_MEM_HOST3D,
-    BLOB_MEM_HOST3D_GUEST, CapsetInfo, Error, IrqEvent, Rect, ResourceCreate3d, ResourceCreateBlob,
-    Transfer3d,
+    BLOB_FLAG_USE_CROSS_DEVICE, BLOB_FLAG_USE_MASK, CapsetInfo, Error, IrqEvent, Rect,
+    ResourceCreate3d, ResourceCreateBlob, Transfer3d,
+    ctrl::ControlQueue,
     dma::Dma,
     wire::{
         CmdCtxCreate, CmdCtxResource, CmdGetCapset, CmdGetCapsetInfo, CmdResourceCreate3D,
@@ -30,18 +28,10 @@ use crate::{
 /// does not use).
 const CONTROL_QUEUE: u16 = 0;
 
-/// Descriptors per virtqueue.
-///
-/// `SUBMIT_3D` puts three buffers into one chain (the `CtrlHeader`, the virgl
-/// command stream and the response). `VirtQueue::add` requires the whole chain
-/// to fit in the queue size, and 16 is the smallest power of two that covers
-/// that plus room for pipelined commands.
-const CONTROL_QUEUE_SIZE: u16 = 16;
-
 /// Receive buffer for control responses.
 const RECV_BUF_SIZE: usize = PAGE_SIZE;
 
-/// Transmit buffer for control requests.
+/// Transmit buffer for control request headers of blocking commands.
 const SEND_BUF_SIZE: usize = PAGE_SIZE;
 
 /// Scanout driven by this driver.
@@ -55,25 +45,39 @@ const FRAMEBUFFER_RESOURCE_ID: u32 = 0xbabe;
 /// The driver covers the 2D display path and the virgl 3D path. Capabilities
 /// that the device did not negotiate are rejected with [`Error::Unsupported`]
 /// instead of being sent anyway.
+///
+/// # Submission model
+///
+/// The control queue runs in the Linux virtio_gpu style (see
+/// [`crate::ctrl`]): the `*_async` commands (also in [`crate::async_api`])
+/// enqueue and return immediately without kicking, and report device-side
+/// errors via the log rather than their return value. Delivery happens when
+/// the consumer calls [`VirtIoGpu::ctrl_notify`] at its transaction boundary
+/// (Linux `virtio_gpu_notify()`); a transaction that never calls it leaves
+/// its commands undelivered. The blocking commands below keep their
+/// historical semantics: they wait for the device's answer and can be freely
+/// mixed with async ones (the used ring is FIFO, so ordering is preserved
+/// end to end).
 pub struct VirtIoGpu<H: Hal, T: Transport> {
-    transport: T,
+    pub(crate) transport: T,
     /// Rectangle of the current framebuffer, if one was set up.
     rect: Option<Rect>,
     /// DMA region backing the default framebuffer.
     frame_buffer_dma: Option<Dma<H>>,
-    /// Queue carrying control commands.
-    control_queue: VirtQueue<H, { CONTROL_QUEUE_SIZE as usize }>,
-    /// Receive buffer for control responses.
-    queue_buf_recv: Box<[u8]>,
-    /// Transmit buffer for control requests.
+    /// Queue carrying control commands, with the async submission state.
+    pub(crate) ctrl: ControlQueue<H>,
+    /// Transmit buffer for control requests of blocking commands.
     ///
-    /// Control requests must live in memory that stays mapped and unchanged for
-    /// as long as the command is in flight: the device reads the request header
-    /// asynchronously after the descriptor is published, so the buffer is owned
-    /// by this structure for its whole lifetime instead of pointing at a
-    /// by-value request that would go out of scope while the device still reads
-    /// it. See [`VirtIoGpu::request_with_len`].
+    /// Blocking requests are copied here before they are submitted: the
+    /// device-visible address is whatever [`Hal::share`] derives from it, and
+    /// a caller's request may live anywhere — including a task kernel stack
+    /// in a vmap'd region, which a linear-offset `virt_to_phys` translation
+    /// does not map correctly. Allocator-owned buffers always resolve
+    /// faithfully. (The async path does not need this: [`ControlQueue::enqueue`]
+    /// copies commands into its own heap arenas before adding them.)
     queue_buf_send: Box<[u8]>,
+    /// Receive buffer for control responses of blocking commands.
+    queue_buf_recv: Box<[u8]>,
     /// Whether the VIRGL 3D feature was negotiated.
     has_virgl: bool,
     /// Whether `VIRTIO_GPU_F_RESOURCE_BLOB` was negotiated.
@@ -84,7 +88,13 @@ pub struct VirtIoGpu<H: Hal, T: Transport> {
 
 impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// Initialises the device over `transport` and negotiates the feature set.
-    pub fn new(mut transport: T) -> Result<Self, Error> {
+    ///
+    /// `clock` must return monotonically increasing nanoseconds (for example
+    /// a platform monotonic-time reader). It bounds the driver's blocking
+    /// waits — `wait_fence` and the teardown drains — so a stalled or dead
+    /// host unwedges the caller with [`Error::TimedOut`] after a fixed time
+    /// instead of spinning forever under the consumer's global lock.
+    pub fn new(mut transport: T, clock: fn() -> u64) -> Result<Self, Error> {
         let negotiated = transport.begin_init(SUPPORTED_FEATURES);
 
         let events_read = read_config!(transport, Config, events_read)?;
@@ -93,15 +103,16 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             "virtio-gpu config: events_read={events_read:#x}, num_scanouts={num_scanouts:#x}"
         );
 
-        let control_queue = VirtQueue::new(
+        let ctrl = ControlQueue::new(
             &mut transport,
             CONTROL_QUEUE,
             negotiated.contains(Features::RING_INDIRECT_DESC),
             negotiated.contains(Features::RING_EVENT_IDX),
+            clock,
         )?;
 
-        let queue_buf_recv = alloc::vec![0u8; RECV_BUF_SIZE].into_boxed_slice();
         let queue_buf_send = alloc::vec![0u8; SEND_BUF_SIZE].into_boxed_slice();
+        let queue_buf_recv = alloc::vec![0u8; RECV_BUF_SIZE].into_boxed_slice();
 
         transport.finish_init();
 
@@ -117,9 +128,9 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             transport,
             rect: None,
             frame_buffer_dma: None,
-            control_queue,
-            queue_buf_recv,
+            ctrl,
             queue_buf_send,
+            queue_buf_recv,
             has_virgl,
             has_resource_blob,
             has_context_init,
@@ -286,6 +297,11 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         self.rect = None;
         self.resource_detach_backing(FRAMEBUFFER_RESOURCE_ID)?;
         self.resource_unref(FRAMEBUFFER_RESOURCE_ID)?;
+        // Fire-and-forget teardown: the device must be provably done with the
+        // backing before it is handed back to the allocator, so drain the
+        // ring before releasing the DMA.
+        self.ctrl_notify();
+        self.ctrl.wait_idle(&mut self.transport)?;
         self.frame_buffer_dma = None;
         Ok(())
     }
@@ -296,96 +312,45 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         self.set_scanout(rect, SCANOUT_ID, FRAMEBUFFER_RESOURCE_ID)
     }
 
-    /// Transfers the framebuffer to the host and flushes it to the scanout.
-    pub fn flush(&mut self) -> Result<(), Error> {
-        let rect = self.rect.ok_or(Error::NotReady)?;
-        self.transfer_to_host_2d(rect, 0, FRAMEBUFFER_RESOURCE_ID)?;
-        self.resource_flush(rect, FRAMEBUFFER_RESOURCE_ID)
-    }
-
-    // --- 2D resource and scanout commands ---
-
-    /// Creates a 2D resource in `B8G8R8A8_UNORM` format.
+    /// Fire-and-forget variant of [`VirtIoGpu::resource_create_2d`]: returns as
+    /// soon as the command is enqueued (see the [`VirtIoGpu`] submission-model
+    /// docs). Device errors are logged, not returned.
     pub fn resource_create_2d(
         &mut self,
         resource_id: u32,
         width: u32,
         height: u32,
     ) -> Result<(), Error> {
-        let response: CtrlHeader = self.request(ResourceCreate2D {
-            header: CtrlHeader::with_type(Command::RESOURCE_CREATE_2D),
-            resource_id,
-            format: Format::B8G8R8A8Unorm,
-            width,
-            height,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &ResourceCreate2D {
+                    header: CtrlHeader::with_type(Command::RESOURCE_CREATE_2D),
+                    resource_id,
+                    format: Format::B8G8R8A8Unorm,
+                    width,
+                    height,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
-    /// Binds `resource_id` to `scanout_id` for the given display area.
-    pub fn set_scanout(
-        &mut self,
-        rect: Rect,
-        scanout_id: u32,
-        resource_id: u32,
-    ) -> Result<(), Error> {
-        let response: CtrlHeader = self.request(SetScanout {
-            header: CtrlHeader::with_type(Command::SET_SCANOUT),
-            rect,
-            scanout_id,
-            resource_id,
-        })?;
-        response.check_type(Command::OK_NODATA)
-    }
-
-    /// Refreshes `rect` of `resource_id` on the display.
-    pub fn resource_flush(&mut self, rect: Rect, resource_id: u32) -> Result<(), Error> {
-        let response: CtrlHeader = self.request(ResourceFlush {
-            header: CtrlHeader::with_type(Command::RESOURCE_FLUSH),
-            rect,
-            resource_id,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
-    }
-
-    /// Transfers `rect` of a 2D resource from guest memory to the host.
-    pub fn transfer_to_host_2d(
-        &mut self,
-        rect: Rect,
-        offset: u64,
-        resource_id: u32,
-    ) -> Result<(), Error> {
-        let response: CtrlHeader = self.request(TransferToHost2D {
-            header: CtrlHeader::with_type(Command::TRANSFER_TO_HOST_2D),
-            rect,
-            offset,
-            resource_id,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
-    }
-
-    /// Attaches one guest-physical memory range to a resource.
+    /// Attaches one guest-physical memory range to a resource; see the
+    /// [`VirtIoGpu`] submission-model docs for the ordering argument.
+    /// Device errors are logged, not returned.
     ///
-    /// The device reads and writes `paddr..paddr + length` directly for as long
-    /// as the resource exists, so the caller must guarantee that the range is
-    /// device-accessible guest memory and stays allocated, unaliased and free of
-    /// concurrent access until the matching [`VirtIoGpu::resource_unref`]
-    /// (after a [`VirtIoGpu::resource_detach_backing`], when the caller drives
-    /// the teardown itself).
-    ///
-    /// A zero `length` is rejected with [`Error::InvalidParam`] and a range that
-    /// would wrap the 64-bit address space with [`Error::Overflow`], before
-    /// anything is sent. These are protocol and arithmetic checks only; they do
-    /// not weaken the ownership contract below.
+    /// The validation of the synchronous variant (non-zero `length`, no
+    /// address-space wrap) runs here too: an enqueue that would have been
+    /// rejected must not be sent and only then fail invisibly on the log.
     ///
     /// # Safety
     ///
     /// `paddr..paddr + length` must be valid device-accessible memory that
-    /// outlives this mapping and is not accessed by anyone else while the device
-    /// may touch it. `length` must not exceed the region actually owned by the
-    /// caller.
+    /// outlives this mapping and is not accessed by anyone else while the
+    /// device may touch it. `length` must not exceed the region actually owned
+    /// by the caller.
     pub unsafe fn resource_attach_backing(
         &mut self,
         resource_id: u32,
@@ -400,44 +365,155 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         paddr
             .checked_add(u64::from(length))
             .ok_or(Error::Overflow)?;
-        let response: CtrlHeader = self.request(ResourceAttachBacking {
-            header: CtrlHeader::with_type(Command::RESOURCE_ATTACH_BACKING),
-            resource_id,
-            nr_entries: 1,
-            addr: paddr,
-            length,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &ResourceAttachBacking {
+                    header: CtrlHeader::with_type(Command::RESOURCE_ATTACH_BACKING),
+                    resource_id,
+                    nr_entries: 1,
+                    addr: paddr,
+                    length,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
+    }
+
+    /// Fire-and-forget variant of [`VirtIoGpu::set_scanout`] (Linux
+    /// `virtio_gpu_primary_plane_update` doesn't wait); see the
+    /// [`VirtIoGpu`] submission-model docs for the ordering argument.
+    /// Device errors are logged, not returned.
+    pub fn set_scanout(
+        &mut self,
+        rect: Rect,
+        scanout_id: u32,
+        resource_id: u32,
+    ) -> Result<(), Error> {
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &SetScanout {
+                    header: CtrlHeader::with_type(Command::SET_SCANOUT),
+                    rect,
+                    scanout_id,
+                    resource_id,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
+    }
+
+    /// Fire-and-forget variant of [`VirtIoGpu::transfer_to_host_2d`]; see the
+    /// [`VirtIoGpu`] submission-model docs for the ordering argument.
+    /// Device errors are logged, not returned.
+    pub fn transfer_to_host_2d(
+        &mut self,
+        rect: Rect,
+        offset: u64,
+        resource_id: u32,
+    ) -> Result<(), Error> {
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &TransferToHost2D {
+                    header: CtrlHeader::with_type(Command::TRANSFER_TO_HOST_2D),
+                    rect,
+                    offset,
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
     /// Detaches the backing memory from a resource.
     ///
-    /// After this returns, the device no longer reads or writes the ranges that
-    /// were attached.
-    fn resource_detach_backing(&mut self, resource_id: u32) -> Result<(), Error> {
-        let response: CtrlHeader = self.request(ResourceDetachBacking {
-            header: CtrlHeader::with_type(Command::RESOURCE_DETACH_BACKING),
-            resource_id,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
+    /// After the host processes this command it no longer reads or writes the
+    /// ranges that were attached. Fire-and-forget: teardown callers drain the
+    /// queue ([`VirtIoGpu::wait_idle`]-style) before releasing the memory.
+    pub(crate) fn resource_detach_backing(&mut self, resource_id: u32) -> Result<(), Error> {
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &ResourceDetachBacking {
+                    header: CtrlHeader::with_type(Command::RESOURCE_DETACH_BACKING),
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
     /// Releases a resource.
     ///
     /// The protocol has a single `RESOURCE_UNREF` for 2D and 3D resources, so
-    /// this is also the only way to destroy a 3D resource. Once it returns, the
-    /// guest memory previously attached to the resource may be freed by its
-    /// owner.
+    /// this is also the only way to destroy a 3D resource. The command is
+    /// submitted and delivered, and this call returns only after the host has
+    /// popped it — the guest memory previously attached to the resource may be
+    /// freed by its owner as soon as it returns (Linux instead defers the free
+    /// to its completion callback; draining here is the no-callback
+    /// equivalent).
+    ///
+    /// The drain is bounded by the wait timeout: on [`Error::TimedOut`] the
+    /// host is unrecoverably stalled, and the caller releasing memory the
+    /// device may still own is the accepted tradeoff for unwedging the guest.
     pub fn resource_unref(&mut self, resource_id: u32) -> Result<(), Error> {
-        let response: CtrlHeader = self.request(ResourceUnref {
-            header: CtrlHeader::with_type(Command::RESOURCE_UNREF),
-            resource_id,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &ResourceUnref {
+                    header: CtrlHeader::with_type(Command::RESOURCE_UNREF),
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())?;
+        self.ctrl_notify();
+        self.ctrl.wait_idle(&mut self.transport)
     }
+
+    /// Refreshes `rect` of `resource_id` on the display. Fire-and-forget
+    /// (Linux `virtio_gpu_cmd_resource_flush` doesn't wait). Device errors are
+    /// logged by the completion pump, not returned.
+    pub fn resource_flush(&mut self, rect: Rect, resource_id: u32) -> Result<(), Error> {
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &ResourceFlush {
+                    header: CtrlHeader::with_type(Command::RESOURCE_FLUSH),
+                    rect,
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
+    }
+
+    /// Transfers the framebuffer to the host and flushes it to the scanout.
+    ///
+    /// Fire-and-forget: both commands are enqueued and delivered with one
+    /// boundary notify; the console refresh path does not need completion.
+    pub fn flush(&mut self) -> Result<(), Error> {
+        let rect = self.rect.ok_or(Error::NotReady)?;
+        self.transfer_to_host_2d(rect, 0, FRAMEBUFFER_RESOURCE_ID)?;
+        self.resource_flush(rect, FRAMEBUFFER_RESOURCE_ID)?;
+        self.ctrl_notify();
+        Ok(())
+    }
+
+    // --- 2D resource and scanout commands ---
 
     // --- 3D (virgl) commands ---
 
@@ -470,7 +546,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     ///
     /// Every 3D command is undefined without the feature and the host would
     /// reject it, so the driver fails early with a domain error.
-    fn require_virgl(&self) -> Result<(), Error> {
+    pub(crate) fn require_virgl(&self) -> Result<(), Error> {
         if self.has_virgl {
             Ok(())
         } else {
@@ -527,20 +603,19 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         Ok(self.queue_buf_recv[start..end].to_vec())
     }
 
+    // --- 3D (virgl) commands ---
+
     /// Creates a 3D rendering context.
     ///
     /// `context_init` carries the capset ID that selects the context protocol
     /// (0 for virgl1, 2 for virgl2). `name` is a debug label the host may show;
-    /// it is truncated to 64 bytes.
-    ///
-    /// The context-init protocol is only available when the device negotiated
-    /// `VIRTIO_GPU_F_CONTEXT_INIT`, so a non-zero `context_init` on a device
-    /// without it is rejected with [`Error::Unsupported`] instead of being sent.
-    /// The legacy `context_init == 0` path still works whenever VIRGL was
-    /// negotiated.
+    /// it is truncated to 64 bytes. Fire-and-forget (Linux
+    /// `virtio_gpu_cmd_context_create` doesn't wait): every later command for
+    /// this context is enqueued after it on the same ring.
+    /// Device errors are logged, not returned.
     pub fn ctx_create(&mut self, ctx_id: u32, name: &str, context_init: u32) -> Result<(), Error> {
         self.require_virgl()?;
-        if context_init != 0 && !self.has_context_init {
+        if context_init != 0 && !self.has_context_init() {
             return Err(Error::Unsupported);
         }
         let mut cmd = CmdCtxCreate {
@@ -553,121 +628,196 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         let nlen = bytes.len().min(cmd.debug_name.len());
         cmd.debug_name[..nlen].copy_from_slice(&bytes[..nlen]);
         cmd.nlen = nlen as u32;
-
-        let response: CtrlHeader = self.request(cmd)?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(&mut self.transport, &cmd, None, 0)
+            .map(|_| ())
     }
 
-    /// Destroys a 3D rendering context.
+    /// Destroys a 3D rendering context. Fire-and-forget (Linux
+    /// `virtio_gpu_cmd_context_destroy` doesn't wait). Device errors are
+    /// logged, not returned.
     pub fn ctx_destroy(&mut self, ctx_id: u32) -> Result<(), Error> {
         self.require_virgl()?;
-        let response: CtrlHeader =
-            self.request(CtrlHeader::with_type_and_ctx(Command::CTX_DESTROY, ctx_id))?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CtrlHeader::with_type_and_ctx(Command::CTX_DESTROY, ctx_id),
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
-    /// Attaches a resource to a rendering context.
+    /// Fire-and-forget variant of [`VirtIoGpu::ctx_attach_resource`] (Linux
+    /// `virtio_gpu_cmd_ctx_attach_resource` doesn't wait); see the
+    /// [`VirtIoGpu`] submission-model docs for the ordering argument.
+    /// Device errors are logged, not returned.
     pub fn ctx_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> Result<(), Error> {
         self.require_virgl()?;
-        let response: CtrlHeader = self.request(CmdCtxResource {
-            header: CtrlHeader::with_type_and_ctx(Command::CTX_ATTACH_RESOURCE, ctx_id),
-            resource_id,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdCtxResource {
+                    header: CtrlHeader::with_type_and_ctx(Command::CTX_ATTACH_RESOURCE, ctx_id),
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
-    /// Detaches a resource from a rendering context.
+    /// Detaches a resource from a rendering context. Fire-and-forget (Linux
+    /// `virtio_gpu_cmd_ctx_detach_resource` doesn't wait). Device errors are
+    /// logged, not returned.
     pub fn ctx_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> Result<(), Error> {
         self.require_virgl()?;
-        let response: CtrlHeader = self.request(CmdCtxResource {
-            header: CtrlHeader::with_type_and_ctx(Command::CTX_DETACH_RESOURCE, ctx_id),
-            resource_id,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdCtxResource {
+                    header: CtrlHeader::with_type_and_ctx(Command::CTX_DETACH_RESOURCE, ctx_id),
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
-    /// Creates a 3D resource such as a texture, render target or buffer.
+    /// Fire-and-forget variant of [`VirtIoGpu::resource_create_3d`]
+    /// (Linux `virtio_gpu_cmd_resource_create_3d` doesn't wait); see the
+    /// [`VirtIoGpu`] submission-model docs for the ordering argument.
+    /// Device errors are logged, not returned.
     pub fn resource_create_3d(&mut self, params: ResourceCreate3d) -> Result<(), Error> {
         self.require_virgl()?;
-        let response: CtrlHeader = self.request(CmdResourceCreate3D {
-            header: CtrlHeader::with_type_and_ctx(Command::RESOURCE_CREATE_3D, params.ctx_id),
-            resource_id: params.resource_id,
-            target: params.target,
-            format: params.format,
-            bind: params.bind,
-            width: params.width,
-            height: params.height,
-            depth: params.depth,
-            array_size: params.array_size,
-            last_level: params.last_level,
-            nr_samples: params.nr_samples,
-            flags: params.flags,
-            _padding: 0,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdResourceCreate3D {
+                    header: CtrlHeader::with_type_and_ctx(
+                        Command::RESOURCE_CREATE_3D,
+                        params.ctx_id,
+                    ),
+                    resource_id: params.resource_id,
+                    target: params.target,
+                    format: params.format,
+                    bind: params.bind,
+                    width: params.width,
+                    height: params.height,
+                    depth: params.depth,
+                    array_size: params.array_size,
+                    last_level: params.last_level,
+                    nr_samples: params.nr_samples,
+                    flags: params.flags,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
-    /// Transfers a 3D resource from guest memory to the host.
+    /// Transfers a 3D resource from guest memory to the host. Fire-and-forget
+    /// (Linux `virtio_gpu_cmd_transfer_to_host_3d` doesn't wait): the host
+    /// applies it in ring order, before anything enqueued later. Device errors
+    /// are logged, not returned.
     pub fn transfer_to_host_3d(&mut self, params: Transfer3d) -> Result<(), Error> {
         self.require_virgl()?;
-        let response: CtrlHeader = self.request(CmdTransferHost3D {
-            header: CtrlHeader::with_type_and_ctx(Command::TRANSFER_TO_HOST_3D, params.ctx_id),
-            box_: params.box_,
-            offset: params.offset,
-            resource_id: params.resource_id,
-            level: params.level,
-            stride: params.stride,
-            layer_stride: params.layer_stride,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdTransferHost3D {
+                    header: CtrlHeader::with_type_and_ctx(
+                        Command::TRANSFER_TO_HOST_3D,
+                        params.ctx_id,
+                    ),
+                    box_: params.box_,
+                    offset: params.offset,
+                    resource_id: params.resource_id,
+                    level: params.level,
+                    stride: params.stride,
+                    layer_stride: params.layer_stride,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
-    /// Transfers a 3D resource from the host to guest memory.
+    /// Transfers a 3D resource from the host to guest memory, and waits until
+    /// the host has applied it: the caller reads the guest memory right after
+    /// this returns, so completion has to be observed before the data is
+    /// valid (Linux waits the same transfer's fence in
+    /// `virtio_gpu_transfer_from_host_ioctl`). The read-back drain is bounded
+    /// by the wait timeout — see [`VirtIoGpu::new`].
     pub fn transfer_from_host_3d(&mut self, params: Transfer3d) -> Result<(), Error> {
         self.require_virgl()?;
-        let response: CtrlHeader = self.request(CmdTransferHost3D {
-            header: CtrlHeader::with_type_and_ctx(Command::TRANSFER_FROM_HOST_3D, params.ctx_id),
-            box_: params.box_,
-            offset: params.offset,
-            resource_id: params.resource_id,
-            level: params.level,
-            stride: params.stride,
-            layer_stride: params.layer_stride,
-        })?;
-        response.check_type(Command::OK_NODATA)
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdTransferHost3D {
+                    header: CtrlHeader::with_type_and_ctx(
+                        Command::TRANSFER_FROM_HOST_3D,
+                        params.ctx_id,
+                    ),
+                    box_: params.box_,
+                    offset: params.offset,
+                    resource_id: params.resource_id,
+                    level: params.level,
+                    stride: params.stride,
+                    layer_stride: params.layer_stride,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())?;
+        self.ctrl_notify();
+        self.ctrl.wait_idle(&mut self.transport)
     }
 
-    /// Submits a virgl command stream to a rendering context.
+    /// Fire-and-forget variant of [`VirtIoGpu::submit_3d`]: returns as soon as
+    /// the command stream is enqueued, not when rendering has finished.
+    /// `fence_id` is recorded; block on [`VirtIoGpu::wait_fence`] (which also
+    /// delivers the batch) or poll [`VirtIoGpu::fence_completed`] alongside
+    /// [`VirtIoGpu::ctrl_notify`] before reading back anything the batch
+    /// renders. The high-water mark only advances when completed entries are
+    /// popped ([`VirtIoGpu::pump_completions`], from the IRQ handler or the
+    /// poll loop itself), so a poll loop with neither spins forever. Mirrors
+    /// Linux `virtio_gpu_cmd_submit` (enqueue-and-return).
     ///
-    /// `cmds` is the encoded stream produced by the Mesa virgl Gallium driver
-    /// in userspace and is sent as a second buffer next to the `SUBMIT_3D`
-    /// header. `fence_id` is assigned by the caller; the host signals that fence
-    /// once the stream has been processed. The stream length must be a multiple
-    /// of four, because the host passes `size / 4` dwords to virglrenderer.
+    /// The command carries `VIRTIO_GPU_FLAG_FENCE`, so the host pops the used
+    /// entry — and thus advances the fence high-water mark past `fence_id` —
+    /// only when the virgl fence fires, i.e. after the host finished decoding
+    /// and executing the batch (Linux fences every EXECBUFFER;
+    /// `virtio_gpu_init_submit`, virtgpu_submit.c). Without the flag the
+    /// used-pop would happen at decode+enqueue, making `wait_fence` report
+    /// completion before rendering actually finished. Device errors are
+    /// logged, not returned.
     pub fn submit_3d(&mut self, ctx_id: u32, fence_id: u64, cmds: &[u8]) -> Result<(), Error> {
         self.require_virgl()?;
-        if !cmds.len().is_multiple_of(size_of::<u32>()) {
+        if !cmds.len().is_multiple_of(core::mem::size_of::<u32>()) {
             return Err(Error::InvalidParam);
         }
         let size = u32::try_from(cmds.len()).map_err(|_| Error::Overflow)?;
-        let response: CtrlHeader = self.request_with_data(
-            CmdSubmit3D {
-                header: CtrlHeader::with_fence(Command::SUBMIT_3D, ctx_id, fence_id),
-                size,
-                _padding: 0,
-            },
-            cmds,
-        )?;
-        response.check_type(Command::OK_NODATA)
+        let req = CmdSubmit3D {
+            header: CtrlHeader::with_fence(Command::SUBMIT_3D, ctx_id, fence_id),
+            size,
+            _padding: 0,
+        };
+        // Fire-and-forget: the popped response is dropped (the fence is the
+        // completion signal), and the command stream is copied into a heap
+        // box by the queue.
+        self.ctrl
+            .enqueue(&mut self.transport, &req, Some(cmds), fence_id)
+            .map(|_| ())
     }
 
     /// Creates a blob resource such as host-visible memory or a dma-buf.
-    ///
-    /// A plain `GUEST` blob only needs `VIRTIO_GPU_F_RESOURCE_BLOB`; `HOST3D`
-    /// and `HOST3D_GUEST` blobs additionally need VIRGL, because the host 3D
-    /// memory they name belongs to a rendering context.
+    /// Fire-and-forget (Linux `virtio_gpu_cmd_resource_create_blob` doesn't
+    /// wait). Device errors are logged, not returned.
     ///
     /// The parameters are validated before anything is sent:
     ///
@@ -676,7 +826,8 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// * `size` must be non-zero;
     /// * `blob_flags` may only set the low three, defined
     ///   `VIRTGPU_BLOB_FLAG_USE_*` bits, and cross-device blobs are rejected
-    ///   because the required UUID feature is not negotiated ([`Error::Unsupported`]);
+    ///   because the required UUID feature is not negotiated
+    ///   ([`Error::Unsupported`]);
     /// * `GUEST` and `HOST3D_GUEST` blobs must pass a non-empty `mem_entries`
     ///   whose lengths are each non-zero, whose `paddr + length` ranges do not
     ///   wrap the 64-bit address space, and whose lengths sum (checked) to at
@@ -686,30 +837,20 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// # Safety
     ///
     /// For `GUEST` and `HOST3D_GUEST` blobs the device reads and writes the
-    /// guest memory at the addresses in [`ResourceCreateBlob::mem_entries`].
-    /// The caller must guarantee that every range is valid device-accessible
-    /// memory and stays allocated and free of concurrent access for as long as
-    /// the blob resource exists, that is until the matching
-    /// [`VirtIoGpu::resource_unref`]. The ranges must also cover `size` bytes in
-    /// total: a blob larger than its backing would let the device reach past the
-    /// end of the provided ranges. `HOST3D` blobs must pass no entries at all.
+    /// guest memory at the addresses in the entries. The caller must guarantee
+    /// that every range is valid device-accessible memory and stays allocated
+    /// and free of concurrent access for as long as the blob resource exists,
+    /// that is until the matching [`VirtIoGpu::resource_unref`].
     pub unsafe fn resource_create_blob(
         &mut self,
         params: ResourceCreateBlob<'_>,
     ) -> Result<(), Error> {
-        if !self.has_resource_blob {
+        if !self.has_resource_blob() {
             return Err(Error::Unsupported);
         }
-
-        // Only the low three `VIRTGPU_BLOB_FLAG_USE_*` bits are defined; any
-        // other bit is a caller bug, not something the device should see.
         if params.blob_flags & !BLOB_FLAG_USE_MASK != 0 {
             return Err(Error::InvalidParam);
         }
-        // This crate neither negotiates `VIRTIO_GPU_F_RESOURCE_UUID` nor
-        // implements `RESOURCE_ASSIGN_UUID`, so a cross-device blob cannot be
-        // honoured. Reject it instead of forwarding a flag the device would
-        // accept without the guest ever being able to name the host blob.
         if params.blob_flags & BLOB_FLAG_USE_CROSS_DEVICE != 0 {
             return Err(Error::Unsupported);
         }
@@ -718,13 +859,15 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         }
 
         let guest_backed = match params.blob_mem {
-            BLOB_MEM_GUEST => true,
-            BLOB_MEM_HOST3D_GUEST => true,
-            BLOB_MEM_HOST3D => false,
+            crate::BLOB_MEM_GUEST | crate::BLOB_MEM_HOST3D_GUEST => true,
+            crate::BLOB_MEM_HOST3D => false,
             _ => return Err(Error::InvalidParam),
         };
-        let host3d = matches!(params.blob_mem, BLOB_MEM_HOST3D | BLOB_MEM_HOST3D_GUEST);
-        if host3d && !self.has_virgl {
+        let host3d = matches!(
+            params.blob_mem,
+            crate::BLOB_MEM_HOST3D | crate::BLOB_MEM_HOST3D_GUEST
+        );
+        if host3d && !self.has_virgl() {
             return Err(Error::Unsupported);
         }
 
@@ -734,8 +877,6 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
                 if entry.length == 0 {
                     return Err(Error::InvalidParam);
                 }
-                // The device reads and writes `paddr..paddr + length`; a wrapped
-                // extent would name a range unrelated to the caller's backing.
                 entry
                     .paddr
                     .checked_add(u64::from(entry.length))
@@ -744,15 +885,10 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
                     .checked_add(u64::from(entry.length))
                     .ok_or(Error::Overflow)?;
             }
-            // A blob larger than its backing would let the device reach past
-            // the end of the provided ranges, so require the ranges to cover
-            // `size` bytes. An empty slice sums to zero and fails this check.
             if total < params.size {
                 return Err(Error::InvalidParam);
             }
         } else if !params.mem_entries.is_empty() {
-            // `HOST3D` blobs are backed by host memory and must carry no guest
-            // ranges; virglrenderer rejects a nonzero `num_iovs`.
             return Err(Error::InvalidParam);
         }
 
@@ -774,19 +910,85 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             );
         }
 
-        let response: CtrlHeader = self.request_with_data(
-            CmdResourceCreateBlob {
-                header: CtrlHeader::with_type_and_ctx(Command::RESOURCE_CREATE_BLOB, params.ctx_id),
-                resource_id: params.resource_id,
-                blob_mem: params.blob_mem,
-                blob_flags: params.blob_flags,
-                nr_entries,
-                blob_id: params.blob_id,
-                size: params.size,
-            },
-            &data,
-        )?;
-        response.check_type(Command::OK_NODATA)
+        let data: &[u8] = &data;
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdResourceCreateBlob {
+                    header: CtrlHeader::with_type_and_ctx(
+                        Command::RESOURCE_CREATE_BLOB,
+                        params.ctx_id,
+                    ),
+                    resource_id: params.resource_id,
+                    blob_mem: params.blob_mem,
+                    blob_flags: params.blob_flags,
+                    nr_entries,
+                    blob_id: params.blob_id,
+                    size: params.size,
+                },
+                if data.is_empty() { None } else { Some(data) },
+                0,
+            )
+            .map(|_| ())
+    }
+
+    // --- Completion and fence API ---
+
+    /// Delivers all fire-and-forget control commands accumulated since the
+    /// last kick with a single MMIO write — Linux `virtio_gpu_notify()` at the
+    /// transaction boundary.
+    ///
+    /// This is what delivers every command enqueued since the last notify —
+    /// a transaction that enqueues fire-and-forget commands and never calls
+    /// this leaves them undelivered (the Linux DRM ioctls carry the same
+    /// obligation, discharged by their end-of-ioctl `virtio_gpu_notify()`).
+    /// No-op when nothing has accumulated; with `RING_EVENT_IDX` the write is
+    /// additionally suppressed while the device is draining.
+    pub fn ctrl_notify(&mut self) {
+        self.ctrl.notify(&mut self.transport);
+    }
+
+    /// Pop and reclaim every used control-queue entry currently available.
+    ///
+    /// Recycles the descriptors, advances the fence high-water mark, and logs
+    /// device-side error responses. This is the counterpart of Linux's
+    /// IRQ-driven `virtio_gpu_dequeue_ctrl_func`; call it from the IRQ handler
+    /// and/or from the polling wait paths. Entries belonging to an in-flight
+    /// blocking command are left for their waiter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::VirtIo`] if popping a completed entry failed; the
+    /// affected entry's buffers are reclaimed before the error propagates.
+    pub fn pump_completions(&mut self) -> Result<(), Error> {
+        self.ctrl.pump_completions(&mut self.transport)
+    }
+
+    /// Block until the fence identified by `fence_id` (and everything enqueued
+    /// before it) has been popped from the control queue. Implicit ordering:
+    /// any entry completes all ≤ its id. Bounded by the wait timeout — see
+    /// [`VirtIoGpu::new`].
+    ///
+    /// Also delivers fire-and-forget commands accumulated since the last kick
+    /// before waiting — the fenced entry itself may not have reached the host
+    /// yet (the consumer's boundary [`VirtIoGpu::ctrl_notify`] must have run).
+    pub fn wait_fence(&mut self, fence_id: u64) -> Result<(), Error> {
+        self.ctrl.wait_fence(&mut self.transport, fence_id)
+    }
+
+    /// Non-blocking fence query: has `fence_id` (and everything enqueued before
+    /// it) already been popped, i.e. has its virgl fence fired?
+    ///
+    /// Only reflects batches that have actually been delivered to the host; a
+    /// consumer that only polls must ensure delivery itself (e.g.
+    /// [`VirtIoGpu::ctrl_notify`] at the transaction boundary, or a
+    /// [`VirtIoGpu::wait_fence`]). The high-water mark only advances when
+    /// completed entries are popped, so without an IRQ handler calling
+    /// [`VirtIoGpu::pump_completions`] the poll loop must call it itself. The
+    /// counterpart of Linux `dma_resv_test_signaled` in the NOWAIT probe of
+    /// `virtio_gpu_wait_ioctl` (virtgpu_ioctl.c).
+    pub fn fence_completed(&self, fence_id: u64) -> bool {
+        self.ctrl.fence_completed(fence_id)
     }
 
     // --- Command plumbing ---
@@ -804,51 +1006,22 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// wrote into the receive buffer.
     ///
     /// The request is copied into the long-lived control send buffer before it
-    /// is submitted, and only the bytes of the request are handed to the queue:
-    /// a by-value request would live on the stack, which is neither guaranteed
-    /// to stay mapped for the device nor stable while `add_notify_wait_pop`
-    /// waits, and exposing the whole page would present the untouched tail as
-    /// part of the command.
+    /// is submitted (see the field's documentation for why the copy is not
+    /// optional), and only the copied bytes are handed to the queue: exposing
+    /// the whole page would present the untouched tail as part of the command.
     fn request_with_len<Req, Rsp>(&mut self, req: Req) -> Result<(Rsp, usize), Error>
     where
         Req: IntoBytes + Immutable,
         Rsp: FromBytes,
     {
         let req_len = copy_request_into(&mut self.queue_buf_send, &req)?;
-        let used_len = self.control_queue.add_notify_wait_pop(
+        let used_len = self.ctrl.request_sync(
+            &mut self.transport,
             &[&self.queue_buf_send[..req_len]],
             &mut [&mut self.queue_buf_recv],
-            &mut self.transport,
         )? as usize;
         let response = self.parse_response(used_len)?;
         Ok((response, used_len))
-    }
-
-    /// Sends a command with a second device-readable buffer, used by `SUBMIT_3D`
-    /// and `RESOURCE_CREATE_BLOB`.
-    ///
-    /// The chain is ordered request header, caller data, response. Like
-    /// [`VirtIoGpu::request_with_len`], the header is copied into the control
-    /// send buffer and only its exact length is submitted. `data` is borrowed
-    /// by the virtqueue, so the caller's slice must stay allocated and unchanged
-    /// until this call returns, which the signature enforces.
-    fn request_with_data<Req, Rsp>(&mut self, req: Req, data: &[u8]) -> Result<Rsp, Error>
-    where
-        Req: IntoBytes + Immutable,
-        Rsp: FromBytes,
-    {
-        let req_len = copy_request_into(&mut self.queue_buf_send, &req)?;
-        let inputs: &[&[u8]] = if data.is_empty() {
-            &[&self.queue_buf_send[..req_len]]
-        } else {
-            &[&self.queue_buf_send[..req_len], data]
-        };
-        let used_len = self.control_queue.add_notify_wait_pop(
-            inputs,
-            &mut [&mut self.queue_buf_recv],
-            &mut self.transport,
-        )? as usize;
-        self.parse_response(used_len)
     }
 
     /// Validates the response length and parses `Rsp` from exactly the bytes the
@@ -889,7 +1062,10 @@ impl<H: Hal, T: Transport> Drop for VirtIoGpu<H, T> {
         // when the fields below are dropped, a use-after-free from the device's
         // point of view. A status write is a single register or PCI capability
         // write, so it cannot block on the control queue; no control command is
-        // sent here.
+        // sent here. Fire-and-forget commands still in flight are *not* waited
+        // for: a caller that hands device-accessible memory to async commands
+        // must wait on the last fence before freeing it (see
+        // [`VirtIoGpu::wait_fence`]).
         self.transport.set_status(DeviceStatus::empty());
         // Clear the queue registration so the device cannot keep reading the
         // descriptor rings after the transport and its DMA are released.

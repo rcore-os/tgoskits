@@ -23,6 +23,11 @@
 //! [`virtio_drivers::Error`]); this crate adds the virtio-gpu domain types, the
 //! wire encoding and the response validation on top of it.
 //!
+//! The control queue runs in the Linux virtio_gpu submission model (see
+//! [`ctrl`]): fire-and-forget commands enqueue and return immediately,
+//! blocking commands keep waiting for the device's answer, and the two mix
+//! freely because the used ring is FIFO.
+//!
 //! The crate is `#![no_std]` and only needs `alloc`. It has no dependency on
 //! `rdrive`, `rdif-display`, StarryOS, ArceOS or the Linux DRM UAPI: mapping
 //! those onto the types below is the adapter's job.
@@ -39,9 +44,12 @@
 #![deny(missing_docs)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+mod ctrl;
 mod device;
 mod dma;
 mod error;

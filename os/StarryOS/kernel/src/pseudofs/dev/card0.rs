@@ -193,6 +193,7 @@ use super::drm::{
     VIRTGPU_PARAM_HOST_VISIBLE,
     VIRTGPU_PARAM_RESOURCE_BLOB,
     VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS,
+    VIRTGPU_WAIT_NOWAIT,
 };
 use super::sync_file::SyncFile;
 use crate::{
@@ -1294,6 +1295,10 @@ impl Drop for Card0File {
             }
             let _ = ax_display::gpu3d_ctx_destroy(context.ctx_id);
         }
+        // Dropping GpuResources below enqueues fire-and-forget RESOURCE_UNREFs
+        // after the sync ctx teardown above already kicked; one boundary
+        // notify delivers them — Linux `virtio_gpu_notify()`.
+        ax_display::gpu3d_ctrl_notify();
 
         let mut state = self.card.state.lock();
         {
@@ -1356,6 +1361,7 @@ impl Card0 {
         let mut scanout = self.scanout_resource.lock();
         ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).map_err(map_gpu3d_err)?;
         *scanout = None;
+        ax_display::gpu3d_ctrl_notify();
         Ok(())
     }
 
@@ -1391,9 +1397,7 @@ impl Card0 {
                     return;
                 };
                 let mut scanout = self.scanout_resource.lock();
-                if scanout.is_some()
-                    && ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).is_err()
-                {
+                if scanout.is_some() && ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).is_err() {
                     return;
                 }
                 if ax_display::framebuffer_restore_scanout().is_err() {
@@ -1450,7 +1454,8 @@ impl Card0 {
                     );
                 }
                 let mut scanout = self.scanout_resource.lock();
-                if ax_display::gpu3d_set_scanout(0, resource.res_handle, 0, 0, fb.width, fb.height).is_ok()
+                if ax_display::gpu3d_set_scanout(0, resource.res_handle, 0, 0, fb.width, fb.height)
+                    .is_ok()
                 {
                     *scanout = Some(resource.clone());
                 }
@@ -1461,6 +1466,10 @@ impl Card0 {
                     fb.width,
                     fb.height,
                 );
+                // The present is a fire-and-forget transaction (transfer +
+                // scanout + flush); one boundary notify delivers it — Linux
+                // `virtio_gpu_notify()` per atomic update.
+                ax_display::gpu3d_ctrl_notify();
             }
         }
     }
@@ -1541,6 +1550,9 @@ impl Card0 {
             });
             ax_display::gpu3d_attach_backing(res_handle, paddr.as_usize() as u64, size as u32)
                 .map_err(map_gpu3d_err)?;
+            // Dumb creation is a fire-and-forget batch (create + attach);
+            // deliver it — Linux `virtio_gpu_notify()` at the ioctl boundary.
+            ax_display::gpu3d_ctrl_notify();
             Some(resource)
         } else {
             None
@@ -1675,6 +1687,9 @@ impl Card0 {
         let ptr = arg as *const DrmModeDestroyDumb;
         let d: DrmModeDestroyDumb = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         self.destroy_handle(file, d.handle)?;
+        // GEM_CLOSE may have enqueued a fire-and-forget RESOURCE_UNREF; one
+        // boundary notify delivers it — Linux `virtio_gpu_notify()`.
+        ax_display::gpu3d_ctrl_notify();
         Ok(0)
     }
 
@@ -1689,6 +1704,9 @@ impl Card0 {
         let ptr = arg as *const DrmGemClose;
         let c: DrmGemClose = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         self.destroy_handle(file, c.handle)?;
+        // GEM_CLOSE may have enqueued a fire-and-forget RESOURCE_UNREF; one
+        // boundary notify delivers it — Linux `virtio_gpu_notify()`.
+        ax_display::gpu3d_ctrl_notify();
         Ok(0)
     }
 
@@ -1932,6 +1950,9 @@ impl Card0 {
                     resource: dma.resource.clone(),
                 },
             );
+            // The import may have enqueued a fire-and-forget CTX_ATTACH;
+            // deliver it — Linux `virtio_gpu_notify()` at the ioctl boundary.
+            ax_display::gpu3d_ctrl_notify();
             return Ok(0);
         }
 
@@ -3333,6 +3354,9 @@ impl Card0 {
         )
         .map_err(map_gpu3d_err)?;
         file.attach_resource(&resource)?;
+        // Fire-and-forget batch (create + attach + ctx_attach); deliver it —
+        // Linux `virtio_gpu_notify()` at the ioctl boundary.
+        ax_display::gpu3d_ctrl_notify();
 
         let buffer = DumbBuffer {
             owner: file.file_id,
@@ -3473,7 +3497,10 @@ impl Card0 {
         // `FENCE_FD_IN` imports an existing fence fd. Only a sync_file created
         // by this driver carries one; a foreign object under that fd number is
         // -EINVAL, matching Linux `sync_file_get_fence()` returning NULL.
-        if fence_in {
+        // Out-fences are real fences now (submits are fire-and-forget), so an
+        // unsignaled import is the normal cross-buffer dependency case: the
+        // batch waits for it below instead of being rejected.
+        let in_fence = if fence_in {
             if eb.fence_fd < 0 {
                 return Err(StarryError::InvalidInput);
             }
@@ -3482,27 +3509,21 @@ impl Card0 {
             let fence = file
                 .downcast_arc::<SyncFile>()
                 .map_err(|_| VfsError::InvalidInput)?;
-            // Every out-fence produced by this driver is already signaled by
-            // the time its fd is visible, so the dependency is satisfied. An
-            // unsignaled fence cannot be produced here; treat it as an invalid
-            // import rather than parking the submit.
-            if !fence.is_signaled() {
-                return Err(StarryError::InvalidInput);
-            }
-        }
-
-        // `FENCE_FD_OUT` reserves the descriptor *before* any side effect: an
-        // fd shortage must fail the ioctl (with EMFILE) without having created
-        // a context or queued GPU work. The reservation is released
-        // automatically if a later step fails.
-        let out_fence = if fence_out {
-            let sync_file = Arc::new(SyncFile::new());
-            let created: Arc<dyn FileLike> = sync_file.clone();
-            let prepared = prepare_file_like(move || Ok(created), true)?;
-            Some((prepared, sync_file))
+            Some(fence)
         } else {
             None
         };
+
+        // Enforce the in-fence dependency: the batch must not reach the host
+        // until the imported fence signals (Linux waits the in-fence inside
+        // `virtgpu_execbuffer_ioctl` before `virtio_gpu_execbuffer`).
+        if let Some(in_fence) = &in_fence
+            && in_fence.wait_signaled(None).is_err()
+        {
+            // Unreachable today (unbounded wait), but never convert a failed
+            // dependency into a silently unordered submit.
+            return Err(StarryError::InvalidInput);
+        }
 
         // Read the command buffer and BO handles, then resolve every handle to
         // an owned resource — all before creating a context, so a bad command
@@ -3540,19 +3561,42 @@ impl Card0 {
             resource.last_fence.store(fence_id, Ordering::Release);
         }
 
-        // The submit completed synchronously: its host fence response was
-        // already consumed, so an out-fence is signaled here and the fd only
-        // becomes visible after this point. `fence_fd` is written back only
-        // for `FENCE_FD_OUT`; an IN-only request keeps its input fd.
-        if let Some((prepared, sync_file)) = out_fence {
-            sync_file.mark_signaled();
-            eb.fence_fd = prepared.fd();
-            ptr.vm_write(current, eb)
-                .map_err(|_| VfsError::BadAddress)?;
-            prepared.install();
+        // Linux: `VIRTGPU_EXECBUF_FENCE_FD_OUT` wraps the submit fence in a
+        // sync_file and returns the fd (`virtgpu_execbuffer_ioctl`). The fence
+        // starts unsignaled — the submit is fire-and-forget — and signals when
+        // the host pops the fenced command, which the fence refresher and the
+        // poll/wait refresh paths observe. The fd can only be created after
+        // the submit (the fence id does not exist before it), so an fd
+        // shortage fails the ioctl *after* the work was enqueued; that is safe
+        // — the batch is ordered and its fence is simply dropped.
+        let out_fd = if fence_out {
+            let sync_file = Arc::new(SyncFile::new(fence_id));
+            sync_file.register();
+            let created: Arc<dyn FileLike> = sync_file.clone();
+            let prepared = prepare_file_like(move || Ok(created), true)?;
+            Some(prepared)
         } else {
-            ptr.vm_write(current, eb)
-                .map_err(|_| VfsError::BadAddress)?;
+            None
+        };
+        // `fence_fd` is written back only for `FENCE_FD_OUT`; an IN-only
+        // request keeps its input fd.
+        eb.fence_fd = out_fd.as_ref().map(|p| p.fd()).unwrap_or(-1);
+        ptr.vm_write(current, eb)
+            .map_err(|_| VfsError::BadAddress)?;
+        if let Some(prepared) = out_fd {
+            prepared.install();
+        }
+
+        // EXECBUFFER is a fire-and-forget transaction (optional ctx_attach +
+        // submit_3d); one boundary notify delivers it — Linux
+        // `virtio_gpu_notify()`.
+        ax_display::gpu3d_ctrl_notify();
+
+        // The out-fence (when FENCE_FD_OUT) completes tens of us from now;
+        // kick the refresher into burst pumping so the fence signals within
+        // one host round-trip instead of the next 1 ms tick.
+        if (eb.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT) != 0 {
+            super::sync_file::kick_refresher();
         }
 
         Ok(0)
@@ -3604,6 +3648,8 @@ impl Card0 {
             layer_stride: t.layer_stride,
         })
         .map_err(map_gpu3d_err)?;
+        // Fire-and-forget transfer; deliver it — Linux `virtio_gpu_notify()`.
+        ax_display::gpu3d_ctrl_notify();
 
         Ok(0)
     }
@@ -3686,9 +3732,26 @@ impl Card0 {
         if !has_dumb && resource.is_none() {
             return Err(VfsError::NotFound);
         }
-        // Every driver submission waits for its virtqueue completion, so a
-        // returned ioctl has already completed the last fence for this GEM.
-        let _last_fence = resource.map(|resource| resource.last_fence.load(Ordering::Acquire));
+        // Submits are fire-and-forget, so WAIT honestly waits for the last
+        // fence that referenced this GEM (Linux `virtio_gpu_wait_ioctl` →
+        // `dma_resv_wait_timeout`); NOWAIT only probes the signal level and
+        // reports -EBUSY while the host is still working. Handles never
+        // submitted (dumb buffers, created-but-idle GEMs) have no fence and
+        // report idle.
+        if let Some(resource) = &resource {
+            let last_fence = resource.last_fence.load(Ordering::Acquire);
+            if last_fence != 0 {
+                if w.flags & VIRTGPU_WAIT_NOWAIT != 0 {
+                    let done =
+                        ax_display::gpu3d_fence_completed(last_fence).map_err(map_gpu3d_err)?;
+                    if !done {
+                        return Err(VfsError::ResourceBusy);
+                    }
+                } else {
+                    ax_display::gpu3d_wait_fence(last_fence).map_err(map_gpu3d_err)?;
+                }
+            }
+        }
         Ok(0)
     }
 
@@ -3864,7 +3927,9 @@ impl Card0 {
 
         self.dumbs.lock().insert(bo_handle, buffer);
         self.gpu_resources.lock().insert(res_handle, resource);
-
+        // Blob creation is fire-and-forget now; deliver the batch (Linux
+        // `virtio_gpu_notify()` at the ioctl boundary).
+        ax_display::gpu3d_ctrl_notify();
         Ok(0)
     }
 }
@@ -3887,6 +3952,8 @@ fn map_gpu3d_err(err: ax_display::DisplayError) -> VfsError {
         ax_display::DisplayError::Gpu3dError(kind) => match kind {
             ax_display::Gpu3dErrorKind::InvalidParam => VfsError::InvalidInput,
             ax_display::Gpu3dErrorKind::NotReady => VfsError::WouldBlock,
+            // Bounded wait expired on a stalled host (Linux -ETIMEDOUT).
+            ax_display::Gpu3dErrorKind::TimedOut => VfsError::TimedOut,
             _ => VfsError::Io,
         },
         _ => VfsError::Io,

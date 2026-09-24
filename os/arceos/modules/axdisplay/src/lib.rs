@@ -75,13 +75,17 @@ pub fn framebuffer_handle_irq() -> bool {
 
 // --- 3D API ---
 //
-// Every entry point below runs in task context and may block inside the
-// device backend (e.g. `submit_cmd` waits for the host fence response on the
-// virtqueue). The display IRQ path (`framebuffer_handle_irq`) takes the same
-// `MAIN_DISPLAY` lock, so a plain `lock()` here would let a display IRQ
-// interrupt the critical section on the same CPU and spin forever on the lock
-// we still hold. These forwarding paths therefore use `lock_irqsave()`, the
-// same discipline as the IRQ-safe `framebuffer_*` helpers above.
+// Every entry point below runs in task context. Hot-path commands (resource
+// create/attach/transfer/flush, submit) are fire-and-forget in the device
+// backend: they enqueue on the control queue and return before the host has
+// applied them, so callers must keep the batching contract (one
+// `gpu3d_ctrl_notify()` per transaction) and observe completion through the
+// fence API (`gpu3d_wait_fence` / `gpu3d_fence_completed`). The display IRQ
+// path (`framebuffer_handle_irq`) takes the same `MAIN_DISPLAY` lock, so a
+// plain `lock()` here would let a display IRQ interrupt the critical section
+// on the same CPU and spin forever on the lock we still hold. These
+// forwarding paths therefore use `lock_irqsave()`, the same discipline as the
+// IRQ-safe `framebuffer_*` helpers above.
 
 /// Checks if the display device supports virgl 3D.
 pub fn has_virgl() -> bool {
@@ -219,8 +223,54 @@ pub fn gpu3d_transfer_from_host(params: Transfer3d) -> DisplayResult {
 }
 
 /// Submit a virgl command buffer. Returns a monotonically increasing fence ID.
+///
+/// The submit is fire-and-forget: the returned fence signals when the host has
+/// finished the batch, observable via [`gpu3d_wait_fence`] or
+/// [`gpu3d_fence_completed`].
 pub fn gpu3d_submit_cmd(ctx_id: u32, cmds: &[u8]) -> Result<u64, DisplayError> {
     MAIN_DISPLAY.lock_irqsave().submit_cmd(ctx_id, cmds)
+}
+
+/// Block until the submit identified by `fence_id` has completed on the host —
+/// the honest completion signal behind VIRTGPU_WAIT (Linux
+/// `virtio_gpu_wait_ioctl` → `dma_resv_wait_timeout`).
+pub fn gpu3d_wait_fence(fence_id: u64) -> Result<(), DisplayError> {
+    MAIN_DISPLAY.lock_irqsave().wait_fence(fence_id)
+}
+
+/// Non-blocking fence query — Linux `dma_resv_test_signaled` (the NOWAIT probe
+/// in `virtio_gpu_wait_ioctl`). `false` means the host is still busy with the
+/// batch.
+pub fn gpu3d_fence_completed(fence_id: u64) -> Result<bool, DisplayError> {
+    MAIN_DISPLAY.lock_irqsave().fence_completed(fence_id)
+}
+
+/// Completion-level-only fence query without draining the used ring. Intended
+/// for callers whose pump has already advanced the completion level.
+pub fn gpu3d_fence_completed_no_pump(fence_id: u64) -> Result<bool, DisplayError> {
+    MAIN_DISPLAY
+        .lock_irqsave()
+        .fence_completed_no_pump(fence_id)
+}
+
+/// Drain the host completion queue without blocking. Call after fire-and-forget
+/// submits so the next completion triggers the device IRQ promptly (Linux's
+/// virtio-gpu pumps in its completion worker after every IRQ, keeping
+/// fence-signal latency at µs instead of up to a frame).
+pub fn gpu3d_pump() -> Result<(), DisplayError> {
+    MAIN_DISPLAY.lock_irqsave().pump()
+}
+
+/// Flush any pending fire-and-forget control-queue commands and notify the
+/// host — an ioctl/transaction boundary (Linux `virtio_gpu_notify()`,
+/// vq.c:551).
+///
+/// Call exactly once at the end of an ioctl that enqueued commands whose
+/// response the caller does not wait for, so the whole batch is delivered to
+/// the host with a single kick. No-op when nothing is pending and when no
+/// display device is initialized (no commands could have been enqueued).
+pub fn gpu3d_ctrl_notify() {
+    MAIN_DISPLAY.lock_irqsave().ctrl_notify();
 }
 
 /// Query capset information by index.
