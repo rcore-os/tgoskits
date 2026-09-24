@@ -62,26 +62,33 @@ fn init_command_from_bootargs() -> Vec<String> {
 fn default_command() -> Vec<String> {
     #[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
     {
-        for path in [
-            "/sbin/init",
-            "/sbin/openrc",
-            "/etc/inittab",
-            "/etc/rc.conf",
-            "/etc/profile.d/starry.sh",
-            "/etc/runlevels/sysinit/starry-runtime",
-            "/etc/runlevels/default/starry-autorun",
-            "/usr/libexec/starry/console",
-        ] {
-            let metadata = ax_std::fs::metadata(path).unwrap_or_else(|error| {
-                panic!(
-                    "Default Alpine boot requires {path}: {error}; prepare the rootfs or use \
-                     init=/bin/sh"
-                )
-            });
-            assert!(
-                metadata.is_file(),
-                "Default Alpine boot requires a file: {path}"
-            );
+        // The strict OpenRC asset check only applies to the Alpine rootfs that
+        // `axbuild` prepared: `openrc::prepare` publishes this marker inside
+        // the image. Other rootfs images (for example the Debian container-host
+        // image) ship their own `/sbin/init` and boot through `DEFAULT_CMDLINE`,
+        // so the early diagnosis must not fire — or panic — for them.
+        if ax_std::fs::metadata("/etc/starry-openrc-assets").is_ok() {
+            for path in [
+                "/sbin/init",
+                "/sbin/openrc",
+                "/etc/inittab",
+                "/etc/rc.conf",
+                "/etc/profile.d/starry.sh",
+                "/etc/runlevels/sysinit/starry-runtime",
+                "/etc/runlevels/default/starry-autorun",
+                "/usr/libexec/starry/console",
+            ] {
+                let metadata = ax_std::fs::metadata(path).unwrap_or_else(|error| {
+                    panic!(
+                        "Default Alpine boot requires {path}: {error}; prepare the rootfs or use \
+                         init=/bin/sh"
+                    )
+                });
+                assert!(
+                    metadata.is_file(),
+                    "Default Alpine boot requires a file: {path}"
+                );
+            }
         }
     }
     DEFAULT_CMDLINE
