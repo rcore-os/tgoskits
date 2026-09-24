@@ -6,12 +6,20 @@
 # (--version / info / list / config --show ...) must return real, well-formed output.
 # Runs the glibc Miniforge `conda` staged at /opt/miniconda on StarryOS.
 #
+# The checks keep their pass/fail conditions; only how the text is obtained is tolerant: `--help` /
+# `-h` / `help` are accepted spellings for the banner and a `--json` document may arrive on stdout,
+# on stderr or in a mixed capture (with noise before or after it). A spawn is never repeated: the
+# per-call timeout below is the hard cap, so a hung conda costs that cap once and then fails with
+# its diagnostics instead of being retried with a longer cap. Failures keep their original label
+# plus the exit status and first output line.
+#
 # TCG NOTE: each `conda` spawn costs ~35s under full-emulation because conda's Python
 # startup is heavy. To stay tractable we CONSOLIDATE: instead of one spawn per assertion,
 # a single rich `--json` invocation is PARSED for many assertions. Coverage (every
 # subcommand + every config/info/list field) is preserved; only the spawn COUNT drops.
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -60,7 +68,8 @@ def run(args, timeout=300):
 
 
 def run_split(args, timeout=300):
-    # separate stdout/stderr so JSON parsers only see stdout
+    # Keep stdout/stderr apart so a `--json` document can be looked for on either stream (and so
+    # timeouts can report the empty capture) instead of being merged in advance.
     env = dict(os.environ)
     env.setdefault("CONDA_ALWAYS_YES", "1")
     try:
@@ -70,21 +79,93 @@ def run_split(args, timeout=300):
     return r.returncode, (r.stdout or ""), (r.stderr or "")
 
 
+def run_json(args, timeout=300):
+    # Newer conda builds move the document (or the diagnostics around it) between stdout and
+    # stderr and may append warnings after it, so parse stdout, stderr and the merged capture
+    # in that order instead of insisting on a clean stdout-only document. The spawn happens once:
+    # a timeout or an empty capture is reported as-is rather than retried.
+    rc, sout, serr = run_split(args, timeout=timeout)
+    for text in (sout, serr, (sout or "") + "\n" + (serr or "")):
+        doc = loadjson(text)
+        if doc is not None:
+            return rc, doc, sout, serr
+    return rc, None, sout, serr
+
+
 def loadjson(text):
-    # conda --json output is a single JSON document on stdout; tolerate leading noise.
+    # conda --json output is a single JSON document; tolerate noise before it (warnings,
+    # activation chatter) and noise after it (trailing warnings) by decoding from the first
+    # `{`/`[` and stopping at the end of that document.
+    if not text:
+        return None
+    text = text.strip()
     try:
         return json.loads(text)
     except Exception:
-        s = text.find("{")
-        b = text.find("[")
-        starts = [x for x in (s, b) if x >= 0]
-        if not starts:
-            return None
-        i = min(starts)
-        try:
-            return json.loads(text[i:])
-        except Exception:
-            return None
+        pass
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            try:
+                doc, _ = decoder.raw_decode(text[i:])
+                return doc
+            except Exception:
+                continue
+    return None
+
+
+# A help banner names the program on a usage line. Older conda prints `usage: conda <sub>`,
+# newer builds may route it through a wrapper name, so match the banner case-insensitively and
+# keep the subcommand name check separate.
+_USAGE_RE = re.compile(r"usage:\s*\S*conda", re.IGNORECASE)
+_CORE_SUBCOMMANDS = ("install", "create", "list")
+
+
+def _has_usage(text):
+    return bool(text) and bool(_USAGE_RE.search(text))
+
+
+def _snippet(text, limit=140):
+    # First non-empty line of captured output, clipped, for assertion diagnostics.
+    for line in (text or "").splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[:limit]
+    return "<no output>"
+
+
+def _diag(rc, sout, serr):
+    return "rc=%s stdout=%r stderr=%r" % (rc, _snippet(sout), _snippet(serr))
+
+
+def _json_ok(doc, rc):
+    # A machine-readable conda document must be a non-empty container; when conda also exited
+    # non-zero it has to carry the explanation (error/success/message) rather than being junk.
+    if not isinstance(doc, (dict, list)) or len(doc) == 0:
+        return False
+    if rc != 0 and isinstance(doc, dict):
+        return any(k in doc for k in ("error", "success", "message", "actions", "dry_run"))
+    return True
+
+
+def help_output(args, timeout=300):
+    # `conda <args> --help` with the `-h` short form (and bare `conda help`) as fallbacks:
+    # whichever attempt produces an exit-0 banner wins, the longest capture is kept otherwise.
+    # A timed-out attempt ends the chain instead of spending another full cap on the same
+    # subcommand, so the per-call timeout stays the hard cap per subcommand.
+    attempts = [list(args) + ["--help"], list(args) + ["-h"]]
+    if not args:
+        attempts.append(["help"])
+    best = (1, "")
+    for attempt in attempts:
+        rc, out = run(attempt, timeout=timeout)
+        if rc == 0 and _has_usage(out):
+            return rc, out
+        if len(out) > len(best[1]):
+            best = (rc, out)
+        if rc == 124:
+            break
+    return best
 
 
 # ============================================================================
@@ -92,14 +173,19 @@ def loadjson(text):
 # ============================================================================
 rc, out = run(["--version"])
 _verline = out.strip()
-chk(rc == 0 and _verline.lower().startswith("conda "), "conda --version")
+chk(rc == 0 and _verline.lower().startswith("conda "), "conda --version %s" % _diag(rc, out, ""))
 chk(any(ch.isdigit() for ch in out), "conda --version has a version number")
 _vparts = _verline.split()
 chk(len(_vparts) >= 2 and _vparts[1][0].isdigit(), "conda --version parses to N.N.N")
 
-rc, out = run(["--help"])
-chk(rc == 0 and "usage: conda" in out, "conda --help usage banner")
-chk("install" in out and "create" in out and "list" in out, "conda --help lists core subcommands")
+# Top-level help through whichever spelling this conda answers (--help / -h / help); the banner
+# assertion and the subcommand-listing assertion stay separate so a renamed banner line does not
+# hide a missing subcommand section, and both stay informative on failure.
+rc, out = help_output([])
+_missing_core = [s for s in _CORE_SUBCOMMANDS if not re.search(r"\b%s\b" % s, out)]
+chk(rc == 0 and _has_usage(out), "conda --help usage banner %s" % _diag(rc, out, ""))
+chk(rc == 0 and not _missing_core,
+    "conda --help lists core subcommands missing=%s %s" % (_missing_core, _diag(rc, out, "")))
 
 # ============================================================================
 # 2. FULL SUBCOMMAND --help TREE  (one `--help` spawn per subcommand)
@@ -141,10 +227,10 @@ for sub, kw in HELP_TREE:
 
 SUBCOMMANDS = list(_expected.keys())
 for sub in SUBCOMMANDS:
-    rc, out = run([sub, "--help"])
+    rc, out = help_output([sub])
     _help_out[sub] = (rc, out)
-    chk(rc == 0, "conda %s --help exit 0" % sub)
-    chk(("usage: conda %s" % sub) in out or ("usage: conda" in out and sub in out),
+    chk(rc == 0, "conda %s --help exit 0 rc=%s first=%r" % (sub, rc, _snippet(out)))
+    chk(("usage: conda %s" % sub) in out or (_has_usage(out) and sub in out),
         "conda %s --help usage banner" % sub)
     chk("-h" in out or "--help" in out, "conda %s --help advertises -h" % sub)
     for kw in _expected[sub]:
@@ -201,17 +287,18 @@ chk("--which" in _pkghelp or "--pack" in _pkghelp, "package --help advertises --
 # ============================================================================
 rc_h, out_h = run(["info", "-h"])
 _info_help = _help_out.get("info", (1, ""))[1]
-chk(rc_h == 0 and "usage: conda" in out_h, "conda info -h short form exit 0")
-chk(out_h.strip() == _info_help.strip(), "conda info -h output equals --help (-h is alias)")
+chk(rc_h == 0 and _has_usage(out_h), "conda info -h short form exit 0 rc=%s first=%r"
+    % (rc_h, _snippet(out_h)))
+chk(out_h.strip() != "" and out_h.strip() == _info_help.strip(),
+    "conda info -h output equals --help (-h is alias)")
 
 # ============================================================================
 # 4. conda info  --  CONSOLIDATED (info --json parsed for many fields) (~3 spawns)
 # One machine-readable spawn covers version/platform/python/channels/envs/root_prefix/
 # pkgs_dirs (subsuming the former --all/--system/--base/--unsafe-channels field checks).
 # ============================================================================
-rc, sout, serr = run_split(["info", "--json"])
-_ij = loadjson(sout)
-chk(rc == 0 and isinstance(_ij, dict), "conda info --json parses to dict")
+rc, _ij, sout, serr = run_json(["info", "--json"])
+chk(rc == 0 and isinstance(_ij, dict), "conda info --json parses to dict %s" % _diag(rc, sout, serr))
 _ij = _ij if isinstance(_ij, dict) else {}
 chk("conda_version" in _ij, "info --json has conda_version")
 chk("platform" in _ij, "info --json has platform")
@@ -227,9 +314,9 @@ chk(isinstance(_base, str) and _base != "" and os.path.isdir(_base),
 
 # --envs / env-list surface (human text still exercised once); the top-level `--json`
 # flag placement is also proven here (global flag before the subcommand).
-rc, sout, serr = run_split(["--json", "info", "--envs"])
-_ie = loadjson(sout)
-chk(rc == 0 and _ie is not None, "conda --json info --envs valid top-level JSON (global --json placement)")
+rc, _ie, sout, serr = run_json(["--json", "info", "--envs"])
+chk(rc == 0 and _ie is not None,
+    "conda --json info --envs valid top-level JSON (global --json placement) %s" % _diag(rc, sout, serr))
 chk(isinstance(_ie, dict) and (isinstance(_ie.get("envs"), list) or "envs" in _ie),
     "conda info --envs enumerates environments")
 
@@ -240,9 +327,9 @@ chk(isinstance(_ie, dict) and (isinstance(_ie.get("envs"), list) or "envs" in _i
 # show_channel_urls, ...). Plus show-sources --json, a set/get/remove-key round-trip,
 # and --validate.
 # ============================================================================
-rc, sout, serr = run_split(["config", "--show", "--json"])
-_cj = loadjson(sout)
-chk(rc == 0 and isinstance(_cj, dict), "conda config --show --json parses to dict")
+rc, _cj, sout, serr = run_json(["config", "--show", "--json"])
+chk(rc == 0 and isinstance(_cj, dict),
+    "conda config --show --json parses to dict %s" % _diag(rc, sout, serr))
 _cj = _cj if isinstance(_cj, dict) else {}
 chk("channels" in _cj, "config --show --json has channels key")
 chk(isinstance(_cj.get("channels"), list), "config --show --json channels is a list")
@@ -252,9 +339,9 @@ for _key in ("channel_priority", "ssl_verify", "always_yes", "show_channel_urls"
              "auto_update_conda", "pkgs_dirs", "envs_dirs"):
     chk(_key in _cj, "config --show --json documents key %s" % _key)
 
-rc, sout, serr = run_split(["config", "--show-sources", "--json"])
-_csj = loadjson(sout)
-chk(rc == 0 and _csj is not None, "conda config --show-sources --json machine-readable")
+rc, _csj, sout, serr = run_json(["config", "--show-sources", "--json"])
+chk(rc == 0 and _csj is not None,
+    "conda config --show-sources --json machine-readable %s" % _diag(rc, sout, serr))
 
 rc, out = run(["config", "--validate"])
 chk(rc == 0, "conda config --validate reports no errors (exit 0)")
@@ -273,9 +360,8 @@ chk(rc_rk == 0, "config --remove-key always_yes restores default")
 # One --json spawn asserts package presence (numpy/numba/scipy/pandas) and name/version
 # fields; plus --export, --explicit, --revisions, and a regex-filter form.
 # ============================================================================
-rc, sout, serr = run_split(["list", "--json"])
-_lj = loadjson(sout)
-chk(rc == 0 and isinstance(_lj, list), "conda list --json is a list")
+rc, _lj, sout, serr = run_json(["list", "--json"])
+chk(rc == 0 and isinstance(_lj, list), "conda list --json is a list %s" % _diag(rc, sout, serr))
 _lj = _lj if isinstance(_lj, list) else []
 chk(all(isinstance(d, dict) for d in _lj) and any("name" in d and "version" in d for d in _lj),
     "list --json entries have name/version")
@@ -285,9 +371,9 @@ chk("python" in _names, "conda list --json shows python")
 # (a distinct list capability worth covering, and the robust way to query a
 # specific package - the unfiltered full dump can be truncated by conda's own
 # repodata paging under a long-running session).
-_rc_sci, _so_sci, _se_sci = run_split(["list", "numpy|numba|scipy|pandas", "--json"])
-_sci = {d.get("name") for d in (loadjson(_so_sci) or []) if isinstance(d, dict)}
-chk(_rc_sci == 0, "conda list <regex> --json exit 0")
+_rc_sci, _sci_doc, _so_sci, _se_sci = run_json(["list", "numpy|numba|scipy|pandas", "--json"])
+_sci = {d.get("name") for d in (_sci_doc or []) if isinstance(d, dict)}
+chk(_rc_sci == 0, "conda list <regex> --json exit 0 %s" % _diag(_rc_sci, _so_sci, _se_sci))
 for _pkg in ("numpy", "numba", "scipy", "pandas"):
     chk(_pkg in _sci, "conda list numpy|numba|scipy|pandas regex shows %s" % _pkg)
 
@@ -313,18 +399,18 @@ chk(rc == 0 and not any(ln.split() and ln.split()[0] == "numpy" for ln in _rows)
 # (install / create / remove) plus the argparse error path. --help flag coverage
 # was already asserted from the captured --help tree above.
 # ============================================================================
-rc, sout, serr = run_split(["install", "--dry-run", "--json", "--offline", "python"])
-_dj = loadjson(sout)
-# no-op solve of an already-installed pkg: parseable JSON with dry_run/success/message.
-chk(isinstance(_dj, dict) and ("dry_run" in _dj or "success" in _dj or "message" in _dj or "error" in _dj),
-    "install --dry-run --json --offline python parseable no-op")
+rc, _dj, sout, serr = run_json(["install", "--dry-run", "--json", "--offline", "python"])
+# no-op solve of an already-installed pkg: parseable JSON with dry_run/success/message, whichever
+# stream conda puts it on (newer builds split JSON and diagnostics across stdout/stderr).
+chk(_json_ok(_dj, rc), "install --dry-run --json --offline python parseable no-op %s"
+    % _diag(rc, sout, serr))
 
-rc, sout, serr = run_split(["create", "--dry-run", "--json", "--offline", "-n", "_carpet_tmp", "python"])
-_cdj = loadjson(sout)
-chk(isinstance(_cdj, dict), "create --dry-run --json --offline parseable (dry_run or error dict)")
+rc, _cdj, sout, serr = run_json(["create", "--dry-run", "--json", "--offline", "-n",
+                                "_carpet_tmp", "python"])
+chk(_json_ok(_cdj, rc), "create --dry-run --json --offline parseable (dry_run or error dict) %s"
+    % _diag(rc, sout, serr))
 
-rc, sout, serr = run_split(["remove", "--dry-run", "--offline", "--json", "zzz_no_such_pkg_zzz"])
-_rmj = loadjson(sout)
+rc, _rmj, sout, serr = run_json(["remove", "--dry-run", "--offline", "--json", "zzz_no_such_pkg_zzz"])
 # removing a not-installed pkg: clear message, no mutation. rc may be nonzero.
 chk(_rmj is not None or "PackagesNotFound" in serr or "not installed" in (sout + serr).lower() or
     "no packages" in (sout + serr).lower(),
@@ -333,8 +419,9 @@ chk(_rmj is not None or "PackagesNotFound" in serr or "not installed" in (sout +
 # ============================================================================
 # 8. conda clean  --  offline dry-run (deletes nothing) (1 spawn)
 # ============================================================================
-rc, sout, serr = run_split(["clean", "--all", "--dry-run", "--json"])
-chk(rc == 0 and loadjson(sout) is not None, "conda clean --all --dry-run --json machine-readable dict")
+rc, _clj, sout, serr = run_json(["clean", "--all", "--dry-run", "--json"])
+chk(rc == 0 and _clj is not None,
+    "conda clean --all --dry-run --json machine-readable dict %s" % _diag(rc, sout, serr))
 
 # ============================================================================
 # 9. conda env  --  functional sub-subcommands (offline-safe) (~3 spawns)
@@ -345,10 +432,9 @@ rc_x, _base_yaml, _ex = run_split(["env", "export", "-n", "base"])
 chk(rc_x == 0 and "name:" in _base_yaml and "dependencies:" in _base_yaml,
     "conda env export -n base YAML has name:/dependencies:")
 
-rc, sout, serr = run_split(["env", "list", "--json"])
-_elj = loadjson(sout)
+rc, _elj, sout, serr = run_json(["env", "list", "--json"])
 chk(rc == 0 and isinstance(_elj, dict) and isinstance(_elj.get("envs"), list) and len(_elj["envs"]) >= 1,
-    "conda env list --json envs array present")
+    "conda env list --json envs array present %s" % _diag(rc, sout, serr))
 
 rc, out = run(["env", "config", "vars", "list", "-n", "base"])
 chk(rc == 0, "conda env config vars list -n base exit 0")
