@@ -31,6 +31,37 @@ A1 有效 full20 包含 20 项、380000/380000 样本、`not_parked=0`；OTHER
 **没有同源码候选，也没有 90% 验收结论**。普通镜像 SHA256 为
 `b872b4b59829e0b63bd21a6d79c75295c5a4ee7fd470ef72afc8585a1976b8e5`。
 
+### 1.3 四 crate 原生 PGO 训练前置修复
+
+`resume779` 在相同 `dev@05175ca388` 上将 AArch64 C ABI `memset` 改为
+不接受编译器插桩的 naked 汇编；非 AArch64 实现保持不变。原生
+`ax_task`、`ax_sched`、`ax_runtime`、`starry_kernel` 四 crate 的
+profile-generate 镜像在 OrangePi-5-Plus-1 启动到 Starry shell。
+训练镜像 `.bin` SHA256 为
+`7165206f4851cf923212ee2de2dea28b86dd0ec42dd9c34e23eb7d600227f653`，
+串口原始记录 SHA256 为
+`4c05ee9633f0d49106229aca071a825fa7f53392953b251b3f942decc1965b64`。
+
+`resume780` 临时启用 debugfs profile exporter 后取得四 crate 原生计数，
+profdata SHA256 为
+`7d71a724fd5ce66e4faf15280995602392fc6ff8e6d41fc197cdbc0eb8e67156`。
+16 个定向训练场景都运行至完成标记，但四次 OTHER 同核 futex 各有
+`19999/20000` 样本和 `not_parked=1`；这份训练记录不满足 full20 验收。
+exporter 已撤回，未纳入 PR 源码。`resume781` 的 profile-use 构建因
+训练 feature 改变 `starry_kernel` 身份，出现 14792 个缺失 profile 警告，
+未作为候选上板；`resume782` 的严格符号/CFG 哈希映射也无法覆盖最热的
+`sys_futex` 和 `ResolvedFutex::wait_nofault_until`，因此未把部分映射
+当作已解决的训练方案。
+
+`resume783` 在上述 `memset` 源码上完成十项 feature、无 PGO、无插桩
+的普通 release 构建；`.bin` SHA256 为
+`4d2e6656ff13684de1ae0202e25c150a027bc6ee504facd479cf9eed566c31a4`。
+反汇编核对 `memset` 的零长度返回、逐字节写入和原指针返回；ELF 无
+`__llvm_prf_*` section。`cargo fmt` 和 `git diff --check` 通过；
+`cargo xtask clippy --package starry-kernel` 展开 72 组配置，前 10 组
+通过后因磁盘不足主动停止，**不能报告全量 clippy 通过**。普通 release
+尚未上板，未取得同源码 A/F full20，不能声称性能改善或 `<3%` 回退门通过。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
