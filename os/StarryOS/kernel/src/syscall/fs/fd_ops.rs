@@ -324,6 +324,38 @@ fn proc_exe_target(
     Some(get_user_process_data_by_number(tgid))
 }
 
+/// Applies Linux's `PTRACE_MODE_READ_FSCREDS` task-access check
+/// (`kernel/ptrace.c::__ptrace_may_access`) to a cross-process proc read.
+///
+/// The caller's filesystem uid and gid must match the target's
+/// real/effective/saved uid and gid triplet, or the caller must hold
+/// `CAP_SYS_PTRACE`; a non-dumpable target additionally requires that
+/// capability. StarryOS does not scope capabilities per user namespace, so
+/// `CAP_SYS_PTRACE` is read from the caller's effective set.
+fn proc_exe_read_access_allowed(
+    caller: &crate::task::Cred,
+    proc_data: &Arc<crate::task::ProcessData>,
+) -> StarryResult<bool> {
+    if caller.has_cap_sys_ptrace() {
+        return Ok(true);
+    }
+    let target = proc_data.identity();
+    let target_cred = if let Some(task) = target.live_task() {
+        task.as_thread().cred()
+    } else {
+        target
+            .zombie_snapshot(|zombie| zombie.cred.clone())
+            .ok_or(StarryError::NoSuchProcess)?
+    };
+    let ids_match = caller.fsuid == target_cred.uid
+        && caller.fsuid == target_cred.euid
+        && caller.fsuid == target_cred.suid
+        && caller.fsgid == target_cred.gid
+        && caller.fsgid == target_cred.egid
+        && caller.fsgid == target_cred.sgid;
+    Ok(ids_match && proc_data.dumpable() == 1)
+}
+
 /// `/proc/<pid>/exe` is a magic link: opening it must yield the backing
 /// executable file itself, never a re-resolution of the displayed path. A
 /// memfd-exec'd runc displays `/memfd:... (deleted)`, which no path lookup
@@ -343,25 +375,22 @@ fn try_open_proc_exe(
     };
     let cred = current.as_thread().cred();
     // /proc/<pid>/exe of another process requires ptrace-style read
-    // permission (PTRACE_MODE_READ_FSCREDS): same-thread-group callers pass,
-    // CAP_SYS_PTRACE bypasses, and otherwise the ids must match *and* the
-    // target must still be dumpable (a non-dumpable target hides its exe
-    // even from the same uid).
+    // permission (`PTRACE_MODE_READ_FSCREDS`, fs/proc/base.c
+    // `proc_fd_access_allowed`): same-thread-group callers pass, CAP_SYS_PTRACE
+    // bypasses, and otherwise the caller's filesystem uid/gid must match the
+    // target's real/effective/saved triplet *and* the target must stay
+    // dumpable. A kill-style uid-only check would let a caller with a matching
+    // uid but a different group (or a non-dumpable target) read the target's
+    // executable.
     let same_process = core::ptr::eq(
         proc_data.as_ref() as *const _,
         Arc::as_ref(&current.as_thread().proc_data),
     );
-    if !same_process
-        && !cred.has_cap_sys_ptrace()
-    {
-        let identity_ok = crate::syscall::signal::check_kill_permission_identity(
-            current,
-            &proc_data.identity(),
-        )
-        .is_ok();
-        let dumpable = proc_data.dumpable() == 1;
-        if !identity_ok || !dumpable {
-            return Some(Err(StarryError::PermissionDenied));
+    if !same_process {
+        match proc_exe_read_access_allowed(&cred, &proc_data) {
+            Ok(true) => {}
+            Ok(false) => return Some(Err(StarryError::PermissionDenied)),
+            Err(err) => return Some(Err(err)),
         }
     }
     let loc = proc_data.exe_location()?;
