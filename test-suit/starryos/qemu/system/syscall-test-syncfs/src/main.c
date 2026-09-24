@@ -11,7 +11,7 @@ int main(void)
 {
     TEST_START("sync and syncfs Linux ABI");
 
-    /* Keep the public sync(2) dispatch covered without claiming durability. */
+    /* Catch a missing or misrouted sync(2) ABI; sync01 owns durability. */
     CHECK_RET(syscall(SYS_sync), 0, "SYS_sync 返回 0");
 
     /* 测试节点 1：普通文件 fd 上 syncfs 返回 0。 */
