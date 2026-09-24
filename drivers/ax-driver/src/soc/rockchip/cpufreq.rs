@@ -12,53 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! RK3588 CPU DVFS: SCMI clocks + PMIC rail-voltage alignment + ondemand governor.
+//! RK3588 CPU DVFS hardware adapter for the shared `rdif-cpufreq` interface.
 //!
-//! The RK3588 CPU clock is voltage-coupled — an SCMI clock id selects a PVTPLL
-//! ring whose *delivered* frequency tracks the core rail voltage — and the SCMI
-//! interface is frequency-only. Exact DVFS therefore needs BOTH levers together:
-//! the SCMI ring *and* the matching rail voltage. This driver does three things,
-//! in order:
+//! A CPU OPP couples an SCMI PVTPLL clock request with its regulator voltage
+//! and GRF read margin. The probe confirms bootstrap clocks and rails before
+//! the shared runtime starts its policy worker. After all CPUs are online,
+//! OTP, PVTM, temperature, and the board DT select each domain's OPP table.
 //!
-//! 1. **Set each cluster clock** to its boot target over the board-proven SCMI
-//!    seam ([`set_and_verify`]). The three CPU domains and their SCMI clock ids
-//!    (ground truth `orangepi5plus.dts`: `cpu@0..300` → `<scmi 0>`, `cpu@400/500`
-//!    → `<scmi 2>`, `cpu@600/700` → `<scmi 3>`):
+//! The three CPU domains and their SCMI clock IDs are:
 //!
-//!    | cluster        | SCMI clock id | boot target (MHz) |
-//!    |----------------|---------------|-------------------|
-//!    | A55 (little)   | 0             | 1008              |
-//!    | A76 big pair 0 | 2             | 1200              |
-//!    | A76 big pair 1 | 3             | 1200              |
+//! | cluster        | SCMI clock id | bootstrap MHz |
+//! |----------------|---------------|---------------|
+//! | A55 (little)   | 0             | 1008          |
+//! | A76 big pair 0 | 2             | 1200          |
+//! | A76 big pair 1 | 3             | 1200          |
 //!
-//! 2. **Align each rail voltage to the OPP** ([`align_rail_voltages_to_opp`]).
-//!    Boot firmware leaves the rails high (~800 mV), so the coupled clock
-//!    overshoots the SCMI target until each rail is lowered to its OPP-nominal
-//!    (0.675 V for these OPPs on the standard SKU). Lowering cannot undervolt: the
-//!    coupled clock tracks the rail down in lockstep. NOTE the industrial
-//!    RK3588J/M SKU (selected by the `specification_serial_number` nvmem cell)
-//!    puts these OPPs at 0.75 V; the PMIC modules floor at 0.675 V, so gate the
-//!    nominal on the SKU cell before running this on a J/M part.
-//!
-//! 3. **Hand off to the ondemand governor** ([`governor_poll`]). Once both
-//!    CPU-rail PMIC buses are up, a dynamic governor scales each cluster's OPP to
-//!    match load (see the governor section at the end of this file).
-//!
-//! Registration and ordering: a `PostKernel` / `DEFAULT` rdrive probe, so the CRU +
-//! SCMI providers (registered at `CLK` priority) are already live, and it runs
-//! inside `devices::probe_all_devices()` — **before** `start_secondary_cpus()` —
-//! so the A76 clusters are reclocked while no core is scheduled on them (the live
-//! A55 id-0 switch is BL31's glitch-free path). It binds to the CPU nodes rather
-//! than `arm,scmi-smc` (which the SCMI driver already owns; a second driver on
-//! that node would never get an `on_probe`), and applies exactly once via a
-//! one-shot guard because several `cpu@*` nodes match.
+//! A `PostKernel` CPU-node probe runs before secondary CPUs start. The
+//! `ax-runtime` worker serializes every later OPP request and thermal refresh.
 
 use alloc::{format, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "rk3588-cpufreq-thermal-test")]
+use core::sync::atomic::AtomicI32;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
-use fdt_edit::{NodeType, Phandle};
+use ax_lazyinit::OnceLock;
+use fdt_edit::{Fdt, NodeType, Phandle};
 use log::{info, warn};
+use rockchip_soc::rk3588::{
+    cpufreq as soc_cpufreq,
+    cpufreq_opp::{self, HardwareSelection},
+};
 
+use super::{
+    cpufreq_margin::{GrfResource, ReadMargin},
+    cpufreq_pvtm, cpufreq_sensors,
+};
 use crate::{probe::OnProbeError, register::ProbeFdt, soc::scmi};
 
 /// SCMI clock id of the A55 (little) cluster — cpu0..3.
@@ -67,12 +55,12 @@ const A55_CLK_ID: u32 = 0;
 /// must be set; they cover different core pairs.
 const A76_CLK_IDS: [u32; 2] = [2, 3];
 
-/// A55 target and hard ceiling: the top OPP still on the 816 MHz boot voltage
-/// row. `set_clock_rate` must never be driven above this for the A55 cluster.
+/// Confirmed A55 bootstrap rate, before OTP and PVTM authorize higher OPPs.
 const A55_MAX_HZ: u64 = 1_008_000_000;
-/// A76 target and hard ceiling: the top OPP still on the 816 MHz boot voltage
-/// row. `set_clock_rate` must never be driven above this for an A76 cluster.
+/// Confirmed A76 bootstrap rate, before OTP and PVTM authorize higher OPPs.
 const A76_MAX_HZ: u64 = 1_200_000_000;
+const A55_PVTM_HZ: u64 = 1_416_000_000;
+const A76_PVTM_HZ: u64 = 1_608_000_000;
 
 /// One-shot guard: several `cpu@*` nodes match, but the reclock runs once.
 static APPLIED: AtomicBool = AtomicBool::new(false);
@@ -93,17 +81,19 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // Several CPU nodes match this driver; only the first invocation reclocks.
-    if APPLIED.load(Ordering::Acquire) {
+    if APPLIED.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
 
-    let phandle = probe
-        .info()
-        .clocks()?
-        .into_iter()
-        .next()
-        .map(|clock| clock.phandle)
-        .ok_or_else(|| OnProbeError::other("RK3588 CPU node has no SCMI clock reference"))?;
+    let phandle = probe.info().clocks().and_then(|clocks| {
+        clocks
+            .into_iter()
+            .next()
+            .map(|clock| clock.phandle)
+            .ok_or_else(|| OnProbeError::other("RK3588 CPU node has no SCMI clock reference"))
+    });
+    super::cpufreq_rdif::register(probe.into_platform_device());
+    let phandle = phandle?;
     match SCMI_CLOCK_PHANDLE.compare_exchange(0, phandle.raw(), Ordering::AcqRel, Ordering::Acquire)
     {
         Ok(_) => {}
@@ -115,10 +105,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             )));
         }
     }
-    if APPLIED.swap(true, Ordering::AcqRel) {
-        return Ok(());
-    }
-
     // Safety preflight (read-only): confirm this exact provider services all
     // CPU-cluster clocks before touching any of them. If any target id is
     // rejected, leave every cluster at its boot rate and bail.
@@ -159,14 +145,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // down-transitions), and only on the full-success path above.
     align_rail_voltages_to_opp();
 
-    // Hand off to the dynamic ondemand governor. It cannot
-    // live entirely in this crate — ax-driver sits *below* ax-task/ax-hal in the
-    // dependency graph (they pull ax-driver back in via axplat-dyn), so a
-    // task-spawning loop here would be a cyclic dep. Instead this driver exposes
-    // the pure policy+apply (`governor_poll`, see the governor section at the end
-    // of this file) and the kernel drives it from a periodic sleepable task. The
-    // voltage lever above armed `GOV_READY` iff both PMIC buses came up.
-
     Ok(())
 }
 
@@ -175,19 +153,345 @@ fn scmi_clock_phandle() -> Option<Phandle> {
     (phandle != 0).then(|| Phandle::from(phandle))
 }
 
-/// Programs `clock_id` to `target`, but never above `ceiling` (the hard cap on
-/// the boot voltage row), then verifies the platform actually applied it.
+fn rail_voltage(cluster: Cluster) -> Option<u32> {
+    use super::{pmic_i2c, pmic_spi};
+    match cluster {
+        Cluster::A55 => pmic_spi::get_uv(),
+        Cluster::Big0 => pmic_i2c::get_uv(pmic_i2c::RK8602_BIG0_ADDR),
+        Cluster::Big1 => pmic_i2c::get_uv(pmic_i2c::RK8603_BIG1_ADDR),
+    }
+}
+
+fn grf_resource(fdt: &Fdt, phandle: u32) -> Result<GrfResource, FrequencyError> {
+    let node = fdt
+        .get_by_phandle(Phandle::from(phandle))
+        .ok_or(FrequencyError::NotReady)?;
+    let reg = node
+        .regs()
+        .into_iter()
+        .next()
+        .ok_or(FrequencyError::NotReady)?;
+    Ok(GrfResource {
+        address: reg.address,
+        size: reg.size.ok_or(FrequencyError::NotReady)?,
+    })
+}
+
+fn select_domain_opps(
+    fdt: &Fdt,
+    cluster: Cluster,
+    phandle: Phandle,
+    hold_measurement_clock: bool,
+) -> Result<SelectedDomain, FrequencyError> {
+    let cpu = fdt
+        .find_compatible(&["arm,cortex-a55", "arm,cortex-a76"])
+        .into_iter()
+        .find(|node| cpu_node_clock_id(node, phandle) == Some(cluster.clock_id()))
+        .ok_or(FrequencyError::NotReady)?;
+    let table_phandle = cpu
+        .as_node()
+        .get_property("operating-points-v2")
+        .and_then(|property| property.get_u32())
+        .ok_or(FrequencyError::NotReady)?;
+    let table = fdt
+        .get_by_phandle(Phandle::from(table_phandle))
+        .ok_or(FrequencyError::NotReady)?;
+    let table_node = table.as_node();
+    let property_u32 = |name| {
+        table_node
+            .get_property(name)
+            .and_then(|property| property.get_u32())
+            .ok_or(FrequencyError::NotReady)
+    };
+
+    let serial = cpufreq_sensors::sku_serial().map_err(|_| FrequencyError::NotReady)?;
+    let bin = match serial {
+        0x0d => 1,
+        0x0a => 2,
+        _ => 0,
+    };
+    if bin != 0 {
+        warn!(
+            "cpufreq: {} SKU bin {bin} has no board-validated high OPP; retaining boot OPP",
+            cluster.name()
+        );
+        return Err(FrequencyError::NotReady);
+    }
+    let cell_phandle = table_node
+        .get_property("nvmem-cells")
+        .and_then(|property| property.get_u32_iter().nth(1))
+        .ok_or(FrequencyError::NotReady)?;
+    let cell = fdt
+        .get_by_phandle(Phandle::from(cell_phandle))
+        .ok_or(FrequencyError::NotReady)?;
+    let cell_reg = cell
+        .regs()
+        .into_iter()
+        .next()
+        .ok_or(FrequencyError::NotReady)?;
+    let opp_info = cpufreq_sensors::read_otp_bytes(
+        usize::try_from(cell_reg.address).map_err(|_| FrequencyError::NotReady)?,
+        usize::try_from(cell_reg.size.ok_or(FrequencyError::NotReady)?)
+            .map_err(|_| FrequencyError::NotReady)?,
+    )
+    .map_err(|_| FrequencyError::NotReady)?;
+
+    let temperature = cpufreq_sensors::cpu_temperature_millidegrees(cluster.index())
+        .map_err(|_| FrequencyError::NotReady)?;
+    let grf = grf_resource(fdt, property_u32("rockchip,grf")?)?;
+    let measurement_hz = u64::from(property_u32("rockchip,pvtm-freq")?) * 1000;
+    let measurement_uv = property_u32("rockchip,pvtm-volt")?;
+    let delay_us = property_u32("rockchip,pvtm-sample-time")?;
+    let offset = property_u32("rockchip,pvtm-offset")?;
+    let margin_cells = table_node
+        .get_property("volt-mem-read-margin")
+        .map(|property| property.get_u32_iter().collect::<Vec<_>>())
+        .ok_or(FrequencyError::NotReady)?;
+    let dsu = table_node
+        .get_property("rockchip,dsu-grf")
+        .and_then(|property| property.get_u32())
+        .map(|phandle| grf_resource(fdt, phandle))
+        .transpose()?;
+    let margin = ReadMargin::new(grf, dsu, &margin_cells).map_err(|_| FrequencyError::NotReady)?;
+    let boot_hz = if matches!(cluster, Cluster::A55) {
+        A55_MAX_HZ
+    } else {
+        A76_MAX_HZ
+    };
+    let expected_measurement_hz = if matches!(cluster, Cluster::A55) {
+        A55_PVTM_HZ
+    } else {
+        A76_PVTM_HZ
+    };
+    if measurement_uv != 750_000
+        || measurement_hz != expected_measurement_hz
+        || rail_voltage(cluster) != Some(measurement_uv)
+        || scmi::clock_rate(phandle, cluster.clock_id()) != Some(boot_hz)
+        || delay_us == 0
+        || delay_us > 10_000
+    {
+        return Err(FrequencyError::NotReady);
+    }
+    if !matches!(cluster, Cluster::A55)
+        && scmi::clock_rate(phandle, A55_CLK_ID)
+            .is_none_or(|rate| rate < soc_cpufreq::dsu_minimum_hz(measurement_hz))
+    {
+        return Err(FrequencyError::NotReady);
+    }
+    if margin.establish_for_voltage(measurement_uv).is_err() {
+        DOMAIN_READY[cluster.index()].store(false, Ordering::Release);
+        if matches!(cluster, Cluster::A55) {
+            DOMAIN_READY[1].store(false, Ordering::Release);
+            DOMAIN_READY[2].store(false, Ordering::Release);
+        }
+        return Err(FrequencyError::HardwareFailure);
+    }
+    if !set_and_verify(phandle, cluster.clock_id(), measurement_hz, measurement_hz) {
+        DOMAIN_READY[cluster.index()].store(false, Ordering::Release);
+        return Err(FrequencyError::HardwareFailure);
+    }
+    axklib::time::busy_wait(core::time::Duration::from_micros(u64::from(delay_us)));
+    let sample = cpufreq_pvtm::read_raw_sample(grf.address, grf.size, offset);
+    if !hold_measurement_clock
+        && !set_and_verify(phandle, cluster.clock_id(), boot_hz, measurement_hz)
+    {
+        DOMAIN_READY[cluster.index()].store(false, Ordering::Release);
+        return Err(FrequencyError::HardwareFailure);
+    }
+    let sample = sample.map_err(|_| FrequencyError::HardwareFailure)?;
+    let temp_props = table_node
+        .get_property("rockchip,pvtm-temp-prop")
+        .map(|property| property.get_u32_iter().collect::<Vec<_>>())
+        .ok_or(FrequencyError::NotReady)?;
+    let [below, above] = temp_props.as_slice() else {
+        return Err(FrequencyError::NotReady);
+    };
+    let corrected = cpufreq_pvtm::temperature_correct(
+        sample,
+        temperature,
+        property_u32("rockchip,pvtm-ref-temp")? as i32,
+        [*below as i32, *above as i32],
+    )
+    .ok_or(FrequencyError::NotReady)?;
+    let pvtm_hw = property_u32("rockchip,pvtm-hw")?;
+    let grade_property = if cpufreq_pvtm::uses_hardware_bin_table(bin, pvtm_hw) {
+        "rockchip,pvtm-voltage-sel-hw"
+    } else {
+        "rockchip,pvtm-voltage-sel"
+    };
+    let grade_cells = table_node
+        .get_property(grade_property)
+        .map(|property| property.get_u32_iter().collect::<Vec<_>>())
+        .ok_or(FrequencyError::NotReady)?;
+    let (rows, remainder) = grade_cells.as_chunks::<3>();
+    if !remainder.is_empty() {
+        return Err(FrequencyError::NotReady);
+    }
+    let grade = u8::try_from(
+        cpufreq_pvtm::select_voltage_grade(corrected, rows).ok_or(FrequencyError::NotReady)?,
+    )
+    .map_err(|_| FrequencyError::NotReady)?;
+    let grade_measured = match cluster {
+        Cluster::A55 => matches!(grade, 0 | 1),
+        Cluster::Big0 | Cluster::Big1 => matches!(grade, 0 | 3),
+    };
+    if !grade_measured {
+        warn!(
+            "cpufreq: {} PVTM grade {grade} has no board-validated high OPP; retaining boot OPP",
+            cluster.name()
+        );
+        return Err(FrequencyError::NotReady);
+    }
+    let selection = HardwareSelection::from_otp(serial, grade, &opp_info)
+        .map_err(|_| FrequencyError::NotReady)?;
+    let selected = cpufreq_opp::parse_domain_opps(fdt, cpu.as_node(), selection)
+        .map_err(|_| FrequencyError::NotReady)?;
+    let opps = selected
+        .into_iter()
+        .map(|opp| {
+            let rail_ceiling_uv = if matches!(cluster, Cluster::A55) {
+                950_000
+            } else {
+                1_000_000
+            };
+            if opp.cpu.target_uv > rail_ceiling_uv
+                || opp
+                    .memory
+                    .is_some_and(|memory| memory.target_uv != opp.cpu.target_uv)
+                || opp.frequency_hz % 1_000_000 != 0
+                || opp.frequency_hz / 1_000_000 > u64::from(u32::MAX)
+                || opp.frequency_hz / 1000 > u64::from(u32::MAX)
+            {
+                return Err(FrequencyError::NotReady);
+            }
+            Ok(Opp {
+                ring_khz: (opp.frequency_hz / 1000) as u32,
+                uv: opp.cpu.target_uv,
+                mhz: (opp.frequency_hz / 1_000_000) as u32,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    info!(
+        "cpufreq: {} OTP bin={} PVTM raw={} corrected={} grade={} temp={}mC, {} OPPs, max={}MHz",
+        cluster.name(),
+        bin,
+        sample,
+        corrected,
+        grade,
+        temperature,
+        opps.len(),
+        opps.last().map_or(0, |opp| opp.mhz)
+    );
+    Ok(SelectedDomain { opps, margin })
+}
+
+/// Complete silicon selection after device probing and CPU startup, before the
+/// shared policy worker begins applying requests.
+pub fn initialize_post_boot() {
+    if SELECTED_OPPS.is_initialized() || !driver_ready() {
+        return;
+    }
+    let Some(phandle) = scmi_clock_phandle() else {
+        return;
+    };
+    let Some(fdt) = rdrive::fdt_ref() else {
+        return;
+    };
+    let select = |cluster, hold| match select_domain_opps(fdt, cluster, phandle, hold) {
+        Ok(selected) => Some(selected),
+        Err(error) => {
+            warn!(
+                "cpufreq: {} OPP selection failed: {error:?}; keeping boot OPP",
+                cluster.name()
+            );
+            None
+        }
+    };
+    // The A55 PVTM measurement point is 1.416 GHz at 750 mV. Keep it
+    // confirmed there while the big clusters sample at 1.608 GHz: their BSP
+    // DSU dependency requires at least 1.2 GHz from the little domain.
+    let little = select(Cluster::A55, true);
+    let little_holds_dsu = little.is_some()
+        && DOMAIN_READY[0].load(Ordering::Acquire)
+        && rail_voltage(Cluster::A55) == Some(750_000)
+        && scmi::clock_rate(phandle, A55_CLK_ID) == Some(A55_PVTM_HZ);
+    let big0 = little_holds_dsu
+        .then(|| select(Cluster::Big0, false))
+        .flatten();
+    let big1 = little_holds_dsu
+        .then(|| select(Cluster::Big1, false))
+        .flatten();
+    // A failed PVTM clock SET can leave a big cluster at 1.608 GHz even when
+    // its readback is unknown. Confirm both big rings at 1.2 GHz before
+    // lowering A55 below their 1.2 GHz DSU requirement.
+    let mut big_boot_confirmed = true;
+    for id in A76_CLK_IDS {
+        if scmi::clock_rate(phandle, id) != Some(A76_MAX_HZ)
+            && !set_and_verify(phandle, id, A76_MAX_HZ, A76_PVTM_HZ)
+        {
+            big_boot_confirmed = false;
+        }
+    }
+    if !big_boot_confirmed {
+        warn!("cpufreq: big-cluster PVTM clock recovery failed; leaving A55 clock unchanged");
+        disable_all_domains();
+        return;
+    }
+    if !set_and_verify(phandle, A55_CLK_ID, A55_MAX_HZ, A55_PVTM_HZ) {
+        disable_all_domains();
+        return;
+    }
+    let selected = [little, big0, big1];
+    let selected = SELECTED_OPPS.call_once(|| selected);
+    for (index, domain) in DOMAINS.into_iter().enumerate() {
+        let Some(table) = selected[index].as_ref() else {
+            continue;
+        };
+        let boot_hz = if index == 0 { A55_MAX_HZ } else { A76_MAX_HZ };
+        let Some(boot_index) = table
+            .opps
+            .iter()
+            .position(|opp| opp.ring_khz as u64 * 1000 == boot_hz)
+        else {
+            mark_domain_failed(domain);
+            break;
+        };
+        if !apply_opp(domain.cluster(), table.opps[boot_index], false) {
+            mark_domain_failed(domain);
+            break;
+        }
+        IDX[index].store(boot_index, Ordering::Release);
+        FLOOR_IDX[index].store(0, Ordering::Release);
+    }
+}
+
+fn disable_all_domains() {
+    for ready in &DOMAIN_READY {
+        ready.store(false, Ordering::Release);
+    }
+    SELECTED_OPPS.call_once(|| [None, None, None]);
+}
+
+fn mark_domain_failed(_domain: FrequencyDomain) {
+    // A big clock may have changed even when its readback failed. Its unknown
+    // DSU floor also makes subsequent A55 transitions unsafe.
+    for ready in &DOMAIN_READY {
+        ready.store(false, Ordering::Release);
+    }
+}
+
+/// Programs `clock_id` to `target`, but never above the caller's confirmed
+/// rail-voltage ceiling, then verifies the platform actually applied it.
 /// Returns `true` only when the read-back matches the request.
 ///
-/// `target == ceiling` for the boot targets; the clamp is defense in depth so a future
-/// edit can never push a cluster past its boot-voltage-safe ceiling. A rejected
-/// set or a deviating read-back is reported and returns `false` so the caller
-/// stops rather than leaving a partial/phantom state — the board stays on
-/// whatever rate the firmware last confirmed.
+/// The ceiling is the boot ring during probing and the PVTM measurement ring
+/// after the 750 mV rail is confirmed. A rejected set or a deviating read-back
+/// returns `false`; the caller then stops because the actual clock may differ
+/// from the requested rate.
 fn set_and_verify(phandle: Phandle, clock_id: u32, target: u64, ceiling: u64) -> bool {
     if target > ceiling {
         warn!(
-            "cpufreq: refusing to set clock id {clock_id} to {target} Hz (above boot-safe ceiling \
+            "cpufreq: refusing to set clock id {clock_id} to {target} Hz (above confirmed ceiling \
              {ceiling} Hz)"
         );
         return false;
@@ -200,7 +504,7 @@ fn set_and_verify(phandle: Phandle, clock_id: u32, target: u64, ceiling: u64) ->
         Some(applied) if applied == target => true,
         Some(applied) if applied > ceiling => {
             warn!(
-                "cpufreq: clock id {clock_id} read back {applied} Hz ABOVE boot-safe ceiling \
+                "cpufreq: clock id {clock_id} read back {applied} Hz ABOVE confirmed ceiling \
                  {ceiling} Hz (requested {target} Hz); stopping"
             );
             false
@@ -236,29 +540,12 @@ fn read_mhz(phandle: Phandle, clock_id: u32) -> u64 {
 /// below — its spi2/RK806 read is not up yet, so it is skipped).
 const APPLY_RAIL_VOLTAGE: bool = true;
 
-/// OPP-nominal core voltage for the boot targets on the **standard** SKU: the
-/// 675 mV row shared by the 816/1008/1200 MHz OPPs (board-confirmed from the
-/// `cluster*-opp-table` `opp-microvolt`). The A55 1008 OPP and both A76 1200 OPPs
-/// all sit here.
-///
-/// NOTE: the industrial RK3588J/M SKU puts these OPPs at 750 mV (`opp-j-m-*`). The
-/// PMIC modules floor at 675 mV, so a 675 mV target would *under*-volt a J/M part.
-/// This board is the standard SKU; if this driver is ever run on a J/M board, gate
-/// this constant on the `specification_serial_number` nvmem SKU cell first.
-const A76_NOMINAL_UV: u32 = 675_000;
-const A55_NOMINAL_UV: u32 = 675_000;
-
-/// One-shot A55 MOSI/write diagnostic — **OFF by default**. The RK806 read path is
-/// dead (returns a bogus 0x00), so an A55 write cannot be validated by read-back.
-/// When enabled this force-writes DCDC2 to the bounded-safe A55 OPP nominal and
-/// relies on cpuprobe observing whether the A55 frequency drops — the only way to
-/// learn if MOSI/writes physically reach the RK806 when reads do not. But that is
-/// an *unconfirmable* A55 rail write, which is exactly the boundary the ring-only
-/// A55 policy exists to avoid (the governor never writes the A55 rail; A55 keeps
-/// its boot voltage, which over-volts every ring <= 1008 MHz). Leave it `false` in
-/// production; flip to `true` only for a deliberate board-side MOSI reachability
-/// probe. The write is clamped to the A55 boot-safe row inside the PMIC module.
-const A55_FORCE_WRITE_TEST: bool = false;
+/// Conservative boot voltage shared by standard and J/M OPP rows. The standard
+/// rows allow 675 mV, but OTP is not yet available here, so that row is closed.
+// The J/M OPP rows require 750 mV at the same boot ring. Until OTP selection
+// exists, never lower a rail to the standard-SKU-only 675 mV row.
+const A76_NOMINAL_UV: u32 = 750_000;
+const A55_NOMINAL_UV: u32 = 750_000;
 
 /// Read (and, once validated, lower) the three CPU-cluster rails to their OPP
 /// nominal so the voltage-coupled clock lands on the exact requested frequency.
@@ -302,85 +589,47 @@ fn align_rail_voltages_to_opp() {
         return;
     }
 
-    // --- Apply: stepped, down-only, read-back-verified lower to OPP nominal. ---
+    // --- Apply: stepped, down-only, read-back-verified lower to a common safe row. ---
+    let mut a76_aligned = false;
     if a76_ok {
-        let b0 = pmic_i2c::set_uv_stepped(pmic_i2c::RK8602_BIG0_ADDR, A76_NOMINAL_UV);
-        let b1 = pmic_i2c::set_uv_stepped(pmic_i2c::RK8603_BIG1_ADDR, A76_NOMINAL_UV);
+        let b0 = pmic_i2c::set_uv_stepped_verified(pmic_i2c::RK8602_BIG0_ADDR, A76_NOMINAL_UV);
+        let b1 = pmic_i2c::set_uv_stepped_verified(pmic_i2c::RK8603_BIG1_ADDR, A76_NOMINAL_UV);
+        a76_aligned = b0 && b1;
         info!("cpufreq: A76 rails -> {A76_NOMINAL_UV} uV (big0 ok={b0}, big1 ok={b1})");
     }
-    // A55 (spi2/RK806): only lower it if the current-voltage read is trustworthy.
-    // `set_uv_stepped` reads the rail before stepping down, so we must never lower a
-    // rail we cannot read. The spi2/RK806 read path is not up yet (it returns a bogus
-    // 0x00 == 500 mV), so skip the A55 write until that bring-up completes rather than
-    // act on a false reading. A real A55 boot voltage is in [675 mV, 950 mV] per the
-    // RK806 DCDC2 range and the cluster0 OPP table.
+    // A55 (spi2/RK806): only lower the rail after a trustworthy selector readback.
+    // A real A55 boot voltage is in [675 mV, 950 mV] per the DCDC2 range and
+    // cluster0 OPP table.
     match if a55_ok { pmic_spi::get_uv() } else { None } {
         Some(v) if (675_000..=950_000).contains(&v) => {
-            let a55 = pmic_spi::set_uv_stepped(A55_NOMINAL_UV);
+            let a55 = pmic_spi::set_uv_stepped_verified(A55_NOMINAL_UV);
+            A55_RAIL_CONFIRMED.store(a55, Ordering::Release);
             info!("cpufreq: A55 rail {v} -> {A55_NOMINAL_UV} uV (ok={a55})");
         }
         other => warn!(
-            "cpufreq: A55 boot voltage not trustworthy ({other:?} uV); skipping A55 write until \
-             spi2/RK806 bring-up completes (A76 unaffected)"
+            "cpufreq: A55 boot voltage not trustworthy ({other:?} uV); leaving A55 DVFS \
+             unavailable"
         ),
     }
 
-    // A55 MOSI/write diagnostic: force-write DCDC2 to the bounded-safe nominal and
-    // let cpuprobe reveal whether writes reach the RK806 even though reads don't.
-    if A55_FORCE_WRITE_TEST && a55_ok {
-        let ok = pmic_spi::force_write_dcdc2(A55_NOMINAL_UV);
-        info!(
-            "cpufreq: A55 MOSI/write test -> {A55_NOMINAL_UV} uV (write xfer_ok={ok}); watch A55 \
-             cpuprobe (req=0..3) for a freq drop if the write reached"
-        );
-    }
-
-    // Arm the dynamic governor as long as the A76 I2C rail came up. The governor's
-    // only dynamic PMIC writes are the A76 rails (RK8602/RK8603, read-back verified
-    // over I2C); the A55 is ring-only — it scales solely via its SCMI PVTPLL ring
-    // and the governor never writes the A55 rail (see `Cluster::voltage_managed`).
-    // So a flaky SPI2/RK806 bring-up (a55_ok=false) must NOT disable the fully
-    // working A76 DVFS. When a55_ok is false the one-shot boot alignment above was
-    // skipped, so A55 keeps its boot rail voltage; that only ever OVER-volts the
-    // ring-only A55 rungs (<= 1008 MHz), never undervolts, so ring scaling stays
-    // safe. If the A76 I2C bus itself failed, leave every cluster on the boot OPP
-    // the SCMI reclock already set (the safe fixed-boot state).
-    if GOVERNOR_ENABLE && a76_ok {
+    // The runtime may start only after both big-cluster rails are confirmed.
+    // A55 remains unavailable independently if its RK806 rail readback failed.
+    if a76_aligned {
         GOV_READY.store(true, Ordering::Release);
-        info!("cpufreq: ondemand governor armed (A76 I2C up; a55_spi={a55_ok}, A55 ring-only)");
-    } else if GOVERNOR_ENABLE {
+        info!("cpufreq: boot rails confirmed (A76 I2C up; a55_spi={a55_ok})");
+    } else {
         warn!(
-            "cpufreq: ondemand governor NOT armed (a76_pmic={a76_ok}); clusters stay on boot OPP"
+            "cpufreq: DVFS unavailable (a76_pmic={a76_ok}, aligned={a76_aligned}); clusters stay \
+             on boot OPP"
         );
     }
 }
 
 // ===========================================================================
-// Dynamic ondemand governor
+// Boot OPPs and selected silicon OPPs
 // ===========================================================================
-//
-// The voltage lever above pins each cluster at a single boot OPP. This governor
-// makes DVFS *dynamic*: it samples per-CPU busy time and moves each cluster's
-// OPP up and down to track load, the way Linux's `ondemand`/`schedutil` do.
-//
-// Split by cost, exactly like Linux: the *accounting* is a cheap per-CPU counter
-// charged by the scheduler whenever non-idle runtime advances, but the *apply*
-// is slow and SLEEPS — an
-// SCMI clock set is an SMC into BL31, and the paired PMIC write is an I2C/SPI
-// transaction with a millisecond voltage ramp. Neither may run in the tick
-// handler, so the decision+apply live in a periodic sleepable kernel task. This
-// is exactly why Linux's old ondemand used a deferred timer and schedutil kicks
-// a kthread rather than reprogramming the OPP inline in the tick.
 
-/// Master gate for the dynamic governor. When `false`, each cluster simply stays
-/// on the fixed boot OPP the voltage alignment left it on.
-const GOVERNOR_ENABLE: bool = true;
-
-/// An operating performance point: the SCMI ring target to program, the rail
-/// voltage to pair with it, and the frequency that combination actually delivers
-/// (`mhz`, board-measured — see the calibration section). Because the PVTPLL is
-/// voltage-coupled, the delivered `mhz` is generally NOT the `ring_khz`; the
-/// governor reports `mhz`.
+/// An OPP's requested SCMI rate, required rail voltage, and nominal frequency.
 #[derive(Clone, Copy)]
 struct Opp {
     ring_khz: u32,
@@ -388,97 +637,72 @@ struct Opp {
     mhz: u32,
 }
 
-/// A76 (big) OPP ladder, low→high, from the on-board calibration sweep. The clock
-/// is voltage-coupled, so this ladder is a HYBRID: below the 675 mV exact point it
-/// scales the SCMI ring (408/816/1200 @ 675 mV land on target); above it, it holds
-/// the ring at 1200 and raises the *voltage* — the delivered freq climbs while
-/// staying over-volted (each rung's voltage exceeds the delivered freq's DT
-/// nominal, so never an undervolt). Scaling the ring instead (e.g. ring 1608 @
-/// 762.5 mV) over-delivers ~1733 MHz = ~125 mV of undervolt (measured), so it is
-/// avoided. Top rung 1725 MHz @ 925 mV is the calibration sweep's safe maximum
-/// (over-volted ~110 mV vs the delivered freq's DT nominal); board-validated
-/// all-core (threads=8) with no PSU brownout.
+/// Bootstrap A76 ladder; only the confirmed 1200 MHz row is published before
+/// the silicon-specific DT OPP table has been validated.
 const A76_OPPS: &[Opp] = &[
     Opp {
         ring_khz: 408_000,
-        uv: 675_000,
+        uv: 750_000,
         mhz: 408,
     },
     Opp {
         ring_khz: 816_000,
-        uv: 675_000,
+        uv: 750_000,
         mhz: 816,
     },
     Opp {
         ring_khz: 1_200_000,
-        uv: 675_000,
-        mhz: 1189,
-    },
-    Opp {
-        ring_khz: 1_200_000,
-        uv: 725_000,
-        mhz: 1318,
-    },
-    Opp {
-        ring_khz: 1_200_000,
-        uv: 800_000,
-        mhz: 1491,
-    },
-    Opp {
-        ring_khz: 1_200_000,
-        uv: 850_000,
-        mhz: 1592,
-    },
-    Opp {
-        ring_khz: 1_200_000,
-        uv: 925_000,
-        mhz: 1725,
+        uv: 750_000,
+        mhz: 1200,
     },
 ];
 
-/// A55 (little) OPP ladder, low→high. Unlike the A76 ladder this is **ring-only**:
-/// every rung sits on the boot-confirmed 675 mV rail and only the SCMI PVTPLL ring
-/// moves. The A55 rail is RK806 DCDC2 over SPI2, whose *read* path is a hardware
-/// scope-wall — writes reach the chip (proven by the rail-alignment freq drop) but
-/// MISO never feeds the shift register, so a write cannot be read back to confirm
-/// the rail actually reached target. Scaling the A55 voltage on such an unconfirmable
-/// write could commit an OPP whose rail never arrived; rather than risk that, the
-/// little cluster forgoes the voltage lever and stays on 675 mV, which board
-/// measurement proves delivers the full 1008 MHz ring exactly. 675 mV over-volts
-/// every ring at or below 1008, so no A55 rung can undervolt regardless of the PMIC
-/// (see [`Cluster::voltage_managed`]). The big clusters keep the voltage lever
-/// because their RK8602/RK8603 rails read back over I2C. Restoring the higher
-/// voltage-scaled A55 rungs (1212–1523 MHz) is gated on a trusted RK806 write-back
-/// (an oscilloscope-level MISO fix, or a delivered-frequency oracle confirmation).
+/// Bootstrap A55 ladder. Higher rows require RK806 selector readback and the
+/// silicon-specific DT OPP selection.
 const A55_OPPS: &[Opp] = &[
     Opp {
         ring_khz: 408_000,
-        uv: 675_000,
+        uv: 750_000,
         mhz: 408,
     },
     Opp {
         ring_khz: 816_000,
-        uv: 675_000,
+        uv: 750_000,
         mhz: 816,
     },
     Opp {
         ring_khz: 1_008_000,
-        uv: 675_000,
-        mhz: 1021,
+        uv: 750_000,
+        mhz: 1008,
     },
 ];
 
-/// Index into each ladder of the boot OPP the voltage lever leaves the cluster on:
-/// A55 1008 MHz and A76 1200 MHz are both element 2 (the 675 mV rung). The governor
-/// starts tracking here so its first move is relative to the known boot state; from
-/// idle it decays down the ring-scaled rungs and under load climbs the voltage ones.
-/// Also the governor's shed floor (`scaling_min_freq` equivalent): bursty-I/O
-/// workloads (e.g. a model load that blocks on SD reads most of the window)
-/// read as near-idle, and shedding below the boot OPP slows their per-block
-/// completion path far more than the idle power it saves — measured on
-/// OrangePi 5 Plus, a 490 MB model read went 25.4s (static 1200 MHz) vs
-/// 29.8s (shedding to 408 MHz between read bursts).
+/// Index of the confirmed bootstrap OPP in each fallback ladder.
 const BOOT_OPP_IDX: usize = 2;
+
+// A table is published only after OTP, PVTM, the thermal sensor, regulator
+// readback, and the board OPP properties have all been validated. A selection
+// failure retains the bootstrap ladder; a hardware transition failure disables
+// all domains because their DSU relationship may no longer be known.
+struct SelectedDomain {
+    opps: Vec<Opp>,
+    margin: ReadMargin,
+}
+
+static SELECTED_OPPS: OnceLock<[Option<SelectedDomain>; 3]> = OnceLock::new();
+static FLOOR_IDX: [AtomicUsize; 3] = [const { AtomicUsize::new(BOOT_OPP_IDX) }; 3];
+static TEMPERATURE_STATE: [AtomicU8; 3] = [const { AtomicU8::new(0) }; 3];
+#[cfg(feature = "rk3588-cpufreq-thermal-test")]
+static TEST_TEMPERATURE_MC: AtomicI32 = AtomicI32::new(i32::MIN);
+
+/// Adds a test temperature constraint without masking the live TSADC result.
+/// `None` restores the sensor-only policy. Available only in board test builds.
+#[cfg(feature = "rk3588-cpufreq-thermal-test")]
+pub fn set_test_cpu_temperature_mc(temperature_mc: Option<i32>) {
+    let value = temperature_mc.unwrap_or(i32::MIN);
+    assert!(value == i32::MIN || (-40_000..=120_000).contains(&value));
+    TEST_TEMPERATURE_MC.store(value, Ordering::Release);
+}
 
 /// The three DVFS domains (one little cluster, two big pairs).
 #[derive(Clone, Copy)]
@@ -488,11 +712,306 @@ enum Cluster {
     Big1,
 }
 
+/// A physical CPU frequency domain. The two A76 pairs have independent clocks
+/// and regulators, so callers must address them separately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrequencyDomain {
+    Little,
+    Big0,
+    Big1,
+}
+
+impl FrequencyDomain {
+    const fn index(self) -> usize {
+        match self {
+            Self::Little => 0,
+            Self::Big0 => 1,
+            Self::Big1 => 2,
+        }
+    }
+
+    const fn cluster(self) -> Cluster {
+        match self {
+            Self::Little => Cluster::A55,
+            Self::Big0 => Cluster::Big0,
+            Self::Big1 => Cluster::Big1,
+        }
+    }
+}
+
+/// One confirmed nominal frequency and its supply requirement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperatingPoint {
+    /// Nominal OPP frequency from the board DT.
+    pub frequency_hz: u64,
+    /// SCMI clock rate requested and read back for this OPP.
+    pub ring_hz: u64,
+    /// Confirmed regulator set point for this OPP.
+    pub voltage_uv: u32,
+}
+
+/// Frequency bounds currently exposed by the driver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrequencyLimits {
+    pub min_hz: u64,
+    pub max_hz: u64,
+}
+
+/// CPU frequency control errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrequencyError {
+    NotReady,
+    OppUnavailable,
+    HardwareFailure,
+}
+
+/// The domain names are stable across supported operating systems.
+pub const DOMAINS: [FrequencyDomain; 3] = [
+    FrequencyDomain::Little,
+    FrequencyDomain::Big0,
+    FrequencyDomain::Big1,
+];
+
+fn describe(opp: Opp) -> OperatingPoint {
+    OperatingPoint {
+        frequency_hz: opp.mhz as u64 * 1_000_000,
+        ring_hz: opp.ring_khz as u64 * 1_000,
+        voltage_uv: opp.uv,
+    }
+}
+
+fn effective_voltage(cluster: Cluster, nominal_uv: u32) -> u32 {
+    soc_cpufreq::ThermalState::from_bits(TEMPERATURE_STATE[cluster.index()].load(Ordering::Acquire))
+        .effective_voltage_uv(nominal_uv)
+}
+
+fn describe_for(domain: FrequencyDomain, opp: Opp) -> OperatingPoint {
+    let mut point = describe(opp);
+    point.voltage_uv = effective_voltage(domain.cluster(), opp.uv);
+    point
+}
+
+fn check_ready(domain: FrequencyDomain) -> Result<(), FrequencyError> {
+    if !driver_ready()
+        || !DOMAIN_READY[domain.index()].load(Ordering::Acquire)
+        || domain == FrequencyDomain::Little && !A55_RAIL_CONFIRMED.load(Ordering::Acquire)
+    {
+        Err(FrequencyError::NotReady)
+    } else {
+        Ok(())
+    }
+}
+
+/// Returns the OPPs that this board driver can currently verify and apply.
+pub fn available_opps(domain: FrequencyDomain) -> Result<Vec<OperatingPoint>, FrequencyError> {
+    check_ready(domain)?;
+    let range = allowed_indices(domain)?;
+    Ok(domain.cluster().opps()[range]
+        .iter()
+        .copied()
+        .map(|opp| describe_for(domain, opp))
+        .collect())
+}
+
+/// Returns the last fully confirmed OPP for a domain.
+pub fn current_opp(domain: FrequencyDomain) -> Result<OperatingPoint, FrequencyError> {
+    check_ready(domain)?;
+    let index = IDX[domain.index()].load(Ordering::Acquire);
+    Ok(describe_for(domain, domain.cluster().opps()[index]))
+}
+
+/// Returns the current driver limits for a domain.
+pub fn limits(domain: FrequencyDomain) -> Result<FrequencyLimits, FrequencyError> {
+    check_ready(domain)?;
+    let opps = domain.cluster().opps();
+    let range = allowed_indices(domain)?;
+    Ok(FrequencyLimits {
+        min_hz: describe(opps[*range.start()]).frequency_hz,
+        max_hz: describe(opps[*range.end()]).frequency_hz,
+    })
+}
+
+fn allowed_indices(
+    domain: FrequencyDomain,
+) -> Result<core::ops::RangeInclusive<usize>, FrequencyError> {
+    let minimum = minimum_index(domain).ok_or(FrequencyError::NotReady)?;
+    let maximum = maximum_index(domain);
+    (minimum <= maximum)
+        .then_some(minimum..=maximum)
+        .ok_or(FrequencyError::NotReady)
+}
+
+fn minimum_index(domain: FrequencyDomain) -> Option<usize> {
+    let floor = FLOOR_IDX[domain.index()].load(Ordering::Acquire);
+    if domain != FrequencyDomain::Little {
+        return Some(floor);
+    }
+    let required = [FrequencyDomain::Big0, FrequencyDomain::Big1]
+        .into_iter()
+        .map(|big| {
+            let current = IDX[big.index()].load(Ordering::Acquire);
+            soc_cpufreq::dsu_minimum_hz(describe(big.cluster().opps()[current]).frequency_hz)
+        })
+        .max()
+        .unwrap_or(0);
+    domain
+        .cluster()
+        .opps()
+        .iter()
+        .position(|opp| u64::from(opp.mhz) * 1_000_000 >= required)
+        .map(|index| index.max(floor))
+}
+
+fn maximum_index(domain: FrequencyDomain) -> usize {
+    let opps = domain.cluster().opps();
+    let state = soc_cpufreq::ThermalState::from_bits(
+        TEMPERATURE_STATE[domain.index()].load(Ordering::Acquire),
+    );
+    let thermal_cap = state.maximum_hz(domain == FrequencyDomain::Little);
+    let dsu_cap = if domain != FrequencyDomain::Little {
+        if check_ready(FrequencyDomain::Little).is_err() {
+            A76_MAX_HZ
+        } else {
+            let little = FrequencyDomain::Little.cluster().opps();
+            let little_max = little[maximum_index(FrequencyDomain::Little)].mhz as u64 * 1_000_000;
+            opps.iter()
+                .rev()
+                .find(|opp| soc_cpufreq::dsu_minimum_hz(opp.mhz as u64 * 1_000_000) <= little_max)
+                .map_or(A76_MAX_HZ, |opp| opp.mhz as u64 * 1_000_000)
+        }
+    } else {
+        u64::MAX
+    };
+    opps.iter()
+        .rposition(|opp| opp.mhz as u64 * 1_000_000 <= thermal_cap.min(dsu_cap))
+        .unwrap_or(BOOT_OPP_IDX)
+}
+
+/// Refresh BSP 10/15 C voltage floor and 85/80 C frequency cap. Only the
+/// runtime worker calls this function, serially with all OPP transitions.
+pub fn refresh_limits() -> Result<(), FrequencyError> {
+    use super::cpufreq_sensors;
+
+    initialize_post_boot();
+    let mut first_error = None;
+    let mut previous = [soc_cpufreq::ThermalState::default(); 3];
+    for domain in [
+        FrequencyDomain::Big0,
+        FrequencyDomain::Big1,
+        FrequencyDomain::Little,
+    ] {
+        let index = domain.index();
+        let old =
+            soc_cpufreq::ThermalState::from_bits(TEMPERATURE_STATE[index].load(Ordering::Acquire));
+        let temperature = cpufreq_sensors::cpu_temperature_millidegrees(index).ok();
+        let state = old.update(temperature);
+        #[cfg(feature = "rk3588-cpufreq-thermal-test")]
+        let state = {
+            let mut constrained = state;
+            if constrained.valid {
+                let injected = TEST_TEMPERATURE_MC.load(Ordering::Acquire);
+                if injected != i32::MIN {
+                    let test_state = old.update(Some(injected));
+                    constrained.low |= test_state.low;
+                    constrained.high |= test_state.high;
+                }
+            }
+            constrained
+        };
+        previous[index] = old;
+        TEMPERATURE_STATE[index].store(state.bits(), Ordering::Release);
+    }
+    for domain in [
+        FrequencyDomain::Big0,
+        FrequencyDomain::Big1,
+        FrequencyDomain::Little,
+    ] {
+        let index = domain.index();
+        let old = previous[index];
+        let state =
+            soc_cpufreq::ThermalState::from_bits(TEMPERATURE_STATE[index].load(Ordering::Acquire));
+        if check_ready(domain).is_err() {
+            continue;
+        }
+        let current = IDX[index].load(Ordering::Acquire);
+        let cap = maximum_index(domain);
+        if current > cap {
+            let target = describe(domain.cluster().opps()[cap]).frequency_hz;
+            if let Err(error) = set_frequency(domain, target) {
+                // The new thermal bound cannot be published while the clock
+                // may still exceed it, even if no hardware write was attempted.
+                mark_domain_failed(domain);
+                first_error.get_or_insert(error);
+            }
+        } else if old != state {
+            let opp = domain.cluster().opps()[current];
+            let previous_uv = old.effective_voltage_uv(opp.uv);
+            let new_uv = effective_voltage(domain.cluster(), opp.uv);
+            if previous_uv != new_uv && !apply_opp(domain.cluster(), opp, new_uv > previous_uv) {
+                mark_domain_failed(domain);
+                first_error.get_or_insert(FrequencyError::HardwareFailure);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// Applies a confirmed OPP. The shared runtime serializes all callers with the
+/// governor before entering this sleepable driver path.
+pub fn set_frequency(domain: FrequencyDomain, frequency_hz: u64) -> Result<(), FrequencyError> {
+    check_ready(domain)?;
+    let cluster = domain.cluster();
+    let opps = cluster.opps();
+    let target = opps
+        .iter()
+        .position(|opp| describe(*opp).frequency_hz == frequency_hz)
+        .ok_or(FrequencyError::OppUnavailable)?;
+    if !allowed_indices(domain)?.contains(&target) {
+        return Err(FrequencyError::OppUnavailable);
+    }
+    if domain != FrequencyDomain::Little {
+        let required = soc_cpufreq::dsu_minimum_hz(frequency_hz);
+        let little = FrequencyDomain::Little;
+        let current = IDX[little.index()].load(Ordering::Acquire);
+        if describe(little.cluster().opps()[current]).frequency_hz < required {
+            check_ready(little)?;
+            let boost = little.cluster().opps()[allowed_indices(little)?]
+                .iter()
+                .find(|opp| u64::from(opp.mhz) * 1_000_000 >= required)
+                .ok_or(FrequencyError::OppUnavailable)?;
+            set_frequency(little, describe(*boost).frequency_hz)?;
+        }
+    }
+    let old = IDX[domain.index()].load(Ordering::Acquire);
+    if target == old {
+        return Ok(());
+    }
+    if !apply_opp(cluster, opps[target], target > old) {
+        mark_domain_failed(domain);
+        return Err(FrequencyError::HardwareFailure);
+    }
+    IDX[domain.index()].store(target, Ordering::Release);
+    Ok(())
+}
+
 impl Cluster {
+    fn index(self) -> usize {
+        match self {
+            Self::A55 => 0,
+            Self::Big0 => 1,
+            Self::Big1 => 2,
+        }
+    }
+
     fn opps(self) -> &'static [Opp] {
+        if let Some(selected) = SELECTED_OPPS.get()
+            && let Some(opps) = selected[self.index()].as_ref()
+        {
+            return &opps.opps;
+        }
         match self {
             Cluster::A55 => A55_OPPS,
-            _ => A76_OPPS,
+            _ => &A76_OPPS[..=BOOT_OPP_IDX],
         }
     }
 
@@ -505,16 +1024,6 @@ impl Cluster {
         }
     }
 
-    /// CPUs whose busy time this domain aggregates (RK3588 topology: cpu0-3 A55,
-    /// cpu4-5 big pair 0, cpu6-7 big pair 1).
-    fn cpus(self) -> core::ops::Range<usize> {
-        match self {
-            Cluster::A55 => 0..4,
-            Cluster::Big0 => 4..6,
-            Cluster::Big1 => 6..8,
-        }
-    }
-
     fn name(self) -> &'static str {
         match self {
             Cluster::A55 => "A55",
@@ -523,74 +1032,16 @@ impl Cluster {
         }
     }
 
-    /// Set this domain's rail to `uv`. A76 uses the read-back-verified I2C
-    /// regulator; A55 uses the bounded force-write (its RK806 read is a
-    /// scope-wall, but writes reach the chip — proven by the rail-alignment freq drop).
-    /// Both PMIC helpers clamp to their rail's safe envelope internally.
-    ///
-    /// Only ever called for a [`voltage_managed`](Self::voltage_managed) domain —
-    /// the A55 arm remains for the one-time boot alignment path but the governor
-    /// never drives it, so no dynamic (unconfirmable) A55 SPI write is issued.
+    /// Set and read back this domain's rail voltage, including intermediate steps.
+    /// RK806 supplies A55 over SPI; RK8602 and RK8603 supply the big clusters over I2C.
     fn set_voltage(self, uv: u32) -> bool {
         use super::{pmic_i2c, pmic_spi};
         match self {
-            Cluster::A55 => pmic_spi::force_write_dcdc2(uv),
-            Cluster::Big0 => pmic_i2c::set_uv(pmic_i2c::RK8602_BIG0_ADDR, uv),
-            Cluster::Big1 => pmic_i2c::set_uv(pmic_i2c::RK8603_BIG1_ADDR, uv),
+            Cluster::A55 => pmic_spi::set_uv_stepped_verified(uv),
+            Cluster::Big0 => pmic_i2c::set_uv_stepped_verified(pmic_i2c::RK8602_BIG0_ADDR, uv),
+            Cluster::Big1 => pmic_i2c::set_uv_stepped_verified(pmic_i2c::RK8603_BIG1_ADDR, uv),
         }
     }
-
-    /// Whether the governor may scale this domain's rail voltage dynamically.
-    ///
-    /// The A76 rails (RK8602/RK8603 over I2C) read back, so each write is confirmed
-    /// before the clock is allowed to follow it up — they get the full voltage lever.
-    /// The A55 rail (RK806 DCDC2 over SPI2) cannot be read back (a MISO hardware
-    /// scope-wall), so its voltage is programmed exactly once at init — the down-only,
-    /// boot-safe 675 mV alignment — and never scaled dynamically. The A55 ladder is
-    /// therefore ring-only and every A55 rung stays over-volted (675 mV supports the
-    /// whole ≤1008 MHz ring), which is undervolt-safe no matter what the unconfirmable
-    /// SPI write actually did. This per-cluster split keeps the readback-verified A76
-    /// DVFS while removing every dynamic A55 voltage write.
-    fn voltage_managed(self) -> bool {
-        !matches!(self, Cluster::A55)
-    }
-}
-
-/// One of the two hardware levers an OPP transition programs. Naming them makes
-/// the safety-critical apply *ordering* assertable by a host test with no
-/// hardware (see [`apply_step_order`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ApplyStep {
-    /// Program the rail voltage (PMIC I2C/SPI write).
-    Voltage,
-    /// Program the SCMI PVTPLL ring (clock rate).
-    Clock,
-}
-
-/// Ordering policy for [`apply_opp`], pure so a host test can pin it: to keep the
-/// voltage-coupled clock from ever overshooting its rail, an UPSHIFT raises the
-/// voltage before the clock (clock follows up), and a DOWNSHIFT lowers the clock
-/// before the voltage (clock follows down).
-const fn apply_step_order(going_up: bool) -> [ApplyStep; 2] {
-    if going_up {
-        [ApplyStep::Voltage, ApplyStep::Clock]
-    } else {
-        [ApplyStep::Clock, ApplyStep::Voltage]
-    }
-}
-
-/// Transactional core of [`apply_opp`], pure so a host test can drive every
-/// success/failure combination. Runs the ordered steps, STOPS at the first failed
-/// step (so the second lever is never moved after the first failed), and returns
-/// `true` only when BOTH steps are confirmed. `run(step)` performs one hardware
-/// step and reports whether it was confirmed.
-fn run_apply_steps(order: [ApplyStep; 2], mut run: impl FnMut(ApplyStep) -> bool) -> bool {
-    for step in order {
-        if !run(step) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Apply an OPP to a domain as a matched (voltage, frequency) pair, ordered so
@@ -598,14 +1049,8 @@ fn run_apply_steps(order: [ApplyStep; 2], mut run: impl FnMut(ApplyStep) -> bool
 ///   - going UP:   raise voltage first, then the SCMI ring (clock follows up);
 ///   - going DOWN: lower the SCMI ring first, then voltage (clock follows down).
 ///
-/// TRANSACTIONAL: stops at the first failed step instead of falling through to
-/// the second (which could otherwise create exactly the freq-high/voltage-low
-/// window this ordering exists to prevent), and returns `true` only when BOTH
-/// steps are confirmed. The caller ([`governor_poll`]) must commit its software
-/// OPP index only on `true`; on `false` it must keep tracking the last
-/// confirmed index so the next poll retries from there. The ordering +
-/// stop-on-failure logic is the pure, host-tested [`apply_step_order`] +
-/// [`run_apply_steps`]; only the hardware writes and their logs live here.
+/// Stops at the first failed step and returns `true` only after both steps
+/// have been read back. The caller then commits its software OPP index.
 ///
 /// Each step is CONFIRMED, not just requested: the clock step reads the SCMI rate
 /// back and requires it to equal the request (a SET ack alone is not proof the ring
@@ -634,186 +1079,106 @@ fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) -> bool {
         return false;
     };
     let hz = opp.ring_khz as u64 * 1_000;
-    run_apply_steps(apply_step_order(going_up), |step| match step {
-        ApplyStep::Voltage => {
-            // Ring-only clusters (A55) never scale voltage dynamically: their rail
-            // was pinned once at init to the boot-safe 675 mV row (down-only, and
-            // over-volted for every ring ≤ 1008) and cannot be read back to confirm
-            // a dynamic write. Treat the voltage step as a confirmed no-op so the
-            // ordered/transactional apply logic is unchanged while no unconfirmable
-            // SPI write is ever issued and the clock (already within the fixed rail's
-            // envelope) can safely follow. See [`Cluster::voltage_managed`].
-            if !cluster.voltage_managed() {
-                return true;
+    let target_uv = effective_voltage(cluster, opp.uv);
+    soc_cpufreq::transition(going_up, |step| {
+        let confirmed = match step {
+            soc_cpufreq::TransitionStep::SupplyAndMargin => {
+                let margin = SELECTED_OPPS
+                    .get()
+                    .and_then(|tables| tables[cluster.index()].as_ref())
+                    .map(|selected| &selected.margin);
+                let applied = if going_up {
+                    cluster.set_voltage(target_uv)
+                        && margin.is_none_or(|margin| margin.set_for_voltage(target_uv).is_ok())
+                } else {
+                    margin.is_none_or(|margin| margin.set_for_voltage(target_uv).is_ok())
+                        && cluster.set_voltage(target_uv)
+                };
+                if applied {
+                    return Ok(());
+                }
+                if going_up {
+                    warn!(
+                        "cpufreq: {} upshift to {} mV failed; leaving clock id {} unchanged (no \
+                         undervolt: old freq stays paired with old voltage)",
+                        cluster.name(),
+                        opp.uv / 1_000,
+                        cluster.clock_id()
+                    );
+                } else {
+                    warn!(
+                        "cpufreq: {} clock already lowered to {} Hz but voltage write to {} mV \
+                         failed; not committing this OPP (safe: over-volted for the new, lower \
+                         clock, never under-volted)",
+                        cluster.name(),
+                        hz,
+                        opp.uv / 1_000
+                    );
+                }
+                false
             }
-            if cluster.set_voltage(opp.uv) {
-                return true;
+            soc_cpufreq::TransitionStep::Clock => {
+                let cid = cluster.clock_id();
+                // A SCMI CLOCK_RATE_SET ack is NOT proof the PVTPLL ring actually
+                // switched — read the rate back and require it to equal the request
+                // before treating the clock step as confirmed (same read-back the boot
+                // `set_and_verify` does). This is what makes a DOWNSHIFT safe: the
+                // voltage step that follows only runs once the clock is CONFIRMED at its
+                // new, lower rate, so we can never lower the rail under a still-high
+                // clock (the high-freq/low-voltage window the ordering exists to prevent).
+                let set_ok = scmi::set_clock_rate(phandle, cid, hz).is_some();
+                let applied = if set_ok {
+                    scmi::clock_rate(phandle, cid)
+                } else {
+                    None
+                };
+                if set_ok && applied == Some(hz) {
+                    return Ok(());
+                }
+                if going_up {
+                    warn!(
+                        "cpufreq: {} upshift: SCMI clock id {cid} not confirmed at {hz} Hz \
+                         (set_ok={set_ok}, read_back={applied:?}); not committing this OPP (safe: \
+                         voltage already raised, over-volted for the old, lower clock, never \
+                         under-volted)",
+                        cluster.name()
+                    );
+                } else {
+                    warn!(
+                        "cpufreq: {} downshift: SCMI clock id {cid} not confirmed at {hz} Hz \
+                         (set_ok={set_ok}, read_back={applied:?}); leaving voltage unchanged (no \
+                         undervolt: clock not confirmed lowered, old freq stays paired with old \
+                         voltage)",
+                        cluster.name()
+                    );
+                }
+                false
             }
-            if going_up {
-                warn!(
-                    "cpufreq: {} upshift to {} mV failed; leaving clock id {} unchanged (no \
-                     undervolt: old freq stays paired with old voltage)",
-                    cluster.name(),
-                    opp.uv / 1_000,
-                    cluster.clock_id()
-                );
-            } else {
-                warn!(
-                    "cpufreq: {} clock already lowered to {} Hz but voltage write to {} mV \
-                     failed; not committing this OPP (safe: over-volted for the new, lower clock, \
-                     never under-volted)",
-                    cluster.name(),
-                    hz,
-                    opp.uv / 1_000
-                );
-            }
-            false
-        }
-        ApplyStep::Clock => {
-            let cid = cluster.clock_id();
-            // A SCMI CLOCK_RATE_SET ack is NOT proof the PVTPLL ring actually
-            // switched — read the rate back and require it to equal the request
-            // before treating the clock step as confirmed (same read-back the boot
-            // `set_and_verify` does). This is what makes a DOWNSHIFT safe: the
-            // voltage step that follows only runs once the clock is CONFIRMED at its
-            // new, lower rate, so we can never lower the rail under a still-high
-            // clock (the high-freq/low-voltage window the ordering exists to prevent).
-            let set_ok = scmi::set_clock_rate(phandle, cid, hz).is_some();
-            let applied = if set_ok {
-                scmi::clock_rate(phandle, cid)
-            } else {
-                None
-            };
-            if set_ok && applied == Some(hz) {
-                return true;
-            }
-            if going_up {
-                warn!(
-                    "cpufreq: {} upshift: SCMI clock id {cid} not confirmed at {hz} Hz \
-                     (set_ok={set_ok}, read_back={applied:?}); not committing this OPP (safe: \
-                     voltage already raised, over-volted for the old, lower clock, never \
-                     under-volted)",
-                    cluster.name()
-                );
-            } else {
-                warn!(
-                    "cpufreq: {} downshift: SCMI clock id {cid} not confirmed at {hz} Hz \
-                     (set_ok={set_ok}, read_back={applied:?}); leaving voltage unchanged (no \
-                     undervolt: clock not confirmed lowered, old freq stays paired with old \
-                     voltage)",
-                    cluster.name()
-                );
-            }
-            false
-        }
+        };
+        confirmed.then_some(()).ok_or(())
     })
+    .is_ok()
 }
 
-/// Period, in ms, the kernel governor task sleeps between [`governor_poll`]s.
-const GOV_PERIOD_MS: u64 = 100;
-/// Busy% at or above which a domain jumps straight to its top OPP (ondemand's
-/// signature fast attack: respond to a load spike in one step).
-const UP_THRESHOLD_PCT: u64 = 80;
-/// Busy% below which a domain steps down one OPP (slow decay: shed frequency
-/// gradually so a brief idle dip does not collapse a still-busy workload).
-const DOWN_THRESHOLD_PCT: u64 = 30;
-
-/// Set once the voltage lever confirmed both PMIC buses are up. Until then the
-/// governor must not move any rail (see `align_rail_voltages_to_opp`).
+/// Set once both big-cluster boot rails have been confirmed.
 static GOV_READY: AtomicBool = AtomicBool::new(false);
-
-/// Per-CPU busy-runtime value from the previous poll (RK3588 has 8 cores).
-/// Only the single governor task ever touches these, so `Relaxed` is sufficient.
-static LAST_BUSY: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+/// A failed transition can leave a safe but only partly applied state.
+static DOMAIN_READY: [AtomicBool; 3] = [const { AtomicBool::new(true) }; 3];
+/// The RK806 path must read back the boot rail before publishing A55 OPPs.
+static A55_RAIL_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 /// Per-cluster current OPP index (A55, big0, big1), starting on the boot OPP the
 /// voltage lever pinned.
 static IDX: [AtomicUsize; 3] = [const { AtomicUsize::new(BOOT_OPP_IDX) }; 3];
 
-/// Cleared until the first [`governor_poll`] has recorded a busy baseline. The
-/// first call must only prime `LAST_BUSY`, not decide: its delta is measured
-/// from zero and would otherwise fold in all busy runtime accumulated since boot,
-/// spuriously pegging every cluster to its top OPP for one window.
-static PRIMED: AtomicBool = AtomicBool::new(false);
-
-/// Monotonic timestamp (ns) of the previous [`governor_poll`], so each poll can
-/// divide the busy-runtime delta by the ACTUAL elapsed window rather than a fixed
-/// nominal one. The governor task can be woken late (slow SCMI/PMIC transitions,
-/// scheduling latency under load), which stretches the real window well past
-/// `GOV_PERIOD_MS`; dividing by the nominal window then over-reports load and
-/// would spuriously peg a merely-moderate cluster to its top OPP.
-static LAST_POLL_NANOS: AtomicU64 = AtomicU64::new(0);
-
-/// Whether the dynamic governor should run: enabled at compile time *and* armed
-/// by the voltage lever (both PMIC buses up). The kernel checks this once before
-/// spawning its periodic governor task, so a failed PMIC bring-up leaves every
-/// cluster safely on the boot OPP instead of being scaled with no voltage lever.
-pub fn governor_wanted() -> bool {
-    GOVERNOR_ENABLE && GOV_READY.load(Ordering::Acquire)
+fn driver_ready() -> bool {
+    GOV_READY.load(Ordering::Acquire)
 }
 
-/// Period, in milliseconds, the kernel governor task should sleep between calls
-/// to [`governor_poll`].
-pub fn governor_period_ms() -> u64 {
-    GOV_PERIOD_MS
-}
-
-// ===========================================================================
-// Logical-CPU -> cluster attribution
-// ===========================================================================
-
-/// Governor busy attribution: `busy_runtime_ns[i]` from the kernel is LOGICAL
-/// CPU `i`'s cumulative non-idle runtime, and logical indices are assigned by
-/// the KERNEL's cpu list (boot hart first, then the remaining firmware cpu ids)
-/// — NOT by the FDT's document order. A passthrough guest pinned as
-/// `phys_cpu_ids = [0x400, 0x000]` still lists `/cpus` in host-DT order (cpu@0
-/// before cpu@400) while its logical CPU 0 executes on the A76 cpu@400: mapping
-/// by node position books big-core load under the A55 cluster, boosting the
-/// little cluster while the big one running the workload is never scaled. The
-/// map below is therefore keyed by each FDT cpu node's `reg` (the firmware
-/// hardware id) resolved through the kernel's own hardware-id -> logical-index
-/// capability ([`axklib::cpu::resolve_logical_index`]), plus that node's SCMI
-/// clock id, which names the cluster each online CPU really belongs to.
-static CPU_CLUSTER: [AtomicU8; 8] = [const { AtomicU8::new(0) }; 8];
-static CPU_CLUSTER_READY: AtomicBool = AtomicBool::new(false);
-
-/// Maps an SCMI CPU-cluster clock id to its governor cluster index.
-/// 0 (A55) -> 0, 2 (A76 pair 0) -> 1, 3 (A76 pair 1) -> 2.
-fn cluster_index_from_clock_id(clock_id: u32) -> Option<usize> {
-    match clock_id {
-        id if id == A55_CLK_ID => Some(0),
-        id if id == A76_CLK_IDS[0] => Some(1),
-        id if id == A76_CLK_IDS[1] => Some(2),
-        _ => None,
-    }
-}
-
-/// One FDT cpu node distilled to what attribution needs: the firmware
-/// hardware id (`reg`) and the SCMI clock id naming the cluster it belongs to.
-#[derive(Clone, Copy)]
-struct CpuNodeTopology {
-    hardware_id: usize,
-    clock_id: u32,
-}
-
-/// Reads one `/cpus` cpu node's `reg` hardware id and SCMI cluster clock.
-/// Warns and returns `None` when either is missing — such a node cannot drive
-/// the governor.
-fn cpu_node_topology(node: &NodeType<'_>, phandle: Phandle) -> Option<CpuNodeTopology> {
-    let hardware_id = node
-        .regs()
-        .into_iter()
-        .next()
-        .map(|reg| reg.address as usize)
-        .or_else(|| {
-            warn!(
-                "cpufreq: cpu node {} has no reg hardware id; it will not drive the governor",
-                node.name()
-            );
-            None
-        })?;
-    let clock_id = node
-        .clocks()
+/// Reads the SCMI cluster clock from one `/cpus` node. A missing reference
+/// cannot authorize a silicon-specific OPP table.
+fn cpu_node_clock_id(node: &NodeType<'_>, phandle: Phandle) -> Option<u32> {
+    node.clocks()
         .into_iter()
         .find(|clock| clock.phandle == phandle)
         .and_then(|clock| clock.specifier.first().copied())
@@ -824,928 +1189,5 @@ fn cpu_node_topology(node: &NodeType<'_>, phandle: Phandle) -> Option<CpuNodeTop
                 node.name()
             );
             None
-        })?;
-    Some(CpuNodeTopology {
-        hardware_id,
-        clock_id,
-    })
-}
-
-/// Pure core of [`map_cpus_from_fdt`]: books each FDT cpu node's cluster
-/// (named by its SCMI clock id) under the logical CPU index the KERNEL runs
-/// that node's hardware id as, via `resolve`. Document order is irrelevant —
-/// the kernel, not the FDT, owns logical numbering (boot hart first). A node
-/// whose hardware id no online CPU runs, whose clock names no CPU cluster, or
-/// whose logical index falls outside `store`'s map books nothing
-/// (conservative: its busy drives no domain). Returns how many entries
-/// `store` accepted.
-fn store_cpu_clusters(
-    nodes: &[CpuNodeTopology],
-    resolve: impl Fn(usize) -> Option<usize>,
-    mut store: impl FnMut(usize, usize) -> bool,
-) -> usize {
-    let mut stored = 0usize;
-    for node in nodes {
-        let Some(cluster) = cluster_index_from_clock_id(node.clock_id) else {
-            continue;
-        };
-        let Some(logical_cpu) = resolve(node.hardware_id) else {
-            continue;
-        };
-        if store(logical_cpu, cluster) {
-            stored += 1;
-        }
-    }
-    stored
-}
-
-/// The kernel's hardware-id -> logical-CPU-index mapping. The kernel — not the
-/// FDT — assigns logical indices (boot hart first, then the remaining firmware
-/// cpu ids), so attribution must ask it rather than assume `/cpus` document
-/// order; a passthrough guest's FDT keeps host-DT order even when its vCPUs are
-/// pinned non-monotonically.
-fn resolve_logical_cpu(hardware_id: usize) -> Option<usize> {
-    axklib::cpu::resolve_logical_index(hardware_id)
-}
-
-/// Fills `CPU_CLUSTER` from the FDT: for each `/cpus` cpu node, book the
-/// cluster its SCMI clock id names under the logical index the kernel resolves
-/// the node's `reg` hardware id to, then log the map once so a mis-attributed
-/// boot (wrong cluster pinned/boosted) is diagnosable from the console.
-/// Returns the number of logical CPUs mapped.
-fn map_cpus_from_fdt() -> usize {
-    let Some(phandle) = scmi_clock_phandle() else {
-        return 0;
-    };
-    rdrive::with_fdt(|fdt| {
-        let nodes: Vec<CpuNodeTopology> = fdt
-            .find_compatible(&["arm,cortex-a55", "arm,cortex-a76"])
-            .into_iter()
-            .filter_map(|node| cpu_node_topology(&node, phandle))
-            .collect();
-        let stored =
-            store_cpu_clusters(
-                &nodes,
-                resolve_logical_cpu,
-                |logical_cpu, cluster| match CPU_CLUSTER.get(logical_cpu) {
-                    Some(slot) => {
-                        slot.store(cluster as u8 + 1, Ordering::Relaxed);
-                        true
-                    }
-                    None => false,
-                },
-            );
-        let clusters = [Cluster::A55, Cluster::Big0, Cluster::Big1];
-        info!(
-            "cpufreq: busy attribution {}",
-            (0..CPU_CLUSTER.len())
-                .filter_map(|cpu| {
-                    Some(format!(
-                        "cpu{cpu}->{}",
-                        clusters[cluster_of_cpu(cpu)?].name()
-                    ))
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
-        stored
-    })
-    .unwrap_or(0)
-}
-
-/// Physical-topology fallback used when the FDT walk maps nothing (so bare
-/// metal with an unexpected FDT shape never changes behavior). This is the
-/// inverse of [`Cluster::cpus`]: cpu0-3 -> A55, 4/5 -> A76b0, 6/7 -> A76b1.
-fn map_cpus_from_physical_topology() {
-    for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
-        .iter()
-        .enumerate()
-    {
-        for cpu in cluster.cpus() {
-            if let Some(slot) = CPU_CLUSTER.get(cpu) {
-                slot.store(ci as u8 + 1, Ordering::Relaxed);
-            }
-        }
-    }
-}
-
-/// Ensures the attribution map is built (once). FDT-sourced, falling back to
-/// the physical topology when the walk yields nothing.
-fn ensure_cpu_cluster_map() {
-    if CPU_CLUSTER_READY.swap(true, Ordering::Acquire) {
-        return;
-    }
-    if map_cpus_from_fdt() == 0 {
-        map_cpus_from_physical_topology();
-    }
-}
-
-/// Cluster index driving logical `cpu`, or `None` when no online CPU maps
-/// there (such a CPU's busy is simply not attributed anywhere).
-fn cluster_of_cpu(cpu: usize) -> Option<usize> {
-    let slot = CPU_CLUSTER
-        .get(cpu)?
-        .load(Ordering::Acquire)
-        .checked_sub(1)?;
-    Some(slot as usize)
-}
-
-/// Read-only boot diagnostic: log each CPU cluster's SCMI ring rate, the
-/// per-cluster OPP index, the governor state, and the current core's delivered
-/// frequency (PMU cycle counter). Changes no clock and no voltage — it answers
-/// "which cluster and what frequency is this kernel actually running on" for
-/// CPU-bound workload triage (e.g. comparing against native Linux).
-pub fn log_frequency_readout() {
-    let Some(phandle) = scmi_clock_phandle() else {
-        info!(
-            "cpufreq readout: SCMI clock provider not initialized; clusters left at firmware boot \
-             rates"
-        );
-        return;
-    };
-    let a55_mhz = read_mhz(phandle, Cluster::A55.clock_id());
-    let big0_mhz = read_mhz(phandle, Cluster::Big0.clock_id());
-    let big1_mhz = read_mhz(phandle, Cluster::Big1.clock_id());
-    info!(
-        "cpufreq readout: A55={a55_mhz} MHz, A76b0={big0_mhz} MHz, A76b1={big1_mhz} MHz, \
-         governor={} (gov_ready={}), opp_idx=({},{},{}), current-core delivered={} MHz",
-        governor_wanted(),
-        GOV_READY.load(Ordering::Relaxed),
-        IDX[0].load(Ordering::Relaxed),
-        IDX[1].load(Ordering::Relaxed),
-        IDX[2].load(Ordering::Relaxed),
-        measure_mhz(),
-    );
-}
-
-/// Pure ondemand policy, split out of [`governor_poll`] so the up/down/hold/prime
-/// decision is host-testable with no hardware or runtime counters. Given each core's
-/// busy% over the last window (each already clamped to `0..=100`), the cluster's
-/// current OPP index `cur`, the ladder length, and whether this is the priming
-/// poll, return the next OPP index:
-///   * priming poll, an empty cluster, or an empty ladder -> hold (no change);
-///   * any core at/above [`UP_THRESHOLD_PCT`] -> jump straight to the top OPP
-///     (ondemand fast-attack; a cluster shares one clock, so its busiest core
-///     drives it — averaging would bury a single saturated thread);
-///   * every core below [`DOWN_THRESHOLD_PCT`] -> shed exactly one step, floored
-///     at [`BOOT_OPP_IDX`];
-///   * otherwise hold.
-fn next_opp_idx(core_pcts: &[u64], cur: usize, ladder_len: usize, priming: bool) -> usize {
-    if priming || core_pcts.is_empty() || ladder_len == 0 {
-        return cur;
-    }
-    let any_core_high = core_pcts.iter().any(|&p| p >= UP_THRESHOLD_PCT);
-    let all_cores_low = core_pcts.iter().all(|&p| p < DOWN_THRESHOLD_PCT);
-    if any_core_high {
-        ladder_len - 1
-    } else if all_cores_low && cur > BOOT_OPP_IDX {
-        cur - 1
-    } else {
-        cur
-    }
-}
-
-fn busy_percent(runtime_ns: u64, window_ns: u64) -> u64 {
-    (runtime_ns.saturating_mul(100) / window_ns.max(1)).min(100)
-}
-
-/// One ondemand iteration, called periodically by the kernel governor task with
-/// a fresh snapshot of every CPU's cumulative non-idle runtime in nanoseconds.
-/// Scores each core's busy% over the last window and moves each cluster's OPP
-/// from its busiest core: any saturated core jumps the cluster to its top OPP,
-/// and the cluster sheds a step only when all its cores are near-idle. Applies
-/// via SCMI+PMIC. Pure w.r.t. the task runtime — it neither sleeps nor spawns —
-/// so this crate needs no dependency on ax-task/ax-hal (which would be a cyclic
-/// dep through axplat-dyn).
-///
-/// `busy_runtime_ns[i]` is LOGICAL CPU `i`'s counter, attributed to the cluster
-/// the kernel runs that CPU on (see [`CPU_CLUSTER`]); unmapped CPUs, indices
-/// past the slice, and offline CPUs whose counter never advances simply
-/// contribute nothing — conservative (never over-scales).
-pub fn governor_poll(busy_runtime_ns: &[u64]) {
-    if !governor_wanted() {
-        return;
-    }
-    ensure_cpu_cluster_map();
-
-    // Measure the ACTUAL window this poll covers, in nanoseconds, from the
-    // monotonic clock — not the nominal `GOV_PERIOD_MS`. If the governor task woke
-    // late (the common case under load), the real window is longer than nominal and
-    // more busy runtime accumulated; dividing that larger delta by the nominal window
-    // would inflate busy% and spuriously jump a moderate cluster to its top OPP.
-    // Floor at 1 ns so a back-to-back poll cannot divide by zero.
-    let now_nanos = axklib::time::monotonic_nanos();
-    let last_nanos = LAST_POLL_NANOS.swap(now_nanos, Ordering::Relaxed);
-    let window_ns = now_nanos.saturating_sub(last_nanos).max(1);
-
-    // First call only establishes the baseline (see `PRIMED`); still walk every
-    // cluster below so all `LAST_BUSY` entries are seeded, but make no OPP change.
-    // (On this priming poll `last_nanos == 0` makes `window_ns` huge, so every
-    // busy% reads ~0 — irrelevant, since the priming poll holds regardless.)
-    let priming = !PRIMED.swap(true, Ordering::Relaxed);
-
-    // Score each online logical CPU into its mapped cluster. A cluster shares
-    // ONE clock, so a single saturated core is reason to raise the whole
-    // cluster — this matches Linux schedutil/ondemand, which drive a frequency
-    // domain from its busiest CPU. Averaging instead (an earlier bug) buried
-    // one CPU-bound thread among its idle siblings: a single thread on the
-    // 2-core A76 pair only reads 50%, below the up-threshold, so the cluster
-    // never boosted. Each CPU belongs to exactly one cluster, so every
-    // LAST_BUSY entry is refreshed exactly once per poll.
-    let mut peaks = [0u64; 3]; // busiest core per cluster, for the log lines
-    // RK3588 clusters have at most 4 cores (A55 cpu0-3; the big pairs have 2).
-    let mut core_pcts = [[0u64; 4]; 3];
-    let mut counts = [0usize; 3];
-    for cpu in 0..busy_runtime_ns.len().min(LAST_BUSY.len()) {
-        // An unmapped CPU (no FDT cpu node / no recognizable cluster clock)
-        // must not drive any domain: skip it entirely instead of booking it
-        // as idle, which would drag a cluster's "all cores low" test down.
-        let Some(ci) = cluster_of_cpu(cpu) else {
-            continue;
-        };
-        let now = busy_runtime_ns[cpu];
-        let last = LAST_BUSY[cpu].swap(now, Ordering::Relaxed);
-        // Per-core busy% = non-idle runtime / actual elapsed time, clamped.
-        let pct = busy_percent(now.saturating_sub(last), window_ns);
-        if pct > peaks[ci] {
-            peaks[ci] = pct;
-        }
-        if let Some(slot) = core_pcts[ci].get_mut(counts[ci]) {
-            *slot = pct;
-        }
-        counts[ci] += 1;
-    }
-
-    for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
-        .iter()
-        .enumerate()
-    {
-        // No online CPU maps to this domain (e.g. a small passthrough guest
-        // pinned elsewhere): leave its OPP where the boot path left it rather
-        // than reading the empty cluster as idle and down-clocking it forever.
-        let n = counts[ci];
-        if n == 0 {
-            continue;
-        }
-        let peak_pct = peaks[ci];
-
-        let opps = cluster.opps();
-        let cur = IDX[ci].load(Ordering::Relaxed);
-        // Pure up/down/hold/prime decision (host-tested); the priming poll only
-        // seeds the baseline above and holds here.
-        let new = next_opp_idx(
-            &core_pcts[ci][..n.min(core_pcts[ci].len())],
-            cur,
-            opps.len(),
-            priming,
-        );
-
-        if new != cur {
-            // Only commit IDX (the software record of the last CONFIRMED OPP)
-            // when both the voltage write and the SCMI clock set are verified
-            // successful. On failure, IDX is left at `cur` — the hardware is
-            // always left in a safe (never-undervolted, see `apply_opp`) state
-            // for that index, so the next poll retries the same climb/descent
-            // from a known-good starting point rather than silently pretending
-            // the change took effect.
-            if apply_opp(cluster, opps[new], new > cur) {
-                IDX[ci].store(new, Ordering::Relaxed);
-                info!(
-                    "gov: {} peak={}% opp {}->{} = {} MHz @ {} mV",
-                    cluster.name(),
-                    peak_pct,
-                    cur,
-                    new,
-                    opps[new].mhz,
-                    opps[new].uv / 1_000
-                );
-            } else {
-                warn!(
-                    "gov: {} peak={}% opp {}->{} FAILED to apply; staying at {} ({} MHz @ {} mV)",
-                    cluster.name(),
-                    peak_pct,
-                    cur,
-                    new,
-                    cur,
-                    opps[cur].mhz,
-                    opps[cur].uv / 1_000
-                );
-            }
-        }
-    }
-}
-
-// ===========================================================================
-// OPP calibration sweep (gated, one-shot)
-// ===========================================================================
-//
-// The PVTPLL clock is voltage-coupled, so the delivered frequency for a given
-// SCMI ring drifts with rail voltage, and the drift grows at the higher OPPs
-// (ring=1608 @ 762.5 mV measured near ~1733 MHz on-board). To use the
-// 1416/1608/1800 rungs SAFELY we must know the *actual* delivered frequency at
-// each (ring, voltage); this sweep measures it directly via the PMU cycle
-// counter. It runs once, gated by `CALIBRATE`, from early `init()` (before the
-// console tty handoff) so its `CAL` log lines reach the serial console — the
-// governor's own transition logs do not, because they fire post-handoff.
-
-/// One-shot gate: when true, `init()` runs [`calibrate_cluster`] per cluster
-/// (governor NOT spawned) and the board logs a `CAL` grid; leave false for
-/// production. Requires the PMU cycle counter enabled at boot (axcpu `init_trap`).
-const CALIBRATE: bool = false;
-
-/// Sweep points `(rail_uV, ring_kHz)`. Round 1 showed the delivered frequency is
-/// dominated by voltage and that at any DT (ring=F, V_nom(F)) pair the delivery
-/// *over*-shoots F (undervolt). The safe lever is instead a FIXED low ring with a
-/// rising voltage: the delivered freq climbs but stays over-volted. So round 2
-/// maps ring 1200 across the full voltage range (plus two higher-ring cross-checks
-/// to see where the ring stops mattering). Every point keeps V >= V_nom(ring), so
-/// no measured point undervolts a live core; list is voltage-non-decreasing.
-const CAL_A76: &[(u32, u32)] = &[
-    (675_000, 1_200_000),
-    (725_000, 1_200_000),
-    (762_500, 1_200_000),
-    (800_000, 1_200_000),
-    (850_000, 1_200_000),
-    (925_000, 1_200_000),
-    (850_000, 1_416_000), // cross-check: does a higher ring beat ring 1200 at 850?
-    (925_000, 1_608_000), // cross-check at 925
-];
-
-/// A55: fixed ring 1008 across the voltage range (RK806 force-write caps at 950 mV).
-const CAL_A55: &[(u32, u32)] = &[
-    (675_000, 1_008_000),
-    (712_500, 1_008_000),
-    (762_500, 1_008_000),
-    (800_000, 1_008_000),
-    (850_000, 1_008_000),
-    (950_000, 1_008_000),
-    (850_000, 1_416_000), // cross-check
-    (950_000, 1_608_000), // cross-check
-];
-
-/// Whether to run the calibration sweep this boot (compile gate + PMIC armed).
-pub fn calibrate_wanted() -> bool {
-    CALIBRATE && GOV_READY.load(Ordering::Acquire)
-}
-
-// The calibration sweep is board-only (gated off by `CALIBRATE = false` in
-// production), but `rk3588-cpufreq` is a public feature and must still COMPILE
-// on a non-aarch64 host (e.g. a plain `cargo build`/`cargo test` on the CI
-// host). These four leaf reads are the only AArch64 inline asm in this module;
-// everything above them (`measure_mhz`, `cal_delay_ms`, `calibrate_cluster`)
-// is arch-generic and calls only these, so gating just the leaves keeps the
-// aarch64/board behavior byte-for-byte identical while giving every other
-// target a harmless stub (0 never causes a hang: `cal_delay_ms`'s `frq.max(1)`
-// and `measure_mhz`'s zero-length window both degenerate to an immediate
-// return rather than spinning).
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn rd_pmccntr() -> u64 {
-    let v: u64;
-    unsafe { core::arch::asm!("mrs {}, pmccntr_el0", out(reg) v) };
-    v
-}
-#[cfg(not(target_arch = "aarch64"))]
-#[inline]
-fn rd_pmccntr() -> u64 {
-    0
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn rd_cntvct() -> u64 {
-    let v: u64;
-    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) v) };
-    v
-}
-#[cfg(not(target_arch = "aarch64"))]
-#[inline]
-fn rd_cntvct() -> u64 {
-    0
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn rd_cntfrq() -> u64 {
-    let v: u64;
-    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) v) };
-    v
-}
-#[cfg(not(target_arch = "aarch64"))]
-#[inline]
-fn rd_cntfrq() -> u64 {
-    0
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn rd_mpidr() -> u64 {
-    let v: u64;
-    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) v) };
-    v
-}
-#[cfg(not(target_arch = "aarch64"))]
-#[inline]
-fn rd_mpidr() -> u64 {
-    0
-}
-
-/// Busy-wait `ms` milliseconds against the fixed-rate `CNTVCT` clock.
-fn cal_delay_ms(ms: u64) {
-    let frq = rd_cntfrq().max(1);
-    let start = rd_cntvct();
-    let ticks = frq * ms / 1000;
-    while rd_cntvct().wrapping_sub(start) < ticks {
-        core::hint::spin_loop();
-    }
-}
-
-/// Measure the CURRENT core's frequency (MHz) by counting CPU cycles
-/// (`PMCCNTR_EL0`) over a fixed ~60 ms window timed by `CNTVCT_EL0`. The counter
-/// is 32-bit (no `PMCR_EL0.LC`), which cannot wrap over this window.
-fn measure_mhz() -> u32 {
-    let frq = rd_cntfrq().max(1);
-    let window = frq * 60 / 1000; // 60 ms in cntvct ticks
-    let t0 = rd_cntvct();
-    let c0 = rd_pmccntr() as u32;
-    while rd_cntvct().wrapping_sub(t0) < window {
-        core::hint::spin_loop();
-    }
-    let t1 = rd_cntvct();
-    let c1 = rd_pmccntr() as u32;
-    let dvct = t1.wrapping_sub(t0).max(1);
-    let dcyc = c1.wrapping_sub(c0) as u64; // 32-bit wrap-safe
-    ((dcyc * frq) / (dvct * 1_000_000)) as u32
-}
-
-/// Run the (voltage x ring) calibration sweep for one cluster ON THE CURRENT
-/// CORE, logging the delivered frequency at each point. `cluster_idx`: 0=A55,
-/// 1=A76 big0, 2=A76 big1. The caller must have pinned this task onto a core in
-/// the target cluster (the logged `MPIDR` aff1 lets you confirm it). Restores a
-/// safe boot OPP for the cluster on exit. PMIC access here is pure polling, so it
-/// is safe on a non-boot core.
-pub fn calibrate_cluster(cluster_idx: usize, intended_cpu: usize) {
-    let (cluster, points, restore_khz) = match cluster_idx {
-        0 => (Cluster::A55, CAL_A55, 1_008_000u32),
-        1 => (Cluster::Big0, CAL_A76, 1_200_000u32),
-        _ => (Cluster::Big1, CAL_A76, 1_200_000u32),
-    };
-    let mpidr = rd_mpidr();
-    info!(
-        "CAL begin cl={} cpu={} mpidr_aff1={} aff0={}",
-        cluster.name(),
-        intended_cpu,
-        (mpidr >> 8) & 0xff,
-        mpidr & 0xff
-    );
-    let Some(phandle) = scmi_clock_phandle() else {
-        warn!("CAL aborted: SCMI clock provider is not initialized");
-        return;
-    };
-    for &(uv, khz) in points {
-        // Voltage first (points are voltage-non-decreasing, so this only ever
-        // over-volts the current ring = safe), then the SCMI ring.
-        let vok = cluster.set_voltage(uv);
-        scmi::set_clock_rate(phandle, cluster.clock_id(), khz as u64 * 1_000);
-        cal_delay_ms(25);
-        let f = measure_mhz();
-        info!(
-            "CAL cl={} volt={}uV ring={}MHz volt_ok={} => {}MHz",
-            cluster.name(),
-            uv,
-            khz / 1_000,
-            vok,
-            f
-        );
-    }
-    // Restore: ring down first, then voltage down (safe order).
-    scmi::set_clock_rate(phandle, cluster.clock_id(), restore_khz as u64 * 1_000);
-    cluster.set_voltage(675_000);
-    info!(
-        "CAL end cl={} restored {}MHz@675mV",
-        cluster.name(),
-        restore_khz / 1_000
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cluster_clock_ids_map_to_governor_cluster_indices() {
-        assert_eq!(cluster_index_from_clock_id(A55_CLK_ID), Some(0));
-        assert_eq!(cluster_index_from_clock_id(A76_CLK_IDS[0]), Some(1));
-        assert_eq!(cluster_index_from_clock_id(A76_CLK_IDS[1]), Some(2));
-        // SCMI id 1 is not a CPU-cluster clock on RK3588; neither is anything
-        // past the cluster ids.
-        assert_eq!(cluster_index_from_clock_id(1), None);
-        assert_eq!(cluster_index_from_clock_id(4), None);
-    }
-
-    #[test]
-    fn physical_topology_fallback_partitions_all_cpus() {
-        // The fallback must cover every CPU exactly once and agree with
-        // `Cluster::cpus()`, so a failed FDT walk cannot change bare-metal
-        // governor behavior.
-        map_cpus_from_physical_topology();
-        for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
-            .iter()
-            .enumerate()
-        {
-            for cpu in cluster.cpus() {
-                assert_eq!(cluster_of_cpu(cpu), Some(ci), "cpu {cpu}");
-            }
-        }
-        assert_eq!(cluster_of_cpu(CPU_CLUSTER.len()), None);
-    }
-
-    // -----------------------------------------------------------------------
-    // Busy attribution: the kernel owns logical numbering, not FDT order
-    // -----------------------------------------------------------------------
-
-    /// The mapping walk is pure w.r.t. a `resolve` closure and a `store` sink,
-    /// so it is exercised here with an in-memory map rather than the global
-    /// `CPU_CLUSTER`. These tests are the CI's proof that the non-monotonic
-    /// pin case is discovered and executed (see the `host-test+rk3588-cpufreq`
-    /// std-test profile in `scripts/axbuild/src/test/std.rs`, whose
-    /// `expected_tests` enumerates this submodule).
-    mod attribution {
-        use super::*;
-
-        /// Kernel mapping for a passthrough guest pinned as `phys_cpu_ids =
-        /// [0x400, 0x000]`: the guest FDT still lists `/cpus` in host-DT order
-        /// (cpu@0 first), but the boot hart cpu@400 is logical CPU 0 and cpu@0
-        /// is logical CPU 1.
-        fn boot_first_resolver(hardware_id: usize) -> Option<usize> {
-            match hardware_id {
-                0x400 => Some(0),
-                0x000 => Some(1),
-                _ => None,
-            }
-        }
-
-        /// Books attribution into a local map, so the mapping logic is testable
-        /// without touching the global `CPU_CLUSTER`.
-        fn book_into_map(
-            nodes: &[CpuNodeTopology],
-            resolve: impl Fn(usize) -> Option<usize>,
-            map: &mut [Option<usize>; 8],
-        ) -> usize {
-            let mut store = |logical_cpu: usize, cluster: usize| match map.get_mut(logical_cpu) {
-                Some(slot) => {
-                    *slot = Some(cluster);
-                    true
-                }
-                None => false,
-            };
-            store_cpu_clusters(nodes, resolve, &mut store)
-        }
-
-        #[test]
-        fn non_monotonic_pin_books_busy_under_the_cluster_it_runs_on() {
-            let a55 = cluster_index_from_clock_id(A55_CLK_ID).unwrap();
-            let big0 = cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap();
-            // FDT document order (host-DT order): cpu@0 (A55) before cpu@400 (A76).
-            let nodes = [
-                CpuNodeTopology {
-                    hardware_id: 0x000,
-                    clock_id: A55_CLK_ID,
-                },
-                CpuNodeTopology {
-                    hardware_id: 0x400,
-                    clock_id: A76_CLK_IDS[0],
-                },
-            ];
-            let mut map = [None; 8];
-            let stored = book_into_map(&nodes, boot_first_resolver, &mut map);
-            assert_eq!(stored, 2);
-            // busy[0] executes on the A76 cpu@400; busy[1] on the A55 cpu@0.
-            assert_eq!(map[0], Some(big0), "logical CPU 0 runs the big core");
-            assert_eq!(map[1], Some(a55), "logical CPU 1 runs the little core");
-        }
-
-        #[test]
-        fn identity_order_books_each_cpu_under_its_own_cluster() {
-            // Bare metal: all 8 CPUs online, boot hart == first FDT node, so the
-            // kernel's mapping is document position. Every cluster's members must
-            // agree with `Cluster::cpus()`.
-            let nodes: Vec<CpuNodeTopology> = (0..8)
-                .map(|position| CpuNodeTopology {
-                    hardware_id: position * 0x100,
-                    clock_id: match position {
-                        0..=3 => A55_CLK_ID,
-                        4 | 5 => A76_CLK_IDS[0],
-                        _ => A76_CLK_IDS[1],
-                    },
-                })
-                .collect();
-            let mut map = [None; 8];
-            let stored = book_into_map(&nodes, |hw| Some(hw / 0x100), &mut map);
-            assert_eq!(stored, 8);
-            for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
-                .iter()
-                .enumerate()
-            {
-                for cpu in cluster.cpus() {
-                    assert_eq!(map[cpu], Some(ci), "cpu {cpu}");
-                }
-            }
-        }
-
-        #[test]
-        fn single_vcpu_pin_books_under_its_pinned_cluster() {
-            // The PR's motivating guest: SMP=1 pinned to the A76 cpu@400.
-            let nodes = [CpuNodeTopology {
-                hardware_id: 0x400,
-                clock_id: A76_CLK_IDS[0],
-            }];
-            let mut map = [None; 8];
-            let stored = book_into_map(&nodes, |hw| (hw == 0x400).then_some(0), &mut map);
-            assert_eq!(stored, 1);
-            assert_eq!(
-                map[0],
-                Some(cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap())
-            );
-            assert_eq!(map[1], None, "no other CPU may drive a domain");
-        }
-
-        #[test]
-        fn offline_hardware_id_books_nowhere() {
-            // A cpu node the kernel does not run must not leak onto any logical
-            // index — its busy simply drives no domain.
-            let nodes = [
-                CpuNodeTopology {
-                    hardware_id: 0x000,
-                    clock_id: A55_CLK_ID,
-                },
-                CpuNodeTopology {
-                    hardware_id: 0x600,
-                    clock_id: A76_CLK_IDS[1],
-                },
-            ];
-            let mut map = [None; 8];
-            let stored = book_into_map(&nodes, |hw| (hw == 0x600).then_some(0), &mut map);
-            assert_eq!(stored, 1);
-            assert_eq!(
-                map[0],
-                Some(cluster_index_from_clock_id(A76_CLK_IDS[1]).unwrap())
-            );
-            assert_eq!(map[1], None);
-            assert!(map[2..].iter().all(|slot| slot.is_none()));
-        }
-
-        #[test]
-        fn out_of_range_logical_index_is_refused() {
-            // A resolver answering past the map must be refused, not panic.
-            let nodes = [CpuNodeTopology {
-                hardware_id: 0x000,
-                clock_id: A55_CLK_ID,
-            }];
-            let mut map = [None; 8];
-            let stored = book_into_map(&nodes, |_| Some(9), &mut map);
-            assert_eq!(stored, 0);
-            assert!(map.iter().all(|slot| slot.is_none()));
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // OPP transactional apply: ordering + commit-only-on-full-success
-    //
-    // These pin the two prior state-machine fixes: `apply_opp` orders the levers
-    // so the voltage-coupled clock never overshoots, and commits (returns `true`,
-    // which is what lets `governor_poll` advance `IDX`) ONLY when both the voltage
-    // and SCMI steps succeed. They exercise the exact pure helpers `apply_opp`
-    // uses, so a partial-failure regression (advancing past a step that failed)
-    // would fail here.
-    // -----------------------------------------------------------------------
-
-    /// Run `run_apply_steps` with injected per-step outcomes (keyed by execution
-    /// order), recording which steps actually ran — exactly how `apply_opp` drives
-    /// the two levers, minus the hardware.
-    fn run_recording(order: [ApplyStep; 2], outcomes: [bool; 2]) -> (bool, [Option<ApplyStep>; 2]) {
-        let mut ran: [Option<ApplyStep>; 2] = [None, None];
-        let mut i = 0usize;
-        let committed = run_apply_steps(order, |step| {
-            ran[i] = Some(step);
-            let ok = outcomes[i];
-            i += 1;
-            ok
-        });
-        (committed, ran)
-    }
-
-    #[test]
-    fn apply_step_order_up_is_voltage_then_clock_down_is_clock_then_voltage() {
-        assert_eq!(
-            apply_step_order(true),
-            [ApplyStep::Voltage, ApplyStep::Clock]
-        );
-        assert_eq!(
-            apply_step_order(false),
-            [ApplyStep::Clock, ApplyStep::Voltage]
-        );
-    }
-
-    #[test]
-    fn apply_commits_only_when_both_steps_succeed() {
-        let (committed, ran) = run_recording(apply_step_order(true), [true, true]);
-        assert!(committed, "both steps confirmed must commit the OPP");
-        assert_eq!(ran, [Some(ApplyStep::Voltage), Some(ApplyStep::Clock)]);
-    }
-
-    #[test]
-    fn apply_first_step_failure_skips_second_and_does_not_commit() {
-        // UPSHIFT with the voltage (first) step failing: the SCMI ring must NOT be
-        // touched, and the OPP must not commit.
-        let (committed, ran) = run_recording(apply_step_order(true), [false, true]);
-        assert!(!committed, "a failed first step must not commit the OPP");
-        assert_eq!(
-            ran,
-            [Some(ApplyStep::Voltage), None],
-            "the second lever must be skipped after the first step fails"
-        );
-    }
-
-    #[test]
-    fn apply_second_step_failure_does_not_commit() {
-        // DOWNSHIFT with the voltage (second) step failing after the ring lowered:
-        // both steps ran, but the OPP must not commit (hardware is left over-volted
-        // for the new lower clock — safe, never under-volted).
-        let (committed, ran) = run_recording(apply_step_order(false), [true, false]);
-        assert!(!committed, "a failed second step must not commit the OPP");
-        assert_eq!(ran, [Some(ApplyStep::Clock), Some(ApplyStep::Voltage)]);
-    }
-
-    // -----------------------------------------------------------------------
-    // Ondemand governor policy (pure): up / down / hold / prime / floor
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn governor_saturated_core_jumps_to_top_opp() {
-        // A single saturated core in a 2-core big pair drives the whole cluster to
-        // its top OPP (fast attack; the up-threshold is inclusive).
-        let top = A76_OPPS.len() - 1;
-        assert_eq!(
-            next_opp_idx(&[100, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
-            top
-        );
-        assert_eq!(
-            next_opp_idx(&[UP_THRESHOLD_PCT, 0], 0, A76_OPPS.len(), false),
-            top
-        );
-    }
-
-    #[test]
-    fn governor_all_idle_sheds_one_step_above_the_floor() {
-        // Shedding works while above the boot-OPP floor ...
-        assert_eq!(
-            next_opp_idx(&[0, 0], BOOT_OPP_IDX + 1, A76_OPPS.len(), false),
-            BOOT_OPP_IDX
-        );
-        // ... and stops AT the floor (bursty-I/O workloads read as idle between
-        // read bursts; going lower throttles their completion path).
-        assert_eq!(
-            next_opp_idx(&[0, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
-            BOOT_OPP_IDX
-        );
-        // Every A55 core just under the down-threshold still HOLDS: the A55
-        // top rung is its boot OPP (the ring-only ladder's highest ring), so
-        // the floor pins the A55 there. (An expectation of
-        // `A55_OPPS.len() - 2` here contradicted the floor policy; it never
-        // ran before because the host-test build of this feature was broken.)
-        assert_eq!(
-            next_opp_idx(
-                &[DOWN_THRESHOLD_PCT - 1; 4],
-                A55_OPPS.len() - 1,
-                A55_OPPS.len(),
-                false
-            ),
-            BOOT_OPP_IDX
-        );
-    }
-
-    #[test]
-    fn governor_does_not_shed_below_the_floor() {
-        // A state already below the floor (unreachable through the governor,
-        // kept for completeness) must not shed further.
-        assert_eq!(next_opp_idx(&[0, 0], 0, A76_OPPS.len(), false), 0);
-    }
-
-    #[test]
-    fn governor_holds_on_moderate_load() {
-        // No core saturated and not every core idle: hold.
-        let mid = (DOWN_THRESHOLD_PCT + UP_THRESHOLD_PCT) / 2;
-        assert_eq!(
-            next_opp_idx(&[mid, mid], BOOT_OPP_IDX, A76_OPPS.len(), false),
-            BOOT_OPP_IDX
-        );
-        // One busy-but-not-saturated core keeps the cluster put (down-threshold is
-        // exclusive at the top, up-threshold not yet reached).
-        assert_eq!(
-            next_opp_idx(
-                &[UP_THRESHOLD_PCT - 1, 0],
-                BOOT_OPP_IDX,
-                A76_OPPS.len(),
-                false
-            ),
-            BOOT_OPP_IDX
-        );
-    }
-
-    #[test]
-    fn governor_priming_and_degenerate_inputs_make_no_change() {
-        // The first (priming) poll only seeds the busy baseline; even a saturated
-        // reading must not move the OPP that window.
-        assert_eq!(
-            next_opp_idx(&[100, 100], BOOT_OPP_IDX, A76_OPPS.len(), true),
-            BOOT_OPP_IDX
-        );
-        // An empty cluster or an empty ladder also holds.
-        assert_eq!(
-            next_opp_idx(&[], BOOT_OPP_IDX, A76_OPPS.len(), false),
-            BOOT_OPP_IDX
-        );
-        assert_eq!(next_opp_idx(&[100], BOOT_OPP_IDX, 0, false), BOOT_OPP_IDX);
-    }
-
-    #[test]
-    fn busy_percent_uses_the_actual_elapsed_window() {
-        assert_eq!(busy_percent(50_000_000, 100_000_000), 50);
-        assert_eq!(busy_percent(100_000_000, 200_000_000), 50);
-        assert_eq!(busy_percent(200_000_000, 100_000_000), 100);
-        assert_eq!(busy_percent(1, 0), 100);
-    }
-
-    // -----------------------------------------------------------------------
-    // OPP-table invariants
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn opp_table_voltages_within_pmic_envelope() {
-        // Every ladder rung must be a voltage its rail's PMIC layer will actually
-        // accept, or the governor's transition would silently fail. The A76 rails
-        // (RK8602/03 over I2C) accept [VDD_FLOOR_UV, VDD_CEIL_UV] = [675_000,
-        // 1_000_000] uV (see pmic_i2c); the A55 rail (RK806 force-write over SPI)
-        // accepts [675_000, 950_000] uV (see pmic_spi::force_write_dcdc2). Both
-        // bounds are inclusive. (This complements pmic_i2c's own envelope test.)
-        for opp in A76_OPPS {
-            assert!(
-                (675_000..=1_000_000).contains(&opp.uv),
-                "A76 OPP {} mV outside the I2C PMIC envelope",
-                opp.uv / 1_000
-            );
-        }
-        for opp in A55_OPPS {
-            assert!(
-                (675_000..=950_000).contains(&opp.uv),
-                "A55 OPP {} mV outside the SPI PMIC envelope",
-                opp.uv / 1_000
-            );
-        }
-    }
-
-    #[test]
-    fn a55_ladder_is_ring_only_on_the_boot_rail() {
-        // The A55 RK806 rail cannot be read back (MISO scope-wall), so the little
-        // cluster forgoes the voltage lever: every A55 rung must sit on the single
-        // boot-confirmed 675 mV rail (see `Cluster::voltage_managed`). This locks in
-        // the cluster split — a future rung that raised the A55 voltage on an
-        // unconfirmable SPI write would fail here.
-        assert!(
-            !Cluster::A55.voltage_managed(),
-            "A55 must stay voltage-unmanaged (ring-only) until its rail reads back"
-        );
-        for opp in A55_OPPS {
-            assert_eq!(
-                opp.uv, 675_000,
-                "A55 rung {} MHz must stay on the 675 mV boot rail (ring-only)",
-                opp.mhz
-            );
-        }
-        // The A76 clusters keep the full voltage lever.
-        assert!(Cluster::Big0.voltage_managed());
-        assert!(Cluster::Big1.voltage_managed());
-    }
-
-    #[test]
-    fn opp_table_rings_within_boot_safe_ceiling() {
-        // The ladders never ring a cluster above its boot-safe ceiling: the top
-        // rungs hold the boot ring and raise only voltage. Guards against a future
-        // rung that would ring past the ceiling the probe verified.
-        for opp in A76_OPPS {
-            assert!(
-                opp.ring_khz as u64 * 1_000 <= A76_MAX_HZ,
-                "A76 ring {} kHz above the boot-safe ceiling",
-                opp.ring_khz
-            );
-        }
-        for opp in A55_OPPS {
-            assert!(
-                opp.ring_khz as u64 * 1_000 <= A55_MAX_HZ,
-                "A55 ring {} kHz above the boot-safe ceiling",
-                opp.ring_khz
-            );
-        }
-    }
+        })
 }

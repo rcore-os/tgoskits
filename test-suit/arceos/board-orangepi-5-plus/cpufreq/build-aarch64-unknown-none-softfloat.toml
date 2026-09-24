@@ -1,5 +1,5 @@
-package = "arceos-helloworld"
+package = "arceos-cpu-cpufreq"
 target = "aarch64-unknown-none-softfloat"
-features = ["rk3588-cpufreq"]
+features = ["ax-std", "ax-std/smp"]
 log = "Info"
 max_cpu_num = 8
