@@ -1098,9 +1098,18 @@ impl SimpleDirOps for ThreadFdInfoDir {
 /// Each entry is a magic link displaying the namespace identifier. When
 /// opened, the kernel intercepts the open path and creates an
 /// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
-struct NsDir {
+pub(crate) struct NsDir {
     fs: Arc<SimpleFs>,
     task: WeakUserTaskRef,
+}
+
+impl NsDir {
+    /// Upgrades the owning process task so a dirfd-relative
+    /// `/proc/<pid>/ns/<type>` open can build the same namespace descriptor as
+    /// the absolute path form.
+    pub(crate) fn ns_task(&self) -> Option<crate::task::UserTaskRef> {
+        upgrade_proc_task(&self.task).ok().flatten()
+    }
 }
 
 impl SimpleDirOps for NsDir {
