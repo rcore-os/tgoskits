@@ -223,6 +223,27 @@ int main(void)
                  "cached.txt", RESOLVE_CACHED,
                  O_CREAT | O_RDWR | O_CLOEXEC, EAGAIN);
 
+    /* CACHED must not mask the fundamental errors Linux reports first:
+     * EFAULT for a bad pathname, EBADF for an invalid dirfd, EINVAL for the
+     * mutually exclusive scoping flags. */
+    expect_errno("CACHED keeps EBADF for an invalid dirfd", -1, "rel",
+                 RESOLVE_CACHED, O_RDONLY | O_CLOEXEC, EBADF);
+    expect_errno("CACHED keeps EINVAL for exclusive scoping flags", rootfd,
+                 "rel", RESOLVE_BENEATH | RESOLVE_IN_ROOT | RESOLVE_CACHED,
+                 O_RDONLY | O_CLOEXEC, EINVAL);
+    {
+        const struct open_how cached_how = {
+            .flags = O_RDONLY | O_CLOEXEC,
+            .mode = 0,
+            .resolve = RESOLVE_CACHED,
+        };
+        errno = 0;
+        long bad = syscall(SYS_openat2, rootfd, (const char *)1, &cached_how,
+                           sizeof(cached_how));
+        CHECK(bad < 0 && errno == EFAULT,
+              "CACHED keeps EFAULT for an invalid pathname");
+    }
+
     /* Linux ignores dirfd for absolute pathnames; only RESOLVE_IN_ROOT keeps
      * using it (as the resolution root) and requires it to be valid. */
     expect_open("absolute path ignores an invalid dirfd", -1, pid_stat,
@@ -287,6 +308,22 @@ int main(void)
                 fsrootfd, pid_exe,
                 RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
                 O_PATH | O_NOFOLLOW | O_CLOEXEC);
+
+    /* RESOLVE_NO_SYMLINKS alone (without the caller's O_NOFOLLOW) rejects the
+     * final link with ELOOP; only an explicit O_PATH|O_NOFOLLOW returns the
+     * link handle, so the constraint must not be folded into O_NOFOLLOW. */
+    expect_errno("O_PATH without O_NOFOLLOW under NO_SYMLINKS -> ELOOP",
+                 fsrootfd, pid_exe, RESOLVE_NO_SYMLINKS, O_PATH | O_CLOEXEC,
+                 ELOOP);
+    expect_errno("NO_SYMLINKS rejects an ordinary symlink under O_PATH",
+                 rootfd, "rel", RESOLVE_NO_SYMLINKS, O_PATH | O_CLOEXEC,
+                 ELOOP);
+
+    /* O_CREAT|O_EXCL on an existing entry reports EEXIST before the
+     * link-following restriction. */
+    expect_errno("O_CREAT|O_EXCL on an existing symlink -> EEXIST", rootfd,
+                 "rel", RESOLVE_NO_SYMLINKS,
+                 O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, EEXIST);
 
     /* Restrictions combine. */
     uint64_t all = RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS;

@@ -906,6 +906,14 @@ impl FsContext {
                         // An absolute component leaves the starting directory.
                         return Err(VfsError::CrossesDevices);
                     } else {
+                        // Linux `nd_jump_root()` refuses the jump under
+                        // `LOOKUP_NO_XDEV` when the current mount differs from
+                        // the root mount.
+                        if constraints.is_no_xdev()
+                            && !Arc::ptr_eq(dir.mountpoint(), self.root_dir.mountpoint())
+                        {
+                            return Err(VfsError::CrossesDevices);
+                        }
                         dir = self.root_dir.clone();
                     }
                     *depth = 0;

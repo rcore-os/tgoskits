@@ -286,25 +286,27 @@ static void check_pipe_fchown(void)
         fail("create pipe");
         return;
     }
-    int chown_ok = fchown(p[0], -1, -1);
-    int chown_errno = errno;
-    int chmod_ok = fchmod(p[1], 0644);
-    int chmod_errno = errno;
+
+    /* Linux pipes carry a real inode: fchmod/fchown must persist and be
+     * visible through fstat, shared by both ends. */
+    struct stat r, w;
+    if (fchmod(p[1], 0640) == 0 && fstat(p[0], &r) == 0 && fstat(p[1], &w) == 0 &&
+        (r.st_mode & 0777) == 0640 && (w.st_mode & 0777) == 0640) {
+        pass("fchmod on a pipe persists to both ends' fstat");
+    } else {
+        fail("fchmod on a pipe persists to both ends' fstat");
+    }
+
+    struct stat owned;
+    if (fchown(p[0], 1000, 1000) == 0 && fstat(p[0], &owned) == 0 &&
+        owned.st_uid == 1000 && owned.st_gid == 1000) {
+        pass("fchown on a pipe persists to fstat");
+    } else {
+        fail("fchown on a pipe persists to fstat");
+    }
+
     close(p[0]);
     close(p[1]);
-
-    if (chown_ok == 0) {
-        pass("fchown on a pipe fd succeeds");
-    } else {
-        errno = chown_errno;
-        fail("fchown on a pipe fd succeeds");
-    }
-    if (chmod_ok == 0) {
-        pass("fchmod on a pipe fd succeeds");
-    } else {
-        errno = chmod_errno;
-        fail("fchmod on a pipe fd succeeds");
-    }
 }
 
 /* Asserts the cgroup-device BPF capability is refused (no faked success).
