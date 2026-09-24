@@ -157,6 +157,40 @@ def main():
     print("resume787: valid A1, invalid F1 (one not_parked sample)")
     print("resume788: valid F2, A1/F2 diagnostic 11/20 at 90%, no >=3% regression")
 
+    trial = json.loads((ROOT / "resume795/results.json").read_text())
+    assert trial["source_head"] == "f52d905a4765d84c08ff36fa6298a7cf9659520f"
+    assert trial["source_patch_sha256"] == candidate["temporary_exporter_patch_sha256"]
+    assert trial["bench_sha256"] == baseline["bench_sha256"]
+    assert trial["board_id"] == "OrangePi-5-Plus-1"
+    assert trial["image_sha256"]["A"] == ordinary["bin_sha256"]
+    assert [item["tag"] for item in trial["rounds"]] == ["A1", "B1"]
+    assert (ROOT / "resume795/0001-perf-irq-framework-reuse-dispatch-descriptor-index.patch") \
+        .read_text().startswith(f"From {trial['source_head']} ")
+
+    trial_runs = {}
+    for item in trial["rounds"]:
+        label = item["tag"]
+        path = ROOT / f"resume795/{label}-full.log"
+        assert item["valid"] and item["error"] is None
+        assert item["image_sha256"] == trial["image_sha256"][label[0]]
+        assert sha256(path) == item["raw_log_sha256"]
+        rows = read_full20(path, baseline)
+        assert {(row["policy"], row["case"]): row for row in item["rows"]} == rows
+        assert set(rows) == set(rt)
+        trial_runs[label] = rows
+
+    trial_a, trial_b = trial_runs["A1"], trial_runs["B1"]
+    assert sum(rt[key]["p50_ns"] / trial_b[key]["p50_ns"] >= 0.9 for key in rt) == 10
+    assert (trial_a[worst]["p50_ns"], trial_b[worst]["p50_ns"]) == (27417, 26834)
+    regressions = {(metric, key) for metric in METRICS for key in rt
+                   if trial_b[key][metric] >= trial_a[key][metric] * 1.03}
+    assert regressions == {
+        ("p999_ns", ("fifo", "sched_yield_handoff")),
+        ("p999_ns", ("other", "absolute_timer_same_cpu")),
+        ("p50_ns", ("other", "sched_yield_no_peer")),
+    }
+    print("resume795: valid A1/B1, 10/20 at 90%, three >=3% regressions; rejected")
+
 
 if __name__ == "__main__":
     main()

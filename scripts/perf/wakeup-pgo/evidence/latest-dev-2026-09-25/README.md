@@ -99,15 +99,36 @@ OTHER yield handoff、OTHER 同核 futex 在内的九项仍低于 90%。F1 的
 部分行数据只供诊断，不拼接进 F2 验收。完整逐项数值在 `analysis.json`
 及原始日志中，`check.py` 逐项复算。
 
-本阶段仅归档了构建与板测筛查，**没有可保留的新运行时逻辑优化**。
+上述 PGO 阶段仅归档了构建与板测筛查，**没有可保留的新运行时逻辑优化**。
 需先移除临时 exporter 对生产构建的依赖，重新建立可复现的同源码
 普通/PGO 对照，处理无效轮次和九项缺口，并完成既定三次有效候选
 full20 与 `<3%` 回退门；PR 保持草稿。
 
+### 1.5 IRQ 描述符索引试验
+
+`resume795` 在相同 `dev@05175ca388` 和早期 `memset` 修复上，只试验
+`irq-framework` 的分发收尾：`Registry::begin_dispatch()` 返回描述符索引，
+`DispatchGuard` 将它交给 `Registry::end_dispatch()`，省去一次线性查找。
+源代码和并发注册测试保存在 `resume795/` 的补丁中，**未应用到 PR 的
+运行时源码**。补丁采用零上下文格式，在其父提交 `69a3365076` 上需用
+`git apply --unidiff-zero --check` 复核。普通 A1 与试验 B1 均关闭
+cpufreq，使用相同的临时 exporter feature；均为无 PGO、无
+`qperf-metrics` 的 release 镜像。两次独立启动
+各完成 20 项、380000/380000 样本、零 `not_parked`，原始日志与镜像
+SHA256 见 `resume795/results.json`。
+
+同源码 A1/B1 中，OTHER 同核 futex p50 为 27417→26834 ns，改善 2.13%，
+但 B1 仅 **10/20** 项达到冻结 Linux RT p50 的 90%。相对 A1，FIFO
+`sched_yield_handoff` p99.9 回退 5.25%，OTHER `absolute_timer_same_cpu`
+p99.9 回退 54.53%，OTHER `sched_yield_no_peer` p50 回退 11.09%。
+试验已否决，不把单项 p50 改善计入可保留收益；一次配对足以否决该候选，
+不能用于接受候选或证明最终回退门。`check.py` 从原始 full20 日志复算
+样本完整性、20 项性能和上述回退。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
-原始日志、状态、样本完整性和 `resume771` 的逐项分析。未纳入仓库的
+原始日志、状态、样本完整性及逐项性能和回退。未纳入仓库的
 完整镜像哈希保存在状态文件，
 不能仅凭日志重建镜像身份。冻结 benchmark SHA256 为
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。

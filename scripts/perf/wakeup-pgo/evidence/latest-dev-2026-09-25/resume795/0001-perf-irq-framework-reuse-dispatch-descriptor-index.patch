@@ -1,0 +1,71 @@
+From f52d905a4765d84c08ff36fa6298a7cf9659520f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=91=A8=E7=9D=BF?= <zrufo747@outlook.com>
+Date: Fri, 25 Sep 2026 03:25:48 +0800
+Subject: [PATCH] perf(irq-framework): reuse dispatch descriptor index
+
+---
+ components/irq-framework/src/registry.rs  | 30 +++++++++++++----------
+ components/irq-framework/tests/std_sim.rs | 11 +++++++++
+ 2 files changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/components/irq-framework/src/registry.rs b/components/irq-framework/src/registry.rs
+index 52a33fec27..e1a03fdcc6 100644
+--- a/components/irq-framework/src/registry.rs
++++ b/components/irq-framework/src/registry.rs
+@@ -208 +208 @@ impl<O: IrqOps> Registry<O> {
+-        let Some(head) = self.begin_dispatch(irq) else {
++        let Some((head, descriptor_index)) = self.begin_dispatch(irq) else {
+@@ -213,0 +214 @@ impl<O: IrqOps> Registry<O> {
++            descriptor_index,
+@@ -597 +598 @@ impl<O: IrqOps> Registry<O> {
+-    fn begin_dispatch(&self, irq: IrqId) -> Option<*mut Action> {
++    fn begin_dispatch(&self, irq: IrqId) -> Option<(*mut Action, usize)> {
+@@ -604,2 +605,3 @@ impl<O: IrqOps> Registry<O> {
+-                .find(|descriptor| descriptor.irq == irq)
+-                .and_then(|descriptor| {
++                .enumerate()
++                .find(|(_, descriptor)| descriptor.irq == irq)
++                .and_then(|(index, descriptor)| {
+@@ -610 +612 @@ impl<O: IrqOps> Registry<O> {
+-                        Some(descriptor.head)
++                        Some((descriptor.head, index))
+@@ -618 +620 @@ impl<O: IrqOps> Registry<O> {
+-    fn end_dispatch(&self, irq: IrqId) {
++    fn end_dispatch(&self, irq: IrqId, descriptor_index: usize) {
+@@ -621 +623,3 @@ impl<O: IrqOps> Registry<O> {
+-        if let Some(descriptor) = state
++        // Descriptors are append-only; registration may move the Vec but not
++        // change an existing index while an action callback is in flight.
++        let descriptor = state
+@@ -623,5 +627,4 @@ impl<O: IrqOps> Registry<O> {
+-            .iter_mut()
+-            .find(|descriptor| descriptor.irq == irq)
+-        {
+-            descriptor.in_flight.fetch_sub(1, Ordering::AcqRel);
+-        }
++            .get(descriptor_index)
++            .expect("in-flight IRQ descriptor must remain registered");
++        debug_assert_eq!(descriptor.irq, irq);
++        descriptor.in_flight.fetch_sub(1, Ordering::AcqRel);
+@@ -761,0 +765 @@ struct DispatchGuard<'a, O: IrqOps> {
++    descriptor_index: usize,
+@@ -791 +795 @@ impl<O: IrqOps> Drop for DispatchGuard<'_, O> {
+-        self.registry.end_dispatch(self.irq);
++        self.registry.end_dispatch(self.irq, self.descriptor_index);
+diff --git a/components/irq-framework/tests/std_sim.rs b/components/irq-framework/tests/std_sim.rs
+index eb81588fed..130a8159c5 100644
+--- a/components/irq-framework/tests/std_sim.rs
++++ b/components/irq-framework/tests/std_sim.rs
+@@ -996,0 +997,8 @@ fn free_waits_for_inflight_dispatch_and_detaches_action() {
++    let extra_handles: Vec<_> = (100..116)
++        .map(|number| {
++            registry
++                .request(irq(number), IrqRequest::new(|_| IrqReturn::Handled))
++                .unwrap()
++        })
++        .collect();
++
+@@ -1010,0 +1019,3 @@ fn free_waits_for_inflight_dispatch_and_detaches_action() {
++    for handle in extra_handles {
++        registry.free(handle).unwrap();
++    }
