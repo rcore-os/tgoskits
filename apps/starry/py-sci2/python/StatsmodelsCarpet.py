@@ -18,6 +18,7 @@
 # No assertion depends on print formatting or float repr, so a host reference and a newer musl
 # target build agree. Self-contained ok/fail counters; prints STATSMODELS_RESULT then
 # STATSMODELS_DONE only when fail == 0.
+import inspect
 import math
 import sys
 import warnings
@@ -223,7 +224,13 @@ e = rng.randn(400)
 ar_series = np.zeros(400)
 for i in range(1, 400):
     ar_series[i] = 0.6 * ar_series[i - 1] + e[i]
-autoreg = AutoReg(ar_series, lags=1, old_names=False).fit()
+# statsmodels < 0.14 spells the legacy coefficient names through `old_names`; 0.14 removed the
+# keyword from the signature outright, so only pass it when this build still accepts it. Both
+# spellings fit the same AR(1), so the assertion below keeps the AutoReg coverage either way.
+_autoreg_kwargs = {"lags": 1}
+if "old_names" in inspect.signature(AutoReg).parameters:
+    _autoreg_kwargs["old_names"] = False
+autoreg = AutoReg(ar_series, **_autoreg_kwargs).fit()
 chk("autoreg_phi", abs(autoreg.params[1] - 0.6) < 0.1, "phi=%.4f" % autoreg.params[1])
 arima = ARIMA(ar_series, order=(1, 0, 0)).fit()
 chk("arima_phi", abs(arima.arparams[0] - 0.6) < 0.1, "phi=%.4f" % arima.arparams[0])
@@ -471,6 +478,18 @@ from statsmodels.tsa.seasonal import seasonal_decompose, STL
 from statsmodels.tsa.holtwinters import (ExponentialSmoothing, Holt, SimpleExpSmoothing)
 from statsmodels.tsa.arima_process import ArmaProcess
 
+
+def es_fit(model_cls, endog, **kwargs):
+    # statsmodels >= 0.14 feeds `initialization_method` through `string_like`, so leaving it at the
+    # implicit default fails with `TypeError: initialization_method must be a string`; name the
+    # documented "estimated" method explicitly. 0.12/0.13 accept the same keyword and value, and a
+    # build that predates the keyword is retried with the plain constructor call.
+    try:
+        return model_cls(endog, initialization_method="estimated", **kwargs).fit()
+    except TypeError:
+        return model_cls(endog, **kwargs).fit()
+
+
 # Additive decomposition of a pure period-10 sine: the seasonal component repeats with period 10.
 seas_series = np.tile(np.sin(2.0 * np.pi * np.arange(10) / 10.0), 10)
 dec = seasonal_decompose(seas_series, model="additive", period=10)
@@ -482,17 +501,16 @@ chk("stl_seasonal_amplitude", abs(np.max(np.asarray(stl.seasonal)) - 1.0) < 0.2,
     "amp=%.4f" % np.max(np.asarray(stl.seasonal)))
 # SimpleExpSmoothing of a constant series forecasts that constant.
 const = np.full(30, 7.0)
-ses = SimpleExpSmoothing(const).fit()
+ses = es_fit(SimpleExpSmoothing, const)
 chk("ses_const_forecast", abs(float(np.asarray(ses.forecast(1))[0]) - 7.0) < 1e-6)
 # Holt on a linear trend continues the slope: forecast > last observed value.
 trend = np.arange(1.0, 31.0)
-holt = Holt(trend).fit()
+holt = es_fit(Holt, trend)
 fc_holt = float(np.asarray(holt.forecast(1))[0])
 chk("holt_forecast_continues", fc_holt > trend[-1], "fc=%.4f" % fc_holt)
 # ExponentialSmoothing with additive trend+seasonal on a synthetic seasonal series -> positive fc.
 season4 = np.tile([10.0, 12.0, 8.0, 11.0], 8) + np.arange(32) * 0.1
-es = ExponentialSmoothing(season4, trend="add", seasonal="add",
-                          seasonal_periods=4).fit()
+es = es_fit(ExponentialSmoothing, season4, trend="add", seasonal="add", seasonal_periods=4)
 chk("expsmooth_forecast_positive", float(np.asarray(es.forecast(4))[0]) > 0.0)
 # ArmaProcess closed-form AR(1) acf: lag-1 theoretical autocorrelation == phi == 0.6.
 ap = ArmaProcess(np.array([1.0, -0.6]), np.array([1.0]))
