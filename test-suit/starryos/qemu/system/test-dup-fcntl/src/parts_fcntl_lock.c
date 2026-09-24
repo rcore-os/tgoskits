@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <string.h>
 #include <errno.h>
@@ -39,6 +40,30 @@ int parts_fcntl_lock(void)
 
     flk.l_type = F_UNLCK;
     fcntl(fd, F_SETLK, &flk);
+
+    int other_ofd = openat(AT_FDCWD, TMPFILE, O_RDWR);
+    CHECK(other_ofd >= 0, "F_OFD_GETLK: 打开独立文件描述");
+    if (other_ofd >= 0) {
+        struct flock ofd_lock = {
+            .l_type = F_WRLCK,
+            .l_whence = SEEK_SET,
+            .l_start = 200,
+            .l_len = 100,
+            .l_pid = 0,
+        };
+        CHECK_RET(syscall(SYS_fcntl, fd, F_OFD_SETLK, &ofd_lock), 0,
+                  "F_OFD_SETLK: 建立独立 OFD 锁");
+        struct flock ofd_query = ofd_lock;
+        CHECK_RET(syscall(SYS_fcntl, other_ofd, F_OFD_GETLK, &ofd_query), 0,
+                  "F_OFD_GETLK: 查询另一 OFD 的冲突");
+        CHECK(ofd_query.l_type == F_WRLCK && ofd_query.l_pid == -1
+              && ofd_query.l_start == 200 && ofd_query.l_len == 100,
+              "F_OFD_GETLK: 返回冲突范围与 OFD 所有者");
+        ofd_lock.l_type = F_UNLCK;
+        CHECK_RET(syscall(SYS_fcntl, fd, F_OFD_SETLK, &ofd_lock), 0,
+                  "F_OFD_SETLK: 解除 OFD 锁");
+        close(other_ofd);
+    }
 
     /* PART 16: fcntl F_SETLK 跨进程写锁冲突 */
 
