@@ -151,7 +151,34 @@ F2 最差 OTHER 同核 futex 的 90% 上限是 9397 ns，距 16625 ns
 还差 7228 ns；目前没有证据支持跳过抢占语义或保留单点微优化。
 以上材料只定位下一步实验范围，**没有新增可保留的运行时优化**。
 
-### 1.7 提交前的精确 CI 边界
+### 1.7 同核 Fair 路径审计
+
+`resume806` 只读核对了 OTHER `thread_futex_same_cpu` 的唤醒和后续
+抢占调度路径，没有修改源码、构建镜像或运行板测。`wake_thread_source()`
+按被唤醒任务的 rq 成员状态走 `wake_on_rq_locked()` 或直接激活路径；
+两者在 owner rq 事务中结算 Fair 状态并可能发布 Lazy 抢占请求，用户态
+返回前的 `prepare_user_return()` 消费该请求。普通 Fair 当前任务的
+`prepare_owner_rq_schedule_out()` 已使用 rq-only 路径，不存在可删除的第二次
+task-lock rq 事务。
+
+唤醒时的 `earliest_eligible()` 只是抢占分类查询；调度时的 `pick_eligible()`
+发生在 `put_prev_unlinked_current()` 将当前任务重新入队之后。两次 rq 事务
+之间允许中断和其他唤醒，因此不能直接复用前一次 Fair 候选而保持 EEVDF
+选择及切片保护语义。同一次唤醒事务里可能存在一次输入相同的 Fair V
+重锚，但旧插桩叶子均值只有约 234–261 ns 且包含探针开销；旧 `exp120`
+的另一项 Fair V 刷新删减也因无效轮次和收益不足被拒绝。它们都不能解释
+F2 的 OTHER 同核 futex 距 90% 上限 9397 ns 尚差 **7228 ns**。以上是
+源码审计和旧插桩诊断，**没有新的原生性能收益或可保留的运行时改动**。
+
+`resume807` 继续只读核对私有 futex 到用户态返回、上下文切换的共用路径。
+私有 futex key 检查已是地址范围检查，`ThreadWakeBatch` 无每次分配，
+同一 mm 的切换也已跳过地址空间激活。旧分段数据来自插桩镜像，不能把
+其中某段耗时直接算作 F2 可删除的原生耗时。此次未找到有证据支持、且能
+覆盖多项缺口的多微秒单点改动；下一步需先取得计时窗口内可对照的
+PMU 指令数、周期和缓存事件，再判断瓶颈是工作量还是停顿。该测量尚未
+执行，本节不增加性能验收轮次。
+
+### 1.8 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
@@ -160,6 +187,15 @@ F2 最差 OTHER 同核 futex 的 90% 上限是 9397 ns，距 16625 ns
 [run 36025857970](https://github.com/rcore-os/tgoskits/actions/runs/36025857970)
 在同一用例出现相同失败签名。只能说明签名早于本次证据提交，
 不能证明根因相同、把失败计作通过，或代替新 head 的 CI 结果。
+
+后续 PR head `fedad594b0` 的
+[CI run 36059377315](https://github.com/rcore-os/tgoskits/actions/runs/36059377315)
+已经结束，`Starry / Board OrangePi 5 Plus · Suites` 的
+`native-network-smoke`、`Starry / Board AKA-00 SG2002 · Suites` 的
+`wifi-iperf-smoke` 和 `ArceOS / Board OrangePi 5 Plus · CPU PMU` 均失败。
+前两项出现用户态 SIGSEGV；CPU PMU 任务在等待 U-Boot shell 时超时。
+通过的其他任务不能覆盖这些失败，下一次文档提交触发的新 CI 也须按其
+精确 head 重新核对。PR 继续保持 Draft。
 
 ## 2. 证据核验
 
