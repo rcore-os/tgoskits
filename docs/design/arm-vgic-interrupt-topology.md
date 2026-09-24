@@ -22,7 +22,7 @@ axdevice
 AxVM 内部 ARM 架构适配
   host FDT 解析、ArmVgicConfig、固件、vCPU 与物理 IRQ 生命周期
         ^
-arm_vgic / arm_vcpu / host GIC backend
+arm_vgic / axcpu / host GIC backend
 ```
 
 通用层不规定四架构的设备顺序。AArch64 自己完成 host GIC/FDT 解析、VGIC 计划、控制器 bundle 注册、普通设备构建、vCPU binding、物理 SPI backing、地址空间和 vCPU setup。RISC-V、x86 与 LoongArch 保留各自完全不同的顺序。
@@ -116,6 +116,12 @@ fold 已保存 LR -> refill -> restore -> guest run -> save -> fold
 ```
 
 pause/resume 保存 HCR、VMCR、APR 和全部 LR。主线虚拟 timer、maintenance、EOI/DIR 和 LR overflow 实现保持权威，不在本分支复制另一套状态机。
+
+GICv3 热路径沿用这条状态所有权边界。`arm_vgic::CpuInterfaceState` 使用最多 16 个定长 LR 槽位，并以 `list_register_count` 保留实际配置长度；`used_list_registers()` 给出最后一个已占用槽位之后的上界，允许中间有空槽。`ControllerState::merge_cpu_interface()` 使用定长快照完成 fold，避免每次退出为 LR 列表分配内存。`RedistributorState::refill_list_registers()` 在软件队列为空时保留现有 LR，只刷新维护中断配置，无需分配候选列表或重新排序。软件队列和中断身份仍由 `VgicCore` 管理，不把 `ICH_ELRSR_EL2` 复制成第二份权威状态。
+
+硬件寄存器访问只在 AxVM 的 AArch64 `cpu_interface` 适配器内。`HostCpuInterface::V3` 在发现阶段缓存 LR/APR 数量、优先级宽度和 TDIR 能力；每个 host CPU 启用虚拟化时，`gic::enable_current_cpu()` 先核对该 CPU 的能力与基线一致，再调用 `initialize_current_cpu()` 清空 GICv3 的全部 LR，最后启用 maintenance PPI。之后每次成功保存都会清空本次用过的 LR。`load_v3()` 先验证并编码全部 LR，再只写实际使用上界内的槽位。`save_v3()` 用 `ICH_ELRSR_EL2` 跳过已空 LR 的读取，只清零本次用过的槽位；若上界外出现活跃 LR，则清理后报错。保存前置校验失败也清空硬件上下文。这样空闲 vCPU 不访问 LR，且错误路径不会把残留 LR 交给下一个客户机。对应的 KVM 基线是 Linux v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `__vgic_v3_init_lrs()`、`__vgic_v3_save_state()` 和 `__vgic_v3_restore_state()`。GICv2 的 GICH 寄存器协议继续由同一适配器的 v2 分支处理。
+
+`ICH_HCR_EL2.TDIR` 的选择仍受中断生命周期约束：pending LR 可在客户机运行期间变成 active，客户机随后写入 `ICC_DIR_EL1` 时需要由 VGIC 回收软件或物理 backing。仅凭进入时没有 active LR 就关闭 trap 会漏掉这次转换。GICv4 vPE 和物理 MSI 直通需要独立的 host ITS/vPE 能力及资源所有权契约，不由 LR 快照优化隐式启用。
 
 ## 物理 SPI
 

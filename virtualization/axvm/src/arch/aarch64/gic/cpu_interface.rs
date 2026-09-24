@@ -1,9 +1,9 @@
 //! Checked GICH/ICH register save and restore.
 
 use arm_gic_driver::v3::{
-    ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2,
-    ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
-    ich_lr_el2_set, ich_lr_el2_write,
+    ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_ELRSR_EL2, ICH_HCR_EL2,
+    ICH_LR_EL2, ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
+    ich_lr_el2_set,
 };
 use arm_vgic::{
     CpuInterfaceState, GicV3BackendError, GicVcpuId, HostGicVersion, IntId, InterruptState,
@@ -25,6 +25,8 @@ pub(super) enum HostCpuInterface {
     V3 {
         capabilities: VgicBackendCapabilities,
         irq_config: HostIrqConfig,
+        apr_count: usize,
+        tdir_supported: bool,
     },
 }
 
@@ -91,6 +93,8 @@ pub(super) fn discover() -> Result<HostCpuInterface, GicV3BackendError> {
                     false,
                 ),
                 irq_config: HostIrqConfig::gicv3(),
+                apr_count: hardware_v3_apr_count()?,
+                tdir_supported: ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0,
             });
         }
         Err(GicV3BackendError::new(
@@ -108,6 +112,41 @@ pub(super) fn host_irq_config() -> Result<HostIrqConfig, GicV3BackendError> {
     host_cpu_interface().map(HostCpuInterface::irq_config)
 }
 
+/// Establishes the per-CPU empty-LR invariant before any guest can run here.
+pub(super) fn initialize_current_cpu() -> Result<(), GicV3BackendError> {
+    if let HostCpuInterface::V3 {
+        capabilities,
+        apr_count,
+        tdir_supported,
+        ..
+    } = host_cpu_interface()?
+    {
+        let actual_lr_count = hardware_v3_list_register_count();
+        let actual_apr_count = hardware_v3_apr_count()?;
+        let actual_priority_bits = (ICH_VTR_EL2.read(ICH_VTR_EL2::PRIBITS) + 1) as u8;
+        let actual_tdir = ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0;
+        if actual_lr_count != capabilities.list_register_count()
+            || actual_apr_count != *apr_count
+            || actual_priority_bits != capabilities.priority_bits()
+            || actual_tdir != *tdir_supported
+        {
+            return Err(GicV3BackendError::new(
+                "initialize GICv3 CPU interface",
+                std::format!(
+                    "CPU exposes {actual_lr_count} LRs, {actual_apr_count} APRs, \
+                     {actual_priority_bits} priority bits, TDIR={actual_tdir}; host baseline has \
+                     {} LRs, {} APRs, {} priority bits, TDIR={tdir_supported}",
+                    capabilities.list_register_count(),
+                    apr_count,
+                    capabilities.priority_bits(),
+                ),
+            ));
+        }
+        clear_v3_cpu_interface(actual_lr_count);
+    }
+    Ok(())
+}
+
 pub(super) fn load(
     capabilities: VgicBackendCapabilities,
     vcpu: GicVcpuId,
@@ -117,7 +156,17 @@ pub(super) fn load(
     let host = checked_host_cpu_interface(capabilities, "load virtual CPU interface")?;
     match host {
         HostCpuInterface::V2 { hypervisor, .. } => load_v2(hypervisor, state),
-        HostCpuInterface::V3 { .. } => load_v3(state),
+        HostCpuInterface::V3 {
+            capabilities,
+            apr_count,
+            tdir_supported,
+            ..
+        } => load_v3(
+            state,
+            capabilities.list_register_count(),
+            *apr_count,
+            *tdir_supported,
+        ),
     }
 }
 
@@ -130,7 +179,11 @@ pub(super) fn save(
     let host = checked_host_cpu_interface(capabilities, "save virtual CPU interface")?;
     match host {
         HostCpuInterface::V2 { hypervisor, .. } => save_v2(hypervisor, state),
-        HostCpuInterface::V3 { .. } => save_v3(state),
+        HostCpuInterface::V3 {
+            capabilities,
+            apr_count,
+            ..
+        } => save_v3(state, capabilities.list_register_count(), *apr_count),
     }
 }
 
@@ -378,13 +431,17 @@ fn decode_v2_list_register(
     )))
 }
 
-fn load_v3(state: &CpuInterfaceState) -> Result<(), GicV3BackendError> {
+fn load_v3(
+    state: &CpuInterfaceState,
+    lr_count: usize,
+    apr_count: usize,
+    tdir_supported: bool,
+) -> Result<(), GicV3BackendError> {
     require_lr_count(
         state.list_registers().len(),
-        hardware_v3_list_register_count(),
+        lr_count,
         "load GICv3 CPU interface",
     )?;
-    let apr_count = hardware_v3_apr_count()?;
     if state.apr()[apr_count..].iter().any(|value| *value != 0) {
         return Err(GicV3BackendError::new(
             "load GICv3 active priorities",
@@ -392,31 +449,50 @@ fn load_v3(state: &CpuInterfaceState) -> Result<(), GicV3BackendError> {
         ));
     }
 
+    // Validate all guest-owned LR identities before changing the live CPU
+    // interface. A bad PINTID must not leave a partially restored context.
+    let used_lrs = state.used_list_registers();
+    let mut encoded_lrs = [0u64; 16];
+    for (index, entry) in state.list_registers()[..used_lrs].iter().enumerate() {
+        if let Some(entry) = entry {
+            encoded_lrs[index] = encode_v3_list_register(*entry)?;
+        }
+    }
+
     ICH_HCR_EL2.set(0);
     instruction_sync_barrier();
     ICH_VMCR_EL2.set(state.vmcr());
     write_v3_apr(state.apr(), apr_count);
-    for index in 0..hardware_v3_list_register_count() {
-        match state.list_registers().get(index).copied().flatten() {
-            Some(entry) => write_v3_list_register(index, entry)?,
-            None => ich_lr_el2_set(index, LocalRegisterCopy::new(0)),
-        }
+    for (index, raw) in encoded_lrs[..used_lrs].iter().enumerate() {
+        ich_lr_el2_set(index, LocalRegisterCopy::new(*raw));
     }
     data_sync_barrier();
-    ICH_HCR_EL2.set(hardware_v3_hcr_for_load(state.hcr()));
+    ICH_HCR_EL2.set(hardware_v3_hcr_for_load(state.hcr(), tdir_supported));
     instruction_sync_barrier();
     Ok(())
 }
 
-fn save_v3(state: &mut CpuInterfaceState) -> Result<(), GicV3BackendError> {
-    require_lr_count(
+fn save_v3(
+    state: &mut CpuInterfaceState,
+    lr_count: usize,
+    apr_count: usize,
+) -> Result<(), GicV3BackendError> {
+    if let Err(error) = require_lr_count(
         state.list_registers().len(),
-        hardware_v3_list_register_count(),
+        lr_count,
         "save GICv3 CPU interface",
-    )?;
-    let apr_count = hardware_v3_apr_count()?;
+    ) {
+        clear_v3_cpu_interface(lr_count);
+        return Err(error);
+    }
+    let used_lrs = state.used_list_registers();
     data_sync_barrier();
     instruction_sync_barrier();
+    let live_lrs = if used_lrs == 0 {
+        0
+    } else {
+        live_v3_list_registers(lr_count)
+    };
     let result = (|| {
         state.set_hcr(saved_v3_hcr(ICH_HCR_EL2.get(), state.hcr()));
         state.set_vmcr(ICH_VMCR_EL2.get());
@@ -428,21 +504,60 @@ fn save_v3(state: &mut CpuInterfaceState) -> Result<(), GicV3BackendError> {
                 ));
             }
         }
-        for (index, slot) in state.list_registers_mut().iter_mut().enumerate() {
-            *slot = read_v3_list_register(index, *slot)?;
+        for (index, slot) in state.list_registers_mut()[..used_lrs]
+            .iter_mut()
+            .enumerate()
+        {
+            *slot = if live_lrs & (1 << index) != 0 {
+                if slot.is_none() {
+                    return Err(GicV3BackendError::new(
+                        "save GICv3 CPU interface",
+                        std::format!("LR{index} became live without a saved delivery"),
+                    ));
+                }
+                read_v3_list_register(index, *slot)?
+            } else {
+                None
+            };
         }
         Ok(())
     })();
-    for index in 0..hardware_v3_list_register_count() {
+    for index in 0..used_lrs {
         ich_lr_el2_set(index, LocalRegisterCopy::new(0));
+    }
+    let unexpected_lrs = live_lrs & !((1u32 << used_lrs) - 1) as u16;
+    for index in used_lrs..lr_count {
+        if unexpected_lrs & (1 << index) != 0 {
+            ich_lr_el2_set(index, LocalRegisterCopy::new(0));
+        }
     }
     ICH_HCR_EL2.set(0);
     instruction_sync_barrier();
+    if unexpected_lrs != 0 {
+        return Err(GicV3BackendError::new(
+            "save GICv3 CPU interface",
+            std::format!("hardware has live LRs outside saved span: {unexpected_lrs:#06x}"),
+        ));
+    }
     result
 }
 
 fn hardware_v3_list_register_count() -> usize {
     (ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1).min(16)
+}
+
+fn clear_v3_cpu_interface(lr_count: usize) {
+    ICH_HCR_EL2.set(0);
+    instruction_sync_barrier();
+    for index in 0..lr_count {
+        ich_lr_el2_set(index, LocalRegisterCopy::new(0));
+    }
+    instruction_sync_barrier();
+}
+
+fn live_v3_list_registers(count: usize) -> u16 {
+    let implemented = (1u32 << count) - 1;
+    (!(ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS) as u32) & implemented) as u16
 }
 
 fn hardware_v3_apr_count() -> Result<usize, GicV3BackendError> {
@@ -457,9 +572,9 @@ fn hardware_v3_apr_count() -> Result<usize, GicV3BackendError> {
     }
 }
 
-fn hardware_v3_hcr_for_load(saved: u64) -> u64 {
+fn hardware_v3_hcr_for_load(saved: u64, tdir_supported: bool) -> u64 {
     let adapter_traps = ICH_HCR_EL2::TC::SET.value | ICH_HCR_EL2::TDIR::SET.value;
-    let deactivation_trap = if ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0 {
+    let deactivation_trap = if tdir_supported {
         ICH_HCR_EL2::TDIR::SET.value
     } else {
         ICH_HCR_EL2::TC::SET.value
@@ -496,7 +611,7 @@ fn read_v3_apr(count: usize) -> [u64; 4] {
     apr
 }
 
-fn write_v3_list_register(index: usize, entry: ListRegisterState) -> Result<(), GicV3BackendError> {
+fn encode_v3_list_register(entry: ListRegisterState) -> Result<u64, GicV3BackendError> {
     let state = match entry.state() {
         InterruptState::Inactive => ICH_LR_EL2::STATE::Invalid,
         InterruptState::Pending => ICH_LR_EL2::STATE::Pending,
@@ -519,8 +634,7 @@ fn write_v3_list_register(index: usize, entry: ListRegisterState) -> Result<(), 
         })?;
         fields = fields + ICH_LR_EL2::HW::SET + ICH_LR_EL2::PINTID.val(u64::from(pintid));
     }
-    ich_lr_el2_write(index, fields);
-    Ok(())
+    Ok(fields.value)
 }
 
 fn read_v3_list_register(
