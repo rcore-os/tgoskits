@@ -156,3 +156,29 @@ pub use binding_resolver::{
 };
 pub use error::{Error, Result};
 pub use irq_binding::IrqBindingLease;
+
+/// Resolves a portable device's DMA metadata to the ArceOS-owned backend.
+///
+/// Block runtimes must retain the bound backend when they allocate I/O
+/// buffers; rebuilding a direct capability from translated metadata would
+/// hand a physical address to an IOMMU-managed PCI device.
+pub fn dma_device_for_info(
+    info: dma_api::DmaDeviceInfo,
+) -> core::result::Result<dma_api::DeviceDma, dma_api::DmaError> {
+    match info.domain() {
+        dma_api::DmaDomainId::Direct => Ok(axklib::dma::device(info)),
+        dma_api::DmaDomainId::Translated(_) => {
+            #[cfg(feature = "arm-smmu-v3")]
+            {
+                pci::dma_for_info(info)
+            }
+            #[cfg(not(feature = "arm-smmu-v3"))]
+            {
+                Err(dma_api::DmaError::DomainMismatch {
+                    requested: info.domain(),
+                    backend: dma_api::DmaDomainId::Direct,
+                })
+            }
+        }
+    }
+}

@@ -30,18 +30,15 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         return Err(OnProbeError::other("E1000 BAR0 MMIO region missing"));
     };
 
-    endpoint.update_command(|mut cmd| {
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX)?;
+
+    probe.endpoint_mut().update_command(|mut cmd| {
         cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
         cmd
     });
 
-    let dev = E1000::new(
-        bar.start as u64,
-        bar.count(),
-        crate::pci::device_dma(probe.info(), u64::MAX),
-        axklib::mmio::op(),
-    )
-    .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
+    let dev = E1000::new(bar.start as u64, bar.count(), dma, axklib::mmio::op())
+        .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
 
     probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
     debug!("intel e1000 PCI device registered successfully at {address}");

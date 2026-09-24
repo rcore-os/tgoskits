@@ -44,6 +44,8 @@ pub mod fs;
 pub mod futex;
 #[cfg(all(feature = "eventfd-epoll", feature = "ax-std"))]
 pub mod io_mpx;
+#[cfg(all(feature = "iommu-dma", feature = "ax-std"))]
+pub mod iommu_dma;
 #[cfg(all(
     feature = "ax-std",
     any(feature = "lockdep-baseline", feature = "lockdep-detect",)
@@ -124,6 +126,7 @@ test_runner!(
     exception::page_fault::run
 );
 test_runner!("fs-basic", run_fs_basic, fs::basic::run);
+test_runner!("iommu-dma", run_iommu_dma, iommu_dma::run);
 test_runner!("futex-errno-order", run_futex_errno_order, futex::run);
 test_runner!(
     "lockdep-baseline",
@@ -253,6 +256,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "fs-basic")]
     TestCase::new("fs-basic", "bounded filesystem operations", run_fs_basic),
+    #[cfg(feature = "iommu-dma")]
+    TestCase::new(
+        "iommu-dma",
+        "SMMUv3 PCI DMA translation and isolation",
+        run_iommu_dma,
+    ),
     #[cfg(feature = "futex-errno-order")]
     TestCase::new(
         "futex-errno-order",

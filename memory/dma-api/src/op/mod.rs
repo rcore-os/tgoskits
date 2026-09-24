@@ -2,7 +2,9 @@ use core::{num::NonZeroUsize, ptr::NonNull};
 
 use mbarrier::mb;
 
-use crate::{DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaError, DmaMapHandle};
+use crate::{
+    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaDomainId, DmaError, DmaMapHandle,
+};
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "aarch64")] {
@@ -16,6 +18,15 @@ cfg_if::cfg_if! {
 
 pub trait DmaOp: Sync + Send + 'static {
     fn page_size(&self) -> usize;
+
+    /// Identity of the device address space implemented by this backend.
+    ///
+    /// Translated backends must override this method. It is checked when a
+    /// device capability is constructed, so metadata alone cannot claim an
+    /// IOMMU domain while its backend still returns physical addresses.
+    fn domain_id(&self) -> DmaDomainId {
+        DmaDomainId::Direct
+    }
 
     /// Allocates a device-visible contiguous DMA address range.
     ///
@@ -34,10 +45,45 @@ pub trait DmaOp: Sync + Send + 'static {
         layout: core::alloc::Layout,
     ) -> Option<DmaAllocHandle>;
 
+    /// Fallible allocation for backends that distinguish physical memory,
+    /// IOVA exhaustion, and page-table update failure.
+    ///
+    /// A translated backend must override this method and only return a
+    /// handle after all translations are visible to the device. Partial
+    /// mapping failure must unwind completed mappings and synchronize the
+    /// IOTLB before reusing the pages or IOVA.
+    ///
+    /// # Safety
+    ///
+    /// The returned allocation obeys the same lifetime and layout contract
+    /// as `alloc_contiguous`.
+    unsafe fn try_alloc_contiguous(
+        &self,
+        constraints: DmaConstraints,
+        layout: core::alloc::Layout,
+    ) -> Result<DmaAllocHandle, DmaError> {
+        unsafe { self.alloc_contiguous(constraints, layout) }.ok_or(DmaError::NoMemory)
+    }
+
     /// # Safety
     ///
     /// Must be paired with `alloc_contiguous`.
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle);
+
+    /// Releases an allocation only after device translations are invalidated.
+    ///
+    /// If invalidation fails, the backend must retain the physical storage
+    /// and IOVA in quarantine because the device may still access them. The
+    /// handle is consumed regardless of the result.
+    ///
+    /// # Safety
+    ///
+    /// Must be paired with `try_alloc_contiguous` or `alloc_contiguous`;
+    /// the device must no longer own the buffer.
+    unsafe fn try_dealloc_contiguous(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+        unsafe { self.dealloc_contiguous(handle) };
+        Ok(())
+    }
 
     /// Creates a coherent CPU mapping for a non-coherent DMA device.
     ///
@@ -57,6 +103,20 @@ pub trait DmaOp: Sync + Send + 'static {
         constraints: DmaConstraints,
         layout: core::alloc::Layout,
     ) -> Option<DmaAllocHandle>;
+
+    /// Coherent allocation with typed failure reasons.
+    ///
+    /// # Safety
+    ///
+    /// The returned allocation obeys the same lifetime and layout contract
+    /// as `alloc_coherent`.
+    unsafe fn try_alloc_coherent(
+        &self,
+        constraints: DmaConstraints,
+        layout: core::alloc::Layout,
+    ) -> Result<DmaAllocHandle, DmaError> {
+        unsafe { self.alloc_coherent(constraints, layout) }.ok_or(DmaError::NoMemory)
+    }
 
     /// # Safety
     ///
@@ -83,6 +143,22 @@ pub trait DmaOp: Sync + Send + 'static {
     ///
     /// Must be paired with `map_streaming`.
     unsafe fn unmap_streaming(&self, handle: DmaMapHandle);
+
+    /// Unmaps a streaming buffer and synchronizes device TLB invalidation.
+    ///
+    /// On failure the backend must quarantine any physical bounce storage
+    /// and IOVA still reachable by the device. A translated backend must
+    /// avoid mapping borrowed source pages directly unless invalidation
+    /// cannot fail while those pages are reachable: safe streaming mappings
+    /// release the source borrow after drop, including this error path.
+    ///
+    /// # Safety
+    ///
+    /// Must be paired with `map_streaming`; device access has stopped.
+    unsafe fn try_unmap_streaming(&self, handle: DmaMapHandle) -> Result<(), DmaError> {
+        unsafe { self.unmap_streaming(handle) };
+        Ok(())
+    }
 
     fn flush(&self, addr: NonNull<u8>, size: usize) {
         mb();

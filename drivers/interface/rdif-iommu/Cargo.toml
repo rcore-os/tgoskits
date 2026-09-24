@@ -1,0 +1,13 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "no-std"]
+description = "Portable IOMMU domain interface for device DMA."
+edition.workspace = true
+keywords = ["os", "driver", "iommu", "dma"]
+license.workspace = true
+name = "rdif-iommu"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+rdif-base = { workspace = true }

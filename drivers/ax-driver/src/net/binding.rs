@@ -178,7 +178,7 @@ impl ProbePciNet for rdrive::probe::pci::ProbePci<'_> {
     where
         T: NetDevice + 'static,
     {
-        let dma = crate::pci::device_dma(self.info(), u64::MAX);
+        let dma = crate::pci::device_dma(self.info(), u64::MAX)?;
         let info = binding_info_from_pci(self.info(), requirement)?;
         register_net_with_info(self.into_platform_device(), name, dev, dma, info)
     }

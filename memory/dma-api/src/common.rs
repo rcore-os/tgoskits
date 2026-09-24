@@ -83,10 +83,7 @@ impl DmaAllocation {
         unsafe {
             match self.kind {
                 AllocationKind::Coherent => self.device.dealloc_coherent(handle),
-                AllocationKind::Contiguous { .. } => {
-                    self.device.dealloc_contiguous(handle);
-                    Ok(())
-                }
+                AllocationKind::Contiguous { .. } => self.device.dealloc_contiguous(handle),
             }
         }
     }

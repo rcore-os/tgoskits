@@ -307,6 +307,7 @@ fn dma_api_coherent_bounce_copies_without_cache_maintenance() {
     op.inner.force_next_dma_addr(0x80);
     let dev = device(0xff, DmaCoherency::Coherent, op);
     let mut backing = [0x11_u8; 16];
+    let backing_len = backing.len();
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::Bidirectional)
         .unwrap();
@@ -315,10 +316,11 @@ fn dma_api_coherent_bounce_copies_without_cache_maintenance() {
         .expect("low DMA mask must use a bounce buffer");
 
     map.prepare_for_device(0..map.bytes_len());
-    let device_view = unsafe { core::slice::from_raw_parts_mut(bounce.as_ptr(), backing.len()) };
+    let device_view = unsafe { core::slice::from_raw_parts_mut(bounce.as_ptr(), backing_len) };
     assert_eq!(device_view, &[0x11; 16]);
     device_view.fill(0x5a);
     map.complete_for_cpu(0..map.bytes_len());
+    drop(map);
 
     assert_eq!(backing, [0x5a; 16]);
     assert_eq!(op.cache_ops(), 0);
@@ -436,12 +438,13 @@ fn dma_api_streaming_maps_cover_direct_bounce_and_vector_accessors() {
     assert_eq!(op.unmap_streaming.load(Ordering::SeqCst), 1);
 
     let mut bounced = [1u8; 8];
+    let bounced_len = bounced.len();
     op.force_next_dma_addr(0x80);
     let map = dev
         .map_streaming_slice(&mut bounced, 8, DmaDirection::FromDevice)
         .unwrap();
     let bounce = map.bounce_ptr().unwrap();
-    unsafe { bounce.as_ptr().write_bytes(0x7e, bounced.len()) };
+    unsafe { bounce.as_ptr().write_bytes(0x7e, bounced_len) };
     assert_eq!(map.read_from_device(4, |data| data[0]), 0x7e);
     drop(map);
     assert_eq!(bounced[0], 0x7e);

@@ -211,23 +211,21 @@ fn streaming_read_from_device_syncs_before_cpu_read_and_copies_bounce_buffer() {
     let tracker = Box::leak(tracker);
     let dev = device(0xff, DmaCoherency::NonCoherent, tracker);
     let mut backing = [1u8; 16];
+    let len = backing.len();
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::FromDevice)
         .unwrap();
 
     assert!(map.bounce_ptr().is_some());
     unsafe {
-        map.bounce_ptr()
-            .unwrap()
-            .as_ptr()
-            .write_bytes(0x5a, backing.len());
+        map.bounce_ptr().unwrap().as_ptr().write_bytes(0x5a, len);
     }
 
     tracker.clear();
     let first = map.read_from_device(4, |data| data[0]);
 
     assert_eq!(first, 0x5a);
-    assert_eq!(backing[0], 0x5a);
+    assert_eq!(map.read_cpu(0), Some(0x5a));
     assert_eq!(tracker.count_sync_map_for_cpu(), 1);
     assert!(tracker.operations().iter().any(|op| matches!(
         op,
@@ -245,16 +243,14 @@ fn streaming_bounce_buffer_copies_back_on_cpu_sync() {
     let tracker = Box::leak(tracker);
     let dev = device(0xff, DmaCoherency::NonCoherent, tracker);
     let mut backing = [1u8; 16];
+    let len = backing.len();
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::FromDevice)
         .unwrap();
 
     assert!(map.bounce_ptr().is_some());
     unsafe {
-        map.bounce_ptr()
-            .unwrap()
-            .as_ptr()
-            .write_bytes(0x5a, backing.len());
+        map.bounce_ptr().unwrap().as_ptr().write_bytes(0x5a, len);
     }
     map.complete_for_cpu(0..map.bytes_len());
     drop(map);
@@ -382,17 +378,17 @@ fn coherent_drop_failure_attempts_release_only_once() {
 
 #[test]
 fn explicit_dma_domain_survives_constraint_updates() {
-    let tracker = Box::new(TrackingDmaOp::new());
-    let tracker = Box::leak(tracker);
     let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(0x42).unwrap());
-    let dev = DeviceDma::new(
+    let tracker = std::sync::Arc::new(TrackingDmaOp::new().with_domain(domain));
+    let dev = DeviceDma::new_shared(
         DmaDeviceInfo::new(
             domain,
             DmaCoherency::NonCoherent,
             DmaConstraints::new(u64::MAX),
         ),
         tracker,
-    );
+    )
+    .unwrap();
 
     assert_eq!(dev.info().domain(), domain);
     assert_eq!(
@@ -401,6 +397,24 @@ fn explicit_dma_domain_survives_constraint_updates() {
             .domain(),
         domain
     );
+}
+
+#[test]
+fn translated_metadata_requires_matching_backend() {
+    let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(0x43).unwrap());
+    let info = DmaDeviceInfo::new(
+        domain,
+        DmaCoherency::Coherent,
+        DmaConstraints::new(u64::MAX),
+    );
+    let direct = std::sync::Arc::new(TrackingDmaOp::new());
+    assert!(matches!(
+        DeviceDma::new_shared(info, direct),
+        Err(DmaError::DomainMismatch {
+            requested,
+            backend: DmaDomainId::Direct,
+        }) if requested == domain
+    ));
 }
 
 #[test]

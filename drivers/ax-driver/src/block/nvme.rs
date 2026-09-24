@@ -82,6 +82,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         }
     }
 
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX)?;
     probe.endpoint_mut().update_command(|mut cmd| {
         cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
         cmd.remove(CommandRegister::INTERRUPT_DISABLE);
@@ -91,7 +92,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     let nvme = Nvme::new(
         bar.start,
         bar.count().max(1),
-        crate::pci::device_dma(probe.info(), u64::MAX),
+        dma,
         axklib::mmio::op(),
         Config::intx(DEFAULT_PAGE_SIZE),
     )
@@ -113,6 +114,7 @@ fn register_msix_block(
     let vectors = irq_lease.vector_indices();
     let vector_count = vectors.len();
 
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX)?;
     probe.endpoint_mut().update_command(|mut cmd| {
         cmd.insert(
             CommandRegister::MEMORY_ENABLE
@@ -127,7 +129,7 @@ fn register_msix_block(
     let nvme = Nvme::new(
         bar.start,
         bar.count().max(1),
-        crate::pci::device_dma(probe.info(), u64::MAX),
+        dma,
         axklib::mmio::op(),
         config,
     )

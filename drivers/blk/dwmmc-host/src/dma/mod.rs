@@ -770,9 +770,12 @@ fn dma_write_block_count(size: NonZeroUsize) -> Result<u32, Error> {
 
 fn map_dma_error(err: dma_api::DmaError, phase: Phase) -> Error {
     match err {
-        dma_api::DmaError::NoMemory | dma_api::DmaError::CoherentReleaseFailed => {
-            Error::BusError(ErrorContext::new(phase))
-        }
+        dma_api::DmaError::NoMemory
+        | dma_api::DmaError::NoIova
+        | dma_api::DmaError::MappingFailed
+        | dma_api::DmaError::UnmapFailed
+        | dma_api::DmaError::DomainMismatch { .. }
+        | dma_api::DmaError::CoherentReleaseFailed => Error::BusError(ErrorContext::new(phase)),
         dma_api::DmaError::LayoutError(_)
         | dma_api::DmaError::DmaMaskNotMatch { .. }
         | dma_api::DmaError::AlignMismatch { .. }

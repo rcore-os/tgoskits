@@ -298,6 +298,7 @@ static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
 pub(super) fn init(bootargs: Option<&str>) {
     ONLINE_BLOCK_CPUS.store(1, Ordering::Release);
+    ax_fs_ng::os::install_dma_device_resolver(ax_driver::dma_device_for_info);
     ax_fs_ng::os::install(
         &TIME_PROVIDER,
         &PAGE_PROVIDER,

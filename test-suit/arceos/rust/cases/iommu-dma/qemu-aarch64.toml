@@ -1,0 +1,22 @@
+args = [
+    "-machine", "virt,gic-version=3,iommu=smmuv3",
+    "-m", "512M",
+    "-cpu", "cortex-a72",
+    "-smp", "4",
+    "-device", "nvme,drive=disk0,serial=tgoskits-iommu,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/arceos/rust/disk.img",
+    "-device", "iommu-testdev",
+    "-display", "none",
+    "-serial", "mon:stdio",
+]
+
+timeout = 120
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_TEST_FAIL"]
+
+[[shell_check_steps]]
+success_regex = ["NVMe block device registered at [^\\n]* with [0-9]+ MSI-X vectors"]
+
+[[shell_check_steps]]
+success_regex = ["IOMMU_DMA_TEST_OK"]

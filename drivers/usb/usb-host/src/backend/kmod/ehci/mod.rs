@@ -1991,7 +1991,7 @@ mod tests {
 
     #[test]
     fn ehci_dma_narrowing_preserves_domain_and_coherency() {
-        let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(7).unwrap());
+        let domain = DmaDomainId::Direct;
         let supplied = DeviceDma::new(
             DmaDeviceInfo::new(
                 domain,

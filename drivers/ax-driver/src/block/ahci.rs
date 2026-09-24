@@ -63,6 +63,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         .bar_mmio(5)
         .or_else(|| probe.endpoint().bar_mmio(0))
         .ok_or_else(|| OnProbeError::other("AHCI MMIO BAR5/BAR0 is missing"))?;
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX)?;
     probe.endpoint_mut().update_command(|mut command| {
         command.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
         command.remove(CommandRegister::INTERRUPT_DISABLE);
@@ -70,7 +71,6 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     });
     let name = format!("ahci-pci-{:?}", probe.info().address);
     let mmio = map_mmio(bar.start, bar.count().max(1))?;
-    let dma = crate::pci::device_dma(probe.info(), u64::MAX);
     let host = create_host(name, mmio, dma, AhciConfig::generic())?;
     probe.register_block_group(host, PciIrqRequirement::Required)?;
     Ok(())

@@ -43,6 +43,18 @@ net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 # Owns the Unix namespace provider; run separately from the filesystem suite.
 net-unix-path = ["task-runtime", "ax-driver/virtio-net", "ax-std/net"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
+iommu-dma = [
+    "ax-std",
+    "ax-driver/nvme",
+    "ax-driver/arm-smmu-v3",
+    "ax-driver/iommu-dma-test",
+    "ax-std/alloc",
+    "ax-std/fatfs",
+    "dep:dma-api",
+    "dep:mmio-api",
+    "dep:rdrive",
+    "dep:rdif-iommu",
+]
 debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
 debug-panic-path = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
 display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-std/display"]
@@ -104,6 +116,10 @@ ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
+dma-api = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 libc = { workspace = true, optional = true }
+mmio-api = { workspace = true, optional = true }
+rdif-iommu = { workspace = true, optional = true }
+rdrive = { workspace = true, optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

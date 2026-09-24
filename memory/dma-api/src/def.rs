@@ -169,6 +169,17 @@ pub enum DmaDirection {
 pub enum DmaError {
     #[error("DMA allocation failed")]
     NoMemory,
+    #[error("IOVA allocation failed")]
+    NoIova,
+    #[error("IOMMU mapping failed")]
+    MappingFailed,
+    #[error("IOMMU unmap or invalidation failed; resources quarantined")]
+    UnmapFailed,
+    #[error("DMA domain mismatch: requested {requested:?}, backend {backend:?}")]
+    DomainMismatch {
+        requested: DmaDomainId,
+        backend: DmaDomainId,
+    },
     #[error("Invalid layout")]
     LayoutError(#[from] core::alloc::LayoutError),
     #[error("DMA address {addr} does not match device mask {mask:#X}")]

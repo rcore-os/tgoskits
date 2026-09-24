@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cell::UnsafeCell;
 
 use pci_types::ConfigRegionAccess;
@@ -24,6 +24,78 @@ pub struct PciMem32 {
 pub struct PciMem64 {
     pub address: u64,
     pub size: u64,
+}
+
+/// One `iommu-map` entry from a PCI host bridge device tree node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PciIommuMapEntry {
+    pub rid_base: u32,
+    pub iommu_phandle: u32,
+    pub stream_base: u32,
+    pub length: u32,
+}
+
+/// Firmware routing for a PCI requester ID. The phandle is resolved by the
+/// platform device registry before a driver is allowed to enable bus mastering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PciIommuTarget {
+    pub iommu_phandle: u32,
+    pub stream_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PciIommuMapError {
+    EmptyRange,
+    RangeOverflow,
+    InvalidRequesterIdRange,
+    MaskedRequesterIdBase,
+    AmbiguousRoute,
+}
+
+/// PCI requester-to-IOMMU routing supplied by firmware.
+#[derive(Clone, Debug)]
+pub struct PciIommuMap {
+    mask: u32,
+    entries: Vec<PciIommuMapEntry>,
+}
+
+impl PciIommuMap {
+    pub fn new(mask: u32, entries: Vec<PciIommuMapEntry>) -> Result<Self, PciIommuMapError> {
+        for entry in &entries {
+            if entry.length == 0 {
+                return Err(PciIommuMapError::EmptyRange);
+            }
+            if entry.rid_base.checked_add(entry.length - 1).is_none()
+                || entry.stream_base.checked_add(entry.length - 1).is_none()
+            {
+                return Err(PciIommuMapError::RangeOverflow);
+            }
+            if entry.rid_base + entry.length - 1 > u16::MAX.into() {
+                return Err(PciIommuMapError::InvalidRequesterIdRange);
+            }
+            if entry.rid_base & !mask != 0 {
+                return Err(PciIommuMapError::MaskedRequesterIdBase);
+            }
+        }
+        Ok(Self { mask, entries })
+    }
+
+    pub fn route(&self, requester_id: u16) -> Result<Option<PciIommuTarget>, PciIommuMapError> {
+        let masked_id = u32::from(requester_id) & self.mask;
+        let mut found = None;
+        for entry in &self.entries {
+            if masked_id >= entry.rid_base && masked_id - entry.rid_base < entry.length {
+                if found.is_some() {
+                    return Err(PciIommuMapError::AmbiguousRoute);
+                }
+                found = Some(PciIommuTarget {
+                    iommu_phandle: entry.iommu_phandle,
+                    stream_id: entry.stream_base + (masked_id - entry.rid_base),
+                });
+            }
+        }
+        Ok(found)
+    }
 }
 
 impl rdif_base::DriverGeneric for PcieController {
@@ -59,6 +131,7 @@ pub struct PcieController {
     chip: Arc<ChipRaw>,
     pub bar_allocator: Option<SimpleBarAllocator>,
     dma_coherent: bool,
+    iommu_map: Option<PciIommuMap>,
 }
 
 impl PcieController {
@@ -67,6 +140,7 @@ impl PcieController {
             chip: Arc::new(ChipRaw::new(chip)),
             bar_allocator: None,
             dma_coherent: false,
+            iommu_map: None,
         }
     }
 
@@ -76,6 +150,14 @@ impl PcieController {
 
     pub fn dma_coherent(&self) -> bool {
         self.dma_coherent
+    }
+
+    pub fn set_iommu_map(&mut self, map: PciIommuMap) {
+        self.iommu_map = Some(map);
+    }
+
+    pub fn iommu_map(&self) -> Option<&PciIommuMap> {
+        self.iommu_map.as_ref()
     }
     pub fn typed_ref<T: Interface>(&self) -> Option<&T> {
         self.raw_any()?.downcast_ref()
@@ -141,5 +223,26 @@ unsafe impl Sync for ChipRaw {}
 impl ChipRaw {
     fn new(chip: impl Interface) -> Self {
         Self(UnsafeCell::new(Box::new(chip)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::{PciIommuMap, PciIommuMapEntry, PciIommuMapError};
+
+    #[test]
+    fn iommu_map_rejects_requester_base_ignored_by_mask() {
+        let map = PciIommuMap::new(
+            0xff,
+            vec![PciIommuMapEntry {
+                rid_base: 0x100,
+                iommu_phandle: 1,
+                stream_base: 0,
+                length: 1,
+            }],
+        );
+        assert!(matches!(map, Err(PciIommuMapError::MaskedRequesterIdBase)));
     }
 }

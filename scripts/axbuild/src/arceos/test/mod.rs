@@ -35,6 +35,7 @@ const ARCEOS_RUST_CPU_LIFECYCLE_FEATURE: &str = "task-cpu-lifecycle";
 const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
     ARCEOS_RUST_TASK_IRQ_FEATURE,
     ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
+    "iommu-dma",
     "serial-rx",
     // This fixture owns the Unix namespace instead of the real filesystem.
     "net-unix-path",
@@ -50,6 +51,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "exception-breakpoint",
     ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
     "fs-basic",
+    "iommu-dma",
     "lockdep-baseline",
     ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
     ARCEOS_RUST_MEM_STAGE1_TRANSITION_FEATURE,
@@ -110,7 +112,7 @@ pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<
     }
 }
 
-/// PL011's controlled MMIO window is available on the AArch64 virt machine.
+/// These cases require Arm virt devices that are unavailable on other QEMU machines.
 fn rust_qemu_feature_supports_arch(feature: &str, arch: &str) -> bool {
-    feature != "serial-rx" || arch == "aarch64"
+    !matches!(feature, "serial-rx" | "iommu-dma") || arch == "aarch64"
 }
