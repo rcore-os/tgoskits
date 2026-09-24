@@ -5,6 +5,36 @@
 
 测试设计统一遵循 [test-quality](../../.agents/skills/test-quality/SKILL.md)：优先复用或增强完整功能验证，错误输入的拒绝、状态保持和资源回收并入所属功能，不逐参数或 errno 拆测。本指南中的 case 选择、成功标记和 LTP 完成数量用于运行可信度，不因去重而削弱。
 
+## 一次性外部 QEMU 运行
+
+需要运行已经准备好的独立 rootfs、但仍复用 Starry 构建、成功判定和覆盖率导出链路时，
+可以给 `starry test qemu` 同时提供三个外部输入：
+
+```bash
+cargo xtask starry test qemu \
+  --build-config /absolute/path/build.toml \
+  --qemu-config /absolute/path/qemu.toml \
+  --rootfs /absolute/path/rootfs.img
+```
+
+三个参数必须成组出现，并与 `--arch`、`--target`、`--test-case` 和 `--list` 互斥。
+构建配置负责给出目标；QEMU 配置负责成功、失败和超时判定。外部 rootfs 总是以
+`snapshot=on` 接入，客户机写入不会落回原镜像。
+
+如需复现某个既有内核制品，可再传入位于 Cargo target 目录之外的绝对路径
+`--fixed-elf /absolute/path/starryos`。运行器仍先完成当前源码构建与 `.kallsyms`
+后处理，再比较构建产物和固定 ELF 的架构、入口以及装载与覆盖率 section；验证成功后
+只从固定 ELF 的临时副本启动，因此不会改写固定文件本体。
+
+调用方需要直接观察 QEMU Machine Protocol 时，可在自己的外部 QEMU 配置中声明
+`-qmp` 参数。运行器不连接或解释该端点；socket 生命周期、协议协商、事件解释和命令
+发送均由调用方负责。
+
+构建配置显式设置 `AXTEST_COVERAGE = "y"` 时，运行器启用 Starry 的软件包级覆盖率
+feature，等待客户机写入测试专用 `/proc/starry-test-coverage`，由宿主导出
+`coverage/starryos-<target>.profraw` 后再结束 QEMU。这个入口不参与
+`test-suit/starryos` 的用例发现或 CI case 路由。
+
 ## 发现规则
 
 StarryOS test-suit 不再使用 `normal`、`stress` 等一级测试组。QEMU 和 board

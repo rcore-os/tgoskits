@@ -2,6 +2,7 @@ mod args;
 mod assets;
 mod board;
 mod board_assets;
+mod external;
 mod nixos;
 mod qemu_discovery;
 mod qemu_profiles;
