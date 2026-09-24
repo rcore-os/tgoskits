@@ -12,7 +12,10 @@ image_location = "memory"
 kernel_load_addr = 0x4008_0000
 kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
 dtb_load_addr = 0x4000_0000
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M init=/usr/bin/ivc-starry-bench"
+# Boot the board's default Starry init, which execs an interactive shell as
+# PID 1. The board test starts /usr/bin/ivc-starry-bench from that shell so the
+# benchmark exits as a child; StarryOS treats init exit as fatal.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M"
 
 memory_regions = [
   [0x4000_0000, 0x1000_0000, 0x7, 2],
