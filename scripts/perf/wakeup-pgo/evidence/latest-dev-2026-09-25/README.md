@@ -263,7 +263,16 @@ benchmark 哈希、无效轮次及独立复算；一次性静态二进制和 Lin
 达到 90%，最差 OTHER 同核 futex **50.88%**；三次有效候选启动、同源码
 `<3%` 回退门及生产构建复现均未完成，PR 应保持 Draft。
 
-### 1.10 当前 CI 边界
+### 1.10 最新源码交接路径审计
+
+`resume814-815-path-audit/decision.md` 复核普通 futex 的实际唤醒入口、
+同核 Fair/RT 交接及旧 timer、FP/SIMD、PMU 诊断边界。常见 futex 唤醒
+不走 wait-queue claim；旧 timer 计数不支持每次同核唤醒都重编程硬件，
+旧 `prepare_arch` 插桩总段也无法解释九项的多微秒差距。两轮均为只读
+审计，**没有源码改动、镜像、板测或新增 full20 收益**。现有 PMU
+数据也没有逐 PC/调用栈归因，不能从聚合计数推断可删除成本。
+
+### 1.11 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
