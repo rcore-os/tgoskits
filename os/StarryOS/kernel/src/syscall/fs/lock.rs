@@ -121,42 +121,48 @@ type FcntlLockState = Arc<RwLock<Vec<FLockEntry>>>;
 type FlockLockState = Arc<RwLock<Vec<FlockEntry>>>;
 
 // Index locks protect lookup, publication and empty-state removal. Operations
-// pin the state with an Arc; empty states still pinned by another operation
-// are revisited before publishing a new inode state. Blocking waiters use the
+// pin the state with an Arc; cached or pinned empty states are revisited
+// before publishing a new inode state. Blocking waiters use the
 // separately persistent inode wait queue and look up the state on each retry.
 // Lock order: wait queue -> graph -> index -> inode state. A graph writer may
 // also hold POSIX_LOCK_WAITS while reading index and inode states.
 struct FcntlIndex {
     states: BTreeMap<InodeKey, FcntlLockState>,
-    pending: Vec<InodeKey>,
+    idle: Vec<InodeKey>,
 }
 
 impl FcntlIndex {
-    fn reap_pending(&mut self) {
+    fn reclaim_idle(&mut self) {
         let mut cursor = 0;
-        while cursor < self.pending.len() {
-            let key = self.pending[cursor];
-            let status = self
-                .states
-                .get(&key)
-                .map(|state| (state.read().is_empty(), Arc::strong_count(state)));
+        while cursor < self.idle.len() {
+            let key = self.idle[cursor];
+            let status = self.states.get(&key).map(|state| {
+                let entries = state.read();
+                (entries.is_empty(), entries.capacity(), Arc::strong_count(state))
+            });
             match status {
-                Some((true, 1)) => {
+                Some((true, capacity, 1))
+                    if capacity > FCNTL_CACHED_CAPACITY_LIMIT || self.idle.len() > FCNTL_IDLE_LIMIT =>
+                {
                     self.states.remove(&key);
-                    self.pending.remove(cursor);
+                    self.idle.remove(cursor);
                 }
-                Some((false, _)) | None => {
-                    self.pending.remove(cursor);
+                Some((false, _, _)) | None => {
+                    self.idle.remove(cursor);
                 }
-                Some((true, _)) => cursor += 1,
+                _ => cursor += 1,
             }
         }
     }
 }
 
+// Reuse small empty states for short-lived record locks. Large record vectors
+// are released once no operation still holds the state.
+const FCNTL_IDLE_LIMIT: usize = 32;
+const FCNTL_CACHED_CAPACITY_LIMIT: usize = 8;
 static FCNTL_LOCKS: RwLock<FcntlIndex> = RwLock::new(FcntlIndex {
     states: BTreeMap::new(),
-    pending: Vec::new(),
+    idle: Vec::new(),
 });
 
 // Readers permit independent inode updates; a writer freezes all record-lock
@@ -182,7 +188,7 @@ fn fcntl_state(key: InodeKey) -> FcntlLockState {
     let mut index = FCNTL_LOCKS.write();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    index.reap_pending();
+    index.reclaim_idle();
     let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
     drop(index);
     #[cfg(feature = "qperf-metrics")]
@@ -211,12 +217,20 @@ fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
     let mut index = FCNTL_LOCKS.write();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    if state.read().is_empty() {
-        if Arc::strong_count(state) == 2 {
+    let entries = state.read();
+    if entries.is_empty() {
+        let cacheable = entries.capacity() <= FCNTL_CACHED_CAPACITY_LIMIT;
+        drop(entries);
+        if !cacheable && Arc::strong_count(state) == 2 {
             index.states.remove(&key);
-            index.pending.retain(|candidate| *candidate != key);
-        } else if !index.pending.contains(&key) {
-            index.pending.push(key);
+            index.idle.retain(|candidate| *candidate != key);
+        } else {
+            if !index.idle.contains(&key) {
+                index.idle.push(key);
+            }
+            if index.idle.len() > FCNTL_IDLE_LIMIT || !cacheable {
+                index.reclaim_idle();
+            }
         }
     }
     drop(index);

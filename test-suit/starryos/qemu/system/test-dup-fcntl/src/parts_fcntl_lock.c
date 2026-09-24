@@ -62,6 +62,45 @@ int parts_fcntl_lock(void)
         ofd_lock.l_type = F_UNLCK;
         CHECK_RET(syscall(SYS_fcntl, fd, F_OFD_SETLK, &ofd_lock), 0,
                   "F_OFD_SETLK: 解除 OFD 锁");
+
+        ofd_lock.l_type = F_WRLCK;
+        CHECK_RET(syscall(SYS_fcntl, fd, F_OFD_SETLK, &ofd_lock), 0,
+                  "F_OFD_SETLK: 空状态重新加锁");
+        int churned = 0;
+        for (int i = 0; i < 64; i++) {
+            char path[96];
+            snprintf(path, sizeof(path), "/tmp/starry_fcntl_churn_%d", i);
+            unlink(path);
+            int temporary = open(path, O_RDWR | O_CREAT | O_EXCL, 0600);
+            if (temporary < 0) {
+                break;
+            }
+            struct flock churn = {
+                .l_type = F_WRLCK,
+                .l_whence = SEEK_SET,
+                .l_len = 1,
+            };
+            int ok = syscall(SYS_fcntl, temporary, F_OFD_SETLK, &churn) == 0;
+            churn.l_type = F_UNLCK;
+            ok = ok && syscall(SYS_fcntl, temporary, F_OFD_SETLK, &churn) == 0;
+            close(temporary);
+            unlink(path);
+            if (!ok) {
+                break;
+            }
+            churned++;
+        }
+        CHECK(churned == 64, "F_OFD_SETLK: 独立 inode 空状态轮换成功");
+        if (churned == 64) {
+            ofd_query = ofd_lock;
+            CHECK_RET(syscall(SYS_fcntl, other_ofd, F_OFD_GETLK, &ofd_query), 0,
+                      "F_OFD_GETLK: 轮换后查询另一 OFD");
+            CHECK(ofd_query.l_type == F_WRLCK && ofd_query.l_pid == -1,
+                  "F_OFD_GETLK: 空状态淘汰不能丢失活动锁");
+        }
+        ofd_lock.l_type = F_UNLCK;
+        CHECK_RET(syscall(SYS_fcntl, fd, F_OFD_SETLK, &ofd_lock), 0,
+                  "F_OFD_SETLK: 清理重新建立的锁");
         close(other_ofd);
     }
 

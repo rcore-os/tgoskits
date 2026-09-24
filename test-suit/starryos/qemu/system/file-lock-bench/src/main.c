@@ -12,7 +12,9 @@
 
 #define THREADS 4
 #define SAMPLES 1000
-#define RECORDS 256
+#define DENSE_RECORDS 256
+
+static int record_count;
 
 enum operation { POSIX, OFD, QUERY, FLOCK };
 
@@ -141,7 +143,7 @@ static struct lock_metrics read_lock_metrics(enum operation operation)
         READ_METRIC(operations[operation], "wait_ns", metrics.inode.wait_ns);
         READ_METRIC(operations[operation], "held_ns", metrics.inode.held_ns);
         READ_METRIC(state, "states", metrics.states);
-        READ_METRIC(state, operation == FLOCK ? "idle" : "pending", metrics.idle);
+        READ_METRIC(state, "idle", metrics.idle);
         READ_METRIC(state, "capacity", metrics.capacity);
         READ_METRIC(state, "entry_size", metrics.entry_size);
         READ_METRIC(state, "state_size", metrics.state_size);
@@ -178,7 +180,7 @@ static int run_case(enum operation operation, int count, int distinct)
             return -1;
         }
         if (operation != FLOCK && (distinct || i == 0)) {
-            for (int record = 0; record < RECORDS; record++) {
+            for (int record = 0; record < record_count; record++) {
                 struct flock seed = {
                     .l_type = F_RDLCK,
                     .l_whence = SEEK_SET,
@@ -222,7 +224,7 @@ static int run_case(enum operation operation, int count, int distinct)
     printf("FILE_LOCK_BENCH mode=%s threads=%d files=%d records=%d ops=%d "
            "elapsed_ns=%llu ops_per_s=%llu p50_ns=%llu p95_ns=%llu p99_ns=%llu\n",
            names[operation], count, distinct ? count : 1,
-           operation == FLOCK ? 0 : RECORDS, total,
+           operation == FLOCK ? 0 : record_count, total,
            (unsigned long long)elapsed,
            (unsigned long long)((uint64_t)total * 1000000000ULL / elapsed),
            (unsigned long long)durations[total / 2],
@@ -258,11 +260,15 @@ static int run_case(enum operation operation, int count, int distinct)
 
 int main(void)
 {
-    for (int mode = POSIX; mode <= FLOCK; mode++) {
-        for (int scenario = 0; scenario < 3; scenario++) {
-            int count = scenario == 0 ? 1 : THREADS;
-            if (run_case((enum operation)mode, count, scenario == 1) != 0) {
-                return 1;
+    const int record_counts[] = {0, DENSE_RECORDS};
+    for (size_t depth = 0; depth < sizeof(record_counts) / sizeof(record_counts[0]); depth++) {
+        record_count = record_counts[depth];
+        for (int mode = POSIX; mode <= FLOCK; mode++) {
+            for (int scenario = 0; scenario < 3; scenario++) {
+                int count = scenario == 0 ? 1 : THREADS;
+                if (run_case((enum operation)mode, count, scenario == 1) != 0) {
+                    return 1;
+                }
             }
         }
     }

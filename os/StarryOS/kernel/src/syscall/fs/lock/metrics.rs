@@ -76,7 +76,7 @@ pub(crate) fn render_file_lock_metrics() -> String {
         (counts.0 + entries.len(), counts.1 + entries.capacity())
     });
     writeln!(output, "fcntl_states {}", fcntl.states.len()).unwrap();
-    writeln!(output, "fcntl_pending {}", fcntl.pending.len()).unwrap();
+    writeln!(output, "fcntl_idle {}", fcntl.idle.len()).unwrap();
     writeln!(output, "fcntl_records {fcntl_records}").unwrap();
     writeln!(output, "fcntl_capacity {fcntl_capacity}").unwrap();
     drop(fcntl);
