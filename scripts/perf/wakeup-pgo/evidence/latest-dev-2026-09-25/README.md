@@ -225,7 +225,45 @@ read 的缓存状态不同、原始逐样本计数未导出、两侧背景活动
 16625 ns / Linux RT 8458 ns，即 **50.88%**。三次有效候选启动、同源码
 `<3%` 回退门及生产构建复现仍未完成；当前没有新的可保留运行时优化。
 
-### 1.9 当前 CI 边界
+### 1.9 唤醒顺序与同二进制分层 PMU（仅诊断）
+
+`resume811-wake-order/` 使用同一份静态诊断 benchmark
+（SHA256 `3c72c5ead9c0aad2e0bd271f244807f16cad206d125141199fa52deab86e6189`），
+在发送者 `futex_wake_one()` 返回后的第一处 C 语句设置标记，并由接收者在
+首次读时钟后观察。Linux RT 的两次有效 OTHER 聚焦轮次中，接收者先于
+标记的中位比例为 **63.40%**；同源码 Starry 普通 A/PGO F 各五次有效
+OTHER 轮次分别为 **99.19%/99.385%**，FIFO 全为零。Linux OTHER 一次、
+Starry A1/F1 OTHER 各一次出现 19999/20000、`not_parked=1`，原始日志保留但
+不计入中位数。标记不能区分唤醒 syscall 内抢占与返回用户态前的抢占；
+两边使用的是改变代码布局的诊断 benchmark，其 p50 不计入 full20。
+
+`resume812-audit/` 修正了只读路径审计中的错误假设：Starry 的
+`prepare_user_return()` 在首次唤醒 syscall 返回前处理 Lazy 抢占请求，
+不能认为测得的正向窗口通常包含发送者第二次 `FUTEX_WAIT`。旧全局探针
+提示成功唤醒多走 off-rq 激活，但不能将全局计数换算成逐样本成本。
+此步未修改内核，也未找到可保留的等价运行时优化。
+
+`resume813-stratified-pmu/` 在同一静态诊断 benchmark（SHA256
+`75939fe5a8ccd15476e1f15f967b11c19e5bb680df3da39be141ab391cb73b76`）
+中同时采集上述标记及 CPU0 正向窗口的内核态指令、周期、L1I refill，
+分别在冻结 Linux RT 和同源码 Starry A/F 上运行。Linux 每项/策略两轮，
+Starry 按 A1→F1→F2→A2 各两轮，共 60 次聚焦调用，全部 20000/20000、
+零 `not_parked`。在指令事件组的接收者先于标记 OTHER 分层中，Linux RT/A/F
+的中位样本数分别为 18896/16561.5/19873.5（每轮 20000）；相邻读数近似校准后，
+指令中位数为 4992/11104/8889，周期为 8506.5/24753/15610，L1I refill
+为 224.5/810/454。**加入 PMU 读数把 Linux RT 的标记先后比例从上一版
+63.40% 改到约 95%，也改变了 Starry A 的比例**，诊断明显扰动了交接节奏。
+这些数值只支持在当前插桩条件下继续定位，不能解释为原始 benchmark 的
+可删除成本或候选优化收益。没有导出逐样本 PMU 原始值；首次读数与相邻
+校准读数的缓存状态也可能不同。完整限制见 `decision.md`。
+
+三个目录保留源码副本、运行脚本、原始单项/串口日志、启动状态、镜像和
+benchmark 哈希、无效轮次及独立复算；一次性静态二进制和 Linux initramfs
+未入库。原始冻结 full20 最近一次有效轮次仍为 `resume788` F2：**11/20**
+达到 90%，最差 OTHER 同核 futex **50.88%**；三次有效候选启动、同源码
+`<3%` 回退门及生产构建复现均未完成，PR 应保持 Draft。
+
+### 1.10 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
@@ -252,7 +290,9 @@ read 的缓存状态不同、原始逐样本计数未导出、两侧背景活动
 `python3 resume808-current-pmu/analyze.py`、
 `python3 resume809-linux-pmu/analyze.py` 和
 `python3 resume810-window-pmu/analyze.py` 复核原始日志与有效性；
-它们不参加 full20 验收。未纳入仓库的
+后续还应分别运行 `python3 resume811-wake-order/analyze.py` 和
+`python3 resume813-stratified-pmu/analyze.py`。`resume812-audit/` 是只读审计，
+没有板测日志。它们均不参加 full20 验收。未纳入仓库的
 完整镜像哈希保存在状态文件，
 不能仅凭日志重建镜像身份。冻结 benchmark SHA256 为
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。

@@ -1,0 +1,2609 @@
+{
+  "diagnostic_only": true,
+  "benchmark_sha256": "75939fe5a8ccd15476e1f15f967b11c19e5bb680df3da39be141ab391cb73b76",
+  "board_id": "OrangePi-5-Plus-1",
+  "limitations": [
+    "diagnostic benchmark perturbs cache state and differs from frozen full20",
+    "adjacent PMU read is an approximate, not exact, calibration",
+    "sender marker does not distinguish in-syscall from return-boundary preemption",
+    "raw per-sample PMU deltas are not exported, only stratum summaries",
+    "Linux and Starry background activity differs"
+  ],
+  "rows": [
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "instructions",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9333,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 6293,
+        "read_p50": 1301,
+        "adjusted_p50": 4992,
+        "raw_p99": 10260,
+        "read_p99": 1303
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 18726,
+          "raw_p50": 6293,
+          "read_p50": 1301,
+          "adjusted_p50": 4992,
+          "p50_ns": 9333
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 1274,
+          "raw_p50": 8086,
+          "read_p50": 1300,
+          "adjusted_p50": 6786,
+          "p50_ns": 13125
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9042,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 6606,
+        "read_p50": 1301,
+        "adjusted_p50": 5305,
+        "raw_p99": 11100,
+        "read_p99": 1301
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 6606,
+          "read_p50": 1301,
+          "adjusted_p50": 5305,
+          "p50_ns": 9042
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "instructions",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9334,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 6293,
+        "read_p50": 1301,
+        "adjusted_p50": 4992,
+        "raw_p99": 10299,
+        "read_p99": 1303
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 19066,
+          "raw_p50": 6293,
+          "read_p50": 1301,
+          "adjusted_p50": 4992,
+          "p50_ns": 9334
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 934,
+          "raw_p50": 8086,
+          "read_p50": 1300,
+          "adjusted_p50": 6786,
+          "p50_ns": 13125
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9042,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 6606,
+        "read_p50": 1301,
+        "adjusted_p50": 5305,
+        "raw_p99": 9921,
+        "read_p99": 1303
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 6606,
+          "read_p50": 1301,
+          "adjusted_p50": 5305,
+          "p50_ns": 9042
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "cycles",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9334,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 10512,
+        "read_p50": 1998,
+        "adjusted_p50": 8514,
+        "raw_p99": 22544,
+        "read_p99": 2200
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 19197,
+          "raw_p50": 10506,
+          "read_p50": 1997,
+          "adjusted_p50": 8509,
+          "p50_ns": 9334
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 803,
+          "raw_p50": 13611,
+          "read_p50": 2036,
+          "adjusted_p50": 11575,
+          "p50_ns": 13125
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9042,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 10003,
+        "read_p50": 1951,
+        "adjusted_p50": 8052,
+        "raw_p99": 20134,
+        "read_p99": 2113
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 10003,
+          "read_p50": 1951,
+          "adjusted_p50": 8052,
+          "p50_ns": 9042
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "cycles",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9334,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 10513,
+        "read_p50": 2003,
+        "adjusted_p50": 8510,
+        "raw_p99": 22585,
+        "read_p99": 2198
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 19090,
+          "raw_p50": 10505,
+          "read_p50": 2001,
+          "adjusted_p50": 8504,
+          "p50_ns": 9333
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 910,
+          "raw_p50": 13601,
+          "read_p50": 2044,
+          "adjusted_p50": 11557,
+          "p50_ns": 13125
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9041,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 9984,
+        "read_p50": 1947,
+        "adjusted_p50": 8037,
+        "raw_p99": 19347,
+        "read_p99": 2101
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 9984,
+          "read_p50": 1947,
+          "adjusted_p50": 8037,
+          "p50_ns": 9041
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9334,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 250,
+        "read_p50": 26,
+        "adjusted_p50": 224,
+        "raw_p99": 615,
+        "read_p99": 40
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 18993,
+          "raw_p50": 250,
+          "read_p50": 26,
+          "adjusted_p50": 224,
+          "p50_ns": 9334
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 1007,
+          "raw_p50": 323,
+          "read_p50": 29,
+          "adjusted_p50": 294,
+          "p50_ns": 13125
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9042,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 175,
+        "read_p50": 19,
+        "adjusted_p50": 156,
+        "raw_p99": 529,
+        "read_p99": 37
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 175,
+          "read_p50": 19,
+          "adjusted_p50": 156,
+          "p50_ns": 9042
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9334,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 251,
+        "read_p50": 26,
+        "adjusted_p50": 225,
+        "raw_p99": 613,
+        "read_p99": 41
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 19027,
+          "raw_p50": 250,
+          "read_p50": 25,
+          "adjusted_p50": 225,
+          "p50_ns": 9334
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 973,
+          "raw_p50": 324,
+          "read_p50": 29,
+          "adjusted_p50": 295,
+          "p50_ns": 13125
+        }
+      ]
+    },
+    {
+      "system": "Linux RT",
+      "boot": "L1",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 9042,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 175,
+        "read_p50": 19,
+        "adjusted_p50": 156,
+        "raw_p99": 432,
+        "read_p99": 36
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 175,
+          "read_p50": 19,
+          "adjusted_p50": 156,
+          "p50_ns": 9042
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "instructions",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28584,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 13252,
+        "read_p50": 2146,
+        "adjusted_p50": 11106,
+        "raw_p99": 14464,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 16690,
+          "raw_p50": 13250,
+          "read_p50": 2146,
+          "adjusted_p50": 11104,
+          "p50_ns": 28583
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 3310,
+          "raw_p50": 13828,
+          "read_p50": 2146,
+          "adjusted_p50": 11682,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 21000,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11120,
+        "read_p50": 2146,
+        "adjusted_p50": 8974,
+        "raw_p99": 11120,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 11120,
+          "read_p50": 2146,
+          "adjusted_p50": 8974,
+          "p50_ns": 21000
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "instructions",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28583,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 13252,
+        "read_p50": 2146,
+        "adjusted_p50": 11106,
+        "raw_p99": 14453,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 17407,
+          "raw_p50": 13252,
+          "read_p50": 2146,
+          "adjusted_p50": 11106,
+          "p50_ns": 28583
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 2593,
+          "raw_p50": 13828,
+          "read_p50": 2146,
+          "adjusted_p50": 11682,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20708,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11120,
+        "read_p50": 2146,
+        "adjusted_p50": 8974,
+        "raw_p99": 11120,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 11120,
+          "read_p50": 2146,
+          "adjusted_p50": 8974,
+          "p50_ns": 20708
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "cycles",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28875,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 28209,
+        "read_p50": 3214,
+        "adjusted_p50": 24995,
+        "raw_p99": 32483,
+        "read_p99": 3417
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 15969,
+          "raw_p50": 28085,
+          "read_p50": 3197,
+          "adjusted_p50": 24888,
+          "p50_ns": 28584
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 4031,
+          "raw_p50": 31385,
+          "read_p50": 3274,
+          "adjusted_p50": 28111,
+          "p50_ns": 32666
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 21000,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 21233,
+        "read_p50": 3099,
+        "adjusted_p50": 18134,
+        "raw_p99": 21774,
+        "read_p99": 3232
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 21233,
+          "read_p50": 3099,
+          "adjusted_p50": 18134,
+          "p50_ns": 21000
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "cycles",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28583,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 27944,
+        "read_p50": 3168,
+        "adjusted_p50": 24776,
+        "raw_p99": 32659,
+        "read_p99": 3369
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 17006,
+          "raw_p50": 27860,
+          "read_p50": 3156,
+          "adjusted_p50": 24704,
+          "p50_ns": 28583
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 2994,
+          "raw_p50": 31238,
+          "read_p50": 3239,
+          "adjusted_p50": 27999,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20708,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 21020,
+        "read_p50": 3070,
+        "adjusted_p50": 17950,
+        "raw_p99": 21545,
+        "read_p99": 3195
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 21020,
+          "read_p50": 3070,
+          "adjusted_p50": 17950,
+          "p50_ns": 20708
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28584,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 854,
+        "read_p50": 40,
+        "adjusted_p50": 814,
+        "raw_p99": 1005,
+        "read_p99": 53
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 16213,
+          "raw_p50": 849,
+          "read_p50": 40,
+          "adjusted_p50": 809,
+          "p50_ns": 28583
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 3787,
+          "raw_p50": 978,
+          "read_p50": 43,
+          "adjusted_p50": 935,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20708,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 645,
+        "read_p50": 37,
+        "adjusted_p50": 608,
+        "raw_p99": 675,
+        "read_p99": 47
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 645,
+          "read_p50": 37,
+          "adjusted_p50": 608,
+          "p50_ns": 20708
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28583,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 858,
+        "read_p50": 40,
+        "adjusted_p50": 818,
+        "raw_p99": 1008,
+        "read_p99": 53
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 16902,
+          "raw_p50": 854,
+          "read_p50": 40,
+          "adjusted_p50": 814,
+          "p50_ns": 28583
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 3098,
+          "raw_p50": 978,
+          "read_p50": 43,
+          "adjusted_p50": 935,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A1",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20709,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 645,
+        "read_p50": 37,
+        "adjusted_p50": 608,
+        "raw_p99": 675,
+        "read_p99": 47
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 645,
+          "read_p50": 37,
+          "adjusted_p50": 608,
+          "p50_ns": 20709
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "instructions",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17791,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11075,
+        "read_p50": 2186,
+        "adjusted_p50": 8889,
+        "raw_p99": 12148,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 19873,
+          "raw_p50": 11075,
+          "read_p50": 2186,
+          "adjusted_p50": 8889,
+          "p50_ns": 17791
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 127,
+          "raw_p50": 11748,
+          "read_p50": 2186,
+          "adjusted_p50": 9562,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12542,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 9231,
+        "read_p50": 2187,
+        "adjusted_p50": 7044,
+        "raw_p99": 9231,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 9231,
+          "read_p50": 2187,
+          "adjusted_p50": 7044,
+          "p50_ns": 12542
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "instructions",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17792,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11075,
+        "read_p50": 2186,
+        "adjusted_p50": 8889,
+        "raw_p99": 12148,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 19873,
+          "raw_p50": 11075,
+          "read_p50": 2186,
+          "adjusted_p50": 8889,
+          "p50_ns": 17792
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 127,
+          "raw_p50": 11748,
+          "read_p50": 2186,
+          "adjusted_p50": 9562,
+          "p50_ns": 21291
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12542,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 9231,
+        "read_p50": 2187,
+        "adjusted_p50": 7044,
+        "raw_p99": 9231,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 9231,
+          "read_p50": 2187,
+          "adjusted_p50": 7044,
+          "p50_ns": 12542
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "cycles",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17791,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 18652,
+        "read_p50": 3079,
+        "adjusted_p50": 15573,
+        "raw_p99": 22256,
+        "read_p99": 3247
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 19873,
+          "raw_p50": 18651,
+          "read_p50": 3078,
+          "adjusted_p50": 15573,
+          "p50_ns": 17791
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 127,
+          "raw_p50": 21742,
+          "read_p50": 3130,
+          "adjusted_p50": 18612,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12541,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 13909,
+        "read_p50": 3027,
+        "adjusted_p50": 10882,
+        "raw_p99": 14228,
+        "read_p99": 3152
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 13909,
+          "read_p50": 3027,
+          "adjusted_p50": 10882,
+          "p50_ns": 12541
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "cycles",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 18083,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 18853,
+        "read_p50": 3074,
+        "adjusted_p50": 15779,
+        "raw_p99": 22277,
+        "read_p99": 3229
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 19871,
+          "raw_p50": 18851,
+          "read_p50": 3074,
+          "adjusted_p50": 15777,
+          "p50_ns": 18083
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 129,
+          "raw_p50": 21645,
+          "read_p50": 3116,
+          "adjusted_p50": 18529,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12833,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 14211,
+        "read_p50": 3043,
+        "adjusted_p50": 11168,
+        "raw_p99": 14545,
+        "read_p99": 3166
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 14211,
+          "read_p50": 3043,
+          "adjusted_p50": 11168,
+          "p50_ns": 12833
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17792,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 500,
+        "read_p50": 45,
+        "adjusted_p50": 455,
+        "raw_p99": 608,
+        "read_p99": 57
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 19872,
+          "raw_p50": 500,
+          "read_p50": 45,
+          "adjusted_p50": 455,
+          "p50_ns": 17792
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 128,
+          "raw_p50": 575,
+          "read_p50": 47,
+          "adjusted_p50": 528,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12542,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 294,
+        "read_p50": 38,
+        "adjusted_p50": 256,
+        "raw_p99": 316,
+        "read_p99": 49
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 294,
+          "read_p50": 38,
+          "adjusted_p50": 256,
+          "p50_ns": 12542
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17791,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 499,
+        "read_p50": 45,
+        "adjusted_p50": 454,
+        "raw_p99": 608,
+        "read_p99": 57
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 19873,
+          "raw_p50": 499,
+          "read_p50": 45,
+          "adjusted_p50": 454,
+          "p50_ns": 17791
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 127,
+          "raw_p50": 574,
+          "read_p50": 47,
+          "adjusted_p50": 527,
+          "p50_ns": 21000
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F1",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12542,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 293,
+        "read_p50": 38,
+        "adjusted_p50": 255,
+        "raw_p99": 315,
+        "read_p99": 48
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 293,
+          "read_p50": 38,
+          "adjusted_p50": 255,
+          "p50_ns": 12542
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "instructions",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17500,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11075,
+        "read_p50": 2186,
+        "adjusted_p50": 8889,
+        "raw_p99": 12201,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 19874,
+          "raw_p50": 11075,
+          "read_p50": 2186,
+          "adjusted_p50": 8889,
+          "p50_ns": 17500
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 126,
+          "raw_p50": 11748,
+          "read_p50": 2186,
+          "adjusted_p50": 9562,
+          "p50_ns": 21291
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12541,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 9231,
+        "read_p50": 2187,
+        "adjusted_p50": 7044,
+        "raw_p99": 9231,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 9231,
+          "read_p50": 2187,
+          "adjusted_p50": 7044,
+          "p50_ns": 12541
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "instructions",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17792,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11075,
+        "read_p50": 2186,
+        "adjusted_p50": 8889,
+        "raw_p99": 12200,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 19874,
+          "raw_p50": 11075,
+          "read_p50": 2186,
+          "adjusted_p50": 8889,
+          "p50_ns": 17792
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 126,
+          "raw_p50": 11748,
+          "read_p50": 2186,
+          "adjusted_p50": 9562,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12541,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 9231,
+        "read_p50": 2187,
+        "adjusted_p50": 7044,
+        "raw_p99": 9231,
+        "read_p99": 2187
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 9231,
+          "read_p50": 2187,
+          "adjusted_p50": 7044,
+          "p50_ns": 12541
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "cycles",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17792,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 18723,
+        "read_p50": 3074,
+        "adjusted_p50": 15649,
+        "raw_p99": 22479,
+        "read_p99": 3232
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 19874,
+          "raw_p50": 18721,
+          "read_p50": 3074,
+          "adjusted_p50": 15647,
+          "p50_ns": 17792
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 126,
+          "raw_p50": 21653,
+          "read_p50": 3124,
+          "adjusted_p50": 18529,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12541,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 13926,
+        "read_p50": 3027,
+        "adjusted_p50": 10899,
+        "raw_p99": 14243,
+        "read_p99": 3146
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 13926,
+          "read_p50": 3027,
+          "adjusted_p50": 10899,
+          "p50_ns": 12541
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "cycles",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17500,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 18589,
+        "read_p50": 3072,
+        "adjusted_p50": 15517,
+        "raw_p99": 22185,
+        "read_p99": 3239
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 19872,
+          "raw_p50": 18588,
+          "read_p50": 3072,
+          "adjusted_p50": 15516,
+          "p50_ns": 17500
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 128,
+          "raw_p50": 21739,
+          "read_p50": 3126,
+          "adjusted_p50": 18613,
+          "p50_ns": 21292
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12541,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 13938,
+        "read_p50": 3029,
+        "adjusted_p50": 10909,
+        "raw_p99": 14261,
+        "read_p99": 3154
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 13938,
+          "read_p50": 3029,
+          "adjusted_p50": 10909,
+          "p50_ns": 12541
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17791,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 498,
+        "read_p50": 45,
+        "adjusted_p50": 453,
+        "raw_p99": 606,
+        "read_p99": 57
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 19872,
+          "raw_p50": 498,
+          "read_p50": 45,
+          "adjusted_p50": 453,
+          "p50_ns": 17791
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 128,
+          "raw_p50": 576,
+          "read_p50": 47,
+          "adjusted_p50": 529,
+          "p50_ns": 21291
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12541,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 294,
+        "read_p50": 38,
+        "adjusted_p50": 256,
+        "raw_p99": 316,
+        "read_p99": 49
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 294,
+          "read_p50": 38,
+          "adjusted_p50": 256,
+          "p50_ns": 12541
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 17500,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 499,
+        "read_p50": 45,
+        "adjusted_p50": 454,
+        "raw_p99": 605,
+        "read_p99": 58
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 19872,
+          "raw_p50": 499,
+          "read_p50": 45,
+          "adjusted_p50": 454,
+          "p50_ns": 17500
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 128,
+          "raw_p50": 577,
+          "read_p50": 46,
+          "adjusted_p50": 531,
+          "p50_ns": 21000
+        }
+      ]
+    },
+    {
+      "system": "F",
+      "boot": "F2",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 12542,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 294,
+        "read_p50": 38,
+        "adjusted_p50": 256,
+        "raw_p99": 316,
+        "read_p99": 48
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 294,
+          "read_p50": 38,
+          "adjusted_p50": 256,
+          "p50_ns": 12542
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "instructions",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28583,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 13252,
+        "read_p50": 2146,
+        "adjusted_p50": 11106,
+        "raw_p99": 14453,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 16433,
+          "raw_p50": 13250,
+          "read_p50": 2146,
+          "adjusted_p50": 11104,
+          "p50_ns": 28583
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 3567,
+          "raw_p50": 13828,
+          "read_p50": 2146,
+          "adjusted_p50": 11682,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20708,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11120,
+        "read_p50": 2146,
+        "adjusted_p50": 8974,
+        "raw_p99": 11120,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 11120,
+          "read_p50": 2146,
+          "adjusted_p50": 8974,
+          "p50_ns": 20708
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "instructions",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28584,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 13252,
+        "read_p50": 2146,
+        "adjusted_p50": 11106,
+        "raw_p99": 14381,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 16406,
+          "raw_p50": 13250,
+          "read_p50": 2146,
+          "adjusted_p50": 11104,
+          "p50_ns": 28583
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 3594,
+          "raw_p50": 13828,
+          "read_p50": 2146,
+          "adjusted_p50": 11682,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "instructions",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20708,
+      "window": {
+        "event": "instructions",
+        "samples": 20000,
+        "raw_p50": 11120,
+        "read_p50": 2146,
+        "adjusted_p50": 8974,
+        "raw_p99": 11120,
+        "read_p99": 2146
+      },
+      "strata": [
+        {
+          "event": "instructions",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "instructions",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 11120,
+          "read_p50": 2146,
+          "adjusted_p50": 8974,
+          "p50_ns": 20708
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "cycles",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28584,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 27981,
+        "read_p50": 3185,
+        "adjusted_p50": 24796,
+        "raw_p99": 32859,
+        "read_p99": 3390
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 16609,
+          "raw_p50": 27875,
+          "read_p50": 3171,
+          "adjusted_p50": 24704,
+          "p50_ns": 28583
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 3391,
+          "raw_p50": 31342,
+          "read_p50": 3251,
+          "adjusted_p50": 28091,
+          "p50_ns": 32666
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 21000,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 21155,
+        "read_p50": 3083,
+        "adjusted_p50": 18072,
+        "raw_p99": 21670,
+        "read_p99": 3211
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 21155,
+          "read_p50": 3083,
+          "adjusted_p50": 18072,
+          "p50_ns": 21000
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "cycles",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28584,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 28082,
+        "read_p50": 3177,
+        "adjusted_p50": 24905,
+        "raw_p99": 32594,
+        "read_p99": 3375
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 16502,
+          "raw_p50": 27966,
+          "read_p50": 3164,
+          "adjusted_p50": 24802,
+          "p50_ns": 28583
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 3498,
+          "raw_p50": 31298,
+          "read_p50": 3239,
+          "adjusted_p50": 28059,
+          "p50_ns": 32375
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "cycles",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20709,
+      "window": {
+        "event": "cycles",
+        "samples": 20000,
+        "raw_p50": 21143,
+        "read_p50": 3064,
+        "adjusted_p50": 18079,
+        "raw_p99": 21691,
+        "read_p99": 3188
+      },
+      "strata": [
+        {
+          "event": "cycles",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "cycles",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 21143,
+          "read_p50": 3064,
+          "adjusted_p50": 18079,
+          "p50_ns": 20709
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28875,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 856,
+        "read_p50": 41,
+        "adjusted_p50": 815,
+        "raw_p99": 1003,
+        "read_p99": 53
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 14643,
+          "raw_p50": 848,
+          "read_p50": 40,
+          "adjusted_p50": 808,
+          "p50_ns": 28583
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 5357,
+          "raw_p50": 974,
+          "read_p50": 43,
+          "adjusted_p50": 931,
+          "p50_ns": 32666
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 21291,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 644,
+        "read_p50": 37,
+        "adjusted_p50": 607,
+        "raw_p99": 673,
+        "read_p99": 47
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 644,
+          "read_p50": 37,
+          "adjusted_p50": 607,
+          "p50_ns": 21291
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "l1i_refill",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 28584,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 856,
+        "read_p50": 40,
+        "adjusted_p50": 816,
+        "raw_p99": 1004,
+        "read_p99": 53
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 16071,
+          "raw_p50": 851,
+          "read_p50": 40,
+          "adjusted_p50": 811,
+          "p50_ns": 28583
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 3929,
+          "raw_p50": 975,
+          "read_p50": 43,
+          "adjusted_p50": 932,
+          "p50_ns": 32666
+        }
+      ]
+    },
+    {
+      "system": "A",
+      "boot": "A2",
+      "event": "l1i_refill",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20417,
+      "window": {
+        "event": "l1i_refill",
+        "samples": 20000,
+        "raw_p50": 645,
+        "read_p50": 36,
+        "adjusted_p50": 609,
+        "raw_p99": 675,
+        "read_p99": 47
+      },
+      "strata": [
+        {
+          "event": "l1i_refill",
+          "stratum": "before",
+          "samples": 0
+        },
+        {
+          "event": "l1i_refill",
+          "stratum": "after",
+          "samples": 20000,
+          "raw_p50": 645,
+          "read_p50": 36,
+          "adjusted_p50": 609,
+          "p50_ns": 20417
+        }
+      ]
+    }
+  ],
+  "group_medians": {
+    "Linux RT:instructions:other:before": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 18896.0,
+      "adjusted_p50_median": 4992.0,
+      "p50_ns_diagnostic_only": 9333.5
+    },
+    "Linux RT:instructions:other:after": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 1104.0,
+      "adjusted_p50_median": 6786.0,
+      "p50_ns_diagnostic_only": 13125.0
+    },
+    "Linux RT:instructions:fifo:before": {
+      "valid_runs": 2,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "Linux RT:instructions:fifo:after": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 5305.0,
+      "p50_ns_diagnostic_only": 9042.0
+    },
+    "Linux RT:cycles:other:before": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 19143.5,
+      "adjusted_p50_median": 8506.5,
+      "p50_ns_diagnostic_only": 9333.5
+    },
+    "Linux RT:cycles:other:after": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 856.5,
+      "adjusted_p50_median": 11566.0,
+      "p50_ns_diagnostic_only": 13125.0
+    },
+    "Linux RT:cycles:fifo:before": {
+      "valid_runs": 2,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "Linux RT:cycles:fifo:after": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 8044.5,
+      "p50_ns_diagnostic_only": 9041.5
+    },
+    "Linux RT:l1i_refill:other:before": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 19010.0,
+      "adjusted_p50_median": 224.5,
+      "p50_ns_diagnostic_only": 9334.0
+    },
+    "Linux RT:l1i_refill:other:after": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 990.0,
+      "adjusted_p50_median": 294.5,
+      "p50_ns_diagnostic_only": 13125.0
+    },
+    "Linux RT:l1i_refill:fifo:before": {
+      "valid_runs": 2,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "Linux RT:l1i_refill:fifo:after": {
+      "valid_runs": 2,
+      "nonempty_runs": 2,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 156.0,
+      "p50_ns_diagnostic_only": 9042.0
+    },
+    "A:instructions:other:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 16561.5,
+      "adjusted_p50_median": 11104.0,
+      "p50_ns_diagnostic_only": 28583.0
+    },
+    "A:instructions:other:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 3438.5,
+      "adjusted_p50_median": 11682.0,
+      "p50_ns_diagnostic_only": 32375.0
+    },
+    "A:instructions:fifo:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "A:instructions:fifo:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 8974.0,
+      "p50_ns_diagnostic_only": 20708.0
+    },
+    "A:cycles:other:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 16555.5,
+      "adjusted_p50_median": 24753.0,
+      "p50_ns_diagnostic_only": 28583.0
+    },
+    "A:cycles:other:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 3444.5,
+      "adjusted_p50_median": 28075.0,
+      "p50_ns_diagnostic_only": 32520.5
+    },
+    "A:cycles:fifo:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "A:cycles:fifo:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 18075.5,
+      "p50_ns_diagnostic_only": 20854.5
+    },
+    "A:l1i_refill:other:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 16142.0,
+      "adjusted_p50_median": 810.0,
+      "p50_ns_diagnostic_only": 28583.0
+    },
+    "A:l1i_refill:other:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 3858.0,
+      "adjusted_p50_median": 933.5,
+      "p50_ns_diagnostic_only": 32520.5
+    },
+    "A:l1i_refill:fifo:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "A:l1i_refill:fifo:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 608.0,
+      "p50_ns_diagnostic_only": 20708.5
+    },
+    "F:instructions:other:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 19873.5,
+      "adjusted_p50_median": 8889.0,
+      "p50_ns_diagnostic_only": 17791.5
+    },
+    "F:instructions:other:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 126.5,
+      "adjusted_p50_median": 9562.0,
+      "p50_ns_diagnostic_only": 21291.5
+    },
+    "F:instructions:fifo:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "F:instructions:fifo:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 7044.0,
+      "p50_ns_diagnostic_only": 12541.5
+    },
+    "F:cycles:other:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 19872.5,
+      "adjusted_p50_median": 15610.0,
+      "p50_ns_diagnostic_only": 17791.5
+    },
+    "F:cycles:other:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 127.5,
+      "adjusted_p50_median": 18570.5,
+      "p50_ns_diagnostic_only": 21292.0
+    },
+    "F:cycles:fifo:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "F:cycles:fifo:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 10904.0,
+      "p50_ns_diagnostic_only": 12541.0
+    },
+    "F:l1i_refill:other:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 19872.0,
+      "adjusted_p50_median": 454.0,
+      "p50_ns_diagnostic_only": 17791.0
+    },
+    "F:l1i_refill:other:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 128.0,
+      "adjusted_p50_median": 528.5,
+      "p50_ns_diagnostic_only": 21145.5
+    },
+    "F:l1i_refill:fifo:before": {
+      "valid_runs": 4,
+      "nonempty_runs": 0,
+      "sample_count_median": 0.0,
+      "adjusted_p50_median": null,
+      "p50_ns_diagnostic_only": null
+    },
+    "F:l1i_refill:fifo:after": {
+      "valid_runs": 4,
+      "nonempty_runs": 4,
+      "sample_count_median": 20000.0,
+      "adjusted_p50_median": 256.0,
+      "p50_ns_diagnostic_only": 12542.0
+    }
+  },
+  "invalid_runs": []
+}
