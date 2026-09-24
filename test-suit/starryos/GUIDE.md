@@ -616,10 +616,8 @@ cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 到该步骤中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
 启动脚本。
 
-真板卡 CI 的 AKA WiFi 与 OrangePi 网络冒烟统一使用 iperf2。`run-board-iperf2.sh`
-在 TCP 15001–15064 中为每项 CI 选择一个空闲端口并启动临时服务端，退出时清理进程，
-避免共享服务的旧连接影响后续运行。
-手工板测默认连接 TCP 5001 常驻服务。`board-common/iperf2` 提供公共脚本
+真板卡 CI 的 AKA WiFi 与 OrangePi 网络冒烟统一使用 iperf2，共享 TCP 5001
+服务端口；iperf2 服务进程接受多个独立客户端。`board-common/iperf2` 提供公共脚本
 和打包规则，各 case 的 `c/prebuild.sh` 在 Alpine 暂存环境安装 `iperf`，CMake 将
 客户端、musl 加载器及匹配的 C++ 运行库打包为 `share/iperf2.tar.gz`。板卡通过
 `${sessionFile:share/iperf2.tar.gz}` 下载到 `/tmp`，不要求预装客户端或修改持久根文件系统。
@@ -639,10 +637,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now iperf2.service
 ```
 
-模板使用 systemd 动态用户。服务器防火墙需允许板卡访问手工板测所用的 TCP 5001，
-以及 CI 所用的 TCP 15001–15064。服务端和板端必须都是 iperf2；iperf3
-不兼容该协议。CI 通过 `STARRY_IPERF_PORT` 把临时端口写入会话上传的客户端包，
-手工运行未设置该变量时仍使用 5001。
+模板使用 systemd 动态用户，服务器防火墙需要允许板卡访问 TCP 5001。服务端和
+板端必须都是 iperf2；iperf3 不兼容该协议。无需为每块板分配独立的 iperf3 实例。
 
 完整 benchmark 固定执行 T01--T07：单流 TX、单流 RX、单流双向、2/4/8 流 TX 和
 4 流 RX。每个场景使用 `-t 10 -O 2 -l 128K` 运行 3 次，每个连接结束后固定冷却

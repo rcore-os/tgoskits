@@ -10,16 +10,10 @@ fail() {
     exit 1
 }
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || fail
-server_port=5001
-if [ -f "$root/server-port" ]; then
-    IFS= read -r server_port <"$root/server-port" || fail
-fi
-
 command -v iperf >/dev/null 2>&1 || fail
 report=$(mktemp) || fail
 trap 'rm -f "$report"' EXIT
-iperf -c "$server_ip" -p "$server_port" -t "$duration" -i 1 -P 1 -l 128K -f b --full-duplex >"$report" 2>&1
+iperf -c "$server_ip" -p 5001 -t "$duration" -i 1 -P 1 -l 128K -f b --full-duplex >"$report" 2>&1
 status=$?
 cat "$report"
 [ "$status" -eq 0 ] || fail
