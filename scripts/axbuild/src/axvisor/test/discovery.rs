@@ -77,14 +77,49 @@ pub(crate) fn discover_board_test_groups(
     selected_case: Option<&str>,
     board: Option<&str>,
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
-    let test_suite_dir = test_suite_dir(workspace_root, group)?;
-    let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
+    let roots = board_test_group_roots(workspace_root, group)?;
+    let mut groups = Vec::new();
+    for root in &roots {
+        groups.extend(collect_board_test_groups(workspace_root, root)?);
+    }
+    let searched = roots
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     board_test::filter_board_test_groups(groups, selected_case, board, "axvisor", || {
-        format!(
-            "no Axvisor board test groups found under {}",
-            test_suite_dir.display()
-        )
+        format!("no Axvisor board test groups found under {searched}")
     })
+}
+
+/// Suite roots that hold AxVisor board cases. Besides the regular
+/// `test-suit/axvisor/<group>` tree, real board performance cases live under the
+/// `apps/benchmark/axvisor/<group>` tree, so both roots are discovered together
+/// and remain selectable through the same `--board`/`--test-case` filters.
+fn board_test_group_roots(workspace_root: &Path, group: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    let test_suit_dir = test_suite::group_dir(workspace_root, AXVISOR_TEST_SUITE_OS, group);
+    if test_suit_dir.is_dir() {
+        roots.push(test_suit_dir);
+    }
+    let benchmark_suite_dir = benchmark_suite_root(workspace_root).join(group);
+    if benchmark_suite_dir.is_dir() {
+        roots.push(benchmark_suite_dir);
+    }
+    if roots.is_empty() {
+        bail!(
+            "unsupported Axvisor test group `{group}`. Supported groups are: {}",
+            test_suite::supported_group_names(workspace_root, AXVISOR_TEST_SUITE_OS)?
+        );
+    }
+    Ok(roots)
+}
+
+fn benchmark_suite_root(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join("apps")
+        .join("benchmark")
+        .join("axvisor")
 }
 
 fn collect_board_test_groups(

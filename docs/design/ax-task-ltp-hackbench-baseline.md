@@ -11,7 +11,7 @@ performance claims.
 ## Measurement contract
 
 - Workload: LTP 20260529 `hackbench`, launched through
-  `apps/starry/qemu/ltp-hackbench`.
+  `apps/benchmark/starry/qemu/ltp-hackbench`.
 - Arguments: one group, 1,000 loops, and five measured rounds for both process
   and thread modes.
 - CPU sets: CPU 0 for the one-CPU case and CPUs 0-3 for the four-CPU case.
@@ -29,7 +29,7 @@ The StarryOS command is:
 ```sh
 set -o pipefail
 cargo xtask starry app qemu \
-  -t qemu/ltp-hackbench \
+  -t benchmark/qemu/ltp-hackbench \
   --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml \
   2>&1 | tee target/ltp-hackbench/current-performance.log
