@@ -82,6 +82,7 @@ impl Command {
     pub(crate) const GET_CAPSET_INFO: Command = Command(0x108);
     pub(crate) const GET_CAPSET: Command = Command(0x109);
     pub(crate) const RESOURCE_CREATE_BLOB: Command = Command(0x10c);
+    pub(crate) const SET_SCANOUT_BLOB: Command = Command(0x10d);
 
     // 3D commands (VirtIO GPU spec section 5.7.5, table 5.7.5.2).
     pub(crate) const CTX_CREATE: Command = Command(0x0200);
@@ -163,14 +164,21 @@ impl CtrlHeader {
     }
 }
 
-/// `VIRTIO_GPU_RESP_OK_DISPLAY_INFO`.
+/// One scanout in `VIRTIO_GPU_RESP_OK_DISPLAY_INFO`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, KnownLayout)]
+pub(crate) struct DisplayOne {
+    pub(crate) rect: Rect,
+    pub(crate) enabled: u32,
+    pub(crate) flags: u32,
+}
+
+/// `VIRTIO_GPU_RESP_OK_DISPLAY_INFO` contains all sixteen scanout entries.
 #[repr(C)]
 #[derive(Debug, FromBytes, Immutable, KnownLayout)]
 pub(crate) struct RespDisplayInfo {
     pub(crate) header: CtrlHeader,
-    pub(crate) rect: Rect,
-    pub(crate) enabled: u32,
-    pub(crate) flags: u32,
+    pub(crate) pmodes: [DisplayOne; 16],
 }
 
 /// `VIRTIO_GPU_CMD_RESOURCE_CREATE_2D`.
@@ -192,16 +200,14 @@ pub(crate) enum Format {
     B8G8R8A8Unorm = 1,
 }
 
-/// `VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING` with a single memory entry.
+/// `VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING` header; entries follow in the
+/// control virtqueue request payload.
 #[repr(C)]
 #[derive(Debug, Immutable, IntoBytes, KnownLayout)]
 pub(crate) struct ResourceAttachBacking {
     pub(crate) header: CtrlHeader,
     pub(crate) resource_id: u32,
     pub(crate) nr_entries: u32,
-    pub(crate) addr: u64,
-    pub(crate) length: u32,
-    pub(crate) _padding: u32,
 }
 
 /// `VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING`.
@@ -230,6 +236,22 @@ pub(crate) struct SetScanout {
     pub(crate) rect: Rect,
     pub(crate) scanout_id: u32,
     pub(crate) resource_id: u32,
+}
+
+/// `VIRTIO_GPU_CMD_SET_SCANOUT_BLOB`.
+#[repr(C)]
+#[derive(Debug, Immutable, IntoBytes, KnownLayout)]
+pub(crate) struct SetScanoutBlob {
+    pub(crate) header: CtrlHeader,
+    pub(crate) rect: Rect,
+    pub(crate) scanout_id: u32,
+    pub(crate) resource_id: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) format: u32,
+    pub(crate) _padding: u32,
+    pub(crate) strides: [u32; 4],
+    pub(crate) offsets: [u32; 4],
 }
 
 /// `VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D`.

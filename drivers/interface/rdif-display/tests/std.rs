@@ -1,13 +1,13 @@
 use rdif_display::{DisplayError, io};
 
 #[test]
-fn rdif_display_errors_map_to_io_kinds() {
+fn display_errors_map_to_io_kinds() {
     assert!(matches!(
-        io::ErrorKind::from(DisplayError::NotSupported),
+        io::ErrorKind::from(DisplayError::Unsupported),
         io::ErrorKind::Unsupported
     ));
     assert!(matches!(
-        io::ErrorKind::from(DisplayError::InvalidFramebuffer),
+        io::ErrorKind::from(DisplayError::InvalidState),
         io::ErrorKind::InvalidData
     ));
     assert!(matches!(
@@ -15,7 +15,7 @@ fn rdif_display_errors_map_to_io_kinds() {
         io::ErrorKind::NotAvailable
     ));
     assert!(matches!(
-        io::ErrorKind::from(DisplayError::Other("display backend".into())),
+        io::ErrorKind::from(DisplayError::Io),
         io::ErrorKind::Other(_)
     ));
 }

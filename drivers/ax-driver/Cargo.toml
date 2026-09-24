@@ -18,7 +18,8 @@ pci = ["dep:ax-sync", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
 
 block = ["dep:ax-sync", "dep:rdif-block"]
 net = ["dep:ax-sync", "dep:rd-net"]
-display = ["dep:rdif-display"]
+display = ["dep:rdif-display", "dep:rdif-gpu"]
+gpu = ["display"]
 input = ["dep:rdif-input"]
 vsock = ["dep:rdif-vsock"]
 rtc = []
@@ -27,7 +28,7 @@ pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-sync"]
-virtio-gpu = ["display", "virtio", "pci", "dep:virtio-gpu"]
+virtio-gpu = ["gpu", "virtio", "pci", "dep:virtio-gpu", "virtio-gpu/rdif", "dep:ax-sync", "dep:zerocopy"]
 virtio-input = ["input", "virtio", "pci"]
 virtio-socket = ["vsock", "virtio", "pci", "dep:bitflags", "dep:zerocopy"]
 
@@ -176,6 +177,7 @@ rd-net = { workspace = true, optional = true }
 rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
+rdif-gpu = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true

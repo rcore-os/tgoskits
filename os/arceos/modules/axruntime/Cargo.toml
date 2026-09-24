@@ -13,6 +13,7 @@ default = []
 ext-ld = []
 std-compat = []
 host-test = [
+  "ax-gpu?/host-test",
   "ax-hal/host-test",
   "ax-ipi?/host-test",
   "ax-sync/host-test",
@@ -41,7 +42,7 @@ stack-protector = []
 # Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-hal/tls"]
 
-display = ["paging", "dep:ax-display", "ax-driver/display"]
+display = ["paging", "dep:ax-gpu", "ax-driver/gpu"]
 fs = [
   "paging",
   "dep:ax-fs-ng",
@@ -66,7 +67,7 @@ ax-alloc = {workspace = true}
 ax-cpu.workspace = true
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
-ax-display = {workspace = true, optional = true}
+ax-gpu = {workspace = true, optional = true}
 ax-driver = {workspace = true, features = ["serial"]}
 ax-fs-ng = {workspace = true, optional = true}
 axfs-ng-vfs = {workspace = true, optional = true}

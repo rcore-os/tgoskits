@@ -1,4 +1,5 @@
 features = [
+  "ax-runtime/display",
   "ax-runtime/rtc",
   "ax-driver/serial",
   "ax-driver/nvme",

@@ -4,15 +4,11 @@ version = "0.7.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Shiping Yuan <robert_yuan@pku.edu.com>"]
-description = "ArceOS graphics module"
+description = "ArceOS screen output access"
 license.workspace = true
 
 [features]
-host-test = ["ax-task/host-test"]
+host-test = ["ax-gpu/host-test"]
 
 [dependencies]
-ax-task.workspace = true
-ax-lazyinit.workspace = true
-log.workspace = true
-rdif-display.workspace = true
-irq-framework.workspace = true
+ax-gpu.workspace = true

@@ -14,15 +14,15 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::{
     BLOB_FLAG_USE_CROSS_DEVICE, BLOB_FLAG_USE_MASK, BLOB_MEM_GUEST, BLOB_MEM_HOST3D,
-    BLOB_MEM_HOST3D_GUEST, CapsetInfo, Error, IrqEvent, Rect, ResourceCreate3d, ResourceCreateBlob,
-    Transfer3d,
+    BLOB_MEM_HOST3D_GUEST, BlobMemory, CapsetInfo, Error, IrqEvent, OutputInfo, Rect,
+    ResourceCreate3d, ResourceCreateBlob, Transfer3d,
     dma::Dma,
     wire::{
         CmdCtxCreate, CmdCtxResource, CmdGetCapset, CmdGetCapsetInfo, CmdResourceCreate3D,
         CmdResourceCreateBlob, CmdSubmit3D, CmdTransferHost3D, Command, Config, CtrlHeader,
         Features, Format, MemEntry, ResourceAttachBacking, ResourceCreate2D, ResourceDetachBacking,
         ResourceFlush, ResourceUnref, RespCapsetInfo, RespDisplayInfo, SUPPORTED_FEATURES,
-        SetScanout, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
+        SetScanout, SetScanoutBlob, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
     },
 };
 
@@ -80,6 +80,9 @@ pub struct VirtIoGpu<H: Hal, T: Transport> {
     has_resource_blob: bool,
     /// Whether `VIRTIO_GPU_F_CONTEXT_INIT` was negotiated.
     has_context_init: bool,
+    /// Device-advertised scanouts, capped to the protocol's sixteen entries.
+    num_scanouts: u32,
+    reset_done: bool,
 }
 
 impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
@@ -123,6 +126,42 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             has_virgl,
             has_resource_blob,
             has_context_init,
+            num_scanouts: num_scanouts.min(16),
+            reset_done: false,
+        })
+    }
+
+    /// Number of output slots exposed by this device.
+    pub fn output_count(&self) -> u32 {
+        self.num_scanouts
+    }
+
+    /// Stops all host DMA before an adapter releases backing after an
+    /// ambiguous transport failure. The device must not be used again.
+    pub fn reset(&mut self) {
+        if self.reset_done {
+            return;
+        }
+        self.transport.set_status(DeviceStatus::empty());
+        // VirtIO requires reading status 0 before the driver may release
+        // queue memory or any backing the device could still access.
+        while !self.transport.get_status().is_empty() {
+            core::hint::spin_loop();
+        }
+        self.transport.queue_unset(CONTROL_QUEUE);
+        self.reset_done = true;
+    }
+
+    /// Reads the current connection and preferred rectangle for an output.
+    pub fn output_info(&mut self, index: u32) -> Result<OutputInfo, Error> {
+        if index >= self.num_scanouts {
+            return Err(Error::InvalidParam);
+        }
+        let info = self.display_info()?;
+        let mode = info.pmodes[index as usize];
+        Ok(OutputInfo {
+            rect: mode.rect,
+            enabled: mode.enabled != 0,
         })
     }
 
@@ -172,7 +211,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
 
     /// Returns the device's current display resolution in pixels.
     pub fn resolution(&mut self) -> Result<(u32, u32), Error> {
-        let info = self.display_info()?;
+        let info = self.output_info(0)?;
         Ok((info.rect.width, info.rect.height))
     }
 
@@ -181,7 +220,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// See [`VirtIoGpu::change_resolution`] for the validity of the returned
     /// slice.
     pub fn setup_framebuffer(&mut self) -> Result<&mut [u8], Error> {
-        let info = self.display_info()?;
+        let info = self.output_info(0)?;
         self.change_resolution(info.rect.width, info.rect.height)
     }
 
@@ -338,6 +377,34 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         response.check_type(Command::OK_NODATA)
     }
 
+    /// Binds a blob resource to a scanout with one packed pixel plane.
+    pub fn set_scanout_blob(
+        &mut self,
+        rect: Rect,
+        scanout_id: u32,
+        resource_id: u32,
+        format: u32,
+        stride: u32,
+        offset: u32,
+    ) -> Result<(), Error> {
+        if !self.has_resource_blob {
+            return Err(Error::Unsupported);
+        }
+        let response: CtrlHeader = self.request(SetScanoutBlob {
+            header: CtrlHeader::with_type(Command::SET_SCANOUT_BLOB),
+            rect,
+            scanout_id,
+            resource_id,
+            width: rect.width,
+            height: rect.height,
+            format,
+            _padding: 0,
+            strides: [stride, 0, 0, 0],
+            offsets: [offset, 0, 0, 0],
+        })?;
+        response.check_type(Command::OK_NODATA)
+    }
+
     /// Refreshes `rect` of `resource_id` on the display.
     pub fn resource_flush(&mut self, rect: Rect, resource_id: u32) -> Result<(), Error> {
         let response: CtrlHeader = self.request(ResourceFlush {
@@ -392,22 +459,59 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         paddr: u64,
         length: u32,
     ) -> Result<(), Error> {
-        if length == 0 {
+        // SAFETY: the caller promises this one range remains valid until
+        // detach or unref, exactly as required by the multi-entry method.
+        unsafe {
+            self.resource_attach_backing_segments(resource_id, &[BlobMemory { paddr, length }])
+        }
+    }
+
+    /// Attaches device-visible ranges to a resource in their supplied order.
+    ///
+    /// # Safety
+    ///
+    /// Every range must remain mapped, allocated and free of conflicting CPU
+    /// access until the device confirms detach or unref. The caller must own
+    /// all ranges for the entire attachment lifetime.
+    pub unsafe fn resource_attach_backing_segments(
+        &mut self,
+        resource_id: u32,
+        segments: &[BlobMemory],
+    ) -> Result<(), Error> {
+        if segments.is_empty() {
             return Err(Error::InvalidParam);
         }
-        // The device walks `paddr..paddr + length`; a wrapped extent would hand
-        // it a range that has nothing to do with the caller's allocation.
-        paddr
-            .checked_add(u64::from(length))
+        let nr_entries = u32::try_from(segments.len()).map_err(|_| Error::Overflow)?;
+        let capacity = segments
+            .len()
+            .checked_mul(size_of::<MemEntry>())
             .ok_or(Error::Overflow)?;
-        let response: CtrlHeader = self.request(ResourceAttachBacking {
-            header: CtrlHeader::with_type(Command::RESOURCE_ATTACH_BACKING),
-            resource_id,
-            nr_entries: 1,
-            addr: paddr,
-            length,
-            _padding: 0,
-        })?;
+        let mut data = Vec::with_capacity(capacity);
+        for segment in segments {
+            if segment.length == 0 {
+                return Err(Error::InvalidParam);
+            }
+            segment
+                .paddr
+                .checked_add(u64::from(segment.length))
+                .ok_or(Error::Overflow)?;
+            data.extend_from_slice(
+                MemEntry {
+                    addr: segment.paddr,
+                    length: segment.length,
+                    padding: 0,
+                }
+                .as_bytes(),
+            );
+        }
+        let response: CtrlHeader = self.request_with_data(
+            ResourceAttachBacking {
+                header: CtrlHeader::with_type(Command::RESOURCE_ATTACH_BACKING),
+                resource_id,
+                nr_entries,
+            },
+            &data,
+        )?;
         response.check_type(Command::OK_NODATA)
     }
 
@@ -415,7 +519,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     ///
     /// After this returns, the device no longer reads or writes the ranges that
     /// were attached.
-    fn resource_detach_backing(&mut self, resource_id: u32) -> Result<(), Error> {
+    pub fn resource_detach_backing(&mut self, resource_id: u32) -> Result<(), Error> {
         let response: CtrlHeader = self.request(ResourceDetachBacking {
             header: CtrlHeader::with_type(Command::RESOURCE_DETACH_BACKING),
             resource_id,
@@ -881,19 +985,9 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
 
 impl<H: Hal, T: Transport> Drop for VirtIoGpu<H, T> {
     fn drop(&mut self) {
-        // Reset the device before any field is released. Writing an empty
-        // status tells the device to drop its driver state, which stops the
-        // scanout and tears down the host-side resource backing, so the device
-        // stops issuing DMA. Without this the device could keep scanning out of
-        // (or writing into) the framebuffer DMA that `frame_buffer_dma` frees
-        // when the fields below are dropped, a use-after-free from the device's
-        // point of view. A status write is a single register or PCI capability
-        // write, so it cannot block on the control queue; no control command is
-        // sent here.
-        self.transport.set_status(DeviceStatus::empty());
-        // Clear the queue registration so the device cannot keep reading the
-        // descriptor rings after the transport and its DMA are released.
-        self.transport.queue_unset(CONTROL_QUEUE);
+        // Confirm that the device stopped DMA before dropping queue memory
+        // and any backing retained by the RDIF owner.
+        self.reset();
     }
 }
 

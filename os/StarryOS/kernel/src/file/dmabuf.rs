@@ -8,7 +8,9 @@
 //! fd is closed first; it is freed only when both the fd and every mmap drop.
 
 use alloc::{borrow::Cow, sync::Arc};
-use core::{any::Any, ffi::c_int};
+use core::any::Any;
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
+use core::ffi::c_int;
 
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange};
 use axpoll::{IoEvents, Pollable};
@@ -135,6 +137,7 @@ impl ContiguousDmaBuf for DmaBufFile {
 ///
 /// This is the single seam every accelerator node uses to turn an fd into a
 /// physical address, so JPU / RGA / NPU all resolve shared buffers identically.
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 pub fn resolve_contiguous_dmabuf(fd: c_int) -> Option<Arc<DmaBufFile>> {
     let file = super::get_file_like(fd).ok()?;
     file.downcast_arc::<DmaBufFile>().ok()
