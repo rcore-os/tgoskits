@@ -9,4 +9,5 @@ mod types;
 pub use error::*;
 pub use interface::*;
 pub use rdif_base::{DriverGeneric, KError, io};
+pub use rdif_gpu::{Completion, CompletionStatus, PixelFormat};
 pub use types::*;

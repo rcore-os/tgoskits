@@ -9,36 +9,38 @@ pub(crate) fn probe_all_devices() {
 }
 
 #[cfg(feature = "display")]
-pub(crate) fn init_display() {
+pub(crate) fn init_gpu() {
     if !rdrive::is_initialized() {
-        ax_display::init_display(core::iter::empty::<ax_display::ErasedDisplayDevice>());
+        ax_gpu::init_gpu(core::iter::empty::<ax_gpu::GpuRegistration>());
         return;
     }
-    let devices = ax_driver::display::take_display_devices()
-        .unwrap_or_else(|err| panic!("failed to open display devices: {err:?}"))
+    let devices = ax_driver::display::take_gpu_devices()
+        .unwrap_or_else(|err| panic!("failed to open GPU devices: {err:?}"))
         .into_iter()
-        .map(adapt_display_device);
-    ax_display::init_display(devices);
+        .map(adapt_gpu_device);
+    ax_gpu::init_gpu(devices);
 }
 
 #[cfg(feature = "display")]
-fn adapt_display_device(
-    taken: ax_driver::display::TakenDisplayDevice,
-) -> ax_display::ErasedDisplayDevice {
-    let name = alloc::string::String::from(taken.device.name());
-    let irq = resolve_display_irq(&name, taken.irq)
-        .unwrap_or_else(|err| panic!("failed to resolve display IRQ for {name}: {err:?}"));
-    let display = ax_display::rdif::RdifDisplayDevice::new_with_irq(taken.device, irq)
-        .unwrap_or_else(|err| panic!("failed to adapt display device: {err:?}"));
-    ax_display::ErasedDisplayDevice::new(display)
-}
-
-#[cfg(feature = "display")]
-fn resolve_display_irq(
-    _name: &str,
-    irq: Option<ax_driver::BindingIrq>,
-) -> Result<Option<irq_framework::IrqId>, irq_framework::IrqError> {
-    irq.map(crate::irq::resolve_binding_irq).transpose()
+fn adapt_gpu_device(taken: ax_driver::display::TakenGpuDevice) -> ax_gpu::GpuRegistration {
+    let device = match taken.device {
+        ax_driver::display::RegisteredGpuDevice::GpuOnly(device) => {
+            ax_gpu::ErasedGpuDevice::GpuOnly(device)
+        }
+        ax_driver::display::RegisteredGpuDevice::WithDisplay(device) => {
+            ax_gpu::ErasedGpuDevice::WithDisplay(device)
+        }
+    };
+    let irq = taken
+        .irq
+        .map(crate::irq::resolve_binding_irq)
+        .transpose()
+        .unwrap_or_else(|err| panic!("failed to resolve GPU IRQ: {err:?}"));
+    ax_gpu::GpuRegistration {
+        device,
+        dma: taken.dma,
+        irq,
+    }
 }
 
 #[cfg(feature = "input")]

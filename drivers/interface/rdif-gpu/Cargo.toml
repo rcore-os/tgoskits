@@ -1,17 +1,15 @@
 [package]
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories = ["embedded", "no-std"]
-description = "Driver Interface display definition."
+description = "Operating-system-independent GPU device interface."
 edition.workspace = true
-keywords = ["os", "driver"]
+keywords = ["os", "driver", "gpu"]
 license = "MIT"
-name = "rdif-display"
+name = "rdif-gpu"
 repository.workspace = true
-version = "0.5.0"
+version = "0.1.0"
 
 [dependencies]
+dma-api = { workspace = true }
 rdif-base = { workspace = true }
-rdif-gpu = { workspace = true }
 thiserror = { version = "2", default-features = false }
-
-[features]
