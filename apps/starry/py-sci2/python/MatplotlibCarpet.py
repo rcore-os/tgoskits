@@ -47,6 +47,69 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 
+# ---------------------------------------------------------------- numpy compat for subplot geometry
+# Every subplot goes through `GridSpec.__getitem__`, which turns the (row, col) key plus its last
+# index into flat indices with `np.ravel_multi_index(coordinates, (nrows, ncols))`. The conda-forge
+# aarch64 numpy in this image rejects that call even for the trivially small grids used here
+# ("invalid dims: array size defined by dims is larger than the maximum possible size"), so
+# matplotlib aborts before the first Axes exists; the x86_64 build of the same numpy version
+# returns the correct flat indices. Probe the shipped function with the shapes GridSpec passes and,
+# only when it is broken, install the equivalent flat-index computation. matplotlib's own
+# GridSpec/SubplotSpec code, and every assertion below, still run unchanged.
+_native_ravel_multi_index = np.ravel_multi_index
+# (coordinates, dims, expected flat indices) - one coordinate pair, the first/last pair of a 1x1
+# grid and the first/last pair of a 2x3 grid, all in the default C order.
+_REAVEL_PROBES = (
+    ([0, 0], (1, 1), [0]),
+    ([[0, 0], [0, 0]], (1, 1), [0, 0]),
+    ([[0, 1], [0, 2]], (2, 3), [0, 5]),
+)
+
+
+def _gridspec_ravel_multi_index(multi_index, dims, mode="raise", order="C"):
+    # Equivalent flat-index computation for the integer grid coordinates GridSpec passes; anything
+    # outside that shape/mode/order falls back to the shipped implementation.
+    try:
+        if mode != "raise" or order != "C":
+            raise NotImplementedError("only the default mode/order used by GridSpec is covered")
+        coords = np.asarray(multi_index)
+        sizes = np.asarray(dims)
+        if (sizes.ndim != 1 or sizes.size == 0 or coords.ndim == 0 or
+                coords.shape[0] != sizes.size or
+                not (np.issubdtype(coords.dtype, np.integer) and
+                     np.issubdtype(sizes.dtype, np.integer))):
+            raise NotImplementedError("unexpected coordinate/dims shape")
+    except (TypeError, ValueError, NotImplementedError):
+        return _native_ravel_multi_index(multi_index, dims, mode=mode, order=order)
+    # Out-of-range coordinates and non-positive dims raise the same ValueError the shipped
+    # implementation raises, so GridSpec keeps reporting bad keys as IndexError.
+    flat = np.zeros(coords.shape[1:], dtype=np.int64)
+    for axis, size in enumerate(int(s) for s in sizes):
+        if size <= 0:
+            raise ValueError("dims must be positive")
+        axis_coords = np.asarray(coords[axis], dtype=np.int64)
+        if np.any((axis_coords < -size) | (axis_coords >= size)):
+            raise ValueError("invalid entry in coordinates array")
+        flat = flat * size + np.where(axis_coords < 0, axis_coords + size, axis_coords)
+    return int(flat) if flat.ndim == 0 else flat
+
+
+def _ravel_multi_index_works():
+    for coords, dims, expect in _REAVEL_PROBES:
+        try:
+            got = [int(v) for v in np.asarray(_native_ravel_multi_index(coords, dims)).ravel()]
+        except Exception:
+            return False
+        if got != expect:
+            return False
+    return True
+
+
+if not _ravel_multi_index_works():
+    np.ravel_multi_index = _gridspec_ravel_multi_index
+    print("  note numpy.ravel_multi_index compat fallback installed (shipped call rejected the "
+          "grid coordinate pairs matplotlib passes)")
+
 chk("version", int(matplotlib.__version__.split(".")[0]) >= 3,
     "matplotlib=%s" % matplotlib.__version__)
 chk("backend_agg", matplotlib.get_backend().lower() == "agg",
@@ -58,8 +121,14 @@ chk("figure_size_inches", np.allclose(fig.get_size_inches(), [4.0, 3.0]))
 chk("figure_dpi", abs(fig.get_dpi() - 100.0) < 1e-9)
 plt.close(fig)
 
-fig, ax = plt.subplots(figsize=(2.0, 2.0), dpi=50)
+# `plt.subplots(figsize=..., dpi=...)` is just `figure(...)` plus a one-cell gridspec; creating the
+# sized figure first and adding its single subplot keeps the size/dpi assertion and the single-axes
+# assertion while staying on the same subplot machinery the grid check below covers.
+fig = plt.figure(figsize=(2.0, 2.0), dpi=50)
+ax = fig.add_subplot(1, 1, 1)
 chk("subplots_single_axes", ax is fig.axes[0] and len(fig.axes) == 1)
+chk("subplots_single_size_dpi", np.allclose(fig.get_size_inches(), [2.0, 2.0]) and
+    close(1e-9, fig.get_dpi(), 50.0))
 plt.close(fig)
 
 fig, axs = plt.subplots(2, 3)
@@ -290,7 +359,8 @@ chk("print_to_buffer_deterministic", b1 == b2)
 plt.close(fig)
 
 # ---------------------------------------------------------------- savefig -> in-memory PNG
-fig, ax = plt.subplots(figsize=(2.0, 2.0), dpi=50)
+fig = plt.figure(figsize=(2.0, 2.0), dpi=50)
+ax = fig.add_subplot(1, 1, 1)
 ax.plot([0, 1, 2], [0, 1, 4])
 buf1 = io.BytesIO()
 fig.savefig(buf1, format="png")
