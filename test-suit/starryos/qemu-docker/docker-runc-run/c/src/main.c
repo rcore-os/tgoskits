@@ -469,13 +469,6 @@ static void drr_set_u32(int offset, uint32_t value)
     memcpy(drr_attr + offset, &value, sizeof(value));
 }
 
-static uint32_t drr_get_u32(int offset)
-{
-    uint32_t value;
-    memcpy(&value, drr_attr + offset, sizeof(value));
-    return value;
-}
-
 static void drr_set_u64(int offset, uint64_t value)
 {
     memcpy(drr_attr + offset, &value, sizeof(value));
