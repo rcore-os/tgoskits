@@ -310,11 +310,11 @@ static void check_pipe_fchown(void)
 }
 
 /* Asserts the cgroup-device BPF capability is refused (no faked success).
- * The pids-limited stage's OCI bundle lists only an allow-all `rwm` device
- * rule, so runc's `canSkipEBPFError()` tolerates the unsupported eBPF device
- * manager and the cgroups/pids stage can still run; keep the gate open so the
- * pids.max EAGAIN coverage is retained. Writes the stage-B gate file consumed
- * by the smoke script. */
+ * Non-rootless runc cannot tolerate the refusal: its cgroup v2 device manager
+ * fails at `bpf_prog_query(BPF_CGROUP_DEVICE)` and aborts container init, so
+ * the pids/cgroups stage cannot run without a real device controller. Close
+ * the gate; the smoke script then skips stage B. Writes the stage-B gate file
+ * consumed by the smoke script. */
 static void check_stageb_gate(void)
 {
     section("stageb-gate");
@@ -329,6 +329,8 @@ static void check_stageb_gate(void)
 
     if (rc == -1 && (saved_errno == EOPNOTSUPP || saved_errno == EINVAL)) {
         pass("bpf cgroup-device capability refused (no fake success)");
+        printf("  OBSERVE: stage B disabled (device controller unsupported, "
+               "errno=%d)\n", saved_errno);
     } else {
         printf("  FAIL: expected an explicit cgroup-device refusal, rc=%ld "
                "errno=%d\n",
@@ -341,7 +343,8 @@ static void check_stageb_gate(void)
         fail("write stage-B gate file");
         return;
     }
-    fputs("1", f);
+    /* Any value other than "1" disables stage B in the smoke script. */
+    fputs("0", f);
     fclose(f);
 }
 
