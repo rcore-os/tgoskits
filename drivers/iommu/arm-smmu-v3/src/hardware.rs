@@ -18,6 +18,8 @@ const IOVA_BITS: u32 = 48;
 const CMDQ_BITS: u32 = 8;
 const EVTQ_BITS: u32 = 7;
 const STREAM_SPLIT: u32 = 8;
+// PhysicalRegion addresses u64 words; eight words occupy one 64-byte STE.
+const STE_WORDS: usize = 8;
 const SPIN_LIMIT: usize = 1_000_000;
 
 const IDR0: usize = 0x0;
@@ -159,7 +161,7 @@ impl StreamTable {
         physical_limit: u64,
     ) -> Result<(&PhysicalRegion, usize), IommuError> {
         match self {
-            Self::Linear(region) => Ok((region, sid as usize * 8)),
+            Self::Linear(region) => Ok((region, sid as usize * STE_WORDS)),
             Self::TwoLevel { l1, l2 } => {
                 let l1_index = sid >> STREAM_SPLIT;
                 if let alloc::collections::btree_map::Entry::Vacant(entry) = l2.entry(l1_index) {
@@ -170,7 +172,7 @@ impl StreamTable {
                         physical_limit,
                     )?;
                     for index in 0..1 << STREAM_SPLIT {
-                        region.write_u64(index * 8, 1); // Valid abort STE.
+                        region.write_u64(index * STE_WORDS, 1); // Valid abort STE.
                     }
                     let physical = region.physical();
                     entry.insert(region);
@@ -179,7 +181,10 @@ impl StreamTable {
                     fence(Ordering::SeqCst);
                 }
                 let region = l2.get(&l1_index).ok_or(IommuError::OutOfMemory)?;
-                Ok((region, (sid & ((1 << STREAM_SPLIT) - 1)) as usize * 8))
+                Ok((
+                    region,
+                    (sid & ((1 << STREAM_SPLIT) - 1)) as usize * STE_WORDS,
+                ))
             }
         }
     }
@@ -326,7 +331,7 @@ impl Smmu {
             let entries = 1usize << sid_bits;
             let region = allocate(memory, entries * 64, PAGE_SIZE, physical_limit)?;
             for index in 0..entries {
-                region.write_u64(index * 8, 1); // Valid abort STE.
+                region.write_u64(index * STE_WORDS, 1); // Valid abort STE.
             }
             StreamTable::Linear(region)
         };
@@ -590,14 +595,14 @@ impl Hardware {
             },
         );
         let result = (|| {
-            let (ste_region, ste_index) =
+            let (ste_region, ste_word_index) =
                 self.streams
                     .ensure_ste(stream.0, self.memory, physical_limit)?;
             let cd_physical = self.domains[&stream.0].cd.physical();
             // Publish CD before STE, and publish the STE's valid/config word last.
             fence(Ordering::SeqCst);
-            ste_region.write_u64(ste_index + 1, 2 | (1 << 2) | (1 << 4) | (3 << 6));
-            ste_region.write_u64(ste_index, 1 | (5 << 1) | cd_physical);
+            ste_region.write_u64(ste_word_index + 1, 2 | (1 << 2) | (1 << 4) | (3 << 6));
+            ste_region.write_u64(ste_word_index, 1 | (5 << 1) | cd_physical);
             fence(Ordering::SeqCst);
             self.command_and_sync([3 | (u64::from(stream.0) << 32), 1])?;
             self.command_and_sync([5 | (u64::from(stream.0) << 32), 1])?;

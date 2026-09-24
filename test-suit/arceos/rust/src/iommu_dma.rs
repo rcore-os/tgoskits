@@ -5,6 +5,7 @@ use ax_hal::mem::{VirtAddr, virt_to_phys};
 use dma_api::{DmaConstraints, DmaDomainId, DmaError};
 use mmio_api::{MmioAddr, MmioRaw};
 use rdif_iommu::{Iommu, IommuError, StreamId};
+use rdrive::probe::pci::PciAddress;
 
 use crate::TestResult;
 
@@ -35,9 +36,7 @@ pub fn run() -> TestResult {
 fn verify_iova_limits_and_rebinding() -> TestResult {
     let (address, _) = ax_driver::pci::iommu_testdev_endpoint()
         .ok_or("QEMU iommu-testdev was not bound to PCI")?;
-    let requester_id = ((address.bus() as u32) << 8)
-        | ((address.device() as u32) << 3)
-        | address.function() as u32;
+    let requester_id = requester_id(address);
     let controller = rdrive::get_one::<Iommu>().ok_or("SMMU controller was not registered")?;
     let duplicate = controller
         .lock()
@@ -116,6 +115,15 @@ fn verify_pci_bindings() -> TestResult {
     }
     let testdev_domain = testdev_domain.ok_or("iommu-testdev has no translated domain")?;
     let (address, nvme_domain) = nvme_address.ok_or("NVMe endpoint has no translated domain")?;
+    let nvme_requester = requester_id(address);
+    let testdev_requester = requester_id(testdev_address);
+    if nvme_requester == testdev_requester
+        || nvme_requester & 0xff == 0
+        || testdev_requester & 0xff == 0
+        || nvme_requester >> 8 != testdev_requester >> 8
+    {
+        return Err("QEMU fixture did not exercise distinct nonzero low-byte requester IDs");
+    }
     if nvme_domain == testdev_domain {
         return Err("NVMe and iommu-testdev share one DMA domain");
     }
@@ -156,9 +164,7 @@ fn verify_nvme_io() -> TestResult {
 fn verify_iommu_testdev() -> TestResult {
     let (address, bar0) = ax_driver::pci::iommu_testdev_endpoint()
         .ok_or("QEMU iommu-testdev was not bound to PCI")?;
-    let requester_id = ((address.bus() as u32) << 8)
-        | ((address.device() as u32) << 3)
-        | address.function() as u32;
+    let requester_id = requester_id(address);
     let dma = ax_driver::pci::bound_dma(address, u64::MAX)
         .map_err(|_| "iommu-testdev has no bound DMA domain")?;
     if !matches!(dma.info().domain(), DmaDomainId::Translated(_)) {
@@ -241,6 +247,10 @@ fn verify_fault_records(faults: &[PciIommuFault], requester_id: u32, iova: u64) 
         return Err("SMMU EVTQ reported a different requester, address, or fault type");
     }
     Ok(())
+}
+
+fn requester_id(address: PciAddress) -> u32 {
+    ((address.bus() as u32) << 8) | ((address.device() as u32) << 3) | address.function() as u32
 }
 
 fn trigger_dma(mmio: &MmioRaw, iova: u64, physical: u64) -> u32 {
