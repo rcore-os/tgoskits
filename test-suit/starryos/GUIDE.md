@@ -73,7 +73,7 @@ test-suit/starryos/
       drm-test-drm-perbuf-dumb/
         CMakeLists.txt
         src/
-      evdev-test-evdev-event-primary/
+      evdev-test-evdev-minor/
         CMakeLists.txt
         src/
       usb-audio-iso/

@@ -30,5 +30,11 @@ int main(void)
     CHECK(minor(st.st_rdev) == 64,
           "/dev/input/event0 次设备号应为 64 (EVDEV_MINOR_BASE)");
 
+    int fd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
+    CHECK(fd >= 0, "/dev/input/event0 可用 O_RDONLY|O_NONBLOCK 打开");
+    if (fd >= 0) {
+        close(fd);
+    }
+
     TEST_DONE();
 }

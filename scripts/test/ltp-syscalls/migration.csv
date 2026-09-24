@@ -177,7 +177,7 @@ test-suit/starryos/qemu/system/cgroup-pids,cgroup-pids,待审计,,,,,
 test-suit/starryos/qemu/system/drm-test-drm-atomic,test-drm-atomic,待审计,,,,,
 test-suit/starryos/qemu/system/drm-test-drm-modeset,test-drm-modeset,待审计,,,,,
 test-suit/starryos/qemu/system/drm-test-drm-version,test-drm-version,待审计,,,,,
-test-suit/starryos/qemu/system/evdev-test-evdev-minor,test-evdev-minor,待审计,,,,,
+test-suit/starryos/qemu/system/evdev-test-evdev-minor,test-evdev-minor,保留并合并重复断言,,,保留 event0 字符设备类型和 Linux 13:64 设备号并吸收 O_RDONLY|O_NONBLOCK 打开断言,2026-09-24 AArch64 定向 QEMU 5项断言通过；逐程序和外层均为1/1,test(starry): consolidate low-value system probes
 test-suit/starryos/qemu/system/evdev-test-evdev-prop-bits,test-evdev-prop-bits,待审计,,,,,
 test-suit/starryos/qemu/system/getdents64-bounded-buffer,test-getdents64-bounded-buffer,待审计,,,,,
 test-suit/starryos/qemu/system/ltp-syscalls,待核实安装程序,待审计,,,,,
@@ -330,7 +330,7 @@ test-suit/starryos/qemu/system/syscall-test-socket-dataplane,test-socket-datapla
 test-suit/starryos/qemu/system/syscall-test-splice,test-splice,部分替代并清理,splice01,文件经pipe传输到文件且内容一致,显式off_in/off_out、fd偏移保持、pipe-to-pipe、EOF/len0、flags/fd/方向/同pipe/O_APPEND错误,2026-09-14；x86_64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-x86_64.log；aarch64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-aarch64.log；riscv64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-riscv64.log；loongarch64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-loongarch64.log,test(starry): migrate bugfix and syscall probes to LTP
 test-suit/starryos/qemu/system/syscall-test-splice-carpet,test-splice-carpet,部分替代并清理,splice01,文件与pipe传输且落盘文件内容一致,显式offset、pipe-to-pipe及EINVAL/ESPIPE/EBADF/非阻塞EAGAIN,2026-09-14；x86_64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-x86_64.log；aarch64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-aarch64.log；riscv64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-riscv64.log；loongarch64 exit=0 /tmp/starry-ltp-5fb8-evidence/splice01-loongarch64.log,test(starry): migrate bugfix and syscall probes to LTP
 test-suit/starryos/qemu/system/syscall-test-stat-family,test-stat-family,部分替代并清理,fstat02,fstat普通文件的大小/权限/硬链接数,stat/lstat/fstatat/statx/statfs/fstatfs其余接口、特殊文件与错误、动态大小及路径解析,2026-09-14；x86_64 exit=0 /tmp/starry-ltp-5fb8-evidence/fstat02-x86_64.log；aarch64 exit=0 /tmp/starry-ltp-5fb8-evidence/fstat02-aarch64.log；riscv64 exit=0 /tmp/starry-ltp-5fb8-evidence/fstat02-riscv64.log；loongarch64 exit=0 /tmp/starry-ltp-5fb8-evidence/fstat02-loongarch64.log,test(starry): migrate bugfix and syscall probes to LTP
-test-suit/starryos/qemu/system/syscall-test-sync,test-sync,LTP失败暂缓，保留原测试,sync01,文件写入后sync完成同步,raw返回值、读回内容及目录项仍存在；上游增加块设备写出计数,2026-09-14；x86_64 exit=1 /tmp/starry-ltp-5fb8-evidence/sync01-x86_64.log；tst_device.c:603: TBROK: opendir(/sys/block/) failed: ENOENT (2)；STARRY_SYSTEM_TEST_FAILED: /usr/bin/starry-test-suit/ltp-syscalls-sync01 status=2 elapsed_s=1.796；failed: system: starry qemu test failed for case `system`: Fail pattern matched '(?m)^STARRY_GROUPED_TEST_FAILED:': octl for loop device: 2150105621 [ 6.248399 1:8589934633 starry_kernel::pseudofs::dev::r#loop:411] unknown ioctl for loop device: 2147750532 [ 6.250213 1:8589934633 starry_kernel::pseudofs::dev::r#loop:411] unknown ioctl for loop device: 47...；aarch64=前序架构失败后未运行；riscv64=前序架构失败后未运行；loongarch64=前序架构失败后未运行,test(starry): migrate bugfix and syscall probes to LTP
+test-suit/starryos/qemu/system/syscall-test-sync,test-sync,低价值清理,sync01,,原程序只检查 raw sync 返回0以及同页缓存读回和目录项仍存在；这些结果在 sync 为空操作时仍会通过；sync01 能检查块设备写出但当前因缺少 /sys/block 暂未接入,2026-09-24 源码审计删除弱探针；未运行 LTP；sync 写盘正确性当前无直接系统回归,test(starry): remove low-value system probes
 test-suit/starryos/qemu/system/syscall-test-sync-file-range,test-sync-file-range,LTP失败暂缓，保留原测试,sync_file_range01,坏fd、pipe、非法flags错误,成功flags与EOF语义、目录、错误优先级及关闭fd,"2026-09-14；x86_64 exit=1 /tmp/starry-ltp-5fb8-evidence/sync_file_range01-x86_64.log；sync_file_range01.c:77: TFAIL: sync_file_range(4, 0, 1, 4) succeeded；STARRY_SYSTEM_TEST_FAILED: /usr/bin/starry-test-suit/ltp-syscalls-sync_file_range01 status=1 elapsed_s=0.888；failed: system: starry qemu test failed for case `system`: Fail pattern matched '(?m)^STARRY_GROUPED_TEST_FAILED:': eudofs::dev::r#loop:411] unknown ioctl for loop device: 2147750532 [ 4.430561 0:25769803815 starry_kernel::pseudofs::dev::r#loop:411] unknown ioctl for loop device: 2150105621 [ 4.432151 0:25769803815 starry_kernel::pseudofs::dev::r#loop:41...；aarch64=前序架构失败后未运行；riscv64=前序架构失败后未运行；loongarch64=前序架构失败后未运行",test(starry): migrate bugfix and syscall probes to LTP
 test-suit/starryos/qemu/system/syscall-test-syncfs,test-syncfs,LTP失败暂缓，保留原测试,syncfs01,普通文件fd执行syncfs成功,目录/pipe成功及坏fd、关闭fd错误；上游增加块设备写出检查,2026-09-14；x86_64 exit=1 /tmp/starry-ltp-5fb8-evidence/syncfs01-x86_64.log；tst_device.c:603: TBROK: opendir(/sys/block/) failed: ENOENT (2)；STARRY_SYSTEM_TEST_FAILED: /usr/bin/starry-test-suit/ltp-syscalls-syncfs01 status=2 elapsed_s=1.761；failed: system: starry qemu test failed for case `system`: Fail pattern matched '(?m)^STARRY_GROUPED_TEST_FAILED:': or loop device: 2150105621 [ 5.838722 1:8589934633 starry_kernel::pseudofs::dev::r#loop:411] unknown ioctl for loop device: 2147750532 [ 5.840881 1:8589934633 starry_kernel::pseudofs::dev::r#loop:411] unknown ioctl for loop device: 4730 [ 5...；aarch64=前序架构失败后未运行；riscv64=前序架构失败后未运行；loongarch64=前序架构失败后未运行,test(starry): migrate bugfix and syscall probes to LTP
 test-suit/starryos/qemu/system/syscall-test-tcp-info,test-tcp-info,无对应项保留,,,syscalls未找到TCP_INFO结构、短拷贝或UDP协议错误相关用例,2026-09-14固定LTP源码审计；未删除原测试；未新增运行覆盖；x86_64/aarch64/riscv64/loongarch64=无对应项，未运行迁移候选,test(starry): migrate bugfix and syscall probes to LTP
@@ -356,7 +356,7 @@ test-suit/starryos/qemu/system/syscall-test_ioctl_fionbio_int,test_ioctl_fionbio
 test-suit/starryos/qemu/system/syscallguard-final-fs-runtime,syscallguard-final-fs-runtime,待审计,,,,,
 test-suit/starryos/qemu/system/syscallguard-final-mount-runtime,syscallguard-final-mount-runtime,待审计,,,,,
 test-suit/starryos/qemu/system/syscallguard-final-wait-runtime,syscallguard-final-wait-runtime,待审计,,,,,
-test-suit/starryos/qemu/system/test-aarch64-boot-smoke,test-aarch64-boot-smoke,待审计,,,,,
+test-suit/starryos/qemu/system/test-aarch64-boot-smoke,test-aarch64-boot-smoke,重复测试清理,,,当前 qemu/system AArch64 profile 已以 GICv3 和四核启动并执行全部分组程序；本程序仅调用 uname、可选读取 procfs 并输出固定成功标记；没有独特中断或时钟判定,2026-09-24 源码与 qemu-aarch64.toml 审计；删除后由整组启动和用户程序执行提供更强存活证据,test(starry): remove low-value system probes
 test-suit/starryos/qemu/system/test-aarch64-cpu-feat,test-aarch64-cpu-feat,待审计,,,,,
 test-suit/starryos/qemu/system/test-aarch64-stack-size,test-aarch64-stack-size,待审计,,,,,
 test-suit/starryos/qemu/system/test-auxv,test-auxv,待审计,,,,,
@@ -378,7 +378,7 @@ test-suit/starryos/qemu/system/test-dup-fcntl,test-dup-fcntl,待审计,,,,,
 test-suit/starryos/qemu/system/test-dup2,test-dup2,待审计,,,,,
 test-suit/starryos/qemu/system/test-elf-load-alignment,test-elf-load-alignment,待审计,,,,,
 test-suit/starryos/qemu/system/test-elf-loader-shebang,test-elf-loader-shebang,待审计,,,,,
-test-suit/starryos/qemu/system/test-evdev-event-primary,test-evdev-event-primary,待审计,,,,,
+test-suit/starryos/qemu/system/test-evdev-event-primary,test-evdev-event-primary,合并后清理,,evdev-test-evdev-minor 承接 event0 存在、字符设备类型和 O_RDONLY|O_NONBLOCK 打开,原程序没有独立剩余断言,2026-09-24 断言并入 test-evdev-minor；AArch64 定向 QEMU 5项断言通过；逐程序和外层均为1/1,test(starry): consolidate low-value system probes
 test-suit/starryos/qemu/system/test-execve,test-execve,待审计,,,,,
 test-suit/starryos/qemu/system/test-ext4-inode-unique,test-ext4-inode-unique,待审计,,,,,
 test-suit/starryos/qemu/system/test-ext4-unlink-pagecache,test-ext4-unlink-pagecache,待审计,,,,,
@@ -443,8 +443,8 @@ test-suit/starryos/qemu/system/test-shutdown,test-shutdown,待审计,,,,,
 test-suit/starryos/qemu/system/test-signal-interrupt-eintr,test-signal-interrupt-eintr,待审计,,,,,
 test-suit/starryos/qemu/system/test-sio-set-ifflags,test-sio-set-ifflags,待审计,,,,,
 test-suit/starryos/qemu/system/test-sockopt,test-sockopt,待审计,,,,,
-test-suit/starryos/qemu/system/test-sync,test-sync-basic,待审计,,,,,
-test-suit/starryos/qemu/system/test-syncfs,test-syncfs-basic,待审计,,,,,
+test-suit/starryos/qemu/system/test-sync,test-sync-basic,低价值清理,,,五个 sync 场景的关键判定为无条件 CHECK(1)；关闭再打开后的读回只命中页缓存且不证明写盘,2026-09-24 源码审计；删除弱探针；sync 写盘正确性当前无直接系统回归,test(starry): remove low-value system probes
+test-suit/starryos/qemu/system/test-syncfs,test-syncfs-basic,重复测试清理,,syscall-test-syncfs 已覆盖普通文件成功以及非法和关闭 fd 的 EBADF,重复的多次写入、只读 fd 和同文件双 fd 只再次检查返回0；没有新增故障类型,2026-09-24 源码逐项对照；保留 syscall-test-syncfs,test(starry): remove low-value system probes
 test-suit/starryos/qemu/system/test-sysinfo,test-sysinfo,待审计,,,,,
 test-suit/starryos/qemu/system/test-syslog,test-syslog,待审计,,,,,
 test-suit/starryos/qemu/system/test-timerfd-efault-wake,test-timerfd-efault-wake,待审计,,,,,
