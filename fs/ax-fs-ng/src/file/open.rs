@@ -521,23 +521,13 @@ impl OpenOptions {
         let (parent, name, parent_depth) =
             context.resolve_parent_with_constraints(path, constraints, check_search, depth0)?;
 
-        let existing = match parent.lookup_no_follow(&name) {
-            Ok(_) => true,
-            Err(VfsError::NotFound) => false,
-            Err(error) => return Err(error),
-        };
-
-        // `O_CREAT|O_EXCL` on an existing directory entry — including a
-        // dangling symlink — reports EEXIST before any link-following
-        // restriction, matching Linux `do_open`/`lookup_open` ordering.
-        if self.create_new && existing {
-            return Err(VfsError::AlreadyExists);
-        }
-
-        // A final symlink is rejected under NO_SYMLINKS/NO_MAGICLINKS with
-        // ELOOP. The exception: with O_PATH|O_NOFOLLOW it is returned as a
-        // path-only handle to the link itself even under those restrictions
-        // (man 2 openat2).
+        // Symlink rejection on the final component takes precedence over
+        // creation flags: Linux `step_into` -> `pick_link` returns ELOOP for a
+        // final symlink under NO_SYMLINKS/NO_MAGICLINKS before `do_open` can
+        // report EEXIST for O_CREAT|O_EXCL. The exception: with
+        // O_PATH|O_NOFOLLOW a final symlink (or magic link) is returned as a
+        // path-only handle to the link itself even under
+        // NO_SYMLINKS/NO_MAGICLINKS (man 2 openat2).
         let final_link_handle = self.path && self.no_follow;
         if let Ok(probe) = parent.lookup_no_follow(&name)
             && probe.node_type() == NodeType::Symlink
@@ -553,6 +543,12 @@ impl OpenOptions {
                 return Err(VfsError::FilesystemLoop);
             }
         }
+
+        let existing = match parent.lookup_no_follow(&name) {
+            Ok(_) => true,
+            Err(VfsError::NotFound) => false,
+            Err(error) => return Err(error),
+        };
         // A trailing slash prevents creation of a missing regular file, but an
         // existing directory must still see the original O_CREAT flag so
         // _open() returns EISDIR.
