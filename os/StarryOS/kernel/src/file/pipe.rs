@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, boxed::Box, collections::VecDeque, format, sync::Arc};
 use core::{
     mem,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     task::Waker,
 };
 
@@ -545,6 +545,11 @@ struct Shared {
     wait_tx: PipeWaitSet,
     poll_usage: AtomicBool,
     open_wait: WaitQueue,
+    /// Anonymous-pipe inode metadata (`Pipe::stat`). Both ends share it and
+    /// `fchmod`/`fchown` update it, like Linux's pipe inode.
+    inode_mode: AtomicU32,
+    inode_uid: AtomicU32,
+    inode_gid: AtomicU32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -613,6 +618,9 @@ impl Shared {
             wait_tx: PipeWaitSet::new(),
             poll_usage: AtomicBool::new(false),
             open_wait: WaitQueue::new(),
+            inode_mode: AtomicU32::new(S_IFIFO | 0o600),
+            inode_uid: AtomicU32::new(0),
+            inode_gid: AtomicU32::new(0),
         }
     }
 
@@ -1367,9 +1375,34 @@ impl FileLike for Pipe {
             return file.stat();
         }
         Ok(Kstat {
-            mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
+            mode: self.shared.inode_mode.load(Ordering::Acquire),
+            uid: self.shared.inode_uid.load(Ordering::Acquire),
+            gid: self.shared.inode_gid.load(Ordering::Acquire),
             ..Default::default()
         })
+    }
+
+    fn set_inode_metadata(
+        &self,
+        mode: Option<u32>,
+        owner: Option<(u32, u32)>,
+    ) -> StarryResult<()> {
+        // Named FIFOs persist on their filesystem inode through the regular
+        // location path; only anonymous pipes use the shared inode state.
+        if self.named.is_some() {
+            return Err(StarryError::OperationNotSupported);
+        }
+        if let Some(mode) = mode {
+            // Keep the FIFO type bits; only the permission bits change.
+            self.shared
+                .inode_mode
+                .store(S_IFIFO | (mode & 0o7777), Ordering::Release);
+        }
+        if let Some((uid, gid)) = owner {
+            self.shared.inode_uid.store(uid, Ordering::Release);
+            self.shared.inode_gid.store(gid, Ordering::Release);
+        }
+        Ok(())
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
