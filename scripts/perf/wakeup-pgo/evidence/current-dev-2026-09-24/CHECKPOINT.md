@@ -22,4 +22,20 @@
 
 ### 2.2 未验收项
 
-`resume711` A2 与 `resume712` A1 的 OTHER 同核 futex 均为 19999/20000 样本且 `not_parked=1`，两轮整体无效；两次序列的 F2 均未执行。故当前没有两次有效同源码 A/F full20，也没有三次有效候选 full20；不能判定所有 p50/p99/p99.9 回退 `<3%`，不能把两轮 19/20 视为最终 90% 结论。唯一可成对的 `resume711` A1→F1 中，FIFO `absolute_timer_same_cpu` p99.9 为 32417→42000 ns，候选高 29.56%，属于严重风险信号，但单对不能充当正式两轮回退判定。旧源码 2026-09-23 的 70% 两轮结果保存在相邻 `review-2477/full-pgo-2026-09-23/`，不与本目录拼接。
+`resume711` A2 与 `resume712` A1 的 OTHER 同核 futex 均为 19999/20000 样本且 `not_parked=1`，两轮整体无效；两次序列的 F2 均未执行。后续 `resume742` 补得两次有效普通 A（见第 3 节），但未补得第三次有效 PGO 候选启动；两轮 19/20 不能视为最终 90% 结论。旧源码 2026-09-23 的 70% 两轮结果保存在相邻 `review-2477/full-pgo-2026-09-23/`，不与本目录拼接。
+
+## 3. 单 waiter 候选复测
+
+`resume742/` 保存同一源码 `b59894344a23786d7b5ba57b56eabeb716eb1ba6` 的普通 release 对照与试验性 futex 快路径结果。`candidate.patch.gz` 解压后的补丁仅改变 `ResolvedFutex::wake()` 的单 waiter 分支和新增的 `collect_single_futex_wake()`；该补丁已被拒绝，**没有应用到本 PR 的运行时代码**。冻结 benchmark SHA256 为 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。
+
+### 3.1 镜像和有效性
+
+普通 A 与候选 B 都从本 PR 精确源码编译，使用同一十一项 OrangePi 配置、不启用 PGO 或插桩。A 镜像 SHA256 为 `58801abbba44d6dd61a2807efc62b678274586e075e31beca7fce9b913f84eca`，B 为 `c83b426636bc9d2b672087a773ca9e26cc26a7589e12848c388ba033e9ecebf7`。重新编译的 A `.text` SHA256 `553c78302dc1621c008e17a9390e4e65488108d56b407feed1bb9c250fed16af` 与旧归档普通镜像一致；**重新编译的 A 与旧归档普通镜像**的 `.bin` 除 `.kallsyms` 外逐字节相同，因此旧镜像机器码可复用，但本轮仍重新上板采普通 A。
+
+OrangePi-5-Plus-1 两次租约依次运行 A1/B1/B2 与 A2/B3。A1、B1、A2、B3 均为有效无插桩 full20：各 20 项、380000/380000 样本、零 `not_parked` 与 missed deadline。B2 的 OTHER `thread_futex_same_cpu` 为 19999/20000、`not_parked=1`，整轮无效并原样归档，不参与中位数。`session.json`、`session2.json` 保存租约；两次租约均已释放。`status.json` 记录镜像和原始日志哈希；运行 `python3 scripts/perf/wakeup-pgo/evidence/current-dev-2026-09-24/resume742/check.py` 可重验完整性和比较数值。
+
+### 3.2 结果和决定
+
+有效轮次的逐项 p50、p99、p99.9 使用两次原始值的中位数比较。B 的 OTHER 同核 futex p50 从 A 的 18812.5 降至 18229.5 ns（延迟降低 3.10%），但 OTHER `process_futex_cross_cpu` p99.9 从 52937.5 增至 66209 ns（+25.07%）、p99 从 25958.5 增至 27708.5 ns（+6.74%），FIFO `sched_yield_handoff` p99.9 从 3645.5 增至 3792 ns（+4.02%）。三项超过 `<3%` 回退门，故拒绝该运行时补丁；单项 p50 改善不能用于声称整体性能提升。
+
+新增两次有效普通 A 也允许对现有两次同源码 PGO F 重新检查回退：FIFO `absolute_timer_same_cpu` p99.9 的 A 中位数 32583.5 ns、F 中位数 44625 ns，候选高 **36.96%**。A 与 F 不构成交错 A/F/A/F 四轮，但该尾部风险已明确超过门限；现有 PGO 的 19/20 项 90% 结果仍只是阶段观测，不能请求验收或合入。

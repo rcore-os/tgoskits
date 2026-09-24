@@ -18,7 +18,8 @@ p50、p99、p99.9 回退均小于 3%；最差项 OTHER 同核 futex 为 78.37%�
 `dev@9a7b868bab` 上重新训练的 `full-pgo-2026-09-24.profdata.zst`；
 当前普通板卡配置增加了 `legacy-board-init`，因此 profile 与普通
 release 均包含十一项 feature。该新 profile 的实体板结果有两次独立有效
-PGO full20，但没有完整同源码普通 release 对照，不能沿用旧源码的阶段性通过结论。
+PGO full20；后续 `resume742` 补得两次有效的同源码普通 release 对照，
+但其 p99.9 回退超出门槛，不能沿用旧源码的阶段性通过结论。
 `stdlib-wrapper.py.in` 仅排除预编译的 sysroot crate，`ax_task`、
 `ax_runtime` 和 StarryOS 根 crate 均使用 profile。两种镜像的日志级别
 均为 `Info`，最大 CPU 数均为 8。旧 profile 保留在本目录供历史证据核查。
@@ -149,9 +150,15 @@ OTHER `thread_futex_same_cpu`：Linux RT 8458 ns，普通 A 18958.5 ns，
 `thread_futex_same_cpu` p50 为 11083/11375 ns，中位 11229 ns，
 相对 Linux RT 8458 ns 为 75.32%，还需降至 9397 ns 或更低。
 `resume711` 普通 A1 有效，但 A2 在该项缺少一个样本；`resume712`
-普通 A1 同样缺样本，两次序列的后续 F2 均未执行。因此仅有一次有效
-普通 release 启动，
-因此不能据此判断同源码回退或当前 `dev` 的正式 70%/90% 结果。
+普通 A1 同样缺样本，两次序列的后续 F2 均未执行。`resume742` 在
+同一源码上重建普通 release 镜像，并核实其 `.text` 与旧归档普通镜像
+相同、`.bin` 除 `.kallsyms` 外逐字节一致；随后两次有效普通 A full20
+各有 380000/380000 样本。将这两轮 A 与上述两轮 F 的原始 p99.9
+分别取中位数，FIFO `absolute_timer_same_cpu` 为 32583.5→44625 ns，
+回退 36.96%，已超过 `<3%` 门槛；且 A/F 未构成交错四轮序列。
+`resume742` 试验性单 waiter futex 快路径虽然使 OTHER 同核 futex p50
+下降 3.10%，却使 OTHER 跨核进程 futex p99.9 回退 25.07%，已拒绝，
+未进入运行时代码。当前源码既未通过尾部分位门，也未达到 20/20 项 90%。
 当前 `build.py` 已从全新 target 重建出与 F1 `.text`、`.bin`（除
 `.kallsyms`）一致的镜像；该构建只证明镜像身份，不补足缺失的板测启动。
 新 profile、原始日志、无效轮次、训练状态与构建审计保存在
