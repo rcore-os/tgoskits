@@ -14,13 +14,11 @@
 
 //! RK3588 A55 (`vdd_cpu_lit`) CPU-rail voltage lever — RK806 PMIC over SPI2.
 //!
-//! DVFS Phase 2, little cluster. Phase 1a raises the A55 clock via SCMI only;
-//! the RK3588 CPU clock is voltage-coupled, so exact frequency + power needs the
-//! per-OPP rail voltage that only the PMIC can set. On the OrangePi-5-Plus the
+//! The RK3588 A55 clock is voltage-coupled, so each OPP needs the CPU rail
+//! voltage that only the PMIC can set. On the OrangePi-5-Plus the
 //! A55 rail `vdd_cpu_lit_s0` is provided by an **RK806** PMIC on **SPI2**
 //! (`spi@feb20000`, chip-select 0). This module is a minimal polling SPI master
-//! plus the RK806 buck-2 regulator access needed to read and (safely, down-only)
-//! lower that rail.
+//! plus the RK806 buck-2 regulator access needed to read and set that rail.
 //!
 //! # Board-confirmed ground truth (sources cited inline)
 //!
@@ -29,27 +27,24 @@
 //!   bare-metal polling flow follow mainline `drivers/spi/spi-rockchip.c` and
 //!   U-Boot `drivers/spi/rk_spi.c` (`rk_spi.h`).
 //! - **RK806** = `rockchip,rk806`, CS 0, `spi-max-frequency = 1_000_000`, mode 0.
-//!   SPI framing from mainline `drivers/mfd/rk8xx-spi.c`
+//!   SPI framing from the Orange Pi BSP `drivers/mfd/rk806-spi.c`
 //!   (`rk806_spi_bus_read`/`rk806_spi_bus_write`) + constants in
-//!   `include/linux/mfd/rk808.h`.
+//!   `include/linux/mfd/rk806.h`.
 //! - **`vdd_cpu_lit_s0` = RK806 `dcdc-reg2` (buck #2)** — from
-//!   `arch/arm64/boot/dts/rockchip/rk3588-orangepi-5.dtsi`. Its running voltage
+//!   `arch/arm64/boot/dts/rockchip/rk3588-rk806-single.dtsi`. Its running voltage
 //!   selector is `RK806_BUCK2_ON_VSEL = 0x1B`, full-byte selector
 //!   (`vsel_mask = 0xff`), encoded by `rk806_buck_voltage_ranges` in
-//!   `drivers/regulator/rk808-regulator.c`:
+//!   `drivers/regulator/rk806-regulator.c`:
 //!   `V(uV) = 500000 + sel*6250` for `sel 0..=159` (500 mV..1500 mV, our whole
 //!   CPU window). 675 mV = sel 28 (`0x1C`), 750 mV = sel 40 (`0x28`),
 //!   800 mV = sel 48 (`0x30`).
 //!
 //! # Safety model
 //!
-//! Direction is **down only**, toward Linux-proven OPP nominals. [`set_uv`]
-//! refuses any target below the [`A55_MIN_UV`] floor (675 mV) or **above the
-//! boot voltage read back from the rail** — it can never raise vdd. Every write
-//! is read-back verified (raw selector byte compared), and a mismatch aborts and
-//! returns `false`, leaving the last confirmed selector in place.
-//! [`set_uv_stepped`] lowers in `<=`[`MAX_STEP_UV`] (25 mV) increments with a
-//! settle delay so the voltage-coupled clock tracks down gradually.
+//! [`init`] binds only after the RK806 identity and a plausible A55 rail
+//! selector are read. [`set_uv_stepped_verified`] moves in either direction in
+//! at most [`MAX_STEP_UV`] (25 mV) increments, rechecking identity and selector
+//! after every write. A mismatch aborts and returns `false`.
 //!
 //! After U-Boot, SPI2 is left with its clocks gated **and** its controller held
 //! in soft-reset, so [`init`] first **ungates `PCLK_SPI2` + `CLK_SPI2`**,
@@ -59,8 +54,7 @@
 //! needs, mirroring the i2c0 fix), then verifies the controller responds (a gated
 //! APB reads all-zero, and a core still in reset transacts all-zero — either
 //! would otherwise clock in a fabricated `0`); if it does not respond it stays
-//! **unbound**. It also logs a one-shot read-only RK806 reachability probe
-//! (chip-ID + raw DCDC2 frame). Every SPI poll loop is time-bounded
+//! **unbound**. Every SPI poll loop is time-bounded
 //! ([`SPI_TIMEOUT_NS`]) and treats an all-zero status register as a dead bus, so
 //! a controller that dies after init makes [`get_uv`] return `None` rather than
 //! hanging or fabricating a reading. `init`'s only SoC writes are to the SPI2
@@ -75,10 +69,9 @@
 //! ```ignore
 //! use crate::soc::rockchip::pmic_spi;
 //!
-//! pmic_spi::init();                          // map + configure SPI2/RK806
-//! let boot_uv = pmic_spi::get_uv();          // read A55 boot vdd first
-//! // ... only after the SCMI clock is already at target:
-//! pmic_spi::set_uv_stepped(675_000);         // down-only to the OPP nominal
+//! pmic_spi::init();                             // map, configure and validate
+//! let boot_uv = pmic_spi::get_uv();             // read current A55 rail
+//! pmic_spi::set_uv_stepped_verified(750_000);   // verified OPP voltage
 //! ```
 
 use core::{
@@ -87,16 +80,15 @@ use core::{
 };
 
 // PMIC access is slow: an SPI register read/write busy-waits on the controller
-// (~20 ms per transfer). Serialisation must NOT disable preemption across that
+// (up to 20 ms on failure). Serialisation must NOT disable preemption across that
 // poll, or the caller would stall task-switching on its CPU for the whole
 // transaction (the scheduling-starvation risk raised in review). So the slow
 // transactions are guarded by a non-preempt-disabling bus-ownership flag
 // (`BUS_BUSY` / [`BusGuard`]); the `SpinLock` `Mutex` below is used ONLY to
 // store the controller handle (`init`) or clone it out (`BusGuard::claim`) — a
-// microsecond window that never spans a poll. Ownership is single-caller by
-// construction (the A55 rail is programmed once at boot; the ring-only governor
-// issues no dynamic A55 write), so `BusGuard::claim` bails on the never-expected
-// contended case rather than spinning. `SpinLock` (not `SpinNoIrq`) keeps
+// microsecond window that never spans a poll. The runtime worker serializes
+// normal DVFS requests, so `BusGuard::claim` bails on a contended diagnostic
+// caller rather than spinning. `SpinLock` (not `SpinNoIrq`) keeps
 // IRQs enabled; the lock is never taken from an interrupt handler.
 use ax_sync::SpinLock as Mutex;
 use log::{info, warn};
@@ -153,7 +145,13 @@ const SPI_CTRLR0_MODE0_8BIT: u32 =
 // Status register bits (rk_spi.h).
 const SR_BUSY: u32 = 1 << 0;
 const SR_TF_FULL: u32 = 1 << 1;
+const SR_TF_EMPTY: u32 = 1 << 2;
 const SR_RF_EMPT: u32 = 1 << 3;
+
+// Linux's rk806-spi bus read is two transfers under one CS: three TX bytes
+// followed by one RX byte. The controller must change direction between them.
+const CR0_XFM_TO: u32 = 1 << 18;
+const CR0_XFM_RO: u32 = 2 << 18;
 
 const BAUDR_MIN: u32 = 2;
 const BAUDR_MAX: u32 = 0xfffe;
@@ -176,9 +174,6 @@ const SPI2_CLK_UNGATE: u32 = ((1 << 8) | (1 << 13)) << 16;
 /// frame takes; a dead SPI clock trips this instead of hanging.
 const SPI_TIMEOUT_NS: u64 = 20_000_000; // 20 ms
 
-/// Largest RK806 transaction this module issues: cmd + 2 addr + 1 data.
-const RK806_FRAME_LEN: usize = 4;
-
 // ---------------------------------------------------------------------------
 // RK806 SPI framing (rk8xx-spi.c / rk808.h)
 // ---------------------------------------------------------------------------
@@ -192,9 +187,8 @@ const RK806_CMD_READ: u8 = 0x00;
 /// RK806 buck-2 (`vdd_cpu_lit_s0`) running-voltage selector register.
 const RK806_BUCK2_ON_VSEL: u8 = 0x1B;
 
-/// RK806 chip-name / chip-version registers (rk808.h `RK806_CHIP_NAME`/`_VER`).
-/// Both carry nonzero power-on defaults, so a nonzero read proves the SPI path
-/// actually reaches the RK806 (vs. reading fabricated zeros off a floating MISO).
+/// RK806 chip-name / chip-version registers (`rk806-core.c`). They encode
+/// `RK806` as name-high `0x80` and name-low high nibble `0x6`.
 const RK806_CHIP_NAME: u8 = 0x5A;
 const RK806_CHIP_VER: u8 = 0x5B;
 
@@ -257,7 +251,7 @@ const RK806_VSEL_R3_UV: u32 = 3_400_000;
 /// (1008 MHz -> 675 mV, standard SKU). Never set below this. Industrial J/M SKU
 /// low OPPs sit at 750 mV; a boot read of ~750 is expected there and is fine.
 pub const A55_MIN_UV: u32 = 675_000;
-/// Maximum single-step magnitude for [`set_uv_stepped`] (25 mV == 4 selectors).
+/// Maximum single-step magnitude for [`set_uv_stepped_verified`] (25 mV == 4 selectors).
 pub const MAX_STEP_UV: u32 = 25_000;
 /// Settle delay between stepped-lowering writes (>> the 25 mV ramp time at the
 /// DT `regulator-ramp-delay = 12500` uV/us => ~2 us).
@@ -285,12 +279,9 @@ static PMIC: Mutex<Option<Rk806Spi>> = Mutex::new(None);
 
 /// Non-preempt-disabling bus-ownership flag for the slow RK806 SPI transactions
 /// (`rk806_read`/`rk806_write` poll the controller, ~20 ms per transfer). Holding
-/// it does not disable preemption, so a transfer can be preempted and never
-/// starves the scheduler on that CPU (the review concern). Single-caller by
-/// construction (the A55 rail is programmed once at boot by `align_rail_voltages`;
-/// the ring-only governor never issues a dynamic A55 voltage write), so
-/// [`BusGuard::claim`] takes ownership without blocking and bails on the
-/// never-expected contended case instead of spinning.
+/// it does not disable preemption, so a transfer can be preempted. The shared
+/// runtime serializes DVFS requests; [`BusGuard::claim`] also rejects an
+/// unexpected concurrent SPI caller instead of spinning.
 static BUS_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// RAII ownership of the RK806 SPI bus for one transaction. Carries a clone of
@@ -382,153 +373,98 @@ impl Rk806Spi {
         self.read(SPI_CTRLR0) & SPI_CTRLR0_MODE0_8BIT == SPI_CTRLR0_MODE0_8BIT
     }
 
-    /// Full-duplex byte exchange of `tx.len()` bytes, CS asserted for the whole
-    /// transaction. Replicates Linux `spi-rockchip.c`'s exact PIO sequence (the
-    /// board's known-good driver uses an identical CTRLR0 to ours yet reads the
-    /// RK806, so the transfer *sequence* is the remaining variable): assert CS,
-    /// program CTRLR0/CTRLR1/**RXFTLR** while disabled, clear interrupts, enable,
-    /// **pre-fill the entire TX FIFO**, then drain RX. `rx[3]` holds the value.
-    /// Returns `false` on timeout, leaving CS deasserted and the controller off.
-    #[must_use]
-    fn xfer(&self, tx: &[u8], rx: &mut [u8]) -> bool {
-        self.xfer_cs(tx, rx, true)
-    }
-
-    /// As [`Rk806Spi::xfer`], but `native_cs` selects whether the controller's
-    /// own CS (SER) is asserted. The GPIO-CS diagnostic drives the CS pin
-    /// manually and calls this with `native_cs = false`.
-    #[must_use]
-    fn xfer_cs(&self, tx: &[u8], rx: &mut [u8], native_cs: bool) -> bool {
-        debug_assert_eq!(tx.len(), rx.len());
-        let len = tx.len();
-        let n = len as u32;
-
-        // set_cs first (Linux calls set_cs before the transfer).
-        if native_cs {
-            self.write(SPI_SER, 1 << RK806_CS);
-        }
-
-        // Per-transfer config while disabled: CTRLR0, frame count, and the RX
-        // FIFO threshold (Linux sets RXFTLR = len-1 for small transfers; we
-        // previously left it unset — a prime suspect).
+    /// Transmit one SPI phase while leaving chip select unchanged. The controller
+    /// is disabled at both ends, allowing a receive-only phase under the same CS.
+    fn send_phase(&self, tx: &[u8]) -> bool {
         self.write(SPI_ENR, 0);
-        self.write(SPI_CTRLR0, SPI_CTRLR0_MODE0_8BIT);
-        self.write(SPI_CTRLR1, n.saturating_sub(1));
-        self.write(SPI_RXFTLR, n.saturating_sub(1));
+        self.write(SPI_CTRLR0, SPI_CTRLR0_MODE0_8BIT | CR0_XFM_TO);
+        self.write(SPI_CTRLR1, tx.len() as u32 - 1);
         self.write(SPI_ICR, 0xffff_ffff);
         self.write(SPI_ENR, 1);
 
-        let deadline = now_ns() + SPI_TIMEOUT_NS;
-        let mut ok = true;
-
-        // Pre-fill the ENTIRE TX FIFO first (Linux fills then waits), rather than
-        // interleaving TX/RX. The 4-byte frame fits the FIFO with room to spare.
-        let mut ti = 0usize;
-        while ti < len {
+        let deadline = now_ns().saturating_add(SPI_TIMEOUT_NS);
+        for (index, byte) in tx.iter().enumerate() {
+            loop {
+                let sr = self.read(SPI_SR);
+                if sr == 0 || now_ns() >= deadline {
+                    warn!("pmic_spi: SPI2 TX phase stalled at {index}/{}", tx.len());
+                    self.write(SPI_ENR, 0);
+                    return false;
+                }
+                if sr & SR_TF_FULL == 0 {
+                    self.write(SPI_TXDR, u32::from(*byte));
+                    break;
+                }
+            }
+        }
+        loop {
             let sr = self.read(SPI_SR);
-            if sr == 0 {
-                warn!("pmic_spi: SPI2 SR reads 0 (controller not clocking); aborting");
-                ok = false;
-                break;
+            if sr & (SR_TF_EMPTY | SR_BUSY) == SR_TF_EMPTY {
+                self.write(SPI_ENR, 0);
+                return true;
             }
-            if (sr & SR_TF_FULL) == 0 {
-                self.write(SPI_TXDR, u32::from(tx[ti]));
-                ti += 1;
-            } else if now_ns() >= deadline {
-                warn!("pmic_spi: SPI2 TX fill timed out ({ti}/{len})");
-                ok = false;
-                break;
+            if sr == 0 || now_ns() >= deadline {
+                warn!("pmic_spi: SPI2 TX phase did not finish");
+                self.write(SPI_ENR, 0);
+                return false;
             }
         }
-
-        // Then drain the RX FIFO (one byte per clocked frame).
-        let mut ri = 0usize;
-        while ok && ri < len {
-            if (self.read(SPI_SR) & SR_RF_EMPT) == 0 {
-                rx[ri] = self.read(SPI_RXDR) as u8;
-                ri += 1;
-            } else if now_ns() >= deadline {
-                warn!("pmic_spi: SPI2 RX drain timed out ({ri}/{len})");
-                ok = false;
-                break;
-            }
-        }
-
-        // Wait for the shift engine to go idle before dropping CS.
-        while ok && (self.read(SPI_SR) & SR_BUSY) != 0 {
-            if now_ns() >= deadline {
-                warn!("pmic_spi: SPI2 stayed BUSY after transfer");
-                ok = false;
-                break;
-            }
-        }
-
-        // Deassert CS0 and disable.
-        if native_cs {
-            self.write(SPI_SER, 0);
-        }
-        self.write(SPI_ENR, 0);
-        ok
     }
 
-    /// Read one RK806 register (8-bit value, 16-bit little-endian address).
-    /// Frame: `[READ, addr_lo, addr_hi=0, dummy]`; value is the last RX byte.
-    fn rk806_read(&self, reg: u8) -> Option<u8> {
-        let tx = [RK806_CMD_READ, reg, 0x00, 0x00];
-        let mut rx = [0u8; RK806_FRAME_LEN];
-        if self.xfer(&tx, &mut rx) {
-            Some(rx[RK806_FRAME_LEN - 1])
-        } else {
-            None
+    /// Clock one receive-only byte after the command/address phase. In RO mode
+    /// the controller generates SCLK from CTRLR1 without feeding TXDR.
+    fn receive_phase(&self) -> Option<u8> {
+        self.write(SPI_ENR, 0);
+        self.write(SPI_CTRLR0, SPI_CTRLR0_MODE0_8BIT | CR0_XFM_RO);
+        self.write(SPI_CTRLR1, 0);
+        self.write(SPI_RXFTLR, 0);
+        self.write(SPI_ICR, 0xffff_ffff);
+        self.write(SPI_ENR, 1);
+
+        let deadline = now_ns().saturating_add(SPI_TIMEOUT_NS);
+        loop {
+            let sr = self.read(SPI_SR);
+            if sr == 0 || now_ns() >= deadline {
+                warn!("pmic_spi: SPI2 RX phase stalled");
+                self.write(SPI_ENR, 0);
+                return None;
+            }
+            if sr & SR_RF_EMPT == 0 {
+                let byte = self.read(SPI_RXDR) as u8;
+                self.write(SPI_ENR, 0);
+                return Some(byte);
+            }
         }
+    }
+
+    /// Read one RK806 register with the BSP's two-transfer protocol: send
+    /// `[READ, addr_lo, addr_hi]`, then receive one byte under the same CS.
+    fn rk806_read(&self, reg: u8) -> Option<u8> {
+        self.write(SPI_SER, 1 << RK806_CS);
+        let result = self
+            .send_phase(&[RK806_CMD_READ, reg, 0])
+            .then(|| self.receive_phase())
+            .flatten();
+        self.write(SPI_SER, 0);
+        result
     }
 
     /// Write one RK806 register. Frame: `[WRITE, addr_lo, addr_hi=0, value]`.
-    /// RX is ignored. Returns `false` on transfer timeout.
+    /// Returns `false` on transfer timeout.
     #[must_use]
     fn rk806_write(&self, reg: u8, val: u8) -> bool {
-        let tx = [RK806_CMD_WRITE, reg, 0x00, val];
-        let mut rx = [0u8; RK806_FRAME_LEN];
-        self.xfer(&tx, &mut rx)
+        self.write(SPI_SER, 1 << RK806_CS);
+        let result = self.send_phase(&[RK806_CMD_WRITE, reg, 0, val]);
+        self.write(SPI_SER, 0);
+        result
     }
 
-    /// Read-only one-shot reachability probe, logged at init. The RK806
-    /// chip-name/version registers have nonzero power-on defaults, so a nonzero
-    /// read proves the SPI path actually reaches the RK806; an all-zero read (and
-    /// an all-zero DCDC2 frame) means it is not reached (pin-mux / CS). Also dumps
-    /// the raw DCDC2 read frame for inspection. Performs no PMIC write.
-    fn log_diagnostics(&self) {
-        let name = self.rk806_read(RK806_CHIP_NAME);
-        let ver = self.rk806_read(RK806_CHIP_VER);
-        let tx = [RK806_CMD_READ, RK806_BUCK2_ON_VSEL, 0x00, 0x00];
-        let mut rx = [0u8; RK806_FRAME_LEN];
-        let ok = self.xfer(&tx, &mut rx);
-        info!(
-            "pmic_spi: RK806 probe: chip_name(0x5A)={name:?} chip_ver(0x5B)={ver:?} \
-             dcdc2_raw_rx={rx:02x?} (xfer_ok={ok})"
-        );
-    }
-
-    /// Read-only read-shape diagnostic (boot #8). The RK806 read now returns data
-    /// but the RX mirrors the TX (e.g. chip-name read `tx=[00,5a,00,00]` came back
-    /// `rx=[00,5a,00,00]`). Distinguish a MISO-reads-MOSI loopback from a
-    /// value-position offset:
-    /// - **distinct**: send a distinctive TX pattern; if the RX echoes it byte for
-    ///   byte, MISO is reading MOSI (pad/routing), not the RK806.
-    /// - **long6**: a 6-byte frame; if instead the register value lands at a later
-    ///   wire byte (rx\[4]/rx\[5]), it is just a frame-length/index offset.
-    ///
-    /// No PMIC write.
-    fn probe_read_shape(&self) {
-        let tx1 = [RK806_CMD_READ, RK806_CHIP_NAME, 0xA5, 0x3C];
-        let mut rx1 = [0u8; 4];
-        let ok1 = self.xfer(&tx1, &mut rx1);
-        info!("pmic_spi: read-shape distinct: tx={tx1:02x?} rx={rx1:02x?} ok={ok1}");
-
-        let tx2 = [RK806_CMD_READ, RK806_CHIP_NAME, 0x00, 0x00, 0x00, 0x00];
-        let mut rx2 = [0u8; 6];
-        let ok2 = self.xfer(&tx2, &mut rx2);
-        info!("pmic_spi: read-shape long6: tx={tx2:02x?} rx={rx2:02x?} ok={ok2}");
+    /// Read the A55 rail only when the same bus still identifies as an RK806.
+    fn verified_buck2_selector(&self) -> Option<u8> {
+        let name = self.rk806_read(RK806_CHIP_NAME)?;
+        let version = self.rk806_read(RK806_CHIP_VER)?;
+        let selector = self.rk806_read(RK806_BUCK2_ON_VSEL)?;
+        valid_identity_and_selector(name, version, selector).then_some(selector)
     }
 }
 
@@ -558,6 +494,14 @@ fn vsel_to_uv(sel: u8) -> u32 {
     } else {
         RK806_VSEL_R3_UV
     }
+}
+
+/// Recognize an RK806 and an A55 rail selector within this board's OPP window.
+/// A floating/looped-back MISO must never become a plausible voltage read.
+fn valid_identity_and_selector(name: u8, version: u8, selector: u8) -> bool {
+    name == 0x80
+        && (version & 0xf0) == 0x60
+        && (A55_MIN_UV..=950_000).contains(&vsel_to_uv(selector))
 }
 
 /// Encode microvolts to an RK806 buck selector byte, range 1 only (500 mV..
@@ -781,13 +725,11 @@ fn dump_spi2_iomux() {
 /// on its APB. Returns `true` when the controller is bound and ready — including
 /// an idempotent re-`init()` of an already-bound controller. Returns `false` on
 /// a CRU/SPI2 MMIO mapping failure **or** if the controller does not respond
-/// after ungate (still gated, or held in soft-reset — which would need a
-/// separate reset de-assert). In every `false` case the controller is left
-/// **unbound**, so `get_uv`/`set_uv*` are safe no-ops that leave the boot
-/// voltage rather than returning a fabricated `0`.
+/// after ungate or the RK806 identity/rail selector cannot be verified.
+/// In every `false` case the controller is left **unbound**, so
+/// `get_uv`/`set_uv*` leave the boot voltage untouched.
 pub fn init() -> bool {
-    let mut guard = PMIC.lock();
-    if guard.is_some() {
+    if PMIC.lock().is_some() {
         // Already bound: the controller is ready, so report success (not a
         // failure) and keep the existing binding.
         return true;
@@ -829,13 +771,21 @@ pub fn init() -> bool {
         );
         return false;
     }
-    // Read-only reachability probe (chip-ID + raw DCDC2 frame).
-    dev.log_diagnostics();
-    // Boot #8: the read now returns data but RX mirrors TX — distinguish MISO
-    // loopback from a value-position offset (read-only).
-    dev.probe_read_shape();
-    info!("pmic_spi: RK806/SPI2 bound at {RK3588_SPI2_BASE:#x}");
-    *guard = Some(dev);
+    let (name, version, selector) = (
+        dev.rk806_read(RK806_CHIP_NAME),
+        dev.rk806_read(RK806_CHIP_VER),
+        dev.rk806_read(RK806_BUCK2_ON_VSEL),
+    );
+    if !matches!((name, version, selector), (Some(n), Some(v), Some(s)) if valid_identity_and_selector(n, v, s))
+    {
+        warn!(
+            "pmic_spi: RK806 identity/rail read-back failed (name={name:?}, version={version:?}, \
+             buck2={selector:?}); leaving A55 rail unavailable"
+        );
+        return false;
+    }
+    info!("pmic_spi: RK806/SPI2 bound at {RK3588_SPI2_BASE:#x}, buck2={selector:?}");
+    *PMIC.lock() = Some(dev);
     true
 }
 
@@ -843,140 +793,51 @@ pub fn init() -> bool {
 /// if the controller is not initialized or the SPI read timed out.
 pub fn get_uv() -> Option<u32> {
     let bus = BusGuard::claim()?;
-    let sel = bus.rk806_read(RK806_BUCK2_ON_VSEL)?;
+    let sel = bus.verified_buck2_selector()?;
     let uv = vsel_to_uv(sel);
     info!("pmic_spi: A55 vdd_cpu_lit = {uv} uV (buck2 vsel {sel:#04x})");
     Some(uv)
 }
 
-/// Set the A55 rail to `target_uv` in a single write, **down only**.
+/// Set the A55 rail to an OPP voltage in verified steps in either direction.
 ///
-/// Refuses (returns `false`, no write) when: not initialized; the SPI read of
-/// the boot voltage fails; `target_uv` is below [`A55_MIN_UV`]; or `target_uv`
-/// is above the boot voltage (never raises). On an accepted target it encodes
-/// the selector, writes buck-2 `ON_VSEL`, reads it back, and returns `true` only
-/// when the read-back selector matches.
-// Down-only single-write A55 setter; retained as part of the PMIC-SPI API surface
-// for the calibration/voltage-lever path even when the shipped governor build does
-// not call it.
-#[allow(dead_code)]
-pub fn set_uv(target_uv: u32) -> bool {
+/// The RK806 chip identity and current buck-2 selector must be readable before
+/// the first write. Each step is at most 25 mV and is followed by a fresh
+/// identity plus selector read-back. A failed step aborts immediately, so the
+/// caller must treat the rail as unknown and keep the clock at a safe setting.
+pub fn set_uv_stepped_verified(target_uv: u32) -> bool {
+    if !(A55_MIN_UV..=950_000).contains(&target_uv) {
+        warn!("pmic_spi: target {target_uv} uV outside A55 OPP rail window");
+        return false;
+    }
+    let Some(target_sel) = uv_to_vsel(target_uv) else {
+        warn!("pmic_spi: target {target_uv} uV is not an RK806 selector voltage");
+        return false;
+    };
     let Some(bus) = BusGuard::claim() else {
-        warn!("pmic_spi: set_uv before init or busy; ignored");
+        warn!("pmic_spi: set_uv_stepped_verified before init or busy");
         return false;
     };
     let dev = &*bus;
-    let Some(boot_sel) = dev.rk806_read(RK806_BUCK2_ON_VSEL) else {
-        warn!("pmic_spi: set_uv could not read boot voltage; leaving rail untouched");
+    let Some(mut current_sel) = dev.verified_buck2_selector() else {
+        warn!("pmic_spi: RK806 identity/rail read failed before voltage change");
         return false;
     };
-    let boot_uv = vsel_to_uv(boot_sel);
-    let Some(target_sel) = check_down_only(target_uv, boot_uv) else {
-        return false;
-    };
-    write_and_verify(dev, target_sel)
-}
-
-/// Lower the A55 rail to `target_uv` in `<=`[`MAX_STEP_UV`] steps, verifying
-/// each write and settling between steps, **down only**.
-///
-/// Same refusal rules as [`set_uv`]. A `target_uv` equal to the current voltage
-/// is an accepted no-op (`true`). Any read-back mismatch aborts mid-descent and
-/// returns `false`, leaving the last verified selector in place.
-pub fn set_uv_stepped(target_uv: u32) -> bool {
-    // One claim for the whole stepped transaction (read + step writes).
-    let Some(bus) = BusGuard::claim() else {
-        warn!("pmic_spi: set_uv_stepped before init or busy; ignored");
-        return false;
-    };
-    let dev = &*bus;
-    let Some(cur_sel) = dev.rk806_read(RK806_BUCK2_ON_VSEL) else {
-        warn!("pmic_spi: set_uv_stepped could not read current voltage; leaving rail untouched");
-        return false;
-    };
-    let cur_uv = vsel_to_uv(cur_sel);
-    let Some(target_sel) = check_down_only(target_uv, cur_uv) else {
-        return false;
-    };
-
-    // Higher selector == higher voltage. Down-only means target_sel <= cur_sel.
     let step_sel = (MAX_STEP_UV / RK806_VSEL_STEP_UV).max(1) as u8;
-    let mut sel = cur_sel;
-    while sel > target_sel {
-        let next = target_sel.max(sel.saturating_sub(step_sel));
+    while current_sel != target_sel {
+        let next = if current_sel < target_sel {
+            target_sel.min(current_sel.saturating_add(step_sel))
+        } else {
+            target_sel.max(current_sel.saturating_sub(step_sel))
+        };
         if !write_and_verify(dev, next) {
             return false;
         }
         axklib::time::busy_wait(Duration::from_micros(STEP_SETTLE_US));
-        sel = next;
+        current_sel = next;
     }
-    info!(
-        "pmic_spi: A55 vdd stepped to {} uV (vsel {sel:#04x})",
-        vsel_to_uv(sel)
-    );
+    info!("pmic_spi: A55 vdd stepped to {target_uv} uV (vsel {target_sel:#04x})");
     true
-}
-
-/// **Diagnostic** force-write of the A55 rail (DCDC2 `ON_VSEL`) — proves whether
-/// SPI *writes* physically reach the RK806 while reads are dead. Not part of the
-/// normal DVFS API; intended to be called once from a cpufreq test flag.
-///
-/// Safety: hard-clamped to `[675_000, 950_000]` uV — the A55 (little cluster) OPP
-/// voltage range (675 mV @ 1008 MHz up to 950 mV @ 1800 MHz, all Linux-proven
-/// freq/voltage pairs). The governor only ever passes OPP-matched voltages, so any
-/// accepted value is a proven-safe rail voltage regardless of the (currently
-/// unreadable) present value, and RK3588's voltage-coupled clock tracks the rail in
-/// lockstep. Unlike [`set_uv`] it deliberately SKIPS the read-current/down-only
-/// guard — the read path is a scope-wall (rx==tx loopback) and the write is what we
-/// have. If the SPI path can't reach the RK806, the write is simply a no-op.
-///
-/// This is the A55 voltage-set primitive for the ondemand governor (the read-back
-/// path is deferred pending the MISO scope fix). Attempts a read-back for the log
-/// (`0x00` while reads fail) and returns the write transfer's success.
-pub fn force_write_dcdc2(target_uv: u32) -> bool {
-    if !(675_000..=950_000).contains(&target_uv) {
-        warn!(
-            "pmic_spi: force_write_dcdc2 refused target {target_uv} uV (outside A55 OPP range \
-             [675000, 950000])"
-        );
-        return false;
-    }
-    let Some(bus) = BusGuard::claim() else {
-        warn!("pmic_spi: force_write_dcdc2 before init or busy; ignored");
-        return false;
-    };
-    let dev = &*bus;
-    let Some(sel) = uv_to_vsel(target_uv) else {
-        warn!("pmic_spi: force_write_dcdc2 target {target_uv} uV not encodable");
-        return false;
-    };
-    let wrote = dev.rk806_write(RK806_BUCK2_ON_VSEL, sel);
-    let readback = dev.rk806_read(RK806_BUCK2_ON_VSEL);
-    info!(
-        "pmic_spi: force_write_dcdc2: wrote vsel={sel:#04x} ({target_uv} uV) xfer_ok={wrote} \
-         readback={readback:#04x?}"
-    );
-    wrote
-}
-
-/// Shared down-only clamp: returns the encoded target selector, or `None`
-/// (after logging why) when the target must be refused.
-fn check_down_only(target_uv: u32, reference_uv: u32) -> Option<u8> {
-    if target_uv < A55_MIN_UV {
-        warn!("pmic_spi: refusing target {target_uv} uV below floor {A55_MIN_UV} uV");
-        return None;
-    }
-    if target_uv > reference_uv {
-        warn!("pmic_spi: refusing to RAISE vdd ({reference_uv} uV -> {target_uv} uV); down-only");
-        return None;
-    }
-    match uv_to_vsel(target_uv) {
-        Some(sel) => Some(sel),
-        None => {
-            warn!("pmic_spi: target {target_uv} uV not encodable in buck range 1");
-            None
-        }
-    }
 }
 
 /// Write buck-2 `ON_VSEL` and confirm the read-back selector matches.
@@ -985,7 +846,7 @@ fn write_and_verify(dev: &Rk806Spi, sel: u8) -> bool {
         warn!("pmic_spi: buck2 vsel write timed out (sel {sel:#04x})");
         return false;
     }
-    match dev.rk806_read(RK806_BUCK2_ON_VSEL) {
+    match dev.verified_buck2_selector() {
         Some(rb) if rb == sel => true,
         Some(rb) => {
             warn!("pmic_spi: buck2 vsel read-back {rb:#04x} != written {sel:#04x}; aborting");
@@ -1010,6 +871,15 @@ mod tests {
         assert_eq!(vsel_to_uv(0), 500_000);
         // Selector 159 (range-1 max) is 1_493_750 uV; 1_500_000 is selector 160.
         assert_eq!(vsel_to_uv(RK806_VSEL_R1_MAX_SEL), 1_493_750);
+    }
+
+    #[test]
+    fn rk806_identity_and_rail_gate_rejects_loopback() {
+        assert!(valid_identity_and_selector(0x80, 0x62, 0x30));
+        assert!(!valid_identity_and_selector(0, 0, 0));
+        assert!(!valid_identity_and_selector(0x5a, 0x5b, 0x1b));
+        assert!(!valid_identity_and_selector(0x80, 0x62, 0));
+        assert!(!valid_identity_and_selector(0x80, 0x62, 0xff));
     }
 
     #[test]
@@ -1051,18 +921,6 @@ mod tests {
         // Boundaries stay accepted.
         assert_eq!(uv_to_vsel(500_000), Some(0));
         assert_eq!(uv_to_vsel(506_250), Some(1));
-    }
-
-    #[test]
-    fn down_only_clamp_refuses_below_floor_and_raises() {
-        // Below the 675 mV floor.
-        assert_eq!(check_down_only(650_000, 800_000), None);
-        // Raise attempt (target above reference).
-        assert_eq!(check_down_only(825_000, 800_000), None);
-        // Legal down move.
-        assert_eq!(check_down_only(675_000, 800_000), Some(0x1c));
-        // No-op (equal) is allowed.
-        assert_eq!(check_down_only(800_000, 800_000), Some(0x30));
     }
 
     #[test]
