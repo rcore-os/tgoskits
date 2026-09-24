@@ -21,8 +21,9 @@ test -x /usr/sbin/runc || mark runc-binary
 # Kernel-semantics probe (starttime, oom NUL write, memfd mode, pipe fchown,
 # stage-B gate).
 /usr/bin/docker-runc-run-probe || mark probe
-# Device-controller stub lifecycle: load/attach/query/fetch/detach and the
-# OBJ_GET_INFO / LINK_CREATE contracts the review called out.
+# Cgroup-device BPF capability: the kernel must explicitly refuse the
+# device-controller family (EOPNOTSUPP) instead of faking a device policy
+# that never takes effect.
 /usr/bin/docker-runc-run-probe bpf-lifecycle || mark probe-bpf-lifecycle
 
 mkdir -p /run/runc /tmp/drr || mark workdir

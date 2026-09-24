@@ -82,6 +82,13 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
         ResolveAtResult::File(file.inner().location().clone())
     } else if let Some(dir) = f.downcast_ref::<Directory>() {
         ResolveAtResult::File(dir.inner().clone())
+    } else if let Some(memfd) = f.downcast_ref::<crate::file::memfd::Memfd>() {
+        // A memfd is a regular file inode (Linux `shmem`/tmpfs) that this
+        // kernel wraps; resolving it to its location lets fchmod/fchown/
+        // utimensat/xattr operate on that inode instead of being treated as a
+        // mode-less anonymous fd. `Memfd::stat` already delegates to the inner
+        // file, and `sys_fstatfs` resolves it the same way.
+        ResolveAtResult::File(memfd.inner().inner().location().clone())
     } else {
         ResolveAtResult::Other(file_like)
     })
