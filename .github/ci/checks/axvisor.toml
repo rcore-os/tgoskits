@@ -110,7 +110,7 @@ cases = ["qemu/aarch64/memory-web"]
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + browser console"
+name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 node_version = "24"
 command = '''
