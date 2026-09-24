@@ -1,0 +1,47 @@
+[package]
+name = "task-switch"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yuekai Jia <equation618@gmail.com>", "Luoyuan Xiao <xiaoluoyuan@163.com>"]
+publish = false
+
+# The benchmark is an AArch64 board guest built through the ArceOS
+# standard-library pipeline, so documentation and clippy checks use the same
+# standard-library target instead of the host.
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-linux-musl"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["arceos"]
+# ArceOS guest capability set. `ax-std/arceos` supplies the standard-library
+# compatibility layer the benchmark's `std::thread` workload runs on.
+arceos = [
+    "dep:ax-std",
+    "dep:ax-mm",
+    "dep:ax-memory-addr",
+    "dep:rockchip-soc",
+    "ax-std/arceos",
+]
+# Board-benchmark-local FIFO(80) scheduling, applied by the benchmark itself
+# only around the 30-round task-switch workload through the ax-runtime
+# current-task handle and thread builder. The runtime-wide
+# `SchedulePolicy::default()` stays Fair, so boot, `rdtsc`, and `spawn` are
+# unaffected, and ordinary task-switch builds do not enable this feature.
+# The FIFO scope only exists in the ArceOS guest build, so this feature always
+# carries the guest capability set with it.
+bench-fifo-policy = ["arceos", "dep:ax-runtime"]
+# QEMU builds have no RK3588 GPIO3_C6 pin to toggle.
+qemu = []
+
+[dependencies]
+ax-std = { workspace = true, optional = true, features = ["default"] }
+ax-mm = { workspace = true, optional = true }
+ax-memory-addr = { workspace = true, optional = true }
+# Only used by the benchmark-local FIFO(80) task-switch configuration.
+ax-runtime = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "9.4"
+rockchip-soc = { path = "../../../drivers/soc/rockchip/rockchip-soc", optional = true }

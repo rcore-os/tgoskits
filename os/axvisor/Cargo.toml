@@ -57,6 +57,10 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace"]
 test-virq-delivery = []
 vcpu-perf-load = []
+# Benchmark-local FIFO policy for the vCPU host task. Only the dedicated
+# Rust-Shyper task-switch benchmark board build enables it; default AxVisor
+# builds keep the Fair vCPU host task policy.
+bench-fifo-vcpu-policy = ["axvm/bench-fifo-vcpu-policy"]
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
 # ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
 # tokio `TcpListener`) is enabled only when the control plane is built; a

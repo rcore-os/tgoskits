@@ -1,0 +1,23 @@
+board_type = "OrangePi-5-Plus"
+# Historically, the original Rust-Shyper run on this board finished in 3799.7 s:
+# 100 rounds of 100,000,000 yields at roughly 35 s per round, plus bring-up. The
+# current case measures 30 rounds of 10,000,000 task switches. The harness
+# timeout is infrastructure that only bounds the run; it is not a benchmark
+# threshold, and 7200 s is retained unchanged.
+timeout = 7200
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "Failed to initialize guest VM",
+  "VM\\[1\\] run VCpu\\[0\\] get error",
+  # The guest prints this and stops before measuring when the GPIO3_C6 pin the
+  # benchmark times against cannot be mapped or configured.
+  "(?m)^(?:\\[VM 1\\] )?BENCHER_GPIO_FAILED reason=[a-z0-9-]+\\s*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+# The success evidence is the original benchmark's own completion line. A
+# boot-only, aborted, or truncated run never prints it, so the case can only
+# pass after the full 30-round measured workload finishes.
+success_regex = ["(?m)^(?:\\[VM 1\\] )?Bencher end\\s*$"]

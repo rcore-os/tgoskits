@@ -1,0 +1,13 @@
+features = [
+  "ax-driver/rockchip-sdhci",
+  "fs",
+  # Benchmark-local: run this board case's vCPU host task in the FIFO class so
+  # the guest's FIFO task environment matches the original Rust-Shyper run.
+  # The guest side applies FIFO only to the measured task-switch workload.
+  "bench-fifo-vcpu-policy",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/task-switch.toml",
+]

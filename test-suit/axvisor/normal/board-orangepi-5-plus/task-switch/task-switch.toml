@@ -1,0 +1,42 @@
+# AxVisor guest configuration for the Rust-Shyper task-switch benchmark.
+#
+# `guest-builds.toml` builds `task-switch` from this checkout through the
+# ArceOS standard-library guest pipeline, so the image loaded below is produced
+# by the same pipeline as the other ArceOS board guests.
+#
+# The benchmark reads the physical PMCCNTR_EL0 cycle counter and drives the
+# physical GPIO3_C6 pin inside every timed switch interval. The pin needs the
+# RK3588 MMIO registers at their physical addresses, so this is a passthrough
+# guest: under that policy AxVisor identity-maps the guest-assignable physical
+# devices into the guest address space. AxVisor also programs HCR_EL2 without
+# the TPM trap (`virtualization/axvm/src/arch/aarch64/policy/vcpu.rs`), so the
+# guest's EL1 PMU register access reaches the hardware, exactly like the
+# verified sibling ArceOS task-switch guest on this board.
+
+[base]
+id = 1
+name = "task-switch"
+guest_type = "passthrough"
+cpu_num = 1
+# A76 cluster core 0 (host FDT `/cpus/cpu@400`), the same host CPU the sibling
+# ArceOS task-switch benchmark uses on this board.
+phys_cpu_ids = [0x400]
+
+[kernel]
+# Guest RAM is the 1 GiB host range the sibling passthrough ArceOS guest uses on
+# this board, with the kernel image above the device-tree blob.
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_load_addr = 0x4008_0000
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/task-switch.bin"
+dtb_load_addr = 0x4000_0000
+
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+# `guest_type = "passthrough"` already maps every guest-assignable physical
+# device; nothing extra needs to be listed here.
+passthrough = []
+disabled = []

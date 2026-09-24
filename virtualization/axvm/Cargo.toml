@@ -28,6 +28,10 @@ host-test = [
 vpci-test-device = []
 sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
+# Benchmark-local FIFO scheduling policy for the vCPU host task. Off by
+# default; when enabled, `prepare_vcpu_thread` gives the vCPU task an explicit
+# FIFO policy instead of the Fair default, and ax-task keeps its Fair default.
+bench-fifo-vcpu-policy = []
 
 [dependencies]
 log = "0.4"
