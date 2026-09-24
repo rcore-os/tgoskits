@@ -568,6 +568,20 @@ mod no_xdev {
     }
 
     #[test]
+    fn absolute_component_jumping_to_the_root_is_rejected() {
+        let (context, _) = at_a();
+        let mnt = resolve(&context, "mnt", &ResolveConstraints::new()).unwrap();
+        let inside = context.with_current_dir(mnt).unwrap();
+        // An absolute component restarts at the filesystem root, which is a
+        // different mount from `/a/mnt`; Linux `nd_jump_root()` rejects the
+        // jump under LOOKUP_NO_XDEV.
+        assert_eq!(
+            error_of(&inside, "/b", &ResolveConstraints::new().no_xdev()),
+            VfsError::CrossesDevices
+        );
+    }
+
+    #[test]
     fn magic_links_are_refused() {
         let (context, _) = at_a();
         // A magic-link jump goes to a kernel object, not to the displayed
