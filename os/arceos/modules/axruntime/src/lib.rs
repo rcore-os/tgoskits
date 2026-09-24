@@ -79,6 +79,8 @@ mod devices;
 pub mod emergency_console;
 mod error;
 mod fs;
+#[cfg(feature = "display")]
+mod gpu_irq_work;
 mod interrupt_bootstrap;
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
 mod ipi_delivery;

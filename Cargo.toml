@@ -96,6 +96,7 @@ members = [
     "os/StarryOS/vm",
     "os/arceos/api/*",
     "os/arceos/modules/axdisplay",
+    "os/arceos/modules/axgpu",
     "os/arceos/modules/axhal",
     "os/arceos/modules/axinput",
     "os/arceos/modules/axipi",
@@ -153,6 +154,7 @@ ax-cgroup = { version = "0.3", path = "components/ax-cgroup" }
 ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.7", path = "os/arceos/modules/axdisplay" }
+ax-gpu = { version = "0.1", path = "os/arceos/modules/axgpu" }
 ax-driver = { version = "0.18", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 virtio-gpu = { version = "0.1", path = "drivers/gpu/virtio-gpu" }
@@ -223,7 +225,8 @@ rdif-base = { version = "0.9", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.13", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.4", path = "drivers/interface/rdif-def" }
-rdif-display = { version = "0.4", path = "drivers/interface/rdif-display" }
+rdif-display = { version = "0.5", path = "drivers/interface/rdif-display" }
+rdif-gpu = { version = "0.1", path = "drivers/interface/rdif-gpu" }
 rdif-eth = { version = "0.6", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.3", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.16", path = "drivers/interface/rdif-intc" }

@@ -1,27 +1,44 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use rdif_display::Interface;
-use rdrive::{DriverGeneric, probe::OnProbeError};
+use dma_api::DeviceDma;
+use rdif_display::GpuDisplay;
+use rdif_gpu::GpuDevice;
+use rdrive::DriverGeneric;
 
 use crate::{
-    BindingInfo, BindingIrq, Error, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, Error,
     registration::{BoundDevice, TakeRegistered, register_bound_device, take_registered_device},
 };
-#[cfg(feature = "pci")]
-use crate::{PciIrqRequirement, binding_info_from_pci};
 
-pub struct PlatformDisplayDevice {
-    name: String,
-    info: BindingInfo,
-    display: Option<Box<dyn Interface>>,
+/// Exactly one registered owner of a GPU and its optional scanout capability.
+pub enum RegisteredGpuDevice {
+    GpuOnly(Box<dyn GpuDevice>),
+    WithDisplay(Box<dyn GpuDisplay>),
 }
 
-impl PlatformDisplayDevice {
-    fn new(name: String, display: Box<dyn Interface>, info: BindingInfo) -> Self {
+impl RegisteredGpuDevice {
+    fn name(&self) -> &str {
+        match self {
+            Self::GpuOnly(device) => device.name(),
+            Self::WithDisplay(device) => device.name(),
+        }
+    }
+}
+
+pub struct PlatformGpuDevice {
+    name: String,
+    info: BindingInfo,
+    device: Option<RegisteredGpuDevice>,
+    dma: Option<DeviceDma>,
+}
+
+impl PlatformGpuDevice {
+    fn new(device: RegisteredGpuDevice, dma: DeviceDma, info: BindingInfo) -> Self {
         Self {
-            name,
+            name: device.name().into(),
             info,
-            display: Some(display),
+            device: Some(device),
+            dma: Some(dma),
         }
     }
 
@@ -38,156 +55,105 @@ impl PlatformDisplayDevice {
     }
 }
 
-impl DriverGeneric for PlatformDisplayDevice {
+impl DriverGeneric for PlatformGpuDevice {
     fn name(&self) -> &str {
         &self.name
     }
 }
 
-impl BoundDevice for PlatformDisplayDevice {
+impl BoundDevice for PlatformGpuDevice {
     fn binding_info(&self) -> &BindingInfo {
         &self.info
     }
 }
 
-pub struct TakenDisplayDevice {
-    pub device: Box<dyn Interface>,
+pub struct TakenGpuDevice {
+    pub device: RegisteredGpuDevice,
+    pub dma: DeviceDma,
     pub irq: Option<BindingIrq>,
 }
 
-impl TakeRegistered for PlatformDisplayDevice {
-    type Output = TakenDisplayDevice;
+impl TakeRegistered for PlatformGpuDevice {
+    type Output = TakenGpuDevice;
 
     fn take_registered(&mut self) -> Option<Self::Output> {
-        Some(TakenDisplayDevice {
-            device: self.display.take()?,
+        Some(TakenGpuDevice {
+            device: self.device.take()?,
+            dma: self.dma.take()?,
             irq: self.info.irq_cloned(),
         })
     }
 }
 
-pub trait PlatformDeviceDisplay {
-    fn register_display<T>(self, dev: T) -> Option<usize>
-    where
-        T: Interface + 'static;
-
-    fn register_display_with_info<T>(self, dev: T, info: BindingInfo) -> Option<usize>
-    where
-        T: Interface + 'static;
-}
-
-impl PlatformDeviceDisplay for rdrive::PlatformDevice {
-    fn register_display<T>(self, dev: T) -> Option<usize>
-    where
-        T: Interface + 'static,
-    {
-        self.register_display_with_info(dev, BindingInfo::empty())
-    }
-
-    fn register_display_with_info<T>(self, dev: T, info: BindingInfo) -> Option<usize>
-    where
-        T: Interface + 'static,
-    {
-        register_display_with_info(self, dev, info)
-    }
-}
-
-pub trait ProbeFdtDisplay {
-    fn register_display<T>(self, dev: T) -> Result<Option<usize>, OnProbeError>
-    where
-        T: Interface + 'static;
-}
-
-impl ProbeFdtDisplay for rdrive::probe::fdt::ProbeFdt<'_> {
-    fn register_display<T>(self, dev: T) -> Result<Option<usize>, OnProbeError>
-    where
-        T: Interface + 'static,
-    {
-        let info = binding_info_from_fdt(self.info())?;
-        Ok(register_display_with_info(
-            self.into_platform_device(),
-            dev,
-            info,
-        ))
-    }
-}
-
-pub trait ProbeAcpiDisplay {
-    fn register_display<T>(self, dev: T) -> Result<Option<usize>, OnProbeError>
-    where
-        T: Interface + 'static;
-}
-
-impl ProbeAcpiDisplay for rdrive::probe::acpi::ProbeAcpi<'_> {
-    fn register_display<T>(self, dev: T) -> Result<Option<usize>, OnProbeError>
-    where
-        T: Interface + 'static,
-    {
-        let info = binding_info_from_acpi(self.info())?;
-        Ok(register_display_with_info(
-            self.into_platform_device(),
-            dev,
-            info,
-        ))
-    }
-}
-
-#[cfg(feature = "pci")]
-pub trait ProbePciDisplay {
-    fn register_display<T>(
+pub trait PlatformDeviceGpu {
+    fn register_gpu_with_info<T>(
         self,
-        dev: T,
-        requirement: PciIrqRequirement,
-    ) -> Result<Option<usize>, OnProbeError>
+        device: T,
+        dma: DeviceDma,
+        info: BindingInfo,
+    ) -> Option<usize>
     where
-        T: Interface + 'static;
+        T: GpuDevice + 'static;
+
+    fn register_gpu_display_with_info<T>(
+        self,
+        device: T,
+        dma: DeviceDma,
+        info: BindingInfo,
+    ) -> Option<usize>
+    where
+        T: GpuDisplay + 'static;
 }
 
-#[cfg(feature = "pci")]
-impl ProbePciDisplay for rdrive::probe::pci::ProbePci<'_> {
-    fn register_display<T>(
+impl PlatformDeviceGpu for rdrive::PlatformDevice {
+    fn register_gpu_with_info<T>(
         self,
-        dev: T,
-        requirement: PciIrqRequirement,
-    ) -> Result<Option<usize>, OnProbeError>
+        device: T,
+        dma: DeviceDma,
+        info: BindingInfo,
+    ) -> Option<usize>
     where
-        T: Interface + 'static,
+        T: GpuDevice + 'static,
     {
-        let info = binding_info_from_pci(self.info(), requirement)?;
-        Ok(register_display_with_info(
-            self.into_platform_device(),
-            dev,
+        register_gpu_with_info(
+            self,
+            RegisteredGpuDevice::GpuOnly(Box::new(device)),
+            dma,
             info,
-        ))
+        )
+    }
+
+    fn register_gpu_display_with_info<T>(
+        self,
+        device: T,
+        dma: DeviceDma,
+        info: BindingInfo,
+    ) -> Option<usize>
+    where
+        T: GpuDisplay + 'static,
+    {
+        register_gpu_with_info(
+            self,
+            RegisteredGpuDevice::WithDisplay(Box::new(device)),
+            dma,
+            info,
+        )
     }
 }
 
-fn register_display_with_info<T>(
-    plat_dev: rdrive::PlatformDevice,
-    dev: T,
+fn register_gpu_with_info(
+    platform: rdrive::PlatformDevice,
+    device: RegisteredGpuDevice,
+    dma: DeviceDma,
     info: BindingInfo,
-) -> Option<usize>
-where
-    T: Interface + 'static,
-{
-    let name = dev.name().into();
-    register_bound_device(
-        plat_dev,
-        PlatformDisplayDevice::new(name, Box::new(dev), info),
-    )
+) -> Option<usize> {
+    register_bound_device(platform, PlatformGpuDevice::new(device, dma, info))
 }
 
-pub fn take_display_devices() -> crate::Result<Vec<TakenDisplayDevice>> {
+pub fn take_gpu_devices() -> crate::Result<Vec<TakenGpuDevice>> {
     let mut devices = Vec::new();
-    for dev in rdrive::get_list::<PlatformDisplayDevice>() {
-        let display = take_display_device(dev)?;
-        devices.push(display);
+    for device in rdrive::get_list::<PlatformGpuDevice>() {
+        devices.push(take_registered_device(device).ok_or(Error::DeviceUnavailable)?);
     }
     Ok(devices)
-}
-
-fn take_display_device(
-    device: rdrive::Device<PlatformDisplayDevice>,
-) -> crate::Result<TakenDisplayDevice> {
-    take_registered_device(device).ok_or(Error::DeviceUnavailable)
 }

@@ -1,257 +1,32 @@
-use crate::{
-    CapsetInfo, DisplayError, DisplayInfo, DriverGeneric, FrameBuffer, ResourceCreate3d,
-    ResourceCreateBlob, Transfer3d,
-};
+use rdif_gpu::{Completion, CompletionStatus, GpuDevice};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Event {
-    pub handled: bool,
-    pub changed: bool,
+use crate::{DisplayError, DisplayEvent, DisplayState, DriverGeneric, OutputId, OutputInfo};
+
+/// Display output and scanout control, independent of a GPU renderer.
+pub trait DisplayController: DriverGeneric {
+    fn output_count(&self) -> u32;
+    fn output(&self, id: OutputId) -> Result<OutputInfo, DisplayError>;
+    fn current_state(&self, id: OutputId) -> Result<Option<DisplayState>, DisplayError>;
+
+    /// Validate the complete state without changing the current scanout,
+    /// allocating a hardware resource or submitting a command. This is the
+    /// `TEST_ONLY` path.
+    fn check(&self, state: &DisplayState) -> Result<(), DisplayError>;
+
+    /// Revalidate `state` under this exclusive access before touching hardware.
+    /// On error the previous state and its backing remain active. On success
+    /// the driver retains both new and old resources until the returned
+    /// completion confirms that the old scanout is no longer used.
+    fn commit(&mut self, state: &DisplayState) -> Result<Completion, DisplayError>;
+
+    fn commit_status(&mut self, completion: Completion) -> Result<CompletionStatus, DisplayError>;
+
+    /// Drain one event after the GPU control owner has serviced IRQ work.
+    fn poll_event(&mut self) -> Option<DisplayEvent>;
 }
 
-impl Event {
-    pub const fn none() -> Self {
-        Self {
-            handled: false,
-            changed: false,
-        }
-    }
-}
+/// One registered device implements both GPU and display capabilities.
+/// A GPU without an output may be registered as `dyn GpuDevice` instead.
+pub trait GpuDisplay: GpuDevice + DisplayController {}
 
-pub trait Interface: DriverGeneric {
-    // --- 2D methods ---
-
-    fn info(&self) -> DisplayInfo;
-
-    fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError>;
-
-    fn irq_num(&self) -> Option<usize> {
-        None
-    }
-
-    fn need_flush(&self) -> bool {
-        false
-    }
-
-    fn flush(&mut self) -> Result<(), DisplayError> {
-        Ok(())
-    }
-
-    /// Restore the driver's framebuffer as scanout after an external resource.
-    fn restore_framebuffer_scanout(&mut self) -> Result<(), DisplayError> {
-        Ok(())
-    }
-
-    fn enable_irq(&mut self) {}
-
-    fn disable_irq(&mut self) {}
-
-    fn is_irq_enabled(&self) -> bool {
-        false
-    }
-
-    fn handle_irq(&mut self) -> Event {
-        Event::none()
-    }
-
-    // --- 2D resource / scanout primitives (default: unsupported) ---
-
-    /// Create a 2D resource with the given dimensions on the host.
-    ///
-    /// Maps to `VIRTIO_GPU_CMD_RESOURCE_CREATE_2D`. After creation, call
-    /// [`resource_attach_backing`] to bind guest memory, then
-    /// [`set_scanout`] to make it the display output.
-    fn resource_create_2d(
-        &mut self,
-        _resource_id: u32,
-        _width: u32,
-        _height: u32,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Attach guest memory backing to a resource.
-    ///
-    /// Maps to `VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING`. This tells the
-    /// host where the resource's guest-physical pages are so that
-    /// `TRANSFER_TO_HOST_2D` / `TRANSFER_FROM_HOST_3D` can move data
-    /// between guest RAM and the host resource.
-    fn resource_attach_backing(
-        &mut self,
-        _resource_id: u32,
-        _paddr: u64,
-        _length: u32,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Bind a resource as the scanout (display output) for a given scanout ID.
-    ///
-    /// Maps to `VIRTIO_GPU_CMD_SET_SCANOUT`. Used for zero-copy display:
-    /// a render target can be directly set as the scanout so the host
-    /// displays it without a guest-side memcpy.
-    fn set_scanout(
-        &mut self,
-        _scanout_id: u32,
-        _resource_id: u32,
-        _x: u32,
-        _y: u32,
-        _w: u32,
-        _h: u32,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Transfer a rectangular region of a 2D resource from guest to host.
-    ///
-    /// Maps to `VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D`. This makes the host
-    /// aware of guest-written pixel data before a [`resource_flush`].
-    fn transfer_to_host_2d(
-        &mut self,
-        _resource_id: u32,
-        _x: u32,
-        _y: u32,
-        _w: u32,
-        _h: u32,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Flush a rectangular region of a resource to the display.
-    ///
-    /// Maps to `VIRTIO_GPU_CMD_RESOURCE_FLUSH`. After rendering into a
-    /// resource and optionally binding it with [`set_scanout`], call
-    /// this to make the host display the contents.
-    fn resource_flush(
-        &mut self,
-        _resource_id: u32,
-        _x: u32,
-        _y: u32,
-        _w: u32,
-        _h: u32,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    // --- 3D methods (default: unsupported) ---
-
-    /// Returns `true` if the device negotiated virgl 3D support.
-    fn has_virgl(&self) -> bool {
-        false
-    }
-
-    /// Returns `true` if `VIRTIO_GPU_F_RESOURCE_BLOB` was negotiated.
-    ///
-    /// Mesa decides whether to use the blob resource path from the
-    /// `VIRTGPU_PARAM_RESOURCE_BLOB` GETPARAM value, which the kernel must
-    /// report from this actual negotiation (Linux: `has_resource_blob`).
-    fn has_resource_blob(&self) -> bool {
-        false
-    }
-
-    /// Returns `true` if `VIRTIO_GPU_F_CONTEXT_INIT` was negotiated.
-    ///
-    /// Mesa decides whether to use the context-init protocol from the
-    /// `VIRTGPU_PARAM_CONTEXT_INIT` GETPARAM value, which the kernel must report
-    /// from this actual negotiation (Linux: `has_context_init`). It is
-    /// independent of [`has_virgl`](Interface::has_virgl): a legacy device can
-    /// offer VIRGL without the context-init protocol.
-    fn has_context_init(&self) -> bool {
-        false
-    }
-
-    /// Create a 3D rendering context.
-    fn ctx_create(
-        &mut self,
-        _ctx_id: u32,
-        _name: &str,
-        _context_init: u32,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Destroy a 3D rendering context.
-    fn ctx_destroy(&mut self, _ctx_id: u32) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Attach a 3D resource to a rendering context.
-    ///
-    /// A resource must be attached to a context before the context can use it
-    /// for rendering commands. The resource must have been created first via
-    /// [`resource_create_3d`].
-    fn ctx_attach_resource(&mut self, _ctx_id: u32, _resource_id: u32) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Detach a 3D resource from a rendering context.
-    ///
-    /// Must be called before destroying a context if the context has attached
-    /// resources. The host may not reclaim the resource until all contexts
-    /// have detached it.
-    fn ctx_detach_resource(&mut self, _ctx_id: u32, _resource_id: u32) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Create a 3D resource (texture, render target, buffer, etc.).
-    ///
-    /// The caller must explicitly call [`ctx_attach_resource`] after creation
-    /// before using the resource in rendering commands.
-    fn resource_create_3d(&mut self, _params: ResourceCreate3d) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Unreference (release) a 3D resource.
-    fn resource_unref(&mut self, _resource_id: u32) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Create a blob resource (host-visible memory / dma-buf sharing).
-    ///
-    /// Maps to the Linux `virtio_gpu_resource_create_blob_ioctl`
-    /// (`virtgpu_ioctl.c`). `blob_mem` is `VIRTIO_GPU_BLOB_MEM_GUEST (0x1)`,
-    /// `HOST3D (0x2)` or `HOST3D_GUEST (0x3)`; `blob_flags` is the
-    /// `VIRTIO_GPU_BLOB_FLAG_*` set.
-    ///
-    /// `cmd` is the virgl command stream for the blob's initial state (may be
-    /// empty). To match Linux ordering, the implementation must submit `cmd`
-    /// to the context *before* sending RESOURCE_CREATE_BLOB — both go on the
-    /// same virtqueue in order. For HOST3D blobs `cmd` must be dword-aligned
-    /// in size; for GUEST blobs it must be empty.
-    fn resource_create_blob(
-        &mut self,
-        _params: ResourceCreateBlob<'_>,
-    ) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Transfer data from guest to host for a 3D resource.
-    fn transfer_to_host_3d(&mut self, _params: Transfer3d) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Transfer data from host to guest for a 3D resource.
-    fn transfer_from_host_3d(&mut self, _params: Transfer3d) -> Result<(), DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Submit a virgl command buffer. Returns a monotonically increasing fence ID.
-    fn submit_cmd(&mut self, _ctx_id: u32, _cmds: &[u8]) -> Result<u64, DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Query capset information by index.
-    fn get_capset_info(&mut self, _index: u32) -> Result<CapsetInfo, DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-
-    /// Retrieve capset data.
-    fn get_capset(
-        &mut self,
-        _id: u32,
-        _ver: u32,
-        _size: u32,
-    ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
-        Err(DisplayError::NotSupported)
-    }
-}
+impl<T: GpuDevice + DisplayController + ?Sized> GpuDisplay for T {}

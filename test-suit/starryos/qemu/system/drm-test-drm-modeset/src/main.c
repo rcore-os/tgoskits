@@ -254,6 +254,14 @@ int main(void)
         .flags = DRM_MODE_PAGE_FLIP_EVENT,
         .user_data = 0xdeadbeefcafebabeULL,
     };
+    struct drm_mode_crtc_page_flip unsupported_flip = flip;
+    unsupported_flip.flags = 0x02; /* async is not implemented */
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_PAGE_FLIP, &unsupported_flip), EINVAL,
+              "PAGE_FLIP rejects unsupported async flag");
+    unsupported_flip = flip;
+    unsupported_flip.reserved = 1;
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_PAGE_FLIP, &unsupported_flip), EINVAL,
+              "PAGE_FLIP rejects nonzero reserved field");
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip), 0,
               "PAGE_FLIP (with event)");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);

@@ -1,0 +1,22 @@
+args = [
+    "-nographic",
+    "-vga",
+    "none",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
+]
+uefi = true
+to_bin = true
+fail_regex = ["(?i)panic", "(?m)^STARRY_GPU_ABSENT_FAILED\\s*$"]
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "if [ ! -e /dev/dri/card0 ] && [ ! -e /dev/dri/renderD128 ] && [ ! -e /dev/fb0 ] && [ ! -L /sys/class/drm/card0 ] && [ ! -L /sys/class/drm/renderD128 ] && [ ! -L /sys/class/graphics/fb0 ] && [ ! -L /sys/dev/char/226:0 ] && [ ! -L /sys/dev/char/226:128 ] && [ ! -L /sys/dev/char/29:0 ] && [ ! -e /sys/devices/platform/virtio-gpu0 ]; then echo STARRY_GPU_ABSENT_PASSED; else echo STARRY_GPU_ABSENT_FAILED; false; fi"
+success_regex = ["(?m)^STARRY_GPU_ABSENT_PASSED\\s*$"]

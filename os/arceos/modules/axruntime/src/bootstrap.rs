@@ -217,7 +217,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     crate::fs::init(ax_hal::boot::bootargs());
 
     #[cfg(feature = "display")]
-    crate::devices::init_display();
+    {
+        crate::devices::init_gpu();
+        crate::gpu_irq_work::start();
+    }
 
     #[cfg(feature = "input")]
     crate::devices::init_input();

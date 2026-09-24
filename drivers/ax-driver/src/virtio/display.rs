@@ -1,18 +1,29 @@
+//! VirtIO GPU discovery, DMA preparation and IRQ transport gate.
+
 extern crate alloc;
 
-use alloc::format;
-
-use rdif_display::{
-    CapsetInfo, DisplayError, DisplayInfo, Event, FrameBuffer, PixelFormat, ResourceCreate3d,
-    ResourceCreateBlob, Transfer3d,
+use alloc::{boxed::Box, format, string::ToString, sync::Arc};
+use core::{
+    cell::UnsafeCell,
+    hint::spin_loop,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
-use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
+
+use ax_sync::PreemptIrqSaveGuard;
+use dma_api::{DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDomainId};
+use rdif_display::DisplayController;
+use rdif_gpu::{BusIdentity, GpuIrqEndpoint, GpuIrqEvent, PciIdentity};
+use rdrive::{PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
 use virtio_drivers::transport::DeviceType;
-use virtio_drivers::transport::Transport;
-use virtio_gpu::{IrqEvent, VirtIoGpu};
+use virtio_drivers::{
+    PhysAddr, Result as VirtIoResult,
+    transport::{DeviceStatus, InterruptStatus, Transport},
+};
+use virtio_gpu::{VirtIoGpu, VirtIoGpuDevice};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-use crate::{BindingInfo, display::PlatformDeviceDisplay, virtio::VirtIoHalImpl};
+use crate::{BindingInfo, display::PlatformDeviceGpu, virtio::VirtIoHalImpl};
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
@@ -21,486 +32,300 @@ crate::model_register!(
     name: "VirtIO GPU",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
-    probe_kinds: &[ProbeKind::Pci {
-        on_probe: probe_pci,
-    }],
+    probe_kinds: &[ProbeKind::Pci { on_probe: probe_pci }],
 );
 
 #[cfg(feature = "pci")]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint();
+    let class = endpoint.revision_and_class();
+    let bus = BusIdentity::Pci(PciIdentity {
+        vendor: endpoint.vendor_id(),
+        device: endpoint.device_id(),
+        subsystem_vendor: endpoint.subsystem_vendor_id(),
+        subsystem_device: endpoint.subsystem_id(),
+        revision: class.revision_id,
+        class: (u32::from(class.base_class) << 16)
+            | (u32::from(class.sub_class) << 8)
+            | u32::from(class.interface),
+    });
     let transport =
         crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::GPU)?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
-    register_transport_with_info(probe.into_platform_device(), transport, info)
+    let coherency = if probe.info().dma_coherent {
+        DmaCoherency::Coherent
+    } else {
+        DmaCoherency::NonCoherent
+    };
+    register_transport_prepared(
+        probe.into_platform_device(),
+        transport,
+        info,
+        coherency,
+        bus,
+    )
 }
 
 pub fn register_transport<T: Transport + 'static>(
-    plat_dev: PlatformDevice,
+    platform: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
-    register_transport_with_info(plat_dev, transport, BindingInfo::empty())
+    register_transport_prepared(
+        platform,
+        transport,
+        BindingInfo::empty(),
+        DmaCoherency::Coherent,
+        BusIdentity::Platform {
+            name: "virtio-gpu".to_string(),
+            compatible: Some("virtio,mmio".to_string()),
+        },
+    )
 }
 
 pub fn register_transport_with_info<T: Transport + 'static>(
-    plat_dev: PlatformDevice,
+    platform: PlatformDevice,
     transport: T,
     info: BindingInfo,
 ) -> Result<(), OnProbeError> {
-    let irq_num = info.irq_num();
-    let dev = VirtIoDisplay::new(transport, irq_num)
-        .map_err(|err| OnProbeError::other(format!("failed to initialize virtio-gpu: {err:?}")))?;
-    let irq = plat_dev.register_display_with_info(dev, info);
-    log::info!("registered virtio GPU device irq={irq:?}");
+    register_transport_prepared(
+        platform,
+        transport,
+        info,
+        DmaCoherency::Coherent,
+        BusIdentity::Platform {
+            name: "virtio-gpu".to_string(),
+            compatible: Some("virtio,mmio".to_string()),
+        },
+    )
+}
+
+fn register_transport_prepared<T: Transport + 'static>(
+    platform: PlatformDevice,
+    transport: T,
+    info: BindingInfo,
+    coherency: DmaCoherency,
+    bus: BusIdentity,
+) -> Result<(), OnProbeError> {
+    let dma = axklib::dma::device(DmaDeviceInfo::new(
+        DmaDomainId::Direct,
+        coherency,
+        DmaConstraints::new(u64::MAX),
+    ));
+    let (transport, irq_endpoint) = SharedGpuTransport::new(transport);
+    let raw = VirtIoGpu::<VirtIoHalImpl, _>::new(transport)
+        .map_err(|error| OnProbeError::other(format!("virtio-gpu init: {error:?}")))?;
+    let mut identity = VirtIoGpuDevice::<VirtIoHalImpl, SharedGpuTransport<T>>::virtual_identity();
+    identity.bus = bus;
+    identity.modalias = Some("platform:virtio-gpu".to_string());
+    let device = VirtIoGpuDevice::new(raw, dma.info().domain(), identity, Some(irq_endpoint))
+        .map_err(|error| OnProbeError::other(format!("virtio-gpu outputs: {error:?}")))?;
+    let count = device.output_count();
+    let irq = platform.register_gpu_display_with_info(device, dma, info);
+    log::info!("registered virtio GPU outputs={count} irq={irq:?}");
     Ok(())
 }
 
-struct VirtIoDisplay<T: Transport + 'static> {
-    raw: VirtIoGpu<VirtIoHalImpl, T>,
-    info: DisplayInfo,
-    fb_base: *mut u8,
-    irq_num: Option<usize>,
-    irq_enabled: bool,
-    next_fence_id: u64,
+struct SharedGpuTransport<T: Transport + 'static> {
+    inner: Arc<GpuTransportCell<T>>,
 }
 
-unsafe impl<T: Transport + 'static> Send for VirtIoDisplay<T> {}
-
-impl<T: Transport + 'static> VirtIoDisplay<T> {
-    fn new(transport: T, irq_num: Option<usize>) -> Result<Self, virtio_gpu::Error> {
-        let mut raw = VirtIoGpu::new(transport)?;
-        let framebuffer = raw.setup_framebuffer()?;
-        let fb_base = framebuffer.as_mut_ptr();
-        let fb_size = framebuffer.len();
-        let (width, height) = raw.resolution()?;
-        let info = DisplayInfo {
-            width,
-            height,
-            stride: width as usize * 4,
-            format: PixelFormat::Xrgb8888,
-            fb_size,
-        };
-        let _ = raw.ack_interrupt();
-        Ok(Self {
-            raw,
-            info,
-            fb_base,
-            irq_num,
-            irq_enabled: false,
-            next_fence_id: 1,
-        })
+impl<T: Transport + 'static> SharedGpuTransport<T> {
+    fn new(transport: T) -> (Self, Box<dyn GpuIrqEndpoint>) {
+        let inner = Arc::new(GpuTransportCell::new(transport));
+        (
+            Self {
+                inner: Arc::clone(&inner),
+            },
+            Box::new(GpuIrq { inner }),
+        )
     }
 }
 
-impl<T: Transport + 'static> DriverGeneric for VirtIoDisplay<T> {
-    fn name(&self) -> &str {
-        "virtio-gpu"
+impl<T: Transport + 'static> Drop for SharedGpuTransport<T> {
+    fn drop(&mut self) {
+        self.inner.shutting_down.store(true, Ordering::Release);
     }
 }
 
-impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
-    fn info(&self) -> DisplayInfo {
-        self.info
-    }
+struct GpuTransportCell<T: Transport + 'static> {
+    transport: UnsafeCell<T>,
+    access_active: AtomicBool,
+    ack_deferred: AtomicBool,
+    pending_status: AtomicU32,
+    shutting_down: AtomicBool,
+}
 
-    fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError> {
-        Ok(unsafe { FrameBuffer::from_raw_parts_mut(self.fb_base, self.info.fb_size) })
-    }
+// SAFETY: every mutable transport access is guarded by access_active. Task
+// access disables local IRQs; the hard IRQ only try-acquires and never waits.
+unsafe impl<T: Transport + 'static> Send for GpuTransportCell<T> {}
+// SAFETY: shared references can reach transport only under the same gate.
+unsafe impl<T: Transport + 'static> Sync for GpuTransportCell<T> {}
 
-    fn irq_num(&self) -> Option<usize> {
-        self.irq_num
-    }
-
-    fn need_flush(&self) -> bool {
-        true
-    }
-
-    fn flush(&mut self) -> Result<(), DisplayError> {
-        self.raw.flush().map_err(map_display_err)
-    }
-
-    fn restore_framebuffer_scanout(&mut self) -> Result<(), DisplayError> {
-        self.raw
-            .restore_framebuffer_scanout()
-            .map_err(map_display_err)
-    }
-
-    fn enable_irq(&mut self) {
-        self.irq_enabled = true;
-    }
-
-    fn disable_irq(&mut self) {
-        self.irq_enabled = false;
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
-    }
-
-    fn handle_irq(&mut self) -> Event {
-        let irq = self.raw.ack_interrupt();
-        display_irq_event(self.irq_enabled, irq)
-    }
-
-    // --- 2D resource / scanout primitives ---
-
-    fn resource_create_2d(
-        &mut self,
-        resource_id: u32,
-        width: u32,
-        height: u32,
-    ) -> Result<(), DisplayError> {
-        self.raw
-            .resource_create_2d(resource_id, width, height)
-            .map_err(map_gpu3d_err)
-    }
-
-    fn resource_attach_backing(
-        &mut self,
-        resource_id: u32,
-        paddr: u64,
-        length: u32,
-    ) -> Result<(), DisplayError> {
-        // SAFETY: this is the adapter edge for a raw guest-physical range. The
-        // rdif-display contract puts ownership of `paddr..paddr + length` on the
-        // caller — the DRM layer registers a GEM object's backing and keeps it
-        // allocated and unshared until the matching resource is unreferenced —
-        // so the range stays valid, unaliased and large enough for as long as
-        // the device holds the mapping.
-        unsafe { self.raw.resource_attach_backing(resource_id, paddr, length) }
-            .map_err(map_gpu3d_err)
-    }
-
-    fn set_scanout(
-        &mut self,
-        scanout_id: u32,
-        resource_id: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-    ) -> Result<(), DisplayError> {
-        self.raw
-            .set_scanout(
-                virtio_gpu::Rect {
-                    x,
-                    y,
-                    width: w,
-                    height: h,
-                },
-                scanout_id,
-                resource_id,
-            )
-            .map_err(map_gpu3d_err)
-    }
-
-    fn transfer_to_host_2d(
-        &mut self,
-        resource_id: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-    ) -> Result<(), DisplayError> {
-        self.raw
-            .transfer_to_host_2d(
-                virtio_gpu::Rect {
-                    x,
-                    y,
-                    width: w,
-                    height: h,
-                },
-                0,
-                resource_id,
-            )
-            .map_err(map_gpu3d_err)
-    }
-
-    fn resource_flush(
-        &mut self,
-        resource_id: u32,
-        x: u32,
-        y: u32,
-        w: u32,
-        h: u32,
-    ) -> Result<(), DisplayError> {
-        self.raw
-            .resource_flush(
-                virtio_gpu::Rect {
-                    x,
-                    y,
-                    width: w,
-                    height: h,
-                },
-                resource_id,
-            )
-            .map_err(map_gpu3d_err)
-    }
-
-    // --- 3D methods ---
-
-    fn has_virgl(&self) -> bool {
-        self.raw.has_virgl()
-    }
-
-    fn has_resource_blob(&self) -> bool {
-        self.raw.has_resource_blob()
-    }
-
-    fn has_context_init(&self) -> bool {
-        self.raw.has_context_init()
-    }
-
-    fn ctx_create(
-        &mut self,
-        ctx_id: u32,
-        name: &str,
-        context_init: u32,
-    ) -> Result<(), DisplayError> {
-        self.raw
-            .ctx_create(ctx_id, name, context_init)
-            .map_err(map_gpu3d_err)
-    }
-
-    fn ctx_destroy(&mut self, ctx_id: u32) -> Result<(), DisplayError> {
-        self.raw.ctx_destroy(ctx_id).map_err(map_gpu3d_err)
-    }
-
-    fn ctx_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> Result<(), DisplayError> {
-        self.raw
-            .ctx_attach_resource(ctx_id, resource_id)
-            .map_err(map_gpu3d_err)
-    }
-
-    fn ctx_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> Result<(), DisplayError> {
-        self.raw
-            .ctx_detach_resource(ctx_id, resource_id)
-            .map_err(map_gpu3d_err)
-    }
-
-    fn resource_create_3d(&mut self, params: ResourceCreate3d) -> Result<(), DisplayError> {
-        self.raw
-            .resource_create_3d(virtio_gpu::ResourceCreate3d {
-                ctx_id: params.ctx_id,
-                resource_id: params.resource_id,
-                target: params.target,
-                format: params.format,
-                bind: params.bind,
-                width: params.width,
-                height: params.height,
-                depth: params.depth,
-                array_size: params.array_size,
-                last_level: params.last_level,
-                nr_samples: params.nr_samples,
-                flags: params.flags,
-            })
-            .map_err(map_gpu3d_err)
-    }
-
-    fn resource_unref(&mut self, resource_id: u32) -> Result<(), DisplayError> {
-        self.raw.resource_unref(resource_id).map_err(map_gpu3d_err)
-    }
-
-    fn resource_create_blob(&mut self, params: ResourceCreateBlob<'_>) -> Result<(), DisplayError> {
-        // Linux order (`virtio_gpu_resource_create_blob_ioctl`, virtgpu_ioctl.c):
-        // submit the virgl cmd stream first, then send RESOURCE_CREATE_BLOB —
-        // both go on the same virtqueue and execute in order on the host.
-        if !params.cmd.is_empty() {
-            self.submit_cmd(params.ctx_id, params.cmd)?;
+impl<T: Transport + 'static> GpuTransportCell<T> {
+    fn new(transport: T) -> Self {
+        Self {
+            transport: UnsafeCell::new(transport),
+            access_active: AtomicBool::new(false),
+            ack_deferred: AtomicBool::new(false),
+            pending_status: AtomicU32::new(0),
+            shutting_down: AtomicBool::new(false),
         }
-        let entry = params.backing.map(|memory| virtio_gpu::BlobMemory {
-            paddr: memory.paddr,
-            length: memory.length,
-        });
-        let entries = entry.as_slice();
-        // SAFETY: the DRM GEM object owns `backing` until RESOURCE_UNREF.
-        // Guest-backed modes pass one range covering `size`; HOST3D passes
-        // no range, as required by the virtio-gpu blob memory contract.
-        unsafe {
-            self.raw
-                .resource_create_blob(virtio_gpu::ResourceCreateBlob {
-                    ctx_id: params.ctx_id,
-                    resource_id: params.resource_id,
-                    blob_mem: params.blob_mem,
-                    blob_flags: params.blob_flags,
-                    size: params.size,
-                    blob_id: params.blob_id,
-                    mem_entries: entries,
-                })
+    }
+
+    fn with_task<R>(&self, operation: impl FnOnce(&mut T) -> R) -> R {
+        let _irq_guard = PreemptIrqSaveGuard::new();
+        while self
+            .access_active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
         }
-        .map_err(map_gpu3d_err)
+        // SAFETY: the gate excludes all task and IRQ transport borrows.
+        let transport = unsafe { &mut *self.transport.get() };
+        self.ack_deferred(transport);
+        let result = operation(transport);
+        self.ack_deferred(transport);
+        self.access_active.store(false, Ordering::Release);
+        result
     }
 
-    fn transfer_to_host_3d(&mut self, params: Transfer3d) -> Result<(), DisplayError> {
-        self.raw
-            .transfer_to_host_3d(to_core_transfer(params))
-            .map_err(map_gpu3d_err)
+    fn ack_deferred(&self, transport: &mut T) {
+        if self.ack_deferred.swap(false, Ordering::AcqRel) {
+            let status = transport.ack_interrupt();
+            self.pending_status
+                .fetch_or(status.bits(), Ordering::Release);
+        }
     }
 
-    fn transfer_from_host_3d(&mut self, params: Transfer3d) -> Result<(), DisplayError> {
-        self.raw
-            .transfer_from_host_3d(to_core_transfer(params))
-            .map_err(map_gpu3d_err)
+    fn handle_irq(&self) -> GpuIrqEvent {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return GpuIrqEvent {
+                handled: false,
+                work_pending: false,
+            };
+        }
+        if self
+            .access_active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            self.ack_deferred.store(true, Ordering::Release);
+            return GpuIrqEvent {
+                handled: false,
+                work_pending: true,
+            };
+        }
+        // SAFETY: this hard IRQ owns the non-blocking gate and only performs
+        // the transport's bounded ISR read/ack. No queue or resource is touched.
+        let status = unsafe { &mut *self.transport.get() }.ack_interrupt();
+        self.pending_status
+            .fetch_or(status.bits(), Ordering::Release);
+        self.access_active.store(false, Ordering::Release);
+        GpuIrqEvent {
+            handled: !status.is_empty(),
+            work_pending: !status.is_empty(),
+        }
+    }
+}
+
+struct GpuIrq<T: Transport + 'static> {
+    inner: Arc<GpuTransportCell<T>>,
+}
+
+impl<T: Transport + 'static> GpuIrqEndpoint for GpuIrq<T> {
+    fn handle_irq(&self) -> GpuIrqEvent {
+        self.inner.handle_irq()
+    }
+}
+
+impl<T: Transport + 'static> Transport for SharedGpuTransport<T> {
+    fn device_type(&self) -> virtio_drivers::transport::DeviceType {
+        self.inner.with_task(|transport| transport.device_type())
     }
 
-    fn submit_cmd(&mut self, ctx_id: u32, cmds: &[u8]) -> Result<u64, DisplayError> {
-        let fence_id = self.next_fence_id;
-        self.next_fence_id = self.next_fence_id.wrapping_add(1).max(1);
-        self.raw
-            .submit_3d(ctx_id, fence_id, cmds)
-            .map_err(map_gpu3d_err)?;
-        Ok(fence_id)
+    fn read_device_features(&mut self) -> u64 {
+        self.inner.with_task(Transport::read_device_features)
     }
 
-    fn get_capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
-        let info = self.raw.get_capset_info(index).map_err(map_gpu3d_err)?;
-        Ok(CapsetInfo {
-            capset_id: info.capset_id,
-            max_version: info.max_version,
-            max_size: info.max_size,
-        })
+    fn write_driver_features(&mut self, features: u64) {
+        self.inner
+            .with_task(|transport| transport.write_driver_features(features));
     }
 
-    fn get_capset(
+    fn max_queue_size(&mut self, queue: u16) -> u32 {
+        self.inner
+            .with_task(|transport| transport.max_queue_size(queue))
+    }
+
+    fn notify(&mut self, queue: u16) {
+        self.inner.with_task(|transport| transport.notify(queue));
+    }
+
+    fn get_status(&self) -> DeviceStatus {
+        self.inner.with_task(|transport| transport.get_status())
+    }
+
+    fn set_status(&mut self, status: DeviceStatus) {
+        self.inner
+            .with_task(|transport| transport.set_status(status));
+    }
+
+    fn set_guest_page_size(&mut self, size: u32) {
+        self.inner
+            .with_task(|transport| transport.set_guest_page_size(size));
+    }
+
+    fn requires_legacy_layout(&self) -> bool {
+        self.inner
+            .with_task(|transport| transport.requires_legacy_layout())
+    }
+
+    fn queue_set(
         &mut self,
-        id: u32,
-        ver: u32,
+        queue: u16,
         size: u32,
-    ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
-        self.raw.get_capset(id, ver, size).map_err(map_gpu3d_err)
-    }
-}
-
-/// Translates the core crate's interrupt summary into the display event type.
-///
-/// Interrupts are ignored until the display layer enables them: the driver is
-/// polled for setup and only takes over event delivery afterwards.
-///
-/// `handled` is `!irq.is_empty()`, so a configuration interrupt that carried no
-/// display event is still claimed; `changed` comes from the core's
-/// `display_changed`, not from the transport's configuration bit.
-fn display_irq_event(irq_enabled: bool, irq: IrqEvent) -> Event {
-    if !irq_enabled {
-        return Event::none();
-    }
-    Event {
-        handled: !irq.is_empty(),
-        changed: irq.display_changed,
-    }
-}
-
-/// Converts the rdif 3D transfer parameters into the core crate's parameter set.
-fn to_core_transfer(params: Transfer3d) -> virtio_gpu::Transfer3d {
-    virtio_gpu::Transfer3d {
-        ctx_id: params.ctx_id,
-        resource_id: params.resource_id,
-        box_: virtio_gpu::GpuBox {
-            x: params.box_.x,
-            y: params.box_.y,
-            z: params.box_.z,
-            w: params.box_.w,
-            h: params.box_.h,
-            d: params.box_.d,
-        },
-        offset: params.offset,
-        level: params.level,
-        stride: params.stride,
-        layer_stride: params.layer_stride,
-    }
-}
-
-fn map_display_err(err: virtio_gpu::Error) -> DisplayError {
-    match err {
-        virtio_gpu::Error::Unsupported => DisplayError::NotSupported,
-        virtio_gpu::Error::NotReady => DisplayError::NotAvailable,
-        _ => DisplayError::Other(alloc::boxed::Box::new(err)),
-    }
-}
-
-fn map_gpu3d_err(err: virtio_gpu::Error) -> DisplayError {
-    use rdif_display::Gpu3dErrorKind;
-    let kind = match err {
-        virtio_gpu::Error::Unsupported => Gpu3dErrorKind::Unsupported,
-        virtio_gpu::Error::NotReady => Gpu3dErrorKind::NotReady,
-        virtio_gpu::Error::InvalidParam => Gpu3dErrorKind::InvalidParam,
-        virtio_gpu::Error::VirtIo(virtio_drivers::Error::IoError) => Gpu3dErrorKind::IoError,
-        _ => Gpu3dErrorKind::Other,
-    };
-    DisplayError::Gpu3dError(kind)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display_irq_is_ignored_until_driver_enables_it() {
-        let irq = IrqEvent {
-            queue: true,
-            configuration: true,
-            display_changed: true,
-        };
-
-        assert_eq!(display_irq_event(false, irq), Event::none());
+        descriptors: PhysAddr,
+        driver_area: PhysAddr,
+        device_area: PhysAddr,
+    ) {
+        self.inner.with_task(|transport| {
+            transport.queue_set(queue, size, descriptors, driver_area, device_area)
+        });
     }
 
-    #[test]
-    fn display_irq_reports_display_changes() {
-        assert_eq!(
-            display_irq_event(
-                true,
-                IrqEvent {
-                    queue: false,
-                    configuration: true,
-                    display_changed: true,
-                }
-            ),
-            Event {
-                handled: true,
-                changed: true,
-            }
-        );
+    fn queue_unset(&mut self, queue: u16) {
+        self.inner
+            .with_task(|transport| transport.queue_unset(queue));
     }
 
-    #[test]
-    fn display_irq_configuration_without_display_event_is_handled_only() {
-        // A configuration interrupt that cleared no display event still has to
-        // be claimed, but it must not report a display change.
-        assert_eq!(
-            display_irq_event(
-                true,
-                IrqEvent {
-                    queue: false,
-                    configuration: true,
-                    display_changed: false,
-                }
-            ),
-            Event {
-                handled: true,
-                changed: false,
-            }
-        );
+    fn queue_used(&mut self, queue: u16) -> bool {
+        self.inner
+            .with_task(|transport| transport.queue_used(queue))
     }
 
-    #[test]
-    fn display_irq_reports_queue_interrupt_as_handled_only() {
-        assert_eq!(
-            display_irq_event(
-                true,
-                IrqEvent {
-                    queue: true,
-                    configuration: false,
-                    display_changed: false,
-                }
-            ),
-            Event {
-                handled: true,
-                changed: false,
-            }
-        );
+    fn ack_interrupt(&mut self) -> InterruptStatus {
+        let direct = self.inner.with_task(Transport::ack_interrupt);
+        let pending = self.inner.pending_status.swap(0, Ordering::AcqRel);
+        direct | InterruptStatus::from_bits_retain(pending)
     }
 
-    #[test]
-    fn display_irq_empty_status_is_not_claimed() {
-        assert_eq!(display_irq_event(true, IrqEvent::none()), Event::none());
+    fn read_config_generation(&self) -> u32 {
+        self.inner
+            .with_task(|transport| transport.read_config_generation())
+    }
+
+    fn read_config_space<U: FromBytes + IntoBytes>(&self, offset: usize) -> VirtIoResult<U> {
+        self.inner
+            .with_task(|transport| transport.read_config_space(offset))
+    }
+
+    fn write_config_space<U: IntoBytes + Immutable>(
+        &mut self,
+        offset: usize,
+        value: U,
+    ) -> VirtIoResult<()> {
+        self.inner
+            .with_task(|transport| transport.write_config_space(offset, value))
     }
 }

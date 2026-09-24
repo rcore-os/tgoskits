@@ -1,39 +1,49 @@
 use alloc::boxed::Box;
 
+use rdif_gpu::GpuError;
+
 use crate::io;
 
-/// Specific error kinds for 3D GPU operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Gpu3dErrorKind {
-    IoError,
-    Unsupported,
-    NotReady,
-    InvalidParam,
-    Other,
-}
-
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayError {
     #[error("operation not supported")]
-    NotSupported,
-    #[error("device is not available")]
+    Unsupported,
+    #[error("display is not available")]
     NotAvailable,
-    #[error("invalid framebuffer")]
-    InvalidFramebuffer,
-    #[error("GPU 3D error: {0:?}")]
-    Gpu3dError(Gpu3dErrorKind),
-    #[error("other error: {0}")]
-    Other(Box<dyn core::error::Error>),
+    #[error("invalid output")]
+    InvalidOutput,
+    #[error("invalid display state")]
+    InvalidState,
+    #[error("display is busy")]
+    Busy,
+    #[error("display is not ready")]
+    NotReady,
+    #[error("display device was lost")]
+    DeviceLost,
+    #[error("display I/O failed")]
+    Io,
+    #[error("GPU operation failed: {0}")]
+    Gpu(#[from] GpuError),
 }
 
 impl From<DisplayError> for io::ErrorKind {
     fn from(value: DisplayError) -> Self {
         match value {
-            DisplayError::NotSupported => io::ErrorKind::Unsupported,
-            DisplayError::NotAvailable => io::ErrorKind::NotAvailable,
-            DisplayError::InvalidFramebuffer => io::ErrorKind::InvalidData,
-            e @ DisplayError::Gpu3dError(_) => io::ErrorKind::Other(Box::new(e)),
-            DisplayError::Other(error) => io::ErrorKind::Other(error),
+            DisplayError::Unsupported | DisplayError::Gpu(GpuError::Unsupported) => {
+                Self::Unsupported
+            }
+            DisplayError::NotAvailable
+            | DisplayError::DeviceLost
+            | DisplayError::Gpu(GpuError::NotAvailable | GpuError::DeviceLost) => {
+                Self::NotAvailable
+            }
+            DisplayError::InvalidOutput
+            | DisplayError::InvalidState
+            | DisplayError::Gpu(GpuError::InvalidArgument | GpuError::InvalidHandle) => {
+                Self::InvalidData
+            }
+            DisplayError::Gpu(GpuError::OutOfMemory) => Self::OutOfMemory,
+            error => Self::Other(Box::new(error)),
         }
     }
 }

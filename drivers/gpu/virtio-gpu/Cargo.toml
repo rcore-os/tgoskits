@@ -11,7 +11,13 @@ categories = ["hardware-support", "no-std"]
 
 [dependencies]
 bitflags.workspace = true
+rdif-display = { workspace = true, optional = true }
+rdif-gpu = { workspace = true, optional = true }
 log.workspace = true
 thiserror.workspace = true
 virtio-drivers = { workspace = true, features = ["alloc"] }
 zerocopy = { workspace = true, features = ["derive"] }
+
+[features]
+default = []
+rdif = ["dep:rdif-display", "dep:rdif-gpu"]

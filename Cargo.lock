@@ -877,11 +877,7 @@ dependencies = [
 name = "ax-display"
 version = "0.7.0"
 dependencies = [
- "ax-lazyinit",
- "ax-task",
- "irq-framework",
- "log",
- "rdif-display",
+ "ax-gpu",
 ]
 
 [[package]]
@@ -917,6 +913,7 @@ dependencies = [
  "rdif-block",
  "rdif-clk",
  "rdif-display",
+ "rdif-gpu",
  "rdif-input",
  "rdif-intc",
  "rdif-msi",
@@ -992,6 +989,21 @@ dependencies = [
  "slab",
  "starry-fatfs",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "ax-gpu"
+version = "0.1.0"
+dependencies = [
+ "ax-hal",
+ "ax-lazyinit",
+ "ax-memory-addr",
+ "ax-task",
+ "dma-api",
+ "irq-framework",
+ "log",
+ "rdif-display",
+ "rdif-gpu",
 ]
 
 [[package]]
@@ -1222,9 +1234,9 @@ dependencies = [
  "ax-cpu",
  "ax-crate-interface",
  "ax-ctor-bare",
- "ax-display",
  "ax-driver",
  "ax-fs-ng",
+ "ax-gpu",
  "ax-hal",
  "ax-input",
  "ax-ipi",
@@ -6556,9 +6568,10 @@ dependencies = [
 
 [[package]]
 name = "rdif-display"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rdif-base",
+ "rdif-gpu",
  "thiserror 2.0.20",
 ]
 
@@ -6571,6 +6584,15 @@ dependencies = [
  "rdif-base",
  "thiserror 2.0.20",
  "zeroize",
+]
+
+[[package]]
+name = "rdif-gpu"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "rdif-base",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7875,6 +7897,7 @@ dependencies = [
  "ax-display",
  "ax-driver",
  "ax-fs-ng",
+ "ax-gpu",
  "ax-hal",
  "ax-input",
  "ax-io",
@@ -7929,6 +7952,7 @@ dependencies = [
  "rand 0.10.3",
  "rbpf",
  "rdif-block",
+ "rdif-gpu",
  "rdif-pinctrl",
  "rdif-pwm",
  "rdrive",
@@ -9233,6 +9257,8 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "log",
+ "rdif-display",
+ "rdif-gpu",
  "thiserror 2.0.20",
  "virtio-drivers",
  "zerocopy",

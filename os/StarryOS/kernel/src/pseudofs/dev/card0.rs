@@ -1,7 +1,7 @@
-//! `/dev/dri/card0` — virtio-gpu DRM character device.
+//! `/dev/dri/card0` — DRM character device for the registered GPU.
 //!
-//! Single-CRTC, single-connector, single-plane driver over the existing
-//! `axdisplay` framebuffer and virtio-gpu 3D transport. Covers legacy libdrm
+//! Single-CRTC, single-connector, single-plane KMS over the GPU/display
+//! capabilities. Covers legacy libdrm
 //! (`CREATE_DUMB → ADDFB2 → SETCRTC → PAGE_FLIP`) and the atomic-KMS
 //! path (`MODE_ATOMIC` + blob properties) used by modern compositors.
 //!
@@ -9,25 +9,17 @@
 //!   crtc=0x10, encoder=0x20, connector=0x30, plane=0x40
 //!
 //! Simplifications vs. a real DRM driver:
-//!   - Each `CREATE_DUMB` allocates its own page-aligned `GlobalPage`
-//!     sized for the requested geometry; `MAP_DUMB` returns a unique
-//!     monotonic offset key; `Card0::mmap(offset, length)` resolves that key
-//!     back to the buffer's per-allocation physical range. On
-//!     `SETCRTC` / `PAGE_FLIP` / non-`TEST_ONLY` atomic commit,
-//!     `present_fb` presents the committed buffer: guest-RAM dumb
-//!     buffers are memcpy'd into the axdisplay scanout framebuffer and
-//!     `framebuffer_flush` kicked, while host-side virgl 3D resources
-//!     (Weston/glamor GBM scanout buffers) are bound with
-//!     `SET_SCANOUT` + `RESOURCE_FLUSH` — matching Linux
-//!     `virtio_gpu_plane_atomic_update`. PRIME export/import retains the
-//!     underlying GEM-style resource independently of per-file handles.
+//!   - `CREATE_DUMB` allocates a CPU-mappable GPU backing. `MAP_DUMB`
+//!     returns a unique offset key, which mmap resolves to its retained
+//!     physical pages. KMS commits the associated device buffer through
+//!     the display capability. PRIME export/import retains backing
+//!     independently of per-file handles.
 //!   - Property validation is permissive: value ranges aren't rigorously
 //!     enforced (tests drive sensible values). Atomic rejects only
 //!     unknown `(obj, prop)` pairs and obviously-bad object/blob refs.
 //!   - `WAIT_VBLANK` returns immediately with a bumped sequence number;
 //!     there's no real vblank source to wait on.
-//!   - Mode list: one mode matching axdisplay's resolution at a
-//!     synthesized 60 Hz.
+//!   - One CRTC, connector, and plane are exposed from the first output.
 
 use alloc::{
     borrow::Cow,
@@ -40,17 +32,32 @@ use alloc::{
 };
 use core::{
     any::Any,
+    num::NonZeroUsize,
+    ops::Range,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
-use ax_alloc::GlobalPage;
+use ax_gpu::MappableBacking;
+use ax_gpu::rdif_display::{
+    DisplayError, DisplayState, Framebuffer as ScanoutFramebuffer, Mode as DisplayMode, OutputId,
+    OutputInfo, OutputKind, Rect, ScanoutBuffer,
+};
+use ax_gpu::rdif_gpu::{
+    Backing, BufferDescriptor, BufferHandle, Completion, CompletionStatus, ContextHandle, DmaAddr,
+    DmaDomainId, DmaSegment, GpuError, PixelFormat,
+};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
-use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
+use ax_runtime::hal::time::monotonic_time;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use bytemuck::bytes_of;
 use linux_raw_sys::general::O_CLOEXEC;
+
+mod virtgpu;
+mod virtgpu_uapi;
+
+use self::virtgpu_uapi::*;
 
 use super::drm::{
     DRM_CAP_ADDFB2_MODIFIERS,
@@ -60,8 +67,12 @@ use super::drm::{
     DRM_CAP_TIMESTAMP_MONOTONIC,
     DRM_EVENT_FLIP_COMPLETE,
     DRM_FORMAT_ARGB8888,
+    DRM_FORMAT_BGR888,
     DRM_FORMAT_MOD_INVALID,
     DRM_FORMAT_MOD_LINEAR,
+    DRM_FORMAT_RGB565,
+    DRM_FORMAT_RGB888,
+    DRM_FORMAT_XBGR8888,
     DRM_FORMAT_XRGB8888,
     DRM_IOCTL_AUTH_MAGIC,
     DRM_IOCTL_DROP_MASTER,
@@ -95,24 +106,22 @@ use super::drm::{
     DRM_IOCTL_SET_MASTER,
     DRM_IOCTL_SET_VERSION,
     DRM_IOCTL_VERSION,
-    // virtgpu structs and constants
-    DRM_IOCTL_VIRTGPU_CONTEXT_INIT,
-    DRM_IOCTL_VIRTGPU_EXECBUFFER,
-    DRM_IOCTL_VIRTGPU_GET_CAPS,
-    DRM_IOCTL_VIRTGPU_GETPARAM,
-    DRM_IOCTL_VIRTGPU_MAP,
-    DRM_IOCTL_VIRTGPU_RESOURCE_CREATE,
-    DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB,
-    DRM_IOCTL_VIRTGPU_RESOURCE_INFO,
-    DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST,
-    DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST,
-    DRM_IOCTL_VIRTGPU_WAIT,
     DRM_IOCTL_WAIT_VBLANK,
     DRM_MODE_ATOMIC_ALLOW_MODESET,
     DRM_MODE_ATOMIC_NONBLOCK,
     DRM_MODE_ATOMIC_TEST_ONLY,
     DRM_MODE_CONNECTED,
+    DRM_MODE_DISCONNECTED,
+    DRM_MODE_CONNECTOR_UNKNOWN,
+    DRM_MODE_CONNECTOR_VGA,
+    DRM_MODE_CONNECTOR_DISPLAYPORT,
+    DRM_MODE_CONNECTOR_HDMIA,
+    DRM_MODE_CONNECTOR_EDP,
     DRM_MODE_CONNECTOR_VIRTUAL,
+    DRM_MODE_ENCODER_NONE,
+    DRM_MODE_ENCODER_DAC,
+    DRM_MODE_ENCODER_TMDS,
+    DRM_MODE_ENCODER_LVDS,
     DRM_MODE_ENCODER_VIRTUAL,
     DRM_MODE_FB_MODIFIERS,
     DRM_MODE_OBJECT_CONNECTOR,
@@ -161,38 +170,7 @@ use super::drm::{
     DrmSetVersion,
     DrmUnique,
     DrmVersion,
-    DrmVirtgpu3dTransferFromHost,
-    DrmVirtgpu3dTransferToHost,
-    DrmVirtgpu3dWait,
-    DrmVirtgpuContextInit,
-    DrmVirtgpuContextSetParam,
-    DrmVirtgpuExecbuffer,
-    DrmVirtgpuGetCaps,
-    DrmVirtgpuGetparam,
-    DrmVirtgpuMap,
-    DrmVirtgpuResourceCreate,
-    DrmVirtgpuResourceCreateBlob,
-    DrmVirtgpuResourceInfo,
     DrmWaitVblank,
-    VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE,
-    VIRTGPU_BLOB_MEM_GUEST,
-    VIRTGPU_BLOB_MEM_HOST3D,
-    VIRTGPU_BLOB_MEM_HOST3D_GUEST,
-    VIRTGPU_CONTEXT_PARAM_CAPSET_ID,
-    VIRTGPU_CONTEXT_PARAM_NUM_RINGS,
-    VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK,
-    VIRTGPU_DRM_CAPSET_DRM,
-    VIRTGPU_DRM_CAPSET_VIRGL,
-    VIRTGPU_DRM_CAPSET_VIRGL2,
-    VIRTGPU_EXECBUF_FENCE_FD_IN,
-    VIRTGPU_EXECBUF_FENCE_FD_OUT,
-    VIRTGPU_PARAM_3D_FEATURES,
-    VIRTGPU_PARAM_CAPSET_QUERY_FIX,
-    VIRTGPU_PARAM_CONTEXT_INIT,
-    VIRTGPU_PARAM_CROSS_DEVICE,
-    VIRTGPU_PARAM_HOST_VISIBLE,
-    VIRTGPU_PARAM_RESOURCE_BLOB,
-    VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS,
 };
 use super::sync_file::SyncFile;
 use crate::{
@@ -210,20 +188,7 @@ use crate::{
     },
 };
 
-pub const DRIVER_NAME: &str = "virtio_gpu";
-pub const DRIVER_DATE: &str = "20260921";
-pub const DRIVER_DESC: &str = "StarryOS virtio-gpu DRM driver";
-// Linux's virtio_gpu driver reports DRIVER_MAJOR=0 / DRIVER_MINOR=1
-// (virtgpu_drv.h); minor 1 is the version at which
-// `VIRTGPU_EXECBUF_FENCE_FD_IN/OUT` was introduced. Mesa's
-// `virgl_drm_get_version` (virgl_drm_winsys.c) rejects `version_major != 0`
-// with -EINVAL, and uses `>= VIRGL_DRM_VERSION_FENCE_FD (0,1)` to choose the
-// fd-based fence path instead of the legacy one (an 8x1 placeholder resource
-// plus WAIT plus GEM_CLOSE per frame). EXECBUFFER now implements fence-fd, so
-// matching Linux's stable ABI and reporting minor 1 lets Mesa use fd fences.
-pub const DRIVER_VERSION_MAJOR: i32 = 0;
-pub const DRIVER_VERSION_MINOR: i32 = 1;
-pub const DRIVER_VERSION_PATCHLEVEL: i32 = 0;
+const DRM_DRIVER_DATE: &str = "20260921";
 
 /// Fixed object IDs advertised by GETRESOURCES / GETCONNECTOR / GETENCODER.
 const CRTC_ID: u32 = 0x10;
@@ -231,10 +196,6 @@ const ENCODER_ID: u32 = 0x20;
 const CONNECTOR_ID: u32 = 0x30;
 const PLANE_ID: u32 = 0x40;
 
-/// The implicit virgl context used for all 3D commands on this card.
-///
-/// **Must be non-zero.** virglrenderer rejects `ctx_id == 0` at context
-/// creation (`virgl_renderer_context_create_with_flags` returns EINVAL for
 /// First context id.  Linux starts at 1 (virglrenderer rejects id 0).
 /// Allocated per-fd via `next_ctx_id` to match
 /// `atomic_inc_return(&vgdev->ctx_id_cursor)` in the Linux kernel.
@@ -330,9 +291,6 @@ const PLANE_PROPS: &[u32] = &[
 const CRTC_PROPS: &[u32] = &[PROP_CRTC_ACTIVE, PROP_CRTC_MODE_ID];
 const CONN_PROPS: &[u32] = &[PROP_CONN_CRTC_ID];
 
-/// Supported pixel formats advertised via `GETPLANE.format_type_ptr`.
-const SUPPORTED_FORMATS: &[u32] = &[DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888];
-
 /// Upper bound on the pending-event queue. Matches Linux's
 /// `file->event_space` of 4 KB ≈ 128 `drm_event_vblank`s.
 const MAX_EVENTS: usize = 128;
@@ -345,39 +303,11 @@ const MAX_BLOB_BYTES: usize = 64 * 1024;
 /// Upper bound for one userspace-supplied virgl command stream.
 const MAX_VIRGL_COMMAND_BYTES: usize = 16 * 1024 * 1024;
 
-/// Metadata recorded per `CREATE_DUMB` call. Each buffer owns its own
-/// page-aligned [`GlobalPage`] — no shared 128 MiB pool — so we don't
-/// need a large contiguous physical region up front. The `offset` is
-/// what `MAP_DUMB` returns and what `mmap` looks up: a synthetic,
-/// monotonically-advancing key (not a real byte offset into anything)
-/// that the mmap hook uses to locate this buffer's pages.
-///
-/// `pages` is `Arc<GlobalPage>`: `DESTROY_DUMB` drops Card0's strong
-/// ref, but the `LinearBackend` cloned into each live VMA via
-/// `DeviceMmap::Physical` keeps its own strong ref. The underlying
-/// pages aren't released until every user mapping is unmapped, which
-/// is exactly Linux's GEM refcount contract.
-///
-/// # Field semantics
-///
-/// Only `size`, `offset`, and `pages` are **consumed** by downstream
-/// operations (`ADDFB2` reads `pages`+`size`; `mmap` reads `offset`;
-/// `present_fb` reads `pages`+`size`).  The fields `width`, `height`,
-/// `bpp`, and `pitch` are **metadata only** — written once by
-/// `CREATE_DUMB` but never read back by any ioctl handler in this
-/// driver.  They exist solely so that a human examining a debug dump
-/// or a future `GET_DUMB_INFO` (if added) can see what geometry the
-/// buffer was allocated for.
-///
-/// This matters for the `PRIME_FD_TO_HANDLE` import path: the
-/// [`DrmPrimeHandle`] ioctl struct carries only `{handle, flags, fd}`
-/// — it does **not** convey width/height/bpp/pitch from the exporting
-/// driver.  Consequently an imported `DumbBuffer` will always have
-/// these four fields set to zero.  No ioctl handler depends on them,
-/// so the zero values are safe.  If a future commit adds code that
-/// reads `.width` / `.height` / `.bpp` / `.pitch` from an imported
-/// buffer, that code must handle the zero case (e.g. by falling back
-/// to `ADDFB2`-supplied geometry).
+/// One GEM handle backed by a CPU-mappable GPU allocation. `offset` is a
+/// synthetic `MAP_DUMB` key, while each VMA holds its own mapping reference.
+/// Width, height, bpp, and pitch are metadata only. A PRIME import sets them
+/// to zero because the ioctl carries only the handle, flags, and fd; ADDFB2
+/// supplies the image layout when the imported handle becomes a framebuffer.
 struct DumbBuffer {
     /// Open-file description that owns this GEM handle.
     owner: u64,
@@ -388,9 +318,9 @@ struct DumbBuffer {
     size: u64,
     /// Unique mmap-offset key for this buffer.
     offset: u64,
-    /// Backing pages. Refcounted so user mappings keep them alive
+    /// CPU-mappable backing. Refcounted so user mappings keep it alive
     /// across `DESTROY_DUMB`.
-    pages: Arc<GlobalPage>,
+    mapping: Arc<GpuMapping>,
     /// Whether this GEM object has guest memory userspace may mmap.
     mappable: bool,
     /// Host-side resource associated with this GEM object, when any.
@@ -402,36 +332,27 @@ struct DumbBuffer {
 /// handle does not invalidate the fb — Linux's GEM contract says a
 /// framebuffer keeps the buffer alive for as long as the fb_id is
 /// live.
+#[derive(Clone)]
 struct Framebuffer {
     /// Open-file description that created this framebuffer.
     owner: u64,
-    /// Total backing size in bytes.
-    size: u64,
     /// Row stride (pitch) in bytes — from ADDFB2.pitches[0].
     stride: u32,
     /// Framebuffer width in pixels — from ADDFB2.width.
     width: u32,
     /// Framebuffer height in pixels — from ADDFB2.height.
     height: u32,
-    /// Backing storage kind. Present copies guest RAM for dumb buffers
-    /// (2D path) and binds the host texture as scanout for virgl 3D
-    /// resources (`SET_SCANOUT`) — matching Linux, which always sets the
-    /// resource itself as scanout.
+    format: PixelFormat,
+    /// Backing storage retained by this framebuffer.
     kind: FbBacking,
 }
 
 /// Backing storage for a DRM framebuffer.
 #[derive(Clone)]
 enum FbBacking {
-    /// Guest RAM shared with a dumb buffer. The `Arc` keeps the pages
-    /// alive until both this fb and any user mappings have been dropped.
-    Dumb { pages: Arc<GlobalPage> },
-    /// Host-side resource. `res_handle` is the host 2D/3D resource;
-    /// `is_dumb_2d` marks a guest-backed 2D resource (dumb buffer) whose
-    /// pixels must be `TRANSFER_TO_HOST_2D`'d from guest RAM before flush.
-    /// 3D virgl/blob resources already hold their pixels on the host, so
-    /// present must NOT transfer them (Linux `virtio_gpu_plane_atomic_update`
-    /// transfers the dumb/2D case only).
+    /// Imported GEM backing awaiting image layout from `ADDFB2`.
+    Dumb { mapping: Arc<GpuMapping> },
+    /// Device buffer retained across GEM handle close and scanout.
     Gpu3d { resource: Arc<GpuResource> },
 }
 
@@ -442,14 +363,86 @@ enum FbBacking {
 /// read, or passed via SCM_RIGHTS for cross-process buffer sharing.
 /// Follows the same pattern as card1.rs's `ExportedGemBuffer`.
 struct DmaBufGem {
-    /// Physical address range of the underlying buffer.
-    range: PhysAddrRange,
-    /// Backing pages shared with the source dumb buffer — keeps the
-    /// allocation alive even after a `DESTROY_DUMB` on the source
-    /// handle.
-    pages: Arc<GlobalPage>,
+    /// DMA allocation shared with the source GEM handle and user mappings.
+    mapping: Arc<GpuMapping>,
+    /// The same-device GPU object, when the exporter already created one.
+    /// Sharing this Arc preserves its device handle across PRIME imports.
+    resource: Option<Arc<GpuResource>>,
     /// Total size in bytes.
     size: u64,
+}
+
+/// A user mapping pins both its CPU pages and the GPU object that owns them.
+/// The VMA keeps this lease after the creating GEM handle or PRIME fd closes.
+struct GpuMappingLease {
+    _mapping: Arc<GpuMapping>,
+    _resource: Option<Arc<GpuResource>>,
+}
+
+/// GPU-visible pages retained by a GEM handle, PRIME fd, framebuffer or VMA.
+enum GpuMapping {
+    Owned(Arc<MappableBacking>),
+    Heap(Arc<HeapBacking>),
+}
+
+impl GpuMapping {
+    fn backing(&self) -> Arc<dyn Backing> {
+        match self {
+            Self::Owned(mapping) => mapping.backing(),
+            Self::Heap(backing) => backing.clone(),
+        }
+    }
+
+    fn physical(&self) -> PhysAddrRange {
+        match self {
+            Self::Owned(mapping) => mapping.physical(),
+            Self::Heap(backing) => backing.file.phys_range(),
+        }
+    }
+}
+
+/// Imported coherent dma-heap allocation in the direct DMA domain.
+struct HeapBacking {
+    file: Arc<crate::file::dmabuf::DmaBufFile>,
+    segments: [DmaSegment; 1],
+}
+
+impl HeapBacking {
+    fn new(file: Arc<crate::file::dmabuf::DmaBufFile>) -> Self {
+        let segments = [DmaSegment::new(
+            DmaAddr::from(file.phys_base() as u64),
+            NonZeroUsize::new(file.size()).expect("dma-heap allocation is nonempty"),
+        )];
+        Self { file, segments }
+    }
+}
+
+// SAFETY: DmaBufFile retains a stable contiguous CoherentArray in the direct
+// DMA domain. Its allocation outlives every cloned HeapBacking, and coherent
+// memory needs no explicit cache ownership transfer.
+unsafe impl Backing for HeapBacking {
+    fn len(&self) -> usize {
+        self.file.size()
+    }
+
+    fn domain_id(&self) -> DmaDomainId {
+        DmaDomainId::Direct
+    }
+
+    fn segments(&self) -> &[DmaSegment] {
+        &self.segments
+    }
+
+    fn sync_for_device(&self, range: Range<usize>) -> Result<(), GpuError> {
+        if range.start > range.end || range.end > self.len() {
+            return Err(GpuError::InvalidArgument);
+        }
+        Ok(())
+    }
+
+    fn sync_for_cpu(&self, range: Range<usize>) -> Result<(), GpuError> {
+        self.sync_for_device(range)
+    }
 }
 
 impl FileLike for DmaBufGem {
@@ -482,7 +475,13 @@ impl FileLike for DmaBufGem {
         // the full range (rather than a length-clamped subset) avoids
         // the double-accounting bug where the generic layer would
         // shrink or invalidate the range after shifting it.
-        Ok(DeviceMmap::Physical(self.range, Some(self.pages.clone())))
+        Ok(DeviceMmap::Physical(
+            self.mapping.physical(),
+            Some(Arc::new(GpuMappingLease {
+                _mapping: self.mapping.clone(),
+                _resource: self.resource.clone(),
+            })),
+        ))
     }
 }
 
@@ -536,6 +535,8 @@ struct GpuResource {
     owner: u64,
     /// Virtio-gpu resource id.
     res_handle: u32,
+    /// Device-scoped resource handle; only this enters the portable GPU API.
+    device_handle: BufferHandle,
     /// The GEM handle associated with this resource (from CREATE_DUMB or
     /// allocated by RESOURCE_CREATE).
     bo_handle: u32,
@@ -545,6 +546,8 @@ struct GpuResource {
     height: u32,
     /// Row stride in bytes.
     stride: u32,
+    /// Format used when this resource was created as a dumb image.
+    format: Option<PixelFormat>,
     /// Resource size in bytes.
     size: u64,
     /// blob_mem from RESOURCE_CREATE_BLOB (`VIRTGPU_BLOB_MEM_*`); 0 for
@@ -564,8 +567,10 @@ struct GpuResource {
 
 impl Drop for GpuResource {
     fn drop(&mut self) {
-        if ax_display::has_display() {
-            let _ = ax_display::gpu3d_resource_unref(self.res_handle);
+        if let Err(error) = ax_gpu::with_gpu(|device| device.release_buffer(self.device_handle))
+            .and_then(core::convert::identity)
+        {
+            warn!("failed to release GPU buffer {:?}: {error}", self.device_handle);
         }
     }
 }
@@ -642,8 +647,8 @@ struct PerFdCtx {
     capset_id: u32,
     #[allow(dead_code)]
     num_rings: u32,
-    ctx_id: u32,
-    attached_resources: BTreeSet<u32>,
+    ctx_id: ContextHandle,
+    attached_resources: BTreeMap<u32, Arc<GpuResource>>,
 }
 
 /// Per-open DRM state, equivalent to Linux `struct drm_file` plus the
@@ -662,11 +667,13 @@ struct Card0File {
 pub struct Card0 {
     /// Weak self-reference used only to create per-open file descriptions.
     self_weak: Weak<Card0>,
+    /// Serializes cross-fd modesets while the state lock is released for I/O.
+    modeset_operation: Mutex<()>,
     /// Monotonically-increasing vblank sequence.
     sequence: AtomicU32,
-    /// Serializes modeset validation, scanout and publication. Lock order is
-    /// state -> fbs/blobs -> display; display IRQ handling never takes state.
-    /// User copies and event wakeups happen outside this sleepable mutex.
+    /// Published modeset state. Cross-fd operations use `modeset_operation`;
+    /// this short-lived lock is released before GPU/display calls, user copies
+    /// and event wakeups. Display IRQ handling never takes it.
     state: Mutex<ModesetState>,
     /// `CREATE_DUMB`-allocated buffers keyed by handle. Dropping an
     /// entry releases Card0's strong ref on the backing pages; user
@@ -684,6 +691,8 @@ pub struct Card0 {
     /// Resource currently bound to scanout. The scanout itself owns a GEM
     /// reference independently of the originating framebuffer and handle.
     scanout_resource: Mutex<Option<Arc<GpuResource>>>,
+    /// Old scanout references awaiting an asynchronous device completion.
+    retired_scanout_resources: Mutex<Vec<(Completion, Arc<GpuResource>)>>,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
     /// User-published blobs. A committed mode pins its own reference in state.
@@ -701,9 +710,6 @@ pub struct Card0 {
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: Mutex<()>,
-    /// Registered virtio-gpu IRQ action, when the display backend advertises one.
-    irq_handle: ax_lazyinit::OnceLock<ax_runtime::hal::irq::IrqHandle>,
-
     // ---- 3D (virgl) resource management ----
     /// 3D resources keyed by virtio-gpu resource ID. Each resource tracks
     /// its associated GEM handle, geometry, and size for transfer validation.
@@ -730,8 +736,9 @@ pub struct Card0 {
 
 impl Card0 {
     pub fn new() -> Arc<Self> {
-        let card = Arc::new_cyclic(|weak| Self {
+        Arc::new_cyclic(|weak| Self {
             self_weak: weak.clone(),
+            modeset_operation: Mutex::new(()),
             sequence: AtomicU32::new(0),
             state: Mutex::new(ModesetState::default()),
             dumbs: Mutex::new(BTreeMap::new()),
@@ -742,13 +749,13 @@ impl Card0 {
             next_offset: AtomicU64::new(DUMB_BUFFER_OFFSET_STRIDE),
             fbs: Mutex::new(BTreeMap::new()),
             scanout_resource: Mutex::new(None),
+            retired_scanout_resources: Mutex::new(Vec::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
             blobs: Mutex::new(BTreeMap::new()),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
             system_blobs: Mutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: Mutex::new(()),
-            irq_handle: ax_lazyinit::OnceLock::new(),
             // 3D resource management
             gpu_resources: Mutex::new(BTreeMap::new()),
             blob_aliases: Mutex::new(BTreeMap::new()),
@@ -756,44 +763,7 @@ impl Card0 {
             next_ctx_id: AtomicU32::new(FIRST_VIRGL_CTX_ID),
             next_file_id: AtomicU64::new(1),
             capset_cache: Mutex::new(BTreeMap::new()),
-        });
-        card.register_irq();
-        card
-    }
-
-    fn register_irq(self: &Arc<Self>) {
-        if !ax_display::has_display() {
-            return;
-        }
-        let Some(irq) = ax_display::framebuffer_irq_id() else {
-            return;
-        };
-
-        let request = ax_runtime::hal::irq::IrqRequest::new(|_| {
-            if ax_display::framebuffer_handle_irq() {
-                ax_runtime::hal::irq::IrqReturn::Handled
-            } else {
-                ax_runtime::hal::irq::IrqReturn::Unhandled
-            }
         })
-        .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
-        .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(irq, request) {
-            Ok(handle) => {
-                self.irq_handle.call_once(|| handle);
-                ax_display::framebuffer_enable_irq();
-                if let Some(handle) = self.irq_handle.get().copied()
-                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
-                {
-                    warn!("failed to enable display irq handler for irq {irq:?}: {err:?}");
-                    ax_display::framebuffer_disable_irq();
-                }
-            }
-            Err(err) => {
-                warn!("failed to register display irq handler for irq {irq:?}: {err:?}");
-                ax_display::framebuffer_disable_irq();
-            }
-        }
     }
 
     /// Lazily construct the `IN_FORMATS` blob the first time a caller
@@ -801,21 +771,22 @@ impl Card0 {
     /// allocate-and-publish so a concurrent first-caller cannot leak
     /// a parallel copy into `system_blobs`. The blob lives there
     /// permanently — `handle_destroy_blob` refuses ids it covers.
-    fn ensure_in_formats_blob(&self) -> u32 {
+    fn ensure_in_formats_blob(&self) -> VfsResult<u32> {
         let cur = self.in_formats_blob.load(Ordering::Acquire);
         if cur != 0 {
-            return cur;
+            return Ok(cur);
         }
+        let formats = display_plane_formats()?;
         let _guard = self.system_blobs_init.lock();
         let cur = self.in_formats_blob.load(Ordering::Acquire);
         if cur != 0 {
-            return cur;
+            return Ok(cur);
         }
-        let bytes = build_in_formats_blob();
+        let bytes = build_in_formats_blob(&formats);
         let id = self.next_blob_id.fetch_add(1, Ordering::Relaxed);
         self.system_blobs.lock().insert(id, Arc::new(bytes));
         self.in_formats_blob.store(id, Ordering::Release);
-        id
+        Ok(id)
     }
 }
 
@@ -873,22 +844,71 @@ fn report_user_array<T: bytemuck::NoUninit>(
     Ok(src.len() as u32)
 }
 
-/// Fetch a (width, height) pair from `axdisplay`. If no display device
-/// was probed, returns a tiny default so `MODE_GETRESOURCES`/
-/// `GETCONNECTOR` still have something coherent to report.
-fn display_resolution() -> (u32, u32) {
-    if ax_display::has_display() {
-        let info = ax_display::framebuffer_info();
-        (info.width, info.height)
-    } else {
-        (640, 480)
+fn display_output_info() -> VfsResult<OutputInfo> {
+    ax_gpu::with_display(|device| {
+        let first = device.output(OutputId::new(0))?;
+        if first.connected {
+            return Ok(first);
+        }
+        Ok((1..device.output_count())
+            .map(OutputId::new)
+            .find_map(|id| device.output(id).ok().filter(|output| output.connected))
+            .unwrap_or(first))
+    })
+        .map_err(map_display_err)?
+        .map_err(map_display_err)
+}
+
+fn kms_available() -> bool {
+    ax_gpu::has_display_controller()
+        && ax_gpu::capabilities().is_some_and(|capabilities| capabilities.supports_image_2d)
+}
+
+fn format_to_fourcc(format: PixelFormat) -> u32 {
+    match format {
+        PixelFormat::Rgb565 => DRM_FORMAT_RGB565,
+        PixelFormat::Rgb888 => DRM_FORMAT_RGB888,
+        PixelFormat::Bgr888 => DRM_FORMAT_BGR888,
+        PixelFormat::Xrgb8888 => DRM_FORMAT_XRGB8888,
+        PixelFormat::Argb8888 => DRM_FORMAT_ARGB8888,
+        PixelFormat::Xbgr8888 => DRM_FORMAT_XBGR8888,
     }
 }
 
+fn fourcc_to_format(fourcc: u32) -> Option<PixelFormat> {
+    match fourcc {
+        DRM_FORMAT_RGB565 => Some(PixelFormat::Rgb565),
+        DRM_FORMAT_RGB888 => Some(PixelFormat::Rgb888),
+        DRM_FORMAT_BGR888 => Some(PixelFormat::Bgr888),
+        DRM_FORMAT_XRGB8888 => Some(PixelFormat::Xrgb8888),
+        DRM_FORMAT_ARGB8888 => Some(PixelFormat::Argb8888),
+        DRM_FORMAT_XBGR8888 => Some(PixelFormat::Xbgr8888),
+        _ => None,
+    }
+}
+
+fn display_plane_formats() -> VfsResult<Vec<u32>> {
+    let mut formats = Vec::new();
+    for format in display_output_info()?.formats {
+        let fourcc = format_to_fourcc(format);
+        if !formats.contains(&fourcc) {
+            formats.push(fourcc);
+        }
+    }
+    Ok(formats)
+}
+
+/// Resolution advertised by the bound output.
+fn display_resolution() -> (u32, u32) {
+    display_output_info()
+        .ok()
+        .and_then(|output| output.preferred_mode.or_else(|| output.modes.first().copied()))
+        .map_or((0, 0), |mode| (mode.width, mode.height))
+}
+
 /// VESA CVT-RBv1 (Coordinated Video Timings, Reduced Blanking — 2003)
-/// constants. virtio-gpu doesn't actually drive a scanout clock but
-/// userspace mode-validators reject self-inconsistent modes, so we
-/// synthesize plausible values from the real resolution.
+/// constants. A device may omit timings, but userspace mode validators
+/// require a self-consistent DRM mode structure.
 const CVT_RB_HFRONT_PORCH: u16 = 48;
 const CVT_RB_HSYNC_WIDTH: u16 = 32;
 const CVT_RB_HBACK_PORCH: u16 = 80;
@@ -900,8 +920,8 @@ const CVT_RB_VBACK_PORCH: u16 = 6;
 const DEFAULT_VREFRESH: u32 = 60;
 
 /// Synthesized mode matching the display's current resolution.
-fn current_mode() -> DrmModeModeInfo {
-    let (w, h) = display_resolution();
+fn current_mode(mode: DisplayMode) -> DrmModeModeInfo {
+    let (w, h) = (mode.width, mode.height);
     let mut name = [0u8; 32];
     let s = b"current";
     name[..s.len()].copy_from_slice(s);
@@ -916,7 +936,11 @@ fn current_mode() -> DrmModeModeInfo {
     let vsync_end = vsync_start + CVT_RB_VSYNC_WIDTH;
     let vtotal = vsync_end + CVT_RB_VBACK_PORCH;
 
-    let vrefresh: u32 = DEFAULT_VREFRESH;
+    let vrefresh: u32 = if mode.refresh_millihz == 0 {
+        DEFAULT_VREFRESH
+    } else {
+        mode.refresh_millihz / 1000
+    };
     let clock = ((htotal as u32) * (vtotal as u32) * vrefresh) / 1000;
 
     DrmModeModeInfo {
@@ -996,7 +1020,7 @@ impl Card0File {
     ///
     /// Fails with `Unsupported` when virgl was not negotiated, matching the
     /// device core, which rejects every 3D command without that feature.
-    fn create_context(&self, kind: CreateKind) -> VfsResult<u32> {
+    fn create_context(&self, kind: CreateKind) -> VfsResult<ContextHandle> {
         let (context_init, num_rings) = match kind {
             CreateKind::Legacy => (0, 1),
             CreateKind::Explicit {
@@ -1008,23 +1032,30 @@ impl Card0File {
         // The device core rejects 3D commands without VIRGL; failing here keeps
         // the error a single, predictable `Unsupported` instead of a host
         // round-trip that can only fail.
-        if !ax_display::has_virgl() {
+        if !ax_gpu::capabilities().is_some_and(|caps| caps.supports_3d) {
             return Err(VfsError::Unsupported);
         }
 
-        let ctx_id = self.card.next_ctx_id.fetch_add(1, Ordering::Relaxed);
+        let label_id = self.card.next_ctx_id.fetch_add(1, Ordering::Relaxed);
         // Name encodes the unique `ctx_id` rather than the capset, so two
         // contexts never share the debug label and host-side error logs
         // ("starry-ctx-2") stay attributable to one client.
-        let ctx_name = format!("starry-ctx-{ctx_id}");
-        ax_display::gpu3d_ctx_create(ctx_id, &ctx_name, context_init).map_err(map_gpu3d_err)?;
+        let ctx_name = format!("starry-ctx-{label_id}");
+        let ctx_id = ax_gpu::with_gpu(|device| {
+            device
+                .virgl()
+                .ok_or(GpuError::Unsupported)?
+                .create_context(&ctx_name, context_init)
+        })
+        .map_err(map_gpu_err)?
+        .map_err(map_gpu_err)?;
 
         // Published only after the host accepted the create.
         *self.context.lock() = Some(PerFdCtx {
             capset_id: context_init,
             num_rings,
             ctx_id,
-            attached_resources: BTreeSet::new(),
+            attached_resources: BTreeMap::new(),
         });
         Ok(ctx_id)
     }
@@ -1048,7 +1079,7 @@ impl Card0File {
     /// Callers must already hold `operation`, which serializes every mutable
     /// `Card0File` ioctl on this open file description; the probe-then-create
     /// sequence below relies on that serialization to stay race-free.
-    fn ensure_lazy_context(&self) -> VfsResult<u32> {
+    fn ensure_lazy_context(&self) -> VfsResult<ContextHandle> {
         if let Some(context) = self.context.lock().as_ref() {
             return Ok(context.ctx_id);
         }
@@ -1064,16 +1095,30 @@ impl Card0File {
     /// that as a successful no-op rather than an error. `Ok(true)` covers both
     /// a fresh attach and an already-attached resource.
     fn attach_resource_if_ready(&self, resource: &Arc<GpuResource>) -> VfsResult<bool> {
-        let mut context = self.context.lock();
-        let Some(context) = context.as_mut() else {
-            return Ok(false);
+        let ctx_id = {
+            let guard = self.context.lock();
+            let Some(context) = guard.as_ref() else {
+                return Ok(false);
+            };
+            if context.attached_resources.contains_key(&resource.res_handle) {
+                return Ok(true);
+            }
+            context.ctx_id
         };
-        if context.attached_resources.contains(&resource.res_handle) {
-            return Ok(true);
-        }
-        ax_display::gpu3d_ctx_attach_resource(context.ctx_id, resource.res_handle)
-            .map_err(map_gpu3d_err)?;
-        context.attached_resources.insert(resource.res_handle);
+        ax_gpu::with_gpu(|device| {
+            device
+                .virgl()
+                .ok_or(GpuError::Unsupported)?
+                .attach_resource(ctx_id, resource.device_handle)
+        })
+        .map_err(map_gpu_err)?
+        .map_err(map_gpu_err)?;
+        self.context
+            .lock()
+            .as_mut()
+            .ok_or(VfsError::InvalidInput)?
+            .attached_resources
+            .insert(resource.res_handle, resource.clone());
         Ok(true)
     }
 
@@ -1087,17 +1132,47 @@ impl Card0File {
     }
 
     fn detach_resource(&self, resource_id: u32) {
-        let mut context = self.context.lock();
-        let Some(context) = context.as_mut() else {
-            return;
+        let (ctx_id, resource) = {
+            let guard = self.context.lock();
+            let Some(context) = guard.as_ref() else {
+                return;
+            };
+            let Some(resource) = context.attached_resources.get(&resource_id).cloned() else {
+                return;
+            };
+            (context.ctx_id, resource)
         };
-        if context.attached_resources.remove(&resource_id) {
-            let _ = ax_display::gpu3d_ctx_detach_resource(context.ctx_id, resource_id);
+        let result = ax_gpu::with_gpu(|device| {
+            device
+                .virgl()
+                .ok_or(GpuError::Unsupported)?
+                .detach_resource(ctx_id, resource.device_handle)
+        });
+        if matches!(result, Ok(Ok(())))
+            && let Some(context) = self.context.lock().as_mut()
+        {
+            context.attached_resources.remove(&resource_id);
         }
     }
 
     fn ioctl_inner(&self, current: &UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         let card = &self.card;
+        let number = cmd & 0xff;
+        if (0x41..=0x4b).contains(&number)
+            && ax_gpu::identity().is_none_or(|identity| identity.driver_name != "virtio_gpu")
+        {
+            return Err(VfsError::NotATty);
+        }
+        let kms_ioctl = number >= 0xa0
+            && !matches!(
+                cmd,
+                DRM_IOCTL_MODE_CREATE_DUMB
+                    | DRM_IOCTL_MODE_MAP_DUMB
+                    | DRM_IOCTL_MODE_DESTROY_DUMB
+            );
+        if !kms_available() && (kms_ioctl || cmd == DRM_IOCTL_WAIT_VBLANK) {
+            return Err(VfsError::Unsupported);
+        }
         match cmd {
             DRM_IOCTL_VERSION => handle_version(current, arg),
             DRM_IOCTL_GET_UNIQUE => handle_get_unique(current, arg),
@@ -1244,6 +1319,9 @@ impl FileLike for Card0File {
         }
         let _operation = self.operation.lock();
         if cmd == DRM_IOCTL_VIRTGPU_EXECBUFFER {
+            if ax_gpu::identity().is_none_or(|identity| identity.driver_name != "virtio_gpu") {
+                return Err(StarryError::NotATty);
+            }
             // Fence-fd reservation must surface `EMFILE`
             // (`StarryError::TooManyOpenFiles`), which the `VfsError` domain
             // cannot represent. This one command therefore runs on the
@@ -1262,11 +1340,15 @@ impl FileLike for Card0File {
                 buffer.owner == self.file_id && buffer.mappable && buffer.offset == offset
             })
             .ok_or(StarryError::InvalidInput)?;
+        let physical = buffer.mapping.physical();
         let range = PhysAddrRange::from_start_size(
-            virt_to_phys(buffer.pages.start_vaddr()),
-            length.min(buffer.pages.size() as u64) as usize,
+            physical.start,
+            length.min(buffer.mapping.backing().len() as u64) as usize,
         );
-        let retain: Arc<dyn Any + Send + Sync> = buffer.pages.clone();
+        let retain: Arc<dyn Any + Send + Sync> = Arc::new(GpuMappingLease {
+            _mapping: buffer.mapping.clone(),
+            _resource: buffer.resource.clone(),
+        });
         // MAP_DUMB/VIRTGPU_MAP offsets are synthetic lookup keys, not byte
         // offsets within the returned physical range. Mark the mapping as
         // resolved so the generic mmap path does not add the key again.
@@ -1289,28 +1371,38 @@ impl FileLike for Card0File {
 impl Drop for Card0File {
     fn drop(&mut self) {
         if let Some(context) = self.context.lock().take() {
-            for resource_id in context.attached_resources {
-                let _ = ax_display::gpu3d_ctx_detach_resource(context.ctx_id, resource_id);
-            }
-            let _ = ax_display::gpu3d_ctx_destroy(context.ctx_id);
+            let _ = ax_gpu::with_gpu(|device| {
+                if let Some(virgl) = device.virgl() {
+                    for resource in context.attached_resources.values() {
+                        let _ = virgl.detach_resource(context.ctx_id, resource.device_handle);
+                    }
+                    let _ = virgl.destroy_context(context.ctx_id);
+                }
+            });
         }
 
-        let mut state = self.card.state.lock();
-        {
-            let mut framebuffers = self.card.fbs.lock();
-            let ids = framebuffers
-                .iter()
-                .filter_map(|(&id, framebuffer)| (framebuffer.owner == self.file_id).then_some(id))
-                .collect::<Vec<_>>();
-            if ids.contains(&state.plane_fb_id) {
-                let _ = self.card.clear_scanout();
-                *state = ModesetState::default();
-            }
-            for id in &ids {
-                framebuffers.remove(id);
-            }
+        let _modeset = self.card.modeset_operation.lock();
+        let active_id = self.card.state.lock().plane_fb_id;
+        let ids = self
+            .card
+            .fbs
+            .lock()
+            .iter()
+            .filter_map(|(&id, framebuffer)| (framebuffer.owner == self.file_id).then_some(id))
+            .collect::<Vec<_>>();
+        let keep_active = ids.contains(&active_id) && self.card.clear_scanout(false).is_err();
+        if ids.contains(&active_id) && !keep_active {
+            *self.card.state.lock() = ModesetState::default();
         }
-        drop(state);
+        let removed_framebuffers = {
+            let mut framebuffers = self.card.fbs.lock();
+            ids.into_iter()
+                .filter(|id| !keep_active || *id != active_id)
+                .filter_map(|id| framebuffers.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        drop(_modeset);
+        drop(removed_framebuffers);
 
         let removed_dumbs = {
             let mut dumbs = self.card.dumbs.lock();
@@ -1349,120 +1441,131 @@ impl Drop for Card0File {
 }
 
 impl Card0 {
-    fn clear_scanout(&self) -> VfsResult<()> {
-        if !ax_display::has_display() {
-            return Ok(());
+    fn reap_retired_scanouts(&self) {
+        let retired = core::mem::take(&mut *self.retired_scanout_resources.lock());
+        let mut pending = Vec::new();
+        for (completion, resource) in retired {
+            let status = ax_gpu::with_display(|device| device.commit_status(completion));
+            if !matches!(status, Ok(Ok(CompletionStatus::Complete))) {
+                pending.push((completion, resource));
+            }
         }
-        let mut scanout = self.scanout_resource.lock();
-        ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).map_err(map_gpu3d_err)?;
-        *scanout = None;
+        self.retired_scanout_resources.lock().extend(pending);
+    }
+
+    fn retain_old_scanout(&self, completion: Completion, next: Option<Arc<GpuResource>>) {
+        let previous = core::mem::replace(&mut *self.scanout_resource.lock(), next);
+        if let (Completion::Pending(_), Some(previous)) = (completion, previous) {
+            self.retired_scanout_resources
+                .lock()
+                .push((completion, previous));
+        }
+        self.reap_retired_scanouts();
+    }
+
+    fn clear_scanout(&self, test_only: bool) -> VfsResult<()> {
+        let completion = ax_gpu::with_display(|device| {
+            let output = (0..device.output_count())
+                .map(OutputId::new)
+                .find_map(|id| device.output(id).ok().filter(|info| info.connected))
+                .ok_or(DisplayError::NotAvailable)?;
+            let state = DisplayState {
+                output: output.id,
+                mode: None,
+                framebuffer: None,
+                damage: Vec::new(),
+            };
+            device.check(&state)?;
+            if test_only {
+                Ok(None)
+            } else {
+                device.commit(&state).map(Some)
+            }
+        })
+        .map_err(map_display_err)?
+        .map_err(map_display_err)?;
+        if let Some(completion) = completion {
+            self.retain_old_scanout(completion, None);
+        }
         Ok(())
     }
 
-    /// Look up the dumb buffer behind a given `fb_id` and copy its
-    /// contents into the axdisplay scanout, then trigger
-    /// `framebuffer_flush`. Used by `SETCRTC`, `PAGE_FLIP`, and atomic
-    /// commits — every path that userspace uses to "show this buffer
-    /// now" routes through here. A follow-on PR will swap the memcpy
-    /// for virtio-gpu zero-copy via `set_scanout` / `transfer_to_host`.
-    fn present_fb(&self, fb_id: u32) {
-        // Snapshot the fb out of the registry, then drop the lock so the
-        // display calls below don't run with the map locked. Pages survive
-        // a concurrent DESTROY_DUMB because the fb owns its own
-        // Arc<GlobalPage> clone.
-        let fb = match self.fbs.lock().get(&fb_id) {
-            Some(fb) => Framebuffer {
-                owner: fb.owner,
-                size: fb.size,
-                stride: fb.stride,
-                width: fb.width,
-                height: fb.height,
-                kind: fb.kind.clone(),
-            },
-            None => return,
-        };
-
-        match &fb.kind {
-            // Guest-RAM dumb buffer: copy pixels into the virtio-gpu
-            // framebuffer and flush. This is the 2D CPU path (verified by
-            // the Qt Widgets Gallery test).
-            FbBacking::Dumb { pages } => {
-                if !ax_display::has_display() {
-                    return;
-                };
-                let mut scanout = self.scanout_resource.lock();
-                if scanout.is_some()
-                    && ax_display::gpu3d_set_scanout(0, 0, 0, 0, 0, 0).is_err()
-                {
-                    return;
-                }
-                if ax_display::framebuffer_restore_scanout().is_err() {
-                    return;
-                }
-                *scanout = None;
-                let src = pages.start_vaddr().as_usize() as *const u8;
-                let info = ax_display::framebuffer_info();
-                let dst = info.fb_base_vaddr as *mut u8;
-
-                if fb.stride != 0 && info.stride != 0 && fb.stride as usize != info.stride {
-                    // Stride mismatch — copy row by row to avoid diagonal tearing.
-                    let dst_limit = info.fb_size / info.stride.max(1);
-                    let rows = (fb.height as usize).min(dst_limit);
-                    let bytes_per_row = (fb.stride as usize).min(info.stride);
-                    for row in 0..rows {
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                src.add(row * fb.stride as usize),
-                                dst.add(row * info.stride),
-                                bytes_per_row,
-                            );
-                        }
-                    }
-                } else {
-                    // Strides match (or one is unknown) — flat copy.
-                    let copy = (fb.size as usize).min(info.fb_size);
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(src, dst, copy);
-                    }
-                }
-                let _ = ax_display::framebuffer_flush();
-            }
-            // Host-side resource (2D dumb or 3D virgl/blob): bind it as the
-            // scanout and flush — Linux's `virtio_gpu_plane_atomic_update`
-            // does the same. Guest-backed 2D resources additionally need a
-            // TRANSFER_TO_HOST_2D (handled below); 3D virgl/blob resources
-            // already hold host-side pixels and skip the transfer.
+    /// Commit one GEM framebuffer through the device-independent display API.
+    /// The old scanout remains pinned until a successful commit completes.
+    fn present_fb(&self, fb_id: u32, proposed: &ModesetState, test_only: bool) -> VfsResult<()> {
+        let fb = self
+            .fbs
+            .lock()
+            .get(&fb_id)
+            .cloned()
+            .ok_or(VfsError::InvalidInput)?;
+        let (buffer, resource) = match &fb.kind {
             FbBacking::Gpu3d { resource } => {
-                if !ax_display::has_display() {
-                    return;
-                };
-                // Guest-backed 2D (dumb) resources must copy pixels from
-                // guest RAM into the host image before flush — QEMU only
-                // fills the image on TRANSFER_TO_HOST_2D. 3D virgl/blob
-                // resources already hold host-side pixels and skip this.
-                if resource.is_dumb_2d {
-                    let _ = ax_display::gpu3d_transfer_to_host_2d(
-                        resource.res_handle,
-                        0,
-                        0,
-                        fb.width,
-                        fb.height,
-                    );
-                }
-                let mut scanout = self.scanout_resource.lock();
-                if ax_display::gpu3d_set_scanout(0, resource.res_handle, 0, 0, fb.width, fb.height).is_ok()
-                {
-                    *scanout = Some(resource.clone());
-                }
-                let _ = ax_display::gpu3d_resource_flush(
-                    resource.res_handle,
-                    0,
-                    0,
-                    fb.width,
-                    fb.height,
-                );
+                (ScanoutBuffer::Gpu(resource.device_handle), Some(resource.clone()))
             }
+            // `ADDFB2` binds every imported backing to a device image
+            // before publishing the framebuffer.
+            FbBacking::Dumb { .. } => return Err(VfsError::InvalidInput),
+        };
+        let requested_mode = proposed.mode.as_ref().map(|mode| DisplayMode {
+            width: u32::from(mode.info.hdisplay),
+            height: u32::from(mode.info.vdisplay),
+            refresh_millihz: mode.info.vrefresh.saturating_mul(1000),
+        });
+        let completion = ax_gpu::with_display(|device| {
+            let output = (0..device.output_count())
+                .map(OutputId::new)
+                .find_map(|id| device.output(id).ok().filter(|info| info.connected))
+                .ok_or(DisplayError::NotAvailable)?;
+            let mode = if let Some(requested) = requested_mode {
+                output
+                    .modes
+                    .iter()
+                    .copied()
+                    .find(|available| {
+                        available.width == requested.width
+                            && available.height == requested.height
+                            && (available.refresh_millihz == 0
+                                || available.refresh_millihz == requested.refresh_millihz)
+                    })
+                    .ok_or(DisplayError::InvalidState)?
+            } else {
+                output
+                    .preferred_mode
+                    .or_else(|| output.modes.first().copied())
+                    .ok_or(DisplayError::InvalidState)?
+            };
+            let state = DisplayState {
+                output: output.id,
+                mode: Some(mode),
+                framebuffer: Some(ScanoutFramebuffer {
+                    buffer,
+                    width: fb.width,
+                    height: fb.height,
+                    stride: fb.stride,
+                    offset: 0,
+                    format: fb.format,
+                }),
+                damage: vec![Rect {
+                    x: 0,
+                    y: 0,
+                    width: fb.width,
+                    height: fb.height,
+                }],
+            };
+            device.check(&state)?;
+            if test_only {
+                Ok(None)
+            } else {
+                device.commit(&state).map(Some)
+            }
+        })
+        .map_err(map_display_err)?
+        .map_err(map_display_err)?;
+        if let Some(completion) = completion {
+            self.retain_old_scanout(completion, resource);
         }
+        Ok(())
     }
 
     fn handle_create_dumb(
@@ -1497,54 +1600,72 @@ impl Card0 {
             return Err(VfsError::NoMemory);
         }
         c.pitch = pitch;
-        c.size = size;
-        // Each buffer gets its own page-aligned `GlobalPage`. No shared
-        // pool, so we don't fail on early-boot fragmentation on arches
-        // whose allocator can't satisfy one large contiguous request
-        // after driver probe.
+        // The runtime allocates CPU-mappable pages in this GPU's DMA domain.
+        // The mapping retains both CPU physical pages and the device address.
         let size_aligned = (size as usize).next_multiple_of(PAGE_SIZE_4K);
-        let pages = size_aligned / PAGE_SIZE_4K;
-        let mut backing =
-            GlobalPage::alloc_contiguous(pages, PAGE_SIZE_4K).map_err(|_| VfsError::NoMemory)?;
-        // Linux DRM dumb buffers must be returned zeroed: the page
-        // allocator may hand back pages that previously held kernel
-        // data, and we mmap them straight into user space.
-        backing.zero();
-        let pages_arc = Arc::new(backing);
+        c.size = size_aligned as u64;
+        let mapping = ax_gpu::allocate_mappable_backing(
+            NonZeroUsize::new(size_aligned).ok_or(VfsError::InvalidInput)?,
+        )
+        .map_err(map_gpu_err)?;
+        let mapping = Arc::new(GpuMapping::Owned(mapping));
         let offset = self
             .next_offset
             .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
         let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
 
-        // --- Create a host-side 2D resource + attach guest backing ---
-        // Mirrors Linux `virtio_gpu_mode_dumb_create` (virtgpu_gem.c:61-100)
-        // which calls RESOURCE_CREATE_2D + ATTACH_BACKING so the host knows
-        // about the guest pages.  Without this, virgl blits to the dumb
-        // buffer fail (no host resource) and present_fb reads zeros.
-        let resource = if ax_display::has_display() {
-            let res_handle = self.next_res_handle.fetch_add(1, Ordering::Relaxed);
-            let paddr = virt_to_phys(pages_arc.start_vaddr());
-            ax_display::gpu3d_resource_create_2d(res_handle, c.width, c.height)
-                .map_err(map_gpu3d_err)?;
-            let resource = Arc::new(GpuResource {
-                owner: file.file_id,
-                res_handle,
-                bo_handle: handle,
+        let dumb_format = match c.bpp {
+            16 => Some(PixelFormat::Rgb565),
+            24 => Some(PixelFormat::Rgb888),
+            32 => Some(PixelFormat::Xrgb8888),
+            _ => None,
+        };
+        let descriptor = match dumb_format {
+            Some(format) => BufferDescriptor::Image2d {
                 width: c.width,
                 height: c.height,
                 stride: pitch,
-                size,
-                blob_mem: 0,
-                blob_flags: 0,
-                is_dumb_2d: true,
-                last_fence: AtomicU64::new(0),
-            });
-            ax_display::gpu3d_attach_backing(res_handle, paddr.as_usize() as u64, size as u32)
-                .map_err(map_gpu3d_err)?;
-            Some(resource)
-        } else {
-            None
+                format,
+            },
+            None => BufferDescriptor::Linear { size: size as usize },
         };
+        let device_handle = ax_gpu::with_gpu(|device| {
+            device.create_buffer(descriptor, mapping.backing())
+        })
+        .map_err(map_gpu_err)?
+        .map_err(|error| match error {
+            GpuError::Unsupported => VfsError::InvalidInput,
+            other => map_gpu_err(other),
+        })?;
+        let command_id = ax_gpu::with_gpu(|device| {
+            device
+                .virgl()
+                .map(|virgl| virgl.command_resource_id(device_handle))
+        })
+        .and_then(|id| id.transpose());
+        let res_handle = match command_id {
+            Ok(Some(id)) => id,
+            Ok(None) => self.next_res_handle.fetch_add(1, Ordering::Relaxed),
+            Err(error) => {
+                let _ = ax_gpu::with_gpu(|device| device.release_buffer(device_handle));
+                return Err(map_gpu_err(error));
+            }
+        };
+        let resource = Some(Arc::new(GpuResource {
+            owner: file.file_id,
+            res_handle,
+            device_handle,
+            bo_handle: handle,
+            width: c.width,
+            height: c.height,
+            stride: pitch,
+            format: dumb_format,
+            size: c.size,
+            blob_mem: 0,
+            blob_flags: 0,
+            is_dumb_2d: true,
+            last_fence: AtomicU64::new(0),
+        }));
 
         let buffer = DumbBuffer {
             owner: file.file_id,
@@ -1554,7 +1675,7 @@ impl Card0 {
             pitch: c.pitch,
             size: c.size,
             offset,
-            pages: pages_arc,
+            mapping,
             mappable: true,
             resource: resource.clone(),
         };
@@ -1716,12 +1837,13 @@ impl Card0 {
 fn handle_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmVersion;
     let mut v: DrmVersion = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-    v.version_major = DRIVER_VERSION_MAJOR;
-    v.version_minor = DRIVER_VERSION_MINOR;
-    v.version_patchlevel = DRIVER_VERSION_PATCHLEVEL;
-    v.name_len = write_user_string(current, v.name, v.name_len, DRIVER_NAME)?;
-    v.date_len = write_user_string(current, v.date, v.date_len, DRIVER_DATE)?;
-    v.desc_len = write_user_string(current, v.desc, v.desc_len, DRIVER_DESC)?;
+    let identity = ax_gpu::identity().ok_or(VfsError::Io)?;
+    v.version_major = identity.driver_version.major as i32;
+    v.version_minor = identity.driver_version.minor as i32;
+    v.version_patchlevel = identity.driver_version.patch as i32;
+    v.name_len = write_user_string(current, v.name, v.name_len, &identity.driver_name)?;
+    v.date_len = write_user_string(current, v.date, v.date_len, DRM_DRIVER_DATE)?;
+    v.desc_len = write_user_string(current, v.desc, v.desc_len, &identity.description)?;
     ptr.vm_write(current, v).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
 }
@@ -1729,7 +1851,8 @@ fn handle_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<u
 fn handle_get_unique(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmUnique;
     let mut u: DrmUnique = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-    let unique: String = format!("{}:0", DRIVER_NAME);
+    let identity = ax_gpu::identity().ok_or(VfsError::Io)?;
+    let unique: String = identity.device_name;
     u.unique_len = write_user_string(current, u.unique, u.unique_len, &unique)?;
     ptr.vm_write(current, u).map_err(|_| VfsError::BadAddress)?;
     Ok(0)
@@ -1744,8 +1867,9 @@ fn handle_set_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResu
     if sv.drm_di_minor < 0 {
         sv.drm_di_minor = 4;
     }
-    sv.drm_dd_major = DRIVER_VERSION_MAJOR;
-    sv.drm_dd_minor = DRIVER_VERSION_MINOR;
+    let identity = ax_gpu::identity().ok_or(VfsError::Io)?;
+    sv.drm_dd_major = identity.driver_version.major as i32;
+    sv.drm_dd_minor = identity.driver_version.minor as i32;
     ptr.vm_write(current, sv)
         .map_err(|_| VfsError::BadAddress)?;
     Ok(0)
@@ -1756,10 +1880,12 @@ fn handle_get_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<u
     let mut cap: DrmGetCap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     // Unknown caps return value=0 rather than EINVAL.
     cap.value = match cap.capability {
-        DRM_CAP_DUMB_BUFFER => 1,
+        DRM_CAP_DUMB_BUFFER => u64::from(
+            ax_gpu::capabilities().is_some_and(|capabilities| capabilities.supports_image_2d),
+        ),
         DRM_CAP_TIMESTAMP_MONOTONIC => 1,
-        DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
-        DRM_CAP_ADDFB2_MODIFIERS => 1,
+        DRM_CAP_CRTC_IN_VBLANK_EVENT => u64::from(kms_available()),
+        DRM_CAP_ADDFB2_MODIFIERS => u64::from(kms_available()),
         DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
         _ => 0,
     };
@@ -1771,6 +1897,10 @@ fn handle_get_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<u
 fn handle_set_client_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *const DrmSetClientCap;
     let _scc: DrmSetClientCap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+    // Linux rejects all settable client caps when DRIVER_MODESET is absent.
+    if !kms_available() {
+        return Err(VfsError::OperationNotSupported);
+    }
     Ok(0)
 }
 
@@ -1834,18 +1964,9 @@ impl Card0 {
                     .filter(|buffer| buffer.owner == file.file_id)
                     .ok_or(VfsError::InvalidInput)?;
 
-                // Convert the dumb buffer's virtual address to a physical address
-                // range that the mmap machinery can map into user space.
-                // `PhysAddrRange::from_start_size(virt_to_phys(...), size)` builds
-                // `{ start = pa, end = pa + size }` — the standard idiom for
-                // constructing a range from a base + length.
-                let range = PhysAddrRange::from_start_size(
-                    virt_to_phys(buf.pages.start_vaddr()),
-                    buf.size as usize,
-                );
                 Arc::new(DmaBufGem {
-                    range,
-                    pages: buf.pages.clone(),
+                    mapping: buf.mapping.clone(),
+                    resource: buf.resource.clone(),
                     size: buf.size,
                 })
             }
@@ -1909,7 +2030,9 @@ impl Card0 {
             // triggered the lazy create. With `CONTEXT_INIT` negotiated Linux
             // deliberately does *not* create one (userspace owns that choice),
             // and `attach_resource()` only runs when a context exists.
-            if ax_display::has_virgl() && !ax_display::has_context_init() {
+            if ax_gpu::capabilities()
+                .is_some_and(|caps| caps.supports_3d && !caps.supports_context_init)
+            {
                 let _ctx_id = card_file.ensure_lazy_context()?;
             }
             // Import succeeds even with no context yet: the resource is
@@ -1935,11 +2058,33 @@ impl Card0 {
             return Ok(0);
         }
 
-        // Guest-RAM dma-buf → register in dumbs (original path).
-        let dma_buf: &DmaBufGem = file
-            .as_any()
-            .downcast_ref::<DmaBufGem>()
-            .ok_or(VfsError::InvalidInput)?;
+        // Guest-RAM dma-buf or a coherent dma-heap allocation. The latter
+        // carries a direct DMA address and is imported only when this GPU
+        // uses the same direct domain; other domains need an explicit map.
+        let (mapping, resource, size) = if let Some(dma_buf) =
+            file.as_any().downcast_ref::<DmaBufGem>()
+        {
+            (
+                dma_buf.mapping.clone(),
+                dma_buf.resource.clone(),
+                dma_buf.size,
+            )
+        } else if let Ok(heap_file) = file
+            .clone()
+            .downcast_arc::<crate::file::dmabuf::DmaBufFile>()
+        {
+            if ax_gpu::capabilities().is_none_or(|caps| caps.dma_domain != DmaDomainId::Direct) {
+                return Err(VfsError::Unsupported);
+            }
+            let size = heap_file.size() as u64;
+            (
+                Arc::new(GpuMapping::Heap(Arc::new(HeapBacking::new(heap_file)))),
+                None,
+                size,
+            )
+        } else {
+            return Err(VfsError::InvalidInput);
+        };
 
         let handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
         let offset = self
@@ -1961,11 +2106,11 @@ impl Card0 {
                 height: 0,
                 bpp: 0,
                 pitch: 0,
-                size: dma_buf.size,
+                size,
                 offset,
-                pages: dma_buf.pages.clone(),
+                mapping,
                 mappable: true,
-                resource: None,
+                resource,
             };
         req.handle = handle;
 
@@ -2053,6 +2198,7 @@ impl Card0 {
         if c.crtc_id != CRTC_ID {
             return Err(VfsError::InvalidInput);
         }
+        let _operation = self.modeset_operation.lock();
 
         // Linux uses mode_valid to request disable, but still rejects a
         // disable request that names connectors.
@@ -2060,9 +2206,8 @@ impl Card0 {
             if c.count_connectors != 0 {
                 return Err(VfsError::InvalidInput);
             }
-            let mut state = self.state.lock();
-            self.clear_scanout()?;
-            *state = ModesetState::default();
+            self.clear_scanout(false)?;
+            *self.state.lock() = ModesetState::default();
             return Ok(0);
         }
 
@@ -2088,12 +2233,11 @@ impl Card0 {
             }
         }
 
-        let mut state = self.state.lock();
         if c.fb_id == 0 || !self.fbs.lock().contains_key(&c.fb_id) {
             return Err(VfsError::InvalidInput);
         }
         // Legacy SETCRTC uses the same mode/plane state as an atomic commit.
-        *state = ModesetState {
+        let proposed = ModesetState {
             crtc_active: 1,
             mode: Some(ModeBlob {
                 id: self.next_blob_id.fetch_add(1, Ordering::Relaxed),
@@ -2111,7 +2255,8 @@ impl Card0 {
             plane_crtc_h: u64::from(c.mode.vdisplay),
             ..ModesetState::default()
         };
-        self.present_fb(c.fb_id);
+        self.present_fb(c.fb_id, &proposed, false)?;
+        *self.state.lock() = proposed;
         Ok(0)
     }
 }
@@ -2122,7 +2267,13 @@ fn handle_get_encoder(current: &crate::task::UserTaskRef, arg: usize) -> VfsResu
     if e.encoder_id != ENCODER_ID {
         return Err(VfsError::InvalidInput);
     }
-    e.encoder_type = DRM_MODE_ENCODER_VIRTUAL;
+    e.encoder_type = match display_output_info()?.kind {
+        OutputKind::Virtual => DRM_MODE_ENCODER_VIRTUAL,
+        OutputKind::Internal => DRM_MODE_ENCODER_LVDS,
+        OutputKind::Hdmi | OutputKind::DisplayPort => DRM_MODE_ENCODER_TMDS,
+        OutputKind::Vga => DRM_MODE_ENCODER_DAC,
+        OutputKind::Unknown => DRM_MODE_ENCODER_NONE,
+    };
     e.crtc_id = CRTC_ID;
     e.possible_crtcs = 1;
     e.possible_clones = 0;
@@ -2136,23 +2287,36 @@ fn handle_get_connector(current: &crate::task::UserTaskRef, arg: usize) -> VfsRe
     if c.connector_id != CONNECTOR_ID {
         return Err(VfsError::InvalidInput);
     }
-    c.encoder_id = ENCODER_ID;
-    c.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
+    let output = display_output_info()?;
+    c.encoder_id = if output.connected { ENCODER_ID } else { 0 };
+    c.connector_type = match output.kind {
+        OutputKind::Virtual => DRM_MODE_CONNECTOR_VIRTUAL,
+        OutputKind::Internal => DRM_MODE_CONNECTOR_EDP,
+        OutputKind::Hdmi => DRM_MODE_CONNECTOR_HDMIA,
+        OutputKind::DisplayPort => DRM_MODE_CONNECTOR_DISPLAYPORT,
+        OutputKind::Vga => DRM_MODE_CONNECTOR_VGA,
+        OutputKind::Unknown => DRM_MODE_CONNECTOR_UNKNOWN,
+    };
     c.connector_type_id = 1;
-    c.connection = DRM_MODE_CONNECTED;
-    let (w, h) = display_resolution();
-    c.mm_width = w;
-    c.mm_height = h;
+    c.connection = if output.connected {
+        DRM_MODE_CONNECTED
+    } else {
+        DRM_MODE_DISCONNECTED
+    };
+    let (mm_width, mm_height) = output.physical_size_mm.unwrap_or((0, 0));
+    c.mm_width = mm_width;
+    c.mm_height = mm_height;
     c.subpixel = 0;
 
     c.count_encoders = report_user_array(current, c.encoders_ptr, c.count_encoders, &[ENCODER_ID])?;
 
-    if c.modes_ptr != 0 && c.count_modes > 0 {
-        let p = c.modes_ptr as *mut DrmModeModeInfo;
-        p.vm_write(current, current_mode())
-            .map_err(|_| VfsError::BadAddress)?;
-    }
-    c.count_modes = 1;
+    let modes = output
+        .modes
+        .iter()
+        .copied()
+        .map(current_mode)
+        .collect::<Vec<_>>();
+    c.count_modes = report_user_array(current, c.modes_ptr, c.count_modes, &modes)?;
     c.count_props = 0;
 
     ptr.vm_write(current, c).map_err(|_| VfsError::BadAddress)?;
@@ -2178,7 +2342,7 @@ impl Card0 {
         //      present binds it with SET_SCANOUT instead of copying empty
         //      guest RAM (the shadow pages are never attached to the host).
         //   2) a plain guest-RAM dumb buffer (2D path).
-        let (kind, size) = {
+        let (mut kind, size) = {
             let imported = self
                 .blob_aliases
                 .lock()
@@ -2212,7 +2376,7 @@ impl Card0 {
                 } else {
                     (
                         FbBacking::Dumb {
-                            pages: buffer.pages.clone(),
+                            mapping: buffer.mapping.clone(),
                         },
                         buffer.size,
                     )
@@ -2228,18 +2392,26 @@ impl Card0 {
         let fb_height = f.height;
         let fb_pixel_format = f.pixel_format;
 
-        let bpp = match fb_pixel_format {
-            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => 32u32,
-            _ => {
-                warn!("ADDFB2: unsupported pixel_format {:#x}", fb_pixel_format);
-                return Err(VfsError::InvalidInput);
-            }
-        };
-        let visible_bytes = fb_width * (bpp / 8);
+        let pixel_format = fourcc_to_format(fb_pixel_format).ok_or(VfsError::InvalidInput)?;
+        if !display_output_info()?.formats.contains(&pixel_format) {
+            return Err(VfsError::InvalidInput);
+        }
+        if let FbBacking::Gpu3d { resource } = &kind
+            && resource.is_dumb_2d
+            && (resource.width != fb_width
+                || resource.height != fb_height
+                || resource.stride != fb_stride
+                || resource.format != Some(pixel_format))
+        {
+            return Err(VfsError::InvalidInput);
+        }
+        let visible_bytes = fb_width
+            .checked_mul(pixel_format.bytes_per_pixel() as u32)
+            .ok_or(VfsError::InvalidInput)?;
         if fb_stride < visible_bytes {
             warn!(
-                "ADDFB2: stride {} < visible bytes {} ({}bpp, {}px)",
-                fb_stride, visible_bytes, bpp, fb_width
+                "ADDFB2: stride {} < visible bytes {} ({}px)",
+                fb_stride, visible_bytes, fb_width
             );
             return Err(VfsError::InvalidInput);
         }
@@ -2255,6 +2427,40 @@ impl Card0 {
             );
             return Err(VfsError::InvalidInput);
         }
+        // PRIME import does not carry image geometry. Bind its existing GEM
+        // backing to a device image only after ADDFB2 supplies the layout.
+        if let FbBacking::Dumb { mapping } = &kind {
+            let device_handle = ax_gpu::with_gpu(|device| {
+                device.create_buffer(
+                    BufferDescriptor::Image2d {
+                        width: fb_width,
+                        height: fb_height,
+                        stride: fb_stride,
+                        format: pixel_format,
+                    },
+                    mapping.backing(),
+                )
+            })
+            .map_err(map_gpu_err)?
+            .map_err(map_gpu_err)?;
+            kind = FbBacking::Gpu3d {
+                resource: Arc::new(GpuResource {
+                    owner: file.file_id,
+                    res_handle: self.next_res_handle.fetch_add(1, Ordering::Relaxed),
+                    device_handle,
+                    bo_handle: handle,
+                    width: fb_width,
+                    height: fb_height,
+                    stride: fb_stride,
+                    format: Some(pixel_format),
+                    size,
+                    blob_mem: 0,
+                    blob_flags: 0,
+                    is_dumb_2d: true,
+                    last_fence: AtomicU64::new(0),
+                }),
+            };
+        }
         if f.flags & DRM_MODE_FB_MODIFIERS != 0 {
             for i in 0..4 {
                 if f.handles[i] == 0 {
@@ -2269,10 +2475,10 @@ impl Card0 {
         let fb_id = self.next_fb_id.fetch_add(1, Ordering::Relaxed);
         let framebuffer = Framebuffer {
             owner: file.file_id,
-            size,
             stride: fb_stride,
             width: fb_width,
             height: fb_height,
+            format: pixel_format,
             kind,
         };
         f.fb_id = fb_id;
@@ -2284,23 +2490,22 @@ impl Card0 {
     fn handle_rmfb(&self, file: &Card0File, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
         let ptr = arg as *const u32;
         let fb_id: u32 = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-        let mut state = self.state.lock();
-        let removed = {
-            let mut framebuffers = self.fbs.lock();
-            let owned = framebuffers
-                .get(&fb_id)
-                .is_some_and(|framebuffer| framebuffer.owner == file.file_id);
-            if owned && state.plane_fb_id == fb_id {
-                self.clear_scanout()?;
-            }
-            owned.then(|| framebuffers.remove(&fb_id)).flatten()
-        };
-        if removed.is_none() {
+        let _operation = self.modeset_operation.lock();
+        let owned = self
+            .fbs
+            .lock()
+            .get(&fb_id)
+            .is_some_and(|framebuffer| framebuffer.owner == file.file_id);
+        if !owned {
             return Err(VfsError::InvalidInput);
         }
-        if state.plane_fb_id == fb_id {
-            *state = ModesetState::default();
+        let active = self.state.lock().plane_fb_id == fb_id;
+        if active {
+            self.clear_scanout(false)?;
+            *self.state.lock() = ModesetState::default();
         }
+        let removed = self.fbs.lock().remove(&fb_id);
+        drop(removed);
         Ok(0)
     }
 }
@@ -2328,11 +2533,12 @@ impl Card0 {
         p.fb_id = state.plane_fb_id;
         p.possible_crtcs = 1;
         p.gamma_size = 0;
+        let formats = display_plane_formats()?;
         p.count_format_types = report_user_array(
             current,
             p.format_type_ptr,
             p.count_format_types,
-            SUPPORTED_FORMATS,
+            &formats,
         )?;
         ptr.vm_write(current, p).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
@@ -2350,7 +2556,7 @@ impl Card0 {
         let state = self.state.lock().clone();
         let (prop_ids, prop_vals): (&[u32], Vec<u64>) = match (q.obj_type, q.obj_id) {
             (DRM_MODE_OBJECT_PLANE, PLANE_ID) => {
-                let blob_id = self.ensure_in_formats_blob() as u64;
+                let blob_id = self.ensure_in_formats_blob()? as u64;
                 (PLANE_PROPS, plane_prop_values(&state, blob_id))
             }
             (DRM_MODE_OBJECT_CRTC, CRTC_ID) => (CRTC_PROPS, crtc_prop_values(&state)),
@@ -2393,9 +2599,8 @@ fn plane_prop_values(s: &ModesetState, in_formats: u64) -> Vec<u64> {
     ]
 }
 
-/// Construct the `IN_FORMATS` blob payload advertising every
-/// `SUPPORTED_FORMATS` × `DRM_FORMAT_MOD_LINEAR` pair.
-fn build_in_formats_blob() -> Vec<u8> {
+/// Construct the `IN_FORMATS` blob for the bound output's linear formats.
+fn build_in_formats_blob(formats: &[u32]) -> Vec<u8> {
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::NoUninit)]
     struct Header {
@@ -2414,7 +2619,7 @@ fn build_in_formats_blob() -> Vec<u8> {
         _pad: u32,
         modifier: u64,
     }
-    let n_formats = SUPPORTED_FORMATS.len() as u32;
+    let n_formats = formats.len() as u32;
     let formats_off = size_of::<Header>() as u32;
     let modifiers_off = formats_off + n_formats * 4;
     let hdr = Header {
@@ -2436,7 +2641,7 @@ fn build_in_formats_blob() -> Vec<u8> {
         size_of::<Header>() + (n_formats as usize) * 4 + size_of::<ModifierEntry>(),
     );
     buf.extend_from_slice(bytes_of(&hdr));
-    for fmt in SUPPORTED_FORMATS {
+    for fmt in formats {
         buf.extend_from_slice(&fmt.to_le_bytes());
     }
     buf.extend_from_slice(bytes_of(&me));
@@ -2618,7 +2823,9 @@ impl Card0 {
         {
             return Err(VfsError::InvalidInput);
         }
-        self.present_fb(dirty.fb_id);
+        let _operation = self.modeset_operation.lock();
+        let state = self.state.lock().clone();
+        self.present_fb(dirty.fb_id, &state, false)?;
         Ok(0)
     }
 
@@ -2630,7 +2837,9 @@ impl Card0 {
     ) -> VfsResult<usize> {
         let ptr = arg as *const DrmModeCrtcPageFlip;
         let f: DrmModeCrtcPageFlip = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-        if f.crtc_id != CRTC_ID
+        if f.flags & !DRM_MODE_PAGE_FLIP_EVENT != 0
+            || f.reserved != 0
+            || f.crtc_id != CRTC_ID
             || !self
                 .fbs
                 .lock()
@@ -2639,7 +2848,8 @@ impl Card0 {
         {
             return Err(VfsError::InvalidInput);
         }
-        let mut state = self.state.lock();
+        let _operation = self.modeset_operation.lock();
+        let mut state = self.state.lock().clone();
         if state.plane_fb_id == 0 {
             return Err(VfsError::ResourceBusy);
         }
@@ -2647,8 +2857,8 @@ impl Card0 {
             return Err(VfsError::InvalidInput);
         }
         state.plane_fb_id = f.fb_id;
-        self.present_fb(f.fb_id);
-        drop(state);
+        self.present_fb(f.fb_id, &state, false)?;
+        *self.state.lock() = state;
         if f.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
             self.queue_flip_event(file, f.user_data);
         }
@@ -2762,8 +2972,9 @@ impl Card0 {
         let values: Vec<u64> = vm_load(current, a.prop_values_ptr as *const u64, total_props)
             .map_err(|_| VfsError::BadAddress)?;
 
-        let mut state = self.state.lock();
-        let mut proposed = state.clone();
+        let _operation = self.modeset_operation.lock();
+        let old_state = self.state.lock().clone();
+        let mut proposed = old_state.clone();
         let mut idx = 0;
         for (obj_i, &obj_id) in objs.iter().enumerate() {
             let obj_type = object_type_of(obj_id).ok_or(VfsError::NotFound)?;
@@ -2778,17 +2989,20 @@ impl Card0 {
         }
 
         if a.flags & DRM_MODE_ATOMIC_TEST_ONLY != 0 {
+            if proposed.plane_fb_id != 0 && proposed.crtc_active != 0 {
+                self.present_fb(proposed.plane_fb_id, &proposed, true)?;
+            } else {
+                self.clear_scanout(true)?;
+            }
             return Ok(0);
         }
         let current_fb = proposed.plane_fb_id;
-        if (current_fb == 0 || proposed.crtc_active == 0) && state.plane_fb_id != 0 {
-            self.clear_scanout()?;
+        if current_fb != 0 && proposed.crtc_active != 0 {
+            self.present_fb(current_fb, &proposed, false)?;
+        } else if old_state.plane_fb_id != 0 {
+            self.clear_scanout(false)?;
         }
-        *state = proposed;
-        if current_fb != 0 && state.crtc_active != 0 {
-            self.present_fb(current_fb);
-        }
-        drop(state);
+        *self.state.lock() = proposed;
         if a.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
             self.queue_flip_event(file, a.user_data);
         }
@@ -2985,888 +3199,6 @@ impl Card0 {
             .find(|resource| resource.owner == file.file_id && resource.bo_handle == handle)
             .cloned()
     }
-
-    // ======== virtgpu ioctl handlers ========
-    //
-    // These implement the 11 virtgpu private ioctls that Mesa's virgl
-    // driver needs to submit 3D rendering commands. The handlers forward
-    // to the ax_display 3D API which reaches the virtio-gpu driver.
-    //
-    // Security: Each handler validates input from userspace before use,
-    // matching Linux kernel behavior (bounds checks, EINVAL for invalid
-    // params, EEXIST for duplicate context init, etc.).
-
-    /// VIRTGPU_GETPARAM — queries driver parameters.
-    ///
-    /// Linux: `virtgpu_getparam_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// Mesa queries all parameters during initialization. Known parameters
-    /// return their values; unknown parameters return `-EINVAL` (matching
-    /// Linux kernel behavior — Mesa handles this gracefully).
-    fn handle_virtgpu_getparam(&self, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuGetparam;
-        let g: DrmVirtgpuGetparam = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-
-        let has_virgl = ax_display::has_virgl();
-
-        let value = match g.param {
-            VIRTGPU_PARAM_3D_FEATURES => {
-                // Must return 1 for Mesa to use virgl path.
-                if has_virgl { 1 } else { 0 }
-            }
-            VIRTGPU_PARAM_CAPSET_QUERY_FIX => {
-                // Linux 内核总是返回 1，不管 has_virgl_3d。
-                // 这影响 GET_CAPS 的行为（Mesa 用它决定查询顺序）。
-                1
-            }
-            VIRTGPU_PARAM_RESOURCE_BLOB => {
-                // Report the *actual* negotiated feature (Linux:
-                // `has_resource_blob ? 1 : 0`). Without RESOURCE_BLOB the
-                // device doesn't support blobs and Mesa must use the classic
-                // resource path — reporting 1 here would make Mesa create
-                // blobs that fail.
-                if ax_display::has_resource_blob() {
-                    1
-                } else {
-                    0
-                }
-            }
-            VIRTGPU_PARAM_HOST_VISIBLE => {
-                // RESOURCE_BLOB alone does not make host memory mappable.
-                // Until RESOURCE_MAP_BLOB/BAR mapping exists, advertising
-                // HOST_VISIBLE would send Mesa down a path we cannot honor.
-                0
-            }
-            VIRTGPU_PARAM_CROSS_DEVICE => {
-                // Cross-device sharing not supported yet.
-                0
-            }
-            VIRTGPU_PARAM_CONTEXT_INIT => {
-                // Report the *actual* negotiated feature (Linux:
-                // `has_context_init ? 1 : 0`). Must be 1 for Mesa to use the
-                // context-init protocol, but VIRGL alone does not imply it: a
-                // legacy device can support virgl without CONTEXT_INIT.
-                if ax_display::has_context_init() { 1 } else { 0 }
-            }
-            VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => {
-                // Bitmask of supported capset IDs.
-                // Bit 0 = reserved, bit 1 = VIRGL, bit 2 = VIRGL2.
-                if has_virgl {
-                    (1 << VIRTGPU_DRM_CAPSET_VIRGL) | (1 << VIRTGPU_DRM_CAPSET_VIRGL2)
-                } else {
-                    0
-                }
-            }
-            _ => {
-                // Unknown parameter — match Linux kernel: return -EINVAL.
-                // Mesa handles this gracefully (value stays 0).
-                return Err(VfsError::InvalidInput);
-            }
-        };
-
-        // Linux `virtio_gpu_getparam_ioctl`: `copy_to_user((void __user *)
-        // param->value, &value, sizeof(value))` — 结果写入用户指针指向的 u64,
-        // 而不是写回 struct 字段。之前 `g.value = value; vm_write(g)` 把值写进
-        // struct 的 value 字段(覆盖了指针),mesa 读的是指针指向的本地变量,
-        // 导致所有 GETPARAM 都读到 0 → 3D_FEATURES=0 → virgl winsys 创建失败。
-        if g.value == 0 {
-            return Err(VfsError::BadAddress);
-        }
-        vm_write_slice(current, g.value as *mut u64, &[value]).map_err(|_| VfsError::BadAddress)?;
-        Ok(0)
-    }
-
-    /// VIRTGPU_CONTEXT_INIT — initializes a rendering context on this fd.
-    ///
-    /// Linux: `virtgpu_context_init_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// **Critical**: This is a pure-input ioctl with no output fields.
-    /// The context is implicitly bound to the file descriptor. Each fd
-    /// can only call CONTEXT_INIT once (repeated calls return -EEXIST).
-    ///
-    /// Mesa calls this with num_params=1 and a single parameter:
-    ///   { param=VIRTGPU_CONTEXT_PARAM_CAPSET_ID, value=VIRGL2(2) or VIRGL1(1) }
-    fn handle_virtgpu_context_init(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let init: DrmVirtgpuContextInit = (arg as *const DrmVirtgpuContextInit)
-            .vm_read(current)
-            .map_err(|_| VfsError::BadAddress)?;
-
-        // Linux: if (!vgdev->has_context_init || !vgdev->has_virgl_3d)
-        //           return -EINVAL;
-        if !ax_display::has_context_init() || !ax_display::has_virgl() {
-            return Err(VfsError::InvalidInput);
-        }
-
-        // Linux kernel: each fd can only call CONTEXT_INIT once.
-        if file.context.lock().is_some() {
-            return Err(VfsError::AlreadyExists);
-        }
-
-        // StarryOS currently implements the three context parameters below.
-        if init.num_params > 3 {
-            return Err(VfsError::InvalidInput);
-        }
-        if init.num_params > 0 && init.ctx_set_params == 0 {
-            return Err(VfsError::BadAddress);
-        }
-
-        // Read the parameter array from userspace.
-        let mut capset_id: u32 = 0;
-        let mut num_rings: u32 = 1; // Linux default
-
-        if init.num_params > 0 {
-            let params_ptr = init.ctx_set_params as *const DrmVirtgpuContextSetParam;
-            for i in 0..init.num_params as usize {
-                let param: DrmVirtgpuContextSetParam = unsafe { params_ptr.add(i) }
-                    .vm_read(current)
-                    .map_err(|_| VfsError::BadAddress)?;
-                match param.param {
-                    VIRTGPU_CONTEXT_PARAM_CAPSET_ID => {
-                        capset_id = param.value as u32;
-                        // Linux: if (value > MAX_CAPSET_ID) return -EINVAL;
-                        // MAX_CAPSET_ID in Linux v6.1 is 6 (VIRTGPU_DRM_CAPSET_DRM)
-                        if capset_id > VIRTGPU_DRM_CAPSET_DRM {
-                            return Err(VfsError::InvalidInput);
-                        }
-                        // Linux: if ((vgdev->capset_id_mask & (1ULL << value)) == 0)
-                        //           return -EINVAL;
-                        // 我们支持 VIRGL(1) 和 VIRGL2(2)
-                        if capset_id != VIRTGPU_DRM_CAPSET_VIRGL
-                            && capset_id != VIRTGPU_DRM_CAPSET_VIRGL2
-                        {
-                            warn!("[card0] CONTEXT_INIT: unsupported capset_id={capset_id}");
-                            return Err(VfsError::InvalidInput);
-                        }
-                    }
-                    VIRTGPU_CONTEXT_PARAM_NUM_RINGS => {
-                        num_rings = param.value as u32;
-                        // Sanity check: limit rings.
-                        if num_rings == 0 || num_rings > 64 {
-                            return Err(VfsError::InvalidInput);
-                        }
-                    }
-                    VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK => {
-                        // Accept but ignore — we don't support polling yet.
-                        let _ = param.value;
-                    }
-                    _ => {
-                        // Unknown parameter — Linux returns -EINVAL.
-                        return Err(VfsError::InvalidInput);
-                    }
-                }
-            }
-        }
-
-        // Context creation itself is shared with the legacy lazy paths; the
-        // EEXIST check above already covers a context an earlier lazy path
-        // published on this fd.
-        let ctx_id = file.create_context(CreateKind::Explicit {
-            capset_id,
-            num_rings,
-        })?;
-
-        info!(
-            "[card0] CONTEXT_INIT: ctx_id={ctx_id}, capset_id={capset_id}, num_rings={num_rings}"
-        );
-        Ok(0)
-    }
-
-    /// VIRTGPU_GET_CAPS — retrieves capability set data.
-    ///
-    /// Linux: `virtgpu_get_caps_ioctl()` in `virtgpu_ioctl.c`.
-    ///
-    /// Semantics mirrored from Linux v7.1: the requested capset must exist in
-    /// the device's real capset list with a `max_version` at least the
-    /// requested version, a zero `size` is rejected, the copy uses
-    /// `min(size, host_caps_size)`, and the input struct is never written
-    /// back. Mesa first tries cap_set_id=2 (VIRGL2), then falls back to 1
-    /// (VIRGL).
-    fn handle_virtgpu_get_caps(&self, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuGetCaps;
-        let g: DrmVirtgpuGetCaps = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-        // Linux never writes the request struct back, so the caller's `size`
-        // is a pure input; keep it in a local instead of mutating `g`.
-        let user_size = g.size;
-
-        // `num_capsets == 0` is reported as -ENOSYS by Linux.
-        if !ax_display::has_virgl() {
-            return Err(VfsError::Unsupported);
-        }
-
-        // `gpu3d_capset_info` exposes GET_CAPSET_INFO by index, which is how
-        // Linux enumerates `vgdev->capsets[]`. Index 0 succeeding proves the
-        // device has at least one capset; the first failing index ends the
-        // list, and the bound keeps a misbehaving host from looping forever.
-        let mut capsets = Vec::new();
-        for index in 0..MAX_CAPSET_ENUM {
-            match ax_display::gpu3d_capset_info(index) {
-                Ok(info) => capsets.push(info),
-                Err(_) => break,
-            }
-        }
-        if capsets.is_empty() {
-            return Err(VfsError::Unsupported);
-        }
-
-        // Linux: don't allow userspace to pass 0.
-        if user_size == 0 {
-            return Err(VfsError::InvalidInput);
-        }
-
-        // Select by ID equality and `max_version >= requested version`,
-        // exactly as Linux scans the device's capset list. A missing or
-        // too-old capset is -EINVAL, not a fabricated success.
-        let matched = capsets
-            .iter()
-            .find(|info| info.capset_id == g.cap_set_id && info.max_version >= g.cap_set_ver)
-            .copied()
-            .ok_or(VfsError::InvalidInput)?;
-
-        let cache_key = (g.cap_set_id, g.cap_set_ver);
-        let cached = self.capset_cache.lock().get(&cache_key).cloned();
-        let cap_data = if let Some(data) = cached {
-            data
-        } else {
-            // Ask the host for the full capset (`max_size`, not the user's
-            // smaller `size`) so the cache entry is never truncated; only the
-            // later copy is clamped. Truncating the query would hand Mesa an
-            // incomplete capset and make it enable unsupported GL features.
-            let data = ax_display::gpu3d_capset(g.cap_set_id, g.cap_set_ver, matched.max_size)
-                .map_err(map_gpu3d_err)?;
-            self.capset_cache.lock().insert(cache_key, data.clone());
-            data
-        };
-
-        // Linux copies `min(args->size, host_caps_size)` bytes; `cap_data` is
-        // that host-side blob.
-        let write_size = (user_size as usize).min(cap_data.len());
-        if write_size == 0 || g.addr == 0 {
-            return Err(VfsError::BadAddress);
-        }
-        vm_write_slice(current, g.addr as *mut u8, &cap_data[..write_size])
-            .map_err(|_| VfsError::BadAddress)?;
-
-        Ok(0)
-    }
-
-    /// VIRTGPU_RESOURCE_CREATE — creates a 3D resource.
-    ///
-    /// Linux: `virtgpu_resource_create_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// Creates a 3D resource on the host and optionally associates it with
-    /// an existing GEM handle. Returns the virtio-gpu resource ID in
-    /// `res_handle` (NOT the GEM handle — they are different!).
-    fn handle_virtgpu_resource_create(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuResourceCreate;
-        let mut r: DrmVirtgpuResourceCreate =
-            ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-        if !ax_display::has_virgl() {
-            return Err(VfsError::Unsupported);
-        }
-        // Linux `virtio_gpu_resource_create_ioctl()` calls
-        // `virtio_gpu_create_context()` up front on the virgl path.
-        let ctx_id = file.ensure_lazy_context()?;
-
-        let res_handle = self.next_res_handle.fetch_add(1, Ordering::Relaxed);
-        let size = if r.size > 0 {
-            r.size as u64
-        } else {
-            PAGE_SIZE_4K as u64
-        };
-        if size > DUMB_BUFFER_MAX_SIZE as u64 {
-            return Err(VfsError::InvalidInput);
-        }
-        let mut pages =
-            GlobalPage::alloc_contiguous((size as usize).div_ceil(PAGE_SIZE_4K), PAGE_SIZE_4K)
-                .map_err(|_| VfsError::NoMemory)?;
-        pages.zero();
-        let bo_handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
-        let offset = self
-            .next_offset
-            .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
-        let backing_paddr = virt_to_phys(pages.start_vaddr());
-        let backing_size = pages.size();
-        let pages = Arc::new(pages);
-
-        ax_display::gpu3d_resource_create(ax_display::ResourceCreate3d {
-            ctx_id,
-            resource_id: res_handle,
-            target: r.target,
-            format: r.format,
-            bind: r.bind,
-            width: r.width,
-            height: r.height,
-            depth: r.depth,
-            array_size: r.array_size,
-            last_level: r.last_level,
-            nr_samples: r.nr_samples,
-            flags: r.flags,
-        })
-        .map_err(map_gpu3d_err)?;
-        let resource = Arc::new(GpuResource {
-            owner: file.file_id,
-            res_handle,
-            bo_handle,
-            width: r.width,
-            height: r.height,
-            stride: r.stride,
-            size,
-            blob_mem: 0,
-            blob_flags: 0,
-            is_dumb_2d: false,
-            last_fence: AtomicU64::new(0),
-        });
-        ax_display::gpu3d_attach_backing(
-            res_handle,
-            backing_paddr.as_usize() as u64,
-            backing_size as u32,
-        )
-        .map_err(map_gpu3d_err)?;
-        file.attach_resource(&resource)?;
-
-        let buffer = DumbBuffer {
-            owner: file.file_id,
-            width: r.width,
-            height: r.height,
-            bpp: 32,
-            pitch: r.stride,
-            size,
-            offset,
-            pages,
-            mappable: true,
-            resource: Some(resource.clone()),
-        };
-        r.bo_handle = bo_handle;
-        r.res_handle = res_handle;
-        r.size = size as u32;
-        if ptr.vm_write(current, r).is_err() {
-            file.detach_resource(res_handle);
-            return Err(VfsError::BadAddress);
-        }
-
-        self.dumbs.lock().insert(bo_handle, buffer);
-        self.gpu_resources.lock().insert(res_handle, resource);
-
-        Ok(0)
-    }
-
-    /// VIRTGPU_RESOURCE_INFO — queries resource information.
-    ///
-    /// Linux: `virtgpu_resource_info_ioctl()` in `virtgpu_ioctl.c`
-    fn handle_virtgpu_resource_info(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuResourceInfo;
-        let mut info: DrmVirtgpuResourceInfo =
-            ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-        let resource = self
-            .resource_for_handle(file, info.bo_handle)
-            .ok_or(VfsError::NotFound)?;
-        info.res_handle = resource.res_handle;
-        info.size = resource.size as u32;
-        info.blob_mem = resource.blob_mem;
-        ptr.vm_write(current, info)
-            .map_err(|_| VfsError::BadAddress)?;
-        Ok(0)
-    }
-
-    /// VIRTGPU_MAP — maps a GEM handle to an mmap offset.
-    ///
-    /// Linux: `virtgpu_map_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// Returns an offset that can be used with the mmap system call.
-    /// This reuses the same offset mechanism as MAP_DUMB.
-    fn handle_virtgpu_map(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuMap;
-        let mut m: DrmVirtgpuMap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-
-        let dumbs = self.dumbs.lock();
-        let buf = dumbs
-            .get(&m.handle)
-            .filter(|buffer| buffer.owner == file.file_id && buffer.mappable)
-            .ok_or(VfsError::InvalidInput)?;
-        m.offset = buf.offset;
-        drop(dumbs);
-
-        ptr.vm_write(current, m).map_err(|_| VfsError::BadAddress)?;
-        Ok(0)
-    }
-
-    /// VIRTGPU_EXECBUFFER — submits a virgl command buffer.
-    ///
-    /// Linux: `virtgpu_execbuffer_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// This is the core ioctl: Mesa submits VIRGL_CCMD_* command streams
-    /// through this. The command buffer is read from userspace, along with
-    /// an array of GEM handles that the commands reference.
-    ///
-    /// **Critical**: There is NO ctx_id field. The context is implicitly
-    /// bound to the file descriptor.
-    ///
-    /// Returns `StarryResult` rather than `VfsResult`: the `FENCE_FD_OUT`
-    /// descriptor pre-reservation can fail with `EMFILE`, which the `VfsError`
-    /// domain cannot represent.
-    fn handle_virtgpu_execbuffer(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> StarryResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuExecbuffer;
-        let mut eb: DrmVirtgpuExecbuffer =
-            ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-
-        // Linux: if (vgdev->has_virgl_3d == false) return -ENOSYS;
-        if !ax_display::has_virgl() {
-            return Err(StarryError::Unsupported);
-        }
-
-        // Only the fence-fd in/out flags are supported. `VIRTGPU_EXECBUF_RING_IDX`
-        // (0x04), the syncobj fields and any unknown flag stay unsupported and
-        // must fail instead of being silently ignored (Linux checks
-        // `exbuf->flags & ~VIRTGPU_EXECBUF_FLAGS`).
-        let known_fence_flags = VIRTGPU_EXECBUF_FENCE_FD_IN | VIRTGPU_EXECBUF_FENCE_FD_OUT;
-        if eb.flags & !known_fence_flags != 0
-            || eb.ring_idx != 0
-            || eb.syncobj_stride != 0
-            || eb.num_in_syncobjs != 0
-            || eb.num_out_syncobjs != 0
-            || eb.in_syncobjs != 0
-            || eb.out_syncobjs != 0
-        {
-            return Err(StarryError::InvalidInput);
-        }
-        let fence_in = eb.flags & VIRTGPU_EXECBUF_FENCE_FD_IN != 0;
-        let fence_out = eb.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0;
-
-        // Cheap input validation before any host side effect: a malformed
-        // request must not create a context, attach a resource or submit work.
-        if eb.size == 0
-            || !eb.size.is_multiple_of(4)
-            || eb.size as usize > MAX_VIRGL_COMMAND_BYTES
-            || eb.command == 0
-        {
-            return Err(StarryError::InvalidInput);
-        }
-        if eb.num_bo_handles > 256 || (eb.num_bo_handles > 0 && eb.bo_handles == 0) {
-            return Err(StarryError::InvalidInput);
-        }
-
-        // `FENCE_FD_IN` imports an existing fence fd. Only a sync_file created
-        // by this driver carries one; a foreign object under that fd number is
-        // -EINVAL, matching Linux `sync_file_get_fence()` returning NULL.
-        if fence_in {
-            if eb.fence_fd < 0 {
-                return Err(StarryError::InvalidInput);
-            }
-            let file =
-                crate::file::get_file_like(eb.fence_fd).map_err(|_| VfsError::InvalidInput)?;
-            let fence = file
-                .downcast_arc::<SyncFile>()
-                .map_err(|_| VfsError::InvalidInput)?;
-            // Every out-fence produced by this driver is already signaled by
-            // the time its fd is visible, so the dependency is satisfied. An
-            // unsignaled fence cannot be produced here; treat it as an invalid
-            // import rather than parking the submit.
-            if !fence.is_signaled() {
-                return Err(StarryError::InvalidInput);
-            }
-        }
-
-        // `FENCE_FD_OUT` reserves the descriptor *before* any side effect: an
-        // fd shortage must fail the ioctl (with EMFILE) without having created
-        // a context or queued GPU work. The reservation is released
-        // automatically if a later step fails.
-        let out_fence = if fence_out {
-            let sync_file = Arc::new(SyncFile::new());
-            let created: Arc<dyn FileLike> = sync_file.clone();
-            let prepared = prepare_file_like(move || Ok(created), true)?;
-            Some((prepared, sync_file))
-        } else {
-            None
-        };
-
-        // Read the command buffer and BO handles, then resolve every handle to
-        // an owned resource — all before creating a context, so a bad command
-        // buffer or GEM handle leaves no host state behind.
-        let cmd_buf = vm_load(current, eb.command as *const u8, eb.size as usize)
-            .map_err(|_| VfsError::BadAddress)?;
-        let handles = if eb.num_bo_handles == 0 {
-            Vec::new()
-        } else {
-            vm_load(
-                current,
-                eb.bo_handles as *const u32,
-                eb.num_bo_handles as usize,
-            )
-            .map_err(|_| VfsError::BadAddress)?
-        };
-        let mut resources = Vec::with_capacity(handles.len());
-        for handle in handles {
-            let resource = self
-                .resource_for_handle(file, handle)
-                .ok_or(VfsError::NotFound)?;
-            resources.push(resource);
-        }
-
-        // Context creation and resource attach are the first host side
-        // effects; Linux reaches `virtio_gpu_create_context()` at the same
-        // point, after the inputs above validated.
-        let ctx_id = file.ensure_lazy_context()?;
-        for resource in &resources {
-            file.attach_resource(resource)?;
-        }
-
-        let fence_id = ax_display::gpu3d_submit_cmd(ctx_id, &cmd_buf).map_err(map_gpu3d_err)?;
-        for resource in resources {
-            resource.last_fence.store(fence_id, Ordering::Release);
-        }
-
-        // The submit completed synchronously: its host fence response was
-        // already consumed, so an out-fence is signaled here and the fd only
-        // becomes visible after this point. `fence_fd` is written back only
-        // for `FENCE_FD_OUT`; an IN-only request keeps its input fd.
-        if let Some((prepared, sync_file)) = out_fence {
-            sync_file.mark_signaled();
-            eb.fence_fd = prepared.fd();
-            ptr.vm_write(current, eb)
-                .map_err(|_| VfsError::BadAddress)?;
-            prepared.install();
-        } else {
-            ptr.vm_write(current, eb)
-                .map_err(|_| VfsError::BadAddress)?;
-        }
-
-        Ok(0)
-    }
-
-    /// VIRTGPU_TRANSFER_TO_HOST — transfers data from guest to host.
-    ///
-    /// Linux: `virtgpu_transfer_from_host_ioctl()` in `virtgpu_ioctl.c`
-    /// (Note: Linux naming is confusing — "from_host" means "from guest
-    /// memory to host" in the virtio-gpu spec.)
-    fn handle_virtgpu_transfer_to_host(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let t: DrmVirtgpu3dTransferToHost = (arg as *const DrmVirtgpu3dTransferToHost)
-            .vm_read(current)
-            .map_err(|_| VfsError::BadAddress)?;
-
-        // Linux: if (vgdev->has_virgl_3d == false) return -ENOSYS;
-        if !ax_display::has_virgl() {
-            return Err(VfsError::Unsupported);
-        }
-
-        // Linux `virtio_gpu_transfer_to_host_ioctl()` creates the context on
-        // the virgl branch before forwarding the 3D transfer.
-        let ctx_id = file.ensure_lazy_context()?;
-        let resource = self
-            .resource_for_handle(file, t.bo_handle)
-            .ok_or(VfsError::NotFound)?;
-        file.attach_resource(&resource)?;
-
-        // Forward to the display driver.
-        ax_display::gpu3d_transfer_to_host(ax_display::Transfer3d {
-            ctx_id,
-            resource_id: resource.res_handle,
-            box_: ax_display::TransferBox {
-                x: t.box_.x,
-                y: t.box_.y,
-                z: t.box_.z,
-                w: t.box_.w,
-                h: t.box_.h,
-                d: t.box_.d,
-            },
-            offset: t.offset as u64,
-            level: t.level,
-            stride: t.stride,
-            layer_stride: t.layer_stride,
-        })
-        .map_err(map_gpu3d_err)?;
-
-        Ok(0)
-    }
-
-    /// VIRTGPU_TRANSFER_FROM_HOST — transfers data from host to guest.
-    ///
-    /// Linux: `virtgpu_transfer_to_host_ioctl()` in `virtgpu_ioctl.c`
-    fn handle_virtgpu_transfer_from_host(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let t: DrmVirtgpu3dTransferFromHost = (arg as *const DrmVirtgpu3dTransferFromHost)
-            .vm_read(current)
-            .map_err(|_| VfsError::BadAddress)?;
-
-        // Linux: if (vgdev->has_virgl_3d == false) return -ENOSYS;
-        if !ax_display::has_virgl() {
-            return Err(VfsError::Unsupported);
-        }
-
-        // Linux `virtio_gpu_transfer_from_host_ioctl()` likewise creates the
-        // context before forwarding the 3D transfer.
-        let ctx_id = file.ensure_lazy_context()?;
-        let resource = self
-            .resource_for_handle(file, t.bo_handle)
-            .ok_or(VfsError::NotFound)?;
-        file.attach_resource(&resource)?;
-
-        // Forward to the display driver.
-        ax_display::gpu3d_transfer_from_host(ax_display::Transfer3d {
-            ctx_id,
-            resource_id: resource.res_handle,
-            box_: ax_display::TransferBox {
-                x: t.box_.x,
-                y: t.box_.y,
-                z: t.box_.z,
-                w: t.box_.w,
-                h: t.box_.h,
-                d: t.box_.d,
-            },
-            offset: t.offset as u64,
-            level: t.level,
-            stride: t.stride,
-            layer_stride: t.layer_stride,
-        })
-        .map_err(map_gpu3d_err)?;
-
-        Ok(0)
-    }
-
-    /// VIRTGPU_WAIT — waits for a resource to become idle.
-    ///
-    /// Linux: `virtgpu_wait_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// We implement this as a synchronous wait (the resource is always
-    /// "ready" since we process commands synchronously).
-    fn handle_virtgpu_wait(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let w: DrmVirtgpu3dWait = (arg as *const DrmVirtgpu3dWait)
-            .vm_read(current)
-            .map_err(|_| VfsError::BadAddress)?;
-
-        // Linux: handle=0 is invalid.
-        if w.handle == 0 {
-            return Err(VfsError::InvalidInput);
-        }
-
-        let has_dumb = self
-            .dumbs
-            .lock()
-            .get(&w.handle)
-            .is_some_and(|buffer| buffer.owner == file.file_id);
-        let resource = self.resource_for_handle(file, w.handle);
-        if !has_dumb && resource.is_none() {
-            return Err(VfsError::NotFound);
-        }
-        // Every driver submission waits for its virtqueue completion, so a
-        // returned ioctl has already completed the last fence for this GEM.
-        let _last_fence = resource.map(|resource| resource.last_fence.load(Ordering::Acquire));
-        Ok(0)
-    }
-
-    /// VIRTGPU_RESOURCE_CREATE_BLOB — creates a blob resource.
-    ///
-    /// Linux: `virtgpu_resource_create_blob_ioctl()` in `virtgpu_ioctl.c`
-    ///
-    /// Guest-backed blob types carry a guest memory entry; host-only blobs
-    /// stay unmappable until RESOURCE_MAP_BLOB is implemented.
-    fn handle_virtgpu_resource_create_blob(
-        &self,
-        file: &Card0File,
-        current: &UserTaskRef,
-        arg: usize,
-    ) -> VfsResult<usize> {
-        let ptr = arg as *mut DrmVirtgpuResourceCreateBlob;
-        let mut b: DrmVirtgpuResourceCreateBlob =
-            ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
-
-        // Linux: if (!vgdev->has_resource_blob) return -EINVAL;
-        if !ax_display::has_resource_blob() {
-            return Err(VfsError::InvalidInput);
-        }
-        // Linux: if (rc_blob->blob_flags & ~VIRTGPU_BLOB_FLAG_USE_MASK)
-        //           return -EINVAL;
-        // Note: VIRTGPU_BLOB_FLAG_USE_* 是 0x0001, 0x0002, 0x0004
-        // VIRTGPU_BLOB_FLAG_USE_MASK = 0x0007
-        if (b.blob_flags & !0x0007) != 0 {
-            return Err(VfsError::InvalidInput);
-        }
-        // Linux `verify_blob()` refuses a cross-device blob when the device has
-        // no RESOURCE_ASSIGN_UUID support: `!vgdev->has_resource_assign_uuid`
-        // returns -EINVAL. GETPARAM already reports
-        // VIRTGPU_PARAM_CROSS_DEVICE = 0 for this card, so reject the flag here
-        // rather than forwarding it to a device that cannot honour it.
-        if (b.blob_flags & VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE) != 0 {
-            return Err(VfsError::InvalidInput);
-        }
-
-        // Validate blob memory type and determine blob category.
-        let (guest_blob, host3d_blob) = match b.blob_mem {
-            VIRTGPU_BLOB_MEM_GUEST => (true, false),
-            VIRTGPU_BLOB_MEM_HOST3D_GUEST => (true, true),
-            VIRTGPU_BLOB_MEM_HOST3D => (false, true),
-            _ => {
-                // Linux: default: return -EINVAL;
-                return Err(VfsError::InvalidInput);
-            }
-        };
-
-        // Linux: if (*host3d_blob) {
-        //           if (!vgdev->has_virgl_3d) return -EINVAL;
-        //           if (rc_blob->cmd_size % 4 != 0) return -EINVAL;
-        if host3d_blob {
-            if !ax_display::has_virgl() {
-                return Err(VfsError::InvalidInput);
-            }
-            // cmd_size 必须 4 字节对齐
-            if !b.cmd_size.is_multiple_of(4) {
-                return Err(VfsError::InvalidInput);
-            }
-        } else {
-            // Linux: if (rc_blob->blob_id != 0) return -EINVAL;
-            //        if (rc_blob->cmd_size != 0) return -EINVAL;
-            if b.blob_id != 0 || b.cmd_size != 0 {
-                return Err(VfsError::InvalidInput);
-            }
-        }
-
-        // Linux `virtio_gpu_resource_create_blob_ioctl()` calls
-        // `virtio_gpu_create_context()` on the virgl path before touching the
-        // command stream, so the lazy context is created even for a pure guest
-        // blob even though that blob is not attached to it. Host3D variants
-        // are context-owned, so they keep the resulting ctx_id; a guest-only
-        // blob still sends ctx_id = 0.
-        let ctx_id = if ax_display::has_virgl() {
-            let ctx_id = file.ensure_lazy_context()?;
-            if host3d_blob { ctx_id } else { 0 }
-        } else {
-            0
-        };
-
-        if b.cmd_size as usize > MAX_VIRGL_COMMAND_BYTES
-            || (b.cmd_size > 0 && b.cmd == 0)
-            || b.size == 0
-            || b.size > DUMB_BUFFER_MAX_SIZE as u64
-        {
-            return Err(VfsError::InvalidInput);
-        }
-
-        // Linux copies the command stream before creating/publishing the GEM
-        // object. A bad userspace pointer must not leave a host resource.
-        let cmd_buf = if b.cmd_size == 0 {
-            Vec::new()
-        } else {
-            vm_load(current, b.cmd as *const u8, b.cmd_size as usize)
-                .map_err(|_| VfsError::BadAddress)?
-        };
-
-        // Allocate a guest shadow buffer so VIRTGPU_MAP/mmap on the blob's
-        // GEM handle keeps working. For HOST3D the real backing lives on
-        // the host and we deliberately do NOT send these pages to the
-        // device (nr_entries=0): QEMU and virglrenderer reject HOST3D blobs
-        // that carry an iov. The shadow is only for mmap compatibility —
-        // the present path is zero-copy on the host, no CPU readback.
-        let alloc_size = (b.size as usize).div_ceil(PAGE_SIZE_4K) * PAGE_SIZE_4K;
-        let pages = GlobalPage::alloc_contiguous(alloc_size / PAGE_SIZE_4K, PAGE_SIZE_4K)
-            .map_err(|_| VfsError::NoMemory)?;
-
-        // Zero-initialize.
-        unsafe {
-            core::ptr::write_bytes(pages.start_vaddr().as_ptr() as *mut u8, 0, alloc_size);
-        }
-
-        let backing = guest_blob.then(|| ax_display::BlobMemory {
-            paddr: virt_to_phys(pages.start_vaddr()).as_usize() as u64,
-            length: pages.size() as u32,
-        });
-        let pages = Arc::new(pages);
-        let bo_handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
-        let offset = self
-            .next_offset
-            .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
-        let res_handle = self.next_res_handle.fetch_add(1, Ordering::Relaxed);
-        ax_display::gpu3d_resource_create_blob(ax_display::ResourceCreateBlob {
-            ctx_id,
-            resource_id: res_handle,
-            blob_mem: b.blob_mem,
-            blob_flags: b.blob_flags,
-            size: b.size,
-            blob_id: b.blob_id,
-            backing,
-            cmd: &cmd_buf,
-        })
-        .map_err(map_gpu3d_err)?;
-        let resource = Arc::new(GpuResource {
-            owner: file.file_id,
-            res_handle,
-            bo_handle,
-            width: 0,
-            height: 0,
-            stride: 0,
-            size: b.size,
-            blob_mem: b.blob_mem,
-            blob_flags: b.blob_flags,
-            is_dumb_2d: false,
-            last_fence: AtomicU64::new(0),
-        });
-        if host3d_blob {
-            file.attach_resource(&resource)?;
-        }
-        let buffer = DumbBuffer {
-            owner: file.file_id,
-            width: 0,
-            height: 0,
-            bpp: 0,
-            pitch: 0,
-            size: b.size,
-            offset,
-            pages,
-            mappable: guest_blob,
-            resource: Some(resource.clone()),
-        };
-
-        b.bo_handle = bo_handle;
-        b.res_handle = res_handle;
-        if ptr.vm_write(current, b).is_err() {
-            if host3d_blob {
-                file.detach_resource(res_handle);
-            }
-            return Err(VfsError::BadAddress);
-        }
-
-        self.dumbs.lock().insert(bo_handle, buffer);
-        self.gpu_resources.lock().insert(res_handle, resource);
-
-        Ok(0)
-    }
 }
 
 /// Map a fixed object id to its `DRM_MODE_OBJECT_*` type tag.
@@ -3880,16 +3212,25 @@ fn object_type_of(id: u32) -> Option<u32> {
 }
 
 /// Map a GPU 3D error from the display layer to a VfsError.
-fn map_gpu3d_err(err: ax_display::DisplayError) -> VfsError {
+fn map_gpu_err(err: GpuError) -> VfsError {
     match err {
-        ax_display::DisplayError::NotSupported => VfsError::Unsupported,
-        ax_display::DisplayError::NotAvailable => VfsError::WouldBlock,
-        ax_display::DisplayError::Gpu3dError(kind) => match kind {
-            ax_display::Gpu3dErrorKind::InvalidParam => VfsError::InvalidInput,
-            ax_display::Gpu3dErrorKind::NotReady => VfsError::WouldBlock,
-            _ => VfsError::Io,
-        },
-        _ => VfsError::Io,
+        GpuError::Unsupported => VfsError::Unsupported,
+        GpuError::NotAvailable | GpuError::NotReady => VfsError::WouldBlock,
+        GpuError::InvalidArgument | GpuError::InvalidHandle => VfsError::InvalidInput,
+        GpuError::Busy => VfsError::ResourceBusy,
+        GpuError::OutOfMemory => VfsError::NoMemory,
+        GpuError::DeviceLost | GpuError::Io => VfsError::Io,
+    }
+}
+
+fn map_display_err(err: DisplayError) -> VfsError {
+    match err {
+        DisplayError::Unsupported => VfsError::Unsupported,
+        DisplayError::NotAvailable | DisplayError::NotReady => VfsError::WouldBlock,
+        DisplayError::InvalidOutput | DisplayError::InvalidState => VfsError::InvalidInput,
+        DisplayError::Busy => VfsError::ResourceBusy,
+        DisplayError::DeviceLost | DisplayError::Io => VfsError::Io,
+        DisplayError::Gpu(error) => map_gpu_err(error),
     }
 }
 
@@ -3912,5 +3253,5 @@ fn checked_i32(value: u64) -> VfsResult<i32> {
 #[allow(dead_code)]
 const _DUMB_BUFFER_FIELDS_USED: fn(&DumbBuffer) = |b| {
     let _ = (b.width, b.height, b.bpp, b.pitch);
-    let _ = (b.size, b.offset, &b.pages);
+    let _ = (b.size, b.offset, &b.mapping);
 };

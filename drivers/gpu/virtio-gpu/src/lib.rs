@@ -5,7 +5,8 @@
 //!
 //! * the 2D display path: `GET_DISPLAY_INFO`, `RESOURCE_CREATE_2D`,
 //!   `RESOURCE_ATTACH_BACKING` / `RESOURCE_DETACH_BACKING`, `SET_SCANOUT`,
-//!   `TRANSFER_TO_HOST_2D`, `RESOURCE_FLUSH` and `RESOURCE_UNREF`, and
+//!   `SET_SCANOUT_BLOB`, `TRANSFER_TO_HOST_2D`, `RESOURCE_FLUSH` and
+//!   `RESOURCE_UNREF`, and
 //! * the virgl 3D path: `GET_CAPSET_INFO`, `GET_CAPSET`, `CTX_CREATE` /
 //!   `CTX_DESTROY` / `CTX_ATTACH_RESOURCE` / `CTX_DETACH_RESOURCE`,
 //!   `RESOURCE_CREATE_3D`, `TRANSFER_TO_HOST_3D`, `TRANSFER_FROM_HOST_3D`,
@@ -24,8 +25,9 @@
 //! wire encoding and the response validation on top of it.
 //!
 //! The crate is `#![no_std]` and only needs `alloc`. It has no dependency on
-//! `rdrive`, `rdif-display`, StarryOS, ArceOS or the Linux DRM UAPI: mapping
-//! those onto the types below is the adapter's job.
+//! `rdrive`, StarryOS, ArceOS or the Linux DRM UAPI. The optional `rdif`
+//! feature implements the OS-independent GPU and display capabilities over
+//! the same protocol object.
 //!
 //! # Safety
 //!
@@ -45,10 +47,25 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 mod device;
 mod dma;
 mod error;
+#[cfg(feature = "rdif")]
+mod rdif;
+#[cfg(all(feature = "rdif", test))]
+mod rdif_test;
 mod wire;
 
 pub use device::VirtIoGpu;
 pub use error::Error;
+#[cfg(feature = "rdif")]
+pub use rdif::VirtIoGpuDevice;
+
+/// Current host-reported state of one display output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputInfo {
+    /// Display rectangle reported by the device.
+    pub rect: Rect,
+    /// Whether the output is connected and enabled.
+    pub enabled: bool,
+}
 
 // --- Blob resource protocol values (`VIRTIO_GPU_BLOB_MEM_*`) ---
 

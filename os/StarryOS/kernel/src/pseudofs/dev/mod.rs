@@ -4,9 +4,7 @@ mod axivc;
 pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
 pub(crate) mod card1;
-// The real contiguous coherent dma-heap is shared by every accelerator that
-// exchanges buffers (JPU / NPU / RGA).
-#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
+// The coherent dma-heap is shared by GPUs and other DMA devices.
 mod dmaheap;
 mod drm;
 pub mod event;
@@ -653,11 +651,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     }
 
     // /dev/dma_heap — the real contiguous, DMA-coherent allocator that the
-    // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
-    // heap name maps to the same allocator. Available under any accelerator
-    // feature, not just `jpeg`.
-    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
-    {
+    // accelerators and GPUs share buffers from. Every heap name maps to the
+    // same allocator. GPU PRIME import also accepts these direct-domain pages.
+    if ax_gpu::has_gpu() || cfg!(any(feature = "jpeg", feature = "rknpu", feature = "rga")) {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
             dma_heap_dir.add(
@@ -695,29 +691,28 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
     }
 
-    // /dev/dri/card0 — simpledrm-class DRM character device. Advertised
-    // unconditionally so libdrm/libudev see the DRM node even before
-    // there's a display device behind it.
-    let dri_card0 = card0::Card0::new();
     let mut dri_dir = DirMapping::new();
-    dri_dir.add(
-        "card0",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(226, 0),
-            dri_card0.clone(),
-        ),
-    );
-    dri_dir.add(
-        "renderD128",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(226, 128),
-            dri_card0,
-        ),
-    );
+    if ax_gpu::has_gpu() {
+        let dri_card0 = card0::Card0::new();
+        dri_dir.add(
+            "card0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(226, 0),
+                dri_card0.clone(),
+            ),
+        );
+        dri_dir.add(
+            "renderD128",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(226, 128),
+                dri_card0,
+            ),
+        );
+    }
 
     #[cfg(feature = "rga")]
     root.add(

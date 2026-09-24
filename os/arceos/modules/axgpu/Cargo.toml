@@ -1,0 +1,21 @@
+[package]
+name = "ax-gpu"
+version = "0.1.0"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+license.workspace = true
+description = "ArceOS GPU device and resource runtime"
+
+[features]
+host-test = ["ax-hal/host-test", "ax-task/host-test"]
+
+[dependencies]
+ax-hal.workspace = true
+ax-lazyinit.workspace = true
+ax-memory-addr.workspace = true
+ax-task.workspace = true
+dma-api.workspace = true
+irq-framework.workspace = true
+log.workspace = true
+rdif-display.workspace = true
+rdif-gpu.workspace = true

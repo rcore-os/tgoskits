@@ -58,6 +58,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, va
 [dependencies]
 ax-alloc = { workspace = true }
 ax-display.workspace = true
+ax-gpu.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-cpu = { workspace = true, features = ["fp-simd"] }
 ax-hal = { workspace = true, features = ["fp-simd", "uspace"] }
@@ -98,6 +99,7 @@ axbacktrace = { workspace = true }
 ax-cgroup = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 rdif-block = { workspace = true }
+rdif-gpu.workspace = true
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm.workspace = true
 ax-io = { workspace = true }

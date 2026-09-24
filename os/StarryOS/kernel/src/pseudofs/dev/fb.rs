@@ -1,7 +1,8 @@
-use core::{any::Any, slice};
+use alloc::sync::Arc;
+use core::any::Any;
 
-use ax_memory_addr::{PhysAddrRange, VirtAddr};
-use ax_runtime::hal::mem::virt_to_phys;
+use ax_gpu::MappableBacking;
+use ax_display::PixelFormat;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 
 use crate::{
@@ -83,7 +84,7 @@ struct FixScreenInfo {
 async fn refresh_task() {
     let delay = core::time::Duration::from_secs_f32(1. / 60.);
     loop {
-        if !ax_display::framebuffer_flush() {
+        if ax_display::framebuffer_flush().is_err() {
             warn!("Failed to refresh framebuffer");
         }
         crate::task::future::sleep(delay).await;
@@ -91,56 +92,51 @@ async fn refresh_task() {
 }
 
 pub struct FrameBuffer {
-    base: VirtAddr,
-    size: usize,
+    mapping: Arc<MappableBacking>,
 }
 impl FrameBuffer {
     pub fn new() -> Self {
         crate::task::kernel_thread_builder("fb-refresh".into())
             .spawn(|| crate::task::future::block_on(refresh_task()))
             .expect("failed to spawn kernel thread");
-        let info = ax_display::framebuffer_info();
-        Self {
-            base: VirtAddr::from(info.fb_base_vaddr),
-            size: info.fb_size,
-        }
-    }
-
-    #[allow(clippy::mut_from_ref)]
-    fn as_mut_slice(&self) -> &mut [u8] {
-        unsafe { slice::from_raw_parts_mut(self.base.as_mut_ptr(), self.size) }
+        let mapping = ax_display::framebuffer_mapping()
+            .expect("display backing must exist when /dev/fb0 is registered");
+        Self { mapping }
     }
 }
 impl DeviceOps for FrameBuffer {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let slice = self.as_mut_slice();
-        let off = offset as usize;
-        if off >= slice.len() {
-            return Ok(0);
-        }
-        let len = buf.len().min(slice.len() - off);
-        buf[..len].copy_from_slice(&slice[off..off + len]);
-        Ok(len)
+        let off = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
+        self.mapping.read_at(buf, off).map_err(|_| VfsError::Io)
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        let slice = self.as_mut_slice();
-        let off = offset as usize;
-        if off >= slice.len() {
-            return Err(VfsError::StorageFull);
-        }
-        let len = buf.len().min(slice.len() - off);
-        slice[off..off + len].copy_from_slice(&buf[..len]);
-        Ok(len)
+        let off = usize::try_from(offset).map_err(|_| VfsError::InvalidInput)?;
+        self.mapping.write_at(buf, off).map_err(|error| match error {
+            ax_gpu::rdif_gpu::GpuError::InvalidArgument => VfsError::StorageFull,
+            _ => VfsError::Io,
+        })
     }
 
     fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             // FBIOGET_VSCREENINFO
             0x4600 => {
-                let info = ax_display::framebuffer_info();
-                let line_length = (info.fb_size / info.height as usize) as u32;
-                let bpp = line_length / info.width;
+                let info = ax_display::framebuffer_info().map_err(|_| VfsError::Io)?;
+                let bpp = info.format.bytes_per_pixel() as u32;
+                let (red, green, blue, transp) = match info.format {
+                    PixelFormat::Rgb565 => ((11, 5), (5, 6), (0, 5), (0, 0)),
+                    PixelFormat::Rgb888 => ((16, 8), (8, 8), (0, 8), (0, 0)),
+                    PixelFormat::Bgr888 => ((0, 8), (8, 8), (16, 8), (0, 0)),
+                    PixelFormat::Xrgb8888 => ((16, 8), (8, 8), (0, 8), (0, 0)),
+                    PixelFormat::Argb8888 => ((16, 8), (8, 8), (0, 8), (24, 8)),
+                    PixelFormat::Xbgr8888 => ((0, 8), (8, 8), (16, 8), (0, 0)),
+                };
+                let bitfield = |(offset, length)| FrameBufferBitfield {
+                    offset,
+                    length,
+                    msb_right: 0,
+                };
                 (arg as *mut VarScreenInfo)
                     .vm_write(
                         current,
@@ -153,26 +149,10 @@ impl DeviceOps for FrameBuffer {
                             yoffset: 0,
                             bits_per_pixel: bpp * 8,
                             grayscale: 0,
-                            red: FrameBufferBitfield {
-                                offset: 16,
-                                length: 8,
-                                msb_right: 0,
-                            },
-                            green: FrameBufferBitfield {
-                                offset: 8,
-                                length: 8,
-                                msb_right: 0,
-                            },
-                            blue: FrameBufferBitfield {
-                                offset: 0,
-                                length: 8,
-                                msb_right: 0,
-                            },
-                            transp: FrameBufferBitfield {
-                                offset: 24,
-                                length: 8,
-                                msb_right: 0,
-                            },
+                            red: bitfield(red),
+                            green: bitfield(green),
+                            blue: bitfield(blue),
+                            transp: bitfield(transp),
                             nonstd: 0,
                             activate: 0,
                             height: 0,
@@ -199,13 +179,20 @@ impl DeviceOps for FrameBuffer {
             0x4601 => Ok(0),
             // FBIOGET_FSCREENINFO
             0x4602 => {
-                let info = ax_display::framebuffer_info();
+                let info = ax_display::framebuffer_info().map_err(|_| VfsError::Io)?;
+                let mut id = [0u8; 16];
+                if let Some(identity) = ax_gpu::identity() {
+                    let name = identity.device_name.as_bytes();
+                    let len = name.len().min(id.len() - 1);
+                    id[..len].copy_from_slice(&name[..len]);
+                }
+                let smem_start = self.mapping.physical().start.as_usize() as u64;
                 (arg as *mut FixScreenInfo)
                     .vm_write(
                         current,
                         FixScreenInfo {
-                            id: *b"Virtio Framebuf\0",
-                            smem_start: info.fb_base_vaddr as u64,
+                            id,
+                            smem_start,
                             smem_len: info.fb_size as u32,
                             type_: 0,
                             type_aux: 0,
@@ -214,7 +201,7 @@ impl DeviceOps for FrameBuffer {
                             ypanstep: 0,
                             ywrapstep: 0,
                             _padding0: 0,
-                            line_length: (info.fb_size / info.height as usize) as u32,
+                            line_length: info.stride as u32,
                             _padding1: 0,
                             mmio_start: 0,
                             mmio_len: 0,
@@ -243,12 +230,17 @@ impl DeviceOps for FrameBuffer {
         self
     }
 
-    fn mmap(&self, _offset: u64, _length: u64) -> DeviceMmap {
-        // Framebuffer scanout is owned by axdisplay for the program's
-        // lifetime; no retainer needed.
+    fn mmap(&self, offset: u64, length: u64) -> DeviceMmap {
+        let Some(end) = offset.checked_add(length) else {
+            return DeviceMmap::None;
+        };
+        if end > self.mapping.physical().size() as u64 {
+            return DeviceMmap::None;
+        }
+        let retainer: Arc<dyn Any + Send + Sync> = self.mapping.clone();
         DeviceMmap::Physical(
-            PhysAddrRange::from_start_size(virt_to_phys(self.base), self.size),
-            None,
+            self.mapping.physical(),
+            Some(retainer),
         )
     }
 
