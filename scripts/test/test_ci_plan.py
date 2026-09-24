@@ -441,7 +441,7 @@ command = "cargo xtask clippy --all"
         # Only registered nightly suites route here; disabled suites fail planning.
         for path in (
             "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            # "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
@@ -1211,7 +1211,7 @@ command = "true"
             )["axvisor_performance_matrix"]["include"]
         )
         self.assertNotIn("test-orangepi-5-plus-dualguest-robot", benchmark_rows)
-        self.assertIn(
+        self.assertNotIn(
             "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
             benchmark_rows,
         )
