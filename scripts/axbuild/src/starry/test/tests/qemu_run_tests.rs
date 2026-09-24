@@ -160,6 +160,32 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
 }
 
 #[test]
+fn qemu_group_build_context_prepares_starry_coverage() {
+    let root = tempdir().unwrap();
+    let build_config = root.path().join("build-x86_64-unknown-none.toml");
+    fs::write(
+        &build_config,
+        "target = \"x86_64-unknown-none\"\nenv = { AXTEST_COVERAGE = \"y\" }\nfeatures = []\nlog \
+         = \"Info\"\n",
+    )
+    .unwrap();
+    let request = starry_request(
+        PathBuf::from("/tmp/default-build.toml"),
+        "x86_64",
+        "x86_64-unknown-none",
+    );
+
+    let (_group_request, cargo) =
+        Starry::qemu_group_build_context(&request, &build_config, &workspace()).unwrap();
+
+    assert!(cargo.features.contains(&"axtest-coverage".to_string()));
+    assert!(!cargo.features.contains(&"axtest/coverage".to_string()));
+    let rendered_args = cargo.args.join(" ");
+    assert!(rendered_args.contains("-Cinstrument-coverage"));
+    assert!(rendered_args.contains("cfg(axtest_coverage)"));
+}
+
+#[test]
 fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     let root = tempdir().unwrap();
     let build_config = root

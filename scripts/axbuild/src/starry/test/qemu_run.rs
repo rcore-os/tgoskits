@@ -388,7 +388,7 @@ impl Starry {
             append_cargo_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
         }
         if crate::support::axtest_coverage::enabled(&cargo) {
-            crate::support::axtest_coverage::prepare_cargo(&mut cargo);
+            crate::support::axtest_coverage::prepare_starry_cargo(&mut cargo);
         }
 
         Ok((request, cargo))

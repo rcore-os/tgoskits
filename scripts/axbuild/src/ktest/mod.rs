@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use cargo_metadata::{DependencyKind, Metadata, Package};
+use cargo_metadata::{Metadata, Package};
 use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
     board::RunBoardOptions,
@@ -54,7 +54,7 @@ pub(crate) enum Command {
 
 #[derive(Args, Debug, Clone, Default)]
 pub(crate) struct ArgsKtestQemu {
-    /// Test every workspace package with a direct axtest dev-dependency
+    /// Test every workspace package with a direct axtest dependency
     #[arg(long, conflicts_with = "packages")]
     pub(crate) workspace: bool,
 
@@ -467,7 +467,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     let discovered = load_discovered_ktest_package(app.workspace_metadata(), &args.package)?;
     if !discovered.uses_workspace_axtest {
         bail!(
-            "package `{}` must declare workspace `axtest` directly in [dev-dependencies]",
+            "package `{}` must declare workspace `axtest` directly as a dependency",
             args.package
         );
     }
@@ -583,9 +583,7 @@ fn discover_workspace_ktests(metadata: &Metadata) -> anyhow::Result<Vec<Discover
         .filter(|package| workspace_members.contains(&package.id))
     {
         let uses_workspace_axtest = package.dependencies.iter().any(|dependency| {
-            dependency.kind == DependencyKind::Development
-                && dependency.name == AXTEST_FEATURE
-                && dependency.path.as_deref() == Some(axtest_dir)
+            dependency.name == AXTEST_FEATURE && dependency.path.as_deref() == Some(axtest_dir)
         });
         let ktest_package = ktest_package_from_metadata(package)?;
         packages.push(DiscoveredKtestPackage {
