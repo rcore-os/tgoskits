@@ -43,7 +43,40 @@ const LOG_LEVELS: &[&[u8; 2]] = &[
 
 /// `memset` shim. C ABI; some modules call this directly rather than
 /// through the compiler's intrinsic.
-#[cfg(not(target_env = "musl"))]
+///
+/// # Safety
+///
+/// `s` must be writable for `n` bytes. As with C `memset`, the region must
+/// not overlap an incompatible live Rust reference.
+#[cfg(all(not(target_env = "musl"), target_arch = "aarch64"))]
+#[capi_fn]
+#[unsafe(naked)]
+pub unsafe extern "C" fn memset(
+    _s: *mut core::ffi::c_void,
+    _c: c_int,
+    _n: usize,
+) -> *mut core::ffi::c_void {
+    // Early boot can call this symbol before high virtual profile counters
+    // are mapped. Keep the body free of compiler-inserted instrumentation.
+    core::arch::naked_asm!(
+        "cbz x2, 2f",
+        "mov x3, x0",
+        "1:",
+        "strb w1, [x3], #1",
+        "subs x2, x2, #1",
+        "b.ne 1b",
+        "2:",
+        "ret",
+    );
+}
+
+/// `memset` shim for non-AArch64 targets.
+///
+/// # Safety
+///
+/// `s` must be writable for `n` bytes. As with C `memset`, the region must
+/// not overlap an incompatible live Rust reference.
+#[cfg(all(not(target_env = "musl"), not(target_arch = "aarch64")))]
 #[capi_fn]
 pub unsafe extern "C" fn memset(
     s: *mut core::ffi::c_void,
