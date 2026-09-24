@@ -32,7 +32,7 @@ pub struct ArgsAppQemu {
     #[arg(long, conflicts_with_all = ["test_case", "nixos_case", "all_nixos_cases", "list_nixos_cases"])]
     pub all: bool,
 
-    /// Select apps/starry/<CASE>
+    /// Select apps/starry/<CASE> or apps/benchmark/starry/<CASE> as benchmark/<CASE>
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: Option<String>,
 
@@ -64,7 +64,7 @@ pub struct ArgsAppQemu {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsAppBoard {
-    /// Select apps/starry/<CASE>
+    /// Select apps/starry/<CASE> or apps/benchmark/starry/<CASE> as benchmark/<CASE>
     #[arg(short = 't', long = "test-case", value_name = "CASE")]
     pub test_case: String,
 

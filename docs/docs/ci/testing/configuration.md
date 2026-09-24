@@ -9,7 +9,7 @@ sidebar_label: "配置维护"
 
 ## 1. 检查清单
 
-`load_catalog()` 读取 `MAIN_MANIFESTS` 或 `STARRY_APPS_MANIFEST`，展开 profile 后执行字段、影响范围、artifact 和 suite 注册校验。仅把新的 TOML 文件放进目录，不会自动进入 `MAIN_MANIFESTS`。
+`load_catalog()` 读取 `MAIN_MANIFESTS`、`MAIN_PLAN_MANIFESTS` 或 `STARRY_APPS_MANIFEST`，展开 profile 后执行字段、影响范围、artifact 和 suite 注册校验。主计划使用 `MAIN_PLAN_MANIFESTS`（在 `MAIN_MANIFESTS` 基础上附加 Starry Apps 清单），以便把 `apps/benchmark/starry/**` 的改动路由到 `starry_apps` 阶段的 nightly 性能 check；这些 check 的 phase 不会进入静态或常规测试矩阵。仅把新的 TOML 文件放进目录，不会自动进入 `MAIN_MANIFESTS`。
 
 ### 1.1 文件与字段
 
@@ -50,6 +50,8 @@ arch = "x86_64"
 ```
 
 `kind` 必须属于 `ci_suite.py` 的 `SUPPORTED_SUITE_KINDS`。QEMU 注册要求 `arch`，board 注册要求 `board`；`cases` 可以限制覆盖的 case。注册用于把套件路径映射到已有运行能力，不只是给 Actions 增加一个标签。
+
+Starry 的 nightly 性能应用通过 `cargo xtask starry app ...` 运行，使用单独的 `starry-app-qemu` 和 `starry-app-board` 注册。此时 `cases` 填写相对 `apps/benchmark/starry` 的用例目录（例如 `block-rw-bench`、`qemu/ltp-hackbench`），命中该目录的 PR 改动会路由到注册它的 nightly check；这些 check 只在定时或手动运行，PR 上解析为仅静态检查。
 
 ### 1.3 增加检查
 

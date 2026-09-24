@@ -16,7 +16,7 @@ StarryOS 的固定内核构建单元使其命令围绕运行资产和扩展工�
 | `build` / `qemu` / `uboot` / `board` | 构建内核并在相应运行目标启动 |
 | `test qemu` / `test board` | 运行 Starry 测试套件 |
 | `rootfs` | 拉取并准备默认 managed rootfs |
-| `app list/qemu/board` | 发现并运行 `apps/starry/` 的声明式应用用例 |
+| `app list/qemu/board` | 发现并运行 `apps/starry/` 的声明式应用用例，以及 `apps/benchmark/starry/` 的 nightly 性能用例 |
 | `perf` | qperf 性能采集和报告 |
 | `kmod build` | 构建 Rust 或 C 可加载模块，并可注入 rootfs |
 | `defconfig <board>` / `config ls` | 选择或列出 checked-in board build config |

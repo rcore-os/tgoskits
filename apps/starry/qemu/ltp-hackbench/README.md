@@ -38,12 +38,15 @@ exactly one `LTP_HACKBENCH_SMOKE_PASSED`.
 ## Performance benchmark
 
 Select the x86_64-only benchmark profile explicitly when performance data is
-required:
+required. The benchmark variant is kept with the nightly measurement under
+`apps/benchmark/starry/qemu/ltp-hackbench`, so it is selected as
+`-t benchmark/qemu/ltp-hackbench`; this directory only keeps the smoke profiles
+and the payload they build.
 
 ```bash
 set -o pipefail
 cargo xtask starry app qemu \
-  -t qemu/ltp-hackbench \
+  -t benchmark/qemu/ltp-hackbench \
   --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml \
   2>&1 | tee target/ltp-hackbench/current-performance.log

@@ -4,7 +4,9 @@ use ostool::{board::config::BoardRunConfig, run::ShellCheckStep};
 use tempfile::tempdir;
 
 use super::{configure_board_init_step, merge_board_init_command, resolve_board_case};
-use crate::starry::app::test_support::write_minimal_board_case;
+use crate::starry::app::test_support::{
+    write_benchmark_case_file, write_board_default, write_case_file, write_minimal_board_case,
+};
 
 #[test]
 fn resolves_board_case_from_apps_dir() {
@@ -23,6 +25,37 @@ fn resolves_board_case_from_apps_dir() {
     assert!(
         case.build_config_path
             .ends_with("build-aarch64-unknown-none-softfloat.toml")
+    );
+}
+
+#[test]
+fn resolves_benchmark_board_case_from_benchmark_dir() {
+    let root = tempdir().unwrap();
+    write_benchmark_case_file(root.path(), "block-rw-bench", "init.sh", "echo bench\n");
+    write_benchmark_case_file(
+        root.path(),
+        "block-rw-bench",
+        "board-orangepi-5-plus.toml",
+        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \"root@starry:/root #\"\n",
+    );
+    write_benchmark_case_file(
+        root.path(),
+        "block-rw-bench",
+        "build-aarch64-unknown-none-softfloat.toml",
+        "target = \"aarch64-unknown-none-softfloat\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
+    );
+
+    let case = resolve_board_case(root.path(), "benchmark/block-rw-bench", None).unwrap();
+
+    assert_eq!(case.name, "benchmark/block-rw-bench");
+    assert_eq!(case.target, "aarch64-unknown-none-softfloat");
+    assert!(
+        case.case_dir
+            .ends_with("apps/benchmark/starry/block-rw-bench")
+    );
+    assert!(
+        case.board_config_path
+            .ends_with("board-orangepi-5-plus.toml")
     );
 }
 

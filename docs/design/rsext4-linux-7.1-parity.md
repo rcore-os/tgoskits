@@ -2275,7 +2275,7 @@ EA-inode value、ACL/security/trusted policy 与 external deletion power-cut rep
 
 最终验收以最新 `dev` 的 `c8a7962f4` 为基线，在同一 x86_64 主机、同一 nightly、
 QEMU 10.1.0、8 vCPU、512 MiB、NVMe snapshot rootfs 上运行双方共有的
-`apps/starry/block-io-bench`。每次 guest 运行内部执行 5 轮 4 MiB/4 KiB workload；
+`apps/benchmark/starry/block-io-bench`。每次 guest 运行内部执行 5 轮 4 MiB/4 KiB workload；
 重构数据对应 `bb0f0a57a1`，双方各独立启动 3 次 guest。下表先取每次内部 5 轮中位数，
 再取 3 次 guest 的中位数。
 全部 30 个 correctness phase 均通过 bytewise、checksum 与跨 fd truncate/rewrite 校验。
