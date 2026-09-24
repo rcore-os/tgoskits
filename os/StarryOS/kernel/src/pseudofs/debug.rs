@@ -48,6 +48,11 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
         "scheduler_metrics",
         SimpleFile::new_regular(fs.clone(), || Ok(render_scheduler_metrics())),
     );
+    #[cfg(feature = "qperf-metrics")]
+    root.add(
+        "file_lock_metrics",
+        SimpleFile::new_regular(fs.clone(), || Ok(crate::syscall::render_file_lock_metrics())),
+    );
     SimpleDir::new_maker(fs, Arc::new(root))
 }
 

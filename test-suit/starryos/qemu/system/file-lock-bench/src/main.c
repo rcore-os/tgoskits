@@ -16,6 +16,25 @@
 
 enum operation { POSIX, OFD, QUERY, FLOCK };
 
+struct lock_timing {
+    uint64_t calls;
+    uint64_t wait_ns;
+    uint64_t held_ns;
+};
+
+struct lock_metrics {
+    struct lock_timing index;
+    struct lock_timing reaper;
+    struct lock_timing inode;
+    uint64_t states;
+    uint64_t idle;
+    uint64_t capacity;
+    uint64_t entry_size;
+    uint64_t state_size;
+    uint64_t key_size;
+    int available;
+};
+
 struct worker {
     int fd;
     int id;
@@ -92,6 +111,49 @@ static int compare_u64(const void *left, const void *right)
     return (a > b) - (a < b);
 }
 
+static struct lock_metrics read_lock_metrics(enum operation operation)
+{
+    static const char *operations[] = {"posix_set", "ofd_set", "getlk", "flock"};
+    const char *index = operation == FLOCK ? "flock_index" : "fcntl_index";
+    const char *reaper = operation == FLOCK ? "flock_reap" : "fcntl_reap";
+    const char *state = operation == FLOCK ? "flock" : "fcntl";
+    struct lock_metrics metrics = {0};
+    FILE *file = fopen("/sys/kernel/debug/file_lock_metrics", "r");
+    if (file == NULL) {
+        return metrics;
+    }
+    metrics.available = 1;
+    char key[96];
+    unsigned long long value;
+    while (fscanf(file, "%95s %llu", key, &value) == 2) {
+        char expected[96];
+#define READ_METRIC(prefix, suffix, field) do {                         \
+    snprintf(expected, sizeof(expected), "%s_%s", prefix, suffix);    \
+    if (strcmp(key, expected) == 0) { field = (uint64_t)value; }        \
+} while (0)
+        READ_METRIC(index, "calls", metrics.index.calls);
+        READ_METRIC(index, "wait_ns", metrics.index.wait_ns);
+        READ_METRIC(index, "held_ns", metrics.index.held_ns);
+        READ_METRIC(reaper, "calls", metrics.reaper.calls);
+        READ_METRIC(reaper, "wait_ns", metrics.reaper.wait_ns);
+        READ_METRIC(reaper, "held_ns", metrics.reaper.held_ns);
+        READ_METRIC(operations[operation], "calls", metrics.inode.calls);
+        READ_METRIC(operations[operation], "wait_ns", metrics.inode.wait_ns);
+        READ_METRIC(operations[operation], "held_ns", metrics.inode.held_ns);
+        READ_METRIC(state, "states", metrics.states);
+        READ_METRIC(state, operation == FLOCK ? "idle" : "pending", metrics.idle);
+        READ_METRIC(state, "capacity", metrics.capacity);
+        READ_METRIC(state, "entry_size", metrics.entry_size);
+        READ_METRIC(state, "state_size", metrics.state_size);
+        if (strcmp(key, "inode_key_size") == 0) {
+            metrics.key_size = (uint64_t)value;
+        }
+#undef READ_METRIC
+    }
+    fclose(file);
+    return metrics;
+}
+
 static int run_case(enum operation operation, int count, int distinct)
 {
     static const char *names[] = {"posix", "ofd", "getlk", "flock"};
@@ -136,12 +198,14 @@ static int run_case(enum operation operation, int count, int distinct)
             return -1;
         }
     }
+    struct lock_metrics start_metrics = read_lock_metrics(operation);
     uint64_t before = now_ns();
     pthread_barrier_wait(&start);
     for (int i = 0; i < count; i++) {
         pthread_join(threads[i], NULL);
     }
     uint64_t elapsed = now_ns() - before;
+    struct lock_metrics end_metrics = read_lock_metrics(operation);
     pthread_barrier_destroy(&start);
     for (int i = 0; i < count; i++) {
         if (workers[i].error != 0) {
@@ -164,6 +228,30 @@ static int run_case(enum operation operation, int count, int distinct)
            (unsigned long long)durations[total / 2],
            (unsigned long long)durations[total * 95 / 100],
            (unsigned long long)durations[total * 99 / 100]);
+    if (start_metrics.available && end_metrics.available) {
+        printf("FILE_LOCK_KERNEL mode=%s threads=%d files=%d "
+               "index_calls=%llu index_wait_ns=%llu index_held_ns=%llu "
+               "reap_calls=%llu reap_wait_ns=%llu reap_held_ns=%llu "
+               "inode_calls=%llu inode_wait_ns=%llu inode_held_ns=%llu "
+               "states=%llu idle=%llu capacity=%llu "
+               "key_size=%llu state_size=%llu entry_size=%llu\n",
+               names[operation], count, distinct ? count : 1,
+               (unsigned long long)(end_metrics.index.calls - start_metrics.index.calls),
+               (unsigned long long)(end_metrics.index.wait_ns - start_metrics.index.wait_ns),
+               (unsigned long long)(end_metrics.index.held_ns - start_metrics.index.held_ns),
+               (unsigned long long)(end_metrics.reaper.calls - start_metrics.reaper.calls),
+               (unsigned long long)(end_metrics.reaper.wait_ns - start_metrics.reaper.wait_ns),
+               (unsigned long long)(end_metrics.reaper.held_ns - start_metrics.reaper.held_ns),
+               (unsigned long long)(end_metrics.inode.calls - start_metrics.inode.calls),
+               (unsigned long long)(end_metrics.inode.wait_ns - start_metrics.inode.wait_ns),
+               (unsigned long long)(end_metrics.inode.held_ns - start_metrics.inode.held_ns),
+               (unsigned long long)end_metrics.states,
+               (unsigned long long)end_metrics.idle,
+               (unsigned long long)end_metrics.capacity,
+               (unsigned long long)end_metrics.key_size,
+               (unsigned long long)end_metrics.state_size,
+               (unsigned long long)end_metrics.entry_size);
+    }
     fflush(stdout);
     return 0;
 }

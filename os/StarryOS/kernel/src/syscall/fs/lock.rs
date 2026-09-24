@@ -31,6 +31,11 @@ use alloc::{
 };
 use core::ffi::c_int;
 
+#[cfg(feature = "qperf-metrics")]
+mod metrics;
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use metrics::render_file_lock_metrics;
+
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -159,31 +164,64 @@ static FCNTL_LOCKS: RwLock<FcntlIndex> = RwLock::new(FcntlIndex {
 static POSIX_LOCK_GRAPH: RwLock<()> = RwLock::new(());
 
 fn fcntl_state(key: InodeKey) -> FcntlLockState {
-    if let Some(state) = FCNTL_LOCKS.read().states.get(&key) {
-        return state.clone();
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FCNTL_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    if let Some(state) = found {
+        return state;
     }
+
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
     let mut index = FCNTL_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     index.reap_pending();
-    index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone()
+    let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    state
 }
 
 fn existing_fcntl_state(key: InodeKey) -> Option<FcntlLockState> {
-    FCNTL_LOCKS.read().states.get(&key).cloned()
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FCNTL_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    found
 }
 
 // An empty state may be removed only when no other operation or waiter has
 // acquired it. Index write exclusion prevents publishing a second state.
 fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
     let mut index = FCNTL_LOCKS.write();
-    if !state.read().is_empty() {
-        return;
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    if state.read().is_empty() {
+        if Arc::strong_count(state) == 2 {
+            index.states.remove(&key);
+            index.pending.retain(|candidate| *candidate != key);
+        } else if !index.pending.contains(&key) {
+            index.pending.push(key);
+        }
     }
-    if Arc::strong_count(state) == 2 {
-        index.states.remove(&key);
-        index.pending.retain(|candidate| *candidate != key);
-    } else if !index.pending.contains(&key) {
-        index.pending.push(key);
-    }
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_REAP.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
 }
 
 /// Per-inode waiters parked by `F_SETLKW`/`F_OFD_SETLKW` until a
@@ -317,37 +355,72 @@ static FLOCK_LOCKS: RwLock<FlockIndex> = RwLock::new(FlockIndex {
 });
 
 fn flock_state(key: InodeKey) -> FlockLockState {
-    if let Some(state) = FLOCK_LOCKS.read().states.get(&key) {
-        return state.clone();
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FLOCK_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    if let Some(state) = found {
+        return state;
     }
+
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
     let mut index = FLOCK_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     index.reclaim_idle();
-    index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone()
+    let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    state
 }
 
 fn existing_flock_state(key: InodeKey) -> Option<FlockLockState> {
-    FLOCK_LOCKS.read().states.get(&key).cloned()
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FLOCK_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    found
 }
 
 fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
     let mut index = FLOCK_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     let entries = state.read();
-    if !entries.is_empty() {
-        return;
+    if entries.is_empty() {
+        let cacheable = entries.capacity() <= FLOCK_CACHED_CAPACITY_LIMIT;
+        drop(entries);
+        if !cacheable && Arc::strong_count(state) == 2 {
+            index.states.remove(&key);
+            index.idle.retain(|cached| *cached != key);
+        } else {
+            if !index.idle.contains(&key) {
+                index.idle.push(key);
+            }
+            if index.idle.len() > FLOCK_IDLE_LIMIT {
+                index.reclaim_idle();
+            }
+        }
+    } else {
+        drop(entries);
     }
-    let cacheable = entries.capacity() <= FLOCK_CACHED_CAPACITY_LIMIT;
-    drop(entries);
-    if !cacheable && Arc::strong_count(state) == 2 {
-        index.states.remove(&key);
-        index.idle.retain(|cached| *cached != key);
-        return;
-    }
-    if !index.idle.contains(&key) {
-        index.idle.push(key);
-    }
-    if index.idle.len() > FLOCK_IDLE_LIMIT {
-        index.reclaim_idle();
-    }
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_REAP.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
 }
 
 /// Per-inode waiters parked by blocking `flock(LOCK_SH/LOCK_EX)` (without
@@ -706,7 +779,17 @@ fn try_setlk_once(
     } else {
         return SetlkAttempt::Done { woke_others: false };
     };
+    #[cfg(feature = "qperf-metrics")]
+    let timing = if matches!(&owner, FOwner::Posix { .. }) {
+        &metrics::POSIX_SET
+    } else {
+        &metrics::OFD_SET
+    };
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
     let mut entries = state.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     entries.retain(|e| !e.owner.is_dead());
 
     let attempt = match kind {
@@ -731,6 +814,8 @@ fn try_setlk_once(
     };
     let empty = entries.is_empty();
     drop(entries);
+    #[cfg(feature = "qperf-metrics")]
+    timing.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
     if empty {
         reap_fcntl_state(key, &state);
     }
@@ -883,7 +968,11 @@ pub fn fcntl_getlk(
 
     let report = {
         existing_fcntl_state(key).and_then(|state| {
+            #[cfg(feature = "qperf-metrics")]
+            let requested = ax_runtime::hal::time::monotonic_time();
             let entries = state.read();
+            #[cfg(feature = "qperf-metrics")]
+            let acquired = ax_runtime::hal::time::monotonic_time();
             let mut stale = false;
             let mut report = None;
             for entry in entries.iter() {
@@ -909,11 +998,23 @@ pub fn fcntl_getlk(
                 }
             }
             drop(entries);
+            #[cfg(feature = "qperf-metrics")]
+            metrics::GETLK.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
             if stale {
+                #[cfg(feature = "qperf-metrics")]
+                let requested = ax_runtime::hal::time::monotonic_time();
                 let mut entries = state.write();
+                #[cfg(feature = "qperf-metrics")]
+                let acquired = ax_runtime::hal::time::monotonic_time();
                 entries.retain(|entry| !entry.owner.is_dead());
                 let empty = entries.is_empty();
                 drop(entries);
+                #[cfg(feature = "qperf-metrics")]
+                metrics::GETLK_CLEANUP.record(
+                    requested,
+                    acquired,
+                    ax_runtime::hal::time::monotonic_time(),
+                );
                 if empty {
                     reap_fcntl_state(key, &state);
                 }
@@ -1078,7 +1179,11 @@ fn try_flock_once(
     } else {
         return (FlockAttempt::Done, false);
     };
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
     let mut entries = state.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     let before = entries.len();
     entries.retain(|e| e.weak.strong_count() != 0);
 
@@ -1120,6 +1225,8 @@ fn try_flock_once(
     let mutated = entries.len() != before;
     let empty = entries.is_empty();
     drop(entries);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
     if empty {
         reap_flock_state(key, &state);
     }
