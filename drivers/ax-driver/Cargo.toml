@@ -15,6 +15,8 @@ default = []
 host-test = ["ax-sync?/host-test"]
 
 pci = ["dep:ax-sync", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
+arm-smmu-v3 = ["pci", "dep:arm-smmu-v3", "dep:rdif-iommu", "dep:ax-memory-addr"]
+iommu-dma-test = ["arm-smmu-v3"]
 
 block = ["dep:ax-sync", "dep:rdif-block"]
 net = ["dep:ax-sync", "dep:rd-net"]
@@ -181,6 +183,9 @@ rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-msi = { workspace = true, optional = true }
 rdif-pcie = { workspace = true, optional = true }
+rdif-iommu = { workspace = true, optional = true }
+arm-smmu-v3 = { workspace = true, optional = true }
+ax-memory-addr = { workspace = true, optional = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-power = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }

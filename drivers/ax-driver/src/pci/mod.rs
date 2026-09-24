@@ -1,9 +1,12 @@
 use alloc::format;
-#[cfg(virtio_dev)]
+#[cfg(any(virtio_dev, feature = "arm-smmu-v3"))]
 use alloc::sync::Arc;
+#[cfg(feature = "arm-smmu-v3")]
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 #[cfg(any(
+    feature = "arm-smmu-v3",
     feature = "ahci",
     feature = "intel-net",
     feature = "nvme",
@@ -13,6 +16,7 @@ use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
 ))]
 use dma_api::DeviceDma;
 #[cfg(any(
+    feature = "arm-smmu-v3",
     feature = "ahci",
     feature = "intel-net",
     feature = "nvme",
@@ -21,6 +25,8 @@ use dma_api::DeviceDma;
     all(feature = "net", feature = "pci")
 ))]
 use dma_api::DmaCoherency;
+#[cfg(feature = "arm-smmu-v3")]
+use dma_api::DmaOp;
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
 #[cfg(any(test, virtio_dev))]
@@ -50,9 +56,17 @@ use crate::virtio::VirtIoHalImpl;
 
 mod acpi;
 mod fdt;
+#[cfg(feature = "arm-smmu-v3")]
+mod iommu_dma;
 pub mod msi;
+#[cfg(feature = "arm-smmu-v3")]
+mod smmu;
+#[cfg(feature = "arm-smmu-v3")]
+mod testdev;
 pub(crate) use acpi::acpi_irq_for_endpoint;
 pub(crate) use fdt::fdt_irq_for_endpoint;
+#[cfg(feature = "iommu-dma-test")]
+pub use iommu_dma::verify_failure_paths as verify_iommu_dma_failure_paths;
 pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
@@ -74,13 +88,127 @@ const PCI_INTX_LINES: usize = 4;
     feature = "xhci-pci",
     all(feature = "net", feature = "pci")
 ))]
-pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> DeviceDma {
-    axklib::dma::device(dma_api::DmaDeviceInfo::new(
+pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> Result<DeviceDma, OnProbeError> {
+    #[cfg(feature = "arm-smmu-v3")]
+    if info.iommu.is_some() {
+        return bound_dma_with_coherency(info.address, dma_mask, dma_coherency(info));
+    }
+    if info.iommu.is_some() {
+        return Err(OnProbeError::other(format!(
+            "PCI endpoint {} requires an IOMMU, but no DMA backend is available",
+            info.address
+        )));
+    }
+    Ok(axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         dma_coherency(info),
         dma_api::DmaConstraints::new(dma_mask),
-    ))
+    )))
 }
+
+#[cfg(feature = "arm-smmu-v3")]
+static IOMMU_DMA: Mutex<BTreeMap<PciAddress, Arc<iommu_dma::IommuDma>>> =
+    Mutex::new(BTreeMap::new());
+
+#[cfg(feature = "arm-smmu-v3")]
+fn iommu_backend(address: PciAddress) -> Result<Arc<iommu_dma::IommuDma>, OnProbeError> {
+    let mut backends = raw_lock(&IOMMU_DMA);
+    if let Some(backend) = backends.get(&address) {
+        return Ok(backend.clone());
+    }
+    let domain = rdrive::probe::pci::bound_iommu_domain(address).ok_or_else(|| {
+        OnProbeError::other(format!("PCI endpoint {address} has no bound IOMMU domain"))
+    })?;
+    let backend = Arc::new(iommu_dma::IommuDma::new(domain));
+    backends.insert(address, backend.clone());
+    Ok(backend)
+}
+
+#[cfg(feature = "arm-smmu-v3")]
+fn bound_dma_with_coherency(
+    address: PciAddress,
+    mask: u64,
+    coherency: DmaCoherency,
+) -> Result<DeviceDma, OnProbeError> {
+    let backend = iommu_backend(address)?;
+    let info = dma_api::DmaDeviceInfo::new(
+        backend.domain_id(),
+        coherency,
+        dma_api::DmaConstraints::new(mask),
+    );
+    backend
+        .device(info)
+        .map_err(|err| OnProbeError::other(format!("PCI DMA backend failed: {err}")))
+}
+
+/// Returns the DMA capability already bound to a PCI requester.
+#[cfg(feature = "arm-smmu-v3")]
+pub fn bound_dma(address: PciAddress, mask: u64) -> Result<DeviceDma, OnProbeError> {
+    bound_dma_with_coherency(address, mask, DmaCoherency::Coherent)
+}
+
+#[cfg(feature = "arm-smmu-v3")]
+pub(crate) fn dma_for_info(info: dma_api::DmaDeviceInfo) -> Result<DeviceDma, dma_api::DmaError> {
+    let backend = raw_lock(&IOMMU_DMA)
+        .values()
+        .find(|backend| backend.domain_id() == info.domain())
+        .cloned()
+        .ok_or(dma_api::DmaError::DomainMismatch {
+            requested: info.domain(),
+            backend: dma_api::DmaDomainId::Direct,
+        })?;
+    backend.device(info)
+}
+
+/// Diagnostics for translated PCI requesters that have acquired a DMA backend.
+#[cfg(feature = "arm-smmu-v3")]
+pub fn bound_pci_endpoints() -> Vec<(PciAddress, dma_api::DmaDomainId)> {
+    raw_lock(&IOMMU_DMA)
+        .iter()
+        .map(|(address, backend)| (*address, backend.domain_id()))
+        .collect()
+}
+
+/// Drains the controller event queue and returns its cumulative fault count.
+#[cfg(feature = "arm-smmu-v3")]
+pub fn iommu_fault_count(address: PciAddress) -> Result<u64, OnProbeError> {
+    if rdrive::probe::pci::bound_iommu_domain(address).is_none() {
+        return Err(OnProbeError::other(format!(
+            "PCI endpoint {address} has no IOMMU domain"
+        )));
+    }
+    smmu::fault_count()
+}
+
+/// One decoded SMMU event queue entry for PCI diagnostics.
+#[cfg(feature = "arm-smmu-v3")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PciIommuFault {
+    pub stream_id: u32,
+    pub address: u64,
+    pub event_id: u8,
+}
+
+/// Drains fault records for the controller serving a bound PCI requester.
+#[cfg(feature = "arm-smmu-v3")]
+pub fn iommu_drain_faults(address: PciAddress) -> Result<Vec<PciIommuFault>, OnProbeError> {
+    if rdrive::probe::pci::bound_iommu_domain(address).is_none() {
+        return Err(OnProbeError::other(format!(
+            "PCI endpoint {address} has no IOMMU domain"
+        )));
+    }
+    Ok(smmu::drain_faults()?
+        .into_iter()
+        .map(|fault| PciIommuFault {
+            stream_id: fault.stream.0,
+            address: fault.address,
+            event_id: fault.event_id,
+        })
+        .collect())
+}
+
+#[cfg(feature = "arm-smmu-v3")]
+pub use testdev::iommu_testdev_endpoint;
 
 #[cfg(any(
     feature = "ahci",
@@ -533,6 +661,7 @@ pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
         interrupt_pin: 1,
         interrupt_line: 0,
         dma_coherent: false,
+        iommu: None,
         intx_route: Some(rdrive::probe::pci::PciIntxRoute {
             root_device: address.device(),
             root_function: address.function(),
@@ -593,6 +722,7 @@ mod tests {
             interrupt_pin: 1,
             interrupt_line: 0,
             dma_coherent: false,
+            iommu: None,
             intx_route: Some(PciIntxRoute {
                 root_device: 2,
                 root_function: 0,
@@ -611,6 +741,7 @@ mod tests {
             interrupt_pin: 1,
             interrupt_line: 0,
             dma_coherent: false,
+            iommu: None,
             intx_route: None,
         };
 
@@ -1000,6 +1131,7 @@ mod tests {
             interrupt_pin: 1,
             interrupt_line: 9,
             dma_coherent: false,
+            iommu: None,
             intx_route: Some(PciIntxRoute {
                 root_device: 2,
                 root_function: 0,
@@ -1129,6 +1261,13 @@ fn take_virtio_transport_with_intx_policy(
     let ty = virtio_device_type(&dev_info).ok_or(OnProbeError::NotMatch)?;
     if ty != expected {
         return Err(OnProbeError::NotMatch);
+    }
+
+    if rdrive::probe::pci::bound_iommu_domain(endpoint.address()).is_some() {
+        return Err(OnProbeError::other(format!(
+            "VirtIO PCI endpoint {bdf} requires translated DMA, which VirtIoHalImpl does not \
+             support"
+        )));
     }
 
     if mask_intx_after_match {

@@ -42,19 +42,16 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         endpoint.status()
     );
 
-    endpoint.update_command(|mut cmd| {
+    let dma = crate::pci::device_dma(probe.info(), RTL8125_DMA_MASK)?;
+
+    probe.endpoint_mut().update_command(|mut cmd| {
         cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
         cmd.remove(CommandRegister::INTERRUPT_DISABLE);
         cmd
     });
 
-    let dev = Rtl8125::new(
-        bar.start as u64,
-        bar.count(),
-        crate::pci::device_dma(probe.info(), RTL8125_DMA_MASK),
-        axklib::mmio::op(),
-    )
-    .map_err(|err| OnProbeError::other(alloc::format!("failed to create RTL8125: {err:?}")))?;
+    let dev = Rtl8125::new(bar.start as u64, bar.count(), dma, axklib::mmio::op())
+        .map_err(|err| OnProbeError::other(alloc::format!("failed to create RTL8125: {err:?}")))?;
 
     let status = dev.status();
     if status.link_up() {

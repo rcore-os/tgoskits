@@ -480,9 +480,13 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
+ "dma-api",
  "embedded-graphics",
  "libc",
+ "mmio-api",
  "rand 0.8.8",
+ "rdif-iommu",
+ "rdrive",
 ]
 
 [[package]]
@@ -554,6 +558,13 @@ dependencies = [
  "smccc",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
+]
+
+[[package]]
+name = "arm-smmu-v3"
+version = "0.1.0"
+dependencies = [
+ "rdif-iommu",
 ]
 
 [[package]]
@@ -892,8 +903,10 @@ dependencies = [
  "aic8800",
  "anyhow",
  "arm-scmi-rs",
+ "arm-smmu-v3",
  "ax-alloc",
  "ax-arm-pl031",
+ "ax-memory-addr",
  "ax-sync",
  "axklib",
  "bitflags 2.13.2",
@@ -919,6 +932,7 @@ dependencies = [
  "rdif-display",
  "rdif-input",
  "rdif-intc",
+ "rdif-iommu",
  "rdif-msi",
  "rdif-pcie",
  "rdif-pinctrl",
@@ -6591,6 +6605,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-iommu"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+]
+
+[[package]]
 name = "rdif-msi"
 version = "0.3.1"
 dependencies = [
@@ -6687,6 +6708,7 @@ dependencies = [
  "pcie",
  "rdif-base",
  "rdif-clk",
+ "rdif-iommu",
  "rdif-pcie",
  "rdif-pinctrl",
  "rdif-power",

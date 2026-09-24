@@ -5,7 +5,7 @@ use alloc::{format, vec::Vec};
 use fdt_edit::{Fdt, NodeType, Phandle};
 use log::warn;
 use pcie::{Endpoint, MsixError, MsixTableRegion};
-use rdif_msi::{Msi, MsiAllocation, MsiDeviceId, MsiRequest};
+use rdif_msi::{Msi, MsiAllocation, MsiDeviceId, MsiMessage, MsiRequest};
 use rdrive::{
     DeviceId,
     probe::{
@@ -27,6 +27,8 @@ pub struct PciIrqLease {
     allocation: Option<MsiAllocation>,
     table: MsixTableRegion,
     _table_mmio: mmio_api::Mmio,
+    #[cfg(feature = "arm-smmu-v3")]
+    msi_mappings: Vec<super::iommu_dma::MsiMapping>,
 }
 
 pub type PciMsixAllocation = PciIrqLease;
@@ -64,6 +66,8 @@ impl PciIrqLease {
                 })?,
         );
 
+        #[cfg(feature = "arm-smmu-v3")]
+        let mut msi_mappings = Vec::new();
         let setup = (|| {
             let table_mmio = axklib::mmio::ioremap(table_range.start.into(), table_range.len())
                 .map_err(|err| OnProbeError::other(format!("failed to map MSI-X table: {err}")))?;
@@ -84,6 +88,23 @@ impl PciIrqLease {
                             info.address, vector.index
                         ))
                     })?;
+                    #[cfg(feature = "arm-smmu-v3")]
+                    let message = if info.iommu.is_some() {
+                        let mapping = super::iommu_backend(info.address)?
+                            .map_mmio_page(message.address)
+                            .map_err(|err| {
+                                OnProbeError::other(format!(
+                                    "failed to map MSI-X doorbell for {}: {err}",
+                                    info.address
+                                ))
+                            })?;
+                        let mapped_message =
+                            MsiMessage::new(mapping.dma_address(message.address), message.data);
+                        msi_mappings.push(mapping);
+                        mapped_message
+                    } else {
+                        message
+                    };
                     table
                         .program_masked(vector.index.0, message)
                         .map_err(msix_probe_error)?;
@@ -105,17 +126,40 @@ impl PciIrqLease {
                 allocation: allocation.take(),
                 table,
                 _table_mmio: table_mmio,
+                #[cfg(feature = "arm-smmu-v3")]
+                msi_mappings: core::mem::take(&mut msi_mappings),
             })
         })();
 
-        if setup.is_err()
-            && let Some(allocation) = allocation.take()
-            && let Err(err) = provider.free(allocation)
-        {
-            warn!(
-                "failed to roll back MSI-X allocation for {} after setup error: {err:?}",
-                info.address
-            );
+        if setup.is_err() {
+            let masked = endpoint.set_msix_function_mask(true).is_ok();
+            let disabled = endpoint.set_msix_enabled(false).is_ok();
+            let freed = if let Some(allocation) = allocation.take() {
+                match provider.free(allocation) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            "failed to roll back MSI-X allocation for {} after setup error: \
+                             {err:?}",
+                            info.address
+                        );
+                        false
+                    }
+                }
+            } else {
+                true
+            };
+            #[cfg(feature = "arm-smmu-v3")]
+            {
+                // A posted MSI may still be in flight after the function is
+                // masked. The domain outlives the endpoint, so retain its
+                // doorbell translations for the domain lifetime.
+                core::mem::forget(msi_mappings);
+            }
+            #[cfg(not(feature = "arm-smmu-v3"))]
+            let _ = (masked, disabled, freed);
+            #[cfg(feature = "arm-smmu-v3")]
+            let _ = (masked, disabled, freed);
         }
         setup
     }
@@ -137,10 +181,17 @@ impl PciIrqLease {
             && let Ok(provider) = rdrive::get::<Msi>(self.provider)
             && let Ok(mut provider) = provider.lock()
         {
-            for vector in allocation.vectors() {
+            for (position, vector) in allocation.vectors().iter().enumerate() {
                 let Ok(message) = provider.compose_message(vector) else {
                     warn!(
                         "failed to compose MSI-X message while enabling vector {:?}",
+                        vector.index
+                    );
+                    continue;
+                };
+                let Ok(message) = self.translate_message(position, message) else {
+                    warn!(
+                        "failed to translate MSI-X message for vector {:?}",
                         vector.index
                     );
                     continue;
@@ -172,10 +223,11 @@ impl PciIrqLease {
             warn!("MSI-X source id {source_id} is outside the vector index range");
             return;
         };
-        let Some(vector) = self
+        let Some((position, vector)) = self
             .vectors()
             .iter()
-            .find(|vector| vector.index.0 == source_id)
+            .enumerate()
+            .find(|(_, vector)| vector.index.0 == source_id)
         else {
             warn!("MSI-X source id {source_id} is not owned by this allocation");
             return;
@@ -190,6 +242,10 @@ impl PciIrqLease {
         };
         let Ok(message) = provider.compose_message(vector) else {
             warn!("failed to compose MSI-X message while enabling vector {source_id}");
+            return;
+        };
+        let Ok(message) = self.translate_message(position, message) else {
+            warn!("failed to translate MSI-X message while enabling vector {source_id}");
             return;
         };
         if let Err(err) = self.table.program_masked(vector.index.0, message) {
@@ -213,10 +269,16 @@ impl PciIrqLease {
     }
 
     pub fn disable(&self) {
+        let _ = self.disable_checked();
+    }
+
+    fn disable_checked(&self) -> bool {
+        let mut disabled = true;
         if let Some(allocation) = &self.allocation {
             for vector in allocation.vectors() {
                 if let Err(err) = self.table.mask(vector.index.0) {
                     warn!("failed to mask MSI-X table entry {:?}: {err}", vector.index);
+                    disabled = false;
                 }
             }
             if let Ok(provider) = rdrive::get::<Msi>(self.provider)
@@ -225,10 +287,14 @@ impl PciIrqLease {
                 for vector in allocation.vectors() {
                     if let Err(err) = provider.set_vector_enabled(vector, false) {
                         warn!("failed to disable MSI vector {:?}: {err:?}", vector.index);
+                        disabled = false;
                     }
                 }
+            } else {
+                disabled = false;
             }
         }
+        disabled
     }
 
     fn vectors(&self) -> &[rdif_msi::MsiVector] {
@@ -236,6 +302,26 @@ impl PciIrqLease {
             .as_ref()
             .map(MsiAllocation::vectors)
             .unwrap_or(&[])
+    }
+
+    fn translate_message(
+        &self,
+        position: usize,
+        message: MsiMessage,
+    ) -> Result<MsiMessage, OnProbeError> {
+        #[cfg(feature = "arm-smmu-v3")]
+        if !self.msi_mappings.is_empty() {
+            let mapping = self.msi_mappings.get(position).ok_or_else(|| {
+                OnProbeError::other("MSI-X doorbell mapping is missing for a vector")
+            })?;
+            return Ok(MsiMessage::new(
+                mapping.dma_address(message.address),
+                message.data,
+            ));
+        }
+        #[cfg(not(feature = "arm-smmu-v3"))]
+        let _ = position;
+        Ok(message)
     }
 }
 
@@ -259,15 +345,28 @@ impl crate::IrqBindingLease for PciIrqLease {
 
 impl Drop for PciIrqLease {
     fn drop(&mut self) {
-        self.disable();
+        let mut stopped = self.disable_checked();
         let Some(allocation) = self.allocation.take() else {
             return;
         };
         if let Ok(provider) = rdrive::get::<Msi>(self.provider)
             && let Ok(mut provider) = provider.lock()
-            && let Err(err) = provider.free(allocation)
         {
-            warn!("failed to free MSI-X allocation: {err:?}");
+            if let Err(err) = provider.free(allocation) {
+                warn!("failed to free MSI-X allocation: {err:?}");
+                stopped = false;
+            }
+        } else {
+            stopped = false;
+        }
+        if !stopped {
+            warn!("MSI-X teardown could not stop every vector");
+        }
+        #[cfg(feature = "arm-smmu-v3")]
+        {
+            // MSI writes can remain posted after masking and freeing the
+            // vector. Keep the doorbell IOVAs mapped until domain teardown.
+            core::mem::forget(core::mem::take(&mut self.msi_mappings));
         }
     }
 }

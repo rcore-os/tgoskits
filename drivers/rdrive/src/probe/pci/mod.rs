@@ -1,4 +1,9 @@
-use alloc::{collections::btree_set::BTreeSet, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, btree_set::BTreeSet},
+    format,
+    sync::Arc,
+    vec::Vec,
+};
 use core::ops::{Deref, DerefMut};
 
 use ::pcie::*;
@@ -6,7 +11,8 @@ pub use ::pcie::{Endpoint, PciCapability, PciIntxRoute, PcieGeneric};
 use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock as Mutex;
 use mmio_api::{MapError, MmioOp};
-pub use rdif_pcie::{DriverGeneric, PciAddress, PciMem32, PciMem64, PcieController};
+use rdif_iommu::{Iommu, IommuDomain, StreamId};
+pub use rdif_pcie::{DriverGeneric, PciAddress, PciIommuMap, PciMem32, PciMem64, PcieController};
 
 use crate::{
     Descriptor, Device, PlatformDevice, ProbeError, get_list,
@@ -15,6 +21,19 @@ use crate::{
 };
 
 static PCIE: OnceLock<Mutex<Vec<PcieEnumterator>>> = OnceLock::new();
+static BOUND_IOMMU_DOMAINS: OnceLock<Mutex<BTreeMap<PciAddress, Arc<dyn IommuDomain>>>> =
+    OnceLock::new();
+
+fn bound_domains() -> &'static Mutex<BTreeMap<PciAddress, Arc<dyn IommuDomain>>> {
+    BOUND_IOMMU_DOMAINS.call_once(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Return the domain bound before this endpoint's PCI probe callback ran.
+/// This uses a lock separate from PCI enumeration, so DMA setup in the callback
+/// can safely clone the domain while enumeration still owns its lock.
+pub fn bound_iommu_domain(address: PciAddress) -> Option<Arc<dyn IommuDomain>> {
+    bound_domains().lock().get(&address).cloned()
+}
 
 pub type FnOnProbe = fn(ProbePci<'_>) -> Result<(), OnProbeError>;
 
@@ -65,12 +84,19 @@ impl EndpointRc {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciIommuRoute {
+    pub provider: crate::DeviceId,
+    pub stream_id: StreamId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciInfo {
     pub address: PciAddress,
     pub interrupt_pin: u8,
     pub interrupt_line: u8,
     pub intx_route: Option<PciIntxRoute>,
     pub dma_coherent: bool,
+    pub iommu: Option<PciIommuRoute>,
 }
 
 impl PciInfo {
@@ -78,6 +104,7 @@ impl PciInfo {
         endpoint: &EndpointRc,
         intx_route: Option<PciIntxRoute>,
         dma_coherent: bool,
+        iommu: Option<PciIommuRoute>,
     ) -> Self {
         Self {
             address: endpoint.address(),
@@ -85,6 +112,7 @@ impl PciInfo {
             interrupt_line: endpoint.interrupt_line(),
             intx_route,
             dma_coherent,
+            iommu,
         }
     }
 }
@@ -160,10 +188,17 @@ impl PcieEnumterator {
     ) -> Result<(), ProbeError> {
         let mut g = self.ctrl.lock().unwrap();
         let dma_coherent = g.dma_coherent();
+        let iommu_map = g.iommu_map().cloned();
 
         for ep in enumerate_by_controller_with_info(&mut g, None) {
             debug!("PCIe endpiont: {}", ep.endpoint);
-            match self.probe_one(ep, registers, stop_if_fail, dma_coherent) {
+            match self.probe_one(
+                ep,
+                registers,
+                stop_if_fail,
+                dma_coherent,
+                iommu_map.as_ref(),
+            ) {
                 Ok(_) => {} // Successfully probed, move to the next
                 Err(e) => {
                     if stop_if_fail {
@@ -184,6 +219,7 @@ impl PcieEnumterator {
         registers: &[DriverRegister],
         stop_if_fail: bool,
         dma_coherent: bool,
+        iommu_map: Option<&PciIommuMap>,
     ) -> Result<(), ProbeError> {
         let intx_route = endpoint.intx_route;
         let endpoint = endpoint.endpoint;
@@ -193,6 +229,69 @@ impl PcieEnumterator {
         }
 
         let mut endpoint = EndpointRc::new(endpoint);
+        if iommu_map.is_some() {
+            // No endpoint may keep firmware-enabled bus mastering while its
+            // requester ID is still being resolved or its stream is attached.
+            endpoint.update_command(|mut command| {
+                command.remove(CommandRegister::BUS_MASTER_ENABLE);
+                command
+            });
+        }
+        let iommu = match iommu_map {
+            Some(map) => {
+                let rid = (u16::from(address.bus()) << 8)
+                    | (u16::from(address.device()) << 3)
+                    | u16::from(address.function());
+                let target = map.route(rid).map_err(|error| {
+                    ProbeError::from(OnProbeError::other(format!(
+                        "ambiguous IOMMU route for PCI endpoint {address}: {error:?}"
+                    )))
+                })?;
+                if let Some(target) = target {
+                    let provider = crate::fdt_phandle_to_device_id(target.iommu_phandle.into())
+                        .ok_or_else(|| {
+                            ProbeError::from(OnProbeError::other(format!(
+                                "IOMMU phandle {:#x} for PCI endpoint {address} has no provider",
+                                target.iommu_phandle
+                            )))
+                        })?;
+                    Some(PciIommuRoute {
+                        provider,
+                        stream_id: StreamId(target.stream_id),
+                    })
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+
+        if let Some(route) = iommu
+            && bound_iommu_domain(address).is_none()
+        {
+            let provider = crate::get::<Iommu>(route.provider).map_err(|error| {
+                ProbeError::from(OnProbeError::other(format!(
+                    "IOMMU provider {:?} for PCI endpoint {address} is unavailable: {error:?}",
+                    route.provider
+                )))
+            })?;
+            let domain = provider
+                .lock()
+                .map_err(|error| {
+                    ProbeError::from(OnProbeError::other(format!(
+                        "failed to lock IOMMU provider {:?} for PCI endpoint {address}: {error:?}",
+                        route.provider
+                    )))
+                })?
+                .bind(route.stream_id)
+                .map_err(|error| {
+                    ProbeError::from(OnProbeError::other(format!(
+                        "failed to bind PCI endpoint {address} to IOMMU stream {:?}: {error}",
+                        route.stream_id
+                    )))
+                })?;
+            bound_domains().lock().insert(address, domain);
+        }
 
         for register in registers {
             let Some(pci_probe) = register.probe_kinds.iter().find_map(|probe| {
@@ -208,7 +307,7 @@ impl PcieEnumterator {
             desc.name = register.name;
             desc.irq_parent = self.ctrl.descriptor().irq_parent;
 
-            let info = PciInfo::from_endpoint(&endpoint, intx_route, dma_coherent);
+            let info = PciInfo::from_endpoint(&endpoint, intx_route, dma_coherent, iommu);
             let plat_dev = PlatformDevice::new(desc);
             match (pci_probe)(ProbePci::new(info, &mut endpoint, plat_dev)) {
                 Ok(_) => {

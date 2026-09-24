@@ -63,6 +63,7 @@ pub enum DmaOperation {
 
 #[derive(Clone)]
 pub struct TrackingDmaOp {
+    domain: DmaDomainId,
     operations: Arc<Mutex<Vec<DmaOperation>>>,
     next_dma_addr: Arc<Mutex<u64>>,
     forced_dma_addr: Arc<Mutex<Option<u64>>>,
@@ -79,6 +80,7 @@ impl Default for TrackingDmaOp {
 impl TrackingDmaOp {
     pub fn new() -> Self {
         Self {
+            domain: DmaDomainId::Direct,
             operations: Arc::new(Mutex::new(Vec::new())),
             next_dma_addr: Arc::new(Mutex::new(0x1000)),
             forced_dma_addr: Arc::new(Mutex::new(None)),
@@ -89,6 +91,11 @@ impl TrackingDmaOp {
 
     pub fn with_next_dma_addr(self, dma_addr: u64) -> Self {
         *self.next_dma_addr.lock().unwrap() = dma_addr;
+        self
+    }
+
+    pub fn with_domain(mut self, domain: DmaDomainId) -> Self {
+        self.domain = domain;
         self
     }
 
@@ -174,6 +181,10 @@ impl TrackingDmaOp {
 impl DmaOp for TrackingDmaOp {
     fn page_size(&self) -> usize {
         0x1000
+    }
+
+    fn domain_id(&self) -> DmaDomainId {
+        self.domain
     }
 
     unsafe fn alloc_contiguous(
