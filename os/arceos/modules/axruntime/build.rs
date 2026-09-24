@@ -89,6 +89,11 @@ fn axtest_coverage_runtime_sections() -> &'static str {
         __stop___llvm_prf_cnts = .;
 
         . = ALIGN(0x10);
+        __start___llvm_prf_ucnts = .;
+        KEEP(*(__llvm_prf_ucnts))
+        __stop___llvm_prf_ucnts = .;
+
+        . = ALIGN(0x10);
         __start___llvm_prf_bits = .;
         KEEP(*(__llvm_prf_bits))
         __stop___llvm_prf_bits = .;

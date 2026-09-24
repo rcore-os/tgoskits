@@ -1,11 +1,15 @@
+#[cfg(all(feature = "coverage", any(axtest_coverage, test)))]
+#[path = "coverage_profraw.rs"]
+mod profraw;
+
 #[cfg(all(axtest_coverage, feature = "coverage"))]
 mod imp {
-    use alloc::vec::Vec;
     use core::{
         mem::ManuallyDrop,
         sync::atomic::{AtomicPtr, Ordering},
     };
 
+    use super::profraw;
     use crate::axtest_println;
 
     static WAIT_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -19,9 +23,8 @@ mod imp {
     }
 
     pub fn dump_coverage() {
-        let mut coverage = Vec::new();
-        match xcover::write_profraw(&mut coverage) {
-            Ok(()) => {
+        match profraw::capture() {
+            Ok(coverage) => {
                 let coverage = ManuallyDrop::new(coverage);
                 axtest_println!(
                     "AXTEST_COVERAGE status=ready addr={:p} size={}",

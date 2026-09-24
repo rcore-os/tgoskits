@@ -12,11 +12,10 @@ categories.workspace = true
 
 [dependencies]
 axtest-macros.workspace = true
-xcover = { workspace = true, optional = true }
 
 [features]
 default = []
-coverage = ["dep:xcover"]
+coverage = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest_coverage)'] }
