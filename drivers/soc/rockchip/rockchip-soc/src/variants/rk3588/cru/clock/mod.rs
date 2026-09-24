@@ -71,6 +71,14 @@ clk_id_group!(
     CLK_I2C8 = 148,
 );
 
+clk_id_group!(
+    PCLK_OTPC_NS = 149,
+    CLK_OTPC_NS = 150,
+    CLK_OTPC_ARB = 151,
+    CLK_OTPC_AUTO_RD_G = 152,
+    CLK_OTP_PHY_G = 153,
+);
+
 // PMU I2C (I2C0) 在 PMU CRU 中
 clk_id_group!(PCLK_I2C0 = 646, CLK_I2C0 = 647,);
 

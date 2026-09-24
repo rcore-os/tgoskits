@@ -27,6 +27,7 @@ ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 # logical pending state remains in ax-task.
 wake-ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 qperf-metrics = ["ax-task/qperf-metrics"]
+rk3588-cpufreq = ["ax-driver/rk3588-cpufreq"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
@@ -94,6 +95,7 @@ dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
+rdif-cpufreq.workspace = true
 rdif-intc.workspace = true
 rdif-serial.workspace = true
 rd-net = { workspace = true, optional = true }

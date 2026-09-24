@@ -246,6 +246,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(all(feature = "smp", feature = "ipi"))]
     crate::fs::online_smp();
 
+    crate::cpufreq::start_from_host_bootargs(ax_hal::boot::bootargs());
+
     crate::ax_app_entry();
     crate::terminate();
 }

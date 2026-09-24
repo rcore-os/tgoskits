@@ -14,8 +14,8 @@ use crate::{
     sync::{Mutex, RwLock},
     task::{
         PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
-        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, kernel_thread_builder,
-        new_user_task, prepare_user_thread, sleep, spawn_alarm_task,
+        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, new_user_task,
+        prepare_user_thread, spawn_alarm_task,
     },
     tracepoint::tracepoint_init,
 };
@@ -40,16 +40,6 @@ pub fn init(args: &[String], envs: &[String]) {
     crate::file::epoll::start_epoll_notify_worker();
     spawn_alarm_task();
     crate::mm::spawn_reclaimer_task();
-    // DVFS: a one-shot OPP-calibration boot runs the sweep and skips the governor;
-    // otherwise start the ondemand governor. Both run here (early init, before the
-    // console tty handoff) so their kernel logs reach the serial console.
-    if ax_driver::cpufreq::calibrate_wanted() {
-        run_opp_calibration();
-    } else {
-        spawn_cpufreq_governor();
-    }
-    // Read-only cluster frequency snapshot for CPU-bound workload triage.
-    ax_driver::cpufreq::log_frequency_readout();
     pseudofs::usbfs::start_event_pump();
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
@@ -174,73 +164,4 @@ pub fn init(args: &[String], envs: &[String]) {
     // must neither return nor poll a second process-lifecycle state here.
     let _exit_code = task.join();
     match crate::task::future::block_on(core::future::pending::<core::convert::Infallible>()) {}
-}
-
-/// Run the one-shot DVFS OPP calibration sweep (gated by the driver's `CALIBRATE`
-/// const). Each cluster's (voltage x ring) sweep must execute ON a core of that
-/// cluster to read that core's own PMU cycle counter, so we pin a task per cluster
-/// (cpu0=A55, cpu4=A76 big0, cpu6=A76 big1) before run-queue publication and run
-/// them sequentially (the two A76 rails share one I2C bus). Synchronous: it
-/// blocks init briefly so the `CAL` log lines land before the console tty handoff.
-fn run_opp_calibration() {
-    info!("cpufreq: running OPP calibration sweep (governor disabled this boot)");
-    for &(cluster_idx, cpu) in &[(0usize, 0usize), (1, 4), (2, 6)] {
-        let mut affinity = ax_runtime::task::sched::CpuSet::empty(ax_runtime::hal::cpu_num());
-        let cpu_id =
-            u32::try_from(cpu).unwrap_or_else(|_| panic!("cpufreq CPU id {cpu} is out of range"));
-        assert!(
-            affinity.insert(ax_runtime::task::sched::CpuId::new(cpu_id)),
-            "cpufreq calibration CPU {cpu} is outside the runtime topology"
-        );
-        let task = kernel_thread_builder(String::from("cpufreq-cal"))
-            .affinity(affinity)
-            .spawn(move || ax_driver::cpufreq::calibrate_cluster(cluster_idx, cpu))
-            .expect("failed to spawn kernel thread");
-        let _exit_code = task.join().expect("failed to join kernel thread");
-    }
-    info!("cpufreq: OPP calibration sweep complete");
-}
-
-/// Start the CPU DVFS ondemand governor.
-///
-/// The frequency/voltage policy and the SCMI+PMIC apply live in the cpufreq
-/// driver (`ax_driver::cpufreq`); this kernel task is only the driver's periodic
-/// *loop*. The loop must live here, not in the driver, because ax-driver sits
-/// below ax-task/ax-hal in the dependency graph (they pull ax-driver back in via
-/// axplat-dyn), so spawning a task inside the driver would be a cyclic dep. Each
-/// period we snapshot the scheduler's cumulative per-CPU non-idle runtime and
-/// hand it to `governor_poll`, which decides and applies any OPP change.
-///
-/// No-op unless the driver armed the governor (feature on and both CPU-rail PMIC
-/// buses up); otherwise every cluster stays on its boot OPP.
-fn spawn_cpufreq_governor() {
-    if !ax_driver::cpufreq::governor_wanted() {
-        return;
-    }
-    info!("Initialize cpufreq ondemand governor...");
-    let _ = kernel_thread_builder(String::from("cpufreq-gov"))
-        .spawn(cpufreq_governor_loop)
-        .expect("failed to spawn kernel thread");
-}
-
-/// Periodic body of the DVFS governor task: sleep, sample every CPU's cumulative
-/// non-idle runtime, and let the driver scale each cluster to match load. The
-/// slow work (SCMI SMC + PMIC I2C/SPI voltage ramp) happens inside
-/// `governor_poll`, which is why this runs in a sleepable task rather than the
-/// scheduler tick.
-fn cpufreq_governor_loop() {
-    let period = core::time::Duration::from_millis(ax_driver::cpufreq::governor_period_ms());
-    loop {
-        sleep(period);
-        // RK3588 has 8 CPUs; an offline or topology-excluded core contributes
-        // zero runtime and therefore reads as idle.
-        let mut busy = [0u64; 8];
-        for (cpu, slot) in busy.iter_mut().enumerate() {
-            *slot = ax_runtime::task::sched::cpu_busy_runtime_ns(
-                ax_runtime::task::sched::CpuId::new(cpu as u32),
-            )
-            .unwrap_or(0);
-        }
-        ax_driver::cpufreq::governor_poll(&busy);
-    }
 }

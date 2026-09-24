@@ -137,16 +137,17 @@ group = "cpu"
 [[check]]
 id = "test-arceos-cpu-orangepi-5-plus"
 impact_targets = ["arceos:aarch64"]
-name = "Board OrangePi 5 Plus · CPU PMU"
+name = "Board OrangePi 5 Plus · CPU PMU and cpufreq"
 runner = "board"
 timeout_minutes = 30
 cache_key = ""
 command = '''
 cargo xtask arceos test board --board orangepi-5-plus --test-case pmu
 cargo xtask arceos test board --board orangepi-5-plus --test-case pmu-user
+cargo xtask arceos test board --board orangepi-5-plus --test-case cpufreq
 '''
 
 [[check.suite]]
 kind = "arceos-board"
 board = "orangepi-5-plus"
-cases = ["pmu", "pmu-user"]
+cases = ["pmu", "pmu-user", "cpufreq"]

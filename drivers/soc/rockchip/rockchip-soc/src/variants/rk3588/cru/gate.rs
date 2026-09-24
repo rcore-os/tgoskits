@@ -161,6 +161,12 @@ clk_gate_table!(
     CLK_I2C7 => (11, 6),
     PCLK_I2C8 => (10, 15),
     CLK_I2C8 => (11, 7),
+    // OTP controller clocks are all gated by main CRU CLKGATE_CON18.
+    PCLK_OTPC_NS => (18, 9),
+    CLK_OTPC_NS => (18, 10),
+    CLK_OTPC_ARB => (18, 11),
+    CLK_OTPC_AUTO_RD_G => (18, 12),
+    CLK_OTP_PHY_G => (18, 13),
     // ========================================================================
     // SPI 时钟门控
     // ========================================================================
@@ -212,8 +218,8 @@ clk_gate_table!(
     // ========================================================================
     PCLK_SARADC => (11, 14),
     CLK_SARADC => (11, 15),
-    PCLK_TSADC => (16, 6),
-    CLK_TSADC => (16, 7),
+    PCLK_TSADC => (12, 0),
+    CLK_TSADC => (12, 1),
     // ========================================================================
     // NPU 时钟门控
     // ========================================================================
@@ -466,5 +472,26 @@ mod tests {
             (pwm3_capture.reg_idx, pwm3_capture.bit),
             (saradc.reg_idx, saradc.bit)
         );
+    }
+
+    #[test]
+    fn test_otp_and_tsadc_gate_mappings() {
+        let expected = [
+            (149, 18, 9),
+            (150, 18, 10),
+            (151, 18, 11),
+            (152, 18, 12),
+            (153, 18, 13),
+            (169, 12, 0),
+            (170, 12, 1),
+        ];
+
+        for (clock_id, register, bit) in expected {
+            let gate = CLK_GATE_TABLE
+                .iter()
+                .find(|gate| gate.clk_id == ClkId::new(clock_id))
+                .expect("OTP or TSADC gate must be present");
+            assert_eq!((gate.reg_idx, gate.bit), (register, bit));
+        }
     }
 }
