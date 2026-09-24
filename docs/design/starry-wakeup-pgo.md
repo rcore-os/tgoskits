@@ -4,7 +4,8 @@
 同一源码、板卡和冻结负载各完成两次独立 full20 启动。全部 20 项
 `Linux_RT_p50 / PGO_p50` **严格超过 70%**，相对普通 release 的各项
 p50、p99、p99.9 回退均小于 3%；最差项 OTHER 同核 futex 为 78.37%。
-这是 PR #2477 的阶段性验收，issue #2308 原定 90% 最终目标未改变。
+这是旧源码上的阶段性验收，不能代替当前 `dev` 的验收；issue #2308
+原定 90% 最终目标未改变。
 2026-09-22 的跨源码选择性 PGO 与更早的全量 PGO 尾延迟失败记录仍留在下文。
 
 ## 1. 构建边界
@@ -12,22 +13,28 @@ p50、p99、p99.9 回退均小于 3%；最差项 OTHER 同核 futex 为 78.37%�
 普通板卡镜像继续由 `os/StarryOS/configs/board/orangepi-5-plus.toml` 定义，
 `scripts/perf/wakeup-pgo/build.py` 不修改它。旧的
 `profile-use.profdata.zst` 来自五-feature benchmark，仅供历史核查。
-`full-pgo-2026-09-23.profdata.zst` 使用同一源码和十项普通 feature 训练；
+`full-pgo-2026-09-23.profdata.zst` 使用旧源码和当时的十项普通 feature
+训练，保留供历史证据核查。当前 `build.py` 使用在
+`dev@9a7b868bab` 上重新训练的 `full-pgo-2026-09-24.profdata.zst`；
+当前普通板卡配置增加了 `legacy-board-init`，因此 profile 与普通
+release 均包含十一项 feature。该新 profile 的实体板结果有两次独立有效
+PGO full20，但没有完整同源码普通 release 对照，不能沿用旧源码的阶段性通过结论。
 `stdlib-wrapper.py.in` 仅排除预编译的 sysroot crate，`ax_task`、
 `ax_runtime` 和 StarryOS 根 crate 均使用 profile。两种镜像的日志级别
 均为 `Info`，最大 CPU 数均为 8。旧 profile 保留在本目录供历史证据核查。
 
 ### 1.1 前置门禁
 
-`source_gate()` 以 `ee5a638e0ef4d55ab461fde6285a84e3b4679bec` 为
+`source_gate()` 以 `9a7b868bab8dcceb42acab516dcc88d5cc69985a` 为
 源码基线；`docs/` 与本实验目录的变化不影响内核源码。`Cargo.lock` 由
 `cargo_lock_gate()` 的完整 SHA256 校验。`toolchain_gate()` 检查 Rust 和
-LLVM，`profile_feature_gate()` 核对十项 feature，`check_wrapper_log()`
+LLVM，`profile_feature_gate()` 核对十一项 feature，`check_wrapper_log()`
 核对 `ax_task`、`ax_runtime` 和根 crate 均使用当前 profile。
 `audit_warnings()`、`require_board_text_identity()` 与
 `require_board_bin_identity()` 核对失配告警，以及 `.text` 和除 `.kallsyms`
 外的完整 `.bin` 与实体板候选的身份。只有重建成功才输出
 `WAKEUP_PGO_IMAGE_READY`；仅 `--prepare-only` 不编译，不报告 ready。
+这里的 ready 只证明当前源码镜像可复现，不表示性能门槛已通过。
 
 ### 1.2 验收边界
 
@@ -126,3 +133,26 @@ OTHER `thread_futex_same_cpu`：Linux RT 8458 ns，普通 A 18958.5 ns，
 4667/5250 = 88.90%。20/20 项超过 70%，全部 p50、p99、p999 最大
 回退为 0%，阶段性 PASS；完整 20 项数值在 `resume668-comparison.json`。
 最终 90% 目标仍未达到，不能据此关闭 issue #2308。
+
+### 3.3 当前源码的未完成验证
+
+变基到 `dev@9a7b868bab` 后，原 `build.py` 的旧 source gate 会拒绝
+272 个非排除路径的变化，旧 profile 也不能声称对应新源码。
+`resume710` 在源码树 `4322e0c505` 上重新训练全量 PGO；该树与 PR
+变基后 `d1fb756823` 的 tree 相同。新 profile SHA256 为
+`b916a666710826285845fbe017e70f9a665d423ee79df6ee4896368d2d837ec6`。
+`resume711` 的 `OrangePi-5-Plus-1` 无插桩 F1 镜像 SHA256 为
+`6a234ea391346f2450fdef8b04d19988211dbe3485cf62e3a25544ca4e80cac4`；
+该轮 20 项、380000/380000 样本，零 `not_parked` 与
+`missed_deadlines`，19/20 项达到冻结 Linux RT p50 的 90%。同镜像
+`resume712` F1 也独立完成有效 full20，仍为 19/20；两轮 OTHER
+`thread_futex_same_cpu` p50 为 11083/11375 ns，中位 11229 ns，
+相对 Linux RT 8458 ns 为 75.32%，还需降至 9397 ns 或更低。
+`resume711` 普通 A1 有效，但 A2 在该项缺少一个样本；`resume712`
+普通 A1 同样缺样本，两次序列的后续 F2 均未执行。因此仅有一次有效
+普通 release 启动，
+因此不能据此判断同源码回退或当前 `dev` 的正式 70%/90% 结果。
+当前 `build.py` 已从全新 target 重建出与 F1 `.text`、`.bin`（除
+`.kallsyms`）一致的镜像；该构建只证明镜像身份，不补足缺失的板测启动。
+新 profile、原始日志、无效轮次、训练状态与构建审计保存在
+`scripts/perf/wakeup-pgo/evidence/current-dev-2026-09-24/`。

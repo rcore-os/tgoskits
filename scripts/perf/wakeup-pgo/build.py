@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Fail-closed profile-use (PGO) image builder for issue #2308 on OrangePi-5-Plus.
 
-The ten-feature full PGO candidate passed the PR's 70% interim threshold on
-dev@ee5a638e: 20/20 Linux RT p50 ratios are strictly above 70%, and no p50,
-p99 or p999 regresses by 3% against two same-source ordinary release boots.
-Issue #2308 retains its separate 90% final target.
+The archived 2026-09-23 candidate passed the PR's 70% interim threshold on
+dev@ee5a638e. This entry instead packages a newly trained profile for the
+current dev tree. Its board-tested image has two independent valid full20 PGO boots
+but no complete same-source ordinary-release comparison,
+so neither the 70% interim gate nor issue #2308's 90% final gate is accepted
+for this source yet.
 
 Public entry:
 
     python3 scripts/perf/wakeup-pgo/build.py --output-dir <out>
 
-The script re-hosts the verified ten-feature profile (`selective-task.profdata.zst`),
+The script re-hosts the current-source full profile,
 writes a StarryOS build config that injects `-Cprofile-use=<absolute profile>` and a
 `RUSTC_WRAPPER` into the bare aarch64 target through axbuild's `[env]` table, and then
 runs `cargo xtask starry build -c <config>`.  The ordinary release build is untouched:
@@ -18,8 +20,8 @@ PGO only happens when this script is invoked, and the build uses its own
 `CARGO_TARGET_DIR` inside the output directory.
 
 The shipped profile was trained at `PROFILE_TRAINING_COMMIT`; the identity references
-below describe the image measured in two full20 boots against two ordinary
-release boots from the same source and board.
+below describe the image measured in two valid full20 PGO boots. They prove
+image identity, not performance acceptance or a same-source regression bound.
 
 Every gate fails closed.  Source drift, toolchain drift, `Cargo.lock` drift, a profile
 archive or profile hash mismatch, a foreign profile path in the rustc wrapper log, a
@@ -47,20 +49,20 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parents[2]
 
 # Reviewed dev base. Cargo.lock is pinned separately because this PR upgrades it.
-BASELINE_COMMIT = "ee5a638e0ef4d55ab461fde6285a84e3b4679bec"
+BASELINE_COMMIT = "9a7b868bab8dcceb42acab516dcc88d5cc69985a"
 # Commit the shipped profile was trained at.  The profile may be carried onto newer dev
 # only while the image identity gates below reproduce the board-measured candidate.
-PROFILE_TRAINING_COMMIT = "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891"
+PROFILE_TRAINING_COMMIT = "4322e0c505bad73f10e7ab9e79f520bae0fcab0e"
 # Frozen facts of the audited build: toolchain, lockfile and feature set are pinned to the
 # same values the profile and the board evidence were produced with.
 CARGO_LOCK_SHA256 = "fb0273d9bd1b14d47604b070c419f4c76f32dcf45890d5bd23165b6ec2cf9f01"
 RUST_CHANNEL = "nightly-2026-09-04"
 RUSTC_COMMIT_HASH = "a69a63265cfd9e006d43137f98301b8d274ad4c9"
 RUSTC_LLVM_VERSION = "23.1.1"
-PROFILE_SHA256 = "514932b505324858df95d2bcf5cd83a5f6ae4b6c28b6135198a76acb22a0a213"
-PROFILE_ARCHIVE = PACKAGE_DIR / "full-pgo-2026-09-23.profdata.zst"
+PROFILE_SHA256 = "b916a666710826285845fbe017e70f9a665d423ee79df6ee4896368d2d837ec6"
+PROFILE_ARCHIVE = PACKAGE_DIR / "full-pgo-2026-09-24.profdata.zst"
 # Pins the shipped archive bytes; regenerating the archive requires updating this value.
-PROFILE_ARCHIVE_SHA256 = "2ee97f4d1f5dcbb7bcb36a753e7c02ec3d0811ae032b5cb6113db8a1d52c3000"
+PROFILE_ARCHIVE_SHA256 = "d7d53ee75b39a0abd0fc238999151decd819f90ed1a99ed676169fa87f8e27ac"
 
 PROFILE_NAME = "profile-use.profdata"
 WRAPPER_TEMPLATE = PACKAGE_DIR / "stdlib-wrapper.py.in"
@@ -77,6 +79,7 @@ RUSTFLAGS_ENV = "CARGO_TARGET_AARCH64_UNKNOWN_NONE_SOFTFLOAT_RUSTFLAGS"
 LOG_LEVEL = "Info"
 MAX_CPU_NUM = 8
 FEATURES = (
+    "legacy-board-init",
     "ax-driver/list-pci-devices",
     "ax-driver/rk3588-pcie",
     "ax-driver/realtek-rtl8125",
@@ -91,6 +94,7 @@ FEATURES = (
 # Keep the trained feature set independent of the release list so future release
 # changes cannot silently make the comparison tautological.
 PROFILE_FEATURES = (
+    "legacy-board-init",
     "ax-driver/list-pci-devices",
     "ax-driver/rk3588-pcie",
     "ax-driver/realtek-rtl8125",
@@ -105,21 +109,21 @@ PROFILE_FEATURES = (
 PGO_LLVM_ARGS = ("-Cllvm-args=-disable-vp", "-Cllvm-args=-pgo-warn-missing-function")
 ROOT_CRATE = "starryos"
 
-# Two valid ordinary release boots and two valid PGO boots from the same source.
-REFERENCE_MISSING_WARNINGS = 4494
-REFERENCE_MISSING_UNIQUE = 4415
-REFERENCE_PROFILE_RECORDS = 29887
-REFERENCE_TEXT_BYTES = 7167808
-REFERENCE_TEXT_SHA256 = "35500968674e183cf8eb0fa14f9750560ac24594796173710cdc037bb29ac374"
+# Two valid full20 PGO boots from this source; identity is not an acceptance claim.
+REFERENCE_MISSING_WARNINGS = 4500
+REFERENCE_MISSING_UNIQUE = 4422
+REFERENCE_PROFILE_RECORDS = 29901
+REFERENCE_TEXT_BYTES = 7014528
+REFERENCE_TEXT_SHA256 = "74084b8bdc93384f5dc91f3084eb77e2fdb70bd6fee0f3261a7ef73b77ea3e77"
 # Whole-image identity of the same board-tested candidate: the flashable `.bin` length,
 # the `.kallsyms` placement inside it (image base 0xffffffff80000000) and the sha256 of
 # every other byte.  `.kallsyms` is regenerated per build, so it is the only slice excluded.
 REFERENCE_IMAGE_BASE = 0xFFFFFFFF80000000
-REFERENCE_KALLSYMS_ADDRESS = 0xFFFFFFFF807DD000
+REFERENCE_KALLSYMS_ADDRESS = 0xFFFFFFFF807B8000
 REFERENCE_KALLSYMS_SIZE = 8388608
-REFERENCE_BIN_BYTES = 17084416
+REFERENCE_BIN_BYTES = 16932864
 REFERENCE_BIN_SHA256_EXCLUDING_KALLSYMS = (
-    "d226d55beab8f99252116cc87079fd287b0283c92655c701fc04ff03ff0c6fe9"
+    "0dd45557e31af1cc27b76133cad76e46ad84414f6526dfe1be4f057c071302d9"
 )
 
 EXCLUDED_PREFIXES = ("docs/", "scripts/perf/wakeup-pgo/")
@@ -825,7 +829,7 @@ def main(argv: list[str]) -> int:
         report["image"]["bin_without_kallsyms"] = require_board_bin_identity(
             identity, Path(binary["path"]) if binary else None
         )
-        report["status"] = "interim_70_percent_candidate_image_matched"
+        report["status"] = "current_source_image_matched_unaccepted"
         report["ready"] = True
         write_result(out, report)
         image = report["image"]["elf"]

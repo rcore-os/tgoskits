@@ -1,0 +1,199 @@
+{
+  "experiment": "resume710",
+  "issue": 2308,
+  "head": "4322e0c505bad73f10e7ab9e79f520bae0fcab0e",
+  "dev_head": "9a7b868bab8dcceb42acab516dcc88d5cc69985a",
+  "worktree": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev",
+  "target_subdir": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/target/aarch64-unknown-none-softfloat/release",
+  "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_files": {},
+  "cargo_lock_sha256": "fb0273d9bd1b14d47604b070c419f4c76f32dcf45890d5bd23165b6ec2cf9f01",
+  "build_configs": {
+    "resume710-default-build.toml": "10955fe55973279f897de7869b645263e2f9da734f42e6b98f52e1a186a77ce8",
+    "resume710-profgen-build.toml": "0b83560439fe9b743c47b4322686526caa999bb5e2a717f529dfbdf6675c150b",
+    "resume710-profile-use-build.toml": "dcc66926ee0bec373ab2edcd122c11b5f54ec26de84c350cf5a16c163ba22293",
+    "resume710-qemu.toml": "3d6ca6505c981a67681b5be7090c3519e0c6751f2bace7015dcac0ff15c34133"
+  },
+  "modes": {
+    "default": {
+      "resume710-default.elf": "633f77c76b969b4321a51eef3e89a582c44d9062acc516709fc0a4de7dd385a2",
+      "resume710-default.bin": "96268f8aa16a24237bc1f0bca97b5838087eb839c76a9f1c644b6f413a43db5a"
+    },
+    "profgen": {
+      "resume710-profgen.elf": "360b793666d74d35da03b7330c3337e04f9c766cc97c892437018ee2c57d0f61",
+      "resume710-profgen.bin": "c80dbdd43f1fd6fdfa0f7eee9b06dc9266666a9a56b051282c0bb4b31b7c880c"
+    },
+    "profile-use": {
+      "resume710-profile-use.elf": "cb42a19518762c4844f8507d3091e53ed17da5b8d38d80fe31f2d9e78e1c2376",
+      "resume710-profile-use.bin": "6a234ea391346f2450fdef8b04d19988211dbe3485cf62e3a25544ca4e80cac4"
+    }
+  },
+  "profile_generate_dir": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-profiles",
+  "profdata": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710.profdata",
+  "acceptance": false,
+  "diagnostic_only": false,
+  "status": "profile-use build and warning audit passed; archived B versus native F1/F2 pending",
+  "toolchain_probe": {
+    "channel": "nightly-2026-09-04",
+    "rustc": "rustc 1.100.0-nightly (a69a63265 2026-09-03)\nbinary: rustc\ncommit-hash: a69a63265cfd9e006d43137f98301b8d274ad4c9\ncommit-date: 2026-09-03\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.1\n",
+    "cargo": "cargo 1.100.0-nightly (b2e9d5f9d 2026-09-02)"
+  },
+  "bench": {
+    "path": "/tmp/pr1775-orangepi/bench",
+    "sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "frozen_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "source": "apps/starry/wakeup-latency-bench (head d051d572, includes PR #2464; C source unchanged since 5a5e669354)"
+  },
+  "build_exit_default": 0,
+  "target_compiler_invocations": 230,
+  "build_exit_profgen": 0,
+  "rootfs": {
+    "tag": "resume710",
+    "base_rootfs": "/home/zhourui/.codex/artifacts/issue2308-perf/resume210-rootfs.img",
+    "base_rootfs_sha256": "52de946e31d5842ea0833b9f9daf5ad0d459075ecac1adbfd67f09cca3cc8609",
+    "rootfs": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-rootfs.img",
+    "rootfs_sha256": "b7af1e71f929030131cf0cbfcf6b948d7859204edb951017c91e3a8898a13d67",
+    "bench": "/tmp/pr1775-orangepi/bench",
+    "bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "frozen_bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "bench_matches_frozen": true,
+    "bench_drift_accepted": false,
+    "workload": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-workload.sh",
+    "workload_sha256": "4340df8025f26055b4a9e3eb12e067826f54ffa42fb1a69d094386f72ff92478",
+    "hook": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-profile-hook.sh",
+    "hook_sha256": "e0df21f95ee4751585cc7500dedb1caae228b70088d552f3056b93866e53b677",
+    "guest_paths": {
+      "workload": "/root/resume710-workload.sh",
+      "bench": "/root/resume710-bench",
+      "hook": "/etc/profile.d/resume710.sh"
+    },
+    "debugfs_commands": "rm /etc/profile.d/resume210.sh rm /etc/profile.d/resume208.sh rm /etc/profile.d/exp71.sh write /home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-workload.sh /root/resume710-workload.sh set_inode_field /root/resume710-workload.sh mode 0100755 write /home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-profile-hook.sh /etc/profile.d/resume710.sh set_inode_field /etc/profile.d/resume710.sh mode 0100644 write /tmp/pr1775-orangepi/bench /root/resume710-bench set_inode_field /root/resume710-bench mode 0100755",
+    "qemu_only": true,
+    "native_acceptance": false
+  },
+  "profile_sha256": "b916a666710826285845fbe017e70f9a665d423ee79df6ee4896368d2d837ec6",
+  "profile_layout": {
+    "tag": "resume710",
+    "records": 29901,
+    "names": 36746,
+    "counter_bytes": 1439672,
+    "counter_address": "0xffffffff81c1c840",
+    "counter_end": "0xffffffff81d7bff8",
+    "data_bytes": 2152872,
+    "data_address": "0xffffffff81d7bff8",
+    "record_layout_bytes": 72,
+    "elf_sha256": "77cca61792c0fbec84e7b110765e970f3b8eed830f729a0860518c9bc6d6151b",
+    "sections": {
+      "__llvm_prf_cnts": {
+        "address": "0xffffffff81c1c840",
+        "size": 1439672
+      },
+      "__llvm_prf_data": {
+        "address": "0xffffffff81d7bff8",
+        "size": 2152872
+      },
+      "__llvm_prf_names": {
+        "address": "0xffffffff81b72130",
+        "size": 653161
+      }
+    },
+    "format_source": "LLVM 23.1.1 (rustc 1.100.0-nightly a69a63265) InstrProfData.inc / InstrProf.cpp / InstrProfReader.cpp; layout re-derived from the ELF sections on every run",
+    "entry_first": false,
+    "nonzero_records": 7231,
+    "dump_sha256": "b7b642d7d87470654ab2227bcba4154ad9914273465fe979ec795ed15e365dda"
+  },
+  "runtime_image_identity": {
+    "files": {
+      "resume710.elf": "77cca61792c0fbec84e7b110765e970f3b8eed830f729a0860518c9bc6d6151b",
+      "resume710.bin": "87749e4b6180b9be0f4325e757d212ddb6fbbf8035a727638c60474d7b6a4d32"
+    },
+    "runtime_full_sha256": {
+      "elf": "77cca61792c0fbec84e7b110765e970f3b8eed830f729a0860518c9bc6d6151b",
+      "bin": "87749e4b6180b9be0f4325e757d212ddb6fbbf8035a727638c60474d7b6a4d32"
+    },
+    "profgen_full_sha256": {
+      "elf": "360b793666d74d35da03b7330c3337e04f9c766cc97c892437018ee2c57d0f61",
+      "bin": "c80dbdd43f1fd6fdfa0f7eee9b06dc9266666a9a56b051282c0bb4b31b7c880c"
+    },
+    "identity_sections": [
+      ".head.text",
+      ".text",
+      "__llvm_prf_cnts",
+      "__llvm_prf_data",
+      "__llvm_prf_names"
+    ],
+    "sections": {
+      ".head.text": {
+        "address": "0xffffffff80000000",
+        "size": 64,
+        "runtime_sha256": "0ed7239c61fa23c754cbccf5a876b1fe9b12fc542a95cccab75a2595f8eee0c2",
+        "profgen_sha256": "0ed7239c61fa23c754cbccf5a876b1fe9b12fc542a95cccab75a2595f8eee0c2"
+      },
+      ".text": {
+        "address": "0xffffffff80001000",
+        "size": 19292784,
+        "runtime_sha256": "8a581ef42bb5319e4a4ab5f44616195351067ff75c3638ac651946cb9e014ace",
+        "profgen_sha256": "8a581ef42bb5319e4a4ab5f44616195351067ff75c3638ac651946cb9e014ace"
+      },
+      "__llvm_prf_cnts": {
+        "address": "0xffffffff81c1c840",
+        "size": 1439672,
+        "runtime_sha256": "25daeb464ee0f32a211a35c1aebd7aac1216bda34264b1c04fc3e10fae61f347",
+        "profgen_sha256": "25daeb464ee0f32a211a35c1aebd7aac1216bda34264b1c04fc3e10fae61f347"
+      },
+      "__llvm_prf_data": {
+        "address": "0xffffffff81d7bff8",
+        "size": 2152872,
+        "runtime_sha256": "454cc2a6ab57d26ba2be5a191b84370bee9ee74b1408c4f9ca3f0b6cd0675808",
+        "profgen_sha256": "454cc2a6ab57d26ba2be5a191b84370bee9ee74b1408c4f9ca3f0b6cd0675808"
+      },
+      "__llvm_prf_names": {
+        "address": "0xffffffff81b72130",
+        "size": 653161,
+        "runtime_sha256": "5182a145578e5896daf6930a8b3201bdb96890a1eb016634e90f9d4355d453cc",
+        "profgen_sha256": "5182a145578e5896daf6930a8b3201bdb96890a1eb016634e90f9d4355d453cc"
+      }
+    },
+    "section_identity": true,
+    "whole_file_identity": {
+      "elf": false,
+      "bin": false
+    },
+    "kallsyms_refresh_allowed": true,
+    "whole_file_difference": {
+      "runtime_size": 41724800,
+      "profgen_size": 41724800,
+      "size_delta": 0,
+      "differing_bytes": 3027636,
+      "first_difference_offset": "0x1382000",
+      "last_difference_offset": "0x16f97ad"
+    },
+    "identity_policy": "identity is section-level: `cargo xtask starry qemu` refreshes .kallsyms after the profgen build, so the whole-file hashes are recorded but not required to match; any missing section or drift in .head.text, .text, __llvm_prf_cnts, __llvm_prf_data, __llvm_prf_names fails training",
+    "runtime_text_memory_check": "resume710-capture.py EXACT_ELF_TEXT_MATCH load_bias=0"
+  },
+  "training_coverage": {
+    "rows": 16,
+    "required_cases": [
+      "absolute_timer_same_cpu",
+      "sched_yield_handoff",
+      "thread_futex_cross_cpu",
+      "thread_futex_same_cpu"
+    ],
+    "policies": [
+      "other",
+      "fifo"
+    ],
+    "not_parked_total": 3116
+  },
+  "training_commands": "resume710-training-commands.json",
+  "train_exit": {
+    "runner": 0,
+    "monitor": 0
+  },
+  "build_exit_profile-use": 0,
+  "root_profile_use_verified": true,
+  "no_profile_counter_sections": true,
+  "text_bytes": 7014528,
+  "text_sha256": "74084b8bdc93384f5dc91f3084eb77e2fdb70bd6fee0f3261a7ef73b77ea3e77",
+  "warning_audit": "resume710-warning-audit.json"
+}
