@@ -12,9 +12,7 @@ use super::{
         collect_prefixed_toml_files, default_build_config_for_board_config,
         discover_case_build_config,
     },
-    discovery::{
-        apps_starry_dir, available_case_names, resolve_case_relative_path, validate_case_name,
-    },
+    discovery::{resolve_case_dir, resolve_case_relative_path, validate_case_name},
 };
 
 pub(crate) fn resolve_board_case(
@@ -23,21 +21,7 @@ pub(crate) fn resolve_board_case(
     explicit_board_config: Option<&Path>,
 ) -> anyhow::Result<StarryAppBoardCase> {
     let case_name = validate_case_name(case_name)?;
-    let apps_dir = apps_starry_dir(workspace_root);
-    ensure!(
-        apps_dir.is_dir(),
-        "missing Starry apps directory `{}`",
-        apps_dir.display()
-    );
-
-    let case_dir = apps_dir.join(case_name);
-    if !case_dir.is_dir() {
-        bail!(
-            "unknown Starry app case `{case_name}` in {}; available cases: {}",
-            apps_dir.display(),
-            available_case_names(&apps_dir)?
-        );
-    }
+    let case_dir = resolve_case_dir(workspace_root, case_name)?;
 
     let init_path = case_dir.join("init.sh");
     ensure!(

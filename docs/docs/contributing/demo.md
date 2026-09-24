@@ -413,7 +413,7 @@ cargo starry app board -t <case>
 第一个 StarryOS 场景示例是：
 
 ```bash
-cargo starry app board -t orangepi-5-plus-uvc
+cargo starry app board -t benchmark/orangepi-5-plus-uvc
 ```
 
 该示例假设板端 rootfs 已经预装 `/usr/bin/uvc-fps` 以及 `libuvc`、`libusb` 等运行时

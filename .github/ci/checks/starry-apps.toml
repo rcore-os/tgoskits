@@ -85,8 +85,13 @@ timeout_minutes = 15
 container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
-target/debug/tg-xtask starry app qemu -t block-io-bench --arch x86_64
+target/debug/tg-xtask starry app qemu -t benchmark/block-io-bench --arch x86_64
 '''
+
+[[check.suite]]
+kind = "starry-app-qemu"
+arch = "x86_64"
+cases = ["block-io-bench"]
 
 [[check]]
 id = "starry-performance-compile-sim"
@@ -100,10 +105,15 @@ container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
-  -t qemu/compile-sim-bench \
+  -t benchmark/qemu/compile-sim-bench \
   --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml
 '''
+
+[[check.suite]]
+kind = "starry-app-qemu"
+arch = "x86_64"
+cases = ["qemu/compile-sim-bench"]
 
 [[check]]
 id = "starry-performance-ltp-hackbench"
@@ -117,10 +127,15 @@ container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
-  -t qemu/ltp-hackbench \
+  -t benchmark/qemu/ltp-hackbench \
   --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml
 '''
+
+[[check.suite]]
+kind = "starry-app-qemu"
+arch = "x86_64"
+cases = ["qemu/ltp-hackbench"]
 
 [[check]]
 id = "starry-performance-ltp-netstress"
@@ -134,10 +149,15 @@ container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
-  -t qemu/ltp-netstress \
+  -t benchmark/qemu/ltp-netstress \
   --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml
 '''
+
+[[check.suite]]
+kind = "starry-app-qemu"
+arch = "x86_64"
+cases = ["qemu/ltp-netstress"]
 
 [[check]]
 id = "starry-performance-wakeup-latency"
@@ -150,8 +170,13 @@ timeout_minutes = 15
 container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
-target/debug/tg-xtask starry app qemu -t wakeup-latency-bench --arch x86_64
+target/debug/tg-xtask starry app qemu -t benchmark/wakeup-latency-bench --arch x86_64
 '''
+
+[[check.suite]]
+kind = "starry-app-qemu"
+arch = "x86_64"
+cases = ["wakeup-latency-bench"]
 
 [[check]]
 id = "starry-performance-sysbench"
@@ -165,10 +190,15 @@ container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
-  -t sysbench \
+  -t benchmark/sysbench \
   --arch aarch64 \
   --qemu-config qemu-aarch64-matrix.toml
 '''
+
+[[check.suite]]
+kind = "starry-app-qemu"
+arch = "aarch64"
+cases = ["sysbench"]
 
 [[check]]
 id = "starry-performance-block-rw-orangepi-5-plus"
@@ -181,10 +211,15 @@ timeout_minutes = 45
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app board \
-  -t block-rw-bench \
+  -t benchmark/block-rw-bench \
   --board-config board-orangepi-5-plus.toml \
   -b OrangePi-5-Plus
 '''
+
+[[check.suite]]
+kind = "starry-app-board"
+board = "orangepi-5-plus"
+cases = ["block-rw-bench"]
 
 [[check]]
 id = "starry-performance-iperf3-orangepi-5-plus"
@@ -196,8 +231,13 @@ runner = "board"
 timeout_minutes = 60
 download_xtask_bin_artifact = true
 command = '''
-target/debug/tg-xtask starry app board -t iperf3 -b OrangePi-5-Plus
+target/debug/tg-xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
 '''
+
+[[check.suite]]
+kind = "starry-app-board"
+board = "orangepi-5-plus"
+cases = ["iperf3"]
 
 [[check]]
 id = "starry-performance-uvc-orangepi-5-plus"
@@ -209,8 +249,13 @@ runner = "board"
 timeout_minutes = 30
 download_xtask_bin_artifact = true
 command = '''
-target/debug/tg-xtask starry app board -t orangepi-5-plus-uvc -b OrangePi-5-Plus
+target/debug/tg-xtask starry app board -t benchmark/orangepi-5-plus-uvc -b OrangePi-5-Plus
 '''
+
+[[check.suite]]
+kind = "starry-app-board"
+board = "orangepi-5-plus"
+cases = ["orangepi-5-plus-uvc"]
 
 [[check]]
 id = "starry-performance-uvc-rknn-orangepi-5-plus"
@@ -223,10 +268,15 @@ timeout_minutes = 90
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app board \
-  -t orangepi-5-plus-uvc-rknn \
+  -t benchmark/orangepi-5-plus-uvc-rknn \
   --board-config configs/board-orangepi-5-plus-bench.toml \
   -b OrangePi-5-Plus
 '''
+
+[[check.suite]]
+kind = "starry-app-board"
+board = "orangepi-5-plus"
+cases = ["orangepi-5-plus-uvc-rknn"]
 
 [[check]]
 id = "starry-performance-tennis-yolo-aka-00-sg2002"
@@ -239,6 +289,11 @@ timeout_minutes = 90
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app board \
-  -t aka00-tennis-yolo \
+  -t benchmark/aka00-tennis-yolo \
   -b AKA-00-SG2002
 '''
+
+[[check.suite]]
+kind = "starry-app-board"
+board = "aka-00-sg2002"
+cases = ["aka00-tennis-yolo"]

@@ -108,6 +108,31 @@ class CiPlanTests(unittest.TestCase):
         )
         self.assertTrue(all(row["download_xtask_bin_artifact"] for row in plan["starry_performance_matrix"]["include"]))
 
+        performance_commands = "\n".join(
+            row["command"] for row in plan["starry_performance_matrix"]["include"]
+        )
+        self.assertIn("-t benchmark/block-io-bench", performance_commands)
+        self.assertIn("-t benchmark/wakeup-latency-bench", performance_commands)
+        self.assertIn(
+            "-t benchmark/qemu/compile-sim-bench", performance_commands
+        )
+        self.assertIn(
+            "--qemu-config qemu-x86_64-benchmark.toml", performance_commands
+        )
+        self.assertIn("--qemu-config qemu-aarch64-matrix.toml", performance_commands)
+
+        board_commands = "\n".join(
+            row["command"]
+            for row in plan["starry_board_performance_matrix"]["include"]
+        )
+        self.assertIn("-t benchmark/block-rw-bench", board_commands)
+        self.assertIn("-t benchmark/iperf3", board_commands)
+        self.assertIn("-t benchmark/orangepi-5-plus-uvc-rknn", board_commands)
+        self.assertIn("--board-config board-orangepi-5-plus.toml", board_commands)
+        self.assertIn(
+            "--board-config configs/board-orangepi-5-plus-bench.toml", board_commands
+        )
+
     def test_axvisor_nightly_runs_all_registered_checks_with_artifact_producer(self):
         catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
         expected = {check["id"] for check in catalog if check["group"] == "AxVisor"}
@@ -214,12 +239,38 @@ class CiPlanTests(unittest.TestCase):
                 self.assertIn("--test-case qemu-ivc", commands)
                 self.assertIn("--board orangepi-5-plus-starry", commands)
 
+    def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
+        path = (
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
+            "performance/board-orangepi-5-plus-vcpu-perf.toml"
+        )
+
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].template_id,
+            "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf",
+        )
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask axvisor test board --test-group normal "
+            "--test-case performance --board orangepi-5-plus-vcpu-perf",
+        )
+
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
-            "test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
+            "apps/benchmark/starry/block-rw-bench/board-orangepi-5-plus.toml",
+            "apps/benchmark/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml",
         ):
             with self.subTest(path=path):
                 context = ci_plan.replace(
@@ -233,6 +284,52 @@ class CiPlanTests(unittest.TestCase):
                 self.assertTrue(plan["static_required"])
                 self.assertFalse(main_test_rows(plan))
                 self.assertFalse(plan["axvisor_required"])
+                self.assertFalse(plan["starry_required"])
+
+    def test_benchmark_starry_path_resolves_to_registered_nightly_app_check(self):
+        cases = {
+            "apps/benchmark/starry/block-rw-bench/board-orangepi-5-plus.toml": (
+                "starry-performance-block-rw-orangepi-5-plus",
+                "-t benchmark/block-rw-bench",
+            ),
+            "apps/benchmark/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml": (
+                "starry-performance-ltp-hackbench",
+                "--qemu-config qemu-x86_64-benchmark.toml",
+            ),
+            "apps/benchmark/starry/orangepi-5-plus-uvc-rknn/configs/board-orangepi-5-plus-bench.toml": (
+                "starry-performance-uvc-rknn-orangepi-5-plus",
+                "--board-config configs/board-orangepi-5-plus-bench.toml",
+            ),
+        }
+        for path, (template_id, fragment) in cases.items():
+            with self.subTest(path=path):
+                selections = ci_plan.resolve_suite_selections(
+                    ci_plan.WORKSPACE_ROOT,
+                    ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+                    [path],
+                )
+                self.assertEqual(len(selections), 1)
+                self.assertEqual(selections[0].template_id, template_id)
+                self.assertIn(fragment, selections[0].command)
+
+    def test_functional_smoke_path_does_not_route_to_the_nightly_benchmark_check(
+        self,
+    ):
+        path = "apps/starry/qemu/compile-sim-bench/qemu-x86_64.toml"
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                ignored_apps=(path,),
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+
+        self.assertEqual(plan["starry_matrix"]["include"], [])
+        self.assertFalse(plan["starry_required"])
 
     def test_axvisor_nightly_rejects_incremental_pr_mode(self):
         with self.assertRaises(ci_plan.PlanError):

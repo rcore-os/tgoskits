@@ -5,7 +5,7 @@ sidebar_label: "应用运行"
 
 # StarryOS 应用运行
 
-`cargo xtask starry app` 管理 `apps/starry/` 目录下发现的可运行应用。压力测试、K230、visual 等重型用例已从 `test-suit/starryos/` 迁移到 `apps/starry/`，通过 `app` 子命令显式运行，避免污染常规测试套件。
+`cargo xtask starry app` 管理 `apps/starry/` 目录下发现的可运行应用。压力测试、K230、visual 等重型用例已从 `test-suit/starryos/` 迁移到 `apps/starry/`，通过 `app` 子命令显式运行，避免污染常规测试套件。nightly 性能应用位于 `apps/benchmark/starry/`，通过 `-t benchmark/<CASE>` 显式选择，不进入 `app qemu --all`。
 
 ## 1. 子命令
 
@@ -25,7 +25,7 @@ cargo xtask starry app <subcommand> [options]
 
 ## 2. 应用发现
 
-`discover_apps(workspace_root)` 扫描 `apps/starry/` 目录，递归收集所有应用 case。每个应用目录通过文件特征自动推断类型（`infer_app_kind`）：
+`discover_apps(workspace_root)` 扫描 `apps/starry/` 目录，递归收集所有应用 case；`apps/benchmark/starry/` 存在时会一并发现，其中每个 case 的名字带 `benchmark/` 前缀（例如 `benchmark/sysbench`）。每个应用目录通过文件特征自动推断类型（`infer_app_kind`）：
 
 | 类型 | 触发条件 | 配置文件 |
 |------|----------|----------|
@@ -37,7 +37,7 @@ cargo xtask starry app <subcommand> [options]
 
 ### 2.1 应用忽略
 
-`apps/.ignore` 文件（每行一个应用名，`#` 开头为注释）可排除特定应用。匹配规则支持裸名（`my-app`）、`starry/my-app`、`apps/starry/my-app` 三种前缀形式。
+`apps/.ignore` 文件（每行一个应用名，`#` 开头为注释）可排除特定应用。匹配规则支持裸名（`my-app`）、`starry/my-app`、`apps/starry/my-app`，以及 benchmark 用例的 `benchmark/my-app`、`apps/benchmark/starry/my-app` 形式。
 
 ### 2.2 能力要求
 
@@ -66,13 +66,13 @@ cargo xtask starry app qemu [options]
 | 参数 | 说明 |
 |------|------|
 | `--all` | 运行所有匹配（经能力过滤后的）QEMU 应用 |
-| `-t/--test-case <CASE>` | 选择 `apps/starry/<CASE>` 单个应用 |
+| `-t/--test-case <CASE>` | 选择 `apps/starry/<CASE>` 单个应用；nightly 性能用例使用 `benchmark/<CASE>` |
 | `--cap <CAP>`（可重复） | 声明可用能力，如 `--cap board:OrangePi-5-Plus` |
 | `--arch <ARCH>` | 覆盖架构 |
 | `--qemu-config <PATH>` | 覆盖 QEMU 配置 |
 | `--debug` | debug 构建 |
 
-`--all` 与 `-t` 互斥。每个选中的应用使用其目录内的 `qemu-{arch}.toml` 和 `build-*.toml` 配置，复用 StarryOS 测试的资产准备流程（rootfs 注入、ELF 依赖同步、Grouped runner 生成）。
+`--all` 与 `-t` 互斥，且不包含 `apps/benchmark/starry/` 下的 nightly 性能用例。每个选中的应用使用其目录内的 `qemu-{arch}.toml` 和 `build-*.toml` 配置，复用 StarryOS 测试的资产准备流程（rootfs 注入、ELF 依赖同步、Grouped runner 生成）。
 
 ## 5. App Board
 
@@ -86,7 +86,7 @@ cargo xtask starry app board -t <CASE> [options]
 
 | 参数 | 说明 |
 |------|------|
-| `-t/--test-case <CASE>`（必需） | 选择 `apps/starry/<CASE>` 板端应用 |
+| `-t/--test-case <CASE>`（必需） | 选择 `apps/starry/<CASE>` 板端应用；nightly 性能用例使用 `benchmark/<CASE>` |
 | `--board-config <PATH>` | 板卡配置路径 |
 | `-b/--board-type <TYPE>` | 板卡类型 |
 | `--server <HOST>` `--port <PORT>` | ostool-server 地址 |

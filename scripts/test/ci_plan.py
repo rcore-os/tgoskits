@@ -41,6 +41,11 @@ MAIN_MANIFESTS = (
 )
 STARRY_APPS_MANIFEST = CHECKS_ROOT / "starry-apps.toml"
 RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
+# The main plan must resolve `apps/benchmark/starry` changes to the nightly
+# Starry benchmark checks, which live in the Starry Apps manifest. Their
+# `starry_apps` phase keeps them out of the static/test matrices, so including
+# the manifest only adds suite routing.
+MAIN_PLAN_MANIFESTS = (*MAIN_MANIFESTS, STARRY_APPS_MANIFEST)
 
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
@@ -156,7 +161,7 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
 
 
 def build_main_plan(context: PlanContext) -> dict[str, Any]:
-    checks = load_catalog(MAIN_MANIFESTS)
+    checks = load_catalog(MAIN_PLAN_MANIFESTS)
     context = _resolve_input_fallbacks(checks, context)
     return _build_main_plan(checks, context)
 
@@ -707,6 +712,8 @@ def _suite_path_os(path: str) -> str | None:
         Path("test-suit/arceos"): "arceos",
         Path("test-suit/starryos"): "starry",
         Path("test-suit/axvisor"): "axvisor",
+        Path("apps/benchmark/axvisor"): "axvisor",
+        Path("apps/benchmark/starry"): "starry",
     }
     for prefix, os_name in prefixes.items():
         if normalized == prefix or prefix in normalized.parents:
@@ -841,7 +848,7 @@ def main() -> int:
     )
     try:
         if args.mode == "main":
-            checks = load_catalog(MAIN_MANIFESTS)
+            checks = load_catalog(MAIN_PLAN_MANIFESTS)
             context = _resolve_input_fallbacks(checks, context)
             impact = context.impact
             outputs = _build_main_plan(checks, context)

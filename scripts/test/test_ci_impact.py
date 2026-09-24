@@ -206,6 +206,56 @@ class CiImpactTests(unittest.TestCase):
         )
         self.assertEqual(impact.targets, ())
 
+    def test_benchmark_suite_path_routes_to_axvisor_instead_of_ignored_app(self) -> None:
+        path = Path(
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
+            "performance/board-orangepi-5-plus-vcpu-perf.toml"
+        )
+
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [path],
+            self.metadata_by_arch,
+        )
+
+        self.assertFalse(impact.full)
+        self.assertEqual(impact.ignored_apps, ())
+        self.assertTrue(impact.exclusive)
+        self.assertEqual(impact.test_suite_paths, (path.as_posix(),))
+        self.assertEqual(impact.targets, ())
+
+    def test_benchmark_starry_path_routes_to_nightly_app_instead_of_ignored_app(
+        self,
+    ) -> None:
+        path = Path(
+            "apps/benchmark/starry/block-rw-bench/board-orangepi-5-plus.toml"
+        )
+
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [path],
+            self.metadata_by_arch,
+        )
+
+        self.assertFalse(impact.full)
+        self.assertEqual(impact.ignored_apps, ())
+        self.assertTrue(impact.exclusive)
+        self.assertEqual(impact.test_suite_paths, (path.as_posix(),))
+        self.assertEqual(impact.targets, ())
+
+    def test_apps_starry_functional_path_stays_ignored(self) -> None:
+        path = Path("apps/starry/qemu/compile-sim-bench/qemu-x86_64.toml")
+
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [path],
+            self.metadata_by_arch,
+        )
+
+        self.assertFalse(impact.full)
+        self.assertEqual(impact.ignored_apps, (path.as_posix(),))
+        self.assertEqual(impact.test_suite_paths, ())
+
     def test_ci_owned_virtio_blk_app_triggers_axvisor_aarch64(self) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
