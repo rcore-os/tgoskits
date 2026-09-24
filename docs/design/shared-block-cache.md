@@ -333,14 +333,16 @@ cargo xtask starry app qemu -t block-io-bench --arch x86_64
 
 The helper-level sync regression injects errors into all three stages and
 requires every closure to run while the result remains `Ok(0)`. There is no
-direct QEMU durability claim: the former syscall probe only checked the return
-value and page-cache readback, so it also passed when `sync(2)` performed no
-writeback. Fixed LTP `sync01` is the intended system-level replacement because
-it observes block-device writeout, but the current guest lacks the `/sys/block`
-interface required by that case. Fault-injected device and multi-mount
-durability remain separate infrastructure work because the current QEMU test
-environment exposes neither a controllable block-error endpoint nor a second
-independently recoverable mount.
+direct QEMU durability claim: the retained `syscall-test-syncfs` case checks
+that the public `sync(2)` ABI dispatches and returns zero, but it cannot prove
+writeback. The former dedicated probe also checked page-cache readback, which
+still passed when `sync(2)` performed no writeback. Fixed LTP `sync01` is the
+intended system-level durability replacement because it observes block-device
+writeout, but the current guest lacks the `/sys/block` interface required by
+that case. Fault-injected device and multi-mount durability remain separate
+infrastructure work because the current QEMU test environment exposes neither
+a controllable block-error endpoint nor a second independently recoverable
+mount.
 
 ## Review Boundaries
 
