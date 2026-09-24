@@ -25,6 +25,15 @@ use crate::{
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
+
+/// Benchmark-local FIFO priority for the vCPU host task.
+///
+/// Only the dedicated Rust-Shyper task-switch benchmark host build enables
+/// `bench-fifo-vcpu-policy`; default builds and other board cases keep the Fair
+/// default policy chosen by `ThreadBuilder::new`.
+#[cfg(feature = "bench-fifo-vcpu-policy")]
+const BENCH_VCPU_FIFO_PRIORITY: u8 = 80;
+
 /// Owns a reserved, non-runnable vCPU task until VM publication commits.
 #[must_use = "prepared vCPU threads must be activated or cancelled"]
 pub(crate) struct PreparedVcpuThread {
@@ -421,6 +430,10 @@ pub(crate) fn prepare_vcpu_thread(vm: &VMRef, vcpu: VCpuRef) -> AxVmResult<Prepa
     let mut builder = crate::host::task::builder(name)
         .stack_size(KERNEL_STACK_SIZE)
         .extension(extension);
+    #[cfg(feature = "bench-fifo-vcpu-policy")]
+    {
+        builder = builder.policy(bench_vcpu_fifo_policy());
+    }
     if let Some(affinity) = affinity {
         builder = builder.affinity(affinity);
     }
@@ -463,6 +476,17 @@ fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> us
 
 fn yield_after_vcpu_exit(policy: crate::host::task::SchedulePolicy) -> bool {
     matches!(policy, crate::host::task::SchedulePolicy::Fifo { .. })
+}
+
+/// Returns the benchmark vCPU host task scheduling policy.
+///
+/// The priority is fixed by the benchmark build; invalid values cannot occur
+/// because `80` is a valid POSIX real-time priority.
+#[cfg(feature = "bench-fifo-vcpu-policy")]
+fn bench_vcpu_fifo_policy() -> crate::host::task::SchedulePolicy {
+    let priority = ax_std::os::arceos::task::sched::RtPriority::new(BENCH_VCPU_FIFO_PRIORITY)
+        .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
+    crate::host::task::SchedulePolicy::fifo(priority)
 }
 
 /// The main routine for VCpu task.
