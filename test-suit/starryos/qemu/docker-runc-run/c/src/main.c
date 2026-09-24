@@ -244,7 +244,6 @@ static void check_memfd_mode(void)
         close(fd);
         return;
     }
-    close(fd);
     if ((st.st_mode & 0777) == 0777) {
         pass("memfd_create files are 0777 like Linux");
     } else {
@@ -252,6 +251,30 @@ static void check_memfd_mode(void)
                (unsigned long)(st.st_mode & 07777));
         failures++;
     }
+
+    /* runc/OCI tighten the mode of the memfd it re-executes; fchmod must
+     * update the underlying inode, not silently succeed on a mode-less
+     * anonymous fd. */
+    errno = 0;
+    if (fchmod(fd, 0600) != 0) {
+        fail("fchmod on a memfd fd succeeds");
+        close(fd);
+        return;
+    }
+    if (fstat(fd, &st) != 0) {
+        fail("fstat memfd after fchmod");
+        close(fd);
+        return;
+    }
+    if ((st.st_mode & 0777) == 0600) {
+        pass("fchmod on a memfd fd updates the inode mode");
+    } else {
+        printf("  FAIL: fchmod on a memfd fd updates the inode mode "
+               "(mode=0%lo)\n",
+               (unsigned long)(st.st_mode & 07777));
+        failures++;
+    }
+    close(fd);
 }
 
 static void check_pipe_fchown(void)
@@ -284,11 +307,12 @@ static void check_pipe_fchown(void)
     }
 }
 
-/* Probes whether the bpf(2) cgroup-device stub exists by classifying the
- * errno of a deliberately-invalid PROG_DETACH: EBADF means the stub
- * validated the (missing) fds like Linux; EINVAL means the command fell
- * through to the generic unsupported-command path. Writes the stage-B gate
- * file consumed by the smoke script. */
+/* Asserts the cgroup-device BPF capability is refused (no faked success).
+ * The pids-limited stage's OCI bundle lists only an allow-all `rwm` device
+ * rule, so runc's `canSkipEBPFError()` tolerates the unsupported eBPF device
+ * manager and the cgroups/pids stage can still run; keep the gate open so the
+ * pids.max EAGAIN coverage is retained. Writes the stage-B gate file consumed
+ * by the smoke script. */
 static void check_stageb_gate(void)
 {
     section("stageb-gate");
@@ -301,17 +325,10 @@ static void check_stageb_gate(void)
     long rc = syscall(__NR_bpf, DRR_BPF_PROG_DETACH, attr, sizeof(attr));
     int saved_errno = errno;
 
-    const char *verdict;
-    if (rc == -1 && saved_errno == EBADF) {
-        verdict = "1";
-        pass("bpf cgroup-device stub present (EBADF on invalid fds)");
-    } else if (rc == -1 && saved_errno == EINVAL) {
-        verdict = "0";
-        pass("bpf cgroup-device stub present (EBADF on invalid fds)");
-        printf("  OBSERVE: stage B disabled (stub absent, EINVAL)\n");
+    if (rc == -1 && (saved_errno == EOPNOTSUPP || saved_errno == EINVAL)) {
+        pass("bpf cgroup-device capability refused (no fake success)");
     } else {
-        verdict = "0";
-        printf("  FAIL: unexpected bpf PROG_DETACH probe result rc=%ld "
+        printf("  FAIL: expected an explicit cgroup-device refusal, rc=%ld "
                "errno=%d\n",
                rc, saved_errno);
         failures++;
@@ -322,7 +339,7 @@ static void check_stageb_gate(void)
         fail("write stage-B gate file");
         return;
     }
-    fputs(verdict, f);
+    fputs("1", f);
     fclose(f);
 }
 
@@ -467,27 +484,18 @@ static long drr_bpf(uint32_t cmd)
     return syscall(__NR_bpf, cmd, drr_attr, sizeof(drr_attr));
 }
 
-/* Device-controller stub lifecycle regression: load, query (count-only and
- * with a buffer), attach, close-the-loader-fd, fetch by id (the attachment
- * must keep the program alive), info-by-fd (short and zero buffers), detach,
- * link-create refusal, and the passthrough baseline for ordinary IDs and
- * ordinary (non-placeholder) fds. */
+/* Cgroup-device BPF capability regression: the kernel does not enforce
+ * device access control, so the whole device-controller family must be
+ * refused with EOPNOTSUPP instead of faking a policy that never takes
+ * effect. Ordinary commands, fds and ids keep falling through to the real
+ * handlers. */
 static int run_bpf_lifecycle(void)
 {
     section("bpf-lifecycle");
 
-    /* Baseline: with no device program loaded, ID enumeration falls through
-     * to the real handlers (EINVAL), instead of being short-circuited. */
-    memset(drr_attr, 0, sizeof(drr_attr));
-    errno = 0;
-    if (drr_bpf(DRR_BPF_PROG_GET_NEXT_ID) != -1 || errno != EINVAL) {
-        fail("empty-table GET_NEXT_ID falls through with EINVAL");
-        return 1;
-    }
-
-    /* OBJ_GET_INFO_BY_FD carries no prog_type, so the stub must claim it by
-     * object identity only: an ordinary map fd reaches the real dispatcher
-     * (baseline EINVAL) and its buffer is left untouched. */
+    /* Ordinary map fd: OBJ_GET_INFO_BY_FD carries no prog_type, so it must
+     * reach the real dispatcher (baseline EINVAL) and leave the buffer
+     * untouched. */
     memset(drr_attr, 0, sizeof(drr_attr));
     drr_set_u32(0, DRR_BPF_MAP_TYPE_ARRAY);
     drr_set_u32(4, 4);   /* key_size */
@@ -496,7 +504,7 @@ static int run_bpf_lifecycle(void)
     errno = 0;
     int map_fd = (int)drr_bpf(DRR_BPF_MAP_CREATE);
     if (map_fd < 0) {
-        fail("create array map for OBJ_GET_INFO fall-through");
+        fail("create array map");
         return 1;
     }
     uint32_t map_info[2] = { 0xAAAAAAAA, 0xAAAAAAAA };
@@ -513,158 +521,71 @@ static int run_bpf_lifecycle(void)
     }
     close(map_fd);
 
-    /* Load one cgroup-device program. */
+    /* Ordinary ids: no synthetic program-id space exists, so enumeration and
+     * lookup fall through with the generic unsupported EINVAL. */
+    memset(drr_attr, 0, sizeof(drr_attr));
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_GET_NEXT_ID) != -1 || errno != EINVAL) {
+        fail("GET_NEXT_ID falls through with EINVAL");
+        return 1;
+    }
+    memset(drr_attr, 0, sizeof(drr_attr));
+    drr_set_u32(0, 12345);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_PROG_GET_FD_BY_ID) != -1 || errno != EINVAL) {
+        fail("GET_FD_BY_ID falls through with EINVAL");
+        return 1;
+    }
+
+    /* The device-controller family is refused with EOPNOTSUPP -- never a
+     * placeholder fd, attachment record or synthetic info. The fds are
+     * deliberately invalid so a fake EBADF-validation path cannot pass. */
     memset(drr_attr, 0, sizeof(drr_attr));
     drr_set_u32(0, DRR_BPF_PROG_TYPE_CGROUP_DEVICE);  /* prog_type */
     errno = 0;
-    int prog_fd = (int)drr_bpf(DRR_BPF_PROG_LOAD);
-    if (prog_fd < 0) {
-        fail("PROG_LOAD cgroup-device program");
+    if (drr_bpf(DRR_BPF_PROG_LOAD) != -1 || errno != EOPNOTSUPP) {
+        fail("PROG_LOAD cgroup-device is refused with EOPNOTSUPP");
         return 1;
     }
 
-    /* OBJ_GET_INFO_BY_FD: full buffer reports type + id. */
-    uint32_t info[2] = { 0, 0 };
     memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)prog_fd);
-    drr_set_u32(4, sizeof(info));
-    drr_set_u64(8, (uint64_t)(uintptr_t)info);
-    errno = 0;
-    if (drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD) != 0 ||
-        info[0] != DRR_BPF_PROG_TYPE_CGROUP_DEVICE || info[1] == 0) {
-        fail("OBJ_GET_INFO reports cgroup-device type and id");
-        return 1;
-    }
-    uint32_t prog_id = info[1];
-
-    /* Short buffer: only the requested prefix is written, and info_len
-     * reports the copied size. */
-    uint32_t short_info[2] = { 0xAAAAAAAA, 0xAAAAAAAA };
-    memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)prog_fd);
-    drr_set_u32(4, 4);  /* only room for the type */
-    drr_set_u64(8, (uint64_t)(uintptr_t)short_info);
-    errno = 0;
-    int info_rc = (int)drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD);
-    uint32_t reported_len = drr_get_u32(4);
-    if (info_rc != 0 || reported_len != 4 ||
-        short_info[0] != DRR_BPF_PROG_TYPE_CGROUP_DEVICE ||
-        short_info[1] != 0xAAAAAAAA) {
-        fail("OBJ_GET_INFO honors a short buffer");
-        return 1;
-    }
-
-    /* Zero-length buffer: success, nothing written. */
-    short_info[0] = 0xAAAAAAAA;
-    short_info[1] = 0xAAAAAAAA;
-    memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)prog_fd);
-    drr_set_u32(4, 0);
-    drr_set_u64(8, (uint64_t)(uintptr_t)short_info);
-    errno = 0;
-    info_rc = (int)drr_bpf(DRR_BPF_OBJ_GET_INFO_BY_FD);
-    if (info_rc != 0 || drr_get_u32(4) != 0 || short_info[0] != 0xAAAAAAAA) {
-        fail("OBJ_GET_INFO honors a zero-length buffer");
-        return 1;
-    }
-
-    /* Attach to a directory fd (the stub does not enforce cgroup-ness). */
-    int target_fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (target_fd < 0) {
-        fail("open attach target");
-        return 1;
-    }
-    memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)target_fd);
-    drr_set_u32(4, (uint32_t)prog_fd);
+    drr_set_u32(0, 0xffffffffU);                 /* target_fd: invalid */
+    drr_set_u32(4, 0xffffffffU);                 /* attach_bpf_fd: invalid */
     drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
     errno = 0;
-    if (drr_bpf(DRR_BPF_PROG_ATTACH) != 0) {
-        fail("PROG_ATTACH records the attachment");
-        close(target_fd);
+    if (drr_bpf(DRR_BPF_PROG_ATTACH) != -1 || errno != EOPNOTSUPP) {
+        fail("PROG_ATTACH cgroup-device is refused with EOPNOTSUPP");
         return 1;
     }
 
-    /* Closing the loader fd must not kill the attached program. */
-    close(prog_fd);
     memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, prog_id);
-    errno = 0;
-    int fetch_fd = (int)drr_bpf(DRR_BPF_PROG_GET_FD_BY_ID);
-    if (fetch_fd < 0) {
-        fail("attachment keeps the program fetchable after loader close");
-        close(target_fd);
-        return 1;
-    }
-    close(fetch_fd);
-
-    /* Count-only query (prog_ids = NULL): reports the attach count. */
-    memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)target_fd);
-    drr_set_u32(4, DRR_BPF_ATTACH_CGROUP_DEVICE);
-    drr_set_u32(24, 0);
-    errno = 0;
-    if (drr_bpf(DRR_BPF_PROG_QUERY) != 0 || drr_get_u32(24) != 1) {
-        fail("count-only QUERY reports one attachment");
-        close(target_fd);
-        return 1;
-    }
-
-    /* Buffered query returns the synthetic id. */
-    uint32_t ids[4] = { 0, 0, 0, 0 };
-    memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)target_fd);
-    drr_set_u32(4, DRR_BPF_ATTACH_CGROUP_DEVICE);
-    drr_set_u64(16, (uint64_t)(uintptr_t)ids);
-    drr_set_u32(24, 4);
-    errno = 0;
-    if (drr_bpf(DRR_BPF_PROG_QUERY) != 0 || drr_get_u32(24) != 1 || ids[0] != prog_id) {
-        fail("buffered QUERY reports the attached program id");
-        close(target_fd);
-        return 1;
-    }
-
-    /* DETACH removes the record; afterwards the id is gone. */
-    memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, (uint32_t)target_fd);
+    drr_set_u32(0, 0xffffffffU);                 /* target_fd: invalid */
     drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
     errno = 0;
-    if (drr_bpf(DRR_BPF_PROG_DETACH) != 0) {
-        fail("PROG_DETACH removes the attachment");
-        close(target_fd);
+    if (drr_bpf(DRR_BPF_PROG_DETACH) != -1 || errno != EOPNOTSUPP) {
+        fail("PROG_DETACH cgroup-device is refused with EOPNOTSUPP");
         return 1;
     }
+
     memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, prog_id);
+    drr_set_u32(0, 0xffffffffU);                 /* target_fd: invalid */
+    drr_set_u32(4, DRR_BPF_ATTACH_CGROUP_DEVICE);
     errno = 0;
-    int gone = drr_bpf(DRR_BPF_PROG_GET_FD_BY_ID) == -1 && errno == ENOENT;
-    if (!gone) {
-        fail("detached program id is no longer fetchable");
-        close(target_fd);
+    if (drr_bpf(DRR_BPF_PROG_QUERY) != -1 || errno != EOPNOTSUPP) {
+        fail("PROG_QUERY cgroup-device is refused with EOPNOTSUPP");
         return 1;
     }
 
-    /* LINK_CREATE is explicitly refused (EINVAL), not silently accepted. */
     memset(drr_attr, 0, sizeof(drr_attr));
-    drr_set_u32(0, DRR_BPF_PROG_TYPE_CGROUP_DEVICE);  /* prog_type */
-    int new_prog_fd = (int)drr_bpf(DRR_BPF_PROG_LOAD);
-    if (new_prog_fd >= 0) {
-        memset(drr_attr, 0, sizeof(drr_attr));
-        drr_set_u32(0, (uint32_t)target_fd);
-        drr_set_u32(4, (uint32_t)new_prog_fd);
-        drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
-        errno = 0;
-        long rc = drr_bpf(DRR_BPF_LINK_CREATE);
-        if (rc != -1 || errno != EINVAL) {
-            fail("LINK_CREATE is refused with EINVAL");
-            close(new_prog_fd);
-            close(target_fd);
-            return 1;
-        }
-        close(new_prog_fd);
+    drr_set_u32(0, 0xffffffffU);                 /* prog_fd: invalid */
+    drr_set_u32(4, 0xffffffffU);                 /* target_fd: invalid */
+    drr_set_u32(8, DRR_BPF_ATTACH_CGROUP_DEVICE);
+    errno = 0;
+    if (drr_bpf(DRR_BPF_LINK_CREATE) != -1 || errno != EOPNOTSUPP) {
+        fail("LINK_CREATE cgroup-device is refused with EOPNOTSUPP");
+        return 1;
     }
 
-    close(target_fd);
     return 0;
 }
 
