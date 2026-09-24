@@ -404,7 +404,28 @@ static void check_namespaces(void)
     }
     if (unshare(CLONE_NEWNS) != 0) {
         fail("unshare CLONE_NEWNS");
-        close(mnt_fd);
+close(mnt_fd);
+
+    /* A dirfd-relative open against /proc/self/ns must build the same
+     * namespace handle as the absolute spelling. */
+    int ns_dir = open("/proc/self/ns", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (ns_dir >= 0) {
+        int rel_mnt = openat(ns_dir, "mnt", O_RDONLY);
+        if (rel_mnt >= 0) {
+            struct stat st;
+            if (fstat(rel_mnt, &st) == 0 && S_ISREG(st.st_mode)) {
+                pass("openat(ns_dirfd, \"mnt\") yields a namespace handle");
+            } else {
+                fail("openat(ns_dirfd, \"mnt\") yields a namespace handle");
+            }
+            close(rel_mnt);
+        } else {
+            fail("openat(ns_dirfd, \"mnt\") succeeds");
+        }
+        close(ns_dir);
+    } else {
+        fail("open /proc/self/ns directory");
+    }
         return;
     }
     if (ns_identity("mnt", &after) == 0 && after != before) {
@@ -859,6 +880,38 @@ static int run_exe_acl(void)
     }
     close(ready_pipe[0]);
     close(release_pipe[1]);
+
+    /* A mount namespace that hides /proc must make /proc/self/exe fail with
+     * ENOENT instead of jumping to the executable's backing object. */
+    pid_t hidden = fork();
+    if (hidden == 0) {
+        if (unshare(CLONE_NEWNS) != 0) {
+            _exit(3);
+        }
+        if (mount("tmpfs", "/proc", "tmpfs", 0, NULL) != 0) {
+            _exit(4);
+        }
+        errno = 0;
+        int fd = open("/proc/self/exe", O_RDONLY);
+        if (fd >= 0) {
+            close(fd);
+            _exit(5);
+        }
+        _exit(errno == ENOENT ? 0 : 6);
+    }
+    if (waitpid(hidden, &status, 0) == hidden && WIFEXITED(status)) {
+        int code = WEXITSTATUS(status);
+        if (code == 0) {
+            pass("hiding /proc makes /proc/self/exe fail with ENOENT");
+        } else if (code == 5) {
+            printf("  FAIL: /proc/self/exe opened while /proc was hidden\n");
+            failures++;
+        } else {
+            fail("hiding /proc makes /proc/self/exe fail with ENOENT");
+        }
+    } else {
+        fail("exe-acl hidden-proc child terminates normally");
+    }
 
     return failures != 0;
 }
