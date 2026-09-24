@@ -13,7 +13,8 @@
  *   scm-rights  AF_UNIX SCM_RIGHTS fd passing across fork
  *   cgroup2     cgroup2 mount at /sys/fs/cgroup plus controllers
  *   exe-acl     (subcommand) /proc/<pid>/exe opens obey the cross-process
- *               permission check while the caller's own exe stays openable
+ *               permission check (matching uid AND gid, or CAP_SYS_PTRACE)
+ *               while the caller's own exe stays openable
  *
  * Superblock magics are the values this kernel reports (see
  * os/StarryOS/kernel/src/pseudofs), not generic Linux constants: devfs reports
@@ -32,6 +33,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -691,9 +693,45 @@ static void check_cgroup2(void)
     }
 }
 
+/* Forks a child that drops to (uid, gid) and reports opening `path`:
+ * 1 = opened, 0 = denied with EPERM/EACCES, -1 = setup/outcome failure. */
+static int exe_acl_probe(uid_t uid, gid_t gid, const char *path)
+{
+    int status = 0;
+    pid_t child = fork();
+    if (child < 0) {
+        return -1;
+    }
+    if (child == 0) {
+        if (setgid(gid) != 0 || setuid(uid) != 0) {
+            _exit(3);
+        }
+        errno = 0;
+        int fd = open(path, O_RDONLY);
+        if (fd >= 0) {
+            close(fd);
+            _exit(0);
+        }
+        _exit((errno == EPERM || errno == EACCES) ? 1 : 2);
+    }
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) {
+        return -1;
+    }
+    int code = WEXITSTATUS(status);
+    if (code == 0) {
+        return 1;
+    }
+    if (code == 1) {
+        return 0;
+    }
+    return -1;
+}
+
 /* The caller's own /proc/self/exe must stay openable (runc's CVE-2019-5736
  * self-reexec depends on it), while another user's /proc/<pid>/exe requires
- * the kernel's cross-process permission check. */
+ * the kernel's cross-process permission check. The check follows
+ * `PTRACE_MODE_READ_FSCREDS`, so a matching uid alone is not enough when the
+ * filesystem gid differs. */
 static int run_exe_acl(void)
 {
     section("exe-acl");
@@ -750,6 +788,78 @@ static int run_exe_acl(void)
                code);
         failures++;
     }
+
+    /* FSCREDS triplet: a matching uid is not enough when the filesystem gid
+     * differs. Hold a target at uid/gid 1000/1000, then open its exe as uid
+     * 1000 with gid 1000 (allowed) and gid 2000 (rejected). */
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) != 0 || pipe(release_pipe) != 0) {
+        fail("create exe-acl group pipes");
+        return 1;
+    }
+    pid_t holder = fork();
+    if (holder < 0) {
+        fail("fork exe-acl group holder");
+        return 1;
+    }
+    if (holder == 0) {
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+        if (setgid(1000) != 0 || setuid(1000) != 0) {
+            _exit(3);
+        }
+        /* The uid/gid change resets dumpability; re-enable it so the
+         * matching-gid caller is allowed and only the gid mismatch is
+         * exercised. */
+        prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+        char byte = 'R';
+        if (write(ready_pipe[1], &byte, 1) != 1) {
+            _exit(4);
+        }
+        if (read(release_pipe[0], &byte, 1) != 1) {
+            _exit(5);
+        }
+        _exit(0);
+    }
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
+
+    char ready = 0;
+    if (read(ready_pipe[0], &ready, 1) != 1 || ready != 'R') {
+        fail("exe-acl group holder reached held state");
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+        waitpid(holder, &status, 0);
+        return 1;
+    }
+
+    char holder_path[64];
+    snprintf(holder_path, sizeof(holder_path), "/proc/%ld/exe", (long)holder);
+
+    if (exe_acl_probe(1000, 1000, holder_path) == 1) {
+        pass("matching uid/gid opens /proc/<pid>/exe");
+    } else {
+        fail("matching uid/gid opens /proc/<pid>/exe");
+    }
+    if (exe_acl_probe(1000, 2000, holder_path) == 0) {
+        pass("same uid but different gid is rejected with EPERM/EACCES");
+    } else {
+        printf("  FAIL: same uid but different gid opened /proc/<pid>/exe\n");
+        failures++;
+    }
+
+    char release = 'X';
+    if (write(release_pipe[1], &release, 1) != 1) {
+        fail("release exe-acl group holder");
+    }
+    if (waitpid(holder, &status, 0) != holder || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0) {
+        fail("exe-acl group holder exits cleanly");
+    }
+    close(ready_pipe[0]);
+    close(release_pipe[1]);
+
     return failures != 0;
 }
 

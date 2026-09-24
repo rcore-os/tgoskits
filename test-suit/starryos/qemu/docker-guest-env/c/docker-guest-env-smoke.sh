@@ -22,7 +22,8 @@ done
 # The kernel-semantics probe runs first so its per-check errnos land in the
 # serial log before any fail marker short-captures the run.
 /usr/bin/docker-guest-env-probe || mark probe
-# /proc/<pid>/exe access control: own exe openable, cross-user rejected.
+# /proc/<pid>/exe access control: own exe openable, cross-user and
+# same-uid/different-gid rejected.
 /usr/bin/docker-guest-env-probe exe-acl || mark probe-exe-acl
 
 # /proc/filesystems must advertise what the kernel mounts; util-linux mount
