@@ -84,7 +84,7 @@ impact_targets = ["starry:aarch64"]
 name = "Board OrangePi 5 Plus · Suites"
 runner = "board"
 command = '''
-cargo xtask starry test board --board orangepi-5-plus
+bash .github/ci/run-board-iperf2.sh cargo xtask starry test board --board orangepi-5-plus
 '''
 
 [[check.suite]]
@@ -112,7 +112,7 @@ name = "Board AKA-00 SG2002 · Suites"
 runner = "board"
 wifi_secrets = true
 command = '''
-cargo xtask starry test board --board aka-00-sg2002
+bash .github/ci/run-board-iperf2.sh cargo xtask starry test board --board aka-00-sg2002
 '''
 
 [[check.suite]]

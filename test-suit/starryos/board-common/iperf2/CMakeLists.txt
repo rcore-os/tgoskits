@@ -20,6 +20,15 @@ file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/../iperf-smoke.sh" DESTINATION "${bundle}
     FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 file(COPY_FILE "${BOARD_SMOKE_SCRIPT}" "${bundle}/board-smoke.sh")
 file(CHMOD "${bundle}/board-smoke.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+if(DEFINED ENV{STARRY_IPERF_PORT} AND NOT "$ENV{STARRY_IPERF_PORT}" STREQUAL "")
+    set(server_port "$ENV{STARRY_IPERF_PORT}")
+    if(NOT server_port MATCHES "^[0-9]+$" OR server_port LESS 1 OR server_port GREATER 65535)
+        message(FATAL_ERROR "STARRY_IPERF_PORT must be a TCP port in 1..65535")
+    endif()
+    file(WRITE "${bundle}/server-port" "${server_port}\n")
+else()
+    file(REMOVE "${bundle}/server-port")
+endif()
 # Archive only files: the guest creates the destination directory itself,
 # so extraction does not need to restore host directory ownership or modes.
 file(GLOB bundle_files RELATIVE "${bundle}" "${bundle}/*")
