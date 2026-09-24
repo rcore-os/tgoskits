@@ -1,8 +1,8 @@
 //! Saved GICv3 virtual CPU-interface state.
 
-use alloc::vec;
-
 use crate::{IntId, InterruptState, PhysicalIrqId, Priority, TriggerMode};
+
+pub(crate) const MAX_LIST_REGISTERS: usize = 16;
 
 const ICH_HCR_ENABLE: u64 = 1;
 const ICH_HCR_UIE: u64 = 1 << 1;
@@ -134,7 +134,8 @@ pub struct CpuInterfaceState {
     hcr: u64,
     vmcr: u64,
     apr: [u64; 4],
-    list_registers: alloc::vec::Vec<Option<ListRegisterState>>,
+    list_registers: [Option<ListRegisterState>; MAX_LIST_REGISTERS],
+    list_register_count: usize,
     v2_enabled: bool,
     v2_priority_mask: Priority,
     v2_binary_point: u8,
@@ -144,11 +145,13 @@ pub struct CpuInterfaceState {
 
 impl CpuInterfaceState {
     pub(crate) fn new(list_register_count: usize) -> Self {
+        assert!((1..=MAX_LIST_REGISTERS).contains(&list_register_count));
         Self {
             hcr: 1,
             vmcr: ICH_VMCR_VENG1 | ICH_VMCR_VPMR_MASK,
             apr: [0; 4],
-            list_registers: vec![None; list_register_count],
+            list_registers: [None; MAX_LIST_REGISTERS],
+            list_register_count,
             v2_enabled: false,
             v2_priority_mask: Priority::new(0),
             v2_binary_point: 0,
@@ -264,12 +267,24 @@ impl CpuInterfaceState {
 
     /// Returns all list-register slots.
     pub fn list_registers(&self) -> &[Option<ListRegisterState>] {
-        &self.list_registers
+        &self.list_registers[..self.list_register_count]
     }
 
     /// Returns mutable list-register slots for a checked backend save.
     pub fn list_registers_mut(&mut self) -> &mut [Option<ListRegisterState>] {
-        &mut self.list_registers
+        &mut self.list_registers[..self.list_register_count]
+    }
+
+    /// Returns the span containing all occupied LRs, including any holes.
+    ///
+    /// Backends can use this bound when transferring hardware LR state. A
+    /// guest can complete an earlier LR while a higher-numbered one remains
+    /// live, so counting occupied entries would lose that higher slot.
+    pub fn used_list_registers(&self) -> usize {
+        self.list_registers()
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |index| index + 1)
     }
 
     /// Returns the guest-visible GICC_CTLR state.
@@ -336,7 +351,7 @@ impl CpuInterfaceState {
 
 #[cfg(test)]
 mod tests {
-    use super::ListRegisterState;
+    use super::{CpuInterfaceState, ListRegisterState};
     use crate::{IntId, InterruptState, PpiId, Priority, TriggerMode};
 
     #[test]
@@ -357,5 +372,31 @@ mod tests {
 
         assert!(level.maintenance_on_eoi());
         assert!(!edge.maintenance_on_eoi());
+    }
+
+    #[test]
+    fn used_lr_span_includes_empty_slots_before_the_last_delivery() {
+        let mut state = CpuInterfaceState::new(4);
+        let intid = IntId::Ppi(PpiId::new(27).unwrap());
+        assert_eq!(state.used_list_registers(), 0);
+
+        state.list_registers_mut()[3] = Some(ListRegisterState::new(
+            intid,
+            Priority::DEFAULT,
+            InterruptState::Active,
+        ));
+        assert_eq!(state.used_list_registers(), 4);
+
+        state.list_registers_mut()[0] = Some(ListRegisterState::new(
+            intid,
+            Priority::DEFAULT,
+            InterruptState::Pending,
+        ));
+        state.list_registers_mut()[0] = None;
+        assert_eq!(state.used_list_registers(), 4);
+
+        state.list_registers_mut()[3] = None;
+        assert_eq!(state.used_list_registers(), 0);
+        assert_eq!(state.list_registers().len(), 4);
     }
 }

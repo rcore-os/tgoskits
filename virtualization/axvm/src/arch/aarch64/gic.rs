@@ -569,10 +569,14 @@ pub(crate) fn route_acknowledged_host_irq(token: usize) -> Result<(), GicV3Backe
     physical::route_acknowledged_host_irq(token)
 }
 
-pub(crate) fn enable_maintenance_interrupt() -> axvm_types::VmBackendResult {
+pub(crate) fn enable_current_cpu() -> axvm_types::VmBackendResult {
+    cpu_interface::initialize_current_cpu().map_err(|error| {
+        error!("failed to initialize current host GIC CPU interface: {error:?}");
+        axvm_types::VmBackendError::InvalidState
+    })?;
     maintenance::enable_current_cpu()
 }
 
-pub(crate) fn disable_maintenance_interrupt() -> axvm_types::VmBackendResult {
+pub(crate) fn disable_current_cpu() -> axvm_types::VmBackendResult {
     maintenance::disable_current_cpu()
 }

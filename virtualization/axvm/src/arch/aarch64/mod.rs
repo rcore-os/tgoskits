@@ -523,11 +523,11 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
 
     fn hardware_enable(&mut self) -> BackendResult {
         arm_result(self.0.hardware_enable())?;
-        if let Err(error) = gic::enable_maintenance_interrupt() {
+        if let Err(error) = gic::enable_current_cpu() {
             if let Err(rollback_error) = self.0.hardware_disable() {
                 warn!(
-                    "failed to roll back AArch64 virtualization after maintenance IRQ setup \
-                     failed: {rollback_error:?}"
+                    "failed to roll back AArch64 virtualization after host GIC setup failed: \
+                     {rollback_error:?}"
                 );
             }
             return Err(error);
@@ -536,7 +536,7 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
     }
 
     fn hardware_disable(&mut self) -> BackendResult {
-        gic::disable_maintenance_interrupt()?;
+        gic::disable_current_cpu()?;
         arm_result(self.0.hardware_disable())
     }
 

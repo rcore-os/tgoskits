@@ -6,7 +6,7 @@ use super::{ControllerState, GicV3VcpuWake, SpiBacking};
 use crate::{
     CpuInterfaceState, GicAffinity, GicVcpuId, IntId, InterruptState, ListRegisterBacking,
     ListRegisterState, LpiId, PhysicalInterruptBinding, QueuedDelivery, RedistributorState,
-    SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
+    SgiTarget, SpiId, TriggerMode, VgicError, VgicResult, cpu_interface::MAX_LIST_REGISTERS,
 };
 
 pub(super) enum DeliveryRetirement {
@@ -274,18 +274,21 @@ impl ControllerState {
         saved: CpuInterfaceState,
         refill: bool,
     ) -> VgicResult<Vec<DeliveryRetirement>> {
-        let previous = self
-            .redistributor(vcpu, "merge CPU interface")?
-            .cpu_interface()
-            .clone();
-        let current_list_registers = saved.list_registers().to_vec();
+        let mut previous_list_registers = [None; MAX_LIST_REGISTERS];
+        let mut current_list_registers = [None; MAX_LIST_REGISTERS];
+        let count = saved.list_registers().len();
+        previous_list_registers[..count].copy_from_slice(
+            self.redistributor(vcpu, "merge CPU interface")?
+                .cpu_interface()
+                .list_registers(),
+        );
+        current_list_registers[..count].copy_from_slice(saved.list_registers());
         self.redistributor_mut(vcpu, "merge CPU interface")?
             .replace_cpu_interface(saved);
         let mut retirements = Vec::new();
-        for (index, (old, current)) in previous
-            .list_registers()
+        for (index, (old, current)) in previous_list_registers[..count]
             .iter()
-            .zip(&current_list_registers)
+            .zip(&current_list_registers[..count])
             .enumerate()
         {
             let synchronized = match (old, current) {
