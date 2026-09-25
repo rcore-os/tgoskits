@@ -5,9 +5,11 @@
 源码基点为 `dev@714accd8f6` 加 AArch64 PGO 训练前置 `memset` 修复的
 `b292a098bb60ef604e7677c37cd95d926ff08200`。`resume903-decision.md`
 复算此前归档的 `resume854`、`resume889` 计数：OTHER yield 的完整 rq
-事务没有额外的逐样本一遍；OTHER 同核 futex 则有约 2.1 万笔尚未归因的
-`owner_rq_scheduler_transactions - context_switches`。旧原始日志及校验脚本
-已在同一证据目录的 `resume853-855-fair-yield`、`resume888-889-park-phase` 中。
+事务没有额外的逐样本一遍；OTHER 同核 futex 的
+`owner_rq_scheduler_transactions - context_switches` 约为 2.1 万。
+当时漏查了旧 `resume793`、`resume820` 已给出的计时前 yield 解释；
+本文件第 2.2 节更正其来源。旧原始日志及校验脚本已在同一证据目录的
+`resume853-855-fair-yield`、`resume888-889-park-phase` 中。
 
 ### 1.1 探针与构建
 
@@ -32,24 +34,47 @@ FIFO、OTHER，均为 20000/20000 样本，零 `not_parked` 与
 ## 2. 结果与决定
 
 本次只核对调度事务的发生次数，不能从全局计数推断单个唤醒交易的
-耗时。OTHER 三轮的数据取自两次 `/proc` 快照差值，包含后台活动。
+耗时。六轮的数据取自两次 `/proc` 快照差值，包含后台活动。
 
 ### 2.1 计数核对
 
-OTHER 三轮均满足 `preempt_schedule_passes` 等于切换、进入 rq 后未切换
-和提前返回之和；下表列出与 rq 事务差额相关的类别：
+六轮均满足 `preempt_schedule_passes` 等于切换、进入 rq 后未切换和
+提前返回之和；下表将 rq 事务差额与 yield 入口、yield 切换及抢占帧内
+未切换对齐：
 
-| 轮次 | rq 事务减切换 | 抢占帧内 rq 未切换 | 抢占帧前提前返回 | 抢占帧重复遍数 |
-| --- | ---: | ---: | ---: | ---: |
-| 2 | 21180 | 397 | 577 | 8 |
-| 3 | 21154 | 386 | 558 | 8 |
-| 6 | 21159 | 372 | 540 | 7 |
+| 轮次 | 策略 | rq 事务减切换 | yield 入口 | yield 切换 | 抢占帧内 rq 未切换 | 扣除后残差 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | FIFO | 21382 | 21025 | 5 | 355 | 7 |
+| 2 | OTHER | 21180 | 21023 | 247 | 397 | 7 |
+| 3 | OTHER | 21154 | 21023 | 262 | 386 | 7 |
+| 4 | FIFO | 21386 | 21024 | 4 | 359 | 7 |
+| 5 | FIFO | 21146 | 21023 | 3 | 119 | 7 |
+| 6 | OTHER | 21159 | 21027 | 248 | 372 | 8 |
 
-### 2.2 判定范围
+### 2.2 预唤醒来源
 
-因此约 2.1 万笔剩余 rq 事务**不是**额外的 2.1 万次无切换抢占帧，
-但其来源尚未由这组全局计数定位。不能据此删去 park、尾部或唤醒中的
-任何事务。`python3 check.py` 从原始子轮日志、快照和哈希重算门禁及计数。
+冻结基准的 `apps/starry/wakeup-latency-bench/handoff.c` 在同核每次
+`run_sender()` 中先由 `wait_for_receiver_to_park()` 调用 `sched_yield()`，
+随后才写入 `wake_timestamp_ns` 并执行 `futex_wake_one()`。该 yield 进入
+`yield_current_in_scheduler_frame()` 的 `OwnerRqEntry::SchedulerFrame` 事务；
+每轮 1000 次预热加 20000 次测量，合计 21000 次计时前 yield。
+现有 `switch_scheduler_detail_owner_drain_count` 的索引 10 只在
+`components/ax-task/src/sched/system/task_system/scheduling/yield_entry.rs`
+的两条普通 yield 分支记录入口，每轮实测 21023–21027 次，包含少量
+基准之外的 yield。
+旧 `resume793` 已据此解释类似的 rq 事务差额，`resume820` 已确认
+普通同核 futex 计时窗口内没有这笔额外事务。本轮数据是独立交叉核对，
+不是首次发现该机制。
+
+上表残差按 `rq事务减切换 - (yield入口 - yield切换) - 抢占帧内rq未切换`
+复算。`yield切换` 是全局原因计数，残差仍含后台工作，因此这是聚合
+一致性检查，不是逐次 yield 的一对一追踪。六轮残差仅 7–8 笔，
+与计时前 yield 来源一致，不支持再按这约 2.1 万笔差额优化唤醒链。
+
+### 2.3 判定范围
+
+`python3 check.py` 从原始子轮日志、快照和哈希重算门禁及上述残差。
+不能据此删去 park、尾部或唤醒中的任何事务。
 `cargo xtask clippy --package ax-task`（6/6）、
 `cargo xtask clippy --package starry-kernel`（72/72）、
 `cargo xtask test --since origin/dev` 与 `cargo fmt` 在诊断源码上通过。

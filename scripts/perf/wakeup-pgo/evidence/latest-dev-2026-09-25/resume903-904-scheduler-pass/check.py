@@ -50,6 +50,7 @@ def main():
 
     modes = ("fifo", "other", "other", "fifo", "fifo", "other")
     assert len(result["rounds"]) == len(modes)
+    residuals = []
     for index, (round_, mode) in enumerate(zip(result["rounds"], modes), 1):
         assert round_["round"] == index and round_["mode"] == mode
         assert round_["valid"]
@@ -85,10 +86,19 @@ def main():
         if mode == "other":
             assert counts["owner_rq_scheduler_transactions"] - counts["context_switches"] > 21000
             assert counts["preempt_schedule_rq_no_switch"] < 600
+        rq_surplus = counts["owner_rq_scheduler_transactions"] - counts["context_switches"]
+        yield_entries = counts["switch_scheduler_detail_owner_drain_count"]
+        assert metadata[0]["warmup"] + row["attempted"] <= yield_entries <= 21030
+        residual = (rq_surplus - (yield_entries - counts["context_switches_yield"])
+                    - counts["preempt_schedule_rq_no_switch"])
+        residuals.append(residual)
         print(f"round={index} mode={mode} valid=1 samples=20000 "
-              f"rq_surplus={counts['owner_rq_scheduler_transactions'] - counts['context_switches']} "
-              f"preempt_rq_no_switch={counts['preempt_schedule_rq_no_switch']}")
+              f"rq_surplus={rq_surplus} yield_entries={yield_entries} "
+              f"yield_switches={counts['context_switches_yield']} "
+              f"preempt_rq_no_switch={counts['preempt_schedule_rq_no_switch']} "
+              f"prewake_yield_residual={residual}")
 
+    assert residuals == [7, 7, 7, 7, 7, 8]
     print("qperf-only: no native full20 or production performance claim")
 
 
