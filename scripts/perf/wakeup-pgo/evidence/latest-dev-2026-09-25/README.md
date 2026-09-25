@@ -582,6 +582,16 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 最近的有效五 crate PGO 仍仅 **11/20** 项达到冻结 Linux RT 的 90%，
 最差 OTHER 同核 futex 为 **57.999%**，PR 继续 Draft。
 
+### 1.26 park 路径与切换原因交叉核对
+
+`resume890-891-park-reason/` 复用上节的两份原始计数，补上 PMU owner
+边界与独立切换原因核对。12 个子轮中 11 轮的 rq-only `park_block_count`
+等于 `context_switches_blocked`，另一轮只差一次；所以没有证据支持
+“OTHER 的约一半阻塞切换落入未计时的完整 park 路径”。OTHER 高频的
+`Preempted` 切换需要与目标 handoff 窗口关联，不能按单次 park 探针
+均值选择优化。两组六轮组仍无效，**没有新的 full20、性能收益或生产
+源码改动**；11/20 和最差 57.999% 的状态不变。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -643,3 +653,5 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 `resume888-889-park-phase/` 在子目录运行 `sha256sum -c SHA256SUMS` 和
 `python3 resume889/analyze_valid.py` 复核原始证据及无效组判定；镜像
 本体未入 Git，归档只保留其 SHA256 记录。
+`resume890-891-park-reason/` 在子目录运行 `sha256sum -c SHA256SUMS` 和
+`python3 check.py` 复核既有两份原始 JSON 的计数口径。
