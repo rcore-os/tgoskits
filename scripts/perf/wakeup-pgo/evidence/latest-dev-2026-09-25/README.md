@@ -592,6 +592,22 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 均值选择优化。两组六轮组仍无效，**没有新的 full20、性能收益或生产
 源码改动**；11/20 和最差 57.999% 的状态不变。
 
+### 1.27 当前源码接收端交接探针
+
+`resume895-current-transaction/` 只读复核了同核 futex 的完整事务，
+没有发现可安全删除的
+多微秒重复工作；FIFO/OTHER 的 p50 差值不是 Fair 路径可删除成本的
+严格上界。`resume896-receiver-tail/` 归档临时 `qperf` 探针补丁、构建
+配置、两次独立启动的 12 个子轮原始日志、每轮前后计数快照及复算脚本。
+两组完整六轮组均因 OTHER 第 2/6 轮缺样本且 `not_parked>0` 而无效；
+只有每次启动中的 OTHER 第 3 轮可单独用于探索。接收端从 Starry
+switch-in hook 到 futex wait 完成的均值分别为 1807.527 和
+1827.722 ns，250 ns 直方图的 p50 都落在 `[1750,2000)` ns。
+这段计时有插桩、无 PGO，且不含 owner 交接尾部和用户态返回，
+**不能从无插桩 full20 p50 中相减，也不是性能收益**。探针已撤回；
+镜像未入 Git，仅保存 SHA256。最近有效的五 crate PGO 仍为
+**11/20** 达 90%，最差 OTHER 同核 futex **57.999%**；PR 继续 Draft。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -659,3 +675,7 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 `resume892-893-current-audit/` 记录当前源码的 Fair 抢占交接、Linux RT
 定时器 worker 策略和五 crate PGO 训练输入的只读核对；没有新增构建、
 无插桩 full20、生产运行时改动或可验收收益。
+
+在 `resume896-receiver-tail/` 运行 `python3 analyze.py` 可按记录的
+SHA256 复核原始日志、计数快照、样本门禁和直方图。`board.py` 仅作为
+实际运行流程存档，引用本地镜像路径，不作为仓库内可直接重跑的命令。
