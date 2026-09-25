@@ -608,6 +608,18 @@ switch-in hook 到 futex wait 完成的均值分别为 1807.527 和
 镜像未入 Git，仅保存 SHA256。最近有效的五 crate PGO 仍为
 **11/20** 达 90%，最差 OTHER 同核 futex **57.999%**；PR 继续 Draft。
 
+### 1.28 当前源码同地址空间切换筛查
+
+`resume898-same-mm-fast/` 保存 AArch64 同一用户地址空间直接切换的
+临时补丁、普通 release 构建身份及 A1、B1、B2、A2 四次无插桩 full20。
+B1 因 OTHER 同核 futex 19999/20000 样本和 `not_parked=1` 整轮无效；
+A1、B2、A2 各为完整有效轮次。唯一有效候选 B2 的目标项 p50 为
+26250 ns，相对 A1/A2 中位数 27854 ns 低 5.759%，但对冻结 Linux RT
+仅为 32.221%，全表只有 10/20 达 90%。B2 相对两次普通 A 的 60 个
+p50/p99/p99.9 筛查比较有六项回退至少 3%，FIFO timer p99.9
+高 19.766%。候选不足两次有效启动，已拒绝并撤回运行时代码；
+这些数据不替代既有 PGO 筛查的 11/20 结论。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -679,3 +691,5 @@ switch-in hook 到 futex wait 完成的均值分别为 1807.527 和
 在 `resume896-receiver-tail/` 运行 `python3 analyze.py` 可按记录的
 SHA256 复核原始日志、计数快照、样本门禁和直方图。`board.py` 仅作为
 实际运行流程存档，引用本地镜像路径，不作为仓库内可直接重跑的命令。
+在 `resume898-same-mm-fast/` 运行 `python3 check.py` 可复算四轮
+full20 的有效性、90% 门和同源码回退筛查；镜像本体未入 Git。
