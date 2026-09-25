@@ -554,6 +554,15 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 处同步异常，尚无可用 profile 或无插桩候选，更没有新 full20。
 首次镜像已判无效，后续重试另行记账；本次归档不改变上节的 10/20 结论。
 
+### 1.23 预 MMU 排查与五 crate PGO
+
+`resume880-883-five-crate/` 记录两次广覆盖训练的板卡启动失败、预 MMU
+插桩调用链审计，以及仅增补 `ax_sync` 的五 crate 原生 PGO。广覆盖
+`resume880`/`resume882` 没有可用 profile 或 full20；五 crate 候选的
+两次有效、无插桩 full20 为 **11/20** 项达到冻结 Linux RT 90%，
+最差 OTHER 同核 futex 为 **57.999%**。这只是被拒绝候选的筛查进展，
+第三次有效候选和同源码全项回退门仍未证明，不构成 PR 验收。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -607,3 +616,6 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 计数器及 profdata 未纳入 Git，其身份只能核对归档的 SHA256 记录。
 `resume877-879-checkpoint/` 在子目录运行 `sha256sum -c SHA256SUMS`
 核对首次失败构建与串口原件；镜像哈希保存在该目录说明中，镜像未入 Git。
+`resume880-883-five-crate/` 在子目录运行 `sha256sum -c SHA256SUMS`，
+并运行 `python3 five-crate/analyze_full20.py` 复核 20 项原始日志与
+冻结基线；它只证明两次筛查结果，不覆盖最终验收门禁。

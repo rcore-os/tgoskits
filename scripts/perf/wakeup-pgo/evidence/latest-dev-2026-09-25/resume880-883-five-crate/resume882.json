@@ -1,0 +1,42 @@
+{
+  "id": "resume882",
+  "created_at": "2026-09-25T15:11:02.599437+00:00",
+  "state": "invalid",
+  "change": "Train b292 broad native PGO after excluding exact pre-MMU inlined profile owners fdt_raw, log and ax_alloc in generate/use; require counter-free someboot disassembly before board",
+  "hypothesis": "The run880 silent startup is due to pre-MMU atomic profile counters from fdt_raw/log/allocator code inlined into someboot; excluding these owners while keeping post-MMU runtime crates profiled will permit boot and preserve broader coverage than four-crate PGO",
+  "files": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/wrapper.py",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/profgen-export.toml",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/pgouse.toml",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/check-early-counters.py"
+  ],
+  "prior_reviewed": [
+    "resume764",
+    "resume766",
+    "resume769",
+    "resume774",
+    "resume876",
+    "resume879",
+    "resume880",
+    "resume881"
+  ],
+  "difference": "Exclusions are derived from exact run880 ELF counter record owners, not guessed boot crate names; a static no-counter gate must pass before any board run; source/toolchain/workload and root-only exporter remain exact b292",
+  "effect": "Exact b292 generate build succeeded with fdt_raw/log/ax_alloc excluded symmetrically; 213/233 target compile invocations remained profiled, ELF had 34723 records and 1683280 counter bytes. The calibrated static checker found zero counter writes in named someboot/ax_cpu early functions. Board run1 progressed past early console to Memory Map: then produced no more output for 300s; no shell, counters, profile or full20; session released. Existing ELF shows print_memory_map calls instrumented byte_unit::Byte::get_appropriate_unit whose body contains counter ldxr/stxr, consistent with but not proving the silent stop.",
+  "decision": "Reject this broad training image; named-function counter-free gate was insufficient because an out-of-line early callee remained instrumented. Avoid another blind broad exclusion iteration; evaluate a narrower exact-source PGO scope around wakeup-relevant runtime crates.",
+  "history": [
+    {
+      "at": "2026-09-25T15:23:44.407196+00:00",
+      "previous_state": "planned",
+      "previous_effect": "尚未执行；无性能结论",
+      "previous_decision": "待验证"
+    }
+  ],
+  "evidence": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/build-profgen.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/export-profile-layout.json",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/wrapper.jsonl",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/run1/serial.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume882-counter-owner/check-early-counters.py"
+  ],
+  "updated_at": "2026-09-25T15:23:44.407214+00:00"
+}

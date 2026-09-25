@@ -1,0 +1,227 @@
+{
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "source_patch_sha256": "44866a74273e74d8656e1e5130e0f0997f1f39851c204ec583952e5fbbef1cff",
+  "session_id": "9cf0c8de-aa06-41c8-947a-644d6a42bfe5",
+  "board_id": "OrangePi-5-Plus-1",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "candidate_image_sha256": "e2b96fde90132a7c678a511dbd4d675b40c3743902b2e6ecfd6b1744d4178969",
+  "valid_boots": [
+    "F1",
+    "F2"
+  ],
+  "candidate_90pct_rows_two_boot_median": 11,
+  "worst": {
+    "policy": "other",
+    "case": "thread_futex_same_cpu",
+    "linux_rt_p50_ns": 8458,
+    "F1_p50_ns": 14583,
+    "F2_p50_ns": 14583,
+    "candidate_median_p50_ns": 14583.0,
+    "rt_over_candidate_pct": 57.999,
+    "passes_90pct": false
+  },
+  "same_source_tail_gate_proven": false,
+  "acceptance_proven": false,
+  "comparison": [
+    {
+      "policy": "fifo",
+      "case": "absolute_timer_same_cpu",
+      "linux_rt_p50_ns": 13211,
+      "F1_p50_ns": 19125,
+      "F2_p50_ns": 18875,
+      "candidate_median_p50_ns": 19000.0,
+      "rt_over_candidate_pct": 69.532,
+      "passes_90pct": false
+    },
+    {
+      "policy": "fifo",
+      "case": "clock_pair",
+      "linux_rt_p50_ns": 875,
+      "F1_p50_ns": 875,
+      "F2_p50_ns": 875,
+      "candidate_median_p50_ns": 875.0,
+      "rt_over_candidate_pct": 100.0,
+      "passes_90pct": true
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wait_mismatch",
+      "linux_rt_p50_ns": 2333,
+      "F1_p50_ns": 1459,
+      "F2_p50_ns": 1459,
+      "candidate_median_p50_ns": 1459.0,
+      "rt_over_candidate_pct": 159.904,
+      "passes_90pct": true
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wake_empty",
+      "linux_rt_p50_ns": 1750,
+      "F1_p50_ns": 1458,
+      "F2_p50_ns": 1458,
+      "candidate_median_p50_ns": 1458.0,
+      "rt_over_candidate_pct": 120.027,
+      "passes_90pct": true
+    },
+    {
+      "policy": "fifo",
+      "case": "getpid",
+      "linux_rt_p50_ns": 1458,
+      "F1_p50_ns": 1458,
+      "F2_p50_ns": 1458,
+      "candidate_median_p50_ns": 1458.0,
+      "rt_over_candidate_pct": 100.0,
+      "passes_90pct": true
+    },
+    {
+      "policy": "fifo",
+      "case": "process_futex_cross_cpu",
+      "linux_rt_p50_ns": 15167,
+      "F1_p50_ns": 25083,
+      "F2_p50_ns": 24792,
+      "candidate_median_p50_ns": 24937.5,
+      "rt_over_candidate_pct": 60.82,
+      "passes_90pct": false
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_handoff",
+      "linux_rt_p50_ns": 3791,
+      "F1_p50_ns": 4083,
+      "F2_p50_ns": 4083,
+      "candidate_median_p50_ns": 4083.0,
+      "rt_over_candidate_pct": 92.848,
+      "passes_90pct": true
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_no_peer",
+      "linux_rt_p50_ns": 2333,
+      "F1_p50_ns": 2042,
+      "F2_p50_ns": 2042,
+      "candidate_median_p50_ns": 2042.0,
+      "rt_over_candidate_pct": 114.251,
+      "passes_90pct": true
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_cross_cpu",
+      "linux_rt_p50_ns": 13708,
+      "F1_p50_ns": 22750,
+      "F2_p50_ns": 22750,
+      "candidate_median_p50_ns": 22750.0,
+      "rt_over_candidate_pct": 60.255,
+      "passes_90pct": false
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_same_cpu",
+      "linux_rt_p50_ns": 8458,
+      "F1_p50_ns": 11667,
+      "F2_p50_ns": 11667,
+      "candidate_median_p50_ns": 11667.0,
+      "rt_over_candidate_pct": 72.495,
+      "passes_90pct": false
+    },
+    {
+      "policy": "other",
+      "case": "absolute_timer_same_cpu",
+      "linux_rt_p50_ns": 23920,
+      "F1_p50_ns": 41083,
+      "F2_p50_ns": 40792,
+      "candidate_median_p50_ns": 40937.5,
+      "rt_over_candidate_pct": 58.431,
+      "passes_90pct": false
+    },
+    {
+      "policy": "other",
+      "case": "clock_pair",
+      "linux_rt_p50_ns": 875,
+      "F1_p50_ns": 875,
+      "F2_p50_ns": 875,
+      "candidate_median_p50_ns": 875.0,
+      "rt_over_candidate_pct": 100.0,
+      "passes_90pct": true
+    },
+    {
+      "policy": "other",
+      "case": "futex_wait_mismatch",
+      "linux_rt_p50_ns": 2333,
+      "F1_p50_ns": 1459,
+      "F2_p50_ns": 1459,
+      "candidate_median_p50_ns": 1459.0,
+      "rt_over_candidate_pct": 159.904,
+      "passes_90pct": true
+    },
+    {
+      "policy": "other",
+      "case": "futex_wake_empty",
+      "linux_rt_p50_ns": 1750,
+      "F1_p50_ns": 1458,
+      "F2_p50_ns": 1458,
+      "candidate_median_p50_ns": 1458.0,
+      "rt_over_candidate_pct": 120.027,
+      "passes_90pct": true
+    },
+    {
+      "policy": "other",
+      "case": "getpid",
+      "linux_rt_p50_ns": 1458,
+      "F1_p50_ns": 1458,
+      "F2_p50_ns": 1458,
+      "candidate_median_p50_ns": 1458.0,
+      "rt_over_candidate_pct": 100.0,
+      "passes_90pct": true
+    },
+    {
+      "policy": "other",
+      "case": "process_futex_cross_cpu",
+      "linux_rt_p50_ns": 17792,
+      "F1_p50_ns": 26541,
+      "F2_p50_ns": 26541,
+      "candidate_median_p50_ns": 26541.0,
+      "rt_over_candidate_pct": 67.036,
+      "passes_90pct": false
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_handoff",
+      "linux_rt_p50_ns": 4667,
+      "F1_p50_ns": 7292,
+      "F2_p50_ns": 7292,
+      "candidate_median_p50_ns": 7292.0,
+      "rt_over_candidate_pct": 64.002,
+      "passes_90pct": false
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_no_peer",
+      "linux_rt_p50_ns": 2625,
+      "F1_p50_ns": 2333,
+      "F2_p50_ns": 2333,
+      "candidate_median_p50_ns": 2333.0,
+      "rt_over_candidate_pct": 112.516,
+      "passes_90pct": true
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_cross_cpu",
+      "linux_rt_p50_ns": 16041,
+      "F1_p50_ns": 23917,
+      "F2_p50_ns": 23917,
+      "candidate_median_p50_ns": 23917.0,
+      "rt_over_candidate_pct": 67.069,
+      "passes_90pct": false
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_same_cpu",
+      "linux_rt_p50_ns": 8458,
+      "F1_p50_ns": 14583,
+      "F2_p50_ns": 14583,
+      "candidate_median_p50_ns": 14583.0,
+      "rt_over_candidate_pct": 57.999,
+      "passes_90pct": false
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+## 结论（先说判定）
+
+run880（第二次 broad 镜像，`export.elf`）在 `Starting kernel ...` 之后 300 s 无输出，**不是**“没有插桩”，而是：someboot/ax_cpu 等 crate 虽然被排除，但它们依赖的**仍被插桩**的 crate（`fdt_raw` 为主，`log`、分配器 shim）的函数体被 fat LTO 内联进了 someboot 的**预 MMU** 启动函数；这些内联体里的 `ldxr/stxr` 计数器更新在“MMU 未开、内存按 Device-nGnRnE 对待”的状态下触发 **DFSC 0x35（implementation fault / unsupported exclusive）**。run879 是在 `switch_to_elx` 触发（此时还没安装 someboot 自己的向量，所以 U-Boot 打印了 abort）；run880 的首个同类访问落在 `el_entry → trap::setup()` **之后**的 `fdt::earlycon::setup_earlycon`，异常被 someboot 自己的 boot handler 接管，而此刻串口还是 `NoCon`（静默丢弃），于是只剩 300 s 静默。
+
+同一结论对四 crate 镜像给出反向对照：`resume876` 的 `export.elf` 里 someboot 函数内**计数器站点为 0**，`fdt_raw`/分配器 shim 记录也为 0，因此它能出串口。
+
+## 一、崩溃性质的证据（不是推断）
+
+ESR 原文（第 1 次 broad，`resume879`）：
+
+- `resume879-broad-pgo/run1/serial.log:166`：`"Synchronous Abort" handler, esr 0x96000035, far 0x40267f8`
+- EC=0x25（同 EL Data Abort），`esr & 0x3F = 0x35 = 53`。内核同源表把 53 命名为 **“implementation fault (unsupported exclusive)”**：[/home/zhourui/linux-src/arch/arm64/mm/fault.c:959](/home/zhourui/linux-src/arch/arm64/mm/fault.c:959)（表项 48=`TLB conflict abort`、49=`Unsupported atomic hardware update fault`、53=`unsupported exclusive`）。
+- 即：故障来自**独占访问本身不被该内存属性支持**，而不是缺页/权限/对齐。
+
+PC、计数器、FAR 三者可以完全对齐（只读反汇编核对）：
+
+- `preboot-abort.elf`（run1 实际引导的镜像，38375424 B）中 `someboot::arch::elx::switch_to_elx` 在 `0xffffffff80c30558`，故障 ELR `0x2c3059c` = `+0x44`，指令序列：
+  `0xffffffff80c30594 adrp x8,0xffffffff82026000` / `+0x98 add x8,x8,#0x7f8` / `+0x9c ldxr x9,[x8]` / `+0xa4 stxr w10,x9,[x8]` / `+0xa8 cbnz w10,→0x…59c`。
+- 该 counter VMA `0xffffffff820267f8`，镜像链接基址 `0xffffffff80000000`、板卡加载址 `0x2000000` ⇒ 物理 `0x40267f8`，**与 FAR 逐位相同**；`x8` 也等于 FAR。
+- 代码运行在物理地址侧（run1 原始 `lr = 0x2000008` 正好是 `.head.text` 里 `bl kernel_entry` 的返回地址，`_head` 落在 `0x2000000`）。所以 `adrp+add` 得到的是**物理 counter 地址**，counter 数据本身确实在已加载镜像内（镜像内偏移 0xf6af8，文件大小 0x2499000）。
+
+清零/映射顺序（决定了“谁先跑”）：[entry.rs](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/aarch64/entry.rs:47) 的 naked `enter_with_boot_state` 直接 `b switch_to_elx`；[el1/mod.rs](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/aarch64/el1/mod.rs:6) 的 `switch_to_elx` 在 `current_el >= 2` 分支进 `ax_cpu::boot::El1::enter`；`enable_mmu`/`setup_sctlr` 要等到 [paging/mod.rs](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/aarch64/paging/mod.rs:20) 与 `setup_page_table()` 之后才执行。**在这之前所有 counter 更新都在预 MMU 窗口**。
+
+## 二、run880 早路径上“仍被插桩”的精确位置（证据）
+
+`wrapper-retry.py` 只是按 `--crate-name` 摘掉 flags（[wrapper-retry.py:13](/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/wrapper-retry.py:13)、[:39](/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/wrapper-retry.py:39)），而训练 rustflags 保留了 `-Cllvm-args=-instrprof-atomic-counter-update-all`（[profgen-export.toml:19](/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml:19)）。`wrapper-retry.jsonl`：233 条目标编译，209 个 crate profiled / 16 个 unprofiled（含 someboot、somehal、some_serial、ax_cpu、ax_hal、ax_percpu、ax_plat、axplat_dyn、ax_ctor_bare、aarch64_cpu、aarch64_cpu_ext、ax_memory_addr）。
+
+对 `export.elf`（run880，34960 记录 / 1691840 B counters，counter 段 `0xffffffff81e889c0..0xffffffff82025a80`）做全 `.text` 独占指令扫描 + 计数器属主解析（按 `__llvm_prf_data` 反查记录名）得到：
+
+- **0 个** 站点：`switch_to_elx`、`el_entry`、`relocate::apply/reset`、`trap::setup`、`mmu_entry`、`cmdline::cmdline`（这解释了“为何不再像 run879 那样在 switch_to_elx 崩”）。
+- **someboot 启动路径函数内共 178 个** 计数器站点，全部来自别的 crate 的记录：`fdt_raw` 164、`___rust_alloc` 8、`log` 6。分布：
+  `primary_init_early` 66（首址 `0xffffffff80bbc3d8`）、`fdt::earlycon::setup_earlycon` 24（首址 `0xffffffff80bc06cc`）、`arch::paging::enable_mmu` 16（首址 `0xffffffff80bc20d8`）、`fdt::capacity::CpuCapacities::raw` 26、`fdt::fdt_base` 10、`fdt::cpu_id_list` 10、`smp::cpu_iter::cpu_id_list` 6、anyhow/allocator 路径若干。
+- **执行顺序上最早的一个**（也是决定“是否永远没输出”的那个）在 `setup_earlycon` 内，原始反汇编：
+
+```
+ffffffff80bc06c4: adrp x9, 0xffffffff81f2c000      ; 段内 = __llvm_prf_cnts
+ffffffff80bc06c8: add  x9, x9, #0xea0
+ffffffff80bc06cc: ldxr x10, [x9]
+ffffffff80bc06d4: stxr w11, x10, [x9]
+ffffffff80bc06d8: cbnz w11, 0xffffffff80bc06cc
+```
+
+  counter `0xffffffff81f2cea0`（物理 `0x3f2cea0`）属主记录 = `fdt_raw::header::Header::from_ptr`；下一个 `0xffffffff80bc0730 → 0xffffffff81f2ce90` 属主 = `fdt_raw::header::Header::from_aligned_ptr`；`primary_init_early` 里的 `log` 站点属主 = `log::__private_api::GlobalLogger::log`（`0xffffffff81f37968`）。
+
+为什么它必然早于第一条串口输出：`primary_init_early` 的顺序是 `mem::setup_entry` → `fdt::setup_earlycon()`（[entry/mod.rs:11](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/entry/mod.rs:11)），而 `setup_earlycon` 先走 FDT 解析（[fdt/earlycon.rs:10](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/fdt/earlycon.rs:10) → `fdt::fdt_base()` → [fdt/mod.rs:53](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/fdt/mod.rs:53) 的 `fdt_raw::Fdt::from_bytes`），console 是解析成功之后才装。且 console 默认是 `NoCon`（[console/mod.rs:187](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/console/mod.rs:187)、[:177](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/console/mod.rs:177)），此前所有 `println!/warn!` 都被静默丢弃。
+
+对照（同法扫描四 crate 镜像 `resume876-root-exporter/export.elf`，18131 记录 / 789952 B）：
+
+- someboot 函数内计数器站点 **0**；`fdt_raw` 记录 0；`___rust_alloc` 记录 0。
+- 说明差异不是“有没有插桩”，而是**插桩代码有没有落进预 MMU 路径**。四 crate 的 profgen 配置同样带 `-instrprof-atomic-counter-update-all`（[resume876 profgen-export.toml:19](/home/zhourui/.codex/artifacts/issue2308-perf/resume876-root-exporter/profgen-export.toml:19)），所以“原子计数 flag”本身不足以解释失败，**flag × 预 MMU 插桩代码**才致命。
+
+（补充实测：run880 排除 crate 定义的函数内全镜像共 7756 个计数器站点，最大属主是 `starry_kernel`、`ax_mm`、`ax_driver`、`cpu_local`、`ax_task::…context_exit` 等；这些多数在 MMU 打开之后，属于“能跑但不该跑”的泄漏，不是启动阻塞点。）
+
+## 三、推断部分（明确标注为推断）
+
+1. **推断**：run880 会在 `setup_earlycon` 的第一处 `ldxr`（`0xffffffff80bc06cc`）触发与 run879 同类的 `0x96000035`。依据：同一类指令、同一预 MMU 状态、四 crate 对照为空；但我没有 run880 的 ESR 证据（该镜像没有任何串口输出），所以这是推断不是结论。
+2. **推断**：run880 静默的原因链是 异常 → someboot 自己的向量（`el_entry` 里在 `primary_init_early` 之前调用 `trap::setup()`，[entry.rs:57](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/aarch64/entry.rs:57)）→ [trap.rs:9](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/aarch64/trap.rs:9) 的 `BootTraps::handle` 对未知同步异常 `panic!` → [lang_items.rs:16](/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axruntime/src/lang_items.rs:16) → `panic_output::panic_now` 走 `emergency_console`（此刻仍 `NoCon`，静默）→ `panic_shutdown()` → `hal::power::system_off()`（[panic_output.rs:15](/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axruntime/src/panic_output.rs:15)/[:41](/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axruntime/src/panic_output.rs:41)）。另外 some_serial 的 `Ns16550EmergencyTx` 单态化副本（在 `rdif_serial`/`ax_driver` 里被实例化）本身也带计数器站点，所以“打印 panic”这条路在预 MMU 窗口同样不是无插桩的。
+3. **推断（机制层）**：`-instrprof-atomic-counter-update-all` 让 LLVM 对所有计数器用 `ldxr/stxr` 原子更新；在 U-Boot 交接、stage-1 关闭的状态下访问被当作 Device-nGnRnE，独占访问不受支持 ⇒ `0x35`。这是对 ESR 与指令形态的自洽解释，但我没有独立实验证明“非独占更新就不报错”。
+
+## 四、per-function 排除机制（rustc 1.100 nightly / 本仓库）
+
+- 仓库里确实在用的源码级机制只有一个：`#[cfg_attr(axtest_coverage, coverage(off))]`，共 3 处，全部在 loongarch64 且只服务 `-Cinstrument-coverage`：[paging.rs:37](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/loongarch64/paging.rs:37)、[paging.rs:155](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/loongarch64/paging.rs:155)、[trap.rs:83](/tmp/tgoskits-issue2308-resume876-root/platforms/someboot/src/arch/loongarch64/trap.rs:83)；axtest 侧也是按 `-Cinstrument-coverage` 注入（[axtest_coverage.rs:17](/tmp/tgoskits-issue2308-resume876-root/scripts/axbuild/src/support/axtest_coverage.rs:17)）。
+- 该机制**不覆盖 PGO**：`resume774` 对 Starry C-ABI `memset` 加 `coverage(off)` 后，four-crate profgen ELF 里该函数仍以 `__llvm_prf_cnts` 的 `ldxr/stxr` 开头（`0xffffffff816deba8`），随后才改走 naked asm（`resume779`）；HEAD 的 `memset` 现在就是 naked（当前 commit `b292a098`，"keep early memset usable during PGO training"，[kprint.rs:46](/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/kernel/src/kmod/kprint.rs:46)）。
+- 该工具链自带文档与我读到的一致：`#[coverage(off)]` 只描述“selectively disable **coverage** instrumentation”（nightly-2026-09-04 `unstable-book/language-features/coverage-attribute.html`），而 `rustc/profile-guided-optimization.html` 全文没有出现 `exclude`/`per-function`/`attribute`/`no_profile` 之类字眼。
+- **是否会改变被 profile crate 的身份**：会（推断，但有同源旁证）——在 profiled crate 内加源码属性会改变 item 集/CFG hash；`resume874`（Cargo feature 门）与 `resume875`（rustc `--cfg` 门）都因此让 `starry_kernel::syscall::sync::futex::sys_futex` 的 CFG hash 变化，分别丢弃最多 7738999 / 3132306 次训练计数。所以“在 profiled crate 内做 per-function 排除”大概率等于放弃该 crate 的热点计数，需要重训。
+- **不知道**：rustc 1.100.0-nightly 是否存在别的源码级 per-function PGO 排除手段（例如是否暴露 LLVM `no_profile_instrument_function`）。仓库、文档、历史记录里都没有依据，我不做断言。工具链身份：`rust-toolchain.toml` 固定 `nightly-2026-09-04`（rustc 1.100.0-nightly，LLVM 23.1.1，来自 `export-profile-layout.json` 的 `format_source`）。
+
+## 五、与 resume764 / 766 / 769 / 879 / 880 的结论对照
+
+| 实验 | 改变量 | 现象 | 与本报告的机制一致性 |
+| --- | --- | --- | --- |
+| resume764 run1 / run2 | 全 crate / 仅排除 someboot | `0x96000035`，PC 分别落在 `switch_to_elx`、`ax_cpu…El1::enter` | 二者都在 `trap::setup()` **之前**，故 U-Boot 打印 abort |
+| resume764 run3 | 排除 someboot+ax_cpu | 无 abort、300 s 无输出 | 与 run880 同型：泄漏的 `fdt_raw` 等把故障推到向量安装之后 |
+| resume766 | 四 crate（含 starry_kernel） | 有输出，卡在 "Flushed RAM used range" 之后 | 预 MMU 只有 starry_kernel 的 C-ABI `memset` 触雷 |
+| resume769 | 三 crate | 定位到 `memset` 的 `ldxr/stxr`（`0xffffffff816f4a88`） | 同一机制，被 779 的 naked memset 修掉 |
+| resume879 | 全 crate | `switch_to_elx` abort | 本节已给出 PC/counter/FAR 三方吻合 |
+| resume880 | 排除 12 个“启动 crate” | 无 abort、300 s 无输出 | 排除集合按“启动代码所在 crate”选，漏掉**被内联进启动路径的依赖 crate** |
+
+## 六、至多两个下一步最小诊断（与旧尝试的实质差异）
+
+**D1（首选，一次构建 + 一次上板）：同 scope、同 wrapper，仅去掉 `-Cllvm-args=-instrprof-atomic-counter-update-all`**（保留 `-Zno-profiler-runtime`、保留 exporter、保留 209-crate 范围）。
+
+- 差异：764/766/769/879/880 动的是**crate 范围**或 `memset` 函数体，这一个动的是**计数更新的 lowering**；它在所有旧尝试里都没被变过（该 flag 自 resume294 引入后一直存在）。
+- 判据（可证伪）：构建后先静态核对 `setup_earlycon` 里 `0xffffffff80bc06cc` 那组 `ldxr/stxr` 变成非独占（`ldr/add/str` 或等价）；上板应能出串口。若仍静默无输出，则“独占计数是预 MMU 阻塞点”被证伪，应转向 D2 假设之外的方向（例如 BSS/栈布局或更早的 `ax_cpu` 交接）。
+- 边界：非原子更新在 8 核并发下会丢/撕裂计数，这是**诊断**，不能当最终训练配置。
+
+**D2（若要保留原子计数）：把排除集合从“启动代码所在 crate”改为“实测泄漏记录属主”**，即按本次 ELF 扫描结果排除 `fdt_raw`（164 站点）、`log`（6）、以及生成 `___rust_alloc/_dealloc/_realloc` 的分配器 shim（8）——必要时再迭代一次扫描。
+
+- 差异：旧排除集合（someboot/somehal/ax_cpu/…）是**按归属猜**；D2 的集合是**从 exact ELF 反查出来的实际属主**，并要求“新 ELF 中 someboot 预 MMU 函数计数器站点 = 0”作为上板前置门禁。
+- 判据（可证伪）：静态门禁不通过就不上板；通过后若仍静默，说明还有非 fdt_raw/log/alloc 的预 MMU 插桩路径（需要重扫并把 BSS/栈/`mmio` 访问类路径单独列出）。
+
+## 七、不确定项与未覆盖范围
+
+- run880 **没有** ESR/FAR 记录，“首站点即故障点”是推断；本次未能运行镜像（按要求只读），因此无法直接证明 run880 确实在 `0xffffffff80bc06cc` 停止，也无法区分“异常后静默”与“异常前更早的挂起”。
+- 我没有验证 U-Boot 在该板卡上是否关闭 stage-1（这是 `0x35` 机制解释的关键前提之一），只验证了“该地址不受支持”这一 ESR 语义与指令形态。
+- 泄漏归属解析依赖 v0 mangling 的最后一段 crate 名，对“泛型在其他 crate 中单态化”的函数名，我给出的 crate 分组是近似的；精确的 178 个站点属主（fdt_raw / log / `___rust_alloc`）已逐个反查记录名，属高置信。
+- 未评估任何性能收益；全程未改文件、未构建、未上板、未做任何验证性运行（仅只读读源、读产物、反汇编与 ELF 段解析）。
+

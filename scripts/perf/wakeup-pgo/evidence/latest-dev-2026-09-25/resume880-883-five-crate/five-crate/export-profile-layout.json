@@ -1,0 +1,30 @@
+{
+  "tag": "export",
+  "records": 18170,
+  "names": 18170,
+  "counter_bytes": 790272,
+  "counter_address": "0xffffffff81715100",
+  "counter_end": "0xffffffff817d6000",
+  "data_bytes": 1308240,
+  "data_address": "0xffffffff817d6000",
+  "record_layout_bytes": 72,
+  "elf_sha256": "98b6bbe38f07db02cd014376f880c311f87e36a5129636acb51039a4c00ccae9",
+  "sections": {
+    "__llvm_prf_cnts": {
+      "address": "0xffffffff81715100",
+      "size": 790272
+    },
+    "__llvm_prf_data": {
+      "address": "0xffffffff817d6000",
+      "size": 1308240
+    },
+    "__llvm_prf_names": {
+      "address": "0xffffffff816c6130",
+      "size": 278599
+    }
+  },
+  "format_source": "LLVM 23.1.1 (rustc 1.100.0-nightly a69a63265) InstrProfData.inc / InstrProf.cpp / InstrProfReader.cpp; layout re-derived from the ELF sections on every run",
+  "entry_first": false,
+  "nonzero_records": 4560,
+  "dump_sha256": "744124bed5323faf56ef1fed9746d482110b4e47e4ea456867b2df484b09572c"
+}
