@@ -1,0 +1,54 @@
+{
+  "experiment": "resume847",
+  "source_head": "69a33650763538692fafea27c869870ed0313642",
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "901a0255-cf62-4b79-9c99-3988387b955a",
+  "image_sha256": "9e9847a433cd99808d7f511372d454eb2cf5412a94e42187bcab64780ebfb8a3",
+  "benchmark_sha256": "a0c02891e5ea9edd8bf132d66edb3923fed6bb1108118f41ddb016adb3e4d21f",
+  "board_released": true,
+  "pll_verified": true,
+  "state": "collected",
+  "rounds": [
+    {
+      "round": 1,
+      "rows": [
+        {
+          "case": "empty",
+          "samples": 20000,
+          "p50_ns": 1750,
+          "p99_ns": 2042,
+          "p999_ns": 2042
+        },
+        {
+          "case": "parked_lower_priority",
+          "samples": 20000,
+          "p50_ns": 7000,
+          "p99_ns": 7583,
+          "p999_ns": 8750
+        }
+      ],
+      "log_sha256": "c68a3b2872dde752c6be36b6cb3bc70fe87fe759977cd8a9f903745d447146f4"
+    },
+    {
+      "round": 2,
+      "rows": [
+        {
+          "case": "empty",
+          "samples": 20000,
+          "p50_ns": 1750,
+          "p99_ns": 2042,
+          "p999_ns": 2042
+        },
+        {
+          "case": "parked_lower_priority",
+          "samples": 20000,
+          "p50_ns": 7000,
+          "p99_ns": 7292,
+          "p999_ns": 8459
+        }
+      ],
+      "log_sha256": "a902a5417c92072afc0b11f982f5f87092fb95830874b911e8c25dfc130516e9"
+    }
+  ],
+  "serial_sha256": "daebdcb09e9f67273d3dbde5c0766f331522d8f2b34a00a2ebbacb4fb2dbd491"
+}

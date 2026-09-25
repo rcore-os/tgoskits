@@ -1,0 +1,73 @@
+Read-only exploration is complete. Writing up findings.
+
+## 结论：NO-GO — 该裸 `memset` 不是可解释 ≥5us p50 缺口的 90% 候选
+
+### 0. 核对基线（只读，未改动、未构建、未运行任何程序）
+
+- `git rev-parse HEAD` = `69a33650763538692fafea27c869870ed0313642`（工作树干净）；提交标题 `fix(starry-kernel): keep early memset usable during PGO training`，只改了 `os/StarryOS/kernel/src/kmod/kprint.rs`（+34/-1）。
+- ELF/.bin SHA256 与任务给定完全一致：`31313ba5…e1599bac` / `9e9847a4…ebfb8a3`。
+
+### 1. 裸 memset 本体、C ABI 与 PGO 启动约束
+
+符号与机器码（`aarch64-linux-gnu-nm/objdump`，`resume817.elf`）：
+
+```
+ffffffff8007e2f8 0000000000000018 t memset
+ffffffff8007e2f8: cbz  x2, +0x14        ; n==0 → ret
+ffffffff8007e2fc: mov  x3, x0
+ffffffff8007e300: strb w1, [x3], #1     ; 逐字节
+ffffffff8007e304: subs x2, x2, #1
+ffffffff8007e308: b.ne -8
+ffffffff8007e30c: ret                   ; 返回 x0 (=s)
+```
+
+- 定义在 [kprint.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/kmod/kprint.rs:51)（`#[cfg(all(not(target_env="musl"), target_arch="aarch64"))]` + `#[capi_fn]` + `#[unsafe(naked)]`），naked 体在 [kprint.rs:61](kprint.rs)（`cbz/mov/strb/subs/b.ne/ret`）。要求 C ABI：`x0 = s`（同时是返回值）、`w1 = c`、`x2 = n`，即 `void *memset(void *, int, size_t)`；`#[capi_fn]` 让它被全局引用，供 kmod `resolve_symbol`/kallsyms 解析。
+- PGO 启动约束（resume769/774/779/783）：被 LLVM 插桩的 memset 会在 MMU 高端映射建立前访问高地址 `__llvm_prf_cnts`（resume769: `ffffffff816f4a88`，resume774: `ffffffff816deba8`），使四 crate 原生 profgen 在 before-zero marker 前挂死；naked `coverage(off)` 无关的纯汇编体抑制入口插桩，才让 profgen 镜像能启动导出计数。它是**训练可行性前提**，不是已测收益（resume779/783）。本 G 镜像（profile-use，无非空计数段）仍把全部 `memset` 引用解析到这个逐字节实现。
+
+### 2. 测量窗口的精确定义（关键是排除 sender 的窗口外 `sched_yield`）
+
+- 同核/跨核 futex（[handoff.c](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/handoff.c:311)）：窗口 = sender 写 `wake_timestamp_ns` → 发布 `gate` → `FUTEX_WAKE_PRIVATE` → 调度唤醒/切换 → receiver 从 `FUTEX_WAIT` 返回后读 `resumed_ns`（[handoff.c:220](handoff.c)）。让 receiver park 的 `sched_yield()`/`nanosleep()` 在 [handoff.c:308](handoff.c)（时间戳之前），**在窗口外**。
+- `bench_monotonic_ns()` 是 raw syscall `clock_gettime`（[stats.c:22-30](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/stats.c:25)），所以窗口内还包含 receiver 侧一次 `clock_gettime` syscall。
+- yield 场景（[yield.c:160-166](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/yield.c:160)）：窗口 = sender `sched_yield` → receiver 自旋观察到 `turn` → receiver `clock_gettime`。
+- timer 场景（[timer.c:26-52](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/timer.c:26)）：窗口 = 定时器到期/ktimer 处理 → 唤醒 → 切回 sleeper → `clock_nanosleep` 返回 → `clock_gettime`。
+
+### 3. 调用面普查
+
+镜像内共 **672 条 `bl ffffffff8007e2f8 <memset>`**（全为直接分支，符号是 local `t`，无 GOT/PLT 间接引用）。按符号区间精确归属后（零 UNMATCHED），热点相关如下。
+
+窗口内存在的 memset（全部定位到源码）：
+
+| 调用点 | 长度 | 函数 / 源码 | 说明 |
+|---|---|---|---|
+| `ffffffff800c6080` | **8B** | `finish_owner_selection`+0x19c；[publication.rs:48-54](components/ax-task/src/sched/system/task_system/switch/publication.rs:52) | 由 `0x800c5f58 tbnz` 进入，`next_is_idle && !previous_was_idle` → `arm_idle_pull()` |
+| `ffffffff800d3f0c` | **8B** | `schedule_if_requested_in_scheduler_frame`+0x3060 | 同上（内联 `arm_idle_pull`） |
+| `ffffffff80189390` | **8B** | `commit_park_owner`+0x4ac0；[park_commit.rs:35](components/ax-task/src/sched/system/task_system/park_exit/park_commit.rs:35) | park 侧 idle 转换 |
+| `ffffffff80430140` | **8B** | `finish_requested_preemption`+0x214；[preemption.rs:58](components/ax-task/src/sched/system/task_system/scheduling/preemption.rs:58) | 同上 |
+| `ffffffff8001911c / 80032224 / 80033d08` | **8B** | `ax_task::runtime::service::ktimer::ktimer_service_entry` | 同上（ktimer worker 内联） |
+| `ffffffff80223d04 / 802244dc / 80224a48` | **8B** | `service_owner_balance`；[balance.rs:17-42](components/ax-task/src/sched/system/task_system/scheduling/balance.rs:18) | `reset_idle_pull_scan()` |
+| `ffffffff800addf8 / 800adf10` | 128B | `check_signals_with_outcome`；[signal.rs:349](os/StarryOS/kernel/src/task/signal.rs:349) | 仅在实际取到信号（`take_*` 原子标志为真）后执行 |
+| `ffffffff800ad5a4/5d0/5f8` | 120B / **4096B** / 15B | `check_signals_slow_with`；[api/thread.rs:439](os/StarryOS/signal/src/api/thread.rs:439) | 只有 `check_signals_with` 慢路径才进入；快路径 [api/thread.rs:497-509](os/StarryOS/signal/src/api/thread.rs:497) 在 `possibly_has_signal==false` 时直接 `return None`（benchmark 无信号） |
+
+四个 8B 调用的统一形状是 `ldp x0,x8,[x,#120]; strb 1,[x,#160]; lsl x2,x8,#3; bl memset`，即 `OwnerDispatchState::arm_idle_pull()`（[dispatch_state.rs:55-58](components/ax-task/src/sched/system/cpu/local/dispatch_state.rs:55)）里 `CpuSet::clear()`（[spec.rs:218-221](components/ax-task/src/thread/spec.rs:218)）对 `Vec<usize>` 做 `fill(0)`。`CpuSet::empty(cpu_count)` 只有 `cpu_count.div_ceil(64)` 个字（[spec.rs:178-184](components/ax-task/src/thread/spec.rs:178)），本镜像 `max_cpu_num=8`、板卡 8 核 ⇒ **1 个字 = 8 字节**。而且该分支只在“切到 idle 线程”时执行；同核 futex/yield 交接中 next 始终是非 idle 线程，根本不进入；timer 场景进 idle 也只付 8B。
+
+窗口内**没有** memset 的关键符号（区间内 memset 调用点数 = 0）：
+
+- futex 实现区（`handle_syscall` 内联体，`validate_futex_word` @0x8006bedc/0x8006cbc8/0x8006cbf0、`apply_wake_op_without_waiters` @0x8006fa74 所在区间）`[0x8006a000, 0x80070000]`：**0**。
+- `ResolvedFutex::wake` `[0x8012240c, 0x801232f0]`：**0**；`activate_waking_thread_locked` `[0x80434b8c, 0x80436088]`：**0**；`ThreadWakeBatch::wake_all` `[0x8043dfa8, 0x8043e188]`：**0**。
+- 全镜像 672 个调用点中，**没有任何一个**落在名字含 `futex` 的函数里；`sys_futex` 源码 WAIT/WAKE 路径（[futex.rs:269-360](os/StarryOS/kernel/src/syscall/sync/futex.rs:269)）无缓冲区清零/无大局部量，`ThreadWakeBatch::new` 明确无分配（[wake_batch.rs:22-41](components/ax-task/src/thread/handle/wake_batch.rs:22)）。
+- `clock_gettime` 臂（nr=113 → `0x80056bdc`）与 `sched_yield` 臂（nr=124 → `0x80056ff4`，经二级跳表解出，见下）附近无 memset。
+
+镜像内所有 ≥4KB 的 memset 分布：`handle_syscall` 内 6 处 64KB/256KB（`0x8006243c/800624ac/8006292c/80062964`，均紧跟 `bl GlobalAllocator::alloc` 后整块清零）、37 处 4KB（页表/MM：`map_range_recursive`、`prepare*`、`CachedFile`、`CowBackend`、`ElfLoader` 等）、网络（`init_network`、`RawSocket`、`router`）、perf（`device_mmap`、`alloc_sampling_ring`）、`io_uring::RingMemory::new`、usbfs/card0 ioctl、someboot `enable_mmu`、kallsyms dump。**没有一处落在 futex/clock/yield 路径**。`handle_syscall` 内在“分配簇”之外最大的常量长度只有 **256B**（`0x8005f150`）。
+
+### 4. 量级判定
+
+该实现是逐字节循环（约 3 条指令/字节，RK3588 上大致 1–2 cycle/byte）。同核 OTHER futex 的 90% 缺口约 5186ns、跨核/timer 更大；按 ~2.4GHz 折算 5us ≈ 1.2×10⁴ cycle，需要窗口内出现大约 **≥6–12KB** 的逐字节 memset 才可能解释。测量窗口内实际 memset 量：futex/yield 同核交接 **0 字节**；timer 场景最多 **8 字节**。差距 3 个数量级。
+
+### 5. 精确不确定项与最小证伪诊断
+
+- 不确定项：`handle_syscall` 是一个把数百个 syscall 臂内联进同一函数的巨型函数（`0x80055e2c`–`0x8007d834`），地址相邻不等于可达。我已用两级跳表消解主要歧义——第一级 `0xffffffff80799760`（置 `w27=nr` 后跳 `0x80056a38`）、第二级 `0xffffffff80799eb8`，目标 = `0x80056a64 + int32(entry)`，解出 futex(nr=98)→`0x80056a84`、clock_gettime(nr=113)→`0x80056bdc`、sched_yield(nr=124)→`0x80056ff4`、clock_nanosleep(nr=115)→`0x80059b90`。唯一残留歧义是 `0x8006243c/800624ac`(64KB) 与 `0x8006292c/80062964`(256KB) 这 4 处 `alloc`+整块清零属于哪个臂——但它们都跟在堆分配之后，而 futex WAKE/WAIT 源码无分配、无清零，且 64KB 逐字节清零在窗口内会直接给出 ~25us 级差异（与实测 5–7us 缺口形状不符）。除此之外，窗口相关调用点长度都是常量且 ≤256B。
+- 最小证伪诊断（不改变热函数代码生成）：在 `memset`（`0xffffffff8007e2f8`）挂 kprobe（内核已有 kprobe 设施）或在临时诊断镜像里让该符号自增一个 per-CPU 计数并记录最大 `x2`，跑一次冻结 full20，检查是否存在窗口内 `x2 ≥ 4096` 的调用。只要窗口内出现一次 ≥4KB 的 memset，即证伪本文结论；若最大 `x2` 始终 ≤8，则确认 memset 与 90% 缺口无关。
+
+### 6. 决定
+
+**NO-GO。** 该全局逐字节 `memset` 在测得的同核/跨核 futex、yield 窗口内不被调用（0 字节）；timer 场景最多 8 字节（idle 转换的 `CpuSet::clear`）；futex 实现区、`ResolvedFutex::wake`、`activate_waking_thread_locked`、`ThreadWakeBatch::wake_all` 内 memset 调用点数为 0。它作为 PGO 训练启动前提必须保留，但**不能作为 90% 性能候选**，也不应据符号存在或代码体积推断其热度。未做任何改动、构建、板测或运行验证。

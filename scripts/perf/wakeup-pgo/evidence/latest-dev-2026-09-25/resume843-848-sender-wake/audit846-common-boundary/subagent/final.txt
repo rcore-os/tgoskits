@@ -1,0 +1,96 @@
+I have enough evidence. Here is the read-only audit result.
+
+---
+
+# resume846 只读审计：九个未达项的前向窗口公共边界
+
+**范围与限制**：只读探索。未编辑文件、未构建、未跑测试/板卡、未派子代理。HEAD `69a3365076`（`dev 05175ca388`）。所有数值均取自既有验收产物，本报告不含我新产生的测量。
+
+## 1. 结论先行
+
+- **没有找到可立项的单一源码候选**（无 ≤1 个函数级的“重复多微秒事务”）。理由不是“旧审计说没有”，而是本轮用**验收矩阵本身**做了一个形状匹配的分层，能把缺口定位到“从阻塞唤醒”这一步，而这一步内部没有再找到可证明等价删除的一环。
+- 关键新观察（来自既有 G1/G2，而不是新测量）：**不需要唤醒阻塞任务的行全部通过，需要唤醒阻塞任务的行全部失败**；其中 `fifo sched_yield_handoff` 含一次**真实上下文切换**却仍以 +292 ns（92.85%）通过。由此可把同核 futex 的缺口减去同核 yield 交接，得到**策略无关的 +3208 ns（FIFO）/ +3209 ns（OTHER）**，即“唤醒一个阻塞对端并解挂”这一步的额外成本。
+- 唯一在源码里找到的“重复工作”是一个每调度趟多一次的 rq 锁获取（`scheduler_current_cpu_with_entry` 里的生命周期态读），但它的量级是几十 ns，且同样出现在所有通过行中，无法解释 3.2 µs。已按候选格式给出并给反例。
+- 排序第一的新测量见 §4：**“不抢占的阻塞唤醒”差分行**（不改内核、无探针、无额外时间戳、形状与既有行匹配），用来把 3.2 µs 在“发送侧唤醒激活”与“接收侧解挂+切换尾”之间切开。
+
+## 2. 决定性证据：验收矩阵的形状分层（既有数据，非新测量）
+
+来源：`resume818-weighted-profile-full20/analysis.json`、`resume819-weighted-profile-repeat/analysis.json`（G1 与 G2 两趟 full20，两趟中位数在这些行上完全一致）。测量形状见 `apps/starry/wakeup-latency-bench/handoff.c:311-315`（`wake_timestamp_ns` → `gate` → `futex_wake`）与 `handoff.c:220`（接收者 `resumed_ns`）。
+
+| policy | case | linux p50 | G p50 | Δ 绝对值 | ratio | 判定 |
+|---|---|---:|---:|---:|---:|---|
+| fifo | sched_yield_handoff | 3791 | 4083 | **+292** | 92.85% | **通过（含真实切换）** |
+| fifo | thread_futex_same_cpu | 8458 | 11958 | +3500 | 70.73% | 失败 |
+| fifo | absolute_timer_same_cpu | 13211 | 19792 | +6581 | 66.75% | 失败 |
+| fifo | thread_futex_cross_cpu | 13708 | 22459 | +8751 | 61.04% | 失败 |
+| fifo | process_futex_cross_cpu | 15167 | 24209 | +9042 | 62.65% | 失败 |
+| fifo | futex_wake_empty | 1750 | 1458 | −292 | 120.03% | 通过 |
+| fifo | futex_wait_mismatch | 2333 | 1459 | −874 | 159.90% | 通过 |
+| fifo | sched_yield_no_peer | 2333 | 2041 | −292 | 114.31% | 通过 |
+| fifo | getpid / clock_pair | 1458 / 875 | 1458 / 875 | 0 | 100% | 通过 |
+| other | sched_yield_handoff | 4667 | 7583 | +2916 | 61.55% | 失败 |
+| other | thread_futex_same_cpu | 8458 | 14583 | +6125 | 58.00% | 失败 |
+| other | absolute_timer_same_cpu | 23920 | 40584 | +16664 | 58.88% | 失败 |
+| other | thread_futex_cross_cpu | 16041 | 23916 | +7875 | 67.48% | 失败 |
+| other | process_futex_cross_cpu | 17792 | 26250 | +8458 | 68.16% | 失败 |
+| other | futex_wake_empty / futex_wait_mismatch / sched_yield_no_peer | — | — | −292 / −874 / −583 | 120–159% | 通过 |
+
+由 20 行构成（`main.c:25-40`、`main.c:368-381` 与 `baseline.c:13-46`）可得四条互相独立的判定：
+
+1. **syscall 取景不是缺口。** `clock_pair`（两次原始 `clock_gettime`）两边都是 875 ns，即一次原始 syscall 往返 ≈ 437 ns；`futex_wake_empty`（含完整 futex_wake 取景、无 waiter）Starry 1458 对 Linux 1750，`futex_wait_mismatch`（完整 futex_wait 取景、EAGAIN 不 park）Starry 1459 对 Linux 2333。Starry 的 futex 取景/键解析/桶锁/空队返回**比 Linux 更快**（`task/futex.rs:574-581`、`syscall/sync/futex.rs:70-80`）。
+2. **调度趟机械不是缺口。** `sched_yield_no_peer` 通过，但它走的是“唯一任务保留下发”的早退（`scheduling.rs:43-63`，`yield_entry.rs:88-125`），并不是一次真切换，所以它只能证明 guard/rq 事务/`settle_current` 这一段与 Linux 同水位，不能证明切换。
+3. **切换事务本身不是缺口（对 RT 成立）。** `fifo sched_yield_handoff` 含真实 put_prev/pick_next/arch switch/switch-in 回调，仅 +292 ns。
+4. **缺口在“唤醒一个阻塞任务 + 把它解挂”。** 用形状相同的 `sched_yield_handoff` 作参照：
+   - FIFO：Starry 11958−4083 = 7875，Linux 8458−3791 = 4667 → **+3208**
+   - OTHER：Starry 14583−7583 = 7000，Linux 8458−4667 = 3791 → **+3209**
+
+两个策略差 1 ns。Linux 侧同核 futex 的 p50 本身与策略无关（都是 8458），说明“唤醒阻塞任务”这一增量与调度类无关；Starry 的增量同样与策略无关，指向的是**判定类之前**的公共机械，而不是 Fair/RT 类内逻辑。按 §2.1 的 syscall 标定，3.2 µs ≈ 7.3 次原始 syscall 往返的“看不见的工作”。
+
+## 3. 候选（按“是否有可证明的重复工作”列出，含反例）
+
+### C1（唯一真正的重复工作，量级不足）
+- **重复工作**：每次 `schedule_current_cpu_with_entry` 循环都先取一次 rq 锁只为读当前线程生命周期态，随后同一趟里 `schedule_if_requested_in_scheduler_frame` 立刻再取一次同一把 rq 锁。
+  - `components/ax-task/src/runtime/switch/dispatch.rs:77` `let current_state = unsafe { cpu.scheduler_current_lifecycle_state() };`
+  - `components/ax-task/src/sched/system/cpu/local/owner_dispatch.rs:100-105`：`lock_run_queue_irq_disabled().current_core_ref().map(ThreadCore::state)`
+  - `components/ax-task/src/runtime/switch/dispatch.rs:91` → `scheduling/preemption.rs:194` `rq_entry.begin(self, remote)`（第二次取锁）
+- **所有权不变量**：该读只需“本 CPU 帧内 `rq->curr` 稳定”；同一帧已持有 `CurrentThreadPublication`（`runtime/context.rs:321-324`、`borrow_current` 于 `:331`），`ThreadState` 由该 publication 的 core 直接可读，不需要 rq 互斥。删除它的正确性风险在于 `ParkingDeferred` 必须在进入事务之前判定（`preemption.rs:211-220` 也有一处同样的判定）。
+- **频次（冻结窗口）**：每个调度趟 1 次，即每个同核失败行窗口内 1 次（`resume801`/`resume805` 已证窗口内恰好一次切换）。
+- **Linux 对照**：Linux `need_resched()`/`__schedule()` 判定前不取 `rq->lock`；本项目里等价的无锁读已经存在（`runtime/context.rs:340-344` 的 `scheduler_request_pending`、`has_remote_work`）。所以这一次取锁确实是 Linux 没有的。
+- **决定性反例**：它出现在**每一个**通过行里（`clock_pair`/`getpid`/`futex_wake_empty`/`sched_yield_no_peer` 都经过 `schedule_current_cpu…` 的同一循环），量级又是单次无竞争 ticket 锁 ≈ 数十 ns；而缺口 3208/3209 是**策略无关的 3.2 µs**。因此它不是答案，只能作为“顺手可清”的边角，并且需要与 ParkingDeferred 顺序一起重排。
+
+### C2（已关闭，本轮给出相关性反例）
+- 怀疑点：`schedule_if_requested_owner` 在真抢占切换时可能走“提交事务 → 取线程锁 → 第二次 rq 事务并重采时钟、再 `settle_current(0)`”（`scheduling/preemption.rs:194`、`:276`、`:282`、`:284`），而 yield 路径只用一个事务（`yield_entry.rs:61`、`:130` 起）。
+- **反例（源码级）**：该双事务分支的入口是 `prepare_owner_rq_schedule_out` 只在迁移/Deadline 时返回 `None`（`switch/schedule_out.rs:25-30`）；被测的普通 Fair/FIFO 任务 `requested_migration().is_none()` 且非 Deadline，走**单事务**分支。因此“双 rq 融合”与本次九行的通过/失败**不相关**，与 BY-DIRECTION §1.1 的封禁一致，不重开。
+
+### C3（Fair 专属切换增量 ~2.6 µs，已被旧证据关闭）
+- `other sched_yield_handoff` +2916 对 `fifo sched_yield_handoff` +292，差值即一个真切换中两个 Fair 竞争者相对 RT 的额外成本。
+- 但 `resume810` 已在同核 futex 窗口量到 Fair 专属 +2158 指令再减去；`resume806`/`812`/`814`/`816` 逐条否定了跨事务复用、wake/选择融合、候选缓存、跳过 put_prev/pick；`resume599` 证明 Fair 每次插入平均比较 0.51 次、旋转 0.018%（树几乎为空）；`exp120` 的 Fair V 刷新被否。没有新机制可立。
+
+### C4（entity 快照 80 字节 memcpy 簇，禁止重提）
+- 归档诊断（Sep-9）显示 `memcpy` 占 EL1 inclusive 20.1%，最大调用者是 `CpuRunQueueState::install_current ← RunQueue::install_current ← Option<CurrentDispatch>::replace`（76/1816），另有 `activate_waking_thread_locked ← OwnerRqTxn::enqueue_task`（31）、`finish_switch_tail`（49）、`prepare_runtime_address_space_switch`（40）；反汇编显示 `try_commit_park_in_rq` 内 7 处 `mov w2,#0x50; bl memcpy`（80 B），`FairRunQueue::finish_removed` 一处 81 B。
+- **反例**：这些数字来自 `aarch64-hotspots.json` / `aarch64-memcpy-call-sites.json`，ELF sha `18d92bb…` 是 9 月 9 日的旧基线，不是当前 G 镜像；`exp57`/`250`/`390`/`409`/`509` 已经打过这个方向（390 原生退化、409 代码生成变差、509 多项退化 9–11%），BY-DIRECTION §1.1 与 §4.2 明确禁止“凭符号大小/冷路径调用/旧基线 PMU 数值立项”。另外单次 80 B L1 常驻结构搬运约 20–30 cycle，即使一趟十处也仅 ~0.3 µs。**不立项。**
+
+### C5（timer 软路径，已被关闭）
+- `other absolute_timer_same_cpu` 的 +16664 ns 是最大单项，与 Linux 自身 OTHER/FIFO 差（23920 vs 13211）同向，指向 PREEMPT_RT 软定时器必须经 ktimer worker（`resume839`：Fair ParkSoft 必须过 worker、FIFO ParkHard 可在硬中断唤醒）。`resume831` 已给出严格同代配对的分段（notify→entry 4–6 µs、entry→decision 6–8 µs、decision→claim 4–6 µs），`resume845` 逐条否定了 idle→ktimer 的重复 tick/二次 clockevent 提交。把 ParkSoft 改 ParkHard 是契约变更（`resume839` 明确拒绝）。
+
+## 4. 排序第一的新测量（诊断，不是验收）
+
+**“不抢占的阻塞唤醒”差分行**：在**同一 G 镜像**上加一个用户态诊断用例，形状与 `baseline.c:35-46` 的 `bench_syscall_baseline` 完全一致（`started=clock; op; elapsed=clock`），op 为“对同核已 park 的对端做一次 private futex_wake，但对端优先级低于唤醒者，因此本趟不产生抢占、不切换”（FIFO 唤醒者 prio 80 + FIFO 被唤醒者 prio 1，或 FIFO 唤醒者 + OTHER 被唤醒者）。
+
+- **它测什么**：`该行 − futex_wake_empty(1458)` = 发送侧“阻塞→可运行”激活事务（`activation.rs:69-160` 的 `wait_until_not_on_cpu`/`prepare_wake_activation`/`enqueue_task`/抢占发布/`commit`）的净成本，且**不含**切换、不含接收侧解挂。
+- **它判什么**：若该差值接近 §2 推出的 3.2 µs，则接收侧解挂与切换尾被排除，下一步只在发送侧激活事务内部；若该差值只有几百 ns，则 3.2 µs 在接收侧（park 退出/`SwitchInCompletion::finish`/`park_commit` 返回/bump 到 `sys_futex` 返回），`resume629`/`630` 的接收侧叶（`handoff_consumed_to_task_tail_finished` 1287 ns 等）才成为目标。
+- **必须配套**：同一二进制在**同板同频的 source-matched Linux RT** 上跑同一诊断（`resume841` 的先例）；该成本在 Linux 也存在，只能用比值/增量比较，不得当绝对值。
+- **为什么不是旧测量重做**：`resume810` 是改过 benchmark 的 CPU0 PMU 指令/事件窗；`resume831` 是 ktimer 路径的时间戳分桶；`resume833/836` 是 IPI 投递/传输计时；`resume843` 是静态 memset 调用点；`resume844` 是整例 PMU 采样 IP 直方图。本方案不改内核、无探针、无额外时间戳、只在用户态加一个用例，且是 `resume840`（强制**抢占**变体）的补集。
+- **它不构成验收**：不计入 20 行门槛；验收仍须在 G1/G2 同源 full20 上以 p50/p99/p99.9 <3% 回退门复核（`README.md` §2.3）。
+
+（次选，如果主代理只想加计数而非加用例：以 benchmark 自己的 `wake_timestamp_ns` 代际为闸门，在窗口内**只做计数不做时间戳**，统计 rq 锁获取次数、`read_cpu_base`/DAIF 读取次数、`RqClockSample` 采样次数，用来直接裁决“窗口内重复 CPU 本地采样”假说。它属于新手段，但定位能力弱于上一个。）
+
+## 5. 不确定项与未覆盖范围
+
+- 我**没有**反汇编或构建当前 G 镜像（被禁止运行验证）；§3-C4 的反汇编原文来自归档旧基线，其 ELF 与当前 G 不同，属于可能过期证据。
+- 3.2 µs 在“发送侧激活”与“接收侧解挂+切换尾”之间的切分，本轮**无法**从既有数据判定，必须靠 §4；`resume605`（FIFO activation_enqueue ≈1521.80 ns，含探针）与 `resume628/629/630`（接收侧叶 213–1287 ns，含探针）都暗示两侧都有成本，且都不能直接折算。
+- 跨核三行不可与同核直接比：其 park 收敛用 `nanosleep(50 µs)` 而非 `sched_yield`（`handoff.c:139-155`），`process_futex_cross_cpu` 还经过 fork；它们的 Δ 里含 IPI 传输（`resume836`：issue→entry 中位 2750–3249 ns）与远端 rq/IPI 处理（`resume833`：包络超出 1181–1247 ns）。
+- timer 两行的窗口里没有用户 syscall 起点（`timer.c:49-53`），§2 的“减 yield 交接”推导**不直接适用**，它们的公共边界是“唤醒阻塞任务”这一半，另一半是 IRQ/软定时器机械（`resume839`/`831`/`845`）。
+- 未覆盖：`os/StarryOS/kernel/src/task/futex.rs` 全文（1710 行，我读了 wait/wake/域/键与清理段）、`park_exit/*` 的 `completion.rs`/`exit.rs`/`park_commit.rs` 全文、`FairRunQueue` 内部、`runtime/sync` PI 路径、Deadline/Stop 类；`irq-time-accounting`/`qperf-metrics` 在 G 镜像中的实际开关未逐字节核验。
+
+**引用**：resume599、resume605、resume606、resume627\u2013630、resume789、resume793、resume801、resume805、resume806、resume807、resume810、resume812、resume814、resume815、resume816、resume818、resume819、resume820、resume831、resume833、resume836、resume838、resume839、resume840、resume841、resume842、resume843、resume844、resume845；方向约束 BY-DIRECTION §1.1（inline / Fair V / membership skip / double-rq）、§2.1、§4.2；既有产物 `aarch64-hotspots.json`、`aarch64-memcpy-call-sites.json`、`aarch64-memcpy-callers.json`（旧基线，仅作反例）。
