@@ -570,3 +570,7 @@ park/恢复交接，再提出保留语义的原生候选。
 缺席的 17 MB 镜像本体哈希；本地原始归档另已核验该镜像。
 `resume872-current-pgo-audit/` 可在该目录运行 `sha256sum -c SHA256SUMS`
 核对构建门禁输出；它没有镜像或性能日志。
+`resume873-current-four-crate/` 归档最新源码训练镜像的临时 exporter
+补丁、选择性 wrapper、配置、构建日志和 ELF 派生的计数布局；该目录
+同样可运行 `sha256sum -c SHA256SUMS`。训练镜像和 ELF 仅保存在本地，
+其 SHA 在该目录的 `README.md` 中，尚无板卡计数或性能验收。
