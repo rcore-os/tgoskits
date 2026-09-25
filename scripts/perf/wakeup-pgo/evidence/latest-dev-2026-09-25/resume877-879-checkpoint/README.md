@@ -20,4 +20,4 @@
 
 `run1/serial.log` 保留第一次上板的同步异常：ESR `0x96000035`、FAR `0x040267f8`、物理 PC `0x02c3059c`。对应训练 ELF 虚拟 PC `0xffffffff80c3059c` 位于 `someboot::arch::elx::switch_to_elx`，指令为对 profile 计数器执行 `ldxr x9, [x8]`。这表明首次广覆盖训练镜像在早期启动阶段就访问了尚不可用的计数器地址；没有进入 benchmark，不能作为性能候选。
 
-`resume879` 仍在进行，下一次训练需在 generate/use 两侧同时排除早期启动和平台 crate，再核对 profile 身份及无插桩候选。这里没有新的 p50、p99 或 p99.9 结论。已提交的 `resume876` 两次有效候选 full20 仍仅 10/20 项达到冻结 Linux RT 的 90%，最差 OTHER `thread_futex_same_cpu` 为 56.861%。PR 继续 Draft；三次有效候选、全部同源码尾延迟回退小于 3%、生产构建复现及新 head CI 均未完成。
+`resume879` 首次训练镜像已判无效。后续重试需在 generate/use 两侧同时排除早期启动和平台 crate，再核对 profile 身份及无插桩候选；重试另行记账。这里没有新的 p50、p99 或 p99.9 结论。已提交的 `resume876` 两次有效候选 full20 仍仅 10/20 项达到冻结 Linux RT 的 90%，最差 OTHER `thread_futex_same_cpu` 为 56.861%。PR 继续 Draft；三次有效候选、全部同源码尾延迟回退小于 3%、生产构建复现及新 head CI 均未完成。
