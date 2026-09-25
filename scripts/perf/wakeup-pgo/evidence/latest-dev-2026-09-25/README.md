@@ -563,6 +563,15 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 最差 OTHER 同核 futex 为 **57.999%**。这只是被拒绝候选的筛查进展，
 第三次有效候选和同源码全项回退门仍未证明，不构成 PR 验收。
 
+### 1.24 Fair 唤醒抢占时机筛查
+
+`resume884-fair-immediate/` 归档 Fair 唤醒 `Lazy` 改 `Immediate` 的临时
+源码补丁与四轮普通 release full20。B1/B2 有效，A2 因 OTHER 同核 futex
+缺 1 个样本且 `not_parked=1` 整轮无效；B 的 90% 项数仅 **10/20**，
+最差同核 futex 为 **32.043%**。唯一有效 A1 与 B1/B2 的目标项 p50
+比较只作探索；六个 p50/p99/p99.9 筛查值回退至少 3%，不能据此声称
+通过正式双 A 回退门。候选已拒绝，单行调度改动撤回，没有进入 PR 源码。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -619,3 +628,5 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 `resume880-883-five-crate/` 在子目录运行 `sha256sum -c SHA256SUMS`，
 并运行 `python3 five-crate/analyze_full20.py` 复核 20 项原始日志与
 冻结基线；它只证明两次筛查结果，不覆盖最终验收门禁。
+`resume884-fair-immediate/` 在子目录运行 `sha256sum -c SHA256SUMS` 和
+`python3 check.py` 复核原始日志、无效轮次及淘汰依据；镜像本体未入 Git。
