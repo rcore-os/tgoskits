@@ -15,7 +15,7 @@
 //!     ├── up -> ..       (parent symlink)
 //!     ├── magic -> /secret (symlink flagged MAGIC_LINK)
 //!     ├── magic-rel -> b   (flagged MAGIC_LINK, in-base target)
-//!     └── mnt/           (mountpoint of the second filesystem)
+//!     └── mnt/           (mountpoint of the second filesystem; holds jump -> /b)
 //! ```
 
 use std::{any::Any, collections::BTreeMap, sync::Arc, time::Duration};
@@ -366,7 +366,15 @@ impl FilesystemOps for EmptyFs {
         DirEntry::new_dir(
             |weak| {
                 DirNode::new(Arc::new(TestDir {
-                    tree: Tree::Dir(BTreeMap::new()),
+                    // A symlink on the second mount whose absolute target
+                    // jumps back to the process root.
+                    tree: Tree::dir(&[(
+                        "jump",
+                        Tree::Symlink {
+                            target: "/b".into(),
+                            magic: false,
+                        },
+                    )]),
                     self_weak: weak,
                     ino: 100,
                 }))
@@ -568,15 +576,26 @@ mod no_xdev {
     }
 
     #[test]
-    fn absolute_component_jumping_to_the_root_is_rejected() {
+    fn absolute_pathname_starts_at_the_process_root() {
         let (context, _) = at_a();
         let mnt = resolve(&context, "mnt", &ResolveConstraints::new()).unwrap();
         let inside = context.with_current_dir(mnt).unwrap();
-        // An absolute component restarts at the filesystem root, which is a
-        // different mount from `/a/mnt`; Linux `nd_jump_root()` rejects the
-        // jump under LOOKUP_NO_XDEV.
+        // An initial absolute pathname ignores the cwd/dirfd, so it starts at
+        // the process root and NO_XDEV does not fire even though the cwd sits
+        // on a different mount.
+        assert!(resolve(&inside, "/a", &ResolveConstraints::new().no_xdev()).is_ok());
+    }
+
+    #[test]
+    fn absolute_symlink_jump_root_is_rejected() {
+        let (context, _) = at_a();
+        let mnt = resolve(&context, "mnt", &ResolveConstraints::new()).unwrap();
+        let inside = context.with_current_dir(mnt).unwrap();
+        // `jump -> /b` on the second mount follows an absolute target, which
+        // jumps from the mount to the process root; Linux `nd_jump_root()`
+        // rejects that crossing under LOOKUP_NO_XDEV.
         assert_eq!(
-            error_of(&inside, "/b", &ResolveConstraints::new().no_xdev()),
+            error_of(&inside, "jump", &ResolveConstraints::new().no_xdev()),
             VfsError::CrossesDevices
         );
     }
