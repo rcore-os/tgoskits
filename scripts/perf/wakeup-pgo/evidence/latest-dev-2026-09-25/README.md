@@ -518,14 +518,32 @@ park/恢复交接，再提出保留语义的原生候选。
 性能证据路径后仍有 28 个路径与其不同。锁文件哈希虽匹配，旧 profile
 也不能据此跨源码复用；该次检查在构建和上板之前停止。
 
-下一步在 `dev@714accd8f6` 加现有 `memset` 训练修复的
+当时计划在 `dev@714accd8f6` 加现有 `memset` 训练修复的
 `b292a098bb` 上重新训练。训练专用的 `board-profile-export` 只用于
 采集精确 ELF 的计数器；最终候选必须不含 exporter，使用关闭 cpufreq
 的十项板卡 feature，且只对 `ax_task`、`ax_sched`、`ax_runtime`、
 `starry_kernel` 应用新 profile。训练镜像的 `.text` 因插桩本来就不同于
 普通 release；应核对的是 profile 计数与训练 ELF 的布局，以及最终
-无插桩镜像和上板镜像的字节身份。这里尚无新候选、full20 或 90%
-验收结果，生产构建入口也尚未更新。
+无插桩镜像和上板镜像的字节身份。本节的构建门禁审计尚无新候选、
+full20 或 90% 验收结果，生产构建入口也尚未更新。
+
+### 1.21 最新源码 root-only exporter 与无插桩 PGO 筛查
+
+`resume873-876-current-pgo/` 记录 `dev@714accd8f6` 加现有 `memset`
+修复后四次探索。`resume873` 已取得训练计数，但 exporter 在被 profile
+的 `starry_kernel` 内；`resume874` 的空 feature 和 `resume875` 的
+`--cfg` 尝试都未消除热 futex 函数的 profile CFG 不匹配，未上板验收。
+
+`resume876` 把训练专用计数器导出移到顶层 binary，训练和无 exporter
+候选的 `starry_kernel` 编译输入相同；普通 profile-generate 对照的
+16887 个记录在训练 ELF 中均能找到，hash/count 无不匹配。
+OrangePi-5-Plus-1 上普通 A1 和候选 F1/F2 各为有效的无插桩 full20：
+每次 20/20 项、380000/380000 样本、零 `not_parked`。普通 A2 的
+OTHER 同核 futex 缺 1 个样本且 `not_parked=1`，整次作废。
+F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
+最差 OTHER 同核 futex 为 **56.861%**（RT 8458 ns、F 14875 ns）。
+此候选已拒绝；三次有效候选启动、同源码全项尾延迟回退门和生产构建门
+均未证明，PR 仍为 Draft。训练补丁仅作为实验数据归档，不合入生产源码。
 
 ## 2. 证据核验
 
@@ -574,3 +592,7 @@ park/恢复交接，再提出保留语义的原生候选。
 补丁、选择性 wrapper、配置、构建日志和 ELF 派生的计数布局；该目录
 同样可运行 `sha256sum -c SHA256SUMS`。训练镜像和 ELF 仅保存在本地，
 其 SHA 在该目录的 `README.md` 中，尚无板卡计数或性能验收。
+
+`resume873-876-current-pgo/` 在子目录运行 `sha256sum -c SHA256SUMS`
+和 `python3 check.py` 核对原始日志、样本完整性与逐项比例；镜像、ELF、
+计数器及 profdata 未纳入 Git，其身份只能核对归档的 SHA256 记录。
