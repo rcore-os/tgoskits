@@ -481,6 +481,34 @@ hard-IRQ 通知计数前后差值，以及同 generation 的通知到 worker cla
 三次候选启动、同源码 p50/p99/p99.9 全项 `<3%` 回退和生产构建门禁
 仍未完成，PR 保持 Draft。
 
+### 1.19 最新 dev 同核 futex 唤醒分段
+
+`resume862-futex-wake-stages/` 基于 `dev@714accd8f6` 加现有 `memset`
+训练修复的 `b292a098bb`，仅在 `qperf-metrics` 下临时插桩；
+诊断镜像无 PGO、关闭 cpufreq feature，未纳入 Git。OrangePi-5-Plus-1
+同一次启动按 OTHER/FIFO/OTHER/FIFO/OTHER 运行五个独立同核线程 futex
+进程，逐轮均为 20000/20000 样本、零 `not_parked` 和
+`missed_deadlines`。冻结 benchmark、镜像、源码快照和原始串口均有
+SHA256 记录。临时插桩已撤回，PR 生产运行时没有变化。
+
+OTHER 三轮命中且入队的唤醒为 21465/21454/21440 次；即使把各轮
+所有全局 direct-wake 未激活都归于目标 gate，目标 off-rq 激活比例
+仍至少为 97.645%。锁前至批量前的插桩调用均值为 1657/1676/1652 ns，
+`wake_batch` 区间为 9891/9977/9875 ns。FIFO 的对应区间为
+1386/1360 ns 和 5416/5407 ns。**这些均值含探针，且全局抢占计数
+未与单次唤醒配对；不能把 `wake_batch` 差值或插桩 p50 折算为
+原生可删成本。** 独立源码审计发现 Fair 命中唤醒通常发布 Lazy
+请求，不能凭每轮约 21570 次 `context_switches_preempted` 推定
+切换发生在 `wake_batch` 内。后续应先定位 Lazy 消费点和
+park/恢复交接，再提出保留语义的原生候选。
+
+`cargo xtask clippy --package starry-kernel` 的 72/72 组配置及
+`cargo xtask test` 的 68/68 项白名单已通过；五轮原始日志由
+`python3 check.py` 离线复算。此诊断**没有新的无插桩 full20
+性能收益**；旧源码 G1/G2 仍是最近有效的同频率 90% 比较，
+仅 11/20 达标，最差 OTHER 同核 futex 58.00%。三次候选启动、
+同源码 p50/p99/p99.9 全项回退和生产构建门仍未完成，PR 保持 Draft。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -510,6 +538,12 @@ hard-IRQ 通知计数前后差值，以及同 generation 的通知到 worker cla
 预登记判别；这只是一轮插桩诊断，不参加 full20 验收。
 `resume858-ktimer-fresh/` 运行 `sha256sum -c SHA256SUMS --quiet` 与
 `python3 check.py` 复核逐轮日志、计数器差值和 generation 配对。
+`resume862-futex-wake-stages/` 同样运行 `sha256sum -c SHA256SUMS --quiet`
+和 `python3 check.py`；缺席的 17 MB 镜像只能核对记录的 SHA，
+本地原件已单独核验。`build.log.gz` 与 `probe-tracked.patch.gz` 是
+无时间戳 gzip 原件，解压后 SHA256 分别为
+`03857df02e180128b4a0489669062bb10bfc3cb5e99d12d68f18380420ab48bb`
+和 `4d71a55ff1a17b3a2c0740c8ba4f358af45ffd453a6c12f04caaa986fb6254ad`。
 `build.log.gz` 与 `probe.patch.gz` 是原始文件的无时间戳 gzip 归档；
 解压后 SHA256 分别为
 `51f90c64df300a70b9f7c3c0fd96753388eb7fb2e88c926784d6ccd56fe4473c`

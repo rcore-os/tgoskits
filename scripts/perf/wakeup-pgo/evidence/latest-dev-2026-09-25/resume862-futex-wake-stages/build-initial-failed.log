@@ -1,0 +1,8 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running `target/debug/tg-xtask starry build -c /home/zhourui/.codex/artifacts/issue2308-perf/resume862-stage-probe/build.toml`
+[2026-09-25T09:24:56Z INFO  axbuild::context] Workspace root: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev
+[2026-09-25T09:24:56Z INFO  axbuild::context] Cargo target directory: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target
+Using build config: /home/zhourui/.codex/artifacts/issue2308-perf/resume862-stage-probe/build.toml
+[2026-09-25T09:24:56Z INFO  axbuild::build::config_file] Found build config at /home/zhourui/.codex/artifacts/issue2308-perf/resume862-stage-probe/build.toml
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ...
+Error: both Cargo future-incompatibility report /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/.future-incompat-report.json and interrupted axbuild history /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/.future-incompat-report.json.axbuild-history exist
