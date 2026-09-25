@@ -126,11 +126,14 @@ int main(void)
     if (fd >= 0)
         close(fd);
 
+    /* O_CREAT|O_EXCL implies O_NOFOLLOW (Linux build_open_flags), so the final
+     * symlink is not followed and O_EXCL reports the existing entry as EEXIST
+     * via do_open(), not ELOOP. */
     errno = 0;
     fd = openat2_beneath_no_symlinks(
         rootfd, "link", O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0666);
-    CHECK(fd == -1 && errno == ELOOP,
-          "RESOLVE_NO_SYMLINKS takes precedence over O_EXCL for a symlink");
+    CHECK(fd == -1 && errno == EEXIST,
+          "O_CREAT|O_EXCL reports EEXIST for an existing symlink");
     if (fd >= 0)
         close(fd);
 

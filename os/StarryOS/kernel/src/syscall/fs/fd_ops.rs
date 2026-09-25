@@ -373,19 +373,26 @@ fn try_open_proc_exe(
         Ok(proc_data) => proc_data,
         Err(err) => return Some(Err(err)),
     };
+    let cred = current.as_thread().cred();
     // The backing object is only reachable when the caller's current root and
-    // mount namespace actually expose the procfs magic link. A chroot/pivot
-    // root without `/proc`, or a tmpfs mounted over `/proc`, must observe the
-    // normal lookup result instead; fall through so the generic walk reports
-    // ENOENT/EACCES rather than opening the executable.
-    let procfs_visible = match with_fs(AT_FDCWD, |fs| Ok(fs.resolve_no_follow(path))) {
-        Ok(Ok(loc)) => loc.is_magic_link(),
+    // mount namespace actually expose the procfs magic link *and* every
+    // directory on the way is searchable by the caller. A chroot/pivot root
+    // without `/proc`, a tmpfs over `/proc`, or a non-searchable `/proc` must
+    // observe the normal lookup result (ENOENT/EACCES); fall through so the
+    // generic walk reports it rather than opening the executable.
+    let mutation_cred = mutation_credentials(&cred);
+    let procfs_visible = match with_fs(AT_FDCWD, |fs| {
+        let boundary = fs.permission_boundary().cloned();
+        let check =
+            |dir: &Location| fs.check_search_path(dir, boundary.as_ref(), &mutation_cred);
+        Ok(fs.resolve_no_follow_with_search_checked(path, check))
+    }) {
+        Ok(Ok((loc, _))) => loc.is_magic_link(),
         _ => false,
     };
     if !procfs_visible {
         return None;
     }
-    let cred = current.as_thread().cred();
     // /proc/<pid>/exe of another process requires ptrace-style read
     // permission (`PTRACE_MODE_READ_FSCREDS`, fs/proc/base.c
     // `proc_fd_access_allowed`): same-thread-group callers pass, CAP_SYS_PTRACE

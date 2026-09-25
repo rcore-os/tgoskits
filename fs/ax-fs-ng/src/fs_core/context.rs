@@ -777,13 +777,18 @@ impl FsContext {
             search: Some(&check_search),
             final_may_be_file: false,
         };
-        let dir = self.walk_constrained(
-            components,
-            &self.current_dir.clone(),
-            &mut depth,
-            &mut follow_count,
-            &walk,
-        )?;
+        // Linux ignores cwd and dirfd for absolute pathnames (except
+        // RESOLVE_IN_ROOT), so the walk starts at the process root and the
+        // leading `RootDir` is a no-op. Only an absolute symlink target jumps
+        // from the link's mount to the root, which is where RESOLVE_NO_XDEV
+        // must compare mounts.
+        let start = if path.as_str().starts_with('/') && constraints.root().is_none() {
+            self.root_dir.clone()
+        } else {
+            self.current_dir.clone()
+        };
+        let dir =
+            self.walk_constrained(components, &start, &mut depth, &mut follow_count, &walk)?;
         // The final directory has no next component to trigger its search
         // check; an unsearchable parent must fail the resolution here, before
         // the caller's final lookup reports ENOENT.
@@ -801,6 +806,13 @@ impl FsContext {
     ) -> VfsResult<Location> {
         let mut follow_count = 0;
         let mut depth = depth0;
+        // See `resolve_parent_with_constraints`: absolute pathnames start at
+        // the process root rather than the cwd/dirfd.
+        let start = if path.as_str().starts_with('/') && constraints.root().is_none() {
+            self.root_dir.clone()
+        } else {
+            self.current_dir.clone()
+        };
         match path.file_name() {
             Some(name) => {
                 let mut components = path.components();
@@ -812,7 +824,7 @@ impl FsContext {
                 };
                 let dir = self.walk_constrained(
                     components,
-                    &self.current_dir.clone(),
+                    &start,
                     &mut depth,
                     &mut follow_count,
                     &walk,
@@ -838,7 +850,7 @@ impl FsContext {
                 };
                 let dir = self.walk_constrained(
                     path.components(),
-                    &self.current_dir.clone(),
+                    &start,
                     &mut depth,
                     &mut follow_count,
                     &walk,
