@@ -572,6 +572,16 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 比较只作探索；六个 p50/p99/p99.9 筛查值回退至少 3%，不能据此声称
 通过正式双 A 回退门。候选已拒绝，单行调度改动撤回，没有进入 PR 源码。
 
+### 1.25 普通 soft timer 与 park 阶段诊断
+
+`resume888-889-park-phase/` 记录 Linux 7.1 PREEMPT_RT 普通 sleeper 的
+`ktimers/%u` 执行者边界，以及当前源码的同核 futex 临时分段探针。前者
+否定将任意 `ParkSoft` 回调直接移入 IRQ 后调度帧的等价性假设；后者的
+两次六轮组都因 OTHER `not_parked=1` 而无效，只有组内有效子轮的
+探索性计数。没有新增无插桩 full20，没有保留插桩或运行时补丁；
+最近的有效五 crate PGO 仍仅 **11/20** 项达到冻结 Linux RT 的 90%，
+最差 OTHER 同核 futex 为 **57.999%**，PR 继续 Draft。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -630,3 +640,6 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 冻结基线；它只证明两次筛查结果，不覆盖最终验收门禁。
 `resume884-fair-immediate/` 在子目录运行 `sha256sum -c SHA256SUMS` 和
 `python3 check.py` 复核原始日志、无效轮次及淘汰依据；镜像本体未入 Git。
+`resume888-889-park-phase/` 在子目录运行 `sha256sum -c SHA256SUMS` 和
+`python3 resume889/analyze_valid.py` 复核原始证据及无效组判定；镜像
+本体未入 Git，归档只保留其 SHA256 记录。
