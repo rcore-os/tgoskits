@@ -655,3 +655,7 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 本体未入 Git，归档只保留其 SHA256 记录。
 `resume890-891-park-reason/` 在子目录运行 `sha256sum -c SHA256SUMS` 和
 `python3 check.py` 复核既有两份原始 JSON 的计数口径。
+
+`resume892-893-current-audit/` 记录当前源码的 Fair 抢占交接、Linux RT
+定时器 worker 策略和五 crate PGO 训练输入的只读核对；没有新增构建、
+无插桩 full20、生产运行时改动或可验收收益。
