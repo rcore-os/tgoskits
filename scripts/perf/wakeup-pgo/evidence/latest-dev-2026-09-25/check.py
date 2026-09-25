@@ -176,6 +176,59 @@ def check_recent_path_diagnostics(baseline):
         print(f"resume{identifier}: four valid instrumented rounds; diagnostic only")
 
 
+def check_sgi_diagnostic(baseline):
+    directory = ROOT / "resume834-836-sgi-path/resume836"
+    run = directory / "run1"
+    result = json.loads((run / "results.json").read_text())
+    assert result["diagnostic_only"] is True
+    assert result["source_head"] == "69a33650763538692fafea27c869870ed0313642"
+    assert result["board_id"] == "OrangePi-5-Plus-2"
+    assert result["session_id"] == json.loads((run / "session.json").read_text())["session_id"]
+    assert result["bench_sha256"] == baseline["bench_sha256"]
+    assert result["image_sha256"] == "e803441a0d600b9d02d11899d1f028fb9c1c620e516901a6ed3b05877bf903ff"
+    assert result["build_config_sha256"] == sha256(directory / "build.toml")
+    patch = gzip.decompress((directory / "probe.patch.gz").read_bytes())
+    assert hashlib.sha256(patch).hexdigest() == result["source_patch_sha256"]
+    assert (run / "sha256").read_text().split()[0] == baseline["bench_sha256"]
+    assert [(row["policy"], row["round"]) for row in result["rounds"]] == [
+        ("fifo", 1), ("fifo", 2), ("other", 1), ("other", 2)
+    ]
+    expected = ((21138, 21765, 11), (21182, 22084, 11),
+                (21014, 21375, 12), (21001, 21360, 12))
+    for row, (cpu0_pairs, ipis, median_bucket) in zip(result["rounds"], expected):
+        assert row["valid"] is True
+        assert row["case"] == "thread_futex_cross_cpu"
+        policy, number = row["policy"], row["round"]
+        prefix = f"{policy}-thread_futex_cross_cpu-{number}"
+        raw_log = run / f"{prefix}.log"
+        assert sha256(raw_log) == row["raw_log_sha256"]
+        lines = raw_log.read_text().splitlines()
+        assert lines.count("WAKEUP_LATENCY_PASSED") == 1
+        bench = row["benchmark"]
+        assert [json.loads(line.split(" ", 1)[1]) for line in lines
+                if line.startswith("WAKEUP_LATENCY_RESULT ")] == [bench]
+        assert (bench["policy"], bench["case"]) == (policy, row["case"])
+        assert (bench["samples"], bench["attempted"], bench["not_parked"],
+                bench["missed_deadlines"]) == (20000, 20000, 0, 0)
+        assert sum(bench["histogram_counts"]) == 20000
+        before = read_counter_snapshot(run / f"{prefix}-before")
+        after = read_counter_snapshot(run / f"{prefix}-after")
+        assert before.keys() == after.keys() == row["delta"].keys()
+        delta = row["delta"]
+        assert {key: after[key] - before[key] for key in before} == delta
+        assert (delta["ipi_issue_count"], delta["ipi_entry_count"],
+                delta["ipi_pair_count"]) == (ipis, ipis, ipis)
+        assert (delta["ipi_overwrite_count"], delta["ipi_unmatched_count"],
+                delta["ipi_backward_count"]) == (0, 0, 0)
+        assert delta["ipi_dispatch_count"] == delta["ipi_handler_count"] == ipis
+        assert delta["ipi_cpu0_pair_count"] == cpu0_pairs
+        buckets = [delta[f"ipi_cpu0_pair_bucket_{index}"] for index in range(64)]
+        assert sum(buckets) == cpu0_pairs
+        assert next(index for index in range(64)
+                    if sum(buckets[:index + 1]) >= cpu0_pairs / 2) == median_bucket
+    print("resume836: four valid instrumented SGI rounds; diagnostic only")
+
+
 def check_weighted_pgo(baseline, rt, ordinary, previous):
     directory = ROOT / "resume817-819-weighted-pgo"
     training = json.loads((directory / "training-result.json").read_text())
@@ -427,6 +480,7 @@ def main():
     print("resume801: three valid focused qperf rounds; one OTHER round invalid")
 
     check_recent_path_diagnostics(baseline)
+    check_sgi_diagnostic(baseline)
 
 
 if __name__ == "__main__":

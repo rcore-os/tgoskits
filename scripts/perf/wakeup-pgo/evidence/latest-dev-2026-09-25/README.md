@@ -320,7 +320,27 @@ worker 选择、选择至 claim 分别主要落在 4–6、6–8、4–6 us 的 
 **本阶段没有新的运行时改动或无插桩 full20 收益**。最新有效 G1/G2
 仍为 11/20 达到 90%，最差 OTHER 同核 futex 为 58.00%。
 
-### 1.13 当前 CI 边界
+### 1.13 跨核路径和频率复核
+
+`resume834-836-sgi-path/` 保存两次只读审计和一次临时插桩板测。`resume834`
+逐段核对跨核 futex 的唤醒、物理 SGI、CPU1 IRQ 和调度返回路径；此前
+`resume833` 的派发包围段差值不能归因于 IRQ registry，也不足以解释跨核
+p50 的数微秒缺口。`resume835` 对照旧 18/20、已打包 19/20 和最新 G1/G2
+的构建身份：前两组启用了 cpufreq feature，已打包镜像另测得约 1150 MHz；
+冻结 Linux RT 和 G1/G2 的独立探针约为 816 MHz。旧 18/20 镜像没有直接
+测频，不能把旧结果当作同频率 90% 进展，也不能把跨源码差值归因于逻辑回退。
+
+`resume836` 在 OrangePi-5-Plus-2 将 CPU0 发送前与 CPU1 识别 SGI 后的
+时间配对。FIFO/OTHER 各两轮 `thread_futex_cross_cpu` 均为 20000/20000
+样本、零 `not_parked` 和 missed deadlines；每轮约 2.1 万个 CPU0 配对，
+无覆盖写入、未配对或反向时间。250 ns 直方图的中位桶为 FIFO
+2750–2999 ns、OTHER 3000–3249 ns。该区间包含发送包装、GIC 投递、
+异常入口和 `begin_irq()`，且混有非 benchmark IPI；不能与原生 p50
+相减，也不能算作新性能收益。原始日志、计数器快照、探针补丁、配置和
+镜像哈希均已归档；临时探针已撤销，镜像只保留在本地实验归档。
+最新有效、无插桩同频率 G1/G2 仍是 **11/20** 达到 90%，最差 **58.00%**。
+
+### 1.14 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
@@ -355,5 +375,5 @@ worker 选择、选择至 claim 分别主要落在 4–6、6–8、4–6 us 的 
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。
 `check.py` 也会复算 `resume817-819-weighted-pgo` 两次有效 full20
 的逐项中位数、90% 门槛和单次普通 A1 对照；它不是三次启动验收。
-`resume829-833-path-diagnostics/` 的核验只证明诊断记录完整，不参与
-full20 验收。
+`resume829-833-path-diagnostics/` 和 `resume834-836-sgi-path/` 的核验
+只证明诊断记录完整，不参与 full20 验收。
