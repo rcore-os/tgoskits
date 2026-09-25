@@ -1,0 +1,82 @@
+board_type = "OrangePi-5-Plus"
+uboot_cmd = [
+  "setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "Failed to initialize guest VM",
+  "Failed to start VM",
+  "VM\\[[123]\\] run VCpu\\[0\\] get error",
+  "VFS: Cannot open root device",
+  "Waiting for root device",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "(?m)^AXVISOR_LINUX_GUEST_TESTS_FAILED(?: .*)?$",
+]
+timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm list"
+success_regex = ['(?ms)^1[ \t]+linux-guest-tests[ \t]+running[^\r\n]*\r?\n2[ \t]+starry[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr[ \t]+running[^\r\n]*\r?\n']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ['Attached VM\[2\] console']
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+shell_cmd = "pwd"
+success_regex = ['(?m)^/root\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+shell_cmd = "\u0018hvm console 1"
+success_regex = ['Attached VM\[1\] console']
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "mount -t proc proc /proc"
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = 'mkdir -p /dev/shm /sys && mount -t tmpfs tmpfs /dev/shm && mount -t sysfs sysfs /sys && echo AXVISOR_LINUX_GUEST_TESTS_MOUNTS_PASSED || echo AXVISOR_LINUX_GUEST_TESTS_FAILED'
+success_regex = ["AXVISOR_LINUX_GUEST_TESTS_MOUNTS_PASSED"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = 'm=AXVISOR_LINUX_GUEST_TESTS; [ "$(/usr/bin/findmnt -n -o SOURCE /)" = /dev/vda ] && echo ${m}_VIRTIO_ROOT_PASSED || echo ${m}_FAILED'
+success_regex = ["AXVISOR_LINUX_GUEST_TESTS_VIRTIO_ROOT_PASSED"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = 'i=/guest-tests/iozone/iozone; l=/guest-tests/lmbench/bin/Linux/lat_syscall; c=/guest-tests/cyclictest/cyclictest'
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = 'f=/tmp/iozone; "$i" -i 0 -i 1 -s 16384 -r 4 -f "$f"; s=$?; rm -f "$f"; [ "$s" -eq 0 ] && echo ${m}_IOZONE_PASSED || echo ${m}_FAILED'
+success_regex = ["AXVISOR_LINUX_GUEST_TESTS_IOZONE_PASSED"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = '"$l" null && echo ${m}_LMBENCH_PASSED || echo ${m}_FAILED'
+success_regex = ["AXVISOR_LINUX_GUEST_TESTS_LMBENCH_PASSED"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = '"$c" --policy=fifo --priority=1 --duration=1s --quiet && /bin/sync && echo ${m}_CYCLICTEST_PASSED || echo ${m}_FAILED'
+success_regex = ["(?m)^AXVISOR_LINUX_GUEST_TESTS_CYCLICTEST_PASSED\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = "\u0018hvm list"
+success_regex = ['(?ms)^1[ \t]+linux-guest-tests[ \t]+running[^\r\n]*\r?\n2[ \t]+starry[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr[ \t]+running[^\r\n]*\r?\n']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+success_regex = ['isr\.resume\.interrupted\.thread\.kernel']
+
+[[shell_check_steps]]
+success_regex = ["PROJECT EXECUTION SUCCESSFUL"]

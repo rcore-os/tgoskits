@@ -26,6 +26,7 @@ pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
+virtio-blk = ["block", "virtio", "dep:bitflags"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-sync"]
 virtio-gpu = ["display", "virtio", "pci", "dep:virtio-gpu"]
 virtio-input = ["input", "virtio", "pci"]

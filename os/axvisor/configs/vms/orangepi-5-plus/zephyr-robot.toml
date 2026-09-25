@@ -1,0 +1,19 @@
+[base]
+id = 3
+name = "zephyr"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x200]
+
+[kernel]
+entry_point = 0x4000_100c
+image_location = "fs"
+kernel_load_addr = 0x4000_0000
+kernel_path = "/guest/zephyr/orangepi-5-plus"
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
