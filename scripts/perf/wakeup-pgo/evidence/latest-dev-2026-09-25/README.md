@@ -509,6 +509,24 @@ park/恢复交接，再提出保留语义的原生候选。
 仅 11/20 达标，最差 OTHER 同核 futex 58.00%。三次候选启动、
 同源码 p50/p99/p99.9 全项回退和生产构建门仍未完成，PR 保持 Draft。
 
+### 1.20 最新源码 PGO 构建门禁
+
+`resume872-current-pgo-audit/` 在 PR head `ac9f443d5e` 上以
+`scripts/perf/wakeup-pgo/build.py --prepare-only` 复核生产构建入口。
+`build-result.json` 记录 `WAKEUP_PGO_BUILD_NOT_READY`：脚本仍锁定
+`dev@9a7b868bab` 与旧训练提交 `4322e0c505`，最新源码在排除文档和
+性能证据路径后仍有 28 个路径与其不同。锁文件哈希虽匹配，旧 profile
+也不能据此跨源码复用；该次检查在构建和上板之前停止。
+
+下一步在 `dev@714accd8f6` 加现有 `memset` 训练修复的
+`b292a098bb` 上重新训练。训练专用的 `board-profile-export` 只用于
+采集精确 ELF 的计数器；最终候选必须不含 exporter，使用关闭 cpufreq
+的十项板卡 feature，且只对 `ax_task`、`ax_sched`、`ax_runtime`、
+`starry_kernel` 应用新 profile。训练镜像的 `.text` 因插桩本来就不同于
+普通 release；应核对的是 profile 计数与训练 ELF 的布局，以及最终
+无插桩镜像和上板镜像的字节身份。这里尚无新候选、full20 或 90%
+验收结果，生产构建入口也尚未更新。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -550,3 +568,5 @@ park/恢复交接，再提出保留语义的原生候选。
 和 `23ba81b82f825af7af4a704465ea01bc69fc26b48b8b264709e4925b23cd0c10`。
 构建镜像没有纳入 Git，脚本只能核对日志中的镜像 SHA 记录，不能重算
 缺席的 17 MB 镜像本体哈希；本地原始归档另已核验该镜像。
+`resume872-current-pgo-audit/` 可在该目录运行 `sha256sum -c SHA256SUMS`
+核对构建门禁输出；它没有镜像或性能日志。
