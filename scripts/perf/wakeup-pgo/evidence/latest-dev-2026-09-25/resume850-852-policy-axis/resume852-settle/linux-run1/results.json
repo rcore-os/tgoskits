@@ -1,0 +1,162 @@
+{
+  "experiment": "resume852",
+  "diagnostic_only": true,
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "901427b6-2053-4cda-98c1-ef742fb2b7ac",
+  "linux_image_sha256": "aac6d3c5fa0c4fdf65f987af635f4cd55a06852b23046a4242a184acc2fd563b",
+  "dtb_sha256": "316dd15b329756be3887dea22f89fc8d1f5b055f8769761f4144b6b1caaea994",
+  "initramfs_sha256": "b45d2a993ae4600c099662524a128f175c82c3d38934c4dc93ce9c6d5e9ec41a",
+  "benchmark_sha256": "2cbc88477cd5ff43475505534918c5c2ee9835de33c916d4c8203b1f9babd19b",
+  "bootargs": "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr",
+  "board_released": true,
+  "pll_verified": true,
+  "state": "collected",
+  "failures": 0,
+  "rows": [
+    {
+      "mode": "fifo",
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2625,
+      "p99_ns": 3208,
+      "p999_ns": 16917
+    },
+    {
+      "mode": "fifo",
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2625,
+      "p999_ns": 17208
+    },
+    {
+      "mode": "fifo",
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 4375,
+      "p99_ns": 4667,
+      "p999_ns": 19833
+    },
+    {
+      "mode": "other",
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2625,
+      "p99_ns": 3209,
+      "p999_ns": 17209
+    },
+    {
+      "mode": "other",
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2625,
+      "p999_ns": 17208
+    },
+    {
+      "mode": "other",
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 5542,
+      "p99_ns": 6125,
+      "p999_ns": 20708
+    },
+    {
+      "mode": "other",
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2625,
+      "p99_ns": 3209,
+      "p999_ns": 17209
+    },
+    {
+      "mode": "other",
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2625,
+      "p999_ns": 16917
+    },
+    {
+      "mode": "other",
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 5542,
+      "p99_ns": 6125,
+      "p999_ns": 21000
+    },
+    {
+      "mode": "fifo",
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2625,
+      "p99_ns": 2917,
+      "p999_ns": 3209
+    },
+    {
+      "mode": "fifo",
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2625,
+      "p999_ns": 16333
+    },
+    {
+      "mode": "fifo",
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 4375,
+      "p99_ns": 4667,
+      "p999_ns": 18375
+    },
+    {
+      "mode": "fifo",
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2625,
+      "p99_ns": 3208,
+      "p999_ns": 16916
+    },
+    {
+      "mode": "fifo",
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2625,
+      "p999_ns": 17208
+    },
+    {
+      "mode": "fifo",
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 4375,
+      "p99_ns": 4667,
+      "p999_ns": 19541
+    },
+    {
+      "mode": "other",
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2625,
+      "p99_ns": 3209,
+      "p999_ns": 17209
+    },
+    {
+      "mode": "other",
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2625,
+      "p999_ns": 16917
+    },
+    {
+      "mode": "other",
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 5542,
+      "p99_ns": 6125,
+      "p999_ns": 20709
+    }
+  ],
+  "boot_sha256": "a8293d9b5149c2e8929de403751c67935ac8215a0aa2b2acf79411eb3c37e4b4"
+}

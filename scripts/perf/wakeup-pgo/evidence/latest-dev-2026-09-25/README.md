@@ -379,6 +379,39 @@ worker 的只读审计，以及在同一 OrangePi-5-Plus-2 上以相同用户态
 没有运行时改动或新的 90% 收益。原始串口、二进制、源代码、
 `analyze.py` 和哈希核验方式见子目录 README。
 
+### 1.16 命中唤醒策略轴诊断
+
+`resume850-852-policy-axis/` 归档命中唤醒路径只读审计、一次无效试验及
+有效的 Starry/Linux RT 同二进制对照。`resume850` 没有找到可证明安全且
+可能节省数微秒的 domain/batch 局部改动；同地址 requeue 不执行完整的
+等待者移除、状态转换和调度器激活，不能充当唤醒成本替身。
+
+`resume851` 的 50 us park settle 在 Starry 两次启动中都未取得完整有效
+六轮：第一次 runner 在下载逐轮日志前断言，第二次保留了所有原始日志，
+其中 OTHER 第 3/6 轮分别有 3/2 次异常返回。已整体判无效，不能拼接
+其中成功的 FIFO 和 OTHER 轮次，也没有用这组结果与 Linux 比较。
+
+`resume852` 仅将计时窗口外的 park settle 延长到 500 us，并将异常
+唤醒返回按空、不匹配、匹配三臂分别计数。相同静态二进制 SHA256
+`2cbc88477cd5ff43475505534918c5c2ee9835de33c916d4c8203b1f9babd19b`
+在 OrangePi-5-Plus-2 的未改动 Starry G 镜像及冻结 Linux RT 镜像上
+各启动一次，每侧按 FIFO、OTHER、OTHER、FIFO、FIFO、OTHER 顺序
+独立运行六个进程。CPU0 FIFO80 发送者不变，CPU0 接收者为 FIFO1 或
+OTHER；每轮三臂各有 1000 次预热和 20000 次有效样本，唤醒返回
+始终为 0/0/1，策略、CPU、退出状态和板卡释放均已核对。
+
+按每轮“命中 p50 减不匹配 p50”再取策略内三轮中位数，Starry 的
+FIFO/OTHER 为 4958/5833 ns，Linux RT 为 2042/3209 ns；OTHER
+相对 FIFO 的增量分别为 875/1167 ns，Starry 特有增量为 **-292 ns**。
+这未达到预登记的 Starry 至少多 1000 ns、Linux 不超过 300 ns 的
+Fair 发送侧假设门槛。因此，**低优先级、不会立即抢占发送者的唤醒
+窗口不足以解释 full20 最差项的策略差**；不能由此确定 park、切换或
+恢复中的具体原因。该变体改变了冻结工作负载，三轮进程也不是三次
+独立启动，所有数值只用于诊断。原始串口与逐轮日志、协议、构建脚本、
+二进制、镜像哈希、`SHA256SUMS` 和 `resume852-settle/check.py` 均在目录中。
+这次没有运行时源码改动，也没有新的无插桩 full20；最新有效 G1/G2
+仍是 **11/20** 项达到 90%，最差 **58.00%**，PR 继续保持 Draft。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -400,3 +433,6 @@ worker 的只读审计，以及在同一 OrangePi-5-Plus-2 上以相同用户态
 `resume837-842-local-path/` 运行 `sha256sum -c SHA256SUMS` 与
 `python3 resume841-linux-forced-rt/analyze.py` 核对聚焦实验；
 这些结果同样不参与 full20 验收。
+`resume850-852-policy-axis/` 运行 `sha256sum -c SHA256SUMS` 和
+`python3 resume852-settle/check.py` 核对原始日志、二进制哈希、
+完整轮次、样本及策略差值；无效的 `resume851` 仅存证。
