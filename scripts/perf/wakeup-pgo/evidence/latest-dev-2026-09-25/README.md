@@ -272,7 +272,30 @@ benchmark 哈希、无效轮次及独立复算；一次性静态二进制和 Lin
 审计，**没有源码改动、镜像、板测或新增 full20 收益**。现有 PMU
 数据也没有逐 PC/调用栈归因，不能从聚合计数推断可删除成本。
 
-### 1.11 当前 CI 边界
+### 1.11 重新加权的四 crate PGO 筛查
+
+`resume817-819-weighted-pgo/` 保存 `dev@05175ca388` 加已提交 `memset`
+修复后的另一份原生 PGO 训练、构建和两次独立 full20。训练仍沿用
+`resume780` 的临时 exporter 镜像，但将工作负载改为 20 项全跑一次，
+再额外运行 OTHER 同核 futex 七次；训练产生 17 个 `not_parked`，
+不用于验收。`wrapper.jsonl` 确认四个目标 crate 使用新 profile，
+`starryos` 未使用。候选无 profile-generate 插桩，`.bin` SHA256 为
+`9e9847a433cd99808d7f511372d454eb2cf5412a94e42187bcab64780ebfb8a3`。
+profile 和镜像二进制仅保存在本地实验归档，本 PR 留存哈希、构建日志、
+训练记录和逐项原始日志；临时 exporter 未进入 PR 运行时源码。
+
+G1/G2 在 OrangePi-5-Plus-1 的独立启动均完成 20 项、380000/380000
+样本，零 `not_parked` 和 `missed_deadlines`。两轮逐项 p50 中位数仍只有
+**11/20** 达到冻结 Linux RT 的 90%，最差 OTHER 同核线程 futex 为
+14583.5 ns / RT 8458 ns，即 **58.00%**；OTHER timer 为 **58.88%**。
+旧 profile F2 的最差值为 16625 ns，重训在该项有局部 p50 改善，
+但 FIFO timer 和 OTHER 两项跨核 futex 的 p99.9 相对 F2 分别增加
+6.32%、18.11% 和 22.36%。与**仅一次**同源码普通 A1 比较没有
+`>=3%` 的逐项回退，仍不足以通过多次启动回退门。完整九项未达值、
+profile/benchmark/原始日志 SHA 及生产构建限制见子目录 `decision.md`
+和 `analysis.json`。**没有可提交的运行时优化；本候选已拒绝，PR 保持 Draft。**
+
+### 1.12 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
@@ -305,3 +328,5 @@ benchmark 哈希、无效轮次及独立复算；一次性静态二进制和 Lin
 完整镜像哈希保存在状态文件，
 不能仅凭日志重建镜像身份。冻结 benchmark SHA256 为
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。
+`check.py` 也会复算 `resume817-819-weighted-pgo` 两次有效 full20
+的逐项中位数、90% 门槛和单次普通 A1 对照；它不是三次启动验收。

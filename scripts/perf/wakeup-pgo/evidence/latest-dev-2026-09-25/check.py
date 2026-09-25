@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+from statistics import median
 
 
 ROOT = Path(__file__).resolve().parent
@@ -112,6 +113,88 @@ def check_diagnostic(name, baseline, case, valid_rounds):
     return result["rounds"]
 
 
+def check_weighted_pgo(baseline, rt, ordinary, previous):
+    directory = ROOT / "resume817-819-weighted-pgo"
+    training = json.loads((directory / "training-result.json").read_text())
+    assert training["diagnostic_only"] is True
+    assert training["bench_sha256"] == baseline["bench_sha256"]
+    assert training["board_id"] == "OrangePi-5-Plus-1"
+    assert training["session_id"] == json.loads(
+        (directory / "training-session.json").read_text())["session_id"]
+    assert training["workload_log_sha256"] == sha256(directory / "training-workload.log")
+    training_rows = [json.loads(line.split(" ", 1)[1])
+                     for line in (directory / "training-workload.log").read_text().splitlines()
+                     if line.startswith("WAKEUP_LATENCY_RESULT ")]
+    assert len(training_rows) == training["workload_rows"] == 27
+    assert [[row["policy"], row["case"]] for row in training_rows] == training["policies_cases"]
+    assert sum(row["not_parked"] for row in training_rows) == training["not_parked_total"] == 17
+
+    wrapper = [json.loads(line) for line in (directory / "wrapper.jsonl").read_text().splitlines()]
+    assert {row["crate"] for row in wrapper if row["profiled"]} == {
+        "ax_sched", "ax_task", "ax_runtime", "starry_kernel"}
+    assert {row["crate"] for row in wrapper if not row["profiled"]} == {"starryos"}
+    assert "starry bin refresh" in gzip.decompress(
+        (directory / "build.log.gz").read_bytes()).decode()
+
+    runs = {}
+    image = "9e9847a433cd99808d7f511372d454eb2cf5412a94e42187bcab64780ebfb8a3"
+    for label in ("G1", "G2"):
+        status = json.loads((directory / f"{label}-results.json").read_text())
+        assert status["source_head"] == "69a33650763538692fafea27c869870ed0313642"
+        assert status["source_patch_sha256"] == "d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78"
+        assert status["bench_sha256"] == baseline["bench_sha256"]
+        assert status["board_id"] == "OrangePi-5-Plus-1"
+        assert status["session_id"] == json.loads(
+            (directory / f"{label}-session.json").read_text())["session_id"]
+        assert status["image_sha256"]["G"] == image
+        assert len(status["rounds"]) == 1
+        run = status["rounds"][0]
+        assert run["tag"] == label and run["valid"] and run["error"] is None
+        assert run["image_sha256"] == image
+        path = directory / f"{label}-full.log"
+        assert sha256(path) == run["raw_log_sha256"]
+        rows = read_full20(path, baseline)
+        assert rows == {(row["policy"], row["case"]): row for row in run["rows"]}
+        assert set(rows) == set(rt)
+        runs[label] = rows
+
+    analysis = json.loads((directory / "analysis.json").read_text())
+    assert analysis["candidate"] == "G1/G2" and analysis["screening_only"] is True
+    assert analysis["both_full20_valid"] is True and analysis["image_sha256"] == image
+    assert len(analysis["comparison"]) == 20
+    assert {(row["policy"], row["case"]) for row in analysis["comparison"]} == set(rt)
+    assert analysis["accepted_rows_90_percent"] == sum(
+        rt[key]["p50_ns"] * 10 >= median(runs[label][key]["p50_ns"] for label in runs) * 9
+        for key in rt) == 11
+    regressions = []
+    for row in analysis["comparison"]:
+        key = row["policy"], row["case"]
+        candidate_p50 = median(runs[label][key]["p50_ns"] for label in runs)
+        assert row["linux_rt_p50_ns"] == rt[key]["p50_ns"]
+        assert row["rt_over_G_p50_percent"] == round(
+            100 * rt[key]["p50_ns"] / candidate_p50, 2)
+        assert row["G_passes_90_percent"] == (rt[key]["p50_ns"] * 10 >= candidate_p50 * 9)
+        for metric in METRICS:
+            values = row["metrics"][metric]
+            g1, g2 = (runs[label][key][metric] for label in runs)
+            g = median((g1, g2))
+            vs_a = round(100 * (g / ordinary[key][metric] - 1), 2)
+            vs_f = round(100 * (g / previous[key][metric] - 1), 2)
+            assert values == {"A1": ordinary[key][metric], "F2": previous[key][metric],
+                              "G1": g1, "G2": g2, "G_median": g,
+                              "G_vs_A_percent": vs_a, "G_vs_F_percent": vs_f}
+            if g >= ordinary[key][metric] * 1.03:
+                regressions.append({"policy": key[0], "case": key[1], "metric": metric,
+                                    "G_vs_A_percent": vs_a})
+    assert analysis["regressions_ge_3_percent_vs_single_A1"] == regressions == []
+    worst = min(analysis["comparison"], key=lambda row: row["rt_over_G_p50_percent"])
+    assert (worst["policy"], worst["case"]) == ("other", "thread_futex_same_cpu")
+    assert analysis["worst_row"] == worst["case"]
+    assert median(runs[label]["other", "thread_futex_same_cpu"]["p50_ns"]
+                  for label in runs) == 14583.5
+    print("resume817-819: two valid G full20 boots, 11/20 at 90%; weighted PGO rejected")
+
+
 def main():
     baseline = json.loads(BASELINE.read_text())
     rt = {(row["policy"], row["case"]): row for row in baseline["results"]}
@@ -217,6 +300,8 @@ def main():
     assert not (rt[worst]["p50_ns"] / f[worst]["p50_ns"] >= 0.9)
     print("resume787: valid A1, invalid F1 (one not_parked sample)")
     print("resume788: valid F2, A1/F2 diagnostic 11/20 at 90%, no >=3% regression")
+
+    check_weighted_pgo(baseline, rt, a, f)
 
     trial = json.loads((ROOT / "resume795/results.json").read_text())
     assert trial["source_head"] == "f52d905a4765d84c08ff36fa6298a7cf9659520f"
