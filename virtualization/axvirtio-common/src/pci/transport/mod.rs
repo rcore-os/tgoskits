@@ -107,6 +107,21 @@ pub trait VirtioDeviceCore: Send + Sync {
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<QueueNotifyOutcome>;
 
+    /// Processes one queue using the features successfully negotiated with the driver.
+    ///
+    /// Existing device cores may keep implementing [`notify_queue`](Self::notify_queue);
+    /// the default implementation preserves that callback contract. Feature-aware
+    /// devices should override this method and must treat the mask as negotiated
+    /// state, not as the features offered by the device.
+    fn notify_queue_with_features(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+        _negotiated_features: u64,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        self.notify_queue(queue, memory)
+    }
+
     /// Retries one queue whose device-specific backend deferred completion.
     fn poll_queue(
         &self,
@@ -114,6 +129,19 @@ pub trait VirtioDeviceCore: Send + Sync {
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<QueueNotifyOutcome> {
         self.notify_queue(queue, memory)
+    }
+
+    /// Retries a deferred queue using the successfully negotiated features.
+    ///
+    /// The default keeps existing [`poll_queue`](Self::poll_queue) overrides
+    /// source-compatible.
+    fn poll_queue_with_features(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+        _negotiated_features: u64,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        self.poll_queue(queue, memory)
     }
 
     /// Whether queue processing can complete asynchronously.

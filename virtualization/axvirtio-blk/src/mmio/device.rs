@@ -3,8 +3,8 @@ use alloc::{sync::Arc, vec};
 use ax_sync::SpinLock;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
-    AddressSpaceMemory, MmioReadOutcome, MmioWriteAction, VirtioDeviceID, VirtioError,
-    VirtioMmioState, VirtioQueue, VirtioResult, mmio::transport,
+    AddressSpaceMemory, MmioReadOutcome, MmioWriteAction, VirtioDeviceID, VirtioMmioState,
+    VirtioQueue, VirtioResult, mmio::transport,
 };
 use axvm_types::{AccessWidth, GuestPhysAddr};
 use log::trace;
@@ -186,20 +186,22 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
         queue_index: u16,
         memory: &mut dyn axvirtio_common::GuestMemory,
     ) -> VirtioResult<BlockDeviceEvent> {
-        if !self.is_device_ready() {
+        let Some(mut queue_lease) = self.state.acquire_queue_processing_lease(queue_index)? else {
             return Ok(BlockDeviceEvent::None);
-        }
-        let mut queues = self.state.queues_lock();
-        let queue = queues
-            .get_mut(queue_index as usize)
-            .ok_or(VirtioError::InvalidQueue)?;
-        if !queue.is_valid() {
-            return Ok(BlockDeviceEvent::None);
-        }
+        };
+        let negotiated_features = queue_lease.negotiated_features();
         let pending_head = self.take_pending_head();
-        let outcome = self.core.process_queue(queue, memory, pending_head);
-        drop(queues);
-        match outcome? {
+        let outcome = self.core.process_queue_with_features(
+            queue_lease.queue(),
+            memory,
+            pending_head,
+            negotiated_features,
+        )?;
+        if let BlockQueueOutcome::Deferred { pending_head, .. } = outcome {
+            self.store_pending_head(pending_head);
+        }
+        drop(queue_lease);
+        match outcome {
             BlockQueueOutcome::Idle | BlockQueueOutcome::Completed { notify: false } => {
                 Ok(BlockDeviceEvent::None)
             }
@@ -207,11 +209,7 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
                 self.trigger_interrupt();
                 Ok(BlockDeviceEvent::InterruptPending)
             }
-            BlockQueueOutcome::Deferred {
-                pending_head,
-                notify,
-            } => {
-                self.store_pending_head(pending_head);
+            BlockQueueOutcome::Deferred { notify, .. } => {
                 if notify {
                     self.trigger_interrupt();
                 }
@@ -277,12 +275,15 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use alloc::{sync::Arc, vec, vec::Vec};
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::{sync::Barrier, thread};
 
     use axvirtio_common::{
-        GuestMemory, NoGuestMemoryAccessor, VirtioError,
-        constants::{VIRTIO_MMIO_STATUS, VIRTQ_DESC_F_NEXT},
+        GuestMemory, NoGuestMemoryAccessor, VirtioError, constants as vc,
+        constants::VIRTQ_DESC_F_NEXT,
     };
 
     use super::*;
@@ -290,6 +291,7 @@ mod tests {
     const DESC_TABLE: usize = 0x100;
     const AVAIL_RING: usize = 0x200;
     const USED_RING: usize = 0x240;
+    const BASE: usize = 0x0a00_0000;
     const HEADER: usize = 0x300;
     const DATA: usize = 0x400;
     const STATUS: usize = 0x800;
@@ -314,6 +316,10 @@ mod tests {
         fn set_header(&mut self, request_type: u32, sector: u64) {
             self.0[HEADER..HEADER + 4].copy_from_slice(&request_type.to_le_bytes());
             self.0[HEADER + 8..HEADER + 16].copy_from_slice(&sector.to_le_bytes());
+        }
+
+        fn used_idx(&self) -> u16 {
+            u16::from_le_bytes(self.0[USED_RING + 2..USED_RING + 4].try_into().unwrap())
         }
     }
 
@@ -383,6 +389,33 @@ mod tests {
         }
     }
 
+    struct BlockingBackend {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+        reset_calls: Arc<AtomicUsize>,
+    }
+
+    impl BlockBackend for BlockingBackend {
+        fn reset(&self) {
+            self.reset_calls.fetch_add(1, Ordering::Release);
+        }
+
+        fn read(&self, _sector: u64, buffer: &mut [u8]) -> VirtioResult<usize> {
+            buffer.fill(0x5a);
+            Ok(buffer.len())
+        }
+
+        fn write(&self, _sector: u64, _buffer: &[u8]) -> VirtioResult<usize> {
+            self.entered.wait();
+            self.release.wait();
+            Err(VirtioError::WouldBlock)
+        }
+
+        fn flush(&self) -> VirtioResult<()> {
+            Ok(())
+        }
+    }
+
     fn fixture(
         data_len: u32,
         sector: u64,
@@ -439,8 +472,88 @@ mod tests {
         (device, queue, memory)
     }
 
+    fn write_register<B: BlockBackend, T: GuestMemoryAccessor + Clone>(
+        device: &VirtioMmioBlockDevice<B, T>,
+        memory: &mut TestMemory,
+        register: usize,
+        value: usize,
+    ) -> BlockDeviceEvent {
+        device
+            .mmio_write_with_memory(
+                GuestPhysAddr::from(BASE + register),
+                AccessWidth::Dword,
+                value,
+                memory,
+            )
+            .unwrap()
+    }
+
+    fn negotiate_driver_features<B: BlockBackend, T: GuestMemoryAccessor + Clone>(
+        device: &VirtioMmioBlockDevice<B, T>,
+        memory: &mut TestMemory,
+        features: u64,
+    ) {
+        write_register(device, memory, vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
+        write_register(
+            device,
+            memory,
+            vc::VIRTIO_MMIO_DRIVER_FEATURES,
+            features as usize,
+        );
+        for status in [
+            vc::VIRTIO_STATUS_ACKNOWLEDGE,
+            vc::VIRTIO_STATUS_ACKNOWLEDGE | vc::VIRTIO_STATUS_DRIVER,
+            vc::VIRTIO_STATUS_ACKNOWLEDGE
+                | vc::VIRTIO_STATUS_DRIVER
+                | vc::VIRTIO_STATUS_FEATURES_OK,
+            vc::VIRTIO_STATUS_ACKNOWLEDGE
+                | vc::VIRTIO_STATUS_DRIVER
+                | vc::VIRTIO_STATUS_FEATURES_OK
+                | vc::VIRTIO_STATUS_DRIVER_OK,
+        ] {
+            write_register(device, memory, vc::VIRTIO_MMIO_STATUS, status as usize);
+        }
+    }
+
+    fn configure_queue_from_registers<B: BlockBackend, T: GuestMemoryAccessor + Clone>(
+        device: &VirtioMmioBlockDevice<B, T>,
+        memory: &mut TestMemory,
+    ) {
+        for (register, value) in [
+            (vc::VIRTIO_MMIO_QUEUE_SEL, 0),
+            (vc::VIRTIO_MMIO_QUEUE_NUM, 4),
+            (vc::VIRTIO_MMIO_QUEUE_DESC_LOW, DESC_TABLE),
+            (vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW, AVAIL_RING),
+            (vc::VIRTIO_MMIO_QUEUE_USED_LOW, USED_RING),
+            (vc::VIRTIO_MMIO_QUEUE_READY, 1),
+        ] {
+            write_register(device, memory, register, value);
+        }
+    }
+
+    fn configure_ready_transport<B: BlockBackend, T: GuestMemoryAccessor + Clone>(
+        device: &VirtioMmioBlockDevice<B, T>,
+        memory: &mut TestMemory,
+        features: u64,
+    ) {
+        negotiate_driver_features(device, memory, features);
+        configure_queue_from_registers(device, memory);
+    }
+
+    fn wait_for_reset_status<B: BlockBackend, T: GuestMemoryAccessor + Clone>(
+        device: &VirtioMmioBlockDevice<B, T>,
+    ) {
+        for _ in 0..100_000 {
+            if device.get_status() == 0 {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("MMIO reset did not publish status zero");
+    }
+
     #[test]
-    fn oversized_segment_completes_with_ioerr_without_allocating_guest_length() {
+    fn unaligned_segment_completes_with_ioerr() {
         let (device, queue, mut memory) = fixture(513, 0);
 
         assert_eq!(
@@ -501,7 +614,7 @@ mod tests {
         let writes = backend.writes.clone();
         let cancellations = backend.cancellations.clone();
         let (device, _queue, mut memory) = fixture_with_backend(512, 0, backend, false);
-        device.set_status(crate::constants::VIRTIO_STATUS_DRIVER_OK);
+        negotiate_driver_features(&device, &mut memory, 0);
         {
             let mut queues = device.state.queues_lock();
             let queue = &mut queues[0];
@@ -574,7 +687,7 @@ mod tests {
     #[test]
     fn empty_event_idx_queue_rearms_the_next_available_index() {
         let (device, _queue, mut memory) = fixture(64, 0);
-        device.set_status(crate::constants::VIRTIO_STATUS_DRIVER_OK);
+        negotiate_driver_features(&device, &mut memory, 0);
         {
             let mut queues = device.state.queues_lock();
             let queue = &mut queues[0];
@@ -604,5 +717,135 @@ mod tests {
             u16::from_le_bytes(memory.0[avail_event..avail_event + 2].try_into().unwrap()),
             2
         );
+    }
+
+    #[test]
+    fn mmio_queue_uses_only_the_features_negotiated_through_registers() {
+        let backend = TestBackend::default();
+        let writes = Arc::clone(&backend.writes);
+        let (device, _queue, mut memory) = fixture_with_backend(512, 0, backend, false);
+        configure_ready_transport(
+            &device,
+            &mut memory,
+            crate::constants::VIRTIO_BLK_F_SIZE_MAX,
+        );
+
+        memory.set_descriptor(
+            0,
+            HEADER,
+            crate::block::VIRTIO_BLK_REQUEST_HEADER_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            1,
+        );
+        memory.set_descriptor(1, DATA, 1024, VIRTQ_DESC_F_NEXT, 2);
+        memory.set_descriptor(2, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+        memory.set_header(VIRTIO_BLK_T_OUT, 0);
+        memory.0[STATUS] = 0xff;
+        memory.0[AVAIL_RING + 2..AVAIL_RING + 4].copy_from_slice(&1_u16.to_le_bytes());
+        memory.0[AVAIL_RING + 4..AVAIL_RING + 6].copy_from_slice(&0_u16.to_le_bytes());
+
+        assert_eq!(
+            write_register(&device, &mut memory, vc::VIRTIO_MMIO_QUEUE_NOTIFY, 0),
+            BlockDeviceEvent::InterruptPending
+        );
+        assert_eq!(memory.0[STATUS], IOERR);
+        assert_eq!(writes.load(Ordering::Relaxed), 0);
+        assert_eq!(memory.used_idx(), 1);
+
+        memory.set_descriptor(1, DATA, 512, VIRTQ_DESC_F_NEXT, 2);
+        memory.set_descriptor(2, DATA + 512, 512, VIRTQ_DESC_F_NEXT, 3);
+        memory.set_descriptor(3, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+        memory.0[STATUS] = 0xff;
+        memory.0[AVAIL_RING + 2..AVAIL_RING + 4].copy_from_slice(&2_u16.to_le_bytes());
+        memory.0[AVAIL_RING + 6..AVAIL_RING + 8].copy_from_slice(&0_u16.to_le_bytes());
+
+        assert_eq!(
+            write_register(&device, &mut memory, vc::VIRTIO_MMIO_QUEUE_NOTIFY, 0),
+            BlockDeviceEvent::InterruptPending
+        );
+        assert_eq!(memory.0[STATUS], 0);
+        assert_eq!(writes.load(Ordering::Relaxed), 1);
+        assert_eq!(memory.used_idx(), 2);
+    }
+
+    #[test]
+    fn reset_waits_for_queue_lease_and_clears_deferred_state() {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let reset_calls = Arc::new(AtomicUsize::new(0));
+        let backend = BlockingBackend {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+            reset_calls: Arc::clone(&reset_calls),
+        };
+        let device = Arc::new(
+            VirtioMmioBlockDevice::new(
+                GuestPhysAddr::from(BASE),
+                0x200,
+                backend,
+                VirtioBlockConfig {
+                    capacity: 8,
+                    size_max: 512,
+                    seg_max: 1,
+                    ..VirtioBlockConfig::default()
+                },
+                NoGuestMemoryAccessor,
+            )
+            .unwrap(),
+        );
+        let mut memory = TestMemory::new();
+        configure_ready_transport(&device, &mut memory, 0);
+        memory.set_descriptor(
+            0,
+            HEADER,
+            crate::block::VIRTIO_BLK_REQUEST_HEADER_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            1,
+        );
+        memory.set_descriptor(1, DATA, 512, VIRTQ_DESC_F_NEXT, 2);
+        memory.set_descriptor(2, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+        memory.set_header(VIRTIO_BLK_T_OUT, 1);
+        memory.0[AVAIL_RING + 2..AVAIL_RING + 4].copy_from_slice(&1_u16.to_le_bytes());
+        memory.0[AVAIL_RING + 4..AVAIL_RING + 6].copy_from_slice(&0_u16.to_le_bytes());
+
+        let notify_device = Arc::clone(&device);
+        let notify = thread::spawn(move || {
+            let mut memory = memory;
+            let event =
+                write_register(&notify_device, &mut memory, vc::VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+            (event, memory)
+        });
+        entered.wait();
+
+        let reset_started = Arc::new(Barrier::new(2));
+        let reset_finished = Arc::new(AtomicBool::new(false));
+        let reset_device = Arc::clone(&device);
+        let reset_started_thread = Arc::clone(&reset_started);
+        let reset_finished_thread = Arc::clone(&reset_finished);
+        let reset = thread::spawn(move || {
+            reset_started_thread.wait();
+            let mut memory = TestMemory::new();
+            let event = write_register(&reset_device, &mut memory, vc::VIRTIO_MMIO_STATUS, 0);
+            reset_finished_thread.store(true, Ordering::Release);
+            event
+        });
+        reset_started.wait();
+        wait_for_reset_status(&device);
+        assert!(!reset_finished.load(Ordering::Acquire));
+        assert_eq!(reset_calls.load(Ordering::Acquire), 0);
+
+        release.wait();
+        let (notify_event, memory) = notify.join().expect("queue notify should finish");
+        assert_eq!(notify_event, BlockDeviceEvent::QueuePending(0));
+        assert_eq!(memory.used_idx(), 0);
+        assert_eq!(
+            reset.join().expect("reset should finish after queue lease"),
+            BlockDeviceEvent::Reset
+        );
+        assert!(reset_finished.load(Ordering::Acquire));
+        assert_eq!(device.get_status(), 0);
+        assert_eq!(reset_calls.load(Ordering::Acquire), 1);
+        assert_eq!(*device.pending_head.lock(), None);
+        assert!(!device.get_queue(0).unwrap().is_valid());
     }
 }

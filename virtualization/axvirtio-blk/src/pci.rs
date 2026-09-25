@@ -42,10 +42,11 @@ impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
         &self,
         queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
         memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
     ) -> DeviceResult<QueueNotifyOutcome> {
         let pending_head = self.pending_head.lock().take();
         self.core
-            .process_queue(queue, memory, pending_head)
+            .process_queue_with_features(queue, memory, pending_head, negotiated_features)
             .map(|outcome| match outcome {
                 BlockQueueOutcome::Idle => QueueNotifyOutcome::Idle,
                 BlockQueueOutcome::Completed { notify } => QueueNotifyOutcome::Completed { notify },
@@ -107,7 +108,16 @@ impl<B: BlockBackend> VirtioDeviceCore for VirtioBlockPciAdapter<B> {
         queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<QueueNotifyOutcome> {
-        self.process_queue(queue, memory)
+        self.process_queue(queue, memory, 0)
+    }
+
+    fn notify_queue_with_features(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        self.process_queue(queue, memory, negotiated_features)
     }
 
     fn poll_queue(
@@ -115,7 +125,16 @@ impl<B: BlockBackend> VirtioDeviceCore for VirtioBlockPciAdapter<B> {
         queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
         memory: &mut dyn GuestMemory,
     ) -> DeviceResult<QueueNotifyOutcome> {
-        self.process_queue(queue, memory)
+        self.process_queue(queue, memory, 0)
+    }
+
+    fn poll_queue_with_features(
+        &self,
+        queue: &mut VirtioQueue<NoGuestMemoryAccessor>,
+        memory: &mut dyn GuestMemory,
+        negotiated_features: u64,
+    ) -> DeviceResult<QueueNotifyOutcome> {
+        self.process_queue(queue, memory, negotiated_features)
     }
 
     fn reset(&self) -> DeviceResult {
@@ -395,6 +414,16 @@ mod tests {
         Arc<VirtioPciTransport<VirtioBlockPciAdapter<B>>>,
         TestMemory,
     ) {
+        configure_transport_with_features(backend, VIRTIO_BLK_F_SIZE_MAX | VIRTIO_BLK_F_SEG_MAX)
+    }
+
+    fn configure_transport_with_features<B: BlockBackend>(
+        backend: B,
+        negotiated_features: u64,
+    ) -> (
+        Arc<VirtioPciTransport<VirtioBlockPciAdapter<B>>>,
+        TestMemory,
+    ) {
         let transport = Arc::new(
             VirtioPciTransport::try_new(VirtioBlockPciAdapter::new(
                 backend,
@@ -411,7 +440,7 @@ mod tests {
         for (offset, width, value) in [
             (0x00, AccessWidth::Dword, 0),
             (0x08, AccessWidth::Dword, 0),
-            (0x0c, AccessWidth::Dword, 0),
+            (0x0c, AccessWidth::Dword, negotiated_features),
             (0x14, AccessWidth::Byte, 0x0f),
             (0x16, AccessWidth::Word, 0),
             (0x18, AccessWidth::Word, 4),
@@ -563,6 +592,7 @@ mod tests {
         config: VirtioBlockConfig,
         sector: u64,
         data_len: u32,
+        negotiated_features: u64,
         setup: impl FnOnce(&mut TestMemory),
     ) -> (TestMemory, Arc<AtomicUsize>) {
         let backend = TestBackend::new(8);
@@ -583,7 +613,13 @@ mod tests {
         memory.set_available_head(0);
         setup(&mut memory);
 
-        let outcome = adapter.notify_queue(&mut queue, &mut memory).unwrap();
+        let outcome = if negotiated_features == 0 {
+            adapter.notify_queue(&mut queue, &mut memory).unwrap()
+        } else {
+            adapter
+                .notify_queue_with_features(&mut queue, &mut memory, negotiated_features)
+                .unwrap()
+        };
         assert!(matches!(
             outcome,
             QueueNotifyOutcome::Completed { notify: true }
@@ -680,6 +716,64 @@ mod tests {
         assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_OK);
         assert_eq!(memory.bytes[DATA as usize], 0x5a);
         assert_eq!(memory.bytes[DATA as usize + 511], 0x5a);
+    }
+
+    #[test]
+    fn pci_transport_passes_only_the_driver_negotiated_feature_mask() {
+        let backend = TestBackend::new(8);
+        let write_count = Arc::clone(&backend.write_count);
+        let (transport, mut memory) =
+            configure_transport_with_features(backend, VIRTIO_BLK_F_SIZE_MAX);
+
+        memory.set_descriptor(
+            0,
+            HEADER,
+            VIRTIO_BLK_REQUEST_HEADER_SIZE,
+            VIRTQ_DESC_F_NEXT,
+            1,
+        );
+        memory.set_descriptor(1, READ_DATA, 1024, VIRTQ_DESC_F_NEXT, 2);
+        memory.set_descriptor(2, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+        memory.set_header(VIRTIO_BLK_T_OUT, 0);
+        memory.bytes[STATUS as usize] = 0xff;
+        memory.set_available_head(0);
+
+        let notification = transport
+            .write_bar_with_dma(0x100, AccessWidth::Word, 0, true, &mut memory)
+            .unwrap();
+        let outcome = match notification {
+            VirtioPciWriteOutcome::QueueNotified(notification) => {
+                let outcome = notification.outcome();
+                notification.complete();
+                outcome
+            }
+            _ => panic!("expected PCI block queue notification"),
+        };
+        assert_eq!(outcome, QueueNotifyOutcome::Completed { notify: true });
+        assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_IOERR);
+        assert_eq!(write_count.load(Ordering::Relaxed), 0);
+
+        memory.set_descriptor(1, DATA, 512, VIRTQ_DESC_F_NEXT, 2);
+        memory.set_descriptor(2, READ_DATA, 512, VIRTQ_DESC_F_NEXT, 3);
+        memory.set_descriptor(3, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+        memory.bytes[STATUS as usize] = 0xff;
+        memory.set_available_head_at(2, 0);
+
+        let notification = transport
+            .write_bar_with_dma(0x100, AccessWidth::Word, 0, true, &mut memory)
+            .unwrap();
+        let outcome = match notification {
+            VirtioPciWriteOutcome::QueueNotified(notification) => {
+                let outcome = notification.outcome();
+                notification.complete();
+                outcome
+            }
+            _ => panic!("expected PCI block queue notification"),
+        };
+        assert_eq!(outcome, QueueNotifyOutcome::Completed { notify: true });
+        assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_OK);
+        assert_eq!(write_count.load(Ordering::Relaxed), 1);
+        assert_eq!(memory.used_idx(), 2);
     }
 
     #[test]
@@ -861,7 +955,7 @@ mod tests {
                 seg_max: 1,
                 ..VirtioBlockConfig::default()
             };
-            let (memory, write_count) = run_write_request(config, 0, 512, |memory| {
+            let (memory, write_count) = run_write_request(config, 0, 512, 0, |memory| {
                 memory.set_descriptor(0, HEADER, 16, header_flags, 1);
                 memory.set_descriptor(2, STATUS, 1, status_flags, 0);
                 memory.bytes[STATUS as usize] = 0xff;
@@ -875,6 +969,68 @@ mod tests {
     }
 
     #[test]
+    fn accepts_large_segments_when_limits_were_not_negotiated() {
+        let config = VirtioBlockConfig {
+            capacity: 8,
+            size_max: 512,
+            seg_max: 1,
+            ..VirtioBlockConfig::default()
+        };
+        let (memory, write_count) = run_write_request(config, 0, 1024, 0, |memory| {
+            memory.set_descriptor(1, READ_DATA, 1024, VIRTQ_DESC_F_NEXT, 2);
+            memory.bytes[STATUS as usize] = 0xff;
+        });
+
+        assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_OK);
+        assert_eq!(write_count.load(Ordering::Relaxed), 1);
+        assert_eq!(memory.used_idx(), 1);
+        assert_eq!(memory.used_element(0), (0, 1));
+    }
+
+    #[test]
+    fn size_and_segment_limits_follow_their_independent_features() {
+        let config = VirtioBlockConfig {
+            capacity: 8,
+            size_max: 512,
+            seg_max: 1,
+            ..VirtioBlockConfig::default()
+        };
+        for (features, single_segment_status, split_segment_status) in [
+            (0, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_OK),
+            (VIRTIO_BLK_F_SIZE_MAX, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK),
+            (VIRTIO_BLK_F_SEG_MAX, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_IOERR),
+            (
+                VIRTIO_BLK_F_SIZE_MAX | VIRTIO_BLK_F_SEG_MAX,
+                VIRTIO_BLK_S_IOERR,
+                VIRTIO_BLK_S_IOERR,
+            ),
+        ] {
+            let (memory, writes) = run_write_request(config.clone(), 0, 1024, features, |memory| {
+                memory.set_descriptor(1, READ_DATA, 1024, VIRTQ_DESC_F_NEXT, 2);
+                memory.bytes[STATUS as usize] = 0xff;
+            });
+            assert_eq!(memory.bytes[STATUS as usize], single_segment_status);
+            assert_eq!(
+                writes.load(Ordering::Relaxed),
+                usize::from(single_segment_status == 0)
+            );
+
+            let (memory, writes) = run_write_request(config.clone(), 0, 512, features, |memory| {
+                memory.set_descriptor(1, DATA, 512, VIRTQ_DESC_F_NEXT, 2);
+                memory.set_descriptor(2, READ_DATA, 512, VIRTQ_DESC_F_NEXT, 3);
+                memory.set_descriptor(3, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+                memory.bytes[STATUS as usize] = 0xff;
+            });
+            assert_eq!(memory.bytes[STATUS as usize], split_segment_status);
+            assert_eq!(
+                writes.load(Ordering::Relaxed),
+                usize::from(split_segment_status == 0)
+            );
+            assert_eq!(memory.used_idx(), 1);
+        }
+    }
+
+    #[test]
     fn rejects_sector_end_length_and_segment_limits_before_data_copy() {
         let config = VirtioBlockConfig {
             capacity: 8,
@@ -882,12 +1038,13 @@ mod tests {
             seg_max: 1,
             ..VirtioBlockConfig::default()
         };
-        let (memory, write_count) = run_write_request(config.clone(), u64::MAX, 512, |_| {});
+        let (memory, write_count) = run_write_request(config.clone(), u64::MAX, 512, 0, |_| {});
         assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_IOERR);
         assert_eq!(write_count.load(Ordering::Relaxed), 0);
         assert!(!memory.reads.contains(&(DATA, 512)));
 
-        let (memory, write_count) = run_write_request(config.clone(), u64::MAX / 512, 512, |_| {});
+        let (memory, write_count) =
+            run_write_request(config.clone(), u64::MAX / 512, 512, 0, |_| {});
         assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_IOERR);
         assert_eq!(write_count.load(Ordering::Relaxed), 0);
         assert!(!memory.reads.contains(&(DATA, 512)));
@@ -899,17 +1056,19 @@ mod tests {
             },
             0,
             512,
+            VIRTIO_BLK_F_SIZE_MAX,
             |_| {},
         );
         assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_IOERR);
         assert_eq!(write_count.load(Ordering::Relaxed), 0);
         assert!(!memory.reads.contains(&(DATA, 512)));
 
-        let (memory, write_count) = run_write_request(config.clone(), 0, 512, |memory| {
-            memory.set_descriptor(1, DATA, 512, VIRTQ_DESC_F_NEXT, 2);
-            memory.set_descriptor(2, READ_DATA, 512, VIRTQ_DESC_F_NEXT, 3);
-            memory.set_descriptor(3, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
-        });
+        let (memory, write_count) =
+            run_write_request(config.clone(), 0, 512, VIRTIO_BLK_F_SEG_MAX, |memory| {
+                memory.set_descriptor(1, DATA, 512, VIRTQ_DESC_F_NEXT, 2);
+                memory.set_descriptor(2, READ_DATA, 512, VIRTQ_DESC_F_NEXT, 3);
+                memory.set_descriptor(3, STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+            });
         assert_eq!(memory.bytes[STATUS as usize], VIRTIO_BLK_S_IOERR);
         assert_eq!(write_count.load(Ordering::Relaxed), 0);
         assert!(!memory.reads.contains(&(DATA, 512)));
