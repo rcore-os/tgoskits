@@ -1,0 +1,643 @@
+[
+  {
+    "date": "2026-09-20",
+    "revision": "2f5347b14bd43fa65c27597cccf348194a85db25",
+    "metrics": [
+      {
+        "name": "ivc-bench/send/256KiB",
+        "unit": "MB/s",
+        "value": 2269.89
+      },
+      {
+        "name": "ivc-bench/receive/256KiB",
+        "unit": "MB/s",
+        "value": 1676.35
+      },
+      {
+        "name": "ivc-bench/send/512KiB",
+        "unit": "MB/s",
+        "value": 2278.09
+      },
+      {
+        "name": "ivc-bench/receive/512KiB",
+        "unit": "MB/s",
+        "value": 1933.38
+      },
+      {
+        "name": "ivc-bench/send/1MiB",
+        "unit": "MB/s",
+        "value": 2286.48
+      },
+      {
+        "name": "ivc-bench/receive/1MiB",
+        "unit": "MB/s",
+        "value": 2045.98
+      },
+      {
+        "name": "ivc-bench/send/10MiB",
+        "unit": "MB/s",
+        "value": 2239.05
+      },
+      {
+        "name": "ivc-bench/receive/10MiB",
+        "unit": "MB/s",
+        "value": 2071.14
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 373635.79
+      }
+    ]
+  },
+  {
+    "date": "2026-09-20",
+    "revision": "4aed343ff27f0827d32a78528c62687f1cb1565c",
+    "metrics": [
+      {
+        "name": "ivc-bench/send/256KiB",
+        "unit": "MB/s",
+        "value": 2270.5
+      },
+      {
+        "name": "ivc-bench/receive/256KiB",
+        "unit": "MB/s",
+        "value": 1612.9
+      },
+      {
+        "name": "ivc-bench/send/512KiB",
+        "unit": "MB/s",
+        "value": 2276.35
+      },
+      {
+        "name": "ivc-bench/receive/512KiB",
+        "unit": "MB/s",
+        "value": 1954.24
+      },
+      {
+        "name": "ivc-bench/send/1MiB",
+        "unit": "MB/s",
+        "value": 2283.04
+      },
+      {
+        "name": "ivc-bench/receive/1MiB",
+        "unit": "MB/s",
+        "value": 2038.6
+      },
+      {
+        "name": "ivc-bench/send/10MiB",
+        "unit": "MB/s",
+        "value": 2239.31
+      },
+      {
+        "name": "ivc-bench/receive/10MiB",
+        "unit": "MB/s",
+        "value": 2073.15
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 351895.95
+      }
+    ]
+  },
+  {
+    "date": "2026-09-20",
+    "revision": "e55adc1bbaca88f99ad64e0e757d3b4273d0eeba",
+    "metrics": [
+      {
+        "name": "ivc-bench/send/256KiB",
+        "unit": "MB/s",
+        "value": 2265.35
+      },
+      {
+        "name": "ivc-bench/receive/256KiB",
+        "unit": "MB/s",
+        "value": 1704.28
+      },
+      {
+        "name": "ivc-bench/send/512KiB",
+        "unit": "MB/s",
+        "value": 2282.96
+      },
+      {
+        "name": "ivc-bench/receive/512KiB",
+        "unit": "MB/s",
+        "value": 1950.19
+      },
+      {
+        "name": "ivc-bench/send/1MiB",
+        "unit": "MB/s",
+        "value": 2286.86
+      },
+      {
+        "name": "ivc-bench/receive/1MiB",
+        "unit": "MB/s",
+        "value": 2044.5
+      },
+      {
+        "name": "ivc-bench/send/10MiB",
+        "unit": "MB/s",
+        "value": 2239.21
+      },
+      {
+        "name": "ivc-bench/receive/10MiB",
+        "unit": "MB/s",
+        "value": 2076.89
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 374866.13
+      }
+    ]
+  },
+  {
+    "date": "2026-09-21",
+    "revision": "7840113b02d5bc261dfb42b397234ef6f1bea0d0",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1707.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1707.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1707.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1707.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1707.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 360935.76
+      }
+    ]
+  },
+  {
+    "date": "2026-09-21",
+    "revision": "f8ac402f852e8193c15fca07111b4fcd78b49f7b",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1708.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 373001.6
+      }
+    ]
+  },
+  {
+    "date": "2026-09-22",
+    "revision": "ee5a638e0ef4d55ab461fde6285a84e3b4679bec",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1703.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1708.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1703.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 363390.61
+      }
+    ]
+  },
+  {
+    "date": "2026-09-23",
+    "revision": "9a7b868bab8dcceb42acab516dcc88d5cc69985a",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1712.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1708.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1712.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 362174.94
+      }
+    ]
+  },
+  {
+    "date": "2026-09-23",
+    "revision": "ee5a638e0ef4d55ab461fde6285a84e3b4679bec",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1705.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1703.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1708.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1706.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1704.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 374403.23
+      }
+    ]
+  },
+  {
+    "date": "2026-09-24",
+    "revision": "05175ca38823b631a73777b0130226ddfa558439",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1712.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1712.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 361228.06
+      }
+    ]
+  },
+  {
+    "date": "2026-09-24",
+    "revision": "9a7b868bab8dcceb42acab516dcc88d5cc69985a",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1712.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 371453.47
+      }
+    ]
+  },
+  {
+    "date": "2026-09-25",
+    "revision": "714accd8f636c540b2c3554b0b1e5cb885be42a4",
+    "metrics": [
+      {
+        "name": "task-switch/avg_cycles/index-0",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-1",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-2",
+        "unit": "cycles",
+        "value": 1710.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-3",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-4",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-5",
+        "unit": "cycles",
+        "value": 1709.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-6",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-7",
+        "unit": "cycles",
+        "value": 1713.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-8",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "task-switch/avg_cycles/index-9",
+        "unit": "cycles",
+        "value": 1711.0
+      },
+      {
+        "name": "vcpu-perf/blocks_per_second",
+        "unit": "blocks/s",
+        "value": 363122.89
+      }
+    ]
+  }
+]
