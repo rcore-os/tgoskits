@@ -620,6 +620,17 @@ p50/p99/p99.9 筛查比较有六项回退至少 3%，FIFO timer p99.9
 高 19.766%。候选不足两次有效启动，已拒绝并撤回运行时代码；
 这些数据不替代既有 PGO 筛查的 11/20 结论。
 
+### 1.29 软定时器句柄转移筛查
+
+`resume901-ktimer-handle-transfer/` 只在实验源码中将 worker 已取得的
+`ThreadHandle` 于关中断事务外消费为 `ThreadWakeHandle`，避免二次
+`Arc` 克隆与外部租约增减。AArch64 QEMU 睡眠和定时器用例均通过。
+Plus-1 的 A1、B2、A2 为有效无插桩 full20；B1 因 OTHER 同核 futex
+19999/20000 样本、`not_parked=1` 整轮无效。唯一有效候选 B2 的
+OTHER timer p50 为 56166 ns，对两次普通 A 各 54500 ns 回退 3.057%；
+60 个 p50/p99/p99.9 筛查比较有 8 项至少回退 3%。候选只有一次有效
+启动，已拒绝并撤回；当前有效五 crate PGO 仍是 11/20 达 90%。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -693,3 +704,5 @@ SHA256 复核原始日志、计数快照、样本门禁和直方图。`board.py`
 实际运行流程存档，引用本地镜像路径，不作为仓库内可直接重跑的命令。
 在 `resume898-same-mm-fast/` 运行 `python3 check.py` 可复算四轮
 full20 的有效性、90% 门和同源码回退筛查；镜像本体未入 Git。
+在 `resume901-ktimer-handle-transfer/` 运行 `python3 check.py` 可复算
+同样的完整轮次、最差项、定时器目标与八项回退筛查；镜像本体未入 Git。
