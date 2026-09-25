@@ -319,6 +319,12 @@ int main(void)
                  rootfd, "rel", RESOLVE_NO_SYMLINKS, O_PATH | O_CLOEXEC,
                  ELOOP);
 
+    /* O_CREAT|O_EXCL implies O_NOFOLLOW, so an existing symlink reports
+     * EEXIST from the existence check rather than ELOOP. */
+    expect_errno("O_CREAT|O_EXCL on an existing symlink -> EEXIST", rootfd,
+                 "rel", RESOLVE_NO_SYMLINKS,
+                 O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, EEXIST);
+
     /* Restrictions combine. */
     uint64_t all = RESOLVE_BENEATH | RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS;
     expect_open("BENEATH|NO_XDEV|NO_SYMLINKS creates a relative file",

@@ -521,13 +521,26 @@ impl OpenOptions {
         let (parent, name, parent_depth) =
             context.resolve_parent_with_constraints(path, constraints, check_search, depth0)?;
 
-        // Symlink rejection on the final component takes precedence over
-        // creation flags: Linux `step_into` -> `pick_link` returns ELOOP for a
-        // final symlink under NO_SYMLINKS/NO_MAGICLINKS before `do_open` can
-        // report EEXIST for O_CREAT|O_EXCL. The exception: with
-        // O_PATH|O_NOFOLLOW a final symlink (or magic link) is returned as a
-        // path-only handle to the link itself even under
-        // NO_SYMLINKS/NO_MAGICLINKS (man 2 openat2).
+        let existing = match parent.lookup_no_follow(&name) {
+            Ok(_) => true,
+            Err(VfsError::NotFound) => false,
+            Err(error) => return Err(error),
+        };
+
+        // Linux `build_open_flags` makes `O_CREAT|O_EXCL` imply `O_NOFOLLOW`,
+        // so the final symlink is not followed and `do_open()` reports EEXIST
+        // for the existing directory entry. This precedes the
+        // NO_SYMLINKS/NO_MAGICLINKS ELOOP, which only applies to a link that
+        // would actually be followed.
+        if self.create_new && existing {
+            return Err(VfsError::AlreadyExists);
+        }
+
+        // Symlink rejection on the final component: Linux `step_into` ->
+        // `pick_link` returns ELOOP for a followed final symlink under
+        // NO_SYMLINKS/NO_MAGICLINKS. The exception: with O_PATH|O_NOFOLLOW a
+        // final symlink (or magic link) is returned as a path-only handle to
+        // the link itself even under those restrictions (man 2 openat2).
         let final_link_handle = self.path && self.no_follow;
         if let Ok(probe) = parent.lookup_no_follow(&name)
             && probe.node_type() == NodeType::Symlink
@@ -544,11 +557,6 @@ impl OpenOptions {
             }
         }
 
-        let existing = match parent.lookup_no_follow(&name) {
-            Ok(_) => true,
-            Err(VfsError::NotFound) => false,
-            Err(error) => return Err(error),
-        };
         // A trailing slash prevents creation of a missing regular file, but an
         // existing directory must still see the original O_CREAT flag so
         // _open() returns EISDIR.
