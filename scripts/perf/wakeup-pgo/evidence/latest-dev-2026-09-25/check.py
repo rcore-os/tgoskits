@@ -113,6 +113,69 @@ def check_diagnostic(name, baseline, case, valid_rounds):
     return result["rounds"]
 
 
+def check_recent_path_diagnostics(baseline):
+    root = ROOT / "resume829-833-path-diagnostics"
+    source = "69a33650763538692fafea27c869870ed0313642"
+    cases = {"830": ("absolute_timer_same_cpu", 10000),
+             "831": ("absolute_timer_same_cpu", 10000),
+             "833": ("thread_futex_cross_cpu", 20000)}
+    images = {
+        "830": "bfc70a0df2ea0d3c1991b9ac81474f9dbb7e76535fdab3e087f15ac8da27b21e",
+        "831": "4b9173ee3ecc34cf2c0930166999fe0d31d6eabda60e732c85c0957cae8e7500",
+        "833": "68ff5e32dead62e21fa96c67572fcf8acf3c6b4a591f9c228ac534fb58196ad1",
+    }
+    for identifier, (case, samples) in cases.items():
+        directory = root / f"resume{identifier}"
+        run = directory / "run1"
+        result = json.loads((run / "results.json").read_text())
+        assert result["diagnostic_only"] is True
+        assert result["board_id"] == "OrangePi-5-Plus-2"
+        assert result["source_head"] == source
+        assert result["bench_sha256"] == baseline["bench_sha256"]
+        assert result["image_sha256"] == images[identifier]
+        assert result["session_id"] == json.loads((run / "session.json").read_text())["session_id"]
+        patch = gzip.decompress((directory / "probe.patch.gz").read_bytes())
+        if identifier == "833":
+            assert hashlib.sha256(patch).hexdigest() == result["source_patch_sha256"]
+        assert [(row["policy"], row["round"]) for row in result["rounds"]] == [
+            ("fifo", 1), ("fifo", 2), ("other", 1), ("other", 2)]
+        for row in result["rounds"]:
+            policy, number = row["policy"], row["round"]
+            bench = row["benchmark"]
+            assert row["valid"] is True
+            assert (bench["policy"], bench["case"]) == (policy, case)
+            assert (bench["samples"], bench["attempted"], bench["not_parked"],
+                    bench["missed_deadlines"]) == (samples, samples, 0, 0)
+            assert sum(bench["histogram_counts"]) == samples
+            prefix = f"{policy}-{case}-{number}"
+            log = run / f"{prefix}.log"
+            assert sha256(log) == row["raw_log_sha256"]
+            lines = log.read_text().splitlines()
+            assert lines.count("WAKEUP_LATENCY_PASSED") == 1
+            metadata = [json.loads(line.split(" ", 1)[1]) for line in lines
+                        if line.startswith("WAKEUP_LATENCY_METADATA ")]
+            comparable = lambda item: {key: value for key, value in item.items()
+                                       if key != "clock_pair_min_ns"}
+            assert len(metadata) == 1
+            assert comparable(metadata[0]) == comparable(baseline["metadata"][0])
+            assert [json.loads(line.split(" ", 1)[1]) for line in lines
+                    if line.startswith("WAKEUP_LATENCY_RESULT ")] == [bench]
+            before = read_counter_snapshot(run / f"{prefix}-before")
+            after = read_counter_snapshot(run / f"{prefix}-after")
+            assert before.keys() == after.keys() == row["delta"].keys()
+            assert {key: after[key] - before[key] for key in before} == row["delta"]
+            if identifier == "833":
+                delta = row["delta"]
+                count = delta["ipi_dispatch_count"]
+                assert count == delta["ipi_handler_count"]
+                assert 21000 < count < 22000
+                assert sum(delta[f"ipi_dispatch_bucket_{i}"] for i in range(64)) == count
+                assert sum(delta[f"ipi_handler_bucket_{i}"] for i in range(64)) == count
+                excess = (delta["ipi_dispatch_total_ns"] - delta["ipi_handler_total_ns"]) / count
+                assert 1180 < excess < 1250
+        print(f"resume{identifier}: four valid instrumented rounds; diagnostic only")
+
+
 def check_weighted_pgo(baseline, rt, ordinary, previous):
     directory = ROOT / "resume817-819-weighted-pgo"
     training = json.loads((directory / "training-result.json").read_text())
@@ -362,6 +425,8 @@ def main():
     assert 3.25 < other_rq < 3.26
     assert 1.05 < same_cpu[3]["delta"]["direct_wake_preemptions"] / 20000 < 1.06
     print("resume801: three valid focused qperf rounds; one OTHER round invalid")
+
+    check_recent_path_diagnostics(baseline)
 
 
 if __name__ == "__main__":

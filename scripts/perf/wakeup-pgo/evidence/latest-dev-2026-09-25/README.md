@@ -295,7 +295,32 @@ G1/G2 在 OrangePi-5-Plus-1 的独立启动均完成 20 项、380000/380000
 profile/benchmark/原始日志 SHA 及生产构建限制见子目录 `decision.md`
 和 `analysis.json`。**没有可提交的运行时优化；本候选已拒绝，PR 保持 Draft。**
 
-### 1.12 当前 CI 边界
+### 1.12 后续交接与 CPU1 IPI 诊断
+
+`resume829-833-path-diagnostics/` 归档了最新源码上的两次只读审计和三次
+临时 `qperf-metrics` 板测。`resume829` 纠正旧探针只记录首个 `IrqReturn`
+帧的覆盖缺口；`resume830/831` 将实际 ktimer worker 切入与同 generation
+通知、claim 配对。OTHER 有效轮次的通知返回至调度帧入口、帧入口至
+worker 选择、选择至 claim 分别主要落在 4–6、6–8、4–6 us 的 2 us
+直方桶。这些区间包含必需的调度、切换和探针开销，不能相加或视为可删除
+成本。`resume832` 确认 Fair 同核路径已有单次 owner-rq 事务，没有证据
+支持删去第二次事务或无条件省略 idle tick fallback。
+
+`resume833` 在 OrangePi-5-Plus-2 对 CPU1 跨核 futex IPI 的派发包围段和
+注册 handler 计时。FIFO/OTHER 各两轮均为 20000/20000 样本、零
+`not_parked` 和 missed deadlines；每轮派发与 handler 计数一致。包围段
+平均比 handler 多 1181–1247 ns/次，但还包括 per-CPU pin、分发包装和
+测量开销，**不是 IRQ registry 的独占成本**。这段差值本身也不足以
+解释原生跨核项约 8–9 us 的缺口，因此没有保留 registry-only 修改。
+`resume830/831` 各四轮 timer 聚焦数据同样全部有效，但均带插桩。
+
+归档保留三次板测的探针补丁、原始日志、前后计数器快照、结果和镜像哈希；
+镜像本体只在本地实验归档，不在 PR 中。`check.py` 逐轮核对原始日志、
+样本、计数器差值和 IPI 直方图。三次临时探针已从工作源码撤回，
+**本阶段没有新的运行时改动或无插桩 full20 收益**。最新有效 G1/G2
+仍为 11/20 达到 90%，最差 OTHER 同核 futex 为 58.00%。
+
+### 1.13 当前 CI 边界
 
 原 PR head `1689312780` 的 [CI run 36054555037](https://github.com/rcore-os/tgoskits/actions/runs/36054555037)
 中 `Starry / Board OrangePi 5 Plus · Suites` 已失败：
@@ -330,3 +355,5 @@ profile/benchmark/原始日志 SHA 及生产构建限制见子目录 `decision.m
 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`。
 `check.py` 也会复算 `resume817-819-weighted-pgo` 两次有效 full20
 的逐项中位数、90% 门槛和单次普通 A1 对照；它不是三次启动验收。
+`resume829-833-path-diagnostics/` 的核验只证明诊断记录完整，不参与
+full20 验收。
