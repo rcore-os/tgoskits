@@ -1,0 +1,43 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running `target/debug/tg-xtask starry build -c /home/zhourui/.codex/artifacts/issue2308-perf/resume864-wake-window/build.toml`
+[2026-09-25T09:59:59Z INFO  axbuild::context] Workspace root: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev
+[2026-09-25T09:59:59Z INFO  axbuild::context] Cargo target directory: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target
+Using build config: /home/zhourui/.codex/artifacts/issue2308-perf/resume864-wake-window/build.toml
+[2026-09-25T09:59:59Z INFO  axbuild::build::config_file] Found build config at /home/zhourui/.codex/artifacts/issue2308-perf/resume864-wake-window/build.toml
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ...
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume864-wake-window/build.toml ...
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+SMP=8
+cargo build -p starryos --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z unstable-options --target-dir /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target --features ax-driver/list-pci-devices,ax-driver/realtek-rtl8125,ax-driver/rk3588-pcie,ax-driver/rockchip-dwc-xhci,ax-driver/rockchip-dwmmc,ax-driver/rockchip-ehci,ax-driver/rockchip-sdhci,ax-driver/rockchip-soc,legacy-board-init,qperf-metrics,rknpu -Z json-target-spec -Z build-std=core,alloc --config target.aarch64-unknown-none-softfloat.rustflags=["-Cllvm-args=--max-store-memcpy=16", "-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=--gc-sections", "-Clink-args=-znorelro", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Tlinker.x", "-Clink-args=-u _head", "-D", "warnings"] --bin starryos --release --message-format json-render-diagnostics
+   Compiling ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+   Compiling ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+   Compiling ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+   Compiling starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+   Compiling ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+   Compiling ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+error[E0433]: cannot find module or crate `ax_task` in this scope
+    --> os/StarryOS/kernel/src/task/futex.rs:1100:17
+     |
+1100 |                 ax_task::diagnostics::qperf_context_switch_counts(),
+     |                 ^^^^^^^ use of unresolved module or unlinked crate `ax_task`
+     |
+     = help: if you wanted to use a crate named `ax_task`, use `cargo add ax_task` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `ax_task` in this scope
+    --> os/StarryOS/kernel/src/task/futex.rs:1109:17
+     |
+1109 |                 ax_task::diagnostics::qperf_context_switch_counts(),
+     |                 ^^^^^^^ use of unresolved module or unlinked crate `ax_task`
+     |
+     = help: if you wanted to use a crate named `ax_task`, use `cargo add ax_task` to add it to your `Cargo.toml`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `starry-kernel` (lib) due to 2 previous errors
+Error: failed with status: exit status: 101

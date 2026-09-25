@@ -1,0 +1,167 @@
+{
+  "diagnostic_only": true,
+  "valid_rounds": 5,
+  "image_sha256": "52d38b69d9e694323beddfbd1009dd684a605697fa91b8b703287188f75d2ee7",
+  "summary": [
+    {
+      "sequence": "other-1",
+      "valid": true,
+      "probe_p50_ns_not_acceptance": 30042,
+      "context_switches_preempted_global": 21546,
+      "slots": {
+        "gate": {
+          "selected_one_enqueued": 21000,
+          "any_switch": 77,
+          "preempted_switch": 58,
+          "multiple_switches": 38,
+          "any_fraction": 0.003667,
+          "preempted_fraction": 0.002762
+        },
+        "done": {
+          "selected_one_enqueued": 214,
+          "any_switch": 1,
+          "preempted_switch": 0,
+          "multiple_switches": 0,
+          "any_fraction": 0.004673,
+          "preempted_fraction": 0.0
+        },
+        "other": {
+          "selected_one_enqueued": 216,
+          "any_switch": 1,
+          "preempted_switch": 1,
+          "multiple_switches": 0,
+          "any_fraction": 0.00463,
+          "preempted_fraction": 0.00463
+        }
+      }
+    },
+    {
+      "sequence": "fifo-1",
+      "valid": true,
+      "probe_p50_ns_not_acceptance": 24208,
+      "context_switches_preempted_global": 302,
+      "slots": {
+        "gate": {
+          "selected_one_enqueued": 21000,
+          "any_switch": 35,
+          "preempted_switch": 23,
+          "multiple_switches": 12,
+          "any_fraction": 0.001667,
+          "preempted_fraction": 0.001095
+        },
+        "done": {
+          "selected_one_enqueued": 21000,
+          "any_switch": 31,
+          "preempted_switch": 14,
+          "multiple_switches": 7,
+          "any_fraction": 0.001476,
+          "preempted_fraction": 0.000667
+        },
+        "other": {
+          "selected_one_enqueued": 1,
+          "any_switch": 0,
+          "preempted_switch": 0,
+          "multiple_switches": 0,
+          "any_fraction": 0.0,
+          "preempted_fraction": 0.0
+        }
+      }
+    },
+    {
+      "sequence": "other-2",
+      "valid": true,
+      "probe_p50_ns_not_acceptance": 30042,
+      "context_switches_preempted_global": 21539,
+      "slots": {
+        "gate": {
+          "selected_one_enqueued": 20999,
+          "any_switch": 76,
+          "preempted_switch": 58,
+          "multiple_switches": 36,
+          "any_fraction": 0.003619,
+          "preempted_fraction": 0.002762
+        },
+        "done": {
+          "selected_one_enqueued": 210,
+          "any_switch": 1,
+          "preempted_switch": 1,
+          "multiple_switches": 0,
+          "any_fraction": 0.004762,
+          "preempted_fraction": 0.004762
+        },
+        "other": {
+          "selected_one_enqueued": 210,
+          "any_switch": 1,
+          "preempted_switch": 1,
+          "multiple_switches": 1,
+          "any_fraction": 0.004762,
+          "preempted_fraction": 0.004762
+        }
+      }
+    },
+    {
+      "sequence": "fifo-2",
+      "valid": true,
+      "probe_p50_ns_not_acceptance": 24208,
+      "context_switches_preempted_global": 85,
+      "slots": {
+        "gate": {
+          "selected_one_enqueued": 21000,
+          "any_switch": 0,
+          "preempted_switch": 0,
+          "multiple_switches": 0,
+          "any_fraction": 0.0,
+          "preempted_fraction": 0.0
+        },
+        "done": {
+          "selected_one_enqueued": 21000,
+          "any_switch": 0,
+          "preempted_switch": 0,
+          "multiple_switches": 0,
+          "any_fraction": 0.0,
+          "preempted_fraction": 0.0
+        },
+        "other": {
+          "selected_one_enqueued": 1,
+          "any_switch": 0,
+          "preempted_switch": 0,
+          "multiple_switches": 0,
+          "any_fraction": 0.0,
+          "preempted_fraction": 0.0
+        }
+      }
+    },
+    {
+      "sequence": "other-3",
+      "valid": true,
+      "probe_p50_ns_not_acceptance": 30042,
+      "context_switches_preempted_global": 21548,
+      "slots": {
+        "gate": {
+          "selected_one_enqueued": 21000,
+          "any_switch": 71,
+          "preempted_switch": 50,
+          "multiple_switches": 38,
+          "any_fraction": 0.003381,
+          "preempted_fraction": 0.002381
+        },
+        "done": {
+          "selected_one_enqueued": 224,
+          "any_switch": 2,
+          "preempted_switch": 0,
+          "multiple_switches": 0,
+          "any_fraction": 0.008929,
+          "preempted_fraction": 0.0
+        },
+        "other": {
+          "selected_one_enqueued": 224,
+          "any_switch": 1,
+          "preempted_switch": 1,
+          "multiple_switches": 1,
+          "any_fraction": 0.004464,
+          "preempted_fraction": 0.004464
+        }
+      }
+    }
+  ]
+}
