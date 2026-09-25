@@ -545,6 +545,15 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 此候选已拒绝；三次有效候选启动、同源码全项尾延迟回退门和生产构建门
 均未证明，PR 仍为 Draft。训练补丁仅作为实验数据归档，不合入生产源码。
 
+### 1.22 当前源码只读审计与广覆盖 PGO 预检
+
+`resume877-879-checkpoint/` 保存两次只读路径审计和广覆盖 PGO 首次训练
+镜像的启动异常。`resume877` 未发现可以证明等价的唤醒事务删减；`resume878`
+核对机器码后拒绝改写已由 fat LTO 展开的上下文桥接。`resume879` 首次
+将 `someboot` 也插桩，镜像在 early boot 的 profile 计数器 `ldxr`
+处同步异常，尚无可用 profile 或无插桩候选，更没有新 full20。
+该实验仍在进行；本次归档不改变上节的 10/20 结论。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -596,3 +605,5 @@ F1/F2 的 p50 中位数只有 **10/20** 项达到冻结 Linux RT 的 90%，
 `resume873-876-current-pgo/` 在子目录运行 `sha256sum -c SHA256SUMS`
 和 `python3 check.py` 核对原始日志、样本完整性与逐项比例；镜像、ELF、
 计数器及 profdata 未纳入 Git，其身份只能核对归档的 SHA256 记录。
+`resume877-879-checkpoint/` 在子目录运行 `sha256sum -c SHA256SUMS`
+核对首次失败构建与串口原件；镜像哈希保存在该目录说明中，镜像未入 Git。

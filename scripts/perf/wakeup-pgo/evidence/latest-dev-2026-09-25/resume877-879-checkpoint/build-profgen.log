@@ -1,0 +1,746 @@
+   Compiling unicode-ident v1.0.26
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.5
+   Compiling log v0.4.34
+   Compiling pin-project-lite v0.2.17
+   Compiling serde_core v1.0.229
+   Compiling futures-core v0.3.34
+   Compiling bitflags v2.13.2
+   Compiling pkg-config v0.3.34
+   Compiling memchr v2.8.3
+   Compiling find-msvc-tools v0.1.13
+   Compiling shlex v2.0.1
+   Compiling equivalent v1.0.2
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling smallvec v1.16.1
+   Compiling scopeguard v1.2.0
+   Compiling futures-io v0.3.34
+   Compiling typenum v1.20.1
+   Compiling parking_lot_core v0.9.12
+   Compiling autocfg v1.5.1
+   Compiling serde v1.0.229
+   Compiling thiserror v2.0.20
+   Compiling lock_api v0.4.14
+   Compiling slab v0.4.12
+   Compiling winnow v1.0.4
+   Compiling bytes v1.12.1
+   Compiling futures-sink v0.3.34
+   Compiling rustversion v1.0.23
+   Compiling stable_deref_trait v1.2.1
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling rustix v1.1.5
+   Compiling tracing-core v0.1.36
+   Compiling ident_case v1.0.1
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-utils v0.8.23
+   Compiling linux-raw-sys v0.12.1
+   Compiling futures-channel v0.3.34
+   Compiling version_check v0.9.5
+   Compiling hashbrown v0.17.1
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling futures-task v0.3.34
+   Compiling parking v2.2.1
+   Compiling fs_extra v1.3.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling dunce v1.0.5
+   Compiling fnv v1.0.7
+   Compiling http v1.5.0
+   Compiling strsim v0.11.1
+   Compiling atomic-waker v1.1.2
+   Compiling zmij v1.0.23
+   Compiling ryu v1.0.23
+   Compiling jobserver v0.1.35
+   Compiling unicode-width v0.2.2
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_json v1.0.151
+   Compiling fastrand v2.5.0
+   Compiling heck v0.5.0
+   Compiling cc v1.4.7
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling hybrid-array v0.4.15
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.57
+   Compiling zeroize v1.9.0
+   Compiling aws-lc-rs v1.18.1
+   Compiling errno v0.3.14
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling signal-hook-registry v1.4.8
+   Compiling num-integer v0.1.47
+   Compiling parking_lot v0.12.5
+   Compiling indexmap v2.14.2
+   Compiling concurrent-queue v2.5.0
+   Compiling castaway v0.2.4
+   Compiling event-listener v5.4.2
+   Compiling signal-hook v0.3.18
+   Compiling writeable v0.6.4
+   Compiling httparse v1.10.1
+   Compiling crypto-common v0.2.2
+   Compiling litemap v0.8.3
+   Compiling cmov v0.5.4
+   Compiling static_assertions v1.1.0
+   Compiling compact_str v0.9.1
+   Compiling event-listener-strategy v0.5.4
+   Compiling block-buffer v0.12.1
+   Compiling ctutils v0.4.2
+   Compiling http-body v1.1.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling futures-lite v2.6.1
+   Compiling cmake v0.1.58
+   Compiling generic-array v0.14.7
+   Compiling const-oid v0.10.2
+   Compiling toml_edit v0.25.15+spec-1.1.0
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling percent-encoding v2.3.2
+   Compiling endi v1.1.1
+   Compiling num-bigint v0.4.8
+   Compiling async-io v2.6.0
+   Compiling digest v0.11.3
+   Compiling untrusted v0.9.0
+   Compiling aws-lc-sys v0.45.0
+   Compiling either v1.18.0
+   Compiling utf8parse v0.2.2
+   Compiling rustls v0.23.45
+   Compiling vcpkg v0.2.15
+   Compiling tower-service v0.3.3
+   Compiling anstyle-parse v1.0.0
+   Compiling signal-hook-mio v0.2.5
+   Compiling proc-macro-crate v3.5.0
+   Compiling itertools v0.14.0
+   Compiling block-padding v0.4.2
+   Compiling num-iter v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling hashbrown v0.16.1
+   Compiling anstyle v1.0.14
+   Compiling try-lock v0.2.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling libz-sys v1.1.29
+   Compiling httpdate v1.0.3
+   Compiling async-task v4.7.1
+   Compiling instability v0.3.13
+   Compiling subtle v2.6.1
+   Compiling anstyle-query v1.1.5
+   Compiling crc32fast v1.5.2
+   Compiling cpufeatures v0.3.1
+   Compiling colorchoice v1.0.5
+   Compiling darling_core v0.21.3
+   Compiling want v0.3.1
+   Compiling anstream v1.0.0
+   Compiling num-rational v0.4.2
+   Compiling inout v0.2.2
+   Compiling form_urlencoded v1.2.2
+   Compiling async-channel v2.5.0
+   Compiling convert_case v0.10.0
+   Compiling lru v0.18.4
+   Compiling libudev-sys v0.1.4
+   Compiling aho-corasick v1.1.5
+   Compiling sync_wrapper v1.0.2
+   Compiling num-conv v0.2.2
+   Compiling critical-section v1.2.0
+   Compiling ref-cast v1.0.27
+   Compiling time-core v0.1.9
+   Compiling unicase v2.9.0
+   Compiling tower-layer v0.3.3
+   Compiling byteorder v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling num v0.4.3
+   Compiling deranged v0.5.8
+   Compiling powerfmt v0.2.0
+   Compiling mime v0.3.17
+   Compiling getrandom v0.4.3
+   Compiling jiff-core v0.1.1
+   Compiling regex-syntax v0.8.11
+   Compiling num_threads v0.1.7
+   Compiling adler2 v2.0.1
+   Compiling simd-adler32 v0.3.10
+   Compiling indoc v2.0.7
+   Compiling miniz_oxide v0.9.1
+   Compiling unicode-truncate v2.0.1
+   Compiling mime_guess v2.0.5
+   Compiling serde_derive_internals v0.30.0
+   Compiling cipher v0.5.2
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling jiff v0.2.37
+   Compiling tracing-attributes v0.1.31
+   Compiling enumflags2_derive v0.7.12
+   Compiling strum_macros v0.28.0
+   Compiling time v0.3.55
+   Compiling polling v3.11.0
+   Compiling derive_more-impl v2.1.1
+   Compiling serde_spanned v1.1.1
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling tracing v0.1.44
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling kasuari v0.4.12
+   Compiling tokio v1.53.1
+   Compiling zerofrom v0.1.8
+   Compiling futures-util v0.3.34
+   Compiling darling_macro v0.21.3
+   Compiling regex-automata v0.4.18
+   Compiling async-signal v0.2.14
+   Compiling yoke v0.8.3
+   Compiling serde_repr v0.1.21
+   Compiling strum v0.28.0
+   Compiling ref-cast-impl v1.0.27
+   Compiling zerotrie v0.2.5
+   Compiling ratatui-core v0.1.2
+   Compiling darling_macro v0.24.1
+   Compiling http-body-util v0.1.5
+   Compiling async-lock v3.4.2
+   Compiling piper v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling ipnet v2.12.2
+   Compiling darling v0.24.1
+   Compiling base64 v0.22.1
+   Compiling litrs v1.0.0
+   Compiling anyhow v1.0.104
+   Compiling hex v0.4.3
+   Compiling cfg_aliases v0.2.2
+   Compiling clap_lex v1.1.1
+   Compiling camino v1.2.6
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling clap_builder v4.6.7
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling document-features v0.2.12
+   Compiling nix v0.31.3
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling async-process v2.5.0
+   Compiling blocking v1.7.0
+   Compiling darling v0.21.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling derive_more v2.1.1
+   Compiling clap_derive v4.6.7
+   Compiling async-trait v0.1.92
+   Compiling schemars_derive v1.2.2
+   Compiling async-recursion v1.1.1
+   Compiling digest v0.10.7
+   Compiling flate2 v1.1.10
+   Compiling icu_provider v2.3.1
+   Compiling async-executor v1.14.0
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling zcheapstr v1.1.0
+   Compiling zvariant_utils v4.2.0
+   Compiling enumflags2 v0.7.12
+   Compiling hmac v0.13.0
+   Compiling uuid v1.26.1
+   Compiling rand_core v0.9.5
+   Compiling async-broadcast v0.7.2
+   Compiling ahash v0.8.12
+   Compiling line-clipping v0.3.8
+   Compiling ordered-stream v0.2.0
+   Compiling twox-hash v2.1.4
+   Compiling rustix v0.38.44
+   Compiling dyn-clone v1.0.20
+   Compiling bitflags v1.3.2
+   Compiling cpufeatures v0.2.17
+   Compiling cpubits v0.1.1
+   Compiling openssl-probe v0.2.1
+   Compiling lazy_static v1.5.0
+   Compiling nix v0.26.4
+   Compiling aes v0.9.3
+   Compiling schemars v1.2.2
+   Compiling regex v1.13.1
+   Compiling rustls-native-certs v0.8.4
+   Compiling ruzstd v0.8.3
+   Compiling ratatui-widgets v0.3.2
+   Compiling rand_chacha v0.9.0
+   Compiling hkdf v0.13.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling clap v4.6.7
+   Compiling libudev v0.3.0
+   Compiling crossterm v0.29.0
+   Compiling idna_adapter v1.2.2
+   Compiling enumset_derive v0.15.0
+   Compiling idna v1.1.0
+   Compiling unescaper v0.1.10
+   Compiling multiversion-macros v0.9.0
+   Compiling zvariant_derive v5.15.0
+   Compiling url v2.5.8
+   Compiling enum-map-derive v0.17.0
+   Compiling zvariant v5.15.0
+   Compiling cbc v0.2.1
+   Compiling sha2 v0.11.0
+   Compiling cargo-platform v0.3.3
+   Compiling semver v1.0.28
+   Compiling encoding_rs v0.8.41
+   Compiling crc-catalog v2.5.0
+   Compiling http-range-header v0.4.2
+   Compiling tokio-util v0.7.19
+   Compiling tower v0.5.3
+   Compiling linux-raw-sys v0.4.15
+   Compiling portable-atomic v1.15.0
+   Compiling rust_decimal v1.43.0
+   Compiling heapless v0.9.3
+   Compiling object v0.39.1
+   Compiling cargo_metadata v0.23.1
+   Compiling multiversion v0.9.0
+   Compiling crc v3.4.0
+   Compiling enumset v1.1.14
+   Compiling toml v1.1.6+spec-1.1.0
+   Compiling ratatui-macros v0.7.2
+   Compiling enum-map v2.7.3
+   Compiling ratatui-crossterm v0.1.2
+   Compiling serialport v4.10.1
+   Compiling h2 v0.4.19
+   Compiling tower-http v0.6.11
+   Compiling env_filter v2.0.0
+   Compiling rand v0.9.5
+   Compiling sha1 v0.10.7
+   Compiling futures-executor v0.3.34
+   Compiling hash32 v0.3.1
+   Compiling lzma-sys v0.1.20
+   Compiling network-interface v2.0.5
+   Compiling crossbeam-channel v0.5.17
+   Compiling cursive-macros v0.1.0
+   Compiling keyring-core v1.0.0
+   Compiling tftpd v0.5.3
+   Compiling utf-8 v0.7.6
+   Compiling core_detect v1.0.0
+   Compiling iana-time-zone v0.1.65
+   Compiling bitmaps v3.2.1
+   Compiling xi-unicode v0.3.0
+   Compiling cpp_demangle v0.5.1
+   Compiling arrayvec v0.7.8
+   Compiling data-encoding v2.11.1
+   Compiling multiversion_no_op v1.0.0
+   Compiling simdutf8 v0.1.5
+   Compiling cursive_core v0.4.7
+   Compiling chrono v0.4.45
+   Compiling mio-serial v5.0.7
+   Compiling futures v0.3.34
+   Compiling zbus_names v4.3.4
+   Compiling crossterm v0.28.1
+   Compiling ax-cpumask v0.4.1 (/tmp/tgoskits-issue2308-resume876-root/components/cpumask)
+   Compiling env_logger v0.11.11
+   Compiling ratatui v0.30.2
+   Compiling zbus_macros v5.19.0
+   Compiling axum-core v0.5.6
+   Compiling xattr v1.6.1
+   Compiling sha1 v0.11.0
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling serde_path_to_error v0.1.20
+   Compiling filetime v0.2.29
+   Compiling console v0.16.6
+   Compiling vm-fdt v0.3.0
+   Compiling ax-memory-addr v0.7.1 (/tmp/tgoskits-issue2308-resume876-root/memory/memory_addr)
+   Compiling md5 v0.8.1
+   Compiling matchit v0.8.4
+   Compiling unicode-width v0.1.14
+   Compiling utf8-width v0.1.9
+   Compiling object v0.38.1
+   Compiling winnow v0.7.15
+   Compiling device_tree v1.1.0
+   Compiling unit-prefix v0.5.2
+   Compiling colored v3.1.1
+   Compiling base64 v0.23.1
+   Compiling futures-timer v3.0.4
+   Compiling indicatif v0.18.6
+   Compiling fitimage v0.1.6
+   Compiling byte-unit v5.2.6
+   Compiling uboot-shell v0.2.8
+   Compiling axvm-types v0.7.6 (/tmp/tgoskits-issue2308-resume876-root/virtualization/axvm-types)
+   Compiling fdt-raw v0.3.0
+   Compiling tar v0.4.46
+   Compiling jkconfig v0.2.5
+   Compiling tokio-serial v5.5.0
+   Compiling lzma-rs v0.3.0
+   Compiling sharded-slab v0.1.7
+   Compiling httpboot-protocol v0.2.1
+   Compiling fs4 v1.1.0
+   Compiling enum_dispatch v0.3.13
+   Compiling memmap2 v0.9.11
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling gimli v0.33.0
+   Compiling rustc-demangle v0.1.28
+   Compiling same-file v1.0.6
+   Compiling fallible-iterator v0.3.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling typed-arena v2.0.2
+   Compiling walkdir v2.5.0
+   Compiling xz2 v0.1.7
+   Compiling hyper v1.11.1
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling fdt-edit v0.2.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling axvmconfig v0.8.9 (/tmp/tgoskits-issue2308-resume876-root/virtualization/axvmconfig)
+   Compiling sha2 v0.10.9
+   Compiling tempfile v3.27.0
+   Compiling zbus v5.19.0
+   Compiling os_pipe v1.2.3
+   Compiling cursive v0.21.1
+   Compiling raw-cpuid v11.6.0
+   Compiling hyper-util v0.1.20
+   Compiling addr2line v0.26.1
+   Compiling axum v0.8.9
+   Compiling secret-service v5.2.0
+   Compiling zbus-secret-service-keyring-store v1.0.1
+   Compiling keyring v4.2.0
+   Compiling jkconfig v0.1.8
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.5
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling tungstenite v0.28.0
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling tokio-tungstenite v0.28.0
+   Compiling ostool v0.29.5
+   Compiling axbuild v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/scripts/axbuild)
+   Compiling tg-xtask v0.5.11 (/tmp/tgoskits-issue2308-resume876-root/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 51.73s
+     Running `target/debug/tg-xtask starry build -c /home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml`
+[2026-09-25T14:28:42Z INFO  axbuild::context] Workspace root: /tmp/tgoskits-issue2308-resume876-root
+[2026-09-25T14:28:42Z INFO  axbuild::context] Cargo target directory: /tmp/tgoskits-issue2308-resume876-root/target
+Using build config: /home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml
+[2026-09-25T14:28:42Z INFO  axbuild::build::config_file] Found build config at /home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ...
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml ...
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_TARGET_AARCH64_UNKNOWN_NONE_SOFTFLOAT_RUSTFLAGS=-Cprofile-generate=/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profiles -Zno-profiler-runtime -Cllvm-args=-disable-vp -Cllvm-args=-instrprof-atomic-counter-update-all
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+RUSTC_WRAPPER=/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/wrapper.py
+SMP=8
+cargo build -p starryos --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z unstable-options --target-dir /tmp/tgoskits-issue2308-resume876-root/target --features ax-driver/list-pci-devices,ax-driver/realtek-rtl8125,ax-driver/rk3588-pcie,ax-driver/rockchip-dwc-xhci,ax-driver/rockchip-dwmmc,ax-driver/rockchip-ehci,ax-driver/rockchip-sdhci,ax-driver/rockchip-soc,legacy-board-init,profile-counter-export,rknpu -Z json-target-spec -Z build-std=core,alloc --config target.aarch64-unknown-none-softfloat.rustflags=["-Cllvm-args=--max-store-memcpy=16", "-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=--gc-sections", "-Clink-args=-znorelro", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Tlinker.x", "-Clink-args=-u _head", "-D", "warnings"] --bin starryos --release --message-format json-render-diagnostics
+   Compiling compiler_builtins v0.1.160 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling thiserror v2.0.20
+   Compiling paste v1.0.15
+   Compiling unicode-segmentation v1.13.3
+   Compiling unicode-xid v0.2.6
+   Compiling heapless v0.9.3
+   Compiling semver v1.0.28
+   Compiling autocfg v1.5.1
+   Compiling once_cell v1.21.4
+   Compiling ident_case v1.0.1
+   Compiling ax-cpu v0.10.3 (/tmp/tgoskits-issue2308-resume876-root/components/axcpu)
+   Compiling heck v0.5.0
+   Compiling syn v1.0.109
+   Compiling crossbeam-utils v0.8.23
+   Compiling cpu-local v0.4.3 (/tmp/tgoskits-issue2308-resume876-root/components/cpu-local)
+   Compiling rustversion v1.0.23
+   Compiling ax-percpu v0.4.24 (/tmp/tgoskits-issue2308-resume876-root/components/percpu/percpu)
+   Compiling anyhow v1.0.104
+   Compiling strsim v0.11.1
+   Compiling crossbeam-epoch v0.9.21
+   Compiling prettyplease v0.3.0
+   Compiling rust_decimal v1.43.0
+   Compiling ax-alloc v0.9.2 (/tmp/tgoskits-issue2308-resume876-root/memory/ax-alloc)
+   Compiling arm-scmi-rs v0.1.11 (/tmp/tgoskits-issue2308-resume876-root/drivers/firmware/arm-scmi-rs)
+   Compiling rockchip-soc v0.4.8 (/tmp/tgoskits-issue2308-resume876-root/drivers/soc/rockchip/rockchip-soc)
+   Compiling libc v0.2.189
+   Compiling rockchip-npu v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/npu/rockchip-npu)
+   Compiling convert_case v0.10.0
+   Compiling convert_case v0.8.0
+   Compiling num-traits v0.2.19
+   Compiling rockchip-pm v0.4.10 (/tmp/tgoskits-issue2308-resume876-root/drivers/soc/rockchip/rockchip-pm)
+   Compiling crab-usb v0.12.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/usb/usb-host)
+   Compiling glob v0.3.4
+   Compiling ax-driver v0.18.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/ax-driver)
+   Compiling somehal v0.11.3 (/tmp/tgoskits-issue2308-resume876-root/platforms/somehal)
+   Compiling strsim v0.10.0
+   Compiling zerocopy v0.8.57
+   Compiling fnv v1.0.7
+   Compiling prettyplease v0.2.37
+   Compiling axplat-dyn v0.10.4 (/tmp/tgoskits-issue2308-resume876-root/platforms/axplat-dyn)
+   Compiling cfg-if v1.0.5
+   Compiling regex-syntax v0.8.11
+   Compiling minimal-lexical v0.2.1
+   Compiling memchr v2.8.3
+   Compiling libloading v0.8.9
+   Compiling memoffset v0.9.1
+   Compiling bindgen v0.72.1
+   Compiling either v1.18.0
+   Compiling smoltcp v0.13.1
+   Compiling shlex v1.3.0
+   Compiling bitflags v2.13.2
+   Compiling clang-sys v1.9.1
+   Compiling version_check v0.9.5
+   Compiling syscalls v0.8.1
+   Compiling rustc-hash v2.1.3
+   Compiling log v0.4.34
+   Compiling scope-local v0.6.5 (/tmp/tgoskits-issue2308-resume876-root/components/scope-local)
+   Compiling itertools v0.13.0
+   Compiling yansi v1.0.1
+   Compiling indoc v2.0.7
+   Compiling find-msvc-tools v0.1.13
+   Compiling shlex v2.0.1
+   Compiling axerrno v0.2.2
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling proc-macro2-diagnostics v0.10.1
+   Compiling cc v1.4.7
+   Compiling ax-hal v0.8.4 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axhal)
+   Compiling nom v7.1.3
+   Compiling ax-runtime v0.13.5 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axruntime)
+   Compiling ax-errno v0.6.3
+   Compiling starry-signal v0.10.5 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/signal)
+   Compiling heck v0.4.1
+   Compiling ax-tracepoint v0.6.1 (/tmp/tgoskits-issue2308-resume876-root/components/ax-tracepoint)
+   Compiling function_name-proc-macro v0.3.0
+   Compiling starry-kernel v0.12.1 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/kernel)
+   Compiling starryos v0.5.39 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/starryos)
+   Compiling regex-automata v0.4.18
+   Compiling cexpr v0.6.0
+   Compiling regex v1.13.1
+   Compiling darling_core v0.13.4
+   Compiling num-derive v0.3.3
+   Compiling darling_core v0.23.0
+   Compiling derive_more-impl v2.1.1
+   Compiling enum_dispatch v0.3.13
+   Compiling strum_macros v0.27.2
+   Compiling num_enum_derive v0.7.6
+   Compiling uefi-macros v0.19.0
+   Compiling volatile-macro v0.6.0
+   Compiling bitfield-struct v0.11.0
+   Compiling zerocopy-derive v0.8.57
+   Compiling kmacro-tools v0.3.0
+   Compiling thiserror-impl v2.0.20
+   Compiling async-trait v0.1.92
+   Compiling ax-crate-interface v0.5.8 (/tmp/tgoskits-issue2308-resume876-root/components/crate_interface)
+   Compiling trait-ffi-macros v0.4.0 (/tmp/tgoskits-issue2308-resume876-root/components/trait-ffi/trait-ffi-macros)
+   Compiling bytemuck_derive v1.12.1
+   Compiling ax-percpu-macros v0.4.12 (/tmp/tgoskits-issue2308-resume876-root/components/percpu/percpu_macros)
+   Compiling rdrive-macros v0.4.3 (/tmp/tgoskits-issue2308-resume876-root/drivers/rdrive-macros)
+   Compiling ptr_meta_derive v0.3.2
+   Compiling ax-plat-macros v0.3.10 (/tmp/tgoskits-issue2308-resume876-root/platforms/ax-plat-macros)
+   Compiling someboot v0.7.2 (/tmp/tgoskits-issue2308-resume876-root/platforms/someboot)
+   Compiling ax-ctor-bare-macros v0.4.10 (/tmp/tgoskits-issue2308-resume876-root/components/ctor_bare/ctor_bare_macros)
+   Compiling scroll_derive v0.13.2
+   Compiling int-enum v1.2.0
+   Compiling ouroboros_macro v0.18.5
+   Compiling strum_macros v0.28.0
+   Compiling bitfield-struct v0.13.0
+   Compiling darling_macro v0.13.4
+   Compiling darling v0.13.4
+   Compiling inherit-methods-macro v0.1.0
+   Compiling darling_macro v0.23.0
+   Compiling darling v0.23.0
+   Compiling somehal-macros v0.1.7 (/tmp/tgoskits-issue2308-resume876-root/platforms/somehal-macros)
+   Compiling ax-posix-api v0.6.8 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/api/arceos_posix_api)
+   Compiling lwprintf-rs v0.3.3
+   Compiling alloc v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc)
+   Compiling as-any v0.3.2
+   Compiling tock-registers v0.10.1
+   Compiling byteorder v1.5.0
+   Compiling derive_more v2.1.1
+   Compiling ax-sync v0.6.0 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axsync)
+   Compiling stable_deref_trait v1.2.1
+   Compiling tock-registers v0.9.0
+   Compiling mbarrier v0.1.3
+   Compiling scopeguard v1.2.0
+   Compiling bit_field v0.10.3
+   Compiling trait-ffi v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/components/trait-ffi/trait-ffi)
+   Compiling rdif-def v0.4.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-def)
+   Compiling ax-lazyinit v0.5.1 (/tmp/tgoskits-issue2308-resume876-root/components/ax-lazyinit)
+   Compiling num-align v0.1.0
+   Compiling irq-framework v0.5.0 (/tmp/tgoskits-issue2308-resume876-root/components/irq-framework)
+   Compiling bytemuck v1.25.2
+   Compiling lock_api v0.4.14
+   Compiling aarch64-cpu v10.0.0
+   Compiling mmio-api v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/memory/mmio-api)
+   Compiling ax-memory-addr v0.7.1 (/tmp/tgoskits-issue2308-resume876-root/memory/memory_addr)
+   Compiling aarch64-cpu v11.2.0
+   Compiling rdif-base v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-base)
+   Compiling pci_types v0.10.1
+   Compiling pin-project-lite v0.2.17
+   Compiling hash32 v0.3.1
+   Compiling futures-core v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-sink v0.3.34
+   Compiling strum v0.27.2
+   Compiling rdif-clk v0.5.7 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-clk)
+   Compiling futures-task v0.3.34
+   Compiling rdif-msi v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-msi)
+   Compiling rdif-intc v0.16.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-intc)
+   Compiling rdif-pcie v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-pcie)
+   Compiling futures-channel v0.3.34
+   Compiling rdif-reset v0.2.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-reset)
+   Compiling spinning_top v0.3.0
+   Compiling futures-util v0.3.34
+   Compiling rdif-power v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-power)
+   Compiling futures-io v0.3.34
+   Compiling foldhash v0.2.0
+   Compiling acpi v6.1.1
+   Compiling arrayvec v0.7.8
+   Compiling allocator-api2 v0.2.21
+   Compiling equivalent v1.0.2
+   Compiling rdif-serial v0.10.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-serial)
+   Compiling smccc v0.2.3
+   Compiling pcie v0.7.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/pci/pcie)
+   Compiling uguid v2.2.1
+   Compiling const-default v1.0.0
+   Compiling embedded-hal v1.0.0
+   Compiling const-str v1.1.0
+   Compiling num_enum v0.7.6
+   Compiling zeroize v1.9.0
+   Compiling chrono v0.4.45
+   Compiling rlsf v0.2.3
+   Compiling uefi-raw v0.14.0
+   Compiling crossbeam-queue v0.3.14
+   Compiling rdif-pwm v0.2.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-pwm)
+   Compiling buddy-slab-allocator v0.6.1 (/tmp/tgoskits-issue2308-resume876-root/memory/buddy-slab-allocator)
+   Compiling ucs2 v0.3.3
+   Compiling nb v1.1.0
+   Compiling utf8-width v0.1.9
+   Compiling accessor v0.3.3
+   Compiling ptr_meta v0.3.2
+   Compiling page-table-generic v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/memory/page-table-generic)
+   Compiling fdt-raw v0.3.0
+   Compiling ranges-ext v0.6.4 (/tmp/tgoskits-issue2308-resume876-root/memory/ranges-ext)
+   Compiling some-serial v0.7.8 (/tmp/tgoskits-issue2308-resume876-root/drivers/serial/some-serial)
+   Compiling xhci v0.9.2
+   Compiling crossbeam v0.8.5
+   Compiling crossbeam-skiplist v0.1.3
+   Compiling kernutil v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/components/kernutil)
+   Compiling rdif-input v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-input)
+   Compiling volatile v0.6.1
+   Compiling byte-unit v5.2.6
+   Compiling rockchip-pwm v0.2.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/pwm/rockchip-pwm)
+   Compiling sg200x-pwm v0.1.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/pwm/sg200x-pwm)
+   Compiling fdt-edit v0.2.3
+   Compiling rk3588-pci v0.2.7 (/tmp/tgoskits-issue2308-resume876-root/drivers/pci/rk3588-pci)
+   Compiling cv181x-clock v0.1.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/soc/cv181x-clock)
+   Compiling ax-arm-pl031 v0.4.7 (/tmp/tgoskits-issue2308-resume876-root/drivers/rtc/arm_pl031)
+   Compiling rdif-vsock v0.3.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-vsock)
+   Compiling axpanic v0.1.1 (/tmp/tgoskits-issue2308-resume876-root/components/axpanic)
+   Compiling hashbrown v0.16.1
+   Compiling ax-linked-list-r4l v0.5.7 (/tmp/tgoskits-issue2308-resume876-root/components/linked_list_r4l)
+   Compiling linux-raw-sys v0.12.1
+   Compiling rdif-pinctrl v0.2.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-pinctrl)
+   Compiling ax-sched v0.5.11 (/tmp/tgoskits-issue2308-resume876-root/components/axsched)
+   Compiling rdrive v0.25.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/rdrive)
+   Compiling axbacktrace v0.4.12 (/tmp/tgoskits-issue2308-resume876-root/components/axbacktrace)
+   Compiling aarch64-cpu-ext v0.1.4
+   Compiling fdt-parser v0.4.19
+   Compiling dma-api v0.10.2 (/tmp/tgoskits-issue2308-resume876-root/memory/dma-api)
+   Compiling ax-task v0.8.4 (/tmp/tgoskits-issue2308-resume876-root/components/ax-task)
+   Compiling futures v0.3.34
+   Compiling event-listener v5.4.2
+   Compiling rdif-block v0.13.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-block)
+   Compiling sdmmc-host v0.1.8 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/sdmmc-host)
+   Compiling usb-if v0.8.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/usb/usb-if)
+   Compiling rdif-eth v0.6.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-eth)
+   Compiling nvme-driver v0.8.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/nvme-driver)
+   Compiling sdmmc-protocol v0.5.4 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/sdmmc-protocol)
+   Compiling realtek-rtl8125 v0.3.3 (/tmp/tgoskits-issue2308-resume876-root/drivers/net/realtek-rtl8125)
+   Compiling rd-net v0.3.3 (/tmp/tgoskits-issue2308-resume876-root/drivers/net/rd-net)
+   Compiling axpoll v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/components/axpoll)
+   Compiling event-listener-strategy v0.5.4
+   Compiling ax-io v0.7.2 (/tmp/tgoskits-issue2308-resume876-root/components/axio)
+   Compiling arm-gic-driver v0.18.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/intc/arm-gic-driver)
+   Compiling uefi v0.37.0
+   Compiling concurrent-queue v2.5.0
+   Compiling managed v0.8.0
+   Compiling sdhci-host v0.5.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/sdhci-host)
+   Compiling dwmmc-host v0.4.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/dwmmc-host)
+   Compiling rand_core v0.6.4
+   Compiling bitflags v1.3.2
+   Compiling smallvec v1.16.1
+   Compiling intrusive-collections v0.9.7
+   Compiling axfs-ng-vfs v0.8.1 (/tmp/tgoskits-issue2308-resume876-root/fs/axfs-ng-vfs)
+   Compiling ax-plat v0.15.0 (/tmp/tgoskits-issue2308-resume876-root/platforms/ax-plat)
+   Compiling async-channel v2.5.0
+   Compiling axpoll-set v0.1.1 (/tmp/tgoskits-issue2308-resume876-root/components/axpoll-set)
+   Compiling lru v0.16.4
+   Compiling ringbuf v0.4.8
+   Compiling ax-memory-set v0.8.0 (/tmp/tgoskits-issue2308-resume876-root/memory/memory_set)
+   Compiling rsext4 v0.9.2 (/tmp/tgoskits-issue2308-resume876-root/fs/rsext4)
+   Compiling axklib v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/components/axklib)
+   Compiling atomic-waker v1.1.2
+   Compiling ax-log v0.6.1 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axlog)
+   Compiling bitmaps v3.2.1
+   Compiling ax-ctor-bare v0.4.10 (/tmp/tgoskits-issue2308-resume876-root/components/ctor_bare/ctor_bare)
+   Compiling hashbrown v0.17.1
+   Compiling kbindings v0.3.0
+   Compiling itertools v0.14.0
+   Compiling ax-cpumask v0.4.1 (/tmp/tgoskits-issue2308-resume876-root/components/cpumask)
+   Compiling flatten_objects v0.2.4
+   Compiling rand_core v0.10.1
+   Compiling zero v0.1.3
+   Compiling scroll v0.13.0
+   Compiling plain v0.2.3
+   Compiling chacha20 v0.10.2
+   Compiling xmas-elf v0.9.1
+   Compiling combine v4.6.8
+   Compiling lru v0.18.4
+   Compiling starry-vm v0.6.0 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/vm)
+   Compiling goblin v0.10.7
+   Compiling rdif-display v0.4.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-display)
+   Compiling static-keys v0.8.2
+   Compiling function_name v0.3.0
+   Compiling static_assertions v1.1.0
+   Compiling tp-lexer v0.5.5
+   Compiling aliasable v0.1.3
+   Compiling ouroboros v0.18.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling printf-compat v0.4.0
+   Compiling rand_chacha v0.3.1
+   Compiling kernel-elf-parser v0.3.4
+   Compiling ddebug v0.5.5
+   Compiling kbpf-basic v0.6.0
+   Compiling ax-input v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axinput)
+   Compiling ax-display v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axdisplay)
+   Compiling rand v0.10.3
+   Compiling usb-serial v0.1.4 (/tmp/tgoskits-issue2308-resume876-root/drivers/usb/usb-serial)
+   Compiling uluru v3.1.0
+   Compiling kprobe v0.6.0
+   Compiling ax-cgroup v0.3.0 (/tmp/tgoskits-issue2308-resume876-root/components/ax-cgroup)
+   Compiling axhvc v0.5.1 (/tmp/tgoskits-issue2308-resume876-root/virtualization/axhvc)
+   Compiling strum v0.28.0
+   Compiling ksym v0.6.0
+   Compiling axivc v0.1.1 (/tmp/tgoskits-issue2308-resume876-root/virtualization/axivc)
+   Compiling downcast-rs v2.0.2
+   Compiling ax-fs-ng v0.11.2 (/tmp/tgoskits-issue2308-resume876-root/fs/ax-fs-ng)
+   Compiling kmod-tools v0.3.0
+   Compiling kapi v0.3.0
+   Compiling kmod-loader v0.3.1
+   Compiling ax-ipi v0.6.5 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axipi)
+   Compiling ax-mm v0.8.4 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axmm)
+   Compiling ax-net v0.13.6 (/tmp/tgoskits-issue2308-resume876-root/net/ax-net)
+   Compiling rbpf v0.4.1
+   Compiling ax-api v0.8.6 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/api/arceos_api)
+   Compiling ax-std v0.7.5 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/ulib/axstd)
+    Finished `release` profile [optimized] target(s) in 3m 00s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+  bin: /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml ... done (181.06s)
+[axbuild] cargo build elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] cargo build bin=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] cargo build artifact_dir=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ... done (182.09s)
+[axbuild] starry artifact elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] starry kallsyms elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos ...
+[axbuild] starry kallsyms symbols=36024
+rust-objcopy --update-section .kallsyms=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/.starryos.kallsyms.3407294.tmp /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] starry kallsyms elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos ... done (1.01s)
+[axbuild] starry bin refresh /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin ...
+rust-objcopy --strip-all -O binary /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] starry bin refresh /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin ... done (1.63s)
