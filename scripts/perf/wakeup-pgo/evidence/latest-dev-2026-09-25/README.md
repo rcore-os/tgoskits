@@ -443,9 +443,43 @@ benchmark p50 中位数为 10500/16917 ns，明显高于无插桩 G1/G2 的
 已经在 `resume135/136` 原生测试中退化。独立审计报告把不同场景、
 插桩与原生 p50 换算成可删上界的推导不成立，主审结论已在
 `resume855-audit/decision.md` 逐项限定。被选任务的 hrtick 派生复用
-只是后续待证伪假设，未实现或测量。
+已在后续 `resume856` 源码审计中证伪，见下一节。
 最近有效无插桩 full20 仍是 **11/20** 达到 90%，最差 **58.00%**；
 PR 继续保持 Draft。
+
+### 1.18 Timer worker 通知分类
+
+`resume856` 在 `69a3365076` 上核对 `SchedulerDeadlineRqObservation` 的
+选择和发布：rq 未变化时已有一次派生值传递；只有负载均衡改变 rq 时才
+重新观察，不能复用旧结果。`resume857` 核对公共 context-switch 尾段与
+`resume854` 计数：已测的 validate、trace 和 out hook 均值是含插桩的
+亚微秒全局事件，未发现有语义依据的多微秒可删操作。这两次是只读审计，
+没有代码或板测改动；结论保存在本地实验台账的 `resume856/857` 记录中。
+
+`resume858-ktimer-fresh/` 基于同一源码，给现有 generation 配对的
+`ktimers/%u` 通知探针增加 `WakeResult::Notified` 与
+`WakeResult::AlreadyPending` 分类；`probe.patch.gz` 保留临时 qperf 插桩原件，
+未进入生产源码。OrangePi-5-Plus-2 的一次启动运行 FIFO、OTHER timer
+各两个独立进程，每轮 10000/10000 样本、零 `not_parked` 和
+`missed_deadlines`，PLL 检查和板卡租约释放均通过。下表是 CPU1
+hard-IRQ 通知计数前后差值，以及同 generation 的通知到 worker claim
+直方图中位桶。
+
+| 策略 | 轮次 | Fresh | AlreadyPending | Pending | 配对数 | p50 桶 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| FIFO | 1 | 504 | 0 | 0 | 504 | 16–18 µs |
+| FIFO | 2 | 491 | 0 | 0 | 491 | 16–18 µs |
+| OTHER | 1 | 11443 | 0 | 16 | 11443 | 16–18 µs |
+| OTHER | 2 | 11437 | 0 | 6 | 11437 | 16–18 µs |
+
+四轮中 `AlreadyPending` 都为零，因此这张镜像上先前的粗粒度
+`Notified` 计数没有掩盖大量合并通知。FIFO 的 worker 通知是背景事件，
+因为 FIFO park 使用 `ParkHard`；OTHER 的 `ParkSoft` 才经过 timer worker。
+16–18 µs 包含 IRQ 剩余工作、调度、切换和 wait 返回，也包含探针开销，
+**不是原生可删成本或性能收益**。这次没有新的无插桩 full20；最新有效
+同频率 G1/G2 仍是 11/20 项达到 90%，最差 OTHER 同核 futex 58.00%。
+三次候选启动、同源码 p50/p99/p99.9 全项 `<3%` 回退和生产构建门禁
+仍未完成，PR 保持 Draft。
 
 ## 2. 证据核验
 
@@ -474,3 +508,11 @@ PR 继续保持 Draft。
 `resume853-855-fair-yield/resume854-yield-stages/` 运行
 `sha256sum -c SHA256SUMS` 与 `python3 check.py` 复核原始阶段计数与
 预登记判别；这只是一轮插桩诊断，不参加 full20 验收。
+`resume858-ktimer-fresh/` 运行 `sha256sum -c SHA256SUMS --quiet` 与
+`python3 check.py` 复核逐轮日志、计数器差值和 generation 配对。
+`build.log.gz` 与 `probe.patch.gz` 是原始文件的无时间戳 gzip 归档；
+解压后 SHA256 分别为
+`51f90c64df300a70b9f7c3c0fd96753388eb7fb2e88c926784d6ccd56fe4473c`
+和 `23ba81b82f825af7af4a704465ea01bc69fc26b48b8b264709e4925b23cd0c10`。
+构建镜像没有纳入 Git，脚本只能核对日志中的镜像 SHA 记录，不能重算
+缺席的 17 MB 镜像本体哈希；本地原始归档另已核验该镜像。
