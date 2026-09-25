@@ -412,6 +412,41 @@ Fair 发送侧假设门槛。因此，**低优先级、不会立即抢占发送�
 这次没有运行时源码改动，也没有新的无插桩 full20；最新有效 G1/G2
 仍是 **11/20** 项达到 90%，最差 **58.00%**，PR 继续保持 Draft。
 
+### 1.17 Fair yield 阶段诊断
+
+`resume853-855-fair-yield/` 保存当前 `69a3365076` 源码的交接路径审计与
+`resume854` 同板聚焦诊断。只读审计确认发送侧唤醒与后续 park/切换属于
+不同 owner rq 事务，不能跨事务复用 Fair 选择结果；也不能把不同 benchmark
+场景的边缘 p50 相减当作可删除的耗时。诊断直接使用已有的
+`yield_run_queue.rs` qperf 阶段计数器，未修改生产运行时源码。
+
+`resume854` 的 `qperf-metrics`、无 PGO、cpufreq-off 镜像在
+OrangePi-5-Plus-2 上启动一次，按 FIFO/OTHER/OTHER/FIFO/FIFO/OTHER
+运行六个独立进程。每轮仅执行 `sched_yield_handoff`，均有
+20000/20000 样本、零 `not_parked` 和 `missed_deadlines`，所有五段计数
+在每轮内完全相等，约 42008–42010 次。每事件插桩均值的策略内中位数中，
+OTHER 相对 FIFO 的 `put-prev`、`pick` 分别增加 2218.75、937.74 ns；
+`rq commit`、`selection tail` 分别增加 774.00、658.39 ns。预登记的
+前两段合计差 3156.49 ns/event，大于后两段合计的 1432.40 ns/event，
+因此后续优先检查 Fair 当前任务重新入队与挑选路径。
+
+这些是包含探针且可能混有后台调度的全局计数；镜像内 FIFO/OTHER
+benchmark p50 中位数为 10500/16917 ns，明显高于无插桩 G1/G2 的
+4083/7583 ns。阶段差值**不是原生可删除成本**，也不是 Linux RT 对照
+或 full20 性能收益。原始串口、每轮日志、计数器快照、构建配置和复算
+脚本已归档；仓库副本的构建日志只规范化了 CRLF 行尾。临时 `image.bin`
+未纳入 Git，镜像 SHA256 为
+`255c03696d0de9b808c6c06a9d3cf61303557212c602253016ae500f2e0877fc`。
+仓库内校验可复核日志与镜像身份记录，不能重算缺席镜像本体的哈希。
+`resume855` 又核对了两任务 Fair yield 的 EEVDF 入队、选择及发布边界：
+未找到可跳过且有多微秒收益证据的等价操作；旧 retained-node 表示法
+已经在 `resume135/136` 原生测试中退化。独立审计报告把不同场景、
+插桩与原生 p50 换算成可删上界的推导不成立，主审结论已在
+`resume855-audit/decision.md` 逐项限定。被选任务的 hrtick 派生复用
+只是后续待证伪假设，未实现或测量。
+最近有效无插桩 full20 仍是 **11/20** 达到 90%，最差 **58.00%**；
+PR 继续保持 Draft。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -436,3 +471,6 @@ Fair 发送侧假设门槛。因此，**低优先级、不会立即抢占发送�
 `resume850-852-policy-axis/` 运行 `sha256sum -c SHA256SUMS` 和
 `python3 resume852-settle/check.py` 核对原始日志、二进制哈希、
 完整轮次、样本及策略差值；无效的 `resume851` 仅存证。
+`resume853-855-fair-yield/resume854-yield-stages/` 运行
+`sha256sum -c SHA256SUMS` 与 `python3 check.py` 复核原始阶段计数与
+预登记判别；这只是一轮插桩诊断，不参加 full20 验收。

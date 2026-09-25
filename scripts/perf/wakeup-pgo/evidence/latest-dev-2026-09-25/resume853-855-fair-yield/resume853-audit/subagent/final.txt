@@ -1,0 +1,111 @@
+# 独立审计（只读）：同核 futex / yield 交接在 90% 目标下的结构性优化候选
+
+HEAD `69a33650763538692fafea27c869870ed0313642`（`dev@05175ca38823b631a73777b0130226ddfa558439`），工作树未改动，未编译、未跑板、未跑任何验证脚本。标记：**[测]** 来自已归档的原始测量，**[推]** 是本轮的源码/结构推断。
+
+---
+
+## 1. 精确路径（file:line）
+
+### 1.1 接收方：私有 FUTEX_WAIT 的 park 准备
+
+- 入口 `os/StarryOS/kernel/src/syscall/sync/futex.rs:297-317`：`FutexCommand::Wait | WaitBitset` → `context.resolve(uaddr, key_mode)` → `futex.wait_nofault_until(task, bitset, deadline, || futex_read_user_nofault(uaddr)==value)`。private 模式只用 `FutexKeyMode::Private`（`:300-305`），不解引用 word 建立 VMA。
+- `os/StarryOS/kernel/src/task/futex.rs:942-1013` 是本路径真正执行体：
+  - `:955` `bucket(&self.key)`；`:957` `bucket.reserve_waiter()`（`task/futex.rs:691-701` = `pending.fetch_add(Relaxed)`+`fence(SeqCst)`）；
+  - `:963` `begin_current_park()`（`components/ax-task/src/thread/current/park.rs:181-215`：`acquire_blocking_permit` → `PreemptScope::enter()` → `current_thread_core_arc()` → `system.prepare_current_park`）；
+  - `:978` `task.as_thread().wait_state().begin(Some(self.cleanup()))` 取 generation；
+  - `:985-993` `waiters.push_back(FutexBucketWaiter{..})` + `reservation.commit()`；
+  - `:1016` `park.commit()` → `components/ax-task/src/thread/current/park.rs:420-424`：`RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Block, RuntimeSchedulerEntry::Task)` → `commit_park_in_scheduler_frame` → `ParkCommit::Blocked(decision)` → `execute_switch_plan`；**接收方的时间戳就在 `execute_switch_plan` 返回之后**（`futex.c:203` `resumed_ns = bench_monotonic_ns()`，窗口见 `apps/starry/wakeup-latency-bench/handoff.c:196-215`）。
+  - 恢复后 `:1023-1024` `is_woken(generation)` / `finish(generation)`，`:1042-1047` 是 repark 分支。
+
+### 1.2 发送方：唤醒 pass
+
+- `syscall/sync/futex.rs:339-351`：`FutexCommand::Wake | WakeBitset` → `futex.wake(wake_count, bitset)` → `complete_futex_wake(count)`（`:262-267` 注释明确 wake 不再额外加调度点）。
+- `task/futex.rs:1083-1094` `ResolvedFutex::wake`：`count==0||mask==0||!bucket.has_pending_waiters()` 早退，然后 `bucket.waiters.lock()` + `collect_futex_wakes`（`:1266-1297`：`is_cancelled`/`mark_woken`/`VecDeque::remove`/`waiter_removed`/`push_wake`）→ `wake_batch`（`:66-69`）→ `WakeBatch::tasks.wake_all()`（`components/ax-task/src/thread/handle/wake_batch.rs:89-99`，只搬指针无 Arc RMW）。
+- `ThreadWakeHandle::wake` → `runtime::context.rs:17` → `sched/system/task_system/dispatch/wake/request.rs:13-23` → `wake_thread_source`（`:41-148`）：
+  - `:47` `PreemptScope::enter()`；`:49` `core.sched().lock()`（**接收方 task 锁**）；`:50` `core.publish_wake()`；
+  - `:87-118` 早退（`saved_state_only` / `already_pending && state!=Blocked` / `Parking|Running|Waking|New`）；
+  - `:124-131` `sched.placement.queued_cpu()` 是 `Some` → `wake_on_rq_locked`（`dispatch/wake/on_run_queue.rs:16-160`，Fair delayed 路径）；
+  - `:139-147` 否则 `select_wake_target` → `consume_wake_locked` → `activate_waking_thread_locked`（`dispatch/wake/activation.rs:77-275`）。
+
+### 1.3 策略差异决定了「第二个事务是谁」——这是本轮最关键的更正
+
+- **OTHER（Fair/Fair）**：`activate_waking_thread_locked` 里 `prepare_wake_activation`（`activation.rs:16-27`）在 current 也是 Fair 时调用 `run_queue.settle_current(0)`，再做 `update_fair_virtual_time`（`:50-51`、`:177`），`wakeup_preempt_with_intent`（`cpu/remote/run_queue/preemption.rs:31-105`）跑 `default_sync_wakeup_preempts` 判据 + `fair_wakee_is_selected` + `fair_preemption_cancels_protection`（取消 current 的 slice protection），返回 `WakeeSelected`。
+  - `WakePreemptionDecision::reschedule_kind`（`cpu/remote/run_queue.rs:186-200`）：**Fair wakee → `RescheduleKind::Lazy`**（`:195-197`）。
+  - Lazy 的消费点：`os/arceos/modules/axruntime/src/guard/mod.rs:65-105` `prepare_user_return()` 用 `current_cpu_needs_reschedule_pinned`（`thread/mod.rs:105-109` → `remote/scheduler.rs:472-474`，`REQUEST_REASON_MASK` **含 `REQUEST_PREEMPT_LAZY`**），因此发送方从 `FUTEX_WAKE` 返回用户态时就会 `schedule_current_cpu()`（entry `Task`，scope `All`，见 `dispatch.rs:157-172`）。
+  - 结论[推]：OTHER 同核窗口 = wake pass + **返回用户态触发的抢占切换**；发送方的 `FUTEX_WAIT` 不在窗口内。
+- **FIFO 等优先级（80/80）**：`preemption.rs:57-65` 命中 `EqualRtWakeAction::PreserveFifoOrder && 优先级相等` → 直接 `KeepCurrent`，`activate_waking_thread_locked:232` 的 `publish_rq_scheduler_reasons(None,false,..)` 在 `scheduler.rs:296-298` **立即返回**（不发请求）；发送方返回用户态后继续执行自己的 `FUTEX_WAIT` → park pass（`park_exit/park_commit.rs:35-260`，快路 `park_exit/park_run_queue.rs:15-…`）→ 切换给接收方。
+- 与 [测] 一致：`resume801` OTHER `direct_wake_preemptions≈1.05/样本`、FIFO `0.003–0.014`，而两者 `context_switches` 仅差 0.07–0.09（2.1969 vs 2.1298），即**两种策略窗口内都恰好一次切换**（另一次是窗口前的 `sched_yield`，见 `resume805`、`resume793/820`）。`resume840` 强制 FIFO81 比等优先级 FIFO 快 1166ns，正好等于「窗口里去掉发送方那次用户→内核→park」。
+
+---
+
+## 2. 唤醒 pass 与 schedule pass 的重叠工作：逐项判定
+
+| 重叠项 | 唤醒 pass 位置 | schedule/park pass 位置 | 判定 |
+| --- | --- | --- | --- |
+| `settle_current(0)`（rq clock 充电） | `activation.rs:24`（仅 Fair current）、`on_run_queue.rs:104`、`enqueue.rs:163` | `dispatch/current.rs:13`（经 `park_commit.rs:117`/`park_run_queue.rs:64`）、`preemption.rs:197`、`yield_entry.rs:105`、`yield_run_queue.rs:21` | **不可合并**：两者是不同时钟点的两次真实充电，唤醒那次是为 enqueue 之前 `update_curr`（Fair placement/EEVDF 判据依赖它），schedule 那次覆盖「唤醒返回→切换」区间[推] |
+| `update_fair_virtual_time`（avg_vruntime） | `activation.rs:51`、`:177` | `current.rs:54/62`（put_prev 头尾各一次）、`class.rs:238`（Fair `pick_task` 头） | **存在一处可证明冗余**（见 §2.1），但量级是**几十–几百 ns**，不是微秒 |
+| rq domain/load 发布 | `commit()`→`balance.rs:75-89` | 同上（另一次 `commit()`） | **已按值去重**：`take_summary_dirty`/`take_domain_publication`（`run_queue.rs:265-289`）比较后才发布；两次发布携带的 runnable 集合不同，都需要 |
+| scheduler deadline / hrtick | `activation.rs:222-243`（`Disallow`/`Disarm` + `publish_scheduler_runtime_deadline`） | `switch/publication.rs:92-99` → `deadline/clockevent.rs:15-31` | **已去重**：`clock_event.rs:216-224` 按值比较、`:203-215` 按 generation、`next_scheduler_deadline_update_if_changed`；唤醒侧在有抢占时故意 `Disarmed`（`activation.rs:223-227`），再编程是设计而非重复 |
+| task 锁 / rq 锁所有权 | 持**接收方** task 锁 + 目标 rq 嵌套事务 | 持**发送方**（current）所有权，`resume832` 已证明常规 Fair 路径只用一次 rq 事务 | **无重叠**，不能合并 |
+| 跨事务复用 Fair 候选 | wake pass 算出的 `fair_wakee_is_selected` | schedule pass 的 `pick_owner_next_in_rq` | **明确禁止**：两事务之间是可抢占窗口（其他核 `wake_on_rq_locked`、IRQ-return、tick、migration、PI/policy 变更），`resume806/816/820` 已否 |
+
+### 2.1 唯一可证明的冗余（量级不足）
+
+`put_prev_unlinked_current`（`cpu/remote/run_queue/current.rs:47-64`）在 `enqueue_task` 之后立刻做 `self.queue.update_fair_virtual_time(None)`（`:62`），随后同一 rq 事务内 `SchedulerClass::Fair::pick_task` 的第一句又是 `run_queue.update_fair_virtual_time(None)`（`algorithm/queue/class.rs:238`）。两次之间**没有成员变化**（同一 `OwnerRqTxn`，未释放），且 `RunQueue::enqueue_task`（`lifecycle.rs:193-233`）与 Fair 类 hook（`class.rs:79-113`）都不再改动 fair 平均。即第二次是**恒等重算**（`rebase(0)`）。
+但 `update_fair_virtual_time`（`fair_queue.rs:560-591`）只是 i128 乘加 + 一次 64 位除法（宽除法有守卫，`divide_weighted_sum:659-668`），[推] 单次几十 ns；**不能**作为 90% 缺口的解释，且方向与已否的 `exp120`（Fair V 刷新：OTHER 无效、FIFO ~1.2%）重叠。
+
+**结论（A）**：在本轮审查的唤醒→调度路径里，**没有**既能保住抢占/状态发布/内存序、又带「微秒级」收益的重复工作。可安全合并的工作其上限是亚微秒。
+
+---
+
+## 3. 缺口分解：把 futex 与 Fair 切换分开
+
+用冻结矩阵里同一 boot 的行（`resume818` G1 与 `resume819` G1/G2 完全一致，两次独立启动逐字节同值）[测]：
+
+| 行 | Linux RT | Starry G1=G2 | 比值 |
+| --- | ---: | ---: | ---: |
+| `fifo sched_yield_no_peer` | 2333 | 2041 | 114.3% |
+| `other sched_yield_no_peer` | 2625 | 2042 | 128.6% |
+| `fifo sched_yield_handoff` | 3791 | 4083 | **92.9%（过）** |
+| `other sched_yield_handoff` | 4667 | 7583 | **61.6%** |
+| `fifo thread_futex_same_cpu` | 8458 | 11958 | 70.7% |
+| `other thread_futex_same_cpu` | 8458 | 14583.5 | **58.0%（最差）** |
+
+由此得到两条**互相独立**的可测分量：
+
+1. **Fair 同侪切换（完全不含 futex / 不含 park）**：Starry `other_yield − fifo_yield = 3500ns`，Linux 同式 `876ns` ⇒ Starry 特有约 **+2624ns**；`handoff − no_peer` 的同类增量 Starry 5541 vs Linux 2042 ⇒ **+3499ns**。而 RT 侧 `fifo yield_handoff` 已达标（+292ns）。**这是 90% 缺口里 Fair 专属部分的直接载体，且不需要跑 futex 就能复现**。
+2. **真实 waiter 的唤醒 syscall（不含切换）**：`fifo futex_same_cpu 11958 − fifo yield_handoff 4083 = 7875`，Linux `8458 − 3791 = 4667` ⇒ Starry 特有约 **+3208ns**，与 `resume847/849` 用同一静态二进制、FIFO80 发送 + FIFO1 接收测到的 **+3207ns（hit−miss）** 完全吻合[测]。
+
+即 OTHER 同核最差行（90% 需减 5186ns）大致由 **≈+3.2µs 唤醒/激活** + **≈+2.6µs Fair 抢占切换** 构成；两者都可各自在同一镜像上以「无 futex」或「无切换」的方式复现。`resume852` 只覆盖了 Fair **非抢占**激活（sender FIFO80 + receiver OTHER），那里 Starry/Linux 的 Fair 增量是 1166/1167 —— 因此 Fair 专属部分**不在激活判据的前半段**，只能在 `wakeup_preempt` 的 Fair 尾部（`:95-105`）或 schedule pass 的 Fair put_prev/pick。**[测 + 推]**
+
+`resume605` 的插桩激活分段（OTHER prepare 1590 / enqueue 2689 / publish+commit 1604 / wait 139 ns）与 +3.2µs 同量级，但含探针，**不能**直接当作可删成本。
+
+---
+
+## 4. 旧实验重叠（避免重复）
+
+`resume847/849/852`（发送侧真实唤醒窗口，已排除 bucket 扫描/Fair 非抢占激活）、`resume840/841`（强制抢占，双内核）、`resume838`（同核事务复审）、`resume832`（第二次 rq 事务受限）、`resume801/802`（过渡次数与 Fair 抢占判据）、`resume805`（窗口内一次切换、`prepare_arch`/`switch_out_hook` 各 ~0.3µs）、`resume628/630`（入向 tail 1.996µs / futex cleanup 2.02µs、switch-in 各 197–585ns）、`exp57/250/390/409/451/509/519`（enqueue 快照/内联）、`exp114/495`（未变化 effective key）、`exp120`（Fair V 刷新）、`resume604/742`（fence / 单 waiter）、`resume806/816/820`（跨事务复用候选被否）。**没有任何一条已否方向能解释 §3.1 的 futex-free Fair 同侪切换缺口。**
+
+---
+
+## 5. 结论与一个窄判别器
+
+**（A）没有找到满足「精确行 + 删除的工作 + 所有权/内存序证明 + 负例」且带微秒级收益的事务级候选。** 唯一可证明的重复（§2.1）是亚微秒，且与已否的 `exp120` 同向。不得以诊断 p50 当作 full20 收益；当前有效无插桩 full20 仍是 11/20 @90%，最差 58.00%。
+
+**（B）唯一推荐的判别器（不是宽探针）**：把 §3.1 的「FIFO 同侪切换 = 控制组」与「Fair 同侪切换 = 处理组」做成**同一静态二进制、同一 boot、ABBA 多轮（≥3 进程轮）的配对测量**，直接复用 `yield_run_queue.rs` 里已有的 qperf 槽位 0/1/2/4/6（account、put_prev、pick、rq commit、selection tail），**判据只用同一槽位的 (other − fifo) 差值**，从而抵消探针与骨架成本：
+
+- 预测 1：若 `slot1`（`put_prev_unlinked_current` → avg_vruntime ×2 + `yield_request`）+`slot2`（Fair `pick_task`：avg ×1 + EEVDF eligibility + slice protection）承担 ≥2µs，则缺口落在 **Fair 类 put_prev/pick**，与 RT 骨架无关 → 下一步对该段做源码候选（必须同时排除 §2.1 的恒等重算、`exp120`、`resume589` 旧分段）。
+- 预测 2：若 (other−fifo) 差值均摊在 slot4/6（rq commit / selection tail），则缺口是**类无关骨架**在 Fair 下被放大（例如 `publish_run_queue` 的 `earliest_deadline_including_current` 每次切换都变）→ 目标转向 `root_domain/publication.rs` 与 `finish_owner_selection`。
+- 负例（整轮作废并记录）：任一内核 `not_parked≠0`/样本不完整/镜像或二进制 SHA 不符；FIFO 控制组相对 4083 漂移 >3%（说明该轮不可与冻结行对比）。
+- 必须同时报 Linux RT，只用**跨内核同式差值**归因；不得把插桩 p50 当收益。
+
+**（C）任何后续源码候选的 A/B 与正确性门（沿用项目口径）**：同源码 + 关闭 cpufreq 的无插桩 full20，A（未改）vs B（改动）配对；焦点 `other thread_futex_same_cpu` p50 严格改善 >10% 且 20 项 p50/p99/p99.9 无 ≥3% 回退、`not_parked`/`missed_deadlines` 全零、3 次有效候选启动；`cargo xtask clippy`、`cargo xtask test`、futex/thread/sched 回归（含 `0x5251_*`/`0x5343_*`/`0x574b_*` fatal invariant 不得触发）与 host 侧 Fair 判定测试（`cargo test -p ax-runtime --features 'host-test multitask'`）。
+
+---
+
+## 6. 不确定项与未覆盖
+
+1. §1.3 的「Lazy 在返回用户态被消费」是源码推断（`guard/mod.rs:65-105` + `scheduler.rs:472-474`）；`resume801` 的 2.197 vs 2.106 只排除了「OTHER 多一次完整切换」，未直接证明发送方未进入 `FUTEX_WAIT`。判别器不依赖此点，但若要做 park 侧候选必须先证实。
+2. G1/G2 仍是 `screening_only: true`（两次启动），比值用于选方向、不是验收。
+3. `wakeup_preempt` 的 `fair_wakee_is_selected`/`cancel_slice_protection`/`fair_preemption_cancels_protection` 与 `pick_task` Fair 的重复选择（唤醒侧已判定、调度侧重算）在语义上**不可**无条件合并（跨核唤醒、IRQ-return、tick、迁移、PI/policy 变更都可在窗口内改变 runnable 集合），本轮未找到受限且可证安全的合并条件。
+4. 未覆盖：`wake_wait_claim_from_current_cpu`/`WaitWakeClaim`、`wake_on_rq_locked` 中 `reactivate_delayed_fair` 的 EEVDF 内部成本、跨核 `ring_scheduler_doorbell` 侧、`process_futex_cross_cpu`（另有进程语义）。板卡/频率/会话状态未核验（未接触板卡服务）。
