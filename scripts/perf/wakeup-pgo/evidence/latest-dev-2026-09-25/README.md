@@ -359,6 +359,26 @@ p50 的数微秒缺口。`resume835` 对照旧 18/20、已打包 19/20 和最新
 通过的其他任务不能覆盖这些失败，下一次文档提交触发的新 CI 也须按其
 精确 head 重新核对。PR 继续保持 Draft。
 
+PR head `145b3f349f` 的
+[CI run 36092724049](https://github.com/rcore-os/tgoskits/actions/runs/36092724049)
+也已结束：Starry OrangePi 5 Plus 的 `native-network-smoke` 和 AKA-00
+SG2002 的 `wifi-iperf-smoke` 各因用户态 SIGSEGV 失败。其余该 run
+列出的任务通过；两个失败不能计作通过。OrangePi 的同用例故障签名
+此前已在精确 `dev@05175ca388` 上出现，但尚未证明两次故障根因相同。
+
+### 1.15 本地强制抢占判别
+
+`resume837-842-local-path/` 归档跨核 SGI 后半段、同核 futex、定时器
+worker 的只读审计，以及在同一 OrangePi-5-Plus-2 上以相同用户态
+二进制执行的 Starry/Linux RT 聚焦对照。接收者优先级由 FIFO 80
+提高到 81 后，两侧 p50 均改善，但 RT/Starry 中位比值从等优先级
+的 71.96% 降至 60.81%；OTHER 对照 Linux 第二轮仅 19999/20000
+样本、`not_parked=1`，已排除。这个结果指向 Fair 之外的共用
+即时抢占与切换路径，却没有定位可删除的多微秒操作。只读源码审计
+未发现具备语义证明和收益上界的事务级候选。该变体不计入 full20，
+没有运行时改动或新的 90% 收益。原始串口、二进制、源代码、
+`analyze.py` 和哈希核验方式见子目录 README。
+
 ## 2. 证据核验
 
 从本目录执行 `sha256sum -c SHA256SUMS` 和 `python3 check.py`，可核对归档的
@@ -377,3 +397,6 @@ p50 的数微秒缺口。`resume835` 对照旧 18/20、已打包 19/20 和最新
 的逐项中位数、90% 门槛和单次普通 A1 对照；它不是三次启动验收。
 `resume829-833-path-diagnostics/` 和 `resume834-836-sgi-path/` 的核验
 只证明诊断记录完整，不参与 full20 验收。
+`resume837-842-local-path/` 运行 `sha256sum -c SHA256SUMS` 与
+`python3 resume841-linux-forced-rt/analyze.py` 核对聚焦实验；
+这些结果同样不参与 full20 验收。

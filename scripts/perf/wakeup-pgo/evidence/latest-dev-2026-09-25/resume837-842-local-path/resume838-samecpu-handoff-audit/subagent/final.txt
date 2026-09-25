@@ -1,0 +1,71 @@
+## 结论
+
+在 exact head `69a3365076` 上，**不存在可证据支撑、单独覆盖约 5.2 µs 的语义等价运行机制**。冻结矩阵的原生数据表明缺口是**两段相当、且各自都弥散**的成本之和：约 3.2 µs 属于 futex park/wake 事务（FIFO/OTHER 完全一致），约 2.9–3.5 µs 属于切换/handoff 通路（其中 Fair 份额远大于 FIFO）。所有已隔离的叶段在插桩下都 ≤ 约 2.2 µs，因此任何叶级改动都填不满缺口。我给出证据、最大候选（含证明义务）与一个能决定攻击方向的聚焦判别实验。
+
+## 1. 被测量的前向事务（带 file:line）
+
+窗口起点：sender 写时间戳并唤醒 —— [handoff.c:311](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/handoff.c:311)、[handoff.c:314](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/handoff.c:314)；窗口终点：receiver 从 `FUTEX_WAIT` 返回后立即读钟 —— [handoff.c:220](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/handoff.c:220)。
+
+唤醒侧：
+`sys_futex(FUTEX_WAKE)` [futex.rs:337](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/syscall/sync/futex.rs:337) → `Futex::wake` [task/futex.rs:1083](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/futex.rs:1083) → `wake_batch` [task/futex.rs:66](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/futex.rs:66) → `ThreadWakeBatch::wake_all` [wake_batch.rs:81](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/handle/wake_batch.rs:81) → `ThreadWakeHandle::wake` [handle/mod.rs:287](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/handle/mod.rs:287) → `ThreadCore::wake` [handle/mod.rs:309](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/handle/mod.rs:309) → [runtime/context.rs:17](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/context.rs:17) → `TaskSystem::wake_thread_source` [request.rs:41](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/request.rs:41) → `activate_waking_thread_locked` [activation.rs:72](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:72)：
+- `wait_until_not_on_cpu` [activation.rs:89](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:89)（resume605 测 ~139 ns，非主瓶颈）
+- `OwnerRqTxn::begin_nested` [activation.rs:116](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:116)
+- `settle_current` [activation.rs:24](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:24) + 两次 `update_fair_virtual_time` [activation.rs:51](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:51)、[activation.rs:177](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:177)
+- Fair 入队 [activation.rs:172](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:172)、唤醒抢占决策 [activation.rs:197](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:197)（Fair 命中 `WakeeSelected`，见 [preemption.rs:103](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/preemption.rs:103)）
+- 关键动态条件：Fair wakee 的 `reschedule_kind` 是 **Lazy** [run_queue.rs:196](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue.rs:196)；`publish_rq_scheduler_reasons` 在 `producer == owner` 且非 Immediate 时**不打 IPI/doorbell**，只留 sticky 位 [scheduler.rs:292](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:292)。
+
+sender 用户态返回点消费 Lazy 并进调度：`prepare_user_return`（IRQ 开→观测 `needs_reschedule`→调 `schedule_current_cpu`）[guard/mod.rs:65](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:65) → [dispatch.rs:29](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/switch/dispatch.rs:29) → `schedule_if_requested_owner` [preemption.rs:170](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/preemption.rs:170) → `settle_current` [:197](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/preemption.rs:197) → 普通 Fair current 走 rq-only 快路径 `OwnerRqScheduleOut::Unlinked`（[schedule_out.rs:12](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/schedule_out.rs:12)、[:37](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/schedule_out.rs:37)）→ `put_prev_unlinked_current` [current.rs:47](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs:47) → `pick_owner_next_after_preemption_in_rq` [selection.rs:28](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/selection.rs:28) → Fair `pick_task` [class.rs:237](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/class.rs:237) → `execute_switch_plan` [dispatch.rs:256](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/switch/dispatch.rs:256) → `switch_context` [dispatch.rs:350](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/switch/dispatch.rs:350) → `switch_runtime_context` [context.rs:589](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/context.rs:589)。
+
+receiver 侧进入：incoming tail [context.rs:287](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/context.rs:287) → 非迁移 tail [completion.rs:80](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/park_exit/completion.rs:80) → `SwitchInCompletion::finish` [outcome.rs:80](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/outcome.rs:80) → Starry 扩展钩子 [scheduler_task.rs:735](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/scheduler_task.rs:735) → `scheduler_switch_in` [thread.rs:629](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/thread.rs:629)（scope/perf/`perf::sw::sched_in` [sw.rs:976](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/sw.rs:976)）；再回到 `park.commit()` 之后、`wait_state().finish()`、`sys_futex` 返回 [task/futex.rs:1016](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/futex.rs:1016)。
+
+## 2. 为什么单个叶段覆盖不了 5.2 µs（原生、无插桩证据）
+
+当前 head 的冻结 full20（`resume818` G1，816 MHz，无探针）按"窗口内是否有一次切换"分层：
+
+| 行 | Starry p50 | Linux p50 | 达标比 |
+|---|---|---|---|
+| getpid / clock_pair（0 切换） | 1458 / 875 | 1458 / 875 | 100% |
+| futex_wait_mismatch / futex_wake_empty / sched_yield_no_peer（0 切换） | 1459 / 1458 / 2042 | 2333 / 1750 / 2625 | 115–160% |
+| OTHER sched_yield_handoff（1 切换，无 futex） | 7583 | 4667 | 61.6% |
+| OTHER thread_futex_same_cpu（1 切换 + futex） | 14583 | 8458 | 58.0% |
+| FIFO thread_futex_same_cpu | 11958 | 8458 | 70.7% |
+| OTHER/FIFO cross_cpu futex（2 切换） | 23916 / 22459 | 16041 / 13708 | 61–67% |
+
+两点硬结论：
+
+- **所有含 ≥1 次切换的行都失守（58–71%），所有零切换行都在 100–160%**。syscall/trap 入口出口、时钟读取、`futex_wake_empty` 等不含切换的路径没有缺口 —— 缺口完全落在切换/handoff 与 park/wake 组合上。
+- **按既有行做原生差分**（用 `yield_no_peer` 作零切换基线）：Fair 的"一次 yield 切换"边际成本 Starry 5541 ns vs Linux 2042 ns（+3.5 µs）；FIFO 仅 2042 vs 1458（+0.6 µs）。而"futex 减去等价 yield"得到 park/wake 事务增量 Starry −3209 ns、FIFO −3208 ns（两者**完全一致**）。即约 3.2 µs 是 FIFO/OTHER 共有的 futex park/wake 成本，约 2.9–3.5 µs 是切换通路、其中 Fair 份额最大。（`sched_yield_handoff` 是自旋交接，这一差分是近似，非严格因果。）
+
+插桩叶段给出的上界（都含读钟探针，不可折算收益）：整次切换三段独占阶段 2170+1143+657 ≈ 3971 ns/次（`resume606`：prepare_entry ~1150、raw_switch ~640、switch_out_hook ~370）；唤醒侧 `resume777` 最大叶 pick 2189 / enqueue 1538 / commit_selection 1101 ns；receiver 侧 `resume628/629` ax-task tail ~1996、futex cleanup ~2020 ns，其中最大子叶 1287 ns。**没有任何叶段 ≥2.2 µs**，而探针地板约 100–290 ns/边界。
+
+因此：缺口是"多段几百 ns 相加 + 每次切换的固定公共成本"，不存在一个天然可删的微秒级操作；跨 wake→schedule 复用已被 `resume806` 证明不成立（`put_prev` 改变集合、边界是 IRQ 可用解锁窗口）。Fair V 重锚（`activation.rs:51/177`、`current.rs:56/65`、`class.rs:238`）每次 ~234–261 ns，且 exp120 已否决。`update_virtual_time` 常路径是 64 位除法，不是宽除法热点 [fair_queue.rs:659](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair_queue.rs:659)。FIFO 路径甚至比 Linux 更快（零切换行 115–160%），排除了 syscall/trap 层。
+
+## 3. 最大候选（transaction-level，量级仍不足，需组合）
+
+唯一在结构上"够大且语义可证"的方向是**跨 Lazy 边界的带校验预选/直接交接**：唤醒侧已算出 `WakeeSelected` 与 `earliest_eligible`；调度侧可携带(wakee, 当时 V/资格快照)，在 `pick_task` 前用一条**失效协议**校验（无更高类可运行、无并发 Fair 入队改变加权均值、`protected_fair_current`/切片保护未变、无迁移请求、无 tick 提升），校验通过则跳过 `pick_eligible` 摘取与重平衡，失败则回落完整 pick。
+
+证明义务：①校验必须覆盖 §1 所列全部并发写入者（IRQ tick `accounting.rs`、`on_run_queue`、`bandwidth`、远端 push/pull、迁移、`tighten_current_fair_slice_protection`）；②通过时必须与完整 pick 选出**同一实体**且写入同样的 slice protection；③不得改变 `put_prev` 重插后的 EEVDF 资格。
+量级上限 ≈ pick(2189) + commit_selection(1101) 的探针包含值，去探针后大概率 1–1.5 µs —— **单独不足以补 5.2 µs**，只能在判别出"Fair 决策是主项"后才值得做。`resume806` 已否掉无失效协议的复用；若重开必须写明与该结论的实质差异。
+
+## 4. 聚焦判别实验（推荐先做，非重复）
+
+**用 benchmark 副本（不改冻结 hash、不插内核探针）把"抢占/切换机器成本"与"Fair 决策成本"分开**：新增一行 `thread_futex_same_cpu` 的 FIFO 变体，sender 低优先级 FIFO、wakee 高优先级 FIFO，使唤醒**强制发生 RT 抢占**（与现有 FIFO"自愿阻塞后切换"、OTHER"Fair 唤醒抢占"三者对照）。
+
+- 若 Starry 强制 RT 抢占仍 ≈ Starry 自愿阻塞（~11–12 µs，远高于 Linux 8.5 µs）→ 缺口在**抢占/切换公共机器**，攻击 §1 的 `execute_switch_plan`→incoming tail→扩展钩子链。
+- 若 Starry 强制 RT 抢占 ≈ Linux（~8.5 µs）→ 缺口在 **Fair 专属的 put_prev/selection/记账**，再做 §3 的带校验预选。
+- 每项须同镜像、cpufreq-off、同一冻结协议、`samples==attempted`、`not_parked==0`。
+
+次级判别（若需量化 park/wake 那一半）：同形态副本中把 receiver 由 park 改为在 gate 上自旋（零 futex 事务、仍一次切换）；先验预测该副本超额应落在 `sched_yield_handoff` 量级（约 +2.9 µs），用于确认 §2 的 ~3.2 µs park/wake 份额。
+
+## 5. 任何候选必须保有的不变量与最小 A/B 门
+
+不变量：FUTEX_WAIT/Wake 顺序与 `publish_wake`/`wait_state`（generation）发布；`WakeTransition::Activate` 与 `on_rq`/`on_cpu` 事实元组；`settle_current` 的区间记账（`accounted_until_ns`，第二次只结算残差）；Fair EEVDF 的 `vruntime`/加权均值/`min_vruntime` 剪枝与切片保护；`put_prev`→`pick` 顺序；超时/取消/信号/RT-lock PI（`WakeSource::RtLock*`）；迁移/affinity 分支与 `requested_migration`；本地 IRQ-off baton 与 `SwitchHandoff` 生命周期。不得通过弱化发布、跳过抢占或放宽判据达成。
+
+最小原生门：源码配对的 ordinary vs candidate，cpufreq-off 完整 full20，逐项 p50/p99/p99.9 回退 <3%、`not_parked`/`missed_deadlines` 为 0、20 项唯一、直方图吻合；`Linux p50*10 >= Starry p50*9` 判据不变。CI queued/skipped 不算通过。
+
+## 6. 风险与下一步
+
+风险：不分解就动手要么是第 N 次叶级微优化（`BY-DIRECTION` §1/§5/§6 已封），要么以"跨事务复用"重开 `resume806`/exp120 的失败路线；用探针计时或 PMU 会扰动路径比例（`resume811/813`），不得当因果。FIFO 与 OTHER 在 park/wake 增量的数值完全一致，说明"Fair 特化"解释不了全部缺口。
+
+下一步：先执行 §4 的强制 RT 抢占副本（一次板卡租约、原生、无插桩），据结果在"公共切换机器"与"Fair 决策"之间二选一，再决定是否立项 §3；立项须在 `experiment-ledger` 走 `begin` 并写明与 resume806/exp120/597 的差异。本次为只读探索，未改任何文件、未构建/测试/上板。
+
