@@ -1,6 +1,7 @@
-//! Conventional PCI Type-0 configuration-space layout constants.
+//! PCI Type-0 configuration-space layout constants.
 
-pub(crate) const CONFIG_SPACE_SIZE: usize = 0x100;
+pub(crate) const CONVENTIONAL_CONFIG_SPACE_SIZE: usize = 0x100;
+pub(crate) const CONFIG_SPACE_SIZE: usize = 0x1000;
 
 pub(crate) const CONFIG_VENDOR_ID_OFFSET: usize = 0x00;
 pub(crate) const CONFIG_DEVICE_ID_OFFSET: usize = 0x02;

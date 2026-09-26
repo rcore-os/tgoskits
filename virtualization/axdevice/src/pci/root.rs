@@ -1,9 +1,8 @@
 //! Architecture-neutral PCI root-owned config and BAR decode state.
 //!
 //! Frontends pass already-decoded BDF/config accesses into this object. The
-//! root owns only conventional config bytes and BAR routes; endpoint objects,
-//! runtime identities, and lifecycle callbacks are introduced by later
-//! integration layers.
+//! root owns config bytes and BAR routes; endpoint objects, runtime identities,
+//! and lifecycle callbacks are introduced by later integration layers.
 
 use alloc::{
     boxed::Box,
@@ -147,7 +146,7 @@ impl PciRootState {
         &self.topology
     }
 
-    /// Reads one conventional config access.
+    /// Reads one PCI config access.
     ///
     /// An absent BDF reads as all ones for the requested width.
     ///
@@ -172,7 +171,7 @@ impl PciRootState {
         }
     }
 
-    /// Applies one conventional config write.
+    /// Applies one PCI config write.
     ///
     /// Writes to absent functions or read-only fields have no effect. BAR
     /// probe and relocation writes are classified after merging the complete

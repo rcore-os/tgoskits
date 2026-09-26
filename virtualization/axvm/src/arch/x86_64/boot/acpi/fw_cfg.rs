@@ -6,7 +6,7 @@ use axdevice::FwCfgAcpiBlobs;
 use super::{
     aml::{build_dsdt, build_spcr, oem_id, oem_revision, oem_table_id},
     config::X86FirmwarePlan,
-    tables::{build_fadt, build_madt, serialize},
+    tables::{build_fadt, build_madt, build_mcfg, serialize},
 };
 use crate::boot::acpi::*;
 
@@ -19,19 +19,22 @@ const XSDT_HEADER_SIZE: usize = 36;
 pub(crate) fn build_fw_cfg_blobs(plan: &X86FirmwarePlan) -> Result<FwCfgAcpiBlobs, AcpiBuildError> {
     let mut dsdt = build_dsdt(plan)?;
     let mut madt = build_madt(plan);
+    let mut mcfg = build_mcfg(plan);
     let mut spcr = build_spcr(plan);
     let mut arena = AcpiTableArena::new(0, u64::from(u32::MAX) + 1)?;
-    let xsdt_slot = arena.reserve("XSDT", XSDT_HEADER_SIZE + 3 * 8, 8)?;
+    let xsdt_slot = arena.reserve("XSDT", XSDT_HEADER_SIZE + 4 * 8, 8)?;
     let fadt_slot = arena.reserve("FADT", acpi_tables::fadt::FADT::len(), 8)?;
     let facs_slot = arena.reserve("FACS", FACS::len(), 64)?;
     let dsdt_slot = arena.reserve("DSDT", dsdt.len(), 8)?;
     let madt_slot = arena.reserve("MADT", madt.len(), 8)?;
+    let mcfg_slot = arena.reserve("MCFG", mcfg.len(), 8)?;
     let spcr_slot = arena.reserve("SPCR", spcr.len(), 8)?;
 
     let mut fadt = build_fadt(plan, dsdt_slot.gpa(), facs_slot.gpa());
     let mut xsdt = XSDT::new(oem_id(), oem_table_id(), oem_revision());
     xsdt.add_entry(fadt_slot.gpa());
     xsdt.add_entry(madt_slot.gpa());
+    xsdt.add_entry(mcfg_slot.gpa());
     xsdt.add_entry(spcr_slot.gpa());
     let mut xsdt = serialize(&xsdt);
     let facs = serialize(&FACS::new());
@@ -41,6 +44,7 @@ pub(crate) fn build_fw_cfg_blobs(plan: &X86FirmwarePlan) -> Result<FwCfgAcpiBlob
         ("FADT", fadt.as_mut_slice()),
         ("DSDT", dsdt.as_mut_slice()),
         ("MADT", madt.as_mut_slice()),
+        ("MCFG", mcfg.as_mut_slice()),
         ("SPCR", spcr.as_mut_slice()),
     ] {
         clear_checksum(table, 9, name)?;
@@ -51,6 +55,7 @@ pub(crate) fn build_fw_cfg_blobs(plan: &X86FirmwarePlan) -> Result<FwCfgAcpiBlob
     arena.write(&facs_slot, &facs)?;
     arena.write(&dsdt_slot, &dsdt)?;
     arena.write(&madt_slot, &madt)?;
+    arena.write(&mcfg_slot, &mcfg)?;
     arena.write(&spcr_slot, &spcr)?;
 
     let mut rsdp = serialize(&Rsdp::new(oem_id(), xsdt_slot.gpa()));
@@ -67,7 +72,7 @@ pub(crate) fn build_fw_cfg_blobs(plan: &X86FirmwarePlan) -> Result<FwCfgAcpiBlob
         8,
     )?;
     add_table_pointer(&mut loader, &fadt_slot, FADT_X_DSDT_OFFSET, TABLE_FILE, 8)?;
-    for index in 0..3 {
+    for index in 0..4 {
         add_table_pointer(
             &mut loader,
             &xsdt_slot,
@@ -82,6 +87,7 @@ pub(crate) fn build_fw_cfg_blobs(plan: &X86FirmwarePlan) -> Result<FwCfgAcpiBlob
         (&fadt_slot, fadt.len()),
         (&dsdt_slot, dsdt.len()),
         (&madt_slot, madt.len()),
+        (&mcfg_slot, mcfg.len()),
         (&spcr_slot, spcr.len()),
     ] {
         add_table_checksum(&mut loader, slot, length)?;
@@ -196,8 +202,8 @@ mod tests {
         let blobs = build_fw_cfg_blobs(&super::super::config::test_plan(2)).unwrap();
         let commands = decode_loader(&blobs.loader);
 
-        assert_eq!(blobs.loader.len(), 15 * LOADER_ENTRY_SIZE);
-        assert_eq!(commands.len(), 15);
+        assert_eq!(blobs.loader.len(), 17 * LOADER_ENTRY_SIZE);
+        assert_eq!(commands.len(), 17);
         assert_eq!(
             commands[0],
             DecodedLoaderCommand::Allocate {
@@ -220,6 +226,7 @@ mod tests {
         let facs = acpi_table_range(&blobs.tables, b"FACS");
         let dsdt = acpi_table_range(&blobs.tables, b"DSDT");
         let madt = acpi_table_range(&blobs.tables, b"APIC");
+        let mcfg = acpi_table_range(&blobs.tables, b"MCFG");
         let spcr = acpi_table_range(&blobs.tables, b"SPCR");
 
         for (command, pointer_file, offset, target) in [
@@ -227,8 +234,9 @@ mod tests {
             (&commands[3], TABLE_FILE, fadt.start + 140, &dsdt),
             (&commands[4], TABLE_FILE, xsdt.start + 36, &fadt),
             (&commands[5], TABLE_FILE, xsdt.start + 44, &madt),
-            (&commands[6], TABLE_FILE, xsdt.start + 52, &spcr),
-            (&commands[7], RSDP_FILE, 24, &xsdt),
+            (&commands[6], TABLE_FILE, xsdt.start + 52, &mcfg),
+            (&commands[7], TABLE_FILE, xsdt.start + 60, &spcr),
+            (&commands[8], RSDP_FILE, 24, &xsdt),
         ] {
             assert_pointer_command(
                 command,
@@ -240,14 +248,14 @@ mod tests {
             );
         }
 
-        for (command, table) in commands[8..13]
+        for (command, table) in commands[9..15]
             .iter()
-            .zip([&xsdt, &fadt, &dsdt, &madt, &spcr])
+            .zip([&xsdt, &fadt, &dsdt, &madt, &mcfg, &spcr])
         {
             assert_checksum_command(command, TABLE_FILE, table, &blobs.tables);
         }
         assert_eq!(
-            commands[13],
+            commands[15],
             DecodedLoaderCommand::Checksum {
                 file: RSDP_FILE.into(),
                 checksum_offset: 8,
@@ -257,7 +265,7 @@ mod tests {
         );
         assert_eq!(blobs.rsdp[8], 0);
         assert_eq!(
-            commands[14],
+            commands[16],
             DecodedLoaderCommand::Checksum {
                 file: RSDP_FILE.into(),
                 checksum_offset: 32,
@@ -266,6 +274,15 @@ mod tests {
             }
         );
         assert_eq!(blobs.rsdp[32], 0);
+        assert_eq!(mcfg.end - mcfg.start, 60);
+        assert_eq!(
+            u64::from_le_bytes(
+                blobs.tables[mcfg.start + 44..mcfg.start + 52]
+                    .try_into()
+                    .unwrap()
+            ),
+            crate::arch::x86_64::pci_config::PCI_ECAM_BASE
+        );
     }
 
     fn decode_loader(bytes: &[u8]) -> Vec<DecodedLoaderCommand> {

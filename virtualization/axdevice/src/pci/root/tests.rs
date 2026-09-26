@@ -14,7 +14,7 @@ const APERTURE_END: u64 = 0x2040_0000;
 const BAR_SIZE: u64 = 0x1_0000;
 
 #[test]
-fn exposes_a_256_byte_type_zero_config_image() {
+fn exposes_a_4_kib_type_zero_config_image() {
     let (root, endpoint_bdf, _) = root_with_bar();
 
     assert_eq!(
@@ -32,8 +32,46 @@ fn exposes_a_256_byte_type_zero_config_image() {
             .unwrap(),
         0
     );
+    assert_eq!(ConfigOffset::new(0x100).unwrap().value(), 0x100);
+    assert_eq!(ConfigOffset::new(0xfff).unwrap().value(), 0xfff);
     assert!(matches!(
-        ConfigOffset::new(0x100),
+        ConfigOffset::new(0x1000),
+        Err(PciError::InvalidAddress { .. })
+    ));
+}
+
+#[test]
+fn config_image_dispatches_extended_offsets_and_preserves_write_masks() {
+    let extended_offset = offset(0x104);
+    let endpoint = function("extended-config")
+        .with_platform_config_byte(extended_offset, 0x5a, 0x0f)
+        .unwrap();
+    let mut builder = PciTopologyBuilder::new();
+    builder.add_function(endpoint).unwrap();
+    let topology = Arc::new(builder.resolve(APERTURE_START..APERTURE_END).unwrap());
+    let endpoint_bdf = topology.function(&node("extended-config")).unwrap().bdf();
+    let root = PciRootState::new(topology);
+
+    assert_eq!(
+        root.read_config(endpoint_bdf, offset(0x100), AccessWidth::Dword),
+        Ok(0)
+    );
+    assert_eq!(
+        root.read_config(endpoint_bdf, extended_offset, AccessWidth::Byte),
+        Ok(0x5a)
+    );
+    root.write_config(endpoint_bdf, extended_offset, AccessWidth::Byte, 0xa5)
+        .unwrap();
+    assert_eq!(
+        root.read_config(endpoint_bdf, extended_offset, AccessWidth::Byte),
+        Ok(0x55)
+    );
+    assert_eq!(
+        root.read_config(endpoint_bdf, offset(0xffc), AccessWidth::Dword),
+        Ok(0)
+    );
+    assert!(matches!(
+        ConfigOffset::new(0x1000),
         Err(PciError::InvalidAddress { .. })
     ));
 }
@@ -48,12 +86,24 @@ fn absent_functions_read_all_ones_and_ignore_writes() {
             .unwrap(),
         0xffff
     );
+    assert_eq!(
+        root.read_config(absent, offset(0x104), AccessWidth::Byte)
+            .unwrap(),
+        u8::MAX as u64
+    );
     root.write_config(absent, offset(4), AccessWidth::Word, 0xffff)
+        .unwrap();
+    root.write_config(absent, offset(0x104), AccessWidth::Byte, 0)
         .unwrap();
     assert_eq!(
         root.read_config(absent, offset(4), AccessWidth::Word)
             .unwrap(),
         0xffff
+    );
+    assert_eq!(
+        root.read_config(absent, offset(0x104), AccessWidth::Byte)
+            .unwrap(),
+        u8::MAX as u64
     );
 }
 

@@ -448,7 +448,7 @@ mod tests {
     const BAR_SIZE: u64 = 0x1_0000;
 
     #[test]
-    fn rejects_addresses_outside_conventional_pci_ranges() {
+    fn rejects_addresses_outside_supported_pci_ranges() {
         assert!(matches!(
             PciBdf::new(PciSegment::new(0), 0, 32, 0),
             Err(PciError::InvalidAddress {
@@ -471,7 +471,7 @@ mod tests {
             })
         ));
         assert!(matches!(
-            ConfigOffset::new(0x100),
+            ConfigOffset::new(0x1000),
             Err(PciError::InvalidAddress {
                 component: "config offset",
                 ..

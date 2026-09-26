@@ -5,11 +5,20 @@ use axdevice_base::*;
 
 use crate::{AxVmResult, config::AxVMConfig};
 
-// Keep synthetic MMIO below the PCI root bridge window described by ACPI.
-const AUTO_MMIO: core::ops::Range<u64> = 0x8000_0000..0xc000_0000;
+// Keep synthetic MMIO below the fixed ECAM and PCI root bridge windows.
+const AUTO_MMIO: core::ops::Range<u64> = 0x8000_0000..super::pci_config::PCI_ECAM_BASE;
 const AUTO_PIO: core::ops::Range<u16> = 0x1000..0x5000;
 const AUTO_GSI: core::ops::Range<ControllerInputId> =
     ControllerInputId::new(5)..ControllerInputId::new(16);
+
+const _: () = {
+    assert!(AUTO_MMIO.start < AUTO_MMIO.end);
+    assert!(AUTO_MMIO.end == super::pci_config::PCI_ECAM_BASE);
+    assert!(
+        super::pci_config::PCI_ECAM_BASE + super::pci_config::PCI_ECAM_SIZE
+            <= super::pci_config::PCI_MEMORY_BASE
+    );
+};
 
 pub(super) fn create(config: &AxVMConfig) -> AxVmResult<ResourcePools> {
     let controller = InterruptControllerId::new(0);
@@ -18,6 +27,10 @@ pub(super) fn create(config: &AxVMConfig) -> AxVmResult<ResourcePools> {
     pools.allow_fixed_mmio(
         super::pci_config::PCI_MEMORY_BASE
             ..super::pci_config::PCI_MEMORY_BASE + super::pci_config::PCI_MEMORY_SIZE,
+    )?;
+    pools.allow_fixed_mmio(
+        super::pci_config::PCI_ECAM_BASE
+            ..super::pci_config::PCI_ECAM_BASE + super::pci_config::PCI_ECAM_SIZE,
     )?;
     pools.add_auto_pio(AUTO_PIO)?;
     pools.add_auto_controller_inputs(controller, AUTO_GSI)?;

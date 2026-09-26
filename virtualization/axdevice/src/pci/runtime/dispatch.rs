@@ -329,7 +329,7 @@ impl PciRootBinding {
         )
     }
 
-    /// Dispatches one complete conventional config read.
+    /// Dispatches one complete config-space read.
     pub fn read_config(
         &self,
         bdf: PciBdf,
@@ -381,7 +381,7 @@ impl PciRootBinding {
             .map_err(pci_config_error)
     }
 
-    /// Dispatches one complete conventional config write.
+    /// Dispatches one complete config-space write.
     pub fn write_config(
         &self,
         bdf: PciBdf,

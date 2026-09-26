@@ -25,7 +25,7 @@ pub enum PciError {
         /// Diagnostic reason.
         detail: &'static str,
     },
-    /// A conventional config access violates width, alignment, or range rules.
+    /// A PCI config access violates width, alignment, or range rules.
     #[error("invalid PCI config access at {offset:#x} with width {width:?}: {detail}")]
     InvalidConfigAccess {
         /// Function-relative config-space offset.
@@ -41,7 +41,7 @@ pub enum PciError {
     /// A platform-owned config byte conflicts with core-owned state.
     #[error("invalid PCI config patch at {offset:#x}: {detail}")]
     InvalidConfigPatch {
-        /// Conventional config byte offset.
+        /// Function-relative config byte offset.
         offset: u16,
         /// Rejected invariant.
         detail: &'static str,

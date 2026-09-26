@@ -10,7 +10,7 @@ use crate::{DeviceLifecycle, DeviceManagerResult, PciError, PciResult};
 const ECAM_BUS_SIZE: u64 = 1 << 20;
 const ECAM_MAX_SIZE: u64 = 256 * ECAM_BUS_SIZE;
 
-/// MMIO ECAM frontend for one conventional PCI root.
+/// MMIO ECAM frontend for one PCI root.
 pub struct PciEcamConfigFrontend {
     base: u64,
     size: u64,
@@ -43,7 +43,7 @@ impl PciEcamConfigFrontend {
         })
     }
 
-    fn selection(&self, access: &DeviceAccess) -> DeviceResult<Option<(PciBdf, ConfigOffset)>> {
+    fn selection(&self, access: &DeviceAccess) -> DeviceResult<(PciBdf, ConfigOffset)> {
         if access.bus() != BusKind::Mmio {
             return Err(DeviceError::OutOfRange {
                 addr: access.address(),
@@ -63,9 +63,6 @@ impl PciEcamConfigFrontend {
                 addr: access.address(),
             })?;
         let function_offset = (offset & 0xfff) as u16;
-        if function_offset >= 0x100 {
-            return Ok(None);
-        }
         let bdf = PciBdf::new(
             PciSegment::new(0),
             (offset >> 20) as u8,
@@ -74,7 +71,7 @@ impl PciEcamConfigFrontend {
         )
         .map_err(pci_access_error)?;
         let register = ConfigOffset::new(function_offset).map_err(pci_access_error)?;
-        Ok(Some((bdf, register)))
+        Ok((bdf, register))
     }
 }
 
@@ -88,13 +85,9 @@ impl Device for PciEcamConfigFrontend {
     }
 
     fn read(&self, access: &DeviceAccess, context: &mut dyn DeviceContext) -> DeviceResult<u64> {
-        match self.selection(access)? {
-            Some((bdf, register)) => {
-                self.binding
-                    .read_config_with_context(bdf, register, access.width(), context)
-            }
-            None => Ok(all_ones(access.width().size())),
-        }
+        let (bdf, register) = self.selection(access)?;
+        self.binding
+            .read_config_with_context(bdf, register, access.width(), context)
     }
 
     fn write(
@@ -103,16 +96,9 @@ impl Device for PciEcamConfigFrontend {
         value: u64,
         context: &mut dyn DeviceContext,
     ) -> DeviceResult {
-        if let Some((bdf, register)) = self.selection(access)? {
-            self.binding.write_config_with_context(
-                bdf,
-                register,
-                access.width(),
-                value,
-                context,
-            )?;
-        }
-        Ok(())
+        let (bdf, register) = self.selection(access)?;
+        self.binding
+            .write_config_with_context(bdf, register, access.width(), value, context)
     }
 }
 
@@ -221,17 +207,16 @@ mod tests {
 
     fn frontend() -> PciEcamConfigFrontend {
         let mut topology = PciTopologyBuilder::new();
-        topology
-            .add_function(
-                PciFunctionSpec::new(
-                    DeviceNodeId::new("endpoint").unwrap(),
-                    PciEndpointIdentity::new(0x1af4, 0x1042, PciClass::new(1, 0x80, 0)),
-                )
-                .with_bdf(ResourceRequest::Fixed(
-                    PciBdf::new(PciSegment::new(0), 0, 3, 0).unwrap(),
-                )),
-            )
-            .unwrap();
+        let endpoint = PciFunctionSpec::new(
+            DeviceNodeId::new("endpoint").unwrap(),
+            PciEndpointIdentity::new(0x1af4, 0x1042, PciClass::new(1, 0x80, 0)),
+        )
+        .with_platform_config_byte(ConfigOffset::new(0x104).unwrap(), 0x5a, 0xff)
+        .unwrap()
+        .with_bdf(ResourceRequest::Fixed(
+            PciBdf::new(PciSegment::new(0), 0, 3, 0).unwrap(),
+        ));
+        topology.add_function(endpoint).unwrap();
         let topology = Arc::new(topology.resolve(0x4000_0000..0x8000_0000).unwrap());
         let root = Arc::new(PciRootState::new(topology));
         let binding = Arc::new(PciRootBinding::new(
@@ -246,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn ecam_decodes_bdf_and_treats_extended_space_as_unimplemented() {
+    fn ecam_dispatches_extended_offsets_through_the_shared_config_image() {
         let frontend = frontend();
         let mut context = NoopDeviceContext::new(DeviceId::new(0));
         assert_eq!(
@@ -265,7 +250,41 @@ mod tests {
                     &mut context,
                 )
                 .unwrap(),
-            u32::MAX as u64
+            0
+        );
+        assert_eq!(
+            frontend
+                .read(
+                    &access(ECAM_BASE + (3 << 15) + 0x104, AccessWidth::Byte),
+                    &mut context,
+                )
+                .unwrap(),
+            0x5a
+        );
+        frontend
+            .write(
+                &access(ECAM_BASE + (3 << 15) + 0x104, AccessWidth::Byte),
+                0xa5,
+                &mut context,
+            )
+            .unwrap();
+        assert_eq!(
+            frontend
+                .read(
+                    &access(ECAM_BASE + (3 << 15) + 0x104, AccessWidth::Byte),
+                    &mut context,
+                )
+                .unwrap(),
+            0xa5
+        );
+        assert_eq!(
+            frontend
+                .read(
+                    &access(ECAM_BASE + (3 << 15) + 0xfff, AccessWidth::Byte),
+                    &mut context,
+                )
+                .unwrap(),
+            0
         );
         assert_eq!(
             frontend

@@ -20,7 +20,7 @@ const OEM_REVISION: u32 = 1;
 
 pub(crate) fn build_dsdt(plan: &X86FirmwarePlan) -> Result<Vec<u8>, AcpiBuildError> {
     let mut aml = Vec::new();
-    build_pci_device(plan, &mut aml);
+    build_pci_device(plan, &mut aml)?;
     for serial in &plan.resources.serials {
         build_serial_device(serial, &mut aml)?;
     }
@@ -40,16 +40,19 @@ pub(crate) fn build_dsdt(plan: &X86FirmwarePlan) -> Result<Vec<u8>, AcpiBuildErr
     Ok(dsdt.as_slice().to_vec())
 }
 
-fn build_pci_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) {
+fn build_pci_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) -> Result<(), AcpiBuildError> {
     let hid = Name::new("_HID".into(), &EISAName::new("PNP0A03"));
     let uid = Name::new("_UID".into(), &0u8);
     let adr = Name::new("_ADR".into(), &0u8);
-    let seg = Name::new("_SEG".into(), &0u8);
-    let bbn = Name::new("_BBN".into(), &0u8);
+    let seg = Name::new("_SEG".into(), &plan.pci.ecam.segment);
+    let bbn = Name::new("_BBN".into(), &plan.pci.ecam.start_bus);
     let crs = Name::new(
         "_CRS".into(),
         &ResourceTemplate::new(std::vec![
-            &AddressSpace::new_bus_number(plan.pci.bus_range.0, plan.pci.bus_range.1),
+            &AddressSpace::new_bus_number(
+                u16::from(plan.pci.ecam.start_bus),
+                u16::from(plan.pci.ecam.end_bus),
+            ),
             &AddressSpace::new_io(plan.pci.io_windows[0].0, plan.pci.io_windows[0].1, None,),
             &AddressSpace::new_io(plan.pci.io_windows[1].0, plan.pci.io_windows[1].1, None,),
             &AddressSpace::new_memory(
@@ -81,6 +84,28 @@ fn build_pci_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) {
         std::vec![&hid, &uid, &adr, &seg, &bbn, &crs, &prt],
     )
     .to_aml_bytes(aml);
+
+    let ecam_end = plan
+        .pci
+        .ecam
+        .base
+        .checked_add(plan.pci.ecam.size)
+        .and_then(|end| end.checked_sub(1))
+        .ok_or_else(|| AcpiBuildError::AddressOverflow {
+            object: "x86 PCI ECAM _CRS".into(),
+        })?;
+    let ecam_resource = AddressSpace::new_memory(
+        AddressSpaceCacheable::NotCacheable,
+        true,
+        plan.pci.ecam.base,
+        ecam_end,
+        None,
+    );
+    let ecam_resources = ResourceTemplate::new(std::vec![&ecam_resource]);
+    let ecam_hid = Name::new("_HID".into(), &EISAName::new("PNP0C02"));
+    let ecam_crs = Name::new("_CRS".into(), &ecam_resources);
+    Device::new("_SB_.DRAC".into(), std::vec![&ecam_hid, &ecam_crs]).to_aml_bytes(aml);
+    Ok(())
 }
 
 const fn cacheability(cacheable: bool) -> AddressSpaceCacheable {
@@ -231,7 +256,7 @@ mod tests {
         plan.pci.intx_routes.push(route);
 
         let mut aml = Vec::new();
-        build_pci_device(&plan, &mut aml);
+        build_pci_device(&plan, &mut aml).unwrap();
         assert!(
             aml.windows(4)
                 .any(|window| window == route.acpi_address().to_le_bytes())

@@ -170,6 +170,8 @@ cargo xtask ovmf --arch x86_64
 
 Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和最终 guest image 的路径、字节数及 SHA-256，同时说明布局是 `split CODE/VARS` 还是 `monolithic CODE`。对于 monolithic CODE，VARS 仍会记录来源证据，但明确标记为 `unused`；这些运行时摘要不固化到仓库。
 
-成功条件 `AXVISOR_X86_OVMF_ACPI_PASSED` 来自嵌套 Linux initramfs，而不是 QEMU 外层 OVMF。该 marker 只有在 OVMF 完成 kernel handoff、Linux 进入早期用户态，并且 Linux 能读取 DSDT、APIC、FACP、SPCR、发现 `ttyS0`、初始化 IOAPIC 且 online CPU 集合为 `0` 时才会输出。因此它同时证明当前 firmware handoff 和 guest-side ACPI 接受路径。
+成功条件 `AXVISOR_X86_OVMF_ACPI_PASSED` 来自嵌套 Linux initramfs，而不是 QEMU 外层 OVMF。该 marker 只有在 OVMF 完成 kernel handoff、Linux 进入早期用户态，并且 Linux 能读取 DSDT、APIC、FACP、SPCR、MCFG，在 `/proc/iomem` 中登记 Q35 PCI MMCONFIG 区间，发现 `ttyS0`、初始化 IOAPIC 且 online CPU 集合为 `0` 时才会输出。因此它同时证明当前 firmware handoff 和 guest-side ACPI 接受路径。
+
+同一 MMCONFIG 检查也由 x86 `pci-enumeration` initramfs 执行；该用例继续通过 ECAM 验证客户机 PCI endpoint 枚举。Q35 固定 ECAM 的资源所有权、PCIEXBAR 只读语义及 direct/OVMF firmware 描述见 [x86 Q35 ECAM 设计](../../../design/axvisor-x86-q35-ecam.md)。
 
 当前用例仍由 fw_cfg 提供 Linux kernel、initramfs 和命令行。它不证明 OVMF 已枚举 Axvisor guest PCI 启动盘，也不证明 Linux 经 guest ESP 或 EFI stub 启动。

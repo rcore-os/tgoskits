@@ -192,11 +192,12 @@ impl PciFunctionSpec {
         Ok(self)
     }
 
-    /// Defines one platform-owned conventional config byte and its write mask.
+    /// Defines one platform-owned config byte and its write mask.
     ///
     /// This is intended for fixed host-bridge compatibility fields. BAR bytes
     /// cannot be overridden because their state is owned by the root BAR
-    /// state machine.
+    /// state machine. Unspecified bytes, including extended config space,
+    /// remain zero and read-only.
     ///
     /// # Errors
     ///

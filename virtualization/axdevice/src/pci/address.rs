@@ -1,4 +1,4 @@
-//! Typed PCI function, BAR, and conventional config-space addresses.
+//! Typed PCI function, BAR, and config-space addresses.
 
 use core::fmt;
 
@@ -140,16 +140,16 @@ impl fmt::Display for PciBarIndex {
     }
 }
 
-/// A byte offset in one 256-byte conventional PCI config image.
+/// A byte offset in one 4 KiB PCI function config image.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ConfigOffset(u16);
 
 impl ConfigOffset {
-    /// Creates a conventional config-space offset below `0x100`.
+    /// Creates a PCI config-space offset below `0x1000`.
     ///
     /// # Errors
     ///
-    /// Returns [`PciError::InvalidAddress`] for an extended-config offset.
+    /// Returns [`PciError::InvalidAddress`] for an offset outside one function.
     pub fn new(value: u16) -> PciResult<Self> {
         if usize::from(value) >= config_layout::CONFIG_SPACE_SIZE {
             return Err(PciError::InvalidAddress {
@@ -172,7 +172,7 @@ impl ConfigOffset {
                 return Err(PciError::InvalidConfigAccess {
                     offset: self.0,
                     width,
-                    detail: "conventional config accesses are limited to 32 bits",
+                    detail: "PCI config accesses are limited to 32 bits",
                 });
             }
         };
