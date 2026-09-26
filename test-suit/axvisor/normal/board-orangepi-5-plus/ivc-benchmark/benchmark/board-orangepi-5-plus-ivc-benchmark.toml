@@ -15,9 +15,15 @@ fail_regex = [
 ]
 timeout = 300
 
+# Attach to VM 1 and start the benchmark from its Starry shell, so the
+# benchmark runs as a child of the persistent init shell instead of as init.
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/ivc-starry-bench"
 success_regex = [
   "(?m)^(?:\\[VM 1\\] )?AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$",
 ]

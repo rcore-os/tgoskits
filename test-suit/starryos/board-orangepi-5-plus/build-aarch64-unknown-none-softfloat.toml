@@ -14,5 +14,5 @@ features = [
   "ax-driver/rk3588-cpufreq",
   "rknpu",
 ]
-log = "Info"
+log = "Error"
 max_cpu_num = 1
