@@ -1,0 +1,326 @@
+board_type = "OrangePi-5-Plus"
+# 24 guests share the eight cores of the board, three VMs per physical CPU, so
+# the guest-to-guest chain converges slowly and the later VMs print their pass
+# markers long before the runner attaches to them. Every step therefore asserts
+# a line that repeats for the whole run: VM1 is checked on the heartbeat it
+# sends (which needs the acknowledgement of VM2), and every other VM on the
+# heartbeat it answers. That keeps each check independent of attach timing.
+timeout = 3600
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  'Failed to initialize guest VM',
+  '(?m)^VM[0-9]{1,2}_VIRTIO_NET_FAIL\s*$',
+]
+
+# VM1 (10.0.2.15) only has a client session towards VM2, so it proves the
+# client role and the first session of the chain.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ['VM1_VIRTIO_NET_HB_TX.*ack="ACK VM2 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM1_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM2 answers VM1 and connects to VM3; one heartbeat here proves the
+# whole session 1 -> 2.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ['VM2_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM3 answers VM2 and connects to VM4; one heartbeat here proves the
+# whole session 2 -> 3.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+success_regex = ['VM3_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM4 answers VM3 and connects to VM5; one heartbeat here proves the
+# whole session 3 -> 4.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 4"
+success_regex = ['VM4_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM4_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM5 answers VM4 and connects to VM6; one heartbeat here proves the
+# whole session 4 -> 5.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 5"
+success_regex = ['VM5_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM5_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM6 answers VM5 and connects to VM7; one heartbeat here proves the
+# whole session 5 -> 6.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 6"
+success_regex = ['VM6_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM6_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM7 answers VM6 and connects to VM8; one heartbeat here proves the
+# whole session 6 -> 7.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 7"
+success_regex = ['VM7_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM7_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM8 answers VM7 and connects to VM9; one heartbeat here proves the
+# whole session 7 -> 8.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 8"
+success_regex = ['VM8_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM8_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM9 answers VM8 and connects to VM10; one heartbeat here proves the
+# whole session 8 -> 9.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 9"
+success_regex = ['VM9_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM9_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM10 answers VM9 and connects to VM11; one heartbeat here proves the
+# whole session 9 -> 10.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 10"
+success_regex = ['VM10_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM10_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM11 answers VM10 and connects to VM12; one heartbeat here proves the
+# whole session 10 -> 11.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 11"
+success_regex = ['VM11_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM11_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM12 answers VM11 and connects to VM13; one heartbeat here proves the
+# whole session 11 -> 12.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 12"
+success_regex = ['VM12_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM12_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM13 answers VM12 and connects to VM14; one heartbeat here proves the
+# whole session 12 -> 13.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 13"
+success_regex = ['VM13_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM13_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM14 answers VM13 and connects to VM15; one heartbeat here proves the
+# whole session 13 -> 14.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 14"
+success_regex = ['VM14_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM14_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM15 answers VM14 and connects to VM16; one heartbeat here proves the
+# whole session 14 -> 15.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 15"
+success_regex = ['VM15_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM15_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM16 answers VM15 and connects to VM17; one heartbeat here proves the
+# whole session 15 -> 16.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 16"
+success_regex = ['VM16_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM16_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM17 answers VM16 and connects to VM18; one heartbeat here proves the
+# whole session 16 -> 17.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 17"
+success_regex = ['VM17_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM17_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM18 answers VM17 and connects to VM19; one heartbeat here proves the
+# whole session 17 -> 18.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 18"
+success_regex = ['VM18_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM18_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM19 answers VM18 and connects to VM20; one heartbeat here proves the
+# whole session 18 -> 19.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 19"
+success_regex = ['VM19_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM19_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM20 answers VM19 and connects to VM21; one heartbeat here proves the
+# whole session 19 -> 20.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 20"
+success_regex = ['VM20_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM20_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM21 answers VM20 and connects to VM22; one heartbeat here proves the
+# whole session 20 -> 21.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 21"
+success_regex = ['VM21_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM21_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM22 answers VM21 and connects to VM23; one heartbeat here proves the
+# whole session 21 -> 22.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 22"
+success_regex = ['VM22_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM22_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM23 answers VM22 and connects to VM24; one heartbeat here proves the
+# whole session 22 -> 23.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 23"
+success_regex = ['VM23_VIRTIO_NET_HB_RX']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM23_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+# VM24 (10.0.2.38) closes the chain: it answers VM23 while its own
+# client keeps retrying 10.0.2.39, which has no listener.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 24"
+success_regex = ['VM24_VIRTIO_NET_HB_RX']
+timeout = 300
+
+# The chain keeps exchanging heartbeats after the checks above, so this asserts
+# that the peer side of the last session is still alive while still attached to
+# VM24.
+[[shell_check_steps]]
+success_regex = ['VM24_VIRTIO_NET_HB_RX']
