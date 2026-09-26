@@ -41,6 +41,7 @@ mod mm;
 mod namespace;
 mod perf;
 mod pseudofs;
+mod random;
 mod rdrive_osal;
 mod stop_machine;
 mod sync;

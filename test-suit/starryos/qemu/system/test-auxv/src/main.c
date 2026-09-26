@@ -4,7 +4,9 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/auxv.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef AT_SECURE
@@ -26,6 +28,20 @@
 #ifndef AT_EGID
 #define AT_EGID 14
 #endif
+
+#ifndef AT_FLAGS
+#define AT_FLAGS 8
+#endif
+
+#ifndef AT_CLKTCK
+#define AT_CLKTCK 17
+#endif
+
+#ifndef AT_RANDOM
+#define AT_RANDOM 25
+#endif
+
+static const char PRINT_AT_RANDOM[] = "--print-at-random";
 
 extern char **environ;
 
@@ -79,8 +95,67 @@ static void check_getauxval_entry(unsigned long key, unsigned long expected,
     CHECK(value == expected, msg);
 }
 
-int main(void)
+/* Executes this binary again and collects the AT_RANDOM bytes it received. */
+static int child_at_random(const char *self, unsigned char *out)
 {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return 0;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(fds[0]);
+        dup2(fds[1], STDOUT_FILENO);
+        execl(self, self, PRINT_AT_RANDOM, (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+
+    size_t got = 0;
+    while (pid > 0 && got < 16) {
+        ssize_t n = read(fds[0], out + got, 16 - got);
+        if (n <= 0) {
+            break;
+        }
+        got += (size_t)n;
+    }
+    close(fds[0]);
+
+    int status = 0;
+    int reaped = pid > 0 && waitpid(pid, &status, 0) == pid;
+    return reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0 && got == 16;
+}
+
+static void check_at_random(const char *self)
+{
+    const unsigned char *own = (const unsigned char *)getauxval(AT_RANDOM);
+    CHECK(own != NULL, "AT_RANDOM is present");
+    if (own == NULL) {
+        return;
+    }
+
+    unsigned char first[16];
+    unsigned char second[16];
+    int first_ok = child_at_random(self, first);
+    int second_ok = child_at_random(self, second);
+    CHECK(first_ok, "first exec reports its AT_RANDOM bytes");
+    CHECK(second_ok, "second exec reports its AT_RANDOM bytes");
+    if (!first_ok || !second_ok) {
+        return;
+    }
+    /* libc derives the stack protector canary and pointer guard from AT_RANDOM. */
+    CHECK(memcmp(first, second, 16) != 0, "AT_RANDOM differs between execs");
+    CHECK(memcmp(own, first, 16) != 0, "AT_RANDOM differs from the parent's");
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], PRINT_AT_RANDOM) == 0) {
+        const unsigned char *bytes = (const unsigned char *)getauxval(AT_RANDOM);
+        return bytes != NULL && write(STDOUT_FILENO, bytes, 16) == 16 ? 0 : 1;
+    }
+
     TEST_START("ELF auxiliary vector process ABI");
 
     check_auxv_terminator();
@@ -111,6 +186,17 @@ int main(void)
     check_getauxval_entry(AT_EUID, (unsigned long)geteuid(), "getauxval(AT_EUID) matches geteuid()");
     check_getauxval_entry(AT_GID, (unsigned long)getgid(), "getauxval(AT_GID) matches getgid()");
     check_getauxval_entry(AT_EGID, (unsigned long)getegid(), "getauxval(AT_EGID) matches getegid()");
+
+    unsigned long clktck = 0;
+    CHECK(find_auxv_value(AT_CLKTCK, &clktck) == 1, "AT_CLKTCK is present");
+    CHECK(clktck == 100, "AT_CLKTCK is USER_HZ");
+    CHECK(sysconf(_SC_CLK_TCK) == 100, "sysconf(_SC_CLK_TCK) is USER_HZ");
+
+    unsigned long flags = 1;
+    CHECK(find_auxv_value(AT_FLAGS, &flags) == 1, "AT_FLAGS is present");
+    CHECK(flags == 0, "AT_FLAGS is zero for a normal exec");
+
+    check_at_random(argv[0]);
 
     TEST_DONE();
 }

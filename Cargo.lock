@@ -7939,6 +7939,7 @@ dependencies = [
  "sg2002-tpu",
  "sg200x-bsp",
  "sg200x-jpu",
+ "sha2 0.10.9",
  "slab",
  "some-serial",
  "somehal",

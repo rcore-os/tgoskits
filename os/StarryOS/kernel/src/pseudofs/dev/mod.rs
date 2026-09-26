@@ -46,27 +46,17 @@ mod cvi_usb_camera;
 mod cvi_vdec;
 
 use alloc::{format, sync::Arc};
-use core::{
-    any::Any,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::any::Any;
 
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
-
-use crate::sync::Mutex;
 
 #[cfg(feature = "sg2002")]
 pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();
 #[cfg(feature = "dev-log")]
 pub use log::bind_dev_log;
-use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 
 use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFile, SimpleFs};
-
-const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
-
-static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
 
 static INITIAL_PTS_INSTANCE: OnceLock<Arc<tty::PtsInstance>> = OnceLock::new();
 
@@ -200,72 +190,50 @@ impl DeviceOps for Zero {
     }
 }
 
-struct Random {
-    state: Mutex<RandomState>,
-}
-
-impl Random {
-    pub fn new() -> Self {
-        Self {
-            state: Mutex::new(RandomState::new(random_seed())),
-        }
-    }
-
-    #[cfg(all(test, axtest))]
-    fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
-        Self {
-            state: Mutex::new(RandomState::new(seed)),
-        }
-    }
-}
-
-struct RandomState {
-    rng: ChaCha20Rng,
-    reseed_count: u64,
-}
-
-impl RandomState {
-    fn new(seed: [u8; 32]) -> Self {
-        Self {
-            rng: ChaCha20Rng::from_seed(seed),
-            reseed_count: 0,
-        }
-    }
-
-    fn fill_bytes(&mut self, buf: &mut [u8]) {
-        self.rng.fill_bytes(buf);
-    }
-
-    fn mix_entropy(&mut self, entropy: &[u8]) {
-        self.mix_entropy_at(entropy, time_entropy());
-    }
-
-    fn mix_entropy_at(&mut self, entropy: &[u8], time_entropy: u64) {
-        let mut seed = [0; 32];
-        self.rng.fill_bytes(&mut seed);
-
-        self.reseed_count = self.reseed_count.wrapping_add(1);
-        fold_seed_word(&mut seed, entropy.len() as u64);
-        fold_seed_word(&mut seed, self.reseed_count);
-        fold_seed_word(&mut seed, time_entropy);
-
-        for (idx, byte) in entropy.iter().copied().enumerate() {
-            let seed_idx = idx % seed.len();
-            seed[seed_idx] ^= byte.rotate_left((idx & 7) as u32);
-        }
-
-        self.rng = ChaCha20Rng::from_seed(seed);
-    }
-}
+/// `/dev/random`: reads wait for the CRNG like `getrandom(buf, len, 0)`.
+struct Random;
 
 impl DeviceOps for Random {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        self.state.lock().fill_bytes(buf);
+        // The file layer turns `WouldBlock` into EAGAIN for O_NONBLOCK readers
+        // and parks the others on `RandomReady`, as `random_read_iter()` does.
+        if !crate::random::rng_is_initialized() {
+            return Err(VfsError::WouldBlock);
+        }
+        crate::random::get_random_bytes(buf);
         Ok(buf.len())
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        self.state.lock().mix_entropy(buf);
+        crate::random::write_pool(buf);
+        Ok(buf.len())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_pollable(&self) -> Option<&dyn axpoll::Pollable> {
+        Some(&crate::random::RandomReady)
+    }
+
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+    }
+}
+
+/// `/dev/urandom`: reads never wait. Linux `urandom_fops` has no poll hook,
+/// so it keeps the default always-ready mask.
+struct Urandom;
+
+impl DeviceOps for Urandom {
+    fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        crate::random::urandom_read(buf);
+        Ok(buf.len())
+    }
+
+    fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        crate::random::write_pool(buf);
         Ok(buf.len())
     }
 
@@ -276,108 +244,6 @@ impl DeviceOps for Random {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
-}
-
-fn random_seed() -> [u8; 32] {
-    // This counter only perturbs seeds created in the same timer tick; it does
-    // not publish state to other threads.
-    let counter = RANDOM_SEED_COUNTER.fetch_add(RANDOM_SEED_STEP, Ordering::Relaxed);
-    let stack_addr = &counter as *const u64 as usize as u64;
-    let mut state = time_entropy() ^ counter ^ stack_addr.rotate_left(17);
-    let mut seed = [0; 32];
-
-    for chunk in seed.as_chunks_mut::<{ core::mem::size_of::<u64>() }>().0 {
-        state = splitmix64(state.wrapping_add(RANDOM_SEED_STEP));
-        chunk.copy_from_slice(&state.to_le_bytes());
-    }
-
-    seed
-}
-
-fn time_entropy() -> u64 {
-    ax_runtime::hal::time::monotonic_time_nanos()
-}
-
-fn fold_seed_word(seed: &mut [u8; 32], word: u64) {
-    let mixed = splitmix64(word);
-    for (idx, byte) in mixed.to_le_bytes().into_iter().enumerate() {
-        let seed_idx = idx * 4 % seed.len();
-        seed[seed_idx] ^= byte;
-    }
-}
-
-fn splitmix64(mut value: u64) -> u64 {
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-#[cfg(all(test, axtest))]
-fn random_write_mixes_entropy_for_test() -> bool {
-    let seed = *b"0123456789abcdef0123456789abcdef";
-    let baseline = Random::new_with_seed_for_test(seed);
-    let mixed = Random::new_with_seed_for_test(seed);
-    let mut discarded = [0; 32];
-    let mut baseline_next = [0; 32];
-    let mut mixed_next = [0; 32];
-
-    if baseline.read_at(&mut discarded, 0) != Ok(discarded.len()) {
-        return false;
-    }
-    if mixed.read_at(&mut discarded, 0) != Ok(discarded.len()) {
-        return false;
-    }
-    if mixed.write_at(b"caller entropy", 0) != Ok(14) {
-        return false;
-    }
-    if baseline.read_at(&mut baseline_next, 0) != Ok(baseline_next.len()) {
-        return false;
-    }
-    if mixed.read_at(&mut mixed_next, 0) != Ok(mixed_next.len()) {
-        return false;
-    }
-
-    baseline_next != mixed_next
-        && splitmix64_determinism_rules_hold()
-        && fold_seed_word_xors_into_byte_indices()
-}
-
-#[cfg(test)]
-fn splitmix64_determinism_rules_hold() -> bool {
-    // splitmix64 is a pure bijection: the same input always yields the same
-    // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
-    // outputs (no fixed-point within a small sample).
-    let a = splitmix64(0);
-    let b = splitmix64(1);
-    let c = splitmix64(0xffff_ffff_ffff_ffff);
-    a == splitmix64(0)
-        && b == splitmix64(1)
-        && c == splitmix64(0xffff_ffff_ffff_ffff)
-        && a != b
-        && b != c
-        && a != c
-}
-
-#[cfg(test)]
-fn fold_seed_word_xors_into_byte_indices() -> bool {
-    // fold_seed_word XORs splitmix64(word) into seed[idx*4 % 32]. Repeatedly
-    // folding the same word twice must cancel out (XOR is its own inverse).
-    let mut seed = [0u8; 32];
-    let snapshot_before = seed;
-    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
-    let mutated = seed;
-    // Folding again with the same word must restore the original bytes.
-    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
-    let cancelled = seed == snapshot_before;
-    // The mutated seed must be different from the all-zero baseline at least at
-    // one byte (proves fold_seed_word actually wrote something).
-    let mutated_differs_from_zero = mutated.iter().any(|byte| *byte != 0);
-    // Folding word 0 affects byte indices {0, 4, 8, 12, 16, 20, 24, 28}.
-    let affected_indices = [0, 4, 8, 12, 16, 20, 24, 28];
-    let affected_bytes_differ = affected_indices
-        .iter()
-        .any(|&idx| mutated.get(idx).copied() != snapshot_before.get(idx).copied());
-    cancelled && mutated_differs_from_zero && affected_bytes_differ
 }
 
 struct Full;
@@ -466,7 +332,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 8),
-            Arc::new(Random::new()),
+            Arc::new(Random),
         ),
     );
     root.add(
@@ -475,7 +341,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(1, 9),
-            Arc::new(Random::new()),
+            Arc::new(Urandom),
         ),
     );
     // Root block device node. Its rdev must equal the root filesystem's st_dev
@@ -829,25 +695,4 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
 fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
     SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
-}
-
-#[cfg(all(test, axtest))]
-mod tests {
-    #[axtest::axtest]
-    fn random_write_mixes_entropy() {
-        assert!(super::random_write_mixes_entropy_for_test());
-    }
-}
-
-#[cfg(all(test, not(axtest)))]
-mod host_tests {
-    #[test]
-    fn splitmix64_is_deterministic() {
-        assert!(super::splitmix64_determinism_rules_hold());
-    }
-
-    #[test]
-    fn fold_seed_word_uses_the_expected_byte_indices() {
-        assert!(super::fold_seed_word_xors_into_byte_indices());
-    }
 }
