@@ -31,6 +31,11 @@ use alloc::{
 };
 use core::ffi::c_int;
 
+#[cfg(feature = "qperf-metrics")]
+mod metrics;
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use metrics::render_file_lock_metrics;
+
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -112,7 +117,126 @@ struct FLockEntry {
 }
 
 /// fcntl POSIX + OFD locks share one space.
-static FCNTL_LOCKS: RwLock<BTreeMap<InodeKey, Vec<FLockEntry>>> = RwLock::new(BTreeMap::new());
+type FcntlLockState = Arc<RwLock<Vec<FLockEntry>>>;
+type FlockLockState = Arc<RwLock<Vec<FlockEntry>>>;
+
+// Index locks protect lookup, publication and empty-state removal. Operations
+// pin the state with an Arc; cached or pinned empty states are revisited
+// before publishing a new inode state. Blocking waiters use the
+// separately persistent inode wait queue and look up the state on each retry.
+// Lock order: wait queue -> graph -> index -> inode state. A graph writer may
+// also hold POSIX_LOCK_WAITS while reading index and inode states.
+struct FcntlIndex {
+    states: BTreeMap<InodeKey, FcntlLockState>,
+    idle: Vec<InodeKey>,
+}
+
+impl FcntlIndex {
+    fn reclaim_idle(&mut self) {
+        let mut cursor = 0;
+        while cursor < self.idle.len() {
+            let key = self.idle[cursor];
+            let status = self.states.get(&key).map(|state| {
+                let entries = state.read();
+                (entries.is_empty(), entries.capacity(), Arc::strong_count(state))
+            });
+            match status {
+                Some((true, capacity, 1))
+                    if capacity > FCNTL_CACHED_CAPACITY_LIMIT || self.idle.len() > FCNTL_IDLE_LIMIT =>
+                {
+                    self.states.remove(&key);
+                    self.idle.remove(cursor);
+                }
+                Some((false, _, _)) | None => {
+                    self.idle.remove(cursor);
+                }
+                _ => cursor += 1,
+            }
+        }
+    }
+}
+
+// Reuse small empty states for short-lived record locks. Large record vectors
+// are released once no operation still holds the state.
+const FCNTL_IDLE_LIMIT: usize = 32;
+const FCNTL_CACHED_CAPACITY_LIMIT: usize = 8;
+static FCNTL_LOCKS: RwLock<FcntlIndex> = RwLock::new(FcntlIndex {
+    states: BTreeMap::new(),
+    idle: Vec::new(),
+});
+
+// Readers permit independent inode updates; a writer freezes all record-lock
+// mutations while deadlock detection walks the wait-for graph.
+static POSIX_LOCK_GRAPH: RwLock<()> = RwLock::new(());
+
+fn fcntl_state(key: InodeKey) -> FcntlLockState {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FCNTL_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    if let Some(state) = found {
+        return state;
+    }
+
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let mut index = FCNTL_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    index.reclaim_idle();
+    let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    state
+}
+
+fn existing_fcntl_state(key: InodeKey) -> Option<FcntlLockState> {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FCNTL_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    found
+}
+
+// An empty state may be removed only when no other operation or waiter has
+// acquired it. Index write exclusion prevents publishing a second state.
+fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let mut index = FCNTL_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let entries = state.read();
+    if entries.is_empty() {
+        let cacheable = entries.capacity() <= FCNTL_CACHED_CAPACITY_LIMIT;
+        drop(entries);
+        if !cacheable && Arc::strong_count(state) == 2 {
+            index.states.remove(&key);
+            index.idle.retain(|candidate| *candidate != key);
+        } else {
+            if !index.idle.contains(&key) {
+                index.idle.push(key);
+            }
+            if index.idle.len() > FCNTL_IDLE_LIMIT || !cacheable {
+                index.reclaim_idle();
+            }
+        }
+    }
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FCNTL_REAP.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+}
 
 /// Per-inode waiters parked by `F_SETLKW`/`F_OFD_SETLKW` until a
 /// conflicting lock is released. Wakers are called from every code path
@@ -147,22 +271,26 @@ impl PosixLockWaitGuard {
         request: WaitingLock,
         owner: &FOwner,
     ) -> Result<Option<Self>, Errno> {
-        let mut table = FCNTL_LOCKS.write();
-        let Some(entries) = table.get_mut(&request.key) else {
+        let _graph = POSIX_LOCK_GRAPH.write();
+        let Some(state) = existing_fcntl_state(request.key) else {
             return Ok(None);
         };
+        let mut entries = state.write();
         entries.retain(|e| !e.owner.is_dead());
         let still_blocked =
-            find_conflict(entries, owner, request.start, request.end, request.kind).is_some();
-        if entries.is_empty() {
-            table.remove(&request.key);
-        }
+            find_conflict(&mut entries, owner, request.start, request.end, request.kind).is_some();
         if !still_blocked {
+            let empty = entries.is_empty();
+            drop(entries);
+            if empty {
+                reap_fcntl_state(request.key, &state);
+            }
             return Ok(None);
         }
+        drop(entries);
 
         let mut waits = POSIX_LOCK_WAITS.write();
-        if posix_lock_deadlock_would_occur(&table, &waits, waiter, request) {
+        if posix_lock_deadlock_would_occur(&waits, waiter, request) {
             return Err(Errno::EDEADLK);
         }
         waits.entry(waiter).or_default().push(request);
@@ -199,7 +327,115 @@ struct FlockEntry {
 }
 
 /// flock(2) entries: at most one entry per (inode, OFD).
-static FLOCK_LOCKS: RwLock<BTreeMap<InodeKey, Vec<FlockEntry>>> = RwLock::new(BTreeMap::new());
+struct FlockIndex {
+    states: BTreeMap<InodeKey, FlockLockState>,
+    idle: Vec<InodeKey>,
+}
+
+impl FlockIndex {
+    fn reclaim_idle(&mut self) {
+        let mut cursor = 0;
+        while cursor < self.idle.len() {
+            let key = self.idle[cursor];
+            let status = self.states.get(&key).map(|state| {
+                let entries = state.read();
+                (entries.is_empty(), entries.capacity(), Arc::strong_count(state))
+            });
+            match status {
+                Some((true, capacity, 1))
+                    if capacity > FLOCK_CACHED_CAPACITY_LIMIT
+                        || self.idle.len() > FLOCK_IDLE_LIMIT =>
+                {
+                    self.states.remove(&key);
+                    self.idle.remove(cursor);
+                }
+                Some((false, _, _)) | None => {
+                    self.idle.remove(cursor);
+                }
+                _ => cursor += 1,
+            }
+        }
+    }
+}
+
+// A small cache avoids allocating a new state on every uncontended LOCK_SH /
+// LOCK_UN pair. Large vectors are not cached after their last reference;
+// temporarily pinned empty states are revisited on subsequent index writes.
+const FLOCK_IDLE_LIMIT: usize = 32;
+const FLOCK_CACHED_CAPACITY_LIMIT: usize = 8;
+static FLOCK_LOCKS: RwLock<FlockIndex> = RwLock::new(FlockIndex {
+    states: BTreeMap::new(),
+    idle: Vec::new(),
+});
+
+fn flock_state(key: InodeKey) -> FlockLockState {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FLOCK_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    if let Some(state) = found {
+        return state;
+    }
+
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let mut index = FLOCK_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    index.reclaim_idle();
+    let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    state
+}
+
+fn existing_flock_state(key: InodeKey) -> Option<FlockLockState> {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let index = FLOCK_LOCKS.read();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let found = index.states.get(&key).cloned();
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    found
+}
+
+fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let mut index = FLOCK_LOCKS.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
+    let entries = state.read();
+    if entries.is_empty() {
+        let cacheable = entries.capacity() <= FLOCK_CACHED_CAPACITY_LIMIT;
+        drop(entries);
+        if !cacheable && Arc::strong_count(state) == 2 {
+            index.states.remove(&key);
+            index.idle.retain(|cached| *cached != key);
+        } else {
+            if !index.idle.contains(&key) {
+                index.idle.push(key);
+            }
+            if index.idle.len() > FLOCK_IDLE_LIMIT {
+                index.reclaim_idle();
+            }
+        }
+    } else {
+        drop(entries);
+    }
+    drop(index);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK_REAP.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+}
 
 /// Per-inode waiters parked by blocking `flock(LOCK_SH/LOCK_EX)` (without
 /// `LOCK_NB`) until a conflicting OFD-level entry is released. Independent
@@ -422,7 +658,6 @@ fn push_posix_conflict_pids(
 }
 
 fn posix_lock_deadlock_would_occur(
-    table: &BTreeMap<InodeKey, Vec<FLockEntry>>,
     waits: &PosixLockWaitTable,
     requester: PidIdentityId,
     request: WaitingLock,
@@ -430,9 +665,10 @@ fn posix_lock_deadlock_would_occur(
     let mut stack = Vec::new();
     let mut seen = Vec::new();
 
-    if let Some(entries) = table.get(&request.key) {
+    if let Some(state) = existing_fcntl_state(request.key) {
+        let entries = state.read();
         push_posix_conflict_pids(
-            entries,
+            &entries,
             requester,
             request.start,
             request.end,
@@ -454,9 +690,10 @@ fn posix_lock_deadlock_would_occur(
             continue;
         };
         for blocked_request in blocker_waits {
-            if let Some(entries) = table.get(&blocked_request.key) {
+            if let Some(state) = existing_fcntl_state(blocked_request.key) {
+                let entries = state.read();
                 push_posix_conflict_pids(
-                    entries,
+                    &entries,
                     blocker,
                     blocked_request.start,
                     blocked_request.end,
@@ -484,11 +721,9 @@ fn lock_waiters(key: InodeKey) -> Arc<WaitQueue> {
         .clone()
 }
 
-/// Wake every task parked on `key`. MUST be called without `FCNTL_LOCKS`
-/// held to keep the lock order `WaitQueue → FCNTL_LOCKS`: waiters take
-/// the wait-queue mutex first and the table lock second from inside
-/// `wait_if`'s condition closure, so a waker that already held the
-/// table lock would invert that order and deadlock.
+/// Wake every task parked on `key`. MUST be called after releasing the
+/// graph and inode locks: waiters take the wait-queue mutex before those
+/// locks in `wait_if`'s condition closure.
 pub fn wake_lock_waiters(key: InodeKey) {
     let wq = LOCK_WAITERS.read().get(&key).cloned();
     if let Some(wq) = wq {
@@ -536,9 +771,8 @@ fn make_owner(current: &crate::task::UserTaskRef, ofd: bool, file: &Arc<dyn File
     }
 }
 
-/// Result of one attempt to install / clear a record lock. Carried out
-/// of the FCNTL_LOCKS critical section so any wakeups happen with the
-/// table lock released.
+/// Result of one attempt to install / clear a record lock. Wakeups happen
+/// after releasing the graph and inode locks.
 enum SetlkAttempt {
     Done { woke_others: bool },
     Conflict,
@@ -551,20 +785,37 @@ fn try_setlk_once(
     end: i64,
     kind: Option<LockKind>,
 ) -> SetlkAttempt {
-    let mut table = FCNTL_LOCKS.write();
-    let entries = table.entry(key).or_default();
+    let _graph = matches!(&owner, FOwner::Posix { .. }).then(|| POSIX_LOCK_GRAPH.read());
+    let state = if kind.is_some() {
+        fcntl_state(key)
+    } else if let Some(state) = existing_fcntl_state(key) {
+        state
+    } else {
+        return SetlkAttempt::Done { woke_others: false };
+    };
+    #[cfg(feature = "qperf-metrics")]
+    let timing = if matches!(&owner, FOwner::Posix { .. }) {
+        &metrics::POSIX_SET
+    } else {
+        &metrics::OFD_SET
+    };
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let mut entries = state.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     entries.retain(|e| !e.owner.is_dead());
 
     let attempt = match kind {
         None => {
-            let woke_others = clear_owner_overlap(entries, &owner, start, end);
+            let woke_others = clear_owner_overlap(&mut entries, &owner, start, end);
             SetlkAttempt::Done { woke_others }
         }
         Some(k) => {
-            if find_conflict(entries, &owner, start, end, k).is_some() {
+            if find_conflict(&mut entries, &owner, start, end, k).is_some() {
                 SetlkAttempt::Conflict
             } else {
-                let woke_others = clear_owner_overlap(entries, &owner, start, end);
+                let woke_others = clear_owner_overlap(&mut entries, &owner, start, end);
                 entries.push(FLockEntry {
                     start,
                     end,
@@ -575,8 +826,12 @@ fn try_setlk_once(
             }
         }
     };
-    if entries.is_empty() {
-        table.remove(&key);
+    let empty = entries.is_empty();
+    drop(entries);
+    #[cfg(feature = "qperf-metrics")]
+    timing.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    if empty {
+        reap_fcntl_state(key, &state);
     }
     attempt
 }
@@ -644,8 +899,7 @@ pub fn fcntl_setlk(
                 let mut deadlock = false;
 
                 // Park on the inode's wait queue. The condition re-checks
-                // conflict while holding only the wq mutex (which itself
-                // takes FCNTL_LOCKS internally) so there is no chance of
+                // conflict while holding the wq mutex so there is no chance of
                 // missing a wakeup that lands between our outer attempt
                 // and the sleep. POSIX waiters are registered only after
                 // this re-check says they will really sleep, avoiding stale
@@ -664,16 +918,13 @@ pub fn fcntl_setlk(
                             Err(_) => unreachable!("try_new only reports EDEADLK"),
                         }
                     } else {
-                        let mut table = FCNTL_LOCKS.write();
-                        let Some(entries) = table.get_mut(&key) else {
+                        let Some(state) = existing_fcntl_state(key) else {
                             return false;
                         };
+                        let mut entries = state.write();
                         entries.retain(|e| !e.owner.is_dead());
                         let still_blocked =
-                            find_conflict(entries, &owner, start, end, want).is_some();
-                        if entries.is_empty() {
-                            table.remove(&key);
-                        }
+                            find_conflict(&mut entries, &owner, start, end, want).is_some();
                         if !still_blocked {
                             return false;
                         }
@@ -729,27 +980,62 @@ pub fn fcntl_getlk(
 
     let observer = current.as_thread().active_pid_namespace().id();
 
-    let mut table = FCNTL_LOCKS.write();
-    let (report, empty_after) = {
-        let entries = table.entry(key).or_default();
-        let report = find_conflict(entries, &requester, start, end, req_kind).map(|e| {
-            (
-                e.kind,
-                e.owner.report_pid(observer),
-                e.start,
-                if e.end == i64::MAX {
-                    0
-                } else {
-                    e.end - e.start
-                },
-            )
-        });
-        (report, entries.is_empty())
+    let report = {
+        existing_fcntl_state(key).and_then(|state| {
+            #[cfg(feature = "qperf-metrics")]
+            let requested = ax_runtime::hal::time::monotonic_time();
+            let entries = state.read();
+            #[cfg(feature = "qperf-metrics")]
+            let acquired = ax_runtime::hal::time::monotonic_time();
+            let mut stale = false;
+            let mut report = None;
+            for entry in entries.iter() {
+                if entry.owner.is_dead() {
+                    stale = true;
+                    continue;
+                }
+                if report.is_none()
+                    && !entry.owner.same_as(&requester)
+                    && ranges_overlap(entry.start, entry.end, start, end)
+                    && kinds_conflict(entry.kind, req_kind)
+                {
+                    report = Some((
+                        entry.kind,
+                        entry.owner.report_pid(observer),
+                        entry.start,
+                        if entry.end == i64::MAX {
+                            0
+                        } else {
+                            entry.end - entry.start
+                        },
+                    ));
+                }
+            }
+            drop(entries);
+            #[cfg(feature = "qperf-metrics")]
+            metrics::GETLK.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+            if stale {
+                #[cfg(feature = "qperf-metrics")]
+                let requested = ax_runtime::hal::time::monotonic_time();
+                let mut entries = state.write();
+                #[cfg(feature = "qperf-metrics")]
+                let acquired = ax_runtime::hal::time::monotonic_time();
+                entries.retain(|entry| !entry.owner.is_dead());
+                let empty = entries.is_empty();
+                drop(entries);
+                #[cfg(feature = "qperf-metrics")]
+                metrics::GETLK_CLEANUP.record(
+                    requested,
+                    acquired,
+                    ax_runtime::hal::time::monotonic_time(),
+                );
+                if empty {
+                    reap_fcntl_state(key, &state);
+                }
+            }
+            report
+        })
     };
-    if empty_after {
-        table.remove(&key);
-    }
-    drop(table);
 
     if let Some((kind, owner, l_start, l_len)) = report {
         fl.l_type = (if kind == LockKind::Read {
@@ -814,20 +1100,26 @@ pub fn dispatch_fcntl(
 pub fn release_pid_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
-        let mut table = FCNTL_LOCKS.write();
-        table.retain(|inode, entries| {
+        let _graph = POSIX_LOCK_GRAPH.read();
+        let states: Vec<_> = FCNTL_LOCKS.read().states.iter().map(|(key, state)| (*key, state.clone())).collect();
+        for (inode, state) in states {
+            let mut entries = state.write();
             let before = entries.len();
             entries.retain(|e| match &e.owner {
                 FOwner::Posix { owner: candidate } => candidate.identity_id() != owner,
                 FOwner::Ofd { .. } => true,
             });
             if entries.len() != before {
-                affected.push(*inode);
+                affected.push(inode);
             }
-            !entries.is_empty()
-        });
+            let empty = entries.is_empty();
+            drop(entries);
+            if empty {
+                reap_fcntl_state(inode, &state);
+            }
+        }
     }
-    // Wake outside the table-lock critical section to keep lock order.
+    // Wake outside the graph and inode critical sections to keep lock order.
     for key in affected {
         wake_lock_waiters(key);
     }
@@ -845,18 +1137,21 @@ pub fn release_pid_locks(owner: PidIdentityId) {
 /// `Weak::strong_count` once the underlying `Arc<dyn FileLike>` is gone.
 pub fn release_inode_posix_locks(owner: PidIdentityId, key: InodeKey) {
     let woke_someone = {
-        let mut table = FCNTL_LOCKS.write();
-        let Some(entries) = table.get_mut(&key) else {
+        let _graph = POSIX_LOCK_GRAPH.read();
+        let Some(state) = existing_fcntl_state(key) else {
             return;
         };
+        let mut entries = state.write();
         let before = entries.len();
         entries.retain(|e| match &e.owner {
             FOwner::Posix { owner: candidate } => candidate.identity_id() != owner,
             FOwner::Ofd { .. } => true,
         });
         let changed = entries.len() != before;
-        if entries.is_empty() {
-            table.remove(&key);
+        let empty = entries.is_empty();
+        drop(entries);
+        if empty {
+            reap_fcntl_state(key, &state);
         }
         changed
     };
@@ -891,8 +1186,18 @@ fn try_flock_once(
     file: &Arc<dyn FileLike>,
     kind: Option<LockKind>,
 ) -> (FlockAttempt, bool) {
-    let mut table = FLOCK_LOCKS.write();
-    let entries = table.entry(key).or_default();
+    let state = if kind.is_some() {
+        flock_state(key)
+    } else if let Some(state) = existing_flock_state(key) {
+        state
+    } else {
+        return (FlockAttempt::Done, false);
+    };
+    #[cfg(feature = "qperf-metrics")]
+    let requested = ax_runtime::hal::time::monotonic_time();
+    let mut entries = state.write();
+    #[cfg(feature = "qperf-metrics")]
+    let acquired = ax_runtime::hal::time::monotonic_time();
     let before = entries.len();
     entries.retain(|e| e.weak.strong_count() != 0);
 
@@ -932,8 +1237,12 @@ fn try_flock_once(
         }
     };
     let mutated = entries.len() != before;
-    if entries.is_empty() {
-        table.remove(&key);
+    let empty = entries.is_empty();
+    drop(entries);
+    #[cfg(feature = "qperf-metrics")]
+    metrics::FLOCK.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
+    if empty {
+        reap_flock_state(key, &state);
     }
     (outcome, mutated)
 }
@@ -947,15 +1256,17 @@ fn try_flock_once(
 pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
     let addr = ofd_addr(file);
     let mutated = {
-        let mut table = FLOCK_LOCKS.write();
-        let Some(entries) = table.get_mut(&key) else {
+        let Some(state) = existing_flock_state(key) else {
             return;
         };
+        let mut entries = state.write();
         let before = entries.len();
         entries.retain(|e| e.addr != addr);
         let changed = entries.len() != before;
-        if entries.is_empty() {
-            table.remove(&key);
+        let empty = entries.is_empty();
+        drop(entries);
+        if empty {
+            reap_flock_state(key, &state);
         }
         changed
     };
@@ -972,15 +1283,20 @@ pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
 pub fn release_pid_flock_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
-        let mut table = FLOCK_LOCKS.write();
-        table.retain(|inode, entries| {
+        let states: Vec<_> = FLOCK_LOCKS.read().states.iter().map(|(key, state)| (*key, state.clone())).collect();
+        for (inode, state) in states {
+            let mut entries = state.write();
             let before = entries.len();
             entries.retain(|entry| entry.owner != owner);
             if entries.len() != before {
-                affected.push(*inode);
+                affected.push(inode);
             }
-            !entries.is_empty()
-        });
+            let empty = entries.is_empty();
+            drop(entries);
+            if empty {
+                reap_flock_state(inode, &state);
+            }
+        }
     }
     for key in affected {
         wake_flock_waiters(key);
@@ -1027,10 +1343,10 @@ pub fn flock_op(
                 let want = kind.unwrap();
                 let wq = flock_waiters(key);
                 wq.wait_if(current, !0u32, None, || {
-                    let table = FLOCK_LOCKS.read();
-                    let Some(entries) = table.get(&key) else {
+                    let Some(state) = existing_flock_state(key) else {
                         return false;
                     };
+                    let entries = state.read();
                     entries.iter().any(|e| {
                         e.weak.strong_count() != 0 && e.addr != addr && kinds_conflict(e.kind, want)
                     })
