@@ -309,9 +309,10 @@ Deterministic host tests must cover:
 
 The runnable `block-io-bench` validates deterministic contents for repeated
 reads and truncate/rewrite generations observed through an already-open file
-descriptor. QEMU validation covers the public StarryOS syscall and application
-paths. CI must additionally pass formatting, targeted clippy configurations,
-workspace host tests, and the StarryOS architecture matrix.
+descriptor. The host regressions exercise `sync_all_block_caches()` and the
+`sys_sync()` stage ordering directly. CI must additionally pass formatting,
+targeted clippy configurations, workspace host tests, and the StarryOS
+architecture matrix.
 
 The author-side commands and required observations are:
 
@@ -326,18 +327,22 @@ cargo xtask clippy --package ax-fs-ng
 cargo xtask clippy --package rsext4
 cargo xtask clippy --package starry-kernel
   -> every configured check passes with warnings denied
-cargo xtask starry test qemu --arch x86_64 -c qemu/system/syscall-test-sync
-  -> test-sync reaches STARRY_SYSTEM_TEST_PASSED and the grouped runner passes
 cargo xtask starry app qemu -t block-io-bench --arch x86_64
   -> every initial/coherence generation verifies and BLOCK_BENCH_APP_PASSED appears
 ```
 
 The helper-level sync regression injects errors into all three stages and
-requires every closure to run while the result remains `Ok(0)`. The direct
-QEMU syscall case verifies the public success path. Fault-injected device and
-multi-mount durability remain separate infrastructure work because the current
-QEMU test environment exposes neither a controllable block-error endpoint nor
-a second independently recoverable mount.
+requires every closure to run while the result remains `Ok(0)`. There is no
+direct QEMU durability claim: the retained `syscall-test-syncfs` case checks
+that the public `sync(2)` ABI dispatches and returns zero, but it cannot prove
+writeback. The former dedicated probe also checked page-cache readback, which
+still passed when `sync(2)` performed no writeback. Fixed LTP `sync01` is the
+intended system-level durability replacement because it observes block-device
+writeout, but the current guest lacks the `/sys/block` interface required by
+that case. Fault-injected device and multi-mount durability remain separate
+infrastructure work because the current QEMU test environment exposes neither
+a controllable block-error endpoint nor a second independently recoverable
+mount.
 
 ## Review Boundaries
 
