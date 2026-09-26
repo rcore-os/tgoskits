@@ -1,0 +1,12 @@
+board_type = "OrangePi-5-Plus-robot"
+timeout = 180
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^STARRY_UVC_V4L2_FAILED\b',
+  '(?i)segmentation fault',
+]
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+shell_cmd = '''u='${sessionFile:usr/bin/starry-test-suit/uvc-v4l2}'; p=/tmp/uvc-v4l2; n=0; while [ "$n" -lt 12 ]; do if curl --connect-timeout 3 --max-time 10 -fsSL "$u" -o "$p.part" && [ -s "$p.part" ]; then mv "$p.part" "$p"; break; fi; n=$((n+1)); sleep 2; done; if [ -s "$p" ] && chmod +x "$p"; then "$p"; else m=STARRY_UVC_V4L2; echo "${m}_FAILED stage=download"; fi'''
+success_regex = ['(?m)^STARRY_UVC_V4L2_OK frames=5 bytes=[1-9][0-9]*\s*$']

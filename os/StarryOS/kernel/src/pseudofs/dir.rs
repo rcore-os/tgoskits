@@ -32,6 +32,11 @@ pub trait SimpleDirOps: Send + Sync + 'static {
         true
     }
 
+    /// Check whether one child has a stable directory entry.
+    fn is_cacheable_child(&self, _name: &str) -> bool {
+        self.is_cacheable()
+    }
+
     /// Combines two directories into one.
     fn chain<N: SimpleDirOps>(self, other: N) -> ChainedDirOps<Self, N>
     where
@@ -224,6 +229,10 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
 
     fn is_cacheable(&self) -> bool {
         self.ops.is_cacheable()
+    }
+
+    fn is_cacheable_child(&self, name: &str) -> bool {
+        self.ops.is_cacheable_child(name)
     }
 
     fn create(

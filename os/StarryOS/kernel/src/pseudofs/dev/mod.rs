@@ -44,6 +44,14 @@ mod cvi_usb_camera;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_vdec;
+#[cfg(feature = "uvc")]
+mod uvc_camera;
+#[cfg(feature = "uvc")]
+pub(crate) mod video;
+#[cfg(feature = "uvc")]
+mod video_allocator;
+#[cfg(feature = "uvc")]
+mod video_dir;
 
 use alloc::{format, sync::Arc};
 use core::{
@@ -824,7 +832,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
         }
     }
-    SimpleDir::new_maker(fs, Arc::new(root))
+    #[cfg(feature = "uvc")]
+    {
+        SimpleDir::new_maker(fs.clone(), Arc::new(video_dir::UvcDevRoot::new(root, fs)))
+    }
+
+    #[cfg(not(feature = "uvc"))]
+    {
+        SimpleDir::new_maker(fs, Arc::new(root))
+    }
 }
 
 fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
