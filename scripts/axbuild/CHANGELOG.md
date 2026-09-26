@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.1...axbuild-v0.9.2) - 2026-09-26
+
+### Added
+
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+- *(axbuild)* run one Starry LTP case in QEMU ([#2495](https://github.com/rcore-os/tgoskits/pull/2495))
+
+### Other
+
+- *(axbuild)* retain functional tests and remove parameter cases ([#2496](https://github.com/rcore-os/tgoskits/pull/2496))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.0...axbuild-v0.9.1) - 2026-09-22
 
 ### Added

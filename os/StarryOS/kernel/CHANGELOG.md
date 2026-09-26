@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.12.1...starry-kernel-v0.12.2) - 2026-09-26
+
+### Added
+
+- *(starry-kernel)* synthesize card0 vblank clock with CRTC sequence ioctls ([#2365](https://github.com/rcore-os/tgoskits/pull/2365))
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+
+### Fixed
+
+- *(starry)* complete sched priority range compatibility ([#2499](https://github.com/rcore-os/tgoskits/pull/2499))
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+- *(starry-kernel)* write recvmmsg remaining timeout after receiving ([#2489](https://github.com/rcore-os/tgoskits/pull/2489))
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.12.0...starry-kernel-v0.12.1) - 2026-09-22
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.7...axvirtio-common-v0.2.8) - 2026-09-26
+
+### Fixed
+
+- *(axvirtio-blk)* honor negotiated request limits ([#2510](https://github.com/rcore-os/tgoskits/pull/2510))
+
 ## [0.2.7](https://github.com/rcore-os/tgoskits/compare/axvirtio-common-v0.2.6...axvirtio-common-v0.2.7) - 2026-09-22
 
 ### Other
