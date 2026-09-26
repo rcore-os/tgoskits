@@ -1,0 +1,13 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "no-std"]
+description = "Arm SMMUv3 Stage 1 translation driver."
+edition.workspace = true
+keywords = ["arm", "smmu", "iommu", "dma"]
+license.workspace = true
+name = "arm-smmu-v3"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+rdif-iommu = { version = "0.1", path = "../../interface/rdif-iommu" }

@@ -23,9 +23,12 @@ impl Transfer {
             Direction::Out => DmaDirection::ToDevice,
         };
         let mapping = if let Some((ptr, len)) = buff.filter(|(_, len)| *len > 0) {
-            let slice = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), len) };
             Some(
-                dma.map_streaming_slice(slice, ALIGN, dma_direction)
+                // SAFETY: The endpoint request contract requires the caller
+                // to keep this raw buffer live and stable until the transfer
+                // completes or cancellation stops device access. This map is
+                // owned by Transfer for that same interval.
+                unsafe { dma.map_streaming_raw(ptr, len, ALIGN, dma_direction) }
                     .map_err(|err| TransferError::Other(anyhow!("DMA mapping failed: {err}")))?,
             )
         } else {

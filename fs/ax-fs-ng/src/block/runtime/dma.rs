@@ -1,9 +1,9 @@
 use core::num::NonZeroUsize;
 
-use dma_api::{CompletedDma, CpuDmaBuffer, DeviceDma, DmaDirection, PreparedDma};
+use dma_api::{CompletedDma, CpuDmaBuffer, DmaDirection, PreparedDma};
 use rdif_block::{BlkError, QueueLimits};
 
-use crate::os::dma_op;
+use crate::os::dma_device;
 
 pub(super) fn prepare_read(limits: QueueLimits, len: usize) -> Result<PreparedDma, BlkError> {
     allocate(limits, len, DmaDirection::FromDevice).map(CpuDmaBuffer::prepare_for_device)
@@ -32,13 +32,15 @@ fn allocate(
     {
         return Err(BlkError::InvalidRequest);
     }
-    let dma_op = dma_op().ok_or(BlkError::Io)?;
     if let Some(boundary) = constraints.boundary
         && !boundary.is_power_of_two()
     {
         return Err(BlkError::InvalidRequest);
     }
-    let device = DeviceDma::new(limits.dma, dma_op);
+    let device = dma_device(limits.dma).map_err(BlkError::from)?;
+    if device.info() != limits.dma {
+        return Err(BlkError::Io);
+    }
     CpuDmaBuffer::new_zero(
         &device,
         NonZeroUsize::new(len).ok_or(BlkError::InvalidRequest)?,

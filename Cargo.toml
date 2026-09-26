@@ -70,6 +70,7 @@ members = [
     "drivers/gpu/*",
     "drivers/intc/*",
     "drivers/interface/*",
+    "drivers/iommu/*",
     "drivers/net/*",
     "drivers/npu/*",
     "drivers/pci/*",
@@ -228,7 +229,9 @@ rdif-eth = { version = "0.6", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.3", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.16", path = "drivers/interface/rdif-intc" }
 rdif-msi = { version = "0.3", path = "drivers/interface/rdif-msi" }
+rdif-iommu = { version = "0.1", path = "drivers/interface/rdif-iommu" }
 rdif-pcie = { version = "0.3", path = "drivers/interface/rdif-pcie" }
+arm-smmu-v3 = { version = "0.1", path = "drivers/iommu/arm-smmu-v3" }
 rdif-pinctrl = { version = "0.2", path = "drivers/interface/rdif-pinctrl" }
 rdif-pwm = { version = "0.2", path = "drivers/interface/rdif-pwm" }
 rdif-power = { version = "0.9", path = "drivers/interface/rdif-power" }

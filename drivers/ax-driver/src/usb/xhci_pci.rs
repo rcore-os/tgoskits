@@ -24,7 +24,7 @@ crate::model_register!(
 );
 
 fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
-    let dma = crate::pci::device_dma(probe.info(), u64::MAX);
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX)?;
     let endpoint = probe.endpoint_mut();
     let class = endpoint.revision_and_class();
     if (class.base_class, class.sub_class, class.interface) != (0x0c, 0x03, 0x30) {
