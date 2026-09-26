@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.40](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.39...starryos-v0.5.40) - 2026-09-26
+
+### Added
+
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+
 ## [0.5.39](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.38...starryos-v0.5.39) - 2026-09-22
 
 ### Other

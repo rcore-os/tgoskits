@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.5...axvm-v0.8.6) - 2026-09-26
+
+### Added
+
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+
+### Fixed
+
+- *(axvirtio-blk)* honor negotiated request limits ([#2510](https://github.com/rcore-os/tgoskits/pull/2510))
+- *(axvm)* follow host console by default and fix OrangePi Nightly ([#2490](https://github.com/rcore-os/tgoskits/pull/2490))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.4...axvm-v0.8.5) - 2026-09-22
 
 ### Other

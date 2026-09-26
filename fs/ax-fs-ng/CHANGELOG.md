@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.2...ax-fs-ng-v0.11.3) - 2026-09-26
+
+### Other
+
+- *(ax-fs-ng)* batch contiguous dirty folio writeback ([#2492](https://github.com/rcore-os/tgoskits/pull/2492))
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.1...ax-fs-ng-v0.11.2) - 2026-09-22
 
 ### Added

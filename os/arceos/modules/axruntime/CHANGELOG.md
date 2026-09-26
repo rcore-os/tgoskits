@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.6](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.5...ax-runtime-v0.13.6) - 2026-09-26
+
+### Fixed
+
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+
 ## [0.13.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.4...ax-runtime-v0.13.5) - 2026-09-22
 
 ### Fixed
