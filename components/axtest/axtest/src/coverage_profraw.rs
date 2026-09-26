@@ -26,32 +26,32 @@ compile_error!("axtest coverage currently requires a little-endian target");
 /// LLVM 23's per-function coverage record.
 ///
 /// Keep this layout in sync with the repository's pinned Rust toolchain. The
-/// MC/DC pointer and record count distinguish raw profile version 11 from the
-/// version 10 layout used by older LLVM releases.
+/// The uniform counter pointer distinguishes this layout from older LLVM
+/// profile records.
 #[repr(C)]
 struct LlvmProfileData {
     name_ref: u64,
     function_hash: u64,
     counter_ptr: usize,
+    uniform_counter_ptr: usize,
     bitmap_ptr: usize,
-    mcdc_bitmap_ptr: usize,
     function_pointer: *const (),
     values: *mut (),
     num_counters: u32,
     num_value_sites: [u16; 3],
-    num_mcdc_records: u16,
+    offload_device_wave_size: u16,
     num_bitmap_bytes: u32,
 }
 
 const PROFILE_DATA_SIZE: usize = size_of::<LlvmProfileData>();
 const COUNTER_PTR_OFFSET: usize = 16;
-const BITMAP_PTR_OFFSET: usize = 24;
-const MCDC_BITMAP_PTR_OFFSET: usize = 32;
+const UNIFORM_COUNTER_PTR_OFFSET: usize = 24;
+const BITMAP_PTR_OFFSET: usize = 32;
 const FUNCTION_PTR_OFFSET: usize = 40;
 const VALUES_PTR_OFFSET: usize = 48;
 const NUM_COUNTERS_OFFSET: usize = 56;
 const NUM_VALUE_SITES_OFFSET: usize = 60;
-const NUM_MCDC_RECORDS_OFFSET: usize = 66;
+const OFFLOAD_DEVICE_WAVE_SIZE_OFFSET: usize = 66;
 const NUM_BITMAP_BYTES_OFFSET: usize = 68;
 
 #[derive(Clone, Copy)]
@@ -72,7 +72,7 @@ pub(super) enum ProfileError {
     CounterCountMismatch,
     BitmapCountMismatch,
     ValueProfilingUnsupported,
-    McdcUnsupported,
+    OffloadCoverageUnsupported,
 }
 
 impl fmt::Display for ProfileError {
@@ -92,8 +92,8 @@ impl fmt::Display for ProfileError {
             Self::ValueProfilingUnsupported => {
                 f.write_str("LLVM value profiling is not supported by axtest coverage")
             }
-            Self::McdcUnsupported => {
-                f.write_str("LLVM MC/DC coverage is not supported by axtest coverage")
+            Self::OffloadCoverageUnsupported => {
+                f.write_str("LLVM offload coverage is not supported by axtest coverage")
             }
         }
     }
@@ -187,9 +187,9 @@ fn encode(sections: ProfileSections<'_>) -> Result<Vec<u8>, ProfileError> {
         usize_to_u64(counters_padding)?,
         usize_to_u64(sections.bitmap.len())?,
         usize_to_u64(bitmap_padding)?,
-        0, // raw v11 MC/DC header field
-        0, // raw v11 MC/DC header field
-        0, // raw v11 MC/DC header field
+        0, // uniform counter count
+        0, // padding after uniform counters
+        0, // uniform counters delta
         usize_to_u64(sections.names.len())?,
         usize_to_u64(counters_start - data_start)?,
         usize_to_u64(bitmap_start - data_start)?,
@@ -213,8 +213,10 @@ fn encode(sections: ProfileSections<'_>) -> Result<Vec<u8>, ProfileError> {
         {
             return Err(ProfileError::ValueProfilingUnsupported);
         }
-        if read_u16(record, NUM_MCDC_RECORDS_OFFSET) != 0 {
-            return Err(ProfileError::McdcUnsupported);
+        if read_u64(record, UNIFORM_COUNTER_PTR_OFFSET) != 0
+            || read_u16(record, OFFLOAD_DEVICE_WAVE_SIZE_OFFSET) != 0
+        {
+            return Err(ProfileError::OffloadCoverageUnsupported);
         }
 
         let counter_address = checked_add(counters_start, counter_offset)?;
@@ -230,7 +232,7 @@ fn encode(sections: ProfileSections<'_>) -> Result<Vec<u8>, ProfileError> {
             usize_to_u64(bitmap_address - record_start)?,
         );
         for offset in [
-            MCDC_BITMAP_PTR_OFFSET,
+            UNIFORM_COUNTER_PTR_OFFSET,
             FUNCTION_PTR_OFFSET,
             VALUES_PTR_OFFSET,
         ] {
@@ -295,13 +297,22 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     ])
 }
 
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + size_of::<u64>()].try_into().unwrap())
+}
+
 fn patch_u64(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use super::*;
+    extern crate std;
+
+    use std::{path::Path, process::Command};
 
     fn record(num_counters: u32) -> [u8; PROFILE_DATA_SIZE] {
         let mut record = [0; PROFILE_DATA_SIZE];
@@ -348,6 +359,68 @@ mod tests {
     }
 
     #[test]
+    fn nonempty_bitmap_profile_merges_with_pinned_llvm() {
+        let mut data = record(2);
+        // NameRef is the first eight bytes of MD5("bitmap_fixture").
+        data[..8].copy_from_slice(&0x67d2_06a4_6760_dcaeu64.to_le_bytes());
+        data[8..16].copy_from_slice(&0x8267_d13e_6351_6cddu64.to_le_bytes());
+        data[NUM_BITMAP_BYTES_OFFSET..NUM_BITMAP_BYTES_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        let counters = [1u64.to_le_bytes(), 0u64.to_le_bytes()].concat();
+        let encoded = encode(ProfileSections {
+            data: &data,
+            counters: &counters,
+            bitmap: &[1],
+            names: b"\x0e\x00bitmap_fixture",
+        })
+        .unwrap();
+
+        let bitmap_delta = read_u64(&encoded, RAW_HEADER_SIZE + 32);
+        assert_eq!(
+            bitmap_delta,
+            (PROFILE_DATA_SIZE + 2 * size_of::<u64>()) as u64
+        );
+
+        let sysroot = Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .unwrap();
+        assert!(sysroot.status.success());
+        let rustlib =
+            Path::new(std::str::from_utf8(&sysroot.stdout).unwrap().trim()).join("lib/rustlib");
+        let profdata = std::fs::read_dir(rustlib)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("bin/llvm-profdata"))
+            .find(|path| path.is_file())
+            .expect("pinned toolchain must provide llvm-profdata");
+        let raw_path =
+            std::env::temp_dir().join(format!("axtest-bitmap-{}.profraw", std::process::id()));
+        let merged_path =
+            std::env::temp_dir().join(format!("axtest-bitmap-{}.profdata", std::process::id()));
+        std::fs::write(&raw_path, &encoded).unwrap();
+        let merged = Command::new(&profdata)
+            .args(["merge", "-sparse", "--text"])
+            .arg(&raw_path)
+            .arg("-o")
+            .arg(&merged_path)
+            .output()
+            .unwrap();
+        std::fs::remove_file(&raw_path).unwrap();
+        assert!(
+            merged.status.success(),
+            "{}",
+            std::str::from_utf8(&merged.stderr).unwrap()
+        );
+        let merged_text = std::fs::read_to_string(&merged_path).unwrap();
+        assert!(
+            merged_text.contains("$1\n# Bitmap Byte Values:\n0x1\n"),
+            "{merged_text}"
+        );
+        std::fs::remove_file(&merged_path).unwrap();
+        assert!(merged_text.starts_with("bitmap_fixture\n"), "{merged_text}");
+    }
+
+    #[test]
     fn rejects_value_profiling_before_export() {
         let mut data = record(0);
         data[NUM_VALUE_SITES_OFFSET..NUM_VALUE_SITES_OFFSET + 2]
@@ -361,9 +434,5 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, ProfileError::ValueProfilingUnsupported);
-    }
-
-    fn read_u64(bytes: &[u8], offset: usize) -> u64 {
-        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
     }
 }
