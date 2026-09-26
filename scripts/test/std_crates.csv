@@ -63,6 +63,8 @@ axvmconfig
 riscv-h
 virtualization-tests
 sg200x-jpu
+alsa-pcm-uapi
+sg200x-audio
 starry-kernel
 starry-signal
 starry-vm

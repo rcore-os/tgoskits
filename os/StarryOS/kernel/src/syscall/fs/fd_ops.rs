@@ -104,6 +104,12 @@ fn add_to_fd(
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
                 let inner = device.inner().as_any();
+                #[cfg(feature = "sg2002-audio")]
+                if let Some(audio) = inner.downcast_ref::<crate::pseudofs::dev::audio::AudioNode>()
+                {
+                    let wrapped = audio.open(file, flags)?;
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
                     if flags & O_NONBLOCK != 0 {
@@ -895,7 +901,7 @@ pub fn sys_fcntl(
         F_GETFL => {
             let f = get_file_like(fd)?;
 
-            let mut ret = f.open_flags() & !O_APPEND;
+            let mut ret = f.open_flags() & !(O_APPEND | O_NONBLOCK);
             if f.nonblocking() {
                 ret |= O_NONBLOCK;
             }

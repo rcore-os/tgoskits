@@ -252,6 +252,12 @@ pub trait FileLike: Pollable + DowncastSync {
         Err(StarryError::InvalidInput)
     }
 
+    /// Reads a vector as one byte stream unless the device assigns a different
+    /// meaning to its segments (for example, noninterleaved PCM channels).
+    fn read_vectored(&self, dst: &mut IoDst) -> StarryResult<usize> {
+        self.read(dst)
+    }
+
     fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
         Err(StarryError::InvalidInput)
     }

@@ -1,10 +1,10 @@
+target = "riscv64gc-unknown-none-elf"
 features = [
-  "legacy-board-init",
-  "starry-kernel/sg2002",
   "starry-kernel/sg2002-audio",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/cv181x-sdhci",
+  "ax-driver/aic8800-wifi",
 ]
 log = "Info"
-target = "riscv64gc-unknown-none-elf"
+max_cpu_num = 1

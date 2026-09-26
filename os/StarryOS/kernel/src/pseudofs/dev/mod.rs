@@ -1,6 +1,8 @@
 //! Special devices
 
 mod axivc;
+#[cfg(feature = "sg2002-audio")]
+pub(crate) mod audio;
 pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
 pub(crate) mod card1;
@@ -701,6 +703,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // there's a display device behind it.
     let dri_card0 = card0::Card0::new();
     let mut dri_dir = DirMapping::new();
+    #[cfg(feature = "sg2002-audio")]
+    if let Some(snd) = audio::devices(fs.clone()) {
+        root.add("snd", SimpleDir::new_maker(fs.clone(), Arc::new(snd)));
+    }
     dri_dir.add(
         "card0",
         Device::new(

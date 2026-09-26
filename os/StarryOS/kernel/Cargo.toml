@@ -48,6 +48,7 @@ sg2002-cvi-usb-camera = [
     "dep:cvi-vdec-uapi",
     "dep:sg200x-jpu",
 ]
+sg2002-audio = ["sg2002", "ax-driver/sg2002-audio", "dep:alsa-pcm-uapi"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = ["ax-runtime/fault-injection"]
@@ -56,6 +57,7 @@ axtest = ["ax-runtime/fault-injection"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
 
 [dependencies]
+alsa-pcm-uapi = { workspace = true, optional = true }
 ax-alloc = { workspace = true }
 ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }

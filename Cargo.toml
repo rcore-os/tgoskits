@@ -64,6 +64,7 @@ members = [
     "components/percpu/percpu_macros",
 
     "drivers/ax-driver",
+    "drivers/audio/*",
     "drivers/blk/*",
     "drivers/examples/*",
     "drivers/firmware/*",
@@ -135,6 +136,7 @@ exclude = [
 ]
 
 [workspace.dependencies]
+alsa-pcm-uapi = { version = "0.1", path = "drivers/interface/alsa-pcm-uapi" }
 ax-sched = { path = "components/axsched", version = "0.5.11" }
 # Local workspace crates
 # Keep local dependency requirements at major.minor precision so release-plz does not
@@ -327,6 +329,7 @@ trait-ffi-macros = { version = "=0.4.0", path = "components/trait-ffi/trait-ffi-
 tock-registers = "0.10"
 zeroize = { version = "1.9.0", default-features = false }
 sg200x-bsp = { version = "0.7.1", default-features = false }
+sg200x-audio = { version = "0.1", path = "drivers/audio/sg200x-audio" }
 sg200x-jpu = { version = "0.1", path = "drivers/vpu/sg200x-jpu" }
 syscalls = { version = "0.8.1", default-features = false }
 x86 = "0.52"

@@ -54,6 +54,7 @@ usb = ["dep:crab-usb"]
 rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
 rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
 sg2002-dwc2 = ["usb", "dep:sg200x-bsp"]
+sg2002-audio = ["dep:sg200x-audio"]
 xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = ["dep:rdif-serial", "dep:some-serial"]
@@ -147,6 +148,7 @@ list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+sg200x-audio = { workspace = true, optional = true }
 sg200x-pwm = { workspace = true, optional = true }
 cv181x-clock = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }

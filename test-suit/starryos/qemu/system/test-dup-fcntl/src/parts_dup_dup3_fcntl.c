@@ -149,8 +149,8 @@ int parts_dup_dup3_fcntl(void)
 
     /* PART 9: fcntl F_SETFL 清除标志 */
 
-    fd = openat(AT_FDCWD, TMPFILE, O_RDWR | O_APPEND);
-    CHECK(fd >= 0, "打开文件带 O_APPEND 标志");
+    fd = openat(AT_FDCWD, TMPFILE, O_RDWR | O_APPEND | O_NONBLOCK);
+    CHECK(fd >= 0, "打开文件带 O_APPEND 和 O_NONBLOCK 标志");
 
     int fl_before = fcntl(fd, F_GETFL);
     CHECK(fl_before >= 0, "F_GETFL 获取标志成功");
@@ -160,6 +160,7 @@ int parts_dup_dup3_fcntl(void)
     int fl_after = fcntl(fd, F_GETFL);
     CHECK(fl_after >= 0, "清除后 F_GETFL 成功");
     CHECK((fl_after & O_APPEND) == 0, "O_APPEND 已被清除");
+    CHECK((fl_after & O_NONBLOCK) == 0, "O_NONBLOCK 已被清除");
 
     lseek(fd, 0, SEEK_SET);
     write(fd, "X", 1);
