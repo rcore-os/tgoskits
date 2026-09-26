@@ -42,8 +42,36 @@ pub fn prepare_dtb_guest(
     }
 
     let guest_dtb = build_guest_dtb(vm_config, vm_create_config, provider, host_fdt_bytes)?;
+    resolve_virtual_gic_from_guest(vm_config, guest_dtb.as_ref())?;
     enrich_guest_config(vm_config, vm_create_config, guest_dtb.as_ref())?;
     Ok(guest_dtb)
+}
+
+fn resolve_virtual_gic_from_guest(
+    vm_config: &mut AxVMConfig,
+    guest_dtb: Option<&GuestDtbImage>,
+) -> AxVmResult {
+    if vm_config.uses_passthrough_address_space() || vm_config.gic_profile().is_none() {
+        return Ok(());
+    }
+    let Some(guest_dtb) = guest_dtb else {
+        return Ok(());
+    };
+    let guest_fdt = fdt_edit::Fdt::from_bytes(guest_dtb.as_bytes()).map_err(|err| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse guest FDT while resolving the virtual GIC: {err:#?}")
+        )
+    })?;
+    if let Some(gic) = interrupt::host_gic_profile(&guest_fdt)? {
+        info!(
+            "VM[{}] virtual GIC follows guest firmware resources: {:?}",
+            vm_config.id(),
+            gic
+        );
+        vm_config.replace_machine_gic(gic)?;
+    }
+    Ok(())
 }
 
 fn resolve_machine_resources_from_host(
@@ -75,7 +103,9 @@ fn resolve_machine_resources_from_host(
         vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
     }
 
-    if let Some(gic) = interrupt::host_gic_profile(&host_fdt)? {
+    if vm_config.uses_passthrough_address_space()
+        && let Some(gic) = interrupt::host_gic_profile(&host_fdt)?
+    {
         info!(
             "VM[{}] virtual GIC follows host firmware resources: {:?}",
             vm_config.id(),
