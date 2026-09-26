@@ -1,0 +1,4 @@
+dir /dev 755 0 0
+nod /dev/console 600 0 0 c 5 1
+file /init scripts/perf/wakeup-pgo/evidence/current-dev-2026-09-24/frequency-audit/init 755 0 0
+file /probe scripts/perf/wakeup-pgo/evidence/current-dev-2026-09-24/frequency-audit/probe2 755 0 0

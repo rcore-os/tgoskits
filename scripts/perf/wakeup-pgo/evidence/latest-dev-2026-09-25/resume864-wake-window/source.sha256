@@ -1,0 +1,6 @@
+f5197e62397bdb2772e5e1f490e20c4845c8bdb0340efa5f93f3ff016ad24c90  components/ax-task/src/diagnostics.rs
+1f765b5b2ab893c9b72dd0c10545365fe3badbee247a027d5753e9688e30303b  components/ax-task/src/diagnostics/counters.rs
+b95e2426e6002486bbc17f0f7033a1a08a68d9676182a00c81f48e1c6c403973  os/arceos/modules/axruntime/src/diagnostics.rs
+b05500faf0a03911db0dd6a141d37cc9e07a5f52df0ed0b7f1a10a22dc99ac4a  os/StarryOS/kernel/src/pseudofs/debug.rs
+00cd30b6b17bc2ac10b6141507d491080c497e555c984b961c0156fa8b374353  os/StarryOS/kernel/src/task/futex.rs
+6a22895d6be984b6465205e759f2ea5c085f35dcd16301b478522ae7d25cfa78  os/StarryOS/kernel/src/task/futex/probe.rs

@@ -1,0 +1,24 @@
+{
+  "experiment": "resume874",
+  "state": "rejected",
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "training_profile_sha256": "b0422bf9f5bebd0de750d0e0bd8f6a81b843062bd70ead1cd31268a330ae4cbe",
+  "candidate_change": "Temporary no-op starry-kernel/board-profile-export Cargo feature marker; no exporter source code",
+  "candidate_config_sha256": "800a560a79d7f62875d06454adea56e1c6d3773b355465219e33042ba42dc6f1",
+  "candidate_wrapper_sha256": "28aa90811fc0f65b95b257f8bef551ef17564703719c527c131919428f62e089",
+  "candidate_build_log_sha256": "ce04371c424d71f78a5315963decc6798779654a9a91c03c86f53c470ec96aac",
+  "candidate_image_sha256": "0b7bd7f025abece4417436f3403511cea8639119312f8a8c27bb297cb4d2f40a",
+  "build_succeeded": true,
+  "instrumented_sections_present": false,
+  "profile_missing_function_warnings": 5273,
+  "profile_cfg_hash_mismatches": 359,
+  "critical_mismatches": [
+    "starry_kernel::syscall::sync::futex::sys_futex: up to 7738999 count discarded",
+    "starry_kernel::task::futex::ResolvedFutex::wait_nofault_until: up to 3132306 count discarded"
+  ],
+  "board_used": false,
+  "performance_measured": false,
+  "production_source_changed": false,
+  "effect": "A no-exporter feature-marker profile-use build succeeded but discarded hot futex profile counts due to LLVM CFG hash mismatch; 359 functions mismatched and 5273 had no profile data. It is not a valid four-crate PGO candidate.",
+  "decision": "Reject and do not board-test as an acceptance candidate. Keep the temporary feature marker only in the isolated worktree and archive build diagnostics. Find a counter-export route that does not alter the trained starry_kernel codegen/CFG, then retrain."
+}

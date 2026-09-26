@@ -1,0 +1,6 @@
+clear_count 386777
+clear_observe_total_ns 62518278
+clear_exit_total_ns 33819128
+pending_count 21205
+pending_observe_total_ns 3801019
+pending_unmask_total_ns 2445306

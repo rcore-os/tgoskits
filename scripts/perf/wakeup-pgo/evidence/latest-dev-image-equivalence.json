@@ -1,0 +1,107 @@
+{
+  "experiment": "wakeup-pgo-latest-dev-image-equivalence",
+  "issue": 2308,
+  "board": "OrangePi-5-Plus-1",
+  "purpose": "记录 profile 跨提交复用的机器码与数据等价性核对；等价只说明可沿用旧板测证据，不代表新镜像已在板上运行",
+  "profile": {
+    "archive": "scripts/perf/wakeup-pgo/profile-use.profdata.zst",
+    "sha256": "f08464508b9dc02911e9660ccfa0216795cc4b89e07f6723b147d8de6ea8d49f",
+    "size": 7943048,
+    "training_commit": "d051d572b76c9675b60b0c9442dd87c5fa1af8ba",
+    "training_environment": "QEMU TCG profgen 训练（2 vCPU），2026-09-21"
+  },
+  "commits": {
+    "checkout_baseline": "29f3fef885b273628e1f2d1d249e950e1b9184a5",
+    "profile_training_and_board_measured": "d051d572b76c9675b60b0c9442dd87c5fa1af8ba",
+    "delta": "29f3fef 相对 d051d572 只修改 docs/docs/architecture/driver/runtime.md 与 os/arceos/modules/axinput/src/lib.rs（#2296 删除废弃 evdev polling fallback 函数及其单元测试）",
+    "cargo_lock_sha256": "651266bc61ebd16f64ad5d9537ab07c37eea730d3f39d4d00678c08bd21ef830"
+  },
+  "pgo_image": {
+    "role": "B：release + profile-use",
+    "build_config": "resume649-profile-use-build.toml 的等价形态（target/log/max_cpu_num/features 相同，profile 与 wrapper 为输出目录内绝对路径）",
+    "board_measured_bin": {
+      "sha256": "7f55ccaf01c68e4b6bfedbdd762d7e749ca48be78554a43e098e738462bc419c",
+      "size": 16609280,
+      "source_commit": "d051d572b76c9675b60b0c9442dd87c5fa1af8ba",
+      "note": "resume650 四轮 A1-B1-B2-A2 的 B 组镜像"
+    },
+    "rebuilt_bin_old_dev": {
+      "sha256": "0ed74d0ef7a36d6898367d0adacfffd55ccfdc8f2df7703a53be25d6aa5dee0f",
+      "size": 16609280,
+      "source_commit": "d051d572b76c9675b60b0c9442dd87c5fa1af8ba",
+      "note": "d051d 基线上 build.py 验收重建"
+    },
+    "rebuilt_bin_latest_dev": {
+      "sha256": "dc139f068fcd5ae28936561d43cb8d27ea5c3f1be397b54a86dddc85df2420ac",
+      "size": 16609280,
+      "source_commit": "29f3fef885b273628e1f2d1d249e950e1b9184a5",
+      "note": "29f 基线上 build.py 诊断重建"
+    },
+    "text": {
+      "size": 6799040,
+      "sha256": "38c0dcdb4ce8a9f0c96aa5643c4932c009621f0779295e98406520341a279a59",
+      "equal_across": [
+        "board_measured_bin",
+        "rebuilt_bin_latest_dev"
+      ]
+    },
+    "bin_without_kallsyms": {
+      "image_base": "0xffffffff80000000",
+      "kallsyms_offset_hex": "0x774000",
+      "kallsyms_size": 8388608,
+      "sha256": "f81c220cafc659cf050873f37cf35135a1c3a2e938bc62a5115e88be99ba583c",
+      "equal_across": [
+        "board_measured_bin",
+        "rebuilt_bin_latest_dev"
+      ]
+    },
+    "warning_audit_latest_dev": {
+      "cfg_mismatch_count": 0,
+      "missing_warnings": 6087,
+      "missing_unique": 5933,
+      "profile_records": 27146,
+      "unexpected_warning_lines": [],
+      "root_profile_use_verified": true,
+      "target_invocations": 229
+    }
+  },
+  "default_image": {
+    "role": "A：release 无 PGO",
+    "build_config": "/home/zhourui/.codex/artifacts/issue2308-perf/resume649-default-build.toml（冻结配置，经 cargo xtask starry build -c 全量重建）",
+    "board_measured_bin": {
+      "sha256": "d96ee9cb999935e1347e673ceb447fa2820a80e91ebf7b9793de0bf7dc540469",
+      "size": 16842752,
+      "source_commit": "d051d572b76c9675b60b0c9442dd87c5fa1af8ba",
+      "note": "resume650 四轮 A1-B1-B2-A2 的 A 组镜像"
+    },
+    "rebuilt_bin_latest_dev": {
+      "sha256": "67e6cf4b6c36302ead8d286015459a30f25b18c6b8b6cc953bd73cad14c53a2f",
+      "size": 16842752,
+      "source_commit": "29f3fef885b273628e1f2d1d249e950e1b9184a5",
+      "build_log": "/tmp/issue2308-new-dev-default-build.log（主代理运行，未随仓库提交）"
+    },
+    "text": {
+      "size": 7076504,
+      "sha256": "b040022780db25e2861062887b4d212d2c441fbf70acf161931c18588dfacf39",
+      "equal_across": [
+        "board_measured_bin",
+        "rebuilt_bin_latest_dev"
+      ]
+    },
+    "bin_without_kallsyms": {
+      "image_base": "0xffffffff80000000",
+      "kallsyms_offset_hex": "0x7b3000",
+      "kallsyms_size": 8388608,
+      "sha256": "7c2262085a2a5cddc4ae1d8e96fb64487533e25bff50636d8a9bb849f5c03e97",
+      "equal_across": [
+        "board_measured_bin",
+        "rebuilt_bin_latest_dev"
+      ]
+    }
+  },
+  "scope": {
+    "board_results_valid_for": "d051d 板测镜像与 29f 重建镜像在机器码与 .kallsyms 之外的全部 bin 字节上相同，因此 resume650 四轮 full20 统计可作为该等价范围内的证据引用",
+    "not_claimed": "29f 重编镜像未在板上运行；resume650 原始日志仍然只属于 d051d 镜像；每次重建的 bin 整文件 sha256 都不同（.kallsyms 重新生成），不得把任一重建值当作板测值",
+    "recheck_trigger": "任何非排除源码漂移都必须重跑 build.py 的两道身份门禁（.text 与去掉 .kallsyms 的 bin 哈希）；若二者不再相等，必须重训 profile 并重新板测，不能沿用本文件"
+  }
+}

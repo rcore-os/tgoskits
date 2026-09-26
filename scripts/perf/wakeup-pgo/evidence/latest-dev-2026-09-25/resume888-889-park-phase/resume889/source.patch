@@ -1,0 +1,68 @@
+diff --git a/components/ax-task/src/diagnostics/counters.rs b/components/ax-task/src/diagnostics/counters.rs
+index 0fe3919624..48ac516733 100644
+--- a/components/ax-task/src/diagnostics/counters.rs
++++ b/components/ax-task/src/diagnostics/counters.rs
+@@ -11,7 +11,7 @@ use crate::{
+ const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
+ const IRQ_GUARD_SOURCE_COUNT: usize = 24;
+ const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 6;
+-const SWITCH_SCHEDULER_DETAIL_COUNT: usize = 30;
++const SWITCH_SCHEDULER_DETAIL_COUNT: usize = 32;
+ 
+ struct QperfSchedulerMetrics {
+     switch_phase_scheduler_count: AtomicU64,
+diff --git a/components/ax-task/src/sched/system/task_system/park_exit/park_run_queue.rs b/components/ax-task/src/sched/system/task_system/park_exit/park_run_queue.rs
+index 1f6c755c19..b82aed5a3b 100644
+--- a/components/ax-task/src/sched/system/task_system/park_exit/park_run_queue.rs
++++ b/components/ax-task/src/sched/system/task_system/park_exit/park_run_queue.rs
+@@ -78,6 +78,8 @@ impl TaskSystem {
+         }
+ 
+         cpu.defer_park_preemption(scheduler_request);
++        #[cfg(feature = "qperf-metrics")]
++        let park_settle_start_ns = task_runtime::monotonic_now().as_nanos();
+         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
+ 
+         if dispatch_commit.has_deferred_task_lock_work() {
+@@ -193,12 +195,28 @@ impl TaskSystem {
+         };
+ 
+         cpu.finish_park_preemption(false);
++        #[cfg(feature = "qperf-metrics")]
++        let park_block_end_ns = task_runtime::monotonic_now().as_nanos();
+         if transaction.current().is_some() {
+             task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
+         }
+         transaction.merge_scheduler_request(SchedulerRequestScope::All);
+ 
+         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
++        #[cfg(feature = "qperf-metrics")]
++        {
++            let park_pick_end_ns = task_runtime::monotonic_now().as_nanos();
++            crate::diagnostics::counters::qperf_record_switch_scheduler_detail(
++                30,
++                park_settle_start_ns,
++                park_block_end_ns,
++            );
++            crate::diagnostics::counters::qperf_record_switch_scheduler_detail(
++                31,
++                park_block_end_ns,
++                park_pick_end_ns,
++            );
++        }
+         let OwnerNext {
+             core: next_core,
+             policy: next_policy_ref,
+diff --git a/os/StarryOS/kernel/src/pseudofs/debug.rs b/os/StarryOS/kernel/src/pseudofs/debug.rs
+index 187b1984b0..71a86f1623 100644
+--- a/os/StarryOS/kernel/src/pseudofs/debug.rs
++++ b/os/StarryOS/kernel/src/pseudofs/debug.rs
+@@ -138,6 +138,8 @@ fn render_scheduler_metrics() -> alloc::string::String {
+         "switch_trace",
+         "switch_out_hook",
+         "switch_plan",
++        "park_block",
++        "park_pick",
+     ]
+     .into_iter()
+     .enumerate()

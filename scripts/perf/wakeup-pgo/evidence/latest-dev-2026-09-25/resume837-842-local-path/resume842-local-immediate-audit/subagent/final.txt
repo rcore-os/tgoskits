@@ -1,0 +1,180 @@
+## 结论
+
+**在 69a33650 精确 head 上，我没有找到任何具备「≥4us p50」可证上界的 transaction-level 候选。** 现有证据把 forced-FIFO 同核窗口（10792ns）与 Linux RT（6562.5ns）之间的 4229.5ns 缺口切成两半后，**两半都由必需步骤构成**，且旧探针数据（resume605/606/621/628/629）来自 a65f7182 / a70783ec + Plus-1，不能移植到当前 head/Plus-2，因此不能把任何探针均值当作可移除的原生成本。我给出的是一个**单边界的二分裂证伪诊断**（见文末），它能在一次板卡会话内判定缺口落在 wake 事务半区还是 switch/tail 半区，从而证伪或确认「存在可移除的事务级成本」。
+
+下面先给精确路径与不变量，再给候选的上界论证。
+
+---
+
+## 1. forced FIFO sameCPU 精确路径（receiver 81 / sender 80）
+
+### 1.1 wake 半区：`FUTEX_WAKE_PRIVATE` → `wake_thread_source`
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| `FUTEX_WAKE_PRIVATE` = `FUTEX_WAKE`(1) ∣ `FUTEX_PRIVATE_FLAG`(128) | [futex.rs:27](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/syscall/sync/futex.rs:27) | `const FUTEX_PRIVATE_FLAG: u32 = 128;` |
+| 解码命令 / 私有 key | futex.rs:213、futex.rs:228 | `FUTEX_WAKE => FutexCommand::Wake`；`flags & FUTEX_PRIVATE_FLAG != 0 ⇒ FutexKeyMode::Private` |
+| Wake 分支 | futex.rs:337-352 | `validate_futex_wake_key(...)`；`let futex = context.resolve(uaddr.addr(), op.key_mode);`（:344）；`let count = futex.wake(wake_count, bitset);`（:350） |
+| Private 解析不碰 VMA | [task/futex.rs:853](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/futex.rs:853) | 直接取 `private_futexes_ref().generation()`，无 aspace 锁 |
+| 桶锁 + 选 waiter + 建 wake_q | task/futex.rs:574-580、:547-570 | `self.inner.lock()` 内 `wake_locked`；离开作用域后才 `wake_batch(wakes)` |
+| wake_q 语义（Linux `wake_q`） | [wake_batch.rs:44-99](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/handle/wake_batch.rs:44) | `push` 先 `fence(SeqCst)`；`wake_all` 每个节点前再 `fence(SeqCst)` 后 `wake.wake()` |
+| 直接唤醒 | [handle/mod.rs:287](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/handle/mod.rs:287) | `self.core.wake(WakeIntent::Normal)`；:313-317 → `runtime::context::wake_thread_from_current_cpu` |
+| 事务入口 | [request.rs:41](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/request.rs:41) | `fn wake_thread_source` |
+| 前置 preempt guard + 任务锁 | request.rs:57-59 | `let _preempt = PreemptScope::enter();`（:57）；`let sched = core.sched().lock();`（:59） |
+| 发布 wake 位 | request.rs:61 → [state.rs:109](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/state.rs:109) | `core.publish_wake()`：单次 CAS 同时定 state 与 `WAKE_PENDING` |
+| on_rq 分支 | request.rs:119-130 | `if let Some(target) = sched.placement.queued_cpu()`：FIFO park 已 `block_current` 清 `on_rq`，**本路径不走** `wake_on_rq_locked` |
+| 目标 CPU 选择 | request.rs:131-140 → wake/placement.rs:6 | `select_wake_target`；同核 pin 下即 producer CPU |
+| 激活 | request.rs:145 → [activation.rs:72](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:72) | `activate_waking_thread_locked(core, sched, target, intent, context)` |
+
+### 1.2 immediate preemption 决策
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| 等待 `on_cpu` 清 | activation.rs:89 → [placement.rs:93](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/thread_sched/placement.rs:93) | `sched.placement.wait_until_not_on_cpu();`（对应 Linux `smp_cond_load_acquire(&p->on_cpu)`） |
+| 嵌套 rq 事务 | activation.rs:116 | `OwnerRqTxn::begin_nested(self, remote, &irq_owner)` |
+| 策略预处理 | activation.rs:118、:10-70 | FIFO 走 `maintains_fair_virtual_time = false`，无 Fair 记账 |
+| 入队 + 置 `on_rq` | activation.rs:157-174 | `QueuedThread::new` → `run_queue.enqueue_task(.., EnqueueReason::Wake, ..)`；`sched.placement.activate(target)` |
+| 等优先级判定 | activation.rs:184-203、[wake/placement.rs:100](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/placement.rs:100) | `equal_rt_wake_action(...)`；`run_queue.wakeup_preempt_with_intent(...)` |
+| 决断（80 vs 81） | [run_queue/preemption.rs:31-118](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/preemption.rs:31) | :59-64 只在**同优先级**返回 `KeepCurrent`；本路径不等优先级 → 落到 :98-110 → `WakeeSelected` |
+| 映射成 PREEMPT_RT 标志 | [run_queue.rs:186-199](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue.rs:186) | `WakeeSelected` + `Fifo` → `Some(RescheduleKind::Immediate)`，即 `TIF_NEED_RESCHED` |
+| 发布 sticky 请求 | activation.rs:232-238 | `remote.publish_rq_scheduler_reasons(reschedule, ..)`；`run_queue.commit();` |
+| 本地自投递（**不发 IPI**） | [remote/scheduler.rs:292-333](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:292)、:457-470 | producer==owner ⇒ `task_runtime::publish_local_scheduler_work()`（只写架构 preempt 字的 pending 位） |
+| 提交 rq、释放任务锁 | activation.rs:238-244 | `run_queue.commit(); drop(sched_guard);` |
+
+### 1.3 从 preempt guard 退出发起调度
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| guard 析构即调度点 | [lock/preempt.rs:79-93](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/lock/preempt.rs:79) | `Drop for PreemptScope` → `task_runtime::preempt_guard_exit(self.token)` |
+| provider 入口 | [runtime_impl.rs:208](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/runtime_impl.rs:208) | `crate::guard::exit_preempt(token);` |
+| 末层 pending 判定 | [guard/mod.rs:293-344](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:293) | `finish_preemption(token)` 得 `PreemptionExit::Pending`（[preempt.rs:367](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local/src/preempt.rs:367)）；`claim_preempt_exit_scheduler`（:311） |
+| 进 scheduler frame | guard/mod.rs:329 → [dispatch.rs:41-51](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/switch/dispatch.rs:41) | `schedule_current_cpu_from_preempt_exit(RuntimeSchedulerEntry::PreemptExit)` |
+
+> 重要：调度点发生在 **futex wake 系统调用内部**（`futex.wake()` 的 `wake_batch` 里），不是 syscall 返回时。`PreemptScope` 在 `wake_thread_source` 入口建立、函数末尾析构，而 `sched`（任务锁）声明在其后、先析构，因此 rq 提交后才进入调度器。
+
+### 1.4 scheduler frame → `execute_switch_plan`
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| 帧入口 / scope | dispatch.rs:64-97、:128-149 | `PreemptExit` → `SchedulerRequestScope::Immediate`；命中 `REQUEST_PREEMPT` 才调度 |
+| 决策 | [scheduling/preemption.rs:156-332](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/preemption.rs:156) | :184 `claim_scheduler_request(Immediate)`；:196-202 `settle_current` + `merge_scheduler_request` |
+| 非真抢占的早退分支 | preemption.rs:229-241、[scheduling.rs:13-41](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling.rs:13) | `lone_realtime_preemption_keeps_dispatch`：current 是**唯一最高优先级** RT 时才保留；本例 receiver 81 > sender 80 ⇒ 返回 false，进入真切换 |
+| 快路径 put_prev | preemption.rs:242-271、[switch/schedule_out.rs:12-38](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/schedule_out.rs:12) | `prepare_owner_rq_schedule_out` 返回 `LinkedRealtime` ⇒ **不取任务锁**，单 rq 事务完成 put_prev |
+| 选下一个 + 交接 | preemption.rs:257-271、[switch/handoff.rs:47-107](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/handoff.rs:47) | `commit_owner_switch_selection(...)` 提交并把 rq baton 装进 `SwitchHandoff`；`owner_switch_plan` 构造 `RuntimeSwitchPlan` |
+| 执行计划 | dispatch.rs:256-358 | `execute_switch_plan`：`trace_sched_switch`(:290) → `on_switch_out`(:312) → `switch_context(plan)`(:350) |
+| 上下文切换 | [runtime/context.rs:589-717](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/context.rs:589) | `prepare_runtime_address_space_switch`（同 MM 走既有复用路径）→ `prepare_context_switch`（[cpu-local/switch.rs:98](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local/src/switch.rs:98)）→ `stage_switch_tail`(:679) → `switch_baton.transfer()` → `prepared.commit()` → `previous_arch_context.switch_to(next)` |
+
+### 1.5 incoming tail → receiver `park.commit()` 返回
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| 切回后在**新栈**继续 | dispatch.rs:351-357 | `scheduler_frame.refresh_current_cpu();` → `complete_current_context_switch_tail_in_scheduler_frame` |
+| tail 主体 | [park_exit/completion.rs:11-141](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/park_exit/completion.rs:11) | :77 `finish_context_switch_tail()`；:91 `placement.finish_task(owner)`（清 `on_cpu`）；:88-95 rq baton 释放；:136 `SwitchInCompletion::for_core` |
+| runtime tail | [runtime/context.rs:287-315](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/context.rs:287) | `finish_switch_tail()` 收回 outgoing 的 CPU binding |
+| incoming 回调 | dispatch.rs:403 → [outcome.rs:80-103](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/outcome.rs:80) | `completion.finish()` → `on_switch_in` |
+| 回到 receiver 的 park 事务 | [thread/current/park.rs:402-428](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/current/park.rs:402) | :424 `execute_switch_plan(&mut scheduler_frame, &mut decision);` → `ParkCommit` 分支返回 `CurrentParkDisposition::BlockedAndResumed` |
+| `commit()` 返回 | park.rs:126-154 | :148 `cancel_current_park_deadline(...)`（无 deadline 时立即 `Ok(false)`）→ 返回 `CurrentParkResume` |
+| 用户态读时钟 | bench `handoff.c` | `futex_wait_once` 返回 → 校验 `gate == sequence` → `resumed_ns = bench_monotonic_ns()` |
+
+---
+
+## 2. 等优先级 FIFO 对照（两线程都 80）
+
+差异只在**是否产生抢占请求**，其余共用：
+
+- 唤醒侧：`equal_rt_wake_action` 在同优先级 + 两边都被 pin（`!is_migration_capable()`）时返回 `PreserveFifoOrder`（wake/placement.rs:100-127），于是 `wakeup_preempt_with_intent` 在 run_queue/preemption.rs:59-64 直接 `KeepCurrent`；`reschedule_kind` → `None`（run_queue.rs:186-199），**不置 `REQUEST_PREEMPT`，不发本地 pending**。
+- 因此 sender 的 `PreemptScope` 析构**不会**进调度器；sender 从 futex wake 返回后继续执行 `wait_for_sequence(&state->done, ...)`，读 `done` 失败后进入**自己的** `FUTEX_WAIT`（`handoff.c` `run_sender`），经 `sys_futex` WAIT 分支（futex.rs:299-336）→ `wait_nofault_until` → `begin_current_park` → `commit_current_park_with_system`（park.rs:402-428）→ `commit_park_in_scheduler_frame`（[park_exit/park_commit.rs:26](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/park_exit/park_commit.rs:26)）。
+- park commit 里 sender 走 `publish_blocked_from_parking()`（park_commit.rs:134-151）→ `placement.block_current(cpu.owner())`（:211）→ `pick_owner_next_in_rq`（:232）→ `ParkCommit::Blocked(decision)`（:282），switch reason = `SwitchReason::Blocked`。
+- **所以等优先级窗口内多包含 sender 的 park 事务（读 `done` + futex WAIT 入口 + park 事务 + 它自己的 switch-out），而 forced 窗口内是 sender 的 preempt-exit 入口。** 两者 receiver 侧（incoming tail + park 完成 + futex 返回）相同。这正是「两边都变好、但相对差距在 forced 下变大」（71.96% → 60.81%）的来源：Linux 的 park/阻塞路径比 Starry 相对更贵，而其 immediate-preemption 路径相对更便宜。
+
+---
+
+## 3. 必须持有的不变量
+
+**状态所有权**
+
+- 一个 handoff 只有一个 rq owner：`OwnerRqTxn` + `SwitchHandoff` 持有 rq baton（handoff.rs:8-45）；`switch_baton.transfer()` 后由 incoming tail 消费（context.rs:687-691、completion.rs:88-95）。任一时刻不得同时存在两个 handoff（handoff.rs:15-17 `fatal_invariant(0x5343_1117)`）。
+- `task_cpu`/`on_rq`/`on_cpu` 三者正交（[placement.rs:1-50](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/thread_sched/placement.rs:1)）：`Queued = TASK_ON_RQ_QUEUED`，`Migrating` 是唯一 rq→rq 载具状态，**switch-out 与 exit 不在 `on_rq` 里**，只属 owner 的 `SwitchHandoff`。
+- 任务锁（`core.sched()`）与 rq 锁的顺序：wake 持任务锁时**不得**把 rq baton 跨到 switch tail；只有 migration/Deadline 定时器所有权越界时才允许取任务锁（schedule_out.rs:12-38）。
+
+**IRQ / preempt guard**
+
+- 末层 preempt guard 退出是唯一「不暴露可抢占窗口」的入口（dispatch.rs:33-51）；`PreemptExit` 要求硬件 IRQ 已关、preempt depth 仍保留（[preempt.rs:311-318](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local/src/preempt.rs:311)）。
+- 已持有 CPU 所有权（scheduler frame / hardirq）时 `enter_lock_preempt` 必须返回 `None`，避免反复改写被挂起任务的 preempt 字（[guard/mod.rs:380-395](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:380)）。
+- 本地唤醒走 `publish_local_scheduler_work`（写 pending 位）而不是自 IPI（remote/scheduler.rs:457-470）；`PollingOwner` 空闲协议下必须提前返回（remote/scheduler.rs:322-326）。
+- `REQUEST_PREEMPT` 与 `REQUEST_PREEMPT_LAZY` 不得叠加残留（remote/scheduler.rs:129-156），tick 提升 lazy（:508+）。
+
+**on_cpu / on_rq**
+
+- waker 必须持任务锁自旋等 `on_cpu` 清零（placement.rs:93-108），并由 `finish_task()` 用 Release 清 `on_cpu`（placement.rs:344-355）；这是「runnable 发布不得越过前一栈最后的调度发布」的同步点。
+- `set_next_task` 先 `publish_on_cpu`（placement.rs:320-322，debug 断言要求 `on_rq == Queued` 且 `task_cpu == cpu`）；`block_current` 清 `on_rq` 但**保留** `on_cpu`（placement.rs:263-280），`finish_task` 再清 `on_cpu`。
+- `activate` 要求 `on_cpu().is_none()`（placement.rs:144-158）；`Migrating` 状态下只允许目标 CPU 激活。
+
+**wake generation / lost-wake**
+
+- 一次 park 一个 generation：`ThreadWaitState::begin` 用 CAS `WAIT_IDLE→WAIT_PREPARING` 并把 generation 自增（task/futex.rs:189-205）；wake 侧只用同 generation 的 `mark_woken`（task/futex.rs:232-243）。
+- park 与 wake 的仲裁在同一个 16-bit 字里完成：`publish_wake`（state.rs:109-131）、`take_park_notification`（state.rs:146-153）、`publish_blocked_from_parking`（state.rs:192-221）——`PARK_NOTIFIED` 命中则 CAS 回 `Running`，否则一次性发布 `Blocked`。
+- `wake_q` 的丢唤醒屏障不可去掉：`ThreadWakeBatch::push` 的 `fence(SeqCst)` 与 `wake_all` 每节点前的 `fence(SeqCst)`（wake_batch.rs:48、:95）对应 Linux `wake_q_add` / `wake_up_q`。
+
+---
+
+## 4. 候选：没有达到 ≥4us 上界的事务级候选
+
+**缺口规模**：forced FIFO Starry 10792 − Linux 6562.5 = **4229.5ns**；等优先级 11958 − 8604.5 = 3353.5ns。要把 90% 门槛从 11/20 推进，需要在这条公共事务上真实减少约 4us。
+
+我逐个核对了「事务级可移除」的候选，全部不成立或上界远低于 4us：
+
+| 候选 | 位置 | 为何不够 |
+| --- | --- | --- |
+| C1 把 wake 激活事务与 preempt/switch 事务合并成一次 rq 事务 | activation.rs:116-238 + preemption.rs:194-271 | resume816/resume820 已证：两者是**独立 owner-rq 事务**，且 preempt 事务必须重新采样 rq 时钟并重新 settle current；强制合并会把 rq baton 跨过任务锁/PI 边界，违反 placement.rs 与 schedule_out.rs 的锁序契约。上界未建立 |
+| C2 删掉 preempt 事务里的 `settle_current` / rq 时钟重采样 | preemption.rs:196-202、accounting.rs:166-180 | 这是 Linux `update_curr_rt` 等价的强制运行时间记账；resume806 已证 wake→schedule 间隔含**真实 runtime**。成本是 1–2 次架构计数器读 |
+| C3 删 `WakeBatch` 的 SeqCst fence / `publish_wake` CAS | wake_batch.rs:48,95；state.rs:109 | 这是丢唤醒屏障（Linux `wake_q_add`/`wake_up_process` 等价）；用户明确禁止，且量级是数十 ns |
+| C4 直达交接 / 跳过完整上下文切换 | dispatch.rs:256-358、context.rs:589-717 | 明确禁止；且 resume628 测得裸架构转移仅 264ns |
+| C5 精简 `SwitchInCompletion::finish` / `on_switch_in` | outcome.rs:80-103；completion.rs:136-141 | resume629 测得该叶节点含探针约 1.29us，是 required 回调（对应 `finish_task_switch` + preempt notifier） |
+| C6 futex wake 系统调用内的解析/桶扫描/`runtime_task_system()` FFI | futex.rs:337-352；task/futex.rs:853-901；context.rs:17-25 | 单 waiter O(1)、Private key 免 VMA 走查（resume838 已确认）；量级 sub-us |
+| C7 `trace_sched_switch` | dispatch.rs:290-296；runtime_impl.rs:593-606 | 门控关闭时只有两次原子 load 后 `return None`（`SCHED_SWITCH_TRACE_ENABLED`，runtime_impl.rs:8、:44） |
+
+**旧负结果边界（不得重做）**：resume605/606（switch 阶段探针）、resume621/628/629（tail）、resume794（无重复完整调度，IRQ-return continuation 仅 0.0035–0.0128/样本）、resume806（无失效协议的 Fair 选择复用不可能）、resume800/807/816/820/832/838（同核 futex 无单个 <7.2us/5.186us 的可删操作）。
+
+**证据缺口必须显式承认**：resume628 的分段数值（execute-entry 1.84us、runtime preparation 1.98us、裸转移 0.264us、incoming tail 0.91us、ax-task tail 2.00us、futex 清理 2.02us）来自 head **a70783ec / a65f7182 + Plus-1**，而当前是 **69a33650 + Plus-2**，且全部**含探针开销**（时钟对底线 291ns）。按账本规则，这些数只能用于选取下一段边界，**不能**作为可移除的原生成本。
+
+---
+
+## 5. 最窄的可证伪诊断
+
+**单边界二分裂（D-min）**：在已有的 forced-FIFO 诊断变体（receiver 81 / sender 80，SHA `fabee7b6…`）上，只在 Starry 内核加 **一条** 边界，把被测窗口一切为二：
+
+- **B** = `schedule_current_cpu_with_entry` 的第一条指令（dispatch.rs:64），即「wake 事务 / preempt-exit 边界」。
+- 落到该点的关联沿用 resume629 的 receiver-correlated 关联协议（按 target-thread id 匹配，报告完整链计数与覆盖率），窗口两端仍是 benchmark 已有的 sender `wake_timestamp_ns` 与 receiver `resumed_ns`，**不改冻结 benchmark**。
+
+**预登记判定规则**（这一步是关键，使结果是「证伪」而不是「描述」）：
+
+- W1 = `[sender wake_ns, B)`：futex wake 系统调用体 + 桶锁 + wake_q + `wake_thread_source` 全事务 + 请求发布。
+- W2 = `[B, receiver resumed_ns)`：preempt-exit 入口 + 调度决策 + put_prev/pick + 交接 + `execute_switch_plan` + 裸切换 + incoming tail + park 完成 + futex 返回。
+- 若 `max(W1, W2) < 2us`，则证伪「本条事务里存在 ≥4us 的可移除成本」——缺口必然是被摊到整个窗口的逐指令常数因子，而非某个可删除的事务步骤，方向应当关闭。
+- 若某个半区 ≥4us，则候选被锁定到该半区；只有在此时才允许再加**一条**边界（`switch_context` 调用前，dispatch.rs:350）把该半区再二分，仍然只用两条 probe。
+
+**配套（否则不成立）**：与 **rebuilt equal-priority control**（`6f582832…`）组成同源码配对，让探针自身开销相互抵消；同一板卡（Plus-2）、cpufreq off、交错次序、每行 20000/20000 样本且 `not_parked == 0 && missed_deadlines == 0`、直方图计数一致；3 轮有效。探针数值只用于二分裂判定，**不得**作为原生成本或 full20 验收。
+
+**为什么这是最窄的**：forced 变体下 sender 在 `PreemptScope` 析构内就被抢占（`finish_preemption` 返回 `Pending`，preempt.rs:367），**sender 无法在用户态打第二条时间戳**；因此窗口只能在内核里切。而一次 `fence`/一次时钟对（291ns 底线）就足以把 4.2us 的归属从「一半」推进到「另一半」，这是能产生结论的最小信息量。
+
+---
+
+## 6. 风险与下一步
+
+**风险**
+
+1. 该诊断是**用户态优先级不同**的工作负载，不能替代冻结 Linux RT full20（resume840 已明示），结论只用于定位、不用于验收。
+2. 探针会抬高窗口（每边界约一次单调时钟读 + 一次 record），必须靠配对 control 抵消；任何把探针均值当原生成本的写法都会被账本驳回。
+3. 「sender 在 `PreemptScope` 析构处被抢占」是我**从源码推导**的（lock/preempt.rs:79-93 → runtime_impl.rs:208 → guard/mod.rs:293-344 → dispatch.rs:41-51，配合 `publish_local_scheduler_work` 的 pending 位），**未做运行时确认**；若实际在 syscall 返回的 `prepare_user_return` 处调度，B 边界会前移。这是本结论唯一的运行时不确定项，D-min 本身即可顺带验证（W1 应包含整个 wake 事务体）。
+4. 频率未在八轮内同步测量（cpufreq-off G 与冻结 Linux RT 的 ~816MHz 是独立探针结论），同 board 同窗口未做频率对照。
+
+**下一步（最小动作）**
+
+1. 在 `experiment-ledger` 先 `begin` 登录 resume842：记录旧编号（605/606/621/628/629 阶段探针、794、806、800/807/816/820/832/838、840/841 判别器）与新差异（forced 变体 + 单边界二分裂 + 预登记判定规则）。
+2. 只在 `components/ax-task/src/runtime/switch/dispatch.rs`（B 边界）与 `components/ax-task/src/diagnostics/` 落探针；不改调度语义、不动 mandatory accounting / lost-wake 屏障 / 完整上下文切换 / PI / IRQ safe point。
+3. 用 rebuilt equal-priority control + forced 变体两枚用户二进制，在 Plus-2 交错跑 3 轮 focused，`cargo fmt` 与 `cargo xtask clippy --package ax-task` 由主代理执行。
+4. 按预登记规则输出「W1/W2 哪一半 ≥4us」或「两半都 <2us ⇒ 证伪并关闭方向」，再 `finish` 记录效果与 keep/revert。
+
+**未覆盖范围**：未做任何构建、板卡、运行、fmt、clippy 或测试；未验证运行时 switch reason 与预抢占发生点；未重新核对 Plus-2 与 head 69a33650 下旧探针的可移植性（已按 head 不匹配判定为不可移植）。
+

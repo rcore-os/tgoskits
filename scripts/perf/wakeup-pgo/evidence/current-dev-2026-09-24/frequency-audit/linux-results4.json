@@ -1,0 +1,66 @@
+{
+  "board_id": "OrangePi-5-Plus-1",
+  "session_id": "8c21c90f-8bf2-4bb2-8ee1-72129512cd18",
+  "linux_sha256": "aac6d3c5fa0c4fdf65f987af635f4cd55a06852b23046a4242a184acc2fd563b",
+  "dtb_sha256": "316dd15b329756be3887dea22f89fc8d1f5b055f8769761f4144b6b1caaea994",
+  "probe_sha256": "ef41ecec0b569d46240941bb81004482db6c1cbe7684f2dbc19c3d59021370c0",
+  "initramfs_sha256": "3f53e9ba6b39955e849b9ae64d04d5ae0fa4fb26d93298564db9deeb6c71d114",
+  "bootargs": "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr",
+  "boot_sha256": "ad95c4fea4ab595d833ebd2e791583fc2a3ee5bcd3174a19331575ee278978aa",
+  "readings": [
+    {
+      "cpu": 0,
+      "rep": 0,
+      "cycles": 408111306,
+      "enabled_ns": 500149707,
+      "running_ns": 500149707,
+      "wall_ns": 500148542,
+      "mhz": 815.978
+    },
+    {
+      "cpu": 0,
+      "rep": 1,
+      "cycles": 408059688,
+      "enabled_ns": 1000232913,
+      "running_ns": 1000232913,
+      "wall_ns": 500081167,
+      "mhz": 815.984
+    },
+    {
+      "cpu": 0,
+      "rep": 2,
+      "cycles": 407989496,
+      "enabled_ns": 1500228037,
+      "running_ns": 1500228037,
+      "wall_ns": 500040333,
+      "mhz": 815.987
+    },
+    {
+      "cpu": 1,
+      "rep": 0,
+      "cycles": 408016622,
+      "enabled_ns": 500026914,
+      "running_ns": 500026914,
+      "wall_ns": 500025459,
+      "mhz": 815.989
+    },
+    {
+      "cpu": 1,
+      "rep": 1,
+      "cycles": 408026593,
+      "enabled_ns": 1000066662,
+      "running_ns": 1000066662,
+      "wall_ns": 500038001,
+      "mhz": 815.988
+    },
+    {
+      "cpu": 1,
+      "rep": 2,
+      "cycles": 408004416,
+      "enabled_ns": 1500078701,
+      "running_ns": 1500078701,
+      "wall_ns": 500010000,
+      "mhz": 815.989
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "id": "resume883",
+  "created_at": "2026-09-25T15:24:38.214862+00:00",
+  "state": "rejected",
+  "change": "Exact b292 five-crate native PGO: add ax_sync to the four-crate root-exporter training and profile-use scopes, with a pre-MMU counter static gate and same 816MHz training workload",
+  "hypothesis": "Profiling ax_sync in addition to ax_sched/ax_task/ax_runtime/starry_kernel may improve the futex wake/park path without instrumenting broad early-boot dependencies",
+  "files": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/wrapper.py",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/pgouse-wrapper.py",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/profgen-export.toml",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/pgouse.toml"
+  ],
+  "prior_reviewed": [
+    "resume873",
+    "resume876",
+    "resume879",
+    "resume880",
+    "resume881",
+    "resume882"
+  ],
+  "difference": "Single additional hot-path crate relative to boot-valid four-crate profile, same source and workload; broad 213-crate scope has been rejected, and the exact-ELF early-counter gate precedes board use",
+  "effect": "Current b292 root-only exporter five-crate ax_sync+ax_task+ax_sched+ax_runtime+starry_kernel PGO trained on Plus-1 with 18170 IR records and 790272 counter bytes; uninstrumented profile-use ELF had no __llvm_prf sections and only the known ax_runtime::run_idle partial-profile warning. Two independent valid full20 boots each had 20/20 rows, 380000/380000 samples and zero not_parked. Two-boot p50 median reached Linux RT 90% on 11/20 rows, one more than four-crate resume876, but worst OTHER thread_futex_same_cpu stayed at 14583ns, RT/candidate 57.999%. Same-source ordinary tail gate and third candidate boot not proven.",
+  "decision": "Reject as final candidate: far below 20/20 90%, and no complete p50/p99/p99.9 regression proof. Preserve training profile, images by SHA, raw two-boot logs, offline comparison and exact wrapper scope; do not promote to production build or request PR merge.",
+  "history": [
+    {
+      "at": "2026-09-25T15:38:56.191694+00:00",
+      "previous_state": "planned",
+      "previous_effect": "尚未执行；无性能结论",
+      "previous_decision": "待验证"
+    }
+  ],
+  "evidence": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/export-profile-layout.json",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/profile.profdata",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/build-pgouse.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/full20/F1-full.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/full20/F2-full.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume883-ax-sync-pgo/full20-analysis.json"
+  ],
+  "updated_at": "2026-09-25T15:38:56.191714+00:00"
+}

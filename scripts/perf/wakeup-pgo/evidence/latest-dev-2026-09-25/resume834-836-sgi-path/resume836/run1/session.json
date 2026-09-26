@@ -1,0 +1,8 @@
+{
+  "session_id": "554ba564-8b83-4650-b92d-f4617d9fdec9",
+  "board_id": "OrangePi-5-Plus-2",
+  "lease_expires_at": "2026-09-25T03:53:25.297457179Z",
+  "serial_available": true,
+  "boot_mode": "uboot",
+  "ws_url": "/api/v1/sessions/554ba564-8b83-4650-b92d-f4617d9fdec9/serial/ws"
+}

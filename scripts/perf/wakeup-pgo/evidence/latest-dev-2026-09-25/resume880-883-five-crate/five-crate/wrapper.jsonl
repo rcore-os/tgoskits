@@ -1,0 +1,6 @@
+{"crate": "ax_sync", "target": "/tmp/tgoskits-issue2308-resume876-root/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "instrumented": true}
+{"crate": "ax_sched", "target": "/tmp/tgoskits-issue2308-resume876-root/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "instrumented": true}
+{"crate": "ax_task", "target": "/tmp/tgoskits-issue2308-resume876-root/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "instrumented": true}
+{"crate": "ax_runtime", "target": "/tmp/tgoskits-issue2308-resume876-root/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "instrumented": true}
+{"crate": "starry_kernel", "target": "/tmp/tgoskits-issue2308-resume876-root/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "instrumented": true}
+{"crate": "starryos", "target": "/tmp/tgoskits-issue2308-resume876-root/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "instrumented": false}

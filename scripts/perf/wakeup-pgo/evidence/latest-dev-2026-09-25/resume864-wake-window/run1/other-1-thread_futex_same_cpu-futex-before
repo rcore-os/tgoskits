@@ -1,0 +1,12 @@
+futex_window_gate_selected_one_enqueued 0
+futex_window_gate_any_switch 0
+futex_window_gate_preempted_switch 0
+futex_window_gate_multiple_switches 0
+futex_window_done_selected_one_enqueued 0
+futex_window_done_any_switch 0
+futex_window_done_preempted_switch 0
+futex_window_done_multiple_switches 0
+futex_window_other_selected_one_enqueued 0
+futex_window_other_any_switch 0
+futex_window_other_preempted_switch 0
+futex_window_other_multiple_switches 0

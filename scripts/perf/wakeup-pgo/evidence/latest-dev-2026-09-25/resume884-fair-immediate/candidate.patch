@@ -1,0 +1,154 @@
+diff --git a/components/ax-task/src/sched/system/cpu/remote/run_queue.rs b/components/ax-task/src/sched/system/cpu/remote/run_queue.rs
+index 8faeee4b12..ca9e4264a3 100644
+--- a/components/ax-task/src/sched/system/cpu/remote/run_queue.rs
++++ b/components/ax-task/src/sched/system/cpu/remote/run_queue.rs
+@@ -193,7 +193,7 @@ impl WakePreemptionDecision {
+             // `TIF_NEED_RESCHED`, even when the waking class is Fair.
+             Self::DedicatedIdlePreempted => Some(RescheduleKind::Immediate),
+             Self::WakeeSelected => Some(match wakee_policy {
+-                SchedulePolicy::Fair { .. } => RescheduleKind::Lazy,
++                SchedulePolicy::Fair { .. } => RescheduleKind::Immediate,
+                 _ => RescheduleKind::Immediate,
+             }),
+         }
+diff --git a/os/StarryOS/kernel/src/pseudofs/debug.rs b/os/StarryOS/kernel/src/pseudofs/debug.rs
+index 187b1984b0..c8ae135544 100644
+--- a/os/StarryOS/kernel/src/pseudofs/debug.rs
++++ b/os/StarryOS/kernel/src/pseudofs/debug.rs
+@@ -1,10 +1,19 @@
+ use alloc::sync::Arc;
+ 
+-#[cfg(any(feature = "qperf-metrics", feature = "uaccess-lock-regression"))]
+ use super::SimpleFile;
+ use super::{DirMaker, DirMapping, SimpleDir, SimpleFs};
++use ax_lazyinit::{LazyInit, OnceLock};
+ 
+ const DEBUGFS_MAGIC: u32 = 0x64626720;
++static PROFILE_COUNTER_SNAPSHOT: LazyInit<fn() -> Option<alloc::vec::Vec<u8>>> = LazyInit::new();
++
++/// Register a profile counter snapshot provider before debugfs is mounted.
++///
++/// The provider must be registered exactly once and remain callable for the
++/// image lifetime. Ordinary images leave it unregistered and expose no file.
++pub fn register_profile_counter_snapshot(snapshot: fn() -> Option<alloc::vec::Vec<u8>>) {
++    PROFILE_COUNTER_SNAPSHOT.init_once(snapshot);
++}
+ 
+ /// Create a new debugfs filesystem.
+ pub fn new_debugfs() -> axfs_ng_vfs::Filesystem {
+@@ -48,9 +57,35 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
+         "scheduler_metrics",
+         SimpleFile::new_regular(fs.clone(), || Ok(render_scheduler_metrics())),
+     );
++    if let Some(snapshot) = PROFILE_COUNTER_SNAPSHOT.get().copied() {
++        root.add(
++            "profile_counters",
++            SimpleFile::new_regular(
++                fs.clone(),
++                ProfileCounterFile {
++                    snapshot,
++                    cached: OnceLock::new(),
++                },
++            ),
++        );
++    }
+     SimpleDir::new_maker(fs, Arc::new(root))
+ }
+ 
++struct ProfileCounterFile {
++    snapshot: fn() -> Option<alloc::vec::Vec<u8>>,
++    cached: OnceLock<alloc::vec::Vec<u8>>,
++}
++
++impl super::file::SimpleFileOps for ProfileCounterFile {
++    fn read_all(&self) -> axfs_ng_vfs::VfsResult<alloc::borrow::Cow<'_, [u8]>> {
++        let snapshot = self
++            .cached
++            .get_or_try_init(|| (self.snapshot)().ok_or(axfs_ng_vfs::VfsError::InvalidInput))?;
++        Ok(alloc::borrow::Cow::Borrowed(snapshot))
++    }
++}
++
+ #[cfg(feature = "qperf-metrics")]
+ fn render_scheduler_metrics() -> alloc::string::String {
+     use core::fmt::Write;
+diff --git a/os/StarryOS/kernel/src/root.rs b/os/StarryOS/kernel/src/root.rs
+index 94597f68be..38b5bfda37 100644
+--- a/os/StarryOS/kernel/src/root.rs
++++ b/os/StarryOS/kernel/src/root.rs
+@@ -57,6 +57,7 @@ mod block_runtime_axtest;
+ mod thread_lifecycle_axtest;
+ 
+ pub use error::{DmaOperation, StarryError, StarryResult};
++pub use pseudofs::debug::register_profile_counter_snapshot;
+ // The staged MM ownership and transaction types are intentionally reachable
+ // from the kernel boundary so migration call sites do not need a second
+ // compatibility facade.
+diff --git a/os/StarryOS/starryos/Cargo.toml b/os/StarryOS/starryos/Cargo.toml
+index c758d9f91e..53339af236 100644
+--- a/os/StarryOS/starryos/Cargo.toml
++++ b/os/StarryOS/starryos/Cargo.toml
+@@ -22,6 +22,8 @@ legacy-board-init = []
+ # individual driver feature list at runtime.
+ qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
+ qperf-metrics = ["starry-kernel/qperf-metrics"]
++# Training-only root-binary exporter; the four profiled crates keep identical features.
++profile-counter-export = []
+ lockdep = ["ax-std/lockdep"]
+ 
+ k230 = [
+diff --git a/os/StarryOS/starryos/src/main.rs b/os/StarryOS/starryos/src/main.rs
+index dea1178993..203d51aeae 100644
+--- a/os/StarryOS/starryos/src/main.rs
++++ b/os/StarryOS/starryos/src/main.rs
+@@ -25,6 +25,9 @@ const ENVIRON: &[&str] = &[];
+ 
+ #[unsafe(no_mangle)]
+ extern "C" fn main() {
++    #[cfg(feature = "profile-counter-export")]
++    starry_kernel::register_profile_counter_snapshot(snapshot_profile_counters);
++
+     let args = init_command_from_bootargs();
+     let envs = ENVIRON
+         .iter()
+@@ -35,6 +38,40 @@ extern "C" fn main() {
+     starry_kernel::entry::init(&args, &envs);
+ }
+ 
++#[cfg(feature = "profile-counter-export")]
++fn snapshot_profile_counters() -> Option<Vec<u8>> {
++    use core::sync::atomic::{AtomicU64, Ordering};
++
++    unsafe extern "C" {
++        static mut __start___llvm_prf_cnts: u64;
++        static mut __stop___llvm_prf_cnts: u64;
++    }
++
++    let start = core::ptr::addr_of_mut!(__start___llvm_prf_cnts) as usize;
++    let end = core::ptr::addr_of_mut!(__stop___llvm_prf_cnts) as usize;
++    let bytes = end.checked_sub(start)?;
++    if bytes == 0
++        || bytes > 16 * 1024 * 1024
++        || !bytes.is_multiple_of(8)
++        || !start.is_multiple_of(8)
++    {
++        return None;
++    }
++
++    let mut snapshot = Vec::new();
++    snapshot.try_reserve_exact(bytes).ok()?;
++    // This section remains mapped for the image lifetime, and LLVM updates
++    // every counter atomically in the profile-generate build.
++    let counters = start as *const AtomicU64;
++    for index in 0..bytes / 8 {
++        // SAFETY: the linker bounds and alignment checks cover this counter;
++        // the training build requests atomic LLVM updates on every CPU.
++        let count = unsafe { (*counters.add(index)).load(Ordering::Relaxed) };
++        snapshot.extend_from_slice(&count.to_le_bytes());
++    }
++    Some(snapshot)
++}
++
+ fn init_command_from_bootargs() -> Vec<String> {
+     let Some(bootargs) = ax_hal::boot::bootargs() else {
+         return default_command();

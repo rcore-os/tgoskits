@@ -1,0 +1,6 @@
+RESUME851_POLICY mode=fifo sender=1 receiver=1 cpu=0
+RESUME851_RESULT {"mode":"fifo","case":"empty","samples":20000,"p50_ns":2042,"p99_ns":2334,"p999_ns":2334}
+RESUME851_RESULT {"mode":"fifo","case":"bitset_miss","samples":20000,"p50_ns":2042,"p99_ns":2334,"p999_ns":2334}
+RESUME851_RESULT {"mode":"fifo","case":"bitset_hit","samples":20000,"p50_ns":6709,"p99_ns":7292,"p999_ns":8458}
+RESUME851_DONE 0
+DIAGNOSTIC_EXIT 0

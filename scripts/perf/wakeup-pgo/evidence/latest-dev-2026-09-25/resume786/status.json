@@ -1,0 +1,16 @@
+{
+  "experiment": "resume786",
+  "source_commit": "69a3365076",
+  "temporary_exporter_patch_sha256": "d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78",
+  "features": "ten cpufreq-off OrangePi features plus starry-kernel/board-profile-export",
+  "linker_environment": "AXTEST_COVERAGE=1, link-only in ordinary starry build",
+  "profile_use": false,
+  "build_config_sha256": "92d60494164ed418e2a92a445d4a946393a7e14ee8ade07f3dc39abf51c1cf1f",
+  "elf_sha256": "ad852a7f30db9b37cf144e7c9669117a45f64fef38185b8ecf21775ed4d43af2",
+  "bin_sha256": "750589429f5afe81b16775dde50050fedb936614b78d7bbde999a51856618473",
+  "build_result": "success",
+  "instrumentation": "No nonempty __llvm_prf_* sections; linker produces an empty __llvm_prf_names section",
+  "hot_futex_identity": "Ordinary ELF has starry_kernel CslXXgci8H4Mj sys_futex symbol",
+  "full20_executed": false,
+  "native_performance_conclusion": "none; awaiting source-matched candidate full20"
+}

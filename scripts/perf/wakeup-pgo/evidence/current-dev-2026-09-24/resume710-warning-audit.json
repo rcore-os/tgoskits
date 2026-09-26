@@ -1,0 +1,17 @@
+{
+  "head": "4322e0c505bad73f10e7ab9e79f520bae0fcab0e",
+  "profile_sha256": "b916a666710826285845fbe017e70f9a665d423ee79df6ee4896368d2d837ec6",
+  "profile_records": 29901,
+  "missing_warnings": 4500,
+  "missing_unique": 4422,
+  "missing_but_exact_key_present": [],
+  "name_present_different_hash": [],
+  "cfg_mismatch_lines": [],
+  "cfg_mismatch_count": 0,
+  "other_warning_lines": [
+    "warning: ax_runtime.c3d120daf5f68e39-cgu.14: Profile in _RNvNtNtCsgOknVfzdeXd_10ax_runtime6thread9bootstrap8run_idle partially ignored, possibly due to the lack of a return path.",
+    "warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3"
+  ],
+  "unexpected_warning_lines": [],
+  "build_terminal_checked": true
+}

@@ -1,0 +1,19 @@
+{
+  "experiment": "resume841",
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "fa2cc4fd-4aee-4932-893c-cb40a6c558a2",
+  "linux_image_sha256": "aac6d3c5fa0c4fdf65f987af635f4cd55a06852b23046a4242a184acc2fd563b",
+  "dtb_sha256": "316dd15b329756be3887dea22f89fc8d1f5b055f8769761f4144b6b1caaea994",
+  "initramfs_sha256": "cfd660201bb19be461395680510845358359df510adaf34775e5d39c5b29bbd4",
+  "init_source_sha256": "a34a4ee9bb9abcd495cc3fed450d7b90df1ef8d55046cf2f9945f2b8211e3cde",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "control_sha256": "6f582832f3e10d3d447d8f06afc706c0684c6f80a0b9346369b4dc59d922e713",
+  "forced_sha256": "fabee7b6b3e312b07248d9d797cd3e3b40db406bac9f218d3516c66a1c3abe8c",
+  "bootargs": "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr",
+  "diagnostic_only": true,
+  "board_released": true,
+  "pll_verified": true,
+  "failures": 0,
+  "boot_sha256": "00166a1157b41312fb3f585c671981ffdfe8b2fe8e455db58c1d7863fc4e45a9",
+  "state": "collected"
+}

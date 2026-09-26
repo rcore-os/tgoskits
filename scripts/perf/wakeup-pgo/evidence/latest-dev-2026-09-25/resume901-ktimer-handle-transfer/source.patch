@@ -1,0 +1,73 @@
+diff --git a/components/ax-task/src/runtime/service/ktimer.rs b/components/ax-task/src/runtime/service/ktimer.rs
+index 04b8d3e5ed..ee44f65f25 100644
+--- a/components/ax-task/src/runtime/service/ktimer.rs
++++ b/components/ax-task/src/runtime/service/ktimer.rs
+@@ -142,7 +142,7 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<KtimerServicePass, TaskEr
+                 event.thread().map_or(0, ThreadId::as_u64) as usize,
+             ),
+         };
+-        let (wake, update) = {
++        let (should_wake, update) = {
+             let mut irq = RuntimeIrqGuard::enter();
+             // Once an expiration leaves the deadline base, this worker owns
+             // its only completion token. Losing the pinned CPU or returning a
+@@ -162,7 +162,10 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<KtimerServicePass, TaskEr
+         if let Some(update) = update {
+             task_runtime::publish_scheduler_deadline(update);
+         }
+-        if let Some(wake) = wake {
++        if should_wake {
++            let wake = handle
++                .expect("a completed task timer retains its handle")
++                .into_wake_handle();
+             let _wake_result = wake.wake();
+         }
+     }
+diff --git a/components/ax-task/src/sched/system/task_system/deadline/soft_timer.rs b/components/ax-task/src/sched/system/task_system/deadline/soft_timer.rs
+index 667369b1ee..9e26b46fe8 100644
+--- a/components/ax-task/src/sched/system/task_system/deadline/soft_timer.rs
++++ b/components/ax-task/src/sched/system/task_system/deadline/soft_timer.rs
+@@ -67,7 +67,7 @@ impl TaskSystem {
+         cpu: Pin<&mut CpuLocal>,
+         event: ExpiredTaskDeadline,
+         handle: Option<&ThreadHandle>,
+-    ) -> Result<(Option<ThreadWakeHandle>, Option<SchedulerDeadlineUpdate>), TaskError> {
++    ) -> Result<(bool, Option<SchedulerDeadlineUpdate>), TaskError> {
+         let mut deadline_base = cpu
+             .remote()
+             .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
+@@ -84,15 +84,13 @@ impl TaskSystem {
+             &mut deadline_base,
+             non_timer,
+         )?;
+-        let wake = completed
+-            .then(|| handle.expect("a completed task timer retains its handle"))
+-            .filter(|handle| {
++        let should_wake = completed
++            && handle.is_some_and(|handle| {
+                 event.kind().is_some_and(|kind| {
+                     kind.park_generation() == Some(handle.core.ordinary_park_generation())
+                 })
+-            })
+-            .map(ThreadHandle::wake_handle);
+-        Ok((wake, update))
++            });
++        Ok((should_wake, update))
+     }
+ 
+     pub(crate) fn complete_kernel_timer_execution(
+diff --git a/components/ax-task/src/sched/system/task_system/mod.rs b/components/ax-task/src/sched/system/task_system/mod.rs
+index f74ec40e84..9ed1c68393 100644
+--- a/components/ax-task/src/sched/system/task_system/mod.rs
++++ b/components/ax-task/src/sched/system/task_system/mod.rs
+@@ -103,8 +103,8 @@ use crate::{
+         ParkPrepare, ParkTicket, PiDonation, PiWaitKey, PiWaitRegistration, REALTIME_CLASS_RANK,
+         SchedulingUrgency, SwitchReason, TaskError, ThreadCore, ThreadCoreInit, ThreadExtension,
+         ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId,
+-        ThreadRuntimeSnapshot, ThreadSpec, ThreadState, ThreadWakeHandle, WaitWakeClaim,
+-        WaitWakeDelivery, WakeIntent, WakeResult,
++        ThreadRuntimeSnapshot, ThreadSpec, ThreadState, WaitWakeClaim, WaitWakeDelivery,
++        WakeIntent, WakeResult,
+     },
+     time::{
+         MonotonicDeadline, MonotonicInstant,

@@ -1,0 +1,19 @@
+[37m[ 26.907109 4:81604378678 [37mstarry_kernel::task::ops:539] [32mTask(81604378678, "mesg") exit with code: 256[m[m
+[37m[ 26.905866 5:8589934639 [37mcrab_usb::backend::kmod::hub::device:176] [32mPort 4 connection changed: true[m[m
+[37m[ 26.907158 4:81604378678 [37mstarry_kernel::task::signal:763] [32mSend signal SIGCHLD to process 1[m[m
+[37m[ 26.906071 5:8589934639 [37mcrab_usb::backend::kmod::hub::device:189] [32mPort 4 connection changed: connected=true, enabled=false[m[m
+[37m[ 26.906076 5:8589934639 [37mcrab_usb::backend::kmod::hub::device:700] [32mHandling connection on port 4, speed: Full[m[m
+curl [37m[ 26.906078 5:8589934639 [37mcrab_usb::backend::kmod::hub::device:599] [32mStarting debounce on port 4 (expected_connected: true)[m[m
+--retry 15 --retry-delay 2 --retry-connrefused --connect-timeout 10 --max-time 20 -fsS http://192.168.1.2:2999/share/sessions/5b84e53e-6a06-4c8c-935d-0404df5fb85b/resume748-probe -o /tmp/resume748-probe && chmod +x /tmp/r[37m[ 26.917237 4:85899345974 [37mstarry_kernel::task::user:83] [32mEnter user space: ip=0xfa194, sp=0x3fffffff5b0[m[m
+esume748-probe && /tmp/[37m[ 26.918190 7:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m[m
+resume748-probe 0 && /tmp/resume748-probe 1; rc=$?; echo RESUME748_DONE A2 $rc
+[37m[ 27.006992 3:8589934639 [37mcrab_usb::backend::kmod::hub::device:621] [32mPort 4 debounce stable (connected: true)[m[m
+[37m[ 27.007015 3:8589934639 [37mcrab_usb::backend::kmod::hub::device:655] [32mResetting port 4[m[m
+[37m[ 27.081738 6:8589934639 [37mcrab_usb::backend::kmod::hub::device:678] [32mPort 4 reset complete[m[m
+[37m[ 27.081965 4:8589934639 [37mcrab_usb::backend::kmod::hub::device:742] [32mPort 4 enabled after 1 checks[m[m
+[37m[ 27.081969 4:8589934639 [37mcrab_usb::backend::kmod::hub::device:720] [32mPort 4 device ready: speed=Full, enabled=true[m[m
+[37m[ 27.167606 1:4294967348 [37max_driver::soc::rockchip::cpufreq:1113] [32mgov: A76b0 peak=15% opp 6->5 = 1592 MHz @ 850 mV[m[m
+[37m[ 27.267785 0:4294967348 [37max_driver::soc::rockchip::cpufreq:1113] [32mgov: A76b0 peak=0% opp 5->4 = 1491 MHz @ 800 mV[m[m
+curl: (7) Couldn't connect to server
+[37m[ 27.333233 3:85899345974 [37mstarry_kernel::task::ops:539] [32mTask(85899345974, "curl") exit with code: 1792[m[m
+RESUME748_DONE A2 7
