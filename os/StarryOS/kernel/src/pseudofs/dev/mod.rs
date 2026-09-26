@@ -25,6 +25,7 @@ pub(crate) mod r#loop;
 mod memtrack;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+mod net;
 #[cfg(feature = "sg2002")]
 mod pinmux;
 pub(super) mod pwm;
@@ -686,6 +687,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "mqueue",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+    );
+    root.add(
+        "net",
+        SimpleDir::new_maker(fs.clone(), Arc::new(net::net_dir(fs.clone()))),
     );
     {
         let mut bus_dir = DirMapping::new();

@@ -42,6 +42,19 @@ use crate::{
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
+
+/// Destination filter applied before a frame reaches ARP or the IP stack.
+fn accepts_destination(
+    destination: EthernetAddress,
+    own: EthernetAddress,
+    accept_multicast: bool,
+) -> bool {
+    destination.is_broadcast()
+        || destination == EMPTY_MAC
+        || destination == own
+        || (accept_multicast && destination.is_multicast())
+}
+
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
@@ -57,6 +70,7 @@ pub struct EthernetDevice {
     neighbors: HashMap<IpAddress, Neighbor>,
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
+    accept_multicast: bool,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
     /// Replies owned by the protocol executor until TX space is available.
@@ -116,6 +130,7 @@ impl EthernetDevice {
             neighbors: HashMap::new(),
             pending_neighbors: HashMap::new(),
             ip,
+            accept_multicast: false,
 
             pending_packets,
             pending_arp_replies: VecDeque::new(),
@@ -131,6 +146,11 @@ impl EthernetDevice {
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
         EthernetAddress(self.inner.mac_address())
+    }
+
+    /// Also passes frames sent to multicast addresses up the stack.
+    pub(crate) fn set_accept_multicast(&mut self, accept: bool) {
+        self.accept_multicast = accept;
     }
 
     fn transmit_ip_to(
@@ -265,10 +285,11 @@ impl EthernetDevice {
             return 0;
         };
 
-        if !repr.dst_addr.is_broadcast()
-            && repr.dst_addr != EMPTY_MAC
-            && repr.dst_addr != self.hardware_address()
-        {
+        if !accepts_destination(
+            repr.dst_addr,
+            self.hardware_address(),
+            self.accept_multicast,
+        ) {
             return 0;
         }
 
@@ -578,6 +599,7 @@ impl Device for EthernetDevice {
                 }
             };
             let hardware_address = self.hardware_address();
+            let accept_multicast = self.accept_multicast;
             let mut malformed = false;
             let mut side_frame = false;
             let packet_range = frame.read_with(|packet| {
@@ -590,10 +612,7 @@ impl Device for EthernetDevice {
                     malformed = true;
                     return None;
                 };
-                if !repr.dst_addr.is_broadcast()
-                    && repr.dst_addr != EMPTY_MAC
-                    && repr.dst_addr != hardware_address
-                {
+                if !accepts_destination(repr.dst_addr, hardware_address, accept_multicast) {
                     return None;
                 }
                 match repr.ethertype {
@@ -634,6 +653,7 @@ impl Device for EthernetDevice {
         self.flush_arp_replies();
         loop {
             let hardware_address = self.hardware_address();
+            let accept_multicast = self.accept_multicast;
             let mut side_frame = None;
             let mut malformed = false;
             let mut dropped = false;
@@ -647,10 +667,7 @@ impl Device for EthernetDevice {
                     malformed = true;
                     return 0;
                 };
-                if !repr.dst_addr.is_broadcast()
-                    && repr.dst_addr != EMPTY_MAC
-                    && repr.dst_addr != hardware_address
-                {
+                if !accepts_destination(repr.dst_addr, hardware_address, accept_multicast) {
                     return 0;
                 }
                 match repr.ethertype {
