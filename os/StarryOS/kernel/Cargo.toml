@@ -28,13 +28,6 @@ ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
-# Enables destructive block-I/O axtests. The tests are opt-in and require an
-# explicitly prepared scratch region or device.
-block-runtime-write-tests = []
-# Uses the reserved region documented for the VisionFive2 rootfs SD card.
-# This profile permits the root block device only when the region is outside
-# the mounted root filesystem partition.
-block-runtime-visionfive2-reserved-region = ["block-runtime-write-tests"]
 # Exposes a debugfs-only synchronization hook used by the real userspace QEMU
 # regression for faultable user copies. Production builds must not enable it.
 uaccess-lock-regression = []

@@ -1,17 +1,13 @@
 //! Starry axtests for the asynchronous block runtime boundary.
 
-#[cfg(feature = "block-runtime-write-tests")]
-use alloc::vec;
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     future::{Future, poll_fn},
     pin::{Pin, pin},
     task::Poll,
 };
 
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
-use ax_fs_ng::BlockRegion;
-use ax_fs_ng::{BlockDeviceHandle, BlockError, block_batch_stats};
+use ax_fs_ng::{BlockDeviceHandle, BlockError, BlockRegion, block_batch_stats};
 #[cfg(feature = "qperf-metrics")]
 use ax_runtime::diagnostics::qperf_runtime_scheduler_metrics_snapshot;
 use ax_runtime::hal::time::monotonic_time_nanos;
@@ -21,54 +17,18 @@ const BENCHMARK_REQUESTS: usize = 256;
 const BENCHMARK_ROUNDS: usize = 3;
 const ASYNC_CONCURRENCIES: [usize; 4] = [1, 2, 4, 8];
 const ASYNC_CONCURRENCY: usize = 8;
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
 const MULTI_RW_BLOCKS_PER_REQUEST: u32 = 8;
-#[cfg(all(
-    feature = "block-runtime-write-tests",
-    not(feature = "block-runtime-visionfive2-reserved-region")
-))]
-const MULTI_RW_BLOCKS_PER_REQUEST: u32 = 4;
-#[cfg(feature = "block-runtime-write-tests")]
 const MULTI_RW_ASYNC_CONCURRENCY: usize = 4;
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
 const MIXED_RW_BLOCKS_PER_REQUEST: u32 = 8;
-#[cfg(all(
-    feature = "block-runtime-write-tests",
-    not(feature = "block-runtime-visionfive2-reserved-region")
-))]
-const MIXED_RW_BLOCKS_PER_REQUEST: u32 = 2;
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
 const RW_BENCHMARK_REGION_BLOCKS: u32 = 64;
-#[cfg(all(
-    feature = "block-runtime-write-tests",
-    not(feature = "block-runtime-visionfive2-reserved-region")
-))]
-const RW_BENCHMARK_REGION_BLOCKS: u32 = 24;
-#[cfg(all(
-    feature = "block-runtime-write-tests",
-    not(feature = "block-runtime-visionfive2-reserved-region")
-))]
 const SCRATCH_DISK_MARKER: &[u8] = b"TGOS_BLOCK_SCRATCH_V1\n";
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
-const SCRATCH_TEST_START_LBA: u64 = 2_099_200;
-#[cfg(all(
-    feature = "block-runtime-write-tests",
-    not(feature = "block-runtime-visionfive2-reserved-region")
-))]
-const SCRATCH_TEST_START_LBA: u64 = 1;
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
-const SCRATCH_REGION_BLOCKS: u32 = 256;
-#[cfg(all(
-    feature = "block-runtime-write-tests",
-    not(feature = "block-runtime-visionfive2-reserved-region")
-))]
-const SCRATCH_REGION_BLOCKS: u32 = 24;
-#[cfg(feature = "block-runtime-write-tests")]
 const WRITE_TEST_BLOCKS: u32 = 8;
-#[cfg(feature = "block-runtime-write-tests")]
 const MIXED_TEST_BLOCKS: u32 = 8;
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
 const MULTI_DESCRIPTOR_TEST_BLOCKS: u32 = 16;
+/// Functional sub-regions ([0, 24)), the read/write benchmark region
+/// ([0, 64)) and the multi-descriptor test ([64, 80)) must all fit the
+/// runtime-resolved scratch region.
+const SCRATCH_MIN_REGION_BLOCKS: u32 = 80;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct CpuRuntimeSnapshot {
@@ -207,7 +167,6 @@ struct BenchmarkResult {
     latency: LatencySummary,
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 #[derive(Clone, Copy, Debug, Default)]
 struct IoPhaseResult {
     requests: u64,
@@ -215,7 +174,6 @@ struct IoPhaseResult {
     latency: LatencySummary,
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 #[derive(Clone, Copy, Debug, Default)]
 struct ReadWriteBenchmarkResult {
     concurrency: usize,
@@ -233,7 +191,6 @@ fn median_elapsed_benchmark_result(mut rounds: Vec<BenchmarkResult>) -> Benchmar
     rounds[rounds.len() / 2]
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn median_elapsed_read_write_result(
     mut rounds: Vec<ReadWriteBenchmarkResult>,
 ) -> ReadWriteBenchmarkResult {
@@ -253,11 +210,11 @@ fn print_benchmark_result(label: &str, result: BenchmarkResult, block_size: usiz
     let block_size = u64::try_from(block_size).expect("logical block size must fit in u64");
     let bytes = result.completed_requests.saturating_mul(block_size);
     axtest::axtest_println!(
-        "{label} requests={} concurrency={} benchmark_rounds={} elapsed_ns={} average_latency_ns={} p50_latency_ns={} \
-         p95_latency_ns={} p99_latency_ns={} max_latency_ns={} cpu_runtime_ns={} \
-         cpu_runtime_permille={} scheduler_metrics_enabled={} requests_per_sec={} \
-         bytes_per_sec={} submitted={} completed={} failed={} commit_calls={} commit_failures={} \
-         submission_batches={} largest_batch_global={} peak_inflight_global={} \
+        "{label} requests={} concurrency={} benchmark_rounds={} elapsed_ns={} \
+         average_latency_ns={} p50_latency_ns={} p95_latency_ns={} p99_latency_ns={} \
+         max_latency_ns={} cpu_runtime_ns={} cpu_runtime_permille={} scheduler_metrics_enabled={} \
+         requests_per_sec={} bytes_per_sec={} submitted={} completed={} failed={} commit_calls={} \
+         commit_failures={} submission_batches={} largest_batch_global={} peak_inflight_global={} \
          scheduler_context_switches={} scheduler_blocked_switches={} \
          scheduler_yielded_switches={} scheduler_preempted_switches={} progress_polls={}",
         result.requests,
@@ -290,29 +247,24 @@ fn print_benchmark_result(label: &str, result: BenchmarkResult, block_size: usiz
     );
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn print_read_write_benchmark_result(
     label: &str,
     result: ReadWriteBenchmarkResult,
     blocks_per_request: u32,
 ) {
-    let requests = result
-        .read
-        .requests
-        .saturating_add(result.write.requests);
+    let requests = result.read.requests.saturating_add(result.write.requests);
     let bytes = result.read.bytes.saturating_add(result.write.bytes);
     axtest::axtest_println!(
-        "{label} requests={} concurrency={} benchmark_rounds={} blocks_per_request={} elapsed_ns={} \
-         operations_per_sec={} bytes_per_sec={} read_requests={} write_requests={} \
+        "{label} requests={} concurrency={} benchmark_rounds={} blocks_per_request={} \
+         elapsed_ns={} operations_per_sec={} bytes_per_sec={} read_requests={} write_requests={} \
          read_bytes={} write_bytes={} read_average_latency_ns={} read_p50_latency_ns={} \
          read_p95_latency_ns={} read_p99_latency_ns={} read_max_latency_ns={} \
          write_average_latency_ns={} write_p50_latency_ns={} write_p95_latency_ns={} \
          write_p99_latency_ns={} write_max_latency_ns={} cpu_runtime_ns={} \
-         cpu_runtime_permille={} scheduler_metrics_enabled={} submitted={} completed={} \
-         failed={} commit_calls={} commit_failures={} submission_batches={} \
-         largest_batch_global={} peak_inflight_global={} scheduler_context_switches={} \
-         scheduler_blocked_switches={} scheduler_yielded_switches={} \
-         scheduler_preempted_switches={} progress_polls={}",
+         cpu_runtime_permille={} scheduler_metrics_enabled={} submitted={} completed={} failed={} \
+         commit_calls={} commit_failures={} submission_batches={} largest_batch_global={} \
+         peak_inflight_global={} scheduler_context_switches={} scheduler_blocked_switches={} \
+         scheduler_yielded_switches={} scheduler_preempted_switches={} progress_polls={}",
         requests,
         result.concurrency,
         BENCHMARK_ROUNDS,
@@ -365,40 +317,53 @@ fn assert_successful_read(request: &CompletedRequest, block_size: usize) {
     assert_successful_read_bytes(request, block_size);
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
-fn writable_test_device() -> Arc<BlockDeviceHandle> {
+/// Resolves the destructive-write scratch target. Returns `None` when the
+/// machine offers neither path, in which case the write tests skip instead of
+/// failing. Two discovery paths exist:
+///
+/// 1. An operator-declared reserved region on the root card, requested on the
+///    kernel command line as `axtest.block_scratch=<start_lba>:<blocks>`. A
+///    request that fails its eligibility checks is a hard error: the operator
+///    explicitly asked for the destructive tests to run.
+/// 2. A dedicated non-root disk whose first sector starts with the scratch
+///    marker, usable without any command-line configuration.
+fn writable_test_device() -> Option<(Arc<BlockDeviceHandle>, BlockRegion)> {
     let devices = BlockDeviceHandle::axtest_devices()
         .expect("block runtime must be installed for block axtest");
-    #[cfg(feature = "block-runtime-visionfive2-reserved-region")]
-    let candidates = devices
-        .iter()
-        .filter(|device| !device.device_info().read_only)
-        .filter(|device| {
-            let info = device.device_info();
-            if info.logical_block_size != 512 {
-                return false;
-            }
-            if SCRATCH_TEST_START_LBA
-                .checked_add(u64::from(SCRATCH_REGION_BLOCKS))
-                .is_none_or(|end| end > info.num_blocks)
-            {
-                return false;
-            }
 
-            let scratch =
-                BlockRegion::new(SCRATCH_TEST_START_LBA, u64::from(SCRATCH_REGION_BLOCKS));
-            // The VisionFive 2 profile is specifically for the reserved
-            // extent on the mounted root SD card. Do not fall back to an
-            // unrelated writable disk whose fixed LBA range has not been
-            // explicitly identified as scratch space.
-            let Some(root) = ax_fs_ng::root::axtest_root_region(device) else {
-                return false;
-            };
-            scratch.end_lba <= root.start_lba || root.end_lba <= scratch.start_lba
-        })
-        .collect::<Vec<_>>();
+    if let Some(scratch) = ax_fs_ng::root::axtest_scratch_region_request() {
+        let candidates = devices
+            .iter()
+            .filter(|device| !device.device_info().read_only)
+            .filter(|device| {
+                let info = device.device_info();
+                info.logical_block_size == 512 && scratch.end_lba <= info.num_blocks
+            })
+            .filter(|device| {
+                // The reserved extent lives on the root SD card; do not fall
+                // back to an unrelated writable disk whose fixed LBA range has
+                // not been explicitly identified as scratch space.
+                ax_fs_ng::root::axtest_is_root_device(device)
+            })
+            .filter(|device| {
+                let Some(root) = ax_fs_ng::root::axtest_root_region(device) else {
+                    return false;
+                };
+                scratch.end_lba <= root.start_lba || root.end_lba <= scratch.start_lba
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            candidates.len(),
+            1,
+            "requested scratch region [{}, {}) matches no eligible device",
+            scratch.start_lba,
+            scratch.end_lba,
+        );
+        let device = Arc::clone(candidates[0]);
+        log_write_device(&device, &scratch);
+        return Some((device, scratch));
+    }
 
-    #[cfg(not(feature = "block-runtime-visionfive2-reserved-region"))]
     let candidates = devices
         .iter()
         .filter(|device| {
@@ -406,9 +371,7 @@ fn writable_test_device() -> Arc<BlockDeviceHandle> {
         })
         .filter(|device| {
             let info = device.device_info();
-            if SCRATCH_TEST_START_LBA
-                .checked_add(u64::from(SCRATCH_REGION_BLOCKS))
-                .is_none_or(|end| end > info.num_blocks)
+            if info.num_blocks < u64::from(SCRATCH_MIN_REGION_BLOCKS) + 1
                 || info.logical_block_size < SCRATCH_DISK_MARKER.len()
             {
                 return false;
@@ -430,18 +393,17 @@ fn writable_test_device() -> Arc<BlockDeviceHandle> {
             bytes.starts_with(SCRATCH_DISK_MARKER)
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        candidates.len(),
-        1,
-        "write axtests require exactly one eligible scratch device"
-    );
-    let device = Arc::clone(candidates[0]);
-    let info = device.device_info();
+    let device = Arc::clone(*candidates.first()?);
+    let scratch = BlockRegion::new(1, u64::from(SCRATCH_MIN_REGION_BLOCKS));
+    log_write_device(&device, &scratch);
+    Some((device, scratch))
+}
 
-    // The root region and scratch extent are logged for the board record;
-    // eligibility was already enforced by the candidate filters above.
-    #[cfg(feature = "block-runtime-visionfive2-reserved-region")]
-    if let Some(root) = ax_fs_ng::root::axtest_root_region(&device) {
+fn log_write_device(device: &BlockDeviceHandle, scratch: &BlockRegion) {
+    let info = device.device_info();
+    // The root region is logged for the board record; eligibility was already
+    // enforced by the candidate filters above.
+    if let Some(root) = ax_fs_ng::root::axtest_root_region(device) {
         axtest::axtest_println!(
             "BLOCK_ROOT_REGION start_lba={} end_lba={}",
             root.start_lba,
@@ -454,15 +416,21 @@ fn writable_test_device() -> Arc<BlockDeviceHandle> {
         device.name(),
         info.num_blocks,
         info.logical_block_size,
-        SCRATCH_TEST_START_LBA,
-        SCRATCH_REGION_BLOCKS,
-        SCRATCH_TEST_START_LBA + u64::from(SCRATCH_REGION_BLOCKS),
-        SCRATCH_TEST_START_LBA + u64::from(SCRATCH_REGION_BLOCKS) - 1,
+        scratch.start_lba,
+        scratch.num_blocks(),
+        scratch.end_lba,
+        scratch.end_lba - 1,
     );
-    device
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
+/// Marks a destructive case as skipped because the machine offers neither a
+/// bootargs-declared scratch region nor a dedicated marker scratch disk.
+fn log_write_tests_skip() {
+    axtest::axtest_println!(
+        "BLOCK_WRITE_TESTS_SKIPPED reason=no eligible scratch device or region on this machine"
+    );
+}
+
 fn pattern_bytes(block_size: usize, block_count: u32, seed: u8) -> Vec<u8> {
     let byte_len = block_size
         .checked_mul(block_count as usize)
@@ -475,7 +443,6 @@ fn pattern_bytes(block_size: usize, block_count: u32, seed: u8) -> Vec<u8> {
         .collect()
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn read_region_sync(device: &Arc<BlockDeviceHandle>, lba: u64, block_count: u32) -> Vec<u8> {
     let block_size = device.device_info().logical_block_size;
     let byte_len = block_size
@@ -494,12 +461,10 @@ fn read_region_sync(device: &Arc<BlockDeviceHandle>, lba: u64, block_count: u32)
     bytes
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn assert_successful_write(request: &CompletedRequest) {
     assert_eq!(request.result, Ok(()));
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 struct ScratchRegionGuard {
     device: Arc<BlockDeviceHandle>,
     lba: u64,
@@ -508,7 +473,6 @@ struct ScratchRegionGuard {
     armed: bool,
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 impl ScratchRegionGuard {
     fn new(device: Arc<BlockDeviceHandle>, lba: u64, block_count: u32, original: Vec<u8>) -> Self {
         Self {
@@ -538,7 +502,6 @@ impl ScratchRegionGuard {
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 impl Drop for ScratchRegionGuard {
     fn drop(&mut self) {
         if !self.armed {
@@ -575,7 +538,6 @@ impl Drop for ScratchRegionGuard {
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 enum MixedExpectation {
     Write,
     Read(Vec<u8>),
@@ -618,10 +580,7 @@ fn run_sync_benchmark(device: &Arc<BlockDeviceHandle>, block_count: u64) -> Benc
     }
 }
 
-fn run_sync_benchmark_rounds(
-    device: &Arc<BlockDeviceHandle>,
-    block_count: u64,
-) -> BenchmarkResult {
+fn run_sync_benchmark_rounds(device: &Arc<BlockDeviceHandle>, block_count: u64) -> BenchmarkResult {
     median_elapsed_benchmark_result(
         (0..BENCHMARK_ROUNDS)
             .map(|_| run_sync_benchmark(device, block_count))
@@ -711,25 +670,19 @@ async fn run_async_benchmark_rounds(
 ) -> BenchmarkResult {
     let mut rounds = Vec::with_capacity(BENCHMARK_ROUNDS);
     for _ in 0..BENCHMARK_ROUNDS {
-        rounds.push(
-            run_async_benchmark(Arc::clone(device), block_count, concurrency).await,
-        );
+        rounds.push(run_async_benchmark(Arc::clone(device), block_count, concurrency).await);
     }
     median_elapsed_benchmark_result(rounds)
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
-type ReadWriteFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<CompletedRequest, BlockError>> + 'a>>;
+type ReadWriteFuture<'a> = Pin<Box<dyn Future<Output = Result<CompletedRequest, BlockError>> + 'a>>;
 
-#[cfg(feature = "block-runtime-write-tests")]
 #[derive(Clone, Copy)]
 enum ReadWriteOperation {
     Read { slot: usize },
     Write,
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn benchmark_patterns(
     block_size: usize,
     blocks_per_request: u32,
@@ -747,12 +700,10 @@ fn benchmark_patterns(
         .collect()
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn benchmark_slot_lba(base_lba: u64, slot: usize, blocks_per_request: u32) -> u64 {
     base_lba + (slot as u64).saturating_mul(u64::from(blocks_per_request))
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn assert_read_matches(request: &CompletedRequest, expected: &[u8]) {
     assert_successful_read_bytes(request, expected.len());
     let data = request
@@ -764,7 +715,6 @@ fn assert_read_matches(request: &CompletedRequest, expected: &[u8]) {
     assert_eq!(actual, expected);
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn run_sync_multi_block_read_write_benchmark(
     device: &Arc<BlockDeviceHandle>,
     base_lba: u64,
@@ -825,7 +775,6 @@ fn run_sync_multi_block_read_write_benchmark(
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 async fn run_async_multi_block_read_write_benchmark(
     device: Arc<BlockDeviceHandle>,
     base_lba: u64,
@@ -879,8 +828,7 @@ async fn run_async_multi_block_read_write_benchmark(
                             panic!("asynchronous multi-block write failed: {error:?}")
                         });
                         assert_successful_write(&request);
-                        write_latencies
-                            .push(monotonic_time_nanos().saturating_sub(request_start));
+                        write_latencies.push(monotonic_time_nanos().saturating_sub(request_start));
                     }
                     Some(Poll::Pending) => pending = true,
                     None => {}
@@ -921,10 +869,7 @@ async fn run_async_multi_block_read_write_benchmark(
         poll_fn(|cx| {
             let mut pending = false;
             for slot in &mut futures {
-                match slot
-                    .as_mut()
-                    .map(|(_, _, future)| future.as_mut().poll(cx))
-                {
+                match slot.as_mut().map(|(_, _, future)| future.as_mut().poll(cx)) {
                     Some(Poll::Ready(result)) => {
                         let (request_start, pattern_slot, _) = slot
                             .take()
@@ -933,8 +878,7 @@ async fn run_async_multi_block_read_write_benchmark(
                             panic!("asynchronous multi-block read failed: {error:?}")
                         });
                         assert_read_matches(&request, &patterns[pattern_slot]);
-                        read_latencies
-                            .push(monotonic_time_nanos().saturating_sub(request_start));
+                        read_latencies.push(monotonic_time_nanos().saturating_sub(request_start));
                     }
                     Some(Poll::Pending) => pending = true,
                     None => {}
@@ -971,7 +915,6 @@ async fn run_async_multi_block_read_write_benchmark(
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn run_sync_mixed_read_write_benchmark(
     device: &Arc<BlockDeviceHandle>,
     base_lba: u64,
@@ -1032,7 +975,6 @@ fn run_sync_mixed_read_write_benchmark(
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 async fn run_async_mixed_read_write_benchmark(
     device: Arc<BlockDeviceHandle>,
     base_lba: u64,
@@ -1063,9 +1005,8 @@ async fn run_async_mixed_read_write_benchmark(
         let wave_end = next_request
             .saturating_add(concurrency)
             .min(BENCHMARK_REQUESTS);
-        let mut futures: Vec<
-            Option<(u64, ReadWriteOperation, ReadWriteFuture<'_>)>,
-        > = Vec::with_capacity(wave_end - next_request);
+        let mut futures: Vec<Option<(u64, ReadWriteOperation, ReadWriteFuture<'_>)>> =
+            Vec::with_capacity(wave_end - next_request);
         for index in next_request..wave_end {
             let slot = index % slot_count;
             let target_lba = benchmark_slot_lba(base_lba, slot, blocks_per_request);
@@ -1096,10 +1037,7 @@ async fn run_async_mixed_read_write_benchmark(
         poll_fn(|cx| {
             let mut pending = false;
             for slot in &mut futures {
-                match slot
-                    .as_mut()
-                    .map(|(_, _, future)| future.as_mut().poll(cx))
-                {
+                match slot.as_mut().map(|(_, _, future)| future.as_mut().poll(cx)) {
                     Some(Poll::Ready(result)) => {
                         let (request_start, operation, _) = slot
                             .take()
@@ -1114,15 +1052,13 @@ async fn run_async_mixed_read_write_benchmark(
                                     &request,
                                     &original[offset..offset + request_bytes],
                                 );
-                                read_latencies.push(
-                                    monotonic_time_nanos().saturating_sub(request_start),
-                                );
+                                read_latencies
+                                    .push(monotonic_time_nanos().saturating_sub(request_start));
                             }
                             ReadWriteOperation::Write => {
                                 assert_successful_write(&request);
-                                write_latencies.push(
-                                    monotonic_time_nanos().saturating_sub(request_start),
-                                );
+                                write_latencies
+                                    .push(monotonic_time_nanos().saturating_sub(request_start));
                             }
                         }
                     }
@@ -1161,7 +1097,6 @@ async fn run_async_mixed_read_write_benchmark(
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn assert_mixed_region_matches(
     device: &Arc<BlockDeviceHandle>,
     base_lba: u64,
@@ -1184,7 +1119,6 @@ fn assert_mixed_region_matches(
     }
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn assert_read_write_benchmark_complete(
     result: ReadWriteBenchmarkResult,
     expected_read_requests: u64,
@@ -1341,12 +1275,14 @@ fn block_runtime_async_double_read() {
 /// Validates a consecutive sequence of single-block writes and reads. The
 /// original bytes are restored before the test completes so the scratch disk
 /// remains reusable for the next case.
-#[cfg(feature = "block-runtime-write-tests")]
 #[axtest::axtest]
-fn block_runtime_single_block_contiguous_read_write() {
-    let device = writable_test_device();
+fn block_runtime_single_block_contiguous_read_write() -> axtest::AxTestResult {
+    let Some((device, scratch_region)) = writable_test_device() else {
+        log_write_tests_skip();
+        return axtest::AxTestResult::Ok;
+    };
     let info = device.device_info();
-    let lba = SCRATCH_TEST_START_LBA;
+    let lba = scratch_region.start_lba;
     let original = read_region_sync(&device, lba, WRITE_TEST_BLOCKS);
     let mut scratch =
         ScratchRegionGuard::new(Arc::clone(&device), lba, WRITE_TEST_BLOCKS, original);
@@ -1398,9 +1334,9 @@ fn block_runtime_single_block_contiguous_read_write() {
         batch.submitted_requests,
         batch.completed_requests,
     );
+    axtest::AxTestResult::Ok
 }
 
-#[cfg(feature = "block-runtime-write-tests")]
 fn run_multi_block_functional_test(
     device: Arc<BlockDeviceHandle>,
     lba: u64,
@@ -1440,8 +1376,8 @@ fn run_multi_block_functional_test(
     scratch.restore();
 
     axtest::axtest_println!(
-        "{label} lba={} blocks={} bytes={} elapsed_ns={} bytes_per_sec={} \
-         submitted={} completed={}",
+        "{label} lba={} blocks={} bytes={} elapsed_ns={} bytes_per_sec={} submitted={} \
+         completed={}",
         lba,
         block_count,
         pattern.len(),
@@ -1455,48 +1391,59 @@ fn run_multi_block_functional_test(
 /// Validates a true multi-block request (`block_count > 1`) through both the
 /// asynchronous write and asynchronous read completion paths, including
 /// complete buffer contents and block boundaries.
-#[cfg(feature = "block-runtime-write-tests")]
 #[axtest::axtest]
-fn block_runtime_multi_block_contiguous_read_write() {
+fn block_runtime_multi_block_contiguous_read_write() -> axtest::AxTestResult {
+    let Some((device, scratch_region)) = writable_test_device() else {
+        log_write_tests_skip();
+        return axtest::AxTestResult::Ok;
+    };
     run_multi_block_functional_test(
-        writable_test_device(),
-        SCRATCH_TEST_START_LBA + u64::from(WRITE_TEST_BLOCKS),
+        device,
+        scratch_region.start_lba + u64::from(WRITE_TEST_BLOCKS),
         WRITE_TEST_BLOCKS,
         0x72,
         "BLOCK_MULTI_RW_FUNCTIONAL",
     );
+    axtest::AxTestResult::Ok
 }
 
 /// Exercises a real chained IDMAC transfer on VisionFive 2. The kernel DMA
 /// allocator returns 4 KiB-aligned buffers and each DW-MMC descriptor carries
 /// at most 4 KiB, so this 8 KiB request requires two hardware descriptors.
-#[cfg(feature = "block-runtime-visionfive2-reserved-region")]
 #[axtest::axtest]
-fn block_runtime_multi_descriptor_contiguous_read_write() {
+fn block_runtime_multi_descriptor_contiguous_read_write() -> axtest::AxTestResult {
+    let Some((device, scratch_region)) = writable_test_device() else {
+        log_write_tests_skip();
+        return axtest::AxTestResult::Ok;
+    };
     assert!(
-        RW_BENCHMARK_REGION_BLOCKS + MULTI_DESCRIPTOR_TEST_BLOCKS <= SCRATCH_REGION_BLOCKS,
+        u64::from(RW_BENCHMARK_REGION_BLOCKS + MULTI_DESCRIPTOR_TEST_BLOCKS)
+            <= scratch_region.num_blocks(),
         "scratch region is too small for the multi-descriptor functional test"
     );
     run_multi_block_functional_test(
-        writable_test_device(),
-        SCRATCH_TEST_START_LBA + u64::from(RW_BENCHMARK_REGION_BLOCKS),
+        device,
+        scratch_region.start_lba + u64::from(RW_BENCHMARK_REGION_BLOCKS),
         MULTI_DESCRIPTOR_TEST_BLOCKS,
         0xC7,
         "BLOCK_MULTI_DESCRIPTOR_RW_FUNCTIONAL",
     );
+    axtest::AxTestResult::Ok
 }
 
 /// Interleaves asynchronous writes and reads in one task. Reads target the
 /// untouched odd blocks while writes target even blocks, so each completion
 /// has an independent, deterministic expected result.
-#[cfg(feature = "block-runtime-write-tests")]
 #[axtest::axtest]
-fn block_runtime_async_mixed_read_write() {
+fn block_runtime_async_mixed_read_write() -> axtest::AxTestResult {
     type MixedFuture = Pin<Box<dyn Future<Output = Result<CompletedRequest, BlockError>>>>;
 
-    let device = writable_test_device();
+    let Some((device, scratch_region)) = writable_test_device() else {
+        log_write_tests_skip();
+        return axtest::AxTestResult::Ok;
+    };
     let info = device.device_info();
-    let lba = SCRATCH_TEST_START_LBA + u64::from(WRITE_TEST_BLOCKS * 2);
+    let lba = scratch_region.start_lba + u64::from(WRITE_TEST_BLOCKS * 2);
     let block_count = MIXED_TEST_BLOCKS;
     let original = read_region_sync(&device, lba, block_count);
     let mut scratch = ScratchRegionGuard::new(Arc::clone(&device), lba, block_count, original);
@@ -1612,29 +1559,28 @@ fn block_runtime_async_mixed_read_write() {
         batch.submitted_requests,
         batch.completed_requests,
     );
+    axtest::AxTestResult::Ok
 }
 
 /// Compares synchronous and asynchronous multi-block write/read workloads on
 /// the same scratch slots. Every slot uses a stable pattern, so repeated
 /// requests remain verifiable while each asynchronous wave targets distinct
 /// ranges. Results are measurements rather than pass/fail performance gates.
-#[cfg(feature = "block-runtime-write-tests")]
 #[axtest::axtest]
-fn block_runtime_multi_block_read_write_benchmark() {
+fn block_runtime_multi_block_read_write_benchmark() -> axtest::AxTestResult {
+    let Some((device, scratch_region)) = writable_test_device() else {
+        log_write_tests_skip();
+        return axtest::AxTestResult::Ok;
+    };
     assert!(
-        SCRATCH_REGION_BLOCKS >= RW_BENCHMARK_REGION_BLOCKS,
+        scratch_region.num_blocks() >= u64::from(RW_BENCHMARK_REGION_BLOCKS),
         "scratch region is too small for the read/write benchmark"
     );
-    assert_eq!(
-        RW_BENCHMARK_REGION_BLOCKS % MULTI_RW_BLOCKS_PER_REQUEST,
-        0
-    );
+    assert_eq!(RW_BENCHMARK_REGION_BLOCKS % MULTI_RW_BLOCKS_PER_REQUEST, 0);
 
-    let device = writable_test_device();
     let info = device.device_info();
-    let base_lba = SCRATCH_TEST_START_LBA;
-    let slot_count =
-        (RW_BENCHMARK_REGION_BLOCKS / MULTI_RW_BLOCKS_PER_REQUEST) as usize;
+    let base_lba = scratch_region.start_lba;
+    let slot_count = (RW_BENCHMARK_REGION_BLOCKS / MULTI_RW_BLOCKS_PER_REQUEST) as usize;
     let patterns = benchmark_patterns(
         info.logical_block_size,
         MULTI_RW_BLOCKS_PER_REQUEST,
@@ -1708,8 +1654,8 @@ fn block_runtime_multi_block_read_write_benchmark() {
         MULTI_RW_BLOCKS_PER_REQUEST,
     );
     axtest::axtest_println!(
-        "BLOCK_MULTI_RW_COMPARE blocks_per_request={} requests_per_direction={} benchmark_rounds={} \
-         sync_elapsed_ns={} async_elapsed_ns={} async_speedup_permille={} \
+        "BLOCK_MULTI_RW_COMPARE blocks_per_request={} requests_per_direction={} \
+         benchmark_rounds={} sync_elapsed_ns={} async_elapsed_ns={} async_speedup_permille={} \
          sync_cpu_runtime_ns={} async_cpu_runtime_ns={} sync_context_switches={} \
          async_context_switches={} async_progress_polls={} async_concurrency={}",
         MULTI_RW_BLOCKS_PER_REQUEST,
@@ -1725,28 +1671,27 @@ fn block_runtime_multi_block_read_write_benchmark() {
         asynchronous.progress_polls,
         MULTI_RW_ASYNC_CONCURRENCY,
     );
+    axtest::AxTestResult::Ok
 }
 
 /// Compares a serialized alternating read/write workload with asynchronous
 /// waves over disjoint multi-block slots. Reads observe untouched odd slots;
 /// writes update even slots, allowing completion-order-independent validation.
-#[cfg(feature = "block-runtime-write-tests")]
 #[axtest::axtest]
-fn block_runtime_mixed_read_write_benchmark() {
+fn block_runtime_mixed_read_write_benchmark() -> axtest::AxTestResult {
+    let Some((device, scratch_region)) = writable_test_device() else {
+        log_write_tests_skip();
+        return axtest::AxTestResult::Ok;
+    };
     assert!(
-        SCRATCH_REGION_BLOCKS >= RW_BENCHMARK_REGION_BLOCKS,
+        scratch_region.num_blocks() >= u64::from(RW_BENCHMARK_REGION_BLOCKS),
         "scratch region is too small for the mixed benchmark"
     );
-    assert_eq!(
-        RW_BENCHMARK_REGION_BLOCKS % MIXED_RW_BLOCKS_PER_REQUEST,
-        0
-    );
+    assert_eq!(RW_BENCHMARK_REGION_BLOCKS % MIXED_RW_BLOCKS_PER_REQUEST, 0);
 
-    let device = writable_test_device();
     let info = device.device_info();
-    let base_lba = SCRATCH_TEST_START_LBA;
-    let slot_count =
-        (RW_BENCHMARK_REGION_BLOCKS / MIXED_RW_BLOCKS_PER_REQUEST) as usize;
+    let base_lba = scratch_region.start_lba;
+    let slot_count = (RW_BENCHMARK_REGION_BLOCKS / MIXED_RW_BLOCKS_PER_REQUEST) as usize;
     assert_eq!(slot_count % 2, 0);
     let write_patterns = benchmark_patterns(
         info.logical_block_size,
@@ -1844,8 +1789,8 @@ fn block_runtime_mixed_read_write_benchmark() {
         MIXED_RW_BLOCKS_PER_REQUEST,
     );
     axtest::axtest_println!(
-        "BLOCK_MIXED_RW_COMPARE blocks_per_request={} read_requests={} write_requests={} benchmark_rounds={} \
-         sync_elapsed_ns={} async_elapsed_ns={} async_speedup_permille={} \
+        "BLOCK_MIXED_RW_COMPARE blocks_per_request={} read_requests={} write_requests={} \
+         benchmark_rounds={} sync_elapsed_ns={} async_elapsed_ns={} async_speedup_permille={} \
          sync_cpu_runtime_ns={} async_cpu_runtime_ns={} sync_context_switches={} \
          async_context_switches={} async_progress_polls={} async_concurrency={}",
         MIXED_RW_BLOCKS_PER_REQUEST,
@@ -1862,6 +1807,7 @@ fn block_runtime_mixed_read_write_benchmark() {
         asynchronous.progress_polls,
         ASYNC_CONCURRENCY,
     );
+    axtest::AxTestResult::Ok
 }
 
 /// Measures equivalent synchronous and asynchronous workloads on the real
@@ -1947,7 +1893,9 @@ fn block_runtime_sync_async_benchmark() {
             result.elapsed_ns,
             synchronous.elapsed_ns.saturating_mul(1_000) / result.elapsed_ns,
             rate_per_second(
-                result.completed_requests.saturating_mul(info.logical_block_size as u64),
+                result
+                    .completed_requests
+                    .saturating_mul(info.logical_block_size as u64),
                 result.elapsed_ns,
             ),
             result.latency.p95_ns,

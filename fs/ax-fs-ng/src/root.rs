@@ -27,6 +27,8 @@ static ROOT_BLOCK_IDENTITY: OnceLock<RootBlockIdentity> = OnceLock::new();
 static ROOT_BLOCK_HANDLE: OnceLock<usize> = OnceLock::new();
 #[cfg(axtest)]
 static ROOT_BLOCK_REGION: OnceLock<BlockRegion> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_SCRATCH_REGION: OnceLock<Option<BlockRegion>> = OnceLock::new();
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -229,6 +231,8 @@ pub fn init_root(
     );
     #[cfg(axtest)]
     ROOT_BLOCK_REGION.call_once(|| region);
+    #[cfg(axtest)]
+    AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
 
     let root = if let Some(kind) = selected_filesystem_kind(
         selected.raw_filesystem,
@@ -269,6 +273,27 @@ pub fn axtest_root_region(handle: &BlockDeviceHandle) -> Option<BlockRegion> {
             .get()
             .expect("root block region must be published before axtests run"),
     )
+}
+
+/// Returns the destructive-write scratch region requested on the kernel
+/// command line (`axtest.block_scratch=<start_lba>:<blocks>`), if any. The
+/// destructive axtests write only inside this region.
+#[cfg(axtest)]
+pub fn axtest_scratch_region_request() -> Option<BlockRegion> {
+    let requested = AXTEST_SCRATCH_REGION.get()?;
+    *requested
+}
+
+#[cfg(axtest)]
+fn parse_axtest_scratch_region(bootargs: Option<&str>) -> Option<BlockRegion> {
+    let value = bootargs?.split_ascii_whitespace().find_map(|arg| {
+        arg.strip_prefix("axtest.block_scratch=")
+            .filter(|value| !value.is_empty())
+    })?;
+    let (start_lba, block_count) = value.split_once(':')?;
+    let start_lba = start_lba.parse::<u64>().ok()?;
+    let block_count = block_count.parse::<u64>().ok()?;
+    (block_count != 0).then_some(BlockRegion::new(start_lba, block_count))
 }
 
 const SD_NAMES: [&str; 26] = [
