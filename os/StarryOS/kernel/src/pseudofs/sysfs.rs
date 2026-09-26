@@ -35,9 +35,20 @@ use alloc::{
 
 use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64"))]
+pub use self::cache::init_cpu_cache;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64"))]
+use self::cache::{CpuCacheDir, has_cache_leaves};
 use crate::pseudofs::{
     DirMaker, DirMapping, NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFs,
 };
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64"))]
+mod cache;
+
+/// RISC-V describes caches only in the device tree, so no CPU exposes `cache/`.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64")))]
+pub fn init_cpu_cache() {}
 
 /// The DRM major number. Matches Linux's DRM_MAJOR (226).
 const DRM_MAJOR: u32 = 226;
@@ -736,7 +747,7 @@ struct SystemDir {
 
 impl SimpleDirOps for SystemDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["cpu"].into_iter().map(Cow::Borrowed))
+        Box::new(["cpu", "node"].into_iter().map(Cow::Borrowed))
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -747,9 +758,159 @@ impl SimpleDirOps for SystemDir {
                     fs: self.fs.clone(),
                 }),
             ))),
+            // `/sys/devices/system/node/` - a single UMA node. hwloc (used by pocl, numactl, ...)
+            // reads `nodeN/meminfo`'s `Node N MemTotal:` line to size device global memory; without
+            // it hwloc reports 0 and pocl advertises a 0-byte OpenCL device. Linux always exposes
+            // this even on non-NUMA machines.
+            "node" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                self.fs.clone(),
+                Arc::new(SystemNodeDir {
+                    fs: self.fs.clone(),
+                }),
+            ))),
             _ => Err(VfsError::NotFound),
         }
     }
+}
+
+/// `/sys/devices/system/node/` - one memory node (node0) covering all CPUs and RAM.
+struct SystemNodeDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SystemNodeDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            [
+                "online",
+                "possible",
+                "has_normal_memory",
+                "has_cpu",
+                "node0",
+            ]
+            .into_iter()
+            .map(Cow::Borrowed),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(match name {
+            "online" | "possible" | "has_normal_memory" | "has_cpu" => {
+                SimpleFile::new_regular(fs, || Ok("0\n".to_owned())).into()
+            }
+            "node0" => NodeOpsMux::Dir(SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(SystemNodeEntryDir { fs }),
+            )),
+            _ => return Err(VfsError::NotFound),
+        })
+    }
+}
+
+/// `/sys/devices/system/node/node0/` - the node's memory + CPU map.
+struct SystemNodeEntryDir {
+    fs: Arc<SimpleFs>,
+}
+
+impl SimpleDirOps for SystemNodeEntryDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        Box::new(
+            ["meminfo", "cpumap", "cpulist", "distance"]
+                .into_iter()
+                .map(Cow::Borrowed),
+        )
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        Ok(match name {
+            "meminfo" => SimpleFile::new_regular(fs, || Ok(render_node_meminfo())).into(),
+            "cpulist" => {
+                SimpleFile::new_regular(fs, || Ok(format!("{}\n", cpu_range_string()))).into()
+            }
+            "cpumap" => SimpleFile::new_regular(fs, || Ok(format!("{}\n", cpu_hex_mask()))).into(),
+            // `distance` is unconditional in Linux `node_dev_attrs[]` (drivers/base/node.c:654):
+            // `node_read_distance()` emits space-separated `node_distance(nid, i)` for each online
+            // node. This single UMA node has only its self-distance, `LOCAL_DISTANCE == 10`
+            // (include/linux/topology.h:46).
+            "distance" => SimpleFile::new_regular(fs, || Ok("10\n".to_owned())).into(),
+            _ => return Err(VfsError::NotFound),
+        })
+    }
+}
+
+/// `Node 0 {MemTotal,MemFree,MemUsed}` block that hwloc parses to learn per-node memory.
+///
+/// Matches Linux `drivers/base/node.c:node_read_meminfo()`: `MemTotal = totalram`,
+/// `MemFree = freeram`, `MemUsed = totalram - freeram`, printed `"Node %d <field>: %8lu kB"`.
+/// The free figure is the live allocator gauge (RAM minus the sum of every `UsageKind`
+/// category), identical to what `/proc/meminfo` reports in `render_meminfo()`, so the two
+/// views never contradict each other.
+fn render_node_meminfo() -> String {
+    let total = ax_runtime::hal::mem::total_ram_size();
+    let usages = ax_alloc::global_allocator().usages();
+    let used = super::allocator_used_bytes(&usages);
+    let free = total.saturating_sub(used);
+
+    // Derive the displayed values so the reported `MemUsed == MemTotal - MemFree`
+    // identity is exact. Linux keeps it exact because `K()` scales page counts
+    // linearly (`K(total) - K(free) == K(total - free)`); scaling bytes and
+    // truncating each field independently would break it by up to 1 kB.
+    let total_kb = total / 1024;
+    let free_kb = free / 1024;
+    let used_kb = total_kb - free_kb;
+    format!(
+        "Node 0 MemTotal:       {total_kb:>8} kB\nNode 0 MemFree:        {free_kb:>8} kB\nNode 0 \
+         MemUsed:        {used_kb:>8} kB\n"
+    )
+}
+
+/// Format a `nr_bits`-wide CPU bitmask in Linux sysfs form, `set(i)` reporting whether bit `i` is
+/// set. Mirrors `bitmap_string()` (`lib/vsprintf.c`, the `%*pb` cpumask format used by
+/// `cpumap_print_to_pagebuf`): comma-separated 32-bit hex groups, most-significant group first.
+///
+/// The width is the CPU count, not a fixed 64, so masks above 64 CPUs are not truncated. The
+/// leading group is printed in `ceil(chunksz / 4)` hex digits where `chunksz = nr_bits % 32` (or 32
+/// when `nr_bits` is a multiple of 32); every following group is a full zero-padded 8 hex digits.
+/// A 65-CPU all-set mask thus renders `1,ffffffff,ffffffff` and a 128-CPU one four `ffffffff`
+/// groups, matching Linux exactly.
+fn format_cpu_mask(nr_bits: usize, set: impl Fn(usize) -> bool) -> String {
+    let nr_bits = nr_bits.max(1);
+    let mut chunksz = match nr_bits % 32 {
+        0 => 32,
+        rem => rem,
+    };
+    let mut out = String::new();
+    // Walk 32-bit chunks most-significant first, aligned like Linux's `ALIGN(nr_bits, 32) - 32`.
+    let mut base = nr_bits.next_multiple_of(32) - 32;
+    loop {
+        let val: u32 = (0..chunksz)
+            .filter(|&b| set(base + b))
+            .fold(0u32, |acc, b| acc | (1u32 << b));
+        if !out.is_empty() {
+            out.push(',');
+        }
+        let width = chunksz.div_ceil(4);
+        out.push_str(&alloc::format!("{val:0width$x}"));
+        chunksz = 32;
+        if base == 0 {
+            break;
+        }
+        base -= 32;
+    }
+    out
+}
+
+/// Hex CPU bitmask for all online CPUs, e.g. `f` for 4 CPUs.
+fn cpu_hex_mask() -> String {
+    let n = ax_runtime::hal::cpu_num();
+    format_cpu_mask(n, |cpu| cpu < n)
+}
+
+/// Hex CPU bitmask with only `cpu` set (a no-SMT core owning exactly its own CPU).
+fn cpu_bit_mask(cpu: usize) -> String {
+    format_cpu_mask(ax_runtime::hal::cpu_num(), |i| i == cpu)
 }
 
 /// `/sys/devices/system/cpu/` — enough CPU topology for userspace to size pools.
@@ -798,7 +959,19 @@ struct SystemCpuEntryDir {
 
 impl SimpleDirOps for SystemCpuEntryDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        Box::new(["online", "regs"].into_iter().map(Cow::Borrowed))
+        let names = [
+            Cow::Borrowed("online"),
+            Cow::Borrowed("regs"),
+            Cow::Borrowed("topology"),
+        ]
+        .into_iter();
+        // `cache/` only exists when the architecture can enumerate real cache leaves; on
+        // targets with no cache-geometry facility (e.g. riscv64, DT-only in Linux) it is
+        // absent rather than filled with invented values.
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64"))]
+        let names =
+            names.chain(has_cache_leaves(self.cpu).then_some(Cow::Borrowed("cache")));
+        Box::new(names)
     }
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
@@ -818,6 +991,138 @@ impl SimpleDirOps for SystemCpuEntryDir {
                     cpu: self.cpu,
                 }),
             ))),
+            // `cpuN/topology/` is what hwloc (used by pocl/lavapipe) probes to decide the Linux sysfs
+            // backend is usable; without a cpumask topology file it aborts discovery and reports
+            // total_memory=0 (so pocl advertises a 0-byte OpenCL device). `cache/` fills the cache
+            // hierarchy hwloc reads next.
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "loongarch64"))]
+            "cache" if has_cache_leaves(self.cpu) => {
+                Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                    self.fs.clone(),
+                    Arc::new(CpuCacheDir {
+                        fs: self.fs.clone(),
+                        cpu: self.cpu,
+                    }),
+                )))
+            }
+            "topology" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                self.fs.clone(),
+                Arc::new(CpuTopologyDir {
+                    fs: self.fs.clone(),
+                    cpu: self.cpu,
+                }),
+            ))),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+}
+
+/// `/sys/devices/system/cpu/cpu<N>/topology/` - socket/core/thread map. `core_cpus` (a cpumask) is
+/// the file hwloc requires to accept the Linux backend; each CPU is modelled as its own core (no
+/// SMT) so hwloc's compute-unit count matches cpu_num.
+struct CpuTopologyDir {
+    fs: Arc<SimpleFs>,
+    cpu: usize,
+}
+
+impl SimpleDirOps for CpuTopologyDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        // The `_list` and `thread_siblings` files mirror Linux `drivers/base/topology.c`, which
+        // always emits both the hex-`_cpus` mask and its `_list` sibling for every mask attribute.
+        let names = [
+            "core_id",
+            "physical_package_id",
+            "core_cpus",
+            "core_cpus_list",
+            "thread_siblings",
+            "thread_siblings_list",
+            // `core_siblings{,_list}` are in `topology.c`'s `bin_attrs[]` with no `#ifdef`, so every
+            // arch exposes them; they are backed by `core_cpumask` - the package/socket domain,
+            // the same mask `package_cpus` renders.
+            "core_siblings",
+            "core_siblings_list",
+            "package_cpus",
+            "package_cpus_list",
+        ]
+        .into_iter();
+        // `cluster_*` gate behind Linux's `TOPOLOGY_CLUSTER_SYSFS` (include/linux/topology.h:183),
+        // set when the arch defines `topology_cluster_id`/`topology_cluster_cpumask`: x86_64
+        // (arch/x86/include/asm/topology.h) plus aarch64/riscv64 via include/linux/arch_topology.h;
+        // loongarch64 defines neither, so it omits them.
+        #[cfg(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        ))]
+        let names = names.chain(["cluster_id", "cluster_cpus", "cluster_cpus_list"]);
+        // `die_*` gate behind `TOPOLOGY_DIE_SYSFS` (include/linux/topology.h:180), which needs
+        // `topology_die_id`+`topology_die_cpumask` - defined only by x86_64 among the four targets
+        // (arch/x86/include/asm/topology.h:147,201); aarch64/riscv64/loongarch64 define neither.
+        #[cfg(target_arch = "x86_64")]
+        let names = names.chain(["die_id", "die_cpus", "die_cpus_list"]);
+        Box::new(names.map(Cow::Borrowed))
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let cpu = self.cpu;
+        // A direct lookup must honour the same per-arch gating as `child_names`, otherwise a
+        // name absent from the listing is still openable. `die_*` exists only under Linux's
+        // TOPOLOGY_DIE_SYSFS (x86_64) and `cluster_*` only under TOPOLOGY_CLUSTER_SYSFS
+        // (x86_64/aarch64/riscv64); elsewhere Linux returns ENOENT.
+        #[cfg(not(target_arch = "x86_64"))]
+        if matches!(name, "die_id" | "die_cpus" | "die_cpus_list") {
+            return Err(VfsError::NotFound);
+        }
+        #[cfg(not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        )))]
+        if matches!(name, "cluster_id" | "cluster_cpus" | "cluster_cpus_list") {
+            return Err(VfsError::NotFound);
+        }
+        match name {
+            "core_id" => {
+                Ok(
+                    SimpleFile::new_regular(self.fs.clone(), move || Ok(alloc::format!("{cpu}\n")))
+                        .into(),
+                )
+            }
+            // `die_id` only reachable on x86_64 (see `child_names` gating); the same "0\n" single
+            // socket/die value as `physical_package_id`. `cluster_id` is the CPU's cluster index,
+            // 0 in the single no-sub-package-cluster model StarryOS uses.
+            "physical_package_id" | "die_id" | "cluster_id" => {
+                Ok(SimpleFile::new_regular(self.fs.clone(), || Ok("0\n".to_owned())).into())
+            }
+            // no-SMT: this core / thread owns exactly its own CPU. `cluster_cpus` is the CPU's own
+            // cluster mask; with no sub-package cluster modelled it is the CPU itself, exactly what
+            // Linux's default `clear_cpu_topology()` leaves in `cluster_sibling` (arch_topology.c:
+            // 792-793) for a CPU whose firmware declares no cluster.
+            "core_cpus" | "thread_siblings" | "cluster_cpus" => {
+                Ok(SimpleFile::new_regular(self.fs.clone(), move || {
+                    Ok(alloc::format!("{}\n", cpu_bit_mask(cpu)))
+                })
+                .into())
+            }
+            // Single self-CPU list (no SMT / no sub-package cluster): just this CPU's number.
+            "core_cpus_list" | "thread_siblings_list" | "cluster_cpus_list" => {
+                Ok(SimpleFile::new_regular(self.fs.clone(), move || Ok(format!("{cpu}\n"))).into())
+            }
+            // `core_siblings` is Linux's `core_cpumask` = the package/socket domain, identical to
+            // `package_cpus`; `die_cpus` is x86-only and (single die) also spans every online CPU.
+            "package_cpus" | "die_cpus" | "core_siblings" => {
+                Ok(SimpleFile::new_regular(self.fs.clone(), || {
+                    Ok(alloc::format!("{}\n", cpu_hex_mask()))
+                })
+                .into())
+            }
+            // System-wide list (all online CPUs) with the single terminating newline.
+            "package_cpus_list" | "die_cpus_list" | "core_siblings_list" => {
+                Ok(SimpleFile::new_regular(self.fs.clone(), || {
+                    Ok(format!("{}\n", cpu_range_string()))
+                })
+                .into())
+            }
             _ => Err(VfsError::NotFound),
         }
     }
@@ -874,12 +1179,22 @@ impl SimpleDirOps for CpuIdRegsDir {
     }
 }
 
+/// The online-CPU range as a bare sysfs `cpulist` string (`0` or `0-N`), *without*
+/// a trailing newline. Callers append the single terminating `\n` a sysfs attribute
+/// requires, so the newline is owned at exactly one place per attribute and cannot be
+/// doubled up (Linux emits one `\n` per single-line node/cpu list attribute).
 fn cpu_range_string() -> String {
-    let cpu_num = ax_runtime::hal::cpu_num();
-    if cpu_num <= 1 {
-        "0\n".to_owned()
+    cpu_range(ax_runtime::hal::cpu_num())
+}
+
+/// The `0`/`0-N` range for `n` online CPUs, split out from [`cpu_range_string`] so the
+/// newline-free byte format is unit-testable without the HAL (the double-`\n` regression
+/// only shows in the rendered attribute bytes).
+fn cpu_range(n: usize) -> String {
+    if n <= 1 {
+        "0".to_owned()
     } else {
-        format!("0-{}\n", cpu_num - 1)
+        format!("0-{}", n - 1)
     }
 }
 
@@ -1296,5 +1611,54 @@ impl SimpleDirOps for PlatformDrmDir {
             .into(),
             _ => return Err(VfsError::NotFound),
         })
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    // Byte-exact regression for the `node0/cpulist` double-newline ABI fix (#1573).
+    // `cpu_range_string()` embedded its own `\n`, so the attribute renderer's
+    // `format!("{}\n", cpu_range_string())` emitted `0\n\n` (`0-N\n\n` for SMP) -
+    // an illegal extra blank line for a single-line sysfs attribute a byte-exact
+    // user-space reader (`cat`, hwloc) parses. The range helper now returns the
+    // bare `0`/`0-N`, and every attribute owns the single terminating `\n`.
+    #[test]
+    fn cpu_range_has_no_embedded_newline() {
+        for n in [0usize, 1, 2, 4, 64, 65, 128] {
+            let range = cpu_range(n);
+            // Root-cause invariant: the range carries no newline of its own, so no
+            // caller can double it up. On the buggy `"0\n"`/`"0-N\n"` helper this
+            // fails immediately.
+            assert!(
+                !range.contains('\n'),
+                "cpu_range({n}) must not embed a newline, got {range:?}"
+            );
+        }
+    }
+
+    // The rendered sysfs attribute bytes: exactly one trailing `\n`, never `\n\n`.
+    // Mirrors how `node0/cpulist`, `cpu/{online,possible,present}`, PMU `cpus`, and
+    // the `*_list` topology attributes render (`format!("{}\n", cpu_range_string())`).
+    #[test]
+    fn cpulist_attribute_has_single_trailing_newline() {
+        // Uniprocessor and SMP both terminate with a single `\n`.
+        let uni = format!("{}\n", cpu_range(1));
+        assert_eq!(uni, "0\n", "smp1 cpulist must be exactly `0\\n`");
+        let smp = format!("{}\n", cpu_range(4));
+        assert_eq!(smp, "0-3\n", "smp4 cpulist must be exactly `0-3\\n`");
+
+        for rendered in [&uni, &smp] {
+            assert!(
+                rendered.ends_with('\n') && !rendered.ends_with("\n\n"),
+                "cpulist attribute must end with a single newline, got {rendered:?}"
+            );
+            assert_eq!(
+                rendered.matches('\n').count(),
+                1,
+                "cpulist attribute must contain exactly one newline, got {rendered:?}"
+            );
+        }
     }
 }
