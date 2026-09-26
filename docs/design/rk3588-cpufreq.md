@@ -1,203 +1,187 @@
-# RK3588 CPU DVFS 设计说明
+# RK3588 CPU 调频设计
 
-特性开关 `ax-driver/rk3588-cpufreq`（默认关闭，Orange Pi 5 Plus 板卡构建启用）为 RK3588
-提供 ondemand CPU 调频调压。本文是这套驱动的行为契约：调频域与安全边界、负载归因（逻辑
-CPU 到物理集群的映射拥有者与排序规则）、调度策略与降频下限，以及可在串口上核对的验收
-手段。实现位于 `drivers/ax-driver/src/soc/rockchip/cpufreq.rs`，内核侧轮询任务位于
-`os/StarryOS/kernel/src/entry.rs`。
+Orange Pi 5 Plus 有三个独立 CPU 调频域：A55 cpu0-3、A76 cpu4-5、A76 cpu6-7，
+对应 SCMI 时钟号 0、2、3。每个域共用一个时钟和一条 CPU/mem 电源轨。
+`rdif-cpufreq` 描述通用调频域、OPP、限制和硬件错误；
+`ax-runtime::cpufreq` 为 ArceOS、StarryOS 和 Axvisor 提供唯一的 governor 工作线程。
+RK3588 的 OPP 表筛选、温度规则、DSU 约束和转换顺序位于 `rockchip-soc::rk3588`，
+`ax-driver::soc::rockchip` 负责 FDT 探测以及 SCMI、PMIC、OTP、TSADC、GRF 的资源适配。
+原 `ax-driver::cpufreq` 公共门面和 StarryOS 校准入口已移除；内核调用方通过
+`ax-runtime::cpufreq` 发起串行请求。
 
-## 1. 功能与安全边界
+## 1. 启动与控制
 
-### 1.1 调频域与两根杠杆
+`ax-runtime::bootstrap` 在设备探测建立启动 OPP 后启动次级 CPU，随后创建唯一的
+调频工作线程。该顺序保证硅片分档与运行时调档开始时，三个 CPU 域都已有可确认的
+初始频率。
 
-RK3588 的 CPU 时钟是电压耦合的 PVTPLL：SCMI 时钟号只选定环形振荡器目标，实际送达频率
-跟随核心轨电压。因此一次 OPP 迁移必须成对操作 SCMI ring 与 PMIC 轨电压，且顺序保证任何
-中间状态都只会过压、不会欠压（升档先压后频，降档先频后压，见 `apply_opp` 与
-`run_apply_steps` 的主机端测试）。
+### 1.1 启动顺序
 
-三个物理调频域、它们的 SCMI 时钟号与 boot 目标如下（依据 `orangepi5plus.dts`）：
-
-| 集群 | 物理 CPU | SCMI 时钟号 | boot OPP |
-| --- | --- | --- | --- |
-| A55（小核） | cpu0-3 | 0 | 1008 MHz @ 675 mV |
-| A76 big0 | cpu4/5 | 2 | 1200 MHz ring @ 675 mV |
-| A76 big1 | cpu6/7 | 3 | 1200 MHz ring @ 675 mV |
-
-两个大核集群使用完整电压杠杆：RK8602/RK8603 轨电压可经 I2C 读回，每次写都确认后才提交
-OPP。A55 是 ring-only：其 RK806 轨电压读路径存在硬件限制（MISO 不进移位寄存器），因此只
-在启动对齐阶段执行一次有界的降压，运行期不再写 A55 轨电压，仅移动 SCMI ring；675 mV 对
-所有 ≤1008 MHz 的 ring 都过压，不可能欠压（`Cluster::voltage_managed` 固定了这一划分，
-`a55_ladder_is_ring_only_on_the_boot_rail` 测试锁定）。
-
-### 1.2 失败安全与探测时序
-
-失败安全由 `GOV_READY` 门控：任一时刻 A76 I2C PMIC 未起来，governor 不武装，所有集群停
-在 boot OPP；A55 SPI 失败不阻止 governor（A55 本就 ring-only）。探测本身是
-`PostKernel`/`DEFAULT` 级、一次性守卫 `APPLIED` 保护，发生在 `start_secondary_cpus()`
-之前，重定时 A76 时其上没有被调度的核心。
-
-## 2. 负载归因契约
-
-governor 收到的 `busy_runtime_ns[i]` 是**逻辑 CPU i** 的累计非 idle 运行时间（ns；由
-ax-task 在调度事务结算当前非 idle task 时累计，经 axruntime 公共 runtime facade 读取），
-而调频域是物理集群。归因要回答的问题是：逻辑 CPU i 实际运行在哪个物理集群上。
-
-### 2.1 逻辑编号的拥有者
-
-逻辑 CPU 编号由**内核的 CPU 列表**决定，不由设备树的文档顺序决定：someboot 的
-`CpuIdOrder`（`platforms/someboot/src/smp/cpu_iter.rs`）把 boot hart 的固件硬件号排在
-逻辑 0，其余 CPU 按固件（FDT `/cpus` 文档序）跟进。per-CPU 内核状态（调度队列、忙计数）
-全部按这套索引分配。驱动的归因必须与它一致，唯一的正确来源是询问内核本身：
-
-`axklib::cpu::resolve_logical_index(hardware_id)`
-→ `Klib::cpu_resolve_logical_index`（`components/axklib`）
-→ `ax_hal::topology::resolve_cpu_index`（axruntime 实现）
-→ somehal `cpu_id_to_idx`（即当初分配 per-CPU 索引的同一映射）。
-
-ax-driver 位于 ax-task/ax-hal 之下，不能直接依赖它们，`Klib` 是既有的上行能力通道。
-未实现该能力的平台得到 `None`，行为退化为回退路径（见 2.3）。
-
-之所以强调这一点，是因为 guest FDT 的文档顺序可能与逻辑顺序脱节：Axvisor 的
-`create_guest_fdt`/`need_cpu_node`（`virtualization/axvm/src/boot/fdt/core/create.rs`）
-按 `phys_cpu_ids` **成员**过滤 `/cpus/cpu@*` 并保留宿主 DT 顺序，不按数组顺序重排；而
-每个 vCPU 的 guest MPIDR 等于其 `phys_cpu_ids[i]`（`virtualization/axvm/src/arch/aarch64/vm.rs`
-的 `mpidr_el1`）。对非单调绑定如 `phys_cpu_ids = [0x400, 0x000]`，guest FDT 仍先列出
-cpu@0，但逻辑 CPU 0 运行在 A76 cpu@400 上。按遍历序号归因会把大核负载记到 A55 集群：
-governor 推高小核而真正承载负载的大核从不升频——这正是本契约要排除的失效模式。
-
-### 2.2 逐节点归因规则
-
-`map_cpus_from_fdt` 对每个 `/cpus` cpu 节点做同一套判定：取节点的 `reg`（固件硬件号）
-与 SCMI 时钟号（`cpu_node_topology`），把硬件号经 2.1 的能力解析成逻辑索引，再把该时钟
-号对应的集群记入 `CPU_CLUSTER[logical]`（`store_cpu_clusters` 为可主机测试的纯核心）。
+启动过程先注册 `rdif-cpufreq`，再确认启动时钟和电源轨，最后由
+`ax-runtime::cpufreq::start` 接管策略；以下流程标出硬件与策略的交接点。
 
 ```mermaid
-flowchart TD
-    A["cpu 节点"] -->|"缺 reg"| W1["warn：不参与归因"]
-    A -->|"缺 SCMI 集群时钟"| W2["warn：不参与归因"]
-    A -->|"时钟号不属任一集群"| S1["静默跳过"]
-    A --> R["解析硬件号 → 逻辑索引"]
-    R -->|"None：CPU 未运行 / 平台无实现"| S2["不驱动任何域"]
-    R -->|"索引越界"| S3["拒绝，不写入"]
-    R --> V["写入 CPU_CLUSTER：逻辑索引 → 集群"]
+flowchart LR
+    A[CPU 设备探测] --> B[注册 rdif-cpufreq]
+    B --> C[确认 1008/1200 MHz 启动状态]
+    C --> D[所有宿主 CPU 上线]
+    D --> E[ax-runtime 工作线程]
+    E --> F[OTP/PVTM/温度筛选 OPP]
+    F --> G[ondemand 或 performance]
 ```
 
-这些分支不是防御性堆砌，而是可独立验收的契约：诊断"某个集群不调频"或"调错集群"时，可
-按下表逐项排除输入侧原因。
+探测先注册 CPUFreq 设备，再把三个时钟设到已验证的启动 ring，确认 RK8602、RK8603
+和 RK806 电压读回，并将轨电压逐级对齐到 750 mV。设备探测未建立安全状态时查询
+返回 `NotReady`；没有设备才返回 `NotSupported`。完成所有宿主 CPU 上线后，运行时从宿主 bootargs
+读取 `cpufreq.default_governor=ondemand|performance`。缺省或无效值为 `ondemand`，
+无效值另记告警。Axvisor 客户机命令行不控制宿主调频。固定频率调整只供内核调用，
+本次没有 StarryOS 用户态 ABI。
 
-| 情况 | 处理 | 理由 |
-| --- | --- | --- |
-| 节点缺 `reg` 或缺可识别 SCMI 集群时钟 | warn 后跳过 | 节点无法标识身份或所属域 |
-| 时钟号不属于任何 CPU 集群 | 跳过 | `cluster_index_from_clock_id` 之外无目标域 |
-| 硬件号解析为 `None` | 不驱动任何域 | 内核未运行该 CPU（离线/未纳入 CPU 集）或平台未实现该能力 |
-| 逻辑索引越界（≥ `CPU_CLUSTER.len()`） | 拒绝写入 | 防御畸形解析结果，不 panic |
-| 两个节点 `reg` 重复 | 畸形 DT，后写覆盖 | DT 规范要求 `reg` 唯一；映射仍是"逻辑索引 → 集群"的函数，无害 |
+### 1.2 调频接口
 
-所有跳过都是保守方向：被跳过的 CPU 不贡献任何忙碌读数，因此绝不会把某个域"读成全空
-闲"而误降频，只会让它维持原状态。
+`rdif-cpufreq::Interface` 是驱动与三套系统共用运行时之间的契约。调用方按调频域
+读取 OPP 和限制，由运行时将策略切换、固定频率请求和温度刷新送入同一工作线程。
 
-### 2.3 部分映射与回退
+`rdif-cpufreq::Interface` 按域提供 `domains`、`available_opps`、`current_opp`、
+`limits`、`set_frequency` 和 `refresh_limits`。`DomainInfo.cpu_ids` 是调度器逻辑 CPU
+编号；适配器通过 `axklib::cpu::resolve_logical_index` 转换设备树中的硬件 ID，
+不得假定设备树文档顺序等于逻辑顺序。运行时把策略、固定频率请求和温度刷新串行
+送入同一个任务上下文。`current_opp` 是完整读回后的策略状态，实际送达频率须以
+绑核 PMU 周期计数和系统计时器测量。
 
-部分映射是合法状态：只有至少映射到一个在线逻辑 CPU 的集群参与决策；没有任何在线 CPU
-的集群在 `governor_poll` 中被整体跳过（`counts[ci] == 0 → continue`），不会被当作全空
-闲而永远降频。仅当整趟 FDT 走查一无所获（`map_cpus_from_fdt() == 0`，例如平台未实现
-2.1 的能力）时，`map_cpus_from_physical_topology` 按 cpu0-3 / cpu4-5 / cpu6-7 的物理区间
-回退，裸机行为与历史版本一致。
+`ondemand` 每 100 ms 采样各域最忙核心的非 idle 比例：达到 80% 升至当前上限，
+全部低于 30% 降一档。`performance` 持续请求限制内最高 OPP。温度或 DSU 约束
+改变后，驱动先完成必要降档，才公布新限制；固定请求若当前不可用返回
+`OppUnavailable`。硬件读回失败返回 `HardwareFailure`，受影响域停止后续写入，并以
+`NotReady` 表示软件已不能证明当前 OPP。任一域调档失败都会关闭三个调频域：
+SCMI 写入可能已生效而读回失败，大核实际频率未知时不能再按旧索引降低 A55/DSU。
 
-## 3. 调度策略与降频下限
+## 2. 芯片筛选与转换
 
-### 3.1 ondemand 决策
+RK3588 驱动以板卡 DTB、OTP 和 PVTM 决定可用 OPP，再让 SoC 转换状态机依次确认
+供电、GRF read margin 与 SCMI 时钟。筛选失败保留启动状态，转换失败关闭后续写入。
 
-每个集群共享一个时钟，因此由其**最忙的核心**驱动（`next_opp_idx`，主机可测）：任一核
-心忙碌百分比 ≥ `UP_THRESHOLD_PCT`（80%）时一步跳到梯顶（快速攻击）；全部核心 <
-`DOWN_THRESHOLD_PCT`（30%）时降一档；其余保持。窗口按实际流逝时间折算（慢唤醒不会虚
-增负载），首次轮询只建立基线不做决策。
+### 2.1 OPP 筛选
 
-### 3.2 boot OPP 下限
+`rockchip-soc::rk3588::cpufreq_opp` 负责解析 DT OPP 电压和硬件掩码，
+`ax-driver::soc::rockchip::cpufreq::select_domain_opps` 提供 OTP、PVTM 与温度实测值。
+只有这两层都确认的档位才进入 `available_opps`。
 
-降档以 `BOOT_OPP_IDX`（A55 1008 / A76 1200 ring @ 675 mV）为下限：突发 I/O 型负载在两次
-读盘之间读作近空闲，降到 boot OPP 以下会拖慢其完成路径（板上实测 490 MB 模型读取：静态
-1200 MHz 25.4s，允许降到 408 MHz 则 29.8s）。由此有一个直接推论：A55 梯子的顶格就是它
-的 boot OPP，所以 A55 永远不会被 governor 降档，只在 ring-only 梯内保持 1008 MHz。
+CPU OPP 来自板卡 DTB 的三个 `operating-points-v2` 表。OTP byte 6 的低五位
+`0x0d`、`0x0a` 分别是 M/bin1、J/bin2，其余是标准/bin0。探测双读 OTP 缓存；
+PVTM 在表指定的 750 mV 和 1.416/1.608 GHz 测量点取 GRF 样本，按 TSADC 温度
+修正后，从 `rockchip,pvtm-voltage-sel*` 选择电压档。测量频率必须与这两个
+已确认的板级值严格相等，异常 DT 值在 SCMI 升频前拒绝。随后同时匹配
+`opp-supported-hw` 型号与电压档掩码，优先读取 `opp-microvolt-L<档>`，
+没有该属性才读取普通 `opp-microvolt`。`opp-info` OTP 修正电压仍受 OPP
+允许的最大值限制。任一必要输入缺失、格式无效或测量无法恢复启动时钟时，
+不发布依赖该输入的高档。
 
-## 4. 启用与构建
+高档当前只对实体板验证过的标准 SKU 分档开放：A55 PVTM 档 0、1，
+两组大核 PVTM 档 0、3。J/M SKU 及其他 PVTM 档保留启动 OPP；即使 DT
+列出更高频率，也不因静态表存在就开放。新增分档需补齐对应实体板的轨电压
+读回和绑核频率测量，再更新这道门控。
 
-特性在两个 Orange Pi 5 Plus 构建配置中启用：
+### 2.2 OPP 转换
 
-- `test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml`
-  —— 板卡 CI runner 实际构建的配置，标准板卡测试入口会在真实硬件上编译、启动并运行
-  governor：
+`rockchip-soc::rk3588::cpufreq::transition` 决定调档顺序，RK3588 适配层分别实现
+轨电压、GRF read margin 和 SCMI 时钟写入与读回。软件 OPP 索引只在整个转换完成
+后更新，因此中途失败不会被报告为已达到目标档。
 
-  ```bash
-  cargo xtask starry test board --board orangepi-5-plus
-  ```
+三域使用各自的轨：RK806 DCDC2 经 SPI2 驱动 A55，RK8602/8603 经 I2C0 驱动
+两个大核域。调压每步至多 25 mV，读回选择码并等待稳定。CPU 与 mem supply
+在该板卡指向同一物理轨，只写一次。GRF read margin 按电压表设置并读回；
+SCMI 设置也必须读回目标 ring。SoC 层转换状态机规定：
 
-  该套件每个用例都启动此内核；governor 引起的启动 panic/挂起会命中用例的 `panic`
-  失败正则，板卡 CI 由此回归保护该特性。
-- `os/StarryOS/configs/board/orangepi-5-plus.toml` —— 通用板卡构建模板（CI 之外的
-  `max_cpu_num` 全核构建）。
+| 转换 | 第一步 | 第二步 | 部分失败后的处理 |
+| --- | --- | --- | --- |
+| 升档 | 确认供电和 read margin | 确认 SCMI 时钟 | 停止；可能过压，不提交 OPP |
+| 降档 | 确认 SCMI 时钟 | 确认 read margin 和供电 | 停止；可能过压，不提交 OPP |
 
-自定义构建启用时，向该配置的 `features` 列表加入 `"ax-driver/rk3588-cpufreq"`。
+RK3588 大核频率对 A55/DSU 有最低频率要求。按 BSP 规则，大核目标频率的
+80% 向下取整到 100 MHz；升大核前先满足小核下限，降小核前先检查两个大核
+当前频率。不能满足该要求的大核档从当前限制中排除。
 
-## 5. 可观测验证
+## 3. 温度与失效
 
-### 5.1 启动与运行日志
+`refresh_limits` 在每轮策略计算前读取真实 TSADC，并由 `ThermalState` 应用温度迟滞。
+必要的降档或升压完成后才允许后续策略请求观察新状态；读回错误会关闭受影响的
+调频能力。
 
-启动早期（console 交接前）输出轨电压与重定时结果；governor 武装条件是 A76 I2C PMIC 成
-功（A55 SPI 失败不影响，A55 ring-only）：
+### 3.1 温度限制
 
-```text
-cpufreq: A55 rail boot voltage = <uV> uV
-cpufreq: A55 <before>-><after>, A76 <before>-><after> MHz
-cpufreq: ondemand governor armed (A76 I2C up; a55_spi=<bool>, A55 ring-only)
-```
+`ThermalState::update` 维护高低温两个独立迟滞条件，`refresh_limits` 将它们映射到
+每域的频率上限和有效电压，并在超限时先执行降档。
 
-governor 武装后的第一次 `governor_poll`（任务启动后约一个 `GOV_PERIOD_MS`）构建归因映射
-并输出一行最终映射，误归因的启动可以直接在串口定位：
+TSADC 初始化七个通道的 120 °C 硬件关机比较器及 CRU 路由，等待三个 CPU
+通道出现有效样本后才公开传感器。低于 10 °C 启用 750 mV 电压下限，超过
+15 °C 解除；高于 85 °C 将 A55 限到 1.608 GHz、大核限到 2.208 GHz，
+低于 80 °C 恢复。温度丢失时，电压使用 750 mV 下限，频率仅保留确认过的
+1008/1200 MHz 启动档。每次工作线程轮询先更新这些限制再处理请求。
 
-```text
-cpufreq: busy attribution cpu0->A76b0 cpu1->A55 ...
-```
+### 3.2 失效边界
 
-运行期每次 OPP 迁移输出
-`gov: <cluster> peak=<n>% opp <i>-><j> = <mhz> MHz @ <mv> mV`。精确送达频率可用
-`cpuprobe` 的 `mhz_pmc` 读取（PMU 周期计数器在启动时使能）；配套的
-`apps/starry/sysbench` harness驱动全核负载并与 Linux 基线对比。
+`check_ready` 只开放读回已确认的调频域；`mark_domain_failed` 在转换状态不再可信时
+关闭三个域，避免大核频率未知后继续按旧 DSU 约束调小核。
 
-### 5.2 频率读数
+OTP/PVTM/传感器、PMIC 读回、SCMI 时钟或 GRF 确认失败均不得通过猜测软件
+索引开放档位。RK806 已在实体板上读回 buck2 选择码；任何无法再次读回的
+A55 实例仍不能进入需升压的 OPP。板卡 DTB 静态最高 A55 1.8 GHz、
+大核 2.4 GHz，并不意味着每颗芯片都能使用。标准 SKU 的某一 PVTM 档
+最高为 2.256 GHz，较高档可选择 2.352 GHz；实际以 OTP、PVTM 和表掩码为准。
 
-`log_frequency_readout()` 是只读快照，由 StarryOS 内核 `entry.rs` 的 `init` 在决定是否
-派生 governor 任务之后调用，输出三个域的 SCMI ring 频率、governor 武装状态、各域 OPP
-索引与当前核心的送达频率（PMU 实测）：
+## 4. 验证与开放
 
-```text
-cpufreq readout: A55=<mhz> MHz, A76b0=<mhz> MHz, A76b1=<mhz> MHz, governor=<bool> \
-(gov_ready=<bool>), opp_idx=(<i>,<i>,<i>), current-core delivered=<mhz> MHz
-```
+主机测试验证纯规则与参数解析；板卡测试验证电源、时钟和调度器共同工作时的
+实际结果。测试只证明覆盖到的芯片分档与温度场景，新增分档仍需另行测量。
 
-它不改动任何时钟与电压，用于回答"这个内核此刻实际跑在哪个集群、多高频率"。
+### 4.1 自动化验证
 
-### 5.3 确定性验收
+`cargo xtask test` 运行 `rockchip-soc` 的 OPP 与转换规则测试及 `ax-runtime` 的
+CPUFreq 策略测试。ArceOS 的 `cpufreq` 板卡用例补充三域并发调档和 PMU 实测。
 
-映射逻辑的确定性验证在主机单元测试层（`cargo test -p ax-driver --features
-rk3588-cpufreq --lib cpufreq`），其中非单调用例曾在按 FDT 序号归因的旧实现下实际失败后
-再修复（红-绿证据）：
+主机测试覆盖 OPP 双掩码与电压选择、PVTM 分档、10/15 °C 和 85/80 °C
+迟滞、DSU 下限、转换每一步失败时停止，以及启动参数解析。板卡路径是
+`cargo xtask arceos test board --board orangepi-5-plus --test-case cpufreq`：
+用例读取三个 RDIF 域，设置最高/最低档，跨核同时请求两个档位，再在八个
+逻辑 CPU 上用 PMU 周期计数与 CNTVCT 测量实际送达频率。板卡测试专用的
+`rk3588-cpufreq-thermal-test` 特性可叠加温度限制：真实 TSADC 每次仍须成功
+读取，真实高温和传感器故障不能被模拟温度覆盖。用例按 86、80、79 °C 与
+9、15、16 °C 顺序验证限频降档、迟滞和恢复，以及低温电压下限与实际频率。
+芯片分档未开放全部三个高档域时会记录 `THERMAL_SKIP_UNREADY`，不把该板
+当作高档温度测试通过。QEMU 结果仅验证接口与启动，不作为实体板频率证据。
 
-| 测试 | 固定的行为 |
-| --- | --- |
-| `non_monotonic_pin_books_busy_under_the_cluster_it_runs_on` | `[0x400, 0x000]` + boot-hart 优先解析：busy[0]→A76b0、busy[1]→A55 |
-| `identity_order_books_each_cpu_under_its_own_cluster` | 裸机全核顺序下逐 CPU 与 `Cluster::cpus()` 一致 |
-| `single_vcpu_pin_books_under_its_pinned_cluster` | SMP=1 绑 cpu@400：仅 cpu0→A76b0 |
-| `offline_hardware_id_books_nowhere` | 内核未运行的硬件号不落入任何逻辑索引 |
-| `out_of_range_logical_index_is_refused` | 越界逻辑索引被拒绝且不 panic |
-| `cluster_clock_ids_map_to_governor_cluster_indices` | SCMI 时钟号→集群索引表 |
-| `physical_topology_fallback_partitions_all_cpus` | 回退物理区间与 `Cluster::cpus()` 一致 |
-| `governor_*` / `apply_*` / `opp_table_*` | 阈值、boot-OPP 下限、升降档顺序与事务提交语义 |
+### 4.2 板卡结果
 
-非单调跨集群绑定的板卡验收条件（当前尚未在实体板上执行，为合并后的确认项）：
+以下数据来自 2026-09-24 的 Orange Pi 5 Plus 实体板运行，包含两种 PVTM 分档。
+频率以绑核 PMU 周期计数与系统计时器换算，轨电压由 PMIC 选择码读回确认。
 
-1. guest 配置 `phys_cpu_ids = [0x400, 0x000]`（SMP=2），vCPU0 绑 A76 big0；
-2. 启动串口出现 `cpufreq: busy attribution cpu0->A76b0 cpu1->A55`；
-3. 在 vCPU0 上施加 CPU 密集负载：出现 `gov: A76b0 ... opp 2-><更高>` 升档行，`gov: A55`
-   不因该负载升档，`cpufreq readout:` 中 A76b0 的 `opp_idx` 上移而 A55 保持；
-4. 把负载移到 vCPU1 后 A55 的行为对称成立。
+2026-09-24 的 OrangePi-5-Plus-3 运行通过：OTP 标准 SKU，PVTM 分档
+A55 0、大核 0；OPP 上限 A55 1.8 GHz、大核 2.256 GHz。板上绑核测量
+A55 最高档约 1.783 GHz，大核两域约 2.163-2.171 GHz；三域最低
+408 MHz 档测得约 396 MHz。RK806 在该板确认 750、675 和 950 mV
+写入读回；两个大核轨在 675 mV 与 1.0 V 间完成升降。精确原始日志保留
+在本次本地验证记录中。另一次 `OrangePi-5-Plus-1` 运行通过：标准 SKU，
+PVTM A55 档 1、大核档 3，选择上限为 1.8/2.352/2.352 GHz；绑核测得
+A55 约 1.827 GHz，大核约 2.241-2.252 GHz，三域最低档约 396 MHz。
+两块板均确认升降档后的轨电压读回。最终代码再次在
+`OrangePi-5-Plus-1` 通过 ArceOS 调频板卡用例：三域最高、最低及并发请求后，
+八个核心实测最高约 1.828/2.243/2.254 GHz，最低约 396 MHz。
+同一型号的板卡在受控温度用例中完成三域热限制降档与恢复，并确认低温下
+750 mV 轨电压读回和约 396 MHz 的实际频率。此项是合成温度的电源、时钟和
+软件策略闭环测试，不是实体芯片在 9 °C 或 86 °C 环境下的热稳定性证明。
+StarryOS 的 `native-hardware-smoke` 在 `OrangePi-5-Plus-3` 通过，宿主启动
+`Ondemand`，筛得 1.8/2.256/2.256 GHz；Axvisor 的
+`orangepi-5-plus-linux` 冒烟用例在 `OrangePi-5-Plus-2` 通过，宿主启动
+`Ondemand`，筛得 1.8/2.352/2.352 GHz，Linux 客户机进入 shell。
+这两项启动用例没有逐簇切档与绑核频率测量；该行为由 ArceOS 板卡用例验证。
+实际环境中的高低温切换尚未完成，常温及合成温度结果不能替代该项证据。
+
+### 4.3 合入门禁
+
+实体板测量证明当前两组标准 SKU 分档的常温行为，合入前仍需独立审查高档的
+电源、时钟与失效边界；真实环境的高低温稳定性也尚无证据。
+
+高于先前保守档位的 OPP 在合入前须由合格 RK3588 电源/时钟领域审查人确认
+供电范围、PVTPLL/固件要求、read margin、DSU 时序、失败状态及板卡测量。
+该审查是独立门禁，测试通过不代表审查完成。

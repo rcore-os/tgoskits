@@ -311,6 +311,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-cpu-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-driver",
+ "ax-runtime",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-cpu-fp-context"
 version = "0.1.0"
 dependencies = [
@@ -894,6 +904,7 @@ dependencies = [
  "arm-scmi-rs",
  "ax-alloc",
  "ax-arm-pl031",
+ "ax-lazyinit",
  "ax-sync",
  "axklib",
  "bitflags 2.13.2",
@@ -916,6 +927,7 @@ dependencies = [
  "rd-net",
  "rdif-block",
  "rdif-clk",
+ "rdif-cpufreq",
  "rdif-display",
  "rdif-input",
  "rdif-intc",
@@ -1252,6 +1264,7 @@ dependencies = [
  "quote",
  "rd-net",
  "rdif-block",
+ "rdif-cpufreq",
  "rdif-intc",
  "rdif-serial",
  "rdrive",
@@ -6545,6 +6558,14 @@ name = "rdif-clk"
 version = "0.5.7"
 dependencies = [
  "rdif-base",
+]
+
+[[package]]
+name = "rdif-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

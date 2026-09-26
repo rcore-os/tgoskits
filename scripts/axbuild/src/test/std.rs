@@ -49,6 +49,19 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
     ],
 }];
 
+// The full host-test binary includes target-only runtime tests that cannot run
+// in a host process. Keep CPUFreq's pure policy rules executable in CI.
+const AX_RUNTIME_CPUFREQ_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "host-test-cpufreq",
+    no_default_features: false,
+    features: &["host-test"],
+    name_filter: Some("cpufreq::tests::"),
+    expected_tests: &[
+        "cpufreq::tests::boot_governor_selection",
+        "cpufreq::tests::ondemand_uses_busiest_cpu_and_decays_one_opp",
+    ],
+}];
+
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
         name: "host-test+rtc+starfive-jh7110-dwmmc",
@@ -63,25 +76,6 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         features: &["pci"],
         name_filter: Some(PCI_FDT_IRQ_CAPABILITY_TEST),
         expected_tests: &[PCI_FDT_IRQ_CAPABILITY_TEST],
-    },
-    // The rk3588-cpufreq feature gates the governor busy-attribution tests
-    // (the non-monotonic pin regression and its siblings), which are otherwise
-    // never compiled by the host-test profile above. This profile lists and
-    // runs exactly the `attribution` submodule so CI proves the regression is
-    // discovered and executed, not just compiled into a binary that is never
-    // asked to run it.
-    PackageFeatureProfile {
-        name: "host-test+rk3588-cpufreq",
-        no_default_features: false,
-        features: &["host-test", "rk3588-cpufreq"],
-        name_filter: Some("attribution::"),
-        expected_tests: &[
-            "soc::rockchip::cpufreq::tests::attribution::identity_order_books_each_cpu_under_its_own_cluster",
-            "soc::rockchip::cpufreq::tests::attribution::non_monotonic_pin_books_busy_under_the_cluster_it_runs_on",
-            "soc::rockchip::cpufreq::tests::attribution::offline_hardware_id_books_nowhere",
-            "soc::rockchip::cpufreq::tests::attribution::out_of_range_logical_index_is_refused",
-            "soc::rockchip::cpufreq::tests::attribution::single_vcpu_pin_books_under_its_pinned_cluster",
-        ],
     },
 ];
 
@@ -531,7 +525,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-input"
         | "ax-ipi"
         | "ax-log"
-        | "ax-runtime"
         | "ax-api"
         | "rdrive"
         | "ax-net"
@@ -541,6 +534,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
+        "ax-runtime" => Some(AX_RUNTIME_CPUFREQ_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
