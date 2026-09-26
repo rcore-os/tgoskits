@@ -1,0 +1,3 @@
+/* Linked only from test.html: a request for this file in the httpd log
+   shows that the browser fetched the page and parsed its head. */
+.ok { text-decoration: underline; }
