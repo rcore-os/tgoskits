@@ -150,7 +150,8 @@ class CiPlanTests(unittest.TestCase):
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            # Suspended pending the ivshmem replacement.
+            # "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
         ):
@@ -857,7 +858,7 @@ command = "true"
             )["axvisor_matrix"]["include"]
         )
         self.assertNotIn("test-orangepi-5-plus-dualguest-robot", nightly_rows)
-        self.assertIn(
+        self.assertNotIn(
             "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark", nightly_rows
         )
 

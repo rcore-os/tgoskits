@@ -12,10 +12,10 @@ struct GuestBuilds {
     arceos_build_configs: Vec<std::path::PathBuf>,
 }
 
-pub(super) async fn prepare(app: &mut AppContext, board_config: &Path) -> anyhow::Result<()> {
-    let directory = board_config
+pub(super) async fn prepare(app: &mut AppContext, test_config: &Path) -> anyhow::Result<()> {
+    let directory = test_config
         .parent()
-        .context("board config has no directory")?;
+        .context("test config has no directory")?;
     let path = directory.join("guest-builds.toml");
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -45,8 +45,8 @@ pub(super) async fn prepare(app: &mut AppContext, board_config: &Path) -> anyhow
             crate::arceos::build::resolve_build_info_path,
         )?;
         let cargo = crate::arceos::build::load_cargo_config(&request, app.workspace_context())?;
-        ensure!(cargo.to_bin, "board guest build must enable to_bin");
-        println!("prepare board guest: {}", request.package);
+        ensure!(cargo.to_bin, "test guest build must enable to_bin");
+        println!("prepare test guest: {}", request.package);
         app.build(cargo, request.build_info_path).await?;
     }
     Ok(())

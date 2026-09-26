@@ -1,0 +1,6 @@
+package = "arceos-ivc-publisher"
+target = "aarch64-unknown-none-softfloat"
+features = ["arceos"]
+log = "Info"
+max_cpu_num = 1
+to_bin = true

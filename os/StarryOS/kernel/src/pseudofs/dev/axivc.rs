@@ -20,11 +20,13 @@ use ax_runtime::hal::irq::{
 };
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
 use axhvc::ivc::{self, IvcGuestPhysAddr};
-use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion};
 use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use bytemuck::{AnyBitPattern, NoUninit};
 
+use super::ivc_legacy::{
+    self as axivc, IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcProducer, IvcRegion,
+};
 use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
