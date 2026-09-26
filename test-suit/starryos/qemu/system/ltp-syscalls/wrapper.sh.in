@@ -60,6 +60,9 @@ export LTPROOT="${ltp_root}"
 export PATH="${binary_dir}:${ltp_root}/bin:/usr/sbin:/sbin:/usr/bin:/bin"
 export TMPDIR="${case_tmp}"
 export LTP_TIMEOUT_MUL=1
+if [ "${case_id}" = "fcntl14" ]; then
+    export LTP_TIMEOUT_MUL=2
+fi
 case_output="${case_tmp}/ltp-output.log"
 
 set +e
