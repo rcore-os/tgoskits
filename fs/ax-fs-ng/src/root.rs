@@ -29,6 +29,8 @@ static ROOT_BLOCK_HANDLE: OnceLock<usize> = OnceLock::new();
 static ROOT_BLOCK_REGION: OnceLock<BlockRegion> = OnceLock::new();
 #[cfg(axtest)]
 static AXTEST_SCRATCH_REGION: OnceLock<Option<BlockRegion>> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_ROOT_DISK_PARTITION_REGIONS: OnceLock<Vec<BlockRegion>> = OnceLock::new();
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,6 +235,14 @@ pub fn init_root(
     ROOT_BLOCK_REGION.call_once(|| region);
     #[cfg(axtest)]
     AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
+    #[cfg(axtest)]
+    AXTEST_ROOT_DISK_PARTITION_REGIONS.call_once(|| {
+        selected
+            .partitions
+            .iter()
+            .map(|partition| partition.info.region)
+            .collect()
+    });
 
     let root = if let Some(kind) = selected_filesystem_kind(
         selected.raw_filesystem,
@@ -282,6 +292,17 @@ pub fn axtest_root_region(handle: &BlockDeviceHandle) -> Option<BlockRegion> {
 pub fn axtest_scratch_region_request() -> Option<BlockRegion> {
     let requested = AXTEST_SCRATCH_REGION.get()?;
     *requested
+}
+
+/// Returns every partition region identified on the root disk. The
+/// destructive axtests must not overlap any of them: init_root mounts the
+/// non-root partitions alongside the root filesystem.
+#[cfg(axtest)]
+pub fn axtest_root_disk_partition_regions() -> &'static [BlockRegion] {
+    AXTEST_ROOT_DISK_PARTITION_REGIONS
+        .get()
+        .map(|regions| regions.as_slice())
+        .unwrap_or(&[])
 }
 
 #[cfg(axtest)]

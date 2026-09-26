@@ -322,9 +322,11 @@ fn assert_successful_read(request: &CompletedRequest, block_size: usize) {
 /// failing. Two discovery paths exist:
 ///
 /// 1. An operator-declared reserved region on the root card, requested on the
-///    kernel command line as `axtest.block_scratch=<start_lba>:<blocks>`. A
-///    request that fails its eligibility checks is a hard error: the operator
-///    explicitly asked for the destructive tests to run.
+///    kernel command line as `axtest.block_scratch=<start_lba>:<blocks>`. The
+///    region must hold at least [`SCRATCH_MIN_REGION_BLOCKS`] blocks and must
+///    not overlap any partition of the root disk. A request that fails its
+///    eligibility checks is a hard error: the operator explicitly asked for
+///    the destructive tests to run.
 /// 2. A dedicated non-root disk whose first sector starts with the scratch
 ///    marker, usable without any command-line configuration.
 fn writable_test_device() -> Option<(Arc<BlockDeviceHandle>, BlockRegion)> {
@@ -337,7 +339,12 @@ fn writable_test_device() -> Option<(Arc<BlockDeviceHandle>, BlockRegion)> {
             .filter(|device| !device.device_info().read_only)
             .filter(|device| {
                 let info = device.device_info();
-                info.logical_block_size == 512 && scratch.end_lba <= info.num_blocks
+                // The region must be large enough for every test layout
+                // (functional sub-regions, benchmark region and the
+                // multi-descriptor test together need 80 blocks).
+                info.logical_block_size == 512
+                    && scratch.num_blocks() >= u64::from(SCRATCH_MIN_REGION_BLOCKS)
+                    && scratch.end_lba <= info.num_blocks
             })
             .filter(|device| {
                 // The reserved extent lives on the root SD card; do not fall
@@ -350,6 +357,17 @@ fn writable_test_device() -> Option<(Arc<BlockDeviceHandle>, BlockRegion)> {
                     return false;
                 };
                 scratch.end_lba <= root.start_lba || root.end_lba <= scratch.start_lba
+            })
+            .filter(|_device| {
+                // init_root mounts every other recognized partition on this
+                // disk too (a /boot partition, for example), so the scratch
+                // extent must avoid all of them, not just the root one.
+                ax_fs_ng::root::axtest_root_disk_partition_regions()
+                    .iter()
+                    .all(|partition| {
+                        scratch.end_lba <= partition.start_lba
+                            || partition.end_lba <= scratch.start_lba
+                    })
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -1416,11 +1434,6 @@ fn block_runtime_multi_descriptor_contiguous_read_write() -> axtest::AxTestResul
         log_write_tests_skip();
         return axtest::AxTestResult::Ok;
     };
-    assert!(
-        u64::from(RW_BENCHMARK_REGION_BLOCKS + MULTI_DESCRIPTOR_TEST_BLOCKS)
-            <= scratch_region.num_blocks(),
-        "scratch region is too small for the multi-descriptor functional test"
-    );
     run_multi_block_functional_test(
         device,
         scratch_region.start_lba + u64::from(RW_BENCHMARK_REGION_BLOCKS),
@@ -1572,10 +1585,6 @@ fn block_runtime_multi_block_read_write_benchmark() -> axtest::AxTestResult {
         log_write_tests_skip();
         return axtest::AxTestResult::Ok;
     };
-    assert!(
-        scratch_region.num_blocks() >= u64::from(RW_BENCHMARK_REGION_BLOCKS),
-        "scratch region is too small for the read/write benchmark"
-    );
     assert_eq!(RW_BENCHMARK_REGION_BLOCKS % MULTI_RW_BLOCKS_PER_REQUEST, 0);
 
     let info = device.device_info();
@@ -1683,10 +1692,6 @@ fn block_runtime_mixed_read_write_benchmark() -> axtest::AxTestResult {
         log_write_tests_skip();
         return axtest::AxTestResult::Ok;
     };
-    assert!(
-        scratch_region.num_blocks() >= u64::from(RW_BENCHMARK_REGION_BLOCKS),
-        "scratch region is too small for the mixed benchmark"
-    );
     assert_eq!(RW_BENCHMARK_REGION_BLOCKS % MIXED_RW_BLOCKS_PER_REQUEST, 0);
 
     let info = device.device_info();
