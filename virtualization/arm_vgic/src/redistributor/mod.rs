@@ -448,6 +448,15 @@ impl RedistributorState {
         &mut self,
         mut spi_priority: impl FnMut(SpiId) -> VgicResult<Priority>,
     ) -> VgicResult<RefillOutcome> {
+        if self.queued_deliveries.is_empty() {
+            // Existing LR deliveries are already marked in flight. With no
+            // software overflow there is nothing to rank, move, or re-mark.
+            self.configure_delivery_traps();
+            return Ok(RefillOutcome {
+                loaded: Vec::new(),
+                spilled_pending: Vec::new(),
+            });
+        }
         let lr_count = self.cpu_interface.list_registers().len();
         let queued_priorities = self
             .queued_deliveries
