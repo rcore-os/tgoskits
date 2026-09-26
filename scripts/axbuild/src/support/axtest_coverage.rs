@@ -19,23 +19,32 @@ pub(crate) const AXTEST_COVERAGE_RUSTFLAGS: &[&str] = &[
 ];
 
 const COVERAGE_FEATURE: &str = "axtest/coverage";
+const STARRY_COVERAGE_FEATURE: &str = "axtest-coverage";
 const MARKER_PREFIX: &str = "AXTEST_COVERAGE status=ready";
-const SUITE_OK_MARKER: &str = "AXTEST_SUITE_OK";
 pub(crate) const COVERAGE_DONE_MARKER: &str = "AXTEST_COVERAGE_DONE";
+pub(crate) const DEFERRED_FAIL_MARKER: &str = "AXTEST_COVERAGE_DEFERRED_FAIL";
 
 pub(crate) fn enabled(cargo: &Cargo) -> bool {
     crate::build::env_truthy(&cargo.env, "AXTEST_COVERAGE")
 }
 
 pub(crate) fn prepare_cargo(cargo: &mut Cargo) {
+    prepare_cargo_with_feature(cargo, COVERAGE_FEATURE);
+}
+
+pub(crate) fn prepare_starry_cargo(cargo: &mut Cargo) {
+    prepare_cargo_with_feature(cargo, STARRY_COVERAGE_FEATURE);
+}
+
+fn prepare_cargo_with_feature(cargo: &mut Cargo, coverage_feature: &str) {
     // Coverage is enabled only after the caller explicitly selected coverage
     // mode; do not alter ordinary test builds.
     if !cargo
         .features
         .iter()
-        .any(|feature| feature == COVERAGE_FEATURE)
+        .any(|feature| feature == coverage_feature)
     {
-        cargo.features.push(COVERAGE_FEATURE.to_string());
+        cargo.features.push(coverage_feature.to_string());
     }
     crate::build::append_cargo_rustflags(cargo, AXTEST_COVERAGE_RUSTFLAGS);
 }
@@ -57,11 +66,13 @@ impl AxtestCoveragePaths {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| sanitize_path_component(target));
-        let profraw_filename = format!(
-            "{}-{}-{arch_triple}.profraw",
-            sanitize_path_component(package),
-            sanitize_path_component(test)
-        );
+        let package = sanitize_path_component(package);
+        let test = sanitize_path_component(test);
+        let profraw_filename = if package == test {
+            format!("{package}-{arch_triple}.profraw")
+        } else {
+            format!("{package}-{test}-{arch_triple}.profraw")
+        };
         let dir = workspace_root.join("coverage");
         fs::create_dir_all(&dir)?;
         let profraw_path = dir.join(profraw_filename);
@@ -121,14 +132,18 @@ fn remove_stale_profraw(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Keep the QEMU success contract tied to a marker emitted by the guest.
+/// Keep QEMU alive until the host has copied the profile out of guest memory.
 ///
-/// `AXTEST_COVERAGE_DONE` is emitted by the host capture thread after `memsave`
-/// completes, so it never appears in QEMU's serial stream and cannot be used by
-/// the QEMU runner as its success regex. Coverage completion is enforced by
-/// [`AxtestCoverageCaptureGuard::finish`] after the guest suite succeeds.
+/// The capture thread feeds this host-generated marker into the success
+/// verifier after `memsave` completes and asks QEMU to quit through its monitor.
 pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
-    super::qemu_success::append_configured_success_regex(qemu, SUITE_OK_MARKER);
+    super::qemu_success::replace_configured_success_regex(
+        qemu,
+        vec![format!("(?m)^{COVERAGE_DONE_MARKER}$")],
+    );
+    let deferred_fail_regex = format!("(?m)^{DEFERRED_FAIL_MARKER}$");
+    qemu.fail_regex
+        .retain(|regex| regex != &deferred_fail_regex);
 }
 
 #[cfg(unix)]
@@ -146,7 +161,10 @@ mod capture {
     use anyhow::{Context, bail};
     use regex::Regex;
 
-    use super::{AxtestCoveragePaths, COVERAGE_DONE_MARKER, MARKER_PREFIX, remove_stale_profraw};
+    use super::{
+        AxtestCoveragePaths, COVERAGE_DONE_MARKER, DEFERRED_FAIL_MARKER, MARKER_PREFIX,
+        remove_stale_profraw,
+    };
     use crate::support::qemu_success::QemuSuccessOutput;
 
     struct InstallRollback {
@@ -266,6 +284,7 @@ mod capture {
         line_buf: String,
         dumped: bool,
         completion_signaled: bool,
+        deferred_fail: bool,
         error: Option<String>,
         monitor_conn: Option<UnixStream>,
     }
@@ -284,6 +303,7 @@ mod capture {
                 line_buf: String::new(),
                 dumped: false,
                 completion_signaled: false,
+                deferred_fail: false,
                 error: None,
                 monitor_conn: None,
             }));
@@ -363,6 +383,9 @@ mod capture {
                     state.profraw_path.display()
                 );
             }
+            if state.deferred_fail {
+                bail!("guest test failed after coverage was exported");
+            }
             Ok(())
         }
 
@@ -409,6 +432,10 @@ mod capture {
         }
 
         fn process_line(&mut self, line: &str) {
+            if line.contains(DEFERRED_FAIL_MARKER) {
+                self.deferred_fail = true;
+                return;
+            }
             if self.dumped || !line.starts_with(MARKER_PREFIX) {
                 return;
             }
@@ -568,6 +595,7 @@ mod capture {
                 line_buf: String::new(),
                 dumped: false,
                 completion_signaled: false,
+                deferred_fail: false,
                 error: None,
                 monitor_conn: Some(client),
             };
@@ -605,6 +633,7 @@ mod capture {
                 line_buf: String::new(),
                 dumped: false,
                 completion_signaled: false,
+                deferred_fail: false,
                 error: None,
                 monitor_conn: Some(client),
             };
@@ -645,13 +674,52 @@ pub(crate) use capture::AxtestCoverageCaptureGuard;
 mod tests {
     use ostool::run::qemu::QemuConfig;
 
-    use super::{SUITE_OK_MARKER, update_success_regex};
+    use super::{
+        AxtestCoveragePaths, COVERAGE_DONE_MARKER, COVERAGE_FEATURE, Cargo, DEFERRED_FAIL_MARKER,
+        STARRY_COVERAGE_FEATURE, prepare_starry_cargo, update_success_regex,
+    };
 
     #[test]
-    fn coverage_keeps_the_guest_suite_success_contract() {
+    fn package_named_binary_keeps_package_level_profile_name() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = AxtestCoveragePaths::new(
+            root.path(),
+            "starryos",
+            "starryos",
+            "scripts/targets/bare/x86_64-unknown-none.json",
+        )
+        .unwrap();
+
+        assert_eq!(
+            paths.profraw_path.file_name().unwrap(),
+            "starryos-x86_64-unknown-none.profraw"
+        );
+    }
+
+    #[test]
+    fn starry_coverage_uses_package_forwarding_feature() {
+        let mut cargo = Cargo::default();
+        prepare_starry_cargo(&mut cargo);
+
+        assert!(
+            cargo
+                .features
+                .iter()
+                .any(|feature| feature == STARRY_COVERAGE_FEATURE)
+        );
+        assert!(
+            cargo
+                .features
+                .iter()
+                .all(|feature| feature != COVERAGE_FEATURE)
+        );
+    }
+
+    #[test]
+    fn coverage_waits_for_host_profile_completion() {
         let mut qemu = QemuConfig {
             shell_check_steps: vec![ostool::run::ShellCheckStep {
-                success_regex: Some(vec![SUITE_OK_MARKER.to_string()]),
+                success_regex: Some(vec!["guest-suite-ok".to_string()]),
                 ..Default::default()
             }],
             ..QemuConfig::default()
@@ -661,7 +729,23 @@ mod tests {
 
         assert_eq!(
             qemu.shell_check_steps[0].success_regex,
-            Some(vec![SUITE_OK_MARKER.to_string()])
+            Some(vec![format!("(?m)^{COVERAGE_DONE_MARKER}$")])
         );
+    }
+
+    #[test]
+    fn deferred_failure_cannot_stop_qemu_before_profile_capture() {
+        let immediate_failure = "(?i)panic".to_string();
+        let mut qemu = QemuConfig {
+            fail_regex: vec![
+                immediate_failure.clone(),
+                format!("(?m)^{DEFERRED_FAIL_MARKER}$"),
+            ],
+            ..QemuConfig::default()
+        };
+
+        update_success_regex(&mut qemu);
+
+        assert_eq!(qemu.fail_regex, vec![immediate_failure]);
     }
 }

@@ -1933,8 +1933,35 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
     )
 }
 
+#[cfg(axtest_coverage)]
+fn print_starry_test_coverage(arguments: core::fmt::Arguments<'_>) {
+    ax_print!("{arguments}");
+}
+
+#[cfg(axtest_coverage)]
+fn dump_starry_test_coverage() {
+    axtest::set_printer(print_starry_test_coverage);
+    axtest::dump_coverage();
+}
+
 fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     let mut root = DirMapping::new();
+    // Test-only control plane for serializing LLVM coverage into guest memory.
+    // Production builds do not compile this procfs entry.
+    #[cfg(axtest_coverage)]
+    root.add(
+        "starry-test-coverage",
+        SimpleFile::new_regular(
+            fs.clone(),
+            RwFile::new(|operation| match operation {
+                SimpleFileOperation::Read => Ok(Some(Vec::new())),
+                SimpleFileOperation::Write(_) => {
+                    dump_starry_test_coverage();
+                    Ok(None)
+                }
+            }),
+        ),
+    );
     root.add(
         "mounts",
         SimpleFile::new_regular(fs.clone(), || {

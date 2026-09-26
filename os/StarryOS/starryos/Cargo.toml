@@ -23,6 +23,7 @@ legacy-board-init = []
 qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
 qperf-metrics = ["starry-kernel/qperf-metrics"]
 lockdep = ["ax-std/lockdep"]
+axtest-coverage = ["starry-kernel/axtest-coverage"]
 
 k230 = [
   "starry-kernel/k230-kpu",

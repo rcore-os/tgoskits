@@ -227,10 +227,22 @@ pub(crate) fn append_configured_success_regex(qemu: &mut QemuConfig, pattern: &s
 }
 
 const BENIGN_QEMU_STOP_ERROR: &str = "QEMU stopped without matching a configured success regex";
+const INCOMPLETE_SHELL_SEQUENCE_PREFIX: &str =
+    "shell check sequence ended before shell_check_steps[";
+
+fn is_incomplete_shell_sequence_error(message: &str) -> bool {
+    let Some(rest) = message.strip_prefix(INCOMPLETE_SHELL_SEQUENCE_PREFIX) else {
+        return false;
+    };
+    let Some((index, suffix)) = rest.split_once(']') else {
+        return false;
+    };
+    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()) && suffix == " completed"
+}
 
 fn is_benign_qemu_stop_error(err: &anyhow::Error) -> bool {
     let message = err.to_string();
-    if message == BENIGN_QEMU_STOP_ERROR {
+    if message == BENIGN_QEMU_STOP_ERROR || is_incomplete_shell_sequence_error(&message) {
         return true;
     }
 
@@ -271,9 +283,30 @@ pub(crate) fn verify_qemu_success_contract(
 {tail}"
     )
 }
+
+/// Preserve the primary QEMU failure and retain simultaneous coverage context.
+pub(crate) fn combine_qemu_and_coverage_results(
+    qemu_result: Result<()>,
+    coverage_result: Result<()>,
+) -> Result<()> {
+    match (qemu_result, coverage_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(coverage_error)) => Err(coverage_error),
+        (Err(qemu_error), Ok(())) => Err(qemu_error),
+        (Err(qemu_error), Err(coverage_error)) if is_benign_qemu_stop_error(&qemu_error) => {
+            Err(coverage_error)
+        }
+        (Err(qemu_error), Err(coverage_error)) => Err(anyhow::anyhow!(
+            "{qemu_error:#}; additional coverage failure: {coverage_error:#}"
+        )),
+    }
+}
 #[cfg(test)]
 mod tests {
-    use super::{QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, verify_qemu_success_contract};
+    use super::{
+        QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, combine_qemu_and_coverage_results,
+        verify_qemu_success_contract,
+    };
 
     fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
         let patterns = patterns.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -322,6 +355,31 @@ mod tests {
             Some(&output),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn incomplete_shell_sequence_is_accepted_after_host_completion() {
+        let output = captured_output(&["AXTEST_COVERAGE_DONE"], &[b"AXTEST_COVERAGE_DONE\n"]);
+
+        verify_qemu_success_contract(
+            Err(anyhow::anyhow!(
+                "shell check sequence ended before shell_check_steps[0] completed"
+            )),
+            Some(&output),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn qemu_failure_remains_primary_when_coverage_also_fails() {
+        let error = combine_qemu_and_coverage_results(
+            Err(anyhow::anyhow!("QEMU launch failed")),
+            Err(anyhow::anyhow!("profile missing")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().starts_with("QEMU launch failed"));
+        assert!(error.to_string().contains("profile missing"));
     }
     #[test]
     fn extended_benign_stop_error_is_not_ignored() {

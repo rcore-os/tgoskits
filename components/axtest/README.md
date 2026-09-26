@@ -303,7 +303,9 @@ QEMU configs continue to own platform arguments, timeout, `to_bin`, UEFI, device
 
 ## Coverage
 
-axtest supports LLVM source-based coverage via [xcover](https://crates.io/crates/xcover). The guest serializes `.profraw` data into memory, and the host extracts it through QEMU's monitor interface.
+axtest supports LLVM source-based coverage. The guest serializes the pinned
+toolchain's raw profile format into memory, and the host extracts it through
+QEMU's monitor interface.
 
 ### Running with Coverage
 
@@ -334,9 +336,8 @@ tests pass
   │
   ▼
 axtest::dump_coverage()
-  ├─ xcover::write_profraw(Vec)    capture guard scans stdout
-  │   serializes LLVM profraw        │
-  │   into guest memory              │
+  ├─ serialize raw profile v11     capture guard scans stdout
+  │   into one guest buffer           │
   └─ prints marker:                 parses marker, extracts addr/size
      AXTEST_COVERAGE status=ready      │
      addr=0x... size=...               ▼

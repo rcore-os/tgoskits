@@ -65,7 +65,7 @@ pub(super) fn build_qemu_plan(
         if !package.uses_workspace_axtest {
             if explicitly_selected {
                 bail!(
-                    "package `{}` must declare workspace `axtest` directly in [dev-dependencies]",
+                    "package `{}` must declare workspace `axtest` directly as a dependency",
                     package.name
                 );
             }
