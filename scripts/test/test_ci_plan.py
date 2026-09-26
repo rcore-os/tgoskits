@@ -5,6 +5,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,17 @@ def board_type_by_board_name() -> dict[str, str]:
             name = config.stem.removeprefix("board-")
             board_types.setdefault(name, tomllib.loads(config.read_text()).get("board_type", ""))
     return board_types
+
+
+def selected_test_cases(command: str) -> set[str]:
+    tokens = shlex.split(command, comments=True)
+    cases = set()
+    for index, token in enumerate(tokens):
+        if token == "--test-case" and index + 1 < len(tokens):
+            cases.update(tokens[index + 1].split(","))
+        elif token.startswith("--test-case="):
+            cases.update(token.partition("=")[2].split(","))
+    return cases
 
 
 class CiPlanTests(unittest.TestCase):
@@ -377,6 +389,7 @@ command = "cargo xtask clippy --all"
                 )
                 self.assertRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/general(?:[,\s]|$)")
                 self.assertNotRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc(?:[,\s]|$)")
+                self.assertIn("qemu/aarch64/ivc-local", selected_test_cases(commands))
                 # The ordinary CI check keeps the native StarryOS board suite but no
                 # longer registers the single-guest AxVisor smokes.
                 self.assertIn(
