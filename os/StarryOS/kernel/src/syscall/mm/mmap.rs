@@ -184,6 +184,42 @@ bitflags::bitflags! {
     }
 }
 
+/// Linux `may_expand_vm()`: whether a mapping would push the address space past
+/// `RLIMIT_AS`. `released_pages` are the pages a fixed target replaces, which
+/// Linux unmaps before the check.
+fn exceeds_rlimit_as(vss_pages: u64, released_pages: u64, charge_pages: u64, limit_bytes: u64) -> bool {
+    limit_bytes != u64::MAX
+        && vss_pages.saturating_sub(released_pages).saturating_add(charge_pages)
+            > limit_bytes / PAGE_SIZE_4K as u64
+}
+
+/// Pages already mapped in `[start, start + size)`.
+fn mapped_pages(aspace: &crate::mm::AddrSpace, start: VirtAddr, size: usize) -> StarryResult<u64> {
+    let range = VirtAddrRange::try_from_start_size(start, size).ok_or(StarryError::InvalidInput)?;
+    let bytes: usize = aspace
+        .vma_snapshots_in_range(start, size)?
+        .iter()
+        .map(|vma| {
+            vma.range.end.as_usize().min(range.end.as_usize())
+                - vma.range.start.as_usize().max(range.start.as_usize())
+        })
+        .sum();
+    Ok((bytes / PAGE_SIZE_4K) as u64)
+}
+
+pub(crate) fn check_rlimit_as(
+    aspace: &crate::mm::AddrSpace,
+    released_pages: u64,
+    charge_bytes: usize,
+    limit_bytes: u64,
+) -> StarryResult {
+    let charge_pages = (charge_bytes / PAGE_SIZE_4K) as u64;
+    if exceeds_rlimit_as(aspace.vm_stat.vss_pages(), released_pages, charge_pages, limit_bytes) {
+        return Err(StarryError::NoMemory);
+    }
+    Ok(())
+}
+
 pub fn sys_mmap(
     current: &crate::task::UserTaskRef,
     addr: usize,
@@ -226,6 +262,7 @@ pub fn sys_mmap(
     } else {
         None
     };
+    let as_limit = curr.as_thread().proc_data.rlimit_current(RLIMIT_AS);
     let mut aspace = curr_aspace.lock();
     let anonymous = map_flags.contains(MmapFlags::ANONYMOUS);
     let map_type = match flags & MmapFlags::TYPE.bits() {
@@ -425,6 +462,12 @@ pub fn sys_mmap(
             let populate = map_flags.intersects(MmapFlags::POPULATE | MmapFlags::LOCKED);
             let replace_existing = map_flags.contains(MmapFlags::FIXED)
                 && !map_flags.contains(MmapFlags::FIXED_NOREPLACE);
+            let released = if replace_existing {
+                mapped_pages(&aspace, start, map_length)?
+            } else {
+                0
+            };
+            check_rlimit_as(&aspace, released, map_length, as_limit)?;
             aspace.map_with_permissions_publication(
                 start,
                 map_length,
@@ -748,6 +791,17 @@ pub fn sys_mmap(
     let populate = map_flags.intersects(MmapFlags::POPULATE | MmapFlags::LOCKED);
     let replace_existing =
         map_flags.contains(MmapFlags::FIXED) && !map_flags.contains(MmapFlags::FIXED_NOREPLACE);
+    // Linux do_mmap() refuses an occupied MAP_FIXED_NOREPLACE target before
+    // may_expand_vm() sees the charge, so the conflict outranks RLIMIT_AS.
+    if map_flags.contains(MmapFlags::FIXED_NOREPLACE) && mapped_pages(&aspace, start, length)? != 0 {
+        return Err(StarryError::AlreadyExists);
+    }
+    let released = if replace_existing {
+        mapped_pages(&aspace, start, length)?
+    } else {
+        0
+    };
+    check_rlimit_as(&aspace, released, length, as_limit)?;
     let maximum_mapping_flags = maximum_mapping_flags_for_backend(&backend, mapping_flags);
     aspace.map_with_permissions_publication(
         start,
@@ -1186,6 +1240,7 @@ pub fn sys_mremap(
         curr.as_thread().proc_data.rlimit_current(RLIMIT_MEMLOCK),
         curr.as_thread().cred().has_cap_ipc_lock(),
     );
+    let as_limit = curr.as_thread().proc_data.rlimit_current(RLIMIT_AS);
     let aspace_ref = curr.as_thread().proc_data.pin_aspace()?;
     let mut aspace = aspace_ref.lock();
     let source = aspace.mremap_source(addr).ok_or(StarryError::BadAddress)?;
@@ -1235,6 +1290,12 @@ pub fn sys_mremap(
             find_free(&aspace, addr, new_size, operation_alignment)?
         };
         drop(object);
+        let released = if fixed {
+            mapped_pages(&aspace, target, new_size)?
+        } else {
+            0
+        };
+        check_rlimit_as(&aspace, released, new_size, as_limit)?;
         aspace.duplicate_shared_mremap_source(
             &source,
             target,
@@ -1269,6 +1330,17 @@ pub fn sys_mremap(
         }
         if source.is_linear() {
             return Err(StarryError::OperationNotSupported);
+        }
+        // Linux unmaps the fixed target before charging; DONTUNMAP keeps the
+        // source and so charges the whole new mapping.
+        let charge = if dontunmap {
+            new_size
+        } else {
+            new_size.saturating_sub(old_size)
+        };
+        if charge != 0 {
+            let released = mapped_pages(&aspace, target, new_size)?;
+            check_rlimit_as(&aspace, released, charge, as_limit)?;
         }
         if !dontunmap && old_size == new_size {
             let fragments = prepare_fixed_mremap_fragments(&aspace, addr, old_size, target)?;
@@ -1309,6 +1381,7 @@ pub fn sys_mremap(
     }
 
     if dontunmap {
+        check_rlimit_as(&aspace, 0, new_size, as_limit)?;
         let hint = addr
             .checked_add(old_size)
             .ok_or(StarryError::InvalidInput)?;
@@ -1332,6 +1405,7 @@ pub fn sys_mremap(
     }
 
     let delta = new_size - old_size;
+    check_rlimit_as(&aspace, 0, delta, as_limit)?;
 
     let old_end = addr
         .checked_add(old_size)
@@ -1765,9 +1839,26 @@ fn mmap_device_map_len_rules_hold_for_test() -> bool {
 }
 
 #[cfg(all(test, not(axtest)))]
+fn rlimit_as_rules_hold_for_test() -> bool {
+    let limit = 4 * PAGE_SIZE_4K as u64;
+    !exceeds_rlimit_as(u64::MAX, 0, u64::MAX, u64::MAX)
+        && !exceeds_rlimit_as(0, 0, 4, limit)
+        && exceeds_rlimit_as(0, 0, 5, limit)
+        && exceeds_rlimit_as(4, 0, 1, limit)
+        && !exceeds_rlimit_as(4, 2, 2, limit)
+        && exceeds_rlimit_as(4, 1, 2, limit)
+        && exceeds_rlimit_as(5, 0, 0, limit)
+}
+
+#[cfg(all(test, not(axtest)))]
 mod tests {
     #[test]
     fn mmap_device_map_len_rules_hold() {
         assert!(super::mmap_device_map_len_rules_hold_for_test());
+    }
+
+    #[test]
+    fn rlimit_as_rules_hold() {
+        assert!(super::rlimit_as_rules_hold_for_test());
     }
 }
