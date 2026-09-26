@@ -1,0 +1,33 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a53",
+    "-m",
+    "1G",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-debian.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_check_steps = [
+  {
+    shell_prefix = "root@starry:",
+    shell_cmd = "/usr/bin/docker-runc-run-smoke.sh",
+    success_regex = ["(?m)^DOCKER_RUNC_RUN_PASSED\\s*$"],
+  },
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^lockdep fatal violation\\s*$",
+  "(?m)^DOCKER_RUNC_RUN_FAILED:",
+  "(?m)^DOCKER_RUNC_RUN_PROBE_FAILED:",
+  "(?m)^DOCKER_RUNC_RUN_SHELL_FAIL",
+  "(?m)^DOCKER_RUNC_RUN_STAGE_B_FAILED",
+]
+timeout = 1800

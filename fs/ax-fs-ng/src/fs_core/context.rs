@@ -25,6 +25,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     file::File,
+    fs_core::ResolveConstraints,
     os::sync::{IrqMutex, SleepMutex as Mutex},
 };
 
@@ -178,6 +179,15 @@ pub struct FsContext {
     /// is deliberately separate from `root_dir`: the fd supplies a path-walk
     /// starting point, not a process root or a `..`-containment boundary.
     permission_root: Option<Location>,
+}
+
+/// Bundled state for one constrained walk: the active constraints, the
+/// caller's search-permission callback, and whether the final component may
+/// be a plain file (symlink targets) instead of a directory.
+struct ConstrainedWalk<'a> {
+    constraints: &'a ResolveConstraints,
+    search: SearchCheck<'a>,
+    final_may_be_file: bool,
 }
 
 impl FsContext {
@@ -723,75 +733,368 @@ impl FsContext {
         self.resolve_using(path.as_ref(), false, Some(&check_search))
     }
 
-    /// Resolves a relative path's parent without following intermediate
-    /// symbolic links or allowing the walk to escape above `current_dir`.
+    /// Fully resolves `path` under `constraints`, following the final
+    /// component's symlink when `follow_final` is set.
     ///
-    /// This provides the path-walk guarantees required by Linux openat2's
-    /// `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` combination.
-    pub fn resolve_parent_beneath_no_symlinks<'a>(
+    /// Every directory entered during the walk — including directories reached
+    /// through symlink targets — is passed to `check_search` before lookup.
+    /// See [`ResolveConstraints`] for the per-flag semantics.
+    pub fn resolve_with_constraints(
         &self,
-        path: &'a Path,
-    ) -> VfsResult<(Location, Cow<'a, str>)> {
-        self.resolve_parent_beneath_no_symlinks_checked(path, |_| Ok(()))
+        path: impl AsRef<Path>,
+        constraints: &ResolveConstraints,
+        follow_final: bool,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+        depth0: usize,
+    ) -> VfsResult<Location> {
+        self.resolve_using_constrained(
+            path.as_ref(),
+            follow_final,
+            constraints,
+            Some(&check_search),
+            depth0,
+        )
     }
 
-    /// Resolves the parent for `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` while
-    /// checking search permission before every directory lookup. The
-    /// no-symlink and beneath guarantees are identical to the unchecked
-    /// variant; the callback only supplies the caller's DAC policy.
-    pub fn resolve_parent_beneath_no_symlinks_checked<'a>(
+    /// Resolves `path`'s parent under `constraints`, returning the parent
+    /// directory, the final component name, and the parent's depth below the
+    /// starting directory (for callers that continue the walk into the final
+    /// component). The final component itself is not looked up.
+    pub fn resolve_parent_with_constraints<'a>(
         &self,
         path: &'a Path,
+        constraints: &ResolveConstraints,
         check_search: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<(Location, Cow<'a, str>)> {
-        let mut components = path.components().peekable();
-        let mut dir = self.current_dir.clone();
-        let mut depth = 0usize;
+        depth0: usize,
+    ) -> VfsResult<(Location, Cow<'a, str>, usize)> {
+        let entry_name = path.file_name().ok_or(VfsError::InvalidInput)?;
+        let mut follow_count = 0;
+        let mut depth = depth0;
+        let mut components = path.components();
+        components.next_back();
+        let walk = ConstrainedWalk {
+            constraints,
+            search: Some(&check_search),
+            final_may_be_file: false,
+        };
+        // Linux ignores cwd and dirfd for absolute pathnames (except
+        // RESOLVE_IN_ROOT), so the walk starts at the process root and the
+        // leading `RootDir` is a no-op. Only an absolute symlink target jumps
+        // from the link's mount to the root, which is where RESOLVE_NO_XDEV
+        // must compare mounts.
+        let start = if path.as_str().starts_with('/') && constraints.root().is_none() {
+            self.root_dir.clone()
+        } else {
+            self.current_dir.clone()
+        };
+        let dir =
+            self.walk_constrained(components, &start, &mut depth, &mut follow_count, &walk)?;
+        // The final directory has no next component to trigger its search
+        // check; an unsearchable parent must fail the resolution here, before
+        // the caller's final lookup reports ENOENT.
+        Self::check_search(&dir, Some(&check_search))?;
+        Ok((dir, Cow::Borrowed(entry_name), depth))
+    }
 
-        while let Some(component) = components.next() {
-            let is_last = components.peek().is_none();
+    fn resolve_using_constrained(
+        &self,
+        path: &Path,
+        follow_final: bool,
+        constraints: &ResolveConstraints,
+        search: SearchCheck<'_>,
+        depth0: usize,
+    ) -> VfsResult<Location> {
+        let mut follow_count = 0;
+        let mut depth = depth0;
+        // See `resolve_parent_with_constraints`: absolute pathnames start at
+        // the process root rather than the cwd/dirfd.
+        let start = if path.as_str().starts_with('/') && constraints.root().is_none() {
+            self.root_dir.clone()
+        } else {
+            self.current_dir.clone()
+        };
+        match path.file_name() {
+            Some(name) => {
+                let mut components = path.components();
+                components.next_back();
+                let walk = ConstrainedWalk {
+                    constraints,
+                    search,
+                    final_may_be_file: false,
+                };
+                let dir = self.walk_constrained(
+                    components,
+                    &start,
+                    &mut depth,
+                    &mut follow_count,
+                    &walk,
+                )?;
+                let resolved = self.lookup_constrained(
+                    &dir,
+                    name,
+                    follow_final,
+                    &mut depth,
+                    &mut follow_count,
+                    constraints,
+                    search,
+                )?;
+                Self::finish_checked_path(path, resolved, search)
+            }
+            // The final component is `.` or `..` (or the path is empty): the
+            // walk consumes everything and its result is the resolution.
+            None => {
+                let walk = ConstrainedWalk {
+                    constraints,
+                    search,
+                    final_may_be_file: false,
+                };
+                let dir = self.walk_constrained(
+                    path.components(),
+                    &start,
+                    &mut depth,
+                    &mut follow_count,
+                    &walk,
+                )?;
+                dir.check_is_dir()?;
+                Self::finish_checked_path(path, dir, search)
+            }
+        }
+    }
+
+    /// Looks up one final component in `dir` under `constraints`, applying
+    /// the mount-crossing and symlink restrictions to that component.
+    #[allow(clippy::too_many_arguments)]
+    fn lookup_constrained(
+        &self,
+        dir: &Location,
+        name: &str,
+        follow: bool,
+        depth: &mut usize,
+        follow_count: &mut usize,
+        constraints: &ResolveConstraints,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
+        Self::check_search(dir, search)?;
+        let loc = dir.lookup_no_follow(name)?;
+        if constraints.is_no_xdev() && !Arc::ptr_eq(dir.mountpoint(), loc.mountpoint()) {
+            return Err(VfsError::CrossesDevices);
+        }
+        if follow {
+            self.try_resolve_symlink_constrained(loc, dir, depth, follow_count, constraints, search)
+        } else {
+            Ok(loc)
+        }
+    }
+
+    /// Walks `components` starting from `start` under `constraints`.
+    ///
+    /// `depth` must equal `start`'s own depth below the resolution's starting
+    /// directory on entry (0 at the top level); it is updated as the walk
+    /// descends, ascends, or jumps through symlinks, and is what enforces
+    /// `RESOLVE_BENEATH`. `follow_count` bounds the total number of symlink
+    /// expansions for the whole resolution, mirroring `SYMLINKS_MAX`.
+    fn walk_constrained(
+        &self,
+        components: Components<'_>,
+        start: &Location,
+        depth: &mut usize,
+        follow_count: &mut usize,
+        walk: &ConstrainedWalk<'_>,
+    ) -> VfsResult<Location> {
+        let constraints = walk.constraints;
+        let search = walk.search;
+        let final_may_be_file = walk.final_may_be_file;
+        let mut dir = start.clone();
+        let components: Vec<_> = components.collect();
+        let last = components.len().saturating_sub(1);
+        for (index, component) in components.into_iter().enumerate() {
+            let is_final = index == last;
             match component {
-                Component::RootDir => return Err(VfsError::CrossesDevices),
-                Component::CurDir if is_last => {
-                    check_search(&dir)?;
-                    if let Some(parent) = dir.parent() {
-                        return Ok((parent, dir.name().into_owned().into()));
-                    }
-                    return Ok((dir, Cow::Borrowed(".")));
-                }
                 Component::CurDir => {}
+                Component::RootDir => {
+                    if let Some(root) = constraints.root() {
+                        dir = root.clone();
+                    } else if constraints.is_beneath() {
+                        // An absolute component leaves the starting directory.
+                        return Err(VfsError::CrossesDevices);
+                    } else {
+                        // Linux `nd_jump_root()` refuses the jump under
+                        // `LOOKUP_NO_XDEV` when the current mount differs from
+                        // the root mount.
+                        if constraints.is_no_xdev()
+                            && !Arc::ptr_eq(dir.mountpoint(), self.root_dir.mountpoint())
+                        {
+                            return Err(VfsError::CrossesDevices);
+                        }
+                        dir = self.root_dir.clone();
+                    }
+                    *depth = 0;
+                }
                 Component::ParentDir => {
-                    if depth == 0 {
+                    Self::check_search(&dir, search)?;
+                    // `..` at the RESOLVE_IN_ROOT root stays there, exactly
+                    // like the filesystem-root clamp in the plain walk.
+                    let at_constraint_root = constraints.is_in_root()
+                        && constraints.root().is_some_and(|root| dir.ptr_eq(root));
+                    if at_constraint_root {
+                        continue;
+                    }
+                    if constraints.is_beneath() && *depth == 0 {
                         return Err(VfsError::CrossesDevices);
                     }
-                    check_search(&dir)?;
-                    dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
-                    depth -= 1;
-                    if is_last {
-                        if let Some(parent) = dir.parent() {
-                            return Ok((parent, dir.name().into_owned().into()));
-                        }
-                        return Ok((dir, Cow::Borrowed(".")));
+                    // `..` from a mount root crosses back into the mount's
+                    // attach point, which is a device crossing for
+                    // RESOLVE_NO_XDEV.
+                    if constraints.is_no_xdev()
+                        && dir.is_root_of_mount()
+                        && dir.mountpoint().location().is_some()
+                    {
+                        return Err(VfsError::CrossesDevices);
                     }
-                }
-                Component::Normal(name) if is_last => {
-                    check_search(&dir)?;
-                    return Ok((dir, Cow::Borrowed(name)));
+                    dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
+                    if constraints.is_beneath() {
+                        *depth -= 1;
+                    }
                 }
                 Component::Normal(name) => {
-                    check_search(&dir)?;
-                    let next = dir.lookup_no_follow(name)?;
+                    let next = self.lookup_constrained(
+                        &dir,
+                        name,
+                        false,
+                        depth,
+                        follow_count,
+                        constraints,
+                        search,
+                    )?;
                     if next.node_type() == NodeType::Symlink {
-                        return Err(VfsError::FilesystemLoop);
+                        dir = self.try_resolve_symlink_constrained(
+                            next,
+                            &dir,
+                            depth,
+                            follow_count,
+                            constraints,
+                            search,
+                        )?;
+                    } else {
+                        // A symlink target's final component may be a plain
+                        // file; only an intermediate (or explicitly
+                        // directory-expecting) component must be a directory.
+                        if !is_final || !final_may_be_file {
+                            next.check_is_dir()?;
+                        }
+                        dir = next;
+                        if constraints.is_beneath() {
+                            *depth += 1;
+                        }
                     }
-                    next.check_is_dir()?;
-                    dir = next;
-                    depth += 1;
                 }
             }
         }
+        Ok(dir)
+    }
 
-        Err(VfsError::NotFound)
+    /// Follows the symlink at `loc` under `constraints`.
+    ///
+    /// Relative targets restart the walk at the symlink's parent directory
+    /// with the current depth; absolute targets restart at the
+    /// `RESOLVE_IN_ROOT` root when one is set, at the filesystem root
+    /// otherwise, and are rejected outright under `RESOLVE_BENEATH` alone —
+    /// all matching Linux's `pick_link`/`link_path_walk` behavior.
+    ///
+    /// Magic links are handled first: `NO_SYMLINKS`/`NO_MAGICLINKS` reject
+    /// them with `ELOOP`, and a spatial restriction (`BENEATH`/`IN_ROOT`/
+    /// `NO_XDEV`) refuses the object jump with `EXDEV`, mirroring Linux's
+    /// `nd_jump_link`. Their displayed target is never re-parsed as a path.
+    #[allow(clippy::too_many_arguments)]
+    fn try_resolve_symlink_constrained(
+        &self,
+        loc: Location,
+        parent_dir: &Location,
+        depth: &mut usize,
+        follow_count: &mut usize,
+        constraints: &ResolveConstraints,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
+        if loc.node_type() != NodeType::Symlink {
+            return Ok(loc);
+        }
+        if constraints.is_no_symlinks() {
+            return Err(VfsError::FilesystemLoop);
+        }
+        if constraints.is_no_magiclinks() && loc.is_magic_link() {
+            return Err(VfsError::FilesystemLoop);
+        }
+        // A magic link jumps to a kernel object, not to a pathname. Linux
+        // refuses that jump whenever the lookup is spatially scoped:
+        // `nd_jump_link()` fails `LOOKUP_NO_XDEV` when the object lives on
+        // another mount and `LOOKUP_IS_SCOPED` (BENEATH/IN_ROOT) outright,
+        // both with EXDEV. This walker cannot re-enter at a kernel object, and
+        // re-reading the displayed target (`pipe:[inode]`, `uts:[id]`, ...)
+        // as a pathname would fabricate a wrong resolution. Refuse the jump
+        // under any spatial restriction instead.
+        if loc.is_magic_link()
+            && (constraints.is_beneath() || constraints.is_in_root() || constraints.is_no_xdev())
+        {
+            return Err(VfsError::CrossesDevices);
+        }
+        if *follow_count >= SYMLINKS_MAX {
+            return Err(VfsError::FilesystemLoop);
+        }
+        *follow_count += 1;
+        let target = loc.read_link()?;
+        if target.is_empty() {
+            return Err(VfsError::NotFound);
+        }
+        let target = PathBuf::from(target);
+        if target.as_str().starts_with('/') {
+            if let Some(root) = constraints.root() {
+                // Absolute targets resolve inside the constraint root.
+                let walk = ConstrainedWalk {
+                    constraints,
+                    search,
+                    final_may_be_file: true,
+                };
+                let resolved =
+                    self.walk_constrained(target.components(), root, depth, follow_count, &walk)?;
+                *depth = 0;
+                return Self::finish_checked_path(&target, resolved, search);
+            }
+            if constraints.is_beneath() {
+                return Err(VfsError::CrossesDevices);
+            }
+            *depth = 0;
+        }
+        let walk = ConstrainedWalk {
+            constraints,
+            search,
+            final_may_be_file: true,
+        };
+        let resolved =
+            self.walk_constrained(target.components(), parent_dir, depth, follow_count, &walk)?;
+        Self::finish_checked_path(&target, resolved, search)
+    }
+
+    /// Follows a final-component symlink under constraints on behalf of the
+    /// constrained open path, resuming `depth` at the parent's own depth. The
+    /// symlink budget restarts here, mirroring how the plain open path
+    /// re-resolves the final component with a fresh counter.
+    pub(crate) fn try_resolve_symlink_constrained_follow(
+        &self,
+        loc: Location,
+        parent_dir: &Location,
+        depth: &mut usize,
+        constraints: &ResolveConstraints,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<Location> {
+        let mut follow_count = 0;
+        self.try_resolve_symlink_constrained(
+            loc,
+            parent_dir,
+            depth,
+            &mut follow_count,
+            constraints,
+            Some(&check_search),
+        )
     }
 
     /// Taking current node as root directory, resolves a path starting from

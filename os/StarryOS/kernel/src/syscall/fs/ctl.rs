@@ -24,8 +24,8 @@ use linux_raw_sys::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, FileLike, current_fd_table, fd_is_path, get_file_like, resolve_at,
-        resolve_at_with_boundary_checked, with_fs,
+        Directory, FileLike, ResolveAtResult, current_fd_table, fd_is_path, get_file_like,
+        resolve_at, resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
     task::UserTaskRef,
@@ -830,10 +830,15 @@ pub fn sys_fchownat(
         .nullable()
         .map(|path| vm_load_path_string(current, path))
         .transpose()?;
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?;
-    let meta = loc.metadata()?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    // Linux chown_common() updates the target inode, or the anonymous inode
+    // backing a pipe/socket. Kinds that cannot persist ownership (eventfd,
+    // epoll, timerfd, signalfd, ...) report EOPNOTSUPP instead of silently
+    // succeeding. runc fchowns its container stdio pipes.
+    let (loc, meta, anon) = match &resolved {
+        ResolveAtResult::File(loc) => (Some(loc.clone()), Some(loc.metadata()?), None),
+        ResolveAtResult::Other(file_like) => (None, None, Some(file_like.clone())),
+    };
 
     let cred = current.as_thread().cred();
 
@@ -842,8 +847,16 @@ pub fn sys_fchownat(
     // - Changing the file group (gid) without CAP_CHOWN is allowed only if
     //   the caller owns the file and the target group is one the caller
     //   belongs to.
-    let changing_owner = uid != -1 && uid as u32 != meta.uid;
-    let changing_group = gid != -1 && gid as u32 != meta.gid;
+    let (owner_uid, owner_gid) = match (&meta, &anon) {
+        (Some(meta), _) => (meta.uid, meta.gid),
+        (None, Some(file_like)) => {
+            let stat = file_like.stat()?;
+            (stat.uid, stat.gid)
+        }
+        (None, None) => unreachable!("resolution is either a file or a file-like"),
+    };
+    let changing_owner = uid != -1 && uid as u32 != owner_uid;
+    let changing_group = gid != -1 && gid as u32 != owner_gid;
 
     if changing_owner && !cred.has_cap_chown() {
         return Err(StarryError::OperationNotPermitted);
@@ -851,7 +864,7 @@ pub fn sys_fchownat(
 
     if changing_group && !cred.has_cap_chown() {
         // Non-root: must own the file and target group must be in our groups.
-        if cred.fsuid != meta.uid {
+        if cred.fsuid != owner_uid {
             return Err(StarryError::OperationNotPermitted);
         }
         if !cred.in_group(gid as u32) {
@@ -859,32 +872,33 @@ pub fn sys_fchownat(
         }
     }
 
-    let mut mode = meta.mode;
-    // Linux chown_common() semantics for clearing setuid/setgid on
-    // non-directory files:
-    //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
-    //     regardless of whether uid/gid participates (i.e. even chown
-    //     with -1/-1 clears SUID).
-    //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
-    //     calls should_remove_sgid() which strips SGID on non-directory
-    //     files only when GROUP_EXEC (S_IXGRP) is set.
-    // Directories preserve SETGID (used for new-file group inheritance).
-    let is_dir = meta.node_type == NodeType::Directory;
-
-    if !is_dir {
-        mode.remove(NodePermission::SET_UID);
-        if mode.contains(NodePermission::GROUP_EXEC) {
-            mode.remove(NodePermission::SET_GID);
+    let uid = if uid == -1 { owner_uid } else { uid as _ };
+    let gid = if gid == -1 { owner_gid } else { gid as _ };
+    if let (Some(loc), Some(meta)) = (&loc, &meta) {
+        let mut mode = meta.mode;
+        // Linux chown_common() semantics for clearing setuid/setgid on
+        // non-directory files:
+        //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
+        //     regardless of whether uid/gid participates (i.e. even chown
+        //     with -1/-1 clears SUID).
+        //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
+        //     calls should_remove_sgid() which strips SGID on non-directory
+        //     files only when GROUP_EXEC (S_IXGRP) is set.
+        // Directories preserve SETGID (used for new-file group inheritance).
+        if meta.node_type != NodeType::Directory {
+            mode.remove(NodePermission::SET_UID);
+            if mode.contains(NodePermission::GROUP_EXEC) {
+                mode.remove(NodePermission::SET_GID);
+            }
         }
+        loc.update_metadata(MetadataUpdate {
+            owner: Some((uid, gid)),
+            mode: Some(mode),
+            ..Default::default()
+        })?;
+    } else if let Some(file_like) = &anon {
+        file_like.set_inode_metadata(None, Some((uid, gid)))?;
     }
-
-    let uid = if uid == -1 { meta.uid } else { uid as _ };
-    let gid = if gid == -1 { meta.gid } else { gid as _ };
-    loc.update_metadata(MetadataUpdate {
-        owner: Some((uid, gid)),
-        mode: Some(mode),
-        ..Default::default()
-    })?;
     Ok(0)
 }
 
@@ -941,23 +955,37 @@ pub fn sys_fchmodat(
         return Err(StarryError::BadFileDescriptor); // (2) and (3)
     }
 
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    // Linux chmod_common() updates the target inode, or the anonymous inode
+    // backing a pipe/socket. Kinds that cannot persist a mode (eventfd, epoll,
+    // timerfd, signalfd, ...) report EOPNOTSUPP instead of silently
+    // succeeding. O_PATH fds were already rejected above.
+    let (loc, anon) = match &resolved {
+        ResolveAtResult::File(loc) => (Some(loc.clone()), None),
+        ResolveAtResult::Other(file_like) => (None, Some(file_like.clone())),
+    };
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
     let cred = current.as_thread().cred();
     if !cred.has_cap_fowner() {
-        let meta = loc.metadata()?;
-        if cred.fsuid != meta.uid {
+        let owner_uid = match (&loc, &anon) {
+            (Some(loc), _) => loc.metadata()?.uid,
+            (None, Some(file_like)) => file_like.stat()?.uid,
+            (None, None) => unreachable!("resolution is either a file or a file-like"),
+        };
+        if cred.fsuid != owner_uid {
             return Err(StarryError::OperationNotPermitted);
         }
     }
 
-    loc.update_metadata(MetadataUpdate {
-        mode: Some(NodePermission::from_bits_truncate(mode as u16)),
-        ..Default::default()
-    })?;
+    if let Some(loc) = &loc {
+        loc.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(mode as u16)),
+            ..Default::default()
+        })?;
+    } else if let Some(file_like) = &anon {
+        file_like.set_inode_metadata(Some(mode & 0o7777), None)?;
+    }
     Ok(0)
 }
 
