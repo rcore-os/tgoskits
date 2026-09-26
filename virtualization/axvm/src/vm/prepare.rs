@@ -47,6 +47,11 @@ impl AxVM {
         // IRQ-safe machine lock so this path never waits for config while
         // holding `machine`.
         let config = self.config.lock_unpoisoned();
+        // Device sets detached while resetting are retired only after the
+        // IRQ-safe machine guard below is released: dropping the last
+        // `Arc<DeviceRuntime>` joins device worker threads. Declared before the
+        // guard so it outlives every return path.
+        let mut retired_devices = Vec::new();
         let mut machine = self.machine.lock();
         if !matches!(
             machine.status(),
@@ -64,16 +69,22 @@ impl AxVM {
         let resources = machine
             .resources_mut()
             .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available for prepare"))?;
-        resources.reset_transient_resources()?;
+        if let Some(devices) = resources.reset_transient_resources()? {
+            retired_devices.push(devices);
+        }
         let prepared = match initialize(resources, &config) {
             Ok(prepared) => prepared,
             Err(err) => {
-                if let Err(reset_err) = resources.reset_transient_resources() {
-                    warn!(
-                        "VM[{}] failed to reset transient resources after initialization error: \
-                         {reset_err:?}",
-                        self.id()
-                    );
+                match resources.reset_transient_resources() {
+                    Ok(Some(devices)) => retired_devices.push(devices),
+                    Ok(None) => {}
+                    Err(reset_err) => {
+                        warn!(
+                            "VM[{}] failed to reset transient resources after initialization \
+                             error: {reset_err:?}",
+                            self.id()
+                        );
+                    }
                 }
                 return Err(err);
             }
@@ -84,6 +95,8 @@ impl AxVM {
         resources.interrupt_controller = Some(prepared.interrupt_controller);
 
         info!("VM setup: id={}", self.id());
+        drop(machine);
+        drop(retired_devices);
         Ok(())
     }
 }

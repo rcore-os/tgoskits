@@ -29,7 +29,15 @@ pub enum Machine<R, H = ()> {
     },
     Destroying,
     Destroyed,
-    Failed(String),
+    /// Terminal failure. The first field is the failure message, the second
+    /// keeps the resource set owned by the transition that failed.
+    ///
+    /// Retaining the set keeps it away from device destructors running inside
+    /// the IRQ-safe machine guard: a later [`Self::take_resources_for_destroy`]
+    /// hands it to `destroy`, which retires it after the guard is released. A
+    /// device teardown may join a worker thread (a file-backed virtio-blk owns
+    /// one) and joining blocks, which needs a scheduler safe point.
+    Failed(String, Option<R>),
     Switching,
 }
 
@@ -44,7 +52,7 @@ impl<R, H> Machine<R, H> {
             Machine::Stopped { .. } => VmStatus::Stopped,
             Machine::Destroying => VmStatus::Destroying,
             Machine::Destroyed => VmStatus::Destroyed,
-            Machine::Failed(_) => VmStatus::Failed,
+            Machine::Failed(..) => VmStatus::Failed,
             Machine::Switching => VmStatus::Failed,
         }
     }
@@ -117,7 +125,7 @@ impl<R, H> Machine<R, H> {
                     Ok(())
                 }
                 Err(err) => {
-                    *self = Machine::Failed(err.to_string());
+                    *self = Machine::Failed(err.to_string(), Some(resources));
                     Err(err)
                 }
             },
@@ -214,7 +222,7 @@ impl<R, H> Machine<R, H> {
             Machine::Ready(resources) => {
                 let mut resources = Some(resources);
                 if let Err(err) = f(resources.as_mut(), &reason) {
-                    *self = Machine::Failed(err.to_string());
+                    *self = Machine::Failed(err.to_string(), resources);
                     return Err(err);
                 }
                 *self = Machine::Stopped {
@@ -389,26 +397,50 @@ impl<R, H> Machine<R, H> {
         }
     }
 
+    /// Resets the resource set owned by `Ready`/`Stopped` and keeps the closure
+    /// free of any owned output.
+    ///
+    /// A closure that must carry an owned resource (a detached device set, for
+    /// instance) reports it through its own captured state, so the signature
+    /// stays as released. `AxVM::reset` uses that to retire the demoted devices
+    /// after the guard is released.
+    ///
+    /// A closure failure commits `Failed`: a failed rebuild leaves the VM
+    /// unreusable, and the documented contract is `destroy()` and then rebuild.
+    /// The resource set stays attached to that state instead of being dropped in
+    /// place, because the caller still holds the IRQ-safe machine guard and a
+    /// device destructor may need a scheduler safe point. A later
+    /// [`Self::take_resources_for_destroy`] retires the set outside the guard.
     pub fn reset_with<F>(&mut self, f: F) -> AxVmResult
     where
         F: FnOnce(&mut R) -> AxVmResult,
     {
         let old = std::mem::replace(self, Machine::Switching);
         match old {
-            Machine::Ready(mut resources) => {
-                f(&mut resources)?;
-                *self = Machine::Ready(resources);
-                Ok(())
-            }
+            Machine::Ready(mut resources) => match f(&mut resources) {
+                Ok(()) => {
+                    *self = Machine::Ready(resources);
+                    Ok(())
+                }
+                Err(error) => {
+                    *self = Machine::Failed(error.to_string(), Some(resources));
+                    Err(error)
+                }
+            },
             Machine::Stopped {
                 resources: Some(mut resources),
                 runtime: None,
                 ..
-            } => {
-                f(&mut resources)?;
-                *self = Machine::Ready(resources);
-                Ok(())
-            }
+            } => match f(&mut resources) {
+                Ok(()) => {
+                    *self = Machine::Ready(resources);
+                    Ok(())
+                }
+                Err(error) => {
+                    *self = Machine::Failed(error.to_string(), Some(resources));
+                    Err(error)
+                }
+            },
             Machine::Stopping {
                 resources,
                 runtime,
@@ -469,20 +501,28 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn destroy_with<F>(&mut self, f: F) -> AxVmResult
-    where
-        F: FnOnce(Option<R>) -> AxVmResult,
-    {
+    /// Transitions to `Destroyed` and hands the owned resources back.
+    ///
+    /// The caller finishes destroying the resources *after* releasing the lock
+    /// that guards this machine. A device teardown may join a worker thread
+    /// (a file-backed virtio-blk owns one), and joining blocks, which needs a
+    /// scheduler safe point. The machine lock is IRQ-safe, so its whole critical
+    /// section runs with interrupts disabled: a join attempted here fails with
+    /// `TaskError::UnsafeContext` instead of waiting.
+    ///
+    /// `Failed` is accepted as well, so the resource set retained by a failed
+    /// rebuild reaches that same lock-outside teardown instead of being dropped
+    /// inside the guard.
+    pub fn take_resources_for_destroy(&mut self) -> AxVmResult<Option<R>> {
         let old = std::mem::replace(self, Machine::Destroying);
         match old {
             Machine::Destroyed => {
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(None)
             }
             Machine::Ready(resources) => {
-                f(Some(resources))?;
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(Some(resources))
             }
             Machine::Running { resources, runtime } => {
                 *self = Machine::Running { resources, runtime };
@@ -545,14 +585,16 @@ impl<R, H> Machine<R, H> {
                 runtime: None,
                 ..
             } => {
-                f(resources)?;
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(resources)
             }
-            Machine::Failed(_) | Machine::Switching | Machine::Destroying => {
-                f(None)?;
+            Machine::Failed(_, resources) => {
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(resources)
+            }
+            Machine::Switching | Machine::Destroying => {
+                *self = Machine::Destroyed;
+                Ok(None)
             }
         }
     }
@@ -591,12 +633,10 @@ mod tests {
         assert_eq!(machine.take_stopped_runtime(), Some(()));
         assert_eq!(machine.status(), VmStatus::Stopped);
 
-        machine
-            .destroy_with(|resources| {
-                assert_eq!(resources, Some(9));
-                Ok(())
-            })
-            .unwrap();
+        // Destroying is the caller's job: the resources come back with the
+        // state transition already committed, and are dropped here, outside the
+        // machine guard.
+        assert_eq!(machine.take_resources_for_destroy().unwrap(), Some(9));
         assert_eq!(machine.status(), VmStatus::Destroyed);
     }
 
@@ -639,6 +679,44 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_reset_from_ready_fails_into_failed_with_retained_resources() {
+        let mut machine = Machine::<usize>::Ready(7usize);
+
+        // A failed rebuild commits `Failed` and keeps the resource set attached
+        // to it: the closure runs under the caller's IRQ-safe guard, so the set
+        // (and any device set it detached) must not be dropped there. A later
+        // `destroy` retires it through the machine-level destroy entry point.
+        let err = machine
+            .reset_with(|_| Err::<(), _>(AxVmError::invalid_state("reset", "boom")))
+            .unwrap_err();
+        assert!(matches!(err, AxVmError::InvalidState { .. }));
+        assert_eq!(machine.status(), VmStatus::Failed);
+        assert_eq!(machine.resources(), None);
+        assert_eq!(machine.take_resources_for_destroy().unwrap(), Some(7));
+        assert_eq!(machine.status(), VmStatus::Destroyed);
+    }
+
+    #[test]
+    fn lifecycle_reset_from_stopped_fails_into_failed_with_retained_resources() {
+        let mut machine = Machine::<usize>::Stopped {
+            resources: Some(7usize),
+            runtime: None,
+            reason: StopReason::Forced,
+        };
+
+        let err = machine
+            .reset_with(|_| Err::<(), _>(AxVmError::invalid_state("reset", "boom")))
+            .unwrap_err();
+
+        assert!(matches!(err, AxVmError::InvalidState { .. }));
+        assert_eq!(machine.status(), VmStatus::Failed);
+        assert_eq!(machine.resources(), None);
+        assert!(machine.runtime().is_none());
+        assert_eq!(machine.take_resources_for_destroy().unwrap(), Some(7));
+        assert_eq!(machine.status(), VmStatus::Destroyed);
+    }
+
+    #[test]
     fn lifecycle_rejects_reset_while_runtime_is_live() {
         let mut machine = Machine::Ready(7usize);
         machine.start_with(|resources| Ok(*resources + 1)).unwrap();
@@ -663,7 +741,7 @@ mod tests {
         let mut machine = Machine::Ready(7usize);
         machine.start_with(|resources| Ok(*resources + 1)).unwrap();
 
-        let err = machine.destroy_with(|_| Ok(())).unwrap_err();
+        let err = machine.take_resources_for_destroy().unwrap_err();
 
         assert!(matches!(
             err,

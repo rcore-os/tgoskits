@@ -23,6 +23,7 @@ fn test_vm_with_machine(
         name: config.name(),
         config: StdMutex::new(config),
         machine: IrqSafeMutex::new(machine),
+        destroy_gate: StdMutex::new(()),
         #[cfg(not(target_arch = "aarch64"))]
         translations: translation::TranslationGate::new(),
         fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
@@ -140,7 +141,7 @@ fn with_config_remains_available_without_machine_resources() {
     let states = [
         Machine::Destroying,
         Machine::Destroyed,
-        Machine::Failed(String::from("test failure")),
+        Machine::Failed(String::from("test failure"), None),
     ];
 
     for (index, machine) in states.into_iter().enumerate() {
@@ -176,4 +177,41 @@ fn runtime_handle_returns_without_machine_lock() {
         "runtime handle access must not retain the machine lock"
     );
     runtime.notify_all();
+}
+
+/// A second `destroy()` must not report completion while the first one is still
+/// cleaning up. `destroy` commits `Destroyed` before releasing the machine guard
+/// and runs `cleanup_resource_set` after it, and that cleanup tears down global
+/// IVC state keyed by the VM id. An early `Ok` lets the caller unregister the VM
+/// and reuse the id, so the in-flight cleanup would tear down the replacement
+/// VM's bindings.
+#[test]
+fn destroy_waits_for_an_in_flight_destroy() {
+    let vm = test_vm(11);
+    let gate = vm.destroy_gate.lock_unpoisoned();
+    let (destroy_started_tx, destroy_started_rx) = mpsc::channel();
+    let (destroy_done_tx, destroy_done_rx) = mpsc::channel();
+
+    let destroy_vm = vm.clone();
+    let destroy_thread = thread::spawn(move || {
+        destroy_started_tx.send(()).expect("announce destroy");
+        destroy_done_tx
+            .send(destroy_vm.destroy())
+            .expect("report destroy");
+    });
+    destroy_started_rx.recv().expect("wait for destroy entry");
+
+    let early_result = destroy_done_rx.recv_timeout(Duration::from_millis(200));
+
+    drop(gate);
+    let result = destroy_done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("destroy must report after the in-flight destroy released the gate");
+    destroy_thread.join().expect("destroy task panicked");
+
+    assert!(
+        early_result.is_err(),
+        "destroy returned while another destroy still held the gate"
+    );
+    assert_eq!(result, Ok(()));
 }

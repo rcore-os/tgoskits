@@ -32,7 +32,9 @@
 
 ## 2. VM states
 
-状态由 `AxVM::status()` 返回（`VmStatus`）。实际运行中只能观测到下列 8 个状态：7 个常规稳定态 + 1 个异常可观测态 `Destroying`（仅 `destroy()` 资源清理失败时出现，见 §4）。创建用
+状态由 `AxVM::status()` 返回（`VmStatus`）。实际运行中只能观测到 7 个状态：6 个常规稳定态 + 1 个
+异常终态 `Failed`（下表另列出 `Destroying` 以便对照，它是持锁期间的内部瞬态，`status()` 观测不到，
+见 §4）。创建用
 `AxVM::new(config)`（→ `Ready`，见 §7）；`new()` 本身不注册到全局注册表，注册由 manager
 （`register_vm` / AxVisor 的 `create_vm_from_toml`）完成。
 
@@ -43,14 +45,13 @@
 | `Paused` | 暂停请求已接受（置暂停标志并挂起设备，vCPU 会停止执行 guest 等待 `resume`）；**不保证暂停已完成** |
 | `Stopping` | 停止请求已接受，执行面收敛中 |
 | `Stopped` | 所有 vCPU 已停止执行 guest（vCPU 运行循环已结束），VM 不再执行 guest；**VM 对象与资源（内存/vCPU 后端/设备）仍保留**（runtime 是否已回收是内部细节，API 不承诺），可通过 `start()`/`reset()`/`destroy()` 继续管理 |
-| `Destroying` | **异常可观测态**（仅 `destroy()` 资源清理失败时停留于此，见 §4）；重试 `destroy()` 可到 `Destroyed`，属可恢复 |
+| `Destroying` | **内部瞬态，不可观测**：仅在 `destroy()` 持锁移交资源所有权期间存在，锁释放前已被改写为 `Destroyed` 或还原原状态（见 §4） |
 | `Failed` | 生命周期进入失败状态，不能继续启动或恢复；需 `destroy()` 后重新创建 VM |
 | `Destroyed` | VM 已销毁，不能继续使用；重复 `destroy()` 幂等接受（返回成功、无副作用） |
 
-> `pausing` 是内部瞬态，正常完成时观测不到（瞬态发生在持锁期间，`status()` 须等锁释放，因此只
-> 返回释放后的稳定态）；`Destroying` 平时同是瞬态，但 `destroy()` 资源清理失败时会停留并变为可
-> 观测（见上表该行与 §4）。`Failed`/`Destroyed` 是**终态**；`Stopped` 是**静默态**（quiescent），
-> 不是终态——可 `start()`/`reset()` 恢复。
+> `Pausing` 与 `Destroying` 都是**内部瞬态**，观测不到（瞬态发生在持锁期间，`status()` 须等锁
+> 释放，因此只返回释放后的稳定态，见 §4）。`Failed`/`Destroyed` 是**终态**；`Stopped` 是
+> **静默态**（quiescent），不是终态——可 `start()`/`reset()` 恢复。
 >
 > `destroy()` 释放 VM 资源（→`Destroyed`），但**不从全局注册表移除**；`remove_vm(id)` 才移除
 > （此后 `get_vm_by_id(id)` 返回 `None`）。`remove_vm` 对不存在或已移除的 id 返回 `None`
@@ -67,13 +68,12 @@
 | `Paused` | `resume()` / `stop()` / `reset()` / `destroy()` |
 | `Stopping` | `destroy()`（强制删除路径，阻塞等待停止完成） / `reset()`（先等 stop 完成） |
 | `Stopped` | `start()` / `reset()` / `destroy()` |
-| `Destroying` | `destroy()`（重试；内部不再重复清理，§4） |
 | `Failed` | `destroy()` |
 | `Destroyed` | `destroy()`（幂等 no-op：重复调用返回 `Ok`、状态不变） |
 
 > 上表列出**控制面推荐使用路径**。从 `Stopping` 直接 `destroy()` 是支持的**强制删除路径**
 > （内部阻塞等待停止完成）；控制面也可先 `stop()` 轮询到 `Stopped` 再 `destroy()`。两种模式
-> 都合法（见 §4）。
+> 都合法（见 §4）。表内不含 `Destroying`：它是不可观测的内部瞬态，控制面无需为它设计分支。
 >
 > **重试安全（当前实现已验证，供重试逻辑参考）**：`stop()` 在 `Stopping`/`Stopped` 上重复调用
 > 返回 `Ok`（状态不变）。`destroy()` 在 `Destroyed` 上的幂等 no-op 已列主表。
@@ -104,7 +104,6 @@ stateDiagram-v2
     Paused --> Destroyed: destroy()
     Stopping --> Destroyed: destroy()
     Stopped --> Destroyed: destroy()
-    Destroying --> Destroyed: destroy() 重试
     Destroyed --> [*]: remove_vm(id) 从注册表移除
 ```
 
@@ -120,8 +119,7 @@ stateDiagram-v2
   （内部完成）        → Stopped    Stopping 等最后一个 vCPU 退出后进入
   start()（重启）    → Running    从 Stopped
   reset()           → Running    从 Ready / Running / Paused / Stopping / Stopped（见 §4）
-  destroy()         → Destroyed  可从任何状态发起（含 Failed；成功时，失败返回错误，见 §4）
-  destroy()（重试）  → Destroyed  从 Destroying（资源清理失败后的异常可观测态，见 §4）
+  destroy()         → Destroyed  可从任何可销毁状态发起（含 Failed；成功时；失败返回错误，见 §4）
 ```
 
 > `Paused*`：**仅状态机翻转，不保证 vCPU 已暂停**（*state transition only, vCPU quiescence not
@@ -137,8 +135,8 @@ stateDiagram-v2
 | `stop()` | `Running` / `Paused` → `Stopping`（`Ready` → `Stopped` 直达） | 状态立即更新；执行面收敛**异步**，须轮询到 `Stopped`（从 `Ready` 直达：vCPU 从未运行，无需收敛） |
 | `pause()` | `Running` → `Paused` | 置暂停标志并挂起设备；vCPU 观察到后停止执行并等待 `resume`；**无确认 API** 保证暂停已完成（生效时机为 vCPU 下次 VM-exit，通常微秒级，取决于 guest 退出频率；掩中断忙循环的 guest 可能长时间不生效） |
 | `resume()` | `Paused` → `Running` | **同步**，返回即完成 |
-| `reset()` | `Ready` / `Running` / `Paused` / `Stopping` / `Stopped` → `Running`（内部经 `Ready` 瞬态） | **阻塞同步**：成功返回即完成清理与重启。失败分两类：停止等待超时 → 返回错误，VM **始终停留在 `Stopping`**（不回滚到原状态），可稍后重试；重建失败（`reset_transient_resources` 出错）→ 进入 `Failed`（`AxVMResources` 已在失败路径释放，VM 对象不可复用，`destroy()` 后重建）。从 `Stopping` 发起时，内部**先等本次 stop 完成**（`wait_until_stopped`）再重建，**不是取消 stop**，此时超时即本次 stop 等待超时（状态停留 `Stopping`）。`Failed`/`Destroyed` 不可 reset |
-| `destroy()` | 任何可销毁状态 → `Destroyed`（**成功时**） | **阻塞同步**：成功返回即资源释放完成；失败时返回错误，VM 停在 `Stopping`（等待超时）或 `Destroying`（清理失败），不进入 `Destroyed`（详见下方 bullet） |
+| `reset()` | `Ready` / `Running` / `Paused` / `Stopping` / `Stopped` → `Running`（内部经 `Ready` 瞬态） | **阻塞同步**：成功返回即完成清理与重启。失败分两类：停止等待超时 → 返回错误，VM **始终停留在 `Stopping`**（不回滚到原状态），可稍后重试；重建失败（`reset_transient_resources` 出错）→ 进入 `Failed`（`AxVMResources` 仍挂在 `Failed` 状态上，由随后的 `destroy()` 在锁外回收；VM 对象不可复用，`destroy()` 后重建）。从 `Stopping` 发起时，内部**先等本次 stop 完成**（`wait_until_stopped`）再重建，**不是取消 stop**，此时超时即本次 stop 等待超时（状态停留 `Stopping`）。`Failed`/`Destroyed` 不可 reset |
+| `destroy()` | 任何可销毁状态 → `Destroyed`（**成功时**） | **阻塞同步**：成功返回即资源释放完成；失败分两类：停止等待超时 → VM 停在 `Stopping`；资源清理失败 → 状态**已提交为 `Destroyed`**，错误只报告清理未完成（详见下方 bullet） |
 
 关键语义：
 
@@ -186,9 +184,12 @@ stateDiagram-v2
   资源释放完成。失败分两类，`status()` 返回值确定：**① 停止等待超时**（从 `Running`/`Paused`/
   `Stopping` 发起）→ VM **始终停留在 `Stopping`**（不回滚到 `Running`/`Paused`），`status()`
   返回 `Stopping`；`Stopping` 允许 `destroy()`，直接重试 `destroy()` 会再次发起强制停止。**② 资源
-  清理失败**（`cleanup_resource_set` 出错，从 `Ready`/`Stopped` 或等待完成后发起）→ 机器停留在
-  `Destroying` 且可观测，`status()` 返回 `Destroying`；重试 `destroy()` 仍可到 `Destroyed`（已
-  部分释放的资源不再重复清理）。阻塞是
+  清理失败**（`cleanup_resource_set` 出错，从 `Ready`/`Stopped` 或等待完成后发起）→ 状态已在
+  machine 锁内提交为 `Destroyed`，待回收的 resources 也在同一次提交中移出锁外，`status()` 返回
+  `Destroyed`；
+  `destroy()` 返回 `Err` 表示清理未完成，已部分释放的资源不会重做，重试 `destroy()` 只返回
+  `Ok(())`。需要"清理是否完整"的证据时只有这个错误返回值，控制面应记录并上报，不能靠查询状态
+  区分。阻塞是
   **协作式等待**（`wait_until_stopped` 循环
   `yield_now` + vCPU `task.join`），调用
   task 让出 CPU 而非忙等，但**占用时间不固定**——依赖 vCPU 何时退出，无法预知何时返回。等待
@@ -198,6 +199,12 @@ stateDiagram-v2
   guest 会让 `destroy()` 长时间占用调用 task 甚至最终报错，而非无限卡死。**控制面实现
   `destroy()` 时应避免同步等待**（如 HTTP `DELETE /vm/{id}`），包装为异步删除任务并配
   timeout（§6）。
+- **并发 `destroy()` 被串行化**：整次 `destroy()`（含 `Destroyed` 提交之后的资源清理）由每 VM 的
+  destroy 门闩串行化，后到的调用会**等前一个调用的清理完成**再返回 `Ok`，因此 §1 的“成功返回即
+  清理完成”对并发调用同样成立。原因是先到的调用在锁外清理**按 VM id 索引的全局 IVC 通道**；若后到者
+  提前返回 `Ok`，控制面会注销并重建同 id 的 VM，而仍在运行的旧清理会误拆新 VM 的绑定。等待期间
+  同样不占用生命周期锁（§6），`status()` 仍可并发读取（读到的可能是 `Stopping`，也可能是清理已
+  完成而门闩尚未释放时的 `Destroyed`）。
 
 ## 5. Error handling
 
@@ -211,8 +218,9 @@ AxVmResult<AxVMRef>`（返回新建 VM 句柄）；查询 `status() -> VmStatus`
 |------|------|---------|
 | `InvalidTransition` | 当前状态下不允许该操作（如在 `Running` 上 `start()`、非 `Paused` 上 `resume()`） | 状态不变；先查 `status()` 再重试 |
 | `ResourceUnavailable` / `OutOfMemory` | 资源不足 | 稍后重试 |
-| 转换初始化失败 | `start()`（从 `Ready`）或 `stop()`（从 `Ready`）的准备步骤失败；`reset()` 重建步骤失败 | 进入 `Failed`（不可恢复），`destroy()` 后重建 |
+| 转换初始化失败 | `start()`（从 `Ready`）或 `stop()`（从 `Ready`）的准备步骤失败；`reset()` 重建步骤失败 | 进入 `Failed`（不可恢复；资源保留到 `destroy()` 回收），之后须重建 VM |
 | 停止等待超时 | `reset()`/`destroy()` 内部 `wait_until_stopped` 超时 | 返回 **`AxVmError::InvalidState`**（错误枚举无 `Timeout` 变体），**不进入目标状态**；VM 处于 `Stopping`（§4），可直接重试 |
+| 资源清理失败 | `destroy()` 把 resources 交出后 `cleanup_resource_set` 出错 | 状态已是 `Destroyed`；错误表示清理未完成，重试不重做清理（§4）。记录错误并上报，勿当幂等成功处理 |
 
 `Failed` 是终态，只能 `destroy()` 离开；当前无独立 API 查询失败原因（原因随错误返回值提供）。
 `start()` 从 `Stopped` 失败则保持 `Stopped`（可重试），不进入 `Failed`。
@@ -294,7 +302,6 @@ loop {
         VmStatus::Stopped => break,
         VmStatus::Destroyed => return Err(VmGone),      // 其他路径已 destroy
         VmStatus::Failed => return Err(VmFailed),       // 并发 reset 重建失败等
-        VmStatus::Destroying => return Err(VmDestroying), // 并发 destroy 清理失败；或改重试 destroy()
         _ if Instant::now() >= deadline => return Err(Timeout),
         _ => sleep(Duration::from_millis(10)),
     }
@@ -329,9 +336,9 @@ vm.destroy()?;                    // Destroyed（阻塞，资源释放完成）
    - `pause()`：无完成确认，vCPU 静默不可保证（同 `stop()`）
    - `destroy()`：完成是成功返回 → `Destroyed`（终态）；失败返回不保证达到目标状态
    - `Failed`：不可恢复错误态（终态）
-   `Stopping`/`Paused` 不代表执行面已静默；`Destroying` 是**异常可观测态**（destroy 清理失败），
-   重试 `destroy()` 可达 `Destroyed`。
+   `Stopping`/`Paused` 不代表执行面已静默；`destroy()` 资源清理失败时状态已提交为 `Destroyed`
+   而返回 `Err`，重试不会重做清理（§4）。
 4. **控制面必须处理 timeout 与 `InvalidTransition`**（见 §5、§6）。
 
-> **行为基准：** 本文描述的契约以提交 `31f341abc`（dev 分支，2026-07-31）为准；源码级行号对照
-> 见 [lifecycle-internals.md](lifecycle-internals.md)。
+> **行为基准：** 本文描述的契约与当前实现同步——`destroy()` 在 machine 锁外回收 resources，并由
+> 每 VM 门闩串行化（§4）；源码级行号对照见 [lifecycle-internals.md](lifecycle-internals.md)。
