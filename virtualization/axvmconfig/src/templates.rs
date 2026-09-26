@@ -18,6 +18,12 @@
 //! with sensible defaults based on user-provided parameters.
 use crate::*;
 
+/// Access bits a guest's own RAM is mapped with: read, write and execute.
+///
+/// Every configuration in this repository maps guest RAM this way, and a region
+/// without them is not one a guest can run from.
+const GUEST_RAM_FLAGS: usize = 0x7;
+
 /// Configuration parameters for generating a VM template.
 ///
 /// Groups all parameters needed for VM configuration template generation
@@ -41,6 +47,13 @@ pub struct VmTemplateParams {
     pub image_location: String,
     /// Optional kernel command line parameters
     pub cmdline: Option<String>,
+    /// Guest physical address the guest's memory region starts at.
+    ///
+    /// A parameter for the same reason the entry point is: the address belongs to
+    /// the guest image and the machine it is written for, not to this platform.
+    pub memory_base: usize,
+    /// Size of that region, in mebibytes.
+    pub memory_mb: usize,
 }
 
 /// Generate a VM configuration template with specified parameters.
@@ -82,8 +95,23 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
             ramdisk_load_addr: None,
             image_location: Some(params.image_location),
             cmdline: params.cmdline, // Optional kernel command line
-            memory_regions: vec![],  // Memory regions to be defined per architecture
-            configured_memory_region_count: 0,
+            // The guest's own memory, and the only region this builder can know
+            // about: without one the guest has no RAM at all, and the creation
+            // path refuses a configuration that names no region. Saturating on
+            // the unit conversion rather than wrapping, because a size past what
+            // the host can hold is refused when the region is allocated, while a
+            // wrapped value would name a small region that looks valid.
+            memory_regions: vec![VmMemConfig {
+                gpa: params.memory_base,
+                size: params.memory_mb.saturating_mul(1024 * 1024),
+                flags: GUEST_RAM_FLAGS,
+                map_type: VmMemMappingType::MapAlloc,
+            }],
+            // One region came from the caller, so it counts as a configured one.
+            // This is the value that parsing this template back from TOML
+            // produces, which keeps the two ways of building one configuration
+            // identical.
+            configured_memory_region_count: 1,
         },
         // Machine-profile devices, including the virtual serial port, are
         // intentionally absent from the user configuration.

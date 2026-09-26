@@ -21,15 +21,11 @@
 #![cfg_attr(not(all(feature = "std", any(windows, unix))), no_std)]
 
 #[cfg(all(feature = "std", any(windows, unix)))]
-use axvmconfig::*;
-
-// CLI tool module - only available with std feature.
+// The template module and everything else the tool needs come from the library
+// crate; this binary only owns the command line entry point, which is why the
+// module is gated the way it was: the CLI exists on a host with `std`.
 #[cfg(all(feature = "std", any(windows, unix)))]
 mod tool;
-
-// Template generation module - only available with std feature.
-#[cfg(all(feature = "std", any(windows, unix)))]
-mod templates;
 
 /// Main entry point for the axvmconfig CLI tool.
 ///

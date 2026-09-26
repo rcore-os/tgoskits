@@ -469,20 +469,24 @@ impl<R, H> Machine<R, H> {
         }
     }
 
-    pub fn destroy_with<F>(&mut self, f: F) -> AxVmResult
-    where
-        F: FnOnce(Option<R>) -> AxVmResult,
-    {
+    /// Transitions to `Destroyed` and hands the owned resources back.
+    ///
+    /// The caller finishes destroying the resources *after* releasing the lock
+    /// that guards this machine. A device teardown may join a worker thread
+    /// (a file-backed virtio-blk owns one), and joining blocks, which needs a
+    /// scheduler safe point. The machine lock is IRQ-safe, so its whole critical
+    /// section runs with interrupts disabled: a join attempted here fails with
+    /// `TaskError::UnsafeContext` instead of waiting.
+    pub fn take_resources_for_destroy(&mut self) -> AxVmResult<Option<R>> {
         let old = std::mem::replace(self, Machine::Destroying);
         match old {
             Machine::Destroyed => {
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(None)
             }
             Machine::Ready(resources) => {
-                f(Some(resources))?;
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(Some(resources))
             }
             Machine::Running { resources, runtime } => {
                 *self = Machine::Running { resources, runtime };
@@ -545,14 +549,12 @@ impl<R, H> Machine<R, H> {
                 runtime: None,
                 ..
             } => {
-                f(resources)?;
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(resources)
             }
             Machine::Failed(_) | Machine::Switching | Machine::Destroying => {
-                f(None)?;
                 *self = Machine::Destroyed;
-                Ok(())
+                Ok(None)
             }
         }
     }
@@ -591,12 +593,10 @@ mod tests {
         assert_eq!(machine.take_stopped_runtime(), Some(()));
         assert_eq!(machine.status(), VmStatus::Stopped);
 
-        machine
-            .destroy_with(|resources| {
-                assert_eq!(resources, Some(9));
-                Ok(())
-            })
-            .unwrap();
+        // Destroying is the caller's job: the resources come back with the
+        // state transition already committed, and are dropped here, outside the
+        // machine guard.
+        assert_eq!(machine.take_resources_for_destroy().unwrap(), Some(9));
         assert_eq!(machine.status(), VmStatus::Destroyed);
     }
 
@@ -663,7 +663,7 @@ mod tests {
         let mut machine = Machine::Ready(7usize);
         machine.start_with(|resources| Ok(*resources + 1)).unwrap();
 
-        let err = machine.destroy_with(|_| Ok(())).unwrap_err();
+        let err = machine.take_resources_for_destroy().unwrap_err();
 
         assert!(matches!(
             err,

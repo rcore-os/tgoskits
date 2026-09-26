@@ -594,7 +594,7 @@ pub(super) fn plan_qemu_case_artifacts<'case, 'artifact, T>(
 
 #[cfg(test)]
 mod tests {
-    use super::combine_results;
+    use super::{combine_results, load_axvisor_http_probe_config};
 
     fn ok() -> anyhow::Result<()> {
         Ok(())
@@ -641,5 +641,31 @@ mod tests {
     fn non_probe_case_uses_qemu_result() {
         assert!(combine_results(ok(), false, None).is_ok());
         assert!(combine_results(err("boot failed"), false, None).is_err());
+    }
+
+    #[test]
+    fn probe_config_parses_with_serde_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("axvisor-probe-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let probe_path = dir.join("qemu-aarch64.toml");
+        let plain_path = dir.join("plain.toml");
+        std::fs::write(&probe_path, "[host_http_probe]\nguest_port = 8081\n").unwrap();
+        std::fs::write(&plain_path, "args = []\n").unwrap();
+
+        let config = load_axvisor_http_probe_config(&probe_path)
+            .unwrap()
+            .expect("host_http_probe present");
+        assert_eq!(config.guest_port, 8081);
+        assert_eq!(config.connect_timeout_secs, 120);
+        assert_eq!(config.request_timeout_secs, 5);
+
+        assert!(
+            load_axvisor_http_probe_config(&plain_path)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

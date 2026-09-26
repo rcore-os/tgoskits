@@ -1,0 +1,22 @@
+# The full browser control plane over the VM pool: no default guest, the pool
+# directory is provisioned by the `sh/` asset pipeline, and the host-side probe
+# drives start/close cycles through the control API only. The point of the case
+# is that a client can learn what the pool offers, start, close and restart
+# guests by id without ever sending a config, and that the browser-facing
+# surfaces (`/api/manifest`, `/api/consoles`, `/ws/events`) follow the VM
+# registry while all of that happens. `web-ui` is on as well so the served
+# dashboard is part of the same boot: the probe checks the shell it serves and
+# that the capability declaration it navigates by matches this build.
+features = ["ax-driver/nvme", "browser-console", "fs", "http-axum", "web-ui"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+[env]
+# QEMU hostfwd reaches the guest through its non-loopback interface.
+AXVM_HTTP_BIND = "0.0.0.0:8080"
+# The pool directory here is the injection target of the `sh/` asset pipeline,
+# which is the only pre-boot way to place complete guest configs into the guest
+# filesystem. The image holds no other `.toml` file, so the directory holds
+# exactly the case's fixtures.
+AXVISOR_VM_POOL = "/usr/bin"

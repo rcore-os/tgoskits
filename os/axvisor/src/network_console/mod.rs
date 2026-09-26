@@ -3,13 +3,13 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{
     string::String,
-    sync::{Arc, OnceLock},
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use axvisor::console_mux::HostOutputQueue;
-use axvm::VMId;
+use axvm::{AxVmError, VMId};
 use {
     ax_std::os::arceos::api::task::AxCpuMask,
     ax_std::os::arceos::api::task::ax_set_current_affinity,
@@ -24,7 +24,8 @@ mod layout;
 mod delivery;
 
 use delivery::{DeliveryFrame, DeliveryQueue};
-use layout::{ConsoleLane, Endpoint, plan_endpoints};
+pub(crate) use layout::LaneAllocation;
+use layout::{ConsoleLane, Endpoint, Layout, LayoutFull, MAX_GUEST_CONSOLES};
 
 const CONSOLE_LANE_COUNT: usize = ConsoleLane::COUNT;
 const OUTPUT_QUEUE_CAPACITY: usize = 64 * 1024;
@@ -37,7 +38,11 @@ const MANAGEMENT_LINE_CAPACITY: usize = 256;
 const MANAGEMENT_CPU_ID: usize = 0;
 
 static OUTPUT_HUB: NetworkOutputHub = NetworkOutputHub::new();
-static ENDPOINTS: OnceLock<Vec<Endpoint>> = OnceLock::new();
+/// Which lane each guest owns. The table is written when a VM is created and
+/// when one is removed, so the browser console set follows the VM registry
+/// instead of a startup snapshot.
+static LAYOUT: LazyLock<NoPreemptMutex<Layout>> =
+    LazyLock::new(|| NoPreemptMutex::new(Layout::new()));
 
 struct NetworkOutputHub {
     lanes: [NetworkOutputLane; CONSOLE_LANE_COUNT],
@@ -59,17 +64,17 @@ struct BrowserOutputDelivery {
 impl NetworkOutputHub {
     const fn new() -> Self {
         Self {
-            lanes: [
-                NetworkOutputLane::new(),
-                NetworkOutputLane::new(),
-                NetworkOutputLane::new(),
-                NetworkOutputLane::new(),
-            ],
+            lanes: [const { NetworkOutputLane::new() }; CONSOLE_LANE_COUNT],
         }
     }
 
     fn submit(&self, lane: ConsoleLane, bytes: &[u8]) {
         self.lanes[lane.index()].submit(bytes);
+    }
+
+    /// Ends the lane's attached browser session, if it has one.
+    fn close_session(&self, lane: ConsoleLane) {
+        self.lanes[lane.index()].close_session();
     }
 
     fn is_connected(&self, lane: ConsoleLane) -> bool {
@@ -143,6 +148,16 @@ impl NetworkOutputLane {
             drop(queue);
             let _result = self.ready.notify();
         }
+    }
+
+    /// Ends whatever session currently owns this lane.
+    ///
+    /// Reading the session id is atomic and `end_session` ignores an id that is
+    /// no longer the live one, so this cannot end a session installed later on a
+    /// reallocated lane.
+    fn close_session(&self) {
+        let session = self.session.load(Ordering::Acquire);
+        self.end_session(session);
     }
 
     fn take_batch(&self, session: usize) -> Option<NetworkOutputBatch> {
@@ -270,36 +285,50 @@ impl Drop for ActiveSession {
     }
 }
 
-/// Captures the immutable console layout after the startup VMs are registered.
-pub(crate) fn start() -> Result<()> {
-    ENDPOINTS
-        .set(build_startup_endpoints())
-        .map_err(|_| anyhow::anyhow!("browser console endpoints were already initialized"))
+/// Makes `vm_id` visible as a browser console on the smallest free guest lane.
+///
+/// Called while the VM is being created, before it becomes visible in the
+/// registry, so a full lane table fails that creation instead of yielding a VM
+/// no browser can attach to. The failure is reported as
+/// [`AxVmError::ResourceUnavailable`], which the HTTP control plane maps to 503
+/// like any other exhausted host resource.
+///
+/// The result says whether this call took a lane or the VM already had one, so
+/// a caller that has to undo the registration gives back only its own lane.
+pub(crate) fn register_guest(vm_id: VMId, name: &str) -> Result<LaneAllocation> {
+    LAYOUT.lock().allocate(vm_id, name).map_err(|LayoutFull| {
+        anyhow::anyhow!(AxVmError::ResourceUnavailable {
+            resource: "browser console lane",
+            detail: format!("all {MAX_GUEST_CONSOLES} guest console lanes are in use"),
+        })
+    })
 }
 
-fn build_startup_endpoints() -> Vec<Endpoint> {
-    let guests = crate::manager::AxvmManager::vm_list()
-        .into_iter()
-        .map(|vm| (vm.id(), vm.name()))
-        .collect();
-    plan_endpoints(guests)
+/// Drops `vm_id`'s guest lane and stops any browser session attached to it.
+///
+/// Called when the VM is removed. The session is closed before the lane is
+/// released, so whichever VM takes the slot next never inherits a stale browser
+/// transport (an attached session would otherwise reject a new attachment).
+pub(crate) fn release_guest(vm_id: VMId) {
+    let Some(endpoint) = LAYOUT.lock().release(vm_id) else {
+        return;
+    };
+    OUTPUT_HUB.close_session(endpoint.lane);
 }
 
-fn endpoints() -> &'static [Endpoint] {
-    ENDPOINTS.get().map(Vec::as_slice).unwrap_or(&[])
+fn endpoints() -> Vec<Endpoint> {
+    LAYOUT.lock().endpoints()
 }
 
-fn endpoint_for_lane(lane: ConsoleLane) -> Option<&'static Endpoint> {
-    endpoints().iter().find(|endpoint| endpoint.lane == lane)
-}
-
-fn endpoint_for_route(route: &str) -> Option<&'static Endpoint> {
-    endpoints().iter().find(|endpoint| endpoint.route == route)
+fn endpoint_for_route(route: &str) -> Option<Endpoint> {
+    LAYOUT.lock().by_route(route)
 }
 
 fn lane_name(lane: ConsoleLane) -> String {
-    endpoint_for_lane(lane)
-        .map(|endpoint| endpoint.display_name.clone())
+    LAYOUT
+        .lock()
+        .by_lane(lane)
+        .map(|endpoint| endpoint.display_name)
         .unwrap_or_else(|| format!("console lane {}", lane.index()))
 }
 
@@ -309,26 +338,34 @@ pub(crate) fn pin_current_task() {
         .expect("web console management CPU affinity must be valid");
 }
 
-/// Returns whether the startup snapshot exposed this browser route.
+/// Returns whether this browser route exists in the current layout.
 pub(crate) fn has_console_route(route: &str) -> bool {
     endpoint_for_route(route).is_some()
 }
 
-/// Browser-visible console descriptors for the startup VM snapshot.
+/// Browser-visible console descriptors for the current VM set.
+///
+/// `attached` reports whether a browser session already holds the lane. The
+/// lanes are exclusive, so a client that wants to explain its own failed
+/// WebSocket upgrade needs this fact: the browser API hides the server's 409
+/// behind an anonymous 1006 close, and a non-upgrade request never reaches the
+/// upgrade handler at all.
 pub(crate) fn console_descriptions() -> Vec<ConsoleDescription> {
     endpoints()
-        .iter()
+        .into_iter()
         .map(|endpoint| ConsoleDescription {
-            route: endpoint.route.clone(),
-            display_name: endpoint.display_name.clone(),
+            route: endpoint.route,
+            display_name: endpoint.display_name,
+            attached: OUTPUT_HUB.is_connected(endpoint.lane),
         })
         .collect()
 }
 
-/// One console entry returned to the embedded browser page.
+/// One console entry as the control plane reports it.
 pub(crate) struct ConsoleDescription {
     pub(crate) route: String,
     pub(crate) display_name: String,
+    pub(crate) attached: bool,
 }
 
 /// Copies Axvisor shell bytes into its fixed browser queue.
@@ -338,19 +375,13 @@ pub(crate) fn submit_management_output(bytes: &[u8]) {
 
 /// Returns whether one guest currently has an attached browser session.
 pub(crate) fn guest_output_connected(vm_id: VMId) -> bool {
-    endpoints()
-        .iter()
-        .find(|endpoint| endpoint.vm_id == Some(vm_id))
-        .is_some_and(|endpoint| OUTPUT_HUB.is_connected(endpoint.lane))
+    let lane = LAYOUT.lock().guest(vm_id).map(|endpoint| endpoint.lane);
+    lane.is_some_and(|lane| OUTPUT_HUB.is_connected(lane))
 }
 
 /// Copies current guest output into its VM-specific fixed browser queue.
 pub(crate) fn submit_guest_output(vm_id: VMId, bytes: &[u8]) {
-    let Some(lane) = endpoints()
-        .iter()
-        .find(|endpoint| endpoint.vm_id == Some(vm_id))
-        .map(|endpoint| endpoint.lane)
-    else {
+    let Some(lane) = LAYOUT.lock().guest(vm_id).map(|endpoint| endpoint.lane) else {
         return;
     };
     OUTPUT_HUB.submit(lane, bytes);
@@ -360,10 +391,17 @@ pub(crate) fn submit_guest_output(vm_id: VMId, bytes: &[u8]) {
 pub(crate) fn open_browser_console(
     route: &str,
 ) -> Result<(BrowserConsoleInput, BrowserConsoleOutput)> {
-    let endpoint = endpoint_for_route(route)
-        .cloned()
-        .with_context(|| format!("unknown console endpoint `{route}`"))?;
+    let endpoint =
+        endpoint_for_route(route).with_context(|| format!("unknown console endpoint `{route}`"))?;
     let active_session = ActiveSession::install(endpoint.lane)?;
+    // The VM may be removed between the lookup and the install. Re-check the
+    // lane: if it no longer serves this endpoint the session guard ends the
+    // session on the way out, so a stale browser transport can never keep a
+    // reallocated lane unusable.
+    let current = LAYOUT.lock().by_lane(endpoint.lane);
+    if current.is_none_or(|current| current.vm_id != endpoint.vm_id) {
+        return Err(anyhow::anyhow!("console endpoint `{route}` was removed"));
+    }
     let lane = active_session.lane;
     let session = active_session.session;
     let delivery = start_output_dispatcher(lane, session)?;
@@ -371,6 +409,7 @@ pub(crate) fn open_browser_console(
         BrowserConsoleInput {
             endpoint,
             editor: ManagementLineEditor::new(),
+            rejected_input_reported: false,
             _active_session: active_session,
         },
         BrowserConsoleOutput {
@@ -442,6 +481,12 @@ fn receive_output_frame(
 pub(crate) struct BrowserConsoleInput {
     endpoint: Endpoint,
     editor: ManagementLineEditor,
+    /// Whether the current input streak was already rejected by a stopped guest.
+    ///
+    /// Keystrokes arrive one frame at a time, so reporting every rejected byte
+    /// would turn one attempt into a wall of text; one notice per streak tells
+    /// the operator why nothing is happening and stops on its own.
+    rejected_input_reported: bool,
     _active_session: ActiveSession,
 }
 
@@ -461,7 +506,18 @@ impl BrowserConsoleInput {
     /// Routes browser bytes to the selected shell and reports whether it stays open.
     pub(crate) fn route(&mut self, bytes: &[u8]) -> bool {
         if let Some(vm_id) = self.endpoint.vm_id {
-            crate::guest_console::route_network_input(vm_id, bytes);
+            if crate::guest_console::route_network_input(vm_id, bytes) {
+                self.rejected_input_reported = false;
+            } else if !self.rejected_input_reported {
+                // The guest console only accepts input while its VM runs. A
+                // dropped keystroke used to leave no trace at all, which is
+                // indistinguishable from a broken terminal: say why, once.
+                self.rejected_input_reported = true;
+                let notice = format!(
+                    "[Axvisor] VM {vm_id} is not running; input was dropped. Start it first.\r\n"
+                );
+                submit_guest_output(vm_id, notice.as_bytes());
+            }
             true
         } else {
             self.editor.process(bytes)

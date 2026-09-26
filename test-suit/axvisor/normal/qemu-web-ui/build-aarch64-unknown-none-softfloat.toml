@@ -1,0 +1,33 @@
+# Dashboard build for the `qemu-web-ui` case.
+#
+# `web-ui` serves the React dashboard from assets embedded in the hypervisor at
+# build time (no rootfs read for the assets, cargo never invokes npm), and
+# `browser-console` adds the terminal gateway the dashboard's guest and
+# management panels drive. `no-auto-start` keeps the default VM
+# (`web-ui/vm-linux-alpine.toml`) in `Ready` (registered but not booted), so the
+# probe can assert the lane table and then drive start/close/create itself.
+#
+# `fs` + `ax-driver/nvme` are what make the guest possible at all: the guest
+# kernel, and the ext4 image the guest roots from, are files in the hypervisor's
+# own filesystem on the QEMU NVMe disk. Nothing is embedded in the hypervisor
+# binary, so a case that wants a different guest only has to place files.
+#
+# The bundle is NOT built by cargo — run
+# `cd os/axvisor/web-ui && npm ci && npm run build` before building this case,
+# otherwise the build fails with a message naming that command. CI does it for
+# the check that runs this case.
+features = [
+    "web-ui",
+    "browser-console",
+    "ax-driver/nvme",
+    "fs",
+    "no-auto-start",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-web-ui/web-ui/vm-linux-alpine.toml"]
+
+# Bind contract: the probe reaches the in-guest listener through QEMU hostfwd, so
+# the listener has to accept connections from the QEMU network.
+[env]
+AXVM_HTTP_BIND = "0.0.0.0:8080"

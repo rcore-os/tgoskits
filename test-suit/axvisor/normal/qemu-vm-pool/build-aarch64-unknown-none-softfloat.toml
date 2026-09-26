@@ -1,0 +1,16 @@
+# The VM pool is a directory of guest configs that a start request may create on
+# demand: nothing in it is created at startup, so this case boots without any
+# default guest. The shell steps in `vm-pool/qemu-aarch64.toml` write the two
+# pool configs into Axvisor's own root filesystem, which is how a
+# console-provisioned pool looks, and then drive listing, start-on-demand and
+# delete-on-close through the management shell.
+features = ["ax-driver/nvme", "fs"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+[env]
+# Exercise the build-config override of the pool directory: the long guest
+# config in a shell command has to fit the shell line buffer, and `/pool` keeps
+# that command short.
+AXVISOR_VM_POOL = "/pool"

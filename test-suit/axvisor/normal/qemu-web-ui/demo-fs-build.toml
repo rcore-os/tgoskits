@@ -1,0 +1,24 @@
+# Local demo build for looking at the dashboard with an fs-backed guest.
+#
+# Not a test case: the file name does not match the `build-<target>.toml` shape
+# the suite discovers, so it cannot show up in a test run. Drive it with
+#   cargo xtask axvisor qemu -c <this file> --qemu-config web-ui/qemu-aarch64-hostfwd.toml --arch aarch64
+# and open http://localhost:8080/.
+#
+# `vm_configs` is deliberately absent: no guest is registered at boot, so every
+# guest on the page comes from a config the operator puts in the guest tree. The
+# pool reads every `.toml` under `/guest` (recursively), and a config the
+# dashboard saves goes to `/guest` too; `AXVISOR_VM_DIRS` / `AXVISOR_VM_POOL`
+# could point those elsewhere, and this demo needs neither.
+features = [
+    "web-ui",
+    "browser-console",
+    "fs",
+    "ax-driver/nvme",
+    "no-auto-start",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+
+[env]
+AXVM_HTTP_BIND = "0.0.0.0:8080"

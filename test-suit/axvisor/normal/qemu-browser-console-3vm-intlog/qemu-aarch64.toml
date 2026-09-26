@@ -1,0 +1,29 @@
+# wedge6: same as qemu-browser-console-3vm but with QEMU exception logging.
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-m",
+    "2g",
+    "-netdev",
+    "user,id=net0,hostfwd=tcp::8080-:8080",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-monitor",
+    "unix:/tmp/qemu-mon.sock,server,nowait",
+    "-gdb",
+    "tcp::1234",
+    "-d",
+    "int,guest_errors",
+    "-D",
+    "/tmp/qemu-int.log",
+]
+fail_regex = []
+success_regex = []
+timeout = 1800
+to_bin = true
+uefi = false

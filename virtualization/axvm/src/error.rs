@@ -50,6 +50,12 @@ pub enum AxVmError {
     /// No registered VM has the requested identifier.
     #[error("VM {vm_id} was not found")]
     VmNotFound { vm_id: VMId },
+    /// A virtual device needs a guest file the filesystem does not have yet.
+    ///
+    /// This is a precondition the operator clears by transferring the file, so
+    /// the path is kept for the caller instead of being buried in a diagnostic.
+    #[error("virtual device '{device}' needs `{path}`, which is not in the guest filesystem")]
+    DeviceBackingFileMissing { device: String, path: String },
     /// A required VM resource is unavailable.
     #[error("VM resource {resource} is unavailable: {detail}")]
     ResourceUnavailable {

@@ -248,12 +248,16 @@ fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
     // Validate state transition using helper function
     can_start_vm(status).map_err(anyhow::Error::msg)?;
     crate::manager::AxvmManager::start_vm(vm_id).with_context(|| format!("boot VM[{vm_id}]"))?;
-    crate::guest_console::mark_running(vm_id);
     Ok(())
 }
 
 #[cfg(feature = "fs")]
 fn start_vm_by_id(vm_id: usize, attach_console: bool) {
+    if let Err(error) = ensure_registered(vm_id) {
+        println!("✗ {error:#}");
+        return;
+    }
+
     match crate::manager::AxvmManager::with_vm(vm_id, |vm| start_single_vm(vm.clone())) {
         Some(Ok(_)) => {
             println!("✓ VM[{}] started successfully", vm_id);
@@ -280,6 +284,51 @@ fn start_vm_by_id(vm_id: usize, attach_console: bool) {
             println!("✗ VM[{}] not found", vm_id);
         }
     }
+}
+
+/// Make sure `vm_id` has a registered VM before the start path runs.
+///
+/// start names a VM, not a config file, so an id that is still only a pool
+/// candidate is created from its pool entry first.
+#[cfg(feature = "fs")]
+fn ensure_registered(vm_id: usize) -> anyhow::Result<()> {
+    if crate::manager::AxvmManager::ensure_registered(vm_id)? {
+        return Ok(());
+    }
+
+    anyhow::bail!("VM[{vm_id}] is neither registered nor listed in the VM pool")
+}
+
+/// List the configs the VM pool offers, with the runtime state of each id.
+#[cfg(feature = "fs")]
+fn vm_pool(_cmd: &ParsedCommand) {
+    let pool = crate::control::domain::pool::scan();
+    println!("VM pool directory: {}", pool.directory());
+
+    if pool.entries().is_empty() {
+        println!("No config in the pool can be started.");
+    } else {
+        println!("{:<6} {:<16} {:<12} PATH", "VM ID", "NAME", "STATE");
+        println!("{:-<6} {:-<16} {:-<12} {:-<24}", "", "", "", "");
+        for entry in pool.entries() {
+            let state = match crate::manager::AxvmManager::vm_by_id(entry.id()) {
+                Some(vm) => vm.status().as_str().to_string(),
+                None => "not-created".to_string(),
+            };
+            println!(
+                "{:<6} {:<16} {:<12} {}",
+                entry.id(),
+                entry.name(),
+                state,
+                entry.path()
+            );
+        }
+    }
+
+    for issue in pool.issues() {
+        println!("✗ {issue}");
+    }
+    println!("Start an entry with 'vm start <VM_ID>'.");
 }
 
 fn vm_stop(cmd: &ParsedCommand) {
@@ -334,7 +383,6 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
             .with_context(|| format!("send shutdown request to VM[{vm_id}]"))
     }) {
         Some(Ok(_)) => {
-            crate::guest_console::mark_stopped(vm_id);
             println!("✓ VM[{}] stop signal sent successfully", vm_id);
             println!(
                 "  Note: vCPU threads will exit gracefully, VM status will transition to Stopped"
@@ -372,7 +420,6 @@ fn reset_vm_by_id(vm_id: usize) {
     println!("Resetting VM[{}]...", vm_id);
     match crate::manager::AxvmManager::reset_vm(vm_id) {
         Ok(()) => {
-            crate::guest_console::mark_running(vm_id);
             println!("✓ VM[{}] reset and started successfully", vm_id);
         }
         Err(err) => println!("✗ VM[{vm_id}] reset failed: {err:#}"),
@@ -513,7 +560,6 @@ fn resume_vm_by_id(vm_id: usize) {
 
     match result {
         Some(Ok(_)) => {
-            crate::guest_console::mark_running(vm_id);
             println!("✓ VM[{}] resumed successfully", vm_id);
         }
         Some(Err(err)) => {
@@ -1291,9 +1337,14 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
 
     #[cfg(feature = "fs")]
     {
+        let pool_cmd = CommandNode::new("List the VMs the pool can start")
+            .with_handler(vm_pool)
+            .with_usage("vm pool");
+
         vm_node = vm_node
             .add_subcommand("create", create_cmd)
-            .add_subcommand("start", start_cmd);
+            .add_subcommand("start", start_cmd)
+            .add_subcommand("pool", pool_cmd);
     }
 
     vm_node = vm_node

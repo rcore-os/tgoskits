@@ -21,6 +21,13 @@ include = [
     "xtask/src/**",
     "README.md",
     "LICENSE*",
+    # The `web-ui` feature embeds `web-ui/dist`, which is produced with the
+    # frontend toolchain and is therefore not shipped: the sources and the
+    # lockfile are enough to rebuild it, and neither `node_modules` (installed
+    # dependencies) nor `dist` (build output) belongs in the package.
+    "web-ui/**",
+    "!web-ui/node_modules/**",
+    "!web-ui/dist/**",
 ]
 
 [[bin]]
@@ -73,6 +80,13 @@ browser-console = [
   "dep:serde_json",
   "dep:tokio",
 ]
+# React dashboard served from the same listener. The bundle is compiled into
+# the binary (`web-ui/dist`, embedded by `build.rs`) and served from memory, so
+# enabling this needs no rootfs and cargo never invokes npm — the dist tree must
+# have been produced by hand (`cd web-ui && npm ci && npm run build`).
+# The dashboard owns `/` and `/assets/*`; the JSON API and the terminal sockets
+# keep their own paths.
+web-ui = ["http-axum"]
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
@@ -93,8 +107,10 @@ futures-util = { version = "0.3", optional = true, features = ["sink"] }
 serde_json = { version = "1", optional = true }
 # The runtime only enables the IO driver (`enable_io()`), so no `time` driver
 # and thus no `timerfd` syscall is needed. `rt` + `net` cover the manually
-# built current-thread runtime and `TcpListener`.
-tokio = { version = "1", optional = true, features = ["net", "rt"] }
+# built current-thread runtime and `TcpListener`; `sync` + `macros` add the
+# per-browser event channel and the `select!` that serves `/ws/events` and
+# watches for a client that closes the socket.
+tokio = { version = "1", optional = true, features = ["macros", "net", "rt", "sync"] }
 
 # System dependent modules provided by ArceOS.
 ax-api.workspace = true

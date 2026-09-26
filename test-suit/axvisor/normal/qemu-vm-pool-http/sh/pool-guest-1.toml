@@ -1,0 +1,40 @@
+# VM pool entry fixture, injected into the case rootfs at
+# `/usr/bin/pool-guest-1.toml` by the `sh/` asset pipeline (see the case
+# build config). The pool directory in this case *is* that directory, so the
+# file is a candidate exactly as written.
+#
+# All three entries share the guest physical layout and the ArceOS kernel the
+# `qemu-ivc` case boots; only id, name and pinned host CPU differ, so the case
+# can start them side by side on one machine.
+[base]
+id = 1
+name = "pool-guest-1"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/arceos/arceos-ivc-publisher.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+disabled = [
+  { path = "/virtio_mmio@a003000" },
+  { path = "/virtio_mmio@a003200" },
+  { path = "/virtio_mmio@a003400" },
+  { path = "/virtio_mmio@a003600" },
+  { path = "/virtio_mmio@a003800" },
+  { path = "/virtio_mmio@a003a00" },
+  { path = "/virtio_mmio@a003c00" },
+  { path = "/virtio_mmio@a003e00" },
+  { path = "/pcie@10000000" },
+]
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

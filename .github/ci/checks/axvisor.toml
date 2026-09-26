@@ -25,13 +25,38 @@ cases = ["smoke"]
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + browser console"
-timeout_minutes = 30
+name = "QEMU aarch64 · HTTP control-plane + browser console + dashboard"
+timeout_minutes = 40
 command = '''
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
+echo "==> ensure Node.js 24 for the dashboard bundle (cargo never invokes npm)"
+if ! command -v node >/dev/null 2>&1 || [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -lt 24 ]; then
+  NODE_VERSION=24.21.0
+  case "$(uname -m)" in
+    x86_64) NODE_ARCH=x64 ;;
+    aarch64) NODE_ARCH=arm64 ;;
+    *) NODE_ARCH="$(uname -m)" ;;
+  esac
+  NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}" \
+    || curl -fsSL "https://registry.npmmirror.com/-/binary/node/v${NODE_VERSION}/${NODE_TARBALL}" -o "/tmp/${NODE_TARBALL}"
+  mkdir -p /tmp/node-toolchain
+  tar -xf "/tmp/${NODE_TARBALL}" -C /tmp/node-toolchain --strip-components=1
+  export PATH="/tmp/node-toolchain/bin:$PATH"
+fi
+node -v
+npm -v
+echo "==> build the dashboard bundle (cargo never invokes npm)"
+(cd os/axvisor/web-ui && npm ci && npm run build)
+echo "==> axvisor aarch64 dashboard"
+cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui
+echo "==> axvisor aarch64 VM pool"
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool
+echo "==> axvisor aarch64 VM pool over HTTP"
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool-http
 # Disabled until the Linux IVC guest image matches the v2 publisher protocol.
 # echo "==> axvisor aarch64 IVC"
 # cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
@@ -43,6 +68,9 @@ arch = "aarch64"
 cases = [
   "http-control-plane",
   "browser-console",
+  "web-ui",
+  "qemu-vm-pool",
+  "qemu-vm-pool-http",
   # "qemu-ivc", # Linux guest image uses IVC v3; ArceOS publisher uses v2.
 ]
 

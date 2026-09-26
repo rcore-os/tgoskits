@@ -1,0 +1,50 @@
+# Guest fixture for the `qemu-web-ui` case, kept `Ready` by `no-auto-start`.
+#
+# Everything this guest needs is read from the Axvisor host filesystem, which is
+# why the case is built with `fs`:
+#
+# - `image_location = "fs"` makes the hypervisor read the kernel from
+#   `/guest/linux/linux-qemu` in that filesystem instead of embedding it in the
+#   hypervisor binary at build time.
+# - the `virtio-blk` virtual device is backed by the ext4 image at
+#   `/guest/rootfs-aarch64-alpine-0.img`, a file in the same filesystem. The guest
+#   boots from it as `/dev/vda`, so it runs a full Alpine userland. A guest that
+#   only has a minimal initramfs answers `sh: ls: not found`, which reads like a
+#   broken console even when the wiring is correct -- and the dashboard's guest
+#   terminal exists to be typed into, so the case has to type into a real shell.
+#
+# The guest disk is mounted `ro`. The hypervisor mounts the same file as its own
+# root filesystem, so a writable guest disk would be a second writer on one ext4
+# image and corrupt it; a read-only mount is enough to run a shell.
+#
+# The machine model is the one
+# `os/axvisor/configs/vms/qemu/aarch64/linux-virtio-blk.toml` boots:
+# virtualized (no device passthrough), 1G of guest RAM, and vCPU 0 pinned to host
+# CPU 1 so host CPU 0 stays free for the hypervisor's own console.
+[base]
+id = 1
+name = "linux-web-ui"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+cmdline = "root=/dev/vda ro rootwait console=ttyAMA0 init=/bin/sh"
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtblk0"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-alpine-0.img"
+filesystem = "ext4"

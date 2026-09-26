@@ -5,7 +5,7 @@ sidebar_label: "客户机控制台"
 
 # Axvisor 客户机控制台架构
 
-Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机都需要收发字符。这个共享边界由 Axvisor 应用层的 `GuestConsoleMux` 管理：它是物理宿主输入的唯一读取者，决定当前前台，把输入送进对应 VM 的有界队列，并在多个客户机写同一个物理终端时完成输出仲裁。可选的 `browser-console` 传输还可以把管理 shell 和启动时成功注册的最多三个 VM 映射到独立 WebSocket 字节流，而不改变物理 UART 前台。虚拟 UART 只通过 `SerialBackend` 读写字节，不拥有前台、快捷键或宿主终端策略。
+Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机都需要收发字符。这个共享边界由 Axvisor 应用层的 `GuestConsoleMux` 管理：它是物理宿主输入的唯一读取者，决定当前前台，把输入送进对应 VM 的有界队列，并在多个客户机写同一个物理终端时完成输出仲裁。可选的 `browser-console` 传输还可以把管理 shell 和每个已登记 VM 映射到独立 WebSocket 字节流，而不改变物理 UART 前台。虚拟 UART 只通过 `SerialBackend` 读写字节，不拥有前台、快捷键或宿主终端策略。
 
 本文说明应用层的输入 ownership、前台状态、backend generation/identity 有效性、输出模式和 VM 生命周期接入。UART 寄存器、FIFO、IRQ endpoint 与 vCPU poll 的完整语义见[设备运行时与中断架构](./device-runtime.md#5-串口完整路径)。
 
@@ -20,7 +20,7 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `GuestSerialBackendFactory` / `GuestSerialBackend` | factory 为一个 host-console serial request 创建带 `(VMId, BackendGeneration)` 身份的 backend；backend 的 `try_write()` 把设备层字节调用转入 mux。`SerialBackend::try_write` 是通用 accepted-prefix 接口，当前 `GuestSerialBackend` 对 ordered record queue 的提交是 all-or-zero：整条 record 被接受时返回 `bytes.len()`，`WouldBlock` 或 stale 时返回 0 | configured node 创建；UART runtime 读写 |
 | `GuestOutputMux` | 在 `BootMultiplex` 与 `Interactive` 间切换，补齐物理行，维护每 VM 16 KiB 环形输出，并生成回放 | 客户机输出与前台变化 |
 | `guest_console/host.rs` | 在 vCPU 启动前取得唯一的 task-console RX、日志订阅与 output；output 移交给专用任务，其他路径只向固定队列提交事务 | Axvisor 初始化与 shell 主循环 |
-| `network_console` | 私有保存启动快照、四条固定容量通道、独占网页会话和 Axvisor 网页行编辑；不提供 raw TCP listener | `browser-console` 功能启用时 |
+| `network_console` | 在运行期登记与释放客户机通道（管理通道加 8 条客户机通道）、维护独占网页会话和 Axvisor 网页行编辑；不提供 raw TCP listener | `browser-console` 功能启用时 |
 | `shell/mod.rs` | 作为输入事件循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
 | `AxvmManager` 接入 | 提供 VM registry/status；输入入队后、以及 ordered record 被消费释放容量后唤醒对应 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
@@ -320,19 +320,23 @@ active admission/stable identity 语义一致。
 | 输出并发 | `output_lock` 覆盖 active admission、record 入队、`retained_tx` 记/清与 retry drain；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试，并由 pop 路径锁外 `notify_vm()` 唤醒；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径都不阻塞 vCPU writer |
 | 网络输出 | 每端点独立 64 KiB 固定队列；有连接时 vCPU 只复制原始字节并通过 `IrqNotify` 唤醒对应网页输出任务 | 无连接时不保留历史也不获取网络队列锁；慢客户端只影响自身通道并最终触发该端点队列丢弃摘要 |
 
-`browser-console` 在默认 VM 初始化后只获取一次运行时 VM 列表并按 VM ID 排序。网页通过 `/api/consoles` 获取这个启动快照，
-使用 `/ws/axvisor` 和 `/ws/vm-<真实 ID>` 路由，并直接显示客户机 TOML 的 `base.name`。
-零个客户机时只有管理窗格，一个、两个或三个客户机时分别生成两个、三个或四个窗格；
-运行中创建、删除 VM 不重建网络通道。超过三个启动客户机时，只为按 VM ID 排序后的前三个
-客户机创建网络通道，其余客户机仍正常启动并保留物理 UART 路径。
-这些 WebSocket 是无 TLS、无认证的原始控制台字节流，每端点同时只接受一个会话，只能用在受信任的管理网络。网络 shell 不给客户机提供 IP 栈；连接终止在 Axvisor 现有的 virtual-UART backend。
+`browser-console` 只提供控制台字节流的 WebSocket 网关，不再内嵌网页。网页界面由 `web-ui`
+功能提供：它以编译期内嵌的静态资源发布管理台，并通过 HTTP 管理 API 读取 VM registry；
+`browser-console` 与 `web-ui` 各自独立启用。
 
-启用 `browser-console` 后，Axvisor 会在配置的 HTTP 地址直接发布一个自适应页面。
-浏览器通过同源 WebSocket 取得 management/guest 独占会话、固定队列及溢出统计；
-该 feature 不隐式启用 `http-axum` VM 管理 API，也没有 raw TCP 控制台、per-lane dispatcher
-或 Tokio `mpsc` 中转。命令执行主机不参与运行时链路。页面的
-HTML、CSS 和 JavaScript 均编译进 Axvisor，不依赖 GitHub、CDN 或开发板根文件系统；
-不存在需要命令主机持续运行的网页代理路径。
+`network_console` 的通道表是运行期注册表而不是启动快照：VM 创建时为它登记一条客户机通道，
+VM 删除时释放，通道号取最小空位，因此释放过的通道可以复用，客户机也可能出现在任意通道上。
+表容量是 1 条管理通道加 8 条客户机通道，通道满时 VM 创建失败而不是静默降级。
+`GET /api/consoles` 报告每条通道的 `route`、`name`（客户机 TOML 的 `base.name`，缺省时回落
+到 `VM <id>`）与 `attached`；`attached` 表示该通道当前是否已被浏览器会话持有，因此客户端
+能区分“通道被另一个页面占用”和“通道不可用”，而浏览器的 WebSocket 失败只会给出无法区分的
+关闭码。
+
+管理通道用 `/ws/axvisor`，客户机通道用 `/ws/vm-<真实 ID>`。这些 WebSocket 是无 TLS、无认证
+的原始控制台字节流，每通道同时只接受一个会话，只能用在受信任的管理网络。网络 shell 不给
+客户机提供 IP 栈；连接终止在 Axvisor 现有的 virtual-UART backend。命令执行主机不参与运行时
+链路，页面的 HTML、CSS 和 JavaScript 均编译进 Axvisor，不依赖 GitHub、CDN 或开发板根文件
+系统，也不存在需要命令主机持续运行的网页代理路径。
 
 SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owner 假设。线程世代绑定的 vCPU0 kick capability 只解决定向 wait/wake；设备 poll 的所有权仍固定在 vCPU0。
 
@@ -409,6 +413,7 @@ disabled = [
 | 宿主日志插入正在编辑的命令 | 是否取得唯一日志订阅；记录是否经 `route_host_log()`；drop 摘要是否增长 | shell 模式必须清行、输出完整记录并重画；guest 前台模式必须缓存而非直写 |
 | `vm console` 报错 | VM ID 是否存在；Running VM 是否可附着；Stopped VM 是否仍有 console state | attach 不接受 Ready、Paused、Stopping；删除或从未建立 backend 的 VM 没有可回放 ring |
 | 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；vCPU0 是否持续产生可处理的 VM-exit | 4096 字节尾部丢弃并按 drain 周期报告一次；kick 会定向唤醒或退出 vCPU0 |
+| 网页终端没有回显，但客户机输出照常到达 | 该通道的 VM 是否在运行（`GET /api/vms` 的状态是否为 `running`）；该 VM 是否经过 `mark_running()` 登记：`vm start`、HTTP start/resume/reset 与 auto-start 都必须登记 | mux 只把输入交给 running 集合中的 VM；未登记时输入被丢弃，且输入链路会向该通道回一行说明丢弃原因；客户机输出不受 running 限制，所以现象是“看得到、打不进” |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
 | stop 后仍看到 guest output | 记录是 stop 前已进入 ordered record queue 的，还是 stop 后新的提交 | stop 清 active generation 并拒绝新的 input/output submission，但保留 identity，已排队记录仍可 replay；replacement/remove 才让旧 identity 失效，旧 backend 的新提交与 replay 都被拒绝 |
 | guest 输出停止或丢字 | PL011 retained TX FIFO 是否积压、`FR.TXFE/BUSY` 电平、ordered record queue 是否持续返回 `WouldBlock`、`notify_vm` warning、host transport 是否报告 drop 摘要 | record queue 满时 `try_write()` 返回 0 并记 `retained_tx`，PL011 在下一次 poll 重试；容量被消费后 pop 路径锁外 `notify_vm()` 发布该 poll，被唤醒的是被阻塞 VM 而不是被消费记录的 owner；只有 runtime 实际丢弃的记录或 direct host transport 溢出才报告摘要 |
@@ -429,7 +434,7 @@ disabled = [
 - foreground 或 background 未结束物理行在切换时正确补行。
 - VM 2 网络输入不改变物理 VM 1 foreground，并拒绝 stopped 或 stale backend；
 - 有连接的 VM 输出只进入对应网络通道，无连接时跳过网络输出路径；
-- 启动布局按 VM ID 排序、最多选择三个客户机并使用配置名称。
+- 运行期登记与释放客户机通道，客户机可以出现在任意槽位，并使用配置名称。
 
 `os/axvisor/tests/axtest.rs` 另有一组只在该 kernel harness 中运行的用例：它们编译真实的
 `guest_console/mux`，只把 host 侧 stub 成一个有界 ordered record queue，并让

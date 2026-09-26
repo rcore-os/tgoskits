@@ -1,0 +1,75 @@
+# Guest fixture for the converged HTTP control-plane test.
+#
+# The guest kernel and the guest root filesystem are files in the hypervisor's
+# own filesystem (`image_location = "fs"`), so nothing about this guest is baked
+# into the hypervisor binary: `kernel_path` is where the hypervisor reads the
+# kernel and the `virtio-blk` device below is where the guest roots from.
+#
+# `id = 1`: the typed probe's `POST /api/vms/create` body is this file verbatim,
+# so the id it recreates is the one the build configured as the default VM.
+# `phys_cpu_ids = [1]` keeps the vCPU on Core 1 while the management console runs
+# on Core 0 — the exact configuration that makes a resume wake (parked vCPU on a
+# pinned non-primary CPU) observable.
+#
+# The guest disk is mounted `ro` because the hypervisor mounts the same file as
+# its own root filesystem; a writable guest disk would be a second writer on one
+# ext4 image and corrupt it.
+[base]
+id = 1
+name = "linux-http-control-plane"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x8020_0000
+# Guest images are read from the guest filesystem; this is the only source.
+image_location = "fs"
+# The path of the kernel image inside the hypervisor filesystem.
+kernel_path = "/guest/linux/linux-qemu"
+# The load address of the kernel image.
+kernel_load_addr = 0x8020_0000
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x8000_0000
+cmdline = "root=/dev/vda ro rootwait console=ttyAMA0 init=/bin/sh"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+# MAP_ALLOC maps guest GPA 0x80000000 to hypervisor-allocated host pages; the
+# QEMU virt host RAM is 0x40000000..0x80000000, so an identity-mapped region
+# would land at the host heap address rather than the configured 0x80000000 and
+# the guest images at 0x80200000 would not resolve.
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # System RAM 256M MAP_ALLOC
+]
+
+#
+# Device specifications
+#
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+# The QEMU virt PCI host bridge must stay with the host. Excluding it removes it
+# from the guest DTB and punches its ECAM/MMIO ranges out of the guest address
+# space, so the guest Linux never enumerates the host's own virtio-net-pci and
+# destroys the vrings of the management network path this test drives through.
+# The guest still boots without a NIC, which is all this case needs.
+#
+# The guest is `virtualized`, not `passthrough`: a passthrough guest makes the
+# hypervisor release its own filesystem for the guest's benefit, and that release
+# is one-way. This case recreates its VM after closing it, which needs the
+# hypervisor filesystem to still be there to read the guest kernel from.
+disabled = [{ path = "/pcie@10000000" }]
+
+# The guest root filesystem: a file in the hypervisor filesystem, exposed to the
+# guest as `/dev/vda`.
+[[devices.virtual]]
+id = "virtblk0"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-alpine-0.img"
+filesystem = "ext4"

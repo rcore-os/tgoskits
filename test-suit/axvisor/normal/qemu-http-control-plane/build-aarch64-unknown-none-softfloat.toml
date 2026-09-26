@@ -1,25 +1,24 @@
 # Converged HTTP control-plane build for the axum management API test
 # (http-control-plane).
-# `no-auto-start` keeps the default VM (`http-control-plane/vm-memory.toml`, a
-# build-time embedded `memory` guest) in `Ready` (registered but not booted); the
-# typed probe drives the full lifecycle through the HTTP control API. The guest
-# kernel and its BusyBox initramfs are embedded at build time, so no `fs`/NVMe
-# feature is needed. CI runs `cargo xtask image pull` before the test to
-# provision the QEMU images and the managed rootfs the initramfs is built from.
+# `no-auto-start` keeps the default VM (`http-control-plane/vm-linux-alpine.toml`)
+# in `Ready` (registered but not booted); the typed probe drives the full
+# lifecycle through the HTTP control API. `fs` + `ax-driver/nvme` are what make
+# the guest possible: the hypervisor reads the guest kernel from its own
+# filesystem on the QEMU NVMe disk, and the guest roots from an ext4 image in
+# that same filesystem. Nothing about the guest is embedded in the hypervisor
+# binary. CI runs `cargo xtask image pull` before the test to provision the QEMU
+# images and the managed rootfs.
 features = [
     "http-axum",
+    "ax-driver/nvme",
+    "fs",
     "no-auto-start",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
-vm_configs = ["test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/vm-memory.toml"]
+vm_configs = ["test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/vm-linux-alpine.toml"]
 
-# Control-plane auth + bind. The mutating routes require
-# `Authorization: Bearer <token>`; the typed probe sends this same token
-# (`[host_http_probe] token`), and hostfwd reachability requires binding all
-# interfaces. The BusyBox initramfs is generated from the managed rootfs into
-# the path the fixture's `ramdisk_path` points at.
+# Control-plane bind. The control plane has no authentication, so no token is
+# configured; hostfwd reachability requires binding all interfaces.
 [env]
-AXVM_HTTP_TOKEN = "axvisor-http-test-token"
 AXVM_HTTP_BIND = "0.0.0.0:8080"
-AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-http-control-plane/initramfs-aarch64.cpio.gz"

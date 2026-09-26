@@ -31,9 +31,8 @@ use ax_std as _;
 
 mod banner;
 mod config;
+mod control;
 mod guest_console;
-#[cfg(any(feature = "browser-console", feature = "http-axum"))]
-mod http;
 mod manager;
 #[cfg(feature = "browser-console")]
 mod network_console;
@@ -52,10 +51,11 @@ mod virq_regression;
 /// 1. Configure the sole runtime host-console owner.
 /// 2. Print the startup banner through its output worker.
 /// 3. Check and enable hardware virtualization on every CPU.
-/// 4. Build the default guest VMs.
-/// 5. Spawn the management plane first — the configured HTTP and network
-///    console services so they are live before any guest boots — then the VM
-///    lifecycle waiter and the physical-console shell.
+/// 4. Build the default guest VMs, then report the pool of configs the
+///    management plane may start on demand.
+/// 5. Spawn the management plane first — the configured HTTP service and the
+///    registry watcher that feeds the browser UI — so they are live before any
+///    guest boots, then the VM lifecycle waiter and the physical-console shell.
 ///
 fn main() {
     guest_console::configure_host_console()
@@ -71,25 +71,30 @@ fn main() {
     #[cfg(feature = "vcpu-perf-load")]
     let _performance_load = perf_load::start();
 
-    // The browser-console registry snapshots the successfully initialized
-    // default VM set exactly once. Initialize it before HTTP so the browser's
-    // `/api/consoles` endpoint cannot observe a partially configured layout.
-    #[cfg(feature = "browser-console")]
-    network_console::start()
-        .unwrap_or_else(|error| panic!("failed to initialize browser consoles: {error:#}"));
+    // The pool reports what it found under the guest tree: a config there
+    // becomes a VM only when the shell or the control plane asks for it.
+    #[cfg(feature = "fs")]
+    control::domain::pool::log_startup_state();
+
+    // Browser consoles follow the VM registry: a VM allocates its console lane
+    // while it is created, so there is no startup layout to freeze here. The
+    // registry watcher behind `/ws/events` is started before HTTP so the first
+    // subscriber cannot miss a change; without the VM management API the
+    // watcher has no subscriber and is not started.
+    #[cfg(all(feature = "browser-console", feature = "http-axum"))]
+    control::domain::events::start();
 
     // The optional HTTP server accepts connections in a loop and needs its
-    // own task so neither the shell nor the VMM blocks it. The console registry
-    // is already complete when this task is enqueued, but the server's bind
+    // own task so neither the shell nor the VMM blocks it. The server's bind
     // still races guest task scheduling because spawning only enqueues work.
     #[cfg(feature = "browser-console")]
     std::thread::Builder::new()
         .name("axvisor-http".into())
         .spawn(|| {
-            if let Err(error) = http::serve() {
+            if let Err(error) = control::serve() {
                 let message = format!(
                     "\r\nAxvisor web console unavailable:\r\n  bind = {}\r\n  error = {error:#}\r\n",
-                    http::bind_addr()
+                    control::bind_addr()
                 );
                 guest_console::submit_host_bytes(message.as_bytes());
             }
@@ -100,7 +105,8 @@ fn main() {
     std::thread::Builder::new()
         .name("axvisor-http".into())
         .spawn(|| {
-            http::serve().unwrap_or_else(|error| panic!("Axvisor HTTP server failed: {error:#}"));
+            control::serve()
+                .unwrap_or_else(|error| panic!("Axvisor HTTP server failed: {error:#}"));
         })
         .unwrap_or_else(|error| panic!("failed to start Axvisor HTTP server: {error}"));
 

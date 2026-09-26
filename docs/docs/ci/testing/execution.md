@@ -13,11 +13,12 @@ sidebar_label: "矩阵执行"
 
 ### 1.1 Preflight
 
-普通运行的 `static.toml` 包含两类前置检查。它们可以作为同一矩阵中的不同 job 调度，不能假定两者按表格顺序执行。
+普通运行的 `static.toml` 包含多类前置检查。它们可以作为同一矩阵中的不同 job 调度，不能假定它们按表格顺序执行。
 
 | 检查 | 当前命令 | 作用 |
 | --- | --- | --- |
 | Formatting + publish dry-run | `cargo fmt --all -- --check`，随后 `cargo publish --workspace --dry-run --no-verify` | 验证格式和打包预检，不实际发布软件包 |
+| Axvisor control plane layering | `python3 scripts/test/check_axvisor_control_layers.py` | 验证 Axvisor 控制面分层，拒绝反向依赖与散落的请求路径 |
 | Synchronization lint | `cargo xtask sync-lint --since "$SINCE_REF"` | 验证共享实现同步约束，并构建后续可复用的任务工具 |
 
 `static_checks` 必须满足规划成功、`should_run=true` 且 `static_required=true`。exclusive 套件模式有意不执行此阶段，不能把这种 skipped 当成格式已经通过。

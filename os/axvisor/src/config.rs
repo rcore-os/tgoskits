@@ -47,21 +47,20 @@ pub mod vmcfg {
         vec![]
     }
 
-    /// Read VM configs from filesystem
+    /// Read the configs that the startup path creates as the default guest set.
+    ///
+    /// Unlike the pool ([`crate::control::domain::pool`]), this directory is not a candidate
+    /// list: every config here is created before the management plane starts.
     #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs() -> Vec<String> {
-        let config_dir = "/guest/vm_default";
-        crate::manager::AxvmManager::filesystem_vm_configs(config_dir)
-            .into_iter()
-            .filter_map(
-                |content| match axvmconfig::GuestConfig::from_toml(&content) {
-                    Ok(_) => Some(content),
-                    Err(e) => {
-                        warn!("Filesystem VM config is invalid: {:?}", e);
-                        None
-                    }
-                },
-            )
+        use crate::control::domain::pool;
+
+        let configs = pool::scan_dir(pool::DEFAULT_VM_CONFIG_DIR);
+        pool::log_issues(&configs);
+        configs
+            .entries()
+            .iter()
+            .map(|entry| entry.toml().to_string())
             .collect()
     }
 
@@ -102,9 +101,18 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
+    let config = GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+    init_guest_vm_from_config(config)
+}
+
+/// Create one VM from an already built configuration.
+///
+/// The dashboard's form sends fields rather than TOML text, so the configuration
+/// arrives here as a value instead of a string and joins the same path the
+/// textual bodies use: re-serializing it to TOML just to parse it again would be
+/// a step with nothing in it.
+pub fn init_guest_vm_from_config(vm_create_config: GuestConfig) -> Result<usize> {
     let image_provider = AxvisorBootImageProvider;
-    let vm_create_config =
-        GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
 
     #[cfg(all(
@@ -155,7 +163,19 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
+    // Allocate the browser console lane before the VM becomes visible. A full
+    // lane table must fail this creation (the HTTP control plane reports it as
+    // 503) instead of producing a VM no browser can attach to; on that path the
+    // local handle is dropped, destroying the VM before it is ever registered.
+    #[cfg(feature = "browser-console")]
+    crate::network_console::register_guest(vm_id, &vm.name())
+        .with_context(|| format!("register browser console for VM[{vm_id}]"))?;
+
     if !axvm::register_vm(vm.clone()) {
+        // The id is taken after all: release the lane again so a rejected
+        // registration does not consume a console slot forever.
+        #[cfg(feature = "browser-console")]
+        crate::network_console::release_guest(vm_id);
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
     }
 

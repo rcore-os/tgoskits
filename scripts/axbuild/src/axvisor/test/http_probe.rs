@@ -21,7 +21,6 @@
 //!
 //! ```text
 //! AXVISOR_HTTP_BASE            http://127.0.0.1:<host_port> (forwarded)
-//! AXVISOR_HTTP_TOKEN           bearer token (may be empty)
 //! AXVISOR_HTTP_CASE_DIR        case directory (fixtures like `vm-memory.toml`)
 //! AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
 //! AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
@@ -55,10 +54,10 @@ const MAX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
 /// Run the case's HTTP probe asset against one boot.
 ///
 /// `addr` is the forwarded host address (`127.0.0.1:<port>`). `config` carries
-/// the bearer token, timeouts, and the probe-asset name; `case_dir` locates
-/// the asset (and its fixtures). `stop` is the shared abort flag: when the
-/// runner marks the case over (QEMU failure, timeout), a still-running asset is
-/// killed instead of waiting it out.
+/// the timeouts and the probe-asset name; `case_dir` locates the asset (and its
+/// fixtures). `stop` is the shared abort flag: when the runner marks the case
+/// over (QEMU failure, timeout), a still-running asset is killed instead of
+/// waiting it out.
 pub(crate) fn run(
     addr: &str,
     config: &AxvisorHttpProbeConfig,
@@ -184,7 +183,7 @@ fn ensure_probe_asset(script: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Spawn the probe asset with the forwarded base URL, token, and timeouts as
+/// Spawn the probe asset with the forwarded base URL and timeouts as
 /// environment. The asset is executed directly so its shebang picks the
 /// interpreter; stdout/stderr share one pipe drained by a bounded reader so a
 /// noisy probe cannot grow temporary storage or block on a full pipe.
@@ -201,10 +200,6 @@ fn spawn_probe_asset(
     let mut command = Command::new(script);
     command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
-        .env(
-            "AXVISOR_HTTP_TOKEN",
-            config.token.clone().unwrap_or_default(),
-        )
         .env("AXVISOR_HTTP_CASE_DIR", case_dir)
         .env(
             "AXVISOR_HTTP_CONNECT_TIMEOUT",
@@ -275,7 +270,6 @@ mod tests {
             connect_timeout_secs: 120,
             request_timeout_secs: 5,
             probe_script,
-            token: Some("t".into()),
         }
     }
 
@@ -286,8 +280,7 @@ mod tests {
         use std::{fs, os::unix::fs::PermissionsExt};
         let path = dir.join(name);
         let script = format!(
-            "#!/bin/sh\nprintf '%s' \
-             \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_TOKEN|$AXVISOR_HTTP_CASE_DIR\" > \
+            "#!/bin/sh\nprintf '%s' \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_CASE_DIR\" > \
              \"$AXVISOR_HTTP_CASE_DIR/env.txt\"\nexit {code}\n"
         );
         fs::write(&path, script).unwrap();
@@ -344,7 +337,7 @@ mod tests {
         let recorded = std::fs::read_to_string(dir.path().join("env.txt")).unwrap();
         assert_eq!(
             recorded,
-            "http://127.0.0.1:12345|t|".to_string() + &dir.path().to_string_lossy()
+            "http://127.0.0.1:12345|".to_string() + &dir.path().to_string_lossy()
         );
         assert!(probe.exists());
     }

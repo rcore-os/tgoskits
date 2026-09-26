@@ -103,6 +103,21 @@ fn create_device_node(
             )
         }
     };
+    // A backing file that is not there yet is a precondition the operator clears
+    // by transferring it, not a malformed option, and not a host fault. Naming
+    // it before the backend opens it keeps it out of a nested device-setup
+    // diagnostic, so the control plane can answer with the same transfer prompt
+    // the kernel gate gives.
+    #[cfg(feature = "fs")]
+    if let BackendConfig::File { path, .. } = &backend_config
+        && missing_guest_file(path)
+    {
+        return Err(ConfiguredDeviceError::MissingBackingFile {
+            device: request.id.clone(),
+            model: request.model.clone(),
+            path: path.clone(),
+        });
+    }
     let backend =
         VirtioBlkBackend::open(&backend_config, capacity_bytes, vm_id).map_err(|error| {
             ConfiguredDeviceError::Instantiation {
@@ -192,6 +207,20 @@ fn invalid_options(request: &VirtualDeviceRequest, detail: &str) -> ConfiguredDe
         model: request.model.clone(),
         detail: detail.into(),
     }
+}
+
+/// Whether the guest filesystem does not have `path`.
+///
+/// Only "not found" counts. A file that is there but cannot be read is a
+/// different failure and reaches the backend's own error instead.
+#[cfg(feature = "fs")]
+fn missing_guest_file(path: &str) -> bool {
+    matches!(
+        ax_api::fs::ax_metadata(path),
+        Err(ax_api::ApiError::Vfs(
+            ax_api::modules::ax_fs_ng::VfsError::NotFound
+        ))
+    )
 }
 
 fn parse_capacity(request: &VirtualDeviceRequest) -> Result<Option<u64>, &'static str> {

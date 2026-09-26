@@ -6,20 +6,25 @@ args = [
   "virt,virtualization=on,gic-version=3",
   "-smp",
   "2",
-  # The memory-backed guest boots its embedded kernel + BusyBox initramfs; the
-  # initramfs is the guest rootfs (`rdinit=/init`), so no NVMe disk is needed.
+  # The hypervisor reads its own root filesystem from this NVMe disk: that is
+  # where the guest kernel (`/guest/linux/linux-qemu`) and the guest root image
+  # (`/guest/rootfs-aarch64-alpine-0.img`) live. The guest gets the latter as its
+  # own virtio-blk disk, so it never touches this device.
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
   "-append",
-  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7",
-  # `-m 1g`: the guest uses a 256M MAP_ALLOC region, and the hypervisor plus
-  # that region must both fit in QEMU's total RAM (same sizing as the previous
-  # HTTP control case).
+  "root=/dev/nvme0n1 rw init=/bin/sh",
+  # `-m 4g`: the hypervisor root filesystem, the guest kernel it reads from it
+  # and the 256M guest region must all fit in QEMU's total RAM.
   "-m",
-  "1g",
+  "4g",
 ]
 # Full lifecycle verification via the case's host-side probe asset.
 # `[host_http_probe]` makes the runner append hostfwd netdev + virtio-net-pci
 # device and execute the probe asset (`http_probe.py`, next to this file) over
-# real TCP. The asset drives the default VM (id 1, `vm-memory.toml`, kept
+# real TCP. The asset drives the default VM (id 1, `vm-linux-alpine.toml`, kept
 # `Ready` by `no-auto-start`) through the whole control-plane contract —
 # list/detail/auth/error/start/pause/resume/stop/delete/recreate — with
 # polling, then quits QEMU over QMP; the runner collects the asset's exit code
@@ -28,7 +33,7 @@ args = [
 # `success_regex` is empty because the probe result, not serial output, is the
 # verdict; a guest panic still fails via `fail_regex`.
 fail_regex = [
-  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)\bpanic(?:ked)?\b",
   "(?i)kernel panic",
 ]
 timeout = 600
@@ -36,4 +41,4 @@ to_bin = true
 uefi = false
 
 [host_http_probe]
-token = "axvisor-http-test-token"
+request_timeout_secs = 60

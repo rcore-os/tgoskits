@@ -1,0 +1,43 @@
+# Bootable VM pool entry delivered as a case asset.
+#
+# axbuild's `sh/` asset pipeline copies this file into the case rootfs at
+# `/usr/bin/vm-pool-entry.toml` before QEMU starts, so the guest filesystem
+# carries a complete multi-line guest config that no console writer could
+# produce (the shell line buffer holds 256 bytes and TOML needs one key-value
+# pair per line). The case copies it into the pool directory and starts it.
+#
+# The kernel is the ArceOS IVC publisher the `qemu-ivc` case already boots, and
+# the device layout mirrors its config so this entry boots under the same
+# hypervisor build.
+[base]
+id = 5
+name = "pool-guest"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/arceos/arceos-ivc-publisher.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+disabled = [
+  { path = "/virtio_mmio@a003000" },
+  { path = "/virtio_mmio@a003200" },
+  { path = "/virtio_mmio@a003400" },
+  { path = "/virtio_mmio@a003600" },
+  { path = "/virtio_mmio@a003800" },
+  { path = "/virtio_mmio@a003a00" },
+  { path = "/virtio_mmio@a003c00" },
+  { path = "/virtio_mmio@a003e00" },
+  { path = "/pcie@10000000" },
+]
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

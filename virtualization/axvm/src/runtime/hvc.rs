@@ -754,6 +754,7 @@ impl HyperCall {
                 operation,
             },
             AxVmError::InvalidConfig { .. }
+            | AxVmError::DeviceBackingFileMissing { .. }
             | AxVmError::LifecycleRollback { .. }
             | AxVmError::Boot { .. }
             | AxVmError::Memory { .. }

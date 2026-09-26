@@ -1026,6 +1026,9 @@ impl AxVMResources {
 
     fn reset_transient_resources(&mut self) -> AxVmResult {
         self.teardown_ivc_bindings()?;
+        // Callers run this under the IRQ-safe machine guard, so the devices are
+        // only reset here, never dropped: dropping the last `Arc<DeviceRuntime>`
+        // joins device worker threads, which cannot block with interrupts off.
         if let Some(devices) = self.devices.take() {
             devices
                 .reset_lifecycle_devices()
@@ -2464,12 +2467,16 @@ impl AxVM {
                 self.stop_and_join_runtime(StopReason::Forced)?;
             }
         }
-        self.machine.lock().destroy_with(|resources| {
-            if let Some(mut resources) = resources {
-                Self::cleanup_resource_set(vm_id, &mut resources)?;
-            }
-            Ok(())
-        })
+        // Take the resources out under the machine guard, but destroy them after
+        // it is released. Device teardown can join a worker thread (a file-backed
+        // virtio-blk owns one) and joining blocks, which needs a scheduler safe
+        // point; the guard is IRQ-safe, so its whole critical section runs with
+        // interrupts disabled and the join would fail instead of waiting.
+        let mut resources = self.machine.lock().take_resources_for_destroy()?;
+        if let Some(resources) = resources.as_mut() {
+            Self::cleanup_resource_set(vm_id, resources)?;
+        }
+        Ok(())
     }
 
     fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) -> AxVmResult {

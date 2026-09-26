@@ -310,6 +310,21 @@ pub enum ConfiguredDeviceError {
         model: String,
         detail: String,
     },
+    /// A virtual device needs a backing file the guest filesystem does not have.
+    ///
+    /// The model that owns the option is the only layer that knows which file
+    /// it is, so it separates "the operator has not transferred this yet" from
+    /// "the option itself is wrong". The control plane answers the first one
+    /// the way it answers the kernel gate, so one precondition reads as one
+    /// answer.
+    #[error(
+        "virtual device '{device}' ({model}) needs `{path}`, which is not in the guest filesystem"
+    )]
+    MissingBackingFile {
+        device: String,
+        model: String,
+        path: String,
+    },
     #[error("invalid virtual device id '{device}': {detail}")]
     InvalidDeviceId { device: String, detail: String },
 }
