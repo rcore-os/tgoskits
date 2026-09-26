@@ -42,6 +42,13 @@ TEST_SUITE_PATHS = (
     (Path("test-suit/arceos"), "arceos"),
     (Path("test-suit/starryos"), "starry"),
     (Path("test-suit/axvisor"), "axvisor"),
+    # Real board performance cases live outside `test-suit`, but their paths are
+    # still a registered AxVisor suite: PR routing must select the same checks
+    # instead of silently ignoring them as ordinary `apps/**` files.
+    (Path("apps/benchmark/axvisor"), "axvisor"),
+    # Starry nightly performance apps moved to `apps/benchmark/starry`; their
+    # paths must route to the same nightly checks instead of being ignored.
+    (Path("apps/benchmark/starry"), "starry"),
 )
 KNOWN_OS_CONFIG_PATHS = (
     (Path("os/arceos/configs"), "arceos"),
@@ -388,13 +395,17 @@ def _partition_ignored(
         rendered = path.as_posix()
         if path.suffix.casefold() == ".md":
             ignored_markdown.add(rendered)
-        elif _is_prefix(path, IGNORED_APP_PREFIX) and not any(
-            _is_prefix(path, prefix) for prefix, _ in CI_OWNED_APP_INPUTS
-        ):
+        elif _is_prefix(path, IGNORED_APP_PREFIX) and not _is_ci_owned_app_path(path):
             ignored_apps.add(rendered)
         else:
             relevant.append(path)
     return ignored_markdown, ignored_apps, relevant
+
+
+def _is_ci_owned_app_path(path: Path) -> bool:
+    """Whether an `apps/**` path is a registered CI input rather than an app."""
+    owned = (*CI_OWNED_APP_INPUTS, *TEST_SUITE_PATHS)
+    return any(_is_prefix(path, prefix) for prefix, _ in owned)
 
 
 def _partition_soft_global_inputs(

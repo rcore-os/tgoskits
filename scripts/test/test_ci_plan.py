@@ -40,7 +40,99 @@ def main_test_rows(plan: dict) -> list[dict]:
     ]
 
 
+def perf_chart_labels(html: str) -> str:
+    """Return the concatenated x-axis labels of every chart on the dashboard."""
+    return " ".join(
+        match.group(1) for match in re.finditer(r'"labels": (\[[^\]]*\])', html)
+    )
+
+
+def perf_table_group(html: str, source: str, prefix: str, unit: str) -> str:
+    """Return one chart group's table section ('' if the group is absent)."""
+    match = re.search(
+        rf'<section class="table-group" data-source="{re.escape(source)}"'
+        rf' data-group="{re.escape(prefix)}" data-unit="{re.escape(unit)}"'
+        rf"[^>]*>.*?</section>",
+        html,
+        re.DOTALL,
+    )
+    return match.group(0) if match else ""
+
+
+def perf_group_date_body(group: str, date: str) -> str:
+    """Return the tbody of one date inside a table group ('' if absent)."""
+    match = re.search(
+        rf'data-date="{re.escape(date)}"[^>]*>(.*?)</tbody>',
+        group,
+        re.DOTALL,
+    )
+    return match.group(1) if match else ""
+
+
 class CiPlanTests(unittest.TestCase):
+    def test_starry_apps_nightly_splits_performance_matrix(self):
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="workflow_dispatch",
+        )
+        plan = ci_plan.build_starry_apps_plan(context)
+        app_ids = {row["id"] for row in plan["starry_apps_matrix"]["include"]}
+        performance_ids = {
+            row["id"] for row in plan["starry_performance_matrix"]["include"]
+        }
+        self.assertTrue(app_ids)
+        self.assertEqual(
+            performance_ids,
+            {
+                "starry-performance-block-io-x86-64",
+                "starry-performance-compile-sim",
+                "starry-performance-ltp-hackbench",
+                "starry-performance-ltp-netstress",
+                "starry-performance-wakeup-latency",
+                "starry-performance-sysbench",
+            },
+        )
+        self.assertEqual(
+            {
+                row["id"]
+                for row in plan["starry_board_performance_matrix"]["include"]
+            },
+            {
+                "starry-performance-block-rw-orangepi-5-plus",
+                "starry-performance-iperf3-orangepi-5-plus",
+                "starry-performance-uvc-orangepi-5-plus",
+                "starry-performance-uvc-rknn-orangepi-5-plus",
+                "starry-performance-tennis-yolo-aka-00-sg2002",
+            },
+        )
+        self.assertTrue(all(row["download_xtask_bin_artifact"] for row in plan["starry_performance_matrix"]["include"]))
+
+        performance_commands = "\n".join(
+            row["command"] for row in plan["starry_performance_matrix"]["include"]
+        )
+        self.assertIn("-t benchmark/block-io-bench", performance_commands)
+        self.assertIn("-t benchmark/wakeup-latency-bench", performance_commands)
+        self.assertIn(
+            "-t benchmark/qemu/compile-sim-bench", performance_commands
+        )
+        self.assertIn(
+            "--qemu-config qemu-x86_64-benchmark.toml", performance_commands
+        )
+        self.assertIn("--qemu-config qemu-aarch64-matrix.toml", performance_commands)
+
+        board_commands = "\n".join(
+            row["command"]
+            for row in plan["starry_board_performance_matrix"]["include"]
+        )
+        self.assertIn("-t benchmark/block-rw-bench", board_commands)
+        self.assertIn("-t benchmark/iperf3", board_commands)
+        self.assertIn("-t benchmark/orangepi-5-plus-uvc-rknn", board_commands)
+        self.assertIn("--board-config board-orangepi-5-plus.toml", board_commands)
+        self.assertIn(
+            "--board-config configs/board-orangepi-5-plus-bench.toml", board_commands
+        )
+
     def test_axvisor_nightly_runs_all_registered_checks_with_artifact_producer(self):
         catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
         expected = {check["id"] for check in catalog if check["group"] == "AxVisor"}
@@ -147,12 +239,38 @@ class CiPlanTests(unittest.TestCase):
                 self.assertIn("--test-case qemu-ivc", commands)
                 self.assertIn("--board orangepi-5-plus-starry", commands)
 
+    def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
+        path = (
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
+            "performance/board-orangepi-5-plus-vcpu-perf.toml"
+        )
+
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].template_id,
+            "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf",
+        )
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask axvisor test board --test-group normal "
+            "--test-case performance --board orangepi-5-plus-vcpu-perf",
+        )
+
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
-            "test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
+            "apps/benchmark/starry/block-rw-bench/board-orangepi-5-plus.toml",
+            "apps/benchmark/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml",
         ):
             with self.subTest(path=path):
                 context = ci_plan.replace(
@@ -166,6 +284,52 @@ class CiPlanTests(unittest.TestCase):
                 self.assertTrue(plan["static_required"])
                 self.assertFalse(main_test_rows(plan))
                 self.assertFalse(plan["axvisor_required"])
+                self.assertFalse(plan["starry_required"])
+
+    def test_benchmark_starry_path_resolves_to_registered_nightly_app_check(self):
+        cases = {
+            "apps/benchmark/starry/block-rw-bench/board-orangepi-5-plus.toml": (
+                "starry-performance-block-rw-orangepi-5-plus",
+                "-t benchmark/block-rw-bench",
+            ),
+            "apps/benchmark/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml": (
+                "starry-performance-ltp-hackbench",
+                "--qemu-config qemu-x86_64-benchmark.toml",
+            ),
+            "apps/benchmark/starry/orangepi-5-plus-uvc-rknn/configs/board-orangepi-5-plus-bench.toml": (
+                "starry-performance-uvc-rknn-orangepi-5-plus",
+                "--board-config configs/board-orangepi-5-plus-bench.toml",
+            ),
+        }
+        for path, (template_id, fragment) in cases.items():
+            with self.subTest(path=path):
+                selections = ci_plan.resolve_suite_selections(
+                    ci_plan.WORKSPACE_ROOT,
+                    ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+                    [path],
+                )
+                self.assertEqual(len(selections), 1)
+                self.assertEqual(selections[0].template_id, template_id)
+                self.assertIn(fragment, selections[0].command)
+
+    def test_functional_smoke_path_does_not_route_to_the_nightly_benchmark_check(
+        self,
+    ):
+        path = "apps/starry/qemu/compile-sim-bench/qemu-x86_64.toml"
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                ignored_apps=(path,),
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+
+        self.assertEqual(plan["starry_matrix"]["include"], [])
+        self.assertFalse(plan["starry_required"])
 
     def test_axvisor_nightly_rejects_incremental_pr_mode(self):
         with self.assertRaises(ci_plan.PlanError):
@@ -271,6 +435,10 @@ class CiPlanTests(unittest.TestCase):
 
         html = ci_perf_dashboard.render_dashboard("AxVisor Nightly Benchmarks", history)
         self.assertIn("<h2>vcpu-perf</h2>", html)
+        self.assertIn(
+            '<p class="chart-description">AxVisor 中 ArceOS guest 的 vCPU 工作吞吐量。</p>',
+            html,
+        )
         # Send and receive bandwidth get separate charts.
         self.assertIn("<h2>ivc-bench/send</h2>", html)
         self.assertIn("<h2>ivc-bench/receive</h2>", html)
@@ -289,21 +457,428 @@ class CiPlanTests(unittest.TestCase):
             {"name": "vcpu-perf/blocks_per_second", "unit": "blocks/s", "value": 1.0},
         ]
         history: list[dict[str, object]] = []
-        for day in range(1, 10):
+        for day in range(1, 13):
             history = ci_perf_dashboard.update_history(
-                history, f"2026-09-0{day}", f"rev{day}", metrics
+                history, f"2026-09-{day:02d}", f"rev{day}", metrics
             )
 
-        html = ci_perf_dashboard.render_dashboard("Benchmarks", history, window=7)
-        self.assertNotIn('"2026-09-01"', html)
-        self.assertNotIn('"2026-09-02"', html)
-        self.assertIn('"2026-09-03"', html)
-        self.assertIn('"2026-09-09"', html)
-        self.assertIn("showing last 7 of 9 nightly entries", html)
-        # window=0 keeps the full history available for manual inspection.
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+        labels = perf_chart_labels(html)
+        self.assertNotIn('"2026-09-01"', labels)
+        self.assertNotIn('"2026-09-02"', labels)
+        self.assertIn('"2026-09-03"', labels)
+        self.assertIn('"2026-09-12"', labels)
+        self.assertIn("showing last 10 of 12 nightly entries", html)
+        # The table keeps every date even though the chart only windows ten.
+        self.assertIn('data-date="2026-09-01"', html)
+        # window=0 charts the full history for manual inspection.
         self.assertIn(
             '"2026-09-01"',
-            ci_perf_dashboard.render_dashboard("Benchmarks", history, window=0),
+            perf_chart_labels(
+                ci_perf_dashboard.render_dashboard("Benchmarks", history, window=0)
+            ),
+        )
+
+    def test_perf_dashboard_keeps_axvisor_and_starry_sources(self):
+        history = ci_perf_dashboard.update_history(
+            {},
+            "2026-09-20",
+            "ax-rev",
+            [{"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0}],
+            "axvisor",
+        )
+        history = ci_perf_dashboard.update_history(
+            history,
+            "2026-09-20",
+            "starry-rev",
+            [{"name": "wakeup/p50", "unit": "ns", "value": 2.0}],
+            "starry",
+        )
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+        self.assertIn(
+            '<option value="axvisor" selected>AxVisor</option>', html
+        )
+        self.assertIn('<option value="starry">Starry</option>', html)
+        self.assertIn('data-source="axvisor"', html)
+        self.assertIn('data-source="starry"', html)
+        self.assertIn(
+            '<p class="chart-description">StarryOS 回环 TCP/UDP 请求响应耗时。</p>',
+            ci_perf_dashboard.render_dashboard(
+                "Benchmarks",
+                {
+                    "starry": [
+                        {
+                            "date": "2026-09-20",
+                            "revision": "rev",
+                            "metrics": [
+                                {
+                                    "name": "netstress/tcp-rr",
+                                    "unit": "ms",
+                                    "value": 1.0,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ),
+        )
+
+    def test_perf_dashboard_defaults_to_chart_view(self):
+        history = [
+            {
+                "date": "2026-09-20",
+                "revision": "rev",
+                "metrics": [
+                    {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+                ],
+            }
+        ]
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+
+        # The selected source panel is visible, the other source hides, and
+        # the table view starts hidden while charts are the default.
+        self.assertIn(
+            '<div class="dashboard-source" data-source="axvisor">',
+            html,
+        )
+        self.assertIn('<div class="chart-view">', html)
+        self.assertIn('<div class="table-view" hidden>', html)
+        self.assertNotIn(
+            '<div class="dashboard-source" data-source="axvisor" hidden>', html
+        )
+        self.assertIn('<select id="benchmark-source">', html)
+        self.assertIn(
+            '<button type="button" id="show-charts" aria-pressed="true">Charts</button>',
+            html,
+        )
+        self.assertIn(
+            '<button type="button" id="show-table" aria-pressed="false">Table</button>',
+            html,
+        )
+        # The date picker only shows in table view, so it starts hidden.
+        self.assertIn(
+            '<label id="table-date-label" for="table-date" hidden>Date:',
+            html,
+        )
+        self.assertIn('<select id="table-date"></select>', html)
+
+    def test_perf_dashboard_table_links_source_and_date(self):
+        history = ci_perf_dashboard.update_history(
+            {},
+            "2026-09-18",
+            "ax-1",
+            [{"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0}],
+            "axvisor",
+        )
+        history = ci_perf_dashboard.update_history(
+            history,
+            "2026-09-19",
+            "ax-2",
+            [{"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 2.0}],
+            "axvisor",
+        )
+        history = ci_perf_dashboard.update_history(
+            history,
+            "2026-09-21",
+            "starry-1",
+            [{"name": "wakeup/p50", "unit": "ns", "value": 5.0}],
+            "starry",
+        )
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+
+        # Only the default source panel is visible initially; the other hides.
+        self.assertIn('<div class="dashboard-source" data-source="axvisor">', html)
+        self.assertIn(
+            '<div class="dashboard-source" data-source="starry" hidden>', html
+        )
+        # Every source keeps its own chart group tables and newest date body.
+        axvisor = perf_table_group(html, "axvisor", "vcpu-perf", "blocks/s")
+        self.assertIn('data-source="axvisor" data-date="2026-09-19">', axvisor)
+        self.assertIn('data-source="axvisor" data-date="2026-09-18" hidden>', axvisor)
+        self.assertIn(
+            "<td>blocks</td><td><code>ax-2</code></td>"
+            '<td class="metric-value">2</td><td>blocks/s</td>',
+            perf_group_date_body(axvisor, "2026-09-19"),
+        )
+        starry = perf_table_group(html, "starry", "wakeup", "ns")
+        self.assertIn(
+            "<td>p50</td><td><code>starry-1</code></td>"
+            '<td class="metric-value">5</td><td>ns</td>',
+            perf_group_date_body(starry, "2026-09-21"),
+        )
+
+    def test_perf_dashboard_table_has_one_table_per_chart_group(self):
+        history = [
+            {
+                "date": "2026-09-19",
+                "revision": "rev-1",
+                "metrics": [
+                    {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+                    {"name": "ivc-bench/send/256KiB", "unit": "MB/s", "value": 2263.1},
+                ],
+            },
+            {
+                "date": "2026-09-20",
+                "revision": "rev-2",
+                "metrics": [
+                    {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 2.0},
+                    {"name": "ivc-bench/send/256KiB", "unit": "MB/s", "value": 2287.42},
+                ],
+            },
+        ]
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+
+        # Each chart group gets its own titled table, matching the chart.
+        self.assertIn("<h3>vcpu-perf</h3>", html)
+        self.assertIn("<h3>ivc-bench/send</h3>", html)
+        vcpu = perf_table_group(html, "axvisor", "vcpu-perf", "blocks/s")
+        send = perf_table_group(html, "axvisor", "ivc-bench/send", "MB/s")
+        self.assertIn(
+            '<p class="chart-description">'
+            "AxVisor 中 ArceOS guest 的 vCPU 工作吞吐量。</p>",
+            vcpu,
+        )
+        self.assertIn(
+            '<p class="chart-description">'
+            "AxVisor IVC 通道向 guest 发送数据的带宽。</p>",
+            send,
+        )
+        # Exactly one table per group, with per-group columns instead of a
+        # shared "Test case" column.
+        self.assertEqual(vcpu.count("<table"), 1)
+        self.assertEqual(send.count("<table"), 1)
+        self.assertIn(
+            "<thead><tr><th>Metric</th><th>Revision</th><th>Value</th>"
+            "<th>Unit</th></tr></thead>",
+            vcpu,
+        )
+        self.assertNotIn("Test case", html)
+        # The two group tables never mix each other's metrics.
+        self.assertIn("<td>blocks</td>", vcpu)
+        self.assertNotIn("256KiB", vcpu)
+        self.assertIn("<td>256KiB</td>", send)
+        self.assertNotIn("blocks</td>", send)
+        # Both group tables show the newest date and hide the older one.
+        self.assertIn('data-date="2026-09-20">', vcpu)
+        self.assertIn('data-date="2026-09-19" hidden>', vcpu)
+
+    def test_perf_dashboard_table_isolates_groups_by_unit(self):
+        history = [
+            {
+                "date": "2026-09-20",
+                "revision": "rev",
+                "metrics": [
+                    {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+                    {"name": "vcpu-perf/cycles", "unit": "cycles", "value": 7.0},
+                ],
+            }
+        ]
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+
+        # The same prefix with a different unit is a separate chart group, so it
+        # becomes its own table rather than one merged table.
+        blocks = perf_table_group(html, "axvisor", "vcpu-perf", "blocks/s")
+        cycles = perf_table_group(html, "axvisor", "vcpu-perf", "cycles")
+        self.assertIn("<td>blocks</td>", blocks)
+        self.assertNotIn("cycles</td>", blocks)
+        self.assertIn("<td>cycles</td>", cycles)
+        self.assertNotIn("blocks</td>", cycles)
+        self.assertEqual(html.count('class="table-group"'), 2)
+
+    def test_perf_dashboard_table_keeps_same_day_revisions(self):
+        history = ci_perf_dashboard.update_history(
+            [],
+            "2026-09-20",
+            "rev-a",
+            [
+                {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+                {"name": "vcpu-perf/cycles", "unit": "cycles", "value": 7.0},
+            ],
+        )
+        history = ci_perf_dashboard.update_history(
+            history,
+            "2026-09-20",
+            "rev-b",
+            [{"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 2.0}],
+        )
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+
+        body = perf_group_date_body(
+            perf_table_group(html, "axvisor", "vcpu-perf", "blocks/s"),
+            "2026-09-20",
+        )
+        # Two runs of the same day keep their own measurements, newer first.
+        self.assertIn(
+            "<td>blocks</td><td><code>rev-b</code></td>"
+            '<td class="metric-value">2</td><td>blocks/s</td>',
+            body,
+        )
+        self.assertIn(
+            "<td>blocks</td><td><code>rev-a</code></td>"
+            '<td class="metric-value">1</td><td>blocks/s</td>',
+            body,
+        )
+        # The date heading plus one row per run.
+        self.assertEqual(body.count("<tr"), 3)
+        # rev-b did not measure cycles, so that group only has the rev-a row.
+        cycles = perf_group_date_body(
+            perf_table_group(html, "axvisor", "vcpu-perf", "cycles"),
+            "2026-09-20",
+        )
+        self.assertIn("<td><code>rev-a</code></td>", cycles)
+        self.assertNotIn("<code>rev-b</code>", cycles)
+
+    def test_perf_dashboard_table_hides_group_without_the_date(self):
+        history = [
+            {
+                "date": "2026-09-18",
+                "revision": "rev-a",
+                "metrics": [
+                    {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+                    {"name": "vcpu-perf/cycles", "unit": "cycles", "value": 2.0},
+                ],
+            },
+            {
+                "date": "2026-09-20",
+                "revision": "rev-b",
+                "metrics": [
+                    {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 3.0},
+                ],
+            },
+        ]
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+
+        # 2026-09-19 has no data, so no date body exists for it.
+        self.assertNotIn('data-date="2026-09-19"', html)
+        blocks = perf_table_group(html, "axvisor", "vcpu-perf", "blocks/s")
+        cycles = perf_table_group(html, "axvisor", "vcpu-perf", "cycles")
+        # blocks measures both dates; the default newest body shows.
+        self.assertIn('data-unit="blocks/s">', blocks)
+        self.assertIn('data-date="2026-09-20">', blocks)
+        self.assertIn("<td>blocks</td>", perf_group_date_body(blocks, "2026-09-20"))
+        # cycles has no record on the newest date, so it has no body for it and
+        # the whole group is hidden until a date it measured is selected.
+        self.assertNotIn('data-date="2026-09-20"', cycles)
+        self.assertIn('data-unit="cycles" hidden>', cycles)
+        self.assertIn("<td>cycles</td>", perf_group_date_body(cycles, "2026-09-18"))
+
+    def test_perf_dashboard_table_keeps_full_value_precision(self):
+        history = [
+            {
+                "date": "2026-09-20",
+                "revision": "rev",
+                "metrics": [
+                    {"name": "vcpu-perf/decimal", "unit": "ns", "value": 1.23456789},
+                    {"name": "vcpu-perf/large", "unit": "ns", "value": 1234567.89},
+                    {"name": "vcpu-perf/whole", "unit": "ns", "value": 368008.0},
+                ],
+            }
+        ]
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history)
+        body = perf_group_date_body(
+            perf_table_group(html, "axvisor", "vcpu-perf", "ns"), "2026-09-20"
+        )
+
+        # Long decimals and large magnitudes keep every stored digit.
+        self.assertIn('<td class="metric-value">1.23456789</td>', body)
+        self.assertIn('<td class="metric-value">1234567.89</td>', body)
+        # Integral floats stay in their plain form.
+        self.assertIn('<td class="metric-value">368008</td>', body)
+        # The previous ':g' formatting truncated to six significant digits.
+        self.assertNotIn("1.23457", body)
+        self.assertNotIn("1.23457e+06", body)
+
+    def test_perf_dashboard_table_keeps_every_date_beyond_window(self):
+        metrics = [
+            {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+        ]
+        history: list[dict[str, object]] = []
+        for day in range(1, 13):
+            history = ci_perf_dashboard.update_history(
+                history, f"2026-09-{day:02d}", f"rev{day}", metrics
+            )
+        html = ci_perf_dashboard.render_dashboard("Benchmarks", history, window=3)
+
+        # The chart keeps only the window, but the table exposes every date.
+        labels = perf_chart_labels(html)
+        self.assertNotIn('"2026-09-09"', labels)
+        self.assertNotIn('"2026-09-01"', labels)
+        self.assertIn('"2026-09-12"', labels)
+        self.assertIn("showing last 3 of 12 nightly entries", html)
+        for day in (1, 2, 5, 10, 12):
+            self.assertIn(f'data-date="2026-09-{day:02d}"', html)
+        # Newest date is the visible table body, the rest hide.
+        self.assertIn(
+            '<tbody class="table-date-body" data-source="axvisor" data-date="2026-09-12">',
+            html,
+        )
+        self.assertIn(
+            '<tbody class="table-date-body" data-source="axvisor" data-date="2026-09-01" hidden>',
+            html,
+        )
+
+    def test_perf_dashboard_escapes_dynamic_strings(self):
+        source = 'a"<b>&'
+        html = ci_perf_dashboard.render_dashboard(
+            "<b>t</b>",
+            {
+                source: [
+                    {
+                        "date": "2026-09-20",
+                        "revision": 'rev</script>"x',
+                        "metrics": [
+                            {"name": 'm"<x/y&z', "unit": "u<v", "value": 1.0},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        # The page title is escaped everywhere it appears.
+        self.assertIn("&lt;b&gt;t&lt;/b&gt;", html)
+        self.assertNotIn("<b>t</b>", html)
+        # The source survives as escaped data attribute, option value and text.
+        escaped_source = 'a&quot;&lt;b&gt;&amp;'
+        self.assertIn(f'data-source="{escaped_source}"', html)
+        self.assertIn(f'<option value="{escaped_source}" selected>', html)
+        self.assertIn(f">{escaped_source}</option>", html)
+        # The chart heading and description never emit raw log text.
+        self.assertIn('<h2>m&quot;&lt;x</h2>', html)
+        self.assertNotIn('m"<x', html)
+        # Table cells, the revision and the unit are escaped too.
+        self.assertIn("<td><code>rev&lt;/script&gt;&quot;x</code></td>", html)
+        self.assertNotIn("rev</script>", html)
+        self.assertIn("y&amp;z", html)
+        self.assertIn("u&lt;v", html)
+
+    def test_performance_report_renders_starry_result_lines(self):
+        log_text = "\n".join(
+            [
+                "BLOCK_BENCH_RESULT op=read round=5 mib_s=123.4",
+                "LTP_NETSTRESS_RESULT case=tcp-rr median_ms=2",
+                'WAKEUP_LATENCY_RESULT {"case":"foo","policy":"other","p50_ns":9}',
+                "STARRY_IPERF3_BENCH_RESULT case=T01 direction=tx median_mbps=100.5",
+                "uvc-fps: done avg_fps=30 avg_throughput_mib_s=4.5",
+            ]
+        )
+        report = ci_perf_report.render_report(
+            "starry-performance",
+            "Starry performance",
+            log_text,
+        )
+        self.assertIn("#### Starry benchmark metrics", report)
+        self.assertIn("| block-io/read | MiB/s | 123.4 |", report)
+        metrics = ci_perf_report.render_benchmarks(log_text)
+        self.assertEqual(
+            metrics,
+            [
+                {"name": "block-io/read", "unit": "MiB/s", "value": 123.4},
+                {"name": "netstress/tcp-rr", "unit": "ms", "value": 2.0},
+                {"name": "wakeup/foo/other/p50", "unit": "ns", "value": 9.0},
+                {"name": "iperf3/T01/tx", "unit": "Mbps", "value": 100.5},
+                {"name": "uvc/avg_fps", "unit": "frames/s", "value": 30.0},
+                {"name": "uvc/avg_throughput_mib_s", "unit": "MiB/s", "value": 4.5},
+            ],
         )
 
     def test_axvisor_nightly_preserves_runner_owner_restrictions(self):

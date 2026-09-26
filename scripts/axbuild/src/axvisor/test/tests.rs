@@ -410,6 +410,122 @@ fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
 }
 
 #[test]
+fn merges_benchmark_suite_root_into_board_discovery() {
+    let root = tempdir().unwrap();
+    let regular_build_config = write_board_build_config(root.path(), "board-orangepi-5-plus");
+    let regular_board_config = write_board_config_in_group(
+        root.path(),
+        "normal",
+        "board-orangepi-5-plus",
+        "smoke",
+        "orangepi-5-plus-linux",
+        "board_type = \"OrangePi-5-Plus\"\n",
+    );
+
+    let benchmark_wrapper = root
+        .path()
+        .join("apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf");
+    let benchmark_case = benchmark_wrapper.join("performance");
+    fs::create_dir_all(&benchmark_case).unwrap();
+    let benchmark_build_config =
+        benchmark_wrapper.join("build-aarch64-unknown-none-softfloat.toml");
+    fs::write(
+        &benchmark_build_config,
+        "target = \"aarch64-unknown-none-softfloat\"\n",
+    )
+    .unwrap();
+    let benchmark_board_config = benchmark_case.join("board-orangepi-5-plus-vcpu-perf.toml");
+    fs::write(
+        &benchmark_board_config,
+        "board_type = \"OrangePi-5-Plus\"\n",
+    )
+    .unwrap();
+
+    let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+
+    assert_eq!(groups.len(), 2);
+    let benchmark = groups
+        .iter()
+        .find(|group| group.board_name == "orangepi-5-plus-vcpu-perf")
+        .expect("benchmark board case must be discovered");
+    assert_eq!(benchmark.name, "performance");
+    assert_eq!(benchmark.build_config, benchmark_build_config);
+    assert_eq!(benchmark.board_test_config_path, benchmark_board_config);
+    let regular = groups
+        .iter()
+        .find(|group| group.board_name == "orangepi-5-plus-linux")
+        .expect("regular board case must stay discoverable");
+    assert_eq!(regular.name, "smoke");
+    assert_eq!(regular.build_config, regular_build_config);
+    assert_eq!(regular.board_test_config_path, regular_board_config);
+
+    let selected = discover_board_test_groups(
+        root.path(),
+        "normal",
+        None,
+        Some("orangepi-5-plus-vcpu-perf"),
+    )
+    .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].name, "performance");
+}
+
+#[test]
+fn filters_board_test_group_by_case() {
+    let root = tempdir().unwrap();
+    let build_config = write_board_build_config(root.path(), "default");
+    let board_test_config = write_board_config(
+        root.path(),
+        "smoke",
+        "phytiumpi-linux",
+        "board_type = \"PhytiumPi\"\n",
+    );
+
+    let groups = discover_board_test_groups(root.path(), "normal", Some("smoke"), None).unwrap();
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "smoke");
+    assert_eq!(groups[0].board_name, "phytiumpi-linux");
+    assert_eq!(groups[0].build_config, build_config);
+    assert_eq!(groups[0].board_test_config_path, board_test_config);
+}
+
+#[test]
+fn filters_board_test_groups_by_board() {
+    let root = tempdir().unwrap();
+    write_board_build_config(root.path(), "default");
+    write_board_config(
+        root.path(),
+        "smoke",
+        "phytiumpi-linux",
+        "board_type = \"PhytiumPi\"\n",
+    );
+    write_board_config(
+        root.path(),
+        "syscall",
+        "phytiumpi-linux",
+        "board_type = \"PhytiumPi\"\n",
+    );
+    write_board_config(
+        root.path(),
+        "smoke",
+        "orangepi-5-plus-linux",
+        "board_type = \"OrangePi-5-Plus\"\n",
+    );
+
+    let groups =
+        discover_board_test_groups(root.path(), "normal", None, Some("phytiumpi-linux")).unwrap();
+
+    assert_eq!(
+        groups
+            .iter()
+            .map(|group| format!("{}/{}", group.name, group.board_name))
+            .collect::<Vec<_>>(),
+        vec!["smoke/phytiumpi-linux", "syscall/phytiumpi-linux"]
+    );
+}
+
+#[test]
 fn discovers_uboot_test_group_from_board_cases() {
     let root = tempdir().unwrap();
     let build_config = write_board_build_config(root.path(), "board-rdk-s100");

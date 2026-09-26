@@ -50,7 +50,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - QEMU 发现先选择具有匹配体系结构或目标构建配置的目录，再在该目录及其下级目录中发现 `qemu-<arch>.toml`。
 - 板卡发现扫描 `board-*.toml`，并从用例目录或最近的构建包装目录解析构建配置。
 - 批量 QEMU 运行跳过缺少所需 `qemu-<arch>.toml` 的目录。显式 `-c/--test-case` 要求匹配构建包装目录下同时存在用例与配置。Starry QEMU 还接受 `-c qemu/<subcase>` 和 `-c qemu/system/<subcase>`，用于运行 `qemu/system` 中的单个分组子用例。
-- 旧的 `--test-group` 和 `--stress` 入口已删除。大型应用、压力、K230、图形和基准图像工作负载位于 `apps/starry`，通过 `cargo xtask starry app ...` 或各自脚本运行。
+- 旧的 `--test-group` 和 `--stress` 入口已删除。普通大型应用、压力、K230 和图形功能工作负载位于 `apps/starry`；nightly 性能及基准图像工作负载位于 `apps/benchmark/starry`，通过 `cargo xtask starry app ... -t benchmark/<case>` 显式选择或运行各自脚本。
 - `-l/--list` 列出所有发现的 Starry QEMU 或板卡用例。`qemu` 等构建包装目录本身没有运行配置时不进入列表。
 - `qemu/system` 是统一 QEMU 构建包装目录下的聚合用例。其子目录只保存文件，不得再放置 `qemu-<arch>.toml`。
 - 分组父配置可以用 `[[grouped_qemu_profiles]]` 的 `name`、`subcase_prefix`、`config` 将不同模拟器要求拆成互斥启动。`qemu_profiles::expand()` 保留全部未匹配项，并让定向子用例选择使用同一配置；不得用拆分跳过用例。AArch64 `perf-*` 独立使用 icount，普通 system 测试保留默认 MTTCG。
@@ -112,7 +112,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 - 板卡用例可声明相对 `board-<board>.toml` 所在目录的 `session_files`。从本地查找到会话端点始终保持原相对路径，不添加别名或远端名称。需要下载会话文件或访问板卡侧服务地址时，在 `shell_init_cmd` 中使用 `${sessionFile:<relative-path>}`、`${boardServerIp}` 或 `${boardServerHttpBaseUrl}`。
 - 目标具备可用网络驱动时，临时板卡测试文件默认使用会话文件。网络连接或动态主机配置协议路由可能晚于命令行提示符，应使用有界下载重试。只有目标无法取得会话文件，或正在验证持久共享根文件系统状态时才写入 Linux 根文件系统。
 - 含 `c/CMakeLists.txt` 的板卡用例安装到 `target/<target>/board-cases/<case>/runs/<run-id>/upload/`。所有普通文件保持相对路径自动上传。生成文件不要列入 `session_files`；`ostool` 不会自动执行，仍需在 `shell_init_cmd` 中明确写出 `wget`、`chmod` 和运行命令。
-- 大型板卡工作负载保留在 `apps/starry`。含 `rust/Cargo.toml` 的 Starry 应用可用 `starry app board` 把静态辅助程序交叉编译到逐次运行的会话上传根目录；其 `init.sh` 必须通过超文本传输协议显式下载 `${sessionFile:usr/bin/<program>}`、设置可执行位并运行，禁止通过安全外壳协议部署或预装到持久根文件系统。
+- 普通大型板卡功能工作负载保留在 `apps/starry`；nightly 性能板卡基准位于 `apps/benchmark/starry`，通过 `-t benchmark/<case>` 显式选择。含 `rust/Cargo.toml` 的 Starry 应用可用 `starry app board` 把静态辅助程序交叉编译到逐次运行的会话上传根目录；其 `init.sh` 必须通过超文本传输协议显式下载 `${sessionFile:usr/bin/<program>}`、设置可执行位并运行，禁止通过安全外壳协议部署或预装到持久根文件系统。
 
 ## 验证
 
@@ -139,5 +139,5 @@ cargo xtask clippy --package axbuild
 - `test-suit/starryos` 不是 Cargo 软件包，不要在其中添加 `Cargo.toml` 或 `src/`。
 - 不要依靠构建分组名区分 QEMU 与板卡；前者由 `qemu-<arch>.toml` 发现，后者由 `board-<board>.toml` 发现。
 - `shell_init_cmd` 与 `test_commands` 互斥。
-- 大型应用、压力、K230、图形和基准图像工作负载留在 `apps/starry`，不要移入 `test-suit/starryos`。
+- 普通大型应用、压力、K230 和图形功能工作负载留在 `apps/starry`；nightly 性能及基准图像工作负载放在 `apps/benchmark/starry`，不要移入 `test-suit/starryos`。
 - 用例需要对称多处理时，应选用合适的构建分组或配置，例如 `qemu`，不能只添加 QEMU `-smp` 参数。

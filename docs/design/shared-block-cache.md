@@ -328,7 +328,7 @@ cargo xtask clippy --package starry-kernel
   -> every configured check passes with warnings denied
 cargo xtask starry test qemu --arch x86_64 -c qemu/system/syscall-test-sync
   -> test-sync reaches STARRY_SYSTEM_TEST_PASSED and the grouped runner passes
-cargo xtask starry app qemu -t block-io-bench --arch x86_64
+cargo xtask starry app qemu -t benchmark/block-io-bench --arch x86_64
   -> every initial/coherence generation verifies and BLOCK_BENCH_APP_PASSED appears
 ```
 

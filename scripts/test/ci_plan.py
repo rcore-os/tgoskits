@@ -41,6 +41,11 @@ MAIN_MANIFESTS = (
 )
 STARRY_APPS_MANIFEST = CHECKS_ROOT / "starry-apps.toml"
 RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
+# The main plan must resolve `apps/benchmark/starry` changes to the nightly
+# Starry benchmark checks, which live in the Starry Apps manifest. Their
+# `starry_apps` phase keeps them out of the static/test matrices, so including
+# the manifest only adds suite routing.
+MAIN_PLAN_MANIFESTS = (*MAIN_MANIFESTS, STARRY_APPS_MANIFEST)
 
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
@@ -67,6 +72,7 @@ TOP_LEVEL_FIELDS = {
 CHECK_FIELDS = {
     "nightly_only",
     "performance_report",
+    "performance_artifact_prefix",
     "id",
     "name",
     "runner",
@@ -155,7 +161,7 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
 
 
 def build_main_plan(context: PlanContext) -> dict[str, Any]:
-    checks = load_catalog(MAIN_MANIFESTS)
+    checks = load_catalog(MAIN_PLAN_MANIFESTS)
     context = _resolve_input_fallbacks(checks, context)
     return _build_main_plan(checks, context)
 
@@ -213,11 +219,43 @@ def _build_test_group_outputs(
 def build_starry_apps_plan(
     context: PlanContext,
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    # The scheduled/manual Starry Apps workflow is also the owner of the
+    # nightly performance matrix. Keep performance checks out of the normal
+    # app-smoke matrix so they run only after the smoke job completes.
+    context = replace(
+        context,
+        include_nightly=context.event_name in {"schedule", "workflow_dispatch"},
+    )
     checks = load_catalog((STARRY_APPS_MANIFEST,))
     rows = _plan_phase(checks, "starry_apps", context)
-    if not rows:
+    app_rows = [row for row in rows if not row["performance_report"]]
+    performance_rows = [row for row in rows if row["performance_report"]]
+    qemu_performance_rows = [
+        row for row in performance_rows if "board" not in row["runs_on"]
+    ]
+    board_performance_rows = [
+        row for row in performance_rows if "board" in row["runs_on"]
+    ]
+    if not app_rows:
         raise PlanError("Starry Apps must resolve to a non-empty matrix")
-    return {"starry_apps_matrix": {"include": rows}}
+
+    # Starry Apps is a standalone workflow, so it cannot consume the xtask
+    # artifact produced by the main CI workflow. Produce the same small,
+    # reusable artifact used by AxVisor Nightly inside this workflow.
+    main_checks = load_catalog(MAIN_MANIFESTS)
+    producer = next(check for check in main_checks if check.get("upload_xtask_bin_artifact"))
+    prepare = _normalize_check(producer, context)
+    prepare.update(
+        id="starry-apps-build-xtask",
+        name="Build tg-xtask",
+        command="cargo build -p tg-xtask",
+    )
+    return {
+        "prepare_matrix": {"include": [prepare]},
+        "starry_apps_matrix": {"include": app_rows},
+        "starry_performance_matrix": {"include": qemu_performance_rows},
+        "starry_board_performance_matrix": {"include": board_performance_rows},
+    }
 
 
 def build_axvisor_nightly_plan(context: PlanContext) -> dict[str, Any]:
@@ -674,6 +712,8 @@ def _suite_path_os(path: str) -> str | None:
         Path("test-suit/arceos"): "arceos",
         Path("test-suit/starryos"): "starry",
         Path("test-suit/axvisor"): "axvisor",
+        Path("apps/benchmark/axvisor"): "axvisor",
+        Path("apps/benchmark/starry"): "starry",
     }
     for prefix, os_name in prefixes.items():
         if normalized == prefix or prefix in normalized.parents:
@@ -732,6 +772,10 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "timeout_minutes": check.get("timeout_minutes", 360),
         "require_kvm": check.get("require_kvm", False),
         "performance_report": check.get("performance_report", False),
+        "performance_artifact_prefix": check.get(
+            "performance_artifact_prefix",
+            f"{check['group'].lower().replace(' ', '-')}-nightly-performance",
+        ),
         "upload_xtask_bin_artifact": check.get("upload_xtask_bin_artifact", False),
         "download_xtask_bin_artifact": download_xtask,
         "xtask_bin_artifact_name": check.get("xtask_bin_artifact_name", "tg-xtask-bin"),
@@ -804,7 +848,7 @@ def main() -> int:
     )
     try:
         if args.mode == "main":
-            checks = load_catalog(MAIN_MANIFESTS)
+            checks = load_catalog(MAIN_PLAN_MANIFESTS)
             context = _resolve_input_fallbacks(checks, context)
             impact = context.impact
             outputs = _build_main_plan(checks, context)

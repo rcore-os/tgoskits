@@ -226,7 +226,7 @@ scripts/test/ltp-syscalls/generate-common.sh \
 这次接管的边界有意收缩：PR #1775 新增或修改过可执行 C 源码的 Starry cases 从发现
 流程中整项移除，由最终共同集中的官方 LTP 结果承担回归；原 C cases 中 LTP 没有表达的
 自定义断言不再保留，也不再宣称仍被覆盖。ArceOS C 测试仍由 ArceOS 自己的测试入口维护。
-性能基准 `apps/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
+性能基准 `apps/benchmark/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
 
 逐项 syscall 迁移以 `scripts/test/ltp-syscalls/migration.csv` 为账本。按当前工作约定，
 候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出和证据路径后暂缓，先处理
@@ -604,12 +604,12 @@ App 的 `board-<name>.toml` 默认复用
 ```bash
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
-cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
+cargo xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
 ```
 
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
 `native-network-smoke` 执行一条短 TCP 双向命令，随后在 `eth1` 上验证 rtnetlink
-地址增删，适合作为 CI 连通性检查。完整吞吐测试位于 `apps/starry/iperf3`，直接通过
+地址增删，适合作为 CI 连通性检查。完整吞吐测试位于 `apps/benchmark/starry/iperf3`，直接通过
 上面的 `cargo xtask starry app board` 命令启动板测；ostool server 持续提供 iperf3
 服务，board 配置步骤内的 `shell_cmd` 通过活动 session 的 `${boardServerIp}` 和
 `${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程追加

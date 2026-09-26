@@ -6,11 +6,11 @@
 
 ### 1.1 与已有测试的关系
 
-PR #1417 的 TCP 单流、多流和反向吞吐场景与现有 [`iperf3`](../../iperf3/README.md) 重叠，继续使用该应用。板卡 `native-network-smoke` 和 LTP 系统调用套件继续承担功能回归。这里补充现有应用缺少的请求响应性能场景，默认应用发现通过 `apps/.ignore` 排除它，必须显式选择。
+PR #1417 的 TCP 单流、多流和反向吞吐场景与现有 [`iperf3`](../../../benchmark/starry/iperf3/README.md) 重叠，继续使用该应用。板卡 `native-network-smoke` 和 LTP 系统调用套件继续承担功能回归。这里补充现有应用缺少的请求响应性能场景；正式 benchmark 变体已随 nightly 性能用例移到 `apps/benchmark/starry/qemu/ltp-netstress`，必须显式选择 `-t benchmark/qemu/ltp-netstress`。
 
 | 场景 | 复用入口 | 结果含义 |
 | --- | --- | --- |
-| TCP 连续流单向、双向、多流吞吐 | 现有 `apps/starry/iperf3` | 接收端 Mbps |
+| TCP 连续流单向、双向、多流吞吐 | 现有 `apps/benchmark/starry/iperf3` | 接收端 Mbps |
 | TCP/UDP 小消息、并行请求响应 | 本应用的 `tcp-rr`、`udp-rr` 及 parallel 场景 | 固定请求数的总耗时 |
 | TCP 大消息请求响应 | `tcp-large`，双方消息均为 16384 字节 | 固定工作负载耗时 |
 | TCP 每次请求重新建立连接 | `tcp-connect-rr`，上游服务端 `-R 1` | 包含连接建立与关闭的耗时 |
@@ -43,7 +43,7 @@ cargo xtask starry app qemu -t qemu/ltp-netstress --arch x86_64
 
 ```bash
 set -o pipefail
-cargo xtask starry app qemu -t qemu/ltp-netstress --arch x86_64 \
+cargo xtask starry app qemu -t benchmark/qemu/ltp-netstress --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml \
   2>&1 | tee /tmp/ltp-netstress-benchmark.log
 ```

@@ -159,14 +159,14 @@ cd apps/starry/aka-rk3588
 
 脚本会把 `source.env` 里固定提交号的源码归档下载下来、校验 SHA256，再用仓库里的预编译程序替换归档中的构建产物，最后在 `target/aka-rk3588/aka-rk3588.tar.gz` 生成部署包。源码来自 `source.env` 里的 `AKA_RK3588_REPOSITORY`，也就是 `bullhh/aka-rk3588` 的固定提交 `8408f1b9`；包里的 `config/`、`models/` 和几个 `run_*.sh` 都取自这份归档，本仓库只保存程序本体（预编译的 `prebuilt/aarch64/build/tennis`），其余文件都在那份归档里。后面 6.2、6.5 里引用的 `run_vision_once.sh` 和日志字符串都来自那份归档，要对照这个上游仓库看。要把源码版本换掉时，`source.env` 里的提交号和二进制 SHA256 必须一起更新，不要用分支名或 `HEAD` 当输入。
 
-SG2002 上先跑仓库自带的最小推理校验，代码就在 `apps/starry/aka00-tennis-yolo/`，不用另外下载。它依赖玄铁 V3.4.0 musl 工具链和 Milk-V 的 SG200x TPU SDK，用脚本一次装好：
+SG2002 上先跑仓库自带的最小推理校验，代码就在 `apps/benchmark/starry/aka00-tennis-yolo/`，不用另外下载。它依赖玄铁 V3.4.0 musl 工具链和 Milk-V 的 SG200x TPU SDK，用脚本一次装好：
 
 ```bash
-apps/starry/aka00-tennis-yolo/scripts/setup.sh
-apps/starry/aka00-tennis-yolo/build-validator.sh
+apps/benchmark/starry/aka00-tennis-yolo/scripts/setup.sh
+apps/benchmark/starry/aka00-tennis-yolo/build-validator.sh
 ```
 
-第一步会下载工具链和 TPU SDK 并校验哈希，联网不方便时可以用 `--toolchain-archive` 和 `--sdk-archive` 指定本地压缩包。第二步的产物在 `apps/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/`，`install/` 是生成物，不进仓库。
+第一步会下载工具链和 TPU SDK 并校验哈希，联网不方便时可以用 `--toolchain-archive` 和 `--sdk-archive` 指定本地压缩包。第二步的产物在 `apps/benchmark/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/`，`install/` 是生成物，不进仓库。
 
 需要完整自主捡球程序时，再用外部仓库 `BattiestStone4/akars`，它是一个独立的 Rust 项目，代码不在本仓库里：
 
@@ -368,10 +368,10 @@ cat target/riscv64gc-unknown-linux-musl/release/akars | \
 
 管道左边是本机文件的路径，右边引号里是板子上的目标路径，两者不一样，别照着左边去板子上找。装到 `/usr/local/bin` 是因为板子的 `PATH` 里只有它：`os/StarryOS/starryos/src/init.sh` 把 `PATH` 设成 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`，里面没有 `/root`。装在别的目录就得每次写全路径，6.3 那张子命令表里的 `akars` 也就不能照着敲了。
 
-`akars` 运行时需要的 `libcviruntime.so`、`libcvikernel.so`、`libstdc++.so.6` 和 `libgcc_s.so.1` 按同一条通道送进 `/lib`，送完 `sync`。这四个文件在 `apps/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/lib/` 下，`build-validator.sh` 把 TPU SDK 里的 `.so` 和工具链里的 `libstdc++.so.6`、`libgcc_s.so.1` 一起收在这个目录。要跑 6.3 里的固定图片推理校验，还要把 `apps/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/` 这个目录放到第二个分区根下的 `/akars_tennis`，`lib/`、`model/`、`validation/` 三份都要在。上面那条管道一次只送一个文件，装不下整个目录，先在开发机上打包再在板子上解开：
+`akars` 运行时需要的 `libcviruntime.so`、`libcvikernel.so`、`libstdc++.so.6` 和 `libgcc_s.so.1` 按同一条通道送进 `/lib`，送完 `sync`。这四个文件在 `apps/benchmark/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/lib/` 下，`build-validator.sh` 把 TPU SDK 里的 `.so` 和工具链里的 `libstdc++.so.6`、`libgcc_s.so.1` 一起收在这个目录。要跑 6.3 里的固定图片推理校验，还要把 `apps/benchmark/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/` 这个目录放到第二个分区根下的 `/akars_tennis`，`lib/`、`model/`、`validation/` 三份都要在。上面那条管道一次只送一个文件，装不下整个目录，先在开发机上打包再在板子上解开：
 
 ```bash
-tar -C apps/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl -cf - akars_tennis | \
+tar -C apps/benchmark/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl -cf - akars_tennis | \
   ssh root@<板子IP> 'cd / && tar -xf - && sync'
 ```
 
@@ -404,7 +404,7 @@ cargo starry board \
 
 车板用 `aka-00-sg2002-board.toml`，荔枝派 Nano 把 `--board-config` 换成 `os/StarryOS/configs/board/licheerv-nano-sg2002-board.toml`。板级测试的写法是 `cargo starry test board --board aka-00-sg2002`，荔枝派对应 `--board licheerv-nano-sg2002`，配置分别在 `test-suit/starryos/board-aka-00-sg2002` 和 `test-suit/starryos/board-licheerv-nano-sg2002` 下。两份板卡的 `shell_prefix` 都是 `root@starry:`，和 5.2 里的提示符一致。
 
-和 6.3 里 `cargo xtask starry app board -t aka00-tennis-yolo -b AKA-00-SG2002` 那条应用级测试是两回事：这里跑的是内核启动验证，那里跑的是用户程序。
+和 6.3 里 `cargo xtask starry app board -t benchmark/aka00-tennis-yolo -b AKA-00-SG2002` 那条应用级测试是两回事：这里跑的是内核启动验证，那里跑的是用户程序。
 
 ### 4.4 把卡装进机器人
 
@@ -558,13 +558,13 @@ cargo xtask starry app board -t aka-rk3588 -b OrangePi-5-Plus-robot
 
 SG2002 上有两条路径，先跑通仓库内的推理自检，再上完整的自主捡球。
 
-第一步是仓库里的 `apps/starry/aka00-tennis-yolo`。它用三张固定图片跑一遍 TPU 推理并比对结果，不接摄像头也不需要机械臂，是最快的"板子到底能不能推理"判据。按 3.2 编译、按 4.3 部署到 `/akars_tennis` 之后，在板子上执行：
+第一步是仓库里的 `apps/benchmark/starry/aka00-tennis-yolo`。它用三张固定图片跑一遍 TPU 推理并比对结果，不接摄像头也不需要机械臂，是最快的"板子到底能不能推理"判据。按 3.2 编译、按 4.3 部署到 `/akars_tennis` 之后，在板子上执行：
 
 ```bash
 cd /akars_tennis && ./run.sh
 ```
 
-跑通会看到 `AKARS_TENNIS_VALIDATE_PASS images=3`，随后是 `STARRY_AKA00_TENNIS_DETECT_OK`。这条路径也进了自动测试：`cargo xtask starry app board -t aka00-tennis-yolo -b AKA-00-SG2002`。推理链路确认无误之后再往下走。
+跑通会看到 `AKARS_TENNIS_VALIDATE_PASS images=3`，随后是 `STARRY_AKA00_TENNIS_DETECT_OK`。这条路径也进了自动测试：`cargo xtask starry app board -t benchmark/aka00-tennis-yolo -b AKA-00-SG2002`。推理链路确认无误之后再往下走。
 
 第二步是 `akars`，也就是完整的自主捡球程序。它按 3.2 的方式交叉编译后传到板子上，提供四个子命令，对应从粗到细的验证层次，调试时按这个顺序逐层往上走最省事。
 

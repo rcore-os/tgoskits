@@ -44,6 +44,12 @@ pub(crate) fn selected_apps(
         discover_apps(workspace_root)?
     };
     apps.retain(|app| app_supports_kind(app.kind, kind));
+    if args.all {
+        // `apps/benchmark/starry` holds nightly-only measurements. They must
+        // stay selectable through `-t benchmark/<case>` without joining the
+        // regular `--all` matrix.
+        apps.retain(|app| !app.benchmark);
+    }
     if args.all && args.qemu_config.is_none() {
         // Keep app selection aligned with the generic Starry command default.
         let arch = args.arch.as_deref().unwrap_or(DEFAULT_STARRY_ARCH);

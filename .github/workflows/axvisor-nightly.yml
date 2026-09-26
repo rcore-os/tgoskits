@@ -116,6 +116,9 @@ jobs:
     permissions:
       contents: write
       actions: write
+    concurrency:
+      group: perf-data-publish
+      cancel-in-progress: false
     steps:
       - name: Checkout tested revision
         uses: actions/checkout@v6
@@ -169,10 +172,11 @@ jobs:
           python3 scripts/test/ci_perf_dashboard.py \
             --metrics "${RUNNER_TEMP}/bench.json" \
             --history "${dashboard}/history.json" \
+            --source axvisor \
             --date "$(date -u +%F)" \
             --revision "${NIGHTLY_REVISION}" \
-            --title "AxVisor Nightly Benchmarks" \
-            --window 7 \
+            --title "Nightly Performance Benchmarks" \
+            --window 10 \
             --output "${dashboard}/index.html"
           html_blob=$(git hash-object -w "${dashboard}/index.html")
           json_blob=$(git hash-object -w "${dashboard}/history.json")
