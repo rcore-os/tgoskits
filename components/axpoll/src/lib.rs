@@ -141,6 +141,19 @@ impl<M> PollRegistrar<M> {
         self.registrations.is_empty()
     }
 
+    /// Returns whether every owned lease is still waiting for a notification.
+    ///
+    /// A source removes the entry it notifies, so once any lease reports
+    /// [`PollRegistration::was_notified`] this attempt no longer covers every
+    /// source and its owner has to register again.
+    pub fn is_armed(&self) -> bool {
+        !self.registrations.is_empty()
+            && self
+                .registrations
+                .iter()
+                .all(|registration| !registration.lease.was_notified())
+    }
+
     unsafe fn register_mode(
         &mut self,
         source: &dyn PollSource,

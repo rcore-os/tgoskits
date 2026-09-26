@@ -166,6 +166,10 @@ struct EntryKey {
 }
 
 impl EntryKey {
+    fn is_live(&self) -> bool {
+        self.file.strong_count() != 0
+    }
+
     fn new(fd: i32) -> StarryResult<Self> {
         let file = get_file_like(fd)?;
         if !file.supports_epoll() {
@@ -351,6 +355,14 @@ impl EpollInterest {
     fn take_owner_repoll_request(&self) -> bool {
         self.can_refresh_waker_from_current_process()
             && self.owner_repoll_pending.swap(false, Ordering::AcqRel)
+    }
+
+    fn registration_is_armed(&self) -> bool {
+        match &*self.registration.lock() {
+            Some(InterestRegistration::Shared(registrar)) => registrar.is_armed(),
+            Some(InterestRegistration::Exclusive(registrar)) => registrar.is_armed(),
+            None => false,
+        }
     }
 
     fn replace_registration(&self, registration: Option<InterestRegistration>) {
@@ -786,6 +798,14 @@ impl Epoll {
     // only register waker, not add to ready queue
     fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
         if !interest.can_refresh_waker_from_current_process() {
+            return;
+        }
+
+        // A lease that no source has notified is still queued on its source,
+        // so replacing it on every wait only repeats the same registration.
+        // Disabled one-shot interests and interests whose file is gone still
+        // take the refresh below, which releases their leases.
+        if interest.is_enabled() && interest.key.is_live() && interest.registration_is_armed() {
             return;
         }
 
