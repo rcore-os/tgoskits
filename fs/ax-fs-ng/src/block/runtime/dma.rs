@@ -9,7 +9,7 @@ pub(super) fn prepare_read(limits: QueueLimits, len: usize) -> Result<PreparedDm
     allocate(limits, len, DmaDirection::FromDevice).map(CpuDmaBuffer::prepare_for_device)
 }
 
-#[cfg(any(feature = "ext4", feature = "fat"))]
+#[cfg(any(feature = "ext4", feature = "fat", axtest))]
 pub(super) fn prepare_write(limits: QueueLimits, source: &[u8]) -> Result<PreparedDma, BlkError> {
     let mut buffer = allocate(limits, source.len(), DmaDirection::ToDevice)?;
     buffer.copy_from_slice_cpu(source);

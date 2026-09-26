@@ -158,6 +158,47 @@ fn idmac_ring_rejects_more_payload_than_descriptor_capacity() {
 }
 
 #[test]
+fn idmac_ring_plans_2040_and_2041_blocks_and_rejects_over_ring_capacity() {
+    let mut descriptors = [IdmacDesc::default(); IDMAC_RING_DESC_COUNT];
+    let table_dma = 0x1000_0000;
+    // The block buffer is aligned to the DMA contract (512 bytes), but starts
+    // 512 bytes into a 4 KiB boundary. This consumes one descriptor for the
+    // prefix and therefore exercises all 256 entries at the advertised limit.
+    let buffer_dma = 0x2000_0200;
+    let max_len = IDMAC_MAX_BLOCKS as usize * BLOCK_SIZE;
+
+    let count = prepare_idmac_descriptors(&mut descriptors, table_dma, buffer_dma, max_len)
+        .expect("the advertised maximum must fit the descriptor ring");
+    assert_eq!(IDMAC_MAX_BLOCKS, 2040);
+    assert_eq!(max_len, 1_044_480);
+    assert_eq!(count, IDMAC_RING_DESC_COUNT);
+    assert_eq!(descriptors[0].des1, 3_584);
+    assert_eq!(descriptors[count - 1].des1, 512);
+
+    // 2041 blocks are not rejected by the raw descriptor planner: at this
+    // particular DMA address the extra block still fits in the final entry.
+    // The public queue limit rejects this request before reaching IDMAC.
+    let count = prepare_idmac_descriptors(
+        &mut descriptors,
+        table_dma,
+        buffer_dma,
+        max_len + BLOCK_SIZE,
+    )
+    .expect("the raw planner may use the final descriptor for 2041 blocks");
+    assert_eq!(count, IDMAC_RING_DESC_COUNT);
+    assert_eq!(descriptors[count - 1].des1, 1_024);
+
+    // A full 256 * 4 KiB payload cannot fit from this worst-case starting
+    // address: the 512-byte-aligned prefix consumes part of the ring, so the
+    // planner needs a 257th descriptor and must reject the request.
+    let ring_capacity = IDMAC_RING_DESC_COUNT * IDMAC_DESC_MAX_BYTES;
+    assert_eq!(
+        prepare_idmac_descriptors(&mut descriptors, table_dma, buffer_dma, ring_capacity,),
+        Err(Error::InvalidArgument)
+    );
+}
+
+#[test]
 fn task_side_does_not_consume_unacknowledged_raw_irq_status() {
     let mut mmio = [0u32; 256];
     let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();

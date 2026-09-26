@@ -23,6 +23,14 @@ use crate::{
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
 static ROOT_BLOCK_IDENTITY: OnceLock<RootBlockIdentity> = OnceLock::new();
+#[cfg(axtest)]
+static ROOT_BLOCK_HANDLE: OnceLock<usize> = OnceLock::new();
+#[cfg(axtest)]
+static ROOT_BLOCK_REGION: OnceLock<BlockRegion> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_SCRATCH_REGION: OnceLock<Option<BlockRegion>> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_ROOT_DISK_PARTITION_REGIONS: OnceLock<Vec<BlockRegion>> = OnceLock::new();
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,6 +210,8 @@ pub fn init_root(
     let selected = disks.swap_remove(selected_disk_pos);
     ROOT_BLOCK_IDENTITY
         .call_once(|| block_identity(selected.handle.device_info(), selected.disk_index));
+    #[cfg(axtest)]
+    ROOT_BLOCK_HANDLE.call_once(|| Arc::as_ptr(&selected.handle) as usize);
     let selected_partition_info = selected_partition.and_then(|part_index| {
         selected
             .partitions
@@ -221,6 +231,18 @@ pub fn init_root(
         || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
         |part| part.info.region,
     );
+    #[cfg(axtest)]
+    ROOT_BLOCK_REGION.call_once(|| region);
+    #[cfg(axtest)]
+    AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
+    #[cfg(axtest)]
+    AXTEST_ROOT_DISK_PARTITION_REGIONS.call_once(|| {
+        selected
+            .partitions
+            .iter()
+            .map(|partition| partition.info.region)
+            .collect()
+    });
 
     let root = if let Some(kind) = selected_filesystem_kind(
         selected.raw_filesystem,
@@ -235,6 +257,64 @@ pub fn init_root(
     for disk in &disks {
         mount_additional_partitions(&root, disk, None);
     }
+}
+
+/// Returns whether a block handle is the device selected for the root
+/// filesystem. This test-only identity prevents destructive axtests from
+/// accidentally writing the root device.
+#[cfg(axtest)]
+pub fn axtest_is_root_device(handle: &BlockDeviceHandle) -> bool {
+    let root = ROOT_BLOCK_HANDLE
+        .get()
+        .expect("root block handle must be published before axtests run");
+    *root == handle as *const BlockDeviceHandle as usize
+}
+
+/// Returns the filesystem region selected as root when `handle` is the root
+/// block device. This lets destructive axtests use an explicitly reserved
+/// region on the same physical disk without touching the mounted filesystem.
+#[cfg(axtest)]
+pub fn axtest_root_region(handle: &BlockDeviceHandle) -> Option<BlockRegion> {
+    if !axtest_is_root_device(handle) {
+        return None;
+    }
+    Some(
+        *ROOT_BLOCK_REGION
+            .get()
+            .expect("root block region must be published before axtests run"),
+    )
+}
+
+/// Returns the destructive-write scratch region requested on the kernel
+/// command line (`axtest.block_scratch=<start_lba>:<blocks>`), if any. The
+/// destructive axtests write only inside this region.
+#[cfg(axtest)]
+pub fn axtest_scratch_region_request() -> Option<BlockRegion> {
+    let requested = AXTEST_SCRATCH_REGION.get()?;
+    *requested
+}
+
+/// Returns every partition region identified on the root disk. The
+/// destructive axtests must not overlap any of them: init_root mounts the
+/// non-root partitions alongside the root filesystem.
+#[cfg(axtest)]
+pub fn axtest_root_disk_partition_regions() -> &'static [BlockRegion] {
+    AXTEST_ROOT_DISK_PARTITION_REGIONS
+        .get()
+        .map(|regions| regions.as_slice())
+        .unwrap_or(&[])
+}
+
+#[cfg(axtest)]
+fn parse_axtest_scratch_region(bootargs: Option<&str>) -> Option<BlockRegion> {
+    let value = bootargs?.split_ascii_whitespace().find_map(|arg| {
+        arg.strip_prefix("axtest.block_scratch=")
+            .filter(|value| !value.is_empty())
+    })?;
+    let (start_lba, block_count) = value.split_once(':')?;
+    let start_lba = start_lba.parse::<u64>().ok()?;
+    let block_count = block_count.parse::<u64>().ok()?;
+    (block_count != 0).then_some(BlockRegion::new(start_lba, block_count))
 }
 
 const SD_NAMES: [&str; 26] = [
