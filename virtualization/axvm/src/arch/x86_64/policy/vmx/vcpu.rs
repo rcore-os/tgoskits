@@ -29,7 +29,10 @@ use x86_vlapic::EmulatedLocalApic;
 
 use super::{VmxExitInfo, vmcs::*, *};
 use crate::arch::x86_64::policy::{
-    pending_event::{PendingEvent, queue_pending_event},
+    pending_event::{
+        PendingEvent, PendingEventKind, PendingEventSource, is_valid_fixed_apic_vector,
+        needs_interrupt_window, queue_pending_event, select_pending_event,
+    },
     port_io::*,
     *,
 };
@@ -58,7 +61,7 @@ impl VmxInjectionEvent {
     fn pending(event: PendingEvent) -> Self {
         Self {
             event,
-            int_type: VmxInterruptionType::from_vector(event.vector),
+            int_type: vmcs::interruption_type_for_event(event),
             instruction_len: None,
         }
     }
@@ -73,15 +76,33 @@ fn interrupted_vmx_event(
         return None;
     }
 
-    let level_triggered = injected
-        .filter(|event| event.event.vector == info.vector && event.int_type == info.int_type)
-        .is_some_and(|event| event.event.level_triggered);
+    let matched = injected
+        .filter(|event| event.event.vector == info.vector && event.int_type == info.int_type);
+    let level_triggered = matched.is_some_and(|event| event.event.level_triggered);
+    let kind = if info.int_type == VmxInterruptionType::External {
+        let source = matched.map_or(PendingEventSource::FixedApic, |event| {
+            match event.event.kind {
+                PendingEventKind::ExternalInterrupt(source) => source,
+                PendingEventKind::Exception => PendingEventSource::FixedApic,
+            }
+        });
+        PendingEventKind::ExternalInterrupt(source)
+    } else {
+        PendingEventKind::Exception
+    };
+    let event = match kind {
+        PendingEventKind::ExternalInterrupt(source) => {
+            PendingEvent::external_interrupt(info.vector, level_triggered, source)
+        }
+        PendingEventKind::Exception => PendingEvent::exception(
+            info.vector,
+            (info.int_type == VmxInterruptionType::HardException)
+                .then_some(info.err_code)
+                .flatten(),
+        ),
+    };
     Some(VmxInjectionEvent {
-        event: PendingEvent {
-            vector: info.vector,
-            err_code: info.err_code,
-            level_triggered,
-        },
+        event,
         int_type: info.int_type,
         instruction_len: info.int_type.is_soft().then_some(exit_instruction_len),
     })
@@ -323,27 +344,20 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         Ok(())
     }
 
-    /// Add a virtual interrupt or exception to the pending events list,
-    /// and try to inject it before later VM entries.
-    pub fn queue_event(&mut self, vector: u8, err_code: Option<u32>) {
-        self.queue_event_with_trigger(vector, err_code, false);
+    fn queue_event(&mut self, event: PendingEvent) {
+        queue_pending_event(&mut self.pending_events, event);
     }
 
-    /// Add a virtual interrupt or exception with trigger mode metadata.
-    pub fn queue_event_with_trigger(
-        &mut self,
-        vector: u8,
-        err_code: Option<u32>,
-        level_triggered: bool,
-    ) {
-        queue_pending_event(
-            &mut self.pending_events,
-            PendingEvent {
-                vector,
-                err_code,
-                level_triggered,
-            },
-        );
+    fn queue_fixed_apic_interrupt(&mut self, vector: u8, level_triggered: bool) -> X86VcpuResult {
+        if !is_valid_fixed_apic_vector(vector) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
+        }
+        self.queue_event(PendingEvent::external_interrupt(
+            vector,
+            level_triggered,
+            PendingEventSource::FixedApic,
+        ));
+        Ok(())
     }
 
     /// If enable, a VM exit occurs at the beginning of any instruction if
@@ -970,8 +984,10 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
 
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> X86VcpuResult {
-        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
-            self.queue_event(vector, None);
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt()
+            && let Err(error) = self.queue_fixed_apic_interrupt(vector, false)
+        {
+            warn!("ignoring invalid local APIC timer vector {vector:#x}: {error:?}");
         }
         if self.injecting_event.is_some() {
             return Ok(());
@@ -998,29 +1014,24 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             return Ok(());
         }
 
-        if let Some(event) = self.pending_events.front().copied() {
-            // trace!(
-            //     "pending event vector {:#x} allow_int {}",
-            //     event.vector,
-            //     self.allow_interrupt()
-            // );
-            if event.vector < 32 || self.allow_interrupt() {
-                // if it's an exception, or an interrupt that is not blocked, inject it directly.
-                vmcs::inject_event(
-                    self.cpu.vmx_controls_mut().expect("VMX policy CPU"),
-                    event.vector,
-                    event.err_code,
-                )?;
-                if event.vector >= 32 {
-                    self.vlapic
-                        .accept_interrupt(event.vector, event.level_triggered);
-                }
-                self.injecting_event = Some(VmxInjectionEvent::pending(event));
-                self.pending_events.pop_front();
-            } else {
-                // interrupts are blocked, enable interrupt-window exiting.
-                self.set_interrupt_window(true)?;
+        if self.pending_events.is_empty() {
+            return Ok(());
+        }
+        let interrupts_allowed = self.allow_interrupt();
+        if let Some((index, event)) =
+            select_pending_event(&self.pending_events, interrupts_allowed, |vector| {
+                self.vlapic.can_accept_interrupt(vector)
+            })
+        {
+            vmcs::inject_event(self.cpu.vmx_controls_mut().expect("VMX policy CPU"), event)?;
+            if event.requires_vlapic_accept() {
+                self.vlapic
+                    .accept_interrupt(event.vector, event.level_triggered);
             }
+            self.injecting_event = Some(VmxInjectionEvent::pending(event));
+            self.pending_events.remove(index);
+        } else if needs_interrupt_window(&self.pending_events, interrupts_allowed) {
+            self.set_interrupt_window(true)?;
         }
         Ok(())
     }
@@ -2334,14 +2345,10 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
     }
 
     pub fn inject_interrupt(&mut self, vector: usize) -> X86VcpuResult {
-        if vector != 0 {
-            // warn!("interrupt queued in inject_interrupt: vector {:#x}", vector);
-        } else {
-            warn!("interrupt queued in inject_interrupt: vector 0");
-            panic!()
+        if !(32..=u8::MAX as usize).contains(&vector) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
         }
-        self.queue_event(vector as u8, None);
-        Ok(())
+        self.queue_fixed_apic_interrupt(vector as u8, false)
     }
 
     pub fn inject_interrupt_with_trigger(
@@ -2349,11 +2356,22 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         vector: usize,
         level_triggered: bool,
     ) -> X86VcpuResult {
-        if vector == 0 {
-            warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
-            panic!()
+        if !(32..=u8::MAX as usize).contains(&vector) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
         }
-        self.queue_event_with_trigger(vector as u8, None, level_triggered);
+        self.queue_fixed_apic_interrupt(vector as u8, level_triggered)
+    }
+
+    pub fn inject_legacy_pic_interrupt(&mut self, vector: u8) -> X86VcpuResult {
+        if vector == 0 {
+            warn!("legacy PIC interrupt queued with vector 0");
+            return x86_err!(InvalidInput, "legacy PIC vector must be nonzero");
+        }
+        self.queue_event(PendingEvent::external_interrupt(
+            vector,
+            false,
+            PendingEventSource::LegacyPic,
+        ));
         Ok(())
     }
 
@@ -2379,11 +2397,7 @@ mod tests {
 
     #[test]
     fn vmx_requeues_interrupted_external_irq_injection() {
-        let pending = PendingEvent {
-            vector: 0x51,
-            err_code: None,
-            level_triggered: true,
-        };
+        let pending = PendingEvent::external_interrupt(0x51, true, PendingEventSource::FixedApic);
         let injected = VmxInjectionEvent::pending(pending);
         let vectoring = VmxInterruptInfo {
             vector: pending.vector,
@@ -2395,6 +2409,40 @@ mod tests {
         assert_eq!(
             interrupted_vmx_event(vectoring, 0, Some(injected)),
             Some(injected)
+        );
+    }
+
+    #[test]
+    fn vmx_requeue_preserves_legacy_pic_source() {
+        let pending = PendingEvent::external_interrupt(8, false, PendingEventSource::LegacyPic);
+        let injected = VmxInjectionEvent::pending(pending);
+        let vectoring = VmxInterruptInfo {
+            vector: pending.vector,
+            int_type: VmxInterruptionType::External,
+            err_code: None,
+            valid: true,
+        };
+
+        let reinjected = interrupted_vmx_event(vectoring, 0, Some(injected)).unwrap();
+        assert_eq!(
+            reinjected.event.kind,
+            PendingEventKind::ExternalInterrupt(PendingEventSource::LegacyPic)
+        );
+        assert!(!reinjected.event.requires_vlapic_accept());
+    }
+
+    #[test]
+    fn vmx_classifies_low_legacy_pic_vector_as_external() {
+        let pic = PendingEvent::external_interrupt(8, false, PendingEventSource::LegacyPic);
+
+        assert_eq!(
+            VmxInjectionEvent::pending(pic).int_type,
+            VmxInterruptionType::External
+        );
+        let double_fault = PendingEvent::exception(8, Some(0));
+        assert_eq!(
+            VmxInjectionEvent::pending(double_fault).int_type,
+            VmxInterruptionType::HardException
         );
     }
 

@@ -132,6 +132,11 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
             .accept_interrupt(vector, level_triggered);
     }
 
+    /// Returns whether the local APIC priority permits accepting `vector`.
+    pub fn can_accept_interrupt(&self, vector: u8) -> bool {
+        self.get_vlapic_regs().can_accept_interrupt(vector)
+    }
+
     /// Returns whether the local APIC timer has an edge awaiting vCPU entry.
     pub fn has_pending_timer_interrupt(&self) -> bool {
         self.get_vlapic_regs().has_pending_timer_interrupt()
