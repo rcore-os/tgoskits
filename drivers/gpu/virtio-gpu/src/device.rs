@@ -255,14 +255,17 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
 
         // Bind the resource to the scanout. If that fails we must stop the
         // device from using the backing before freeing it: detach first, then
-        // unref. Only a confirmed detach lets the DMA be released; otherwise it
-        // is kept in `self.frame_buffer_dma` so a later retry, or the `Drop`
-        // device reset, can release it once the device is known to be done.
+        // unref. `detached` must mean the host has actually finished the
+        // detach: `resource_unref` enqueues the unref after the detach (FIFO
+        // order) and drains the whole queue before returning, so its success
+        // is the completion proof for both. On TimedOut/QueueBroken the DMA
+        // is kept alive here and released by a later retry or the device
+        // reset in `Drop`.
         if let Err(err) = self.set_scanout(rect, SCANOUT_ID, FRAMEBUFFER_RESOURCE_ID) {
             let detached = self
                 .resource_detach_backing(FRAMEBUFFER_RESOURCE_ID)
+                .and_then(|()| self.resource_unref(FRAMEBUFFER_RESOURCE_ID))
                 .is_ok();
-            let _ = self.resource_unref(FRAMEBUFFER_RESOURCE_ID);
             if !detached {
                 // Keep the DMA alive: the device may still be writing into it.
                 self.frame_buffer_dma = Some(frame_buffer_dma);
