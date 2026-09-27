@@ -260,6 +260,16 @@ fn validate_transition(
             actual: received,
         });
     }
+    if !frame.last && received == active.meta.len() {
+        // Reaching the declared length without `LAST` leaves a state that no
+        // legal frame can finish: zero-length fragments are invalid for
+        // non-empty messages, and any longer fragment exceeds the declared
+        // length. Reject it here instead of letting the peer stall the
+        // receiver until it sends a frame that can only fail.
+        return Err(IvcMessageError::MissingLast {
+            declared: active.meta.len(),
+        });
+    }
 
     let complete = frame.last;
     let next_state = if complete {
@@ -387,11 +397,13 @@ mod tests {
         ring.initialize(IvcRingDirection::PublisherToSubscriber);
         let mut producer = IvcSlotProducer::new(&ring);
         let mut receiver = IvcMessageReceiver::new(IvcSlotConsumer::new(&ring));
-        push_frame(&mut producer, 1, 40, true, false, &[0x11; 40]);
+        push_frame(&mut producer, 1, 40, true, false, &[0x11; 30]);
 
-        let mut output = [0u8; 40];
-        receiver.try_read(&mut output).unwrap();
-        push_frame(&mut producer, 1, 40, false, true, &[0x22]);
+        let mut output = [0u8; 30];
+        let progress = receiver.try_read(&mut output).unwrap();
+        assert_eq!(progress.written(), 30);
+        assert!(!progress.is_complete());
+        push_frame(&mut producer, 1, 40, false, false, &[0x22; 11]);
         assert_eq!(
             receiver.try_read(&mut output),
             Err(IvcMessageError::MessageLengthExceeded {
@@ -399,6 +411,23 @@ mod tests {
                 received: 41,
             })
         );
+    }
+
+    #[test]
+    fn receiver_rejects_non_last_frame_that_reaches_the_declared_length() {
+        let ring = new_ring_for_test();
+        ring.initialize(IvcRingDirection::PublisherToSubscriber);
+        let mut producer = IvcSlotProducer::new(&ring);
+        let mut receiver = IvcMessageReceiver::new(IvcSlotConsumer::new(&ring));
+        push_frame(&mut producer, 1, 8, true, false, &[0x11; 8]);
+        let error = IvcMessageError::MissingLast { declared: 8 };
+
+        assert_eq!(receiver.complete_message_available(), Err(error));
+
+        let mut output = [0u8; 8];
+        assert_eq!(receiver.try_read(&mut output), Err(error));
+        assert_eq!(receiver.try_read(&mut output), Err(error));
+        assert_eq!(receiver.peek_message_meta(), Err(error));
     }
 
     fn push_frame(

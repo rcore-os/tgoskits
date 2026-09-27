@@ -86,6 +86,15 @@ pub enum IvcMessageError {
         /// Accumulated length at `LAST`.
         actual: u64,
     },
+    /// A frame without `LAST` already reached the declared message length.
+    ///
+    /// Non-empty messages reject zero-length fragments, so no later frame can
+    /// complete the message without exceeding the declared length.
+    #[error("frame without LAST reached the declared {declared} byte message length")]
+    MissingLast {
+        /// Declared message length.
+        declared: u64,
+    },
     /// The output cannot hold the next complete slot fragment.
     #[error("output has {provided} bytes but the next fragment requires {required}")]
     BufferTooSmall {
