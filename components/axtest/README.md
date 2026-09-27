@@ -323,11 +323,17 @@ cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --cov
 
 The build tool will automatically:
 1. Add the `axtest/coverage` Cargo feature
-2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Zno-profiler-runtime` into rustflags
+2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Cllvm-args=-instrprof-atomic-counter-update-all`, `-Zno-profiler-runtime` into rustflags
 3. Set up a QEMU monitor socket for memory extraction
 4. Generate `<workspace>/coverage/<package>-<test>-<target>.profdata` and `<workspace>/coverage/<package>-<test>-<target>-html/index.html` when `--out-fmt html` is set
 
 ### How It Works
+
+`dump_coverage()` uses `coverage_profraw::capture()` to read each LLVM counter
+atomically into a separate buffer before encoding the raw profile. Counters
+may reflect different instants; this is not a consistent snapshot of all
+counters. Nonempty LLVM bitmap sections cannot be captured live and cause
+`AXTEST_COVERAGE status=error`, failing the coverage run.
 
 ```
 Guest                              Host (axbuild)

@@ -15,12 +15,14 @@ pub(crate) const AXTEST_COVERAGE_RUSTFLAGS: &[&str] = &[
     "--check-cfg",
     "cfg(axtest_coverage)",
     "-Cinstrument-coverage",
+    "-Cllvm-args=-instrprof-atomic-counter-update-all",
     "-Zno-profiler-runtime",
 ];
 
 const COVERAGE_FEATURE: &str = "axtest/coverage";
 const STARRY_COVERAGE_FEATURE: &str = "axtest-coverage";
 const MARKER_PREFIX: &str = "AXTEST_COVERAGE status=ready";
+const COVERAGE_ERROR_REGEX: &str = r"(?m)^AXTEST_COVERAGE status=error\b";
 pub(crate) const COVERAGE_DONE_MARKER: &str = "AXTEST_COVERAGE_DONE";
 pub(crate) const DEFERRED_FAIL_MARKER: &str = "AXTEST_COVERAGE_DEFERRED_FAIL";
 
@@ -144,6 +146,13 @@ pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
     let deferred_fail_regex = format!("(?m)^{DEFERRED_FAIL_MARKER}$");
     qemu.fail_regex
         .retain(|regex| regex != &deferred_fail_regex);
+    if !qemu
+        .fail_regex
+        .iter()
+        .any(|regex| regex == COVERAGE_ERROR_REGEX)
+    {
+        qemu.fail_regex.push(COVERAGE_ERROR_REGEX.to_string());
+    }
 }
 
 #[cfg(unix)]
@@ -675,8 +684,8 @@ mod tests {
     use ostool::run::qemu::QemuConfig;
 
     use super::{
-        AxtestCoveragePaths, COVERAGE_DONE_MARKER, COVERAGE_FEATURE, Cargo, DEFERRED_FAIL_MARKER,
-        STARRY_COVERAGE_FEATURE, prepare_starry_cargo, update_success_regex,
+        AxtestCoveragePaths, COVERAGE_DONE_MARKER, COVERAGE_ERROR_REGEX, COVERAGE_FEATURE, Cargo,
+        DEFERRED_FAIL_MARKER, STARRY_COVERAGE_FEATURE, prepare_starry_cargo, update_success_regex,
     };
 
     #[test]
@@ -713,6 +722,11 @@ mod tests {
                 .iter()
                 .all(|feature| feature != COVERAGE_FEATURE)
         );
+        assert!(
+            cargo.env["CARGO_ENCODED_RUSTFLAGS"]
+                .split('\x1f')
+                .any(|flag| flag == "-Cllvm-args=-instrprof-atomic-counter-update-all")
+        );
     }
 
     #[test]
@@ -731,6 +745,16 @@ mod tests {
             qemu.shell_check_steps[0].success_regex,
             Some(vec![format!("(?m)^{COVERAGE_DONE_MARKER}$")])
         );
+        let error_regex = qemu
+            .fail_regex
+            .iter()
+            .find(|regex| regex.contains("AXTEST_COVERAGE status=error"))
+            .expect("coverage errors must fail QEMU without waiting for a profile");
+        assert!(
+            regex::Regex::new(error_regex)
+                .unwrap()
+                .is_match("AXTEST_COVERAGE status=error reason=unsupported bitmap")
+        );
     }
 
     #[test]
@@ -746,6 +770,9 @@ mod tests {
 
         update_success_regex(&mut qemu);
 
-        assert_eq!(qemu.fail_regex, vec![immediate_failure]);
+        assert_eq!(
+            qemu.fail_regex,
+            vec![immediate_failure, COVERAGE_ERROR_REGEX.to_string()]
+        );
     }
 }

@@ -1,5 +1,9 @@
 use alloc::vec::Vec;
-use core::{fmt, mem::size_of};
+use core::{
+    fmt,
+    mem::{align_of, size_of},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 const RAW_PROFILE_MAGIC_64: u64 = 0xff6c_7072_6f66_7281;
 const RAW_PROFILE_VERSION: u64 = 11;
@@ -64,13 +68,15 @@ struct ProfileSections<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ProfileError {
-    #[cfg(axtest_coverage)]
+    #[cfg(any(axtest_coverage, test))]
     InvalidSectionRange,
     InvalidDataSize,
     InvalidCounterSize,
+    InvalidCounterAlignment,
     ArithmeticOverflow,
     CounterCountMismatch,
     BitmapCountMismatch,
+    LiveBitmapUnsupported,
     ValueProfilingUnsupported,
     OffloadCoverageUnsupported,
 }
@@ -78,16 +84,20 @@ pub(super) enum ProfileError {
 impl fmt::Display for ProfileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(axtest_coverage)]
+            #[cfg(any(axtest_coverage, test))]
             Self::InvalidSectionRange => f.write_str("invalid LLVM profile section range"),
             Self::InvalidDataSize => f.write_str("invalid LLVM profile data record size"),
             Self::InvalidCounterSize => f.write_str("invalid LLVM profile counter size"),
+            Self::InvalidCounterAlignment => f.write_str("unaligned LLVM profile counter section"),
             Self::ArithmeticOverflow => f.write_str("LLVM profile size overflow"),
             Self::CounterCountMismatch => {
                 f.write_str("LLVM profile records do not match the counter section")
             }
             Self::BitmapCountMismatch => {
                 f.write_str("LLVM profile records do not match the bitmap section")
+            }
+            Self::LiveBitmapUnsupported => {
+                f.write_str("live LLVM profile bitmap capture is not supported")
             }
             Self::ValueProfilingUnsupported => {
                 f.write_str("LLVM value profiling is not supported by axtest coverage")
@@ -113,40 +123,100 @@ unsafe extern "C" {
 
 #[cfg(axtest_coverage)]
 pub(super) fn capture() -> Result<Vec<u8>, ProfileError> {
-    // SAFETY: the linker defines each pair as immutable bounds of a live
-    // coverage section. Tests have completed before capture starts, so no
-    // other execution context may mutate the counters while they are copied.
-    let sections = unsafe {
-        ProfileSections {
-            data: section_slice(
+    // SAFETY: the linker bounds cover live, immutable data and names sections
+    // for the image lifetime. Writable counters and bitmap are passed only as
+    // raw pointers; capture_sections checks them before accessing either.
+    unsafe {
+        capture_sections(
+            section_slice(
                 &raw const __start___llvm_prf_data,
                 &raw const __stop___llvm_prf_data,
             )?,
-            counters: section_slice(
-                &raw const __start___llvm_prf_cnts,
-                &raw const __stop___llvm_prf_cnts,
-            )?,
-            bitmap: section_slice(
-                &raw const __start___llvm_prf_bits,
-                &raw const __stop___llvm_prf_bits,
-            )?,
-            names: section_slice(
+            &raw const __start___llvm_prf_cnts,
+            &raw const __stop___llvm_prf_cnts,
+            &raw const __start___llvm_prf_bits,
+            &raw const __stop___llvm_prf_bits,
+            section_slice(
                 &raw const __start___llvm_prf_names,
                 &raw const __stop___llvm_prf_names,
             )?,
-        }
-    };
-    encode(sections)
+        )
+    }
+}
+
+/// # Safety
+/// The counter bounds must cover live, initialized `u64` counters whose
+/// writers use only atomic updates for the duration of this call. Bitmap
+/// bounds must refer to the same live image; nonempty bitmaps are rejected
+/// without being read. `data` and `names` must not be mutated concurrently.
+#[cfg(any(axtest_coverage, test))]
+unsafe fn capture_sections(
+    data: &[u8],
+    counter_start: *const u8,
+    counter_end: *const u8,
+    bitmap_start: *const u8,
+    bitmap_end: *const u8,
+    names: &[u8],
+) -> Result<Vec<u8>, ProfileError> {
+    if section_len(bitmap_start, bitmap_end)? != 0 {
+        return Err(ProfileError::LiveBitmapUnsupported);
+    }
+    // SAFETY: the caller provides live atomic counter storage, and the bounds
+    // are passed unchanged to snapshot_counters for validation.
+    let counters = unsafe { snapshot_counters(counter_start, counter_end)? };
+    encode(ProfileSections {
+        data,
+        counters: &counters,
+        bitmap: &[],
+        names,
+    })
+}
+
+/// # Safety
+/// The bounds must cover live, initialized `u64` counters that are only
+/// accessed atomically while this function executes.
+#[cfg(any(axtest_coverage, test))]
+unsafe fn snapshot_counters(start: *const u8, end: *const u8) -> Result<Vec<u8>, ProfileError> {
+    let len = section_len(start, end)?;
+    if len % size_of::<u64>() != 0 {
+        return Err(ProfileError::InvalidCounterSize);
+    }
+    if !(start as usize).is_multiple_of(align_of::<AtomicU64>()) {
+        return Err(ProfileError::InvalidCounterAlignment);
+    }
+
+    let mut snapshot = Vec::with_capacity(len);
+    let counters = start.cast::<u64>().cast_mut();
+    for index in 0..len / size_of::<u64>() {
+        // SAFETY: the caller guarantees live, initialized atomic counters;
+        // the range and alignment checks above cover each element. LLVM uses
+        // atomic updates in coverage builds, so no non-atomic access races.
+        let counter = unsafe { AtomicU64::from_ptr(counters.add(index)) };
+        snapshot.extend_from_slice(&counter.load(Ordering::Relaxed).to_le_bytes());
+    }
+    Ok(snapshot)
 }
 
 #[cfg(axtest_coverage)]
+/// # Safety
+/// The bounds must refer to a live, immutable linker section for the image
+/// lifetime, including a valid non-null pointer for an empty section.
 unsafe fn section_slice(start: *const u8, end: *const u8) -> Result<&'static [u8], ProfileError> {
+    let len = section_len(start, end)?;
+    // SAFETY: callers pass linker-provided immutable section bounds, which
+    // remain valid for the image lifetime and are checked above.
+    Ok(unsafe { core::slice::from_raw_parts(start, len) })
+}
+
+#[cfg(any(axtest_coverage, test))]
+fn section_len(start: *const u8, end: *const u8) -> Result<usize, ProfileError> {
     let len = (end as usize)
         .checked_sub(start as usize)
         .ok_or(ProfileError::InvalidSectionRange)?;
-    // SAFETY: callers pass linker-provided section bounds. Subtraction above
-    // proves their order, and both symbols remain valid for the image lifetime.
-    Ok(unsafe { core::slice::from_raw_parts(start, len) })
+    if len > isize::MAX as usize {
+        return Err(ProfileError::InvalidSectionRange);
+    }
+    Ok(len)
 }
 
 fn encode(sections: ProfileSections<'_>) -> Result<Vec<u8>, ProfileError> {
@@ -308,6 +378,7 @@ fn patch_u64(bytes: &mut [u8], offset: usize, value: u64) {
 #[cfg(test)]
 mod tests {
     use alloc::format;
+    use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
     use super::*;
     extern crate std;
@@ -355,6 +426,58 @@ mod tests {
                 RAW_HEADER_SIZE + PROFILE_DATA_SIZE + COUNTER_PTR_OFFSET,
             ),
             (PROFILE_DATA_SIZE + size_of::<u64>()) as u64
+        );
+    }
+
+    #[test]
+    fn live_capture_snapshots_counters_and_rejects_unsafe_sections() {
+        let data = record(2);
+        let counters = [AtomicU64::new(0), AtomicU64::new(0)];
+        counters[0].store(7, Ordering::Relaxed);
+        counters[1].store(13, Ordering::Relaxed);
+        let start = counters.as_ptr().cast::<u8>();
+        let end = unsafe { start.add(size_of_val(&counters)) };
+        let empty_bitmap = [0u8; 0];
+        let bitmap = empty_bitmap.as_ptr();
+
+        // SAFETY: all pointers refer to live local atomic storage or an empty
+        // bitmap; the invalid ranges below are rejected before being read.
+        let capture = |data: &[u8],
+                       start: *const u8,
+                       end: *const u8,
+                       bits: *const u8,
+                       bits_end: *const u8,
+                       names: &[u8]| unsafe {
+            capture_sections(data, start, end, bits, bits_end, names)
+        };
+        let encoded = capture(&data, start, end, bitmap, bitmap, b"names").unwrap();
+        let counter_offset = RAW_HEADER_SIZE + PROFILE_DATA_SIZE;
+        assert_eq!(read_u64(&encoded, counter_offset), 7);
+        assert_eq!(read_u64(&encoded, counter_offset + size_of::<u64>()), 13);
+
+        let nonempty_bitmap = [AtomicU8::new(1)];
+        let bits = nonempty_bitmap.as_ptr().cast::<u8>();
+        let bits_end = unsafe { bits.add(1) };
+        assert_eq!(
+            capture(&data, start, end, bits, bits_end, b"names"),
+            Err(ProfileError::LiveBitmapUnsupported)
+        );
+
+        let bytes = [0u8; 24];
+        let unaligned = unsafe { bytes.as_ptr().add(1) };
+        let unaligned_end = unsafe { unaligned.add(size_of::<u64>()) };
+        assert_eq!(
+            capture(&[], unaligned, unaligned_end, bitmap, bitmap, b""),
+            Err(ProfileError::InvalidCounterAlignment)
+        );
+        let short_end = unsafe { start.add(size_of::<u64>() - 1) };
+        assert_eq!(
+            capture(&[], start, short_end, bitmap, bitmap, b""),
+            Err(ProfileError::InvalidCounterSize)
+        );
+        assert_eq!(
+            capture(&[], end, start, bitmap, bitmap, b""),
+            Err(ProfileError::InvalidSectionRange)
         );
     }
 
