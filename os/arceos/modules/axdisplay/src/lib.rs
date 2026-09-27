@@ -270,6 +270,13 @@ pub fn gpu3d_pump() -> Result<(), DisplayError> {
 /// the host with a single kick. No-op when nothing is pending and when no
 /// display device is initialized (no commands could have been enqueued).
 pub fn gpu3d_ctrl_notify() {
+    // Card0 exists as a device node even on configs without a GPU (the
+    // system test suite), so callers reach this with the lazy static never
+    // initialized; locking it there would panic. Without a device nothing
+    // can have been enqueued, so the notify is a no-op.
+    if !MAIN_DISPLAY.is_inited() {
+        return;
+    }
     MAIN_DISPLAY.lock_irqsave().ctrl_notify();
 }
 
