@@ -12,7 +12,6 @@ use crate::{config::*, machine::*, vm::prepare::device_plan::*, *};
 pub(crate) struct Aarch64VmPlan {
     devices: VmDevicePlan,
     firmware: Aarch64FirmwarePlan,
-    pci: Option<Aarch64PciPlan>,
 }
 
 impl Aarch64VmPlan {
@@ -57,13 +56,8 @@ impl Aarch64VmPlan {
             super::resource_pools::create(vgic.config())?,
             provider(&controller_id)?,
         )?;
-        let pci = Aarch64PciPlan::resolve(config, devices.graph())?;
         let firmware = Aarch64FirmwarePlan::new(config, vgic.config(), devices.graph())?;
-        Ok(Self {
-            devices,
-            firmware,
-            pci,
-        })
+        Ok(Self { devices, firmware })
     }
 
     pub(crate) const fn gic_profile(&self) -> &GuestGicProfile {
@@ -91,7 +85,7 @@ impl Aarch64VmPlan {
     }
 
     pub(crate) fn pci_firmware(&self) -> Option<crate::boot::fdt::core::pci::GuestPciHost> {
-        self.pci.as_ref().map(Aarch64PciPlan::firmware)
+        self.firmware.pci()
     }
 }
 

@@ -6,8 +6,9 @@ publish = false
 
 [features]
 default = ["arceos"]
-arceos = ["dep:ax-mm", "dep:ax-std", "ax-std/arceos"]
+arceos = ["dep:ax-mm", "dep:ax-std", "ax-std/arceos", "dep:fdt-parser"]
 
 [dependencies]
 ax-mm = { workspace = true, optional = true }
+fdt-parser = { version = "0.4", optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }

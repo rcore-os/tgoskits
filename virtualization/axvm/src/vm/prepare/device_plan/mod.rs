@@ -23,7 +23,7 @@ enum PciHostRegistration {
     Required(PciHostProvider),
     /// Architectures that only expose virtual PCI when a configured endpoint
     /// selects the host key register it on first reference.
-    #[cfg(any(target_arch = "aarch64", test))]
+    #[cfg(target_arch = "aarch64")]
     IfReferenced(PciHostProvider),
 }
 
@@ -55,7 +55,7 @@ impl VmDevicePlan {
         )
     }
 
-    #[cfg(any(target_arch = "aarch64", test))]
+    #[cfg(target_arch = "aarch64")]
     pub(crate) fn with_optional_pci_host_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
@@ -91,7 +91,7 @@ impl VmDevicePlan {
                     .map_err(DeviceManagerError::from)?;
                 builder.requests().map_err(DeviceManagerError::from)?
             }
-            #[cfg(any(target_arch = "aarch64", test))]
+            #[cfg(target_arch = "aarch64")]
             Some(PciHostRegistration::IfReferenced(provider)) => {
                 let requests = builder.requests().map_err(DeviceManagerError::from)?;
                 if pci_host_is_referenced(&requests, provider.key()) {
@@ -124,7 +124,7 @@ impl VmDevicePlan {
     }
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(target_arch = "aarch64")]
 fn pci_host_is_referenced(requests: &[DevicePlanRequest], host: &PciHostKey) -> bool {
     requests.iter().any(|request| {
         request

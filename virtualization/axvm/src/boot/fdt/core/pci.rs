@@ -1,5 +1,7 @@
 //! Generic ECAM host encoding from one resolved guest PCI firmware view.
 
+mod registers;
+
 use core::ops::Range;
 use std::{format, vec::Vec};
 
@@ -152,17 +154,10 @@ fn is_pci_bridge(node: &Node) -> bool {
 /// device relies on this validation as its sole aperture-conflict guard.
 fn validate_node_registers(tree: &FdtTree, node_id: usize, host: GuestPciHost) -> AxVmResult {
     let path = tree.inner().path_of(node_id);
-    let Some(view) = tree.inner().view_typed(node_id) else {
-        return Ok(());
-    };
-    for register in view.regs() {
-        let Some(size) = register.size.filter(|size| *size != 0) else {
-            continue;
-        };
-        let end = register.address.checked_add(size).ok_or_else(|| {
-            AxVmError::invalid_config(format!("FDT register range for {path} overflows"))
-        })?;
-        let register_range = register.address..end;
+    let registers = registers::cpu_registers(tree.inner(), node_id).map_err(|error| {
+        AxVmError::invalid_config(format!("FDT register translation for {path}: {error}"))
+    })?;
+    for register_range in registers {
         if ranges_overlap(&register_range, &host.ecam_range())
             || ranges_overlap(&register_range, &host.memory_range())
         {
@@ -385,18 +380,43 @@ mod tests {
 
     #[test]
     fn nested_register_range_conflict_is_rejected() {
-        let mut fdt = Fdt::from_bytes(&base_fdt()).unwrap();
-        let root = fdt.root_id();
-        let soc = fdt.add_node(root, Node::new("soc"));
-        let uart = fdt.add_node(soc, Node::new("uart@c100000"));
-        fdt.view_typed_mut(uart)
-            .unwrap()
-            .set_regs(&[RegInfo::new(0x0c10_0000, Some(0x1000))]);
-        let bytes = fdt.encode().as_ref().to_vec();
+        for (cpu_base, conflicts) in [(0x0c00_0000, true), (0x2000_0000, false)] {
+            let mut fdt = Fdt::from_bytes(&base_fdt()).unwrap();
+            let root = fdt.root_id();
+            let soc = fdt.add_node(root, Node::new("soc"));
+            let bridge = fdt.add_node(soc, Node::new("bridge"));
+            for bus in [soc, bridge] {
+                let node = fdt.node_mut(bus).unwrap();
+                node.set_property(super::cell_property("#address-cells", &[2]));
+                node.set_property(super::cell_property("#size-cells", &[2]));
+            }
+            fdt.node_mut(soc)
+                .unwrap()
+                .set_property(super::cell_property(
+                    "ranges",
+                    &[0, 0, 0, cpu_base, 0, 0x0100_0000],
+                ));
+            fdt.node_mut(bridge)
+                .unwrap()
+                .set_property(super::cell_property(
+                    "ranges",
+                    &[0, 0, 0, 0x1_0000, 0, 0x1_0000],
+                ));
+            let uart = fdt.add_node(bridge, Node::new("uart@1000"));
+            fdt.node_mut(uart)
+                .unwrap()
+                .set_property(super::cell_property("reg", &[0, 0x1000, 0, 0x1000]));
+            let bytes = fdt.encode().as_ref().to_vec();
 
-        let error = install_pci_host(&bytes, Some(&host())).unwrap_err();
-        assert!(error.to_string().contains("/soc/uart@c100000"));
-        assert!(error.to_string().contains("conflicts with PCI host"));
+            let result = install_pci_host(&bytes, Some(&host()));
+            if conflicts {
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("/soc/bridge/uart@1000"));
+                assert!(error.to_string().contains("conflicts with PCI host"));
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     #[test]

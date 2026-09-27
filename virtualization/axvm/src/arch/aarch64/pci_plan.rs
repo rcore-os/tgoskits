@@ -6,7 +6,10 @@ use axdevice::*;
 
 use crate::{
     AxVmError, AxVmResult,
-    boot::fdt::core::pci::{GuestPciHost, PCI_BUS_ZERO_ECAM_SIZE},
+    boot::fdt::{
+        core::pci::{GuestPciHost, PCI_BUS_ZERO_ECAM_SIZE},
+        device::{ResolvedFdtSpecial, ResolvedFdtSpecialKind},
+    },
     config::AxVMConfig,
 };
 
@@ -55,9 +58,17 @@ impl DeviceModel for Aarch64PciHostModel {
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        // The AArch64 firmware adapter emits the generic ECAM node from the
-        // graph-resolved host ranges after validating the input DTB.
-        DeviceFirmwareSpec::None
+        DeviceFirmwareSpec::interfaces(
+            Some(vec![FdtContributionSpec::PciHostBridge(
+                FdtNodeSpec::new("pci")
+                    .with_compatible("pci-host-ecam-generic")
+                    .with_register(ResourceSlot::new(ECAM_SLOT).expect("static ECAM slot is valid"))
+                    .with_register(
+                        ResourceSlot::new(MEMORY_SLOT).expect("static memory slot is valid"),
+                    ),
+            )]),
+            None,
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -116,17 +127,39 @@ impl Aarch64PciPlan {
     pub(super) fn resolve(
         config: &AxVMConfig,
         graph: &ResolvedDeviceGraph,
+        specials: &mut Vec<ResolvedFdtSpecial>,
     ) -> AxVmResult<Option<Self>> {
-        let Some(topology) = graph.pci_topology(&host_key()) else {
+        let mut hosts = specials
+            .iter()
+            .enumerate()
+            .filter(|(_, special)| special.kind == ResolvedFdtSpecialKind::PciHostBridge);
+        let host_index = hosts.next().map(|(index, _)| index);
+        if hosts.next().is_some() {
+            return Err(AxVmError::unsupported(
+                "resolve AArch64 PCI firmware",
+                "multiple PCI host contributions",
+            ));
+        }
+        let topology = graph.pci_topology(&host_key());
+        let (Some(topology), Some(host_index)) = (topology, host_index) else {
+            if topology.is_some() || host_index.is_some() {
+                return Err(AxVmError::invalid_config(
+                    "AArch64 PCI topology and firmware contribution must exist together",
+                ));
+            }
             return Ok(None);
         };
-        let host_id = DeviceNodeId::new(PCI_HOST_ID)?;
-        if !topology
+        let host = &specials[host_index];
+        let host_id = DeviceNodeId::new(&host.id)?;
+        if topology
             .functions()
-            .any(|function| function.owner() != &host_id)
+            .any(|function| function.host() != &host_id)
+            || !topology
+                .functions()
+                .any(|function| function.owner() != &host_id)
         {
             return Err(AxVmError::invalid_config(
-                "AArch64 device graph materialized a PCI host without endpoints",
+                "AArch64 PCI contribution does not own the resolved endpoint topology",
             ));
         }
         if config.image_config().dtb_load_gpa.is_none() {
@@ -136,10 +169,24 @@ impl Aarch64PciPlan {
             ));
         }
 
-        let resources = graph.resources_for(&host_id)?;
-        let ecam = resources.mmio(&ResourceSlot::new(ECAM_SLOT)?)?;
-        let memory = resources.mmio(&ResourceSlot::new(MEMORY_SLOT)?)?;
-        let firmware = GuestPciHost::new(ecam, memory)?;
+        let [ecam, memory] = host.registers.as_slice() else {
+            return Err(AxVmError::invalid_config(
+                "AArch64 PCI contribution requires ECAM and memory windows",
+            ));
+        };
+        let firmware = GuestPciHost::new(*ecam, *memory)?;
+        if host.node_name != "pci"
+            || host.compatible.as_slice() != ["pci-host-ecam-generic"]
+            || !host.interrupts.is_empty()
+            || !host.properties.is_empty()
+            || memory.1 != PCI_MEMORY_APERTURE_SIZE
+            || topology.memory_aperture() != &(memory.0..memory.0 + memory.1)
+        {
+            return Err(AxVmError::invalid_config(
+                "AArch64 PCI contribution differs from the runtime host",
+            ));
+        }
+        specials.remove(host_index);
         Ok(Some(Self { firmware }))
     }
 
@@ -244,14 +291,16 @@ mod tests {
         })
     }
 
-    #[cfg(target_arch = "aarch64")]
     fn auto_mmio_search() -> core::ops::Range<u64> {
         super::super::resource_pools::AUTO_MMIO_SEARCH.clone()
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    fn auto_mmio_search() -> core::ops::Range<u64> {
-        0x0b00_0000..0x1_0000_0000
+    fn resolve_plan(
+        config: &AxVMConfig,
+        graph: &ResolvedDeviceGraph,
+    ) -> AxVmResult<Option<Aarch64PciPlan>> {
+        let mut firmware = crate::boot::fdt::device::resolve_fdt_firmware(graph)?;
+        Aarch64PciPlan::resolve(config, graph, &mut firmware.specials)
     }
 
     fn device_plan(
@@ -290,9 +339,7 @@ mod tests {
             .collect::<std::vec::Vec<_>>();
         assert_eq!(ids, ["vgic", "pci-host", "endpoint0"]);
 
-        let plan = Aarch64PciPlan::resolve(&config(true), graph)
-            .unwrap()
-            .unwrap();
+        let plan = resolve_plan(&config(true), graph).unwrap().unwrap();
         let firmware = plan.firmware();
         assert_eq!(firmware.ecam_base(), 0x0b00_0000);
         assert_eq!(firmware.memory_base(), 0x0c00_0000);
@@ -318,7 +365,7 @@ mod tests {
 
         assert_eq!(ids, ["vgic"]);
         assert!(
-            Aarch64PciPlan::resolve(&config(false), devices.graph())
+            resolve_plan(&config(false), devices.graph())
                 .unwrap()
                 .is_none()
         );
@@ -364,7 +411,7 @@ mod tests {
     #[test]
     fn endpoint_without_guest_dtb_is_rejected() {
         let devices = device_plan(true, &[]).unwrap();
-        let error = Aarch64PciPlan::resolve(&config(false), devices.graph()).unwrap_err();
+        let error = resolve_plan(&config(false), devices.graph()).unwrap_err();
         assert!(matches!(error, AxVmError::Unsupported { .. }));
         assert!(error.to_string().contains("require a guest DTB"));
     }
