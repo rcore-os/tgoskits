@@ -317,13 +317,13 @@ fn refresher_loop() -> ! {
         if has_live_waiters() {
             let signaled = refresh_all_fences(&mut live);
             let now = monotonic_time().as_nanos() as u64;
-            if now < REFRESHER_BURST_UNTIL_NS.load(Ordering::Relaxed) && signaled == 0 {
+            if now < REFRESHER_BURST_UNTIL_NS.load(Ordering::Acquire) && signaled == 0 {
                 // A kicked submit's completion is imminent; re-check quickly
                 // so the fence signals within one host round-trip.
                 sleep(REFRESHER_BURST_TICK);
             } else {
                 if signaled > 0 {
-                    REFRESHER_BURST_UNTIL_NS.store(0, Ordering::Relaxed);
+                    REFRESHER_BURST_UNTIL_NS.store(0, Ordering::Release);
                 }
                 REFRESHER_WAKE.wait_timeout_until(REFRESHER_ACTIVE_TICK, || !has_live_waiters());
             }
@@ -359,9 +359,12 @@ fn ensure_refresher() {
 /// fenced command ~tens of µs later, and burst pumping signals the fence as
 /// soon as that completion reaches the used ring.
 pub(crate) fn kick_refresher() {
+    // Release publishes the new deadline before the wake: the woken refresher
+    // reads it with Acquire, and a stale deadline would drop this submit's
+    // burst to the slow 250 µs active tick.
     REFRESHER_BURST_UNTIL_NS.store(
         monotonic_time().as_nanos() as u64 + REFRESHER_BURST_WINDOW_NS,
-        Ordering::Relaxed,
+        Ordering::Release,
     );
     REFRESHER_WAKE.notify_one();
 }
