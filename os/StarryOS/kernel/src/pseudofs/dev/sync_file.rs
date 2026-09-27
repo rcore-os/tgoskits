@@ -329,7 +329,7 @@ fn refresher_loop() -> ! {
             }
         } else {
             prune_dead_waiters();
-            REFRESHER_WAKE.wait_timeout_until(REFRESHER_IDLE_TICK, || has_live_waiters());
+            REFRESHER_WAKE.wait_timeout_until(REFRESHER_IDLE_TICK, has_live_waiters);
         }
     }
 }
@@ -500,9 +500,9 @@ impl Pollable for SyncFile {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-
-    use super::*;
+    use super::{
+        IOC_WRITE, SYNC_IOC_FILE_INFO, SYNC_IOC_WAIT, SyncFenceInfo, SyncFileInfo, ioc, name_bytes,
+    };
 
     #[test]
     fn file_info_layout_matches_uapi() {
