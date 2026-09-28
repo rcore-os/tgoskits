@@ -8,7 +8,7 @@ mod args;
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
-use args::{DeviceArg, DriveArg};
+use args::{DeviceArg, DriveArg, QemuOptions};
 use clap::ValueEnum;
 use ostool::run::qemu::QemuConfig;
 use serde::Deserialize;
@@ -78,27 +78,42 @@ pub(crate) fn has_host_rootfs_wiring(arguments: &[String]) -> bool {
     drive_argument_indices(arguments).any(|index| host_drive(&arguments[index]))
         || device_argument_indices(arguments)
             .any(|index| DeviceArg::parse(&arguments[index]).drive() == Some(disk_id))
+        || arguments
+            .windows(2)
+            .any(|pair| pair[0] == "-blockdev" && blockdev_is_host_root(&pair[1], disk_id))
         || arguments.iter().any(|argument| {
             argument.strip_prefix("-drive=").is_some_and(host_drive)
                 || argument
                     .strip_prefix("-device=")
                     .is_some_and(|value| DeviceArg::parse(value).drive() == Some(disk_id))
+                || argument
+                    .strip_prefix("-blockdev=")
+                    .is_some_and(|value| blockdev_is_host_root(value, disk_id))
                 || matches!(
                     argument.as_str(),
-                    "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom" | "-blockdev"
+                    "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom"
                 )
-                || [
-                    "-hda=",
-                    "-hdb=",
-                    "-hdc=",
-                    "-hdd=",
-                    "-sd=",
-                    "-cdrom=",
-                    "-blockdev=",
-                ]
-                .iter()
-                .any(|option| argument.starts_with(option))
+                || ["-hda=", "-hdb=", "-hdc=", "-hdd=", "-sd=", "-cdrom="]
+                    .iter()
+                    .any(|option| argument.starts_with(option))
         })
+}
+
+fn blockdev_is_host_root(value: &str, disk_id: &str) -> bool {
+    if value.trim_start().starts_with('{') {
+        return serde_json::from_str::<serde_json::Value>(value)
+            .ok()
+            .and_then(|blockdev| {
+                blockdev
+                    .get("node-name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| name == disk_id)
+            })
+            .unwrap_or(true);
+    }
+    QemuOptions::parse(value)
+        .value("node-name")
+        .is_none_or(|name| name == disk_id)
 }
 
 /// Controls whether writes to the selected rootfs survive QEMU exit.

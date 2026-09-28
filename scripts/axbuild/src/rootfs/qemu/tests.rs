@@ -19,6 +19,23 @@ fn host_initramfs_ignores_guest_drives_but_keeps_rootfs_wiring() {
     assert!(!host_initramfs_without_rootfs_drive(&qemu));
     qemu.args = vec!["-drive=id=disk0,if=none,file=root.img".into()];
     assert!(!host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec![
+        "-blockdev".into(),
+        "driver=file,filename=guest.img,node-name=guestdisk".into(),
+        "-device".into(),
+        "virtio-blk-pci,drive=guestdisk".into(),
+    ];
+    assert!(host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec![
+        "-blockdev={\"driver\":\"file\",\"filename\":\"guest.img\",\"node-name\":\"guestdisk\"}"
+            .into(),
+    ];
+    assert!(host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec![
+        "-blockdev".into(),
+        "driver=file,filename=root.img,node-name=disk0".into(),
+    ];
+    assert!(!host_initramfs_without_rootfs_drive(&qemu));
     for argument in ["-drive=if=none,file=root.img", "-hda", "-sd", "-blockdev"] {
         qemu.args = vec![argument.into(), "file=root.img".into()];
         assert!(!host_initramfs_without_rootfs_drive(&qemu), "{argument}");
