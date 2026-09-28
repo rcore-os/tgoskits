@@ -1,0 +1,9 @@
+# Starry benchmark apps skipped by default app discovery. Nightly benchmarks
+# run only when explicitly selected as `-t benchmark/<case>`; listing them here
+# also keeps them out of the default `starry app list` output.
+benchmarks/starry/orangepi-5-plus-uvc
+benchmarks/starry/orangepi-5-plus-uvc-rknn
+benchmarks/starry/aka00-tennis-yolo
+benchmarks/starry/qemu/ltp-hackbench
+benchmarks/starry/qemu/ltp-netstress
+benchmarks/starry/sysbench

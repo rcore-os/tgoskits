@@ -11,7 +11,7 @@ use super::{
     types::{StarryAppCase, StarryAppKind},
 };
 
-/// Case-name prefix used for cases that live under `apps/benchmark/starry`.
+/// Case-name prefix used for cases that live under `benchmarks/starry`.
 /// It keeps nightly-only benchmarks distinct from the equally named QEMU smoke
 /// cases that stay in `apps/starry`.
 pub(super) const BENCHMARK_APP_PREFIX: &str = "benchmark";
@@ -115,18 +115,28 @@ fn optional_file(path: PathBuf) -> Option<PathBuf> {
 }
 
 fn ignored_app_names(workspace_root: &Path) -> anyhow::Result<BTreeSet<String>> {
-    let path = workspace_root.join("apps/.ignore");
-    if !path.is_file() {
-        return Ok(BTreeSet::new());
+    // Functional apps stay under `apps/starry` and nightly benchmarks moved to
+    // `benchmarks/starry`, so the ignore lists live next to each tree and are
+    // merged into one set used by both discovery passes.
+    let mut names = BTreeSet::new();
+    for path in [
+        workspace_root.join("apps/.ignore"),
+        workspace_root.join("benchmarks/.ignore"),
+    ] {
+        if !path.is_file() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        names.extend(
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(|line| line.trim_matches('/').to_string()),
+        );
     }
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| line.trim_matches('/').to_string())
-        .collect())
+    Ok(names)
 }
 
 fn is_ignored_app(ignored: &BTreeSet<String>, name: &str) -> bool {
@@ -139,7 +149,7 @@ fn is_ignored_app(ignored: &BTreeSet<String>, name: &str) -> bool {
         {
             Some(relative) => {
                 ignored.contains(&format!("benchmark/{relative}"))
-                    || ignored.contains(&format!("apps/benchmark/starry/{relative}"))
+                    || ignored.contains(&format!("benchmarks/starry/{relative}"))
             }
             None => false,
         }
@@ -180,12 +190,12 @@ pub(super) fn apps_starry_dir(workspace_root: &Path) -> PathBuf {
 }
 
 pub(super) fn apps_benchmark_starry_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("apps/benchmark/starry")
+    workspace_root.join("benchmarks/starry")
 }
 
 /// Resolve a selected case name (optionally prefixed with `benchmark/`) to the
 /// case directory that owns it, accepting both the functional `apps/starry`
-/// tree and the nightly `apps/benchmark/starry` tree.
+/// tree and the nightly `benchmarks/starry` tree.
 pub(super) fn resolve_case_dir(workspace_root: &Path, case_name: &str) -> anyhow::Result<PathBuf> {
     let case_name = validate_case_name(case_name)?;
     let (apps_dir, relative) = case_root_and_relative(workspace_root, case_name);

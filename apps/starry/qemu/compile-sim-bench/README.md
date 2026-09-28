@@ -56,7 +56,7 @@ cargo xtask starry app qemu \
 正式编译模拟必须显式选择 benchmark 配置，并保存完整串口输出。不要与其他 QEMU、编译或高 CPU
 任务并发运行；不同分支也应在同一主机状态下交错采样。
 
-正式 benchmark 变体随 nightly 性能用例放在 `apps/benchmark/starry/qemu/compile-sim-bench`，
+正式 benchmark 变体随 nightly 性能用例放在 `benchmarks/starry/qemu/compile-sim-bench`，
 必须用 `-t benchmark/qemu/compile-sim-bench` 选择；本目录只保留自带的 smoke 配置与依赖载荷。
 
 ```bash

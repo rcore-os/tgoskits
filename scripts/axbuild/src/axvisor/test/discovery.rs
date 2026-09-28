@@ -94,7 +94,7 @@ pub(crate) fn discover_board_test_groups(
 
 /// Suite roots that hold AxVisor board cases. Besides the regular
 /// `test-suit/axvisor/<group>` tree, real board performance cases live under the
-/// `apps/benchmark/axvisor/<group>` tree, so both roots are discovered together
+/// `benchmarks/axvisor/<group>` tree, so both roots are discovered together
 /// and remain selectable through the same `--board`/`--test-case` filters.
 fn board_test_group_roots(workspace_root: &Path, group: &str) -> anyhow::Result<Vec<PathBuf>> {
     let mut roots = Vec::new();
@@ -116,10 +116,7 @@ fn board_test_group_roots(workspace_root: &Path, group: &str) -> anyhow::Result<
 }
 
 fn benchmark_suite_root(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join("apps")
-        .join("benchmark")
-        .join("axvisor")
+    workspace_root.join("benchmarks").join("axvisor")
 }
 
 fn collect_board_test_groups(

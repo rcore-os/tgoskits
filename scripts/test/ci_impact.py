@@ -45,10 +45,10 @@ TEST_SUITE_PATHS = (
     # Real board performance cases live outside `test-suit`, but their paths are
     # still a registered AxVisor suite: PR routing must select the same checks
     # instead of silently ignoring them as ordinary `apps/**` files.
-    (Path("apps/benchmark/axvisor"), "axvisor"),
-    # Starry nightly performance apps moved to `apps/benchmark/starry`; their
+    (Path("benchmarks/axvisor"), "axvisor"),
+    # Starry nightly performance apps live under `benchmarks/starry`; their
     # paths must route to the same nightly checks instead of being ignored.
-    (Path("apps/benchmark/starry"), "starry"),
+    (Path("benchmarks/starry"), "starry"),
 )
 KNOWN_OS_CONFIG_PATHS = (
     (Path("os/arceos/configs"), "arceos"),

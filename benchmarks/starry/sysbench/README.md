@@ -55,7 +55,7 @@ cat "$work/linux.log"
 `harness/compare.py` 只接受完整的单次板卡日志，要求包哈希、参数、CPU 掩码和工作负载集合相同，并拒绝绑核不一致、缺失结果以及非有限数值。
 
 ```bash
-python3 apps/benchmark/starry/sysbench/harness/compare.py linux.log starry.log
+python3 benchmarks/starry/sysbench/harness/compare.py linux.log starry.log
 ```
 
 输出的 `StarryOS/Linux` 是观测指标之比：吞吐越大越好，首次接触耗时越小越好。CPU 编号在两个内核间的物理映射仍需操作者确认；同一包与掩码不能证明环境相同。多次运行应分别保存并比较分布，单次数据不作为性能门禁。
@@ -78,9 +78,9 @@ cargo xtask starry app qemu -t benchmark/sysbench --arch aarch64 --qemu-config q
 编译后的 `cpuprobe` 和 `membw` 可以在目标系统直接测试，或在宿主通过 qemu-user 执行交叉编译产物。`--runner` 省略时直接运行本机程序。
 
 ```bash
-sh apps/benchmark/starry/sysbench/tests/check.sh
-python3 apps/benchmark/starry/sysbench/tests/test_helpers.py --bin-dir /path/to/tools --runner qemu-aarch64
-python3 apps/benchmark/starry/sysbench/tests/test_compare.py
+sh benchmarks/starry/sysbench/tests/check.sh
+python3 benchmarks/starry/sysbench/tests/test_helpers.py --bin-dir /path/to/tools --runner qemu-aarch64
+python3 benchmarks/starry/sysbench/tests/test_compare.py
 cargo xtask clippy --package axbuild
 cargo xtask test --since origin/dev
 ```

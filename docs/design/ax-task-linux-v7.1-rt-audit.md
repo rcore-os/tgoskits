@@ -1055,7 +1055,7 @@ owner inbox，再由 scheduler IPI/safe point 激活，语义上没有永久丢�
 
 旧的 `futex-ping-pong-bench` 只用七轮完整往返推算单向 handoff，无法区分真正进入
 内核 park 的样本、同 CPU 与跨 CPU 调度、进程边界和 timer deadline。它已被
-`apps/benchmark/starry/wakeup-latency-bench` 破坏性替换，不保留旧应用或输出兼容。新基准在
+`benchmarks/starry/wakeup-latency-bench` 破坏性替换，不保留旧应用或输出兼容。新基准在
 同一份 C 源码中逐样本记录从 producer 发布 wake 到 waiter 恢复运行的延迟，并报告
 `min / mean / stddev / p50 / p95 / p99 / p99.9 / max` 与固定直方图；`FUTEX_WAIT`
 返回 `EAGAIN` 的未 park 样本只进入 `not_parked`，不能伪装成低延迟。

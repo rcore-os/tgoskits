@@ -25,12 +25,12 @@ SUITE_ROOTS = {
     "axvisor": Path("test-suit/axvisor"),
 }
 EXTRA_SUITE_ROOTS = {
-    "axvisor": (Path("apps/benchmark/axvisor"),),
+    "axvisor": (Path("benchmarks/axvisor"),),
 }
-# Starry board/QEMU nightly measurements live under `apps/benchmark/starry` and
-# are selected through `cargo xtask starry app ...`, so they need their own
-# suite kind instead of the `starry test` runtime discovery.
-STARRY_APP_SUITE_ROOT = Path("apps/benchmark/starry")
+# Starry board/QEMU nightly measurements live under `benchmarks/starry` and are
+# selected through `cargo xtask starry app ...`, so they need their own suite
+# kind instead of the `starry test` runtime discovery.
+STARRY_APP_SUITE_ROOT = Path("benchmarks/starry")
 STARRY_APP_SUITE_KINDS = frozenset({"starry-app-qemu", "starry-app-board"})
 
 
@@ -241,10 +241,10 @@ def _starry_app_selections(
     registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
     path: Path,
 ) -> list[SuiteSelection]:
-    """Route an `apps/benchmark/starry` change to its registered nightly check.
+    """Route a `benchmarks/starry` change to its registered nightly check.
 
     Starry benchmark cases run through `cargo xtask starry app ...`, so the
-    registration names the case directory relative to `apps/benchmark/starry`
+    registration names the case directory relative to `benchmarks/starry`
     and the owning check contributes its own command unchanged.
     """
     selections = []

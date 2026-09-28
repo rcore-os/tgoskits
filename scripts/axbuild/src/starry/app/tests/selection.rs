@@ -192,6 +192,6 @@ fn selected_benchmark_case_resolves_through_the_benchmark_prefix() {
     assert!(
         apps[0]
             .case_dir
-            .ends_with("apps/benchmark/starry/qemu/compile-sim-bench")
+            .ends_with("benchmarks/starry/qemu/compile-sim-bench")
     );
 }
