@@ -1,6 +1,7 @@
 board_type = "OrangePi-5-Plus"
 session_files = [
   "network-bench.sh",
+  "bootstrap.sh",
 ]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
@@ -18,6 +19,8 @@ shell_cmd = """
 export STARRY_NETWORK_BENCH_SERVER='${boardServerIp}'
 export STARRY_NETWORK_BENCH_SCRIPT_URL='${sessionFile:network-bench.sh}'
 export STARRY_NETWORK_BENCH_SOURCE_URL='${sessionFile:bin/upload-source}'
+export STARRY_NETWORK_BENCH_CURL_URL='${sessionFile:share/curl-bundle.tar.gz}'
+export STARRY_NETWORK_BENCH_BOOTSTRAP_URL='${sessionFile:bootstrap.sh}'
 """
 success_regex = [
   '(?m)^STARRY_NETWORK_BENCH_PASSED\r?$',

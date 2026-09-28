@@ -8,7 +8,7 @@ fail_regex = [
   '(?i)segmentation fault|SIGSEGV',
   '(?m)^STARRY_AKA_WIFI_DHCP_FAILED\s*$',
   '(?m)^STARRY_AKA_WIFI_NETWORK_SMOKE_FAILED\s*$',
-  '(?i)(curl|chmod|ip|grep|sh): .*not found',
+  '(?i)(curl|wget|tar|chmod|ip|grep|sh): .*not found',
   '(?i)WPA2 .*failed|AIC .*failed|DHCP .*failed',
 ]
 timeout = 600
@@ -20,15 +20,17 @@ marker=STARRY_AKA_WIFI_NETWORK_SMOKE
 ready=0
 attempt=1
 while [ "$attempt" -le 30 ]; do
-  if command -v curl >/dev/null 2>&1 && mkdir -p /tmp/network-smoke &&
-    curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:bin/upload-source}' -o /tmp/network-smoke/upload-source &&
-    curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:bin/curl-smoke.sh}' -o /tmp/network-smoke/curl-smoke.sh &&
-    curl --connect-timeout 2 --max-time 5 -fsSL '${sessionFile:bin/network-smoke.sh}' -o /tmp/network-smoke/network-smoke.sh; then ready=1; fi
+  if mkdir -p /tmp/network-smoke &&
+    wget -q -T 5 -O /tmp/network-smoke/curl-bundle.tar.gz '${sessionFile:share/curl-bundle.tar.gz}' &&
+    wget -q -T 5 -O /tmp/network-smoke/upload-source '${sessionFile:bin/upload-source}' &&
+    wget -q -T 5 -O /tmp/network-smoke/curl-smoke.sh '${sessionFile:bin/curl-smoke.sh}' &&
+    wget -q -T 5 -O /tmp/network-smoke/network-smoke.sh '${sessionFile:bin/network-smoke.sh}'; then ready=1; fi
   if [ "$ready" = 1 ]; then break; fi
   sleep 1
   attempt=$((attempt + 1))
 done
-if [ "$ready" = 1 ] && chmod +x /tmp/network-smoke/*; then
+if [ "$ready" = 1 ] && tar -xzf /tmp/network-smoke/curl-bundle.tar.gz -C /tmp/network-smoke &&
+   chmod +x /tmp/network-smoke/curl /tmp/network-smoke/curl.bin /tmp/network-smoke/upload-source /tmp/network-smoke/*.sh; then
   PATH="/tmp/network-smoke:$PATH" /tmp/network-smoke/network-smoke.sh '${boardServerIp}'
 else
   echo "${marker}_FAILED"

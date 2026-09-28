@@ -16,7 +16,7 @@ T01–T07 依次覆盖单流 TX、单流 RX、单流双向、2/4/8 流 TX 和 4 
 
 ## 2. 板卡运行
 
-`init.sh` 使用板卡会话文件 URL 下载 `network-bench.sh` 与静态链接的 `upload-source`。板卡配置通过 `${boardServerIp}` 提供当前服务端地址，因此不需要固定板卡 IP。两个板卡配置都存在，运行时必须显式选择 `--board-config`。
+`init.sh` 只从本次会话下载并执行 `bootstrap.sh`，避免把完整下载逻辑塞进串口命令。后者下载 `network-bench.sh` 与静态链接的 `upload-source`；若板端没有 curl，则先用 wget 下载本次会话打包的 curl 和 musl 依赖。板卡配置通过 `${boardServerIp}` 提供当前服务端地址，因此不需要固定板卡 IP。两个板卡配置都存在，运行时必须显式选择 `--board-config`。
 
 ### 2.1 启动命令
 
