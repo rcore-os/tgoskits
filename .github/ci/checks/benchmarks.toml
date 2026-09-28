@@ -65,9 +65,8 @@ board = "orangepi-5-plus-task-switch-overhead"
 id = "starry-performance-block-io-x86-64"
 group = "Starry Apps"
 name = "Starry performance · block I/O"
-runner = "ubuntu-base"
+runner = "qcs"
 timeout_minutes = 15
-container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu -t benchmark/block-io-bench --arch x86_64
@@ -82,9 +81,8 @@ cases = ["block-io-bench"]
 id = "starry-performance-compile-sim"
 group = "Starry Apps"
 name = "Starry performance · compile simulation"
-runner = "ubuntu-base"
+runner = "qcs"
 timeout_minutes = 35
-container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
@@ -102,9 +100,8 @@ cases = ["qemu/compile-sim-bench"]
 id = "starry-performance-ltp-hackbench"
 group = "Starry Apps"
 name = "Starry performance · LTP hackbench"
-runner = "ubuntu-base"
+runner = "qcs"
 timeout_minutes = 20
-container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
@@ -122,9 +119,8 @@ cases = ["qemu/ltp-hackbench"]
 id = "starry-performance-ltp-netstress"
 group = "Starry Apps"
 name = "Starry performance · LTP netstress"
-runner = "ubuntu-base"
+runner = "qcs"
 timeout_minutes = 20
-container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
@@ -142,9 +138,8 @@ cases = ["qemu/ltp-netstress"]
 id = "starry-performance-wakeup-latency"
 group = "Starry Apps"
 name = "Starry performance · wakeup latency"
-runner = "ubuntu-base"
+runner = "qcs"
 timeout_minutes = 15
-container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu -t benchmark/wakeup-latency-bench --arch x86_64
@@ -159,9 +154,8 @@ cases = ["wakeup-latency-bench"]
 id = "starry-performance-sysbench"
 group = "Starry Apps"
 name = "Starry performance · sysbench matrix"
-runner = "ubuntu-base"
+runner = "qcs"
 timeout_minutes = 25
-container_preflight = "qemu-user"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry app qemu \
