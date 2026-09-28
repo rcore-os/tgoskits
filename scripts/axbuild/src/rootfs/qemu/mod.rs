@@ -298,7 +298,25 @@ fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) -> Vec<usi
         arguments.insert(insert_position + 1, wiring.drive_arg(rootfs_path).render());
         return vec![insert_position + 1];
     }
-    Vec::new()
+    if drive_argument_indices(arguments)
+        .any(|index| DriveArg::parse(&arguments[index]).id() == Some(wiring.disk_id))
+    {
+        return Vec::new();
+    }
+
+    let anonymous = drive_argument_indices(arguments)
+        .filter(|&index| {
+            let drive = DriveArg::parse(&arguments[index]);
+            drive.id().is_none() && drive.is_file_backed_block_drive()
+        })
+        .collect::<Vec<_>>();
+    let [index] = anonymous.as_slice() else {
+        return Vec::new();
+    };
+    let mut drive = DriveArg::parse(&arguments[*index]);
+    drive.set_file(rootfs_path);
+    arguments[*index] = drive.render();
+    vec![*index]
 }
 
 /// Ensures a QEMU config contains the standard block device, drive, and user

@@ -183,6 +183,80 @@ fn inline_rootfs_drive_and_device_are_rewritten() {
 }
 
 #[test]
+fn anonymous_host_drive_is_rewritten_without_touching_guest_drive() {
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-drive=if=sd,format=raw,file=/tmp/old-root.img".into(),
+            "-drive".into(),
+            "id=guestdisk,if=none,format=raw,file=/tmp/guest.img".into(),
+            "-device".into(),
+            "virtio-blk-pci,drive=guestdisk".into(),
+        ],
+        ..Default::default()
+    };
+
+    patch_rootfs(
+        &mut qemu,
+        Path::new("/tmp/new-root.img"),
+        RootfsPatchMode::ReplaceDriveOnly,
+    );
+
+    assert_eq!(
+        qemu.args,
+        vec![
+            "-drive",
+            "if=sd,format=raw,file=/tmp/new-root.img",
+            "-drive",
+            "id=guestdisk,if=none,format=raw,file=/tmp/guest.img",
+            "-device",
+            "virtio-blk-pci,drive=guestdisk",
+        ]
+    );
+
+    let mut ambiguous = QemuConfig {
+        args: vec![
+            "-drive=if=sd,file=/tmp/first.img".into(),
+            "-drive=if=sd,file=/tmp/second.img".into(),
+        ],
+        ..Default::default()
+    };
+    let original_args = ambiguous.args.clone();
+    let error = super::patch_rootfs(
+        &mut ambiguous,
+        Path::new("/tmp/new-root.img"),
+        RootfsPatchOptions {
+            mode: RootfsPatchMode::ReplaceDriveOnly,
+            write_policy: RootfsWritePolicy::Persist,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("failed to identify the QEMU rootfs drive"));
+    assert_eq!(ambiguous.args, original_args);
+
+    let mut missing_root_file = QemuConfig {
+        args: vec![
+            "-drive=id=disk0,if=none".into(),
+            "-drive=if=sd,file=/tmp/other.img".into(),
+        ],
+        ..Default::default()
+    };
+    let original_args = missing_root_file.args.clone();
+    assert!(
+        super::patch_rootfs(
+            &mut missing_root_file,
+            Path::new("/tmp/new-root.img"),
+            RootfsPatchOptions {
+                mode: RootfsPatchMode::ReplaceDriveOnly,
+                write_policy: RootfsWritePolicy::Persist,
+            },
+        )
+        .is_err()
+    );
+    assert_eq!(missing_root_file.args, original_args);
+}
+
+#[test]
 fn direct_drive_alias_is_not_silently_left_on_the_old_image() {
     let mut qemu = QemuConfig {
         args: vec!["-hda".into(), "/tmp/old.img".into()],

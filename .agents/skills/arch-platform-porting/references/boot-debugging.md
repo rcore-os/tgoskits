@@ -403,6 +403,8 @@ Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是�
 只把 `disk0`、匿名或直连盘视为宿主接线。检查 `root=` 时同时查看 ostool
 `cmdline` 和原始 QEMU `-append`，显式磁盘根没有可识别的宿主根盘应在配置阶段失败。
 补盘器同时接受 `-drive ...` 和 `-drive=...`，`-device` 亦然。
+没有 `disk0` 接线时，`replace_drive_arg()` 仅改写唯一匿名文件后端；
+多个匿名后端必须显式指定宿主 `disk0`，不能任意选择其中一个。
 宿主根盘若使用 `-blockdev`，axbuild 当前不能改写其链式后端，应明确报错并改用
 `-drive id=disk0`；不要让补盘器再插入一个同名 `-drive`。`-hda`、`-sd` 等
 直连盘别名也不能改写，补盘器会明确报错。
