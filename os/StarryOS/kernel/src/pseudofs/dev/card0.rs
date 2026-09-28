@@ -1015,6 +1015,30 @@ fn run_scanout_reaper(weak: Weak<Card0>) {
     }
 }
 
+fn display_device_lost(error: &DisplayError) -> bool {
+    matches!(
+        error,
+        DisplayError::DeviceLost | DisplayError::Gpu(GpuError::DeviceLost)
+    )
+}
+
+fn pending_scanouts_after_query<T>(
+    retired: Vec<(Completion, T)>,
+    mut query: impl FnMut(Completion) -> Result<CompletionStatus, DisplayError>,
+) -> (Vec<(Completion, T)>, bool) {
+    let mut pending = Vec::new();
+    for (completion, pin) in retired {
+        match query(completion) {
+            Ok(CompletionStatus::Complete) => {}
+            // A device reset ends every outstanding scanout, including the
+            // earlier pending entries and those not queried yet.
+            Err(error) if display_device_lost(&error) => return (Vec::new(), true),
+            _ => pending.push((completion, pin)),
+        }
+    }
+    (pending, false)
+}
+
 impl Card0 {
     /// Called with the modeset state locked, so queue submission cannot race
     /// the transition from an active clock to a completed pending event.
@@ -1813,7 +1837,15 @@ impl Drop for Card0File {
             .filter_map(|(&id, framebuffer)| (framebuffer.owner == self.file_id).then_some(id))
             .collect::<Vec<_>>();
         let clear_active = last_file || ids.contains(&active_id);
-        let keep_active = clear_active && self.card.clear_scanout(false).is_err();
+        let keep_active = clear_active
+            && match self.card.clear_scanout(false) {
+                Ok(()) => false,
+                Err(error) if display_device_lost(&error) => {
+                    self.card.release_scanout_pins_after_device_loss();
+                    false
+                }
+                Err(_) => true,
+            };
         if clear_active && !keep_active {
             *self.card.state.lock() = ModesetState::default();
         }
@@ -1888,16 +1920,23 @@ impl Drop for Card0File {
 }
 
 impl Card0 {
+    fn release_scanout_pins_after_device_loss(&self) {
+        let active = self.scanout_pin.lock().take();
+        let retired = core::mem::take(&mut *self.retired_scanouts.lock());
+        drop((active, retired));
+    }
+
     fn reap_retired_scanouts(&self) {
         let retired = core::mem::take(&mut *self.retired_scanouts.lock());
-        let mut pending = Vec::new();
-        for (completion, pin) in retired {
-            let status = ax_gpu::with_display_for_cleanup(|device| device.commit_status(completion));
-            if !matches!(status, Ok(Ok(CompletionStatus::Complete))) {
-                pending.push((completion, pin));
-            }
+        let (pending, device_lost) = pending_scanouts_after_query(retired, |completion| {
+            ax_gpu::with_display_for_cleanup(|device| device.commit_status(completion))
+                .and_then(core::convert::identity)
+        });
+        if device_lost {
+            self.release_scanout_pins_after_device_loss();
+        } else {
+            self.retired_scanouts.lock().extend(pending);
         }
-        self.retired_scanouts.lock().extend(pending);
     }
 
     fn retain_old_scanout(&self, completion: Completion, next: Option<FbBacking>) {
@@ -1924,7 +1963,7 @@ impl Card0 {
         }
     }
 
-    fn clear_scanout(&self, test_only: bool) -> VfsResult<()> {
+    fn clear_scanout(&self, test_only: bool) -> Result<(), DisplayError> {
         let clear = |device: &mut dyn GpuDisplay| {
             let output = scanout_output_to_clear(device)?;
             let state = DisplayState {
@@ -1945,8 +1984,7 @@ impl Card0 {
         } else {
             ax_gpu::with_display_for_cleanup(clear)
         }
-        .map_err(map_display_err)?
-        .map_err(map_display_err)?;
+        .and_then(core::convert::identity)?;
         if let Some(completion) = completion {
             self.retain_old_scanout(completion, None);
         }
@@ -2709,7 +2747,7 @@ impl Card0 {
             if c.count_connectors != 0 {
                 return Err(VfsError::InvalidInput);
             }
-            self.clear_scanout(false)?;
+            self.clear_scanout(false).map_err(map_display_err)?;
             let mut state = self.state.lock();
             *state = ModesetState::default();
             let completed = self.set_vblank_active(&state, monotonic_time_nanos());
@@ -3016,7 +3054,7 @@ impl Card0 {
         }
         let active = self.state.lock().plane_fb_id == fb_id;
         let completed = if active {
-            self.clear_scanout(false)?;
+            self.clear_scanout(false).map_err(map_display_err)?;
             let mut state = self.state.lock();
             *state = ModesetState::default();
             let completed = self.set_vblank_active(&state, monotonic_time_nanos());
@@ -3752,7 +3790,7 @@ impl Card0 {
             if proposed.plane_fb_id != 0 && proposed.crtc_active != 0 {
                 self.present_fb(proposed.plane_fb_id, &proposed, true)?;
             } else {
-                self.clear_scanout(true)?;
+                self.clear_scanout(true).map_err(map_display_err)?;
             }
             return Ok(0);
         }
@@ -3765,7 +3803,7 @@ impl Card0 {
         if current_fb != 0 && proposed.crtc_active != 0 {
             self.present_fb(current_fb, &proposed, false)?;
         } else if old_state.plane_fb_id != 0 {
-            self.clear_scanout(false)?;
+            self.clear_scanout(false).map_err(map_display_err)?;
         }
         let mut state = self.state.lock();
         *state = proposed;
@@ -4034,6 +4072,33 @@ mod tests {
     use super::*;
     use ax_gpu::rdif_display::{DisplayEvent, DriverGeneric};
     use core::num::NonZeroU64;
+
+    #[test]
+    fn device_loss_releases_all_retired_scanout_pins() {
+        let first = Arc::new(());
+        let second = Arc::new(());
+        let first_weak = Arc::downgrade(&first);
+        let second_weak = Arc::downgrade(&second);
+        let first_completion = Completion::Pending(NonZeroU64::new(1).unwrap());
+        let second_completion = Completion::Pending(NonZeroU64::new(2).unwrap());
+        let retired = vec![
+            (first_completion, Arc::clone(&first)),
+            (second_completion, Arc::clone(&second)),
+        ];
+        drop((first, second));
+
+        let (pending, device_lost) = pending_scanouts_after_query(retired, |completion| {
+            if completion == first_completion {
+                Ok(CompletionStatus::Pending)
+            } else {
+                Err(DisplayError::DeviceLost)
+            }
+        });
+        assert!(device_lost);
+        assert!(pending.is_empty());
+        assert!(first_weak.upgrade().is_none());
+        assert!(second_weak.upgrade().is_none());
+    }
 
     struct DisconnectedDisplay {
         connected: [bool; 2],

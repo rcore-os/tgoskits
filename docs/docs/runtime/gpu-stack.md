@@ -148,3 +148,9 @@ Starry 在停用时查询驱动的 `current_state`，向仍持有 framebuffer �
 控制队列交还已用描述符但未回显匹配的 fence 时，驱动无法确认 `SET_SCANOUT` 是否仍会在主机侧生效，也无法安全地仅靠后续回滚命令证明旧提交已经结束。协议核心此时先写入设备复位状态、读回确认并解除队列，再允许适配层放弃旧、新 scanout backing；调用者收到 `DeviceLost`，不会把这次提交误当成普通的可回滚错误。`DisplayController::commit` 的错误契约据此明确：设备仍可用时保留旧状态；设备丢失时旧 scanout 不再有效。
 
 模拟主机省略 `SET_SCANOUT` fence 的测试先在旧实现上失败（实际得到 `Gpu(Io)`，且没有证明复位已完成），修复后验证 `DeviceLost`、复位读回以及两份 backing 均在设备停止后释放。`cargo test -p virtio-gpu --features rdif --lib` 8/8 通过，`cargo xtask clippy --package virtio-gpu` 2/2 组合和 `cargo xtask clippy --package rdif-display` 1/1 组合通过，`cargo fmt` 与 `git diff --check` 通过。本地不运行全量 Clippy 或 QEMU。
+
+### 4.8 2026-09-28 设备丢失后的 scanout 回收
+
+Starry 对异步旧 scanout 每隔 20 ms 查询 `commit_status`。原逻辑将任何错误都视作待完成；若驱动报告 `DeviceLost`，后台任务会永久重试并保留旧 backing。现在 `DeviceLost` 作为终态：回收任务释放所有旧 scanout 引用及当前 pin，最后一个 DRM 文件关闭时即使禁用提交因设备丢失失败，也会清理 framebuffer 表和 pin。暂时性查询错误仍保留引用并重试，避免在设备继续 DMA 时提前释放。
+
+新增的资源生命周期测试以两个 `Arc` pin 模拟“先待完成、后设备丢失”，在旧逻辑上使 `cargo xtask test --since ce1740fcad707227a8e505adeda3942cfe647251` 失败（`starry-kernel` 276 pass、1 fail），修复后同一入口 14/14 个软件包通过，测试确认两个 pin 都已释放。`cargo fmt`、`git diff --check` 和 Starry 内核基础功能组合的定向 Clippy 通过。本地未运行全量 Clippy 或 QEMU；真实设备复位后的用户态行为仍需当前提交的系统级证据。
