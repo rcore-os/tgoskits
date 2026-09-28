@@ -14,8 +14,12 @@ pub mod interface;
 mod lockdep;
 #[cfg(feature = "sleep")]
 mod mutex;
+#[cfg(feature = "profile")]
+mod profile;
 mod spin;
 
 #[cfg(feature = "sleep")]
 pub use self::mutex::*;
+#[cfg(feature = "profile")]
+pub use self::profile::*;
 pub use self::{context::*, lockdep::*, spin::*};
