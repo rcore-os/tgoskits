@@ -52,8 +52,14 @@ comparison (raw-frame reader, PSNR, SSIM, radix-2 FFT, SHA-256, PTS/drift math) 
 5. **video_realassets** - real transcodes (references `$ASSET_DIR`, honest-skips if absent). For each of
    the four Bad Apple transcodes `{h264, hevc, vp9, ffv1}`: assert `codec_name` / 640x480 / `30/1` fps /
    duration ~5.13s vs golden; first-frame `sha256(rgb24)` == golden; first-frame 8x8 luma signature ==
-   golden `luma8x8_hex`; and the frame at `t=2.0` (which diverges across codecs) `sha256(rgb24)` ==
-   golden - a per-codec discriminating check.
+   golden `luma8x8_hex`; and seek to absolute PTS >= 2.0 s for all four clips. The target prints each
+   stream's `start_time`, `time_base`, aligned frame offset and selected `pts_time`, then uses the
+   on-target ffv1 lossless frame as the reference and aligns each lossy stream within a documented
+   +/- 6-frame window by best silhouette/PSNR match. The aligned frame must stay within explicit
+   pixel-domain bounds (luma PSNR >= 18 dB, RGB PSNR >= 15 dB, SSIM >= 0.85, binary silhouette
+   mismatch <= 12%, silhouette IoU >= 0.70, white-ratio delta <= 5%); each codec's t2 fingerprint
+   must stay distinct, and every t2 frame must be non-uniform and differ from frame 0. The host t2
+   SHA values remain diagnostics, not a cross-FFmpeg-version gate.
 
 ## Gate (three-gate, matches audio carpet)
 
@@ -84,16 +90,26 @@ gate.
 - 8x8 luma signature: `scale=8:8:flags=bicubic,format=gray` (reproduces golden `luma8x8_hex` byte-exact
   on the host; `video_frames` compares it with a bounded cross-architecture tolerance because swscale's
   bicubic/gray kernels can round differently across architectures and FFmpeg builds).
-- clip first frame: `select=eq(n,0) -vframes 1`; frame at t=2.0: `-ss 2.0 -i F -vframes 1`.
+- clip first frame: `select=eq(n,0) -vframes 1` (byte-exact golden SHA). Host t2 fingerprints:
+  `-ss 2.0 -i F -vframes 1` with FFmpeg 6.1.1. The target uses the same input-side accurate seek
+  with `-copyts -ss 2.0 -accurate_seek -i F -vframes 1`, reports `start_time`, `time_base` and the
+  selected `pts_time`, so MP4 `start_time`/decoder-delay offsets cannot make a decoded-frame ordinal
+  mean a different presentation time than in MKV/WebM. Because FFmpeg 6.1.1/x86_64 and 8.1.2/aarch64
+  do not produce byte-identical rgb24 for the same yuv420p decode, t2 is judged by the cross-codec
+  pixel bounds above rather than by the host fingerprint SHA.
+- target t2 alignment: the on-target ffv1 frame is the lossless content reference. Each lossy stream
+  is decoded over a bounded +/- 6-frame window around PTS 2.0 and the frame with the best binary
+  silhouette/PSNR match is selected; the chosen offset and PTS are logged. A black, stuck, uniform,
+  or wrong-codec frame cannot satisfy the quality bounds after this bounded search.
 - Bad Apple white-ratio: threshold Rec.601 luma (int weights `(77R+150G+29B)>>8`) at 128.
 - avsync golden: analytical - `testsrc` 50 frames @ 25fps + `sine` 88200 samples @ 44100 Hz, tone bin
   `round(1000*8192/44100)=186`, both spanning exactly 2.0 s.
 
-The golden is exactly what host ffmpeg decodes; the carpet re-decodes (StarryOS ffmpeg on-target, the
-same host at validation time) and asserts byte-exact rgb24 frame identity (lossless) / PSNR+SSIM (lossy) /
-PTS-aligned == that golden. The `video_frames` 8x8 luma signature is a bounded cross-architecture
-comparison rather than byte-exact, because it exercises the target's swscale/bicubic and
-gray-conversion kernels.
+The golden first frame is exactly what host ffmpeg decodes; real-clip t2 decoding is checked against
+the on-target ffv1 lossless frame with bounded PSNR/SSIM/silhouette checks, while the host t2 SHA is
+only a diagnostic fingerprint. The `video_frames` 8x8 luma signature is likewise a bounded
+cross-architecture comparison rather than byte-exact, because it exercises the target's
+swscale/bicubic and gray-conversion kernels.
 
 ## Build / run
 
