@@ -95,11 +95,13 @@ StarryOS system 分组从用户态调用 Linux syscall，覆盖公共 VFS 无法
 | 测试类别 | 代表位置/名称 | 主要契约 |
 | --- | --- | --- |
 | mount namespace | `test-unshare-fs` | clone/unshare 后 topology visibility |
-| sync | `test-syncfs`、`syscall-test-syncfs` | page cache + filesystem flush 和错误传播 |
+| sync | `syscall-test-syncfs` | `SYS_sync` 返回 0；`syncfs` 对普通文件、目录和 pipe fd 返回 0，对无效或关闭 fd 返回 `EBADF` |
 | mount/umount | system mount cases | busy、flags、bind/move/lazy detach、mountinfo |
 | path/open | openat2、symlink、chroot/pivot cases | no-follow/beneath/root boundary |
 | file I/O | read/write/truncate/mmap/fsync cases | cache、EOF、MAP_SHARED 一致性 |
 | metadata | stat/xattr/link/rename cases | Linux-visible inode、mode、link count、errno |
+
+`syscall-test-syncfs` 只验证公共 ABI 的返回值和部分 fd 错误，不证明 page cache 或文件系统数据已写入块设备，也不覆盖写回失败的错误传播。LTP `sync01` 可检查块设备写出，但当前 guest 缺少它所需的 `/sys/block`，尚未接入运行集合。
 
 原 `syscall-test-overlayfs` 已部分迁移到 LTP `getxattr01`，仅承接扩展属性读取等行为。
 该程序的多层 lookup、copy-up 和 mount 断言随原程序清理，不再由这项替代提供；
