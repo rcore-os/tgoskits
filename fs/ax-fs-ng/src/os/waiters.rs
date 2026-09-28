@@ -157,6 +157,7 @@ impl TaskWaiters {
 mod tests {
     use super::*;
     use crate::BlockError;
+    use core::cell::Cell;
 
     #[test]
     fn registration_allocation_runs_unlocked_and_failure_adds_no_waiter() {
@@ -182,6 +183,28 @@ mod tests {
                 true
             })
             .unwrap();
+        assert_eq!(waiters.len(), 0);
+    }
+
+    #[test]
+    fn registered_waiter_is_not_skipped_by_stale_count() {
+        crate::os::task::install_test_runtime_ops();
+        let waiters = TaskWaiters::new();
+        let notification = runtime_ops().unwrap().notification();
+        waiters
+            .register_with(&notification, |spare, required| {
+                spare
+                    .try_reserve_exact(required)
+                    .map_err(|_| BlockError::NoMemory)
+            })
+            .unwrap();
+
+        // A count load may observe its previous value without synchronizing
+        // with the registration store. Notification must inspect the queue.
+        waiters.count.store(0, Ordering::Relaxed);
+        let wakes = Cell::new(0);
+        waiters.wake_all(|_| wakes.set(wakes.get() + 1));
+        assert_eq!(wakes.get(), 1);
         assert_eq!(waiters.len(), 0);
     }
 }
