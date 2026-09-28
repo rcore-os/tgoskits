@@ -1,4 +1,4 @@
-//! Conventional Type-0 config image and guest-writable root state.
+//! Type-0 config image and guest-writable root state.
 
 use alloc::vec::Vec;
 
@@ -10,11 +10,11 @@ use super::{
         COMMAND_BUS_MASTER_ENABLE, COMMAND_INTERRUPT_DISABLE, COMMAND_MEMORY_SPACE_ENABLE,
         CONFIG_BAR_END, CONFIG_BAR_MEMORY_ADDRESS_MASK, CONFIG_BAR_REGISTER_SIZE, CONFIG_BAR_START,
         CONFIG_BASE_CLASS_OFFSET, CONFIG_CAPABILITY_POINTER_OFFSET, CONFIG_COMMAND_OFFSET,
-        CONFIG_DEVICE_ID_OFFSET, CONFIG_HEADER_TYPE_OFFSET, CONFIG_INTERRUPT_LINE_OFFSET,
-        CONFIG_INTERRUPT_PIN_OFFSET, CONFIG_PROGRAMMING_INTERFACE_OFFSET, CONFIG_REVISION_OFFSET,
-        CONFIG_SPACE_SIZE, CONFIG_STATUS_OFFSET, CONFIG_SUBCLASS_OFFSET,
-        CONFIG_SUBSYSTEM_DEVICE_ID_OFFSET, CONFIG_SUBSYSTEM_VENDOR_ID_OFFSET,
-        CONFIG_VENDOR_ID_OFFSET, STATUS_CAPABILITIES_LIST,
+        CONFIG_COMMAND_SIZE, CONFIG_DEVICE_ID_OFFSET, CONFIG_HEADER_TYPE_OFFSET,
+        CONFIG_INTERRUPT_LINE_OFFSET, CONFIG_INTERRUPT_PIN_OFFSET,
+        CONFIG_PROGRAMMING_INTERFACE_OFFSET, CONFIG_REVISION_OFFSET, CONFIG_SPACE_SIZE,
+        CONFIG_STATUS_OFFSET, CONFIG_SUBCLASS_OFFSET, CONFIG_SUBSYSTEM_DEVICE_ID_OFFSET,
+        CONFIG_SUBSYSTEM_VENDOR_ID_OFFSET, CONFIG_VENDOR_ID_OFFSET, STATUS_CAPABILITIES_LIST,
     },
     function::PciConfigByte,
     runtime::{PciCommandRevision, PciCommandState},
@@ -149,19 +149,31 @@ impl FunctionState {
     }
 
     pub(crate) fn command_write_changes(&self, offset: usize, size: usize, value: u64) -> bool {
-        let mut candidate = self.config;
-        merge_bytes(
-            &mut candidate,
-            offset,
-            size,
-            value,
-            &self.power_on.write_mask,
-        );
-        candidate[CONFIG_COMMAND_OFFSET] & COMMAND_MEMORY_SPACE_ENABLE
+        let command_end = CONFIG_COMMAND_OFFSET + CONFIG_COMMAND_SIZE;
+        let write_end = offset + size;
+        let mut candidate = [
+            self.config[CONFIG_COMMAND_OFFSET],
+            self.config[CONFIG_COMMAND_OFFSET + 1],
+        ];
+        let value_bytes = value.to_le_bytes();
+        for (config_offset, &mask) in self
+            .power_on
+            .write_mask
+            .iter()
+            .enumerate()
+            .take(write_end.min(command_end))
+            .skip(offset.max(CONFIG_COMMAND_OFFSET))
+        {
+            let value_lane = config_offset - offset;
+            let command_lane = config_offset - CONFIG_COMMAND_OFFSET;
+            candidate[command_lane] =
+                (candidate[command_lane] & !mask) | (value_bytes[value_lane] & mask);
+        }
+        candidate[0] & COMMAND_MEMORY_SPACE_ENABLE
             != self.config[CONFIG_COMMAND_OFFSET] & COMMAND_MEMORY_SPACE_ENABLE
-            || candidate[CONFIG_COMMAND_OFFSET] & COMMAND_BUS_MASTER_ENABLE
+            || candidate[0] & COMMAND_BUS_MASTER_ENABLE
                 != self.config[CONFIG_COMMAND_OFFSET] & COMMAND_BUS_MASTER_ENABLE
-            || candidate[CONFIG_COMMAND_OFFSET + 1] & COMMAND_INTERRUPT_DISABLE
+            || candidate[1] & COMMAND_INTERRUPT_DISABLE
                 != self.config[CONFIG_COMMAND_OFFSET + 1] & COMMAND_INTERRUPT_DISABLE
     }
 

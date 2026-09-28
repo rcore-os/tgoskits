@@ -303,7 +303,9 @@ QEMU configs continue to own platform arguments, timeout, `to_bin`, UEFI, device
 
 ## Coverage
 
-axtest supports LLVM source-based coverage via [xcover](https://crates.io/crates/xcover). The guest serializes `.profraw` data into memory, and the host extracts it through QEMU's monitor interface.
+axtest supports LLVM source-based coverage. The guest serializes the pinned
+toolchain's raw profile format into memory, and the host extracts it through
+QEMU's monitor interface.
 
 ### Running with Coverage
 
@@ -321,11 +323,17 @@ cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --cov
 
 The build tool will automatically:
 1. Add the `axtest/coverage` Cargo feature
-2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Zno-profiler-runtime` into rustflags
+2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Cllvm-args=-instrprof-atomic-counter-update-all`, `-Zno-profiler-runtime` into rustflags
 3. Set up a QEMU monitor socket for memory extraction
 4. Generate `<workspace>/coverage/<package>-<test>-<target>.profdata` and `<workspace>/coverage/<package>-<test>-<target>-html/index.html` when `--out-fmt html` is set
 
 ### How It Works
+
+`dump_coverage()` uses `coverage_profraw::capture()` to read each LLVM counter
+atomically into a separate buffer before encoding the raw profile. Counters
+may reflect different instants; this is not a consistent snapshot of all
+counters. Nonempty LLVM bitmap sections cannot be captured live and cause
+`AXTEST_COVERAGE status=error`, failing the coverage run.
 
 ```
 Guest                              Host (axbuild)
@@ -334,9 +342,8 @@ tests pass
   │
   ▼
 axtest::dump_coverage()
-  ├─ xcover::write_profraw(Vec)    capture guard scans stdout
-  │   serializes LLVM profraw        │
-  │   into guest memory              │
+  ├─ serialize raw profile v11     capture guard scans stdout
+  │   into one guest buffer           │
   └─ prints marker:                 parses marker, extracts addr/size
      AXTEST_COVERAGE status=ready      │
      addr=0x... size=...               ▼

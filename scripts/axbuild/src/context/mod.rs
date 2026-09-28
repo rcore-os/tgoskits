@@ -282,7 +282,8 @@ impl AppContext {
             cargo
                 .test
                 .as_deref()
-                .context("axtest coverage requires a Cargo test target")?,
+                .or(cargo.bin.as_deref())
+                .unwrap_or(&cargo.package),
             &cargo.target,
         )?;
         crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
@@ -305,10 +306,14 @@ impl AppContext {
             cargo.package, cargo.target
         ));
         let result = self.run_qemu_captured(cargo, qemu, capture_backtrace).await;
-        capture.finish()?;
-        let result = crate::support::qemu_success::verify_qemu_success_contract(
+        let coverage_result = capture.finish();
+        let qemu_result = crate::support::qemu_success::verify_qemu_success_contract(
             result,
             Some(&success_output),
+        );
+        let result = crate::support::qemu_success::combine_qemu_and_coverage_results(
+            qemu_result,
+            coverage_result,
         );
         if result.is_ok() {
             stage.done();

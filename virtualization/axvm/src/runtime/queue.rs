@@ -32,6 +32,9 @@ use crate::irq::model::PendingVcpuInterrupt;
 pub(crate) enum QueuedVcpuInterrupt {
     /// A virtual interrupt whose trigger semantics are architecture-independent.
     Virtual(PendingVcpuInterrupt),
+    /// A vector delivered by the emulated legacy PIC through ExtINT.
+    #[cfg(target_arch = "x86_64")]
+    LegacyPic { vector: u8 },
     /// A host physical interrupt that retains its source identity until the
     /// architecture-specific vCPU injection path consumes it.
     #[cfg(target_arch = "loongarch64")]
@@ -45,6 +48,8 @@ impl QueuedVcpuInterrupt {
     pub(crate) fn into_virtual(self) -> Result<PendingVcpuInterrupt, Self> {
         match self {
             Self::Virtual(interrupt) => Ok(interrupt),
+            #[cfg(target_arch = "x86_64")]
+            arch @ Self::LegacyPic { .. } => Err(arch),
             #[cfg(target_arch = "loongarch64")]
             arch @ (Self::Physical { .. } | Self::External { .. }) => Err(arch),
         }
@@ -53,6 +58,8 @@ impl QueuedVcpuInterrupt {
     fn has_same_pending_owner(self, other: Self) -> bool {
         match (self, other) {
             (Self::Virtual(left), Self::Virtual(right)) => left.id == right.id,
+            #[cfg(target_arch = "x86_64")]
+            (Self::LegacyPic { vector: left }, Self::LegacyPic { vector: right }) => left == right,
             #[cfg(target_arch = "loongarch64")]
             (
                 Self::Physical {
@@ -65,7 +72,7 @@ impl QueuedVcpuInterrupt {
             ) => left == right,
             #[cfg(target_arch = "loongarch64")]
             (Self::External { vector: left }, Self::External { vector: right }) => left == right,
-            #[cfg(target_arch = "loongarch64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
             _ => false,
         }
     }
@@ -249,6 +256,20 @@ mod tests {
         state.push(edge(10));
 
         assert_eq!(state.pending, vec![edge(10)]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn legacy_pic_and_fixed_apic_same_vector_keep_distinct_owners() {
+        let mut state = VcpuInterruptState::default();
+        let fixed = edge(0x20);
+        let pic = QueuedVcpuInterrupt::LegacyPic { vector: 0x20 };
+
+        state.push(fixed);
+        state.push(pic);
+        state.push(pic);
+
+        assert_eq!(state.pending, vec![fixed, pic]);
     }
 
     #[test]
