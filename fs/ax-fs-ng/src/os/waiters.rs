@@ -110,9 +110,6 @@ impl TaskWaiters {
     }
 
     fn wake_all(&self, notify: impl Fn(&dyn BlockNotification)) {
-        if self.count.load(Ordering::Acquire) == 0 {
-            return;
-        }
         let notifications = {
             let mut notifications = self.notifications.lock();
             let pending = core::mem::take(&mut *notifications);
@@ -155,9 +152,10 @@ impl TaskWaiters {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::*;
     use crate::BlockError;
-    use core::cell::Cell;
 
     #[test]
     fn registration_allocation_runs_unlocked_and_failure_adds_no_waiter() {
