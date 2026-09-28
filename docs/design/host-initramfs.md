@@ -8,7 +8,8 @@
 属于 Linux 客户机，不进入宿主 `InitramfsRange`。
 
 行为对照本地 Linux v7.1 的 `init/initramfs.c` 与 `init/main.c`：内置归档先于
-外部归档解包，后者同名条目覆盖前者。支持 `newc`、`crc`、零填充、串接归档
+外部归档解包，后者同名条目按 Linux 规则覆盖前者；非空目录遇到异类条目时
+保留目录并继续解包。支持 `newc`、`crc`、零填充、串接归档
 和 gzip；格式错误、中途截断、路径越界与不支持的压缩格式均终止启动，
 不改从磁盘根继续。宿主镜像不是磁盘镜像，也不要求包含分区表。
 
@@ -45,6 +46,9 @@ UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`。`--` 后的词只传给 PID 1；
 未知的不带点号的键值参数成为环境变量，其余未知词成为参数。ArceOS 和
 Axvisor 没有 PID 1：显式 `root=` 选择磁盘，否则存在 initramfs 就选择内存根。
+axbuild 将 `disk0`、匿名及直连盘视为宿主根盘接线；明确命名为其他 ID 的
+guest/data drive 不要求额外准备宿主根盘。Axvisor 显式 `root=` 但未接入
+可识别的宿主根盘会在配置阶段报错。
 
 ## 4. 验证入口与边界
 

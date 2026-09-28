@@ -1,4 +1,4 @@
-cmdline = "root=/dev/sda rdinit=/init HOST_ENV=ready -- from-dashes"
+cmdline = "root=/dev/sda rdinit=/init nosmp nr_cpus=1 keep_bootcon earlyprintk=serial initcall_debug oops=panic HOST_ENV=ready -- from-dashes"
 args = [
   "-machine", "virt",
   "-cpu", "cortex-a53",

@@ -63,27 +63,41 @@ pub(crate) enum RootfsPatchMode {
     EnsureDiskBootNet,
 }
 
-/// A host initramfs replaces the managed disk only when the config has no
-/// explicit block device. An omitted initramfs retains the historical disk.
-pub(crate) fn diskless_host_initramfs(qemu: &QemuConfig) -> bool {
-    qemu.boot.initramfs.is_some()
-        && !has_block_storage_wiring(&qemu.args)
-        && !qemu.args.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom" | "-blockdev"
-            ) || [
-                "-drive=",
-                "-blockdev=",
-                "-hda=",
-                "-hdb=",
-                "-hdc=",
-                "-hdd=",
-                "-sd=",
-                "-cdrom=",
-            ]
-            .iter()
-            .any(|option| arg.starts_with(option))
+/// A host initramfs avoids the managed rootfs when no host root drive is wired.
+/// Named drives other than `disk0` may belong to guests or data volumes.
+pub(crate) fn host_initramfs_without_rootfs_drive(qemu: &QemuConfig) -> bool {
+    qemu.boot.initramfs.is_some() && !has_host_rootfs_wiring(&qemu.args)
+}
+
+pub(crate) fn has_host_rootfs_wiring(arguments: &[String]) -> bool {
+    let disk_id = DEFAULT_ROOTFS_WIRING.disk_id;
+    let host_drive = |value: &str| {
+        let drive = DriveArg::parse(value);
+        drive.id() == Some(disk_id) || (drive.id().is_none() && drive.is_file_backed_block_drive())
+    };
+    drive_argument_indices(arguments).any(|index| host_drive(&arguments[index]))
+        || device_argument_indices(arguments)
+            .any(|index| DeviceArg::parse(&arguments[index]).drive() == Some(disk_id))
+        || arguments.iter().any(|argument| {
+            argument.strip_prefix("-drive=").is_some_and(host_drive)
+                || argument
+                    .strip_prefix("-device=")
+                    .is_some_and(|value| DeviceArg::parse(value).drive() == Some(disk_id))
+                || matches!(
+                    argument.as_str(),
+                    "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom" | "-blockdev"
+                )
+                || [
+                    "-hda=",
+                    "-hdb=",
+                    "-hdc=",
+                    "-hdd=",
+                    "-sd=",
+                    "-cdrom=",
+                    "-blockdev=",
+                ]
+                .iter()
+                .any(|option| argument.starts_with(option))
         })
 }
 

@@ -76,12 +76,18 @@ fn known_kernel_option(token: &str) -> bool {
             | "rw"
             | "console"
             | "earlycon"
+            | "earlyprintk"
+            | "keep_bootcon"
             | "loglevel"
             | "quiet"
             | "debug"
+            | "initcall_debug"
+            | "oops"
             | "panic"
             | "mem"
             | "maxcpus"
+            | "nr_cpus"
+            | "nosmp"
             | "nokaslr"
     )
 }
@@ -107,12 +113,28 @@ mod tests {
 
     #[test]
     fn init_parameters_follow_linux_split() {
-        let options = init_options("auto root=/dev/sda init=/bin/init foo=one foo=two -- hi X=1");
+        let options = init_options(
+            "auto root=/dev/sda init=/bin/init nosmp nr_cpus=1 keep_bootcon earlyprintk=serial \
+             initcall_debug oops=panic foo=one foo=two -- hi X=1 nosmp",
+        );
         assert_eq!(options.init.as_deref(), Some("/bin/init"));
-        assert_eq!(options.argv, ["hi", "X=1"]);
+        assert_eq!(options.argv, ["hi", "X=1", "nosmp"]);
         assert!(options.env.contains(&"foo=two".to_owned()));
         assert!(!options.env.contains(&"foo=one".to_owned()));
         assert!(!options.env.iter().any(|entry| entry.starts_with("root=")));
+        assert!(
+            !options
+                .env
+                .iter()
+                .any(|entry| entry.starts_with("nr_cpus="))
+        );
+        assert!(
+            !options
+                .env
+                .iter()
+                .any(|entry| entry.starts_with("earlyprintk="))
+        );
+        assert!(!options.env.iter().any(|entry| entry.starts_with("oops=")));
     }
 
     #[test]

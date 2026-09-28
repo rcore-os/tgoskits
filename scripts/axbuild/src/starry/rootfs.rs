@@ -111,7 +111,7 @@ pub(super) async fn qemu(
 }
 
 fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool) -> bool {
-    explicit_config && crate::rootfs::qemu::diskless_host_initramfs(qemu)
+    explicit_config && crate::rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
 }
 
 pub(super) async fn load_patched_qemu_config(

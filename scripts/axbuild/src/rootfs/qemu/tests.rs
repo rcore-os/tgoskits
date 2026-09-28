@@ -1,14 +1,27 @@
 use super::*;
 
 #[test]
-fn host_initramfs_skips_only_diskless_qemu() {
+fn host_initramfs_ignores_guest_drives_but_keeps_rootfs_wiring() {
     let mut qemu = QemuConfig::default();
-    assert!(!diskless_host_initramfs(&qemu));
+    assert!(!host_initramfs_without_rootfs_drive(&qemu));
     qemu.boot.initramfs = Some("host.cpio".into());
-    assert!(diskless_host_initramfs(&qemu));
+    assert!(host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec![
+        "-drive".into(),
+        "id=guestdisk,if=none,file=guest.img".into(),
+        "-device".into(),
+        "virtio-blk-pci,drive=guestdisk".into(),
+    ];
+    assert!(host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec!["-drive".into(), "id=disk0,if=none,file=root.img".into()];
+    assert!(!host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec!["-device".into(), "nvme,drive=disk0".into()];
+    assert!(!host_initramfs_without_rootfs_drive(&qemu));
+    qemu.args = vec!["-drive=id=disk0,if=none,file=root.img".into()];
+    assert!(!host_initramfs_without_rootfs_drive(&qemu));
     for argument in ["-drive=if=none,file=root.img", "-hda", "-sd", "-blockdev"] {
         qemu.args = vec![argument.into(), "file=root.img".into()];
-        assert!(!diskless_host_initramfs(&qemu), "{argument}");
+        assert!(!host_initramfs_without_rootfs_drive(&qemu), "{argument}");
     }
 }
 

@@ -295,7 +295,11 @@ fn apply_entry(
             existing
         } else {
             if existing.is_dir() {
-                context.remove_dir(path.as_str(), &credentials)?;
+                match context.remove_dir(path.as_str(), &credentials) {
+                    Ok(()) => {}
+                    Err(VfsError::DirectoryNotEmpty) => return Ok(()),
+                    Err(error) => return Err(error.into()),
+                }
             } else {
                 context.remove_file(path.as_str(), &credentials)?;
             }
@@ -324,7 +328,7 @@ fn apply_entry(
         links.insert(key, path.clone());
     }
     if linked_from.is_some() && ty == NodeType::RegularFile && !entry.data.is_empty() {
-        write_file(context, &path, entry.data, false)?;
+        write_file(context, &path, entry.data, true)?;
     }
     location.update_metadata(MetadataUpdate {
         mode: Some(mode),
@@ -555,9 +559,12 @@ mod tests {
             );
             add_entry(&mut built_in, "bin/init", 0o100755, 3, 2, b"hello", false);
             add_entry(&mut built_in, "bin/init-copy", 0o100755, 3, 2, &[], false);
+            add_entry(&mut built_in, "short-a", 0o100644, 8, 2, b"ABCDEFGH", false);
+            add_entry(&mut built_in, "short-b", 0o100644, 8, 2, b"WXYZ", false);
             finish(&mut built_in, false);
 
             let mut external = Vec::new();
+            add_entry(&mut external, "bin", 0o100644, 9, 1, b"blocked", true);
             add_entry(&mut external, "bin/init", 0o100755, 5, 1, b"updated", true);
             add_entry(&mut external, "init", 0o120777, 4, 1, b"bin/init", true);
             finish(&mut external, true);
@@ -570,7 +577,7 @@ mod tests {
                 report,
                 UnpackReport {
                     archives: 3,
-                    entries: 11
+                    entries: 15
                 }
             );
             let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
@@ -580,6 +587,16 @@ mod tests {
             assert_eq!(init.nlink, 2);
             assert_eq!(init.mode.bits() & 0o777, 0o755);
             assert_eq!((init.uid, init.gid), (12, 34));
+            assert!(context.resolve("/bin").unwrap().is_dir());
+            let short = OpenOptions::new()
+                .read(true)
+                .open(&context, "/short-a")
+                .unwrap()
+                .into_file()
+                .unwrap();
+            let mut bytes = [0; 8];
+            assert_eq!(short.read_at(&mut bytes[..], 0).unwrap(), 4);
+            assert_eq!(&bytes[..4], b"WXYZ");
             assert_eq!(context.metadata("/bin/through").unwrap().size, 6);
             assert_eq!(
                 context

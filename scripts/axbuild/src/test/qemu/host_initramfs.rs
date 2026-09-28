@@ -113,8 +113,8 @@ fn build_test_init(entry_source: &Path, init_source: &Path, output: &Path) -> an
     Ok(())
 }
 
-pub(crate) fn diskless_host_initramfs(qemu: &QemuConfig) -> bool {
-    crate::rootfs::qemu::diskless_host_initramfs(qemu)
+pub(crate) fn host_initramfs_without_rootfs_drive(qemu: &QemuConfig) -> bool {
+    crate::rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
 }
 
 fn copy_fixture(source: &Path, destination: &Path) -> anyhow::Result<()> {

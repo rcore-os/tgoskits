@@ -398,3 +398,6 @@ qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask
 axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs`。
 axbuild 读取 case 下的 `host-initramfs.toml` 生成归档，内存根用例不接磁盘，
 磁盘回退用例保留主 rootfs drive。ArceOS 的内建和外部镜像测试命令见设计文档。
+Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是否准备宿主根盘时
+只把 `disk0`、匿名或直连盘视为宿主接线。检查 `root=` 时同时查看 ostool
+`cmdline` 和原始 QEMU `-append`，显式磁盘根没有可识别的宿主根盘应在配置阶段失败。

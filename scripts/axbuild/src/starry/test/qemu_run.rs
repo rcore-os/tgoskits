@@ -255,7 +255,7 @@ impl Starry {
                 &qemu,
                 default_rootfs_path,
             )?;
-            if !qemu_test::diskless_host_initramfs(&qemu) {
+            if !qemu_test::host_initramfs_without_rootfs_drive(&qemu) {
                 rootfs_paths.insert(rootfs_path.clone());
                 rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
                     self.app.workspace_root(),
@@ -533,7 +533,7 @@ impl Starry {
                 ("phase", "patch-rootfs".to_string()),
             ],
         );
-        if !qemu_test::diskless_host_initramfs(&qemu) {
+        if !qemu_test::host_initramfs_without_rootfs_drive(&qemu) {
             rootfs::patch_rootfs(
                 &mut qemu,
                 &prepared_assets.rootfs_path,

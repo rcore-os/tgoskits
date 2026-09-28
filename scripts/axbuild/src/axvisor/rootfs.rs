@@ -123,8 +123,38 @@ pub(super) async fn load_patched_qemu_config(
     Ok(qemu)
 }
 
-fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool, explicit_rootfs: bool) -> bool {
-    explicit_config && !explicit_rootfs && rootfs::qemu::diskless_host_initramfs(qemu)
+pub(super) fn diskless_explicit_qemu(
+    qemu: &QemuConfig,
+    explicit_config: bool,
+    explicit_rootfs: bool,
+) -> bool {
+    explicit_config
+        && !explicit_rootfs
+        && rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
+        && !has_explicit_root(qemu)
+}
+
+fn has_explicit_root(qemu: &QemuConfig) -> bool {
+    let has_root = |cmdline: &str| {
+        cmdline
+            .split_ascii_whitespace()
+            .take_while(|token| *token != "--")
+            .any(|token| {
+                token
+                    .strip_prefix("root=")
+                    .is_some_and(|root| !root.is_empty())
+            })
+    };
+    qemu.boot.cmdline.as_deref().is_some_and(has_root)
+        || qemu
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "-append" && has_root(&pair[1]))
+        || qemu
+            .args
+            .iter()
+            .filter_map(|argument| argument.strip_prefix("-append="))
+            .any(has_root)
 }
 
 /// Ensures all image-managed assets required by an Axvisor QEMU run are available.
@@ -151,7 +181,7 @@ struct GuestImageReference {
     required_path: PathBuf,
 }
 
-async fn ensure_guest_image_bundles(
+pub(super) async fn ensure_guest_image_bundles(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,
     target_dir: &Path,
@@ -336,6 +366,9 @@ pub(crate) fn patch_qemu_rootfs_path(
     rootfs_path: &Path,
     write_policy: rootfs::qemu::RootfsWritePolicy,
 ) -> anyhow::Result<()> {
+    if has_explicit_root(config) && !rootfs::qemu::has_host_rootfs_wiring(&config.args) {
+        bail!("Axvisor root= requires a QEMU disk0 drive or device");
+    }
     rootfs::qemu::patch_rootfs(
         config,
         rootfs_path,
@@ -473,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn qemu_assets_prepare_guest_bundle_referenced_by_vm_config() {
         let root = tempdir().unwrap();
-        let archive = make_tar_gz(&[("linux/linux-qemu", b"kernel")]);
+        let archive = make_tar_gz(&[("linux/linux-qemu", b"kernel"), ("linux/initrd", b"initrd")]);
         let archive_url = test_support::register_bytes("qemu-aarch64.tar.gz", archive.clone());
         let registry = crate::image::registry::ImageRegistry {
             images: vec![ImageEntry {
@@ -500,34 +533,36 @@ mod tests {
         )
         .unwrap();
 
-        let default_rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
-        fs::create_dir_all(default_rootfs.parent().unwrap()).unwrap();
-        fs::write(&default_rootfs, b"rootfs").unwrap();
-
         let vmconfig = root.path().join("vm.toml");
         fs::write(
             &vmconfig,
             r#"
 [kernel]
 kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
+ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
 "#,
         )
         .unwrap();
 
         let target_dir = target_dir_for_test(root.path());
-        ensure_qemu_assets_ready(
-            &request(root.path(), vec![vmconfig]),
-            root.path(),
-            &target_dir,
-            None,
-        )
-        .await
-        .unwrap();
+        let request = request(root.path(), vec![vmconfig]);
+        ensure_guest_image_bundles(&request, root.path(), &target_dir)
+            .await
+            .unwrap();
+        let guest_kernel = target_dir.join("axbuild/images/qemu-aarch64/linux/linux-qemu");
+        let guest_initrd = target_dir.join("axbuild/images/qemu-aarch64/linux/initrd");
+        assert_eq!(fs::read(&guest_kernel).unwrap(), b"kernel");
+        assert_eq!(fs::read(&guest_initrd).unwrap(), b"initrd");
 
-        assert_eq!(
-            fs::read(target_dir.join("axbuild/images/qemu-aarch64/linux/linux-qemu"),).unwrap(),
-            b"kernel"
-        );
+        let default_rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
+        fs::create_dir_all(default_rootfs.parent().unwrap()).unwrap();
+        fs::write(&default_rootfs, b"rootfs").unwrap();
+        ensure_qemu_assets_ready(&request, root.path(), &target_dir, None)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(guest_kernel).unwrap(), b"kernel");
+        assert_eq!(fs::read(guest_initrd).unwrap(), b"initrd");
     }
 
     #[test]
@@ -587,10 +622,30 @@ kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
         assert!(diskless_explicit_qemu(&qemu, true, false));
         assert!(!diskless_explicit_qemu(&qemu, true, true));
         assert!(!diskless_explicit_qemu(&qemu, false, false));
-        let with_drive = QemuConfig {
-            args: vec!["-drive".into(), "file=rootfs.img".into()],
-            ..Default::default()
-        };
-        assert!(!diskless_explicit_qemu(&with_drive, true, false));
+        let mut with_guest_drive = qemu.clone();
+        with_guest_drive.args = vec![
+            "-drive".into(),
+            "id=guestdisk,if=none,file=guest.img".into(),
+        ];
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
+        with_guest_drive.boot.cmdline = Some("root=/dev/sda".into());
+        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(
+            patch_qemu_rootfs_path(
+                &mut with_guest_drive,
+                Path::new("rootfs.img"),
+                rootfs::qemu::RootfsWritePolicy::Discard,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("requires a QEMU disk0")
+        );
+        with_guest_drive.boot.cmdline = Some("-- root=/dev/sda".into());
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
+        with_guest_drive.boot.cmdline = None;
+        with_guest_drive
+            .args
+            .extend(["-append".into(), "root=/dev/sda".into()]);
+        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
     }
 }

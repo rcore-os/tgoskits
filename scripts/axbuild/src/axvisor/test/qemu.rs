@@ -146,13 +146,19 @@ impl Axvisor {
         // embedded VM configuration, so a later build would otherwise replace
         // the executable belonging to an earlier group.
         for (index, build_group) in build_groups.iter_mut().enumerate() {
-            let diskless_host_only = build_group.request.vmconfigs.is_empty()
-                && build_group
-                    .group
-                    .cases
-                    .iter()
-                    .all(|case| test_qemu::diskless_host_initramfs(&case.qemu));
-            if !diskless_host_only {
+            let diskless_host_only = build_group
+                .group
+                .cases
+                .iter()
+                .all(|case| rootfs::diskless_explicit_qemu(&case.qemu, true, false));
+            if diskless_host_only {
+                rootfs::ensure_guest_image_bundles(
+                    &build_group.request,
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
+                )
+                .await?;
+            } else {
                 rootfs::ensure_qemu_assets_ready(
                     &build_group.request,
                     self.app.workspace_root(),
@@ -348,7 +354,7 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
-        if !test_qemu::diskless_host_initramfs(&qemu) {
+        if !rootfs::diskless_explicit_qemu(&qemu, true, false) {
             rootfs::patch_qemu_rootfs_path(
                 &mut qemu,
                 &prepared_assets.rootfs_path,
