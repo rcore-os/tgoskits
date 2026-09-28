@@ -563,7 +563,7 @@ pub fn initialize_post_boot() {
         .flatten();
     // A failed PVTM clock SET can leave a big cluster at 1.608 GHz even when
     // its readback is unknown. Confirm both big rings at 1.2 GHz before
-    // lowering A55 below their 1.2 GHz DSU requirement.
+    // restoring A55 below the 1.608 GHz ring's 1.2 GHz DSU requirement.
     let mut big_boot_confirmed = true;
     for id in A76_CLK_IDS {
         if scmi::clock_rate(phandle, id) != Some(A76_MAX_HZ)
@@ -574,17 +574,6 @@ pub fn initialize_post_boot() {
     }
     if !big_boot_confirmed {
         warn!("cpufreq: big-cluster PVTM clock recovery failed; leaving A55 clock unchanged");
-        disable_all_domains();
-        return;
-    }
-    if !set_and_verify(phandle, A55_CLK_ID, A55_MAX_HZ, A55_PVTM_HZ) {
-        disable_all_domains();
-        return;
-    }
-    if DOMAIN_READY
-        .iter()
-        .any(|ready| !ready.load(Ordering::Acquire))
-    {
         disable_all_domains();
         return;
     }
@@ -612,6 +601,17 @@ pub fn initialize_post_boot() {
             "cpufreq: {} OPP selection unavailable; limiting to 816 MHz at 750 mV",
             cluster.name()
         );
+    }
+    if !set_and_verify(phandle, A55_CLK_ID, A55_MAX_HZ, A55_PVTM_HZ) {
+        disable_all_domains();
+        return;
+    }
+    if DOMAIN_READY
+        .iter()
+        .any(|ready| !ready.load(Ordering::Acquire))
+    {
+        disable_all_domains();
+        return;
     }
     if selected[Cluster::A55.index()].is_none() {
         // Set both unselected big rings to their original low rate before
