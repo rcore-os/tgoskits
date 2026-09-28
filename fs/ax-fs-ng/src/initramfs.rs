@@ -385,6 +385,9 @@ fn create_entry(
     let location = match ty {
         NodeType::Directory => context.create_dir(path, mode, entry.uid, entry.gid, credentials)?,
         NodeType::Symlink => {
+            if entry.data.contains(&0) {
+                return Err(InitramfsError::Corrupt("NUL in symlink target"));
+            }
             let target = str::from_utf8(entry.data).map_err(|_| InitramfsError::InvalidText)?;
             context.symlink(target, path, entry.uid, entry.gid, credentials)?
         }
@@ -643,6 +646,22 @@ mod tests {
             assert!(matches!(
                 unpack(&bad_path),
                 Err(InitramfsError::InvalidPath)
+            ));
+
+            let mut bad_symlink = Vec::new();
+            add_entry(
+                &mut bad_symlink,
+                "link",
+                0o120777,
+                1,
+                1,
+                b"bin\0/escape",
+                false,
+            );
+            finish(&mut bad_symlink, false);
+            assert!(matches!(
+                unpack(&bad_symlink),
+                Err(InitramfsError::Corrupt("NUL in symlink target"))
             ));
 
             let mut damaged_crc = archive;
