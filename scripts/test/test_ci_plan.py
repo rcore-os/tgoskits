@@ -738,11 +738,43 @@ command = "true"
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
-    def test_dualguest_robot_board_is_not_scheduled(self) -> None:
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+    def test_dualguest_robot_board_runs_both_guest_variants(self) -> None:
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("os/axvisor/src/lib.rs",),
+                targets=("axvisor:aarch64",),
+            ),
         )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", rows)
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
+        )
+        dualguest = rows["test-orangepi-5-plus-dualguest-robot"]
+
+        self.assertEqual(
+            dualguest["command"],
+            "cargo xtask starry build --config "
+            "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr/"
+            "starry-guest-build.toml --smp 1\n"
+            "cargo xtask axvisor test board "
+            "--board orangepi-5-plus-dualguest-robot",
+        )
+
+        # Both existing robot variants declare that board route, so the one
+        # command above runs the Linux+Zephyr and the StarryOS+Zephyr cases.
+        root = MODULE_PATH.parents[2]
+        for variant in ("dual-linux-zephyr", "dual-starry-zephyr"):
+            path = (
+                root
+                / "test-suit/axvisor/normal/board-orangepi-5-plus"
+                / variant
+                / "board-orangepi-5-plus-dualguest-robot.toml"
+            )
+            with self.subTest(variant=variant):
+                self.assertTrue(path.is_file())
+
         nightly_rows = self.assert_unique_ids(
             ci_plan.build_axvisor_nightly_plan(
                 ci_plan.replace(self.upstream, event_name="schedule")
