@@ -86,15 +86,18 @@ pub struct Socket {
 }
 
 impl Socket {
-    pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
+    /// Creates a socket file-like. `uid`/`gid` are the creating task's
+    /// fsuid/fsgid, mirroring how Linux `sock_alloc` initializes the sockfs
+    /// inode owner.
+    pub fn new(inner: SocketInner, ip_domain: u32, uid: u32, gid: u32) -> Self {
         Self {
             inner,
             ip_domain,
             async_mode: AtomicBool::new(false),
             owner: AtomicI32::new(0),
             inode_mode: AtomicU32::new(S_IFSOCK | 0o777),
-            inode_uid: AtomicU32::new(0),
-            inode_gid: AtomicU32::new(0),
+            inode_uid: AtomicU32::new(uid),
+            inode_gid: AtomicU32::new(gid),
         }
     }
 

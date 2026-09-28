@@ -407,7 +407,8 @@ static void check_namespaces(void)
 close(mnt_fd);
 
     /* A dirfd-relative open against /proc/self/ns must build the same
-     * namespace handle as the absolute spelling. */
+     * namespace handle as the absolute spelling, but a magic link must never
+     * be followed under O_NOFOLLOW. */
     int ns_dir = open("/proc/self/ns", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (ns_dir >= 0) {
         int rel_mnt = openat(ns_dir, "mnt", O_RDONLY);
@@ -421,6 +422,26 @@ close(mnt_fd);
             close(rel_mnt);
         } else {
             fail("openat(ns_dirfd, \"mnt\") succeeds");
+        }
+
+        errno = 0;
+        int followed = openat(ns_dir, "mnt", O_RDONLY | O_NOFOLLOW);
+        if (followed >= 0) {
+            close(followed);
+            errno = 0;
+            fail("O_NOFOLLOW does not follow a namespace magic link");
+        } else if (errno == ELOOP) {
+            pass("O_NOFOLLOW does not follow a namespace magic link");
+        } else {
+            fail("O_NOFOLLOW does not follow a namespace magic link");
+        }
+
+        int link_handle = openat(ns_dir, "mnt", O_PATH | O_NOFOLLOW | O_CLOEXEC);
+        if (link_handle >= 0) {
+            pass("O_PATH|O_NOFOLLOW opens the namespace link itself");
+            close(link_handle);
+        } else {
+            fail("O_PATH|O_NOFOLLOW opens the namespace link itself");
         }
         close(ns_dir);
     } else {
@@ -765,6 +786,20 @@ static int run_exe_acl(void)
         fail("own /proc/self/exe stays openable");
     }
 
+    /* O_CREAT|O_EXCL implies no-follow: the existing magic link must report
+     * EEXIST instead of opening the backing executable. */
+    errno = 0;
+    int excl = open("/proc/self/exe", O_CREAT | O_EXCL | O_RDONLY | O_CLOEXEC, 0600);
+    if (excl >= 0) {
+        close(excl);
+        errno = 0;
+        fail("O_CREAT|O_EXCL on /proc/self/exe reports EEXIST");
+    } else if (errno == EEXIST) {
+        pass("O_CREAT|O_EXCL on /proc/self/exe reports EEXIST");
+    } else {
+        fail("O_CREAT|O_EXCL on /proc/self/exe reports EEXIST");
+    }
+
     pid_t child = fork();
     if (child < 0) {
         fail("fork exe-acl child");
@@ -897,17 +932,30 @@ static int run_exe_acl(void)
             close(fd);
             _exit(5);
         }
+        if (errno != ENOENT) {
+            _exit(6);
+        }
+        /* The namespace magic links must also be unreachable. */
+        errno = 0;
+        int ns = open("/proc/self/ns/mnt", O_RDONLY);
+        if (ns >= 0) {
+            close(ns);
+            _exit(7);
+        }
         _exit(errno == ENOENT ? 0 : 6);
     }
     if (waitpid(hidden, &status, 0) == hidden && WIFEXITED(status)) {
         int code = WEXITSTATUS(status);
         if (code == 0) {
-            pass("hiding /proc makes /proc/self/exe fail with ENOENT");
+            pass("hiding /proc makes /proc/self/exe and ns links fail with ENOENT");
         } else if (code == 5) {
             printf("  FAIL: /proc/self/exe opened while /proc was hidden\n");
             failures++;
+        } else if (code == 7) {
+            printf("  FAIL: /proc/self/ns/mnt opened while /proc was hidden\n");
+            failures++;
         } else {
-            fail("hiding /proc makes /proc/self/exe fail with ENOENT");
+            fail("hiding /proc makes /proc/self/exe and ns links fail with ENOENT");
         }
     } else {
         fail("exe-acl hidden-proc child terminates normally");
