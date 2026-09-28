@@ -84,14 +84,20 @@ pub(crate) fn has_host_rootfs_wiring(arguments: &[String]) -> bool {
                 || argument
                     .strip_prefix("-device=")
                     .is_some_and(|value| DeviceArg::parse(value).drive() == Some(disk_id))
-                || matches!(
-                    argument.as_str(),
-                    "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom"
-                )
-                || ["-hda=", "-hdb=", "-hdc=", "-hdd=", "-sd=", "-cdrom="]
-                    .iter()
-                    .any(|option| argument.starts_with(option))
         })
+        || has_direct_drive_alias(arguments)
+}
+
+fn has_direct_drive_alias(arguments: &[String]) -> bool {
+    const OPTIONS: &[&str] = &["-hda", "-hdb", "-hdc", "-hdd", "-sd", "-cdrom"];
+    arguments.iter().any(|argument| {
+        OPTIONS.iter().any(|option| {
+            argument == option
+                || argument
+                    .strip_prefix(option)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+    })
 }
 
 fn has_host_blockdev_wiring(arguments: &[String]) -> bool {
@@ -149,7 +155,10 @@ pub(crate) fn patch_rootfs(
     if has_host_blockdev_wiring(&qemu.args) {
         bail!("QEMU host rootfs -blockdev cannot be patched; use -drive id=disk0");
     }
-    let mut arguments = qemu.args.clone();
+    if has_direct_drive_alias(&qemu.args) {
+        bail!("QEMU direct drive alias cannot be patched; use -drive id=disk0");
+    }
+    let mut arguments = normalize_inline_options(&qemu.args);
     if options.write_policy == RootfsWritePolicy::Persist
         && arguments.iter().any(|argument| argument == "-snapshot")
     {
@@ -186,12 +195,17 @@ pub(crate) fn patch_rootfs(
 /// Returns all file-backed block image paths referenced by `-drive` arguments.
 pub(crate) fn drive_file_paths(qemu: &QemuConfig) -> Vec<PathBuf> {
     qemu.args
-        .windows(2)
-        .filter_map(|arguments| {
-            (arguments[0] == "-drive")
-                .then(|| DriveArg::parse(&arguments[1]))
-                .filter(DriveArg::is_file_backed_block_drive)
-                .and_then(|drive| drive.file().map(PathBuf::from))
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            let value = argument.strip_prefix("-drive=").or_else(|| {
+                (index > 0 && qemu.args[index - 1] == "-drive").then_some(argument.as_str())
+            })?;
+            let drive = DriveArg::parse(value);
+            drive
+                .is_file_backed_block_drive()
+                .then(|| drive.file().map(PathBuf::from))
+                .flatten()
         })
         .collect()
 }
@@ -204,24 +218,44 @@ pub(crate) fn rewrite_drive_file_paths<F>(
 where
     F: FnMut(&Path) -> anyhow::Result<Option<PathBuf>>,
 {
-    let mut index = 0;
-    while index + 1 < qemu.args.len() {
-        if qemu.args[index] != "-drive" {
-            index += 1;
+    for index in 0..qemu.args.len() {
+        let inline = qemu.args[index].starts_with("-drive=");
+        let value = if inline {
+            qemu.args[index].strip_prefix("-drive=").unwrap()
+        } else if index > 0 && qemu.args[index - 1] == "-drive" {
+            qemu.args[index].as_str()
+        } else {
             continue;
-        }
-
-        let mut drive = DriveArg::parse(&qemu.args[index + 1]);
+        };
+        let mut drive = DriveArg::parse(value);
         if drive.is_file_backed_block_drive()
             && let Some(file) = drive.file()
             && let Some(new_path) = rewrite(Path::new(file))?
         {
             drive.set_file(&new_path);
-            qemu.args[index + 1] = drive.render();
+            qemu.args[index] = if inline {
+                format!("-drive={}", drive.render())
+            } else {
+                drive.render()
+            };
         }
-        index += 2;
     }
     Ok(())
+}
+
+fn normalize_inline_options(arguments: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(arguments.len());
+    for argument in arguments {
+        if let Some((option, value)) = argument.split_once('=')
+            && matches!(option, "-drive" | "-device" | "-netdev")
+        {
+            normalized.push(option.to_owned());
+            normalized.push(value.to_owned());
+        } else {
+            normalized.push(argument.clone());
+        }
+    }
+    normalized
 }
 
 /// Replaces an existing `disk0` drive argument or inserts one next to the

@@ -62,6 +62,7 @@ fn rewrite_drive_file_paths_replaces_selected_drive_files() {
             "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
             "-drive".to_string(),
             "id=usbdisk,if=none,format=raw,snapshot=on,file=/tmp/usb.img".to_string(),
+            "-drive=id=extra,if=none,format=raw,file=/tmp/extra.img".to_string(),
             "-netdev".to_string(),
             "user,id=net0,file=/tmp/not-a-drive.img".to_string(),
         ],
@@ -69,7 +70,7 @@ fn rewrite_drive_file_paths_replaces_selected_drive_files() {
     };
 
     rewrite_drive_file_paths(&mut qemu, |path| {
-        if path == Path::new("/tmp/usb.img") {
+        if matches!(path.to_str(), Some("/tmp/usb.img" | "/tmp/extra.img")) {
             Ok(Some(PathBuf::from("/cache/rootfs.img")))
         } else {
             Ok(None)
@@ -84,8 +85,17 @@ fn rewrite_drive_file_paths_replaces_selected_drive_files() {
             "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
             "-drive".to_string(),
             "id=usbdisk,if=none,format=raw,snapshot=on,file=/cache/rootfs.img".to_string(),
+            "-drive=id=extra,if=none,format=raw,file=/cache/rootfs.img".to_string(),
             "-netdev".to_string(),
             "user,id=net0,file=/tmp/not-a-drive.img".to_string(),
+        ]
+    );
+    assert_eq!(
+        drive_file_paths(&qemu),
+        vec![
+            PathBuf::from("/tmp/rootfs.img"),
+            PathBuf::from("/cache/rootfs.img"),
+            PathBuf::from("/cache/rootfs.img"),
         ]
     );
 }
@@ -142,6 +152,54 @@ fn host_blockdev_is_not_replaced_with_duplicate_drive() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("host rootfs -blockdev"), "{error}");
+    assert_eq!(qemu.args, original_args);
+}
+
+#[test]
+fn inline_rootfs_drive_and_device_are_rewritten() {
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-drive=id=disk0,if=none,format=raw,file=/tmp/old.img".into(),
+            "-device=virtio-blk-pci,drive=disk0".into(),
+        ],
+        ..Default::default()
+    };
+
+    patch_rootfs(
+        &mut qemu,
+        Path::new("/tmp/new.img"),
+        RootfsPatchMode::ReplaceDriveOnly,
+    );
+
+    assert_eq!(
+        qemu.args,
+        vec![
+            "-drive",
+            "id=disk0,if=none,format=raw,file=/tmp/new.img",
+            "-device",
+            "virtio-blk-pci,drive=disk0",
+        ]
+    );
+}
+
+#[test]
+fn direct_drive_alias_is_not_silently_left_on_the_old_image() {
+    let mut qemu = QemuConfig {
+        args: vec!["-hda".into(), "/tmp/old.img".into()],
+        ..Default::default()
+    };
+    let original_args = qemu.args.clone();
+    let error = super::patch_rootfs(
+        &mut qemu,
+        Path::new("/tmp/new.img"),
+        RootfsPatchOptions {
+            mode: RootfsPatchMode::ReplaceDriveOnly,
+            write_policy: RootfsWritePolicy::Discard,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("direct drive alias"), "{error}");
     assert_eq!(qemu.args, original_args);
 }
 
