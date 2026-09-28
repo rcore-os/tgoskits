@@ -1,0 +1,44 @@
+    Blocking waiting for file lock on package cache
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.60s
+     Running `target/debug/tg-xtask starry build -c /home/zhourui/.codex/artifacts/issue2308-perf/resume916-exporter/use.toml`
+[2026-09-28T04:15:39Z INFO  axbuild::context] Workspace root: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev
+[2026-09-28T04:15:39Z INFO  axbuild::context] Cargo target directory: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target
+Using build config: /home/zhourui/.codex/artifacts/issue2308-perf/resume916-exporter/use.toml
+[2026-09-28T04:15:39Z INFO  axbuild::build::config_file] Found build config at /home/zhourui/.codex/artifacts/issue2308-perf/resume916-exporter/use.toml
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ...
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume916-exporter/use.toml ...
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_TARGET_AARCH64_UNKNOWN_NONE_SOFTFLOAT_RUSTFLAGS=-Cprofile-use=/home/zhourui/.codex/artifacts/issue2308-perf/resume914-current-source-training/profile.profdata -Cllvm-args=-disable-vp -Cllvm-args=-pgo-warn-missing-function
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+ISSUE2308_PROFILE_MODE=use
+RUSTC_WRAPPER=/home/zhourui/.codex/artifacts/issue2308-perf/resume916-exporter/profile-wrapper.py
+SMP=8
+cargo build -p starryos --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z unstable-options --target-dir /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target --features ax-driver/list-pci-devices,ax-driver/realtek-rtl8125,ax-driver/rk3588-pcie,ax-driver/rockchip-dwc-xhci,ax-driver/rockchip-dwmmc,ax-driver/rockchip-ehci,ax-driver/rockchip-sdhci,ax-driver/rockchip-soc,legacy-board-init,rknpu -Z json-target-spec -Z build-std=core,alloc --config target.aarch64-unknown-none-softfloat.rustflags=["-Cllvm-args=--max-store-memcpy=16", "-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=--gc-sections", "-Clink-args=-znorelro", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Tlinker.x", "-Clink-args=-u _head", "-D", "warnings"] --bin starryos --release --message-format json-render-diagnostics
+warning: ax_runtime.2590d1a936ddc4aa-cgu.14: Profile in _RNvNtNtCs3dXBn6bAxFC_10ax_runtime6thread9bootstrap8run_idle partially ignored, possibly due to the lack of a return path.
+
+warning: `ax-runtime` (lib) generated 1 warning
+   Compiling starryos v0.5.39 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/starryos)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `release` profile [optimized] target(s) in 1m 50s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos
+  bin: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos.bin
+/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume916-exporter/use.toml ... done (110.56s)
+[axbuild] cargo build elf=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] cargo build bin=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] cargo build artifact_dir=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ... done (112.07s)
+[axbuild] starry artifact elf=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] starry kallsyms elf=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos ...
+[axbuild] starry kallsyms symbols=13935
+rust-objcopy --update-section .kallsyms=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/.starryos.kallsyms.4069552.tmp /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] starry kallsyms elf=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos ... done (321.36ms)
+[axbuild] starry bin refresh /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos.bin ...
+rust-objcopy --strip-all -O binary /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] starry bin refresh /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/starryos.bin ... done (69.09ms)
