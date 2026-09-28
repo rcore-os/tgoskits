@@ -15,8 +15,9 @@ pub trait DisplayController: DriverGeneric {
     fn check(&self, state: &DisplayState) -> Result<(), DisplayError>;
 
     /// Revalidate `state` under this exclusive access before touching hardware.
-    /// On error the previous state and its backing remain active. On success
-    /// the driver retains both new and old resources until the returned
+    /// On error the previous state and its backing remain active, except when
+    /// [`DisplayError::DeviceLost`] reports that the device was reset. On
+    /// success the driver retains both new and old resources until the returned
     /// completion confirms that the old scanout is no longer used.
     fn commit(&mut self, state: &DisplayState) -> Result<Completion, DisplayError>;
 

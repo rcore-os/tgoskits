@@ -146,8 +146,8 @@ impl CtrlHeader {
     pub(crate) fn check_type(&self, expected: Command) -> Result<(), Error> {
         if self.hdr_type == expected {
             Ok(())
-        } else if (0x1200..=0x12ff).contains(&self.hdr_type.0) {
-            Err(Error::DeviceRejected(self.hdr_type.0))
+        } else if let Some(error) = self.rejection() {
+            Err(error)
         } else {
             Err(Error::InvalidResponse)
         }
@@ -159,6 +159,12 @@ impl CtrlHeader {
         } else {
             Err(Error::InvalidResponse)
         }
+    }
+
+    pub(crate) fn rejection(&self) -> Option<Error> {
+        (0x1200..=0x12ff)
+            .contains(&self.hdr_type.0)
+            .then_some(Error::DeviceRejected(self.hdr_type.0))
     }
 }
 

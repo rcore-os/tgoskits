@@ -150,7 +150,10 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
         }
     }
 
-    fn ensure_ready(&self) -> Result<(), GpuError> {
+    fn ensure_ready(&mut self) -> Result<(), GpuError> {
+        if self.raw.is_reset() && !self.lost {
+            self.mark_lost();
+        }
         if self.lost {
             Err(GpuError::DeviceLost)
         } else {
@@ -388,7 +391,7 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> DisplayController for Virt
     }
 
     fn check(&self, state: &DisplayState) -> Result<(), DisplayError> {
-        if self.lost {
+        if self.lost || self.raw.is_reset() {
             return Err(DisplayError::DeviceLost);
         }
         let index = self.output_index(state.output)?;
@@ -531,6 +534,7 @@ fn map_error(error: Error) -> GpuError {
     match error {
         Error::Unsupported => GpuError::Unsupported,
         Error::NotReady => GpuError::NotReady,
+        Error::DeviceLost => GpuError::DeviceLost,
         Error::InvalidParam | Error::Overflow => GpuError::InvalidArgument,
         Error::DeviceRejected(0x1201) => GpuError::OutOfMemory,
         Error::DeviceRejected(0x1202 | 0x1205) => GpuError::InvalidArgument,
@@ -545,7 +549,10 @@ fn map_error(error: Error) -> GpuError {
 }
 
 fn map_display_error(error: Error) -> DisplayError {
-    DisplayError::Gpu(map_error(error))
+    match error {
+        Error::DeviceLost => DisplayError::DeviceLost,
+        error => DisplayError::Gpu(map_error(error)),
+    }
 }
 
 impl<H: Hal + 'static, T: Transport + Send + 'static> rdif_gpu::DriverGeneric

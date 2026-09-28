@@ -14,7 +14,8 @@ use core::{
 use std::sync::{Mutex, Weak};
 
 use rdif_display::{
-    DisplayController, DisplayEvent, DisplayState, Framebuffer, OutputId, ScanoutBuffer,
+    DisplayController, DisplayError, DisplayEvent, DisplayState, Framebuffer, OutputId,
+    ScanoutBuffer,
 };
 use rdif_gpu::{
     Backing, BufferDescriptor, DmaAddr, DmaDomainId, DmaSegment, GpuDevice, GpuError, PixelFormat,
@@ -134,6 +135,7 @@ struct Host {
     reject_unref: bool,
     fail_display_info: bool,
     fail_set_scanout: bool,
+    omit_set_scanout_fence: bool,
     fail_flush: bool,
     fail_detach: bool,
     fail_ctx_detach: bool,
@@ -211,6 +213,10 @@ impl Host {
         let mut reply = self.response(request, Command::OK_NODATA.0, 24);
         if command == Command::CTX_DESTROY.0 && self.omit_ctx_destroy_fence {
             self.omit_ctx_destroy_fence = false;
+            set_word(&mut reply, 4, 0);
+        }
+        if command == Command::SET_SCANOUT.0 && self.omit_set_scanout_fence {
+            self.omit_set_scanout_fence = false;
             set_word(&mut reply, 4, 0);
         }
         reply
@@ -740,4 +746,53 @@ fn test_only_and_failed_commits_keep_scanout_and_backing() {
     assert!(host.lock().unwrap().status.is_empty());
     assert_eq!(host.lock().unwrap().queue.descriptors, 0);
     assert!(failing_weak.upgrade().is_none());
+}
+
+#[test]
+fn unconfirmed_scanout_completion_resets_before_backing_release() {
+    let host = Arc::new(Mutex::new(Host::default()));
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let mut device = VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap();
+    let descriptor = BufferDescriptor::Image2d {
+        width: WIDTH,
+        height: HEIGHT,
+        stride: WIDTH * 4,
+        format: PixelFormat::Xrgb8888,
+    };
+    let old_backing = TestBacking::new();
+    let old_weak = Arc::downgrade(&old_backing);
+    let old = device
+        .create_buffer(descriptor, old_backing.clone())
+        .unwrap();
+    drop(old_backing);
+    let new_backing = TestBacking::new();
+    let new_weak = Arc::downgrade(&new_backing);
+    let new = device
+        .create_buffer(descriptor, new_backing.clone())
+        .unwrap();
+    drop(new_backing);
+    let mode = device
+        .output(OutputId::new(0))
+        .unwrap()
+        .preferred_mode
+        .unwrap();
+    device.commit(&scanout_state(old, mode)).unwrap();
+
+    host.lock().unwrap().omit_set_scanout_fence = true;
+    assert_eq!(
+        device.commit(&scanout_state(new, mode)),
+        Err(DisplayError::DeviceLost)
+    );
+    let host = host.lock().unwrap();
+    assert!(host.status.is_empty());
+    assert!(host.reset_readback);
+    drop(host);
+    assert!(old_weak.upgrade().is_none());
+    assert!(new_weak.upgrade().is_none());
 }

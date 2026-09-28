@@ -154,6 +154,11 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         self.reset_done = true;
     }
 
+    #[cfg(feature = "rdif")]
+    pub(crate) fn is_reset(&self) -> bool {
+        self.reset_done
+    }
+
     /// Reads the current connection and preferred rectangle for an output.
     pub fn output_info(&mut self, index: u32) -> Result<OutputInfo, Error> {
         if index >= self.num_scanouts {
@@ -931,9 +936,17 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             &[&self.queue_buf_send[..req_len]],
             &mut [&mut self.queue_buf_recv],
             &mut self.transport,
-        )? as usize;
-        let response = self.parse_response(used_len)?;
-        self.check_fence_response(used_len, fence_id)?;
+        );
+        let used_len = match used_len {
+            Ok(length) => length as usize,
+            Err(_) => {
+                // Submission may have reached the device. Stop DMA before
+                // callers can drop backing after this ambiguous completion.
+                self.reset();
+                return Err(Error::DeviceLost);
+            }
+        };
+        let response = self.finish_request(used_len, fence_id)?;
         Ok((response, used_len))
     }
 
@@ -960,16 +973,44 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             inputs,
             &mut [&mut self.queue_buf_recv],
             &mut self.transport,
-        )? as usize;
-        let response = self.parse_response(used_len)?;
-        self.check_fence_response(used_len, fence_id)?;
-        Ok(response)
+        );
+        let used_len = match used_len {
+            Ok(length) => length as usize,
+            Err(_) => {
+                self.reset();
+                return Err(Error::DeviceLost);
+            }
+        };
+        self.finish_request(used_len, fence_id)
+    }
+
+    fn finish_request<Rsp: FromBytes>(
+        &mut self,
+        used_len: usize,
+        fence_id: u64,
+    ) -> Result<Rsp, Error> {
+        let header = match self.check_fence_response(used_len, fence_id) {
+            Ok(header) => header,
+            Err(_) => {
+                // A used descriptor alone does not prove that a control
+                // command has stopped accessing its backing.
+                self.reset();
+                return Err(Error::DeviceLost);
+            }
+        };
+        if let Some(error) = header.rejection() {
+            return Err(error);
+        }
+        self.parse_response(used_len)
     }
 
     fn prepare_request<Req: IntoBytes + Immutable>(
         &mut self,
         req: &Req,
     ) -> Result<(usize, u64), Error> {
+        if self.reset_done {
+            return Err(Error::DeviceLost);
+        }
         let req_len = copy_request_into(&mut self.queue_buf_send, req)?;
         if req_len < size_of::<CtrlHeader>() {
             return Err(Error::InvalidParam);
@@ -983,13 +1024,17 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         Ok((req_len, fence_id))
     }
 
-    fn check_fence_response(&self, used_len: usize, fence_id: u64) -> Result<(), Error> {
+    fn check_fence_response(&self, used_len: usize, fence_id: u64) -> Result<CtrlHeader, Error> {
+        if used_len > self.queue_buf_recv.len() {
+            return Err(Error::ResponseTooLarge);
+        }
         if used_len < size_of::<CtrlHeader>() {
             return Err(Error::InvalidResponse);
         }
         let (header, _) = CtrlHeader::read_from_prefix(&self.queue_buf_recv[..used_len])
             .map_err(|_| Error::InvalidResponse)?;
-        header.check_fence(fence_id)
+        header.check_fence(fence_id)?;
+        Ok(header)
     }
 
     /// Validates the response length and parses `Rsp` from exactly the bytes the

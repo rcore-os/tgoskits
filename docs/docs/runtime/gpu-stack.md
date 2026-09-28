@@ -142,3 +142,9 @@ Starry 在停用时查询驱动的 `current_state`，向仍持有 framebuffer �
 `cargo test -p virtio-gpu --features rdif --lib` 的新增关闭路径测试在旧实现上失败，修复后 7/7 通过；同一测试中的未设置 fence 断言也先在旧请求实现上失败。模拟主机故意省略 `CTX_DESTROY` 的 fence 回显时，驱动返回 `DeviceLost`，测试确认复位已读回并且 backing 随后才释放。独立复核发现普通显示访问容忍输出查询失败会使用过期模式，已恢复错误传播；进一步按任意 GPU 驱动的契约把普通 GPU 访问也恢复为错误传播，仅明确的清理与回收路径使用容错入口。
 
 `cargo fmt`、`git diff --check`、`cargo xtask clippy --package virtio-gpu`（2/2）、`rdif-gpu`（1/1）和 `ax-gpu`（2/2）通过。`cargo xtask clippy --package starry-kernel` 在首批 10 个组合通过后按本地范围限制中断，不能作为最终差异的完整证据；任务入口无单组合选项，随后按其展开参数定向运行最终差异的 Starry AArch64 基础组合并通过。本地未运行全量 Clippy 或 QEMU；真实主机的 fence 行为仍以本次提交的 CI 和后续图形运行证据为准。
+
+### 4.7 2026-09-28 未确认的显示提交
+
+控制队列交还已用描述符但未回显匹配的 fence 时，驱动无法确认 `SET_SCANOUT` 是否仍会在主机侧生效，也无法安全地仅靠后续回滚命令证明旧提交已经结束。协议核心此时先写入设备复位状态、读回确认并解除队列，再允许适配层放弃旧、新 scanout backing；调用者收到 `DeviceLost`，不会把这次提交误当成普通的可回滚错误。`DisplayController::commit` 的错误契约据此明确：设备仍可用时保留旧状态；设备丢失时旧 scanout 不再有效。
+
+模拟主机省略 `SET_SCANOUT` fence 的测试先在旧实现上失败（实际得到 `Gpu(Io)`，且没有证明复位已完成），修复后验证 `DeviceLost`、复位读回以及两份 backing 均在设备停止后释放。`cargo test -p virtio-gpu --features rdif --lib` 8/8 通过，`cargo xtask clippy --package virtio-gpu` 2/2 组合和 `cargo xtask clippy --package rdif-display` 1/1 组合通过，`cargo fmt` 与 `git diff --check` 通过。本地不运行全量 Clippy 或 QEMU。
