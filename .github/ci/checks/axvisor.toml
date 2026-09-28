@@ -203,6 +203,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus · Linux + StarryOS"
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> axvisor OrangePi 5 Plus Linux guest"
@@ -273,6 +274,7 @@ id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus robot · StarryOS guest"
 runner = "board"
+resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
@@ -288,6 +290,7 @@ id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus robot · Linux guest"
 runner = "board"
+resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
@@ -305,6 +308,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
 nightly_only = true
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
@@ -338,6 +342,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux PCI network ping"
 nightly_only = true
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
@@ -355,6 +360,7 @@ name = "Board OrangePi 5 Plus · AXIVC Zephyr-Starry benchmark"
 nightly_only = true
 performance_report = true
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> build the StarryOS guest from this checkout"
@@ -374,6 +380,7 @@ name = "Board OrangePi 5 Plus · Single ArceOS guest performance"
 nightly_only = true
 performance_report = true
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 15
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf
@@ -390,6 +397,7 @@ name = "Board OrangePi 5 Plus · Task switch benchmark"
 nightly_only = true
 performance_report = true
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> axvisor OrangePi 5 Plus task switch benchmark"

@@ -986,6 +986,32 @@ command = "true"
 
         self.assertTrue(any("self-hosted" in row["runs_on"] for row in rows.values()))
 
+    def test_orangepi_checks_queue_by_physical_board(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
+        )
+        main_rows = main_test_rows(ci_plan.build_main_plan(context))
+        nightly_rows = ci_plan.build_axvisor_nightly_plan(context)["axvisor_matrix"][
+            "include"
+        ]
+        catalog = {
+            check["id"]: check for check in ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
+        }
+        for row in (*main_rows, *nightly_rows):
+            boards = {
+                registration["board"]
+                for registration in catalog[row["id"]].get("suite", ())
+                if "board" in registration
+            }
+            if any(board.startswith("orangepi-5-plus-robot") for board in boards):
+                self.assertEqual(row["resource_group"], "orangepi-5-plus-robot")
+            elif any(board.startswith("orangepi-5-plus") for board in boards):
+                self.assertEqual(row["resource_group"], "orangepi-5-plus")
+            else:
+                self.assertEqual(row["resource_group"], "")
+
     def test_event_and_boolean_input_select_checks_independently(self) -> None:
         check = {"events": ["schedule"], "enable_boolean_input": "run_optional"}
         for event, enabled, expected in (

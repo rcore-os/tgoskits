@@ -52,6 +52,11 @@ jobs:
       fail-fast: ${{ inputs.fail_fast }}
       max-parallel: ${{ inputs.max_parallel }}
       matrix: ${{ fromJSON(inputs.matrix_json) }}
+    # Jobs using the same physical board must not race for its U-Boot console.
+    concurrency:
+      group: ci-resource-${{ matrix.resource_group || format('run-{0}-{1}', github.run_id, matrix.id) }}
+      queue: max
+      cancel-in-progress: false
     runs-on: >-
       ${{ github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name != github.repository &&

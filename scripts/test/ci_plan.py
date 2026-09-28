@@ -75,6 +75,7 @@ CHECK_FIELDS = {
     "fetch_depth",
     "timeout_minutes",
     "cache_key",
+    "resource_group",
     "wifi_secrets",
     "apk_region",
     "upload_xtask_bin_artifact",
@@ -364,6 +365,14 @@ def _validate_check(
         raise PlanError(f"{location} cache_key must be a string")
     if "self-hosted" in runs_on and cache_key:
         raise PlanError(f"{location} self-hosted checks must use an empty cache_key")
+
+    resource_group = check.get("resource_group", "")
+    if not isinstance(resource_group, str) or (
+        resource_group and CHECK_ID_PATTERN.fullmatch(resource_group) is None
+    ):
+        raise PlanError(f"{location} resource_group must use lowercase kebab-case")
+    if resource_group and "board" not in runs_on:
+        raise PlanError(f"{location} resource_group requires a board runner")
 
     artifact_name = check.get("xtask_bin_artifact_name")
     if artifact_name is not None and (
@@ -726,6 +735,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "container_preflight": preflight,
         "command": command.strip(),
         "cache_key": check.get("cache_key", ""),
+        "resource_group": "" if fallback else check.get("resource_group", ""),
         "apk_region": check.get("apk_region", "china"),
         "wifi_secrets": check.get("wifi_secrets", False),
         "fetch_depth": fetch_depth,
