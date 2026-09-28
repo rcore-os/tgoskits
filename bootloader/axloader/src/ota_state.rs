@@ -218,10 +218,16 @@ impl State {
     }
 
     pub fn rollback(&self, outcome: Outcome) -> Result<Self, StateError> {
-        if self.pending.is_none() || !matches!(outcome, Outcome::RolledBack | Outcome::LoadFailed) {
+        let Some(pending) = self.pending else {
+            return Err(StateError::Invalid);
+        };
+        if !matches!(outcome, Outcome::RolledBack | Outcome::LoadFailed) {
             return Err(StateError::Invalid);
         }
         let mut next = self.next()?;
+        // The abandoned image was never confirmed. Its digest must not make
+        // it eligible as a fallback if the stable slot fails later.
+        next.digests[pending.as_byte() as usize] = [0; 32];
         next.pending = None;
         next.attempted = false;
         next.outcome = outcome;
@@ -351,8 +357,17 @@ mod tests {
         assert_eq!(recovered.active, Slot::A);
         assert!(recovered.pending.is_none());
         assert_eq!(recovered.digest(Slot::A), &[1; 32]);
+        assert_eq!(recovered.digest(Slot::B), &[0; 32]);
+        assert_eq!(
+            attempting
+                .rollback(Outcome::LoadFailed)
+                .unwrap()
+                .digest(Slot::B),
+            &[0; 32]
+        );
         let confirmed = attempting.confirm(Slot::B, &id, Source::Direct).unwrap();
         assert_eq!(confirmed.active, Slot::B);
+        assert_eq!(confirmed.digest(Slot::A), &[1; 32]);
         assert_eq!(
             confirmed
                 .stage([3; 32], id, Source::Server)
