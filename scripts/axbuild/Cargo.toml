@@ -39,6 +39,7 @@ rustc-demangle = "0.1"
 schemars = { workspace = true, features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
+shlex.workspace = true
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
 tempfile = "3"

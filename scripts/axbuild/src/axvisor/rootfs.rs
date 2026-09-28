@@ -136,9 +136,15 @@ pub(super) fn diskless_explicit_qemu(
 
 fn has_explicit_root(qemu: &QemuConfig) -> bool {
     let has_root = |cmdline: &str| {
-        cmdline
-            .split_ascii_whitespace()
-            .take_while(|token| *token != "--")
+        let tokens = shlex::split(cmdline).unwrap_or_else(|| {
+            cmdline
+                .split_ascii_whitespace()
+                .map(|token| token.trim_matches('"').to_owned())
+                .collect()
+        });
+        tokens
+            .into_iter()
+            .take_while(|token| token != "--")
             .any(|token| {
                 token
                     .strip_prefix("root=")
@@ -641,6 +647,12 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
             .contains("requires a QEMU disk0")
         );
         with_guest_drive.boot.cmdline = Some("-- root=/dev/sda".into());
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
+        with_guest_drive.boot.cmdline = Some("\"root=/dev/sda\"".into());
+        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        with_guest_drive.boot.cmdline = Some("root=\"\"".into());
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
+        with_guest_drive.boot.cmdline = Some("label=\"not root=/dev/sda\"".into());
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = None;
         with_guest_drive
