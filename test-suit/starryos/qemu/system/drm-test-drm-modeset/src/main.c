@@ -498,6 +498,11 @@ int main(void)
     conn.modes_ptr = (uint64_t)(uintptr_t)modes;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn), 0,
               "GETCONNECTOR");
+    uint64_t period_ns = modes[0].clock != 0
+        ? (uint64_t)modes[0].htotal * modes[0].vtotal * 1000000ULL / modes[0].clock
+        : 1000000000ULL / (modes[0].vrefresh ? modes[0].vrefresh : 60);
+    CHECK(period_ns > 0, "advertised mode has a valid vblank period");
+    if (period_ns == 0) period_ns = 1;
 
     struct drm_mode_create_dumb cdumb = {
         .width = modes[0].hdisplay, .height = modes[0].vdisplay, .bpp = 32,
@@ -592,7 +597,7 @@ int main(void)
     int64_t expected_edge_ns = seq1 == before_flip.sequence
                              ? before_flip.sequence_ns
                              : gseq1.sequence_ns
-                               - (int64_t)(gseq1.sequence - seq1) * (1000000000LL / 60);
+                               - (int64_t)(gseq1.sequence - seq1) * (int64_t)period_ns;
     CHECK(expected_edge_ns >= flip_edge_ns && expected_edge_ns - flip_edge_ns < 1000,
           "flip timestamp identifies its sequence's vblank edge");
 
@@ -601,8 +606,9 @@ int main(void)
     CHECK_RET(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq2), 0,
               "CRTC_GET_SEQUENCE second query");
     uint64_t seq_delta = gseq2.sequence - gseq1.sequence;
-    CHECK(seq_delta >= 5 && seq_delta <= 9,
-          "sequence advances at ~60 Hz over 120 ms");
+    uint64_t expected_delta = 120000000ULL / period_ns;
+    CHECK(seq_delta + 2 >= expected_delta && seq_delta <= expected_delta + 3,
+          "sequence advances at the advertised mode rate over 120 ms");
     CHECK(gseq2.sequence_ns > gseq1.sequence_ns, "sequence_ns monotonic");
 
     struct drm_crtc_get_sequence gseq_bad = { .crtc_id = 0xdeadbeef };
@@ -750,12 +756,13 @@ int main(void)
     CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wblock), 0,
               "WAIT_VBLANK relative 2 blocks");
     clock_gettime(CLOCK_MONOTONIC, &ts2);
-    long elapsed_ms = (ts2.tv_sec - ts1.tv_sec) * 1000
-                      + (ts2.tv_nsec - ts1.tv_nsec) / 1000000;
+    int64_t elapsed_ns = (ts2.tv_sec - ts1.tv_sec) * 1000000000LL
+                         + (ts2.tv_nsec - ts1.tv_nsec);
     /* 相对等待语义与真实 DRM 一致：从当前时刻数 N 个边沿。若调用发生在
      * 边沿刚过后，第 N 个边沿不足 N 个整周期（最短 ≈(N-1) 周期），
      * 因此接受 [1, 3.5] 个周期的时间窗。 */
-    CHECK(elapsed_ms >= 16 && elapsed_ms <= 60,
+    CHECK(elapsed_ns >= (int64_t)(period_ns * 3 / 4) &&
+          elapsed_ns <= (int64_t)(period_ns * 7 / 2),
           "relative wait 2 spans 1-2 vblank periods");
     CHECK(wblock.reply.sequence > wev.reply.sequence,
           "blocking wait advanced the counter");
@@ -944,7 +951,7 @@ int main(void)
                             * 1000000000ULL + reenable_end.tv_nsec - reenable_start.tv_nsec;
     CHECK(after_enable.sequence >= resumed_event.sequence &&
           after_enable.sequence - resumed_event.sequence <=
-          1 + reenabled_ns / (1000000000ULL / 60),
+          1 + reenabled_ns / period_ns,
           "disabled interval does not advance vblank sequence");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
     struct drm_crtc_get_sequence after_event = { .crtc_id = crtc_ids[0] };
@@ -952,7 +959,7 @@ int main(void)
               "query sequence after disable event");
     CHECK(after_event.sequence >= resumed_event.sequence &&
           resumed_event.tv_ns == before_disable.sequence_ns +
-          (int64_t)(resumed_event.sequence - before_disable.sequence) * (1000000000LL / 60),
+          (int64_t)(resumed_event.sequence - before_disable.sequence) * (int64_t)period_ns,
           "disabled event timestamp identifies the frozen edge");
 
     check_vblank_disable_reenable(fd, crtc_ids[0], &setcrtc);

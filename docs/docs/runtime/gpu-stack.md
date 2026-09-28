@@ -26,6 +26,8 @@ GPU 负责资源、渲染上下文与命令完成，显示控制器负责把缓�
 
 创建缓冲区时，运行时先取得 backing 并验证尺寸、格式、步长及 DMA 可见性，再交给驱动创建硬件资源。提交到显示端会再持有资源引用；每个 VMA 保活对象持有 backing，映射建立时已有 GPU 资源的也同时持有该资源，PRIME fd 与导入对象持有相同引用。用户关闭 GEM handle、解除 mmap 或 PRIME 导入时，只减少相应引用。设备确认旧 scanout 不再使用且全部引用释放后，运行时才允许驱动解除 backing、释放硬件资源，最后释放页。失败或设备复位期间若不能确认停止 DMA，则保留 backing 直至复位完成。
 
+同设备 PRIME 导入可能遇到资源已附着到当前渲染上下文的情况。导入 ioctl 的用户缓冲区回写失败时，只撤销此次新建的上下文附着；既有附着属于先前成功操作，必须保留。关闭文件描述符时，先从资源表移出其引用，释放模式设置锁后再析构可能触发驱动资源回收的对象。
+
 ### 2.1 显示提交
 
 `DisplayController` 对一次提交先检查输出、模式、framebuffer、damage 和资源归属。`TEST_ONLY` 在检查后直接返回，不改变 scanout 或引用；正式提交先保留新资源，再由驱动执行硬件命令，成功后发布新状态并释放旧引用。中途失败仍保留旧 scanout，回滚尚未发布的新资源。同步完成令牌明确表示何时能释放旧 backing，不能以 ioctl 返回或固定延时推断 DMA 已结束。
@@ -36,11 +38,13 @@ GPU 负责资源、渲染上下文与命令完成，显示控制器负责把缓�
 
 VirtIO 的失败清理与正常析构写入设备状态 `0` 后，都必须读回 `0` 才把复位视为完成；随后解除队列，再放弃资源表中的 backing。这与本地 Linux PCI transport 的复位确认顺序一致。
 
-Starry 的调用顺序为文件描述符的 `operation` 锁、必要时的 `modeset_operation` 锁、短时读取状态或资源表、释放表锁、最后进入 `axgpu` 设备锁。提交路径可在 `modeset_operation` 下进入设备锁，以串行化同一输出的检查与提交；资源表锁不得跨设备调用。硬中断不取得上述任一锁。删除 GEM、framebuffer 或 PRIME 别名时，先从表中移出 `Arc`，退出表锁后才让析构调用驱动的 `release_buffer`。
+Starry 的调用顺序为文件描述符的 `operation` 锁、必要时的 `modeset_operation` 锁、短时读取状态或资源表、释放表锁、最后进入 `axgpu` 设备锁。提交路径可在 `modeset_operation` 下进入设备锁，以串行化同一输出的检查与提交；资源表锁不得跨设备调用。硬中断不取得上述任一锁。删除 GEM、framebuffer 或 PRIME 别名时，先从表中移出 `Arc`，退出表锁后才让析构调用驱动的 `release_buffer`。合成 vblank 时钟只在成功提交后随 CRTC 状态和模式周期更新；待发事件在停用时按冻结的边沿完成。事件唤醒和可能释放最后一个文件引用的操作在 `modeset_operation` 锁外执行。
 
 ## 3. 操作系统接入
 
 ArceOS 的 `axruntime` 把 `ax-driver` 注册对象交给 `axgpu`，`axdisplay` 通过同一实例访问显示端。StarryOS 的 DRM 核心维护 GEM handle、framebuffer、PRIME 与 modeset 状态；Linux 标准的 `DRM_IOCTL_VIRTGPU_*` 只在 VirtIO 兼容模块中转译到可选 `VirglOps`，不向通用 RDIF 泄漏 Linux UAPI，也不增加 Starry 专属 ioctl。同设备 PRIME 别名共享资源引用；外部 dma-heap 连续缓冲区只在 GPU 使用 Direct DMA 域时作为 backing 导入，其他 DMA 域须先提供映射能力。设备身份和 sysfs 信息来自已绑定驱动，VirtIO PCI 数值属性从探测到的 endpoint 读取；sysfs 父路径暂保留供现有 libdrm 使用的 platform 兼容层。没有 GPU 时不发布 DRM 节点，没有可映射 scanout 时不发布 `/dev/fb0`。无输出 GPU 的 dumb ioctl 仍按其图像资源能力工作，但 KMS ioctl 不发布显示能力。
+
+当前 Starry DRM 向用户态只暴露一组 CRTC、connector 和 primary plane，选取第一个已连接输出进行提交；`rdif-display` 仍保留完整的输出枚举能力。多个输出同时运行和热插拔后保持原输出绑定不在本轮实现范围内。
 
 ### 3.1 迁移与回滚
 
@@ -78,3 +82,9 @@ ArceOS 的 `axruntime` 把 `ax-driver` 注册对象交给 `axgpu`，`axdisplay` 
 ![Weston 终端与 glmark2 的 virgl 3D 场景](images/gpu-virgl-20260924.png)
 
 QMP `screendump` 对 `egl-headless` 返回 `no surface`，因此画面由 VNC 原始 framebuffer 捕获；这不影响客体报告的 renderer。未运行实体板卡图形输出测试，以上图形证据只对应这次 QEMU/KVM 虚机与宿主 `/dev/dri/renderD128`。
+
+### 4.1 2026-09-28 变基与审查修复
+
+分支先变基到 `7c79828fefde`，合并上游新增的 vblank 支持，并修复同设备 PRIME 重复导入失败时误拆除既有 virgl 上下文附着的问题；随后无冲突变基到包含 PCI ECAM 测试修复的 `8af5f36698`。`cargo fmt`、`git diff --check` 和 DRM modeset 用例的 `cc -std=gnu11 -Wall -Wextra -Werror -fsyntax-only` 均通过。`cargo xtask clippy --package starry-kernel` 完成 76/76 项检查；`cargo xtask test --since 7c79828fefde` 完成 14/14 个软件包，包含模式切换后 vblank 周期与序号的单元测试。
+
+本次 Starry x86_64 `qemu/system` 运行期间，四个 DRM 系统用例均报告 `STARRY_SYSTEM_TEST_PASSED`。用户随后收窄本地验证范围，完整套件已中断，不能视为整套通过；其他架构与 virgl 画面没有在变基后的提交上重新运行。上方四架构和图形输出记录属于 2026-09-24 的原提交。

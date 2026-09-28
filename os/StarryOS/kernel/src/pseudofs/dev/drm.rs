@@ -605,10 +605,9 @@ pub const DRM_CRTC_SEQUENCE_NEXT_ON_MISS: u32 = 0x0000_0002;
 
 // ---- event delivery ----
 //
-// Page-flip completion events are delivered by reading the DRM fd.  Each
-// event begins with a `drm_event` header (type + total length); the
-// concrete payload type tells userspace what struct to expect.  We only
-// ever emit `drm_event_vblank`.
+// Display events are delivered by reading the DRM fd. Each event begins
+// with a `drm_event` header (type + total length); the event type selects
+// either a vblank/page-flip payload or a CRTC sequence payload.
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]

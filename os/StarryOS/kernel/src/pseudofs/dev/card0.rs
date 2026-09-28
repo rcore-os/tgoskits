@@ -194,7 +194,8 @@ use super::drm::{
     DrmWaitVblank,
 };
 use super::vblank::{
-    PendingVblankEvent, QueuedVblankEvent, VblankClock, vblank_passed, widen_32_to_64,
+    PendingVblankEvent, QueuedVblankEvent, VBLANK_PERIOD_NS, VblankClock, vblank_passed,
+    widen_32_to_64,
 };
 use super::sync_file::SyncFile;
 use crate::{
@@ -688,6 +689,14 @@ struct PerFdCtx {
     attached_resources: BTreeMap<u32, Arc<GpuResource>>,
 }
 
+/// Whether this ioctl changed the context's resource attachments.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttachmentState {
+    NoContext,
+    AlreadyAttached,
+    NewlyAttached,
+}
+
 /// Per-open DRM state, equivalent to Linux `struct drm_file` plus the
 /// virtio-gpu private context. `dup` and `fork` share this Arc; reopening the
 /// device creates a new handle namespace and rendering context.
@@ -769,7 +778,8 @@ pub struct Card0 {
     next_ctx_id: AtomicU32,
     /// Stable identity assigned to each open file description.
     next_file_id: AtomicU64,
-    /// Live primary-node file descriptions, guarded by `state` during open and drop.
+    /// Live primary-node file descriptions, serialized with final close by
+    /// `modeset_operation` during open and drop.
     open_files: Mutex<usize>,
     /// Weak per-open references for completing queued events on CRTC disable.
     vblank_files: Mutex<Vec<Weak<Card0File>>>,
@@ -990,8 +1000,17 @@ async fn run_vblank_timer(weak: Weak<Card0File>) {
 impl Card0 {
     /// Called with the modeset state locked, so queue submission cannot race
     /// the transition from an active clock to a completed pending event.
-    fn set_vblank_active(&self, active: bool, now_ns: u64) -> Option<Vec<(Arc<Card0File>, bool)>> {
-        if !self.vblank.set_active(active, now_ns) {
+    fn set_vblank_active(
+        &self,
+        state: &ModesetState,
+        now_ns: u64,
+    ) -> Option<Vec<(Arc<Card0File>, bool)>> {
+        let active = state.crtc_active != 0;
+        let period_ns = state
+            .mode
+            .as_ref()
+            .map_or(VBLANK_PERIOD_NS, |mode| mode_period_ns(&mode.info));
+        if !self.vblank.set_active(active, now_ns, period_ns) {
             return None;
         }
         let mut completed = Vec::new();
@@ -1220,6 +1239,23 @@ const CVT_RB_VBACK_PORCH: u16 = 6;
 /// Default output refresh rate.
 const DEFAULT_VREFRESH: u32 = 60;
 
+fn rounded_refresh_hz(refresh_millihz: u32) -> u32 {
+    (refresh_millihz.saturating_add(500) / 1000).max(1)
+}
+
+fn mode_period_ns(mode: &DrmModeModeInfo) -> u64 {
+    let pixels = u64::from(mode.htotal) * u64::from(mode.vtotal);
+    let period = if pixels != 0 && mode.clock != 0 {
+        pixels * 1_000_000 / u64::from(mode.clock)
+    } else if mode.vrefresh != 0 {
+        1_000_000_000 / u64::from(mode.vrefresh)
+    } else {
+        VBLANK_PERIOD_NS
+    };
+    // A user-supplied mode must not arm a busy-looping deadline worker.
+    period.clamp(1_000_000, 1_000_000_000)
+}
+
 /// Synthesized mode matching the display's current resolution.
 fn current_mode(mode: DisplayMode) -> DrmModeModeInfo {
     let (w, h) = (mode.width, mode.height);
@@ -1237,12 +1273,16 @@ fn current_mode(mode: DisplayMode) -> DrmModeModeInfo {
     let vsync_end = vsync_start + CVT_RB_VSYNC_WIDTH;
     let vtotal = vsync_end + CVT_RB_VBACK_PORCH;
 
-    let vrefresh: u32 = if mode.refresh_millihz == 0 {
-        DEFAULT_VREFRESH
+    let refresh_millihz = if mode.refresh_millihz == 0 {
+        DEFAULT_VREFRESH * 1000
     } else {
-        mode.refresh_millihz / 1000
+        mode.refresh_millihz
     };
-    let clock = ((htotal as u32) * (vtotal as u32) * vrefresh) / 1000;
+    let vrefresh = rounded_refresh_hz(refresh_millihz);
+    let clock = ((u64::from(htotal) * u64::from(vtotal) * u64::from(refresh_millihz)
+        + 500_000)
+        / 1_000_000)
+        .min(u64::from(u32::MAX)) as u32;
 
     DrmModeModeInfo {
         clock,
@@ -1393,22 +1433,19 @@ impl Card0File {
         self.create_context(CreateKind::Legacy)
     }
 
-    /// Attaches `resource` to this fd's context when one exists, reporting
-    /// whether an attach actually happened.
+    /// Attaches `resource` to this fd's context when one exists.
     ///
-    /// `Ok(false)` means the fd has no context yet, so there is nothing to
-    /// attach to. Callers acting in a Linux context-conditional position (for
-    /// instance the PRIME import in `virtio_gpu_gem_object_open()`) must treat
-    /// that as a successful no-op rather than an error. `Ok(true)` covers both
-    /// a fresh attach and an already-attached resource.
-    fn attach_resource_if_ready(&self, resource: &Arc<GpuResource>) -> VfsResult<bool> {
+    /// A missing context is a successful no-op for context-conditional PRIME
+    /// imports. Only a newly attached resource belongs to this ioctl's
+    /// failure rollback; an earlier attachment must stay in place.
+    fn attach_resource_if_ready(&self, resource: &Arc<GpuResource>) -> VfsResult<AttachmentState> {
         let ctx_id = {
             let guard = self.context.lock();
             let Some(context) = guard.as_ref() else {
-                return Ok(false);
+                return Ok(AttachmentState::NoContext);
             };
             if context.attached_resources.contains_key(&resource.res_handle) {
-                return Ok(true);
+                return Ok(AttachmentState::AlreadyAttached);
             }
             context.ctx_id
         };
@@ -1426,7 +1463,7 @@ impl Card0File {
             .ok_or(VfsError::InvalidInput)?
             .attached_resources
             .insert(resource.res_handle, resource.clone());
-        Ok(true)
+        Ok(AttachmentState::NewlyAttached)
     }
 
     /// Attaches `resource` to the fd context, failing when the fd has none.
@@ -1435,7 +1472,7 @@ impl Card0File {
     /// is a real error rather than an expected state.
     fn attach_resource(&self, resource: &Arc<GpuResource>) -> VfsResult<()> {
         self.attach_resource_if_ready(resource)
-            .and_then(|attached| attached.then_some(()).ok_or(VfsError::InvalidInput))
+            .and_then(|state| (state != AttachmentState::NoContext).then_some(()).ok_or(VfsError::InvalidInput))
     }
 
     fn detach_resource(&self, resource_id: u32) {
@@ -1470,14 +1507,17 @@ impl Card0File {
         {
             return Err(VfsError::NotATty);
         }
-        let kms_ioctl = number >= 0xa0
+        let kms_ioctl = matches!(
+            cmd,
+            DRM_IOCTL_CRTC_GET_SEQUENCE | DRM_IOCTL_CRTC_QUEUE_SEQUENCE
+        ) || (number >= 0xa0
             && !matches!(
                 cmd,
                 DRM_IOCTL_MODE_CREATE_DUMB
                     | DRM_IOCTL_MODE_MAP_DUMB
                     | DRM_IOCTL_MODE_DESTROY_DUMB
-            );
-        if !kms_available() && (kms_ioctl || cmd == DRM_IOCTL_WAIT_VBLANK) {
+            ));
+        if !kms_available() && kms_ioctl {
             return Err(VfsError::Unsupported);
         }
         match cmd {
@@ -1626,6 +1666,9 @@ impl FileLike for Card0File {
         // A vblank wait can outlive many other ioctls on this open file.
         // Its CRTC and event state has separate locks from the 3D operation state.
         if cmd == DRM_IOCTL_WAIT_VBLANK {
+            if !kms_available() {
+                return Err(VfsError::Unsupported.into());
+            }
             if !self.is_primary {
                 return Err(VfsError::PermissionDenied.into());
             }
@@ -1702,8 +1745,14 @@ impl Drop for Card0File {
         }
 
         let _modeset = self.card.modeset_operation.lock();
-        let mut open_files = self.card.open_files.lock();
-        let last_file = self.is_primary && *open_files == 1;
+        let last_file = {
+            let mut open_files = self.card.open_files.lock();
+            let last_file = self.is_primary && *open_files == 1;
+            if self.is_primary {
+                *open_files -= 1;
+            }
+            last_file
+        };
         let active_id = self.card.state.lock().plane_fb_id;
         let ids = self
             .card
@@ -1741,7 +1790,6 @@ impl Drop for Card0File {
         if last_file {
             self.card.blobs.lock().clear();
         }
-        drop(removed_framebuffers);
         let removed_dumbs = {
             let mut dumbs = self.card.dumbs.lock();
             let handles = dumbs
@@ -1774,10 +1822,6 @@ impl Drop for Card0File {
                 .filter_map(|id| resources.remove(&id))
                 .collect::<Vec<_>>()
         };
-        drop((removed_dumbs, removed_aliases, removed_resources));
-        if self.is_primary {
-            *open_files -= 1;
-        }
         self.card
             .vblank_files
             .lock()
@@ -1785,9 +1829,10 @@ impl Drop for Card0File {
         let state = self.card.state.lock();
         let completed = self
             .card
-            .set_vblank_active(state.crtc_active != 0, monotonic_time_nanos());
-        drop((state, open_files, _modeset));
+            .set_vblank_active(&state, monotonic_time_nanos());
+        drop((state, _modeset));
         self.card.notify_vblank_change(completed);
+        drop((removed_framebuffers, removed_dumbs, removed_aliases, removed_resources));
     }
 }
 
@@ -1877,7 +1922,8 @@ impl Card0 {
                         available.width == requested.width
                             && available.height == requested.height
                             && (available.refresh_millihz == 0
-                                || available.refresh_millihz == requested.refresh_millihz)
+                                || rounded_refresh_hz(available.refresh_millihz)
+                                    == requested.refresh_millihz / 1000)
                     })
                     .ok_or(DisplayError::InvalidState)?
             } else {
@@ -2380,7 +2426,7 @@ impl Card0 {
             // `PRIME_FD_TO_HANDLE` rather than anything else that would have
             // triggered the lazy create. With `CONTEXT_INIT` negotiated Linux
             // deliberately does *not* create one (userspace owns that choice),
-            // and `attach_resource()` only runs when a context exists.
+            // and an attachment is only made when a context exists.
             if ax_gpu::capabilities()
                 .is_some_and(|caps| caps.supports_3d && !caps.supports_context_init)
             {
@@ -2388,13 +2434,12 @@ impl Card0 {
             }
             // Import succeeds even with no context yet: the resource is
             // registered under a fresh handle and only attached to the host
-            // context when this fd already has one. `attach_resource()`
-            // distinguishes "no context" from an attach failure, so an
-            // unattached import must not fail the ioctl.
-            let attached = card_file.attach_resource_if_ready(&dma.resource)?;
+            // context when this fd already has one. A missing context is a
+            // successful no-op, while an attach failure aborts the import.
+            let attachment = card_file.attach_resource_if_ready(&dma.resource)?;
             req.handle = handle;
             if ptr.vm_write(current, req).is_err() {
-                if attached {
+                if attachment == AttachmentState::NewlyAttached {
                     card_file.detach_resource(dma.resource.res_handle);
                 }
                 return Err(VfsError::BadAddress);
@@ -2560,8 +2605,9 @@ impl Card0 {
             self.clear_scanout(false)?;
             let mut state = self.state.lock();
             *state = ModesetState::default();
-            let completed = self.set_vblank_active(false, monotonic_time_nanos());
+            let completed = self.set_vblank_active(&state, monotonic_time_nanos());
             drop(state);
+            drop(_operation);
             self.notify_vblank_change(completed);
             return Ok(0);
         }
@@ -2613,8 +2659,9 @@ impl Card0 {
         self.present_fb(c.fb_id, &proposed, false)?;
         let mut state = self.state.lock();
         *state = proposed;
-        let completed = self.set_vblank_active(true, monotonic_time_nanos());
+        let completed = self.set_vblank_active(&state, monotonic_time_nanos());
         drop(state);
+        drop(_operation);
         self.notify_vblank_change(completed);
         Ok(0)
     }
@@ -2859,15 +2906,19 @@ impl Card0 {
             return Err(VfsError::InvalidInput);
         }
         let active = self.state.lock().plane_fb_id == fb_id;
-        if active {
+        let completed = if active {
             self.clear_scanout(false)?;
             let mut state = self.state.lock();
             *state = ModesetState::default();
-            let completed = self.set_vblank_active(false, monotonic_time_nanos());
+            let completed = self.set_vblank_active(&state, monotonic_time_nanos());
             drop(state);
-            self.notify_vblank_change(completed);
-        }
+            completed
+        } else {
+            None
+        };
         let removed = self.fbs.lock().remove(&fb_id);
+        drop(_operation);
+        self.notify_vblank_change(completed);
         drop(removed);
         Ok(0)
     }
@@ -3607,11 +3658,12 @@ impl Card0 {
         }
         let mut state = self.state.lock();
         *state = proposed;
-        let completed = self.set_vblank_active(state.crtc_active != 0, monotonic_time_nanos());
+        let completed = self.set_vblank_active(&state, monotonic_time_nanos());
         let flip_edge = reservation
             .as_ref()
             .map(|_| self.vblank.snapshot_at(monotonic_time_nanos()));
         drop(state);
+        drop(_operation);
         self.notify_vblank_change(completed);
         if let (Some(reservation), Some((sequence, edge_ns))) = (reservation, flip_edge) {
             self.queue_flip_event(reservation, a.user_data, sequence, edge_ns);

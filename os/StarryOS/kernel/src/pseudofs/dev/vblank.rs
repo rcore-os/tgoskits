@@ -1,7 +1,7 @@
-//! Synthesized 60 Hz vblank clock for the emulated `/dev/dri/card0`.
+//! Synthesized mode-rate vblank clock for `/dev/dri/card0`.
 //!
-//! The card has no real scanout engine — presentation is a synchronous
-//! memcpy — so there is no hardware counter to latch vblank edges from.
+//! The display capability does not provide periodic vblank interrupts, so
+//! there is no hardware counter to latch vblank edges from.
 //! Linux DRM userspace (libdrm, compositors) nevertheless expects a
 //! monotonic per-CRTC sequence advancing at the mode's refresh rate,
 //! plus timestamps of the most recent edge (`CRTC_GET_SEQUENCE`,
@@ -15,8 +15,7 @@
 
 use crate::sync::RawSpinLock;
 
-/// Nanoseconds between synthesized vblank edges (60 Hz, matching the
-/// mode's `DEFAULT_VREFRESH` advertised by the card).
+/// Default period when an output does not report a refresh rate.
 pub const VBLANK_PERIOD_NS: u64 = 1_000_000_000 / 60;
 
 /// Wrap-aware "has the counter reached `target`" test on u64 sequences.
@@ -58,6 +57,7 @@ pub(super) struct VblankClock {
 
 struct VblankState {
     active: bool,
+    period_ns: u64,
     anchor_ns: u64,
     base_sequence: u64,
     last_edge_ns: u64,
@@ -67,7 +67,7 @@ struct VblankState {
 impl VblankState {
     fn at(&self, now_ns: u64) -> (u64, u64) {
         let elapsed = if self.active {
-            now_ns.saturating_sub(self.anchor_ns) / VBLANK_PERIOD_NS
+            now_ns.saturating_sub(self.anchor_ns) / self.period_ns
         } else {
             0
         };
@@ -75,7 +75,7 @@ impl VblankState {
             self.last_edge_ns
         } else {
             self.anchor_ns
-                .saturating_add(elapsed.saturating_mul(VBLANK_PERIOD_NS))
+                .saturating_add(elapsed.saturating_mul(self.period_ns))
         };
         (self.base_sequence.saturating_add(elapsed), edge_ns)
     }
@@ -87,7 +87,7 @@ impl VblankState {
             self.anchor_ns.saturating_add(
                 sequence
                     .saturating_sub(self.base_sequence)
-                    .saturating_mul(VBLANK_PERIOD_NS),
+                    .saturating_mul(self.period_ns),
             )
         }
     }
@@ -98,6 +98,7 @@ impl VblankClock {
         Self {
             state: RawSpinLock::new(VblankState {
                 active: false,
+                period_ns: VBLANK_PERIOD_NS,
                 anchor_ns: now_ns,
                 base_sequence: 0,
                 last_edge_ns: now_ns,
@@ -108,15 +109,21 @@ impl VblankClock {
 
     /// Called under the device's modeset lock. Returns whether workers
     /// must recompute their deadlines after the transition.
-    pub(super) fn set_active(&self, active: bool, now_ns: u64) -> bool {
+    pub(super) fn set_active(&self, active: bool, now_ns: u64, period_ns: u64) -> bool {
         let mut state = self.state.lock();
-        if state.active == active {
+        let period_ns = period_ns.max(1);
+        if state.active == active && (!active || state.period_ns == period_ns) {
             return false;
         }
         if active {
+            let was_active = state.active;
+            if was_active {
+                (state.base_sequence, state.last_edge_ns) = state.at(now_ns);
+            }
             state.anchor_ns = now_ns;
+            state.period_ns = period_ns;
             // A re-enable at sequence zero must not overwrite the disabled edge.
-            if state.disable_generation == 0 {
+            if !was_active && state.disable_generation == 0 {
                 state.last_edge_ns = now_ns;
             }
         } else {
@@ -201,7 +208,7 @@ mod tests {
     fn clock_sequences_track_elapsed_periods() {
         let clock = VblankClock::new(1_000);
         assert_eq!(clock.snapshot_at(1_000 + VBLANK_PERIOD_NS * 3).0, 0);
-        clock.set_active(true, 1_000);
+        clock.set_active(true, 1_000, VBLANK_PERIOD_NS);
         assert_eq!(clock.snapshot_at(1_000).0, 0);
         // Just before the first edge.
         assert_eq!(clock.snapshot_at(1_000 + VBLANK_PERIOD_NS - 1).0, 0);
@@ -215,10 +222,10 @@ mod tests {
         // Edge timestamps round-trip through the sequence computation.
         assert_eq!(clock.deadline_ns(4, 1_000), Some(1_000 + VBLANK_PERIOD_NS * 4));
 
-        clock.set_active(false, 1_000 + VBLANK_PERIOD_NS * 7 / 2);
+        clock.set_active(false, 1_000 + VBLANK_PERIOD_NS * 7 / 2, VBLANK_PERIOD_NS);
         assert_eq!(clock.snapshot_at(1_000 + VBLANK_PERIOD_NS * 30).0, 3);
         assert_eq!(clock.deadline_ns(4, 1_000 + VBLANK_PERIOD_NS * 30), None);
-        clock.set_active(true, 1_000 + VBLANK_PERIOD_NS * 30);
+        clock.set_active(true, 1_000 + VBLANK_PERIOD_NS * 30, VBLANK_PERIOD_NS);
         assert_eq!(clock.snapshot_at(1_000 + VBLANK_PERIOD_NS * 30).0, 3);
         assert_eq!(clock.snapshot_at(1_000 + VBLANK_PERIOD_NS * 30).1, 1_000 + VBLANK_PERIOD_NS * 3);
         assert_eq!(
@@ -228,7 +235,7 @@ mod tests {
         assert_eq!(clock.snapshot_at(1_000 + VBLANK_PERIOD_NS * 31).0, 4);
 
         let stale_clock = VblankClock::new(1_000);
-        stale_clock.set_active(true, 1_000);
+        stale_clock.set_active(true, 1_000, VBLANK_PERIOD_NS);
         let stale_at = 1_000 + VBLANK_PERIOD_NS * ((1 << 23) + 1);
         assert_eq!(stale_clock.deadline_ns(0, stale_at), None);
     }
@@ -236,18 +243,33 @@ mod tests {
     #[test]
     fn waiter_observes_disable_after_crtc_is_reenabled() {
         let clock = VblankClock::new(1_000);
-        clock.set_active(true, 1_000);
+        clock.set_active(true, 1_000, VBLANK_PERIOD_NS);
         let generation = clock.disable_generation();
 
         let disabled_at = 1_000 + VBLANK_PERIOD_NS / 2;
-        clock.set_active(false, disabled_at);
+        clock.set_active(false, disabled_at, VBLANK_PERIOD_NS);
         let frozen = clock.snapshot_at(disabled_at);
         assert_eq!(frozen, (0, 1_000));
-        clock.set_active(true, disabled_at + VBLANK_PERIOD_NS * 10);
+        clock.set_active(true, disabled_at + VBLANK_PERIOD_NS * 10, VBLANK_PERIOD_NS);
 
         let (active_for_wait, sequence, edge_ns) =
             clock.status_since(disabled_at + VBLANK_PERIOD_NS * 11, generation);
         assert!(!active_for_wait);
         assert_eq!((sequence, edge_ns), frozen);
+    }
+
+    #[test]
+    fn mode_change_uses_new_period_without_losing_sequence() {
+        let clock = VblankClock::new(1_000);
+        clock.set_active(true, 1_000, VBLANK_PERIOD_NS);
+        let changed_at = 1_000 + VBLANK_PERIOD_NS * 5 / 2;
+        let before = clock.snapshot_at(changed_at);
+        assert_eq!(before.0, 2);
+
+        let faster_period = VBLANK_PERIOD_NS / 2;
+        assert!(clock.set_active(true, changed_at, faster_period));
+        assert_eq!(clock.snapshot_at(changed_at), before);
+        assert_eq!(clock.deadline_ns(3, changed_at), Some(changed_at + faster_period));
+        assert_eq!(clock.snapshot_at(changed_at + faster_period).0, 3);
     }
 }
