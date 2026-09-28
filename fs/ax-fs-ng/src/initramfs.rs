@@ -63,7 +63,7 @@ pub fn unpack_sources(sources: &[&[u8]]) -> Result<(Filesystem, UnpackReport), I
     let context = FsContext::new(root);
     let mut report = UnpackReport::default();
     for source in sources.iter().copied().filter(|source| !source.is_empty()) {
-        unpack_stream(source, &context, &mut report)?;
+        unpack_stream(source, &context, &mut report, false)?;
     }
     Ok((fs, report))
 }
@@ -79,6 +79,7 @@ fn unpack_stream(
     input: &[u8],
     context: &FsContext,
     report: &mut UnpackReport,
+    compressed: bool,
 ) -> Result<(), InitramfsError> {
     let mut position = 0;
     let initial_archives = report.archives;
@@ -101,8 +102,11 @@ fn unpack_stream(
             report.archives += 1;
             report.entries += entries;
         } else if input[position..].starts_with(&[0x1f, 0x8b]) {
+            if compressed {
+                return Err(InitramfsError::Corrupt("nested gzip archive"));
+            }
             let (inflated, consumed) = inflate_gzip(&input[position..])?;
-            unpack_stream(&inflated, context, report)?;
+            unpack_stream(&inflated, context, report, true)?;
             position += consumed;
         } else {
             return Err(InitramfsError::UnsupportedCompression);
@@ -632,6 +636,13 @@ mod tests {
                     entries: 1
                 }
             );
+            let mut concatenated = compressed.clone();
+            concatenated.extend_from_slice(&compressed);
+            assert_eq!(unpack(&concatenated).unwrap().1.archives, 2);
+            assert!(matches!(
+                unpack(&gzip(&compressed)),
+                Err(InitramfsError::Corrupt("nested gzip archive"))
+            ));
             let mut damaged = compressed.clone();
             *damaged.last_mut().unwrap() ^= 1;
             assert!(matches!(unpack(&damaged), Err(InitramfsError::Corrupt(_))));
