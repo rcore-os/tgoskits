@@ -49,7 +49,7 @@ sidebar_label: "文档发布"
 
 构建成功后，`actions/configure-pages` 准备 Pages 配置，`actions/upload-pages-artifact` 上传 `docs/build`。`deploy` job 通过 `needs: build` 等待这一过程完成，再调用 `actions/deploy-pages`。
 
-构建阶段还会用 `actions/configure-pages` 输出的 `base_url` 读取线上 `benchmark/index.html` 和 `benchmark/history.json`。已有页面时只使用 Pages 内容；仅当两份文件都返回 404 时，构建会一次性只读 `perf-data` 分支中的同名文件进行兼容 bootstrap。该 bootstrap 必须完整成功，普通文档发布才复制遗留 dashboard；fetch 失败、任一文件缺失或为空都会阻止 Pages 部署。benchmark dispatch 会先从对应 run 下载 `benchmark-updates` artifact，并要求线上或遗留 history 可读后再合并本次数据，否则构建失败，不能用空历史覆盖累计结果。线上读取带 `Cache-Control: no-cache` 请求头和 cache-buster，线上读取的网络错误、单文件 404 或其它非预期 HTTP 状态会阻止 Pages 部署。首次发布成功后，Pages 是唯一持久历史来源，遗留分支冻结且不再被任何 workflow 写入或部署。
+构建阶段还会用 `actions/configure-pages` 输出的 `base_url` 读取线上 `benchmark/index.html` 和 `benchmark/history.json`。`Prepare performance dashboard` 步骤只准备环境变量并调用 `scripts/test/ci_perf_pages.py`，页面读取、缓存控制、legacy bootstrap 和历史合并都由该脚本负责，workflow 不再内联 curl 或 git 片段。脚本在已有页面时只使用 Pages 内容；仅当两份文件都返回 404 时，才一次性只读 `perf-data` 分支中的同名文件进行兼容 bootstrap。该 bootstrap 必须完整成功，普通文档发布才复制遗留 dashboard；fetch 失败、任一文件缺失或为空都会阻止 Pages 部署。benchmark dispatch 会先从对应 run 下载 `benchmark-updates` artifact，并要求线上或遗留 history 可读后再合并本次数据，否则构建失败，不能用空历史覆盖累计结果。线上读取带 `Cache-Control: no-cache` 请求头和 cache-buster，线上读取的网络错误、单文件 404 或其它非预期 HTTP 状态会阻止 Pages 部署。首次发布成功后，Pages 是唯一持久历史来源，遗留分支冻结且不再被任何 workflow 写入或部署。
 
 ```mermaid
 flowchart LR

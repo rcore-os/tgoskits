@@ -14,6 +14,7 @@ REUSABLE_CHECK_MATRIX = (
 )
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
+CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
 
 
 def main() -> int:
@@ -28,6 +29,8 @@ def main() -> int:
         errors.append("missing workflow: .github/workflows/benchmarks.yml")
     if not DOCS_WORKFLOW.is_file():
         errors.append("missing workflow: .github/workflows/docs.yml")
+    if not CI_PERF_PAGES_SCRIPT.is_file():
+        errors.append("missing script: scripts/test/ci_perf_pages.py")
     if PR_CLEANUP_WORKFLOW.exists():
         errors.append("stale-run cleanup must reuse the Plan CI runner")
     if LEGACY_BRANCH_WORKFLOW.exists():
@@ -632,110 +635,79 @@ def main() -> int:
     for fragment, message in (
         (
             "PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}",
-            "docs must read the deployed benchmark page",
+            "docs must forward the deployed benchmark base URL to the script",
         ),
         (
-            "--header 'Cache-Control: no-cache'",
-            "published benchmark reads must use a valid cache header",
+            "BENCHMARK_UPDATES: ${{ runner.temp }}/benchmark-updates",
+            "docs must forward the benchmark updates directory",
         ),
         (
-            "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
-            "published benchmark reads must include a cache buster",
+            "python3 scripts/test/ci_perf_pages.py",
+            "docs must delegate dashboard preparation to the script",
         ),
         (
-            '"${history_status}" != "200"',
-            "benchmark updates must fail without deployed history",
+            '--base-url "${PAGES_BASE_URL}"',
+            "docs must pass the deployed benchmark base URL",
         ),
         (
-            '"${history_status}" = "200"',
-            "normal docs builds must preserve deployed history",
+            "--output-dir docs/build",
+            "docs must pass the Pages output directory",
         ),
         (
-            '"${index_status}" = "200"',
-            "normal docs builds must preserve the deployed dashboard",
+            '--updates-dir "${BENCHMARK_UPDATES}"',
+            "docs must pass the benchmark updates directory",
         ),
         (
-            '"${history_status}" = "404"',
-            "a brand new site may skip the benchmark dashboard",
+            '--benchmark-run-id "${BENCHMARK_RUN_ID}"',
+            "docs must pass the benchmark run ID",
         ),
         (
-            '"${index_status}" = "404"',
-            "a brand new site may skip the benchmark dashboard",
+            '--benchmark-revision "${BENCHMARK_REVISION}"',
+            "docs must pass the benchmark revision",
         ),
         (
-            "::error::Failed to fetch",
-            "benchmark fetch failures must stop Pages deployment",
-        ),
-        (
-            "::error::Published benchmark history is empty",
-            "empty published history must stop Pages deployment",
-        ),
-        (
-            "::error::Unexpected published dashboard state",
-            "partial published dashboard states must stop deployment",
-        ),
-        (
-            "git fetch --depth=1 origin perf-data",
-            "docs must only bootstrap from the frozen legacy branch",
-        ),
-        (
-            "git show FETCH_HEAD:history.json",
-            "legacy bootstrap must read the frozen history",
-        ),
-        (
-            "git show FETCH_HEAD:index.html",
-            "legacy bootstrap must read the frozen dashboard",
-        ),
-        (
-            "::error::Benchmark updates require published or legacy dashboard data",
-            "benchmark updates must fail without a usable history seed",
-        ),
-        (
-            "::error::Legacy performance dashboard is incomplete",
-            "partial legacy dashboard data must stop deployment",
-        ),
-        (
-            "::error::Legacy performance dashboard is unavailable",
-            "unavailable legacy bootstrap must stop deployment",
-        ),
-        (
-            '--source "${source}"',
-            "docs must merge source-specific benchmark updates",
-        ),
-        (
-            "docs/build/benchmark/index.html",
-            "docs must publish the benchmark page",
-        ),
-        (
-            "docs/build/benchmark/history.json",
-            "docs must publish the cumulative benchmark history",
+            '--benchmark-date "${BENCHMARK_DATE}"',
+            "docs must pass the benchmark date",
         ),
     ):
         require_contains(errors, docs_dashboard, fragment, message)
-    if "--no-cache" in docs_dashboard:
-        errors.append("curl --no-cache is not a supported option")
-    if "dashboards are unavailable; skipping" in docs_dashboard:
-        errors.append("missing legacy bootstrap data must not be skipped")
-    if docs_workflow.count("perf-data") != 1:
-        errors.append("the frozen legacy branch must only support the 404 bootstrap")
-    else:
-        legacy_index = docs_dashboard.find("git fetch --depth=1 origin perf-data")
-        bootstrap_start = docs_dashboard.find(
-            'if [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ]; then'
+    for fragment, message in (
+        ("curl ", "dashboard fetch logic must live in ci_perf_pages.py"),
+        (
+            "--header 'Cache-Control: no-cache'",
+            "published benchmark reads must live in ci_perf_pages.py",
+        ),
+        (
+            "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "the cache buster must live in ci_perf_pages.py",
+        ),
+        (
+            "git fetch --depth=1 origin perf-data",
+            "legacy bootstrap must live in ci_perf_pages.py",
+        ),
+        (
+            "git show FETCH_HEAD:history.json",
+            "legacy bootstrap must live in ci_perf_pages.py",
+        ),
+        (
+            "::error::Failed to fetch",
+            "benchmark fetch failures must live in ci_perf_pages.py",
+        ),
+        (
+            "::error::Benchmark updates require published or legacy dashboard data",
+            "the history seed check must live in ci_perf_pages.py",
+        ),
+        (
+            "::error::Unexpected published dashboard state",
+            "the published state check must live in ci_perf_pages.py",
+        ),
+    ):
+        if fragment in docs_dashboard:
+            errors.append(message)
+    if "perf-data" in docs_workflow:
+        errors.append(
+            "the frozen legacy branch bootstrap must live in ci_perf_pages.py"
         )
-        benchmark_start = docs_dashboard.find(
-            'if [ -n "${BENCHMARK_RUN_ID}" ]; then'
-        )
-        if (
-            legacy_index == -1
-            or bootstrap_start == -1
-            or benchmark_start == -1
-            or legacy_index < bootstrap_start
-            or legacy_index > benchmark_start
-        ):
-            errors.append(
-                "legacy bootstrap reads must stay inside the double-404 branch"
-            )
     for fragment, message in (
         ("git push", "docs must not push a legacy history branch"),
         ("push --force", "docs must not force-push a legacy history branch"),
