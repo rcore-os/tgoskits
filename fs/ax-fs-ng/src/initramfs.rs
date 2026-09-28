@@ -277,9 +277,8 @@ fn apply_entry(
         return Err(InitramfsError::InvalidPath);
     }
     let key = (entry.dev_major, entry.dev_minor, entry.ino, ty as u8);
-    let linked_from = (entry.nlink >= 2 && ty != NodeType::Directory)
-        .then(|| links.get(&key).cloned())
-        .flatten();
+    let may_link = entry.nlink >= 2 && !matches!(ty, NodeType::Directory | NodeType::Symlink);
+    let linked_from = may_link.then(|| links.get(&key).cloned()).flatten();
     let existing = match context.resolve_no_follow(path.as_str()) {
         Ok(location) => Some(location),
         Err(VfsError::NotFound) => None,
@@ -321,7 +320,7 @@ fn apply_entry(
             &credentials,
         )?
     };
-    if entry.nlink >= 2 && ty != NodeType::Directory && linked_from.is_none() {
+    if may_link && linked_from.is_none() {
         links.insert(key, path.clone());
     }
     if linked_from.is_some() && ty == NodeType::RegularFile && !entry.data.is_empty() {
@@ -543,7 +542,8 @@ mod tests {
             let mut built_in = Vec::new();
             add_entry(&mut built_in, ".", 0o040755, 1, 2, &[], false);
             add_entry(&mut built_in, "bin", 0o040755, 2, 2, &[], false);
-            add_entry(&mut built_in, "bin-alias", 0o120777, 6, 1, b"bin", false);
+            add_entry(&mut built_in, "bin-alias", 0o120777, 6, 2, b"bin", false);
+            add_entry(&mut built_in, "bin-alias-2", 0o120777, 6, 2, b"bin", false);
             add_entry(
                 &mut built_in,
                 "bin-alias/through",
@@ -570,7 +570,7 @@ mod tests {
                 report,
                 UnpackReport {
                     archives: 3,
-                    entries: 10
+                    entries: 11
                 }
             );
             let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
@@ -589,6 +589,9 @@ mod tests {
                     .unwrap(),
                 "bin/init"
             );
+            let alias = context.resolve_no_follow("/bin-alias-2").unwrap();
+            assert_eq!(alias.metadata().unwrap().node_type, NodeType::Symlink);
+            assert_eq!(alias.read_link().unwrap(), "bin");
         });
     }
 

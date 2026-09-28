@@ -35,17 +35,18 @@ fn initramfs_from_fdt(fdt: fdt_raw::Fdt<'_>) -> Option<Result<InitramfsRange, &'
         if start >= end {
             return Err("empty or reversed initramfs range");
         }
+        let reservation_start = start & !(PAGE_SIZE - 1);
+        let reservation_end = end
+            .checked_next_multiple_of(PAGE_SIZE)
+            .ok_or("initramfs reservation alignment overflows")?;
         let contained = fdt.memory().any(|memory| {
             memory.regions().any(|region| {
                 normalize_region(region.address, region.size)
-                    .is_some_and(|ram| ram.start <= start && end <= ram.end)
+                    .is_some_and(|ram| ram.start <= reservation_start && reservation_end <= ram.end)
             })
         });
         if !contained {
-            return Err("initramfs range is outside usable RAM");
-        }
-        if end.checked_add(PAGE_SIZE - 1).is_none() {
-            return Err("initramfs reservation alignment overflows");
+            return Err("initramfs reservation is outside usable RAM");
         }
         Ok(InitramfsRange {
             start,
@@ -58,18 +59,24 @@ fn initramfs_from_fdt(fdt: fdt_raw::Fdt<'_>) -> Option<Result<InitramfsRange, &'
 pub fn init_memory_map() -> Option<()> {
     let fdt = super::fdt_base()?;
 
-    for memory in fdt.memory() {
-        for region in memory.regions() {
-            let Some(region) = normalize_region(region.address, region.size) else {
-                continue;
-            };
+    #[cfg(efi)]
+    let add_fdt_ram = !crate::efi_stub::is_uefi_available();
+    #[cfg(not(efi))]
+    let add_fdt_ram = true;
+    if add_fdt_ram {
+        for memory in fdt.memory() {
+            for region in memory.regions() {
+                let Some(region) = normalize_region(region.address, region.size) else {
+                    continue;
+                };
 
-            add_memory_descriptor(MemoryDescriptor {
-                physical_start: region.start,
-                size_in_bytes: region.end - region.start,
-                memory_type: MemoryType::Free,
-            })
-            .unwrap();
+                add_memory_descriptor(MemoryDescriptor {
+                    physical_start: region.start,
+                    size_in_bytes: region.end - region.start,
+                    memory_type: MemoryType::Free,
+                })
+                .unwrap();
+            }
         }
     }
 
