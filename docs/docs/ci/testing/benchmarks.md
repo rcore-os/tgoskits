@@ -27,7 +27,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 
 性能工作流按 UTC `40 21 * * *` 调度，对应北京时间次日 05:40；它与 Starry Apps 的 `0 18 * * *`、AxVisor Nightly 的 `20 19 * * *` 分开。该时间给 AxVisor 当前最长的 90 分钟板卡检查留出间隔，但 GitHub 调度延迟、runner 排队和实体板卡占用仍可能改变实际开始时间。
 
-`benchmarks.yml` 的 workflow concurrency group 使用 `benchmarks-${{ github.ref }}` 且 `cancel-in-progress: false`。因此新事件不会取消正在运行的同一分支基准任务；两个历史发布 job 另用 `perf-data-publish` 串行保护 `perf-data` 分支。
+`benchmarks.yml` 的 workflow concurrency group 使用 `benchmarks-${{ github.ref }}` 且 `cancel-in-progress: false`。因此新事件不会取消正在运行的同一分支基准任务。结束后的 `benchmark-updates` job 只整理本次增量并 dispatch `docs.yml`；Pages 发布由 docs workflow 的 `docs-pages` 队列串行处理。
 
 ## 2. 清单与矩阵
 
@@ -47,7 +47,7 @@ Starry 板卡矩阵在 `benchmarks.yml` 中设置 `max_parallel: 1`，避免同�
 
 ### 2.2 数据流
 
-下图说明从统一清单到两个独立历史发布入口的分支关系。关键是两个历史入口只依赖自己的矩阵结果，不共享聚合结果或彼此的成功状态。
+下图说明从统一清单到 Pages 历史更新的数据流。矩阵仍按自己的成功条件选择数据，最后的桥接 job 只把本次增量交给唯一 Pages publisher，不承担累计历史。
 
 ```mermaid
 flowchart TD
@@ -60,8 +60,9 @@ flowchart TD
     axvisor --> reusable
     starryqemu --> reusable
     starryboard --> reusable
-    reusable --> axxhistory[perf-history-axvisor]
-    reusable --> starryhistory[perf-history-starry]
+    reusable --> updates[benchmark-updates]
+    updates --> artifact[benchmark-updates artifact]
+    artifact --> docs[docs.yml]
 ```
 
 ## 3. 报告与历史
@@ -70,10 +71,10 @@ flowchart TD
 
 ### 3.1 汇总结果
 
-`benchmarks.yml` 的 `result` job 同时下载两个报告前缀，把每个 check 的 Markdown 合并到 workflow summary，并报告四个阶段的结果。它不负责修改 `perf-data`，也不替代矩阵 job 里的详细日志；失败检查的原始输出仍在对应 Actions job。
+`benchmarks.yml` 的 `result` job 同时下载两个报告前缀，把每个 check 的 Markdown 合并到 workflow summary，并报告四个阶段的结果。它不负责发布历史，也不替代矩阵 job 里的详细日志；失败检查的原始输出仍在对应 Actions job。
 
 ### 3.2 历史发布
 
-`perf-history-axvisor` 与 `perf-history-starry` 分别读取自己的报告 artifact，分别调用 `scripts/test/ci_perf_dashboard.py`。前者固定 `--source axvisor`，后者固定 `--source starry`，保持现有 dashboard JSON 格式和作者、提交信息约定。两个 job 都通过 `perf-data-publish` 串行写入同一个数据分支，但条件只检查各自矩阵，成功组的历史不会因为另一组失败而丢失。
+`benchmark-updates` 从报告 artifact 中收集本次数据。AxVisor 保持“只要存在成功测例报告就保留部分数据”的语义；Starry 只有在 QEMU 与 board 矩阵都成功时才纳入。只要任一来源有 metric，job 就把本次增量写成 `axvisor.json` / `starry.json`，上传为保留 30 天的 `benchmark-updates` artifact，为 docs-pages 排队或短暂部署故障保留恢复窗口，并执行 `gh workflow run docs.yml --ref dev`，携带 benchmark run ID、固定 revision 和 UTC 日期。没有任何新 metric 时不触发 docs。
 
-发布完成后，两个 job 各自执行 `gh workflow run docs.yml --ref dev`。`docs.yml` 继续把 `perf-data` 合并进站点；性能工作流本身不修改 Pages 部署。
+`docs.yml` 是唯一 Pages publisher。构建阶段先通过 `actions/configure-pages` 的 `base_url` 读取线上 `benchmark/index.html` 和 `benchmark/history.json`。页面存在时只使用 Pages 内容；仅当两份文件都返回 404 时，才一次性只读 `perf-data` 分支中的 `history.json` 与 `index.html` 作为 bootstrap。该 bootstrap 必须完整成功，普通文档发布才复制遗留 dashboard；fetch 失败、任一文件缺失或为空都会阻止 Pages 部署。benchmark dispatch 还必须拿到线上或遗留 history 作为 seed，否则构建失败，避免空历史覆盖累计数据。随后 `ci_perf_dashboard.py --source axvisor|starry` 按原 schema 合并本次增量，生成的 `history.json` 和 `index.html` 仍经现有 Pages artifact 与 deploy job 发布。线上读取使用 `Cache-Control: no-cache` 请求头和 cache-buster；线上读取的网络错误、单文件 404 或其它非预期状态会阻止部署。首次 Pages 发布成功后，唯一持久历史是 Pages，`perf-data` 分支冻结且不再被任何 workflow 写入、推送或部署。

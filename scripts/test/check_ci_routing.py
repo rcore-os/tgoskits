@@ -8,6 +8,7 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_MANIFEST = WORKSPACE_ROOT / "Cargo.toml"
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
+DOCS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/docs.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
@@ -25,6 +26,8 @@ def main() -> int:
         )
     if not BENCHMARKS_WORKFLOW.is_file():
         errors.append("missing workflow: .github/workflows/benchmarks.yml")
+    if not DOCS_WORKFLOW.is_file():
+        errors.append("missing workflow: .github/workflows/docs.yml")
     if PR_CLEANUP_WORKFLOW.exists():
         errors.append("stale-run cleanup must reuse the Plan CI runner")
     if LEGACY_BRANCH_WORKFLOW.exists():
@@ -33,6 +36,8 @@ def main() -> int:
         return report(errors)
 
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    benchmarks_workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")
+    docs_workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
     reusable_check_matrix = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
     ci_triggers = mapping_block(ci_workflow, "on", 0)
     ci_push = mapping_block(ci_triggers, "push", 2)
@@ -83,6 +88,7 @@ def main() -> int:
         ".github/workflows/starry-apps.yml",
         ".github/workflows/axvisor-nightly.yml",
         ".github/workflows/benchmarks.yml",
+        ".github/workflows/docs.yml",
     ):
         if workflow_path not in pull_request_paths:
             errors.append(
@@ -466,6 +472,285 @@ def main() -> int:
         ),
     ):
         require_contains(errors, reusable_run, fragment, message)
+
+    if "perf-data" in benchmarks_workflow:
+        errors.append("benchmark history updates must not use the legacy branch")
+    if (
+        "perf-history-axvisor" in benchmarks_workflow
+        or "perf-history-starry" in benchmarks_workflow
+    ):
+        errors.append("benchmark history must use one Pages update bridge")
+    for fragment, message in (
+        ("git push", "benchmarks must not push a legacy history branch"),
+        ("push --force", "benchmarks must not force-push a legacy history branch"),
+        ("git commit-tree", "benchmarks must not build legacy history commits"),
+        ("git mktree", "benchmarks must not build legacy history trees"),
+    ):
+        if fragment in benchmarks_workflow:
+            errors.append(message)
+
+    benchmark_jobs = mapping_block(benchmarks_workflow, "jobs", 0)
+    benchmark_updates = mapping_block(benchmark_jobs, "benchmark-updates", 2)
+    benchmark_permissions = mapping_block(benchmark_updates, "permissions", 4)
+    require_contains(
+        errors,
+        benchmark_permissions,
+        "actions: write",
+        "benchmark updates must dispatch the Pages workflow",
+    )
+    for fragment, message in (
+        (
+            "needs.plan.result == 'success'",
+            "benchmark updates must wait for the tested revision",
+        ),
+        (
+            "continue-on-error: true",
+            "AxVisor updates must retain successful partial reports",
+        ),
+        (
+            "needs.starry_performance.result == 'success'",
+            "Starry updates must require the QEMU matrix",
+        ),
+        (
+            "needs.starry_board_performance.result == 'success'",
+            "Starry updates must require the board matrix",
+        ),
+        (
+            "steps.updates.outputs.has_updates == 'true'",
+            "docs must not be dispatched without benchmark updates",
+        ),
+        (
+            "name: benchmark-updates",
+            "benchmark updates must be handed off as an artifact",
+        ),
+        (
+            "path: ${{ runner.temp }}/benchmark-updates/*.json",
+            "the bridge artifact must contain only this run's increments",
+        ),
+        (
+            "retention-days: 30",
+            "the benchmark bridge artifact must cover a docs recovery window",
+        ),
+        (
+            "gh workflow run docs.yml --ref dev",
+            "benchmark updates must dispatch the Pages workflow",
+        ),
+        (
+            '-f benchmark_run_id="${BENCHMARK_RUN_ID}"',
+            "docs must receive the benchmark run ID",
+        ),
+        (
+            '-f benchmark_revision="${BENCHMARK_REVISION}"',
+            "docs must receive the benchmark revision",
+        ),
+        (
+            '-f benchmark_date="${BENCHMARK_DATE}"',
+            "docs must receive the benchmark date",
+        ),
+    ):
+        require_contains(errors, benchmark_updates, fragment, message)
+    if "needs.axvisor_performance.result == 'success'" in benchmark_updates:
+        errors.append("AxVisor updates must accept successful partial reports")
+
+    docs_permissions = mapping_block(docs_workflow, "permissions", 0)
+    for fragment, message in (
+        (
+            "actions: read",
+            "docs must read benchmark artifacts from the benchmark run",
+        ),
+        ("contents: read", "docs must keep read-only repository access"),
+        ("pages: write", "docs must remain the Pages publisher"),
+        ("id-token: write", "docs must keep the Pages deployment identity"),
+    ):
+        require_contains(errors, docs_permissions, fragment, message)
+
+    docs_triggers = mapping_block(docs_workflow, "on", 0)
+    docs_dispatch = mapping_block(docs_triggers, "workflow_dispatch", 2)
+    for input_name in (
+        "benchmark_run_id",
+        "benchmark_revision",
+        "benchmark_date",
+    ):
+        require_contains(
+            errors,
+            docs_dispatch,
+            f"{input_name}:",
+            f"docs dispatch must accept {input_name}",
+        )
+
+    docs_concurrency = mapping_block(docs_workflow, "concurrency", 0)
+    require_contains(
+        errors,
+        docs_concurrency,
+        "group: docs-pages",
+        "docs deployments must share one Pages queue",
+    )
+    require_contains(
+        errors,
+        docs_concurrency,
+        "queue: max",
+        "docs deployments must preserve queued Pages work",
+    )
+    if "cancel-in-progress" in docs_concurrency:
+        errors.append("docs deployments must not cancel queued Pages work")
+
+    docs_jobs = mapping_block(docs_workflow, "jobs", 0)
+    docs_build = mapping_block(docs_jobs, "build", 2)
+    docs_setup = named_step_block(docs_build, "Set up Pages")
+    require_contains(
+        errors,
+        docs_setup,
+        "id: pages",
+        "docs must expose the Pages base URL to the dashboard step",
+    )
+    docs_download = named_step_block(docs_build, "Download benchmark updates")
+    for fragment, message in (
+        (
+            "github.event_name == 'workflow_dispatch'",
+            "benchmark updates must only be downloaded for dispatched docs runs",
+        ),
+        (
+            "inputs.benchmark_run_id != ''",
+            "benchmark updates must identify the benchmark run",
+        ),
+        (
+            "name: benchmark-updates",
+            "docs must download the benchmark bridge artifact",
+        ),
+        (
+            "run-id: ${{ inputs.benchmark_run_id }}",
+            "docs must download the benchmark artifact from its source run",
+        ),
+        (
+            "github-token: ${{ github.token }}",
+            "cross-run artifact downloads need the workflow token",
+        ),
+    ):
+        require_contains(errors, docs_download, fragment, message)
+
+    docs_dashboard = named_step_block(docs_build, "Prepare performance dashboard")
+    for fragment, message in (
+        (
+            "PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}",
+            "docs must read the deployed benchmark page",
+        ),
+        (
+            "--header 'Cache-Control: no-cache'",
+            "published benchmark reads must use a valid cache header",
+        ),
+        (
+            "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "published benchmark reads must include a cache buster",
+        ),
+        (
+            '"${history_status}" != "200"',
+            "benchmark updates must fail without deployed history",
+        ),
+        (
+            '"${history_status}" = "200"',
+            "normal docs builds must preserve deployed history",
+        ),
+        (
+            '"${index_status}" = "200"',
+            "normal docs builds must preserve the deployed dashboard",
+        ),
+        (
+            '"${history_status}" = "404"',
+            "a brand new site may skip the benchmark dashboard",
+        ),
+        (
+            '"${index_status}" = "404"',
+            "a brand new site may skip the benchmark dashboard",
+        ),
+        (
+            "::error::Failed to fetch",
+            "benchmark fetch failures must stop Pages deployment",
+        ),
+        (
+            "::error::Published benchmark history is empty",
+            "empty published history must stop Pages deployment",
+        ),
+        (
+            "::error::Unexpected published dashboard state",
+            "partial published dashboard states must stop deployment",
+        ),
+        (
+            "git fetch --depth=1 origin perf-data",
+            "docs must only bootstrap from the frozen legacy branch",
+        ),
+        (
+            "git show FETCH_HEAD:history.json",
+            "legacy bootstrap must read the frozen history",
+        ),
+        (
+            "git show FETCH_HEAD:index.html",
+            "legacy bootstrap must read the frozen dashboard",
+        ),
+        (
+            "::error::Benchmark updates require published or legacy dashboard data",
+            "benchmark updates must fail without a usable history seed",
+        ),
+        (
+            "::error::Legacy performance dashboard is incomplete",
+            "partial legacy dashboard data must stop deployment",
+        ),
+        (
+            "::error::Legacy performance dashboard is unavailable",
+            "unavailable legacy bootstrap must stop deployment",
+        ),
+        (
+            '--source "${source}"',
+            "docs must merge source-specific benchmark updates",
+        ),
+        (
+            "docs/build/benchmark/index.html",
+            "docs must publish the benchmark page",
+        ),
+        (
+            "docs/build/benchmark/history.json",
+            "docs must publish the cumulative benchmark history",
+        ),
+    ):
+        require_contains(errors, docs_dashboard, fragment, message)
+    if "--no-cache" in docs_dashboard:
+        errors.append("curl --no-cache is not a supported option")
+    if "dashboards are unavailable; skipping" in docs_dashboard:
+        errors.append("missing legacy bootstrap data must not be skipped")
+    if docs_workflow.count("perf-data") != 1:
+        errors.append("the frozen legacy branch must only support the 404 bootstrap")
+    else:
+        legacy_index = docs_dashboard.find("git fetch --depth=1 origin perf-data")
+        bootstrap_start = docs_dashboard.find(
+            'if [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ]; then'
+        )
+        benchmark_start = docs_dashboard.find(
+            'if [ -n "${BENCHMARK_RUN_ID}" ]; then'
+        )
+        if (
+            legacy_index == -1
+            or bootstrap_start == -1
+            or benchmark_start == -1
+            or legacy_index < bootstrap_start
+            or legacy_index > benchmark_start
+        ):
+            errors.append(
+                "legacy bootstrap reads must stay inside the double-404 branch"
+            )
+    for fragment, message in (
+        ("git push", "docs must not push a legacy history branch"),
+        ("push --force", "docs must not force-push a legacy history branch"),
+        ("git commit-tree", "docs must not build legacy history commits"),
+        ("git mktree", "docs must not build legacy history trees"),
+    ):
+        if fragment in docs_workflow:
+            errors.append(message)
+    docs_deploy = mapping_block(docs_jobs, "deploy", 2)
+    require_contains(
+        errors,
+        docs_deploy,
+        "uses: actions/deploy-pages@v5",
+        "docs must keep the existing Pages deploy job",
+    )
 
     return report(errors)
 

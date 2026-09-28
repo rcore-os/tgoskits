@@ -208,7 +208,7 @@ class CiImpactTests(unittest.TestCase):
 
     def test_benchmark_suite_path_routes_to_axvisor_instead_of_ignored_app(self) -> None:
         path = Path(
-            "benchmarks/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
+            "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/"
             "performance/board-orangepi-5-plus-vcpu-perf.toml"
         )
 

@@ -243,7 +243,7 @@ class CiPlanTests(unittest.TestCase):
 
     def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
         path = (
-            "benchmarks/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
+            "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/"
             "performance/board-orangepi-5-plus-vcpu-perf.toml"
         )
 
@@ -267,10 +267,10 @@ class CiPlanTests(unittest.TestCase):
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "benchmarks/axvisor/normal/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
-            "benchmarks/axvisor/normal/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
-            "benchmarks/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
             "benchmarks/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml",
         ):
@@ -523,6 +523,54 @@ class CiPlanTests(unittest.TestCase):
                     ]
                 },
             ),
+        )
+
+    def test_perf_dashboard_bootstraps_legacy_axvisor_history_for_starry(self):
+        legacy_entry = {
+            "date": "2026-09-16",
+            "revision": "legacy-rev",
+            "metrics": [
+                {"name": "vcpu-perf/blocks", "unit": "blocks/s", "value": 1.0},
+            ],
+        }
+        starry_metrics = [
+            {"name": "wakeup/p50", "unit": "ns", "value": 2.0},
+        ]
+
+        history = ci_perf_dashboard.update_history(
+            [legacy_entry],
+            "2026-09-20",
+            "starry-rev",
+            starry_metrics,
+            "starry",
+        )
+
+        self.assertIsInstance(history, dict)
+        self.assertEqual(
+            history["axvisor"],
+            [
+                {
+                    "date": "2026-09-16",
+                    "revision": "legacy-rev",
+                    "metrics": [
+                        {
+                            "name": "vcpu-perf/blocks",
+                            "unit": "blocks/s",
+                            "value": 1.0,
+                        },
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(
+            history["starry"],
+            [
+                {
+                    "date": "2026-09-20",
+                    "revision": "starry-rev",
+                    "metrics": starry_metrics,
+                }
+            ],
         )
 
     def test_perf_dashboard_defaults_to_chart_view(self):

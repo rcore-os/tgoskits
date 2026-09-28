@@ -20,6 +20,7 @@ on:
       - ".github/workflows/starry-apps.yml"
       - ".github/workflows/axvisor-nightly.yml"
       - ".github/workflows/benchmarks.yml"
+      - ".github/workflows/docs.yml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"

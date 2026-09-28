@@ -25,19 +25,36 @@ on:
       - "os/**/README*.md"
       - "apps/**"
       - ".github/workflows/docs.yml"
-  # Fallback for nights when the perf-history job cannot dispatch this workflow.
+  # Fallback for nights when the benchmark update job cannot dispatch this workflow.
   schedule:
     - cron: "0 23 * * *"
   workflow_dispatch:
+    inputs:
+      benchmark_run_id:
+        description: Benchmarks workflow run containing the current updates.
+        required: false
+        default: ""
+        type: string
+      benchmark_revision:
+        description: Tested revision for the benchmark updates.
+        required: false
+        default: ""
+        type: string
+      benchmark_date:
+        description: UTC date for the benchmark updates.
+        required: false
+        default: ""
+        type: string
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
 
 concurrency:
   group: docs-pages
-  cancel-in-progress: true
+  queue: max
 
 jobs:
   build:
@@ -69,20 +86,169 @@ jobs:
         working-directory: docs
         run: yarn build
 
-      - name: Merge performance dashboard
+      - name: Set up Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Download benchmark updates
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.benchmark_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: benchmark-updates
+          run-id: ${{ inputs.benchmark_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/benchmark-updates
+
+      - name: Prepare performance dashboard
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+          BENCHMARK_RUN_ID: ${{ github.event.inputs.benchmark_run_id || '' }}
+          BENCHMARK_REVISION: ${{ github.event.inputs.benchmark_revision || '' }}
+          BENCHMARK_DATE: ${{ github.event.inputs.benchmark_date || '' }}
+          BENCHMARK_UPDATES: ${{ runner.temp }}/benchmark-updates
         run: |
           set -euo pipefail
-          if git fetch --depth=1 origin perf-data 2>/dev/null; then
-            mkdir -p docs/build/benchmark
-            git show FETCH_HEAD:index.html > docs/build/benchmark/index.html
-            git show FETCH_HEAD:history.json > docs/build/benchmark/history.json
-            echo "merged performance dashboard"
-          else
-            echo "perf-data branch is not available; publishing docs without it"
+          test -n "${PAGES_BASE_URL}"
+
+          dashboard="${RUNNER_TEMP}/performance-dashboard"
+          mkdir -p "${dashboard}"
+
+          fetch_benchmark_file() {
+            local filename="$1"
+            local output="$2"
+            local url="${PAGES_BASE_URL%/}/benchmark/${filename}"
+            url="${url}?cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            local status
+            if ! status="$(
+              curl --silent --show-error --location \
+                --header 'Cache-Control: no-cache' \
+                --output "${output}" \
+                --write-out '%{http_code}' \
+                "${url}"
+            )"; then
+              echo "::error::Failed to fetch ${url}" >&2
+              return 1
+            fi
+            printf '%s' "${status}"
+          }
+
+          if ! history_status="$(
+            fetch_benchmark_file history.json "${dashboard}/history.json"
+          )"; then
+            exit 1
+          fi
+          if ! index_status="$(
+            fetch_benchmark_file index.html "${dashboard}/index.html"
+          )"; then
+            exit 1
+          fi
+          echo "Online benchmark history status: ${history_status}"
+          echo "Online benchmark index status: ${index_status}"
+          if [ "${history_status}" = "200" ] && [ ! -s "${dashboard}/history.json" ]; then
+            echo "::error::Published benchmark history is empty" >&2
+            exit 1
+          fi
+          if [ "${index_status}" = "200" ] && [ ! -s "${dashboard}/index.html" ]; then
+            echo "::error::Published benchmark dashboard is empty" >&2
+            exit 1
           fi
 
-      - name: Set up Pages
-        uses: actions/configure-pages@v6
+          bootstrap_status=1
+          if [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ]; then
+            legacy_history=false
+            legacy_index=false
+            if git fetch --depth=1 origin perf-data 2>/dev/null; then
+              if git show FETCH_HEAD:history.json > "${dashboard}/history.json" \
+                && [ -s "${dashboard}/history.json" ]; then
+                legacy_history=true
+              else
+                rm -f "${dashboard}/history.json"
+              fi
+              if git show FETCH_HEAD:index.html > "${dashboard}/index.html" \
+                && [ -s "${dashboard}/index.html" ]; then
+                legacy_index=true
+              else
+                rm -f "${dashboard}/index.html"
+              fi
+              if [ "${legacy_history}" = "true" ] && [ "${legacy_index}" = "true" ]; then
+                bootstrap_status=0
+              elif [ "${legacy_history}" = "true" ] || [ "${legacy_index}" = "true" ]; then
+                bootstrap_status=2
+              fi
+            fi
+          fi
+
+          if [ -n "${BENCHMARK_RUN_ID}" ]; then
+            if [ "${history_status}" != "200" ] || [ "${index_status}" != "200" ]; then
+              if [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ] \
+                && [ "${bootstrap_status}" = "0" ]; then
+                echo "Bootstrapping benchmark history from the frozen legacy branch"
+              else
+                echo "::error::Benchmark updates require published or legacy dashboard data" >&2
+                exit 1
+              fi
+            fi
+            test -n "${BENCHMARK_REVISION}"
+            test -n "${BENCHMARK_DATE}"
+
+            updated=false
+            for source in axvisor starry; do
+              metrics="${BENCHMARK_UPDATES}/${source}.json"
+              if [ ! -f "${metrics}" ]; then
+                continue
+              fi
+              count="$(
+                python3 -c \
+                  'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' \
+                  "${metrics}"
+              )"
+              if [ "${count}" = "0" ]; then
+                continue
+              fi
+              python3 scripts/test/ci_perf_dashboard.py \
+                --metrics "${metrics}" \
+                --history "${dashboard}/history.json" \
+                --source "${source}" \
+                --date "${BENCHMARK_DATE}" \
+                --revision "${BENCHMARK_REVISION}" \
+                --title "Nightly Performance Benchmarks" \
+                --window 10 \
+                --output "${dashboard}/index.html"
+              updated=true
+            done
+            if [ "${updated}" != "true" ]; then
+              echo "::error::No benchmark updates were found in the artifact" >&2
+              exit 1
+            fi
+            mkdir -p docs/build/benchmark
+            cp "${dashboard}/index.html" docs/build/benchmark/index.html
+            cp "${dashboard}/history.json" docs/build/benchmark/history.json
+            echo "Updated performance dashboard from benchmark run ${BENCHMARK_RUN_ID}"
+          elif [ "${history_status}" = "200" ] && [ "${index_status}" = "200" ]; then
+            mkdir -p docs/build/benchmark
+            cp "${dashboard}/index.html" docs/build/benchmark/index.html
+            cp "${dashboard}/history.json" docs/build/benchmark/history.json
+            echo "Preserved published performance dashboard"
+          elif [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ]; then
+            if [ "${bootstrap_status}" = "0" ]; then
+              mkdir -p docs/build/benchmark
+              cp "${dashboard}/index.html" docs/build/benchmark/index.html
+              cp "${dashboard}/history.json" docs/build/benchmark/history.json
+              echo "Bootstrapped performance dashboard from the frozen legacy branch"
+            else
+              if [ "${bootstrap_status}" = "2" ]; then
+                echo "::error::Legacy performance dashboard is incomplete" >&2
+              else
+                echo "::error::Legacy performance dashboard is unavailable" >&2
+              fi
+              exit 1
+            fi
+          else
+            echo "::error::Unexpected published dashboard state: history=${history_status}, index=${index_status}" >&2
+            exit 1
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

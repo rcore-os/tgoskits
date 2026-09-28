@@ -57,8 +57,14 @@ job reports the tested SHA and plan/check results in the GitHub job summary, and
 fails if either stage did not succeed. Detailed output remains in each matrix
 job's Actions log.
 
-Performance reports and `perf-data` history are produced by
-`.github/workflows/benchmarks.yml`; see the [CI performance
+Performance reports are produced by `.github/workflows/benchmarks.yml`. Its
+`benchmark-updates` job hands this run's AxVisor and Starry increments to the
+docs workflow as a short-lived artifact, and the docs Pages deployment merges
+them with the published benchmark history. If both Pages files are initially
+missing, docs performs a one-time read-only bootstrap from the frozen legacy
+`perf-data` branch and blocks deployment unless both legacy files are readable;
+after that publication, Pages is the only persistent history source.
+See the [CI performance
 benchmarks](../../docs/docs/ci/testing/benchmarks.md) for report prefixes,
 dashboard sources and history publishing. This page only covers AxVisor's
 functional nightly.

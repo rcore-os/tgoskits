@@ -57,7 +57,7 @@ flowchart TD
 
 `axvisor-nightly.yml` 按 UTC 每日 19:20 运行 `axvisor-nightly.toml` 中的非性能 AxVisor 场景，由 `build_axvisor_nightly_plan()` 规划。`benchmarks.yml` 按 UTC 每日 21:40 运行统一 `benchmarks.toml` 中的全部性能 check，由 `build_benchmarks_plan()` 规划：`AxVisor` 组进入 `axvisor_performance_matrix`，`Starry Apps` 组按运行环境进入 QEMU 的 `starry_performance_matrix` 和 `max_parallel: 1` 的 `starry_board_performance_matrix`。
 
-三条日常入口不建立相互等待的 `needs` 门禁。AxVisor Nightly 只产生功能结果；Benchmarks 单独汇总两组性能报告，并以 `perf-data-publish` 串行发布 `axvisor` 与 `starry` 历史。性能检查的名称、运行命令和维护边界详见[基准验证](testing/benchmarks.md)。
+三条日常入口不建立相互等待的 `needs` 门禁。AxVisor Nightly 只产生功能结果；Benchmarks 汇总两组性能报告，把本次 `axvisor` 与 `starry` 增量作为短生命周期 artifact 交给 docs workflow。docs 优先合并线上 Pages 历史，只在 Pages 双 404 时一次性只读旧分支完成 bootstrap；bootstrap 不完整时阻止部署，之后 Pages 始终是唯一持久历史。性能检查的名称、运行命令和维护边界详见[基准验证](testing/benchmarks.md)。
 
 ## 2. 发布
 
@@ -105,7 +105,7 @@ Python 文件均位于 `scripts/test/`。任务工具和各 OS 的适配层决�
 | `container-publish.yml` | [容器发布](publishing/containers.md)：构建 base 和 AxVisor LVZ 镜像并推送 GHCR | 提供部分矩阵需要的环境，不是主 CI 的依赖 job   |
 | `starry-apps.yml`       | [应用验证](testing/applications.md)：定时或手动运行 Starry 应用矩阵         | 使用同一矩阵执行器，维护独立检查清单           |
 | `axvisor-nightly.yml`   | AxVisor 非性能 nightly：运行 `axvisor-nightly.toml` 的功能场景              | 只复用矩阵执行器，不等待主 CI 成功             |
-| `benchmarks.yml`        | [基准验证](testing/benchmarks.md)：运行统一性能清单并发布两组历史            | 只复用矩阵执行器，不等待主 CI 成功             |
+| `benchmarks.yml`        | [基准验证](testing/benchmarks.md)：运行统一性能清单并桥接本次历史增量          | 只复用矩阵执行器，不等待主 CI 成功             |
 | `docs.yml`              | [文档发布](publishing/documentation.md)：构建 Docusaurus 并部署 Pages          | 构建成功后才部署，独立于 Rust、QEMU 和板卡检查 |
 | `release-plz.yml`       | [软件包发布](publishing/releases.md)：发布软件包、创建或更新发布 PR            | 主仓专用，没有等待主 CI 成功的工作流依赖       |
 
