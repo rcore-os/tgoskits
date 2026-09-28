@@ -114,13 +114,13 @@ name = "QEMU aarch64 · HTTP control-plane + browser console + IVC"
 timeout_minutes = 30
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 HTTP control-plane, browser console and source-built IVC publisher"
+echo "==> axvisor aarch64 HTTP control-plane, browser console and source-built IVC peers"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
 # and their per-case initramfs/runtime inputs are still prepared independently.
 # Temporarily build the IVC publisher from source until the rootfs image is updated.
 cargo xtask axvisor test qemu --arch aarch64 \
-  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local
+  --test-case qemu/aarch64/http-control-plane,qemu/aarch64/ivc-local,qemu/aarch64/ivc-arceos
 '''
 
 [[check.suite]]
@@ -129,6 +129,7 @@ arch = "aarch64"
 cases = [
   "qemu/aarch64/http-control-plane",
   "qemu/aarch64/ivc-local",
+  "qemu/aarch64/ivc-arceos",
   # "qemu/aarch64/ivc", # Prebuilt guest images must match the publisher protocol.
 ]
 

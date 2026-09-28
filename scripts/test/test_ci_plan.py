@@ -20,6 +20,12 @@ sys.path.insert(0, str(MODULE_PATH.parent))
 
 from ci_impact import analyze_changed_paths
 from ci_suite import SUITE_ROOTS
+IMPACT_SPEC = importlib.util.spec_from_file_location(
+    "ci_impact", MODULE_PATH.with_name("ci_impact.py")
+)
+assert IMPACT_SPEC is not None and IMPACT_SPEC.loader is not None
+ci_impact = importlib.util.module_from_spec(IMPACT_SPEC)
+IMPACT_SPEC.loader.exec_module(ci_impact)
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -1913,6 +1919,30 @@ node_version = "latest"
                     ],
                     selection.command,
                 )
+
+    def test_arceos_ivc_app_changes_select_their_qemu_cases(self) -> None:
+        scenarios = (
+            ("apps/arceos/ivc_publisher/src/main.rs", "qemu/aarch64/ivc-local"),
+            ("apps/arceos/ivc_subscriber/src/main.rs", "qemu/aarch64/ivc-arceos"),
+        )
+        for path, case in scenarios:
+            with self.subTest(path=path):
+                impact = ci_impact.analyze_changed_paths(
+                    ci_plan.WORKSPACE_ROOT, [Path(path)], {}
+                )
+                self.assertFalse(impact.full)
+                self.assertEqual(impact.input_selections, ("axvisor:qemu:aarch64",))
+                self.assertNotIn(path, impact.ignored_apps)
+                rows = ci_plan.build_main_plan(
+                    ci_plan.replace(self.upstream, impact=impact)
+                )["axvisor_matrix"]["include"]
+                check = next(
+                    row
+                    for row in rows
+                    if row["id"]
+                    == "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
+                )
+                self.assertIn(case, selected_test_cases(check["command"]))
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]

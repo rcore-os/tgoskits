@@ -142,14 +142,23 @@ consumers from racing on `UnsafeCell` slot bytes.
 
 # Development
 
-Use the workspace `xtask` flow for validation:
+Use the workspace `xtask` flow for validation. `qemu/aarch64/ivc-local` builds
+the ArceOS publisher from this workspace and runs it with the Linux subscriber.
+`qemu/aarch64/ivc-arceos` builds and runs both ArceOS peers from this workspace:
 
 ```bash
 cargo fmt
 cargo xtask test
 cargo xtask clippy --package axivc
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/ivc-local
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/ivc-arceos
 ```
+
+The older `qemu/aarch64/ivc` case loads the ArceOS publisher from
+`/guest/arceos/arceos-ivc-publisher.bin` in the rootfs, not from the current
+source. Use it only after the rootfs publisher and Linux peer have been updated
+for the v3 region layout and Message V1; it cannot validate local publisher
+changes.
 
 # License
 

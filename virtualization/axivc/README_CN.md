@@ -127,14 +127,21 @@ unsafe attach 契约负责阻止重复 producer/consumer 在 `UnsafeCell` slot b
 
 # 开发验证
 
-使用 workspace 的 `xtask` 流程进行验证：
+使用 workspace 的 `xtask` 流程进行验证。`qemu/aarch64/ivc-local` 从当前源码
+构建 ArceOS publisher，并与 Linux subscriber 互操作；
+`qemu/aarch64/ivc-arceos` 从当前源码构建并运行两个 ArceOS 客户机：
 
 ```bash
 cargo fmt
 cargo xtask test
 cargo xtask clippy --package axivc
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/ivc-local
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/ivc-arceos
 ```
+
+旧用例 `qemu/aarch64/ivc` 从 rootfs 的 `/guest/arceos/arceos-ivc-publisher.bin` 加载
+publisher，而不是使用当前源码。只有 rootfs publisher 和 Linux 对端都同步到 v3
+region 布局及 Message V1 后，才应运行旧用例；它不能验证本地 publisher 源码改动。
 
 # 许可证
 

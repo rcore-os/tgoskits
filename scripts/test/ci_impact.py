@@ -62,6 +62,8 @@ KNOWN_OS_CONFIG_PATHS = (
 CI_OWNED_APP_INPUTS = (
     (Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),
     (Path("apps/arceos/pci-memory-test"), "axvisor:qemu:aarch64"),
+    (Path("apps/arceos/ivc_publisher"), "axvisor:qemu:aarch64"),
+    (Path("apps/arceos/ivc_subscriber"), "axvisor:qemu:aarch64"),
 )
 ARCH_PATH_ALIASES = {
     "aarch64": (
