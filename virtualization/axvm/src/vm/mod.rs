@@ -591,6 +591,29 @@ impl VmRuntimeHandle {
         )
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn dispatch_legacy_pic_interrupt(&self, vcpu_id: usize, vector: u8) -> AxVmResult {
+        let (owner, kick) = self.vcpu_dispatch_target(vcpu_id)?;
+        dispatch_vcpu_interrupt_with(
+            || {
+                let needs_kick = self
+                    .irq_dispatcher
+                    .enqueue_legacy_pic(vcpu_id, owner, vector)
+                    .ok_or_else(|| {
+                        AxVmError::invalid_state(
+                            "dispatch legacy PIC interrupt",
+                            format_args!("vCPU {vcpu_id} task generation changed"),
+                        )
+                    })?;
+                Ok(needs_kick)
+            },
+            || {
+                kick.kick_from_task();
+                Ok(())
+            },
+        )
+    }
+
     #[cfg(target_arch = "loongarch64")]
     pub(crate) fn dispatch_physical_vcpu_interrupt(
         &self,

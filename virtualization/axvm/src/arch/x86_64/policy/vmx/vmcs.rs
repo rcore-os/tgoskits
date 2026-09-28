@@ -24,6 +24,7 @@ use super::VmxInterruptionType;
 use crate::arch::x86_64::policy::{
     X86AccessFlags, X86GuestPhysAddr, X86HostPhysAddr, X86NestedPageFaultInfo, X86VcpuError,
     X86VcpuResult,
+    pending_event::{PendingEvent, PendingEventKind},
 };
 
 pub mod controls {
@@ -50,26 +51,40 @@ pub fn set_ept_pointer<M: ControlMemory>(
 
 pub fn inject_event<M: ControlMemory>(
     controls: &mut VmxControls<M>,
-    vector: u8,
-    err_code: Option<u32>,
+    event: PendingEvent,
 ) -> X86VcpuResult {
     // SDM Vol. 3C, Section 24.8.3
-    let err_code = if VmxInterruptionType::vector_has_error_code(vector) {
-        err_code.or_else(|| {
-            Some(
-                controls
+    let err_code =
+        if event.is_exception() && VmxInterruptionType::vector_has_error_code(event.vector) {
+            Some(match event.err_code {
+                Some(err_code) => err_code,
+                None => controls
                     .read(VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE)
-                    .map_err(X86VcpuError::from)
-                    .unwrap(),
-            )
-        })
-    } else {
-        None
-    };
+                    .map_err(X86VcpuError::from)?,
+            })
+        } else {
+            None
+        };
     let length = controls.read(VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN)?;
     controls
-        .inject_interrupt(VmxInterruptInfo::from(vector, err_code), length)
+        .inject_interrupt(event_interrupt_info(event, err_code), length)
         .map_err(X86VcpuError::from)
+}
+
+pub(super) const fn interruption_type_for_event(event: PendingEvent) -> VmxInterruptionType {
+    match event.kind {
+        PendingEventKind::ExternalInterrupt(_) => VmxInterruptionType::External,
+        PendingEventKind::Exception => VmxInterruptionType::HardException,
+    }
+}
+
+fn event_interrupt_info(event: PendingEvent, err_code: Option<u32>) -> VmxInterruptInfo {
+    VmxInterruptInfo {
+        vector: event.vector,
+        int_type: interruption_type_for_event(event),
+        err_code: event.is_exception().then_some(err_code).flatten(),
+        valid: true,
+    }
 }
 
 pub fn ept_violation_info<M: ControlMemory>(
@@ -118,4 +133,25 @@ pub fn apic_access_exit_info<M: ControlMemory>(
         access_type: ApicAccessExitType::try_from(qualification.get_bits(12..16) as u8).unwrap(),
         non_event_delivery_asynchronous: qualification.get_bit(16),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VmxInterruptionType, event_interrupt_info};
+    use crate::arch::x86_64::policy::pending_event::{PendingEvent, PendingEventSource};
+
+    #[test]
+    fn vmx_injection_type_and_error_code_follow_event_kind_not_vector() {
+        let pic = PendingEvent::external_interrupt(8, false, PendingEventSource::LegacyPic);
+        let pic_info = event_interrupt_info(pic, None);
+        assert_eq!(pic_info.int_type, VmxInterruptionType::External);
+        assert_eq!(pic_info.err_code, None);
+        assert_eq!(pic_info.bits() & (1 << 11), 0);
+
+        let double_fault = PendingEvent::exception(8, Some(0));
+        let exception_info = event_interrupt_info(double_fault, Some(0));
+        assert_eq!(exception_info.int_type, VmxInterruptionType::HardException);
+        assert_eq!(exception_info.err_code, Some(0));
+        assert_ne!(exception_info.bits() & (1 << 11), 0);
+    }
 }

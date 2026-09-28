@@ -74,6 +74,18 @@ impl VcpuIrqDispatcher {
         self.queue.push(vcpu_id, owner, interrupt.into())
     }
 
+    /// Enqueues one legacy PIC vector while retaining its ExtINT source.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn enqueue_legacy_pic(
+        &self,
+        vcpu_id: usize,
+        owner: u64,
+        vector: u8,
+    ) -> Option<bool> {
+        self.queue
+            .push(vcpu_id, owner, QueuedVcpuInterrupt::LegacyPic { vector })
+    }
+
     /// Enqueues one host physical interrupt while retaining its source identity.
     #[cfg(target_arch = "loongarch64")]
     pub(crate) fn enqueue_physical(

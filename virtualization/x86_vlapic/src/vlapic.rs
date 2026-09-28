@@ -379,6 +379,11 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         let _ = host::inject_interrupt::<H>(H::current_vm_id(), vcpu_id as usize, vector as u8);
     }
 
+    /// Returns whether the local APIC priority permits accepting `vector`.
+    pub fn can_accept_interrupt(&self, vector: u8) -> bool {
+        interrupt_priority_above_ppr(vector, self.regs().PPR.get() as u8)
+    }
+
     /// Record interrupt acceptance in the virtual APIC page.
     pub fn accept_interrupt(&mut self, vector: u8, level_triggered: bool) {
         let vector = vector as u32;
@@ -710,6 +715,24 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
     fn write_dcr(&mut self) -> X86VlapicResult {
         self.virtual_timer.write_dcr(self.regs().DCR_TIMER.get());
         Ok(())
+    }
+}
+
+fn interrupt_priority_above_ppr(vector: u8, ppr: u8) -> bool {
+    vector & 0xf0 > ppr & 0xf0
+}
+
+#[cfg(test)]
+mod interrupt_priority_tests {
+    use super::interrupt_priority_above_ppr;
+
+    #[test]
+    fn fixed_interrupt_must_have_a_higher_priority_class_than_ppr() {
+        assert!(!interrupt_priority_above_ppr(0x5f, 0x50));
+        assert!(!interrupt_priority_above_ppr(0x50, 0x5f));
+        assert!(!interrupt_priority_above_ppr(0x4f, 0x50));
+        assert!(interrupt_priority_above_ppr(0x6f, 0x5f));
+        assert!(interrupt_priority_above_ppr(0x50, 0x4f));
     }
 }
 

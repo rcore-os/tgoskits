@@ -16,7 +16,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use starry_signal::{SignalInfo, Signo};
 
@@ -38,10 +38,7 @@ use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
     sync::{IrqMutex, Mutex},
-    task::{
-        PgidNumber, Process, current_user_task, get_process_group_by_number,
-        send_signal_to_process_group,
-    },
+    task::{PgidNumber, PidView, Process, current_user_task, send_signal_to_process_group},
 };
 
 const TCIFLUSH: usize = 0;
@@ -146,6 +143,17 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         self.terminal.pty_number.load(Ordering::Acquire)
     }
 
+    /// Every refusal is silent, as in Linux `tty_open_proc_set_tty()`: the
+    /// caller must lead a session that has no terminal, and no other session
+    /// may own this one.
+    fn acquire_on_open(&self, proc: &Process, location: Option<Location>) {
+        if !self.is_ptm
+            && let Some(this) = self.this.upgrade()
+        {
+            let _ = this.bind_to_at(proc, location);
+        }
+    }
+
     fn bind_current_to_at(&self, location: Location) -> StarryResult<()> {
         self.this.upgrade().unwrap().bind_to_at(
             &current_user_task().as_thread().proc_data.proc,
@@ -160,13 +168,53 @@ pub(crate) fn bind_pty_at_location(location: Location) -> Option<StarryResult<us
     Some(pty.bind_current_to_at(location).map(|()| 0))
 }
 
+/// Linux `tty_open()` makes a tty opened for reading without `O_NOCTTY` the
+/// caller's controlling terminal. Pty masters and `/dev/console` never are.
+pub(crate) fn set_controlling_terminal_on_open(
+    current: &crate::task::UserTaskRef,
+    location: &Location,
+) {
+    let Ok(device) = location.entry().downcast::<Device>() else {
+        return;
+    };
+    if location
+        .metadata()
+        .is_ok_and(|metadata| metadata.rdev == DeviceId::new(5, 1))
+    {
+        return;
+    }
+    let proc = &current.as_thread().proc_data.proc;
+    let inner = device.inner().as_any();
+    if let Some(pty) = inner.downcast_ref::<PtyDriver>() {
+        pty.acquire_on_open(proc, Some(location.clone()));
+    } else if let Some(tty) = inner.downcast_ref::<serial::SerialTtyDriver>() {
+        tty.acquire_on_open(proc, None);
+    } else if let Some(tty) = inner.downcast_ref::<usb_serial::UsbSerialTtyDriver>() {
+        tty.acquire_on_open(proc, None);
+    }
+}
+
+/// The PID namespace the caller sees; Linux resolves job control ids in it.
+fn caller_view(current: &crate::task::UserTaskRef) -> PidView {
+    PidView::new(current.as_thread().active_pid_namespace())
+}
+
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     fn open(&self, _exclusive: bool) -> VfsResult<()> {
+        // The writer accounts for the open before the count moves: a pty refuses
+        // an open whose peer is already gone, and a refused open must not count.
+        self.writer.opened().map_err(VfsError::from)?;
         self.open_count.fetch_add(1, Ordering::AcqRel);
-        self.writer.open().map_err(VfsError::from)
+        if let Err(error) = self.writer.open() {
+            self.open_count.fetch_sub(1, Ordering::AcqRel);
+            self.writer.closing();
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     fn close(&self, _exclusive: bool) {
+        self.writer.closing();
         // On the last fd close, notify the writer side so the peer reader can
         // observe POLLHUP / EOF. Without this, a PTY master/slave close never
         // wakes the peer and poll()/read() hang.
@@ -247,11 +295,17 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .job_control
                         .foreground()
                         .ok_or(StarryError::NoSuchProcess)?;
-                    (arg as *mut u32).vm_write(current, foreground.pgid().get())?;
+                    // Linux tiocgpgrp() answers with pid_vnr(): the number the
+                    // caller's PID namespace shows, and 0 when that namespace
+                    // cannot name the group at all.
+                    let pgid = caller_view(current)
+                        .visible_group_number(&foreground.identity())
+                        .map_or(0, |pgid| pgid.get());
+                    (arg as *mut u32).vm_write(current, pgid)?;
                 }
                 TIOCSPGRP => {
                     let pgid: u32 = (arg as *const u32).vm_read(current)?;
-                    let pg = get_process_group_by_number(PgidNumber::try_from(pgid)?)?;
+                    let pg = caller_view(current).resolve_group(PgidNumber::try_from(pgid)?)?;
                     self.terminal.job_control.set_foreground(&pg)?;
                 }
                 TIOCGWINSZ => {

@@ -72,6 +72,22 @@ impl ArchOps for X86_64Arch {
         crate::arch::x86_64::policy::initialize_hardware_support().is_ok()
     }
 
+    fn inject_arch_interrupt(
+        vm_id: usize,
+        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
+        interrupt: crate::runtime::QueuedVcpuInterrupt,
+    ) {
+        let crate::runtime::QueuedVcpuInterrupt::LegacyPic { vector } = interrupt else {
+            unreachable!("virtual interrupts are consumed by the common injection path")
+        };
+        if let Err(error) = vcpu.get_arch_vcpu().inject_legacy_pic_interrupt(vector) {
+            warn!(
+                "VM[{vm_id}] VCpu[{}] failed to inject legacy PIC vector {vector:#x}: {error:?}",
+                vcpu.id()
+            );
+        }
+    }
+
     fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
         irq::start_deferred_irq_delivery(vm)
     }
@@ -286,7 +302,7 @@ pub(crate) fn publish_pic_interrupt_after_write(vm: &AxVM, vcpu_id: X86VcpuId) -
         return Ok(());
     };
     dispatch_pic_claim(pic.as_ref(), claim, |vector| {
-        dispatch_x86_interrupt(vm, vcpu_id, vector, InterruptTriggerMode::EdgeTriggered)
+        dispatch_legacy_pic_interrupt(vm, vcpu_id, vector)
     })
 }
 
@@ -315,6 +331,14 @@ fn dispatch_x86_interrupt(
             trigger,
         },
     )
+}
+
+fn dispatch_legacy_pic_interrupt(vm: &AxVM, vcpu_id: X86VcpuId, vector: u8) -> AxVmResult {
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return ax_err!(BadState, "VM does not accept virtual interrupts");
+    }
+    vm.runtime_handle()?
+        .dispatch_legacy_pic_interrupt(vcpu_id, vector)
 }
 
 pub(crate) struct AxvmX86HostOps;
@@ -471,7 +495,9 @@ impl X86VlapicHostOps for AxvmX86HostOps {
                         .restore_interrupt(claim)
                 },
                 ioapic_interrupts,
-                |vector, trigger| dispatch_pit_interrupt(vm, vcpu_id, vector, trigger),
+                |vector, trigger, source| {
+                    dispatch_pit_interrupt(vm, vcpu_id, vector, trigger, source)
+                },
             )
         })
         .unwrap_or(Err(X86VlapicError::BadState))
@@ -482,7 +508,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
 fn route_pit_irq(
     pulse_pic: impl FnOnce() -> Option<u8>,
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
-    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+    inject: impl FnMut(u8, InterruptTriggerMode, PitInterruptSource) -> X86VlapicResult,
 ) -> X86VlapicResult {
     route_pit_claim(
         pulse_pic,
@@ -499,7 +525,7 @@ fn route_pit_claim<C>(
     pic_vector: impl FnOnce(&C) -> u8,
     restore_pic: impl FnOnce(C),
     assert_ioapic: impl FnOnce() -> Option<IoApicInterrupt>,
-    inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+    inject: impl FnMut(u8, InterruptTriggerMode, PitInterruptSource) -> X86VlapicResult,
 ) -> X86VlapicResult {
     route_pit_claims(
         claim_pic,
@@ -515,7 +541,7 @@ fn route_pit_claims<C>(
     pic_vector: impl FnOnce(&C) -> u8,
     restore_pic: impl FnOnce(C),
     ioapic_interrupts: impl IntoIterator<Item = Option<IoApicInterrupt>>,
-    mut inject: impl FnMut(u8, InterruptTriggerMode) -> X86VlapicResult,
+    mut inject: impl FnMut(u8, InterruptTriggerMode, PitInterruptSource) -> X86VlapicResult,
 ) -> X86VlapicResult {
     // KVM fans GSI 0 out to both in-kernel irqchips. Each controller owns its
     // mask/in-service state and independently decides whether this edge is
@@ -526,7 +552,11 @@ fn route_pit_claims<C>(
 
     if let Some(claim) = pic_claim {
         let vector = pic_vector(&claim);
-        if let Err(error) = inject(vector, InterruptTriggerMode::EdgeTriggered) {
+        if let Err(error) = inject(
+            vector,
+            InterruptTriggerMode::EdgeTriggered,
+            PitInterruptSource::LegacyPic,
+        ) {
             restore_pic(claim);
             first_error = Some(error);
         }
@@ -537,7 +567,7 @@ fn route_pit_claims<C>(
         } else {
             InterruptTriggerMode::EdgeTriggered
         };
-        if let Err(error) = inject(interrupt.vector, trigger)
+        if let Err(error) = inject(interrupt.vector, trigger, PitInterruptSource::IoApic)
             && first_error.is_none()
         {
             first_error = Some(error);
@@ -547,13 +577,24 @@ fn route_pit_claims<C>(
     first_error.map_or(Ok(()), Err)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PitInterruptSource {
+    LegacyPic,
+    IoApic,
+}
+
 fn dispatch_pit_interrupt(
     vm: &AxVM,
     vcpu_id: X86VcpuId,
     vector: u8,
     trigger: InterruptTriggerMode,
+    source: PitInterruptSource,
 ) -> X86VlapicResult {
-    dispatch_x86_interrupt(vm, vcpu_id, vector, trigger).map_err(ax_error_to_vlapic)
+    let result = match source {
+        PitInterruptSource::LegacyPic => dispatch_legacy_pic_interrupt(vm, vcpu_id, vector),
+        PitInterruptSource::IoApic => dispatch_x86_interrupt(vm, vcpu_id, vector, trigger),
+    };
+    result.map_err(ax_error_to_vlapic)
 }
 
 impl X86HostOps for AxvmX86HostOps {
@@ -643,6 +684,10 @@ impl AxvmX86Vcpu {
 
     fn has_pending_event(&self) -> bool {
         self.0.has_pending_event()
+    }
+
+    pub(crate) fn inject_legacy_pic_interrupt(&mut self, vector: u8) -> BackendResult {
+        x86_result(self.0.inject_legacy_pic_interrupt(vector))
     }
 
     fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
@@ -1356,12 +1401,12 @@ mod tests {
             || {
                 ioapic_asserts.set(ioapic_asserts.get() + 1);
                 Some(IoApicInterrupt {
-                    vector: 0x30,
+                    vector: 0x20,
                     level_triggered: false,
                 })
             },
-            |vector, trigger| {
-                injected.borrow_mut().push((vector, trigger));
+            |vector, trigger, source| {
+                injected.borrow_mut().push((vector, trigger, source));
                 Ok(())
             },
         )
@@ -1372,8 +1417,16 @@ mod tests {
         assert_eq!(
             injected.into_inner(),
             [
-                (0x20, InterruptTriggerMode::EdgeTriggered),
-                (0x30, InterruptTriggerMode::EdgeTriggered),
+                (
+                    0x20,
+                    InterruptTriggerMode::EdgeTriggered,
+                    PitInterruptSource::LegacyPic,
+                ),
+                (
+                    0x20,
+                    InterruptTriggerMode::EdgeTriggered,
+                    PitInterruptSource::IoApic,
+                ),
             ]
         );
     }
@@ -1385,8 +1438,8 @@ mod tests {
         route_pit_irq(
             || Some(0x20),
             || None,
-            |vector, trigger| {
-                injected.set(Some((vector, trigger)));
+            |vector, trigger, source| {
+                injected.set(Some((vector, trigger, source)));
                 Ok(())
             },
         )
@@ -1394,7 +1447,11 @@ mod tests {
 
         assert_eq!(
             injected.get(),
-            Some((0x20, InterruptTriggerMode::EdgeTriggered))
+            Some((
+                0x20,
+                InterruptTriggerMode::EdgeTriggered,
+                PitInterruptSource::LegacyPic,
+            ))
         );
     }
 
@@ -1410,7 +1467,8 @@ mod tests {
                     level_triggered: true,
                 })
             },
-            |_vector, trigger| {
+            |_vector, trigger, source| {
+                assert_eq!(source, PitInterruptSource::IoApic);
                 injected_trigger.set(Some(trigger));
                 Ok(())
             },
@@ -1432,7 +1490,7 @@ mod tests {
             |vector| *vector,
             |claim| restored.set(Some(claim)),
             || None,
-            |_vector, _trigger| Err(X86VlapicError::BadState),
+            |_vector, _trigger, _source| Err(X86VlapicError::BadState),
         );
 
         assert_eq!(result, Err(X86VlapicError::BadState));

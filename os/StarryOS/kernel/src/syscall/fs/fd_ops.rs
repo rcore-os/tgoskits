@@ -86,6 +86,7 @@ fn add_to_fd(
     flags: u32,
     mount_table_namespace: Option<Arc<MountNamespace>>,
 ) -> StarryResult<i32> {
+    let mut controlling_terminal = None;
     let f: Arc<dyn FileLike> = match result {
         OpenResult::File(mut file) => {
             if flags & O_PATH != 0 {
@@ -155,6 +156,7 @@ fn add_to_fd(
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 } else if inner.is::<tty::CurrentTty>() {
+                    // Linux tty_open_current_tty() reports ENXIO when there is none.
                     let term = current
                         .as_thread()
                         .proc_data
@@ -162,7 +164,7 @@ fn add_to_fd(
                         .group()
                         .session()
                         .terminal()
-                        .ok_or(StarryError::NotFound)?;
+                        .ok_or(StarryError::NoSuchDeviceOrAddress)?;
                     let target = tty::terminal_device(term.as_ref()).ok_or_else(|| {
                         warn!("unknown controlling terminal type for /dev/tty");
                         StarryError::BadState
@@ -179,6 +181,9 @@ fn add_to_fd(
             // Pair one final device open with the last close of the shared file.
             if let Ok(device) = file.location().entry().downcast::<Device>() {
                 device.inner().open(flags & O_EXCL != 0)?;
+                if flags & O_NOCTTY == 0 && flags & O_ACCMODE != O_WRONLY {
+                    controlling_terminal = Some(file.location().clone());
+                }
             }
             let file = Arc::new(File::new(file, flags));
             if let Some(namespace) = mount_table_namespace {
@@ -192,7 +197,13 @@ fn add_to_fd(
     if flags & O_NONBLOCK != 0 {
         f.set_nonblocking(true)?;
     }
-    add_file_like(f, flags & O_CLOEXEC != 0)
+    let fd = add_file_like(f, flags & O_CLOEXEC != 0)?;
+    // Linux reserves the descriptor before tty_open() makes the terminal the
+    // caller's, so an open refused for want of one changes no session.
+    if let Some(location) = controlling_terminal {
+        tty::set_controlling_terminal_on_open(current, &location);
+    }
+    Ok(fd)
 }
 
 fn mount_table_namespace(

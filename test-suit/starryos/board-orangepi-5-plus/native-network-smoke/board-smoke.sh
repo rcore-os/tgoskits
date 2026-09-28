@@ -3,7 +3,7 @@ set -u
 suite=STARRY_NATIVE_NETWORK
 rtnl_marker=STARRY_RTNL
 ok=1
-iperf-smoke.sh "$1" || ok=0
+network-smoke.sh "$1" || ok=0
 printf '\n%s_BEGIN\n' "$rtnl_marker"
 rtnl_ok=1
 ip addr del 192.168.10.2/24 dev eth1 >/tmp/starry-rtnl-cleanup 2>&1 || true
