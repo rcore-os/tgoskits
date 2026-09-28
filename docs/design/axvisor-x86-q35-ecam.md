@@ -4,7 +4,7 @@
 
 基线3531e72e734ada002ee20520f7467e58e5ea69e9。Axvisor x86 Q35 当前只提供 CF8/CFC 配置机制 #1，客户机固件无法通过标准 PCI Express 配置空间访问扩展配置寄存器。该设计为现有 Q35 PCI 根增加固定 256 MiB ECAM，并让运行时设备图、PCIEXBAR、ACPI MCFG、根资源保留和 Linux 直接启动内存图描述同一地址范围。
 
-成功标准是 Linux 能通过 MCFG 发现 Q35 的 segment 0、bus 00–ff，`/proc/iomem` 中出现对应的 PCI MMCONFIG 资源，且既有 ECAM PCI 枚举用例仍能发现完整 endpoint，并能从 Q35 host bridge 的 sysfs 配置文件读取 offset `0x100`。`PciEcamConfigFrontend` 将 function-relative offset `0x000` 到 `0xfff` 映射到共享配置镜像；未建模的扩展寄存器默认读零且只读，平台可显式声明字节值和写掩码。传统 capability 布局仍限于前 256 B，CF8/CFC configuration mechanism #1 仍只访问传统配置空间。此改动不增加 PCI host 公共接口、不改变设备 BDF/BAR/INTx 分配、不实现动态 ECAM 重定位或 PCIe extended capability 语义。
+成功标准是 Linux 能通过 MCFG 发现 Q35 的 segment 0、bus 00–ff，`/proc/iomem` 中出现对应的 PCI ECAM 资源，且既有 ECAM PCI 枚举用例仍能发现完整 endpoint，并能从 Q35 host bridge 的 sysfs 配置文件读取 offset `0x100`。`PciEcamConfigFrontend` 将 function-relative offset `0x000` 到 `0xfff` 映射到共享配置镜像；未建模的扩展寄存器默认读零且只读，平台可显式声明字节值和写掩码。传统 capability 布局仍限于前 256 B，CF8/CFC configuration mechanism #1 仍只访问传统配置空间。此改动不增加 PCI host 公共接口、不改变设备 BDF/BAR/INTx 分配、不实现动态 ECAM 重定位或 PCIe extended capability 语义。
 
 ## 2. 资源所有权与数据流
 
@@ -52,7 +52,7 @@ DSDT 的 `PCI0._CRS` 描述 bus range、CF8/CFC 和 PCI forwarding windows，但
 
 ## 6. 验证与审查门槛
 
-`axdevice` 的 root 与 frontend 单元测试覆盖 offset `0x100`、可写的扩展配置字节 `0x104`、镜像末尾 `0xffc` 和 function 边界 `0x1000`，并确认写掩码与 absent BDF 语义保持一致；capability 测试继续验证传统 capability 不越过 `0xff`。`pci_config` provider 单元测试验证 fixed resource、PCIEXBAR 只读语义以及 runtime 实际 ECAM 读写；ACPI 单元测试验证直接镜像 XSDT/MCFG 指针、geometry 与 checksum，fw_cfg 测试验证 loader pointer/checksum 命令和 MCFG 内容。Axbuild BusyBox 的 PCI 枚举检查要求 MCFG 可读、`/proc/iomem` 包含 `b0000000-bfffffff : PCI MMCONFIG 0000 [bus 00-ff]`，并通过 `/sys/bus/pci/devices/0000:00:00.0/config` 读取 offset `0x100` 的零值，以证明来宾访问没有在传统空间边界被截断。既有 `pci-enumeration-vmx` CI 继续证明客户机端到端枚举和扩展空间读取。
+`axdevice` 的 root 与 frontend 单元测试覆盖 offset `0x100`、可写的扩展配置字节 `0x104`、镜像末尾 `0xffc` 和 function 边界 `0x1000`，并确认写掩码与 absent BDF 语义保持一致；capability 测试继续验证传统 capability 不越过 `0xff`。`pci_config` provider 单元测试验证 fixed resource、PCIEXBAR 只读语义以及 runtime 实际 ECAM 读写；ACPI 单元测试验证直接镜像 XSDT/MCFG 指针、geometry 与 checksum，fw_cfg 测试验证 loader pointer/checksum 命令和 MCFG 内容。Axbuild BusyBox 的 PCI 枚举检查要求 MCFG 可读、`/proc/iomem` 包含 `b0000000-bfffffff : PCI ECAM 0000 [bus 00-ff]`，并通过 `/sys/bus/pci/devices/0000:00:00.0/config` 读取 offset `0x100` 的零值，以证明来宾访问没有在传统空间边界被截断。既有 `pci-enumeration-vmx` CI 继续证明客户机端到端枚举和扩展空间读取。
 
 合入前必须确认 PCIEXBAR 的固定启用/只读策略与 QEMU reset 差异、PNP0C02 resource descriptor 的 Linux/OVMF 解释，以及 direct/OVMF 两条启动路径。必要证据由 VMX 与 SVM PCI 枚举 CI 及 OVMF ACPI CI 提供。
 
