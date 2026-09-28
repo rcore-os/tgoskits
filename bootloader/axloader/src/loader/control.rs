@@ -137,9 +137,8 @@ pub fn fetch_boot_offer(
             crate::logln!("loader_poll_http_client_error: {error:?}");
             ControlError::Http
         })?;
-        let response: serde_json::Value = client
-            .post_json_with_progress(&poll_url, &payload, || {})
-            .map_err(|error| {
+        let response: serde_json::Value =
+            client.post_json(&poll_url, &payload).map_err(|error| {
                 crate::logln!("loader_poll_http_error: {error:?}");
                 ControlError::Http
             })?;
