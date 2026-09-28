@@ -1,15 +1,26 @@
-//! 32-bit non-prefetchable memory BAR descriptors and decode state.
+//! 32-bit memory BAR descriptors and decode state.
 
 use core::ops::Range;
 
 use super::{FOUR_GIB, PciBarIndex, PciError, PciResult};
 use crate::ResourceRequest;
 
-/// One 32-bit non-prefetchable memory BAR requested by a PCI function.
+/// Runtime decode policy of one memory BAR, independent of initial placement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PciBarDecodePolicy {
+    /// The planner-owned base is permanent; guest writes cannot move decode.
+    Fixed,
+    /// The BAR may relocate within its host memory aperture.
+    RelocatableWithinHostAperture,
+}
+
+/// One 32-bit memory BAR requested by a PCI function.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PciMemoryBar {
     index: PciBarIndex,
     size: u64,
+    prefetchable: bool,
+    decode_policy: PciBarDecodePolicy,
     address: ResourceRequest<u64>,
 }
 
@@ -33,8 +44,22 @@ impl PciMemoryBar {
         Ok(Self {
             index,
             size,
+            prefetchable: false,
+            decode_policy: PciBarDecodePolicy::RelocatableWithinHostAperture,
             address: ResourceRequest::Auto,
         })
+    }
+
+    /// Marks this BAR prefetchable in its configuration-space attributes.
+    pub const fn prefetchable(mut self) -> Self {
+        self.prefetchable = true;
+        self
+    }
+
+    /// Selects the runtime decode policy independently of initial placement.
+    pub const fn with_decode_policy(mut self, decode_policy: PciBarDecodePolicy) -> Self {
+        self.decode_policy = decode_policy;
+        self
     }
 
     /// Selects automatic or fixed initial placement inside the host aperture.
@@ -53,6 +78,16 @@ impl PciMemoryBar {
         self.size
     }
 
+    /// Returns whether this BAR is prefetchable.
+    pub const fn is_prefetchable(&self) -> bool {
+        self.prefetchable
+    }
+
+    /// Returns this BAR's runtime decode policy.
+    pub const fn decode_policy(&self) -> PciBarDecodePolicy {
+        self.decode_policy
+    }
+
     pub(crate) const fn address_request(&self) -> ResourceRequest<u64> {
         self.address
     }
@@ -62,6 +97,8 @@ impl PciMemoryBar {
 pub(crate) struct ResolvedBarPlan {
     pub(crate) index: PciBarIndex,
     pub(crate) size: u64,
+    pub(crate) prefetchable: bool,
+    pub(crate) policy: PciBarDecodePolicy,
     pub(crate) address: u64,
 }
 
@@ -104,7 +141,7 @@ impl BarState {
         // Aperture resolution caps addresses below 4 GiB; the cast relies on
         // that validated invariant.
         debug_assert!(self.address < FOUR_GIB);
-        self.address as u32 & 0xffff_fff0
+        (self.address as u32 & 0xffff_fff0) | self.attributes()
     }
 
     pub(crate) const fn candidate_address(dword: u32) -> u64 {
@@ -127,8 +164,20 @@ impl BarState {
         self.probing = false;
     }
 
+    pub(crate) const fn decode_policy(&self) -> PciBarDecodePolicy {
+        self.plan.policy
+    }
+
+    pub(crate) const fn planned_address(&self) -> u64 {
+        self.plan.address
+    }
+
+    const fn attributes(&self) -> u32 {
+        if self.plan.prefetchable { 0x8 } else { 0 }
+    }
+
     const fn size_mask(&self) -> u32 {
-        (!(self.plan.size - 1) as u32) & 0xffff_fff0
+        (!(self.plan.size - 1) as u32 & 0xffff_fff0) | self.attributes()
     }
 }
 

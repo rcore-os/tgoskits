@@ -1,0 +1,46 @@
+args = [
+  "-nographic", "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4", "-m", "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "run VCpu\\[\\d+\\] get error",
+  "IVSHMEM_PUBLISHER_FAILED",
+  "IVSHMEM_SUBSCRIBER_FAILED",
+]
+timeout = 240
+to_bin = true
+uefi = false
+
+# VM[1] (ArceOS publisher) powers off after printing its verdict; the console
+# mux silently detaches when the VM stops, so the shell prompt returns on its
+# own and no Ctrl+X detach is needed before attaching VM[2].
+[[shell_check_steps]]
+shell_prefix = "axvisor:$ "
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?IVSHMEM_PUBLISHER_PASSED\\s*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$ "
+shell_cmd = "vm console 2"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?IVSHMEM_SUBSCRIBER_PASSED peer=1\\s*$",
+]
+
+# VM[2] keeps running at the Linux shell; detach explicitly before attaching
+# VM[3].
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[2\\] console"]
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$ "
+shell_cmd = "vm console 3"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 3\\] )?IVSHMEM_SUBSCRIBER_PASSED peer=2\\s*$",
+]

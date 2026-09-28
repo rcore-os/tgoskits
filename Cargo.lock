@@ -432,6 +432,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-ivshmem-pci"
+version = "0.1.0"
+dependencies = [
+ "ax-mm",
+ "ax-std",
+ "fdt-parser",
+]
+
+[[package]]
 name = "arceos-loongarch-unaligned-fixup"
 version = "0.1.0"
 dependencies = [
@@ -1462,6 +1471,9 @@ dependencies = [
 [[package]]
 name = "axivc"
 version = "0.1.1"
+dependencies = [
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "axklib"
@@ -1675,6 +1687,10 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
 ]
+
+[[package]]
+name = "axvisor-ivshmem"
+version = "0.1.0"
 
 [[package]]
 name = "axvm"
@@ -4499,6 +4515,16 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "ivshmem_publisher"
+version = "0.1.0"
+dependencies = [
+ "ax-mm",
+ "ax-std",
+ "axvisor-ivshmem",
+ "fdt-parser",
+]
 
 [[package]]
 name = "jiff"
@@ -7901,7 +7927,6 @@ dependencies = [
  "axbacktrace",
  "axfs-ng-vfs",
  "axhvc",
- "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",

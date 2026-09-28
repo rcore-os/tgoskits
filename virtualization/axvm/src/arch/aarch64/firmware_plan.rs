@@ -11,6 +11,8 @@ pub(super) struct Aarch64FirmwarePlan {
     serial_identity: Option<GuestSerialFdtIdentity>,
     devices: std::vec::Vec<crate::boot::fdt::device::ResolvedFdtDevice>,
     timer: GuestTimerProfile,
+    pci: Option<super::pci_plan::Aarch64PciPlan>,
+    pci_msi_parent: Option<u32>,
 }
 
 impl Aarch64FirmwarePlan {
@@ -27,8 +29,29 @@ impl Aarch64FirmwarePlan {
             AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
         })?;
         let serials = resolved_serial_devices(graph)?;
-        let firmware = crate::boot::fdt::device::resolve_fdt_firmware(graph)?;
+        let mut firmware = crate::boot::fdt::device::resolve_fdt_firmware(graph)?;
+        let pci = super::pci_plan::Aarch64PciPlan::resolve(config, graph, &mut firmware.specials)?;
         apply_gic_contribution(&firmware.specials, &serials, vgic, &mut gic)?;
+        let pci_msi_parent = if pci.is_some() {
+            match gic.its.as_slice() {
+                [] => None,
+                [its] => Some(
+                    its.node_phandle
+                        .filter(|phandle| *phandle != 0)
+                        .ok_or_else(|| {
+                            AxVmError::invalid_config("guest ITS has no usable phandle for PCI MSI")
+                        })?,
+                ),
+                _ => {
+                    return Err(AxVmError::unsupported(
+                        "resolve AArch64 PCI MSI domain",
+                        "multiple guest ITS instances need an explicit PCI requester route",
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         let console = serials
             .iter()
             .find(|serial| serial.id() == "console0")
@@ -49,6 +72,16 @@ impl Aarch64FirmwarePlan {
             serial_identity,
             devices: firmware.devices,
             timer,
+            pci,
+            pci_msi_parent,
+        })
+    }
+
+    pub(super) fn pci(&self) -> Option<crate::boot::fdt::core::pci::GuestPciHost> {
+        self.pci.as_ref().map(|pci| {
+            let host = pci.firmware();
+            self.pci_msi_parent
+                .map_or(host, |phandle| host.with_msi_parent(phandle))
         })
     }
 

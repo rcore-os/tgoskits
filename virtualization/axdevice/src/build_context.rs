@@ -10,6 +10,8 @@ use crate::{interrupt::*, *};
 pub struct DeviceBuildContext<'a> {
     resources: PlannedBuildResources<'a>,
     pci_host_topology: Option<&'a Arc<ResolvedPciTopology>>,
+    stage2_remap: Option<Arc<dyn Stage2Remap>>,
+    owner: DeviceNodeId,
 }
 
 struct PlannedBuildResources<'a> {
@@ -91,13 +93,30 @@ impl<'a> DeviceBuildContext<'a> {
         self.pci_host_topology
     }
 
+    /// Returns the VM-wide stage-2 update port, when the assembly injected
+    /// one. Devices that map BAR ranges directly must fail their build when
+    /// this is `None`.
+    pub fn stage2_remap(&self) -> Option<Arc<dyn Stage2Remap>> {
+        self.stage2_remap.clone()
+    }
+
+    /// Returns the graph node identity of the device being built; direct
+    /// mappings are registered per owner.
+    pub fn node_id(&self) -> DeviceNodeId {
+        self.owner.clone()
+    }
+
     pub(crate) fn planned(
         interrupts: &'a InterruptRegistry,
         claims: ResourceClaimSet,
         pci_host_topology: Option<&'a Arc<ResolvedPciTopology>>,
+        stage2_remap: Option<Arc<dyn Stage2Remap>>,
+        owner: DeviceNodeId,
     ) -> Self {
         Self {
             pci_host_topology,
+            stage2_remap,
+            owner,
             resources: PlannedBuildResources {
                 interrupts,
                 claims,

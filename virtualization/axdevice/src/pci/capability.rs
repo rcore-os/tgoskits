@@ -100,6 +100,10 @@ impl PciCapabilityEffectAccess {
     }
 }
 
+/// An aligned config read may straddle an endpoint effect and immutable bytes.
+pub(crate) const PARTIAL_EFFECT_ACCESS: &str =
+    "config access partially covers or uses an unsupported capability effect";
+
 /// One endpoint-owned effect region within a serialized capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PciCapabilityEffectRegion {
@@ -337,8 +341,7 @@ impl PciCapabilityLayout {
                     return Err(PciError::InvalidConfigAccess {
                         offset: config_offset as u16,
                         width,
-                        detail: "config access partially covers or uses an unsupported capability \
-                                 effect",
+                        detail: PARTIAL_EFFECT_ACCESS,
                     });
                 }
                 if matched.replace(*effect).is_some() {

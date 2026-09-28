@@ -66,7 +66,17 @@ impl Aarch64Arch {
                 )?;
             }
 
-            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            resources.prepare_guest_address_space(
+                vm.id(),
+                config,
+                &[],
+                &devices
+                    .devices()
+                    .direct_mappings()
+                    .iter()
+                    .map(|(_, mapping)| *mapping)
+                    .collect::<std::vec::Vec<_>>(),
+            )?;
             vcpus.setup(resources, config, move |_config, _memory_regions| {
                 Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
             })?;

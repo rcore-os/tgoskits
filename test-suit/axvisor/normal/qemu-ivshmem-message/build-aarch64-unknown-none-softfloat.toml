@@ -1,0 +1,13 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "test-suit/axvisor/normal/qemu-ivshmem-message/configs/arceos-publisher.toml",
+    "test-suit/axvisor/normal/qemu-ivshmem-message/configs/linux-subscriber-1.toml",
+    "test-suit/axvisor/normal/qemu-ivshmem-message/configs/linux-subscriber-2.toml",
+]
+
+[env]
+AXVISOR_TEST_ROOTFS_IMAGE = "rootfs-aarch64-alpine.img"
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-ivshmem-message/initramfs-aarch64.cpio.gz"
+AXVISOR_TEST_IVSHMEM_SMOKE = "1"

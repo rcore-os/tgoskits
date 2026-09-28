@@ -263,7 +263,7 @@ impl ArmVcpu {
 
         let result = match exit.kind {
             TrapKind::Synchronous => {
-                handle_exception_sync(&mut self.machine.context, &self.machine.system, &exit)
+                handle_exception_sync(&mut self.machine.context, &mut self.machine.system, &exit)
             }
             _ => panic!("Unhandled exception {:?}", exit.kind),
         };

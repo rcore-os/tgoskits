@@ -11,6 +11,23 @@ use super::{
 /// Errors reported while connecting or signaling interrupt endpoints.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IrqError {
+    /// A guest-programmed message encoding did not match the planned message.
+    #[error(
+        "message encoding mismatch for {endpoint:?}: expected address {expected_address:#x} data \
+         {expected_data:#x}, got address {actual_address:#x} data {actual_data:#x}"
+    )]
+    MessageEncodingMismatch {
+        /// The endpoint the delivery was attempted on.
+        endpoint: InterruptEndpoint,
+        /// The address expected by the controller.
+        expected_address: u64,
+        /// The data expected by the controller.
+        expected_data: u32,
+        /// The address the guest programmed.
+        actual_address: u64,
+        /// The data the guest programmed.
+        actual_data: u32,
+    },
     /// The requested operation does not match the input trigger mode.
     #[error(
         "interrupt endpoint {endpoint:?} uses {actual:?} triggering, but {operation} requires \

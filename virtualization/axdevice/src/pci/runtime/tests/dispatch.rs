@@ -9,6 +9,7 @@ use std::{
 use axdevice_base::{Device, DeviceAccess, DeviceContext, DeviceError, Resource};
 
 use super::*;
+use crate::{PciBarDecodePolicy, PciBarIndex, PciMemoryBar};
 
 struct ReverseCommandFunction {
     first_entered: Arc<Barrier>,
@@ -246,6 +247,22 @@ fn binding_dispatches_config_effects_and_command_transitions() {
     assert!(recording.reads.lock_irqsave().is_empty());
     assert!(recording.writes.lock_irqsave().is_empty());
 
+    // A conventional dword read may straddle a live effect and the frozen
+    // bytes beside it; the result must still include the endpoint value.
+    assert_eq!(
+        binding
+            .read_config(
+                bdf,
+                ConfigOffset::new(capability_offset + 12).unwrap(),
+                AccessWidth::Dword,
+            )
+            .unwrap(),
+        0x5a
+    );
+    let partial = recording.reads.lock_irqsave().pop().unwrap();
+    assert_eq!(partial.0.offset(), 12);
+    assert_eq!(partial.0.width(), AccessWidth::Word);
+
     assert_eq!(
         binding
             .read_config(
@@ -315,14 +332,15 @@ fn binding_dispatches_config_effects_and_command_transitions() {
     assert_eq!(command.1, DeviceId::new(7));
 
     assert!(matches!(
-        binding.read_config(
+        binding.write_config(
             bdf,
             ConfigOffset::new(capability_offset + 12).unwrap(),
             AccessWidth::Dword,
+            0xfeed_beef,
         ),
         Err(DeviceError::InvalidInput { .. })
     ));
-    assert!(recording.reads.lock_irqsave().is_empty());
+    assert!(recording.writes.lock_irqsave().is_empty());
 
     drop(lease);
     assert!(matches!(
@@ -417,4 +435,201 @@ fn dynamic_interrupt_status_is_read_from_the_bound_endpoint() {
             & 0x08,
         0
     );
+}
+
+struct BarWatchFunction {
+    assignments: SpinLock<Vec<BarAssignment>>,
+    relocations: SpinLock<Vec<(PciBarIndex, u64)>>,
+    fail_assignment: bool,
+}
+
+impl Device for BarWatchFunction {
+    fn name(&self) -> &str {
+        "bar-watch-function"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &[]
+    }
+
+    fn read(&self, _access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        Err(DeviceError::NotFound)
+    }
+
+    fn write(
+        &self,
+        _access: &DeviceAccess,
+        _value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        Err(DeviceError::NotFound)
+    }
+}
+
+impl PciFunction for BarWatchFunction {
+    fn read_bar(
+        &self,
+        _access: PciBarAccess,
+        _context: &mut dyn PciEndpointContext,
+    ) -> DeviceResult<u64> {
+        Ok(0)
+    }
+
+    fn write_bar(
+        &self,
+        _access: PciBarAccess,
+        _value: u64,
+        _context: &mut dyn PciEndpointContext,
+    ) -> DeviceResult {
+        Ok(())
+    }
+
+    fn notify_bar_assignment(&self, bars: &[BarAssignment]) -> DeviceResult {
+        if self.fail_assignment {
+            return Err(DeviceError::InvalidState {
+                operation: "accept assigned BAR table",
+                detail: "injected test failure".into(),
+            });
+        }
+        *self.assignments.lock_irqsave() = bars.to_vec();
+        Ok(())
+    }
+
+    fn notify_bar_relocated(&self, bar: PciBarIndex, new_gpa: u64) -> DeviceResult {
+        self.relocations.lock_irqsave().push((bar, new_gpa));
+        Ok(())
+    }
+
+    fn direct_mappings(&self) -> Vec<crate::DirectMapping> {
+        self.assignments
+            .lock_irqsave()
+            .iter()
+            .map(|bar| {
+                crate::DirectMapping::new(bar.gpa(), 0x2000_0000, bar.size(), false, "test")
+                    .unwrap()
+            })
+            .collect()
+    }
+}
+
+fn bar_watch_binding(
+    function_id: &DeviceNodeId,
+) -> (Arc<PciRootBinding>, Arc<PciRootState>, PciBdf, u64) {
+    let mut builder = PciTopologyBuilder::new();
+    builder
+        .add_function(
+            PciFunctionSpec::new(
+                function_id.clone(),
+                PciEndpointIdentity::new(0x1af4, 0x1110, PciClass::new(0x05, 0x00, 0)),
+            )
+            .with_bar(
+                PciMemoryBar::new(PciBarIndex::new(0).unwrap(), 0x1_0000)
+                    .unwrap()
+                    .with_decode_policy(PciBarDecodePolicy::RelocatableWithinHostAperture),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let topology = Arc::new(builder.resolve(0xc000_0000..0xc100_0000).unwrap());
+    let bdf = topology.function(function_id).unwrap().bdf();
+    let bar_gpa = topology
+        .function(function_id)
+        .unwrap()
+        .bar(PciBarIndex::new(0).unwrap())
+        .unwrap()
+        .address();
+    let root = Arc::new(PciRootState::new(topology));
+    let binding = Arc::new(PciRootBinding::new(
+        DeviceNodeId::new("bar-watch-host").unwrap(),
+        Arc::clone(&root),
+    ));
+    (binding, root, bdf, bar_gpa)
+}
+
+#[test]
+fn bound_endpoint_observes_assignment_and_relocation_of_its_bars() {
+    let function_id = DeviceNodeId::new("bar-watch-endpoint").unwrap();
+    let (binding, _root, bdf, bar_gpa) = bar_watch_binding(&function_id);
+    let function = Arc::new(BarWatchFunction {
+        assignments: SpinLock::new(Vec::new()),
+        relocations: SpinLock::new(Vec::new()),
+        fail_assignment: false,
+    });
+    let mut grants = Vec::new();
+    let _lease = binding
+        .bind_registered(
+            &function_id,
+            DeviceId::new(3),
+            function.clone(),
+            &mut grants,
+        )
+        .unwrap();
+
+    // The bind-time notification carries the resolved BAR table.
+    assert_eq!(
+        *function.assignments.lock_irqsave(),
+        vec![BarAssignment::new(
+            PciBarIndex::new(0).unwrap(),
+            bar_gpa,
+            0x1_0000
+        )]
+    );
+    assert_eq!(function.direct_mappings().len(), 1);
+
+    // An accepted relocation through a routed config write notifies the
+    // endpoint; a rejected relocation does not.
+    let relocated = 0xc008_0000;
+    binding
+        .write_config(
+            bdf,
+            ConfigOffset::new(0x10).unwrap(),
+            AccessWidth::Dword,
+            relocated,
+        )
+        .unwrap();
+    assert_eq!(
+        *function.relocations.lock_irqsave(),
+        vec![(PciBarIndex::new(0).unwrap(), relocated)]
+    );
+
+    // A candidate outside the host aperture is rejected and never notified.
+    binding
+        .write_config(
+            bdf,
+            ConfigOffset::new(0x10).unwrap(),
+            AccessWidth::Dword,
+            0x8000_0000,
+        )
+        .unwrap();
+    assert_eq!(function.relocations.lock_irqsave().len(), 1);
+}
+
+#[test]
+fn failing_bar_assignment_notification_rolls_the_bind_back() {
+    let function_id = DeviceNodeId::new("bar-watch-failing-endpoint").unwrap();
+    let (binding, _root, _bdf, _gpa) = bar_watch_binding(&function_id);
+    let failing = Arc::new(BarWatchFunction {
+        assignments: SpinLock::new(Vec::new()),
+        relocations: SpinLock::new(Vec::new()),
+        fail_assignment: true,
+    });
+    let mut grants = Vec::new();
+    assert!(
+        binding
+            .bind_registered(&function_id, DeviceId::new(4), failing, &mut grants)
+            .is_err()
+    );
+    assert!(grants.is_empty());
+
+    // The rolled-back bind must not pin the route: a healthy endpoint can
+    // bind the same function afterwards.
+    let healthy = Arc::new(BarWatchFunction {
+        assignments: SpinLock::new(Vec::new()),
+        relocations: SpinLock::new(Vec::new()),
+        fail_assignment: false,
+    });
+    binding
+        .bind_registered(&function_id, DeviceId::new(5), healthy.clone(), &mut grants)
+        .unwrap();
+    assert_eq!(healthy.assignments.lock_irqsave().len(), 1);
 }

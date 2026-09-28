@@ -3,12 +3,12 @@ use alloc::{string::ToString, sync::Arc, vec::Vec};
 use axdevice_base::{DeviceContext, DeviceError, DeviceId, DeviceResult, RoutedDeviceGrant};
 
 use super::{
-    super::{PciBdf, PciError, ResolvedPciTopology},
+    super::{PciBdf, PciError, ResolvedPciTopology, capability::PARTIAL_EFFECT_ACCESS},
     DeviceManagerResult, EndpointRouteToken, PciBarAccess, PciRootBinding,
     cleanup::PciBindingLease,
     endpoint::{
-        EndpointIrqTransitionPermit, LegacyPciEndpointContext, OwnerPciEndpointContext,
-        PciEndpointContext, PciFunction, RoutedPciEndpointContext,
+        BarAssignment, EndpointIrqTransitionPermit, LegacyPciEndpointContext,
+        OwnerPciEndpointContext, PciEndpointContext, PciFunction, RoutedPciEndpointContext,
     },
     lifecycle::PendingIrqWithdrawal,
     pci_config_error,
@@ -73,6 +73,12 @@ impl PciRootBinding {
 
     pub(crate) fn matches_topology(&self, topology: &Arc<ResolvedPciTopology>) -> bool {
         Arc::ptr_eq(self.root.topology_arc(), topology)
+    }
+
+    /// Resets every route of this root back to power-on state, including
+    /// endpoint-owned state through `PciFunction::reset`.
+    pub fn reset(&self) -> DeviceManagerResult {
+        self.reset_lifecycle()
     }
 
     pub(crate) fn reset_lifecycle(&self) -> DeviceManagerResult {
@@ -156,6 +162,17 @@ impl PciRootBinding {
             self.rollback_unpublished_endpoint(&token, function);
             return Err(error.into());
         }
+        // Direct-mapped BAR support: hand the resolved BAR table to the
+        // endpoint before the lease is returned; a failing endpoint rolls
+        // the whole bind back.
+        if let Err(error) = function.notify_bar_assignment(&self.bar_assignments(function_id)) {
+            if registered && let Some(grants) = routed_grants {
+                grants.pop();
+            }
+            self.root.unbind_route_for_binding(&token);
+            self.rollback_unpublished_endpoint(&token, function);
+            return Err(DeviceManagerError::Device(error));
+        }
         if let Err(error) = lifecycle.finish_restore() {
             // The route publication itself succeeded. Deferred withdrawals
             // remove their routes before reporting an IRQ cleanup failure, so
@@ -166,6 +183,22 @@ impl PciRootBinding {
             binding: self.clone(),
             token,
         })
+    }
+
+    /// Collects the resolved BAR table of one function for bind-time
+    /// notification.
+    fn bar_assignments(&self, function_id: &DeviceNodeId) -> Vec<BarAssignment> {
+        self.root
+            .topology()
+            .function(function_id)
+            .map(|function| {
+                function
+                    .bars()
+                    .iter()
+                    .map(|bar| BarAssignment::new(bar.index, bar.address, bar.size))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn validate_config_effect_contract(
@@ -336,11 +369,16 @@ impl PciRootBinding {
         offset: crate::ConfigOffset,
         width: AccessWidth,
     ) -> DeviceResult<u64> {
-        match self
-            .root
-            .prepare_read_config(bdf, offset, width)
-            .map_err(pci_config_error)?
-        {
+        let prepared = match self.root.prepare_read_config(bdf, offset, width) {
+            Ok(prepared) => prepared,
+            Err(error) if split_config_effect_read(&error, width) => {
+                return read_config_halfwords(offset, |half| {
+                    self.read_config(bdf, half, AccessWidth::Word)
+                });
+            }
+            Err(error) => return Err(pci_config_error(error)),
+        };
+        match prepared {
             PciConfigReadOutcome::Value(value) => Ok(value),
             PciConfigReadOutcome::DynamicStatus {
                 token,
@@ -410,6 +448,14 @@ impl PciRootBinding {
                     endpoint.command_changed(command, context)
                 })
             }
+            PciConfigWriteOutcome::BarRelocated { token, bar, gpa } => {
+                let Some(token) = token else {
+                    return Ok(());
+                };
+                self.dispatch_legacy(&token, false, |endpoint, _context| {
+                    endpoint.notify_bar_relocated(bar, gpa)
+                })
+            }
         }
     }
 
@@ -422,11 +468,19 @@ impl PciRootBinding {
         width: AccessWidth,
         context: &mut dyn DeviceContext,
     ) -> DeviceResult<u64> {
-        match self
-            .root
-            .prepare_read_config(bdf, offset, width)
-            .map_err(pci_config_error)?
-        {
+        let prepared = match self.root.prepare_read_config(bdf, offset, width) {
+            Ok(prepared) => prepared,
+            // PCI capability headers and their first register share a dword.
+            // Read both halfwords through the endpoint route to preserve the
+            // live value of endpoint-owned fields during enumeration.
+            Err(error) if split_config_effect_read(&error, width) => {
+                return read_config_halfwords(offset, |half| {
+                    self.read_config_with_context(bdf, half, AccessWidth::Word, context)
+                });
+            }
+            Err(error) => return Err(pci_config_error(error)),
+        };
+        match prepared {
             PciConfigReadOutcome::Value(value) => Ok(value),
             PciConfigReadOutcome::DynamicStatus {
                 token,
@@ -496,6 +550,29 @@ impl PciRootBinding {
                     |endpoint, context| endpoint.command_changed(command, context),
                 )
             }
+            PciConfigWriteOutcome::BarRelocated { token, bar, gpa } => {
+                let Some(token) = token else {
+                    return Ok(());
+                };
+                self.dispatch_with_context(&token, false, context, |endpoint, _context| {
+                    endpoint.notify_bar_relocated(bar, gpa)
+                })
+            }
         }
     }
+}
+
+fn split_config_effect_read(error: &PciError, width: AccessWidth) -> bool {
+    width == AccessWidth::Dword
+        && matches!(error, PciError::InvalidConfigAccess { detail, .. } if *detail == PARTIAL_EFFECT_ACCESS)
+}
+
+fn read_config_halfwords(
+    offset: crate::ConfigOffset,
+    mut read_word: impl FnMut(crate::ConfigOffset) -> DeviceResult<u64>,
+) -> DeviceResult<u64> {
+    let low = read_word(offset)?;
+    let high_offset = crate::ConfigOffset::new(offset.value() + 2).map_err(pci_config_error)?;
+    let high = read_word(high_offset)?;
+    Ok(low | (high << 16))
 }

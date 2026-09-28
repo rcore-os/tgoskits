@@ -18,7 +18,7 @@ use super::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
     },
     host_probe,
-    initramfs::prepare_configured_busybox_initramfs,
+    initramfs::{configured_rootfs_image_path, prepare_configured_busybox_initramfs},
     parse_target,
     types::{AxvisorHttpProbeConfig, PreparedAxvisorQemuCase},
 };
@@ -146,15 +146,33 @@ impl Axvisor {
         // embedded VM configuration, so a later build would otherwise replace
         // the executable belonging to an earlier group.
         for (index, build_group) in build_groups.iter_mut().enumerate() {
+            // Embedded guest images must exist before the host build script reads them.
+            super::guest_build::prepare(&mut self.app, build_group.group.build_config_path).await?;
+            build_group.cargo =
+                build::load_cargo_config(&build_group.request, self.app.workspace_context())?;
+            let configured_rootfs = configured_rootfs_image_path(
+                &build_group.cargo,
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                &build_group.request.arch,
+            )?;
             rootfs::ensure_qemu_assets_ready(
                 &build_group.request,
                 self.app.workspace_root(),
                 self.app.target_dir(),
-                None,
+                configured_rootfs.as_deref(),
             )
             .await?;
-            build_group.cargo =
-                build::load_cargo_config(&build_group.request, self.app.workspace_context())?;
+            if let Some(configured_build) =
+                build_group.cargo.env.get(super::ivshmem_smoke::ARCEOS_ENV)
+            {
+                super::ivshmem_smoke::build_arceos_smoke(
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
+                    &build_group.request.arch,
+                    configured_build,
+                )?;
+            }
             prepare_configured_busybox_initramfs(
                 &build_group.request,
                 &build_group.cargo,
@@ -305,6 +323,7 @@ impl Axvisor {
     async fn load_qemu_case_config(
         &mut self,
         request: &ResolvedAxvisorRequest,
+        cargo: &Cargo,
         case: &PreparedAxvisorQemuCase,
         asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
@@ -318,12 +337,21 @@ impl Axvisor {
             qemu.fail_regex.push(VCPU_RUNTIME_ERROR.to_string());
         }
 
-        let rootfs_path = rootfs::qemu_rootfs_path(
-            request,
+        let rootfs_path = configured_rootfs_image_path(
+            cargo,
             self.app.workspace_root(),
             self.app.target_dir(),
-            None,
-        )?;
+            &request.arch,
+        )?
+        .map(Ok)
+        .unwrap_or_else(|| {
+            rootfs::qemu_rootfs_path(
+                request,
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                None,
+            )
+        })?;
         let prepared_assets = test_case::prepare_case_assets(
             self.app.target_dir(),
             &request.arch,
@@ -350,7 +378,7 @@ impl Axvisor {
     ) -> anyhow::Result<()> {
         let prepare_started = Instant::now();
         let (mut qemu, prepared_assets) = self
-            .load_qemu_case_config(request, case, asset_config)
+            .load_qemu_case_config(request, cargo, case, asset_config)
             .await?;
 
         // Optional host->guest TCP probe over QEMU user-mode networking. When

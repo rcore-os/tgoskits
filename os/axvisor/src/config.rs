@@ -74,7 +74,7 @@ pub mod vmcfg {
     include!(concat!(env!("OUT_DIR"), "/vm_configs.rs"));
 }
 
-pub fn init_guest_vms() {
+pub fn init_guest_vms(ivshmem_registry: &alloc::sync::Arc<axvm::IvshmemLinkRegistry>) {
     init_guest_boot_resources();
 
     // First try to get configs from filesystem if fs feature is enabled
@@ -95,13 +95,16 @@ pub fn init_guest_vms() {
 
     for raw_cfg_str in gvm_raw_configs {
         debug!("Initializing guest VM with config: {:#?}", raw_cfg_str);
-        if let Err(e) = init_guest_vm(&raw_cfg_str) {
+        if let Err(e) = init_guest_vm(&raw_cfg_str, ivshmem_registry) {
             error!("Failed to initialize guest VM: {e:#}");
         }
     }
 }
 
-pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
+pub fn init_guest_vm(
+    raw_cfg: &str,
+    ivshmem_registry: &alloc::sync::Arc<axvm::IvshmemLinkRegistry>,
+) -> Result<usize> {
     let image_provider = AxvisorBootImageProvider;
     let vm_create_config =
         GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
@@ -124,7 +127,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         );
     }
 
-    let mut vm_config = build_axvm_config(&vm_create_config)?;
+    let mut vm_config = build_axvm_config(&vm_create_config, ivshmem_registry)?;
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
@@ -176,7 +179,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     Ok(vm_id)
 }
 
-pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
+pub(crate) fn build_axvm_config(
+    cfg: &GuestConfig,
+    ivshmem_registry: &alloc::sync::Arc<axvm::IvshmemLinkRegistry>,
+) -> Result<AxVMConfig> {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
     let mut passthrough_devices = cfg.devices.unresolved_host_devices();
@@ -229,6 +235,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
         virtual_device_requests: cfg.devices.virtual_device_requests().to_vec(),
         virtual_device_catalog: alloc::sync::Arc::new(virtual_device_catalog),
+        ivshmem_link_registry: Some(alloc::sync::Arc::clone(ivshmem_registry)),
     }))
 }
 
@@ -327,7 +334,13 @@ mod tests {
             0x200000,
             VmMemMappingType::MapIdentical,
         ));
-        let mut vm_config = build_axvm_config(&crate_config).unwrap();
+        let mut vm_config = build_axvm_config(
+            &crate_config,
+            &alloc::sync::Arc::new(axvm::IvshmemLinkRegistry::new(
+                axvm::host::shared_backing::platform_shared_backing_allocator(),
+            )),
+        )
+        .unwrap();
 
         crate_config.kernel.memory_regions.push(memory_region(
             0x110000,

@@ -15,8 +15,20 @@ pub(crate) struct VmDevicePlan {
     graph: ResolvedDeviceGraph,
 }
 
+/// Selects whether one architecture always materializes its PCI host.
+enum PciHostRegistration {
+    /// Architectures whose firmware always exposes a PCI host register it
+    /// unconditionally.
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+    Required(PciHostProvider),
+    /// Architectures that only expose virtual PCI when a configured endpoint
+    /// selects the host key register it on first reference.
+    #[cfg(target_arch = "aarch64")]
+    IfReferenced(PciHostProvider),
+}
+
 impl VmDevicePlan {
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
+    #[cfg(any(target_arch = "riscv64", test))]
     pub(crate) fn with_pools_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
@@ -39,7 +51,24 @@ impl VmDevicePlan {
             nodes,
             replacement_ranges,
             &mut pools,
-            Some(pci_host),
+            Some(PciHostRegistration::Required(pci_host)),
+        )
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn with_optional_pci_host_for_vm(
+        config: &AxVMConfig,
+        nodes: Vec<DeviceNodeSpec>,
+        replacement_ranges: &[Range<u64>],
+        mut pools: ResourcePools,
+        pci_host: PciHostProvider,
+    ) -> AxVmResult<Self> {
+        Self::build(
+            config,
+            nodes,
+            replacement_ranges,
+            &mut pools,
+            Some(PciHostRegistration::IfReferenced(pci_host)),
         )
     }
 
@@ -48,19 +77,34 @@ impl VmDevicePlan {
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         pools: &mut ResourcePools,
-        pci_host: Option<PciHostProvider>,
+        pci_host: Option<PciHostRegistration>,
     ) -> AxVmResult<Self> {
         let mut builder = DeviceGraphBuilder::new();
         for node in nodes {
             builder.add(node).map_err(DeviceManagerError::from)?;
         }
-        if let Some(pci_host) = pci_host {
-            builder
-                .register_pci_host(pci_host)
-                .map_err(DeviceManagerError::from)?;
-        }
-
-        let configured_requests = builder.requests().map_err(DeviceManagerError::from)?;
+        let configured_requests = match pci_host {
+            #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+            Some(PciHostRegistration::Required(provider)) => {
+                builder
+                    .register_pci_host(provider)
+                    .map_err(DeviceManagerError::from)?;
+                builder.requests().map_err(DeviceManagerError::from)?
+            }
+            #[cfg(target_arch = "aarch64")]
+            Some(PciHostRegistration::IfReferenced(provider)) => {
+                let requests = builder.requests().map_err(DeviceManagerError::from)?;
+                if pci_host_is_referenced(&requests, provider.key()) {
+                    builder
+                        .register_pci_host(provider)
+                        .map_err(DeviceManagerError::from)?;
+                    builder.requests().map_err(DeviceManagerError::from)?
+                } else {
+                    requests
+                }
+            }
+            None => builder.requests().map_err(DeviceManagerError::from)?,
+        };
         let fixed_internal_ranges = pools::fixed_mmio_ranges(&configured_requests)?;
         pools::reserve_guest_memory(config, pools)?;
 
@@ -78,6 +122,16 @@ impl VmDevicePlan {
     pub(crate) const fn graph(&self) -> &ResolvedDeviceGraph {
         &self.graph
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn pci_host_is_referenced(requests: &[DevicePlanRequest], host: &PciHostKey) -> bool {
+    requests.iter().any(|request| {
+        request
+            .requirements()
+            .pci_function()
+            .is_some_and(|function| function.host() == host)
+    })
 }
 
 /// Small common capability exposed by every architecture-specific VM plan.
@@ -200,6 +254,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
             None,
         )
         .unwrap();

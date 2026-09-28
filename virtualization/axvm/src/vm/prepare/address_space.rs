@@ -1,8 +1,8 @@
 //! Guest address-space construction for VM preparation.
 
-use std::vec::Vec;
+use std::{ops::Range, vec::Vec};
 
-use axdevice::DeviceNodeKind;
+use axdevice::{DeviceNodeKind, DirectMapping};
 use axdevice_base::Resource;
 use axvm_types::HostDeviceAssignment;
 
@@ -14,11 +14,22 @@ impl AxVMResources {
         vm_id: usize,
         config: &AxVMConfig,
         architecture_regions: &[GuestOwnedRegion],
+        direct_mappings: &[DirectMapping],
     ) -> AxVmResult {
         self.validate_guest_dtb(config)?;
         let mut owned_regions = self.guest_owned_regions(config);
         owned_regions.extend_from_slice(architecture_regions);
-        self.map_guest_address_space(vm_id, config, &owned_regions)
+        // Direct-mapped BAR ranges must punch holes in passthrough space:
+        // the stage-2 update port maps them to the backing HPA directly, so
+        // the identity window must not claim those GPAs.
+        owned_regions.extend(direct_mappings.iter().map(|mapping| {
+            GuestOwnedRegion::new(
+                mapping.gpa_base() as usize,
+                mapping.size() as usize,
+                VmRegionKind::Reserved,
+            )
+        }));
+        self.map_guest_address_space(vm_id, config, &owned_regions, direct_mappings)
     }
 
     fn validate_guest_dtb(&self, config: &AxVMConfig) -> AxVmResult {
@@ -38,8 +49,16 @@ impl AxVMResources {
         vm_id: usize,
         config: &AxVMConfig,
         owned_regions: &[GuestOwnedRegion],
+        direct_mappings: &[DirectMapping],
     ) -> AxVmResult {
         let graph = self.planned_devices().graph();
+        // Direct-mapped BAR ranges leave the emulated trap registration:
+        // their guests reach the backing through stage-2 page permissions
+        // instead of VM exits.
+        let mut direct_ranges = direct_mappings
+            .iter()
+            .map(|mapping| mapping.gpa_base()..mapping.gpa_base() + mapping.size())
+            .collect::<Vec<_>>();
         let emulated_resources = graph
             .nodes()
             .filter(|node| {
@@ -56,6 +75,7 @@ impl AxVMResources {
                     .mmio_ranges()
                     .map(|(_, base, size)| Resource::MmioRange { base, size })
             })
+            .flat_map(|resource| split_emulated_range(resource, &mut direct_ranges))
             .collect::<Vec<_>>();
         let passthrough_devices = graph
             .host_mappings()
@@ -95,8 +115,23 @@ impl AxVMResources {
                 mapping.flags
             );
             self.address_space
+                .lock()
                 .map_linear(mapping.gpa, mapping.hpa, mapping.size, mapping.flags)
                 .map_err(|error| AxVmError::from_addrspace("map guest address space", error))?;
+        }
+        // Direct device mappings were installed through the stage-2 update
+        // port when their endpoints bound; their GPA ranges were excluded
+        // from the emulated registration above, so nothing else claims them.
+        for mapping in direct_mappings {
+            info!(
+                "VM[{vm_id}] stage2 direct mapping: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {} {}",
+                mapping.gpa_base(),
+                mapping.gpa_base() + mapping.size(),
+                mapping.hpa_base(),
+                mapping.hpa_base() + mapping.size(),
+                mapping.label(),
+                if mapping.writable() { "rw" } else { "ro" }
+            );
         }
         self.address_layout = Some(address_layout);
 
@@ -127,6 +162,46 @@ impl AxVMResources {
     }
 }
 
+/// Splits one emulated MMIO range around every direct-mapped GPA range.
+///
+/// A range that no direct mapping touches passes through unchanged; a range
+/// fully covered disappears; a partially covered range is cut into the
+/// non-overlapping remainders so only trap-backed bytes stay emulated.
+fn split_emulated_range(resource: Resource, direct_ranges: &mut [Range<u64>]) -> Vec<Resource> {
+    let Resource::MmioRange { base, size } = resource else {
+        return vec![resource];
+    };
+    let start = base;
+    let end = base + size;
+    let mut cuts = direct_ranges
+        .iter()
+        .filter_map(|range| {
+            let cut_start = range.start.max(start);
+            let cut_end = range.end.min(end);
+            (cut_start < cut_end).then_some((cut_start, cut_end))
+        })
+        .collect::<Vec<_>>();
+    cuts.sort_unstable();
+    let mut pieces = Vec::new();
+    let mut cursor = start;
+    for (cut_start, cut_end) in cuts {
+        if cut_start > cursor {
+            pieces.push(Resource::MmioRange {
+                base: cursor,
+                size: cut_start - cursor,
+            });
+        }
+        cursor = cursor.max(cut_end);
+    }
+    if cursor < end {
+        pieces.push(Resource::MmioRange {
+            base: cursor,
+            size: end - cursor,
+        });
+    }
+    pieces
+}
+
 fn stage2_guest_address_space_size(gpa_bits: usize) -> usize {
     if gpa_bits >= usize::BITS as usize {
         VM_ASPACE_SIZE
@@ -143,5 +218,44 @@ mod tests {
     fn guest_address_space_is_capped_by_stage2_gpa_width() {
         assert_eq!(stage2_guest_address_space_size(39), 1usize << 39);
         assert_eq!(stage2_guest_address_space_size(48), VM_ASPACE_SIZE);
+    }
+
+    #[test]
+    fn split_emulated_range_carves_direct_mappings() {
+        let resource = Resource::MmioRange {
+            base: 0x1000,
+            size: 0x4000,
+        };
+        let mut direct = [0x2000..0x3000, 0x4000..0x5000];
+        let pieces = split_emulated_range(resource, &mut direct);
+        assert_eq!(
+            pieces,
+            vec![
+                Resource::MmioRange {
+                    base: 0x1000,
+                    size: 0x1000
+                },
+                Resource::MmioRange {
+                    base: 0x3000,
+                    size: 0x1000
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn split_emulated_range_drops_fully_covered_ranges() {
+        let resource = || Resource::MmioRange {
+            base: 0x2000,
+            size: 0x1000,
+        };
+        let mut direct = [0x1000..0x4000, 0x9000..0xa000];
+        assert!(split_emulated_range(resource(), &mut direct).is_empty());
+        // A range no direct mapping touches passes through unchanged.
+        let mut disjoint = [0x8000..0x9000, 0xa000..0xb000];
+        assert_eq!(
+            split_emulated_range(resource(), &mut disjoint),
+            vec![resource()]
+        );
     }
 }

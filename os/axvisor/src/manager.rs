@@ -22,6 +22,24 @@ pub struct AxvmManager {
 }
 
 impl AxvmManager {
+    /// Returns the process-wide ivshmem link registry.
+    ///
+    /// Axvisor creates exactly one registry and passes it explicitly into
+    /// every VM configuration build, so peers of one link always share the
+    /// same backing. The registry object is not a global map; per-peer state
+    /// stays inside the registry and links disappear with their last VM.
+    pub fn ivshmem_registry() -> alloc::sync::Arc<axvm::IvshmemLinkRegistry> {
+        static IVSHMEM_REGISTRY: std::sync::OnceLock<alloc::sync::Arc<axvm::IvshmemLinkRegistry>> =
+            std::sync::OnceLock::new();
+        IVSHMEM_REGISTRY
+            .get_or_init(|| {
+                alloc::sync::Arc::new(axvm::IvshmemLinkRegistry::new(
+                    axvm::host::shared_backing::platform_shared_backing_allocator(),
+                ))
+            })
+            .clone()
+    }
+
     /// Initialize the AxVM runtime services.
     pub fn new() -> Result<Self> {
         Ok(Self {
@@ -31,7 +49,7 @@ impl AxvmManager {
 
     /// Load and initialize the default VM set.
     pub fn init_default_vms(&self) {
-        crate::config::init_guest_vms();
+        crate::config::init_guest_vms(&Self::ivshmem_registry());
         self.runtime.init_vms();
         self.release_host_filesystem_for_guest_passthrough();
     }
@@ -63,7 +81,8 @@ impl AxvmManager {
     /// Create one VM from a TOML config string.
     #[cfg(any(feature = "fs", feature = "http-axum"))]
     pub fn create_vm_from_toml(raw_cfg: &str) -> Result<VMId> {
-        crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")
+        crate::config::init_guest_vm(raw_cfg, &Self::ivshmem_registry())
+            .context("create VM from TOML configuration")
     }
 
     /// Start a VM by ID.

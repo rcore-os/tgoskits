@@ -56,6 +56,8 @@ axdevice
 x86-apic-driver
 x86_vlapic
 axhvc
+axivc
+axvisor-ivshmem
 axvirtio-blk
 axvirtio-common
 axvm

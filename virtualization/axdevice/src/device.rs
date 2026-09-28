@@ -174,6 +174,9 @@ pub struct DeviceRuntime {
     sealed: bool,
     pci_roots: BTreeMap<DeviceNodeId, Arc<PciRootBinding>>,
     pci_binding_leases: Vec<crate::pci::PciBindingLease>,
+    /// Direct stage-2 mappings committed by bound endpoints, kept for the
+    /// VM address-space build to reserve the mapped GPA ranges.
+    direct_mappings: Vec<(DeviceNodeId, crate::DirectMapping)>,
 }
 
 struct DmaPollableRuntimeDevice {
@@ -484,7 +487,14 @@ impl DeviceRuntime {
             sealed: false,
             pci_roots: BTreeMap::new(),
             pci_binding_leases: Vec::new(),
+            direct_mappings: Vec::new(),
         }
+    }
+
+    /// Direct stage-2 mappings committed by bound PCI endpoints, in
+    /// registration order.
+    pub fn direct_mappings(&self) -> &[(DeviceNodeId, crate::DirectMapping)] {
+        &self.direct_mappings
     }
 
     pub(crate) fn attach_access_ports(&mut self, access_ports: RuntimeAccessPorts) {
@@ -789,9 +799,15 @@ impl DeviceRuntime {
             let endpoint = binding.bind_registered(
                 &function_id,
                 device,
-                function,
+                function.clone(),
                 &mut transaction.runtime.routed_grants,
             )?;
+            for mapping in function.direct_mappings() {
+                transaction
+                    .runtime
+                    .direct_mappings
+                    .push((node.id().clone(), mapping));
+            }
             for registered in &mut transaction.runtime.dma_pollable_devices {
                 if registered.device_id == device {
                     registered.pci_binding = Some(binding.clone());

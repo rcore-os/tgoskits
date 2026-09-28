@@ -56,6 +56,7 @@ use crate::{
 pub(crate) mod boot;
 pub(crate) mod memory;
 pub(crate) mod prepare;
+pub(crate) mod stage2;
 #[cfg(any(test, target_arch = "aarch64"))]
 mod timer_wait;
 pub use memory::PreparedMemoryLayout;
@@ -157,8 +158,14 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmRes
 
 pub(crate) struct AxVMResources {
     vm_id: VMId,
-    // Todo: use more efficient lock.
-    pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
+    /// Shared address-space handle: the stage-2 update service edits guest
+    /// mappings from both the prepare path and runtime relocation
+    /// notifications, under one innermost lock.
+    pub(crate) address_space: Arc<IrqSafeMutex<AddrSpace<ArchNestedPageTable>>>,
+    /// Stage-2 update service handed to direct-mapping device builds. Kept
+    /// concrete so VM reset can clear its registry; the trait object form
+    /// reaches device builds.
+    pub(crate) stage2_remap: Arc<stage2::AxStage2Remap>,
     nested_paging: NestedPagingConfig,
     memory_regions: Vec<VMMemoryRegion>,
     phys_cpu_ls: PhysCpuList,
@@ -1002,9 +1009,12 @@ impl AxVMResources {
         )
         .map_err(|error| AxVmError::from_addrspace("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
+        let address_space = Arc::new(IrqSafeMutex::new(address_space));
+        let stage2_remap = Arc::new(stage2::AxStage2Remap::new(Arc::clone(&address_space)));
         Ok(Self {
             vm_id,
             address_space,
+            stage2_remap,
             nested_paging,
             memory_regions: Vec::new(),
             phys_cpu_ls: PhysCpuList::default(),
@@ -1055,9 +1065,11 @@ impl AxVMResources {
                 .map_err(|error| AxVmError::device("reset device lifecycle", error))?;
         }
         let memory_regions = self.memory_regions.clone();
-        self.address_space.clear();
+        self.address_space.lock().clear();
+        self.stage2_remap.reset_registry();
         for region in &memory_regions {
             self.address_space
+                .lock()
                 .map_linear(
                     region.gpa,
                     region.host_paddr(),
@@ -1102,6 +1114,7 @@ impl IvcGuestBindingRelease for AxVMResources {
         binding: crate::runtime::ivc::IvcGuestBinding,
     ) -> AxVmResult {
         self.address_space
+            .lock()
             .unmap(binding.gpa, binding.size)
             .map_err(|error| AxVmError::from_addrspace("unmap IVC binding", error))
     }
@@ -1678,7 +1691,7 @@ impl AxVM {
 
     /// Returns the root address of the nested page table for the VM.
     pub fn nested_page_table_root(&self) -> AxVmResult<HostPhysAddr> {
-        self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
+        self.with_resources(|resources| Ok(resources.address_space.lock().page_table_root()))
     }
 
     /// Executes an operation with mutable access to the VM's configuration.
@@ -1755,6 +1768,7 @@ impl AxVM {
         let image_load_hva = self.with_resources(|resources| {
             resources
                 .address_space
+                .lock()
                 .translated_byte_buffer(image_load_gpa, image_size)
                 .ok_or_else(|| {
                     ax_err_type!(BadState, "Failed to translate kernel image load address")
@@ -2057,8 +2071,26 @@ impl AxVM {
         self.with_resources_mut(|resources| {
             let handled = resources
                 .address_space
+                .lock()
                 .handle_page_fault(addr, access_flags);
             Self::debug_nested_page_fault(self.id(), resources, addr, access_flags, handled);
+            if !handled && let Some(fault) = resources.stage2_remap.diagnose(addr.as_usize() as u64)
+            {
+                // An unhandled fault on a direct-mapped section is a guest
+                // permission violation (for example a write to a read-only
+                // mapping): diagnose it against the committed mappings
+                // instead of silently dropping the context.
+                warn!(
+                    "VM[{}] stage2 permission violation: gpa={:#x} section={} owner={} \
+                     mapping_writable={} access={:?}",
+                    self.id(),
+                    addr.as_usize(),
+                    fault.label(),
+                    fault.owner(),
+                    fault.writable(),
+                    access_flags
+                );
+            }
             Ok(handled)
         })
         .unwrap_or(false)
@@ -2072,8 +2104,8 @@ impl AxVM {
         access_flags: MappingFlags,
         handled: bool,
     ) {
-        let root = resources.address_space.page_table_root();
-        match NestedPageTableOps::query(resources.address_space.page_table(), addr) {
+        let root = resources.address_space.lock().page_table_root();
+        match NestedPageTableOps::query(resources.address_space.lock().page_table(), addr) {
             Ok((hpa, flags, size)) => {
                 if handled {
                     debug!(
@@ -2124,7 +2156,7 @@ impl AxVM {
             }
         }
 
-        let translate = resources.address_space.translate(addr);
+        let translate = resources.address_space.lock().translate(addr);
         if handled {
             debug!(
                 "VM[{}] stage2 translate: gpa={:#x} -> {:?}",
@@ -2221,6 +2253,7 @@ impl AxVM {
         self.with_resources_mut(|resources| {
             resources
                 .address_space
+                .lock()
                 .map_linear(gpa, hpa, size, flags)
                 .map_err(|error| AxVmError::from_addrspace("map guest memory region", error))?;
             Ok(())
@@ -2232,6 +2265,7 @@ impl AxVM {
         self.with_resources_mut(|resources| {
             resources
                 .address_space
+                .lock()
                 .unmap(gpa, size)
                 .map_err(|error| AxVmError::from_addrspace("unmap guest memory region", error))?;
             Ok(())
@@ -2250,6 +2284,7 @@ impl AxVM {
         self.with_resources(|resources| {
             let Some(buffers) = resources
                 .address_space
+                .lock()
                 .translated_byte_buffer(gpa_ptr, size)
             else {
                 return ax_err!(
@@ -2286,6 +2321,7 @@ impl AxVM {
         self.with_resources(|resources| {
             let Some(chunks) = resources
                 .address_space
+                .lock()
                 .translated_byte_buffer(gpa_ptr, buffer.len())
             else {
                 return ax_err!(InvalidInput, "Failed to translate guest physical address");
@@ -2325,6 +2361,7 @@ impl AxVM {
         self.with_resources(|resources| {
             let Some(mut chunks) = resources
                 .address_space
+                .lock()
                 .translated_byte_buffer(gpa_ptr, data.len())
             else {
                 return ax_err!(InvalidInput, "Failed to translate guest physical address");
@@ -2388,6 +2425,7 @@ impl AxVM {
         if let Err(err) = self.with_resources_mut(|resources| {
             resources
                 .address_space
+                .lock()
                 .map_linear(
                     gpa,
                     hpa,
@@ -2446,6 +2484,7 @@ impl AxVM {
         self.with_resources_mut(|resources| {
             resources
                 .address_space
+                .lock()
                 .map_linear(
                     gpa,
                     gpa.as_usize().into(),
@@ -2517,7 +2556,11 @@ impl AxVM {
                 region.gpa.as_usize(),
                 region.size()
             );
-            if let Err(err) = resources.address_space.unmap(region.gpa, region.size()) {
+            if let Err(err) = resources
+                .address_space
+                .lock()
+                .unmap(region.gpa, region.size())
+            {
                 warn!(
                     "VM[{vm_id}] failed to unmap region at GPA={:#x}: {err:?}",
                     region.gpa.as_usize()
@@ -2546,7 +2589,7 @@ impl AxVM {
             }
         }
         resources.memory_regions.clear();
-        resources.address_space.clear();
+        resources.address_space.lock().clear();
 
         resources.vcpu_list = None;
         resources.interrupt_controller = None;

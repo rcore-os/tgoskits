@@ -5,6 +5,7 @@ mod guest_build;
 mod host_probe;
 mod http_probe;
 mod initramfs;
+mod ivshmem_smoke;
 mod ovmf;
 mod qemu;
 mod types;

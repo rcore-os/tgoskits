@@ -1,0 +1,35 @@
+# The primary peer runs polling before loading the UIO module and testing MSI-X.
+[base]
+id = 1
+name = "linux-ivshmem-primary"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-ivshmem-pci/initramfs-aarch64.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 initcall_blacklist=ahci_pci_driver_init,virtio_pci_driver_init axvisor.pci_case=ivshmem-suite-linux"
+memory_regions = [
+  [0x8000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = [
+  { path = "/pcie@10000000" },
+]
+
+[[devices.virtual]]
+id = "ivshmem0"
+model = "ivshmem-pci"
+link_id = 4
+peer_id = 0
+max_peers = 3
+common_size = 0
+output_size = 0x5000

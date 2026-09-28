@@ -4,6 +4,8 @@ pub(crate) mod arceos;
 pub(crate) mod paging;
 #[cfg(any(test, target_arch = "aarch64"))]
 pub(crate) mod percpu_irq;
+/// Shared-backing allocation for ivshmem links.
+pub mod shared_backing;
 #[cfg(any(test, target_arch = "aarch64"))]
 pub(crate) mod shared_mmio;
 pub(crate) mod task;

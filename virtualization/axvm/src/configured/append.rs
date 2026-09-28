@@ -16,13 +16,22 @@ pub(crate) fn append_configured_devices(
     default_controller_node: &DeviceNodeId,
     default_controller: InterruptControllerId,
     default_pci_host_key: Option<PciHostKey>,
+    default_message_controller: Option<(InterruptControllerId, ItsId)>,
 ) -> AxVmResult {
-    let base_context = DeviceInstantiationContext::new()
+    let mut base_context = DeviceInstantiationContext::new()
         .with_vm_id(config.id())
-        .with_default_wired_controller(default_controller_node.clone(), default_controller);
-    let base_context = default_pci_host_key.map_or(base_context.clone(), |host| {
-        base_context.clone().with_default_pci_host_key(host)
-    });
+        .with_default_wired_controller(default_controller_node.clone(), default_controller)
+        .with_ivshmem_registry(config.ivshmem_link_registry());
+    if let Some(host) = default_pci_host_key {
+        base_context = base_context.with_default_pci_host_key(host);
+    }
+    if let Some((controller, its)) = default_message_controller {
+        base_context = base_context.with_default_message_controller(
+            default_controller_node.clone(),
+            controller,
+            its,
+        );
+    }
     let default = default_serial_intent(config, default_controller)?;
     let request = config
         .virtual_device_requests()
@@ -264,6 +273,7 @@ mod tests {
             &controller,
             InterruptControllerId::new(0),
             None,
+            None,
         )
         .unwrap();
 
@@ -350,6 +360,7 @@ mod tests {
                 &controller,
                 InterruptControllerId::new(0),
                 None,
+                None,
             )
             .unwrap();
             let mut graph = DeviceGraphBuilder::new();
@@ -417,6 +428,7 @@ mod tests {
             &controller,
             InterruptControllerId::new(0),
             None,
+            None,
         )
         .unwrap_err();
         assert!(error.to_string().contains("address exceeds"));
@@ -447,6 +459,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
             None,
         )
         .unwrap();
@@ -484,6 +497,7 @@ mod tests {
             &mut nodes,
             &controller,
             InterruptControllerId::new(0),
+            None,
             None,
         )
         .unwrap();

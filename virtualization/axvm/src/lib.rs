@@ -44,7 +44,7 @@ mod vm;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
-pub use axdevice::{SerialBackend, SerialBackendFactory};
+pub use axdevice::{IvshmemLinkRegistry, SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,

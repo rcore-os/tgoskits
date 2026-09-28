@@ -4,7 +4,9 @@ use core::fmt;
 use std::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
 use axdevice::*;
-use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
+use axdevice_base::{
+    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId,
+};
 use axvmconfig::VirtualDeviceRequest;
 
 use crate::{machine::GuestSerialFirmwareIdentity, *};
@@ -94,11 +96,13 @@ pub struct DeviceInstantiationContext {
     vm_id: Option<usize>,
     default_wired_controller: Option<(DeviceNodeId, InterruptControllerId)>,
     default_pci_host_key: Option<PciHostKey>,
+    default_message_controller: Option<(DeviceNodeId, InterruptControllerId, ItsId)>,
     fixed: FixedDeviceBindings,
     firmware_binding: DeviceFirmwareBinding,
     serial_profile: Option<crate::machine::GuestSerialProfile>,
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
     host_console_by_default: bool,
+    ivshmem_registry: Option<Arc<IvshmemLinkRegistry>>,
 }
 
 impl DeviceInstantiationContext {
@@ -107,11 +111,13 @@ impl DeviceInstantiationContext {
             vm_id: None,
             default_wired_controller: None,
             default_pci_host_key: None,
+            default_message_controller: None,
             fixed: FixedDeviceBindings::default(),
             firmware_binding: DeviceFirmwareBinding::None,
             serial_profile: None,
             serial_backend_factory: Arc::new(NullSerialBackendFactory),
             host_console_by_default: false,
+            ivshmem_registry: None,
         }
     }
 
@@ -153,6 +159,42 @@ impl DeviceInstantiationContext {
     /// Returns the graph node that must precede users of the default wired domain.
     pub fn default_wired_controller_node(&self) -> Option<&DeviceNodeId> {
         self.default_wired_controller.as_ref().map(|(node, _)| node)
+    }
+
+    /// Injects the VM's default message-signaled interrupt domain.
+    pub fn with_default_message_controller(
+        mut self,
+        node: DeviceNodeId,
+        controller: InterruptControllerId,
+        its: ItsId,
+    ) -> Self {
+        self.default_message_controller = Some((node, controller, its));
+        self
+    }
+
+    /// Returns the controller and ITS identities of the default MSI domain.
+    pub fn default_message_controller(&self) -> Option<(InterruptControllerId, ItsId)> {
+        self.default_message_controller
+            .as_ref()
+            .map(|(_, controller, its)| (*controller, *its))
+    }
+
+    /// Returns the graph node that must precede users of the default MSI domain.
+    pub fn default_message_controller_node(&self) -> Option<&DeviceNodeId> {
+        self.default_message_controller
+            .as_ref()
+            .map(|(node, ..)| node)
+    }
+
+    /// Injects the process-level ivshmem link registry for this VM.
+    pub fn with_ivshmem_registry(mut self, registry: Option<Arc<IvshmemLinkRegistry>>) -> Self {
+        self.ivshmem_registry = registry;
+        self
+    }
+
+    /// Returns the injected ivshmem link registry, if any.
+    pub fn ivshmem_registry(&self) -> Option<Arc<IvshmemLinkRegistry>> {
+        self.ivshmem_registry.clone()
     }
 
     pub fn fixed_bindings(&self) -> &FixedDeviceBindings {

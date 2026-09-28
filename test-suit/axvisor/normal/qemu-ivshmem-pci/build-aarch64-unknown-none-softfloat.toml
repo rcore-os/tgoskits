@@ -1,0 +1,14 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+    "test-suit/axvisor/normal/qemu-ivshmem-pci/configs/linux-primary.toml",
+    "test-suit/axvisor/normal/qemu-ivshmem-pci/configs/arceos-ivshmem-pci.toml",
+    "test-suit/axvisor/normal/qemu-ivshmem-pci/configs/linux-portable-peer.toml",
+]
+
+[env]
+AXVISOR_TEST_ROOTFS_IMAGE = "rootfs-aarch64-alpine.img"
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-ivshmem-pci/initramfs-aarch64.cpio.gz"
+AXVISOR_TEST_IVSHMEM_SMOKE = "1"
+AXVISOR_TEST_IVSHMEM_ARCEOS_SMOKE = "apps/arceos/build-aarch64-ivshmem-pci.toml"

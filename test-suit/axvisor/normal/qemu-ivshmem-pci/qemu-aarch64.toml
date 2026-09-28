@@ -1,0 +1,29 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "run VCpu\\[\\d+\\] get error",
+  "IVSHMEM_PCI_SUITE_FAILED",
+  "ARCEOS_IVSHMEM_PCI_FAIL",
+]
+timeout = 240
+to_bin = true
+uefi = false
+
+# The primary peer prints the final marker only after the polling and MSI-X
+# phases, the ArceOS exchange, and both non-target isolation checks succeed.
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?IVSHMEM_PCI_SUITE_PASSED\\s*$",
+]

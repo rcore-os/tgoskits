@@ -54,7 +54,7 @@ use crate::arch::aarch64::policy::{
 /// syndrome register (ESR), and system control registers.
 pub fn handle_exception_sync(
     ctx: &mut TrapFrame,
-    system: &GuestSystemRegisters,
+    system: &mut GuestSystemRegisters,
     exit: &Exit,
 ) -> ArmVcpuResult<ArmVmExit> {
     match exception_class(exit) {
@@ -63,12 +63,7 @@ pub fn handle_exception_sync(
             ctx.set_exception_pc(next_pc);
             Ok(ArmVmExit::WaitForInterrupt)
         }
-        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
-            let elr = ctx.exception_pc();
-            let val = elr + exception_next_instruction_step(exit);
-            ctx.set_exception_pc(val);
-            handle_data_abort(ctx, exit)
-        }
+        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => handle_data_abort(ctx, system, exit),
         Some(ESR_EL2::EC::Value::HVC64) => {
             // HVC records the preferred return address (the instruction after
             // `hvc`) in ELR_EL2, so the handlers must preserve this PC.
@@ -142,7 +137,11 @@ fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     })
 }
 
-fn handle_data_abort(context_frame: &mut TrapFrame, exit: &Exit) -> ArmVcpuResult<ArmVmExit> {
+fn handle_data_abort(
+    context_frame: &mut TrapFrame,
+    system: &mut GuestSystemRegisters,
+    exit: &Exit,
+) -> ArmVcpuResult<ArmVmExit> {
     let addr = exception_fault_addr(exit)?;
     let access_width = exception_data_abort_access_width(exit);
     let is_write = exception_data_abort_access_is_write(exit);
@@ -169,13 +168,21 @@ fn handle_data_abort(context_frame: &mut TrapFrame, exit: &Exit) -> ArmVcpuResul
     }
 
     if !exception_data_abort_is_translate_fault(exit) {
-        if exception_data_abort_is_permission_fault(exit) {
-            return Err(ArmVcpuError::Unsupported);
-        } else {
-            panic!("Core data abort is not translate fault {:#x}", addr,);
+        // S1PTW faults are not data accesses by the guest instruction. Never
+        // inject or emulate an MMIO transaction for an unresolved walk.
+        const ESR_S1PTW: u64 = 1 << 7;
+        if exception_data_abort_is_permission_fault(exit)
+            && is_write
+            && exit.syndrome & ESR_S1PTW == 0
+            && system.inject_el0_external_data_abort(context_frame, exit.fault_address)
+        {
+            return Ok(ArmVmExit::Nothing);
         }
+        return Err(ArmVcpuError::Unsupported);
     }
 
+    context_frame
+        .set_exception_pc(context_frame.exception_pc() + exception_next_instruction_step(exit));
     if is_write {
         return Ok(ArmVmExit::MmioWrite {
             addr,

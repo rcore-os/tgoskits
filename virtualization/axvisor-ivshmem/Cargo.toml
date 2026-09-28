@@ -1,0 +1,10 @@
+[package]
+name = "axvisor-ivshmem"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Allocation-free peer-to-peer message transport over AxVisor ivshmem output sections"
+keywords = ["ivshmem", "virtualization", "no-std"]
+categories = ["virtualization", "no-std"]

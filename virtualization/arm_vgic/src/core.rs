@@ -414,6 +414,52 @@ impl MessageInterruptSink for VgicMessageSink {
             )
             .map_err(|error| msi_backend_error(self.id, message, "signal MSI", error))
     }
+
+    fn signal_table(&self, message: MsiMessage, address: u64, data: u32) -> IrqResult {
+        // Guest encoding for a GICv3 ITS MSI (DT `msi-map` path): the write
+        // address is the ITS instance's GITS_TRANSLATER register and the
+        // write data is the EventID. GITS_TRANSLATER sits at offset 0x40 of
+        // the ITS frame's second 64 KiB page, i.e. frame base + 0x10040 (Arm
+        // GICv3 IHI 0069, ITS register map; Linux programs the same address
+        // via GITS_TRANSLATER in drivers/irqchip/irq-gic-v3-its.c). The
+        // device layer only forwards what the guest wrote into the MSI-X
+        // table; anything else is refused without injecting.
+        const GITS_TRANSLATER_OFFSET: u64 = 0x1_0040;
+        let endpoint = InterruptEndpoint::Message {
+            controller: self.id,
+            its: message.its(),
+            device: message.device(),
+            event: message.event(),
+            lpi: message.lpi(),
+        };
+        // The current profile exposes a single ITS instance (id 0).
+        let expected_address = self
+            .controller
+            .config()
+            .its()
+            .filter(|_| message.its().value() == 0)
+            .map(|region| region.base() + GITS_TRANSLATER_OFFSET);
+        let expected_data = message.event().value();
+        let Some(expected_address) = expected_address else {
+            return Err(IrqError::MessageEncodingMismatch {
+                endpoint,
+                expected_address: 0,
+                expected_data,
+                actual_address: address,
+                actual_data: data,
+            });
+        };
+        if address != expected_address || data != expected_data {
+            return Err(IrqError::MessageEncodingMismatch {
+                endpoint,
+                expected_address,
+                expected_data,
+                actual_address: address,
+                actual_data: data,
+            });
+        }
+        self.signal(message)
+    }
 }
 
 pub(crate) fn trigger_mode(trigger: InterruptTrigger) -> TriggerMode {
