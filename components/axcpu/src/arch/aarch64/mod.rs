@@ -17,6 +17,7 @@ pub(crate) mod barrier;
 pub(crate) mod cache;
 pub(crate) mod capability;
 pub(crate) mod interrupt;
+pub(crate) mod memory;
 pub(crate) mod registers;
 pub(crate) mod timer;
 
