@@ -40,7 +40,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 | `group` | 矩阵 | 运行环境 | 报告前缀 |
 | --- | --- | --- | --- |
 | `AxVisor` | `axvisor_performance_matrix` | 板卡 profile | `axvisor-nightly-performance` |
-| `Starry Apps` | `starry_performance_matrix` | 托管 QEMU profile | `starry-apps-nightly-performance` |
+| `Starry Apps` | `starry_performance_matrix` | QCS 自托管 profile | `starry-apps-nightly-performance` |
 | `Starry Apps` | `starry_board_performance_matrix` | 板卡 profile | `starry-apps-nightly-performance` |
 
 Starry 板卡矩阵在 `benchmarks.yml` 中设置 `max_parallel: 1`，避免同一入口同时占用多个实体板卡。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
