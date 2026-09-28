@@ -57,7 +57,7 @@ flowchart TD
 
 `axvisor-nightly.yml` 按 UTC 每日 19:20 运行 `axvisor-nightly.toml` 中的非性能 AxVisor 场景，由 `build_axvisor_nightly_plan()` 规划。`benchmarks.yml` 按 UTC 每日 21:40 运行统一 `benchmarks.toml` 中的全部性能 check，由 `build_benchmarks_plan()` 规划：`AxVisor` 组进入 `axvisor_performance_matrix`，`Starry Apps` 组按运行环境进入 QEMU 的 `starry_performance_matrix` 和 `max_parallel: 1` 的 `starry_board_performance_matrix`。
 
-三条日常入口不建立相互等待的 `needs` 门禁。AxVisor Nightly 只产生功能结果；Benchmarks 汇总两组性能报告，把本次 `axvisor` 与 `starry` 增量作为短生命周期 artifact 交给 docs workflow。docs 优先合并线上 Pages 历史，只在 Pages 双 404 时一次性只读旧分支完成 bootstrap；bootstrap 不完整时阻止部署，之后 Pages 始终是唯一持久历史。性能检查的名称、运行命令和维护边界详见[基准验证](testing/benchmarks.md)。
+三条日常入口不建立相互等待的 `needs` 门禁。AxVisor Nightly 只产生功能结果；Benchmarks 汇总两组性能报告，把本次 `axvisor` 与 `starry` 增量作为短生命周期 artifact 交给 docs workflow。docs 的 `Prepare performance dashboard` 步骤只准备环境变量并调用 `scripts/test/ci_perf_pages.py`，由脚本优先合并线上 Pages 历史，只在 Pages 双 404 时一次性只读旧分支完成 bootstrap；bootstrap 不完整时阻止部署，之后 Pages 始终是唯一持久历史。性能检查的名称、运行命令和维护边界详见[基准验证](testing/benchmarks.md)。
 
 ## 2. 发布
 

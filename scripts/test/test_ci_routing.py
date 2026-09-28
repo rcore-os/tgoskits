@@ -15,6 +15,12 @@ from scripts.test.check_ci_routing import (
     mapping_block,
     named_step_block,
 )
+# The CI unittest invocation lists test modules explicitly; importing the Pages
+# script tests here keeps them part of the routing suite.
+from scripts.test.test_ci_perf_pages import (  # noqa: F401
+    FetchPublishedFileTests,
+    PrepareDashboardTests,
+)
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
@@ -361,44 +367,34 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         prepare = named_step_block(build, "Prepare performance dashboard")
         for fragment in (
             "PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}",
+            "BENCHMARK_UPDATES: ${{ runner.temp }}/benchmark-updates",
+            "python3 scripts/test/ci_perf_pages.py",
+            '--base-url "${PAGES_BASE_URL}"',
+            "--output-dir docs/build",
+            '--updates-dir "${BENCHMARK_UPDATES}"',
+            '--benchmark-run-id "${BENCHMARK_RUN_ID}"',
+            '--benchmark-revision "${BENCHMARK_REVISION}"',
+            '--benchmark-date "${BENCHMARK_DATE}"',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, prepare)
+        # The fetch, cache-buster, legacy bootstrap and merge branches moved
+        # into ci_perf_pages.py, so the workflow step must not keep them.
+        for fragment in (
+            "curl ",
             "--header 'Cache-Control: no-cache'",
             "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
-            '"${history_status}" != "200"',
-            '"${history_status}" = "200"',
-            '"${index_status}" = "200"',
-            '"${history_status}" = "404"',
-            '"${index_status}" = "404"',
             "git fetch --depth=1 origin perf-data",
             "git show FETCH_HEAD:history.json",
             "git show FETCH_HEAD:index.html",
             "::error::Failed to fetch",
-            "::error::Published benchmark history is empty",
             "::error::Unexpected published dashboard state",
-            "::error::Benchmark updates require published or legacy dashboard data",
-            "::error::Legacy performance dashboard is incomplete",
-            "::error::Legacy performance dashboard is unavailable",
-            "Bootstrapping benchmark history from the frozen legacy branch",
-            "Bootstrapped performance dashboard from the frozen legacy branch",
-            '--source "${source}"',
             "docs/build/benchmark/index.html",
             "docs/build/benchmark/history.json",
         ):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, prepare)
-        self.assertNotIn("--no-cache", prepare)
-        self.assertNotIn("dashboards are unavailable; skipping", prepare)
-        self.assertEqual(workflow.count("perf-data"), 1)
-        legacy_index = prepare.index("git fetch --depth=1 origin perf-data")
-        self.assertLess(
-            prepare.index(
-                'if [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ]; then'
-            ),
-            legacy_index,
-        )
-        self.assertLess(
-            legacy_index,
-            prepare.index('if [ -n "${BENCHMARK_RUN_ID}" ]; then'),
-        )
+            with self.subTest(removed_fragment=fragment):
+                self.assertNotIn(fragment, prepare)
+        self.assertNotIn("perf-data", workflow)
         self.assertLess(
             build.index("- name: Set up Pages"),
             build.index("- name: Prepare performance dashboard"),
