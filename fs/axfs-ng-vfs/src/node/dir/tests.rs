@@ -64,6 +64,28 @@ fn opted_out_and_uncacheable_directories_revalidate_missing_names() {
 }
 
 #[test]
+fn mixed_directory_revalidates_only_dynamic_children() {
+    let backend = Arc::new(ScriptedDirectory {
+        policy: CachePolicy::Mixed,
+        ..Default::default()
+    });
+    let directory = DirNode::new(backend.clone());
+    let stable = create_directory(&directory, "stable");
+    create_directory(&directory, "volatile");
+
+    assert!(directory.lookup("stable").unwrap().ptr_eq(&stable));
+    assert!(directory.lookup("stable").unwrap().ptr_eq(&stable));
+    assert_eq!(backend.lookups.load(Ordering::Relaxed), 0);
+
+    assert!(directory.lookup_cache("volatile").is_none());
+    directory.lookup("volatile").unwrap();
+    directory.lookup("volatile").unwrap();
+    assert_missing(&directory, "volatile-missing");
+    assert_missing(&directory, "volatile-missing");
+    assert_eq!(backend.lookups.load(Ordering::Relaxed), 4);
+}
+
+#[test]
 fn stale_missing_lookup_cannot_hide_a_completed_create() {
     let (directory, backend) = fixture();
     let changed = directory.clone();
@@ -177,6 +199,7 @@ enum CachePolicy {
     PositiveAndNegative,
     PositiveOnly,
     Disabled,
+    Mixed,
 }
 
 struct ScriptedDirectory {
@@ -227,6 +250,10 @@ impl NodeOps for ScriptedDirectory {
 impl DirNodeOps for ScriptedDirectory {
     fn is_cacheable(&self) -> bool {
         !matches!(self.policy, CachePolicy::Disabled)
+    }
+    fn is_cacheable_child(&self, name: &str) -> bool {
+        self.is_cacheable()
+            && !(matches!(self.policy, CachePolicy::Mixed) && name.starts_with("volatile"))
     }
     fn negative_cache_generation(&self) -> VfsResult<Option<u64>> {
         if matches!(self.policy, CachePolicy::PositiveOnly) {

@@ -520,19 +520,18 @@ impl DirNode {
         dst_name: &str,
         options: RenameOptions,
     ) {
-        let (source_entry, target_entry) =
-            if core::ptr::eq(self, dst_dir)
-                && self.ops.is_cacheable_child(src_name)
-                && self.ops.is_cacheable_child(dst_name)
-            {
-                let mut children = self.cache.lock();
-                children.remove_renamed(src_name, dst_name)
-            } else {
-                (
-                    self.remove_cache_after_mutation(src_name),
-                    dst_dir.remove_cache_after_mutation(dst_name),
-                )
-            };
+        let (source_entry, target_entry) = if core::ptr::eq(self, dst_dir)
+            && self.ops.is_cacheable_child(src_name)
+            && self.ops.is_cacheable_child(dst_name)
+        {
+            let mut children = self.cache.lock();
+            children.remove_renamed(src_name, dst_name)
+        } else {
+            (
+                self.remove_cache_after_mutation(src_name),
+                dst_dir.remove_cache_after_mutation(dst_name),
+            )
+        };
 
         if options.exchange() {
             if let Some(source) = source_entry

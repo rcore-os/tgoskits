@@ -3,8 +3,8 @@ use core::io::BorrowedCursor;
 
 use ax_io::prelude::*;
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, PreallocationMode, VfsError,
-    VfsResult, NodeFlags,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
+    VfsError, VfsResult,
 };
 
 use crate::{file::cache::CachedFile, io_error_to_vfs_error, vfs_error_to_io_error};
