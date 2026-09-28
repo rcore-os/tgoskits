@@ -10,8 +10,13 @@ use crate::{
 };
 
 pub(super) enum DeliveryRetirement {
-    Emulated { intid: IntId },
-    Physical { binding: PhysicalInterruptBinding },
+    Emulated {
+        intid: IntId,
+        wake: Option<Arc<dyn GicV3VcpuWake>>,
+    },
+    Physical {
+        binding: PhysicalInterruptBinding,
+    },
 }
 
 impl ControllerState {
@@ -45,17 +50,35 @@ impl ControllerState {
         &mut self,
         spi: SpiId,
     ) -> VgicResult<Option<Arc<dyn GicV3VcpuWake>>> {
-        let (route, cpu_target_mask, trigger) = {
+        let trigger = {
             let interrupt = self.distributor.interrupt(spi)?;
             if !self.distributor.enabled() || !interrupt.deliverable() {
                 return Ok(None);
             }
-            (
-                interrupt.route(),
-                interrupt.cpu_target_mask(),
-                interrupt.trigger(),
-            )
+            interrupt.trigger()
         };
+        let target = self.spi_target(spi)?;
+        let mut canceled_inflight = false;
+        let vcpu_interfaces = &self.vcpu_interfaces;
+        for (vcpu, redistributor) in &mut self.redistributors {
+            if *vcpu != target {
+                let loaded = vcpu_interfaces.get(vcpu) == Some(&super::CpuInterfacePhase::Loaded);
+                canceled_inflight |=
+                    redistributor.withdraw_pending_delivery(IntId::Spi(spi), loaded);
+            }
+        }
+        if canceled_inflight {
+            self.distributor.interrupt_mut(spi)?.cancel_inflight();
+        }
+        let redistributor = self.redistributor_mut(target, "queue SPI")?;
+        redistributor.queue(IntId::Spi(spi), trigger);
+        Ok(Some(redistributor.wake()))
+    }
+
+    fn spi_target(&self, spi: SpiId) -> VgicResult<GicVcpuId> {
+        let interrupt = self.distributor.interrupt(spi)?;
+        let route = interrupt.route();
+        let cpu_target_mask = interrupt.cpu_target_mask();
         let target = if let Some(mask) = cpu_target_mask {
             self.redistributors
                 .keys()
@@ -73,19 +96,7 @@ impl ControllerState {
             resource: alloc::format!("SPI {} target Redistributor", spi.raw()),
             operation: "queue SPI",
         })?;
-        let mut canceled_inflight = false;
-        for (vcpu, redistributor) in &mut self.redistributors {
-            if *vcpu != target {
-                canceled_inflight |= redistributor
-                    .withdraw_pending_delivery(IntId::Spi(spi), self.active_vcpus.contains(vcpu));
-            }
-        }
-        if canceled_inflight {
-            self.distributor.interrupt_mut(spi)?.cancel_inflight();
-        }
-        let redistributor = self.redistributor_mut(target, "queue SPI")?;
-        redistributor.queue(IntId::Spi(spi), trigger);
-        Ok(Some(redistributor.wake()))
+        Ok(target)
     }
 
     pub(super) fn queue_physical_spi(
@@ -497,11 +508,12 @@ impl ControllerState {
                 interrupt.deliverable()
             }
         };
-        if repend && delivery.backing() == ListRegisterBacking::Software {
-            self.redistributor_mut(vcpu, "requeue software interrupt")?
-                .requeue_software(intid, delivery.maintenance_on_eoi());
-        }
-        self.retirement_for(delivery.backing(), intid, false)
+        let wake = if repend && delivery.backing() == ListRegisterBacking::Software {
+            self.requeue_software_delivery(vcpu, intid, delivery.maintenance_on_eoi())?
+        } else {
+            None
+        };
+        self.retirement_for(delivery.backing(), intid, false, wake)
     }
 
     pub(super) fn deactivate_interrupt(
@@ -545,11 +557,27 @@ impl ControllerState {
                 interrupt.deliverable()
             }
         };
-        if repend && delivery.backing() == ListRegisterBacking::Software {
-            self.redistributor_mut(vcpu, "requeue deactivated interrupt")?
-                .requeue_software(intid, delivery.maintenance_on_eoi());
-        }
-        self.retirement_for(delivery.backing(), intid, true)
+        let wake = if repend && delivery.backing() == ListRegisterBacking::Software {
+            self.requeue_software_delivery(vcpu, intid, delivery.maintenance_on_eoi())?
+        } else {
+            None
+        };
+        self.retirement_for(delivery.backing(), intid, true, wake)
+    }
+
+    fn requeue_software_delivery(
+        &mut self,
+        vcpu: GicVcpuId,
+        intid: IntId,
+        maintenance_on_eoi: bool,
+    ) -> VgicResult<Option<Arc<dyn GicV3VcpuWake>>> {
+        let target = match intid {
+            IntId::Spi(spi) => self.spi_target(spi)?,
+            IntId::Sgi(_) | IntId::Ppi(_) | IntId::Lpi(_) => vcpu,
+        };
+        let redistributor = self.redistributor_mut(target, "requeue software interrupt")?;
+        redistributor.requeue_software(intid, maintenance_on_eoi);
+        Ok((target != vcpu).then(|| redistributor.wake()))
     }
 
     fn retirement_for(
@@ -557,9 +585,10 @@ impl ControllerState {
         backing: ListRegisterBacking,
         intid: IntId,
         explicit_deactivation: bool,
+        wake: Option<Arc<dyn GicV3VcpuWake>>,
     ) -> VgicResult<Option<DeliveryRetirement>> {
         match backing {
-            ListRegisterBacking::Software => Ok(Some(DeliveryRetirement::Emulated { intid })),
+            ListRegisterBacking::Software => Ok(Some(DeliveryRetirement::Emulated { intid, wake })),
             ListRegisterBacking::Physical(_) if !explicit_deactivation => Ok(None),
             ListRegisterBacking::Physical(host) => {
                 let IntId::Spi(spi) = intid else {

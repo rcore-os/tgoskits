@@ -184,8 +184,21 @@ struct ControllerState {
     physical_spi_acknowledged: BTreeMap<SpiId, bool>,
     releasing_physical_spis: BTreeSet<SpiId>,
     msi_backings: BTreeMap<(ItsId, ItsDeviceId, EventId), MsiBacking>,
-    active_vcpus: alloc::collections::BTreeSet<GicVcpuId>,
+    vcpu_interfaces: BTreeMap<GicVcpuId, CpuInterfacePhase>,
     its: BTreeMap<ItsId, ItsState>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CpuInterfacePhase {
+    Loaded,
+    // Hardware state is saved, but lock-free backing retirements still own it.
+    Retiring,
+}
+
+impl ControllerState {
+    fn cpu_interface_loaded(&self, vcpu: GicVcpuId) -> bool {
+        self.vcpu_interfaces.get(&vcpu) == Some(&CpuInterfacePhase::Loaded)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -237,7 +250,7 @@ impl GicV3Controller {
                     physical_spi_acknowledged: BTreeMap::new(),
                     releasing_physical_spis: BTreeSet::new(),
                     msi_backings: BTreeMap::new(),
-                    active_vcpus: alloc::collections::BTreeSet::new(),
+                    vcpu_interfaces: BTreeMap::new(),
                     its,
                 }),
             }),
@@ -278,7 +291,7 @@ impl GicV3Controller {
                     physical_spi_acknowledged: BTreeMap::new(),
                     releasing_physical_spis: BTreeSet::new(),
                     msi_backings: BTreeMap::new(),
-                    active_vcpus: alloc::collections::BTreeSet::new(),
+                    vcpu_interfaces: BTreeMap::new(),
                     its,
                 }),
             }),
@@ -373,11 +386,10 @@ impl GicV3Controller {
             if !asserted {
                 let mut canceled = false;
                 let state = &mut *state;
+                let vcpu_interfaces = &state.vcpu_interfaces;
                 for (vcpu, redistributor) in &mut state.redistributors {
-                    canceled |= redistributor.withdraw_pending_delivery(
-                        IntId::Spi(spi),
-                        state.active_vcpus.contains(vcpu),
-                    );
+                    let loaded = vcpu_interfaces.get(vcpu) == Some(&CpuInterfacePhase::Loaded);
+                    canceled |= redistributor.withdraw_pending_delivery(IntId::Spi(spi), loaded);
                 }
                 if canceled {
                     state.distributor.interrupt_mut(spi)?.cancel_inflight();
@@ -404,7 +416,7 @@ impl GicV3Controller {
     pub fn set_ppi_level(&self, vcpu: GicVcpuId, ppi: PpiId, asserted: bool) -> VgicResult {
         let wake = {
             let mut state = self.inner.state.lock_irqsave();
-            let cpu_interface_loaded = state.active_vcpus.contains(&vcpu);
+            let cpu_interface_loaded = state.cpu_interface_loaded(vcpu);
             state
                 .redistributor_mut(vcpu, "set PPI level")?
                 .set_ppi_level(ppi, asserted, cpu_interface_loaded);

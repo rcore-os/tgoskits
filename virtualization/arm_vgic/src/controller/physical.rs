@@ -217,7 +217,7 @@ impl GicV3Controller {
                     });
                 }
             };
-            if !state.active_vcpus.is_empty() {
+            if !state.vcpu_interfaces.is_empty() {
                 return Err(VgicError::InvalidStateTransition {
                     intid: IntId::Spi(spi),
                     operation: "tear down physical SPI",
@@ -464,7 +464,7 @@ impl ControllerState {
         spi: SpiId,
         binding: PhysicalInterruptBinding,
     ) -> VgicResult {
-        if !self.active_vcpus.is_empty() {
+        if !self.vcpu_interfaces.is_empty() {
             return Err(VgicError::InvalidStateTransition {
                 intid: IntId::Spi(spi),
                 operation: "unbind physical SPI",
