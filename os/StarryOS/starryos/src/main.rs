@@ -25,6 +25,9 @@ const ENVIRON: &[&str] = &[];
 
 #[unsafe(no_mangle)]
 extern "C" fn main() {
+    #[cfg(feature = "profile-counter-export")]
+    starry_kernel::register_profile_counter_snapshot(snapshot_profile_counters);
+
     let args = init_command_from_bootargs();
     let envs = ENVIRON
         .iter()
@@ -33,6 +36,40 @@ extern "C" fn main() {
         .collect::<Vec<_>>();
 
     starry_kernel::entry::init(&args, &envs);
+}
+
+#[cfg(feature = "profile-counter-export")]
+fn snapshot_profile_counters() -> Option<Vec<u8>> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    unsafe extern "C" {
+        static mut __start___llvm_prf_cnts: u64;
+        static mut __stop___llvm_prf_cnts: u64;
+    }
+
+    let start = core::ptr::addr_of_mut!(__start___llvm_prf_cnts) as usize;
+    let end = core::ptr::addr_of_mut!(__stop___llvm_prf_cnts) as usize;
+    let bytes = end.checked_sub(start)?;
+    if bytes == 0
+        || bytes > 16 * 1024 * 1024
+        || !bytes.is_multiple_of(8)
+        || !start.is_multiple_of(8)
+    {
+        return None;
+    }
+
+    let mut snapshot = Vec::new();
+    snapshot.try_reserve_exact(bytes).ok()?;
+    // LLVM updates these counters atomically in the profile-generate build;
+    // the linker section stays mapped for the lifetime of the image.
+    let counters = start as *const AtomicU64;
+    for index in 0..bytes / 8 {
+        // SAFETY: the linker bounds and alignment checks cover this counter;
+        // the training build requests atomic LLVM updates on every CPU.
+        let count = unsafe { (*counters.add(index)).load(Ordering::Relaxed) };
+        snapshot.extend_from_slice(&count.to_le_bytes());
+    }
+    Some(snapshot)
 }
 
 fn init_command_from_bootargs() -> Vec<String> {

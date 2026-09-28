@@ -22,6 +22,7 @@ legacy-board-init = []
 # individual driver feature list at runtime.
 qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
 qperf-metrics = ["starry-kernel/qperf-metrics"]
+profile-counter-export = []
 lockdep = ["ax-std/lockdep"]
 axtest-coverage = ["starry-kernel/axtest-coverage"]
 

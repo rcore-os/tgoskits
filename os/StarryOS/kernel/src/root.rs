@@ -57,6 +57,7 @@ mod block_runtime_axtest;
 mod thread_lifecycle_axtest;
 
 pub use error::{DmaOperation, StarryError, StarryResult};
+pub use pseudofs::debug::register_profile_counter_snapshot;
 // The staged MM ownership and transaction types are intentionally reachable
 // from the kernel boundary so migration call sites do not need a second
 // compatibility facade.

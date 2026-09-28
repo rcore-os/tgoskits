@@ -1,10 +1,19 @@
 use alloc::sync::Arc;
 
-#[cfg(any(feature = "qperf-metrics", feature = "uaccess-lock-regression"))]
 use super::SimpleFile;
 use super::{DirMaker, DirMapping, SimpleDir, SimpleFs};
+use ax_lazyinit::{LazyInit, OnceLock};
 
 const DEBUGFS_MAGIC: u32 = 0x64626720;
+static PROFILE_COUNTER_SNAPSHOT: LazyInit<fn() -> Option<alloc::vec::Vec<u8>>> = LazyInit::new();
+
+/// Registers a profile counter snapshot provider before debugfs is mounted.
+///
+/// The provider is registered once and remains callable for the image lifetime.
+/// Images without a provider do not expose the profile file.
+pub fn register_profile_counter_snapshot(snapshot: fn() -> Option<alloc::vec::Vec<u8>>) {
+    PROFILE_COUNTER_SNAPSHOT.init_once(snapshot);
+}
 
 /// Create a new debugfs filesystem.
 pub fn new_debugfs() -> axfs_ng_vfs::Filesystem {
@@ -48,7 +57,33 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
         "scheduler_metrics",
         SimpleFile::new_regular(fs.clone(), || Ok(render_scheduler_metrics())),
     );
+    if let Some(snapshot) = PROFILE_COUNTER_SNAPSHOT.get().copied() {
+        root.add(
+            "profile_counters",
+            SimpleFile::new_regular(
+                fs.clone(),
+                ProfileCounterFile {
+                    snapshot,
+                    cached: OnceLock::new(),
+                },
+            ),
+        );
+    }
     SimpleDir::new_maker(fs, Arc::new(root))
+}
+
+struct ProfileCounterFile {
+    snapshot: fn() -> Option<alloc::vec::Vec<u8>>,
+    cached: OnceLock<alloc::vec::Vec<u8>>,
+}
+
+impl super::file::SimpleFileOps for ProfileCounterFile {
+    fn read_all(&self) -> axfs_ng_vfs::VfsResult<alloc::borrow::Cow<'_, [u8]>> {
+        let snapshot = self
+            .cached
+            .get_or_try_init(|| (self.snapshot)().ok_or(axfs_ng_vfs::VfsError::InvalidInput))?;
+        Ok(alloc::borrow::Cow::Borrowed(snapshot))
+    }
 }
 
 #[cfg(feature = "qperf-metrics")]
