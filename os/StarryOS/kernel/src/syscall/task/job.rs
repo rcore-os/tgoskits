@@ -93,6 +93,10 @@ pub fn sys_setpgid(
         .transpose()?;
 
     let proc = target.resolve(current)?;
+    // Linux setpgid(): a session leader keeps the group it leads.
+    if proc.group().session().sid().pid_number() == proc.pid().pid_number() {
+        return Err(StarryError::OperationNotPermitted);
+    }
     let proc_number = current_view(current)
         .visible_process_number(&proc.identity())
         .ok_or(StarryError::NoSuchProcess)?

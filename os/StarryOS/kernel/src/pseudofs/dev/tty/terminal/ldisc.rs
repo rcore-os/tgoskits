@@ -72,6 +72,15 @@ pub trait TtyWrite: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Called for every open of this side before the descriptor exists, so the
+    /// side can account for it and refuse an open it cannot serve.
+    fn opened(&self) -> StarryResult<()> {
+        Ok(())
+    }
+
+    /// Called for every close of this side, before the last-close [`Self::close`].
+    fn closing(&self) {}
+
     /// Called when the last fd referencing this writer side is closed, so the
     /// peer reader can be woken for POLLHUP/EOF. Default: no-op.
     fn close(&self) {}
