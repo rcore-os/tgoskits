@@ -110,11 +110,6 @@ fn fetch_control_offer(failed_boot_id: Option<&str>) -> BootAttempt {
                         elf.entry_point,
                         elf.handoff
                     );
-                    if let Err(err) = network_boot.report_status(LoaderStatusPhase::ReadyToHandoff)
-                    {
-                        logln!("loader_status_error: {err:?}");
-                        return BootAttempt::DiscoveryFailed;
-                    }
                     let published_payload = match prepared_payload.publish() {
                         Ok(payload) => payload,
                         Err(err) => {
@@ -126,6 +121,11 @@ fn fetch_control_offer(failed_boot_id: Option<&str>) -> BootAttempt {
                             return BootAttempt::Failed(Some(offer.boot_id.clone()));
                         }
                     };
+                    if let Err(err) = network_boot.report_status(LoaderStatusPhase::ReadyToHandoff)
+                    {
+                        logln!("loader_status_error: {err:?}");
+                        return BootAttempt::DiscoveryFailed;
+                    }
                     let entry_point = elf.entry_point;
                     let handoff = elf.handoff;
                     drop(network_boot);

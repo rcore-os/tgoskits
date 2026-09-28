@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
 };
@@ -181,7 +181,7 @@ pub(crate) fn pack_initramfs_dir(source: &Path, output: &Path) -> anyhow::Result
         "initramfs output must be outside its source directory"
     );
     let paths = archive_paths(&source)?;
-    let temp = tempfile::NamedTempFile::new_in(&parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(&parent)?;
     let mut child = ProcessCommand::new("cpio")
         .args([
             "--create",
@@ -219,8 +219,67 @@ pub(crate) fn pack_initramfs_dir(source: &Path, output: &Path) -> anyhow::Result
         temp.as_file().metadata()?.len() != 0,
         "cpio created an empty archive"
     );
+    normalize_newc_mtimes(temp.as_file_mut())?;
     temp.persist(&output)?;
     println!("host initramfs: {}", output.display());
+    Ok(())
+}
+
+fn normalize_newc_mtimes(archive: &mut fs::File) -> anyhow::Result<()> {
+    const HEADER_LEN: u64 = 110;
+    let archive_len = archive.metadata()?.len();
+    let mut offset = 0u64;
+    loop {
+        ensure!(
+            offset
+                .checked_add(HEADER_LEN)
+                .is_some_and(|end| end <= archive_len),
+            "cpio output has a truncated newc header"
+        );
+        archive.seek(SeekFrom::Start(offset))?;
+        let mut header = [0u8; HEADER_LEN as usize];
+        archive.read_exact(&mut header)?;
+        ensure!(
+            header.starts_with(b"070701") || header.starts_with(b"070702"),
+            "cpio output is not a newc archive"
+        );
+        let field = |index: usize| -> anyhow::Result<u64> {
+            let start = 6 + index * 8;
+            let hex = std::str::from_utf8(&header[start..start + 8])?;
+            Ok(u64::from_str_radix(hex, 16)?)
+        };
+        let size = field(6)?;
+        let name_len = field(11)?;
+        ensure!(name_len != 0, "cpio output has an empty name field");
+        let name_end = offset
+            .checked_add(HEADER_LEN)
+            .and_then(|start| start.checked_add(name_len))
+            .context("cpio output name offset overflows")?;
+        let data_start = name_end
+            .checked_next_multiple_of(4)
+            .context("cpio output data offset overflows")?;
+        let next = data_start
+            .checked_add(size)
+            .and_then(|end| end.checked_next_multiple_of(4))
+            .context("cpio output entry offset overflows")?;
+        ensure!(next <= archive_len, "cpio output has a truncated entry");
+
+        let trailer = if name_len == 11 {
+            let mut name = [0u8; 11];
+            archive.read_exact(&mut name)?;
+            name == *b"TRAILER!!!\0"
+        } else {
+            false
+        };
+        header[46..54].copy_from_slice(b"00000000");
+        archive.seek(SeekFrom::Start(offset))?;
+        archive.write_all(&header)?;
+        if trailer {
+            ensure!(size == 0, "cpio output has data after the trailer");
+            break;
+        }
+        offset = next;
+    }
     Ok(())
 }
 
@@ -365,6 +424,8 @@ fn workspace_relative_path(workspace_root: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use tempfile::tempdir;
 
     use super::*;
@@ -384,6 +445,40 @@ mod tests {
                 PathBuf::from("./z"),
             ]
         );
+    }
+
+    #[test]
+    fn packed_initramfs_ignores_source_mtime() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let entry = source.join("init");
+        fs::write(&entry, b"init").unwrap();
+
+        let set_mtime = |seconds| {
+            let time = fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds));
+            fs::File::open(&entry).unwrap().set_times(time).unwrap();
+            fs::File::open(&source).unwrap().set_times(time).unwrap();
+        };
+        set_mtime(1_000_000);
+        let first = root.path().join("first.cpio");
+        pack_initramfs_dir(&source, &first).unwrap();
+
+        set_mtime(2_000_000);
+        let second = root.path().join("second.cpio");
+        pack_initramfs_dir(&source, &second).unwrap();
+
+        assert!(fs::read(&first).unwrap() == fs::read(&second).unwrap());
+        let extracted = root.path().join("extracted");
+        fs::create_dir(&extracted).unwrap();
+        let status = ProcessCommand::new("cpio")
+            .args(["--extract", "--quiet"])
+            .current_dir(&extracted)
+            .stdin(Stdio::from(fs::File::open(&second).unwrap()))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(fs::read(extracted.join("init")).unwrap(), b"init");
     }
 
     #[test]

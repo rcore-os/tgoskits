@@ -30,8 +30,9 @@ and HTTP transfer on another. Diagnostic text uses firmware `ConOut` only.
 4. 收到 `boot` 后通过 `POST /api/v1/loaders/status` 报告进度，下载内核 ELF，
    核验长度和 SHA-256。若本会话提供宿主 initramfs，再下载该归档并独立核验长度
    和 SHA-256，同时保存 `cmdline`。任一核验失败都不交接。
-5. `loader::payload::install()` 把归档页和命令行写入 `BootPayload` 配置表；随后
+5. `PreparedPayload::publish()` 把归档页和命令行写入 `BootPayload` 配置表；随后
    报告 `ready_to_handoff`，销毁 UDP/HTTP/IP 对象，退出 Boot Services 并进入内核。
+   若状态上报失败，撤销配置表并回收尚未交接的归档页。
 
 Every loader restart performs discovery again and gets a fresh
 `registration_id`. The server binds the device by its persistent MAC and may

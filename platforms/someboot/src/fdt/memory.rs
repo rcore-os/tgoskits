@@ -111,8 +111,9 @@ pub fn init_memory_map() -> Option<()> {
             MemoryType::Reserved,
             PAGE_SIZE,
         );
-        let reclaimable = match add_memory_descriptor(reservation.clone()) {
-            Ok(()) => true,
+        let reclaimable = archive_reservation_was_free(crate::mem::memory_map(), &reservation);
+        match add_memory_descriptor(reservation.clone()) {
+            Ok(()) => {}
             Err(error) => {
                 let already_reserved = crate::mem::memory_map().iter().any(|entry| {
                     entry.memory_type == MemoryType::Reserved
@@ -126,13 +127,30 @@ pub fn init_memory_map() -> Option<()> {
                     already_reserved,
                     "failed to reserve host initramfs: {error:?}"
                 );
-                false
             }
-        };
+        }
         crate::boot_payload::publish(range.start, range.end, reclaimable);
     }
 
     Some(())
+}
+
+fn archive_reservation_was_free(
+    memory_map: &[MemoryDescriptor],
+    reservation: &MemoryDescriptor,
+) -> bool {
+    let start = reservation.physical_start;
+    let Some(end) = start.checked_add(reservation.size_in_bytes) else {
+        return false;
+    };
+    memory_map.iter().any(|entry| {
+        entry.memory_type == MemoryType::Free
+            && entry.physical_start <= start
+            && entry
+                .physical_start
+                .checked_add(entry.size_in_bytes)
+                .is_some_and(|free_end| end <= free_end)
+    })
 }
 
 pub fn memories() -> impl Iterator<Item = Range<usize>> {
@@ -162,4 +180,42 @@ fn normalize_region(address: u64, size: u64) -> Option<Range<usize>> {
 
 fn normalize_fdt_address(address: usize) -> usize {
     <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preexisting_reservation_is_not_owned_by_the_archive() {
+        let archive =
+            MemoryDescriptor::new_aligned(0x2000, 0x1000, MemoryType::Reserved, PAGE_SIZE);
+        let free = MemoryDescriptor {
+            physical_start: 0x1000,
+            size_in_bytes: 0x3000,
+            memory_type: MemoryType::Free,
+        };
+        let reserved = MemoryDescriptor {
+            memory_type: MemoryType::Reserved,
+            ..free.clone()
+        };
+        assert!(archive_reservation_was_free(&[free], &archive));
+        assert!(!archive_reservation_was_free(&[reserved], &archive));
+        assert!(!archive_reservation_was_free(
+            &[
+                MemoryDescriptor {
+                    physical_start: 0x1000,
+                    size_in_bytes: 0x1000,
+                    memory_type: MemoryType::Free,
+                },
+                archive.clone(),
+                MemoryDescriptor {
+                    physical_start: 0x3000,
+                    size_in_bytes: 0x1000,
+                    memory_type: MemoryType::Free,
+                },
+            ],
+            &archive
+        ));
+    }
 }
