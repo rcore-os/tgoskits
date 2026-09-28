@@ -1,0 +1,29 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "4g",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^ARCEOS_IVSHMEM_PCI_FAIL(?:\\s|$)",
+]
+timeout = 120
+to_bin = true
+uefi = false
+
+# The host build has no `fs` feature, so the shell prompt stays in its
+# fallback form. Match only after the guest maps the generated ECAM,
+# verifies the ivshmem identity, enables BAR2 and completes a write/read
+# round trip.
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+success_regex = [
+  "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ARCEOS_IVSHMEM_PCI_PASS\\s*$",
+]
