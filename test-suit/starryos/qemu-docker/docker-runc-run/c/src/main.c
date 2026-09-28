@@ -305,6 +305,63 @@ static void check_pipe_fchown(void)
         fail("fchown on a pipe persists to fstat");
     }
 
+    /* chown_common() clears SUID unconditionally and SGID for a group-exec
+     * non-directory; an anonymous pipe must follow the same rule. */
+    struct stat cleared;
+    if (fchmod(p[0], 04777) == 0 && fchown(p[0], -1, -1) == 0 &&
+        fstat(p[0], &cleared) == 0 && (cleared.st_mode & 06000) == 0) {
+        pass("fchown clears setuid/setgid on an anonymous pipe");
+    } else {
+        fail("fchown clears setuid/setgid on an anonymous pipe");
+    }
+
+    /* A non-root creator owns the anonymous inode and may chmod it. */
+    pid_t owner_child = fork();
+    if (owner_child == 0) {
+        if (setuid(1000) != 0) {
+            _exit(3);
+        }
+        int q[2];
+        if (pipe(q) != 0) {
+            _exit(4);
+        }
+        struct stat st;
+        if (fstat(q[0], &st) != 0 || st.st_uid != 1000 || st.st_gid != 1000) {
+            _exit(5);
+        }
+        if (fchmod(q[0], 0600) != 0) {
+            _exit(6);
+        }
+        if (fstat(q[0], &st) != 0 || (st.st_mode & 0777) != 0600) {
+            _exit(7);
+        }
+        close(q[0]);
+        close(q[1]);
+
+        /* A non-root socketpair's inodes carry the creator's identity too. */
+        int sv[2];
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+            _exit(8);
+        }
+        if (fstat(sv[0], &st) != 0 || st.st_uid != 1000 || st.st_gid != 1000) {
+            _exit(9);
+        }
+        close(sv[0]);
+        close(sv[1]);
+        _exit(0);
+    }
+    if (owner_child > 0) {
+        int owner_status = 0;
+        if (waitpid(owner_child, &owner_status, 0) == owner_child &&
+            WIFEXITED(owner_status) && WEXITSTATUS(owner_status) == 0) {
+            pass("a non-root creator owns and can chmod its pipe inode");
+        } else {
+            fail("a non-root creator owns and can chmod its pipe inode");
+        }
+    } else {
+        fail("fork non-root pipe owner child");
+    }
+
     close(p[0]);
     close(p[1]);
 }
