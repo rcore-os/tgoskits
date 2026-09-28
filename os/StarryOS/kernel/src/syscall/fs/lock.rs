@@ -1407,7 +1407,7 @@ pub fn flock_op(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::{LockIndex, LockState, RwLock};
     use alloc::sync::Arc;
