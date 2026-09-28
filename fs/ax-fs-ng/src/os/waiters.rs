@@ -199,7 +199,7 @@ mod tests {
 
         // A count load may observe its previous value without synchronizing
         // with the registration store. Notification must inspect the queue.
-        waiters.count.store(0, Ordering::Relaxed);
+        waiters.count.store(0, Ordering::Release);
         let wakes = Cell::new(0);
         waiters.wake_all(|_| wakes.set(wakes.get() + 1));
         assert_eq!(wakes.get(), 1);
