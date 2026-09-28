@@ -488,11 +488,7 @@ fn save_v3(
     let used_lrs = state.used_list_registers();
     data_sync_barrier();
     instruction_sync_barrier();
-    let live_lrs = if used_lrs == 0 {
-        0
-    } else {
-        live_v3_list_registers(lr_count)
-    };
+    let live_lrs = live_v3_list_registers(lr_count);
     let result = (|| {
         state.set_hcr(saved_v3_hcr(ICH_HCR_EL2.get(), state.hcr()));
         state.set_vmcr(ICH_VMCR_EL2.get());

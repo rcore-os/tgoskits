@@ -316,13 +316,15 @@ impl RedistributorState {
             }
             return false;
         }
-        if let Some(entry) = self
+        if let Some(index) = self
             .cpu_interface
-            .list_registers_mut()
-            .iter_mut()
-            .flatten()
-            .find(|entry| entry.intid() == delivery.intid)
+            .list_registers()
+            .iter()
+            .position(|entry| entry.is_some_and(|entry| entry.intid() == delivery.intid))
         {
+            let entry = self.cpu_interface.list_registers_mut()[index]
+                .as_mut()
+                .expect("the matched LR slot must remain occupied");
             if entry.backing() == delivery.backing
                 && !matches!(entry.backing(), ListRegisterBacking::Physical(_))
             {
@@ -331,6 +333,7 @@ impl RedistributorState {
                     InterruptState::Active => InterruptState::ActivePending,
                     state => state,
                 });
+                self.cpu_interface.clear_pending_withdrawal(index);
             }
             return false;
         }
@@ -358,23 +361,9 @@ impl RedistributorState {
         canceled
     }
 
-    pub(crate) fn withdraw_pending_delivery(&mut self, intid: IntId) -> bool {
+    pub(crate) fn withdraw_pending_delivery(&mut self, intid: IntId, loaded: bool) -> bool {
         self.clear_queued_pending(intid);
-        let mut canceled = false;
-        for slot in self.cpu_interface.list_registers_mut() {
-            let Some(entry) = slot.as_mut().filter(|entry| entry.intid() == intid) else {
-                continue;
-            };
-            match entry.state() {
-                InterruptState::Pending => {
-                    *slot = None;
-                    canceled = true;
-                }
-                InterruptState::ActivePending => entry.set_state(InterruptState::Active),
-                InterruptState::Inactive | InterruptState::Active => {}
-            }
-        }
-        canceled
+        self.cpu_interface.withdraw_pending_delivery(intid, loaded)
     }
 
     pub(crate) fn pending_count(&self) -> usize {

@@ -92,14 +92,14 @@ impl GicV3VcpuBinding {
                 .backend
                 .save_cpu_interface(self.vcpu, &mut saved),
         );
-        let merge_result = match save_result {
-            Ok(()) => self
-                .merge_saved_state(saved, false)
-                .and_then(|retirements| self.apply_retirements(retirements)),
-            Err(error) => Err(error),
+        let merge_result = {
+            let mut controller = self.controller_state();
+            let result =
+                save_result.and_then(|()| controller.merge_cpu_interface(self.vcpu, saved, false));
+            controller.active_vcpus.remove(&self.vcpu);
+            result
         };
-        self.controller_state().active_vcpus.remove(&self.vcpu);
-        merge_result
+        self.apply_retirements(merge_result?)
     }
 
     /// Harvests completed LRs, refills software pending work, and reloads ICH state.
@@ -152,7 +152,6 @@ impl GicV3VcpuBinding {
                 .backend
                 .save_cpu_interface(self.vcpu, &mut saved),
         )?;
-
         let (retirements, state) = {
             let mut controller = self.controller_state();
             let mut retirements = controller.merge_cpu_interface(self.vcpu, saved, false)?;

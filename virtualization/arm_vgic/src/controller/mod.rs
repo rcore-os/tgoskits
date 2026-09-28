@@ -372,8 +372,12 @@ impl GicV3Controller {
             state.distributor.set_level(spi, asserted)?;
             if !asserted {
                 let mut canceled = false;
-                for redistributor in state.redistributors.values_mut() {
-                    canceled |= redistributor.withdraw_pending_delivery(IntId::Spi(spi));
+                let state = &mut *state;
+                for (vcpu, redistributor) in &mut state.redistributors {
+                    canceled |= redistributor.withdraw_pending_delivery(
+                        IntId::Spi(spi),
+                        state.active_vcpus.contains(vcpu),
+                    );
                 }
                 if canceled {
                     state.distributor.interrupt_mut(spi)?.cancel_inflight();

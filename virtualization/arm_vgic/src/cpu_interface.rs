@@ -1,6 +1,6 @@
 //! Saved GICv3 virtual CPU-interface state.
 
-use crate::{IntId, InterruptState, PhysicalIrqId, Priority, TriggerMode};
+use crate::{IntId, InterruptState, PhysicalIrqId, Priority, TriggerMode, VgicError, VgicResult};
 
 pub(crate) const MAX_LIST_REGISTERS: usize = 16;
 
@@ -135,6 +135,7 @@ pub struct CpuInterfaceState {
     vmcr: u64,
     apr: [u64; 4],
     list_registers: [Option<ListRegisterState>; MAX_LIST_REGISTERS],
+    withdrawn_pending: [Option<IntId>; MAX_LIST_REGISTERS],
     list_register_count: usize,
     v2_enabled: bool,
     v2_priority_mask: Priority,
@@ -151,6 +152,7 @@ impl CpuInterfaceState {
             vmcr: ICH_VMCR_VENG1 | ICH_VMCR_VPMR_MASK,
             apr: [0; 4],
             list_registers: [None; MAX_LIST_REGISTERS],
+            withdrawn_pending: [None; MAX_LIST_REGISTERS],
             list_register_count,
             v2_enabled: false,
             v2_priority_mask: Priority::new(0),
@@ -285,6 +287,76 @@ impl CpuInterfaceState {
             .iter()
             .rposition(Option::is_some)
             .map_or(0, |index| index + 1)
+    }
+
+    /// Defers withdrawal of a loaded LR until the backend has read hardware.
+    ///
+    /// The slot retains its identity so a guest activation racing with input
+    /// deassertion can still be harvested. Its pending state is hidden from
+    /// software queries until the hardware observation is reconciled.
+    pub(crate) fn withdraw_pending_delivery(&mut self, intid: IntId, loaded: bool) -> bool {
+        let mut canceled = false;
+        for (index, slot) in self.list_registers[..self.list_register_count]
+            .iter_mut()
+            .enumerate()
+        {
+            let Some(entry) = slot.as_mut().filter(|entry| entry.intid() == intid) else {
+                continue;
+            };
+            match entry.state() {
+                InterruptState::Pending if loaded => {
+                    entry.set_state(InterruptState::Inactive);
+                    self.withdrawn_pending[index] = Some(intid);
+                }
+                InterruptState::Pending => {
+                    *slot = None;
+                    canceled = true;
+                }
+                InterruptState::ActivePending if loaded => {
+                    entry.set_state(InterruptState::Active);
+                    self.withdrawn_pending[index] = Some(intid);
+                }
+                InterruptState::ActivePending => entry.set_state(InterruptState::Active),
+                InterruptState::Inactive | InterruptState::Active => {}
+            }
+        }
+        canceled
+    }
+
+    pub(crate) fn clear_pending_withdrawal(&mut self, index: usize) {
+        self.withdrawn_pending[index] = None;
+    }
+
+    /// Applies the latest canonical withdrawals to a hardware observation.
+    ///
+    /// The input can change after the caller takes its save snapshot, so the
+    /// owner must call this while holding the controller state lock.
+    pub(crate) fn reconcile_withdrawn_pending(
+        &self,
+        observed: &mut CpuInterfaceState,
+    ) -> VgicResult {
+        for (index, withdrawal) in self.withdrawn_pending.iter().enumerate() {
+            let Some(intid) = *withdrawal else {
+                continue;
+            };
+            let slot = &mut observed.list_registers[index];
+            if let Some(entry) = slot {
+                if entry.intid() != intid || entry.backing() != ListRegisterBacking::Software {
+                    return Err(VgicError::InvalidStateTransition {
+                        intid,
+                        operation: "reconcile withdrawn CPU-interface delivery",
+                        detail: alloc::format!("LR{index} changed identity while loaded"),
+                    });
+                }
+                match entry.state() {
+                    InterruptState::Pending => *slot = None,
+                    InterruptState::ActivePending => entry.set_state(InterruptState::Active),
+                    InterruptState::Inactive | InterruptState::Active => {}
+                }
+            }
+        }
+        observed.withdrawn_pending = [None; MAX_LIST_REGISTERS];
+        Ok(())
     }
 
     /// Returns the guest-visible GICC_CTLR state.
