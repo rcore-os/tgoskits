@@ -863,10 +863,15 @@ func collectionSection() {
 	}
 
 	// RollingWindow[float64, *Bucket[float64]]: Add then Reduce over buckets.
+	// go-zero aligns buckets with timex.Now(), which is wall-clock based; using
+	// the maximum interval keeps all three Adds in the current bucket even if a
+	// forward guest wall-clock/RTC step occurs between them. The expected sum
+	// remains the exact 6, so a dropped or mis-summed Add still changes the
+	// golden.
 	{
 		rw := collection.NewRollingWindow[float64, *collection.Bucket[float64]](
 			func() *collection.Bucket[float64] { return new(collection.Bucket[float64]) },
-			3, time.Hour, // long interval => no bucket rolls during test
+			3, gz_noRollInterval,
 		)
 		rw.Add(1)
 		rw.Add(2)
@@ -876,10 +881,11 @@ func collectionSection() {
 		fwOK("collection.RollingWindow Reduce sum", sum)
 
 		// IgnoreCurrentBucket option: current in-progress bucket is excluded; with
-		// a long interval everything lands in the current bucket, so Reduce sees 0.
+		// a non-rolling interval everything lands in the current bucket, so Reduce
+		// sees 0.
 		rwIgnore := collection.NewRollingWindow[float64, *collection.Bucket[float64]](
 			func() *collection.Bucket[float64] { return new(collection.Bucket[float64]) },
-			3, time.Hour,
+			3, gz_noRollInterval,
 			collection.IgnoreCurrentBucket[float64, *collection.Bucket[float64]](),
 		)
 		rwIgnore.Add(10)
@@ -890,6 +896,13 @@ func collectionSection() {
 }
 
 const gz_testStep = time.Millisecond * 50
+
+// gz_noRollInterval keeps RollingWindow tests within one bucket. go-zero's
+// timex.Now() is based on time.Since of a wall-clock timestamp, so a forward
+// guest wall-clock/RTC step can otherwise look like a multi-hour gap and reset
+// the window between Add calls. The maximum time.Duration exceeds any forward
+// step representable by the 32-bit RTC epoch used on the AArch64 QEMU target.
+const gz_noRollInterval = time.Duration(1<<63 - 1)
 
 func gz_sortedInts(in []int) []int {
 	out := append([]int(nil), in...)
