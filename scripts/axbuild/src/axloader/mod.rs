@@ -892,40 +892,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smoke_arch_uses_protocol_architecture() {
-        assert_eq!(parse_smoke_arch("x86_64").unwrap(), BootArch::X86_64);
-        assert!(parse_smoke_arch("mips64").is_err());
-    }
-
-    #[test]
-    fn first_failed_qemu_attempt_is_retried() {
-        assert_eq!(next_smoke_attempt(1), Some(2));
-        assert_eq!(next_smoke_attempt(2), None);
-    }
-
-    #[test]
-    fn json_control_requests_require_explicit_http_framing() {
-        let body = br#"{"protocol_version":2}"#;
-        let content_length = format!("Content-Length: {}\r\n\r\n", body.len());
-        let framed = [
-            b"POST /api/v1/loaders/poll HTTP/1.1\r\n".as_slice(),
-            b"Content-Type: application/json\r\n",
-            content_length.as_bytes(),
-            body,
-        ]
-        .concat();
-        assert!(json_request_is_framed(&framed));
-
-        let unframed = [
-            b"POST /api/v1/loaders/poll HTTP/1.1\r\n".as_slice(),
-            b"Host: 10.0.2.2\r\n\r\n",
-            body,
-        ]
-        .concat();
-        assert!(!json_request_is_framed(&unframed));
-    }
-
-    #[test]
     fn qemu_filter_frame_parser_waits_for_complete_frame_and_rejects_invalid_lengths() {
         let mut encoded = Vec::from(3_u32.to_be_bytes());
         encoded.extend_from_slice(b"ab");

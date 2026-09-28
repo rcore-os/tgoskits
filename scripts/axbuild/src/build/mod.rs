@@ -42,8 +42,6 @@ pub(crate) use info::{
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]
-pub(crate) use platform::parse_makefile_features;
-#[cfg(test)]
 pub(crate) use platform::workspace_metadata;
 use platform::*;
 pub(crate) use platform::{

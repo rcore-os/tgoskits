@@ -5711,42 +5711,47 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Removes every user mapping after the caller has proved that this page
-    /// table cannot be installed on a CPU.  This is the shared apply step for
-    /// unpublished-image abort and retired-MM reclaim; it deliberately does
-    /// not publish an epoch or side-band event by itself.
-    fn clear_quiescent_contents(&mut self) -> StarryResult {
+    /// Releases user mappings after the caller has proved that this page table
+    /// cannot be installed on a CPU. Unpublished images keep their root for
+    /// reuse; retired MMs detach the entire root after lifecycle quiescence.
+    /// This step does not publish an epoch or side-band event by itself.
+    fn clear_quiescent_contents(&mut self, retired: bool) -> StarryResult {
         self.ensure_quiescent_for_content_clear()?;
-        let range = self.layout.range();
-        let operations = self.mapping_operation_fragments(range, false)?;
-        if operations
-            .iter()
-            .any(|(fragment, operation)| !operation.validate_unmap_range(*fragment, &self.pt))
-        {
-            return Err(StarryError::BadState);
-        }
-
-        let leaf_count = self.occupied_pte_leaves_overlapping(&[range])?.len();
-        let mut page_table_reclaims =
-            MappingMutationContext::for_published_mutation(leaf_count)?;
-        // A retired MM has no users, pins, activations, pending receipts or
-        // page-table walkers.  An unpublished loader image is likewise held by
-        // one `&mut AddrSpace`.  Linux uses the same isolation proof to run
-        // `free_pgtables()` without a PTL after VMAs have been detached.  Do
-        // not acquire the IRQ-saving structure lock here: backend validation,
-        // occupied-leaf vectors, page-table frame release and Arc destruction
-        // are all allowed to allocate or enter the allocator's reclaim path.
-        let clear_result = operations
-            .into_iter()
-            .try_for_each(|(fragment, operation)| {
-                operation.unmap_range(fragment, &mut page_table_reclaims, &mut self.pt)
-            });
-        // SAFETY: `ensure_quiescent_for_content_clear` proved that this root
-        // has no active CPU, pending receipt, or earlier retire batch.
-        unsafe { page_table_reclaims.reclaim() };
-        if let Err(error) = clear_result {
-            self.mutation_gate.mark_needs_repair();
-            return Err(error);
+        if retired {
+            // No CPU or walker can reach this retired root, and MappingSlot
+            // owns each data frame independently of its PTE. Unlike Linux's
+            // unmap_vmas/free_pgtables sequence, this teardown can release
+            // the root and all owners without per-VMA or per-leaf unmapping.
+            // SAFETY: RetirePermit has quiesced all users, and the check above
+            // excludes active CPUs, pending TLB receipts and retained owners.
+            unsafe { self.pt.detach(|token| token.reclaim()) };
+        } else {
+            let range = self.layout.range();
+            let operations = self.mapping_operation_fragments(range, false)?;
+            if operations
+                .iter()
+                .any(|(fragment, operation)| !operation.validate_unmap_range(*fragment, &self.pt))
+            {
+                return Err(StarryError::BadState);
+            }
+            let leaf_count = self.occupied_pte_leaves_overlapping(&[range])?.len();
+            let mut page_table_reclaims =
+                MappingMutationContext::for_published_mutation(leaf_count)?;
+            // An unpublished loader image is held by one `&mut AddrSpace`.
+            // Keep its root reusable and reclaim detached intermediate tables
+            // only after every backend has finished changing its PTEs.
+            let clear_result = operations
+                .into_iter()
+                .try_for_each(|(fragment, operation)| {
+                    operation.unmap_range(fragment, &mut page_table_reclaims, &mut self.pt)
+                });
+            // SAFETY: the quiescence check above excludes page-table users
+            // and pending TLB receipts for this unpublished image.
+            unsafe { page_table_reclaims.reclaim() };
+            if let Err(error) = clear_result {
+                self.mutation_gate.mark_needs_repair();
+                return Err(error);
+            }
         }
         let slots = core::mem::take(&mut self.mapping_slots);
         for slot in slots.into_values() {
@@ -5775,7 +5780,7 @@ impl AddrSpace {
         let range = self.layout.range();
         let memfd_deltas =
             crate::syscall::memfd_prepare_aspace_unmap_deltas(self, range.start, range.size());
-        self.clear_quiescent_contents()?;
+        self.clear_quiescent_contents(false)?;
         self.resident_pages = ResidentPageCounts::default();
         self.heap = HeapState::new(USER_HEAP_BASE);
         self.executable_data = ExecutableDataLayout::default();
@@ -5784,7 +5789,7 @@ impl AddrSpace {
     }
 
     /// Clears a retired, formerly published MM and records that teardown in
-    /// the ordinary mutation protocol before page-table frames are detached.
+    /// the ordinary mutation protocol after quiescent whole-tree detach.
     fn clear_retired_contents(&mut self) -> StarryResult {
         self.ensure_quiescent_for_content_clear()?;
         let base_epoch = self.vm_epoch();
@@ -5815,7 +5820,7 @@ impl AddrSpace {
             ..MappingDelta::default()
         });
         mutation.set_resident_delta(self.resident_pages.checked_negated_delta()?);
-        self.clear_quiescent_contents()?;
+        self.clear_quiescent_contents(true)?;
         let result = self.commit_mutation(mutation);
         if self.vm_epoch() != base_epoch {
             crate::syscall::memfd_apply_shared_writable_deltas(&memfd_deltas);
@@ -5837,25 +5842,6 @@ impl AddrSpace {
             return Err(StarryError::ResourceBusy);
         }
         self.clear_retired_contents()?;
-        let epoch = self.vm_epoch();
-
-        // Detach page-table frames from the materialized tree before allocator
-        // release. Lifecycle quiescence is the zero-target form of Linux's
-        // mmu-gather contract: no CPU can still walk this root, so the typed
-        // allocator capability may be consumed immediately. Published
-        // mutations with remote observers take the ordinary TLB quarantine
-        // path before an MM can reach Retired.
-        let targets = self.tlb_targets.load(core::sync::atomic::Ordering::Acquire);
-        let request = TlbRequest::new(self.id, epoch, targets);
-        debug_assert!(request.is_complete());
-        // SAFETY: lifecycle only calls this after all user/kernel references
-        // and scheduler activations are quiescent.  `PageTable::detach` leaves
-        // the owning table inert and transfers each frame to a token. The
-        // completed zero-target request proves that consuming each token in
-        // the callback cannot race an architectural page-table walk.
-        unsafe {
-            self.pt.detach(|token| token.reclaim());
-        }
         Ok(())
     }
 
@@ -6789,27 +6775,19 @@ impl AddrSpace {
                     self_modify,
                     &mut guard.pt,
                 )?;
-                let start = entry.start();
-                child_memfd_deltas.extend(crate::syscall::memfd_prepare_aspace_replace_deltas(
-                    &guard,
-                    start,
-                    entry.size(),
+                // Parent VMAs do not overlap, and the child is built from an
+                // empty root. No prior child mapping can be replaced here.
+                if let Some(delta) = crate::syscall::memfd_prepare_new_mapping_delta(
+                    guard.address_space_id(),
                     entry.rights(),
                     &new_backend,
-                ));
+                ) {
+                    child_memfd_deltas.push(delta);
+                }
 
                 let child_entry = guard
                     .vma_root
-                    .prepare_mapping_entry(
-                        entry.range(),
-                        entry.rights(),
-                        entry.reported_rights(),
-                        entry.max_rights(),
-                        entry.snapshot().huge_page_advice,
-                        VmaLockMode::Unlocked,
-                        entry.snapshot().advice_policy,
-                        new_backend.clone(),
-                    )
+                    .prepare_fork_mapping_entry(&entry, new_backend.clone())
                     .ok_or(StarryError::BadState)?;
                 let child_root = guard
                     .vma_root

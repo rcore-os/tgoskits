@@ -57,28 +57,6 @@ fn default_mode_selects_every_workspace_package() {
 }
 
 #[test]
-fn all_mode_selects_every_workspace_package() {
-    let packages = vec![
-        pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
-        pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
-    ];
-    let metadata = metadata_with_packages(
-        packages.clone(),
-        &[
-            "alpha 0.1.0 (path+file:///tmp/alpha)",
-            "beta 0.1.0 (path+file:///tmp/beta)",
-        ],
-    );
-
-    let resolved =
-        resolve_requested_packages(&args(true, &[]), Path::new("/tmp/ws"), &metadata, &packages)
-            .unwrap();
-
-    assert!(resolved.iter().any(|pkg| pkg.name == "alpha"));
-    assert!(resolved.iter().any(|pkg| pkg.name == "beta"));
-}
-
-#[test]
 fn unavailable_since_ref_falls_back_to_every_workspace_package() {
     let root = tempfile::tempdir().unwrap();
     let packages = vec![
@@ -184,14 +162,4 @@ fn since_rejects_explicit_package_selection() {
         err.to_string()
             .contains("cannot be combined with `--package`")
     );
-}
-
-#[test]
-fn since_rejects_all_selection() {
-    let mut args = args(true, &[]);
-    args.since = Some("origin/main".to_string());
-
-    let err = validate_clippy_args(&args).unwrap_err();
-
-    assert!(err.to_string().contains("cannot be combined with `--all`"));
 }

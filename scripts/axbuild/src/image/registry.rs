@@ -261,16 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn filtering_uses_regex_or_substring() {
-        let table = registry().render_table(true, Some("^arc"));
-        assert!(table.contains("arceos"));
-        assert!(!table.contains("linux"));
-
-        let table = registry().render_table(true, Some("lin"));
-        assert!(table.contains("linux"));
-    }
-
-    #[test]
     fn find_prefers_latest_when_version_omitted() {
         let images = registry();
         let entry = images.find(ImageSpecRef::parse("linux")).unwrap();

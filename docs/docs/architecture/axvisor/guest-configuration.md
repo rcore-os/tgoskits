@@ -72,7 +72,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 
 ### 3.1 `base`
 
-`VMBaseConfig` 描述 VM 身份与 CPU 拓扑，是三个表中字段最少的一段，且每个字段都有缺省值。`guest_type` 决定地址空间基线，其语义在 3.4 节展开；其余字段的转换目标都集中在 `PhysCpuList`。
+`VMBaseConfig` 描述 VM 身份及 CPU 拓扑，每个字段都有缺省值。`guest_type` 决定地址空间基线，其语义在 3.4 节展开；CPU 字段的转换目标集中在 `PhysCpuList`。
 
 | 字段 | TOML 类型 | 缺省值 | 含义与约束 |
 | --- | --- | --- | --- |
@@ -84,6 +84,8 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `phys_cpu_sets` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 的宿主 pCPU affinity 位图；未覆盖的位置保持无显式 affinity，多余项忽略 |
 
 `phys_cpu_ids` 和 `phys_cpu_sets` 是 CPU selector，不是设备资源。当前 `PhysCpuList::new()` 不校验数组长度；`phys_cpu_ids` 长度与 `cpu_num` 不同时只记录日志，`default_vcpu_affinities()` 仍按已有位置应用，缺项使用默认值，多余项忽略。配置方不能依赖长度或拓扑不匹配一定在 prepare 阶段被拒绝，应主动保证数组长度与 `cpu_num` 一致，并使用目标平台存在的 CPU ID 和 affinity 位。
+
+默认 `console0` 模拟宿主调试串口的型号、地址、中断和固件身份：AArch64/RISC-V 从宿主 FDT 中选定的控制台读取，x86/LoongArch 从 ACPI SPCR 读取。没有选定串口时使用 machine profile 的固定资源；已经选定但描述无效时直接报错。镜像需要固定串口地址时，可在 `[[devices.virtual]]` 的串口 model 下指定 `address`。例如 Orange Pi 5 Plus 上使用 QEMU PL011 地址的 Linux 客户机配置 `model = "pl011-mmio"` 和 `address = 0x09000000`；此时串口地址优先于宿主，中断自动分配，固件描述使用最终资源。
 
 ### 3.2 `kernel`
 

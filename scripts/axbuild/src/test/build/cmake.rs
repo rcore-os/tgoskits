@@ -71,6 +71,9 @@ pub(super) fn build_grouped_c_root_project_configure_command(
     {
         command.arg(format!("-DSTARRY_GROUPED_C_SUBCASES={subcases}"));
     }
+    if let Some(ltp_case_id) = case.ltp_case_id.as_deref() {
+        command.arg(format!("-DLTP_SYSCALLS_CASE={ltp_case_id}"));
+    }
     command
 }
 

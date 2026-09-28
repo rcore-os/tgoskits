@@ -402,7 +402,7 @@ pub(crate) fn layout_capabilities(
             .ok_or(PciError::InvalidCapability {
                 detail: "capability placement overflows conventional config space".into(),
             })?;
-        if end > config_layout::CONFIG_SPACE_SIZE {
+        if end > config_layout::CONVENTIONAL_CONFIG_SPACE_SIZE {
             return Err(PciError::InvalidCapability {
                 detail: "capability declarations exceed conventional config space".into(),
             });

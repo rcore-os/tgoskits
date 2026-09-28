@@ -152,7 +152,7 @@ qemu-system-aarch64 \
 自举产物的启动验证到达：
 
 ```text
-root@starry:/root #
+root@starry:~#
 ```
 
 这说明 guest 编译出的 `.bin` 可以作为普通 StarryOS 内核启动。

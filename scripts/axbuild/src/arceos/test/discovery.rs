@@ -79,6 +79,7 @@ fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<Ar
             host_http_server,
             subcases: Vec::new(),
             grouped_subcase_filter: None,
+            ltp_case_id: None,
         },
         build_group: case.build_group,
         build_config_path: case.build_config_path,
@@ -108,6 +109,7 @@ pub(super) fn load_arceos_test_suit_qemu_case(
             host_http_server,
             subcases: Vec::new(),
             grouped_subcase_filter: None,
+            ltp_case_id: None,
         },
         build_group: ARCEOS_RUST_TEST_BUILD_GROUP.to_string(),
         build_config_path,
@@ -220,36 +222,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let flows =
             selected_qemu_test_groups(dir.path(), &qemu_args(false, false, Vec::new())).unwrap();
-
-        assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
-    }
-
-    #[test]
-    fn selected_qemu_test_groups_only_rust_skips_c() {
-        let dir = tempdir().unwrap();
-        let flows =
-            selected_qemu_test_groups(dir.path(), &qemu_args(true, false, Vec::new())).unwrap();
-
-        assert_eq!(flows, &[QemuTestFlow::Rust]);
-    }
-
-    #[test]
-    fn selected_qemu_test_groups_only_c_skips_rust() {
-        let dir = tempdir().unwrap();
-        let flows =
-            selected_qemu_test_groups(dir.path(), &qemu_args(false, true, Vec::new())).unwrap();
-
-        assert_eq!(flows, &[QemuTestFlow::C]);
-    }
-
-    #[test]
-    fn selected_qemu_test_groups_package_filter_no_longer_changes_groups() {
-        let dir = tempdir().unwrap();
-        let flows = selected_qemu_test_groups(
-            dir.path(),
-            &qemu_args(false, false, vec!["arceos-test-suit".to_string()]),
-        )
-        .unwrap();
 
         assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
     }

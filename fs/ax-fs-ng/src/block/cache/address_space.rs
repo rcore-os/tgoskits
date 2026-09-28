@@ -20,6 +20,8 @@ use crate::{BlockError, BlockResult, block::FsBlockDevice, os::memory::PAGE_SIZE
 /// Folios cached per device: 1024 frames of 4 KiB = 4 MiB with 512-byte
 /// device blocks.
 pub(crate) const BLOCK_CACHE_FOLIO_CAP: usize = 1024;
+/// Limit temporary staging while letting the runtime split smaller device requests.
+const WRITEBACK_BATCH_BYTES: usize = 128 * 1024;
 
 /// Fixed folio layout of one device: folio size, device block size, and
 /// the number of device blocks each folio covers.
@@ -209,7 +211,8 @@ impl BlockAddressSpace {
     }
 
     /// Writes back dirty slots (`sync_dirty_buffers`). Every run of
-    /// consecutive dirty slots becomes one merged device write; frames are
+    /// consecutive dirty slots becomes one merged device write; adjacent
+    /// fully dirty folios are submitted in bounded batches. Frames are
     /// visited in ascending order. `range` restricts writeback to frames
     /// overlapping the block range.
     pub(crate) fn writeback_dirty<T: FsBlockDevice + ?Sized>(
@@ -221,6 +224,7 @@ impl BlockAddressSpace {
             let last = count.checked_sub(1).and_then(|n| first.checked_add(n))?;
             Some((self.geometry.frame_of(first), self.geometry.frame_of(last)))
         });
+        let mut batch = Vec::new();
         loop {
             let target = match frame_range {
                 None if range.is_some() => None,
@@ -236,9 +240,76 @@ impl BlockAddressSpace {
             let Some(frame) = target else {
                 break;
             };
+            if self.writeback_full_folio_run(
+                dev,
+                frame,
+                frame_range.map_or(u64::MAX, |(_, last)| last),
+                &mut batch,
+            )? {
+                continue;
+            }
             self.writeback_folio(dev, frame)?;
         }
         Ok(())
+    }
+
+    /// Submits consecutive fully dirty folios together. A failed request may
+    /// have written an unknown prefix, so all folios stay dirty for retry.
+    fn writeback_full_folio_run<T: FsBlockDevice + ?Sized>(
+        &mut self,
+        dev: &mut T,
+        first: u64,
+        last: u64,
+        batch: &mut Vec<u8>,
+    ) -> BlockResult<bool> {
+        let geometry = self.geometry;
+        let max_frames = WRITEBACK_BATCH_BYTES / geometry.folio_size();
+        if max_frames < 2 {
+            return Ok(false);
+        }
+        let index = self
+            .dirty_frames
+            .binary_search(&first)
+            .expect("writeback target is a dirty frame");
+        let mut frames = 0;
+        let mut expected = first;
+        for &frame in self.dirty_frames[index..].iter().take(max_frames) {
+            if frame != expected || frame > last {
+                break;
+            }
+            let Some(folio) = self.folios.get(&frame) else {
+                break;
+            };
+            if folio.dirty_runs().next() != Some((0, geometry.slots())) {
+                break;
+            }
+            frames += 1;
+            let Some(next) = frame.checked_add(1) else {
+                break;
+            };
+            expected = next;
+        }
+        if frames < 2 {
+            return Ok(false);
+        }
+
+        batch.clear();
+        if batch.try_reserve(frames * geometry.folio_size()).is_err() {
+            return Ok(false);
+        }
+        for &frame in &self.dirty_frames[index..index + frames] {
+            let folio = self.folios.get_mut(&frame).expect("dirty folio is cached");
+            batch.extend_from_slice(folio.slot_bytes_mut(0, geometry.slots()));
+        }
+        dev.write_block(geometry.frame_base_block(first), batch)?;
+        for &frame in &self.dirty_frames[index..index + frames] {
+            self.folios
+                .get_mut(&frame)
+                .expect("dirty folio is cached")
+                .clear_dirty_slots(0, geometry.slots());
+        }
+        self.dirty_frames.drain(index..index + frames);
+        Ok(true)
     }
 
     /// Overlays a device-direct request result onto overlapping folios so

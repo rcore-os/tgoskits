@@ -1,6 +1,7 @@
 # Build-time config template for StarryOS on VisionFive2.
 target = "riscv64gc-unknown-none-elf"
 features = [
+  "legacy-board-init",
   "ax-runtime/rtc",
   "ax-driver/rtc",
   "ax-driver/serial",

@@ -13,7 +13,7 @@ fail_regex = [
 timeout = 900
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 shell_cmd = """
 export STARRY_IPERF3_SERVER='${boardServerIp}'
 export STARRY_IPERF3_SCRIPT_URL='${sessionFile:iperf-bench.sh}'

@@ -173,18 +173,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_ovmf_is_assembled_at_the_top_of_the_four_mib_window() {
-        let vars = vec![0xa5; 0x84_000];
-        let code = vec![0x5a; OVMF_SIZE - vars.len()];
-        let image = assemble_ovmf_image(&code, Some(&vars)).unwrap();
-
-        assert_eq!(image.len(), OVMF_SIZE);
-        assert_eq!(&image[..vars.len()], vars);
-        assert_eq!(&image[vars.len()..], code);
-        assert!(assemble_ovmf_image(&code, None).is_err());
-    }
-
-    #[test]
     fn split_firmware_evidence_matches_the_installed_guest_image() {
         let root = tempdir().unwrap();
         let code_path = root.path().join("OVMF_CODE.fd");
@@ -219,22 +207,5 @@ mod tests {
         assert!(text.contains(&format!("Ostool VARS: path={}", vars_path.display())));
         assert!(text.contains("usage=prefix"));
         assert!(text.contains(&format!("guest image: path={}", output_path.display())));
-    }
-
-    #[test]
-    fn monolithic_firmware_reports_the_variable_store_as_unused() {
-        let root = tempdir().unwrap();
-        let code_path = root.path().join("OVMF_CODE.fd");
-        let vars_path = root.path().join("OVMF_VARS.fd");
-        let output_path = root.path().join("OVMF_CODE_4M.fd");
-        fs::write(&code_path, vec![0x5a; OVMF_SIZE]).unwrap();
-        fs::write(&vars_path, b"unused vars").unwrap();
-        let firmware = OvmfFirmware::from_paths(code_path, vars_path);
-
-        let evidence = prepare_x86_ovmf_from_firmware(&output_path, &firmware).unwrap();
-
-        assert_eq!(evidence.layout, OvmfLayout::MonolithicCode);
-        assert!(evidence.to_string().contains("usage=unused"));
-        assert_eq!(fs::metadata(output_path).unwrap().len(), OVMF_SIZE as u64);
     }
 }

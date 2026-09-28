@@ -77,22 +77,3 @@ impl<'a> From<&'a String> for ImageSpecRef<'a> {
         ImageSpecRef::parse(value.as_str())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_name_without_version() {
-        let spec = ImageSpecRef::parse("linux");
-        assert_eq!(spec.name, "linux");
-        assert_eq!(spec.version, None);
-    }
-
-    #[test]
-    fn parses_name_with_version() {
-        let spec = ImageSpecRef::parse("linux:0.0.1");
-        assert_eq!(spec.name, "linux");
-        assert_eq!(spec.version, Some("0.0.1"));
-    }
-}

@@ -22,7 +22,7 @@ fcntl12
 fcntl12_64
 fcntl13
 fcntl13_64
-fcntl14
+# fcntl14 # temporarily excluded to follow the formal LTP set; see https://github.com/rcore-os/tgoskits/issues/2512
 fcntl14_64
 # fcntl15 # TBROK: F_SETLK returns EFAULT in current environment
 # fcntl15_64 # TBROK: F_SETLK returns EFAULT in current environment

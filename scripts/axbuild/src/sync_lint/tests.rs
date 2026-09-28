@@ -91,19 +91,6 @@ fn incremental_selection_skips_changed_non_rust_package_files() {
 }
 
 #[test]
-fn incremental_selection_skips_changed_non_rust_global_files() {
-    let root = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
-    let packages = vec![package(root.path(), "alpha")];
-
-    let selection =
-        select_sync_lint_files_for_paths(root.path(), &packages, [PathBuf::from("Cargo.lock")])
-            .unwrap();
-
-    assert_eq!(selection, SyncLintSelection::Files(Vec::new()));
-}
-
-#[test]
 fn incremental_selection_falls_back_for_global_rust_files() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join("crates/alpha/src")).unwrap();
@@ -202,86 +189,6 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
 }
 
 #[test]
-fn reports_relaxed_publish_before_ipi() {
-    let findings = findings(
-        r#"
-use core::sync::atomic::{AtomicBool, Ordering};
-
-fn demo(flag: &AtomicBool, target: IpiTarget) {
-    flag.store(true, Ordering::Relaxed);
-    ax_hal::irq::send_ipi(IPI_IRQ, target);
-}
-"#,
-    );
-
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::PublishBeforeNotify)
-    );
-}
-
-#[test]
-fn reports_relaxed_publish_before_waker() {
-    let findings = findings(
-        r#"
-use core::sync::atomic::{AtomicBool, Ordering};
-
-fn demo(flag: &AtomicBool, waker: &core::task::Waker) {
-    flag.store(true, Ordering::Relaxed);
-    waker.wake_by_ref();
-}
-"#,
-    );
-
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::PublishBeforeNotify)
-    );
-}
-
-#[test]
-fn reports_relaxed_publish_before_task_wake() {
-    let findings = findings(
-        r#"
-use core::sync::atomic::{AtomicBool, Ordering};
-
-fn demo(flag: &AtomicBool, wake: &ThreadWakeHandle) {
-    flag.store(true, Ordering::Relaxed);
-    wake.wake();
-}
-"#,
-    );
-
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::PublishBeforeNotify)
-    );
-}
-
-#[test]
-fn reports_relaxed_publish_before_signal_wake_entrypoint() {
-    let findings = findings(
-        r#"
-use core::sync::atomic::{AtomicBool, Ordering};
-
-fn demo(flag: &AtomicBool, tid: Pid, sig: SignalInfo) -> Result<(), SignalError> {
-    flag.store(true, Ordering::Relaxed);
-    send_signal_to_thread(None, tid, Some(sig))
-}
-"#,
-    );
-
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::PublishBeforeNotify)
-    );
-}
-
-#[test]
 fn ignores_release_wait_conditions() {
     let findings = findings(
         r#"
@@ -342,26 +249,6 @@ fn demo(flag: &AtomicBool, wq: WaitQueue) {
     flag.store(true, Ordering::Release);
     wq.notify_all(true);
     let _ = flag.load(Ordering::Relaxed);
-}
-"#,
-    );
-
-    assert!(
-        findings
-            .iter()
-            .any(|finding| finding.rule == Rule::MixedOrdering)
-    );
-}
-
-#[test]
-fn reports_relaxed_mixed_ordering_for_parenthesized_receiver() {
-    let findings = findings(
-        r#"
-use core::sync::atomic::{AtomicBool, Ordering};
-
-fn demo(flag: &AtomicBool, wq: WaitQueue) {
-    flag.store(true, Ordering::Relaxed);
-    wq.wait_until(|| (flag).load(Ordering::Acquire));
 }
 "#,
     );

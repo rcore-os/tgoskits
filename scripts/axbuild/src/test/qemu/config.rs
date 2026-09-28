@@ -98,6 +98,7 @@ pub(crate) fn load_qemu_case_fields_with_write_policy(
         host_http_server: config.host_http_server,
         subcases,
         grouped_subcase_filter: None,
+        ltp_case_id: None,
     };
     Ok((test_case, write_policy))
 }

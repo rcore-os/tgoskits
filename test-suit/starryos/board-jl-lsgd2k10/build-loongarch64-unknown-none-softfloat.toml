@@ -2,6 +2,7 @@
 target = "loongarch64-unknown-none-softfloat"
 log = "Info"
 features = [
+  "legacy-board-init",
   "ax-driver/serial",
   "ax-driver/rtc",
   "ax-driver/ls2k1000-ahci",

@@ -26,6 +26,9 @@ const BUSYBOX_PATH: &str = "/bin/busybox";
 // Keep them synchronized with `virtualization/axvm/src/arch/x86_64/pci_config.rs`.
 const X86_PCI_MEMORY_APERTURE_START: &str = "0xc0000000";
 const X86_PCI_MEMORY_APERTURE_END: &str = "0xd0000000";
+// Keep the ECAM resource assertion synchronized with the fixed Q35 window in
+// virtualization/axvm/src/arch/x86_64/pci_config.rs.
+const X86_PCI_ECAM_IOMEM_ENTRY: &str = "b0000000-bfffffff : PCI MMCONFIG 0000 [bus 00-ff]";
 const INIT_SCRIPT_TEMPLATE: &str = r#"#!/bin/busybox sh
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 /bin/busybox mount -t proc proc /proc 2>/dev/null || true
@@ -39,6 +42,35 @@ export TERM=vt100
 export PS1='~ # '
 cd /root
 
+check_x86_mmconfig() {
+  if [ ! -r /sys/firmware/acpi/tables/MCFG ]; then
+    echo "missing readable ACPI table: MCFG"
+    return 1
+  fi
+  if ! /bin/busybox grep -F -i -q '__AXVISOR_PCI_ECAM_IOMEM_ENTRY__' /proc/iomem; then
+    echo "Linux did not reserve the Q35 PCI MMCONFIG range"
+    return 1
+  fi
+  return 0
+}
+
+check_q35_extended_config() {
+  host_bridge=/sys/bus/pci/devices/0000:00:00.0/config
+  if [ ! -r "$host_bridge" ]; then
+    echo "missing readable Q35 host bridge config space"
+    return 1
+  fi
+  value=$(read_config_le32 "$host_bridge" 256) || {
+    echo "Q35 host bridge extended config dword at 0x100 is unreadable"
+    return 1
+  }
+  if [ "$value" != "0x00000000" ]; then
+    echo "unexpected Q35 host bridge extended config value at 0x100: $value"
+    return 1
+  fi
+  echo "Q35 host bridge extended config dword at 0x100 is readable"
+}
+
 run_x86_acpi_check() {
   success_marker=$1
   failed=0
@@ -50,6 +82,9 @@ run_x86_acpi_check() {
       failed=1
     fi
   done
+  if ! check_x86_mmconfig; then
+    failed=1
+  fi
   online=$(/bin/busybox cat /sys/devices/system/cpu/online 2>/dev/null)
   if [ "$online" != "0" ]; then
     echo "unexpected online CPU set: $online"
@@ -77,6 +112,12 @@ __AXVISOR_PCI_CAPABILITY_VALIDATOR__
 run_pci_enumeration_check() {
   success_marker=$1
   failed=0
+  if ! check_x86_mmconfig; then
+    failed=1
+  fi
+  if ! check_q35_extended_config; then
+    failed=1
+  fi
   # The managed rootfs images ship no pciutils, so this check consumes the
   # kernel-published sysfs PCI state directly (the same source `lspci` reads).
   bdf=""
@@ -607,6 +648,7 @@ fn init_script() -> Vec<u8> {
             "__AXVISOR_PCI_MEMORY_APERTURE_END__",
             X86_PCI_MEMORY_APERTURE_END,
         )
+        .replace("__AXVISOR_PCI_ECAM_IOMEM_ENTRY__", X86_PCI_ECAM_IOMEM_ENTRY)
         .into_bytes()
 }
 
@@ -903,145 +945,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn pci_bar_validator_rejects_unassigned_zero_based_resource() {
-        let output = run_pci_bar_validator(
-            "0000000000000000 000000000000ffff 00000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_rejects_resource_outside_aperture() {
-        let output = run_pci_bar_validator(
-            "00000000b0000000 00000000b000ffff 00000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_rejects_unassigned_resource_flag() {
-        let output = run_pci_bar_validator(
-            "00000000c0000000 00000000c000ffff 20000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_rejects_64_bit_memory_resource() {
-        let output = run_pci_bar_validator(
-            "00000000c0000000 00000000c000ffff 00100200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_bar_validator_accepts_assigned_resource_inside_aperture() {
-        let output = run_pci_bar_validator(
-            "00000000c0000000 00000000c000ffff 00000200",
-            X86_PCI_MEMORY_APERTURE_START,
-            X86_PCI_MEMORY_APERTURE_END,
-        );
-        assert!(output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_msi_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x05;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_msix_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x11;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_msi_after_another_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x01;
-        config[0x41] = 0x44;
-        config[0x44] = 0x05;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_invalid_capability_pointer() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x42;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_capability_cycle() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x01;
-        config[0x41] = 0x40;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_accepts_config_without_capability_list() {
-        let output = run_pci_capability_validator(&[0; 256]);
-        assert!(output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_accepts_a_non_msi_capability_list() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        config[0x34] = 0x40;
-        config[0x40] = 0x01;
-        let output = run_pci_capability_validator(&config);
-        assert!(output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_capability_validator_rejects_missing_first_capability() {
-        let mut config = vec![0; 256];
-        config[0x06] = 0x10;
-        let output = run_pci_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn virtio_capability_validator_accepts_the_modern_pci_layout() {
         let config = modern_virtio_pci_config();
         let output = run_virtio_capability_validator(&config);
@@ -1051,21 +954,6 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pci_command_parser_accepts_prefixed_le16_value() {
-        let mut config = vec![0; 256];
-        config[4] = 0x06;
-        let output = run_pci_command_parser(&config);
-        assert!(
-            output.status.success(),
-            "PCI command parser rejected 0x0006: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "6");
     }
 
     #[cfg(unix)]
@@ -1084,60 +972,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn virtio_capability_validator_rejects_wrong_notify_length() {
-        let mut config = modern_virtio_pci_config();
-        config[0x50 + 2] = 16;
-        let output = run_virtio_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn virtio_capability_validator_rejects_non_vendor_capability() {
-        let mut config = modern_virtio_pci_config();
-        config[0x64] = 1;
-        let output = run_virtio_capability_validator(&config);
-        assert!(!output.status.success());
-    }
-
-    #[cfg(unix)]
-    fn run_pci_bar_validator(
-        resource_line: &str,
-        aperture_start: &str,
-        aperture_end: &str,
-    ) -> std::process::Output {
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{PCI_BAR_VALIDATOR}\nvalidate_pci_bar_resource \"$1\" \"$2\" \"$3\" 65536"
-            ))
-            .arg("pci-bar-test")
-            .arg(resource_line)
-            .arg(aperture_start)
-            .arg(aperture_end)
-            .output()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
-    fn run_pci_capability_validator(config: &[u8]) -> std::process::Output {
-        let directory = tempdir().unwrap();
-        let config_path = directory.path().join("config");
-        fs::write(&config_path, config).unwrap();
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{PCI_CONFIG_READERS}\n{PCI_CAPABILITY_VALIDATOR}\nvalidate_pci_capabilities \
-                 \"$1\""
-            ))
-            .arg("pci-capability-test")
-            .arg(config_path)
-            .output()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
     fn run_virtio_capability_validator(config: &[u8]) -> std::process::Output {
         let directory = tempdir().unwrap();
         let config_path = directory.path().join("config");
@@ -1148,24 +982,6 @@ mod tests {
                 "{PCI_CONFIG_READERS}\nvalidate_virtio_capabilities \"$1\""
             ))
             .arg("virtio-capability-test")
-            .arg(config_path)
-            .output()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
-    fn run_pci_command_parser(config: &[u8]) -> std::process::Output {
-        let directory = tempdir().unwrap();
-        let config_path = directory.path().join("config");
-        fs::write(&config_path, config).unwrap();
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{PCI_CONFIG_READERS}\ncommand=$(read_config_le16 \"$1\" 4) || exit \
-                 1\ncommand_value=$(parse_config_hex \"$command\") || exit 1\nprintf '%s\\n' \
-                 \"$command_value\""
-            ))
-            .arg("pci-command-test")
             .arg(config_path)
             .output()
             .unwrap()

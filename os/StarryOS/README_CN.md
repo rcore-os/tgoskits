@@ -23,6 +23,9 @@
 
 ## 快速开始
 
+Alpine 用户态默认通过 BusyBox init 和 OpenRC 启动。镜像准备、服务管理、
+PID 1 语义与恢复入口见 [OpenRC 启动说明](docs/openrc.md)。
+
 ```bash
 # 进入工作区目录
 cd os/StarryOS

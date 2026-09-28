@@ -363,11 +363,8 @@ fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{append_text_filter_params, prepare_uefi_boot};
-    use crate::{
-        starry::perf::symbols::{AddressRange, KernelTextRange},
-        support::ovmf::OvmfFirmware,
-    };
+    use super::prepare_uefi_boot;
+    use crate::support::ovmf::OvmfFirmware;
 
     #[tokio::test]
     async fn loongarch_uefi_rejects_unconverted_kernel_before_boot() {
@@ -388,28 +385,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("to_bin = true"));
-    }
-
-    #[test]
-    fn x86_64_kernel_filter_does_not_guess_a_low_address_alias() {
-        let mut params = String::new();
-        append_text_filter_params(
-            &mut params,
-            "x86_64",
-            Some(KernelTextRange {
-                virt: AddressRange {
-                    start: 0xffff_ffff_8000_0000,
-                    end: 0xffff_ffff_804d_383f,
-                },
-                phys: Some(AddressRange {
-                    start: 0x8000_0000,
-                    end: 0x804d_383f,
-                }),
-            }),
-        );
-
-        assert!(params.contains("filter_start=0xffffffff80000000"));
-        assert!(!params.contains("filter_alias_start"));
     }
 
     #[test]

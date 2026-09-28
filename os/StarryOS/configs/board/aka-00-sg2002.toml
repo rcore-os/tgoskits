@@ -1,4 +1,5 @@
 features = [
+  "legacy-board-init",
   "starry-kernel/sg2002",
   "starry-kernel/sg2002-cvi-usb-camera",
   "axplat-dyn/thead-mae",

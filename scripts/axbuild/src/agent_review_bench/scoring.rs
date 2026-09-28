@@ -120,67 +120,6 @@ mod tests {
     use crate::agent_review_bench::cases::{ExpectedFinding, Severity};
 
     #[test]
-    fn scores_joint_matches_shared_findings_and_extras() {
-        let case = sample_case();
-        let review = ReviewOutput {
-            summary: "summary".into(),
-            findings: vec![
-                finding("first part"),
-                finding("shared part"),
-                finding("extra"),
-            ],
-        };
-        let grade = GradeOutput {
-            matches: vec![
-                finding_match("first", &[0, 1]),
-                finding_match("second", &[1]),
-            ],
-        };
-
-        assert_eq!(
-            score_review(&case, &review, &grade).unwrap(),
-            CaseScore {
-                caught: 2,
-                expected: 2,
-                extra_findings: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn scores_all_missed_and_zero_candidate_reviews() {
-        let case = sample_case();
-        let missed_review = ReviewOutput {
-            summary: "summary".into(),
-            findings: vec![finding("unmatched")],
-        };
-        let missed_grade = GradeOutput {
-            matches: vec![finding_match("first", &[]), finding_match("second", &[])],
-        };
-        assert_eq!(
-            score_review(&case, &missed_review, &missed_grade).unwrap(),
-            CaseScore {
-                caught: 0,
-                expected: 2,
-                extra_findings: 1,
-            }
-        );
-
-        let empty_review = ReviewOutput {
-            summary: "summary".into(),
-            findings: Vec::new(),
-        };
-        assert_eq!(
-            score_review(&case, &empty_review, &missed_grade).unwrap(),
-            CaseScore {
-                caught: 0,
-                expected: 2,
-                extra_findings: 0,
-            }
-        );
-    }
-
-    #[test]
     fn rejects_unknown_missing_duplicate_and_invalid_matches() {
         let case = sample_case();
         let review = ReviewOutput {

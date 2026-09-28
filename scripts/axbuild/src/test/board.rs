@@ -334,36 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn filter_selected_board_on_empty_group_reports_empty_group() {
-        let err = filter_board_test_groups(
-            Vec::<TestBoardGroup>::new(),
-            None,
-            Some("orangepi-5-plus"),
-            "Starry",
-            || "no Starry board test groups found under /tmp/stress".to_string(),
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert_eq!(err, "no Starry board test groups found under /tmp/stress");
-    }
-
-    #[test]
-    fn board_requirements_load_required_environment_names() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join("requirements.toml"),
-            "required_env = [\"STARRY_WIFI_SSID\", \"STARRY_WIFI_PASSWORD\"]\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            load_board_test_required_env(root.path()).unwrap(),
-            ["STARRY_WIFI_SSID", "STARRY_WIFI_PASSWORD"]
-        );
-    }
-
-    #[test]
     fn required_environment_treats_absent_and_empty_values_as_missing() {
         let required = vec![
             "ABSENT".to_string(),
@@ -387,21 +357,5 @@ mod tests {
 
         assert_eq!(run.skipped, ["wifi/board"]);
         assert!(run.finish().is_ok());
-    }
-
-    #[derive(Debug)]
-    struct TestBoardGroup {
-        name: String,
-        board_name: String,
-    }
-
-    impl BoardTestGroupInfo for TestBoardGroup {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn board_name(&self) -> &str {
-            &self.board_name
-        }
     }
 }

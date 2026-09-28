@@ -1,16 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
 project(ltp-syscalls C)
 
-# Deterministic coverage for worker teardown required by LTP mount cleanup.
-# This helper runs in the native phase and is not an upstream LTP testcase.
-add_executable(ltp-isolation-exit-fs src/exit_fs_context.c)
-target_compile_options(ltp-isolation-exit-fs PRIVATE -Wall -Wextra -Werror)
-install(TARGETS ltp-isolation-exit-fs RUNTIME DESTINATION usr/bin/starry-test-suit)
+if(NOT DEFINED LTP_SYSCALLS_CASE OR LTP_SYSCALLS_CASE STREQUAL "")
+    # These native isolation checks accompany the full LTP group only.
+    add_executable(ltp-isolation-exit-fs src/exit_fs_context.c)
+    target_compile_options(ltp-isolation-exit-fs PRIVATE -Wall -Wextra -Werror)
+    install(TARGETS ltp-isolation-exit-fs RUNTIME DESTINATION usr/bin/starry-test-suit)
 
-# Access must distinguish real credentials, mount flags and shared filesystem state.
-add_executable(ltp-isolation-access-context src/access_context.c)
-target_compile_options(ltp-isolation-access-context PRIVATE -Wall -Wextra -Werror)
-install(TARGETS ltp-isolation-access-context RUNTIME DESTINATION usr/bin/starry-test-suit)
+    add_executable(ltp-isolation-access-context src/access_context.c)
+    target_compile_options(ltp-isolation-access-context PRIVATE -Wall -Wextra -Werror)
+    install(TARGETS ltp-isolation-access-context RUNTIME DESTINATION usr/bin/starry-test-suit)
+endif()
 
 if(NOT DEFINED STARRY_STAGING_ROOT)
     message(FATAL_ERROR "STARRY_STAGING_ROOT must be provided by axbuild")
@@ -40,6 +40,13 @@ endif()
 
 if(NOT LTP_SYSCALLS_CASES)
     message(FATAL_ERROR "the frozen PR #1775 LTP manifest is empty")
+endif()
+if(DEFINED LTP_SYSCALLS_CASE AND NOT LTP_SYSCALLS_CASE STREQUAL "")
+    if(NOT LTP_SYSCALLS_CASE MATCHES "^[A-Za-z0-9_]+$"
+        OR NOT LTP_SYSCALLS_CASE IN_LIST LTP_SYSCALLS_CASES)
+        message(FATAL_ERROR "unknown LTP testcase for ${LTP_TARGET_ARCH}: ${LTP_SYSCALLS_CASE}")
+    endif()
+    set(LTP_SYSCALLS_CASES "${LTP_SYSCALLS_CASE}")
 endif()
 
 # Keep source-derived completion contracts separate from the generated case set.

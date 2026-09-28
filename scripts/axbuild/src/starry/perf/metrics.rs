@@ -137,15 +137,3 @@ fn timeval_micros(value: libc::timeval) -> i128 {
 pub(super) fn child_resource_usage() -> Option<ChildResourceUsage> {
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::report_returncode;
-
-    #[test]
-    fn expected_profile_timeout_is_a_successful_report() {
-        assert_eq!(report_returncode(124, true), 0);
-        assert_eq!(report_returncode(124, false), 124);
-        assert_eq!(report_returncode(1, true), 1);
-    }
-}

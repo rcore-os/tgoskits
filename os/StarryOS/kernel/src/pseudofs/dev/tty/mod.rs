@@ -30,7 +30,7 @@ pub use self::{
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
-    serial::{arm_console_irq, bind_console_to, console_device, serial_tty_entries},
+    serial::{arm_console_irq, console_device, serial_tty_entries},
     usb_serial::usb_serial_tty,
 };
 use crate::{

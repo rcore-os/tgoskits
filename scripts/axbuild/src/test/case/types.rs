@@ -36,6 +36,7 @@ pub(crate) struct TestQemuCase {
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
     pub(crate) grouped_subcase_filter: Option<BTreeSet<String>>,
+    pub(crate) ltp_case_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

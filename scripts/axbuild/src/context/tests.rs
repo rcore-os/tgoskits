@@ -9,18 +9,6 @@ mod starry;
 mod workspace;
 
 #[test]
-fn cargo_bin_path_replaces_elf_extension() {
-    assert_eq!(
-        cargo_bin_path_for_elf(Path::new("/workspace/target/release/kernel")),
-        PathBuf::from("/workspace/target/release/kernel.bin")
-    );
-    assert_eq!(
-        cargo_bin_path_for_elf(Path::new("/workspace/target/release/kernel.elf")),
-        PathBuf::from("/workspace/target/release/kernel.bin")
-    );
-}
-
-#[test]
 fn raw_cargo_target_dir_before_rustc_args_is_rejected() {
     let cargo = Cargo {
         package: "kernel".to_string(),

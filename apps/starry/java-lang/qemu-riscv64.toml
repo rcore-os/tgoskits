@@ -22,6 +22,6 @@ fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 18000
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 shell_cmd = "sh /usr/bin/run-java.sh"
 success_regex = ['(?m)^TEST PASSED\s*$']

@@ -8,6 +8,7 @@ use acpi_tables::{
     fadt::{FADT, FADTBuilder, Flags as FadtFlag, PmProfile},
     gas::{AccessSize as GasAccessSize, AddressSpace as GasAddressSpace, GAS},
     madt::{EnabledStatus, IoApic, LocalInterruptController, MADT, ProcessorLocalApic},
+    mcfg::MCFG,
     rsdp::Rsdp,
     xsdt::XSDT,
 };
@@ -24,21 +25,24 @@ const DIRECT_ACPI_LIMIT: u64 = 0x0010_0000;
 pub(crate) fn build_direct_image(plan: &X86FirmwarePlan) -> Result<AcpiImage, AcpiBuildError> {
     let dsdt = build_dsdt(plan)?;
     let madt = build_madt(plan);
+    let mcfg = build_mcfg(plan);
     let spcr = build_spcr(plan);
     let mut arena = AcpiTableArena::new(DIRECT_ACPI_BASE, DIRECT_ACPI_LIMIT)?;
 
     let rsdp_slot = arena.reserve("RSDP", Rsdp::len(), 16)?;
-    let xsdt_slot = arena.reserve("XSDT", 36 + 3 * 8, 8)?;
+    let xsdt_slot = arena.reserve("XSDT", 36 + 4 * 8, 8)?;
     let fadt_slot = arena.reserve("FADT", FADT::len(), 8)?;
     let facs_slot = arena.reserve("FACS", FACS::len(), 64)?;
     let dsdt_slot = arena.reserve("DSDT", dsdt.len(), 8)?;
     let madt_slot = arena.reserve("MADT", madt.len(), 8)?;
+    let mcfg_slot = arena.reserve("MCFG", mcfg.len(), 8)?;
     let spcr_slot = arena.reserve("SPCR", spcr.len(), 8)?;
 
     let fadt = build_fadt(plan, dsdt_slot.gpa(), facs_slot.gpa());
     let mut xsdt = XSDT::new(oem_id(), oem_table_id(), oem_revision());
     xsdt.add_entry(fadt_slot.gpa());
     xsdt.add_entry(madt_slot.gpa());
+    xsdt.add_entry(mcfg_slot.gpa());
     xsdt.add_entry(spcr_slot.gpa());
     let xsdt = serialize(&xsdt);
     let rsdp = serialize(&Rsdp::new(oem_id(), xsdt_slot.gpa()));
@@ -50,6 +54,7 @@ pub(crate) fn build_direct_image(plan: &X86FirmwarePlan) -> Result<AcpiImage, Ac
     arena.write(&facs_slot, &facs)?;
     arena.write(&dsdt_slot, &dsdt)?;
     arena.write(&madt_slot, &madt)?;
+    arena.write(&mcfg_slot, &mcfg)?;
     arena.write(&spcr_slot, &spcr)?;
 
     let mut set = AcpiTableSet::new();
@@ -58,6 +63,7 @@ pub(crate) fn build_direct_image(plan: &X86FirmwarePlan) -> Result<AcpiImage, Ac
     set.add(AcpiTableRecord::new(*b"FACS", facs_slot.gpa(), facs.len()))?;
     set.add(AcpiTableRecord::new(*b"DSDT", dsdt_slot.gpa(), dsdt.len()))?;
     set.add(AcpiTableRecord::new(*b"APIC", madt_slot.gpa(), madt.len()))?;
+    set.add(AcpiTableRecord::new(*b"MCFG", mcfg_slot.gpa(), mcfg.len()))?;
     set.add(AcpiTableRecord::new(*b"SPCR", spcr_slot.gpa(), spcr.len()))?;
     Ok(AcpiImage::new(
         DIRECT_ACPI_BASE,
@@ -65,6 +71,17 @@ pub(crate) fn build_direct_image(plan: &X86FirmwarePlan) -> Result<AcpiImage, Ac
         arena.into_bytes(),
         set,
     ))
+}
+
+pub(super) fn build_mcfg(plan: &X86FirmwarePlan) -> Vec<u8> {
+    let mut mcfg = MCFG::new(oem_id(), oem_table_id(), oem_revision());
+    mcfg.add_ecam(
+        plan.pci.ecam.base,
+        plan.pci.ecam.segment,
+        plan.pci.ecam.start_bus,
+        plan.pci.ecam.end_bus,
+    );
+    serialize(&mcfg)
 }
 
 pub(super) fn build_fadt(plan: &X86FirmwarePlan, dsdt_address: u64, facs_address: u64) -> Vec<u8> {
@@ -182,6 +199,34 @@ mod tests {
             u64::from_le_bytes(extended_timer[4..].try_into().unwrap()),
             0x608
         );
+
+        let mcfg = image.tables().find(*b"MCFG").unwrap();
+        let xsdt_offset = (xsdt.address() - image.load_gpa()) as usize;
+        let xsdt_length = u32::from_le_bytes(
+            image.bytes()[xsdt_offset + 4..xsdt_offset + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let xsdt_entries = image.bytes()[xsdt_offset + 36..xsdt_offset + xsdt_length]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|entry| u64::from_le_bytes(*entry))
+            .collect::<Vec<_>>();
+        assert!(xsdt_entries.contains(&mcfg.address()));
+        assert_eq!(mcfg.length(), 60);
+        let mcfg_offset = (mcfg.address() - image.load_gpa()) as usize;
+        let mcfg_bytes = &image.bytes()[mcfg_offset..mcfg_offset + mcfg.length()];
+        assert_eq!(
+            u64::from_le_bytes(mcfg_bytes[44..52].try_into().unwrap()),
+            crate::arch::x86_64::pci_config::PCI_ECAM_BASE
+        );
+        assert_eq!(
+            u16::from_le_bytes(mcfg_bytes[52..54].try_into().unwrap()),
+            0
+        );
+        assert_eq!(&mcfg_bytes[54..56], &[0, 0xff]);
+        assert_eq!(checksum(mcfg_bytes), 0);
     }
 
     fn checksum(bytes: &[u8]) -> u8 {

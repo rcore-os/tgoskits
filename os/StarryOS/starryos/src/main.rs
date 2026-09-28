@@ -11,7 +11,10 @@ use ax_std as _;
 #[cfg(feature = "nixos")]
 pub const DEFAULT_CMDLINE: &[&str] = &["/init"];
 
-#[cfg(not(feature = "nixos"))]
+#[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
+pub const DEFAULT_CMDLINE: &[&str] = &["/sbin/init"];
+
+#[cfg(all(not(feature = "nixos"), feature = "legacy-board-init"))]
 pub const DEFAULT_CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];
 
 #[cfg(feature = "nixos")]
@@ -57,6 +60,30 @@ fn init_command_from_bootargs() -> Vec<String> {
 }
 
 fn default_command() -> Vec<String> {
+    #[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
+    {
+        for path in [
+            "/sbin/init",
+            "/sbin/openrc",
+            "/etc/inittab",
+            "/etc/rc.conf",
+            "/etc/profile.d/starry.sh",
+            "/etc/runlevels/sysinit/starry-runtime",
+            "/etc/runlevels/default/starry-autorun",
+            "/usr/libexec/starry/console",
+        ] {
+            let metadata = ax_std::fs::metadata(path).unwrap_or_else(|error| {
+                panic!(
+                    "Default Alpine boot requires {path}: {error}; prepare the rootfs or use \
+                     init=/bin/sh"
+                )
+            });
+            assert!(
+                metadata.is_file(),
+                "Default Alpine boot requires a file: {path}"
+            );
+        }
+    }
     DEFAULT_CMDLINE
         .iter()
         .copied()
@@ -67,7 +94,10 @@ fn default_command() -> Vec<String> {
 #[cfg(feature = "nixos")]
 const _: () = assert!(command_eq(DEFAULT_CMDLINE, &["/init"]));
 
-#[cfg(not(feature = "nixos"))]
+#[cfg(all(not(feature = "nixos"), not(feature = "legacy-board-init")))]
+const _: () = assert!(command_eq(DEFAULT_CMDLINE, &["/sbin/init"]));
+
+#[cfg(all(not(feature = "nixos"), feature = "legacy-board-init"))]
 const _: () = assert!(command_eq(
     DEFAULT_CMDLINE,
     &["/bin/sh", "-c", include_str!("init.sh")]

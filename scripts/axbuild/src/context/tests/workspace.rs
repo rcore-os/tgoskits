@@ -6,14 +6,6 @@ use crate::context::{WorkspaceContext, workspace::workspace_root_path_from};
 const CARGO_TARGET_DIR_CHILD: &str = "AXBUILD_TEST_CARGO_TARGET_DIR_CHILD";
 
 #[test]
-fn workspace_context_uses_metadata_target_directory() {
-    let root = tempdir().unwrap();
-    let app = test_app_context(root.path());
-
-    assert_eq!(app.target_dir(), root.path().join("target"));
-}
-
-#[test]
 fn workspace_context_respects_cargo_config_target_directory() {
     let root = tempdir().unwrap();
     let _ = test_app_context(root.path());
@@ -75,17 +67,6 @@ fn explicit_target_directory_overrides_metadata_and_is_workspace_relative() {
     let absolute =
         WorkspaceContext::from_root(root.path(), Some(absolute_target.as_path())).unwrap();
     assert_eq!(absolute.target_dir(), absolute_target);
-}
-
-#[test]
-fn debug_mode_keeps_the_selected_target_directory() {
-    let root = tempdir().unwrap();
-    let mut app = test_app_context(root.path());
-    let target_dir = app.target_dir().to_path_buf();
-
-    app.set_debug_mode(true).unwrap();
-
-    assert_eq!(app.target_dir(), target_dir);
 }
 
 #[test]

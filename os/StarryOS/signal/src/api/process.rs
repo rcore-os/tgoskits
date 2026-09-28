@@ -45,6 +45,11 @@ impl IndexMut<Signo> for SignalActions {
 
 /// Process-level signal manager.
 pub struct ProcessSignalManager {
+    /// Global init rejects kernel-only signals throughout its lifetime.
+    global_init: bool,
+    /// Cleared only by a forced synchronous fault with default disposition.
+    /// The disposition lock orders this flag with handler changes and publication.
+    init_unkillable: AtomicBool,
     /// Shared with process teardown; signal publication preserves the first code.
     pub(super) group_exit: Arc<GroupExit>,
     /// The process-level shared pending signals
@@ -76,6 +81,8 @@ impl ProcessSignalManager {
         group_exit: Arc<GroupExit>,
     ) -> Self {
         Self {
+            global_init: false,
+            init_unkillable: AtomicBool::new(false),
             group_exit,
             pending: RawSpinLock::new(PendingSignals::default()),
             actions_slot: RawSpinLock::new(actions),
@@ -83,6 +90,30 @@ impl ProcessSignalManager {
             children: RawSpinLock::new(Vec::new()),
             possibly_has_signal: AtomicBool::new(false),
         }
+    }
+
+    /// Designates the root PID namespace's init before any thread is registered.
+    /// This property is process-owned and is not inherited through CLONE_SIGHAND.
+    pub fn protect_global_init(mut self) -> Self {
+        self.global_init = true;
+        *self.init_unkillable.get_mut() = true;
+        self
+    }
+
+    pub(super) fn rejects_kernel_only_signal(&self, signo: Signo) -> bool {
+        self.global_init && matches!(signo, Signo::SIGKILL | Signo::SIGSTOP)
+    }
+
+    pub(super) fn ignores_init_default(&self, action: &SignalAction) -> bool {
+        self.init_unkillable.load(Ordering::Relaxed)
+            && matches!(action.disposition, SignalDisposition::Default)
+    }
+
+    /// Allows an unhandled synchronous fault to terminate init, as Linux's
+    /// force_sig_info_to_task does. Call while holding this process's action lock,
+    /// after normalizing the fault disposition and before publishing the signal.
+    pub fn allow_init_fault_exit(&self) {
+        self.init_unkillable.store(false, Ordering::Relaxed);
     }
 
     /// Returns a strong reference to the currently-installed signal action
@@ -242,7 +273,8 @@ impl ProcessSignalManager {
         action: &SignalAction,
         targets: &[(u32, Arc<ThreadSignalManager>)],
     ) {
-        if matches!(action.disposition, SignalDisposition::Default)
+        if !self.ignores_init_default(action)
+            && matches!(action.disposition, SignalDisposition::Default)
             && signo.default_action() == DefaultSignalAction::Terminate
             && (signo == Signo::SIGKILL || !defer_fatal)
         {
@@ -263,6 +295,9 @@ impl ProcessSignalManager {
         let signo = sig.signo();
         let mut prepared = Some(crate::pending::PreparedSignalInfo::new(sig));
         let (result, children) = self.publish_with_targets(|actions, children| {
+            if self.rejects_kernel_only_signal(signo) {
+                return None;
+            }
             let all_blocked = !children.is_empty()
                 && children
                     .iter()
@@ -270,7 +305,10 @@ impl ProcessSignalManager {
             let any_sigwait = children
                 .iter()
                 .any(|(_, thread)| thread.is_sigwait_for(signo));
-            if !all_blocked && !any_sigwait && actions[signo].is_ignore(signo) {
+            if !all_blocked
+                && !any_sigwait
+                && (actions[signo].is_ignore(signo) || self.ignores_init_default(&actions[signo]))
+            {
                 return None;
             }
             prepared = self.pending.lock_irqsave().put_prepared(

@@ -1,0 +1,6 @@
+#!/bin/sh
+. /etc/profile.d/starry.sh
+cd "$HOME" || exit 1
+printf 'Welcome to Starry OS!\n'
+export ENV=/etc/profile.d/starry.sh
+exec /bin/sh -l -i

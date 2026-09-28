@@ -50,12 +50,14 @@ sg2002-cvi-usb-camera = [
 ]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
-axtest = ["ax-runtime/fault-injection"]
+axtest = ["ax-runtime/fault-injection", "dep:axtest"]
+axtest-coverage = ["dep:axtest", "axtest/coverage"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(axtest_coverage)', 'cfg(feature, values("ax-std"))'] }
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 ax-alloc = { workspace = true }
 ax-display.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
@@ -167,7 +169,6 @@ kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
-axtest = { path = "../../../components/axtest/axtest" }
 ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features = [
     "alloc",
     "fd",

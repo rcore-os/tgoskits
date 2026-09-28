@@ -557,6 +557,11 @@ fn build_boot_params(
         firmware.plan.io_apic_base() as usize,
         0x1000,
     ));
+    let (ecam_base, ecam_size) = firmware.plan.pci_ecam_range();
+    builder.add_reserved_range(linux::X86LinuxRange::new(
+        ecam_base as usize,
+        ecam_size as usize,
+    ));
     builder.add_reserved_range(mptable::reserved_range());
     builder.build().map_err(|err| {
         ax_err_type!(

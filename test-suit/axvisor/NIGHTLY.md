@@ -81,9 +81,11 @@ with PR CI. Scheduling after Starry Apps reduces overlap but does not provide
 cross-workflow board exclusion by itself.
 
 Existing image/rootfs requirements still apply. In particular, the OrangePi
-IVC test requires the matching tgosimages IVC payload in the board Linux rootfs.
-This first version does not add automated rootfs provisioning, regression
-thresholds or extra log artifacts.
+IVC test requires the matching tgosimages Zephyr image and Starry userspace
+benchmark in the board Linux rootfs. Its Starry kernel is embedded from the
+current checkout by the board check after `cargo xtask starry build`; the
+preinstalled `/guest/starry` kernel is not used. This first version does not add
+automated rootfs provisioning, regression thresholds or extra log artifacts.
 
 ## Local Planning
 

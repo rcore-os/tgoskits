@@ -213,11 +213,3 @@ pub(crate) fn flush_pending_stream_symbolize(
         session.on_block_complete(lines);
     }
 }
-
-/// Filter a full QEMU transcript down to raw backtrace blocks and write them to `log_path`.
-#[cfg(test)]
-pub(crate) fn write_raw_blocks_from_output(output: &str, log_path: &Path) -> io::Result<()> {
-    let mut capture = BacktraceBlockCapture::create(Some(log_path), None)?;
-    capture.push_bytes(output.as_bytes())?;
-    capture.finish()
-}

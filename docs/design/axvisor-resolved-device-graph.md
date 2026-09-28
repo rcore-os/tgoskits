@@ -26,7 +26,7 @@ ConfiguredDeviceCatalog（显式 registration）
 FDT / ACPI 片段       DeviceRuntime
 ```
 
-普通虚拟设备只声明需要几段 MMIO/PIO、几个有线中断或 MSI，不填写数字资源。平台设备和 host replacement 可以使用来自 machine profile 或 host 固件的固定资源。固件模型与运行时构建消费同一份 `ResolvedDeviceResources`。
+普通虚拟设备只声明需要几段 MMIO/PIO、几个有线中断或 MSI，不填写数字资源；串口 model 专有的 `address` 可显式固定基址，中断继续由图分配，固件消费解析后的地址。平台设备和 host replacement 可以使用来自 machine profile 或 host 固件的固定资源。固件模型与运行时构建消费同一份 `ResolvedDeviceResources`。
 
 通用层只统一机制，不统一四种架构的初始化策略。AArch64、RISC-V、x86 和 LoongArch 仍分别控制控制器创建、vCPU 绑定、地址空间和固件固化顺序。
 

@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(starry-pid1-fault C)
+add_executable(starry-pid1-fault src/main.c)
+set_target_properties(starry-pid1-fault PROPERTIES OUTPUT_NAME init)
+target_compile_options(starry-pid1-fault PRIVATE -Wall -Wextra -Werror)
+install(TARGETS starry-pid1-fault RUNTIME DESTINATION sbin)

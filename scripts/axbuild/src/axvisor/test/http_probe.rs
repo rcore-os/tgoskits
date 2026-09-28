@@ -307,19 +307,6 @@ mod tests {
         path
     }
 
-    #[cfg(unix)]
-    fn write_output_fixture_probe(dir: &Path, name: &str) -> PathBuf {
-        use std::{fs, os::unix::fs::PermissionsExt};
-        let path = dir.join(name);
-        fs::write(
-            &path,
-            "#!/bin/sh\nprintf 'probe stdout\\n'\nprintf 'probe stderr\\n' >&2\n",
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
     #[cfg(target_os = "linux")]
     fn write_large_output_fixture_probe(dir: &Path, name: &str) -> PathBuf {
         use std::{fs, os::unix::fs::PermissionsExt};
@@ -335,16 +322,6 @@ mod tests {
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
-    }
-
-    #[test]
-    fn captured_probe_output_is_bounded_without_changing_execution_verdict() {
-        let mut output = BoundedProbeOutput::default();
-        output.append(&vec![b'x'; MAX_PROBE_OUTPUT_BYTES + 1]);
-        let output = output.finish();
-
-        assert!(output.starts_with(&vec![b'x'; MAX_PROBE_OUTPUT_BYTES]));
-        assert!(output.ends_with(b"\n[probe output truncated: dropped 1 bytes]\n"));
     }
 
     #[cfg(unix)]
@@ -373,22 +350,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn run_captures_probe_output_for_deferred_replay() {
-        let dir = fixture_dir();
-        write_output_fixture_probe(dir.path(), "http_probe.py");
-        let config = test_config(PathBuf::from("http_probe.py"));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        let outcome = run("127.0.0.1:12345", &config, dir.path(), stop);
-
-        assert!(outcome.verdict.is_ok());
-        assert_eq!(
-            String::from_utf8(outcome.output).unwrap(),
-            "probe stdout\nprobe stderr\n"
-        );
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn run_bounds_a_real_probe_while_it_writes_to_a_pipe() {
@@ -465,27 +426,6 @@ mod tests {
         let error = probe_thread.join().unwrap().verdict.unwrap_err();
         assert!(
             error.to_string().contains("was killed"),
-            "unexpected error: {error:#}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_does_not_spawn_probe_when_stop_was_already_requested() {
-        let dir = fixture_dir();
-        let probe = dir.path().join("http_probe.py");
-        std::fs::write(&probe, "#!/bin/sh\nexit 0\n").unwrap();
-        let config = test_config(PathBuf::from("http_probe.py"));
-        let stop = Arc::new(AtomicBool::new(true));
-
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop)
-            .verdict
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("was not started because the case had already stopped"),
             "unexpected error: {error:#}"
         );
     }

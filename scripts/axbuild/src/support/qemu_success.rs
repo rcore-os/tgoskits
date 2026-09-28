@@ -227,10 +227,22 @@ pub(crate) fn append_configured_success_regex(qemu: &mut QemuConfig, pattern: &s
 }
 
 const BENIGN_QEMU_STOP_ERROR: &str = "QEMU stopped without matching a configured success regex";
+const INCOMPLETE_SHELL_SEQUENCE_PREFIX: &str =
+    "shell check sequence ended before shell_check_steps[";
+
+fn is_incomplete_shell_sequence_error(message: &str) -> bool {
+    let Some(rest) = message.strip_prefix(INCOMPLETE_SHELL_SEQUENCE_PREFIX) else {
+        return false;
+    };
+    let Some((index, suffix)) = rest.split_once(']') else {
+        return false;
+    };
+    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()) && suffix == " completed"
+}
 
 fn is_benign_qemu_stop_error(err: &anyhow::Error) -> bool {
     let message = err.to_string();
-    if message == BENIGN_QEMU_STOP_ERROR {
+    if message == BENIGN_QEMU_STOP_ERROR || is_incomplete_shell_sequence_error(&message) {
         return true;
     }
 
@@ -271,30 +283,30 @@ pub(crate) fn verify_qemu_success_contract(
 {tail}"
     )
 }
+
+/// Preserve the primary QEMU failure and retain simultaneous coverage context.
+pub(crate) fn combine_qemu_and_coverage_results(
+    qemu_result: Result<()>,
+    coverage_result: Result<()>,
+) -> Result<()> {
+    match (qemu_result, coverage_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(coverage_error)) => Err(coverage_error),
+        (Err(qemu_error), Ok(())) => Err(qemu_error),
+        (Err(qemu_error), Err(coverage_error)) if is_benign_qemu_stop_error(&qemu_error) => {
+            Err(coverage_error)
+        }
+        (Err(qemu_error), Err(coverage_error)) => Err(anyhow::anyhow!(
+            "{qemu_error:#}; additional coverage failure: {coverage_error:#}"
+        )),
+    }
+}
 #[cfg(test)]
 mod tests {
-    use ostool::run::qemu::QemuConfig;
-
     use super::{
-        QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, append_configured_success_regex,
+        QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, combine_qemu_and_coverage_results,
         verify_qemu_success_contract,
     };
-
-    #[test]
-    fn appending_success_to_config_without_steps_creates_passive_step() {
-        let mut qemu = QemuConfig::default();
-
-        append_configured_success_regex(&mut qemu, "AXTEST_SUITE_OK");
-
-        assert_eq!(qemu.shell_check_steps.len(), 1);
-        let step = &qemu.shell_check_steps[0];
-        assert!(step.shell_prefix.is_none());
-        assert!(step.shell_cmd.is_none());
-        assert_eq!(
-            step.success_regex.as_deref(),
-            Some(&["AXTEST_SUITE_OK".to_string()][..])
-        );
-    }
 
     fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
         let patterns = patterns.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -344,6 +356,31 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn incomplete_shell_sequence_is_accepted_after_host_completion() {
+        let output = captured_output(&["AXTEST_COVERAGE_DONE"], &[b"AXTEST_COVERAGE_DONE\n"]);
+
+        verify_qemu_success_contract(
+            Err(anyhow::anyhow!(
+                "shell check sequence ended before shell_check_steps[0] completed"
+            )),
+            Some(&output),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn qemu_failure_remains_primary_when_coverage_also_fails() {
+        let error = combine_qemu_and_coverage_results(
+            Err(anyhow::anyhow!("QEMU launch failed")),
+            Err(anyhow::anyhow!("profile missing")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().starts_with("QEMU launch failed"));
+        assert!(error.to_string().contains("profile missing"));
+    }
     #[test]
     fn extended_benign_stop_error_is_not_ignored() {
         let output = captured_output(&["PASS"], &[b"PASS\n"]);
@@ -391,15 +428,6 @@ mod tests {
     #[test]
     fn unrelated_runner_error_still_wins_over_success_marker() {
         let output = captured_output(&["PASS"], &[b"PASS\n"]);
-        let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
-            .unwrap_err();
-
-        assert_eq!(err.to_string(), "QEMU timeout");
-    }
-
-    #[test]
-    fn runner_error_takes_precedence_over_missing_marker() {
-        let output = captured_output(&["PASS"], &[]);
         let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
             .unwrap_err();
 

@@ -5,6 +5,36 @@
 
 测试设计统一遵循 [test-quality](../../.agents/skills/test-quality/SKILL.md)：优先复用或增强完整功能验证，错误输入的拒绝、状态保持和资源回收并入所属功能，不逐参数或 errno 拆测。本指南中的 case 选择、成功标记和 LTP 完成数量用于运行可信度，不因去重而削弱。
 
+## 一次性外部 QEMU 运行
+
+需要运行已经准备好的独立 rootfs、但仍复用 Starry 构建、成功判定和覆盖率导出链路时，
+可以给 `starry test qemu` 同时提供三个外部输入：
+
+```bash
+cargo xtask starry test qemu \
+  --build-config /absolute/path/build.toml \
+  --qemu-config /absolute/path/qemu.toml \
+  --rootfs /absolute/path/rootfs.img
+```
+
+三个参数必须成组出现，并与 `--arch`、`--target`、`--test-case` 和 `--list` 互斥。
+构建配置负责给出目标；QEMU 配置负责成功、失败和超时判定。外部 rootfs 总是以
+`snapshot=on` 接入，客户机写入不会落回原镜像。
+
+如需复现某个既有内核制品，可再传入位于 Cargo target 目录之外的绝对路径
+`--fixed-elf /absolute/path/starryos`。运行器仍先完成当前源码构建与 `.kallsyms`
+后处理，再比较构建产物和固定 ELF 的架构、入口以及装载与覆盖率 section；验证成功后
+只从固定 ELF 的临时副本启动，因此不会改写固定文件本体。
+
+调用方需要直接观察 QEMU Machine Protocol 时，可在自己的外部 QEMU 配置中声明
+`-qmp` 参数。运行器不连接或解释该端点；socket 生命周期、协议协商、事件解释和命令
+发送均由调用方负责。
+
+构建配置显式设置 `AXTEST_COVERAGE = "y"` 时，运行器启用 Starry 的软件包级覆盖率
+feature，等待客户机写入测试专用 `/proc/starry-test-coverage`，由宿主导出
+`coverage/starryos-<target>.profraw` 后再结束 QEMU。这个入口不参与
+`test-suit/starryos` 的用例发现或 CI case 路由。
+
 ## 发现规则
 
 StarryOS test-suit 不再使用 `normal`、`stress` 等一级测试组。QEMU 和 board
@@ -240,6 +270,11 @@ scripts/test/ltp-syscalls/generate-common.sh \
 `MIGRATION.md` 第 7、8 节。
 
 定向运行累计 LTP 集合使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system/ltp-syscalls`；
+只运行一个 LTP testcase 使用
+`cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls/execve03`。
+单项名称须位于 `cases.txt` 或对应架构的 `cases-<arch>.txt`；无效名称在构建前报错。
+单项运行仅安装该 testcase 的 wrapper，不执行整组专用的两个 native 隔离回归；
+wrapper 原有的 LTP 版本、`TPASS` 完成数量及文件系统检查仍然生效。
 完整系统验证使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system`。四个架构
 `x86_64`、`aarch64`、`riscv64`、`loongarch64` 在同一工作区串行执行，只有实际完成的
 测试结果才能计为通过。
@@ -290,6 +325,15 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 ## QEMU 用例类型
 
 运行器会根据 case 目录内容选择一个 asset pipeline。一个 case 只能使用一种 pipeline。
+
+默认 Alpine 镜像在启动前准备 BusyBox init 与 OpenRC。分组 runner 由
+`starry-autorun` 服务执行，终端由 BusyBox init 重新拉起；测试命令结束不再等同于
+根 PID 1 退出。`qemu/pid1`、`qemu/pid1-exit`、`qemu/pid1-exit-thread` 和 `qemu/pid1-fault` 安装专用
+`/sbin/init`，验证根 PID 1 的信号、回收语义、两种退出入口与同步缺页；`qemu/openrc` 验证服务管理和终端重新拉起。
+
+`python3 scripts/test/starry_openrc_boot.py --arch <arch> --output <目录>` 另外在私有镜像副本上
+通过 `cargo xtask starry qemu` 连续启动两次，检查服务注册持久化、正常关机及重启的 QMP
+事件。它不修改 test-suit 的 discard 策略；单纯匹配服务停止日志不能替代电源终态证明。
 
 | Pipeline | 触发条件 | 行为 |
 | --- | --- | --- |
@@ -672,7 +716,7 @@ cargo xtask starry board \
   -b Rock-4D
 ```
 
-两条路径都必须进入 `root@starry:/root #` 并打印独立的
+两条路径都必须进入 `root@starry:~#` 并打印独立的
 `STARRY_ROCK4D_BOOT_OK` 成功行。RK3576 的固件、PSCI、CPU 拓扑和 CRU/PMU
 检查点见 `.claude/skills/arch-platform-porting/references/boot-debugging.md`。
 

@@ -1634,14 +1634,45 @@ impl VmaMap {
         ))
     }
 
+    pub(super) fn prepare_fork_mapping_entry(
+        &self,
+        parent: &VmaEntry,
+        operation: MappingOperation,
+    ) -> Option<Arc<VmaEntry>> {
+        let snapshot = parent.snapshot();
+        if snapshot.range.is_empty() {
+            return None;
+        }
+        let descriptor = operation.vma_descriptor(snapshot.range.start);
+        // Mapping groups are immutable metadata. Retain the parent's group
+        // when the cloned backend still describes the same mapping.
+        let group = if same_mapping_group(snapshot, descriptor) {
+            snapshot.group.clone()
+        } else {
+            self.group_for_descriptor(descriptor)
+        };
+        Some(VmaEntry::new(
+            VmaSnapshot {
+                id: allocate_vma_id(),
+                group,
+                source_offset: descriptor.source_offset,
+                lock_mode: VmaLockMode::Unlocked,
+                ..(**snapshot).clone()
+            },
+            operation,
+        ))
+    }
+
     /// Prepares the complete metadata successor for a fresh mapping or a
     /// `MAP_FIXED` replacement. No PTE or externally visible root is changed.
     pub(super) fn with_mapping_entry(&self, entry: Arc<VmaEntry>, replace: bool) -> Option<Self> {
+        if !replace {
+            // insert_node rejects intersecting intervals without a separate
+            // traversal of the current tree.
+            return self.insert_entry(entry);
+        }
         let range = entry.range();
         let base = if self.overlaps(range) {
-            if !replace {
-                return None;
-            }
             self.without_range(range)?
         } else {
             self.clone()

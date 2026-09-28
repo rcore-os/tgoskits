@@ -5,7 +5,7 @@ sidebar_label: "模拟设备"
 
 # Axvisor 模拟设备框架
 
-Axvisor 的模拟设备由 Hypervisor 在软件中实现，客户机通过 MMIO、x86 Port I/O 或架构系统寄存器访问这些设备。用户配置只描述稳定 ID、model 名和设备语义参数，地址、中断、MSI、host IRQ 与固件 identity 均由 machine profile、host snapshot 和设备图统一规划。
+Axvisor 的模拟设备由 Hypervisor 在软件中实现，客户机通过 MMIO、x86 Port I/O 或架构系统寄存器访问这些设备。用户配置描述稳定 ID、model 名和设备语义参数；串口 model 允许专有的固定 `address`，最终地址、中断、MSI、host IRQ 与固件 identity 由设备图统一规划。
 
 这套框架主要分布在 `virtualization/axdevice_base`、`virtualization/axdevice`、`virtualization/axvmconfig` 和 `virtualization/axvm` 中。本文以现有代码为准，说明配置解析、设备型号注册、设备图构建、资源规划、运行时注册、访问分派、直接内存访问授权、中断连接、固件生成以及各架构现有设备实现。架构能力与设备能力为什么采用不同的分层方法，见[《AxVM 分层能力接口设计》](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/axvm-capability-layering.md)。
 
@@ -93,7 +93,7 @@ id = "ivc0"
 model = "ivc-channel"
 ```
 
-普通虚拟设备配置不得填写 `base_gpa`、`mmio_base`、`pio_base`、`irq_id`、`msi_device_id`、`msi_event_id`、`lpi_id` 等框架资源字段。这些值如果来自用户，会在 `VirtualDeviceRequest::validate()` 中被拒绝；如果确实需要固定资源，必须由 machine profile、host firmware snapshot 或架构内部节点产生 `FixedDeviceBindings` 或 fixed `DeviceRequirement`。
+普通虚拟设备配置不得填写 `base_gpa`、`mmio_base`、`pio_base`、`irq_id`、`msi_device_id`、`msi_event_id`、`lpi_id` 等框架资源字段。这些值如果来自用户，会在 `VirtualDeviceRequest::validate()` 中被拒绝；固定资源通常由 machine profile、host firmware snapshot 或架构内部节点产生 `FixedDeviceBindings` 或 fixed `DeviceRequirement`；串口 model 的专有 `address` 是例外，只固定其 MMIO/PIO 基址。
 
 AxVM 公共注册入口显式注册的用户可选 model 如下。
 
@@ -564,14 +564,14 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 
 | model | 构建结果 | 关键 options |
 | --- | --- | --- |
-| `pl011-mmio` | PL011 MMIO 设备，wired IRQ，FDT/ACPI 串口元数据 | `clock_hz`、`register_shift`、`register_width`、`backend` |
+| `pl011-mmio` | PL011 MMIO 设备，wired IRQ，FDT/ACPI 串口元数据 | `address`、`clock_hz`、`register_shift`、`register_width`、`backend` |
 | `uart16550-mmio` | 16550 MMIO 设备，wired IRQ，串口 service/固件元数据 | 同上 |
-| `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `clock_hz`、`backend` |
+| `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `address`、`clock_hz`、`backend` |
 | `ivc-channel` | IVC aperture allocator service + wired notify endpoint service | options 为空且拒绝未知字段 |
 | `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；PCI transport 当前只接受同步 ramdisk | `transport`、`capacity`/`capacity_sectors`、`backend`、`path`、`read_only`、`filesystem`（file 后端必填 `ext4`） |
 | `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac` |
 
-串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
+串口的 `address` 是 model 专有整数选项，仅固定该串口的 MMIO/PIO 基址，范围与冲突由设备图校验；不开放通用设备裸地址。`console0` 默认采用宿主选定串口或 machine profile 固定资源；配置 `address` 后 IRQ 自动分配，不沿用宿主节点身份。额外串口省略 `address` 时仍从自动池分配。串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
 
 `ivc-channel` 不注册可直接读写的 `Device`；它通过 service 提供共享 MMIO aperture 分配器和 notify endpoint。判断 IVC 是否生效不能只看 `device_count()`。
 

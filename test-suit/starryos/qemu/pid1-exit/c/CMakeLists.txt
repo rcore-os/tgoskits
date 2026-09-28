@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(starry-pid1-exit C)
+find_package(Threads REQUIRED)
+add_executable(starry-pid1-exit src/main.c)
+target_link_libraries(starry-pid1-exit PRIVATE Threads::Threads)
+set_target_properties(starry-pid1-exit PROPERTIES OUTPUT_NAME init)
+target_compile_options(starry-pid1-exit PRIVATE -Wall -Wextra -Werror)
+install(TARGETS starry-pid1-exit RUNTIME DESTINATION sbin)

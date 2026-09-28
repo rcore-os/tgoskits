@@ -2,6 +2,7 @@
 # enough for repeatable userspace performance checks.
 target = "aarch64-unknown-none-softfloat"
 features = [
+  "legacy-board-init",
   "ax-driver/list-pci-devices",
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",

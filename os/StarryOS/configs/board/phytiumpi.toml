@@ -1,6 +1,7 @@
 # Build-time config for StarryOS on PhytiumPi.
 target = "aarch64-unknown-none-softfloat"
 features = [
+  "legacy-board-init",
   "ax-driver/serial",
   "ax-driver/ahci-fdt",
   "ax-driver/phytium-mci",

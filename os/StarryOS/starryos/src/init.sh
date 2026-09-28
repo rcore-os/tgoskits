@@ -7,13 +7,9 @@ export TERM=xterm-256color
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 printf "Welcome to \033[96m\033[1mStarry OS\033[0m!\n"
+echo STARRY_LEGACY_BOARD_INIT
 env
 echo
-
-printf "Use \033[1m\033[3mapk\033[0m to install packages.\n"
-echo
-
-# Do your initialization here!
 
 if [ -f /usr/bin/starry-run-case-tests ]; then
     echo "STARRY_GROUPED_AUTORUN_INIT"
@@ -21,31 +17,18 @@ if [ -f /usr/bin/starry-run-case-tests ]; then
     sh /usr/bin/starry-run-case-tests
 fi
 
-# Pre-populate /run/udev/data/ so libudev considers our devices
-# "initialized" (otherwise libinput silently skips every input device
-# with "skip unconfigured input device").  Linux populates this at udevd
-# startup after rule processing; we don't run udevd.  One empty file per
-# known device node — libudev flips is_initialized=true as soon as the
-# file is openable, regardless of contents.
+# The persistent board images do not run udevd. Populate the known device
+# records so libudev recognizes the input and display nodes.
 mkdir /run 2>/dev/null
 mkdir /run/udev 2>/dev/null
 mkdir /run/udev/data 2>/dev/null
-# Use touch instead of : > redirect — POSIX shell exits on redirect failure
-touch /run/udev/data/c226:0 2>/dev/null || true    # /dev/dri/card0
-touch /run/udev/data/c29:0 2>/dev/null || true     # /dev/fb0 (if present)
+touch /run/udev/data/c226:0 2>/dev/null || true
+touch /run/udev/data/c29:0 2>/dev/null || true
 for i in 0 1 2 3 4 5 6 7; do
     touch "/run/udev/data/c13:$((64 + i))" 2>/dev/null || true
 done
 
-# Visual-CI hook: when run_scenario.sh injects /test_runner.sh into the
-# rootfs, fire it asynchronously before dropping to the login shell.
-# Absence of /test_runner.sh in normal/interactive boots leaves this a
-# true no-op, so this hook is harmless on user images.
-#
-# setsid detaches from the controlling tty so weston's children don't
-# get SIGHUP when init re-execs the login shell; /dev/console captures
-# the runner's progress prints into the serial log used by the harness
-# to assert that the scenario actually launched.
+# Keep the existing visual test hook on boards using this init mode.
 if [ -x /test_runner.sh ]; then
     echo "[init] /test_runner.sh detected, launching visual scenario"
     setsid /test_runner.sh </dev/null >/dev/console 2>&1 &
@@ -55,7 +38,22 @@ fi
 cd "$HOME" || cd /
 
 cat > /tmp/starry-shrc <<'EOF'
-export PS1='${USER}@${HOSTNAME}:${PWD} # '
+# PS1 is interactive shell state, not part of child process environment.
+unset PS1
+starry_update_prompt() {
+    PS1="${USER}@${HOSTNAME}:"
+    case "$PWD" in
+        "$HOME") PS1="${PS1}~" ;;
+        "$HOME"/*) PS1="${PS1}~${PWD#"$HOME"}" ;;
+        *) PS1="${PS1}${PWD}" ;;
+    esac
+    PS1="${PS1}# "
+}
+cd() {
+    command cd "$@" || return
+    starry_update_prompt
+}
+starry_update_prompt
 EOF
 export ENV=/tmp/starry-shrc
 exec /bin/sh -l -i

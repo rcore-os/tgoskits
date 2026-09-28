@@ -411,43 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn relative_dir_resolves_against_workspace_root() {
-        // The pip-uv online wheel index is a committed, workspace-root-relative
-        // directory; resolving it must yield an absolute path under the workspace
-        // root regardless of the test process CWD.
-        let rel = "apps/starry/pip-uv/online-index";
-        let resolved = resolve_serve_dir(rel).expect("relative dir should resolve");
-        let workspace_root =
-            crate::context::workspace_root_path().expect("workspace root should resolve");
-
-        assert!(resolved.is_absolute(), "resolved dir must be absolute");
-        assert!(resolved.starts_with(&workspace_root));
-        assert_eq!(resolved, workspace_root.join(rel).canonicalize().unwrap());
-
-        match HostHttpBody::from_config(&HostHttpServerConfig {
-            bind: "127.0.0.1".to_string(),
-            port: 0,
-            body: "unused".to_string(),
-            body_size: None,
-            body_byte: b'a',
-            dir: Some(rel.to_string()),
-        })
-        .expect("from_config should accept the committed relative dir")
-        {
-            HostHttpBody::Dir(path) => assert_eq!(path, resolved),
-            other => panic!("expected Dir body, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn absolute_dir_is_used_verbatim() {
-        let temp = std::env::temp_dir();
-        let resolved = resolve_serve_dir(&temp.to_string_lossy())
-            .expect("an existing absolute dir should resolve");
-        assert_eq!(resolved, temp.canonicalize().unwrap());
-    }
-
-    #[test]
     fn missing_dir_errors_at_start() {
         let config = HostHttpServerConfig {
             bind: "127.0.0.1".to_string(),

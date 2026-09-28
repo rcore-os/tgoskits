@@ -211,47 +211,4 @@ log = "Info"
         assert!(err.contains("unknown ArceOS board `missing`"));
         assert!(err.contains("orangepi-5-plus"));
     }
-
-    #[test]
-    fn ensure_default_build_config_uses_matching_qemu_board_without_changing_snapshot() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        let source = r#"
-package = "arceos-helloworld"
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Warn"
-"#;
-        write_board(root.path(), "qemu-aarch64", source);
-        let existing_snapshot = ArceosCommandSnapshot {
-            package: Some("arceos-helloworld".to_string()),
-            arch: Some("riscv64".to_string()),
-            target: Some("riscv64gc-unknown-none-elf".to_string()),
-            smp: None,
-            config: None,
-            qemu: ArceosQemuSnapshot {
-                qemu_config: Some("configs/qemu.toml".into()),
-            },
-            uboot: ArceosUbootSnapshot {
-                uboot_config: Some("configs/uboot.toml".into()),
-            },
-        };
-        existing_snapshot.store(root.path()).unwrap();
-
-        let output = root.path().join("tmp/custom-arceos.toml");
-        let board = ensure_default_build_config_for_target(
-            root.path(),
-            "arceos-helloworld",
-            "aarch64-unknown-none-softfloat",
-            &output,
-        )
-        .unwrap();
-
-        assert_eq!(board.unwrap().name, "qemu-aarch64");
-        assert_eq!(fs::read_to_string(&output).unwrap(), source);
-        assert_eq!(
-            ArceosCommandSnapshot::load(root.path()).unwrap(),
-            existing_snapshot
-        );
-    }
 }

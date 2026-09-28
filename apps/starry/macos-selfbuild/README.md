@@ -160,7 +160,7 @@ qemu-system-aarch64 \
 Boot verification of the self-built kernel reached:
 
 ```text
-root@starry:/root #
+root@starry:~#
 ```
 
 This confirms that the guest-built `.bin` can boot as a normal StarryOS kernel.

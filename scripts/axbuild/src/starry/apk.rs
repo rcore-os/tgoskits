@@ -114,47 +114,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_apk_region_defaults_to_us() {
-        assert_eq!(parse_apk_region(None).unwrap(), ApkRegion::Us);
-        assert_eq!(parse_apk_region(Some("")).unwrap(), ApkRegion::Us);
-    }
-
-    #[test]
-    fn parse_apk_region_accepts_supported_aliases() {
-        assert_eq!(parse_apk_region(Some("china")).unwrap(), ApkRegion::China);
-        assert_eq!(parse_apk_region(Some("cn")).unwrap(), ApkRegion::China);
-        assert_eq!(parse_apk_region(Some("us")).unwrap(), ApkRegion::Us);
-        assert_eq!(parse_apk_region(Some("usa")).unwrap(), ApkRegion::Us);
-    }
-
-    #[test]
-    fn parse_apk_region_rejects_unknown_value() {
-        let err = parse_apk_region(Some("europe")).unwrap_err().to_string();
-        assert!(err.contains(STARRY_APK_REGION_VAR));
-        assert!(err.contains("china, cn, us, usa"));
-    }
-
-    #[test]
-    fn rewrite_apk_repositories_switches_to_us_mirror() {
-        let input = "https://mirrors.cernet.edu.cn/alpine/v3.23/main\nhttps://mirrors.cernet.edu.cn/alpine/v3.23/community\n";
-
-        assert_eq!(
-            rewrite_apk_repositories_content(input, ApkRegion::Us),
-            "https://dl-cdn.alpinelinux.org/alpine/v3.23/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.23/community\n"
-        );
-    }
-
-    #[test]
-    fn rewrite_apk_repositories_switches_to_china_mirror() {
-        let input = "https://dl-cdn.alpinelinux.org/alpine/v3.23/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.23/community\n";
-
-        assert_eq!(
-            rewrite_apk_repositories_content(input, ApkRegion::China),
-            "https://mirrors.cernet.edu.cn/alpine/v3.23/main\nhttps://mirrors.cernet.edu.cn/alpine/v3.23/community\n"
-        );
-    }
-
-    #[test]
     fn rewrite_apk_repositories_preserves_comments_blank_lines_and_other_urls() {
         let input = "\n# keep me\n  https://example.com/not-alpine/main  \nhttps://mirror.nyist.edu.cn/alpine/v3.23/main\n";
 

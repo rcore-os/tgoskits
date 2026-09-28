@@ -48,7 +48,6 @@ impl FolioCache {
         self.entries.len() >= self.capacity.get()
     }
 
-    #[cfg(feature = "vfs")]
     pub(super) fn get(&self, frame: &u64) -> Option<&CacheFolio> {
         self.entries.get(frame).map(|entry| &entry.folio)
     }

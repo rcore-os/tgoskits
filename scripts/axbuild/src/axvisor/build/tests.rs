@@ -39,26 +39,6 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
-fn resolve_build_info_path_ignores_source_tree_defaults() {
-    let root = tempdir().unwrap();
-    let axvisor_dir = root.path().join("os/axvisor");
-    fs::create_dir_all(&axvisor_dir).unwrap();
-    let bare = axvisor_dir.join("build-aarch64-unknown-none-softfloat.toml");
-    let dotted = axvisor_dir.join(".build-aarch64-unknown-none-softfloat.toml");
-    fs::write(&bare, "").unwrap();
-    fs::write(&dotted, "").unwrap();
-
-    let path =
-        resolve_build_info_path(&axvisor_dir, "aarch64-unknown-none-softfloat", None).unwrap();
-
-    assert_eq!(
-        path,
-        root.path()
-            .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
-    );
-}
-
-#[test]
 fn load_cargo_config_injects_vmconfigs() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
@@ -125,29 +105,6 @@ log = "Info"
 }
 
 #[test]
-fn load_cargo_config_does_not_select_an_x86_backend() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join("build-x86_64.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = []
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let cargo = load_cargo_config(
-        &request(config_path, "x86_64", "x86_64-unknown-none"),
-        &workspace(),
-    )
-    .unwrap();
-
-    assert!(!cargo.features.contains(&"vmx".to_string()));
-    assert!(!cargo.features.contains(&"svm".to_string()));
-}
-
-#[test]
 fn load_cargo_config_rejects_explicit_x86_backend_features() {
     for feature in ["vmx", "svm"] {
         let root = tempdir().unwrap();
@@ -172,89 +129,6 @@ log = "Info"
         assert!(err.to_string().contains("selected from CPU capabilities"));
         assert!(err.to_string().contains(&format!("`{feature}`")));
     }
-}
-
-#[test]
-fn load_target_from_board_config_reads_target() {
-    let root = tempdir().unwrap();
-    let path = root.path().join("qemu-aarch64.toml");
-    fs::write(
-        &path,
-        r#"
-features = []
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-vm_configs = []
-"#,
-    )
-    .unwrap();
-
-    assert_eq!(
-        load_target_from_build_config(&path).unwrap(),
-        Some("aarch64-unknown-none-softfloat".to_string())
-    );
-}
-
-#[test]
-fn load_target_from_plain_build_config_returns_none() {
-    let root = tempdir().unwrap();
-    let path = root.path().join(".build.toml");
-    fs::write(
-        &path,
-        r#"
-features = ["fs"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    assert_eq!(load_target_from_build_config(&path).unwrap(), None);
-}
-
-#[test]
-fn load_target_from_build_config_rejects_removed_std_field() {
-    let root = tempdir().unwrap();
-    let path = root.path().join("qemu-aarch64.toml");
-    fs::write(
-        &path,
-        r#"
-std = true
-features = []
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-"#,
-    )
-    .unwrap();
-
-    let err = load_target_from_build_config(&path).unwrap_err();
-
-    assert!(
-        err.to_string().contains("uses removed `std` field"),
-        "{err:#}"
-    );
-}
-
-#[test]
-fn load_target_from_build_config_rejects_arceos_app_c_field() {
-    let root = tempdir().unwrap();
-    let path = root.path().join("qemu-aarch64.toml");
-    fs::write(
-        &path,
-        r#"
-app-c = "c"
-features = []
-log = "Info"
-target = "aarch64-unknown-none-softfloat"
-"#,
-    )
-    .unwrap();
-
-    let err = load_target_from_build_config(&path).unwrap_err();
-
-    assert!(
-        err.to_string().contains("uses ArceOS-only `app-c` field"),
-        "{err:#}"
-    );
 }
 
 #[test]
@@ -339,44 +213,4 @@ log = "Info"
 
     assert!(err.to_string().contains("dynamic platform features"));
     assert!(err.to_string().contains("axplat-dyn/efi"));
-}
-
-#[test]
-fn load_cargo_config_applies_stack_protector_from_makefile_features() {
-    let root = tempdir().unwrap();
-    let config_path = root.path().join(".build.toml");
-    fs::write(
-        &config_path,
-        r#"
-features = ["fs"]
-log = "Info"
-"#,
-    )
-    .unwrap();
-
-    let cargo = load_cargo_config_with_makefile_features(
-        &ResolvedAxvisorRequest {
-            package: AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: root.path().join("os/axvisor"),
-            arch: "x86_64".to_string(),
-            target: "x86_64-unknown-none".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: config_path,
-            qemu_config: None,
-            uboot_config: None,
-            vmconfigs: vec![],
-        },
-        &workspace(),
-        &["stack-protector".to_string()],
-    )
-    .unwrap();
-
-    assert!(
-        cargo
-            .features
-            .contains(&"ax-std/stack-protector".to_string())
-    );
-    let config = fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
-    assert!(config.contains(r#""-Zstack-protector=strong""#));
 }

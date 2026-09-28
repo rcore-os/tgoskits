@@ -433,11 +433,9 @@ impl PidNamespace {
     /// Starts the namespace-init exit transaction from its last live thread.
     ///
     /// `executor` is the TID identity that must finish the transaction before
-    /// its normal task-exit path can retire that identity. Linux keeps the
-    /// global init alive forever, while Starry joins PID 1 and tears the whole
-    /// system down when its userspace command completes. The root namespace
-    /// therefore uses this same exclusive shutdown transaction instead of
-    /// attempting an impossible ordinary reparent-to-self transition.
+    /// its normal task-exit path can retire that identity. The global init's
+    /// last-thread exit is fatal; production callers use this transaction only
+    /// for child PID namespaces.
     pub fn begin_shutdown(
         &self,
         init: PidIdentityId,

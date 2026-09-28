@@ -6,5 +6,5 @@ fail_regex = [
 timeout = 600
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 success_regex = ['(?m)^AKA_RK3588_DEMO_PASSED$']

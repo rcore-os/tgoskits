@@ -3,7 +3,7 @@ timeout = 300
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_RKNPU_RESOURCES_FAILED\b', '(?i)segmentation fault']
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:~#"
 shell_cmd = '''
 marker=STARRY_RKNPU_RESOURCES
 ready=0

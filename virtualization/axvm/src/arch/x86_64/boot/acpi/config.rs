@@ -31,10 +31,20 @@ pub(super) struct X86InterruptPlan {
 /// PCI INTx routing exposed by the current virtual IOAPIC policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct X86PciPlan {
-    pub(super) bus_range: (u16, u16),
+    pub(super) ecam: X86PciEcamPlan,
     pub(super) io_windows: [(u16, u16); 2],
     pub(super) memory_windows: [X86PciMemoryWindow; 2],
     pub(super) intx_routes: Vec<X86PciIntxRoute>,
+}
+
+/// Resolved ECAM geometry shared by the runtime map and x86 firmware tables.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct X86PciEcamPlan {
+    pub(super) base: u64,
+    pub(super) size: u64,
+    pub(super) segment: u16,
+    pub(super) start_bus: u8,
+    pub(super) end_bus: u8,
 }
 
 /// One resolved PCI INTx route published to guest firmware.
@@ -137,6 +147,21 @@ impl X86FirmwarePlan {
                 .ok_or(X86FirmwarePlanError::MissingDevice {
                     node_id: PCI_HOST_NODE,
                 })?;
+        let ecam = specials.pci_ecam;
+        for function in pci_topology.functions() {
+            let bdf = function.bdf();
+            if bdf.segment().value() != ecam.segment
+                || !(ecam.start_bus..=ecam.end_bus).contains(&bdf.bus())
+            {
+                return Err(X86FirmwarePlanError::InvalidValue {
+                    field: "PCI function ECAM coverage",
+                    value: format!(
+                        "function {bdf} is outside segment {} bus {:02x}-{:02x}",
+                        ecam.segment, ecam.start_bus, ecam.end_bus
+                    ),
+                });
+            }
+        }
         let pci_aperture = pci_topology.memory_aperture();
         let pci_size = pci_aperture
             .end
@@ -235,7 +260,7 @@ impl X86FirmwarePlan {
                 gsi_base: 0,
             },
             pci: X86PciPlan {
-                bus_range: (0, 0xff),
+                ecam,
                 io_windows: [(0, 0x0cf7), (0x0d00, u16::MAX)],
                 memory_windows: [
                     X86PciMemoryWindow {
@@ -307,6 +332,10 @@ impl X86FirmwarePlan {
         &self.pci.intx_routes
     }
 
+    pub(crate) const fn pci_ecam_range(&self) -> (u64, u64) {
+        (self.pci.ecam.base, self.pci.ecam.size)
+    }
+
     pub(crate) fn fw_cfg_range(&self) -> Result<(usize, usize), X86FirmwarePlanError> {
         let base = usize::from(self.resources.fw_cfg_selector_base);
         let end = usize::from(self.resources.fw_cfg_dma_base)
@@ -331,6 +360,7 @@ struct ResolvedX86Specials {
     fw_cfg: [(u16, u16); 2],
     pm_timer: (u16, u16),
     sci: crate::boot::acpi::ResolvedAcpiInterrupt,
+    pci_ecam: X86PciEcamPlan,
     pci_memory: (u64, u64),
 }
 
@@ -405,22 +435,41 @@ fn resolve_x86_specials(
 
     let pci = named_special(specials, "PCI0", "PCI host bridge")?;
     let [
-        ResolvedAcpiRegister::Pio { .. },
+        ResolvedAcpiRegister::Pio {
+            base: pci_config_base,
+            size: pci_config_size,
+        },
+        ResolvedAcpiRegister::Mmio {
+            base: pci_ecam_base,
+            size: pci_ecam_size,
+        },
         ResolvedAcpiRegister::Mmio {
             base: pci_memory_base,
             size: pci_memory_size,
         },
     ] = pci.registers.as_slice()
     else {
-        return invalid_special_shape(pci, "one CF8/CFC PIO window and one memory aperture");
+        return invalid_special_shape(
+            pci,
+            "CF8/CFC PIO, one ECAM window, and one PCI memory aperture",
+        );
     };
     if pci.kind != ResolvedAcpiSpecialKind::PciHostBridge
         || pci.hid.as_deref() != Some("PNP0A03")
         || !pci.interrupts.is_empty()
         || !pci.properties.is_empty()
     {
-        return invalid_special_shape(pci, "PNP0A03 bridge with CF8/CFC and memory aperture");
+        return invalid_special_shape(
+            pci,
+            "PNP0A03 bridge with CF8/CFC, ECAM, and memory aperture",
+        );
     }
+    if *pci_config_base != X86PciConfigFrontend::PORT_BASE
+        || *pci_config_size != X86PciConfigFrontend::PORT_SIZE
+    {
+        return invalid_special_shape(pci, "the x86 CF8/CFC configuration port window");
+    }
+    let pci_ecam = resolve_pci_ecam(*pci_ecam_base, *pci_ecam_size)?;
 
     let fw_cfg = named_special(specials, "FWCF", "fw_cfg transport")?;
     let [
@@ -468,7 +517,43 @@ fn resolve_x86_specials(
         fw_cfg: [(*selector_base, *selector_size), (*dma_base, *dma_size)],
         pm_timer: (*pm_timer_base, *pm_timer_size),
         sci: *sci,
+        pci_ecam,
         pci_memory: (*pci_memory_base, *pci_memory_size),
+    })
+}
+
+fn resolve_pci_ecam(base: u64, size: u64) -> Result<X86PciEcamPlan, X86FirmwarePlanError> {
+    const BUS_WINDOW_SIZE: u64 = 1 << 20;
+    const MAX_ECAM_SIZE: u64 = 256 * BUS_WINDOW_SIZE;
+
+    if base == 0 || !base.is_multiple_of(BUS_WINDOW_SIZE) {
+        return Err(X86FirmwarePlanError::InvalidValue {
+            field: "PCI ECAM base",
+            value: format!("{base:#x} is zero or not 1 MiB aligned"),
+        });
+    }
+    if size == 0 || size > MAX_ECAM_SIZE || !size.is_multiple_of(BUS_WINDOW_SIZE) {
+        return Err(X86FirmwarePlanError::InvalidValue {
+            field: "PCI ECAM size",
+            value: format!("{size:#x} is not 1..=256 complete bus windows"),
+        });
+    }
+    base.checked_add(size)
+        .ok_or_else(|| X86FirmwarePlanError::InvalidValue {
+            field: "PCI ECAM address range",
+            value: format!("{base:#x}+{size:#x} overflows u64"),
+        })?;
+    let bus_count = size / BUS_WINDOW_SIZE;
+    let end_bus = u8::try_from(bus_count - 1).map_err(|_| X86FirmwarePlanError::InvalidValue {
+        field: "PCI ECAM bus range",
+        value: bus_count.to_string(),
+    })?;
+    Ok(X86PciEcamPlan {
+        base,
+        size,
+        segment: 0,
+        start_bus: 0,
+        end_bus,
     })
 }
 
@@ -634,7 +719,13 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             gsi_base: 0,
         },
         pci: X86PciPlan {
-            bus_range: (0, 0xff),
+            ecam: X86PciEcamPlan {
+                base: crate::arch::x86_64::pci_config::PCI_ECAM_BASE,
+                size: crate::arch::x86_64::pci_config::PCI_ECAM_SIZE,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 0xff,
+            },
             io_windows: [(0, 0x0cf7), (0x0d00, u16::MAX)],
             memory_windows: [
                 X86PciMemoryWindow {
@@ -685,5 +776,37 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             fw_cfg_dma_size: 8,
         },
         configured_devices: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ecam_geometry_maps_complete_bus_windows() {
+        assert_eq!(
+            resolve_pci_ecam(0x8000_0000, 2 << 20).unwrap(),
+            X86PciEcamPlan {
+                base: 0x8000_0000,
+                size: 2 << 20,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn ecam_geometry_rejects_invalid_ranges() {
+        for (base, size) in [
+            (0x8000_0001, 1 << 20),
+            (0x8000_0000, 0),
+            (0x8000_0000, (1 << 20) + 1),
+            (0x8000_0000, 257 << 20),
+            (u64::MAX - ((1 << 20) - 1), 1 << 20),
+        ] {
+            assert!(resolve_pci_ecam(base, size).is_err(), "{base:#x}+{size:#x}");
+        }
     }
 }

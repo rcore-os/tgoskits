@@ -17,11 +17,11 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 shell_cmd = 'd=/home/orangepi/robot/aka-rk3588; m=DUAL_PICK_CI; g=starry-zephyr'
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:/root #"
+shell_prefix = "root@starry:"
 shell_cmd = '''if "$d/run_dual_pick_ci_once.sh" --min-fps 28 && sync; then printf "\n%s_PASS guest=%s\n" "$m" "$g"; else r=$?; sync; printf "\n%s_FAIL guest=%s status=%s\n" "$m" "$g" "$r"; fi'''
 success_regex = [
   '(?m)^DUAL_PICK_CI_PASS guest=starry-zephyr\s*$',

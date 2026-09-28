@@ -74,6 +74,12 @@ fn parses_structured_guest_config() {
 }
 
 #[test]
+fn obsolete_serial_source_is_rejected() {
+    let config = "[base]\nguest_type = \"virtualized\"\nserial_source = \"host-firmware\"\n";
+    assert!(GuestConfig::from_toml(config).is_err());
+}
+
+#[test]
 fn parses_open_virtual_device_options() {
     let config = GuestConfig::from_toml(
         r#"
@@ -272,10 +278,13 @@ disabled = [{ path = "/soc/net@1000" }]
 }
 
 #[test]
-fn serialization_has_no_serial_or_raw_device_fields() {
+fn serialization_has_no_raw_serial_or_device_fields() {
     let encoded = toml::to_string(&GuestConfig::default()).unwrap();
+    assert!(
+        !encoded.contains("\nserial ="),
+        "raw serial leaked into schema"
+    );
     for removed in [
-        "serial",
         "emu_devices",
         "cfg_list",
         "interrupt_mode",
@@ -287,6 +296,7 @@ fn serialization_has_no_serial_or_raw_device_fields() {
         assert!(!encoded.contains(removed), "{removed} leaked into schema");
     }
     assert!(encoded.contains("guest_type = \"virtualized\""));
+    assert!(!encoded.contains("serial_source"));
     assert!(encoded.contains("passthrough = []"));
     assert!(encoded.contains("disabled = []"));
 }

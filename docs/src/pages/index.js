@@ -320,7 +320,7 @@ function HeroTerminal() {
         'Using rootfs-aarch64-alpine.img',
         'Booting StarryOS on qemu-aarch64',
         'Starting init process and user shell',
-        'root@starry:/root #',
+        'root@starry:~#',
       ],
     },
     {

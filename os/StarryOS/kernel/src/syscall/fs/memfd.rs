@@ -9,6 +9,7 @@ pub(crate) use crate::file::memfd::{
     check_write_seal_for_shared_file_backend as memfd_check_write_seal_for_shared_file_backend,
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
+    prepare_new_mapping_delta as memfd_prepare_new_mapping_delta,
     prepare_aspace_replace_deltas as memfd_prepare_aspace_replace_deltas,
     prepare_aspace_unmap_deltas as memfd_prepare_aspace_unmap_deltas,
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,

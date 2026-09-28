@@ -1,6 +1,3 @@
-use ::std::fs;
-use tempfile::tempdir;
-
 use super::*;
 
 fn repo_metadata() -> cargo_metadata::Metadata {
@@ -18,6 +15,4 @@ mod info;
 mod metadata;
 mod platform;
 mod std_features;
-mod std_linker;
 mod std_metadata;
-mod target_specs;

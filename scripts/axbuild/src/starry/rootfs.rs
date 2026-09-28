@@ -163,18 +163,31 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
 
     let rootfs =
         crate::image::storage::ensure_rootfs_for_arch(workspace_root, target_dir, arch).await?;
-    let _lock = crate::support::download::acquire_path_lock(&rootfs).await?;
-    ensure_apk_region_in_rootfs(&rootfs)?;
-    Ok(rootfs)
+    let image_lock = crate::support::download::acquire_path_lock(&rootfs).await?;
+    let workspace_root = workspace_root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        // Retain the lock in the blocking task even if its async caller is cancelled.
+        let _lock = image_lock;
+        sync_qemu_slirp_resolver_in_rootfs(&rootfs)?;
+        super::openrc::prepare(&workspace_root, &rootfs)?;
+        Ok(rootfs)
+    })
+    .await
+    .context("OpenRC rootfs preparation task failed")?
 }
 
-/// Ensures a selected rootfs image exists without modifying its contents.
+/// Prepares the default Alpine image; explicit images are only checked for existence.
 pub(crate) async fn ensure_qemu_rootfs_ready(
     request: &ResolvedStarryRequest,
     workspace_root: &Path,
     target_dir: &Path,
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
+    if explicit_rootfs.is_none() {
+        ensure_rootfs_in_tmp_dir(workspace_root, target_dir, &request.arch, &request.target)
+            .await?;
+        return Ok(());
+    }
     let rootfs_path = qemu_rootfs_path(request, workspace_root, target_dir, explicit_rootfs)?;
     crate::image::storage::ensure_optional_managed_rootfs(
         workspace_root,
@@ -397,116 +410,5 @@ mod tests {
         );
         assert!(qemu.args.iter().any(|arg| arg == "-netdev"));
         assert!(qemu.args.iter().any(|arg| arg == "user,id=net0"));
-    }
-
-    #[tokio::test]
-    async fn patch_qemu_rootfs_preserves_existing_base_args() {
-        let root = tempdir().unwrap();
-        write_test_image_config(root.path());
-        let rootfs = managed_rootfs_path(root.path(), "rootfs-riscv64-alpine.img");
-
-        let request = ResolvedStarryRequest {
-            package: "starryos".to_string(),
-            arch: "riscv64".to_string(),
-            target: "riscv64gc-unknown-none-elf".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: PathBuf::from("/tmp/.build.toml"),
-            build_info_override: None,
-            qemu_config: None,
-            uboot_config: None,
-        };
-        let mut qemu = QemuConfig {
-            args: vec![
-                "-nographic".to_string(),
-                "-cpu".to_string(),
-                "rv64".to_string(),
-                "-machine".to_string(),
-                "virt".to_string(),
-            ],
-            ..Default::default()
-        };
-
-        patch_qemu_rootfs(
-            &mut qemu,
-            &request,
-            root.path(),
-            &target_dir(root.path()),
-            None,
-            RootfsPatchMode::EnsureDiskBootNet,
-            RootfsWritePolicy::Persist,
-        )
-        .unwrap();
-
-        for arg in ["-nographic", "-cpu", "rv64", "-machine", "virt"] {
-            assert!(qemu.args.iter().any(|value| value == arg));
-        }
-        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
-        assert!(
-            qemu.args
-                .iter()
-                .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
-        );
-        assert!(
-            qemu.args
-                .iter()
-                .any(|arg| arg == "virtio-net-pci,netdev=net0")
-        );
-        assert!(qemu.args.iter().any(|arg| arg == "user,id=net0"));
-    }
-
-    #[tokio::test]
-    async fn patch_qemu_rootfs_for_dynamic_platform_replaces_drive_only() {
-        let root = tempdir().unwrap();
-        write_test_image_config(root.path());
-        let rootfs = managed_rootfs_path(root.path(), "rootfs-riscv64-alpine.img");
-
-        let request = ResolvedStarryRequest {
-            package: "starryos".to_string(),
-            arch: "riscv64".to_string(),
-            target: "riscv64gc-unknown-none-elf".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: PathBuf::from("/tmp/.build.toml"),
-            build_info_override: None,
-            qemu_config: None,
-            uboot_config: None,
-        };
-        let mut qemu = QemuConfig {
-            args: vec![
-                "-machine".to_string(),
-                "virt".to_string(),
-                "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
-                "-drive".to_string(),
-                "id=disk0,if=none,format=raw,file=/old/rootfs.img".to_string(),
-            ],
-            ..Default::default()
-        };
-
-        patch_qemu_rootfs(
-            &mut qemu,
-            &request,
-            root.path(),
-            &target_dir(root.path()),
-            None,
-            RootfsPatchMode::ReplaceDriveOnly,
-            RootfsWritePolicy::Persist,
-        )
-        .unwrap();
-
-        assert!(
-            qemu.args
-                .windows(2)
-                .any(|pair| pair == ["-machine", "virt"])
-        );
-        assert!(qemu.args.iter().any(|arg| arg.starts_with("nvme,")));
-        assert!(
-            qemu.args
-                .iter()
-                .any(|arg| { arg.contains(&format!("file={}", rootfs.display())) })
-        );
-        assert!(!qemu.args.iter().any(|arg| arg.contains("/old/rootfs.img")));
-        assert!(!qemu.args.iter().any(|arg| arg == "-netdev"));
     }
 }

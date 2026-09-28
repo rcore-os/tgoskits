@@ -612,6 +612,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     super::cgroup_exit_invariant::enforce(cgroup_exit);
     if let ThreadExit::Last(exit_owner) = thread_exit {
         debug_assert!(Arc::ptr_eq(exit_owner.process(), process));
+        if process.pid().get() == 1 {
+            panic!(
+                "Attempted to kill init! exitcode={:#010x}",
+                exit_owner.exit_code()
+            );
+        }
         thr.proc_data.release_cgroup_namespace();
         thr.proc_data
             .cancel_interval_timer_alarm()
@@ -639,9 +645,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_flock_locks(process_identity_id);
 
         // PID namespace init owns the only namespace-shutdown transaction.
-        // This includes root PID 1: unlike Linux's immortal global init,
-        // Starry joins PID 1 and shuts the system down when its userspace
-        // command completes. Close child publication before SIGKILL is
+        // Global init's last-thread exit was rejected above. Close child publication before SIGKILL is
         // delivered so no fork can escape the victim snapshot. Normal exits
         // atomically reparent through the process topology transaction instead.
         let pid_ns = thr.active_pid_namespace();

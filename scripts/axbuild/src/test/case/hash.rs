@@ -94,6 +94,10 @@ fn case_asset_cache_key_with_lookup(
     if pipeline == CasePipeline::Grouped {
         hash_grouped_execution(&mut hasher, &config.grouped_execution);
         hash_grouped_subcase_filter(&mut hasher, case.grouped_subcase_filter.as_ref());
+        if let Some(ltp_case_id) = case.ltp_case_id.as_deref() {
+            hash_token(&mut hasher, "ltp-case-select-v1");
+            hash_token(&mut hasher, ltp_case_id);
+        }
     }
 
     hash_rootfs_fingerprint(&mut hasher, shared_rootfs)?;

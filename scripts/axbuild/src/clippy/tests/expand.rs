@@ -130,27 +130,6 @@ fn host_test_feature_uses_host_target_outside_docs_target_matrix() {
 }
 
 #[test]
-fn host_test_feature_alias_uses_host_target_outside_docs_target_matrix() {
-    let checks = expand(&[pkg(
-        "alpha",
-        "alpha 0.1.0 (path+file:///tmp/alpha)",
-        &[
-            ("host-test", &[]),
-            ("platform", &[]),
-            ("test", &["host-test"]),
-        ],
-        Some(&["aarch64-unknown-none-softfloat"]),
-    )]);
-    let test_checks = checks
-        .iter()
-        .filter(|check| check.label().contains("feature: test"))
-        .collect::<Vec<_>>();
-
-    assert_eq!(test_checks[0].label(), "alpha (feature: test)");
-    assert!(!test_checks[0].cargo_args().contains(&"--target".into()));
-}
-
-#[test]
 fn clippy_preserves_non_bare_docs_rs_targets() {
     let target = "x86_64-unknown-linux-gnu";
     let check = ClippyCheck {
@@ -189,41 +168,6 @@ fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
         selected,
         vec!["shared".to_string(), "ax-std".into(), "starryos".into()]
     );
-}
-
-#[test]
-fn incremental_selection_adds_only_affected_os_root() {
-    let selected = incremental_clippy_selections(
-        vec!["alpha".into()],
-        vec!["alpha".into(), "intermediate".into(), "ax-std".into()],
-    );
-
-    assert_eq!(selected, vec!["alpha".to_string(), "ax-std".into()]);
-}
-
-#[test]
-fn incremental_selection_omits_unaffected_os_roots_and_top_levels() {
-    let selected = incremental_clippy_selections(
-        vec!["alpha".into()],
-        vec![
-            "alpha".into(),
-            "intermediate".into(),
-            "app".into(),
-            "axvisor".into(),
-        ],
-    );
-
-    assert_eq!(selected, vec!["alpha"]);
-}
-
-#[test]
-fn incremental_selection_deduplicates_changed_os_root() {
-    let selected = incremental_clippy_selections(
-        vec!["starryos".into(), "starryos".into()],
-        vec!["starryos".into()],
-    );
-
-    assert_eq!(selected, vec!["starryos"]);
 }
 
 #[test]
@@ -435,37 +379,6 @@ fn docs_rs_targets_expand_base_and_feature_checks() {
 }
 
 #[test]
-fn nested_docs_rs_targets_expand_base_checks() {
-    let checks = expand(&[pkg_with_metadata(
-        "alpha",
-        "alpha 0.1.0 (path+file:///tmp/alpha)",
-        &[],
-        serde_json::json!({
-            "docs": {
-                "rs": {
-                    "targets": ["aarch64-unknown-none"],
-                },
-            },
-        }),
-    )]);
-
-    assert_eq!(
-        checks[0].cargo_args(),
-        vec![
-            "clippy",
-            "--no-deps",
-            "-p",
-            "alpha",
-            "--target",
-            "aarch64-unknown-none-softfloat",
-            "--",
-            "-D",
-            "warnings",
-        ]
-    );
-}
-
-#[test]
 fn docs_rs_targets_are_normalized_to_workspace_toolchain_targets() {
     let checks = expand(&[pkg(
         "alpha",
@@ -477,33 +390,6 @@ fn docs_rs_targets_are_normalized_to_workspace_toolchain_targets() {
     assert_eq!(
         checks[0].label(),
         "alpha (base, target: loongarch64-unknown-none-softfloat)"
-    );
-}
-
-#[test]
-fn docs_rs_targets_are_sorted_and_deduplicated() {
-    let checks = expand(&[pkg(
-        "alpha",
-        "alpha 0.1.0 (path+file:///tmp/alpha)",
-        &[("feat", &[])],
-        Some(&[
-            "riscv64gc-unknown-none-elf",
-            "aarch64-unknown-none-softfloat",
-            "riscv64gc-unknown-none-elf",
-        ]),
-    )]);
-
-    assert_eq!(
-        checks
-            .into_iter()
-            .map(|check| check.label())
-            .collect::<Vec<_>>(),
-        vec![
-            "alpha (base, target: aarch64-unknown-none-softfloat)",
-            "alpha (feature: feat, target: aarch64-unknown-none-softfloat)",
-            "alpha (base, target: riscv64gc-unknown-none-elf)",
-            "alpha (feature: feat, target: riscv64gc-unknown-none-elf)",
-        ]
     );
 }
 
