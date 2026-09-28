@@ -17,7 +17,7 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def read_runs(label, tags, state_file, baseline):
+def read_runs(label, tags, state_file, baseline, side):
     state = json.loads(state_file.read_text())
     assert state['source_head'] == 'a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891'
     assert state['board_id'] == 'OrangePi-5-Plus-1' and state['board_released']
@@ -26,8 +26,10 @@ def read_runs(label, tags, state_file, baseline):
     assert all(row['valid'] and row['samples'] == row['attempted'] == 380000
                and row['not_parked'] == row['missed_deadlines'] == 0
                for row in state['runs'])
+    expected_image_sha256 = state['images'][side]['sha256']
     runs = []
     for tag, entry in zip(tags, state['runs']):
+        assert entry['tftp_image_sha256'] == expected_image_sha256
         path = state_file.parent / entry['guest_log_name']
         assert path.name == f'{label}-{tag}-full.log'
         assert sha256(path) == entry['guest_log_sha256']
@@ -68,8 +70,8 @@ def read_runs(label, tags, state_file, baseline):
 def main():
     baseline = json.loads(BASELINE.read_text())
     assert sha256(ROOT / 'linux-rt-baseline.raw.log') == baseline['raw_sha256']
-    a_state, a = read_runs('resume666', ['A1', 'A2'], ROOT / 'resume666-a-status.json', baseline)
-    b_state, b = read_runs('resume668', ['F1', 'F2'], ROOT / 'resume668-abba-status.json', baseline)
+    a_state, a = read_runs('resume666', ['A1', 'A2'], ROOT / 'resume666-a-status.json', baseline, 'A')
+    b_state, b = read_runs('resume668', ['F1', 'F2'], ROOT / 'resume668-abba-status.json', baseline, 'F')
     rt = {(row['policy'], row['case']): row for row in baseline['results']}
     assert len(rt) == 20 and set(a[0]) == set(a[1]) == set(b[0]) == set(b[1]) == set(rt)
     assert a_state['bench']['sha256'] == b_state['bench']['sha256'] == baseline['bench_sha256']
