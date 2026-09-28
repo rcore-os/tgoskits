@@ -16,6 +16,8 @@ pub(crate) struct TaskWaiters {
     count: AtomicUsize,
     #[cfg(test)]
     registration_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    waiting_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
 }
 
 impl TaskWaiters {
@@ -25,6 +27,8 @@ impl TaskWaiters {
             count: AtomicUsize::new(0),
             #[cfg(test)]
             registration_hook: IrqMutex::new(None),
+            #[cfg(test)]
+            waiting_hook: IrqMutex::new(None),
         }
     }
 
@@ -52,6 +56,13 @@ impl TaskWaiters {
             }
         }
         if should_wait() {
+            #[cfg(test)]
+            {
+                let hook = self.waiting_hook.lock().take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
             notification.wait();
         }
         self.remove(&notification);
@@ -142,6 +153,15 @@ impl TaskWaiters {
             previous.is_none(),
             "waiter registration hook already installed"
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_waiting_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self
+            .waiting_hook
+            .lock()
+            .replace(alloc::boxed::Box::new(hook));
+        assert!(previous.is_none(), "waiter waiting hook already installed");
     }
 
     #[cfg(test)]

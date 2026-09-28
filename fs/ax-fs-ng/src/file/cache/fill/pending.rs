@@ -262,9 +262,11 @@ mod tests {
         thread::scope(|scope| {
             let (entered_tx, entered_rx) = mpsc::channel();
             let (done_tx, done_rx) = mpsc::channel();
+            registry
+                .capacity_waiters
+                .set_waiting_hook(move || entered_tx.send(()).unwrap());
             let waiting_registry = &registry;
             scope.spawn(move || {
-                entered_tx.send(()).unwrap();
                 waiting_registry.wait_for_capacity().unwrap();
                 done_tx.send(()).unwrap();
             });
@@ -272,6 +274,7 @@ mod tests {
             owners.remove(1).finish(Ok(())).unwrap();
             let woke_for_second = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
             owners.remove(0).finish(Ok(())).unwrap();
+            registry.capacity_waiters.notify_all();
             assert!(woke_for_second, "capacity waiter stayed on the first fill");
         });
         drop(owners);
