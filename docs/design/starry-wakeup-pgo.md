@@ -1,5 +1,19 @@
 # StarryOS 唤醒延迟 PGO 状态
 
+2026-09-28 的 PR 阶段分支已合并 `dev@8af5f36698`，并把
+`profile-counter-export` 作为默认关闭的训练功能纳入源码。固定 816 MHz
+条件下，最近一次有效的五 crate PGO full20 仍是旧源码 `resume914`：
+11/20 项达到 Linux RT p50 的 90%，最差 OTHER 同核 futex 为 14875 ns，
+对 Linux RT 8458 ns 仅为 56.861%。训练镜像用了临时 exporter 补丁，
+不能算作新 PR head 的性能验收。新功能在 StarryOS 的 `main()` 注册
+`starry_kernel::register_profile_counter_snapshot()`，仅供原子计数器训练
+镜像从 debugfs 导出计数；板卡冒烟、构建记录见
+`scripts/perf/wakeup-pgo/evidence/latest-dev-2026-09-25/resume916-tracked-exporter/`。
+`build.py` 仍钉定旧源码、锁文件和 profile；在当前 PR head 上执行
+`--prepare-only` 已由 `source_gate()` 以 86 个未审计源码路径变化拒绝。
+必须重新训练精确源码并完成
+镜像身份和 full20 回退审计后，才能更新交付入口。PR 保持 Draft。
+
 2026-09-23 基于 `dev@ee5a638e0e` 构建普通 release 与全量 PGO，
 同一源码、板卡和冻结负载各完成两次独立 full20 启动。全部 20 项
 `Linux_RT_p50 / PGO_p50` **严格超过 70%**，相对普通 release 的各项
@@ -14,7 +28,7 @@ p50、p99、p99.9 回退均小于 3%；最差项 OTHER 同核 futex 为 78.37%�
 `scripts/perf/wakeup-pgo/build.py` 不修改它。旧的
 `profile-use.profdata.zst` 来自五-feature benchmark，仅供历史核查。
 `full-pgo-2026-09-23.profdata.zst` 使用旧源码和当时的十项普通 feature
-训练，保留供历史证据核查。当前 `build.py` 使用在
+训练，保留供历史证据核查。归档中的 `build.py` 使用在
 `dev@9a7b868bab` 上重新训练的 `full-pgo-2026-09-24.profdata.zst`；
 当前普通板卡配置增加了 `legacy-board-init`，因此 profile 与普通
 release 均包含十一项 feature。该新 profile 的实体板结果有两次独立有效
@@ -26,7 +40,7 @@ PGO full20；后续 `resume742` 补得两次有效的同源码普通 release 对
 
 ### 1.1 前置门禁
 
-`source_gate()` 以 `9a7b868bab8dcceb42acab516dcc88d5cc69985a` 为
+归档的 `source_gate()` 以 `9a7b868bab8dcceb42acab516dcc88d5cc69985a` 为
 源码基线；`docs/` 与本实验目录的变化不影响内核源码。`Cargo.lock` 由
 `cargo_lock_gate()` 的完整 SHA256 校验。`toolchain_gate()` 检查 Rust 和
 LLVM，`profile_feature_gate()` 核对十一项 feature，`check_wrapper_log()`
