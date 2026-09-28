@@ -607,7 +607,7 @@ struct GpuResource {
 
 impl Drop for GpuResource {
     fn drop(&mut self) {
-        if let Err(error) = ax_gpu::with_gpu(|device| device.release_buffer(self.device_handle))
+        if let Err(error) = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(self.device_handle))
             .and_then(core::convert::identity)
         {
             warn!("failed to release GPU buffer {:?}: {error}", self.device_handle);
@@ -1509,7 +1509,7 @@ impl Card0File {
             };
             (context.ctx_id, resource)
         };
-        let result = ax_gpu::with_gpu(|device| {
+        let result = ax_gpu::with_gpu_for_cleanup(|device| {
             device
                 .virgl()
                 .ok_or(GpuError::Unsupported)?
@@ -1784,7 +1784,7 @@ impl Drop for Card0File {
         self.card.vblank_event.notify(usize::MAX);
 
         if let Some(context) = self.context.lock().take()
-            && let Err(error) = ax_gpu::with_gpu(|device| {
+            && let Err(error) = ax_gpu::with_gpu_for_cleanup(|device| {
                 device
                     .virgl()
                     .ok_or(GpuError::Unsupported)?
@@ -2108,7 +2108,7 @@ impl Card0 {
                 Ok(Some(id)) => id,
                 Ok(None) => self.next_res_handle.fetch_add(1, Ordering::Relaxed),
                 Err(error) => {
-                    let _ = ax_gpu::with_gpu(|device| device.release_buffer(device_handle));
+                    let _ = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(device_handle));
                     return Err(map_gpu_err(error));
                 }
             };

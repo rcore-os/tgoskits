@@ -321,6 +321,19 @@ pub fn with_gpu<R>(access: impl FnOnce(&mut dyn GpuDevice) -> R) -> Result<R, Gp
         return Err(GpuError::NotAvailable);
     }
     let mut runtime = MAIN_GPU.lock();
+    service_pending(&mut runtime)?;
+    Ok(access(runtime.device.gpu()))
+}
+
+/// Allows resource teardown while deferred device work reports an error.
+/// Callers must only complete or release resources, never start new work.
+pub fn with_gpu_for_cleanup<R>(
+    access: impl FnOnce(&mut dyn GpuDevice) -> R,
+) -> Result<R, GpuError> {
+    if !has_gpu() {
+        return Err(GpuError::NotAvailable);
+    }
+    let mut runtime = MAIN_GPU.lock();
     service_pending_for_access(&mut runtime);
     Ok(access(runtime.device.gpu()))
 }

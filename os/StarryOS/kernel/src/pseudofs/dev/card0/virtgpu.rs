@@ -372,7 +372,7 @@ impl Card0 {
         let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
             Ok(id) => id,
             Err(error) => {
-                let _ = ax_gpu::with_gpu(|device| device.release_buffer(device_handle));
+                let _ = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(device_handle));
                 return Err(error);
             }
         };
@@ -877,7 +877,7 @@ impl Card0 {
         let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
             Ok(id) => id,
             Err(error) => {
-                let _ = ax_gpu::with_gpu(|device| device.release_buffer(device_handle));
+                let _ = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(device_handle));
                 return Err(error);
             }
         };
