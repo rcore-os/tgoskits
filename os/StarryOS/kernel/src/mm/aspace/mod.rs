@@ -2569,20 +2569,6 @@ impl AddrSpace {
             .collect()
     }
 
-    pub(crate) fn shared_file_vmas_in_range(
-        &self,
-        range: VirtAddrRange,
-    ) -> Vec<SharedFileVmaRecord> {
-        let mut records = Vec::new();
-        self.vma_root.for_each_overlapping_entry(range, |entry| {
-            if let Some(record) = entry.shared_file_record() {
-                records.push(record);
-            }
-            true
-        });
-        records
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn mremap_move_from_source(
         &mut self,
