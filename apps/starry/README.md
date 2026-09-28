@@ -33,18 +33,17 @@ Example:
 cargo xtask starry app board -t orangepi-5-plus-uvc
 ```
 
-## iperf3
+## Network throughput
 
-The `iperf3` board app provides a repeatable Orange Pi 5 Plus TCP performance
-matrix. Run the app through xtask; the board session supplies the address of the
-persistent iperf3 server. The app prints three samples plus a median for each
-scenario:
+The `network-throughput` board app runs a repeatable HTTP streaming throughput
+matrix against the ostool-server network test port (3000). It prints three
+samples plus a median for each scenario:
 
 ```bash
-cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
+cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-config board-orangepi-5-plus.toml
 ```
 
-See `iperf3/README.md` for the fixed T01--T07 profile.
+See `network-throughput/README.md` for the fixed T01--T07 profile.
 
 ## AArch64 Linux perf
 

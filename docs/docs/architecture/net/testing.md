@@ -158,9 +158,9 @@ Ethernet 发送回归检查 IPv4/IPv6 组播 MAC、有限广播和子网广播�
 回压后重试时不进入 ARP、不改写 IP payload 或请求 checksum 卸载。
 
 板端验证还需要确认每轮退出前的 `flush()` 真正推动已发布发送、replacement refill
-不会饿死 RX，以及接收端数据正确；显式驱动 checksum 请求需单独验证。Orange Pi 5 Plus 的 iperf3 矩阵
-使用 `apps/starry/iperf3/iperf-bench.sh`，记录构建提交、FIT 与脚本 SHA-256、链路速率、
-每轮 receiver 结果。吞吐数据单独记录，不能替代 token 生命周期与 IRQ 状态机断言。
+不会饿死 RX，以及接收端数据正确；显式驱动 checksum 请求需单独验证。Orange Pi 5 Plus 的 HTTP 流式吞吐矩阵
+使用 `apps/starry/network-throughput/network-bench.sh`，记录构建提交、FIT 与脚本 SHA-256、链路速率、
+每轮上传及下载结果。吞吐数据单独记录，不能替代 token 生命周期与 IRQ 状态机断言。
 
 ## 3. StarryOS 系统测试
 

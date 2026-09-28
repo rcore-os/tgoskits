@@ -3569,9 +3569,9 @@ checksum = "80bb028c8b4148c9ee0cca68fcd9add6044e81d3619f48577ddf13a263d047a2"
 
 [[package]]
 name = "fitimage"
-version = "0.1.7"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e07c5be8e720622c718afeae97c70f8430253772f030bff4b81e1001de11b741"
+checksum = "bb1515a6253a95508a9d106e45d6d76689005715ad0c11925fa33b94fc2e6979"
 dependencies = [
  "anyhow",
  "byteorder",
