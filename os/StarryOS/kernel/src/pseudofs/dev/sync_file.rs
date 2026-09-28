@@ -47,6 +47,7 @@ use ax_runtime::{hal::time::monotonic_time, task::sync::WaitQueue};
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use bytemuck::{AnyBitPattern, NoUninit};
+use syscalls::Errno;
 
 use crate::{
     StarryError, StarryResult,
@@ -239,7 +240,7 @@ impl SyncFile {
             if let Some(deadline) = deadline
                 && monotonic_time() >= deadline
             {
-                return Err(StarryError::TimedOut);
+                return Err(sync_wait_timeout_error());
             }
             yield_now();
         }
@@ -369,6 +370,13 @@ pub(crate) fn kick_refresher() {
     REFRESHER_WAKE.notify_one();
 }
 
+/// The error `SYNC_IOC_WAIT` reports on timeout: Linux
+/// `sync_file_ioctl_wait` returns `-ETIME` (not `-ETIMEDOUT`), and DRM
+/// userland distinguishes the two errno values.
+fn sync_wait_timeout_error() -> StarryError {
+    StarryError::Errno(Errno::ETIME)
+}
+
 impl FileLike for SyncFile {
     fn validate_write_access(&self) -> StarryResult {
         Err(StarryError::InvalidInput)
@@ -405,7 +413,7 @@ impl SyncFile {
             n if n < 0 => self.wait_signaled(None)?,
             0 => {
                 if !self.refresh() {
-                    return Err(StarryError::TimedOut);
+                    return Err(sync_wait_timeout_error());
                 }
             }
             n => self.wait_signaled(Some(Duration::from_millis(n as u64)))?,
@@ -530,5 +538,14 @@ mod tests {
     #[test]
     fn file_info_ioctl_matches_uapi_encoding() {
         assert_eq!(SYNC_IOC_FILE_INFO, 0xc038_3e04);
+    }
+
+    #[test]
+    fn sync_wait_timeout_reports_linux_etime() {
+        // Linux `sync_file_ioctl_wait` returns -ETIME on timeout; DRM
+        // userland distinguishes it from -ETIMEDOUT (the mapping used by
+        // generic kernel timeouts).
+        assert_eq!(sync_wait_timeout_error().linux_errno(), Errno::ETIME);
+        assert_ne!(Errno::ETIME, Errno::ETIMEDOUT);
     }
 }

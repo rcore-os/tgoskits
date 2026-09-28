@@ -3579,8 +3579,9 @@ impl Card0 {
             None
         };
         // `fence_fd` is written back only for `FENCE_FD_OUT`; an IN-only
-        // request keeps its input fd.
-        eb.fence_fd = out_fd.as_ref().map(|p| p.fd()).unwrap_or(-1);
+        // request keeps its input fd untouched (Linux only updates the field
+        // when it created an out-fence).
+        eb.fence_fd = writeback_fence_fd(eb.fence_fd, out_fd.as_ref().map(|p| p.fd()));
         ptr.vm_write(current, eb)
             .map_err(|_| VfsError::BadAddress)?;
         if let Some(prepared) = out_fd {
@@ -3944,6 +3945,13 @@ fn object_type_of(id: u32) -> Option<u32> {
     }
 }
 
+/// The `fence_fd` to write back to userspace after EXECBUFFER: the
+/// out-fence fd when one was created, otherwise the caller's value
+/// untouched — an IN-only request must keep its input fence fd.
+fn writeback_fence_fd(current: i32, out_fd: Option<i32>) -> i32 {
+    out_fd.unwrap_or(current)
+}
+
 /// Map a GPU 3D error from the display layer to a VfsError.
 fn map_gpu3d_err(err: ax_display::DisplayError) -> VfsError {
     match err {
@@ -3981,3 +3989,20 @@ const _DUMB_BUFFER_FIELDS_USED: fn(&DumbBuffer) = |b| {
     let _ = (b.width, b.height, b.bpp, b.pitch);
     let _ = (b.size, b.offset, &b.pages);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::writeback_fence_fd;
+
+    #[test]
+    fn execbuffer_in_only_request_keeps_its_input_fence_fd() {
+        assert_eq!(writeback_fence_fd(7, None), 7);
+        assert_eq!(writeback_fence_fd(-1, None), -1);
+    }
+
+    #[test]
+    fn execbuffer_out_fence_fd_overwrites_the_written_back_value() {
+        assert_eq!(writeback_fence_fd(7, Some(9)), 9);
+        assert_eq!(writeback_fence_fd(-1, Some(9)), 9);
+    }
+}
