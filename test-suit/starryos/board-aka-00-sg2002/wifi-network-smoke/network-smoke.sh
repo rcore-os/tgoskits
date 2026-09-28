@@ -2,7 +2,7 @@
 set -u
 
 fail() {
-    echo STARRY_AKA_WIFI_IPERF_SMOKE_FAILED
+    echo STARRY_AKA_WIFI_NETWORK_SMOKE_FAILED
     exit 1
 }
 
@@ -22,4 +22,4 @@ if ! ip -4 -o addr show dev wlan0 | grep -q ' inet '; then
     fail
 fi
 
-iperf2-smoke "$server_ip" 22 2 STARRY_AKA_WIFI_IPERF_SMOKE || fail
+curl-smoke.sh "$server_ip" 22 2 STARRY_AKA_WIFI_NETWORK_SMOKE || fail

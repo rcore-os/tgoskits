@@ -1366,7 +1366,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
- "httpboot-protocol",
+ "httpboot-protocol 0.2.1",
  "indicatif",
  "jkconfig 0.1.8",
  "libc",
@@ -1482,7 +1482,7 @@ name = "axloader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "httpboot-protocol",
+ "httpboot-protocol 0.2.1",
  "object 0.38.1",
  "serde",
  "serde_json",
@@ -4081,6 +4081,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "httpboot-protocol"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "304ee30032f80a06c96461b2e983dd7f1517377fbcc17dd3ad2602c2e093f9ec"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5634,9 +5644,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.29.5"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04c1bab14680136959c011ba4e8254dc2855e2f8c13e18b9570ccb470f361f53"
+checksum = "8eb806ba1abe025c72b93b62c60b85a0e0786d76b85d723d1b5a47516c6b69e6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5650,7 +5660,7 @@ dependencies = [
  "fitimage",
  "fs4",
  "futures",
- "httpboot-protocol",
+ "httpboot-protocol 0.3.0",
  "indicatif",
  "jkconfig 0.2.5",
  "keyring",
@@ -5668,6 +5678,7 @@ dependencies = [
  "serialport",
  "sha2 0.11.0",
  "tar",
+ "tempfile",
  "tftpd",
  "thiserror 2.0.20",
  "tokio",
