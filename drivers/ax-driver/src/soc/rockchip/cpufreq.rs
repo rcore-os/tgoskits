@@ -441,7 +441,38 @@ pub fn initialize_post_boot() {
         disable_all_domains();
         return;
     }
+    if DOMAIN_READY
+        .iter()
+        .any(|ready| !ready.load(Ordering::Acquire))
+    {
+        disable_all_domains();
+        return;
+    }
     let selected = [little, big0, big1];
+    for cluster in [Cluster::Big0, Cluster::Big1] {
+        if selected[cluster.index()].is_some() {
+            continue;
+        }
+        // No PVTM grade or margin was established for this cluster. At 750 mV
+        // the 1.2 GHz PVTPLL ring is not a verified delivered-frequency OPP on
+        // every board. The original 816 MHz ring is within the common boot
+        // voltage envelope and needs no unverified rail or GRF write.
+        if !set_and_verify(phandle, cluster.clock_id(), 816_000_000, A76_MAX_HZ) {
+            warn!(
+                "cpufreq: {} safe fallback clock could not be confirmed at 816 MHz",
+                cluster.name()
+            );
+            disable_all_domains();
+            return;
+        }
+        IDX[cluster.index()].store(0, Ordering::Release);
+        FLOOR_IDX[cluster.index()].store(0, Ordering::Release);
+        LIMITED_FALLBACK[cluster.index()].store(true, Ordering::Release);
+        warn!(
+            "cpufreq: {} OPP selection unavailable; limiting to 816 MHz at 750 mV",
+            cluster.name()
+        );
+    }
     let selected = SELECTED_OPPS.call_once(|| selected);
     for (index, domain) in DOMAINS.into_iter().enumerate() {
         let Some(table) = selected[index].as_ref() else {
@@ -657,6 +688,13 @@ const A76_OPPS: &[Opp] = &[
     },
 ];
 
+/// Single confirmed fallback for an unselected big-cluster OPP table.
+const A76_LIMITED_FALLBACK: &[Opp] = &[Opp {
+    ring_khz: 816_000,
+    uv: 750_000,
+    mhz: 816,
+}];
+
 /// Bootstrap A55 ladder. Higher rows require RK806 selector readback and the
 /// silicon-specific DT OPP selection.
 const A55_OPPS: &[Opp] = &[
@@ -682,14 +720,15 @@ const BOOT_OPP_IDX: usize = 2;
 
 // A table is published only after OTP, PVTM, the thermal sensor, regulator
 // readback, and the board OPP properties have all been validated. A selection
-// failure retains the bootstrap ladder; a hardware transition failure disables
-// all domains because their DSU relationship may no longer be known.
+// failure limits a big cluster to a confirmed low ring; a hardware transition
+// failure disables all domains because their DSU relationship may be unknown.
 struct SelectedDomain {
     opps: Vec<Opp>,
     margin: ReadMargin,
 }
 
 static SELECTED_OPPS: OnceLock<[Option<SelectedDomain>; 3]> = OnceLock::new();
+static LIMITED_FALLBACK: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
 static FLOOR_IDX: [AtomicUsize; 3] = [const { AtomicUsize::new(BOOT_OPP_IDX) }; 3];
 static TEMPERATURE_STATE: [AtomicU8; 3] = [const { AtomicU8::new(0) }; 3];
 #[cfg(feature = "rk3588-cpufreq-thermal-test")]
@@ -1011,7 +1050,8 @@ impl Cluster {
         }
         match self {
             Cluster::A55 => A55_OPPS,
-            _ => &A76_OPPS[..=BOOT_OPP_IDX],
+            _ if LIMITED_FALLBACK[self.index()].load(Ordering::Acquire) => A76_LIMITED_FALLBACK,
+            _ => A76_OPPS,
         }
     }
 
