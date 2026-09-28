@@ -236,6 +236,48 @@ fn rerouting_a_loaded_level_spi_does_not_requeue_it_on_the_old_vcpu() {
 }
 
 #[test]
+fn deactivating_a_level_spi_with_no_routed_vcpu_preserves_pending_delivery() {
+    let (controller, backend) = controller(2, 1);
+    let vcpu0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let vcpu1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
+    let spi = SpiId::new(32).unwrap();
+
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+    controller.set_spi_level(spi, true).unwrap();
+    vcpu0.load().unwrap();
+    backend.activate_all(0);
+    vcpu0.save().unwrap();
+
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            2,
+        )
+        .unwrap();
+    vcpu0.deactivate_saved(IntId::Spi(spi)).unwrap();
+    assert_eq!(
+        controller.interrupt_state(None, IntId::Spi(spi)).unwrap(),
+        InterruptState::Pending
+    );
+
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            1,
+        )
+        .unwrap();
+    vcpu0.load().unwrap();
+    vcpu1.load().unwrap();
+    assert!(backend.loaded_intids(0).is_empty());
+    assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
+}
+
+#[test]
 fn spi_refill_preserves_the_distributor_priority() {
     let (controller, backend) = controller(1, 1);
     let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));

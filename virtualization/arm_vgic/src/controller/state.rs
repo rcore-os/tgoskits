@@ -57,7 +57,12 @@ impl ControllerState {
             }
             interrupt.trigger()
         };
-        let target = self.spi_target(spi)?;
+        let target = self
+            .spi_target(spi)?
+            .ok_or_else(|| VgicError::ResourceNotFound {
+                resource: alloc::format!("SPI {} target Redistributor", spi.raw()),
+                operation: "queue SPI",
+            })?;
         let mut canceled_inflight = false;
         let vcpu_interfaces = &self.vcpu_interfaces;
         for (vcpu, redistributor) in &mut self.redistributors {
@@ -75,7 +80,7 @@ impl ControllerState {
         Ok(Some(redistributor.wake()))
     }
 
-    fn spi_target(&self, spi: SpiId) -> VgicResult<GicVcpuId> {
+    fn spi_target(&self, spi: SpiId) -> VgicResult<Option<GicVcpuId>> {
         let interrupt = self.distributor.interrupt(spi)?;
         let route = interrupt.route();
         let cpu_target_mask = interrupt.cpu_target_mask();
@@ -91,11 +96,7 @@ impl ControllerState {
                 .map(|(vcpu, _)| *vcpu)
         } else {
             self.redistributors.keys().next().copied()
-        }
-        .ok_or_else(|| VgicError::ResourceNotFound {
-            resource: alloc::format!("SPI {} target Redistributor", spi.raw()),
-            operation: "queue SPI",
-        })?;
+        };
         Ok(target)
     }
 
@@ -572,7 +573,10 @@ impl ControllerState {
         maintenance_on_eoi: bool,
     ) -> VgicResult<Option<Arc<dyn GicV3VcpuWake>>> {
         let target = match intid {
-            IntId::Spi(spi) => self.spi_target(spi)?,
+            IntId::Spi(spi) => match self.spi_target(spi)? {
+                Some(target) => target,
+                None => return Ok(None),
+            },
             IntId::Sgi(_) | IntId::Ppi(_) | IntId::Lpi(_) => vcpu,
         };
         let redistributor = self.redistributor_mut(target, "requeue software interrupt")?;
