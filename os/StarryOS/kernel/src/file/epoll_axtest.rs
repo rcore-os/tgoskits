@@ -589,6 +589,199 @@ fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool {
         })
 }
 
+#[cfg(all(test, not(axtest)))]
+struct CountedLease {
+    lease: Box<dyn PollRegistration>,
+    live: Arc<AtomicUsize>,
+}
+
+#[cfg(all(test, not(axtest)))]
+impl PollRegistration for CountedLease {
+    fn was_notified(&self) -> bool {
+        self.lease.was_notified()
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+impl Drop for CountedLease {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+struct CountedSource {
+    waiters: PollSet,
+    registered: AtomicUsize,
+    live: Arc<AtomicUsize>,
+}
+
+#[cfg(all(test, not(axtest)))]
+impl CountedSource {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            waiters: PollSet::new(),
+            registered: AtomicUsize::new(0),
+            live: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    fn registered(&self) -> usize {
+        self.registered.load(Ordering::Acquire)
+    }
+
+    fn live(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+impl PollSource for CountedSource {
+    unsafe fn register(
+        &self,
+        waker: &Waker,
+        interests: IoEvents,
+        mode: RegistrationMode,
+    ) -> Option<Box<dyn PollRegistration>> {
+        let lease = unsafe { self.waiters.register(waker, interests, mode) }?;
+        self.registered.fetch_add(1, Ordering::AcqRel);
+        self.live.fetch_add(1, Ordering::AcqRel);
+        Some(Box::new(CountedLease {
+            lease,
+            live: Arc::clone(&self.live),
+        }))
+    }
+}
+
+// The source is shared rather than owned so a test can keep it alive after the
+// file is gone, like a FIFO buffer that outlives one of its open files.
+#[cfg(all(test, not(axtest)))]
+struct CountedFile {
+    ready: AtomicBool,
+    source: Arc<CountedSource>,
+}
+
+#[cfg(all(test, not(axtest)))]
+impl CountedFile {
+    fn new(ready: bool, source: &Arc<CountedSource>) -> Arc<Self> {
+        Arc::new(Self {
+            ready: AtomicBool::new(ready),
+            source: Arc::clone(source),
+        })
+    }
+
+    fn make_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+        unsafe { self.source.waiters.wake(IoEvents::IN) };
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+impl FileLike for CountedFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-counted-file]".into()
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+impl Pollable for CountedFile {
+    fn poll(&self) -> IoEvents {
+        if self.ready.load(Ordering::Acquire) {
+            IoEvents::IN
+        } else {
+            IoEvents::empty()
+        }
+    }
+
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(self.source.as_ref(), events) };
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+fn armed_lease_survives_repeated_waits_for_test() -> bool {
+    let epoll = Epoll::new();
+    let source = CountedSource::new();
+    let target = CountedFile::new(false, &source);
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file, 0x61, EpollFlags::empty())
+        .expect("level-triggered test interest must be added");
+    for _ in 0..8 {
+        if epoll.register_waiter_wakers().is_err() {
+            return false;
+        }
+    }
+    let registered_once = source.registered() == 1 && source.live() == 1;
+
+    target.make_ready();
+    registered_once && matches!(collect_one_event(&epoll), Ok((1, Some(0x61))))
+}
+
+#[cfg(all(test, not(axtest)))]
+fn notified_lease_is_registered_again_for_test() -> bool {
+    let epoll = Epoll::new();
+    let source = CountedSource::new();
+    let target = CountedFile::new(false, &source);
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file, 0x62, EpollFlags::EDGE_TRIGGER)
+        .expect("edge-triggered test interest must be added");
+    target.make_ready();
+    let first = collect_one_event(&epoll);
+    let registered_again = source.registered() == 2 && source.live() == 1;
+    let waits_ok = epoll.register_waiter_wakers().is_ok();
+    target.make_ready();
+    let second = collect_one_event(&epoll);
+
+    matches!(first, Ok((1, Some(0x62))))
+        && registered_again
+        && waits_ok
+        && matches!(second, Ok((1, Some(0x62))))
+}
+
+#[cfg(all(test, not(axtest)))]
+fn one_shot_queued_by_recheck_releases_its_lease_for_test() -> bool {
+    let epoll = Epoll::new();
+    let source = CountedSource::new();
+    let target = CountedFile::new(true, &source);
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    // Readiness seen by the registration recheck queues the interest while
+    // its lease has not been notified, so the lease is still armed when the
+    // one-shot event is consumed.
+    epoll
+        .add_file_for_test(1, target_file, 0x63, EpollFlags::ONESHOT)
+        .expect("one-shot test interest must be added");
+    let armed = source.live() == 1;
+    let event = collect_one_event(&epoll);
+
+    armed && matches!(event, Ok((1, Some(0x63)))) && source.live() == 0
+}
+
+#[cfg(all(test, not(axtest)))]
+fn closed_file_releases_its_armed_lease_for_test() -> bool {
+    let epoll = Epoll::new();
+    let source = CountedSource::new();
+    let target = CountedFile::new(false, &source);
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file.clone(), 0x64, EpollFlags::empty())
+        .expect("level-triggered test interest must be added");
+    let armed = source.live() == 1;
+    drop(target_file);
+    drop(target);
+
+    armed && epoll.register_waiter_wakers().is_ok() && source.live() == 0
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(test, axtest))]
@@ -643,5 +836,28 @@ mod tests {
     #[test]
     fn requeues_readiness_observed_during_rearm() {
         assert!(super::epoll_requeues_readiness_observed_during_rearm_for_test());
+    }
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn armed_lease_survives_repeated_waits() {
+        assert!(super::armed_lease_survives_repeated_waits_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn notified_lease_is_registered_again() {
+        assert!(super::notified_lease_is_registered_again_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn one_shot_queued_by_recheck_releases_its_lease() {
+        assert!(super::one_shot_queued_by_recheck_releases_its_lease_for_test());
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn closed_file_releases_its_armed_lease() {
+        assert!(super::closed_file_releases_its_armed_lease_for_test());
     }
 }
