@@ -193,7 +193,8 @@ impl StreamTable {
 struct DomainState {
     id: DmaDomainId,
     asid: u16,
-    cd: PhysicalRegion,
+    // Keep the descriptor pinned while the STE can reference it.
+    _cd: PhysicalRegion,
     root: u64,
     physical_limit: u64,
     tables: BTreeMap<u64, PhysicalRegion>,
@@ -540,81 +541,92 @@ impl Hardware {
     }
 
     fn bind(&mut self, stream: StreamId) -> Result<(), IommuError> {
+        self.bind_with_commands(stream, Self::command_and_sync)
+    }
+
+    fn bind_with_commands(
+        &mut self,
+        stream: StreamId,
+        mut command_and_sync: impl FnMut(&mut Self, [u64; 2]) -> Result<(), IommuError>,
+    ) -> Result<(), IommuError> {
         if u64::from(stream.0) >= 1 << self.sid_bits {
             return Err(IommuError::InvalidAddress);
         }
-        if self.domains.contains_key(&stream.0) {
+        if self
+            .domains
+            .get(&stream.0)
+            .is_some_and(|domain| domain.active)
+        {
             return Err(IommuError::AlreadyBound);
         }
-        let asid = self.next_asid;
-        if asid == 0 || asid > self.asid_limit {
-            return Err(IommuError::NoIdentifiers);
-        }
-        self.next_asid = self.next_asid.wrapping_add(1);
-        let physical_limit = 1 << self.oas_bits;
-        let root = allocate(self.memory, PAGE_SIZE, PAGE_SIZE, physical_limit)?;
-        let root_physical = root.physical();
-        let cd = allocate(self.memory, 64, 64, physical_limit)?;
-        let ips = match self.oas_bits {
-            32 => 0,
-            36 => 1,
-            40 => 2,
-            42 => 3,
-            44 => 4,
-            _ => 5,
-        };
-        cd.write_u64(
-            0,
-            16 | (1 << 8)
-                | (1 << 10)
-                | (3 << 12)
-                | (1 << 30)
-                | (1 << 31)
-                | ((ips as u64) << 32)
-                | (1 << 41)
-                | (1 << 45)
-                | (1 << 46)
-                | (1 << 47)
-                | (u64::from(asid) << 48),
-        );
-        cd.write_u64(1, root_physical);
-        cd.write_u64(3, 0xf404_ff44);
-        let id = DmaDomainId(NEXT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed));
-        let mut tables = BTreeMap::new();
-        tables.insert(root_physical, root);
-        self.domains.insert(
-            stream.0,
-            DomainState {
-                id,
-                asid,
-                cd,
-                root: root_physical,
-                physical_limit,
-                tables,
-                active: false,
-            },
-        );
-        let result = (|| {
+        if !self.domains.contains_key(&stream.0) {
+            let asid = self.next_asid;
+            if asid == 0 || asid > self.asid_limit {
+                return Err(IommuError::NoIdentifiers);
+            }
+            let physical_limit = 1 << self.oas_bits;
+            let root = allocate(self.memory, PAGE_SIZE, PAGE_SIZE, physical_limit)?;
+            let root_physical = root.physical();
+            let cd = allocate(self.memory, 64, 64, physical_limit)?;
+            let ips = match self.oas_bits {
+                32 => 0,
+                36 => 1,
+                40 => 2,
+                42 => 3,
+                44 => 4,
+                _ => 5,
+            };
+            cd.write_u64(
+                0,
+                16 | (1 << 8)
+                    | (1 << 10)
+                    | (3 << 12)
+                    | (1 << 30)
+                    | (1 << 31)
+                    | ((ips as u64) << 32)
+                    | (1 << 41)
+                    | (1 << 45)
+                    | (1 << 46)
+                    | (1 << 47)
+                    | (u64::from(asid) << 48),
+            );
+            cd.write_u64(1, root_physical);
+            cd.write_u64(3, 0xf404_ff44);
             let (ste_region, ste_word_index) =
                 self.streams
                     .ensure_ste(stream.0, self.memory, physical_limit)?;
-            let cd_physical = self.domains[&stream.0].cd.physical();
+            let cd_physical = cd.physical();
+            let id = DmaDomainId(NEXT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed));
+            let mut tables = BTreeMap::new();
+            tables.insert(root_physical, root);
+            self.next_asid = self.next_asid.wrapping_add(1);
+            // From this point the STE may be visible to hardware. A failed
+            // command sync must retain the CD, tables and ASID for retry.
+            self.domains.insert(
+                stream.0,
+                DomainState {
+                    id,
+                    asid,
+                    _cd: cd,
+                    root: root_physical,
+                    physical_limit,
+                    tables,
+                    active: false,
+                },
+            );
             // Publish CD before STE, and publish the STE's valid/config word last.
             fence(Ordering::SeqCst);
             ste_region.write_u64(ste_word_index + 1, 2 | (1 << 2) | (1 << 4) | (3 << 6));
             ste_region.write_u64(ste_word_index, 1 | (5 << 1) | cd_physical);
             fence(Ordering::SeqCst);
-            self.command_and_sync([3 | (u64::from(stream.0) << 32), 1])?;
-            self.command_and_sync([5 | (u64::from(stream.0) << 32), 1])?;
-            Ok(())
-        })();
-        if result.is_ok() {
-            self.domains
-                .get_mut(&stream.0)
-                .ok_or(IommuError::InvalidAddress)?
-                .active = true;
         }
-        result
+        command_and_sync(self, [3 | (u64::from(stream.0) << 32), 1])?;
+        command_and_sync(self, [5 | (u64::from(stream.0) << 32), 1])?;
+        self.domains
+            .get_mut(&stream.0)
+            .ok_or(IommuError::InvalidAddress)?
+            .active = true;
+        Ok(())
     }
 
     fn validate_range(
@@ -792,5 +804,144 @@ impl Hardware {
         fence(Ordering::SeqCst);
         self.mmio.write32(0x10000 + EVTQ_CONS, self.evt_cons);
         Ok(faults)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+    use std::{
+        alloc::{alloc, dealloc},
+        boxed::Box,
+        vec,
+    };
+
+    use super::*;
+
+    struct TestMemory {
+        next_physical: AtomicU64,
+        fail_after: AtomicIsize,
+        live: AtomicIsize,
+    }
+
+    // SAFETY: Allocations use the requested layout and remain live until the
+    // exact pointer and layout are returned. Synthetic physical addresses are
+    // disjoint and aligned; this test never exposes them to real hardware.
+    unsafe impl PhysicalMemory for TestMemory {
+        fn allocate(&'static self, layout: Layout) -> Result<PhysicalRegion, IommuError> {
+            let remaining = self.fail_after.load(Ordering::Relaxed);
+            if remaining == 0 {
+                self.fail_after.store(-1, Ordering::Relaxed);
+                return Err(IommuError::OutOfMemory);
+            }
+            if remaining > 0 {
+                self.fail_after.fetch_sub(1, Ordering::Relaxed);
+            }
+            let physical = loop {
+                let cursor = self.next_physical.load(Ordering::Relaxed);
+                let aligned = (cursor + layout.align() as u64 - 1) & !(layout.align() as u64 - 1);
+                if self
+                    .next_physical
+                    .compare_exchange(
+                        cursor,
+                        aligned + layout.size() as u64,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    break aligned;
+                }
+            };
+            // SAFETY: alloc returns a region matching layout or null.
+            let ptr = NonNull::new(unsafe { alloc(layout) }).ok_or(IommuError::OutOfMemory)?;
+            self.live.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: The pointer and physical range meet the provider contract.
+            Ok(unsafe { PhysicalRegion::new(ptr, physical, layout, self) })
+        }
+
+        unsafe fn deallocate(&self, ptr: NonNull<u8>, _physical: u64, layout: Layout) {
+            self.live.fetch_sub(1, Ordering::Relaxed);
+            // SAFETY: PhysicalRegion calls this once with the original layout.
+            unsafe { dealloc(ptr.as_ptr(), layout) };
+        }
+    }
+
+    fn test_hardware() -> (Hardware, &'static TestMemory, Box<[u64]>) {
+        let memory = Box::leak(Box::new(TestMemory {
+            next_physical: AtomicU64::new(0x100000),
+            fail_after: AtomicIsize::new(-1),
+            live: AtomicIsize::new(0),
+        }));
+        let mut registers = vec![0; 0x20000 / 8].into_boxed_slice();
+        let mmio = Mmio(NonNull::new(registers.as_mut_ptr().cast()).unwrap());
+        let limit = 1 << 48;
+        let hardware = Hardware {
+            mmio,
+            memory,
+            sid_bits: 16,
+            oas_bits: 48,
+            asid_limit: u16::MAX,
+            next_asid: 1,
+            cmdq_bits: CMDQ_BITS,
+            evtq_bits: EVTQ_BITS,
+            cmdq: allocate(memory, 16 << CMDQ_BITS, PAGE_SIZE, limit).unwrap(),
+            evtq: allocate(memory, 32 << EVTQ_BITS, PAGE_SIZE, limit).unwrap(),
+            cmd_prod: 0,
+            evt_cons: 0,
+            streams: StreamTable::TwoLevel {
+                l1: allocate(memory, PAGE_SIZE, PAGE_SIZE, limit).unwrap(),
+                l2: BTreeMap::new(),
+            },
+            domains: BTreeMap::new(),
+            fault_count: 0,
+        };
+        (hardware, memory, registers)
+    }
+
+    #[test]
+    fn bind_retries_after_allocation_and_command_failures() {
+        let (mut hardware, memory, _registers) = test_hardware();
+        let stream = StreamId(0x108);
+        let baseline = memory.live.load(Ordering::Relaxed);
+
+        // Root and CD succeed; creating the second-level stream table fails.
+        memory.fail_after.store(2, Ordering::Relaxed);
+        assert_eq!(
+            hardware.bind_with_commands(stream, |_, _| Ok(())),
+            Err(IommuError::OutOfMemory)
+        );
+        assert_eq!(memory.live.load(Ordering::Relaxed), baseline);
+        assert_eq!(hardware.next_asid, 1);
+        assert!(!hardware.domains.contains_key(&stream.0));
+
+        let mut commands = 0;
+        assert_eq!(
+            hardware.bind_with_commands(stream, |_, _| {
+                commands += 1;
+                Err(IommuError::CommandTimeout)
+            }),
+            Err(IommuError::CommandTimeout)
+        );
+        assert_eq!(commands, 1);
+        let retained = memory.live.load(Ordering::Relaxed);
+        assert!(retained > baseline);
+
+        assert_eq!(
+            hardware.bind_with_commands(stream, |_, _| {
+                commands += 1;
+                Ok(())
+            }),
+            Ok(())
+        );
+        assert_eq!(commands, 3);
+        assert_eq!(memory.live.load(Ordering::Relaxed), retained);
+        assert!(hardware.domains[&stream.0].active);
+        assert_eq!(
+            hardware.bind_with_commands(stream, |_, _| Ok(())),
+            Err(IommuError::AlreadyBound)
+        );
     }
 }
