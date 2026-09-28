@@ -34,6 +34,9 @@ impl BootPayload {
         if cmdline.len() > MAX_CMDLINE {
             return Err("host command line is too long");
         }
+        if cmdline.contains('\0') {
+            return Err("host command line contains NUL");
+        }
         self.cmdline[..cmdline.len()].copy_from_slice(cmdline.as_bytes());
         self.cmdline_len = cmdline.len() as u32;
         Ok(())
@@ -47,6 +50,7 @@ impl BootPayload {
             return Err("invalid host boot payload version");
         }
         if self.cmdline_len as usize > MAX_CMDLINE
+            || self.cmdline[..self.cmdline_len as usize].contains(&0)
             || core::str::from_utf8(&self.cmdline[..self.cmdline_len as usize]).is_err()
         {
             return Err("invalid host command line");
@@ -62,5 +66,21 @@ impl BootPayload {
     pub fn cmdline(&self) -> &str {
         core::str::from_utf8(&self.cmdline[..self.cmdline_len as usize])
             .expect("validated host command line")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_line_cannot_be_silently_truncated_at_nul() {
+        let mut payload = BootPayload::empty();
+        let command = "root=/dev/sda\0rdinit=/init";
+        assert!(payload.set_cmdline(command).is_err());
+
+        payload.cmdline[..command.len()].copy_from_slice(command.as_bytes());
+        payload.cmdline_len = command.len() as u32;
+        assert!(payload.validate().is_err());
     }
 }

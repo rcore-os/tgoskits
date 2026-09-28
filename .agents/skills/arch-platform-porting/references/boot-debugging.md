@@ -392,6 +392,7 @@ Axvisor Linux guest 的 `ramdisk_path`。FDT `linux,initrd-start/end` 必须在
 UEFI 内存图负责 RAM 分类，FDT 只补充保留区；LoongArch UEFI 入口不能再次清零
 已保存交接状态的 `.bss`。可回收归档属于物理 RAM，但在解包完成前仍须排除在
 启动分配器之外。UEFI/HTTP 镜像必须在 `ExitBootServices` 前完成读取和校验。
+UEFI 配置表和 ESP cmdline 含内部 NUL 时必须拒绝，不能静默截断启动参数。
 内置归档通过同一解包器，但不能代替外部传输验证。
 QEMU 定向回归使用 `cargo xtask starry test qemu --arch aarch64 --test-case
 qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask

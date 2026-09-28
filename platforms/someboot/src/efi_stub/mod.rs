@@ -215,6 +215,7 @@ fn load_host_boot_payload() {
         let mut bytes = [0u8; MAX_CMDLINE];
         read_exact_file(&mut file, &mut bytes[..size]);
         let command = core::str::from_utf8(&bytes[..size]).expect("invalid host command line");
+        assert!(!command.contains('\0'), "host command line contains NUL");
         crate::cmdline::set_cmdline(command.trim_end_matches(['\r', '\n']));
     }
     if let Ok(file) = volume.open(

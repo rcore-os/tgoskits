@@ -48,6 +48,7 @@ rockchip-soc
 sg200x-pwm
 some-serial
 ax-arm-pl031
+host-boot-abi
 ax-riscv-plic
 aarch64_sysreg
 axdevice_base

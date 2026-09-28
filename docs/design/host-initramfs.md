@@ -26,7 +26,8 @@
 UEFI 配置表由 `host-boot-abi::BootPayload` 定义。表自身使用
 `RUNTIME_SERVICES_DATA` pool，归档使用 `LOADER_DATA` 页。someboot 在退出
 Boot Services 前读取配置表或 ESP 文件并记录范围；退出后核对固件内存映射，
-把归档页从可分配内存中预留。FDT 范围连同向外扩展的边界页都须处于 RAM，
+把归档页从可分配内存中预留。配置表和 ESP 的 cmdline 不允许内部 NUL，
+避免内核按 C 字符串读取时静默截断。FDT 范围连同向外扩展的边界页都须处于 RAM，
 并在初始化页分配器前预留。UEFI 启动以固件内存图为 RAM 来源，FDT 只补充保留区；
 LoongArch 的 UEFI 入口不再次清零已暂存的交接状态。
 `ax-runtime` 解包完成后只把确知归本次镜像所有的完整物理页提交给
