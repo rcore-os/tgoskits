@@ -549,6 +549,7 @@ impl AppContext {
             &mut self.invocation,
             &BuildConfig {
                 system: BuildSystem::Cargo(Box::new(cargo.clone())),
+                ..Default::default()
             },
             build_config_path.as_deref(),
         )

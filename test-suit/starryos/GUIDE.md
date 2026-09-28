@@ -118,7 +118,7 @@ test-suit/starryos/
       board-orangepi-5-plus.toml
     native-network-smoke/
       board-orangepi-5-plus.toml
-      iperf-smoke.sh
+      network-smoke.sh
 ```
 
 `qemu/system` 是统一的 SMP4 聚合 QEMU case。`qemu/` 根目录只放四架构 build
@@ -568,7 +568,7 @@ os/StarryOS/configs/board/<board>.toml
 
 ```toml
 session_files = [
-  "iperf-bench.sh",
+  "network-bench.sh",
   "tools/network/probe.sh",
 ]
 ```
@@ -634,70 +634,48 @@ App 的 `board-<name>.toml` 默认复用
 ```bash
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
-cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
+cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-config board-orangepi-5-plus.toml
 ```
 
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
-`native-network-smoke` 执行一条短 TCP 双向命令，随后在 `eth1` 上验证 rtnetlink
-地址增删，适合作为 CI 连通性检查。完整吞吐测试位于 `apps/starry/iperf3`，直接通过
-上面的 `cargo xtask starry app board` 命令启动板测；ostool server 持续提供 iperf3
-服务，board 配置步骤内的 `shell_cmd` 通过活动 session 的 `${boardServerIp}` 和
-`${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程追加
-到该步骤中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
-启动脚本。
+`native-network-smoke` 在专用 TCP 3000 端口执行短时双向 HTTP 流式传输，随后在
+`eth1` 上验证 rtnetlink 地址增删，适合作为 CI 连通性检查。AKA Wi-Fi 的
+`wifi-network-smoke` 在取得 DHCP 地址后执行同样的双向传输。两项测试只依赖板端
+`curl` 和本次 session 上传的 `upload-source`，无需板端安装 iperf。
 
-真板卡 CI 的 AKA WiFi 与 OrangePi 网络冒烟统一使用 iperf2，共享 TCP 5001
-服务端口；iperf2 服务进程接受多个独立客户端。`board-common/iperf2` 提供公共脚本
-和打包规则，各 case 的 `c/prebuild.sh` 在 Alpine 暂存环境安装 `iperf`，CMake 将
-客户端、musl 加载器及匹配的 C++ 运行库打包为 `share/iperf2.tar.gz`。板卡通过
-`${sessionFile:share/iperf2.tar.gz}` 下载到 `/tmp`，不要求预装客户端或修改持久根文件系统。
+`board-common/network-test` 的 `upload-source.c` 以 128 KiB 固定块生成零数据，
+按单调时钟运行指定时长，不落盘；CMake 将其编译并把脚本安装到每次运行的 session
+upload root。板端从 `${sessionFile:bin/...}` 下载资产，使用 `${boardServerIp}:3000`
+访问 ostool-server 的网络测试服务。管理 API 仍使用 2999；该测试是 HTTP 协议，
+不兼容 iperf2/iperf3。
 
-`iperf2-smoke` 使用 `--full-duplex` 同时收发，按 iperf2 的普通线程 ID 和带 `*`
-的接收线程 ID 分别检查进展。AKA 运行 22 秒，其中前 2 秒预热；OrangePi 运行
-4 秒，其中前 1 秒预热。任一方向在预热后连续 3 秒无进展、缺少接收报告、最终
-报告提前结束或命令非零退出均失败。最终汇总不能覆盖中间停滞。完整 iperf3
-benchmark 应用仍可手工运行，不属于这两个 CI 冒烟入口。
+每次 smoke 先用 `POST /v1/tests` 获取独立的测试 ID，然后并行运行
+`PUT /v1/tests/{id}/upload` 和 `GET /v1/tests/{id}/download?duration_secs=N`。
+脚本每秒查询 `GET /v1/tests/{id}`，按上传和下载的字节数分别检查进展，预热后
+任一方向连续三次查询没有进展，或预热后未观察到该方向进展即失败。
+OrangePi 运行 4 秒、预热 1 秒；AKA Wi-Fi
+运行 22 秒、预热 2 秒。只有两个 curl 命令均成功、两方向状态均为 `completed`、
+字节数大于零且服务端耗时覆盖预期时长才打印通过标记。网络或服务端错误会失败；
+结果与测试 ID 同时输出，便于按服务端记录排查。专用端口默认最多允许 64 个
+活动测试；容量满时创建请求返回 429，smoke 会失败而不是误报通过。
 
-在 runner 服务器安装并启用共享 iperf2 服务：
+完整吞吐矩阵位于 `apps/starry/network-throughput`，通过上面的
+`cargo xtask starry app board` 手工启动。它覆盖单流上传、单流下载、单流双向、
+2/4/8 流上传和 4 流下载，每场景三轮并取中位数。上传使用同一
+`upload-source`，下载由服务端流式生成。板端用 `curl` 与服务端的状态字节计数
+计算 Mbps；这是 HTTP 流式吞吐指标，不能和旧 iperf3 报告直接比较。
+
+可在 runner 上检查服务：
 
 ```bash
-sudo apt-get install -y iperf
-sudo install -m 644 .github/ci/iperf2.service /etc/systemd/system/iperf2.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now iperf2.service
+curl -fsS http://10.3.10.194:3000/healthz
+curl -fsS -X POST http://10.3.10.194:3000/v1/tests
 ```
 
-模板使用 systemd 动态用户，服务器防火墙需要允许板卡访问 TCP 5001。服务端和
-板端必须都是 iperf2；iperf3 不兼容该协议。无需为每块板分配独立的 iperf3 实例。
-
-完整 benchmark 固定执行 T01--T07：单流 TX、单流 RX、单流双向、2/4/8 流 TX 和
-4 流 RX。每个场景使用 `-t 10 -O 2 -l 128K` 运行 3 次，每个连接结束后固定冷却
-15 秒，避免上一轮 TCP teardown 干扰下一轮；脚本直接打印原始输出、中位数和最终
-汇总表：
-
-```text
-T01  Single-stream DUT TX
-Command: iperf3 -c <session-host> -t 10 -O 2 -P 1 -l 128K
-
-Run 1/3
-<native iperf3 output>
-Result  DUT TX: ... Mbps
-
-Run 2/3
-<native iperf3 output>
-Result  DUT TX: ... Mbps
-
-Run 3/3
-<native iperf3 output>
-Result  DUT TX: ... Mbps
-
-Median DUT TX: ... Mbps
-STARRY_IPERF3_BENCH_PASSED
-```
-
-每轮 iperf3 原始文本和机器可读汇总保存在板端 `/tmp/starry-iperf3-bench/`。
-benchmark 只要求所有场景完成并产生有效速率，不设置与机器绑定的吞吐门槛；端口和
-测试档位固定，避免不同运行使用不同参数。
+测试要求 `ostool-server` 0.8.0 或更新版本，并启用网络测试服务。该端口在 TOML 中
+可配置，默认 3000。若服务器更改端口，
+需同时更新板卡脚本中的 URL。无需重启或更改独立的 iperf2 服务；迁移后的
+TGOSKits 测试不再调用它。
 
 ROCK 4D 使用板卡服务名称 `Rock-4D`、仓库内的 RK3576 DTB 和 1,500,000 baud
 串口。维护的单核启动回归命令为：

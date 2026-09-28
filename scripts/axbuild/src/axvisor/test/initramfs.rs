@@ -28,7 +28,7 @@ const X86_PCI_MEMORY_APERTURE_START: &str = "0xc0000000";
 const X86_PCI_MEMORY_APERTURE_END: &str = "0xd0000000";
 // Keep the ECAM resource assertion synchronized with the fixed Q35 window in
 // virtualization/axvm/src/arch/x86_64/pci_config.rs.
-const X86_PCI_ECAM_IOMEM_ENTRY: &str = "b0000000-bfffffff : PCI MMCONFIG 0000 [bus 00-ff]";
+const X86_PCI_ECAM_IOMEM_ENTRY: &str = "b0000000-bfffffff : PCI ECAM 0000 [bus 00-ff]";
 const INIT_SCRIPT_TEMPLATE: &str = r#"#!/bin/busybox sh
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 /bin/busybox mount -t proc proc /proc 2>/dev/null || true
@@ -48,7 +48,7 @@ check_x86_mmconfig() {
     return 1
   fi
   if ! /bin/busybox grep -F -i -q '__AXVISOR_PCI_ECAM_IOMEM_ENTRY__' /proc/iomem; then
-    echo "Linux did not reserve the Q35 PCI MMCONFIG range"
+    echo "Linux did not publish the expected Q35 PCI ECAM resource"
     return 1
   fi
   return 0

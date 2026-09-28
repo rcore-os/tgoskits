@@ -17,7 +17,10 @@ use x86_vlapic::EmulatedLocalApic;
 
 use super::flags::*;
 use crate::arch::x86_64::policy::{
-    pending_event::{PendingEvent, queue_pending_event},
+    pending_event::{
+        PendingEvent, PendingEventKind, PendingEventSource, is_valid_fixed_apic_vector,
+        needs_interrupt_window, queue_pending_event, select_pending_event,
+    },
     port_io::*,
     *,
 };
@@ -78,27 +81,30 @@ const SVM_INT_STATE_INTERRUPT_SHADOW: u32 = 1 << 0;
 struct SvmInjectionEvent {
     event: PendingEvent,
     reinjected: bool,
+    pending_index: Option<usize>,
 }
 
 impl SvmInjectionEvent {
     fn needs_apic_accept(self) -> bool {
-        self.event.vector >= 32 && !self.reinjected
+        self.event.requires_vlapic_accept() && !self.reinjected
     }
 }
 
 fn select_svm_injection(
     reinjection: Option<PendingEvent>,
-    pending: Option<PendingEvent>,
+    pending: Option<(usize, PendingEvent)>,
 ) -> Option<SvmInjectionEvent> {
     if let Some(event) = reinjection {
         Some(SvmInjectionEvent {
             event,
             reinjected: true,
+            pending_index: None,
         })
     } else {
-        pending.map(|event| SvmInjectionEvent {
+        pending.map(|(pending_index, event)| SvmInjectionEvent {
             event,
             reinjected: false,
+            pending_index: Some(pending_index),
         })
     }
 }
@@ -508,26 +514,20 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         self.vlapic.handle_eoi()
     }
 
-    /// Add a virtual interrupt or exception to the pending events list.
-    pub fn queue_event(&mut self, vector: u8, err_code: Option<u32>) {
-        self.queue_event_with_trigger(vector, err_code, false);
+    fn queue_event(&mut self, event: PendingEvent) {
+        queue_pending_event(&mut self.pending_events, event);
     }
 
-    /// Add a virtual interrupt or exception with trigger mode metadata.
-    pub fn queue_event_with_trigger(
-        &mut self,
-        vector: u8,
-        err_code: Option<u32>,
-        level_triggered: bool,
-    ) {
-        queue_pending_event(
-            &mut self.pending_events,
-            PendingEvent {
-                vector,
-                err_code,
-                level_triggered,
-            },
-        );
+    fn queue_fixed_apic_interrupt(&mut self, vector: u8, level_triggered: bool) -> X86VcpuResult {
+        if !is_valid_fixed_apic_vector(vector) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
+        }
+        self.queue_event(PendingEvent::external_interrupt(
+            vector,
+            level_triggered,
+            PendingEventSource::FixedApic,
+        ));
+        Ok(())
     }
 
     fn flush_guest_tlb(&mut self) {
@@ -1106,21 +1106,39 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
     }
 
     fn inject_pending_events(&mut self) -> X86VcpuResult {
-        if let Some(vector) = self.vlapic.take_pending_timer_interrupt() {
-            self.queue_event(vector, None);
+        if let Some(vector) = self.vlapic.take_pending_timer_interrupt()
+            && let Err(error) = self.queue_fixed_apic_interrupt(vector, false)
+        {
+            warn!("ignoring invalid local APIC timer vector {vector:#x}: {error:?}");
         }
         if self.injecting_event.is_some() {
             return Ok(());
         }
 
-        let Some(injection) =
-            select_svm_injection(self.reinjection_event, self.pending_events.front().copied())
-        else {
+        let injection = if self.reinjection_event.is_some() {
+            select_svm_injection(self.reinjection_event, None)
+        } else {
+            if self.pending_events.is_empty() {
+                return Ok(());
+            }
+            let interrupts_allowed = self.allow_external_interrupt();
+            let selected =
+                select_pending_event(&self.pending_events, interrupts_allowed, |vector| {
+                    self.vlapic.can_accept_interrupt(vector)
+                });
+            if selected.is_none()
+                && needs_interrupt_window(&self.pending_events, interrupts_allowed)
+            {
+                self.set_interrupt_window(true);
+            }
+            select_svm_injection(None, selected)
+        };
+        let Some(injection) = injection else {
             return Ok(());
         };
         let event = injection.event;
 
-        if event.vector >= 32 {
+        if event.is_external_interrupt() {
             if injection.reinjected || self.allow_external_interrupt() {
                 self.set_interrupt_window(false);
                 if injection.needs_apic_accept() {
@@ -1155,7 +1173,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             return Ok(());
         }
 
-        self.inject_event(event.vector, event.err_code)?;
+        self.inject_event(event)?;
         self.commit_svm_injection(injection);
         Ok(())
     }
@@ -1165,7 +1183,10 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         if injection.reinjected {
             self.reinjection_event = None;
         } else {
-            self.pending_events.pop_front();
+            let index = injection
+                .pending_index
+                .expect("new SVM injection has a pending queue index");
+            self.pending_events.remove(index);
         }
     }
 
@@ -1203,25 +1224,19 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         vmcb.control.clean_bits.set(0);
     }
 
-    fn inject_event(&mut self, vector: u8, err_code: Option<u32>) -> X86VcpuResult {
+    fn inject_event(&mut self, event: PendingEvent) -> X86VcpuResult {
         let vmcb = self
             .cpu
             .svm_controls_mut()
             .expect("SVM policy CPU")
             .image_mut();
-        let int_type = if vector < 32 {
-            InterruptType::Exception
-        } else {
-            InterruptType::External
-        };
-        let mut event = VmcbIntInfo::from(int_type, vector).bits();
-        if let Some(err_code) = err_code {
-            event |= VmcbIntInfo::ERROR_CODE.bits();
+        let (event_info, error_code) = svm_event_injection_info(event);
+        if let Some(err_code) = error_code {
             vmcb.control.event_inj_err.set(err_code);
         } else {
             vmcb.control.event_inj_err.set(0);
         }
-        vmcb.control.event_inj.set(event);
+        vmcb.control.event_inj.set(event_info);
         vmcb.control.clean_bits.set(0);
         Ok(())
     }
@@ -1736,7 +1751,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
 
 fn inject_external_interrupt_control(control: &mut VmcbControlArea, event: PendingEvent) {
     control.event_inj.set(
-        VmcbIntInfo::from(InterruptType::External, event.vector).bits()
+        VmcbIntInfo::from(InterruptType::External, event.vector, false).bits()
             & !VmcbIntInfo::ERROR_CODE.bits(),
     );
     control.event_inj_err.set(0);
@@ -1780,7 +1795,7 @@ fn interrupted_injected_event(info: u32, err: u32, injected: PendingEvent) -> Op
         return None;
     }
 
-    let err_code = if int_type == InterruptType::Exception as u32 {
+    let err_code = if injected.is_exception() {
         if int_info.contains(VmcbIntInfo::ERROR_CODE) {
             Some(err)
         } else {
@@ -1794,15 +1809,26 @@ fn interrupted_injected_event(info: u32, err: u32, injected: PendingEvent) -> Op
         vector,
         err_code,
         level_triggered: injected.level_triggered,
+        kind: injected.kind,
     })
 }
 
 fn pending_event_interrupt_type(event: PendingEvent) -> u32 {
-    if event.vector < 32 {
-        InterruptType::Exception as u32
-    } else {
-        InterruptType::External as u32
+    match event.kind {
+        PendingEventKind::ExternalInterrupt(_) => InterruptType::External as u32,
+        PendingEventKind::Exception => InterruptType::Exception as u32,
     }
+}
+
+fn svm_event_injection_info(event: PendingEvent) -> (u32, Option<u32>) {
+    let (interrupt_type, error_code) = match event.kind {
+        PendingEventKind::ExternalInterrupt(_) => (InterruptType::External, None),
+        PendingEventKind::Exception => (InterruptType::Exception, event.err_code),
+    };
+    (
+        VmcbIntInfo::from(interrupt_type, event.vector, error_code.is_some()).bits(),
+        error_code,
+    )
 }
 
 fn svm_intr_exit_reason(_vector: Option<u8>) -> X86VmExit {
@@ -2045,12 +2071,10 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
     }
 
     pub fn inject_interrupt(&mut self, vector: usize) -> X86VcpuResult {
-        if vector == 0 {
-            warn!("interrupt queued in inject_interrupt: vector 0");
-            panic!()
+        if !(32..=u8::MAX as usize).contains(&vector) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
         }
-        self.queue_event(vector as u8, None);
-        Ok(())
+        self.queue_fixed_apic_interrupt(vector as u8, false)
     }
 
     pub fn inject_interrupt_with_trigger(
@@ -2058,11 +2082,22 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         vector: usize,
         level_triggered: bool,
     ) -> X86VcpuResult {
-        if vector == 0 {
-            warn!("interrupt queued in inject_interrupt_with_trigger: vector 0");
-            panic!()
+        if !(32..=u8::MAX as usize).contains(&vector) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
         }
-        self.queue_event_with_trigger(vector as u8, None, level_triggered);
+        self.queue_fixed_apic_interrupt(vector as u8, level_triggered)
+    }
+
+    pub fn inject_legacy_pic_interrupt(&mut self, vector: u8) -> X86VcpuResult {
+        if vector == 0 {
+            warn!("legacy PIC interrupt queued with vector 0");
+            return x86_err!(InvalidInput, "legacy PIC vector must be nonzero");
+        }
+        self.queue_event(PendingEvent::external_interrupt(
+            vector,
+            false,
+            PendingEventSource::LegacyPic,
+        ));
         Ok(())
     }
 
@@ -2098,11 +2133,12 @@ mod tests {
     use x86_64::registers::rflags::RFlags;
 
     use super::{
-        PendingEvent, SVM_INT_CTL_V_INTR_MASKING, SVM_INT_CTL_V_INTR_PRIO_SHIFT, SVM_INT_CTL_V_IRQ,
-        SVM_INT_CTL_V_IRQ_INJECTION_BITS, SVM_INT_STATE_INTERRUPT_SHADOW, SvmExitCode,
-        enable_virtual_interrupt_masking_control, inject_external_interrupt_control,
-        interrupted_injected_event, prepare_external_interrupt_injection, select_svm_injection,
-        set_interrupt_window_control, svm_external_interrupt_allowed,
+        PendingEvent, PendingEventSource, SVM_INT_CTL_V_INTR_MASKING,
+        SVM_INT_CTL_V_INTR_PRIO_SHIFT, SVM_INT_CTL_V_IRQ, SVM_INT_CTL_V_IRQ_INJECTION_BITS,
+        SVM_INT_STATE_INTERRUPT_SHADOW, SvmExitCode, enable_virtual_interrupt_masking_control,
+        inject_external_interrupt_control, interrupted_injected_event,
+        pending_event_interrupt_type, prepare_external_interrupt_injection, select_svm_injection,
+        set_interrupt_window_control, svm_event_injection_info, svm_external_interrupt_allowed,
         svm_external_interrupt_exit_vector, svm_guest_gif_after_exit, svm_hlt_exit_reason,
         svm_intr_exit_reason, svm_mmio_register_write_opcode,
     };
@@ -2119,11 +2155,7 @@ mod tests {
 
         inject_external_interrupt_control(
             &mut control,
-            PendingEvent {
-                vector: 0x51,
-                err_code: None,
-                level_triggered: true,
-            },
+            PendingEvent::external_interrupt(0x51, true, PendingEventSource::FixedApic),
         );
 
         let event = control.event_inj.get();
@@ -2137,11 +2169,7 @@ mod tests {
     fn svm_external_irq_is_accepted_before_guest_entry() {
         let mut control = unsafe { MaybeUninit::<VmcbControlArea>::zeroed().assume_init() };
         let accepted = Cell::new(false);
-        let event = PendingEvent {
-            vector: 0x51,
-            err_code: None,
-            level_triggered: true,
-        };
+        let event = PendingEvent::external_interrupt(0x51, true, PendingEventSource::FixedApic);
 
         prepare_external_interrupt_injection(&mut control, event, |accepted_event| {
             assert_eq!(accepted_event, event);
@@ -2216,13 +2244,13 @@ mod tests {
     #[test]
     fn svm_intr_exit_reports_external_interrupt_vector() {
         let vector = 0x51;
-        let info = VmcbIntInfo::from(InterruptType::External, vector).bits();
+        let info = VmcbIntInfo::from(InterruptType::External, vector, false).bits();
 
         assert_eq!(svm_external_interrupt_exit_vector(info), Some(vector));
         assert_eq!(svm_external_interrupt_exit_vector(0), None);
         assert_eq!(
             svm_external_interrupt_exit_vector(
-                VmcbIntInfo::from(InterruptType::Exception, 6).bits()
+                VmcbIntInfo::from(InterruptType::Exception, 6, false).bits()
             ),
             None
         );
@@ -2249,12 +2277,8 @@ mod tests {
 
     #[test]
     fn svm_requeues_interrupted_event_injection() {
-        let injected = PendingEvent {
-            vector: 0x51,
-            err_code: None,
-            level_triggered: true,
-        };
-        let info = VmcbIntInfo::from(InterruptType::External, injected.vector).bits();
+        let injected = PendingEvent::external_interrupt(0x51, true, PendingEventSource::FixedApic);
+        let info = VmcbIntInfo::from(InterruptType::External, injected.vector, false).bits();
 
         assert_eq!(
             interrupted_injected_event(info, 0, injected),
@@ -2264,11 +2288,8 @@ mod tests {
 
     #[test]
     fn svm_reinjected_external_irq_skips_a_second_apic_accept() {
-        let interrupted = PendingEvent {
-            vector: 0x51,
-            err_code: None,
-            level_triggered: true,
-        };
+        let interrupted =
+            PendingEvent::external_interrupt(0x51, true, PendingEventSource::FixedApic);
 
         let selected = select_svm_injection(Some(interrupted), None).unwrap();
 
@@ -2277,13 +2298,43 @@ mod tests {
     }
 
     #[test]
+    fn svm_legacy_pic_injection_bypasses_vlapic_accept_and_keeps_source_on_requeue() {
+        let pic_event = PendingEvent::external_interrupt(8, false, PendingEventSource::LegacyPic);
+        let selected = select_svm_injection(None, Some((0, pic_event))).unwrap();
+        assert!(!selected.needs_apic_accept());
+
+        let info = VmcbIntInfo::from(InterruptType::External, pic_event.vector, false).bits();
+        assert_eq!(
+            interrupted_injected_event(info, 0, pic_event),
+            Some(pic_event)
+        );
+        assert_eq!(
+            pending_event_interrupt_type(pic_event),
+            InterruptType::External as u32
+        );
+        let (pic_info, pic_error_code) = svm_event_injection_info(pic_event);
+        assert_eq!((pic_info >> 8) & 0b111, InterruptType::External as u32);
+        assert_eq!(pic_info & VmcbIntInfo::ERROR_CODE.bits(), 0);
+        assert_eq!(pic_error_code, None);
+
+        let double_fault = PendingEvent::exception(8, Some(0));
+        let (double_fault_info, error_code) = svm_event_injection_info(double_fault);
+        assert!(double_fault_info & VmcbIntInfo::ERROR_CODE.bits() != 0);
+        assert_eq!(error_code, Some(0));
+        assert_eq!(
+            pending_event_interrupt_type(double_fault),
+            InterruptType::Exception as u32
+        );
+        assert_eq!(
+            interrupted_injected_event(double_fault_info, 0, double_fault),
+            Some(double_fault)
+        );
+    }
+
+    #[test]
     fn svm_ignores_unrelated_exit_int_info_for_event_completion() {
-        let injected = PendingEvent {
-            vector: 0x51,
-            err_code: None,
-            level_triggered: true,
-        };
-        let unrelated = VmcbIntInfo::from(InterruptType::External, 0x52).bits();
+        let injected = PendingEvent::external_interrupt(0x51, true, PendingEventSource::FixedApic);
+        let unrelated = VmcbIntInfo::from(InterruptType::External, 0x52, false).bits();
 
         assert_eq!(interrupted_injected_event(0, 0, injected), None);
         assert_eq!(interrupted_injected_event(unrelated, 0, injected), None);

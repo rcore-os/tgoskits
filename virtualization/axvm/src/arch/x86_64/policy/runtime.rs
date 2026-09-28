@@ -220,6 +220,11 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
         dispatch_vcpu!(self, inject_interrupt_with_trigger, vector, level_triggered)
     }
 
+    /// Queue one legacy PIC vector without attributing it to the local APIC.
+    pub fn inject_legacy_pic_interrupt(&mut self, vector: u8) -> X86VcpuResult {
+        dispatch_vcpu!(self, inject_legacy_pic_interrupt, vector)
+    }
+
     /// Returns whether the selected backend owns an event awaiting guest injection.
     pub fn has_pending_event(&self) -> bool {
         match &self.inner {

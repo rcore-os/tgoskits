@@ -1,0 +1,24 @@
+board_type = "OrangePi-5-Plus"
+session_files = [
+  "network-bench.sh",
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  '(?m)^STARRY_NETWORK_BENCH_FAILED\r?$',
+  '(?i)(curl|awk|sed|sh): .*not found',
+]
+# The fixed matrix opens 21 test IDs and cools down after every round.
+timeout = 900
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = """
+export STARRY_NETWORK_BENCH_SERVER='${boardServerIp}'
+export STARRY_NETWORK_BENCH_SCRIPT_URL='${sessionFile:network-bench.sh}'
+export STARRY_NETWORK_BENCH_SOURCE_URL='${sessionFile:bin/upload-source}'
+"""
+success_regex = [
+  '(?m)^STARRY_NETWORK_BENCH_PASSED\r?$',
+]
