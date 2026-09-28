@@ -2,7 +2,7 @@
 
 use ax_sync::SpinLockIrqSaveGuard;
 
-use super::{ControllerState, GicV3Controller, state::DeliveryRetirement};
+use super::{ControllerState, CpuInterfacePhase, GicV3Controller, state::DeliveryRetirement};
 use crate::{CpuInterfaceState, GicVcpuId, IntId, VgicError, VgicResult, backend_result};
 
 /// Per-vCPU lifecycle handle returned by [`GicV3Controller::attach_vcpu`].
@@ -28,7 +28,7 @@ impl core::fmt::Debug for GicV3VcpuBinding {
 impl Drop for GicV3VcpuBinding {
     fn drop(&mut self) {
         let mut state = self.controller_state();
-        state.active_vcpus.remove(&self.vcpu);
+        state.vcpu_interfaces.remove(&self.vcpu);
         state.redistributors.remove(&self.vcpu);
     }
 }
@@ -52,17 +52,20 @@ impl GicV3VcpuBinding {
         let state = {
             let mut controller = self.controller_state();
             controller.redistributor(self.vcpu, "load CPU interface")?;
-            if !controller.active_vcpus.insert(self.vcpu) {
+            if controller.vcpu_interfaces.contains_key(&self.vcpu) {
                 return Err(VgicError::ResourceConflict {
                     resource: "vCPU interrupt binding",
                     detail: alloc::format!("vCPU {} is already loaded", self.vcpu.raw()),
                 });
             }
+            controller
+                .vcpu_interfaces
+                .insert(self.vcpu, CpuInterfacePhase::Loaded);
             match controller.refill_cpu_interface(self.vcpu) {
                 Ok(state) => state,
                 Err(error) => {
                     let rollback = controller.rollback_cpu_interface_load(self.vcpu);
-                    controller.active_vcpus.remove(&self.vcpu);
+                    controller.vcpu_interfaces.remove(&self.vcpu);
                     rollback?;
                     return Err(error);
                 }
@@ -76,7 +79,7 @@ impl GicV3VcpuBinding {
         ) {
             let mut controller = self.controller_state();
             let rollback = controller.rollback_cpu_interface_load(self.vcpu);
-            controller.active_vcpus.remove(&self.vcpu);
+            controller.vcpu_interfaces.remove(&self.vcpu);
             rollback?;
             return Err(error);
         }
@@ -92,14 +95,27 @@ impl GicV3VcpuBinding {
                 .backend
                 .save_cpu_interface(self.vcpu, &mut saved),
         );
-        let merge_result = {
+        let (merge_result, retiring) = {
             let mut controller = self.controller_state();
             let result =
                 save_result.and_then(|()| controller.merge_cpu_interface(self.vcpu, saved, false));
-            controller.active_vcpus.remove(&self.vcpu);
-            result
+            let retiring = result
+                .as_ref()
+                .is_ok_and(|retirements| !retirements.is_empty());
+            if retiring {
+                controller
+                    .vcpu_interfaces
+                    .insert(self.vcpu, CpuInterfacePhase::Retiring);
+            } else {
+                controller.vcpu_interfaces.remove(&self.vcpu);
+            }
+            (result, retiring)
         };
-        self.apply_retirements(merge_result?)
+        let result = self.apply_retirements(merge_result?);
+        if retiring {
+            self.controller_state().vcpu_interfaces.remove(&self.vcpu);
+        }
+        result
     }
 
     /// Harvests completed LRs, refills software pending work, and reloads ICH state.
@@ -130,7 +146,7 @@ impl GicV3VcpuBinding {
     pub fn deactivate(&self, intid: IntId) -> VgicResult {
         let mut saved = {
             let controller = self.controller_state();
-            if !controller.active_vcpus.contains(&self.vcpu) {
+            if !controller.cpu_interface_loaded(self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,
                     operation: "deactivate virtual interrupt",
@@ -174,7 +190,7 @@ impl GicV3VcpuBinding {
     pub fn deactivate_saved(&self, intid: IntId) -> VgicResult {
         let retirements = {
             let mut controller = self.controller_state();
-            if controller.active_vcpus.contains(&self.vcpu) {
+            if controller.vcpu_interfaces.contains_key(&self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,
                     operation: "deactivate saved virtual interrupt",
@@ -274,12 +290,16 @@ impl GicV3VcpuBinding {
         let mut first_error = None;
         for retirement in retirements {
             let result = match retirement {
-                DeliveryRetirement::Emulated { intid } => backend_result(
-                    self.controller
-                        .inner
-                        .backend
-                        .retire_emulated_interrupt(self.vcpu, intid),
-                ),
+                DeliveryRetirement::Emulated { intid, wake } => {
+                    let result = backend_result(
+                        self.controller
+                            .inner
+                            .backend
+                            .retire_emulated_interrupt(self.vcpu, intid),
+                    );
+                    let wake_result = wake.map_or(Ok(()), |wake| wake.wake());
+                    result.and(wake_result)
+                }
                 DeliveryRetirement::Physical { binding } => {
                     self.controller.complete_physical_spi(self.vcpu, binding)
                 }

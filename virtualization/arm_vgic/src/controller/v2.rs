@@ -480,8 +480,11 @@ impl GicV3Controller {
             return Ok(());
         };
         match retirement {
-            DeliveryRetirement::Emulated { intid } => {
-                backend_result(self.inner.backend.retire_emulated_interrupt(vcpu, intid))
+            DeliveryRetirement::Emulated { intid, wake } => {
+                let result =
+                    backend_result(self.inner.backend.retire_emulated_interrupt(vcpu, intid));
+                let wake_result = wake.map_or(Ok(()), |wake| wake.wake());
+                result.and(wake_result)
             }
             DeliveryRetirement::Physical { binding } => self.complete_physical_spi(vcpu, binding),
         }

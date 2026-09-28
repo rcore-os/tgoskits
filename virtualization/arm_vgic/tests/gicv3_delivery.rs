@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    panic::Location,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -12,8 +11,9 @@ use arm_vgic::{
     GicV3HardwareCapabilities, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuWake, GicVcpuId, IntId,
     InterruptState, PpiId, SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
 };
-use ax_sync::interface::{AcquireResult, ContextState, LockMetadata};
 use axvm_types::AccessWidth;
+
+mod support;
 
 const GICD_CTLR: u64 = 0x0000;
 const GICD_TYPER: u64 = 0x0004;
@@ -30,77 +30,6 @@ const ICH_HCR_UIE: u64 = 1 << 1;
 const ICH_HCR_LRENPIE: u64 = 1 << 2;
 const ICH_HCR_NPIE: u64 = 1 << 3;
 const ICH_HCR_TDIR: u64 = 1 << 14;
-
-struct TestContextOps;
-
-#[ax_crate_interface::impl_interface]
-impl ax_sync::interface::ContextOps for TestContextOps {
-    fn enter(_context: u8) -> ContextState {
-        ContextState::new(0, 0)
-    }
-
-    fn exit(_context: u8, _state: ContextState) {}
-
-    fn irq_return_preempt_enter() -> usize {
-        0
-    }
-
-    fn irq_return_preempt_exit(_state: usize) {}
-
-    fn hardirq_enter() {}
-
-    fn hardirq_exit() {}
-}
-
-struct TestSpinOps;
-
-#[ax_crate_interface::impl_interface]
-impl ax_sync::interface::SpinOps for TestSpinOps {
-    fn acquire(
-        locked: &AtomicBool,
-        _metadata: &LockMetadata,
-        _lock_addr: usize,
-        _context: u8,
-        _subclass: u32,
-        _caller: &'static Location<'static>,
-    ) -> ContextState {
-        while locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            std::thread::yield_now();
-        }
-        ContextState::new(0, 0)
-    }
-
-    fn try_acquire(
-        locked: &AtomicBool,
-        _metadata: &LockMetadata,
-        _lock_addr: usize,
-        _context: u8,
-        _subclass: u32,
-        _caller: &'static Location<'static>,
-    ) -> AcquireResult {
-        AcquireResult::new(
-            locked
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok(),
-            ContextState::new(0, 0),
-        )
-    }
-
-    fn release(locked: &AtomicBool, _lock_addr: usize, _context: u8, _context_state: ContextState) {
-        locked.store(false, Ordering::Release);
-    }
-
-    fn force_release(locked: &AtomicBool, _lock_addr: usize, _context: u8) {
-        locked.store(false, Ordering::Release);
-    }
-
-    fn is_locked(locked: &AtomicBool) -> bool {
-        locked.load(Ordering::Acquire)
-    }
-}
 
 #[test]
 fn physical_distributor_capabilities_are_not_fabricated_for_the_guest() {
@@ -271,6 +200,38 @@ fn rerouting_a_pending_spi_removes_the_old_redistributor_delivery() {
     vcpu1.load().unwrap();
 
     assert!(backend.loaded_intids(0).is_empty());
+    assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
+}
+
+#[test]
+fn rerouting_a_loaded_level_spi_does_not_requeue_it_on_the_old_vcpu() {
+    let (controller, backend) = controller(2, 1);
+    let vcpu0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let vcpu1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
+    let spi = SpiId::new(32).unwrap();
+
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+    controller.set_spi_level(spi, true).unwrap();
+    vcpu0.load().unwrap();
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            1,
+        )
+        .unwrap();
+    backend.complete_all(0);
+    vcpu0.save().unwrap();
+
+    vcpu0.load().unwrap();
+    vcpu1.load().unwrap();
+    assert!(
+        backend.loaded_intids(0).is_empty(),
+        "completion after a route change must not restore the old vCPU delivery"
+    );
     assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
 }
 
