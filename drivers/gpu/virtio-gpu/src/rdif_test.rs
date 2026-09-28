@@ -130,6 +130,7 @@ struct Host {
     events_read: u32,
     interrupt_status: InterruptStatus,
     fail_create: bool,
+    fail_create_with_invalid_response: bool,
     reject_unref: bool,
     fail_display_info: bool,
     fail_set_scanout: bool,
@@ -143,6 +144,13 @@ impl Host {
         self.commands.push(command);
         if command == Command::RESOURCE_CREATE_2D.0 {
             self.created_formats.push(word(request, 28));
+            if self.fail_create_with_invalid_response {
+                self.fail_create_with_invalid_response = false;
+                self.reject_unref = true;
+                let mut reply = vec![0; 24];
+                set_word(&mut reply, 0, 0xdead); // Ambiguous response after CREATE.
+                return reply;
+            }
             if self.fail_create {
                 self.fail_create = false;
                 self.reject_unref = true;
@@ -390,10 +398,28 @@ fn resource_creation_preserves_format_and_survives_host_rejection() {
         assert!(!host.commands.contains(&Command::RESOURCE_UNREF.0));
     }
 
+    host.lock().unwrap().fail_create_with_invalid_response = true;
+    let ambiguous_backing = TestBacking::new();
+    let ambiguous_weak = Arc::downgrade(&ambiguous_backing);
+    assert_eq!(
+        device.create_buffer(descriptor(PixelFormat::Xrgb8888), ambiguous_backing.clone()),
+        Err(GpuError::Io),
+    );
+    drop(ambiguous_backing);
+    assert!(ambiguous_weak.upgrade().is_none());
+    {
+        let host = host.lock().unwrap();
+        assert!(
+            !host.status.is_empty(),
+            "a confirmed missing resource cannot hold DMA"
+        );
+        assert!(host.commands.contains(&Command::RESOURCE_UNREF.0));
+    }
+
     let argb = device
         .create_buffer(descriptor(PixelFormat::Argb8888), TestBacking::new())
         .unwrap();
-    assert_eq!(host.lock().unwrap().created_formats, [2, 1]);
+    assert_eq!(host.lock().unwrap().created_formats, [2, 2, 1]);
     host.lock().unwrap().reject_unref = false;
     device.release_buffer(argb).unwrap();
 }

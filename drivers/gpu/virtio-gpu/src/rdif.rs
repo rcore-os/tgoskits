@@ -240,9 +240,11 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
 
     fn cleanup_failed_create(&mut self, id: u32) {
         // A failed attach may have reached the host. Confirmation through
-        // UNREF permits backing release; otherwise reset stops all DMA.
-        if self.raw.resource_unref(id).is_err() {
-            self.mark_lost();
+        // UNREF or an explicit missing-resource response permits backing
+        // release; an ambiguous failure requires reset to stop all DMA.
+        match self.raw.resource_unref(id) {
+            Ok(()) | Err(Error::DeviceRejected(0x1203)) => {}
+            Err(_) => self.mark_lost(),
         }
     }
 
