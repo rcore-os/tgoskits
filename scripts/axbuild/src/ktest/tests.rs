@@ -34,7 +34,7 @@ fn discovered_package(
 }
 
 #[test]
-fn workspace_plan_skips_packages_without_direct_axtest_dev_dependency() {
+fn workspace_plan_skips_packages_without_direct_axtest_dependency() {
     let packages = [
         discovered_package(
             "plain",
@@ -58,7 +58,7 @@ fn workspace_plan_skips_packages_without_direct_axtest_dev_dependency() {
 }
 
 #[test]
-fn explicit_package_without_axtest_dev_dependency_is_an_error() {
+fn explicit_package_without_axtest_dependency_is_an_error() {
     let packages = [discovered_package(
         "plain",
         false,
@@ -73,7 +73,7 @@ fn explicit_package_without_axtest_dev_dependency_is_an_error() {
 
     let error = build_qemu_plan(&packages, &selector).unwrap_err();
 
-    assert!(error.to_string().contains("dev-dependencies"));
+    assert!(error.to_string().contains("as a dependency"));
     assert!(error.to_string().contains("plain"));
 }
 

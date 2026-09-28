@@ -1,5 +1,8 @@
 # LTP 20260529 cases for source-defined architecture-specific entrypoints.
+# fcntl14 is temporarily excluded from the x86_64 set because its two
+# 5000-operation variants intermittently exceed the fixed 38s LTP timeout.
+# Tracked by #2512. The `fcntl14 2` contract in minimum-passes.txt is retained,
+# so restoring this entry resumes that contract (see NEXT.md section 2.10).
 arch_prctl01
 epoll_create01
 epoll_create02
-fcntl14

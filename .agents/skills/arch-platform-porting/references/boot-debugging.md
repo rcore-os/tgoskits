@@ -34,9 +34,11 @@ x86 直接启动 Linux 时，修改内核命令行策略前核验：
 
 - 高级配置与电源接口映像完整位于 `0xe0000..0x100000`，根系统描述指针按 16 字节对齐；
 - `boot_params.acpi_rsdp_addr` 保存该客户机物理地址；
-- E820 保留高级配置与电源接口映像和传统低内存窗口；
+- E820 保留高级配置与电源接口映像、传统低内存窗口，以及设备图解析出的 PCI ECAM 区间；
 - 根系统描述指针、扩展系统描述表及所有表的校验和与指针闭包有效；
 - 显式 `acpi=off` 后备使用同一高级可编程中断控制器计划生成多处理器表。
+
+Q35 的 PCI ECAM 地址和几何必须由同一个已解析设备图同时驱动运行时映射、PCIEXBAR、MCFG 与资源保留。MCFG 和根级 `PNP0C02` `_CRS` 描述 ECAM；不要把 ECAM 加入 `PCI0._CRS` 的转发窗口。直接 Linux 启动还需在 E820 保留同一区间。验证时让 direct、fw_cfg/OVMF 与 PCI 枚举断言确认 MCFG 可读且 Linux `/proc/iomem` 登记相同的 `PCI MMCONFIG` 范围。细节见 [x86 Q35 ECAM 设计](../../../../docs/design/axvisor-x86-q35-ecam.md)。
 
 x86 OVMF 或基本输入输出系统启动时，核验设备图固定的端口窗口 `0x510..0x512` 与 `0x514..0x51c` 已陷入，并确认 fw_cfg 发布 `etc/acpi/tables`、`etc/acpi/rsdp` 和 `etc/table-loader`。选择器读取成功不能证明表已安装；检查表加载器的直接内存访问操作，并确认 Linux 通过扩展系统描述表发现 `DSDT`、`APIC`、`FACP`、`SPCR`。Linux 的 `/sys/firmware/acpi/tables` 不导出根扩展系统描述表。
 
@@ -46,7 +48,7 @@ Axvisor x86 嵌套 OVMF 用例按下列顺序调试：
 2. 解释固件输出前先读文件准备证据。它记录 Ostool CODE 与 VARS 路径、字节数、SHA-256、分离或单体布局和最终 4 MiB 客户机映像。单体 CODE 映像必须说明记录的 VARS 未使用。
 3. 确认最终客户机映像路径就是共享客户机 TOML 中 `uefi_firmware_path` 选择的路径，不能与启动 Axvisor 宿主的外层 QEMU 闪存混淆。
 4. 核验 fw_cfg 发布三个高级配置与电源接口文件，再检查表加载器分配、指针、校验和与直接内存访问错误测试。选择器读取或固件横幅只是中间检查点。
-5. 要求客户机初始内存文件系统输出 `AXVISOR_X86_OVMF_ACPI_PASSED`。该标记表示 OVMF 已交接给 Linux，Linux 接受 DSDT、APIC、FACP、SPCR、ttyS0 和输入输出中断控制器。标记缺失时保留完整命令、固件证据、最后可靠状态和第一个确定错误。
+5. 要求客户机初始内存文件系统输出 `AXVISOR_X86_OVMF_ACPI_PASSED`。该标记表示 OVMF 已交接给 Linux，Linux 接受 DSDT、APIC、FACP、SPCR、MCFG、Q35 PCI MMCONFIG 资源、ttyS0 和输入输出中断控制器。标记缺失时保留完整命令、固件证据、最后可靠状态和第一个确定错误。
 
 这些嵌套开放虚拟机固件用例仍通过 `fw_cfg` 提供 Linux 内核、初始内存文件系统和命令行，不证明客户机外围部件互连总线启动磁盘、固件系统分区或 Linux 固件存根启动路径。后续能力失败不能通过修改这些只用于验证的用例解决。
 

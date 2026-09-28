@@ -27,6 +27,10 @@ const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtes
 
 impl Starry {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        if args.build_config.is_some() || args.qemu_config.is_some() || args.rootfs.is_some() {
+            return self.run_external_qemu(args).await;
+        }
+
         if args.list && args.arch.is_none() && args.target.is_none() {
             let case_names = discover_all_qemu_cases_with_archs(
                 self.app.workspace_root(),
@@ -388,7 +392,7 @@ impl Starry {
             append_cargo_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
         }
         if crate::support::axtest_coverage::enabled(&cargo) {
-            crate::support::axtest_coverage::prepare_cargo(&mut cargo);
+            crate::support::axtest_coverage::prepare_starry_cargo(&mut cargo);
         }
 
         Ok((request, cargo))

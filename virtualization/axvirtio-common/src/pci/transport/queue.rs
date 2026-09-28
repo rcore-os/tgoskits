@@ -57,7 +57,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 detail: "queue generation is resetting".into(),
             })?;
 
-        let queue = {
+        let (queue, negotiated_features) = {
             let mut state = self.state.lock();
             // The first snapshot was taken before activity admission. A
             // reset may have completed in that gap, so validate every
@@ -67,6 +67,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             let stale_admission = state.queue_generation != generation.value()
                 || !queue_processing_enabled(state.status)
                 || !dma_enabled;
+            let negotiated_features = state.driver_features;
             let queue = &mut state.queues[selected];
             if stale_admission || !queue.enabled {
                 drop(state);
@@ -82,10 +83,11 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             queue.processing = true;
             queue.queue.set_ready(true);
             let queue_size = queue.queue.size;
-            core::mem::replace(
+            let queue = core::mem::replace(
                 &mut queue.queue,
                 VirtioQueue::new(selected as u16, queue_size, Arc::new(NoGuestMemoryAccessor)),
-            )
+            );
+            (queue, negotiated_features)
         };
 
         // Queue layout validation may inspect descriptor and ring memory.
@@ -102,7 +104,14 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             return Ok(fault);
         }
 
-        self.process_queue(selected, queue, memory, activity, false)
+        self.process_queue(
+            selected,
+            queue,
+            memory,
+            activity,
+            false,
+            negotiated_features,
+        )
     }
 
     /// Retries a previously deferred queue using a scoped guest-memory grant.
@@ -126,7 +135,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 operation: "virtio-pci queue poll",
                 detail: "queue generation is resetting".into(),
             })?;
-        let queue = {
+        let (queue, negotiated_features) = {
             let mut state = self.state.lock();
             if state.queue_generation != generation.value()
                 || !queue_processing_enabled(state.status)
@@ -141,13 +150,15 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
                 drop(activity);
                 return Ok(self.retry_notification());
             }
+            let negotiated_features = state.driver_features;
             let queue = &mut state.queues[selected];
             queue.processing = true;
             let queue_size = queue.queue.size;
-            core::mem::replace(
+            let queue = core::mem::replace(
                 &mut queue.queue,
                 VirtioQueue::new(queue_index, queue_size, Arc::new(NoGuestMemoryAccessor)),
-            )
+            );
+            (queue, negotiated_features)
         };
         if let Err(error) = queue
             .validate_layout_with_memory(memory)
@@ -157,7 +168,7 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
             self.restore_queue(selected, queue);
             return Ok(fault);
         }
-        self.process_queue(selected, queue, memory, activity, true)
+        self.process_queue(selected, queue, memory, activity, true, negotiated_features)
     }
 
     fn process_queue(
@@ -167,11 +178,14 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
         memory: &mut dyn GuestMemory,
         activity: ActivityPermit,
         poll: bool,
+        negotiated_features: u64,
     ) -> DeviceResult<VirtioPciWriteOutcome> {
         let result = if poll {
-            self.core.poll_queue(&mut queue, memory)
+            self.core
+                .poll_queue_with_features(&mut queue, memory, negotiated_features)
         } else {
-            self.core.notify_queue(&mut queue, memory)
+            self.core
+                .notify_queue_with_features(&mut queue, memory, negotiated_features)
         };
         let outcome = match result {
             Ok(outcome) => outcome,

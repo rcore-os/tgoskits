@@ -5,8 +5,8 @@ use ax_std::os::arceos::task::sched::{
 };
 use bytemuck::{Pod, Zeroable};
 use linux_raw_sys::general::{
-    SCHED_BATCH, SCHED_DEADLINE, SCHED_FIFO, SCHED_FLAG_DL_OVERRUN, SCHED_FLAG_KEEP_PARAMS,
-    SCHED_FLAG_KEEP_POLICY, SCHED_FLAG_RECLAIM, SCHED_FLAG_RESET_ON_FORK,
+    SCHED_BATCH, SCHED_DEADLINE, SCHED_EXT, SCHED_FIFO, SCHED_FLAG_DL_OVERRUN,
+    SCHED_FLAG_KEEP_PARAMS, SCHED_FLAG_KEEP_POLICY, SCHED_FLAG_RECLAIM, SCHED_FLAG_RESET_ON_FORK,
     SCHED_FLAG_UTIL_CLAMP_MAX, SCHED_FLAG_UTIL_CLAMP_MIN, SCHED_IDLE, SCHED_NORMAL,
     SCHED_RESET_ON_FORK, SCHED_RR,
 };
@@ -263,17 +263,19 @@ pub(crate) fn parse_setscheduler(
 
 /// Returns Linux's minimum priority for a supported policy number.
 pub(crate) fn scheduler_priority_min(policy: u32) -> crate::StarryResult<i32> {
-    match linux_schedule_class(policy)? {
-        LinuxScheduleClass::Fifo | LinuxScheduleClass::RoundRobin => Ok(1),
-        LinuxScheduleClass::Fair(_) | LinuxScheduleClass::Deadline => Ok(0),
-    }
+    Ok(scheduler_priority_range(policy)?.0)
 }
 
 /// Returns Linux's maximum priority for a supported policy number.
 pub(crate) fn scheduler_priority_max(policy: u32) -> crate::StarryResult<i32> {
-    match linux_schedule_class(policy)? {
-        LinuxScheduleClass::Fifo | LinuxScheduleClass::RoundRobin => Ok(99),
-        LinuxScheduleClass::Fair(_) | LinuxScheduleClass::Deadline => Ok(0),
+    Ok(scheduler_priority_range(policy)?.1)
+}
+
+fn scheduler_priority_range(policy: u32) -> crate::StarryResult<(i32, i32)> {
+    match policy {
+        SCHED_FIFO | SCHED_RR => Ok((1, 99)),
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok((0, 0)),
+        _ => Err(crate::StarryError::InvalidInput),
     }
 }
 
@@ -956,6 +958,8 @@ mod tests {
         assert_eq!(scheduler_priority_max(SCHED_RR).unwrap(), 99);
         assert_eq!(scheduler_priority_min(SCHED_NORMAL).unwrap(), 0);
         assert_eq!(scheduler_priority_max(SCHED_DEADLINE).unwrap(), 0);
+        assert_eq!(scheduler_priority_min(SCHED_EXT).unwrap(), 0);
+        assert_eq!(scheduler_priority_max(SCHED_EXT).unwrap(), 0);
         assert!(matches!(
             scheduler_priority_min(42),
             Err(crate::StarryError::InvalidInput)

@@ -53,6 +53,7 @@ aarch64_sysreg
 axdevice_base
 axaddrspace
 axdevice
+x86-apic-driver
 x86_vlapic
 axhvc
 axvirtio-blk

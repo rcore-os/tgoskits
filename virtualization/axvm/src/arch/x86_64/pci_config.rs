@@ -6,10 +6,16 @@ use axdevice::*;
 use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
 
 pub(super) const PCI_HOST_NODE: &str = "pci-host";
+pub(super) const PCI_ECAM_BASE: u64 = 0xb000_0000;
+pub(super) const PCI_ECAM_SIZE: u64 = 0x1000_0000;
 pub(super) const PCI_MEMORY_BASE: u64 = 0xc000_0000;
 pub(super) const PCI_MEMORY_SIZE: u64 = 0x1000_0000;
 const CONFIG_SLOT: &str = "config-ports";
+const ECAM_SLOT: &str = "ecam";
 const MEMORY_SLOT: &str = "memory-aperture";
+const PCIEXBAR_OFFSET: u16 = 0x60;
+const PCIEXBAR_SIZE: u16 = 8;
+const PCIEXBAR_VALUE: u64 = PCI_ECAM_BASE | 1;
 
 pub(super) fn host_key() -> PciHostKey {
     PciHostKey::new("x86-q35").expect("static x86 PCI host key is valid")
@@ -56,6 +62,12 @@ impl DeviceModel for X86PciHostModel {
                 ResourceRequest::Fixed(X86PciConfigFrontend::PORT_BASE),
             )?
             .with_mmio(
+                ResourceSlot::new(ECAM_SLOT)?,
+                PCI_ECAM_SIZE,
+                PCI_ECAM_SIZE,
+                ResourceRequest::Fixed(PCI_ECAM_BASE),
+            )?
+            .with_mmio(
                 ResourceSlot::new(MEMORY_SLOT)?,
                 PCI_MEMORY_SIZE,
                 PCI_MEMORY_SIZE,
@@ -69,6 +81,7 @@ impl DeviceModel for X86PciHostModel {
             Some(std::vec![AcpiContributionSpec::PciHostBridge(
                 AcpiDeviceSpec::new("PCI0", "PNP0A03")
                     .with_register(ResourceSlot::new(CONFIG_SLOT).expect("static slot is valid"))
+                    .with_register(ResourceSlot::new(ECAM_SLOT).expect("static slot is valid"))
                     .with_register(ResourceSlot::new(MEMORY_SLOT).expect("static slot is valid")),
             )]),
         )
@@ -76,12 +89,14 @@ impl DeviceModel for X86PciHostModel {
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let config = context.pio(CONFIG_SLOT)?;
+        let ecam = context.mmio(ECAM_SLOT)?;
         let memory = context.mmio(MEMORY_SLOT)?;
         if config
             != (
                 X86PciConfigFrontend::PORT_BASE,
                 X86PciConfigFrontend::PORT_SIZE,
             )
+            || ecam != (PCI_ECAM_BASE, PCI_ECAM_SIZE)
             || memory != (PCI_MEMORY_BASE, PCI_MEMORY_SIZE)
         {
             return Err(DeviceManagerError::InvalidConfig {
@@ -100,6 +115,11 @@ impl DeviceModel for X86PciHostModel {
         let binding = Arc::new(PciRootBinding::new(self.host_id.clone(), root.clone()));
         let mut bundle = DeviceBundle::new();
         bundle.add_device(Arc::new(X86PciConfigFrontend::new(binding.clone())));
+        bundle.add_device(Arc::new(PciEcamConfigFrontend::try_new(
+            ecam.0,
+            ecam.1,
+            binding.clone(),
+        )?));
         bundle.add_device(Arc::new(PciMemoryApertureDevice::new(
             memory.0,
             memory.1,
@@ -112,7 +132,7 @@ impl DeviceModel for X86PciHostModel {
 }
 
 fn q35_host_function(id: DeviceNodeId) -> PciResult<PciFunctionSpec> {
-    Ok(PciFunctionSpec::new(
+    let mut function = PciFunctionSpec::new(
         id,
         PciEndpointIdentity::new(0x8086, 0x29c0, PciClass::new(0x06, 0x00, 0x00)),
     )
@@ -121,7 +141,15 @@ fn q35_host_function(id: DeviceNodeId) -> PciResult<PciFunctionSpec> {
         0,
         0,
         0,
-    )?)))
+    )?));
+    // This provider owns a fixed ECAM mapping, so expose PCIEXBAR as active and
+    // read-only rather than allowing guest writes to diverge from the graph.
+    for (offset, value) in
+        (PCIEXBAR_OFFSET..PCIEXBAR_OFFSET + PCIEXBAR_SIZE).zip(PCIEXBAR_VALUE.to_le_bytes())
+    {
+        function = function.with_platform_config_byte(ConfigOffset::new(offset)?, value, 0)?;
+    }
+    Ok(function)
 }
 
 fn lpc_function() -> PciResult<PciFunctionSpec> {
@@ -144,6 +172,8 @@ fn lpc_function() -> PciResult<PciFunctionSpec> {
 
 #[cfg(test)]
 mod tests {
+    use axdevice_base::{AccessWidth, BusKind, DeviceAccess, DeviceVcpuId};
+
     use super::*;
 
     #[test]
@@ -165,12 +195,23 @@ mod tests {
         pools
             .allow_fixed_mmio(PCI_MEMORY_BASE..PCI_MEMORY_BASE + PCI_MEMORY_SIZE)
             .unwrap();
+        pools
+            .allow_fixed_mmio(PCI_ECAM_BASE..PCI_ECAM_BASE + PCI_ECAM_SIZE)
+            .unwrap();
         let graph = graph.declare().unwrap().resolve(pools).unwrap();
         let topology = graph.pci_topology(&host_key()).unwrap();
         assert_eq!(topology.functions().count(), 2);
         assert_eq!(
             topology.memory_aperture(),
             &(PCI_MEMORY_BASE..PCI_MEMORY_BASE + PCI_MEMORY_SIZE)
+        );
+        assert_eq!(
+            graph
+                .resources_for(&DeviceNodeId::new(PCI_HOST_NODE).unwrap())
+                .unwrap()
+                .mmio(&ResourceSlot::new(ECAM_SLOT).unwrap())
+                .unwrap(),
+            (PCI_ECAM_BASE, PCI_ECAM_SIZE)
         );
 
         let mut runtime = DeviceRuntimeBuilder::new(RuntimeAccessPorts::new());
@@ -179,6 +220,21 @@ mod tests {
                 .build_graph_node(node, graph.resource_plan())
                 .unwrap();
         }
-        runtime.finish(graph.resource_plan()).unwrap();
+        let runtime = runtime.finish(graph.resource_plan()).unwrap();
+        let ecam_access = DeviceAccess::new(
+            DeviceVcpuId::new(0),
+            BusKind::Mmio,
+            PCI_ECAM_BASE + u64::from(PCIEXBAR_OFFSET),
+            AccessWidth::Dword,
+        );
+        assert_eq!(
+            runtime.try_read(&ecam_access).unwrap(),
+            Some(PCIEXBAR_VALUE)
+        );
+        assert!(runtime.try_write(&ecam_access, 0, None).unwrap());
+        assert_eq!(
+            runtime.try_read(&ecam_access).unwrap(),
+            Some(PCIEXBAR_VALUE)
+        );
     }
 }

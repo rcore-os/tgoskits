@@ -37,6 +37,29 @@ pub enum MmioWriteAction {
     InterruptPending,
 }
 
+/// A ready queue and its negotiated feature snapshot, leased for processing.
+///
+/// The queue lock remains held for this value's lifetime. This prevents reset
+/// and queue reconfiguration from replacing the selected queue while a device
+/// core processes it or updates transport-owned deferred state.
+pub struct MmioQueueProcessingLease<'a, T: GuestMemoryAccessor + Clone> {
+    queues: MutexGuard<'a, Vec<VirtioQueue<T>>>,
+    queue_index: usize,
+    negotiated_features: u64,
+}
+
+impl<T: GuestMemoryAccessor + Clone> MmioQueueProcessingLease<'_, T> {
+    /// Returns the successfully negotiated driver feature snapshot.
+    pub const fn negotiated_features(&self) -> u64 {
+        self.negotiated_features
+    }
+
+    /// Returns mutable access to the queue protected by this lease.
+    pub fn queue(&mut self) -> &mut VirtioQueue<T> {
+        &mut self.queues[self.queue_index]
+    }
+}
+
 #[derive(Default)]
 struct InterruptState {
     pending: u32,
@@ -110,6 +133,44 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     /// Lock the queue vector for a device data path.
     pub fn queues_lock(&self) -> MutexGuard<'_, Vec<VirtioQueue<T>>> {
         self.queues.lock_irqsave()
+    }
+
+    /// Acquires a ready queue for one device-processing operation.
+    ///
+    /// Returns `Ok(None)` while the transport is not ready, its features have
+    /// not been sealed, or the selected queue is unavailable. A ready
+    /// transport with an out-of-range queue index returns
+    /// [`VirtioError::InvalidQueue`]. The lease captures only successfully
+    /// sealed driver features and holds the queue lock until it is dropped.
+    pub fn acquire_queue_processing_lease(
+        &self,
+        queue_index: u16,
+    ) -> VirtioResult<Option<MmioQueueProcessingLease<'_, T>>> {
+        let queue_config_guard = self.queue_config_transaction.lock();
+        let status = *self.status.lock_irqsave();
+        let required = vc::VIRTIO_STATUS_FEATURES_OK | vc::VIRTIO_STATUS_DRIVER_OK;
+        let stopped = vc::VIRTIO_STATUS_FAILED | vc::VIRTIO_STATUS_DEVICE_NEEDS_RESET;
+        if status & required != required || status & stopped != 0 {
+            return Ok(None);
+        }
+        if !*self.features_sealed.lock_irqsave() {
+            return Ok(None);
+        }
+        let negotiated_features = *self.driver_features.lock_irqsave();
+        let queues = self.queues.lock_irqsave();
+        let queue = queues
+            .get(queue_index as usize)
+            .ok_or(VirtioError::InvalidQueue)?;
+        if !queue.is_valid() {
+            return Ok(None);
+        }
+        drop(queue_config_guard);
+
+        Ok(Some(MmioQueueProcessingLease {
+            queues,
+            queue_index: queue_index as usize,
+            negotiated_features,
+        }))
     }
 
     /// Whether the driver has set `DRIVER_OK`.
@@ -569,7 +630,7 @@ mod tests {
         }
     }
 
-    fn configured_state() -> Arc<VirtioMmioState<NoGuestMemoryAccessor>> {
+    fn configured_state(device_features: u64) -> Arc<VirtioMmioState<NoGuestMemoryAccessor>> {
         const BASE: usize = 0x0a00_0000;
         const LENGTH: usize = 0x200;
 
@@ -579,7 +640,7 @@ mod tests {
             LENGTH,
             2,
             vc::VIRTIO_VENDOR_ID,
-            0,
+            device_features,
             vec![queue],
         ));
         for (register, value) in [
@@ -601,10 +662,92 @@ mod tests {
     }
 
     #[test]
+    fn processing_lease_requires_sealed_running_features_and_a_ready_queue() {
+        const BASE: usize = 0x0a00_0000;
+        const DRIVER_FEATURE: u64 = 1 << 17;
+        let state = configured_state(DRIVER_FEATURE);
+        {
+            let mut queues = state.queues_lock();
+            queues[0].set_ready(true);
+        }
+
+        let ready_status = vc::VIRTIO_STATUS_FEATURES_OK | vc::VIRTIO_STATUS_DRIVER_OK;
+        state.set_status(ready_status);
+        assert!(
+            state.acquire_queue_processing_lease(0).unwrap().is_none(),
+            "forcing status does not seal driver features"
+        );
+        state.set_status(0);
+
+        for (register, value) in [
+            (vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0),
+            (vc::VIRTIO_MMIO_DRIVER_FEATURES, DRIVER_FEATURE as usize),
+            (
+                vc::VIRTIO_MMIO_STATUS,
+                vc::VIRTIO_STATUS_ACKNOWLEDGE as usize,
+            ),
+            (
+                vc::VIRTIO_MMIO_STATUS,
+                (vc::VIRTIO_STATUS_ACKNOWLEDGE | vc::VIRTIO_STATUS_DRIVER) as usize,
+            ),
+            (
+                vc::VIRTIO_MMIO_STATUS,
+                (vc::VIRTIO_STATUS_ACKNOWLEDGE
+                    | vc::VIRTIO_STATUS_DRIVER
+                    | vc::VIRTIO_STATUS_FEATURES_OK) as usize,
+            ),
+        ] {
+            state
+                .mmio_write(
+                    GuestPhysAddr::from(BASE + register),
+                    AccessWidth::Dword,
+                    value,
+                )
+                .unwrap();
+        }
+        assert!(
+            state.acquire_queue_processing_lease(0).unwrap().is_none(),
+            "FEATURES_OK without DRIVER_OK must not admit queue work"
+        );
+
+        state
+            .mmio_write(
+                GuestPhysAddr::from(BASE + vc::VIRTIO_MMIO_STATUS),
+                AccessWidth::Dword,
+                (vc::VIRTIO_STATUS_ACKNOWLEDGE
+                    | vc::VIRTIO_STATUS_DRIVER
+                    | vc::VIRTIO_STATUS_FEATURES_OK
+                    | vc::VIRTIO_STATUS_DRIVER_OK) as usize,
+            )
+            .unwrap();
+        let lease = state
+            .acquire_queue_processing_lease(0)
+            .unwrap()
+            .expect("sealed, ready transport should admit the queue");
+        assert_eq!(lease.negotiated_features(), DRIVER_FEATURE);
+        drop(lease);
+        assert!(matches!(
+            state.acquire_queue_processing_lease(1),
+            Err(VirtioError::InvalidQueue)
+        ));
+
+        for stopped in [
+            vc::VIRTIO_STATUS_FAILED,
+            vc::VIRTIO_STATUS_DEVICE_NEEDS_RESET,
+        ] {
+            state.set_status(ready_status | stopped);
+            assert!(
+                state.acquire_queue_processing_lease(0).unwrap().is_none(),
+                "stopped transport status must reject queue work"
+            );
+        }
+    }
+
+    #[test]
     fn queue_ready_zero_cancels_without_guest_memory_probe() {
         const BASE: usize = 0x0a00_0000;
 
-        let state = configured_state();
+        let state = configured_state(0);
         assert!(
             state.queues.lock_irqsave()[0]
                 .begin_ready_preparation()
@@ -655,7 +798,7 @@ mod tests {
     fn queue_ready_rejects_reentrant_configuration_changes() {
         const BASE: usize = 0x0a00_0000;
 
-        let state = configured_state();
+        let state = configured_state(0);
 
         // The callback changes the live layout only when it can re-enter the
         // queue lock. The old hold-the-lock implementation therefore leaves

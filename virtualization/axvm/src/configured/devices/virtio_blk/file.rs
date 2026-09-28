@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn failed_retry_cannot_complete_a_later_write_with_old_data() {
         use axvirtio_blk::{BlockDeviceEvent, VirtioMmioBlockDevice};
-        use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor};
+        use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, constants as vc};
         use axvm_types::{AccessWidth, GuestPhysAddr};
 
         struct Memory {
@@ -442,6 +442,34 @@ mod tests {
             memory.bytes[0x400..0x600].fill(0x11);
             memory.bytes[0x202..0x204].copy_from_slice(&1_u16.to_le_bytes());
             for (register, value) in [
+                (vc::VIRTIO_MMIO_STATUS, vc::VIRTIO_STATUS_ACKNOWLEDGE),
+                (
+                    vc::VIRTIO_MMIO_STATUS,
+                    vc::VIRTIO_STATUS_ACKNOWLEDGE | vc::VIRTIO_STATUS_DRIVER,
+                ),
+                (vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0),
+                (vc::VIRTIO_MMIO_DRIVER_FEATURES, 0),
+                (
+                    vc::VIRTIO_MMIO_STATUS,
+                    vc::VIRTIO_STATUS_ACKNOWLEDGE
+                        | vc::VIRTIO_STATUS_DRIVER
+                        | vc::VIRTIO_STATUS_FEATURES_OK,
+                ),
+            ] {
+                model
+                    .mmio_write(
+                        GuestPhysAddr::from(0x1000 + register),
+                        AccessWidth::Dword,
+                        value as usize,
+                    )
+                    .unwrap();
+            }
+            assert_ne!(
+                model.get_status() & vc::VIRTIO_STATUS_FEATURES_OK,
+                0,
+                "the zero-feature negotiation should be sealed"
+            );
+            for (register, value) in [
                 (0x30, 0),
                 (0x38, 4),
                 (0x80, 0x100),
@@ -458,7 +486,16 @@ mod tests {
                     )
                     .unwrap();
             }
-            model.set_status(4);
+            model
+                .mmio_write(
+                    GuestPhysAddr::from(0x1000 + vc::VIRTIO_MMIO_STATUS),
+                    AccessWidth::Dword,
+                    (vc::VIRTIO_STATUS_ACKNOWLEDGE
+                        | vc::VIRTIO_STATUS_DRIVER
+                        | vc::VIRTIO_STATUS_FEATURES_OK
+                        | vc::VIRTIO_STATUS_DRIVER_OK) as usize,
+                )
+                .unwrap();
             assert_eq!(
                 model.process_pending_queue(0, &mut memory),
                 Ok(BlockDeviceEvent::QueuePending(0))
