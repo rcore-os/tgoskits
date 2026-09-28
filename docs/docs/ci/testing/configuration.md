@@ -13,15 +13,15 @@ sidebar_label: "配置维护"
 
 ### 1.1 文件与字段
 
-manifest 使用 `schema_version = 3`，声明 `phase`、`group` 和非空 `check` 数组。主 CI 使用 `static`、`test`，定时应用 smoke 清单使用 `starry_apps`。性能清单使用 `benchmark`，AxVisor 非性能 nightly 清单使用 `nightly`。文件名为 `benchmarks.toml` 的清单是自动 nightly 性能报告语义的唯一权威来源：加载它的每个 check 自动获得 `nightly_only` 与 `performance_report`，因此 check 不再声明这些布尔值；phase 为 `nightly` 的清单则让其中每个 check 自动成为 `nightly_only`。旧 schema 和未知字段会被拒绝。
+manifest 使用 `schema_version = 3`，声明 `phase`、`group` 和非空 `check` 数组。主 CI 使用 `static`、`test`，定时应用 smoke 清单使用 `starry_apps`。性能清单使用 `benchmark`，只由基准工作流读取；AxVisor 非性能 nightly 清单使用 `nightly`，只由 AxVisor Nightly 读取。文件名为 `benchmarks.toml` 的清单是自动 nightly 性能报告语义的唯一权威来源：加载它的每个 check 自动获得 `nightly_only` 与 `performance_report`，因此 check 不再声明这些布尔值；phase 为 `nightly` 的清单则让其中每个 check 自动成为 `nightly_only`。旧 schema 和未知字段会被拒绝。
 
-清单级 `group` 是默认值，单个 check 可以用 `group` 覆盖它。AxVisor 与 Starry 的性能 check 因此能共用一个 `benchmarks.toml`：每个 check 标注自己的 `group`（`AxVisor` 或 `Starry Apps`），`build_axvisor_nightly_plan()` 与 `build_starry_apps_plan()` 只挑选属于自己分组的 bench case。解析后的 `group` 仍决定各 check 的性能报告 artifact 前缀（`axvisor-nightly-performance`、`starry-apps-nightly-performance`），所以报告与历史记录的分组不变。
+清单级 `group` 是默认值，单个 check 可以用 `group` 覆盖它。AxVisor 与 Starry 的性能 check 因此能共用一个 `benchmarks.toml`：每个 check 标注自己的 `group`（`AxVisor` 或 `Starry Apps`），`build_benchmarks_plan()` 一次读取全部性能 check，再按 `group` 和 `runs_on` 拆成 `axvisor_performance_matrix`、`starry_performance_matrix` 与 `starry_board_performance_matrix`；`build_starry_apps_plan()` 与 `build_axvisor_nightly_plan()` 只读取各自的非性能清单。解析后的 `group` 仍决定各 check 的性能报告 artifact 前缀（`axvisor-nightly-performance`、`starry-apps-nightly-performance`），所以报告与历史记录的分组不变。
 
 | 字段 | 作用与约束 |
 | --- | --- |
 | `id`、`name`、`command` | 必填且非空；`id` 在整个目录载入结果中唯一，`name` 用于显示 |
 | `default_runner`、`runner` | 文件默认 profile 和单项覆盖；省略时使用 `ubuntu-base` |
-| `group` | 可选的单项覆盖，覆盖清单级分组；共享 `benchmarks.toml` 用它区分 `AxVisor` 与 `Starry Apps` 的 bench case |
+| `group` | 可选的单项覆盖，覆盖清单级分组；共享 `benchmarks.toml` 用它区分 `AxVisor` 与 `Starry Apps` 的 bench case 和结果矩阵 |
 | `impact_targets`、`impact_packages` | 声明平台或软件包影响；非 Workspace 的 OS 测试必须至少声明一类 |
 | `pull_request_command` | 非全量 PR 选择时替换普通命令，不影响 push 的命令 |
 | `fetch_depth` | 非负深度或 `full`；默认 `1` |
@@ -54,7 +54,7 @@ arch = "x86_64"
 
 `kind` 必须属于 `ci_suite.py` 的 `SUPPORTED_SUITE_KINDS`。QEMU 注册要求 `arch`，board 注册要求 `board`；`cases` 可以限制覆盖的 case。注册用于把套件路径映射到已有运行能力，不只是给 Actions 增加一个标签。
 
-Starry 的 nightly 性能应用通过 `cargo xtask starry app ...` 运行，使用单独的 `starry-app-qemu` 和 `starry-app-board` 注册。此时 `cases` 填写相对 `benchmarks/starry` 的用例目录（例如 `block-rw-bench`、`qemu/ltp-hackbench`），命中该目录的 PR 改动会路由到注册它的 nightly check；这些 check 只在定时或手动运行，PR 上解析为仅静态检查。
+Starry 的性能应用通过 `cargo xtask starry app ...` 运行，使用单独的 `starry-app-qemu` 和 `starry-app-board` 注册。此时 `cases` 填写相对 `benchmarks/starry` 的用例目录（例如 `block-rw-bench`、`qemu/ltp-hackbench`），命中该目录的 PR 改动会路由到注册它的性能 check；这些 check 只由基准工作流的定时或手动入口运行，PR 上解析为仅静态检查。
 
 ### 1.3 增加检查
 

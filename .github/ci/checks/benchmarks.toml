@@ -3,14 +3,10 @@ phase = "benchmark"
 group = "Benchmarks"
 default_runner = "qcs"
 
-# Shared performance benchmark manifest. The file name is the only source of
-# the automatic nightly + performance-report semantics, so the checks below
-# declare neither `nightly_only = true` nor `performance_report = true`.
-# Each check overrides the manifest `group` with the workflow that owns it:
-# `AxVisor` checks run through the AxVisor Nightly workflow and `Starry Apps`
-# checks run after the Starry app smoke matrix. The resolved group also derives
-# each check's report artifact prefix (`axvisor-nightly-performance`,
-# `starry-apps-nightly-performance`).
+# Shared performance benchmark manifest.
+# ---------------------------------------------------------------------------
+# AxVisor performance checks (group = "AxVisor")
+# ---------------------------------------------------------------------------
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark"
@@ -60,6 +56,10 @@ cargo xtask axvisor test board --board orangepi-5-plus-task-switch-overhead
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-task-switch-overhead"
+
+# ---------------------------------------------------------------------------
+# Starry Apps performance checks (group = "Starry Apps")
+# ---------------------------------------------------------------------------
 
 [[check]]
 id = "starry-performance-block-io-x86-64"

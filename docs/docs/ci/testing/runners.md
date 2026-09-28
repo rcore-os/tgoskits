@@ -47,6 +47,8 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 | --- | --- | --- |
 | `ci.yml / plan_ci` | 去重、清理旧 run、配置校验和规划 | 主 CI 矩阵之前执行；跨仓 PR 不分配 |
 | `starry-apps.yml / plan` | 定时或手动应用矩阵规划 | 应用矩阵之前执行 |
+| `axvisor-nightly.yml / plan` | AxVisor 非性能 nightly 矩阵规划 | nightly 矩阵之前执行 |
+| `benchmarks.yml / plan` | 统一性能清单的 AxVisor、Starry QEMU 和 Starry 板卡矩阵规划 | 性能矩阵之前执行 |
 | `container-publish.yml / publish` | 构建并发布测试容器 | 独立工作流，不是主 CI 的前置 job |
 | `docs.yml / build` | 构建文档并上传 Pages artifact | 文档工作流的构建阶段 |
 | `docs.yml / deploy` | 部署 Pages artifact | 等待文档构建成功 |
@@ -61,17 +63,17 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 
 ### 2.1 分配总览
 
-主 CI 与 Starry Apps 分开载入清单。PR 过滤、事件开关、owner 条件和精确 suite 展开都会改变真正运行的行，不能把静态计数当成每次 CI 的资源需求。
+主 CI、Starry Apps、AxVisor Nightly 与 Benchmarks 分开载入清单。PR 过滤、事件开关、owner 条件和精确 suite 展开都会改变真正运行的行，不能把静态计数当成每次 CI 的资源需求。
 
-| Profile | 主 CI 声明数 | Starry Apps 声明数 | 任务范围 |
-| --- | --- | --- | --- |
-| `qcs` | 10 | 0 | Formatting/publish 预检，Workspace Clippy/std，ArceOS 四架构套件，AxVisor AArch64/RISC-V 场景 |
-| `ubuntu-base` | 6 | 5 | sync-lint、qperf、Starry 四架构套件；定时完整 Clippy 和四架构应用 smoke |
-| `ubuntu-host` | 0 | 1 | Starry NixOS x86_64 Stage-2 |
-| `ubuntu-axvisor-lvz` | 1 | 0 | AxVisor LoongArch QEMU 套件 |
-| `kvm-intel` | 3 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
-| `kvm-amd` | 2 | 0 | SVM、ACPI/OVMF 和 PCI 枚举 |
-| `board` | 11 | 0 | Starry 原生板卡测试和 AxVisor 板卡 guest 场景 |
+| Profile | 主 CI | Starry Apps | AxVisor Nightly | Benchmarks | 任务范围 |
+| --- | --- | --- | --- | --- | --- |
+| `qcs` | 10 | 0 | 1 | 0 | Formatting/publish 预检，Workspace Clippy/std，ArceOS 四架构套件，AxVisor AArch64/RISC-V 场景 |
+| `ubuntu-base` | 6 | 5 | 0 | 6 | sync-lint、qperf、Starry 四架构套件；应用 smoke/完整 Clippy；Starry QEMU 性能 |
+| `ubuntu-host` | 0 | 1 | 0 | 0 | Starry NixOS x86_64 Stage-2 |
+| `ubuntu-axvisor-lvz` | 1 | 0 | 0 | 0 | AxVisor LoongArch QEMU 套件 |
+| `kvm-intel` | 3 | 0 | 0 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
+| `kvm-amd` | 2 | 0 | 0 | 0 | SVM、ACPI/OVMF 和 PCI 枚举 |
+| `board` | 11 | 0 | 2 | 8 | 主 CI、AxVisor nightly 和性能清单中的板卡场景 |
 
 修改清单时应同步更新这张表。`qcs` 在普通外部 fork 上回退为托管环境，表中仍按声明的 profile 分类；它不表示外部 fork 可以使用组织的 QCS 机器。
 

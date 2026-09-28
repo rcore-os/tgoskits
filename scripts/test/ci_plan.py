@@ -44,12 +44,13 @@ RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
 # Performance measurements live in one scope-clear `benchmarks.toml` manifest.
 # Loading a manifest with this file name is the single authority that makes
 # every check inside it a nightly benchmark that produces a performance report.
-# AxVisor and Starry benchmarks share the file, so each check overrides the
-# manifest `group` with the workflow that owns it and the plan builders select
-# their own benchmark checks by that group.
+# AxVisor and Starry benchmarks share the file, but only `build_benchmarks_plan`
+# owns their execution; each check's `group` selects the result matrix and
+# report artifact prefix.
 BENCHMARK_MANIFEST = CHECKS_ROOT / "benchmarks.toml"
 AXVISOR_BENCHMARK_GROUP = "AxVisor"
 STARRY_APPS_BENCHMARK_GROUP = "Starry Apps"
+BENCHMARK_GROUPS = {AXVISOR_BENCHMARK_GROUP, STARRY_APPS_BENCHMARK_GROUP}
 # AxVisor scenarios that only run on the nightly schedule but produce no
 # performance report. Keeping them in their own manifest stops the default main
 # CI matrix from treating every `axvisor.toml` check as nightly coverage.
@@ -250,46 +251,14 @@ def _build_test_group_outputs(
 def build_starry_apps_plan(
     context: PlanContext,
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    # The scheduled/manual Starry Apps workflow is also the owner of the
-    # nightly performance matrix. Keep performance checks out of the normal
-    # app-smoke matrix so they run only after the smoke job completes.
-    context = replace(
-        context,
-        include_nightly=context.event_name in {"schedule", "workflow_dispatch"},
-    )
-    checks = load_catalog((STARRY_APPS_MANIFEST, BENCHMARK_MANIFEST))
-    rows = _plan_phase(checks, "starry_apps", context) + _plan_phase(
-        _benchmark_checks_for(checks, STARRY_APPS_BENCHMARK_GROUP),
-        "benchmark",
-        context,
-    )
-    app_rows = [row for row in rows if not row["performance_report"]]
-    performance_rows = [row for row in rows if row["performance_report"]]
-    qemu_performance_rows = [
-        row for row in performance_rows if "board" not in row["runs_on"]
-    ]
-    board_performance_rows = [
-        row for row in performance_rows if "board" in row["runs_on"]
-    ]
+    # Starry Apps owns application smoke, NixOS and optional Clippy coverage.
+    # Performance checks are owned by the separate Benchmarks workflow.
+    checks = load_catalog((STARRY_APPS_MANIFEST,))
+    app_rows = _plan_phase(checks, "starry_apps", context)
     if not app_rows:
         raise PlanError("Starry Apps must resolve to a non-empty matrix")
-
-    # Starry Apps is a standalone workflow, so it cannot consume the xtask
-    # artifact produced by the main CI workflow. Produce the same small,
-    # reusable artifact used by AxVisor Nightly inside this workflow.
-    main_checks = load_catalog(MAIN_MANIFESTS)
-    producer = next(check for check in main_checks if check.get("upload_xtask_bin_artifact"))
-    prepare = _normalize_check(producer, context)
-    prepare.update(
-        id="starry-apps-build-xtask",
-        name="Build tg-xtask",
-        command="cargo build -p tg-xtask",
-    )
     return {
-        "prepare_matrix": {"include": [prepare]},
         "starry_apps_matrix": {"include": app_rows},
-        "starry_performance_matrix": {"include": qemu_performance_rows},
-        "starry_board_performance_matrix": {"include": board_performance_rows},
     }
 
 
@@ -297,62 +266,70 @@ def build_axvisor_nightly_plan(context: PlanContext) -> dict[str, Any]:
     if context.event_name not in {"schedule", "workflow_dispatch"}:
         raise PlanError("AxVisor nightly requires schedule or workflow_dispatch")
     context = replace(context, include_nightly=True)
-    producer_catalog = load_catalog(MAIN_MANIFESTS)
-    producer = next(
-        check
-        for check in producer_catalog
-        if check.get("upload_xtask_bin_artifact")
-    )
-    checks = load_catalog((AXVISOR_NIGHTLY_MANIFEST, BENCHMARK_MANIFEST))
-    return _build_axvisor_nightly_plan(checks, context, producer)
-
-
-def _benchmark_checks_for(
-    checks: list[dict[str, Any]], group: str
-) -> list[dict[str, Any]]:
-    """Return the benchmark checks owned by one workflow group."""
-    return [
-        check
-        for check in checks
-        if check["phase"] == "benchmark" and check["group"] == group
-    ]
-
-
-def _build_axvisor_nightly_plan(
-    checks: list[dict[str, Any]],
-    context: PlanContext,
-    producer: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if producer is None:
-        producer = next(
-            check for check in checks if check.get("upload_xtask_bin_artifact")
-        )
-    prepare = _normalize_check(producer, context)
-    prepare.update(
-        id="axvisor-nightly-build-xtask",
-        name="Build tg-xtask",
-        command="cargo build -p tg-xtask",
-    )
     rows = [
         _normalize_check(check, context)
-        for check in checks
-        if _is_axvisor_nightly_check(check) and _is_enabled(check, context)
+        for check in load_catalog((AXVISOR_NIGHTLY_MANIFEST,))
+        if _is_enabled(check, context)
     ]
     if not rows:
         raise PlanError("AxVisor nightly must resolve to a non-empty matrix")
+    return {"axvisor_matrix": {"include": rows}}
+
+
+def build_benchmarks_plan(context: PlanContext) -> dict[str, Any]:
+    if context.event_name not in {"schedule", "workflow_dispatch"}:
+        raise PlanError("Benchmarks require schedule or workflow_dispatch")
+    context = replace(context, include_nightly=True)
+    checks = load_catalog((BENCHMARK_MANIFEST,))
+    rows = [
+        _normalize_check(check, context)
+        for check in checks
+        if _is_enabled(check, context)
+    ]
+    unknown_groups = sorted({check["group"] for check in checks} - BENCHMARK_GROUPS)
+    if unknown_groups:
+        raise PlanError(
+            "Benchmarks contain unsupported groups: " + ", ".join(unknown_groups)
+        )
+
+    axvisor_rows = [
+        row for row in rows if row["group"] == AXVISOR_BENCHMARK_GROUP
+    ]
+    starry_rows = [
+        row for row in rows if row["group"] == STARRY_APPS_BENCHMARK_GROUP
+    ]
+    starry_qemu_rows = [
+        row for row in starry_rows if "board" not in row["runs_on"]
+    ]
+    starry_board_rows = [
+        row for row in starry_rows if "board" in row["runs_on"]
+    ]
+    if not axvisor_rows or not starry_qemu_rows or not starry_board_rows:
+        raise PlanError(
+            "Benchmarks must resolve to non-empty AxVisor, Starry QEMU "
+            "and Starry board matrices"
+        )
+
+    # Starry benchmark rows consume the standalone xtask artifact instead of
+    # rebuilding it in every matrix entry.
+    main_checks = load_catalog(MAIN_MANIFESTS)
+    producer = next(
+        check
+        for check in main_checks
+        if check.get("upload_xtask_bin_artifact")
+    )
+    prepare = _normalize_check(producer, context)
+    prepare.update(
+        id="benchmarks-build-xtask",
+        name="Build tg-xtask",
+        command="cargo build -p tg-xtask",
+    )
     return {
         "prepare_matrix": {"include": [prepare]},
-        "axvisor_matrix": {"include": rows},
+        "axvisor_performance_matrix": {"include": axvisor_rows},
+        "starry_performance_matrix": {"include": starry_qemu_rows},
+        "starry_board_performance_matrix": {"include": starry_board_rows},
     }
-
-
-def _is_axvisor_nightly_check(check: dict[str, Any]) -> bool:
-    if check["phase"] == "nightly":
-        return True
-    return (
-        check["phase"] == "benchmark"
-        and check["group"] == AXVISOR_BENCHMARK_GROUP
-    )
 
 
 def write_github_outputs(outputs: dict[str, Any], output_file: Path) -> None:
@@ -883,7 +860,11 @@ def _matrix_rows(outputs: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plan TGOSKits CI matrices")
-    parser.add_argument("--mode", choices=("main", "starry-apps", "axvisor-nightly"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("main", "starry-apps", "axvisor-nightly", "benchmarks"),
+        required=True,
+    )
     parser.add_argument("--repository", required=True)
     parser.add_argument("--repository-owner", required=True)
     parser.add_argument("--event-name", required=True)
@@ -930,6 +911,8 @@ def main() -> int:
             context = _resolve_input_fallbacks(checks, context)
             impact = context.impact
             outputs = _build_main_plan(checks, context)
+        elif args.mode == "benchmarks":
+            outputs = build_benchmarks_plan(context)
         elif args.mode == "axvisor-nightly":
             outputs = build_axvisor_nightly_plan(context)
         else:

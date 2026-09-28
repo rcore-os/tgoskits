@@ -7,6 +7,7 @@ from pathlib import Path
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_MANIFEST = WORKSPACE_ROOT / "Cargo.toml"
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
@@ -22,6 +23,8 @@ def main() -> int:
         errors.append(
             "missing workflow: .github/workflows/reusable-check-matrix.yml"
         )
+    if not BENCHMARKS_WORKFLOW.is_file():
+        errors.append("missing workflow: .github/workflows/benchmarks.yml")
     if PR_CLEANUP_WORKFLOW.exists():
         errors.append("stale-run cleanup must reuse the Plan CI runner")
     if LEGACY_BRANCH_WORKFLOW.exists():
@@ -76,6 +79,16 @@ def main() -> int:
         errors.append(
             "pull_request paths omit workspace roots: " + ", ".join(missing_roots)
         )
+    for workflow_path in (
+        ".github/workflows/starry-apps.yml",
+        ".github/workflows/axvisor-nightly.yml",
+        ".github/workflows/benchmarks.yml",
+    ):
+        if workflow_path not in pull_request_paths:
+            errors.append(
+                f"pull_request paths must include {workflow_path} so workflow-only "
+                "changes run CI routing validation"
+            )
     if "PR_HEAD_REPOSITORY_OWNER" in ci_workflow:
         errors.append("runner planning must not use the pull request source owner")
 
