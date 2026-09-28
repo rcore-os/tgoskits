@@ -47,7 +47,7 @@ use super::{
     cpufreq_margin::{GrfResource, ReadMargin},
     cpufreq_pvtm, cpufreq_sensors,
 };
-use crate::{probe::OnProbeError, register::ProbeFdt, soc::scmi};
+use crate::{KError, probe::OnProbeError, register::ProbeFdt, soc::scmi};
 
 /// SCMI clock id of the A55 (little) cluster — cpu0..3.
 const A55_CLK_ID: u32 = 0;
@@ -61,6 +61,98 @@ const A55_MAX_HZ: u64 = 1_008_000_000;
 const A76_MAX_HZ: u64 = 1_200_000_000;
 const A55_PVTM_HZ: u64 = 1_416_000_000;
 const A76_PVTM_HZ: u64 = 1_608_000_000;
+/// BSP `OPP_LENGTH_LOW`: firmware interprets the low rate bits as a command.
+const PVTPLL_LENGTH_LOW: u64 = 1 << 2;
+#[cfg(target_arch = "aarch64")]
+const SIP_PVTPLL_CFG: u32 = 0x8200_0029;
+const PVTPLL_GET_INFO: u32 = 0;
+const PVTPLL_LOW_TEMP: u32 = 2;
+
+#[cfg(target_arch = "aarch64")]
+fn pvtpll_firmware_call(subcommand: u32, clock_id: u32, value: u32) -> [u32; 8] {
+    smccc::smc32(SIP_PVTPLL_CFG, [subcommand, clock_id, value, 0, 0, 0, 0])
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn pvtpll_firmware_call(_subcommand: u32, _clock_id: u32, _value: u32) -> [u32; 8] {
+    [u32::MAX; 8]
+}
+
+struct PvtpllFirmware {
+    low_temp: bool,
+    legacy: bool,
+}
+
+fn pvtpll_firmware_info(clock_id: u32) -> Result<PvtpllFirmware, FrequencyError> {
+    let result = pvtpll_firmware_call(PVTPLL_GET_INFO, clock_id, 0);
+    if result[0] == u32::MAX {
+        info!("cpufreq: PVTPLL clock id {clock_id} uses legacy firmware without SIP PVTPLL info");
+        return Ok(PvtpllFirmware {
+            low_temp: false,
+            legacy: true,
+        });
+    }
+    if result[0] != 0 {
+        warn!(
+            "cpufreq: PVTPLL clock id {clock_id} firmware info failed: {:#x}",
+            result[0]
+        );
+        return Err(FrequencyError::NotReady);
+    }
+    Ok(PvtpllFirmware {
+        low_temp: result[1] == 0,
+        legacy: false,
+    })
+}
+
+fn configure_pvtpll_low_temp(clock_id: u32, low: bool) -> bool {
+    let result = pvtpll_firmware_call(PVTPLL_LOW_TEMP, clock_id, u32::from(low));
+    if result[0] != 0 {
+        warn!(
+            "cpufreq: PVTPLL clock id {clock_id} low-temperature mode {low} failed: {:#x}",
+            result[0]
+        );
+    }
+    result[0] == 0
+}
+
+fn configure_pvtpll_length(
+    phandle: Phandle,
+    clock_id: u32,
+    boot_hz: u64,
+    grade: u8,
+    low_length_grade: Option<u32>,
+    legacy_firmware: bool,
+) -> bool {
+    let Some(limit) = low_length_grade else {
+        return true;
+    };
+    if u32::from(grade) > limit {
+        return true;
+    }
+    // The BSP sends the low-length flag in the rate's low bits, then restores
+    // the plain rate. A successful SCMI status and restored rate are both
+    // required before this domain can advertise the selected OPPs.
+    let requested = boot_hz | PVTPLL_LENGTH_LOW;
+    let request = scmi::set_clock_rate_checked(phandle, clock_id, requested);
+    let restored = set_and_verify(phandle, clock_id, boot_hz, boot_hz);
+    if matches!(&request, Err(KError::InvalidArg { name: "rate" })) && legacy_firmware && restored {
+        // The board's BL31 returns SMC_UNKNOWN for GET_INFO and rejects this
+        // flagged SCMI rate. The BSP also keeps the ordinary OPPs in this
+        // case. Their delivered frequencies require a separate board check.
+        warn!(
+            "cpufreq: PVTPLL clock id {clock_id} legacy firmware rejected low-length extension; \
+             using confirmed plain rate"
+        );
+        return true;
+    }
+    if request.is_err() || !restored {
+        warn!(
+            "cpufreq: PVTPLL clock id {clock_id} low-length request or plain rate restore failed"
+        );
+    }
+    request.is_ok() && restored
+}
 
 /// One-shot guard: several `cpu@*` nodes match, but the reclock runs once.
 static APPLIED: AtomicBool = AtomicBool::new(false);
@@ -203,6 +295,13 @@ fn select_domain_opps(
             .and_then(|property| property.get_u32())
             .ok_or(FrequencyError::NotReady)
     };
+    if table_node
+        .get_property("rockchip,pvtm-thermal-zone")
+        .and_then(|property| property.as_str())
+        != Some("soc-thermal")
+    {
+        return Err(FrequencyError::NotReady);
+    }
 
     let serial = cpufreq_sensors::sku_serial().map_err(|_| FrequencyError::NotReady)?;
     let bin = match serial {
@@ -236,8 +335,12 @@ fn select_domain_opps(
     )
     .map_err(|_| FrequencyError::NotReady)?;
 
-    let temperature = cpufreq_sensors::cpu_temperature_millidegrees(cluster.index())
-        .map_err(|_| FrequencyError::NotReady)?;
+    let temperature =
+        cpufreq_sensors::soc_temperature_millidegrees().map_err(|_| FrequencyError::NotReady)?;
+    let firmware = pvtpll_firmware_info(cluster.clock_id())?;
+    if firmware.low_temp && !configure_pvtpll_low_temp(cluster.clock_id(), temperature < 10_000) {
+        return Err(FrequencyError::HardwareFailure);
+    }
     let grf = grf_resource(fdt, property_u32("rockchip,grf")?)?;
     let measurement_hz = u64::from(property_u32("rockchip,pvtm-freq")?) * 1000;
     let measurement_uv = property_u32("rockchip,pvtm-volt")?;
@@ -253,6 +356,9 @@ fn select_domain_opps(
         .map(|phandle| grf_resource(fdt, phandle))
         .transpose()?;
     let margin = ReadMargin::new(grf, dsu, &margin_cells).map_err(|_| FrequencyError::NotReady)?;
+    let margin_threshold_hz = u64::from(property_u32("intermediate-threshold-freq")?)
+        .checked_mul(1000)
+        .ok_or(FrequencyError::NotReady)?;
     let boot_hz = if matches!(cluster, Cluster::A55) {
         A55_MAX_HZ
     } else {
@@ -265,6 +371,7 @@ fn select_domain_opps(
     };
     if measurement_uv != 750_000
         || measurement_hz != expected_measurement_hz
+        || margin_threshold_hz != A55_MAX_HZ
         || rail_voltage(cluster) != Some(measurement_uv)
         || scmi::clock_rate(phandle, cluster.clock_id()) != Some(boot_hz)
         || delay_us == 0
@@ -278,7 +385,19 @@ fn select_domain_opps(
     {
         return Err(FrequencyError::NotReady);
     }
-    if margin.establish_for_voltage(measurement_uv).is_err() {
+    // The BSP changes read margin below the DT intermediate threshold. The
+    // A76 bootstrap rate is above that threshold; lower it first while its
+    // 750 mV supply remains confirmed, then restore before PVTM sampling.
+    if boot_hz > margin_threshold_hz
+        && !set_and_verify(phandle, cluster.clock_id(), margin_threshold_hz, boot_hz)
+    {
+        DOMAIN_READY[cluster.index()].store(false, Ordering::Release);
+        return Err(FrequencyError::HardwareFailure);
+    }
+    let margin_established = margin.establish_for_voltage(measurement_uv).is_ok();
+    let boot_restored = boot_hz <= margin_threshold_hz
+        || set_and_verify(phandle, cluster.clock_id(), boot_hz, boot_hz);
+    if !margin_established || !boot_restored {
         DOMAIN_READY[cluster.index()].store(false, Ordering::Release);
         if matches!(cluster, Cluster::A55) {
             DOMAIN_READY[1].store(false, Ordering::Release);
@@ -342,6 +461,23 @@ fn select_domain_opps(
         );
         return Err(FrequencyError::NotReady);
     }
+    let low_length_grade = table_node
+        .get_property("rockchip,pvtm-low-len-sel")
+        .and_then(|property| property.get_u32());
+    if !matches!(cluster, Cluster::A55) && low_length_grade != Some(3) {
+        return Err(FrequencyError::NotReady);
+    }
+    if !configure_pvtpll_length(
+        phandle,
+        cluster.clock_id(),
+        boot_hz,
+        grade,
+        low_length_grade,
+        firmware.legacy,
+    ) {
+        DOMAIN_READY[cluster.index()].store(false, Ordering::Release);
+        return Err(FrequencyError::HardwareFailure);
+    }
     let selection = HardwareSelection::from_otp(serial, grade, &opp_info)
         .map_err(|_| FrequencyError::NotReady)?;
     let selected = cpufreq_opp::parse_domain_opps(fdt, cpu.as_node(), selection)
@@ -382,7 +518,11 @@ fn select_domain_opps(
         opps.len(),
         opps.last().map_or(0, |opp| opp.mhz)
     );
-    Ok(SelectedDomain { opps, margin })
+    Ok(SelectedDomain {
+        opps,
+        margin,
+        low_temp_firmware: firmware.low_temp,
+    })
 }
 
 /// Complete silicon selection after device probing and CPU startup, before the
@@ -438,6 +578,13 @@ pub fn initialize_post_boot() {
         return;
     }
     if !set_and_verify(phandle, A55_CLK_ID, A55_MAX_HZ, A55_PVTM_HZ) {
+        disable_all_domains();
+        return;
+    }
+    if little.is_none() {
+        // At 750 mV the bootstrap A55 ring can deliver above its nominal
+        // 1.008 GHz. Without PVTM and a selected voltage/OPP table we cannot
+        // publish it as a calibrated operating point.
         disable_all_domains();
         return;
     }
@@ -725,6 +872,7 @@ const BOOT_OPP_IDX: usize = 2;
 struct SelectedDomain {
     opps: Vec<Opp>,
     margin: ReadMargin,
+    low_temp_firmware: bool,
 }
 
 static SELECTED_OPPS: OnceLock<[Option<SelectedDomain>; 3]> = OnceLock::new();
@@ -934,6 +1082,7 @@ pub fn refresh_limits() -> Result<(), FrequencyError> {
     initialize_post_boot();
     let mut first_error = None;
     let mut previous = [soc_cpufreq::ThermalState::default(); 3];
+    let temperature = cpufreq_sensors::soc_temperature_millidegrees().ok();
     for domain in [
         FrequencyDomain::Big0,
         FrequencyDomain::Big1,
@@ -942,7 +1091,6 @@ pub fn refresh_limits() -> Result<(), FrequencyError> {
         let index = domain.index();
         let old =
             soc_cpufreq::ThermalState::from_bits(TEMPERATURE_STATE[index].load(Ordering::Acquire));
-        let temperature = cpufreq_sensors::cpu_temperature_millidegrees(index).ok();
         let state = old.update(temperature);
         #[cfg(feature = "rk3588-cpufreq-thermal-test")]
         let state = {
@@ -972,24 +1120,50 @@ pub fn refresh_limits() -> Result<(), FrequencyError> {
         if check_ready(domain).is_err() {
             continue;
         }
+        let firmware_low_temp = SELECTED_OPPS
+            .get()
+            .and_then(|tables| tables[index].as_ref())
+            .is_some_and(|selected| selected.low_temp_firmware);
+        if firmware_low_temp
+            && old.low
+            && !state.low
+            && !configure_pvtpll_low_temp(domain.cluster().clock_id(), false)
+        {
+            mark_domain_failed(domain);
+            first_error.get_or_insert(FrequencyError::HardwareFailure);
+            continue;
+        }
         let current = IDX[index].load(Ordering::Acquire);
         let cap = maximum_index(domain);
-        if current > cap {
+        let adjustment = if current > cap {
             let target = describe(domain.cluster().opps()[cap]).frequency_hz;
-            if let Err(error) = set_frequency(domain, target) {
-                // The new thermal bound cannot be published while the clock
-                // may still exceed it, even if no hardware write was attempted.
-                mark_domain_failed(domain);
-                first_error.get_or_insert(error);
-            }
+            set_frequency(domain, target)
         } else if old != state {
             let opp = domain.cluster().opps()[current];
             let previous_uv = old.effective_voltage_uv(opp.uv);
             let new_uv = effective_voltage(domain.cluster(), opp.uv);
             if previous_uv != new_uv && !apply_opp(domain.cluster(), opp, new_uv > previous_uv) {
-                mark_domain_failed(domain);
-                first_error.get_or_insert(FrequencyError::HardwareFailure);
+                Err(FrequencyError::HardwareFailure)
+            } else {
+                Ok(())
             }
+        } else {
+            Ok(())
+        };
+        if let Err(error) = adjustment {
+            // The new thermal bound cannot be published while the clock may
+            // still exceed it, even if no hardware write was attempted.
+            mark_domain_failed(domain);
+            first_error.get_or_insert(error);
+            continue;
+        }
+        if firmware_low_temp
+            && !old.low
+            && state.low
+            && !configure_pvtpll_low_temp(domain.cluster().clock_id(), true)
+        {
+            mark_domain_failed(domain);
+            first_error.get_or_insert(FrequencyError::HardwareFailure);
         }
     }
     first_error.map_or(Ok(()), Err)

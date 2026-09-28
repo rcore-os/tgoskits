@@ -177,6 +177,9 @@ pub const RK8603_BIG1_ADDR: u8 = 0x43;
 
 /// Active runtime VSEL register on this board (RK8602_VSEL0). See module docs.
 const VSEL_REG: u8 = 0x06;
+/// RK8602/03 identity register; the BSP accepts die ID 0xa for both.
+const RK860X_ID1_REG: u8 = 0x03;
+const RK8602_03_DIE_ID: u8 = 0x0a;
 /// 8-bit voltage-code mask (`RK8602_NVOLTAGES = 160`, `vsel_mask = 0xff`).
 const VSEL_MASK: u8 = 0xff;
 /// Voltage encoding: `V = VSEL_BASE_UV + code · VSEL_STEP_UV` (µV).
@@ -224,6 +227,10 @@ fn uv_to_vsel(uv: u32) -> Option<u8> {
 /// Whether `uv` is inside the Phase-2 down-only safety envelope.
 fn in_envelope(uv: u32) -> bool {
     (VDD_FLOOR_UV..=VDD_CEIL_UV).contains(&uv)
+}
+
+fn is_expected_die_id(id: u8) -> bool {
+    id & 0x0f == RK8602_03_DIE_ID
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +609,7 @@ fn set_i2c0_pinmux() {
 /// mapping fails, in which case every `get_uv`/`set_uv*` below is a no-op that
 /// returns `None`/`false` and leaves the rails at their (safe) boot voltage.
 pub fn init() -> bool {
-    let mut guard = CONTROLLER.lock();
-    if guard.is_some() {
+    if CONTROLLER.lock().is_some() {
         return true;
     }
     // Bring the i2c0 bus up before any transaction: ungate its clocks, release
@@ -632,7 +638,16 @@ pub fn init() -> bool {
     };
     let i2c = Rk3xI2c { mmio };
     i2c.init_controller();
-    *guard = Some(i2c);
+    for chip in [RK8602_BIG0_ADDR, RK8603_BIG1_ADDR] {
+        let id = i2c.read_reg(chip, RK860X_ID1_REG);
+        if !id.is_some_and(is_expected_die_id) {
+            warn!(
+                "pmic_i2c: chip {chip:#x} unexpected RK8602/03 die ID {id:?}; rail access disabled"
+            );
+            return false;
+        }
+    }
+    *CONTROLLER.lock() = Some(i2c);
     true
 }
 

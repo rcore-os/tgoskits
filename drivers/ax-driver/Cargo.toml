@@ -151,6 +151,7 @@ rk3588-cpufreq = [
     "dep:arm-scmi-rs",
     "dep:ax-lazyinit",
     "dep:rdif-cpufreq",
+    "dep:smccc",
 ]
 # Test-only additive thermal constraints; real TSADC faults and limits still win.
 rk3588-cpufreq-thermal-test = ["rk3588-cpufreq"]
@@ -165,6 +166,7 @@ aic8800 = { workspace = true, optional = true }
 ahci-driver = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
+smccc = { version = "0.2", optional = true }
 ax-lazyinit = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-sync = { workspace = true, optional = true }

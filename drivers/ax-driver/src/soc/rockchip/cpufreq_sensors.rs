@@ -123,19 +123,12 @@ pub fn sku_serial() -> Result<u8, SensorError> {
     Ok(otp_specification_byte()? & 0x1f)
 }
 
-/// Read the CPU TSADC channel for A55, big0, or big1, in millidegrees Celsius.
-///
-/// `domain` follows the cpufreq domain order 0=A55, 1=big0, 2=big1. A result
-/// is returned only while the converter, that channel, and a verified <=120 C
-/// CRU hardware shutdown route remain enabled. A missing or implausible
-/// reading requires the caller to cap the OPP.
-pub fn cpu_temperature_millidegrees(domain: usize) -> Result<i32, SensorError> {
-    let channel = match domain {
-        0 => 3,
-        1 => 1,
-        2 => 2,
-        _ => return Err(SensorError::InvalidReading),
-    };
+/// The board CPU OPP tables and system monitor use `soc-thermal` (TSADC
+/// channel 0) for PVTM correction and dynamic low/high temperature limits. A
+/// reading is returned only while conversion and the hardware shutdown route
+/// remain enabled.
+pub fn soc_temperature_millidegrees() -> Result<i32, SensorError> {
+    let channel = 0;
     // probe_tsadc publishes this permanent mapping after all clock and
     // shutdown checks. Acquire also makes the completed probe visible here.
     let mmio = NonNull::new(TSADC_MMIO.load(Ordering::Acquire)).ok_or(SensorError::NotReady)?;

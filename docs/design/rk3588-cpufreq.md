@@ -71,12 +71,30 @@ RK3588 驱动以板卡 DTB、OTP 和 PVTM 决定可用 OPP，再让 SoC 转换�
 CPU OPP 来自板卡 DTB 的三个 `operating-points-v2` 表。OTP byte 6 的低五位
 `0x0d`、`0x0a` 分别是 M/bin1、J/bin2，其余是标准/bin0。探测双读 OTP 缓存；
 PVTM 在表指定的 750 mV 和 1.416/1.608 GHz 测量点取 GRF 样本，按 TSADC 温度
-修正后，从 `rockchip,pvtm-voltage-sel*` 选择电压档。测量频率必须与这两个
+修正后，从 `rockchip,pvtm-voltage-sel*` 选择电压档。温度使用三个 CPU OPP 表共同
+指定的 `soc-thermal`，即 TSADC 通道 0；它也是 BSP system monitor 的输入。
+测量频率必须与这两个
 已确认的板级值严格相等，异常 DT 值在 SCMI 升频前拒绝。随后同时匹配
 `opp-supported-hw` 型号与电压档掩码，优先读取 `opp-microvolt-L<档>`，
 没有该属性才读取普通 `opp-microvolt`。`opp-info` OTP 修正电压仍受 OPP
 允许的最大值限制。任一必要输入缺失、格式无效或测量无法恢复启动时钟时，
 不发布依赖该输入的高档。
+
+GRF 初始 read margin 写入前，时钟先降至 DT `intermediate-threshold-freq`
+规定的 1.008 GHz 并读回，写入后恢复启动频率并读回。A76 PVTM 分档不高于
+`rockchip,pvtm-low-len-sel` 时，再按 BSP 发送一次带 `OPP_LENGTH_LOW` 位的
+SCMI rate 请求，随后恢复普通 rate；除下述旧固件兼容路径外，任一步失败都不开放
+该域高档。SCMI 只返回
+请求状态与普通 rate，不能直接读回 PVTPLL length 模式，因此该步骤还必须结合
+实体板实际送达频率验证。板卡固件若通过 `PVTPLL_GET_INFO` 声明支持低温配置，
+驱动在低温状态切换时调用 `PVTPLL_LOW_TEMP`；未声明支持时不发送该 SMC。
+
+当前 Orange Pi 5 Plus 板上的 BL31 对 `PVTPLL_GET_INFO` 返回 `SMC_UNKNOWN`
+(`0xffffffff`)，对带低长度标志的 SCMI rate 返回 `InvalidParameters`。
+`configure_pvtpll_length` 仅在 SIP 返回 `SMC_UNKNOWN`、SCMI 对该请求明确返回
+`InvalidParameters`，且普通 rate 恢复并读回成功时
+使用 BSP 同样的旧固件路径；其他拒绝或读回失败仍关闭该域高档。旧固件不会报告
+length 是否生效，因而该例外必须由对应板卡的绑核 PMU 频率测量和领域审查共同约束。
 
 高档当前只对实体板验证过的标准 SKU 分档开放：A55 PVTM 档 0、1，
 两组大核 PVTM 档 0、3。J/M SKU 及其他未认证分档仅保留确认的低档；
@@ -94,6 +112,10 @@ PVTM 在表指定的 750 mV 和 1.416/1.608 GHz 测量点取 GRF 样本，按 TS
 两个大核域。调压每步至多 25 mV，读回选择码并等待稳定。CPU 与 mem supply
 在该板卡指向同一物理轨，只写一次。GRF read margin 按电压表设置并读回；
 SCMI 设置也必须读回目标 ring。SoC 层转换状态机规定：
+
+RK8602、RK8603 在轨电压读写开放前读取 ID1 寄存器，只有 die ID 低四位为
+`0xa` 才按板卡电压编码访问。PMIC 选择码读回确认了寄存器状态，实际轨电压仍
+依赖器件正常工作。
 
 | 转换 | 第一步 | 第二步 | 部分失败后的处理 |
 | --- | --- | --- | --- |
@@ -115,17 +137,25 @@ RK3588 大核频率对 A55/DSU 有最低频率要求。按 BSP 规则，大核�
 `ThermalState::update` 维护高低温两个独立迟滞条件，`refresh_limits` 将它们映射到
 每域的频率上限和有效电压，并在超限时先执行降档。
 
-TSADC 初始化七个通道的 120 °C 硬件关机比较器及 CRU 路由，等待三个 CPU
-通道出现有效样本后才公开传感器。低于 10 °C 启用 750 mV 电压下限，超过
+TSADC 初始化七个通道的 120 °C 硬件关机比较器及 CRU 路由；调频读取
+`soc-thermal` 通道 0，并在每次读取时确认该通道及关机路由仍有效。低于
+10 °C 启用 750 mV 电压下限，超过
 15 °C 解除；高于 85 °C 将 A55 限到 1.608 GHz、大核限到 2.208 GHz，
 低于 80 °C 恢复。温度丢失时，电压使用 750 mV 下限，频率不超过已确认的
 A55 1008 MHz、大核 1200 MHz；未完成大核分档确认时仅开放 816 MHz。
 每次工作线程轮询先更新这些限制再处理请求。
 
+对于固件明确声明支持的 PVTPLL 低温模式，进入低温时先确认电压下限，再发送
+`PVTPLL_LOW_TEMP(1)`；退出时先发送 `PVTPLL_LOW_TEMP(0)`，再允许降低轨电压。
+SMC 只有成功状态，没有独立的应用状态读回；返回失败则关闭该域后续调频。
+
 ### 3.2 失效边界
 
 `check_ready` 只开放读回已确认的调频域；`mark_domain_failed` 在转换状态不再可信时
 关闭三个域，避免大核频率未知后继续按旧 DSU 约束调小核。
+若 A55 的 PVTM/OPP 筛选失败，`initialize_post_boot` 恢复启动 ring 后关闭全部调频域：
+750 mV 下的 A55 1.008 GHz ring 在实体板上可能实际送达约 1.15 GHz，不能作为
+已校准的固定 OPP 对外公布。
 
 OTP/PVTM/传感器、PMIC 读回、SCMI 时钟或 GRF 确认失败均不得通过猜测软件
 索引开放档位。RK806 已在实体板上读回 buck2 选择码；任何无法再次读回的
@@ -165,8 +195,18 @@ CPUFreq 策略测试。ArceOS 的 `cpufreq` 板卡用例补充三域并发调档
 
 ### 4.2 板卡结果
 
-以下数据来自 2026-09-24 的 Orange Pi 5 Plus 实体板运行，包含两种 PVTM 分档。
+以下数据来自 Orange Pi 5 Plus 实体板运行，包含两种 PVTM 分档。
 频率以绑核 PMU 周期计数与系统计时器换算，轨电压由 PMIC 选择码读回确认。
+
+2026-09-28 的电源时钟修正后，`OrangePi-5-Plus-2` 和最终差异上的
+`OrangePi-5-Plus-1` 均通过 ArceOS `cpufreq` 用例：两板都是 OTP 标准 SKU、
+A55 PVTM 档 1、两个大核档 3，筛选上限为 1.8/2.352/2.352 GHz。
+最终运行在 `OrangePi-5-Plus-1` 的最高档绑核实测约
+1.828/2.241/2.252 GHz，三域 408 MHz 档约 396 MHz；三域并发请求和
+合成高低温限制得到 `CPU_CPUFREQ_THERMAL_OK`、`CPU_CPUFREQ_OK`。
+两板的 `PVTPLL_GET_INFO`
+返回 `SMC_UNKNOWN`，低长度 SCMI 请求返回 `InvalidParameters`，因此本次测量
+覆盖的是普通 rate 的旧固件兼容路径；不构成新固件接受低长度命令的证据。
 
 2026-09-24 的 OrangePi-5-Plus-3 运行通过：OTP 标准 SKU，PVTM 分档
 A55 0、大核 0；OPP 上限 A55 1.8 GHz、大核 2.256 GHz。板上绑核测量
