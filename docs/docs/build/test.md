@@ -198,10 +198,10 @@ trait CargoRunner {
 
 ## 9. 命令示例
 
-默认命令读取完整 CSV 并输出每个 package 的进度和最终汇总；`--since` 可用于本地增量验证。
+默认命令读取完整 CSV 并输出每个 package 的进度和最终汇总；`--since` 只根据相对基线已提交的软件包差异选择测试。单独修改 `std_crates.csv` 不会选中条目，维护白名单时按 `update-std-tests` 技能核对所选包，必要时运行默认命令。
 
 ```bash
-# 运行白名单中所有 crate 的 std 测试（CI 默认）
+# 运行白名单中所有 crate 的 std 测试（主分支 CI）
 cargo xtask test
 
 # 只运行自指定 ref 以来受影响的白名单 package

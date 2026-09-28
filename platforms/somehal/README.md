@@ -427,8 +427,8 @@ impl Platform for PlatformImpl {
 在提交代码前，请确保：
 
 1. 代码通过 `cargo fmt` 格式化
-2. 通过 `cargo clippy` 检查
-3. 在目标平台上测试通过
+2. 使用 `cargo xtask clippy --package somehal` 检查受影响的软件包
+3. 影响目标运行时行为时，通过相关的 QEMU 或板卡用例验证
 4. 更新相关文档
 
 ---

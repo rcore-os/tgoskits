@@ -289,7 +289,7 @@ Axvisor Runtime 通过虚拟化组件管理 Guest 生命周期，并通过平台
 | 命令 | 功能 | 典型用法 |
 |------|------|---------|
 | `cargo xtask test` | 主机端标准库单元测试（`std_crates.csv` 白名单） | `cargo xtask test` |
-| `cargo xtask clippy` | Clippy 静态检查（支持全量、指定包和增量模式） | `cargo xtask clippy --since origin/main` |
+| `cargo xtask clippy` | Clippy 静态检查（支持全量、指定包和增量模式） | `cargo xtask clippy --since origin/dev` |
 | `cargo arceos` | ArceOS 配置、构建与运行 | `cargo arceos defconfig qemu-riscv64` |
 | `cargo starry` | StarryOS 配置、构建、运行与测试 | `cargo starry defconfig qemu-aarch64` |
 | `cargo axvisor` | Axvisor 配置、构建、运行与测试 | `cargo axvisor defconfig qemu-aarch64` |

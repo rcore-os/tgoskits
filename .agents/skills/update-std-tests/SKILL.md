@@ -87,9 +87,10 @@ python3 .agents/skills/update-std-tests/scripts/std_test_candidates.py apply --r
 
 ## 验证
 
-应用修改后必须运行标准库测试；使用 `cargo xtask test`，或在基线能覆盖本次全部改动时使用 `cargo xtask test --since <REF>`：
+应用白名单修改后必须验证变更条目。`--since` 只检查已提交的软件包差异，单独修改 CSV 不会选中任何测试；如果同时修改并提交了对应软件包，可用增量入口并核对变更条目确实被选中。否则使用完整白名单入口验证：
 
 ```bash
+cargo xtask test --since <REF>
 cargo xtask test
 ```
 

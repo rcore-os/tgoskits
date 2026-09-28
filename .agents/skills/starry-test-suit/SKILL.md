@@ -116,14 +116,14 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 
 ## 验证
 
-使用下列 `xtask` 命令：
+按受影响的架构、用例或应用选择 `xtask` 命令；下列命令是定向验证示例，不要求在提交拉取请求前逐项执行：
 
 ```bash
-cargo xtask starry test qemu --arch riscv64
-cargo xtask starry test qemu --arch aarch64 -c qemu/system
+cargo xtask starry test qemu --arch riscv64 -c <case>
+cargo xtask starry test qemu --arch aarch64 -c qemu/system/<subcase>
 cargo xtask starry test qemu --arch x86_64 -c qemu/syscall-test-prlimit64
 cargo xtask starry app qemu -t stress/git --arch riscv64
-cargo xtask starry test board --board orangepi-5-plus
+cargo xtask starry test board --board orangepi-5-plus --test-case <case>
 ```
 
 修改 `scripts/axbuild` 下 Rust 逻辑时，还要按仓库规则运行格式化和定向静态检查：

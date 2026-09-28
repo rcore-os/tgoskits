@@ -150,7 +150,7 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 
 ## 验证层级
 
-从最小检查开始，逐层扩大：
+按实际改动选择受影响软件包、体系结构和用例。下面是可选的验证入口，不是提交拉取请求前逐项执行的清单；仅在失败或尚未覆盖的风险要求时扩大范围：
 
 ```bash
 cargo test -p axbuild --lib
@@ -158,14 +158,14 @@ cargo test -p axvmconfig
 cargo test -p axdevice serial::tests
 cargo test -p axvm machine::tests
 cargo test -p virtualization-tests --test configured_device_graph
-cargo xtask ktest qemu --workspace --arch <arch>
-cargo xtask arceos test qemu --arch <arch>
-cargo xtask starry test qemu --arch <arch>
+cargo xtask ktest qemu --package <package> --arch <arch>
+cargo xtask arceos test qemu --arch <arch> --test-group <group> --test-case <case>
+cargo xtask starry test qemu --arch <arch> -c <case>
 cargo xtask axvisor test qemu --list --arch <arch>
 cargo xtask axvisor test qemu --arch <arch> --test-group normal --test-case smoke
 ```
 
-`ktest qemu --arch <arch>` 按 `[package.metadata.docs.rs].targets` 中匹配的裸机目标筛选 Cargo 元数据执行计划。没有文档目标的软件包有意只在 x86_64 执行，`[package.metadata.axtest] runtime = "board"` 从 QEMU 排除。同一体系结构全部 ArceOS 测试放在一次串行 `ktest` 调用中，不能替代独立 ArceOS Rust 与 C 测试套件命令。
+`ktest qemu --arch <arch>` 按 `[package.metadata.docs.rs].targets` 中匹配的裸机目标筛选 Cargo 元数据执行计划。没有文档目标的软件包有意只在 x86_64 执行，`[package.metadata.axtest] runtime = "board"` 从 QEMU 排除。同一体系结构中选中的 ArceOS 内核测试软件包可放在一次串行 `ktest` 调用中；它不能替代受影响的 ArceOS Rust 与 C 测试套件用例。
 
 LoongArch Axvisor 虚拟化扩展验证使用仓库容器，并在容器内构建 `xtask`：
 
@@ -208,7 +208,7 @@ cargo xtask clippy --package someboot
 
 ## 完成条件
 
-- 修改在最小受影响层通过验证，并至少通过目标操作系统的一条端到端 QEMU 路径。
+- 修改在最小受影响层通过验证；影响目标操作系统运行时路径时，通过相应目标的一条相关端到端 QEMU 或板卡用例。没有受影响的运行时路径时，不为提交拉取请求运行无关用例。
 - 临时调试标记、一次性 QEMU 参数和本地路径已删除，或明确记录为长期设计。
 - `qemu-<arch>.toml`、`build-*.toml` 和操作系统配置只声明实际验证过的体系结构。
 - 新目标、容器或固件要求已写入相关技能、测试套件指南或文档。
