@@ -44,6 +44,8 @@ Starry 的调用顺序为文件描述符的 `operation` 锁、必要时的 `mode
 
 `Card0File::ioctl` 用 Linux `DRM_RENDER_ALLOW` 表限制 `renderD128`：它可以管理 GPU 资源和 PRIME 引用，但不能查询或改变 KMS 状态，也不能创建 dumb framebuffer。`Card0::handle_dirty_fb` 只重提交流水线当前正在扫描的 framebuffer；后备缓冲区要等正式翻页提交，停用的 CRTC 不会因 dirty 通知重新点亮。这使 `ModesetState::plane_fb_id` 与设备 scanout 保持一致。
 
+Starry 的 KMS 门禁以显示控制器存在为准，不要求 GPU 实现 2D 图像资源。只有显示控制器的设备可把 dumb buffer 和 PRIME 导入 backing 直接交给 `DisplayController::check`、`commit`；支持图像资源的设备仍按原有资源创建路径处理，包括拒绝不支持的格式。当前 scanout 和待完成的旧 scanout 都保留 `FbBacking` 引用。异步提交返回 `Pending` 时，Card0 在任务上下文启动单个回收任务，每 20 ms 查询 `commit_status`；确认完成后才释放旧引用。回收任务进入设备锁前先放开 Card0 的引用表锁，因此 `GpuResource::drop` 可以安全地重新进入设备锁。没有 GPU IRQ 的显示设备只要能通过 `commit_status` 查询完成状态，也可走这条回收路径。
+
 ## 3. 操作系统接入
 
 ArceOS 的 `axruntime` 把 `ax-driver` 注册对象交给 `axgpu`，`axdisplay` 通过同一实例访问显示端。StarryOS 的 DRM 核心维护 GEM handle、framebuffer、PRIME 与 modeset 状态；Linux 标准的 `DRM_IOCTL_VIRTGPU_*` 只在 VirtIO 兼容模块中转译到可选 `VirglOps`，不向通用 RDIF 泄漏 Linux UAPI，也不增加 Starry 专属 ioctl。同设备 PRIME 别名共享资源引用；外部 dma-heap 连续缓冲区只在 GPU 使用 Direct DMA 域时作为 backing 导入，其他 DMA 域须先提供映射能力。设备身份和 sysfs 信息来自已绑定驱动，VirtIO PCI 数值属性从探测到的 endpoint 读取；sysfs 父路径暂保留供现有 libdrm 使用的 platform 兼容层。没有 GPU 时不发布 DRM 节点，没有可映射 scanout 时不发布 `/dev/fb0`。无输出 GPU 的 dumb ioctl 仍按其图像资源能力工作，但 KMS ioctl 不发布显示能力。
@@ -108,3 +110,11 @@ QMP `screendump` 对 `egl-headless` 返回 `no surface`，因此画面由 VNC �
 | `cc -std=gnu11 -Wall -Wextra -Werror -fsyntax-only test-suit/starryos/qemu/system/drm-test-drm-modeset/src/main.c` | DRM 系统用例语法检查通过 |
 
 `ax-driver`、`ax-runtime` 与 `starry-kernel` 的项目任务工具没有单一功能组合入口；上面三条原生 Cargo 命令按任务工具展开的参数定向检查，避免执行整个功能矩阵。本次没有获取新的实体板卡、QEMU 或 virgl 画面证据；系统用例的新增断言仍需在 CI 运行。
+
+### 4.3 2026-09-28 通用 scanout 复核
+
+补齐无 2D 图像资源的显示控制器：`/dev/fb0` 的直接 backing 刷新可识别当前 scanout；Starry 的 KMS、dumb buffer 与 `ADDFB2` 可以提交 backing，`DRM_CAP_DUMB_BUFFER` 与实际能力一致。提交成功后当前 scanout 和异步待释放的旧 scanout 都保留 backing 或 GPU 资源引用；回收任务在完成确认后释放旧引用。
+
+`ax-display` 的直接 backing 身份测试先在旧匹配逻辑上失败，再在修复后以相同命令通过。`cargo fmt` 和 `git diff --check` 通过；`cargo xtask clippy --package ax-display` 的 2/2 组合通过。`cargo xtask clippy --package starry-kernel` 的 AArch64 基础组合已通过，随后按本地验证范围限制中止剩余矩阵；`cargo clippy --no-deps -p starry-kernel --no-default-features -- -D warnings` 定向通过。用户要求本地不运行全量 Clippy 或 QEMU；本次没有新的图形输出证据。
+
+提交代码后运行 `cargo xtask test --since e5efb8291dfe0997341524e1d3f14b082000e421`，`ax-display` 和 `starry-kernel` 2/2 软件包通过，其中 `ax-display` 的直接 backing 回归测试在项目入口实际执行并通过。此前只覆盖 `ax-display` 的定向测试先在旧实现上报告断言失败。本次没有可用于直接 backing 显示控制器的 QEMU 设备，因此 Starry 的纯 backing KMS 路径仍待带相应驱动的系统用例验证。

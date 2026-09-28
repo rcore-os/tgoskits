@@ -98,6 +98,16 @@ pub fn framebuffer_mapping() -> DisplayResult<Arc<ax_gpu::MappableBacking>> {
     Ok(default_framebuffer()?.2)
 }
 
+fn same_scanout(active: &ScanoutBuffer, default: &ScanoutBuffer) -> bool {
+    match (active, default) {
+        (ScanoutBuffer::Gpu(active), ScanoutBuffer::Gpu(default)) => active == default,
+        (ScanoutBuffer::Backing(active), ScanoutBuffer::Backing(default)) => {
+            Arc::ptr_eq(active, default)
+        }
+        _ => false,
+    }
+}
+
 /// Submits full-frame damage for the current output.
 pub fn framebuffer_flush() -> DisplayResult {
     let (mut state, framebuffer, _) = default_framebuffer()?;
@@ -105,10 +115,11 @@ pub fn framebuffer_flush() -> DisplayResult {
         let Some(active) = device.current_state(state.output)? else {
             return Ok(());
         };
-        let still_active = matches!(
-            (active.framebuffer.as_ref().map(|fb| &fb.buffer), state.framebuffer.as_ref().map(|fb| &fb.buffer)),
-            (Some(ScanoutBuffer::Gpu(active)), Some(ScanoutBuffer::Gpu(default))) if active == default
-        );
+        let still_active = active
+            .framebuffer
+            .as_ref()
+            .zip(state.framebuffer.as_ref())
+            .is_some_and(|(active, default)| same_scanout(&active.buffer, &default.buffer));
         if !still_active {
             return Ok(());
         }
@@ -126,4 +137,52 @@ pub fn framebuffer_flush() -> DisplayResult {
 /// Restores the boot framebuffer after a separate modeset.
 pub fn framebuffer_restore_scanout() -> DisplayResult {
     ax_gpu::restore_default_scanout()
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use alloc::sync::Arc;
+    use core::ops::Range;
+
+    use ax_gpu::rdif_gpu::{Backing, DmaDomainId, DmaSegment, GpuError};
+
+    use super::{ScanoutBuffer, same_scanout};
+
+    struct TestBacking;
+
+    // SAFETY: This zero-length backing has no DMA segments or CPU storage.
+    // The test only compares Arc identities and never submits it to a device.
+    unsafe impl Backing for TestBacking {
+        fn len(&self) -> usize {
+            0
+        }
+
+        fn domain_id(&self) -> DmaDomainId {
+            DmaDomainId::Direct
+        }
+
+        fn segments(&self) -> &[DmaSegment] {
+            &[]
+        }
+
+        fn sync_for_device(&self, _range: Range<usize>) -> Result<(), GpuError> {
+            Ok(())
+        }
+
+        fn sync_for_cpu(&self, _range: Range<usize>) -> Result<(), GpuError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn direct_backing_remains_the_active_boot_scanout() {
+        let backing: Arc<dyn Backing> = Arc::new(TestBacking);
+        let active = ScanoutBuffer::Backing(backing.clone());
+        let default = ScanoutBuffer::Backing(backing);
+        assert!(same_scanout(&active, &default));
+        assert!(!same_scanout(
+            &active,
+            &ScanoutBuffer::Backing(Arc::new(TestBacking))
+        ));
+    }
 }

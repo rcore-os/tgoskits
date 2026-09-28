@@ -37,7 +37,8 @@ use core::{
     any::Any,
     num::NonZeroUsize,
     ops::Range,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    time::Duration,
 };
 
 use ax_gpu::MappableBacking;
@@ -388,7 +389,8 @@ struct Framebuffer {
 /// Backing storage for a DRM framebuffer.
 #[derive(Clone)]
 enum FbBacking {
-    /// Imported GEM backing awaiting image layout from `ADDFB2`.
+    /// CPU-mappable backing used directly by the display or awaiting image
+    /// layout from `ADDFB2`.
     Dumb { mapping: Arc<GpuMapping> },
     /// Device buffer retained across GEM handle close and scanout.
     Gpu3d { resource: Arc<GpuResource> },
@@ -737,11 +739,12 @@ pub struct Card0 {
     /// `ADDFB2`-registered framebuffer ids, mapped to the dumb handle
     /// they were built over. Cleared on `RMFB`.
     fbs: Mutex<BTreeMap<u32, Framebuffer>>,
-    /// Resource currently bound to scanout. The scanout itself owns a GEM
-    /// reference independently of the originating framebuffer and handle.
-    scanout_resource: Mutex<Option<Arc<GpuResource>>>,
-    /// Old scanout references awaiting an asynchronous device completion.
-    retired_scanout_resources: Mutex<Vec<(Completion, Arc<GpuResource>)>>,
+    /// Scanout pins its backing or device resource after the framebuffer and
+    /// its GEM handle have been removed.
+    scanout_pin: Mutex<Option<FbBacking>>,
+    /// Old scanouts awaiting confirmation that the device stopped using them.
+    retired_scanouts: Mutex<Vec<(Completion, FbBacking)>>,
+    scanout_reaper_running: AtomicBool,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
     /// User-published blobs. A committed mode pins its own reference in state.
@@ -997,6 +1000,21 @@ async fn run_vblank_timer(weak: Weak<Card0File>) {
     }
 }
 
+fn run_scanout_reaper(weak: Weak<Card0>) {
+    loop {
+        crate::task::sleep(Duration::from_millis(20));
+        let Some(card) = weak.upgrade() else { return };
+        card.reap_retired_scanouts();
+        if card.retired_scanouts.lock().is_empty() {
+            card.scanout_reaper_running.store(false, Ordering::Release);
+            // A modeset may have queued another completion while this worker
+            // was shutting down. It will either start a worker or be seen here.
+            card.start_scanout_reaper();
+            return;
+        }
+    }
+}
+
 impl Card0 {
     /// Called with the modeset state locked, so queue submission cannot race
     /// the transition from an active clock to a completed pending event.
@@ -1055,8 +1073,9 @@ impl Card0 {
             // MAP_DUMB yet").
             next_offset: AtomicU64::new(DUMB_BUFFER_OFFSET_STRIDE),
             fbs: Mutex::new(BTreeMap::new()),
-            scanout_resource: Mutex::new(None),
-            retired_scanout_resources: Mutex::new(Vec::new()),
+            scanout_pin: Mutex::new(None),
+            retired_scanouts: Mutex::new(Vec::new()),
+            scanout_reaper_running: AtomicBool::new(false),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
             blobs: Mutex::new(BTreeMap::new()),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
@@ -1181,7 +1200,11 @@ fn display_output_info() -> VfsResult<OutputInfo> {
 
 fn kms_available() -> bool {
     ax_gpu::has_display_controller()
-        && ax_gpu::capabilities().is_some_and(|capabilities| capabilities.supports_image_2d)
+}
+
+fn dumb_supported() -> bool {
+    kms_available()
+        || ax_gpu::capabilities().is_some_and(|capabilities| capabilities.supports_image_2d)
 }
 
 fn format_to_fourcc(format: PixelFormat) -> u32 {
@@ -1865,25 +1888,39 @@ impl Drop for Card0File {
 
 impl Card0 {
     fn reap_retired_scanouts(&self) {
-        let retired = core::mem::take(&mut *self.retired_scanout_resources.lock());
+        let retired = core::mem::take(&mut *self.retired_scanouts.lock());
         let mut pending = Vec::new();
-        for (completion, resource) in retired {
+        for (completion, pin) in retired {
             let status = ax_gpu::with_display(|device| device.commit_status(completion));
             if !matches!(status, Ok(Ok(CompletionStatus::Complete))) {
-                pending.push((completion, resource));
+                pending.push((completion, pin));
             }
         }
-        self.retired_scanout_resources.lock().extend(pending);
+        self.retired_scanouts.lock().extend(pending);
     }
 
-    fn retain_old_scanout(&self, completion: Completion, next: Option<Arc<GpuResource>>) {
-        let previous = core::mem::replace(&mut *self.scanout_resource.lock(), next);
+    fn retain_old_scanout(&self, completion: Completion, next: Option<FbBacking>) {
+        let previous = core::mem::replace(&mut *self.scanout_pin.lock(), next);
         if let (Completion::Pending(_), Some(previous)) = (completion, previous) {
-            self.retired_scanout_resources
-                .lock()
-                .push((completion, previous));
+            self.retired_scanouts.lock().push((completion, previous));
         }
         self.reap_retired_scanouts();
+        self.start_scanout_reaper();
+    }
+
+    fn start_scanout_reaper(&self) {
+        if self.retired_scanouts.lock().is_empty()
+            || self.scanout_reaper_running.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let weak = self.self_weak.clone();
+        if let Err(error) = crate::task::kernel_thread_builder(String::from("card0-scanout-reaper"))
+            .spawn(move || run_scanout_reaper(weak))
+        {
+            self.scanout_reaper_running.store(false, Ordering::Release);
+            warn!("failed to start scanout completion worker: {error:?}");
+        }
     }
 
     fn clear_scanout(&self, test_only: bool) -> VfsResult<()> {
@@ -1922,13 +1959,9 @@ impl Card0 {
             .get(&fb_id)
             .cloned()
             .ok_or(VfsError::InvalidInput)?;
-        let (buffer, resource) = match &fb.kind {
-            FbBacking::Gpu3d { resource } => {
-                (ScanoutBuffer::Gpu(resource.device_handle), Some(resource.clone()))
-            }
-            // `ADDFB2` binds every imported backing to a device image
-            // before publishing the framebuffer.
-            FbBacking::Dumb { .. } => return Err(VfsError::InvalidInput),
+        let buffer = match &fb.kind {
+            FbBacking::Gpu3d { resource } => ScanoutBuffer::Gpu(resource.device_handle),
+            FbBacking::Dumb { mapping } => ScanoutBuffer::Backing(mapping.backing()),
         };
         let requested_mode = proposed.mode.as_ref().map(|mode| DisplayMode {
             width: u32::from(mode.info.hdisplay),
@@ -1987,7 +2020,7 @@ impl Card0 {
         .map_err(map_display_err)?
         .map_err(map_display_err)?;
         if let Some(completion) = completion {
-            self.retain_old_scanout(completion, resource);
+            self.retain_old_scanout(completion, Some(fb.kind));
         }
         Ok(())
     }
@@ -2010,6 +2043,9 @@ impl Card0 {
             return Err(VfsError::InvalidInput);
         }
         if c.width > 16384 || c.height > 16384 {
+            return Err(VfsError::InvalidInput);
+        }
+        if !dumb_supported() {
             return Err(VfsError::InvalidInput);
         }
         let bytes_per_pixel = c.bpp / 8;
@@ -2053,43 +2089,47 @@ impl Card0 {
             },
             None => BufferDescriptor::Linear { size: size as usize },
         };
-        let device_handle = ax_gpu::with_gpu(|device| {
-            device.create_buffer(descriptor, mapping.backing())
-        })
-        .map_err(map_gpu_err)?
-        .map_err(|error| match error {
-            GpuError::Unsupported => VfsError::InvalidInput,
-            other => map_gpu_err(other),
-        })?;
-        let command_id = ax_gpu::with_gpu(|device| {
-            device
-                .virgl()
-                .map(|virgl| virgl.command_resource_id(device_handle))
-        })
-        .and_then(|id| id.transpose());
-        let res_handle = match command_id {
-            Ok(Some(id)) => id,
-            Ok(None) => self.next_res_handle.fetch_add(1, Ordering::Relaxed),
-            Err(error) => {
-                let _ = ax_gpu::with_gpu(|device| device.release_buffer(device_handle));
-                return Err(map_gpu_err(error));
-            }
+        let resource = if ax_gpu::capabilities().is_some_and(|caps| caps.supports_image_2d) {
+            let device_handle = ax_gpu::with_gpu(|device| {
+                device.create_buffer(descriptor, mapping.backing())
+            })
+            .map_err(map_gpu_err)?
+            .map_err(|error| match error {
+                GpuError::Unsupported => VfsError::InvalidInput,
+                other => map_gpu_err(other),
+            })?;
+            let command_id = ax_gpu::with_gpu(|device| {
+                device
+                    .virgl()
+                    .map(|virgl| virgl.command_resource_id(device_handle))
+            })
+            .and_then(|id| id.transpose());
+            let res_handle = match command_id {
+                Ok(Some(id)) => id,
+                Ok(None) => self.next_res_handle.fetch_add(1, Ordering::Relaxed),
+                Err(error) => {
+                    let _ = ax_gpu::with_gpu(|device| device.release_buffer(device_handle));
+                    return Err(map_gpu_err(error));
+                }
+            };
+            Some(Arc::new(GpuResource {
+                owner: file.file_id,
+                res_handle,
+                device_handle,
+                bo_handle: handle,
+                width: c.width,
+                height: c.height,
+                stride: pitch,
+                format: dumb_format,
+                size: c.size,
+                blob_mem: 0,
+                blob_flags: 0,
+                is_dumb_2d: true,
+                last_fence: AtomicU64::new(0),
+            }))
+        } else {
+            None
         };
-        let resource = Some(Arc::new(GpuResource {
-            owner: file.file_id,
-            res_handle,
-            device_handle,
-            bo_handle: handle,
-            width: c.width,
-            height: c.height,
-            stride: pitch,
-            format: dumb_format,
-            size: c.size,
-            blob_mem: 0,
-            blob_flags: 0,
-            is_dumb_2d: true,
-            last_fence: AtomicU64::new(0),
-        }));
 
         let buffer = DumbBuffer {
             owner: file.file_id,
@@ -2304,9 +2344,7 @@ fn handle_get_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<u
     let mut cap: DrmGetCap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
     // Unknown caps return value=0 rather than EINVAL.
     cap.value = match cap.capability {
-        DRM_CAP_DUMB_BUFFER => u64::from(
-            ax_gpu::capabilities().is_some_and(|capabilities| capabilities.supports_image_2d),
-        ),
+        DRM_CAP_DUMB_BUFFER => u64::from(dumb_supported()),
         DRM_CAP_TIMESTAMP_MONOTONIC => 1,
         DRM_CAP_CRTC_IN_VBLANK_EVENT => u64::from(kms_available()),
         DRM_CAP_ADDFB2_MODIFIERS => u64::from(kms_available()),
@@ -2862,7 +2900,9 @@ impl Card0 {
         }
         // PRIME import does not carry image geometry. Bind its existing GEM
         // backing to a device image only after ADDFB2 supplies the layout.
-        if let FbBacking::Dumb { mapping } = &kind {
+        if let FbBacking::Dumb { mapping } = &kind
+            && ax_gpu::capabilities().is_some_and(|caps| caps.supports_image_2d)
+        {
             let device_handle = ax_gpu::with_gpu(|device| {
                 device.create_buffer(
                     BufferDescriptor::Image2d {
