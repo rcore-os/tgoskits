@@ -79,6 +79,7 @@ The output is:
 
 ```text
 target/x86_64-unknown-uefi/release/axloader.efi
+target/x86_64-unknown-uefi/release/axloader-launcher.efi
 ```
 
 The QEMU test uses OVMF, q35, a virtio network device, real UDP discovery and
@@ -92,18 +93,79 @@ never used to inject a command. Success requires all of the following:
 - `ready_to_handoff` reached the control server;
 - `elf_loaded:` appeared in diagnostics.
 
+## x86_64 OTA 布局与状态
+
+首次迁移后，ESP 中的 `EFI/BOOT/BOOTX64.EFI` 是独立构建的
+`axloader-launcher.efi`；`EFI/AXLOADER/A.EFI` 是迁移前的装载器，
+`B.EFI` 是新装载器。`STATE0.BIN` 与 `STATE1.BIN` 分别存放 256 字节
+`State::encode()` 记录。记录包含代次、稳定槽、待试槽、两槽 SHA-256、
+升级 ID、来源、试运行标志、上次结果和记录校验和。`OtaDisk::load()` 只选择
+校验通过且代次较新的记录，`OtaDisk::commit()` 只写另一份，Flush 后读回
+核对。FAT 不是事务性文件系统；两份记录都不可用时启动器停止并显示诊断。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stable: A 稳定、B 空闲
+    Stable --> Staged: 分块写非活动槽，核对长度/摘要/PE/LoadImage
+    Staged --> Trial: 启动器先持久标记 attempted
+    Trial --> Stable: 匹配 ID 与来源的确认持久提交
+    Trial --> RolledBack: 启动失败或未确认便复位
+    RolledBack --> Stable: 校验原稳定槽后启动
+```
+
+`launcher::launch()` 从同一 ESP 的完整设备路径调用 `LoadImage`／`StartImage`；
+只信任状态记录中对应的文件摘要。待试槽在接收服务端确认指令或直连方确认前
+不会接收内核启动命令。待试装载器宕机或断电，下一次启动先回滚。旧稳定槽
+也无法核对时，必须使用外部介质修复。普通升级只写非活动槽；32 MiB 是
+镜像上限。
+
+`loader::direct::Listener` 使用同一 NIC 的 UEFI TCP4 被动监听 `2999`：
+
+| 接口 | 调用 |
+| --- | --- |
+| `GET /api/v1/ota/status` | 查看运行/稳定槽、摘要、升级 ID、阶段和最近结果 |
+| `PUT /api/v1/ota/image` | 原始 EFI 请求体；必须带 `Content-Length`、`X-Image-Sha256`，成功返回 `202` 和升级 ID 并冷重启 |
+| `POST /api/v1/ota/confirm` | JSON `{"update_id":"..."}`；仅当前直连待试槽接受 |
+
+直连升级不依赖 ostool-server。上传方在重启后先核对 `running_sha256` 和
+`pending_update_id`，再确认。服务端指派使用协议 v4：轮询带 `ota` 状态，
+`update` 给出镜像 URL/长度/摘要，装载器下载、落盘并重启；新槽轮询到匹配
+注册代次、MAC、升级 ID 与运行摘要后才接收 `confirm_update`。服务器启动任务
+仍兼容 v3。TGOS 暂以 `httpboot-protocol` 0.3 的启动结构序列化加上 v4 OTA
+字段；ostool 0.4 的协议发布后可直接替换为共享 OTA 类型。
+
+当前使用的 OVMF 在同一网卡同时保持被动 TCP4 子对象与 HTTP 客户端时，
+服务端控制请求会停住。装载器在控制请求期间暂时关闭直连监听，交换完成
+后重新监听；直连方如果在该窗口连接失败，应重新查询状态再上传或确认。
+发现服务器和轮询间隔仍会处理直连接入；这份固件暂不能保证控制请求期间
+端口 `2999` 连续可用。
+
+仅在可信隔离实验网使用：SHA-256 检查传输一致性，不认证上传者或服务器，
+MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执行同一验签策略并
+验证拒绝路径，再允许回滚；旧槽可能恢复旧的内核认证缺口。
+
 ## Install to removable media
 
-The helper builds the loader, mounts an EFI partition, installs the removable
-media filename, verifies the copy, syncs, and unmounts:
+本脚本只做首次迁移，必须在尚有旧版 `BOOTX64.EFI` 的 x86_64 可写 ESP 上运行：
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh
 ./bootloader/axloader/scripts/build-install-efi.sh --device /dev/sdb1
 ```
 
-By default it finds the `OSTOOLBOOT` filesystem and installs
-`EFI/BOOT/BOOTX64.EFI`.
+默认按 `OSTOOLBOOT` 查找分区。脚本先构建并校验两份 PE 映像、检查空闲
+空间，把旧文件备份为 `EFI/AXLOADER/BOOTX64.ORIGINAL.EFI` 与 A，写入 B、
+双状态记录和临时启动器并同步、逐项核对；最后才覆盖 `BOOTX64.EFI`。
+首次替换启动器仍有断电窗口；保留原文件备份和外部启动介质。B 首次作为
+直连待试槽，安装命令打印升级 ID，上传方须在首次启动后核对摘要并调用
+确认接口。脚本发现已有布局会中止，需离线修复后再尝试。
+
+`cargo xtask axloader test qemu --target x86_64-unknown-uefi` 除原有内核
+HTTP 交接冒烟外，使用同一块真实 FAT 映像跨多次 QEMU 启动，宿主通过
+`hostfwd` 检查直连端口、错误 SHA/短请求、首次确认、待试掉电回滚、
+确认后持久启动、写完非活动槽但尚未提交状态的断电，以及 v4 服务端指派、
+确认和再次启动。此测试需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、
+`mcopy`、`mmd`、`python3`。
 
 ## Troubleshooting
 

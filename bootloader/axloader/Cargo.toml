@@ -11,6 +11,10 @@ version = "0.1.0"
 name = "axloader"
 path = "src/main.rs"
 
+[[bin]]
+name = "axloader-launcher"
+path = "src/launcher.rs"
+
 [dependencies]
 httpboot-protocol = { workspace = true }
 sha2 = { version = "0.10", default-features = false }

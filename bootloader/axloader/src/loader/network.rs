@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::{ffi::c_void, ptr, slice, time::Duration};
 
-use axloader::network_policy::{DiscoverySelectionError, select_unique_server};
+use axloader::network_policy::{DiscoverySelectionError, select_unique_server_for};
 use httpboot_protocol::{
     LoaderDiscoveryOffer, LoaderDiscoveryProbe, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress,
 };
@@ -108,6 +108,7 @@ impl NetworkInterface {
     pub fn discover_server(
         self,
         probe: &LoaderDiscoveryProbe,
+        progress: &mut impl FnMut(),
     ) -> Result<LoaderDiscoveryOffer, NetworkError> {
         let payload = httpboot_protocol::encode_discovery_probe(probe)
             .map_err(|_| NetworkError::MalformedResponse)?;
@@ -117,12 +118,13 @@ impl NetworkInterface {
             httpboot_protocol::DISCOVERY_PORT,
             &payload,
             MAX_DISCOVERY_DATAGRAM_BYTES,
+            progress,
         )?;
 
         let mut offers = Vec::new();
         offers.push(serde_json::from_slice(&first).map_err(|_| NetworkError::MalformedResponse)?);
         for _ in 1..DISCOVERY_RECEIVE_ATTEMPTS {
-            let bytes = match udp.receive(MAX_DISCOVERY_DATAGRAM_BYTES) {
+            let bytes = match udp.receive(MAX_DISCOVERY_DATAGRAM_BYTES, progress) {
                 Ok(bytes) => bytes,
                 Err(NetworkError::Timeout) => continue,
                 Err(error) => return Err(error),
@@ -131,7 +133,7 @@ impl NetworkInterface {
                 serde_json::from_slice(&bytes).map_err(|_| NetworkError::MalformedResponse)?;
             offers.push(offer);
         }
-        select_unique_server(offers).map_err(|error| match error {
+        select_unique_server_for(offers, probe.protocol_version).map_err(|error| match error {
             DiscoverySelectionError::NoCompatibleServer => NetworkError::Timeout,
             DiscoverySelectionError::MultipleServers => NetworkError::MultipleServers,
         })
@@ -270,6 +272,7 @@ impl Udp4Client {
         destination: Ipv4Address,
         port: u16,
         payload: &[u8],
+        progress: &mut impl FnMut(),
     ) -> Result<(), NetworkError> {
         let event = CompletionEvent::new()?;
         let mut session = Udp4SessionData {
@@ -304,7 +307,7 @@ impl Udp4Client {
         self.protocol_mut()
             .transmit(&mut token)
             .map_err(|_| NetworkError::UdpTransmit)?;
-        self.wait(&mut token, NetworkError::UdpTransmit)
+        self.wait(&mut token, NetworkError::UdpTransmit, progress)
     }
 
     fn transmit_and_receive(
@@ -313,6 +316,7 @@ impl Udp4Client {
         port: u16,
         payload: &[u8],
         receive_limit: usize,
+        progress: &mut impl FnMut(),
     ) -> Result<Vec<u8>, NetworkError> {
         let receive_event = CompletionEvent::new()?;
         let mut receive_token = Udp4CompletionToken {
@@ -326,15 +330,19 @@ impl Udp4Client {
             .receive(&mut receive_token)
             .map_err(|_| NetworkError::UdpReceive)?;
 
-        if let Err(error) = self.transmit(destination, port, payload) {
+        if let Err(error) = self.transmit(destination, port, payload, progress) {
             self.cancel_and_complete(&mut receive_token, NetworkError::UdpReceive)?;
             return Err(error);
         }
-        self.wait_for_receive(&mut receive_token)?;
+        self.wait_for_receive(&mut receive_token, progress)?;
         collect_received_bytes(&receive_token, receive_limit)
     }
 
-    fn receive(&mut self, limit: usize) -> Result<Vec<u8>, NetworkError> {
+    fn receive(
+        &mut self,
+        limit: usize,
+        progress: &mut impl FnMut(),
+    ) -> Result<Vec<u8>, NetworkError> {
         let event = CompletionEvent::new()?;
         let mut token = Udp4CompletionToken {
             event: event.as_raw(),
@@ -346,7 +354,7 @@ impl Udp4Client {
         self.protocol_mut()
             .receive(&mut token)
             .map_err(|_| NetworkError::UdpReceive)?;
-        self.wait_for_receive(&mut token)?;
+        self.wait_for_receive(&mut token, progress)?;
         collect_received_bytes(&token, limit)
     }
 
@@ -358,6 +366,7 @@ impl Udp4Client {
         &mut self,
         token: &mut Udp4CompletionToken,
         error: NetworkError,
+        progress: &mut impl FnMut(),
     ) -> Result<(), NetworkError> {
         for _ in 0..UDP_COMPLETION_POLLS {
             if token.status != Status::NOT_READY {
@@ -369,13 +378,18 @@ impl Udp4Client {
                 };
             }
             self.protocol_mut().poll();
+            progress();
             boot::stall(UDP_POLL_STALL);
         }
         self.cancel_and_complete(token, error)?;
         Err(NetworkError::Timeout)
     }
 
-    fn wait_for_receive(&mut self, token: &mut Udp4CompletionToken) -> Result<(), NetworkError> {
+    fn wait_for_receive(
+        &mut self,
+        token: &mut Udp4CompletionToken,
+        progress: &mut impl FnMut(),
+    ) -> Result<(), NetworkError> {
         for _ in 0..UDP_COMPLETION_POLLS {
             if token.status == Status::SUCCESS {
                 return Ok(());
@@ -399,6 +413,7 @@ impl Udp4Client {
                     .map_err(|_| NetworkError::UdpReceive)?;
             }
             self.protocol_mut().poll();
+            progress();
             boot::stall(UDP_POLL_STALL);
         }
         self.cancel_and_complete(token, NetworkError::UdpReceive)?;

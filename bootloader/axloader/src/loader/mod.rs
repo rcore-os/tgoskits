@@ -1,9 +1,11 @@
 pub mod console;
 pub mod control;
+pub mod direct;
 pub mod elf_loader;
 pub mod entry;
 pub mod http;
 pub mod network;
+pub mod ota;
 pub mod payload;
 pub mod smbios;
 
@@ -24,11 +26,33 @@ fn efi_main() -> Status {
     uefi::helpers::init().expect("failed to initialize UEFI helpers");
     let mut failed_boot_id = None;
     let mut discovery_backoff_secs = 1_u64;
+    let mut ota = ota::OtaContext::open();
+    let mut interface = None;
+    let mut listener = None;
     loop {
         logln!("HTTP bootloader");
         logln!("arch: {TARGET_ARCH_NAME}");
         logln!("output: {EFI_OUTPUT_FILE}");
-        match fetch_control_offer(failed_boot_id.as_deref()) {
+        if interface.is_none() {
+            interface = network::NetworkInterface::select().ok();
+        }
+        if let Some(nic) = interface {
+            if ota.is_some() && listener.is_none() {
+                match direct::Listener::open(nic.handle()) {
+                    Ok(service) => {
+                        logln!("ota_direct_listening: ip={} port=2999", nic.station_address);
+                        listener = Some(service);
+                    }
+                    Err(err) => {
+                        logln!("ota_direct_unavailable: {err:?}; server boot remains available")
+                    }
+                }
+            }
+        }
+        match interface
+            .map(|nic| fetch_control_offer(nic, failed_boot_id.as_deref(), &mut ota, &mut listener))
+            .unwrap_or(BootAttempt::DiscoveryFailed)
+        {
             BootAttempt::HandoffReturned => return Status::LOAD_ERROR,
             BootAttempt::Failed(boot_id) => {
                 failed_boot_id = boot_id;
@@ -36,7 +60,14 @@ fn efi_main() -> Status {
             }
             BootAttempt::DiscoveryFailed => {
                 logln!("discovery_retry_wait: {discovery_backoff_secs} s");
-                uefi::boot::stall(core::time::Duration::from_secs(discovery_backoff_secs));
+                if let Some(nic) = interface {
+                    control::reopen_direct(&nic, &mut listener, &ota);
+                }
+                control::service_wait(
+                    core::time::Duration::from_secs(discovery_backoff_secs),
+                    &mut listener,
+                    &mut ota,
+                );
                 discovery_backoff_secs =
                     (discovery_backoff_secs * 2).min(MAX_DISCOVERY_BACKOFF_SECS);
             }
@@ -50,8 +81,13 @@ enum BootAttempt {
     HandoffReturned,
 }
 
-fn fetch_control_offer(failed_boot_id: Option<&str>) -> BootAttempt {
-    match control::fetch_boot_offer(failed_boot_id) {
+fn fetch_control_offer(
+    nic: network::NetworkInterface,
+    failed_boot_id: Option<&str>,
+    ota: &mut Option<ota::OtaContext>,
+    listener: &mut Option<direct::Listener>,
+) -> BootAttempt {
+    match control::fetch_boot_offer(nic, failed_boot_id, ota, listener) {
         Ok(network_boot) => {
             let offer = &network_boot.offer;
             logln!(

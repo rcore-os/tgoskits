@@ -1,5 +1,26 @@
 # 启动调试参考
 
+## axloader x86_64 UEFI OTA 与恢复
+
+迁移后的可移动介质启动路径固定是 `EFI/BOOT/BOOTX64.EFI` 小型启动器；
+装载器镜像放在同一个 ESP 的 `EFI/AXLOADER/A.EFI`、`B.EFI`。
+检查试运行失败时先读取 `STATE0.BIN` 和 `STATE1.BIN`：每份 256 字节，
+代次位于偏移 `8..16`，稳定/待试槽位于 `16..18`，试运行标志在 `18`，
+记录最后 32 字节是前 224 字节的 SHA-256。只使用校验通过且代次较新的
+记录；若状态全坏，启动器停止并要求外部介质恢复。镜像摘要不匹配时同样
+先检查对应槽的文件，而不是修改固件引导顺序。
+
+调试顺序：确认固件实际从预期 ESP 启动 `BOOTX64.EFI`；确认启动器按当前
+记录选槽，并在待试 `StartImage` 前持久标记 `attempted`；确认待试装载器
+报告运行摘要/升级 ID 且只由相同来源确认；掉电后检查记录的
+`rolled_back`。`ota_direct_listening` 证明 TCP4 服务已绑定；再通过
+QEMU `hostfwd` 发 `GET /api/v1/ota/status` 才能证明客户端可访问。
+`cargo xtask axloader test qemu --target x86_64-unknown-uefi` 使用真实 FAT
+镜像跨 QEMU 启动，避免 `fat:rw:` 的实验性写入语义污染回滚结论。
+首次迁移覆盖启动器时仍可能断电，需要保留
+`EFI/AXLOADER/BOOTX64.ORIGINAL.EFI` 及外部启动介质。没有同网卡 TCP4
+服务绑定时观察 `ota_direct_unavailable`，服务端启动功能仍可使用。
+
 本文件记录 LoongArch 动态统一可扩展固件接口平台启动、someboot 对称多处理、StarryOS 测试和 Axvisor LoongArch 虚拟化扩展 QEMU 冒烟测试的项目经验。
 
 ## 分层映射

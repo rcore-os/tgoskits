@@ -24,8 +24,11 @@ use sha2::{Digest, Sha256};
 
 use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
 
+mod ota_qemu;
+
 const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
+const LAUNCHER_BIN: &str = "axloader-launcher";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
 const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
 const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
@@ -78,6 +81,14 @@ pub enum TestCommand {
 pub struct ArgsTestQemu {
     #[arg(long, default_value = DEFAULT_UEFI_TARGET)]
     pub target: String,
+
+    /// Run only the persistent FAT OTA scenario while debugging it.
+    #[arg(long)]
+    pub ota_only: bool,
+
+    /// Start directly with a v4 server assignment on the persistent FAT disk.
+    #[arg(long, conflicts_with = "ota_only")]
+    pub server_only: bool,
 }
 
 /// Axloader host-side commands
@@ -163,7 +174,18 @@ async fn test_qemu(
     );
     result?;
 
-    run_http_smoke_test(workspace.root(), workspace.target_dir(), &args.target).await
+    if !args.ota_only && !args.server_only {
+        run_http_smoke_test(workspace.root(), workspace.target_dir(), &args.target).await?;
+    } else {
+        run_loader_build(workspace.root(), workspace.target_dir(), &args.target, true)?;
+    }
+    ota_qemu::test_direct_ota(
+        workspace.root(),
+        workspace.target_dir(),
+        &args.target,
+        args.server_only,
+    )
+    .await
 }
 
 fn run_loader_build(
@@ -181,6 +203,9 @@ fn run_loader_build(
         "--bin",
         AXLOADER_BIN,
     ];
+    if target == DEFAULT_UEFI_TARGET {
+        args.extend(["--bin", LAUNCHER_BIN]);
+    }
     if release {
         args.push("--release");
     }
@@ -820,8 +845,12 @@ fn internet_checksum(bytes: &[u8]) -> u16 {
 }
 
 fn write_http_response(stream: &mut impl Write, status: &str, body: &[u8]) {
+    write_http_response_version(stream, status, body, "HTTP/1.1");
+}
+
+fn write_http_response_version(stream: &mut impl Write, status: &str, body: &[u8], version: &str) {
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{version} {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     if stream.write_all(header.as_bytes()).is_ok() {

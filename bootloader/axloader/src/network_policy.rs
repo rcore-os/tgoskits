@@ -15,9 +15,16 @@ pub enum DiscoverySelectionError {
 pub fn select_unique_server(
     offers: Vec<LoaderDiscoveryOffer>,
 ) -> Result<LoaderDiscoveryOffer, DiscoverySelectionError> {
+    select_unique_server_for(offers, PROTOCOL_VERSION)
+}
+
+pub fn select_unique_server_for(
+    offers: Vec<LoaderDiscoveryOffer>,
+    expected_version: u16,
+) -> Result<LoaderDiscoveryOffer, DiscoverySelectionError> {
     let mut selected: Option<LoaderDiscoveryOffer> = None;
     for offer in offers {
-        if offer.protocol_version != PROTOCOL_VERSION {
+        if offer.protocol_version != expected_version {
             continue;
         }
         if selected
@@ -60,6 +67,16 @@ mod tests {
             .unwrap()
             .server_id,
             "current"
+        );
+    }
+
+    #[test]
+    fn v4_discovery_ignores_v3_offers() {
+        assert_eq!(
+            select_unique_server_for(vec![offer("old", PROTOCOL_VERSION), offer("ota", 4)], 4)
+                .unwrap()
+                .server_id,
+            "ota"
         );
     }
 

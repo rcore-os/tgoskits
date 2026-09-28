@@ -12,14 +12,57 @@ use core::{
 };
 
 use uefi::{
-    CString16, Handle, Status, boot,
-    boot::{OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol},
-    proto::network::http::{Http, HttpBinding, HttpHelperResponse},
+    CString16, Event, Handle, Status, boot,
+    boot::{EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
+    proto::{
+        network::http::{Http, HttpBinding, HttpHelperResponse},
+        unsafe_protocol,
+    },
 };
 use uefi_raw::protocol::network::http::{
-    HttpAccessPoint, HttpConfigData, HttpHeader, HttpMessage, HttpMethod, HttpRequestData,
-    HttpResponseData, HttpStatusCode, HttpToken, HttpV4AccessPoint, HttpVersion,
+    HttpAccessPoint, HttpConfigData, HttpHeader, HttpMessage, HttpMethod, HttpProtocol,
+    HttpRequestData, HttpResponseData, HttpStatusCode, HttpToken, HttpV4AccessPoint, HttpVersion,
 };
+
+// The high-level wrapper does not expose Configure(NULL), which is required
+// before destroying an OVMF HTTP child with an established TCP connection.
+#[derive(Debug)]
+#[repr(transparent)]
+#[unsafe_protocol("7a59b29b-910b-4171-8242-a85a0df25b5b")]
+struct ResettableHttp(HttpProtocol);
+
+struct HttpCompletionEvent(Option<Event>);
+
+impl HttpCompletionEvent {
+    fn new(error: DownloadError) -> Result<Self, DownloadError> {
+        // SAFETY: The callback touches no firmware or application state, and
+        // this event is closed before the loader exits UEFI Boot Services.
+        let event = unsafe {
+            boot::create_event(
+                EventType::NOTIFY_SIGNAL,
+                Tpl::CALLBACK,
+                Some(http_completed),
+                None,
+            )
+        }
+        .map_err(|_| error)?;
+        Ok(Self(Some(event)))
+    }
+
+    fn as_raw(&self) -> uefi_raw::Event {
+        self.0.as_ref().expect("HTTP event is live").as_ptr()
+    }
+}
+
+unsafe extern "efiapi" fn http_completed(_event: Event, _context: Option<NonNull<c_void>>) {}
+
+impl Drop for HttpCompletionEvent {
+    fn drop(&mut self) {
+        if let Some(event) = self.0.take() {
+            let _ = boot::close_event(event);
+        }
+    }
+}
 
 const MAX_KERNEL_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
 const HTTP_RETRY_LIMIT: usize = 8;
@@ -27,6 +70,7 @@ const HTTP_RETRY_STALL: Duration = Duration::from_millis(250);
 const KERNEL_PROGRESS_STEP_PERCENT: usize = 1;
 const KERNEL_PROGRESS_BAR_WIDTH: usize = 50;
 const MAX_CONTROL_RESPONSE_SIZE: usize = 64 * 1024;
+const HTTP_MAX_WAIT_STALLS: u32 = 60_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadError {
@@ -122,6 +166,42 @@ fn download_body_to_addr(
 
     progress.finish_line();
     Ok(downloaded)
+}
+
+/// Stream a bounded EFI image into the inactive slot. The callback owns the
+/// file write; a short or oversized HTTP response cannot activate the slot.
+pub fn download_ota_image(
+    nic_handle: Handle,
+    url: &str,
+    expected_size: usize,
+    mut write: impl FnMut(&[u8]) -> uefi::Result<()>,
+) -> Result<(), DownloadError> {
+    if expected_size == 0 || expected_size > axloader::ota_disk::MAX_IMAGE_BYTES {
+        return Err(DownloadError::BodyTooLarge);
+    }
+    let mut client = HttpClient::new(nic_handle)?;
+    client.request_get(url)?;
+    let first = client.response_first(false)?;
+    if first.status != HttpStatusCode::STATUS_200_OK {
+        return Err(DownloadError::UnexpectedStatus);
+    }
+    if response_content_length(&first.headers) != Some(expected_size) {
+        return Err(DownloadError::ContentLengthMismatch);
+    }
+    let mut received = 0_usize;
+    let mut chunk = client.response_more_vec()?;
+    while received < expected_size {
+        if chunk.is_empty() || chunk.len() > expected_size - received {
+            return Err(DownloadError::ResponseFailed);
+        }
+        write(&chunk).map_err(|_| DownloadError::ResponseFailed)?;
+        received += chunk.len();
+        if received < expected_size {
+            boot::stall(Duration::from_millis(10));
+            chunk = client.response_more_vec()?;
+        }
+    }
+    Ok(())
 }
 
 fn response_content_length(headers: &[(String, String)]) -> Option<usize> {
@@ -278,9 +358,28 @@ impl HttpClient {
         url: &str,
         request: &Request,
     ) -> Result<Response, DownloadError> {
+        self.post_json_with_progress(url, request, || {})
+    }
+
+    pub fn post_json_with_progress<
+        Request: serde::Serialize,
+        Response: serde::de::DeserializeOwned,
+    >(
+        &mut self,
+        url: &str,
+        request: &Request,
+        mut progress: impl FnMut(),
+    ) -> Result<Response, DownloadError> {
         let mut body = serde_json::to_vec(request).map_err(|_| DownloadError::Json)?;
-        self.request(HttpMethod::POST, url, Some(&mut body), true)?;
-        let response = self.response_body()?;
+        self.request_with_progress(
+            HttpMethod::POST,
+            url,
+            Some(&mut body),
+            true,
+            &mut progress,
+            true,
+        )?;
+        let response = self.response_body_with_progress(&mut progress)?;
         serde_json::from_slice(&response).map_err(|_| DownloadError::Json)
     }
 
@@ -303,8 +402,11 @@ impl HttpClient {
         Ok(())
     }
 
-    fn response_body(&mut self) -> Result<Vec<u8>, DownloadError> {
-        let first = self.response_first(true)?;
+    fn response_body_with_progress(
+        &mut self,
+        progress: &mut impl FnMut(),
+    ) -> Result<Vec<u8>, DownloadError> {
+        let first = self.response_first_with_progress(true, progress, true)?;
         if first.status != HttpStatusCode::STATUS_200_OK {
             crate::logln!(
                 "http_control_unexpected_status: {:?} body_len={}",
@@ -326,7 +428,7 @@ impl HttpClient {
                 return Ok(body);
             }
             let previous_len = body.len();
-            self.response_more(&mut body)?;
+            self.response_more_with_progress(&mut body, progress, true)?;
             if body.len() == previous_len {
                 return Ok(body);
             }
@@ -365,6 +467,18 @@ impl HttpClient {
         body: Option<&mut [u8]>,
         json: bool,
     ) -> Result<(), DownloadError> {
+        self.request_with_progress(method, url, body, json, &mut || {}, false)
+    }
+
+    fn request_with_progress(
+        &mut self,
+        method: HttpMethod,
+        url: &str,
+        body: Option<&mut [u8]>,
+        json: bool,
+        progress: &mut impl FnMut(),
+        serve_direct: bool,
+    ) -> Result<(), DownloadError> {
         let host = url_host(url)?;
         let url = CString16::try_from(url).map_err(|_| DownloadError::RequestFailed)?;
         let host = nul_terminated(host.as_bytes())?;
@@ -399,7 +513,9 @@ impl HttpClient {
             message.body_length = body.len();
             message.body = body.as_mut_ptr().cast::<c_void>();
         }
+        let event = HttpCompletionEvent::new(DownloadError::RequestFailed)?;
         let mut token = HttpToken {
+            event: event.as_raw(),
             status: Status::NOT_READY,
             message: &mut message,
             ..Default::default()
@@ -408,9 +524,7 @@ impl HttpClient {
         protocol
             .request(&mut token)
             .map_err(|_| DownloadError::RequestFailed)?;
-        while token.status == Status::NOT_READY {
-            protocol.poll().map_err(|_| DownloadError::RequestFailed)?;
-        }
+        wait_http_token(protocol, &mut token, progress, serve_direct)?;
         if token.status == Status::SUCCESS {
             Ok(())
         } else {
@@ -419,6 +533,15 @@ impl HttpClient {
     }
 
     fn response_first(&mut self, expect_body: bool) -> Result<HttpHelperResponse, DownloadError> {
+        self.response_first_with_progress(expect_body, &mut || {}, false)
+    }
+
+    fn response_first_with_progress(
+        &mut self,
+        expect_body: bool,
+        progress: &mut impl FnMut(),
+        serve_direct: bool,
+    ) -> Result<HttpHelperResponse, DownloadError> {
         let mut response = HttpResponseData {
             status_code: HttpStatusCode::STATUS_UNSUPPORTED,
         };
@@ -431,7 +554,9 @@ impl HttpClient {
         } else {
             body.as_mut_ptr().cast::<c_void>()
         };
+        let event = HttpCompletionEvent::new(DownloadError::ResponseFailed)?;
         let mut token = HttpToken {
+            event: event.as_raw(),
             status: Status::NOT_READY,
             message: &mut message,
             ..Default::default()
@@ -440,9 +565,7 @@ impl HttpClient {
         protocol
             .response(&mut token)
             .map_err(|_| DownloadError::ResponseFailed)?;
-        while token.status == Status::NOT_READY {
-            protocol.poll().map_err(|_| DownloadError::ResponseFailed)?;
-        }
+        wait_http_token(protocol, &mut token, progress, serve_direct)?;
         let response_header_allocation =
             FirmwareResponseHeaders::new(message.header, message.header_count);
         if token.status != Status::SUCCESS && token.status != Status::HTTP_ERROR {
@@ -485,13 +608,24 @@ impl HttpClient {
     }
 
     fn response_more(&mut self, body: &mut Vec<u8>) -> Result<(), DownloadError> {
+        self.response_more_with_progress(body, &mut || {}, false)
+    }
+
+    fn response_more_with_progress(
+        &mut self,
+        body: &mut Vec<u8>,
+        progress: &mut impl FnMut(),
+        serve_direct: bool,
+    ) -> Result<(), DownloadError> {
         let mut chunk = vec![0; 16 * 1024];
         let mut message = HttpMessage {
             body_length: chunk.len(),
             body: chunk.as_mut_ptr().cast::<c_void>(),
             ..Default::default()
         };
+        let event = HttpCompletionEvent::new(DownloadError::ResponseFailed)?;
         let mut token = HttpToken {
+            event: event.as_raw(),
             status: Status::NOT_READY,
             message: &mut message,
             ..Default::default()
@@ -500,9 +634,7 @@ impl HttpClient {
         protocol
             .response(&mut token)
             .map_err(|_| DownloadError::ResponseFailed)?;
-        while token.status == Status::NOT_READY {
-            protocol.poll().map_err(|_| DownloadError::ResponseFailed)?;
-        }
+        wait_http_token(protocol, &mut token, progress, serve_direct)?;
         let _response_header_allocation =
             FirmwareResponseHeaders::new(message.header, message.header_count);
         if token.status != Status::SUCCESS || message.body_length > chunk.len() {
@@ -520,6 +652,70 @@ impl HttpClient {
 
     fn protocol_mut(&mut self) -> &mut Http {
         self.protocol.as_mut().expect("HTTP protocol is open")
+    }
+}
+
+fn wait_http_token(
+    protocol: &mut Http,
+    token: &mut HttpToken,
+    progress: &mut impl FnMut(),
+    serve_direct: bool,
+) -> Result<(), DownloadError> {
+    // Some OVMF builds do not complete their HTTP timer events while Poll
+    // is active. Use a bounded number of one-millisecond firmware stalls.
+    if !serve_direct {
+        let mut polls = 0_u32;
+        let mut stalls = 0_u32;
+        while token.status == Status::NOT_READY {
+            if let Err(error) = protocol.poll() {
+                crate::logln!("http_poll_error: {error:?}");
+                cancel_http_token(protocol, token);
+                return Err(DownloadError::ResponseFailed);
+            }
+            polls = polls.wrapping_add(1);
+            if polls.is_multiple_of(1024) {
+                stalls += 1;
+                if stalls >= HTTP_MAX_WAIT_STALLS {
+                    crate::logln!("http_deadline_expired: download");
+                    cancel_http_token(protocol, token);
+                    return Err(DownloadError::ResponseFailed);
+                }
+                boot::stall(Duration::from_millis(1));
+            }
+        }
+        return Ok(());
+    }
+    let mut polls = 0_u32;
+    let mut stalls = 0_u32;
+    while token.status == Status::NOT_READY {
+        if let Err(error) = protocol.poll() {
+            crate::logln!("http_poll_error: {error:?}");
+            cancel_http_token(protocol, token);
+            return Err(DownloadError::ResponseFailed);
+        }
+        polls = polls.wrapping_add(1);
+        if polls.is_multiple_of(1024) {
+            stalls += 1;
+            if stalls >= HTTP_MAX_WAIT_STALLS {
+                crate::logln!("http_deadline_expired: control");
+                cancel_http_token(protocol, token);
+                return Err(DownloadError::ResponseFailed);
+            }
+            progress();
+            boot::stall(Duration::from_millis(1));
+        }
+    }
+    Ok(())
+}
+
+fn cancel_http_token(protocol: &mut Http, token: &mut HttpToken) {
+    // Firmware owns token.message and its stack-backed body until Cancel
+    // completes. A failed Cancel must not turn those pointers into dangling
+    // references; keep polling until completion is visible.
+    let _ = protocol.cancel(token);
+    while token.status == Status::NOT_READY {
+        let _ = protocol.poll();
+        boot::stall(Duration::from_millis(10));
     }
 }
 
@@ -567,6 +763,14 @@ impl Drop for FirmwareResponseHeaders {
 impl Drop for HttpClient {
     fn drop(&mut self) {
         self.protocol = None;
+        if let Ok(mut protocol) = open_protocol::<ResettableHttp>(self.child) {
+            // SAFETY: This protocol belongs to our child, and no request or
+            // response token remains pending after the synchronous operation.
+            let status = unsafe { (protocol.0.configure)(&mut protocol.0, ptr::null()) };
+            if status.is_error() {
+                crate::logln!("http_reset_error: {status:?}");
+            }
+        }
         let _ = self.binding.destroy_child(self.child);
     }
 }
