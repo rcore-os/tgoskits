@@ -29,6 +29,11 @@
 //! feature implements the OS-independent GPU and display capabilities over
 //! the same protocol object.
 //!
+//! The control queue runs in the Linux virtio_gpu submission model (see the
+//! `ctrl` module): fire-and-forget commands enqueue and return immediately,
+//! blocking commands keep waiting for the device's answer, and the two mix
+//! freely because the used ring is FIFO.
+//!
 //! # Safety
 //!
 //! Commands that hand a raw guest-physical address to the device are `unsafe`.
@@ -41,9 +46,12 @@
 #![deny(missing_docs)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+mod ctrl;
 mod device;
 mod dma;
 mod error;

@@ -135,7 +135,11 @@ impl ContextHandle {
     }
 }
 
-/// Completion of a submitted operation. `Complete` is a synchronous result.
+/// Completion of a submitted operation. `Complete` is a synchronous result:
+/// either the device finished the operation, or it covers the operation by
+/// queue ordering so that every later tracked completion subsumes it.
+/// `Pending` carries the fence token for [`VirglOps::wait_fence`] and
+/// [`VirglOps::fence_completed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Completion {
     Complete,
@@ -230,6 +234,10 @@ pub enum GpuError {
     /// backing, including work whose completion was still pending.
     #[error("device was lost")]
     DeviceLost,
+    /// A bounded wait for a completion expired on a stalled device. The
+    /// device itself stays usable; the caller may retry the wait.
+    #[error("the device did not complete the waited-for work in time")]
+    TimedOut,
     #[error("device I/O failed")]
     Io,
 }
@@ -366,7 +374,23 @@ pub trait VirglOps {
     ) -> Result<(), GpuError>;
     fn transfer_to_host(&mut self, transfer: Transfer3d) -> Result<Completion, GpuError>;
     fn transfer_from_host(&mut self, transfer: Transfer3d) -> Result<Completion, GpuError>;
+    /// Submits a command stream and returns its fence token without waiting
+    /// for the device (Linux `virtio_gpu_cmd_submit`). The submit is ordered
+    /// behind everything submitted before it on the same device.
     fn submit(&mut self, context: ContextHandle, commands: &[u8]) -> Result<Completion, GpuError>;
+    /// Blocks until the fence (and everything ordered before it) completed on
+    /// the device. Task context only. A stalled device returns
+    /// [`GpuError::TimedOut`] and stays usable.
+    fn wait_fence(&mut self, fence: u64) -> Result<(), GpuError>;
+    /// Whether the fence (and everything ordered before it) already
+    /// completed. Implementations advance their completion view first, so a
+    /// caller that only polls still observes progress.
+    fn fence_completed(&mut self, fence: u64) -> Result<bool, GpuError>;
+    /// Delivers the fire-and-forget commands accumulated in the current
+    /// transaction, mirroring Linux `virtio_gpu_notify()` at the end of a DRM
+    /// ioctl. Every transaction that enqueued commands must end with this;
+    /// a wait (`wait_fence`) delivers the batch itself when it must.
+    fn ctrl_notify(&mut self);
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, GpuError>;
     fn capset(&mut self, id: u32, version: u32, size: u32) -> Result<Vec<u8>, GpuError>;
 }

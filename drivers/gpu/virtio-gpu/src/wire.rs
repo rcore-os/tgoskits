@@ -95,10 +95,16 @@ impl Command {
     pub(crate) const SUBMIT_3D: Command = Command(0x0207);
 
     // Success responses used by this driver.
-    pub(crate) const OK_NODATA: Command = Command(0x1100);
     pub(crate) const OK_DISPLAY_INFO: Command = Command(0x1101);
     pub(crate) const OK_CAPSET_INFO: Command = Command(0x1102);
     pub(crate) const OK_CAPSET: Command = Command(0x1103);
+
+    /// `VIRTIO_GPU_RESP_ERR_UNSPEC`, the lowest device error response code.
+    ///
+    /// Only used as the threshold when deciding whether a popped response is
+    /// an error worth logging for fire-and-forget commands, which have no
+    /// caller to return it to.
+    pub(crate) const ERR_UNSPEC: Command = Command(0x1200);
 }
 
 /// `VIRTIO_GPU_FLAG_FENCE`: signalled when the command stream has completed.
@@ -108,7 +114,9 @@ pub(crate) const GPU_FLAG_FENCE: u32 = 1 << 0;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
 pub(crate) struct CtrlHeader {
-    hdr_type: Command,
+    /// Command or response code; read back by the completion pump to log
+    /// device error responses for fire-and-forget commands.
+    pub(crate) hdr_type: Command,
     flags: u32,
     fence_id: u64,
     ctx_id: u32,
@@ -136,6 +144,19 @@ impl CtrlHeader {
             hdr_type,
             flags: 0,
             fence_id: 0,
+            ctx_id,
+            ring_idx: 0,
+            _padding: [0; 3],
+        }
+    }
+
+    /// A command header that asks the device to signal `fence_id` once the
+    /// host finished the command (VIRTIO_GPU_FLAG_FENCE).
+    pub(crate) const fn with_fence(hdr_type: Command, ctx_id: u32, fence_id: u64) -> Self {
+        Self {
+            hdr_type,
+            flags: GPU_FLAG_FENCE,
+            fence_id,
             ctx_id,
             ring_idx: 0,
             _padding: [0; 3],

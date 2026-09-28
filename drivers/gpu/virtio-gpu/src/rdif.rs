@@ -240,13 +240,32 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
     }
 
     fn cleanup_failed_create(&mut self, id: u32) {
-        // A failed attach may have reached the host. Confirmation through
-        // UNREF or an explicit missing-resource response permits backing
-        // release; an ambiguous failure requires reset to stop all DMA.
-        match self.raw.resource_unref(id) {
-            Ok(()) | Err(Error::DeviceRejected(0x1203)) => {}
-            Err(_) => self.mark_lost(),
+        // A failed create may have enqueued commands whose completion the
+        // caller cannot observe. The UNREF path already delivers and drains
+        // the queue — its success is the completion proof (the host popped
+        // everything, so it is done with the backing). Any failure is
+        // ambiguous: reset the device to stop all DMA before the caller drops
+        // its backing.
+        if self.raw.resource_unref(id).is_err() {
+            self.mark_lost();
         }
+    }
+
+    /// Delivers the accumulated fire-and-forget batch and waits until the host
+    /// popped every command — the completion proof teardown callers need
+    /// before they release backing the device may still DMA.
+    ///
+    /// An unconfirmable drain (timeout, broken queue) resets the device via
+    /// [`Self::mark_lost`]: the reset stops all device DMA, which is what
+    /// makes the caller's imminent backing release safe. The error is
+    /// therefore terminal `DeviceLost`, not a retryable `TimedOut`.
+    fn confirm_drain(&mut self) -> Result<(), GpuError> {
+        self.raw.ctrl_notify();
+        if self.raw.wait_idle().is_err() {
+            self.mark_lost();
+            return Err(GpuError::DeviceLost);
+        }
+        Ok(())
     }
 
     fn mark_lost(&mut self) {
@@ -323,11 +342,19 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
                 height: framebuffer.height,
             };
             let resource_id = self.resource_id(*handle).map_err(DisplayError::Gpu)?;
-            self.bind_scanout(index as u32, resource_id, &framebuffer, rect)
+            let result = self.bind_scanout(index as u32, resource_id, &framebuffer, rect);
+            // The rollback runs after a failed commit; deliver it right away so
+            // the device is not left on the rejected binding until the next
+            // transaction happens to kick.
+            self.raw.ctrl_notify();
+            result
         } else {
-            self.raw
+            let result = self
+                .raw
                 .set_scanout(Rect::default(), index as u32, 0)
-                .map_err(map_display_error)
+                .map_err(map_display_error);
+            self.raw.ctrl_notify();
+            result
         }
     }
 
@@ -458,6 +485,8 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> DisplayController for Virt
                 return Err(self.fail_commit_after_bind(index, map_display_error(error)));
             }
             self.states[index] = Some(state.clone());
+            // Deliver the scanout-off batch: nothing else is queued behind it.
+            self.raw.ctrl_notify();
             return Ok(Completion::Complete);
         };
         let resource_id = self
@@ -495,6 +524,10 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> DisplayController for Virt
             return Err(self.fail_commit_after_bind(index, map_display_error(error)));
         }
         self.states[index] = Some(state.clone());
+        // The whole page-flip transaction (transfer, bind, flush) is
+        // fire-and-forget; one boundary notify delivers it — Linux
+        // `virtio_gpu_notify()` at the end of the atomic commit.
+        self.raw.ctrl_notify();
         Ok(Completion::Complete)
     }
 
@@ -535,6 +568,12 @@ fn map_error(error: Error) -> GpuError {
         Error::Unsupported => GpuError::Unsupported,
         Error::NotReady => GpuError::NotReady,
         Error::DeviceLost => GpuError::DeviceLost,
+        // The queue was reset or observed a foreign completion: every later
+        // completion is unobservable, which is the definition of losing the
+        // device.
+        Error::QueueBroken => GpuError::DeviceLost,
+        // A bounded wait expired on a stalled host; the queue stays usable.
+        Error::TimedOut => GpuError::TimedOut,
         Error::InvalidParam | Error::Overflow => GpuError::InvalidArgument,
         Error::DeviceRejected(0x1201) => GpuError::OutOfMemory,
         Error::DeviceRejected(0x1202 | 0x1205) => GpuError::InvalidArgument,
@@ -544,6 +583,9 @@ fn map_error(error: Error) -> GpuError {
         Error::VirtIo(virtio_drivers::Error::QueueFull | virtio_drivers::Error::AlreadyUsed) => {
             GpuError::Busy
         }
+        // The async control queue reports its own exhaustion (ring and parking
+        // FIFO full, host not draining) instead of blocking.
+        Error::QueueBusy => GpuError::Busy,
         _ => GpuError::Io,
     }
 }
@@ -654,17 +696,31 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
             return Err(GpuError::Busy);
         }
         if self.resources[&key].attached {
-            if self.raw.resource_detach_backing(id).is_err() {
-                // Without a confirmed detach the host may still DMA backing.
-                self.mark_lost();
-                return Err(GpuError::DeviceLost);
+            match self.raw.resource_detach_backing(id) {
+                Ok(()) => {}
+                // The host is draining but the queue is momentarily exhausted;
+                // nothing was sent, so the caller can retry the release.
+                Err(Error::QueueBusy) => return Err(GpuError::Busy),
+                Err(_) => {
+                    // Without a confirmed detach the host may still DMA backing.
+                    self.mark_lost();
+                    return Err(GpuError::DeviceLost);
+                }
             }
             self.resources.get_mut(&key).unwrap().attached = false;
         }
-        if self.raw.resource_unref(id).is_err() {
-            // UNREF may have reached the host; reset before dropping backing.
-            self.mark_lost();
-            return Err(GpuError::DeviceLost);
+        // `resource_unref` delivers the batch and drains the whole queue: its
+        // success is the completion proof that the host stopped touching the
+        // backing, so the caller may free the memory once this returns. A
+        // drain failure is ambiguous — reset stops all DMA before the caller
+        // can release the backing.
+        match self.raw.resource_unref(id) {
+            Ok(()) => {}
+            Err(Error::QueueBusy) => return Err(GpuError::Busy),
+            Err(_) => {
+                self.mark_lost();
+                return Err(GpuError::DeviceLost);
+            }
         }
         self.resources.remove(&key);
         Ok(())
@@ -674,7 +730,14 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
         self.ensure_ready()?;
         match completion {
             Completion::Complete => Ok(CompletionStatus::Complete),
-            Completion::Pending(_) => Err(GpuError::InvalidArgument),
+            // A submit's fence: the level check reflects every completion the
+            // service path has pumped so far; the caller's polling loop goes
+            // through the device lock, which pumps on entry.
+            Completion::Pending(fence) => Ok(if self.raw.fence_completed(fence.get()) {
+                CompletionStatus::Complete
+            } else {
+                CompletionStatus::Pending
+            }),
         }
     }
 
@@ -683,7 +746,15 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
     }
 
     fn service_pending(&mut self) -> Result<(), GpuError> {
-        self.ensure_ready()?;
+        // Task-context completion service, per the IRQ endpoint contract: the
+        // hard IRQ only acknowledges, so this is what recycles fire-and-forget
+        // commands and moves the fence high-water mark the polling waiters
+        // observe. Delivery is forced first as a safety net: a well-formed
+        // consumer has already notified at its transaction boundary, so this
+        // is a no-op unless a producer forgot (without it, a poll loop on
+        // undelivered commands would never make progress).
+        self.raw.ctrl_notify();
+        self.raw.pump_completions().map_err(map_error)?;
         let event = self.raw.ack_interrupt();
         self.display_change_pending |= event.display_changed;
         if self.display_change_pending {
@@ -729,21 +800,50 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
     fn destroy_context(&mut self, context: ContextHandle) -> Result<(), GpuError> {
         self.ensure_ready()?;
         let id = self.context_id(context)?;
-        match self.raw.ctx_destroy(id) {
-            Ok(()) | Err(Error::DeviceRejected(0x1204)) => {
-                // Destroying a context also removes its resource attachments.
-                self.attachments
-                    .retain(|(owner, _)| *owner != context.id().get());
-                self.contexts.remove(&context.id().get());
-                Ok(())
+        let owner = context.id().get();
+        // Detach every attachment first (fire-and-forget), removing each pair
+        // from the table as its command is accepted so a retry after `Busy`
+        // never re-sends a detach.
+        let attached: Vec<u64> = self
+            .attachments
+            .iter()
+            .filter(|(ctx, _)| *ctx == owner)
+            .map(|(_, resource)| *resource)
+            .collect();
+        for key in attached {
+            let resource_id = self
+                .resources
+                .get(&key)
+                .map(|resource| resource.id)
+                .ok_or(GpuError::InvalidHandle)?;
+            match self.raw.ctx_detach_resource(id, resource_id) {
+                Ok(()) => {}
+                Err(Error::QueueBusy) => return Err(GpuError::Busy),
+                Err(_) => {
+                    // The teardown is ambiguous; the host may still use the
+                    // attached resources. Stop DMA before their backing can be
+                    // released by a closing file.
+                    self.mark_lost();
+                    return Err(GpuError::DeviceLost);
+                }
             }
+            self.attachments.remove(&(owner, key));
+        }
+        match self.raw.ctx_destroy(id) {
+            Ok(()) => {}
+            Err(Error::QueueBusy) => return Err(GpuError::Busy),
             Err(_) => {
-                // The host may still use attached resources. Stop DMA before
-                // their backing can be released by a closing file.
                 self.mark_lost();
-                Err(GpuError::DeviceLost)
+                return Err(GpuError::DeviceLost);
             }
         }
+        // Deliver the teardown batch and drain: a closing file releases the
+        // attached resources' backing right after this returns.
+        self.confirm_drain()?;
+        // Destroying a context also removes its resource attachments.
+        self.attachments.retain(|(ctx, _)| *ctx != owner);
+        self.contexts.remove(&owner);
+        Ok(())
     }
 
     fn create_resource_3d(
@@ -936,12 +1036,20 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
             backing.sync_for_device(0..backing.len())?;
         }
         self.raw.transfer_to_host_3d(command).map_err(map_error)?;
+        // Fire-and-forget, exactly like Linux `virtio_gpu_cmd_transfer_to_host_3d`
+        // (this direction carries no fence): there is no completion token, and
+        // strict ring ordering subsumes the transfer into every later fence on
+        // the same queue. The caller delivers the batch with
+        // [`VirglOps::ctrl_notify`] at its transaction boundary.
         Ok(Completion::Complete)
     }
 
     fn transfer_from_host(&mut self, transfer: Transfer3d) -> Result<Completion, GpuError> {
         self.ensure_ready()?;
         let command = self.transfer_command(transfer)?;
+        // The raw path delivers and drains before returning: the caller reads
+        // the guest memory right after this returns, so completion has to be
+        // observed before the data is valid.
         self.raw.transfer_from_host_3d(command).map_err(map_error)?;
         if let Some(backing) = &self.resources[&transfer.resource.id().get()].backing {
             backing.sync_for_cpu(0..backing.len())?;
@@ -952,8 +1060,31 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
     fn submit(&mut self, context: ContextHandle, commands: &[u8]) -> Result<Completion, GpuError> {
         self.ensure_ready()?;
         let ctx_id = self.context_id(context)?;
-        self.raw.submit_3d(ctx_id, commands).map_err(map_error)?;
-        Ok(Completion::Complete)
+        let fence = self.raw.submit_3d(ctx_id, commands).map_err(map_error)?;
+        // The fence counter starts at 1 and only increases, so a submit's
+        // token always fits the NonZeroU64 the completion carries.
+        let fence = NonZeroU64::new(fence).expect("fence ids start at 1 and only increase");
+        Ok(Completion::Pending(fence))
+    }
+
+    fn wait_fence(&mut self, fence: u64) -> Result<(), GpuError> {
+        self.ensure_ready()?;
+        self.raw.wait_fence(fence).map_err(map_error)
+    }
+
+    fn fence_completed(&mut self, fence: u64) -> Result<bool, GpuError> {
+        self.ensure_ready()?;
+        // A poll must make progress on its own: deliver anything still
+        // accumulated (a no-op after a well-formed transaction boundary) and
+        // pump — the high-water mark only advances when completed entries are
+        // popped.
+        self.raw.ctrl_notify();
+        self.raw.pump_completions().map_err(map_error)?;
+        Ok(self.raw.fence_completed(fence))
+    }
+
+    fn ctrl_notify(&mut self) {
+        self.raw.ctrl_notify();
     }
 
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, GpuError> {
