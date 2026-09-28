@@ -111,7 +111,7 @@ pub(super) async fn qemu(
 }
 
 fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool) -> bool {
-    explicit_config && !qemu.args.iter().any(|arg| arg == "-drive")
+    explicit_config && crate::rootfs::qemu::diskless_host_initramfs(qemu)
 }
 
 pub(super) async fn load_patched_qemu_config(
@@ -370,8 +370,10 @@ mod tests {
     #[test]
     fn explicit_diskless_qemu_skips_disk_preparation() {
         let mut qemu = QemuConfig::default();
-        assert!(diskless_explicit_qemu(&qemu, true));
+        assert!(!diskless_explicit_qemu(&qemu, true));
         assert!(!diskless_explicit_qemu(&qemu, false));
+        qemu.boot.initramfs = Some("host.cpio".into());
+        assert!(diskless_explicit_qemu(&qemu, true));
         qemu.args
             .extend(["-drive".into(), "file=rootfs.img".into()]);
         assert!(!diskless_explicit_qemu(&qemu, true));

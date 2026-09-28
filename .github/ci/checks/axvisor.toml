@@ -11,6 +11,8 @@ timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 smoke"
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+echo "==> axvisor aarch64 host initramfs"
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 axtest"
@@ -20,7 +22,7 @@ cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["smoke"]
+cases = ["smoke", "qemu-host-initramfs"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"

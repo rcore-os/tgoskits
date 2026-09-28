@@ -36,8 +36,9 @@ UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
 
 `ax-fs-ng::root::init_root_with_memory()` 只选择和发布根，不选择进程。
 块设备无论是否成为根都注册到块运行时。Starry 按 `rdinit=` 或默认 `/init`
-可执行性决定是否使用内存根；不存在时按照 `root=` 选择磁盘根。内存根上
-执行早期 init 失败不会重新挂载磁盘。随后尝试 `init=` 或 Linux 默认
+的路径可访问性决定是否使用内存根，不提前要求执行位；不存在时按照 `root=`
+选择磁盘根。内存根上执行早期 init 失败不会重新挂载磁盘，而是尝试 `init=`
+或 Linux 默认
 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`。`--` 后的词只传给 PID 1；
 未知的不带点号的键值参数成为环境变量，其余未知词成为参数。ArceOS 和
 Axvisor 没有 PID 1：显式 `root=` 选择磁盘，否则存在 initramfs 就选择内存根。

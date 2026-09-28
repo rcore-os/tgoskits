@@ -293,16 +293,7 @@ fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool 
     }
     let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
     let context = crate::highlevel::FsContext::new(root);
-    context.resolve(path).is_ok_and(|location| {
-        location.metadata().is_ok_and(|metadata| {
-            metadata.node_type == NodeType::RegularFile
-                && metadata.mode.intersects(
-                    NodePermission::OWNER_EXEC
-                        | NodePermission::GROUP_EXEC
-                        | NodePermission::OTHER_EXEC,
-                )
-        })
-    })
+    context.resolve(path).is_ok()
 }
 
 const SD_NAMES: [&str; 26] = [
@@ -922,7 +913,7 @@ mod tests {
                 .create_node(
                     "/init",
                     NodeType::RegularFile,
-                    NodePermission::from_bits_truncate(0o755),
+                    NodePermission::from_bits_truncate(0o644),
                     0,
                     0,
                     &axfs_ng_vfs::MutationCredentials::root(),

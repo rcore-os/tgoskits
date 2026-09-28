@@ -124,7 +124,7 @@ pub(super) async fn load_patched_qemu_config(
 }
 
 fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool, explicit_rootfs: bool) -> bool {
-    explicit_config && !explicit_rootfs && !qemu.args.iter().any(|arg| arg == "-drive")
+    explicit_config && !explicit_rootfs && rootfs::qemu::diskless_host_initramfs(qemu)
 }
 
 /// Ensures all image-managed assets required by an Axvisor QEMU run are available.
@@ -575,6 +575,14 @@ kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
         let qemu = QemuConfig {
             args: vec!["-nographic".into()],
             ..Default::default()
+        };
+        assert!(!diskless_explicit_qemu(&qemu, true, false));
+        let qemu = QemuConfig {
+            boot: ostool::BootPayloadConfig {
+                initramfs: Some("host.cpio".into()),
+                ..Default::default()
+            },
+            ..qemu
         };
         assert!(diskless_explicit_qemu(&qemu, true, false));
         assert!(!diskless_explicit_qemu(&qemu, true, true));

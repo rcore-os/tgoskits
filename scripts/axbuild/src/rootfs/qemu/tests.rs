@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn host_initramfs_skips_only_diskless_qemu() {
+    let mut qemu = QemuConfig::default();
+    assert!(!diskless_host_initramfs(&qemu));
+    qemu.boot.initramfs = Some("host.cpio".into());
+    assert!(diskless_host_initramfs(&qemu));
+    for argument in ["-drive=if=none,file=root.img", "-hda", "-sd", "-blockdev"] {
+        qemu.args = vec![argument.into(), "file=root.img".into()];
+        assert!(!diskless_host_initramfs(&qemu), "{argument}");
+    }
+}
+
 fn patch_rootfs(qemu: &mut QemuConfig, rootfs_path: &Path, mode: RootfsPatchMode) {
     super::patch_rootfs(
         qemu,

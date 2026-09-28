@@ -63,6 +63,30 @@ pub(crate) enum RootfsPatchMode {
     EnsureDiskBootNet,
 }
 
+/// A host initramfs replaces the managed disk only when the config has no
+/// explicit block device. An omitted initramfs retains the historical disk.
+pub(crate) fn diskless_host_initramfs(qemu: &QemuConfig) -> bool {
+    qemu.boot.initramfs.is_some()
+        && !has_block_storage_wiring(&qemu.args)
+        && !qemu.args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom" | "-blockdev"
+            ) || [
+                "-drive=",
+                "-blockdev=",
+                "-hda=",
+                "-hdb=",
+                "-hdc=",
+                "-hdd=",
+                "-sd=",
+                "-cdrom=",
+            ]
+            .iter()
+            .any(|option| arg.starts_with(option))
+        })
+}
+
 /// Controls whether writes to the selected rootfs survive QEMU exit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]

@@ -121,6 +121,12 @@ fn parse_newc<'a>(
     let mut pos: usize = 0;
     let mut entries = 0;
     loop {
+        if pos == input.len()
+            || input.get(pos) == Some(&0)
+            || input[pos..].starts_with(&[0x1f, 0x8b])
+        {
+            return Ok((pos, entries));
+        }
         let hdr = input
             .get(
                 pos..pos
@@ -267,9 +273,7 @@ fn apply_entry(
     } else {
         parent_path
     })?;
-    if !parent.is_dir()
-        || (!parent_path.is_empty() && parent.absolute_path()?.as_str() != parent_path)
-    {
+    if !parent.is_dir() {
         return Err(InitramfsError::InvalidPath);
     }
     let key = (entry.dev_major, entry.dev_minor, entry.ino, ty as u8);
@@ -539,6 +543,16 @@ mod tests {
             let mut built_in = Vec::new();
             add_entry(&mut built_in, ".", 0o040755, 1, 2, &[], false);
             add_entry(&mut built_in, "bin", 0o040755, 2, 2, &[], false);
+            add_entry(&mut built_in, "bin-alias", 0o120777, 6, 1, b"bin", false);
+            add_entry(
+                &mut built_in,
+                "bin-alias/through",
+                0o100644,
+                7,
+                1,
+                b"linked",
+                false,
+            );
             add_entry(&mut built_in, "bin/init", 0o100755, 3, 2, b"hello", false);
             add_entry(&mut built_in, "bin/init-copy", 0o100755, 3, 2, &[], false);
             finish(&mut built_in, false);
@@ -556,7 +570,7 @@ mod tests {
                 report,
                 UnpackReport {
                     archives: 3,
-                    entries: 8
+                    entries: 10
                 }
             );
             let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
@@ -566,6 +580,7 @@ mod tests {
             assert_eq!(init.nlink, 2);
             assert_eq!(init.mode.bits() & 0o777, 0o755);
             assert_eq!((init.uid, init.gid), (12, 34));
+            assert_eq!(context.metadata("/bin/through").unwrap().size, 6);
             assert_eq!(
                 context
                     .resolve_no_follow("/init")
@@ -582,6 +597,8 @@ mod tests {
         with_test_page_provider(true, |_| {
             let mut archive = Vec::new();
             add_entry(&mut archive, "init", 0o100755, 1, 1, b"hello", true);
+            let (_, without_trailer) = unpack(&archive).unwrap();
+            assert_eq!(without_trailer.entries, 1);
             finish(&mut archive, true);
             let compressed = gzip(&archive);
             let (_, report) = unpack(&compressed).unwrap();

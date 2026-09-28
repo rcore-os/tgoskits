@@ -114,7 +114,7 @@ fn build_test_init(entry_source: &Path, init_source: &Path, output: &Path) -> an
 }
 
 pub(crate) fn diskless_host_initramfs(qemu: &QemuConfig) -> bool {
-    qemu.boot.initramfs.is_some() && !qemu.args.iter().any(|arg| arg == "-drive")
+    crate::rootfs::qemu::diskless_host_initramfs(qemu)
 }
 
 fn copy_fixture(source: &Path, destination: &Path) -> anyhow::Result<()> {
