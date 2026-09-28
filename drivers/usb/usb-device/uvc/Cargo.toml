@@ -11,6 +11,7 @@ version = "0.1.1"
 crab-usb = {workspace = true}
 log = "0.4"
 usb-if = {workspace = true}
+uvc-if = {workspace = true}
 anyhow = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]

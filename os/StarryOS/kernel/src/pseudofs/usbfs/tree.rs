@@ -85,13 +85,10 @@ impl SimpleDirOps for UsbBusDir {
         let Some(device_num) = parse_numeric_component(name) else {
             return Err(VfsError::NotFound);
         };
-        if self
+        let (_, generation) = self
             .manager
-            .device_snapshot(self.bus_num, device_num)
-            .is_none()
-        {
-            return Err(VfsError::NotFound);
-        }
+            .device_snapshot_with_generation(self.bus_num, device_num)
+            .ok_or(VfsError::NotFound)?;
 
         Ok(NodeOpsMux::File(Device::new(
             self.fs.clone(),
@@ -101,6 +98,7 @@ impl SimpleDirOps for UsbBusDir {
                 manager: self.manager.clone(),
                 bus_num: self.bus_num,
                 device_num,
+                generation,
             }),
         )))
     }
@@ -110,14 +108,18 @@ pub(super) struct UsbDeviceOps {
     pub(super) manager: Arc<UsbFsManager>,
     pub(super) bus_num: u8,
     pub(super) device_num: u8,
+    pub(super) generation: u64,
 }
 
 impl DeviceOps for UsbDeviceOps {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
-        let snapshot = self
+        let (snapshot, generation) = self
             .manager
-            .device_snapshot(self.bus_num, self.device_num)
+            .device_snapshot_with_generation(self.bus_num, self.device_num)
             .ok_or(VfsError::NotFound)?;
+        if generation != self.generation {
+            return Err(VfsError::NotFound);
+        }
         let offset = offset as usize;
         if offset >= snapshot.descriptor_blob.len() {
             return Ok(0);
@@ -133,10 +135,13 @@ impl DeviceOps for UsbDeviceOps {
     }
 
     fn ioctl(&self, current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
-        let snapshot = self
+        let (snapshot, generation) = self
             .manager
-            .device_snapshot(self.bus_num, self.device_num)
+            .device_snapshot_with_generation(self.bus_num, self.device_num)
             .ok_or(VfsError::NotFound)?;
+        if generation != self.generation {
+            return Err(VfsError::NotFound);
+        }
         match cmd {
             USBDEVFS_CONNECTINFO => {
                 (arg as *mut UsbdevfsConnectInfo)
@@ -159,7 +164,7 @@ impl DeviceOps for UsbDeviceOps {
             }
             USBDEVFS_CONTROL => self
                 .manager
-                .snapshot_device_ioctl(current, self.bus_num, self.device_num, cmd, arg)
+                .snapshot_device_ioctl(current, self.bus_num, self.device_num, self.generation, cmd, arg)
                 .map_err(Into::into),
             _ => Err(VfsError::Unsupported),
         }

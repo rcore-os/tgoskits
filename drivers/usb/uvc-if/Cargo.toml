@@ -1,0 +1,11 @@
+[package]
+name = "uvc-if"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+usb-if = { workspace = true }
+anyhow = { workspace = true }
+bitflags = { workspace = true }
+log = { workspace = true }

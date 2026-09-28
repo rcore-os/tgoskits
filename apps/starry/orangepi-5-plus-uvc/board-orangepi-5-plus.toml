@@ -13,5 +13,5 @@ timeout = 300
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
 success_regex = [
-  '(?m)^UVC_ENDPOINT_LIFECYCLE_OK$'
+  '(?m)^UVC_ENDPOINT_LIFECYCLE_OK\s*$'
 ]

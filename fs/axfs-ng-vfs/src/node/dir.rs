@@ -222,6 +222,12 @@ pub trait DirNodeOps: NodeOps {
         true
     }
 
+    /// Returns whether a child may be cached. Mixed directories can keep
+    /// stable mount points cached while resolving changing entries on demand.
+    fn is_cacheable_child(&self, _name: &str) -> bool {
+        self.is_cacheable()
+    }
+
     /// Returns whether this directory has child entries relevant to rmdir.
     fn has_children(&self) -> VfsResult<bool> {
         let mut has_children = false;
@@ -363,7 +369,7 @@ impl DirNode {
     }
 
     fn lookup_and_cache(&self, name: &str) -> VfsResult<DirEntry> {
-        if !self.ops.is_cacheable() {
+        if !self.ops.is_cacheable_child(name) {
             return self.ops.lookup(name);
         }
 
@@ -390,7 +396,7 @@ impl DirNode {
     }
 
     fn remove_cache_after_mutation(&self, name: &str) -> Option<DirEntry> {
-        if !self.ops.is_cacheable() {
+        if !self.ops.is_cacheable_child(name) {
             self.bump_cache_generation();
             return None;
         }
@@ -411,7 +417,7 @@ impl DirNode {
 
     /// Looks up a directory entry by name in cache.
     pub fn lookup_cache(&self, name: &str) -> Option<DirEntry> {
-        if self.ops.is_cacheable() {
+        if self.ops.is_cacheable_child(name) {
             self.cache.lock().get(name).cloned()
         } else {
             None
@@ -420,7 +426,7 @@ impl DirNode {
 
     /// Inserts a directory entry into the cache.
     pub fn insert_cache(&self, name: String, entry: DirEntry) -> Option<DirEntry> {
-        if self.ops.is_cacheable() {
+        if self.ops.is_cacheable_child(&name) {
             let previous = self.cache.lock().insert(name, entry);
             self.bump_cache_generation();
             previous
@@ -463,7 +469,7 @@ impl DirNode {
             // file content.
             let user_data = node.user_data().clone();
             *entry.user_data() = user_data;
-            if self.ops.is_cacheable() {
+            if self.ops.is_cacheable_child(name) {
                 let previous = {
                     let mut cache = self.cache.lock();
                     cache.insert(name.to_owned(), entry.clone())
@@ -508,7 +514,7 @@ impl DirNode {
             return Err(VfsError::InvalidInput);
         }
         let entry = self.ops.create(name, node_type, permission, uid, gid)?;
-        if self.ops.is_cacheable() {
+        if self.ops.is_cacheable_child(name) {
             let previous = {
                 let mut cache = self.cache.lock();
                 cache.insert(name.to_owned(), entry.clone())
@@ -545,7 +551,7 @@ impl DirNode {
         let entry = self
             .ops
             .create_symlink(name, target, permission, uid, gid)?;
-        if self.ops.is_cacheable() {
+        if self.ops.is_cacheable_child(name) {
             let previous = {
                 let mut cache = self.cache.lock();
                 cache.insert(name.to_owned(), entry.clone())
@@ -577,34 +583,36 @@ impl DirNode {
         dst_name: &str,
         options: RenameOptions,
     ) {
-        let (source_entry, target_entry) =
-            if core::ptr::eq(self, dst_dir) && self.ops.is_cacheable() {
-                let mut children = self.cache.lock();
-                let source = children.remove(src_name);
-                let target = if src_name == dst_name {
-                    None
-                } else {
-                    children.remove(dst_name)
-                };
-                self.bump_cache_generation();
-                (source, target)
+        let (source_entry, target_entry) = if core::ptr::eq(self, dst_dir)
+            && self.ops.is_cacheable_child(src_name)
+            && self.ops.is_cacheable_child(dst_name)
+        {
+            let mut children = self.cache.lock();
+            let source = children.remove(src_name);
+            let target = if src_name == dst_name {
+                None
             } else {
-                (
-                    self.remove_cache_after_mutation(src_name),
-                    dst_dir.remove_cache_after_mutation(dst_name),
-                )
+                children.remove(dst_name)
             };
+            self.bump_cache_generation();
+            (source, target)
+        } else {
+            (
+                self.remove_cache_after_mutation(src_name),
+                dst_dir.remove_cache_after_mutation(dst_name),
+            )
+        };
 
         if options.exchange() {
             if let Some(source) = source_entry
-                && dst_dir.ops.is_cacheable()
+                && dst_dir.ops.is_cacheable_child(dst_name)
                 && let Ok(fresh_target) = dst_dir.ops.lookup(dst_name)
             {
                 Self::transfer_cached_state(source, &fresh_target);
                 dst_dir.insert_cache(dst_name.to_owned(), fresh_target);
             }
             if let Some(target) = target_entry
-                && self.ops.is_cacheable()
+                && self.ops.is_cacheable_child(src_name)
                 && let Ok(fresh_source) = self.ops.lookup(src_name)
             {
                 Self::transfer_cached_state(target, &fresh_source);
@@ -615,7 +623,7 @@ impl DirNode {
 
         Self::forget_removed_entry(target_entry);
         if let Some(source) = source_entry
-            && dst_dir.ops.is_cacheable()
+            && dst_dir.ops.is_cacheable_child(dst_name)
             && let Ok(fresh_destination) = dst_dir.ops.lookup(dst_name)
         {
             Self::transfer_cached_state(source, &fresh_destination);

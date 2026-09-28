@@ -27,6 +27,8 @@ rdif-block
 aic8800
 rdif-eth
 ax-display
+ax-media
+media-uvc
 ax-fs-ng
 rsext4
 ax-hal

@@ -12,7 +12,7 @@ pub use lang_id::*;
 pub use parser::decode_string_descriptor;
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DescriptorType(pub u8);
 
 impl DescriptorType {
@@ -21,6 +21,8 @@ impl DescriptorType {
     pub const STRING: Self = Self(0x03);
     pub const INTERFACE: Self = Self(0x04);
     pub const ENDPOINT: Self = Self(0x05);
+    pub const CLASS_SPECIFIC_INTERFACE: Self = Self(0x24);
+    pub const CLASS_SPECIFIC_ENDPOINT: Self = Self(0x25);
     // Reserved 6
     // Reserved 7
     pub const INTERFACE_POWER: Self = Self(0x08);

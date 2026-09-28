@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(board_uvc_v4l2 C)
+add_executable(uvc-v4l2 main.c)
+target_compile_options(uvc-v4l2 PRIVATE -Wall -Wextra -Werror)
+target_link_options(uvc-v4l2 PRIVATE -static)
+install(TARGETS uvc-v4l2 RUNTIME DESTINATION usr/bin/starry-test-suit)
