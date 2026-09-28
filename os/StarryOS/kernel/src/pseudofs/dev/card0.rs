@@ -198,7 +198,7 @@ use super::vblank::{
     PendingVblankEvent, QueuedVblankEvent, VBLANK_PERIOD_NS, VblankClock, vblank_passed,
     widen_32_to_64,
 };
-use super::sync_file::SyncFile;
+use super::sync_file::{SyncFile, kick_refresher};
 use crate::{
     StarryError, StarryResult,
     file::{
@@ -601,7 +601,9 @@ struct GpuResource {
     /// backing before `RESOURCE_FLUSH`; 3D virgl/blob resources are
     /// host-rendered and skip the transfer.
     is_dumb_2d: bool,
-    /// Last synchronously submitted fence that referenced this object.
+    /// Last submit fence that referenced this object; 0 means no outstanding
+    /// fence (the object was never submitted or the driver completed
+    /// synchronously). `VIRTGPU_WAIT` waits or probes exactly this fence.
     last_fence: AtomicU64,
 }
 
@@ -4030,6 +4032,9 @@ fn map_gpu_err(err: GpuError) -> VfsError {
         GpuError::InvalidArgument | GpuError::InvalidHandle => VfsError::InvalidInput,
         GpuError::Busy => VfsError::ResourceBusy,
         GpuError::OutOfMemory => VfsError::NoMemory,
+        // A bounded device wait expired (stalled host); Linux reports
+        // -ETIMEDOUT for the same condition.
+        GpuError::TimedOut => VfsError::TimedOut,
         GpuError::DeviceLost | GpuError::Io => VfsError::Io,
     }
 }
@@ -4066,6 +4071,13 @@ const _DUMB_BUFFER_FIELDS_USED: fn(&DumbBuffer) = |b| {
     let _ = (b.width, b.height, b.bpp, b.pitch);
     let _ = (b.size, b.offset, &b.mapping);
 };
+
+/// The `fence_fd` value written back by EXECBUFFER: an out-fence fd replaces
+/// the field, and an IN-only request keeps its input fd untouched (Linux only
+/// updates the field when it created an out-fence).
+fn writeback_fence_fd(current: i32, out_fd: Option<i32>) -> i32 {
+    out_fd.unwrap_or(current)
+}
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
@@ -4241,5 +4253,17 @@ mod tests {
             ))
         );
         assert!(events.has_space());
+    }
+
+    #[test]
+    fn execbuffer_in_only_request_keeps_its_input_fence_fd() {
+        assert_eq!(writeback_fence_fd(7, None), 7);
+        assert_eq!(writeback_fence_fd(-1, None), -1);
+    }
+
+    #[test]
+    fn execbuffer_out_fence_fd_overwrites_the_written_back_value() {
+        assert_eq!(writeback_fence_fd(7, Some(9)), 9);
+        assert_eq!(writeback_fence_fd(-1, Some(9)), 9);
     }
 }
