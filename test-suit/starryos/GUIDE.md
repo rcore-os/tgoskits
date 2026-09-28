@@ -640,12 +640,14 @@ cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-co
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
 `native-network-smoke` 在专用 TCP 3000 端口执行短时双向 HTTP 流式传输，随后在
 `eth1` 上验证 rtnetlink 地址增删，适合作为 CI 连通性检查。AKA Wi-Fi 的
-`wifi-network-smoke` 在取得 DHCP 地址后执行同样的双向传输。两项测试只依赖板端
-`curl` 和本次 session 上传的 `upload-source`，无需板端安装 iperf。
+`wifi-network-smoke` 在取得 DHCP 地址后执行同样的双向传输。AKA 板端只有
+`wget` 时，测试会从本次 session 下载包含 `curl` 及其 musl 依赖的归档，再运行
+`upload-source` 和双向传输；无需预装 iperf 或 curl。
 
 `board-common/network-test` 的 `upload-source.c` 以 128 KiB 固定块生成零数据，
 按单调时钟运行指定时长，不落盘；CMake 将其编译并把脚本安装到每次运行的 session
-upload root。板端从 `${sessionFile:bin/...}` 下载资产，使用 `${boardServerIp}:3000`
+upload root。AKA 板测的 CMake 同时从 staging root 打包 curl 的目标 ELF 依赖。
+板端从 `${sessionFile:bin/...}` 和 `${sessionFile:share/curl-bundle.tar.gz}` 下载资产，使用 `${boardServerIp}:3000`
 访问 ostool-server 的网络测试服务。管理 API 仍使用 2999；该测试是 HTTP 协议，
 不兼容 iperf2/iperf3。
 
