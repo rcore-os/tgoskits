@@ -10,11 +10,18 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.test.check_ci_routing import mapping_block, named_step_block
+from scripts.test.check_ci_routing import (
+    list_items_in_order,
+    mapping_block,
+    named_step_block,
+)
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+STARRY_APPS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/starry-apps.yml"
+AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
+BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
@@ -212,6 +219,102 @@ class MatrixParallelismTests(unittest.TestCase):
             reusable_workflow,
             r"(?ms)^      max_parallel:\n.*?^        default: (?:[2-9]|[1-9][0-9]+)$",
         )
+
+
+class ScheduledWorkflowOwnershipTests(unittest.TestCase):
+    def test_ci_pull_request_paths_cover_daily_workflows(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        triggers = mapping_block(workflow, "on", 0)
+        pull_request = mapping_block(triggers, "pull_request", 2)
+        paths = list_items_in_order(pull_request, "paths", 4)
+
+        for workflow_path in (
+            ".github/workflows/starry-apps.yml",
+            ".github/workflows/axvisor-nightly.yml",
+            ".github/workflows/benchmarks.yml",
+        ):
+            self.assertIn(workflow_path, paths)
+
+    def test_benchmarks_workflow_owns_every_performance_matrix(self) -> None:
+        workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")
+        triggers = mapping_block(workflow, "on", 0)
+        schedule = mapping_block(triggers, "schedule", 2)
+        jobs = mapping_block(workflow, "jobs", 0)
+        plan = mapping_block(jobs, "plan", 2)
+        plan_step = named_step_block(plan, "Plan benchmark matrices")
+
+        self.assertIn('cron: "40 21 * * *"', schedule)
+        self.assertIn("workflow_dispatch:", triggers)
+        self.assertIn("--mode benchmarks", plan_step)
+        for output in (
+            "prepare_matrix",
+            "axvisor_performance_matrix",
+            "starry_performance_matrix",
+            "starry_board_performance_matrix",
+        ):
+            self.assertIn(f"steps.matrix.outputs.{output}", plan)
+
+        for job_id, matrix_name in (
+            ("prepare", "prepare_matrix"),
+            ("axvisor_performance", "axvisor_performance_matrix"),
+            ("starry_performance", "starry_performance_matrix"),
+            ("starry_board_performance", "starry_board_performance_matrix"),
+        ):
+            with self.subTest(job_id=job_id):
+                job = mapping_block(jobs, job_id, 2)
+                self.assertTrue(job)
+                self.assertIn(
+                    "uses: ./.github/workflows/reusable-check-matrix.yml",
+                    job,
+                )
+                self.assertIn(
+                    f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}",
+                    job,
+                )
+
+        board_job = mapping_block(jobs, "starry_board_performance", 2)
+        self.assertIn("max_parallel: 1", board_job)
+
+        axvisor_history = mapping_block(jobs, "perf-history-axvisor", 2)
+        starry_history = mapping_block(jobs, "perf-history-starry", 2)
+        self.assertIn("axvisor-nightly-performance-*", axvisor_history)
+        self.assertIn("--source axvisor", axvisor_history)
+        self.assertIn("needs.plan.result == 'success'", axvisor_history)
+        self.assertNotIn(
+            "needs.axvisor_performance.result == 'success'",
+            axvisor_history,
+        )
+        self.assertIn("continue-on-error: true", axvisor_history)
+        self.assertNotIn("needs.starry_performance", axvisor_history)
+        self.assertIn("starry-apps-nightly-performance-*", starry_history)
+        self.assertIn("--source starry", starry_history)
+        self.assertIn("needs.starry_performance.result == 'success'", starry_history)
+        self.assertIn(
+            "needs.starry_board_performance.result == 'success'",
+            starry_history,
+        )
+        self.assertNotIn("needs.axvisor_performance", starry_history)
+        self.assertIn("perf-history-axvisor", starry_history)
+        self.assertIn("always()", starry_history)
+        for history in (axvisor_history, starry_history):
+            self.assertIn("group: perf-data-publish", history)
+            self.assertIn("cancel-in-progress: false", history)
+            self.assertIn("gh workflow run docs.yml --ref dev", history)
+
+    def test_daily_workflows_do_not_own_benchmark_execution(self) -> None:
+        starry_apps = STARRY_APPS_WORKFLOW.read_text(encoding="utf-8")
+        axvisor_nightly = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("--mode starry-apps", starry_apps)
+        self.assertIn("--mode axvisor-nightly", axvisor_nightly)
+        for workflow in (starry_apps, axvisor_nightly):
+            self.assertNotIn("benchmarks.toml", workflow)
+            self.assertNotIn("performance_matrix", workflow)
+            self.assertNotIn("axvisor-nightly-performance", workflow)
+            self.assertNotIn("starry-apps-nightly-performance", workflow)
+            self.assertNotIn("--source axvisor", workflow)
+            self.assertNotIn("--source starry", workflow)
+            self.assertNotIn("perf-data-publish", workflow)
 
 
 class WifiSecretRoutingTests(unittest.TestCase):

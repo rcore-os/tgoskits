@@ -70,114 +70,30 @@ def perf_group_date_body(group: str, date: str) -> str:
 
 
 class CiPlanTests(unittest.TestCase):
-    def test_starry_apps_nightly_splits_performance_matrix(self):
+    def test_starry_apps_plan_excludes_performance_checks(self):
+        benchmark_ids = {
+            check["id"]
+            for check in ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
+        }
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
-            event_name="workflow_dispatch",
+            event_name="schedule",
         )
         plan = ci_plan.build_starry_apps_plan(context)
-        app_ids = {row["id"] for row in plan["starry_apps_matrix"]["include"]}
-        performance_ids = {
-            row["id"] for row in plan["starry_performance_matrix"]["include"]
-        }
-        self.assertTrue(app_ids)
-        self.assertEqual(
-            performance_ids,
-            {
-                "starry-performance-block-io-x86-64",
-                "starry-performance-compile-sim",
-                "starry-performance-ltp-hackbench",
-                "starry-performance-ltp-netstress",
-                "starry-performance-wakeup-latency",
-                "starry-performance-sysbench",
-            },
-        )
-        self.assertEqual(
-            {
-                row["id"]
-                for row in plan["starry_board_performance_matrix"]["include"]
-            },
-            {
-                "starry-performance-block-rw-orangepi-5-plus",
-                "starry-performance-iperf3-orangepi-5-plus",
-                "starry-performance-uvc-orangepi-5-plus",
-                "starry-performance-uvc-rknn-orangepi-5-plus",
-                "starry-performance-tennis-yolo-aka-00-sg2002",
-            },
-        )
-        self.assertTrue(all(row["download_xtask_bin_artifact"] for row in plan["starry_performance_matrix"]["include"]))
-        # The shared benchmarks manifest also holds the AxVisor checks, but the
-        # Starry plan must only pick up its own `Starry Apps` group.
-        starry_performance_rows = (
-            plan["starry_performance_matrix"]["include"]
-            + plan["starry_board_performance_matrix"]["include"]
-        )
-        self.assertTrue(
-            all(row["group"] == "Starry Apps" for row in starry_performance_rows)
-        )
-        self.assertTrue(
-            all(
-                row["performance_artifact_prefix"]
-                == "starry-apps-nightly-performance"
-                for row in starry_performance_rows
-            )
-        )
-        self.assertFalse(
-            any(row["id"].startswith("test-axvisor") for row in starry_performance_rows)
-        )
 
-        performance_commands = "\n".join(
-            row["command"] for row in plan["starry_performance_matrix"]["include"]
-        )
-        self.assertIn("-t benchmark/block-io-bench", performance_commands)
-        self.assertIn("-t benchmark/wakeup-latency-bench", performance_commands)
-        self.assertIn(
-            "-t benchmark/qemu/compile-sim-bench", performance_commands
-        )
-        self.assertIn(
-            "--qemu-config qemu-x86_64-benchmark.toml", performance_commands
-        )
-        self.assertIn("--qemu-config qemu-aarch64-matrix.toml", performance_commands)
+        self.assertEqual(set(plan), {"starry_apps_matrix"})
+        rows = plan["starry_apps_matrix"]["include"]
+        self.assertTrue(rows)
+        self.assertTrue(all(row["group"] == "Starry Apps" for row in rows))
+        self.assertTrue({row["id"] for row in rows}.isdisjoint(benchmark_ids))
+        self.assertFalse(any(row["performance_report"] for row in rows))
 
-        board_commands = "\n".join(
-            row["command"]
-            for row in plan["starry_board_performance_matrix"]["include"]
-        )
-        self.assertIn("-t benchmark/block-rw-bench", board_commands)
-        self.assertIn("-t benchmark/iperf3", board_commands)
-        self.assertIn("-t benchmark/orangepi-5-plus-uvc-rknn", board_commands)
-        self.assertIn("--board-config board-orangepi-5-plus.toml", board_commands)
-        self.assertIn(
-            "--board-config configs/board-orangepi-5-plus-bench.toml", board_commands
-        )
-
-    def test_axvisor_nightly_runs_nightly_and_benchmark_manifests_only(self):
-        catalog = [
-            check
-            for check in ci_plan.load_catalog(
-                (ci_plan.AXVISOR_NIGHTLY_MANIFEST, ci_plan.BENCHMARK_MANIFEST)
-            )
-            if check["phase"] == "nightly"
-            or (
-                check["phase"] == "benchmark"
-                and check["group"] == ci_plan.AXVISOR_BENCHMARK_GROUP
-            )
-        ]
-        expected = {check["id"] for check in catalog}
+    def test_axvisor_nightly_plan_excludes_performance_checks(self):
         benchmark_ids = {
-            check["id"] for check in catalog if check.get("performance_report", False)
-        }
-        nightly_ids = {
             check["id"]
-            for check in catalog
-            if not check.get("performance_report", False)
+            for check in ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
         }
-        # The shared manifest also holds the Starry performance checks; the
-        # AxVisor nightly matrix must not pull them in.
-        self.assertFalse(
-            any(check_id.startswith("starry-performance") for check_id in expected)
-        )
         for event in ("schedule", "workflow_dispatch"):
             with self.subTest(event=event):
                 context = ci_plan.PlanContext(
@@ -187,95 +103,106 @@ class CiPlanTests(unittest.TestCase):
                 )
                 plan = ci_plan.build_axvisor_nightly_plan(context)
                 rows = plan["axvisor_matrix"]["include"]
-                self.assertEqual({row["id"] for row in rows}, expected)
-                self.assertEqual(len(rows), len(expected))
-                self.assertTrue(any(
-                    "--board orangepi-5-plus-linux --test-case ping" in row["command"]
-                    for row in rows
-                ))
+
+                self.assertEqual(set(plan), {"axvisor_matrix"})
+                self.assertTrue(rows)
+                self.assertTrue({row["id"] for row in rows}.isdisjoint(benchmark_ids))
+                self.assertFalse(any(row["performance_report"] for row in rows))
                 self.assertTrue(
-                    any("ivc-benchmark" in row["command"] for row in rows)
+                    any(
+                        "--board orangepi-5-plus-linux --test-case ping"
+                        in row["command"]
+                        for row in rows
+                    )
                 )
-                # Benchmark-manifest checks produce reports; nightly-only checks do not.
-                self.assertEqual(
-                    {row["id"] for row in rows if row["performance_report"]},
-                    benchmark_ids,
-                )
-                self.assertEqual(
-                    {row["id"] for row in rows if not row["performance_report"]},
-                    nightly_ids,
-                )
-                producer, = plan["prepare_matrix"]["include"]
-                self.assertTrue(producer["upload_xtask_bin_artifact"])
-                self.assertEqual(producer["command"], "cargo build -p tg-xtask")
-                for row in rows:
-                    if row["download_xtask_bin_artifact"]:
-                        self.assertEqual(
-                            row["xtask_bin_artifact_name"], producer["xtask_bin_artifact_name"]
-                        )
+
                 # The default main CI matrix never schedules nightly or benchmark rows.
                 main = ci_plan.build_main_plan(context)
                 main_ids = {
                     row["id"] for row in main["axvisor_matrix"]["include"]
                 }
                 self.assertTrue(main_ids)
-                self.assertTrue(main_ids.isdisjoint(expected))
+                self.assertTrue(main_ids.isdisjoint({row["id"] for row in rows}))
 
-    def test_axvisor_nightly_maps_only_performance_checks_to_report_rows(self):
-        checks = [
-            {
-                "id": "xtask-producer",
-                "name": "producer",
-                "group": "Workspace",
-                "phase": "static",
-                "runs_on": ["ubuntu-latest"],
-                "environment": "host",
-                "command": "build-xtask",
-                "source": "synthetic.toml",
-                "upload_xtask_bin_artifact": True,
-            },
-            {
-                "id": "axvisor-performance",
-                "name": "performance",
-                "group": "AxVisor",
-                "phase": "benchmark",
-                "runs_on": ["ubuntu-latest"],
-                "environment": "host",
-                "command": "run-performance",
-                "source": "synthetic.toml",
-                "performance_report": True,
-            },
-            {
-                "id": "axvisor-functional",
-                "name": "functional",
-                "group": "AxVisor",
-                "phase": "nightly",
-                "runs_on": ["ubuntu-latest"],
-                "environment": "host",
-                "command": "run-functional",
-                "source": "synthetic.toml",
-            },
-        ]
+    def test_benchmarks_plan_owns_every_benchmark_matrix(self):
+        checks = ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
+        expected_ids = {check["id"] for check in checks}
         context = ci_plan.PlanContext(
-            repository="example/tgoskits",
-            repository_owner="example",
-            event_name="workflow_dispatch",
-            include_nightly=True,
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
         )
 
-        rows = ci_plan._build_axvisor_nightly_plan(checks, context)[
-            "axvisor_matrix"
-        ]["include"]
+        plan = ci_plan.build_benchmarks_plan(context)
 
         self.assertEqual(
-            {row["id"] for row in rows if row["performance_report"]},
-            {"axvisor-performance"},
+            set(plan),
+            {
+                "prepare_matrix",
+                "axvisor_performance_matrix",
+                "starry_performance_matrix",
+                "starry_board_performance_matrix",
+            },
         )
-        self.assertFalse(
-            next(row for row in rows if row["id"] == "axvisor-functional")[
-                "performance_report"
-            ]
+        axvisor_rows = plan["axvisor_performance_matrix"]["include"]
+        starry_qemu_rows = plan["starry_performance_matrix"]["include"]
+        starry_board_rows = plan["starry_board_performance_matrix"]["include"]
+        self.assertTrue(axvisor_rows)
+        self.assertTrue(starry_qemu_rows)
+        self.assertTrue(starry_board_rows)
+
+        rows = axvisor_rows + starry_qemu_rows + starry_board_rows
+        self.assertEqual(len(rows), len(expected_ids))
+        self.assertEqual({row["id"] for row in rows}, expected_ids)
+        self.assertTrue(all(row["performance_report"] for row in rows))
+        self.assertTrue(
+            all(
+                row["group"] == ci_plan.AXVISOR_BENCHMARK_GROUP
+                for row in axvisor_rows
+            )
         )
+        starry_rows = starry_qemu_rows + starry_board_rows
+        self.assertTrue(
+            all(
+                row["group"] == ci_plan.STARRY_APPS_BENCHMARK_GROUP
+                for row in starry_rows
+            )
+        )
+        self.assertTrue(
+            all("board" not in row["runs_on"] for row in starry_qemu_rows)
+        )
+        self.assertTrue(
+            all("board" in row["runs_on"] for row in starry_board_rows)
+        )
+        self.assertTrue(
+            all(row["download_xtask_bin_artifact"] for row in starry_rows)
+        )
+        self.assertTrue(
+            all(
+                row["performance_artifact_prefix"] == "axvisor-nightly-performance"
+                for row in axvisor_rows
+            )
+        )
+        self.assertTrue(
+            all(
+                row["performance_artifact_prefix"]
+                == "starry-apps-nightly-performance"
+                for row in starry_rows
+            )
+        )
+        producer, = plan["prepare_matrix"]["include"]
+        self.assertTrue(producer["upload_xtask_bin_artifact"])
+        self.assertEqual(producer["command"], "cargo build -p tg-xtask")
+        for row in starry_rows:
+            self.assertEqual(
+                row["xtask_bin_artifact_name"],
+                producer["xtask_bin_artifact_name"],
+            )
+
+        with self.assertRaises(ci_plan.PlanError):
+            ci_plan.build_benchmarks_plan(
+                ci_plan.replace(context, event_name="pull_request")
+            )
 
     def test_benchmark_manifest_auto_enables_nightly_and_reports(self):
         checks = ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
@@ -283,50 +210,6 @@ class CiPlanTests(unittest.TestCase):
         for check in checks:
             self.assertTrue(check["nightly_only"])
             self.assertTrue(check["performance_report"])
-
-    def test_shared_benchmark_manifest_groups_each_check_for_its_workflow(self):
-        checks = ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
-        axvisor_ids = {
-            check["id"]
-            for check in checks
-            if check["group"] == ci_plan.AXVISOR_BENCHMARK_GROUP
-        }
-        starry_ids = {
-            check["id"]
-            for check in checks
-            if check["group"] == ci_plan.STARRY_APPS_BENCHMARK_GROUP
-        }
-        # Preserve the previous 3 AxVisor and 11 Starry performance checks.
-        self.assertEqual(len(axvisor_ids), 3)
-        self.assertEqual(len(starry_ids), 11)
-        self.assertEqual(axvisor_ids | starry_ids, {check["id"] for check in checks})
-        # Each workflow plan only receives the checks from its own group.
-        axvisor_rows = {
-            row["id"]
-            for row in ci_plan.build_axvisor_nightly_plan(
-                ci_plan.PlanContext(
-                    repository="rcore-os/tgoskits",
-                    repository_owner="rcore-os",
-                    event_name="schedule",
-                )
-            )["axvisor_matrix"]["include"]
-        }
-        self.assertTrue(axvisor_ids <= axvisor_rows)
-        self.assertTrue(axvisor_rows.isdisjoint(starry_ids))
-        starry_plan = ci_plan.build_starry_apps_plan(
-            ci_plan.PlanContext(
-                repository="rcore-os/tgoskits",
-                repository_owner="rcore-os",
-                event_name="workflow_dispatch",
-            )
-        )
-        starry_rows = {
-            row["id"]
-            for row in starry_plan["starry_performance_matrix"]["include"]
-            + starry_plan["starry_board_performance_matrix"]["include"]
-        }
-        self.assertEqual(starry_rows, starry_ids)
-        self.assertTrue(starry_rows.isdisjoint(axvisor_ids))
 
     def test_axvisor_nightly_manifest_is_nightly_only_without_reports(self):
         checks = ci_plan.load_catalog((ci_plan.AXVISOR_NIGHTLY_MANIFEST,))
@@ -405,7 +288,7 @@ class CiPlanTests(unittest.TestCase):
                 self.assertFalse(plan["axvisor_required"])
                 self.assertFalse(plan["starry_required"])
 
-    def test_benchmark_starry_path_resolves_to_registered_nightly_app_check(self):
+    def test_benchmark_starry_path_resolves_to_registered_benchmark_check(self):
         cases = {
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml": (
                 "starry-performance-block-rw-orangepi-5-plus",
@@ -1551,8 +1434,19 @@ command = "true"
             )["axvisor_matrix"]["include"]
         )
         self.assertNotIn("test-orangepi-5-plus-dualguest-robot", nightly_rows)
+        self.assertNotIn(
+            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
+            nightly_rows,
+        )
+        benchmark_rows = self.assert_unique_ids(
+            ci_plan.build_benchmarks_plan(
+                ci_plan.replace(self.upstream, event_name="schedule")
+            )["axvisor_performance_matrix"]["include"]
+        )
+        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", benchmark_rows)
         self.assertIn(
-            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark", nightly_rows
+            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
+            benchmark_rows,
         )
 
     def test_dualguest_robot_board_markers_cannot_match_command_echo(self) -> None:
