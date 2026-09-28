@@ -318,7 +318,7 @@ static void check_pipe_fchown(void)
     /* A non-root creator owns the anonymous inode and may chmod it. */
     pid_t owner_child = fork();
     if (owner_child == 0) {
-        if (setuid(1000) != 0) {
+        if (setgid(1000) != 0 || setuid(1000) != 0) {
             _exit(3);
         }
         int q[2];
