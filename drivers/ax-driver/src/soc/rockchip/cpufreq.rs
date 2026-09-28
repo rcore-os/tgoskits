@@ -581,13 +581,6 @@ pub fn initialize_post_boot() {
         disable_all_domains();
         return;
     }
-    if little.is_none() {
-        // At 750 mV the bootstrap A55 ring can deliver above its nominal
-        // 1.008 GHz. Without PVTM and a selected voltage/OPP table we cannot
-        // publish it as a calibrated operating point.
-        disable_all_domains();
-        return;
-    }
     if DOMAIN_READY
         .iter()
         .any(|ready| !ready.load(Ordering::Acquire))
@@ -619,6 +612,13 @@ pub fn initialize_post_boot() {
             "cpufreq: {} OPP selection unavailable; limiting to 816 MHz at 750 mV",
             cluster.name()
         );
+    }
+    if selected[Cluster::A55.index()].is_none() {
+        // Set both unselected big rings to their original low rate before
+        // closing the interface. At 750 mV the A55 bootstrap ring can deliver
+        // above its nominal 1.008 GHz and is not a calibrated OPP either.
+        disable_all_domains();
+        return;
     }
     let selected = SELECTED_OPPS.call_once(|| selected);
     for (index, domain) in DOMAINS.into_iter().enumerate() {
