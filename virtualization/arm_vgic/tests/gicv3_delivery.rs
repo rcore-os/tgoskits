@@ -278,6 +278,35 @@ fn deactivating_a_level_spi_with_no_routed_vcpu_preserves_pending_delivery() {
 }
 
 #[test]
+fn attaching_the_routed_vcpu_delivers_a_parked_level_spi() {
+    let (controller, backend) = controller(2, 1);
+    let vcpu0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(32).unwrap();
+
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+    controller.set_spi_level(spi, true).unwrap();
+    vcpu0.load().unwrap();
+    backend.activate_all(0);
+    vcpu0.save().unwrap();
+
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            1,
+        )
+        .unwrap();
+    vcpu0.deactivate_saved(IntId::Spi(spi)).unwrap();
+
+    let vcpu1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
+    vcpu1.load().unwrap();
+    assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
+}
+
+#[test]
 fn spi_refill_preserves_the_distributor_priority() {
     let (controller, backend) = controller(1, 1);
     let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));

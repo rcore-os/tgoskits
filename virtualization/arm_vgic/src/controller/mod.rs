@@ -351,6 +351,10 @@ impl GicV3Controller {
                 wake,
             )?,
         );
+        if let Err(error) = state.queue_pending_spis_for_vcpu(vcpu, &self.inner.config) {
+            state.redistributors.remove(&vcpu);
+            return Err(error);
+        }
         Ok(GicV3VcpuBinding::new(self.clone(), vcpu))
     }
 
