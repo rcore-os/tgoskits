@@ -2,7 +2,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{ControllerState, GicV3VcpuWake, SpiBacking};
+use super::{ControllerConfig, ControllerState, GicV3VcpuWake, SpiBacking};
 use crate::{
     CpuInterfaceState, GicAffinity, GicVcpuId, IntId, InterruptState, ListRegisterBacking,
     ListRegisterState, LpiId, PhysicalInterruptBinding, QueuedDelivery, RedistributorState,
@@ -20,6 +20,28 @@ pub(super) enum DeliveryRetirement {
 }
 
 impl ControllerState {
+    pub(super) fn queue_pending_spis_for_vcpu(
+        &mut self,
+        vcpu: GicVcpuId,
+        config: &ControllerConfig,
+    ) -> VgicResult {
+        if !self.distributor.enabled() {
+            return Ok(());
+        }
+        for raw in 32..config.spi_limit() {
+            let spi = SpiId::new(raw)?;
+            if self.has_software_backing(spi, config)
+                && self.distributor.interrupt(spi)?.deliverable()
+                && self.spi_target(spi)? == Some(vcpu)
+            {
+                // The new binding is not published yet; its first load will
+                // consume this queue without a separate wake.
+                let _ = self.queue_spi_if_deliverable(spi)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn redistributor(
         &self,
         vcpu: GicVcpuId,
