@@ -48,7 +48,9 @@ UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
 Axvisor 没有 PID 1：显式 `root=` 选择磁盘，否则存在 initramfs 就选择内存根。
 axbuild 将 `disk0`、匿名及直连盘视为宿主根盘接线；明确命名为其他 ID 的
 guest/data drive 不要求额外准备宿主根盘。Axvisor 显式 `root=` 但未接入
-可识别的宿主根盘会在配置阶段报错。
+可识别的宿主根盘会在配置阶段报错。axbuild 目前只改写 `-drive` 根盘；
+宿主根盘使用 `-blockdev` 时会明确报错，需改为 `-drive id=disk0`，
+不会插入第二份根盘后继续启动。
 
 ## 4. 验证入口与边界
 

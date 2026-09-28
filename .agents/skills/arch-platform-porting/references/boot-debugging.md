@@ -401,3 +401,5 @@ axbuild 读取 case 下的 `host-initramfs.toml` 生成归档，内存根用例�
 Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是否准备宿主根盘时
 只把 `disk0`、匿名或直连盘视为宿主接线。检查 `root=` 时同时查看 ostool
 `cmdline` 和原始 QEMU `-append`，显式磁盘根没有可识别的宿主根盘应在配置阶段失败。
+宿主根盘若使用 `-blockdev`，axbuild 当前不能改写其链式后端，应明确报错并改用
+`-drive id=disk0`；不要让补盘器再插入一个同名 `-drive`。

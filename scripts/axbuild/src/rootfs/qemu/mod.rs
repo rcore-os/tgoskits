@@ -78,17 +78,12 @@ pub(crate) fn has_host_rootfs_wiring(arguments: &[String]) -> bool {
     drive_argument_indices(arguments).any(|index| host_drive(&arguments[index]))
         || device_argument_indices(arguments)
             .any(|index| DeviceArg::parse(&arguments[index]).drive() == Some(disk_id))
-        || arguments
-            .windows(2)
-            .any(|pair| pair[0] == "-blockdev" && blockdev_is_host_root(&pair[1], disk_id))
+        || has_host_blockdev_wiring(arguments)
         || arguments.iter().any(|argument| {
             argument.strip_prefix("-drive=").is_some_and(host_drive)
                 || argument
                     .strip_prefix("-device=")
                     .is_some_and(|value| DeviceArg::parse(value).drive() == Some(disk_id))
-                || argument
-                    .strip_prefix("-blockdev=")
-                    .is_some_and(|value| blockdev_is_host_root(value, disk_id))
                 || matches!(
                     argument.as_str(),
                     "-hda" | "-hdb" | "-hdc" | "-hdd" | "-sd" | "-cdrom"
@@ -96,6 +91,18 @@ pub(crate) fn has_host_rootfs_wiring(arguments: &[String]) -> bool {
                 || ["-hda=", "-hdb=", "-hdc=", "-hdd=", "-sd=", "-cdrom="]
                     .iter()
                     .any(|option| argument.starts_with(option))
+        })
+}
+
+fn has_host_blockdev_wiring(arguments: &[String]) -> bool {
+    let disk_id = DEFAULT_ROOTFS_WIRING.disk_id;
+    arguments
+        .windows(2)
+        .any(|pair| pair[0] == "-blockdev" && blockdev_is_host_root(&pair[1], disk_id))
+        || arguments.iter().any(|argument| {
+            argument
+                .strip_prefix("-blockdev=")
+                .is_some_and(|value| blockdev_is_host_root(value, disk_id))
         })
 }
 
@@ -139,6 +146,9 @@ pub(crate) fn patch_rootfs(
     rootfs_path: &Path,
     options: RootfsPatchOptions,
 ) -> anyhow::Result<()> {
+    if has_host_blockdev_wiring(&qemu.args) {
+        bail!("QEMU host rootfs -blockdev cannot be patched; use -drive id=disk0");
+    }
     let mut arguments = qemu.args.clone();
     if options.write_policy == RootfsWritePolicy::Persist
         && arguments.iter().any(|argument| argument == "-snapshot")

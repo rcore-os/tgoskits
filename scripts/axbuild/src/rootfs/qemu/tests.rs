@@ -120,6 +120,32 @@ fn replace_drive_only_rejects_unidentified_file_backed_storage() {
 }
 
 #[test]
+fn host_blockdev_is_not_replaced_with_duplicate_drive() {
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-blockdev".into(),
+            "driver=file,filename=/tmp/old.img,node-name=disk0".into(),
+            "-device".into(),
+            "virtio-blk-pci,drive=disk0".into(),
+        ],
+        ..Default::default()
+    };
+    let original_args = qemu.args.clone();
+    let error = super::patch_rootfs(
+        &mut qemu,
+        Path::new("/tmp/new.img"),
+        RootfsPatchOptions {
+            mode: RootfsPatchMode::ReplaceDriveOnly,
+            write_policy: RootfsWritePolicy::Discard,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("host rootfs -blockdev"), "{error}");
+    assert_eq!(qemu.args, original_args);
+}
+
+#[test]
 fn ensure_disk_boot_net_preserves_existing_nvme_device() {
     let rootfs = Path::new("/tmp/new-rootfs.img");
     let mut qemu = QemuConfig {
