@@ -1,15 +1,13 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::{
     alloc::Layout,
-    cell::UnsafeCell,
     hint::spin_loop,
+    mem::ManuallyDrop,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering, fence},
+    sync::atomic::{AtomicU64, Ordering, fence},
 };
 
-use rdif_iommu::{
-    DmaDomainId, IommuController, IommuDomain, IommuError, IovaWindow, MapPermissions, StreamId,
-};
+use rdif_iommu::{DmaDomainId, IommuError, IovaWindow, MapPermissions, StreamId};
 
 use crate::memory::{PhysicalMemory, PhysicalRegion};
 
@@ -46,72 +44,11 @@ const PHYS_MASK: u64 = (1 << 48) - 1;
 
 static NEXT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 
-struct SpinLock<T> {
-    locked: AtomicBool,
-    value: UnsafeCell<T>,
-}
-
-struct SpinGuard<'a, T>(&'a SpinLock<T>);
-
-impl<T> SpinLock<T> {
-    fn new(value: T) -> Self {
-        Self {
-            locked: AtomicBool::new(false),
-            value: UnsafeCell::new(value),
-        }
-    }
-
-    fn lock(&self) -> SpinGuard<'_, T> {
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
-        }
-        SpinGuard(self)
-    }
-
-    fn try_lock(&self) -> Option<SpinGuard<'_, T>> {
-        self.locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| SpinGuard(self))
-    }
-}
-
-// SAFETY: Exclusive access to T is granted by the acquire/release lock bit.
-unsafe impl<T: Send> Send for SpinLock<T> {}
-// SAFETY: A shared lock reference only exposes T through its guard.
-unsafe impl<T: Send> Sync for SpinLock<T> {}
-
-impl<T> core::ops::Deref for SpinGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: The guard owns the lock for its entire lifetime.
-        unsafe { &*self.0.value.get() }
-    }
-}
-
-impl<T> core::ops::DerefMut for SpinGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: The guard owns the only mutable access.
-        unsafe { &mut *self.0.value.get() }
-    }
-}
-
-impl<T> Drop for SpinGuard<'_, T> {
-    fn drop(&mut self) {
-        self.0.locked.store(false, Ordering::Release);
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Mmio(NonNull<u8>);
 
 // SAFETY: The mapping's lifetime and device exclusivity are constructor
-// preconditions; all register accesses occur under the controller lock.
+// preconditions; mutable controller access serializes register transactions.
 unsafe impl Send for Mmio {}
 
 impl Mmio {
@@ -265,7 +202,9 @@ pub struct SmmuFault {
 
 /// Arm SMMUv3 controller for a coherent, 4 KiB-granule Stage 1 system.
 pub struct Smmu {
-    inner: Arc<SpinLock<Hardware>>,
+    // The enabled SMMU can keep reading its queues and tables after this Rust
+    // value is dropped. There is no device-wide stop/hot-unplug protocol.
+    hardware: ManuallyDrop<Hardware>,
 }
 
 impl Smmu {
@@ -361,73 +300,58 @@ impl Smmu {
             }
             return Err(error);
         }
-        let inner = Arc::new(SpinLock::new(hardware));
-        // The SMMU remains enabled after registration. Without a device-wide
-        // stop protocol it is unsafe to free CMDQ, EVTQ, CD or page-table memory
-        // when the last software handle disappears. Keep the controller's
-        // control memory pinned for the boot lifetime.
-        core::mem::forget(inner.clone());
-        Ok(Self { inner })
+        Ok(Self {
+            hardware: ManuallyDrop::new(hardware),
+        })
     }
 
-    /// Drain event records from a task context. It never takes the lock from
-    /// a hard IRQ and therefore cannot deadlock with a mapping transaction.
-    pub fn drain_faults(&self) -> Result<Vec<SmmuFault>, IommuError> {
-        let mut guard = self.inner.try_lock().ok_or(IommuError::Busy)?;
-        guard.drain_faults()
+    /// Bind a stream and return its stable DMA domain identity. An incomplete
+    /// binding may be retried after a command-sync failure.
+    pub fn bind(&mut self, stream: StreamId) -> Result<DmaDomainId, IommuError> {
+        self.hardware.bind(stream)?;
+        Ok(self.hardware.domains[&stream.0].id)
     }
 
-    /// Count all faults observed so far, including newly queued EVTQ records.
-    pub fn fault_count(&self) -> Result<u64, IommuError> {
-        let mut guard = self.inner.try_lock().ok_or(IommuError::Busy)?;
-        guard.drain_faults()?;
-        Ok(guard.fault_count)
-    }
-}
-
-impl IommuController for Smmu {
-    fn bind(&self, stream: StreamId) -> Result<Arc<dyn IommuDomain>, IommuError> {
-        let mut hardware = self.inner.lock();
-        hardware.bind(stream)?;
-        Ok(Arc::new(AttachedDomain {
-            stream,
-            inner: self.inner.clone(),
-        }))
-    }
-}
-
-struct AttachedDomain {
-    stream: StreamId,
-    inner: Arc<SpinLock<Hardware>>,
-}
-
-impl IommuDomain for AttachedDomain {
-    fn id(&self) -> DmaDomainId {
-        let hardware = self.inner.lock();
-        hardware.domains[&self.stream.0].id
-    }
-
-    fn window(&self) -> IovaWindow {
+    /// Stage 1 IOVA aperture available to each bound stream.
+    pub const fn window() -> IovaWindow {
         IovaWindow {
             start: PAGE_SIZE as u64,
             end: 1 << IOVA_BITS,
         }
     }
 
-    fn map_pages(
-        &self,
+    /// Publish page translations for a bound stream.
+    pub fn map_pages(
+        &mut self,
+        stream: StreamId,
         iova: u64,
         physical: u64,
         len: usize,
         permissions: MapPermissions,
     ) -> Result<(), IommuError> {
-        self.inner
-            .lock()
-            .map_pages(self.stream, iova, physical, len, permissions)
+        self.hardware
+            .map_pages(stream, iova, physical, len, permissions)
     }
 
-    fn unmap_and_sync(&self, iova: u64, len: usize) -> Result<(), IommuError> {
-        self.inner.lock().unmap_and_sync(self.stream, iova, len)
+    /// Remove translations and wait for their IOTLB invalidation.
+    pub fn unmap_and_sync(
+        &mut self,
+        stream: StreamId,
+        iova: u64,
+        len: usize,
+    ) -> Result<(), IommuError> {
+        self.hardware.unmap_and_sync(stream, iova, len)
+    }
+
+    /// Drain event records from a task context with exclusive access.
+    pub fn drain_faults(&mut self) -> Result<Vec<SmmuFault>, IommuError> {
+        self.hardware.drain_faults()
+    }
+
+    /// Count all faults observed so far, including newly queued EVTQ records.
+    pub fn fault_count(&mut self) -> Result<u64, IommuError> {
+        self.hardware.drain_faults()?;
+        Ok(self.hardware.fault_count)
     }
 }
 

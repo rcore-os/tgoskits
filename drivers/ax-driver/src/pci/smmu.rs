@@ -9,7 +9,10 @@ use arm_smmu_v3::{PhysicalMemory, PhysicalRegion, Smmu};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use ax_sync::SpinLock;
 use log::info;
-use rdif_iommu::{Iommu, IommuError};
+use rdif_iommu::{
+    DmaDomainId, Iommu, IommuController, IommuDomain, IommuError, IovaWindow, MapPermissions,
+    StreamId,
+};
 use rdrive::{
     probe::OnProbeError,
     register::{ProbeFdt, ProbeKind, ProbeLevel, ProbePriority},
@@ -18,7 +21,58 @@ use rdrive::{
 struct SmmuMemory;
 
 static MEMORY: SmmuMemory = SmmuMemory;
-static CONTROLLER: SpinLock<Option<Arc<Smmu>>> = SpinLock::new(None);
+static CONTROLLER: SpinLock<Option<Arc<SmmuController>>> = SpinLock::new(None);
+
+/// ArceOS owns serialization; the portable SMMU only accepts mutable access.
+/// Probe and DMA mapping run outside hard IRQs. SMMU transactions may allocate
+/// physical pages while holding this lock; the page allocator does not call
+/// back into the IOMMU.
+struct SmmuController {
+    hardware: Arc<SpinLock<Smmu>>,
+}
+
+impl IommuController for SmmuController {
+    fn bind(&self, stream: StreamId) -> Result<Arc<dyn IommuDomain>, IommuError> {
+        let id = self.hardware.lock().bind(stream)?;
+        Ok(Arc::new(AttachedDomain {
+            stream,
+            id,
+            hardware: self.hardware.clone(),
+        }))
+    }
+}
+
+struct AttachedDomain {
+    stream: StreamId,
+    id: DmaDomainId,
+    hardware: Arc<SpinLock<Smmu>>,
+}
+
+impl IommuDomain for AttachedDomain {
+    fn id(&self) -> DmaDomainId {
+        self.id
+    }
+
+    fn window(&self) -> IovaWindow {
+        Smmu::window()
+    }
+
+    fn map_pages(
+        &self,
+        iova: u64,
+        physical: u64,
+        len: usize,
+        permissions: MapPermissions,
+    ) -> Result<(), IommuError> {
+        self.hardware
+            .lock()
+            .map_pages(self.stream, iova, physical, len, permissions)
+    }
+
+    fn unmap_and_sync(&self, iova: u64, len: usize) -> Result<(), IommuError> {
+        self.hardware.lock().unmap_and_sync(self.stream, iova, len)
+    }
+}
 
 // SAFETY: axklib's page allocator returns directly addressable, physically
 // contiguous pages; QEMU virt advertises a coherent SMMU page-table walker.
@@ -96,11 +150,13 @@ fn probe_smmu_node(
     let mmio = crate::mmio::iomap(reg.address as usize, 0x2_0000)?;
     // SAFETY: iomap returns a Device mapping that lives for the kernel lifetime;
     // the FDT range was checked above and rdrive retains the SMMU controller.
-    let smmu = Arc::new(unsafe { Smmu::new(mmio, &MEMORY) }.map_err(|err| {
-        OnProbeError::other(format!("Arm SMMUv3 initialization failed: {err:?}"))
-    })?);
-    platform.register(Iommu::new("arm-smmu-v3", smmu.clone()));
-    *CONTROLLER.lock() = Some(smmu);
+    let smmu = unsafe { Smmu::new(mmio, &MEMORY) }
+        .map_err(|err| OnProbeError::other(format!("Arm SMMUv3 initialization failed: {err:?}")))?;
+    let controller = Arc::new(SmmuController {
+        hardware: Arc::new(SpinLock::new(smmu)),
+    });
+    platform.register(Iommu::new("arm-smmu-v3", controller.clone()));
+    *CONTROLLER.lock() = Some(controller);
     info!("Arm SMMUv3 registered at {:#x}", reg.address);
     Ok(())
 }
@@ -111,7 +167,11 @@ pub(super) fn fault_count() -> Result<u64, OnProbeError> {
         .as_ref()
         .cloned()
         .ok_or_else(|| OnProbeError::other("Arm SMMUv3 controller is unavailable"))?;
-    smmu.fault_count()
+    let mut hardware = smmu.hardware.try_lock().ok_or_else(|| {
+        OnProbeError::other("Arm SMMUv3 controller is busy while draining faults")
+    })?;
+    hardware
+        .fault_count()
         .map_err(|err| OnProbeError::other(format!("failed to drain SMMU faults: {err}")))
 }
 
@@ -121,6 +181,10 @@ pub(super) fn drain_faults() -> Result<alloc::vec::Vec<arm_smmu_v3::SmmuFault>, 
         .as_ref()
         .cloned()
         .ok_or_else(|| OnProbeError::other("Arm SMMUv3 controller is unavailable"))?;
-    smmu.drain_faults()
+    let mut hardware = smmu.hardware.try_lock().ok_or_else(|| {
+        OnProbeError::other("Arm SMMUv3 controller is busy while draining faults")
+    })?;
+    hardware
+        .drain_faults()
         .map_err(|err| OnProbeError::other(format!("failed to drain SMMU faults: {err}")))
 }

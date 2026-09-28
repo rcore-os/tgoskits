@@ -78,8 +78,8 @@ impl PhysicalRegion {
 }
 
 // SAFETY: The allocation is stable and movable between CPUs; all mutable CPU
-// accesses are serialized by the controller lock, while SMMU access uses the
-// coherent hardware protocol and explicit command sync.
+// accesses require exclusive mutable controller access; the OS serializes
+// shared callers. SMMU access uses the coherent hardware protocol and sync.
 unsafe impl Send for PhysicalRegion {}
 
 impl Drop for PhysicalRegion {
