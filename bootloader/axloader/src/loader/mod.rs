@@ -4,6 +4,7 @@ pub mod elf_loader;
 pub mod entry;
 pub mod http;
 pub mod network;
+pub mod payload;
 pub mod smbios;
 
 use httpboot_protocol::LoaderStatusPhase;
@@ -81,6 +82,19 @@ fn fetch_control_offer(failed_boot_id: Option<&str>) -> BootAttempt {
                 offer.entry_symbol.as_deref(),
             ) {
                 Ok(elf) => {
+                    if let Err(err) = payload::install(
+                        network_boot.interface.handle(),
+                        &offer.initramfs,
+                        offer.cmdline.as_deref(),
+                        elf.handoff,
+                    ) {
+                        logln!("host_payload_error: {err}");
+                        let _ = network_boot.report_status(LoaderStatusPhase::Failed {
+                            code: "host_payload_failed".into(),
+                            message: alloc::format!("{err}"),
+                        });
+                        return BootAttempt::Failed(Some(offer.boot_id.clone()));
+                    }
                     if let Err(err) = network_boot.report_status(LoaderStatusPhase::Verified) {
                         logln!("loader_status_error: {err:?}");
                         return BootAttempt::DiscoveryFailed;

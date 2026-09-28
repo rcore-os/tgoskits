@@ -55,15 +55,28 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         .transpose()?;
     let mut cargo = build::load_cargo_config(&request, axvisor.app.workspace_context())?;
     request.vmconfigs = build::vmconfigs_from_cargo(&cargo);
-    ensure_qemu_assets_ready(
-        &request,
-        axvisor.app.workspace_root(),
-        axvisor.app.target_dir(),
-        explicit_rootfs.as_deref(),
-    )
-    .await?;
     let qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
+    if diskless_explicit_qemu(
+        &qemu,
+        request.qemu_config.is_some(),
+        explicit_rootfs.is_some(),
+    ) {
+        ensure_guest_image_bundles(
+            &request,
+            axvisor.app.workspace_root(),
+            axvisor.app.target_dir(),
+        )
+        .await?;
+    } else {
+        ensure_qemu_assets_ready(
+            &request,
+            axvisor.app.workspace_root(),
+            axvisor.app.target_dir(),
+            explicit_rootfs.as_deref(),
+        )
+        .await?;
+    }
     cargo.to_bin = qemu_to_bin_requested(&qemu)?;
     axvisor
         .app
@@ -94,14 +107,24 @@ pub(super) async fn load_patched_qemu_config(
         .app
         .read_qemu_config_from_path_for_cargo(cargo, &config_path)
         .await?;
-    patch_qemu_rootfs(
-        &mut qemu,
-        request,
-        axvisor.app.workspace_root(),
-        axvisor.app.target_dir(),
-        explicit_rootfs,
-    )?;
+    if !diskless_explicit_qemu(
+        &qemu,
+        request.qemu_config.is_some(),
+        explicit_rootfs.is_some(),
+    ) {
+        patch_qemu_rootfs(
+            &mut qemu,
+            request,
+            axvisor.app.workspace_root(),
+            axvisor.app.target_dir(),
+            explicit_rootfs,
+        )?;
+    }
     Ok(qemu)
+}
+
+fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool, explicit_rootfs: bool) -> bool {
+    explicit_config && !explicit_rootfs && !qemu.args.iter().any(|arg| arg == "-drive")
 }
 
 /// Ensures all image-managed assets required by an Axvisor QEMU run are available.
@@ -545,5 +568,21 @@ kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
         };
 
         assert!(qemu_to_bin_requested(&qemu).is_err());
+    }
+
+    #[test]
+    fn explicit_diskless_qemu_keeps_host_rootfs_unattached() {
+        let qemu = QemuConfig {
+            args: vec!["-nographic".into()],
+            ..Default::default()
+        };
+        assert!(diskless_explicit_qemu(&qemu, true, false));
+        assert!(!diskless_explicit_qemu(&qemu, true, true));
+        assert!(!diskless_explicit_qemu(&qemu, false, false));
+        let with_drive = QemuConfig {
+            args: vec!["-drive".into(), "file=rootfs.img".into()],
+            ..Default::default()
+        };
+        assert!(!diskless_explicit_qemu(&with_drive, true, false));
     }
 }

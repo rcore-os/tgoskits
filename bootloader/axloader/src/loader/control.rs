@@ -8,7 +8,7 @@ use core::time::Duration;
 
 use axloader::boot_offer::{BootManifest, BootManifestDecision, validate_boot_manifest};
 use httpboot_protocol::{
-    BootArch, ImageFormat, LoaderDiscoveryProbe, LoaderPollRequest, LoaderPollResponse,
+    BootArch, BootFile, ImageFormat, LoaderDiscoveryProbe, LoaderPollRequest, LoaderPollResponse,
     LoaderStatusPhase, LoaderStatusReport, PROTOCOL_VERSION,
 };
 
@@ -35,6 +35,8 @@ pub struct BootOffer {
     pub image_format: ImageFormat,
     pub arch: BootArch,
     pub entry_symbol: Option<String>,
+    pub initramfs: Option<BootFile>,
+    pub cmdline: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +146,8 @@ pub fn fetch_boot_offer(failed_boot_id: Option<&str>) -> Result<NetworkBoot, Con
                 arch,
                 image_format,
                 entry_symbol,
+                initramfs,
+                cmdline,
             } => {
                 let kernel_url = endpoint(&discovery.control_base_url, &kernel_path);
                 match validate_boot_manifest(
@@ -178,6 +182,11 @@ pub fn fetch_boot_offer(failed_boot_id: Option<&str>) -> Result<NetworkBoot, Con
                         image_format,
                         arch,
                         entry_symbol,
+                        initramfs: initramfs.map(|file| BootFile {
+                            path: endpoint(&discovery.control_base_url, &file.path),
+                            ..file
+                        }),
+                        cmdline,
                     },
                     control_base_url: discovery.control_base_url,
                     registration_id: discovery.registration_id,

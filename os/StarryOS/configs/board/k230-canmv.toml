@@ -1,5 +1,4 @@
 features = [
-  "legacy-board-init",
   "k230",
 ]
 log = "Info"

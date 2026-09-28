@@ -1,5 +1,4 @@
 features = [
-  "legacy-board-init",
   "starry-kernel/sg2002",
   "ax-driver/aic8800-wifi",
   "axplat-dyn/thead-mae",

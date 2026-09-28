@@ -35,12 +35,17 @@ pub fn select_unique_server(
 mod tests {
     use alloc::{string::ToString, vec};
 
+    use httpboot_protocol::LEGACY_PROTOCOL_VERSION;
+
     use super::*;
 
     #[test]
     fn rejects_multiple_server_instances() {
         assert_eq!(
-            select_unique_server(vec![offer("a", 2), offer("b", 2)]),
+            select_unique_server(vec![
+                offer("a", PROTOCOL_VERSION),
+                offer("b", PROTOCOL_VERSION)
+            ]),
             Err(DiscoverySelectionError::MultipleServers)
         );
     }
@@ -48,9 +53,12 @@ mod tests {
     #[test]
     fn ignores_other_protocol_versions() {
         assert_eq!(
-            select_unique_server(vec![offer("old", 1), offer("current", 2)])
-                .unwrap()
-                .server_id,
+            select_unique_server(vec![
+                offer("old", LEGACY_PROTOCOL_VERSION),
+                offer("current", PROTOCOL_VERSION)
+            ])
+            .unwrap()
+            .server_id,
             "current"
         );
     }

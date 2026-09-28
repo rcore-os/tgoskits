@@ -312,7 +312,7 @@ fi
 
 ### 8.2 自动执行
 
-`GroupedCaseExecution::GuestInit` 表示由客户机启动脚本执行 grouped runner。StarryOS 的 `os/StarryOS/starryos/src/init.sh` 在进入登录 shell 前调用 `/usr/bin/starry-run-case-tests`，不依赖 `/etc/profile.d`。`apply_grouped_qemu_config()` 生成不含 `shell_prefix`/`shell_cmd` 的被动步骤，匹配整组成功标记，并把 grouped 失败正则追加到 QEMU 顶层。`External` 表示共享框架不生成或启动 grouped runner；Axvisor 使用该配置，并在用例发现阶段拒绝非空 `test_commands`，其命令执行由显式 `shell_check_steps` 负责。
+`GroupedCaseExecution::GuestInit` 表示由客户机启动流程执行 grouped runner。StarryOS 的磁盘根通过 `os/StarryOS/starryos/rootfs/etc/init.d/starry-autorun` OpenRC 服务调用 `/usr/bin/starry-run-case-tests`；该服务显式加载 `/etc/profile.d/starry.sh`。`apply_grouped_qemu_config()` 生成不含 `shell_prefix`/`shell_cmd` 的被动步骤，匹配整组成功标记，并把 grouped 失败正则追加到 QEMU 顶层。`External` 表示共享框架不生成或启动 grouped runner；Axvisor 使用该配置，并在用例发现阶段拒绝非空 `test_commands`，其命令执行由显式 `shell_check_steps` 负责。
 
 ## 9. QEMU 启动控制
 

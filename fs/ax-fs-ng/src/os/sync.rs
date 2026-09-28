@@ -28,6 +28,11 @@ mod production {
         }
 
         #[track_caller]
+        pub fn lock_nested(&self, subclass: u32) -> IrqMutexGuard<'_, T> {
+            self.0.lock_irqsave_nested(subclass)
+        }
+
+        #[track_caller]
         pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
             self.0.try_lock_irqsave()
         }
@@ -100,6 +105,13 @@ mod tests {
         #[track_caller]
         pub fn lock(&self) -> TestIrqMutexGuard<'_, T> {
             let inner = self.0.lock();
+            IRQ_MUTEX_DEPTH.with(|depth| depth.set(depth.get() + 1));
+            TestIrqMutexGuard { inner: Some(inner) }
+        }
+
+        #[track_caller]
+        pub fn lock_nested(&self, subclass: u32) -> TestIrqMutexGuard<'_, T> {
+            let inner = self.0.lock_nested(subclass);
             IRQ_MUTEX_DEPTH.with(|depth| depth.set(depth.get() + 1));
             TestIrqMutexGuard { inner: Some(inner) }
         }

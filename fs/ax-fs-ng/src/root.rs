@@ -23,6 +23,18 @@ use crate::{
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
 static ROOT_BLOCK_IDENTITY: OnceLock<RootBlockIdentity> = OnceLock::new();
+static ROOT_KIND: OnceLock<RootKind> = OnceLock::new();
+
+/// Root selected before publishing the first task's filesystem context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootKind {
+    Memory,
+    Block,
+}
+
+pub fn root_kind() -> Option<RootKind> {
+    ROOT_KIND.get().copied()
+}
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,7 +74,7 @@ impl RootSpec {
             return Self::default();
         };
 
-        Self::parse(root)
+        Self::parse(&root)
     }
 
     pub fn parse(root: &str) -> Self {
@@ -189,7 +201,14 @@ pub fn init_root(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
     bootargs: Option<&str>,
 ) {
+    ROOT_KIND.call_once(|| RootKind::Block);
     let root_spec = RootSpec::parse_bootargs(bootargs);
+    if let Some(root) = bootargs.and_then(root_value) {
+        assert!(
+            root_spec.has_explicit_selector(),
+            "unsupported root device selector: {root}"
+        );
+    }
     let mut disks = collect_disks(block_devs)
         .unwrap_or_else(|error| panic!("failed to initialize block cache: {error:?}"));
     let candidates = collect_root_candidates(&disks);
@@ -214,9 +233,7 @@ pub fn init_root(
         selected.disk_index,
         selected_partition,
     );
-    let source = bootargs
-        .and_then(root_value)
-        .unwrap_or(default_source.as_str());
+    let source = bootargs.and_then(root_value).unwrap_or(default_source);
     let region = selected_partition_info.map_or_else(
         || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
         |part| part.info.region,
@@ -227,14 +244,65 @@ pub fn init_root(
         &selected.partitions,
         selected_partition,
     ) {
-        init_detected_filesystem(selected.handle.clone(), region, kind, &description, source)
+        init_detected_filesystem(selected.handle.clone(), region, kind, &description, &source)
     } else {
-        init_filesystem(selected.handle.clone(), region, &description, source)
+        init_filesystem(selected.handle.clone(), region, &description, &source)
     };
     mount_additional_partitions(&root, &selected, selected_partition);
     for disk in &disks {
         mount_additional_partitions(&root, disk, None);
     }
+}
+
+/// Installs the already-unpacked host archive if the caller selects it.
+///
+/// Block devices are still registered even when they are not the root, so
+/// consumers can mount them later or pass them through to a guest.
+pub fn init_root_with_memory(
+    block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
+    bootargs: Option<&str>,
+    memory: Option<axfs_ng_vfs::Filesystem>,
+    early_init: Option<&str>,
+) -> RootKind {
+    if let Some(memory) = memory {
+        let selected = should_use_memory_root(&memory, bootargs, early_init);
+        if selected {
+            ROOT_KIND.call_once(|| RootKind::Memory);
+            crate::finish_filesystem_init(memory, "rootfs");
+            return RootKind::Memory;
+        }
+    }
+    init_root(block_devs, bootargs);
+    RootKind::Block
+}
+
+fn should_use_memory_root(
+    memory: &axfs_ng_vfs::Filesystem,
+    bootargs: Option<&str>,
+    early_init: Option<&str>,
+) -> bool {
+    match early_init {
+        Some(path) => memory_init_accessible(memory, path),
+        None => root_value(bootargs.unwrap_or("")).is_none(),
+    }
+}
+
+fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool {
+    if !path.starts_with('/') {
+        return false;
+    }
+    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
+    let context = crate::highlevel::FsContext::new(root);
+    context.resolve(path).is_ok_and(|location| {
+        location.metadata().is_ok_and(|metadata| {
+            metadata.node_type == NodeType::RegularFile
+                && metadata.mode.intersects(
+                    NodePermission::OWNER_EXEC
+                        | NodePermission::GROUP_EXEC
+                        | NodePermission::OTHER_EXEC,
+                )
+        })
+    })
 }
 
 const SD_NAMES: [&str; 26] = [
@@ -298,6 +366,22 @@ pub fn init_root_from_rdif_sources(
 ) {
     let runtime = BlockRuntime::install_from_rdif_sources(block_devs, block_groups);
     init_root(runtime.devices().iter().cloned(), bootargs);
+}
+
+pub fn init_root_from_rdif_sources_with_memory(
+    block_devs: impl IntoIterator<Item = RdifBlockDevice>,
+    block_groups: impl IntoIterator<Item = RdifBlockGroup>,
+    bootargs: Option<&str>,
+    memory: Option<axfs_ng_vfs::Filesystem>,
+    early_init: Option<&str>,
+) -> RootKind {
+    let runtime = BlockRuntime::install_from_rdif_sources(block_devs, block_groups);
+    init_root_with_memory(
+        runtime.devices().iter().cloned(),
+        bootargs,
+        memory,
+        early_init,
+    )
 }
 
 fn collect_disks(
@@ -437,8 +521,8 @@ fn select_root_candidate(
     candidates: &[RootCandidate],
     spec: &RootSpec,
 ) -> Option<(usize, Option<usize>)> {
-    if let Some(index) = select_explicit_root(candidates, spec) {
-        return Some(index);
+    if spec.has_explicit_selector() {
+        return select_explicit_root(candidates, spec);
     }
 
     select_default_root(candidates)
@@ -741,11 +825,16 @@ const fn filesystem_name(fs: FilesystemKind) -> &'static str {
     }
 }
 
-fn root_value(bootargs: &str) -> Option<&str> {
-    bootargs.split_ascii_whitespace().find_map(|arg| {
-        arg.strip_prefix("root=")
-            .and_then(|root| (!root.is_empty()).then_some(root))
-    })
+fn root_value(bootargs: &str) -> Option<String> {
+    crate::bootargs::tokens(bootargs)
+        .into_iter()
+        .take_while(|arg| arg != "--")
+        .filter_map(|arg| {
+            arg.strip_prefix("root=")
+                .filter(|root| !root.is_empty())
+                .map(String::from)
+        })
+        .last()
 }
 
 fn parse_sd_like(root: &str, prefix: &str) -> Option<(usize, Option<usize>)> {
@@ -821,6 +910,39 @@ mod tests {
 
     use super::*;
     use crate::{BlockError, BlockResult, shutdown_registered_filesystems};
+
+    #[test]
+    fn initramfs_selection_follows_pid1_and_explicit_root_rules() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            let fs = crate::MemoryFs::new_ramfs();
+            let context = crate::highlevel::FsContext::new(
+                axfs_ng_vfs::Mountpoint::new_root(&fs).root_location(),
+            );
+            context
+                .create_node(
+                    "/init",
+                    NodeType::RegularFile,
+                    NodePermission::from_bits_truncate(0o755),
+                    0,
+                    0,
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+
+            assert!(should_use_memory_root(
+                &fs,
+                Some("root=/dev/sda"),
+                Some("/init")
+            ));
+            assert!(!should_use_memory_root(&fs, None, Some("/missing")));
+            assert!(should_use_memory_root(&fs, None, None));
+            assert!(!should_use_memory_root(&fs, Some("root=/dev/sda"), None));
+            assert_eq!(
+                root_value("root=/dev/sda root=PARTUUID=abcd -- root=/ignored"),
+                Some(String::from("PARTUUID=abcd"))
+            );
+        });
+    }
 
     struct FlakyMetadataDevice {
         remaining_failures: usize,

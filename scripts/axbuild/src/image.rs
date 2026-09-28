@@ -1,5 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
+};
 
+use anyhow::{Context, ensure};
 use clap::{Args as ClapArgs, Subcommand};
 
 use crate::{
@@ -62,6 +68,16 @@ pub enum Command {
     Resize(ArgsResize),
     /// Print and optionally verify the sha256 of a local image.
     Check(ArgsCheck),
+    /// Build a reproducible host newc archive from a directory.
+    PackInitramfs(ArgsPackInitramfs),
+}
+
+#[derive(ClapArgs)]
+pub struct ArgsPackInitramfs {
+    /// Directory whose contents become the memory root.
+    pub source: PathBuf,
+    /// Destination archive, outside SOURCE.
+    pub output: PathBuf,
 }
 
 #[derive(ClapArgs)]
@@ -139,7 +155,93 @@ async fn execute(args: ImageArgs) -> anyhow::Result<()> {
                 anyhow::bail!("checksum mismatch for {}", path.display())
             }
         }
+        Command::PackInitramfs(pack) => pack_initramfs(pack),
     }
+}
+
+fn pack_initramfs(args: ArgsPackInitramfs) -> anyhow::Result<()> {
+    pack_initramfs_dir(&args.source, &args.output)
+}
+
+pub(crate) fn pack_initramfs_dir(source: &Path, output: &Path) -> anyhow::Result<()> {
+    let source = fs::canonicalize(source)
+        .with_context(|| format!("cannot open initramfs source {}", source.display()))?;
+    ensure!(source.is_dir(), "initramfs source must be a directory");
+    let output = to_absolute_path(output)?;
+    let parent = output.parent().context("initramfs output has no parent")?;
+    fs::create_dir_all(parent)?;
+    let parent = fs::canonicalize(parent)?;
+    let output = parent.join(
+        output
+            .file_name()
+            .context("initramfs output has no filename")?,
+    );
+    ensure!(
+        !output.starts_with(&source),
+        "initramfs output must be outside its source directory"
+    );
+    let paths = archive_paths(&source)?;
+    let temp = tempfile::NamedTempFile::new_in(&parent)?;
+    let mut child = ProcessCommand::new("cpio")
+        .args([
+            "--create",
+            "--null",
+            "--format=newc",
+            "--reproducible",
+            "--owner=0:0",
+            "--quiet",
+        ])
+        .current_dir(&source)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(temp.reopen()?))
+        .spawn()
+        .context("failed to start cpio; install GNU cpio")?;
+    let write_result = (|| -> anyhow::Result<()> {
+        let mut input = child.stdin.take().context("cpio stdin is unavailable")?;
+        for path in &paths {
+            let path = path.to_str().context("initramfs path is not UTF-8")?;
+            ensure!(!path.contains('\0'), "initramfs path contains NUL");
+            input.write_all(path.as_bytes())?;
+            input.write_all(&[0])?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    ensure!(
+        child.wait()?.success(),
+        "cpio failed to create host initramfs"
+    );
+    ensure!(
+        temp.as_file().metadata()?.len() != 0,
+        "cpio created an empty archive"
+    );
+    temp.persist(&output)?;
+    println!("host initramfs: {}", output.display());
+    Ok(())
+}
+
+fn archive_paths(source: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    fn visit(source: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+        let mut entries =
+            fs::read_dir(source.join(relative))?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = relative.join(entry.file_name());
+            let metadata = fs::symlink_metadata(entry.path())?;
+            out.push(path.clone());
+            if metadata.is_dir() {
+                visit(source, &path, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut paths = vec![PathBuf::from(".")];
+    visit(source, Path::new("."), &mut paths)?;
+    Ok(paths)
 }
 
 fn check_image(path: &Path, expected_sha256: Option<&str>) -> anyhow::Result<bool> {
@@ -266,6 +368,23 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn initramfs_paths_are_sorted_and_include_root() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("etc")).unwrap();
+        fs::write(root.path().join("z"), b"z").unwrap();
+        fs::write(root.path().join("etc/issue"), b"hello").unwrap();
+        assert_eq!(
+            archive_paths(root.path()).unwrap(),
+            [
+                PathBuf::from("."),
+                PathBuf::from("./etc"),
+                PathBuf::from("./etc/issue"),
+                PathBuf::from("./z"),
+            ]
+        );
+    }
 
     #[test]
     fn cli_paths_override_environment_config_relative_to_workspace() {

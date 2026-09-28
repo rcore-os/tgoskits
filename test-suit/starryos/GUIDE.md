@@ -331,6 +331,13 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 根 PID 1 退出。`qemu/pid1`、`qemu/pid1-exit`、`qemu/pid1-exit-thread` 和 `qemu/pid1-fault` 安装专用
 `/sbin/init`，验证根 PID 1 的信号、回收语义、两种退出入口与同步缺页；`qemu/openrc` 验证服务管理和终端重新拉起。
 
+`qemu/host-initramfs` 与 `qemu/host-initramfs-disk-fallback` 在 case 目录放置
+`host-initramfs.toml`，其中 `source` 指向工作区内的归档目录；可选的
+`init_source` 指向 AArch64 `/init` 的 C 源码，同目录须有 `entry-aarch64.S`。
+axbuild 在运行前用 clang/lld 编译 `/init`、构建 `newc` 归档，再交给 QEMU。
+运行配置不要再写固定 `initramfs` 路径。内存根用例不接磁盘，磁盘回退用例
+显式配置主 rootfs drive；两者分别检查 `/init` 优先和无 `/init` 时的 `root=`。
+
 `python3 scripts/test/starry_openrc_boot.py --arch <arch> --output <目录>` 另外在私有镜像副本上
 通过 `cargo xtask starry qemu` 连续启动两次，检查服务注册持久化、正常关机及重启的 QMP
 事件。它不修改 test-suit 的 discard 策略；单纯匹配服务停止日志不能替代电源终态证明。

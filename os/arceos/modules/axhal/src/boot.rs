@@ -15,6 +15,28 @@ pub fn bootargs() -> Option<&'static str> {
     crate::dtb::get_chosen_bootargs()
 }
 
+/// The validated, reserved physical range of the host archive, if provided.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InitramfsRange {
+    pub start: usize,
+    pub end: usize,
+    pub reclaimable: bool,
+}
+
+#[cfg(not(any(test, feature = "host-test")))]
+pub fn initramfs_range() -> Option<InitramfsRange> {
+    axplat_dyn::initramfs_range().map(|range| InitramfsRange {
+        start: range.start,
+        end: range.end,
+        reclaimable: range.reclaimable,
+    })
+}
+
+#[cfg(any(test, feature = "host-test"))]
+pub fn initramfs_range() -> Option<InitramfsRange> {
+    None
+}
+
 /// Returns the trusted firmware seed captured during early boot.
 pub fn boot_entropy() -> Option<[u8; 32]> {
     #[cfg(not(any(test, feature = "host-test")))]

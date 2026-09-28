@@ -184,6 +184,18 @@ impl GlobalAllocator {
         unsafe { self.inner.lock_irqsave().add_region(region) }.map_err(Into::into)
     }
 
+    /// Adds a small region with page-aligned heap storage and reports usable bytes.
+    ///
+    /// # Safety
+    /// The address range must be writable, uniquely owned, and remain mapped
+    /// for the allocator lifetime. It must not overlap managed memory.
+    pub unsafe fn add_compact_memory(&self, start_vaddr: usize, size: usize) -> AllocResult<usize> {
+        // SAFETY: the caller owns this entire mapped region for the allocator lifetime.
+        let region = unsafe { slice::from_raw_parts_mut(start_vaddr as *mut u8, size) };
+        // SAFETY: the region is disjoint from all existing allocator regions.
+        unsafe { self.inner.lock_irqsave().add_compact_region(region) }.map_err(Into::into)
+    }
+
     /// Allocate arbitrary number of bytes. Returns the left bound of the
     /// allocated region.
     pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
@@ -416,6 +428,15 @@ pub fn global_add_memory(start_vaddr: usize, size: usize) -> AllocResult {
         start_vaddr + size
     );
     GLOBAL_ALLOCATOR.add_memory(start_vaddr, size)
+}
+
+/// Adds page-aligned reclaimable memory and reports allocator-visible bytes.
+///
+/// # Safety
+/// The address range must be writable, uniquely owned, and remain mapped for
+/// the allocator lifetime. It must not overlap managed memory.
+pub unsafe fn global_add_memory_compact(start_vaddr: usize, size: usize) -> AllocResult<usize> {
+    unsafe { GLOBAL_ALLOCATOR.add_compact_memory(start_vaddr, size) }
 }
 
 unsafe impl GlobalAlloc for GlobalAllocator {

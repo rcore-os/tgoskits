@@ -1099,6 +1099,27 @@ fn global_add_region_after_init_expands_capacity() {
 }
 
 #[test]
+fn global_add_compact_region_reclaims_small_unaligned_region() {
+    const ALIGN_2M: usize = 2 * 1024 * 1024;
+    let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
+    let mut second = HostRegion::new(ALIGN_2M + PAGE_SIZE, ALIGN_2M);
+    let mut tiny = HostRegion::new(PAGE_SIZE, PAGE_SIZE);
+    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
+    let _ctx = init_global(&allocator, &mut first, 1);
+
+    let before = allocator.available_bytes();
+    let unaligned = unsafe { second.subslice(PAGE_SIZE, ALIGN_2M / 2) };
+    let managed = unsafe { allocator.add_compact_region(unaligned).unwrap() };
+    assert!(managed > 0 && managed < ALIGN_2M / 2);
+    assert_eq!(allocator.available_bytes(), before + managed);
+    assert_eq!(allocator.managed_section_count(), 2);
+
+    let skipped = unsafe { allocator.add_compact_region(tiny.as_mut_slice()).unwrap() };
+    assert_eq!(skipped, 0);
+    assert_eq!(allocator.managed_section_count(), 2);
+}
+
+#[test]
 fn global_add_region_supports_discontiguous_regions() {
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(8 * 1024 * 1024, PAGE_SIZE * 4);

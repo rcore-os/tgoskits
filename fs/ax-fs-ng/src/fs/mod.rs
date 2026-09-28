@@ -2,6 +2,8 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
+pub mod memory;
+
 use axfs_ng_vfs::{Filesystem, VfsResult};
 
 #[cfg(any(feature = "ext4", feature = "fat"))]

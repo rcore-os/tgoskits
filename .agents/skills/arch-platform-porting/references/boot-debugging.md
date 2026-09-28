@@ -382,3 +382,16 @@ AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::Fata
 Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_executable_mapping` 在可执行 PTE 发布前完成缓存同步，mprotect 同样先同步被保留的叶子页。AArch64 使用直接映射别名清理 D-cache 到 PoU，再以 `ic ialluis; dsb ish; isb` 完成 Inner Shareable 指令缓存失效；远端 CPU 的用户异常返回提供 context synchronization。只执行 TLBI、加原子屏障或只在首次进入用户态清缓存不能覆盖后续缺页。
 
 对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `__set_ptes_anysz -> __sync_cache_and_tags -> __sync_icache_dcache`。用 `cargo xtask starry test board --board orangepi-5-plus --test-case exec-cache` 验证文件页内核写入后的重新取指；QEMU 只作为执行路径检查，不作为 I-cache/D-cache 实机红绿证明。完整所有权与证据见 `docs/design/user-executable-cache-coherence.md`。
+## 宿主 initramfs
+
+宿主归档的构建、交接、预留、解包、根选择与回收顺序见
+[`docs/design/host-initramfs.md`](../../../../docs/design/host-initramfs.md)。
+诊断 QEMU `-initrd`、FIT ramdisk 或 UEFI/HTTP Boot 时，先区分宿主归档与
+Axvisor Linux guest 的 `ramdisk_path`。FDT `linux,initrd-start/end` 必须在
+页分配器启动前预留；UEFI/HTTP 镜像必须在 `ExitBootServices` 前完成读取
+和校验。内置归档通过同一解包器，但不能代替外部传输验证。
+QEMU 定向回归使用 `cargo xtask starry test qemu --arch aarch64 --test-case
+qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask
+axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs`。
+axbuild 读取 case 下的 `host-initramfs.toml` 生成归档，内存根用例不接磁盘，
+磁盘回退用例保留主 rootfs drive。ArceOS 的内建和外部镜像测试命令见设计文档。

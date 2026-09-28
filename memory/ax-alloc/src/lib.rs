@@ -281,6 +281,8 @@ mod tlsf_impl;
 
 #[cfg(buddy_slab)]
 use buddy_slab as imp;
+#[cfg(buddy_slab)]
+pub use imp::global_add_memory_compact;
 pub use imp::{
     DefaultByteAllocator, GlobalAllocator, global_add_memory, global_init, init_percpu_slab,
 };
@@ -292,6 +294,27 @@ use tlsf_impl as imp;
 /// Returns the reference to the global allocator.
 pub fn global_allocator() -> &'static GlobalAllocator {
     imp::global_allocator()
+}
+
+/// Adds reclaimed memory and reports allocator-visible bytes in TLSF mode.
+///
+/// # Safety
+/// The address range must be writable, uniquely owned, and remain mapped for
+/// the allocator lifetime. It must not overlap managed memory.
+#[cfg(tlsf)]
+pub unsafe fn global_add_memory_compact(start_vaddr: usize, size: usize) -> AllocResult<usize> {
+    global_add_memory(start_vaddr, size)?;
+    Ok(size)
+}
+
+/// Stub for builds without an allocator backend.
+///
+/// # Safety
+/// The address range must be writable, uniquely owned, and remain mapped for
+/// the allocator lifetime. It must not overlap managed memory.
+#[cfg(not(any(tlsf, buddy_slab)))]
+pub unsafe fn global_add_memory_compact(_start_vaddr: usize, _size: usize) -> AllocResult<usize> {
+    unimplemented!("no allocator backend enabled")
 }
 
 #[cfg(test)]

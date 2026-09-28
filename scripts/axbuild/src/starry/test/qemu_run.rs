@@ -230,6 +230,13 @@ impl Starry {
                     starry_case.case.display_name
                 )
             })?;
+            qemu_test::prepare_host_initramfs(
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                &starry_case.case.case_dir,
+                &request.arch,
+                &mut qemu,
+            )?;
             let timing_stage = timing::TimingStage::new(
                 "starry-qemu",
                 [
@@ -248,12 +255,14 @@ impl Starry {
                 &qemu,
                 default_rootfs_path,
             )?;
-            rootfs_paths.insert(rootfs_path.clone());
-            rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
-                self.app.workspace_root(),
-                self.app.target_dir(),
-                &qemu,
-            )?);
+            if !qemu_test::diskless_host_initramfs(&qemu) {
+                rootfs_paths.insert(rootfs_path.clone());
+                rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
+                    &qemu,
+                )?);
+            }
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -524,14 +533,16 @@ impl Starry {
                 ("phase", "patch-rootfs".to_string()),
             ],
         );
-        rootfs::patch_rootfs(
-            &mut qemu,
-            &prepared_assets.rootfs_path,
-            rootfs::RootfsPatchOptions {
-                mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
-                write_policy: rootfs::RootfsWritePolicy::Discard,
-            },
-        )?;
+        if !qemu_test::diskless_host_initramfs(&qemu) {
+            rootfs::patch_rootfs(
+                &mut qemu,
+                &prepared_assets.rootfs_path,
+                rootfs::RootfsPatchOptions {
+                    mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+                    write_policy: rootfs::RootfsWritePolicy::Discard,
+                },
+            )?;
+        }
         timing_stage.finish();
         let timing_stage = timing::TimingStage::new(
             "qemu-case",

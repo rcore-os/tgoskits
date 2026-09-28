@@ -277,8 +277,14 @@ fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<(
     stop_child(&mut child);
     smoke_result?;
 
-    if !control_server.was_requested() || !control_server.ready_to_handoff() {
-        bail!("axloader network smoke did not observe both kernel download and ready_to_handoff");
+    if !control_server.was_requested()
+        || !control_server.payload_requested()
+        || !control_server.ready_to_handoff()
+    {
+        bail!(
+            "axloader network smoke did not observe kernel and initramfs downloads and \
+             ready_to_handoff"
+        );
     }
 
     Ok(())
@@ -304,7 +310,9 @@ fn drive_http_smoke_session(
     let mut transcript = String::new();
     while Instant::now() < deadline {
         if transcript.contains("elf_loaded:")
+            && transcript.contains("host_payload_ready:")
             && control_server.was_requested()
+            && control_server.payload_requested()
             && control_server.ready_to_handoff()
         {
             return Ok(());
@@ -462,6 +470,7 @@ fn stop_child(child: &mut Child) {
 struct SmokeControlServer {
     stop: Arc<AtomicBool>,
     requested: Arc<AtomicBool>,
+    payload_requested: Arc<AtomicBool>,
     ready_to_handoff: Arc<AtomicBool>,
     threads: Vec<thread::JoinHandle<()>>,
     capture_port: u16,
@@ -494,11 +503,15 @@ impl SmokeControlServer {
 
         let stop = Arc::new(AtomicBool::new(false));
         let requested = Arc::new(AtomicBool::new(false));
+        let payload_requested = Arc::new(AtomicBool::new(false));
         let ready_to_handoff = Arc::new(AtomicBool::new(false));
         let http_stop = stop.clone();
         let http_requested = requested.clone();
+        let http_payload_requested = payload_requested.clone();
         let http_ready = ready_to_handoff.clone();
         let kernel_sha256 = format!("{:x}", Sha256::digest(&body));
+        let initramfs = b"host-initramfs-smoke".to_vec();
+        let initramfs_sha256 = format!("{:x}", Sha256::digest(&initramfs));
         let boot_arch = parse_smoke_arch(arch)?;
         let http_thread = thread::spawn(move || {
             while !http_stop.load(Ordering::Acquire) {
@@ -515,6 +528,9 @@ impl SmokeControlServer {
                         if first_line.starts_with("GET /kernel.elf ") {
                             http_requested.store(true, Ordering::Release);
                             write_http_response(&mut stream, "200 OK", &body);
+                        } else if first_line.starts_with("GET /session/initramfs.cpio ") {
+                            http_payload_requested.store(true, Ordering::Release);
+                            write_http_response(&mut stream, "200 OK", &initramfs);
                         } else if first_line.starts_with("POST /api/v1/loaders/poll ") {
                             if !json_request_is_framed(request) {
                                 write_http_response(&mut stream, "400 Bad Request", &[]);
@@ -529,7 +545,13 @@ impl SmokeControlServer {
                                 kernel_sha256: kernel_sha256.clone(),
                                 arch: boot_arch,
                                 image_format: ImageFormat::Elf64,
-                                entry_symbol: None,
+                                entry_symbol: Some("httpboot_entry".into()),
+                                initramfs: Some(httpboot_protocol::BootFile {
+                                    path: "/session/initramfs.cpio".into(),
+                                    size: initramfs.len() as u64,
+                                    sha256: initramfs_sha256.clone(),
+                                }),
+                                cmdline: Some("console=ttyS0 rdinit=/init".into()),
                             };
                             let response = serde_json::to_vec(&response).unwrap();
                             write_http_response(&mut stream, "200 OK", &response);
@@ -616,6 +638,7 @@ impl SmokeControlServer {
         Ok(Self {
             stop,
             requested,
+            payload_requested,
             ready_to_handoff,
             threads: vec![http_thread, udp_thread],
             capture_port,
@@ -625,6 +648,10 @@ impl SmokeControlServer {
 
     fn was_requested(&self) -> bool {
         self.requested.load(Ordering::Acquire)
+    }
+
+    fn payload_requested(&self) -> bool {
+        self.payload_requested.load(Ordering::Acquire)
     }
 
     fn ready_to_handoff(&self) -> bool {

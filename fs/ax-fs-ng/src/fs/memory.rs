@@ -23,7 +23,7 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::sync::{FsMutex, IrqMutex, Mutex};
+use crate::os::sync::{IrqMutex, SleepMutex as FsMutex, SleepMutex as Mutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;

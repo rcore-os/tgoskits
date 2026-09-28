@@ -21,10 +21,13 @@ pub use axfs_ng_vfs::{VfsError, VfsResult};
 
 pub mod api;
 pub mod block;
+pub mod bootargs;
 mod error;
 pub mod file;
 pub mod fops;
 mod fs;
+pub mod initramfs;
+pub use fs::memory::MemoryFs;
 mod fs_core;
 mod highlevel;
 pub mod os;

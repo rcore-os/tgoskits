@@ -30,6 +30,7 @@ heapless.workspace = true
 intrusive-collections = "0.9"
 irq-framework = { workspace = true }
 log = { workspace = true }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 lru = "0.16"
 rdif-block = { workspace = true }
 scope-local = { workspace = true }

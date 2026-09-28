@@ -137,26 +137,50 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     /// - `region` must be writable and remain valid for the lifetime of this allocator.
     /// - The region must not overlap any already managed region.
     pub unsafe fn add_region(&self, region: &mut [u8]) -> AllocResult {
-        unsafe {
-            if !self.initialized.load(Ordering::Acquire) {
-                return Err(AllocError::NotInitialized);
-            }
-            let region_start = region.as_mut_ptr() as usize;
-            let region_size = region.len();
-            let Some(layout) = BuddySection::compute_region_layout_with_heap_align::<PAGE_SIZE>(
+        unsafe { self.add_region_with_heap_align(region, REGION_GRANULE) }.map(|_| ())
+    }
+
+    /// Adds a region using page alignment and returns allocator-visible bytes.
+    /// The section header and page metadata consume space within `region`.
+    /// Returns zero if the region cannot hold even one managed page.
+    ///
+    /// # Safety
+    /// - `region` must be writable and remain valid for the lifetime of this allocator.
+    /// - The region must not overlap any already managed region.
+    pub unsafe fn add_compact_region(&self, region: &mut [u8]) -> AllocResult<usize> {
+        unsafe { self.add_region_with_heap_align(region, PAGE_SIZE) }
+    }
+
+    /// # Safety
+    /// `region` must remain writable and disjoint from managed regions for the
+    /// allocator lifetime.
+    unsafe fn add_region_with_heap_align(
+        &self,
+        region: &mut [u8],
+        heap_align: usize,
+    ) -> AllocResult<usize> {
+        if !self.initialized.load(Ordering::Acquire) {
+            return Err(AllocError::NotInitialized);
+        }
+        let region_start = region.as_mut_ptr() as usize;
+        let region_size = region.len();
+        let Some(layout) = BuddySection::compute_region_layout_with_heap_align::<PAGE_SIZE>(
+            region_start,
+            region_size,
+            heap_align,
+        ) else {
+            log::info!(
+                "GlobalAllocator: skip region {:#x}+{:#x}, no allocator-visible memory after {} \
+                 alignment",
                 region_start,
                 region_size,
-                REGION_GRANULE,
-            ) else {
-                log::info!(
-                    "GlobalAllocator: skip region {:#x}+{:#x}, no allocator-visible memory after \
-                     {} alignment",
-                    region_start,
-                    region_size,
-                    REGION_GRANULE,
-                );
-                return Ok(());
-            };
+                heap_align,
+            );
+            return Ok(0);
+        };
+        // SAFETY: the caller provides a disjoint, lifetime-stable writable
+        // region, and the computed metadata and heap spans are contained in it.
+        unsafe {
             self.buddy().add_region_raw(SectionInitSpec {
                 region_start,
                 region_size,
@@ -167,8 +191,9 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
                 ),
                 heap_start: layout.managed_heap_start,
                 heap_size: layout.managed_heap_size,
-            })
+            })?;
         }
+        Ok(layout.managed_heap_size)
     }
 
     /// Number of managed sections.

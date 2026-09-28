@@ -22,6 +22,11 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
+    init_candidates(&[args[0].clone()], &args[1..], envs);
+}
+
+/// Starts an init candidate on the root already selected during boot.
+pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) {
     // Install task-context diagnostics and contention backoff before userspace.
     crate::rdrive_osal::init();
 
@@ -54,26 +59,37 @@ pub fn init(args: &[String], envs: &[String]) {
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
-    let loc = current_fs_context()
-        .lock()
-        .resolve(&args[0])
-        .expect("Failed to resolve executable path");
+    let mut selected = None;
+    for candidate in paths {
+        let Ok(loc) = current_fs_context().lock().resolve(candidate) else {
+            continue;
+        };
+        let mut builder = new_user_image_builder()
+            .expect("Failed to create unpublished user address space");
+        let mut args = alloc::vec![candidate.clone()];
+        args.extend_from_slice(init_args);
+        match load_user_app(
+            &mut builder,
+            loc.clone(),
+            candidate,
+            &args,
+            envs,
+            &crate::task::Cred::root(),
+        ) {
+            Ok(image) => {
+                selected = Some((loc, builder, image, args));
+                break;
+            }
+            Err(error) => warn!("Failed to execute init {candidate}: {error:?}"),
+        }
+    }
+    let (loc, image_builder, loaded_image, args) = selected
+        .unwrap_or_else(|| panic!("No working init found among candidates: {paths:?}"));
     let path = loc
         .absolute_path()
         .expect("Failed to get executable absolute path");
     let name = loc.name().into_owned();
 
-    let mut image_builder =
-        new_user_image_builder().expect("Failed to create unpublished user address space");
-    let loaded_image = load_user_app(
-        &mut image_builder,
-        loc,
-        &args[0],
-        args,
-        envs,
-        &crate::task::Cred::root(),
-    )
-    .unwrap_or_else(|error| panic!("Failed to load user app: {error}"));
     let prepared_image = image_builder
         .finish(loaded_image)
         .expect("loaded init image token no longer matches its address space");
