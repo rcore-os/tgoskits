@@ -450,17 +450,15 @@ fn select_domain_opps(
         cpufreq_pvtm::select_voltage_grade(corrected, rows).ok_or(FrequencyError::NotReady)?,
     )
     .map_err(|_| FrequencyError::NotReady)?;
-    let grade_measured = match cluster {
-        Cluster::A55 => matches!(grade, 0 | 1),
-        Cluster::Big0 | Cluster::Big1 => matches!(grade, 0 | 3),
-    };
-    if !grade_measured {
+    let Some(verified_maximum_hz) =
+        soc_cpufreq::orangepi5plus_verified_maximum_hz(matches!(cluster, Cluster::A55), grade)
+    else {
         warn!(
             "cpufreq: {} PVTM grade {grade} has no board-validated high OPP; retaining boot OPP",
             cluster.name()
         );
         return Err(FrequencyError::NotReady);
-    }
+    };
     let low_length_grade = table_node
         .get_property("rockchip,pvtm-low-len-sel")
         .and_then(|property| property.get_u32());
@@ -480,8 +478,12 @@ fn select_domain_opps(
     }
     let selection = HardwareSelection::from_otp(serial, grade, &opp_info)
         .map_err(|_| FrequencyError::NotReady)?;
-    let selected = cpufreq_opp::parse_domain_opps(fdt, cpu.as_node(), selection)
+    let mut selected = cpufreq_opp::parse_domain_opps(fdt, cpu.as_node(), selection)
         .map_err(|_| FrequencyError::NotReady)?;
+    selected.retain(|opp| opp.frequency_hz <= verified_maximum_hz);
+    if selected.is_empty() {
+        return Err(FrequencyError::NotReady);
+    }
     let opps = selected
         .into_iter()
         .map(|opp| {
