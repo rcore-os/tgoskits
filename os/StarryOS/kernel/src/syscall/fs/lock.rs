@@ -29,7 +29,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::ffi::c_int;
+use core::{
+    ffi::c_int,
+    ops::Deref,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 #[cfg(feature = "qperf-metrics")]
 mod metrics;
@@ -116,54 +120,154 @@ struct FLockEntry {
     owner: FOwner,
 }
 
-/// fcntl POSIX + OFD locks share one space.
-type FcntlLockState = Arc<RwLock<Vec<FLockEntry>>>;
-type FlockLockState = Arc<RwLock<Vec<FlockEntry>>>;
-
-// Index locks protect lookup, publication and empty-state removal. Operations
-// pin the state with an Arc; cached or pinned empty states are revisited
-// before publishing a new inode state. Blocking waiters use the
-// separately persistent inode wait queue and look up the state on each retry.
-// Lock order: wait queue -> graph -> index -> inode state. A graph writer may
-// also hold POSIX_LOCK_WAITS while reading index and inode states.
-struct FcntlIndex {
-    states: BTreeMap<InodeKey, FcntlLockState>,
-    idle: Vec<InodeKey>,
+struct LockState<T> {
+    entries: RwLock<Vec<T>>,
+    pins: AtomicUsize,
+    deferred_reap: AtomicBool,
 }
 
-impl FcntlIndex {
+impl<T> LockState<T> {
+    fn new() -> Self {
+        Self {
+            entries: RwLock::new(Vec::new()),
+            pins: AtomicUsize::new(0),
+            deferred_reap: AtomicBool::new(false),
+        }
+    }
+}
+
+// Pin acquisition is serialized with index removal. A deferred state is
+// checked again when its final pin is released, even if no new inode appears.
+struct StatePin<'a, K: Copy + Ord, T> {
+    key: K,
+    state: Arc<LockState<T>>,
+    index: &'a RwLock<LockIndex<K, T>>,
+}
+
+impl<K: Copy + Ord, T> Deref for StatePin<'_, K, T> {
+    type Target = RwLock<Vec<T>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state.entries
+    }
+}
+
+impl<K: Copy + Ord, T> Drop for StatePin<'_, K, T> {
+    fn drop(&mut self) {
+        let previous = self.state.pins.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0);
+        if previous == 1 && self.state.deferred_reap.load(Ordering::Acquire) {
+            self.index.write().reclaim_deferred(self.key);
+        }
+    }
+}
+
+struct LockIndex<K: Copy + Ord, T> {
+    states: BTreeMap<K, Arc<LockState<T>>>,
+    idle: Vec<K>,
+    idle_limit: usize,
+    cached_capacity_limit: usize,
+}
+
+impl<K: Copy + Ord, T> LockIndex<K, T> {
+    const fn new(idle_limit: usize, cached_capacity_limit: usize) -> Self {
+        Self {
+            states: BTreeMap::new(),
+            idle: Vec::new(),
+            idle_limit,
+            cached_capacity_limit,
+        }
+    }
+
+    fn pin<'a>(&self, key: K, index: &'a RwLock<Self>) -> Option<StatePin<'a, K, T>> {
+        let state = self.states.get(&key)?;
+        state.pins.fetch_add(1, Ordering::Relaxed);
+        Some(StatePin {
+            key,
+            state: state.clone(),
+            index,
+        })
+    }
+
     fn reclaim_idle(&mut self) {
         let mut cursor = 0;
         while cursor < self.idle.len() {
-            let key = self.idle[cursor];
-            let status = self.states.get(&key).map(|state| {
-                let entries = state.read();
-                (entries.is_empty(), entries.capacity(), Arc::strong_count(state))
-            });
-            match status {
-                Some((true, capacity, 1))
-                    if capacity > FCNTL_CACHED_CAPACITY_LIMIT || self.idle.len() > FCNTL_IDLE_LIMIT =>
-                {
-                    self.states.remove(&key);
-                    self.idle.remove(cursor);
-                }
-                Some((false, _, _)) | None => {
-                    self.idle.remove(cursor);
-                }
-                _ => cursor += 1,
+            if !self.reclaim_idle_at(cursor) {
+                cursor += 1;
+            }
+        }
+    }
+
+    fn reclaim_deferred(&mut self, key: K) {
+        if let Some(cursor) = self.idle.iter().position(|candidate| *candidate == key) {
+            self.reclaim_idle_at(cursor);
+        }
+    }
+
+    // Returns true when the candidate is removed from the idle queue.
+    fn reclaim_idle_at(&mut self, cursor: usize) -> bool {
+        let key = self.idle[cursor];
+        let Some(state) = self.states.get(&key) else {
+            self.idle.remove(cursor);
+            return true;
+        };
+        let entries = state.entries.read();
+        let empty = entries.is_empty();
+        let oversized = entries.capacity() > self.cached_capacity_limit;
+        drop(entries);
+        if !empty {
+            state.deferred_reap.store(false, Ordering::Release);
+            self.idle.remove(cursor);
+            true
+        } else if oversized || self.idle.len() > self.idle_limit {
+            state.deferred_reap.store(true, Ordering::Release);
+            if state.pins.load(Ordering::Acquire) == 0 {
+                self.states.remove(&key);
+                self.idle.remove(cursor);
+                true
+            } else {
+                false
+            }
+        } else {
+            state.deferred_reap.store(false, Ordering::Release);
+            false
+        }
+    }
+
+    fn reap_empty(&mut self, key: K, pin: &StatePin<'_, K, T>) {
+        let entries = pin.read();
+        if !entries.is_empty() {
+            return;
+        }
+        let cacheable = entries.capacity() <= self.cached_capacity_limit;
+        drop(entries);
+        if !cacheable && pin.state.pins.load(Ordering::Acquire) == 1 {
+            pin.state.deferred_reap.store(false, Ordering::Release);
+            self.states.remove(&key);
+            self.idle.retain(|candidate| *candidate != key);
+        } else {
+            if !self.idle.contains(&key) {
+                self.idle.push(key);
+            }
+            if self.idle.len() > self.idle_limit || !cacheable {
+                self.reclaim_idle();
             }
         }
     }
 }
 
-// Reuse small empty states for short-lived record locks. Large record vectors
-// are released once no operation still holds the state.
+/// fcntl POSIX + OFD locks share one space.
+type FcntlLockState = StatePin<'static, InodeKey, FLockEntry>;
+type FcntlIndex = LockIndex<InodeKey, FLockEntry>;
+
+// Index locks protect lookup, publication and empty-state removal. Blocking
+// waiters use a separately persistent inode wait queue and retry lookup.
+// Lock order: wait queue -> graph -> index -> inode state. A graph writer may
+// also hold POSIX_LOCK_WAITS while reading index and inode states.
 const FCNTL_IDLE_LIMIT: usize = 32;
 const FCNTL_CACHED_CAPACITY_LIMIT: usize = 8;
-static FCNTL_LOCKS: RwLock<FcntlIndex> = RwLock::new(FcntlIndex {
-    states: BTreeMap::new(),
-    idle: Vec::new(),
-});
+static FCNTL_LOCKS: RwLock<FcntlIndex> =
+    RwLock::new(FcntlIndex::new(FCNTL_IDLE_LIMIT, FCNTL_CACHED_CAPACITY_LIMIT));
 
 // Readers permit independent inode updates; a writer freezes all record-lock
 // mutations while deadlock detection walks the wait-for graph.
@@ -175,7 +279,7 @@ fn fcntl_state(key: InodeKey) -> FcntlLockState {
     let index = FCNTL_LOCKS.read();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    let found = index.states.get(&key).cloned();
+    let found = index.pin(key, &FCNTL_LOCKS);
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -189,7 +293,8 @@ fn fcntl_state(key: InodeKey) -> FcntlLockState {
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
     index.reclaim_idle();
-    let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
+    index.states.entry(key).or_insert_with(|| Arc::new(LockState::new()));
+    let state = index.pin(key, &FCNTL_LOCKS).unwrap();
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -202,7 +307,7 @@ fn existing_fcntl_state(key: InodeKey) -> Option<FcntlLockState> {
     let index = FCNTL_LOCKS.read();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    let found = index.states.get(&key).cloned();
+    let found = index.pin(key, &FCNTL_LOCKS);
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FCNTL_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -217,22 +322,7 @@ fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
     let mut index = FCNTL_LOCKS.write();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    let entries = state.read();
-    if entries.is_empty() {
-        let cacheable = entries.capacity() <= FCNTL_CACHED_CAPACITY_LIMIT;
-        drop(entries);
-        if !cacheable && Arc::strong_count(state) == 2 {
-            index.states.remove(&key);
-            index.idle.retain(|candidate| *candidate != key);
-        } else {
-            if !index.idle.contains(&key) {
-                index.idle.push(key);
-            }
-            if index.idle.len() > FCNTL_IDLE_LIMIT || !cacheable {
-                index.reclaim_idle();
-            }
-        }
-    }
+    index.reap_empty(key, state);
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FCNTL_REAP.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -327,46 +417,16 @@ struct FlockEntry {
 }
 
 /// flock(2) entries: at most one entry per (inode, OFD).
-struct FlockIndex {
-    states: BTreeMap<InodeKey, FlockLockState>,
-    idle: Vec<InodeKey>,
-}
-
-impl FlockIndex {
-    fn reclaim_idle(&mut self) {
-        let mut cursor = 0;
-        while cursor < self.idle.len() {
-            let key = self.idle[cursor];
-            let status = self.states.get(&key).map(|state| {
-                let entries = state.read();
-                (entries.is_empty(), entries.capacity(), Arc::strong_count(state))
-            });
-            match status {
-                Some((true, capacity, 1))
-                    if capacity > FLOCK_CACHED_CAPACITY_LIMIT
-                        || self.idle.len() > FLOCK_IDLE_LIMIT =>
-                {
-                    self.states.remove(&key);
-                    self.idle.remove(cursor);
-                }
-                Some((false, _, _)) | None => {
-                    self.idle.remove(cursor);
-                }
-                _ => cursor += 1,
-            }
-        }
-    }
-}
+type FlockLockState = StatePin<'static, InodeKey, FlockEntry>;
+type FlockIndex = LockIndex<InodeKey, FlockEntry>;
 
 // A small cache avoids allocating a new state on every uncontended LOCK_SH /
 // LOCK_UN pair. Large vectors are not cached after their last reference;
-// temporarily pinned empty states are revisited on subsequent index writes.
+// temporarily pinned empty states are revisited after their last pin drops.
 const FLOCK_IDLE_LIMIT: usize = 32;
 const FLOCK_CACHED_CAPACITY_LIMIT: usize = 8;
-static FLOCK_LOCKS: RwLock<FlockIndex> = RwLock::new(FlockIndex {
-    states: BTreeMap::new(),
-    idle: Vec::new(),
-});
+static FLOCK_LOCKS: RwLock<FlockIndex> =
+    RwLock::new(FlockIndex::new(FLOCK_IDLE_LIMIT, FLOCK_CACHED_CAPACITY_LIMIT));
 
 fn flock_state(key: InodeKey) -> FlockLockState {
     #[cfg(feature = "qperf-metrics")]
@@ -374,7 +434,7 @@ fn flock_state(key: InodeKey) -> FlockLockState {
     let index = FLOCK_LOCKS.read();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    let found = index.states.get(&key).cloned();
+    let found = index.pin(key, &FLOCK_LOCKS);
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -388,7 +448,8 @@ fn flock_state(key: InodeKey) -> FlockLockState {
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
     index.reclaim_idle();
-    let state = index.states.entry(key).or_insert_with(|| Arc::new(RwLock::new(Vec::new()))).clone();
+    index.states.entry(key).or_insert_with(|| Arc::new(LockState::new()));
+    let state = index.pin(key, &FLOCK_LOCKS).unwrap();
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -401,7 +462,7 @@ fn existing_flock_state(key: InodeKey) -> Option<FlockLockState> {
     let index = FLOCK_LOCKS.read();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    let found = index.states.get(&key).cloned();
+    let found = index.pin(key, &FLOCK_LOCKS);
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FLOCK_INDEX.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -414,24 +475,7 @@ fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
     let mut index = FLOCK_LOCKS.write();
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
-    let entries = state.read();
-    if entries.is_empty() {
-        let cacheable = entries.capacity() <= FLOCK_CACHED_CAPACITY_LIMIT;
-        drop(entries);
-        if !cacheable && Arc::strong_count(state) == 2 {
-            index.states.remove(&key);
-            index.idle.retain(|cached| *cached != key);
-        } else {
-            if !index.idle.contains(&key) {
-                index.idle.push(key);
-            }
-            if index.idle.len() > FLOCK_IDLE_LIMIT {
-                index.reclaim_idle();
-            }
-        }
-    } else {
-        drop(entries);
-    }
+    index.reap_empty(key, state);
     drop(index);
     #[cfg(feature = "qperf-metrics")]
     metrics::FLOCK_REAP.record(requested, acquired, ax_runtime::hal::time::monotonic_time());
@@ -1101,7 +1145,10 @@ pub fn release_pid_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
         let _graph = POSIX_LOCK_GRAPH.read();
-        let states: Vec<_> = FCNTL_LOCKS.read().states.iter().map(|(key, state)| (*key, state.clone())).collect();
+        let states: Vec<_> = {
+            let index = FCNTL_LOCKS.read();
+            index.states.keys().filter_map(|key| index.pin(*key, &FCNTL_LOCKS).map(|pin| (*key, pin))).collect()
+        };
         for (inode, state) in states {
             let mut entries = state.write();
             let before = entries.len();
@@ -1283,7 +1330,10 @@ pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
 pub fn release_pid_flock_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
-        let states: Vec<_> = FLOCK_LOCKS.read().states.iter().map(|(key, state)| (*key, state.clone())).collect();
+        let states: Vec<_> = {
+            let index = FLOCK_LOCKS.read();
+            index.states.keys().filter_map(|key| index.pin(*key, &FLOCK_LOCKS).map(|pin| (*key, pin))).collect()
+        };
         for (inode, state) in states {
             let mut entries = state.write();
             let before = entries.len();
@@ -1354,5 +1404,51 @@ pub fn flock_op(
                 // Loop and retry.
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LockIndex, LockState, RwLock};
+    use alloc::sync::Arc;
+
+    #[test]
+    fn deferred_empty_state_reclaims_after_last_pin_without_new_inode() {
+        for (idle_limit, records) in [(1, 32), (0, 0)] {
+            let index = RwLock::new(LockIndex::<u64, u8>::new(idle_limit, 8));
+            let state = Arc::new(LockState::new());
+            state.entries.write().extend(0..records);
+            index.write().states.insert(7, state);
+
+            let first = index.read().pin(7, &index).unwrap();
+            let last = index.read().pin(7, &index).unwrap();
+            first.write().clear();
+            index.write().reap_empty(7, &first);
+            assert!(index.read().states.contains_key(&7));
+
+            drop(first);
+            assert!(index.read().states.contains_key(&7));
+            drop(last);
+            assert!(!index.read().states.contains_key(&7));
+        }
+    }
+
+    #[test]
+    fn reactivated_deferred_state_keeps_its_records() {
+        let index = RwLock::new(LockIndex::<u64, u8>::new(1, 8));
+        let state = Arc::new(LockState::new());
+        state.entries.write().extend(0..32);
+        index.write().states.insert(7, state);
+
+        let first = index.read().pin(7, &index).unwrap();
+        let last = index.read().pin(7, &index).unwrap();
+        first.write().clear();
+        index.write().reap_empty(7, &first);
+        last.write().push(42);
+        drop(first);
+        drop(last);
+
+        let active = index.read().pin(7, &index).unwrap();
+        assert_eq!(active.read().as_slice(), &[42]);
     }
 }

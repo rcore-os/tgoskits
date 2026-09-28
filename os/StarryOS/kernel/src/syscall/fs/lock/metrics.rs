@@ -1,11 +1,11 @@
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
 use core::{
     fmt::Write,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
-use super::{FCNTL_LOCKS, FLOCK_LOCKS, FLockEntry, FlockEntry, RwLock};
+use super::{FCNTL_LOCKS, FLOCK_LOCKS, FLockEntry, FlockEntry, LockState};
 
 pub(super) struct LockTiming {
     calls: AtomicU64,
@@ -51,10 +51,10 @@ pub(crate) fn render_file_lock_metrics() -> String {
     let mut output = String::new();
     writeln!(output, "inode_key_size {}", core::mem::size_of::<crate::file::InodeKey>()).unwrap();
     writeln!(output, "fcntl_entry_size {}", core::mem::size_of::<FLockEntry>()).unwrap();
-    writeln!(output, "fcntl_state_size {}", core::mem::size_of::<RwLock<Vec<FLockEntry>>>())
+    writeln!(output, "fcntl_state_size {}", core::mem::size_of::<LockState<FLockEntry>>())
         .unwrap();
     writeln!(output, "flock_entry_size {}", core::mem::size_of::<FlockEntry>()).unwrap();
-    writeln!(output, "flock_state_size {}", core::mem::size_of::<RwLock<Vec<FlockEntry>>>())
+    writeln!(output, "flock_state_size {}", core::mem::size_of::<LockState<FlockEntry>>())
         .unwrap();
     for (name, timing) in [
         ("fcntl_index", &FCNTL_INDEX),
@@ -72,7 +72,7 @@ pub(crate) fn render_file_lock_metrics() -> String {
 
     let fcntl = FCNTL_LOCKS.read();
     let (fcntl_records, fcntl_capacity) = fcntl.states.values().fold((0, 0), |counts, state| {
-        let entries = state.read();
+        let entries = state.entries.read();
         (counts.0 + entries.len(), counts.1 + entries.capacity())
     });
     writeln!(output, "fcntl_states {}", fcntl.states.len()).unwrap();
@@ -83,7 +83,7 @@ pub(crate) fn render_file_lock_metrics() -> String {
 
     let flock = FLOCK_LOCKS.read();
     let (flock_records, flock_capacity) = flock.states.values().fold((0, 0), |counts, state| {
-        let entries = state.read();
+        let entries = state.entries.read();
         (counts.0 + entries.len(), counts.1 + entries.capacity())
     });
     writeln!(output, "flock_states {}", flock.states.len()).unwrap();
