@@ -703,6 +703,16 @@ impl Hardware {
         let mut faults = Vec::new();
         let mask = (1 << (self.evtq_bits + 1)) - 1;
         let prod = self.mmio.read32(0x10000 + EVTQ_PROD);
+        // The SMMU publishes event records before advancing PROD. Prevent
+        // speculative reads of the queue from preceding the MMIO read.
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: `dmb oshld` only orders memory accesses; it does not access
+        // memory or alter registers visible to Rust.
+        unsafe {
+            core::arch::asm!("dmb oshld", options(nostack, preserves_flags));
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        fence(Ordering::Acquire);
         if prod & (1 << 31) != self.evt_cons & (1 << 31) {
             // Match the producer's overflow epoch before returning the
             // diagnostic error. Retain the consumer index so a later call can
