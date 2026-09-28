@@ -50,7 +50,7 @@ fs = [
   "dep:rdif-block",
   "ax-driver/block",
 ]
-# Select the Linux early-userspace root only when rdinit or /init is executable.
+# Select the Linux early-userspace root when rdinit or /init is accessible.
 starry-init = ["fs"]
 ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
