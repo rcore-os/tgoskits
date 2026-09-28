@@ -399,18 +399,14 @@ fn try_open_proc_exe(
     // without `/proc`, a tmpfs over `/proc`, or a non-searchable `/proc` must
     // observe the normal lookup result (ENOENT/EACCES); fall through so the
     // generic walk reports it rather than opening the executable.
-    let mutation_cred = mutation_credentials(&cred);
-    let procfs_visible = match with_fs(AT_FDCWD, |fs| {
-        let boundary = fs.permission_boundary().cloned();
-        let check =
-            |dir: &Location| fs.check_search_path(dir, boundary.as_ref(), &mutation_cred);
-        Ok(fs.resolve_no_follow_with_search_checked(path, check))
-    }) {
-        Ok(Ok((loc, _))) => loc.is_magic_link(),
-        _ => false,
-    };
-    if !procfs_visible {
+    if !magic_link_reachable(current, AT_FDCWD, path) {
         return None;
+    }
+    // `O_CREAT|O_EXCL` implies no-follow (Linux `build_open_flags`): the magic
+    // link already exists, so the exclusivity check wins with EEXIST before the
+    // backing executable is opened.
+    if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
+        return Some(Err(StarryError::AlreadyExists));
     }
     // /proc/<pid>/exe of another process requires ptrace-style read
     // permission (`PTRACE_MODE_READ_FSCREDS`, fs/proc/base.c
@@ -496,26 +492,73 @@ fn openat2_check_extra_bytes(
     Ok(())
 }
 
+/// Returns whether `path`, resolved in the caller's filesystem view with
+/// `dirfd` as the base and the caller's credentials, reaches a procfs magic
+/// link with search permission on every directory on the way.
+fn magic_link_reachable(current: &crate::task::UserTaskRef, dirfd: c_int, path: &str) -> bool {
+    let cred = current.as_thread().cred();
+    let mutation_cred = mutation_credentials(&cred);
+    matches!(
+        with_fs(dirfd, |fs| {
+            let boundary = fs.permission_boundary().cloned();
+            let check = |dir: &Location| fs.check_search_path(dir, boundary.as_ref(), &mutation_cred);
+            Ok(fs.resolve_no_follow_with_search_checked(path, check))
+        }),
+        Ok(Ok((loc, _))) if loc.is_magic_link()
+    )
+}
+
+/// Whether `name` is one of the `/proc/<pid>/ns/<type>` entry names.
+fn is_ns_type(name: &str) -> bool {
+    matches!(
+        name,
+        "uts" | "ipc" | "mnt" | "pid" | "net" | "user" | "cgroup"
+    )
+}
+
 /// Check whether the open targets a `/proc/<pid>/ns/<type>` entry. If so,
 /// create an [`NsFd`] and add it to the fd table instead of opening a regular
 /// file.
 ///
 /// Both the absolute `/proc/<pid>/ns/<type>` spelling and a dirfd-relative
 /// open against a `/proc/<pid>/ns` directory (`openat(ns_dirfd, "mnt")`) are
-/// recognized: Linux resolves the namespace magic link after a real pathname
-/// lookup, so the dirfd-relative form must build the same descriptor.
+/// recognized, but only after a real, search-checked lookup in the caller's
+/// current root/mount view confirms the magic link is reachable. `O_NOFOLLOW`
+/// is left to the VFS, which returns ELOOP (or an `O_PATH` handle to the link
+/// itself for `O_PATH|O_NOFOLLOW`) exactly as Linux does for a magic link.
 ///
 /// Returns `Some(fd)` on success, `Some(Err(...))` on failure, or `None` if
-/// the open does not target a namespace entry (fall through to regular open).
+/// the open does not target a reachable namespace entry (fall through).
 fn try_open_nsfd(
     current: &crate::task::UserTaskRef,
     dirfd: c_int,
     path: &str,
     flags: u32,
 ) -> Option<crate::StarryResult<i32>> {
-    let target = absolute_ns_target(current, path)
-        .or_else(|| dirfd_relative_ns_target(dirfd, path))?;
-    Some(target.and_then(|(task, ns_type)| ns_fd_from_task(&task, &ns_type, flags)))
+    if flags & O_NOFOLLOW != 0 {
+        return None;
+    }
+
+    if let Some(target) = absolute_ns_target(current, path) {
+        if !magic_link_reachable(current, AT_FDCWD, path) {
+            // Not in the caller's root/mount view, or not searchable: let the
+            // generic walk report ENOENT/EACCES.
+            return None;
+        }
+        return Some(target.and_then(|(task, ns_type)| ns_fd_from_task(&task, &ns_type, flags)));
+    }
+
+    if dirfd != AT_FDCWD && !path.contains('/') && is_ns_type(path) {
+        if !magic_link_reachable(current, dirfd, path) {
+            return None;
+        }
+        return Some(match dirfd_ns_target(dirfd, path) {
+            Some((task, ns_type)) => ns_fd_from_task(&task, &ns_type, flags),
+            None => Err(StarryError::NotFound),
+        });
+    }
+
+    None
 }
 
 /// Resolves the task and namespace type for an absolute `/proc/<pid>/ns/<type>`
@@ -560,34 +603,14 @@ fn absolute_ns_target(
 /// Resolves the task and namespace type for a dirfd-relative open whose dirfd
 /// is a `/proc/<pid>/ns` directory. Returns `None` when the dirfd does not
 /// reference such a directory.
-fn dirfd_relative_ns_target(
-    dirfd: c_int,
-    path: &str,
-) -> Option<crate::StarryResult<(crate::task::UserTaskRef, String)>> {
-    if dirfd == AT_FDCWD || path.is_empty() || path.contains('/') {
-        return None;
-    }
-    if !matches!(path, "uts" | "ipc" | "mnt" | "pid" | "net" | "user" | "cgroup") {
-        return None;
-    }
-
-    let parent = match with_fs(dirfd, |fs| Ok(fs.current_dir().clone())) {
-        Ok(location) => location,
-        // A bad dirfd must keep its own errno rather than falling through.
-        Err(err) => return Some(Err(err)),
-    };
-    let Ok(dir) = parent.entry().as_dir() else {
-        return None;
-    };
-    let Ok(ns_dir) =
-        dir.downcast::<crate::pseudofs::SimpleDir<crate::pseudofs::proc::NsDir>>()
-    else {
-        return None;
-    };
-    match ns_dir.ops().ns_task() {
-        Some(task) => Some(Ok((task, path.to_string()))),
-        None => Some(Err(StarryError::NotFound)),
-    }
+fn dirfd_ns_target(dirfd: c_int, path: &str) -> Option<(crate::task::UserTaskRef, String)> {
+    let parent = with_fs(dirfd, |fs| Ok(fs.current_dir().clone())).ok()?;
+    let dir = parent.entry().as_dir().ok()?;
+    let ns_dir = dir
+        .downcast::<crate::pseudofs::SimpleDir<crate::pseudofs::proc::NsDir>>()
+        .ok()?;
+    let task = ns_dir.ops().ns_task()?;
+    Some((task, path.to_string()))
 }
 
 /// Builds the [`NsFd`] for one `/proc/<pid>/ns/<type>` entry of `task`.
