@@ -17,11 +17,12 @@ const MAX_PENDING_FILLS: usize = 16;
 
 pub(in super::super) struct PendingFills {
     fills: SleepMutex<Vec<Arc<PendingFill>>>,
+    capacity_waiters: TaskWaiters,
 }
 
 pub(super) enum FillAdmission<'a> {
     Wait(Arc<PendingFill>),
-    Capacity(Arc<PendingFill>),
+    Capacity,
     Load(FillOwner<'a>),
 }
 
@@ -44,6 +45,7 @@ impl PendingFills {
     pub(in super::super) const fn new() -> Self {
         Self {
             fills: SleepMutex::new(Vec::new()),
+            capacity_waiters: TaskWaiters::new(),
         }
     }
 
@@ -64,7 +66,7 @@ impl PendingFills {
             return Ok(FillAdmission::Wait(Arc::clone(fill)));
         }
         if fills.len() >= MAX_PENDING_FILLS {
-            return Ok(FillAdmission::Capacity(Arc::clone(&fills[0])));
+            return Ok(FillAdmission::Capacity);
         }
         let end = (first..end)
             .find(|number| {
@@ -100,6 +102,12 @@ impl PendingFills {
             // accidentally accept a read captured before a content mutation.
             fill.valid.store(false, Ordering::Release);
         }
+    }
+
+    pub(super) fn wait_for_capacity(&self) -> VfsResult<()> {
+        self.capacity_waiters
+            .wait_while(|| self.fills.lock().len() >= MAX_PENDING_FILLS)
+            .map_err(crate::block_error_to_vfs_error)
     }
 
     #[cfg(test)]
@@ -162,6 +170,7 @@ impl FillOwner<'_> {
             .lock()
             .retain(|fill| !Arc::ptr_eq(fill, &self.fill));
         self.finished = true;
+        self.registry.capacity_waiters.notify_all();
         self.fill.waiters.notify_all();
     }
 }
@@ -176,6 +185,8 @@ impl Drop for FillOwner<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::mpsc, thread, time::Duration};
+
     use super::*;
 
     #[test]
@@ -214,8 +225,7 @@ mod tests {
                     .unwrap(),
             ));
         }
-        let FillAdmission::Capacity(waiter) = registry.admit(100, 101, 500000, &cache).unwrap()
-        else {
+        let FillAdmission::Capacity = registry.admit(100, 101, 500000, &cache).unwrap() else {
             panic!("admission exceeded its frame budget");
         };
         assert_eq!(registry.fills.lock().len(), MAX_PENDING_FILLS);
@@ -223,10 +233,47 @@ mod tests {
             owners.remove(0).finish(Err(VfsError::Io)),
             Err(VfsError::Io)
         );
-        assert_eq!(waiter.wait_ready(), Ok(()));
-        assert_eq!(waiter.wait(), Err(VfsError::Io));
+        crate::os::task::install_test_runtime_ops();
+        assert_eq!(registry.wait_for_capacity(), Ok(()));
         let replacement = load(registry.admit(100, 101, 500000, &cache).unwrap());
         replacement.finish(Ok(())).unwrap();
+        drop(owners);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn admission_capacity_wakes_when_any_fill_finishes() {
+        crate::os::task::install_test_runtime_ops();
+        let registry = PendingFills::new();
+        let cache = CachedPages::unbounded();
+        let mut owners = Vec::new();
+        for number in 0..MAX_PENDING_FILLS as u32 {
+            owners.push(load(
+                registry
+                    .admit(number, u64::from(number) + 1, 100000, &cache)
+                    .unwrap(),
+            ));
+        }
+        assert!(matches!(
+            registry.admit(100, 101, 500000, &cache).unwrap(),
+            FillAdmission::Capacity
+        ));
+
+        thread::scope(|scope| {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let waiting_registry = &registry;
+            scope.spawn(move || {
+                entered_tx.send(()).unwrap();
+                waiting_registry.wait_for_capacity().unwrap();
+                done_tx.send(()).unwrap();
+            });
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            owners.remove(1).finish(Ok(())).unwrap();
+            let woke_for_second = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            owners.remove(0).finish(Ok(())).unwrap();
+            assert!(woke_for_second, "capacity waiter stayed on the first fill");
+        });
         drop(owners);
         assert!(registry.is_empty());
     }

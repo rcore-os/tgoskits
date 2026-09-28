@@ -48,7 +48,7 @@ impl CachedFile {
         };
         match admission {
             FillAdmission::Wait(fill) => fill.wait(),
-            FillAdmission::Capacity(fill) => fill.wait_ready(),
+            FillAdmission::Capacity => self.shared.pending_fills.wait_for_capacity(),
             FillAdmission::Load(owner) => {
                 let prepared = owner.prepare(file);
                 let io = self.shared.io_lock.lock();
