@@ -1323,28 +1323,3 @@ impl Drop for CachedFile {
 mod tests;
 #[cfg(all(test, feature = "vfs"))]
 pub(crate) use tests::BusyDirtyCachedFile;
-
-/// Flushes this filesystem's buffered pages before the filesystem commits metadata.
-#[cfg(feature = "ext4")]
-pub(crate) fn writeback_filesystem_pages(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
-    #[cfg(feature = "vfs")]
-    {
-        reclaim::sync_filesystem_cached_files(filesystem)
-    }
-    #[cfg(not(feature = "vfs"))]
-    {
-        let key = filesystem_key(filesystem);
-        let files: Vec<_> = CACHED_FILE_BY_INODE
-            .lock()
-            .range((key, 0)..=(key, u64::MAX))
-            .filter_map(|(_, cached)| cached.upgrade())
-            .collect();
-        let mut first_error = None;
-        for file in files {
-            if let Err(error) = file.writeback_dirty_for_global_sync() {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-}
