@@ -447,13 +447,21 @@ fn display_change_remains_pending_after_output_query_fails() {
     assert_eq!(host.lock().unwrap().events_read, 0);
     assert_eq!(device.poll_event(), None);
     device.service_pending().unwrap();
+    {
+        let mut host = host.lock().unwrap();
+        host.output_width = WIDTH + 2;
+        host.events_read = 1;
+        host.interrupt_status = InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT;
+    }
+    device.service_pending().unwrap();
     assert_eq!(
         device.poll_event(),
         Some(DisplayEvent::OutputChanged(OutputId::new(0)))
     );
+    assert_eq!(device.poll_event(), None);
     assert_eq!(
         device.output(OutputId::new(0)).unwrap().modes[0].width,
-        WIDTH + 1
+        WIDTH + 2
     );
 }
 
@@ -568,7 +576,10 @@ fn test_only_and_failed_commits_keep_scanout_and_backing() {
         .unwrap();
     let old_state = scanout_state(old, mode);
     let next_state = scanout_state(new, mode);
-    device.commit(&old_state).unwrap();
+    for _ in 0..4 {
+        device.commit(&old_state).unwrap();
+    }
+    assert_eq!(device.poll_event(), None);
     let old_id = host.lock().unwrap().scanout;
     assert_ne!(old_id, 0);
     assert_eq!(current_handle(&device), old);

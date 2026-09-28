@@ -494,10 +494,6 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> DisplayController for Virt
             return Err(self.fail_commit_after_bind(index, map_display_error(error)));
         }
         self.states[index] = Some(state.clone());
-        self.events.push_back(DisplayEvent::CommitCompleted {
-            output: state.output,
-            completion: Completion::Complete,
-        });
         Ok(Completion::Complete)
     }
 
@@ -690,8 +686,10 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
                 let output = read_output(&mut self.raw, index as u32).map_err(map_error)?;
                 if output != self.outputs[index] {
                     self.outputs[index] = output;
-                    self.events
-                        .push_back(DisplayEvent::OutputChanged(OutputId::new(index as u32)));
+                    let event = DisplayEvent::OutputChanged(OutputId::new(index as u32));
+                    if !self.events.contains(&event) {
+                        self.events.push_back(event);
+                    }
                 }
             }
             self.display_change_pending = false;

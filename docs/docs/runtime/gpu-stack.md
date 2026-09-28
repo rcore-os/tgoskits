@@ -40,6 +40,8 @@ VirtIO 的失败清理与正常析构写入设备状态 `0` 后，都必须读�
 
 `GpuTransportCell` 只接受可跨处理器移动的 transport，并在 IRQ 端点确认时把状态锁存给任务端；任务端读取锁存状态后推进显示事件。`VirtIoGpuDevice::service_pending()` 在输出查询失败时保留显示变化标记，`gpu_irq_work` 对暂时性失败作有限次延迟重试。设备树探测的 DMA 一致性由 `dma_coherency_from_fdt()` 决定；没有设备树属性的静态设备使用平台默认值。当前运行时只为首台激活的 GPU 解析并注册 IRQ，其余已探测设备保留所有权但不启用中断。
 
+VirtIO 显示提交同步返回 `Completion::Complete`，因此 `VirtIoGpuDevice::commit()` 不再为它另存一个待轮询的完成事件。`service_pending()` 对每个输出最多保留一个 `OutputChanged` 通知；后续变化更新输出状态，调用者通过 `poll_event()` 收到通知后重新查询最新状态。当前运行时尚未把显示变化事件转发给 Starry 的热插拔路径，这个有界队列不会因持续刷新 framebuffer 而增长。
+
 Starry 的调用顺序为文件描述符的 `operation` 锁、必要时的 `modeset_operation` 锁、短时读取状态或资源表、释放表锁、最后进入 `axgpu` 设备锁。提交路径可在 `modeset_operation` 下进入设备锁，以串行化同一输出的检查与提交；资源表锁不得跨设备调用。硬中断不取得上述任一锁。删除 GEM、framebuffer 或 PRIME 别名时，先从表中移出 `Arc`，退出表锁后才让析构调用驱动的 `release_buffer`。合成 vblank 时钟只在成功提交后随 CRTC 状态和模式周期更新；待发事件在停用时按冻结的边沿完成。事件唤醒和可能释放最后一个文件引用的操作在 `modeset_operation` 锁外执行。
 
 `Card0File::ioctl` 用 Linux `DRM_RENDER_ALLOW` 表限制 `renderD128`：它可以管理 GPU 资源和 PRIME 引用，但不能查询或改变 KMS 状态，也不能创建 dumb framebuffer。`Card0::handle_dirty_fb` 只重提交流水线当前正在扫描的 framebuffer；后备缓冲区要等正式翻页提交，停用的 CRTC 不会因 dirty 通知重新点亮。这使 `ModesetState::plane_fb_id` 与设备 scanout 保持一致。
@@ -118,3 +120,7 @@ QMP `screendump` 对 `egl-headless` 返回 `no surface`，因此画面由 VNC �
 `ax-display` 的直接 backing 身份测试先在旧匹配逻辑上失败，再在修复后以相同命令通过。`cargo fmt` 和 `git diff --check` 通过；`cargo xtask clippy --package ax-display` 的 2/2 组合通过。`cargo xtask clippy --package starry-kernel` 的 AArch64 基础组合已通过，随后按本地验证范围限制中止剩余矩阵；`cargo clippy --no-deps -p starry-kernel --no-default-features -- -D warnings` 定向通过。用户要求本地不运行全量 Clippy 或 QEMU；本次没有新的图形输出证据。
 
 提交代码后运行 `cargo xtask test --since e5efb8291dfe0997341524e1d3f14b082000e421`，`ax-display` 和 `starry-kernel` 2/2 软件包通过，其中 `ax-display` 的直接 backing 回归测试在项目入口实际执行并通过。此前只覆盖 `ax-display` 的定向测试先在旧实现上报告断言失败。本次没有可用于直接 backing 显示控制器的 QEMU 设备，因此 Starry 的纯 backing KMS 路径仍待带相应驱动的系统用例验证。
+
+### 4.4 2026-09-28 显示事件积压修复
+
+VirtIO 的同步显示提交原先每次都向无人消费的队列加入 `CommitCompleted`，连续输出变化也会累积重复通知。增强现有协议测试后，`cargo test -p virtio-gpu --features rdif --lib` 在旧实现上有 2/5 个测试按预期失败；修复后同一命令 5/5 通过。`cargo fmt`、`git diff --check` 和 `cargo xtask clippy --package virtio-gpu` 均通过，后者覆盖 base 与 `rdif` 两个功能组合。本次未运行 QEMU 或全量 Clippy；任务工具的 std 测试清单未包含 `virtio-gpu`，故使用驱动自身的定向宿主测试。
