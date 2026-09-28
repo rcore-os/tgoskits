@@ -25,6 +25,6 @@ description: 编写、修改、重构或审查本 TGOSKits 仓库中的 Rust 代
 
 ## 3. 项目验证
 
-使用仓库任务工具作为验证入口。修改代码后运行 `cargo fmt`，静态检查使用 `cargo xtask clippy` 或定向的 `cargo xtask clippy --package <软件包>`，标准库测试使用 `cargo xtask test` 或 `cargo xtask test --since <引用>`。ArceOS、StarryOS 和 Axvisor 的构建、测试与运行也使用相应的 `cargo xtask` 子命令。
+使用仓库任务工具作为验证入口。修改代码后运行 `cargo fmt`；未提交的改动用 `cargo xtask clippy --package <软件包>` 检查受影响范围，提交后可用 `cargo xtask clippy --since <引用>` 并核对选中项。需要标准库测试证明改动行为时，按 `AGENTS.md` 使用 `cargo xtask test --since <引用>`；直接修改白名单时遵循 `update-std-tests`。ArceOS、StarryOS 和 Axvisor 的构建、测试与运行也使用相应的 `cargo xtask` 子命令，QEMU 或板卡测试按受影响目标和用例选择。提交拉取请求不要求额外执行全量本地矩阵。
 
 不得用原生 Cargo 命令替代已有的项目入口，也不得通过新增 `allow` 属性、削弱测试、放宽匹配规则或静默跳过来制造通过结果。项目任务工具确实没有入口时，先检查其实现，再使用能够精确复现项目参数的特殊命令并说明原因。

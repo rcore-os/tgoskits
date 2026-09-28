@@ -93,10 +93,12 @@ cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc --test axtest -b aka-00-
 | `--since <REF>` | 仅检查自 git ref 以来变更及受影响的包 |
 
 ```bash
-cargo xtask clippy                         # 全量（CI 默认）
+cargo xtask clippy                         # 全量（手动或定时检查）
 cargo xtask clippy --package axcpu
-cargo xtask clippy --since origin/main
+cargo xtask clippy --since origin/dev        # 提交 PR 前按改动选择
 ```
+
+`--since` 只读取相对基线已提交的差异；仍在工作区中的 Rust 改动应先用 `--package` 指定受影响软件包，提交后再按需要使用增量入口。
 
 详见 [Clippy 检查](./clippy)。
 
@@ -109,8 +111,8 @@ cargo xtask clippy --since origin/main
 | `--since <REF>` | 仅检查自 git ref 以来变更的 Rust 文件（省略则全量） |
 
 ```bash
-cargo xtask sync-lint                     # 全量（CI 默认）
-cargo xtask sync-lint --since origin/main # 增量
+cargo xtask sync-lint                     # 全量（手动）
+cargo xtask sync-lint --since origin/dev  # 增量（CI 使用）
 ```
 
 详见 [Sync Lint](./sync_lint)。

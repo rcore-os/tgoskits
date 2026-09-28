@@ -50,11 +50,11 @@ cargo test --test test --target aarch64-unknown-none-softfloat -- uboot
 
 ## 开发规范
 
-**提交前检查**:
-1. `cargo check --test test --target aarch64-unknown-none-softfloat` 必须通过
-2. `cargo fmt --all` 保持代码风格一致
-3. 使用最新依赖库，通过 context7 查询 API
-4. 使用 `tock-registers` 进行寄存器操作
+**提交拉取请求前的验证**:
+1. 使用 `cargo xtask clippy --package rockchip-soc` 检查受影响的软件包
+2. 影响板卡运行时行为时，选择相关的板卡用例验证；不要求本地运行无关的 QEMU 或板卡矩阵
+
+Rust 代码修改后仍按工作区 `AGENTS.md` 运行 `cargo fmt`，功能测试按改动需要执行。选择依赖时查询最新 API，寄存器操作使用 `tock-registers`。
 
 ## 核心架构
 

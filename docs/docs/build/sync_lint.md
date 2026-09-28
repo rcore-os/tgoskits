@@ -199,11 +199,11 @@ while flag.load(Ordering::Relaxed) == 0 {}
 ## 用法示例
 
 ```bash
-# 全量扫描（CI 默认）
+# 全量扫描（手动）
 cargo xtask sync-lint
 
-# 增量扫描：只检查自 origin/main 以来变更的 Rust 文件
-cargo xtask sync-lint --since origin/main
+# 增量扫描：只检查相对 origin/dev 已提交的 Rust 文件
+cargo xtask sync-lint --since origin/dev
 ```
 
 > sync-lint 是语法层分析，不做跨函数数据流，因此只能识别**局部**可判定的可疑模式。对于真正复杂的同步（跨函数、跨 crate 的 happens-before 推理）仍需依赖 review 和 lockdep/运行时校验。它的设计目标是“零误报地挡住最常见的 Relaxed 误用”，而不是替代人工分析。

@@ -56,6 +56,8 @@ git checkout -b fix/your-bug-fix
 
 ### 4. Code Quality Checks
 
+The commands in this section apply to the standalone StarryOS repository. For a pull request to TGOSKits, follow its repository-level validation rules and check only the affected packages and QEMU or board cases.
+
 Before committing, make sure:
 
 #### Run Clippy

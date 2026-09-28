@@ -202,7 +202,7 @@ struct ClippyPackageReport {
 这些命令分别覆盖全量、指定 package 和增量选择三种入口，它们会经过相同的展开与报告流程。
 
 ```bash
-# 全量 workspace clippy（CI 默认）
+# 全量 workspace clippy（手动或定时检查）
 cargo xtask clippy
 cargo xtask clippy --all
 
@@ -210,8 +210,8 @@ cargo xtask clippy --all
 cargo xtask clippy --package ax-cpu --package page-table-generic
 cargo xtask clippy --package starry-kernel --jobs 4
 
-# 增量：只检查自某个 git ref 以来变更及受影响的包
-cargo xtask clippy --since origin/main
+# 增量：只检查相对基线已提交的差异；未提交改动使用 --package
+cargo xtask clippy --since origin/dev
 ```
 
 > `aic8800` 的 crate build script 会根据固定 manifest 从本地 cache 读取并校验 Wi-Fi 固件 blob；cache 缺失时才从固定 upstream 下载。首次构建因此需要网络或预置且校验通过的 cache，后续 `starry`、`clippy` 等命令复用同一供应路径。
