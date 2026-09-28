@@ -76,7 +76,8 @@ impl ControllerState {
         let mut canceled_inflight = false;
         for (vcpu, redistributor) in &mut self.redistributors {
             if *vcpu != target {
-                canceled_inflight |= redistributor.withdraw_pending_delivery(IntId::Spi(spi));
+                canceled_inflight |= redistributor
+                    .withdraw_pending_delivery(IntId::Spi(spi), self.active_vcpus.contains(vcpu));
             }
         }
         if canceled_inflight {
@@ -271,17 +272,17 @@ impl ControllerState {
     pub(super) fn merge_cpu_interface(
         &mut self,
         vcpu: GicVcpuId,
-        saved: CpuInterfaceState,
+        mut saved: CpuInterfaceState,
         refill: bool,
     ) -> VgicResult<Vec<DeliveryRetirement>> {
         let mut previous_list_registers = [None; MAX_LIST_REGISTERS];
         let mut current_list_registers = [None; MAX_LIST_REGISTERS];
         let count = saved.list_registers().len();
-        previous_list_registers[..count].copy_from_slice(
-            self.redistributor(vcpu, "merge CPU interface")?
-                .cpu_interface()
-                .list_registers(),
-        );
+        let canonical = self
+            .redistributor(vcpu, "merge CPU interface")?
+            .cpu_interface();
+        canonical.reconcile_withdrawn_pending(&mut saved)?;
+        previous_list_registers[..count].copy_from_slice(canonical.list_registers());
         current_list_registers[..count].copy_from_slice(saved.list_registers());
         self.redistributor_mut(vcpu, "merge CPU interface")?
             .replace_cpu_interface(saved);

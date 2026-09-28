@@ -575,6 +575,7 @@ version = "0.6.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
+ "ax-crate-interface",
  "ax-sync",
  "axdevice_base",
  "axvm-types",

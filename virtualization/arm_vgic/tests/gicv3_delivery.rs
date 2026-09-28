@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    panic::Location,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -11,6 +12,7 @@ use arm_vgic::{
     GicV3HardwareCapabilities, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuWake, GicVcpuId, IntId,
     InterruptState, PpiId, SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
 };
+use ax_sync::interface::{AcquireResult, ContextState, LockMetadata};
 use axvm_types::AccessWidth;
 
 const GICD_CTLR: u64 = 0x0000;
@@ -28,6 +30,77 @@ const ICH_HCR_UIE: u64 = 1 << 1;
 const ICH_HCR_LRENPIE: u64 = 1 << 2;
 const ICH_HCR_NPIE: u64 = 1 << 3;
 const ICH_HCR_TDIR: u64 = 1 << 14;
+
+struct TestContextOps;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::ContextOps for TestContextOps {
+    fn enter(_context: u8) -> ContextState {
+        ContextState::new(0, 0)
+    }
+
+    fn exit(_context: u8, _state: ContextState) {}
+
+    fn irq_return_preempt_enter() -> usize {
+        0
+    }
+
+    fn irq_return_preempt_exit(_state: usize) {}
+
+    fn hardirq_enter() {}
+
+    fn hardirq_exit() {}
+}
+
+struct TestSpinOps;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::SpinOps for TestSpinOps {
+    fn acquire(
+        locked: &AtomicBool,
+        _metadata: &LockMetadata,
+        _lock_addr: usize,
+        _context: u8,
+        _subclass: u32,
+        _caller: &'static Location<'static>,
+    ) -> ContextState {
+        while locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::thread::yield_now();
+        }
+        ContextState::new(0, 0)
+    }
+
+    fn try_acquire(
+        locked: &AtomicBool,
+        _metadata: &LockMetadata,
+        _lock_addr: usize,
+        _context: u8,
+        _subclass: u32,
+        _caller: &'static Location<'static>,
+    ) -> AcquireResult {
+        AcquireResult::new(
+            locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok(),
+            ContextState::new(0, 0),
+        )
+    }
+
+    fn release(locked: &AtomicBool, _lock_addr: usize, _context: u8, _context_state: ContextState) {
+        locked.store(false, Ordering::Release);
+    }
+
+    fn force_release(locked: &AtomicBool, _lock_addr: usize, _context: u8) {
+        locked.store(false, Ordering::Release);
+    }
+
+    fn is_locked(locked: &AtomicBool) -> bool {
+        locked.load(Ordering::Acquire)
+    }
+}
 
 #[test]
 fn physical_distributor_capabilities_are_not_fabricated_for_the_guest() {
@@ -420,6 +493,54 @@ fn deasserting_a_pending_spi_withdraws_the_saved_lr_before_wfi_wait() {
         binding.has_pending_interrupt().unwrap(),
         "a later level assertion must still create a fresh delivery"
     );
+}
+
+#[test]
+fn deasserting_a_loaded_spi_reconciles_hardware_before_the_next_entry() {
+    let (controller, backend) = controller(1, 1);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(32).unwrap();
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+
+    controller.set_spi_level(spi, true).unwrap();
+    binding.load().unwrap();
+    controller.set_spi_level(spi, false).unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(
+        backend.loaded_intids(0).is_empty(),
+        "a lowered loaded SPI must not be replayed on the next entry"
+    );
+    binding.save().unwrap();
+
+    controller.set_spi_level(spi, true).unwrap();
+    binding.load().unwrap();
+    backend.activate_all(0);
+    controller.set_spi_level(spi, false).unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert_eq!(
+        backend.loaded_states(0),
+        vec![InterruptState::Active],
+        "an accepted SPI must retain its active identity for guest deactivation"
+    );
+    backend.complete_all(0);
+    binding.save().unwrap();
+
+    controller.set_spi_level(spi, true).unwrap();
+    binding.load().unwrap();
+    let controller_during_save = controller.clone();
+    backend.set_save_hook(move || controller_during_save.set_spi_level(spi, false).unwrap());
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(
+        backend.loaded_intids(0).is_empty(),
+        "withdrawal after the save snapshot must still be reconciled"
+    );
+    binding.save().unwrap();
 }
 
 #[test]
@@ -922,11 +1043,16 @@ struct TestBackend {
     interfaces: Mutex<BTreeMap<GicVcpuId, CpuInterfaceState>>,
     retired: Mutex<Vec<(GicVcpuId, IntId)>>,
     fail_next_load: AtomicBool,
+    save_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl TestBackend {
     fn fail_next_load(&self) {
         self.fail_next_load.store(true, Ordering::Release);
+    }
+
+    fn set_save_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.save_hook.lock().unwrap() = Some(Box::new(hook));
     }
 
     fn loaded_hcr(&self, raw_vcpu: usize) -> u64 {
@@ -1061,8 +1187,18 @@ impl GicV3Backend for TestBackend {
         vcpu: GicVcpuId,
         state: &mut CpuInterfaceState,
     ) -> Result<(), GicV3BackendError> {
+        if let Some(hook) = self.save_hook.lock().unwrap().take() {
+            hook();
+        }
         if let Some(current) = self.interfaces.lock().unwrap().get(&vcpu) {
-            *state = current.clone();
+            state.set_hcr(current.hcr());
+            state.set_vmcr(current.vmcr());
+            for (index, value) in current.apr().iter().copied().enumerate() {
+                assert!(state.set_apr(index, value));
+            }
+            state
+                .list_registers_mut()
+                .copy_from_slice(current.list_registers());
         }
         Ok(())
     }

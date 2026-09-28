@@ -34,4 +34,5 @@ tock-registers = "0.10"
 thiserror = { workspace = true }
 
 [dev-dependencies]
+ax-crate-interface = { workspace = true }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
