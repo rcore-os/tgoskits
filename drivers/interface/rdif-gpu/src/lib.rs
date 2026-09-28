@@ -226,6 +226,8 @@ pub enum GpuError {
     NotReady,
     #[error("out of memory")]
     OutOfMemory,
+    /// Terminal failure: the driver has stopped all device access to caller
+    /// backing, including work whose completion was still pending.
     #[error("device was lost")]
     DeviceLost,
     #[error("device I/O failed")]
@@ -255,6 +257,7 @@ pub trait GpuDevice: DriverGeneric {
     /// the buffer; its backing remains owned by the device in that case.
     fn release_buffer(&mut self, buffer: BufferHandle) -> Result<(), GpuError>;
 
+    /// `DeviceLost` ends every outstanding completion for this device.
     fn completion_status(&mut self, completion: Completion) -> Result<CompletionStatus, GpuError>;
 
     /// Take the single independently movable IRQ endpoint, if present.

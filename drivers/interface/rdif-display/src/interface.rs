@@ -16,11 +16,13 @@ pub trait DisplayController: DriverGeneric {
 
     /// Revalidate `state` under this exclusive access before touching hardware.
     /// On error the previous state and its backing remain active, except when
-    /// [`DisplayError::DeviceLost`] reports that the device was reset. On
-    /// success the driver retains both new and old resources until the returned
-    /// completion confirms that the old scanout is no longer used.
+    /// [`DisplayError::DeviceLost`] reports that the device has stopped using
+    /// all scanout backing. On success the driver retains both new and old
+    /// resources until the returned completion confirms that the old scanout
+    /// is no longer used.
     fn commit(&mut self, state: &DisplayState) -> Result<Completion, DisplayError>;
 
+    /// `DeviceLost` ends every outstanding display completion.
     fn commit_status(&mut self, completion: Completion) -> Result<CompletionStatus, DisplayError>;
 
     /// Drain one event after the GPU control owner has serviced IRQ work.

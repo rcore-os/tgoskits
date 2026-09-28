@@ -18,6 +18,7 @@ pub enum DisplayError {
     Busy,
     #[error("display is not ready")]
     NotReady,
+    /// Terminal failure: the driver has stopped all access to scanout backing.
     #[error("display device was lost")]
     DeviceLost,
     #[error("display I/O failed")]
