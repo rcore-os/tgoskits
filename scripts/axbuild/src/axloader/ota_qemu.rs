@@ -525,9 +525,14 @@ impl AssignedOtaServer {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-                        let mut request = [0_u8; 16 * 1024];
-                        let count = stream.read(&mut request).unwrap_or(0);
-                        let body = &request[..count];
+                        let request = match super::read_http_request(&mut stream) {
+                            Ok(request) => request,
+                            Err(error) => {
+                                eprintln!("axloader OTA mock: request read failed: {error}");
+                                continue;
+                            }
+                        };
+                        let body = request.as_slice();
                         let line = String::from_utf8_lossy(body);
                         if line.starts_with("GET /api/v1/loader-updates/") {
                             write_ota_response(&mut stream, "200 OK", &image);
@@ -543,11 +548,12 @@ impl AssignedOtaServer {
                                 .windows(4)
                                 .position(|part| part == b"\r\n\r\n")
                                 .map(|index| index + 4);
-                            let state = body_start
-                                .and_then(|index| {
-                                    serde_json::from_slice::<Value>(&body[index..]).ok()
-                                })
-                                .unwrap_or_default();
+                            let Some(state) = body_start.and_then(|index| {
+                                serde_json::from_slice::<Value>(&body[index..]).ok()
+                            }) else {
+                                write_ota_response(&mut stream, "400 Bad Request", &[]);
+                                continue;
+                            };
                             let ota = &state["ota"];
                             let response = if ota["trial"] == true
                                 && ota["source"] == "server"

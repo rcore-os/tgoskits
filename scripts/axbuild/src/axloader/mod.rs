@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command as StdCommand, Stdio},
@@ -542,9 +542,15 @@ impl SmokeControlServer {
             while !http_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut request = [0u8; 16 * 1024];
-                        let read = stream.read(&mut request).unwrap_or(0);
-                        let request = &request[..read];
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+                        let request = match read_http_request(&mut stream) {
+                            Ok(request) => request,
+                            Err(error) => {
+                                eprintln!("axloader HTTP smoke: request read failed: {error}");
+                                continue;
+                            }
+                        };
+                        let request = request.as_slice();
                         let first_line_end = request
                             .windows(2)
                             .position(|window| window == b"\r\n")
@@ -848,6 +854,49 @@ fn write_http_response(stream: &mut impl Write, status: &str, body: &[u8]) {
     write_http_response_version(stream, status, body, "HTTP/1.1");
 }
 
+fn read_http_request(stream: &mut impl Read) -> io::Result<Vec<u8>> {
+    const MAX_REQUEST: usize = 16 * 1024;
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 2048];
+    loop {
+        let received = stream.read(&mut chunk)?;
+        if received == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        request.extend_from_slice(&chunk[..received]);
+        if request.len() > MAX_REQUEST {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        let Some(body_start) = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .map(|index| index + 4)
+        else {
+            continue;
+        };
+        let headers = std::str::from_utf8(&request[..body_start])
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        let body_size = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map(|(_, value)| value.trim().parse::<usize>())
+            .transpose()
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?
+            .unwrap_or(0);
+        let expected = body_start
+            .checked_add(body_size)
+            .filter(|expected| *expected <= MAX_REQUEST)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if request.len() == expected {
+            return Ok(request);
+        }
+        if request.len() > expected {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+    }
+}
+
 fn write_http_response_version(stream: &mut impl Write, status: &str, body: &[u8], version: &str) {
     let header = format!(
         "{version} {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -946,6 +995,18 @@ fn put_u64(image: &mut [u8], offset: usize, value: u64) {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn smoke_server_reads_complete_split_json_request() {
+        let header_and_partial_body =
+            b"POST /api/v1/loaders/poll HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 8\r\n\r\n{\"ok\":";
+        let remaining_body = b"1}";
+        let mut chunks =
+            io::Cursor::new(header_and_partial_body).chain(io::Cursor::new(remaining_body));
+        let request = read_http_request(&mut chunks).unwrap();
+        assert!(json_request_is_framed(&request));
+        assert!(request.ends_with(b"{\"ok\":1}"));
+    }
 
     #[test]
     fn qemu_filter_frame_parser_waits_for_complete_frame_and_rejects_invalid_lengths() {
