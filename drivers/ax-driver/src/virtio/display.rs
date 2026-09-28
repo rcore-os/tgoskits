@@ -66,7 +66,7 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     )
 }
 
-pub fn register_transport<T: Transport + 'static>(
+pub fn register_transport<T: Transport + Send + 'static>(
     platform: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
@@ -74,7 +74,7 @@ pub fn register_transport<T: Transport + 'static>(
         platform,
         transport,
         BindingInfo::empty(),
-        DmaCoherency::Coherent,
+        crate::binding_resolver::platform_default_dma_coherency(),
         BusIdentity::Platform {
             name: "virtio-gpu".to_string(),
             compatible: Some("virtio,mmio".to_string()),
@@ -82,16 +82,17 @@ pub fn register_transport<T: Transport + 'static>(
     )
 }
 
-pub fn register_transport_with_info<T: Transport + 'static>(
+pub fn register_transport_with_info<T: Transport + Send + 'static>(
     platform: PlatformDevice,
     transport: T,
     info: BindingInfo,
+    coherency: DmaCoherency,
 ) -> Result<(), OnProbeError> {
     register_transport_prepared(
         platform,
         transport,
         info,
-        DmaCoherency::Coherent,
+        coherency,
         BusIdentity::Platform {
             name: "virtio-gpu".to_string(),
             compatible: Some("virtio,mmio".to_string()),
@@ -99,7 +100,7 @@ pub fn register_transport_with_info<T: Transport + 'static>(
     )
 }
 
-fn register_transport_prepared<T: Transport + 'static>(
+fn register_transport_prepared<T: Transport + Send + 'static>(
     platform: PlatformDevice,
     transport: T,
     info: BindingInfo,
@@ -125,11 +126,11 @@ fn register_transport_prepared<T: Transport + 'static>(
     Ok(())
 }
 
-struct SharedGpuTransport<T: Transport + 'static> {
+struct SharedGpuTransport<T: Transport + Send + 'static> {
     inner: Arc<GpuTransportCell<T>>,
 }
 
-impl<T: Transport + 'static> SharedGpuTransport<T> {
+impl<T: Transport + Send + 'static> SharedGpuTransport<T> {
     fn new(transport: T) -> (Self, Box<dyn GpuIrqEndpoint>) {
         let inner = Arc::new(GpuTransportCell::new(transport));
         (
@@ -141,13 +142,13 @@ impl<T: Transport + 'static> SharedGpuTransport<T> {
     }
 }
 
-impl<T: Transport + 'static> Drop for SharedGpuTransport<T> {
+impl<T: Transport + Send + 'static> Drop for SharedGpuTransport<T> {
     fn drop(&mut self) {
         self.inner.shutting_down.store(true, Ordering::Release);
     }
 }
 
-struct GpuTransportCell<T: Transport + 'static> {
+struct GpuTransportCell<T: Transport + Send + 'static> {
     transport: UnsafeCell<T>,
     access_active: AtomicBool,
     ack_deferred: AtomicBool,
@@ -157,11 +158,11 @@ struct GpuTransportCell<T: Transport + 'static> {
 
 // SAFETY: every mutable transport access is guarded by access_active. Task
 // access disables local IRQs; the hard IRQ only try-acquires and never waits.
-unsafe impl<T: Transport + 'static> Send for GpuTransportCell<T> {}
+unsafe impl<T: Transport + Send + 'static> Send for GpuTransportCell<T> {}
 // SAFETY: shared references can reach transport only under the same gate.
-unsafe impl<T: Transport + 'static> Sync for GpuTransportCell<T> {}
+unsafe impl<T: Transport + Send + 'static> Sync for GpuTransportCell<T> {}
 
-impl<T: Transport + 'static> GpuTransportCell<T> {
+impl<T: Transport + Send + 'static> GpuTransportCell<T> {
     fn new(transport: T) -> Self {
         Self {
             transport: UnsafeCell::new(transport),
@@ -229,17 +230,17 @@ impl<T: Transport + 'static> GpuTransportCell<T> {
     }
 }
 
-struct GpuIrq<T: Transport + 'static> {
+struct GpuIrq<T: Transport + Send + 'static> {
     inner: Arc<GpuTransportCell<T>>,
 }
 
-impl<T: Transport + 'static> GpuIrqEndpoint for GpuIrq<T> {
+impl<T: Transport + Send + 'static> GpuIrqEndpoint for GpuIrq<T> {
     fn handle_irq(&self) -> GpuIrqEvent {
         self.inner.handle_irq()
     }
 }
 
-impl<T: Transport + 'static> Transport for SharedGpuTransport<T> {
+impl<T: Transport + Send + 'static> Transport for SharedGpuTransport<T> {
     fn device_type(&self) -> virtio_drivers::transport::DeviceType {
         self.inner.with_task(|transport| transport.device_type())
     }

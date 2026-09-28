@@ -163,7 +163,7 @@ fn dma_mem_interconnect_phandle<'a>(
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
-const fn platform_default_dma_coherency() -> DmaCoherency {
+pub(crate) const fn platform_default_dma_coherency() -> DmaCoherency {
     if cfg!(target_arch = "aarch64") {
         DmaCoherency::NonCoherent
     } else {

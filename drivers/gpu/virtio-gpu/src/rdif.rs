@@ -24,7 +24,10 @@ use rdif_gpu::{
 };
 use virtio_drivers::{Hal, transport::Transport};
 
-use crate::{BlobMemory, Error, GpuBox, Rect, ResourceCreate3d, ResourceCreateBlob, VirtIoGpu};
+use crate::{
+    BlobMemory, Error, GpuBox, Rect, Resource2dFormat, ResourceCreate3d, ResourceCreateBlob,
+    VirtIoGpu,
+};
 
 struct Resource {
     id: u32,
@@ -36,8 +39,22 @@ struct Resource {
 #[derive(Clone, Copy)]
 enum ResourceKind {
     TwoD(BufferDescriptor),
-    ThreeD { width: u32, height: u32 },
-    Blob { size: u64 },
+    ThreeD {
+        width: u32,
+        height: u32,
+        format: u32,
+    },
+    Blob {
+        size: u64,
+    },
+}
+
+fn scanout_format(format: PixelFormat) -> Option<Resource2dFormat> {
+    match format {
+        PixelFormat::Xrgb8888 => Some(Resource2dFormat::B8G8R8X8Unorm),
+        PixelFormat::Argb8888 => Some(Resource2dFormat::B8G8R8A8Unorm),
+        _ => None,
+    }
 }
 
 // Tokens are never reused, including across device instances. Failed
@@ -69,6 +86,7 @@ pub struct VirtIoGpuDevice<H: Hal, T: Transport> {
     outputs: Vec<DisplayOutputInfo>,
     states: Vec<Option<DisplayState>>,
     events: VecDeque<DisplayEvent>,
+    display_change_pending: bool,
     irq_endpoint: Option<Box<dyn GpuIrqEndpoint>>,
     lost: bool,
 }
@@ -112,6 +130,7 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
             outputs,
             states,
             events: VecDeque::new(),
+            display_change_pending: false,
             irq_endpoint,
             lost: false,
         })
@@ -232,6 +251,7 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
         self.raw.reset();
         self.lost = true;
         self.states.fill(None);
+        self.display_change_pending = false;
         self.attachments.clear();
         self.contexts.clear();
         self.resources.clear();
@@ -265,8 +285,14 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
         };
         match resource.kind {
             ResourceKind::TwoD(descriptor) if descriptor == expected => {}
-            ResourceKind::ThreeD { width, height }
-                if width >= framebuffer.width && height >= framebuffer.height => {}
+            ResourceKind::ThreeD {
+                width,
+                height,
+                format,
+            } if width == framebuffer.width
+                && height == framebuffer.height
+                && scanout_format(framebuffer.format)
+                    .is_some_and(|expected| format == expected as u32) => {}
             ResourceKind::Blob { size }
                 if u64::try_from(
                     framebuffer
@@ -510,6 +536,9 @@ fn map_error(error: Error) -> GpuError {
         Error::Unsupported => GpuError::Unsupported,
         Error::NotReady => GpuError::NotReady,
         Error::InvalidParam | Error::Overflow => GpuError::InvalidArgument,
+        Error::DeviceRejected(0x1201) => GpuError::OutOfMemory,
+        Error::DeviceRejected(0x1202 | 0x1205) => GpuError::InvalidArgument,
+        Error::DeviceRejected(0x1203 | 0x1204) => GpuError::InvalidHandle,
         Error::DmaError => GpuError::OutOfMemory,
         Error::VirtIo(virtio_drivers::Error::DmaError) => GpuError::OutOfMemory,
         Error::VirtIo(virtio_drivers::Error::QueueFull | virtio_drivers::Error::AlreadyUsed) => {
@@ -570,10 +599,16 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
         let size = desc.required_len().ok_or(GpuError::InvalidArgument)?;
         self.validate_backing(backing.as_ref(), size)?;
         let (id, handle) = self.alloc_resource()?;
-        if let Err(error) = self.raw.resource_create_2d(id, width, height) {
+        let device_format = scanout_format(format).ok_or(GpuError::Unsupported)?;
+        if let Err(error) = self
+            .raw
+            .resource_create_2d(id, width, height, device_format)
+        {
             // A transport failure may arrive after the host accepted CREATE.
             // UNREF confirmation (or reset) closes that ambiguous lifetime.
-            self.cleanup_failed_create(id);
+            if !matches!(error, Error::DeviceRejected(_)) {
+                self.cleanup_failed_create(id);
+            }
             return Err(map_error(error));
         }
         if let Err(error) = self.attach_backing(id, &backing, size) {
@@ -647,7 +682,8 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
     fn service_pending(&mut self) -> Result<(), GpuError> {
         self.ensure_ready()?;
         let event = self.raw.ack_interrupt();
-        if event.display_changed {
+        self.display_change_pending |= event.display_changed;
+        if self.display_change_pending {
             for index in 0..self.outputs.len() {
                 let output = read_output(&mut self.raw, index as u32).map_err(map_error)?;
                 if output != self.outputs[index] {
@@ -656,6 +692,7 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
                         .push_back(DisplayEvent::OutputChanged(OutputId::new(index as u32)));
                 }
             }
+            self.display_change_pending = false;
         }
         Ok(())
     }
@@ -726,7 +763,9 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
             nr_samples: desc.samples,
             flags: desc.flags,
         }) {
-            self.cleanup_failed_create(id);
+            if !matches!(error, Error::DeviceRejected(_)) {
+                self.cleanup_failed_create(id);
+            }
             return Err(map_error(error));
         }
         if let Some(backing) = &backing
@@ -743,6 +782,7 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
                 kind: ResourceKind::ThreeD {
                     width: desc.width,
                     height: desc.height,
+                    format: desc.format,
                 },
                 attached: backing.is_some(),
             },
@@ -825,7 +865,10 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
         if let Err(error) = result {
             if !matches!(
                 &error,
-                Error::Unsupported | Error::InvalidParam | Error::Overflow
+                Error::Unsupported
+                    | Error::InvalidParam
+                    | Error::Overflow
+                    | Error::DeviceRejected(_)
             ) {
                 self.cleanup_failed_create(id);
             }

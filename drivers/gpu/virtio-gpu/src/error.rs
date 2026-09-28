@@ -22,6 +22,9 @@ pub enum Error {
     /// The device answered with something other than the expected response.
     #[error("unexpected response from the device")]
     InvalidResponse,
+    /// The device explicitly rejected a command with this VirtIO GPU response code.
+    #[error("device rejected command with response code {0:#x}")]
+    DeviceRejected(u32),
     /// The response does not fit into the receive buffer.
     #[error("the device response does not fit into the receive buffer")]
     ResponseTooLarge,

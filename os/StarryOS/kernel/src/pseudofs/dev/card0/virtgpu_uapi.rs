@@ -227,11 +227,11 @@ pub struct DrmVirtgpuResourceCreate {
     pub nr_samples: u32,
     /// Input: resource flags.
     pub flags: u32,
-    /// Input: associate with existing GEM BO (0 = kernel allocates new BO).
+    /// Output: newly allocated GEM handle; Linux does not consume its input value.
     pub bo_handle: u32,
     /// Output: virtio-gpu resource ID (NOT GEM handle!).
     pub res_handle: u32,
-    /// Output: resource size (for transfer validation).
+    /// Input/output: requested resource size (for transfer validation).
     pub size: u32,
     /// Input/Output: row stride.
     pub stride: u32,

@@ -57,6 +57,7 @@ pub use device::VirtIoGpu;
 pub use error::Error;
 #[cfg(feature = "rdif")]
 pub use rdif::VirtIoGpuDevice;
+pub use wire::Resource2dFormat;
 
 /// Current host-reported state of one display output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

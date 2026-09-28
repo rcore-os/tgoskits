@@ -158,6 +158,8 @@ impl CtrlHeader {
     pub(crate) fn check_type(&self, expected: Command) -> Result<(), Error> {
         if self.hdr_type == expected {
             Ok(())
+        } else if (0x1200..=0x12ff).contains(&self.hdr_type.0) {
+            Err(Error::DeviceRejected(self.hdr_type.0))
         } else {
             Err(Error::InvalidResponse)
         }
@@ -187,17 +189,19 @@ pub(crate) struct RespDisplayInfo {
 pub(crate) struct ResourceCreate2D {
     pub(crate) header: CtrlHeader,
     pub(crate) resource_id: u32,
-    pub(crate) format: Format,
+    pub(crate) format: Resource2dFormat,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
 
 /// Pixel formats used by `RESOURCE_CREATE_2D`.
 #[repr(u32)]
-#[derive(Debug, Immutable, IntoBytes, KnownLayout)]
-pub(crate) enum Format {
+#[derive(Debug, Clone, Copy, Immutable, IntoBytes, KnownLayout)]
+pub enum Resource2dFormat {
     /// `VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM`.
     B8G8R8A8Unorm = 1,
+    /// `VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM`.
+    B8G8R8X8Unorm = 2,
 }
 
 /// `VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING` header; entries follow in the

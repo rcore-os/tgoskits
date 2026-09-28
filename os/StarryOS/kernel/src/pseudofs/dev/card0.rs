@@ -1598,6 +1598,30 @@ impl Card0File {
     }
 }
 
+// Mirrors the DRM_RENDER_ALLOW entries in Linux's core and virtio-gpu ioctl
+// tables. Render clients may manage GPU resources but cannot own KMS state.
+fn render_node_allows_ioctl(cmd: u32) -> bool {
+    matches!(
+        cmd,
+        DRM_IOCTL_VERSION
+            | DRM_IOCTL_GET_CAP
+            | DRM_IOCTL_GEM_CLOSE
+            | DRM_IOCTL_PRIME_HANDLE_TO_FD
+            | DRM_IOCTL_PRIME_FD_TO_HANDLE
+            | DRM_IOCTL_VIRTGPU_MAP
+            | DRM_IOCTL_VIRTGPU_EXECBUFFER
+            | DRM_IOCTL_VIRTGPU_GETPARAM
+            | DRM_IOCTL_VIRTGPU_RESOURCE_CREATE
+            | DRM_IOCTL_VIRTGPU_RESOURCE_INFO
+            | DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST
+            | DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST
+            | DRM_IOCTL_VIRTGPU_WAIT
+            | DRM_IOCTL_VIRTGPU_GET_CAPS
+            | DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB
+            | DRM_IOCTL_VIRTGPU_CONTEXT_INIT
+    )
+}
+
 impl Pollable for Card0File {
     fn poll(&self) -> IoEvents {
         self.serve_pending_vblank_events();
@@ -1660,6 +1684,9 @@ impl FileLike for Card0File {
     }
 
     fn ioctl(&self, current: &UserTaskRef, cmd: u32, arg: usize) -> StarryResult<usize> {
+        if !self.is_primary && !render_node_allows_ioctl(cmd) {
+            return Err(VfsError::PermissionDenied.into());
+        }
         if arg == 0 && !matches!(cmd, DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER) {
             return Err(StarryError::BadAddress);
         }
@@ -3239,7 +3266,9 @@ impl Card0 {
         }
         let _operation = self.modeset_operation.lock();
         let state = self.state.lock().clone();
-        self.present_fb(dirty.fb_id, &state, false)?;
+        if state.crtc_active != 0 && state.plane_fb_id == dirty.fb_id {
+            self.present_fb(state.plane_fb_id, &state, false)?;
+        }
         Ok(0)
     }
 

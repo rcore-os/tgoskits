@@ -656,6 +656,14 @@ int main(void)
     render_wait.req.type = _DRM_VBLANK_RELATIVE;
     CHECK_ERR(syscall(SYS_ioctl, render_seq, DRM_IOCTL_WAIT_VBLANK, &render_wait), EACCES,
               "render node rejects WAIT_VBLANK");
+    struct drm_mode_crtc render_crtc = { .crtc_id = crtc_ids[0] };
+    CHECK_ERR(ioctl(render_seq, DRM_IOCTL_MODE_GETCRTC, &render_crtc), EACCES,
+              "render node rejects KMS queries");
+    CHECK_ERR(ioctl(render_seq, DRM_IOCTL_MODE_SETCRTC, &render_crtc), EACCES,
+              "render node cannot change the scanout");
+    struct drm_mode_create_dumb render_dumb = { .width = 1, .height = 1, .bpp = 32 };
+    CHECK_ERR(ioctl(render_seq, DRM_IOCTL_MODE_CREATE_DUMB, &render_dumb), EACCES,
+              "render node rejects KMS buffer creation");
     close(render_seq);
 
     /* --- QUEUE_SEQUENCE 错误路径 --- */

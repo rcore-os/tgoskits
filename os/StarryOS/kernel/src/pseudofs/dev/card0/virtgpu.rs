@@ -315,8 +315,8 @@ impl Card0 {
     ///
     /// Linux: `virtgpu_resource_create_ioctl()` in `virtgpu_ioctl.c`
     ///
-    /// Creates a 3D resource on the host and optionally associates it with
-    /// an existing GEM handle. Returns the virtio-gpu resource ID in
+    /// Creates a 3D resource on the host and allocates a new GEM handle.
+    /// Returns the virtio-gpu resource ID in
     /// `res_handle` (NOT the GEM handle — they are different!).
     pub(super) fn handle_virtgpu_resource_create(
         &self,

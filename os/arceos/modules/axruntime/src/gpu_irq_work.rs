@@ -1,6 +1,7 @@
 //! Task-context service for GPU interrupts and display events.
 
 use alloc::string::String;
+use core::time::Duration;
 
 use ax_lazyinit::OnceLock;
 
@@ -18,8 +19,19 @@ pub(crate) fn start() {
             GPU_IRQ_WORK
                 .wait()
                 .unwrap_or_else(|error| panic!("GPU IRQ worker could not wait: {error}"));
-            if let Err(error) = ax_gpu::service_irq_work() {
-                warn!("GPU IRQ work failed: {error}");
+            for attempt in 0..3 {
+                match ax_gpu::service_irq_work() {
+                    Ok(()) => break,
+                    Err(error)
+                        if attempt < 2 && error != ax_gpu::rdif_gpu::GpuError::DeviceLost =>
+                    {
+                        crate::task::thread::current::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => {
+                        warn!("GPU IRQ work failed: {error}");
+                        break;
+                    }
+                }
             }
         }
     }) {

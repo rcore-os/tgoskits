@@ -15,12 +15,12 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use crate::{
     BLOB_FLAG_USE_CROSS_DEVICE, BLOB_FLAG_USE_MASK, BLOB_MEM_GUEST, BLOB_MEM_HOST3D,
     BLOB_MEM_HOST3D_GUEST, BlobMemory, CapsetInfo, Error, IrqEvent, OutputInfo, Rect,
-    ResourceCreate3d, ResourceCreateBlob, Transfer3d,
+    Resource2dFormat, ResourceCreate3d, ResourceCreateBlob, Transfer3d,
     dma::Dma,
     wire::{
         CmdCtxCreate, CmdCtxResource, CmdGetCapset, CmdGetCapsetInfo, CmdResourceCreate3D,
         CmdResourceCreateBlob, CmdSubmit3D, CmdTransferHost3D, Command, Config, CtrlHeader,
-        Features, Format, MemEntry, ResourceAttachBacking, ResourceCreate2D, ResourceDetachBacking,
+        Features, MemEntry, ResourceAttachBacking, ResourceCreate2D, ResourceDetachBacking,
         ResourceFlush, ResourceUnref, RespCapsetInfo, RespDisplayInfo, SUPPORTED_FEATURES,
         SetScanout, SetScanoutBlob, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
     },
@@ -262,7 +262,12 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
 
         // Create the resource. If this fails the DMA drops here (the device has
         // never seen it) and there is nothing to roll back.
-        self.resource_create_2d(FRAMEBUFFER_RESOURCE_ID, width, height)?;
+        self.resource_create_2d(
+            FRAMEBUFFER_RESOURCE_ID,
+            width,
+            height,
+            Resource2dFormat::B8G8R8X8Unorm,
+        )?;
 
         // SAFETY: `frame_buffer_dma` owns a live, zeroed, at least `size` byte
         // DMA region (the allocation is rounded up to whole pages). On the
@@ -344,17 +349,18 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
 
     // --- 2D resource and scanout commands ---
 
-    /// Creates a 2D resource in `B8G8R8A8_UNORM` format.
+    /// Creates a 2D resource in the requested device format.
     pub fn resource_create_2d(
         &mut self,
         resource_id: u32,
         width: u32,
         height: u32,
+        format: Resource2dFormat,
     ) -> Result<(), Error> {
         let response: CtrlHeader = self.request(ResourceCreate2D {
             header: CtrlHeader::with_type(Command::RESOURCE_CREATE_2D),
             resource_id,
-            format: Format::B8G8R8A8Unorm,
+            format,
             width,
             height,
         })?;

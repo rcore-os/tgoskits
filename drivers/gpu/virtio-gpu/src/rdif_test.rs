@@ -13,9 +13,12 @@ use core::{
 };
 use std::sync::{Mutex, Weak};
 
-use rdif_display::{DisplayController, DisplayState, Framebuffer, OutputId, ScanoutBuffer};
+use rdif_display::{
+    DisplayController, DisplayEvent, DisplayState, Framebuffer, OutputId, ScanoutBuffer,
+};
 use rdif_gpu::{
     Backing, BufferDescriptor, DmaAddr, DmaDomainId, DmaSegment, GpuDevice, GpuError, PixelFormat,
+    Resource3d, VirglOps,
 };
 use virtio_drivers::{
     BufferDirection, Hal, PAGE_SIZE, PhysAddr, Result as VirtIoResult,
@@ -118,9 +121,17 @@ struct QueueAddresses {
 struct Host {
     queue: QueueAddresses,
     status: DeviceStatus,
+    device_features: u64,
     reset_readback: bool,
     commands: Vec<u32>,
+    created_formats: Vec<u32>,
     scanout: u32,
+    output_width: u32,
+    events_read: u32,
+    interrupt_status: InterruptStatus,
+    fail_create: bool,
+    reject_unref: bool,
+    fail_display_info: bool,
     fail_set_scanout: bool,
     fail_flush: bool,
     fail_detach: bool,
@@ -130,6 +141,27 @@ impl Host {
     fn reply(&mut self, request: &[u8]) -> Vec<u8> {
         let command = word(request, 0);
         self.commands.push(command);
+        if command == Command::RESOURCE_CREATE_2D.0 {
+            self.created_formats.push(word(request, 28));
+            if self.fail_create {
+                self.fail_create = false;
+                self.reject_unref = true;
+                let mut reply = vec![0; 24];
+                set_word(&mut reply, 0, 0x1201); // ERR_OUT_OF_MEMORY
+                return reply;
+            }
+        }
+        if command == Command::RESOURCE_UNREF.0 && self.reject_unref {
+            let mut reply = vec![0; 24];
+            set_word(&mut reply, 0, 0x1203); // ERR_INVALID_RESOURCE_ID
+            return reply;
+        }
+        if command == Command::GET_DISPLAY_INFO.0 && self.fail_display_info {
+            self.fail_display_info = false;
+            let mut reply = vec![0; 24];
+            set_word(&mut reply, 0, 0x1200); // ERR_UNSPEC
+            return reply;
+        }
         let failed = if command == Command::SET_SCANOUT.0 && self.fail_set_scanout {
             self.fail_set_scanout = false;
             true
@@ -150,7 +182,7 @@ impl Host {
         if command == Command::GET_DISPLAY_INFO.0 {
             let mut reply = vec![0; size_of::<RespDisplayInfo>()];
             set_word(&mut reply, 0, Command::OK_DISPLAY_INFO.0);
-            set_word(&mut reply, 24 + 8, WIDTH);
+            set_word(&mut reply, 24 + 8, self.output_width.max(WIDTH));
             set_word(&mut reply, 24 + 12, HEIGHT);
             set_word(&mut reply, 24 + 16, 1);
             return reply;
@@ -233,7 +265,7 @@ impl Transport for TestTransport {
         DeviceType::GPU
     }
     fn read_device_features(&mut self) -> u64 {
-        0
+        self.0.lock().unwrap().device_features
     }
     fn write_driver_features(&mut self, _features: u64) {}
     fn max_queue_size(&mut self, _queue: u16) -> u32 {
@@ -285,22 +317,28 @@ impl Transport for TestTransport {
         self.0.lock().unwrap().queue.descriptors != 0
     }
     fn ack_interrupt(&mut self) -> InterruptStatus {
-        InterruptStatus::empty()
+        let mut host = self.0.lock().unwrap();
+        core::mem::take(&mut host.interrupt_status)
     }
     fn read_config_generation(&self) -> u32 {
         0
     }
     fn read_config_space<T: FromBytes + IntoBytes>(&self, offset: usize) -> VirtIoResult<T> {
         let mut config = [0u8; 12];
+        set_word(&mut config, 0, self.0.lock().unwrap().events_read);
         set_word(&mut config, 8, 1); // one scanout
         T::read_from_bytes(&config[offset..offset + size_of::<T>()])
             .map_err(|_| virtio_drivers::Error::ConfigSpaceTooSmall)
     }
     fn write_config_space<T: IntoBytes + Immutable>(
         &mut self,
-        _offset: usize,
-        _value: T,
+        offset: usize,
+        value: T,
     ) -> VirtIoResult<()> {
+        if offset == 4 {
+            let bits = word(value.as_bytes(), 0);
+            self.0.lock().unwrap().events_read &= !bits;
+        }
         Ok(())
     }
 }
@@ -314,6 +352,133 @@ fn normal_drop_confirms_reset_before_releasing_queue() {
     let host = host.lock().unwrap();
     assert!(host.reset_readback);
     assert_eq!(host.queue.descriptors, 0);
+}
+
+#[test]
+fn resource_creation_preserves_format_and_survives_host_rejection() {
+    let host = Arc::new(Mutex::new(Host::default()));
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let mut device = VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap();
+    let descriptor = |format| BufferDescriptor::Image2d {
+        width: WIDTH,
+        height: HEIGHT,
+        stride: WIDTH * 4,
+        format,
+    };
+
+    host.lock().unwrap().fail_create = true;
+    let rejected_backing = TestBacking::new();
+    let rejected_weak = Arc::downgrade(&rejected_backing);
+    assert_eq!(
+        device.create_buffer(descriptor(PixelFormat::Xrgb8888), rejected_backing.clone()),
+        Err(GpuError::OutOfMemory),
+    );
+    drop(rejected_backing);
+    assert!(rejected_weak.upgrade().is_none());
+    {
+        let host = host.lock().unwrap();
+        assert!(
+            !host.status.is_empty(),
+            "host rejection must not reset the GPU"
+        );
+        assert!(!host.commands.contains(&Command::RESOURCE_UNREF.0));
+    }
+
+    let argb = device
+        .create_buffer(descriptor(PixelFormat::Argb8888), TestBacking::new())
+        .unwrap();
+    assert_eq!(host.lock().unwrap().created_formats, [2, 1]);
+    host.lock().unwrap().reject_unref = false;
+    device.release_buffer(argb).unwrap();
+}
+
+#[test]
+fn display_change_remains_pending_after_output_query_fails() {
+    let host = Arc::new(Mutex::new(Host::default()));
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let mut device = VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap();
+    {
+        let mut host = host.lock().unwrap();
+        host.output_width = WIDTH + 1;
+        host.events_read = 1;
+        host.interrupt_status = InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT;
+        host.fail_display_info = true;
+    }
+
+    assert!(device.service_pending().is_err());
+    assert_eq!(host.lock().unwrap().events_read, 0);
+    assert_eq!(device.poll_event(), None);
+    device.service_pending().unwrap();
+    assert_eq!(
+        device.poll_event(),
+        Some(DisplayEvent::OutputChanged(OutputId::new(0)))
+    );
+    assert_eq!(
+        device.output(OutputId::new(0)).unwrap().modes[0].width,
+        WIDTH + 1
+    );
+}
+
+#[test]
+fn scanout_rejects_a_3d_resource_with_an_incompatible_format() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1, // VIRTIO_GPU_F_VIRGL
+        ..Host::default()
+    }));
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let mut device = VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap();
+    let mode = device
+        .output(OutputId::new(0))
+        .unwrap()
+        .preferred_mode
+        .unwrap();
+    let resource = |format| Resource3d {
+        target: 2,
+        format,
+        bind: 0,
+        width: WIDTH,
+        height: HEIGHT,
+        depth: 1,
+        array_size: 1,
+        last_level: 0,
+        samples: 0,
+        flags: 0,
+    };
+    let argb = device.create_resource_3d(resource(1), None).unwrap();
+    assert!(device.check(&scanout_state(argb, mode)).is_err());
+    let xrgb = device.create_resource_3d(resource(2), None).unwrap();
+    device.check(&scanout_state(xrgb, mode)).unwrap();
+    let wider = device
+        .create_resource_3d(
+            Resource3d {
+                width: WIDTH + 1,
+                ..resource(2)
+            },
+            None,
+        )
+        .unwrap();
+    assert!(device.check(&scanout_state(wider, mode)).is_err());
+    device.release_buffer(argb).unwrap();
+    device.release_buffer(xrgb).unwrap();
+    device.release_buffer(wider).unwrap();
 }
 
 fn scanout_state(handle: rdif_gpu::BufferHandle, mode: rdif_display::Mode) -> DisplayState {
