@@ -43,8 +43,8 @@ use core::{
 
 use ax_gpu::MappableBacking;
 use ax_gpu::rdif_display::{
-    DisplayError, DisplayState, Framebuffer as ScanoutFramebuffer, Mode as DisplayMode, OutputId,
-    OutputInfo, OutputKind, Rect, ScanoutBuffer,
+    DisplayController, DisplayError, DisplayState, Framebuffer as ScanoutFramebuffer,
+    Mode as DisplayMode, OutputId, OutputInfo, OutputKind, Rect, ScanoutBuffer,
 };
 use ax_gpu::rdif_gpu::{
     Backing, BufferDescriptor, BufferHandle, Completion, CompletionStatus, ContextHandle, DmaAddr,
@@ -1925,12 +1925,9 @@ impl Card0 {
 
     fn clear_scanout(&self, test_only: bool) -> VfsResult<()> {
         let completion = ax_gpu::with_display(|device| {
-            let output = (0..device.output_count())
-                .map(OutputId::new)
-                .find_map(|id| device.output(id).ok().filter(|info| info.connected))
-                .ok_or(DisplayError::NotAvailable)?;
+            let output = scanout_output_to_clear(device)?;
             let state = DisplayState {
-                output: output.id,
+                output,
                 mode: None,
                 framebuffer: None,
                 damage: Vec::new(),
@@ -1969,10 +1966,7 @@ impl Card0 {
             refresh_millihz: mode.info.vrefresh.saturating_mul(1000),
         });
         let completion = ax_gpu::with_display(|device| {
-            let output = (0..device.output_count())
-                .map(OutputId::new)
-                .find_map(|id| device.output(id).ok().filter(|info| info.connected))
-                .ok_or(DisplayError::NotAvailable)?;
+            let output = select_output_for_present(device)?;
             let mode = if let Some(requested) = requested_mode {
                 output
                     .modes
@@ -2296,6 +2290,48 @@ impl Card0 {
         ptr.vm_write(current, m).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
+}
+
+fn active_scanout_output<D: DisplayController + ?Sized>(
+    device: &D,
+) -> Result<Option<OutputId>, DisplayError> {
+    for id in (0..device.output_count()).map(OutputId::new) {
+        if device
+            .current_state(id)?
+            .as_ref()
+            .is_some_and(|state| state.framebuffer.is_some())
+        {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+fn scanout_output_to_clear<D: DisplayController + ?Sized>(
+    device: &D,
+) -> Result<OutputId, DisplayError> {
+    if let Some(id) = active_scanout_output(device)? {
+        return Ok(id);
+    }
+    (device.output_count() > 0)
+        .then_some(OutputId::new(0))
+        .ok_or(DisplayError::NotAvailable)
+}
+
+fn select_output_for_present<D: DisplayController + ?Sized>(
+    device: &D,
+) -> Result<OutputInfo, DisplayError> {
+    if let Some(id) = active_scanout_output(device)? {
+        let output = device.output(id)?;
+        return output
+            .connected
+            .then_some(output)
+            .ok_or(DisplayError::NotAvailable);
+    }
+    (0..device.output_count())
+        .map(OutputId::new)
+        .find_map(|id| device.output(id).ok().filter(|info| info.connected))
+        .ok_or(DisplayError::NotAvailable)
 }
 
 fn handle_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
@@ -3990,6 +4026,112 @@ const _DUMB_BUFFER_FIELDS_USED: fn(&DumbBuffer) = |b| {
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use super::*;
+    use ax_gpu::rdif_display::{DisplayEvent, DriverGeneric};
+    use core::num::NonZeroU64;
+
+    struct DisconnectedDisplay {
+        connected: [bool; 2],
+        states: [Option<DisplayState>; 2],
+    }
+
+    impl DriverGeneric for DisconnectedDisplay {
+        fn name(&self) -> &str {
+            "disconnected-display"
+        }
+    }
+
+    impl DisplayController for DisconnectedDisplay {
+        fn output_count(&self) -> u32 {
+            2
+        }
+
+        fn output(&self, id: OutputId) -> Result<OutputInfo, DisplayError> {
+            let connected = *self
+                .connected
+                .get(id.id() as usize)
+                .ok_or(DisplayError::InvalidOutput)?;
+            Ok(OutputInfo {
+                id,
+                name: String::from("Disconnected"),
+                kind: OutputKind::Virtual,
+                connected,
+                physical_size_mm: None,
+                modes: Vec::new(),
+                preferred_mode: None,
+                formats: Vec::new(),
+            })
+        }
+
+        fn current_state(&self, id: OutputId) -> Result<Option<DisplayState>, DisplayError> {
+            self.states
+                .get(id.id() as usize)
+                .cloned()
+                .ok_or(DisplayError::InvalidOutput)
+        }
+
+        fn check(&self, _state: &DisplayState) -> Result<(), DisplayError> {
+            unreachable!()
+        }
+
+        fn commit(&mut self, _state: &DisplayState) -> Result<Completion, DisplayError> {
+            unreachable!()
+        }
+
+        fn commit_status(
+            &mut self,
+            _completion: Completion,
+        ) -> Result<CompletionStatus, DisplayError> {
+            unreachable!()
+        }
+
+        fn poll_event(&mut self) -> Option<DisplayEvent> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn disconnected_output_with_active_scanout_can_be_cleared() {
+        let output = OutputId::new(1);
+        let display = DisconnectedDisplay {
+            connected: [true, false],
+            states: [None, Some(DisplayState {
+                output,
+                mode: Some(DisplayMode {
+                    width: 1,
+                    height: 1,
+                    refresh_millihz: 0,
+                }),
+                framebuffer: Some(ScanoutFramebuffer {
+                    buffer: ScanoutBuffer::Gpu(BufferHandle::new(NonZeroU64::new(1).unwrap())),
+                    width: 1,
+                    height: 1,
+                    stride: 4,
+                    offset: 0,
+                    format: PixelFormat::Xrgb8888,
+                }),
+                damage: Vec::new(),
+            })],
+        };
+
+        assert_eq!(scanout_output_to_clear(&display), Ok(output));
+        assert_eq!(
+            select_output_for_present(&display),
+            Err(DisplayError::NotAvailable)
+        );
+        let cleared = DisconnectedDisplay {
+            connected: [true, false],
+            states: [None, None],
+        };
+        assert_eq!(
+            select_output_for_present(&cleared).unwrap().id,
+            OutputId::new(0)
+        );
+        let all_disconnected = DisconnectedDisplay {
+            connected: [false, false],
+            ..display
+        };
+        assert_eq!(scanout_output_to_clear(&all_disconnected), Ok(output));
+    }
 
     #[test]
     fn disabling_completes_all_pending_event_types_at_the_frozen_edge() {

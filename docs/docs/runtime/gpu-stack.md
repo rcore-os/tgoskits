@@ -52,7 +52,7 @@ Starry 的 KMS 门禁以显示控制器存在为准，不要求 GPU 实现 2D �
 
 ArceOS 的 `axruntime` 把 `ax-driver` 注册对象交给 `axgpu`，`axdisplay` 通过同一实例访问显示端。StarryOS 的 DRM 核心维护 GEM handle、framebuffer、PRIME 与 modeset 状态；Linux 标准的 `DRM_IOCTL_VIRTGPU_*` 只在 VirtIO 兼容模块中转译到可选 `VirglOps`，不向通用 RDIF 泄漏 Linux UAPI，也不增加 Starry 专属 ioctl。同设备 PRIME 别名共享资源引用；外部 dma-heap 连续缓冲区只在 GPU 使用 Direct DMA 域时作为 backing 导入，其他 DMA 域须先提供映射能力。设备身份和 sysfs 信息来自已绑定驱动，VirtIO PCI 数值属性从探测到的 endpoint 读取；sysfs 父路径暂保留供现有 libdrm 使用的 platform 兼容层。没有 GPU 时不发布 DRM 节点，没有可映射 scanout 时不发布 `/dev/fb0`。无输出 GPU 的 dumb ioctl 仍按其图像资源能力工作，但 KMS ioctl 不发布显示能力。
 
-当前 Starry DRM 向用户态只暴露一组 CRTC、connector 和 primary plane，选取第一个已连接输出进行提交；`rdif-display` 仍保留完整的输出枚举能力。多个输出同时运行和热插拔后保持原输出绑定不在本轮实现范围内。
+当前 Starry DRM 向用户态只暴露一组 CRTC、connector 和 primary plane，首次提交选取第一个已连接输出；`rdif-display` 仍保留完整的输出枚举能力。后续提交由 `select_output_for_present` 保持原输出绑定；原输出断开时先拒绝新提交，避免切换到另一输出后提前释放旧 backing。`Card0::clear_scanout` 根据 `DisplayController::current_state` 找到实际持有 framebuffer 的输出，即使该输出已断开，也向它提交禁用状态并等待完成后释放旧 backing。多个输出同时运行和无停用阶段的热插拔切换不在本轮实现范围内。
 
 ### 3.1 迁移与回滚
 
@@ -124,3 +124,9 @@ QMP `screendump` 对 `egl-headless` 返回 `no surface`，因此画面由 VNC �
 ### 4.4 2026-09-28 显示事件积压修复
 
 VirtIO 的同步显示提交原先每次都向无人消费的队列加入 `CommitCompleted`，连续输出变化也会累积重复通知。增强现有协议测试后，`cargo test -p virtio-gpu --features rdif --lib` 在旧实现上有 2/5 个测试按预期失败；修复后同一命令 5/5 通过。`cargo fmt`、`git diff --check` 和 `cargo xtask clippy --package virtio-gpu` 均通过，后者覆盖 base 与 `rdif` 两个功能组合。本次未运行 QEMU 或全量 Clippy；任务工具的 std 测试清单未包含 `virtio-gpu`，故使用驱动自身的定向宿主测试。
+
+### 4.5 2026-09-28 断开输出的 scanout 清理
+
+Starry 在停用时查询驱动的 `current_state`，向仍持有 framebuffer 的输出提交禁用状态；原输出断开而另一输出连上时，`select_output_for_present` 拒绝直接切换，防止旧 backing 在设备解绑前释放。现有 Starry 单元测试加入这两种状态后，`cargo xtask test --since d3536651c219946371e253237a429362c46508c4` 在旧逻辑上分别得到 13/14 个软件包通过，`starry-kernel` 的新增断言失败；修复后同一命令 14/14 通过。`cargo fmt`、`git diff --check`、`cargo xtask clippy --package rdif-display` 和 `cargo clippy --no-deps -p starry-kernel --no-default-features -- -D warnings` 均通过。后者按单一功能组合检查，避免 `xtask` 的 Starry 多配置矩阵。本地按要求未运行 QEMU 或全量 Clippy；断开后的实际显示硬件行为仍需设备测试验证。
+
+分支随后无冲突地变基到 `dev` 的 `ce1740fcad`，纳入 SG2002 网络用例的 curl 打包修复及项目验证范围说明。`git range-diff` 显示 GPU 栈的七个提交补丁保持不变；变基后的运行证据以新提交的 CI 终态为准。

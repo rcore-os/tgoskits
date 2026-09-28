@@ -10,7 +10,8 @@ pub trait DisplayController: DriverGeneric {
 
     /// Validate the complete state without changing the current scanout,
     /// allocating a hardware resource or submitting a command. This is the
-    /// `TEST_ONLY` path.
+    /// `TEST_ONLY` path. A state with no framebuffer must remain valid after
+    /// its output disconnects, so a former scanout can always be disabled.
     fn check(&self, state: &DisplayState) -> Result<(), DisplayError>;
 
     /// Revalidate `state` under this exclusive access before touching hardware.
