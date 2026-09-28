@@ -22,6 +22,7 @@ CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 STARRY_APPS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/starry-apps.yml"
 AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
 BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
+DOCS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/docs.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
@@ -232,6 +233,7 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
             ".github/workflows/starry-apps.yml",
             ".github/workflows/axvisor-nightly.yml",
             ".github/workflows/benchmarks.yml",
+            ".github/workflows/docs.yml",
         ):
             self.assertIn(workflow_path, paths)
 
@@ -275,31 +277,140 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         board_job = mapping_block(jobs, "starry_board_performance", 2)
         self.assertIn("max_parallel: 1", board_job)
 
-        axvisor_history = mapping_block(jobs, "perf-history-axvisor", 2)
-        starry_history = mapping_block(jobs, "perf-history-starry", 2)
-        self.assertIn("axvisor-nightly-performance-*", axvisor_history)
-        self.assertIn("--source axvisor", axvisor_history)
-        self.assertIn("needs.plan.result == 'success'", axvisor_history)
+        self.assertNotIn("perf-data", workflow)
+        self.assertNotIn("perf-history-axvisor", workflow)
+        self.assertNotIn("perf-history-starry", workflow)
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("push --force", workflow)
+        self.assertNotIn("git commit-tree", workflow)
+        self.assertNotIn("git mktree", workflow)
+
+        benchmark_updates = mapping_block(jobs, "benchmark-updates", 2)
+        self.assertTrue(benchmark_updates)
+        self.assertIn("axvisor-nightly-performance-*", benchmark_updates)
+        self.assertIn("continue-on-error: true", benchmark_updates)
+        self.assertIn("needs.plan.result == 'success'", benchmark_updates)
         self.assertNotIn(
             "needs.axvisor_performance.result == 'success'",
-            axvisor_history,
+            benchmark_updates,
         )
-        self.assertIn("continue-on-error: true", axvisor_history)
-        self.assertNotIn("needs.starry_performance", axvisor_history)
-        self.assertIn("starry-apps-nightly-performance-*", starry_history)
-        self.assertIn("--source starry", starry_history)
-        self.assertIn("needs.starry_performance.result == 'success'", starry_history)
+        self.assertIn("starry-apps-nightly-performance-*", benchmark_updates)
+        self.assertIn(
+            "needs.starry_performance.result == 'success'",
+            benchmark_updates,
+        )
         self.assertIn(
             "needs.starry_board_performance.result == 'success'",
-            starry_history,
+            benchmark_updates,
         )
-        self.assertNotIn("needs.axvisor_performance", starry_history)
-        self.assertIn("perf-history-axvisor", starry_history)
-        self.assertIn("always()", starry_history)
-        for history in (axvisor_history, starry_history):
-            self.assertIn("group: perf-data-publish", history)
-            self.assertIn("cancel-in-progress: false", history)
-            self.assertIn("gh workflow run docs.yml --ref dev", history)
+        self.assertIn("name: benchmark-updates", benchmark_updates)
+        self.assertIn("retention-days: 30", benchmark_updates)
+        self.assertIn(
+            "steps.updates.outputs.has_updates == 'true'",
+            benchmark_updates,
+        )
+        self.assertIn("gh workflow run docs.yml --ref dev", benchmark_updates)
+        for dispatch_input in (
+            "benchmark_run_id",
+            "benchmark_revision",
+            "benchmark_date",
+        ):
+            self.assertIn(f"-f {dispatch_input}=", benchmark_updates)
+
+    def test_docs_workflow_is_the_only_published_benchmark_writer(self) -> None:
+        workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("push --force", workflow)
+
+        triggers = mapping_block(workflow, "on", 0)
+        dispatch = mapping_block(triggers, "workflow_dispatch", 2)
+        for input_name in (
+            "benchmark_run_id",
+            "benchmark_revision",
+            "benchmark_date",
+        ):
+            self.assertIn(f"{input_name}:", dispatch)
+
+        permissions = mapping_block(workflow, "permissions", 0)
+        self.assertIn("actions: read", permissions)
+        self.assertIn("contents: read", permissions)
+        self.assertIn("pages: write", permissions)
+        self.assertIn("id-token: write", permissions)
+
+        concurrency = mapping_block(workflow, "concurrency", 0)
+        self.assertIn("group: docs-pages", concurrency)
+        self.assertIn("queue: max", concurrency)
+        self.assertNotIn("cancel-in-progress", concurrency)
+
+        jobs = mapping_block(workflow, "jobs", 0)
+        build = mapping_block(jobs, "build", 2)
+        pages = named_step_block(build, "Set up Pages")
+        self.assertIn("id: pages", pages)
+        self.assertIn("uses: actions/configure-pages@v6", pages)
+
+        download = named_step_block(build, "Download benchmark updates")
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch'",
+            download,
+        )
+        self.assertIn("inputs.benchmark_run_id != ''", download)
+        self.assertIn("name: benchmark-updates", download)
+        self.assertIn("run-id: ${{ inputs.benchmark_run_id }}", download)
+        self.assertIn("github-token: ${{ github.token }}", download)
+
+        prepare = named_step_block(build, "Prepare performance dashboard")
+        for fragment in (
+            "PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}",
+            "--header 'Cache-Control: no-cache'",
+            "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            '"${history_status}" != "200"',
+            '"${history_status}" = "200"',
+            '"${index_status}" = "200"',
+            '"${history_status}" = "404"',
+            '"${index_status}" = "404"',
+            "git fetch --depth=1 origin perf-data",
+            "git show FETCH_HEAD:history.json",
+            "git show FETCH_HEAD:index.html",
+            "::error::Failed to fetch",
+            "::error::Published benchmark history is empty",
+            "::error::Unexpected published dashboard state",
+            "::error::Benchmark updates require published or legacy dashboard data",
+            "::error::Legacy performance dashboard is incomplete",
+            "::error::Legacy performance dashboard is unavailable",
+            "Bootstrapping benchmark history from the frozen legacy branch",
+            "Bootstrapped performance dashboard from the frozen legacy branch",
+            '--source "${source}"',
+            "docs/build/benchmark/index.html",
+            "docs/build/benchmark/history.json",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, prepare)
+        self.assertNotIn("--no-cache", prepare)
+        self.assertNotIn("dashboards are unavailable; skipping", prepare)
+        self.assertEqual(workflow.count("perf-data"), 1)
+        legacy_index = prepare.index("git fetch --depth=1 origin perf-data")
+        self.assertLess(
+            prepare.index(
+                'if [ "${history_status}" = "404" ] && [ "${index_status}" = "404" ]; then'
+            ),
+            legacy_index,
+        )
+        self.assertLess(
+            legacy_index,
+            prepare.index('if [ -n "${BENCHMARK_RUN_ID}" ]; then'),
+        )
+        self.assertLess(
+            build.index("- name: Set up Pages"),
+            build.index("- name: Prepare performance dashboard"),
+        )
+        self.assertLess(
+            build.index("- name: Prepare performance dashboard"),
+            build.index("- name: Upload Pages artifact"),
+        )
+
+        deploy = mapping_block(jobs, "deploy", 2)
+        self.assertIn("name: github-pages", deploy)
+        self.assertIn("uses: actions/deploy-pages@v5", deploy)
 
     def test_daily_workflows_do_not_own_benchmark_execution(self) -> None:
         starry_apps = STARRY_APPS_WORKFLOW.read_text(encoding="utf-8")

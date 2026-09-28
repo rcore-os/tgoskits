@@ -174,175 +174,116 @@ jobs:
           test "$STARRY_PERFORMANCE_RESULT" = success
           test "$STARRY_BOARD_PERFORMANCE_RESULT" = success
 
-  perf-history-axvisor:
-    name: AxVisor Performance History
+  benchmark-updates:
+    name: Prepare Benchmark Updates
     if: >-
       always() &&
       github.repository == 'rcore-os/tgoskits' &&
       needs.plan.result == 'success'
-    needs: [plan, axvisor_performance]
+    needs:
+      - plan
+      - axvisor_performance
+      - starry_performance
+      - starry_board_performance
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       actions: write
-    concurrency:
-      group: perf-data-publish
-      cancel-in-progress: false
     steps:
       - name: Checkout tested revision
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.plan.outputs.revision }}
 
-      - name: Download performance reports
+      - name: Download AxVisor performance reports
         uses: actions/download-artifact@v8
         with:
           pattern: axvisor-nightly-performance-*
-          path: ${{ runner.temp }}/performance-reports
+          path: ${{ runner.temp }}/axvisor-performance-reports
           merge-multiple: true
         continue-on-error: true
 
-      - name: Collect benchmark data
-        id: collect
-        run: |
-          set -euo pipefail
-          python3 - "$RUNNER_TEMP" <<'EOF'
-          import json, pathlib, sys
-          reports = pathlib.Path(sys.argv[1]) / "performance-reports"
-          metrics = [
-              metric
-              for path in sorted(reports.glob("*.json"))
-              for metric in json.loads(path.read_text(encoding="utf-8"))
-          ]
-          output = pathlib.Path(sys.argv[1]) / "bench.json"
-          output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-          print(f"collected {len(metrics)} metrics")
-          EOF
-          count=$(python3 -c \
-            "import json, os; print(len(json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'bench.json')))))")
-          echo "metrics=${count}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish dashboard branch
-        if: steps.collect.outputs.metrics != '0'
-        env:
-          NIGHTLY_REVISION: ${{ needs.plan.outputs.revision }}
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions[bot]
-          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-        run: |
-          set -euo pipefail
-          # perf-data is a data-only branch; docs.yml merges it into the site,
-          # so this job never touches the Pages deployment itself.
-          dashboard="${RUNNER_TEMP}/dashboard"
-          mkdir -p "${dashboard}"
-          if git fetch --depth=1 origin perf-data 2>/dev/null; then
-            git show FETCH_HEAD:history.json > "${dashboard}/history.json"
-          fi
-          python3 scripts/test/ci_perf_dashboard.py \
-            --metrics "${RUNNER_TEMP}/bench.json" \
-            --history "${dashboard}/history.json" \
-            --source axvisor \
-            --date "$(date -u +%F)" \
-            --revision "${NIGHTLY_REVISION}" \
-            --title "Nightly Performance Benchmarks" \
-            --window 10 \
-            --output "${dashboard}/index.html"
-          html_blob=$(git hash-object -w "${dashboard}/index.html")
-          json_blob=$(git hash-object -w "${dashboard}/history.json")
-          tree=$(printf '100644 blob %s\tindex.html\n100644 blob %s\thistory.json\n' \
-            "${html_blob}" "${json_blob}" | git mktree)
-          commit=$(git commit-tree "${tree}" -m "chore: update perf dashboard for $(date -u +%F)")
-          git push --force origin "${commit}:refs/heads/perf-data"
-
-      - name: Refresh docs pages
-        if: steps.collect.outputs.metrics != '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run docs.yml --ref dev
-
-  perf-history-starry:
-    name: Starry Performance History
-    if: >-
-      always() &&
-      github.repository == 'rcore-os/tgoskits' &&
-      needs.plan.result == 'success' &&
-      needs.starry_performance.result == 'success' &&
-      needs.starry_board_performance.result == 'success'
-    needs: [plan, starry_performance, starry_board_performance, perf-history-axvisor]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: write
-    concurrency:
-      group: perf-data-publish
-      cancel-in-progress: false
-    steps:
-      - name: Checkout tested revision
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.plan.outputs.revision }}
-
-      - name: Download performance reports
+      - name: Download Starry performance reports
+        if: >-
+          needs.starry_performance.result == 'success' &&
+          needs.starry_board_performance.result == 'success'
         uses: actions/download-artifact@v8
         with:
           pattern: starry-apps-nightly-performance-*
-          path: ${{ runner.temp }}/performance-reports
+          path: ${{ runner.temp }}/starry-performance-reports
           merge-multiple: true
+        continue-on-error: true
 
-      - name: Collect benchmark data
-        id: collect
+      - name: Collect benchmark updates
+        id: updates
+        env:
+          AXVISOR_REPORTS: ${{ runner.temp }}/axvisor-performance-reports
+          STARRY_REPORTS: ${{ runner.temp }}/starry-performance-reports
+          INCLUDE_STARRY: ${{ needs.starry_performance.result == 'success' && needs.starry_board_performance.result == 'success' }}
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP" <<'EOF'
+          output="${RUNNER_TEMP}/benchmark-updates"
+          rm -rf "${output}"
+          mkdir -p "${output}"
+
+          collect_reports() {
+            local reports="$1"
+            local output_file="$2"
+            if [ ! -d "${reports}" ]; then
+              echo 0
+              return 0
+            fi
+            python3 - "${reports}" "${output_file}" <<'EOF'
           import json, pathlib, sys
-          reports = pathlib.Path(sys.argv[1]) / "performance-reports"
+          reports = pathlib.Path(sys.argv[1])
           metrics = [
               metric
               for path in sorted(reports.glob("*.json"))
               for metric in json.loads(path.read_text(encoding="utf-8"))
           ]
-          output = pathlib.Path(sys.argv[1]) / "bench.json"
-          output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-          print(f"collected {len(metrics)} metrics")
+          if metrics:
+              pathlib.Path(sys.argv[2]).write_text(
+                  json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
+              )
+          print(len(metrics))
           EOF
-          count=$(python3 -c \
-            "import json, os; print(len(json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'bench.json')))))")
-          echo "metrics=${count}" >> "$GITHUB_OUTPUT"
+          }
 
-      - name: Publish dashboard branch
-        if: steps.collect.outputs.metrics != '0'
-        env:
-          NIGHTLY_REVISION: ${{ needs.plan.outputs.revision }}
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions[bot]
-          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-        run: |
-          set -euo pipefail
-          dashboard="${RUNNER_TEMP}/dashboard"
-          mkdir -p "${dashboard}"
-          if git fetch --depth=1 origin perf-data 2>/dev/null; then
-            git show FETCH_HEAD:history.json > "${dashboard}/history.json"
+          axvisor_count="$(collect_reports "${AXVISOR_REPORTS}" "${output}/axvisor.json")"
+          echo "AxVisor metrics: ${axvisor_count}"
+
+          starry_count=0
+          if [ "${INCLUDE_STARRY}" = "true" ]; then
+            starry_count="$(collect_reports "${STARRY_REPORTS}" "${output}/starry.json")"
           fi
-          python3 scripts/test/ci_perf_dashboard.py \
-            --metrics "${RUNNER_TEMP}/bench.json" \
-            --history "${dashboard}/history.json" \
-            --source starry \
-            --date "$(date -u +%F)" \
-            --revision "${NIGHTLY_REVISION}" \
-            --title "Nightly Performance Benchmarks" \
-            --window 10 \
-            --output "${dashboard}/index.html"
-          html_blob=$(git hash-object -w "${dashboard}/index.html")
-          json_blob=$(git hash-object -w "${dashboard}/history.json")
-          tree=$(printf '100644 blob %s\tindex.html\n100644 blob %s\thistory.json\n' \
-            "${html_blob}" "${json_blob}" | git mktree)
-          commit=$(git commit-tree "${tree}" -m "chore: update Starry perf dashboard for $(date -u +%F)")
-          git push --force origin "${commit}:refs/heads/perf-data"
+          echo "Starry metrics: ${starry_count}"
 
-      - name: Refresh docs pages
-        if: steps.collect.outputs.metrics != '0'
+          if [ "${axvisor_count}" -gt 0 ] || [ "${starry_count}" -gt 0 ]; then
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload benchmark updates
+        if: steps.updates.outputs.has_updates == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-updates
+          path: ${{ runner.temp }}/benchmark-updates/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Dispatch docs update
+        if: steps.updates.outputs.has_updates == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run docs.yml --ref dev
+          BENCHMARK_RUN_ID: ${{ github.run_id }}
+          BENCHMARK_REVISION: ${{ needs.plan.outputs.revision }}
+          BENCHMARK_DATE: ${{ steps.updates.outputs.date }}
+        run: |
+          set -euo pipefail
+          gh workflow run docs.yml --ref dev \
+            -f benchmark_run_id="${BENCHMARK_RUN_ID}" \
+            -f benchmark_revision="${BENCHMARK_REVISION}" \
+            -f benchmark_date="${BENCHMARK_DATE}"

@@ -5,5 +5,5 @@ features = [
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
-  "benchmarks/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/arceos-task-switch-bench.toml",
+  "benchmarks/axvisor/board-orangepi-5-plus/task-switch-overhead/arceos-task-switch-bench.toml",
 ]
