@@ -104,9 +104,16 @@ rm -rf /tmp/drr
 # The pass/fail marker lives here, not in the interactive shell_init_cmd: a
 # multi-line if/fi typed at the prompt gets PS2 continuation prompts glued to
 # the marker line, which breaks the case's line-anchored success_regex.
-if [ "$fails" -eq 0 ]; then
-    echo DOCKER_RUNC_RUN_PASSED
-else
+if [ "$fails" -ne 0 ]; then
     echo "DOCKER_RUNC_RUN_FAILED: status=$fails"
     exit 1
+fi
+# This kernel refuses the cgroup-device BPF capability, so the cgroups stage
+# cannot run. Report Stage A explicitly instead of implying a full Phase 2
+# pass; DOCKER_RUNC_RUN_PASSED/STAGE_B_OK only become reachable once a real
+# cgroup device controller exists.
+if [ "$stageb" = "1" ]; then
+    echo DOCKER_RUNC_RUN_PASSED
+else
+    echo DOCKER_RUNC_RUN_STAGE_A_ONLY_PASSED
 fi

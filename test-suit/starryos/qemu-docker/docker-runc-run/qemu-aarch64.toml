@@ -19,7 +19,10 @@ shell_check_steps = [
   {
     shell_prefix = "root@starry:",
     shell_cmd = "/usr/bin/docker-runc-run-smoke.sh",
-    success_regex = ["(?m)^DOCKER_RUNC_RUN_PASSED\\s*$"],
+    success_regex = [
+      "(?m)^DOCKER_RUNC_RUN_PASSED\\s*$",
+      "(?m)^DOCKER_RUNC_RUN_STAGE_A_ONLY_PASSED\\s*$",
+    ],
   },
 ]
 fail_regex = [

@@ -862,6 +862,14 @@ impl Drop for Pipe {
 }
 
 impl Pipe {
+    /// Sets the anonymous pipe inode's owner. Linux `get_pipe_inode` assigns
+    /// the creating task's fsuid/fsgid; both ends share one `Shared`, so this
+    /// identity is visible through `fstat` on either end.
+    pub(crate) fn set_inode_owner(&self, uid: u32, gid: u32) {
+        self.shared.inode_uid.store(uid, Ordering::Release);
+        self.shared.inode_gid.store(gid, Ordering::Release);
+    }
+
     pub fn new() -> (Pipe, Pipe) {
         let mut state = PipeState::empty();
         state.add_endpoint(PipeAccess::ReadWrite);

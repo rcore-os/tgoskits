@@ -96,15 +96,16 @@
 - [x] 验证 `/proc/self/ns/*` 可读、`unshare` / `setns` 回退、`mount -t tmpfs`、`/dev/ptmx`、AF_UNIX `SCM_RIGHTS` 传递。
 - [x] 配套内核修复：`/proc/filesystems` 补齐 ramfs/devpts/cgroup2/overlay、cgroup2 经 `fsopen` 挂载、net/ipc ns id 从 1 起始、axbuild 为 runtime-only rootfs 用例提取受管 Alpine 工具链 sysroot。
 
-验收：`cargo xtask starry test qemu --arch aarch64 -c qemu/docker-guest-env` 全绿。
+验收：`cargo xtask starry test qemu --arch aarch64 -c qemu-docker/docker-guest-env` 全绿。
 
-### Phase 2 — runc 单容器（已完成：`qemu/docker-runc-run`）
+### Phase 2 — runc 单容器（已完成 Stage A：`qemu-docker/docker-runc-run`）
 
 - [x] 静态部署官方 runc 1.1.15（构建时下载 + sha256 钉死）+ busybox OCI bundle（空 capabilities、pid/mount/uts/ipc ns、仅 /proc 挂载）。
 - [x] 补齐 runc 依赖的内核缺口：starttime 渲染、`oom_score_adj` NUL 结尾写入、memfd 0777、匿名 fd `fchown/fchmod`、`/proc/<pid>/exe` magic link 直连后备文件、`bpf(2)` cgroup-device 命令显式拒绝（`EOPNOTSUPP`，不伪造设备策略生效）、`pivot_root(".", ".")`、`openat2` RESOLVE_* 约束强制（见 §2 表格）。
-- [x] `runc run` busybox 容器：`echo`、退出码传播、uts/pid/mount 隔离生效；Stage B 启用 cgroups 后 `pids.max=2` 超限 `fork` 返回 EAGAIN 可观察。
+- [x] `runc run` busybox 容器（Stage A，rootless）：`echo`、退出码传播、uts/pid/mount 隔离生效。
+- [ ] Stage B（cgroups 启用后 `pids.max=2` 超限 `fork` 返回 EAGAIN）：本内核不实现 cgroup 设备控制器，非 rootless runc 的 cgroup v2 设备策略初始化失败，因此 Stage B 暂不可执行、由用例显式跳过；待实现真实设备控制器后再作为验收项。
 
-验收：`cargo xtask starry test qemu --arch aarch64 -c qemu/docker-runc-run` 全绿（`DOCKER_RUNC_RUN_PASSED` + `DOCKER_RUNC_RUN_STAGE_B_OK`）。
+验收：`cargo xtask starry test qemu --arch aarch64 -c qemu-docker/docker-runc-run` 全绿（Stage A；成功标记 `DOCKER_RUNC_RUN_STAGE_A_ONLY_PASSED`，Stage B 跳过）。
 
 ### Phase 3 — containerd（ctr 验证）
 
@@ -129,9 +130,9 @@
 | 内核 | amd64 ELF exec | 返回 ENOEXEC，无崩溃 |
 | 内核 | 无 PT_PHDR ELF exec | 正常加载，无 panic |
 | 内核 | `unshare`/`setns` 全部 6 类 ns | 语义与 Linux 一致，EPERM/EINVAL 路径正确 |
-| 内核 | cgroup pids 限制 | `pids.max` 超限 fork 返回 EAGAIN，计数平衡 |
+| 内核 | cgroup pids 限制 | Stage B 暂不可执行（设备控制器未实现，非 rootless runc cgroup 设备策略初始化失败） |
 | 内核 | seccomp FILTER | 白名单外 syscall 返回 `EPERM`/`SIGSYS` |
-| runc | busybox `runc run`（`qemu/docker-runc-run`） | init 起停正确，ns 隔离可见，pids.max EAGAIN 可观察 |
+| runc | busybox `runc run`（`qemu-docker/docker-runc-run`） | Stage A：init 起停正确，ns 隔离可见；Stage B（pids.max EAGAIN）因设备控制器未实现而跳过 |
 | runc | 内核语义探针（starttime/oom NUL/memfd/pipe fchown/bpf 设备控制器拒绝） | `docker-runc-run-probe` 全部断言通过 |
 | 内核 | openat2 RESOLVE_*（`qemu/system/bugfix-openat2-resolve-constraints`） | 合规路径成功，越界 EXDEV/ELOOP，错误优先级与 Linux 一致 |
 | containerd | `ctr run` | shim 生命周期完整 |
