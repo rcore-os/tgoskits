@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(core_io, core_io_borrowed_buf)]
 #![feature(likely_unlikely)]
 #![feature(allocator_api)]
 #![allow(missing_docs)]

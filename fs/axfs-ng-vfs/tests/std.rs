@@ -11,6 +11,8 @@ use core::{
     time::Duration,
 };
 
+use ax_runtime as _;
+
 extern crate alloc;
 
 #[test]
@@ -99,11 +101,26 @@ fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
 
 #[test]
 fn axfs_ng_vfs_type_rules_hold() {
-    use axfs_ng_vfs::{NodeType, TypeMap};
+    use axfs_ng_vfs::{DeviceId, NodePermission, NodeType, TypeMap};
+    use axpoll::IoEvents;
 
     assert_eq!(NodeType::from(0o10), NodeType::RegularFile);
     assert_eq!(NodeType::from(0o12), NodeType::Symlink);
     assert_eq!(NodeType::from(0xff), NodeType::Unknown);
+    assert_eq!(NodePermission::default().bits(), 0o666);
+    assert!(
+        (NodePermission::OWNER_READ | NodePermission::OWNER_WRITE)
+            .contains(NodePermission::OWNER_WRITE)
+    );
+
+    let device = DeviceId::new(0x12345, 0x6789ab);
+    assert_eq!(device.major(), 0x12345);
+    assert_eq!(device.minor(), 0x6789ab);
+
+    let events = IoEvents::IN | IoEvents::OUT;
+    assert!(events.contains(IoEvents::IN));
+    assert!(!events.contains(IoEvents::ERR));
+
     let mut type_map = TypeMap::new();
     assert!(type_map.get::<u32>().is_none());
     type_map.insert(42_u32);
@@ -574,6 +591,12 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     );
     let dir = root.as_dir().unwrap();
     let ops = dir.downcast::<DirTestDir>().unwrap();
+
+    // Existing backends do not opt into negative caching implicitly.
+    let before = ops.lookup_count.load(Ordering::Acquire);
+    assert!(matches!(dir.lookup("missing"), Err(VfsError::NotFound)));
+    assert!(matches!(dir.lookup("missing"), Err(VfsError::NotFound)));
+    assert_eq!(ops.lookup_count.load(Ordering::Acquire), before + 2);
 
     assert!(root.is_dir());
     assert!(root.is_root_of_mount());

@@ -90,6 +90,12 @@ fn release_data_frame(paddr: PhysAddr, align: usize) {
 }
 
 impl FrameLease {
+    /// Looks up the provider capability retained by this allocation, including
+    /// subleases. It grants no ownership beyond the lifetime of this lease.
+    pub(crate) fn provider<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.allocation._anchor.as_ref()?.downcast_ref()
+    }
+
     pub fn new(paddr: PhysAddr) -> Self {
         Self {
             paddr,

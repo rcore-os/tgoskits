@@ -27,6 +27,11 @@ thiserror.workspace = true
 [dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }
 
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Host tests link the workspace runtime's synchronization provider. The
+# path-only dependency is omitted on publish to avoid a release-order cycle.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
+
 [[test]]
 name = "std"
 path = "tests/std.rs"

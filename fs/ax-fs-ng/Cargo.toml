@@ -13,6 +13,7 @@ fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = ["ax-sync/sleep"]
 lockdep = ["axfs-ng-vfs/lockdep"]
+profile = ["ax-sync/profile"]
 
 [dependencies]
 atomic-waker.workspace = true
