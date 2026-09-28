@@ -321,7 +321,7 @@ pub fn with_gpu<R>(access: impl FnOnce(&mut dyn GpuDevice) -> R) -> Result<R, Gp
         return Err(GpuError::NotAvailable);
     }
     let mut runtime = MAIN_GPU.lock();
-    service_pending(&mut runtime)?;
+    service_pending_for_access(&mut runtime);
     Ok(access(runtime.device.gpu()))
 }
 
@@ -332,6 +332,20 @@ pub fn with_display<R>(access: impl FnOnce(&mut dyn GpuDisplay) -> R) -> Result<
     }
     let mut runtime = MAIN_GPU.lock();
     service_pending(&mut runtime)?;
+    let device = runtime.device.display().ok_or(DisplayError::NotAvailable)?;
+    Ok(access(device))
+}
+
+/// Allows a display cleanup operation while an output-change query is pending.
+/// Callers must not use stale output information to select a new scanout.
+pub fn with_display_for_cleanup<R>(
+    access: impl FnOnce(&mut dyn GpuDisplay) -> R,
+) -> Result<R, DisplayError> {
+    if !has_gpu() {
+        return Err(DisplayError::NotAvailable);
+    }
+    let mut runtime = MAIN_GPU.lock();
+    service_pending_for_access(&mut runtime);
     let device = runtime.device.display().ok_or(DisplayError::NotAvailable)?;
     Ok(access(device))
 }
@@ -376,6 +390,14 @@ pub fn restore_default_scanout() -> Result<(), DisplayError> {
         .ok_or(DisplayError::NotAvailable)?
         .commit(&state)?;
     Ok(())
+}
+
+fn service_pending_for_access(runtime: &mut GpuRuntime) {
+    // A display event query may fail while resource cleanup still needs the
+    // device. Keep the event pending for the IRQ worker without blocking access.
+    if let Err(error) = service_pending(runtime) {
+        log::debug!("GPU event service deferred: {error}");
+    }
 }
 
 fn service_pending(runtime: &mut GpuRuntime) -> Result<(), GpuError> {

@@ -136,39 +136,45 @@ struct Host {
     fail_set_scanout: bool,
     fail_flush: bool,
     fail_detach: bool,
+    fail_ctx_detach: bool,
+    omit_ctx_destroy_fence: bool,
+    unfenced_commands: Vec<u32>,
 }
 
 impl Host {
+    fn response(&self, request: &[u8], command: u32, len: usize) -> Vec<u8> {
+        let mut reply = vec![0; len];
+        set_word(&mut reply, 0, command);
+        set_word(&mut reply, 4, word(request, 4));
+        reply[8..16].copy_from_slice(&request[8..16]);
+        reply
+    }
+
     fn reply(&mut self, request: &[u8]) -> Vec<u8> {
         let command = word(request, 0);
         self.commands.push(command);
+        if word(request, 4) & 1 == 0 {
+            self.unfenced_commands.push(command);
+        }
         if command == Command::RESOURCE_CREATE_2D.0 {
             self.created_formats.push(word(request, 28));
             if self.fail_create_with_invalid_response {
                 self.fail_create_with_invalid_response = false;
                 self.reject_unref = true;
-                let mut reply = vec![0; 24];
-                set_word(&mut reply, 0, 0xdead); // Ambiguous response after CREATE.
-                return reply;
+                return self.response(request, 0xdead, 24); // Ambiguous response after CREATE.
             }
             if self.fail_create {
                 self.fail_create = false;
                 self.reject_unref = true;
-                let mut reply = vec![0; 24];
-                set_word(&mut reply, 0, 0x1201); // ERR_OUT_OF_MEMORY
-                return reply;
+                return self.response(request, 0x1201, 24); // ERR_OUT_OF_MEMORY
             }
         }
         if command == Command::RESOURCE_UNREF.0 && self.reject_unref {
-            let mut reply = vec![0; 24];
-            set_word(&mut reply, 0, 0x1203); // ERR_INVALID_RESOURCE_ID
-            return reply;
+            return self.response(request, 0x1203, 24); // ERR_INVALID_RESOURCE_ID
         }
         if command == Command::GET_DISPLAY_INFO.0 && self.fail_display_info {
             self.fail_display_info = false;
-            let mut reply = vec![0; 24];
-            set_word(&mut reply, 0, 0x1200); // ERR_UNSPEC
-            return reply;
+            return self.response(request, 0x1200, 24); // ERR_UNSPEC
         }
         let failed = if command == Command::SET_SCANOUT.0 && self.fail_set_scanout {
             self.fail_set_scanout = false;
@@ -179,17 +185,21 @@ impl Host {
         } else if command == Command::RESOURCE_DETACH_BACKING.0 && self.fail_detach {
             self.fail_detach = false;
             true
+        } else if command == Command::CTX_DETACH_RESOURCE.0 && self.fail_ctx_detach {
+            self.fail_ctx_detach = false;
+            true
         } else {
             false
         };
         if failed {
-            let mut reply = vec![0; 24];
-            set_word(&mut reply, 0, 0x1200); // ERR_UNSPEC
-            return reply;
+            return self.response(request, 0x1200, 24); // ERR_UNSPEC
         }
         if command == Command::GET_DISPLAY_INFO.0 {
-            let mut reply = vec![0; size_of::<RespDisplayInfo>()];
-            set_word(&mut reply, 0, Command::OK_DISPLAY_INFO.0);
+            let mut reply = self.response(
+                request,
+                Command::OK_DISPLAY_INFO.0,
+                size_of::<RespDisplayInfo>(),
+            );
             set_word(&mut reply, 24 + 8, self.output_width.max(WIDTH));
             set_word(&mut reply, 24 + 12, HEIGHT);
             set_word(&mut reply, 24 + 16, 1);
@@ -198,8 +208,11 @@ impl Host {
         if command == Command::SET_SCANOUT.0 {
             self.scanout = word(request, 44);
         }
-        let mut reply = vec![0; 24];
-        set_word(&mut reply, 0, Command::OK_NODATA.0);
+        let mut reply = self.response(request, Command::OK_NODATA.0, 24);
+        if command == Command::CTX_DESTROY.0 && self.omit_ctx_destroy_fence {
+            self.omit_ctx_destroy_fence = false;
+            set_word(&mut reply, 4, 0);
+        }
         reply
     }
 
@@ -360,6 +373,107 @@ fn normal_drop_confirms_reset_before_releasing_queue() {
     let host = host.lock().unwrap();
     assert!(host.reset_readback);
     assert_eq!(host.queue.descriptors, 0);
+}
+
+#[test]
+fn context_close_releases_attachments_after_detach_rejection() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1,
+        ..Host::default()
+    }));
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let mut device = VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap();
+    let backing = TestBacking::new();
+    let weak = Arc::downgrade(&backing);
+    let resource = device
+        .create_resource_3d(
+            Resource3d {
+                target: 2,
+                format: 2,
+                bind: 0,
+                width: WIDTH,
+                height: HEIGHT,
+                depth: 1,
+                array_size: 1,
+                last_level: 0,
+                samples: 0,
+                flags: 0,
+            },
+            Some(backing.clone()),
+        )
+        .unwrap();
+    drop(backing);
+    let context = device.create_context("close", 0).unwrap();
+    device.attach_resource(context, resource).unwrap();
+
+    host.lock().unwrap().fail_ctx_detach = true;
+    assert_eq!(device.detach_resource(context, resource), Err(GpuError::Io));
+    device.destroy_context(context).unwrap();
+    device.release_buffer(resource).unwrap();
+    assert!(weak.upgrade().is_none());
+    let (destroyed, unreferenced, unfenced) = {
+        let host = host.lock().unwrap();
+        (
+            host.commands.contains(&Command::CTX_DESTROY.0),
+            host.commands.contains(&Command::RESOURCE_UNREF.0),
+            host.unfenced_commands.clone(),
+        )
+    };
+    assert!(destroyed);
+    assert!(unreferenced);
+    assert!(unfenced.is_empty(), "unfenced commands: {unfenced:?}");
+}
+
+#[test]
+fn failed_context_destroy_resets_before_releasing_backing() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1,
+        ..Host::default()
+    }));
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let mut device = VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap();
+    let backing = TestBacking::new();
+    let weak = Arc::downgrade(&backing);
+    let resource = device
+        .create_resource_3d(
+            Resource3d {
+                target: 2,
+                format: 2,
+                bind: 0,
+                width: WIDTH,
+                height: HEIGHT,
+                depth: 1,
+                array_size: 1,
+                last_level: 0,
+                samples: 0,
+                flags: 0,
+            },
+            Some(backing.clone()),
+        )
+        .unwrap();
+    drop(backing);
+    let context = device.create_context("close", 0).unwrap();
+    device.attach_resource(context, resource).unwrap();
+    device.detach_resource(context, resource).unwrap();
+
+    host.lock().unwrap().omit_ctx_destroy_fence = true;
+    assert_eq!(device.destroy_context(context), Err(GpuError::DeviceLost));
+    assert!(weak.upgrade().is_none());
+    let host = host.lock().unwrap();
+    assert!(host.status.is_empty());
+    assert!(host.reset_readback);
 }
 
 #[test]

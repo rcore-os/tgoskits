@@ -102,7 +102,7 @@ impl Command {
 }
 
 /// `VIRTIO_GPU_FLAG_FENCE`: signalled when the command stream has completed.
-const GPU_FLAG_FENCE: u32 = 1 << 0;
+pub(crate) const GPU_FLAG_FENCE: u32 = 1 << 0;
 
 /// The header every virtio-gpu control command and response starts with.
 #[repr(C)]
@@ -142,24 +142,20 @@ impl CtrlHeader {
         }
     }
 
-    /// A `SUBMIT_3D` header that asks the device for a fence signal.
-    pub(crate) const fn with_fence(hdr_type: Command, ctx_id: u32, fence_id: u64) -> Self {
-        Self {
-            hdr_type,
-            flags: GPU_FLAG_FENCE,
-            fence_id,
-            ctx_id,
-            ring_idx: 0,
-            _padding: [0; 3],
-        }
-    }
-
     /// Accepts the response only if its command code is the expected one.
     pub(crate) fn check_type(&self, expected: Command) -> Result<(), Error> {
         if self.hdr_type == expected {
             Ok(())
         } else if (0x1200..=0x12ff).contains(&self.hdr_type.0) {
             Err(Error::DeviceRejected(self.hdr_type.0))
+        } else {
+            Err(Error::InvalidResponse)
+        }
+    }
+
+    pub(crate) fn check_fence(&self, fence_id: u64) -> Result<(), Error> {
+        if self.flags & GPU_FLAG_FENCE != 0 && self.fence_id == fence_id {
+            Ok(())
         } else {
             Err(Error::InvalidResponse)
         }

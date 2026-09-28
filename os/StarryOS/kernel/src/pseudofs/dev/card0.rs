@@ -43,7 +43,7 @@ use core::{
 
 use ax_gpu::MappableBacking;
 use ax_gpu::rdif_display::{
-    DisplayController, DisplayError, DisplayState, Framebuffer as ScanoutFramebuffer,
+    DisplayController, DisplayError, DisplayState, Framebuffer as ScanoutFramebuffer, GpuDisplay,
     Mode as DisplayMode, OutputId, OutputInfo, OutputKind, Rect, ScanoutBuffer,
 };
 use ax_gpu::rdif_gpu::{
@@ -1783,15 +1783,16 @@ impl Drop for Card0File {
         drop(events);
         self.card.vblank_event.notify(usize::MAX);
 
-        if let Some(context) = self.context.lock().take() {
-            let _ = ax_gpu::with_gpu(|device| {
-                if let Some(virgl) = device.virgl() {
-                    for resource in context.attached_resources.values() {
-                        let _ = virgl.detach_resource(context.ctx_id, resource.device_handle);
-                    }
-                    let _ = virgl.destroy_context(context.ctx_id);
-                }
-            });
+        if let Some(context) = self.context.lock().take()
+            && let Err(error) = ax_gpu::with_gpu(|device| {
+                device
+                    .virgl()
+                    .ok_or(GpuError::Unsupported)?
+                    .destroy_context(context.ctx_id)
+            })
+            .and_then(core::convert::identity)
+        {
+            warn!("failed to destroy GPU context on close: {error}");
         }
 
         let _modeset = self.card.modeset_operation.lock();
@@ -1891,7 +1892,7 @@ impl Card0 {
         let retired = core::mem::take(&mut *self.retired_scanouts.lock());
         let mut pending = Vec::new();
         for (completion, pin) in retired {
-            let status = ax_gpu::with_display(|device| device.commit_status(completion));
+            let status = ax_gpu::with_display_for_cleanup(|device| device.commit_status(completion));
             if !matches!(status, Ok(Ok(CompletionStatus::Complete))) {
                 pending.push((completion, pin));
             }
@@ -1924,7 +1925,7 @@ impl Card0 {
     }
 
     fn clear_scanout(&self, test_only: bool) -> VfsResult<()> {
-        let completion = ax_gpu::with_display(|device| {
+        let clear = |device: &mut dyn GpuDisplay| {
             let output = scanout_output_to_clear(device)?;
             let state = DisplayState {
                 output,
@@ -1938,7 +1939,12 @@ impl Card0 {
             } else {
                 device.commit(&state).map(Some)
             }
-        })
+        };
+        let completion = if test_only {
+            ax_gpu::with_display(clear)
+        } else {
+            ax_gpu::with_display_for_cleanup(clear)
+        }
         .map_err(map_display_err)?
         .map_err(map_display_err)?;
         if let Some(completion) = completion {

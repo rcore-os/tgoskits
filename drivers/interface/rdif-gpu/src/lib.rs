@@ -336,6 +336,8 @@ pub trait VirglOps {
     fn command_context_id(&self, context: ContextHandle) -> Result<u32, GpuError>;
 
     fn create_context(&mut self, name: &str, context_init: u32) -> Result<ContextHandle, GpuError>;
+    /// Destroy the context and release its resource attachments. On an
+    /// ambiguous failure, retain backing until the device can no longer DMA.
     fn destroy_context(&mut self, context: ContextHandle) -> Result<(), GpuError>;
     fn create_resource_3d(
         &mut self,

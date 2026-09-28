@@ -28,6 +28,8 @@ GPU 负责资源、渲染上下文与命令完成，显示控制器负责把缓�
 
 同设备 PRIME 导入可能遇到资源已附着到当前渲染上下文的情况。导入 ioctl 的用户缓冲区回写失败时，只撤销此次新建的上下文附着；既有附着属于先前成功操作，必须保留。关闭文件描述符时，先从资源表移出其引用，释放模式设置锁后再析构可能触发驱动资源回收的对象。
 
+文件关闭时由设备驱动执行一次 `CTX_DESTROY`，成功后移除该上下文的全部资源附着；不逐个执行可能失败的 `CTX_DETACH_RESOURCE`。如果销毁响应不能证明设备已完成操作，驱动先复位并读回设备停止状态，再清理附着及 backing。[VirtIO 1.2 GPU 控制队列规范](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)允许设备在处理完成前交还响应，设置 `VIRTIO_GPU_FLAG_FENCE` 后则要求完成操作再返回，并回显 fence 标志和编号。协议核心统一请求并核对该完成 fence。
+
 ### 2.1 显示提交
 
 `DisplayController` 对一次提交先检查输出、模式、framebuffer、damage 和资源归属。`TEST_ONLY` 在检查后直接返回，不改变 scanout 或引用；正式提交先保留新资源，再由驱动执行硬件命令，成功后发布新状态并释放旧引用。中途失败仍保留旧 scanout，回滚尚未发布的新资源。同步完成令牌明确表示何时能释放旧 backing，不能以 ioctl 返回或固定延时推断 DMA 已结束。
@@ -39,6 +41,8 @@ GPU 负责资源、渲染上下文与命令完成，显示控制器负责把缓�
 VirtIO 的失败清理与正常析构写入设备状态 `0` 后，都必须读回 `0` 才把复位视为完成；随后解除队列，再放弃资源表中的 backing。这与本地 Linux PCI transport 的复位确认顺序一致。
 
 `GpuTransportCell` 只接受可跨处理器移动的 transport，并在 IRQ 端点确认时把状态锁存给任务端；任务端读取锁存状态后推进显示事件。`VirtIoGpuDevice::service_pending()` 在输出查询失败时保留显示变化标记，`gpu_irq_work` 对暂时性失败作有限次延迟重试。设备树探测的 DMA 一致性由 `dma_coherency_from_fdt()` 决定；没有设备树属性的静态设备使用平台默认值。当前运行时只为首台激活的 GPU 解析并注册 IRQ，其余已探测设备保留所有权但不启用中断。
+
+`axgpu::with_gpu` 在访问前尝试推进待处理事件。输出查询失败时，待处理位留给工作任务重试，但不阻断 GPU 资源解绑；否则文件关闭及析构路径可能无法到达驱动。普通 `with_display` 和默认 scanout 恢复仍向调用方返回查询错误，避免根据过时的输出信息提交新画面。Starry 仅在停用旧 scanout 和查询旧提交完成状态时使用 `with_display_for_cleanup` 容忍该错误。工作任务仍通过 `service_irq_work` 返回错误，供运行时记录和重试。
 
 VirtIO 显示提交同步返回 `Completion::Complete`，因此 `VirtIoGpuDevice::commit()` 不再为它另存一个待轮询的完成事件。`service_pending()` 对每个输出最多保留一个 `OutputChanged` 通知；后续变化更新输出状态，调用者通过 `poll_event()` 收到通知后重新查询最新状态。当前运行时尚未把显示变化事件转发给 Starry 的热插拔路径，这个有界队列不会因持续刷新 framebuffer 而增长。
 
@@ -130,3 +134,11 @@ VirtIO 的同步显示提交原先每次都向无人消费的队列加入 `Commi
 Starry 在停用时查询驱动的 `current_state`，向仍持有 framebuffer 的输出提交禁用状态；原输出断开而另一输出连上时，`select_output_for_present` 拒绝直接切换，防止旧 backing 在设备解绑前释放。现有 Starry 单元测试加入这两种状态后，`cargo xtask test --since d3536651c219946371e253237a429362c46508c4` 在旧逻辑上分别得到 13/14 个软件包通过，`starry-kernel` 的新增断言失败；修复后同一命令 14/14 通过。`cargo fmt`、`git diff --check`、`cargo xtask clippy --package rdif-display` 和 `cargo clippy --no-deps -p starry-kernel --no-default-features -- -D warnings` 均通过。后者按单一功能组合检查，避免 `xtask` 的 Starry 多配置矩阵。本地按要求未运行 QEMU 或全量 Clippy；断开后的实际显示硬件行为仍需设备测试验证。
 
 分支随后无冲突地变基到 `dev` 的 `ce1740fcad`，纳入 SG2002 网络用例的 curl 打包修复及项目验证范围说明。`git range-diff` 显示 GPU 栈的七个提交补丁保持不变；变基后的运行证据以新提交的 CI 终态为准。
+
+### 4.6 2026-09-28 上下文关闭与完成确认
+
+审查发现上下文中的单个资源解绑失败会阻止 `CTX_DESTROY`，进而使随后析构的 GPU 资源因仍有附着而无法释放。Starry 文件关闭现直接请求销毁上下文；驱动在确认销毁后清除附着，结果不明确时先复位设备再释放 backing。VirtIO 规范允许控制队列提前交还响应，故协议核心为同步命令设置 fence 并核对响应中的标志和编号，覆盖 scanout 切换、传输、上下文销毁与资源解绑。
+
+`cargo test -p virtio-gpu --features rdif --lib` 的新增关闭路径测试在旧实现上失败，修复后 7/7 通过；同一测试中的未设置 fence 断言也先在旧请求实现上失败。模拟主机故意省略 `CTX_DESTROY` 的 fence 回显时，驱动返回 `DeviceLost`，测试确认复位已读回并且 backing 随后才释放。独立复核发现普通显示访问容忍输出查询失败会使用过期模式，已恢复错误传播，仅停用和回收路径使用容错入口。
+
+`cargo fmt`、`git diff --check`、`cargo xtask clippy --package virtio-gpu`（2/2）、`rdif-gpu`（1/1）和 `ax-gpu`（2/2）通过。`cargo xtask clippy --package starry-kernel` 在首批 10 个组合通过后按本地范围限制中断，不能作为最终差异的完整证据；任务入口无单组合选项，随后按其展开参数定向运行最终差异的 Starry AArch64 基础组合并通过。本地未运行全量 Clippy 或 QEMU；真实主机的 fence 行为仍以本次提交的 CI 和后续图形运行证据为准。

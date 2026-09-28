@@ -79,7 +79,6 @@ pub struct VirtIoGpuDevice<H: Hal, T: Transport> {
     dma_domain: DmaDomainId,
     next_resource: u32,
     next_context: u32,
-    next_fence: u64,
     resources: BTreeMap<u64, Resource>,
     contexts: BTreeMap<u64, u32>,
     attachments: BTreeSet<(u64, u64)>,
@@ -123,7 +122,6 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
             dma_domain,
             next_resource: 1,
             next_context: 1,
-            next_fence: 1,
             resources: BTreeMap::new(),
             contexts: BTreeMap::new(),
             attachments: BTreeSet::new(),
@@ -724,16 +722,21 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
     fn destroy_context(&mut self, context: ContextHandle) -> Result<(), GpuError> {
         self.ensure_ready()?;
         let id = self.context_id(context)?;
-        if self
-            .attachments
-            .iter()
-            .any(|(owner, _)| *owner == context.id().get())
-        {
-            return Err(GpuError::Busy);
+        match self.raw.ctx_destroy(id) {
+            Ok(()) | Err(Error::DeviceRejected(0x1204)) => {
+                // Destroying a context also removes its resource attachments.
+                self.attachments
+                    .retain(|(owner, _)| *owner != context.id().get());
+                self.contexts.remove(&context.id().get());
+                Ok(())
+            }
+            Err(_) => {
+                // The host may still use attached resources. Stop DMA before
+                // their backing can be released by a closing file.
+                self.mark_lost();
+                Err(GpuError::DeviceLost)
+            }
         }
-        self.raw.ctx_destroy(id).map_err(map_error)?;
-        self.contexts.remove(&context.id().get());
-        Ok(())
     }
 
     fn create_resource_3d(
@@ -835,14 +838,9 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
             Vec::new()
         };
         if !initial_commands.is_empty() {
-            let next_fence = self
-                .next_fence
-                .checked_add(1)
-                .ok_or(GpuError::OutOfMemory)?;
             self.raw
-                .submit_3d(ctx_id, self.next_fence, initial_commands)
+                .submit_3d(ctx_id, initial_commands)
                 .map_err(map_error)?;
-            self.next_fence = next_fence;
         }
         if let Some(backing) = &backing {
             backing.sync_for_device(0..size)?;
@@ -947,11 +945,7 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
     fn submit(&mut self, context: ContextHandle, commands: &[u8]) -> Result<Completion, GpuError> {
         self.ensure_ready()?;
         let ctx_id = self.context_id(context)?;
-        let fence = self.next_fence;
-        self.next_fence = fence.checked_add(1).ok_or(GpuError::OutOfMemory)?;
-        self.raw
-            .submit_3d(ctx_id, fence, commands)
-            .map_err(map_error)?;
+        self.raw.submit_3d(ctx_id, commands).map_err(map_error)?;
         Ok(Completion::Complete)
     }
 

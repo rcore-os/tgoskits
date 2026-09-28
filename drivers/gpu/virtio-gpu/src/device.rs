@@ -20,9 +20,9 @@ use crate::{
     wire::{
         CmdCtxCreate, CmdCtxResource, CmdGetCapset, CmdGetCapsetInfo, CmdResourceCreate3D,
         CmdResourceCreateBlob, CmdSubmit3D, CmdTransferHost3D, Command, Config, CtrlHeader,
-        Features, MemEntry, ResourceAttachBacking, ResourceCreate2D, ResourceDetachBacking,
-        ResourceFlush, ResourceUnref, RespCapsetInfo, RespDisplayInfo, SUPPORTED_FEATURES,
-        SetScanout, SetScanoutBlob, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
+        Features, GPU_FLAG_FENCE, MemEntry, ResourceAttachBacking, ResourceCreate2D,
+        ResourceDetachBacking, ResourceFlush, ResourceUnref, RespCapsetInfo, RespDisplayInfo,
+        SUPPORTED_FEATURES, SetScanout, SetScanoutBlob, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
     },
 };
 
@@ -74,6 +74,7 @@ pub struct VirtIoGpu<H: Hal, T: Transport> {
     /// by-value request that would go out of scope while the device still reads
     /// it. See [`VirtIoGpu::request_with_len`].
     queue_buf_send: Box<[u8]>,
+    next_fence: u64,
     /// Whether the VIRGL 3D feature was negotiated.
     has_virgl: bool,
     /// Whether `VIRTIO_GPU_F_RESOURCE_BLOB` was negotiated.
@@ -123,6 +124,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             control_queue,
             queue_buf_recv,
             queue_buf_send,
+            next_fence: 1,
             has_virgl,
             has_resource_blob,
             has_context_init,
@@ -753,10 +755,10 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     ///
     /// `cmds` is the encoded stream produced by the Mesa virgl Gallium driver
     /// in userspace and is sent as a second buffer next to the `SUBMIT_3D`
-    /// header. `fence_id` is assigned by the caller; the host signals that fence
-    /// once the stream has been processed. The stream length must be a multiple
+    /// header. The control queue assigns a fence and waits until the host
+    /// processes the stream. The stream length must be a multiple
     /// of four, because the host passes `size / 4` dwords to virglrenderer.
-    pub fn submit_3d(&mut self, ctx_id: u32, fence_id: u64, cmds: &[u8]) -> Result<(), Error> {
+    pub fn submit_3d(&mut self, ctx_id: u32, cmds: &[u8]) -> Result<(), Error> {
         self.require_virgl()?;
         if !cmds.len().is_multiple_of(size_of::<u32>()) {
             return Err(Error::InvalidParam);
@@ -764,7 +766,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         let size = u32::try_from(cmds.len()).map_err(|_| Error::Overflow)?;
         let response: CtrlHeader = self.request_with_data(
             CmdSubmit3D {
-                header: CtrlHeader::with_fence(Command::SUBMIT_3D, ctx_id, fence_id),
+                header: CtrlHeader::with_type_and_ctx(Command::SUBMIT_3D, ctx_id),
                 size,
                 _padding: 0,
             },
@@ -924,13 +926,14 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         Req: IntoBytes + Immutable,
         Rsp: FromBytes,
     {
-        let req_len = copy_request_into(&mut self.queue_buf_send, &req)?;
+        let (req_len, fence_id) = self.prepare_request(&req)?;
         let used_len = self.control_queue.add_notify_wait_pop(
             &[&self.queue_buf_send[..req_len]],
             &mut [&mut self.queue_buf_recv],
             &mut self.transport,
         )? as usize;
         let response = self.parse_response(used_len)?;
+        self.check_fence_response(used_len, fence_id)?;
         Ok((response, used_len))
     }
 
@@ -947,7 +950,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         Req: IntoBytes + Immutable,
         Rsp: FromBytes,
     {
-        let req_len = copy_request_into(&mut self.queue_buf_send, &req)?;
+        let (req_len, fence_id) = self.prepare_request(&req)?;
         let inputs: &[&[u8]] = if data.is_empty() {
             &[&self.queue_buf_send[..req_len]]
         } else {
@@ -958,7 +961,35 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             &mut [&mut self.queue_buf_recv],
             &mut self.transport,
         )? as usize;
-        self.parse_response(used_len)
+        let response = self.parse_response(used_len)?;
+        self.check_fence_response(used_len, fence_id)?;
+        Ok(response)
+    }
+
+    fn prepare_request<Req: IntoBytes + Immutable>(
+        &mut self,
+        req: &Req,
+    ) -> Result<(usize, u64), Error> {
+        let req_len = copy_request_into(&mut self.queue_buf_send, req)?;
+        if req_len < size_of::<CtrlHeader>() {
+            return Err(Error::InvalidParam);
+        }
+        let fence_id = self.next_fence;
+        self.next_fence = fence_id.checked_add(1).ok_or(Error::Overflow)?;
+        // Every public operation reports synchronous completion. VirtIO GPU
+        // may otherwise return a used response before host processing ends.
+        self.queue_buf_send[4..8].copy_from_slice(&GPU_FLAG_FENCE.to_le_bytes());
+        self.queue_buf_send[8..16].copy_from_slice(&fence_id.to_le_bytes());
+        Ok((req_len, fence_id))
+    }
+
+    fn check_fence_response(&self, used_len: usize, fence_id: u64) -> Result<(), Error> {
+        if used_len < size_of::<CtrlHeader>() {
+            return Err(Error::InvalidResponse);
+        }
+        let (header, _) = CtrlHeader::read_from_prefix(&self.queue_buf_recv[..used_len])
+            .map_err(|_| Error::InvalidResponse)?;
+        header.check_fence(fence_id)
     }
 
     /// Validates the response length and parses `Rsp` from exactly the bytes the
