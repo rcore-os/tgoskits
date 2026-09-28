@@ -968,6 +968,7 @@ dependencies = [
  "sg200x-bsp",
  "sg200x-pwm",
  "sha1 0.11.0",
+ "smccc",
  "some-serial",
  "starfive-jh7110-dwmmc",
  "thiserror 2.0.20",
