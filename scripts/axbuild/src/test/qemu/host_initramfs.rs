@@ -63,32 +63,53 @@ pub(crate) fn prepare_host_initramfs(
             "missing init entry {}",
             entry_source.display()
         );
-        let result = Command::new("clang")
-            .arg("--target=aarch64-unknown-linux-musl")
-            .args([
-                "-fuse-ld=lld",
-                "-ffreestanding",
-                "-fno-builtin",
-                "-fno-stack-protector",
-                "-nostdlib",
-                "-static",
-                "-Wl,-e,_start",
-            ])
-            .arg(&entry_source)
-            .arg(&init_source)
-            .arg("-o")
-            .arg(staging.path().join("init"))
-            .output()
-            .context("failed to start clang for test init")?;
-        ensure!(
-            result.status.success(),
-            "failed to build test init: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        build_test_init(&entry_source, &init_source, &staging.path().join("init"))?;
     }
 
     crate::image::pack_initramfs_dir(staging.path(), &output)?;
     qemu.boot.initramfs = Some(output.to_string_lossy().into_owned());
+    Ok(())
+}
+
+fn build_test_init(entry_source: &Path, init_source: &Path, output: &Path) -> anyhow::Result<()> {
+    let objects = tempfile::tempdir_in(output.parent().expect("test init has a parent"))?;
+    let entry_object = objects.path().join("entry.o");
+    let init_object = objects.path().join("init.o");
+    for (source, object) in [(entry_source, &entry_object), (init_source, &init_object)] {
+        let result = Command::new("clang")
+            .arg("--target=aarch64-unknown-linux-musl")
+            .args([
+                "-ffreestanding",
+                "-fno-builtin",
+                "-fno-stack-protector",
+                "-nostdlib",
+                "-c",
+            ])
+            .arg(source)
+            .arg("-o")
+            .arg(object)
+            .output()
+            .context("failed to start clang for test init")?;
+        ensure!(
+            result.status.success(),
+            "failed to compile test init {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let result = Command::new("rust-lld")
+        .args(["-flavor", "gnu", "-static", "-e", "_start"])
+        .arg(&entry_object)
+        .arg(&init_object)
+        .arg("-o")
+        .arg(output)
+        .output()
+        .context("failed to start rust-lld for test init")?;
+    ensure!(
+        result.status.success(),
+        "failed to link test init: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     Ok(())
 }
 
