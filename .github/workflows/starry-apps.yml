@@ -122,7 +122,7 @@ jobs:
         if: always()
         uses: actions/download-artifact@v8
         with:
-          pattern: starry-nightly-performance-*
+          pattern: starry-apps-nightly-performance-*
           path: ${{ runner.temp }}/performance-reports
           merge-multiple: true
         continue-on-error: true
@@ -185,7 +185,7 @@ jobs:
       - name: Download performance reports
         uses: actions/download-artifact@v8
         with:
-          pattern: starry-nightly-performance-*
+          pattern: starry-apps-nightly-performance-*
           path: ${{ runner.temp }}/performance-reports
           merge-multiple: true
 

@@ -28,7 +28,7 @@ jobs:
       - name: Pin triggering revision
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Plan all registered AxVisor checks
+      - name: Plan AxVisor nightly and benchmark checks
         id: matrix
         env:
           EVENT_NAME: ${{ github.event_name }}

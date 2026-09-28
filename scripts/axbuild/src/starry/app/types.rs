@@ -19,7 +19,7 @@ pub(crate) struct StarryAppCase {
     pub(crate) case_dir: PathBuf,
     pub(crate) prebuild_path: Option<PathBuf>,
     pub(crate) requires: Vec<String>,
-    /// Whether the case lives under `apps/benchmark/starry`. Benchmark cases
+    /// Whether the case lives under `benchmarks/starry`. Benchmark cases
     /// are nightly-only measurements: they never join `app qemu --all` and run
     /// only when selected explicitly as `benchmark/<case>`.
     pub(crate) benchmark: bool,

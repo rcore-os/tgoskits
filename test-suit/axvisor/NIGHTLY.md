@@ -14,36 +14,42 @@ self-hosted runners provide the required virtualization hosts and boards.
 
 ## Coverage
 
-The source of truth is `.github/ci/checks/axvisor.toml`. Nightly runs every
-enabled check in that catalog without changed-file filtering, including:
+The source of truth is `.github/ci/checks/axvisor-nightly.toml` plus the
+`group = "AxVisor"` checks in the shared `.github/ci/checks/benchmarks.toml`.
+Nightly runs every enabled check in those manifests without changed-file
+filtering, including:
 
-- AArch64 QEMU boot, timer stress, kernel tests, IVC, control plane and console.
-- RISC-V QEMU boot and IPI cross-tests.
-- LoongArch QEMU using the existing LVZ runner environment.
-- Intel VMX and AMD SVM boot, ACPI and PCI tests.
-- Registered board checks, including OrangePi Linux/Starry guests and the
-  Zephyr-Starry IVC benchmark.
+- AArch64 GICv2/GICv3 timer stress and the OrangePi Linux PCI network ping.
+- The OrangePi virtio-net peer scenario.
+- The OrangePi Zephyr-Starry IVC benchmark, single ArceOS guest performance and
+  task switch benchmark from `benchmarks.toml`.
 
-This is full coverage of the registered CI checks, not a claim that every
-AxVisor feature or every test-suit directory has a corresponding nightly test.
-Add new scenarios to the existing test-suit and register them in the catalog;
-do not duplicate their shell commands in the nightly workflow.
+Only these manifests feed the nightly matrix; the default `axvisor.toml`
+checks do not run at night. This is not a claim that every AxVisor feature or
+every test-suit directory has a corresponding nightly test. Add new scenarios
+to the existing test-suit and register them in `axvisor-nightly.toml` (or the
+`group = "AxVisor"` section of `benchmarks.toml` for performance cases); do not
+duplicate their shell commands in the nightly workflow.
 
 ## Default CI Versus Nightly
 
-Default CI runs the functional checks. The GICv2/GICv3 timer stress and
-OrangePi Zephyr-Starry IVC benchmark, single ArceOS guest performance and
-Linux PCI network ping tests are separate checks marked
-`nightly_only = true` in `axvisor.toml`. Nightly includes both functional and
-nightly-only checks. Ordinary CI excludes nightly-only checks for PRs, pushes
-and manual runs, even if the change precisely selects their test-suit files.
-A PR changing only nightly test scenarios still receives static checks.
-The default OrangePi Linux check explicitly selects only the `smoke` case.
+Default CI runs the functional `axvisor.toml` checks. The GICv2/GICv3 timer
+stress, OrangePi Linux PCI network ping, OrangePi virtio-net peer, Zephyr-Starry
+IVC benchmark, single ArceOS guest performance and task switch benchmark were
+split into `axvisor-nightly.toml` and the `group = "AxVisor"` checks in the
+shared `benchmarks.toml`. The manifest file name is the only authority for the
+automatic nightly and performance report semantics, so individual checks no
+longer declare `nightly_only` or `performance_report`. Ordinary CI excludes
+these manifests for PRs, pushes and manual runs, even if the change precisely
+selects their test-suit files; a PR changing only nightly test scenarios still
+receives static checks. The default OrangePi Linux check explicitly selects only
+the `smoke` case.
 
-To add another nightly-only scenario, register its own `[[check]]` with
-`nightly_only = true`, its command and suite registration. Do not mix its
-commands into a default functional check. The nightly workflow's manual
-trigger runs the full nightly set; local xtask commands can still run any
+To add another nightly scenario, register its own `[[check]]` in
+`axvisor-nightly.toml` with its command and suite registration; performance
+measurements go to the `group = "AxVisor"` checks in `benchmarks.toml`. Do not
+mix their commands into a default functional check. The nightly workflow's
+manual trigger runs the full nightly set; local xtask commands can still run any
 individual scenario directly.
 
 ## Execution And Results
@@ -54,15 +60,16 @@ Matrix fail-fast is disabled. The final job reports the tested SHA and stage
 results in the GitHub job summary, and fails if any required stage did not
 succeed. Detailed output remains in each matrix job's Actions log.
 
-Checks marked `performance_report = true` (currently the OrangePi vCPU
-throughput and AXIVC Zephyr-Starry benchmark board tests) additionally get
-their result lines extracted into the job summary and the workflow summary:
-the runner captures the command log, `scripts/test/ci_perf_report.py` renders
-`VCPU_PERF_RESULT` and `AXVISOR_IVC_BENCH_RESULT=` lines as a Markdown table,
-each matrix job appends its table to its own summary, and the final job
-merges the uploaded per-check report artifacts under a "Performance Results"
-section (retained 30 days). Reports render only when the check succeeds; a
-failed run still exposes its numbers through the matrix job log.
+Every `group = "AxVisor"` check from `benchmarks.toml` (currently the OrangePi
+vCPU throughput and AXIVC Zephyr-Starry benchmark board tests, plus the task
+switch benchmark) additionally gets its result lines extracted into the job
+summary and the workflow summary: the runner captures the command log,
+`scripts/test/ci_perf_report.py` renders `VCPU_PERF_RESULT` and
+`AXVISOR_IVC_BENCH_RESULT=` lines as a Markdown table, each matrix job appends
+its table to its own summary, and the final job merges the uploaded per-check
+report artifacts under a "Performance Results" section (retained 30 days).
+Reports render only when the check succeeds; a failed run still exposes its
+numbers through the matrix job log.
 
 A final `Performance History` job also collects the per-check benchmark JSON,
 appends it to the `perf-data` branch, and renders a Chart.js dashboard

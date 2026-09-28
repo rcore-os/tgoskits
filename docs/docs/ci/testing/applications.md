@@ -9,7 +9,7 @@ sidebar_label: "应用验证"
 
 ## 1. 事件与选择
 
-应用工作流只有 `schedule` 和 `workflow_dispatch` 两种入口。其检查集合由 `.github/ci/checks/starry-apps.toml` 和布尔输入共同决定。
+应用工作流只有 `schedule` 和 `workflow_dispatch` 两种入口。smoke 集合由 `.github/ci/checks/starry-apps.toml` 和布尔输入共同决定；nightly 性能矩阵来自共享清单 `.github/ci/checks/benchmarks.toml` 中 `group = "Starry Apps"` 的 check。
 
 ### 1.1 定时运行
 
@@ -25,7 +25,7 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 
 ## 2. 检查内容
 
-`starry-apps.toml` 使用 `phase=starry_apps`。它没有主 CI 的 `static` 和 `test` 阶段划分，所有选中项进入同一个矩阵。
+`starry-apps.toml` 使用 `phase=starry_apps`，只提供 smoke、NixOS 和 Clippy 行；共享的 `benchmarks.toml` 使用 `phase=benchmark`，其 `group = "Starry Apps"` 的 check 自动获得 nightly 与性能报告语义。两者都没有主 CI 的 `static` 和 `test` 阶段划分。
 
 ### 2.1 应用 smoke
 
@@ -39,6 +39,8 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 | LoongArch | `cargo xtask starry app qemu --all --arch loongarch64` | `ubuntu-base` |
 
 这些行设置 `apk_region=us` 和 `container_preflight=qemu-user`。应用检查的结果不能替代主 CI 的系统套件、板卡测试或软件包发布结果。
+
+smoke 矩阵只来自 `starry-apps.toml`；`build_starry_apps_plan()` 另外从共享 `benchmarks.toml` 中挑选 `group = "Starry Apps"` 的 bench case，按运行环境拆成 QEMU 与板卡两个性能矩阵，分别在 smoke 成功后执行。性能矩阵下载 `tg-xtask` artifact 并只使用 `-t benchmark/<case>` 显式选择，不进入 `--all`。
 
 ### 2.2 NixOS 与 Clippy
 

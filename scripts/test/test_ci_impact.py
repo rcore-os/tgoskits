@@ -208,7 +208,7 @@ class CiImpactTests(unittest.TestCase):
 
     def test_benchmark_suite_path_routes_to_axvisor_instead_of_ignored_app(self) -> None:
         path = Path(
-            "apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
+            "benchmarks/axvisor/normal/board-orangepi-5-plus/vcpu-perf/"
             "performance/board-orangepi-5-plus-vcpu-perf.toml"
         )
 
@@ -228,7 +228,7 @@ class CiImpactTests(unittest.TestCase):
         self,
     ) -> None:
         path = Path(
-            "apps/benchmark/starry/block-rw-bench/board-orangepi-5-plus.toml"
+            "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml"
         )
 
         impact = ci_impact.analyze_changed_paths(

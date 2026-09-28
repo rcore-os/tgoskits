@@ -130,7 +130,7 @@ fn discovers_benchmark_cases_with_a_distinct_name_and_flag() {
     assert!(
         benchmark
             .case_dir
-            .ends_with("apps/benchmark/starry/qemu/compile-sim-bench")
+            .ends_with("benchmarks/starry/qemu/compile-sim-bench")
     );
 }
 

@@ -23,6 +23,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "apps/**"
+      - "benchmarks/**"
       - "bootloader/**"
       - "components/**"
       - "drivers/**"

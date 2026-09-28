@@ -424,7 +424,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
 
     let benchmark_wrapper = root
         .path()
-        .join("apps/benchmark/axvisor/normal/board-orangepi-5-plus/vcpu-perf");
+        .join("benchmarks/axvisor/normal/board-orangepi-5-plus/vcpu-perf");
     let benchmark_case = benchmark_wrapper.join("performance");
     fs::create_dir_all(&benchmark_case).unwrap();
     let benchmark_build_config =

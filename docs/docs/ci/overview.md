@@ -45,13 +45,13 @@ flowchart TD
 | `Workspace` | `workspace.toml`            | Clippy、std 白名单测试、qperf 专项测试     |
 | `ArceOS`    | `arceos.toml`、独立测试声明 | QEMU 套件、启动与 SMP 场景、相关内核测试   |
 | `Starry`    | `starry.toml`               | QEMU 套件、内核测试、已注册板卡测试        |
-| `AxVisor`   | `axvisor.toml`              | QEMU、KVM 虚拟化场景及已注册板卡测试       |
+| `AxVisor`   | `axvisor.toml`              | QEMU、KVM 虚拟化场景及已注册板卡测试；nightly 与性能清单由 `axvisor-nightly.toml`、`benchmarks.toml` 承担 |
 
 一个矩阵行可以顺序执行多个命令，也可以由任务工具展开成多个用例。因此 Actions 中的一个绿色 job 不等于只运行了一个测试；反过来，未被选择的检查没有产生通过证据。
 
 ### 1.3 定时应用验证
 
-`starry-apps.yml` 为 Starry 应用提供独立于主 CI 的定时和手动验证。定时入口按 UTC 每日 18:00 运行四架构应用 smoke 和 NixOS 场景，手动入口可追加完整 Clippy。工作流读取 `.github/ci/checks/starry-apps.toml`，由 `scripts/test/ci_plan.py` 的 `build_starry_apps_plan()` 规划，再交给 `reusable-check-matrix.yml` 执行；它不使用主 CI 的 PR 变更范围或 push/PR 去重结果。应用检查的结果不能替代主 CI 的系统套件或板卡测试，详见[应用验证](testing/applications.md)。
+`starry-apps.yml` 为 Starry 应用提供独立于主 CI 的定时和手动验证。定时入口按 UTC 每日 18:00 运行四架构应用 smoke 和 NixOS 场景，随后执行来自 `benchmarks.toml` 中 `Starry Apps` 分组的 QEMU 与板卡性能矩阵；手动入口可追加完整 Clippy。工作流读取 `.github/ci/checks/starry-apps.toml` 与 `.github/ci/checks/benchmarks.toml`，由 `scripts/test/ci_plan.py` 的 `build_starry_apps_plan()` 规划，再交给 `reusable-check-matrix.yml` 执行；它不使用主 CI 的 PR 变更范围或 push/PR 去重结果。应用检查的结果不能替代主 CI 的系统套件或板卡测试，详见[应用验证](testing/applications.md)。
 
 ## 2. 发布
 

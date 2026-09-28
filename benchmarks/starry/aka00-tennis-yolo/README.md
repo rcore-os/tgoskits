@@ -32,7 +32,7 @@
 第一次构建前准备 Xuantie musl 工具链和 Milk-V/Cvitek SG200x TPU SDK：
 
 ```bash
-apps/benchmark/starry/aka00-tennis-yolo/scripts/setup.sh
+benchmarks/starry/aka00-tennis-yolo/scripts/setup.sh
 ```
 
 `setup.sh` 会从固定 URL 下载并校验：
@@ -43,7 +43,7 @@ apps/benchmark/starry/aka00-tennis-yolo/scripts/setup.sh
 如果构建环境无法直接联网，可以先准备本地压缩包，然后通过参数指定：
 
 ```bash
-apps/benchmark/starry/aka00-tennis-yolo/scripts/setup.sh \
+benchmarks/starry/aka00-tennis-yolo/scripts/setup.sh \
   --toolchain-archive /path/to/Xuantie-900-gcc-linux-6.6.36-musl64-x86_64-V3.4.0-20260323.tar.gz \
   --sdk-archive /path/to/tpu-sdk-sg200x-6fa0d80a635db13b6b9dc061d68b8da0593b79f3.tar.gz
 ```
@@ -53,19 +53,19 @@ apps/benchmark/starry/aka00-tennis-yolo/scripts/setup.sh \
 ```bash
 AKARS_TENNIS_TOOLCHAIN_DIR=/path/to/xuantie-v3.4.0 \
 AKARS_TPU_SDK_DIR=/path/to/tpu-sdk-sg200x \
-  apps/benchmark/starry/aka00-tennis-yolo/build-validator.sh
+  benchmarks/starry/aka00-tennis-yolo/build-validator.sh
 ```
 
 常规构建命令：
 
 ```bash
-apps/benchmark/starry/aka00-tennis-yolo/build-validator.sh
+benchmarks/starry/aka00-tennis-yolo/build-validator.sh
 ```
 
 构建产物目录是：
 
 ```text
-apps/benchmark/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/
+benchmarks/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/
 ```
 
 `install/` 是生成物，已被 `.gitignore` 忽略。需要部署时重新运行
@@ -271,7 +271,7 @@ sync
 benchmark 参数误用于更新 golden 数据。
 
 然后把板端生成的 `/akars_tennis/validation/expected.txt` 更新回仓库中的
-`apps/benchmark/starry/aka00-tennis-yolo/validation/expected.txt`，再重新运行
+`benchmarks/starry/aka00-tennis-yolo/validation/expected.txt`，再重新运行
 `build-validator.sh` 生成新的部署目录。
 
 ## 本地校验
@@ -279,18 +279,18 @@ benchmark 参数误用于更新 golden 数据。
 源码层测试：
 
 ```bash
-cargo test --manifest-path apps/benchmark/starry/aka00-tennis-yolo/akars-validator/Cargo.toml
+cargo test --manifest-path benchmarks/starry/aka00-tennis-yolo/akars-validator/Cargo.toml
 ```
 
 clippy：
 
 ```bash
-cargo clippy --manifest-path apps/benchmark/starry/aka00-tennis-yolo/akars-validator/Cargo.toml
+cargo clippy --manifest-path benchmarks/starry/aka00-tennis-yolo/akars-validator/Cargo.toml
 ```
 
 固定资产哈希校验：
 
 ```bash
-cd apps/benchmark/starry/aka00-tennis-yolo
+cd benchmarks/starry/aka00-tennis-yolo
 sha256sum -c SHA256SUMS
 ```

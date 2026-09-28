@@ -45,7 +45,7 @@ pub(crate) fn selected_apps(
     };
     apps.retain(|app| app_supports_kind(app.kind, kind));
     if args.all {
-        // `apps/benchmark/starry` holds nightly-only measurements. They must
+        // `benchmarks/starry` holds nightly-only measurements. They must
         // stay selectable through `-t benchmark/<case>` without joining the
         // regular `--all` matrix.
         apps.retain(|app| !app.benchmark);

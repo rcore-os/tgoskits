@@ -41,13 +41,32 @@ MAIN_MANIFESTS = (
 )
 STARRY_APPS_MANIFEST = CHECKS_ROOT / "starry-apps.toml"
 RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
-# The main plan must resolve `apps/benchmark/starry` changes to the nightly
-# Starry benchmark checks, which live in the Starry Apps manifest. Their
-# `starry_apps` phase keeps them out of the static/test matrices, so including
-# the manifest only adds suite routing.
-MAIN_PLAN_MANIFESTS = (*MAIN_MANIFESTS, STARRY_APPS_MANIFEST)
+# Performance measurements live in one scope-clear `benchmarks.toml` manifest.
+# Loading a manifest with this file name is the single authority that makes
+# every check inside it a nightly benchmark that produces a performance report.
+# AxVisor and Starry benchmarks share the file, so each check overrides the
+# manifest `group` with the workflow that owns it and the plan builders select
+# their own benchmark checks by that group.
+BENCHMARK_MANIFEST = CHECKS_ROOT / "benchmarks.toml"
+AXVISOR_BENCHMARK_GROUP = "AxVisor"
+STARRY_APPS_BENCHMARK_GROUP = "Starry Apps"
+# AxVisor scenarios that only run on the nightly schedule but produce no
+# performance report. Keeping them in their own manifest stops the default main
+# CI matrix from treating every `axvisor.toml` check as nightly coverage.
+AXVISOR_NIGHTLY_MANIFEST = CHECKS_ROOT / "axvisor-nightly.toml"
+BENCHMARK_MANIFEST_NAME = "benchmarks.toml"
+# The main plan must resolve `benchmarks/{axvisor,starry}` and AxVisor nightly
+# changes to the checks that own those suite paths. Their `benchmark`/`nightly`
+# phases and automatic nightly-only semantics keep them out of the default
+# static/test matrices, so including the manifests only adds suite routing.
+MAIN_PLAN_MANIFESTS = (
+    *MAIN_MANIFESTS,
+    STARRY_APPS_MANIFEST,
+    AXVISOR_NIGHTLY_MANIFEST,
+    BENCHMARK_MANIFEST,
+)
 
-SUPPORTED_PHASES = {"static", "test", "starry_apps"}
+SUPPORTED_PHASES = {"static", "test", "starry_apps", "benchmark", "nightly"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
 TEST_GROUP_OUTPUT_PREFIXES = {
     "Workspace": "workspace",
@@ -70,11 +89,10 @@ TOP_LEVEL_FIELDS = {
     "check",
 }
 CHECK_FIELDS = {
-    "nightly_only",
-    "performance_report",
     "performance_artifact_prefix",
     "id",
     "name",
+    "group",
     "runner",
     "command",
     "required_base_branch",
@@ -97,8 +115,6 @@ CHECK_FIELDS = {
 }
 REQUIRED_CHECK_FIELDS = {"id", "name", "command"}
 BOOLEAN_CHECK_FIELDS = {
-    "nightly_only",
-    "performance_report",
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
     "wifi_secrets",
@@ -131,6 +147,11 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
         phase = document["phase"]
         group = document["group"]
         default_runner = document.get("default_runner", GLOBAL_DEFAULT_RUNNER)
+        # The manifest file name and phase are the only authority for the
+        # automatic nightly / performance-report semantics; individual checks
+        # no longer repeat `nightly_only` or `performance_report` booleans.
+        is_benchmark_manifest = manifest.name == BENCHMARK_MANIFEST_NAME
+        is_nightly_manifest = phase == "nightly"
         if default_runner not in runner_profiles:
             raise PlanError(
                 f"{manifest} references unknown default_runner '{default_runner}'"
@@ -148,8 +169,17 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
                 raise PlanError(f"duplicate check id '{check_id}' at {location}")
             seen_ids.add(check_id)
             check["phase"] = phase
-            check["group"] = group
+            # A check may override the manifest-level group. This lets one
+            # `benchmarks.toml` hold the AxVisor and Starry Apps performance
+            # checks while each workflow plan selects only its own group.
+            check["group"] = check.get("group", group)
             check["source"] = str(manifest.relative_to(WORKSPACE_ROOT))
+            if is_benchmark_manifest:
+                check["benchmark"] = True
+                check["nightly_only"] = True
+                check["performance_report"] = True
+            elif is_nightly_manifest:
+                check["nightly_only"] = True
             checks.append(check)
 
     _validate_artifact_contract(checks)
@@ -227,8 +257,12 @@ def build_starry_apps_plan(
         context,
         include_nightly=context.event_name in {"schedule", "workflow_dispatch"},
     )
-    checks = load_catalog((STARRY_APPS_MANIFEST,))
-    rows = _plan_phase(checks, "starry_apps", context)
+    checks = load_catalog((STARRY_APPS_MANIFEST, BENCHMARK_MANIFEST))
+    rows = _plan_phase(checks, "starry_apps", context) + _plan_phase(
+        _benchmark_checks_for(checks, STARRY_APPS_BENCHMARK_GROUP),
+        "benchmark",
+        context,
+    )
     app_rows = [row for row in rows if not row["performance_report"]]
     performance_rows = [row for row in rows if row["performance_report"]]
     qemu_performance_rows = [
@@ -263,14 +297,36 @@ def build_axvisor_nightly_plan(context: PlanContext) -> dict[str, Any]:
     if context.event_name not in {"schedule", "workflow_dispatch"}:
         raise PlanError("AxVisor nightly requires schedule or workflow_dispatch")
     context = replace(context, include_nightly=True)
-    checks = load_catalog(MAIN_MANIFESTS)
-    return _build_axvisor_nightly_plan(checks, context)
+    producer_catalog = load_catalog(MAIN_MANIFESTS)
+    producer = next(
+        check
+        for check in producer_catalog
+        if check.get("upload_xtask_bin_artifact")
+    )
+    checks = load_catalog((AXVISOR_NIGHTLY_MANIFEST, BENCHMARK_MANIFEST))
+    return _build_axvisor_nightly_plan(checks, context, producer)
+
+
+def _benchmark_checks_for(
+    checks: list[dict[str, Any]], group: str
+) -> list[dict[str, Any]]:
+    """Return the benchmark checks owned by one workflow group."""
+    return [
+        check
+        for check in checks
+        if check["phase"] == "benchmark" and check["group"] == group
+    ]
 
 
 def _build_axvisor_nightly_plan(
-    checks: list[dict[str, Any]], context: PlanContext
+    checks: list[dict[str, Any]],
+    context: PlanContext,
+    producer: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    producer = next(check for check in checks if check.get("upload_xtask_bin_artifact"))
+    if producer is None:
+        producer = next(
+            check for check in checks if check.get("upload_xtask_bin_artifact")
+        )
     prepare = _normalize_check(producer, context)
     prepare.update(
         id="axvisor-nightly-build-xtask",
@@ -280,7 +336,7 @@ def _build_axvisor_nightly_plan(
     rows = [
         _normalize_check(check, context)
         for check in checks
-        if check["group"] == "AxVisor" and _is_enabled(check, context)
+        if _is_axvisor_nightly_check(check) and _is_enabled(check, context)
     ]
     if not rows:
         raise PlanError("AxVisor nightly must resolve to a non-empty matrix")
@@ -288,6 +344,15 @@ def _build_axvisor_nightly_plan(
         "prepare_matrix": {"include": [prepare]},
         "axvisor_matrix": {"include": rows},
     }
+
+
+def _is_axvisor_nightly_check(check: dict[str, Any]) -> bool:
+    if check["phase"] == "nightly":
+        return True
+    return (
+        check["phase"] == "benchmark"
+        and check["group"] == AXVISOR_BENCHMARK_GROUP
+    )
 
 
 def write_github_outputs(outputs: dict[str, Any], output_file: Path) -> None:
@@ -354,6 +419,9 @@ def _validate_check(
     check["name"] = check["name"].strip()
     if CHECK_ID_PATTERN.fullmatch(check["id"]) is None:
         raise PlanError(f"{location} field 'id' must use lowercase kebab-case")
+    group = check.get("group")
+    if group is not None and (not isinstance(group, str) or not group.strip()):
+        raise PlanError(f"{location} field 'group' must be a non-empty string")
     runs_on = check["runs_on"]
     required_base = check.get("required_base_branch")
     if required_base is not None and (
@@ -721,8 +789,8 @@ def _suite_path_os(path: str) -> str | None:
         Path("test-suit/arceos"): "arceos",
         Path("test-suit/starryos"): "starry",
         Path("test-suit/axvisor"): "axvisor",
-        Path("apps/benchmark/axvisor"): "axvisor",
-        Path("apps/benchmark/starry"): "starry",
+        Path("benchmarks/axvisor"): "axvisor",
+        Path("benchmarks/starry"): "starry",
     }
     for prefix, os_name in prefixes.items():
         if normalized == prefix or prefix in normalized.parents:

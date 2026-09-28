@@ -49,10 +49,7 @@ fn resolves_benchmark_board_case_from_benchmark_dir() {
 
     assert_eq!(case.name, "benchmark/block-rw-bench");
     assert_eq!(case.target, "aarch64-unknown-none-softfloat");
-    assert!(
-        case.case_dir
-            .ends_with("apps/benchmark/starry/block-rw-bench")
-    );
+    assert!(case.case_dir.ends_with("benchmarks/starry/block-rw-bench"));
     assert!(
         case.board_config_path
             .ends_with("board-orangepi-5-plus.toml")

@@ -16,10 +16,7 @@ pub(super) fn write_benchmark_case_file(
     name: &str,
     body: &str,
 ) -> PathBuf {
-    let path = root
-        .join("apps/benchmark/starry")
-        .join(case_name)
-        .join(name);
+    let path = root.join("benchmarks/starry").join(case_name).join(name);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, body).unwrap();
     path
