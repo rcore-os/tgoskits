@@ -1,4 +1,4 @@
-cmdline = "root=/dev/nvme0n1 init=/sbin/init HOST_ENV=ready -- from-dashes"
+cmdline = 'root=/dev/nvme0n1 init=/bin/sh HOST_ENV=ready -- -c "echo STARRY_DISK_INIT_PASSED; exec /sbin/init"'
 args = [
   "-machine", "virt",
   "-cpu", "cortex-a53",
@@ -13,6 +13,9 @@ uefi = false
 to_bin = true
 fail_regex = ["STARRY_INITRAMFS_FAILED", "(?i)\\bpanic(?:ked)?\\b"]
 timeout = 90
+
+[[shell_check_steps]]
+success_regex = ["STARRY_DISK_INIT_PASSED"]
 
 [[shell_check_steps]]
 success_regex = ["root@starry:~#"]

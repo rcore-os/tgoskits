@@ -18,20 +18,20 @@ and HTTP transfer on another. Diagnostic text uses firmware `ConOut` only.
 
 ## Network boot protocol
 
-The incompatible `httpboot-protocol` 0.2 flow is:
+`httpboot-protocol` 0.3 按同一 `boot_id` 交接内核和可选的宿主
+`initramfs`、`cmdline`。`BootPayload` 在退出 UEFI Boot Services 前安装到配置表，
+由 someboot 接收并预留归档物理页。会话流程如下：
 
-1. Configure IPv4 on the selected UEFI network controller.
-2. Broadcast a JSON discovery probe to UDP port `2998`. The probe contains the
-   protocol version, permanent/current MAC, architecture, and loader version.
-3. Accept one server offer. Offers from different server instances are
-   ambiguous and cause discovery to retry.
-4. Read SMBIOS Type 1 identity and `POST /api/v1/loaders/poll` every two
-   seconds while the device is unbound or bound and idle.
-5. On a `boot` response, report progress to
-   `POST /api/v1/loaders/status`, download the ELF, and verify both its declared
-   length and SHA-256 digest.
-6. Report `ready_to_handoff`, destroy UDP/HTTP/IP objects, call
-   `ExitBootServices`, and enter the image.
+1. 在选定的 UEFI 网络控制器上配置 IPv4，并向 UDP 端口 `2998` 广播包含协议版本、
+   MAC、架构和加载器版本的 JSON 发现报文。
+2. 只接受一个服务端的响应；多个服务端响应会触发重新发现。
+3. 读取 SMBIOS Type 1 身份；设备未绑定或空闲时，每两秒调用
+   `POST /api/v1/loaders/poll`。
+4. 收到 `boot` 后通过 `POST /api/v1/loaders/status` 报告进度，下载内核 ELF，
+   核验长度和 SHA-256。若本会话提供宿主 initramfs，再下载该归档并独立核验长度
+   和 SHA-256，同时保存 `cmdline`。任一核验失败都不交接。
+5. `loader::payload::install()` 把归档页和命令行写入 `BootPayload` 配置表；随后
+   报告 `ready_to_handoff`，销毁 UDP/HTTP/IP 对象，退出 Boot Services 并进入内核。
 
 Every loader restart performs discovery again and gets a fresh
 `registration_id`. The server binds the device by its persistent MAC and may
@@ -85,8 +85,9 @@ HTTP control/download. The serial stream is observed for diagnostics and is
 never used to inject a command. Success requires all of the following:
 
 - discovery and HTTP polling completed;
-- `/kernel.elf` was requested;
-- the declared SHA-256 was verified;
+- `/kernel.elf` 和 `/session/initramfs.cpio` 都被请求；
+- 内核和归档各自的长度及 SHA-256 均已核验；
+- 诊断输出包含 `host_payload_ready:`；
 - `ready_to_handoff` reached the control server;
 - `elf_loaded:` appeared in diagnostics.
 
@@ -125,11 +126,11 @@ POST requests carry explicit `Content-Type: application/json` and
 `Content-Length` headers because an HTTP/1.1 server must not infer a request
 body from bytes following an unframed header block.
 
-`elf_load_error: Download(SizeMismatch)` or `Sha256Mismatch`
+`elf_load_error: Download(SizeMismatch)`、`Sha256Mismatch` 或 `host_payload_error`
 
-The downloaded bytes differ from the active boot manifest. Upload a new
-kernel, which creates a new `boot_id`; the failed command is intentionally not
-retried.
+内核或宿主归档与当前会话清单不符，或者宿主镜像无法安装到 UEFI 配置表。检查
+服务端该 `boot_id` 的镜像和 `cmdline`，上传新制品以创建新 `boot_id`；失败的命令
+不会在同一会话中自动重试。
 
 When debugging handoff, remember that `ready_to_handoff` is the last reliable
 network state. No UEFI network object may remain live across

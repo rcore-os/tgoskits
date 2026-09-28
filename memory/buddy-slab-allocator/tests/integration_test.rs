@@ -1107,11 +1107,11 @@ fn global_add_compact_region_reclaims_small_unaligned_region() {
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let _ctx = init_global(&allocator, &mut first, 1);
 
-    let before = allocator.available_bytes();
+    let before = allocator.managed_bytes();
     let unaligned = unsafe { second.subslice(PAGE_SIZE, ALIGN_2M / 2) };
     let managed = unsafe { allocator.add_compact_region(unaligned).unwrap() };
     assert!(managed > 0 && managed < ALIGN_2M / 2);
-    assert_eq!(allocator.available_bytes(), before + managed);
+    assert_eq!(allocator.managed_bytes(), before + managed);
     assert_eq!(allocator.managed_section_count(), 2);
 
     let skipped = unsafe { allocator.add_compact_region(tiny.as_mut_slice()).unwrap() };
