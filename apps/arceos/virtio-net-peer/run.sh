@@ -4,6 +4,25 @@ set -euo pipefail
 workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$workspace"
 
+case "${1:-}" in
+    "")
+        board_config=os/axvisor/configs/board/qemu-aarch64-virtio-net-peer.toml
+        qemu_config=os/axvisor/configs/qemu/qemu-aarch64-virtio-net-peer.toml
+        ;;
+    --vcpus)
+        board_config=os/axvisor/configs/board/qemu-aarch64-vcpus.toml
+        qemu_config=os/axvisor/configs/qemu/qemu-aarch64-vcpus.toml
+        ;;
+    *)
+        echo "usage: $0 [--vcpus]" >&2
+        exit 2
+        ;;
+esac
+if [[ $# -gt 1 ]]; then
+    echo "usage: $0 [--vcpus]" >&2
+    exit 2
+fi
+
 objcopy="${LLVM_OBJCOPY:-}"
 if [[ -z "$objcopy" ]]; then
     objcopy="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy"
@@ -57,5 +76,5 @@ build_guest vm3
 build_guest vm4
 
 exec cargo xtask axvisor qemu \
-    --config os/axvisor/configs/board/qemu-aarch64-virtio-net-peer.toml \
-    --qemu-config os/axvisor/configs/qemu/qemu-aarch64-virtio-net-peer.toml
+    --config "$board_config" \
+    --qemu-config "$qemu_config"

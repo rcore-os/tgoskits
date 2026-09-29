@@ -2,7 +2,7 @@ args = [
   "-nographic",
   "-cpu", "cortex-a72",
   "-machine", "virt,virtualization=on,gic-version=3",
-  # CPU0 stays with AxVisor, the four guests are pinned to CPU1..CPU4.
+  # The four guests use pCPU0..pCPU3; AxVisor shares pCPU0.
   "-smp", "8",
   "-m", "4g",
 ]

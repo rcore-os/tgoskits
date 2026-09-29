@@ -82,6 +82,56 @@ pub(super) fn update_cpu_node(
     // every guest virtual CPU id; clone the missing ones so the guest SMP
     // bootstrap can power all vCPUs up via PSCI.
     tree.ensure_guest_cpu_nodes(host_fdt, phys_cpu_ids)?;
+    tree.prune_stale_cpu_map_entries()?;
 
     Ok(tree.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use fdt_edit::{Node, Property};
+    use fdt_raw::RegInfo;
+
+    use super::*;
+
+    fn phandle_property(name: &str, value: u32) -> Property {
+        let mut property = Property::new(name, Vec::new());
+        property.set_u32_ls(&[value]);
+        property
+    }
+
+    #[test]
+    fn provided_guest_dtb_drops_cpu_map_references_to_removed_host_cpus() {
+        let mut host = Fdt::new();
+        let cpus = host.add_node(host.root_id(), Node::new("cpus"));
+        for (name, id, phandle) in [("cpu@0", 0, 7), ("cpu@1", 1, 8)] {
+            let cpu = host.add_node(cpus, Node::new(name));
+            host.node_mut(cpu)
+                .unwrap()
+                .set_property(phandle_property("phandle", phandle));
+            host.view_typed_mut(cpu)
+                .unwrap()
+                .set_regs(&[RegInfo::new(id, None)]);
+        }
+
+        let cpu_map = host.add_node(cpus, Node::new("cpu-map"));
+        let cluster = host.add_node(cpu_map, Node::new("cluster0"));
+        for (name, phandle) in [("core0", 7), ("core1", 8)] {
+            let core = host.add_node(cluster, Node::new(name));
+            host.node_mut(core)
+                .unwrap()
+                .set_property(phandle_property("cpu", phandle));
+        }
+
+        let mut config = axvmconfig::GuestConfig::default();
+        config.base.phys_cpu_ids = Some(std::vec![0, 2]);
+        let guest =
+            Fdt::from_bytes(&update_cpu_node(&Fdt::new(), Some(&host), &config).unwrap()).unwrap();
+
+        assert!(guest.get_by_path("/cpus/cpu@0").is_some());
+        assert!(guest.get_by_path("/cpus/cpu@2").is_some());
+        assert!(guest.get_by_path("/cpus/cpu@1").is_none());
+        assert!(guest.get_by_path("/cpus/cpu-map/cluster0/core0").is_some());
+        assert!(guest.get_by_path("/cpus/cpu-map/cluster0/core1").is_none());
+    }
 }
