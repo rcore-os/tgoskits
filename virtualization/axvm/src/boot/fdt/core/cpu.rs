@@ -60,12 +60,6 @@ pub(crate) fn project_cpus(
         }
     }
     let source_cpus = cpu_nodes(source.inner());
-    if source_cpus.len() != phys_cpu_ids.len() {
-        return Err(ax_err_type!(
-            InvalidData,
-            "selected CPU identities are missing from host firmware"
-        ));
-    }
     if let Some(cpus) = source.inner().get_by_path_id("/cpus") {
         for name in ["phandle", "linux,phandle"] {
             source
