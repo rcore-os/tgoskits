@@ -30,6 +30,4 @@ target
 /test_repos/
 *.log
 
-# Downloaded test framework
-/scripts/.axci/
 /Cargo.lock

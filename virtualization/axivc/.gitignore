@@ -7,6 +7,3 @@ Cargo.lock
 /test-results/
 /test_repos/
 *.log
-
-# Downloaded test framework
-/scripts/.axci/

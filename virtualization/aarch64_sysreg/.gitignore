@@ -8,7 +8,4 @@ Cargo.lock
 /test_repos/
 *.log
 
-# Downloaded test framework
-/scripts/.axci/
-
 .claude
