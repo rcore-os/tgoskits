@@ -75,6 +75,12 @@ browser-console = [
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
+# Opt-in physical layer-2 uplink: bridge guest virtio-net MACs onto the single
+# host NIC through `ax-net`. Requires net, the RTL8125 driver, and the NIC
+# accepting guest MACs, so it pulls in `ax-driver/net-l2-uplink`. Required for
+# the all-virtualized board guests, which own no physical NIC and leave through
+# the single host RTL8125; other configurations can leave it off.
+net-l2-uplink = ["ax-std/net", "ax-driver/net-l2-uplink"]
 
 [dependencies]
 anyhow.workspace = true

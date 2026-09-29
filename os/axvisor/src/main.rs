@@ -35,6 +35,8 @@ mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
 mod manager;
+#[cfg(feature = "net-l2-uplink")]
+mod net_uplink;
 #[cfg(feature = "browser-console")]
 mod network_console;
 #[cfg(feature = "browser-console")]
@@ -70,6 +72,11 @@ fn main() {
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
+    // Bridge guest virtio-net ports onto the single host NIC before any guest
+    // device is created, so the host DHCP/console stack keeps owning the wire
+    // and guest MACs are validated against the reserved host MACs.
+    #[cfg(feature = "net-l2-uplink")]
+    net_uplink::start();
     manager
         .init_default_vms()
         .unwrap_or_else(|error| panic!("failed to initialize default VMs: {error:#}"));
