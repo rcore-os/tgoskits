@@ -306,12 +306,12 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 
 ### axloader UEFI 网络启动
 
-- axloader 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `HTTP Service Binding` 必须来自同一个 UEFI 控制器；发现、MAC 和 HTTP 分别来自不同网卡不算可用实现。
+- axloader v5 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `TCP4 Service Binding` 必须来自同一个 UEFI 控制器；广播、MAC 和 HTTP 监听分别来自不同网卡不算可用实现。
 - `ConOut` 只输出诊断；不要从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或字符匹配协议。目标映像接管后，串口才作为交互终端。
-- 每次固件启动重新执行 UDP 2998 发现并取得新的 `registration_id`。多 server 响应必须拒绝，未绑定和空闲状态继续轮询，失败使用有上限退避，不回退串口。
-- QEMU smoke 要走真实 UEFI UDP/HTTP。SLiRP 可承担 DHCP 与 HTTP；需要把二层广播交给宿主测试服务时，用 `filter-mirror` 捕获客户机发包、用独立 `filter-redirector` 注入响应，并验证四字节大端帧长、IPv4/UDP 校验和、目标 MAC/IP/端口。
-- UEFI HTTP JSON POST 必须显式携带 `Content-Type: application/json` 与准确的 `Content-Length`；只有请求体字节但没有长度头时，HTTP/1.1 server 会把请求解析为空 body。对同一网卡连续创建 HTTP 子协议时，上一请求的 protocol guard 必须先完成关闭，避免 OVMF 将相同 OpenProtocol 键合并后在析构期返回 `NOT_FOUND`。
-- 成功证据必须同时包含真实内核 GET、长度和 SHA-256 校验、`ready_to_handoff` 状态及 ELF 装载。`ready_to_handoff` 后先析构 UDP、HTTP、IP 配置及其事件和子句柄，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
+- 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。
+- QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。服务端联调时，`filter-mirror` 捕获客户机广播帧，宿主夹具解析四字节大端帧长和 UDP 长度后转交本地服务端；测试地址仅在夹具内映射到 `hostfwd`，服务端必须通过真实 HTTP 调用设备。
+- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。成功证据包含客户机 `elf_loaded`、`ready_to_handoff` 和真实 FAT 镜像跨复位的确认结果。
+- 发送准备交接响应后先析构 TCP4 监听、子句柄、事件及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。

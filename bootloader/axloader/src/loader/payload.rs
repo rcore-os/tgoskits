@@ -1,24 +1,14 @@
 use core::{ffi::c_void, fmt, ptr, ptr::NonNull};
 
 use host_boot_abi::{BOOT_PAYLOAD_GUID, BootPayload};
-use httpboot_protocol::BootFile;
-use uefi::{
-    Handle,
-    boot::{self, AllocateType, MemoryType},
-};
+use uefi::boot::{self, AllocateType, MemoryType};
 
-use super::{
-    elf_loader::EntryHandoff,
-    http::{self, KernelLoadError},
-};
+use super::elf_loader::EntryHandoff;
 
 #[derive(Debug)]
 pub enum PayloadError {
     UnsupportedHandoff,
-    InvalidArchive,
     InvalidCmdline(&'static str),
-    Download(KernelLoadError),
-    HashMismatch,
     Allocation(uefi::Status),
     Install(uefi::Status),
 }
@@ -27,10 +17,7 @@ impl fmt::Display for PayloadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedHandoff => write!(f, "host payload requires UEFI handoff"),
-            Self::InvalidArchive => write!(f, "invalid host archive offer"),
             Self::InvalidCmdline(error) => write!(f, "{error}"),
-            Self::Download(error) => write!(f, "host archive download failed: {error:?}"),
-            Self::HashMismatch => write!(f, "host archive checksum mismatch"),
             Self::Allocation(status) => write!(f, "host payload allocation failed: {status:?}"),
             Self::Install(status) => write!(f, "host payload handoff failed: {status:?}"),
         }
@@ -73,9 +60,8 @@ impl Drop for PublishedPayload {
     }
 }
 
-pub fn prepare(
-    nic: Handle,
-    initramfs: &Option<BootFile>,
+pub fn prepare_uploaded(
+    initramfs: Option<&[u8]>,
     cmdline: Option<&str>,
     handoff: EntryHandoff,
 ) -> Result<PreparedPayload, PayloadError> {
@@ -88,26 +74,17 @@ pub fn prepare(
     if handoff != EntryHandoff::Uefi {
         return Err(PayloadError::UnsupportedHandoff);
     }
-
     let mut table = BootPayload::empty();
     if let Some(cmdline) = cmdline {
         table
             .set_cmdline(cmdline)
             .map_err(PayloadError::InvalidCmdline)?;
     }
-    let archive = if let Some(file) = initramfs {
-        if file.size == 0 || !file.path.starts_with("http://") {
-            return Err(PayloadError::InvalidArchive);
-        }
-        let bytes = http::download_sized_body(nic, &file.path, file.size)
-            .map_err(PayloadError::Download)?;
-        if !axloader::integrity::sha256_matches(&bytes, &file.sha256) {
-            return Err(PayloadError::HashMismatch);
-        }
+    let archive = if let Some(bytes) = initramfs {
         let pages = bytes.len().div_ceil(4096);
         let address = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
             .map_err(|error| PayloadError::Allocation(error.status()))?;
-        // SAFETY: the UEFI allocation contains at least bytes.len() writable bytes.
+        // SAFETY: The allocated page range is writable and has at least bytes.len() bytes.
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), address.as_ptr(), bytes.len()) };
         table.archive_start = address.as_ptr() as u64;
         table.archive_len = bytes.len() as u64;

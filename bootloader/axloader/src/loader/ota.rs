@@ -59,10 +59,6 @@ impl OtaContext {
         self.state.pending == Some(self.slot) && self.state.attempted
     }
 
-    pub fn source(&self) -> Source {
-        self.state.source
-    }
-
     pub fn record_failure(&mut self, reason: &'static str) {
         self.last_failure = Some(reason);
     }

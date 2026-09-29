@@ -6,9 +6,7 @@ extern crate alloc;
 #[cfg(any(windows, unix))]
 pub mod elf_image;
 
-pub mod boot_offer;
 pub mod integrity;
-pub mod network_policy;
 #[cfg(target_os = "uefi")]
 pub mod ota_disk;
 pub mod ota_state;

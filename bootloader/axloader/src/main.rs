@@ -14,4 +14,4 @@ mod loader;
 mod uefi_runtime;
 
 #[cfg(target_os = "uefi")]
-pub use loader::{console, control, elf_loader, entry, http};
+pub use loader::{console, elf_loader, entry};

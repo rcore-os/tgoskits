@@ -2,15 +2,10 @@
 
 use std::{
     fs,
-    io::{Read, Write},
-    net::{TcpListener, TcpStream, UdpSocket},
+    io::Write,
+    net::{TcpListener, TcpStream},
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
     time::{Duration, Instant},
 };
 
@@ -45,41 +40,16 @@ fn command(program: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_qemu(
-    firmware: &OvmfFirmware,
-    root: &Path,
-    port: u16,
-    server_filters: Option<(u16, u16, u16)>,
-) -> anyhow::Result<QemuChild> {
+fn start_qemu(firmware: &OvmfFirmware, root: &Path, port: u16) -> anyhow::Result<QemuChild> {
     let serial = fs::File::create(root.join("ota-qemu.log"))?;
     let vars = root.join("vars.fd");
     let disk = root.join("esp.img");
     let mut command = Command::new("qemu-system-x86_64");
-    let netdev = if let Some((_, _, udp_port)) = server_filters {
-        format!(
-            "user,id=user0,hostfwd=tcp:127.0.0.1:{port}-:2999,hostfwd=udp:127.0.0.1:{udp_port}-:\
-             2999"
-        )
-    } else {
-        format!("user,id=user0,hostfwd=tcp:127.0.0.1:{port}-:2999")
-    };
+    let netdev = format!("user,id=user0,hostfwd=tcp:127.0.0.1:{port}-:2999");
     command.args([
         "-m", "256M", "-smp", "1", "-machine", "q35", "-accel", "kvm", "-cpu", "host", "-display",
         "none", "-monitor", "none", "-serial", "stdio", "-netdev", &netdev,
     ]);
-    if let Some((capture, inject, _)) = server_filters {
-        command.args([
-            "-chardev",
-            &format!("socket,id=discovery_capture,host=127.0.0.1,port={capture},reconnect-ms=100"),
-            "-chardev",
-            &format!("socket,id=discovery_injection,host=127.0.0.1,port={inject},reconnect-ms=100"),
-            "-object",
-            "filter-mirror,id=discovery_mirror,netdev=user0,queue=rx,outdev=discovery_capture",
-            "-object",
-            "filter-redirector,id=discovery_redirect,netdev=user0,queue=tx,\
-             indev=discovery_injection",
-        ]);
-    }
     command.args([
         "-device",
         "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01",
@@ -139,6 +109,29 @@ async fn status(
     )
 }
 
+async fn epoch(client: &reqwest::Client, port: u16) -> anyhow::Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let response = client
+            .get(format!("http://127.0.0.1:{port}/api/v1/status"))
+            .timeout(Duration::from_secs(6))
+            .send()
+            .await;
+        if let Ok(response) = response
+            && let Ok(status) = response.error_for_status()
+            && let Ok(value) = status.json::<Value>().await
+            && let Some(epoch) = value["boot_epoch"].as_str()
+        {
+            return Ok(epoch.to_owned());
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "loader epoch did not become available"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn upload(
     client: &reqwest::Client,
     port: u16,
@@ -147,6 +140,7 @@ async fn upload(
 ) -> anyhow::Result<reqwest::Response> {
     client
         .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+        .header("X-Boot-Epoch", epoch(client, port).await?)
         .header("X-Image-Sha256", digest)
         .body(bytes.to_vec())
         .send()
@@ -167,7 +161,7 @@ pub(super) async fn test_direct_ota(
     let root = root.path();
     let firmware = OvmfFirmware::fetch(Arch::X64).await?;
     fs::copy(firmware.vars(), root.join("vars.fd"))?;
-    let loader = fs::read(super::axloader_efi_path(target_dir, target))?;
+    let loader = fs::read(target_dir.join(target).join("release/axloader.efi"))?;
     // Distinct, valid PE files represent the old and the first new loader.
     let mut old_loader = loader.clone();
     old_loader.push(0x01);
@@ -231,24 +225,14 @@ pub(super) async fn test_direct_ota(
         .timeout(Duration::from_secs(35))
         .build()?;
     if server_only {
-        let server = AssignedOtaServer::start(loader.clone())?;
-        let qemu = start_qemu(&firmware, root, port, Some(server.filter_ports()))?;
-        let assigned = status(&client, port, root, |value| {
-            value["running_slot"] == "b"
-                && value["active_slot"] == "b"
-                && value["last_outcome"] == "confirmed"
-        })
-        .await?;
-        ensure!(
-            assigned["running_sha256"] == format!("{:x}", Sha256::digest(&loader))
-                && server.confirmed.load(Ordering::Acquire),
-            "v4 server assignment did not commit: {assigned}"
-        );
+        let qemu = start_qemu(&firmware, root, port)?;
+        status(&client, port, root, |value| value["running_slot"] == "a").await?;
+        server_assignment(&client, port, root, &loader).await?;
         drop(qemu);
-        println!("axloader OTA QEMU: isolated v4 server assignment passed");
+        println!("axloader OTA QEMU: assigned v5 upload and confirmation passed");
         return Ok(());
     }
-    let mut qemu = start_qemu(&firmware, root, port, None)?;
+    let mut qemu = start_qemu(&firmware, root, port)?;
     let status0 = status(&client, port, root, |value| {
         value["pending_update_id"] == initial_id && value["trial"] == true
     })
@@ -259,6 +243,7 @@ pub(super) async fn test_direct_ota(
     );
     let confirmed = client
         .post(format!("http://127.0.0.1:{port}/api/v1/ota/confirm"))
+        .header("X-Boot-Epoch", epoch(&client, port).await?)
         .json(&serde_json::json!({"update_id": initial_id}))
         .send()
         .await?;
@@ -272,6 +257,12 @@ pub(super) async fn test_direct_ota(
     })
     .await?;
 
+    boot_smoke(&client, port, root).await?;
+    drop(qemu);
+    qemu = start_qemu(&firmware, root, port)?;
+    status(&client, port, root, |value| value["running_slot"] == "b").await?;
+    println!("axloader OTA QEMU: checking failed uploads on stable B");
+
     let digest = format!("{:x}", Sha256::digest(&old_loader));
     let wrong = upload(&client, port, &old_loader, &"0".repeat(64)).await?;
     ensure!(
@@ -279,7 +270,15 @@ pub(super) async fn test_direct_ota(
         "bad image SHA was accepted"
     );
     let mut short = TcpStream::connect(format!("127.0.0.1:{port}"))?;
-    short.write_all(b"PUT /api/v1/ota/image HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10000\r\nX-Image-Sha256: 0000000000000000000000000000000000000000000000000000000000000000\r\n\r\nhello")?;
+    short.write_all(
+        format!(
+            "PUT /api/v1/ota/image HTTP/1.1\r\nHost: localhost\r\nX-Boot-Epoch: \
+             {}\r\nContent-Length: 10000\r\nX-Image-Sha256: {}\r\n\r\nhello",
+            epoch(&client, port).await?,
+            "0".repeat(64)
+        )
+        .as_bytes(),
+    )?;
     short.shutdown(std::net::Shutdown::Write)?;
     drop(short);
     status(&client, port, root, |value| {
@@ -303,7 +302,7 @@ pub(super) async fn test_direct_ota(
     .await?;
     // A killed trial retains its attempted record on the *same* FAT image.
     drop(qemu);
-    qemu = start_qemu(&firmware, root, port, None)?;
+    qemu = start_qemu(&firmware, root, port)?;
     let rolled = status(&client, port, root, |value| {
         value["last_outcome"] == "rolled_back" && value["running_slot"] == "b"
     })
@@ -328,6 +327,7 @@ pub(super) async fn test_direct_ota(
     .await?;
     let confirmed = client
         .post(format!("http://127.0.0.1:{port}/api/v1/ota/confirm"))
+        .header("X-Boot-Epoch", epoch(&client, port).await?)
         .json(&serde_json::json!({"update_id": id}))
         .send()
         .await?;
@@ -336,7 +336,7 @@ pub(super) async fn test_direct_ota(
         "second confirmation failed"
     );
     drop(qemu);
-    let qemu = start_qemu(&firmware, root, port, None)?;
+    let qemu = start_qemu(&firmware, root, port)?;
     let stable = status(&client, port, root, |value| {
         value["active_slot"] == "a"
             && value["running_slot"] == "a"
@@ -366,7 +366,7 @@ pub(super) async fn test_direct_ota(
             "::EFI/AXLOADER/B.EFI",
         ],
     )?;
-    let qemu = start_qemu(&firmware, root, port, None)?;
+    let qemu = start_qemu(&firmware, root, port)?;
     status(&client, port, root, |value| {
         value["running_slot"] == "a"
             && value["active_slot"] == "a"
@@ -377,7 +377,7 @@ pub(super) async fn test_direct_ota(
     // A valid pending record pointing at a file which cannot be loaded must
     // be committed as a failed trial before returning to the stable slot.
     stage_unloadable_trial(root, disk_path)?;
-    let qemu = start_qemu(&firmware, root, port, None)?;
+    let qemu = start_qemu(&firmware, root, port)?;
     let failed = status(&client, port, root, |value| {
         value["running_slot"] == "a"
             && value["active_slot"] == "a"
@@ -390,35 +390,11 @@ pub(super) async fn test_direct_ota(
         "unloadable EFI trial did not record the cause: {failed}"
     );
     drop(qemu);
-    let server = AssignedOtaServer::start(loader.clone())?;
-    let qemu = start_qemu(&firmware, root, port, Some(server.filter_ports()))?;
-    let assigned = status(&client, port, root, |value| {
-        value["running_slot"] == "b"
-            && value["active_slot"] == "b"
-            && value["last_outcome"] == "confirmed"
-            && value["source"] == "server"
-    })
-    .await?;
-    ensure!(
-        assigned["running_sha256"] == format!("{:x}", Sha256::digest(&loader)),
-        "server upgrade image mismatch: {assigned}"
-    );
-    ensure!(
-        server.confirmed.load(Ordering::Acquire),
-        "v4 server did not confirm the assigned trial"
-    );
+    let qemu = start_qemu(&firmware, root, port)?;
+    status(&client, port, root, |value| value["running_slot"] == "a").await?;
+    server_assignment(&client, port, root, &loader).await?;
     drop(qemu);
-    let _qemu = start_qemu(&firmware, root, port, Some(server.filter_ports()))?;
-    status(&client, port, root, |value| {
-        value["running_slot"] == "b"
-            && value["active_slot"] == "b"
-            && value["pending_update_id"].is_null()
-    })
-    .await?;
-    println!(
-        "axloader OTA QEMU: v4 server assignment, report, confirmation, and subsequent FAT boot \
-         passed"
-    );
+    println!("axloader OTA QEMU: assigned v5 confirmation and subsequent FAT boot passed");
     Ok(())
 }
 
@@ -485,187 +461,182 @@ fn stage_unloadable_trial(root: &Path, disk_path: &str) -> anyhow::Result<()> {
     )
 }
 
-struct AssignedOtaServer {
-    stop: Arc<AtomicBool>,
-    confirmed: Arc<AtomicBool>,
-    threads: Vec<thread::JoinHandle<()>>,
-    capture: u16,
-    inject: u16,
-    udp_hostfwd: u16,
+async fn server_assignment(
+    client: &reqwest::Client,
+    port: u16,
+    root: &Path,
+    image: &[u8],
+) -> anyhow::Result<()> {
+    const ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+    let digest = format!("{:x}", Sha256::digest(image));
+    let response = client
+        .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+        .header("X-Boot-Epoch", epoch(client, port).await?)
+        .header("X-Image-Sha256", digest.clone())
+        .header("X-Update-Source", "server")
+        .header("X-Update-Id", ID)
+        .body(image.to_vec())
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::ACCEPTED,
+        "assigned upload failed: {}",
+        response.status()
+    );
+    status(client, port, root, |value| {
+        value["pending_update_id"] == ID && value["running_slot"] == "b"
+    })
+    .await?;
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/ota/confirm"))
+        .header("X-Boot-Epoch", epoch(client, port).await?)
+        .header("X-Update-Source", "server")
+        .json(&serde_json::json!({"update_id": ID}))
+        .send()
+        .await?;
+    ensure!(
+        response.status().is_success(),
+        "assigned confirmation failed: {}",
+        response.status()
+    );
+    status(client, port, root, |value| {
+        value["running_slot"] == "b" && value["active_slot"] == "b" && value["source"] == "server"
+    })
+    .await?;
+    Ok(())
 }
 
-fn write_ota_response(stream: &mut impl Write, status: &str, body: &[u8]) {
-    super::write_http_response_version(stream, status, body, "HTTP/1.0");
-}
-
-impl AssignedOtaServer {
-    fn start(image: Vec<u8>) -> anyhow::Result<Self> {
-        const ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
-        let listener = TcpListener::bind("0.0.0.0:0")?;
-        listener.set_nonblocking(true)?;
-        let port = listener.local_addr()?.port();
-        let capture_listener = TcpListener::bind("127.0.0.1:0")?;
-        capture_listener.set_nonblocking(true)?;
-        let capture = capture_listener.local_addr()?.port();
-        let injection_listener = TcpListener::bind("127.0.0.1:0")?;
-        injection_listener.set_nonblocking(true)?;
-        let inject = injection_listener.local_addr()?.port();
-        let reservation = UdpSocket::bind("127.0.0.1:0")?;
-        let udp_hostfwd = reservation.local_addr()?.port();
-        drop(reservation);
-        let stop = Arc::new(AtomicBool::new(false));
-        let confirmed = Arc::new(AtomicBool::new(false));
-        let polled = Arc::new(AtomicBool::new(false));
-        let http_stop = stop.clone();
-        let http_confirmed = confirmed.clone();
-        let http_polled = polled.clone();
-        let digest = format!("{:x}", Sha256::digest(&image));
-        let http_thread = thread::spawn(move || {
-            while !http_stop.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-                        let request = match super::read_http_request(&mut stream) {
-                            Ok(request) => request,
-                            Err(error) => {
-                                eprintln!("axloader OTA mock: request read failed: {error}");
-                                continue;
-                            }
-                        };
-                        let body = request.as_slice();
-                        let line = String::from_utf8_lossy(body);
-                        if line.starts_with("GET /api/v1/loader-updates/") {
-                            write_ota_response(&mut stream, "200 OK", &image);
-                        } else if line.starts_with("POST /api/v1/loaders/ota-status ") {
-                            if line.contains("\"phase\":\"succeeded\"") {
-                                http_confirmed.store(true, Ordering::Release);
-                            }
-                            write_ota_response(&mut stream, "204 No Content", &[]);
-                        } else if line.starts_with("POST /api/v1/loaders/poll ") {
-                            http_polled.store(true, Ordering::Release);
-                            println!("axloader OTA mock: v4 poll received");
-                            let body_start = body
-                                .windows(4)
-                                .position(|part| part == b"\r\n\r\n")
-                                .map(|index| index + 4);
-                            let Some(state) = body_start.and_then(|index| {
-                                serde_json::from_slice::<Value>(&body[index..]).ok()
-                            }) else {
-                                write_ota_response(&mut stream, "400 Bad Request", &[]);
-                                continue;
-                            };
-                            let ota = &state["ota"];
-                            let response = if ota["trial"] == true
-                                && ota["source"] == "server"
-                                && ota["pending_update_id"] == ID
-                                && ota["running_sha256"] == digest
-                            {
-                                serde_json::json!({"state": "confirm_update", "board_id": "qemu-ota", "update_id": ID})
-                            } else if ota["active_sha256"] == digest {
-                                serde_json::json!({"state": "bound_idle", "board_id": "qemu-ota"})
-                            } else {
-                                serde_json::json!({"state": "update", "board_id": "qemu-ota", "update_id": ID,
-                                    "image_path": format!("/api/v1/loader-updates/{ID}/image"),
-                                    "image_size": image.len(), "image_sha256": digest})
-                            };
-                            write_ota_response(
-                                &mut stream,
-                                "200 OK",
-                                response.to_string().as_bytes(),
-                            );
-                        } else {
-                            write_ota_response(&mut stream, "404 Not Found", &[]);
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10))
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        let udp_stop = stop.clone();
-        let udp_polled = polled;
-        let udp_thread = thread::spawn(move || {
-            let udp_forward = UdpSocket::bind("127.0.0.1:0").expect("local UDP socket");
-            let mut capture_stream = None;
-            let mut inject_stream = None;
-            let mut frames = Vec::new();
-            let mut buf = [0_u8; 2048];
-            while !udp_stop.load(Ordering::Acquire) {
-                super::accept_qemu_filter(&capture_listener, &mut capture_stream);
-                super::accept_qemu_filter(&injection_listener, &mut inject_stream);
-                if let Some(stream) = capture_stream.as_mut() {
-                    match stream.read(&mut buf) {
-                        Ok(0) => capture_stream = None,
-                        Ok(size) => frames.extend_from_slice(&buf[..size]),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(_) => capture_stream = None,
-                    }
-                }
-                while let Some(frame) = super::take_qemu_filter_frame(&mut frames) {
-                    let Some(request) = super::parse_discovery_frame(&frame) else {
-                        continue;
-                    };
-                    println!("axloader OTA mock: captured v4 discovery");
-                    let offer = serde_json::json!({
-                        "protocol_version": 4, "server_id": "qemu-ota-mock",
-                        "control_base_url": format!("http://10.0.2.2:{port}"),
-                        "registration_id": ID, "expires_in_ms": 60000,
-                    });
-                    let reply =
-                        super::build_discovery_reply(&request, offer.to_string().as_bytes());
-                    thread::sleep(super::HTTP_SMOKE_DISCOVERY_REPLY_DELAY);
-                    for _ in 0..10 {
-                        if udp_polled.load(Ordering::Acquire) {
-                            break;
-                        }
-                        let _ = udp_forward
-                            .send_to(offer.to_string().as_bytes(), ("127.0.0.1", udp_hostfwd));
-                        thread::sleep(Duration::from_millis(500));
-                    }
-                    println!("axloader OTA mock: forwarded v4 offer through QEMU UDP");
-                    for _ in 0..100 {
-                        if inject_stream.is_some() {
-                            break;
-                        }
-                        super::accept_qemu_filter(&injection_listener, &mut inject_stream);
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    if let Some(stream) = inject_stream.as_mut() {
-                        if super::write_qemu_filter_frame(stream, &reply).is_err() {
-                            inject_stream = None;
-                            println!("axloader OTA mock: v4 offer injection failed");
-                        } else {
-                            println!("axloader OTA mock: injected v4 offer");
-                        }
-                    } else {
-                        println!("axloader OTA mock: injection chardev not connected");
-                    }
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-        });
-        Ok(Self {
-            stop,
-            confirmed,
-            threads: vec![http_thread, udp_thread],
-            capture,
-            inject,
-            udp_hostfwd,
-        })
+async fn boot_smoke(client: &reqwest::Client, port: u16, root: &Path) -> anyhow::Result<()> {
+    let kernel = super::minimal_x86_64_kernel_elf();
+    let initramfs = b"uefi-loader-host-payload";
+    let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
+    let epoch = epoch(client, port).await?;
+    let manifest = serde_json::json!({
+        "boot_id": "qemu-v5-boot",
+        "arch": "x86_64",
+        "image_format": "elf64",
+        "kernel": {"size": kernel.len(), "sha256": format!("{:x}", Sha256::digest(&kernel))},
+        "initramfs": {"size": initramfs.len(), "sha256": format!("{:x}", Sha256::digest(initramfs))},
+        "cmdline": "qemu-v5-smoke",
+        "entry_symbol": "httpboot_entry",
+    });
+    let response = client
+        .post(&base)
+        .header("X-Boot-Epoch", &epoch)
+        .json(&manifest)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::CREATED,
+        "boot manifest rejected: {}",
+        response.text().await?
+    );
+    let stale = client
+        .post(&base)
+        .header("X-Boot-Epoch", "previous-generation")
+        .json(&manifest)
+        .send()
+        .await?;
+    ensure!(
+        stale.status() == reqwest::StatusCode::CONFLICT,
+        "stale epoch accepted"
+    );
+    let repeated = client
+        .post(&base)
+        .header("X-Boot-Epoch", &epoch)
+        .json(&manifest)
+        .send()
+        .await?;
+    ensure!(
+        repeated.status() == reqwest::StatusCode::OK,
+        "identical boot rejected"
+    );
+    let concurrent_ota = client
+        .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+        .header("X-Boot-Epoch", &epoch)
+        .header("X-Image-Sha256", "00".repeat(32))
+        .body(vec![1])
+        .send()
+        .await?;
+    ensure!(
+        concurrent_ota.status() == reqwest::StatusCode::CONFLICT,
+        "concurrent OTA accepted"
+    );
+    let mut conflicting_manifest = manifest.clone();
+    conflicting_manifest["boot_id"] = serde_json::json!("another-boot-id");
+    let conflicting = client
+        .post(&base)
+        .header("X-Boot-Epoch", &epoch)
+        .json(&conflicting_manifest)
+        .send()
+        .await?;
+    ensure!(
+        conflicting.status() == reqwest::StatusCode::CONFLICT,
+        "concurrent boot accepted"
+    );
+    let rejected = client
+        .put(format!("{base}/qemu-v5-boot/kernel"))
+        .header("X-Boot-Epoch", &epoch)
+        .header("X-Image-Sha256", "00".repeat(32))
+        .body(kernel.clone())
+        .send()
+        .await?;
+    ensure!(
+        rejected.status() == reqwest::StatusCode::BAD_REQUEST,
+        "bad digest accepted"
+    );
+    let retry = client
+        .post(&base)
+        .header("X-Boot-Epoch", &epoch)
+        .json(&manifest)
+        .send()
+        .await?;
+    ensure!(
+        retry.status() == reqwest::StatusCode::CREATED,
+        "failed upload kept its transaction"
+    );
+    for (kind, bytes) in [
+        ("kernel", kernel.as_slice()),
+        ("initramfs", initramfs.as_slice()),
+    ] {
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        let response = client
+            .put(format!("{base}/qemu-v5-boot/{kind}"))
+            .header("X-Boot-Epoch", &epoch)
+            .header("X-Image-Sha256", digest)
+            .body(bytes.to_vec())
+            .send()
+            .await?;
+        ensure!(
+            response.status().is_success(),
+            "{kind} upload failed: {}",
+            response.status()
+        );
     }
-
-    fn filter_ports(&self) -> (u16, u16, u16) {
-        (self.capture, self.inject, self.udp_hostfwd)
-    }
-}
-
-impl Drop for AssignedOtaServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        for thread in self.threads.drain(..) {
-            let _ = thread.join();
+    let response = client
+        .post(format!("{base}/qemu-v5-boot/start"))
+        .header("X-Boot-Epoch", &epoch)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::ACCEPTED,
+        "boot handoff refused: {}",
+        response.text().await?
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
+        if log.contains("host_payload_ready:")
+            && log.contains("elf_loaded:")
+            && log.contains("ready_to_handoff")
+        {
+            println!("axloader QEMU: pushed kernel and initramfs, verified and handed off");
+            return Ok(());
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    bail!(
+        "pushed kernel did not reach handoff: {}",
+        fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default()
+    )
 }

@@ -1,17 +1,14 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::{ffi::c_void, ptr, slice, time::Duration};
+use core::{ffi::c_void, ptr, time::Duration};
 
-use axloader::network_policy::{DiscoverySelectionError, select_unique_server_for};
-use httpboot_protocol::{
-    LoaderDiscoveryOffer, LoaderDiscoveryProbe, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress,
-};
+use httpboot_protocol::{MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress};
 use uefi::{
     Event, Handle, Status, StatusExt,
     boot::{self, EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
     proto::{
-        network::{http::HttpBinding, ip4config2::Ip4Config2, snp::SimpleNetwork},
+        network::{ip4config2::Ip4Config2, snp::SimpleNetwork},
         unsafe_protocol,
     },
 };
@@ -21,25 +18,17 @@ const UDP4_PROTOCOL_GUID: uefi::Guid = uefi::guid!("3ad9df29-4501-478d-b1f8-7f7f
 const UDP4_SERVICE_BINDING_GUID: uefi::Guid = uefi::guid!("83f01464-99bd-45e5-b383-af6305d8e9e6");
 const UDP_POLL_STALL: Duration = Duration::from_millis(10);
 const UDP_COMPLETION_POLLS: usize = 200;
-const DISCOVERY_RECEIVE_ATTEMPTS: usize = 8;
-const DISCOVERY_CLIENT_PORT: u16 = 2999;
-const UDP_NETWORK_UNREACHABLE: Status = Status(Status::ERROR_BIT | 100);
-const UDP_HOST_UNREACHABLE: Status = Status(Status::ERROR_BIT | 101);
-const UDP_PROTOCOL_UNREACHABLE: Status = Status(Status::ERROR_BIT | 102);
-const UDP_PORT_UNREACHABLE: Status = Status(Status::ERROR_BIT | 103);
+const DISCOVERY_CLIENT_PORT: u16 = 2997;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {
     NoCompatibleInterface,
-    InterfaceUnavailable,
     InvalidMac,
     UdpUnavailable,
     UdpConfigure,
     UdpTransmit,
-    UdpReceive,
     Timeout,
     MalformedResponse,
-    MultipleServers,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,14 +36,13 @@ pub struct NetworkInterface {
     handle: Handle,
     pub mac_address: MacAddress,
     pub current_mac_address: MacAddress,
-    pub station_address: Ipv4Address,
     broadcast_address: Ipv4Address,
 }
 
 impl NetworkInterface {
     pub fn select() -> Result<Self, NetworkError> {
-        let handles =
-            boot::find_handles::<HttpBinding>().map_err(|_| NetworkError::NoCompatibleInterface)?;
+        let handles = boot::find_handles::<super::direct::TcpBinding>()
+            .map_err(|_| NetworkError::NoCompatibleInterface)?;
         for handle in handles {
             let Ok(mut ip4) = Ip4Config2::new(handle) else {
                 continue;
@@ -94,7 +82,6 @@ impl NetworkInterface {
                 handle,
                 mac_address,
                 current_mac_address: current,
-                station_address: info.station_addr,
                 broadcast_address: subnet_broadcast(info.station_addr, info.subnet_mask),
             });
         }
@@ -104,39 +91,44 @@ impl NetworkInterface {
     pub const fn handle(self) -> Handle {
         self.handle
     }
+}
 
-    pub fn discover_server(
-        self,
-        probe: &LoaderDiscoveryProbe,
-        progress: &mut impl FnMut(),
-    ) -> Result<LoaderDiscoveryOffer, NetworkError> {
-        let payload = httpboot_protocol::encode_discovery_probe(probe)
-            .map_err(|_| NetworkError::MalformedResponse)?;
-        let mut udp = Udp4Client::new(self.handle)?;
-        let first = udp.transmit_and_receive(
-            self.broadcast_address,
-            httpboot_protocol::DISCOVERY_PORT,
-            &payload,
-            MAX_DISCOVERY_DATAGRAM_BYTES,
-            progress,
-        )?;
+/// The beacon only advertises a device endpoint; it never waits for a server.
+pub struct Announcer {
+    address: Ipv4Address,
+    payload: Vec<u8>,
+    udp: Udp4Client,
+}
 
-        let mut offers = Vec::new();
-        offers.push(serde_json::from_slice(&first).map_err(|_| NetworkError::MalformedResponse)?);
-        for _ in 1..DISCOVERY_RECEIVE_ATTEMPTS {
-            let bytes = match udp.receive(MAX_DISCOVERY_DATAGRAM_BYTES, progress) {
-                Ok(bytes) => bytes,
-                Err(NetworkError::Timeout) => continue,
-                Err(error) => return Err(error),
-            };
-            let offer: LoaderDiscoveryOffer =
-                serde_json::from_slice(&bytes).map_err(|_| NetworkError::MalformedResponse)?;
-            offers.push(offer);
+impl Announcer {
+    pub fn new(interface: NetworkInterface, boot_epoch: &str) -> Result<Self, NetworkError> {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "protocol_version": 5,
+            "mac_address": interface.mac_address,
+            "current_mac_address": interface.current_mac_address,
+            "arch": httpboot_protocol::BootArch::X86_64,
+            "loader_version": env!("CARGO_PKG_VERSION"),
+            "boot_epoch": boot_epoch,
+            "http_port": 2999,
+        }))
+        .map_err(|_| NetworkError::MalformedResponse)?;
+        if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
+            return Err(NetworkError::MalformedResponse);
         }
-        select_unique_server_for(offers, probe.protocol_version).map_err(|error| match error {
-            DiscoverySelectionError::NoCompatibleServer => NetworkError::Timeout,
-            DiscoverySelectionError::MultipleServers => NetworkError::MultipleServers,
+        Ok(Self {
+            address: interface.broadcast_address,
+            payload,
+            udp: Udp4Client::new(interface.handle)?,
         })
+    }
+
+    pub fn broadcast(&mut self) -> Result<(), NetworkError> {
+        self.udp.transmit(
+            self.address,
+            httpboot_protocol::DISCOVERY_PORT,
+            &self.payload,
+            &mut || (),
+        )
     }
 }
 
@@ -203,10 +195,6 @@ impl Udp4 {
 
     fn transmit(&mut self, token: &mut Udp4CompletionToken) -> uefi::Result<()> {
         unsafe { (self.0.transmit)(&mut self.0, token) }.to_result()
-    }
-
-    fn receive(&mut self, token: &mut Udp4CompletionToken) -> uefi::Result<()> {
-        unsafe { (self.0.receive)(&mut self.0, token) }.to_result()
     }
 
     fn cancel(&mut self, token: &mut Udp4CompletionToken) -> uefi::Result<()> {
@@ -310,54 +298,6 @@ impl Udp4Client {
         self.wait(&mut token, NetworkError::UdpTransmit, progress)
     }
 
-    fn transmit_and_receive(
-        &mut self,
-        destination: Ipv4Address,
-        port: u16,
-        payload: &[u8],
-        receive_limit: usize,
-        progress: &mut impl FnMut(),
-    ) -> Result<Vec<u8>, NetworkError> {
-        let receive_event = CompletionEvent::new()?;
-        let mut receive_token = Udp4CompletionToken {
-            event: receive_event.as_raw(),
-            status: Status::NOT_READY,
-            packet: Udp4CompletionTokenPacket {
-                rx_data: ptr::null_mut(),
-            },
-        };
-        self.protocol_mut()
-            .receive(&mut receive_token)
-            .map_err(|_| NetworkError::UdpReceive)?;
-
-        if let Err(error) = self.transmit(destination, port, payload, progress) {
-            self.cancel_and_complete(&mut receive_token, NetworkError::UdpReceive)?;
-            return Err(error);
-        }
-        self.wait_for_receive(&mut receive_token, progress)?;
-        collect_received_bytes(&receive_token, receive_limit)
-    }
-
-    fn receive(
-        &mut self,
-        limit: usize,
-        progress: &mut impl FnMut(),
-    ) -> Result<Vec<u8>, NetworkError> {
-        let event = CompletionEvent::new()?;
-        let mut token = Udp4CompletionToken {
-            event: event.as_raw(),
-            status: Status::NOT_READY,
-            packet: Udp4CompletionTokenPacket {
-                rx_data: ptr::null_mut(),
-            },
-        };
-        self.protocol_mut()
-            .receive(&mut token)
-            .map_err(|_| NetworkError::UdpReceive)?;
-        self.wait_for_receive(&mut token, progress)?;
-        collect_received_bytes(&token, limit)
-    }
-
     fn protocol_mut(&mut self) -> &mut Udp4 {
         self.protocol.as_mut().expect("UDP4 protocol is open")
     }
@@ -385,41 +325,6 @@ impl Udp4Client {
         Err(NetworkError::Timeout)
     }
 
-    fn wait_for_receive(
-        &mut self,
-        token: &mut Udp4CompletionToken,
-        progress: &mut impl FnMut(),
-    ) -> Result<(), NetworkError> {
-        for _ in 0..UDP_COMPLETION_POLLS {
-            if token.status == Status::SUCCESS {
-                return Ok(());
-            }
-            if token.status != Status::NOT_READY {
-                if !is_discovery_icmp_status(token.status) {
-                    crate::logln!("udp_completion_error: {:?}", token.status);
-                    return Err(NetworkError::UdpReceive);
-                }
-
-                // A broadcast probe can also reach a network path without a
-                // discovery listener.  Its ICMP error must not win the race
-                // against a valid offer arriving through another path.
-                crate::logln!("udp_discovery_ignored_error: {:?}", token.status);
-                token.status = Status::NOT_READY;
-                token.packet = Udp4CompletionTokenPacket {
-                    rx_data: ptr::null_mut(),
-                };
-                self.protocol_mut()
-                    .receive(token)
-                    .map_err(|_| NetworkError::UdpReceive)?;
-            }
-            self.protocol_mut().poll();
-            progress();
-            boot::stall(UDP_POLL_STALL);
-        }
-        self.cancel_and_complete(token, NetworkError::UdpReceive)?;
-        Err(NetworkError::Timeout)
-    }
-
     fn cancel_and_complete(
         &mut self,
         token: &mut Udp4CompletionToken,
@@ -438,57 +343,6 @@ impl Udp4Client {
         }
         Ok(())
     }
-}
-
-fn is_discovery_icmp_status(status: Status) -> bool {
-    status == UDP_NETWORK_UNREACHABLE
-        || status == UDP_HOST_UNREACHABLE
-        || status == UDP_PROTOCOL_UNREACHABLE
-        || status == UDP_PORT_UNREACHABLE
-        || status == Status::ICMP_ERROR
-}
-
-fn collect_received_bytes(
-    token: &Udp4CompletionToken,
-    limit: usize,
-) -> Result<Vec<u8>, NetworkError> {
-    let Some(receive) = (unsafe { token.packet.rx_data.as_ref() }) else {
-        crate::logln!("udp_receive_error: missing RxData");
-        return Err(NetworkError::UdpReceive);
-    };
-    let expected_length = receive.data_length as usize;
-    let fragment_count: usize = receive
-        .fragment_count
-        .try_into()
-        .map_err(|_| NetworkError::UdpReceive)?;
-    if fragment_count == 0 || fragment_count > 32 || expected_length > limit {
-        crate::logln!("udp_receive_error: invalid receive metadata");
-        signal_recycle(receive.recycle_signal);
-        return Err(NetworkError::UdpReceive);
-    }
-    let fragments_ptr = ptr::addr_of!(receive.fragment_table).cast::<Udp4FragmentData>();
-    let fragments = unsafe { slice::from_raw_parts(fragments_ptr, fragment_count) };
-    let mut bytes = Vec::with_capacity(expected_length);
-    for fragment in fragments {
-        let length = fragment.fragment_length as usize;
-        if fragment.fragment_buffer.is_null() || bytes.len().saturating_add(length) > limit {
-            crate::logln!("udp_receive_error: invalid fragment length={length}");
-            signal_recycle(receive.recycle_signal);
-            return Err(NetworkError::UdpReceive);
-        }
-        let data = unsafe { slice::from_raw_parts(fragment.fragment_buffer.cast::<u8>(), length) };
-        bytes.extend_from_slice(data);
-    }
-    signal_recycle(receive.recycle_signal);
-    if bytes.len() != expected_length {
-        crate::logln!(
-            "udp_receive_error: assembled={} expected={}",
-            bytes.len(),
-            expected_length
-        );
-        return Err(NetworkError::UdpReceive);
-    }
-    Ok(bytes)
 }
 
 impl Drop for Udp4Client {
@@ -520,12 +374,6 @@ impl Drop for CompletionEvent {
         if let Some(event) = self.0.take() {
             let _ = boot::close_event(event);
         }
-    }
-}
-
-fn signal_recycle(raw_event: uefi_raw::Event) {
-    if let Some(event) = unsafe { Event::from_ptr(raw_event) } {
-        let _ = boot::signal_event(&event);
     }
 }
 
