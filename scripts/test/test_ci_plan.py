@@ -887,6 +887,87 @@ command = "true"
                 self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_FAIL guest={guest} status=1\n")
                                     for pattern in step["fail_regex"]))
 
+    def test_single_client_robot_check_routing_and_real_board_contract(self) -> None:
+        root = MODULE_PATH.parents[2]
+        real_starry = (
+            root
+            / "test-suit/starryos/board-orangepi-5-plus/robot-flow"
+            / "board-orangepi-5-plus-robot-real.toml"
+        )
+        real_axvisor_starry = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-starry/smoke"
+            / "board-orangepi-5-plus-robot-real-starry.toml"
+        )
+        real_axvisor_linux = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-linux/smoke"
+            / "board-orangepi-5-plus-robot-real-linux.toml"
+        )
+        real_starry_guest = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-starry/guest.toml"
+        )
+        real_linux_guest = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-linux"
+            / "linux-smp1-emmc.toml"
+        )
+
+        main = ci_plan.build_main_plan(self.upstream)
+        starry_rows = self.assert_unique_ids(main["starry_matrix"]["include"])
+        axvisor_rows = self.assert_unique_ids(main["axvisor_matrix"]["include"])
+        nightly_rows = self.assert_unique_ids(
+            ci_plan.build_axvisor_nightly_plan(
+                ci_plan.replace(self.upstream, event_name="schedule")
+            )["axvisor_matrix"]["include"]
+        )
+
+        self.assertIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real",
+            starry_rows["test-orangepi-5-plus-robot-real-native-starryos"]["command"],
+        )
+        real_starry_id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
+        real_linux_id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
+        self.assertNotIn(real_starry_id, axvisor_rows)
+        self.assertNotIn(real_linux_id, axvisor_rows)
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real-starry",
+            nightly_rows[real_starry_id]["command"],
+        )
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real-linux",
+            nightly_rows[real_linux_id]["command"],
+        )
+
+        for path in (real_starry, real_axvisor_starry, real_axvisor_linux):
+            with self.subTest(config=path):
+                config = tomllib.loads(path.read_text())
+                self.assertEqual(config["board_type"], "OrangePi-5-Plus-Robot-USB")
+                self.assertNotIn("uboot_cmd", config)
+                commands = "\n".join(
+                    step["shell_cmd"] for step in config["shell_check_steps"]
+                )
+                self.assertIn("FEETECH_DEV=auto", commands)
+                self.assertIn("./run_robot_ci_once.sh 28.0", commands)
+                self.assertNotIn("/dev/ttyS6", commands)
+                if path == real_axvisor_linux:
+                    self.assertIn("sudo -S env FEETECH_DEV=auto", commands)
+
+        for path in (real_starry_guest, real_linux_guest):
+            text = path.read_text()
+            self.assertNotIn("include_default_passthrough", text)
+            self.assertNotIn("/serial@feb90000", text)
+
+        starry_kernel = tomllib.loads(real_starry_guest.read_text())["kernel"]
+        self.assertEqual(starry_kernel["image_location"], "memory")
+        linux_kernel = tomllib.loads(real_linux_guest.read_text())["kernel"]
+        self.assertEqual(
+            linux_kernel["kernel_path"], "/guest/linux/orangepi-5-plus-6.1.99"
+        )
+        self.assertIn("root=/dev/mmcblk1p2", linux_kernel["cmdline"])
+
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
     ) -> None:
