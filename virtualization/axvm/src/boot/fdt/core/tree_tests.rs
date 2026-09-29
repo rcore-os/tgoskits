@@ -409,6 +409,31 @@ fn tree_clones_missing_guest_cpu_nodes_with_fresh_phandles() {
             .get_u32(),
         Some(first)
     );
+
+    // The highest legal host handle leaves no room above it. Clones must
+    // reuse lower unoccupied handles instead of assigning the reserved value.
+    let mut host = host_fdt_with_cpu_phandles();
+    let cpu = host.get_by_path_id("/cpus/cpu@100").unwrap();
+    host.node_mut(cpu)
+        .unwrap()
+        .set_property(prop_u32("phandle", u32::MAX - 1));
+    host.node_mut(cpu)
+        .unwrap()
+        .set_property(prop_u32("linux,phandle", u32::MAX - 1));
+    let mut guest = FdtTree::clone_filtered(&host, |_, path, _| path != "/cpus/cpu@100").unwrap();
+    guest.ensure_guest_cpu_nodes(&host, &[0, 1, 2]).unwrap();
+    let guest = Fdt::from_bytes(&guest.finish()).unwrap();
+    let handles = phandle_owners(&guest);
+    assert!(
+        handles
+            .iter()
+            .all(|(handle, _)| *handle != 0 && *handle != u32::MAX)
+    );
+    assert_eq!(handles.len(), 3);
+    assert_ne!(
+        phandle_of(&guest, "/cpus/cpu@1"),
+        phandle_of(&guest, "/cpus/cpu@2")
+    );
 }
 
 #[test]
