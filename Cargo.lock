@@ -913,6 +913,7 @@ dependencies = [
  "arm-smmu-v3",
  "ax-alloc",
  "ax-arm-pl031",
+ "ax-crate-interface",
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-sync",

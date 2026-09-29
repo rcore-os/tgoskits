@@ -52,17 +52,6 @@ pub const fn dsu_minimum_hz(big_frequency_hz: u64) -> u64 {
     (big_frequency_hz.saturating_mul(4) / 5 / 100_000_000) * 100_000_000
 }
 
-/// Orange Pi 5 Plus CPU rates verified for each PVTM voltage grade on real boards.
-/// A DT row above this ceiling is not sufficient evidence to publish an OPP.
-pub const fn orangepi5plus_verified_maximum_hz(little: bool, grade: u8) -> Option<u64> {
-    match (little, grade) {
-        (true, 0 | 1) => Some(1_800_000_000),
-        (false, 0) => Some(2_256_000_000),
-        (false, 3) => Some(2_352_000_000),
-        _ => None,
-    }
-}
-
 /// Thermal state of one CPU frequency domain.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ThermalState {
@@ -226,27 +215,6 @@ mod tests {
     fn dsu_floor_matches_bsp_rounding() {
         assert_eq!(dsu_minimum_hz(2_352_000_000), 1_800_000_000);
         assert_eq!(dsu_minimum_hz(2_208_000_000), 1_700_000_000);
-    }
-
-    #[test]
-    fn board_verified_opp_ceiling_excludes_unmeasured_grade_rates() {
-        assert_eq!(
-            orangepi5plus_verified_maximum_hz(true, 0),
-            Some(1_800_000_000)
-        );
-        assert_eq!(
-            orangepi5plus_verified_maximum_hz(true, 1),
-            Some(1_800_000_000)
-        );
-        assert_eq!(
-            orangepi5plus_verified_maximum_hz(false, 0),
-            Some(2_256_000_000)
-        );
-        assert_eq!(
-            orangepi5plus_verified_maximum_hz(false, 3),
-            Some(2_352_000_000)
-        );
-        assert_eq!(orangepi5plus_verified_maximum_hz(false, 1), None);
     }
 
     #[test]

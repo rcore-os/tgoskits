@@ -52,8 +52,11 @@ flowchart LR
 `ondemand` 每 100 ms 采样各域最忙核心的非 idle 比例：达到 80% 升至当前上限，
 全部低于 30% 降一档。`performance` 持续请求限制内最高 OPP。温度或 DSU 约束
 改变后，驱动先完成必要降档，才公布新限制；固定请求若当前不可用返回
-`OppUnavailable`。硬件读回失败返回 `HardwareFailure`，受影响域停止后续写入，并以
-`NotReady` 表示软件已不能证明当前 OPP。任一域调档失败都会关闭三个调频域：
+`OppUnavailable`。固定请求被接受后若温度上限降低，工作线程会选择不高于请求的
+最高可用 OPP；若大核提高了 A55/DSU 下限，硬件安全下限优先，可能选择高于请求的
+最低可用 OPP。首次发生约束偏离时记告警；内核调用方通过 `snapshot` 或
+`current_opp` 查询实际 OPP。硬件读回失败返回 `HardwareFailure`，受影响域停止后续写入，
+并以 `NotReady` 表示软件已不能证明当前 OPP。任一域调档失败都会关闭三个调频域：
 SCMI 写入可能已生效而读回失败，大核实际频率未知时不能再按旧索引降低 A55/DSU。
 
 ## 2. 芯片筛选与转换
@@ -100,7 +103,7 @@ length 是否生效，因而该例外必须由对应板卡的绑核 PMU 频率�
 两组大核 PVTM 档 0、3。J/M SKU 及其他未认证分档仅保留确认的低档；
 大核未完成 PVTM/GRF 确认时回到 816 MHz。即使 DT
 列出更高频率，也不因静态表存在就开放。
-`orangepi5plus_verified_maximum_hz` 还限制已验证分档的频率：A55 档 0/1
+板卡适配层的 `cpufreq_board::verified_maximum_hz` 还限制已验证分档的频率：A55 档 0/1
 不超过 1.8 GHz，大核档 0 不超过 2.256 GHz，档 3 不超过 2.352 GHz。
 `select_domain_opps` 在公布 OPP 前过滤超出本分档实测上限的 DT 行，
 使 `performance` 和固定请求不能选择尚未测量的高档。新增分档或提高上限

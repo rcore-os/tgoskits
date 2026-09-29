@@ -140,3 +140,7 @@ pub fn dma_device_for_info(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_support;

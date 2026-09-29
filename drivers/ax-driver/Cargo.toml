@@ -224,6 +224,7 @@ virtio-drivers = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]

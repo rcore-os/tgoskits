@@ -83,6 +83,7 @@ struct DomainState {
     info: DomainInfo,
     policy: Policy,
     last_error: Option<FrequencyError>,
+    last_fixed_adjustment: Option<u64>,
 }
 
 struct CpuBusy {
@@ -150,8 +151,10 @@ pub fn set_governor(governor: Governor) -> Result<(), FrequencyError> {
     submit(|completion| Request::SetGovernor(governor, completion))
 }
 
-/// Requests an exact available OPP for one domain. The call may sleep while
-/// the worker applies and confirms the driver transition.
+/// Requests an exact currently available OPP for one domain. The call may
+/// sleep while the worker applies and confirms the driver transition. Later
+/// thermal or dependent-domain limits can force another OPP; use
+/// [`current_opp`] or [`snapshot`] to observe the delivered frequency.
 pub fn set_fixed_frequency(domain: DomainId, frequency_hz: u64) -> Result<(), FrequencyError> {
     submit(|completion| Request::SetFixed(domain, frequency_hz, completion))
 }
@@ -215,6 +218,7 @@ fn handle_request(
             let result = refresh.and_then(|()| {
                 for state in states.iter_mut() {
                     state.policy = Policy::Governor(governor);
+                    state.last_fixed_adjustment = None;
                 }
                 if governor == Governor::Performance {
                     apply_policies(device, states, &[], true)
@@ -232,6 +236,7 @@ fn handle_request(
                     .ok_or(FrequencyError::InvalidDomain)?;
                 with_device(device, |driver| driver.set_frequency(domain, hz))?;
                 state.policy = Policy::Fixed(hz);
+                state.last_fixed_adjustment = None;
                 Ok(())
             });
             done.finish(result);
@@ -273,23 +278,34 @@ fn next_ondemand_frequency(
     None
 }
 
+fn fixed_target(requested: u64, opps: &[OperatingPoint]) -> u64 {
+    // A thermal cap can remove the requested OPP. A dependent domain may
+    // instead raise the minimum above it; that hardware floor takes priority.
+    opps.iter()
+        .rev()
+        .find(|opp| opp.frequency_hz <= requested)
+        .or_else(|| opps.first())
+        .expect("eligible OPPs were checked")
+        .frequency_hz
+}
+
+struct PolicyDecision {
+    target: Option<u64>,
+    fixed_adjustment: Option<(u64, u64)>,
+}
+
 fn target_frequency(
     driver: &mut rdif_cpufreq::CpuFreq,
     state: &DomainState,
     samples: &[(usize, u64)],
     priming: bool,
-) -> Result<Option<u64>, FrequencyError> {
+) -> Result<PolicyDecision, FrequencyError> {
     let domain = state.info.id;
     let opps = eligible_opps(driver, domain)?;
     let current = driver.current_opp(domain)?.frequency_hz;
     let target = match state.policy {
         Policy::Governor(Governor::Performance) => opps.last().map(|opp| opp.frequency_hz),
-        Policy::Fixed(requested) => opps
-            .iter()
-            .rev()
-            .find(|opp| opp.frequency_hz <= requested)
-            .or_else(|| opps.first())
-            .map(|opp| opp.frequency_hz),
+        Policy::Fixed(requested) => Some(fixed_target(requested, &opps)),
         Policy::Governor(Governor::Ondemand) => {
             let percents: Vec<u64> = state
                 .info
@@ -305,7 +321,16 @@ fn target_frequency(
             next_ondemand_frequency(&percents, current, &opps, priming)
         }
     };
-    Ok(target.filter(|&hz| hz != current))
+    let fixed_adjustment = match (state.policy, target) {
+        (Policy::Fixed(requested), Some(applied)) if applied != requested => {
+            Some((requested, applied))
+        }
+        _ => None,
+    };
+    Ok(PolicyDecision {
+        target: target.filter(|&hz| hz != current),
+        fixed_adjustment,
+    })
 }
 
 fn apply_policies(
@@ -317,13 +342,33 @@ fn apply_policies(
     let mut first_error = None;
     for state in states {
         let result = with_device(device, |driver| {
-            if let Some(target) = target_frequency(driver, state, samples, priming)? {
+            let decision = target_frequency(driver, state, samples, priming)?;
+            if let Some(target) = decision.target {
                 driver.set_frequency(state.info.id, target)?;
             }
-            Ok(())
+            Ok(decision.fixed_adjustment)
         });
         match result {
-            Ok(()) => state.last_error = None,
+            Ok(adjustment) => {
+                if let Some((requested, applied)) = adjustment {
+                    if state.last_fixed_adjustment != Some(applied) {
+                        let limit = if applied > requested {
+                            "minimum frequency limit"
+                        } else {
+                            "maximum frequency limit"
+                        };
+                        warn!(
+                            "cpufreq: domain {:?} fixed request {requested} Hz constrained to \
+                             {applied} Hz by {limit}",
+                            state.info.id
+                        );
+                    }
+                    state.last_fixed_adjustment = Some(applied);
+                } else {
+                    state.last_fixed_adjustment = None;
+                }
+                state.last_error = None;
+            }
             Err(error) => {
                 if state.last_error != Some(error) && error != FrequencyError::NotReady {
                     warn!(
@@ -370,6 +415,7 @@ fn run_worker(device: Device, infos: Vec<DomainInfo>, initial: Governor) {
             info,
             policy: Policy::Governor(initial),
             last_error: None,
+            last_fixed_adjustment: None,
         })
         .collect();
     let mut busy = Vec::new();
@@ -443,7 +489,7 @@ pub(crate) fn start_from_host_bootargs(bootargs: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Governor, OperatingPoint, next_ondemand_frequency, parse_governor};
+    use super::{Governor, OperatingPoint, fixed_target, next_ondemand_frequency, parse_governor};
 
     #[test]
     fn boot_governor_selection() {
@@ -487,5 +533,16 @@ mod tests {
             next_ondemand_frequency(&[], 816_000_000, &opps, false),
             None
         );
+    }
+
+    #[test]
+    fn fixed_request_obeys_new_thermal_ceiling_and_dsu_floor() {
+        let opps = [408, 816, 1200, 1800].map(|mhz| OperatingPoint {
+            frequency_hz: mhz * 1_000_000,
+            voltage_uv: None,
+        });
+        assert_eq!(fixed_target(816_000_000, &opps), 816_000_000);
+        assert_eq!(fixed_target(1_800_000_000, &opps[..3]), 1_200_000_000);
+        assert_eq!(fixed_target(408_000_000, &opps[2..]), 1_200_000_000);
     }
 }
