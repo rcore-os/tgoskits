@@ -16,6 +16,9 @@
 pub(crate) mod cpufreq;
 
 #[cfg(feature = "rk3588-cpufreq")]
+mod cpufreq_board;
+
+#[cfg(feature = "rk3588-cpufreq")]
 mod cpufreq_rdif;
 
 #[cfg(feature = "rk3588-cpufreq")]

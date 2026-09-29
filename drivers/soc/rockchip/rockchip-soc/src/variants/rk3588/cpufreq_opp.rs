@@ -69,6 +69,15 @@ pub struct HardwareSelection {
 }
 
 impl HardwareSelection {
+    /// Derives the RK3588M/J OPP bin from the OTP specification byte.
+    pub const fn bin_from_serial(specification_serial_number: u8) -> u8 {
+        match specification_serial_number & 0x1f {
+            0x0d => 1, // RK3588M
+            0x0a => 2, // RK3588J
+            _ => 0,
+        }
+    }
+
     /// Matches the Orange Pi BSP's RK3588M/J serial-number bin mapping.
     pub fn from_otp(
         specification_serial_number: u8,
@@ -80,11 +89,7 @@ impl HardwareSelection {
         }
         // The DT nvmem cell selects bits [4:0] from OTP offset 0x06. Mask
         // here as well so a caller passing the raw byte gets the same bin.
-        let bin = match specification_serial_number & 0x1f {
-            0x0d => 1, // RK3588M
-            0x0a => 2, // RK3588J
-            _ => 0,
-        };
+        let bin = Self::bin_from_serial(specification_serial_number);
         Ok(Self {
             bin,
             voltage_grade,

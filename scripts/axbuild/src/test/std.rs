@@ -58,11 +58,46 @@ const AX_RUNTIME_CPUFREQ_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePr
     name_filter: Some("cpufreq::tests::"),
     expected_tests: &[
         "cpufreq::tests::boot_governor_selection",
+        "cpufreq::tests::fixed_request_obeys_new_thermal_ceiling_and_dsu_floor",
         "cpufreq::tests::ondemand_uses_busiest_cpu_and_decays_one_opp",
     ],
 }];
 
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+rk3588-cpufreq",
+        no_default_features: false,
+        features: &["host-test", "rk3588-cpufreq"],
+        name_filter: Some("soc::rockchip::cpufreq"),
+        expected_tests: &[
+            "soc::rockchip::cpufreq_board::tests::unmeasured_grade_rates_are_excluded",
+            "soc::rockchip::cpufreq_pvtm::tests::bsp_temperature_and_bin_select_a_safe_voltage_grade",
+            "soc::rockchip::cpufreq_pvtm::tests::malformed_measurement_or_table_cannot_authorize_an_opp",
+            "soc::rockchip::cpufreq_margin::tests::bsp_thresholds_select_the_first_matching_voltage",
+            "soc::rockchip::cpufreq_sensors::tests::rk3588_tsadc_thresholds_and_invalid_samples",
+        ],
+    },
+    PackageFeatureProfile {
+        name: "host-test+rk3588-cpufreq-pmic",
+        no_default_features: false,
+        features: &["host-test", "rk3588-cpufreq"],
+        name_filter: Some("soc::rockchip::pmic_spi::tests::"),
+        expected_tests: &[
+            "soc::rockchip::pmic_spi::tests::baud_divider_clamps_and_stays_even",
+            "soc::rockchip::pmic_spi::tests::baud_divider_even_and_under_target",
+            "soc::rockchip::pmic_spi::tests::ctrlr0_mode0_8bit_value",
+            "soc::rockchip::pmic_spi::tests::rk806_identity_and_rail_gate_rejects_loopback",
+            "soc::rockchip::pmic_spi::tests::spi2_reset_deassert_matches_reset_bits",
+            "soc::rockchip::pmic_spi::tests::spi2_ungate_value_matches_gate_bits",
+            "soc::rockchip::pmic_spi::tests::step_size_is_four_selectors",
+            "soc::rockchip::pmic_spi::tests::uv_encode_rejects_out_of_range1",
+            "soc::rockchip::pmic_spi::tests::uv_encode_rejects_unaligned_steps",
+            "soc::rockchip::pmic_spi::tests::uv_encode_roundtrips_within_range1",
+            "soc::rockchip::pmic_spi::tests::uv_encodes_opp_nominals_exactly",
+            "soc::rockchip::pmic_spi::tests::vsel_decodes_known_opp_nominals",
+            "soc::rockchip::pmic_spi::tests::vsel_decodes_upper_ranges",
+        ],
+    },
     PackageFeatureProfile {
         name: "host-test+rtc+starfive-jh7110-dwmmc",
         no_default_features: false,

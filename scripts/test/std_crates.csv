@@ -24,6 +24,7 @@ axpoll
 rsext4
 ax-sched
 ax-linked-list-r4l
+ax-driver
 ax-runtime
 ax-input
 ax-log
