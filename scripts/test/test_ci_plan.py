@@ -918,6 +918,53 @@ command = "true"
                 self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_FAIL guest={guest} status=1\n")
                                     for pattern in step["fail_regex"]))
 
+    def test_dualguest_starry_guest_uses_explicit_test_init(self) -> None:
+        root = MODULE_PATH.parents[2]
+        directory = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus"
+            / "dual-starry-zephyr"
+        )
+        config = tomllib.loads((directory / "starry-smp1.toml").read_text())
+        cmdline = config["kernel"]["cmdline"]
+        tokens = cmdline.split()
+
+        self.assertIn("init=/bin/sh", tokens)
+        for token in (
+            "root=/dev/mmcblk0p2",
+            "rw",
+            "console=ttyS2,1500000",
+            "earlycon=uart8250,mmio32,0xfeb50000",
+            "rootwait",
+            "rootfstype=ext4",
+            "cpuidle.off=1",
+            "rodata=off",
+            "cma=128M",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, tokens)
+
+        starry_prompt = "root@starry:"
+        self.assertIn(f'PS1="{starry_prompt}# "', cmdline)
+        self.assertIn(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            tokens,
+        )
+        for env in ("HOME=/root", "USER=root", "HOSTNAME=starry", "TERM=linux"):
+            with self.subTest(env=env):
+                self.assertIn(env, tokens)
+
+        board = tomllib.loads(
+            (directory / "board-orangepi-5-plus-dualguest-robot.toml").read_text()
+        )
+        prompt_steps = [
+            step
+            for step in board["shell_check_steps"]
+            if step.get("shell_prefix", "").startswith(starry_prompt)
+        ]
+        self.assertTrue(prompt_steps)
+        self.assertTrue(all(step.get("shell_cmd") for step in prompt_steps))
+
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
     ) -> None:

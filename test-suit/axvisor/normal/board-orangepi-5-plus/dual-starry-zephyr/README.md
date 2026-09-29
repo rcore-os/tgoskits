@@ -66,10 +66,12 @@ Zephyr 继续使用 TGOSImages 的标准构建入口：
 安全。
 
 AxVisor 与 StarryOS 都按发现顺序把 SD 卡
-作为 `/dev/mmcblk0p2` 挂载，因此 StarryOS 沿用宿主 bootargs；Linux Guest 的
-驱动按 RK3588 设备树别名编号，正式 CI 中才使用 `/dev/mmcblk1p2`。ostool 直接
-启动 AxVisor FIT 镜像时不会执行 SD 卡中的 `boot.scr`，所以板配置仍需显式设置
-宿主的 SD 根设备。
+作为 `/dev/mmcblk0p2` 挂载，因此 StarryOS CI guest 在 `starry-smp1.toml` 中显式
+重述宿主所需的 SD 根设备、串口、`rootwait`/`rootfstype`、`cpuidle`/`rodata`/`cma`
+参数；AxVM 的 guest cmdline 会替换宿主 bootargs，遗漏这些参数会改变根文件系统或
+串口选择。Linux Guest 的驱动按 RK3588 设备树别名编号，正式 CI 中才使用
+`/dev/mmcblk1p2`。ostool 直接启动 AxVisor FIT 镜像时不会执行 SD 卡中的
+`boot.scr`，所以板配置仍需显式设置宿主的 SD 根设备。
 
 普通持续运行时，进入 StarryOS 中已安装的机器人工作负载目录，执行：
 
@@ -106,7 +108,13 @@ AxVisor 的 `exit` 会先调用宿主文件系统关闭流程。StarryOS 用户�
 这些真实设备与时序无法仅由主机单元测试证明。AxVisor 提供 IVC 和设备隔离，StarryOS
 负责感知，Zephyr 独占 UART6，负责决策、底盘及机械臂。
 
-StarryOS 登录 Shell 出现 `root@starry:` 前缀的提示符后，由本目录的 board 配置运行：
+本专用 CI guest 在 `starry-smp1.toml` 的 `[kernel].cmdline` 中显式使用
+`init=/bin/sh`，并通过 bootargs 环境变量设置标准 `PATH`、`HOME`、`USER`、
+`HOSTNAME`、`TERM` 与固定字面值 `PS1`（`root@starry:#` 加空格）。该 shell 是测试 PID 1，
+只为 `shell_check_steps` 提供稳定的 `root@starry:` 交互入口；它不验证
+OpenRC/systemd 服务启动，普通板端系统 init 是否可用仍需独立验收。
+
+StarryOS 测试 Shell 出现 `root@starry:` 前缀的提示符后，由本目录的 board 配置运行：
 
 ```sh
 /home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh --min-fps 28
