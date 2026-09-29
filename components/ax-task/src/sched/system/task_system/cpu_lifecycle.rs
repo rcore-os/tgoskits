@@ -258,7 +258,10 @@ impl TaskSystem {
                         crate::runtime::cpu::IdleOfflineRejection::CpuState
                     },
                 );
-                if cpu.needs_reschedule() || cpu.has_remote_work() {
+                if cpu.needs_reschedule()
+                    || cpu.has_remote_work()
+                    || cpu.ktimer_owner_work_pending_for_offline()
+                {
                     Err(TaskError::NotReady)
                 } else {
                     Err(TaskError::CpuNotQuiescent(id.as_u32()))
