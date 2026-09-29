@@ -100,7 +100,8 @@ runner = "board"
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot
+robot_board_type="$(python3 scripts/test/select_board_type.py OrangePi-5-Plus-Robot-USB OrangePi-5-Plus-robot)"
+cargo xtask starry test board --board orangepi-5-plus-robot --board-type "$robot_board_type"
 '''
 
 [[check.suite]]
