@@ -85,6 +85,30 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
+// The rdif feature gates the whole rdif module and its device-level tests;
+// the plain default-feature run only covers the ctrl queue. This profile
+// lists the gated tests so CI proves they are discovered and executed.
+const VIRTIO_GPU_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "rdif",
+    no_default_features: false,
+    features: &["rdif"],
+    name_filter: None,
+    expected_tests: &[
+        "rdif_test::context_close_releases_attachments_after_drain",
+        "rdif_test::display_change_remains_pending_after_output_query_fails",
+        "rdif_test::lost_device_fails_every_operation_fast",
+        "rdif_test::normal_drop_confirms_reset_before_releasing_queue",
+        "rdif_test::resource_creation_passes_the_format_through",
+        "rdif_test::scanout_rejects_a_3d_resource_with_an_incompatible_format",
+        "rdif_test::stale_context_handle_is_rejected",
+        "rdif_test::submit_returns_a_fence_that_completes_through_the_service_path",
+        "rdif_test::sync_response_with_wrong_fence_resets_the_device",
+        "rdif_test::test_only_and_release_keep_scanout_and_backing",
+        "rdif_test::unconfirmed_context_destroy_resets_before_releasing_backing",
+        "rdif_test::unconfirmed_release_resets_before_backing_release",
+    ],
+}];
+
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     no_default_features: false,
@@ -547,6 +571,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "aic8800" => Some(AIC8800_FEATURE_PROFILES),
         "axbuild" => Some(AXBUILD_FEATURE_PROFILES),
         "axvisor" => Some(FS_FEATURE_PROFILES),
+        "virtio-gpu" => Some(VIRTIO_GPU_FEATURE_PROFILES),
         _ => None,
     }
 }

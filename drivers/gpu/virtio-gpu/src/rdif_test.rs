@@ -22,8 +22,7 @@ use core::{
 use std::sync::{Mutex, Weak};
 
 use rdif_display::{
-    DisplayController, DisplayError, DisplayEvent, DisplayState, Framebuffer, OutputId,
-    ScanoutBuffer,
+    DisplayController, DisplayEvent, DisplayState, Framebuffer, OutputId, ScanoutBuffer,
 };
 use rdif_gpu::{
     Backing, BufferDescriptor, Completion, ContextHandle, DmaAddr, DmaDomainId, DmaSegment,

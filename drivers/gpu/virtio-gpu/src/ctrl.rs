@@ -1021,7 +1021,7 @@ mod tests {
     /// Simulates a broken device: reports a used entry for `id`, a descriptor
     /// chain this driver never submitted, without touching the real rings.
     fn inject_used_entry(state: &Mutex<State>, id: u16) {
-        let mut st = state.lock().unwrap();
+        let st = state.lock().unwrap();
         let device_addr = st.queues[Q as usize].device_area;
         // SAFETY: the device area was allocated and zeroed by `TestHal` and
         // registered via `queue_set`; only this fn (under the lock) and the
