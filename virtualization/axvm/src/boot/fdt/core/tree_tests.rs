@@ -335,6 +335,7 @@ fn host_fdt_with_cpu_phandles() -> Fdt {
         let node = fdt.node_mut(cpu).unwrap();
         node.set_property(prop_str("device_type", "cpu"));
         node.set_property(prop_str("enable-method", "psci"));
+        node.set_property(prop_u32("mpidr-affinity", reg as u32));
         node.set_property(prop_u32("phandle", phandle));
         node.set_property(prop_u32("linux,phandle", phandle));
         fdt.view_typed_mut(cpu)
@@ -388,6 +389,19 @@ fn tree_clones_missing_guest_cpu_nodes_with_fresh_phandles() {
         "clones reused a host phandle: {first:#x} and {second:#x}"
     );
     assert_ne!(first, second);
+
+    // A cloned node must describe its own guest-visible MPIDR, not the
+    // template CPU's identity used for the PSCI secondary boot target.
+    for id in [1, 2] {
+        let cpu = reparsed.get_by_path(&format!("/cpus/cpu@{id:x}")).unwrap();
+        assert_eq!(cpu.regs()[0].address, id);
+        assert_eq!(
+            cpu.as_node()
+                .get_property("mpidr-affinity")
+                .and_then(Property::get_u32),
+            Some(id as u32)
+        );
+    }
 
     let mut seen = BTreeMap::new();
     for (phandle, path) in phandle_owners(&reparsed) {
