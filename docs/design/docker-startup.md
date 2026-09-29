@@ -41,6 +41,7 @@
 | `epoll_pwait` sigsetsize 条件校验 | ✅ 与 Linux 一致（仅 sigmask 非空时校验） | `syscall/io_mpx/epoll.rs` `do_epoll_wait` |
 | `/proc/<pid>/stat` starttime | ✅ 已填充（`ThreadAccounting::start_time_ns` 捕获，渲染为 ticks，单测覆盖） | `task/stat.rs`、`task/thread.rs` |
 | `openat2(2)` RESOLVE_* 约束（BENEATH/IN_ROOT/NO_XDEV/NO_SYMLINKS/NO_MAGICLINKS） | ✅ 已强制执行（`RESOLVE_CACHED` 暂不支持 dcache-only 查找、统一返回 EAGAIN；错误优先级对齐 `link_path_walk`） | `fs/ax-fs-ng/src/fs_core/{constraints.rs,context.rs}`、`file/open.rs`、`syscall/fs/fd_ops.rs` |
+| procfs magic link（`exe`/`fd/N`/`ns/<type>`）在 `openat2` 空间约束下的跳转 | ⚠️ 有意保守：带 `RESOLVE_BENEATH`/`IN_ROOT`/`NO_XDEV` 时一律返回 `EXDEV`。本内核取不到 magic link 目标的对象级挂载身份，而 procfs link 的目标对象（可执行文件/管道/命名空间 inode）实际位于与 procfs 不同的挂载，Linux `nd_jump_link()` 对这种受限跳转同样返回 `EXDEV`；仅当目标与链接同挂载时 Linux 放行，本内核无此情形 | `fs/ax-fs-ng/src/fs_core/context.rs` `try_resolve_symlink_constrained` |
 | `pivot_root(".", ".")` 惯用法（runc/docker 标准 pivot 流程） | ✅ 已支持（old root 堆叠于新根 `/`，`umount2(".", MNT_DETACH)` 收尾） | `fs/axfs-ng-vfs/src/mount/mod.rs` `pivot_mount`、`syscall/fs/mount.rs` |
 | cgroup v2 设备控制器 `bpf(2)`（`BPF_PROG_TYPE_CGROUP_DEVICE` / `BPF_CGROUP_DEVICE`） | ❌ 不实现，整族显式返回 `EOPNOTSUPP`，不伪造设备策略生效；非 rootless runc 的探针据此禁用设备过滤 | `os/StarryOS/kernel/src/ebpf/device_controller.rs` |
 | `/proc/<pid>/exe` magic link 直连后备文件 | ✅ 已实现（memfd 执行显示 `/memfd: (deleted)` 也能打开）；跨进程打开按 `PTRACE_MODE_READ_FSCREDS` 校验 fsUID/fsGID 三元组，非 dumpable 目标需 `CAP_SYS_PTRACE` | `syscall/fs/fd_ops.rs` `try_open_proc_exe` + `task/process_image.rs` `exe_location` |
