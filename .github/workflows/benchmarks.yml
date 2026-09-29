@@ -179,7 +179,10 @@ jobs:
     if: >-
       always() &&
       github.repository == 'rcore-os/tgoskits' &&
-      needs.plan.result == 'success'
+      needs.plan.result == 'success' &&
+      needs.axvisor_performance.result == 'success' &&
+      needs.starry_performance.result == 'success' &&
+      needs.starry_board_performance.result == 'success'
     needs:
       - plan
       - axvisor_performance
@@ -196,6 +199,7 @@ jobs:
           ref: ${{ needs.plan.outputs.revision }}
 
       - name: Download AxVisor performance reports
+        if: needs.axvisor_performance.result == 'success'
         uses: actions/download-artifact@v8
         with:
           pattern: axvisor-nightly-performance-*
@@ -219,6 +223,7 @@ jobs:
         env:
           AXVISOR_REPORTS: ${{ runner.temp }}/axvisor-performance-reports
           STARRY_REPORTS: ${{ runner.temp }}/starry-performance-reports
+          INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}
           INCLUDE_STARRY: ${{ needs.starry_performance.result == 'success' && needs.starry_board_performance.result == 'success' }}
         run: |
           set -euo pipefail
@@ -249,7 +254,10 @@ jobs:
           EOF
           }
 
-          axvisor_count="$(collect_reports "${AXVISOR_REPORTS}" "${output}/axvisor.json")"
+          axvisor_count=0
+          if [ "${INCLUDE_AXVISOR}" = "true" ]; then
+            axvisor_count="$(collect_reports "${AXVISOR_REPORTS}" "${output}/axvisor.json")"
+          fi
           echo "AxVisor metrics: ${axvisor_count}"
 
           starry_count=0

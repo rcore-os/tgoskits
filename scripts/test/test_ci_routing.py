@@ -11,7 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from scripts.test.check_ci_routing import (
-    check_compile_sim_payload_consistency,
+    MIRRORED_BENCHMARK_PAYLOADS,
+    check_mirrored_payload_consistency,
     list_items_in_order,
     mapping_block,
     named_step_block,
@@ -37,43 +38,48 @@ PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
 
 
-class CompileSimPayloadConsistencyTests(unittest.TestCase):
+class MirroredBenchmarkPayloadConsistencyTests(unittest.TestCase):
     def test_current_workspace_shared_payload_matches(self) -> None:
-        self.assertEqual(check_compile_sim_payload_consistency(WORKSPACE_ROOT), [])
+        self.assertEqual(check_mirrored_payload_consistency(WORKSPACE_ROOT), [])
 
-    def test_temporary_workspace_reports_one_mismatched_file(self) -> None:
-        payload_files = (
-            "compile-sim-bench.c",
-            "compile-sim-bench-run.sh",
-            "prebuild.sh",
-            "linux-compile-sim-init.sh",
-            "build-x86_64-unknown-none.toml",
-        )
+    def test_temporary_workspace_detects_non_compile_sim_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_name:
             workspace = Path(temp_dir_name)
-            smoke_dir = workspace / "apps/starry/qemu/compile-sim-bench"
-            benchmark_dir = workspace / "benchmarks/starry/qemu/compile-sim-bench"
-            smoke_dir.mkdir(parents=True)
-            benchmark_dir.mkdir(parents=True)
-            for file_name in payload_files:
-                content = f"shared payload: {file_name}\n"
-                (smoke_dir / file_name).write_text(content, encoding="utf-8")
-                (benchmark_dir / file_name).write_text(content, encoding="utf-8")
+            for case_dir, payload_files in MIRRORED_BENCHMARK_PAYLOADS.items():
+                smoke_dir = workspace / "apps/starry" / case_dir
+                benchmark_dir = workspace / "benchmarks/starry" / case_dir
+                smoke_dir.mkdir(parents=True)
+                benchmark_dir.mkdir(parents=True)
+                (smoke_dir / "README.md").write_text(
+                    "smoke-specific notes\n",
+                    encoding="utf-8",
+                )
+                (benchmark_dir / "README.md").write_text(
+                    "benchmark-specific notes\n",
+                    encoding="utf-8",
+                )
+                for file_name in payload_files:
+                    content = f"shared payload: {file_name}\n"
+                    (smoke_dir / file_name).write_text(content, encoding="utf-8")
+                    (benchmark_dir / file_name).write_text(content, encoding="utf-8")
 
-            mismatched = "compile-sim-bench.c"
-            (benchmark_dir / mismatched).write_text(
+            mismatched = (
+                workspace
+                / "benchmarks/starry/qemu/ltp-netstress/ltp-netstress.sh"
+            )
+            mismatched.write_text(
                 "divergent payload\n",
                 encoding="utf-8",
             )
-            errors = check_compile_sim_payload_consistency(workspace)
+            errors = check_mirrored_payload_consistency(workspace)
 
         self.assertEqual(len(errors), 1)
         self.assertIn(
-            "apps/starry/qemu/compile-sim-bench/compile-sim-bench.c",
+            "apps/starry/qemu/ltp-netstress/ltp-netstress.sh",
             errors[0],
         )
         self.assertIn(
-            "benchmarks/starry/qemu/compile-sim-bench/compile-sim-bench.c",
+            "benchmarks/starry/qemu/ltp-netstress/ltp-netstress.sh",
             errors[0],
         )
         self.assertIn("must remain byte-identical", errors[0])
@@ -336,20 +342,39 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
 
         benchmark_updates = mapping_block(jobs, "benchmark-updates", 2)
         self.assertTrue(benchmark_updates)
+        benchmark_updates_condition = mapping_block(
+            benchmark_updates.replace("if: >-", "if:"),
+            "if",
+            4,
+        )
         self.assertIn("axvisor-nightly-performance-*", benchmark_updates)
         self.assertIn("continue-on-error: true", benchmark_updates)
-        self.assertIn("needs.plan.result == 'success'", benchmark_updates)
-        self.assertNotIn(
-            "needs.axvisor_performance.result == 'success'",
-            benchmark_updates,
-        )
         self.assertIn("starry-apps-nightly-performance-*", benchmark_updates)
+        for matrix_name in (
+            "plan",
+            "axvisor_performance",
+            "starry_performance",
+            "starry_board_performance",
+        ):
+            with self.subTest(matrix_name=matrix_name):
+                self.assertIn(
+                    f"needs.{matrix_name}.result == 'success'",
+                    benchmark_updates_condition,
+                )
         self.assertIn(
-            "needs.starry_performance.result == 'success'",
+            "INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}",
             benchmark_updates,
         )
+        axvisor_download = named_step_block(
+            benchmark_updates,
+            "Download AxVisor performance reports",
+        )
         self.assertIn(
-            "needs.starry_board_performance.result == 'success'",
+            "if: needs.axvisor_performance.result == 'success'",
+            axvisor_download,
+        )
+        self.assertIn(
+            'if [ "${INCLUDE_AXVISOR}" = "true" ]; then',
             benchmark_updates,
         )
         self.assertIn("name: benchmark-updates", benchmark_updates)

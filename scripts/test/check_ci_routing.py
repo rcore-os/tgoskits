@@ -15,20 +15,31 @@ REUSABLE_CHECK_MATRIX = (
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
-COMPILE_SIM_SMOKE_DIR = Path("apps/starry/qemu/compile-sim-bench")
-COMPILE_SIM_BENCHMARK_DIR = Path("benchmarks/starry/qemu/compile-sim-bench")
-COMPILE_SIM_PAYLOAD_FILES = (
-    "compile-sim-bench.c",
-    "compile-sim-bench-run.sh",
-    "prebuild.sh",
-    "linux-compile-sim-init.sh",
-    "build-x86_64-unknown-none.toml",
-)
+MIRRORED_BENCHMARK_PAYLOADS: dict[Path, tuple[str, ...]] = {
+    Path("qemu/compile-sim-bench"): (
+        "compile-sim-bench.c",
+        "compile-sim-bench-run.sh",
+        "prebuild.sh",
+        "linux-compile-sim-init.sh",
+        "build-x86_64-unknown-none.toml",
+    ),
+    Path("qemu/ltp-hackbench"): (
+        "ltp-hackbench.sh",
+        "affinity_exec.c",
+        "prebuild.sh",
+        "build-x86_64-unknown-none.toml",
+    ),
+    Path("qemu/ltp-netstress"): (
+        "ltp-netstress.sh",
+        "prebuild.sh",
+        "build-x86_64-unknown-none.toml",
+    ),
+}
 
 
 def main() -> int:
     errors: list[str] = []
-    errors.extend(check_compile_sim_payload_consistency(WORKSPACE_ROOT))
+    errors.extend(check_mirrored_payload_consistency(WORKSPACE_ROOT))
     if not CI_WORKFLOW.is_file():
         errors.append("missing workflow: .github/workflows/ci.yml")
     if not REUSABLE_CHECK_MATRIX.is_file():
@@ -504,13 +515,40 @@ def main() -> int:
 
     benchmark_jobs = mapping_block(benchmarks_workflow, "jobs", 0)
     benchmark_updates = mapping_block(benchmark_jobs, "benchmark-updates", 2)
+    benchmark_updates_condition = mapping_block(
+        benchmark_updates.replace("if: >-", "if:"),
+        "if",
+        4,
+    )
     benchmark_permissions = mapping_block(benchmark_updates, "permissions", 4)
+    axvisor_download = named_step_block(
+        benchmark_updates,
+        "Download AxVisor performance reports",
+    )
     require_contains(
         errors,
         benchmark_permissions,
         "actions: write",
         "benchmark updates must dispatch the Pages workflow",
     )
+    require_contains(
+        errors,
+        axvisor_download,
+        "if: needs.axvisor_performance.result == 'success'",
+        "AxVisor reports must only be downloaded from a successful matrix",
+    )
+    for matrix_name, description in (
+        ("plan", "planning"),
+        ("axvisor_performance", "AxVisor performance"),
+        ("starry_performance", "Starry performance"),
+        ("starry_board_performance", "Starry board performance"),
+    ):
+        require_contains(
+            errors,
+            benchmark_updates_condition,
+            f"needs.{matrix_name}.result == 'success'",
+            f"benchmark updates must require successful {description}",
+        )
     for fragment, message in (
         (
             "needs.plan.result == 'success'",
@@ -518,7 +556,11 @@ def main() -> int:
         ),
         (
             "continue-on-error: true",
-            "AxVisor updates must retain successful partial reports",
+            "performance report downloads must tolerate missing artifacts",
+        ),
+        (
+            "needs.axvisor_performance.result == 'success'",
+            "AxVisor updates must require the performance matrix",
         ),
         (
             "needs.starry_performance.result == 'success'",
@@ -560,10 +602,16 @@ def main() -> int:
             '-f benchmark_date="${BENCHMARK_DATE}"',
             "docs must receive the benchmark date",
         ),
+        (
+            "INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}",
+            "AxVisor report collection must have an inclusion gate",
+        ),
+        (
+            'if [ "${INCLUDE_AXVISOR}" = "true" ]; then',
+            "AxVisor reports must only be collected from an included source",
+        ),
     ):
         require_contains(errors, benchmark_updates, fragment, message)
-    if "needs.axvisor_performance.result == 'success'" in benchmark_updates:
-        errors.append("AxVisor updates must accept successful partial reports")
 
     docs_permissions = mapping_block(docs_workflow, "permissions", 0)
     for fragment, message in (
@@ -745,31 +793,32 @@ def workspace_source_roots() -> set[str]:
     return {Path(package_path).parts[0] for package_path in package_paths}
 
 
-def check_compile_sim_payload_consistency(workspace_root: Path) -> list[str]:
+def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
     errors: list[str] = []
-    smoke_dir = workspace_root / COMPILE_SIM_SMOKE_DIR
-    benchmark_dir = workspace_root / COMPILE_SIM_BENCHMARK_DIR
-    for file_name in COMPILE_SIM_PAYLOAD_FILES:
-        smoke_path = smoke_dir / file_name
-        benchmark_path = benchmark_dir / file_name
-        if not smoke_path.is_file():
-            errors.append(
-                "missing mirrored compile-sim payload file: "
-                f"{(COMPILE_SIM_SMOKE_DIR / file_name).as_posix()}"
-            )
-        if not benchmark_path.is_file():
-            errors.append(
-                "missing mirrored compile-sim payload file: "
-                f"{(COMPILE_SIM_BENCHMARK_DIR / file_name).as_posix()}"
-            )
-        if not smoke_path.is_file() or not benchmark_path.is_file():
-            continue
-        if smoke_path.read_bytes() != benchmark_path.read_bytes():
-            errors.append(
-                "compile-sim payload files must remain byte-identical: "
-                f"{(COMPILE_SIM_SMOKE_DIR / file_name).as_posix()} and "
-                f"{(COMPILE_SIM_BENCHMARK_DIR / file_name).as_posix()} differ"
-            )
+    for case_dir, file_names in MIRRORED_BENCHMARK_PAYLOADS.items():
+        smoke_dir = workspace_root / "apps/starry" / case_dir
+        benchmark_dir = workspace_root / "benchmarks/starry" / case_dir
+        for file_name in file_names:
+            smoke_path = smoke_dir / file_name
+            benchmark_path = benchmark_dir / file_name
+            if not smoke_path.is_file():
+                errors.append(
+                    "missing mirrored benchmark payload file: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()}"
+                )
+            if not benchmark_path.is_file():
+                errors.append(
+                    "missing mirrored benchmark payload file: "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()}"
+                )
+            if not smoke_path.is_file() or not benchmark_path.is_file():
+                continue
+            if smoke_path.read_bytes() != benchmark_path.read_bytes():
+                errors.append(
+                    "mirrored benchmark payload files must remain byte-identical: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+                )
     return errors
 
 

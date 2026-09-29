@@ -5,6 +5,8 @@ apps/starry/llama-cpp
 apps/starry/deepseek-tui
 apps/starry/doom
 apps/starry/gdb-smoke
+apps/starry/qemu/ltp-hackbench
+apps/starry/qemu/ltp-netstress
 apps/starry/mariadb
 apps/starry/postgresql
 apps/starry/musl-dynamic-smoke

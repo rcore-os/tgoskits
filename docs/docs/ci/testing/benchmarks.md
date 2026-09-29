@@ -65,6 +65,8 @@ flowchart TD
     artifact --> docs[docs.yml]
 ```
 
+`benchmark-updates` 只在 `plan`、`axvisor_performance`、`starry_performance` 与 `starry_board_performance` 全部成功时运行。任一性能矩阵失败时，该 job 不收集报告，也不上传 `benchmark-updates` artifact 或 dispatch `docs.yml`。
+
 ## 3. 报告与历史
 
 `reusable-check-matrix.yml` 仍负责单个 check 的报告渲染和 artifact 上传：`matrix.performance_report` 为真时，它调用 `scripts/test/ci_perf_report.py` 生成 Markdown 与 JSON，并把 artifact 命名为 `${performance_artifact_prefix}-${check_id}`。前缀由 `_normalize_check()` 根据解析后的 `group` 推导，因此统一清单中的两个性能组不会混用历史来源。
@@ -75,6 +77,6 @@ flowchart TD
 
 ### 3.2 历史发布
 
-`benchmark-updates` 从报告 artifact 中收集本次数据。AxVisor 保持“只要存在成功测例报告就保留部分数据”的语义；Starry 只有在 QEMU 与 board 矩阵都成功时才纳入。只要任一来源有 metric，job 就把本次增量写成 `axvisor.json` / `starry.json`，上传为保留 30 天的 `benchmark-updates` artifact，为 docs-pages 排队或短暂部署故障保留恢复窗口，并执行 `gh workflow run docs.yml --ref dev`，携带 benchmark run ID、固定 revision 和 UTC 日期。没有任何新 metric 时不触发 docs。
+`benchmark-updates` 从报告 artifact 中收集本次数据，并且只在 `plan`、`axvisor_performance`、`starry_performance` 与 `starry_board_performance` 全部成功时运行。AxVisor 只有在 `axvisor_performance` 成功时下载并纳入，Starry 只有在 QEMU 与 board 矩阵都成功时才下载并纳入。只要任一被纳入来源有 metric，job 就把本次增量写成 `axvisor.json` / `starry.json`，上传为保留 30 天的 `benchmark-updates` artifact，为 docs-pages 排队或短暂部署故障保留恢复窗口，并执行 `gh workflow run docs.yml --ref dev`，携带 benchmark run ID、固定 revision 和 UTC 日期。任一性能矩阵失败或没有任何新 metric 时，都不上传 artifact 且不触发 docs。
 
 `docs.yml` 是唯一 Pages publisher。`Prepare performance dashboard` 步骤只准备环境变量并调用 `scripts/test/ci_perf_pages.py`，该脚本通过 `actions/configure-pages` 的 `base_url` 读取线上 `benchmark/index.html` 和 `benchmark/history.json`，并在脚本内复用 `ci_perf_dashboard.py` 的 `load_history`/`update_history`/`render_dashboard` 合并增量。页面存在时只使用 Pages 内容；仅当两份文件都返回 404 时，才一次性只读 `perf-data` 分支中的 `history.json` 与 `index.html` 作为 bootstrap。该 bootstrap 必须完整成功，普通文档发布才复制遗留 dashboard；fetch 失败、任一文件缺失或为空都会阻止 Pages 部署。benchmark dispatch 还必须拿到线上或遗留 history 作为 seed，否则构建失败，避免空历史覆盖累计数据。随后脚本按原 schema 合并本次增量，生成的 `history.json` 和 `index.html` 仍经现有 Pages artifact 与 deploy job 发布。线上读取使用 `Cache-Control: no-cache` 请求头和 cache-buster；线上读取的网络错误、单文件 404 或其它非预期状态会阻止部署。首次 Pages 发布成功后，唯一持久历史是 Pages，`perf-data` 分支冻结且不再被任何 workflow 写入、推送或部署。
