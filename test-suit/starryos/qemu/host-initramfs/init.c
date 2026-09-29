@@ -40,15 +40,18 @@ long init_main(unsigned long *stack)
     char **envp = argv + argc + 1;
     int valid = argc == 2 && same_text(argv[1], "from-dashes");
     int env_found = 0;
+    int unsupported_kernel_env_found = 0;
     int kernel_env_absent = 1;
     for (char **env = envp; *env; env++) {
         if (same_text(*env, "HOST_ENV=ready")) env_found = 1;
+        if (same_text(*env, "memmap=exactmap")) unsupported_kernel_env_found = 1;
         if (same_text(*env, "nr_cpus=1") || same_text(*env, "earlyprintk=serial") ||
             same_text(*env, "oops=panic")) kernel_env_absent = 0;
     }
     long fd = syscall4(56, -100, (long)issue_path, 0, 0);
     long read_size = fd < 0 ? -1 : syscall3(63, fd, (long)issue, sizeof(issue));
-    valid = valid && env_found && kernel_env_absent && read_size == sizeof(issue_text) - 1;
+    valid = valid && env_found && unsupported_kernel_env_found && kernel_env_absent &&
+            read_size == sizeof(issue_text) - 1;
     for (unsigned long i = 0; valid && i < sizeof(issue_text) - 1; i++) {
         valid = issue[i] == issue_text[i];
     }

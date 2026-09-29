@@ -11,7 +11,7 @@ args = [
 ]
 uefi = false
 to_bin = true
-fail_regex = ["STARRY_INITRAMFS_FAILED", "(?i)\\bpanic(?:ked)?\\b"]
+fail_regex = ["STARRY_INITRAMFS_FAILED", "ARCEOS_PANIC_EMERGENCY"]
 timeout = 90
 
 [[shell_check_steps]]

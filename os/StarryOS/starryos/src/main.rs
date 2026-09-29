@@ -64,6 +64,7 @@ fn init_options(bootargs: &str) -> InitOptions {
     result
 }
 
+// Reserve only this compatibility subset; other Linux options follow the unknown-option path.
 fn known_kernel_option(token: &str) -> bool {
     let key = token.split_once('=').map_or(token, |(key, _)| key);
     matches!(
@@ -112,7 +113,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn init_parameters_follow_linux_split() {
+    fn init_parameters_follow_boot_split() {
         let options = init_options(
             "auto root=/dev/sda init=/bin/init nosmp nr_cpus=1 keep_bootcon earlyprintk=serial \
              initcall_debug oops=panic foo=one foo=two -- hi X=1 nosmp",

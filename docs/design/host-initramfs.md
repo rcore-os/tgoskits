@@ -47,6 +47,9 @@ UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`。`--` 后的词只传给 PID 1；
 未知的不带点号的键值参数成为环境变量，其余未知词成为参数。ArceOS 和
 Axvisor 没有 PID 1：显式 `root=` 选择磁盘，否则存在 initramfs 就选择内存根。
+Starry 的 `known_kernel_option()` 只过滤启动链路与兼容性名单中的参数，并非 Linux
+完整的内核参数注册表；Starry 未识别的 Linux 参数仍按未知参数规则传给 PID 1，
+例如 `memmap=exactmap` 会进入环境变量，不能据此认为 Starry 已实现该参数的内核语义。
 axbuild 将 `disk0`、匿名及直连盘视为宿主根盘接线；明确命名为其他 ID 的
 guest/data drive 不要求额外准备宿主根盘。Axvisor 显式 `root=` 但未接入
 可识别的宿主根盘会在配置阶段报错。axbuild 可改写 `-drive ...` 与
