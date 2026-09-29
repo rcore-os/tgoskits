@@ -1,22 +1,32 @@
 # Select the test shell on existing board images without replacing their init files.
 cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
-board_type = "OrangePi-5-Plus-robot"
+# Native StarryOS runs the virtual UVC/RKNN + FT232 loopback chain on the
+# ordinary OrangePi 5 Plus board type. It never drives wheels or the arm and
+# never opens the arm serial port; the application selects one 0403:6001 adapter.
+board_type = "OrangePi-5-Plus"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   '(?i)segmentation fault',
   '(?i)SIGSEGV',
   'exit with code: 139',
-  '(?m)^\[ROBOT_CI\] RESULT=FAIL .*$',
-  '(?m)^\[ROBOT_CI\] HARNESS=FAIL .*$',
+  '(?m)^\[VISION_USB_CI\] RESULT=FAIL .*$',
 ]
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:~#"
-shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588; m=ROBOT_CI'
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual'
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:~#"
+# Pin the raw libusb transport: a USB failure must fail the step instead of
+# silently falling back to the FT232 tty.
 # Fixed by this test configuration; change this argument to revise the FPS gate.
-shell_cmd = 'cd "$d" && FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0 || echo "[${m}] HARNESS=FAIL status=$?"'
-success_regex = ['(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12]\s*$']
+# The command must not print any fallback failure marker: the serial echo or an
+# interleaved kernel log can put such a literal at line start and match the
+# stream fail_regex. A missing binary or a failed `cd` therefore fails by never
+# producing the strict success marker, not by emitting a marker of its own.
+shell_cmd = 'cd "$d" && FTDI_TRANSPORT=usb ./run_vision_usb_ci_once.sh 28.0'
+# Only the exact final producer verdict counts; intermediate diagnostics,
+# performance windows and summary titles cannot complete the step.
+success_regex = ['(?m)^\[VISION_USB_CI\] RESULT=PASS attempts=1[ \t\r]*$']

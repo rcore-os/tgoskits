@@ -1,15 +1,19 @@
-board_type = "OrangePi-5-Plus-robot"
+# AxVisor runs the virtual eMMC Linux guest, which performs UVC camera + RKNN
+# inference and FT232 TX/RX loopback. It never drives wheels or the arm and
+# never opens the arm serial port. The guest kernel and shared eMMC root are
+# selected in linux-smp1-emmc.toml.
+board_type = "OrangePi-5-Plus"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   'Failed to initialize guest VM',
   'VFS: Cannot open root device',
   'Waiting for root device',
+  'Waiting for root file system',
   '(?i)segmentation fault',
   '(?i)SIGSEGV',
   'exit with code: 139',
-  '(?m)^\[ROBOT_CI\] RESULT=FAIL .*$',
-  '(?m)^\[ROBOT_CI\] HARNESS=FAIL .*$',
+  '(?m)^\[VISION_USB_CI\] RESULT=FAIL .*$',
 ]
 
 [[shell_check_steps]]
@@ -18,10 +22,15 @@ shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
 shell_prefix = "orangepi@orangepi5plus:~"
-shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588; m=ROBOT_CI'
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual'
 
 [[shell_check_steps]]
 shell_prefix = "orangepi@orangepi5plus:~"
+# The UVC libusb node is root-only in the Linux guest, so feed the default CI
+# password on stdin. The tty transport keeps the FT232 loopback on the guest TTY
+# path and does not fall back to raw libusb.
 # Fixed by this test configuration; change this argument to revise the FPS gate.
-shell_cmd = 'cd "$d" && FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0 || echo "[${m}] HARNESS=FAIL status=$?"'
-success_regex = ['(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12](?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']
+shell_cmd = 'cd "$d" && printf "%s\n" orangepi | sudo -S env FTDI_TRANSPORT=tty ./run_vision_usb_ci_once.sh 28.0'
+# Only the exact final producer verdict counts. The optional trailing kernel
+# timestamp only tolerates the guest console relay appending to the marker line.
+success_regex = ['(?m)^\[VISION_USB_CI\] RESULT=PASS attempts=1(?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']
