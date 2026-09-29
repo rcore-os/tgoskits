@@ -11,27 +11,28 @@
 //! fence fires.
 //!
 //! UAPI reference (`include/uapi/linux/sync_file.h`, Linux master; opcodes
-//! 0-2 were burned by the sync-framework v1→v2 revert):
-//! - `SYNC_IOC_WAIT` = `_IOW('>', 0, struct sync_wait_data)` in the v2 ABI;
-//!   v1 used `_IOW('>', 0, __s32)`. Both place the millisecond timeout in
-//!   the first four bytes, so both are matched by (type `0x3e`, nr `0`).
-//!   Negative waits forever, zero only tests, positive bounds the wait;
-//!   expiry reports `ETIME` (`sync_file_ioctl_wait` → `-ETIME`).
-//! - `SYNC_IOC_FILE_INFO` = `_IOWR('>', 4, struct sync_file_info)`;
-//!   `status` is 1 signaled / 0 active, `num_fences == 0` publishes the
-//!   fence count, a non-null `sync_fence_info` buffer receives one entry.
-//! - `SYNC_IOC_MERGE` / `SYNC_IOC_SET_DEADLINE` have no consumer here and
+//! 0-2 were burned by the sync-framework v1→v2 revert and `sync_file_ioctl`
+//! answers them with the generic `-ENOTTY`):
+//! - `SYNC_IOC_MERGE` = `_IOWR('>', 3, struct sync_merge_data)`;
+//!   `SYNC_IOC_FILE_INFO` = `_IOWR('>', 4, struct sync_file_info)`;
+//!   `SYNC_IOC_SET_DEADLINE` = `_IOW('>', 5, struct sync_set_deadline_data)`.
+//!   Only `SYNC_IOC_FILE_INFO` has a consumer here; `MERGE`/`SET_DEADLINE`
 //!   keep the generic `ENOTTY`.
+//! - Waiting happens exactly like mainline: userspace polls the fd and
+//!   `sync_file_poll` reports `POLLIN` once signaled. There is no WAIT
+//!   opcode in mainline to mirror.
+//! - `SYNC_IOC_FILE_INFO`: `status` is 1 signaled / 0 active, `num_fences
+//!   == 0` publishes the fence count, a non-null `sync_fence_info` buffer
+//!   receives one entry.
 //! - `poll`/`epoll` report `POLLIN` once signaled.
 //!
 //! Wakeups: a [`PollSet`] drives poll/epoll sleepers. Completion is observed
-//! two ways: waiter-driven refresh (the WAIT ioctl loop, poll levels, in-fence
-//! waits — each re-checks the fence level itself, pumping the used ring as a
-//! side effect) and a background refresher task, which exists for a guest
-//! blocked in `poll()`: a sleeping poll cannot re-check the level by itself.
-//! The device's completion IRQ advances the level through the GPU IRQ worker
-//! as well; the refresher is the tick-bounded fallback when no waiter is
-//! driving the query itself.
+//! two ways: waiter-driven refresh (each poll level check queries the fence
+//! level, pumping the used ring as a side effect) and a background refresher
+//! task, which exists for a guest blocked in `poll()`: a sleeping poll cannot
+//! re-check the level by itself. The device's completion IRQ advances the
+//! level through the GPU IRQ worker as well; the refresher is the tick-bounded
+//! fallback when no waiter is driving the query itself.
 
 use alloc::{
     borrow::Cow,
@@ -49,7 +50,6 @@ use ax_std::os::arceos::task::sync::WaitQueue;
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use bytemuck::{AnyBitPattern, NoUninit};
-use syscalls::Errno;
 
 use crate::{
     StarryError, StarryResult,
@@ -67,18 +67,6 @@ const IOC_WRITE: u32 = 1;
 /// 15..8 | 7..0).
 const fn ioc(dir: u32, ty: u8, nr: u8, size: u16) -> u32 {
     (dir << 30) | ((size as u32) << 16) | ((ty as u32) << 8) | (nr as u32)
-}
-
-/// `SYNC_IOC_WAIT`: wait for the fence, timeout in the first `__s32`.
-///
-/// Matches both the v2 `_IOW('>', 0, struct sync_wait_data)` and the v1
-/// `_IOW('>', 0, __s32)` encodings: both carry the timeout in the first four
-/// bytes.
-const SYNC_IOC_WAIT: u32 = ioc(IOC_WRITE, b'>', 0, size_of_sync_wait_data());
-
-const fn size_of_sync_wait_data() -> u16 {
-    // `struct sync_wait_data { __s32 timeout; }` — 4 bytes on every ABI.
-    4
 }
 
 /// `SYNC_IOC_FILE_INFO = _IOWR('>', 4, struct sync_file_info)` — encodes to
@@ -263,35 +251,6 @@ impl SyncFile {
         self.signaled.load(Ordering::Acquire)
     }
 
-    /// Blocks until signaled.
-    ///
-    /// `timeout == None` waits forever (EXECBUFFER in-fence semantics);
-    /// otherwise the wait is bounded and expiry reports `ETIME`, matching
-    /// Linux `sync_file_ioctl_wait` returning `-ETIME`. Sleeps on the
-    /// refresher's wait queue in tick-sized slices instead of spinning: the
-    /// CPU is released while waiting, a burst kick from any execbuffer wakes
-    /// the wait immediately for a re-check, and the slice bounds the wake
-    /// latency to the same 250 µs cadence the poll path gets.
-    pub fn wait_signaled(&self, timeout: Option<Duration>) -> StarryResult<()> {
-        let deadline = timeout.map(|t| monotonic_time_nanos() + t.as_nanos() as u64);
-        loop {
-            if self.refresh() {
-                return Ok(());
-            }
-            let now = monotonic_time_nanos();
-            if let Some(deadline) = deadline
-                && now >= deadline
-            {
-                return Err(sync_wait_timeout_error());
-            }
-            let slice = deadline
-                .map_or(REFRESHER_ACTIVE_TICK, |deadline| {
-                    (Duration::from_nanos(deadline - now)).min(REFRESHER_ACTIVE_TICK)
-                });
-            REFRESHER_WAKE
-                .wait_timeout_until(slice, || self.signaled.load(Ordering::Acquire));
-        }
-    }
 }
 
 impl Drop for SyncFile {
@@ -421,13 +380,6 @@ pub(crate) fn kick_refresher() {
     REFRESHER_WAKE.notify_one();
 }
 
-/// The error `SYNC_IOC_WAIT` reports on timeout: Linux
-/// `sync_file_ioctl_wait` returns `-ETIME` (not `-ETIMEDOUT`), and DRM
-/// userland distinguishes the two errno values.
-fn sync_wait_timeout_error() -> StarryError {
-    StarryError::Errno(Errno::ETIME)
-}
-
 impl FileLike for SyncFile {
     fn validate_write_access(&self) -> StarryResult {
         Err(StarryError::InvalidInput)
@@ -439,34 +391,17 @@ impl FileLike for SyncFile {
 
     fn ioctl(&self, current: &UserTaskRef, cmd: u32, arg: usize) -> StarryResult<usize> {
         match cmd {
-            SYNC_IOC_WAIT => self.ioctl_wait(current, arg),
             SYNC_IOC_FILE_INFO => self.ioctl_file_info(current, arg),
+            // Opcodes 0-2 (including the legacy Android-era WAIT at 0) were
+            // burned in the mainline UAPI and fall through to `-ENOTTY`,
+            // exactly like `sync_file_ioctl()`'s default arm; waiting is done
+            // via poll, as on Linux.
             _ => Err(StarryError::NotATty),
         }
     }
 }
 
 impl SyncFile {
-    /// `SYNC_IOC_WAIT` — mirror of `sync_file_ioctl_wait`.
-    ///
-    /// Both the v1 (`__s32 timeout`) and v2 (`struct sync_wait_data`) ABIs
-    /// read the millisecond timeout from the first four bytes.
-    fn ioctl_wait(&self, current: &UserTaskRef, arg: usize) -> StarryResult<usize> {
-        let timeout_ms: i32 = (arg as *const i32)
-            .vm_read(current)
-            .map_err(|_| StarryError::BadAddress)?;
-        match timeout_ms {
-            n if n < 0 => self.wait_signaled(None)?,
-            0 => {
-                if !self.refresh() {
-                    return Err(sync_wait_timeout_error());
-                }
-            }
-            n => self.wait_signaled(Some(Duration::from_millis(n as u64)))?,
-        }
-        Ok(0)
-    }
-
     /// `SYNC_IOC_FILE_INFO` — mirror of `sync_file_ioctl_fence_info`.
     fn ioctl_file_info(&self, current: &UserTaskRef, arg: usize) -> StarryResult<usize> {
         let ptr = arg as *mut SyncFileInfo;
@@ -554,11 +489,7 @@ impl Pollable for SyncFile {
 // assertions are compile-time constants covered by the std test entry.
 #[cfg(all(test, not(axtest)))]
 mod tests {
-    use super::{
-        IOC_WRITE, SYNC_IOC_FILE_INFO, SYNC_IOC_WAIT, SyncFenceInfo, SyncFileInfo, ioc, name_bytes,
-        sync_wait_timeout_error,
-    };
-    use syscalls::Errno;
+    use super::{SYNC_IOC_FILE_INFO, SyncFenceInfo, SyncFileInfo, name_bytes};
 
     #[test]
     fn file_info_layout_matches_uapi() {
@@ -575,25 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_ioctl_matches_both_abi_variants() {
-        // v2 `_IOW('>', 0, struct sync_wait_data)` and v1 `_IOW('>', 0, s32)`
-        // must both resolve to (type 0x3e, nr 0, size 4).
-        assert_eq!(SYNC_IOC_WAIT, ioc(IOC_WRITE, b'>', 0, 4));
-        assert_eq!(SYNC_IOC_WAIT & 0xff, 0);
-        assert_eq!((SYNC_IOC_WAIT >> 8) & 0xff, b'>' as u32);
-    }
-
-    #[test]
     fn file_info_ioctl_matches_uapi_encoding() {
         assert_eq!(SYNC_IOC_FILE_INFO, 0xc038_3e04);
-    }
-
-    #[test]
-    fn sync_wait_timeout_reports_linux_etime() {
-        // Linux `sync_file_ioctl_wait` returns -ETIME on timeout; DRM
-        // userland distinguishes it from -ETIMEDOUT (the mapping used by
-        // generic kernel timeouts).
-        assert_eq!(sync_wait_timeout_error().linux_errno(), Errno::ETIME);
-        assert_ne!(Errno::ETIME, Errno::ETIMEDOUT);
     }
 }

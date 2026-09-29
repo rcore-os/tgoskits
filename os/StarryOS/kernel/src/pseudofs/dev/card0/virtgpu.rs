@@ -535,34 +535,24 @@ impl Card0 {
 
         // `FENCE_FD_IN` imports an existing fence fd. Only a sync_file created
         // by this driver carries one; a foreign object under that fd number is
-        // -EINVAL, matching Linux `sync_file_get_fence()` returning NULL.
-        // Out-fences are real fences (submits are fire-and-forget), so an
-        // unsignaled import is the normal cross-buffer dependency case: the
-        // batch waits for it below instead of being rejected.
-        let in_fence = if fence_in {
+        // -EINVAL, matching Linux `sync_file_get_fence()` returning NULL. The
+        // downcast is the validation — no wait follows, because mainline
+        // `virtgpu_submit.c` `virtio_gpu_do_fence_wait()` skips the CPU wait
+        // for an in-fence from the same fence context: the dependency is
+        // already ordered by the control queue's strict FIFO (the batch that
+        // produced the fence was enqueued before this one and the host
+        // applies commands in queue order), and only a foreign context would
+        // need `dma_fence_wait(in_fence, true)`. Every sync_file this kernel
+        // exports is backed by this device's `submit_3d` fence, so every
+        // import here is same-context.
+        if fence_in {
             if eb.fence_fd < 0 {
                 return Err(StarryError::InvalidInput);
             }
             let file =
                 crate::file::get_file_like(eb.fence_fd).map_err(|_| VfsError::InvalidInput)?;
-            let fence = file
-                .downcast_arc::<SyncFile>()
+            file.downcast_arc::<SyncFile>()
                 .map_err(|_| VfsError::InvalidInput)?;
-            Some(fence)
-        } else {
-            None
-        };
-
-        // Enforce the in-fence dependency before any host-side effect of this
-        // batch: the submit must not reach the host until the imported fence
-        // signals (Linux waits the in-fence inside `virtgpu_execbuffer_ioctl`
-        // before `virtio_gpu_execbuffer`).
-        if let Some(in_fence) = &in_fence
-            && in_fence.wait_signaled(None).is_err()
-        {
-            // Unreachable today (unbounded wait), but never convert a failed
-            // dependency into a silently unordered submit.
-            return Err(StarryError::InvalidInput);
         }
 
         // Linux reserves the out-fence fd (`get_unused_fd_flags`) before the
@@ -741,9 +731,14 @@ impl Card0 {
             .ok_or(VfsError::NotFound)?;
         file.attach_resource(&resource)?;
 
-        // The read-back path drains inside the device layer before returning
-        // (Linux waits the transfer's fence the same way), so the guest memory
-        // is valid as soon as the ioctl returns.
+        // The read-back path drains inside the device layer before returning,
+        // so the guest memory is valid as soon as the ioctl returns. This is
+        // deliberately stronger than Linux: `virtgpu_ioctl.c`
+        // `virtio_gpu_transfer_from_host_ioctl()` is fire-and-forget — it
+        // drops the fence, notifies, and returns 0 without waiting — and
+        // relies on dma_resv deferred destruction to keep the memory safe.
+        // Our unref/backing release has no dma_resv equivalent, so the drain
+        // is the proof that the host no longer touches the guest memory.
         with_virgl(|virgl| virgl.transfer_from_host(rdif_gpu::Transfer3d {
             context: ctx_id,
             resource: resource.device_handle,
@@ -770,10 +765,10 @@ impl Card0 {
     ///
     /// Submits are fire-and-forget, so WAIT honestly waits for the last fence
     /// that referenced this GEM (Linux `virtio_gpu_wait_ioctl` →
-    /// `dma_resv_wait_timeout`); NOWAIT only probes the signal level and
-    /// reports `-EBUSY` while the host is still working. Handles never
-    /// submitted (dumb buffers, created-but-idle GEMs) have no fence and
-    /// report idle.
+    /// `dma_resv_wait_timeout`); expiry and the NOWAIT probe both report
+    /// `-EBUSY` while the host is still working, so callers can simply retry.
+    /// Handles never submitted (dumb buffers, created-but-idle GEMs) have no
+    /// fence and report idle.
     pub(super) fn handle_virtgpu_wait(
         &self,
         file: &Card0File,
@@ -807,7 +802,20 @@ impl Card0 {
                         return Err(VfsError::ResourceBusy);
                     }
                 } else {
-                    with_virgl(|virgl| virgl.wait_fence(last_fence))?;
+                    // Linux `virtio_gpu_wait_ioctl()` waits up to 15 * HZ and
+                    // reports -EBUSY when the fence is still pending — the
+                    // same errno as the NOWAIT probe — so callers treat the
+                    // expiry as "busy, retry" instead of a hard failure. Map
+                    // the driver's bounded-wait timeout onto that errno. The
+                    // bound itself is the driver's 5s stall-recovery window;
+                    // Linux simply trusts the host and has no shorter bound.
+                    with_virgl(|virgl| virgl.wait_fence(last_fence)).map_err(|err| {
+                        if matches!(err, VfsError::TimedOut) {
+                            VfsError::ResourceBusy
+                        } else {
+                            err
+                        }
+                    })?;
                 }
             }
         }

@@ -4032,8 +4032,9 @@ fn map_gpu_err(err: GpuError) -> VfsError {
         GpuError::InvalidArgument | GpuError::InvalidHandle => VfsError::InvalidInput,
         GpuError::Busy => VfsError::ResourceBusy,
         GpuError::OutOfMemory => VfsError::NoMemory,
-        // A bounded device wait expired (stalled host); Linux reports
-        // -ETIMEDOUT for the same condition.
+        // A bounded device wait expired (stalled host). Linux has no single
+        // errno for this: VIRTGPU_WAIT reports -EBUSY (mapped at its call
+        // site), while our teardown drains surface it as the hard ETIMEDOUT.
         GpuError::TimedOut => VfsError::TimedOut,
         GpuError::DeviceLost | GpuError::Io => VfsError::Io,
     }
