@@ -907,7 +907,7 @@ command = "true"
             with self.subTest(config=path):
                 config = tomllib.loads(path.read_text())
                 self.assertEqual(
-                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
+                    config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:

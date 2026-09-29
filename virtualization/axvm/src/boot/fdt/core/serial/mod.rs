@@ -10,9 +10,9 @@ use super::tree::{FdtTree, prop_string};
 use crate::{
     AxVmResult, ax_err_type,
     machine::{
-        GuestClockReference, GuestMmioRegion, GuestSerialFdtIdentity, GuestSerialFdtInterrupt,
-        GuestSerialFirmwareIdentity, GuestSerialModel, GuestSerialProfile, GuestSerialTransport,
-        HostSerialSnapshot,
+        GuestClockReference, GuestGicProfile, GuestMmioRegion, GuestPlicProfile,
+        GuestSerialFdtIdentity, GuestSerialFdtInterrupt, GuestSerialFirmwareIdentity,
+        GuestSerialModel, GuestSerialProfile, GuestSerialTransport, HostSerialSnapshot,
     },
 };
 
@@ -96,7 +96,7 @@ pub(crate) fn host_selected_serial(
     fallback: GuestSerialProfile,
     interrupt_encoding: GuestSerialFdtInterrupt,
 ) -> AxVmResult<Option<HostSerialSnapshot>> {
-    let Some((stdout_selector, path)) = console_selection(fdt) else {
+    let Some((stdout_selector, path)) = console_selection(fdt)? else {
         return Ok(None);
     };
     let serial = fdt.get_by_path(&path).ok_or_else(|| {
@@ -228,6 +228,113 @@ pub(crate) fn host_selected_serial(
         }),
     }))
 }
+
+/// Firmware source that supplied a resolved console contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConsoleSource {
+    /// A developer-supplied guest DTB.
+    Supplied,
+    /// Host firmware.
+    Host,
+}
+
+/// A resolved console contract together with the controller geometry behind it.
+pub(crate) struct ResolvedConsole {
+    /// Firmware that supplied this contract.
+    pub(crate) source: ConsoleSource,
+    /// Resolved serial profile and firmware identity.
+    pub(crate) snapshot: HostSerialSnapshot,
+    /// GIC description declared by a supplied DTB, retained for validation.
+    pub(crate) supplied_gic: Option<GuestGicProfile>,
+    /// PLIC description declared by a supplied DTB, retained for validation.
+    pub(crate) supplied_plic: Option<GuestPlicProfile>,
+}
+
+/// Resolves which firmware source owns the virtual console.
+///
+/// `provided_dtb` is the developer-supplied guest DTB that was actually loaded;
+/// `dtb_load_addr` alone must not be reported here. A supplied DTB whose
+/// selected console contract is unusable fails closed instead of falling back.
+/// When the supplied DTB declares no console selector at all, the host firmware
+/// is consulted, and `None` leaves the machine profile untouched.
+pub(crate) fn resolve_console_source(
+    current: GuestSerialProfile,
+    interrupt_encoding: GuestSerialFdtInterrupt,
+    explicit_console: bool,
+    provided_dtb: Option<&[u8]>,
+    host_dtb: Option<&[u8]>,
+) -> AxVmResult<Option<ResolvedConsole>> {
+    if explicit_console {
+        return Ok(None);
+    }
+    if let Some(provided) = provided_dtb {
+        let fdt = parse_console_fdt(provided, "supplied guest DTB")?;
+        if let Some(snapshot) = host_selected_serial(&fdt, current, interrupt_encoding)? {
+            let (supplied_gic, supplied_plic) = match interrupt_encoding {
+                GuestSerialFdtInterrupt::GicSpi => {
+                    (super::interrupt::host_gic_profile(&fdt)?, None)
+                }
+                GuestSerialFdtInterrupt::PlicSource => {
+                    (None, super::interrupt::host_plic_profile(&fdt)?)
+                }
+            };
+            return Ok(Some(ResolvedConsole {
+                source: ConsoleSource::Supplied,
+                snapshot,
+                supplied_gic,
+                supplied_plic,
+            }));
+        }
+    }
+    let Some(host) = host_dtb else {
+        return Ok(None);
+    };
+    let fdt = parse_console_fdt(host, "host firmware DTB")?;
+    let Some(snapshot) = host_selected_serial(&fdt, current, interrupt_encoding)? else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedConsole {
+        source: ConsoleSource::Host,
+        snapshot,
+        supplied_gic: None,
+        supplied_plic: None,
+    }))
+}
+
+fn parse_console_fdt(bytes: &[u8], owner: &str) -> AxVmResult<Fdt> {
+    Fdt::from_bytes(bytes).map_err(|err| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse {owner} while reading the console selector: {err:#?}")
+        )
+    })
+}
+
+/// Rewrites a selected console's firmware interrupt description to the encoding
+/// the prepared per-VM controller actually installs.
+///
+/// Only the console contract is normalized here; other firmware nodes keep
+/// their original interrupt properties.
+pub(crate) fn normalize_console_identity(
+    identity: &mut GuestSerialFirmwareIdentity,
+    interrupt_encoding: GuestSerialFdtInterrupt,
+    controller_phandle: Option<u32>,
+) {
+    let GuestSerialFirmwareIdentity::Fdt(identity) = identity else {
+        return;
+    };
+    if let Some(phandle) = controller_phandle {
+        identity.interrupt_parent = phandle;
+    }
+    let cells = match interrupt_encoding {
+        GuestSerialFdtInterrupt::GicSpi => 3,
+        GuestSerialFdtInterrupt::PlicSource => 1,
+    };
+    identity.interrupt_specifier.truncate(cells);
+}
+
+/// Keeps `/chosen` Zephyr console phandles pointing at the rebuilt serial node.
+const ZEPHYR_CONSOLE_PROPERTIES: [&str; 2] = ["zephyr,console", "zephyr,shell-uart"];
 
 fn serial_clock_references(
     fdt: &Fdt,
@@ -484,7 +591,11 @@ fn install_mmio_serial_preserving(
         },
     };
     tree.set_property(serial_id, interrupts)?;
-    if let Some(phandle) = identity.and_then(|identity| identity.node_phandle) {
+    let mut console_phandle = identity.and_then(|identity| identity.node_phandle);
+    if console && console_phandle.is_none() && chosen_uses_zephyr_console_phandle(tree.inner()) {
+        console_phandle = Some(next_phandle(tree.inner()));
+    }
+    if let Some(phandle) = console_phandle {
         tree.set_property(serial_id, prop_u32("phandle", phandle))?;
         tree.set_property(serial_id, prop_u32("linux,phandle", phandle))?;
     }
@@ -506,6 +617,58 @@ fn install_mmio_serial_preserving(
         tree.set_property(aliases, prop_string(stdout_selector, &serial_path))?;
     }
     tree.set_property(chosen, prop_string("stdout-path", stdout_path))?;
+    redirect_chosen_zephyr_console(tree, console_phandle, &serial_path)?;
+    Ok(())
+}
+
+/// Returns whether `/chosen` selects a Zephyr console through a phandle.
+fn chosen_uses_zephyr_console_phandle(fdt: &Fdt) -> bool {
+    let Some(chosen) = fdt.get_by_path("/chosen") else {
+        return false;
+    };
+    let chosen = chosen.as_node();
+    ZEPHYR_CONSOLE_PROPERTIES.iter().copied().any(|name| {
+        chosen
+            .get_property(name)
+            .and_then(Property::get_u32)
+            .is_some()
+    })
+}
+
+/// Redirects surviving `/chosen` Zephyr console selectors at the rebuilt node,
+/// preserving each property's original phandle or path-string representation.
+fn redirect_chosen_zephyr_console(
+    tree: &mut FdtTree,
+    phandle: Option<u32>,
+    serial_path: &str,
+) -> AxVmResult {
+    let mut edits = Vec::new();
+    if let Some(chosen) = tree.inner().get_by_path("/chosen") {
+        let chosen = chosen.as_node();
+        for name in ZEPHYR_CONSOLE_PROPERTIES {
+            let Some(property) = chosen.get_property(name) else {
+                continue;
+            };
+            if property.get_u32().is_some() {
+                if let Some(phandle) = phandle {
+                    edits.push((name, Some(phandle)));
+                }
+            } else if property.as_str().is_some() {
+                edits.push((name, None));
+            }
+        }
+    }
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let chosen = tree.ensure_path("/chosen")?;
+    for (name, phandle) in edits {
+        let property = match phandle {
+            Some(phandle) => prop_u32(name, phandle),
+            None => prop_string(name, serial_path),
+        };
+        tree.set_property(chosen, property)?;
+    }
     Ok(())
 }
 
@@ -595,25 +758,129 @@ fn next_phandle(fdt: &Fdt) -> u32 {
         .max(1)
 }
 
-fn stdout_selection(fdt: &Fdt) -> Option<(String, String)> {
-    let chosen = fdt.get_by_path("/chosen")?;
-    let raw = ["stdout-path", "linux,stdout-path"]
-        .into_iter()
-        .find_map(|name| chosen.as_node().get_property(name)?.as_str())?;
-    let selector = raw.split(':').next().unwrap_or(raw);
-    let path = if selector.starts_with('/') {
-        selector
-    } else {
-        fdt.get_by_path("/aliases")?
-            .as_node()
-            .get_property(selector)?
-            .as_str()?
-    };
-    Some((raw.into(), path.into()))
+/// One console selector declared in `/chosen` and the serial node it names.
+struct SelectedConsole {
+    /// Original selector text, or the resolved node path for a phandle property.
+    raw: String,
+    /// Absolute path of the selected serial node.
+    path: String,
 }
 
-fn console_selection(fdt: &Fdt) -> Option<(String, String)> {
-    stdout_selection(fdt).or_else(|| earlycon_selection(fdt))
+/// Resolves every console selector that `/chosen` declares.
+///
+/// Both the standard `stdout-path`/`linux,stdout-path` string selectors and the
+/// Zephyr `zephyr,console`/`zephyr,shell-uart` phandle selectors are honored.
+/// When several are present they must name the same serial node; a conflicting,
+/// dangling, mistyped, or unparsable selector is rejected instead of being
+/// silently ignored. Only a `/chosen` with no console selector at all falls
+/// back to the legacy earlycon address.
+fn console_selection(fdt: &Fdt) -> AxVmResult<Option<(String, String)>> {
+    let Some(chosen) = fdt.get_by_path("/chosen") else {
+        return Ok(None);
+    };
+    let chosen = chosen.as_node();
+    let mut selected = Vec::new();
+    for name in ["stdout-path", "linux,stdout-path"] {
+        let Some(property) = chosen.get_property(name) else {
+            continue;
+        };
+        let raw = property.as_str().ok_or_else(|| {
+            ax_err_type!(
+                InvalidData,
+                format!("/chosen {name} is present but is not a string selector")
+            )
+        })?;
+        selected.push(resolve_stdout_selector(fdt, name, raw)?);
+    }
+    for name in ["zephyr,console", "zephyr,shell-uart"] {
+        let Some(property) = chosen.get_property(name) else {
+            continue;
+        };
+        if let Some(phandle) = property.get_u32() {
+            selected.push(resolve_phandle_selector(fdt, name, phandle)?);
+        } else if let Some(raw) = property.as_str() {
+            selected.push(resolve_zephyr_path_selector(fdt, name, raw)?);
+        } else {
+            return Err(ax_err_type!(
+                InvalidData,
+                format!("/chosen {name} is present but is neither a phandle nor a path string")
+            ));
+        }
+    }
+    let Some(first) = selected.first() else {
+        return Ok(earlycon_selection(fdt));
+    };
+    for candidate in &selected[1..] {
+        if candidate.path != first.path {
+            return Err(ax_err_type!(
+                InvalidData,
+                format!(
+                    "guest firmware declares conflicting console nodes {} and {}",
+                    first.path, candidate.path
+                )
+            ));
+        }
+    }
+    Ok(Some((first.raw.clone(), first.path.clone())))
+}
+
+fn resolve_stdout_selector(fdt: &Fdt, name: &str, raw: &str) -> AxVmResult<SelectedConsole> {
+    let selector = raw.split(':').next().unwrap_or(raw);
+    let path = if selector.starts_with('/') {
+        String::from(selector)
+    } else {
+        fdt.get_by_path("/aliases")
+            .and_then(|aliases| {
+                aliases
+                    .as_node()
+                    .get_property(selector)
+                    .and_then(Property::as_str)
+                    .map(String::from)
+            })
+            .ok_or_else(|| {
+                ax_err_type!(
+                    InvalidData,
+                    format!("/chosen {name} selector {raw} does not resolve through /aliases")
+                )
+            })?
+    };
+    Ok(SelectedConsole {
+        raw: raw.into(),
+        path,
+    })
+}
+
+fn resolve_phandle_selector(fdt: &Fdt, name: &str, phandle: u32) -> AxVmResult<SelectedConsole> {
+    let node = fdt.get_by_phandle(phandle.into()).ok_or_else(|| {
+        ax_err_type!(
+            InvalidData,
+            format!("/chosen {name} references missing phandle {phandle:#x}")
+        )
+    })?;
+    let path = node.path();
+    Ok(SelectedConsole {
+        raw: path.clone(),
+        path,
+    })
+}
+
+fn resolve_zephyr_path_selector(fdt: &Fdt, name: &str, raw: &str) -> AxVmResult<SelectedConsole> {
+    if !raw.starts_with('/') {
+        return Err(ax_err_type!(
+            InvalidData,
+            format!("/chosen {name} path {raw} is not absolute")
+        ));
+    }
+    if fdt.get_by_path(raw).is_none() {
+        return Err(ax_err_type!(
+            InvalidData,
+            format!("/chosen {name} path {raw} does not resolve to a node")
+        ));
+    }
+    Ok(SelectedConsole {
+        raw: raw.into(),
+        path: raw.into(),
+    })
 }
 
 fn earlycon_selection(fdt: &Fdt) -> Option<(String, String)> {
@@ -661,7 +928,7 @@ fn serial_model(node: &Node) -> Option<GuestSerialModel> {
 }
 
 fn console_path(fdt: &Fdt) -> Option<String> {
-    console_selection(fdt).map(|(_, path)| path)
+    console_selection(fdt).ok().flatten().map(|(_, path)| path)
 }
 
 fn prop_u32(name: &str, value: u32) -> Property {

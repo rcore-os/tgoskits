@@ -1,4 +1,4 @@
-board_type = "OrangePi-5-Plus-DualGuest-robot"
+board_type = "OrangePi-5-Plus-Robot-UART6"
 uboot_cmd = [
   "setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1",
   "mw.l 0xfd7c03cc 0x7e000000",
@@ -18,7 +18,7 @@ shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
 shell_prefix = "orangepi@orangepi5plus:~"
-shell_cmd = 'd=/home/orangepi/robot/aka-rk3588; m=DUAL_PICK_CI; g=linux-zephyr'
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-dual; m=DUAL_PICK_CI; g=linux-zephyr'
 
 [[shell_check_steps]]
 shell_prefix = "orangepi@orangepi5plus:~"

@@ -109,7 +109,7 @@ AxVisor 的 `exit` 会先调用宿主文件系统关闭流程。StarryOS 用户�
 StarryOS 登录 Shell 出现 `root@starry:` 前缀的提示符后，由本目录的 board 配置运行：
 
 ```sh
-/home/orangepi/robot/aka-rk3588/run_dual_pick_ci_once.sh --min-fps 28
+/home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh --min-fps 28
 ```
 
 消息和失败处理按以下顺序进行；IVC 通道 key 为 `0x49564301`：
@@ -141,10 +141,11 @@ NPU 调用错误、IVC 发送失败或丢帧、执行器读写/反馈错误都�
 受控执行器反馈；预设场景允许模拟夹持成功，不能证明识别准确率、真实抓球入桶、
 地面行驶、长期稳定性或硬件急停。
 
-本 SD 场景使用板卡类型 `OrangePi-5-Plus-DualGuest-robot`，与 Linux + Zephyr 场景顺序
+本 SD 场景使用板卡类型 `OrangePi-5-Plus-Robot-UART6`，与 Linux + Zephyr 场景顺序
 共用同一块板。CI 从当前 checkout 构建 StarryOS 并嵌入 AxVisor，确保源码修改得到测试。
 感知程序、Zephyr 镜像和 CI 脚本须配套更新。board 入口以 `shell_check_steps`
-逐步注入短命令。
+逐步注入短命令。双客户机运行目录 `/home/orangepi/robot-ci/aka-rk3588-dual` 独立于
+单客户机 `/home/orangepi/robot-ci/aka-rk3588` 与通用 `/home/orangepi/robot/aka-rk3588`。
 
 ## 如需迁移到 eMMC
 
