@@ -32,19 +32,19 @@ USB 控制器仍可能在系统中呈现 USB 串口节点。VM 配置也不注�
 | `test-orangepi-5-plus-robot-native-starryos` | 普通 CI | `orangepi-5-plus-robot` | `OrangePi-5-Plus` | 在 `/home/orangepi/robot-ci/aka-rk3588-virtual` 运行 `./run_vision_usb_ci_once.sh 28.0` |
 | `test-orangepi-5-plus-robot-axvisor-starryos-guest` | 普通 CI | `orangepi-5-plus-robot-starry` | `OrangePi-5-Plus` | 同上，AxVisor 运行当前 checkout 构建的 StarryOS guest |
 | `test-orangepi-5-plus-robot-axvisor-linux-guest` | 普通 CI | `orangepi-5-plus-robot-linux` | `OrangePi-5-Plus` | 同上，AxVisor 运行 Linux guest |
-| `test-orangepi-5-plus-robot-real-native-starryos` | 普通 CI | `orangepi-5-plus-robot-real` | `OrangePi-5-Plus-Robot-USB` | 在 `/home/orangepi/robot-ci/aka-rk3588` 运行 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0` |
-| `test-orangepi-5-plus-robot-real-axvisor-starryos-guest` | AxVisor Nightly | `orangepi-5-plus-robot-real-starry` | `OrangePi-5-Plus-Robot-USB` | 同上，AxVisor 运行当前 checkout 构建的 StarryOS guest |
-| `test-orangepi-5-plus-robot-real-axvisor-linux-guest` | AxVisor Nightly | `orangepi-5-plus-robot-real-linux` | `OrangePi-5-Plus-Robot-USB` | 同上，AxVisor 运行 Linux guest |
+| `test-orangepi-5-plus-robot-real-native-starryos` | 普通 CI | `orangepi-5-plus-robot-real` | `OrangePi-5-Plus-robot` | 在 `/home/orangepi/robot-ci/aka-rk3588` 运行 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0` |
+| `test-orangepi-5-plus-robot-real-axvisor-starryos-guest` | AxVisor Nightly | `orangepi-5-plus-robot-real-starry` | `OrangePi-5-Plus-robot` | 同上，AxVisor 运行当前 checkout 构建的 StarryOS guest |
+| `test-orangepi-5-plus-robot-real-axvisor-linux-guest` | AxVisor Nightly | `orangepi-5-plus-robot-real-linux` | `OrangePi-5-Plus-robot` | 同上，AxVisor 运行 Linux guest |
 
 三条 virtual 检查使用普通 `OrangePi-5-Plus` 板卡类型。部署前需确认候选板带 UVC
 摄像头和 `0403:6001` FT232 回环接线。
 
 三条 real 检查统一使用板服务已注册的
-`board_type = "OrangePi-5-Plus-Robot-USB"`，对应物理板 ID
-`OrangePi-5-Plus-Robot-USB-1`。三条 TOML 都使用该类型。
+`board_type = "OrangePi-5-Plus-robot"`，对应物理板 ID
+`OrangePi-5-Plus-robot-1`。三条 TOML 都使用该类型。
 
 资源组按物理板类型分开：三条 virtual 检查使用 `resource_group = "orangepi-5-plus"`，
-三条 real 检查使用 `resource_group = "orangepi-5-plus-robot-usb"`。
+三条 real 检查使用 `resource_group = "orangepi-5-plus-robot"`。
 
 ## 3. 客户机内核与根文件系统
 

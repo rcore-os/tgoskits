@@ -125,13 +125,13 @@ FT232 传输通道由 board TOML 固定：原生 Starry 与 AxVisor + Starry 显
 `FTDI_TRANSPORT=usb`，AxVisor + Linux guest 显式设置 `FTDI_TRANSPORT=tty`。三条检查
 都只消费人工同版部署到固定目录的包，CI 不自动打包或部署。
 
-三条 real 检查使用板服务已注册的 `board_type = "OrangePi-5-Plus-Robot-USB"`，对应
-物理板 ID `OrangePi-5-Plus-Robot-USB-1`。其中原生 Starry 在普通 CI 运行，AxVisor +
+三条 real 检查使用板服务已注册的 `board_type = "OrangePi-5-Plus-robot"`，对应
+物理板 ID `OrangePi-5-Plus-robot-1`。其中原生 Starry 在普通 CI 运行，AxVisor +
 StarryOS guest 和 AxVisor + Linux guest 标记 `nightly_only`，只由 AxVisor Nightly
 调度。
 
 资源组按物理板类型分开：三条 virtual 检查使用 `orangepi-5-plus`，三条 real 检查使用
-`orangepi-5-plus-robot-usb`。
+`orangepi-5-plus-robot`。
 
 三条 real 检查都在固定目录 `/home/orangepi/robot-ci/aka-rk3588` 下运行
 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`；AxVisor Linux guest 通过

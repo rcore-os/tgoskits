@@ -310,7 +310,7 @@ impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus robot USB · AxVisor StarryOS guest full robot control"
 nightly_only = true
 runner = "board"
-resource_group = "orangepi-5-plus-robot-usb"
+resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
@@ -327,7 +327,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus robot USB · AxVisor Linux guest full robot control"
 nightly_only = true
 runner = "board"
-resource_group = "orangepi-5-plus-robot-usb"
+resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-real-linux
