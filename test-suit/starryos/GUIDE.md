@@ -570,6 +570,11 @@ os/StarryOS/configs/board/<board>.toml
 并从该 board build config 读取 target。如果当前 build wrapper 下存在匹配的
 `build-<target>.toml`，则优先使用 test-suit 中的构建配置。
 
+交互式板测的 `build-<target>.toml` 启用 `starryos` 的 `board-test-shell` 功能。
+当 `root=` 选择磁盘且没有显式 `init=` 时，`starryos::main` 以
+`board_test_init.sh` 启动测试 shell，准备提示符与板测使用的设备记录。
+普通板卡构建不启用该功能，仍按启动参数或 Linux 默认路径选择 PID 1。
+
 板测需要在运行时下载 case 资产时，可在 typed TOML 配置中声明相对于
 `board-<board>.toml` 所在目录的文件：
 

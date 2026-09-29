@@ -96,16 +96,39 @@ fn known_kernel_option(token: &str) -> bool {
 #[unsafe(no_mangle)]
 extern "C" fn main() {
     let options = init_options(ax_hal::boot::bootargs().unwrap_or(""));
+    let board_test_script = if ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
+        && options.init.is_none()
+    {
+        board_test_init_script()
+    } else {
+        None
+    };
     let mut paths = Vec::new();
     if ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Memory) {
         paths.push(options.rdinit.unwrap_or_else(|| "/init".to_owned()));
     }
     if let Some(init) = options.init {
         paths.push(init);
+    } else if board_test_script.is_some() {
+        paths.push("/bin/sh".to_owned());
     } else {
         paths.extend(DEFAULT_INITS.iter().map(|path| (*path).to_owned()));
     }
-    starry_kernel::entry::init_candidates(&paths, &options.argv, &options.env);
+    let argv = board_test_script
+        .map(|script| vec!["-c".to_owned(), script.to_owned()])
+        .unwrap_or(options.argv);
+    starry_kernel::entry::init_candidates(&paths, &argv, &options.env);
+}
+
+fn board_test_init_script() -> Option<&'static str> {
+    #[cfg(feature = "board-test-shell")]
+    {
+        Some(include_str!("board_test_init.sh"))
+    }
+    #[cfg(not(feature = "board-test-shell"))]
+    {
+        None
+    }
 }
 
 #[cfg(test)]
