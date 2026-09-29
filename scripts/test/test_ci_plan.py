@@ -1793,7 +1793,8 @@ command = "true"
             "include"
         ]
         catalog = {
-            check["id"]: check for check in ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
+            check["id"]: check
+            for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
         for row in (*main_rows, *nightly_rows):
             boards = {

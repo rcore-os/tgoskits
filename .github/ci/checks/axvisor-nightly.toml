@@ -13,6 +13,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
@@ -44,6 +45,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux PCI network ping"
 runner = "board"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping

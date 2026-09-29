@@ -101,3 +101,11 @@ Linux 与 Starry 各自维护一套参数。
 内核命令行使用 `init=/usr/bin/linux-ltp-hackbench-init`。正式完成要求同时出现
 `LTP_HACKBENCH_APP_PASSED` 和 `LINUX_RT_LTP_HACKBENCH_PASSED`。`hackbench` 衡量 scheduler、
 pipe IPC 与 wake/wait 吞吐，不应把它的 speedup 解释成完整项目编译 speedup。
+
+## 4. 镜像载荷
+
+本目录与 `benchmarks/starry/qemu/compile-sim-bench` 暂时各自保留一份自包含目录，但
+`compile-sim-bench.c`、`compile-sim-bench-run.sh`、`prebuild.sh`、
+`linux-compile-sim-init.sh` 和 `build-x86_64-unknown-none.toml` 必须逐字节一致。
+`scripts/test/check_ci_routing.py` 会在 Plan CI 中比较这五个文件；任一文件缺失或内容分叉都会
+让检查失败，因此修改共享载荷时必须同步复制到两个目录。
