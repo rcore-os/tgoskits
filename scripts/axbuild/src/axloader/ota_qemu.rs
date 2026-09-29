@@ -1,8 +1,8 @@
 //! Persistent FAT image OTA checks using real OVMF TCP4 and host forwarding.
 
 use std::{
-    fs,
-    io::Write,
+    fs::{self, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     process::{Child, Command, Stdio},
@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
+use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, format_volume};
 use ostool::ovmf::Arch;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -29,19 +30,6 @@ impl Drop for QemuChild {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
-}
-
-fn command(program: &str, args: &[&str]) -> anyhow::Result<()> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to launch {program}"))?;
-    ensure!(
-        output.status.success(),
-        "{program} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
 }
 
 fn start_qemu(firmware: &OvmfFirmware, root: &Path, port: u16) -> anyhow::Result<QemuChild> {
@@ -251,33 +239,7 @@ pub(super) async fn test_direct_ota(
     }
 
     let disk = root.join("esp.img");
-    let disk_path = disk.to_str().context("non-UTF8 FAT path")?;
-    command("truncate", &["-s", "128M", disk_path])?;
-    command("mkfs.vfat", &["-F", "32", "-n", "OSTOOLBOOT", disk_path])?;
-    command(
-        "mmd",
-        &["-i", disk_path, "::EFI", "::EFI/BOOT", "::EFI/AXLOADER"],
-    )?;
-    command(
-        "mcopy",
-        &[
-            "-i",
-            disk_path,
-            root.join("BOOTX64.EFI").to_str().unwrap(),
-            "::EFI/BOOT/BOOTX64.EFI",
-        ],
-    )?;
-    for name in ["A.EFI", "B.EFI", "STATE0.BIN", "STATE1.BIN"] {
-        command(
-            "mcopy",
-            &[
-                "-i",
-                disk_path,
-                root.join(name).to_str().unwrap(),
-                &format!("::EFI/AXLOADER/{name}"),
-            ],
-        )?;
-    }
+    create_esp_image(root, &disk)?;
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(35))
@@ -460,16 +422,7 @@ pub(super) async fn test_direct_ota(
     let mut uncommitted = loader.clone();
     uncommitted.push(0x42);
     fs::write(root.join("UNCOMMITTED.EFI"), &uncommitted)?;
-    command(
-        "mcopy",
-        &[
-            "-o",
-            "-i",
-            disk_path,
-            root.join("UNCOMMITTED.EFI").to_str().unwrap(),
-            "::EFI/AXLOADER/B.EFI",
-        ],
-    )?;
+    write_esp_file(&disk, "EFI/AXLOADER/B.EFI", &uncommitted)?;
     let qemu = start_qemu(&firmware, root, port)?;
     status(&client, port, root, |value| {
         value["running_slot"] == "a"
@@ -480,7 +433,7 @@ pub(super) async fn test_direct_ota(
     drop(qemu);
     // A valid pending record pointing at a file which cannot be loaded must
     // be committed as a failed trial before returning to the stable slot.
-    stage_unloadable_trial(root, disk_path)?;
+    stage_unloadable_trial(root, &disk)?;
     let qemu = start_qemu(&firmware, root, port)?;
     let failed = status(&client, port, root, |value| {
         value["running_slot"] == "a"
@@ -502,31 +455,91 @@ pub(super) async fn test_direct_ota(
     Ok(())
 }
 
-fn stage_unloadable_trial(root: &Path, disk_path: &str) -> anyhow::Result<()> {
+fn create_esp_image(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
+    const ESP_SIZE: u64 = 128 * 1024 * 1024;
+    let mut disk = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(disk_path)
+        .context("failed to create ESP image")?;
+    disk.set_len(ESP_SIZE)?;
+    disk.seek(SeekFrom::Start(0))?;
+    format_volume(
+        &mut disk,
+        FormatVolumeOptions::new()
+            .fat_type(FatType::Fat32)
+            .volume_label(*b"OSTOOLBOOT "),
+    )
+    .context("failed to format ESP image")?;
+    disk.seek(SeekFrom::Start(0))?;
+    let fs = FileSystem::new(&mut disk, FsOptions::new()).context("failed to open ESP image")?;
+    {
+        let root_dir = fs.root_dir();
+        root_dir.create_dir("EFI")?;
+        root_dir.create_dir("EFI/BOOT")?;
+        root_dir.create_dir("EFI/AXLOADER")?;
+        copy_into_fat(
+            &root_dir,
+            "EFI/BOOT/BOOTX64.EFI",
+            &fs::read(root.join("BOOTX64.EFI"))?,
+        )?;
+        for name in ["A.EFI", "B.EFI", "STATE0.BIN", "STATE1.BIN"] {
+            copy_into_fat(
+                &root_dir,
+                &format!("EFI/AXLOADER/{name}"),
+                &fs::read(root.join(name))?,
+            )?;
+        }
+    }
+    fs.unmount().context("failed to unmount ESP image")?;
+    disk.sync_all().context("failed to sync ESP image")
+}
+
+fn copy_into_fat<T: fatfs::ReadWriteSeek>(
+    root: &fatfs::Dir<'_, T>,
+    path: &str,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    let mut file = root.create_file(path)?;
+    file.truncate()?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    Ok(())
+}
+
+fn write_esp_file(disk_path: &Path, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let mut disk = OpenOptions::new().read(true).write(true).open(disk_path)?;
+    let fs = FileSystem::new(&mut disk, FsOptions::new()).context("failed to open ESP image")?;
+    {
+        let root = fs.root_dir();
+        copy_into_fat(&root, path, bytes)?;
+    }
+    fs.unmount().context("failed to unmount ESP image")?;
+    disk.sync_all().context("failed to sync ESP image")
+}
+
+fn read_esp_file(disk_path: &Path, path: &str) -> anyhow::Result<Vec<u8>> {
+    let mut disk = OpenOptions::new().read(true).write(true).open(disk_path)?;
+    let fs = FileSystem::new(&mut disk, FsOptions::new()).context("failed to open ESP image")?;
+    let mut bytes = Vec::new();
+    {
+        let root = fs.root_dir();
+        root.open_file(path)?.read_to_end(&mut bytes)?;
+    }
+    fs.unmount().context("failed to unmount ESP image")?;
+    Ok(bytes)
+}
+
+fn stage_unloadable_trial(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
     let invalid = vec![0x55; 4096];
-    let invalid_path = root.join("UNLOADABLE.EFI");
-    fs::write(&invalid_path, &invalid)?;
-    command(
-        "mcopy",
-        &[
-            "-o",
-            "-i",
-            disk_path,
-            invalid_path.to_str().unwrap(),
-            "::EFI/AXLOADER/B.EFI",
-        ],
-    )?;
+    write_esp_file(disk_path, "EFI/AXLOADER/B.EFI", &invalid)?;
     let records = [root.join("STATE0.BIN"), root.join("STATE1.BIN")];
     for (index, path) in records.iter().enumerate() {
-        command(
-            "mcopy",
-            &[
-                "-o",
-                "-i",
-                disk_path,
-                &format!("::EFI/AXLOADER/STATE{index}.BIN"),
-                path.to_str().unwrap(),
-            ],
+        fs::write(
+            path,
+            read_esp_file(disk_path, &format!("EFI/AXLOADER/STATE{index}.BIN"))?,
         )?;
     }
     let records = [fs::read(&records[0])?, fs::read(&records[1])?];
@@ -553,15 +566,10 @@ fn stage_unloadable_trial(root: &Path, disk_path: &str) -> anyhow::Result<()> {
     let target = 1 - latest;
     let staged = root.join(format!("STAGE{target}.BIN"));
     fs::write(&staged, next)?;
-    command(
-        "mcopy",
-        &[
-            "-o",
-            "-i",
-            disk_path,
-            staged.to_str().unwrap(),
-            &format!("::EFI/AXLOADER/STATE{target}.BIN"),
-        ],
+    write_esp_file(
+        disk_path,
+        &format!("EFI/AXLOADER/STATE{target}.BIN"),
+        &fs::read(staged)?,
     )
 }
 
