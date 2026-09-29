@@ -347,6 +347,19 @@ mod tests {
     }
 
     #[test]
+    fn marker_scratch_rejects_a_detected_whole_disk_filesystem() {
+        // A raw filesystem occupies the whole device even though it has no
+        // partition entry. Its metadata and data must remain outside the
+        // automatically selected marker extent.
+        let raw_filesystem = BlockRegion::new(0, 1_024);
+        assert!(!marker_scratch_device_eligible(
+            writable_device(1_024),
+            false,
+            Some(&[raw_filesystem]),
+        ));
+    }
+
+    #[test]
     fn marker_scratch_rejects_partition_table_metadata() {
         // On a GPT disk the primary header lives at LBA 1 and the entry
         // areas follow, so the fixed extent would overwrite the table even

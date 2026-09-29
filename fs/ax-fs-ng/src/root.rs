@@ -351,8 +351,8 @@ pub fn axtest_scratch_region_request() -> Option<&'static Result<BlockRegion, St
 }
 
 /// Returns the regions the destructive axtests must not write on the disk
-/// that owns `handle`: every identified partition plus the partition-table
-/// metadata sectors. `None` marks an unknown layout — the handle was never
+/// that owns `handle`: every identified partition, detected whole-disk
+/// filesystem, and partition-table metadata sector. `None` marks an unknown layout — the handle was never
 /// registered or its volume scan failed — and disqualifies the device from
 /// destructive writes instead of silently passing as "no partitions".
 #[cfg(axtest)]
@@ -491,20 +491,18 @@ fn collect_disks(
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
             Ok(scan) => {
-                let (raw_filesystem, partitions) = collect_partitions(&mut *dev, scan.volumes);
+                let (raw_filesystem, _raw_filesystem_region, partitions) =
+                    collect_partitions(&mut *dev, scan.volumes);
                 log_disk(disk_index, &device_name, &partitions);
                 // Scanned disks publish their protected regions: every
-                // identified partition plus the partition-table metadata.
+                // identified partition, detected whole-disk filesystem, and
+                // partition-table metadata.
                 #[cfg(axtest)]
                 {
-                    let mut protected: Vec<BlockRegion> = partitions
-                        .iter()
-                        .map(|partition| partition.info.region)
-                        .collect();
-                    protected.extend(
-                        scan.table_metadata
-                            .iter()
-                            .map(|region| BlockRegion::new(region.start_block, region.num_blocks)),
+                    let protected = axtest_protected_regions(
+                        &partitions,
+                        _raw_filesystem_region,
+                        &scan.table_metadata,
                     );
                     axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, Some(protected)));
                 }
@@ -538,14 +536,22 @@ fn collect_disks(
 fn collect_partitions(
     dev: &mut dyn FsBlockDevice,
     volumes: Vec<BlockVolume>,
-) -> (Option<FilesystemKind>, Vec<DetectedPartition>) {
+) -> (
+    Option<FilesystemKind>,
+    Option<BlockRegion>,
+    Vec<DetectedPartition>,
+) {
     let mut partitions = Vec::new();
     let mut raw_filesystem = None;
+    let mut raw_filesystem_region = None;
     for volume in volumes {
         if volume.table_kind == VolumeTableKind::Raw {
             let region = region_from_volume(&volume);
             let raw_fs = detect_filesystem(dev, region);
             info!("    raw device fs={:?}", raw_fs);
+            if raw_fs.is_some() {
+                raw_filesystem_region = Some(region);
+            }
             raw_filesystem = raw_fs;
             continue;
         }
@@ -563,7 +569,28 @@ fn collect_partitions(
         partitions.push(DetectedPartition { info, filesystem });
     }
 
-    (raw_filesystem, partitions)
+    (raw_filesystem, raw_filesystem_region, partitions)
+}
+
+#[cfg(any(axtest, test))]
+fn axtest_protected_regions(
+    partitions: &[DetectedPartition],
+    raw_filesystem_region: Option<BlockRegion>,
+    table_metadata: &[crate::volume::BlockRegion],
+) -> Vec<BlockRegion> {
+    let mut protected = partitions
+        .iter()
+        .map(|partition| partition.info.region)
+        .collect::<Vec<_>>();
+    if let Some(region) = raw_filesystem_region {
+        protected.push(region);
+    }
+    protected.extend(
+        table_metadata
+            .iter()
+            .map(|region| BlockRegion::new(region.start_block, region.num_blocks)),
+    );
+    protected
 }
 
 fn log_disk(disk_index: usize, device_name: &str, partitions: &[DetectedPartition]) {
@@ -1495,6 +1522,17 @@ mod tests {
             vec![crate::volume::BlockRegion::new(0, 1)]
         );
         assert_eq!(dev.remaining_failures, 0);
+    }
+
+    #[test]
+    fn axtest_protected_regions_include_detected_raw_filesystem() {
+        let raw_filesystem_region = BlockRegion::new(0, 8_192);
+        let table_metadata = [crate::volume::BlockRegion::new(0, 1)];
+
+        assert_eq!(
+            axtest_protected_regions(&[], Some(raw_filesystem_region), &table_metadata),
+            vec![raw_filesystem_region, BlockRegion::new(0, 1)]
+        );
     }
 
     #[test]
