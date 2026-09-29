@@ -10,6 +10,8 @@ target_compile_options(docker-runc-run-probe PRIVATE -Wall -Wextra -Werror)
 # The probe is cross-built against the Alpine musl toolchain sysroot and runs
 # on the Debian glibc rootfs, so it must not carry runtime library deps.
 target_link_options(docker-runc-run-probe PRIVATE -static)
+find_package(Threads REQUIRED)
+target_link_libraries(docker-runc-run-probe PRIVATE Threads::Threads)
 
 if(NOT DEFINED STARRY_STAGING_ROOT)
     message(FATAL_ERROR "STARRY_STAGING_ROOT must be provided by axbuild")
