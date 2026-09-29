@@ -40,10 +40,20 @@ pub(crate) fn scan_gpt<R: BlockReader>(
         .ok_or(Error::InvalidPartitionTable)?;
     let entry_blocks = u64::try_from(entry_bytes.div_ceil(block_size))
         .map_err(|_| Error::InvalidPartitionTable)?;
-    if layout
+    let primary_entries_end = layout
         .entries_start_lba
         .checked_add(entry_blocks)
-        .is_none_or(|end| end > reader.num_blocks())
+        .ok_or(Error::InvalidPartitionTable)?;
+    let backup_entries_start = layout
+        .backup_lba
+        .checked_sub(entry_blocks)
+        .ok_or(Error::InvalidPartitionTable)?;
+    if primary_entries_end > reader.num_blocks()
+        || layout.entries_start_lba < GPT_HEADER_BLOCK + 1
+        || primary_entries_end > layout.first_usable_lba
+        || layout.backup_lba != reader.num_blocks() - 1
+        || backup_entries_start <= layout.last_usable_lba
+        || backup_entries_start >= layout.backup_lba
     {
         return Err(Error::InvalidPartitionTable);
     }
@@ -116,6 +126,7 @@ fn read_entry<R: BlockReader>(reader: &mut R, layout: &GptLayout, index: usize) 
 struct GptLayout {
     first_usable_lba: u64,
     last_usable_lba: u64,
+    backup_lba: u64,
     entries_start_lba: u64,
     entry_count: usize,
     entry_size: usize,
@@ -154,6 +165,7 @@ fn parse_header(header: &[u8], disk_blocks: u64) -> Result<GptLayout> {
     Ok(GptLayout {
         first_usable_lba,
         last_usable_lba,
+        backup_lba,
         entries_start_lba,
         entry_count,
         entry_size,

@@ -110,9 +110,9 @@ The latencies are **not** raw block-request latencies under any
 configuration, and the numbers must not be read as a sync-versus-async block
 submission comparison.
 
-Raw request-level correctness (registration consistency, asynchronous
-completion and waker delivery, contiguous and multi-descriptor write-read
-integrity, scratch-region restore) is covered by the kernel's
+Raw request-level correctness (registration consistency, completion of two
+independent asynchronous reads with separate DMA ownership, contiguous and
+multi-descriptor write-read integrity, scratch-region restore) is covered by the kernel's
 `block_runtime_axtest` regressions. The standard CI `axtest_kernel` entry
 discovers and runs that suite, but a board environment without a configured
 scratch region makes the write cases self-skip

@@ -64,6 +64,34 @@ fn write_mbr_entry(
     block[offset + 12..offset + 16].copy_from_slice(&blocks.to_le_bytes());
 }
 
+fn write_protective_gpt_header(
+    reader: &mut MemReader,
+    backup_lba: u64,
+    first_usable_lba: u64,
+    last_usable_lba: u64,
+    entries_start_lba: u64,
+    entry_count: u32,
+) {
+    let disk_blocks = reader.num_blocks();
+    let mbr = reader.block_mut(0);
+    mbr[446 + 4] = 0xee;
+    mbr[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
+    mbr[446 + 12..446 + 16].copy_from_slice(&(disk_blocks as u32 - 1).to_le_bytes());
+    write_mbr_signature(mbr);
+
+    let header = reader.block_mut(1);
+    header[0..8].copy_from_slice(b"EFI PART");
+    header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+    header[12..16].copy_from_slice(&92u32.to_le_bytes());
+    header[24..32].copy_from_slice(&1u64.to_le_bytes());
+    header[32..40].copy_from_slice(&backup_lba.to_le_bytes());
+    header[40..48].copy_from_slice(&first_usable_lba.to_le_bytes());
+    header[48..56].copy_from_slice(&last_usable_lba.to_le_bytes());
+    header[72..80].copy_from_slice(&entries_start_lba.to_le_bytes());
+    header[80..84].copy_from_slice(&entry_count.to_le_bytes());
+    header[84..88].copy_from_slice(&128u32.to_le_bytes());
+}
+
 #[test]
 fn raw_disk_fallback_covers_entire_reader() {
     let mut reader = MemReader::new(32);
@@ -177,24 +205,7 @@ fn scans_mbr_logical_partitions_without_exposing_extended_container() {
 #[test]
 fn scans_gpt_single_partition() {
     let mut reader = MemReader::new(128);
-    let mbr = reader.block_mut(0);
-    mbr[446 + 4] = 0xee;
-    mbr[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
-    mbr[446 + 12..446 + 16].copy_from_slice(&127u32.to_le_bytes());
-    mbr[510] = 0x55;
-    mbr[511] = 0xaa;
-
-    let header = reader.block_mut(1);
-    header[0..8].copy_from_slice(b"EFI PART");
-    header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
-    header[12..16].copy_from_slice(&92u32.to_le_bytes());
-    header[24..32].copy_from_slice(&1u64.to_le_bytes());
-    header[32..40].copy_from_slice(&127u64.to_le_bytes());
-    header[40..48].copy_from_slice(&34u64.to_le_bytes());
-    header[48..56].copy_from_slice(&126u64.to_le_bytes());
-    header[72..80].copy_from_slice(&2u64.to_le_bytes());
-    header[80..84].copy_from_slice(&4u32.to_le_bytes());
-    header[84..88].copy_from_slice(&128u32.to_le_bytes());
+    write_protective_gpt_header(&mut reader, 127, 34, 125, 2, 4);
 
     let entry = &mut reader.block_mut(2)[0..128];
     entry[0] = 0xaf;
@@ -227,8 +238,28 @@ fn scans_gpt_single_partition() {
     );
     assert_eq!(
         scan.table_metadata,
-        vec![BlockRegion::new(0, 34), BlockRegion::new(127, 1)]
+        vec![BlockRegion::new(0, 34), BlockRegion::new(126, 2)]
     );
+}
+
+#[test]
+fn gpt_primary_entry_array_must_precede_first_usable_lba() {
+    let mut reader = MemReader::new(128);
+    write_protective_gpt_header(&mut reader, 127, 34, 125, 100, 4);
+
+    let err = scan_volumes(&mut reader, DiskId(10)).unwrap_err();
+
+    assert_eq!(err, Error::InvalidPartitionTable);
+}
+
+#[test]
+fn gpt_backup_entry_array_must_follow_last_usable_lba() {
+    let mut reader = MemReader::new(128);
+    write_protective_gpt_header(&mut reader, 127, 34, 126, 2, 4);
+
+    let err = scan_volumes(&mut reader, DiskId(11)).unwrap_err();
+
+    assert_eq!(err, Error::InvalidPartitionTable);
 }
 
 #[test]
