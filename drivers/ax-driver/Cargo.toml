@@ -139,12 +139,16 @@ rockchip-soc = [
     "dep:rdif-reset",
     "dep:rockchip-soc",
 ]
-# RK3588 fixed-OPP-at-boot CPU DVFS (voltage-free rung): raises the CPU cluster
-# clocks via the SCMI seam at probe time. Board-only policy; keep it opt-in.
+# RK3588 CPU DVFS hardware driver and shared RDIF registration.
 rk3588-cpufreq = [
     "rockchip-soc",
     "dep:arm-scmi-rs",
+    "dep:ax-lazyinit",
+    "dep:rdif-cpufreq",
+    "dep:smccc",
 ]
+# Test-only additive thermal constraints; real TSADC faults and limits still win.
+rk3588-cpufreq-thermal-test = ["rk3588-cpufreq"]
 rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
@@ -156,6 +160,8 @@ aic8800 = { workspace = true, optional = true }
 ahci-driver = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
+smccc = { version = "0.2", optional = true }
+ax-lazyinit = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-sync = { workspace = true, optional = true }
 axklib.workspace = true
@@ -178,6 +184,7 @@ phytium-mci-host = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
+rdif-cpufreq = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-gpu = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
@@ -217,6 +224,7 @@ virtio-drivers = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]

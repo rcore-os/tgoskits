@@ -311,6 +311,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-cpu-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-driver",
+ "ax-runtime",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-cpu-fp-context"
 version = "0.1.0"
 dependencies = [
@@ -903,6 +913,8 @@ dependencies = [
  "arm-smmu-v3",
  "ax-alloc",
  "ax-arm-pl031",
+ "ax-crate-interface",
+ "ax-lazyinit",
  "ax-memory-addr",
  "ax-sync",
  "axklib",
@@ -926,6 +938,7 @@ dependencies = [
  "rd-net",
  "rdif-block",
  "rdif-clk",
+ "rdif-cpufreq",
  "rdif-display",
  "rdif-gpu",
  "rdif-input",
@@ -956,6 +969,7 @@ dependencies = [
  "sg200x-bsp",
  "sg200x-pwm",
  "sha1 0.11.0",
+ "smccc",
  "some-serial",
  "starfive-jh7110-dwmmc",
  "thiserror 2.0.20",
@@ -1292,6 +1306,7 @@ dependencies = [
  "quote",
  "rd-net",
  "rdif-block",
+ "rdif-cpufreq",
  "rdif-intc",
  "rdif-serial",
  "rdrive",
@@ -6609,6 +6624,14 @@ name = "rdif-clk"
 version = "0.5.7"
 dependencies = [
  "rdif-base",
+]
+
+[[package]]
+name = "rdif-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

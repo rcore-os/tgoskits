@@ -32,6 +32,8 @@ media-uvc
 ax-fs-ng
 rsext4
 ax-hal
+ax-driver
+ax-runtime
 ax-input
 ax-log
 ax-memory-set

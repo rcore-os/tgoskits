@@ -64,7 +64,7 @@ AKA_RK3588_SOURCE_ARCHIVE=/path/to/aka-rk3588-f5d2c731a13692a1e3bc7136188df3f2ff
 
 ```bash
 cargo xtask starry app board -t aka-rk3588 \
-  -b OrangePi-5-Plus-robot
+  -b OrangePi-5-Plus-Robot-USB
 ```
 
 默认演示直接从共享根文件系统运行一次摄像头采集和 RKNN 网球识别，不驱动车轮和

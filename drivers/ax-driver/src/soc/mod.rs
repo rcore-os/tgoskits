@@ -21,6 +21,8 @@ pub mod scmi;
 #[cfg(feature = "starfive-soc")]
 mod starfive;
 
+#[cfg(feature = "rk3588-cpufreq-thermal-test")]
+pub use rockchip::cpufreq::set_test_cpu_temperature_mc;
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{RockchipFdtPinctrlParser, RockchipPinCtrl};
 

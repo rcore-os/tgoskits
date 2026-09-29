@@ -177,6 +177,9 @@ pub const RK8603_BIG1_ADDR: u8 = 0x43;
 
 /// Active runtime VSEL register on this board (RK8602_VSEL0). See module docs.
 const VSEL_REG: u8 = 0x06;
+/// RK8602/03 identity register; the BSP accepts die ID 0xa for both.
+const RK860X_ID1_REG: u8 = 0x03;
+const RK8602_03_DIE_ID: u8 = 0x0a;
 /// 8-bit voltage-code mask (`RK8602_NVOLTAGES = 160`, `vsel_mask = 0xff`).
 const VSEL_MASK: u8 = 0xff;
 /// Voltage encoding: `V = VSEL_BASE_UV + code · VSEL_STEP_UV` (µV).
@@ -224,6 +227,10 @@ fn uv_to_vsel(uv: u32) -> Option<u8> {
 /// Whether `uv` is inside the Phase-2 down-only safety envelope.
 fn in_envelope(uv: u32) -> bool {
     (VDD_FLOOR_UV..=VDD_CEIL_UV).contains(&uv)
+}
+
+fn is_expected_die_id(id: u8) -> bool {
+    id & 0x0f == RK8602_03_DIE_ID
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +609,7 @@ fn set_i2c0_pinmux() {
 /// mapping fails, in which case every `get_uv`/`set_uv*` below is a no-op that
 /// returns `None`/`false` and leaves the rails at their (safe) boot voltage.
 pub fn init() -> bool {
-    let mut guard = CONTROLLER.lock();
-    if guard.is_some() {
+    if CONTROLLER.lock().is_some() {
         return true;
     }
     // Bring the i2c0 bus up before any transaction: ungate its clocks, release
@@ -632,7 +638,16 @@ pub fn init() -> bool {
     };
     let i2c = Rk3xI2c { mmio };
     i2c.init_controller();
-    *guard = Some(i2c);
+    for chip in [RK8602_BIG0_ADDR, RK8603_BIG1_ADDR] {
+        let id = i2c.read_reg(chip, RK860X_ID1_REG);
+        if !id.is_some_and(is_expected_die_id) {
+            warn!(
+                "pmic_i2c: chip {chip:#x} unexpected RK8602/03 die ID {id:?}; rail access disabled"
+            );
+            return false;
+        }
+    }
+    *CONTROLLER.lock() = Some(i2c);
     true
 }
 
@@ -646,98 +661,38 @@ pub fn get_uv(chip: u8) -> Option<u32> {
     Some(vsel_to_uv(vsel & VSEL_MASK))
 }
 
-/// Set a rail directly to `target_uv` (single write), refusing anything outside
-/// the Phase-2 envelope `[675_000, 800_000]` µV or that is not an exact 6.25 mV
-/// step, and verifying the read-back. Returns `false` on any rejection or
-/// mismatch (leaving the rail unchanged/at its last confirmed value).
-///
-/// This is the direct setter. Live-core lowering should use
-/// [`set_uv_stepped`], which ramps down in small increments.
-pub fn set_uv(chip: u8, target_uv: u32) -> bool {
+/// Move either direction in at most 25 mV steps, confirming every selector
+/// before the next step. The caller owns the matching clock transition order.
+pub fn set_uv_stepped_verified(chip: u8, target_uv: u32) -> bool {
     if !in_envelope(target_uv) {
-        warn!(
-            "pmic_i2c: refusing chip {chip:#x} set to {target_uv} uV (outside [{VDD_FLOOR_UV}, \
-             {VDD_CEIL_UV}])"
-        );
         return false;
     }
-    let Some(vsel) = uv_to_vsel(target_uv) else {
-        warn!("pmic_i2c: {target_uv} uV is not an exact VSEL step; refusing");
+    let Some(target) = uv_to_vsel(target_uv) else {
         return false;
     };
     let Some(bus) = BusGuard::claim() else {
-        warn!("pmic_i2c: not initialised or busy; refusing set");
         return false;
     };
-    bus.set_vsel_verify(chip, vsel)
-}
-
-/// Safely lower a rail to `target_uv` by stepping **down** in ≤25 mV (4-LSB)
-/// increments, verifying the read-back and settling after each step, so the
-/// voltage-coupled CPU clock tracks the rail down without a large undervolt
-/// transient. This is the path `cpufreq` calls on live cores.
-///
-/// Refuses (returns `false`) if `target_uv` is outside the envelope, is not an
-/// exact step, or is **above** the rail's current voltage (this path never
-/// raises voltage). A no-op success if already at target. Aborts and returns
-/// `false` on the first read-back mismatch, leaving the rail at the last
-/// verified step.
-pub fn set_uv_stepped(chip: u8, target_uv: u32) -> bool {
-    if !in_envelope(target_uv) {
-        warn!(
-            "pmic_i2c: refusing chip {chip:#x} step to {target_uv} uV (outside [{VDD_FLOOR_UV}, \
-             {VDD_CEIL_UV}])"
-        );
-        return false;
-    }
-    let Some(target_vsel) = uv_to_vsel(target_uv) else {
-        warn!("pmic_i2c: {target_uv} uV is not an exact VSEL step; refusing");
+    let Some(mut current) = bus.read_reg(chip, VSEL_REG).map(|v| v & VSEL_MASK) else {
         return false;
     };
-
-    // One bus claim for the whole stepped transaction (read + the step writes),
-    // so it stays atomic w.r.t. other callers while never disabling preemption.
-    let Some(bus) = BusGuard::claim() else {
-        warn!("pmic_i2c: not initialised or busy; refusing step");
-        return false;
-    };
-
-    let Some(cur_vsel) = bus.read_reg(chip, VSEL_REG).map(|v| v & VSEL_MASK) else {
-        warn!("pmic_i2c: chip {chip:#x} current VSEL read failed; refusing step");
-        return false;
-    };
-
-    if target_vsel > cur_vsel {
-        warn!(
-            "pmic_i2c: refusing to step UP chip {chip:#x} {} -> {target_uv} uV (down-only path)",
-            vsel_to_uv(cur_vsel)
-        );
-        return false;
-    }
-    if target_vsel == cur_vsel {
-        return true;
-    }
-
-    const STEP_LSB: u8 = (STEP_MAX_UV / VSEL_STEP_UV) as u8; // 25000 / 6250 = 4
-    let mut v = cur_vsel;
-    while v > target_vsel {
-        let next = v.saturating_sub(STEP_LSB).max(target_vsel);
+    const STEP_LSB: u8 = (STEP_MAX_UV / VSEL_STEP_UV) as u8;
+    while current != target {
+        let next = if current < target {
+            current.saturating_add(STEP_LSB).min(target)
+        } else {
+            current.saturating_sub(STEP_LSB).max(target)
+        };
         if !bus.set_vsel_verify(chip, next) {
             warn!(
-                "pmic_i2c: chip {chip:#x} step to VSEL {next:#x} ({} uV) failed; aborting at {} uV",
-                vsel_to_uv(next),
-                vsel_to_uv(v)
+                "pmic_i2c: chip {chip:#x} step failed at {} uV; target {target_uv} uV",
+                vsel_to_uv(next)
             );
             return false;
         }
         axklib::time::busy_wait(Duration::from_micros(SETTLE_US));
-        v = next;
+        current = next;
     }
-    info!(
-        "pmic_i2c: chip {chip:#x} stepped {} -> {} uV",
-        vsel_to_uv(cur_vsel),
-        vsel_to_uv(target_vsel)
-    );
     true
 }
 
