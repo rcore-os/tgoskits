@@ -520,7 +520,11 @@ impl Pollable for SyncFile {
     }
 }
 
-#[cfg(test)]
+// The axtest unit builds the whole kernel tree with `cfg(test)` set but no
+// test harness: rustc strips every `#[test]` fn there, which would leave the
+// named imports below unused under `-D warnings`. Host-only by design; the
+// assertions are compile-time constants covered by the std test entry.
+#[cfg(all(test, not(axtest)))]
 mod tests {
     use super::{
         IOC_WRITE, SYNC_IOC_FILE_INFO, SYNC_IOC_WAIT, SyncFenceInfo, SyncFileInfo, ioc, name_bytes,
