@@ -443,9 +443,47 @@ close(mnt_fd);
         } else {
             fail("O_PATH|O_NOFOLLOW opens the namespace link itself");
         }
+
+        errno = 0;
+        int dir_req = openat(ns_dir, "mnt", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dir_req >= 0) {
+            close(dir_req);
+            errno = 0;
+            fail("O_DIRECTORY on a namespace magic link reports ENOTDIR");
+        } else if (errno == ENOTDIR) {
+            pass("O_DIRECTORY on a namespace magic link reports ENOTDIR");
+        } else {
+            fail("O_DIRECTORY on a namespace magic link reports ENOTDIR");
+        }
+
+        errno = 0;
+        int excl_ns =
+            openat(ns_dir, "mnt", O_CREAT | O_EXCL | O_RDONLY | O_CLOEXEC, 0600);
+        if (excl_ns >= 0) {
+            close(excl_ns);
+            errno = 0;
+            fail("O_CREAT|O_EXCL on a namespace magic link reports EEXIST");
+        } else if (errno == EEXIST) {
+            pass("O_CREAT|O_EXCL on a namespace magic link reports EEXIST");
+        } else {
+            fail("O_CREAT|O_EXCL on a namespace magic link reports EEXIST");
+        }
         close(ns_dir);
     } else {
         fail("open /proc/self/ns directory");
+    }
+
+    errno = 0;
+    int abs_excl =
+        open("/proc/self/ns/mnt", O_CREAT | O_EXCL | O_RDONLY | O_CLOEXEC, 0600);
+    if (abs_excl >= 0) {
+        close(abs_excl);
+        errno = 0;
+        fail("O_CREAT|O_EXCL on the absolute namespace path reports EEXIST");
+    } else if (errno == EEXIST) {
+        pass("O_CREAT|O_EXCL on the absolute namespace path reports EEXIST");
+    } else {
+        fail("O_CREAT|O_EXCL on the absolute namespace path reports EEXIST");
     }
         return;
     }
@@ -821,7 +859,17 @@ static int run_exe_acl(void)
             close(root_exe);
             _exit(5);
         }
-        _exit(errno == EPERM || errno == EACCES ? 0 : 6);
+        if (errno != EPERM && errno != EACCES) {
+            _exit(6);
+        }
+        /* Another process's namespace link needs the same ptrace read check. */
+        errno = 0;
+        int root_ns = open("/proc/1/ns/mnt", O_RDONLY);
+        if (root_ns >= 0) {
+            close(root_ns);
+            _exit(7);
+        }
+        _exit(errno == EPERM || errno == EACCES ? 0 : 8);
     }
 
     int status = 0;
@@ -831,7 +879,7 @@ static int run_exe_acl(void)
     }
     int code = WEXITSTATUS(status);
     if (code == 0) {
-        pass("another user's /proc/1/exe is rejected with EPERM/EACCES");
+        pass("another user's /proc/1/exe and ns link are rejected with EPERM/EACCES");
     } else if (code == 3) {
         fail("exe-acl child setuid");
     } else if (code == 4) {
@@ -839,8 +887,11 @@ static int run_exe_acl(void)
     } else if (code == 5) {
         printf("  FAIL: another user's /proc/1/exe opened without permission\n");
         failures++;
+    } else if (code == 7) {
+        printf("  FAIL: another user's /proc/1/ns/mnt opened without permission\n");
+        failures++;
     } else {
-        printf("  FAIL: another user's /proc/1/exe rejected with wrong errno=%d\n",
+        printf("  FAIL: another user's /proc/1 exe/ns rejected with wrong errno=%d\n",
                code);
         failures++;
     }
