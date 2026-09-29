@@ -1,0 +1,99 @@
+{
+  "experiment": "resume711-current-source-F-A-A-F-diagnostic",
+  "issue": 2308,
+  "source_head": "4322e0c505bad73f10e7ab9e79f520bae0fcab0e",
+  "board_id": "OrangePi-5-Plus-1",
+  "sequence": [
+    "F1",
+    "A1",
+    "A2",
+    "F2"
+  ],
+  "images": {
+    "A": {
+      "build_mode": "ordinary release, no PGO, no qperf-metrics",
+      "source_head": "4322e0c505bad73f10e7ab9e79f520bae0fcab0e",
+      "name": "resume710-default.bin",
+      "sha256": "96268f8aa16a24237bc1f0bca97b5838087eb839c76a9f1c644b6f413a43db5a",
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-default.bin",
+      "size": 17498112,
+      "elf_sha256": "633f77c76b969b4321a51eef3e89a582c44d9062acc516709fc0a4de7dd385a2",
+      "text_sha256": "553c78302dc1621c008e17a9390e4e65488108d56b407feed1bb9c250fed16af"
+    },
+    "F": {
+      "build_mode": "release, newly trained full PGO including ax_task, no qperf-metrics",
+      "source_head": "4322e0c505bad73f10e7ab9e79f520bae0fcab0e",
+      "name": "resume710-profile-use.bin",
+      "sha256": "6a234ea391346f2450fdef8b04d19988211dbe3485cf62e3a25544ca4e80cac4",
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-profile-use.bin",
+      "size": 16932864,
+      "elf_sha256": "cb42a19518762c4844f8507d3091e53ed17da5b8d38d80fe31f2d9e78e1c2376",
+      "text_sha256": "74084b8bdc93384f5dc91f3084eb77e2fdb70bd6fee0f3261a7ef73b77ea3e77"
+    }
+  },
+  "build_config": {
+    "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume710/resume710-default-build.toml",
+    "sha256": "10955fe55973279f897de7869b645263e2f9da734f42e6b98f52e1a186a77ce8"
+  },
+  "cargo_lock_sha256": "fb0273d9bd1b14d47604b070c419f4c76f32dcf45890d5bd23165b6ec2cf9f01",
+  "bench": {
+    "path": "/tmp/pr1775-orangepi/bench",
+    "sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773"
+  },
+  "linux_baseline": "/home/zhourui/.codex/artifacts/pr1775-perf/linux-rt-orangepi-5-plus-1-baseline.json",
+  "runs": [
+    {
+      "tag": "F1",
+      "boot_index": 0,
+      "image_key": "profile-use",
+      "tftp_image_name": "resume710-profile-use.bin",
+      "tftp_image_sha256": "6a234ea391346f2450fdef8b04d19988211dbe3485cf62e3a25544ca4e80cac4",
+      "tftp_kernel_bytes": 16932864,
+      "pll_verified": true,
+      "dhcp_address": "192.168.1.8",
+      "clock_pair_min_ns": 291,
+      "sender_cpu": 0,
+      "receiver_cpu": 1,
+      "cases_verified": 20,
+      "samples": 380000,
+      "attempted": 380000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "terminal": "WAKEUP_LATENCY_PASSED",
+      "guest_log_name": "resume711-F1-full.log",
+      "guest_log_sha256": "cf3ace07e153b0589f2141586b0e8eb54de479d74f338124d66ed974bd124921",
+      "sha256_file_name": "resume711-F1.sha256",
+      "sha256_file_sha256": "92d5efe3e15258becb754306d6056a5ea781f450302d1264906d9646c51c7714",
+      "valid": true
+    },
+    {
+      "tag": "A1",
+      "boot_index": 1,
+      "image_key": "default",
+      "tftp_image_name": "resume710-default.bin",
+      "tftp_image_sha256": "96268f8aa16a24237bc1f0bca97b5838087eb839c76a9f1c644b6f413a43db5a",
+      "tftp_kernel_bytes": 17498112,
+      "pll_verified": true,
+      "dhcp_address": "192.168.1.8",
+      "clock_pair_min_ns": 291,
+      "sender_cpu": 0,
+      "receiver_cpu": 1,
+      "cases_verified": 20,
+      "samples": 380000,
+      "attempted": 380000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "terminal": "WAKEUP_LATENCY_PASSED",
+      "guest_log_name": "resume711-A1-full.log",
+      "guest_log_sha256": "f4eb950ea869797038c0922e7ee27c71d8b4e7dba4c3bcdda3b4f844e4c98cbf",
+      "sha256_file_name": "resume711-A1.sha256",
+      "sha256_file_sha256": "92d5efe3e15258becb754306d6056a5ea781f450302d1264906d9646c51c7714",
+      "valid": true
+    }
+  ],
+  "board_released": true,
+  "stage": "stopped_with_error",
+  "session_id": "ecb7fadd-3288-4242-a215-6c3a3ec745cb",
+  "error": "AssertionError(('A2', ('other', 'thread_futex_same_cpu'), 'samples!=attempted'))",
+  "console_exit_code": 0
+}

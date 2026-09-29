@@ -1,0 +1,82 @@
+{
+  "experiment": "resume668-full-ax-task-PGO",
+  "issue": 2308,
+  "source_head": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+  "board_id": "OrangePi-5-Plus-1",
+  "sequence": [
+    "F1",
+    "F2"
+  ],
+  "images": {
+    "F": {
+      "build_mode": "release, newly trained full PGO including ax_task, no qperf-metrics",
+      "source_head": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+      "name": "resume668-profile-use.bin",
+      "sha256": "9bd198e7a3996b4606d235f2484378293a7d8509fe8849ec66091361f4d3b0b6",
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume668/resume668-profile-use.bin",
+      "size": 17084416
+    }
+  },
+  "profile_sha256": "514932b505324858df95d2bcf5cd83a5f6ae4b6c28b6135198a76acb22a0a213",
+  "same_source_control": "/home/zhourui/.codex/artifacts/issue2308-perf/resume666-board-evidence/resume666-a-status.json",
+  "build_provenance": "/home/zhourui/.codex/artifacts/issue2308-perf/resume668/resume668-build-audit.json",
+  "bench": {
+    "path": "/tmp/pr1775-orangepi/bench",
+    "sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773"
+  },
+  "linux_baseline": "/home/zhourui/.codex/artifacts/pr1775-perf/linux-rt-orangepi-5-plus-1-baseline.json",
+  "runs": [
+    {
+      "tag": "F1",
+      "boot_index": 0,
+      "image_key": "profile-use",
+      "tftp_image_name": "resume668-profile-use.bin",
+      "tftp_image_sha256": "9bd198e7a3996b4606d235f2484378293a7d8509fe8849ec66091361f4d3b0b6",
+      "tftp_kernel_bytes": 17084416,
+      "pll_verified": true,
+      "dhcp_address": "192.168.1.8",
+      "clock_pair_min_ns": 291,
+      "sender_cpu": 0,
+      "receiver_cpu": 1,
+      "cases_verified": 20,
+      "samples": 380000,
+      "attempted": 380000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "terminal": "WAKEUP_LATENCY_PASSED",
+      "guest_log_name": "resume668-F1-full.log",
+      "guest_log_sha256": "cab435b802f658bfc515c492c6da41b1f6648b548a5247457717334127aa4dfe",
+      "sha256_file_name": "resume668-F1.sha256",
+      "sha256_file_sha256": "c229e86c999ae3f97ef9f9117f80e7c4235eaf2c332fc6517229f673f25ec131",
+      "valid": true
+    },
+    {
+      "tag": "F2",
+      "boot_index": 1,
+      "image_key": "profile-use",
+      "tftp_image_name": "resume668-profile-use.bin",
+      "tftp_image_sha256": "9bd198e7a3996b4606d235f2484378293a7d8509fe8849ec66091361f4d3b0b6",
+      "tftp_kernel_bytes": 17084416,
+      "pll_verified": true,
+      "dhcp_address": "192.168.1.8",
+      "clock_pair_min_ns": 291,
+      "sender_cpu": 0,
+      "receiver_cpu": 1,
+      "cases_verified": 20,
+      "samples": 380000,
+      "attempted": 380000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "terminal": "WAKEUP_LATENCY_PASSED",
+      "guest_log_name": "resume668-F2-full.log",
+      "guest_log_sha256": "ca5b6d3967d1e090aba46cb7d14f612a931c3d67c0ec0f5a2c74116d1a033b2f",
+      "sha256_file_name": "resume668-F2.sha256",
+      "sha256_file_sha256": "c229e86c999ae3f97ef9f9117f80e7c4235eaf2c332fc6517229f673f25ec131",
+      "valid": true
+    }
+  ],
+  "board_released": true,
+  "stage": "board_collection_complete",
+  "session_id": "3f5ac04c-ff0c-47f0-8d62-6f395a82236a",
+  "console_exit_code": 0
+}

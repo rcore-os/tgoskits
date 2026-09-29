@@ -1,0 +1,64 @@
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":291,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":17500,"mean_ns":18445,"stddev_ns":999,"p50_ns":18375,"p95_ns":18958,"p99_ns":21583,"p999_ns":28000,"max_ns":118417,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,19441,558,0,1,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=thread_futex_cross_cpu policy=other
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_cross_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_cross_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":20125,"mean_ns":22436,"stddev_ns":2130,"p50_ns":22167,"p95_ns":22750,"p99_ns":24208,"p999_ns":68250,"max_ns":70875,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,0,19961,39,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=process_futex_cross_cpu policy=other
+WAKEUP_LATENCY_CASE_DONE case=process_futex_cross_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"process_futex_cross_cpu","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":22459,"mean_ns":24210,"stddev_ns":1653,"p50_ns":24208,"p95_ns":24500,"p99_ns":25959,"p999_ns":44333,"max_ns":79333,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,0,19981,19,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=absolute_timer_same_cpu policy=other
+WAKEUP_LATENCY_CASE_DONE case=absolute_timer_same_cpu policy=other
+WAKEUP_LATENCY_RESULT {"case":"absolute_timer_same_cpu","policy":"other","samples":10000,"attempted":10000,"not_parked":0,"missed_deadlines":0,"min_ns":28833,"mean_ns":37852,"stddev_ns":2205,"p50_ns":37583,"p95_ns":41125,"p99_ns":42167,"p999_ns":80667,"max_ns":85958,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,0,9979,21,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=clock_pair policy=other
+WAKEUP_LATENCY_CASE_DONE case=clock_pair policy=other
+WAKEUP_LATENCY_RESULT {"case":"clock_pair","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":583,"mean_ns":626,"stddev_ns":113,"p50_ns":583,"p95_ns":875,"p99_ns":875,"p999_ns":875,"max_ns":7291,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[19999,0,0,1,0,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=getpid policy=other
+WAKEUP_LATENCY_CASE_DONE case=getpid policy=other
+WAKEUP_LATENCY_RESULT {"case":"getpid","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":875,"mean_ns":1072,"stddev_ns":1072,"p50_ns":1166,"p95_ns":1167,"p99_ns":1167,"p999_ns":1167,"max_ns":149917,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[7110,12886,0,1,2,0,0,1,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=futex_wait_mismatch policy=other
+WAKEUP_LATENCY_CASE_DONE case=futex_wait_mismatch policy=other
+WAKEUP_LATENCY_RESULT {"case":"futex_wait_mismatch","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":1166,"mean_ns":1226,"stddev_ns":143,"p50_ns":1167,"p95_ns":1459,"p99_ns":1459,"p999_ns":1459,"max_ns":12833,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,19999,0,0,1,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=futex_wake_empty policy=other
+WAKEUP_LATENCY_CASE_DONE case=futex_wake_empty policy=other
+WAKEUP_LATENCY_RESULT {"case":"futex_wake_empty","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":1166,"mean_ns":1236,"stddev_ns":165,"p50_ns":1167,"p95_ns":1459,"p99_ns":1459,"p999_ns":1459,"max_ns":12542,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,19996,0,3,1,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=sched_yield_no_peer policy=other
+WAKEUP_LATENCY_CASE_DONE case=sched_yield_no_peer policy=other
+WAKEUP_LATENCY_RESULT {"case":"sched_yield_no_peer","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":1750,"mean_ns":1927,"stddev_ns":158,"p50_ns":2041,"p95_ns":2042,"p99_ns":2042,"p999_ns":2042,"max_ns":7583,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,7925,12072,3,0,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=sched_yield_handoff policy=other
+WAKEUP_LATENCY_CASE_DONE case=sched_yield_handoff policy=other
+WAKEUP_LATENCY_RESULT {"case":"sched_yield_handoff","policy":"other","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":7291,"mean_ns":7526,"stddev_ns":458,"p50_ns":7583,"p95_ns":7584,"p99_ns":7875,"p999_ns":10209,"max_ns":55417,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,19978,19,2,1,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":13708,"mean_ns":14247,"stddev_ns":367,"p50_ns":14292,"p95_ns":14583,"p99_ns":14584,"p999_ns":22167,"max_ns":23916,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,19972,28,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=thread_futex_cross_cpu policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_cross_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_cross_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":18958,"mean_ns":20256,"stddev_ns":2145,"p50_ns":20125,"p95_ns":20417,"p99_ns":21292,"p999_ns":58625,"max_ns":86917,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,4841,15112,47,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=process_futex_cross_cpu policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=process_futex_cross_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"process_futex_cross_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":21000,"mean_ns":22133,"stddev_ns":3090,"p50_ns":21875,"p95_ns":22167,"p99_ns":23625,"p999_ns":64458,"max_ns":96250,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,0,19897,103,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=absolute_timer_same_cpu policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=absolute_timer_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"absolute_timer_same_cpu","policy":"fifo","samples":10000,"attempted":10000,"not_parked":0,"missed_deadlines":0,"min_ns":18000,"mean_ns":19621,"stddev_ns":1136,"p50_ns":19333,"p95_ns":22458,"p99_ns":23208,"p999_ns":30167,"max_ns":58625,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,8484,1515,1,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=clock_pair policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=clock_pair policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"clock_pair","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":583,"mean_ns":626,"stddev_ns":145,"p50_ns":583,"p95_ns":875,"p99_ns":875,"p999_ns":875,"max_ns":11958,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[19997,0,0,2,1,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=getpid policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=getpid policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"getpid","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":875,"mean_ns":1061,"stddev_ns":167,"p50_ns":1166,"p95_ns":1167,"p99_ns":1167,"p999_ns":1167,"max_ns":12541,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[7338,12660,0,1,1,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=futex_wait_mismatch policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=futex_wait_mismatch policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"futex_wait_mismatch","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":1166,"mean_ns":1223,"stddev_ns":161,"p50_ns":1167,"p95_ns":1459,"p99_ns":1459,"p999_ns":1459,"max_ns":13125,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,19996,0,3,1,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=futex_wake_empty policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=futex_wake_empty policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"futex_wake_empty","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":1166,"mean_ns":1235,"stddev_ns":158,"p50_ns":1167,"p95_ns":1459,"p99_ns":1459,"p999_ns":1459,"max_ns":12833,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,19997,0,2,1,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=sched_yield_no_peer policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=sched_yield_no_peer policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"sched_yield_no_peer","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":1458,"mean_ns":1639,"stddev_ns":165,"p50_ns":1750,"p95_ns":1750,"p99_ns":1750,"p999_ns":1750,"max_ns":8750,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,19993,3,4,0,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_CASE_START case=sched_yield_handoff policy=fifo
+WAKEUP_LATENCY_CASE_DONE case=sched_yield_handoff policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"sched_yield_handoff","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":3208,"mean_ns":3502,"stddev_ns":125,"p50_ns":3500,"p95_ns":3500,"p99_ns":3792,"p999_ns":3792,"max_ns":9917,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,19994,6,0,0,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED

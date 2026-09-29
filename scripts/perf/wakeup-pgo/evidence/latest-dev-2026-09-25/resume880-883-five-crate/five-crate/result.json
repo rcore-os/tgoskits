@@ -1,0 +1,128 @@
+{
+  "diagnostic_only": true,
+  "source_head": "714accd8f636c540b2c3554b0b1e5cb885be42a4",
+  "bootstrap_patch_commit": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "board_id": "OrangePi-5-Plus-1",
+  "session_id": "e6c6d4f0-2808-4b52-8275-afadd2a2b33f",
+  "image_sha256": "7450c7ccafe64b6795a0b95f51c168f5a54852b1295c0f1572b554cba744c999",
+  "elf_sha256": "98b6bbe38f07db02cd014376f880c311f87e36a5129636acb51039a4c00ccae9",
+  "source_patch_sha256": "44866a74273e74d8656e1e5130e0f0997f1f39851c204ec583952e5fbbef1cff",
+  "build_config_sha256": "8334b4444b92354201e1ba1ac5f9bf95e8c14c68f0548fbc32efb24b0efba639",
+  "wrapper_sha256": "39d351fe4617fa9f14ef89dbf1c9de63cd8be3a5f6a1a62f4c9a3eae53876cbb",
+  "bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "counter_sha256": "744124bed5323faf56ef1fed9746d482110b4e47e4ea456867b2df484b09572c",
+  "counter_bytes": 790272,
+  "workload_rows": 27,
+  "not_parked_total": 11,
+  "workload_log_sha256": "e0438fa151b9e8011c468ba5ed08e1a64c7dfce1c18cfe5870a47f011a6082b1",
+  "policies_cases": [
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_cross_cpu"
+    ],
+    [
+      "other",
+      "process_futex_cross_cpu"
+    ],
+    [
+      "other",
+      "absolute_timer_same_cpu"
+    ],
+    [
+      "other",
+      "clock_pair"
+    ],
+    [
+      "other",
+      "getpid"
+    ],
+    [
+      "other",
+      "futex_wait_mismatch"
+    ],
+    [
+      "other",
+      "futex_wake_empty"
+    ],
+    [
+      "other",
+      "sched_yield_no_peer"
+    ],
+    [
+      "other",
+      "sched_yield_handoff"
+    ],
+    [
+      "fifo",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "fifo",
+      "thread_futex_cross_cpu"
+    ],
+    [
+      "fifo",
+      "process_futex_cross_cpu"
+    ],
+    [
+      "fifo",
+      "absolute_timer_same_cpu"
+    ],
+    [
+      "fifo",
+      "clock_pair"
+    ],
+    [
+      "fifo",
+      "getpid"
+    ],
+    [
+      "fifo",
+      "futex_wait_mismatch"
+    ],
+    [
+      "fifo",
+      "futex_wake_empty"
+    ],
+    [
+      "fifo",
+      "sched_yield_no_peer"
+    ],
+    [
+      "fifo",
+      "sched_yield_handoff"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ]
+  ]
+}

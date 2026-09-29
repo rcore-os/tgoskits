@@ -1,0 +1,64 @@
+[
+  {
+    "name": "_RINvMsd_NtNtC*_13starry_kernel4task5futexNtB6_13ResolvedFutex10requeue_toNCNvNtNtNtBa_7syscall4sync5futex9sys_futexs_0EBa_",
+    "feature_exporter": {
+      "cfg_hash": 738243139385643071,
+      "counters": 34
+    },
+    "cfg_exporter": {
+      "cfg_hash": 738243139385643071,
+      "counters": 34
+    },
+    "no_exporter_candidate": null,
+    "exporter_cfg_hash_equal": true,
+    "cfg_matches_no_exporter": false
+  },
+  {
+    "name": "_RINvMsd_NtNtC*_13starry_kernel4task5futexNtB6_13ResolvedFutex18wait_nofault_untilNCNvNtNtNtBa_7syscall4sync5futex9sys_futex0EBa_",
+    "feature_exporter": {
+      "cfg_hash": 417084991874116521,
+      "counters": 58
+    },
+    "cfg_exporter": {
+      "cfg_hash": 417084991874116521,
+      "counters": 58
+    },
+    "no_exporter_candidate": {
+      "cfg_hash": 946099970370573225,
+      "discarded_count": 3132306
+    },
+    "exporter_cfg_hash_equal": true,
+    "cfg_matches_no_exporter": false
+  },
+  {
+    "name": "_RINvMsd_NtNtC*_13starry_kernel4task5futexNtB6_13ResolvedFutex7wake_opNCNvNtNtNtBa_7syscall4sync5futex9sys_futexs0_0EBa_",
+    "feature_exporter": {
+      "cfg_hash": 95820317672714129,
+      "counters": 13
+    },
+    "cfg_exporter": {
+      "cfg_hash": 95820317672714129,
+      "counters": 13
+    },
+    "no_exporter_candidate": null,
+    "exporter_cfg_hash_equal": true,
+    "cfg_matches_no_exporter": false
+  },
+  {
+    "name": "_RNvNtNtNtC*_13starry_kernel7syscall4sync5futex9sys_futex",
+    "feature_exporter": {
+      "cfg_hash": 930378362627116063,
+      "counters": 132
+    },
+    "cfg_exporter": {
+      "cfg_hash": 930378362627116063,
+      "counters": 132
+    },
+    "no_exporter_candidate": {
+      "cfg_hash": 161827148963460207,
+      "discarded_count": 7738999
+    },
+    "exporter_cfg_hash_equal": true,
+    "cfg_matches_no_exporter": false
+  }
+]

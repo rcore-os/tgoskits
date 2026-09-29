@@ -1,0 +1,24 @@
+{
+  "experiment": "resume787",
+  "source_commit": "69a33650763538692fafea27c869870ed0313642",
+  "source_patch_sha256": "d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "board": "OrangePi-5-Plus-1",
+  "session_id": "5969b74a-f9ad-4e6f-a92a-b9408a51c14e",
+  "sequence": ["A1", "F1"],
+  "ordinary_image_sha256": "750589429f5afe81b16775dde50050fedb936614b78d7bbde999a51856618473",
+  "pgo_image_sha256": "e48394c7ef55008d0badf2cd6dc841fa8fa6593e069720304e2400634614fd6d",
+  "ordinary_result": "A1 valid full20, 20 unique rows, 380000/380000 samples, not_parked=0",
+  "pgo_result": "F1 invalid full20: OTHER thread_futex_same_cpu 19999/20000 samples and not_parked=1; remaining 19 rows complete",
+  "diagnostic_other_same_cpu_p50_ns": {"A1": 27417, "F1_invalid": 16625, "linux_rt": 8458},
+  "diagnostic_f_ratio_to_linux_rt_percent": 50.88,
+  "diagnostic_90_percent_rows": 11,
+  "complete_row_regressions_ge_3_percent": 0,
+  "raw_log_sha256": {
+    "A1": "21f8b35123730752ebf53dfa09cc1c8303089f4e673ddd3714b7e879f501853d",
+    "F1": "1d0141532d8f1ccff41b8b9a5f10e0a17884395cfa983ee7fe84c9ce8983b6d3"
+  },
+  "serial_sha256": "6063e297966ec72509c85675509d765b32a3d0132298bdad6fe7db9e9084685e",
+  "board_released": true,
+  "decision": "Reject F1 as acceptance evidence; retain complete raw logs and repeat to diagnose the recurring one-sample park race"
+}

@@ -1,0 +1,19 @@
+{
+  "experiment": "resume785",
+  "source_commit": "69a3365076",
+  "temporary_exporter_patch_sha256": "d7c1388dec5a849b1bec41e49b51d1f4cea6e2e853f1b4b2ce58d195a71d2b78",
+  "profile_source_experiment": "resume780",
+  "profile_sha256": "7d71a724fd5ce66e4faf15280995602392fc6ff8e6d41fc197cdbc0eb8e67156",
+  "features": "ten cpufreq-off OrangePi features plus starry-kernel/board-profile-export",
+  "linker_environment": "AXTEST_COVERAGE=1, link-only in ordinary starry build",
+  "profile_use_crates": ["ax_task", "ax_sched", "ax_runtime", "starry_kernel"],
+  "build_config_sha256": "9c05878ca534a2cf4fcbbffb8feddefb3538b3970e381eaa922206b81c8fbe16",
+  "wrapper_sha256": "b7597e2142c28c97f16375dd0dc588c143ab955de0bf52192121ee4e890783c6",
+  "elf_sha256": "925a95eebac040d7577f3e4f567adcda2b6bb5f94e9abc7b89baa88b76bf06fd",
+  "bin_sha256": "e48394c7ef55008d0badf2cd6dc841fa8fa6593e069720304e2400634614fd6d",
+  "build_result": "success; no starry_kernel missing-profile warnings, one ax_runtime run_idle partially-ignored warning",
+  "instrumentation": "No nonempty __llvm_prf_* sections; start and stop profile counter symbols have equal addresses",
+  "hot_futex_identity": "Training profile and candidate ELF both use starry_kernel CslXXgci8H4Mj; no missing-profile warning for sys_futex or wait_nofault_until",
+  "full20_executed": false,
+  "native_performance_conclusion": "none; awaiting source-matched ordinary A and full20"
+}

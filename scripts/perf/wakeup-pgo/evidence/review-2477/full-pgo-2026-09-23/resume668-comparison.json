@@ -1,0 +1,497 @@
+{
+  "source_head": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+  "board_id": "OrangePi-5-Plus-1",
+  "bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "linux_baseline": "/home/zhourui/.codex/artifacts/pr1775-perf/linux-rt-orangepi-5-plus-1-baseline.json",
+  "linux_baseline_sha256": "aab2e5df04929f36d8b4b653838a21f76f3bc3dbeaf81c64b0e13a7880cf344d",
+  "control_image_sha256": "fcdd7454acc1ab3d78450e4a92e2baa43f92d0b89a3c8fa4579cca3abdf5b533",
+  "candidate_image_sha256": "9bd198e7a3996b4606d235f2484378293a7d8509fe8849ec66091361f4d3b0b6",
+  "accepted": true,
+  "coverage_pass_count": 20,
+  "regression_failures": [],
+  "worst": {
+    "policy": "other",
+    "case": "thread_futex_same_cpu",
+    "linux_rt_p50_ns": 8458,
+    "control": {
+      "p50_ns": 18958.5,
+      "p99_ns": 22166.5,
+      "p999_ns": 28292.0
+    },
+    "candidate": {
+      "p50_ns": 10792.0,
+      "p99_ns": 13125.0,
+      "p999_ns": 16333.5
+    },
+    "rt_coverage_pct": 78.37286879169756,
+    "regression_pct": {
+      "p50_ns": -43.07566526887676,
+      "p99_ns": -40.789028488936005,
+      "p999_ns": -42.26813233422876
+    },
+    "coverage_pass": true,
+    "regression_pass": true
+  },
+  "rows": [
+    {
+      "policy": "fifo",
+      "case": "absolute_timer_same_cpu",
+      "linux_rt_p50_ns": 13211,
+      "control": {
+        "p50_ns": 19687.5,
+        "p99_ns": 23583.5,
+        "p999_ns": 40375.0
+      },
+      "candidate": {
+        "p50_ns": 12500.5,
+        "p99_ns": 16354.5,
+        "p999_ns": 31208.5
+      },
+      "rt_coverage_pct": 105.68377264909404,
+      "regression_pct": {
+        "p50_ns": -36.50539682539683,
+        "p99_ns": -30.652786906099607,
+        "p999_ns": -22.70340557275542
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "clock_pair",
+      "linux_rt_p50_ns": 875,
+      "control": {
+        "p50_ns": 583.0,
+        "p99_ns": 875.0,
+        "p999_ns": 875.0
+      },
+      "candidate": {
+        "p50_ns": 583.0,
+        "p99_ns": 584.0,
+        "p999_ns": 584.0
+      },
+      "rt_coverage_pct": 150.08576329331046,
+      "regression_pct": {
+        "p50_ns": 0.0,
+        "p99_ns": -33.25714285714285,
+        "p999_ns": -33.25714285714285
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wait_mismatch",
+      "linux_rt_p50_ns": 2333,
+      "control": {
+        "p50_ns": 1167.0,
+        "p99_ns": 1459.0,
+        "p999_ns": 1459.0
+      },
+      "candidate": {
+        "p50_ns": 1166.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "rt_coverage_pct": 200.08576329331044,
+      "regression_pct": {
+        "p50_ns": -0.08568980291345785,
+        "p99_ns": -20.013708019191224,
+        "p999_ns": -20.013708019191224
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "futex_wake_empty",
+      "linux_rt_p50_ns": 1750,
+      "control": {
+        "p50_ns": 1167.0,
+        "p99_ns": 1459.0,
+        "p999_ns": 1459.0
+      },
+      "candidate": {
+        "p50_ns": 875.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "rt_coverage_pct": 200.0,
+      "regression_pct": {
+        "p50_ns": -25.02142245072836,
+        "p99_ns": -20.013708019191224,
+        "p999_ns": -20.013708019191224
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "getpid",
+      "linux_rt_p50_ns": 1458,
+      "control": {
+        "p50_ns": 1166.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "candidate": {
+        "p50_ns": 875.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "rt_coverage_pct": 166.62857142857143,
+      "regression_pct": {
+        "p50_ns": -24.957118353344764,
+        "p99_ns": 0.0,
+        "p999_ns": 0.0
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "process_futex_cross_cpu",
+      "linux_rt_p50_ns": 15167,
+      "control": {
+        "p50_ns": 21729.0,
+        "p99_ns": 25375.0,
+        "p999_ns": 59500.0
+      },
+      "candidate": {
+        "p50_ns": 15750.0,
+        "p99_ns": 16771.0,
+        "p999_ns": 46229.0
+      },
+      "rt_coverage_pct": 96.29841269841269,
+      "regression_pct": {
+        "p50_ns": -27.516222559712823,
+        "p99_ns": -33.90738916256157,
+        "p999_ns": -22.304201680672264
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_handoff",
+      "linux_rt_p50_ns": 3791,
+      "control": {
+        "p50_ns": 3500.0,
+        "p99_ns": 3500.0,
+        "p999_ns": 3500.0
+      },
+      "candidate": {
+        "p50_ns": 2917.0,
+        "p99_ns": 2917.0,
+        "p999_ns": 3208.0
+      },
+      "rt_coverage_pct": 129.96229002399727,
+      "regression_pct": {
+        "p50_ns": -16.65714285714286,
+        "p99_ns": -16.65714285714286,
+        "p999_ns": -8.342857142857142
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "sched_yield_no_peer",
+      "linux_rt_p50_ns": 2333,
+      "control": {
+        "p50_ns": 1750.0,
+        "p99_ns": 1750.0,
+        "p999_ns": 1750.0
+      },
+      "candidate": {
+        "p50_ns": 1458.0,
+        "p99_ns": 1459.0,
+        "p999_ns": 1459.0
+      },
+      "rt_coverage_pct": 160.01371742112482,
+      "regression_pct": {
+        "p50_ns": -16.685714285714283,
+        "p99_ns": -16.628571428571426,
+        "p999_ns": -16.628571428571426
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_cross_cpu",
+      "linux_rt_p50_ns": 13708,
+      "control": {
+        "p50_ns": 20125.0,
+        "p99_ns": 21583.0,
+        "p999_ns": 55270.5
+      },
+      "candidate": {
+        "p50_ns": 14292.0,
+        "p99_ns": 15312.5,
+        "p999_ns": 43312.0
+      },
+      "rt_coverage_pct": 95.91379792891128,
+      "regression_pct": {
+        "p50_ns": -28.98385093167701,
+        "p99_ns": -29.052958346847056,
+        "p999_ns": -21.636315937073125
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "fifo",
+      "case": "thread_futex_same_cpu",
+      "linux_rt_p50_ns": 8458,
+      "control": {
+        "p50_ns": 14145.5,
+        "p99_ns": 14438.0,
+        "p999_ns": 19687.5
+      },
+      "candidate": {
+        "p50_ns": 7875.0,
+        "p99_ns": 8167.0,
+        "p999_ns": 9042.0
+      },
+      "rt_coverage_pct": 107.4031746031746,
+      "regression_pct": {
+        "p50_ns": -44.328585062387326,
+        "p99_ns": -43.433993627926306,
+        "p999_ns": -54.07238095238096
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "absolute_timer_same_cpu",
+      "linux_rt_p50_ns": 23920,
+      "control": {
+        "p50_ns": 38229.5,
+        "p99_ns": 42854.0,
+        "p999_ns": 78604.5
+      },
+      "candidate": {
+        "p50_ns": 23396.5,
+        "p99_ns": 27959.0,
+        "p999_ns": 56813.0
+      },
+      "rt_coverage_pct": 102.23751415810057,
+      "regression_pct": {
+        "p50_ns": -38.799879674073686,
+        "p99_ns": -34.75754888691838,
+        "p999_ns": -27.722967514582496
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "clock_pair",
+      "linux_rt_p50_ns": 875,
+      "control": {
+        "p50_ns": 583.0,
+        "p99_ns": 875.0,
+        "p999_ns": 875.0
+      },
+      "candidate": {
+        "p50_ns": 583.0,
+        "p99_ns": 584.0,
+        "p999_ns": 584.0
+      },
+      "rt_coverage_pct": 150.08576329331046,
+      "regression_pct": {
+        "p50_ns": 0.0,
+        "p99_ns": -33.25714285714285,
+        "p999_ns": -33.25714285714285
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "futex_wait_mismatch",
+      "linux_rt_p50_ns": 2333,
+      "control": {
+        "p50_ns": 1167.0,
+        "p99_ns": 1459.0,
+        "p999_ns": 1459.0
+      },
+      "candidate": {
+        "p50_ns": 1166.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "rt_coverage_pct": 200.08576329331044,
+      "regression_pct": {
+        "p50_ns": -0.08568980291345785,
+        "p99_ns": -20.013708019191224,
+        "p999_ns": -20.013708019191224
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "futex_wake_empty",
+      "linux_rt_p50_ns": 1750,
+      "control": {
+        "p50_ns": 1167.0,
+        "p99_ns": 1459.0,
+        "p999_ns": 1459.0
+      },
+      "candidate": {
+        "p50_ns": 875.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "rt_coverage_pct": 200.0,
+      "regression_pct": {
+        "p50_ns": -25.02142245072836,
+        "p99_ns": -20.013708019191224,
+        "p999_ns": -20.013708019191224
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "getpid",
+      "linux_rt_p50_ns": 1458,
+      "control": {
+        "p50_ns": 1166.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "candidate": {
+        "p50_ns": 875.0,
+        "p99_ns": 1167.0,
+        "p999_ns": 1167.0
+      },
+      "rt_coverage_pct": 166.62857142857143,
+      "regression_pct": {
+        "p50_ns": -24.957118353344764,
+        "p99_ns": 0.0,
+        "p999_ns": 0.0
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "process_futex_cross_cpu",
+      "linux_rt_p50_ns": 17792,
+      "control": {
+        "p50_ns": 23917.0,
+        "p99_ns": 26104.5,
+        "p999_ns": 50895.5
+      },
+      "candidate": {
+        "p50_ns": 16333.0,
+        "p99_ns": 17792.0,
+        "p999_ns": 31791.5
+      },
+      "rt_coverage_pct": 108.93283536398701,
+      "regression_pct": {
+        "p50_ns": -31.709662583099885,
+        "p99_ns": -31.84316880231378,
+        "p999_ns": -37.535734986393685
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_handoff",
+      "linux_rt_p50_ns": 4667,
+      "control": {
+        "p50_ns": 7583.5,
+        "p99_ns": 7875.0,
+        "p999_ns": 10208.5
+      },
+      "candidate": {
+        "p50_ns": 5250.0,
+        "p99_ns": 5542.0,
+        "p999_ns": 7000.0
+      },
+      "rt_coverage_pct": 88.8952380952381,
+      "regression_pct": {
+        "p50_ns": -30.77075229115843,
+        "p99_ns": -29.62539682539682,
+        "p999_ns": -31.42969094382132
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "sched_yield_no_peer",
+      "linux_rt_p50_ns": 2625,
+      "control": {
+        "p50_ns": 2041.0,
+        "p99_ns": 2042.0,
+        "p999_ns": 2042.0
+      },
+      "candidate": {
+        "p50_ns": 1459.0,
+        "p99_ns": 1750.0,
+        "p999_ns": 1750.0
+      },
+      "rt_coverage_pct": 179.91775188485263,
+      "regression_pct": {
+        "p50_ns": -28.515433610975016,
+        "p99_ns": -14.299706170421157,
+        "p999_ns": -14.299706170421157
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_cross_cpu",
+      "linux_rt_p50_ns": 16041,
+      "control": {
+        "p50_ns": 22458.0,
+        "p99_ns": 24354.5,
+        "p999_ns": 61541.5
+      },
+      "candidate": {
+        "p50_ns": 14875.0,
+        "p99_ns": 16333.5,
+        "p999_ns": 42291.5
+      },
+      "rt_coverage_pct": 107.83865546218487,
+      "regression_pct": {
+        "p50_ns": -33.76525069017722,
+        "p99_ns": -32.934365312365266,
+        "p999_ns": -31.279705564537753
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    },
+    {
+      "policy": "other",
+      "case": "thread_futex_same_cpu",
+      "linux_rt_p50_ns": 8458,
+      "control": {
+        "p50_ns": 18958.5,
+        "p99_ns": 22166.5,
+        "p999_ns": 28292.0
+      },
+      "candidate": {
+        "p50_ns": 10792.0,
+        "p99_ns": 13125.0,
+        "p999_ns": 16333.5
+      },
+      "rt_coverage_pct": 78.37286879169756,
+      "regression_pct": {
+        "p50_ns": -43.07566526887676,
+        "p99_ns": -40.789028488936005,
+        "p999_ns": -42.26813233422876
+      },
+      "coverage_pass": true,
+      "regression_pass": true
+    }
+  ]
+}

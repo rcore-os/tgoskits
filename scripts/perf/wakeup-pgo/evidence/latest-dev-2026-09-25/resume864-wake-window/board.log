@@ -1,0 +1,13 @@
+components/ax-task/src/diagnostics.rs: OK
+components/ax-task/src/diagnostics/counters.rs: OK
+os/arceos/modules/axruntime/src/diagnostics.rs: OK
+os/StarryOS/kernel/src/pseudofs/debug.rs: OK
+os/StarryOS/kernel/src/task/futex.rs: OK
+os/StarryOS/kernel/src/task/futex/probe.rs: OK
+ROUND other-1 VALID 30042
+ROUND fifo-1 VALID 24208
+ROUND other-2 VALID 30042
+ROUND fifo-2 VALID 24208
+ROUND other-3 VALID 30042
+RESUME864_ROUNDS 5
+BOARD_RELEASED d34feb26-2831-4d1b-b042-390cd471c2c9

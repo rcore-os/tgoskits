@@ -1,0 +1,16 @@
+diff --git a/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs b/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs
+index e67c3f45db..345a0ddfbd 100644
+--- a/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs
++++ b/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs
+@@ -53,7 +53,10 @@ impl CpuRunQueueState {
+             return Err(TaskError::InvalidConfiguration);
+         }
+         let current_fair = self.current_fair_contender();
+-        self.queue.update_fair_virtual_time(current_fair);
++        // Both rq-owned callers settled the Fair current under this lock.
++        if current_fair.is_none() {
++            self.queue.update_fair_virtual_time(None);
++        }
+         let dispatch = self.queue.take_current().ok_or(TaskError::NotReady)?;
+         let queued = dispatch
+             .into_queued_thread()

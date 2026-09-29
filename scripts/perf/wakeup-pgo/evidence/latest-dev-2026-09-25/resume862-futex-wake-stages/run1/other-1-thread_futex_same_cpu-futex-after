@@ -1,0 +1,10 @@
+futex_wake_skipped 41741
+futex_wake_selected_zero 0
+futex_wake_selected_many 0
+futex_wake_selected_one_coalesced 0
+futex_wake_selected_one_enqueued 21465
+futex_wake_key_and_hint_total_ns 4397728
+futex_wake_bucket_lock_total_ns 9421074
+futex_wake_collect_total_ns 17476934
+futex_wake_unlock_total_ns 4263035
+futex_wake_wake_batch_total_ns 212306536

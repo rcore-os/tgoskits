@@ -1,0 +1,23 @@
+{
+  "experiment": "resume773",
+  "source_head": "05175ca38823b631a73777b0130226ddfa558439",
+  "source_branch": "codex/issue-2308-runtime-dev-90",
+  "build_config": "/home/zhourui/.codex/artifacts/issue2308-perf/resume754-pgo-off/resume754-default-build.toml",
+  "build_mode": "ordinary release, no profile-use/generate, qperf or cpufreq feature",
+  "board": "OrangePi-5-Plus-1",
+  "build_config_sha256": "f03cffd78ed8af846645021af9cf2ebfb6dba405ec7eefb80e07a8ca8cd53236",
+  "image_sha256": "b872b4b59829e0b63bd21a6d79c75295c5a4ee7fd470ef72afc8585a1976b8e5",
+  "elf_sha256": "6e4a597762b979280fc5f6f1b2cedaefdf4618b5dbc5b13ed3842e0d551f3091",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "full20_log_sha256": "fb15050e82f967701949a64d868e3b2db681125a56ee4fa6a51173c8094ae894",
+  "serial_log_sha256": "e84ea4868a226d45e41d5a86812f1d075bef1a38878422f11a22963a55f9f790",
+  "board_frequency": "816 MHz PLL registers validated; cpufreq feature absent",
+  "full20_rows": 20,
+  "samples": 380000,
+  "attempted": 380000,
+  "not_parked": 0,
+  "other_thread_futex_same_cpu_p50_ns": 27125,
+  "full20_valid": true,
+  "board_released": true,
+  "status": "diagnostic baseline; not an optimized candidate"
+}

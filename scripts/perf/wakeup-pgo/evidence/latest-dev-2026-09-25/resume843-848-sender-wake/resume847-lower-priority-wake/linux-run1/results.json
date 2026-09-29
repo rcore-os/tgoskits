@@ -1,0 +1,46 @@
+{
+  "experiment": "resume847",
+  "diagnostic_only": true,
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "4310c614-2651-4139-8a31-6a5248ea86bf",
+  "linux_image_sha256": "aac6d3c5fa0c4fdf65f987af635f4cd55a06852b23046a4242a184acc2fd563b",
+  "dtb_sha256": "316dd15b329756be3887dea22f89fc8d1f5b055f8769761f4144b6b1caaea994",
+  "initramfs_sha256": "3f68116401fa975984e0328a0e6a3216384fd4303a029e2221a4abf3182369dc",
+  "benchmark_sha256": "a0c02891e5ea9edd8bf132d66edb3923fed6bb1108118f41ddb016adb3e4d21f",
+  "bootargs": "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr",
+  "board_released": true,
+  "pll_verified": true,
+  "state": "collected",
+  "failures": 0,
+  "rows": [
+    {
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2916,
+      "p99_ns": 3500,
+      "p999_ns": 15459
+    },
+    {
+      "case": "parked_lower_priority",
+      "samples": 20000,
+      "p50_ns": 4375,
+      "p99_ns": 4667,
+      "p999_ns": 20417
+    },
+    {
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2916,
+      "p99_ns": 3500,
+      "p999_ns": 14875
+    },
+    {
+      "case": "parked_lower_priority",
+      "samples": 20000,
+      "p50_ns": 4084,
+      "p99_ns": 4667,
+      "p999_ns": 16333
+    }
+  ],
+  "boot_sha256": "af33f07e112d8a2a8bcce5115ddb6e7300249e56a886c66e2f6a559ef51362e6"
+}

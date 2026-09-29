@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-monitor.py", line 421, in <module>
+    main()
+  File "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-monitor.py", line 346, in main
+    identity = archive_exact_image(status)
+  File "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-monitor.py", line 233, in archive_exact_image
+    sections = section_identity(R / f"{TAG}.elf", profgen_elf)
+  File "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-monitor.py", line 126, in section_identity
+    assert runtime_digest == profgen_digest, (
+AssertionError: .head.text differs between running and profgen ELF: d7bfa045de0acc249da19ead434d22d28b0888ff3d3fe8d5d28c5eb7770ca23f != a4c4916a04b3fe0a9e0c6a614eba71d93625be250011fbd412de9e74e7e9c253

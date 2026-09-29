@@ -1,0 +1,21 @@
+target = "aarch64-unknown-none-softfloat"
+log = "Info"
+max_cpu_num = 8
+features = [
+  "legacy-board-init",
+  "ax-driver/list-pci-devices",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-dwc-xhci",
+  "ax-driver/rockchip-ehci",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "rknpu",
+  "starry-kernel/board-profile-export",
+]
+
+[env]
+AXTEST_COVERAGE = "1"
+CARGO_TARGET_AARCH64_UNKNOWN_NONE_SOFTFLOAT_RUSTFLAGS = "-Cprofile-use=/home/zhourui/.codex/artifacts/issue2308-perf/resume817-weighted-four-crate/profile.profdata -Cllvm-args=-disable-vp -Cllvm-args=-pgo-warn-missing-function"
+RUSTC_WRAPPER = "/home/zhourui/.codex/artifacts/issue2308-perf/resume817-weighted-four-crate/wrapper.py"

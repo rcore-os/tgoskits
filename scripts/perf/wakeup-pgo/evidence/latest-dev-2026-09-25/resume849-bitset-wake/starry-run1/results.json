@@ -1,0 +1,95 @@
+{
+  "experiment": "resume849",
+  "source_head": "69a33650763538692fafea27c869870ed0313642",
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "3badc6f2-a89c-41a2-b7ec-8526cfde1cfa",
+  "image_sha256": "9e9847a433cd99808d7f511372d454eb2cf5412a94e42187bcab64780ebfb8a3",
+  "benchmark_sha256": "cb129fc2b48a8af7a7d9c845161bab1f7858750aed70ae9fee6dc83bcab15326",
+  "board_released": true,
+  "pll_verified": true,
+  "state": "collected",
+  "rounds": [
+    {
+      "round": 1,
+      "rows": [
+        {
+          "case": "empty",
+          "samples": 20000,
+          "p50_ns": 2042,
+          "p99_ns": 2334,
+          "p999_ns": 2334
+        },
+        {
+          "case": "bitset_miss",
+          "samples": 20000,
+          "p50_ns": 2042,
+          "p99_ns": 2334,
+          "p999_ns": 2334
+        },
+        {
+          "case": "bitset_hit",
+          "samples": 20000,
+          "p50_ns": 7000,
+          "p99_ns": 7292,
+          "p999_ns": 8167
+        }
+      ],
+      "log_sha256": "f108a41e6e2922c8912bd9fcccd0a0f8a76701070ca13d97c1a8f4b7db9128f1"
+    },
+    {
+      "round": 2,
+      "rows": [
+        {
+          "case": "empty",
+          "samples": 20000,
+          "p50_ns": 2042,
+          "p99_ns": 2334,
+          "p999_ns": 12833
+        },
+        {
+          "case": "bitset_miss",
+          "samples": 20000,
+          "p50_ns": 2042,
+          "p99_ns": 2334,
+          "p999_ns": 2625
+        },
+        {
+          "case": "bitset_hit",
+          "samples": 20000,
+          "p50_ns": 7000,
+          "p99_ns": 7583,
+          "p999_ns": 8459
+        }
+      ],
+      "log_sha256": "93762340b9ee0c36ac24f004751cd26b93d17d89c0d50930b1b1cadae3c31db7"
+    },
+    {
+      "round": 3,
+      "rows": [
+        {
+          "case": "empty",
+          "samples": 20000,
+          "p50_ns": 2042,
+          "p99_ns": 2334,
+          "p999_ns": 2334
+        },
+        {
+          "case": "bitset_miss",
+          "samples": 20000,
+          "p50_ns": 2042,
+          "p99_ns": 2334,
+          "p999_ns": 2334
+        },
+        {
+          "case": "bitset_hit",
+          "samples": 20000,
+          "p50_ns": 7000,
+          "p99_ns": 7583,
+          "p999_ns": 8458
+        }
+      ],
+      "log_sha256": "d230e8087da781995465ed8862d2b671340711df9c2c7ecb0d317abed6870614"
+    }
+  ],
+  "serial_sha256": "90c0bd2c86bf6f8717a3491315757753b17cb29507a18b7154afef9d4759ecb7"
+}

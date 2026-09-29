@@ -1,0 +1,168 @@
+{
+  "baseline_commit": "ee5a638e0ef4d55ab461fde6285a84e3b4679bec",
+  "board": "OrangePi-5-Plus-1",
+  "build": {
+    "cargo_target_dir": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/target",
+    "command": [
+      "cargo",
+      "xtask",
+      "starry",
+      "build",
+      "-c",
+      "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/build-config.toml"
+    ],
+    "env_injection": {
+      "rustc_wrapper_seen": true,
+      "rustflags_env_seen": true
+    },
+    "exit_code": 0,
+    "host_build_warnings": {
+      "count": 0,
+      "sample": []
+    },
+    "log": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/build.log"
+  },
+  "cargo_lock_gate": {
+    "Cargo.lock_sha256": "fb0273d9bd1b14d47604b070c419f4c76f32dcf45890d5bd23165b6ec2cf9f01"
+  },
+  "config": {
+    "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/build-config.toml",
+    "sha256": "b5d9cf1a449128ca7b22289c0eafb7edd950aab104a93f692965bf2dbc6adc16"
+  },
+  "environment_passthrough": {},
+  "generated_at_utc": "2026-09-23T02:33:08Z",
+  "image": {
+    "bin": {
+      "file": "starryos.bin",
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/target/aarch64-unknown-none-softfloat/release/starryos.bin",
+      "sha256": "2f5a0b242441537ce015f2ba5197cb84c121f81830dcb562b5ef82e3d93c4f81",
+      "size": 17084416
+    },
+    "bin_without_kallsyms": {
+      "image_base": "0xffffffff80000000",
+      "kallsyms_offset": 8245248,
+      "kallsyms_offset_hex": "0x7dd000",
+      "kallsyms_size": 8388608,
+      "matches_board_candidate": true,
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/target/aarch64-unknown-none-softfloat/release/starryos.bin",
+      "reference_sha256_excluding_kallsyms": "d226d55beab8f99252116cc87079fd287b0283c92655c701fc04ff03ff0c6fe9",
+      "reference_size": 17084416,
+      "sha256_excluding_kallsyms": "d226d55beab8f99252116cc87079fd287b0283c92655c701fc04ff03ff0c6fe9",
+      "size": 17084416
+    },
+    "elf": {
+      "file": "starryos",
+      "kallsyms_address": 18446744071570313216,
+      "kallsyms_address_hex": "0xffffffff807dd000",
+      "kallsyms_size": 8388608,
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/target/aarch64-unknown-none-softfloat/release/starryos",
+      "profile_sections_present": [],
+      "reference_text_sha256": "35500968674e183cf8eb0fa14f9750560ac24594796173710cdc037bb29ac374",
+      "reference_text_size": 7167808,
+      "sha256": "0bdf44a0b6a834fa6cc988a8814369460458ee2286a28c6ad043239cc9bf6133",
+      "size": 20778352,
+      "text_address": "0xffffffff80001000",
+      "text_matches_board_candidate": true,
+      "text_sha256": "35500968674e183cf8eb0fa14f9750560ac24594796173710cdc037bb29ac374",
+      "text_size": 7167808
+    }
+  },
+  "issue": 2308,
+  "output_dir": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final",
+  "pgo": {
+    "features": [
+      "ax-driver/list-pci-devices",
+      "ax-driver/rk3588-pcie",
+      "ax-driver/realtek-rtl8125",
+      "ax-driver/rockchip-soc",
+      "ax-driver/rockchip-dwc-xhci",
+      "ax-driver/rockchip-ehci",
+      "ax-driver/rockchip-sdhci",
+      "ax-driver/rockchip-dwmmc",
+      "ax-driver/rk3588-cpufreq",
+      "rknpu"
+    ],
+    "llvm_args": [
+      "-Cllvm-args=-disable-vp",
+      "-Cllvm-args=-pgo-warn-missing-function"
+    ],
+    "log": "Info",
+    "max_cpu_num": 8,
+    "packaged_profile_features": [
+      "ax-driver/list-pci-devices",
+      "ax-driver/rk3588-pcie",
+      "ax-driver/realtek-rtl8125",
+      "ax-driver/rockchip-soc",
+      "ax-driver/rockchip-dwc-xhci",
+      "ax-driver/rockchip-ehci",
+      "ax-driver/rockchip-sdhci",
+      "ax-driver/rockchip-dwmmc",
+      "ax-driver/rk3588-cpufreq",
+      "rknpu"
+    ],
+    "profile_archive": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/scripts/perf/wakeup-pgo/full-pgo-2026-09-23.profdata.zst",
+    "profile_archive_sha256": "2ee97f4d1f5dcbb7bcb36a753e7c02ec3d0811ae032b5cb6113db8a1d52c3000",
+    "profile_sha256": "514932b505324858df95d2bcf5cd83a5f6ae4b6c28b6135198a76acb22a0a213",
+    "target": "aarch64-unknown-none-softfloat"
+  },
+  "prepare_only": false,
+  "profile": {
+    "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/profile-use.profdata",
+    "sha256": "514932b505324858df95d2bcf5cd83a5f6ae4b6c28b6135198a76acb22a0a213",
+    "size": 8712936
+  },
+  "profile_feature_gate": {
+    "features_match_trained_profile": true
+  },
+  "profile_training_commit": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+  "ready": true,
+  "repo_root": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev",
+  "source_gate": {
+    "baseline_commit": "ee5a638e0ef4d55ab461fde6285a84e3b4679bec",
+    "clean": true,
+    "diff_vs_baseline_paths": [],
+    "excluded_prefixes": [
+      "docs/",
+      "scripts/perf/wakeup-pgo/"
+    ],
+    "head": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+    "head_equals_baseline": false,
+    "profile_training_commit": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+    "staged_or_untracked_paths": []
+  },
+  "status": "interim_70_percent_candidate_image_matched",
+  "tool": "scripts/perf/wakeup-pgo/build.py",
+  "toolchain_gate": {
+    "channel": "nightly-2026-09-04",
+    "commit_hash": "a69a63265cfd9e006d43137f98301b8d274ad4c9",
+    "llvm_version": "23.1.1",
+    "rustc_version": "rustc 1.100.0-nightly (a69a63265 2026-09-03)\nbinary: rustc\ncommit-hash: a69a63265cfd9e006d43137f98301b8d274ad4c9\ncommit-date: 2026-09-03\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.1\n"
+  },
+  "warning_audit": {
+    "cfg_mismatch_count": 0,
+    "cfg_mismatch_lines": [],
+    "missing_unique": 4415,
+    "missing_warnings": 4494,
+    "other_warning_lines": [
+      "warning: ax_runtime.c3d120daf5f68e39-cgu.15: Profile in _RNvNtNtCsgOknVfzdeXd_10ax_runtime6thread9bootstrap8run_idle partially ignored, possibly due to the lack of a return path.",
+      "warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3"
+    ],
+    "reference_missing_unique": 4415,
+    "reference_missing_warnings": 4494,
+    "reference_profile_records": 29887,
+    "unexpected_warning_lines": []
+  },
+  "wrapper": {
+    "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/stdlib-wrapper.py",
+    "sha256": "91f5459a93f4cd38d0ad5bcf6575fe8195a2cc027b628b758657c1ab0cb74ccd"
+  },
+  "wrapper_log": {
+    "ax_runtime_profiled_verified": true,
+    "ax_task_profiled_verified": true,
+    "expected_profile_arg": "-Cprofile-use=/home/zhourui/.codex/artifacts/issue2308-perf/resume669-build-final/profile-use.profdata",
+    "foreign_profile_use_args": [],
+    "root_invocations": 1,
+    "root_profile_use_verified": true,
+    "target_invocations": 230
+  }
+}

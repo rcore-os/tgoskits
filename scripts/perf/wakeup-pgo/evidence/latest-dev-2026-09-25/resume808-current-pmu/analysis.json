@@ -1,0 +1,557 @@
+{
+  "diagnostic_only": true,
+  "limitations": [
+    "whole-case CPU0 EL1 counts include startup, reverse handoffs and background",
+    "not full20 or exclusive latency"
+  ],
+  "source_commit": "69a33650763538692fafea27c869870ed0313642",
+  "board_id": "OrangePi-5-Plus-1",
+  "order": [
+    "A1",
+    "F1",
+    "F2",
+    "A2"
+  ],
+  "runs": [
+    {
+      "tag": "A1",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 27417,
+      "counts": {
+        "cycles": 848079583,
+        "instructions": 421398126,
+        "l1i_refill": 27651394,
+        "l1d_refill": 1130355
+      },
+      "instructions_per_attempt": 21069.9063,
+      "cycles_per_instruction": 2.0125376233875327,
+      "l1i_refill_per_1000_instructions": 65.61821777062198,
+      "l1d_refill_per_1000_instructions": 2.682392090182195
+    },
+    {
+      "tag": "A1",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 27708,
+      "counts": {
+        "cycles": 857708229,
+        "instructions": 423707629,
+        "l1i_refill": 27731461,
+        "l1d_refill": 1332922
+      },
+      "instructions_per_attempt": 21185.38145,
+      "cycles_per_instruction": 2.024292626083445,
+      "l1i_refill_per_1000_instructions": 65.4495201454114,
+      "l1d_refill_per_1000_instructions": 3.1458531986923464
+    },
+    {
+      "tag": "A1",
+      "policy": "other",
+      "round": 3,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 27125,
+      "counts": {
+        "cycles": 837435632,
+        "instructions": 413604706,
+        "l1i_refill": 27631934,
+        "l1d_refill": 1065368
+      },
+      "instructions_per_attempt": 20680.2353,
+      "cycles_per_instruction": 2.0247246219679136,
+      "l1i_refill_per_1000_instructions": 66.80759091749793,
+      "l1d_refill_per_1000_instructions": 2.575812084691319
+    },
+    {
+      "tag": "A1",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 19542,
+      "counts": {
+        "cycles": 715788891,
+        "instructions": 401411664,
+        "l1i_refill": 22584122,
+        "l1d_refill": 888195
+      },
+      "instructions_per_attempt": 20070.5832,
+      "cycles_per_instruction": 1.7831791031363753,
+      "l1i_refill_per_1000_instructions": 56.26174828841047,
+      "l1d_refill_per_1000_instructions": 2.2126786031807986
+    },
+    {
+      "tag": "A1",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 19833,
+      "counts": {
+        "cycles": 718073094,
+        "instructions": 401825876,
+        "l1i_refill": 22608464,
+        "l1d_refill": 1030821
+      },
+      "instructions_per_attempt": 20091.2938,
+      "cycles_per_instruction": 1.787025517490566,
+      "l1i_refill_per_1000_instructions": 56.2643307719685,
+      "l1d_refill_per_1000_instructions": 2.565342506713032
+    },
+    {
+      "tag": "A1",
+      "policy": "fifo",
+      "round": 3,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 19833,
+      "counts": {
+        "cycles": 708049967,
+        "instructions": 391344654,
+        "l1i_refill": 22605908,
+        "l1d_refill": 1499352
+      },
+      "instructions_per_attempt": 19567.2327,
+      "cycles_per_instruction": 1.8092746630442025,
+      "l1i_refill_per_1000_instructions": 57.76470374372356,
+      "l1d_refill_per_1000_instructions": 3.8312826933366004
+    },
+    {
+      "tag": "F1",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 16625,
+      "counts": {
+        "cycles": 539078589,
+        "instructions": 335038964,
+        "l1i_refill": 13434292,
+        "l1d_refill": 2205574
+      },
+      "instructions_per_attempt": 16751.9482,
+      "cycles_per_instruction": 1.6090026740889756,
+      "l1i_refill_per_1000_instructions": 40.09770039761704,
+      "l1d_refill_per_1000_instructions": 6.583037309057581
+    },
+    {
+      "tag": "F1",
+      "policy": "other",
+      "round": 2,
+      "valid": false,
+      "samples": 19999,
+      "not_parked": 1,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 16334,
+      "counts": {
+        "cycles": 542153078,
+        "instructions": 342061058,
+        "l1i_refill": 13440753,
+        "l1d_refill": 1215775
+      },
+      "instructions_per_attempt": 17103.0529,
+      "cycles_per_instruction": 1.5849599517990147,
+      "l1i_refill_per_1000_instructions": 39.2934322269447,
+      "l1d_refill_per_1000_instructions": 3.5542631105350786
+    },
+    {
+      "tag": "F1",
+      "policy": "other",
+      "round": 3,
+      "valid": false,
+      "samples": 19999,
+      "not_parked": 1,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 16625,
+      "counts": {
+        "cycles": 544619769,
+        "instructions": 342149068,
+        "l1i_refill": 13442298,
+        "l1d_refill": 1534726
+      },
+      "instructions_per_attempt": 17107.4534,
+      "cycles_per_instruction": 1.5917616616158663,
+      "l1i_refill_per_1000_instructions": 39.28784046841244,
+      "l1d_refill_per_1000_instructions": 4.48554780222286
+    },
+    {
+      "tag": "F1",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 11667,
+      "counts": {
+        "cycles": 421044337,
+        "instructions": 304895612,
+        "l1i_refill": 6321333,
+        "l1d_refill": 2064749
+      },
+      "instructions_per_attempt": 15244.7806,
+      "cycles_per_instruction": 1.38094587271397,
+      "l1i_refill_per_1000_instructions": 20.732777879400903,
+      "l1d_refill_per_1000_instructions": 6.771986603729804
+    },
+    {
+      "tag": "F1",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 11667,
+      "counts": {
+        "cycles": 419055781,
+        "instructions": 305865987,
+        "l1i_refill": 6289810,
+        "l1d_refill": 2006393
+      },
+      "instructions_per_attempt": 15293.29935,
+      "cycles_per_instruction": 1.3700633571917886,
+      "l1i_refill_per_1000_instructions": 20.563940638486226,
+      "l1d_refill_per_1000_instructions": 6.5597127018899295
+    },
+    {
+      "tag": "F1",
+      "policy": "fifo",
+      "round": 3,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 11666,
+      "counts": {
+        "cycles": 427913514,
+        "instructions": 315296047,
+        "l1i_refill": 6306862,
+        "l1d_refill": 1355479
+      },
+      "instructions_per_attempt": 15764.80235,
+      "cycles_per_instruction": 1.357180079076602,
+      "l1i_refill_per_1000_instructions": 20.002984686959934,
+      "l1d_refill_per_1000_instructions": 4.2990675363589315
+    },
+    {
+      "tag": "F2",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 16334,
+      "counts": {
+        "cycles": 533149014,
+        "instructions": 335391727,
+        "l1i_refill": 13435792,
+        "l1d_refill": 1414378
+      },
+      "instructions_per_attempt": 16769.58635,
+      "cycles_per_instruction": 1.5896307841844888,
+      "l1i_refill_per_1000_instructions": 40.059998259885525,
+      "l1d_refill_per_1000_instructions": 4.21709268934949
+    },
+    {
+      "tag": "F2",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 16625,
+      "counts": {
+        "cycles": 543157508,
+        "instructions": 342140469,
+        "l1i_refill": 13437512,
+        "l1d_refill": 1197797
+      },
+      "instructions_per_attempt": 17107.02345,
+      "cycles_per_instruction": 1.5875278057212225,
+      "l1i_refill_per_1000_instructions": 39.27483948120735,
+      "l1d_refill_per_1000_instructions": 3.500892494538552
+    },
+    {
+      "tag": "F2",
+      "policy": "other",
+      "round": 3,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 16334,
+      "counts": {
+        "cycles": 525522189,
+        "instructions": 332004057,
+        "l1i_refill": 13406522,
+        "l1d_refill": 1102906
+      },
+      "instructions_per_attempt": 16600.20285,
+      "cycles_per_instruction": 1.5828788170501182,
+      "l1i_refill_per_1000_instructions": 40.38059691541661,
+      "l1d_refill_per_1000_instructions": 3.3219654300790666
+    },
+    {
+      "tag": "F2",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 11667,
+      "counts": {
+        "cycles": 428357425,
+        "instructions": 312033756,
+        "l1i_refill": 6283092,
+        "l1d_refill": 1602118
+      },
+      "instructions_per_attempt": 15601.6878,
+      "cycles_per_instruction": 1.3727919392157046,
+      "l1i_refill_per_1000_instructions": 20.135936831142075,
+      "l1d_refill_per_1000_instructions": 5.134438083038683
+    },
+    {
+      "tag": "F2",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 11375,
+      "counts": {
+        "cycles": 421823807,
+        "instructions": 311030877,
+        "l1i_refill": 6301777,
+        "l1d_refill": 1143656
+      },
+      "instructions_per_attempt": 15551.54385,
+      "cycles_per_instruction": 1.3562119975631872,
+      "l1i_refill_per_1000_instructions": 20.260936987294674,
+      "l1d_refill_per_1000_instructions": 3.6769854203253267
+    },
+    {
+      "tag": "F2",
+      "policy": "fifo",
+      "round": 3,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 11667,
+      "counts": {
+        "cycles": 430816673,
+        "instructions": 315310730,
+        "l1i_refill": 6313508,
+        "l1d_refill": 1926668
+      },
+      "instructions_per_attempt": 15765.5365,
+      "cycles_per_instruction": 1.3663241748861512,
+      "l1i_refill_per_1000_instructions": 20.023130833511438,
+      "l1d_refill_per_1000_instructions": 6.110378799985652
+    },
+    {
+      "tag": "A2",
+      "policy": "other",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 27417,
+      "counts": {
+        "cycles": 854597964,
+        "instructions": 422548666,
+        "l1i_refill": 27706544,
+        "l1d_refill": 1717296
+      },
+      "instructions_per_attempt": 21127.4333,
+      "cycles_per_instruction": 2.022484113108051,
+      "l1i_refill_per_1000_instructions": 65.57006619445818,
+      "l1d_refill_per_1000_instructions": 4.064137786202359
+    },
+    {
+      "tag": "A2",
+      "policy": "other",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 27708,
+      "counts": {
+        "cycles": 863391605,
+        "instructions": 423975538,
+        "l1i_refill": 27742897,
+        "l1d_refill": 1747403
+      },
+      "instructions_per_attempt": 21198.7769,
+      "cycles_per_instruction": 2.036418443084799,
+      "l1i_refill_per_1000_instructions": 65.43513602428638,
+      "l1d_refill_per_1000_instructions": 4.121471272241183
+    },
+    {
+      "tag": "A2",
+      "policy": "other",
+      "round": 3,
+      "valid": false,
+      "samples": 19999,
+      "not_parked": 1,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 27708,
+      "counts": {
+        "cycles": 852928112,
+        "instructions": 418756383,
+        "l1i_refill": 27747909,
+        "l1d_refill": 1630361
+      },
+      "instructions_per_attempt": 20937.81915,
+      "cycles_per_instruction": 2.036812205439266,
+      "l1i_refill_per_1000_instructions": 66.2626532429477,
+      "l1d_refill_per_1000_instructions": 3.8933400568606973
+    },
+    {
+      "tag": "A2",
+      "policy": "fifo",
+      "round": 1,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 20125,
+      "counts": {
+        "cycles": 734855420,
+        "instructions": 401985077,
+        "l1i_refill": 22596772,
+        "l1d_refill": 2959974
+      },
+      "instructions_per_attempt": 20099.25385,
+      "cycles_per_instruction": 1.828066418495431,
+      "l1i_refill_per_1000_instructions": 56.21296235332637,
+      "l1d_refill_per_1000_instructions": 7.36339274604465
+    },
+    {
+      "tag": "A2",
+      "policy": "fifo",
+      "round": 2,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 19542,
+      "counts": {
+        "cycles": 709772155,
+        "instructions": 396842438,
+        "l1i_refill": 22636963,
+        "l1d_refill": 1399221
+      },
+      "instructions_per_attempt": 19842.1219,
+      "cycles_per_instruction": 1.7885490235799832,
+      "l1i_refill_per_1000_instructions": 57.04269713210461,
+      "l1d_refill_per_1000_instructions": 3.5258855052190765
+    },
+    {
+      "tag": "A2",
+      "policy": "fifo",
+      "round": 3,
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "missed_deadlines": 0,
+      "p50_ns_diagnostic_only": 19833,
+      "counts": {
+        "cycles": 717524478,
+        "instructions": 398042392,
+        "l1i_refill": 22626459,
+        "l1d_refill": 1525729
+      },
+      "instructions_per_attempt": 19902.1196,
+      "cycles_per_instruction": 1.8026333185134713,
+      "l1i_refill_per_1000_instructions": 56.84434486063484,
+      "l1d_refill_per_1000_instructions": 3.8330816783957022
+    }
+  ],
+  "invalid_runs": [
+    {
+      "tag": "F1",
+      "policy": "other",
+      "round": 2,
+      "samples": 19999,
+      "not_parked": 1,
+      "missed_deadlines": 0
+    },
+    {
+      "tag": "F1",
+      "policy": "other",
+      "round": 3,
+      "samples": 19999,
+      "not_parked": 1,
+      "missed_deadlines": 0
+    },
+    {
+      "tag": "A2",
+      "policy": "other",
+      "round": 3,
+      "samples": 19999,
+      "not_parked": 1,
+      "missed_deadlines": 0
+    }
+  ],
+  "group_medians": {
+    "A:other": {
+      "p50_ns_diagnostic_only": 27417,
+      "instructions_per_attempt": 21127.4333,
+      "cycles_per_instruction": 2.024292626083445,
+      "l1i_refill_per_1000_instructions": 65.57006619445818,
+      "l1d_refill_per_1000_instructions": 3.1458531986923464,
+      "valid_runs": 5
+    },
+    "A:fifo": {
+      "p50_ns_diagnostic_only": 19833.0,
+      "instructions_per_attempt": 19986.3514,
+      "cycles_per_instruction": 1.7955911710467274,
+      "l1i_refill_per_1000_instructions": 56.55433781630167,
+      "l1d_refill_per_1000_instructions": 3.6785840992778382,
+      "valid_runs": 6
+    },
+    "F:other": {
+      "p50_ns_diagnostic_only": 16479.5,
+      "instructions_per_attempt": 16760.767275,
+      "cycles_per_instruction": 1.5885792949528557,
+      "l1i_refill_per_1000_instructions": 40.07884932875128,
+      "l1d_refill_per_1000_instructions": 3.858992591944021,
+      "valid_runs": 4
+    },
+    "F:fifo": {
+      "p50_ns_diagnostic_only": 11667.0,
+      "instructions_per_attempt": 15576.615825,
+      "cycles_per_instruction": 1.3681937660389698,
+      "l1i_refill_per_1000_instructions": 20.198436909218373,
+      "l1d_refill_per_1000_instructions": 5.622408441512167,
+      "valid_runs": 6
+    }
+  }
+}

@@ -1,0 +1,58 @@
+## 结论
+
+**CPU1 在 `somehal::irq::begin_irq` 之后的整条路径中，没有一个"语义等价、且有证据支持多微秒影响"的单点机制。** 该路径确实包含多微秒的**聚合**时间（接收 dispatch ~2.6 us 插桩、空闲退出+一次调度选入、接收者 syscall 返回），但其中每一段要么是必须保留的所有权/不变式，要么已被既有实验否定，要么已被证明不可归因为可删除的原生耗时。下面给出逐段证据、被检查过的候选及其否决理由、风险/不变式，以及下一步判别性诊断设计。
+
+---
+
+## 1. CPU1 post-`begin_irq` 路径（精确到 file:line）
+
+1. **物理入口/解码**：[handle](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn/src/irq.rs:59) → [begin_irq](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal/src/irq.rs:602)（`Plat::begin_irq` 已 ack 控制器，GICv2/v3 `ActiveIrq`，`drop_priority_pending = true`）。
+2. **IPI 分派 + 控制器 ack**：[dispatch_ipi_irq_on](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat/src/irq.rs:315) → `acknowledge_controller()`（= [somehal gic `acknowledge_ipi`](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal/src/arch/aarch64/gic/mod.rs:185)，之后一条 `isb`）→ [dispatch_irq_on](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat/src/irq.rs:277)（per-CPU pin + `IRQ_CONTEXT_DEPTH` + 注册表 dispatch）。
+3. **注册动作**：[ipi_delivery::irq_handler](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/ipi_delivery.rs:36)：
+   - `ax_ipi::claim_current_delivery()`（[lib.rs:164](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi/src/lib.rs:164)，内部 [DeliveryEdge::claim](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi/src/notification.rs:95) 一次 CAS+epoch）；
+   - [dispatch_scheduler_doorbell](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/ipi_delivery.rs:15)：`local_scheduler_work_pending()` → [current_cpu_needs_resched](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/cpu.rs:45)（`PreemptScope::enter()` + remote 粘滞位 load）；若 pending → [guard::publish_local_scheduler_work](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:242)（`publish_preemption_pending_pinned` + [in_hard_irq_on](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:616)，硬中断下返回 self-serviced）；
+   - [drain_hard_calls](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi/src/lib.rs:216) → [HardCallQueue::drain](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi/src/hard_call.rs:151)（对共享 `head` 做原子 `swap`）。
+4. **IRQ 返回包装**：[with_observed_irq_entry](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal/src/irq.rs:75) → [finish_irq_entry](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal/src/irq.rs:94)（complete 后再 release preempt）。此处 preempt release 是**嵌套**的：idle 外层 PreemptScope 仍在，所以不会在 IRQ 返回时调度（与 resume794 的 `irq_return_scheduler_continuations` ≈0.0035–0.0128/sample 一致，[resume794.md](/home/zhourui/.codex/artifacts/issue2308-perf/experiment-ledger/attempts/resume794.md)）。
+5. **空闲退出**：WFI 后的重检（[runtime_impl::wait_for_interrupt](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/runtime_impl.rs:392)，WFI 在 453，重检 459–469）：`IrqSaveGuard` + `monotonic_now` + `current_cpu_needs_resched` + （pending 时）[restart_current_scheduler_tick_after_idle](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/clock_event_runtime.rs:233)。
+6. **调度选入**：[run_idle](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/bootstrap.rs:140) 循环 → [schedule_current_cpu](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/switch/dispatch.rs:29)（frame guard → `schedule_if_requested_in_scheduler_frame` → [execute_switch_plan](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/switch/dispatch.rs:256) → [switch_runtime_context](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/context.rs:589)）。切换尾里 idle→非 idle 会再调 [idle_exit_restart_scheduler_tick](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/publication.rs:64)。
+7. **接收者返回用户态**：被唤醒者在 [task/futex.rs:463](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/futex.rs:463) 的 `park.commit()` 处恢复 → `is_woken`/`finish` → syscall 返回 → [UserExecutionContext::enter](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/thread/user_entry.rs:77) → [prepare_user_return](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:65) → `run_unchecked`。
+
+---
+
+## 2. 候选清单与判据（为什么"none"）
+
+| 候选（CPU1 post-begin_irq） | 证据状态 | 否决理由 |
+| --- | --- | --- |
+| 注册表 wrapper + per-CPU pin + 时钟的 enclosing excess | resume833 实测 1181–1247 ns | 属任务明确排除的 generic IRQ registry wrapper；且含 pin/clock 开销，不是可归因的原生收益（[resume833/decision.md](/home/zhourui/.codex/artifacts/issue2308-perf/resume833-ipi-receive/decision.md)） |
+| handler 内容（claim/选举/发布/drain） | resume833 实测 1372–1432 ns | 每步都是单次原子/percpu 校验；`drain_hard_calls` 与调度门铃**共用同一物理边**，不 drain 会让 `membarrier` 的 `Coalesced` 通知永远得不到服务（丢失唤醒等价违例），不可省 |
+| 每次 wake 重复一整轮调度 | resume794 计数 | 已否定（IRQ-return continuation 中位 0.0035/0.0128） |
+| 空闲退出 + tick 重启出现两次 | 源码存在（runtime_impl.rs:466 与 publication.rs:64） | **不是**重复设备编程：[restart_scheduler_tick_after_idle](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/clock_event.rs:155) 在 `scheduler_tick` 已 Running 时返回 `ClockEventAction::None`，第二次是**廉价 no-op 守卫**；删除会破坏"IRQ 重新使能之后才可见的请求"的竞态兜底（resume832 已判定删除不正确） |
+| 描述符索引复用 / registry 结构改动 | resume795 | 3 项 >3% 回归，已否 |
+| `prepare_arch` / `switch_out_hook` / Fair 节点/memcpy 类叶改动 | resume805 / 390·409·451·509·519 / 559 | 各约 0.3 us 且含探针；或历史原生回归/代码生成变差 |
+| 接收者 syscall 返回（含窗口内**第二次** raw syscall） | 结构事实，非机制 | `handoff.c:220` 的测量终点在 `bench_monotonic_ns()`（[stats.c:22](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/stats.c:22) 为 `syscall(SYS_clock_gettime)`）之后，所以 p50 窗口含 FUTEX_WAIT 返回 + 一次完整 clock_gettime 往返；但 `clock_pair` p50 = 875 ns，量级不足以承担 5.9–7.4 us，且 Linux 同 ABI，不可当作 Starry 调度收益 |
+
+结构性佐证：`thread_futex_cross_cpu` 的 sender 先 `atomic_store(gate)` 再 `futex_wake`（[handoff.c:205](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/apps/starry/wakeup-latency-bench/handoff.c:205)），wake 走 [CpuRemote::publish_rq_scheduler_reasons](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:245) → 仅当目标不在 idle-polling 时才 [ring_scheduler_doorbell](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:451)。CPU1 在 WFI 前已 `finish_idle_wait()` 清 polling 位（[remote/scheduler.rs:550](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:550)），因此必定收到物理边——这一步没有可省的 CPU1 工作，只能改 sender 侧，超出本次范围。
+
+---
+
+## 3. 风险与不变式（任何候选都必须保持）
+
+- **publication-before-doorbell**：`notify_cpu` 里 sender 先 Release 发布逻辑位再 `send_ipi`；[somehal gic v2 `send_ipi`](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal/src/arch/aarch64/gic/v2.rs:238) 的 `dmb ISHST` 是这条边的一部分，不能移出 CPU1 之外。
+- **controller ack 先于逻辑边认领**：[dispatch_ipi_irq_on](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat/src/irq.rs:315) 先 ack（含 ISB）再 `claim_current_delivery()`；顺序不可交换，否则并发 publisher 可重新武装旧边。
+- **无丢失唤醒**：`REQUEST_IDLE_POLLING` 的 clear-then-recheck + `finish_idle_wait` 的 `SeqCst` fence（[remote/scheduler.rs:550](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:550)）与"每个物理边都 drain 硬呼叫"共同保证；`IpiNotification::Coalesced` 只承诺物理边，不等价于逻辑完成。
+- **不可信插桩数值**：resume836 的 3 us 是 issue→entry 且混入后台 IPI；resume833 的 2.6 us 是 dispatch（含 handler）；两者相减或与原生 p50 相减都无效。任何候选只接受 source-matched、cpufreq-off、未插桩 full20，p50/p99/p99.9 回归 <3% 且 `not_parked`/missed=0。
+
+---
+
+## 4. 下一步（判别性诊断设计）
+
+**Generation 配对的分段探针**（一个 `qperf-metrics`、cpufreq-off 诊断镜像；CPU0 只为锚点，不改生产源码）：
+
+- 在 CPU0 `send_ipi` 前写共享 generation 槽（沿用 resume836 的 `qperf_mark_ipi_issue_to_cpu1` 位置）；CPU1 每段记录时携带该 generation，**只统计四段 generation 全匹配**的样本，并单独计数 `unmatched / overwritten / Sent / Coalesced`。
+- 段：**A** = `begin_irq` 返回 → `irq_handler` 返回（扩展 resume833，加 generation 配对）；**B** = handler 返回 → CPU1 `schedule_current_cpu` 进入（空 闲退出+tick 重启+run_idle 循环）；**C** = 调度进入 → 接收者 FUTEX_WAIT 返回用户态（选入+上下文切换+接收者内核恢复）。每段保留原始时间戳 + 250 ns 直方图，不互相相减。
+- 判读规则：A 占优 → 收益在接收 dispatch/handler（但那正是被排除的 registry 层，需另行论证）；B 占优 → 收益在空闲退出/tick 重启，需提出把重启移出 preempt-guard 窗口的具体方案；C 占优 → 收益在选入/切换/接收者尾；若三者各自都 < ~2 us 且配对总和远小于原生 gap，则 gap **不在 CPU1 post-begin_irq**，应回到 controller/send/trap-entry 侧。该诊断本身不计入 90% 进度。
+
+---
+
+本次为只读探索，未修改任何文件，未运行 build/test/board，未做 fmt，未委派。（记忆来源：issue2308 台账入口与"禁止盲重"约束。）仅依据 resume794/795/799/810/813/831/832/833/834/836 与当前 head 源码。
+

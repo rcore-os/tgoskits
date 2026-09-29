@@ -1,0 +1,33 @@
+{
+  "experiment": "resume884",
+  "state": "rejected",
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "changed_file": "components/ax-task/src/sched/system/cpu/remote/run_queue.rs",
+  "change": "Diagnostic-only Fair WakeeSelected reschedule Lazy -> Immediate",
+  "candidate_patch_sha256": "5aefbfc414f1a12e0f861649cd20aeec54156b9061de3f837cdc36ba660d4981",
+  "restored_exporter_patch_sha256": "44866a74273e74d8656e1e5130e0f0997f1f39851c204ec583952e5fbbef1cff",
+  "build_config_sha256": "97a5d39843b42bca2e965ce83ebfc6458918dd1566eee46db73232f65a3208b5",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "board": "OrangePi-5-Plus-1",
+  "candidate_image_sha256": "dc09012183d9b44bb7eb3fa1949d695e16f22e4a04153080a068792301d2d6cb",
+  "historical_control_image_sha256": "ad77bbb56abeeafedb90b767ff7f226cf99df757b838e97526b031c34757e747",
+  "restored_source_rebuild_image_sha256": "a9b055fc3b4733ed6ae37fb1ab746a3971772a2156aa2088938dd1ef0964289a",
+  "restored_source_rebuild_diff_scope": "Only .kallsyms differs: both bins are 17465344 bytes; cmp passes before binary offset 0x842000 and from 0x1042000 to EOF. Both ELF section tables place .kallsyms at file offset 0x852000 with size 0x800000; the binary drops the first 0x10000 bytes. Exact image-byte reproducibility remains unproven, but all non-kallsyms binary bytes match.",
+  "full20_order": ["A1", "B1", "B2", "A2"],
+  "valid_full20_boots": ["A1", "B1", "B2"],
+  "invalid_full20_boots": {
+    "A2": "OTHER thread_futex_same_cpu samples=19999/20000, not_parked=1"
+  },
+  "candidate_90pct_rows_two_boot_median": 10,
+  "candidate_worst_row": "OTHER thread_futex_same_cpu",
+  "candidate_worst_p50_ns": 26396,
+  "candidate_worst_rt_over_candidate_pct": 32.043,
+  "exploratory_historical_A1_same_cpu_p50_ns": 27125,
+  "exploratory_candidate_B1_B2_same_cpu_p50_ns": 26396,
+  "historical_A_source_equivalent": true,
+  "same_source_regression_gate_proven": false,
+  "three_valid_candidate_boots_proven": false,
+  "source_restored": true,
+  "effect": "B1 and B2 each passed the full20 sample gate, but only 10/20 candidate rows meet the Linux RT 90% p50 threshold and the worst is 32.043%. A2 is invalid. Both historical A and candidate B build logs identify the same isolated root-exporter worktree as Workspace root; the differing Cargo target directory is not a source difference. The valid A1-to-B1/B2 comparison gives an exploratory 2.688% same-CPU futex p50 reduction. Several p99/p999 rows increase by at least 3% in this single-valid-A screening comparison; A2 invalidity prevents a formal two-boot regression-gate decision. Rebuilding after source restoration yielded a different whole-image SHA only because .kallsyms bytes differ; all other binary bytes match. The historical A image remains the only measured ordinary control and exact whole-image byte reproducibility is unproven.",
+  "decision": "Reject Fair Lazy -> Immediate. It is far short of the 90% goal and has possible tail regressions. Restore only the one-line trial, preserving the pre-existing exporter patch. No production or PR logic change is retained."
+}

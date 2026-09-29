@@ -1,0 +1,5 @@
+{"crate": "ax_sched", "target": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "profiled": true}
+{"crate": "ax_task", "target": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "profiled": true}
+{"crate": "ax_runtime", "target": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "profiled": true}
+{"crate": "starry_kernel", "target": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "profiled": true}
+{"crate": "starryos", "target": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/scripts/targets/bare/aarch64-unknown-none-softfloat.json", "profiled": false}

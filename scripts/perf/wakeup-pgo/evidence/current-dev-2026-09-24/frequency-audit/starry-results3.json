@@ -1,0 +1,312 @@
+{
+  "board_id": "OrangePi-5-Plus-1",
+  "session_id": "b3a56ea0-4fc2-4a1c-9aaa-b9493e4cb04c",
+  "probe_sha256": "2600e1e631d499a7cde6db90b3f067e6a63656a73c997ba418f7bcfa963f2239",
+  "rounds": [
+    {
+      "tag": "A3",
+      "image_sha256": "58801abbba44d6dd61a2807efc62b678274586e075e31beca7fce9b913f84eca",
+      "console_sha256": "d63050855bcc7a075ab647eb81fd93c3f34edb284e7892c326c4008bdd225c26",
+      "readings": [
+        {
+          "cpu": 0,
+          "rep": 0,
+          "cycles": 575167677,
+          "enabled_ns": 500023708,
+          "running_ns": 500023708,
+          "wall_ns": 500025750,
+          "mhz": 1150.281
+        },
+        {
+          "cpu": 0,
+          "rep": 1,
+          "cycles": 575118100,
+          "enabled_ns": 1000021166,
+          "running_ns": 1000021166,
+          "wall_ns": 500000375,
+          "mhz": 575.106
+        },
+        {
+          "cpu": 0,
+          "rep": 2,
+          "cycles": 575140522,
+          "enabled_ns": 1500018041,
+          "running_ns": 1500018041,
+          "wall_ns": 500000375,
+          "mhz": 383.422
+        },
+        {
+          "cpu": 1,
+          "rep": 0,
+          "cycles": 575209820,
+          "enabled_ns": 500066292,
+          "running_ns": 500066292,
+          "wall_ns": 500069792,
+          "mhz": 1150.267
+        },
+        {
+          "cpu": 1,
+          "rep": 1,
+          "cycles": 575146520,
+          "enabled_ns": 1000083001,
+          "running_ns": 1000083001,
+          "wall_ns": 500019917,
+          "mhz": 575.099
+        },
+        {
+          "cpu": 1,
+          "rep": 2,
+          "cycles": 575145511,
+          "enabled_ns": 1500129751,
+          "running_ns": 1500129751,
+          "wall_ns": 500049666,
+          "mhz": 383.397
+        }
+      ]
+    },
+    {
+      "tag": "B1",
+      "image_sha256": "c2592ff126a0e5a60b2a33ec9883ebe2f200ff0f748e14ea132a8437683db1d5",
+      "console_sha256": "f3cd0d38197041c20f90618287460733dcaad0eea495a5ae4a29ae5b756c29a7",
+      "readings": [
+        {
+          "cpu": 0,
+          "rep": 0,
+          "cycles": 408007176,
+          "enabled_ns": 500010000,
+          "running_ns": 500010000,
+          "wall_ns": 500012917,
+          "mhz": 815.998
+        },
+        {
+          "cpu": 0,
+          "rep": 1,
+          "cycles": 408069805,
+          "enabled_ns": 1000096708,
+          "running_ns": 1000096708,
+          "wall_ns": 500090792,
+          "mhz": 408.03
+        },
+        {
+          "cpu": 0,
+          "rep": 2,
+          "cycles": 408114786,
+          "enabled_ns": 1500238249,
+          "running_ns": 1500238249,
+          "wall_ns": 500145041,
+          "mhz": 272.033
+        },
+        {
+          "cpu": 1,
+          "rep": 0,
+          "cycles": 408085546,
+          "enabled_ns": 500105375,
+          "running_ns": 500105375,
+          "wall_ns": 500110333,
+          "mhz": 815.999
+        },
+        {
+          "cpu": 1,
+          "rep": 1,
+          "cycles": 408067474,
+          "enabled_ns": 1000188584,
+          "running_ns": 1000188584,
+          "wall_ns": 500087875,
+          "mhz": 407.991
+        },
+        {
+          "cpu": 1,
+          "rep": 2,
+          "cycles": 408065562,
+          "enabled_ns": 1500269459,
+          "running_ns": 1500269459,
+          "wall_ns": 500084959,
+          "mhz": 271.995
+        }
+      ]
+    },
+    {
+      "tag": "F1",
+      "image_sha256": "6a234ea391346f2450fdef8b04d19988211dbe3485cf62e3a25544ca4e80cac4",
+      "console_sha256": "5092c6a21b3261b682fdaa849436447ad07c05d283f54fd443444ce8a24c9618",
+      "readings": [
+        {
+          "cpu": 0,
+          "rep": 0,
+          "cycles": 575158850,
+          "enabled_ns": 500064542,
+          "running_ns": 500064542,
+          "wall_ns": 500065708,
+          "mhz": 1150.169
+        },
+        {
+          "cpu": 0,
+          "rep": 1,
+          "cycles": 575157310,
+          "enabled_ns": 1000120917,
+          "running_ns": 1000120917,
+          "wall_ns": 500059291,
+          "mhz": 575.088
+        },
+        {
+          "cpu": 0,
+          "rep": 2,
+          "cycles": 575168648,
+          "enabled_ns": 1500187209,
+          "running_ns": 1500187209,
+          "wall_ns": 500068333,
+          "mhz": 383.398
+        },
+        {
+          "cpu": 1,
+          "rep": 0,
+          "cycles": 575115590,
+          "enabled_ns": 500009125,
+          "running_ns": 500009125,
+          "wall_ns": 500012333,
+          "mhz": 1150.21
+        },
+        {
+          "cpu": 1,
+          "rep": 1,
+          "cycles": 575115493,
+          "enabled_ns": 1000008333,
+          "running_ns": 1000008333,
+          "wall_ns": 500002125,
+          "mhz": 575.111
+        },
+        {
+          "cpu": 1,
+          "rep": 2,
+          "cycles": 575108609,
+          "enabled_ns": 1500046333,
+          "running_ns": 1500046333,
+          "wall_ns": 500041209,
+          "mhz": 383.394
+        }
+      ]
+    },
+    {
+      "tag": "A4",
+      "image_sha256": "58801abbba44d6dd61a2807efc62b678274586e075e31beca7fce9b913f84eca",
+      "console_sha256": "edcd16ba888ef30f67de7fa0862c7185efaa1c24f08f5eee9fcd9f3fa1676ce7",
+      "readings": [
+        {
+          "cpu": 0,
+          "rep": 0,
+          "cycles": 575223803,
+          "enabled_ns": 500065708,
+          "running_ns": 500065708,
+          "wall_ns": 500068625,
+          "mhz": 1150.296
+        },
+        {
+          "cpu": 0,
+          "rep": 1,
+          "cycles": 575254149,
+          "enabled_ns": 1000162333,
+          "running_ns": 1000162333,
+          "wall_ns": 500098959,
+          "mhz": 575.161
+        },
+        {
+          "cpu": 0,
+          "rep": 2,
+          "cycles": 575159660,
+          "enabled_ns": 1500166792,
+          "running_ns": 1500166792,
+          "wall_ns": 500007083,
+          "mhz": 383.397
+        },
+        {
+          "cpu": 1,
+          "rep": 0,
+          "cycles": 575183161,
+          "enabled_ns": 500034792,
+          "running_ns": 500034792,
+          "wall_ns": 500038292,
+          "mhz": 1150.286
+        },
+        {
+          "cpu": 1,
+          "rep": 1,
+          "cycles": 575250777,
+          "enabled_ns": 1000123542,
+          "running_ns": 1000123542,
+          "wall_ns": 500091958,
+          "mhz": 575.18
+        },
+        {
+          "cpu": 1,
+          "rep": 2,
+          "cycles": 575245939,
+          "enabled_ns": 1500216083,
+          "running_ns": 1500216083,
+          "wall_ns": 500095750,
+          "mhz": 383.442
+        }
+      ]
+    },
+    {
+      "tag": "B2",
+      "image_sha256": "c2592ff126a0e5a60b2a33ec9883ebe2f200ff0f748e14ea132a8437683db1d5",
+      "console_sha256": "753f201bddea671d30131787bbe9df4bb7d71f855f99ff2b4a078beeea017d08",
+      "readings": [
+        {
+          "cpu": 0,
+          "rep": 0,
+          "cycles": 408095740,
+          "enabled_ns": 500118500,
+          "running_ns": 500118500,
+          "wall_ns": 500121417,
+          "mhz": 815.998
+        },
+        {
+          "cpu": 0,
+          "rep": 1,
+          "cycles": 408065612,
+          "enabled_ns": 1000199958,
+          "running_ns": 1000199958,
+          "wall_ns": 500085250,
+          "mhz": 407.984
+        },
+        {
+          "cpu": 0,
+          "rep": 2,
+          "cycles": 408091890,
+          "enabled_ns": 1500313499,
+          "running_ns": 1500313499,
+          "wall_ns": 500117334,
+          "mhz": 272.004
+        },
+        {
+          "cpu": 1,
+          "rep": 0,
+          "cycles": 408066145,
+          "enabled_ns": 500081458,
+          "running_ns": 500081458,
+          "wall_ns": 500087000,
+          "mhz": 815.999
+        },
+        {
+          "cpu": 1,
+          "rep": 1,
+          "cycles": 408065900,
+          "enabled_ns": 1000162624,
+          "running_ns": 1000162624,
+          "wall_ns": 500086417,
+          "mhz": 408.0
+        },
+        {
+          "cpu": 1,
+          "rep": 2,
+          "cycles": 408062560,
+          "enabled_ns": 1500239999,
+          "running_ns": 1500239999,
+          "wall_ns": 500082042,
+          "mhz": 271.998
+        }
+      ]
+    }
+  ]
+}

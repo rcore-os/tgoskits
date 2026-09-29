@@ -1,0 +1,84 @@
+diff --git a/os/arceos/modules/axruntime/src/thread/address_space.rs b/os/arceos/modules/axruntime/src/thread/address_space.rs
+index d9d038469b..a282d19cf1 100644
+--- a/os/arceos/modules/axruntime/src/thread/address_space.rs
++++ b/os/arceos/modules/axruntime/src/thread/address_space.rs
+@@ -650,7 +650,7 @@ fn same_logical_address_space(first: &RuntimeAddressSpace, second: &RuntimeAddre
+ 
+ enum PreparedAddressSpaceAction {
+     KernelLazy,
+-    #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
++    #[cfg(feature = "uspace")]
+     SameUser,
+     #[cfg(feature = "uspace")]
+     User {
+@@ -722,7 +722,7 @@ impl PreparedAddressSpaceSwitch<'_, '_> {
+                     enter_lazy_kernel_address_space(self.previous_raw != 0);
+                 }
+             }
+-            #[cfg(all(feature = "uspace", not(target_arch = "aarch64")))]
++            #[cfg(feature = "uspace")]
+             PreparedAddressSpaceAction::SameUser => {}
+             #[cfg(feature = "uspace")]
+             PreparedAddressSpaceAction::User {
+@@ -807,25 +807,39 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
+     let pin = _pin;
+     #[cfg(feature = "uspace")]
+     let cpu_id = pin.area().cpu_index().as_usize();
+-    #[cfg(any(not(feature = "uspace"), target_arch = "aarch64"))]
++    #[cfg(not(feature = "uspace"))]
+     let _ = same_address_space;
+ 
+     #[cfg(feature = "uspace")]
+     {
+         let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
+-        #[cfg(not(target_arch = "aarch64"))]
+         if same_address_space {
+             debug_assert!(!previous_selected.is_none());
+             debug_assert!(!next_selected.is_none());
+-            debug_assert_ne!(previous_raw, 0);
+-            return Ok(PreparedAddressSpaceSwitch {
+-                pin,
+-                phase,
+-                previous_raw,
+-                previous: None,
+-                action: PreparedAddressSpaceAction::SameUser,
+-                _not_send_or_sync: PhantomData,
+-            });
++            #[cfg(not(target_arch = "aarch64"))]
++            let ready = {
++                debug_assert_ne!(previous_raw, 0);
++                true
++            };
++            #[cfg(target_arch = "aarch64")]
++            let ready = if previous_raw == 0 {
++                false
++            } else {
++                let next = runtime_address_space(next_selected)?;
++                // A kernel-lazy transition may leave the reserved lower root
++                // installed even while this CPU retains the same active mm.
++                current_hardware_root() == next.root()
++            };
++            if ready {
++                return Ok(PreparedAddressSpaceSwitch {
++                    pin,
++                    phase,
++                    previous_raw,
++                    previous: None,
++                    action: PreparedAddressSpaceAction::SameUser,
++                    _not_send_or_sync: PhantomData,
++                });
++            }
+         }
+         let previous = if previous_raw == 0 {
+             None
+@@ -848,8 +862,8 @@ pub(super) fn prepare_runtime_address_space_switch<'pin, 'cpu>(
+             // active mask, lease count or hardware root. x86, RISC-V and
+             // LoongArch retain the loaded root across lazy kernel threads, so
+             // their user-to-user same-mm switch is likewise a pure no-op.
+-            // AArch64 is excluded because its lazy path installs the reserved
+-            // lower root and must restore TTBR0 on the following user switch.
++            // AArch64 reaches this slower path when its current hardware root
++            // does not match the selected mm, including after a lazy switch.
+             debug_assert!(!previous_selected.is_none());
+             debug_assert!(
+                 runtime_address_space(previous_selected)

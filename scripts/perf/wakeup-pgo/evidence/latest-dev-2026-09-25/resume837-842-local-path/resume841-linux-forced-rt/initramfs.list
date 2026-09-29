@@ -1,0 +1,6 @@
+dir /dev 755 0 0
+nod /dev/console 600 0 0 c 5 1
+file /init /home/zhourui/.codex/artifacts/issue2308-perf/resume841-linux-forced-rt/init 755 0 0
+file /frozen /tmp/pr1775-orangepi/bench 755 0 0
+file /control /home/zhourui/.codex/artifacts/issue2308-perf/resume840-forced-rt-preempt/bench-control-rebuilt 755 0 0
+file /forced /home/zhourui/.codex/artifacts/issue2308-perf/resume840-forced-rt-preempt/bench-forced-rt-preempt 755 0 0

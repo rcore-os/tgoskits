@@ -1,0 +1,4 @@
+dir /dev 755 0 0
+nod /dev/console 600 0 0 c 5 1
+file /init /home/zhourui/.codex/artifacts/issue2308-perf/resume811-wake-order/init-linux 755 0 0
+file /bench-order /home/zhourui/.codex/artifacts/issue2308-perf/resume811-wake-order/bench-order 755 0 0

@@ -1,0 +1,195 @@
+{
+  "experiment": "resume651",
+  "issue": 2308,
+  "head": "9d06d500c7ebbb960678d16d4a44aa2e036cf87e",
+  "dev_head": "f8ac402f852e8193c15fca07111b4fcd78b49f7b",
+  "worktree": "/home/zhourui/.codex/worktrees/03ae/tgoskits-dev",
+  "target_subdir": "tmp/wakeup-pgo-currentdev-full-feature/target/aarch64-unknown-none-softfloat/release",
+  "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_files": {},
+  "cargo_lock_sha256": "d199b6e7acb7435157be1d7fd927d823d8c163783131542914fc41f4ab7c9f5b",
+  "build_configs": {
+    "resume651-default-build.toml": "13cb2ce9a7867a7301613ddde1b60e1847d5a80cf5ea0bf0e69e6d3df0282894",
+    "resume651-profgen-build.toml": "6de006980befa5689657756bbd5252401de3cea2fe18138173ff0f84b72b2df2",
+    "resume651-profile-use-build.toml": "b5276547ea68028894dba8d9bfc1ea7299353979676228a2ef58a8a605f210c4",
+    "resume651-qemu.toml": "f02309090cdb2070de8b7a803f5f4c953736a6ca5f87db585eb4b4f8173a5e2d"
+  },
+  "modes": {
+    "default": {
+      "resume651-default.elf": "a0dd04ae1ac6f79ea9f0a5d4294590c31743c9bc7c7accf035679df4e1bd08fd",
+      "resume651-default.bin": "96fcde12dfda25c8d10ca076c85c1218ff43d4b51fe11649dd42f9cb945b7193"
+    },
+    "profgen": {
+      "resume651-profgen.elf": "b6abe21d31e9281bef1ece274497f3dcb99468543f6d692058ed0e9d654370a7",
+      "resume651-profgen.bin": "6963018c8b0160412027c01591feb9b10e0d4971226d1343561008caf8dd2397"
+    },
+    "profile-use": {
+      "resume651-profile-use.elf": "d1c565e03bdc4c186faa3ffcbb6080a0dc2d8aac1070cffdb85fed8a3d0f42f2",
+      "resume651-profile-use.bin": "16136714c62cfea994f7210a3b3b9971342d995ad7e3c33945c9a76969569d80"
+    }
+  },
+  "profile_generate_dir": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-profiles",
+  "profdata": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651.profdata",
+  "acceptance": false,
+  "diagnostic_only": true,
+  "status": "profile-use build and warning audit passed; native A-B-B-A pending",
+  "toolchain_probe": {
+    "channel": "nightly-2026-09-04",
+    "rustc": "rustc 1.100.0-nightly (a69a63265 2026-09-03)\nbinary: rustc\ncommit-hash: a69a63265cfd9e006d43137f98301b8d274ad4c9\ncommit-date: 2026-09-03\nhost: x86_64-unknown-linux-gnu\nrelease: 1.100.0-nightly\nLLVM version: 23.1.1\n",
+    "cargo": "cargo 1.100.0-nightly (b2e9d5f9d 2026-09-02)"
+  },
+  "bench": {
+    "path": "/tmp/pr1775-orangepi/bench",
+    "sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "frozen_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "source": "apps/starry/wakeup-latency-bench (head d051d572, includes PR #2464; C source unchanged since 5a5e669354)"
+  },
+  "build_exit_default": 0,
+  "target_compiler_invocations": 230,
+  "build_exit_profgen": 0,
+  "rootfs": {
+    "tag": "resume651",
+    "base_rootfs": "/home/zhourui/.codex/artifacts/issue2308-perf/resume210-rootfs.img",
+    "base_rootfs_sha256": "52de946e31d5842ea0833b9f9daf5ad0d459075ecac1adbfd67f09cca3cc8609",
+    "rootfs": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-rootfs.img",
+    "rootfs_sha256": "79b0b5e664ed4e9ef9af1b5db534a27ae381b94fc01f00c89e1e72ada5733c5e",
+    "bench": "/tmp/pr1775-orangepi/bench",
+    "bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "frozen_bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+    "bench_matches_frozen": true,
+    "bench_drift_accepted": false,
+    "workload": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-workload.sh",
+    "workload_sha256": "eb2d87a36f50429d8a0f4208e45bff31d07327c4741163f028803ffc3861c407",
+    "hook": "/home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-profile-hook.sh",
+    "hook_sha256": "7b805a49b001940082867a94660b9fa801258fa23596d36665791231c2cc244a",
+    "guest_paths": {
+      "workload": "/root/resume651-workload.sh",
+      "bench": "/root/resume651-bench",
+      "hook": "/etc/profile.d/resume651.sh"
+    },
+    "debugfs_commands": "rm /etc/profile.d/resume210.sh rm /etc/profile.d/resume208.sh rm /etc/profile.d/exp71.sh write /home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-workload.sh /root/resume651-workload.sh set_inode_field /root/resume651-workload.sh mode 0100755 write /home/zhourui/.codex/artifacts/issue2308-perf/review2477-full-feature/resume651-profile-hook.sh /etc/profile.d/resume651.sh set_inode_field /etc/profile.d/resume651.sh mode 0100644 write /tmp/pr1775-orangepi/bench /root/resume651-bench set_inode_field /root/resume651-bench mode 0100755",
+    "qemu_only": true,
+    "native_acceptance": false
+  },
+  "profile_sha256": "eaea4c2f8d0f9dda04e988b6c4f38a7013333871527bf2a6db0f268b9bd4e749",
+  "profile_layout": {
+    "tag": "resume651",
+    "records": 29541,
+    "names": 36301,
+    "counter_bytes": 1425096,
+    "counter_address": "0xffffffff81bef080",
+    "counter_end": "0xffffffff81d4af48",
+    "data_bytes": 2126952,
+    "data_address": "0xffffffff81d4af48",
+    "record_layout_bytes": 72,
+    "elf_sha256": "e9b391cd2f8e47027e64b3ae6bd8cf1c6869c0e10565ca3852306f4009d5ca84",
+    "sections": {
+      "__llvm_prf_cnts": {
+        "address": "0xffffffff81bef080",
+        "size": 1425096
+      },
+      "__llvm_prf_data": {
+        "address": "0xffffffff81d4af48",
+        "size": 2126952
+      },
+      "__llvm_prf_names": {
+        "address": "0xffffffff81b45130",
+        "size": 651158
+      }
+    },
+    "format_source": "LLVM 23.1.1 (rustc 1.100.0-nightly a69a63265) InstrProfData.inc / InstrProf.cpp / InstrProfReader.cpp; layout re-derived from the ELF sections on every run",
+    "entry_first": false,
+    "nonzero_records": 7260,
+    "dump_sha256": "e0a6e6e56637dcfdaaec5e7ef13ac81bbbceaacab0e44e3315f9dc59c7167a97"
+  },
+  "runtime_image_identity": {
+    "files": {
+      "resume651.elf": "e9b391cd2f8e47027e64b3ae6bd8cf1c6869c0e10565ca3852306f4009d5ca84",
+      "resume651.bin": "1d3eae0ecc0c1ef3083a0f6a3c1b99012c01be5145123ca2133fe1787c0dcd37"
+    },
+    "runtime_full_sha256": {
+      "elf": "e9b391cd2f8e47027e64b3ae6bd8cf1c6869c0e10565ca3852306f4009d5ca84",
+      "bin": "1d3eae0ecc0c1ef3083a0f6a3c1b99012c01be5145123ca2133fe1787c0dcd37"
+    },
+    "profgen_full_sha256": {
+      "elf": "b6abe21d31e9281bef1ece274497f3dcb99468543f6d692058ed0e9d654370a7",
+      "bin": "6963018c8b0160412027c01591feb9b10e0d4971226d1343561008caf8dd2397"
+    },
+    "identity_sections": [
+      ".head.text",
+      ".text",
+      "__llvm_prf_cnts",
+      "__llvm_prf_data",
+      "__llvm_prf_names"
+    ],
+    "sections": {
+      ".head.text": {
+        "address": "0xffffffff80000000",
+        "size": 64,
+        "runtime_sha256": "a4c4916a04b3fe0a9e0c6a614eba71d93625be250011fbd412de9e74e7e9c253",
+        "profgen_sha256": "a4c4916a04b3fe0a9e0c6a614eba71d93625be250011fbd412de9e74e7e9c253"
+      },
+      ".text": {
+        "address": "0xffffffff80001000",
+        "size": 19115648,
+        "runtime_sha256": "045bb556a3adc68cfb2190541fcc2a30959b5c89dab2412714f8e2ae6f742a66",
+        "profgen_sha256": "045bb556a3adc68cfb2190541fcc2a30959b5c89dab2412714f8e2ae6f742a66"
+      },
+      "__llvm_prf_cnts": {
+        "address": "0xffffffff81bef080",
+        "size": 1425096,
+        "runtime_sha256": "e62c64c3a1f6d06c9de0a9af0f513580c9a6cbd2476c94e961ce7ae7ac2ad913",
+        "profgen_sha256": "e62c64c3a1f6d06c9de0a9af0f513580c9a6cbd2476c94e961ce7ae7ac2ad913"
+      },
+      "__llvm_prf_data": {
+        "address": "0xffffffff81d4af48",
+        "size": 2126952,
+        "runtime_sha256": "c755f299b694a2e639670d17a16cf96133333c322d6c6f9e6cc8d2066f7c9b9f",
+        "profgen_sha256": "c755f299b694a2e639670d17a16cf96133333c322d6c6f9e6cc8d2066f7c9b9f"
+      },
+      "__llvm_prf_names": {
+        "address": "0xffffffff81b45130",
+        "size": 651158,
+        "runtime_sha256": "6d0027bdc9321994953bc7917343ba4b258f08bd07e329d39db45b5c3c9043a8",
+        "profgen_sha256": "6d0027bdc9321994953bc7917343ba4b258f08bd07e329d39db45b5c3c9043a8"
+      }
+    },
+    "section_identity": true,
+    "whole_file_identity": {
+      "elf": false,
+      "bin": false
+    },
+    "kallsyms_refresh_allowed": true,
+    "whole_file_difference": {
+      "runtime_size": 41384880,
+      "profgen_size": 41384880,
+      "size_delta": 0,
+      "differing_bytes": 3023570,
+      "first_difference_offset": "0x1355000",
+      "last_difference_offset": "0x16bfdb5"
+    },
+    "identity_policy": "identity is section-level: `cargo xtask starry qemu` refreshes .kallsyms after the profgen build, so the whole-file hashes are recorded but not required to match; any missing section or drift in .head.text, .text, __llvm_prf_cnts, __llvm_prf_data, __llvm_prf_names fails training",
+    "runtime_text_memory_check": "resume651-capture.py EXACT_ELF_TEXT_MATCH load_bias=0"
+  },
+  "training_coverage": {
+    "rows": 10,
+    "required_cases": [
+      "absolute_timer_same_cpu",
+      "sched_yield_handoff",
+      "thread_futex_cross_cpu",
+      "thread_futex_same_cpu"
+    ],
+    "policies": [
+      "other",
+      "fifo"
+    ],
+    "not_parked_total": 25
+  },
+  "training_commands": "resume651-training-commands.json",
+  "build_exit_profile-use": 0,
+  "root_profile_use_verified": true,
+  "no_profile_counter_sections": true,
+  "text_bytes": 7323024,
+  "text_sha256": "c9882d44d5ba1ec062321379611eb3038c889deb54b3a3c93e45daeeac0f9d11",
+  "warning_audit": "resume651-warning-audit.json"
+}

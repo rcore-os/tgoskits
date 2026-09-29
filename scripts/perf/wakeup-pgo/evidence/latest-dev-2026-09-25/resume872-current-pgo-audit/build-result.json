@@ -1,0 +1,53 @@
+{
+  "baseline_commit": "9a7b868bab8dcceb42acab516dcc88d5cc69985a",
+  "board": "OrangePi-5-Plus-1",
+  "environment_passthrough": {},
+  "failure": "source drift against the pinned dev baseline 9a7b868bab8dcceb42acab516dcc88d5cc69985a: 28 path(s) differ outside docs/, scripts/perf/wakeup-pgo and Cargo.lock (apps/starry/qemu/syscall-test/TODO.txt, apps/starry/qemu/syscall-test/syscalls/fcntl.txt, apps/starry/qemu/syscall-test/syscalls/sched_get_priority_max.txt, apps/starry/qemu/syscall-test/syscalls/sched_get_priority_min.txt, drivers/intc/x86-apic-driver/src/local_apic.rs, os/StarryOS/kernel/src/kmod/kprint.rs, os/StarryOS/kernel/src/pseudofs/dev/card0.rs, os/StarryOS/kernel/src/pseudofs/dev/drm.rs, os/StarryOS/kernel/src/pseudofs/dev/mod.rs, os/StarryOS/kernel/src/pseudofs/dev/vblank.rs); the shipped profile was trained at 4322e0c505bad73f10e7ab9e79f520bae0fcab0e and is reusable only while this checkout rebuilds the board-measured image, so re-audit the new commit and retrain the profile if code or data changed",
+  "generated_at_utc": "2026-09-25T12:10:29Z",
+  "issue": 2308,
+  "output_dir": "/home/zhourui/.codex/artifacts/issue2308-perf/resume872-current-pgo-audit/prepare",
+  "pgo": {
+    "features": [
+      "legacy-board-init",
+      "ax-driver/list-pci-devices",
+      "ax-driver/rk3588-pcie",
+      "ax-driver/realtek-rtl8125",
+      "ax-driver/rockchip-soc",
+      "ax-driver/rockchip-dwc-xhci",
+      "ax-driver/rockchip-ehci",
+      "ax-driver/rockchip-sdhci",
+      "ax-driver/rockchip-dwmmc",
+      "ax-driver/rk3588-cpufreq",
+      "rknpu"
+    ],
+    "llvm_args": [
+      "-Cllvm-args=-disable-vp",
+      "-Cllvm-args=-pgo-warn-missing-function"
+    ],
+    "log": "Info",
+    "max_cpu_num": 8,
+    "packaged_profile_features": [
+      "legacy-board-init",
+      "ax-driver/list-pci-devices",
+      "ax-driver/rk3588-pcie",
+      "ax-driver/realtek-rtl8125",
+      "ax-driver/rockchip-soc",
+      "ax-driver/rockchip-dwc-xhci",
+      "ax-driver/rockchip-ehci",
+      "ax-driver/rockchip-sdhci",
+      "ax-driver/rockchip-dwmmc",
+      "ax-driver/rk3588-cpufreq",
+      "rknpu"
+    ],
+    "profile_archive": "/tmp/tgoskits-issue2308-pr2477-stage/scripts/perf/wakeup-pgo/full-pgo-2026-09-24.profdata.zst",
+    "profile_archive_sha256": "d7d53ee75b39a0abd0fc238999151decd819f90ed1a99ed676169fa87f8e27ac",
+    "profile_sha256": "b916a666710826285845fbe017e70f9a665d423ee79df6ee4896368d2d837ec6",
+    "target": "aarch64-unknown-none-softfloat"
+  },
+  "prepare_only": true,
+  "profile_training_commit": "4322e0c505bad73f10e7ab9e79f520bae0fcab0e",
+  "ready": false,
+  "repo_root": "/tmp/tgoskits-issue2308-pr2477-stage",
+  "status": "not_ready",
+  "tool": "scripts/perf/wakeup-pgo/build.py"
+}

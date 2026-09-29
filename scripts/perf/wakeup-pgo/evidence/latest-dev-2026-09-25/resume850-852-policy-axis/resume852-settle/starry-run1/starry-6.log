@@ -1,0 +1,6 @@
+RESUME852_POLICY mode=other sender=1 receiver=0 cpu=0
+RESUME852_RESULT {"mode":"other","case":"empty","samples":20000,"p50_ns":2042,"p99_ns":2625,"p999_ns":2625}
+RESUME852_RESULT {"mode":"other","case":"bitset_miss","samples":20000,"p50_ns":2333,"p99_ns":2625,"p999_ns":2625}
+RESUME852_RESULT {"mode":"other","case":"bitset_hit","samples":20000,"p50_ns":8166,"p99_ns":9333,"p999_ns":18666}
+RESUME852_DONE 0
+DIAGNOSTIC_EXIT 0

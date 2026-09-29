@@ -1,0 +1,279 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running `target/debug/tg-xtask arceos test qemu --arch aarch64 -g cpu -c user-entry`
+[2026-09-25T20:14:06Z INFO  axbuild::context] Workspace root: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev
+[2026-09-25T20:14:06Z INFO  axbuild::context] Cargo target directory: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target
+running arceos cpu qemu tests for arch: aarch64 (target: aarch64-unknown-none-softfloat, cases: 1)
+Using build config: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/test-suit/arceos/cpu/user-entry/build-aarch64-unknown-none-softfloat.toml
+[2026-09-25T20:14:06Z INFO  axbuild::build::config_file] Found build config at /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/test-suit/arceos/cpu/user-entry/build-aarch64-unknown-none-softfloat.toml
+[2026-09-25T20:14:06Z INFO  ostool::run::qemu] Using QEMU config file: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/test-suit/arceos/cpu/user-entry/qemu-aarch64.toml
+[axbuild] cargo build package=arceos-cpu-user-entry target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/test-suit/arceos/cpu/user-entry/build-aarch64-unknown-none-softfloat.toml ...
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+SMP=4
+cargo build -p arceos-cpu-user-entry --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z unstable-options --target-dir /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target --features ax-std -Z json-target-spec -Z build-std=core,alloc --config target.aarch64-unknown-none-softfloat.rustflags=["-Cllvm-args=--max-store-memcpy=16", "-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=--gc-sections", "-Clink-args=-znorelro", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Tlinker.x", "-Clink-args=-u _head"] --release --message-format json-render-diagnostics
+   Compiling compiler_builtins v0.1.160 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
+   Compiling proc-macro2 v1.0.107
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling thiserror v2.0.20
+   Compiling heapless v0.9.3
+   Compiling num-traits v0.2.19
+   Compiling cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+   Compiling ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+   Compiling rust_decimal v1.43.0
+   Compiling anyhow v1.0.104
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+   Compiling axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+   Compiling bindgen v0.72.1
+   Compiling libc v0.2.189
+   Compiling syscalls v0.8.1
+   Compiling quote v1.0.47
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling prettyplease v0.3.0
+   Compiling darling_core v0.23.0
+   Compiling thiserror-impl v2.0.20
+   Compiling async-trait v0.1.92
+   Compiling trait-ffi-macros v0.4.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/trait-ffi/trait-ffi-macros)
+   Compiling ax-crate-interface v0.5.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/crate_interface)
+   Compiling ax-percpu-macros v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu_macros)
+   Compiling rdrive-macros v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rdrive-macros)
+   Compiling ptr_meta_derive v0.3.2
+   Compiling ax-plat-macros v0.3.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat-macros)
+   Compiling ax-ctor-bare-macros v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ctor_bare/ctor_bare_macros)
+   Compiling enum_dispatch v0.3.13
+   Compiling derive_more-impl v2.1.1
+   Compiling strum_macros v0.27.2
+   Compiling uefi-macros v0.19.0
+   Compiling someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+   Compiling darling_macro v0.23.0
+   Compiling darling v0.23.0
+   Compiling somehal-macros v0.1.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal-macros)
+   Compiling ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+   Compiling alloc v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc)
+   Compiling log v0.4.34
+   Compiling bitflags v2.13.2
+   Compiling byteorder v1.5.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling as-any v0.3.2
+   Compiling tock-registers v0.10.1
+   Compiling cfg-if v1.0.5
+   Compiling bit_field v0.10.3
+   Compiling scopeguard v1.2.0
+   Compiling ax-memory-addr v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_addr)
+   Compiling num-align v0.1.0
+   Compiling trait-ffi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/trait-ffi/trait-ffi)
+   Compiling ax-lazyinit v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-lazyinit)
+   Compiling derive_more v2.1.1
+   Compiling rdif-def v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-def)
+   Compiling irq-framework v0.5.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/irq-framework)
+   Compiling bytemuck v1.25.2
+   Compiling lock_api v0.4.14
+   Compiling ax-sync v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axsync)
+   Compiling tock-registers v0.9.0
+   Compiling rdif-base v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-base)
+   Compiling aarch64-cpu v11.2.0
+   Compiling pci_types v0.10.1
+   Compiling mmio-api v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/mmio-api)
+   Compiling rdif-serial v0.10.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-serial)
+   Compiling hash32 v0.3.1
+   Compiling aarch64-cpu v10.0.0
+   Compiling arrayvec v0.7.8
+   Compiling rdif-clk v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-clk)
+   Compiling rdif-power v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-power)
+   Compiling rdif-reset v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-reset)
+   Compiling uguid v2.2.1
+   Compiling const-default v1.0.0
+   Compiling const-str v1.1.0
+   Compiling spinning_top v0.3.0
+   Compiling uefi-raw v0.14.0
+   Compiling rlsf v0.2.3
+   Compiling rdif-pcie v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pcie)
+   Compiling rdif-msi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-msi)
+   Compiling acpi v6.1.1
+   Compiling rdif-intc v0.16.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-intc)
+   Compiling buddy-slab-allocator v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/buddy-slab-allocator)
+   Compiling ucs2 v0.3.3
+   Compiling ptr_meta v0.3.2
+   Compiling utf8-width v0.1.9
+   Compiling strum v0.27.2
+   Compiling mbarrier v0.1.3
+   Compiling smccc v0.2.3
+   Compiling axpanic v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpanic)
+   Compiling fdt-parser v0.4.19
+   Compiling pcie v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pci/pcie)
+   Compiling axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+   Compiling ax-linked-list-r4l v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/linked_list_r4l)
+   Compiling linux-raw-sys v0.12.1
+   Compiling ax-sched v0.5.11 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axsched)
+   Compiling ax-memory-set v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_set)
+   Compiling bitmaps v3.2.1
+   Compiling chrono v0.4.45
+   Compiling ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-log v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axlog)
+   Compiling ax-ctor-bare v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ctor_bare/ctor_bare)
+   Compiling axpoll v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll)
+   Compiling memchr v2.8.3
+   Compiling axpoll-set v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll-set)
+   Compiling page-table-generic v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/page-table-generic)
+   Compiling fdt-raw v0.3.0
+   Compiling ranges-ext v0.6.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ranges-ext)
+   Compiling some-serial v0.7.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/serial/some-serial)
+   Compiling byte-unit v5.2.6
+   Compiling kernutil v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/kernutil)
+   Compiling ax-cpumask v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpumask)
+   Compiling flatten_objects v0.2.4
+   Compiling ax-io v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axio)
+   Compiling fdt-edit v0.2.3
+   Compiling ax-arm-pl031 v0.4.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rtc/arm_pl031)
+   Compiling rdif-pinctrl v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pinctrl)
+   Compiling rdrive v0.25.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rdrive)
+   Compiling aarch64-cpu-ext v0.1.4
+   Compiling dma-api v0.10.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/dma-api)
+   Compiling uefi v0.37.0
+   Compiling arm-gic-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/intc/arm-gic-driver)
+   Compiling ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+   Compiling axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+   Compiling ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+   Compiling ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+   Compiling ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+   Compiling ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+   Compiling arceos-cpu-user-entry v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/test-suit/arceos/cpu/user-entry)
+    Finished `release` profile [optimized] target(s) in 36.88s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry
+  bin: /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry.bin
+/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry.bin
+[axbuild] cargo build package=arceos-cpu-user-entry target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/test-suit/arceos/cpu/user-entry/build-aarch64-unknown-none-softfloat.toml ... done (37.21s)
+[axbuild] cargo build elf=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry
+[axbuild] cargo build bin=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry.bin
+[axbuild] cargo build artifact_dir=/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release
+[1/1] arceos cpu qemu user-entry
+[axbuild] qemu run package=arceos-cpu-user-entry target=scripts/targets/bare/aarch64-unknown-none-softfloat.json ...
+qemu-system-aarch64 -machine virt,gic-version=2 -cpu cortex-a53,pmu=on -m 1G -smp 4 -display none -serial mon:stdio -kernel /home/zhourui/.codex/worktrees/03ae/tgoskits-dev/target/aarch64-unknown-none-softfloat/release/arceos-cpu-user-entry.bin
+Boot entropy source: FDT /chosen/rng-seed
+VM Load @PA:0x40200000
+VM Load Offset: 0xc0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040400000 (2 MiB)
+  Free   0x00000040400000 - 0x00000080000000 (1020 MiB)
+Initialize RAM allocator: 0x40400000..0x80000000
+Reserving CPU-local areas
+CPU-local area stride: 0x41000 bytes
+Total CPU-local allocation: 0x104000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x40400000..0x40500000, current: 0x40500000
+Flushed RAM used range to memory map: 0x40500000..0x40604000, current: 0x40604000
+CPU-local areas allocated at 0x40500000 - 0x40604000
+EL: 1
+Mapping early memory regions...
+Ram                 : [0xffff000040000000, 0xffff000080000000) -> [0x0000000040000000, 0x0000000080000000) (1 GiB)
+KImage              : [0xffffffff80000000, 0xffffffff80200000) -> [0x0000000040200000, 0x0000000040400000) (2 MiB)
+PerCpu              : [0xffffff0040500000, 0xffffff0040604000) -> [0x0000000040500000, 0x0000000040604000) (1.02 MiB)
+Debug serial        : [0xffff000009000000, 0xffff000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: PA:0x40604000
+Setting up table registers...
+MMU Entry point at physical address: 0x4033ac90
+Trap vector at 0xffffffff80002000
+Memory Map:
+  MMIO   0x00000009000000 - 0x00000009001000 (4 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000040400000 (2 MiB)
+  Rsv    0x00000040400000 - 0x00000040500000 (1 MiB)
+  PerCPU 0x00000040500000 - 0x00000040604000 (1.02 MiB)
+  Rsv    0x00000040604000 - 0x0000004060e000 (40 KiB)
+  Free   0x0000004060e000 - 0x00000080000000 (1017.95 MiB)
+Jumping to main entry point at 0xffffffff800d8200 with SP 0xffffff0040541000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37m[  0.041402 0 [37max_runtime::bootstrap:98] [32mLogging is enabled.[m[m
+[37m[  0.042002 0 [37max_runtime::bootstrap:99] [32mPrimary CPU 0 started, arg = 0x40400000.[m[m
+[37m[  0.042202 0 [37max_runtime::bootstrap:101] [32mFound physcial memory regions:[m[m
+[37m[  0.043272 0 [37max_runtime::bootstrap:103] [32m  [PA:0x9000000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m[m
+[37m[  0.043626 0 [37max_runtime::bootstrap:103] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m[m
+[37m[  0.043882 0 [37max_runtime::bootstrap:103] [32m  [PA:0x40200000, PA:0x40400000) reserved (READ | WRITE | EXECUTE | RESERVED)[m[m
+[37m[  0.044072 0 [37max_runtime::bootstrap:103] [32m  [PA:0x40400000, PA:0x40500000) reserved (READ | WRITE | EXECUTE | RESERVED)[m[m
+[37m[  0.044255 0 [37max_runtime::bootstrap:103] [32m  [PA:0x40500000, PA:0x40604000) reserved (READ | WRITE | EXECUTE | RESERVED)[m[m
+[37m[  0.044437 0 [37max_runtime::bootstrap:103] [32m  [PA:0x40604000, PA:0x4060e000) reserved (READ | WRITE | EXECUTE | RESERVED)[m[m
+[37m[  0.044620 0 [37max_runtime::bootstrap:103] [32m  [PA:0x4060e000, PA:0x80000000) free memory (READ | WRITE | FREE)[m[m
+[37m[  0.044869 0 [37max_runtime::boot_memory:6] [32mInitialize global memory allocator...[m[m
+[37m[  0.045040 0 [37max_runtime::boot_memory:7] [32m  use buddy-slab-allocator allocator.[m[m
+[37m[  0.045322 0 [37max_alloc::buddy_slab:169] [32mInitialize global memory allocator, start_vaddr: 0xffff00004060e000, size: 0x3f9f2000[m[m
+[37m[  0.048871 0 [37max_alloc::buddy_slab:407] [32mglobal allocator initialized[m[m
+[37m[  0.049118 0 [37max_alloc::buddy_slab:179] [32mAdd memory region, start_vaddr: 0xffff000040000000, size: 0x200000[m[m
+[37m[  0.049530 0 [37mbuddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0xffff000040000000+0x200000, no allocator-visible memory after 2097152 alignment[m[m
+[37m[  0.050105 0 [37max_runtime::bootstrap:148] [32mkernel aspace: [VA:0xffff000000000000, VA:0xffffffffffffffff)[m[m
+[37m[  0.050368 0 [37max_mm:136] [32mInitialize virtual memory management...[m[m
+[37m[  0.073007 0:4294967296 [37max_runtime::bootstrap:45] [32mInitialize platform devices...[m[m
+[37m[  0.080990 0:4294967296 [37msomeboot::arch::power:23] [32mPower management method : HVC[m[m
+[37m[  0.081274 0:4294967296 [37msomehal::driver:5] [32mInitializing rdrive with FDT at 0xffff000040400000[m[m
+[37m[  0.103277 0:4294967296 [37max_runtime::bootstrap:172] [32mInitialize interrupt handlers...[m[m
+[37m[  0.131616 0:4294967296 [37max_runtime::devices:2] [32mProbe platform devices...[m[m
+[37m[  0.133257 0:4294967296 [37max_driver::serial::pl011:22] [32mProbing PL011 serial device: pl011@9000000[m[m
+[37m[  0.137499 0:4294967296 [37max_driver::serial::pl011:38] [32mPL011 serial@0xffff000009000000 registered successfully[m[m
+[37m[  0.145344 0:4294967296 [37max_runtime::serial:1040] [32mserial runtime PL011 UART ready: cpu=0, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 44, cells: [0, 1, 4] }))), polling=false[m[m
+[37m[  0.155014 0:4294967296 [37max_runtime::bootstrap:202] [32mruntime console active: serial0, ttyS0[m[m
+[37m[  0.163246 1 [37max_runtime::mp:71] [32mSecondary CPU 1 started.[m[m
+[37m[  0.164489 2 [37max_runtime::mp:71] [32mSecondary CPU 2 started.[m[m
+[37m[  0.165805 3 [37max_runtime::mp:71] [32mSecondary CPU 3 started.[m[m
+[37m[  0.166115 0:4294967296 [37max_runtime::bootstrap:236] [32mPrimary CPU 0 init OK.[m[m
+[37m[  0.164867 1:4294967301 [37max_runtime::mp:116] [32mSecondary CPU 1 init OK.[m[m
+[37m[  0.165101 2:4294967304 [37max_runtime::mp:116] [32mSecondary CPU 2 init OK.[m[m
+[37m[  0.166365 3:4294967307 [37max_runtime::mp:116] [32mSecondary CPU 3 init OK.[m[m
+CPU_USER_RESTORE_OK cpu=0 tag=0
+CPU_USER_REMOTE_REMAP_OK cpu=0 tag=0
+CPU_PMU_USER_CORE cpu=0 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=0 tag=1
+CPU_USER_REMOTE_REMAP_OK cpu=0 tag=1
+CPU_PMU_USER_CORE cpu=0 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=1 tag=0
+CPU_USER_REMOTE_REMAP_OK cpu=1 tag=0
+CPU_PMU_USER_CORE cpu=1 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=1 tag=1
+CPU_USER_REMOTE_REMAP_OK cpu=1 tag=1
+CPU_PMU_USER_CORE cpu=1 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=2 tag=0
+CPU_USER_REMOTE_REMAP_OK cpu=2 tag=0
+CPU_PMU_USER_CORE cpu=2 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=2 tag=1
+CPU_USER_REMOTE_REMAP_OK cpu=2 tag=1
+CPU_PMU_USER_CORE cpu=2 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=3 tag=0
+CPU_USER_REMOTE_REMAP_OK cpu=3 tag=0
+CPU_PMU_USER_CORE cpu=3 pc=0x10000010
+CPU_USER_RESTORE_OK cpu=3 tag=1
+CPU_USER_REMOTE_REMAP_OK cpu=3 tag=1
+CPU_PMU_USER_CORE cpu=3 pc=0x10000010
+CPU_USER_ASID_REUSE_OK
+CPU_PMU_USER_OK
+[axbuild] qemu run package=arceos-cpu-user-entry target=scripts/targets/bare/aarch64-unknown-none-softfloat.json ... done (486.76ms)
+ok: user-entry (491.14ms)
+
+arceos cpu qemu test summary:
+  PASS user-entry (491.14ms)
+result: 1/1 case(s) passed
+total: 37.70s
+all arceos cpu qemu tests passed

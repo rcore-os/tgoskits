@@ -1,0 +1,14 @@
+PMU_SCOPE cpu=0 observer_cpu=2 exclude_user=1 exclude_kernel=0 exclude_hv=0 sample_period=4294901760 fixed_slots=1 marker_gated=0 prearmed_cpu0=1 includes_child_startup=1
+WAKEUP_LATENCY_METADATA {"clock":"CLOCK_MONOTONIC","clock_read":"raw_syscall","clock_resolution_ns":1,"clock_pair_min_ns":583,"sender_cpu":0,"receiver_cpu":1,"warmup":1000,"handoff_samples":20000,"timer_samples":10000,"timer_period_ns":1000000,"park_settle_ns":50000,"fifo_priority":80}
+WAKEUP_LATENCY_PROFILE_START
+WAKEUP_LATENCY_CASE_START case=thread_futex_same_cpu policy=fifo
+PMU_COUNT {"window":1,"event":"cycles","value":427913514,"enabled_ns":563137750,"running_ns":563137750}
+PMU_COUNT {"window":1,"event":"instructions","value":315296047,"enabled_ns":563207750,"running_ns":563207750}
+PMU_COUNT {"window":1,"event":"l1i_refill","value":6306862,"enabled_ns":563262000,"running_ns":563262000}
+PMU_COUNT {"window":1,"event":"l1d_refill","value":1355479,"enabled_ns":563315666,"running_ns":563315666}
+WAKEUP_LATENCY_CASE_DONE case=thread_futex_same_cpu policy=fifo
+WAKEUP_LATENCY_RESULT {"case":"thread_futex_same_cpu","policy":"fifo","samples":20000,"attempted":20000,"not_parked":0,"missed_deadlines":0,"min_ns":11083,"mean_ns":11594,"stddev_ns":387,"p50_ns":11666,"p95_ns":11667,"p99_ns":11959,"p999_ns":21291,"max_ns":23333,"histogram_bounds_ns":[1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000,2000000,5000000,10000000],"histogram_counts":[0,0,0,0,19978,22,0,0,0,0,0,0,0,0]}
+WAKEUP_LATENCY_PROFILE_DONE
+WAKEUP_LATENCY_PASSED
+PMU_COUNT_DONE windows=1 active=0 child_status=0
+DIAGNOSTIC_EXIT 0

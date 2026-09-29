@@ -1,0 +1,19 @@
+{
+  "experiment": "resume877",
+  "state": "diagnostic",
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "dev_base": "714accd8f636c540b2c3554b0b1e5cb885be42a4",
+  "changed_source_files": [],
+  "board_run": false,
+  "build_run": false,
+  "new_full20": false,
+  "candidate_reference": "resume876: two valid no-exporter PGO full20 boots, 10/20 >=90%, worst OTHER thread_futex_same_cpu Linux_RT/candidate=56.861%",
+  "effect": "Read-only source audit did not identify a semantics-preserving transaction-level edit capable of closing the 14875ns-to-9397ns same-CPU futex gap. Wake uses a Lazy request consumed at user return; same-CPU notification already avoids IPI. The apparent duplicate Fair virtual-time updates surround enqueue_task, which changes run-queue state, so equivalence of deleting either update was not established. Prior 78.37% full-PGO evidence was from different source/frequency and cannot be compared as a current 816MHz optimization gain. Resume862 already bounded target off-rq activation at >=97.645%, so another generic on/off-rq classification is not the next discriminating test.",
+  "decision": "No production code edit and no performance claim. Do not implement the subagent's proposed deletion or repeat generic wake-stage probes. A new candidate must identify a changed mechanism and be measured against same-source 816MHz full20, including the other nine failing rows and tail gates.",
+  "evidence": [
+    "subagent/final.txt",
+    "../resume876-root-exporter/full20-analysis.json",
+    "../resume862-stage-probe/analysis.json"
+  ],
+  "subagent_limitations": "The subagent did not verify every trap return frame or establish a Linux lock-count equivalence; its claim that the two Fair V updates are redundant is not accepted because enqueue lies between them."
+}

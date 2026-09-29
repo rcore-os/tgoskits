@@ -1,0 +1,6 @@
+{"type":"opened"}[37m[ 77.660764 0:4294967306 [37max_net::device::ethernet:409] [32meth0: ARP 192.168.1.2 -> 9c-c2-c4-32-29-b9[m[m
+[37m[ 96.012755 0:4294967306 [37max_net::device::ethernet:409] [32meth0: ARP 192.168.1.1 -> 60-a3-e3-30-d3-b9[m[m
+[37m[109.348028 0:4294967306 [37max_net::orphan:156] [33mReaped expired orphan socket #1[m[m
+[37m[109.917228 0:4294967306 [37max_net::device::ethernet:409] [32meth0: ARP 192.168.1.2 -> 9c-c2-c4-32-29-b9[m[m
+[37m[152.004720 0:4294967306 [37max_net::device::ethernet:409] [32meth0: ARP 192.168.1.1 -> 60-a3-e3-30-d3-b9[m[m
+[37m[208.004495 0:4294967306 [37max_net::device::ethernet:409] [32meth0: ARP 192.168.1.1 -> 60-a3-e3-30-d3-b9[m[m

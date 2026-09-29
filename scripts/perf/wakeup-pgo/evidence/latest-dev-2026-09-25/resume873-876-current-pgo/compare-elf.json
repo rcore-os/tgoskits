@@ -1,0 +1,67 @@
+{
+  "export_records": 18131,
+  "control_records": 16887,
+  "export_counter_bytes": 789952,
+  "control_counter_bytes": 758096,
+  "changed_cfg_or_counter_count": 0,
+  "only_export": 1244,
+  "only_control": 0,
+  "changed_examples": [],
+  "only_export_examples": [
+    "_RINvMNtNtCsQcWqYLNdgM_7ax_task6thread5spawnNtB3_13ThreadBuilder5spawnNCNvNtCs3dXBn6bAxFC_10ax_runtime11raw_console14init_raw_inputs0_0EB1b_",
+    "_RINvMs4_NtNtCs3dXBn6bAxFC_10ax_runtime6serial7ingressNtB6_9TxIngress14try_write_textNCNCNvMs5_B8_NtB8_14SerialTxSender14write_text_all00EBa_",
+    "_RINvMs4_NtNtCsemfQOwJWoEc_5alloc11collections9vec_dequeINtB6_8VecDequeINtNtBa_4sync3ArcNtNtNtCsQcWqYLNdgM_7ax_task4sync9semaphore15SemaphoreWaiterEE12slice_rangesINtNtNtCs8ArFaDqzQHw_4core3ops5range5RangejEEB1t_",
+    "_RINvMs6_NtNtCs8ArFaDqzQHw_4core3fmt8buildersNtB6_9DebugList7entriesRNtNtNtNtCsQcWqYLNdgM_7ax_task4time5queue6kernel16KernelTimerEntryINtNtNtBa_5slice4iter4IterB14_EEB1c_",
+    "_RINvMs6_NtNtCs8ArFaDqzQHw_4core3fmt8buildersNtB6_9DebugList7entriesRNtNtNtNtCsQcWqYLNdgM_7ax_task4time5queue6kernel20ExecutingKernelTimerINtNtNtBa_5slice4iter4IterB14_EEB1c_",
+    "_RINvMs_NtCs2nkmncb1UhN_9ax_percpu5valueINtB5_6PerCpuNtNtCs3dXBn6bAxFC_10ax_runtime11clock_event15LocalClockEventNtNtBS_19clock_event_runtime33___PERCPU_LOCAL_CLOCK_EVENT_SYMBOLE16with_current_mutNtBQ_16ClockEventActionNvMs0_BQ_BO_12take_offlineEBS_",
+    "_RINvMs_NtCsemfQOwJWoEc_5alloc3vecINtB5_3VecNtNtNtNtCs7Mu2hiiZnfN_13starry_kernel2mm6aspace8mutation16QuarantinedFrameE5drainNtNtNtCs8ArFaDqzQHw_4core3ops5range9RangeFullEBN_",
+    "_RINvMs_NtNtCsQcWqYLNdgM_7ax_task4sync10wait_queueNtB5_9WaitQueue10wait_untilNCNvMNtCs3dXBn6bAxFC_10ax_runtime11raw_consoleNtB1h_15RawConsoleInput13wait_readable0EB1j_",
+    "_RINvMs_NtNtCsQcWqYLNdgM_7ax_task4sync10wait_queueNtB5_9WaitQueue10wait_untilNCNvMs8_NtCs3dXBn6bAxFC_10ax_runtime6serialNtB1k_21SerialLogSubscription13wait_readable0EB1m_",
+    "_RINvMs_NtNtCsQcWqYLNdgM_7ax_task4sync10wait_queueNtB5_9WaitQueue10wait_untilNCNvMsb_NtCs3dXBn6bAxFC_10ax_runtime6serialNtB1k_20SerialRxSubscription13wait_readable0EB1m_"
+  ],
+  "only_control_examples": [],
+  "hot": {
+    "_RINvMsd_NtNtCs7Mu2hiiZnfN_13starry_kernel4task5futexNtB6_13ResolvedFutex10requeue_toNCNvNtNtNtBa_7syscall4sync5futex9sys_futexs_0EBa_": {
+      "export": [
+        738243139385643071,
+        34
+      ],
+      "control": [
+        738243139385643071,
+        34
+      ]
+    },
+    "_RINvMsd_NtNtCs7Mu2hiiZnfN_13starry_kernel4task5futexNtB6_13ResolvedFutex18wait_nofault_untilNCNvNtNtNtBa_7syscall4sync5futex9sys_futex0EBa_": {
+      "export": [
+        417084991874116521,
+        58
+      ],
+      "control": [
+        417084991874116521,
+        58
+      ]
+    },
+    "_RINvMsd_NtNtCs7Mu2hiiZnfN_13starry_kernel4task5futexNtB6_13ResolvedFutex7wake_opNCNvNtNtNtBa_7syscall4sync5futex9sys_futexs0_0EBa_": {
+      "export": [
+        95820317672714129,
+        13
+      ],
+      "control": [
+        95820317672714129,
+        13
+      ]
+    },
+    "_RNvNtNtNtCs7Mu2hiiZnfN_13starry_kernel7syscall4sync5futex9sys_futex": {
+      "export": [
+        161827148963460207,
+        134
+      ],
+      "control": [
+        161827148963460207,
+        134
+      ]
+    }
+  },
+  "identical": false,
+  "control_records_covered": true
+}

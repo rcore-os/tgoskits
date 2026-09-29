@@ -1,0 +1,21 @@
+{
+  "id": "resume881",
+  "created_at": "2026-09-25T15:09:51+00:00",
+  "state": "diagnostic",
+  "change": "Read-only exact-ELF audit of broad-PGO pre-MMU counter leakage",
+  "hypothesis": "Instrumented target dependencies are inlined into unprofiled someboot functions before MMU and console setup",
+  "files": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/export.elf",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/wrapper-retry.jsonl"
+  ],
+  "prior_reviewed": ["resume764", "resume766", "resume769", "resume774", "resume879", "resume880"],
+  "difference": "Resolves exact counter sites and profiled record owners in the current b292 run880 ELF without another crate-range board experiment",
+  "effect": "Existing ELF disassembly finds fdt_raw-owned ldxr/stxr counter updates in someboot::fdt::earlycon::setup_earlycon before the first console output; the first site is 0xffffffff80bc06cc. Log and allocator-shim counters also appear in someboot functions. The valid four-crate training ELF has no such someboot counter sites. Run880 has no ESR, so its exact stopping PC remains an inference.",
+  "decision": "No performance claim. Next experiment should exclude measured counter owners from generate and use, statically verify pre-MMU someboot functions are counter-free, then board-test only if that gate passes.",
+  "history": [],
+  "evidence": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume881-early-codegen-subagent/final.txt",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/export.elf",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/run2/serial.log"
+  ]
+}

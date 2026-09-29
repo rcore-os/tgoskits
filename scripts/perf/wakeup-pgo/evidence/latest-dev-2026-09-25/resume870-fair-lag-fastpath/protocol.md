@@ -1,0 +1,7 @@
+# resume870: Fair lag arithmetic candidate
+
+Source A is exact `b292a098bb60ef604e7677c37cd95d926ff08200`; source B is that commit plus only the checked-i64 `FairEntity::inflated_placement_lag` fast path and its exact wide fallback. Build both with `build.toml`, the same pinned toolchain and no qperf metrics, probe, profile, or wrapper. Capture source diff, build logs and image/benchmark SHA256 before board use.
+
+On the same OrangePi-5-Plus board at the frozen 816 MHz configuration, first run two valid full20 boots per A and B in a balanced A-B-B-A order. Each boot must have 20 unique rows, each `samples == attempted`, zero `not_parked` and missed deadlines, matching histograms and benchmark SHA256 `94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773`. Invalid boots remain in the record and are not replaced by selected rows. Compute two-boot median of raw p50, p99 and p99.9 per row. Reject B if any A-to-B regression is at least 3% or any correctness gate fails. Treat any improvement as preliminary until three valid candidate boots and all 20 rows reach `Linux_RT_p50 / B_p50 >= 90%` with production-reproducible PGO and full CI.
+
+The arithmetic test should compare old and new outputs for zero, positive and negative lag, checked-product overflow, i64/u64 weight bounds and saturation. A code-size or qperf counter change alone is not a performance result. Do not push B to PR as a gain before native A/B evidence.

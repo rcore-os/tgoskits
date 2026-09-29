@@ -1,0 +1,28 @@
+{
+  "tag": "resume873",
+  "records": 18127,
+  "names": 18127,
+  "counter_bytes": 789760,
+  "counter_address": "0xffffffff816fa440",
+  "counter_end": "0xffffffff817bb140",
+  "data_bytes": 1305144,
+  "data_address": "0xffffffff817bb140",
+  "record_layout_bytes": 72,
+  "elf_sha256": "64d70f907ead65419e75bb871046ff4b8a7f62a83cf03b95e8e8782a1da20d66",
+  "sections": {
+    "__llvm_prf_cnts": {
+      "address": "0xffffffff816fa440",
+      "size": 789760
+    },
+    "__llvm_prf_data": {
+      "address": "0xffffffff817bb140",
+      "size": 1305144
+    },
+    "__llvm_prf_names": {
+      "address": "0xffffffff816ab130",
+      "size": 279379
+    }
+  },
+  "format_source": "LLVM 23.1.1 (rustc 1.100.0-nightly a69a63265) InstrProfData.inc / InstrProf.cpp / InstrProfReader.cpp; layout re-derived from the ELF sections on every run",
+  "entry_first": false
+}

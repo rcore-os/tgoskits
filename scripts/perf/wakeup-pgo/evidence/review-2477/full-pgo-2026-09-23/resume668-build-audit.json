@@ -1,0 +1,49 @@
+{
+  "source_head": "a1acbcfdd0377ed5e1c44cf75101bf0e8e6db891",
+  "dev_head": "ee5a638e0ef4d55ab461fde6285a84e3b4679bec",
+  "train_status": "/home/zhourui/.codex/artifacts/issue2308-perf/resume666/resume666-status.json",
+  "profile_sha256": "514932b505324858df95d2bcf5cd83a5f6ae4b6c28b6135198a76acb22a0a213",
+  "cargo_lock_sha256": "fb0273d9bd1b14d47604b070c419f4c76f32dcf45890d5bd23165b6ec2cf9f01",
+  "config_sha256": "748f83158ce9f5e3bfdab76985c0bf4ce25f60b9918a2e180f73c1e3281a65e4",
+  "wrapper_sha256": "8b6a70167a80d6363f7a4a0e630a74e8df83792c5c16dc32902c1785a39f18ac",
+  "build_log_sha256": "55f847ab561bf6c02bed2150d6a640ad63e2e11ac7ca799d5ce154c9027b0a0b",
+  "profile_records": 29887,
+  "missing_warnings": 4494,
+  "cfg_mismatch_count": 0,
+  "unexpected_warning_lines": [],
+  "profiled_crates": [
+    "starryos",
+    "ax_task",
+    "ax_runtime",
+    "rsext4"
+  ],
+  "images": {
+    "elf": {
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume668/resume668-profile-use.elf",
+      "sha256": "2150396b795e12fb765ecd6e654adfbc6cffed17f4a2abc1881db5a1afedbbb1",
+      "size": 20778352
+    },
+    "bin": {
+      "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume668/resume668-profile-use.bin",
+      "sha256": "9bd198e7a3996b4606d235f2484378293a7d8509fe8849ec66091361f4d3b0b6",
+      "size": 17084416
+    }
+  },
+  "elf_identity": {
+    "path": "/home/zhourui/.codex/artifacts/issue2308-perf/resume668/resume668-profile-use.elf",
+    "file": "resume668-profile-use.elf",
+    "size": 20778352,
+    "sha256": "2150396b795e12fb765ecd6e654adfbc6cffed17f4a2abc1881db5a1afedbbb1",
+    "text_address": "0xffffffff80001000",
+    "text_size": 7167808,
+    "text_sha256": "35500968674e183cf8eb0fa14f9750560ac24594796173710cdc037bb29ac374",
+    "profile_sections_present": [],
+    "reference_text_size": 6765184,
+    "reference_text_sha256": "cfcc66199173f2c29087393d787858ce97d3d91c9b6ec57b8acb405372a56262",
+    "text_matches_board_candidate": false,
+    "kallsyms_address": 18446744071570313216,
+    "kallsyms_address_hex": "0xffffffff807dd000",
+    "kallsyms_size": 8388608
+  },
+  "acceptance": false
+}

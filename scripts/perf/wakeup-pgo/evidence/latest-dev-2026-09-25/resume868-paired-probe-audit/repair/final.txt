@@ -1,0 +1,59 @@
+以下为对上一轮结论的修正版只读审计。未改文件、未编译、未运行任何验证。先列出五处更正的核心事实，再给出**唯一一套最小诊断协议**。
+
+## 更正概要
+
+1. tag 的捕获点不在 `ThreadWakeBatch`（它确实无 futex 地址），而在 **Starry 本地**的 `WakeBatch`（`os/StarryOS/kernel/src/task/futex.rs:33-36`）+ `ResolvedFutex::wake`（`futex.rs:1083-1095`）。
+2. 撤回"每 CPU 单写者 seqlock"：改用**带 per-entry 序号的 MPSC 环 + CAS 状态机**，覆盖/丢配对全部计数。
+3. A0→publish 单列为一段，并给出**不假设**的验证规则；冻结二进制只暴露聚合值（`stats.c:142-175`），逐对等值无法交叉校验。
+4. nth-wake↔nth-A5 不是默认成立：**warmup 阶段的 `not_parked` 不进入计数**（`handoff.c:223-228`），必须显式比对并计数，不能按序号硬配。
+5. 撤回 4–6 次读钟与 `clock_pair_min_ns=583` 的自扰推断——本设计不给出任何探针开销数值。
+
+## 1. gate key 与 target ThreadId 的捕获、以及到达 request publication 的路径
+
+- **key**：`FutexKey::Private { mm_generation, address }`（`futex.rs:592-598`），`ResolvedFutex::wake` 持有 `self.key`（`futex.rs:1083-1095`）。resume864 已证实按 `address & 0xfff` 分类（+16=gate、+20=done）可行，探针原文见归档 `resume864-wake-window/source-futex-probe.rs` 的 `key_slot`（`GATE_OFFSET=16`）。**必须同时记录整页基址 `address & !0xfff`**，用于排除"同偏移不同页"的无关私有 futex，而不是只看偏移。
+- **target ThreadId**：`Waiter.task.id()` 与调度侧同一 ID 空间（`futex.rs:163-167` 的 `Waiter{task,bitset,generation}`，`futex.rs:320` 用 `task.id()` 比较；`os/StarryOS/kernel/src/task/scheduler_task.rs:113` 返回 `scheduler::thread::ThreadId`）；也可用 `ThreadWakeHandle::thread_id()`（`components/ax-task/src/thread/handle/mod.rs:309`，已是 `pub`，无需改接口）。
+- **捕获动作**：只在 bucket 锁内**记录 tid**（`futex.rs:556-563` 的 `waiter`），不读钟、不加长临界区；真正的 tag 发布在锁外：`WakeBatch`（starry 本地）增加一个 `#[cfg(feature="qperf-metrics")]` 字段承载 tid（与 `RuntimeSwitchPlan.qperf_prepare_started_ns` 同一模式，`components/ax-task/src/runtime/switch.rs:80-83`），在 `futex.rs:1093`（`wake_batch(wakes)` 之前）把 `{key_address, key_page, key_off, target_tid}` 写入 ax-task 的 gated per-CPU 在飞描述符，`futex.rs:1094` 返回后清除。
+- **到达 publication**：两个真实发布点读该描述符并打点——off-rq 激活 `components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:232`（`publish_rq_scheduler_reasons`，即 ≥97.645% 的分支），on-rq 发布 `.../wake/on_run_queue.rs:144`（兜底到 `activate_waking_thread_locked` 在 `on_run_queue.rs:160`）；分派入口是 `.../wake/request.rs:124-160`。判定条件为 `descriptor.cpu == 当前 CPU && descriptor.target_tid == core.id()`，否则 `untagged_publish++ / tag_tid_mismatch++ / tag_cross_cpu++`，且把 `key_off` 一并记入记录，让分析**验证**而非假设"gate 只对应 receiver tid"。
+- 传播通道不需要新生产契约：描述符与计数放在 `ax-task/src/diagnostics`（特性门控），经 `ax-runtime/src/diagnostics.rs` 再导出给 starry-kernel——这正是 resume864 已验证的接线方式（其 patch 同时在 `components/ax-task/src/diagnostics.rs` 与 `os/arceos/modules/axruntime/src/diagnostics.rs` 增加 `pub use`）。`ThreadWakeBatch` 内部、`wake_all()` 顺序与两处 `SeqCst` fence（`components/ax-task/src/thread/handle/wake_batch.rs:48/95`）一律不动。
+
+## 2. 槽位协议（撤回单写者断言）
+
+同一 CPU 上另一任务/IRQ 完全可能在 tag 与发布之间写同一槽，故不主张单写者。采用每 CPU 一个 MPSC 序号环：
+
+- 结构：`next: AtomicU64` + `slots: [Slot; N]`，`Slot { seq: AtomicU64, state: AtomicU8, tid/key_page/key_off/branch/decision/…, a0_ns/publish_ns/claim_ns/decision_ns/pre_el0_ns/a5_ns }`，静态分配（无分配）。
+- 写者：`let s = next.fetch_add(1, AcqRel)+1;` → 字段 `Relaxed` 写 → `slot.seq.store(s, Release)`。`fetch_add` 的返回值唯一，**不同写者不会共用同一 `s`**，因此每个 `s` 只有唯一定义者。
+- 读者：以 `Acquire` 读 `next`，仅接受 `slot.seq.load(Acquire) == s_i` 的条目；`seq` 不匹配即 `entry_evicted_or_torn++`，绝不静默采信。
+- 状态迁移（published→claimed→switched→a5_done）全部用 `compare_exchange`，每次迁移恰好一个赢家；输者计 `claim_race_lost / switch_race_lost / a5_race_lost`。
+- 覆盖与失败：`publish_dropped_busy`（出现第二个 in-flight publish）、`epoch_evicted`（环索引被复用而前一轮未完成）、`a0_not_found`、`claim_without_epoch`、`switch_other`、`switch_in_without_a5`、`a5_before_switch`、`no_switch_before_next_publish`、`key_off_other`、`key_page_other`、`clock_other_tid`。
+- 内存序必要性：`seq` 的 `Release/Acquire` 只保证字段可见性；配对不对**不能**靠内存序保证，只由上述计数与 §4 的比对证明。
+- 备选（若主代理不接受 per-CPU 在飞描述符）：把槽挪到"生命期自有对象"，即让 incoming endpoint 侧的 `LinkedRqTaskRef`（`components/ax-task/src/sched/system/algorithm/queue/task.rs:193`）对 `ThreadCore` 加 gated 字段；代价是改 ax-task 内部结构与 starry 侧无法直接拿 core（starry 只能拿到 `ThreadId`，`scheduler_task.rs:113`），因此 A5 端仍需 CPU 级记录，反而更大。故推荐序号环。
+
+## 3. A0→publish 段与验证规则
+
+- A0 定义：sender 的 `bench_monotonic_ns()`（`handoff.c:311`），其实现是裸 `SYS_clock_gettime(CLOCK_MONOTONIC)`（`stats.c:22-30`），内核在 `time.rs:149-166` 得到的 `now` 就是用户收到的值。因此 `sys_clock_gettime` 里按 `current.id()`（`scheduler_task.rs:113`）记录 (tid, ns, 每次调用序号) 到同一个每 CPU 序号环即可。
+- "最后一个 clock 就是 A0"的验证：gate wake 时回溯扫描环，取**该 waker tid 的最新一条**clock 记录；因为"最新"由环序定义，任何更晚的同 tid 调用必然被选中，故规则本身不需假设。需要把该条目的 `seq` 与当时 `next` 的差、以及 `a0_not_found` 一起记录；差值大于预设窗口（如 >K 条）即计 `a0_far` 并排除该段，不排除整轮。
+- "首个 target clock 就是 A5"的验证：epoch 达到 `switched` 后，第一条 `current.id() == epoch.tid` 的 clock 记录即为 A5；`state < switched` 时出现的同 tid clock 计 `a5_before_switch`，无 `pre_el0` 打点的计 `a5_without_pre_el0`，两者都排除出配对。
+- 与冻结二进制的交叉校验边界：bench 只打印元数据与 `WAKEUP_LATENCY_RESULT` 聚合行（`stats.c:71-100`、`stats.c:142-175`），**不导出原始 samples**（`main.c` 无 dump，samples 在 mmap 存储里，`handoff.c:378-383` 后被 munmap）。因此能做的是：`samples/attempted/not_parked` 计数一致性、配对总数与 `attempted+warmup` 的比对、以及配对样本的 min/mean/p50/histogram 落在 bench 所报同一量级区间内；**不能**逐对等值比对。若必须逐对校验，只能另建一个打印逐样本 A0/A5 的诊断二进制（此时其自身时序与冻结 SHA 不同，必须显式声明不可与验收混用）。
+
+## 4. nth-wake↔nth-A5 的前提与排除计数
+
+不默认 1:1，先做计数对齐：`publish_gate_count`、`a5_count`、`pre_el0_count` 分别与 `warmup(1000)+attempted(20000)=21000` 比对。特别地：`not_parked_samples` 只在 `sequence > warmup_samples` 时自增（`handoff.c:223-228`），**warmup 阶段的 NOT_PARKED 不会出现在 bench 输出里**；这类轮次仍会有 A5 clock 读（`handoff.c:220` 在判定之前），但 sender 的 gate wake 可能 `selected=0`（无 publish 记录）。因此必须显式输出 `a5_without_publish`、`publish_without_a5`，并要求有效轮满足 `a5_count == publish_gate_count == 21000`（实测轮 `not_parked=0` 只覆盖后 20000 次）。任一不匹配 → 该轮只报计数、不做配对分解。其余排除项：多唤醒分支（`activation.rs:232` vs `on_run_queue.rs:144` vs `WakeActivationPreparation::Throttled`，`activation.rs:125-136`）按 `branch` 分类；同偏移不同页按 `key_page` 排除；后台 syscall 按 `clock_other_tid` 排除；迁移/跨核按 `tag_cross_cpu`、`switch_in_without_a5` 排除。
+
+## 5. 探针开销
+
+撤回数值推断：`clock_pair_min_ns=583` 是用户态一对读钟的最小值，不能换算每次内核读钟成本；本设计不给出任何探针开销估计。无论实现如何落地，插入的读钟与记账都是真实扰动，其大小**未测**，必须由主代理在实体板上用同镜像与无插桩镜像分别取 p50 来界定，且不得把该差值当作原生可删除成本。
+
+## 唯一最小协议
+
+1. 实现面：新增 gated 探针模块（每 CPU 序号环 + 描述符 + debugfs 输出，如 `/sys/kernel/debug/handoff_pair`），在 `futex.rs:1093`、`activation.rs:232`、`on_run_queue.rs:144`、`scheduler.rs:172`、`dispatch.rs:256`（+`350`）、`guard/mod.rs:68-105`、`time.rs:144-168` 打点；`ThreadWakeBatch`、fence、唤醒顺序、`execute_switch_plan` 语义均不改。
+2. 运行：沿用 resume864 的 guest 形态（下载冻结 bench 并校验 SHA `94c0a828…`、每轮前后 dump debugfs、OTHER/FIFO/OTHER/FIFO/OTHER 五进程、1000 warmup + 20000）。
+3. 轮次有效：20000/20000、`not_parked=0`、`missed=0`、exit 0、case/policy/CPU/PLL、镜像与 bench SHA、且 §4 三个计数完全一致、`entry_evicted/torn/a0_not_found` 之和占 `publish_gate_count` 的预设小比例内。
+4. 输出与判定：`A0→publish`、`publish→claim`、`claim→decision`、`decision→a5`（可再拆 `decision→switch_in`、`switch_in→a5`）的 count 与 mean/p50，以及全部排除计数；先要求配对重建的 `(A5−A0)` 聚合与 bench 自身聚合在预注册容差内一致（这是"配错对"的主要 falsify 条件），再按"某段 mean 占 `(A5−A0)` 多数且显著大于其它段"来定位成本；若配对总数覆盖不足或计数不一致，只报覆盖与排除计数，不下分解结论。qperf-only 一律不是 full20 验收。
+
+## 不确定项与未覆盖
+
+- 未验证 `ax_runtime::hal::time::monotonic_time`（`time.rs:151-152`）与探针读钟在同一采样点；不做验证前，A0/A5 与内核打点之间存在未量化的读点偏差。
+- 未确认 `dispatch.rs:350` 返回处的 incoming 上下文能否直接取到 `ThreadId`（需 `current_thread_id()` 类查询），因此 `switch_in` 打点先按"`execute_switch_plan` 中 `handoff.incoming().id()`（`dispatch.rs:274-283`）"记录、A5 端按 tid 匹配。
+- 未统计 benchmark 收尾阶段（`stats.c` 校准读钟等）在同一 tid 上的额外 clock 调用，故 `a0_far`/`clock_other_tid` 是必需兜底。
+- 本轮复核未覆盖 FIFO 路径、跨核/跨进程场景与 `WakeActivationPreparation::Throttled` 分支的落点细节。
+- 所有行号基于 HEAD `b292a098bb60ef604e7677c37cd95d926ff08200`；落地前需复核。无源码候选、无收益主张。

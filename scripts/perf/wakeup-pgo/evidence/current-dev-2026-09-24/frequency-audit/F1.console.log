@@ -1,0 +1,34 @@
+
+[37m[ 36.443551 0:4294967306 [37max_net::service:870] [33meth0: DHCP router 192.168.1.1[m[m
+[37m[ 36.443558 0:4294967306 [37max_net::service:874] [32meth0: DHCP DNS 8.8.8.8[m[m
+[37m[ 36.443565 0:4294967306 [37max_net::service:874] [32meth0: DHCP DNS 1.1.1.1[m[m
+[37m[ 36.443604 0:4294967306 [37max_net::device::ethernet:338] [32meth0: requesting ARP for 192.168.1.2[m[m
+[37m[ 36.444597 0:4294967306 [37max_net::device::ethernet:409] [32meth0: ARP 192.168.1.2 -> 9c-c2-c4-32-29-b9[m[m
+cur[37m[ 36.444624 0:4294967306 [37max_net::device::ethernet:479] [32meth0: sending pending IPv4 packet to 192.168.1.2 via 9c-c2-c4-32-29-b9[m[m
+l --retry 15 --retry-delay 2 --retry-connrefused --connect-timeout 10 --max-time 20 -fsS http://192.168.1.2:2999/share/sessions/b3a56ea0-4fc2-4a1c-9aaa-b9493e4cb04c/resume748-probe -o /tmp/resume748-probe && chmod +x /tmp/resume748-probe && /tmp/resume748-probe 0 && /tmp/resume748-probe 1; rc=$?; echo RESUME748_DONE F1 $rc
+[37m[ 36.454881 4:85899345974 [37mstarry_kernel::task::user:83] [32mEnter user space: ip=0xfa194, sp=0x3fffffff5b0[m[m
+[37m[ 36.455971 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m[m
+[37m[ 36.812707 3:85899345974 [37max_net::tcp:1018] [32mTCP connection from 192.168.1.8:49152 to 192.168.1.2:2999[m[m
+[37m[ 36.834109 5:85899345974 [37mstarry_kernel::task::ops:539] [32mTask(85899345974, "curl") exit with code: 0[m[m
+[37m[ 36.834278 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m[m
+[37m[ 36.835259 4:90194313270 [37mstarry_kernel::task::user:83] [32mEnter user space: ip=0xfa194, sp=0x3fffffff5b0[m[m
+[37m[ 36.834188 5:85899345974 [37mstarry_kernel::task::signal:763] [32mSend signal SIGCHLD to process 1[m[m
+[37m[ 36.836361 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m[m
+[37m[ 36.843758 4:90194313270 [37mstarry_kernel::task::ops:539] [32mTask(90194313270, "chmod") exit with code: 0[m[m
+[37m[ 36.843871 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m[m
+[37m[ 36.843798 4:90194313270 [37mstarry_kernel::task::signal:763] [32mSend signal SIGCHLD to process 1[m[m
+[37m[ 36.844696 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m[m
+[37m[ 36.844332 4:94489280566 [37mstarry_kernel::task::user:83] [32mEnter user space: ip=0xfa194, sp=0x3fffffff610[m[m
+FREQ_PROBE cpu=0 rep=0 cycles=575158850 enabled_ns=500064542 running_ns=500064542 wall_ns=500065708 mhz=1150.169 sink=3426089272817614849
+FREQ_PROBE cpu=0 rep=1 cycles=575157310 enabled_ns=1000120917 running_ns=1000120917 wall_ns=500059291 mhz=575.088 sink=16893390355180617729
+FREQ_PROBE cpu=0 rep=2 cycles=575168648 enabled_ns=1500187209 running_ns=1500187209 wall_ns=500068333 mhz=383.398 sink=892286830975123457
+[37m[ 38.345743 0:94489280566 [37mstarry_kernel::task::ops:539] [32mTask(94489280566, "resume748-probe") exit with code: 0[m[m
+[37m[ 38.345936 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m[m
+[37m[ 38.346359 4:98784247862 [37mstarry_kernel::task::user:83] [32mEnter user space: ip=0xfa194, sp=0x3fffffff670[m[m
+[37m[ 38.345862 0:94489280566 [37mstarry_kernel::task::signal:763] [32mSend signal SIGCHLD to process 1[m[m
+[37m[ 38.346733 3:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m[m
+FREQ_PROBE cpu=1 rep=0 cycles=575115590 enabled_ns=500009125 running_ns=500009125 wall_ns=500012333 mhz=1150.210 sink=2746655612192768001
+FREQ_PROBE cpu=1 rep=1 cycles=575115493 enabled_ns=1000008333 running_ns=1000008333 wall_ns=500002125 mhz=575.111 sink=11748863240189935617
+FREQ_PROBE cpu=1 rep=2 cycles=575108609 enabled_ns=1500046333 running_ns=1500046333 wall_ns=500041209 mhz=383.394 sink=4746244719573450753
+[37m[ 39.847282 1:98784247862 [37mstarry_kernel::task::ops:539] [32mTask(98784247862, "resume748-probe") exit with code: 0[m[m
+RESUME748_DONE F1 0

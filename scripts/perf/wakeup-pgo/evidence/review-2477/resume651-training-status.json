@@ -1,0 +1,111 @@
+{
+  "experiment": "resume651",
+  "head": "9d06d500c7ebbb960678d16d4a44aa2e036cf87e",
+  "artifacts": {
+    "files": {
+      "resume651.elf": "e9b391cd2f8e47027e64b3ae6bd8cf1c6869c0e10565ca3852306f4009d5ca84",
+      "resume651.bin": "1d3eae0ecc0c1ef3083a0f6a3c1b99012c01be5145123ca2133fe1787c0dcd37"
+    },
+    "runtime_full_sha256": {
+      "elf": "e9b391cd2f8e47027e64b3ae6bd8cf1c6869c0e10565ca3852306f4009d5ca84",
+      "bin": "1d3eae0ecc0c1ef3083a0f6a3c1b99012c01be5145123ca2133fe1787c0dcd37"
+    },
+    "profgen_full_sha256": {
+      "elf": "b6abe21d31e9281bef1ece274497f3dcb99468543f6d692058ed0e9d654370a7",
+      "bin": "6963018c8b0160412027c01591feb9b10e0d4971226d1343561008caf8dd2397"
+    },
+    "identity_sections": [
+      ".head.text",
+      ".text",
+      "__llvm_prf_cnts",
+      "__llvm_prf_data",
+      "__llvm_prf_names"
+    ],
+    "sections": {
+      ".head.text": {
+        "address": "0xffffffff80000000",
+        "size": 64,
+        "runtime_sha256": "a4c4916a04b3fe0a9e0c6a614eba71d93625be250011fbd412de9e74e7e9c253",
+        "profgen_sha256": "a4c4916a04b3fe0a9e0c6a614eba71d93625be250011fbd412de9e74e7e9c253"
+      },
+      ".text": {
+        "address": "0xffffffff80001000",
+        "size": 19115648,
+        "runtime_sha256": "045bb556a3adc68cfb2190541fcc2a30959b5c89dab2412714f8e2ae6f742a66",
+        "profgen_sha256": "045bb556a3adc68cfb2190541fcc2a30959b5c89dab2412714f8e2ae6f742a66"
+      },
+      "__llvm_prf_cnts": {
+        "address": "0xffffffff81bef080",
+        "size": 1425096,
+        "runtime_sha256": "e62c64c3a1f6d06c9de0a9af0f513580c9a6cbd2476c94e961ce7ae7ac2ad913",
+        "profgen_sha256": "e62c64c3a1f6d06c9de0a9af0f513580c9a6cbd2476c94e961ce7ae7ac2ad913"
+      },
+      "__llvm_prf_data": {
+        "address": "0xffffffff81d4af48",
+        "size": 2126952,
+        "runtime_sha256": "c755f299b694a2e639670d17a16cf96133333c322d6c6f9e6cc8d2066f7c9b9f",
+        "profgen_sha256": "c755f299b694a2e639670d17a16cf96133333c322d6c6f9e6cc8d2066f7c9b9f"
+      },
+      "__llvm_prf_names": {
+        "address": "0xffffffff81b45130",
+        "size": 651158,
+        "runtime_sha256": "6d0027bdc9321994953bc7917343ba4b258f08bd07e329d39db45b5c3c9043a8",
+        "profgen_sha256": "6d0027bdc9321994953bc7917343ba4b258f08bd07e329d39db45b5c3c9043a8"
+      }
+    },
+    "section_identity": true,
+    "whole_file_identity": {
+      "elf": false,
+      "bin": false
+    },
+    "kallsyms_refresh_allowed": true,
+    "whole_file_difference": {
+      "runtime_size": 41384880,
+      "profgen_size": 41384880,
+      "size_delta": 0,
+      "differing_bytes": 3023570,
+      "first_difference_offset": "0x1355000",
+      "last_difference_offset": "0x16bfdb5"
+    },
+    "identity_policy": "identity is section-level: `cargo xtask starry qemu` refreshes .kallsyms after the profgen build, so the whole-file hashes are recorded but not required to match; any missing section or drift in .head.text, .text, __llvm_prf_cnts, __llvm_prf_data, __llvm_prf_names fails training",
+    "runtime_text_memory_check": "resume651-capture.py EXACT_ELF_TEXT_MATCH load_bias=0"
+  },
+  "status": "training complete, counters exported and profile merged",
+  "diagnostic_only": true,
+  "acceptance": false,
+  "wrapper": "resume651-stdlib-wrapper.py",
+  "compiled_max_cpus": 8,
+  "qemu_cpus": 2,
+  "source_contents_unchanged": true,
+  "profile_sha256": "eaea4c2f8d0f9dda04e988b6c4f38a7013333871527bf2a6db0f268b9bd4e749",
+  "profile_layout": {
+    "tag": "resume651",
+    "records": 29541,
+    "names": 36301,
+    "counter_bytes": 1425096,
+    "counter_address": "0xffffffff81bef080",
+    "counter_end": "0xffffffff81d4af48",
+    "data_bytes": 2126952,
+    "data_address": "0xffffffff81d4af48",
+    "record_layout_bytes": 72,
+    "elf_sha256": "e9b391cd2f8e47027e64b3ae6bd8cf1c6869c0e10565ca3852306f4009d5ca84",
+    "sections": {
+      "__llvm_prf_cnts": {
+        "address": "0xffffffff81bef080",
+        "size": 1425096
+      },
+      "__llvm_prf_data": {
+        "address": "0xffffffff81d4af48",
+        "size": 2126952
+      },
+      "__llvm_prf_names": {
+        "address": "0xffffffff81b45130",
+        "size": 651158
+      }
+    },
+    "format_source": "LLVM 23.1.1 (rustc 1.100.0-nightly a69a63265) InstrProfData.inc / InstrProf.cpp / InstrProfReader.cpp; layout re-derived from the ELF sections on every run",
+    "entry_first": false,
+    "nonzero_records": 7260,
+    "dump_sha256": "e0a6e6e56637dcfdaaec5e7ef13ac81bbbceaacab0e44e3315f9dc59c7167a97"
+  }
+}

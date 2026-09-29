@@ -1,0 +1,149 @@
+## 结论（交付类型 2：no-go）
+
+在当前 head `69a33650763538692fafea27c869870ed0313642` 上，**一个"两 Fair peer、条件受限的 yield/current-switch 快速路径"不能有证据地带来可观收益**。原因不是"收益太小"，而是：这条路径上被 FIFO 对照暴露出来的差额，绝大部分是 **Fair 语义必需的工作**（EEVDF request 重算、加权均值/成员/键发布、slice protection、current dispatch 安装、Fair hrtick 派生）；真正可省下来的只有 **≤2 结点树上的 O(1) 机制**，而对它的结构性消除正好就是 `resume135/136` 已经被否决的 retained-node 方向。
+
+以下均为只读审阅，未改任何文件、未构建、未上板、未运行任何验证。
+
+---
+
+## 1. 当前源码所有权与 EEVDF 链路
+
+### 1.1 入口：两 peer yield 走的是 rq-owned 路径
+
+[yield_entry.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/yield_entry.rs:92) 先用 `owner_yield_kept_class` 判 lone-Fair；该判定在 [scheduling.rs:43-60](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling.rs:43)：
+
+```rust
+SchedulerClass::Fair => transaction.nr_queued() == 0,
+```
+
+即 **只有"队列为空"才短路**；两个 peer（`nr_queued()==1`）必然继续走 [yield_entry.rs:135-166](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/yield_entry.rs:135) 的 `prepare_owner_rq_schedule_out` + `yield_current_rq_owned`。[schedule_out.rs:25-38](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/schedule_out.rs:25) 排除 migration/Deadline 后，Fair 落入 `OwnerRqScheduleOut::Unlinked { thread }`。
+
+### 1.2 put-prev 序列（Resume854 slot 1）
+
+[yield_run_queue.rs:39](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/yield_run_queue.rs:39) → `schedule_out_owner_rq_owned(..., EnqueueReason::Yield)` → Unlinked 分支 [schedule_out.rs:129](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/schedule_out.rs:129) → [put_prev_unlinked_current](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs:47)：
+
+```rust
+let current_fair = self.current_fair_contender();
+self.queue.update_fair_virtual_time(current_fair);          // :56  含 current 的加权均值 + rebase
+let dispatch = self.queue.take_current()...;                 // :57  dispatch 出栈
+let queued = dispatch.into_queued_thread()...;               // :58-60 构造 QueuedThread
+let queued_entity = self.queue.enqueue_task(queued, reason, current_fair)?;  // :61
+// 注释：requeued current 已在树内，再带旧快照会重复计数
+self.queue.update_fair_virtual_time(None);                   // :65
+```
+
+`enqueue_task`（[class.rs:79-146](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/class.rs:79)）对 Fair+Yield 只做两件事：`fair.yield_request(virtual_time)`（class.rs:98 → [fair.rs:448-470](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair.rs:448)，与 Linux `yield_task_fair` 的 `if (entity_eligible) { vruntime = deadline; update_deadline(); }` 同构），以及 `run_queue.fair.insert(thread)`（class.rs:141 → [fair_queue.rs:236-281](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair_queue.rs:236)：`keys[slot]` 索引、`add_weighted_entity`、idle/delayed/migratable 计数、`take_fair()`+`reset()`+`insert_node()`/`refresh()`、`len+=1`）。
+
+### 1.3 pick 序列（slot 2）与 EEVDF 不变量
+
+[yield_run_queue.rs:64](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/scheduling/yield_run_queue.rs:64) 以 `protected_fair_current = None` 调 `pick_owner_next_in_rq`；class 扫描 [dispatch.rs:106-113](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/dispatch.rs:106) → Fair 分支 [class.rs:237-266](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/class.rs:237)：
+
+```rust
+run_queue.update_fair_virtual_time(None);            // :238
+let (mut thread, starts_dispatch) = if let Some(...protected_fair_current...) {...}
+    else { queue.pick_eligible(virtual_time, skip_delayed)? };  // :248
+if starts_dispatch { fair.set_slice_protection(queue.min_service_request_ns()); } // :258-262
+run_queue.mark_publication_dirty();                   // :264
+```
+
+`pick_eligible` → [take_earliest_eligible](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair_queue.rs:853)（按 `min_vruntime` 剪枝下探 + `remove_root`）→ [finish_removed](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair_queue.rs:320)（`return_fair`、`remove_weighted_entity`、计数、`len-=1`）。安装侧 [selection.rs:119-183](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/selection.rs:119) → `set_next_task`（Fair 在 [class.rs:303](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/class.rs:303) `unregister_membership`）+ `CurrentDispatch::owned` + `replace_current`（`state_for_task`/membarrier 身份检查，[current.rs:156-179](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs:156)）。
+
+不变量核心：运行中的 Fair entity **故意不在树内**（`current_fair_contender`，[current.rs:27-36](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/current.rs:27)），树+V+加权和只描述"已排队集合"（`update_virtual_time(current)` 用参数补偿，[fair_queue.rs:560-589](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair_queue.rs:560)）。因此一次 handoff 必然包含"出队者入树 + 入队者离树"这一对状态迁移，且这对迁移被 `keys` 索引、`min_vruntime`/`min_service_request_ns`/`max_service_request_ns` 增广、`earliest_eligible`、balance/migration/PI/delayed 路径共同消费。
+
+### 1.4 Linux 对照（`/home/zhourui/linux-src`）
+
+`kernel/sched/fair.c:9347-9385` `yield_task_fair()`：`if (unlikely(rq->nr_running == 1)) return;` → `update_curr()` → `if (entity_eligible(cfs_rq, se)) { se->vruntime = se->deadline; update_deadline(cfs_rq, se); }`。Linux 同样**不在 yield hook 里直接动树**，真正的入树/出树发生在 `put_prev_entity`/`set_next_entity`。`kernel/sched/fair.c:1143-1148` `pick_eevdf()` 有唯一的"单实体"捷径：
+
+```c
+/* We can safely skip eligibility check if there is only one entity
+ * in this cfs_rq, saving some cycles. */
+if (cfs_rq->nr_queued == 1)
+    return curr && curr->on_rq ? curr : se;
+```
+
+两点值得主代理记录：(a) 该捷径本身只省"eligibility check + 搜索"，Linux 自评是"saving some cycles"；(b) 它**在唯一 peer 不 eligible 时仍返回 `curr`**（避免强制 idle），而 ax-task 的 `pick_eligible` 此时返回 `None` → class 扫描落空 → 选 idle（[selection.rs:261-301](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/selection.rs:261)）。这是语义差异，不是成本优化；本审计不改变该行为，只记录风险（见 §6 不确定项）。
+
+---
+
+## 2. 逐项分类：真可省 / 只是搬到别处 / 只是收窄搜索
+
+| 操作（file:line） | 判定 | 理由 |
+| --- | --- | --- |
+| `settle_current` → `FairEntity::charge`（yield_run_queue.rs:21） | **必需** | EEVDF 运行时间记账；FIFO 走 `charge_runtime_only` 才有 188ns 量级 |
+| `update_fair_virtual_time(Some)`（current.rs:56） | **重复计算，但非位等价** | 与 account 段的 `update_fair_virtual_time(Some)`（remote/run_queue/accounting.rs:122）同输入；但 `rebase` 有截断余项，跳过会改变 V（≤1 虚拟 ns 级） |
+| `take_current` + `into_queued_thread`（current.rs:57-60） | **表示法必需** | 只是搬 `ActiveSchedulingState`（`Box` 指针）+ 约 90B `QueuedThread`；省它＝换 current 表示法（135/136） |
+| `FairEntity::yield_request`（class.rs:98） | **必需** | Linux yield 语义原文见 §1.4 |
+| `insert_entry` 的树插入/旋转/增广 | **实际很便宜（收窄搜索无意义）** | resume599：Fair 每次插入平均比较 **0.51414** 次、root empty **48.60%**、rotation **0.0183%** |
+| `insert_entry` 的 `take_fair`+`reset`+`return_fair` 结点往返 | **可省但只能靠换表示法** | 这正是 135/136 的 `DetachedFairNode`；已否决 |
+| `update_fair_virtual_time(None)`（current.rs:65） | **必需** | `yield_request` 已改 vruntime，必须重新锚定 |
+| pick 侧 `update_fair_virtual_time(None)`（class.rs:238） | **近似冗余**（只做截断余项收敛，2 peer 下 V 偏移 ∈{0,−1}ns） | exp120 已做同类删除并否决；resume806 明确"只有一处同输入 V 重锚，234–261ns，不足" |
+| `pick_eligible`/`remove_root`/`finish_removed` | **必需** | 入队者必须转成 current，且 `slice_is_protected`/`min_service_request_ns` 依赖 |
+| class 扫描 Stop/Deadline/RT 探测 | **只是收窄搜索** | O(1) 判定，无可量化收益 |
+| `mark_publication_dirty` + 安装 + commit | **必需** | rq load/placement/membarrier/current 发布 |
+| commit/tail 的 hrtick 派生（publication.rs:92-104） | **必需**（FIFO 靠 `OwnerSchedulerDeadline::Unchanged` 显式跳过，yield_run_queue.rs:101-108） | 这是"策略不对称"而非"Fair 冗余" |
+
+结论：**没有一项同时满足"语义可省 + 量级可观"**。可以让两 peer 设计少做的，只有"1 结点树的搜索"（resume599 已证明是 0.51 次比较）与"结点装箱往返"（换表示法，已否决）。
+
+---
+
+## 3. 量化上界（含 probe caveat）
+
+可用原始数据（均为**插桩含探针**，非原生可删成本）：
+
+- resume854 decision：OTHER−FIFO 每事件均值差 put-prev **2218.75**、pick **937.74**（合计 **3156.49**）、account 703.70、rq commit 774.00、selection tail 658.39；五段合计约 **5292/event**。同镜像 p50 中位 FIFO/OTHER = **10500/16917**；无插桩 G1/G2 = **4083/7583**。每进程 slot 计数 42008–42010 ≈ 2.1 event/sample。
+- resume762（exact c346 yield put_prev 探针）：OTHER put_prev 均值 **3077/3089ns**，其中 pre-enqueue V **307/306ns**、generic enqueue **1241/1251ns**。
+- resume777（preempt 路径八叶）：V first **261**、take/convert **895**、generic enqueue **1538**、V after **234**、pick next **2189**、handoff **292**、commit selection **1101**、plan **169**。
+- resume562–565：Fair 登记/结点准备/树插入约 **266/215/311ns**，相邻读时钟约 102ns。
+
+**内部自相矛盾必须记录**：resume762 的 "generic enqueue ≈1241ns" 与 resume562–565 的"登记+结点准备+插入 ≈792ns（含 4–6 次时钟读）"在同一代码区域相差 3–5 倍；两者都是插桩均值。因此**不能用它们的和或差去预测原生可删成本**——这正是 resume854 protocol 的原文限定。FIFO 对照能抵消一部分探针开销（FIFO put-prev/pick ≈299ns ≈ 探针地板），但 account 段 FIFO 走的是不同函数（`charge_runtime_only`），FIFO put-prev 走的是 RT list 旋转，**探针本身的成本并不在同一段代码里**，无法假定相消。
+
+据此可给出的最宽松上界：把"整个 OTHER−FIFO put-prev+pick 差额"都当作可删，按 3500/6417 ≈ 0.545（或对 5292 用 0.66）折算，约 **1.7–2.1µs/样本**；而 58%→90% 门需要 `Star van ≤ Linux/0.9`，即最差项要降 **35.6%**；若该项 Starry 为 7583ns，则需 ≈**2.70µs**。也就是说：**连"整段 Fair put-prev+pick 全部消失"的理论上界都低于最差项所需**，而其中真正可删的子集只是 O(1) 机制的一个分数。台账另有一个更接近门的基线可作对照（README §2.1）：PR #2477 全量 PGO 为 90% 门 **18/20**，未达项为 OTHER 同核 futex **78.37%** 与 OTHER yield handoff **88.90%**——yield 只差 ~1.2%，但同核 futex 的缺口远大于本机制上界，且两者共享同一段 put-prev/pick。
+
+---
+
+## 4. 与历史尝试的关系（no-repeat 核对）
+
+- `resume135/136`（[patch](/home/zhourui/.codex/artifacts/issue2308-perf/resume136-change.patch)）：把 Fair current 的结点**保留为 `DetachedFairNode`**（`CurrentClassState::Fair`、`enqueue_fair_node`、`insert_detached`），即消除结点装箱往返。效果：OTHER +5.56%、FIFO +3.49%；加 `#[inline(always)]` 只回收部分退化，"do not retain Fair-node representation trial"。→ 本审计的"唯一结构性缺口"已被测过且更差。
+- `exp120`：删 Preempted 路径的重复 V refresh；OTHER 无效、FIFO +1.2%，否决（原文 `proof_scope`: "Only Preempted skipped refresh. ... Yield retained refresh."）。
+- `resume806`：明确"wake 内只有一处同输入 Fair V 重锚，234–261ns，不足以解释 F2 7228ns"，并写下 "do not repeat exp120-style V micro-optimization"。
+- `resume816`：wake 路径同样得 no-go，"same-transaction known candidate can at most avoid small-tree search, not required accounting/queue/commit"。
+- `resume598` 的后续要求（"对 Fair AVL 深度/比较/rotation 做低扰动计数"）已由 `resume599` 完成，结果是**树本身没有成本**；`resume559` 还核到 Fair refresh 是原生 `sdiv` + 冷宽除法分支。
+
+即：**BY-DIRECTION §1.1/§5.2 已把"入队包装、快照借用、保留结点、未变化键、V 刷新、树种微调"全部关闭**；两 peer 快速路径正是这些的重新组合。
+
+---
+
+## 5. no-go 的精确依据
+
+1. **不变量**：Fair 运行实体按设计不在树内；`keys` 索引、加权和/加权均值、`min_vruntime`/`min|max_service_request_ns`、`slice_is_protected` 的权威状态只能在"离开 current 时写、进入 current 时读"这两个边界上产生。任何两 peer 路径若不同 `yield_request` + 入树 + 选出 + `set_slice_protection` + `mark_publication_dirty`，就会改到 yield fairness/lag/slice protection/membership/weighted sums/rq load publication/migration capture/PI/高类选择中的至少一项；若做了全部，则与现状的差异只剩"怎么做"，而"怎么做"的候选（保留结点）已被 135/136 测为退化。
+2. **成本界**：可删子集 = 1 结点树的搜索（resume599：0.51 次比较、rotation 0.018%）+ 结点装箱往返（换表示法，已否决）+ 近似冗余的 V 重锚（234–261ns 级，且非位等价；exp120/resume806 已关闭）。最宽松全局上界约 1.7–2.1µs/样本 < 最差项所需 ≈2.70µs；且上述可删项远小于该上界。因此"能显著降低 put-prev/pick"不可证。
+
+---
+
+## 6. 一个不同的下一步机制（非两 peer、非 Fair 树内）
+
+**方向：改打两个失败场景共有的"策略无关"per-switch 尾段，而不是 Fair 类内部。**
+
+依据：`resume606` 复算 context-switch 分段，OTHER prepare/runtime tail/owner tail 合计约 **3971.06ns/switch**、FIFO 约 **3802.69ns/switch**（差仅 ~168ns），按样本折算约 8654.52/8105.92ns/attempt —— 这是窗口内**最大绝对块**，且对两种策略几乎相同；yield 与同核 futex 两个失败场景的窗口内都至少含一次这样的 switch。它同时避开了本审计否决的 Fair 树/EEVDF 语义面。
+
+具体第一候选（可被证伪的单点）：[finish_owner_selection](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/switch/publication.rs:13) 在 Fair→Fair handoff 必然走到 `program_local_timer_from_rq_observation`（publication.rs:98-103），它重新经 `current_runtime_timer_delta_ns`（[runtime_state.rs:35-60](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/runtime_state.rs:35)）→ `FairEntity::runtime_deadline_delta_ns`（[fair.rs:583-587](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/fair.rs:583)）→ `finish_hrtick_delta_ns`（[hrtick.rs:6-19](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/hrtick.rs:6)，IRQ PELT 非零时含 `u128 / (1024-util)` 运行期除数除法）**重新派生**一次，而 pick 刚刚持有同一个 entity。
+
+- 建议机制：把被选 entity 的 runtime-deadline 观测（或该 entity 的 `deadline−vruntime` + 权重标度所需输入）从 `SchedulerClass::pick_task` 一路带到 commit，**只对"被选 entity == 提交时 rq->curr 且无 balance/timer-head 变化"的 Fair→Fair handoff** 复用它，跳过 rq 级重派生；共享 deadline head（`refresh_owner_deadline_timers_in_rq`/`next_scheduler_deadline_update_if_changed`）仍必须照原路径写。
+- preconditions：pick 得到的 entity 身份与 commit 时 `rq->curr` 相同；`owner_balance_work_pending` 为假或已按原顺序服务；`OwnerSchedulerDeadline` 不是 `Unchanged`。
+- fallback：任一条件不成立即回到现有 `program_local_timer_from_rq_observation`。
+- proof obligations：新路径产生的 `SchedulerRuntimeDeadline` 与旧派生**逐位相同**（含 `MAX(10us)` 下限与 IRQ PELT 修正）；不改变发布次数（`publish_scheduler_deadline` / `publish_scheduler_runtime_deadline`）与顺序；不改变 `scheduler_deadline_rq_observation` 对 `nr_running/has_fair` 的语义。
+- 测试位置：`components/ax-task/tests/fair_hrtick.rs`（hrtick 派生回归）、`components/ax-task/src/sched/algorithm/fair/tests.rs`、`src/sched/system/cpu/dispatch/current.rs` 内 `mod tests`，再加 Starry 测试套/冻结 benchmark 的系统行为。
+- 原生 A/B 门：按台账冻结协议（README §2.3）——同板同配置、benchmark SHA `94c0a828…b773`、warmup 1000/handoff 20000、20 个唯一场景、三轮、`samples==attempted`、`not_parked==0`、`Linux p50*10 >= Starry p50*9`，并要求 p50/p99/p99.9 无一超过 3% 回退；插桩数据不参与验收。
+- 预期诚实说明：此机制的**量级尚未被任何探针界定**（只知所在块 ~4µs/switch），所以它作为"下一个待证伪方向"提出，不宣称能达 90%。
+
+**若主代理想对 yield 用例再花一次板时**：唯一"近乎免费"的删除仍是 V 重锚族（account 段 `remote/run_queue/accounting.rs:122` 与 `remote/run_queue/current.rs:56` 同输入），但它的收益上界只有 ~0.3µs/event 级、且非位等价，exp120/resume806 已把它判为不足；不建议为此单独开一轮。
+
+---
+
+## 7. 不确定项与未覆盖范围
+
+- **无法把 "generic enqueue / pick next" 内部切成"必需语义" vs "可删机制"**：所有数据都是含探针均值，且 resume762 与 resume562–565 对同一区域给出 3–5 倍冲突；结论"必需占主导"来自源码不变量，不来自可加性测量。
+- **"每样本 2.1 个 stage event" 的解释未从原始日志重算**：本审计采用 resume805 的记账（窗口内一次 switch，窗口外 `sched_yield`），若该记账不成立，§3 的折算因子需要重算。
+- **58% 最差项的身份未在本次读取的文件中确认**（可能是同核 futex 而非 yield handoff）；band§3 的 2.70µs 推导明确标注依赖"最差项为 yield"这一未核实假设。PR #2477 PGO 基线（yield 88.90%/futex 78.37%）来自 README §2.1 摘要，未回读其原始 full20 行。
+- **同 MM / migration_capable 假设**：我按 benchmark 两 peer 同进程同 MM 读源码（`state_for_task` 早退、`refresh_class_pushable` 对 Fair 是 no-op，accounting.rs:294-299）；若冻结用例的两 peer 不同地址空间或可迁移，`AddressSpaceCpuState::membarrier_state` 与 pushable 刷新会进入窗口，量级需另行评估。
+- **未覆盖**：跨核 futex / timer 用例；`runtime/switch` 尾段内部（只引用 resume606 的分段结论）；hrtick 实际编程成本；以及 Linux 与 ax-task 在"唯一 peer 不 eligible 时是否强制 idle"上的行为差异（§1.4，未评估其对 benchmark 的影响）。

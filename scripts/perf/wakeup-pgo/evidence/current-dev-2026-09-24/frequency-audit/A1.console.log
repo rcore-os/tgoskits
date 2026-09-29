@@ -1,0 +1,12 @@
+[37m[ 27.356994 5:81604378678 [37mstarry_kernel::task::signal:763] [32mSend signal SIGCHLD to process 1[m[m
+curl --connect-timeout 10 --max-time 20 -fsS http://192.168.1.2:2999/share/sessions/28fb65ee-1280-478c-9fba-74314e14b4ae/resume748-probe -o /tmp/resume748-probe && chmod +x /tmp/resume748-probe && /tmp/resume748-probe 0 && /tmp/resume748-probe 1; rc=$?; echo RESUME748_DONE A1 $rc
+[37m[ 27.362867 4:85899345974 [37mstarry_kernel::task::user:83] [32mEnter user space: ip=0xfa194, sp=0x3fffffff5b0[m[m
+[37m[ 27.364003 6:4294967349 [37mstarry_kernel::syscall::task::wait:380] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m[m
+[37m[ 27.433012 2:8589934639 [37mcrab_usb::backend::kmod::hub::device:621] [32mPort 4 debounce stable (connected: true)[m[m
+[37m[ 27.433034 2:8589934639 [37mcrab_usb::backend::kmod::hub::device:655] [32mResetting port 4[m[m
+[37m[ 27.507811 4:8589934639 [37mcrab_usb::backend::kmod::hub::device:678] [32mPort 4 reset complete[m[m
+[37m[ 27.508031 4:8589934639 [37mcrab_usb::backend::kmod::hub::device:742] [32mPort 4 enabled after 1 checks[m[m
+[37m[ 27.508038 4:8589934639 [37mcrab_usb::backend::kmod::hub::device:720] [32mPort 4 device ready: speed=Full, enabled=true[m[m
+curl: (7) Couldn't connect to server
+[37m[ 27.748594 4:85899345974 [37mstarry_kernel::task::ops:539] [32mTask(85899345974, "curl") exit with code: 1792[m[m
+RESUME748_DONE A1 7

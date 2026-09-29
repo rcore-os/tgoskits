@@ -1,0 +1,124 @@
+{
+  "diagnostic_only": true,
+  "source_head": "05175ca38823b631a73777b0130226ddfa558439",
+  "bootstrap_patch_commit": "69a33650763538692fafea27c869870ed0313642",
+  "board_id": "OrangePi-5-Plus-1",
+  "session_id": "acd98c0d-dfb8-41a3-a579-f46f3e9e5fa9",
+  "image_sha256": "45a77e44eca6fb458ce576735e1bebe316e78e1650894740be18de2469693917",
+  "bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "counter_sha256": "90687119fbb2ae5218855724980967efda0a5329df7a28f07a459d8cf72357ca",
+  "counter_bytes": 789760,
+  "workload_rows": 27,
+  "not_parked_total": 17,
+  "workload_log_sha256": "fb3da8aa53ccd4f124785b78ecbd705f49181ef7c8869dc7d7ae454616f94659",
+  "policies_cases": [
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_cross_cpu"
+    ],
+    [
+      "other",
+      "process_futex_cross_cpu"
+    ],
+    [
+      "other",
+      "absolute_timer_same_cpu"
+    ],
+    [
+      "other",
+      "clock_pair"
+    ],
+    [
+      "other",
+      "getpid"
+    ],
+    [
+      "other",
+      "futex_wait_mismatch"
+    ],
+    [
+      "other",
+      "futex_wake_empty"
+    ],
+    [
+      "other",
+      "sched_yield_no_peer"
+    ],
+    [
+      "other",
+      "sched_yield_handoff"
+    ],
+    [
+      "fifo",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "fifo",
+      "thread_futex_cross_cpu"
+    ],
+    [
+      "fifo",
+      "process_futex_cross_cpu"
+    ],
+    [
+      "fifo",
+      "absolute_timer_same_cpu"
+    ],
+    [
+      "fifo",
+      "clock_pair"
+    ],
+    [
+      "fifo",
+      "getpid"
+    ],
+    [
+      "fifo",
+      "futex_wait_mismatch"
+    ],
+    [
+      "fifo",
+      "futex_wake_empty"
+    ],
+    [
+      "fifo",
+      "sched_yield_no_peer"
+    ],
+    [
+      "fifo",
+      "sched_yield_handoff"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ],
+    [
+      "other",
+      "thread_futex_same_cpu"
+    ]
+  ]
+}

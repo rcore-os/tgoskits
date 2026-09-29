@@ -1,0 +1,29 @@
+{
+  "source_head": "b59894344a23786d7b5ba57b56eabeb716eb1ba6",
+  "source_patch_sha256": "cba4801a2c1b46f7c5b4f4b0e10e7681d90c056f7c29b96fbdd74926c0e65cc9",
+  "bench_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "board_id": "OrangePi-5-Plus-1",
+  "images": {
+    "A": "58801abbba44d6dd61a2807efc62b678274586e075e31beca7fce9b913f84eca",
+    "B": "c83b426636bc9d2b672087a773ca9e26cc26a7589e12848c388ba033e9ecebf7"
+  },
+  "sessions": [
+    {
+      "id": "dd3c95dd-2191-47b8-b293-ec6277add420",
+      "sequence": ["A1", "B1", "B2"],
+      "released": true
+    },
+    {
+      "id": "aed2b113-ed88-4e50-81c8-3984e0a8e953",
+      "sequence": ["A2", "B3"],
+      "released": true
+    }
+  ],
+  "logs": {
+    "A1": {"sha256": "a14988121aaf19af29fb7031ed016b6a5ecb972f7f546a81da5d18134943cc88", "valid": true},
+    "B1": {"sha256": "446d85d2b36b9eea30f240726d8fa80cc1ec6924afe8386b945260740d8703d7", "valid": true},
+    "B2": {"sha256": "51e4634ae4afa729c28abc7831b85f767988d4a821b7d1cb6c2644a624df6c5c", "valid": false},
+    "A2": {"sha256": "4552e834943ae62e635eff33463adca3a6fa71cc632f7eee7f4e284858eaea88", "valid": true},
+    "B3": {"sha256": "7f72bd993bcedcbec988fc8d147520f866f9cc86ac5195ccd816d3ab6a13764c", "valid": true}
+  }
+}

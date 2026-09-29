@@ -1,0 +1,137 @@
+{
+  "diagnostic_only": true,
+  "limitations": [
+    "whole-case CPU0 EL1 counts include child startup, reverse handoffs and background",
+    "Linux initramfs and Starry userspace service background differ",
+    "counts are sequential rather than atomic group reads",
+    "not exclusive forward latency or full20 acceptance"
+  ],
+  "linux_image_sha256": "aac6d3c5fa0c4fdf65f987af635f4cd55a06852b23046a4242a184acc2fd563b",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "collector_sha256": "47b89a6df65277ef7e0b3c26f6dc1c2a49d019219df7a92fbad2b39b135d1394",
+  "board_id": "OrangePi-5-Plus-1",
+  "runs": [
+    {
+      "policy": "other",
+      "round": 1,
+      "p50_ns_diagnostic_only": 8167,
+      "counts": {
+        "cycles": 438669991,
+        "instructions": 302743506,
+        "l1i_refill": 7386039,
+        "l1d_refill": 74771
+      },
+      "instructions_per_attempt": 15137.1753,
+      "cycles_per_instruction": 1.4489823309372654,
+      "l1i_refill_per_1000_instructions": 24.397018775358966,
+      "l1d_refill_per_1000_instructions": 0.24697804748287483
+    },
+    {
+      "policy": "fifo",
+      "round": 1,
+      "p50_ns_diagnostic_only": 8458,
+      "counts": {
+        "cycles": 316254275,
+        "instructions": 231903342,
+        "l1i_refill": 3686995,
+        "l1d_refill": 256010
+      },
+      "instructions_per_attempt": 11595.1671,
+      "cycles_per_instruction": 1.363733149649909,
+      "l1i_refill_per_1000_instructions": 15.898843751893839,
+      "l1d_refill_per_1000_instructions": 1.1039513177865286
+    },
+    {
+      "policy": "other",
+      "round": 2,
+      "p50_ns_diagnostic_only": 8458,
+      "counts": {
+        "cycles": 448923478,
+        "instructions": 308575309,
+        "l1i_refill": 7565283,
+        "l1d_refill": 437046
+      },
+      "instructions_per_attempt": 15428.76545,
+      "cycles_per_instruction": 1.4548263095152567,
+      "l1i_refill_per_1000_instructions": 24.51681252306548,
+      "l1d_refill_per_1000_instructions": 1.4163349667098608
+    },
+    {
+      "policy": "fifo",
+      "round": 2,
+      "p50_ns_diagnostic_only": 8458,
+      "counts": {
+        "cycles": 329328978,
+        "instructions": 242275043,
+        "l1i_refill": 3725265,
+        "l1d_refill": 302273
+      },
+      "instructions_per_attempt": 12113.75215,
+      "cycles_per_instruction": 1.359318623668555,
+      "l1i_refill_per_1000_instructions": 15.37618135929915,
+      "l1d_refill_per_1000_instructions": 1.2476439845271228
+    },
+    {
+      "policy": "other",
+      "round": 3,
+      "p50_ns_diagnostic_only": 8167,
+      "counts": {
+        "cycles": 461003853,
+        "instructions": 318213741,
+        "l1i_refill": 7736362,
+        "l1d_refill": 243057
+      },
+      "instructions_per_attempt": 15910.68705,
+      "cycles_per_instruction": 1.4487239034721633,
+      "l1i_refill_per_1000_instructions": 24.311841392166656,
+      "l1d_refill_per_1000_instructions": 0.763816795705249
+    },
+    {
+      "policy": "fifo",
+      "round": 3,
+      "p50_ns_diagnostic_only": 8458,
+      "counts": {
+        "cycles": 328827946,
+        "instructions": 241927423,
+        "l1i_refill": 3699929,
+        "l1d_refill": 396499
+      },
+      "instructions_per_attempt": 12096.37115,
+      "cycles_per_instruction": 1.3592007963479196,
+      "l1i_refill_per_1000_instructions": 15.293549421224563,
+      "l1d_refill_per_1000_instructions": 1.6389171392116222
+    }
+  ],
+  "linux_medians": {
+    "other": {
+      "p50_ns_diagnostic_only": 8167,
+      "instructions_per_attempt": 15428.76545,
+      "cycles_per_instruction": 1.4489823309372654,
+      "l1i_refill_per_1000_instructions": 24.397018775358966,
+      "l1d_refill_per_1000_instructions": 0.763816795705249
+    },
+    "fifo": {
+      "p50_ns_diagnostic_only": 8458,
+      "instructions_per_attempt": 12096.37115,
+      "cycles_per_instruction": 1.359318623668555,
+      "l1i_refill_per_1000_instructions": 15.37618135929915,
+      "l1d_refill_per_1000_instructions": 1.2476439845271228
+    }
+  },
+  "starry_f_over_linux_ratios": {
+    "other": {
+      "p50_ns_diagnostic_only": 2.017815599363291,
+      "instructions_per_attempt": 1.0863323659508997,
+      "cycles_per_instruction": 1.0963413845945884,
+      "l1i_refill_per_1000_instructions": 1.642776508793402,
+      "l1d_refill_per_1000_instructions": 5.052248934092799
+    },
+    "fifo": {
+      "p50_ns_diagnostic_only": 1.37940411444786,
+      "instructions_per_attempt": 1.2877098124589208,
+      "cycles_per_instruction": 1.0065291111413321,
+      "l1i_refill_per_1000_instructions": 1.3136185400806837,
+      "l1d_refill_per_1000_instructions": 4.506420510369511
+    }
+  }
+}

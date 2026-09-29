@@ -1,0 +1,1400 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running `target/debug/tg-xtask clippy --package starry-kernel`
+clippy started at: 2026-09-25 17:31:49 +0800
+running clippy for 1 package(s) with 72 check(s) from /home/zhourui/.codex/worktrees/03ae/tgoskits-dev
+[1/72] starry-kernel (base, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.70s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (base, target: aarch64-unknown-none-softfloat)
+[2/72] starry-kernel (feature: axtest, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features axtest --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.63s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: axtest, target: aarch64-unknown-none-softfloat)
+[3/72] starry-kernel (feature: dev-log, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dev-log --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.85s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: dev-log, target: aarch64-unknown-none-softfloat)
+[4/72] starry-kernel (feature: dynamic_debug, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dynamic_debug --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.97s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: dynamic_debug, target: aarch64-unknown-none-softfloat)
+[5/72] starry-kernel (feature: ext4, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features ext4 --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.04s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: ext4, target: aarch64-unknown-none-softfloat)
+[6/72] starry-kernel (feature: fat, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features fat --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.91s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: fat, target: aarch64-unknown-none-softfloat)
+[7/72] starry-kernel (feature: jpeg, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features jpeg --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.99s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: jpeg, target: aarch64-unknown-none-softfloat)
+[8/72] starry-kernel (feature: k230-kpu, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features k230-kpu --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.94s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: k230-kpu, target: aarch64-unknown-none-softfloat)
+[9/72] starry-kernel (feature: memtrack, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features memtrack --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.76s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: memtrack, target: aarch64-unknown-none-softfloat)
+[10/72] starry-kernel (feature: qperf-metrics, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features qperf-metrics --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.94s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: qperf-metrics, target: aarch64-unknown-none-softfloat)
+[11/72] starry-kernel (feature: rdif-pinctrl, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rdif-pinctrl --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.06s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: rdif-pinctrl, target: aarch64-unknown-none-softfloat)
+[12/72] starry-kernel (feature: rga, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rga --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking rockchip-rga v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/gpu/rockchip-rga)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.86s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: rga, target: aarch64-unknown-none-softfloat)
+[13/72] starry-kernel (feature: rknpu, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rknpu --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+   Compiling rockchip-npu v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/rockchip-npu)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.90s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: rknpu, target: aarch64-unknown-none-softfloat)
+[14/72] starry-kernel (feature: sg2002, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002 --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg2002-tpu v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/tpu/sg2002-tpu)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+warning: unused dependency `sg200x-bsp`
+   --> os/StarryOS/kernel/Cargo.toml:157:1
+    |
+157 | sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `sg200x-bsp`
+warning: `starry-kernel` (manifest) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.06s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: sg2002, target: aarch64-unknown-none-softfloat)
+[15/72] starry-kernel (feature: sg2002-cvi-usb-camera, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002-cvi-usb-camera --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg200x-jpu v0.1.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/sg200x-jpu)
+    Checking cvi-vdec-uapi v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/cvi-vdec-uapi)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.75s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: sg2002-cvi-usb-camera, target: aarch64-unknown-none-softfloat)
+[16/72] starry-kernel (feature: stack-guard-page, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-guard-page --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.34s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: stack-guard-page, target: aarch64-unknown-none-softfloat)
+[17/72] starry-kernel (feature: stack-protector, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-protector --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.17s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: stack-protector, target: aarch64-unknown-none-softfloat)
+[18/72] starry-kernel (feature: uaccess-lock-regression, target: aarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features uaccess-lock-regression --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -Cllvm-args=--max-store-memcpy=16 -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.87s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+ok: starry-kernel (feature: uaccess-lock-regression, target: aarch64-unknown-none-softfloat)
+[19/72] starry-kernel (base, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+   Compiling ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+   Compiling crab-usb v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-host)
+    Checking ax-lazyinit v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-lazyinit)
+    Checking ax-memory-addr v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_addr)
+   Compiling ax-crate-interface v0.5.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/crate_interface)
+   Compiling trait-ffi-macros v0.4.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/trait-ffi/trait-ffi-macros)
+    Checking rdif-def v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-def)
+    Checking irq-framework v0.5.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/irq-framework)
+    Checking mmio-api v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/mmio-api)
+   Compiling ax-percpu-macros v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu_macros)
+   Compiling rdrive-macros v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rdrive-macros)
+    Checking rdif-serial v0.10.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-serial)
+   Compiling ax-plat-macros v0.3.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat-macros)
+    Checking usb-if v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-if)
+   Compiling someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking page-table-generic v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/page-table-generic)
+    Checking rdif-base v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-base)
+    Checking ranges-ext v0.6.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ranges-ext)
+   Compiling rockchip-soc v0.4.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/rockchip/rockchip-soc)
+   Compiling somehal-macros v0.1.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal-macros)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking some-serial v0.7.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/serial/some-serial)
+    Checking rdif-clk v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-clk)
+    Checking rdif-pcie v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pcie)
+    Checking rdif-msi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-msi)
+    Checking rdif-intc v0.16.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-intc)
+    Checking rdif-power v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-power)
+    Checking rdif-pinctrl v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pinctrl)
+    Checking rdif-reset v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-reset)
+    Checking pcie v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pci/pcie)
+    Checking rdif-pwm v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pwm)
+    Checking kernutil v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/kernutil)
+    Checking rdif-input v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-input)
+    Checking loongarch-intc-driver v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/intc/loongarch-intc-driver)
+    Checking cv181x-clock v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/cv181x-clock)
+    Checking rdif-vsock v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-vsock)
+    Checking ax-sync v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axsync)
+    Checking rockchip-pwm v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pwm/rockchip-pwm)
+    Checking sg200x-pwm v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pwm/sg200x-pwm)
+    Checking axpanic v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpanic)
+   Compiling axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-linked-list-r4l v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/linked_list_r4l)
+    Checking axpoll v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll)
+   Compiling scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking ax-io v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axio)
+    Checking axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+    Checking ax-memory-set v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_set)
+    Checking rsext4 v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/rsext4)
+   Compiling ax-ctor-bare-macros v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ctor_bare/ctor_bare_macros)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-log v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axlog)
+    Checking dma-api v0.10.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/dma-api)
+    Checking rdrive v0.25.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rdrive)
+    Checking buddy-slab-allocator v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/buddy-slab-allocator)
+    Checking ax-sched v0.5.11 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axsched)
+    Checking ax-cpumask v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpumask)
+    Checking axfs-ng-vfs v0.8.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/axfs-ng-vfs)
+    Checking axpoll-set v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll-set)
+   Compiling ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+   Compiling ax-tracepoint v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-tracepoint)
+    Checking trait-ffi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/trait-ffi/trait-ffi)
+   Compiling starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking rdif-display v0.4.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-display)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-cgroup v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-cgroup)
+    Checking rdif-eth v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-eth)
+    Checking rdif-block v0.13.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-block)
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+    Checking ax-ctor-bare v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ctor_bare/ctor_bare)
+    Checking usb-serial v0.1.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-serial)
+    Checking rd-net v0.3.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/net/rd-net)
+    Checking axhvc v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/virtualization/axhvc)
+    Checking axivc v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/virtualization/axivc)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.95s
+ok: starry-kernel (base, target: loongarch64-unknown-none-softfloat)
+[20/72] starry-kernel (feature: axtest, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features axtest --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.83s
+ok: starry-kernel (feature: axtest, target: loongarch64-unknown-none-softfloat)
+[21/72] starry-kernel (feature: dev-log, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dev-log --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.28s
+ok: starry-kernel (feature: dev-log, target: loongarch64-unknown-none-softfloat)
+[22/72] starry-kernel (feature: dynamic_debug, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dynamic_debug --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.39s
+ok: starry-kernel (feature: dynamic_debug, target: loongarch64-unknown-none-softfloat)
+[23/72] starry-kernel (feature: ext4, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features ext4 --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.23s
+ok: starry-kernel (feature: ext4, target: loongarch64-unknown-none-softfloat)
+[24/72] starry-kernel (feature: fat, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features fat --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.02s
+ok: starry-kernel (feature: fat, target: loongarch64-unknown-none-softfloat)
+[25/72] starry-kernel (feature: jpeg, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features jpeg --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling rockchip-pm v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/rockchip/rockchip-pm)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking rockchip-jpeg v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/rockchip-jpeg)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.47s
+ok: starry-kernel (feature: jpeg, target: loongarch64-unknown-none-softfloat)
+[26/72] starry-kernel (feature: k230-kpu, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features k230-kpu --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking k230-kpu v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/k230-kpu)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.84s
+ok: starry-kernel (feature: k230-kpu, target: loongarch64-unknown-none-softfloat)
+[27/72] starry-kernel (feature: memtrack, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features memtrack --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.48s
+ok: starry-kernel (feature: memtrack, target: loongarch64-unknown-none-softfloat)
+[28/72] starry-kernel (feature: qperf-metrics, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features qperf-metrics --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.20s
+ok: starry-kernel (feature: qperf-metrics, target: loongarch64-unknown-none-softfloat)
+[29/72] starry-kernel (feature: rdif-pinctrl, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rdif-pinctrl --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.24s
+ok: starry-kernel (feature: rdif-pinctrl, target: loongarch64-unknown-none-softfloat)
+[30/72] starry-kernel (feature: rga, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rga --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking rockchip-rga v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/gpu/rockchip-rga)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.82s
+ok: starry-kernel (feature: rga, target: loongarch64-unknown-none-softfloat)
+[31/72] starry-kernel (feature: rknpu, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rknpu --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling rockchip-npu v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/rockchip-npu)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.76s
+ok: starry-kernel (feature: rknpu, target: loongarch64-unknown-none-softfloat)
+[32/72] starry-kernel (feature: sg2002, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002 --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg2002-tpu v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/tpu/sg2002-tpu)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+warning: unused dependency `sg200x-bsp`
+   --> os/StarryOS/kernel/Cargo.toml:157:1
+    |
+157 | sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `sg200x-bsp`
+warning: `starry-kernel` (manifest) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.37s
+ok: starry-kernel (feature: sg2002, target: loongarch64-unknown-none-softfloat)
+[33/72] starry-kernel (feature: sg2002-cvi-usb-camera, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002-cvi-usb-camera --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg200x-jpu v0.1.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/sg200x-jpu)
+    Checking cvi-vdec-uapi v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/cvi-vdec-uapi)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.47s
+ok: starry-kernel (feature: sg2002-cvi-usb-camera, target: loongarch64-unknown-none-softfloat)
+[34/72] starry-kernel (feature: stack-guard-page, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-guard-page --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.81s
+ok: starry-kernel (feature: stack-guard-page, target: loongarch64-unknown-none-softfloat)
+[35/72] starry-kernel (feature: stack-protector, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-protector --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.81s
+ok: starry-kernel (feature: stack-protector, target: loongarch64-unknown-none-softfloat)
+[36/72] starry-kernel (feature: uaccess-lock-regression, target: loongarch64-unknown-none-softfloat)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features uaccess-lock-regression --target scripts/targets/bare/loongarch64-unknown-none-softfloat.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.30s
+ok: starry-kernel (feature: uaccess-lock-regression, target: loongarch64-unknown-none-softfloat)
+[37/72] starry-kernel (base, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking ax-lazyinit v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-lazyinit)
+    Checking ax-memory-addr v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_addr)
+   Compiling ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-sync v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axsync)
+    Checking trait-ffi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/trait-ffi/trait-ffi)
+    Checking rdif-def v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-def)
+    Checking irq-framework v0.5.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/irq-framework)
+    Checking mmio-api v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/mmio-api)
+    Checking rdif-serial v0.10.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-serial)
+    Checking usb-if v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-if)
+    Checking ranges-ext v0.6.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ranges-ext)
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+   Compiling someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+   Compiling crab-usb v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-host)
+   Compiling rockchip-soc v0.4.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/rockchip/rockchip-soc)
+   Compiling somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking ax-riscv-plic v0.4.9 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/intc/riscv_plic)
+    Checking axpanic v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpanic)
+   Compiling axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking rdif-base v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-base)
+    Checking page-table-generic v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/page-table-generic)
+    Checking dma-api v0.10.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/dma-api)
+    Checking buddy-slab-allocator v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/buddy-slab-allocator)
+    Checking ax-linked-list-r4l v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/linked_list_r4l)
+    Checking axpoll v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll)
+    Checking kernutil v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/kernutil)
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+   Compiling scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking ax-io v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axio)
+    Checking ax-memory-set v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_set)
+    Checking rsext4 v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/rsext4)
+    Checking rdif-pcie v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pcie)
+    Checking rdif-msi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-msi)
+    Checking rdif-clk v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-clk)
+    Checking rdif-power v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-power)
+    Checking rdif-pinctrl v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pinctrl)
+    Checking rdif-reset v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-reset)
+    Checking rdif-intc v0.16.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-intc)
+    Checking some-serial v0.7.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/serial/some-serial)
+    Checking rdif-pwm v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pwm)
+    Checking rdif-input v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-input)
+    Checking rdif-vsock v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-vsock)
+    Checking rdif-block v0.13.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-block)
+    Checking rdif-eth v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-eth)
+    Checking cv181x-clock v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/cv181x-clock)
+    Checking ax-sched v0.5.11 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axsched)
+    Checking axfs-ng-vfs v0.8.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/axfs-ng-vfs)
+    Checking pcie v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pci/pcie)
+    Checking rockchip-pwm v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pwm/rockchip-pwm)
+    Checking sg200x-pwm v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pwm/sg200x-pwm)
+    Checking axpoll-set v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll-set)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-ctor-bare v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ctor_bare/ctor_bare)
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+    Checking ax-log v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axlog)
+    Checking rd-net v0.3.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/net/rd-net)
+    Checking ax-cpumask v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpumask)
+   Compiling ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+   Compiling starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+   Compiling ax-tracepoint v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-tracepoint)
+    Checking rdif-display v0.4.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-display)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking rdrive v0.25.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rdrive)
+    Checking usb-serial v0.1.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-serial)
+    Checking ax-cgroup v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-cgroup)
+    Checking axhvc v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/virtualization/axhvc)
+    Checking axivc v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/virtualization/axivc)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.58s
+ok: starry-kernel (base, target: riscv64gc-unknown-none-elf)
+[38/72] starry-kernel (feature: axtest, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features axtest --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.76s
+ok: starry-kernel (feature: axtest, target: riscv64gc-unknown-none-elf)
+[39/72] starry-kernel (feature: dev-log, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dev-log --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.21s
+ok: starry-kernel (feature: dev-log, target: riscv64gc-unknown-none-elf)
+[40/72] starry-kernel (feature: dynamic_debug, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dynamic_debug --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.22s
+ok: starry-kernel (feature: dynamic_debug, target: riscv64gc-unknown-none-elf)
+[41/72] starry-kernel (feature: ext4, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features ext4 --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.14s
+ok: starry-kernel (feature: ext4, target: riscv64gc-unknown-none-elf)
+[42/72] starry-kernel (feature: fat, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features fat --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.97s
+ok: starry-kernel (feature: fat, target: riscv64gc-unknown-none-elf)
+[43/72] starry-kernel (feature: jpeg, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features jpeg --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling rockchip-pm v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/rockchip/rockchip-pm)
+    Checking rockchip-jpeg v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/rockchip-jpeg)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.27s
+ok: starry-kernel (feature: jpeg, target: riscv64gc-unknown-none-elf)
+[44/72] starry-kernel (feature: k230-kpu, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features k230-kpu --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking k230-kpu v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/k230-kpu)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.69s
+ok: starry-kernel (feature: k230-kpu, target: riscv64gc-unknown-none-elf)
+[45/72] starry-kernel (feature: memtrack, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features memtrack --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.33s
+ok: starry-kernel (feature: memtrack, target: riscv64gc-unknown-none-elf)
+[46/72] starry-kernel (feature: qperf-metrics, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features qperf-metrics --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.52s
+ok: starry-kernel (feature: qperf-metrics, target: riscv64gc-unknown-none-elf)
+[47/72] starry-kernel (feature: rdif-pinctrl, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rdif-pinctrl --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.27s
+ok: starry-kernel (feature: rdif-pinctrl, target: riscv64gc-unknown-none-elf)
+[48/72] starry-kernel (feature: rga, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rga --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking bytemuck v1.25.2
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+    Checking rockchip-rga v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/gpu/rockchip-rga)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.86s
+ok: starry-kernel (feature: rga, target: riscv64gc-unknown-none-elf)
+[49/72] starry-kernel (feature: rknpu, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rknpu --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking tock-registers v0.9.0
+   Compiling rockchip-npu v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/rockchip-npu)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking aarch64-cpu v10.0.0
+    Checking aarch64-cpu-ext v0.1.4
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.31s
+ok: starry-kernel (feature: rknpu, target: riscv64gc-unknown-none-elf)
+[50/72] starry-kernel (feature: sg2002, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002 --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg2002-tpu v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/tpu/sg2002-tpu)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking bit-struct v0.3.2
+    Checking sg200x-bsp v0.7.1
+warning: unused dependency `sg200x-bsp`
+   --> os/StarryOS/kernel/Cargo.toml:157:1
+    |
+157 | sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `sg200x-bsp`
+warning: `starry-kernel` (manifest) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.43s
+ok: starry-kernel (feature: sg2002, target: riscv64gc-unknown-none-elf)
+[51/72] starry-kernel (feature: sg2002-cvi-usb-camera, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002-cvi-usb-camera --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg200x-jpu v0.1.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/sg200x-jpu)
+    Checking cvi-vdec-uapi v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/cvi-vdec-uapi)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.52s
+ok: starry-kernel (feature: sg2002-cvi-usb-camera, target: riscv64gc-unknown-none-elf)
+[52/72] starry-kernel (feature: stack-guard-page, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-guard-page --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.73s
+ok: starry-kernel (feature: stack-guard-page, target: riscv64gc-unknown-none-elf)
+[53/72] starry-kernel (feature: stack-protector, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-protector --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.80s
+ok: starry-kernel (feature: stack-protector, target: riscv64gc-unknown-none-elf)
+[54/72] starry-kernel (feature: uaccess-lock-regression, target: riscv64gc-unknown-none-elf)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features uaccess-lock-regression --target scripts/targets/bare/riscv64gc-unknown-none-elf.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.29s
+ok: starry-kernel (feature: uaccess-lock-regression, target: riscv64gc-unknown-none-elf)
+[55/72] starry-kernel (base, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling compiler_builtins v0.1.160 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling x86 v0.52.0
+   Compiling const_fn v0.4.12
+   Compiling thiserror v2.0.20
+   Compiling heapless v0.9.3
+   Compiling num-traits v0.2.19
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling crossbeam-utils v0.8.23
+   Compiling cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+   Compiling ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+   Compiling anyhow v1.0.104
+   Compiling crossbeam-epoch v0.9.21
+   Compiling rust_decimal v1.43.0
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+   Compiling someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+   Compiling crab-usb v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-host)
+   Compiling rockchip-soc v0.4.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/rockchip/rockchip-soc)
+   Compiling somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+   Compiling zerocopy v0.8.57
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+   Compiling memoffset v0.9.1
+   Compiling smoltcp v0.13.1
+   Compiling syscalls v0.8.1
+   Compiling scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling ax-errno v0.6.3
+   Compiling axerrno v0.2.2
+   Compiling yaxpeax-x86 v2.2.0
+   Compiling ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+   Compiling libc v0.2.189
+   Compiling ax-tracepoint v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-tracepoint)
+   Compiling starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+   Compiling lwprintf-rs v0.3.3
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+   Compiling alloc v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc)
+    Checking log v0.4.34
+    Checking bitflags v2.13.2
+    Checking cfg-if v1.0.5
+    Checking as-any v0.3.2
+    Checking byteorder v1.5.0
+    Checking bit_field v0.10.3
+    Checking stable_deref_trait v1.2.1
+    Checking derive_more v2.1.1
+    Checking bitflags v1.3.2
+    Checking ax-sync v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axsync)
+    Checking ax-lazyinit v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-lazyinit)
+    Checking scopeguard v1.2.0
+    Checking trait-ffi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/trait-ffi/trait-ffi)
+    Checking volatile v0.4.6
+    Checking tock-registers v0.10.1
+    Checking rdif-def v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-def)
+    Checking irq-framework v0.5.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/irq-framework)
+    Checking ax-memory-addr v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_addr)
+    Checking num-align v0.1.0
+    Checking raw-cpuid v10.7.0
+    Checking lock_api v0.4.14
+    Checking bytemuck v1.25.2
+    Checking pin-project-lite v0.2.17
+    Checking mbarrier v0.1.3
+    Checking rdif-base v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-base)
+    Checking futures-core v0.3.34
+    Checking mmio-api v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/mmio-api)
+    Checking futures-sink v0.3.34
+    Checking x86_64 v0.15.5
+    Checking hash32 v0.3.1
+    Checking pci_types v0.10.1
+    Checking dma-api v0.10.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/dma-api)
+    Checking strum v0.27.2
+    Checking slab v0.4.12
+    Checking futures-task v0.3.34
+    Checking rdif-clk v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-clk)
+    Checking rdif-msi v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-msi)
+    Checking rdif-reset v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-reset)
+    Checking futures-channel v0.3.34
+    Checking rdif-power v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-power)
+    Checking rdif-intc v0.16.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-intc)
+    Checking futures-io v0.3.34
+    Checking allocator-api2 v0.2.21
+    Checking equivalent v1.0.2
+    Checking arrayvec v0.7.8
+    Checking foldhash v0.2.0
+    Checking rdif-serial v0.10.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-serial)
+    Checking futures-util v0.3.34
+    Checking uguid v2.2.1
+    Checking const-str v1.1.0
+    Checking num_enum v0.7.6
+    Checking const-default v1.0.0
+    Checking rdif-pcie v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pcie)
+    Checking rdif-pwm v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pwm)
+    Checking spinning_top v0.3.0
+    Checking uefi-raw v0.14.0
+    Checking buddy-slab-allocator v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/buddy-slab-allocator)
+    Checking crossbeam-queue v0.3.14
+    Checking ucs2 v0.3.3
+    Checking rlsf v0.2.3
+    Checking pcie v0.7.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pci/pcie)
+    Checking acpi v6.1.1
+    Checking accessor v0.3.3
+    Checking utf8-width v0.1.9
+    Checking zeroize v1.9.0
+    Checking ptr_meta v0.3.2
+    Checking bit v0.1.1
+    Checking rdif-block v0.13.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-block)
+    Checking rdif-input v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-input)
+    Checking nb v1.1.0
+    Checking rockchip-pwm v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pwm/rockchip-pwm)
+    Checking sg200x-pwm v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/pwm/sg200x-pwm)
+    Checking cv181x-clock v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/cv181x-clock)
+    Checking rdif-eth v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-eth)
+    Checking crossbeam-skiplist v0.1.3
+    Checking crossbeam v0.8.5
+    Checking rdif-vsock v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-vsock)
+    Checking axpanic v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpanic)
+    Checking hashbrown v0.16.1
+    Checking ax-linked-list-r4l v0.5.7 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/linked_list_r4l)
+    Checking linux-raw-sys v0.12.1
+    Checking memchr v2.8.3
+    Checking fdt-parser v0.4.19
+    Checking axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+    Checking event-listener v5.4.2
+    Checking ax-sched v0.5.11 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axsched)
+    Checking xhci v0.9.2
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+    Checking concurrent-queue v2.5.0
+    Checking event-listener-strategy v0.5.4
+    Checking managed v0.8.0
+    Checking smallvec v1.16.1
+    Checking page-table-generic v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/page-table-generic)
+    Checking fdt-raw v0.3.0
+    Checking ranges-ext v0.6.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ranges-ext)
+    Checking byte-unit v5.2.6
+    Checking rand_core v0.6.4
+    Checking kernutil v0.3.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/kernutil)
+    Checking ax-io v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axio)
+    Checking intrusive-collections v0.9.7
+    Checking async-channel v2.5.0
+    Checking chrono v0.4.45
+    Checking fdt-edit v0.2.3
+    Checking ringbuf v0.4.8
+    Checking lru v0.16.4
+    Checking ax-memory-set v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/memory_set)
+    Checking rsext4 v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/rsext4)
+    Checking atomic-waker v1.1.2
+    Checking ax-log v0.6.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axlog)
+    Checking rdif-pinctrl v0.2.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-pinctrl)
+    Checking bitmaps v3.2.1
+    Checking x2apic v0.5.0
+    Checking ax-ctor-bare v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ctor_bare/ctor_bare)
+    Checking hashbrown v0.17.1
+    Checking kbindings v0.3.0
+    Checking either v1.18.0
+    Checking yaxpeax-arch v0.3.2
+    Checking rand_core v0.10.1
+    Checking itertools v0.14.0
+    Checking cpufeatures v0.3.1
+    Checking zero v0.1.3
+    Checking scroll v0.13.0
+    Checking plain v0.2.3
+    Checking xmas-elf v0.9.1
+    Checking rdrive v0.25.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/rdrive)
+    Checking some-serial v0.7.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/serial/some-serial)
+    Checking x86-apic-driver v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/intc/x86-apic-driver)
+    Checking ax-cpumask v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpumask)
+    Checking flatten_objects v0.2.4
+    Checking goblin v0.10.7
+    Checking chacha20 v0.10.2
+    Checking lru v0.18.4
+    Checking combine v4.6.8
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+    Checking axpoll v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll)
+    Checking rdif-display v0.4.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/rdif-display)
+    Checking static-keys v0.8.2
+    Checking function_name v0.3.0
+    Checking axfs-ng-vfs v0.8.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/axfs-ng-vfs)
+    Checking axpoll-set v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axpoll-set)
+    Checking static_assertions v1.1.0
+    Checking aliasable v0.1.3
+    Checking tp-lexer v0.5.5
+    Checking ddebug v0.5.5
+    Checking rand v0.10.3
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking ouroboros v0.18.5
+    Checking uluru v3.1.0
+    Checking ax-cgroup v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-cgroup)
+    Checking axhvc v0.5.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/virtualization/axhvc)
+    Checking futures v0.3.34
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ksym v0.6.0
+    Checking usb-if v0.8.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-if)
+    Checking rd-net v0.3.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/net/rd-net)
+    Checking axivc v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/virtualization/axivc)
+    Checking strum v0.28.0
+    Checking downcast-rs v2.0.2
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking usb-serial v0.1.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/usb/usb-serial)
+    Checking printf-compat v0.4.0
+    Checking kbpf-basic v0.6.0
+    Checking uefi v0.37.0
+    Checking kmod-tools v0.3.0
+    Checking kapi v0.3.0
+    Checking kmod-loader v0.3.1
+    Checking ppv-lite86 v0.2.21
+    Checking kernel-elf-parser v0.3.4
+    Checking rand_chacha v0.3.1
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking rbpf v0.4.1
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking kprobe v0.6.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.51s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (base, target: x86_64-unknown-none)
+[56/72] starry-kernel (feature: axtest, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features axtest --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.89s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: axtest, target: x86_64-unknown-none)
+[57/72] starry-kernel (feature: dev-log, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dev-log --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.33s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: dev-log, target: x86_64-unknown-none)
+[58/72] starry-kernel (feature: dynamic_debug, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features dynamic_debug --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.39s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: dynamic_debug, target: x86_64-unknown-none)
+[59/72] starry-kernel (feature: ext4, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features ext4 --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.26s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: ext4, target: x86_64-unknown-none)
+[60/72] starry-kernel (feature: fat, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features fat --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking starry-fatfs v0.4.1-preview.2
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.53s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: fat, target: x86_64-unknown-none)
+[61/72] starry-kernel (feature: jpeg, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features jpeg --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling rockchip-pm v0.4.10 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/soc/rockchip/rockchip-pm)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking rockchip-jpeg v0.2.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/rockchip-jpeg)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.58s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: jpeg, target: x86_64-unknown-none)
+[62/72] starry-kernel (feature: k230-kpu, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features k230-kpu --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+   Compiling ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking k230-kpu v0.1.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/k230-kpu)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.91s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: k230-kpu, target: x86_64-unknown-none)
+[63/72] starry-kernel (feature: memtrack, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features memtrack --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking axbacktrace v0.4.12 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axbacktrace)
+   Compiling ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.51s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: memtrack, target: x86_64-unknown-none)
+[64/72] starry-kernel (feature: qperf-metrics, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features qperf-metrics --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-task v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task)
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-input v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axinput)
+    Checking ax-display v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axdisplay)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.37s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: qperf-metrics, target: x86_64-unknown-none)
+[65/72] starry-kernel (feature: rdif-pinctrl, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rdif-pinctrl --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.30s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: rdif-pinctrl, target: x86_64-unknown-none)
+[66/72] starry-kernel (feature: rga, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rga --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking bytemuck v1.25.2
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-cpu v0.10.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu)
+    Checking rockchip-rga v0.3.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/gpu/rockchip-rga)
+    Checking starry-vm v0.6.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/vm)
+    Checking cpu-local v0.4.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/cpu-local)
+    Checking someboot v0.7.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/someboot)
+    Checking ax-percpu v0.4.24 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/percpu/percpu)
+    Checking ax-plat v0.15.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/ax-plat)
+    Checking scope-local v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/scope-local)
+    Checking somehal v0.11.3 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/somehal)
+    Checking ax-fs-ng v0.11.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/fs/ax-fs-ng)
+    Checking ax-alloc v0.9.2 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/memory/ax-alloc)
+    Checking axklib v0.9.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axklib)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.94s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: rga, target: x86_64-unknown-none)
+[67/72] starry-kernel (feature: rknpu, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features rknpu --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking tock-registers v0.9.0
+   Compiling rockchip-npu v0.7.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/npu/rockchip-npu)
+   Compiling ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking aarch64-cpu v10.0.0
+    Checking aarch64-cpu-ext v0.1.4
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.22s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: rknpu, target: x86_64-unknown-none)
+[68/72] starry-kernel (feature: sg2002, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002 --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+    Checking ax-driver v0.18.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/ax-driver)
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg2002-tpu v0.4.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/tpu/sg2002-tpu)
+    Checking axplat-dyn v0.10.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/platforms/axplat-dyn)
+    Checking ax-hal v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal)
+    Checking ax-ipi v0.6.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axipi)
+    Checking ax-mm v0.8.4 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axmm)
+    Checking ax-net v0.13.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/net/ax-net)
+    Checking ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Checking bit-struct v0.3.2
+    Checking sg200x-bsp v0.7.1
+warning: unused dependency `sg200x-bsp`
+   --> os/StarryOS/kernel/Cargo.toml:157:1
+    |
+157 | sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `sg200x-bsp`
+warning: `starry-kernel` (manifest) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.47s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: sg2002, target: x86_64-unknown-none)
+[69/72] starry-kernel (feature: sg2002-cvi-usb-camera, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features sg2002-cvi-usb-camera --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking sg200x-jpu v0.1.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/vpu/sg200x-jpu)
+    Checking cvi-vdec-uapi v0.1.0 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/drivers/interface/cvi-vdec-uapi)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.53s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: sg2002-cvi-usb-camera, target: x86_64-unknown-none)
+[70/72] starry-kernel (feature: stack-guard-page, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-guard-page --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.86s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: stack-guard-page, target: x86_64-unknown-none)
+[71/72] starry-kernel (feature: stack-protector, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features stack-protector --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling ax-runtime v0.13.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime)
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Checking ax-api v0.8.6 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_api)
+    Checking starry-signal v0.10.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/signal)
+    Checking ax-posix-api v0.6.8 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/api/arceos_posix_api)
+    Checking ax-std v0.7.5 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/ulib/axstd)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.90s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: stack-protector, target: x86_64-unknown-none)
+[72/72] starry-kernel (feature: uaccess-lock-regression, target: x86_64-unknown-none)
+          cd /home/zhourui/.codex/worktrees/03ae/tgoskits-dev && CARGO_UNSTABLE_JSON_TARGET_SPEC=true cargo clippy --no-deps -p starry-kernel --no-default-features --features uaccess-lock-regression --target scripts/targets/bare/x86_64-unknown-none.json -Z json-target-spec -Z build-std=core,alloc -- -D warnings
+   Compiling starry-kernel v0.12.1 (/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.33s
+warning: the following packages contain code that will be rejected by a future version of Rust: bitmaps v3.2.1, chacha20 v0.10.2, core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+ok: starry-kernel (feature: uaccess-lock-regression, target: x86_64-unknown-none)
+clippy summary: 1 package(s), 72 check(s), 1 package(s) passed, 0 package(s) failed, 0 package(s) skipped
+passed checks: 72, failed checks: 0, skipped checks: 0
+clippy finished at: 2026-09-25 17:39:35 +0800
+clippy elapsed: 7m 45s
+all clippy checks passed

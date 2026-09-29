@@ -1,0 +1,69 @@
+## Conclusion up front
+
+No semantic-preserving source mechanism with a plausible ≥14 µs p50 reduction is currently evidenced for OTHER `absolute_timer_same_cpu`. The path implements the intended PREEMPT_RT two-stage handoff (hard IRQ publishes → `ktimers/%u` executes the timeout wake), and every stage measured by `resume825/826/828/830/831` contains required work. The one concrete structural lever I found (below) would remove the `ktimers/%u` hop, but it does so by moving the timeout wake from task context into the hard IRQ, i.e. it changes the hard/soft timer contract the task requires me to respect. It is therefore not admissible as “semantic-preserving”; under that constraint the correct answer is “none evidenced, discriminator nominated”.
+
+## 1. Forward path, OTHER `absolute_timer_same_cpu` (head `69a33650`, dev `05175ca3`)
+
+Armed side (receiver on CPU1, Fair policy):
+
+- `os/StarryOS/kernel/src/syscall/task/schedule.rs:164` `sys_clock_nanosleep` (TIMER_ABSTIME) → `:78` `sleep_until` → `:111` `begin_current_park()` → `:117` `park.arm_deadline(deadline)` → `:122` `park.commit()`.
+- `components/ax-task/src/thread/current/park.rs:439` `arm_current_park_deadline`: the timeout class is chosen from the **parker’s base policy** — `park.rs:460-476`: FIFO/RR/Deadline → `queue.arm_hard_park(...)` (`TaskDeadlineClass::ParkHard`), everything else (Fair) → `queue.arm(...)` (`TaskDeadlineClass::ParkSoft`). Classes: `time/queue/node.rs:28-33`. Only `ParkHard`/DeadlineCbs/ZeroLag are visible to `next_hard_deadline`/`claim_due_hard` (`time/queue/mod.rs:303-309, 345-372`); `expire_soft` scans **only** `ParkSoft` (`mod.rs:337-342`).
+
+Idle side (CPU1 is idle because the Fair receiver blocked):
+
+- `os/arceos/modules/axruntime/src/thread/bootstrap.rs:140-161` `run_idle` → `schedule_current_cpu()` (`:155`) → `idle_current_cpu_once()` (`:159`).
+- `components/ax-task/src/runtime/cpu.rs:79-97`: `idle_current_cpu_once` holds `PreemptScope` (`:85`) so the idle polling bit cannot transfer to an ordinary task; `wait_for_interrupt` (`os/arceos/modules/axruntime/src/thread/runtime_impl.rs:392`) adds a second `PreemptGuard` (`:398`), disables IRQs, stops the tick, and WFI’s via `ax_cpu::interrupt::wait_for_irqs_disabled()` (WFI with `DAIF.I` masked, then re-enable; `components/axcpu/src/arch/aarch64/asm.rs:103-109`).
+
+Hard IRQ → publication:
+
+- `os/arceos/modules/axruntime/src/clock_event_runtime.rs:363` `timer_irq_handler` → `ClockEventFiringTransaction::begin/finish` → `crate::thread::on_clock_event` (`:399`).
+- `components/ax-task/src/thread/current/park.rs:218` `on_clock_event` → `:260` `service_due_hard_timers`.
+- `sched/system/task_system/deadline/expiry.rs:64-101`: the ParkSoft entry is **not** hard-claimable, so `claim_due_hard_timer_step` (`sched/system/cpu/local/owner_deadline.rs:388`) falls to `promote_due_task_deadlines_in_base` (`:344`), sets `softirq_activated = true` (`:445`) and calls `remote.publish_ktimer_work()` (`:455`). The hard-wake branch that *would* avoid the worker is `expiry.rs:82-87` (`HardTimerServiceClaim::Park` → `wake_thread_from_current_cpu`), reachable only for ParkHard.
+- `sched/system/cpu/remote/ktimer.rs:119-126` `publish()`: bump `published_generation` (release), then `event.notify()`.
+- `sync/irq/cell.rs:476-482` `notify()` → `wake_registration` (`:577-581`) → `ThreadWakeHandle::wake` (`sched/system/task_system/dispatch/wake/request.rs:41-147`; worker is Blocked/not-on-rq → `activate_waking_thread_locked`, `dispatch/wake/activation.rs:73`, requesting `RescheduleKind::Immediate`).
+
+IRQ return cannot schedule:
+
+- The idle `PreemptGuard` depth is still held and the code is in hard IRQ, so `exit_lock_preempt`’s guard `preempt_exit_needs_schedule` (`os/arceos/modules/axruntime/src/guard/mod.rs:417-431`) is false at IRQ return. The switch happens only at the **final** preempt exit: `guard/mod.rs:293-335` (`exit_lock_preempt`, origin `PreemptExitOrigin::Task`) → `RuntimeSchedulerEntry::PreemptExit` (`:323`) → `runtime/switch/dispatch.rs:41-51` `schedule_current_cpu_from_preempt_exit`.
+- In `wait_for_interrupt` the tick is restarted and the guards dropped in order `drop(irq_guard); drop(idle_exit_guard)` (`runtime_impl.rs:460-469`); the final drop is the outer `PreemptScope` in `idle_current_cpu_once`. This is exactly the `resume830` observation (11388/11379 of ~11400 OTHER switch-ins are `PreemptExit` from idle).
+
+Worker claim → callback → receiver wake:
+
+- Selection picks `ktimers/1` (FIFO priority 1, `runtime/service/ktimer.rs:37-39`) over Fair idle. `runtime/service/ktimer.rs:73-103` `ktimer_service_loop`: `remote.claim_ktimer_work()` (`:80`) → `KtimerWorkerState::claim` (`remote/ktimer.rs:128-143`, requires `published != completed`, CAS `in_service false→true`, fatal otherwise) → `service_current_ktimer_pass` (`:111`) → `service_ktimer_work` (`task_system/deadline/soft_timer.rs:12-63`) → `complete_task_timer_execution` (`:65-96`) returns the wake handle → `wake.wake()` (`service/ktimer.rs:165-167`).
+- The woken Fair receiver cannot preempt FIFO-1 worker; the worker finishes the pass, re-publishes remainder if any (`:92-97`), `complete_ktimer_work` (`:98`), loops, claims `None` (`:80`) and parks in `waiter.wait` (`:81`) → that park’s switch-out is the receiver’s switch-in. Receiver resumes, rechecks `now.reached(deadline)` and returns to user (`schedule.rs:99-127`).
+
+Net: OTHER = idle→worker→receiver (2 switches); FIFO timer row = idle→receiver (1 switch, ParkHard). Matched with data: G1/G2 `absolute_timer_same_cpu` p50 FIFO 19875 ns (Linux 13211), OTHER 40625.5 ns (Linux 23920); `resume825/826` counted ~11.4 k soft claims per 10 k OTHER samples vs ~500 FIFO (background) — the OTHER benchmark timeouts do take the soft path.
+
+## 2. The one concrete lever, and why it is excluded
+
+The structural asymmetry is `park.rs:460-476`: a **Fair** park timeout is `ParkSoft`, hence reachable only through the hard→soft promotion and `ktimers/%u`. Arming Fair park timeouts as `ParkHard` (drop the policy condition) would let the hard claim at `expiry.rs:82-87` wake the receiver directly, removing the worker publish/notify (`remote/ktimer.rs:119`), the worker switch-in, the worker pass and its park — the same ~20.75 µs that separates the OTHER and FIFO Starry rows (19875 vs 40625.5). That is >14 µs, so the magnitude is plausible.
+
+I do not offer it as a candidate because it changes *where the timeout wake executes* (hard IRQ vs task context) and adds wake work to hard-IRQ time. That is the PREEMPT_RT hard/soft split the task says to respect, and it contradicts the project’s own audit statement “hardirq 只把 generation-bearing timeout 值移入预分配 buffer 并发布 `IrqWaitCell`” (`docs/design/ax-task-linux-v7.1-rt-audit.md:2513-2521`; Linux parity for nanosleep, which under RT runs in `ktimers`). So this is a contract change, not a semantics-preserving optimization.
+
+## 3. Owner / locking / lost-timeout invariants any candidate must keep
+
+- Deadline-base owner: per-CPU `CpuDeadlineState` on `CpuRemote`, under an `IrqTicketGuard` (`sched/system/cpu/remote/mod.rs:137-166`); lock order is task-lock → rq → deadline-base, and the timer IRQ takes only the deadline lock (`mod.rs:107-112`). The base is released before callbacks run (`owner_deadline.rs:388-399`, `soft_timer.rs:71-73`).
+- Notification owner: single-waiter `IrqWaitCell` (`cell.rs:356-624`) with a coalesced pending bit and 8-CAS budget fallback (`:489-567`) so no notification is dropped under churn; drain is a bounded spin because every notifier section runs non-preemptible (`:298-309`).
+- Publication/claim are generation-specific: publish-before-notify (`remote/ktimer.rs:119-126`); claim refuses when `published == completed` and fatal-invariants on a double claim (`:128-143`); `complete` re-notifies when a newer generation arrived during service (`:145-158`) so a timeout cannot be lost.
+- Hotplug: `is_quiescent_for_offline` (generations complete, service idle, no pending event; `remote/ktimer.rs:102-113`) and `is_parked_ktimer_worker` (`task_system/cpu_lifecycle.rs:522-529`).
+- Idle: the preemption guard must stay held across WFI (`runtime/cpu.rs:83-97` comment: otherwise the CPU-global polling bit attaches to an ordinary task); IRQ-return entry deliberately cannot schedule from idle.
+- The worker’s waiter lives on its own stack and the identity is published once (`remote/ktimer.rs:56-100`); any change must keep it re-installable per CPU lifecycle.
+
+## 4. Does any candidate help the other eight failed rows?
+
+No. A timer-park-path change cannot reach them: the four cross-CPU futex rows are IPI wakeups with no timeout on the critical path; both `thread_futex_same_cpu` rows and OTHER `sched_yield_handoff` have no park timeout on the path; FIFO `absolute_timer_same_cpu` already uses `ParkHard` and would be unaffected. Best case it touches only the single OTHER timer row.
+
+## 5. Next action (falsifying low-overhead diagnostic)
+
+Run a **counter-only, no-timestamp** paired diagnostic (cheaper than `resume825/826/828/831`, which all used clock reads and were probe-heavy), keyed to the benchmark’s own park generation:
+
+- For each OTHER and FIFO timer park, count: (a) hard-claim vs soft-promotion of that expiry (`expiry.rs:78-98` vs `owner_deadline.rs:440-455`), (b) `ktimer_service_loop` claim count and worker scheduler-entry kind, (c) receiver switch-in entry kind and whether its predecessor is the ktimer worker, (d) number of scheduler frames between the deadline edge and receiver user return.
+- Falsifier: if OTHER shows exactly one soft promotion, one worker switch-in, one worker park and one receiver switch-in (no extra scheduler frame) while FIFO shows one hard claim and one receiver switch-in, then the gap is the mandated extra hop plus per-switch dispatch cost, and no removable multi-microsecond transaction exists. Any extra frame/wake per generation would be the genuinely removable cost to pursue instead.
+
+## Uncertainties and uncovered scope
+
+- I did not measure anything, and the quoted stage medians (8-10/4-6/6-8/4-6 µs) are instrumented and overlapping; I did not sum them, and I did not treat them as native removable cost.
+- I could not attribute the residual Starry-vs-Linux factor inside the soft hop (Starry soft hop ≈20.75 µs vs Linux ≈10.71 µs in the frozen baselines) to a specific symbol; that needs the counter diagnostic above.
+- I did not audit the cross-CPU/IPI rows, the Fair handoff path, or `resume832`’s `schedule_if_requested_owner` beyond reading its decision; if the intended home for the ≥14 µs is a shared rq transaction rather than the timer hop, that remains open.
+- No code was changed; no build/test/board step was run.
+

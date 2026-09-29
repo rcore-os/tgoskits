@@ -1,0 +1,119 @@
+## 结论（交付物 B，并给出 A 的否证与 C 的边界）
+
+只读审计，HEAD `69a33650763538692fafea27c869870ed0313642`（`dev@05175ca388`），未改任何文件、未构建/未跑板/未跑任何验证脚本。口径按项目要求：`python3`、不把诊断当验收、不重复既有已否方向。
+
+---
+
+### 1. matched waiter 的精确源码路径（含 file:line）
+
+**1.1 syscall 入口（发送方）**
+- `os/StarryOS/kernel/src/syscall/sync/futex.rs:339-351`：`Wake | WakeBitset` 分支；`let wake_count = value as usize;`、`bitset = value3`（WakeBitset）/`u32::MAX`（Wake）、`let count = futex.wake(wake_count, bitset);`，末尾 `complete_futex_wake(count)`。
+- `syscall/sync/futex.rs:81-95`：private 模式只做 `check_access`，不解引用 futex word、不解析 VMA（注释原文明说 "Wake therefore performs access_ok() but never dereferences the futex word"）。
+- `syscall/sync/futex.rs:262-267`：`complete_futex_wake` 只返回 count，"the futex syscall must not add a second, unconditional scheduling point"（wake 不再额外调度点）。
+
+**1.2 域（bucket）阶段**
+- `task/futex.rs:1083-1094` `ResolvedFutex::wake`：`if count == 0 || mask == 0 || !bucket.has_pending_waiters() { return 0; }` 再取锁。
+- `task/futex.rs:691-716`：`reserve_waiter` = `pending.fetch_add(Relaxed)` + `fence(SeqCst)`；`waiter_removed` = `fetch_sub(Release)`；`has_pending_waiters` = `fence(SeqCst)` + `load(Acquire)`。
+- `task/futex.rs:1266-1297` `collect_futex_wakes`：逐条 `waiter.is_cancelled()` → `waiters.remove(index)`+`bucket.waiter_removed()`（取消项）；否则 `key.same`、bitset 掩码、`VecDeque::remove(index)`、`waiter_removed()`、`if waiter.mark_woken() { WaitQueue::push_wake(...) }`。
+- `task/futex.rs:227-244`：`is_cancelled` = `generation` load + `phase` load；`mark_woken` = `is_generation` load + `compare_exchange(WAIT_QUEUED→WAIT_WOKEN, Release, Relaxed)`。
+- `task/futex.rs:566-570` `push_wake`：`wakes.push(waiter.task.into_wake_handle())`（注释："mark_woken already selected this generation under its queue lock"）。
+
+**1.3 batch 阶段**
+- `task/futex.rs:32-56`：`WakeBatch::push` = `self.tasks.push(wake); self.selected += 1;`。
+- `components/ax-task/src/thread/handle/wake_batch.rs:44-70` `push`：`fence(SeqCst)` + `wake_batch_linked.compare_exchange(false,true,AcqRel,Acquire)` + 链表串联。
+- `wake_batch.rs:89-99` `wake_all`：逐项 `pop()` → `fence(SeqCst)` → `wake.wake()`（即 `ThreadWakeHandle::wake`）。
+- `wake_batch.rs:145-166` `pop`、`101-141` `into_raw/from_raw`：只做指针搬运，**无 Arc 引用计数 RMW**（`into_wake_handle` 是 `ManuallyDrop` + `ptr::read`，见 `thread/handle/mod.rs:172-186`）。
+- `thread/handle/mod.rs:287-289` `ThreadWakeHandle::wake` → `ThreadCore::wake`（`mod.rs:315-317`）→ `runtime::context::wake_thread_from_current_cpu`。
+
+**1.4 调度事务阶段**
+- `sched/system/task_system/dispatch/wake/request.rs:41-148` `wake_thread_source`：
+  - 早退点 `86-118`：`saved_state_only()`、`already_pending() && state != Blocked`、`Parking|Running|Waking|New => Notified` —— **这些分支完全不做 rq 事务**。
+  - `123-130`：`if let Some(target) = sched.placement.queued_cpu() { consume_on_rq_wake_locked; wake_on_rq_locked }`（Linux `ttwu_runnable()` 路径）。
+  - `131-147`：`select_wake_target` → `consume_wake_locked` → `activate_waking_thread_locked`。
+  - `placement.queued_cpu()` 定义：`sched/system/thread_sched/placement.rs:76-81`（`on_rq == Queued`）。
+- `dispatch/wake.rs:165-192`：`consume_wake_locked` 转 `Waking` 后仅 `Blocked→Activate`；`consume_on_rq_wake_locked` 保持 Blocked 直接判 Activate。
+- `dispatch/wake/activation.rs:72-275` `activate_waking_thread_locked`：`wait_until_not_on_cpu` → `OwnerRqTxn::begin_nested`（rq 锁）→ `prepare_wake_activation`（`10-70`）→ `QueuedThread::new(..., Arc::clone(core), ...)`（`157-164`）→ `run_queue.enqueue_task(...)`（`165-173`）→ `placement.activate` → `wakeup_preempt_with_intent`（`197-205`）→ `set_wake_cpu_hint` → `transition(Running)` → `remote.publish_rq_scheduler_reasons(...)`（`232-238`）→ `run_queue.commit()`（`238`）→ FIFO 下 `activate_owner_rt_period_for_policy`（`245`）。
+- `dispatch/wake/on_run_queue.rs:13-160` `wake_on_rq_locked`（Fair delayed 路径：`on_rq_wake_action`、`reactivate_delayed_fair`、`settle_current`、两次 `update_fair_virtual_time`）。
+- 入队叶子：`sched/algorithm/queue/lifecycle.rs:193-233`（`allocate_sequence`、`SchedulerClass::enqueue_task`、`nr_running`、`fixed_placement_demand`、`register_membership`、`refresh_class_pushable`、返回 `entity().clone()`）；`queue/class.rs:79-140`（RT 分支 `run_queue.rt.enqueue(thread, reason)`，Fair 分支 `fair.place_after_activation`）；`cpu/remote/run_queue/membership.rs:6-33`（RT 不计 runtime timer）。
+- 提交/发布：`cpu/transaction/commit.rs:13-24` → `task_system/balance.rs:75-89 publish_run_queue_summary` → `remote/run_queue.rs:265-308`（`take_domain_publication` 先比 `highest_rt_priority/earliest_deadline/...` 再决定是否 `root_domain.publish_run_queue`，见 `root_domain/publication.rs:6-40`）。
+- wake 发布本身只有一次 CAS：`thread/handle/wake_state.rs:26-28` → `thread/state.rs:109-129 publish_wake`。
+
+**1.5 与本地 Linux v7.1 源码对比（`/home/zhourui/linux-src`，`Makefile:1-5` VERSION 7.1、HEAD `8cd9520d35a6`，与 issue 冻结基线同版本）**
+- `kernel/futex/waitwake.c:155-197 futex_wake`：`hb` 锁内 `plist` 扫描 → `this->wake(&wake_q, this)` → `wake_up_q`；`110-150`：`futex_wake_mark` = `get_task_struct(p)`（refcount 原子加）+ `__futex_wake_mark`（`plist_del` + `smp_store_release(lock_ptr,NULL)`）+ `wake_q_add_safe`。
+- `kernel/sched/core.c:1076-1161`：`__wake_q_add` 用 `smp_mb__before_atomic()`+`cmpxchg_relaxed`；`wake_up_q` 每项 `wake_up_process`（含一次全屏障）+ `put_task_struct`（refcount 原子减）。
+- 即：**每个被选中 waiter，Linux 比 Starry 多 2 次 refcount 原子、plist 摘除；Starry 少这些，但多 2 次 `fence(SeqCst)`（batch push/pop）**。域+batch 的等价原语，Starry 并不更重——这与 resume604 把四处 fence 折算为“几十 ns”一致。
+- 同址 requeue：`kernel/futex/requeue.c:405-411` 只有 `requeue_pi` 才拒绝 `uaddr1==uaddr2`；`requeue.c:76-97 requeue_futex` 同 bucket 时只 `q->key = *key2`（无链表移动）；`kernel/futex/futex.h:386-398 double_lock_hb` 同 hb 只取一把锁。
+
+---
+
+### 2. 当前证据能/不能隔离什么（显式）
+
+**已隔离（可复用）**
+- bucket 锁 + 扫描 + pending hint **不是**超额来源：resume849 同一二进制/板卡/内核上 `miss p50 == empty p50`（Starry 2042/2042，Linux 2333/2333，见 `resume849-bitset-wake/decision.md:25-31`）；冻结矩阵同向：`futex_wake_empty` 120.03%、`futex_wait_mismatch` 159.90% 均通过（`resume818-weighted-profile-full20/analysis.json`）。
+- 固定 syscall 开销：849 `empty` 2.04µs < Linux 2.33µs，说明入口/解析/空 wake 不比 Linux 差。
+
+**本轮新增的判断：同核“只做域+batch、不做调度激活”的 hit 臂在用户态不可构造**
+- 只有 `Parking/Running/Waking/New` 会走 `request.rs:86-118` 早退（跳过整段 rq 事务）；但队列里的 waiter 处于这些状态时线程必然正在 CPU 上执行（`wait_nofault_until` 先 `push_back` 再 `park.commit()`，`task/futex.rs:948-1013`），同核上发送线程不可能与之并发运行。**唯一能构造的途径是跨核**，而那时完整臂走的是远端路径（`publish_rq_scheduler_reasons` → `ring_scheduler_doorbell`），与冠军行（同核）不可比。→ 同核用户态诊断无法把“域+batch”与“调度事务”逐段切开，只能做**上界/量级**比较。
+
+**不能隔离（本审计明确未覆盖）**
+- hit 增量内部：`remove+pending_sub+mark_woken+into_wake_handle+batch` 与 `wake 发布+task 锁+rq 事务+commit` 之间的分配。
+- 接收方 park 侧成本（849 与本设计都只在发送侧计时；冻结矩阵同核行的窗口则含发送方自身 park + 一次切换 + 接收方恢复，见 `apps/starry/wakeup-latency-bench/handoff.c:140-147,193-232,300-320`）。
+- `wake_on_rq_locked`（Fair delayed）与 `activate_waking_thread_locked`（off-rq）在本场景各占多少，未用证据确定。
+
+---
+
+### 3. 一个被此前所有诊断漏掉的新信号（驱动本轮 B）
+
+当前 G1（2026-09-23，`resume818` 的 G1 单次筛查）逐行：`other thread_futex_same_cpu` p50 = 14583ns vs Linux 8458 → **58.00%（最差行）**；`fifo thread_futex_same_cpu` p50 = 11958 vs 8458 → 70.73%。而冻结 Linux 基线里**同一 case 的 other 与 fifo p50 都是 8458**（`/home/zhourui/.codex/artifacts/pr1775-perf/linux-rt-orangepi-5-plus-1-baseline.json`，`bench_sha256 94c0a828…`、`image_sha256 aac6d3c5…` 与 resume849 的 Linux 镜像一致），p99 才是 other 23917 / fifo 11083。
+
+也就是说：**同核 thread_futex 的 p50 上，Starry 的 Fair 唤醒路径比它自己的 RT 路径贵 +2625ns，而 Linux 该行 p50 无策略差**；同时 resume849 的接收方是 `SCHED_FIFO(1)`（`resume849-bitset-wake/wake_cost.c` `pin_and_schedule(1)`，发送方 `80`），它定位到的 3207ns 是 **RT 激活路径且窗口内无抢占/切换**，根本没有测过当前最差行的 Fair 路径（`prepare_wake_activation`/`SchedulerClass::Fair`/`wake_on_rq_locked`）。这是可被同一协议证伪的新假设，而 Fair 唤醒路径 `dispatch/wake.rs` 早退规则不清（`request.rs:123-130` 取决于 `queued_cpu()` 是否为 `Some`，Fair delayed 休眠者可能命中 `wake_on_rq_locked`），必须用同板同核实测而不是从行差反推。
+
+---
+
+### 4. 交付物 B：一个新的、可证伪、最小化诊断
+
+**同一静态 ARM64 二进制、未改内核、Plus 型板、收发同 CPU0**（与 849 同构；发送方固定 `SCHED_FIFO(80)`，接收方按变体为 `SCHED_FIFO(1)` 或 `SCHED_OTHER`）。
+
+每次迭代（receiver 先 parked 在 `W`、bitset=1；sender 在 50µs settle 后连发 6 个被计时的 syscall，receiver 只能等 sender 之后 park 才运行，故窗口纯发送侧）：
+
+| # | 调用 | 期望返回 | 覆盖的工作 |
+|---|---|---|---|
+| 1 | `WAKE_BITSET(empty, mask=1, count=1)` | 0 | 固定开销参照（849 同臂） |
+| 2 | `WAKE_BITSET(W, mask=2, count=1)` | 0 | bucket 锁 + 扫描，无选中（849 miss） |
+| 3 | `REQUEUE(empty, empty, val=0, val2=1)` | 0 | requeue 族固定开销参照 |
+| 4 | `REQUEUE(W, W, val=0, val2=0)` | 0 | 同 bucket/同 waiter，仅扫描 + `is_cancelled`，**无域写** |
+| 5 | `REQUEUE(W, W, val=0, val2=1)` | 1 | 域内 per-waiter **写**原语：`set_cleanup_if_queued`（RawSpinLock + cleanup Arc 换入换出）+ `key.clone`（`task/futex.rs:1349-1378`）；**无 wake 发布、无 batch、无调度事务** |
+| 6 | `WAKE_BITSET(W, mask=1, count=1)` | 1 | 完整 hit（849 同臂） |
+
+编码依据：`syscall/sync/futex.rs:353-395`（`val=wake_count`、`timeout.addr()` 作 `requeue_count`，返回值 = woken+requeued）；同址走 `Ordering::Equal` → `task/futex.rs:1096-1160, 1349-1378`；Linux 侧同址 requeue 合法且几乎零成本（上文 1.5）。臂 4/5 与 2/6 都作用于**同一个 word、同一把 bucket 锁、同一个 parked waiter**，变量只有 `val2∈{0,1}` / `mask∈{2,1}`，避免跨 opcode 相减的混淆。
+
+**有效性门（预注册，先于上板写死）**
+- 每个 warmup/measured 迭代：臂 1,2,3,4 返回 0、臂 5,6 返回 1；任一不符即整轮无效；
+- receiver 侧记录每次 `FUTEX_WAIT_BITSET` 结果与自身耗时，臂 6 必须观察到 WOKEN（等价 849 的 `missed==0`）、且必须在 `armed` 之后才进入等待；
+- 每臂 20000 样本、1000 warmup、线程 join 正常、退出码 0；镜像/二进制/bench SHA、U-Boot PLL（816MHz）、板卡身份核验；每次释放会话；
+- 每内核至少 3 个独立进程轮（不是 3 次独立启动，须注明）；两种 receiver 类各至少 3 轮；
+- 对照轮：同二进制在**同一进程轮内**再跑一遍只有 {1,2,6} 的 849 协议（或把 4/5 放在轮内不同相位），要求 hit p50 与含 requeue 臂时相差 < 1 个时钟粒度（875/1750ns 量级），证明新臂没污染 hit。
+
+**预注册解释规则（不是验收阈值，只选下一步）**
+- D1（域 vs 调度）：记 `Dd = Starry(臂5−臂4)`、`Dh = Starry(臂6−臂2)`。若 `Dd ≥ 0.5·Dh` → 域内 per-waiter 写原语可观，允许提出域侧源码候选并配完整正确性论证；若 `Dd ≤ 0.25·Dh` 且 `Starry Dh − Linux Dh ≥ 2000ns` → hit 超额落在 **wake 发布 + batch + 调度事务**，后续不得再提交纯域/batch 微优化，只能给这些步骤的源码候选或有界探针。（Linux 的 `臂5−臂4` 预期≈0，作为该臂结构的正确性参照，不作跨核收益。）
+- D2（策略轴）：同一 `SCHED_FIFO(80)` 发送方下比较 receiver FIFO vs OTHER 的 `Dh`。若 Starry 的 Fair 增量比 RT 增量再高 ≥1000ns 而 Linux 两者差 <300ns，则第 3 节的 +2625ns 属**唤醒侧 Fair 激活**（`prepare_wake_activation` 的 Fair 分支、`place_after_activation`、`settle_current/update_fair_virtual_time`、`owner_work` 发布）；若两者接近，则 +2625ns 只能落在**切换侧**（Fair 的 put_prev/pick_next/EEVDF/delayed dequeue），方向转到 `switch/selection.rs` 那一侧。这一分叉是当前唯一能把该 2.6µs 归因到源码模块的用户态判据。
+- 负例：若 `Dh` 两内核差异不显著，或臂 5 返回 1 但臂 6 变成 0/EAGAIN，则整个诊断作废（记录为无效轮，不得改口）。
+
+---
+
+### 5. 为什么不是 A（无可用源码候选）与范围外
+
+本审计没有找到满足“精确行 + 删除的工作 + 所有权/内存序证明 + 负例”的候选，理由是可核查的：(1) 域+batch 的 per-waiter 原语比 Linux 更省（无 refcount 原子、无链表移动，只有 2 次 SeqCst fence，resume604 已测几十 ns）；(2) `has_pending_waiters`/扫描已被 849 与冻结空 wake 行排除；(3) 剩余嫌疑（task 锁、`publish_wake` 单 CAS、rq 事务、`publish_run_queue_summary`、entity clone、§1.4 各步）在台账里已被 57/250/390/409/509（实体快照）、451/519（内联）、597/598（membership/叶段）、601（bitmap 尾写）、604（fence）、742（单 waiter 快路径）覆盖，且均无“语义等价 + 同源码 tail 收益”证据；没有新机制前不应重做。可能真正可做的候选（Fair 激活内的重算/发布合并）**必须先由 D2 判定落在哪一侧**，否则就是再猜一次。
+
+未覆盖：`wake_wait_claim_from_current_cpu`（`request.rs:150-205`）与 `WaitWakeClaim` 不属普通 futex wake；`wake_on_rq_locked` 中 `reactivate_delayed_fair` 的 EEVDF 内部成本；跨核 `ring_scheduler_doorbell`/IPI 侧；`process_futex_cross_cpu` 行（另有进程切换语义）。这些均未测，也未据此下结论。
+
+---
+
+### 6. 不确定项
+
+1. G1 是单次筛查（`analysis.json one_boot_screening_only: true`），§3 的 +2625ns 策略差尚未在同 head 多轮/ABBA 复核；同一进程内 FIFO 与 OTHER 行的顺序效应未排除，需按 D2 在同二进制内配对。
+2. Fair 停放者在被唤醒时 `queued_cpu()` 是否为 `Some`（走 `wake_on_rq_locked`）未由源码唯一确定（取决于 delayed dequeue 是否已完成）；D2 结果本身会间接暴露这一点。
+3. 849 的 3207ns 与冻结矩阵的行值不可直接相减（不同二进制/不同窗口），本报告只用其“空/错/中”结构。
+4. 板卡/频率/会话状态未在本轮核验（只读审计，未接触板卡服务）。
+
+下次上板前按台账流程 `ledger.py begin` 记录本编号与新机制差异，完成后 `finish`（含无效轮），并保持 `search`/`BY-DIRECTION` 不重复既有方向。

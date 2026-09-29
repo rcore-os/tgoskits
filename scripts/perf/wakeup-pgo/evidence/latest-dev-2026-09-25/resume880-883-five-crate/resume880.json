@@ -1,0 +1,40 @@
+{
+  "id": "resume880",
+  "created_at": "2026-09-25T14:44:46.336532+00:00",
+  "state": "invalid",
+  "change": "Retry current b292 native broad PGO with early boot and platform crates excluded symmetrically from profile-generate and profile-use; smoke training boot, then candidate full20 if valid",
+  "hypothesis": "The resume879 abort was caused by instrumenting someboot before counter memory is usable; retaining broader post-MMU runtime coverage than the successful four-crate profile may change worst-row performance",
+  "files": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/wrapper-retry.py",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/profgen-export.toml",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/pgouse.toml",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/board.py"
+  ],
+  "prior_reviewed": [
+    "resume764",
+    "resume766",
+    "resume769",
+    "resume873",
+    "resume876",
+    "resume879"
+  ],
+  "difference": "Current b292 memset-safe source and root-only exporter already booted with four-crate PGO; retry excludes all pre-MMU/platform crates, keeps ax_sync and other post-MMU dependencies, and uses a changed profile output path to force a clean target recompilation",
+  "effect": "Retry profile-generate compiled on b292 with 216/233 target-crate invocations instrumented, excluding someboot/somehal/ax_cpu/ax_hal/aarch64_cpu and other early crates. ELF has 34960 IR records and 1691840 counter bytes. Board run2 loaded the image and reached Starting kernel but produced no Starry output for 300s; no profile, benchmark, or full20; session was released.",
+  "decision": "Reject this broad training image; do not repeat crate-by-crate stripping without a precise pre-MMU call-path/codegen diagnosis. Preserve source and board logs; explore function-level early instrumentation exclusion before another board run.",
+  "history": [
+    {
+      "at": "2026-09-25T14:55:25.417866+00:00",
+      "previous_state": "planned",
+      "previous_effect": "尚未执行；无性能结论",
+      "previous_decision": "待验证"
+    }
+  ],
+  "evidence": [
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/build-profgen-retry.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/export-profile-layout.json",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/wrapper-retry.jsonl",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/run2/serial.log",
+    "/home/zhourui/.codex/artifacts/issue2308-perf/resume879-broad-pgo/run2/session.json"
+  ],
+  "updated_at": "2026-09-25T14:55:25.417902+00:00"
+}

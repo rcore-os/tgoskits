@@ -1,0 +1,4 @@
+broad-failures/*-serial.log binary
+broad-failures/resume881-readonly-audit.txt binary
+five-crate/build-pgouse.log binary
+five-crate/full20/serial.log binary

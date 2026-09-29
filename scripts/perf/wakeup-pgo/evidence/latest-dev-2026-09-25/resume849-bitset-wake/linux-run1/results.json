@@ -1,0 +1,81 @@
+{
+  "experiment": "resume849",
+  "diagnostic_only": true,
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "65e04d36-b964-441f-bb83-a33657662842",
+  "linux_image_sha256": "aac6d3c5fa0c4fdf65f987af635f4cd55a06852b23046a4242a184acc2fd563b",
+  "dtb_sha256": "316dd15b329756be3887dea22f89fc8d1f5b055f8769761f4144b6b1caaea994",
+  "initramfs_sha256": "44cdf310cb527e5d78d91fa468d5b4ad74ac2828f21b13524efe55370f1d3345",
+  "benchmark_sha256": "cb129fc2b48a8af7a7d9c845161bab1f7858750aed70ae9fee6dc83bcab15326",
+  "bootargs": "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 nokaslr",
+  "board_released": true,
+  "pll_verified": true,
+  "state": "collected",
+  "failures": 0,
+  "rows": [
+    {
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2917,
+      "p999_ns": 14583
+    },
+    {
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2334,
+      "p999_ns": 16042
+    },
+    {
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 4084,
+      "p99_ns": 17500,
+      "p999_ns": 19542
+    },
+    {
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2917,
+      "p999_ns": 3208
+    },
+    {
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2334,
+      "p999_ns": 14292
+    },
+    {
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 4084,
+      "p99_ns": 4667,
+      "p999_ns": 20709
+    },
+    {
+      "case": "empty",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2917,
+      "p999_ns": 3208
+    },
+    {
+      "case": "bitset_miss",
+      "samples": 20000,
+      "p50_ns": 2333,
+      "p99_ns": 2334,
+      "p999_ns": 2625
+    },
+    {
+      "case": "bitset_hit",
+      "samples": 20000,
+      "p50_ns": 4084,
+      "p99_ns": 4666,
+      "p999_ns": 19542
+    }
+  ],
+  "boot_sha256": "91ce9e63feb11ee6419b2521f0e2a7dc0373379cddf7cfa0f9cf194338c176b2"
+}

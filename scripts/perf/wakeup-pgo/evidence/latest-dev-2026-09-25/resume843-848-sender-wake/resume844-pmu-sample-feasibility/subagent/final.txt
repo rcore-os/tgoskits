@@ -1,0 +1,149 @@
+## 结论（先给判断）
+
+机制层面 **可行，而且已经在同型号板上跑通过**：Starry 的 PMUv3 溢出采样路径确实能采集 EL1（内核）PC 样本，权限过滤允许 EL1，RK3588 的 PMU PPI 在设备树里存在，`perf_event_paranoid` 只上报 `-1` 不做内核过滤。`resume725` 用最小消费者在本板一次 boot 内拿到 492/493/491 个内核 PC 样本、`lost=0`，并能对归档 ELF 反汇编定位。
+
+但对 #2308 的 **“sender 时间戳 → receiver 用户态恢复”测量窗口**做窗口内归因，**不可行**：冻结 benchmark 不导出逐次窗口时间戳，逐次 enable/disable 会改动被测量的窗口本身，而且窗口只有 ~10–16 µs，跨核 enable 走 worker 会直接破坏该窗口。采样只能做**整段单场景热点定位（假设生成）**，不能当作窗口独占耗时或 full20 验收证据。
+
+---
+
+## 1. EL1 采样为什么可行（源码证据）
+
+**权限过滤允许 EL1。** `exclude_kernel` 一路映射到 `PMEVTYPERn.P`：
+
+- [hw_open.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/hw_open.rs:135)：`let exclude_kernel = attr.exclude_kernel() != 0;`
+- [hw_open.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/hw_open.rs:171)：system 事件把 `exclude_user/exclude_kernel` 交给 `SystemPmuConfigure`；task 事件走 `PerTaskConfig`（`hw_open.rs:297-298`）。
+- [hw_owner.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/hw_owner.rs:23)：`EventConfig { event, exclude_user, exclude_kernel, include_hypervisor: false }`。
+- [counter.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu/src/arch/aarch64/pmu/counter.rs:23)：`filter = (exclude_kernel << 31) | (exclude_user << 30) | (include_hypervisor << 27)`，写入 `PMEVTYPER`/`PMCCFILTR`。
+- [task/model.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/task/model.rs:34)：注释明确 `attr.exclude_kernel` 对应不计数 EL1，且 `model.rs:263,352` 一路透传。
+
+`exclude_kernel=0`（perf 在 paranoid≤0 时的默认）→ 计数 EL1，符合需求。
+
+**内核 IRQ 也有合法中断现场。** 内核 IRQ 入口按 `TrapOrigin::Kernel` 传入现场：
+
+- [trap.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu/src/arch/aarch64/trap.rs:216)：`dispatch_irq(0, TrapOrigin::Kernel, Some(raw.0.interrupted_context()))`。
+- [context.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/axcpu/src/arch/aarch64/context.rs:52)：`pc = ip()`（即 `ELR_EL1`），`privilege` 由 `spsr[4:0]` 判定。
+
+所以 EL1 溢出时 handler 拿到的是**内核 PC**，并打上 `PERF_RECORD_MISC_KERNEL`：
+
+- [sampling.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/sampling.rs:846) handler；`sampling.rs:852` `ip = context.pc`；`sampling.rs:865` `misc = KERNEL/USER`；`sampling.rs:749` `time = monotonic_time_nanos()`。
+
+**平台 PMU IRQ 存在。** RK3588/OrangePi-5-Plus 的 `arm-pmu` 节点（`/home/zhourui/.codex/artifacts/issue2308-perf/board.dtb` 内含 `arm,armv8-pmuv3` 与 `interrupt-affinity`；对应解出的 DT 为 `os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.dts:1426-1431`）：
+
+```
+interrupts = <0x01 0x07 0x08>;      // PPI#7, level → IrqId 23
+interrupt-affinity = <... 8 个 CPU phandle>;
+```
+
+[pmu.rs](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axhal/src/pmu.rs:93) `discover_pmu_ppi()` 要求 `kind==1 && number<16`、父节点 `gic-v3`/3 cells、affinity 覆盖所有在线 CPU（`pmu.rs:146-191`），本板满足。采样 open 会先 `ensure_pmu_irq_registered()`（[sampling.rs:684](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/perf/sampling.rs:684)、`hw_open.rs:158`），失败返回 `ENODEV`。
+
+**权限不是障碍。** 只有 task 目标走 ptrace 风格凭据检查（`access.rs:82-112`、`access_policy.rs:240-260`）；system-wide（`pid=-1,cpu>=0`）无 perf_event_paranoid 门禁，`/proc/sys/kernel/perf_event_paranoid` 固定上报 `-1`（`pseudofs/proc.rs:2111-2117`）。基准本身以 root 运行。
+
+**符号化可行到函数级。** 镜像 `resume817.elf`（G，ELF SHA `31313ba5…`）含 `.symtab/.strtab` 与 `.kallsyms`，但**无 `.debug_info`/`.debug_line`**；内核态 `/proc/kallsyms` 也暴露全符号（`pseudofs/proc.rs:2338-2346`）。所以 `nm`/`objdump -d`/`perf report -k` 可用，`addr2line` 得不到文件行号。
+
+**板上已实证。** `resume725-pmu-evidence2/decision.md`：同一板、CPU0、`exclude_user=1` 的 cycles 采样，三连跑 492/493/491 样本、零丢样，并能对归档 ELF 反汇编定位到 `msr daifclr, #0x2` 之后的地址。
+
+---
+
+## 2. 与 #2308 测量窗口的关系（关键限制）
+
+窗口定义（冻结 benchmark `SHA 94c0a828…`，`apps/starry/wakeup-latency-bench/`）：
+
+- 同核：`sched_yield()` 让 receiver 进 `FUTEX_WAIT`（`handoff.c:137-148`），**该 yield 在窗口之前**；窗口内的两个时间点是 sender 的 `atomic_store(wake_timestamp_ns)`（`handoff.c:311-313`）和 receiver 的 `resumed_ns = bench_monotonic_ns()`（`handoff.c:220-229`）。
+- 跨核：`nanosleep(park_settle=50us)` 之后同样只测 `wake_timestamp → receiver resume`（`handoff.c:150-159`，默认参数见 `main.c:12-22`）。
+- 时间基：`bench_monotonic_ns()` 是 **raw syscall `CLOCK_MONOTONIC`**（`stats.c:30-39`）；Starry 把 `CLOCK_MONOTONIC` 映射到 `monotonic_time()`（`syscall/time.rs:151-153`），与采样时间 `monotonic_time_nanos()`（`platforms/ax-plat/src/time.rs:228`）同源，因此**时间基相同**。
+
+问题在于：
+
+1. **冻结 benchmark 不导出逐次窗口边界。** 只把 `resumed-wake` 的差值写进 `samples[]`（`handoff.c:223-229`），`wake_timestamp_ns` 只有单槽会覆盖。因此无法把某条 sample 归到“第 N 次窗口”。要归因就必须改 benchmark，而 `resume813-decision` 已证明：仅仅加相邻 PMU 读，就把 Linux OTHER 的 “sender-marker 之后” strata 从 63.4% 变到 94–95%，Starry A 从 ~99% 变到 ~81–83% ——**插桩改变路径混合**。
+
+2. **逐次 enable/disable 不可行。**
+   - ENABLE/DISABLE 最终是 `control.enable()/disable()`（`perf/mod.rs:425-437`），system 事件走 `cpu_worker::enable_system`（`cpu_worker.rs:338`）。
+   - 同核：`try_local` 命中（`cpu_worker.rs:181-190`），但整个 `enable_system_on_owner` 在 `NoPreemptIrqSave` 内完成 `enable_local_pmu_irq + preload + register(新 generation) + enable_overflow_irq + enable`（`hw_owner.rs:147-169`），DISABLE 还多一次 `unregister` + 读计数器（`hw_owner.rs:172-193`、`sampling.rs:607-628`）。这是在**被测量 CPU**上、窗口附近反复关中断做寄存器/registry 事务，量级与被测窗口同阶。
+   - 跨核：sender 在 CPU0 上操作 CPU1 的 receiver 事件时 `try_local` 失败 → `owner_worker.submit() + completion.wait()`（`cpu_worker.rs:344-353`）——一次跨核 worker 唤醒/阻塞，远大于 10–16 µs 窗口。要避免它，只能让 receiver 自己在 CPU1 上本地 ENABLE/DISABLE，那又是改 benchmark。
+
+3. **交付时机偏差。** 采样记录的是**服务 IRQ 时**的 PC，不是计数溢出点。调度器/rq 临界区用 `NoPreemptIrqSave` 关中断，样本会被推迟到 `daifclr` 处——`resume725` 实测 67.3% 样本集中在三个 `msr daifclr, #0x2` 之后（`PreparedCurrentPark::commit`、`schedule_current_cpu`、`guard::exit_irq`），`exp126-status.json` 也列为 “PMU IRQ delivery under IRQ exclusion can attribute samples to unmasking point”。这使 IP 直方图**偏向解锁点**，不是干净热点。
+
+4. **system 事件的 kernel 样本丢失 TID。** `slot.owner_ids=None` 时 pid/tid 回落到 `try_current_user_irq_view()`，内核 IRQ 下为 None → pid/tid=0（`sampling.rs:758-768`）。内核样本只能靠 `PERF_SAMPLE_CPU` + `TIME` 区分，无法按 TID 区分 sender/receiver。
+
+5. **扰动量级已被测量过。** `resume725`：采样 run p50≈11.1 µs，p99≈28.8–29.2 µs，明确“PMU IRQ perturb the tail，不能当天花板/回退 gate”。
+
+---
+
+## 3. 与 ledger resume808/810 的关系
+
+- `resume808-decision.md`：用固定计数采集器（`sample_period` 大到不溢出）读 CPU0 EL1 的 `instructions/CPI/L1I/L1D` 每窗口聚合值；**没有**溢出采样、没有逐 PC/调用栈；母体包含 child startup、反向 handoff、后台活动；三组 OTHER 因 `not_parked=1` 被排除。
+- `resume810-decision.md`：逐窗口 bracket，但仍是**计数读**（相邻读校正），只给 instructions/cycles/L1I/L1D 窗口中位数；“raw per-sample PMU deltas were not exported”。
+- `resume809` 结论即本任务的出发点：**停止用 whole-case / overflow-PC 采样代理正向 wakeup**。
+
+也就是说，808/810 缺的正是“带 IP 的溢出采样”，本次要评估的正是补齐它——但补齐后能得到的只是**整段单场景的 IP 直方图**，仍不能还原 810 想要的逐窗口独占代价。
+
+---
+
+## 4. 现有测试 / feature gate 覆盖
+
+- 采样相关 system 用例：`test-suit/starryos/qemu/system/perf-hw-sample`（system 采样，`attr.flags=0` → `exclude_kernel=0`，IP-only）、`perf-hw-sample-read`、`perf-hw-group-sample`、`perf-hw-sample-task`、`perf-hw-callchain-user`（`flags = DISABLED | (1<<5)` → **exclude_kernel=1**）、`perf-hw-lost`、`perf-hw-ring-merge`、`perf-hw-record-ioctl`、`perf-hw-stat`、`perf-hw-cycles`（含 `--no-pmu-irq` 手工变体）、`perf-hw-cache`、`perf-hw-pmu-sysfs`、`perf-open-abi`、`perf-sw-counters` 等。
+- 运行配置：`qemu-aarch64.toml` 的 `grouped_qemu_profiles name="perf"` → `perf-aarch64.toml`（`-icount shift=0 -cpu cortex-a53,pmu=on -smp 4`）。
+- 内核 axtest：`sampling.rs:1229-1363`、`system_flex.rs:332-401` 等。
+- feature gate：`os/StarryOS/kernel/Cargo.toml:201-202`（aarch64 下 `ax-cpu/ax-hal features=["pmu"]`）；`axhal/src/pmu.rs` 用 `target_arch="aarch64" && feature="pmu"` 切分实现。
+- **board 侧唯一 perf 验收**：`apps/starry/linux-perf`（Alpine perf 6.19.14）。注意它的 record 用的是 `-e cycles:u`（`linux-perf.sh:76`），并在 report 阶段只校验**用户**调用链帧（`linux-perf.sh:104-109`）——**内核采样没有被任何测试或 board 脚本覆盖**（我 grep 过 `MISC_KERNEL`/`misc==1`，没有内核样本断言）。这是明确的覆盖缺口。
+
+---
+
+## 5. 最小消费者设计（推荐复用已有资产）
+
+已有、已验证的静态消费者：`/home/zhourui/.codex/artifacts/issue2308-perf/resume725-pmu-sample.c`（657 KB 静态 aarch64）。它的做法与你要的完全一致：
+
+```c
+attr.type = PERF_TYPE_RAW; attr.config = 0x11;      /* CPU_CYCLES */
+attr.sample_period = <period>;
+attr.sample_type  = PERF_SAMPLE_IP;                  /* 可加 TID|TIME|CPU|PERIOD */
+attr.disabled = 1; attr.exclude_user = 1; attr.exclude_hv = 1;   /* 只采 EL1 */
+fd = perf_event_open(&attr, -1, 0, -1, FD_CLOEXEC);  /* pid=-1,cpu=0 → system-wide */
+mmap(129*4096); ioctl(RESET); ioctl(ENABLE);
+fork(); 子进程 sched_setaffinity({0,1}) 后 execv(bench, "--policy other --case thread_futex_same_cpu");
+waitpid(); ioctl(DISABLE); 遍历 ring，打印 PMU_IP / PMU_DONE samples lost;
+```
+
+驱动脚本 `resume725-pmu-board.py` 展示了 session 上传 + 串口起内核 + guest `curl` 拉资产 + 回传日志的完整流程。针对本任务只需三处调整：
+
+1. `sample_period` 从 `1000000` 降到 ~`2000–8000`（816 MHz 下约 2.5–10 µs），让窗口内有多次溢出。
+2. `sample_type |= (PERF_SAMPLE_TID|PERF_SAMPLE_TIME|PERF_SAMPLE_CPU|PERF_SAMPLE_PERIOD)`，解析记录时按 `cpu`/`time` 分类（内核样本 pid/tid=0）。
+3. 高周期率必须**边跑边 drain**：把父进程 pin 到 CPU2，循环读 ring 写到串口/文件；否则 129 页 ring 会被覆盖并产生 `PERF_RECORD_LOST`（`sampling.rs:1101-1205`，`output.rs` 的 `try_begin_write` 是单次 CAS，失败即丢）。单事件、一次 run 只采一个 event：`-a` 下多采样事件成组会被拒（`perf/mod.rs:1005-1013`、`1023-1031`，`direct_system_sampling` → `EOPNOTSUPP`；`pinned` 也被拒 `perf/mod.rs:1033-1038`）。
+
+若坚持用现成 perf：`cargo xtask starry app board -t linux-perf -b OrangePi-5-Plus` 的运行时可用，但需新写一个 record 脚本变体，把 `linux-perf.sh:76` 的 `cycles:u` 改成 `-e cycles`（或 `cycles:k`）并指向 `wakeup-latency-bench`，否则拿到的仍是用户样本。
+
+预期证据：
+
+- `PMU_SCOPE …` / `PMU_DONE samples>0 lost=0 child_status=0`，三次一致；
+- 对 `resume817.elf` 做 `aarch64-linux-gnu-nm -n` 地址排序 + `objdump -d --start-address/--stop-address`，或 guest 内 `perf report` 读 `/proc/kallsyms`；
+- 同参数下**关闭采样**的对照 p50/p99（证明扰动量级，而非声称收益）。
+
+---
+
+## 6. 同步限制与失败条件
+
+**同步限制**
+
+- 采样时间与 benchmark 时间同源（`platforms/ax-plat/src/time.rs:228` ↔ `syscall/time.rs:151`），可以做粗时间对齐；但**逐次窗口边界不在镜像里**，全量时间对齐全靠改 benchmark。
+- IP 是“服务 IRQ 时”的 PC，关中断段会推迟到解锁点（`resume725` 的 67% 偏置；`exp126` 的 measurement_limitations）。
+- system 内核样本 pid/tid=0（`sampling.rs:758-768`），只能按 CPU/时间划分 sender/receiver。
+- 内核调用栈依赖 `-Cforce-frame-pointers=yes`（`scripts/axbuild/src/build/info.rs:14-27`，仅当环境 `BACKTRACE=1`/`DWARF=1`）。`resume817` 的 `build.toml` 未设 `BACKTRACE/DWARF`，且 ELF 无 `.debug_info`，所以**内核 FP 调用栈深度不可假定**；leaf IP（`unwind.rs:13-25` 的 `write_leaf`）一定有效。
+- 完整跳过 `sched_yield` 的同核窗口在冻结镜像里不存在——那属于诊断变体（`resume813`/`resume840` 一类）。
+
+**失败条件**
+
+- `ENODEV`：DTB 缺 PMU 中断/PPI 拓扑不覆盖全部 CPU（`axhal/src/pmu.rs:146-191`；design doc 第 73 行）。
+- `ENOENT`：目标 CPU PMCEID 不支持 `0x11`（`hw_open.rs:47-48,90-92`）。
+- `EINVAL`：mmap 页数非 `2^k+1`（`hw_sampling.rs:94-100`）；`sample_type` 缺 IP 或含不支持位（`hw_open.rs:349-372`）；`pid=-1,cpu=-1`。
+- `EOPNOTSUPP`：`pinned`、system 采样成组、mixed group（`perf/mod.rs:1005-1038`）。
+- `PERF_RECORD_LOST>0`：周期太小 + 无并发 drain。
+- 采样本身把 p99 抬高数倍（`resume725`），任何“延迟数字”都不能与未插桩 full20/冻结 Linux RT 比较。
+
+---
+
+## 7. 不确定项 / 未覆盖
+
+- 未逐字节校验 `board.dtb` 中 `arm-pmu` 的 `status` 字段（字符串 grep 只见 `arm,armv8-pmuv3` 与 `interrupt-affinity`）；不过 `pmu.rs` 接受缺失 status，且 `resume725` 已在该板成功跑通采样，风险低。
+- `resume817` 是否含内核 frame pointer 未做二进制验证（无 `.debug_info`、build.toml 无 `BACKTRACE`，据此推断大概率没有）；因此内核调用栈是否可用需一次实测确认。
+- `perf record -a -e cycles`（内核+用户）是否被 Starry 全链接受，未实测；已知 `-a` 在本板 `cycles:u` 下通过，且多采样事件成组会被拒。
+- 本报告未运行任何编译/测试/板卡命令；所有板上数字均来自归档台账（`resume725/808/809/810/813`）。

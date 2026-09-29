@@ -1,0 +1,32 @@
+{
+  "experiment": "resume875",
+  "state": "rejected",
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "temporary_source_diff_sha256": "5d223cc0f1aa6f14df2862befbc20ee3142069a1b25b9f58d354c1060a2d5c85",
+  "source_change": "Temporary board_profile_export rustc cfg in starry-kernel debugfs exporter; no Cargo feature change",
+  "build_config_sha256": "75f9b96218bfa0950ba392ec05668822d6d2ea3f43738a126c146e42c0581b58",
+  "wrapper_sha256": "30d6f14d702f053250b95d413d750e99e7aaffaf5d8228b8bf6eba7baf967b29",
+  "build_log_sha256": "f2f523d3cddf6192bbdbb2513172498807cf3e48778d084b32a9b2c2f43b6e6a",
+  "elf_sha256": "86f7c0fe6a3a884725d09ecea375259ba474710b31b58414552e361a79e62c62",
+  "image_sha256": "bfd061dcad96eb13610a5b6ef1099097fe981eaa8aa710426b91f501d26b1e91",
+  "hash_audit_sha256": "c9b173e654b600abb0d3264d45d5a9d64560d51154ee81b86938421f40c959cf",
+  "build_succeeded": true,
+  "starry_kernel_crate_identity_matches_no_exporter": true,
+  "hot_path_hashes": {
+    "sys_futex": {
+      "cfg_exporter": 930378362627116063,
+      "no_exporter": 161827148963460207,
+      "discarded_training_count_if_used": 7738999
+    },
+    "wait_nofault_until": {
+      "cfg_exporter": 417084991874116521,
+      "no_exporter": 946099970370573225,
+      "discarded_training_count_if_used": 3132306
+    }
+  },
+  "board_used": false,
+  "performance_measured": false,
+  "production_source_changed": false,
+  "effect": "Changing the temporary exporter gate from Cargo feature to rustc cfg restored the ordinary crate identity, but both hot futex functions still have the exporter-enabled CFG hash. The no-exporter candidate would discard their profile counts.",
+  "decision": "Reject before board training. Move counter export outside the four profiled crates while keeping the starry_kernel item set and source identical between training and production, or use an external memory capture route."
+}

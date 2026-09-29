@@ -1,0 +1,12 @@
+{
+  "experiment": "resume851",
+  "source_head": "69a33650763538692fafea27c869870ed0313642",
+  "board_id": "OrangePi-5-Plus-2",
+  "session_id": "03c00d3d-70cb-4168-9896-2c96a86ba966",
+  "image_sha256": "9e9847a433cd99808d7f511372d454eb2cf5412a94e42187bcab64780ebfb8a3",
+  "benchmark_sha256": "c9e96efb297c64017c55052368a3470cb717f83375c266213b1bb820163addc5",
+  "board_released": true,
+  "pll_verified": true,
+  "state": "stopped_with_error",
+  "error": "AssertionError()"
+}

@@ -1,0 +1,101 @@
+{
+  "diagnostic_only": true,
+  "valid_rounds": 5,
+  "summary": [
+    {
+      "sequence": "other-1",
+      "valid": true,
+      "p50_ns_diagnostic_only": 32375,
+      "selected_one_enqueued": 21465,
+      "direct_wake_attempts": 21822,
+      "direct_wake_activations": 21351,
+      "minimum_target_off_rq_fraction": 0.97645,
+      "pre_batch_mean_ns_probe_inclusive": 1656.59,
+      "stage_mean_ns_probe_inclusive": {
+        "key_and_hint": 204.88,
+        "bucket_lock": 438.9,
+        "collect": 814.21,
+        "unlock": 198.6,
+        "wake_batch": 9890.82
+      },
+      "context_switches_preempted": 21578,
+      "context_switches_blocked": 21814
+    },
+    {
+      "sequence": "fifo-1",
+      "valid": true,
+      "p50_ns_diagnostic_only": 25083,
+      "selected_one_enqueued": 42001,
+      "direct_wake_attempts": 42331,
+      "direct_wake_activations": 42324,
+      "minimum_target_off_rq_fraction": 0.99965,
+      "pre_batch_mean_ns_probe_inclusive": 1385.52,
+      "stage_mean_ns_probe_inclusive": {
+        "key_and_hint": 203.91,
+        "bucket_lock": 380.31,
+        "collect": 618.49,
+        "unlock": 182.81,
+        "wake_batch": 5416.01
+      },
+      "context_switches_preempted": 316,
+      "context_switches_blocked": 42324
+    },
+    {
+      "sequence": "other-2",
+      "valid": true,
+      "p50_ns_diagnostic_only": 32375,
+      "selected_one_enqueued": 21454,
+      "direct_wake_attempts": 21811,
+      "direct_wake_activations": 21349,
+      "minimum_target_off_rq_fraction": 0.9769,
+      "pre_batch_mean_ns_probe_inclusive": 1675.91,
+      "stage_mean_ns_probe_inclusive": {
+        "key_and_hint": 206.45,
+        "bucket_lock": 445.59,
+        "collect": 818.66,
+        "unlock": 205.21,
+        "wake_batch": 9977.36
+      },
+      "context_switches_preempted": 21570,
+      "context_switches_blocked": 21805
+    },
+    {
+      "sequence": "fifo-2",
+      "valid": true,
+      "p50_ns_diagnostic_only": 25375,
+      "selected_one_enqueued": 42001,
+      "direct_wake_attempts": 42331,
+      "direct_wake_activations": 42323,
+      "minimum_target_off_rq_fraction": 0.9996,
+      "pre_batch_mean_ns_probe_inclusive": 1359.76,
+      "stage_mean_ns_probe_inclusive": {
+        "key_and_hint": 204.25,
+        "bucket_lock": 377.38,
+        "collect": 595.36,
+        "unlock": 182.77,
+        "wake_batch": 5407.43
+      },
+      "context_switches_preempted": 320,
+      "context_switches_blocked": 42324
+    },
+    {
+      "sequence": "other-3",
+      "valid": true,
+      "p50_ns_diagnostic_only": 32375,
+      "selected_one_enqueued": 21440,
+      "direct_wake_attempts": 21800,
+      "direct_wake_activations": 21353,
+      "minimum_target_off_rq_fraction": 0.97765,
+      "pre_batch_mean_ns_probe_inclusive": 1652.49,
+      "stage_mean_ns_probe_inclusive": {
+        "key_and_hint": 207.6,
+        "bucket_lock": 431.85,
+        "collect": 815.12,
+        "unlock": 197.92,
+        "wake_batch": 9875.12
+      },
+      "context_switches_preempted": 21571,
+      "context_switches_blocked": 21796
+    }
+  ]
+}

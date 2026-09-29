@@ -1,0 +1,260 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running `target/debug/tg-xtask starry build -c /home/zhourui/.codex/artifacts/issue2308-perf/resume884-fair-immediate/ordinary.toml`
+[2026-09-25T15:48:20Z INFO  axbuild::context] Workspace root: /tmp/tgoskits-issue2308-resume876-root
+[2026-09-25T15:48:20Z INFO  axbuild::context] Cargo target directory: /tmp/tgoskits-issue2308-resume876-root/target
+Using build config: /home/zhourui/.codex/artifacts/issue2308-perf/resume884-fair-immediate/ordinary.toml
+[2026-09-25T15:48:20Z INFO  axbuild::build::config_file] Found build config at /home/zhourui/.codex/artifacts/issue2308-perf/resume884-fair-immediate/ordinary.toml
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ...
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume884-fair-immediate/ordinary.toml ...
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+SMP=8
+cargo build -p starryos --target scripts/targets/bare/aarch64-unknown-none-softfloat.json -Z unstable-options --target-dir /tmp/tgoskits-issue2308-resume876-root/target --features ax-driver/list-pci-devices,ax-driver/realtek-rtl8125,ax-driver/rk3588-pcie,ax-driver/rockchip-dwc-xhci,ax-driver/rockchip-dwmmc,ax-driver/rockchip-ehci,ax-driver/rockchip-sdhci,ax-driver/rockchip-soc,legacy-board-init,rknpu -Z json-target-spec -Z build-std=core,alloc --config target.aarch64-unknown-none-softfloat.rustflags=["-Cllvm-args=--max-store-memcpy=16", "-Crelocation-model=pic", "-Clink-args=-pie", "-Clink-args=--gc-sections", "-Clink-args=-znorelro", "-Clink-args=-znostart-stop-gc", "-Clink-args=-Tlinker.x", "-Clink-args=-u _head", "-D", "warnings"] --bin starryos --release --message-format json-render-diagnostics
+   Compiling compiler_builtins v0.1.160 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
+   Compiling thiserror v2.0.20
+   Compiling heapless v0.9.3
+   Compiling ax-cpu v0.10.3 (/tmp/tgoskits-issue2308-resume876-root/components/axcpu)
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-utils v0.8.23
+   Compiling cpu-local v0.4.3 (/tmp/tgoskits-issue2308-resume876-root/components/cpu-local)
+   Compiling ax-percpu v0.4.24 (/tmp/tgoskits-issue2308-resume876-root/components/percpu/percpu)
+   Compiling anyhow v1.0.104
+   Compiling crossbeam-epoch v0.9.21
+   Compiling rust_decimal v1.43.0
+   Compiling ax-alloc v0.9.2 (/tmp/tgoskits-issue2308-resume876-root/memory/ax-alloc)
+   Compiling crab-usb v0.12.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/usb/usb-host)
+   Compiling rockchip-npu v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/npu/rockchip-npu)
+   Compiling arm-scmi-rs v0.1.11 (/tmp/tgoskits-issue2308-resume876-root/drivers/firmware/arm-scmi-rs)
+   Compiling rockchip-soc v0.4.8 (/tmp/tgoskits-issue2308-resume876-root/drivers/soc/rockchip/rockchip-soc)
+   Compiling rockchip-pm v0.4.10 (/tmp/tgoskits-issue2308-resume876-root/drivers/soc/rockchip/rockchip-pm)
+   Compiling somehal v0.11.3 (/tmp/tgoskits-issue2308-resume876-root/platforms/somehal)
+   Compiling ax-driver v0.18.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/ax-driver)
+   Compiling someboot v0.7.2 (/tmp/tgoskits-issue2308-resume876-root/platforms/someboot)
+   Compiling axplat-dyn v0.10.4 (/tmp/tgoskits-issue2308-resume876-root/platforms/axplat-dyn)
+   Compiling zerocopy v0.8.57
+   Compiling ax-hal v0.8.4 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axhal)
+   Compiling memoffset v0.9.1
+   Compiling syscalls v0.8.1
+   Compiling scope-local v0.6.5 (/tmp/tgoskits-issue2308-resume876-root/components/scope-local)
+   Compiling smoltcp v0.13.1
+   Compiling ax-runtime v0.13.5 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axruntime)
+   Compiling ax-errno v0.6.3
+   Compiling axerrno v0.2.2
+   Compiling libc v0.2.189
+   Compiling ax-posix-api v0.6.8 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/api/arceos_posix_api)
+   Compiling starry-signal v0.10.5 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/signal)
+   Compiling ax-tracepoint v0.6.1 (/tmp/tgoskits-issue2308-resume876-root/components/ax-tracepoint)
+   Compiling lwprintf-rs v0.3.3
+   Compiling starry-kernel v0.12.1 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/kernel)
+   Compiling starryos v0.5.39 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/starryos)
+   Compiling alloc v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc)
+   Compiling log v0.4.34
+   Compiling as-any v0.3.2
+   Compiling bitflags v2.13.2
+   Compiling cfg-if v1.0.5
+   Compiling tock-registers v0.10.1
+   Compiling ax-sync v0.6.0 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axsync)
+   Compiling derive_more v2.1.1
+   Compiling byteorder v1.5.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling tock-registers v0.9.0
+   Compiling mbarrier v0.1.3
+   Compiling scopeguard v1.2.0
+   Compiling bit_field v0.10.3
+   Compiling trait-ffi v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/components/trait-ffi/trait-ffi)
+   Compiling rdif-def v0.4.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-def)
+   Compiling ax-lazyinit v0.5.1 (/tmp/tgoskits-issue2308-resume876-root/components/ax-lazyinit)
+   Compiling num-align v0.1.0
+   Compiling irq-framework v0.5.0 (/tmp/tgoskits-issue2308-resume876-root/components/irq-framework)
+   Compiling bytemuck v1.25.2
+   Compiling ax-memory-addr v0.7.1 (/tmp/tgoskits-issue2308-resume876-root/memory/memory_addr)
+   Compiling aarch64-cpu v10.0.0
+   Compiling lock_api v0.4.14
+   Compiling rdif-base v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-base)
+   Compiling aarch64-cpu v11.2.0
+   Compiling mmio-api v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/memory/mmio-api)
+   Compiling pci_types v0.10.1
+   Compiling pin-project-lite v0.2.17
+   Compiling hash32 v0.3.1
+   Compiling futures-core v0.3.34
+   Compiling strum v0.27.2
+   Compiling slab v0.4.12
+   Compiling futures-sink v0.3.34
+   Compiling rdif-clk v0.5.7 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-clk)
+   Compiling futures-task v0.3.34
+   Compiling futures-channel v0.3.34
+   Compiling rdif-reset v0.2.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-reset)
+   Compiling rdif-power v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-power)
+   Compiling rdif-msi v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-msi)
+   Compiling rdif-pcie v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-pcie)
+   Compiling futures-util v0.3.34
+   Compiling rdif-intc v0.16.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-intc)
+   Compiling futures-io v0.3.34
+   Compiling foldhash v0.2.0
+   Compiling arrayvec v0.7.8
+   Compiling allocator-api2 v0.2.21
+   Compiling spinning_top v0.3.0
+   Compiling equivalent v1.0.2
+   Compiling rdif-serial v0.10.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-serial)
+   Compiling smccc v0.2.3
+   Compiling acpi v6.1.1
+   Compiling uguid v2.2.1
+   Compiling pcie v0.7.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/pci/pcie)
+   Compiling num_enum v0.7.6
+   Compiling embedded-hal v1.0.0
+   Compiling const-default v1.0.0
+   Compiling const-str v1.1.0
+   Compiling zeroize v1.9.0
+   Compiling rlsf v0.2.3
+   Compiling uefi-raw v0.14.0
+   Compiling crossbeam-queue v0.3.14
+   Compiling rdif-pwm v0.2.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-pwm)
+   Compiling ucs2 v0.3.3
+   Compiling chrono v0.4.45
+   Compiling buddy-slab-allocator v0.6.1 (/tmp/tgoskits-issue2308-resume876-root/memory/buddy-slab-allocator)
+   Compiling utf8-width v0.1.9
+   Compiling ptr_meta v0.3.2
+   Compiling accessor v0.3.3
+   Compiling nb v1.1.0
+   Compiling crossbeam v0.8.5
+   Compiling crossbeam-skiplist v0.1.3
+   Compiling rdif-input v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-input)
+   Compiling volatile v0.6.1
+   Compiling rockchip-pwm v0.2.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/pwm/rockchip-pwm)
+   Compiling xhci v0.9.2
+   Compiling sg200x-pwm v0.1.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/pwm/sg200x-pwm)
+   Compiling rk3588-pci v0.2.7 (/tmp/tgoskits-issue2308-resume876-root/drivers/pci/rk3588-pci)
+   Compiling page-table-generic v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/memory/page-table-generic)
+   Compiling fdt-raw v0.3.0
+   Compiling ranges-ext v0.6.4 (/tmp/tgoskits-issue2308-resume876-root/memory/ranges-ext)
+   Compiling some-serial v0.7.8 (/tmp/tgoskits-issue2308-resume876-root/drivers/serial/some-serial)
+   Compiling cv181x-clock v0.1.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/soc/cv181x-clock)
+   Compiling rdif-vsock v0.3.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-vsock)
+   Compiling byte-unit v5.2.6
+   Compiling kernutil v0.3.1 (/tmp/tgoskits-issue2308-resume876-root/components/kernutil)
+   Compiling axpanic v0.1.1 (/tmp/tgoskits-issue2308-resume876-root/components/axpanic)
+   Compiling hashbrown v0.16.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling fdt-edit v0.2.3
+   Compiling ax-linked-list-r4l v0.5.7 (/tmp/tgoskits-issue2308-resume876-root/components/linked_list_r4l)
+   Compiling ax-arm-pl031 v0.4.7 (/tmp/tgoskits-issue2308-resume876-root/drivers/rtc/arm_pl031)
+   Compiling memchr v2.8.3
+   Compiling ax-sched v0.5.11 (/tmp/tgoskits-issue2308-resume876-root/components/axsched)
+   Compiling axbacktrace v0.4.12 (/tmp/tgoskits-issue2308-resume876-root/components/axbacktrace)
+   Compiling fdt-parser v0.4.19
+   Compiling rdif-pinctrl v0.2.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-pinctrl)
+   Compiling rdrive v0.25.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/rdrive)
+   Compiling ax-task v0.8.4 (/tmp/tgoskits-issue2308-resume876-root/components/ax-task)
+   Compiling aarch64-cpu-ext v0.1.4
+   Compiling event-listener v5.4.2
+   Compiling dma-api v0.10.2 (/tmp/tgoskits-issue2308-resume876-root/memory/dma-api)
+   Compiling futures v0.3.34
+   Compiling event-listener-strategy v0.5.4
+   Compiling usb-if v0.8.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/usb/usb-if)
+   Compiling ax-io v0.7.2 (/tmp/tgoskits-issue2308-resume876-root/components/axio)
+   Compiling concurrent-queue v2.5.0
+   Compiling smallvec v1.16.1
+   Compiling rdif-block v0.13.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-block)
+   Compiling sdmmc-host v0.1.8 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/sdmmc-host)
+   Compiling rdif-eth v0.6.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-eth)
+   Compiling sdmmc-protocol v0.5.4 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/sdmmc-protocol)
+   Compiling nvme-driver v0.8.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/nvme-driver)
+   Compiling realtek-rtl8125 v0.3.3 (/tmp/tgoskits-issue2308-resume876-root/drivers/net/realtek-rtl8125)
+   Compiling rd-net v0.3.3 (/tmp/tgoskits-issue2308-resume876-root/drivers/net/rd-net)
+   Compiling axpoll v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/components/axpoll)
+   Compiling managed v0.8.0
+   Compiling rand_core v0.6.4
+   Compiling bitflags v1.3.2
+   Compiling axpoll-set v0.1.1 (/tmp/tgoskits-issue2308-resume876-root/components/axpoll-set)
+   Compiling arm-gic-driver v0.18.1 (/tmp/tgoskits-issue2308-resume876-root/drivers/intc/arm-gic-driver)
+   Compiling uefi v0.37.0
+   Compiling dwmmc-host v0.4.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/dwmmc-host)
+   Compiling sdhci-host v0.5.2 (/tmp/tgoskits-issue2308-resume876-root/drivers/blk/sdhci-host)
+   Compiling axfs-ng-vfs v0.8.1 (/tmp/tgoskits-issue2308-resume876-root/fs/axfs-ng-vfs)
+   Compiling async-channel v2.5.0
+   Compiling intrusive-collections v0.9.7
+   Compiling ax-plat v0.15.0 (/tmp/tgoskits-issue2308-resume876-root/platforms/ax-plat)
+   Compiling lru v0.16.4
+   Compiling ringbuf v0.4.8
+   Compiling ax-memory-set v0.8.0 (/tmp/tgoskits-issue2308-resume876-root/memory/memory_set)
+   Compiling rsext4 v0.9.2 (/tmp/tgoskits-issue2308-resume876-root/fs/rsext4)
+   Compiling atomic-waker v1.1.2
+   Compiling ax-log v0.6.1 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axlog)
+   Compiling ax-ctor-bare v0.4.10 (/tmp/tgoskits-issue2308-resume876-root/components/ctor_bare/ctor_bare)
+   Compiling bitmaps v3.2.1
+   Compiling hashbrown v0.17.1
+   Compiling kbindings v0.3.0
+   Compiling axklib v0.9.1 (/tmp/tgoskits-issue2308-resume876-root/components/axklib)
+   Compiling ax-cpumask v0.4.1 (/tmp/tgoskits-issue2308-resume876-root/components/cpumask)
+   Compiling either v1.18.0
+   Compiling flatten_objects v0.2.4
+   Compiling itertools v0.14.0
+   Compiling rand_core v0.10.1
+   Compiling zero v0.1.3
+   Compiling lru v0.18.4
+   Compiling scroll v0.13.0
+   Compiling plain v0.2.3
+   Compiling chacha20 v0.10.2
+   Compiling xmas-elf v0.9.1
+   Compiling combine v4.6.8
+   Compiling starry-vm v0.6.0 (/tmp/tgoskits-issue2308-resume876-root/os/StarryOS/vm)
+   Compiling rdif-display v0.4.0 (/tmp/tgoskits-issue2308-resume876-root/drivers/interface/rdif-display)
+   Compiling static-keys v0.8.2
+   Compiling goblin v0.10.7
+   Compiling function_name v0.3.0
+   Compiling tp-lexer v0.5.5
+   Compiling static_assertions v1.1.0
+   Compiling aliasable v0.1.3
+   Compiling ouroboros v0.18.5
+   Compiling ddebug v0.5.5
+   Compiling rand v0.10.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling printf-compat v0.4.0
+   Compiling kernel-elf-parser v0.3.4
+   Compiling rand_chacha v0.3.1
+   Compiling ax-input v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axinput)
+   Compiling kbpf-basic v0.6.0
+   Compiling ax-display v0.7.0 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axdisplay)
+   Compiling usb-serial v0.1.4 (/tmp/tgoskits-issue2308-resume876-root/drivers/usb/usb-serial)
+   Compiling uluru v3.1.0
+   Compiling kprobe v0.6.0
+   Compiling ax-cgroup v0.3.0 (/tmp/tgoskits-issue2308-resume876-root/components/ax-cgroup)
+   Compiling axhvc v0.5.1 (/tmp/tgoskits-issue2308-resume876-root/virtualization/axhvc)
+   Compiling strum v0.28.0
+   Compiling ksym v0.6.0
+   Compiling axivc v0.1.1 (/tmp/tgoskits-issue2308-resume876-root/virtualization/axivc)
+   Compiling downcast-rs v2.0.2
+   Compiling ax-fs-ng v0.11.2 (/tmp/tgoskits-issue2308-resume876-root/fs/ax-fs-ng)
+   Compiling kmod-tools v0.3.0
+   Compiling kapi v0.3.0
+   Compiling kmod-loader v0.3.1
+   Compiling ax-ipi v0.6.5 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axipi)
+   Compiling ax-net v0.13.6 (/tmp/tgoskits-issue2308-resume876-root/net/ax-net)
+   Compiling ax-mm v0.8.4 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/modules/axmm)
+   Compiling rbpf v0.4.1
+   Compiling ax-api v0.8.6 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/api/arceos_api)
+   Compiling ax-std v0.7.5 (/tmp/tgoskits-issue2308-resume876-root/os/arceos/ulib/axstd)
+    Finished `release` profile [optimized] target(s) in 1m 55s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+  bin: /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+/home/zhourui/.rustup/toolchains/nightly-2026-09-04-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] cargo build package=starryos target=scripts/targets/bare/aarch64-unknown-none-softfloat.json config=/home/zhourui/.codex/artifacts/issue2308-perf/resume884-fair-immediate/ordinary.toml ... done (115.64s)
+[axbuild] cargo build elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] cargo build bin=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] cargo build artifact_dir=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release
+[axbuild] accepted known upstream Rust #134375 future-incompatibility for core@0.0.0, memchr@2.8.3
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ... done (116.70s)
+[axbuild] starry artifact elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] starry kallsyms elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos ...
+[axbuild] starry kallsyms symbols=11573
+rust-objcopy --update-section .kallsyms=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/.starryos.kallsyms.3882158.tmp /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos
+[axbuild] starry kallsyms elf=/tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos ... done (366.09ms)
+[axbuild] starry bin refresh /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin ...
+rust-objcopy --strip-all -O binary /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin
+[axbuild] starry bin refresh /tmp/tgoskits-issue2308-resume876-root/target/aarch64-unknown-none-softfloat/release/starryos.bin ... done (260.08ms)

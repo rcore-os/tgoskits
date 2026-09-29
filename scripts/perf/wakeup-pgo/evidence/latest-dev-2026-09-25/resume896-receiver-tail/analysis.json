@@ -1,0 +1,749 @@
+{
+  "experiment": "resume896",
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "benchmark_sha256": "94c0a8285db8c4cae5ce3162f8a4abeead7d0e03bc8034d70e4474defba0b773",
+  "boots": [
+    {
+      "name": "run1",
+      "group_valid": false,
+      "rounds": [
+        {
+          "round": 1,
+          "policy": "fifo",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 410.823,
+              "p50_bin_lower_ns": 250,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 977.932,
+              "p50_bin_lower_ns": 750,
+              "p99_bin_lower_ns": 1000
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1388.756,
+              "p50_bin_lower_ns": 1250,
+              "p99_bin_lower_ns": 1250
+            }
+          }
+        },
+        {
+          "round": 2,
+          "policy": "other",
+          "valid": false,
+          "samples": 19999,
+          "not_parked": 1,
+          "probe_armed": 20998,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 20998,
+              "mean_ns": 483.374,
+              "p50_bin_lower_ns": 500,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 20998,
+              "mean_ns": 1332.508,
+              "p50_bin_lower_ns": 1000,
+              "p99_bin_lower_ns": 4750
+            },
+            "total": {
+              "count": 20998,
+              "mean_ns": 1815.882,
+              "p50_bin_lower_ns": 1750,
+              "p99_bin_lower_ns": 5500
+            }
+          }
+        },
+        {
+          "round": 3,
+          "policy": "other",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 485.793,
+              "p50_bin_lower_ns": 500,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 1321.734,
+              "p50_bin_lower_ns": 1000,
+              "p99_bin_lower_ns": 5250
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1807.527,
+              "p50_bin_lower_ns": 1750,
+              "p99_bin_lower_ns": 5750
+            }
+          }
+        },
+        {
+          "round": 4,
+          "policy": "fifo",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 435.488,
+              "p50_bin_lower_ns": 250,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 959.93,
+              "p50_bin_lower_ns": 750,
+              "p99_bin_lower_ns": 1000
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1395.418,
+              "p50_bin_lower_ns": 1250,
+              "p99_bin_lower_ns": 1250
+            }
+          }
+        },
+        {
+          "round": 5,
+          "policy": "fifo",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 415.834,
+              "p50_bin_lower_ns": 250,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 994.058,
+              "p50_bin_lower_ns": 750,
+              "p99_bin_lower_ns": 1000
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1409.892,
+              "p50_bin_lower_ns": 1250,
+              "p99_bin_lower_ns": 1750
+            }
+          }
+        },
+        {
+          "round": 6,
+          "policy": "other",
+          "valid": false,
+          "samples": 19998,
+          "not_parked": 2,
+          "probe_armed": 20998,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 20998,
+              "mean_ns": 481.761,
+              "p50_bin_lower_ns": 500,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 20998,
+              "mean_ns": 1318.635,
+              "p50_bin_lower_ns": 1000,
+              "p99_bin_lower_ns": 4750
+            },
+            "total": {
+              "count": 20998,
+              "mean_ns": 1800.396,
+              "p50_bin_lower_ns": 1750,
+              "p99_bin_lower_ns": 5500
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "run2",
+      "group_valid": false,
+      "rounds": [
+        {
+          "round": 1,
+          "policy": "fifo",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 409.665,
+              "p50_bin_lower_ns": 250,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 960.151,
+              "p50_bin_lower_ns": 750,
+              "p99_bin_lower_ns": 1000
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1369.817,
+              "p50_bin_lower_ns": 1250,
+              "p99_bin_lower_ns": 1250
+            }
+          }
+        },
+        {
+          "round": 2,
+          "policy": "other",
+          "valid": false,
+          "samples": 19999,
+          "not_parked": 1,
+          "probe_armed": 20999,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 20999,
+              "mean_ns": 477.222,
+              "p50_bin_lower_ns": 500,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 20999,
+              "mean_ns": 1327.684,
+              "p50_bin_lower_ns": 1000,
+              "p99_bin_lower_ns": 4750
+            },
+            "total": {
+              "count": 20999,
+              "mean_ns": 1804.906,
+              "p50_bin_lower_ns": 1750,
+              "p99_bin_lower_ns": 5500
+            }
+          }
+        },
+        {
+          "round": 3,
+          "policy": "other",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 483.452,
+              "p50_bin_lower_ns": 500,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 1344.27,
+              "p50_bin_lower_ns": 1000,
+              "p99_bin_lower_ns": 5250
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1827.722,
+              "p50_bin_lower_ns": 1750,
+              "p99_bin_lower_ns": 5500
+            }
+          }
+        },
+        {
+          "round": 4,
+          "policy": "fifo",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 409.654,
+              "p50_bin_lower_ns": 250,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 983.887,
+              "p50_bin_lower_ns": 750,
+              "p99_bin_lower_ns": 1000
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1393.541,
+              "p50_bin_lower_ns": 1250,
+              "p99_bin_lower_ns": 1250
+            }
+          }
+        },
+        {
+          "round": 5,
+          "policy": "fifo",
+          "valid": true,
+          "samples": 20000,
+          "not_parked": 0,
+          "probe_armed": 21000,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 21000,
+              "mean_ns": 412.282,
+              "p50_bin_lower_ns": 250,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 21000,
+              "mean_ns": 970.471,
+              "p50_bin_lower_ns": 750,
+              "p99_bin_lower_ns": 1000
+            },
+            "total": {
+              "count": 21000,
+              "mean_ns": 1382.753,
+              "p50_bin_lower_ns": 1250,
+              "p99_bin_lower_ns": 1250
+            }
+          }
+        },
+        {
+          "round": 6,
+          "policy": "other",
+          "valid": false,
+          "samples": 19999,
+          "not_parked": 1,
+          "probe_armed": 20999,
+          "errors": {
+            "overlap": 0,
+            "repeated_switch": 0,
+            "generation_mismatch": 0,
+            "cancelled": 0,
+            "missing_switch": 0,
+            "invalid_timestamp": 0
+          },
+          "stages": {
+            "hook": {
+              "count": 20999,
+              "mean_ns": 478.719,
+              "p50_bin_lower_ns": 500,
+              "p99_bin_lower_ns": 500
+            },
+            "unwind": {
+              "count": 20999,
+              "mean_ns": 1337.52,
+              "p50_bin_lower_ns": 1000,
+              "p99_bin_lower_ns": 4750
+            },
+            "total": {
+              "count": 20999,
+              "mean_ns": 1816.239,
+              "p50_bin_lower_ns": 1750,
+              "p99_bin_lower_ns": 5500
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "valid_rounds": [
+    {
+      "boot": "run1",
+      "round": 1,
+      "policy": "fifo",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 410.823,
+          "p50_bin_lower_ns": 250,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 977.932,
+          "p50_bin_lower_ns": 750,
+          "p99_bin_lower_ns": 1000
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1388.756,
+          "p50_bin_lower_ns": 1250,
+          "p99_bin_lower_ns": 1250
+        }
+      }
+    },
+    {
+      "boot": "run1",
+      "round": 3,
+      "policy": "other",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 485.793,
+          "p50_bin_lower_ns": 500,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 1321.734,
+          "p50_bin_lower_ns": 1000,
+          "p99_bin_lower_ns": 5250
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1807.527,
+          "p50_bin_lower_ns": 1750,
+          "p99_bin_lower_ns": 5750
+        }
+      }
+    },
+    {
+      "boot": "run1",
+      "round": 4,
+      "policy": "fifo",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 435.488,
+          "p50_bin_lower_ns": 250,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 959.93,
+          "p50_bin_lower_ns": 750,
+          "p99_bin_lower_ns": 1000
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1395.418,
+          "p50_bin_lower_ns": 1250,
+          "p99_bin_lower_ns": 1250
+        }
+      }
+    },
+    {
+      "boot": "run1",
+      "round": 5,
+      "policy": "fifo",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 415.834,
+          "p50_bin_lower_ns": 250,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 994.058,
+          "p50_bin_lower_ns": 750,
+          "p99_bin_lower_ns": 1000
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1409.892,
+          "p50_bin_lower_ns": 1250,
+          "p99_bin_lower_ns": 1750
+        }
+      }
+    },
+    {
+      "boot": "run2",
+      "round": 1,
+      "policy": "fifo",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 409.665,
+          "p50_bin_lower_ns": 250,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 960.151,
+          "p50_bin_lower_ns": 750,
+          "p99_bin_lower_ns": 1000
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1369.817,
+          "p50_bin_lower_ns": 1250,
+          "p99_bin_lower_ns": 1250
+        }
+      }
+    },
+    {
+      "boot": "run2",
+      "round": 3,
+      "policy": "other",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 483.452,
+          "p50_bin_lower_ns": 500,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 1344.27,
+          "p50_bin_lower_ns": 1000,
+          "p99_bin_lower_ns": 5250
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1827.722,
+          "p50_bin_lower_ns": 1750,
+          "p99_bin_lower_ns": 5500
+        }
+      }
+    },
+    {
+      "boot": "run2",
+      "round": 4,
+      "policy": "fifo",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 409.654,
+          "p50_bin_lower_ns": 250,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 983.887,
+          "p50_bin_lower_ns": 750,
+          "p99_bin_lower_ns": 1000
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1393.541,
+          "p50_bin_lower_ns": 1250,
+          "p99_bin_lower_ns": 1250
+        }
+      }
+    },
+    {
+      "boot": "run2",
+      "round": 5,
+      "policy": "fifo",
+      "valid": true,
+      "samples": 20000,
+      "not_parked": 0,
+      "probe_armed": 21000,
+      "errors": {
+        "overlap": 0,
+        "repeated_switch": 0,
+        "generation_mismatch": 0,
+        "cancelled": 0,
+        "missing_switch": 0,
+        "invalid_timestamp": 0
+      },
+      "stages": {
+        "hook": {
+          "count": 21000,
+          "mean_ns": 412.282,
+          "p50_bin_lower_ns": 250,
+          "p99_bin_lower_ns": 500
+        },
+        "unwind": {
+          "count": 21000,
+          "mean_ns": 970.471,
+          "p50_bin_lower_ns": 750,
+          "p99_bin_lower_ns": 1000
+        },
+        "total": {
+          "count": 21000,
+          "mean_ns": 1382.753,
+          "p50_bin_lower_ns": 1250,
+          "p99_bin_lower_ns": 1250
+        }
+      }
+    }
+  ]
+}

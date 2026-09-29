@@ -1,0 +1,51 @@
+diff --git a/components/ax-task/src/sched/algorithm/fair.rs b/components/ax-task/src/sched/algorithm/fair.rs
+index e15aeb1b78..85c239131c 100644
+--- a/components/ax-task/src/sched/algorithm/fair.rs
++++ b/components/ax-task/src/sched/algorithm/fair.rs
+@@ -426,7 +426,14 @@ impl FairEntity {
+             return 0;
+         }
+         let weight = u64::from(self.load_weight());
+-        (i128::from(saved_lag).saturating_mul(i128::from(runnable_weight.saturating_add(weight)))
++        let total_weight = runnable_weight.saturating_add(weight);
++        if let (Ok(total_weight), Ok(runnable_weight)) =
++            (i64::try_from(total_weight), i64::try_from(runnable_weight))
++            && let Some(scaled_lag) = saved_lag.checked_mul(total_weight)
++        {
++            return scaled_lag / runnable_weight;
++        }
++        (i128::from(saved_lag).saturating_mul(i128::from(total_weight))
+             / i128::from(runnable_weight))
+         .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+     }
+diff --git a/components/ax-task/src/sched/algorithm/fair/tests.rs b/components/ax-task/src/sched/algorithm/fair/tests.rs
+index 123ab553a5..6ebfbd08cc 100644
+--- a/components/ax-task/src/sched/algorithm/fair/tests.rs
++++ b/components/ax-task/src/sched/algorithm/fair/tests.rs
+@@ -197,3 +197,26 @@ fn sleep_lag_is_bounded_by_the_linux_rq_max_slice() {
+         }
+     );
+ }
++
++#[test]
++fn placement_lag_fast_path_matches_wide_arithmetic() {
++    let entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
++    let weight = u64::from(entity.load_weight());
++    for saved_lag in [i64::MIN, -1_000_000, -1, 0, 1, 1_000_000, i64::MAX] {
++        for runnable_weight in [0, 1, 1_024, i64::MAX as u64, u64::MAX] {
++            let expected = if saved_lag == 0 || runnable_weight == 0 {
++                0
++            } else {
++                (i128::from(saved_lag)
++                    .saturating_mul(i128::from(runnable_weight.saturating_add(weight)))
++                    / i128::from(runnable_weight))
++                .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
++            };
++            assert_eq!(
++                entity.inflated_placement_lag(saved_lag, runnable_weight),
++                expected,
++                "saved_lag={saved_lag}, runnable_weight={runnable_weight}"
++            );
++        }
++    }
++}

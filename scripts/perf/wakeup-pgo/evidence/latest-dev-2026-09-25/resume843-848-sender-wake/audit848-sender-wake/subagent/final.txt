@@ -1,0 +1,135 @@
+## 结论（先行）
+
+交付 **(B)**：一个新的、可证伪、纯用户态（内核字节不变）的三臂同二进制诊断，把 resume847 定位出的「sender 侧真实唤醒路径 ≈5250 ns 边际」再切成**两个互斥的大组件**：
+
+- **D 臂（域层）** = 同一个 futex 词上有 1 个真正 parked 的 waiter，但用 `FUTEX_WAKE_BITSET` 的 mask 把它排除 → 只走桶锁 + 扫描，**完全不进入调度器事务**；
+- **S 臂（调度器唤醒事务）** = 同一个 waiter、mask 命中 → 完整 sender 侧唤醒事务。
+
+D+S 之和必须复现 resume847 的 5250 ns；据此可判定缺口落在「futex 域/等待队列层」还是「调度器唤醒事务」。我没有找到任何具备 ≥4 µs 上界的语义等价源码候选，因此不交付 (A)（理由见 §3）。
+
+只读探索：HEAD `69a33650763538692fafea27c869870ed0313642`，`dev@05175ca38823b631a73777b0130226ddfa558439`，工作树干净（`git status --porcelain` 0 行）。未编译、未 lint、未测试、未上板。
+
+---
+
+## 1. 精确路径：`FUTEX_WAKE_PRIVATE` → `commit`（当前 head）
+
+### 1.1 系统调用与域层
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| `FUTEX_WAKE_PRIVATE` = `FUTEX_WAKE`∣`FUTEX_PRIVATE_FLAG`(128) | [futex.rs:27](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/syscall/sync/futex.rs:27)；命令解码 :214、:216 | `const FUTEX_PRIVATE_FLAG: u32 = 128;` / `FUTEX_WAKE => FutexCommand::Wake` / `FUTEX_WAKE_BITSET => FutexCommand::WakeBitset` |
+| Wake/WakeBitset 分支 | futex.rs:338-351 | `validate_futex_wake_key(...)`；`let futex = context.resolve(uaddr.addr(), op.key_mode);`(:344)；`let count = futex.wake(wake_count, bitset);`(:350) |
+| Private key 不碰 VMA | [task/futex.rs:859-864](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/StarryOS/kernel/src/task/futex.rs:859) | `if matches!(mode, FutexKeyMode::Private) { let mm_generation = ...generation(); return (FutexKey::Private{..}, ..) }` |
+| 空桶快速返回（**空唤醒的基线在此早退**） | task/futex.rs:1083-1086 | `if count == 0 \|\| mask == 0 \|\| !bucket.has_pending_waiters() { return 0; }` |
+| waiter 提示位 | task/futex.rs:680、:707-715 | `pending: AtomicUsize`；`waiter_removed()` 做 `fetch_sub(Release)`，`has_pending_waiters()` 做 `fence(SeqCst)` + Acquire load |
+| 桶锁 = **PI 睡眠互斥量**（非裸自旋锁） | task/futex.rs:675；[axsync RawMutex::acquire](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axsync/src/mutex/mod.rs:42) → [bridge mutex.rs:60](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sync/bridge/mutex.rs:60) → [mutex/mod.rs:161](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sync/mutex/mod.rs:161) | `waiters: Mutex<VecDeque<FutexBucketWaiter>>`；`mutex_acquire(...)` → `PiMutexAlgorithm::lock_pi()`，快路径 = `validate_sleeping_lock_context()` + `current_thread_token()` + owner-word CAS |
+| 选择 waiter | task/futex.rs:1266-1296 | `if !waiters[index].key.same(key) \|\| wakes.len()-base >= count \|\| (waiters[index].waiter.bitset & mask) == 0 { index += 1; continue; }`；命中才 `remove(index)` → `waiter_removed()` → `if waiter.mark_woken() { WaitQueue::push_wake(...) }` |
+| wake_q 交接 | task/futex.rs:35-51、:566-569、:66-69 | `struct WakeBatch { tasks: ThreadWakeBatch, selected }`；`push` = `self.tasks.push(wake); self.selected += 1;`（**忽略去重返回值**）；`wake_batch` = `wakes.tasks.wake_all()` |
+| 丢唤醒屏障 | [wake_batch.rs:44-51](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/thread/handle/wake_batch.rs:44)、:89-99、:145-168 | `push` 先 `fence(SeqCst)` 再 `wake_batch_linked` CAS；`wake_all` 每节点再 `fence(SeqCst)` 后 `wake.wake()`；`pop` 清链 + `wake_batch_linked.store(false, Release)` |
+
+### 1.2 调度器唤醒事务（`reschedule = None` 时仍全部执行）
+
+| 步骤 | 位置 | 关键原文 |
+| --- | --- | --- |
+| 入口 | [request.rs:41](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/request.rs:41) | `fn wake_thread_source(...)`；`WakeSource::Ordinary`（futex 走 `wake()`→`WakeIntent::Normal`，**不走** `wake_wait_claim_from_current_cpu`） |
+| 独占域 1 + 任务锁 | request.rs:57-59 | `let _preempt = PreemptScope::enter();`（preempt 字 RMW）然后 `let sched = core.sched().lock();`（[IrqTicketLock::lock](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/lock/irq_ticket.rs:39)，IRQ 关+裸 ticket） |
+| 发布 wake 位 / 状态判定 | request.rs:61、:86-118 | `core.publish_wake()`；`matches!(.., Parking\|Running\|Waking)` → `Notified` 直接返回 |
+| 同核 parked → 走 off-rq 激活 | request.rs:123、:131-145 | `if let Some(target) = sched.placement.queued_cpu()`（parked 后为 `None`，**绕过** `wake_on_rq_locked`）；`select_wake_target(...)` → `consume_wake_locked` → `activate_waking_thread_locked` |
+| 等 `on_cpu` 清零 | [activation.rs:88-92](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/dispatch/wake/activation.rs:88) | `sched.placement.wait_until_not_on_cpu();`（首次与最终 Acquire load） |
+| 独占域 2（rq 裸 ticket，嵌套在任务锁 IRQ 之下） | activation.rs:93-116 | `remote.cancel_idle_pull_if_uncommitted();`；`OwnerRqTxn::begin_nested(self, remote, &irq_owner)` |
+| 策略预处理（FIFO 只做少量判定） | activation.rs:118、:10-70 | `prepare_wake_activation`；`deadline_wake=false`、`maintains_fair_virtual_time=false`、`delayed_migration_wake=false`；`rq_task_metadata()`、`take_active()` |
+| 入队 | activation.rs:157-174 | `QueuedThread::new(.., Arc::clone(core), ..)`；`run_queue.enqueue_task(queued, EnqueueReason::Wake, current_fair)`；`sched.placement.activate(target)` |
+| 抢占决策 → `None` | activation.rs:184-205 | `equal_rt_wake_action(...)`；`run_queue.wakeup_preempt_with_intent(...)`（[preemption.rs:59-64](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/run_queue/preemption.rs:59) 仅同优先级早退，否则 :74-110 通用比较 FIFO1 vs FIFO80 → `KeepCurrent`）；`reschedule = preemption.reschedule_kind(policy)` = `None` |
+| 发布（**空操作**） | activation.rs:232-238；[scheduler.rs:292-301](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/remote/scheduler.rs:292) | `remote.publish_rq_scheduler_reasons(reschedule, ..)`；函数首行 `if reschedule.is_none() && !owner_work { return; }` ⇒ **不写 sticky 位、不发本地 pending、不发 IPI**；随后 `run_queue.commit()` |
+| commit 的固定代价 | [commit.rs:13-25](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/cpu/transaction/commit.rs:13) → [balance.rs:75-88](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/balance.rs:75) | `take_summary_dirty` 由 `mark_publication_dirty()`（[queue/mod.rs:175](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/mod.rs:175)）置真 ⇒ 每次唤醒都跑完整 `publish_run_queue_load_summary`（~15 个标量）+ `take_domain_publication` 比较 + `root_domain.publish_run_queue` → `rt.publish` 的 2 个 `fetch_or/fetch_and`（[priority_index.rs:171-203](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/task_system/priority_index.rs:171)）；`publish_deadline` 因 `DEADLINE_CPU_FREE` 未变而早退 |
+| 被绕过的两处 | activation.rs:220-221、:245-248、:270-272 | `push_class = push_class_for_policy(FIFO)=Realtime` 但被 `has_pushable_realtime()` 过滤为 `None`（[realtime.rs:513](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/realtime.rs:513) `should_be_pushable = node.thread().migration_capable && ...`，pin 住 ⇒ false）⇒ **无 root-domain push、无 push IPI**；`activate_owner_rt_period_for_policy` 因 [rt.rs:166](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/rt.rs:166) `enabled = rt_runtime_ns() < rt_period_ns()` 而 `DEFAULT_RT_RUNTIME_NS == DEFAULT_RT_PERIOD_NS`（[config.rs:12-14](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/config.rs:12)）恒为 false |
+| 退出不调度 | [preempt.rs:79-93](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/lock/preempt.rs:79) → [guard/mod.rs:293-344](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/os/arceos/modules/axruntime/src/guard/mod.rs:293) | `PreemptScope` 析构 → `finish_preemption(token)` 非 `Pending` ⇒ 不进 `schedule_current_cpu_from_preempt_exit`，无调度帧、无上下文切换 |
+
+**计数（resume847 场景：sender CPU0 FIFO80，receiver CPU0 FIFO1 pinned，parked）**
+
+- 内核锁 3 个：① 桶 PI 睡眠互斥量（域层，:675）；② receiver 任务锁 `IrqTicketLock<ThreadSchedState>`（[thread_sched/mod.rs:53](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/system/thread_sched/mod.rs:53)：irqsave = IRQ 关 + 裸 ticket）；③ 目标 rq `IrqTicketLock<CpuRunQueueState>`（`begin_nested`，只裸 ticket，无第二层 IRQ scope）。**注意不是 2 个锁**：futex 域层的①与调度器侧的②③是互相独立的临界区。
+- CPU-local 独占域 2 个：任务锁自带 `IrqScope`（[irq.rs:26-45](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/runtime/lock/irq.rs:26)）与 `wake_thread_source` 的 `PreemptScope`；②③ 的 IRQ 独占由①之外的这条 IrqScope 覆盖（`lock_nested` 只借 `IrqOwner` 证明）。
+- **`reschedule=None` 时真正被跳过的**只有：`wake_on_rq_locked` 分支、`WakeeSelected`/`reschedule_kind`、`publish_rq_scheduler_reasons` 的发布体、root-domain push、`PreemptScope` 退出后的调度帧与整个切换/incoming tail。**其余全部照跑**——这正是 resume847 边际 5250 ns 的所在范围。
+
+---
+
+## 2. 与历史编号的关系 / head 差异
+
+- **resume604**（台账 README）：四处 `SeqCst`（含 wake-batch push/drain 两段）折算后「仅为几十 ns」，wake-batch 两段落在计时噪声内 ⇒ 本次不能把 D 或 S 归给 fence。
+- **resume597**（Owned membership skip）在精确 head `a65f718231` 上被 FIFO `sched_yield_handoff` +6.24% 撤回；**resume598** 把 `enqueue_task` 拆为 8/4 段，FIFO `SchedulerClass::enqueue_task` ≈479.26 ns、`entity snapshot`/`pushable`/`membership`/`publication` 单项更小（**含探针开销，old head**）；**resume605** `activation_enqueue` FIFO ≈1521.80 ns、`wait_until_not_on_cpu` 仅 ≈124.97 ns；**resume606** 公共 switch 路径 ≈3802.69 ns/切换。这些都是 `a65f7182`/`a70783ec`/`b598943` ＋ Plus-1 的插桩均值，**不可减到当前 `69a33650` ＋ Plus-2 的原生 p50**（resume842 已明确此边界）。
+- **resume742**：单 waiter FUTEX 快路径被拒（OTHER 跨核 p99.9 +25.07%），故本交付**不碰**该机制。
+- **resume842/845/846**：三次只读审计均未找到 ≥4 µs 的可移除事务级操作；resume846 明确要求做「同核低优先级真实 waiter + 空唤醒对照」的判别器，**resume847** 已完成该判别器并得到 5250 ns 对 1168–1459 ns。
+- **BY-DIRECTION §1.1/§2.1/§5**：禁止重复 enqueue 包装内联（exp29/451/519）、entity snapshot（exp57/250/390/409/509）、未变化 effective key 发布（exp114/495）、Fair V 刷新（exp120）与 Fair AVL 树叶优化；`ClassEnqueue` 结构计数（resume599）也表明不应再动 AVL/bitmap 内部。
+- 当前 head 代码与上述探针 head **不同**：`request.rs`/`activation.rs` 的分文件拆分、`publish_rq_scheduler_reasons` 的 `if reschedule.is_none() && !owner_work { return; }` 早退、`ThreadSchedCell::lock` 的 `detached_active.publication_in_progress()` 重试环、`RtCpuPriorityIndex` 的无锁发布都是当前版本形态。
+
+---
+
+## 3. 为什么没有 (A)
+
+逐条核对了所有「看起来可删」的位置，均无法给出 ≥4 µs 上界，或已被禁止：
+
+| 候选项 | 位置 | 否证理由 |
+| --- | --- | --- |
+| 去掉 wake 激活事务与 rq commit 的部分发布 | activation.rs:232-238；priority_index.rs:171-203 | 已被 `reschedule.is_none() && !owner_work` 早退；剩下的 `commit` 发布是 Linux `cpupri_set` 等价物，且**只有 2 个原子 RMW**，量级远小于 4 µs。 |
+| 跳过 `publish_run_queue_load_summary` | balance.rs:75-88 | 该发布是远端 placement 的输入（`rt_wake_requires_cpupri`）与 Linux `rq` 负载发布的等价物；删掉会破坏跨核 RT 放置证据，且所有读取项都是 O(1)。 |
+| 合并 wake 事务与 preempt/switch 事务 | resume816/820（resume842 §4 C1） | 两者是独立 owner-rq 事务，preempt 事务必须重采样 rq 时钟；合并会把 rq baton 跨过任务锁/PI 边界，违反锁序契约。 |
+| 桶锁换成裸自旋锁 | task/futex.rs:675 | 队列变更会分配、取消可能进调度器（模块注释 :155-159）；在 nofault 用户内存条件下换成自旋锁会改变「持锁不能睡眠」的契约，非语义等价。 |
+| 单 waiter 快路径（去掉 `VecDeque` 扫描/掩码/计数） | resume742 | 已实测 p99.9 回退 +25.07%，且属明令禁止方向。 |
+| `queued_thread_ref(id)` 二次查表 | [lifecycle.rs:193-237](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/lifecycle.rs:193) | 属被禁的 entity snapshot 方向；量级数十 ns。 |
+| 弱化 `ThreadWakeBatch` 两处 `SeqCst` | wake_batch.rs:48、:95 | 明令禁止；resume604 已界定为「几十 ns」。 |
+
+因此继续猜「某个可删步骤」没有证据基础；缺口的正确问题形式是**它落在哪一层**——这正是 (B)。
+
+---
+
+## 4. 交付 (B)：三臂同二进制 sender 侧分层诊断
+
+### 4.1 原理
+
+`collect_futex_wakes` 的第三个判据 `(waiter.bitset & mask) == 0`（task/futex.rs:1284）是**唯一**能构造「同一个真实 parked waiter 在场、域层全跑、但零调度器事务」的手臂：
+
+- waiter 用 `FUTEX_WAIT_BITSET_PRIVATE(uaddr, val, NULL, uaddr, bitset=1)` 入队（`bitset` 被原样存入 bucket，见 task/futex.rs:945-990）；
+- `FUTEX_WAKE_BITSET_PRIVATE(uaddr, 1, 2)` → mask=2 与该 waiter 的 bitset=1 不交 → 不 `remove`、不 `mark_woken`、不 push wake handle → `wake_batch` 空批 → 返回 0，waiter **仍 parked**；
+- 随后 `FUTEX_WAKE_BITSET_PRIVATE(uaddr, 1, 1)` → 命中，返回 1 并释放 waiter。
+
+Linux 侧路径对称（`futex_wake` 的 `plist_for_each_entry_safe` + `this->bitset & bitset` 判据 → 不 `wake_q_add`），因此**同一份用户态源码可在冻结 G 镜像与冻结 Linux RT 镜像上跑**，内核字节不变（沿用 resume847 的方法学与 SHA 校验要求）。
+
+### 4.2 三臂与协议
+
+`wake_cost.c` 的三次计时（同一迭代、固定顺序、各含一次尾部 `clock_gettime` 原始系统调用）：
+
+1. `empty`：对无 waiter 的独立词（沿用 resume847 的 `state.empty`）`FUTEX_WAKE_PRIVATE(word,1)` → 期望 0；
+2. `bitset_miss`：对 `gate` 词 `FUTEX_WAKE_BITSET_PRIVATE(gate, 1, 2)` → 期望 0（waiter 保持 parked）；
+3. `bitset_hit`：对 `gate` 词 `FUTEX_WAKE_BITSET_PRIVATE(gate, 1, 1)` → 期望 1。
+
+其余沿用 resume847：sender `SCHED_FIFO 80` pin CPU0，receiver `SCHED_FIFO 1` pin CPU0，receiver 成功设置策略后才 `ready`，每迭代 `nanosleep(50 µs)` 让 receiver 完成 park，20000 样本，原始 `CLOCK_MONOTONIC` 系统调用计时，warmup 1000。
+
+**无效判定（预设，必须先判无效再算）**：任一轮 `empty_count != 0 || bitset_miss_count != 0 || bitset_hit_count != 1`、`receiver_error != 0`、`join != NULL`、样本数或直方图不符 ⇒ 该轮无效。`bitset_hit_count == 1` 本身就证明 mask 命中的那一刻 waiter 仍在同代 park 中（唯一能把它取走的只有匹配唤醒）。
+
+### 4.3 预登记判定规则（关键，先写在 `begin()` 里再上板）
+
+记 `D = p50(bitset_miss) − p50(empty)`，`S = p50(bitset_hit) − p50(bitset_miss)`，下标本系统。先用 resume847 的量做**内部一致性**要求：`D + S` 必须落在该轮 `p50(bitset_hit) − p50(empty)` 的近旁（同轮同二进制，直接相减即为真值），并与 resume847 的 5250 ns / 1168–1459 ns 同量级；若三臂之和与 resume847 边际差出量级，说明新协议本身改变了被测路径，应先修协议而不是解读阶段。
+
+- **R1｜域层假设**：若 `D_starry ≥ 3.0 µs` 且 `D_linux ≤ 1.0 µs` ⇒ 缺口在 **futex 域/等待队列层**（`has_pending_waiters` 屏障、PI 睡眠互斥量、`mark_woken`、`into_wake_handle`、wake-batch）。此时应关闭调度器侧方向，改为审计桶锁的 PI-mutex 快路径与 waiter 交接（**不得**用被禁的单 waiter 快路径修）。resume604 已把 fence 排除，故 R1 会把嫌疑集中到桶锁与 waiter 交接本身。
+- **R2｜调度器事务假设**：若 `D_starry ≤ 1.0 µs` 且 `S_starry ≥ 4.0 µs`、同时 `S_linux ≤ 1.5 µs` ⇒ 缺口在**发送侧调度器唤醒事务**（任务锁/rq 锁/入队/发布）。此时可断言「整段事务是可测量目标」，随后用 §4.4 的轴 2 在**同一二进制**内继续二分，而不需要任何内核探针。
+- **R3｜常系数摊薄（支持关闭）**：若两个半区都低于 3.0 µs 而 `D + S` 已复现总边际 ⇒ 缺口是被摊到整个窗口的逐指令/缓存常数因子，与 resume842 §4 的结论一致，方向应按 (C) 关闭，并在台账写明「已在无插桩同二进制条件下完成 sender 侧二分，无单一主导组件」。
+- 仪器下限：任何 <300 ns 的臂间差按噪声处理（resume842 给出 291 ns 时钟对底线；resume847 两轮 p50 完全重复：1750/1750、2916/2916）。至少 3 轮有效、交错次序。
+
+### 4.4 可选（同一二进制、同一次板卡会话内）追加轴
+
+- **轴 2｜class 维度**：把 waiter 换成 `SCHED_OTHER`（nice 0）并同样让当前线程为 FIFO80，则 [class.rs:461 起](/home/zhourui/.codex/worktrees/03ae/tgoskits-dev/components/ax-task/src/sched/algorithm/queue/class.rs:461) 的 `fair_wakeup_preempts` 对 RT current 仍返回 false ⇒ `reschedule` 依旧 `None`，但 `prepare_wake_activation` 会额外做 `current_fair_contender`/`update_fair_virtual_time`、`place_after_activation` AVL 插入、可能的 runtime-deadline 刷新。`S_fair − S_fifo` 即 **Fair 专属入队成本**（原生、无插桩），直接对应 full20 中占比最大的 OTHER 同核行。这不与 resume562-565（插桩分段）重复，因为此处没有探针开销。
+- **轴 3｜目标维度**：receiver pin CPU1（同逻辑，`reschedule` 仍 `None`）与 pin CPU0 对照，隔离「本核 rq 临界区」与「远端 rq 临界区 + 远端 cache line/`cancel_idle_pull_if_uncommitted`」。仅作补充，不参与 R1/R2/R3 判定。
+
+---
+
+## 5. 不确定项与未覆盖范围
+
+1. **未运行任何构建/测试/板卡**；所有数值均引自 resume847 归档与台账文本，未在本轮复核板卡、频率、镜像 SHA。
+2. **`bitset_miss` 臂的域层成本不严格等于 `bitset_hit` 臂的域层成本**：命中臂多出 `VecDeque::remove` + `waiter_removed()` + `mark_woken()` CAS + `into_wake_handle()`（Arc clone + external-lease 获取）。这部分被计入 `S`，因此 `S` 是「调度器事务 + 少量命中专属域工作」的上界；好在同一偏差也存在于 Linux 的 `S_linux`，判定规则只用两者的**比较**，不单独把 `S_starry` 当调度器成本。
+3. **`FUTEX_WAIT_BITSET` 的 timeout 语义是绝对 CLOCK_MONOTONIC**（无 `CLOCK_REALTIME` 时）。协议必须用 `NULL` timeout（或绝对期限），不可像 `FUTEX_WAIT` 那样传相对值，否则 waiter 立即超时并使该轮无效。
+4. **两系统域层并非等价成本**：Linux 的空唤醒仍执行 `get_futex_key()`（VMA/key 解析），Starry 的 Private 解析不碰 VMA（task/futex.rs:859），这解释了 resume847 中 Starry 空唤醒 1750 ns 反而快于 Linux 2916 ns；因此 `D` 的跨系统比较只能读**相对量级**，不能当作「同一份域工作的耗时」。
+5. 未确认 `bitset_miss` 臂在 Linux 上是否会被 `futex_waitv`/`futex_lock_pi` 等其它机制干扰（本题只用 `FUTEX_WAIT_BITSET`/`FUTEX_WAKE_BITSET` 私有形式，应在 `begin()` 记录常量值 `FUTEX_WAIT_BITSET=9`、`FUTEX_WAKE_BITSET=10`、`FUTEX_PRIVATE_FLAG=128`）。
+6. 未在源码层面确认 resume605/598/628 的分段均值在当前 head 上是否仍成立（head 与板卡均不同，按台账规则视为不可移植）；本交付不依赖它们。
+7. 未评估 `publish_run_queue_load_summary` 中各项的真实耗时分布（仅确认全部 O(1)）：若 R2 成立，`S` 的进一步二分仍只能靠轴 2/轴 3 或新的边界探针，属本轮未覆盖。
+
+台账动作建议：`resume848` 以 `diagnostic` 记录本只读审计（无源码 diff、无镜像、无板卡）；新诊断上板前先 `begin` 一个独立编号，写入三臂协议、无效判定与 R1/R2/R3 规则，避免事后挑选解释。

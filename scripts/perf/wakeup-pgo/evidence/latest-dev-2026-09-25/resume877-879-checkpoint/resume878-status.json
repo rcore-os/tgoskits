@@ -1,0 +1,28 @@
+{
+  "experiment": "resume878",
+  "state": "diagnostic",
+  "source_head": "b292a098bb60ef604e7677c37cd95d926ff08200",
+  "candidate_elf_sha256": "5fe400775038279b1143b2d803494fdcc63a55df47572443f536c312678c17e3",
+  "profile_sha256": "1c42e8712a55bc92e9d19a9b31ed881101b34614b8b4f89f6ed7524c347787e9",
+  "source_files_changed": [],
+  "new_build_or_board_run": false,
+  "profile_counts": {
+    "ax_task_sync_bridge_context_enter_max_count": 14476996,
+    "ax_task_sync_bridge_context_exit_max_count": 14476996,
+    "ax_runtime_context_irq_save_and_disable_max_count": 12284842,
+    "ax_runtime_context_preempt_exit_max_count": 9406415
+  },
+  "machine_code": {
+    "ContextOps_enter_symbol_address": "0xffffffff8003cf88",
+    "ContextOps_enter_symbol_size_bytes": 1104,
+    "hot_preempt_irqsave_path": "The exact four-crate PGO ELF directly executes DAIF/SP_EL0 reads, preemption-depth ldxr/stxr, and DAIFSet; the hot path has no indirect callback branch. Large symbol size includes cold invariant failures and other context variants."
+  },
+  "effect": "The high training counts identify frequent context operations but not exclusive latency. Fat LTO already devirtualizes and inlines the external context callbacks on the hot path, so replacing the bridge with a direct provider has no demonstrated multi-microsecond benefit. The old native perf guard-exit PC concentration is delivery-time skid, not exclusive CPU time.",
+  "decision": "Reject the bridge-flattening optimization before source editing or board testing. Keep the current source and resume876 candidate unchanged; investigate an actual measured transaction or profile-coverage difference instead.",
+  "evidence": [
+    "../resume876-root-exporter/profile.profdata",
+    "../resume876-root-exporter/pgouse.elf",
+    "../resume128-report.log",
+    "../resume128-status.json"
+  ]
+}
