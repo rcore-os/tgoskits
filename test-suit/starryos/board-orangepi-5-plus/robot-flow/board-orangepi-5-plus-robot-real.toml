@@ -1,7 +1,7 @@
 # Native StarryOS runs the real robot control flow on the single-client USB
 # robot board. The launcher uses the USB camera 0ac8:0346 and the Feetech USB
 # controller 1a86:55d3 through FEETECH_DEV=auto; it never opens the arm serial port.
-board_type = "OrangePi-5-Plus-Robot-USB"
+board_type = "OrangePi-5-Plus-robot"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',

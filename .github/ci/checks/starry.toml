@@ -112,7 +112,7 @@ id = "test-orangepi-5-plus-robot-real-native-starryos"
 impact_targets = ["starry:aarch64"]
 name = "Board OrangePi 5 Plus robot USB · Native robot control"
 runner = "board"
-resource_group = "orangepi-5-plus-robot-usb"
+resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot-real

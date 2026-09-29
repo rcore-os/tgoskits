@@ -944,7 +944,7 @@ command = "true"
         for path in (real_starry, real_axvisor_starry, real_axvisor_linux):
             with self.subTest(config=path):
                 config = tomllib.loads(path.read_text())
-                self.assertEqual(config["board_type"], "OrangePi-5-Plus-Robot-USB")
+                self.assertEqual(config["board_type"], "OrangePi-5-Plus-robot")
                 self.assertNotIn("uboot_cmd", config)
                 commands = "\n".join(
                     step["shell_cmd"] for step in config["shell_check_steps"]
@@ -1087,7 +1087,7 @@ command = "true"
                 if "board" in registration
             }
             if any(board.startswith("orangepi-5-plus-robot-real") for board in boards):
-                self.assertEqual(row["resource_group"], "orangepi-5-plus-robot-usb")
+                self.assertEqual(row["resource_group"], "orangepi-5-plus-robot")
             elif any(board.startswith("orangepi-5-plus") for board in boards):
                 self.assertEqual(row["resource_group"], "orangepi-5-plus")
             else:

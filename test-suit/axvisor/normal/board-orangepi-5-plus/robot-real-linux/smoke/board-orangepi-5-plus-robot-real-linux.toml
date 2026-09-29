@@ -7,7 +7,7 @@
 # selected in linux-smp1-emmc.toml. The guest user needs the CI password to
 # reach the camera and USB device nodes, so the command uses the same sudo -S
 # convention as the Linux virtual check.
-board_type = "OrangePi-5-Plus-Robot-USB"
+board_type = "OrangePi-5-Plus-robot"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
