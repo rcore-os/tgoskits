@@ -97,7 +97,7 @@ id = "test-orangepi-5-plus-robot-native-starryos"
 impact_targets = ["starry:aarch64"]
 name = "Board OrangePi 5 Plus · Native UVC/NPU + FT232 loopback"
 runner = "board"
-resource_group = "orangepi-5-plus-robot"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot
@@ -112,7 +112,7 @@ id = "test-orangepi-5-plus-robot-real-native-starryos"
 impact_targets = ["starry:aarch64"]
 name = "Board OrangePi 5 Plus robot USB · Native robot control"
 runner = "board"
-resource_group = "orangepi-5-plus-robot"
+resource_group = "orangepi-5-plus-robot-usb"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot-real

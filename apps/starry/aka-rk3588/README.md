@@ -43,6 +43,9 @@ USB 控制器仍可能在系统中呈现 USB 串口节点。VM 配置也不注�
 `board_type = "OrangePi-5-Plus-Robot-USB"`，对应物理板 ID
 `OrangePi-5-Plus-Robot-USB-1`。三条 TOML 都使用该类型。
 
+资源组按物理板类型分开：三条 virtual 检查使用 `resource_group = "orangepi-5-plus"`，
+三条 real 检查使用 `resource_group = "orangepi-5-plus-robot-usb"`。
+
 ## 3. 客户机内核与根文件系统
 
 virtual 和 real 的 AxVisor StarryOS guest 都使用 `image_location = "memory"`，内核为

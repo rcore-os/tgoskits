@@ -130,6 +130,9 @@ FT232 传输通道由 board TOML 固定：原生 Starry 与 AxVisor + Starry 显
 StarryOS guest 和 AxVisor + Linux guest 标记 `nightly_only`，只由 AxVisor Nightly
 调度。
 
+资源组按物理板类型分开：三条 virtual 检查使用 `orangepi-5-plus`，三条 real 检查使用
+`orangepi-5-plus-robot-usb`。
+
 三条 real 检查都在固定目录 `/home/orangepi/robot-ci/aka-rk3588` 下运行
 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`；AxVisor Linux guest 通过
 `sudo -S env FEETECH_DEV=auto` 运行同一入口。它们使用原 USB 摄像头 `0ac8:0346` 和
