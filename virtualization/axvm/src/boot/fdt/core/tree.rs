@@ -375,7 +375,7 @@ impl FdtTree {
                 self.set_property(node_id, prop_u32_list("mpidr-affinity", &[id as u32]))?;
             }
             if template_has_phandle {
-                let phandle = next_free_phandle(&[host, self.inner()]);
+                let phandle = next_free_phandle(&[host, self.inner()])?;
                 self.set_property(node_id, prop_u32_list("phandle", &[phandle]))?;
                 if template_has_legacy_phandle {
                     self.set_property(node_id, prop_u32_list("linux,phandle", &[phandle]))?;
@@ -600,20 +600,38 @@ fn node_phandle(node: &Node) -> Option<u32> {
         .and_then(Property::get_u32)
 }
 
-/// Returns the smallest phandle that no node of any tree in `trees` uses.
+/// Allocates a valid phandle unused by any tree in `trees`.
 ///
 /// Every tree counts, so a caller that clones a node of one tree into another
 /// cannot pick a value that a remaining reference of either tree still means.
-pub(crate) fn next_free_phandle(trees: &[&Fdt]) -> u32 {
-    let highest = trees
+/// Prefer a value above the highest handle; at the upper bound, reuse a gap.
+pub(crate) fn next_free_phandle(trees: &[&Fdt]) -> AxVmResult<u32> {
+    let used = trees
         .iter()
         .flat_map(|fdt| {
             fdt.iter_node_ids()
                 .filter_map(|node_id| fdt.node(node_id).and_then(node_phandle))
         })
-        .max()
-        .unwrap_or(0);
-    highest.saturating_add(1).max(1)
+        .collect::<BTreeSet<_>>();
+    let highest = used.last().copied().unwrap_or(0);
+    if let Some(next) = highest.checked_add(1).filter(|next| *next < u32::MAX) {
+        return Ok(next);
+    }
+
+    let mut next = 1_u32;
+    for phandle in used {
+        if phandle > next {
+            break;
+        }
+        if phandle == next {
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| ax_err_type!(InvalidData, "no valid FDT phandle available"))?;
+        }
+    }
+    (next < u32::MAX)
+        .then_some(next)
+        .ok_or_else(|| ax_err_type!(InvalidData, "no valid FDT phandle available"))
 }
 
 fn should_skip_guest_cpu_prop(source: &Fdt, prop_name: &str) -> bool {

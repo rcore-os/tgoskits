@@ -25,7 +25,7 @@ use std::{
 };
 
 use ax_std::os::arceos::{
-    guard::{PreemptGuard, PreemptIrqSaveGuard},
+    guard::PreemptGuard,
     percpu::{self as ax_percpu, CpuAreaRef, CpuPin},
     sync::IrqSafeMutex as Mutex,
 };
@@ -475,17 +475,15 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         // `Location::caller()` inside `panic!` arguments resolves to the
         // argument expression itself instead of the propagated caller.
         let caller = core::panic::Location::caller();
-        // The guard must block IRQs as well: without the `preempt` feature the
-        // preempt-count stays zero, so `might_sleep()` would not flag a
-        // contended sleepable mutex, and blocking here (e.g. on guest console
-        // output) would deschedule the task with `CURRENT_VCPU` still set.
-        // With IRQs disabled, any accidental sleep in `f` panics loudly in
-        // `might_sleep` instead of corrupting the publication invariant.
-        let _guard = PreemptIrqSaveGuard::new();
-        // let _guard = PreemptGuard::new();
+        // Pin the CPU through the backend operation and publication teardown,
+        // but leave host IRQs enabled for entry preparation. The guest-entry
+        // window has its own IRQ guard in ArchOps::run_vcpu. Preemption also
+        // rejects any attempt to sleep with CURRENT_VCPU published.
+        let _guard = PreemptGuard::new();
 
         // SAFETY: the guard prevents migration through the backend operation,
-        // guest run, restoration check, and publication withdrawal.
+        // guest run, restoration check, and publication withdrawal. The
+        // CPU-local CURRENT_VCPU scalar is atomic for local IRQ readers.
         unsafe {
             ax_std::os::arceos::percpu::with_cpu_pin(|cpu_pin| {
                 let pinned_cpu = PinnedCpuContext::new(cpu_pin);
