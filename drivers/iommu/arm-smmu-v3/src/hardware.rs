@@ -59,6 +59,18 @@ fn dma_wmb() {
 }
 
 #[inline]
+fn dma_mb() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: The barrier orders queue reads before the consumer index is
+    // published to the SMMU; it does not access memory.
+    unsafe {
+        core::arch::asm!("dmb osh", options(nostack, preserves_flags));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    fence(Ordering::SeqCst);
+}
+
+#[inline]
 fn page_table_wmb() {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: The barrier completes preceding page-table stores before the
@@ -764,7 +776,7 @@ impl Hardware {
             self.fault_count = self.fault_count.saturating_add(1);
             self.evt_cons = (self.evt_cons + 1) & mask;
         }
-        fence(Ordering::SeqCst);
+        dma_mb();
         self.mmio.write32(0x10000 + EVTQ_CONS, self.evt_cons);
         Ok(faults)
     }
