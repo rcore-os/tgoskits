@@ -37,7 +37,7 @@ const LOCAL_IP: &str = match option_env!("AXVIRTIO_LOCAL_IP") {
 /// Heartbeat period in milliseconds (compile-time override).
 const HEARTBEAT_PERIOD_MS: &str = match option_env!("AXVIRTIO_HEARTBEAT_PERIOD_MS") {
     Some(value) => value,
-    None => "2000",
+    None => "4000",
 };
 /// Successful heartbeats after which the pass marker is printed, once.
 const PASS_AFTER_HEARTBEATS: &str = match option_env!("AXVIRTIO_HEARTBEAT_PASS_AFTER") {
@@ -97,10 +97,12 @@ fn run() -> std::io::Result<()> {
     let peer_ip = peer_ip_of(local_ip)?;
     ax_net::set_interface_ipv4(interface.id, local_ip, IPV4_PREFIX_LEN)
         .map_err(|error| std::io::Error::other(format!("configure eth0: {error}")))?;
+    let guest_cpus = thread::available_parallelism()
+        .map_err(|error| std::io::Error::other(format!("guest CPU count: {error}")))?;
 
     println!(
         "{VM_TAG}_VIRTIO_NET_READY roles=server+client local={local_ip}/{IPV4_PREFIX_LEN} \
-         peer={peer_ip}:{TEST_PORT} period_ms={} mac={:?}",
+         peer={peer_ip}:{TEST_PORT} period_ms={} cpus={guest_cpus} mac={:?}",
         heartbeat_period().as_millis(),
         interface.mac
     );
@@ -111,7 +113,14 @@ fn run() -> std::io::Result<()> {
     // life, which also keeps the process alive.
     thread::Builder::new()
         .name(String::from("virtio-net-server"))
-        .spawn(run_server)
+        .spawn(|| {
+            if let Err(error) = run_server() {
+                // The test runner stops at the FAIL marker; emit the cause
+                // first so the diagnostic survives an immediate stop.
+                println!("{VM_TAG}_VIRTIO_NET_SERVER_ERROR role=server error={error}");
+                println!("{VM_TAG}_VIRTIO_NET_FAIL role=server error={error}");
+            }
+        })
         .map_err(|error| std::io::Error::other(format!("spawn server thread: {error}")))?;
     run_client(peer_ip)
 }

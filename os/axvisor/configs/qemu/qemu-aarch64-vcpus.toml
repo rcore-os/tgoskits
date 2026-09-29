@@ -2,7 +2,7 @@ args = [
   "-nographic",
   "-cpu", "cortex-a72",
   "-machine", "virt,virtualization=on,gic-version=3",
-  # Four guest vCPUs share the two host pCPUs (two guests on each).
+  # Five guest vCPUs share two host pCPUs; VM1's two vCPUs both use pCPU0.
   "-smp", "2",
   "-m", "4g",
 ]
@@ -21,6 +21,11 @@ uefi = false
 [[shell_check_steps]]
 shell_prefix = "axvisor:$"
 shell_cmd = "vm console 1"
+
+# ArceOS enters the application only after all configured CPUs finish init;
+# VM1's second vCPU has guest ID 2, cloned from the host's CPU 0 node.
+[[shell_check_steps]]
+success_regex = ["VM1_VIRTIO_NET_READY.*cpus=2"]
 
 [[shell_check_steps]]
 success_regex = ["VM1_VIRTIO_NET_PASS role=client"]
