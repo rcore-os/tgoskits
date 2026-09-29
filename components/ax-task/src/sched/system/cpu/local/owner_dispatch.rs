@@ -49,6 +49,21 @@ impl CpuLocal {
             && self.remote.is_quiescent_for_offline()
     }
 
+    /// A published timer event or its runnable fixed worker can still drain
+    /// after the scheduler request bit has been consumed by the idle owner.
+    pub(crate) fn ktimer_owner_work_pending_for_offline(&self) -> bool {
+        if !self.remote.ktimer_is_quiescent_for_offline() {
+            return true;
+        }
+        let run_queue = self.remote.lock_run_queue(RunQueueGuardSource::Lifecycle);
+        run_queue.current_thread() == run_queue.idle()
+            && run_queue.nr_running() == 1
+            && self
+                .remote
+                .ktimer_worker()
+                .is_some_and(|worker| run_queue.queued_thread(worker).is_some())
+    }
+
     /// Publishes a sticky reschedule request from task or IRQ context.
     pub(crate) fn request_reschedule(&self, kind: RescheduleKind) {
         self.remote.request_reschedule(kind);
