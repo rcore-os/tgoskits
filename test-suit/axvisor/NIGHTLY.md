@@ -2,10 +2,11 @@
 
 The `AxVisor Nightly` workflow runs the registered AxVisor CI checks daily at
 19:20 UTC (03:20 Beijing time). It also supports `workflow_dispatch`: trigger it
-from the GitHub Actions page ("AxVisor Nightly" → "Run workflow", choose `dev`)
-or with `gh workflow run axvisor-nightly.yml --ref dev`. Both triggers test
-`dev`; the planner resolves its commit once and every build and test checks out
-that same SHA.
+from the GitHub Actions page ("AxVisor Nightly" → "Run workflow", choose the
+branch to test) or with `gh workflow run axvisor-nightly.yml --ref <branch>`.
+The planner resolves the triggering commit once and every build and test checks
+out that same SHA. Scheduled runs use the repository default branch; a manual
+run uses the selected branch.
 
 The workflow must be merged into the repository's default branch before the
 scheduled run is available. Execution is limited to `rcore-os/tgoskits`, whose
@@ -72,7 +73,9 @@ unfilled, and charts show the most recent 7 nightly entries while
 merges `perf-data` into `docs/build/axvisor-perf` before publishing Pages, so
 the dashboard appears next to the documentation at
 `<docs-site>/axvisor-perf/`. `docs.yml` also rebuilds nightly as a fallback.
-The job never touches the Pages deployment itself and writes history only in
+Only runs of `dev` publish this shared history, so manually testing another
+branch cannot add experimental measurements to the dashboard. The job never
+touches the Pages deployment itself and writes history only in
 `rcore-os/tgoskits`.
 
 Nightly runs do not cancel one another. Board availability, reservation and

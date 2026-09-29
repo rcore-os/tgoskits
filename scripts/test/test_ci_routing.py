@@ -17,6 +17,7 @@ REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
+AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
 
 
 class ReleasePrerequisiteTests(unittest.TestCase):
@@ -112,6 +113,21 @@ class ConcurrencyRoutingTests(unittest.TestCase):
             "format('ci-{0}-{1}', github.workflow, github.run_id)", concurrency
         )
         self.assertIn("queue: max", concurrency)
+
+
+class AxvisorNightlyWorkflowTests(unittest.TestCase):
+    def test_manual_dispatch_uses_the_selected_revision(self) -> None:
+        workflow = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+        plan = mapping_block(workflow, "plan", 2)
+        concurrency = mapping_block(workflow, "concurrency", 0)
+        perf_history = mapping_block(workflow, "perf-history", 2)
+
+        self.assertNotIn("ref: dev", plan)
+        self.assertIn("- name: Pin triggering revision", plan)
+        self.assertIn('echo "sha=$(git rev-parse HEAD)"', plan)
+        self.assertIn("axvisor-nightly-${{ github.ref }}", concurrency)
+        self.assertIn("tested revision: ${REVISION}", workflow)
+        self.assertIn("github.ref == 'refs/heads/dev'", perf_history)
 
 
 class MatrixParallelismTests(unittest.TestCase):

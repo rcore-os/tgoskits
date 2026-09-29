@@ -11,7 +11,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: axvisor-nightly
+  group: axvisor-nightly-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -25,9 +25,7 @@ jobs:
       axvisor_matrix: ${{ steps.matrix.outputs.axvisor_matrix }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: dev
-      - name: Pin dev revision
+      - name: Pin triggering revision
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Plan all registered AxVisor checks
@@ -87,7 +85,7 @@ jobs:
           {
             echo "## AxVisor Nightly"
             echo ""
-            echo "dev revision: ${REVISION}"
+            echo "tested revision: ${REVISION}"
             echo ""
             echo "| Stage | Result |"
             echo "| --- | --- |"
@@ -110,7 +108,9 @@ jobs:
 
   perf-history:
     name: Performance History
-    if: always() && github.repository == 'rcore-os/tgoskits'
+    if: >-
+      always() && github.repository == 'rcore-os/tgoskits' &&
+      github.ref == 'refs/heads/dev'
     needs: [plan, checks]
     runs-on: ubuntu-latest
     permissions:
