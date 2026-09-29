@@ -565,6 +565,20 @@ impl Card0 {
             return Err(StarryError::InvalidInput);
         }
 
+        // Linux reserves the out-fence fd (`get_unused_fd_flags`) before the
+        // submit, so an fd shortage fails with EMFILE while the device has
+        // seen nothing of this batch. The fence id only exists after the
+        // submit, so the file is created as a placeholder here and bound to
+        // the submit's fence below, before the fd is installed.
+        let out_fd = if fence_out {
+            let sync_file = Arc::new(SyncFile::new(0));
+            let created: Arc<dyn FileLike> = sync_file.clone();
+            let prepared = prepare_file_like(move || Ok(created), true)?;
+            Some((sync_file, prepared))
+        } else {
+            None
+        };
+
         // Read the command buffer and BO handles, then resolve every handle to
         // an owned resource — all before creating a context, so a bad command
         // buffer or GEM handle leaves no host state behind.
@@ -598,6 +612,9 @@ impl Card0 {
 
         let completion = with_virgl(|virgl| virgl.submit(ctx_id, &cmd_buf))?;
         let fence_id = completion_fence(completion);
+        if let Some((sync_file, _)) = &out_fd {
+            sync_file.bind_fence_id(fence_id);
+        }
         for resource in resources {
             resource.last_fence.store(fence_id, Ordering::Release);
         }
@@ -606,30 +623,22 @@ impl Card0 {
         // sync_file and returns the fd (`virtgpu_execbuffer_ioctl`). The fence
         // starts unsignaled — the submit is fire-and-forget — and signals when
         // the host pops the fenced command, which the fence refresher and the
-        // poll/wait refresh paths observe. The fd can only be created after
-        // the submit (the fence id does not exist before it), so an fd
-        // shortage fails the ioctl *after* the work was enqueued; that is safe
-        // — the batch is ordered and its fence is simply dropped. A
-        // synchronous completion has no fence to observe (`fence_id == 0`);
-        // its sync_file signals on the first level check.
-        let out_fd = if fence_out {
-            let sync_file = Arc::new(SyncFile::new(fence_id));
-            if fence_id != 0 {
-                sync_file.register();
-            }
-            let created: Arc<dyn FileLike> = sync_file.clone();
-            let prepared = prepare_file_like(move || Ok(created), true)?;
-            Some(prepared)
-        } else {
-            None
-        };
+        // poll/wait refresh paths observe. A synchronous completion has no
+        // fence to observe (`fence_id == 0`); its sync_file signals on the
+        // first level check.
+        if let Some((sync_file, _)) = &out_fd
+            && fence_id != 0
+        {
+            sync_file.register();
+        }
         // `fence_fd` is written back only for `FENCE_FD_OUT`; an IN-only
         // request keeps its input fd untouched (Linux only updates the field
         // when it created an out-fence).
-        eb.fence_fd = writeback_fence_fd(eb.fence_fd, out_fd.as_ref().map(|p| p.fd()));
+        eb.fence_fd =
+            writeback_fence_fd(eb.fence_fd, out_fd.as_ref().map(|(_, p)| p.fd()));
         ptr.vm_write(current, eb)
             .map_err(|_| VfsError::BadAddress)?;
-        if let Some(prepared) = out_fd {
+        if let Some((_, prepared)) = out_fd {
             prepared.install();
         }
 

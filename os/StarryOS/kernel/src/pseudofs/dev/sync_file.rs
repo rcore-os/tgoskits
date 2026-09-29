@@ -56,7 +56,7 @@ use crate::{
     file::FileLike,
     mm::{VmMutPtr, VmPtr},
     sync::IrqMutex,
-    task::{UserTaskRef, kernel_thread_builder, sleep, yield_now},
+    task::{UserTaskRef, kernel_thread_builder, sleep},
 };
 
 /// Linux `_IOC` direction bits (`include/uapi/asm-generic/ioctl.h`).
@@ -132,7 +132,9 @@ pub struct SyncFenceInfo {
 /// was woken for.
 pub struct SyncFile {
     /// The `submit_3d` fence id whose host completion signals this file.
-    fence_id: u64,
+    /// Written once by [`Self::bind_fence_id`] before the fd becomes visible
+    /// to any other thread, so relaxed accesses suffice.
+    fence_id: AtomicU64,
     signaled: AtomicBool,
     poll_rx: PollSet,
 }
@@ -204,10 +206,22 @@ impl SyncFile {
     /// [`Self::register`] right after the `Arc` is created.
     pub fn new(fence_id: u64) -> Self {
         Self {
-            fence_id,
+            fence_id: AtomicU64::new(fence_id),
             signaled: AtomicBool::new(false),
             poll_rx: PollSet::new(),
         }
+    }
+
+    /// Binds the submit's fence id to a file created before the submit.
+    ///
+    /// EXECBUFFER reserves the out-fence fd before any host-side effect so
+    /// an fd shortage fails with no queued GPU work (Linux reserves the fd
+    /// with `get_unused_fd_flags` before `virtio_gpu_execbuffer`), but the
+    /// fence id only exists once the submit returned. Called exactly once,
+    /// after the submit and before [`Self::register`] or the fd install
+    /// publishes the file to any other thread.
+    pub fn bind_fence_id(&self, fence_id: u64) {
+        self.fence_id.store(fence_id, Ordering::Relaxed);
     }
 
     /// Registers this out-fence in the completion registry and makes sure the
@@ -218,7 +232,7 @@ impl SyncFile {
     pub fn register(self: &Arc<Self>) {
         FENCE_WAITERS
             .lock()
-            .push((self.fence_id, Arc::downgrade(self)));
+            .push((self.fence_id.load(Ordering::Relaxed), Arc::downgrade(self)));
         ensure_refresher();
     }
 
@@ -241,7 +255,9 @@ impl SyncFile {
     /// ring as a side effect (`fence_completed` pumps), so waiter-driven
     /// refresh alone advances the completion level even without an IRQ.
     pub fn refresh(&self) -> bool {
-        if !self.signaled.load(Ordering::Acquire) && fence_level(self.fence_id) {
+        if !self.signaled.load(Ordering::Acquire)
+            && fence_level(self.fence_id.load(Ordering::Relaxed))
+        {
             self.mark_signaled();
         }
         self.signaled.load(Ordering::Acquire)
@@ -251,21 +267,29 @@ impl SyncFile {
     ///
     /// `timeout == None` waits forever (EXECBUFFER in-fence semantics);
     /// otherwise the wait is bounded and expiry reports `ETIME`, matching
-    /// Linux `sync_file_ioctl_wait` returning `-ETIME`.
-    /// Cooperative: the loop yields between completion checks, mirroring the
-    /// driver's bounded fence wait.
+    /// Linux `sync_file_ioctl_wait` returning `-ETIME`. Sleeps on the
+    /// refresher's wait queue in tick-sized slices instead of spinning: the
+    /// CPU is released while waiting, a burst kick from any execbuffer wakes
+    /// the wait immediately for a re-check, and the slice bounds the wake
+    /// latency to the same 250 µs cadence the poll path gets.
     pub fn wait_signaled(&self, timeout: Option<Duration>) -> StarryResult<()> {
         let deadline = timeout.map(|t| monotonic_time_nanos() + t.as_nanos() as u64);
         loop {
             if self.refresh() {
                 return Ok(());
             }
+            let now = monotonic_time_nanos();
             if let Some(deadline) = deadline
-                && monotonic_time_nanos() >= deadline
+                && now >= deadline
             {
                 return Err(sync_wait_timeout_error());
             }
-            yield_now();
+            let slice = deadline
+                .map_or(REFRESHER_ACTIVE_TICK, |deadline| {
+                    (Duration::from_nanos(deadline - now)).min(REFRESHER_ACTIVE_TICK)
+                });
+            REFRESHER_WAKE
+                .wait_timeout_until(slice, || self.signaled.load(Ordering::Acquire));
         }
     }
 }
@@ -275,7 +299,9 @@ impl Drop for SyncFile {
         // Fence ids are unique among live out-fences (one SyncFile per
         // submit), so removing every entry with this id is exact. The IRQ-save
         // lock discipline matches `register`.
-        FENCE_WAITERS.lock().retain(|(id, _)| *id != self.fence_id);
+        FENCE_WAITERS
+            .lock()
+            .retain(|(id, _)| *id != self.fence_id.load(Ordering::Relaxed));
     }
 }
 
@@ -318,14 +344,16 @@ fn prune_dead_waiters() {
     FENCE_WAITERS.lock().retain(|(_, w)| w.strong_count() > 0);
 }
 
-/// Whether any live out-fence exists. The refresher's active cadence is only
-/// needed while this holds; every other wait path re-checks the fence level
-/// itself.
+/// Whether any live out-fence still waits for its host completion. The
+/// refresher's active cadence is only needed while this holds: a signaled
+/// fence has already woken its pollers, and its registry entry only waits
+/// for the fd to close (pruned by the idle backstop). Every other wait path
+/// re-checks the fence level itself.
 fn has_live_waiters() -> bool {
-    FENCE_WAITERS
-        .lock()
-        .iter()
-        .any(|(_, w)| w.strong_count() > 0)
+    FENCE_WAITERS.lock().iter().any(|(_, w)| {
+        w.strong_count() > 0
+            && w.upgrade().is_some_and(|sf| !sf.signaled.load(Ordering::Acquire))
+    })
 }
 
 /// Background fence waiter: while at least one live out-fence exists, pump +

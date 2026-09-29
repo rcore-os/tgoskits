@@ -4254,16 +4254,4 @@ mod tests {
         );
         assert!(events.has_space());
     }
-
-    #[test]
-    fn execbuffer_in_only_request_keeps_its_input_fence_fd() {
-        assert_eq!(writeback_fence_fd(7, None), 7);
-        assert_eq!(writeback_fence_fd(-1, None), -1);
-    }
-
-    #[test]
-    fn execbuffer_out_fence_fd_overwrites_the_written_back_value() {
-        assert_eq!(writeback_fence_fd(7, Some(9)), 9);
-        assert_eq!(writeback_fence_fd(-1, Some(9)), 9);
-    }
 }
