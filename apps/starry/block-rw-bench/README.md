@@ -88,3 +88,35 @@ Each sequential case transfers 8 MiB. The eight concurrent workers transfer
 2 MiB each; these sizes keep the depth-one hardware queue validation bounded
 while still exercising thousands of 512-byte submissions and every required
 ADMA2 split boundary.
+
+## Measurement boundary
+
+This benchmark measures the **full file-I/O stack** of the running StarryOS
+image: VFS, ext4, page cache and syscalls. Reported per-operation read
+latencies are file-interface timings and may be served **entirely by the page
+cache**: reads follow a `sync_all` write of the same file, and syncing does
+not evict cache lines, so a sample can complete without any request reaching
+the block runtime or the hardware controller. Unless
+`BLOCK_RW_BENCH_DROP_CACHES` is enabled, the read percentiles must not be
+read as device latency.
+
+With `BLOCK_RW_BENCH_DROP_CACHES` enabled, check the per-phase `diskstats`
+delta lines printed for each case (`phase=read`): a nonzero `reads=` delta
+confirms that the phase reached the device path, and only such a verified run
+supports claims about the hardware controller. The per-case output also labels
+itself with `boundary=full-file-stack-not-raw-request-latency`.
+
+The latencies are **not** raw block-request latencies under any
+configuration, and the numbers must not be read as a sync-versus-async block
+submission comparison.
+
+Raw request-level correctness (registration consistency, asynchronous
+completion and waker delivery, contiguous and multi-descriptor write-read
+integrity, scratch-region restore) is covered by the kernel's
+`block_runtime_axtest` regressions. The standard CI `axtest_kernel` entry
+discovers and runs that suite, but a board environment without a configured
+scratch region makes the write cases self-skip
+(`BLOCK_WRITE_TESTS_SKIPPED`): only the read cases execute under plain CI.
+The write-read coverage therefore depends on running the suite on hardware
+whose kernel command line declares the scratch region
+(`axtest.block_scratch=<start_lba>:<blocks>`).

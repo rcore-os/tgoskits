@@ -9,7 +9,7 @@ mod types;
 
 pub use error::{Error, Result};
 pub use reader::BlockReader;
-pub use scan::scan_volumes;
+pub use scan::{VolumeScan, scan_volumes};
 pub use types::{
     BlockRegion, BlockVolume, DiskId, PartitionId, PartitionLabel, PartitionTableKind,
     PartitionUuid,

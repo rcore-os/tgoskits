@@ -67,7 +67,8 @@ fn write_mbr_entry(
 #[test]
 fn raw_disk_fallback_covers_entire_reader() {
     let mut reader = MemReader::new(32);
-    let volumes = scan_volumes(&mut reader, DiskId(7)).unwrap();
+    let scan = scan_volumes(&mut reader, DiskId(7)).unwrap();
+    let volumes = &scan.volumes;
 
     assert_eq!(volumes.len(), 1);
     assert_eq!(volumes[0].disk_id, DiskId(7));
@@ -77,6 +78,7 @@ fn raw_disk_fallback_covers_entire_reader() {
     assert!(!volumes[0].bootable);
     assert_eq!(volumes[0].partuuid, None);
     assert_eq!(volumes[0].partlabel, None);
+    assert!(scan.table_metadata.is_empty());
 }
 
 #[test]
@@ -87,7 +89,8 @@ fn scans_mbr_primary_partition() {
     write_mbr_entry(mbr, 0, 0x83, 8, 40, true);
     write_mbr_signature(mbr);
 
-    let volumes = scan_volumes(&mut reader, DiskId(2)).unwrap();
+    let scan = scan_volumes(&mut reader, DiskId(2)).unwrap();
+    let volumes = &scan.volumes;
 
     assert_eq!(volumes.len(), 1);
     assert_eq!(volumes[0].disk_id, DiskId(2));
@@ -98,6 +101,28 @@ fn scans_mbr_primary_partition() {
     assert_eq!(
         volumes[0].partuuid.as_ref().map(|uuid| uuid.0.as_str()),
         Some("1234abcd-01")
+    );
+    assert_eq!(scan.table_metadata, vec![BlockRegion::new(0, 1)]);
+}
+
+#[test]
+fn preserves_mbr_and_ebr_metadata_without_data_partitions() {
+    let mut reader = MemReader::new(64);
+    let mbr = reader.block_mut(0);
+    write_mbr_entry(mbr, 0, 0x05, 8, 40, false);
+    write_mbr_signature(mbr);
+
+    let ebr = reader.block_mut(8);
+    write_mbr_signature(ebr);
+
+    let scan = scan_volumes(&mut reader, DiskId(6)).unwrap();
+
+    assert_eq!(scan.volumes.len(), 1);
+    assert_eq!(scan.volumes[0].table_kind, PartitionTableKind::Raw);
+    assert_eq!(scan.volumes[0].region, BlockRegion::new(0, 64));
+    assert_eq!(
+        scan.table_metadata,
+        vec![BlockRegion::new(0, 1), BlockRegion::new(8, 1)]
     );
 }
 
@@ -119,7 +144,8 @@ fn scans_mbr_logical_partitions_without_exposing_extended_container() {
     write_mbr_entry(ebr1, 0, 0x83, 1, 5, false);
     write_mbr_signature(ebr1);
 
-    let volumes = scan_volumes(&mut reader, DiskId(9)).unwrap();
+    let scan = scan_volumes(&mut reader, DiskId(9)).unwrap();
+    let volumes = &scan.volumes;
 
     assert_eq!(volumes.len(), 3);
     assert_eq!(volumes[0].partition_id, PartitionId(1));
@@ -137,6 +163,14 @@ fn scans_mbr_logical_partitions_without_exposing_extended_container() {
     assert_eq!(
         volumes[2].partuuid.as_ref().map(|uuid| uuid.0.as_str()),
         Some("1234abcd-06")
+    );
+    assert_eq!(
+        scan.table_metadata,
+        vec![
+            BlockRegion::new(0, 1),
+            BlockRegion::new(32, 1),
+            BlockRegion::new(52, 1),
+        ]
     );
 }
 
@@ -175,7 +209,8 @@ fn scans_gpt_single_partition() {
         entry[56 + idx * 2..58 + idx * 2].copy_from_slice(&unit.to_le_bytes());
     }
 
-    let volumes = scan_volumes(&mut reader, DiskId(3)).unwrap();
+    let scan = scan_volumes(&mut reader, DiskId(3)).unwrap();
+    let volumes = &scan.volumes;
 
     assert_eq!(volumes.len(), 1);
     assert_eq!(volumes[0].disk_id, DiskId(3));
@@ -189,6 +224,10 @@ fn scans_gpt_single_partition() {
     assert_eq!(
         volumes[0].partlabel.as_ref().map(|label| label.0.as_str()),
         Some("root")
+    );
+    assert_eq!(
+        scan.table_metadata,
+        vec![BlockRegion::new(0, 34), BlockRegion::new(127, 1)]
     );
 }
 

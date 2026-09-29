@@ -1,7 +1,7 @@
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::{self, BufReader, Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Barrier},
     thread,
@@ -139,7 +139,8 @@ fn run() -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let diskstats = verify_root_device(&config)?;
     println!(
-        "block-rw-bench: io_model=buffered-file write_scope=write-syscalls fsync={} drop_caches={}",
+        "block-rw-bench: io_model=buffered-file write_scope=write-syscalls fsync={} \
+         drop_caches={} boundary=full-file-stack-not-raw-request-latency",
         config.fsync,
         env::var_os(DROP_CACHES_ENV).is_some()
     );
@@ -222,6 +223,16 @@ fn root_device_matches(root_source: &str, expected: &str) -> bool {
     })
 }
 
+/// Nearest-rank percentile over per-operation samples in nanoseconds.
+fn percentile_ns(samples: &mut [u64], percent: usize) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    samples.sort_unstable();
+    let rank = (samples.len() * percent).div_ceil(100);
+    samples[rank.max(1) - 1]
+}
+
 fn run_case(
     dir: &Path,
     case: Case,
@@ -242,10 +253,13 @@ fn run_case(
         .open(&path)?;
 
     let mut offset = 0usize;
+    let mut write_latencies = Vec::new();
     while offset < bytes {
         let chunk_len = (bytes - offset).min(case.io_size);
         fill_pattern(&mut pattern[..chunk_len], case.io_size, offset);
+        let op_start = Instant::now();
         file.write_all(&pattern[..chunk_len])?;
+        write_latencies.push(op_start.elapsed().as_nanos() as u64);
         offset += chunk_len;
     }
     let write_elapsed = write_start.elapsed();
@@ -263,7 +277,8 @@ fn run_case(
 
     let before_read = diskstats.snapshot()?;
     let read_start = Instant::now();
-    verify_file(&path, case.io_size, bytes)?;
+    let mut read_latencies = Vec::new();
+    verify_file(&path, case.io_size, bytes, &mut read_latencies)?;
     let read_elapsed = read_start.elapsed();
     let after_read = diskstats.snapshot()?;
 
@@ -276,6 +291,23 @@ fn run_case(
         throughput_mib_s(bytes, write_elapsed),
         throughput_mib_s(bytes, read_elapsed),
         duration_ms(fsync_elapsed)
+    );
+    println!(
+        "block-rw-bench: result case={} io_size={} bytes={} operations={} write_bytes_per_sec={} \
+         read_bytes_per_sec={} write_p50_ns={} write_p95_ns={} write_p99_ns={} read_p50_ns={} \
+         read_p95_ns={} read_p99_ns={}",
+        case.name,
+        case.io_size,
+        bytes,
+        write_latencies.len(),
+        throughput_bytes_per_sec(bytes, write_elapsed),
+        throughput_bytes_per_sec(bytes, read_elapsed),
+        percentile_ns(&mut write_latencies, 50),
+        percentile_ns(&mut write_latencies, 95),
+        percentile_ns(&mut write_latencies, 99),
+        percentile_ns(&mut read_latencies, 50),
+        percentile_ns(&mut read_latencies, 95),
+        percentile_ns(&mut read_latencies, 99),
     );
     diskstats.print_delta(case.name, "write", before_write, after_write);
     diskstats.print_delta(case.name, "fsync", after_write, after_fsync);
@@ -362,15 +394,24 @@ fn run_path_case(
     fs::remove_file(path)
 }
 
-fn verify_file(path: &Path, block_size: usize, bytes: usize) -> io::Result<()> {
-    let mut reader = BufReader::new(File::open(path)?);
+fn verify_file(
+    path: &Path,
+    block_size: usize,
+    bytes: usize,
+    read_latencies: &mut Vec<u64>,
+) -> io::Result<()> {
+    // Deliberately unbuffered: every read must cross the syscall/filesystem
+    // boundary so the recorded latencies cover the full file-I/O path.
+    let mut file = File::open(path)?;
     let mut actual = vec![0; block_size];
     let mut expected = vec![0; block_size];
     let mut offset = 0usize;
 
     while offset < bytes {
         let chunk_len = (bytes - offset).min(block_size);
-        reader.read_exact(&mut actual[..chunk_len])?;
+        let op_start = Instant::now();
+        file.read_exact(&mut actual[..chunk_len])?;
+        read_latencies.push(op_start.elapsed().as_nanos() as u64);
         fill_pattern(&mut expected[..chunk_len], block_size, offset);
         if actual[..chunk_len] != expected[..chunk_len] {
             return Err(io::Error::new(
@@ -393,14 +434,14 @@ fn verify_worker_file(
     bytes: usize,
     worker_id: usize,
 ) -> io::Result<()> {
-    let mut reader = BufReader::new(File::open(path)?);
+    let mut file = File::open(path)?;
     let mut actual = vec![0; block_size];
     let mut expected = vec![0; block_size];
     let mut offset = 0usize;
 
     while offset < bytes {
         let chunk_len = (bytes - offset).min(block_size);
-        reader.read_exact(&mut actual[..chunk_len])?;
+        file.read_exact(&mut actual[..chunk_len])?;
         fill_pattern_for_worker(&mut expected[..chunk_len], block_size, offset, worker_id);
         if actual[..chunk_len] != expected[..chunk_len] {
             return Err(io::Error::new(
@@ -435,6 +476,11 @@ fn fill_pattern_for_worker(
             .wrapping_add(seed)
             .rotate_left((pos & 7) as u32) as u8;
     }
+}
+
+fn throughput_bytes_per_sec(bytes: usize, elapsed: Duration) -> u64 {
+    let elapsed_ns = elapsed.as_nanos().max(1) as u64;
+    (bytes as u64).saturating_mul(1_000_000_000) / elapsed_ns
 }
 
 fn throughput_mib_s(bytes: usize, elapsed: Duration) -> f64 {

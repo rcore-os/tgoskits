@@ -35,6 +35,15 @@ pub enum RootKind {
 pub fn root_kind() -> Option<RootKind> {
     ROOT_KIND.get().copied()
 }
+#[cfg(axtest)]
+static ROOT_BLOCK_HANDLE: OnceLock<usize> = OnceLock::new();
+#[cfg(axtest)]
+static ROOT_BLOCK_REGION: OnceLock<BlockRegion> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_SCRATCH_REGION: OnceLock<Option<Result<BlockRegion, String>>> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_DISK_PROTECTED_REGIONS: OnceLock<Vec<(usize, Option<Vec<BlockRegion>>)>> =
+    OnceLock::new();
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,6 +230,8 @@ pub fn init_root(
     let selected = disks.swap_remove(selected_disk_pos);
     ROOT_BLOCK_IDENTITY
         .call_once(|| block_identity(selected.handle.device_info(), selected.disk_index));
+    #[cfg(axtest)]
+    ROOT_BLOCK_HANDLE.call_once(|| Arc::as_ptr(&selected.handle) as usize);
     let selected_partition_info = selected_partition.and_then(|part_index| {
         selected
             .partitions
@@ -238,6 +249,10 @@ pub fn init_root(
         || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
         |part| part.info.region,
     );
+    #[cfg(axtest)]
+    ROOT_BLOCK_REGION.call_once(|| region);
+    #[cfg(axtest)]
+    AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
 
     let root = if let Some(kind) = selected_filesystem_kind(
         selected.raw_filesystem,
@@ -264,6 +279,8 @@ pub fn init_root_with_memory(
     memory: Option<axfs_ng_vfs::Filesystem>,
     early_init: Option<&str>,
 ) -> RootKind {
+    #[cfg(axtest)]
+    AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
     if let Some(memory) = memory {
         let selected = should_use_memory_root(&memory, bootargs, early_init);
         if selected {
@@ -294,6 +311,91 @@ fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool 
     let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
     let context = crate::highlevel::FsContext::new(root);
     context.resolve(path).is_ok()
+}
+
+/// Returns whether a block handle is the device selected for the root
+/// filesystem. This test-only identity prevents destructive axtests from
+/// accidentally writing the root device.
+#[cfg(axtest)]
+pub fn axtest_is_root_device(handle: &BlockDeviceHandle) -> bool {
+    ROOT_BLOCK_HANDLE
+        .get()
+        .is_some_and(|root| *root == handle as *const BlockDeviceHandle as usize)
+}
+
+/// Returns the filesystem region selected as root when `handle` is the root
+/// block device. This lets destructive axtests use an explicitly reserved
+/// region on the same physical disk without touching the mounted filesystem.
+#[cfg(axtest)]
+pub fn axtest_root_region(handle: &BlockDeviceHandle) -> Option<BlockRegion> {
+    if !axtest_is_root_device(handle) {
+        return None;
+    }
+    Some(
+        *ROOT_BLOCK_REGION
+            .get()
+            .expect("root block region must be published before axtests run"),
+    )
+}
+
+/// Returns the destructive-write scratch region requested on the kernel
+/// command line (`axtest.block_scratch=<start_lba>:<blocks>`). `None` when
+/// the command line does not mention it; a present but malformed declaration
+/// is returned as `Err` so callers fail loudly instead of silently falling
+/// back to another disk.
+#[cfg(axtest)]
+pub fn axtest_scratch_region_request() -> Option<&'static Result<BlockRegion, String>> {
+    AXTEST_SCRATCH_REGION
+        .get()
+        .and_then(|requested| requested.as_ref())
+}
+
+/// Returns the regions the destructive axtests must not write on the disk
+/// that owns `handle`: every identified partition plus the partition-table
+/// metadata sectors. `None` marks an unknown layout — the handle was never
+/// registered or its volume scan failed — and disqualifies the device from
+/// destructive writes instead of silently passing as "no partitions".
+#[cfg(axtest)]
+pub fn axtest_disk_protected_regions(handle: &BlockDeviceHandle) -> Option<&'static [BlockRegion]> {
+    let ptr = handle as *const BlockDeviceHandle as usize;
+    AXTEST_DISK_PROTECTED_REGIONS
+        .get()?
+        .iter()
+        .find(|(entry_ptr, _)| *entry_ptr == ptr)
+        .and_then(|(_, regions)| regions.as_deref())
+}
+
+// The parser is pure, so host unit tests compile it alongside the axtest
+// builds to cover the fallback and hard-error contract deterministically.
+#[cfg(any(axtest, test))]
+fn parse_axtest_scratch_region(bootargs: Option<&str>) -> Option<Result<BlockRegion, String>> {
+    // Absent on the command line -> None (the caller falls back). A present
+    // but malformed declaration is reported as Err so the destructive tests
+    // fail loudly instead of silently running against another disk.
+    let value = bootargs?
+        .split_ascii_whitespace()
+        .find_map(|arg| arg.strip_prefix("axtest.block_scratch="))?;
+    let Some((start_lba, block_count)) = value.split_once(':') else {
+        return Some(Err(format!(
+            "axtest.block_scratch expects <start_lba>:<blocks>, got {value:?}"
+        )));
+    };
+    let Ok(start_lba) = start_lba.parse::<u64>() else {
+        return Some(Err(format!(
+            "axtest.block_scratch start_lba {start_lba:?} is not an integer"
+        )));
+    };
+    let Ok(block_count) = block_count.parse::<u64>() else {
+        return Some(Err(format!(
+            "axtest.block_scratch blocks {block_count:?} is not an integer"
+        )));
+    };
+    if block_count == 0 {
+        return Some(Err(
+            "axtest.block_scratch blocks must be nonzero".to_string()
+        ));
+    }
+    Some(Ok(BlockRegion::new(start_lba, block_count)))
 }
 
 const SD_NAMES: [&str; 26] = [
@@ -379,6 +481,8 @@ fn collect_disks(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
 ) -> crate::BlockResult<Vec<DiscoveredDisk>> {
     let mut disks = Vec::new();
+    #[cfg(axtest)]
+    let mut axtest_disk_regions: Vec<(usize, Option<Vec<BlockRegion>>)> = Vec::new();
 
     for (disk_index, dev) in block_devs.into_iter().enumerate() {
         let handle = dev.clone();
@@ -386,9 +490,24 @@ fn collect_disks(
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
-            Ok(volumes) => {
-                let (raw_filesystem, partitions) = collect_partitions(&mut *dev, volumes);
+            Ok(scan) => {
+                let (raw_filesystem, partitions) = collect_partitions(&mut *dev, scan.volumes);
                 log_disk(disk_index, &device_name, &partitions);
+                // Scanned disks publish their protected regions: every
+                // identified partition plus the partition-table metadata.
+                #[cfg(axtest)]
+                {
+                    let mut protected: Vec<BlockRegion> = partitions
+                        .iter()
+                        .map(|partition| partition.info.region)
+                        .collect();
+                    protected.extend(
+                        scan.table_metadata
+                            .iter()
+                            .map(|region| BlockRegion::new(region.start_block, region.num_blocks)),
+                    );
+                    axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, Some(protected)));
+                }
                 disks.push(DiscoveredDisk {
                     disk_index,
                     handle,
@@ -401,9 +520,17 @@ fn collect_disks(
                     "  failed to scan partitions on block device {} ({}): {err:?}",
                     disk_index, device_name
                 );
+                // A failed volume scan leaves the disk layout unknown; the
+                // entry stays registered as unusable so destructive axtests
+                // can never treat the disk as an unprotected candidate.
+                #[cfg(axtest)]
+                axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, None));
             }
         }
     }
+
+    #[cfg(axtest)]
+    AXTEST_DISK_PROTECTED_REGIONS.call_once(|| axtest_disk_regions);
 
     Ok(disks)
 }
@@ -1359,10 +1486,14 @@ mod tests {
     fn volume_reader_retries_transient_metadata_read_errors() {
         let mut dev = FlakyMetadataDevice::new(1);
         let mut reader = VolumeReader::new(&mut dev);
-        let volumes = scan_volumes(&mut reader, DiskId(0)).unwrap();
+        let scan = scan_volumes(&mut reader, DiskId(0)).unwrap();
 
-        assert_eq!(volumes.len(), 1);
-        assert_eq!(volumes[0].table_kind, VolumeTableKind::Raw);
+        assert_eq!(scan.volumes.len(), 1);
+        assert_eq!(scan.volumes[0].table_kind, VolumeTableKind::Raw);
+        assert_eq!(
+            scan.table_metadata,
+            vec![crate::volume::BlockRegion::new(0, 1)]
+        );
         assert_eq!(dev.remaining_failures, 0);
     }
 
@@ -1537,5 +1668,42 @@ mod tests {
         assert_eq!(default_root_source(emmc, 0, Some(0)), "/dev/mmcblk0p1");
         assert_eq!(default_root_source(ahci, 0, None), "/dev/sda");
         assert_eq!(default_root_source(ahci, 1, Some(0)), "/dev/sdb1");
+    }
+
+    #[test]
+    fn missing_scratch_declaration_falls_back_to_the_marker_disk() {
+        assert!(parse_axtest_scratch_region(None).is_none());
+        assert!(parse_axtest_scratch_region(Some("root=/dev/mmcblk0p1 quiet")).is_none());
+    }
+
+    #[test]
+    fn malformed_scratch_declarations_are_reported_not_folded_into_fallback() {
+        for (declaration, expected_fragment) in [
+            ("axtest.block_scratch=2099200", "expects"),
+            ("axtest.block_scratch=abc:256", "start_lba"),
+            ("axtest.block_scratch=2099200:xyz", "blocks"),
+            ("axtest.block_scratch=2099200:0", "nonzero"),
+        ] {
+            let requested = parse_axtest_scratch_region(Some(declaration))
+                .expect("a present declaration must not collapse to the fallback path");
+            let error = requested
+                .as_ref()
+                .expect_err("malformed declarations must be errors");
+            assert!(
+                error.contains(expected_fragment),
+                "declaration {declaration:?} produced unrelated error {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_scratch_declaration_resolves_to_a_half_open_region() {
+        let region =
+            parse_axtest_scratch_region(Some("console=ttyS0 axtest.block_scratch=2099200:256"))
+                .expect("declaration present")
+                .expect("well-formed declaration");
+        assert_eq!(region.start_lba, 2_099_200);
+        assert_eq!(region.end_lba, 2_099_456);
+        assert_eq!(region.num_blocks(), 256);
     }
 }

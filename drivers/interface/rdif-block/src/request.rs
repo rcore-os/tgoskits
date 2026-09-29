@@ -635,6 +635,36 @@ mod tests {
     }
 
     #[test]
+    fn request_shape_accepts_2040_blocks_and_rejects_2041() {
+        const BLOCK_SIZE: usize = 512;
+        const MAX_BLOCKS: u32 = 2040;
+
+        let max_len = MAX_BLOCKS as usize * BLOCK_SIZE;
+        let dma = dma_info(
+            dma_api::DmaCoherency::NonCoherent,
+            DmaConstraints::new(u64::MAX)
+                .with_align(BLOCK_SIZE)
+                .with_max_segment_size(max_len + BLOCK_SIZE),
+        );
+        let limits = QueueLimits {
+            dma,
+            max_blocks_per_request: MAX_BLOCKS,
+            max_segments: 1,
+            ..QueueLimits::simple(BLOCK_SIZE, dma)
+        };
+        let info = DeviceInfo::new(4096, BLOCK_SIZE);
+
+        assert_eq!(
+            validate_owned_request_shape(info, limits, &request_with(0x1000, max_len)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_owned_request_shape(info, limits, &request_with(0x1000, max_len + BLOCK_SIZE),),
+            Err(BlkError::InvalidBlockIndex(0))
+        );
+    }
+
+    #[test]
     fn request_validation_rejects_unknown_flags() {
         let limits = queue_limits(dma_api::DmaCoherency::NonCoherent);
         let request = OwnedRequest {

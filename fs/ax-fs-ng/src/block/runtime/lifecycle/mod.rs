@@ -1131,7 +1131,19 @@ impl BlockDeviceHandle {
     /// preparation and request validation remain owned by the runtime.
     #[cfg(axtest)]
     pub async fn axtest_read(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
-        let request = self.axtest_read_request(lba)?;
+        self.axtest_read_blocks(lba, 1).await
+    }
+
+    /// Reads a contiguous range of logical blocks through the asynchronous
+    /// runtime path. The returned DMA buffer contains exactly `block_count`
+    /// logical blocks in device order.
+    #[cfg(axtest)]
+    pub async fn axtest_read_blocks(
+        &self,
+        lba: u64,
+        block_count: u32,
+    ) -> Result<CompletedRequest, BlockError> {
+        let request = self.axtest_data_request(RequestOp::Read, lba, block_count, None)?;
         let subscription = self
             .submit_owned_async(request)
             .await
@@ -1146,7 +1158,69 @@ impl BlockDeviceHandle {
     /// completion paths without duplicating runtime internals in the kernel.
     #[cfg(axtest)]
     pub fn axtest_read_sync(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
-        let request = self.axtest_read_request(lba)?;
+        self.axtest_read_blocks_sync(lba, 1)
+    }
+
+    /// Reads a contiguous range of logical blocks through the synchronous
+    /// completion path.
+    #[cfg(axtest)]
+    pub fn axtest_read_blocks_sync(
+        &self,
+        lba: u64,
+        block_count: u32,
+    ) -> Result<CompletedRequest, BlockError> {
+        let request = self.axtest_data_request(RequestOp::Read, lba, block_count, None)?;
+        let subscription = self
+            .submit_owned(request)
+            .map_err(|error| BlockError::from(error.error))?;
+        subscription.recv().map_err(BlockError::from)
+    }
+
+    /// Writes one logical block through the asynchronous runtime path.
+    #[cfg(axtest)]
+    pub async fn axtest_write(
+        &self,
+        lba: u64,
+        data: &[u8],
+    ) -> Result<CompletedRequest, BlockError> {
+        self.axtest_write_blocks(lba, 1, data).await
+    }
+
+    /// Writes a contiguous range of logical blocks through the asynchronous
+    /// runtime path. The caller must provide exactly `block_count` logical
+    /// blocks of data.
+    #[cfg(axtest)]
+    pub async fn axtest_write_blocks(
+        &self,
+        lba: u64,
+        block_count: u32,
+        data: &[u8],
+    ) -> Result<CompletedRequest, BlockError> {
+        let request = self.axtest_data_request(RequestOp::Write, lba, block_count, Some(data))?;
+        let subscription = self
+            .submit_owned_async(request)
+            .await
+            .map_err(|error| BlockError::from(error.error))?;
+        Ok(subscription.recv_async().await)
+    }
+
+    /// Writes one logical block through the synchronous completion path.
+    #[cfg(axtest)]
+    pub fn axtest_write_sync(&self, lba: u64, data: &[u8]) -> Result<CompletedRequest, BlockError> {
+        self.axtest_write_blocks_sync(lba, 1, data)
+    }
+
+    /// Writes a contiguous range of logical blocks through the synchronous
+    /// completion path. The caller must provide exactly `block_count` logical
+    /// blocks of data.
+    #[cfg(axtest)]
+    pub fn axtest_write_blocks_sync(
+        &self,
+        lba: u64,
+        block_count: u32,
+        data: &[u8],
+    ) -> Result<CompletedRequest, BlockError> {
+        let request = self.axtest_data_request(RequestOp::Write, lba, block_count, Some(data))?;
         let subscription = self
             .submit_owned(request)
             .map_err(|error| BlockError::from(error.error))?;
@@ -1154,13 +1228,38 @@ impl BlockDeviceHandle {
     }
 
     #[cfg(axtest)]
-    fn axtest_read_request(&self, lba: u64) -> Result<OwnedRequest, BlockError> {
+    fn axtest_data_request(
+        &self,
+        op: RequestOp,
+        lba: u64,
+        block_count: u32,
+        source: Option<&[u8]>,
+    ) -> Result<OwnedRequest, BlockError> {
         let info = self.inner.selected_queue_info().ok_or(BlockError::Io)?;
-        let data = dma::prepare_read(info.limits, info.device.logical_block_size)?;
+        let byte_len = usize::try_from(block_count)
+            .ok()
+            .and_then(|count| count.checked_mul(info.device.logical_block_size))
+            .ok_or(BlockError::InvalidRequest)?;
+        let data = match op {
+            RequestOp::Read => {
+                if source.is_some() {
+                    return Err(BlockError::InvalidRequest);
+                }
+                dma::prepare_read(info.limits, byte_len)?
+            }
+            RequestOp::Write => {
+                let source = source.ok_or(BlockError::InvalidRequest)?;
+                if source.len() != byte_len {
+                    return Err(BlockError::InvalidRequest);
+                }
+                dma::prepare_write(info.limits, source)?
+            }
+            RequestOp::Flush => return Err(BlockError::InvalidRequest),
+        };
         Ok(OwnedRequest {
-            op: RequestOp::Read,
+            op,
             lba,
-            block_count: 1,
+            block_count,
             data: Some(data),
             flags: RequestFlags::NONE,
         })

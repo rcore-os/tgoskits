@@ -51,6 +51,8 @@ mod tracepoint;
 mod trap;
 mod uprobe;
 
+#[cfg(any(test, axtest))]
+mod block_scratch_policy;
 #[cfg(all(test, axtest))]
 mod block_runtime_axtest;
 #[cfg(all(test, axtest))]
