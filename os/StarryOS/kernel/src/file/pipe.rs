@@ -1407,6 +1407,21 @@ impl FileLike for Pipe {
                 .store(S_IFIFO | (mode & 0o7777), Ordering::Release);
         }
         if let Some((uid, gid)) = owner {
+            // `chown_common()` clears SUID unconditionally and SGID when the
+            // group-execute bit is set. Apply that on the *current* mode with
+            // one atomic read-modify-write so a concurrent `fchmod` is not lost.
+            let _ = self.shared.inode_mode.try_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |current| {
+                    let mut perm = current & 0o7777;
+                    perm &= !0o4000;
+                    if perm & 0o0010 != 0 {
+                        perm &= !0o2000;
+                    }
+                    Some(S_IFIFO | perm)
+                },
+            );
             self.shared.inode_uid.store(uid, Ordering::Release);
             self.shared.inode_gid.store(gid, Ordering::Release);
         }

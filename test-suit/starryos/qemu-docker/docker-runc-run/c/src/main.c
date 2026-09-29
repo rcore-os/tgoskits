@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -277,6 +278,13 @@ static void check_memfd_mode(void)
     close(fd);
 }
 
+static void *pipe_chmod_worker(void *arg)
+{
+    int fd = *(int *)arg;
+    (void)fchmod(fd, 0600);
+    return NULL;
+}
+
 static void check_pipe_fchown(void)
 {
     section("pipe-fchown");
@@ -360,6 +368,36 @@ static void check_pipe_fchown(void)
         }
     } else {
         fail("fork non-root pipe owner child");
+    }
+
+    /* A concurrent fchmod must not be undone by fchown's clear-privileged
+     * read-modify-write: whatever the interleaving, the serial-equivalent
+     * result of `fchmod(0600)` is 0600 and no SUID/SGID bit remains. */
+    int raced = 0;
+    for (int i = 0; i < 2000; i++) {
+        if (fchmod(p[0], 04777) != 0) {
+            raced = -1;
+            break;
+        }
+        pthread_t th;
+        if (pthread_create(&th, NULL, pipe_chmod_worker, &p[0]) != 0) {
+            raced = -1;
+            break;
+        }
+        (void)fchown(p[0], -1, -1);
+        pthread_join(th, NULL);
+        struct stat st;
+        if (fstat(p[0], &st) != 0 || (st.st_mode & 0777) != 0600) {
+            raced = 1;
+            break;
+        }
+    }
+    if (raced == 0) {
+        pass("concurrent fchmod/fchown keeps the tightened pipe mode");
+    } else if (raced == 1) {
+        fail("concurrent fchmod/fchown keeps the tightened pipe mode");
+    } else {
+        fail("concurrent fchmod/fchown setup");
     }
 
     close(p[0]);

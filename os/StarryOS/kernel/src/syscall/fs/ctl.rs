@@ -897,15 +897,11 @@ pub fn sys_fchownat(
             ..Default::default()
         })?;
     } else if let Some(file_like) = &anon {
-        // Mirror `chown_common()` for a non-directory anonymous inode: clear
-        // SUID unconditionally and SGID when the group-execute bit is set, so
-        // an anonymous pipe/socket does not keep privilege bits after chown.
-        let mut perm = file_like.stat()?.mode & 0o7777;
-        perm &= !0o4000;
-        if perm & 0o0010 != 0 {
-            perm &= !0o2000;
-        }
-        file_like.set_inode_metadata(Some(perm), Some((uid, gid)))?;
+        // Mirror `chown_common()` for an anonymous inode: the implementation
+        // clears SUID/SGID on the *current* mode with one atomic
+        // read-modify-write while setting the owner, so a concurrent `fchmod`
+        // cannot be undone by a stale mode read.
+        file_like.set_inode_metadata(None, Some((uid, gid)))?;
     }
     Ok(0)
 }
