@@ -1,6 +1,8 @@
 args = [
     "-m",
-    "256M",
+    # The aggregate test image carries embedded DWARF and needs enough
+    # pre-ExitBootServices memory for both the EFI source and loaded image.
+    "512M",
     "-smp",
     "4",
     "-device",
