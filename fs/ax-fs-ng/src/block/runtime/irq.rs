@@ -360,19 +360,25 @@ mod tests {
     }
 
     #[test]
-    fn irq_arriving_during_take_keeps_drain_and_rearm_together() {
+    fn irq_arriving_during_take_keeps_queue_control_and_rearm_together() {
         crate::os::task::install_test_runtime_ops();
+        assert_irq_snapshot_is_atomic(IrqAck::cleared(
+            IrqQueueMask::from_queue(2),
+            ControlEvent::new(11, 0x40),
+        ));
+        assert_irq_snapshot_is_atomic(IrqAck::masked_needs_rearm(
+            IrqQueueMask::from_queue(2),
+            ControlEvent::new(11, 0x80),
+        ));
+    }
+
+    fn assert_irq_snapshot_is_atomic(ack: IrqAck) {
         let latch = Arc::new(IrqEventLatch::new(11));
         let notification = Arc::new(TestNotification {
             irq_notifications: AtomicUsize::new(0),
         });
         let mut action = BlockIrqAction::new(
-            Box::new(FixedHandler {
-                ack: IrqAck::masked_needs_rearm(
-                    IrqQueueMask::from_queue(2),
-                    ControlEvent::new(11, 0x80),
-                ),
-            }),
+            Box::new(FixedHandler { ack }),
             vec![IrqTarget::new(2, latch.clone(), notification)],
         );
         AFTER_SNAPSHOT.with(|slot| {
@@ -394,8 +400,8 @@ mod tests {
             latch.take(),
             LatchedIrqEvent {
                 queue_ready: true,
-                needs_rearm: true,
-                control: ControlEvent::new(11, 0x80),
+                needs_rearm: matches!(ack.disposition(), IrqDisposition::MaskedNeedsRearm),
+                control: ack.control_event(),
             },
         );
         assert!(!latch.take().queue_ready);
