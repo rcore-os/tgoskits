@@ -70,6 +70,8 @@ pub mod tcp;
 pub mod udp;
 /// Unix domain socket implementation.
 pub mod unix;
+/// Physical NIC layer-2 uplink bridge for hypervisor guest NICs.
+pub mod uplink;
 /// Vsock socket implementation.
 #[cfg(feature = "vsock")]
 pub mod vsock;
