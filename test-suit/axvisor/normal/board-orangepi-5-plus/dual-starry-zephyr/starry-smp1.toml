@@ -9,6 +9,10 @@ phys_cpu_ids = [0x00]
 entry_point = 0x4008_0000
 kernel_load_addr = 0x4008_0000
 kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+# AxVM replaces host bootargs with this value, so repeat the SD-root and RK3588
+# console semantics needed by this guest. The explicit shell is the test PID 1,
+# not the board's normal system init.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M init=/bin/sh HOME=/root USER=root HOSTNAME=starry TERM=linux PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PS1=\"root@starry:# \""
 # DTB GPA is selected automatically from the prepared guest memory layout.
 
 memory_regions = [
