@@ -172,6 +172,7 @@ impl LoopDevice {
     /// Returns EBUSY when another mount already holds this binding, matching
     /// Linux: mounting the same loop backing device twice is rejected while an
     /// ordinary open of the mounted device keeps working.
+    #[cfg(feature = "ext4")]
     pub(crate) fn acquire_mount_holder(&self) -> VfsResult<()> {
         let mut state = self.state.lock();
         state.binding()?;
@@ -184,6 +185,7 @@ impl LoopDevice {
 
     /// Records the mount published under the holder so `BLKFLSBUF` can flush
     /// that filesystem's dirty cache. Called after the mount succeeds.
+    #[cfg(feature = "ext4")]
     pub(crate) fn set_mount_flush_target(&self, mount: Weak<Mountpoint>) {
         let mut state = self.state.lock();
         state.mount_flush_target = Some(mount);
@@ -191,6 +193,7 @@ impl LoopDevice {
 
     /// Releases the mount holder and applies autoclear when nothing else keeps
     /// the binding alive.
+    #[cfg(feature = "ext4")]
     pub(crate) fn release_mount_holder(&self) {
         let released = {
             let mut state = self.state.lock();
@@ -310,14 +313,7 @@ impl DeviceOps for LoopDevice {
             }
             LOOP_CLR_FD => {
                 let mut state = self.state.lock();
-                // A live mount holder counts as a user of the device, matching
-                // Linux's `lo_refcnt` check: clearing while a filesystem is
-                // mounted fails with EBUSY instead of reporting success while
-                // the backing store is still in use.
-                if state.mounted {
-                    return Err(VfsError::ResourceBusy);
-                }
-                let only_opener = state.openers == 1;
+                let only_opener = state.openers == 1 && !state.mounted;
                 let binding = state.binding_mut()?;
                 binding.flags |= LO_FLAGS_AUTOCLEAR as u32;
                 binding.rundown = only_opener;

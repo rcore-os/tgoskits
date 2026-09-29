@@ -1291,7 +1291,7 @@ else
 fi
 
 bb_case_start "busybox_run_parts"
-_t=$({ timeout 10 sh -c "busybox sh -c 'mkdir -p /tmp/bb_rp/d && busybox echo rp_ok > /tmp/bb_rp/d/00t && chmod +x /tmp/bb_rp/d/00t && busybox run-parts /tmp/bb_rp/d' 2>&1"; } 2>&1)
+_t=$({ timeout 10 sh -c "busybox sh -c 'mkdir -p /tmp/bb_rp/d && busybox printf \"#!/bin/sh\\necho rp_ok\\n\" > /tmp/bb_rp/d/00t && chmod +x /tmp/bb_rp/d/00t && busybox run-parts /tmp/bb_rp/d' 2>&1"; } 2>&1)
 if echo "$_t" | grep -qF "rp_ok"; then echo "PASS: busybox_run_parts"; bb_case_pass; else echo "FAIL_DETAIL: busybox_run_parts"; bb_case_fail; fi
 
 # busybox_add_shell — exercise the real /etc/shells rewrite path (NOT --help).

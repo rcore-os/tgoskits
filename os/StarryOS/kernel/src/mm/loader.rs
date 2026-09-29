@@ -308,8 +308,9 @@ fn map_elf<'a>(
         // ELF requires each loadable segment's virtual address and file
         // offset to have the same page offset. This is untrusted executable
         // metadata, so reject a mismatch instead of panicking in the kernel.
-        // Use a distinct error from InvalidExecutable: execve uses that error
-        // to opt into its legacy shell fallback for a non-ELF file.
+        // This is an ELF-specific layout inconsistency. Report
+        // MalformedExecutable rather than InvalidExecutable, which marks input
+        // that is not recognized as an executable format.
         if seg_pad != ph.offset as usize % PAGE_SIZE_4K {
             return Err(StarryError::MalformedExecutable);
         }
