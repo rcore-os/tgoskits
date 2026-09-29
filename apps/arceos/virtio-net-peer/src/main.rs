@@ -81,7 +81,6 @@ const STATUS_EVERY_HEARTBEATS: u64 = 10;
 fn main() {
     if let Err(error) = run() {
         println!("{VM_TAG}_VIRTIO_NET_FAIL {error}");
-        return;
     }
 }
 
@@ -175,7 +174,7 @@ fn run_server() -> std::io::Result<()> {
                 pass_reported = true;
                 println!("{VM_TAG}_VIRTIO_NET_PASS role=server heartbeats={heartbeats}");
             }
-            if heartbeats % STATUS_EVERY_HEARTBEATS == 0 {
+            if heartbeats.is_multiple_of(STATUS_EVERY_HEARTBEATS) {
                 println!(
                     "{VM_TAG}_VIRTIO_NET_STATUS role=server session={sessions} \
                      heartbeats={heartbeats} local={LOCAL_IP} peer={peer} ifaces={}",
@@ -263,7 +262,7 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
                      sessions={sessions}"
                 );
             }
-            if sequence % STATUS_EVERY_HEARTBEATS == 0 {
+            if sequence.is_multiple_of(STATUS_EVERY_HEARTBEATS) {
                 println!(
                     "{VM_TAG}_VIRTIO_NET_STATUS role=client session={sessions} \
                      heartbeats={sequence} uptime={uptime}s local={LOCAL_IP} peer={peer_ip} \
@@ -297,7 +296,7 @@ fn connect_forever(target: (Ipv4Addr, u16), attempts: &mut u64) -> TcpStream {
             Ok(stream) => return stream,
             Err(error) => {
                 *attempts += 1;
-                if *attempts <= CONNECT_RETRY_LOG_BURST || *attempts % 10 == 0 {
+                if *attempts <= CONNECT_RETRY_LOG_BURST || (*attempts).is_multiple_of(10) {
                     println!(
                         "{VM_TAG}_VIRTIO_NET_CONNECT_RETRY attempt={} target={peer_ip}:{port} \
                          local={LOCAL_IP} error={error}",

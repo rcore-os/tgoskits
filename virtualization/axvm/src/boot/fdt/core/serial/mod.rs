@@ -522,7 +522,7 @@ fn install_pl011_clock(
     };
     let clock_path = format!("/{node_name}");
     tree.inner_mut().remove_by_path(&clock_path);
-    let phandle = next_free_phandle(&[tree.inner()]);
+    let phandle = next_free_phandle(&[tree.inner()])?;
     let clock = tree.add_node(tree.inner().root_id(), Node::new(&node_name));
 
     tree.set_property(clock, prop_string("compatible", "fixed-clock"))?;
@@ -575,7 +575,7 @@ pub(super) fn interrupt_controller_phandle(
         return Ok(phandle);
     }
 
-    let phandle = next_free_phandle(&[tree.inner()]);
+    let phandle = next_free_phandle(&[tree.inner()])?;
     tree.set_property(controller, prop_u32("phandle", phandle))?;
     tree.set_property(controller, prop_u32("linux,phandle", phandle))?;
     Ok(phandle)

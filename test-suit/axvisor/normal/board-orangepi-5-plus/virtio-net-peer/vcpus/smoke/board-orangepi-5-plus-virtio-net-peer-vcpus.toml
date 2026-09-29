@@ -9,7 +9,7 @@ timeout = 3600
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   'Failed to initialize guest VM',
-  '(?m)^VM[0-9]{1,2}_VIRTIO_NET_FAIL\s*$',
+  '(?m)^VM[0-9]{1,2}_VIRTIO_NET_FAIL(?:[ \t]+[^\r\n]*)?\r?$',
 ]
 
 # VM1 (10.0.2.15) only has a client session towards VM2, so it proves the

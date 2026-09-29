@@ -634,7 +634,7 @@ fn interrupt_controller_phandle(
         return Ok(phandle);
     }
 
-    let phandle = next_free_phandle(&[tree.inner()]);
+    let phandle = next_free_phandle(&[tree.inner()])?;
     tree.set_property(controller, u32_property("phandle", phandle))?;
     tree.set_property(controller, u32_property("linux,phandle", phandle))?;
     Ok(phandle)
