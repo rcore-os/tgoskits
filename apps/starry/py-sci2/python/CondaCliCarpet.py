@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # CondaCliCarpet.py - exhaustive conda command-line surface carpet.
 #
-# Ground truth is `conda --help`'s own subcommand tree: every subcommand's `--help` must
+# Ground truth is conda's own top-level help subcommand tree: every subcommand's `--help` must
 # print its `usage: conda <sub>` banner and exit 0, and the core informational commands
 # (--version / info / list / config --show ...) must return real, well-formed output.
 # Runs the glibc Miniforge `conda` staged at /opt/miniconda on StarryOS.
 #
 # The checks keep their pass/fail conditions; only how the text is obtained is tolerant: `--help` /
-# `-h` / `help` are accepted spellings for the banner and a `--json` document may arrive on stdout,
-# on stderr or in a mixed capture (with noise before or after it). A spawn is never repeated: the
-# per-call timeout below is the hard cap, so a hung conda costs that cap once and then fails with
-# its diagnostics instead of being retried with a longer cap. Failures keep their original label
-# plus the exit status and first output line.
+# `-h` / `help` are accepted spellings for a banner and a `--json` document may arrive on stdout,
+# on stderr or in a mixed capture (with noise before or after it). At the top level the bare
+# `conda help` spelling is probed ahead of the canonical `--help`, so the first conda spawn that
+# builds the full argparse/plugin tree is the cheap one and warms that path for the canonical
+# spelling (see help_output() below). No command line is ever run twice and the per-call timeout
+# below stays the hard cap, so a hung conda costs that cap once and then fails with its diagnostics
+# instead of being retried with a longer cap. Failures keep their original label plus the exit
+# status and first output line.
 #
 # TCG NOTE: each `conda` spawn costs ~35s under full-emulation because conda's Python
 # startup is heavy. To stay tractable we CONSOLIDATE: instead of one spawn per assertion,
@@ -149,27 +152,40 @@ def _json_ok(doc, rc):
 
 
 def help_output(args, timeout=300):
-    # `conda <args> --help` with the `-h` short form (and bare `conda help`) as fallbacks:
-    # whichever attempt produces an exit-0 banner wins, the longest capture is kept otherwise.
-    # A timed-out attempt ends the chain instead of spending another full cap on the same
-    # subcommand, so the per-call timeout stays the hard cap per subcommand.
-    attempts = [list(args) + ["--help"], list(args) + ["-h"]]
-    if not args:
-        attempts.append(["help"])
+    # `conda <args> --help` with the `-h` short form as fallbacks; the top-level entry probes the
+    # bare `conda help` spelling first. `conda help` is the same top-level help, but on the x86_64
+    # QEMU target the canonical `conda --help` is the first spawn that builds conda's full parser,
+    # so it pays the cold import of every plugin entry point (the libmamba solver included) inside
+    # the per-call cap; probing the cheap spelling first warms that path, and the canonical
+    # `--help` right after stays inside the same, unchanged cap. Whichever attempt produces an
+    # exit-0 banner wins, the longest capture is kept otherwise. Identical command lines are never
+    # repeated: a timed-out subcommand spelling ends the chain, and the top-level chain spends at
+    # most one extra cap so the canonical spelling still gets its single attempt.
+    if args:
+        attempts = [list(args) + ["--help"], list(args) + ["-h"]]
+    else:
+        attempts = [["help"], ["--help"], ["-h"]]
     best = (1, "")
     for attempt in attempts:
         rc, out = run(attempt, timeout=timeout)
         if rc == 0 and _has_usage(out):
             return rc, out
-        if len(out) > len(best[1]):
+        # Keep the longest capture, except that a timeout always wins so a hard-cap failure stays
+        # visible even when an earlier spelling failed with a shorter banner/error capture.
+        if rc == 124 or len(out) > len(best[1]):
             best = (rc, out)
         if rc == 124:
-            break
+            # A hung conda normally ends the chain so it costs the cap once. Only the leading
+            # top-level `conda help` spelling falls through: it is a distinct command line whose
+            # timeout has already warmed the import path, so the canonical `--help` still gets its
+            # single, unchanged-cap attempt. Any later timeout stops the chain as usual.
+            if args or attempt != attempts[0]:
+                break
     return best
 
 
 # ============================================================================
-# 1. TOP-LEVEL SURFACE  (2 spawns)
+# 1. TOP-LEVEL SURFACE  (2-4 spawns)
 # ============================================================================
 rc, out = run(["--version"])
 _verline = out.strip()
@@ -178,14 +194,15 @@ chk(any(ch.isdigit() for ch in out), "conda --version has a version number")
 _vparts = _verline.split()
 chk(len(_vparts) >= 2 and _vparts[1][0].isdigit(), "conda --version parses to N.N.N")
 
-# Top-level help through whichever spelling this conda answers (--help / -h / help); the banner
-# assertion and the subcommand-listing assertion stay separate so a renamed banner line does not
-# hide a missing subcommand section, and both stay informative on failure.
+# Top-level help through whichever equivalent spelling this conda answers (`help` first, then
+# `--help` / `-h`). The labels stay spelling-neutral because any of the three may be the one that
+# answers; the banner assertion and the subcommand-listing assertion stay separate so a renamed
+# banner line does not hide a missing subcommand section, and both stay informative on failure.
 rc, out = help_output([])
 _missing_core = [s for s in _CORE_SUBCOMMANDS if not re.search(r"\b%s\b" % s, out)]
-chk(rc == 0 and _has_usage(out), "conda --help usage banner %s" % _diag(rc, out, ""))
+chk(rc == 0 and _has_usage(out), "conda top-level help usage banner %s" % _diag(rc, out, ""))
 chk(rc == 0 and not _missing_core,
-    "conda --help lists core subcommands missing=%s %s" % (_missing_core, _diag(rc, out, "")))
+    "conda top-level help lists core subcommands missing=%s %s" % (_missing_core, _diag(rc, out, "")))
 
 # ============================================================================
 # 2. FULL SUBCOMMAND --help TREE  (one `--help` spawn per subcommand)
