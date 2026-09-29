@@ -23,6 +23,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 mod arm_config;
 mod backend;
 mod config;
@@ -37,6 +40,10 @@ mod its;
 mod redistributor;
 mod register;
 mod types;
+
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;
 
 pub use core::*;
 

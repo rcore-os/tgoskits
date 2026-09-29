@@ -233,8 +233,9 @@ impl ControllerState {
         lpi: LpiId,
         pending: bool,
     ) -> VgicResult<Option<Arc<dyn GicV3VcpuWake>>> {
+        let loaded = self.vcpu_interfaces.get(&target) == Some(&super::CpuInterfacePhase::Loaded);
         let redistributor = self.redistributor_mut(target, "deliver LPI")?;
-        let canceled = !pending && redistributor.clear_pending_delivery(IntId::Lpi(lpi));
+        let canceled = !pending && redistributor.withdraw_pending_delivery(IntId::Lpi(lpi), loaded);
         let interrupt = redistributor.lpi_mut(lpi);
         interrupt.set_pending(pending);
         if canceled {

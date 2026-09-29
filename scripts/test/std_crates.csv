@@ -53,6 +53,7 @@ ax-display
 ax-cgroup
 ax-timer-list
 aarch64_sysreg
+arm_vgic
 axdevice_base
 axaddrspace
 axdevice

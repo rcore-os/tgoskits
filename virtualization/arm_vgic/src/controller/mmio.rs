@@ -86,9 +86,10 @@ impl GicV3Controller {
     ) -> VgicResult {
         let wakes = {
             let mut state = self.inner.state.lock_irqsave();
+            let loaded = state.cpu_interface_loaded(vcpu);
             let candidates = state
                 .redistributor_mut(vcpu, "write Redistributor")?
-                .write(offset, width, value, &self.inner.config)?;
+                .write(offset, width, value, &self.inner.config, loaded)?;
             let mut wakes = Vec::new();
             for intid in candidates {
                 if let Some(wake) = state.queue_local_if_deliverable(vcpu, intid)? {

@@ -32,8 +32,9 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
+        cpu_interface_loaded: bool,
     ) -> VgicResult<Vec<IntId>> {
-        self.write_sgi_frame(offset, width, value, config)
+        self.write_sgi_frame(offset, width, value, config, cpu_interface_loaded)
     }
 
     pub(crate) fn read(
@@ -55,12 +56,19 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
+        cpu_interface_loaded: bool,
     ) -> VgicResult<Vec<IntId>> {
         validate_access(offset, width, config, "write")?;
         if offset < GICR_SGI_BASE {
             return self.write_rd_frame(offset, width, value, config);
         }
-        self.write_sgi_frame(offset - GICR_SGI_BASE, width, value, config)
+        self.write_sgi_frame(
+            offset - GICR_SGI_BASE,
+            width,
+            value,
+            config,
+            cpu_interface_loaded,
+        )
     }
 
     fn read_rd_frame(
@@ -189,6 +197,7 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
+        cpu_interface_loaded: bool,
     ) -> VgicResult<Vec<IntId>> {
         let owned = u64::from(config.guest_private_interrupt_mask());
         let mut candidates = Vec::new();
@@ -196,27 +205,51 @@ impl RedistributorState {
             GICD_IGROUPR => require_width(offset, width, AccessWidth::Dword, "write")?,
             GICD_ISENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value & owned, PrivateFlag::Enable)?;
+                candidates = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::Enable,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ICENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value & owned, PrivateFlag::Disable)?;
+                self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::Disable,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ISPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value & owned, PrivateFlag::SetPending)?;
+                candidates = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::SetPending,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ICPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value & owned, PrivateFlag::ClearPending)?;
+                self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::ClearPending,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ISACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value & owned, PrivateFlag::SetActive)?;
+                self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::SetActive,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ICACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value & owned, PrivateFlag::Complete)?;
+                candidates = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::Complete,
+                    cpu_interface_loaded,
+                )?;
             }
             _ if (GICD_IPRIORITYR..GICD_IPRIORITYR + 32).contains(&offset) => {
                 self.write_priorities(offset, width, value, config)?;
@@ -255,6 +288,7 @@ impl RedistributorState {
         &mut self,
         value: u64,
         operation: PrivateFlag,
+        cpu_interface_loaded: bool,
     ) -> VgicResult<Vec<IntId>> {
         let mut candidates = Vec::new();
         for bit in 0..32usize {
@@ -263,7 +297,8 @@ impl RedistributorState {
             }
             let intid = IntId::new(bit as u32)?;
             operation.apply(&mut self.private_interrupts[bit]);
-            if matches!(operation, PrivateFlag::ClearPending) && self.clear_pending_delivery(intid)
+            if matches!(operation, PrivateFlag::ClearPending)
+                && self.withdraw_pending_delivery(intid, cpu_interface_loaded)
             {
                 self.private_interrupts[bit].cancel_inflight();
             }

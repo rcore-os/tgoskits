@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use arm_vgic::{
-    EventId, GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership,
-    GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, GuestMemory, GuestMemoryError, IntId, ItsDeviceId,
-    SoftwareGicV3Backend, VgicError, VgicResult,
+    CpuInterfaceState, EventId, GicAffinity, GicV3Backend, GicV3BackendError, GicV3Config,
+    GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuBinding, GicV3VcpuWake,
+    GicVcpuId, GuestMemory, GuestMemoryError, IntId, ItsDeviceId, SoftwareGicV3Backend, VgicError,
+    VgicResult,
 };
 use axdevice_base::ItsId;
 use axvm_types::AccessWidth;
@@ -17,6 +18,36 @@ const GITS_PIDR0: u64 = 0xffe0;
 const GITS_PIDR2: u64 = 0xffe8;
 const COMMAND_SIZE: u64 = 32;
 const QUEUE_SIZE: usize = 0x1000;
+
+mod support;
+
+#[test]
+fn clearing_a_loaded_lpi_preserves_its_lr_until_hardware_is_saved() {
+    let backend = Arc::new(TrackingBackend::default());
+    let (controller, binding, memory) = controller_with_its_backend(1, 32, backend.clone());
+    enable_lpis(&controller, 0);
+    initialize_its(&controller, &memory);
+
+    memory.write_command(0, mapd(7, 8));
+    memory.write_command(0x20, mapc(3, 0));
+    memory.write_command(0x40, mapti(7, 5, 8192, 3));
+    memory.write_command(0x60, command(0x03, 7, 5, 0, 0));
+    controller
+        .write_its(GITS_CWRITER, AccessWidth::Qword, 0x80)
+        .unwrap();
+
+    binding.load().unwrap();
+    assert_eq!(backend.loaded_intids(), vec![IntId::new(8192).unwrap()]);
+
+    memory.write_command(0x80, command(0x04, 7, 5, 0, 0));
+    controller
+        .write_its(GITS_CWRITER, AccessWidth::Qword, 0xa0)
+        .unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(backend.loaded_intids().is_empty());
+    binding.save().unwrap();
+}
 
 #[test]
 fn two_its_instances_keep_device_event_namespaces_isolated() {
@@ -379,6 +410,14 @@ fn controller_with_its(
     vcpu_count: usize,
     budget: usize,
 ) -> (GicV3Controller, GicV3VcpuBinding, Arc<TestGuestMemory>) {
+    controller_with_its_backend(vcpu_count, budget, Arc::new(SoftwareGicV3Backend))
+}
+
+fn controller_with_its_backend(
+    vcpu_count: usize,
+    budget: usize,
+    backend: Arc<dyn GicV3Backend>,
+) -> (GicV3Controller, GicV3VcpuBinding, Arc<TestGuestMemory>) {
     let memory = Arc::new(TestGuestMemory::new(0x4000_0000, QUEUE_SIZE));
     let config = GicV3Config::new(
         GicV3SpiOwnership::AllGuestOwned,
@@ -394,12 +433,8 @@ fn controller_with_its(
     .unwrap()
     .with_its_command_budget(budget)
     .unwrap();
-    let controller = GicV3Controller::new_with_guest_memory(
-        config,
-        Arc::new(SoftwareGicV3Backend),
-        Some(memory.clone()),
-    )
-    .unwrap();
+    let controller =
+        GicV3Controller::new_with_guest_memory(config, backend, Some(memory.clone())).unwrap();
     let binding = controller
         .attach_vcpu(
             GicVcpuId::new(0),
@@ -461,6 +496,65 @@ struct NoopWake;
 
 impl GicV3VcpuWake for NoopWake {
     fn wake(&self) -> VgicResult {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct TrackingBackend {
+    loaded: Mutex<Option<CpuInterfaceState>>,
+}
+
+impl TrackingBackend {
+    fn loaded_intids(&self) -> Vec<IntId> {
+        self.loaded
+            .lock()
+            .unwrap()
+            .as_ref()
+            .into_iter()
+            .flat_map(CpuInterfaceState::list_registers)
+            .flatten()
+            .map(|entry| entry.intid())
+            .collect()
+    }
+}
+
+impl GicV3Backend for TrackingBackend {
+    fn load_cpu_interface(
+        &self,
+        _vcpu: GicVcpuId,
+        state: &CpuInterfaceState,
+    ) -> Result<(), GicV3BackendError> {
+        *self.loaded.lock().unwrap() = Some(state.clone());
+        Ok(())
+    }
+
+    fn save_cpu_interface(
+        &self,
+        _vcpu: GicVcpuId,
+        state: &mut CpuInterfaceState,
+    ) -> Result<(), GicV3BackendError> {
+        let mut loaded = self.loaded.lock().unwrap();
+        let hardware = loaded
+            .as_mut()
+            .expect("the vCPU must be loaded before save");
+        for (index, (expected, actual)) in state
+            .list_registers()
+            .iter()
+            .zip(hardware.list_registers())
+            .enumerate()
+        {
+            if expected.is_none() && actual.is_some() {
+                return Err(GicV3BackendError::new(
+                    "save CPU interface",
+                    format!("LR{index} became live without a saved delivery"),
+                ));
+            }
+        }
+        state
+            .list_registers_mut()
+            .copy_from_slice(hardware.list_registers());
+        hardware.list_registers_mut().fill(None);
         Ok(())
     }
 }
