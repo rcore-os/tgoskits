@@ -1165,8 +1165,8 @@ command = "true"
                 for registration in catalog[row["id"]].get("suite", ())
                 if "board" in registration
             }
-            if any(board.startswith("orangepi-5-plus-robot") for board in boards):
-                self.assertEqual(row["resource_group"], "orangepi-5-plus-robot")
+            if any(board.startswith("orangepi-5-plus-robot-real") for board in boards):
+                self.assertEqual(row["resource_group"], "orangepi-5-plus-robot-usb")
             elif any(board.startswith("orangepi-5-plus") for board in boards):
                 self.assertEqual(row["resource_group"], "orangepi-5-plus")
             else:
