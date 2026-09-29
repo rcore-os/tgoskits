@@ -410,6 +410,41 @@ class StaleRunCancellationTests(unittest.TestCase):
             any("actions/runs/101/force-cancel" in call for call in result.gh_calls)
         )
 
+    def test_pending_cleanup_ignores_unrelated_or_newer_runs(self) -> None:
+        result = run_cancellation(
+            runs=[
+                fake_run(
+                    run_id=108,
+                    run_number=150,
+                    event="push",
+                    head_branch="fix/qemu-forward-progress",
+                    head_repository_id=1,
+                    status="pending",
+                ),
+                fake_run(
+                    run_id=109,
+                    run_number=151,
+                    event="push",
+                    head_branch="other-branch",
+                    head_repository_id=1,
+                    status="pending",
+                ),
+                fake_run(
+                    run_id=110,
+                    run_number=300,
+                    event="push",
+                    head_branch="fix/qemu-forward-progress",
+                    head_repository_id=1,
+                    status="pending",
+                ),
+            ],
+        )
+
+        self.assertEqual(cancelled_runs(result), {108})
+        self.assertTrue(
+            any("actions/runs/108/force-cancel" in call for call in result.gh_calls)
+        )
+
     def test_pull_request_cancels_only_older_matching_head_runs(self) -> None:
         result = run_cancellation(
             event_name="pull_request",
@@ -670,6 +705,7 @@ def fake_run(
     head_branch: str,
     head_repository_id: int,
     pull_request_number: int | None = None,
+    status: str = "queued",
 ) -> dict[str, object]:
     pull_requests = (
         [] if pull_request_number is None else [{"number": pull_request_number}]
@@ -682,7 +718,7 @@ def fake_run(
         "id": run_id,
         "pull_requests": pull_requests,
         "run_number": run_number,
-        "status": "queued",
+        "status": status,
     }
 
 
