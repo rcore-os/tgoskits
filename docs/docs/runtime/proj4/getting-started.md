@@ -549,7 +549,7 @@ cd /home/orangepi/robot/aka-rk3588
 仓库里还有一条自动测试通道，用来在不改板子的前提下确认这套程序在 StarryOS 上跑得通：
 
 ```bash
-cargo xtask starry app board -t aka-rk3588 -b OrangePi-5-Plus-robot
+cargo xtask starry app board -t aka-rk3588 -b OrangePi-5-Plus-Robot-USB
 ```
 
 这个命令按 `apps/starry/aka-rk3588/board-orangepi-5-plus.toml` 编译内核、连上板子、执行 `init.sh`，只跑一次摄像头采集和 RKNN 识别，不驱动车轮和机械臂。板端还没按 4.2 部署过应用时，它会以 `linux_deployment_required` 失败，这是部署问题不是内核问题。
