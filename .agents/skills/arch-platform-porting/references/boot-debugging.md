@@ -283,6 +283,20 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 
 ## QEMU 调试模式
 
+### 测试资产 prebuild 的 system emulator
+
+测试资产的 `prebuild.sh` 在没有 qemu-user 的宿主上，通过目标架构
+`qemu-system-*` 启动 rootfs 自带 `/guest/linux/linux-qemu`。体系结构参数由
+`scripts/axbuild/src/context/arch.rs` 的 `LinuxQemuSpec` 单点维护：x86_64 使用
+`q35/ttyS0`，AArch64 使用 `virt/cortex-a72/ttyAMA0`，RISC-V 与 LoongArch 使用
+`virt/ttyS0`，LoongArch 另保留 `la464`、串口 earlycon 和 Linux 已验证的 `e1000e`
+网络设备，其余架构使用 `virtio-net-pci`。根盘使用 `snapshot=on`，避免临时
+Linux 写入测试 rootfs；宿主等待 `init=/bin/sh` 的 BusyBox prompt 后注入工作目录
+挂载与准备入口，staging、case 和工作目录分别通过 9P tag 挂载，APK wrapper
+把安装目标保持在 staging root。诊断时先区分 Linux 启动、virtio-blk、virtio-net、
+DHCP、9P 挂载、脚本和完成标记；不得把 system emulator 的启动成功当成 Starry 用例
+通过。脚本输出完成标记前必须 `sync`，宿主只在标记后终止 QEMU。
+
 ### axloader UEFI 网络启动
 
 - axloader 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `HTTP Service Binding` 必须来自同一个 UEFI 控制器；发现、MAC 和 HTTP 分别来自不同网卡不算可用实现。

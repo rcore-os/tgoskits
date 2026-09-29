@@ -96,6 +96,7 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         let result = prepare_grouped_c_subcases_sync(
             arch,
             case,
+            case_rootfs,
             &c_subcases,
             all_c_subcases.len(),
             layout,
@@ -339,6 +340,7 @@ pub(super) fn cmake_install_target_names(content: &str) -> BTreeSet<String> {
 pub(super) fn prepare_grouped_c_subcases_sync(
     arch: &str,
     case: &TestQemuCase,
+    case_rootfs: &Path,
     subcases: &[&TestQemuSubcase],
     all_c_subcase_count: usize,
     layout: &case_assets::CaseAssetLayout,
@@ -357,17 +359,17 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             prepare_guest_package_env(config, &layout.staging_root)?,
             subcases,
         );
-        let prebuild_env =
-            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
-        let mut command = build_prebuild_command_with_work_dir(
-            &root_prebuild_script,
-            &case.case_dir,
+        let result = run_guest_prebuild(GuestPrebuildRequest {
+            arch,
+            case,
+            case_rootfs,
+            script: &root_prebuild_script,
+            work_dir: &case.case_dir,
             layout,
-            &prebuild_env,
-        )?;
-        let result = command
-            .exec()
-            .context("failed to run grouped C root prebuild.sh");
+            extra_envs: &extra_script_envs,
+            config,
+        })
+        .context("failed to run grouped C root prebuild.sh");
         timing_stage.finish();
         result?;
     }
@@ -400,22 +402,18 @@ pub(super) fn prepare_grouped_c_subcases_sync(
                         ("phase", "prebuild".to_string()),
                     ],
                 );
-                let prebuild_env = prepare_guest_prebuild_env(
+                let source_dir = grouped_c_subcase_source_dir(subcase);
+                let result = run_guest_prebuild(GuestPrebuildRequest {
                     arch,
-                    &subcase_case,
-                    &subcase_layout,
-                    extra_script_envs.clone(),
+                    case: &subcase_case,
+                    case_rootfs,
+                    script: &prebuild_script,
+                    work_dir: &source_dir,
+                    layout: &subcase_layout,
+                    extra_envs: &extra_script_envs,
                     config,
-                )?;
-                let mut command = build_prebuild_command(
-                    &subcase_case,
-                    &prebuild_script,
-                    &subcase_layout,
-                    &prebuild_env,
-                )?;
-                let result = command.exec().with_context(|| {
-                    format!("failed to run {} prebuild.sh", subcase.name.as_str())
-                });
+                })
+                .with_context(|| format!("failed to run {} prebuild.sh", subcase.name.as_str()));
                 timing_stage.finish();
                 result?;
                 timing::print_timing_line(
