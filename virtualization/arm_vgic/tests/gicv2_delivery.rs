@@ -11,6 +11,8 @@ use axdevice_base::{
 };
 use axvm_types::AccessWidth;
 
+mod support;
+
 const GICD_CTLR: u64 = 0x0000;
 const GICD_ISENABLER: u64 = 0x0100;
 const GICD_ICENABLER: u64 = 0x0180;

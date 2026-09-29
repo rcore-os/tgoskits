@@ -452,6 +452,7 @@ fn load_v3(
     // Validate all guest-owned LR identities before changing the live CPU
     // interface. A bad PINTID must not leave a partially restored context.
     let used_lrs = state.used_list_registers();
+    // ICH_VTR_EL2 permits at most 16 LRs; require_lr_count checked the state length.
     let mut encoded_lrs = [0u64; 16];
     for (index, entry) in state.list_registers()[..used_lrs].iter().enumerate() {
         if let Some(entry) = entry {
@@ -521,7 +522,8 @@ fn save_v3(
     for index in 0..used_lrs {
         ich_lr_el2_set(index, LocalRegisterCopy::new(0));
     }
-    let unexpected_lrs = live_lrs & !((1u32 << used_lrs) - 1) as u16;
+    let used_mask = ((1u32 << used_lrs) - 1) as u16;
+    let unexpected_lrs = live_lrs & !used_mask;
     for index in used_lrs..lr_count {
         if unexpected_lrs & (1 << index) != 0 {
             ich_lr_el2_set(index, LocalRegisterCopy::new(0));

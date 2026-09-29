@@ -340,27 +340,6 @@ impl RedistributorState {
         true
     }
 
-    pub(crate) fn clear_pending_delivery(&mut self, intid: IntId) -> bool {
-        self.clear_queued_pending(intid);
-        let mut canceled = false;
-        for slot in self.cpu_interface.list_registers_mut() {
-            let Some(entry) = slot.as_mut().filter(|entry| entry.intid() == intid) else {
-                continue;
-            };
-            match entry.state() {
-                crate::InterruptState::Pending => {
-                    *slot = None;
-                    canceled = true;
-                }
-                crate::InterruptState::ActivePending => {
-                    entry.set_state(crate::InterruptState::Active);
-                }
-                crate::InterruptState::Inactive | crate::InterruptState::Active => {}
-            }
-        }
-        canceled
-    }
-
     pub(crate) fn withdraw_pending_delivery(&mut self, intid: IntId, loaded: bool) -> bool {
         self.clear_queued_pending(intid);
         self.cpu_interface.withdraw_pending_delivery(intid, loaded)
@@ -665,7 +644,10 @@ impl RedistributorState {
         // While a vCPU is loaded, the hardware LRs own their delivery state.
         // Keep the saved LR identity intact until `save` harvests guest EOI;
         // only the input level may change at this point.
-        if !asserted && !cpu_interface_loaded && self.clear_pending_delivery(IntId::Ppi(ppi)) {
+        if !asserted
+            && !cpu_interface_loaded
+            && self.withdraw_pending_delivery(IntId::Ppi(ppi), false)
+        {
             self.private_interrupts[index].cancel_inflight();
         }
     }
@@ -710,7 +692,7 @@ impl RedistributorState {
         if empty {
             let intid = IntId::Sgi(sgi);
             self.private_interrupts[sgi.raw() as usize].set_pending(false);
-            if self.clear_pending_delivery(intid) {
+            if self.withdraw_pending_delivery(intid, false) {
                 self.private_interrupts[sgi.raw() as usize].cancel_inflight();
             }
         }

@@ -18,6 +18,7 @@ mod support;
 const GICD_CTLR: u64 = 0x0000;
 const GICD_TYPER: u64 = 0x0004;
 const GICD_ISENABLER: u64 = 0x0100;
+const GICD_ICPENDR: u64 = 0x0280;
 const GICD_IPRIORITYR: u64 = 0x0400;
 const GICD_IROUTER: u64 = 0x6000;
 const GIC_PIDR2: u64 = 0xffe8;
@@ -489,6 +490,29 @@ fn deasserting_a_pending_ppi_withdraws_the_saved_lr_before_wfi_wait() {
         binding.has_pending_interrupt().unwrap(),
         "a later level assertion must still create a fresh delivery"
     );
+}
+
+#[test]
+fn clearing_a_loaded_sgi_pending_waits_for_hardware_save() {
+    let (controller, backend) = controller(1, 1);
+    let vcpu = GicVcpuId::new(0);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let sgi = SgiId::new(3).unwrap();
+
+    controller.send_sgi(vcpu, sgi, SgiTarget::SelfOnly).unwrap();
+    binding.load().unwrap();
+    controller
+        .write_redistributor(
+            vcpu,
+            GICR_SGI_BASE + GICD_ICPENDR,
+            AccessWidth::Dword,
+            1 << sgi.raw(),
+        )
+        .unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(backend.loaded_intids(0).is_empty());
+    binding.save().unwrap();
 }
 
 #[test]

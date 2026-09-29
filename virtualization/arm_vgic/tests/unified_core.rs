@@ -11,6 +11,8 @@ use axdevice_base::{
     MessageInterruptController, MsiDeviceId, MsiEventId, VirtualInterruptController,
 };
 
+mod support;
+
 struct V2Backend;
 
 impl VgicBackend for V2Backend {
