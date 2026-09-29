@@ -1,6 +1,7 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
+use ax_cgroup::CgroupPin;
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
 use axpoll::{IoEvents, Pollable};
@@ -203,6 +204,7 @@ enum MountContextKind {
     Tmpfs,
     Ramfs,
     DevPts,
+    Cgroup2,
 }
 
 struct MountContextState {
@@ -213,6 +215,7 @@ struct MountContextState {
     tmpfs_size_limit: Option<u64>,
     unsupported_tmpfs_limits: bool,
     readonly_reconfigure: bool,
+    cgroup_pin: Option<Arc<CgroupPin>>,
     mounts: Vec<Arc<Mountpoint>>,
 }
 
@@ -233,6 +236,7 @@ impl MountContext {
                 tmpfs_size_limit: None,
                 unsupported_tmpfs_limits: false,
                 readonly_reconfigure: false,
+                cgroup_pin: None,
                 mounts: Vec::new(),
             }),
         }
@@ -321,6 +325,7 @@ pub fn sys_fsopen(
         "tmpfs" => MountContextKind::Tmpfs,
         "ramfs" => MountContextKind::Ramfs,
         "devpts" => MountContextKind::DevPts,
+        "cgroup2" => MountContextKind::Cgroup2,
         _ => return Err(StarryError::NoSuchDevice),
     };
     MountContext::new(kind)
@@ -411,6 +416,18 @@ pub fn sys_fsconfig(
                 MountContextKind::DevPts => {
                     new_devptsfs(DevPtsMount::NewInstance(state.devpts_options))
                 }
+                MountContextKind::Cgroup2 => {
+                    // Mirror the legacy sys_mount path: the fs instance is
+                    // bound to the creating task's cgroup namespace root, and
+                    // the pin keeps that root alive for the mount's lifetime.
+                    let (root, pin) = {
+                        let nsproxy = current.as_thread().proc_data.nsproxy.lock();
+                        let namespace = nsproxy.cgroup_ns.lock();
+                        (namespace.root(), namespace.pin_root())
+                    };
+                    state.cgroup_pin = Some(Arc::new(pin));
+                    crate::pseudofs::cgroup::new_cgroup2fs(root)
+                }
             });
         }
         command if command == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {
@@ -456,11 +473,20 @@ pub fn sys_fsmount(
     let mountpoint =
         Mountpoint::new_root_with_source(&filesystem, state.source.as_deref().unwrap_or("none"));
     let root = mountpoint.root_location();
-    if context.kind != MountContextKind::DevPts {
+    if !matches!(
+        context.kind,
+        MountContextKind::DevPts | MountContextKind::Cgroup2
+    ) {
         root.update_metadata(MetadataUpdate {
             mode: Some(state.root_mode),
             ..Default::default()
         })?;
+    }
+    // Same lifetime contract as the legacy cgroup2 mount path: the pinned
+    // cgroup namespace root must outlive the mount even after the fs context
+    // fd is closed.
+    if let Some(pin) = state.cgroup_pin.clone() {
+        mountpoint.set_lifetime_guard(pin);
     }
     mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0);
     mountpoint.set_mount_flags(
@@ -884,6 +910,11 @@ pub fn sys_umount2(
     } else {
         fs_context.lock().resolve(target)?
     };
+    // Follow mounts stacked on the resolved dentry, like Linux path
+    // resolution: after `pivot_root(".", ".")` the caller detaches the stacked
+    // old root with `umount2(".", MNT_DETACH)`, which must target the old
+    // root mount rather than the new root itself.
+    let target = target.mount_top();
 
     if !current.as_thread().cred().has_cap_sys_admin() {
         return Err(crate::StarryError::OperationNotPermitted);

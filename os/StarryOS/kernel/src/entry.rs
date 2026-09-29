@@ -117,6 +117,7 @@ pub fn init(args: &[String], envs: &[String]) {
         ProcessDataInit::new(
             ProcessImage::new(
                 path.to_string(),
+                None,
                 Arc::new(args.to_vec()),
                 Arc::new(envs.to_vec()),
                 auxv,
