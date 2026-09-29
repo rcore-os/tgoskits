@@ -89,6 +89,18 @@ impl AppContext {
 
     pub(crate) fn new_with_target_dir(target_dir: Option<&Path>) -> anyhow::Result<Self> {
         let workspace = WorkspaceContext::discover(target_dir)?;
+        Self::from_workspace_context(workspace)
+    }
+
+    pub(crate) fn from_workspace_root(
+        workspace_root: &Path,
+        target_dir: Option<&Path>,
+    ) -> anyhow::Result<Self> {
+        let workspace = WorkspaceContext::from_root(workspace_root, target_dir)?;
+        Self::from_workspace_context(workspace)
+    }
+
+    fn from_workspace_context(workspace: WorkspaceContext) -> anyhow::Result<Self> {
         crate::support::logging::init_logging(workspace.root())?;
 
         info!("Workspace root: {}", workspace.root().display());

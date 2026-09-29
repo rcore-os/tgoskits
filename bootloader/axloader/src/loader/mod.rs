@@ -79,8 +79,11 @@ fn efi_main() -> Status {
                     uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::SUCCESS, None);
                 }
                 direct::Action::Boot(execution) => {
-                    let elf = execution.elf;
-                    let payload = execution.payload;
+                    let boot_server::BootExecution {
+                        elf,
+                        payload,
+                        load_options,
+                    } = execution;
                     logln!(
                         "elf_loaded: load={:#x} end={:#x} entry={:#x}",
                         elf.load_addr,
@@ -90,15 +93,9 @@ fn efi_main() -> Status {
                     logln!("ready_to_handoff");
                     drop(listener);
                     drop(announcer);
-                    let result = match elf.handoff {
-                        elf_loader::EntryHandoff::BootInfo => {
-                            entry::exit_boot_services_and_jump(elf.entry_point)
-                        }
-                        elf_loader::EntryHandoff::Uefi => {
-                            entry::jump_to_uefi_entry(elf.entry_point)
-                        }
-                    };
+                    let result = entry::jump_to_uefi_entry(elf.entry_point, load_options);
                     drop(payload);
+                    boot_server::free_loaded_elf(&elf);
                     logln!("jump_error: {result:?}");
                     return Status::LOAD_ERROR;
                 }

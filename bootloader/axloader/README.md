@@ -19,7 +19,7 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 | 接口 | 作用 |
 | --- | --- |
 | `GET /api/v1/status` | 读取启动代次、MAC、硬件、启动事务与 OTA 状态 |
-| `POST /api/v1/boot/jobs` | 提交启动 ID、x86_64 ELF64、内核和可选归档的长度、SHA-256、命令行 |
+| `POST /api/v1/boot/jobs` | 提交启动 ID、x86_64 ELF64、内核和可选归档的长度、SHA-256、命令行；入口固定为 `__x86_64_efi_pe_entry` |
 | `GET /api/v1/boot/jobs/{id}` | 查询已接收文件及阶段 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核，要求匹配 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 定长上传可选归档，要求匹配摘要 |
@@ -35,6 +35,12 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 `BootServer::create()` 允许同 ID、同清单重试，其他并发事务返回冲突。只有
 文件核对和 `elf_loader::load_elf()`、`payload::prepare_uploaded()` 成功后，
 才回复 `ready_to_handoff`、释放 TCP/UDP 对象并进入内核。
+
+`cmdline` 与 `initramfs` 相互独立且都可省略。axloader 把命令行编码成带 NUL
+结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
+命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。只有归档
+存在时才安装 `host-boot-abi::BootPayload` 配置表。EFI 入口异常返回时会恢复
+原 LoadOptions，并释放本次事务持有的命令行与归档。
 
 ### 1.2 启动流程
 
@@ -75,9 +81,9 @@ and rejects tables larger than 1 MiB.
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 
 The current loader accepts little-endian x86_64 ELF64 images. `PT_LOAD`
-segments must have page-aligned physical addresses. If `httpboot_entry` is
-requested, the loader resolves that symbol; otherwise it uses the ELF header
-entry. The maximum uploaded kernel is 256 MiB.
+segments must have page-aligned physical addresses. Protocol v5 requires the
+`__x86_64_efi_pe_entry` symbol and rejects `httpboot_entry`, an ELF header entry,
+or a `BootInfo` fallback. The maximum uploaded kernel is 256 MiB.
 
 ## Build and test
 
@@ -98,8 +104,10 @@ target/x86_64-unknown-uefi/release/axloader-launcher.efi
 ```
 
 QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
-跨启动验证内核及宿主归档推送、SHA-256、`host_payload_ready` 与 `elf_loaded`，
-以及 OTA 待试槽确认和回滚。服务端协议测试另见 ostool 的
+跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
+initramfs 和两者都有，并以目标内核输出的 `HOST_CMDLINE`、
+`HOST_INITRAMFS_PASSED` 为成功证据。测试还覆盖 SHA-256、OTA 待试槽确认和
+回滚。服务端协议测试另见 ostool 的
 `docs/axloader-network-control.md`。
 
 ## x86_64 OTA 布局与状态

@@ -15,6 +15,7 @@ const ELF_VERSION_CURRENT: u8 = 1;
 const ELF_MACHINE_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const UEFI_PAGE_SIZE: u64 = 4096;
+pub const EFI_ENTRY_SYMBOL: &str = "__x86_64_efi_pe_entry";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfLoadError {
@@ -42,13 +43,6 @@ pub struct LoadedElf {
     pub load_addr: u64,
     pub load_end: u64,
     pub page_count: usize,
-    pub handoff: EntryHandoff,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryHandoff {
-    BootInfo,
-    Uefi,
 }
 
 #[repr(C)]
@@ -125,31 +119,12 @@ pub(super) fn load_elf(
     .ok_or(ElfLoadError::SegmentAddressOverflow)?;
     let page_count = usize::try_from((load_end - load_addr) / UEFI_PAGE_SIZE)
         .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
-    let (entry, handoff) = match entry_symbol {
-        Some("httpboot_entry") => {
-            if let Some(entry) = find_symbol(image, &header, "httpboot_entry")
-                .and_then(|symbol| virtual_to_physical(symbol, &segments))
-            {
-                (entry, EntryHandoff::BootInfo)
-            } else if let Some(entry) = find_symbol(image, &header, "__x86_64_efi_pe_entry")
-                .and_then(|symbol| virtual_to_physical(symbol, &segments))
-            {
-                (entry, EntryHandoff::Uefi)
-            } else {
-                (
-                    virtual_to_physical(header.e_entry, &segments)
-                        .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
-                    EntryHandoff::Uefi,
-                )
-            }
-        }
-        Some(_) => return Err(ElfLoadError::UnsupportedEntrySymbol),
-        None => (
-            virtual_to_physical(header.e_entry, &segments)
-                .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
-            EntryHandoff::BootInfo,
-        ),
-    };
+    if entry_symbol != Some(EFI_ENTRY_SYMBOL) {
+        return Err(ElfLoadError::UnsupportedEntrySymbol);
+    }
+    let entry = find_symbol(image, &header, EFI_ENTRY_SYMBOL)
+        .and_then(|symbol| virtual_to_physical(symbol, &segments))
+        .ok_or(ElfLoadError::EntryNotInLoadSegment)?;
     let (target, actual_load_addr) = allocate_load_region(load_addr, page_count)?;
 
     if let Err(err) = copy_segments(image, &segments, load_addr, target) {
@@ -179,7 +154,6 @@ pub(super) fn load_elf(
         load_addr: actual_load_addr,
         load_end: actual_load_end,
         page_count,
-        handoff,
     })
 }
 

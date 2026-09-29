@@ -95,6 +95,7 @@ unsafe extern "C" fn efi_pe_entry_main(
         table::set_system_table(system_table.cast());
         setup_console();
         println!("UEFI application started.");
+        load_efi_cmdline(image_handle);
         load_host_boot_payload();
         // Safety: `system_table` comes from the EFI firmware entry path and
         // matches the contract documented on `ArchTrait::efi_enter_kernel`.
@@ -173,6 +174,7 @@ pub(crate) fn exit_boot_services() {
 }
 
 fn load_host_boot_payload() {
+    let mut archive_staged = false;
     let installed = with_config_table(|tables| {
         tables
             .iter()
@@ -185,7 +187,7 @@ fn load_host_boot_payload() {
         // until ExitBootServices; the loader publishes a versioned BootPayload.
         let payload = unsafe { &*address.cast::<BootPayload>() };
         payload.validate().expect("invalid host boot payload");
-        if payload.cmdline_len != 0 {
+        if payload.cmdline_len != 0 && !crate::cmdline::has_handoff_cmdline() {
             crate::cmdline::set_cmdline(payload.cmdline());
         }
         if payload.archive_len != 0 {
@@ -196,7 +198,11 @@ fn load_host_boot_payload() {
                 .checked_add(len)
                 .expect("host archive range overflows");
             crate::boot_payload::stage_uefi(start, end);
+            archive_staged = true;
         }
+    }
+
+    if crate::cmdline::has_handoff_cmdline() && archive_staged {
         return;
     }
 
@@ -204,11 +210,13 @@ fn load_host_boot_payload() {
         return;
     };
     let mut volume = fs.open_volume().expect("failed to open UEFI boot volume");
-    if let Ok(file) = volume.open(
-        uefi::cstr16!("\\EFI\\BOOT\\cmdline.txt"),
-        FileMode::Read,
-        FileAttribute::empty(),
-    ) {
+    if !crate::cmdline::has_handoff_cmdline()
+        && let Ok(file) = volume.open(
+            uefi::cstr16!("\\EFI\\BOOT\\cmdline.txt"),
+            FileMode::Read,
+            FileAttribute::empty(),
+        )
+    {
         let mut file = regular_file(file);
         let size = file_size(&mut file);
         assert!(size <= MAX_CMDLINE, "host command line is too long");
@@ -218,11 +226,13 @@ fn load_host_boot_payload() {
         assert!(!command.contains('\0'), "host command line contains NUL");
         crate::cmdline::set_cmdline(command.trim_end_matches(['\r', '\n']));
     }
-    if let Ok(file) = volume.open(
-        uefi::cstr16!("\\EFI\\BOOT\\initramfs.cpio"),
-        FileMode::Read,
-        FileAttribute::empty(),
-    ) {
+    if !archive_staged
+        && let Ok(file) = volume.open(
+            uefi::cstr16!("\\EFI\\BOOT\\initramfs.cpio"),
+            FileMode::Read,
+            FileAttribute::empty(),
+        )
+    {
         let mut file = regular_file(file);
         let size = file_size(&mut file);
         assert!(
@@ -243,6 +253,45 @@ fn load_host_boot_payload() {
                 .expect("host archive range overflows"),
         );
         println!("UEFI host initramfs loaded: {size} bytes");
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EfiCmdlineError {
+    TooLong,
+    InvalidCharacter,
+}
+
+fn decode_efi_cmdline<'a>(
+    words: &[u16],
+    bytes: &'a mut [u8; MAX_CMDLINE],
+) -> core::result::Result<&'a str, EfiCmdlineError> {
+    if words.len() >= bytes.len() {
+        return Err(EfiCmdlineError::TooLong);
+    }
+    for (index, word) in words.iter().copied().enumerate() {
+        let byte = u8::try_from(word).map_err(|_| EfiCmdlineError::InvalidCharacter)?;
+        if byte != b' ' && !byte.is_ascii_graphic() {
+            return Err(EfiCmdlineError::InvalidCharacter);
+        }
+        bytes[index] = byte;
+    }
+    core::str::from_utf8(&bytes[..words.len()]).map_err(|_| EfiCmdlineError::InvalidCharacter)
+}
+
+fn load_efi_cmdline(image_handle: Handle) {
+    let image = boot::open_protocol_exclusive::<LoadedImage>(image_handle)
+        .expect("failed to open LoadedImage for EFI command line");
+    let options = match image.load_options_as_cstr16() {
+        Ok(options) => options,
+        Err(uefi::proto::loaded_image::LoadOptionsError::NotSet) => return,
+        Err(error) => panic!("invalid EFI command line: {error:?}"),
+    };
+    let mut bytes = [0_u8; MAX_CMDLINE];
+    match decode_efi_cmdline(options.to_u16_slice(), &mut bytes) {
+        Ok("") => {}
+        Ok(cmdline) => crate::cmdline::set_cmdline(cmdline),
+        Err(error) => panic!("unsupported EFI command line: {error:?}"),
     }
 }
 
@@ -528,6 +577,35 @@ mod tests {
     #[test]
     fn boot_entropy_is_unavailable_without_uefi_system_table() {
         assert_eq!(boot_entropy(), None);
+    }
+
+    #[test]
+    fn decodes_valid_ascii_efi_command_lines() {
+        let mut bytes = [0_u8; MAX_CMDLINE];
+        assert_eq!(
+            decode_efi_cmdline(&[b'a' as u16; MAX_CMDLINE - 1], &mut bytes).unwrap(),
+            "a".repeat(MAX_CMDLINE - 1)
+        );
+        assert_eq!(decode_efi_cmdline(&[], &mut bytes).unwrap(), "");
+        assert_eq!(
+            decode_efi_cmdline(&[b'a' as u16, b' ', b'=' as u16], &mut bytes).unwrap(),
+            "a ="
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_efi_command_lines() {
+        let mut bytes = [0_u8; MAX_CMDLINE];
+        assert_eq!(
+            decode_efi_cmdline(&vec![b'a' as u16; MAX_CMDLINE], &mut bytes),
+            Err(EfiCmdlineError::TooLong)
+        );
+        for words in [&[0x100_u16][..], &[b'\t' as u16][..], &[b'\n' as u16][..]] {
+            assert_eq!(
+                decode_efi_cmdline(words, &mut bytes),
+                Err(EfiCmdlineError::InvalidCharacter)
+            );
+        }
     }
 }
 

@@ -21,7 +21,7 @@
 | QEMU 直启 | 运行内核前 | AArch64/RISC-V 使用 QEMU `-initrd`、FDT `linux,initrd-start/end`；x86 使用 UEFI ESP 相邻文件，不向裸 ELF 传 Linux x86 boot protocol 参数 |
 | U-Boot FIT | `bootm` 前 | FIT ramdisk 节点和 `bootargs`；someboot 从 FDT 接收物理范围 |
 | UEFI 本地 | `ExitBootServices` 前 | 从启动卷读取 `EFI/BOOT/initramfs.cpio` 和 `cmdline.txt` |
-| HTTP Boot | axloader 下载 kernel 后 | 同会话下载 initramfs，检查长度和 SHA-256，再以版本化 UEFI 配置表交接 |
+| axloader v5 HTTP 服务 | 调用方推送 kernel 后 | 调用方按清单向设备推送可选 initramfs；axloader 检查长度和 SHA-256，再以版本化 UEFI 配置表交接 |
 
 UEFI 配置表由 `host-boot-abi::BootPayload` 定义。表自身使用
 `RUNTIME_SERVICES_DATA` pool，归档使用 `LOADER_DATA` 页。someboot 在退出
@@ -36,6 +36,22 @@ LoongArch 的 UEFI 入口不再次清零已暂存的交接状态。
 元数据和一页堆空间的归档不会伪报回收；普通新增内存仍使用 2 MiB 对齐策略。
 可回收归档在平台物理 RAM 范围中可见，但启动时仍由保留区遮罩，解包前不会进入分配器。
 UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
+
+运行配置统一复用 ostool 的 `BootPayloadConfig`。`.qemu.toml` 和
+`.board.toml` 都在顶层填写两个可选字段，路径继续支持 `${workspace}`、
+`${package}` 等变量：
+
+```toml
+cmdline = "loglevel=7 init=/bin/sh"
+initramfs = "${workspace}/test-suit/host-initramfs.cpio"
+```
+
+两个字段可以分别省略；它们属于运行配置，不写入 `build-*.toml`。QEMU 直启
+使用 `-append` 和 `-initrd`，x86 UEFI 本地启动使用 ESP 的 `cmdline.txt` 和
+`initramfs.cpio`，U-Boot 使用 `bootargs` 和 FIT ramdisk。ostool v5 推送给
+axloader 时，cmdline 通过 EFI LoadOptions 传给 someboot，initramfs 仍使用
+`BootPayload` 配置表。someboot 的命令行优先级为 EFI LoadOptions、旧
+`BootPayload.cmdline`、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 
 ## 3. 根与 PID 1
 
@@ -83,5 +99,5 @@ Starry 内存根用例编译独立 AArch64 `/init`，检查 `rdinit=`、环境�
 
 解析器的宿主测试覆盖串接归档、硬链接、权限、错误边界和不支持的压缩格式；
 只测试内置镜像不能证明外部传输。FIT 的 U-Boot 实机交接、UEFI 本地 ESP
-读取、HTTP Boot 同会话下载及实体板卡上的镜像页回收仍须按各自入口核对。没有实体板卡
+读取、axloader HTTP 推送及实体板卡上的镜像页回收仍须按各自入口核对。没有实体板卡
 运行证据时标为未验证，不能以 QEMU 成功代替。

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uefi::boot;
 
-use super::{elf_loader, ota, payload};
+use super::{elf_loader, entry, ota, payload};
 
 pub const MAX_BOOT_FILE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -55,6 +55,7 @@ struct Job {
 pub struct BootExecution {
     pub elf: elf_loader::LoadedElf,
     pub payload: payload::PublishedPayload,
+    pub load_options: entry::PreparedLoadOptions,
 }
 
 impl BootServer {
@@ -133,10 +134,7 @@ impl BootServer {
                 .cmdline
                 .as_deref()
                 .is_some_and(|cmdline| !httpboot_protocol::valid_host_cmdline(cmdline))
-            || manifest
-                .entry_symbol
-                .as_deref()
-                .is_some_and(|symbol| symbol != "httpboot_entry")
+            || manifest.entry_symbol.as_deref() != Some(elf_loader::EFI_ENTRY_SYMBOL)
         {
             return Err("invalid_boot_manifest");
         }
@@ -204,29 +202,42 @@ impl BootServer {
                 return Err("kernel_load_failed");
             }
         };
-        let payload = payload::prepare_uploaded(
-            job.initramfs.as_deref(),
-            job.manifest.cmdline.as_deref(),
-            elf.handoff,
-        )
-        .and_then(payload::PreparedPayload::publish);
-        let payload = match payload {
-            Ok(payload) => payload,
+        let load_options = entry::PreparedLoadOptions::new(job.manifest.cmdline.as_deref());
+        let payload = payload::prepare_uploaded(job.initramfs.as_deref())
+            .and_then(payload::PreparedPayload::publish);
+        let load_options = match load_options {
+            Ok(load_options) => load_options,
             Err(_) => {
-                // SAFETY: this ELF region has not been handed to the kernel.
-                unsafe {
-                    boot::free_pages(
-                        NonNull::new(elf.load_addr as *mut u8).expect("allocated ELF address"),
-                        elf.page_count,
-                    )
-                }
-                .expect("failed to free ELF pages");
+                free_loaded_elf(&elf);
                 self.job = None;
                 return Err("host_payload_failed");
             }
         };
-        Ok(BootExecution { elf, payload })
+        let payload = match payload {
+            Ok(payload) => payload,
+            Err(_) => {
+                free_loaded_elf(&elf);
+                self.job = None;
+                return Err("host_payload_failed");
+            }
+        };
+        Ok(BootExecution {
+            elf,
+            payload,
+            load_options,
+        })
     }
+}
+
+pub(super) fn free_loaded_elf(elf: &elf_loader::LoadedElf) {
+    // SAFETY: this ELF region has not been handed to the kernel.
+    unsafe {
+        boot::free_pages(
+            NonNull::new(elf.load_addr as *mut u8).expect("allocated ELF address"),
+            elf.page_count,
+        )
+    }
+    .expect("failed to free ELF pages");
 }
 
 fn valid_image(image: &Image) -> bool {

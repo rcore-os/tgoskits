@@ -14,7 +14,11 @@ use ostool::ovmf::Arch;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::support::ovmf::OvmfFirmware;
+use crate::{
+    build::BuildInfo,
+    context::{AppContext, WorkspaceContext},
+    support::ovmf::OvmfFirmware,
+};
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(75);
 
@@ -148,17 +152,71 @@ async fn upload(
         .context("direct OTA upload failed")
 }
 
+struct BootKernels {
+    cmdline: Vec<u8>,
+    initramfs: Vec<u8>,
+}
+
+struct BootScenario<'a> {
+    name: &'a str,
+    kernel: &'a [u8],
+    initramfs: Option<&'a [u8]>,
+    cmdline: Option<&'a str>,
+    expected_lines: &'a [&'a str],
+    check_retries: bool,
+}
+
+async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<BootKernels> {
+    let mut app = AppContext::from_workspace_root(workspace.root(), Some(workspace.target_dir()))?;
+    let build_config = workspace.root().join("Cargo.toml");
+    let build = |feature: &str| {
+        let mut info = BuildInfo::default().with_features([feature]);
+        info.max_cpu_num = Some(1);
+        info.into_prepared_std_cargo_config_with_metadata(
+            "arceos-helloworld",
+            "x86_64-unknown-none",
+            workspace.metadata(),
+            &workspace.axbuild_artifact_dir(),
+        )
+    };
+    let output = app
+        .build(build("cmdline-smoke")?, build_config.clone())
+        .await?;
+    let cmdline = fs::read(output.elf_path()).context("failed to read cmdline smoke kernel")?;
+    let output = app.build(build("initramfs-smoke")?, build_config).await?;
+    let initramfs = fs::read(output.elf_path()).context("failed to read initramfs smoke kernel")?;
+    Ok(BootKernels { cmdline, initramfs })
+}
+
 pub(super) async fn test_direct_ota(
-    workspace: &Path,
-    target_dir: &Path,
+    workspace: &WorkspaceContext,
     target: &str,
     server_only: bool,
 ) -> anyhow::Result<()> {
     if target != super::DEFAULT_UEFI_TARGET {
         bail!("persistent OTA QEMU test supports only x86_64 UEFI");
     }
+    let kernels = if server_only {
+        None
+    } else {
+        Some(build_boot_kernels(workspace).await?)
+    };
+    let workspace_root = workspace.root();
+    let target_dir = workspace.target_dir();
     let root = tempfile::tempdir().context("failed to create OTA FAT image directory")?;
     let root = root.path();
+    let host_initramfs_path = root.join("host-initramfs.cpio");
+    if !server_only {
+        crate::image::pack_initramfs_dir(
+            &workspace_root.join("test-suit/host-initramfs"),
+            &host_initramfs_path,
+        )?;
+    }
+    let host_initramfs = if server_only {
+        None
+    } else {
+        Some(fs::read(&host_initramfs_path).context("failed to read host initramfs")?)
+    };
     let firmware = OvmfFirmware::fetch(Arch::X64).await?;
     fs::copy(firmware.vars(), root.join("vars.fd"))?;
     let loader = fs::read(target_dir.join(target).join("release/axloader.efi"))?;
@@ -174,7 +232,7 @@ pub(super) async fn test_direct_ota(
         root.join("BOOTX64.EFI"),
     )?;
     let output = Command::new("python3")
-        .arg(workspace.join("bootloader/axloader/scripts/init-ota-state.py"))
+        .arg(workspace_root.join("bootloader/axloader/scripts/init-ota-state.py"))
         .args(["--stable", "A.EFI", "--trial", "B.EFI", "--output", "."])
         .current_dir(root)
         .output()?;
@@ -257,9 +315,55 @@ pub(super) async fn test_direct_ota(
     })
     .await?;
 
-    boot_smoke(&client, port, root).await?;
-    drop(qemu);
-    qemu = start_qemu(&firmware, root, port)?;
+    let kernels = kernels.context("boot smoke kernels were not built")?;
+    let host_initramfs = host_initramfs.context("host initramfs was not packed")?;
+    let scenarios = [
+        BootScenario {
+            name: "no-options",
+            kernel: &kernels.cmdline,
+            initramfs: None,
+            cmdline: None,
+            expected_lines: &["HOST_CMDLINE: ", "Hello, world!"],
+            check_retries: false,
+        },
+        BootScenario {
+            name: "cmdline-only",
+            kernel: &kernels.cmdline,
+            initramfs: None,
+            cmdline: Some("axloader.cmdline=qemu-direct"),
+            expected_lines: &[
+                "HOST_CMDLINE: axloader.cmdline=qemu-direct",
+                "Hello, world!",
+            ],
+            check_retries: false,
+        },
+        BootScenario {
+            name: "initramfs-only",
+            kernel: &kernels.initramfs,
+            initramfs: Some(&host_initramfs),
+            cmdline: None,
+            expected_lines: &["HOST_CMDLINE: ", "HOST_INITRAMFS_PASSED", "Hello, world!"],
+            check_retries: false,
+        },
+        BootScenario {
+            name: "both",
+            kernel: &kernels.initramfs,
+            initramfs: Some(&host_initramfs),
+            cmdline: Some("axloader.cmdline=qemu-direct"),
+            expected_lines: &[
+                "HOST_CMDLINE: axloader.cmdline=qemu-direct",
+                "HOST_INITRAMFS_PASSED",
+                "Hello, world!",
+            ],
+            check_retries: true,
+        },
+    ];
+    for scenario in scenarios {
+        status(&client, port, root, |value| value["running_slot"] == "b").await?;
+        boot_smoke(&client, port, root, scenario).await?;
+        drop(qemu);
+        qemu = start_qemu(&firmware, root, port)?;
+    }
     status(&client, port, root, |value| value["running_slot"] == "b").await?;
     println!("axloader OTA QEMU: checking failed uploads on stable B");
 
@@ -506,20 +610,32 @@ async fn server_assignment(
     Ok(())
 }
 
-async fn boot_smoke(client: &reqwest::Client, port: u16, root: &Path) -> anyhow::Result<()> {
-    let kernel = super::minimal_x86_64_kernel_elf();
-    let initramfs = b"uefi-loader-host-payload";
+async fn boot_smoke(
+    client: &reqwest::Client,
+    port: u16,
+    root: &Path,
+    scenario: BootScenario<'_>,
+) -> anyhow::Result<()> {
+    let kernel = scenario.kernel;
     let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
     let epoch = epoch(client, port).await?;
-    let manifest = serde_json::json!({
-        "boot_id": "qemu-v5-boot",
+    let boot_id = format!("qemu-v5-{}", scenario.name);
+    let mut manifest = serde_json::json!({
+        "boot_id": boot_id,
         "arch": "x86_64",
         "image_format": "elf64",
-        "kernel": {"size": kernel.len(), "sha256": format!("{:x}", Sha256::digest(&kernel))},
-        "initramfs": {"size": initramfs.len(), "sha256": format!("{:x}", Sha256::digest(initramfs))},
-        "cmdline": "qemu-v5-smoke",
-        "entry_symbol": "httpboot_entry",
+        "kernel": {"size": kernel.len(), "sha256": format!("{:x}", Sha256::digest(kernel))},
+        "entry_symbol": "__x86_64_efi_pe_entry",
     });
+    if let Some(initramfs) = scenario.initramfs {
+        manifest["initramfs"] = serde_json::json!({
+            "size": initramfs.len(),
+            "sha256": format!("{:x}", Sha256::digest(initramfs)),
+        });
+    }
+    if let Some(cmdline) = scenario.cmdline {
+        manifest["cmdline"] = serde_json::json!(cmdline);
+    }
     let response = client
         .post(&base)
         .header("X-Boot-Epoch", &epoch)
@@ -531,77 +647,80 @@ async fn boot_smoke(client: &reqwest::Client, port: u16, root: &Path) -> anyhow:
         "boot manifest rejected: {}",
         response.text().await?
     );
-    let stale = client
-        .post(&base)
-        .header("X-Boot-Epoch", "previous-generation")
-        .json(&manifest)
-        .send()
-        .await?;
-    ensure!(
-        stale.status() == reqwest::StatusCode::CONFLICT,
-        "stale epoch accepted"
-    );
-    let repeated = client
-        .post(&base)
-        .header("X-Boot-Epoch", &epoch)
-        .json(&manifest)
-        .send()
-        .await?;
-    ensure!(
-        repeated.status() == reqwest::StatusCode::OK,
-        "identical boot rejected"
-    );
-    let concurrent_ota = client
-        .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
-        .header("X-Boot-Epoch", &epoch)
-        .header("X-Image-Sha256", "00".repeat(32))
-        .body(vec![1])
-        .send()
-        .await?;
-    ensure!(
-        concurrent_ota.status() == reqwest::StatusCode::CONFLICT,
-        "concurrent OTA accepted"
-    );
-    let mut conflicting_manifest = manifest.clone();
-    conflicting_manifest["boot_id"] = serde_json::json!("another-boot-id");
-    let conflicting = client
-        .post(&base)
-        .header("X-Boot-Epoch", &epoch)
-        .json(&conflicting_manifest)
-        .send()
-        .await?;
-    ensure!(
-        conflicting.status() == reqwest::StatusCode::CONFLICT,
-        "concurrent boot accepted"
-    );
-    let rejected = client
-        .put(format!("{base}/qemu-v5-boot/kernel"))
-        .header("X-Boot-Epoch", &epoch)
-        .header("X-Image-Sha256", "00".repeat(32))
-        .body(kernel.clone())
-        .send()
-        .await?;
-    ensure!(
-        rejected.status() == reqwest::StatusCode::BAD_REQUEST,
-        "bad digest accepted"
-    );
-    let retry = client
-        .post(&base)
-        .header("X-Boot-Epoch", &epoch)
-        .json(&manifest)
-        .send()
-        .await?;
-    ensure!(
-        retry.status() == reqwest::StatusCode::CREATED,
-        "failed upload kept its transaction"
-    );
-    for (kind, bytes) in [
-        ("kernel", kernel.as_slice()),
-        ("initramfs", initramfs.as_slice()),
-    ] {
+    if scenario.check_retries {
+        let stale = client
+            .post(&base)
+            .header("X-Boot-Epoch", "previous-generation")
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            stale.status() == reqwest::StatusCode::CONFLICT,
+            "stale epoch accepted"
+        );
+        let repeated = client
+            .post(&base)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            repeated.status() == reqwest::StatusCode::OK,
+            "identical boot rejected"
+        );
+        let concurrent_ota = client
+            .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+            .header("X-Boot-Epoch", &epoch)
+            .header("X-Image-Sha256", "00".repeat(32))
+            .body(vec![1])
+            .send()
+            .await?;
+        ensure!(
+            concurrent_ota.status() == reqwest::StatusCode::CONFLICT,
+            "concurrent OTA accepted"
+        );
+        let mut conflicting_manifest = manifest.clone();
+        conflicting_manifest["boot_id"] = serde_json::json!("another-boot-id");
+        let conflicting = client
+            .post(&base)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&conflicting_manifest)
+            .send()
+            .await?;
+        ensure!(
+            conflicting.status() == reqwest::StatusCode::CONFLICT,
+            "concurrent boot accepted"
+        );
+        let rejected = client
+            .put(format!("{base}/{boot_id}/kernel"))
+            .header("X-Boot-Epoch", &epoch)
+            .header("X-Image-Sha256", "00".repeat(32))
+            .body(kernel.to_vec())
+            .send()
+            .await?;
+        ensure!(
+            rejected.status() == reqwest::StatusCode::BAD_REQUEST,
+            "bad digest accepted"
+        );
+        let retry = client
+            .post(&base)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            retry.status() == reqwest::StatusCode::CREATED,
+            "failed upload kept its transaction"
+        );
+    }
+    let mut uploads = vec![("kernel", kernel)];
+    if let Some(initramfs) = scenario.initramfs {
+        uploads.push(("initramfs", initramfs));
+    }
+    for (kind, bytes) in uploads {
         let digest = format!("{:x}", Sha256::digest(bytes));
         let response = client
-            .put(format!("{base}/qemu-v5-boot/{kind}"))
+            .put(format!("{base}/{boot_id}/{kind}"))
             .header("X-Boot-Epoch", &epoch)
             .header("X-Image-Sha256", digest)
             .body(bytes.to_vec())
@@ -614,7 +733,7 @@ async fn boot_smoke(client: &reqwest::Client, port: u16, root: &Path) -> anyhow:
         );
     }
     let response = client
-        .post(format!("{base}/qemu-v5-boot/start"))
+        .post(format!("{base}/{boot_id}/start"))
         .header("X-Boot-Epoch", &epoch)
         .send()
         .await?;
@@ -623,20 +742,25 @@ async fn boot_smoke(client: &reqwest::Client, port: u16, root: &Path) -> anyhow:
         "boot handoff refused: {}",
         response.text().await?
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + STATUS_TIMEOUT;
     while Instant::now() < deadline {
         let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
-        if log.contains("host_payload_ready:")
-            && log.contains("elf_loaded:")
-            && log.contains("ready_to_handoff")
+        let lines = log
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line));
+        if scenario
+            .expected_lines
+            .iter()
+            .all(|expected| lines.clone().any(|line| line == *expected))
         {
-            println!("axloader QEMU: pushed kernel and initramfs, verified and handed off");
+            println!("axloader QEMU: {} kernel output passed", scenario.name);
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     bail!(
-        "pushed kernel did not reach handoff: {}",
+        "{} kernel output was incomplete: {}",
+        scenario.name,
         fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default()
     )
 }

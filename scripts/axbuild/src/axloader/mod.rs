@@ -129,13 +129,7 @@ async fn test_qemu(
     result?;
 
     run_loader_build(workspace.root(), workspace.target_dir(), &args.target, true)?;
-    ota_qemu::test_direct_ota(
-        workspace.root(),
-        workspace.target_dir(),
-        &args.target,
-        args.server_only,
-    )
-    .await
+    ota_qemu::test_direct_ota(workspace, &args.target, args.server_only).await
 }
 
 fn run_loader_build(
@@ -174,52 +168,4 @@ fn run_cargo<'a>(
         .arg("--target-dir")
         .arg(target_dir);
     command.exec()
-}
-
-fn minimal_x86_64_kernel_elf() -> Vec<u8> {
-    const EHDR_SIZE: usize = 64;
-    const PHDR_SIZE: usize = 56;
-    const LOAD_OFFSET: usize = 0x1000;
-    const LOAD_ADDR: u64 = 0x20_0000;
-    const LOAD_MEM_SIZE: u64 = 0x1000;
-    let code = [0xeb, 0xfe]; // jmp .
-    let mut image = vec![0; LOAD_OFFSET + code.len()];
-
-    image[0..4].copy_from_slice(b"\x7fELF");
-    image[4] = 2;
-    image[5] = 1;
-    image[6] = 1;
-    put_u16(&mut image, 16, 2);
-    put_u16(&mut image, 18, 62);
-    put_u32(&mut image, 20, 1);
-    put_u64(&mut image, 24, LOAD_ADDR);
-    put_u64(&mut image, 32, EHDR_SIZE as u64);
-    put_u16(&mut image, 52, EHDR_SIZE as u16);
-    put_u16(&mut image, 54, PHDR_SIZE as u16);
-    put_u16(&mut image, 56, 1);
-
-    let ph = EHDR_SIZE;
-    put_u32(&mut image, ph, 1);
-    put_u32(&mut image, ph + 4, 5);
-    put_u64(&mut image, ph + 8, LOAD_OFFSET as u64);
-    put_u64(&mut image, ph + 16, LOAD_ADDR);
-    put_u64(&mut image, ph + 24, LOAD_ADDR);
-    put_u64(&mut image, ph + 32, code.len() as u64);
-    put_u64(&mut image, ph + 40, LOAD_MEM_SIZE);
-    put_u64(&mut image, ph + 48, 0x1000);
-
-    image[LOAD_OFFSET..LOAD_OFFSET + code.len()].copy_from_slice(&code);
-    image
-}
-
-fn put_u16(image: &mut [u8], offset: usize, value: u16) {
-    image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
-
-fn put_u32(image: &mut [u8], offset: usize, value: u32) {
-    image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-fn put_u64(image: &mut [u8], offset: usize, value: u64) {
-    image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }

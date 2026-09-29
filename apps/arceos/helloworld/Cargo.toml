@@ -8,7 +8,8 @@ publish = false
 [features]
 default = ["arceos"]
 arceos = ["dep:ax-std", "ax-std/arceos"]
-initramfs-smoke = ["arceos", "ax-std/fs", "dep:ax-hal"]
+cmdline-smoke = ["arceos", "dep:ax-hal"]
+initramfs-smoke = ["cmdline-smoke", "ax-std/fs"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
