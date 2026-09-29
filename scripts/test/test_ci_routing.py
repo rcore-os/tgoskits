@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from scripts.test.check_ci_routing import (
+    check_compile_sim_payload_consistency,
     list_items_in_order,
     mapping_block,
     named_step_block,
@@ -34,6 +35,48 @@ REUSABLE_CHECK_MATRIX = (
 )
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
+
+
+class CompileSimPayloadConsistencyTests(unittest.TestCase):
+    def test_current_workspace_shared_payload_matches(self) -> None:
+        self.assertEqual(check_compile_sim_payload_consistency(WORKSPACE_ROOT), [])
+
+    def test_temporary_workspace_reports_one_mismatched_file(self) -> None:
+        payload_files = (
+            "compile-sim-bench.c",
+            "compile-sim-bench-run.sh",
+            "prebuild.sh",
+            "linux-compile-sim-init.sh",
+            "build-x86_64-unknown-none.toml",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            workspace = Path(temp_dir_name)
+            smoke_dir = workspace / "apps/starry/qemu/compile-sim-bench"
+            benchmark_dir = workspace / "benchmarks/starry/qemu/compile-sim-bench"
+            smoke_dir.mkdir(parents=True)
+            benchmark_dir.mkdir(parents=True)
+            for file_name in payload_files:
+                content = f"shared payload: {file_name}\n"
+                (smoke_dir / file_name).write_text(content, encoding="utf-8")
+                (benchmark_dir / file_name).write_text(content, encoding="utf-8")
+
+            mismatched = "compile-sim-bench.c"
+            (benchmark_dir / mismatched).write_text(
+                "divergent payload\n",
+                encoding="utf-8",
+            )
+            errors = check_compile_sim_payload_consistency(workspace)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(
+            "apps/starry/qemu/compile-sim-bench/compile-sim-bench.c",
+            errors[0],
+        )
+        self.assertIn(
+            "benchmarks/starry/qemu/compile-sim-bench/compile-sim-bench.c",
+            errors[0],
+        )
+        self.assertIn("must remain byte-identical", errors[0])
 
 
 class ReleasePrerequisiteTests(unittest.TestCase):

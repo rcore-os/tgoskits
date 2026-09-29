@@ -15,10 +15,20 @@ REUSABLE_CHECK_MATRIX = (
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
+COMPILE_SIM_SMOKE_DIR = Path("apps/starry/qemu/compile-sim-bench")
+COMPILE_SIM_BENCHMARK_DIR = Path("benchmarks/starry/qemu/compile-sim-bench")
+COMPILE_SIM_PAYLOAD_FILES = (
+    "compile-sim-bench.c",
+    "compile-sim-bench-run.sh",
+    "prebuild.sh",
+    "linux-compile-sim-init.sh",
+    "build-x86_64-unknown-none.toml",
+)
 
 
 def main() -> int:
     errors: list[str] = []
+    errors.extend(check_compile_sim_payload_consistency(WORKSPACE_ROOT))
     if not CI_WORKFLOW.is_file():
         errors.append("missing workflow: .github/workflows/ci.yml")
     if not REUSABLE_CHECK_MATRIX.is_file():
@@ -733,6 +743,34 @@ def workspace_source_roots() -> set[str]:
     package_paths = re.findall(r'^\s+"([^"]+)",?$', members, flags=re.MULTILINE)
     package_paths.extend(re.findall(r'\bpath\s*=\s*"([^"]+)"', manifest))
     return {Path(package_path).parts[0] for package_path in package_paths}
+
+
+def check_compile_sim_payload_consistency(workspace_root: Path) -> list[str]:
+    errors: list[str] = []
+    smoke_dir = workspace_root / COMPILE_SIM_SMOKE_DIR
+    benchmark_dir = workspace_root / COMPILE_SIM_BENCHMARK_DIR
+    for file_name in COMPILE_SIM_PAYLOAD_FILES:
+        smoke_path = smoke_dir / file_name
+        benchmark_path = benchmark_dir / file_name
+        if not smoke_path.is_file():
+            errors.append(
+                "missing mirrored compile-sim payload file: "
+                f"{(COMPILE_SIM_SMOKE_DIR / file_name).as_posix()}"
+            )
+        if not benchmark_path.is_file():
+            errors.append(
+                "missing mirrored compile-sim payload file: "
+                f"{(COMPILE_SIM_BENCHMARK_DIR / file_name).as_posix()}"
+            )
+        if not smoke_path.is_file() or not benchmark_path.is_file():
+            continue
+        if smoke_path.read_bytes() != benchmark_path.read_bytes():
+            errors.append(
+                "compile-sim payload files must remain byte-identical: "
+                f"{(COMPILE_SIM_SMOKE_DIR / file_name).as_posix()} and "
+                f"{(COMPILE_SIM_BENCHMARK_DIR / file_name).as_posix()} differ"
+            )
+    return errors
 
 
 def mapping_block(text: str, key: str, indent: int) -> str:
