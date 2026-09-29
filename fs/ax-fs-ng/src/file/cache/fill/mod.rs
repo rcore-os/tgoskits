@@ -8,7 +8,7 @@ use axfs_ng_vfs::{FileNode, VfsError, VfsResult};
 pub(super) use pending::PendingFills;
 use pending::{FillAdmission, FillOwner};
 
-use super::{CachedFile, PAGE_SIZE, PageCache};
+use super::{CacheMappingEvent, CacheMappingResult, CachedFile, PAGE_SIZE, PageCache};
 
 impl CachedFile {
     pub(super) fn populate_page_window(
@@ -71,6 +71,88 @@ impl CachedFile {
                 });
                 drop(io);
                 owner.finish(result)
+            }
+        }
+    }
+
+    /// Retires clean cache owners after a buffered read has copied its demand
+    /// page. A live endpoint prevents the insertion path from detaching pages;
+    /// its typed callback invalidates any PTE before a frame is freed.
+    pub(super) fn trim_clean_pages_after_read(&self) {
+        let over_target = {
+            let cache = self.shared.page_cache.lock();
+            cache.len() > cache.cap().get()
+        };
+        if !over_target || !self.shared.has_mapping_endpoint() {
+            return;
+        }
+
+        let _mapping_update = match self.begin_mapping_reclaim() {
+            Ok(guard) => guard,
+            Err(VfsError::ResourceBusy) => return,
+            Err(error) => {
+                log::warn!("clean mapped cache trim deferred: {error:?}");
+                return;
+            }
+        };
+
+        const BATCH: usize = 64;
+        let mut candidates = [0u32; BATCH];
+        let mut count = 0;
+        {
+            let cache = self.shared.page_cache.lock();
+            if cache.len() <= cache.cap().get() {
+                return;
+            }
+            for (&number, page) in cache.iter().rev() {
+                if !page.dirty && page.pins == 0 {
+                    candidates[count] = number;
+                    count += 1;
+                    if count == BATCH {
+                        break;
+                    }
+                }
+            }
+        }
+
+        for number in candidates.into_iter().take(count) {
+            let io = self.shared.io_lock.lock();
+            let candidate = {
+                let mut cache = self.shared.page_cache.lock();
+                if cache.len() <= cache.cap().get() {
+                    return;
+                }
+                match cache.peek_mut(&number) {
+                    Some(page) if !page.dirty && page.pins == 0 => cache.pop(&number),
+                    _ => None,
+                }
+            };
+            drop(io);
+            let Some(page) = candidate else {
+                continue;
+            };
+
+            let result = match page.paddr() {
+                Ok(paddr) => self.shared.publish_mapping_event(CacheMappingEvent::Evict(
+                    self.cache_page_identity(number, paddr),
+                )),
+                Err(error) => {
+                    log::warn!("clean mapped cache trim deferred: {error:?}");
+                    CacheMappingResult::Failed
+                }
+            };
+            match result {
+                CacheMappingResult::Retired => {}
+                CacheMappingResult::Busy | CacheMappingResult::Quarantined => {
+                    let replaced = self.shared.page_cache.lock().put(number, page);
+                    drop(replaced);
+                }
+                CacheMappingResult::Protected | CacheMappingResult::Failed => {
+                    let replaced = self.shared.page_cache.lock().put(number, page);
+                    drop(replaced);
+                    log::warn!("clean mapped cache trim failed for page {number}: {result:?}");
+                    return;
+                }
             }
         }
     }

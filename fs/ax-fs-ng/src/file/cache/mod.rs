@@ -1064,12 +1064,29 @@ impl CachedFile {
     }
 
     fn begin_mapping_update(&self) -> VfsResult<MappingUpdateGuard<'_>> {
+        self.begin_mapping_update_inner(true)
+    }
+
+    fn begin_mapping_reclaim(&self) -> VfsResult<MappingUpdateGuard<'_>> {
+        // Reclaim changes only cache ownership, not file contents. An active
+        // fill cannot cover an indexed candidate: admission stops before the
+        // first cached page, and the I/O lock serializes its publication with
+        // candidate detachment. Keep unrelated fills valid across eviction.
+        self.begin_mapping_update_inner(false)
+    }
+
+    fn begin_mapping_update_inner(
+        &self,
+        invalidate_fills: bool,
+    ) -> VfsResult<MappingUpdateGuard<'_>> {
         let layout = self.shared.mapping_layout_lock.lock();
         self.shared
             .mapping_update_in_progress
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| VfsError::ResourceBusy)?;
-        self.shared.pending_fills.invalidate();
+        if invalidate_fills {
+            self.shared.pending_fills.invalidate();
+        }
         Ok(MappingUpdateGuard {
             shared: &self.shared,
             _layout: layout,

@@ -96,6 +96,66 @@ fn replacement_fill_reads_without_holding_cache_or_endpoint_index() {
 }
 
 #[test]
+fn buffered_reads_reclaim_clean_pages_with_live_mapping_endpoint() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 8]));
+        let cached = reopen_cached_file(backing);
+        cached
+            .shared
+            .page_cache
+            .lock()
+            .set_reclaim_target(core::num::NonZeroUsize::new(2).unwrap());
+        let evictions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&evictions);
+        let _endpoint = install_shared_test_endpoint(&cached.shared, move |event| match event {
+            CacheMappingEvent::Evict(page) if page.page_number() == 0 => CacheMappingResult::Busy,
+            CacheMappingEvent::Evict(_) => {
+                observed.fetch_add(1, Ordering::Relaxed);
+                CacheMappingResult::Retired
+            }
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+        });
+
+        for page in 0..8 {
+            assert_eq!(read_bytes(&cached, (page * PAGE_SIZE) as u64, 1), [0x5a]);
+        }
+
+        assert!(evictions.load(Ordering::Relaxed) > 0);
+        assert!(cached.is_page_cached(0));
+        assert!(cached.shared.page_cache.lock().len() <= 2);
+    });
+}
+
+#[test]
+fn mapped_cache_trim_preserves_unrelated_inflight_fill() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 129]));
+        let cached = reopen_cached_file(backing.clone());
+        assert_eq!(read_bytes(&cached, 0, 1), [0x5a]);
+        cached
+            .shared
+            .page_cache
+            .lock()
+            .set_reclaim_target(NonZeroUsize::new(1).unwrap());
+        let _endpoint = install_shared_test_endpoint(&cached.shared, |event| match event {
+            CacheMappingEvent::Evict(page) if page.page_number() == 0 => CacheMappingResult::Busy,
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+        });
+        let other = cached.clone();
+        *backing.after_read.lock().unwrap() = Some(Box::new(move || {
+            assert_eq!(read_bytes(&other, PAGE_SIZE as u64 * 128, 1), [0x5a]);
+        }));
+
+        cached
+            .populate_page_window(cached.inner.entry().as_file().unwrap(), 64, 1)
+            .unwrap();
+        assert!(cached.is_page_cached(64));
+        assert_eq!(backing.state.lock().unwrap().read_calls, 3);
+    });
+}
+
+#[test]
 fn overlapping_misses_wait_for_one_backing_read() {
     check_coalesced_fill(false);
 }

@@ -89,6 +89,7 @@ impl<'a> CachedRead<'a> {
             .min(dst.capacity());
         let source = page_offset..page_offset + copied;
 
+        let mut filled = false;
         loop {
             if let Some(copied) =
                 self.cached
@@ -99,13 +100,16 @@ impl<'a> CachedRead<'a> {
                 if copied == 0 {
                     self.end = self.current;
                 }
+                if filled {
+                    self.cached.trim_clean_pages_after_read();
+                }
                 return Ok(copied);
             }
             match self
                 .cached
                 .populate_page_window(self.file, page_number, self.window_pages)
             {
-                Ok(()) => {}
+                Ok(()) => filled = true,
                 Err(axfs_ng_vfs::VfsError::ResourceBusy) => {
                     // Ordinary buffered readers may wait for a layout mutation;
                     // fault preparation uses the same fill API and retries in MM.
