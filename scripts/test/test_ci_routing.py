@@ -2,11 +2,13 @@
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts.test.check_ci_routing import mapping_block, named_step_block
 
@@ -112,6 +114,60 @@ class ConcurrencyRoutingTests(unittest.TestCase):
             "format('ci-{0}-{1}', github.workflow, github.run_id)", concurrency
         )
         self.assertIn("queue: max", concurrency)
+
+    def test_board_jobs_only_share_groups_on_protected_or_manual_runs(self) -> None:
+        workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
+        job = mapping_block(mapping_block(workflow, "jobs", 0), "run", 2)
+        concurrency = mapping_block(job, "concurrency", 4)
+        match = re.search(
+            r"group:\s*(?:>-\s*)?ci-resource-\${{(.*?)}}", concurrency, re.S
+        )
+        self.assertIsNotNone(match)
+        expression = " ".join(match.group(1).split())
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+
+        def group(
+            event: str,
+            ref: str,
+            run_id: int,
+            resource: str = "board",
+            check_id: str = "check",
+        ) -> str:
+            # GitHub's &&/|| and format() use the same truthy short-circuit
+            # behavior as Python's and/or and str.format for this expression.
+            context = {
+                "github": SimpleNamespace(event_name=event, ref=ref, run_id=run_id),
+                "matrix": SimpleNamespace(id=check_id, resource_group=resource),
+                "format": lambda template, *args: template.format(*args),
+            }
+            return "ci-resource-" + eval(expression, {"__builtins__": {}}, context)
+
+        for event, ref in (
+            ("push", "refs/heads/dev"),
+            ("push", "refs/heads/main"),
+            ("schedule", "refs/heads/dev"),
+            ("workflow_dispatch", "refs/heads/topic"),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(group(event, ref, 1), "ci-resource-board")
+                self.assertEqual(group(event, ref, 2), "ci-resource-board")
+
+        for event, ref in (
+            ("push", "refs/heads/topic"),
+            ("pull_request", "refs/pull/123/merge"),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(group(event, ref, 1), "ci-resource-run-1-check")
+                self.assertEqual(group(event, ref, 2), "ci-resource-run-2-check")
+                self.assertEqual(
+                    group(event, ref, 1, check_id="other"), "ci-resource-run-1-other"
+                )
+
+        self.assertEqual(
+            group("push", "refs/heads/dev", 1, ""), "ci-resource-run-1-check"
+        )
+        self.assertIn("queue: max", concurrency)
+        self.assertIn("cancel-in-progress: false", concurrency)
 
 
 class MatrixParallelismTests(unittest.TestCase):
