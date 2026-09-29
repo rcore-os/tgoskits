@@ -32,7 +32,7 @@ use alloc::{
 use core::{
     ffi::c_int,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 #[cfg(feature = "qperf-metrics")]
@@ -122,19 +122,30 @@ struct FLockEntry {
 
 struct LockState<T> {
     entries: RwLock<Vec<T>>,
-    pins: AtomicUsize,
-    deferred_reap: AtomicBool,
+    pin_state: AtomicUsize,
 }
 
 impl<T> LockState<T> {
     fn new() -> Self {
         Self {
             entries: RwLock::new(Vec::new()),
-            pins: AtomicUsize::new(0),
-            deferred_reap: AtomicBool::new(false),
+            pin_state: AtomicUsize::new(0),
+        }
+    }
+
+    fn clear_deferred_reap(&self) {
+        // Only index writers change this bit; pin updates preserve it.
+        if self.pin_state.load(Ordering::Acquire) & DEFERRED_REAP_BIT != 0 {
+            self.pin_state
+                .fetch_and(!DEFERRED_REAP_BIT, Ordering::AcqRel);
         }
     }
 }
+
+// The low bit marks deferred reaping; the remaining bits count pins in units
+// of two. Marking and releasing a pin share one atomic modification order.
+const DEFERRED_REAP_BIT: usize = 1;
+const PIN_UNIT: usize = 2;
 
 // Pin acquisition is serialized with index removal. A deferred state is
 // checked again when its final pin is released, even if no new inode appears.
@@ -154,9 +165,9 @@ impl<K: Copy + Ord, T> Deref for StatePin<'_, K, T> {
 
 impl<K: Copy + Ord, T> Drop for StatePin<'_, K, T> {
     fn drop(&mut self) {
-        let previous = self.state.pins.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0);
-        if previous == 1 && self.state.deferred_reap.load(Ordering::Acquire) {
+        let previous = self.state.pin_state.fetch_sub(PIN_UNIT, Ordering::AcqRel);
+        debug_assert!(previous >= PIN_UNIT);
+        if previous == (PIN_UNIT | DEFERRED_REAP_BIT) {
             self.index.write().reclaim_deferred(self.key);
         }
     }
@@ -181,7 +192,7 @@ impl<K: Copy + Ord, T> LockIndex<K, T> {
 
     fn pin<'a>(&self, key: K, index: &'a RwLock<Self>) -> Option<StatePin<'a, K, T>> {
         let state = self.states.get(&key)?;
-        state.pins.fetch_add(1, Ordering::Relaxed);
+        state.pin_state.fetch_add(PIN_UNIT, Ordering::Relaxed);
         Some(StatePin {
             key,
             state: state.clone(),
@@ -216,12 +227,12 @@ impl<K: Copy + Ord, T> LockIndex<K, T> {
         let oversized = entries.capacity() > self.cached_capacity_limit;
         drop(entries);
         if !empty {
-            state.deferred_reap.store(false, Ordering::Release);
+            state.clear_deferred_reap();
             self.idle.remove(cursor);
             true
         } else if oversized || self.idle.len() > self.idle_limit {
-            state.deferred_reap.store(true, Ordering::Release);
-            if state.pins.load(Ordering::Acquire) == 0 {
+            let previous = state.pin_state.fetch_or(DEFERRED_REAP_BIT, Ordering::AcqRel);
+            if previous & !DEFERRED_REAP_BIT == 0 {
                 self.states.remove(&key);
                 self.idle.remove(cursor);
                 true
@@ -229,7 +240,7 @@ impl<K: Copy + Ord, T> LockIndex<K, T> {
                 false
             }
         } else {
-            state.deferred_reap.store(false, Ordering::Release);
+            state.clear_deferred_reap();
             false
         }
     }
@@ -241,8 +252,10 @@ impl<K: Copy + Ord, T> LockIndex<K, T> {
         }
         let cacheable = entries.capacity() <= self.cached_capacity_limit;
         drop(entries);
-        if !cacheable && pin.state.pins.load(Ordering::Acquire) == 1 {
-            pin.state.deferred_reap.store(false, Ordering::Release);
+        if !cacheable
+            && pin.state.pin_state.load(Ordering::Acquire) & !DEFERRED_REAP_BIT == PIN_UNIT
+        {
+            pin.state.clear_deferred_reap();
             self.states.remove(&key);
             self.idle.retain(|candidate| *candidate != key);
         } else {
@@ -1409,8 +1422,40 @@ pub fn flock_op(
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{LockIndex, LockState, RwLock};
+    use super::{DEFERRED_REAP_BIT, LockIndex, LockState, PIN_UNIT, RwLock};
     use alloc::sync::Arc;
+    use loom::{
+        sync::{
+            Arc as LoomArc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+    };
+
+    #[test]
+    fn deferred_reap_and_last_pin_cannot_both_miss() {
+        loom::model(|| {
+            let pin_state = LoomArc::new(AtomicUsize::new(PIN_UNIT));
+            let scanner = {
+                let pin_state = pin_state.clone();
+                thread::spawn(move || {
+                    let previous = pin_state.fetch_or(DEFERRED_REAP_BIT, Ordering::AcqRel);
+                    previous & !DEFERRED_REAP_BIT == 0
+                })
+            };
+            let last_pin = thread::spawn(move || {
+                let previous = pin_state.fetch_sub(PIN_UNIT, Ordering::AcqRel);
+                previous == (PIN_UNIT | DEFERRED_REAP_BIT)
+            });
+
+            let scanner_reaped = scanner.join().unwrap();
+            let last_pin_reaped = last_pin.join().unwrap();
+            assert!(
+                scanner_reaped || last_pin_reaped,
+                "empty state was not reaped after its last pin was released"
+            );
+        });
+    }
 
     #[test]
     fn deferred_empty_state_reclaims_after_last_pin_without_new_inode() {
@@ -1431,6 +1476,20 @@ mod tests {
             drop(last);
             assert!(!index.read().states.contains_key(&7));
         }
+
+        let index = RwLock::new(LockIndex::<u64, u8>::new(1, 8));
+        index.write().states.insert(7, Arc::new(LockState::new()));
+        let cached = index.read().pin(7, &index).unwrap();
+        index.write().reap_empty(7, &cached);
+
+        index.write().states.insert(8, Arc::new(LockState::new()));
+        let next = index.read().pin(8, &index).unwrap();
+        index.write().reap_empty(8, &next);
+        assert!(index.read().states.contains_key(&7));
+
+        drop(cached);
+        assert!(!index.read().states.contains_key(&7));
+        drop(next);
     }
 
     #[test]
