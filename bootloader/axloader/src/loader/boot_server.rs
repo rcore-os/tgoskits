@@ -5,31 +5,14 @@ extern crate alloc;
 use alloc::{string::String, vec::Vec};
 use core::ptr::NonNull;
 
-use httpboot_protocol::{BootArch, ImageFormat, LoaderHardwareInfo, MacAddress};
-use serde::{Deserialize, Serialize};
+use httpboot_protocol::{
+    BootArch, DeviceBootImage, DeviceBootJob, DeviceBootStatus, ImageFormat, LoaderHardwareInfo,
+    MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
+};
 use sha2::{Digest, Sha256};
 use uefi::boot;
 
-use super::{elf_loader, entry, ota, payload};
-
-pub const MAX_BOOT_FILE_BYTES: usize = 256 * 1024 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Image {
-    pub size: u64,
-    pub sha256: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Manifest {
-    pub boot_id: String,
-    pub arch: BootArch,
-    pub image_format: ImageFormat,
-    pub kernel: Image,
-    pub initramfs: Option<Image>,
-    pub cmdline: Option<String>,
-    pub entry_symbol: Option<String>,
-}
+use super::{elf_loader, entry, payload};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileKind {
@@ -46,7 +29,7 @@ pub struct BootServer {
 }
 
 struct Job {
-    manifest: Manifest,
+    manifest: DeviceBootJob,
     kernel: Option<Vec<u8>>,
     initramfs: Option<Vec<u8>>,
     last_error: Option<String>,
@@ -94,22 +77,24 @@ impl BootServer {
         &self.hardware
     }
 
-    pub fn status(&self) -> serde_json::Value {
-        self.job.as_ref().map_or(serde_json::Value::Null, |job| {
-            serde_json::json!({
-                "boot_id": job.manifest.boot_id,
-                "phase": if job.kernel.is_some() &&
-                    (job.manifest.initramfs.is_none() || job.initramfs.is_some()) {
-                    "ready"
-                } else { "receiving" },
-                "kernel_received": job.kernel.is_some(),
-                "initramfs_received": job.initramfs.is_some(),
-                "last_error": job.last_error,
-            })
+    pub fn status(&self) -> Option<DeviceBootStatus> {
+        self.job.as_ref().map(|job| DeviceBootStatus {
+            boot_id: job.manifest.boot_id.clone(),
+            phase: if job.kernel.is_some()
+                && (job.manifest.initramfs.is_none() || job.initramfs.is_some())
+            {
+                "ready"
+            } else {
+                "receiving"
+            }
+            .into(),
+            kernel_received: job.kernel.is_some(),
+            initramfs_received: job.initramfs.is_some(),
+            last_error: job.last_error.clone(),
         })
     }
 
-    pub fn create(&mut self, manifest: Manifest) -> Result<bool, &'static str> {
+    pub fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, &'static str> {
         if let Some(job) = &self.job {
             return if job.manifest == manifest {
                 Ok(false)
@@ -147,7 +132,7 @@ impl BootServer {
         Ok(true)
     }
 
-    pub fn descriptor(&self, id: &str, kind: FileKind) -> Result<&Image, &'static str> {
+    pub fn descriptor(&self, id: &str, kind: FileKind) -> Result<&DeviceBootImage, &'static str> {
         let job = self.job.as_ref().ok_or("unknown_boot_job")?;
         if job.manifest.boot_id != id {
             return Err("unknown_boot_job");
@@ -165,7 +150,8 @@ impl BootServer {
     pub fn upload(&mut self, id: &str, kind: FileKind, data: Vec<u8>) -> Result<(), &'static str> {
         let desc = self.descriptor(id, kind)?;
         if desc.size != data.len() as u64
-            || ota::decode_sha(&desc.sha256).as_ref() != Some(&Sha256::digest(&data).into())
+            || axloader::integrity::decode_sha256(&desc.sha256).as_ref()
+                != Some(&Sha256::digest(&data).into())
         {
             self.job = None;
             return Err("image_digest_mismatch");
@@ -240,8 +226,8 @@ pub(super) fn free_loaded_elf(elf: &elf_loader::LoadedElf) {
     .expect("failed to free ELF pages");
 }
 
-fn valid_image(image: &Image) -> bool {
+fn valid_image(image: &DeviceBootImage) -> bool {
     image.size > 0
-        && image.size <= MAX_BOOT_FILE_BYTES as u64
-        && ota::decode_sha(&image.sha256).is_some()
+        && image.size <= MAX_HTTP_BOOT_INITRAMFS_BYTES as u64
+        && axloader::integrity::decode_sha256(&image.sha256).is_some()
 }

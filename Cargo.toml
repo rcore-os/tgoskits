@@ -277,7 +277,7 @@ smoltcp = { version = "0.13.1", default-features = false }
 starry-kernel = { version = "0.12", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.10", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
-httpboot-protocol = { version = "0.3.0", default-features = false, features = ["alloc", "json"] }
+httpboot-protocol = { version = "0.4.0", default-features = false, features = ["alloc", "json"] }
 host-boot-abi = { version = "0.1.0", path = "components/host-boot-abi" }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
@@ -328,7 +328,7 @@ lock_api = { version = "0.4", default-features = false }
 spinning_top = { version = "0.3", default-features = false }
 log = "0.4"
 loom = "0.7.2"
-ostool = { version = "0.30.0" }
+ostool = { version = "0.30" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"

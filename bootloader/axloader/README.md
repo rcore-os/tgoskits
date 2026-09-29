@@ -14,7 +14,7 @@ MAC、架构、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接�
 每次启动创建新的 `boot_epoch`。所有修改请求均需 `X-Boot-Epoch` 与
 `GET /api/v1/status` 返回值一致；错误代次返回 `409`。当前协议为 v5，旧版
 v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
-`boot_server::BootServer` 和 `ota::OtaContext` 共享监听器：
+`boot_server::BootServer` 和 `axloader::ota::OtaController` 共享监听器：
 
 | 接口 | 作用 |
 | --- | --- |

@@ -4,7 +4,6 @@ pub mod direct;
 pub mod elf_loader;
 pub mod entry;
 pub mod network;
-pub mod ota;
 pub mod payload;
 pub mod smbios;
 
@@ -19,7 +18,7 @@ use crate::logln;
 #[entry]
 fn efi_main() -> Status {
     uefi::helpers::init().expect("failed to initialize UEFI helpers");
-    let mut ota = ota::OtaContext::open();
+    let mut ota = axloader::ota::OtaController::open();
     let mut interface = None;
     loop {
         if interface.is_none() {

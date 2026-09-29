@@ -4121,9 +4121,9 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpboot-protocol"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "304ee30032f80a06c96461b2e983dd7f1517377fbcc17dd3ad2602c2e093f9ec"
+checksum = "a1d4d06b73a4d668781166cf0f8c4986822b2b3d50f9a17e8dc41395cbdc453d"
 dependencies = [
  "serde",
  "serde_json",
@@ -5697,9 +5697,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.30.0"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eb806ba1abe025c72b93b62c60b85a0e0786d76b85d723d1b5a47516c6b69e6"
+checksum = "ec9fadbb96fb50f7b59a9e935a97a85641748ec8298156de98c404b102beb406"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8277,7 +8277,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.59.0",

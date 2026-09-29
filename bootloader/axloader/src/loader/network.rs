@@ -3,7 +3,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::{ffi::c_void, ptr, time::Duration};
 
-use httpboot_protocol::{MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress};
+use httpboot_protocol::{
+    BootArch, DEVICE_PROTOCOL_VERSION, LoaderAnnouncement, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress,
+};
 use uefi::{
     Event, Handle, Status, StatusExt,
     boot::{self, EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
@@ -102,15 +104,15 @@ pub struct Announcer {
 
 impl Announcer {
     pub fn new(interface: NetworkInterface, boot_epoch: &str) -> Result<Self, NetworkError> {
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "protocol_version": 5,
-            "mac_address": interface.mac_address,
-            "current_mac_address": interface.current_mac_address,
-            "arch": httpboot_protocol::BootArch::X86_64,
-            "loader_version": env!("CARGO_PKG_VERSION"),
-            "boot_epoch": boot_epoch,
-            "http_port": 2999,
-        }))
+        let payload = serde_json::to_vec(&LoaderAnnouncement {
+            protocol_version: DEVICE_PROTOCOL_VERSION,
+            mac_address: interface.mac_address,
+            current_mac_address: interface.current_mac_address,
+            arch: BootArch::X86_64,
+            loader_version: env!("CARGO_PKG_VERSION").into(),
+            boot_epoch: boot_epoch.into(),
+            http_port: 2999,
+        })
         .map_err(|_| NetworkError::MalformedResponse)?;
         if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
             return Err(NetworkError::MalformedResponse);

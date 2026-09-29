@@ -5,7 +5,10 @@ extern crate alloc;
 use alloc::{boxed::Box, format, vec::Vec};
 use core::ptr;
 
-use axloader::ota_state::Source;
+use axloader::{integrity::decode_sha256, ota::OtaController};
+use httpboot_protocol::{
+    BootArch, DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderDeviceStatus, OtaSource,
+};
 use uefi::{
     Event, Handle, Status, StatusExt,
     boot::{self, EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
@@ -22,10 +25,7 @@ use uefi_raw::{
     },
 };
 
-use super::{
-    boot_server::{BootExecution, BootServer, FileKind, Manifest},
-    ota::{self, OtaContext},
-};
+use super::boot_server::{BootExecution, BootServer, FileKind};
 
 const TCP4_BINDING_GUID: uefi::Guid = uefi::guid!("00720665-67eb-4a99-baf7-d3c33a1c7cc9");
 const TCP4_GUID: uefi::Guid = uefi::guid!("65530bc7-a359-410f-b010-5aadc7ec2b62");
@@ -148,7 +148,7 @@ impl Listener {
     /// Drive one accepted connection, then return the requested firmware action.
     pub fn poll(
         &mut self,
-        ota: &mut Option<OtaContext>,
+        ota: &mut Option<OtaController>,
         boot_server: &mut BootServer,
         progress: &mut impl FnMut(),
     ) -> Action {
@@ -364,7 +364,7 @@ impl<'a> Connection<'a> {
 
     fn handle_http(
         &mut self,
-        ota: &mut Option<OtaContext>,
+        ota: &mut Option<OtaController>,
         boot_server: &mut BootServer,
     ) -> uefi::Result<Action> {
         let mut header = [0; MAX_HEADER + 1];
@@ -406,7 +406,7 @@ impl<'a> Connection<'a> {
         let mut sha256 = None;
         let mut display_version = None;
         let mut update_id = None;
-        let mut source = Source::Direct;
+        let mut source = OtaSource::Direct;
         let mut epoch = None;
         for line in request.split("\r\n").skip(1) {
             if line.is_empty() {
@@ -433,7 +433,7 @@ impl<'a> Connection<'a> {
                 self.reply("400 Bad Request", b"{}")?;
                 return Ok(Action::None);
             } else if key.eq_ignore_ascii_case("x-image-sha256") {
-                sha256 = ota::decode_sha(value);
+                sha256 = decode_sha256(value);
             } else if key.eq_ignore_ascii_case("x-image-version") {
                 if value.len() > 96 || !value.bytes().all(|byte| byte.is_ascii_graphic()) {
                     self.reply("400 Bad Request", b"{}")?;
@@ -447,24 +447,24 @@ impl<'a> Connection<'a> {
                     self.reply("400 Bad Request", b"{}")?;
                     return Ok(Action::None);
                 }
-                source = Source::Server;
+                source = OtaSource::Server;
             } else if key.eq_ignore_ascii_case("x-boot-epoch") {
                 epoch = Some(value);
             }
         }
         let initial = &header[header_end..used];
         if method == "GET" && path == "/api/v1/status" {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "protocol_version": 5,
-                "boot_epoch": boot_server.epoch(),
-                "mac_address": boot_server.mac_address(),
-                "current_mac_address": boot_server.current_mac_address(),
-                "arch": httpboot_protocol::BootArch::X86_64,
-                "loader_version": env!("CARGO_PKG_VERSION"),
-                "hardware": boot_server.hardware(),
-                "boot": boot_server.status(),
-                "ota": ota.as_ref().map(OtaContext::poll_state),
-            }))
+            let body = serde_json::to_vec(&LoaderDeviceStatus {
+                protocol_version: DEVICE_PROTOCOL_VERSION,
+                boot_epoch: boot_server.epoch().into(),
+                mac_address: boot_server.mac_address(),
+                current_mac_address: boot_server.current_mac_address(),
+                arch: BootArch::X86_64,
+                loader_version: env!("CARGO_PKG_VERSION").into(),
+                hardware: boot_server.hardware().clone(),
+                boot: boot_server.status(),
+                ota: ota.as_ref().map(OtaController::protocol_state),
+            })
             .map_err(|_| Status::ABORTED)?;
             self.reply("200 OK", &body)?;
             return Ok(Action::None);
@@ -525,7 +525,7 @@ impl<'a> Connection<'a> {
                     return Ok(Action::None);
                 }
                 let Some(length) = content_length
-                    .filter(|size| *size > 0 && *size <= axloader::ota_disk::MAX_IMAGE_BYTES)
+                    .filter(|size| *size > 0 && *size <= axloader::ota::MAX_IMAGE_BYTES)
                 else {
                     self.reply("413 Payload Too Large", b"{}")?;
                     return Ok(Action::None);
@@ -538,7 +538,7 @@ impl<'a> Connection<'a> {
                     self.reply("400 Bad Request", b"{}")?;
                     return Ok(Action::None);
                 }
-                let id = if source == Source::Server {
+                let id = if source == OtaSource::Server {
                     let Some(id) = update_id.and_then(|value| value.as_bytes().try_into().ok())
                     else {
                         self.reply("400 Bad Request", b"{}")?;
@@ -593,7 +593,7 @@ impl<'a> Connection<'a> {
             self.reply("503 Service Unavailable", b"{}")?;
             return Ok(Action::None);
         }
-        if ota.as_ref().is_some_and(OtaContext::trial) {
+        if ota.as_ref().is_some_and(OtaController::trial) {
             self.reply(
                 "409 Conflict",
                 br#"{"error":"ota_trial_requires_confirmation"}"#,
@@ -607,7 +607,7 @@ impl<'a> Connection<'a> {
                 return Ok(Action::None);
             };
             let body = self.read_body(length, initial)?;
-            let manifest: Manifest = match serde_json::from_slice(&body) {
+            let manifest: DeviceBootJob = match serde_json::from_slice(&body) {
                 Ok(value) => value,
                 Err(_) => {
                     self.reply("400 Bad Request", b"{}")?;
@@ -647,7 +647,7 @@ impl<'a> Connection<'a> {
                     return Ok(Action::None);
                 };
                 if content_length != Some(descriptor.size as usize)
-                    || sha256 != ota::decode_sha(&descriptor.sha256)
+                    || sha256 != decode_sha256(&descriptor.sha256)
                 {
                     let _ = boot_server.cancel(id);
                     self.reply("400 Bad Request", b"{}")?;

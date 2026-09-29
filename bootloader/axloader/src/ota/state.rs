@@ -3,6 +3,7 @@
 //! The records are written alternately. A record is never considered committed
 //! until its complete checksum has been written and the file has been flushed.
 
+use httpboot_protocol::OtaSource;
 use sha2::{Digest, Sha256};
 
 pub const RECORD_SIZE: usize = 256;
@@ -34,29 +35,6 @@ impl Slot {
         match value {
             0 => Some(Self::A),
             1 => Some(Self::B),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Source {
-    Direct,
-    Server,
-}
-
-impl Source {
-    const fn as_byte(self) -> u8 {
-        match self {
-            Self::Direct => 0,
-            Self::Server => 1,
-        }
-    }
-
-    fn from_byte(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Direct),
-            1 => Some(Self::Server),
             _ => None,
         }
     }
@@ -97,7 +75,7 @@ pub struct State {
     pub active: Slot,
     pub pending: Option<Slot>,
     pub attempted: bool,
-    pub source: Source,
+    pub source: OtaSource,
     pub digests: [[u8; 32]; 2],
     pub update_id: [u8; 36],
     pub outcome: Outcome,
@@ -122,7 +100,7 @@ impl State {
             active: Slot::A,
             pending: None,
             attempted: false,
-            source: Source::Direct,
+            source: OtaSource::Direct,
             digests: [active_digest, [0; 32]],
             update_id: [0; 36],
             outcome: Outcome::None,
@@ -138,7 +116,7 @@ impl State {
         &self,
         digest: [u8; 32],
         update_id: [u8; 36],
-        source: Source,
+        source: OtaSource,
     ) -> Result<Self, StateError> {
         self.stage_named(digest, update_id, source, None)
     }
@@ -147,7 +125,7 @@ impl State {
         &self,
         digest: [u8; 32],
         update_id: [u8; 36],
-        source: Source,
+        source: OtaSource,
         version: Option<&str>,
     ) -> Result<Self, StateError> {
         if self.pending.is_some() {
@@ -200,7 +178,7 @@ impl State {
         &self,
         running: Slot,
         update_id: &[u8; 36],
-        source: Source,
+        source: OtaSource,
     ) -> Result<Self, StateError> {
         if self.pending != Some(running)
             || !self.attempted
@@ -247,7 +225,10 @@ impl State {
         bytes[16] = self.active.as_byte();
         bytes[17] = self.pending.map_or(0xff, Slot::as_byte);
         bytes[18] = u8::from(self.attempted);
-        bytes[19] = self.source.as_byte();
+        bytes[19] = match self.source {
+            OtaSource::Direct => 0,
+            OtaSource::Server => 1,
+        };
         bytes[20..52].copy_from_slice(&self.digests[0]);
         bytes[52..84].copy_from_slice(&self.digests[1]);
         bytes[84..120].copy_from_slice(&self.update_id);
@@ -278,7 +259,11 @@ impl State {
                 1 => true,
                 _ => return Err(StateError::Invalid),
             },
-            source: Source::from_byte(bytes[19]).ok_or(StateError::Invalid)?,
+            source: match bytes[19] {
+                0 => OtaSource::Direct,
+                1 => OtaSource::Server,
+                _ => return Err(StateError::Invalid),
+            },
             digests: [
                 bytes[20..52].try_into().unwrap(),
                 bytes[52..84].try_into().unwrap(),
@@ -310,7 +295,8 @@ impl State {
     }
 }
 
-pub fn newest(first: &[u8], second: &[u8]) -> Result<(State, usize), StateError> {
+#[cfg(any(target_os = "uefi", test))]
+pub(super) fn newest(first: &[u8], second: &[u8]) -> Result<(State, usize), StateError> {
     match (State::decode(first), State::decode(second)) {
         (Ok(a), Ok(b)) if b.generation > a.generation => Ok((b, 1)),
         (Ok(a), _) => Ok((a, 0)),
@@ -337,14 +323,14 @@ mod tests {
     fn interrupted_trial_restores_the_stable_image() {
         let old = State::initial([1; 32]).unwrap();
         let id = *b"01234567-89ab-cdef-0123-456789abcdef";
-        let staged = old.stage([2; 32], id, Source::Direct).unwrap();
+        let staged = old.stage([2; 32], id, OtaSource::Direct).unwrap();
         let attempting = staged.mark_attempt().unwrap();
         assert_eq!(
-            attempting.confirm(Slot::A, &id, Source::Direct),
+            attempting.confirm(Slot::A, &id, OtaSource::Direct),
             Err(StateError::Stale)
         );
         assert_eq!(
-            attempting.confirm(Slot::B, &id, Source::Server),
+            attempting.confirm(Slot::B, &id, OtaSource::Server),
             Err(StateError::Stale)
         );
         let old_record = staged.encode();
@@ -365,12 +351,12 @@ mod tests {
                 .digest(Slot::B),
             &[0; 32]
         );
-        let confirmed = attempting.confirm(Slot::B, &id, Source::Direct).unwrap();
+        let confirmed = attempting.confirm(Slot::B, &id, OtaSource::Direct).unwrap();
         assert_eq!(confirmed.active, Slot::B);
         assert_eq!(confirmed.digest(Slot::A), &[1; 32]);
         assert_eq!(
             confirmed
-                .stage([3; 32], id, Source::Server)
+                .stage([3; 32], id, OtaSource::Server)
                 .unwrap()
                 .pending,
             Some(Slot::A)

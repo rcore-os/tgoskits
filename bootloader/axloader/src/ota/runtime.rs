@@ -5,21 +5,20 @@ use alloc::{
     string::{String, ToString},
 };
 
-use axloader::{
-    ota_disk::{InactiveWriter, MAX_IMAGE_BYTES, OtaDisk, load_slot},
-    ota_state::{Outcome, Slot, Source, State},
-};
+use httpboot_protocol::{LoaderOtaState, OtaOutcome, OtaSource};
 use sha2::{Digest, Sha256};
 use uefi::{Status, boot, proto::loaded_image::LoadedImage};
 
-pub struct OtaContext {
+use super::{InactiveWriter, MAX_IMAGE_BYTES, OtaDisk, Outcome, Slot, State, load_slot};
+
+pub struct OtaController {
     state: State,
     slot: Slot,
     index: usize,
     last_failure: Option<&'static str>,
 }
 
-impl OtaContext {
+impl OtaController {
     pub fn open() -> Option<Self> {
         let image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle()).ok()?;
         let file_path = image
@@ -73,7 +72,7 @@ impl OtaContext {
             "phase": if self.trial() { "awaiting_confirmation" } else if self.state.pending.is_some() { "staged" } else { "stable" },
             "version": self.state.version(),
             "trial": self.trial(),
-            "source": match self.state.source { Source::Direct => "direct", Source::Server => "server" },
+            "source": self.state.source,
             "last_update_id": self.last_id(),
             "last_outcome": match self.state.outcome {
                 Outcome::None => None,
@@ -89,21 +88,21 @@ impl OtaContext {
         })
     }
 
-    pub fn poll_state(&self) -> serde_json::Value {
-        serde_json::json!({
-            "active_sha256": hex(self.state.digest(self.state.active)),
-            "running_sha256": hex(self.state.digest(self.slot)),
-            "pending_update_id": self.pending_id(),
-            "trial": self.trial(),
-            "source": if self.trial() { Some(match self.state.source { Source::Direct => "direct", Source::Server => "server" }) } else { None },
-            "last_update_id": self.last_id(),
-            "last_outcome": match self.state.outcome {
+    pub fn protocol_state(&self) -> LoaderOtaState {
+        LoaderOtaState {
+            active_sha256: hex(self.state.digest(self.state.active)),
+            running_sha256: hex(self.state.digest(self.slot)),
+            pending_update_id: self.pending_id(),
+            trial: self.trial(),
+            source: self.trial().then_some(self.state.source),
+            last_update_id: self.last_id(),
+            last_outcome: match self.state.outcome {
                 Outcome::None => None,
-                Outcome::RolledBack => Some("rolled_back"),
-                Outcome::LoadFailed => Some("failed"),
-                Outcome::Confirmed => Some("confirmed"),
+                Outcome::RolledBack => Some(OtaOutcome::RolledBack),
+                Outcome::LoadFailed => Some(OtaOutcome::Failed),
+                Outcome::Confirmed => Some(OtaOutcome::Confirmed),
             },
-        })
+        }
     }
 
     fn pending_id(&self) -> Option<String> {
@@ -156,7 +155,7 @@ impl OtaContext {
         writer: InactiveWriter,
         expected: [u8; 32],
         id: [u8; 36],
-        source: Source,
+        source: OtaSource,
         version: Option<&str>,
     ) -> Result<(), Status> {
         if expected == *self.state.digest(self.state.active) {
@@ -182,7 +181,7 @@ impl OtaContext {
         Ok(())
     }
 
-    pub fn confirm(&mut self, id: &str, source: Source) -> Result<(), Status> {
+    pub fn confirm(&mut self, id: &str, source: OtaSource) -> Result<(), Status> {
         let id: [u8; 36] = id
             .as_bytes()
             .try_into()
@@ -205,17 +204,6 @@ impl OtaContext {
         self.last_failure = None;
         Ok(())
     }
-}
-
-pub fn decode_sha(value: &str) -> Option<[u8; 32]> {
-    if value.len() != 64 {
-        return None;
-    }
-    let mut result = [0; 32];
-    for (index, slot) in result.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
-    }
-    Some(result)
 }
 
 fn id_text(id: &[u8; 36]) -> String {

@@ -9,10 +9,7 @@ mod firmware {
 
     extern crate alloc;
 
-    use axloader::{
-        ota_disk::{OtaDisk, load_slot},
-        ota_state::Outcome,
-    };
+    use axloader::ota::{OtaDisk, Outcome, load_slot};
     use uefi::{Status, boot, prelude::*};
 
     #[entry]

@@ -1,16 +1,19 @@
 use sha2::{Digest, Sha256};
 
 pub fn sha256_matches(bytes: &[u8], expected: &str) -> bool {
-    if expected.len() != 64 {
-        return false;
+    decode_sha256(expected).as_ref() == Some(&Sha256::digest(bytes).into())
+}
+
+pub fn decode_sha256(encoded: &str) -> Option<[u8; 32]> {
+    if encoded.len() != 64 {
+        return None;
     }
-    Sha256::digest(bytes)
-        .iter()
-        .enumerate()
-        .all(|(index, actual)| {
-            let offset = index * 2;
-            decode_hex_byte(&expected.as_bytes()[offset..offset + 2]) == Some(*actual)
-        })
+    let mut result = [0; 32];
+    for (index, byte) in result.iter_mut().enumerate() {
+        let offset = index * 2;
+        *byte = decode_hex_byte(&encoded.as_bytes()[offset..offset + 2])?;
+    }
+    Some(result)
 }
 
 fn decode_hex_byte(encoded: &[u8]) -> Option<u8> {

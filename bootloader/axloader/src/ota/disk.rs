@@ -16,11 +16,11 @@ use uefi::{
     },
 };
 
-use crate::ota_state::{self, Slot, State};
+use super::{Slot, State, state};
 
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
-pub fn slot_path(slot: Slot) -> &'static uefi::CStr16 {
+fn slot_path(slot: Slot) -> &'static uefi::CStr16 {
     match slot {
         Slot::A => uefi::cstr16!("\\EFI\\AXLOADER\\A.EFI"),
         Slot::B => uefi::cstr16!("\\EFI\\AXLOADER\\B.EFI"),
@@ -115,14 +115,14 @@ impl OtaDisk {
             .ok_or(Status::INVALID_PARAMETER.into())
     }
 
-    fn record(&mut self, index: usize) -> [u8; ota_state::RECORD_SIZE] {
-        let mut result = [0; ota_state::RECORD_SIZE];
+    fn record(&mut self, index: usize) -> [u8; state::RECORD_SIZE] {
+        let mut result = [0; state::RECORD_SIZE];
         let Ok(mut file) = self.file(record_path(index), FileMode::Read) else {
             return result;
         };
-        let mut buf = [0; ota_state::RECORD_SIZE + 1];
-        if let Ok(ota_state::RECORD_SIZE) = file.read(&mut buf) {
-            result.copy_from_slice(&buf[..ota_state::RECORD_SIZE]);
+        let mut buf = [0; state::RECORD_SIZE + 1];
+        if let Ok(state::RECORD_SIZE) = file.read(&mut buf) {
+            result.copy_from_slice(&buf[..state::RECORD_SIZE]);
         }
         result
     }
@@ -130,7 +130,7 @@ impl OtaDisk {
     pub fn load(&mut self) -> Result<(State, usize)> {
         let a = self.record(0);
         let b = self.record(1);
-        ota_state::newest(&a, &b).map_err(|_| Status::COMPROMISED_DATA.into())
+        state::newest(&a, &b).map_err(|_| Status::COMPROMISED_DATA.into())
     }
 
     /// The caller retains the previous record and may proceed only after this
