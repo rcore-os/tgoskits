@@ -9,20 +9,38 @@
 
 static const char chunk[128 * 1024];
 
-static double monotonic_seconds(void) {
+static struct timespec monotonic_now(void) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
         perror("clock_gettime");
         exit(1);
     }
-    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+    return now;
+}
+
+static int timespec_before(struct timespec left, struct timespec right) {
+    return left.tv_sec < right.tv_sec ||
+           (left.tv_sec == right.tv_sec && left.tv_nsec < right.tv_nsec);
+}
+
+static uint64_t elapsed_milliseconds(struct timespec start,
+                                     struct timespec end) {
+    uint64_t seconds = (uint64_t)(end.tv_sec - start.tv_sec);
+    long nanoseconds = end.tv_nsec - start.tv_nsec;
+    if (nanoseconds < 0) {
+        seconds--;
+        nanoseconds += 1000000000L;
+    }
+    return seconds * 1000 + (uint64_t)nanoseconds / 1000000;
 }
 
 int main(int argc, char **argv) {
     char *end;
     unsigned long duration;
     uint64_t total = 0;
-    double deadline;
+    struct timespec started;
+    struct timespec deadline;
+    struct timespec now;
 
     if (argc != 2) {
         fprintf(stderr, "usage: %s <duration-seconds>\n", argv[0]);
@@ -34,7 +52,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "invalid duration: %s\n", argv[1]);
         return 2;
     }
-    deadline = monotonic_seconds() + (double)duration;
+    started = monotonic_now();
+    deadline = started;
+    deadline.tv_sec += (time_t)duration;
     do {
         size_t remaining = sizeof(chunk);
         const char *next = chunk;
@@ -55,7 +75,9 @@ int main(int argc, char **argv) {
             next += written;
             remaining -= (size_t)written;
         }
-    } while (monotonic_seconds() < deadline);
-    fprintf(stderr, "BYTES=%" PRIu64 "\n", total);
+        now = monotonic_now();
+    } while (timespec_before(now, deadline));
+    fprintf(stderr, "BYTES=%" PRIu64 "\nELAPSED_MS=%" PRIu64 "\n", total,
+            elapsed_milliseconds(started, now));
     return 0;
 }
