@@ -137,3 +137,17 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 ```
 
 Axvisor HTTP 用例显式切到 NVMe 根，删除、重建并再次启动 VM，创建请求使用打包后的自带配置和镜像路径；无需旧 initramfs 或内核内嵌镜像。
+
+## 7. 板卡启动资源
+
+`prepare_guest_payload()` 在构建机准备启动资源，交给既有 FIT、UEFI 或 HTTP Boot 流程。板卡上的可写客户机根盘和用户态工作负载保持原部署方式；客户机启动镜像不再从板卡预存的 `/guest`、`/boot/Image` 或 `/userdata/rootfs_overlay` 读取。
+
+### 7.1 发布镜像
+
+`ensure_guest_image_bundles()` 识别 `${workspace}/target/axbuild/images/<image-name>/...`，复用镜像 registry、SHA-256 校验和解包缓存。kernel、DTB、BIOS、UEFI firmware 和客户机 initrd 均检查对应文件。OrangePi IVC benchmark 使用 `orangepi/ivc/guest/zephyr/zephyr-ivc-benchmark.bin`；virtio-net-peer 使用 `qemu-aarch64` 和 `initramfs-aarch64-busybox.cpio.gz`；Phytium Pi 使用 `phytiumpi`。构建目录改名时通过 `resolve_axbuild_artifact_path()` 转到实际 target 目录。
+
+### 7.2 定制镜像
+
+配置中的 `${env:AXVISOR_GUEST_ASSETS}` 指向构建机资产目录，必须由相应发布或板卡 CI 环境提供。ROC-RK3568-PC、OrangePi 的定制 BSP/initrd、机器人 Linux 6.1.99 AXIVC 内核、Zephyr 控制程序和 ROCK 4D DTB 沿用各自生产者，不用通用 BusyBox 镜像代替。机器人 Zephyr 使用 TGOSImages 的 `scripts/apps/aka-rk3588-zephyr.sh`，生成的二进制及 DTB 放到资产目录的 `zephyr/`。该环境变量是归档输入，不进入 Axvisor 内核构建依赖。
+
+缺失环境变量、缺失或空镜像在上传前报错。自托管 board runner 升级时须把原先部署到板卡的启动资源同步到构建机并设置该变量；客户机磁盘、模型、标定与用户态程序仍按各自部署流程维护。没有对应 BSP 或设备时，FIT/HTTP Boot 的实机交接和客户机运行均标为未验证。

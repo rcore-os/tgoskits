@@ -27,6 +27,8 @@ fail_regex = [
 ]
 to_bin = true
 uefi = true
+# Inherited root= is harmless when no host block device is attached.
+cmdline = "root=/dev/nvme0n1 rw"
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"

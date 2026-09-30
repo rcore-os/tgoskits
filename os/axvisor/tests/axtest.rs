@@ -60,6 +60,19 @@ mod tests {
     use axvisor::builtin::selected_configs;
 
     #[test]
+    fn diskless_boot_keeps_memory_root_with_inherited_root_parameter() {
+        ax_assert!(
+            ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
+                .is_none_or(|devices| devices.is_empty())
+        );
+        axvisor::builtin::prepare_root().expect("diskless boot keeps the initramfs root");
+        ax_assert_eq!(
+            ax_fs_ng::root::root_kind(),
+            Some(ax_fs_ng::root::RootKind::Memory)
+        );
+    }
+
+    #[test]
     fn user_configs_override_defaults_and_invalid_user_configs_stop_loading() {
         let context =
             FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());

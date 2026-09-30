@@ -684,7 +684,7 @@ uefi_firmware_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/firm
         ];
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("root=/dev/sda".into());
-        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         assert!(
             patch_qemu_rootfs_path(
                 &mut with_guest_drive,
@@ -698,7 +698,7 @@ uefi_firmware_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/firm
         with_guest_drive.boot.cmdline = Some("-- root=/dev/sda".into());
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("\"root=/dev/sda\"".into());
-        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("root=\"\"".into());
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("label=\"not root=/dev/sda\"".into());
@@ -707,6 +707,6 @@ uefi_firmware_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/firm
         with_guest_drive
             .args
             .extend(["-append".into(), "root=/dev/sda".into()]);
-        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
     }
 }
