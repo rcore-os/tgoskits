@@ -82,16 +82,19 @@ fn concurrent_reverse_add_is_serialized_for_test() -> bool {
 #[cfg(all(test, axtest))]
 struct DeferredWakeWaiter {
     woken: AtomicBool,
+    completion: crate::task::future::IrqNotify,
 }
 
 #[cfg(all(test, axtest))]
 impl Wake for DeferredWakeWaiter {
     fn wake(self: Arc<Self>) {
         self.woken.store(true, Ordering::Release);
+        self.completion.notify_irq();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.woken.store(true, Ordering::Release);
+        self.completion.notify_irq();
     }
 }
 
@@ -100,19 +103,17 @@ fn epoll_notify_worker_flushes_deferred_wake_for_test() -> bool {
     let epoll = Epoll::new();
     let waiter = Arc::new(DeferredWakeWaiter {
         woken: AtomicBool::new(false),
+        completion: crate::task::future::IrqNotify::new(),
     });
     let waker = Waker::from(Arc::clone(&waiter));
     let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
     unsafe { epoll.register_exclusive(&mut registrar, IoEvents::IN) };
 
     epoll.defer_ready_waiters_for_test(1);
-    for _ in 0..1024 {
-        if waiter.woken.load(Ordering::Acquire) {
-            return true;
-        }
-        crate::task::yield_now();
-    }
-    false
+    // Wait for the real worker callback instead of imposing a scheduler-turn
+    // budget. The QEMU execution timeout still bounds a missing notification.
+    waiter.completion.wait();
+    waiter.woken.load(Ordering::Acquire)
 }
 
 #[cfg(all(test, not(axtest)))]
