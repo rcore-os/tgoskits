@@ -142,10 +142,7 @@ pub(super) fn diskless_explicit_qemu(
     explicit_config: bool,
     explicit_rootfs: bool,
 ) -> bool {
-    explicit_config
-        && !explicit_rootfs
-        && !rootfs::qemu::has_host_rootfs_wiring(&qemu.args)
-        && !has_explicit_root(qemu)
+    explicit_config && !explicit_rootfs && !rootfs::qemu::has_host_rootfs_wiring(&qemu.args)
 }
 
 fn has_explicit_root(qemu: &QemuConfig) -> bool {

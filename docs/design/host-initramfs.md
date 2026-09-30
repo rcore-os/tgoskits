@@ -62,13 +62,12 @@ axloader 时，cmdline 通过 EFI LoadOptions 传给 someboot，initramfs 仍使
 或 Linux 默认
 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`。`--` 后的词只传给 PID 1；
 未知的不带点号的键值参数成为环境变量，其余未知词成为参数。ArceOS 和
-Axvisor 没有 PID 1：ArceOS 在应用启动前处理显式 `root=`；Axvisor 使用延迟切根，先安装自带资源再提交。没有块设备驱动或磁盘根时省略 `root=`，直接从 initramfs 运行客户机，不切根。
+Axvisor 没有 PID 1：ArceOS 在应用启动前处理显式 `root=`；Axvisor 使用延迟切根，先安装自带资源再提交。没有块设备驱动或宿主块设备时，即使继承了 `root=`，也直接从 initramfs 运行客户机，不切根。没有请求磁盘根时同样保留内存根；已接入磁盘但显式选择错误、文件系统不可用或安装失败时明确报错。
 Starry 的 `known_kernel_option()` 只过滤启动链路与兼容性名单中的参数，并非 Linux
 完整的内核参数注册表；Starry 未识别的 Linux 参数仍按未知参数规则传给 PID 1，
 例如 `memmap=exactmap` 会进入环境变量，不能据此认为 Starry 已实现该参数的内核语义。
 axbuild 将 `disk0`、匿名及直连盘视为宿主根盘接线；明确命名为其他 ID 的
-guest/data drive 不要求额外准备宿主根盘。Axvisor 显式 `root=` 但未接入
-可识别的宿主根盘会在配置阶段报错。axbuild 可改写 `-drive ...` 与
+guest/data drive 不要求额外准备宿主根盘。显式 QEMU 配置未接宿主根盘且未传 `--rootfs` 时，axbuild 保持无盘启动；仅继承 `root=` 不会触发下载或补盘。显式准备磁盘镜像并设置 `root=` 时必须提供宿主根盘接线。axbuild 可改写 `-drive ...` 与
 `-drive=...` 根盘，并识别两种 `-device` 写法。`replace_drive_arg()` 在没有
 `disk0` 接线时也可改写唯一匿名文件后端；多个匿名后端不会猜测根盘，
 须显式指定 `disk0`。

@@ -17,8 +17,10 @@ pub fn prepare_root() -> Result<()> {
         .take_while(|arg| arg != "--")
         .any(|arg| arg.starts_with("root="));
     let source = current_fs_context().lock().clone();
-    if !has_root {
-        log::info!("Axvisor uses initramfs root; no disk root switch requested");
+    let has_block_devices = ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
+        .is_some_and(|devices| !devices.is_empty());
+    if !has_root || !has_block_devices {
+        log::info!("Axvisor uses initramfs root; disk root unavailable or not requested");
         validate_builtin(&source, BUILTIN_GUEST_DIR)?;
         return Ok(());
     }
