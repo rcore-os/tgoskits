@@ -52,7 +52,9 @@ fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
     let mut registry = FS_REGISTRY.lock();
     // Prune dead weak references so the registry does not grow unboundedly
     // in long-running scenarios where pivot_root is never invoked.
-    registry.retain(|weak| weak.upgrade().is_some());
+    // Inspect the count without temporarily owning a context: releasing its
+    // last strong reference may destroy filesystem state and take other locks.
+    registry.retain(|weak| weak.strong_count() != 0);
     registry.push(Arc::downgrade(ctx));
 }
 
@@ -62,7 +64,7 @@ fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
 pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
     let refs: Vec<Arc<Mutex<FsContext>>> = {
         let mut registry = FS_REGISTRY.lock();
-        registry.retain(|weak| weak.upgrade().is_some());
+        registry.retain(|weak| weak.strong_count() != 0);
         registry.iter().filter_map(|weak| weak.upgrade()).collect()
     };
     for ctx_arc in refs {
@@ -1472,7 +1474,7 @@ impl FsContext {
         //    release it so we never nest two PI mutex guards.
         let refs: Vec<Arc<Mutex<FsContext>>> = {
             let mut registry = FS_REGISTRY.lock();
-            registry.retain(|weak| weak.upgrade().is_some());
+            registry.retain(|weak| weak.strong_count() != 0);
             registry.iter().filter_map(|weak| weak.upgrade()).collect()
         };
 
