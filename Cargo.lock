@@ -1511,7 +1511,6 @@ dependencies = [
  "ax-sync",
  "axpoll",
  "bitflags 2.13.2",
- "cfg-if",
  "hashbrown 0.16.1",
  "inherit-methods-macro",
  "log",
