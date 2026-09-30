@@ -1946,6 +1946,21 @@ fn dump_starry_test_coverage() {
 
 fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     let mut root = DirMapping::new();
+    root.add("cmdline", {
+        let bootargs = ax_runtime::hal::boot::bootargs().unwrap_or("");
+        let file = SimpleFile::new_regular(fs.clone(), move || Ok(format!("{bootargs}\n")));
+        file.set_fixed_size(bootargs.len() as u64 + 1);
+        let now = wall_time();
+        file.set_attrs(
+            NodePermission::from_bits_truncate(0o444),
+            0,
+            0,
+            now,
+            now,
+            now,
+        );
+        file
+    });
     // Test-only control plane for serializing LLVM coverage into guest memory.
     // Production builds do not compile this procfs entry.
     #[cfg(axtest_coverage)]
