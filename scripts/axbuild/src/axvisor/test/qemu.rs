@@ -21,6 +21,7 @@ use super::{
     initramfs::prepare_configured_busybox_initramfs,
     parse_target,
     types::{AxvisorHttpProbeConfig, PreparedAxvisorQemuCase},
+    uefi_file,
 };
 use crate::{
     axvisor::{ArgsTestQemu, Axvisor, build, rootfs},
@@ -176,6 +177,12 @@ impl Axvisor {
                 self.app.target_dir(),
             )
             .await?;
+            super::ovmf::prepare_configured_x86_ovmf(
+                &build_group.request,
+                &build_group.cargo,
+                self.app.workspace_root(),
+            )
+            .await?;
             let output = self
                 .app
                 .build(
@@ -326,9 +333,14 @@ impl Axvisor {
     async fn load_qemu_case_config(
         &mut self,
         request: &ResolvedAxvisorRequest,
+        cargo: &Cargo,
         case: &PreparedAxvisorQemuCase,
         asset_config: &test_case::CaseAssetConfig,
-    ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
+    ) -> anyhow::Result<(
+        QemuConfig,
+        test_case::PreparedCaseAssets,
+        Option<uefi_file::PreparedBootRootfs>,
+    )> {
         let mut qemu = case.qemu.clone();
         test_qemu::apply_timeout_scale(&mut qemu);
         if !qemu
@@ -345,7 +357,7 @@ impl Axvisor {
             self.app.target_dir(),
             None,
         )?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.target_dir(),
             &request.arch,
             &request.target,
@@ -354,6 +366,15 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        let boot_rootfs = uefi_file::prepare_configured_boot_rootfs(
+            cargo,
+            self.app.workspace_root(),
+            self.app.target_dir(),
+            &prepared_assets.rootfs_path,
+        )?;
+        if let Some(boot_rootfs) = &boot_rootfs {
+            prepared_assets.rootfs_path = boot_rootfs.rootfs_path().to_path_buf();
+        }
         if !rootfs::diskless_explicit_qemu(&qemu, true, false) {
             rootfs::patch_qemu_rootfs_path(
                 &mut qemu,
@@ -361,7 +382,7 @@ impl Axvisor {
                 crate::rootfs::qemu::RootfsWritePolicy::Discard,
             )?;
         }
-        Ok((qemu, prepared_assets))
+        Ok((qemu, prepared_assets, boot_rootfs))
     }
 
     async fn run_qemu_case(
@@ -372,8 +393,8 @@ impl Axvisor {
         asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<()> {
         let prepare_started = Instant::now();
-        let (mut qemu, prepared_assets) = self
-            .load_qemu_case_config(request, case, asset_config)
+        let (mut qemu, prepared_assets, _boot_rootfs) = self
+            .load_qemu_case_config(request, cargo, case, asset_config)
             .await?;
 
         // Optional host->guest TCP probe over QEMU user-mode networking. When

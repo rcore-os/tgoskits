@@ -1,0 +1,68 @@
+#!/bin/busybox sh
+
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+/bin/busybox mount -t proc proc /proc 2>/dev/null || true
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || true
+export PATH=/bin
+export HOME=/root
+export PS1='~ # '
+
+fail() {
+  echo "$1"
+  echo AXVISOR_X86_UEFI_FILE_DUAL_DISK_FAILED
+  exec /bin/busybox sh -i
+}
+
+case "$(/bin/busybox cat /proc/cmdline)" in
+  *axvisor.uefi_file_dual_disk=1*) ;;
+  *) fail 'missing boot disk GRUB command line' ;;
+esac
+
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+  boot_device=
+  data_device=
+  for device in /dev/vd?; do
+    [ -b "$device" ] || continue
+    if /bin/busybox dd if="$device" bs=512 skip=1 count=1 2>/dev/null | /bin/busybox grep -a -q 'EFI PART'; then
+      boot_device=$device
+      continue
+    fi
+    ext4_magic=$(/bin/busybox dd if="$device" bs=1 skip=1080 count=2 2>/dev/null | /bin/busybox od -An -tx1 | /bin/busybox tr -d ' \n')
+    [ "$ext4_magic" = 53ef ] && data_device=$device
+  done
+  [ -n "$boot_device" ] && [ -n "$data_device" ] && break
+  /bin/busybox sleep 1
+  attempt=$((attempt + 1))
+done
+
+[ -n "$boot_device" ] || fail 'missing GPT boot disk'
+[ -n "$data_device" ] || fail 'missing ext4 data disk'
+boot_name=${boot_device#/dev/}
+[ -b "${boot_device}1" ] || fail 'missing ESP partition node'
+[ "$(/bin/busybox cat "/sys/class/block/${boot_name}/ro")" = 0 ] || fail 'boot disk is not writable'
+
+/bin/busybox mkdir -p /mnt/esp
+/bin/busybox mount -t vfat -o rw "${boot_device}1" /mnt/esp || fail 'failed to mount ESP read-write'
+esp_marker=/mnt/esp/axvisor-write-check
+/bin/busybox echo 'file-backend-esp-write-ok' > "$esp_marker" || fail 'failed to write ESP marker'
+/bin/busybox sync
+/bin/busybox umount /mnt/esp || fail 'failed to unmount ESP'
+/bin/busybox mount -t vfat -o rw "${boot_device}1" /mnt/esp || fail 'failed to remount ESP'
+[ "$(/bin/busybox cat "$esp_marker")" = 'file-backend-esp-write-ok' ] || fail 'ESP marker did not survive remount'
+/bin/busybox rm "$esp_marker" || fail 'failed to remove ESP marker'
+/bin/busybox umount /mnt/esp || fail 'failed to unmount ESP after readback'
+
+/bin/busybox mkdir -p /mnt/data
+/bin/busybox mount -t ext4 -o rw "$data_device" /mnt/data || fail 'failed to mount ext4 data disk'
+[ -s /mnt/data/etc/alpine-release ] || fail 'data disk Alpine content unavailable'
+marker=/mnt/data/axvisor-uefi-file-dual-disk-marker
+/bin/busybox echo 'file-backend-data-write-ok' > "$marker" || fail 'failed to write data disk marker'
+/bin/busybox sync
+/bin/busybox umount /mnt/data || fail 'failed to unmount ext4 data disk'
+/bin/busybox mount -t ext4 -o rw "$data_device" /mnt/data || fail 'failed to remount ext4 data disk'
+[ "$(/bin/busybox cat "$marker")" = 'file-backend-data-write-ok' ] || fail 'data disk marker did not survive remount'
+/bin/busybox umount /mnt/data || fail 'failed to unmount after readback'
+
+echo AXVISOR_X86_UEFI_FILE_DUAL_DISK_PASSED
+exec /bin/busybox sh -i

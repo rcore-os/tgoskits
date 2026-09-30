@@ -47,7 +47,6 @@ impl OvmfFirmware {
         &self.vars
     }
 
-    #[cfg(test)]
     pub(crate) fn from_paths(code: PathBuf, vars: PathBuf) -> Self {
         Self { code, vars }
     }
