@@ -302,6 +302,15 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 且保留 pending 位、恢复宿主 IRQ 屏蔽状态。它提供入口契约的确定性证明，Axvisor
 `normal/smoke` 继续验证 Linux 启动、定时唤醒和块设备访问。
 
+Linux 已枚举 VirtIO 块设备却停在首次挂载时，还需检查延后队列是否在
+WFI 前提交。`axvm::runtime::vcpus::run_waits_for_event()` 由主 vCPU
+无条件推进设备轮询，再进入体系结构等待；次 vCPU 不执行 VM 级设备轮询。
+队列通知可能仅设置设备的 `queue_pending`，不能只检查运行时的
+`device_poll_requested`，否则没有提交给文件工作线程的请求也不会产生完成唤醒。
+`FileBackend.shared` 使用 `IrqSafeMutex`，因为调用者持有关闭中断的队列租约；
+存储 I/O 和通知在该锁之外执行。验证同时保留等待前轮询的顺序测试和真实
+Linux 挂载结果，偶然成功的重试不能证明已修复丢失进展。
+
 ## QEMU 调试模式
 
 ### axloader UEFI 网络启动
