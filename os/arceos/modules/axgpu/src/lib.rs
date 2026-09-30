@@ -386,14 +386,14 @@ pub const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Probe rounds before sleeping: the virtual device services the virtqueue
 /// kick synchronously inside the MMIO write and the observed fence latency
-/// of this stack is in the low hundreds of microseconds, so a probe budget
-/// in the thousands of short self-pumping transactions covers the common
-/// case — the waited work finishes while probing and the hot path keeps the
-/// old spin's latency without ever parking. Each probe re-takes and drops
-/// the lock, so producers and the IRQ worker interleave freely; a genuinely
-/// stalled host falls through to the sleep, where completion pumps reach
-/// the waiter.
-const WAIT_PROBE_ROUNDS: usize = 4096;
+/// of this stack spans from the idle low hundreds of microseconds up to
+/// tens of milliseconds when the host is backlogged with earlier batches —
+/// a per-frame wait that outlives the probe budget pays one sleep-wake hop,
+/// which showed up as -40..-80% on the heaviest glmark2 scenes at a 4096
+/// budget. Each probe re-takes and drops the lock, so producers and the IRQ
+/// worker interleave freely; the bound only matters on a genuinely stalled
+/// host, which falls through to the sleep after a bounded burn.
+const WAIT_PROBE_ROUNDS: usize = 32768;
 
 /// Waits for `cond` to hold on the GPU runtime, sleeping outside the device
 /// lock — the stack's `wait_event` equivalent, with a bounded adaptive
