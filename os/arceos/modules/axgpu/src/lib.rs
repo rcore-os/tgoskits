@@ -331,7 +331,14 @@ pub fn with_gpu<R>(access: impl FnOnce(&mut dyn GpuDevice) -> R) -> Result<R, Gp
     }
     let mut runtime = MAIN_GPU.lock();
     service_pending(&mut runtime)?;
-    Ok(access(runtime.device.gpu()))
+    let result = access(runtime.device.gpu());
+    // The access may have pumped completions through its own queries
+    // (`fence_completed` and friends deliver and pump), which the
+    // IRQ-worker-only notify would miss in a polling environment — a
+    // sleeping waiter cannot self-pump, so it would ride its deadline.
+    // Wake here too; near-free when nobody waits.
+    notify_completions();
+    Ok(result)
 }
 
 /// Allows resource teardown while deferred device work reports an error.
