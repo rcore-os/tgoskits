@@ -611,7 +611,11 @@ uefi_firmware_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/firm
         let config = &request.vmconfigs[0];
         let original = fs::read_to_string(config).unwrap();
         for name in ["guest.dtb", "bios", "firmware"] {
-            fs::write(config, original.replace(name, "missing-asset")).unwrap();
+            fs::write(
+                config,
+                original.replace(&format!("/linux/{name}"), "/linux/missing-asset"),
+            )
+            .unwrap();
             let error = ensure_guest_image_bundles(&request, root.path(), &target_dir)
                 .await
                 .unwrap_err();
