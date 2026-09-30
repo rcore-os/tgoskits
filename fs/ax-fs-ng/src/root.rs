@@ -1054,6 +1054,14 @@ pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_requested_root_returns_an_error_without_publishing() {
+        assert!(matches!(
+            super::prepare_root(core::iter::empty(), Some("root=/dev/sda")),
+            Err(axfs_ng_vfs::VfsError::NoSuchDevice)
+        ));
+    }
+
     use core::{any::Any, time::Duration};
 
     use axfs_ng_vfs::{
