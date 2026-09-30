@@ -911,6 +911,24 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unpublished_filesystem_and_detached_nodes_release_their_owner() {
+        let (filesystem, owner) = super::MemoryFs::new_with_handle();
+        let lifetime = alloc::sync::Arc::downgrade(&owner);
+        let root = filesystem.root_dir();
+        drop(owner);
+        drop(filesystem);
+        assert!(lifetime.upgrade().is_some(), "live node must retain its filesystem");
+        drop(root);
+        assert!(lifetime.upgrade().is_none(), "root cache and directory links must not retain the filesystem");
+
+        let (filesystem, owner) = super::MemoryFs::new_with_handle();
+        let lifetime = alloc::sync::Arc::downgrade(&owner);
+        drop(owner);
+        drop(filesystem);
+        assert!(lifetime.upgrade().is_none(), "unpublished filesystem must also be reclaimed");
+    }
+
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn failed_symlink_capacity_reservation_does_not_publish_name() {
