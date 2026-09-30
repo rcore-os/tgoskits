@@ -1157,6 +1157,32 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         self.ctrl.fence_completed(fence_id)
     }
 
+    /// Non-blocking whole-queue drain query — the predicate
+    /// [`VirtIoGpu::wait_idle`] waits on, without delivering or pumping
+    /// (a poll-only caller must drive progress itself, as
+    /// [`VirtIoGpu::fence_completed`] requires). The completion proof the
+    /// OS layer needs before releasing backing, so it can wait outside the
+    /// device lock instead of spinning inside it.
+    pub fn queue_idle(&self) -> bool {
+        self.ctrl.queue_idle()
+    }
+
+    /// The completion high-water mark: every fence up to and including this
+    /// id fired. Pairs with [`VirtIoGpu::in_flight_fences`] for windowed
+    /// submission throttling.
+    pub fn completed_fence(&self) -> u64 {
+        self.ctrl.completed_fence()
+    }
+
+    /// Fences submitted but not yet observed complete — the in-flight window
+    /// depth an OS layer may throttle submissions against. Shrinks only when
+    /// completions are pumped.
+    pub fn in_flight_fences(&self) -> u64 {
+        self.next_fence
+            .saturating_sub(1)
+            .saturating_sub(self.ctrl.completed_fence())
+    }
+
     // --- Command plumbing ---
 
     /// Sends a command and returns the parsed response.

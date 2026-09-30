@@ -725,6 +725,25 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
     pub(crate) fn fence_completed(&self, fence_id: u64) -> bool {
         self.completed_fence_id >= fence_id
     }
+
+    /// Non-blocking drain query: has every enqueued command —
+    /// fire-and-forget and synchronous alike — been popped, with nothing
+    /// parked? The same predicate [`ControlQueue::wait_idle`] waits on,
+    /// without delivering or pumping: a poll loop must drive its own
+    /// progress first, exactly as [`ControlQueue::fence_completed`]
+    /// requires.
+    pub(crate) fn queue_idle(&self) -> bool {
+        self.pending_commands.is_empty()
+            && self.pending.iter().all(|entry| entry.is_none())
+            && !self.queue.can_pop()
+    }
+
+    /// The completion high-water mark: every fence up to and including this
+    /// id has been observed complete. Pure query — only
+    /// [`ControlQueue::pump_completions`] advances it.
+    pub(crate) fn completed_fence(&self) -> u64 {
+        self.completed_fence_id
+    }
 }
 
 /// Whether `err` is the virtqueue's ring-full condition, which the submission
@@ -1228,6 +1247,40 @@ mod tests {
         // Implicit ordering: everything ≤ 5 is complete too.
         assert!(ctrl.fence_completed(4));
         assert_eq!(state.lock().unwrap().processed, vec![1]);
+    }
+
+    #[test]
+    fn queue_idle_reflects_the_drained_predicate() {
+        let (mut ctrl, state, mut transport) = make_ctrl();
+
+        assert!(ctrl.queue_idle());
+
+        // An enqueued-but-undelivered command keeps the queue busy...
+        ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq: 1 }, None, 0)
+            .unwrap();
+        assert!(!ctrl.queue_idle());
+
+        // ...and so does a completed-but-unpopped ring entry.
+        ctrl.notify(&mut transport);
+        assert!(complete_one(&state, ok_responder));
+        assert!(!ctrl.queue_idle());
+
+        ctrl.pump_completions(&mut transport).unwrap();
+        assert!(ctrl.queue_idle());
+    }
+
+    #[test]
+    fn completed_fence_reports_the_high_water_mark() {
+        let (mut ctrl, state, mut transport) = make_ctrl();
+
+        ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq: 1 }, None, 5)
+            .unwrap();
+        ctrl.notify(&mut transport);
+        assert_eq!(ctrl.completed_fence(), 0);
+
+        assert!(complete_one(&state, ok_responder));
+        ctrl.pump_completions(&mut transport).unwrap();
+        assert_eq!(ctrl.completed_fence(), 5);
     }
 
     #[test]

@@ -8,12 +8,14 @@ mod backing;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
+    cell::Cell,
     num::NonZeroUsize,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use ax_lazyinit::LazyInit;
-use ax_task::sync::Mutex;
+use ax_task::sync::{Mutex, WaitQueue};
 use backing::DmaFramebuffer;
 use dma_api::DeviceDma;
 use irq_framework::IrqId;
@@ -111,6 +113,12 @@ static GPU_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 static GPU_WORK_PENDING: AtomicBool = AtomicBool::new(false);
 static GPU_WORK_NOTIFY: LazyInit<fn()> = LazyInit::new();
 static GPU_COMPLETION_NOTIFY: LazyInit<fn()> = LazyInit::new();
+
+/// Task-context waiters for GPU completion progress, woken by
+/// [`notify_completions`] after every completion pump. Waiters re-check
+/// their condition under `MAIN_GPU` on every wake; see
+/// [`wait_gpu_condition`].
+static GPU_WAIT_QUEUE: WaitQueue = WaitQueue::new();
 
 /// Registers one GPU. The first discovered device is the active instance.
 /// A failed default scanout leaves GPU rendering available.
@@ -364,6 +372,94 @@ pub fn with_display_for_cleanup<R>(
     Ok(access(device))
 }
 
+/// How long a lock-free GPU completion wait trusts the host before reporting
+/// [`GpuError::TimedOut`] — the same bound the driver applies to its own
+/// in-lock spins (`WAIT_TIMEOUT_NS`).
+pub const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Waits for `cond` to hold on the GPU runtime, sleeping outside the device
+/// lock — the stack's `wait_event` equivalent.
+///
+/// Two correctness arguments carry the whole design:
+///
+/// * The waiter sleeps only after the condition was checked under and the
+///   lock has been released, so the completion pump (the IRQ worker or any
+///   `with_gpu` caller) can always take `MAIN_GPU` between two checks:
+///   progress never depends on the waiter. A woken waiter re-takes the lock
+///   and re-checks, so there is no lock-order inversion —
+///   [`notify_completions`] runs while a pump holds `MAIN_GPU`, and
+///   `WaitQueue::notify_all` takes no lock a waiter holds.
+/// * The condition observes device state through the driver's polling
+///   queries (`fence_completed`, `queue_idle`), which deliver the
+///   accumulated batch and pump completions themselves: in an environment
+///   without completion IRQs the waiter drives its own progress, exactly
+///   like an IRQ-driven one.
+///
+/// `cond` runs once per wake-up under `MAIN_GPU`: it must not sleep, must
+/// not re-enter this crate, and should only use the device's query methods.
+fn wait_gpu_condition(
+    timeout: Duration,
+    cond: impl Fn(&mut GpuRuntime) -> Result<bool, GpuError>,
+) -> Result<(), GpuError> {
+    if !has_gpu() {
+        return Err(GpuError::NotAvailable);
+    }
+    let cond_failed: Cell<Option<GpuError>> = Cell::new(None);
+    let timed_out = GPU_WAIT_QUEUE.wait_timeout_until(timeout, || {
+        let mut runtime = MAIN_GPU.lock();
+        if let Err(error) = service_pending(&mut runtime) {
+            // The pump itself failed: leave the wait, report it below.
+            cond_failed.set(Some(error));
+            return true;
+        }
+        match cond(&mut runtime) {
+            Ok(done) => done,
+            Err(error) => {
+                cond_failed.set(Some(error));
+                true
+            }
+        }
+    });
+    if let Some(error) = cond_failed.take() {
+        return Err(error);
+    }
+    if timed_out {
+        return Err(GpuError::TimedOut);
+    }
+    Ok(())
+}
+
+/// Waits, outside the device control lock, for `fence` and everything
+/// submitted before it to complete. Task context only. A stalled host
+/// returns [`GpuError::TimedOut`] and stays usable; the caller may retry.
+pub fn virgl_wait_fence(fence: u64, timeout: Duration) -> Result<(), GpuError> {
+    wait_gpu_condition(timeout, |runtime| match runtime.device.gpu().virgl() {
+        Some(virgl) => virgl.fence_completed(fence),
+        None => Err(GpuError::Unsupported),
+    })
+}
+
+/// Waits, outside the device control lock, for the whole control queue to
+/// drain — the completion proof a teardown caller needs before releasing
+/// backing the device may still DMA into.
+pub fn virgl_wait_drain(timeout: Duration) -> Result<(), GpuError> {
+    wait_gpu_condition(timeout, |runtime| match runtime.device.gpu().virgl() {
+        Some(virgl) => virgl.queue_idle(),
+        None => Err(GpuError::Unsupported),
+    })
+}
+
+/// Waits, outside the device control lock, until fewer than `window`
+/// submitted fences remain uncompleted — the submission throttle a caller
+/// may apply ahead of enqueueing more work. Query-side helper for windowed
+/// throttling; no call site in this workspace yet.
+pub fn virgl_wait_window_room(window: u64, timeout: Duration) -> Result<(), GpuError> {
+    wait_gpu_condition(timeout, |runtime| match runtime.device.gpu().virgl() {
+        Some(virgl) => virgl.in_flight_fences().map(|in_flight| in_flight < window),
+        None => Err(GpuError::Unsupported),
+    })
+}
+
 /// Returns the active framebuffer backing, retaining its memory after the
 /// device lock is released. The caller still needs to coordinate CPU writes
 /// with GPU submissions through `with_display`.
@@ -443,6 +539,12 @@ pub fn set_completion_notifier(notify: fn()) {
 }
 
 fn notify_completions() {
+    // Wake the lock-free waiters first: the generation-checked queue closes
+    // the check-then-park window in `wait_gpu_condition` against this
+    // notify. This runs while the pump holds `MAIN_GPU`, which is safe
+    // because `notify_all` never takes that lock — woken waiters queue on
+    // it and re-check once the pumping transaction ends.
+    GPU_WAIT_QUEUE.notify_all();
     if GPU_COMPLETION_NOTIFY.is_inited() {
         (*GPU_COMPLETION_NOTIFY)();
     }
