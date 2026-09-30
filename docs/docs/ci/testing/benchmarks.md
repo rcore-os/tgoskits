@@ -43,7 +43,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 | `Starry Apps` | `starry_performance_matrix` | QCS 自托管 profile | `starry-apps-nightly-performance` |
 | `Starry Apps` | `starry_board_performance_matrix` | 板卡 profile | `starry-apps-nightly-performance` |
 
-Starry 板卡矩阵在 `benchmarks.yml` 中设置 `max_parallel: 1`，避免同一入口同时占用多个实体板卡。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
+Starry 板卡矩阵在 `benchmarks.yml` 中设置 `max_parallel: 1`，避免同一入口同时占用多个实体板卡；这只是矩阵内的并行上限，不是板卡行串行的唯一机制。运行在同一块 OrangePi 5 Plus 上的基准板卡行（三条 AxVisor 性能行与四条 Starry 板卡行）都在清单里声明 `resource_group = "orangepi-5-plus"`，复用矩阵据此把受保护的 `schedule` 与 `workflow_dispatch` 运行放进共享的 `ci-resource-orangepi-5-plus` concurrency group，使它们与其它工作流中同样使用该资源组的 OrangePi 检查串行，避免跨工作流同时占用同一块实体板卡。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
 
 ### 2.2 数据流
 
