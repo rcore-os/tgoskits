@@ -838,12 +838,19 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     }
     let device = source_location.entry().downcast::<Device>()?;
     let readonly = flags & MS_RDONLY != 0;
-    if let Some(physical) = device.inner().as_any().downcast_ref::<crate::pseudofs::dev::PhysicalBlock>() {
+    if let Some(physical) = device
+        .inner()
+        .as_any()
+        .downcast_ref::<crate::pseudofs::dev::PhysicalBlock>()
+    {
         if !readonly && physical.0.handle.device_info().read_only {
             return Err(StarryError::ReadOnlyFilesystem);
         }
-        let fs = ax_fs_ng::vfs::new_filesystem_from_handle(physical.0.handle.clone(), physical.0.region)?;
-        if fs.name() != "ext4" { return Err(StarryError::NoSuchDevice); }
+        let fs =
+            ax_fs_ng::vfs::new_filesystem_from_handle(physical.0.handle.clone(), physical.0.region)?;
+        if fs.name() != "ext4" {
+            return Err(StarryError::NoSuchDevice);
+        }
         let mount = target_location.mount_with_source(&fs, source)?;
         mount.set_readonly(readonly || fs.is_readonly());
         mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);

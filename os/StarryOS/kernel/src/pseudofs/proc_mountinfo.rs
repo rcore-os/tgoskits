@@ -22,8 +22,11 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
         let Ok(mount_point) = root_loc.path_from(fs_context.root_dir()) else {
             continue;
         };
-        let mount_root = root_loc.entry().absolute_path()
-            .map(|path| path.to_string()).unwrap_or_else(|_| "/".into());
+        let mount_root = root_loc
+            .entry()
+            .absolute_path()
+            .map(|path| path.to_string())
+            .unwrap_or_else(|_| "/".into());
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();
