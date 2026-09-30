@@ -385,13 +385,15 @@ pub fn with_display_for_cleanup<R>(
 pub const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Probe rounds before sleeping: the virtual device services the virtqueue
-/// kick synchronously inside the MMIO write, so the common case — the waited
-/// work already finished — resolves within the first self-pumping probes,
-/// preserving the latency of the old in-lock spin. Each probe is one short
-/// locked transaction and producers interleave between probes; the long
-/// tail (host genuinely busy) still sleeps outside the lock where the
-/// completion pump reaches it.
-const WAIT_PROBE_ROUNDS: usize = 64;
+/// kick synchronously inside the MMIO write and the observed fence latency
+/// of this stack is in the low hundreds of microseconds, so a probe budget
+/// in the thousands of short self-pumping transactions covers the common
+/// case — the waited work finishes while probing and the hot path keeps the
+/// old spin's latency without ever parking. Each probe re-takes and drops
+/// the lock, so producers and the IRQ worker interleave freely; a genuinely
+/// stalled host falls through to the sleep, where completion pumps reach
+/// the waiter.
+const WAIT_PROBE_ROUNDS: usize = 4096;
 
 /// Waits for `cond` to hold on the GPU runtime, sleeping outside the device
 /// lock — the stack's `wait_event` equivalent, with a bounded adaptive
@@ -459,6 +461,9 @@ fn wait_gpu_condition(
         return Err(error);
     }
     if timed_out {
+        log::warn!(
+            "ax-gpu: completion wait timed out after {timeout:?} (waiter retried or gave up)"
+        );
         return Err(GpuError::TimedOut);
     }
     Ok(())
