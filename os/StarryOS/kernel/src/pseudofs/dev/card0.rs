@@ -609,12 +609,24 @@ struct GpuResource {
 
 impl Drop for GpuResource {
     fn drop(&mut self) {
-        if let Err(error) = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(self.device_handle))
-            .and_then(core::convert::identity)
-        {
+        if let Err(error) = release_gpu_buffer_and_drain(self.device_handle) {
             warn!("failed to release GPU buffer {:?}: {error}", self.device_handle);
         }
     }
+}
+
+/// Releases a GPU buffer and waits, outside the device control lock, until
+/// the host finished with its backing. The drain used to spin inside the
+/// driver's `RESOURCE_UNREF` while holding the global lock; it moved here so
+/// the completion pump (IRQ worker or any ioctl) keeps making progress while
+/// the releaser sleeps. On a drain timeout the release itself stays submitted
+/// and the caller proceeds with its teardown: the host is unrecoverably
+/// stalled at that point — the same accepted tradeoff the driver documents
+/// for its bounded waits.
+fn release_gpu_buffer_and_drain(handle: BufferHandle) -> Result<(), GpuError> {
+    ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(handle))
+        .and_then(core::convert::identity)?;
+    ax_gpu::virgl_wait_drain(ax_gpu::GPU_WAIT_TIMEOUT)
 }
 
 /// Kernel-side dma-buf for a *host* 3D resource (blob or classic virgl
@@ -2153,7 +2165,7 @@ impl Card0 {
                 Ok(Some(id)) => id,
                 Ok(None) => self.next_res_handle.fetch_add(1, Ordering::Relaxed),
                 Err(error) => {
-                    let _ = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(device_handle));
+                    let _ = release_gpu_buffer_and_drain(device_handle);
                     return Err(map_gpu_err(error));
                 }
             };

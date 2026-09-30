@@ -626,15 +626,14 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     ///
     /// The protocol has a single `RESOURCE_UNREF` for 2D and 3D resources, so
     /// this is also the only way to destroy a 3D resource. The command is
-    /// submitted and delivered, and this call returns only after the host has
-    /// popped everything — the guest memory previously attached to the
-    /// resource may be freed by its owner as soon as it returns (Linux instead
-    /// defers the free to its completion callback; draining here is the
-    /// no-callback equivalent).
-    ///
-    /// The drain is bounded by the wait timeout: on [`Error::TimedOut`] the
-    /// host is unrecoverably stalled, and the caller releasing memory the
-    /// device may still own is the accepted tradeoff for unwedging the guest.
+    /// submitted fire-and-forget and delivered; this call returns as soon as
+    /// it is on the ring. The guest memory previously attached to the
+    /// resource may only be freed by its owner after the host popped
+    /// everything — that completion proof moved to the OS layer, which
+    /// drains through [`VirtIoGpu::queue_idle`] outside the device lock
+    /// (Linux instead defers the free to its completion callback).
+    /// Teardown paths inside this crate that must not return without the
+    /// proof drain explicitly via [`VirtIoGpu::wait_idle`].
     pub fn resource_unref(&mut self, resource_id: u32) -> Result<(), Error> {
         self.ctrl
             .enqueue(
@@ -649,7 +648,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             )
             .map(|_| ())?;
         self.ctrl_notify();
-        self.ctrl.wait_idle(&mut self.transport)
+        Ok(())
     }
 
     // --- 3D (virgl) commands ---
@@ -888,12 +887,13 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             .map(|_| ())
     }
 
-    /// Transfers a 3D resource from the host to guest memory, and waits until
-    /// the host has applied it: the caller reads the guest memory right after
-    /// this returns, so completion has to be observed before the data is
-    /// valid (Linux waits the same transfer's fence in
-    /// `virtio_gpu_transfer_from_host_ioctl`). The read-back drain is bounded
-    /// by the wait timeout — see [`VirtIoGpu::new`].
+    /// Transfers a 3D resource from the host to guest memory. The command is
+    /// submitted fire-and-forget: the guest memory only becomes valid once
+    /// the host applied the transfer, so the OS layer observes completion
+    /// before letting its caller read back — it drains through
+    /// [`VirtIoGpu::queue_idle`] outside the device lock (Linux instead
+    /// relies on dma_resv deferred destruction and returns without
+    /// waiting).
     pub fn transfer_from_host_3d(&mut self, params: Transfer3d) -> Result<(), Error> {
         self.require_virgl()?;
         self.ctrl
@@ -916,7 +916,7 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             )
             .map(|_| ())?;
         self.ctrl_notify();
-        self.ctrl.wait_idle(&mut self.transport)
+        Ok(())
     }
 
     /// Submits a virgl command stream to a rendering context and returns the

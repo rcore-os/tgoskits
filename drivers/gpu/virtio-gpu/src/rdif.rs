@@ -241,14 +241,17 @@ impl<H: Hal, T: Transport> VirtIoGpuDevice<H, T> {
 
     fn cleanup_failed_create(&mut self, id: u32) {
         // A failed create may have enqueued commands whose completion the
-        // caller cannot observe. The UNREF path already delivers and drains
-        // the queue — its success is the completion proof (the host popped
-        // everything, so it is done with the backing). Any failure is
-        // ambiguous: reset the device to stop all DMA before the caller drops
-        // its backing.
+        // caller cannot observe, and the UNREF submission no longer drains
+        // on its own (the hot-path wait moved to the OS layer). This cold
+        // recovery path still needs the completion proof before the caller
+        // drops its backing, so drain explicitly; `confirm_drain` marks the
+        // device lost — stopping all DMA — exactly when that proof stays
+        // unconfirmable.
         if self.raw.resource_unref(id).is_err() {
             self.mark_lost();
+            return;
         }
+        let _ = self.confirm_drain();
     }
 
     /// Delivers the accumulated fire-and-forget batch and waits until the host
@@ -709,11 +712,11 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
             }
             self.resources.get_mut(&key).unwrap().attached = false;
         }
-        // `resource_unref` delivers the batch and drains the whole queue: its
-        // success is the completion proof that the host stopped touching the
-        // backing, so the caller may free the memory once this returns. A
-        // drain failure is ambiguous — reset stops all DMA before the caller
-        // can release the backing.
+        // `resource_unref` only submits and delivers now: the drain proof
+        // that the host stopped touching the backing moved to the caller,
+        // which waits outside the device lock (see the OS layer's drain
+        // wait). A submission failure is ambiguous — reset stops all DMA
+        // before the caller can release the backing.
         match self.raw.resource_unref(id) {
             Ok(()) => {}
             Err(Error::QueueBusy) => return Err(GpuError::Busy),

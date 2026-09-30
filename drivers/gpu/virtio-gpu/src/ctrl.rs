@@ -329,14 +329,15 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
     /// only after every older one.
     ///
     /// The wait busy-polls with `spin_loop`, exactly as upstream
-    /// `add_notify_wait_pop` does, and is deliberately NOT bounded by the
-    /// wait timeout: an abandoned synchronous request would leave its ring
-    /// entry referencing the caller's returned stack frame, which the device
-    /// could still DMA into (the same reason `add_sync`'s queue-full loop
-    /// cannot report exhaustion). The wait therefore makes progress whenever
-    /// the host does; it is only reachable from the init-time and capset
-    /// queries, and a completion pump marks the queue broken long before it
-    /// if the device reports foreign completions.
+    /// `add_notify_wait_pop` does, bounded by the wait timeout like every
+    /// other wait. Expiry cannot simply return an error: the ring entry
+    /// would still reference the caller's returned stack frame, which the
+    /// device could DMA into, so the queue is marked broken instead — the
+    /// caller's failure path then resets the device, stopping all DMA (the
+    /// same contract as `add_sync`'s queue-full loop below). It is only
+    /// reachable from the init-time and capset queries, and a completion
+    /// pump marks the queue broken long before it if the device reports
+    /// foreign completions.
     pub(crate) fn request_sync<'a: 'b, 'b>(
         &mut self,
         transport: &mut impl Transport,
@@ -361,6 +362,7 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
     ) -> Result<u16, Error> {
         self.flush_pending(transport)?;
 
+        let deadline = (self.clock)().saturating_add(WAIT_TIMEOUT_NS);
         let token = loop {
             // SAFETY: the borrowed buffers live in the caller's frame until the
             // matching `pop_used` in `wait_sync`, exactly as
@@ -373,12 +375,18 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
                     // and retry. Unlike the fire-and-forget path this cannot
                     // report exhaustion — the borrowed buffers live in the
                     // caller's frame and a returned error would leave the ring
-                    // entry dangling — so the loop is bounded only by host
-                    // progress. Reachable from the init-time queries only;
-                    // moving the wait out of the caller's frame is the
-                    // remaining alignment work.
+                    // entry dangling — so a stalled host breaks the queue
+                    // instead (the caller's failure path resets the device).
+                    // Reachable from the init-time queries only; moving the
+                    // wait out of the caller's frame is the remaining
+                    // alignment work.
                     transport.notify(self.queue_idx);
                     self.pump_completions(transport)?;
+                    if (self.clock)() >= deadline {
+                        return Err(self.mark_broken(
+                            "the ring never drained a queue-full synchronous request",
+                        ));
+                    }
                     spin_loop();
                 }
                 Err(err) => return Err(err.into()),
@@ -401,6 +409,7 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
         inputs: &'a [&'b [u8]],
         outputs: &'a mut [&'b mut [u8]],
     ) -> Result<u32, Error> {
+        let deadline = (self.clock)().saturating_add(WAIT_TIMEOUT_NS);
         loop {
             // Reclaim earlier in-flight entries (fire-and-forget commands
             // submitted before this one) so the whole queue keeps making
@@ -417,6 +426,14 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
                     // and the pop: from here on the ring cannot be trusted.
                     Err(err) => Err(self.mark_broken(err)),
                 };
+            }
+            if (self.clock)() >= deadline {
+                // The ring entry still references the caller's stack frame,
+                // so it can never be reclaimed on this path: break the queue
+                // (every further operation fails fast) and let the caller's
+                // failure path reset the device. Bounded, like every other
+                // wait.
+                return Err(self.mark_broken("the host never completed the synchronous request"));
             }
             spin_loop();
         }
@@ -594,7 +611,7 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
     /// operation on this queue reports. The `cause` is only logged (once, at
     /// the first trip); the typed result is [`Error::QueueBroken`] so callers
     /// fail fast instead of wedging on the unusable used ring.
-    fn mark_broken(&mut self, cause: virtio_drivers::Error) -> Error {
+    fn mark_broken(&mut self, cause: impl core::fmt::Debug) -> Error {
         if !self.broken {
             self.broken = true;
             log::error!(
@@ -1440,6 +1457,60 @@ mod tests {
         assert!(complete_one(&state, ok_responder));
         ctrl.pump_completions(&mut transport).unwrap();
         assert_eq!(state.lock().unwrap().processed, vec![1, 2]);
+    }
+
+    /// A synchronous request whose host never answers must fail in bounded
+    /// time and break the queue: the used-ring entry still references the
+    /// caller's frame, so no later operation may trust the ring — the
+    /// caller's failure path resets the device.
+    #[test]
+    fn sync_request_timeout_breaks_the_queue() {
+        let (mut ctrl, _state, mut transport) = make_ctrl_with(ticking_clock);
+
+        let req = [1u8; 16];
+        let mut resp = [0u8; RESP_SIZE];
+        let token = ctrl
+            .add_sync(&mut transport, &[&req], &mut [&mut resp])
+            .unwrap();
+
+        let err = ctrl
+            .wait_sync(token, &mut transport, &[&req], &mut [&mut resp])
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::QueueBroken),
+            "expected QueueBroken, got {err:?}"
+        );
+
+        // Every further operation fails fast instead of trusting the ring.
+        assert!(matches!(
+            ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq: 1 }, None, 0),
+            Err(Error::QueueBroken)
+        ));
+    }
+
+    /// The queue-full retry of a synchronous add is bounded too: a host that
+    /// never drains the ring breaks the queue instead of spinning forever
+    /// under the caller's lock.
+    #[test]
+    fn sync_request_queue_full_timeout_breaks_the_queue() {
+        let (mut ctrl, _state, mut transport) = make_ctrl_with(ticking_clock);
+        let capacity = CTRL_QUEUE_SIZE as u32 + PENDING_FIFO_CAP as u32;
+
+        // Saturate the ring and the parking FIFO with a stalled host.
+        for seq in 0..capacity {
+            ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq }, None, 0)
+                .unwrap();
+        }
+
+        let req = [1u8; 16];
+        let mut resp = [0u8; RESP_SIZE];
+        let err = ctrl
+            .add_sync(&mut transport, &[&req], &mut [&mut resp])
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::QueueBroken),
+            "expected QueueBroken, got {err:?}"
+        );
     }
 
     /// Regression (silent wedge / index panic): a used entry whose id is
