@@ -1526,7 +1526,7 @@ command = "true"
     def test_ivc_benchmark_board_runs_benchmark_from_guest_shell(self) -> None:
         root = MODULE_PATH.parents[2]
         case_dir = (
-            root / "test-suit/axvisor/normal/board-orangepi-5-plus/ivc-benchmark"
+            root / "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark"
         )
         vm_config = tomllib.loads(
             (case_dir / "starry-axivc-benchmark.toml").read_text()
@@ -1792,11 +1792,17 @@ command = "true"
         nightly_rows = ci_plan.build_axvisor_nightly_plan(context)["axvisor_matrix"][
             "include"
         ]
+        benchmark_plan = ci_plan.build_benchmarks_plan(context)
+        benchmark_rows = (
+            benchmark_plan["axvisor_performance_matrix"]["include"]
+            + benchmark_plan["starry_performance_matrix"]["include"]
+            + benchmark_plan["starry_board_performance_matrix"]["include"]
+        )
         catalog = {
             check["id"]: check
             for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
-        for row in (*main_rows, *nightly_rows):
+        for row in (*main_rows, *nightly_rows, *benchmark_rows):
             boards = {
                 registration["board"]
                 for registration in catalog[row["id"]].get("suite", ())

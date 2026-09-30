@@ -239,14 +239,16 @@ class AxvisorNightlyWorkflowTests(unittest.TestCase):
         workflow = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
         plan = mapping_block(workflow, "plan", 2)
         concurrency = mapping_block(workflow, "concurrency", 0)
-        perf_history = mapping_block(workflow, "perf-history", 2)
 
         self.assertNotIn("ref: dev", plan)
         self.assertIn("- name: Pin triggering revision", plan)
         self.assertIn('echo "sha=$(git rev-parse HEAD)"', plan)
         self.assertIn("axvisor-nightly-${{ github.ref }}", concurrency)
         self.assertIn("tested revision: ${REVISION}", workflow)
-        self.assertIn("github.ref == 'refs/heads/dev'", perf_history)
+        # Performance history moved to the benchmarks workflow, which pins the
+        # dev revision; a nightly dispatch from any branch must stay a pure
+        # check run and never publish history.
+        self.assertNotIn("perf-history", workflow)
 
 
 class MatrixParallelismTests(unittest.TestCase):
@@ -303,6 +305,9 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         self.assertIn('cron: "40 21 * * *"', schedule)
         self.assertIn("workflow_dispatch:", triggers)
         self.assertIn("--mode benchmarks", plan_step)
+        # The owner of the performance history always measures the dev branch,
+        # so a manual dispatch elsewhere cannot publish non-dev history.
+        self.assertIn("ref: dev", plan)
         for output in (
             "prepare_matrix",
             "axvisor_performance_matrix",
