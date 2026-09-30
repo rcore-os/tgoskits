@@ -406,6 +406,17 @@ Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_ex
 对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `__set_ptes_anysz -> __sync_cache_and_tags -> __sync_icache_dcache`。用 `cargo xtask starry test board --board orangepi-5-plus --test-case exec-cache` 验证文件页内核写入后的重新取指；QEMU 只作为执行路径检查，不作为 I-cache/D-cache 实机红绿证明。完整所有权与证据见 `docs/design/user-executable-cache-coherence.md`。
 ## 宿主 initramfs
 
+板卡测试停在 systemd 的 `Freezing execution`，或 BusyBox 持续启动不存在的
+`/dev/tty1`～`/dev/tty6` 时，先检查实际 `init=` 与根文件系统，不能仅延长超时。
+等待测试 shell 的 `board-*.toml` 使用 `BoardRunConfig.boot.cmdline` 明确指定
+`init=/bin/sh`，在 `--` 后传入 `-c "cd /root; exec /bin/sh -i"`，并设置
+`HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# "`。
+这是完整 cmdline，需保留实际 `root=`；OrangePi 5 Plus 和 SG2002 使用
+`/dev/mmcblk0p2`，ROCK 4D 使用 `/dev/mmcblk0p3`。Axvisor Starry guest 在
+`[kernel].cmdline` 中指定同样的客户机启动条件，不改宿主 cmdline。
+确认提示符后仍须执行用例命令并检查成功标记；该测试模式不证明 OpenRC
+生命周期或完整的终端作业控制。普通启动的可选 cmdline 仍可省略。
+
 宿主归档的构建、交接、预留、解包、根选择与回收顺序见
 [`docs/design/host-initramfs.md`](../../../../docs/design/host-initramfs.md)。
 诊断 QEMU `-initrd`、FIT ramdisk 或 UEFI/HTTP Boot 时，先区分宿主归档与

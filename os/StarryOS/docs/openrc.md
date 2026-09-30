@@ -65,6 +65,14 @@ Starry 的默认根文件系统复用 `ImageConfig` 所选的 [`tgosimages` 默�
 
 QEMU 使用的受管理镜像仍由 `openrc::prepare()` 注入 OpenRC 启动资产；实体板卡及 Axvisor 的 Starry guest 使用既有持久根文件系统，不经过这条镜像准备路径。`legacy-board-init` 已删除，旧板端镜像不再保证兼容。板端需提供可执行的 `/init`/`rdinit=`，或包含 `/sbin/init` 的可挂载磁盘根；无设备可测的板端启动结果仍待验证。
 
+等待交互 shell 的板卡测试通过 `BoardRunConfig.boot.cmdline` 明确选择 `init=/bin/sh`，并在 `--` 后传递 shell 参数；Axvisor 的 Starry guest 使用 `VMKernelConfig.cmdline` 写入客户机设备树的 `/chosen/bootargs`。这些配置保留各板卡的 `root=` 选择，设置测试提示符和 `/root` 工作目录，不要求磁盘上的 systemd 或通用 BusyBox inittab 能启动 Starry。未配置 `cmdline` 的普通启动仍按 `starryos::init_options()` 选择原有 init 路径。测试 shell 使用已有 console FD，不提供完整的终端作业控制，也不能作为 OpenRC 生命周期验证的替代。
+
+板卡运行配置示例中，`root=` 必须与实际根分区一致；此处对应 OrangePi 5 Plus。`cmdline` 属于运行 TOML，不加入 `build-*.toml`。
+
+```toml
+cmdline = 'root=/dev/mmcblk0p2 init=/bin/sh HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# " -- -c "cd /root; exec /bin/sh -i"'
+```
+
 ## 2. 进程契约
 
 `entry::init()` 已经通过 `PidReservation` 保证根用户进程的 PID 为 1。进程关系和僵尸状态继续分别由现有进程拓扑与 PID identity 管理，不创建 OpenRC 专用进程表。

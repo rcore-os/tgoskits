@@ -1,3 +1,5 @@
+# Select the test shell on existing board images without replacing their init files.
+cmdline = 'root=/dev/mmcblk0p2 init=/bin/sh HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# " -- -c "cd /root; exec /bin/sh -i"'
 board_type = "OrangePi-5-Plus-robot"
 timeout = 900
 fail_regex = [

@@ -1,3 +1,5 @@
+# Select the test shell on existing board images without replacing their init files.
+cmdline = 'root=/dev/mmcblk0p2 init=/bin/sh HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# " -- -c "cd /root; exec /bin/sh -i"'
 board_type = "OrangePi-5-Plus"
 dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
 fail_regex = [

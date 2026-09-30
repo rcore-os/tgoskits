@@ -11,6 +11,8 @@ phys_cpu_ids = [0x00]
 
 # StarryOS is an AArch64 Image and receives the generated guest DTB in x0.
 [kernel]
+# The persistent board rootfs does not provide the managed QEMU OpenRC setup.
+cmdline = 'root=/dev/mmcblk0p2 init=/bin/sh HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# " -- -c "cd /root; exec /bin/sh -i"'
 entry_point = 0x4008_0000
 image_location = "memory"
 kernel_load_addr = 0x4008_0000
