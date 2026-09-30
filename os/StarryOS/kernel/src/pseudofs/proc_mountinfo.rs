@@ -19,13 +19,11 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (mount_id, parent_id, mp) in entries {
         let root_loc = mp.root_location();
-        let (mount_root, mount_point) = if alloc::sync::Arc::ptr_eq(root_loc.mountpoint(), fs_context.root_dir().mountpoint()) {
-            let Ok(root) = fs_context.root_dir().path_from(&root_loc) else { continue; };
-            (root.to_string(), String::from("/"))
-        } else {
-            let Ok(path) = root_loc.path_from(fs_context.root_dir()) else { continue; };
-            (String::from("/"), path.to_string())
+        let Ok(mount_point) = root_loc.path_from(fs_context.root_dir()) else {
+            continue;
         };
+        let mount_root = root_loc.entry().absolute_path()
+            .map(|path| path.to_string()).unwrap_or_else(|_| "/".into());
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();
@@ -69,11 +67,8 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (_, _, mp) in entries {
         let root_loc = mp.root_location();
-        let mount_point = if alloc::sync::Arc::ptr_eq(root_loc.mountpoint(), fs_context.root_dir().mountpoint()) {
-            String::from("/")
-        } else {
-            let Ok(path) = root_loc.path_from(fs_context.root_dir()) else { continue; };
-            path.to_string()
+        let Ok(mount_point) = root_loc.path_from(fs_context.root_dir()) else {
+            continue;
         };
 
         let fstype = root_loc.filesystem().name();
