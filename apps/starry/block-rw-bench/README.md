@@ -103,8 +103,11 @@ read as device latency.
 With `BLOCK_RW_BENCH_DROP_CACHES` enabled, check the per-phase `diskstats`
 delta lines printed for each case (`phase=read`): a nonzero `reads=` delta
 confirms that the phase reached the device path, and only such a verified run
-supports claims about the hardware controller. The per-case output also labels
-itself with `boundary=full-file-stack-not-raw-request-latency`.
+supports claims about the hardware controller. The startup line reports the
+measurement boundary as `boundary=full-file-stack-not-raw-request-latency`.
+When saving an individual `case=` or `result case=` line for a Linux/Starry
+comparison, preserve that startup line with the case output so the latency
+boundary remains explicit.
 
 The latencies are **not** raw block-request latencies under any
 configuration, and the numbers must not be read as a sync-versus-async block

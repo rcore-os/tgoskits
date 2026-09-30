@@ -352,9 +352,10 @@ pub fn axtest_scratch_region_request() -> Option<&'static Result<BlockRegion, St
 
 /// Returns the regions the destructive axtests must not write on the disk
 /// that owns `handle`: every identified partition, detected whole-disk
-/// filesystem, and partition-table metadata sector. `None` marks an unknown layout — the handle was never
-/// registered or its volume scan failed — and disqualifies the device from
-/// destructive writes instead of silently passing as "no partitions".
+/// filesystem, and partition-table metadata sector. `None` marks an unknown
+/// layout — the handle was never registered, its volume scan failed, or a
+/// filesystem probe failed — and disqualifies the device from destructive
+/// writes instead of silently passing as "no partitions".
 #[cfg(axtest)]
 pub fn axtest_disk_protected_regions(handle: &BlockDeviceHandle) -> Option<&'static [BlockRegion]> {
     let ptr = handle as *const BlockDeviceHandle as usize;
@@ -491,7 +492,7 @@ fn collect_disks(
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
             Ok(scan) => {
-                let (raw_filesystem, _raw_filesystem_region, partitions) =
+                let (raw_filesystem, _raw_filesystem_region, _filesystem_probe_unknown, partitions) =
                     collect_partitions(&mut *dev, scan.volumes);
                 log_disk(disk_index, &device_name, &partitions);
                 // Scanned disks publish their protected regions: every
@@ -502,9 +503,10 @@ fn collect_disks(
                     let protected = axtest_protected_regions(
                         &partitions,
                         _raw_filesystem_region,
+                        _filesystem_probe_unknown,
                         &scan.table_metadata,
                     );
-                    axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, Some(protected)));
+                    axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, protected));
                 }
                 disks.push(DiscoveredDisk {
                     disk_index,
@@ -539,25 +541,51 @@ fn collect_partitions(
 ) -> (
     Option<FilesystemKind>,
     Option<BlockRegion>,
+    bool,
     Vec<DetectedPartition>,
 ) {
     let mut partitions = Vec::new();
     let mut raw_filesystem = None;
     let mut raw_filesystem_region = None;
+    let mut filesystem_probe_unknown = false;
     for volume in volumes {
         if volume.table_kind == VolumeTableKind::Raw {
             let region = region_from_volume(&volume);
-            let raw_fs = detect_filesystem(dev, region);
-            info!("    raw device fs={:?}", raw_fs);
-            if raw_fs.is_some() {
-                raw_filesystem_region = Some(region);
+            match detect_filesystem(dev, region) {
+                Ok(raw_fs) => {
+                    info!("    raw device fs={:?}", raw_fs);
+                    if raw_fs.is_some() {
+                        raw_filesystem_region = Some(region);
+                    }
+                    raw_filesystem = raw_fs;
+                }
+                Err(error) => {
+                    warn!(
+                        "    raw device filesystem probe failed at lba {}..{}: {error:?}",
+                        region.start_lba, region.end_lba,
+                    );
+                    raw_filesystem = None;
+                    raw_filesystem_region = None;
+                    filesystem_probe_unknown = true;
+                }
             }
-            raw_filesystem = raw_fs;
             continue;
         }
 
         let info = partition_info_from_volume(&volume);
-        let filesystem = detect_filesystem(dev, info.region);
+        let filesystem = match detect_filesystem(dev, info.region) {
+            Ok(filesystem) => filesystem,
+            Err(error) => {
+                warn!(
+                    "    filesystem probe failed for partition {} at lba {}..{}: {error:?}",
+                    info.index + 1,
+                    info.region.start_lba,
+                    info.region.end_lba,
+                );
+                filesystem_probe_unknown = true;
+                None
+            }
+        };
         info!(
             "    partition {} name={:?} fs={:?} lba {}..{}",
             info.index + 1,
@@ -569,15 +597,25 @@ fn collect_partitions(
         partitions.push(DetectedPartition { info, filesystem });
     }
 
-    (raw_filesystem, raw_filesystem_region, partitions)
+    (
+        raw_filesystem,
+        raw_filesystem_region,
+        filesystem_probe_unknown,
+        partitions,
+    )
 }
 
-#[cfg(any(axtest, test))]
+#[cfg(any(axtest, all(test, feature = "ext4")))]
 fn axtest_protected_regions(
     partitions: &[DetectedPartition],
     raw_filesystem_region: Option<BlockRegion>,
+    filesystem_probe_unknown: bool,
     table_metadata: &[crate::volume::BlockRegion],
-) -> Vec<BlockRegion> {
+) -> Option<Vec<BlockRegion>> {
+    if filesystem_probe_unknown {
+        return None;
+    }
+
     let mut protected = partitions
         .iter()
         .map(|partition| partition.info.region)
@@ -590,7 +628,7 @@ fn axtest_protected_regions(
             .iter()
             .map(|region| BlockRegion::new(region.start_block, region.num_blocks)),
     );
-    protected
+    Some(protected)
 }
 
 fn log_disk(disk_index: usize, device_name: &str, partitions: &[DetectedPartition]) {
@@ -1091,6 +1129,7 @@ mod tests {
 
     struct FlakyMetadataDevice {
         remaining_failures: usize,
+        raw_probe_failures: usize,
         data: Vec<u8>,
     }
 
@@ -1395,8 +1434,22 @@ mod tests {
             data[511] = 0xaa;
             Self {
                 remaining_failures,
+                raw_probe_failures: 0,
                 data,
             }
+        }
+
+        #[cfg(feature = "ext4")]
+        fn with_raw_ext4_magic(mut self) -> Self {
+            let magic_offset = 2 * 512 + 0x38;
+            self.data[magic_offset..magic_offset + 2].copy_from_slice(&0xEF53_u16.to_le_bytes());
+            self
+        }
+
+        #[cfg(feature = "ext4")]
+        fn fail_next_raw_filesystem_probe(mut self) -> Self {
+            self.raw_probe_failures = 1;
+            self
         }
     }
 
@@ -1436,6 +1489,10 @@ mod tests {
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
             if self.remaining_failures > 0 {
                 self.remaining_failures -= 1;
+                return Err(BlockError::Io);
+            }
+            if block_id == 2 && self.raw_probe_failures > 0 {
+                self.raw_probe_failures -= 1;
                 return Err(BlockError::Io);
             }
 
@@ -1524,14 +1581,58 @@ mod tests {
         assert_eq!(dev.remaining_failures, 0);
     }
 
+    #[cfg(feature = "ext4")]
     #[test]
-    fn axtest_protected_regions_include_detected_raw_filesystem() {
-        let raw_filesystem_region = BlockRegion::new(0, 8_192);
-        let table_metadata = [crate::volume::BlockRegion::new(0, 1)];
+    fn raw_filesystem_protection_uses_the_production_scan_and_probe_chain() {
+        let mut dev = FlakyMetadataDevice::new(0).with_raw_ext4_magic();
+        let mut reader = VolumeReader::new(&mut dev);
+        let scan = scan_volumes(&mut reader, DiskId(0)).unwrap();
+        drop(reader);
 
+        let (raw_filesystem, raw_filesystem_region, raw_probe_unknown, partitions) =
+            collect_partitions(&mut dev, scan.volumes);
+        let protected = axtest_protected_regions(
+            &partitions,
+            raw_filesystem_region,
+            raw_probe_unknown,
+            &scan.table_metadata,
+        );
+
+        assert_eq!(raw_filesystem, Some(FilesystemKind::Ext4));
+        assert_eq!(raw_filesystem_region, Some(BlockRegion::new(0, 16)));
+        assert!(!raw_probe_unknown);
         assert_eq!(
-            axtest_protected_regions(&[], Some(raw_filesystem_region), &table_metadata),
-            vec![raw_filesystem_region, BlockRegion::new(0, 1)]
+            protected,
+            Some(vec![BlockRegion::new(0, 16), BlockRegion::new(0, 1)])
+        );
+    }
+
+    #[cfg(feature = "ext4")]
+    #[test]
+    fn raw_filesystem_probe_failure_remains_unknown_after_device_recovery() {
+        let mut dev = FlakyMetadataDevice::new(0)
+            .with_raw_ext4_magic()
+            .fail_next_raw_filesystem_probe();
+        let mut reader = VolumeReader::new(&mut dev);
+        let scan = scan_volumes(&mut reader, DiskId(0)).unwrap();
+        drop(reader);
+
+        let (raw_filesystem, raw_filesystem_region, raw_probe_unknown, partitions) =
+            collect_partitions(&mut dev, scan.volumes);
+        let protected = axtest_protected_regions(
+            &partitions,
+            raw_filesystem_region,
+            raw_probe_unknown,
+            &scan.table_metadata,
+        );
+
+        assert_eq!(raw_filesystem, None);
+        assert_eq!(raw_filesystem_region, None);
+        assert!(raw_probe_unknown);
+        assert_eq!(protected, None);
+        assert_eq!(
+            detect_filesystem(&mut dev, BlockRegion::new(0, 16)),
+            Ok(Some(FilesystemKind::Ext4))
         );
     }
 

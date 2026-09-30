@@ -143,25 +143,28 @@ fn shutdown_registered_filesystems() -> axfs_ng_vfs::VfsResult {
 pub(crate) fn detect_filesystem(
     dev: &mut dyn crate::block::FsBlockDevice,
     region: BlockRegion,
-) -> Option<FilesystemKind> {
+) -> BlockResult<Option<FilesystemKind>> {
     #[cfg(not(any(feature = "ext4", feature = "fat")))]
     let _ = (&mut *dev, region);
 
     #[cfg(feature = "ext4")]
-    if region_has_ext4(dev, region) {
-        return Some(FilesystemKind::Ext4);
+    if region_has_ext4(dev, region)? {
+        return Ok(Some(FilesystemKind::Ext4));
     }
 
     #[cfg(feature = "fat")]
-    if region_has_fat(dev, region) {
-        return Some(FilesystemKind::Fat);
+    if region_has_fat(dev, region)? {
+        return Ok(Some(FilesystemKind::Fat));
     }
 
-    None
+    Ok(None)
 }
 
 #[cfg(feature = "ext4")]
-fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_ext4(
+    dev: &mut dyn crate::block::FsBlockDevice,
+    region: BlockRegion,
+) -> BlockResult<bool> {
     const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
     const EXT4_MAGIC_OFFSET: usize = 0x38;
     const EXT4_MAGIC: u16 = 0xEF53;
@@ -174,28 +177,29 @@ fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegio
 }
 
 #[cfg(feature = "fat")]
-fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_fat(
+    dev: &mut dyn crate::block::FsBlockDevice,
+    region: BlockRegion,
+) -> BlockResult<bool> {
     const FAT16_MAGIC: &[u8; 5] = b"FAT16";
     const FAT32_MAGIC: &[u8; 5] = b"FAT32";
     let start_lba = region.start_lba;
     let visible_blocks = region.num_blocks();
     if visible_blocks == 0 {
-        return false;
+        return Ok(false);
     }
 
     let block_size = dev.block_size();
     if block_size < 512 {
-        return false;
+        return Ok(false);
     }
 
     let mut buf = alloc::vec![0u8; block_size];
-    if dev.read_block(start_lba, &mut buf).is_err() {
-        return false;
-    }
+    dev.read_block(start_lba, &mut buf)?;
 
-    buf.get(510..512) == Some([0x55, 0xAA].as_slice())
+    Ok(buf.get(510..512) == Some([0x55, 0xAA].as_slice())
         && (buf.get(54..59) == Some(FAT16_MAGIC.as_slice())
-            || buf.get(82..87) == Some(FAT32_MAGIC.as_slice()))
+            || buf.get(82..87) == Some(FAT32_MAGIC.as_slice())))
 }
 
 #[cfg(feature = "ext4")]
@@ -204,10 +208,10 @@ fn region_has_magic_u16(
     region: BlockRegion,
     byte_offset: usize,
     magic: u16,
-) -> bool {
+) -> BlockResult<bool> {
     let block_size = dev.block_size();
     if block_size == 0 {
-        return false;
+        return Ok(false);
     }
 
     let start_lba = region.start_lba;
@@ -215,24 +219,22 @@ fn region_has_magic_u16(
     let block_index = byte_offset / block_size;
     let within_block = byte_offset % block_size;
     if visible_blocks == 0 || within_block + 2 > block_size {
-        return false;
+        return Ok(false);
     }
 
     let Some(block_index_u64) = u64::try_from(block_index).ok() else {
-        return false;
+        return Ok(false);
     };
     let Some(end_lba) = start_lba.checked_add(visible_blocks) else {
-        return false;
+        return Ok(false);
     };
     let block_id = match start_lba.checked_add(block_index_u64) {
         Some(block_id) if block_id < end_lba => block_id,
-        _ => return false,
+        _ => return Ok(false),
     };
 
     let mut buf = alloc::vec![0u8; block_size];
-    if dev.read_block(block_id, &mut buf).is_err() {
-        return false;
-    }
+    dev.read_block(block_id, &mut buf)?;
 
-    u16::from_le_bytes([buf[within_block], buf[within_block + 1]]) == magic
+    Ok(u16::from_le_bytes([buf[within_block], buf[within_block + 1]]) == magic)
 }
