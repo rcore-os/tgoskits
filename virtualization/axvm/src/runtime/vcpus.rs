@@ -612,7 +612,12 @@ fn vcpu_run() {
                 VcpuRunAction {
                     waits_for_event: true,
                     ..
-                } => CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
+                } => run_waits_for_event(
+                    vcpu_id,
+                    &runtime,
+                    || poll_vm_devices(&vm),
+                    || CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
+                ),
                 VcpuRunAction { .. } => {}
             }
         }
@@ -698,6 +703,32 @@ fn poll_primary_vcpu_devices_with(runtime: &VmRuntimeHandle, poll_devices: impl 
     consumed_request
 }
 
+/// Handles a `waits_for_event` vCPU exit.
+///
+/// vCPU0 owns VM-wide device polling. A virtio-blk MMIO queue notify is handled
+/// inside the guest run slice and only leaves device-local pending work (the
+/// device's own `queue_pending` flag); it does not publish a VM-wide
+/// `device_poll_requested`. That work is drained by the DMA device poll, so the
+/// poll at the top of the run loop can have run before the notify and never see
+/// it. Parking here without polling again would leave the deferred queue
+/// unprocessed, the file worker without a request, and no completion wake to
+/// arrive. The primary vCPU therefore advances pollable and DMA devices
+/// unconditionally before the architecture wait, independently of whether a
+/// runtime poll request was published. Secondary vCPUs never poll here, keeping
+/// vCPU0 the single VM-wide poll owner rather than spreading producer-side
+/// polling across vCPUs.
+fn run_waits_for_event(
+    vcpu_id: usize,
+    runtime: &VmRuntimeHandle,
+    poll_devices: impl FnOnce(),
+    wait_for_event: impl FnOnce(),
+) {
+    if vcpu_id == 0 {
+        let _ = poll_primary_vcpu_devices_with(runtime, poll_devices);
+    }
+    wait_for_event();
+}
+
 pub(super) fn poll_vm_devices(vm: &VMRef) {
     poll_vm_input_devices(vm);
     poll_vm_dma_devices(vm);
@@ -775,6 +806,51 @@ mod tests {
         }));
         assert_eq!(poll_count.get(), 2);
         notifier.join().unwrap();
+    }
+
+    #[test]
+    fn primary_vcpu_polls_devices_before_the_architecture_wait_without_a_runtime_request() {
+        let runtime = VmRuntimeHandle::new();
+        // A virtio-blk queue notify inside the run slice only leaves
+        // device-local pending work; it publishes no runtime poll request, so
+        // the wait path must poll unconditionally.
+        assert!(
+            !runtime.device_poll_requested(),
+            "the regression window starts with no VM-wide poll request"
+        );
+        let order = std::cell::RefCell::new(Vec::new());
+
+        run_waits_for_event(
+            0,
+            &runtime,
+            || order.borrow_mut().push("poll"),
+            || order.borrow_mut().push("wait"),
+        );
+
+        assert_eq!(
+            *order.borrow(),
+            ["poll", "wait"],
+            "the primary vCPU must advance device-local work before it waits"
+        );
+    }
+
+    #[test]
+    fn secondary_vcpu_waits_without_running_vm_wide_device_poll() {
+        let runtime = VmRuntimeHandle::new();
+        let order = std::cell::RefCell::new(Vec::new());
+
+        run_waits_for_event(
+            1,
+            &runtime,
+            || order.borrow_mut().push("secondary-poll"),
+            || order.borrow_mut().push("wait"),
+        );
+
+        assert_eq!(
+            *order.borrow(),
+            ["wait"],
+            "a secondary vCPU must not run VM-wide device polling"
+        );
     }
 
     #[test]
