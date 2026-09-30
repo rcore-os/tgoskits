@@ -36,9 +36,75 @@ mod network_console;
 // These cases exercise the mux-to-network boundary through the stub above and
 // therefore must live beside the harness assembly instead of `mux/tests.rs`
 // (the binary is also compiled with `--cfg axtest` and has no network console).
-#[axtest::tests]
+fn prepare_filesystem() {
+    for path in ["/tmp", "/var", "/run"] {
+        std::fs::create_dir_all(path).expect("prepare memory-root test directory");
+    }
+    ax_fs_ng::current_fs_context()
+        .lock()
+        .symlink(
+            "/run",
+            "/var/run",
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .expect("prepare directory symlink fixture");
+}
+
+#[axtest::tests(setup = prepare_filesystem)]
 mod tests {
+    use ax_fs_ng::vfs::FsContext;
+    use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
     use axtest::prelude::*;
+    use axvisor::builtin::selected_configs;
+
+    #[test]
+    fn user_configs_override_defaults_and_invalid_user_configs_stop_loading() {
+        let context =
+            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        for path in [
+            "/guest",
+            "/guest/builtin",
+            "/guest/builtin/configs",
+            "/guest/vm_default",
+        ] {
+            context
+                .create_dir(
+                    path,
+                    NodePermission::from_bits_truncate(0o755),
+                    0,
+                    0,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+        }
+        let builtin = "[base]\nid=1\nname='builtin'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\n[devices]\n";
+        let user = builtin.replace("builtin'", "user'").replace("id=1", "id=2");
+        context
+            .write("/guest/builtin/configs/default.toml", builtin)
+            .unwrap();
+        ax_assert_eq!(
+            selected_configs(&context).unwrap(),
+            alloc::vec![builtin.to_owned()]
+        );
+        context
+            .write("/guest/vm_default/custom.toml", &user)
+            .unwrap();
+        ax_assert_eq!(selected_configs(&context).unwrap(), alloc::vec![user]);
+        context.write("/guest/vm_default/custom.toml", "").unwrap();
+        ax_assert!(selected_configs(&context).is_err());
+        context
+            .remove_file(
+                "/guest/vm_default/custom.toml",
+                &MutationCredentials::root(),
+            )
+            .unwrap();
+        ax_assert_eq!(
+            selected_configs(&context).unwrap(),
+            alloc::vec![builtin.to_owned()]
+        );
+    }
 
     fn remove_guest_console(vm_id: usize) {
         use crate::guest_console_harness::mux;

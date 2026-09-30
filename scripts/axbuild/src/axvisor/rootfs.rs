@@ -32,6 +32,9 @@ struct VmRootfsProbe {
 struct VmKernelRootfsProbe {
     kernel_path: Option<String>,
     ramdisk_path: Option<String>,
+    dtb_path: Option<String>,
+    bios_path: Option<String>,
+    uefi_firmware_path: Option<String>,
 }
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
@@ -271,9 +274,15 @@ fn guest_image_references(
         let Some(kernel) = probe.kernel else {
             continue;
         };
-        for kernel_path in [kernel.kernel_path, kernel.ramdisk_path]
-            .into_iter()
-            .flatten()
+        for kernel_path in [
+            kernel.kernel_path,
+            kernel.ramdisk_path,
+            kernel.dtb_path,
+            kernel.bios_path,
+            kernel.uefi_firmware_path,
+        ]
+        .into_iter()
+        .flatten()
         {
             let required_path =
                 resolve_vm_asset_path(vmconfig, workspace_root, target_dir, &kernel_path);
@@ -523,7 +532,13 @@ mod tests {
     #[tokio::test]
     async fn qemu_assets_prepare_guest_bundle_referenced_by_vm_config() {
         let root = tempdir().unwrap();
-        let archive = make_tar_gz(&[("linux/linux-qemu", b"kernel"), ("linux/initrd", b"initrd")]);
+        let archive = make_tar_gz(&[
+            ("linux/linux-qemu", b"kernel"),
+            ("linux/initrd", b"initrd"),
+            ("linux/guest.dtb", b"dtb"),
+            ("linux/bios", b"bios"),
+            ("linux/firmware", b"firmware"),
+        ]);
         let archive_url = test_support::register_bytes("qemu-aarch64.tar.gz", archive.clone());
         let registry = crate::image::registry::ImageRegistry {
             images: vec![ImageEntry {
@@ -557,6 +572,9 @@ mod tests {
 [kernel]
 kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
 ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
+dtb_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/guest.dtb"
+bios_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/bios"
+uefi_firmware_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/firmware"
 "#,
         )
         .unwrap();
@@ -570,6 +588,16 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
         let guest_initrd = target_dir.join("axbuild/images/qemu-aarch64/linux/initrd");
         assert_eq!(fs::read(&guest_kernel).unwrap(), b"kernel");
         assert_eq!(fs::read(&guest_initrd).unwrap(), b"initrd");
+        for (name, contents) in [
+            ("guest.dtb", b"dtb".as_slice()),
+            ("bios", b"bios"),
+            ("firmware", b"firmware"),
+        ] {
+            assert_eq!(
+                fs::read(guest_kernel.parent().unwrap().join(name)).unwrap(),
+                contents
+            );
+        }
 
         let default_rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
         fs::create_dir_all(default_rootfs.parent().unwrap()).unwrap();
@@ -580,6 +608,16 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
 
         assert_eq!(fs::read(guest_kernel).unwrap(), b"kernel");
         assert_eq!(fs::read(guest_initrd).unwrap(), b"initrd");
+        let config = &request.vmconfigs[0];
+        let original = fs::read_to_string(config).unwrap();
+        for name in ["guest.dtb", "bios", "firmware"] {
+            fs::write(config, original.replace(name, "missing-asset")).unwrap();
+            let error = ensure_guest_image_bundles(&request, root.path(), &target_dir)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("missing-asset"));
+        }
+        fs::write(config, original).unwrap();
     }
 
     #[test]
