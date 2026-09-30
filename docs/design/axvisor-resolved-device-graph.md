@@ -53,9 +53,9 @@ path = "/images/data.raw"
 filesystem = "ext4"
 ```
 
-此文件后端示例要求 Axvisor 宿主文件系统内已经存在一个长度为 20 GiB 的 ext4 镜像；`path` 不是开发机路径或客户机挂载路径。`virtio_blk::options::parse_backend()` 在省略 `backend` 时仍选择 `file`，`parse_file_backend()` 要求显式填写 `filesystem = "ext4"`，缺失或填写其他值会使设备实例化失败。迁移旧配置时，无论原来写了 `backend = "file"` 还是省略了 `backend`，都需要补上该字段，并在启动前准备好已有文件系统的镜像。
+此文件后端示例要求 Axvisor 宿主文件系统内已经存在一个长度为 20 GiB 的 ext4 镜像；`path` 不是开发机路径或客户机挂载路径。`virtio_blk::options::parse_backend()` 在省略 `backend` 时仍选择 `file`，`parse_file_backend()` 要求显式填写 `filesystem = "ext4"` 或 `image_format = "raw"`，并拒绝同时填写。前者验证 ext4 超级块，后者把 GPT＋ESP 等整盘镜像作为原始扇区暴露给客户机。迁移旧配置时需要补上合适的格式字段，并在启动前准备已有镜像。
 
-`virtio_blk::image::inspect_file_image()` 要求镜像非空、文件长度为 512 字节的整数倍，并校验 ext4 超级块和文件系统大小；该校验不替代完整文件系统检查。`capacity` 可省略，省略时采用实际文件长度；显式容量必须等于文件长度，不再触发创建文件、格式化或扩缩容。原来依赖自动创建或调整容量的流程，需要在宿主侧先准备镜像，再更新容量配置。使用 `backend = "ramdisk"` 时不要填写 `path` 或 `filesystem`。
+`virtio_blk::image::inspect_file_image()` 要求镜像非空、文件长度为 512 字节的整数倍；ext4 格式还校验超级块和文件系统大小，raw 格式的 GPT/ESP 内容应在资产准备时校验。`capacity` 可省略，省略时采用实际文件长度；显式容量必须等于文件长度，不再触发创建文件、格式化或扩缩容。原来依赖自动创建或调整容量的流程，需要在宿主侧先准备镜像，再更新容量配置。使用 `backend = "ramdisk"` 时不要填写 `path`、`filesystem` 或 `image_format`。
 
 `VirtualDeviceRequest` 只保留稳定 ID、规范 model 名和剩余 TOML table。它禁止用户填写 MMIO、PIO、IRQ、MSI 或 LPI 数字。catalog 中的 `ConfiguredModelRegistration` 保存规范 model 名和普通构造函数指针；构造函数使用带 `deny_unknown_fields` 的类型化结构解析 options，并直接返回 `DeviceNodeSpec`。未知 model、重复注册、重复设备 ID 和未知选项都明确失败，不存在额外 factory trait 或 instance 包装层。
 

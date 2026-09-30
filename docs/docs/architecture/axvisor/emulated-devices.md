@@ -568,18 +568,18 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 | `uart16550-mmio` | 16550 MMIO 设备，wired IRQ，串口 service/固件元数据 | 同上 |
 | `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `address`、`clock_hz`、`backend` |
 | `ivc-channel` | IVC aperture allocator service + wired notify endpoint service | options 为空且拒绝未知字段 |
-| `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；PCI transport 当前只接受同步 ramdisk | `transport`、`capacity`/`capacity_sectors`、`backend`、`path`、`read_only`、`filesystem`（file 后端必填 `ext4`） |
+| `virtio-blk` | VirtIO MMIO/PCI block runtime + DMA grant/poller；PCI file 后端使用异步文件 I/O | `transport`、`capacity`/`capacity_sectors`、`backend`、`path`、`read_only`、`filesystem` 或 `image_format` |
 | `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac` |
 
 串口的 `address` 是 model 专有整数选项，仅固定该串口的 MMIO/PIO 基址，范围与冲突由设备图校验；不开放通用设备裸地址。`console0` 默认采用宿主选定串口或 machine profile 固定资源；配置 `address` 后 IRQ 自动分配，不沿用宿主节点身份。额外串口省略 `address` 时仍从自动池分配。串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
 
 `ivc-channel` 不注册可直接读写的 `Device`；它通过 service 提供共享 MMIO aperture 分配器和 notify endpoint。判断 IVC 是否生效不能只看 `device_count()`。
 
-virtio-blk/net 的 model、transport、DMA 接线、IRQ 和 backend glue 都由 AxVM 拥有；Axvisor 不再维护单独的 `virtual_devices` 模块或 model registration。virtio-blk 默认仍是 MMIO；指定 `transport = "pci"` 时必须使用 `backend = "ramdisk"`，由同一 resolved PCI topology 分配 BAR0 和 INTA，并在 endpoint bundle 中注册 `DmaGrant`。MMIO/PCI 资源均按 graph ID 确定性规划，固件节点与实例一一对应。
+virtio-blk/net 的 model、transport、DMA 接线、IRQ 和 backend glue 都由 AxVM 拥有；Axvisor 不再维护单独的 `virtual_devices` 模块或 model registration。virtio-blk 默认仍是 MMIO；指定 `transport = "pci"` 时可以使用 `ramdisk` 或 `file` 后端，由同一 resolved PCI topology 分配 BAR0 和 INTA，并在 endpoint bundle 中注册 `DmaGrant`。MMIO/PCI 资源均按 graph ID 确定性规划，固件节点与实例一一对应。
 
 `VirtioBlockRequestCore` 统一执行后端生命周期契约：保留的请求先检查 `BlockBackend::pending_request_ready()`，成功或失败终结时调用 `cancel_pending_request()`，描述符校验提前失败也必须取消旧操作。MMIO 与 PCI transport 复位均通过请求核心调用后端 `reset()`，避免旧异步结果被新请求消费。MMIO 中断通过 `synchronize_interrupt_line()` 跟随未确认的 interrupt status，资源声明保持电平触发。
 
-virtio-blk 省略 `backend` 时默认使用 `file`。文件后端必须显式配置 `filesystem = "ext4"`，目前不接受其他值，也不提供文件系统类型默认值。`path` 是 Axvisor 宿主文件系统中的镜像路径，省略时使用 `/tmp/<设备 id>.img`。文件必须已存在、非空且长度按 512 字节对齐；超级块校验失败会终止设备实例化，不会自动创建文件或格式化。仅使用 `backend = "ramdisk"` 时无需镜像文件，且禁止配置 `path` 和 `filesystem`。
+virtio-blk 省略 `backend` 时默认使用 `file`。文件后端必须在 `filesystem = "ext4"` 与 `image_format = "raw"` 中选一个；两者同时填写会报配置错误，也没有默认格式。`ext4` 会验证超级块，`raw` 则把整个文件按扇区原样暴露给客户机，可承载 GPT＋ESP；Axvisor 不解析 GPT 或 FAT。`path` 是 Axvisor 宿主文件系统中的镜像路径，省略时使用 `/tmp/<设备 id>.img`。文件必须已存在、非空且长度按 512 字节对齐；不会自动创建文件或格式化。`ramdisk` 不使用镜像文件，禁止配置 `path`、`filesystem` 和 `image_format`。
 
 迁移旧 file 配置（包括省略 `backend` 的配置）时，补上 `filesystem = "ext4"`，并在启动前将已有 ext4 镜像放入宿主文件系统。文件后端省略容量时采用文件实际长度；显式 `capacity` 或 `capacity_sectors` 必须与实际长度一致，两者不能同时填写。原来依赖自动创建或调整文件长度的配置需要先在宿主侧准备镜像、核对容量；本实现不执行扩缩容。`ramdisk` 的默认容量仍为 2 MiB。文件后端基础校验与客户机挂载时的文件系统检查是两个阶段，不保证整个 ext4 镜像没有损坏。
 
