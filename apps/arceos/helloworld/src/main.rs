@@ -2,6 +2,8 @@
 use ax_std as _;
 
 fn main() {
+    #[cfg(any(feature = "cmdline-smoke", feature = "initramfs-smoke"))]
+    println!("HOST_CMDLINE: {}", ax_hal::boot::bootargs().unwrap_or(""));
     #[cfg(feature = "initramfs-smoke")]
     {
         match ax_fs_ng::root::root_kind().expect("root filesystem selected") {
@@ -25,7 +27,5 @@ fn main() {
             }
         }
     }
-    #[cfg(any(feature = "cmdline-smoke", feature = "initramfs-smoke"))]
-    println!("HOST_CMDLINE: {}", ax_hal::boot::bootargs().unwrap_or(""));
     println!("Hello, world!");
 }
