@@ -256,9 +256,6 @@ STAGING_DIR="$TARGET_DIR/axbuild/board-assets/asus-nuc15crh-linux"
 mkdir -p "$STAGING_DIR"
 target/debug/tg-xtask image pull qemu-x86_64 --extract-dir "$STAGING_DIR"
 target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir "$STAGING_DIR"
-gzip -dc \
-  "$STAGING_DIR/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz" \
-  > "$STAGING_DIR/initramfs-x86_64-busybox.cpio"
 target/debug/tg-xtask axvisor test board --board asus-nuc15crh-linux
 '''
 

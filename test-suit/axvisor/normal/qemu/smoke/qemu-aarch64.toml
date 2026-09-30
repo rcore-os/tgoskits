@@ -105,7 +105,7 @@ timeout = 60
 
 [[shell_check_steps]]
 shell_cmd = "cat /mnt/v/etc/alpine-release"
-success_regex = ['(?m)^3\.23\.5\s*$']
+success_regex = ['(?m)^3\.23\.6\s*$']
 fail_regex = ['cat:']
 timeout = 60
 

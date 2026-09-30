@@ -27,5 +27,5 @@ disabled = [{ path = "/soc/pci@30000000" }]
 [[devices.virtual]]
 id = "virtblk0"
 model = "virtio-blk"
-path = "/guest/rootfs-riscv64-alpine.img"
+path = "/guest/rootfs-riscv64-alpine-0.img"
 filesystem = "ext4"
