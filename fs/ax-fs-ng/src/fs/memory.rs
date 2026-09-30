@@ -1049,7 +1049,7 @@ mod tests {
             assert!(lifetime.upgrade().is_some());
             drop(file);
             assert!(lifetime.upgrade().is_none());
-            assert_eq!(pages.dealloc_count(), 0, "mapped page remains pinned");
+            assert_eq!(pages.alloc_count() - pages.dealloc_count(), 1, "mapped page remains pinned");
             drop(pin);
             assert_eq!(pages.dealloc_count(), pages.alloc_count());
         });
