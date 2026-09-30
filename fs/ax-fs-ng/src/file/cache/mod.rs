@@ -1004,7 +1004,6 @@ impl CachedFile {
 
     /// Marks one cached mmap page dirty through the shared cached-I/O protocol.
     pub fn mark_mmap_dirty_page(&self, pn: u32) -> VfsResult<()> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         if self.in_memory {
             return Ok(());
         }
@@ -1187,7 +1186,6 @@ impl CachedFile {
     /// Writes `buf` to the file at `offset`.
     pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
         let _layout = self.shared.mapping_layout_lock.lock();
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let mut update = self.shared.lock_for_update();
         self.write_at_locked(buf, offset, &mut update)
     }
@@ -1195,7 +1193,6 @@ impl CachedFile {
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
         let _layout = self.shared.mapping_layout_lock.lock();
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let mut update = self.shared.lock_for_update();
         let len = self.shared.len();
         self.write_at_locked(buf, len, &mut update)
