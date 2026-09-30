@@ -686,13 +686,18 @@ impl RedistributorState {
         self.sgi_sources[sgi.raw() as usize]
     }
 
-    pub(crate) fn clear_sgi_sources(&mut self, sgi: SgiId, mask: u8) -> bool {
+    pub(crate) fn clear_sgi_sources(
+        &mut self,
+        sgi: SgiId,
+        mask: u8,
+        cpu_interface_loaded: bool,
+    ) -> bool {
         self.sgi_sources[sgi.raw() as usize] &= !mask;
         let empty = !self.has_sgi_sources(sgi);
         if empty {
             let intid = IntId::Sgi(sgi);
             self.private_interrupts[sgi.raw() as usize].set_pending(false);
-            if self.withdraw_pending_delivery(intid, false) {
+            if self.withdraw_pending_delivery(intid, cpu_interface_loaded) {
                 self.private_interrupts[sgi.raw() as usize].cancel_inflight();
             }
         }
