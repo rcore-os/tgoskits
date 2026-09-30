@@ -431,6 +431,14 @@ Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_ex
 确认提示符后仍须执行用例命令并检查成功标记；该测试模式不证明 OpenRC
 生命周期或完整的终端作业控制。普通启动的可选 cmdline 仍可省略。
 
+U-Boot 回显命令在中途缺字、尾部丢失或重试内容交错时，先区分固件命令行
+长度限制与串口输入未被消费。宿主 `write_all`、`flush` 成功不能证明目标已
+处理输入；`uboot-shell 0.2.9` 的 `UbootShell::cmd` 在回显开启的控制台中逐字节
+等待设备确认，缺失回显时中断并重新取得提示符，不盲目重复整行。核对完整
+`setenv bootargs` 的回显、`printenv bootargs` 和内核实际 cmdline；不要通过
+缩短有效 cmdline 或恢复服务端持锁 `tcdrain` 掩盖输入流控制问题。该修复不
+改变固件自身的命令行容量，YMODEM 二进制传输也不走命令回显路径。
+
 宿主归档的构建、交接、预留、解包、根选择与回收顺序见
 [`docs/design/host-initramfs.md`](../../../../docs/design/host-initramfs.md)。
 诊断 QEMU `-initrd`、FIT ramdisk 或 UEFI/HTTP Boot 时，先区分宿主归档与
