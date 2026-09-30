@@ -45,7 +45,7 @@ static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<axfs_ng_vfs::WeakFilesystem>>
 
 fn register_mounted_filesystem(fs: Filesystem) {
     let mut registry = MOUNTED_FILESYSTEMS.lock();
-    registry.retain(|entry| entry.upgrade().is_some());
+    registry.retain(axfs_ng_vfs::WeakFilesystem::is_alive);
     registry.push(fs.downgrade());
 }
 
