@@ -147,6 +147,7 @@ fn validate_known_options(request: &VirtualDeviceRequest) -> Result<(), Configur
                 | "path"
                 | "read_only"
                 | "filesystem"
+                | "image_format"
         ) {
             return Err(invalid_options(
                 request,
