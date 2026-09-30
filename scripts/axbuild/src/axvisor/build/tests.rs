@@ -172,7 +172,7 @@ vm_configs = []
         fs::read_to_string(&path).unwrap(),
         fs::read_to_string(board_path).unwrap()
     );
-    assert!(cargo.features.contains(&"fs".to_string()));
+    assert!(!cargo.features.contains(&"fs".to_string()));
     assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));

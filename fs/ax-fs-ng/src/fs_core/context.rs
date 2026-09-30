@@ -295,7 +295,7 @@ impl FsContext {
             .as_ref()
             .map(Location::absolute_path)
             .transpose()?;
-        let new_root_loc = new_ns.root_mount().root_location();
+        let new_root_loc = new_ns.root_mount().root_location().resolve_mountpoint();
         let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
         let root_dir = resolver.resolve(root_path)?;
         let current_dir = resolver.resolve(current_path)?;

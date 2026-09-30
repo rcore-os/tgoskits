@@ -20,6 +20,16 @@ pub fn install_directory(
     path: &str,
     validate: impl Fn(&FsContext, &str) -> VfsResult<()>,
 ) -> VfsResult<bool> {
+    install_with_flush(source, target, path, validate, &flush)
+}
+
+fn install_with_flush(
+    source: &FsContext,
+    target: &FsContext,
+    path: &str,
+    validate: impl Fn(&FsContext, &str) -> VfsResult<()>,
+    flush: &dyn Fn(&FsContext) -> VfsResult<()>,
+) -> VfsResult<bool> {
     if !path.starts_with('/')
         || path.ends_with('/')
         || path.split('/').any(|p| matches!(p, "." | ".."))
@@ -28,7 +38,7 @@ pub fn install_directory(
     }
     let stage = format!("{path}.new");
     let backup = format!("{path}.old");
-    recover(target, path, &stage, &backup, &validate)?;
+    recover(target, path, &stage, &backup, &validate, flush)?;
     if !exists(source, path)? {
         return Ok(false);
     }
@@ -41,7 +51,7 @@ pub fn install_directory(
         copy_tree(source, path, target, &stage)?;
         validate(target, &stage)?;
         flush(target)?;
-        publish(target, path, &stage, &backup)?;
+        publish(target, path, &stage, &backup, flush)?;
         Ok(true)
     })();
     if result.is_err() {
@@ -78,6 +88,7 @@ fn recover(
     stage: &str,
     backup: &str,
     validate: &impl Fn(&FsContext, &str) -> VfsResult<()>,
+    flush: &dyn Fn(&FsContext) -> VfsResult<()>,
 ) -> VfsResult<()> {
     if exists(target, backup)? {
         if exists(target, path)? {
@@ -95,7 +106,13 @@ fn recover(
     remove_tree(target, stage)
 }
 
-fn publish(target: &FsContext, path: &str, stage: &str, backup: &str) -> VfsResult<()> {
+fn publish(
+    target: &FsContext,
+    path: &str,
+    stage: &str,
+    backup: &str,
+    flush: &dyn Fn(&FsContext) -> VfsResult<()>,
+) -> VfsResult<()> {
     let installed = exists(target, path)?;
     let exchange = installed && target.root_dir().filesystem().name() == "ext4";
     if exchange {
@@ -231,131 +248,12 @@ fn remove_tree(context: &FsContext, path: &str) -> VfsResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::cell::Cell;
 
     use axfs_ng_vfs::Mountpoint;
 
     use super::*;
     use crate::MemoryFs;
-
-    struct FailingFlush {
-        self_ref: alloc::sync::Weak<Self>,
-        inner: axfs_ng_vfs::Filesystem,
-        name: &'static str,
-        calls: AtomicUsize,
-        fail_at: AtomicUsize,
-    }
-
-    impl axfs_ng_vfs::FilesystemOps for FailingFlush {
-        fn name(&self) -> &str {
-            self.name
-        }
-        fn root_dir(&self) -> axfs_ng_vfs::DirEntry {
-            axfs_ng_vfs::DirEntry::new_dir(
-                |_| {
-                    axfs_ng_vfs::DirNode::new(Arc::new(FailingRoot {
-                        owner: self.self_ref.upgrade().unwrap(),
-                        inner: self.inner.root_dir(),
-                    }))
-                },
-                axfs_ng_vfs::Reference::root(),
-            )
-        }
-        fn stat(&self) -> VfsResult<axfs_ng_vfs::StatFs> {
-            self.inner.stat()
-        }
-        fn flush(&self) -> VfsResult<()> {
-            let count = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
-            if count == self.fail_at.load(Ordering::Relaxed) {
-                Err(VfsError::Io)
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    // Only the superblock flush boundary is faulted; directory mutations and
-    // file contents still execute the real MemoryFs implementation.
-    struct FailingRoot {
-        owner: Arc<FailingFlush>,
-        inner: axfs_ng_vfs::DirEntry,
-    }
-    impl axfs_ng_vfs::NodeOps for FailingRoot {
-        fn inode(&self) -> u64 {
-            self.inner.inode()
-        }
-        fn metadata(&self) -> VfsResult<axfs_ng_vfs::Metadata> {
-            self.inner.metadata()
-        }
-        fn update_metadata(&self, update: axfs_ng_vfs::MetadataUpdate) -> VfsResult<()> {
-            self.inner.update_metadata(update)
-        }
-        fn filesystem(&self) -> &dyn axfs_ng_vfs::FilesystemOps {
-            self.owner.as_ref()
-        }
-        fn sync(&self, data_only: bool) -> VfsResult<()> {
-            self.inner.sync(data_only)
-        }
-        fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
-            self
-        }
-    }
-    impl axfs_ng_vfs::DirNodeOps for FailingRoot {
-        fn read_dir(
-            &self,
-            cursor: axfs_ng_vfs::DirectoryCursor,
-            sink: &mut dyn axfs_ng_vfs::DirEntrySink,
-        ) -> VfsResult<usize> {
-            self.inner.as_dir()?.read_dir(cursor, sink)
-        }
-        fn lookup(&self, name: &str) -> VfsResult<axfs_ng_vfs::DirEntry> {
-            self.inner.as_dir()?.lookup(name)
-        }
-        fn create(
-            &self,
-            name: &str,
-            node_type: NodeType,
-            permission: NodePermission,
-            uid: u32,
-            gid: u32,
-        ) -> VfsResult<axfs_ng_vfs::DirEntry> {
-            self.inner
-                .as_dir()?
-                .create(name, node_type, permission, uid, gid)
-        }
-        fn create_symlink(
-            &self,
-            name: &str,
-            target: &str,
-            permission: NodePermission,
-            uid: u32,
-            gid: u32,
-        ) -> VfsResult<axfs_ng_vfs::DirEntry> {
-            self.inner
-                .as_dir()?
-                .create_symlink(name, target, permission, uid, gid)
-        }
-        fn link(
-            &self,
-            name: &str,
-            node: &axfs_ng_vfs::DirEntry,
-        ) -> VfsResult<axfs_ng_vfs::DirEntry> {
-            self.inner.as_dir()?.link(name, node)
-        }
-        fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-            self.inner.as_dir()?.unlink(name, is_dir)
-        }
-        fn rename(
-            &self,
-            from: &str,
-            dir: &axfs_ng_vfs::DirNode,
-            to: &str,
-            options: RenameOptions,
-        ) -> VfsResult<()> {
-            self.inner.as_dir()?.rename(from, dir, to, options)
-        }
-    }
 
     fn context() -> FsContext {
         FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
@@ -431,24 +329,32 @@ mod tests {
     #[test]
     fn failed_publication_flush_restores_the_installed_directory() {
         crate::os::memory::test_support::with_test_page_provider(true, |_| {
-            for (name, fail_at) in [("fat", 2), ("fat", 3)] {
+            for fail_at in [2, 3] {
                 let source = context();
                 mkdir_parents(&source, "/guest/builtin").unwrap();
                 write(&source, "/guest/builtin/new", b"new");
-                let failure = Arc::new_cyclic(|self_ref| FailingFlush {
-                    self_ref: self_ref.clone(),
-                    inner: MemoryFs::new(),
-                    name,
-                    calls: AtomicUsize::new(0),
-                    fail_at: AtomicUsize::new(0),
-                });
-                let filesystem = axfs_ng_vfs::Filesystem::new(failure.clone());
-                let target = FsContext::new(Mountpoint::new_root(&filesystem).root_location());
+                let target = context();
+                let calls = Cell::new(0);
+                let failing_flush = |context: &FsContext| {
+                    flush(context)?;
+                    calls.set(calls.get() + 1);
+                    if calls.get() == fail_at {
+                        Err(VfsError::Io)
+                    } else {
+                        Ok(())
+                    }
+                };
                 mkdir_parents(&target, "/guest/builtin").unwrap();
                 write(&target, "/guest/builtin/old", b"old");
                 failure.fail_at.store(fail_at, Ordering::Relaxed);
                 assert_eq!(
-                    install_directory(&source, &target, "/guest/builtin", |_, _| Ok(())),
+                    install_with_flush(
+                        &source,
+                        &target,
+                        "/guest/builtin",
+                        |_, _| Ok(()),
+                        &failing_flush
+                    ),
                     Err(VfsError::Io)
                 );
                 assert_eq!(target.read("/guest/builtin/old").unwrap(), b"old");

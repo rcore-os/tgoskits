@@ -1008,8 +1008,8 @@ impl Location {
             .contains_key(&self.entry.key())
     }
 
-    /// See [`Mountpoint::effective_mountpoint`].
-    fn resolve_mountpoint(self) -> Self {
+    /// Follows mounts stacked directly over this location.
+    pub fn resolve_mountpoint(self) -> Self {
         let Some(mountpoint) = self
             .mountpoint
             .children
