@@ -607,14 +607,6 @@ fn filesystem_uses_unbounded_page_cache(name: &str) -> bool {
 }
 
 impl CachedFile {
-    #[cfg(feature = "profile")]
-    fn profile_scope(&self) -> ax_sync::ProfileScope {
-        ax_sync::ProfileScope::new(
-            ax_sync::ProfileEvent::PageCache,
-            Arc::as_ptr(&self.shared) as usize,
-        )
-    }
-
     /// Returns an existing cached file for `location`, or creates a new one.
     pub fn get_or_create(location: Location) -> VfsResult<Self> {
         let in_memory = filesystem_uses_unbounded_page_cache(location.filesystem().name());
@@ -1043,8 +1035,6 @@ impl CachedFile {
     /// carries only frame identity, so callers cannot invoke unknown code while
     /// borrowing mutable cache state.
     pub fn pin_page_or_insert(&self, pn: u32) -> VfsResult<CachedPagePin> {
-        #[cfg(feature = "profile")]
-        let _profile = self.profile_scope();
         if self
             .shared
             .mapping_update_in_progress

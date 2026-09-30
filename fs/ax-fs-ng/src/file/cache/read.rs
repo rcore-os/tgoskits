@@ -79,8 +79,6 @@ impl<'a> CachedRead<'a> {
     }
 
     fn read_page(&mut self, mut dst: BorrowedCursor<'_, u8>) -> VfsResult<usize> {
-        #[cfg(feature = "profile")]
-        let _profile = self.cached.profile_scope();
         let page_number = (self.current / PAGE_SIZE as u64) as u32;
         let page_start = u64::from(page_number) * PAGE_SIZE as u64;
         let page_offset = (self.current - page_start) as usize;

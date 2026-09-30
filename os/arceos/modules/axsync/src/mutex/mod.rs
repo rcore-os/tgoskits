@@ -9,8 +9,6 @@ use core::{
 };
 
 use crate::interface::{LockMetadata, MutexStorage};
-#[cfg(feature = "profile")]
-use crate::{ProfileEvent, ProfileScope};
 
 /// A lockdep subclass identifier.
 pub type LockSubclass = u32;
@@ -42,10 +40,6 @@ impl MutexBackend {
     #[inline(always)]
     #[track_caller]
     fn acquire(&self, subclass: u32) {
-        #[cfg(feature = "profile")]
-        let _profile = self
-            .is_locked()
-            .then(|| ProfileScope::new(ProfileEvent::MutexWait, self.addr()));
         crate::interface::mutex_acquire(
             &self.storage,
             &self.next_waiter_sequence,
