@@ -1,5 +1,4 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     BlockError, BlockResult,
@@ -13,7 +12,6 @@ use crate::{
 /// before rechecking the predicate closes the transition-to-sleep race.
 pub(crate) struct TaskWaiters {
     notifications: IrqMutex<Vec<Arc<dyn BlockNotification>>>,
-    count: AtomicUsize,
     #[cfg(test)]
     registration_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
@@ -24,7 +22,6 @@ impl TaskWaiters {
     pub(crate) const fn new() -> Self {
         Self {
             notifications: IrqMutex::new(Vec::new()),
-            count: AtomicUsize::new(0),
             #[cfg(test)]
             registration_hook: IrqMutex::new(None),
             #[cfg(test)]
@@ -93,7 +90,6 @@ impl TaskWaiters {
                 core::mem::swap(&mut spare, &mut notifications);
             }
             notifications.push(Arc::clone(notification));
-            self.count.store(notifications.len(), Ordering::Release);
             return Ok(());
         }
     }
@@ -106,7 +102,6 @@ impl TaskWaiters {
                 None
             } else {
                 let notification = notifications.remove(0);
-                self.count.store(notifications.len(), Ordering::Release);
                 Some(notification)
             }
         };
@@ -123,9 +118,7 @@ impl TaskWaiters {
     fn wake_all(&self, notify: impl Fn(&dyn BlockNotification)) {
         let notifications = {
             let mut notifications = self.notifications.lock();
-            let pending = core::mem::take(&mut *notifications);
-            self.count.store(0, Ordering::Release);
-            pending
+            core::mem::take(&mut *notifications)
         };
         for notification in notifications {
             notify(&*notification);
@@ -139,7 +132,6 @@ impl TaskWaiters {
             .position(|candidate| Arc::ptr_eq(candidate, notification))
         {
             notifications.remove(index);
-            self.count.store(notifications.len(), Ordering::Release);
         }
     }
 
@@ -172,8 +164,6 @@ impl TaskWaiters {
 
 #[cfg(test)]
 mod tests {
-    use core::cell::Cell;
-
     use super::*;
     use crate::BlockError;
 
@@ -188,7 +178,6 @@ mod tests {
         });
         assert_eq!(result, Err(BlockError::NoMemory));
         assert_eq!(waiters.len(), 0);
-        assert_eq!(waiters.count.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -201,28 +190,6 @@ mod tests {
                 true
             })
             .unwrap();
-        assert_eq!(waiters.len(), 0);
-    }
-
-    #[test]
-    fn registered_waiter_is_not_skipped_by_stale_count() {
-        crate::os::task::install_test_runtime_ops();
-        let waiters = TaskWaiters::new();
-        let notification = runtime_ops().unwrap().notification();
-        waiters
-            .register_with(&notification, |spare, required| {
-                spare
-                    .try_reserve_exact(required)
-                    .map_err(|_| BlockError::NoMemory)
-            })
-            .unwrap();
-
-        // A count load may observe its previous value without synchronizing
-        // with the registration store. Notification must inspect the queue.
-        waiters.count.store(0, Ordering::Release);
-        let wakes = Cell::new(0);
-        waiters.wake_all(|_| wakes.set(wakes.get() + 1));
-        assert_eq!(wakes.get(), 1);
         assert_eq!(waiters.len(), 0);
     }
 }
