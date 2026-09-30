@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use inherit_methods_macro::inherit_methods;
 
-use crate::{CachedWriteAdmission, DirEntry, VfsResult, WritebackPolicy};
+use crate::{CachedWriteAdmission, DirEntry, VfsResult};
 
 pub struct StatFs {
     pub fs_type: u32,
@@ -76,7 +76,6 @@ static NEXT_FILESYSTEM_ID: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct FilesystemMountState {
     pub(crate) id: FilesystemId,
     readonly: AtomicBool,
-    writeback_policy: AtomicU8,
 }
 
 impl FilesystemMountState {
@@ -87,7 +86,6 @@ impl FilesystemMountState {
         Self {
             id: FilesystemId(id),
             readonly: AtomicBool::new(readonly),
-            writeback_policy: AtomicU8::new(WritebackPolicy::empty().bits()),
         }
     }
 
@@ -97,27 +95,6 @@ impl FilesystemMountState {
 
     pub(crate) fn set_readonly(&self, readonly: bool) {
         self.readonly.store(readonly, Ordering::Release);
-    }
-
-    pub(crate) fn writeback_policy(&self) -> WritebackPolicy {
-        WritebackPolicy::from_bits_retain(self.writeback_policy.load(Ordering::Acquire))
-    }
-
-    pub(crate) fn set_writeback_policy(&self, policy: WritebackPolicy) {
-        self.writeback_policy
-            .store(policy.bits(), Ordering::Release);
-    }
-
-    pub(crate) fn set_synchronous(&self, synchronous: bool) {
-        // Only this bit is mutable on Linux remount. Preserve directory sync,
-        // including when another mount concurrently updates the shared policy.
-        if synchronous {
-            self.writeback_policy
-                .fetch_or(WritebackPolicy::SYNCHRONOUS.bits(), Ordering::AcqRel);
-        } else {
-            self.writeback_policy
-                .fetch_and(!WritebackPolicy::SYNCHRONOUS.bits(), Ordering::AcqRel);
-        }
     }
 }
 
@@ -183,11 +160,5 @@ impl Filesystem {
     /// This does not change the capabilities of the backing device.
     pub fn set_readonly(&self, readonly: bool) {
         self.mount_state.set_readonly(readonly);
-    }
-
-    /// Sets persistence requirements before publishing the initial mount.
-    /// Clones and bind mounts share this policy rather than copying its value.
-    pub fn set_writeback_policy(&self, policy: WritebackPolicy) {
-        self.mount_state.set_writeback_policy(policy);
     }
 }

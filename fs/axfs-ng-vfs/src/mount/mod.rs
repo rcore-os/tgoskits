@@ -22,7 +22,7 @@ use crate::{
     Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
     MetadataUpdate, RawSpinLock, RawSpinLockGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
     Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry,
-    WritebackPolicy, XattrSetMode,
+    XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -741,17 +741,6 @@ impl Mountpoint {
         self.filesystem_state.set_readonly(readonly);
     }
 
-    /// Returns the persistence policy shared by every mount of this filesystem.
-    pub fn filesystem_writeback_policy(&self) -> WritebackPolicy {
-        self.filesystem_state.writeback_policy()
-    }
-
-    /// Updates the shared synchronous-write requirement for an ordinary remount.
-    /// This preserves directory-sync policy and must not be used for bind-remount.
-    pub fn set_filesystem_synchronous(&self, synchronous: bool) {
-        self.filesystem_state.set_synchronous(synchronous);
-    }
-
     pub fn set_readonly(&self, readonly: bool) {
         self.readonly.store(readonly, Ordering::Release);
     }
@@ -911,33 +900,6 @@ impl Location {
         self.mountpoint.is_readonly() || self.mountpoint.is_filesystem_readonly()
     }
 
-    /// Combines inode and filesystem persistence requirements at completion.
-    pub fn writeback_policy(&self) -> VfsResult<WritebackPolicy> {
-        Ok(self.entry.writeback_policy()? | self.mountpoint.filesystem_writeback_policy())
-    }
-
-    fn sync_mounted_metadata(&self) -> VfsResult<()> {
-        if self
-            .mountpoint
-            .filesystem_writeback_policy()
-            .contains(WritebackPolicy::SYNCHRONOUS)
-        {
-            self.entry.sync(false)?;
-        }
-        Ok(())
-    }
-
-    fn sync_mounted_directory(&self) -> VfsResult<()> {
-        if self
-            .mountpoint
-            .filesystem_writeback_policy()
-            .syncs_directory()
-        {
-            self.entry.sync(false)?;
-        }
-        Ok(())
-    }
-
     pub fn entry(&self) -> &DirEntry {
         &self.entry
     }
@@ -950,24 +912,21 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.update_metadata(update)?;
-        self.sync_mounted_metadata()
+        self.entry.update_metadata(update)
     }
 
     pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.set_xattr(name, value, mode)?;
-        self.sync_mounted_metadata()
+        self.entry.set_xattr(name, value, mode)
     }
 
     pub fn remove_xattr(&self, name: &[u8]) -> VfsResult<()> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.remove_xattr(name)?;
-        self.sync_mounted_metadata()
+        self.entry.remove_xattr(name)
     }
 
     /// Returns the entry name.
@@ -1030,27 +989,6 @@ impl Location {
         Ok(iter::once("/")
             .chain(components.iter().map(String::as_str).rev())
             .collect())
-    }
-
-    /// Returns this location's absolute-looking path relative to `root`.
-    ///
-    /// `None` means that this location is not reachable from `root`. The walk
-    /// follows mount boundaries through [`Self::parent`], so callers can use
-    /// it for process-root-relative paths such as Linux `getcwd(2)` results.
-    pub fn path_from(&self, root: &Self) -> Option<PathBuf> {
-        let mut components = vec![];
-        let mut current = self.clone();
-        loop {
-            if current.ptr_eq(root) {
-                return Some(
-                    iter::once("/")
-                        .chain(components.iter().map(String::as_str).rev())
-                        .collect(),
-                );
-            }
-            components.push(current.name().into_owned());
-            current = current.parent()?;
-        }
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
@@ -1135,7 +1073,6 @@ impl Location {
             .entry
             .as_dir()?
             .create(name, node_type, permission, uid, gid)?;
-        self.sync_mounted_directory()?;
         Ok(self.wrap(entry))
     }
 
@@ -1154,7 +1091,6 @@ impl Location {
             .entry
             .as_dir()?
             .create_symlink(name, target, permission, uid, gid)?;
-        self.sync_mounted_directory()?;
         Ok(self.wrap(entry))
     }
 
@@ -1215,7 +1151,6 @@ impl Location {
             return Err(VfsError::CrossesDevices);
         }
         let entry = self.entry.as_dir()?.link(name, &node.entry)?;
-        self.sync_mounted_directory()?;
         Ok(self.wrap(entry))
     }
 
@@ -1261,10 +1196,6 @@ impl Location {
             dst_name,
             options,
         )?;
-        self.sync_mounted_directory()?;
-        if !self.ptr_eq(dst_dir) {
-            dst_dir.sync_mounted_directory()?;
-        }
         Ok(())
     }
 
@@ -1272,8 +1203,7 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry.as_dir()?.unlink(name, is_dir)?;
-        self.sync_mounted_directory()
+        self.entry.as_dir()?.unlink(name, is_dir)
     }
 
     pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location> {
@@ -1291,9 +1221,6 @@ impl Location {
             return Err(VfsError::ReadOnlyFilesystem);
         }
         let opened = self.entry.as_dir()?.open_file_with_status(name, options)?;
-        if opened.1 {
-            self.sync_mounted_directory()?;
-        }
         Ok((self.wrap(opened.0).resolve_mountpoint(), opened.1))
     }
 

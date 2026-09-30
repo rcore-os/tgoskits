@@ -5,8 +5,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, NodeType,
-    PreallocationMode, VfsError, VfsResult, WritebackPolicy, path::Path,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
+    VfsError, VfsResult, path::Path,
 };
 use axpoll::{IoEvents, Pollable};
 
@@ -19,18 +19,6 @@ use crate::{fs_core::FsContext, os::sync::Mutex, vfs_error_to_io_error};
 mod backend;
 pub use backend::FileBackend;
 
-/// Persistence required before a successful write is reported to the caller.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum WriteSync {
-    /// Leave durability to explicit sync or filesystem writeback.
-    #[default]
-    Buffered,
-    /// Persist data and the metadata needed to read it back.
-    Data,
-    /// Persist data and all associated file metadata.
-    All,
-}
-
 /// Provides `std::fs::File`-like interface.
 pub struct File {
     pub(super) write_access: Option<Arc<WriteAccess>>,
@@ -38,7 +26,6 @@ pub struct File {
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
     access_flags: AtomicU8,
-    write_sync: WriteSync,
 }
 
 impl File {
@@ -64,17 +51,7 @@ impl File {
             flags: AtomicU8::new(flags.bits()),
             position,
             access_flags: AtomicU8::new(0),
-            write_sync: WriteSync::Buffered,
         }
-    }
-
-    /// Sets the write-completion policy before sharing this open file.
-    ///
-    /// This applies to regular files and block devices. Stream and character
-    /// device writes retain their backend-specific completion semantics.
-    pub fn with_write_sync(mut self, policy: WriteSync) -> Self {
-        self.write_sync = policy;
-        self
     }
 
     /// Returns the writer lease retained by this open file description.
@@ -161,14 +138,12 @@ impl File {
 
     /// Writes a number of bytes starting from a given offset.
     pub fn write_at(&self, src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        let written = self.access(FileFlags::WRITE)?.write_at(src, offset)?;
-        self.finish_write(written)
+        self.access(FileFlags::WRITE)?.write_at(src, offset)
     }
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
-        self.access(FileFlags::WRITE)?.set_len(len)?;
-        self.finish_sync()
+        self.access(FileFlags::WRITE)?.set_len(len)
     }
 
     /// Reserves backing storage for a byte range.
@@ -236,7 +211,6 @@ impl File {
             let mut pos = pos.lock();
             if let Ok(f) = self.access(FileFlags::APPEND) {
                 let (written, new_size) = f.append(src).map_err(vfs_error_to_io_error)?;
-                self.finish_write(written).map_err(vfs_error_to_io_error)?;
                 if written != 0 {
                     *pos = new_size;
                 }
@@ -251,30 +225,6 @@ impl File {
         } else {
             self.write_at(src, 0).map_err(vfs_error_to_io_error)
         }
-    }
-
-    fn finish_write(&self, written: usize) -> VfsResult<usize> {
-        if written != 0 {
-            self.finish_sync()?;
-        }
-        Ok(written)
-    }
-
-    fn finish_sync(&self) -> VfsResult<()> {
-        if matches!(
-            self.location().node_type(),
-            NodeType::RegularFile | NodeType::BlockDevice
-        ) {
-            let synchronous = self
-                .location()
-                .writeback_policy()?
-                .contains(WritebackPolicy::SYNCHRONOUS);
-            if synchronous || self.write_sync != WriteSync::Buffered {
-                self.inner
-                    .sync(!synchronous && self.write_sync == WriteSync::Data)?;
-            }
-        }
-        Ok(())
     }
 
     /// Flushes any internally buffered data. Currently a no-op.
@@ -378,7 +328,6 @@ impl Drop for File {
 
 #[cfg(test)]
 mod tests {
-    mod write_sync;
     use alloc::sync::Arc;
     use core::{
         any::Any,
