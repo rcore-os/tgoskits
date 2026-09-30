@@ -1,4 +1,7 @@
-use std::sync::{Arc, Barrier, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Barrier, Mutex},
+};
 
 use arm_vgic::{
     ArmVgicConfig, CpuInterfaceState, GicAffinity, GicV3BackendError, GicV3VcpuWake, GicVcpuId,
@@ -17,6 +20,8 @@ const GICD_CTLR: u64 = 0x0000;
 const GICD_ISENABLER: u64 = 0x0100;
 const GICD_ICENABLER: u64 = 0x0180;
 const GICD_ITARGETSR: u64 = 0x0800;
+const GICD_CPENDSGIR: u64 = 0x0f10;
+const GICD_SPENDSGIR: u64 = 0x0f20;
 const GICC_CTLR: u64 = 0x0000;
 const GICC_PMR: u64 = 0x0004;
 const GICC_IAR: u64 = 0x000c;
@@ -26,19 +31,47 @@ const GICC_DIR: u64 = 0x1000;
 
 #[derive(Default)]
 struct TestBackend {
-    loaded: Mutex<Vec<(usize, Vec<IntId>)>>,
+    interfaces: Mutex<BTreeMap<GicVcpuId, CpuInterfaceState>>,
     retired: Mutex<Vec<(GicVcpuId, IntId)>>,
 }
 
 impl TestBackend {
     fn loaded_intids(&self, vcpu: usize) -> Vec<IntId> {
-        self.loaded
+        self.interfaces
             .lock()
             .unwrap()
-            .iter()
-            .rev()
-            .find_map(|(loaded_vcpu, intids)| (*loaded_vcpu == vcpu).then(|| intids.clone()))
+            .get(&GicVcpuId::new(vcpu))
+            .map(|state| {
+                state
+                    .list_registers()
+                    .iter()
+                    .flatten()
+                    .map(|entry| entry.intid())
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    fn loaded_states(&self, vcpu: GicVcpuId) -> Vec<InterruptState> {
+        self.interfaces.lock().unwrap()[&vcpu]
+            .list_registers()
+            .iter()
+            .flatten()
+            .map(|entry| entry.state())
+            .collect()
+    }
+
+    fn simulate_guest_state(&self, vcpu: GicVcpuId, state: InterruptState) {
+        let mut interfaces = self.interfaces.lock().unwrap();
+        for entry in interfaces
+            .get_mut(&vcpu)
+            .unwrap()
+            .list_registers_mut()
+            .iter_mut()
+            .flatten()
+        {
+            entry.set_state(state);
+        }
     }
 
     fn retired_interrupts(&self) -> Vec<(GicVcpuId, IntId)> {
@@ -56,23 +89,20 @@ impl VgicBackend for TestBackend {
         vcpu: GicVcpuId,
         state: &CpuInterfaceState,
     ) -> Result<(), GicV3BackendError> {
-        self.loaded.lock().unwrap().push((
-            vcpu.raw(),
-            state
-                .list_registers()
-                .iter()
-                .flatten()
-                .map(|entry| entry.intid())
-                .collect(),
-        ));
+        self.interfaces.lock().unwrap().insert(vcpu, state.clone());
         Ok(())
     }
 
     fn save_cpu_interface(
         &self,
-        _vcpu: GicVcpuId,
-        _state: &mut CpuInterfaceState,
+        vcpu: GicVcpuId,
+        state: &mut CpuInterfaceState,
     ) -> Result<(), GicV3BackendError> {
+        let interfaces = self.interfaces.lock().unwrap();
+        let observed = &interfaces[&vcpu];
+        state
+            .list_registers_mut()
+            .copy_from_slice(observed.list_registers());
         Ok(())
     }
 
@@ -424,6 +454,73 @@ fn v2_trapped_iar_acknowledges_a_pending_list_register() {
             .unwrap(),
         InterruptState::Active
     );
+}
+
+#[test]
+fn v2_clearing_loaded_sgi_sources_withdraws_pending_but_preserves_activation() {
+    for hardware_state in [
+        InterruptState::Pending,
+        InterruptState::Active,
+        InterruptState::ActivePending,
+    ] {
+        let (core, backend) = core();
+        let binding = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
+        let _source = core.attach_vcpu(1, Arc::new(Wake)).unwrap();
+        let vcpu = GicVcpuId::new(0);
+        let sgi = 3u32;
+        let intid = IntId::new(sgi).unwrap();
+
+        core.write_v2_distributor(vcpu, GICD_CTLR, AccessWidth::Dword, 1)
+            .unwrap();
+        core.write_v2_cpu_interface(vcpu, GICC_PMR, AccessWidth::Dword, 0xff)
+            .unwrap();
+        core.write_v2_cpu_interface(vcpu, GICC_CTLR, AccessWidth::Dword, 1)
+            .unwrap();
+        core.write_v2_distributor(
+            vcpu,
+            GICD_SPENDSGIR + u64::from(sgi),
+            AccessWidth::Byte,
+            0b10,
+        )
+        .unwrap();
+        binding.load().unwrap();
+        assert_eq!(backend.loaded_intids(0), vec![intid]);
+        backend.simulate_guest_state(vcpu, hardware_state);
+
+        core.write_v2_distributor(
+            vcpu,
+            GICD_CPENDSGIR + u64::from(sgi),
+            AccessWidth::Byte,
+            0b10,
+        )
+        .unwrap();
+        binding.save().unwrap();
+        binding.load().unwrap();
+        let expected = if hardware_state == InterruptState::Pending {
+            vec![]
+        } else {
+            vec![InterruptState::Active]
+        };
+        assert_eq!(
+            backend.loaded_states(vcpu),
+            expected,
+            "CPENDSGIR must remove pending without losing a guest activation ({hardware_state:?})"
+        );
+        binding.save().unwrap();
+
+        if hardware_state != InterruptState::Pending {
+            binding.deactivate_saved(intid).unwrap();
+            binding.load().unwrap();
+            assert!(backend.loaded_intids(0).is_empty());
+            binding.save().unwrap();
+        }
+        assert_eq!(
+            core.controller()
+                .interrupt_state(Some(vcpu), intid)
+                .unwrap(),
+            InterruptState::Inactive
+        );
+    }
 }
 
 #[test]

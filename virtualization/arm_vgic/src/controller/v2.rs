@@ -345,6 +345,7 @@ impl GicV3Controller {
         )?;
         let wakes = {
             let mut state = self.inner.state.lock_irqsave();
+            let loaded = state.cpu_interface_loaded(vcpu);
             let mut wakes = Vec::new();
             for byte in 0..width.size() {
                 let sgi = SgiId::new((offset - bank) as u8 + byte as u8)?;
@@ -363,7 +364,7 @@ impl GicV3Controller {
                 } else {
                     state
                         .redistributor_mut(vcpu, "clear SGI source-pending register")?
-                        .clear_sgi_sources(sgi, mask);
+                        .clear_sgi_sources(sgi, mask, loaded);
                 }
             }
             wakes
