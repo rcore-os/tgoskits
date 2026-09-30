@@ -846,17 +846,48 @@ command = "true"
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
-    def test_dualguest_robot_board_is_not_scheduled(self) -> None:
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+    def test_dualguest_robot_board_runs_both_guest_variants(self) -> None:
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("os/axvisor/src/lib.rs",),
+                targets=("axvisor:aarch64",),
+            ),
         )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", rows)
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
+        )
+        dualguest = rows["test-orangepi-5-plus-dualguest-robot"]
+
+        self.assertEqual(
+            dualguest["command"],
+            "cargo xtask starry build --config "
+            "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr/"
+            "starry-guest-build.toml --smp 1\n"
+            "cargo xtask axvisor test board "
+            "--board orangepi-5-plus-dualguest-robot",
+        )
+
+        # Both existing robot variants declare that board route, so the one
+        # command above runs the Linux+Zephyr and the StarryOS+Zephyr cases.
+        root = MODULE_PATH.parents[2]
+        for variant in ("dual-linux-zephyr", "dual-starry-zephyr"):
+            path = (
+                root
+                / "test-suit/axvisor/normal/board-orangepi-5-plus"
+                / variant
+                / "board-orangepi-5-plus-dualguest-robot.toml"
+            )
+            with self.subTest(variant=variant):
+                self.assertTrue(path.is_file())
+
         nightly_rows = self.assert_unique_ids(
             ci_plan.build_axvisor_nightly_plan(
                 ci_plan.replace(self.upstream, event_name="schedule")
             )["axvisor_matrix"]["include"]
         )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", nightly_rows)
         self.assertIn(
             "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark", nightly_rows
         )
@@ -876,7 +907,7 @@ command = "true"
             with self.subTest(config=path):
                 config = tomllib.loads(path.read_text())
                 self.assertEqual(
-                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
+                    config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:
@@ -886,6 +917,53 @@ command = "true"
                                     for pattern in step["success_regex"]))
                 self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_FAIL guest={guest} status=1\n")
                                     for pattern in step["fail_regex"]))
+
+    def test_dualguest_starry_guest_uses_explicit_test_init(self) -> None:
+        root = MODULE_PATH.parents[2]
+        directory = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus"
+            / "dual-starry-zephyr"
+        )
+        config = tomllib.loads((directory / "starry-smp1.toml").read_text())
+        cmdline = config["kernel"]["cmdline"]
+        tokens = cmdline.split()
+
+        self.assertIn("init=/bin/sh", tokens)
+        for token in (
+            "root=/dev/mmcblk0p2",
+            "rw",
+            "console=ttyS2,1500000",
+            "earlycon=uart8250,mmio32,0xfeb50000",
+            "rootwait",
+            "rootfstype=ext4",
+            "cpuidle.off=1",
+            "rodata=off",
+            "cma=128M",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, tokens)
+
+        starry_prompt = "root@starry:"
+        self.assertIn(f'PS1="{starry_prompt}# "', cmdline)
+        self.assertIn(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            tokens,
+        )
+        for env in ("HOME=/root", "USER=root", "HOSTNAME=starry", "TERM=linux"):
+            with self.subTest(env=env):
+                self.assertIn(env, tokens)
+
+        board = tomllib.loads(
+            (directory / "board-orangepi-5-plus-dualguest-robot.toml").read_text()
+        )
+        prompt_steps = [
+            step
+            for step in board["shell_check_steps"]
+            if step.get("shell_prefix", "").startswith(starry_prompt)
+        ]
+        self.assertTrue(prompt_steps)
+        self.assertTrue(all(step.get("shell_cmd") for step in prompt_steps))
 
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,

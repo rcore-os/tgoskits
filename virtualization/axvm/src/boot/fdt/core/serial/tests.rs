@@ -778,3 +778,353 @@ fn rejects_truncated_host_serial_clock_specifier() {
     assert!(matches!(error, crate::AxVmError::InvalidConfig { .. }));
     assert!(error.to_string().contains("truncated clock specifier"));
 }
+
+/// Zephyr selects its console through `/chosen` phandle properties instead of
+/// `stdout-path`, so a supplied firmware DTB may omit the string selector.
+const ZEPHYR_CONSOLE_PHANDLE: u32 = 0x2d1;
+
+/// Builds a synthetic AArch64 firmware DTB whose only console selection is the
+/// `/chosen` `zephyr,console`/`zephyr,shell-uart` phandle pair.
+fn zephyr_phandle_console_tree() -> FdtTree {
+    let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@8000000");
+    let gic = tree
+        .inner()
+        .get_by_path_id("/interrupt-controller@8000000")
+        .unwrap();
+    tree.inner_mut().view_typed_mut(gic).unwrap().set_regs(&[
+        RegInfo::new(0x0800_0000, Some(0x1_0000)),
+        RegInfo::new(0x080a_0000, Some(0xf6_0000)),
+    ]);
+    let root = tree.inner().root_id();
+    let serial = tree.add_node(root, Node::new("serial@feb50000"));
+    tree.set_property(
+        serial,
+        prop_string_list("compatible", &["rockchip,rk3588-uart", "snps,dw-apb-uart"]),
+    )
+    .unwrap();
+    tree.inner_mut()
+        .view_typed_mut(serial)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfeb5_0000, Some(0x100))]);
+    tree.set_property(serial, prop_string("status", "okay"))
+        .unwrap();
+    tree.set_property(serial, prop_u32("reg-shift", 2)).unwrap();
+    tree.set_property(serial, prop_u32("reg-io-width", 4))
+        .unwrap();
+    tree.set_property(serial, prop_u32_list("interrupts", &[0, 0x14d, 4]))
+        .unwrap();
+    tree.set_property(serial, prop_u32("phandle", ZEPHYR_CONSOLE_PHANDLE))
+        .unwrap();
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(chosen, prop_u32("zephyr,console", ZEPHYR_CONSOLE_PHANDLE))
+        .unwrap();
+    tree.set_property(
+        chosen,
+        prop_u32("zephyr,shell-uart", ZEPHYR_CONSOLE_PHANDLE),
+    )
+    .unwrap();
+    tree
+}
+
+/// Rebuilds the Zephyr fixture with path-string selectors and no serial phandle,
+/// matching firmware that emits `zephyr,console = "/serial@feb50000";`.
+fn zephyr_path_string_console_tree() -> FdtTree {
+    let mut tree = zephyr_phandle_console_tree();
+    let serial = tree.inner().get_by_path_id("/serial@feb50000").unwrap();
+    tree.inner_mut()
+        .node_mut(serial)
+        .unwrap()
+        .remove_property("phandle");
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(chosen, prop_string("zephyr,console", "/serial@feb50000"))
+        .unwrap();
+    tree.set_property(chosen, prop_string("zephyr,shell-uart", "/serial@feb50000"))
+        .unwrap();
+    tree
+}
+
+fn zephyr_console_fallback() -> GuestSerialProfile {
+    GuestSerialProfile {
+        model: GuestSerialModel::Pl011,
+        transport: GuestSerialTransport::Mmio {
+            base: 0x0900_0000,
+            length: 0x1000,
+            register_shift: 0,
+            register_width: AccessWidth::Dword,
+        },
+        irq: 33,
+        clock_hz: 24_000_000,
+    }
+}
+
+/// Builds a host firmware DTB whose console is selected by `stdout-path`.
+fn host_pl011_console_tree() -> FdtTree {
+    let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@8000000");
+    let root = tree.inner().root_id();
+    let serial = tree.add_node(root, Node::new("pl011@9000000"));
+    tree.set_property(
+        serial,
+        prop_string_list("compatible", &["arm,pl011", "arm,primecell"]),
+    )
+    .unwrap();
+    tree.inner_mut()
+        .view_typed_mut(serial)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0900_0000, Some(0x1000))]);
+    tree.set_property(serial, prop_u32_list("interrupts", &[0, 1, 4]))
+        .unwrap();
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(chosen, prop_string("stdout-path", "/pl011@9000000"))
+        .unwrap();
+    tree
+}
+
+/// Builds a supplied DTB that carries a serial node but selects no console.
+fn bare_serial_tree() -> FdtTree {
+    let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@8000000");
+    let root = tree.inner().root_id();
+    let serial = tree.add_node(root, Node::new("serial@feb50000"));
+    tree.set_property(serial, prop_string("compatible", "ns16550a"))
+        .unwrap();
+    tree.inner_mut()
+        .view_typed_mut(serial)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfeb5_0000, Some(0x100))]);
+    tree.set_property(serial, prop_u32_list("interrupts", &[0, 0x14d, 4]))
+        .unwrap();
+    tree
+}
+
+#[test]
+fn supplied_console_beats_host_selected_console() {
+    let provided = zephyr_phandle_console_tree().finish();
+    let host = host_pl011_console_tree().finish();
+
+    let resolved = resolve_console_source(
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+        false,
+        Some(provided.as_slice()),
+        Some(host.as_slice()),
+    )
+    .unwrap()
+    .expect("the supplied console contract must take priority over the host serial");
+
+    assert_eq!(resolved.snapshot.profile.model, GuestSerialModel::Uart16550);
+    let GuestSerialTransport::Mmio { base, .. } = resolved.snapshot.profile.transport else {
+        panic!("supplied console selection must use MMIO");
+    };
+    assert_eq!(base, 0xfeb5_0000);
+    assert_eq!(
+        fdt_identity(&resolved.snapshot).node_path,
+        "/serial@feb50000"
+    );
+}
+
+#[test]
+fn explicit_console0_overrides_implicit_console_sources() {
+    let provided = zephyr_phandle_console_tree().finish();
+    let host = host_pl011_console_tree().finish();
+
+    let resolved = resolve_console_source(
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+        true,
+        Some(provided.as_slice()),
+        Some(host.as_slice()),
+    )
+    .unwrap();
+
+    assert!(
+        resolved.is_none(),
+        "explicit console0 must not be overwritten by supplied or host firmware"
+    );
+}
+
+#[test]
+fn provided_dtb_without_console_selector_falls_back_to_host_then_machine() {
+    let provided = bare_serial_tree().finish();
+    let host = host_pl011_console_tree().finish();
+
+    let resolved = resolve_console_source(
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+        false,
+        Some(provided.as_slice()),
+        Some(host.as_slice()),
+    )
+    .unwrap()
+    .expect("a supplied DTB without a console selector must fall back to the host serial");
+    assert_eq!(resolved.snapshot.profile.model, GuestSerialModel::Pl011);
+    assert_eq!(fdt_identity(&resolved.snapshot).node_path, "/pl011@9000000");
+
+    // `dtb_load_addr` alone is not a supplied DTB: no bytes means the host then
+    // machine path is followed.
+    let preserved = resolve_console_source(
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(
+        preserved.is_none(),
+        "no firmware console source must preserve the machine profile"
+    );
+}
+
+#[test]
+fn normalizes_zephyr_console_interrupt_to_runtime_controller_encoding() {
+    // Mirrors the Orange Pi UART2 Zephyr DT: the firmware specifier carries an
+    // extra cell and a non-level flags value. The console node must adopt the
+    // per-VM controller phandle and its three-cell GIC encoding without
+    // rejecting the firmware form.
+    let mut identity = GuestSerialFirmwareIdentity::Fdt(GuestSerialFdtIdentity {
+        node_path: "/serial@feb50000".into(),
+        node_phandle: Some(ZEPHYR_CONSOLE_PHANDLE),
+        interrupt_parent: 1,
+        interrupt_specifier: vec![0, 0x14d, 4, 0xa0],
+        stdout_path: "/serial@feb50000".into(),
+        clock_references: Vec::new(),
+    });
+
+    normalize_console_identity(&mut identity, GuestSerialFdtInterrupt::GicSpi, Some(0x22));
+
+    let GuestSerialFirmwareIdentity::Fdt(identity) = identity else {
+        panic!("normalization must keep the FDT identity");
+    };
+    assert_eq!(identity.interrupt_parent, 0x22);
+    assert_eq!(identity.interrupt_specifier, [0, 0x14d, 4]);
+    assert_eq!(identity.node_phandle, Some(ZEPHYR_CONSOLE_PHANDLE));
+}
+
+#[test]
+fn resolves_zephyr_phandle_console_selection() {
+    let tree = zephyr_phandle_console_tree();
+    let host_dtb = tree.finish();
+    let host_fdt = Fdt::from_bytes(&host_dtb).unwrap();
+
+    let resolution = host_selected_serial(
+        &host_fdt,
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .unwrap();
+    assert!(
+        resolution.is_some(),
+        "host_selected_serial must honor /chosen zephyr,console and zephyr,shell-uart phandles \
+         when stdout-path and earlycon are absent"
+    );
+    let resolved = resolution.unwrap();
+
+    assert_eq!(
+        resolved.profile,
+        GuestSerialProfile {
+            model: GuestSerialModel::Uart16550,
+            transport: GuestSerialTransport::Mmio {
+                base: 0xfeb5_0000,
+                length: 0x100,
+                register_shift: 2,
+                register_width: AccessWidth::Dword,
+            },
+            irq: 0x14d + 32,
+            clock_hz: 24_000_000,
+        }
+    );
+    let identity = fdt_identity(&resolved);
+    assert_eq!(identity.node_path, "/serial@feb50000");
+    assert_eq!(identity.node_phandle, Some(ZEPHYR_CONSOLE_PHANDLE));
+    assert_eq!(identity.interrupt_parent, 7);
+    assert_eq!(identity.interrupt_specifier, [0, 0x14d, 4]);
+    assert!(!identity.stdout_path.is_empty());
+}
+
+#[test]
+fn resolves_zephyr_path_string_console_and_preserves_its_form() {
+    let tree = zephyr_path_string_console_tree();
+    let host_dtb = tree.finish();
+    let host_fdt = Fdt::from_bytes(&host_dtb).unwrap();
+
+    let resolved = host_selected_serial(
+        &host_fdt,
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .unwrap()
+    .expect("a zephyr path-string console must resolve");
+
+    assert_eq!(resolved.profile.model, GuestSerialModel::Uart16550);
+    assert_eq!(fdt_identity(&resolved).node_path, "/serial@feb50000");
+    assert_eq!(fdt_identity(&resolved).node_phandle, None);
+
+    let mut guest = FdtTree::from_bytes(&host_dtb).unwrap();
+    install_mmio_serial(
+        &mut guest,
+        resolved.profile,
+        GuestSerialFdtInterrupt::GicSpi,
+        Some(fdt_identity(&resolved)),
+        true,
+    )
+    .unwrap();
+    let patched = Fdt::from_bytes(&guest.finish()).unwrap();
+
+    let chosen = patched.get_by_path("/chosen").unwrap().as_node();
+    assert_eq!(
+        chosen.get_property("zephyr,console").unwrap().as_str(),
+        Some("/serial@feb50000")
+    );
+    assert_eq!(
+        chosen.get_property("zephyr,shell-uart").unwrap().as_str(),
+        Some("/serial@feb50000")
+    );
+    assert!(
+        patched
+            .get_by_path("/serial@feb50000")
+            .unwrap()
+            .as_node()
+            .get_property("phandle")
+            .is_none(),
+        "a path-string selector must not force a serial phandle"
+    );
+}
+
+#[test]
+fn rejects_zephyr_console_phandle_without_matching_node() {
+    let mut tree = zephyr_phandle_console_tree();
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(chosen, prop_u32("zephyr,console", 0xdead))
+        .unwrap();
+    let host_dtb = tree.finish();
+    let host_fdt = Fdt::from_bytes(&host_dtb).unwrap();
+
+    let result = host_selected_serial(
+        &host_fdt,
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+    );
+    assert!(
+        result.is_err(),
+        "a dangling zephyr,console phandle must fail closed instead of being ignored"
+    );
+}
+
+#[test]
+fn rejects_malformed_zephyr_console_property() {
+    let mut tree = zephyr_phandle_console_tree();
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(chosen, prop_string("zephyr,shell-uart", "uart2"))
+        .unwrap();
+    let host_dtb = tree.finish();
+    let host_fdt = Fdt::from_bytes(&host_dtb).unwrap();
+
+    let result = host_selected_serial(
+        &host_fdt,
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+    );
+    assert!(
+        result.is_err(),
+        "a present but non-absolute zephyr,shell-uart path must fail closed"
+    );
+}
