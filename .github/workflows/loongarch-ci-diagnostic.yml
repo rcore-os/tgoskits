@@ -1,0 +1,46 @@
+name: LoongArch CI diagnostic
+
+on:
+  push:
+    branches: [codex/axvisor-loongarch-ci-diagnostic-20260930]
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+jobs:
+  smoke:
+    name: Same-head LoongArch smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/rcore-os/tgoskits-container-axvisor-lvz@sha256:a5fb1a2262794b3326a079d11725f6a1b472ee30a7835f8278888cd6c2a8e50e
+      credentials:
+        username: anonymous
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      STARRY_APK_REGION: china
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 956c33c6b60ad21f1d22bdf0fbfba7bc647d3a16
+      - name: Download exact failing-run task binary
+        uses: actions/download-artifact@v8
+        with:
+          name: tg-xtask-bin
+          path: ${{ runner.temp }}/xtask-bin
+          github-token: ${{ github.token }}
+          run-id: 36671698210
+      - name: Restore task binary and verify revision
+        run: |
+          tar -xf "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" -C "${GITHUB_WORKSPACE}"
+          chmod +x target/debug/tg-xtask
+          test "$(git rev-parse HEAD)" = 956c33c6b60ad21f1d22bdf0fbfba7bc647d3a16
+          /opt/qemu-lvz/bin/qemu-system-loongarch64 --version
+      - name: Run original LoongArch smoke
+        run: target/debug/tg-xtask axvisor test qemu --arch loongarch64
