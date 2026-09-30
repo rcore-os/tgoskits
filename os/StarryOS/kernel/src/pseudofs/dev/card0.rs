@@ -1086,6 +1086,11 @@ impl Card0 {
     }
 
     pub fn new() -> Arc<Self> {
+        // The GPU IRQ worker calls this after pumping completions, so a
+        // poll-blocked out-fence waiter is woken in µs instead of waiting out
+        // the fence refresher's 250 µs active tick. Runs once per boot (this
+        // constructor is the single Card0 instantiation).
+        ax_gpu::set_completion_notifier(super::sync_file::on_gpu_completion);
         Arc::new_cyclic(|weak| Self {
             self_weak: weak.clone(),
             vblank: VblankClock::new(monotonic_time_nanos()),

@@ -110,6 +110,7 @@ static GPU_IRQ_ENDPOINT: LazyInit<Box<dyn GpuIrqEndpoint>> = LazyInit::new();
 static GPU_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 static GPU_WORK_PENDING: AtomicBool = AtomicBool::new(false);
 static GPU_WORK_NOTIFY: LazyInit<fn()> = LazyInit::new();
+static GPU_COMPLETION_NOTIFY: LazyInit<fn()> = LazyInit::new();
 
 /// Registers one GPU. The first discovered device is the active instance.
 /// A failed default scanout leaves GPU rendering available.
@@ -414,11 +415,15 @@ fn service_pending_for_access(runtime: &mut GpuRuntime) {
 }
 
 fn service_pending(runtime: &mut GpuRuntime) -> Result<(), GpuError> {
-    if GPU_WORK_PENDING.swap(false, Ordering::AcqRel)
-        && let Err(error) = runtime.device.gpu().service_pending()
-    {
-        GPU_WORK_PENDING.store(true, Ordering::Release);
-        return Err(error);
+    if GPU_WORK_PENDING.swap(false, Ordering::AcqRel) {
+        if let Err(error) = runtime.device.gpu().service_pending() {
+            GPU_WORK_PENDING.store(true, Ordering::Release);
+            return Err(error);
+        }
+        // Completions just became observable at the device level: let the
+        // registered notifier wake whoever polls on them now instead of at
+        // the OS's next periodic scan.
+        notify_completions();
     }
     Ok(())
 }
@@ -427,6 +432,20 @@ fn service_pending(runtime: &mut GpuRuntime) -> Result<(), GpuError> {
 /// The callback must be safe in hard IRQ context and must not take the GPU lock.
 pub fn set_irq_work_notifier(notify: fn()) {
     GPU_WORK_NOTIFY.init_once(notify);
+}
+
+/// Installs the completion notifier (once, after the scheduler is online).
+/// It runs in task context right after the device service pumped completions,
+/// while the caller still holds the GPU control lock: it must be cheap and
+/// must NOT take the GPU lock again.
+pub fn set_completion_notifier(notify: fn()) {
+    GPU_COMPLETION_NOTIFY.init_once(notify);
+}
+
+fn notify_completions() {
+    if GPU_COMPLETION_NOTIFY.is_inited() {
+        (*GPU_COMPLETION_NOTIFY)();
+    }
 }
 
 /// Advances transport acknowledgements and device events in task context.

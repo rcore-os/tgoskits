@@ -380,6 +380,19 @@ pub(crate) fn kick_refresher() {
     REFRESHER_WAKE.notify_one();
 }
 
+/// Completion-side kick, registered as axgpu's completion notifier
+/// ([`ax_gpu::set_completion_notifier`]): the GPU IRQ worker has just pumped
+/// completions, so any registered out-fence at or below the new completion
+/// high-water mark can signal now. Wakes the refresher for an immediate scan
+/// instead of letting a poll-blocked guest wait out the 250 µs active tick.
+///
+/// Runs in task context while the GPU worker holds the device lock, so this
+/// must not touch the GPU lock again — it only stores the burst deadline and
+/// wakes the refresher, exactly [`kick_refresher`].
+pub fn on_gpu_completion() {
+    kick_refresher();
+}
+
 impl FileLike for SyncFile {
     fn validate_write_access(&self) -> StarryResult {
         Err(StarryError::InvalidInput)
