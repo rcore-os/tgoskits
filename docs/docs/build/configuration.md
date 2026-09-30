@@ -210,4 +210,4 @@ guest 内核驱动不属于该迁移。
 | `TGOS_OVMF_DIR` | 覆盖 Ostool 格式的 OVMF 缓存根目录；不绕过版本选择和 SHA-256 校验 |
 | `TGOSKITS_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
 
-`AX_LOG`、`SMP`、`AX_TARGET`、`AX_ARCH` 和 `AXVISOR_VM_CONFIGS` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。
+`AX_LOG`、`SMP`、`AX_TARGET` 和 `AX_ARCH` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。

@@ -27,7 +27,7 @@
 
 ## 构建客户机镜像
 
-StarryOS 由当前 TGOSKits checkout 构建并嵌入 AxVisor，确保 CI 使用本次源码生成的
+StarryOS 由当前 TGOSKits checkout 构建并打入 AxVisor 宿主 initramfs，确保 CI 使用本次源码生成的
 客户机。单 vCPU 配置保留原有核心分配，日志级别为 Warn，避免逐帧内核日志进入性能测量。
 
 ```bash
@@ -142,7 +142,7 @@ NPU 调用错误、IVC 发送失败或丢帧、执行器读写/反馈错误都�
 地面行驶、长期稳定性或硬件急停。
 
 本 SD 场景使用板卡类型 `OrangePi-5-Plus-DualGuest-robot`，与 Linux + Zephyr 场景顺序
-共用同一块板。CI 从当前 checkout 构建 StarryOS 并嵌入 AxVisor，确保源码修改得到测试。
+共用同一块板。CI 从当前 checkout 构建 StarryOS 并打入 AxVisor 宿主 initramfs，确保源码修改得到测试。
 感知程序、Zephyr 镜像和 CI 脚本须配套更新。board 入口以 `shell_check_steps`
 逐步注入短命令。
 

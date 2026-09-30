@@ -14,16 +14,24 @@ use crate::block::FsBlockDevice;
 use crate::block_error_to_vfs_error;
 use crate::{BlockDeviceHandle, block::BlockRegion};
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+struct NativeFilesystem {
+    device: alloc::sync::Weak<BlockDeviceHandle>,
+    region: BlockRegion,
+    filesystem: axfs_ng_vfs::WeakFilesystem,
+}
+
+// Serialize superblock construction, including sleeping disk I/O. No block-cache
+// or topology lock is held when entering this registry; its entries own neither
+// devices nor filesystems, so detached mounts retain their normal lifetimes.
+#[cfg(any(feature = "ext4", feature = "fat"))]
+static NATIVE_FILESYSTEMS: crate::os::sync::SleepMutex<alloc::vec::Vec<NativeFilesystem>> =
+    crate::os::sync::SleepMutex::new(alloc::vec::Vec::new());
+
 #[cfg(feature = "ext4")]
 mod ext4;
 #[cfg(feature = "fat")]
 mod fat;
-
-/// Create a filesystem instance from a block device.
-#[cfg(any(feature = "ext4", feature = "fat"))]
-pub fn new_default(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
-    new_ext4(dev, region)
-}
 
 /// Create a filesystem instance from a detected filesystem kind.
 #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -44,9 +52,7 @@ pub(crate) fn new_by_kind(
 /// platform probe path.
 #[cfg(any(feature = "ext4", feature = "fat"))]
 pub fn new_from_handle(dev: Arc<BlockDeviceHandle>, region: BlockRegion) -> VfsResult<Filesystem> {
-    let dev =
-        crate::block::boxed_native_handle_block_device(dev).map_err(block_error_to_vfs_error)?;
-    new_default(dev, region)
+    new_from_handle_with_kind(dev, region, FilesystemKind::Ext4)
 }
 
 /// Creates an ext4 filesystem using on-demand file I/O.
@@ -72,9 +78,25 @@ pub(crate) fn new_from_handle_with_kind(
     region: BlockRegion,
     kind: FilesystemKind,
 ) -> VfsResult<Filesystem> {
-    let dev =
+    let mut registry = NATIVE_FILESYSTEMS.lock();
+    registry.retain(|entry| entry.filesystem.is_alive());
+    for entry in &*registry {
+        if entry.region == region && entry.device.ptr_eq(&Arc::downgrade(&dev)) {
+            if let Some(fs) = entry.filesystem.upgrade() {
+                return Ok(fs);
+            }
+        }
+    }
+    let device = Arc::downgrade(&dev);
+    let backend =
         crate::block::boxed_native_handle_block_device(dev).map_err(block_error_to_vfs_error)?;
-    new_by_kind(dev, region, kind)
+    let filesystem = new_by_kind(backend, region, kind)?;
+    registry.push(NativeFilesystem {
+        device,
+        region,
+        filesystem: filesystem.downgrade(),
+    });
+    Ok(filesystem)
 }
 
 #[cfg(not(any(feature = "ext4", feature = "fat")))]

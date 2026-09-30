@@ -24,7 +24,6 @@ entry_point = 0x1008_0000
 kernel_load_addr = 0x1008_0000
 # The load address of the device tree blob (DTB).
 dtb_load_addr = 0x1000_0000
-# The location of image: "memory" | "fs".
 # load from memory
 # The file path of the kernel image.
 kernel_path = "/path/to/kernel"

@@ -33,31 +33,47 @@ const VCPU_RUNTIME_ERROR: &str = r"VM\[\d+\] run VCpu\[\d+\] get error";
 
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        let selectors: Vec<Option<&str>> = if args.test_case.is_empty() {
+            vec![None]
+        } else {
+            args.test_case
+                .iter()
+                .map(|case| Some(case.as_str()))
+                .collect()
+        };
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
-            let groups = discover_test_group_names(self.app.workspace_root())?
-                .into_iter()
-                .filter_map(|group| {
-                    let test_suite_dir = match test_suite_dir(self.app.workspace_root(), &group) {
-                        Ok(dir) => dir,
-                        Err(err) => return Some(Err(err)),
-                    };
-                    match test_qemu::discover_all_qemu_cases_with_archs(
-                        &test_suite_dir,
-                        args.test_case.first().map(String::as_str),
-                        "Axvisor",
-                        &group,
-                    ) {
-                        Ok(case_names) => Some(Ok((group, case_names))),
-                        Err(err) => {
-                            if qemu_list_error_is_ignorable(err.kind()) {
-                                None
-                            } else {
-                                Some(Err(anyhow::Error::new(err)))
+            let mut groups = Vec::new();
+            for selector in &selectors {
+                let selected_groups = discover_test_group_names(self.app.workspace_root())?
+                    .into_iter()
+                    .filter_map(|group| {
+                        let test_suite_dir = match test_suite_dir(self.app.workspace_root(), &group)
+                        {
+                            Ok(dir) => dir,
+                            Err(err) => return Some(Err(err)),
+                        };
+                        match test_qemu::discover_all_qemu_cases_with_archs(
+                            &test_suite_dir,
+                            *selector,
+                            "Axvisor",
+                            &group,
+                        ) {
+                            Ok(case_names) => Some(Ok((group, case_names))),
+                            Err(err) => {
+                                if qemu_list_error_is_ignorable(err.kind()) {
+                                    None
+                                } else {
+                                    Some(Err(anyhow::Error::new(err)))
+                                }
                             }
                         }
-                    }
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                if selected_groups.is_empty() {
+                    anyhow::bail!("no Axvisor qemu cases match {:?}", selector);
+                }
+                groups.extend(selected_groups);
+            }
             if groups.is_empty() {
                 anyhow::bail!(
                     "no Axvisor qemu test cases found under {}",
@@ -71,27 +87,24 @@ impl Axvisor {
         let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
         if args.list && args.arch.is_none() && args.target.is_none() {
             let test_suite_dir = test_suite_dir(self.app.workspace_root(), test_group)?;
-            let case_names = test_qemu::discover_all_qemu_cases(
-                &test_suite_dir,
-                args.test_case.first().map(String::as_str),
-                "Axvisor",
-                test_group,
-            )
-            .map_err(anyhow::Error::new)?;
+            let mut case_names = std::collections::BTreeSet::new();
+            for selector in &selectors {
+                case_names.extend(
+                    test_qemu::discover_all_qemu_cases(
+                        &test_suite_dir,
+                        *selector,
+                        "Axvisor",
+                        test_group,
+                    )
+                    .map_err(anyhow::Error::new)?,
+                );
+            }
             println!("{}", test_qemu::render_case_tree(test_group, case_names));
             return Ok(());
         }
 
         let (arch, target) = parse_target(&args.arch, &args.target)?;
         let mut cases = Vec::new();
-        let selectors = if args.test_case.is_empty() {
-            vec![None]
-        } else {
-            args.test_case
-                .iter()
-                .map(|case| Some(case.as_str()))
-                .collect()
-        };
         for selected in selectors {
             for case in discover_qemu_cases(
                 self.app.workspace_root(),

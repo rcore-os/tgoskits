@@ -1,0 +1,2 @@
+source = "test-suit/host-initramfs"
+init_source = "test-suit/starryos/qemu/host-initramfs-switch-root/init.c"

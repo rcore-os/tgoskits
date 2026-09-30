@@ -24,7 +24,7 @@ CI、单项与手工运行共用标准板卡命令。需要仓库固定 Rust 工
 
 ### 2.1 运行命令
 
-从仓库根目录执行一次命令，自动构建当前客户机、嵌入 AxVisor 并运行测试：
+从仓库根目录执行一次命令，自动构建当前客户机、打入 AxVisor 宿主 initramfs 并运行测试：
 
 ```bash
 cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf

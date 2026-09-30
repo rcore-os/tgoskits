@@ -13,6 +13,7 @@ extern crate alloc;
 
 use ax_hal as _;
 use ax_std as _;
+use axvisor as _;
 use axvm as _;
 
 // Compile the production guest-console mux with narrow host/manager adapters

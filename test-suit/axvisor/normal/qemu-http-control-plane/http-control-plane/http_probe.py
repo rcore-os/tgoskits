@@ -17,7 +17,7 @@ Environment (set by the generic runner):
 
     AXVISOR_HTTP_BASE            http://127.0.0.1:<host_port> (forwarded)
     AXVISOR_HTTP_TOKEN           bearer token for authenticated requests
-    AXVISOR_HTTP_CASE_DIR        case directory holding `vm-memory.toml`
+    AXVISOR_BUILTIN_CONFIG_DIR   directory holding packaged `vm-1.toml`
                                  (default: this file's directory)
     AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
     AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
@@ -97,11 +97,10 @@ deterministic regression for the failed-entry path as well.
 
 The last recreate -> start -> stop -> delete block is the resource re-acquire
 regression: it proves destroy freed guest memory, vCPUs, devices, and the
-registry entry so a fresh VM can be rebuilt from the same embedded image.
-`vm-memory.toml` is matched by `base.id` against the build-time embedded
-images, so the create body carries that file verbatim (the `kernel_path` /
-`ramdisk_path` `${workspace}` placeholders are unused at runtime for memory
-images).
+registry entry so a fresh VM can be rebuilt from the installed boot files.
+The create body uses the exact packaged `vm-1.toml` supplied through
+`AXVISOR_BUILTIN_CONFIG_DIR`; its paths refer to `/guest/builtin/images` on
+the disk root after the host initramfs has been detached and released.
 """
 
 import json
@@ -570,7 +569,7 @@ def main():
     check("DELETE /api/vms/1", status, 204)
     poll_vm_gone(1)
 
-    # 33. Recreate after delete: the embedded image is matched by id, so a
+    # 33. Recreate after delete from the installed boot files, so a
     #     fresh create with the same config succeeds and registers id 1 again.
     status, body = request("POST", "/api/vms/create", token=TOKEN, body=create_body)
     check("POST /api/vms/create (recreate)", status, 200)
@@ -585,7 +584,7 @@ def main():
     # 35-36. The recreated VM must be fully usable, not merely re-registered:
     #        destroy must have freed guest memory, vCPUs, devices, and the
     #        registry entry so a fresh VM can be rebuilt and run from the same
-    #        embedded image. This is the resource re-acquire regression.
+    #        installed image. This is the resource re-acquire regression.
     status, _ = request("POST", "/api/vms/1/start", token=TOKEN)
     check("POST /api/vms/1/start (recreated)", status, 200)
     poll_vm_status(1, "running")

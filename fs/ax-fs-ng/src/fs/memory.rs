@@ -1035,12 +1035,25 @@ mod tests {
                 .mount(&super::MemoryFs::new())
                 .unwrap()
                 .root_location();
+            new.create(
+                "new-root-marker",
+                NodeType::RegularFile,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
             context.pivot_root(new.clone(), new.clone()).unwrap();
             old.detach_mount().unwrap();
             assert!(alloc::sync::Arc::ptr_eq(
                 context.mount_namespace().root_mount(),
                 &anchor
             ));
+            context.unshare_mount_namespace().unwrap();
+            assert!(
+                context.resolve("/new-root-marker").is_ok(),
+                "namespace copy must retain the active root"
+            );
             assert!(context.resolve("/data").is_err());
             let mut content = [0; 16];
             assert_eq!(file.read_at(&mut content[..], 0).unwrap(), 16);

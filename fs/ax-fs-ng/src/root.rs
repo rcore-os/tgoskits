@@ -225,6 +225,7 @@ impl PreparedRoot {
         let old_root = context.lock().root_dir().clone();
         let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
         let mount = mount_dir.mount_with_source(&self.filesystem, &self.source)?;
+        mount.set_readonly(self.context.root_dir().is_readonly());
         let new_root = mount.root_location();
         #[cfg(feature = "vfs")]
         let namespace = context.lock().mount_namespace().clone();
@@ -261,6 +262,49 @@ impl PreparedRoot {
 pub fn prepare_block_root(bootargs: Option<&str>) -> axfs_ng_vfs::VfsResult<PreparedRoot> {
     let devices = BlockRuntime::installed_devices().ok_or(VfsError::NoSuchDevice)?;
     prepare_root(devices.iter().cloned(), bootargs)
+}
+
+/// A physical disk or partition that can be exposed by an OS device filesystem.
+pub struct BlockDeviceNode {
+    pub path: String,
+    pub device: axfs_ng_vfs::DeviceId,
+    pub handle: Arc<BlockDeviceHandle>,
+    pub region: BlockRegion,
+}
+
+/// Discovers device nodes using the same naming and partition scan as root selection.
+pub fn block_device_nodes() -> axfs_ng_vfs::VfsResult<Vec<BlockDeviceNode>> {
+    let Some(devices) = BlockRuntime::installed_devices() else {
+        return Ok(Vec::new());
+    };
+    let disks =
+        collect_disks(devices.iter().cloned()).map_err(crate::error::block_error_to_vfs_error)?;
+    let mut nodes = Vec::new();
+    for disk in disks {
+        let identity = block_identity(disk.handle.device_info(), disk.disk_index);
+        nodes.push(BlockDeviceNode {
+            path: default_root_source(disk.handle.device_info(), disk.disk_index, None),
+            device: axfs_ng_vfs::DeviceId::new(identity.major, identity.minor),
+            region: BlockRegion::from_num_blocks(disk.handle.device_info().num_blocks),
+            handle: disk.handle.clone(),
+        });
+        for partition in disk.partitions {
+            nodes.push(BlockDeviceNode {
+                path: default_root_source(
+                    disk.handle.device_info(),
+                    disk.disk_index,
+                    Some(partition.info.index),
+                ),
+                device: axfs_ng_vfs::DeviceId::new(
+                    identity.major,
+                    identity.minor + partition.info.index as u32 + 1,
+                ),
+                handle: disk.handle.clone(),
+                region: partition.info.region,
+            });
+        }
+    }
+    Ok(nodes)
 }
 
 fn prepare_root(
@@ -308,6 +352,19 @@ fn prepare_root(
     let context = crate::highlevel::FsContext::new(
         axfs_ng_vfs::Mountpoint::new_root_with_source(&filesystem, &source).root_location(),
     );
+    if bootargs
+        .and_then(|args| {
+            crate::bootargs::tokens(args)
+                .into_iter()
+                .take_while(|word| word != "--")
+                .filter(|word| matches!(word.as_str(), "ro" | "rw"))
+                .last()
+        })
+        .as_deref()
+        == Some("ro")
+    {
+        context.root_dir().mountpoint().set_readonly(true);
+    }
     Ok(PreparedRoot {
         filesystem,
         context,

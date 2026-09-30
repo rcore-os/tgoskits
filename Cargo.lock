@@ -395,6 +395,7 @@ dependencies = [
 name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
+ "ax-fs-ng",
  "ax-hal",
  "ax-std",
 ]

@@ -62,7 +62,7 @@ axloader 时，cmdline 通过 EFI LoadOptions 传给 someboot，initramfs 仍使
 或 Linux 默认
 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`。`--` 后的词只传给 PID 1；
 未知的不带点号的键值参数成为环境变量，其余未知词成为参数。ArceOS 和
-Axvisor 没有 PID 1：显式 `root=` 选择磁盘，否则存在 initramfs 就选择内存根。
+Axvisor 没有 PID 1：ArceOS 在应用启动前处理显式 `root=`；Axvisor 使用延迟切根，先安装自带资源再提交。没有块设备驱动或磁盘根时省略 `root=`，直接从 initramfs 运行客户机，不切根。
 Starry 的 `known_kernel_option()` 只过滤启动链路与兼容性名单中的参数，并非 Linux
 完整的内核参数注册表；Starry 未识别的 Linux 参数仍按未知参数规则传给 PID 1，
 例如 `memmap=exactmap` 会进入环境变量，不能据此认为 Starry 已实现该参数的内核语义。
@@ -101,3 +101,39 @@ Starry 内存根用例编译独立 AArch64 `/init`，检查 `rdinit=`、环境�
 只测试内置镜像不能证明外部传输。FIT 的 U-Boot 实机交接、UEFI 本地 ESP
 读取、axloader HTTP 推送及实体板卡上的镜像页回收仍须按各自入口核对。没有实体板卡
 运行证据时标为未验证，不能以 QEMU 成功代替。
+
+## 5. Axvisor 自带资源
+
+`axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs` 和 `/guest/builtin/images`。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
+
+### 5.1 安装发布
+
+`builtin::prepare_root()` 先调用 `prepare_block_root()`，通过独立 `PreparedRoot::context()` 安装资源，再调用 `PreparedRoot::commit()`。`bundle::install_directory()` 将整个包复制到 `builtin.new`，校验配置及镜像、刷盘后发布；旧包独有文件一并删除。Ext4 用 `RenameOptions::EXCHANGE`，FAT 用 `builtin.old` 备份、目录发布和失败回滚；FAT 不保证断电原子性。后续启动先处理遗留临时及备份目录。
+
+源目录缺失时保留已安装版本，空包清空旧资源。只读目标、空间不足或安装失败时保持原根并停止 VM 启动。`selected_configs()` 优先有效非空 `/guest/vm_default`；空目录或缺失才回退到自带配置，无效用户配置明确报错。
+
+### 5.2 资源生命周期
+
+`take_initramfs()` 一次领取并清除外部启动范围；解包借用结束后只回收确知归属的完整页。内置归档、边界共享页和固件保留页保留。原始归档页回收与解包 ramfs 释放分别记录，仍在使用的无盘内存根保留到正常生命周期结束。
+
+`MemoryFs` 对自身及挂载登记使用弱引用；文件内容由 inode 所有，挂载 lease 在旧根最后引用释放时清理目录和页缓存。已打开文件和映射继续可用，最终关闭后才释放实际页面。挂载拓扑变化移出引用后在锁外执行析构。
+
+## 6. 磁盘根提交
+
+`MountNamespace` 保存不可变命名空间底座，实际根通过挂载替换。`FsContext::pivot_root()` 支持普通移动和 `pivot_root(".", ".")`，提交后更新同命名空间中仍指向旧根的 root/cwd，Canonical 根上下文用于后续任务初始化；命名空间复制基于当前有效根恢复路径。
+
+### 6.1 用户态切根
+
+Starry 早期 init 可挂载物理块设备的 Ext4，再切根并用 `umount2(MNT_DETACH)` 脱离旧根。`mount_ext4()` 复用共享块运行时、选盘命名和分区扫描；native filesystem 登记为弱引用，重复挂载同一块区域复用超级块。物理块节点的原始 read/write 仍不支持，文件系统 I/O 经共享 native handle 后端执行。
+
+### 6.2 验证入口
+
+`qemu/host-initramfs-switch-root` 在 AArch64 直接执行 mount、chdir、pivot_root 和 umount2，读取磁盘根 `/etc/alpine-release`，再从磁盘 exec `/sbin/init`。ArceOS 的 `block-root-smoke` 显式启用 Ext4 和 NVMe，验证应用启动时已读取磁盘文件。
+
+```bash
+cargo xtask starry test qemu --arch aarch64 --test-case qemu/host-initramfs-switch-root
+FEATURES=block-root-smoke cargo xtask arceos qemu -p arceos-helloworld --arch aarch64 --qemu-config apps/arceos/helloworld/qemu-host-initramfs-root-aarch64.toml
+cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
+```
+
+Axvisor HTTP 用例显式切到 NVMe 根，删除、重建并再次启动 VM，创建请求使用打包后的自带配置和镜像路径；无需旧 initramfs 或内核内嵌镜像。

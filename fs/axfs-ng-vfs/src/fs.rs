@@ -106,6 +106,11 @@ pub struct WeakFilesystem {
 }
 
 impl WeakFilesystem {
+    /// Reports whether both filesystem owners are still present.
+    pub fn is_alive(&self) -> bool {
+        self.ops.strong_count() != 0 && self.mount_state.strong_count() != 0
+    }
+
     /// Retains the instance only while a mount, file, or explicit owner is live.
     pub fn upgrade(&self) -> Option<Filesystem> {
         Some(Filesystem {

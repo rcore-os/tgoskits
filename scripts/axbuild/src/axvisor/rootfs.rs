@@ -141,7 +141,7 @@ pub(super) fn diskless_explicit_qemu(
 ) -> bool {
     explicit_config
         && !explicit_rootfs
-        && rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
+        && !rootfs::qemu::has_host_rootfs_wiring(&qemu.args)
         && !has_explicit_root(qemu)
 }
 
@@ -628,7 +628,7 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
             args: vec!["-nographic".into()],
             ..Default::default()
         };
-        assert!(!diskless_explicit_qemu(&qemu, true, false));
+        assert!(diskless_explicit_qemu(&qemu, true, false));
         let qemu = QemuConfig {
             boot: ostool::BootPayloadConfig {
                 initramfs: Some("host.cpio".into()),

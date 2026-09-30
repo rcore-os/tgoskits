@@ -52,7 +52,7 @@ mod video_allocator;
 #[cfg(feature = "uvc")]
 mod video_dir;
 
-use alloc::{format, sync::Arc};
+use alloc::{format, string::ToString, sync::Arc};
 use core::{
     any::Any,
     sync::atomic::{AtomicU64, Ordering},
@@ -167,6 +167,27 @@ impl DeviceOps for Null {
 /// read/write return `EIO` rather than silently succeeding, so the node never
 /// masquerades as a working disk for `dd`/`blkid`/`fsck`.
 struct RootBlk;
+
+/// Mountable physical block device. Raw device I/O is not implemented here.
+pub(crate) struct PhysicalBlock(pub ax_fs_ng::root::BlockDeviceNode);
+
+impl DeviceOps for PhysicalBlock {
+    fn len(&self) -> VfsResult<u64> {
+        Ok(self.0.region.num_blocks() * self.0.handle.device_info().logical_block_size as u64)
+    }
+
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::Io)
+    }
+
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::Io)
+    }
+
+    fn as_any(&self) -> &dyn Any { self }
+
+    fn flags(&self) -> NodeFlags { NodeFlags::NON_CACHEABLE }
+}
 
 impl DeviceOps for RootBlk {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
@@ -490,6 +511,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // `rdev`, which stats "/" then looks for a block node with a matching
     // st_rdev) can find it. The root mount is the first mount, so its
     // `DEVICE_COUNTER` id is 1 (== `DeviceId::new(0, 1).0`).
+    let block_nodes = ax_fs_ng::root::block_device_nodes()
+        .unwrap_or_else(|error| panic!("failed to discover block device nodes: {error:?}"));
+    let root_name = ax_fs_ng::root::root_block_identity().name;
+    if !block_nodes.iter().any(|node| node.path.strip_prefix("/dev/") == Some(root_name)) {
     root.add(
         ax_fs_ng::root::root_block_identity().name,
         Device::new(
@@ -499,6 +524,12 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             Arc::new(RootBlk),
         ),
     );
+    }
+    for node in block_nodes {
+        let name = node.path.strip_prefix("/dev/").expect("device path").to_string();
+        let device = node.device;
+        root.add(name, Device::new(fs.clone(), NodeType::BlockDevice, device, Arc::new(PhysicalBlock(node))));
+    }
     if ax_display::has_display() {
         root.add(
             "fb0",

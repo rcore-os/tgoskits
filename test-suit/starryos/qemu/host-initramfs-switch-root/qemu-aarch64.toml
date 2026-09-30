@@ -1,0 +1,21 @@
+cmdline = "root=/dev/nvme0n1 rdinit=/init"
+args = [
+  "-machine", "virt",
+  "-cpu", "cortex-a53",
+  "-m", "512M",
+  "-smp", "1",
+  "-nographic",
+  "-serial", "mon:stdio",
+  "-device", "nvme,drive=disk0,serial=tgoskits",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+]
+uefi = false
+to_bin = true
+fail_regex = ["STARRY_USER_ROOT_SWITCH_FAILED", "ARCEOS_PANIC_EMERGENCY"]
+timeout = 90
+
+[[shell_check_steps]]
+success_regex = ["STARRY_USER_ROOT_SWITCH_PASSED"]
+
+[[shell_check_steps]]
+success_regex = ["root@starry:~#"]

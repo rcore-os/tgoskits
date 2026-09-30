@@ -19,14 +19,13 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (mount_id, parent_id, mp) in entries {
         let root_loc = mp.root_location();
-        if !root_loc.is_descendant_of(fs_context.root_dir()) {
-            continue;
-        }
-
-        let mount_point = root_loc
-            .absolute_path()
-            .map(|p| p.to_string())
-            .unwrap_or_else(|_| "/".into());
+        let (mount_root, mount_point) = if alloc::sync::Arc::ptr_eq(root_loc.mountpoint(), fs_context.root_dir().mountpoint()) {
+            let Ok(root) = fs_context.root_dir().path_from(&root_loc) else { continue; };
+            (root.to_string(), String::from("/"))
+        } else {
+            let Ok(path) = root_loc.path_from(fs_context.root_dir()) else { continue; };
+            (String::from("/"), path.to_string())
+        };
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();
@@ -56,7 +55,7 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
 
         let _ = writeln!(
             &mut buf,
-            "{mount_id} {parent_id} {}:{} / {mount_point} {options}{optional_fields} - {fstype} \
+            "{mount_id} {parent_id} {}:{} {mount_root} {mount_point} {options}{optional_fields} - {fstype} \
              {source} {super_options}",
             dev.major(),
             dev.minor(),
@@ -70,14 +69,12 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (_, _, mp) in entries {
         let root_loc = mp.root_location();
-        if !root_loc.is_descendant_of(fs_context.root_dir()) {
-            continue;
-        }
-
-        let mount_point = root_loc
-            .absolute_path()
-            .map(|p| p.to_string())
-            .unwrap_or_else(|_| "/".into());
+        let mount_point = if alloc::sync::Arc::ptr_eq(root_loc.mountpoint(), fs_context.root_dir().mountpoint()) {
+            String::from("/")
+        } else {
+            let Ok(path) = root_loc.path_from(fs_context.root_dir()) else { continue; };
+            path.to_string()
+        };
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();

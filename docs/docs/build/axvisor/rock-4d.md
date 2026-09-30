@@ -2,86 +2,55 @@
 sidebar_position: 5
 sidebar_label: "ROCK 4D"
 ---
+
 # ROCK 4D Linux Guest
 
-ROCK 4D 的 Linux VM 配置使用 `image_location = "fs"`。Axvisor 会从板卡根文件系统读取以下资产，TGOSKits 的构建和 board test 不会自动生成或安装它们：
+ROCK 4D 的客户机 kernel 和 DTB 由构建机准备，`prepare_guest_payload()` 将其放入宿主 initramfs，Axvisor 统一按文件路径加载。VM 配置 `os/axvisor/configs/vms/rock-4d/linux-smp1.toml` 使用 `${env:AXVISOR_GUEST_ASSETS}` 指定本地目录。
 
-```text
-/guest/linux/rock-4d
-/guest/linux/rock-4d-linux-smp1.dtb
-```
+## 1. 客户机资源
 
-Linux kernel 使用 Radxa BSP 的 `linux/rk2410` profile 构建，guest DTB 的源文件由 TGOSKits 仓库维护。运行 ROCK 4D board 用例前，先设置两个工作区路径和板卡连接信息：
+Linux kernel 使用 Radxa BSP 的 `linux/rk2410` profile 构建，guest DTS 由 TGOSKits 维护。资源打包前必须非空；缺少资源时报错，不继续使用旧归档。
+
+### 1.1 Linux kernel
+
+先设置工作区和本地资产目录，再构建 BSP raw ARM64 `Image`。有意保留 BSP 本地修改时使用其 `--dirty` 选项。
 
 ```bash
 export TGOSKITS_ROOT=/path/to/tgoskits
 export ROCK4D_BSP=/path/to/rock-4d/bsp
-export ROCK4D_HOST=<board-linux-ip>
-export ROCK4D_USER=radxa
-```
-
-## 1. 构建 Linux kernel
-
-使用 BSP 构建 raw ARM64 kernel `Image`：
-
-```bash
+export AXVISOR_GUEST_ASSETS="${TGOSKITS_ROOT}/tmp/axvisor/guest-assets"
 cd "${ROCK4D_BSP}"
 ./bsp linux rk2410
-
-test -s .src/linux/arch/arm64/boot/Image
+mkdir -p "${AXVISOR_GUEST_ASSETS}/linux"
+cp .src/linux/arch/arm64/boot/Image "${AXVISOR_GUEST_ASSETS}/linux/rock-4d"
+test -s "${AXVISOR_GUEST_ASSETS}/linux/rock-4d"
 ```
 
-如果正在复用 `.src/linux` 中有意保留的本地 kernel 修改，使用 BSP 提供的 `--dirty` 选项重新构建：
+### 1.2 Guest DTB
 
-```bash
-cd "${ROCK4D_BSP}"
-./bsp --dirty linux rk2410
-```
-
-## 2. 生成 Guest DTB
-
-从 TGOSKits 维护的 DTS 生成 guest DTB：
+`dtc` 编译仓库中的 guest DTS；输出目录结构与 VM TOML 的打包输入路径一致。
 
 ```bash
 cd "${TGOSKITS_ROOT}"
-
-mkdir -p tmp/axvisor/rock-4d
 dtc -I dts -O dtb \
-  -o tmp/axvisor/rock-4d/rock-4d-linux-smp1.dtb \
+  -o "${AXVISOR_GUEST_ASSETS}/linux/rock-4d-linux-smp1.dtb" \
   os/axvisor/configs/vms/rock-4d/linux-smp1.dts
-
-test -s tmp/axvisor/rock-4d/rock-4d-linux-smp1.dtb
+test -s "${AXVISOR_GUEST_ASSETS}/linux/rock-4d-linux-smp1.dtb"
 ```
 
-## 3. 部署 Guest 资产
+## 2. 板卡启动
 
-将 BSP kernel 和 guest DTB 一起部署到板卡的 Axvisor guest 目录：
+`axvisor test board` 复用 FIT 或 HTTP Boot 的宿主归档交接，不再要求先通过 SSH 将启动镜像写入板卡根文件系统。客户机可写磁盘的路径及所有权仍由 VM 配置定义。
 
-```bash
-scp \
-  "${ROCK4D_BSP}/.src/linux/arch/arm64/boot/Image" \
-  tmp/axvisor/rock-4d/rock-4d-linux-smp1.dtb \
-  "${ROCK4D_USER}@${ROCK4D_HOST}:/tmp/"
+### 2.1 执行用例
 
-ssh "${ROCK4D_USER}@${ROCK4D_HOST}" \
-  'sudo install -D -m 0644 /tmp/Image /guest/linux/rock-4d && \
-   sudo install -m 0644 /tmp/rock-4d-linux-smp1.dtb \
-     /guest/linux/rock-4d-linux-smp1.dtb && \
-   sudo sync && \
-   test -s /guest/linux/rock-4d && \
-   test -s /guest/linux/rock-4d-linux-smp1.dtb && \
-   sha256sum /guest/linux/rock-4d /guest/linux/rock-4d-linux-smp1.dtb'
-```
-
-`bsp`、`dtc`、`scp`、`ssh` 或板端写入失败时必须停止，不能继续使用旧 kernel 或 DTB。
-
-## 4. 运行 Board 用例
-
-部署完成并确认两项资产均非空后，从 TGOSKits 仓库运行：
+本地资源准备完成后，通过现有板卡服务运行完整 U-Boot、Axvisor、Linux 客户机链路。
 
 ```bash
 cd "${TGOSKITS_ROOT}"
 cargo xtask axvisor test board --board rock-4d-linux
 ```
 
-board 用例覆盖从 U-Boot 启动 Axvisor 到 Linux guest 登录提示的路径，但不修改板卡的持久文件系统。更新 BSP kernel 或 guest DTS 后必须重新执行对应的构建、部署和 `sync` 流程。
+### 2.2 根文件系统选择
+
+没有宿主 `root=` 时直接从 initramfs 加载客户机，不切根。显式磁盘根时，`builtin::prepare_root()` 将 `/guest/builtin` 整包替换到磁盘、刷盘并切根；只读根、空间不足或安装失败会停止启动。板卡实际交接及根切换需要在对应硬件上验证，QEMU 结果不能代替。

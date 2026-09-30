@@ -567,6 +567,14 @@ impl Mountpoint {
 
         let new_parent = new_root_mp.location().ok_or(VfsError::InvalidInput)?;
         let old_parent = self.location();
+        if put_old.mountpoint().is_shared()
+            || new_parent.mountpoint().is_shared()
+            || old_parent
+                .as_ref()
+                .is_some_and(|parent| parent.mountpoint().is_shared())
+        {
+            return Err(VfsError::InvalidInput);
+        }
         let removed_new = new_parent
             .mountpoint
             .children
@@ -962,6 +970,19 @@ impl Location {
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.mountpoint, &other.mountpoint) && self.entry.ptr_eq(&other.entry)
+    }
+
+    /// Returns the visible absolute path within a process root.
+    pub fn path_from(&self, root: &Self) -> VfsResult<PathBuf> {
+        let mut components = Vec::new();
+        let mut current = self.clone();
+        while !current.ptr_eq(root) {
+            components.push(current.name().into_owned());
+            current = current.parent().ok_or(VfsError::InvalidInput)?;
+        }
+        Ok(iter::once("/")
+            .chain(components.iter().map(String::as_str).rev())
+            .collect())
     }
 
     /// Returns whether this resolved location is equal to or below `ancestor`.

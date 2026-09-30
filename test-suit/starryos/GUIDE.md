@@ -331,7 +331,7 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 根 PID 1 退出。`qemu/pid1`、`qemu/pid1-exit`、`qemu/pid1-exit-thread` 和 `qemu/pid1-fault` 安装专用
 `/sbin/init`，验证根 PID 1 的信号、回收语义、两种退出入口与同步缺页；`qemu/openrc` 验证服务管理和终端重新拉起。
 
-`qemu/host-initramfs` 与 `qemu/host-initramfs-disk-fallback` 在 case 目录放置
+`qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback` 与 `qemu/host-initramfs-switch-root` 在 case 目录放置
 `host-initramfs.toml`，其中 `source` 指向工作区内的归档目录；可选的
 `init_source` 指向 AArch64 `/init` 的 C 源码，同目录须有 `entry-aarch64.S`。
 axbuild 在运行前用 clang/lld 编译 `/init`、构建 `newc` 归档，再交给 QEMU。
@@ -754,3 +754,5 @@ cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-smoke --arch riscv64
 - `fail_regex` 保持精确，避免匹配正常输出如 `failed: 0`。
 - 不要在同一个工作区并行运行多个 `cargo xtask starry test qemu`，rootfs 和生成配置可能互相影响。
 - heavy app 不应放回 `test-suit/starryos`；迁出到 `apps/starry` 后加入 `apps/.ignore`，需要时用显式 `-t` 运行。
+
+`qemu/host-initramfs-switch-root` 的早期 `/init` 直接挂载 NVMe Ext4、移动 `/dev`、执行 `pivot_root(".", ".")` 和 `umount2(MNT_DETACH)`，读取磁盘根版本文件后再 exec 磁盘 `/sbin/init`；各步骤失败打印 errno 并令测试失败。
