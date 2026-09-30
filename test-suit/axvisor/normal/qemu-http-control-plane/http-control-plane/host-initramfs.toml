@@ -1,0 +1,2 @@
+vm_configs = ["test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/vm-memory.toml"]
+busybox_initramfs = "tmp/axbuild/axvisor/qemu-http-control-plane/initramfs-aarch64.cpio.gz"

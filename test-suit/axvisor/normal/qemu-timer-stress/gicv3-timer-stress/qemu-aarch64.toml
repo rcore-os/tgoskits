@@ -23,7 +23,7 @@ to_bin = true
 uefi = false
 
 [[shell_check_steps]]
-shell_prefix = "axvisor:$"
+shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 
 [[shell_check_steps]]

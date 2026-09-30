@@ -8,6 +8,7 @@
 # provision the QEMU images and the managed rootfs the initramfs is built from.
 features = [
     "http-axum",
+    "ax-driver/nvme",
     "no-auto-start",
 ]
 log = "Info"
@@ -22,4 +23,3 @@ vm_configs = ["test-suit/axvisor/normal/qemu-http-control-plane/http-control-pla
 [env]
 AXVM_HTTP_TOKEN = "axvisor-http-test-token"
 AXVM_HTTP_BIND = "0.0.0.0:8080"
-AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-http-control-plane/initramfs-aarch64.cpio.gz"

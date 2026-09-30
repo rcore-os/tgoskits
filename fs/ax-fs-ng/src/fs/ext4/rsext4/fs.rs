@@ -745,4 +745,57 @@ mod tests {
             "the final filesystem reference must release its backing device"
         );
     }
+
+    #[test]
+    fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
+
+            use crate::{MemoryFs, highlevel::FsContext};
+
+            let (storage, flushes) = formatted_test_storage();
+            let filesystem = Ext4Filesystem::new(
+                Box::new(SharedMemoryDevice {
+                    storage,
+                    read_only: false,
+                    flushes,
+                }),
+                BlockRegion::from_num_blocks((TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64),
+            )
+            .unwrap();
+            let target = FsContext::new(Mountpoint::new_root(&filesystem).root_location());
+            let source = FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location());
+            for context in [&source, &target] {
+                for path in ["/guest", "/guest/builtin"] {
+                    context
+                        .create_dir(
+                            path,
+                            NodePermission::from_bits_truncate(0o755),
+                            0,
+                            0,
+                            &MutationCredentials::root(),
+                        )
+                        .unwrap();
+                }
+            }
+            target.write("/guest/builtin/old", b"old contents").unwrap();
+            let old_file = crate::file::File::open(&target, "/guest/builtin/old").unwrap();
+            source.write("/guest/builtin/new", b"new contents").unwrap();
+            assert_eq!(
+                crate::bundle::install_directory(&source, &target, "/guest/builtin", |_, _| Err(
+                    VfsError::InvalidData
+                )),
+                Err(VfsError::InvalidData)
+            );
+            assert_eq!(target.read("/guest/builtin/old").unwrap(), b"old contents");
+            crate::bundle::install_directory(&source, &target, "/guest/builtin", |_, _| Ok(()))
+                .unwrap();
+            assert_eq!(target.read("/guest/builtin/new").unwrap(), b"new contents");
+            assert!(target.resolve("/guest/builtin/old").is_err());
+            assert!(target.resolve("/guest/builtin.new").is_err());
+            let mut bytes = [0; 12];
+            assert_eq!(old_file.read_at(&mut bytes[..], 0).unwrap(), 12);
+            assert_eq!(&bytes, b"old contents");
+        });
+    }
 }

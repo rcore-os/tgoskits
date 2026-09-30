@@ -32,7 +32,6 @@ pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
 
 pub(super) fn shutdown(exit_code: i32) -> ! {
-    #[cfg(feature = "fs")]
     if let Err(error) = axvm::host::shutdown_filesystems() {
         println!("Warning: failed to shut down host filesystems: {error}");
     }
@@ -454,16 +453,11 @@ pub fn print_prompt() {
 }
 
 pub fn prompt_string() -> String {
-    #[cfg(feature = "fs")]
     {
         match std::env::current_dir() {
             Ok(dir) => format!("axvisor:{}$ ", dir.display()),
             Err(_) => "axvisor:$ ".to_string(),
         }
-    }
-    #[cfg(not(feature = "fs"))]
-    {
-        "axvisor:$ ".to_string()
     }
 }
 

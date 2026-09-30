@@ -19,7 +19,6 @@ phys_cpu_sets = [1]
 # The entry point of the UEFI firmware reset vector.
 entry_point = 0xffff_fff0
 # The location of image: "memory" | "fs".
-image_location = "fs"
 # The file path of the ArceOS x86_64 UEFI guest image.
 kernel_path = "/guest/arceos/arceos-x86_64-uefi.bin"
 # The load address of the guest image.

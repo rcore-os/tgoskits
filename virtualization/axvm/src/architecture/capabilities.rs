@@ -99,14 +99,6 @@ pub(crate) trait BootImagePlatform {
         None
     }
 
-    fn load_images_from_memory(
-        loader: &mut crate::boot::images::ImageLoaderCore<'_>,
-        images: crate::boot::StaticVmImage,
-    ) -> AxVmResult {
-        loader.load_standard_images_from_memory(images, Self::load_guest_dtb)
-    }
-
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_images_from_filesystem(
         loader: &mut crate::boot::images::ImageLoaderCore<'_>,
     ) -> AxVmResult {

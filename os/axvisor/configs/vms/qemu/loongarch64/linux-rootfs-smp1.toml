@@ -19,7 +19,6 @@ phys_cpu_ids = [0]
 # UEFI guest starts from firmware; Linux is provided to firmware through fw_cfg.
 entry_point = 0x1c00_0000
 # The location of image: "memory" | "fs".
-image_location = "fs"
 # The file path of the kernel image.
 kernel_path = "/guest/linux/linux-qemu"
 # Fallback load address for non-firmware boot paths.

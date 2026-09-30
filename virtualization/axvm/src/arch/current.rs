@@ -95,14 +95,6 @@ pub(crate) fn prepare_guest_boot(
     CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)
 }
 
-pub(crate) fn load_images_from_memory(
-    loader: &mut crate::boot::images::ImageLoaderCore<'_>,
-    images: crate::boot::StaticVmImage,
-) -> AxVmResult {
-    CurrentArch::load_images_from_memory(loader, images)
-}
-
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub(crate) fn load_images_from_filesystem(
     loader: &mut crate::boot::images::ImageLoaderCore<'_>,
 ) -> AxVmResult {

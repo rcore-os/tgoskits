@@ -14,11 +14,7 @@ pub(crate) use resources::{
     prepare_uefi_fdt_config, prepare_uefi_runtime_config,
 };
 
-use crate::{
-    architecture::*,
-    boot::{images::*, *},
-    *,
-};
+use crate::{architecture::*, boot::images::*, *};
 
 pub(crate) const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
 
@@ -546,33 +542,6 @@ impl BootImagePlatform for super::LoongArch64Arch {
         super::make_guest_memory_visible(addr, size);
     }
 
-    fn load_images_from_memory(
-        loader: &mut ImageLoaderCore<'_>,
-        images: StaticVmImage,
-    ) -> AxVmResult {
-        if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Direct {
-            return load_direct_linux(loader, images.kernel, images.ramdisk);
-        }
-        ensure_uefi_boot(loader)?;
-        load_uefi_firmware_dtb(loader)?;
-        add_fw_cfg(
-            loader,
-            FwCfgKernelPayload::unsplit(Arc::from(images.kernel)),
-            images.ramdisk.map(Arc::from),
-        )?;
-        let firmware = images
-            .bios
-            .or_else(|| provider_firmware_image(loader))
-            .ok_or_else(|| {
-                ax_err_type!(
-                    NotFound,
-                    "LoongArch UEFI boot requires a build-time firmware image"
-                )
-            })?;
-        load_uefi_firmware_image(loader, firmware)
-    }
-
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
         if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Direct {
             let kernel = crate::boot::images::fs::read_full_image(
@@ -605,13 +574,11 @@ impl BootImagePlatform for super::LoongArch64Arch {
         };
         add_fw_cfg(loader, FwCfgKernelPayload::unsplit(kernel), ramdisk)?;
 
-        let firmware = provider_firmware_image(loader).ok_or_else(|| {
-            ax_err_type!(
-                NotFound,
-                "LoongArch UEFI boot requires a build-time firmware image"
-            )
+        let path = loader.config.kernel.boot_firmware_path().ok_or_else(|| {
+            ax_err_type!(NotFound, "LoongArch UEFI boot requires a firmware file")
         })?;
-        load_uefi_firmware_image(loader, firmware)
+        let firmware = loader.provider.read_file(path)?;
+        load_uefi_firmware_image(loader, &firmware)
     }
 }
 
@@ -691,15 +658,6 @@ fn add_fw_cfg(
         cpu_num: loader.config.base.cpu_num as u16,
         platform: platform.fw_cfg_platform_config(loader.config.base.cpu_num as u16)?,
     })
-}
-
-fn provider_firmware_image(loader: &ImageLoaderCore<'_>) -> Option<&'static [u8]> {
-    loader
-        .provider
-        .static_firmware_images()
-        .iter()
-        .find(|image| image.id == loader.config.base.id)
-        .and_then(|image| image.bios)
 }
 
 fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> AxVmResult {

@@ -54,8 +54,8 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         })
         .transpose()?;
     let mut cargo = build::load_cargo_config(&request, axvisor.app.workspace_context())?;
-    request.vmconfigs = build::vmconfigs_from_cargo(&cargo);
-    let qemu =
+    request.vmconfigs = build::load_vmconfigs(&request, axvisor.app.workspace_context())?;
+    let mut qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
     if diskless_explicit_qemu(
         &qemu,
@@ -77,6 +77,17 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         )
         .await?;
     }
+    let bundle_path = axvisor
+        .app
+        .target_dir()
+        .join("axbuild/axvisor/host-initramfs")
+        .join(format!("{}.cpio", request.arch));
+    super::bundle::attach(
+        &request.vmconfigs,
+        false,
+        &bundle_path,
+        &mut qemu.boot.initramfs,
+    )?;
     cargo.to_bin = qemu_to_bin_requested(&qemu)?;
     axvisor
         .app

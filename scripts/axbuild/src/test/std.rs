@@ -155,14 +155,6 @@ const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile
     expected_tests: &[],
 }];
 
-const FS_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "fs",
-    no_default_features: false,
-    features: &["fs"],
-    name_filter: None,
-    expected_tests: &[],
-}];
-
 const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
         name: "host-test+vfs+fat+ext4",
@@ -579,7 +571,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
         "aic8800" => Some(AIC8800_FEATURE_PROFILES),
         "axbuild" => Some(AXBUILD_FEATURE_PROFILES),
-        "axvisor" => Some(FS_FEATURE_PROFILES),
         "virtio-gpu" => Some(VIRTIO_GPU_FEATURE_PROFILES),
         _ => None,
     }

@@ -13,7 +13,6 @@ bios_path = "rvm-bios.bin"
 bios_load_addr = 0x8000
 kernel_path = "arceos-x86_64.bin"
 kernel_load_addr = 0x20_0000
-image_location = "fs"
 memory_regions = [
     [0x0000_0000, 0x100_0000, 0x7, 1],
 ]

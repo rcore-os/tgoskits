@@ -26,7 +26,6 @@ kernel_load_addr = 0x1008_0000
 dtb_load_addr = 0x1000_0000
 # The location of image: "memory" | "fs".
 # load from memory
-image_location = "memory"
 # The file path of the kernel image.
 kernel_path = "/path/to/kernel"
 # The file path of the device tree blob (DTB).

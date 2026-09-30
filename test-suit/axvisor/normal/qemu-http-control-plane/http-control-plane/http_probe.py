@@ -378,8 +378,10 @@ def poll_vm_gone(vm_id):
 
 
 def main():
-    with open(os.path.join(CASE_DIR, "vm-memory.toml"), "r", encoding="utf-8") as f:
+    with open(os.path.join(os.environ["AXVISOR_BUILTIN_CONFIG_DIR"], "vm-1.toml"), "r", encoding="utf-8") as f:
         vm_config = f.read()
+    if "/guest/builtin/images/" not in vm_config:
+        raise AssertionError("VM recreate must use installed built-in boot assets")
     create_body = json.dumps({"toml": vm_config})
     bad_body = json.dumps({"toml": "this is not [[ valid toml {{{"})
 

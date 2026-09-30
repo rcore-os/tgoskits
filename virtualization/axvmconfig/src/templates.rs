@@ -37,8 +37,6 @@ pub struct VmTemplateParams {
     pub kernel_path: String,
     /// Address where kernel should be loaded
     pub kernel_load_addr: usize,
-    /// Location of kernel image ("fs" or "memory")
-    pub image_location: String,
     /// Optional kernel command line parameters
     pub cmdline: Option<String>,
 }
@@ -80,7 +78,6 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
             dtb_load_addr: None,
             ramdisk_path: None, // No initial ramdisk by default
             ramdisk_load_addr: None,
-            image_location: Some(params.image_location),
             cmdline: params.cmdline, // Optional kernel command line
             memory_regions: vec![],  // Memory regions to be defined per architecture
             configured_memory_region_count: 0,

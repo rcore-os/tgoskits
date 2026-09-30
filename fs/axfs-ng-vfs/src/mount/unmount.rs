@@ -143,17 +143,17 @@ impl Mountpoint {
             return Err(VfsError::InvalidInput);
         }
         let retired = {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        plan.revalidate_targets_locked()?;
-        if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
-            let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
-            // A changed propagation set has not passed the caller's busy
-            // checks and cannot join (or leave) this admitted transaction.
-            if !current_plan.has_same_targets(&plan) {
-                return Err(UnmountCommitError::TopologyChanged.into());
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            plan.revalidate_targets_locked()?;
+            if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
+                let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
+                // A changed propagation set has not passed the caller's busy
+                // checks and cannot join (or leave) this admitted transaction.
+                if !current_plan.has_same_targets(&plan) {
+                    return Err(UnmountCommitError::TopologyChanged.into());
+                }
             }
-        }
-        plan.detach_targets_locked().map_err(VfsError::from)?
+            plan.detach_targets_locked().map_err(VfsError::from)?
         };
         drop(retired);
         Ok(())

@@ -63,11 +63,16 @@ fn main() {
 
     guest_console::submit_host_bytes(banner::STARTUP);
 
+    axvisor::builtin::prepare_root()
+        .unwrap_or_else(|error| panic!("failed to prepare Axvisor boot resources: {error:#}"));
+
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
-    manager.init_default_vms();
+    manager
+        .init_default_vms()
+        .unwrap_or_else(|error| panic!("failed to initialize default VMs: {error:#}"));
     #[cfg(feature = "vcpu-perf-load")]
     let _performance_load = perf_load::start();
 

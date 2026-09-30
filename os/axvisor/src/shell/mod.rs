@@ -102,8 +102,6 @@ fn print_shell_intro() {
     println!("Type 'help' to see available commands");
     println!("Use UP/DOWN arrows to navigate command history");
     print_console_shortcuts();
-    #[cfg(not(feature = "fs"))]
-    println!("Note: Running with limited features (filesystem support disabled).");
     println!();
 }
 

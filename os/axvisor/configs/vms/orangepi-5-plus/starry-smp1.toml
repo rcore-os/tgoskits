@@ -9,7 +9,6 @@ phys_cpu_ids = [0x00]
 # StarryOS is an AArch64 Image and receives the generated guest DTB in x0.
 [kernel]
 entry_point = 0x4008_0000
-image_location = "fs"
 kernel_load_addr = 0x4008_0000
 kernel_path = "/guest/starry/orangepi-5-plus"
 dtb_load_addr = 0x4000_0000

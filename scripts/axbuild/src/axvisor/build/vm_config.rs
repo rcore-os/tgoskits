@@ -11,14 +11,6 @@ use tempfile::NamedTempFile;
 
 use crate::context::ResolvedAxvisorRequest;
 
-const IMAGE_PATH_FIELDS: [&str; 5] = [
-    "kernel_path",
-    "dtb_path",
-    "bios_path",
-    "uefi_firmware_path",
-    "ramdisk_path",
-];
-
 pub(super) fn resolve_vmconfigs(
     request: &ResolvedAxvisorRequest,
     configured_paths: &[PathBuf],
@@ -70,8 +62,8 @@ fn resolve_vmconfig(
     };
 
     let mut paths = Vec::new();
-    let mut expanded_any = false;
-    for field in IMAGE_PATH_FIELDS {
+
+    for field in axvmconfig::BOOT_IMAGE_PATH_FIELDS {
         let Some(value) = kernel.get(field) else {
             continue;
         };
@@ -87,7 +79,6 @@ fn resolve_vmconfig(
                 source.display()
             )
         })?;
-        let variables_expanded = expanded != Path::new(value);
         let expanded = if expanded.is_absolute() {
             expanded
         } else {
@@ -98,12 +89,7 @@ fn resolve_vmconfig(
         };
         let resolved =
             crate::context::resolve_axbuild_artifact_path(workspace_root, target_dir, &expanded);
-        expanded_any |= variables_expanded || resolved != expanded;
         paths.push((field, resolved));
-    }
-
-    if !expanded_any {
-        return Ok(source.to_path_buf());
     }
 
     let kernel = document

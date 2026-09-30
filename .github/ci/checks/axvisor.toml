@@ -84,24 +84,20 @@ arch = "loongarch64"
 cases = ["smoke"]
 
 [[check]]
-id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
+id = "test-axvisor-self-hosted-x86-64-svm"
 impact_targets = ["axvisor:x86_64"]
-name = "SVM x86_64 · Smoke + direct/OVMF ACPI"
+name = "SVM x86_64 · Smoke, ACPI and PCI"
 runner = "kvm-amd"
-timeout_minutes = 30
+cache_key = ""
+timeout_minutes = 120
 command = '''
-echo "==> axvisor x86_64 svm smoke"
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
-echo "==> axvisor x86_64 svm direct ACPI boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
-echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
+cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm,direct-acpi-svm,ovmf-acpi-svm,pci-enumeration-svm,pci-block-rw-svm,pci-block-ro-svm
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm"]
+cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm", "pci-enumeration-svm", "pci-block-rw-svm", "pci-block-ro-svm"]
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx-smoke-pci-enumeration"
@@ -154,21 +150,6 @@ arch = "x86_64"
 cases = ["direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx"]
 
 [[check]]
-id = "test-axvisor-x86-64-pci-enumeration-svm"
-impact_targets = ["axvisor:x86_64"]
-name = "SVM x86_64 · Generic PCI enumeration"
-runner = "kvm-amd"
-timeout_minutes = 45
-command = '''
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-svm
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "x86_64"
-cases = ["pci-enumeration-svm"]
-
-[[check]]
 id = "test-axvisor-x86-64-pci-block-vmx"
 impact_targets = ["axvisor:x86_64"]
 name = "VMX x86_64 · VirtIO PCI block RW/RO"
@@ -183,22 +164,6 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
 kind = "axvisor-qemu"
 arch = "x86_64"
 cases = ["pci-block-rw-vmx", "pci-block-ro-vmx"]
-
-[[check]]
-id = "test-axvisor-x86-64-pci-block-svm"
-impact_targets = ["axvisor:x86_64"]
-name = "SVM x86_64 · VirtIO PCI block RW/RO"
-runner = "kvm-amd"
-timeout_minutes = 45
-command = '''
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-svm
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-svm
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "x86_64"
-cases = ["pci-block-rw-svm", "pci-block-ro-svm"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry"

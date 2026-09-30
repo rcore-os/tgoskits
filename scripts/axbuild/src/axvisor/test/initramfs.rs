@@ -13,7 +13,6 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 use flate2::{Compression, write::GzEncoder};
-use ostool::build::config::Cargo;
 use tempfile::NamedTempFile;
 
 use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::read_binary_file};
@@ -654,11 +653,11 @@ fn init_script() -> Vec<u8> {
 
 pub(super) async fn prepare_configured_busybox_initramfs(
     request: &ResolvedAxvisorRequest,
-    cargo: &Cargo,
+    inputs: &crate::axvisor::bundle::ResourceInputs,
     workspace_root: &Path,
     target_dir: &Path,
 ) -> anyhow::Result<()> {
-    if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
+    if let Some(configured_output) = inputs.busybox_initramfs.as_deref() {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?;
         prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
@@ -667,7 +666,7 @@ pub(super) async fn prepare_configured_busybox_initramfs(
             output_path.display()
         );
     }
-    if let Some(configured_output) = cargo.env.get(OVMF_OUTPUT_ENV) {
+    if let Some(configured_output) = inputs.ovmf_firmware.as_deref() {
         ensure!(
             request.arch == "x86_64",
             "{OVMF_OUTPUT_ENV} is only valid for x86_64 Axvisor tests"

@@ -1721,9 +1721,12 @@ dependencies = [
  "anyhow",
  "ax-api",
  "ax-driver",
+ "ax-fs-ng",
  "ax-hal",
+ "ax-runtime",
  "ax-std",
  "axbuild",
+ "axfs-ng-vfs",
  "axtest",
  "axum",
  "axvm",
@@ -1733,14 +1736,9 @@ dependencies = [
  "futures-util",
  "heapless",
  "log",
- "prettyplease 0.3.0",
- "proc-macro2",
- "quote",
  "serde_json",
  "shlex 2.0.1",
- "syn 3.0.6",
  "tokio",
- "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

@@ -7,7 +7,6 @@ phys_cpu_ids = [0x200]
 
 [kernel]
 entry_point = 0x4008_0000
-image_location = "fs"
 kernel_path = "/guest/linux/linux-qemu"
 kernel_load_addr = 0x4008_0000
 dtb_load_addr = 0x6000_0000

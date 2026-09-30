@@ -8,7 +8,6 @@ phys_cpu_sets = [1]
 
 [kernel]
 entry_point = 0x8020_0000
-image_location = "memory"
 kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtio-blk-test.bin"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000

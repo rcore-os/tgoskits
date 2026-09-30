@@ -30,12 +30,9 @@ pub async fn vm_detail(Path(id_str): Path<String>) -> Result<Json<Value>, Status
 
 /// `POST /api/vms/create` — create a VM from a TOML config in the JSON body.
 ///
-/// Body: `{"toml": "<完整 TOML 配置>"}`. The guest kernel must be a build-time
-/// embedded image (`image_location = "memory"`) whose id matches the config's
-/// `base.id`, and that id must not currently be registered. Because embedded
-/// images are matched by id (`memory_images_for_vm`), a config whose id has no
-/// embedded image fails with 500 — the runtime can only realize guest images
-/// that were baked into the hypervisor at build time.
+/// Body: `{"toml": "<TOML configuration>"}`. Boot asset paths are resolved in
+/// the current host root filesystem, including installed `/guest/builtin/images`
+/// files. The requested VM ID must not currently be registered.
 pub async fn vm_create(
     _token: ApiToken,
     Json(payload): Json<Value>,

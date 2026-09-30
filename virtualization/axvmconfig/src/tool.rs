@@ -89,17 +89,12 @@ pub struct TemplateArgs {
     /// The entry point of the VM.
     #[arg(short = 'e', long, default_value_t = 1)]
     entry_point: usize,
-    /// The path of the kernel image, if the image_location is "fs", it should be the path of the kernel image file inside the ArceOS's rootfs.
+    /// The path of the kernel image file in the host filesystem.
     #[arg(short = 'k', long)]
     kernel_path: String,
     /// The load address of the kernel image.
     #[arg(short = 'l', long, value_parser = parse_usize)]
     kernel_load_addr: usize,
-    /// The location of the kernel image：
-    /// - "fs" for the kernel image file inside the ArceOS's rootfs
-    /// - "memory" for the kernel image file in the memory.
-    #[arg(long, default_value_t = String::from("fs"))]
-    image_location: String,
     /// The command line of the kernel.
     #[arg(long)]
     cmdline: Option<String>,
@@ -173,19 +168,6 @@ pub fn run() {
         }
         // Handle template generation
         CLISubCmd::Generate(args) => {
-            // Determine the kernel path based on image location
-            // For memory-based images, use absolute path; for fs-based, use relative path
-            let kernel_path = if args.image_location == "memory" {
-                Path::new(&args.kernel_path)
-                    .canonicalize()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-            } else {
-                args.kernel_path.clone()
-            };
-
             // Generate the VM configuration template with provided parameters
             let template = get_vm_config_template(VmTemplateParams {
                 id: args.id,
@@ -193,9 +175,8 @@ pub fn run() {
                 guest_type: args.guest_type,
                 cpu_num: args.cpu_num,
                 entry_point: args.entry_point,
-                kernel_path,
+                kernel_path: args.kernel_path,
                 kernel_load_addr: args.kernel_load_addr,
-                image_location: args.image_location,
                 cmdline: args.cmdline,
             });
 

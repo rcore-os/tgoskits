@@ -7,7 +7,6 @@ phys_cpu_ids = [0x00]
 
 [kernel]
 entry_point = 0x2_4008_0000
-image_location = "fs"
 kernel_load_addr = 0x2_4008_0000
 # Guest kernel on the AxVisor host filesystem; the path is maintained manually.
 kernel_path = "/guest/linux/orangepi-5-plus-6.1.99"

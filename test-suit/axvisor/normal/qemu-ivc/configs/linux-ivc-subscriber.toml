@@ -20,7 +20,6 @@ phys_cpu_ids = [1]
 entry_point = 0x8020_0000
 # The location of image: "memory" | "fs".
 # Load from file system.
-image_location = "fs"
 # The file path of the kernel image.
 kernel_path = "/guest/linux/linux-qemu"
 # The load address of the kernel image.

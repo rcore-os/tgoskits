@@ -9,6 +9,7 @@ use std::{
 use anyhow::Context;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
+use sha2::Digest;
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
@@ -42,7 +43,7 @@ impl Axvisor {
                     };
                     match test_qemu::discover_all_qemu_cases_with_archs(
                         &test_suite_dir,
-                        args.test_case.as_deref(),
+                        args.test_case.first().map(String::as_str),
                         "Axvisor",
                         &group,
                     ) {
@@ -72,7 +73,7 @@ impl Axvisor {
             let test_suite_dir = test_suite_dir(self.app.workspace_root(), test_group)?;
             let case_names = test_qemu::discover_all_qemu_cases(
                 &test_suite_dir,
-                args.test_case.as_deref(),
+                args.test_case.first().map(String::as_str),
                 "Axvisor",
                 test_group,
             )
@@ -82,13 +83,31 @@ impl Axvisor {
         }
 
         let (arch, target) = parse_target(&args.arch, &args.target)?;
-        let cases = discover_qemu_cases(
-            self.app.workspace_root(),
-            test_group,
-            &arch,
-            &target,
-            args.test_case.as_deref(),
-        )?;
+        let mut cases = Vec::new();
+        let selectors = if args.test_case.is_empty() {
+            vec![None]
+        } else {
+            args.test_case
+                .iter()
+                .map(|case| Some(case.as_str()))
+                .collect()
+        };
+        for selected in selectors {
+            for case in discover_qemu_cases(
+                self.app.workspace_root(),
+                test_group,
+                &arch,
+                &target,
+                selected,
+            )? {
+                if !cases
+                    .iter()
+                    .any(|existing: &AxvisorQemuCase| existing.case.name == case.case.name)
+                {
+                    cases.push(case);
+                }
+            }
+        }
         if args.list {
             let case_names = cases.iter().map(|case| case.case.name.as_str());
             println!("{}", test_qemu::render_case_tree(test_group, case_names));
@@ -120,7 +139,7 @@ impl Axvisor {
         let mut summary = test_qemu::QemuTestSummary::default();
         let asset_config = axvisor_case_asset_config();
 
-        let mut build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
+        let build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
             Self::qemu_group_build_context(
                 &request,
                 build_config_path,
@@ -142,40 +161,9 @@ impl Axvisor {
 
         // Phase 1: Build all build groups first so compilation errors surface
         // before any QEMU time is spent. Preserve each executable immediately:
-        // Cargo uses one output path for build groups that differ only in
-        // embedded VM configuration, so a later build would otherwise replace
-        // the executable belonging to an earlier group.
-        for (index, build_group) in build_groups.iter_mut().enumerate() {
-            let diskless_host_only = build_group
-                .group
-                .cases
-                .iter()
-                .all(|case| rootfs::diskless_explicit_qemu(&case.qemu, true, false));
-            if diskless_host_only {
-                rootfs::ensure_guest_image_bundles(
-                    &build_group.request,
-                    self.app.workspace_root(),
-                    self.app.target_dir(),
-                )
-                .await?;
-            } else {
-                rootfs::ensure_qemu_assets_ready(
-                    &build_group.request,
-                    self.app.workspace_root(),
-                    self.app.target_dir(),
-                    None,
-                )
-                .await?;
-            }
-            build_group.cargo =
-                build::load_cargo_config(&build_group.request, self.app.workspace_context())?;
-            prepare_configured_busybox_initramfs(
-                &build_group.request,
-                &build_group.cargo,
-                self.app.workspace_root(),
-                self.app.target_dir(),
-            )
-            .await?;
+        // Cargo can reuse output paths for different feature groups; retain
+        // each executable until its cases have finished.
+        for (index, build_group) in build_groups.iter().enumerate() {
             let output = self
                 .app
                 .build(
@@ -223,13 +211,43 @@ impl Axvisor {
                     .with_context(|| {
                         format!("failed to activate Axvisor qemu artifact for case `{case_name}`")
                     })?;
-                self.run_qemu_case(
-                    &build_group.request,
-                    &build_group.cargo,
-                    case,
-                    &asset_config,
+                let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
+                let mut case_request = build_group.request.clone();
+                case_request.vmconfigs = match &inputs.vm_configs {
+                    Some(configs) => build::resolve_vmconfigs(
+                        &case_request,
+                        configs,
+                        self.app.workspace_context(),
+                    )?,
+                    None => build::load_vmconfigs(&case_request, self.app.workspace_context())?,
+                };
+                if crate::rootfs::qemu::has_host_rootfs_wiring(&case.qemu.args) {
+                    rootfs::ensure_qemu_assets_ready(
+                        &case_request,
+                        self.app.workspace_root(),
+                        self.app.target_dir(),
+                        None,
+                    )
+                    .await?;
+                } else {
+                    rootfs::ensure_guest_image_bundles(
+                        &case_request,
+                        self.app.workspace_root(),
+                        self.app.target_dir(),
+                    )
+                    .await?;
+                }
+                prepare_configured_busybox_initramfs(
+                    &case_request,
+                    &inputs,
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
                 )
-                .await
+                .await?;
+                let digest = sha2::Sha256::digest(std::fs::read(case_artifact.build_artifact)?);
+                println!("Axvisor kernel sha256={digest:x} case={case_name}");
+                self.run_qemu_case(&case_request, &build_group.cargo, case, &asset_config)
+                    .await
             }
             .await
             .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
@@ -312,7 +330,7 @@ impl Axvisor {
         let mut request = request.clone();
         request.build_info_path = build_config_path.to_path_buf();
         let cargo = build::load_cargo_config(&request, workspace)?;
-        request.vmconfigs = build::vmconfigs_from_cargo(&cargo);
+        request.vmconfigs = build::load_vmconfigs(&request, workspace)?;
 
         Ok((request, cargo))
     }
@@ -330,6 +348,19 @@ impl Axvisor {
         asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
+        let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
+        let bundle_path = self
+            .app
+            .target_dir()
+            .join("axbuild/axvisor/host-initramfs")
+            .join(&request.arch)
+            .join(format!("{}.cpio", case.case.case.name.replace('/', "-")));
+        crate::axvisor::bundle::attach(
+            &request.vmconfigs,
+            inputs.vm_configs.is_some(),
+            &bundle_path,
+            &mut qemu.boot.initramfs,
+        )?;
         test_qemu::apply_timeout_scale(&mut qemu);
         if !qemu
             .fail_regex
@@ -429,8 +460,19 @@ impl Axvisor {
             let probe_owned = probe_config.clone();
             let probe_case_dir = case.case.case.case_dir.clone();
             let probe_stop = stop.clone();
+            let builtin_configs = qemu
+                .boot
+                .initramfs
+                .as_ref()
+                .map(|archive| Path::new(archive).with_extension("configs"));
             let probe: host_probe::HostHttpProbeFn = Box::new(move || {
-                super::http_probe::run(&probe_addr, &probe_owned, &probe_case_dir, probe_stop)
+                super::http_probe::run(
+                    &probe_addr,
+                    &probe_owned,
+                    &probe_case_dir,
+                    builtin_configs.as_deref(),
+                    probe_stop,
+                )
             });
             host_probe_guard = Some(host_probe::HostHttpProbeGuard::start(
                 &probe_config,

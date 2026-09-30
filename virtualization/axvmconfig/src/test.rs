@@ -25,7 +25,6 @@ phys_cpu_ids = [0x500, 0x501]
 
 [kernel]
 entry_point = 0xdeadbeef
-image_location = "memory"
 kernel_path = "guest.bin"
 kernel_load_addr = 0xdeadbeef
 memory_regions = [

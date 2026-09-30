@@ -1,7 +1,6 @@
 //! Completion for unquoted command words and filesystem paths.
 
 use std::string::String;
-#[cfg(feature = "fs")]
 use std::string::ToString;
 
 use super::{command, prompt_string, redraw_shell_line};
@@ -25,7 +24,6 @@ pub(super) fn complete_line(buf: &mut [u8], line_len: &mut usize, cursor: &mut u
     let prefix = &before_cursor[start..];
     let context = &before_cursor[..start];
     let mut candidates = command::command_completions(context, prefix);
-    #[cfg(feature = "fs")]
     if !context.trim().is_empty() || prefix.contains('/') {
         candidates.extend(path_completions(prefix));
     }
@@ -68,7 +66,6 @@ pub(super) fn complete_line(buf: &mut [u8], line_len: &mut usize, cursor: &mut u
     redraw_shell_line(&prompt_string(), content, *cursor);
 }
 
-#[cfg(feature = "fs")]
 fn path_completions(prefix: &str) -> std::vec::Vec<String> {
     let (directory, basename) = prefix
         .rsplit_once('/')

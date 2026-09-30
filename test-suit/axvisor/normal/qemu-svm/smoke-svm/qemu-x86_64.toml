@@ -1,3 +1,4 @@
+cmdline = "root=/dev/nvme0n1 rw"
 args = [
   "-no-user-config",
   "-display",

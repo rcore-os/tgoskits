@@ -22,6 +22,7 @@ pub use axfs_ng_vfs::{VfsError, VfsResult};
 pub mod api;
 pub mod block;
 pub mod bootargs;
+pub mod bundle;
 mod error;
 pub mod file;
 pub mod fops;

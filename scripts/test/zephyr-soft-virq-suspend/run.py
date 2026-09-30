@@ -61,7 +61,6 @@ cpu_num = 2
 phys_cpu_ids = [0, 1]
 [kernel]
 entry_point = {entry}
-image_location = "memory"
 kernel_path = {json.dumps(str(build / "zephyr/zephyr.bin"))}
 kernel_load_addr = 0x40000000
 dtb_load_addr = 0x47e00000

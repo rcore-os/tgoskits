@@ -75,7 +75,6 @@ fs = [
     "ax-api/fs",
     "ax-posix-api/fs",
     "ax-runtime/fs",
-    "ax-driver/nvme",
     "fd",
 ]
 ext4fs = ["fs", "ax-runtime/ext4fs"]
