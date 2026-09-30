@@ -505,4 +505,4 @@ Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是�
 
 `prepare_block_root()` 不改变当前根；`PreparedRoot::commit()` 切根、更新同命名空间中的 root/cwd、脱离旧根。ArceOS 在应用启动前处理显式 `root=`；Starry 的 `rdinit=` 或 `/init` 可访问时由早期用户态切根，没有早期 init 时由内核切根。早期 init 执行失败不得再次挂载磁盘。
 
-Axvisor 使用 `deferred-rootfs`，在读取 VM 配置前安装 `/guest/builtin`，然后提交磁盘切根。无块设备驱动或无磁盘根时省略 `root=`，直接在 initramfs 运行 VM，不切根。HTTP 删除、重建 VM 的验证应使用打包后或已安装的资源路径，不能依赖内核内嵌镜像。
+Axvisor 使用 `deferred-rootfs`，在读取 VM 配置前安装 `/guest/builtin`，然后提交磁盘切根。无块设备驱动、无宿主块设备或未请求磁盘根时，直接在 initramfs 运行 VM，不切根；无块设备时即使继承了 `root=` 也保持内存根。已接入块设备且显式选择的根不可用时报告错误。HTTP 删除、重建 VM 的验证应使用打包后或已安装的资源路径，不能依赖内核内嵌镜像。

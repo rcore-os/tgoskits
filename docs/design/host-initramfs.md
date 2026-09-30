@@ -101,6 +101,8 @@ Starry 内存根用例编译独立 AArch64 `/init`，检查 `rdinit=`、环境�
 读取、axloader HTTP 推送及实体板卡上的镜像页回收仍须按各自入口核对。没有实体板卡
 运行证据时标为未验证，不能以 QEMU 成功代替。
 
+Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令、确定性回归和未运行目标，记录在 [根切换验收记录](axvisor-initramfs-validation.md)。
+
 ## 5. Axvisor 自带资源
 
 `axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs` 和 `/guest/builtin/images`。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
