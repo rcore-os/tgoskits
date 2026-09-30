@@ -228,18 +228,6 @@ pub trait DirNodeOps: NodeOps {
         self.is_cacheable()
     }
 
-    /// Returns a cache-only version for confirmed missing names, if supported.
-    ///
-    /// Opt in only when names use exact matching, lookup errors are independent
-    /// of caller credentials, and every namespace change updates this version
-    /// across all aliases of the directory inode. It must not perform I/O or
-    /// wait for filesystem exclusion. Unavailable or transaction-private state
-    /// returns `None`, forcing authoritative lookup. Errors must be propagated.
-    /// This has no effect when [`Self::is_cacheable`] returns `false`.
-    fn negative_cache_generation(&self) -> VfsResult<Option<u64>> {
-        Ok(None)
-    }
-
     /// Returns whether this directory has child entries relevant to rmdir.
     fn has_children(&self) -> VfsResult<bool> {
         let mut has_children = false;
@@ -413,7 +401,7 @@ impl DirNode {
 
         self.ops
             .link(name, node)
-            .inspect_err(|_| self.invalidate_missing_entries())
+            .inspect_err(|_| self.invalidate_lookup_generation())
             .inspect(|entry| {
                 // Hard links must share the same page cache (user_data) as the
                 // source node.  Without this, in-memory filesystems like tmpfs
@@ -438,7 +426,7 @@ impl DirNode {
 
         self.ops
             .unlink(name, is_dir)
-            .inspect_err(|_| self.invalidate_missing_entries())?;
+            .inspect_err(|_| self.invalidate_lookup_generation())?;
         let removed = self.remove_cache_after_mutation(name);
         Self::forget_removed_entry(removed);
         Ok(())
@@ -463,7 +451,7 @@ impl DirNode {
         let entry = self
             .ops
             .create(name, node_type, permission, uid, gid)
-            .inspect_err(|_| self.invalidate_missing_entries())?;
+            .inspect_err(|_| self.invalidate_lookup_generation())?;
         drop(self.insert_cache(name.to_owned(), entry.clone()));
         Ok(entry)
     }
@@ -494,7 +482,7 @@ impl DirNode {
         let entry = self
             .ops
             .create_symlink(name, target, permission, uid, gid)
-            .inspect_err(|_| self.invalidate_missing_entries())?;
+            .inspect_err(|_| self.invalidate_lookup_generation())?;
         drop(self.insert_cache(name.to_owned(), entry.clone()));
         Ok(entry)
     }
@@ -616,8 +604,8 @@ impl DirNode {
         self.ops
             .rename(src_name, dst_dir, dst_name, options)
             .inspect_err(|_| {
-                self.invalidate_missing_entries();
-                dst_dir.invalidate_missing_entries();
+                self.invalidate_lookup_generation();
+                dst_dir.invalidate_lookup_generation();
             })
             .inspect(|_| self.update_cache_after_rename(src_name, dst_dir, dst_name, options))
     }

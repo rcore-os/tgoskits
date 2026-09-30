@@ -12,27 +12,6 @@ use super::*;
 use crate::{FilesystemOps, Metadata, MetadataUpdate, Reference, StatFs};
 
 #[test]
-fn missing_names_are_cached_without_evicting_positive_owners() {
-    let (directory, backend) = fixture();
-    let child = create_directory(&directory, "present");
-    child.user_data().insert(42_u32);
-    assert_missing(&directory, "missing");
-    let before = backend.lookups.load(Ordering::Relaxed);
-    assert_missing(&directory, "missing");
-    assert_eq!(backend.lookups.load(Ordering::Relaxed), before);
-
-    for index in 0..1024 {
-        assert_missing(&directory, &alloc::format!("missing-{index}"));
-    }
-    let before = backend.lookups.load(Ordering::Relaxed);
-    assert_missing(&directory, "missing");
-    assert_eq!(backend.lookups.load(Ordering::Relaxed), before + 1);
-    let cached = directory.lookup("present").unwrap();
-    assert!(cached.ptr_eq(&child));
-    assert_eq!(*cached.user_data().get::<u32>().unwrap(), 42);
-}
-
-#[test]
 fn non_not_found_errors_are_never_cached() {
     let (directory, backend) = fixture();
     for error in [
@@ -46,20 +25,6 @@ fn non_not_found_errors_are_never_cached() {
             assert!(matches!(directory.lookup("missing"), Err(actual) if actual == error));
         }
         assert_eq!(backend.lookups.load(Ordering::Relaxed), before + 2);
-    }
-}
-
-#[test]
-fn opted_out_and_uncacheable_directories_revalidate_missing_names() {
-    for policy in [CachePolicy::PositiveOnly, CachePolicy::Disabled] {
-        let backend = Arc::new(ScriptedDirectory {
-            policy,
-            ..Default::default()
-        });
-        let directory = DirNode::new(backend.clone());
-        assert_missing(&directory, "missing");
-        assert_missing(&directory, "missing");
-        assert_eq!(backend.lookups.load(Ordering::Relaxed), 2);
     }
 }
 
@@ -86,17 +51,6 @@ fn mixed_directory_revalidates_only_dynamic_children() {
 }
 
 #[test]
-fn stale_missing_lookup_cannot_hide_a_completed_create() {
-    let (directory, backend) = fixture();
-    let changed = directory.clone();
-    *backend.after_lookup.lock() = Some(Box::new(move || {
-        create_directory(&changed, "created");
-    }));
-    assert_missing(&directory, "created");
-    assert!(directory.lookup("created").is_ok());
-}
-
-#[test]
 fn cache_clear_rejects_an_in_flight_positive_lookup() {
     let (directory, backend) = fixture();
     let child = create_directory(&directory, "present");
@@ -108,74 +62,29 @@ fn cache_clear_rejects_an_in_flight_positive_lookup() {
 }
 
 #[test]
-fn cache_clear_rejects_an_in_flight_missing_lookup() {
-    let (directory, backend) = fixture();
-    let changed = directory.clone();
-    *backend.after_lookup.lock() = Some(Box::new(move || changed.clear_cached_entries()));
-    assert_missing(&directory, "missing");
-    assert_missing(&directory, "missing");
-    assert_eq!(backend.lookups.load(Ordering::Relaxed), 2);
-}
-
-#[test]
-fn failed_mutation_invalidates_missing_results_without_losing_positive_owners() {
+fn failed_mutation_rejects_an_in_flight_positive_lookup() {
     let (directory, backend) = fixture();
     let preserved = create_directory(&directory, "preserved");
-    assert_missing(&directory, "created");
+    let stale = create_directory(&directory, "stale");
+    directory.remove_cache_after_mutation("stale");
     backend.fail_after_create.store(true, Ordering::Relaxed);
-    assert!(matches!(
-        directory.create(
-            "created",
-            NodeType::Directory,
-            NodePermission::default(),
-            0,
-            0
-        ),
-        Err(VfsError::Io)
-    ));
+    let changed = directory.clone();
+    *backend.after_lookup.lock() = Some(Box::new(move || {
+        assert!(matches!(
+            changed.create(
+                "created",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0
+            ),
+            Err(VfsError::Io)
+        ));
+    }));
+    assert!(directory.lookup("stale").unwrap().ptr_eq(&stale));
+    assert!(directory.lookup_cache("stale").is_none());
     assert!(directory.lookup("created").is_ok());
     assert!(directory.lookup("preserved").unwrap().ptr_eq(&preserved));
-}
-
-#[test]
-fn successful_create_replaces_a_cached_missing_name() {
-    let (directory, _) = fixture();
-    assert_missing(&directory, "created");
-    let child = create_directory(&directory, "created");
-    assert!(directory.lookup("created").unwrap().ptr_eq(&child));
-}
-
-#[test]
-fn a_second_directory_alias_invalidates_cached_missing_names() {
-    let (directory, backend) = fixture();
-    let alias = DirNode::new(backend);
-    assert_missing(&directory, "created");
-    let child = create_directory(&alias, "created");
-    assert!(directory.lookup("created").unwrap().ptr_eq(&child));
-}
-
-#[test]
-fn unavailable_generation_forces_authoritative_lookup() {
-    let (directory, backend) = fixture();
-    assert_missing(&directory, "missing");
-    *backend.generation.lock() = Ok(None);
-    let before = backend.lookups.load(Ordering::Relaxed);
-    assert_missing(&directory, "missing");
-    assert_missing(&directory, "missing");
-    assert_eq!(backend.lookups.load(Ordering::Relaxed), before + 2);
-    *backend.generation.lock() = Err(VfsError::Io);
-    assert!(matches!(directory.lookup("missing"), Err(VfsError::Io)));
-}
-
-#[test]
-fn an_alias_mutation_during_lookup_prevents_negative_publication() {
-    let (directory, backend) = fixture();
-    let alias = DirNode::new(backend.clone());
-    *backend.after_lookup.lock() = Some(Box::new(move || {
-        create_directory(&alias, "created");
-    }));
-    assert_missing(&directory, "created");
-    assert!(directory.lookup("created").is_ok());
 }
 
 fn fixture() -> (Arc<DirNode>, Arc<ScriptedDirectory>) {
@@ -196,9 +105,7 @@ fn assert_missing(directory: &DirNode, name: &str) {
 #[derive(Default)]
 enum CachePolicy {
     #[default]
-    PositiveAndNegative,
-    PositiveOnly,
-    Disabled,
+    Standard,
     Mixed,
 }
 
@@ -209,7 +116,6 @@ struct ScriptedDirectory {
     after_lookup: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     fail_after_create: AtomicBool,
     policy: CachePolicy,
-    generation: Mutex<VfsResult<Option<u64>>>,
 }
 
 impl Default for ScriptedDirectory {
@@ -221,7 +127,6 @@ impl Default for ScriptedDirectory {
             after_lookup: Mutex::new(None),
             fail_after_create: AtomicBool::new(false),
             policy: CachePolicy::default(),
-            generation: Mutex::new(Ok(Some(0))),
         }
     }
 }
@@ -248,21 +153,9 @@ impl NodeOps for ScriptedDirectory {
 }
 
 impl DirNodeOps for ScriptedDirectory {
-    fn is_cacheable(&self) -> bool {
-        !matches!(self.policy, CachePolicy::Disabled)
-    }
     fn is_cacheable_child(&self, name: &str) -> bool {
-        self.is_cacheable()
-            && !(matches!(self.policy, CachePolicy::Mixed) && name.starts_with("volatile"))
+        !matches!(self.policy, CachePolicy::Mixed) || !name.starts_with("volatile")
     }
-    fn negative_cache_generation(&self) -> VfsResult<Option<u64>> {
-        if matches!(self.policy, CachePolicy::PositiveOnly) {
-            Ok(None)
-        } else {
-            *self.generation.lock()
-        }
-    }
-
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         self.lookups.fetch_add(1, Ordering::Relaxed);
         let result = self
@@ -291,9 +184,6 @@ impl DirNodeOps for ScriptedDirectory {
             Reference::root(),
         );
         self.entries.lock().insert(name.into(), entry.clone());
-        if let Ok(Some(generation)) = &mut *self.generation.lock() {
-            *generation += 1;
-        }
         if self.fail_after_create.load(Ordering::Relaxed) {
             Err(VfsError::Io)
         } else {

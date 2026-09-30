@@ -3,19 +3,13 @@
 use alloc::{borrow::ToOwned, string::String};
 use core::mem;
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 
-use super::{DirEntry, DirNode, VfsError, VfsResult};
-
-// Bound attacker-controlled missing names without evicting live positive
-// entries, whose user_data may own the only dirty file-page cache.
-const MAX_NEGATIVE_ENTRIES: usize = 128;
+use super::{DirEntry, DirNode, VfsResult};
 
 #[derive(Default)]
 pub(super) struct DirectoryCache {
     entries: HashMap<String, DirEntry>,
-    missing: HashSet<String>,
-    missing_version: Option<u64>,
     generation: u64,
 }
 
@@ -33,28 +27,7 @@ impl DirNode {
             cache.generation
         };
 
-        let version = self.ops.negative_cache_generation()?;
-        if let Some(version) = version {
-            let cache = self.cache.lock();
-            if cache.generation == generation
-                && cache.missing_version == Some(version)
-                && cache.missing.contains(name)
-            {
-                return Err(VfsError::NotFound);
-            }
-        }
-
         let result = self.ops.lookup(name);
-        // Recheck aliases and transaction visibility without a cache guard.
-        // Unavailable versions cannot certify the namespace seen by lookup.
-        let missing_version = if matches!(result, Err(VfsError::NotFound))
-            && version.is_some()
-            && self.ops.negative_cache_generation()? == version
-        {
-            version
-        } else {
-            None
-        };
         let mut cache = self.cache.lock();
         if cache.generation != generation {
             return result;
@@ -70,10 +43,6 @@ impl DirNode {
                     .clone();
                 drop(cache);
                 Ok(cached)
-            }
-            Err(VfsError::NotFound) if missing_version.is_some() => {
-                cache.remember_missing(name, missing_version);
-                result
             }
             Err(_) => result,
         }
@@ -95,7 +64,7 @@ impl DirNode {
     pub fn insert_cache(&self, name: String, entry: DirEntry) -> Option<DirEntry> {
         if self.ops.is_cacheable_child(&name) {
             let mut cache = self.cache.lock();
-            cache.invalidate_missing();
+            cache.invalidate_generation();
             cache.entries.insert(name, entry)
         } else {
             None
@@ -104,14 +73,14 @@ impl DirNode {
 
     pub(super) fn remove_cache_after_mutation(&self, name: &str) -> Option<DirEntry> {
         let mut cache = self.cache.lock();
-        cache.invalidate_missing();
+        cache.invalidate_generation();
         cache.entries.remove(name)
     }
 
     // A backend may change the namespace and then fail during persistence.
-    // Preserve existing positive owners, but never retain pre-operation misses.
-    pub(super) fn invalidate_missing_entries(&self) {
-        self.cache.lock().invalidate_missing();
+    // Preserve existing positive owners, but reject in-flight lookup results.
+    pub(super) fn invalidate_lookup_generation(&self) {
+        self.cache.lock().invalidate_generation();
     }
 
     /// Clears cached names and user data without unlinking backing entries.
@@ -121,7 +90,7 @@ impl DirNode {
     pub fn clear_cached_entries(&self) {
         let children = {
             let mut cache = self.cache.lock();
-            cache.invalidate_missing();
+            cache.invalidate_generation();
             mem::take(&mut cache.entries)
         };
         for (_, child) in children {
@@ -133,18 +102,8 @@ impl DirNode {
 }
 
 impl DirectoryCache {
-    fn remember_missing(&mut self, name: &str, version: Option<u64>) {
-        if self.missing.len() == MAX_NEGATIVE_ENTRIES || self.missing_version != version {
-            self.missing.clear();
-        }
-        self.missing_version = version;
-        self.missing.insert(name.to_owned());
-    }
-
-    fn invalidate_missing(&mut self) {
-        self.missing.clear();
-        self.missing_version = None;
-        // Both the observed version and publication use the same mutex. A
+    fn invalidate_generation(&mut self) {
+        // Both the observed generation and publication use the same mutex. A
         // lookup cannot span 2^64 completed namespace changes in practice.
         self.generation = self.generation.wrapping_add(1);
     }
@@ -154,7 +113,7 @@ impl DirectoryCache {
         source: &str,
         destination: &str,
     ) -> (Option<DirEntry>, Option<DirEntry>) {
-        self.invalidate_missing();
+        self.invalidate_generation();
         let source_entry = self.entries.remove(source);
         let destination_entry = if source == destination {
             None
