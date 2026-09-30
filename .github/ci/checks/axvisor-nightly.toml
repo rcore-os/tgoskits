@@ -1,0 +1,57 @@
+schema_version = 3
+phase = "nightly"
+group = "AxVisor"
+default_runner = "qcs"
+
+# AxVisor checks that only run on the nightly schedule. They are kept apart
+# from `axvisor.toml` so the default main CI matrix never schedules them.
+# Every check in a `nightly` manifest is nightly-only by construction; do not
+# add a `nightly_only = true` field.
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
+runner = "board"
+resource_group = "orangepi-5-plus"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-virtio-net-peer"
+
+[[check]]
+id = "test-axvisor-aarch64-qemu-timer-stress"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
+timeout_minutes = 30
+command = '''
+echo "==> axvisor aarch64 gicv2 timer stress"
+cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+echo "==> axvisor aarch64 gicv3 timer stress"
+cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["gicv2-timer-stress", "gicv3-timer-stress"]
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Linux PCI network ping"
+runner = "board"
+resource_group = "orangepi-5-plus"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-linux"
+cases = ["ping"]

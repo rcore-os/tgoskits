@@ -28,10 +28,17 @@ jobs:
     name: Plan Starry Apps
     runs-on: ubuntu-latest
     outputs:
+      revision: ${{ steps.revision.outputs.sha }}
       matrix: ${{ steps.matrix.outputs.starry_apps_matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: dev
+
+      - name: Pin dev revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Plan check matrix
         id: matrix
@@ -54,9 +61,33 @@ jobs:
 
   checks:
     name: Starry Apps
-    needs: plan
+    needs: [plan]
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
       matrix_json: ${{ needs.plan.outputs.matrix }}
       fail_fast: false
       save_cache: ${{ github.event_name == 'schedule' }}
+
+  result:
+    name: Nightly Result
+    if: always()
+    needs: [plan, checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report result
+        env:
+          REVISION: ${{ needs.plan.outputs.revision }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: |
+          {
+            echo "## Starry Apps Nightly"
+            echo ""
+            echo "dev revision: ${REVISION}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Plan | ${PLAN_RESULT} |"
+            echo "| Apps | ${CHECKS_RESULT} |"
+          } >> "$GITHUB_STEP_SUMMARY"

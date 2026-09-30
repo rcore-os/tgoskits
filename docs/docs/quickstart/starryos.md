@@ -222,7 +222,7 @@ cargo xtask board connect -b JL-LSGD2K10
 
 ```bash
 cargo xtask starry test board --board jl-lsgd2k10
-cargo xtask starry app board -t block-rw-bench \
+cargo xtask starry app board -t benchmark/block-rw-bench \
   --board-config board-jl-lsgd2k10.toml -b JL-LSGD2K10
 ```
 

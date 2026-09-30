@@ -249,6 +249,7 @@ mod tests {
             case_dir: workspace.path().join("apps/starry/dropbear"),
             prebuild_path: Some(workspace.path().join("prebuild.sh")),
             requires: Vec::new(),
+            benchmark: false,
         };
 
         let first =

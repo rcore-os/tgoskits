@@ -1,0 +1,297 @@
+name: Benchmarks
+
+on:
+  schedule:
+    # GitHub cron uses UTC. This runs at 05:40 Beijing time (UTC+8) next day.
+    - cron: "40 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan Benchmarks
+    if: github.repository == 'rcore-os/tgoskits'
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.revision.outputs.sha }}
+      prepare_matrix: ${{ steps.matrix.outputs.prepare_matrix }}
+      axvisor_performance_matrix: ${{ steps.matrix.outputs.axvisor_performance_matrix }}
+      starry_performance_matrix: ${{ steps.matrix.outputs.starry_performance_matrix }}
+      starry_board_performance_matrix: ${{ steps.matrix.outputs.starry_board_performance_matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: dev
+
+      - name: Pin dev revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Plan benchmark matrices
+        id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 scripts/test/ci_plan.py \
+            --mode benchmarks \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-owner "$GITHUB_REPOSITORY_OWNER" \
+            --event-name "$EVENT_NAME" \
+            --output-file "$GITHUB_OUTPUT"
+
+  prepare:
+    name: Prepare
+    needs: plan
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.prepare_matrix }}
+      save_cache: ${{ github.event_name == 'schedule' }}
+
+  axvisor_performance:
+    name: AxVisor Performance
+    needs: [plan]
+    if: always() && needs.plan.result == 'success'
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.axvisor_performance_matrix }}
+      fail_fast: false
+      save_cache: ${{ github.event_name == 'schedule' }}
+
+  starry_performance:
+    name: Starry Performance
+    needs: [plan, prepare]
+    if: >-
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.prepare.result == 'success'
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.starry_performance_matrix }}
+      fail_fast: false
+      save_cache: ${{ github.event_name == 'schedule' }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+      STARRY_WIFI_SSID: ${{ secrets.STARRY_WIFI_SSID }}
+      STARRY_WIFI_PASSWORD: ${{ secrets.STARRY_WIFI_PASSWORD }}
+
+  starry_board_performance:
+    name: Starry Board Performance
+    needs: [plan, prepare]
+    if: >-
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.prepare.result == 'success'
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
+      matrix_json: ${{ needs.plan.outputs.starry_board_performance_matrix }}
+      fail_fast: false
+      max_parallel: 1
+      save_cache: ${{ github.event_name == 'schedule' }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+      STARRY_WIFI_SSID: ${{ secrets.STARRY_WIFI_SSID }}
+      STARRY_WIFI_PASSWORD: ${{ secrets.STARRY_WIFI_PASSWORD }}
+
+  result:
+    name: Benchmark Result
+    if: always() && github.repository == 'rcore-os/tgoskits'
+    needs:
+      - plan
+      - prepare
+      - axvisor_performance
+      - starry_performance
+      - starry_board_performance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download AxVisor performance reports
+        if: always()
+        uses: actions/download-artifact@v8
+        with:
+          pattern: axvisor-nightly-performance-*
+          path: ${{ runner.temp }}/performance-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download Starry performance reports
+        if: always()
+        uses: actions/download-artifact@v8
+        with:
+          pattern: starry-apps-nightly-performance-*
+          path: ${{ runner.temp }}/performance-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Report result
+        env:
+          REVISION: ${{ needs.plan.outputs.revision }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          AXVISOR_PERFORMANCE_RESULT: ${{ needs.axvisor_performance.result }}
+          STARRY_PERFORMANCE_RESULT: ${{ needs.starry_performance.result }}
+          STARRY_BOARD_PERFORMANCE_RESULT: ${{ needs.starry_board_performance.result }}
+          PERFORMANCE_REPORT_DIR: ${{ runner.temp }}/performance-reports
+        run: |
+          {
+            echo "## Benchmarks"
+            echo ""
+            echo "dev revision: ${REVISION}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Plan | ${PLAN_RESULT} |"
+            echo "| Prepare | ${PREPARE_RESULT} |"
+            echo "| AxVisor performance | ${AXVISOR_PERFORMANCE_RESULT} |"
+            echo "| Starry performance | ${STARRY_PERFORMANCE_RESULT} |"
+            echo "| Starry board performance | ${STARRY_BOARD_PERFORMANCE_RESULT} |"
+            if [ -d "${PERFORMANCE_REPORT_DIR}" ] && find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print -quit | grep -q .; then
+              echo ""
+              echo "## Performance Results"
+              echo ""
+              find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print | sort | while read -r report; do
+                cat "${report}"
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$PLAN_RESULT" = success
+          test "$PREPARE_RESULT" = success
+          test "$AXVISOR_PERFORMANCE_RESULT" = success
+          test "$STARRY_PERFORMANCE_RESULT" = success
+          test "$STARRY_BOARD_PERFORMANCE_RESULT" = success
+
+  benchmark-updates:
+    name: Prepare Benchmark Updates
+    if: >-
+      always() &&
+      github.repository == 'rcore-os/tgoskits' &&
+      needs.plan.result == 'success' &&
+      needs.axvisor_performance.result == 'success' &&
+      needs.starry_performance.result == 'success' &&
+      needs.starry_board_performance.result == 'success'
+    needs:
+      - plan
+      - axvisor_performance
+      - starry_performance
+      - starry_board_performance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision }}
+
+      - name: Download AxVisor performance reports
+        if: needs.axvisor_performance.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: axvisor-nightly-performance-*
+          path: ${{ runner.temp }}/axvisor-performance-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download Starry performance reports
+        if: >-
+          needs.starry_performance.result == 'success' &&
+          needs.starry_board_performance.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: starry-apps-nightly-performance-*
+          path: ${{ runner.temp }}/starry-performance-reports
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Collect benchmark updates
+        id: updates
+        env:
+          AXVISOR_REPORTS: ${{ runner.temp }}/axvisor-performance-reports
+          STARRY_REPORTS: ${{ runner.temp }}/starry-performance-reports
+          INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}
+          INCLUDE_STARRY: ${{ needs.starry_performance.result == 'success' && needs.starry_board_performance.result == 'success' }}
+        run: |
+          set -euo pipefail
+          output="${RUNNER_TEMP}/benchmark-updates"
+          rm -rf "${output}"
+          mkdir -p "${output}"
+
+          collect_reports() {
+            local reports="$1"
+            local output_file="$2"
+            if [ ! -d "${reports}" ]; then
+              echo 0
+              return 0
+            fi
+            python3 - "${reports}" "${output_file}" <<'EOF'
+          import json, pathlib, sys
+          reports = pathlib.Path(sys.argv[1])
+          metrics = [
+              metric
+              for path in sorted(reports.glob("*.json"))
+              for metric in json.loads(path.read_text(encoding="utf-8"))
+          ]
+          if metrics:
+              pathlib.Path(sys.argv[2]).write_text(
+                  json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
+              )
+          print(len(metrics))
+          EOF
+          }
+
+          axvisor_count=0
+          if [ "${INCLUDE_AXVISOR}" = "true" ]; then
+            axvisor_count="$(collect_reports "${AXVISOR_REPORTS}" "${output}/axvisor.json")"
+          fi
+          echo "AxVisor metrics: ${axvisor_count}"
+
+          starry_count=0
+          if [ "${INCLUDE_STARRY}" = "true" ]; then
+            starry_count="$(collect_reports "${STARRY_REPORTS}" "${output}/starry.json")"
+          fi
+          echo "Starry metrics: ${starry_count}"
+
+          if [ "${axvisor_count}" -gt 0 ] || [ "${starry_count}" -gt 0 ]; then
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload benchmark updates
+        if: steps.updates.outputs.has_updates == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-updates
+          path: ${{ runner.temp }}/benchmark-updates/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Dispatch docs update
+        if: steps.updates.outputs.has_updates == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BENCHMARK_RUN_ID: ${{ github.run_id }}
+          BENCHMARK_REVISION: ${{ needs.plan.outputs.revision }}
+          BENCHMARK_DATE: ${{ steps.updates.outputs.date }}
+        run: |
+          set -euo pipefail
+          gh workflow run docs.yml --ref dev \
+            -f benchmark_run_id="${BENCHMARK_RUN_ID}" \
+            -f benchmark_revision="${BENCHMARK_REVISION}" \
+            -f benchmark_date="${BENCHMARK_DATE}"

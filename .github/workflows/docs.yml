@@ -25,19 +25,36 @@ on:
       - "os/**/README*.md"
       - "apps/**"
       - ".github/workflows/docs.yml"
-  # Fallback for nights when the perf-history job cannot dispatch this workflow.
+  # Fallback for nights when the benchmark update job cannot dispatch this workflow.
   schedule:
     - cron: "0 23 * * *"
   workflow_dispatch:
+    inputs:
+      benchmark_run_id:
+        description: Benchmarks workflow run containing the current updates.
+        required: false
+        default: ""
+        type: string
+      benchmark_revision:
+        description: Tested revision for the benchmark updates.
+        required: false
+        default: ""
+        type: string
+      benchmark_date:
+        description: UTC date for the benchmark updates.
+        required: false
+        default: ""
+        type: string
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
 
 concurrency:
   group: docs-pages
-  cancel-in-progress: true
+  queue: max
 
 jobs:
   build:
@@ -69,20 +86,36 @@ jobs:
         working-directory: docs
         run: yarn build
 
-      - name: Merge performance dashboard
-        run: |
-          set -euo pipefail
-          if git fetch --depth=1 origin perf-data 2>/dev/null; then
-            mkdir -p docs/build/axvisor-perf
-            git show FETCH_HEAD:index.html > docs/build/axvisor-perf/index.html
-            git show FETCH_HEAD:history.json > docs/build/axvisor-perf/history.json
-            echo "merged performance dashboard"
-          else
-            echo "perf-data branch is not available; publishing docs without it"
-          fi
-
       - name: Set up Pages
+        id: pages
         uses: actions/configure-pages@v6
+
+      - name: Download benchmark updates
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.benchmark_run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: benchmark-updates
+          run-id: ${{ inputs.benchmark_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/benchmark-updates
+
+      - name: Prepare performance dashboard
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+          BENCHMARK_RUN_ID: ${{ github.event.inputs.benchmark_run_id || '' }}
+          BENCHMARK_REVISION: ${{ github.event.inputs.benchmark_revision || '' }}
+          BENCHMARK_DATE: ${{ github.event.inputs.benchmark_date || '' }}
+          BENCHMARK_UPDATES: ${{ runner.temp }}/benchmark-updates
+        run: |
+          python3 scripts/test/ci_perf_pages.py \
+            --base-url "${PAGES_BASE_URL}" \
+            --output-dir docs/build \
+            --updates-dir "${BENCHMARK_UPDATES}" \
+            --benchmark-run-id "${BENCHMARK_RUN_ID}" \
+            --benchmark-revision "${BENCHMARK_REVISION}" \
+            --benchmark-date "${BENCHMARK_DATE}"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

@@ -56,10 +56,13 @@ cargo xtask starry app qemu \
 正式编译模拟必须显式选择 benchmark 配置，并保存完整串口输出。不要与其他 QEMU、编译或高 CPU
 任务并发运行；不同分支也应在同一主机状态下交错采样。
 
+正式 benchmark 变体随 nightly 性能用例放在 `benchmarks/starry/qemu/compile-sim-bench`，
+必须用 `-t benchmark/qemu/compile-sim-bench` 选择；本目录只保留自带的 smoke 配置与依赖载荷。
+
 ```bash
 set -o pipefail
 cargo xtask starry app qemu \
-  -t qemu/compile-sim-bench \
+  -t benchmark/qemu/compile-sim-bench \
   --arch x86_64 \
   --qemu-config qemu-x86_64-benchmark.toml \
   2>&1 | tee target/compile-sim-bench.log
@@ -98,3 +101,11 @@ Linux 与 Starry 各自维护一套参数。
 内核命令行使用 `init=/usr/bin/linux-ltp-hackbench-init`。正式完成要求同时出现
 `LTP_HACKBENCH_APP_PASSED` 和 `LINUX_RT_LTP_HACKBENCH_PASSED`。`hackbench` 衡量 scheduler、
 pipe IPC 与 wake/wait 吞吐，不应把它的 speedup 解释成完整项目编译 speedup。
+
+## 4. 镜像载荷
+
+本目录与 `benchmarks/starry/qemu/compile-sim-bench` 暂时各自保留一份自包含目录，但
+`compile-sim-bench.c`、`compile-sim-bench-run.sh`、`prebuild.sh`、
+`linux-compile-sim-init.sh` 和 `build-x86_64-unknown-none.toml` 必须逐字节一致。
+`scripts/test/check_ci_routing.py` 会在 Plan CI 中比较这五个文件；任一文件缺失或内容分叉都会
+让检查失败，因此修改共享载荷时必须同步复制到两个目录。

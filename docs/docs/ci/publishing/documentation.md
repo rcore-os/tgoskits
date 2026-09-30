@@ -15,13 +15,13 @@ sidebar_label: "文档发布"
 
 自动触发要求 push 到 `main`，且修改 `docs/**` 或 `.github/workflows/docs.yml`。`dev` 的文档 push 和普通 PR 不在这个工作流的自动触发条件中。
 
-`workflow_dispatch` 支持显式运行，job 没有额外的 ref 或 repository owner 条件。手动运行不是单纯的构建检查：构建成功后会继续尝试部署，实际能否发布取决于 Pages 配置和权限。
+`workflow_dispatch` 支持显式运行，job 没有额外的 ref 或 repository owner 条件。手动运行不是单纯的构建检查：构建成功后会继续尝试部署，实际能否发布取决于 Pages 配置和权限。benchmark 结束后的调度额外传入 benchmark run ID、revision 和日期，用于从对应 run 下载本次增量数据。
 
 ### 1.2 并发策略
 
-工作流使用固定的 `docs-pages` concurrency group，并设置 `cancel-in-progress=true`。新运行可以取消同组旧运行，使文档发布优先处理更新的内容。
+工作流使用固定的 `docs-pages` concurrency group，并设置 `queue: max`。普通文档发布和 benchmark 触发的历史更新按队列执行，不取消正在进行的 Pages 部署。
 
-这与主 CI 对 `main`、`dev` 保留各次提交验证的队列策略不同。文档工作流不承诺为每个历史提交生成一次完整部署。
+这与主 CI 对 `main`、`dev` 保留各次提交验证的队列策略不同。文档工作流不承诺为每个历史提交生成一次完整部署，但会保留已经排队的 Pages 工作直到它们得到处理。
 
 ## 2. 站点构建
 
@@ -49,6 +49,8 @@ sidebar_label: "文档发布"
 
 构建成功后，`actions/configure-pages` 准备 Pages 配置，`actions/upload-pages-artifact` 上传 `docs/build`。`deploy` job 通过 `needs: build` 等待这一过程完成，再调用 `actions/deploy-pages`。
 
+构建阶段还会用 `actions/configure-pages` 输出的 `base_url` 读取线上 `benchmark/index.html` 和 `benchmark/history.json`。`Prepare performance dashboard` 步骤只准备环境变量并调用 `scripts/test/ci_perf_pages.py`，页面读取、缓存控制、legacy bootstrap 和历史合并都由该脚本负责，workflow 不再内联 curl 或 git 片段。脚本在已有页面时只使用 Pages 内容；仅当两份文件都返回 404 时，才一次性只读 `perf-data` 分支中的同名文件进行兼容 bootstrap。该 bootstrap 必须完整成功，普通文档发布才复制遗留 dashboard；fetch 失败、任一文件缺失或为空都会阻止 Pages 部署。benchmark dispatch 会先从对应 run 下载 `benchmark-updates` artifact，并要求线上或遗留 history 可读后再合并本次数据，否则构建失败，不能用空历史覆盖累计结果。线上读取带 `Cache-Control: no-cache` 请求头和 cache-buster，线上读取的网络错误、单文件 404 或其它非预期 HTTP 状态会阻止 Pages 部署。首次发布成功后，Pages 是唯一持久历史来源，遗留分支冻结且不再被任何 workflow 写入或部署。
+
 ```mermaid
 flowchart LR
     source[文档与站点配置] --> build[Node.js 和 Yarn 构建]
@@ -61,7 +63,7 @@ flowchart LR
 
 ### 3.2 权限与结果
 
-工作流声明 `contents: read`、`pages: write` 和 `id-token: write`。`deploy` 使用 `github-pages` environment，并将部署步骤返回的 `page_url` 写入 environment URL。
+工作流声明 `contents: read`、`actions: read`、`pages: write` 和 `id-token: write`。`actions: read` 用于下载 benchmark run 的跨 workflow artifact；`deploy` 使用 `github-pages` environment，并将部署步骤返回的 `page_url` 写入 environment URL。
 
 environment 的审批和部署限制属于仓库设置，YAML 中的名称不证明当前设置了哪些保护。构建可以成功而部署因权限或配置失败，这两类结果必须分别记录。
 
