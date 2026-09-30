@@ -26,6 +26,9 @@ pub fn prepare_root() -> Result<()> {
     }
     let prepared =
         ax_fs_ng::root::prepare_block_root(bootargs).context("prepare Axvisor disk root")?;
+    if prepared.context().root_dir().is_readonly() {
+        bail!("Axvisor disk root is read-only; keeping the initramfs root");
+    }
     ax_fs_ng::bundle::install_directory(
         &source,
         prepared.context(),

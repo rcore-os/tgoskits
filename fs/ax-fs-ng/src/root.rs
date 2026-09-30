@@ -734,7 +734,7 @@ fn select_explicit_root(
     }
 
     if spec.has_explicit_selector() {
-        panic!("configured root device was not found in discovered block devices");
+        warn!("configured root device was not found in discovered block devices");
     }
 
     None

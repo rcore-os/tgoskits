@@ -44,7 +44,7 @@ long init_main(unsigned long *stack)
     char preserved[64];
     valid = valid && syscall5(63, old_fd, (long)preserved, sizeof(preserved), 0, 0) == size;
     for (long i = 0; valid && i < size; ++i) valid = original[i] == preserved[i];
-    if (old_fd >= 0) syscall5(57, old_fd, 0, 0, 0, 0);
+    if (old_fd >= 0) valid = check(syscall5(57, old_fd, 0, 0, 0, 0), "close-old errno=", 16) && valid;
     for (long i = 0; valid && i < size; ++i) valid = original[i] == ((volatile char *)mapping)[i];
     if (mapping >= 0) valid = check(syscall5(215, mapping, 4096, 0, 0, 0), "munmap errno=", 13) && valid;
     long fd = valid ? syscall5(56, -100, (long)"/etc/alpine-release", 0, 0, 0) : -1;
