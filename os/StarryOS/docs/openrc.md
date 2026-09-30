@@ -67,11 +67,13 @@ QEMU 使用的受管理镜像仍由 `openrc::prepare()` 注入 OpenRC 启动资�
 
 等待交互 shell 的板卡测试通过 `BoardRunConfig.boot.cmdline` 明确选择 `init=/bin/sh`，并在 `--` 后传递 shell 参数；Axvisor 的 Starry guest 使用 `VMKernelConfig.cmdline` 写入客户机设备树的 `/chosen/bootargs`。这些配置保留各板卡的 `root=` 选择，设置测试提示符和 `/root` 工作目录，不要求磁盘上的 systemd 或通用 BusyBox inittab 能启动 Starry。未配置 `cmdline` 的普通启动仍按 `starryos::init_options()` 选择原有 init 路径。测试 shell 使用已有 console FD，不提供完整的终端作业控制，也不能作为 OpenRC 生命周期验证的替代。
 
-板卡运行配置示例中，`root=` 必须与实际根分区一致；此处对应 OrangePi 5 Plus。`cmdline` 属于运行 TOML，不加入 `build-*.toml`。
+板卡运行配置中的 `cmdline` 会完整替换固件参数，必须同时保留实际根分区、串口选择和早期控制台；此处对应 OrangePi 5 Plus。`cmdline` 属于运行 TOML，不加入 `build-*.toml`。
 
 ```toml
-cmdline = 'root=/dev/mmcblk0p2 init=/bin/sh HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# " -- -c "cd /root; exec /bin/sh -i"'
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 ```
+
+提示符由 shell 展开 `$USER` 和 `$HOSTNAME` 后生成，不能直接在 cmdline 中写完整的 `shell_prefix`。内核可能先打印 cmdline；如果其中出现完整提示符，ostool 的串口步骤会提前发送命令，导致命令在运行时控制台接管前丢失。
 
 ## 2. 进程契约
 

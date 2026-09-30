@@ -418,9 +418,14 @@ Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_ex
 板卡测试停在 systemd 的 `Freezing execution`，或 BusyBox 持续启动不存在的
 `/dev/tty1`～`/dev/tty6` 时，先检查实际 `init=` 与根文件系统，不能仅延长超时。
 等待测试 shell 的 `board-*.toml` 使用 `BoardRunConfig.boot.cmdline` 明确指定
-`init=/bin/sh`，在 `--` 后传入 `-c "cd /root; exec /bin/sh -i"`，并设置
-`HOME=/root USER=root HOSTNAME=starry PS1="root@starry:~# "`。
-这是完整 cmdline，需保留实际 `root=`；OrangePi 5 Plus 和 SG2002 使用
+`init=/bin/sh`，设置 `HOME=/root USER=root HOSTNAME=starry`，在 `--` 后传入
+`-c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"`。
+提示符只在 shell 中派生，不能把完整 `shell_prefix` 写入 cmdline，否则内核
+打印参数时会触发测试步骤，命令会在运行时控制台接管前发出。
+这是完整 cmdline，需保留实际 `root=`、`console=` 与 `earlycon`；仅加
+测试 shell 参数会覆盖固件的串口选择。VisionFive 2 保留
+`console=ttyS0,115200 debug rootwait earlycon=sbi`，JL LSGD2K10 保留
+`earlycon`。OrangePi 5 Plus 和 SG2002 使用
 `/dev/mmcblk0p2`，ROCK 4D 使用 `/dev/mmcblk0p3`。Axvisor Starry guest 在
 `[kernel].cmdline` 中指定同样的客户机启动条件，不改宿主 cmdline。
 确认提示符后仍须执行用例命令并检查成功标记；该测试模式不证明 OpenRC
