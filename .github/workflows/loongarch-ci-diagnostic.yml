@@ -40,7 +40,7 @@ jobs:
         run: |
           tar -xf "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" -C "${GITHUB_WORKSPACE}"
           chmod +x target/debug/tg-xtask
-          test "$(git rev-parse HEAD)" = 956c33c6b60ad21f1d22bdf0fbfba7bc647d3a16
+          test "$(git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse HEAD)" = 956c33c6b60ad21f1d22bdf0fbfba7bc647d3a16
           /opt/qemu-lvz/bin/qemu-system-loongarch64 --version
       - name: Run original LoongArch smoke
         run: target/debug/tg-xtask axvisor test qemu --arch loongarch64
