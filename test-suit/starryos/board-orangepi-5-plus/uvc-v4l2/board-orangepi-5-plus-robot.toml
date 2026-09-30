@@ -1,4 +1,6 @@
-board_type = "OrangePi-5-Plus-robot"
+# Keep the virtual robot check selector in the file name while running this UVC
+# check on the ordinary OrangePi 5 Plus board type.
+board_type = "OrangePi-5-Plus"
 timeout = 180
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',

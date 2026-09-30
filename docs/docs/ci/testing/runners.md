@@ -103,8 +103,8 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 
 | 目标板卡或场景 | Starry 清单 | AxVisor 清单 |
 | --- | --- | --- |
-| OrangePi 5 Plus | 原生套件 | Linux guest、StarryOS guest、AXIVC Zephyr-Starry benchmark |
-| OrangePi 5 Plus robot | 原生套件 | StarryOS guest 和 Linux guest，分别独立声明 |
+| OrangePi 5 Plus | 原生套件、原生 UVC/NPU + FT232 回环 | Linux guest、StarryOS guest 及其 UVC/NPU + FT232 回环、AXIVC Zephyr-Starry benchmark |
+| OrangePi 5 Plus robot USB | 原生真实机器人控制（普通 CI） | StarryOS guest 和 Linux guest 真实机器人控制，仅 nightly |
 | AKA-00 SG2002 | 原生套件，启用 Wi-Fi 凭据 | 未声明对应行 |
 | VisionFive 2 | 原生套件 | 未声明对应行 |
 | JL LSGD2K10 | 原生套件 | 未声明对应行 |
@@ -113,6 +113,40 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 | ASUS NUC15CRH | 未声明对应行 | Linux guest |
 
 这张表描述已注册的测试目标，不证明板卡当前在线或可用。维护时要分别检查 runner 是否空闲、板卡服务是否可达、对应板卡是否可取得会话，以及测试资产是否齐备；增加 Linux runner 数量不会自动增加物理板卡容量。
+
+三条 virtual 检查使用普通 `OrangePi-5-Plus` 板卡类型，无需 `--board-type` 覆盖，固定
+目录 `/home/orangepi/robot-ci/aka-rk3588-virtual`，入口
+`./run_vision_usb_ci_once.sh 28.0`。部署前需确认候选板带 UVC 摄像头和 `0403:6001` FT232 回环
+接线；这些检查只驱动 UVC、RKNN 推理和 FT232 收发，不驱动车轮或机械臂。AxVisor + Linux
+的 guest VM 使用 AxVisor 宿主上的 `/guest/linux/orangepi-5-plus-6.1.99` 和共享 eMMC
+根 `/dev/mmcblk0p2`。
+
+FT232 传输通道由 board TOML 固定：原生 Starry 与 AxVisor + Starry 显式设置
+`FTDI_TRANSPORT=usb`，AxVisor + Linux guest 显式设置 `FTDI_TRANSPORT=tty`。三条检查
+都只消费人工同版部署到固定目录的包，CI 不自动打包或部署。
+
+三条 real 检查使用板服务已注册的 `board_type = "OrangePi-5-Plus-robot"`，对应
+物理板 ID `OrangePi-5-Plus-robot-1`。其中原生 Starry 在普通 CI 运行，AxVisor +
+StarryOS guest 和 AxVisor + Linux guest 标记 `nightly_only`，只由 AxVisor Nightly
+调度。
+
+资源组按物理板类型分开：三条 virtual 检查使用 `orangepi-5-plus`，三条 real 检查使用
+`orangepi-5-plus-robot`。
+
+三条 real 检查都在固定目录 `/home/orangepi/robot-ci/aka-rk3588` 下运行
+`FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`；AxVisor Linux guest 通过
+`sudo -S env FEETECH_DEV=auto` 运行同一入口。它们使用原 USB 摄像头 `0ac8:0346` 和
+USB 控制器 `1a86:55d3`，不使用 SoC UART6 `/dev/ttyS6`，也不在 VM 配置中注入额外的
+UART6 设备选择；USB 控制器仍可能在系统中呈现 USB 串口节点。AxVisor 的两条检查分别使用
+`image_location = "memory"`（StarryOS，当前 checkout 构建）和
+`image_location = "fs"`（Linux，`/guest/linux/orangepi-5-plus-6.1.99`、
+`root=/dev/mmcblk1p2`、`console=ttyS2`）。real Linux 使用 USB 机器人板实测的
+`/dev/mmcblk1p2`；virtual 普通板仍为 `/dev/mmcblk0p2`。
+
+所有板卡检查都依赖人工部署：CI 不下载、编译、打包或部署应用。virtual 包由
+`apps/starry/aka-rk3588/prepare-vision-usb-source.sh` 和
+`prepare-vision-usb-package.sh` 按 `apps/starry/aka-rk3588/README.md` 生成；real 包由
+`prepare-package.sh` 生成。部署、目录切换和回滚都由人工完成。
 
 ## 3. 宿主要求与容量
 

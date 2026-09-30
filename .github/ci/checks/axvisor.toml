@@ -274,9 +274,9 @@ board = "asus-nuc15crh-linux"
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
-name = "Board OrangePi 5 Plus robot · StarryOS guest"
+name = "Board OrangePi 5 Plus · AxVisor StarryOS guest UVC/NPU + FT232 loopback"
 runner = "board"
-resource_group = "orangepi-5-plus-robot"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
@@ -290,9 +290,9 @@ board = "orangepi-5-plus-robot-starry"
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
 impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus robot · Linux guest"
+name = "Board OrangePi 5 Plus · AxVisor Linux guest UVC/NPU + FT232 loopback"
 runner = "board"
-resource_group = "orangepi-5-plus-robot"
+resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
@@ -303,6 +303,39 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-robot-linux"
 
 # Nightly-only checks.
+
+[[check]]
+id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus robot USB · AxVisor StarryOS guest full robot control"
+nightly_only = true
+runner = "board"
+resource_group = "orangepi-5-plus-robot"
+timeout_minutes = 90
+command = '''
+cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
+cargo xtask axvisor test board --board orangepi-5-plus-robot-real-starry
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-real-starry"
+
+[[check]]
+id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus robot USB · AxVisor Linux guest full robot control"
+nightly_only = true
+runner = "board"
+resource_group = "orangepi-5-plus-robot"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-robot-real-linux
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-real-linux"
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"

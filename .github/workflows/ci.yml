@@ -227,7 +227,7 @@ jobs:
         run: |
           set -uo pipefail
 
-          statuses=(queued in_progress waiting requested)
+          statuses=(queued in_progress waiting requested pending)
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
             selector='select(

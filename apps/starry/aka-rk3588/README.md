@@ -1,137 +1,154 @@
-# aka-rk3588 tennis robot
+# aka-rk3588 板卡检查
 
-该应用用于在 Orange Pi 5 Plus 的 StarryOS 环境中运行 RK3588 网球机器人视觉程序。
-StarryOS 直接使用 Linux 预先部署到共享根文件系统
-`/home/orangepi/robot-ci/aka-rk3588` 的程序，不依赖 StarryOS 网络下载。
+本目录描述 Orange Pi 5 Plus 上运行的两套 `aka-rk3588` 程序和本仓库为它们注册的
+板卡检查。应用源码在外部仓库 `bullhh/aka-rk3588` 中维护；本仓库只保存打包脚本，
+以及真实机器人程序使用的预编译 `prebuilt/aarch64/build/tennis`。
 
-仓库保留已经在 Orange Pi Jammy 上使用 GCC 11 原生编译并完成实机验证的 AArch64
-`tennis` 程序。模型、`librknnrt.so`、默认配置和运行脚本由
-[`prepare-package.sh`](prepare-package.sh) 从 `aka-rk3588` 固定提交下载，不在本仓库
-重复保存。
+应用和客户机内核是两件事：客户机内核由板卡检查的 VM 配置决定，`tennis` 程序始终
+来自板上共享根文件系统中的固定部署目录。CI 不下载、编译或部署应用。
 
-固定源码版本和 SHA256 记录在 [`source.env`](source.env) 中。当前程序最高依赖
-`GLIBC_2.34`，适用于机器人共享的 Jammy/StarryOS 根文件系统，不适用于仅含 musl
-的通用 Alpine rootfs。
+## 1. 两套运行链路
 
-## 准备部署包
+| 链路 | 固定入口 | 固定部署目录 | 用途 |
+| --- | --- | --- | --- |
+| virtual | `run_vision_usb_ci_once.sh` | `/home/orangepi/robot-ci/aka-rk3588-virtual` | 真实 UVC 摄像头、RKNN YOLO 推理、FT232 `0403:6001` TX/RX 回环 |
+| real | `run_robot_ci_once.sh` | `/home/orangepi/robot-ci/aka-rk3588` | 摄像头、RKNPU、USB 机器人控制器与车轮/机械臂完整控制 |
 
-在开发主机执行：
+virtual 链路没有机械控制代码，也不打开 SoC UART6 `/dev/ttyS6`。它只证明摄像头到
+NPU 的推理链路和 FT232 物理回环；回环帧原样返回不能证明控制器、伺服器或机械动作
+正确。
 
-```bash
-cd apps/starry/aka-rk3588
-./prepare-package.sh
-```
+real 链路使用原 USB 摄像头 `0ac8:0346` 和 USB 控制器 `1a86:55d3`。原生 Starry 直接
+运行 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`；AxVisor Linux guest 通过
+`sudo -S env FEETECH_DEV=auto` 运行同一入口。两者都不使用 SoC UART6 `/dev/ttyS6`；
+USB 控制器仍可能在系统中呈现 USB 串口节点。VM 配置也不注入额外的 UART6 设备选择。
 
-脚本下载固定提交源码归档并校验 SHA256，然后用仓库中的预编译 `tennis` 替换源码
-归档中的构建产物。生成文件为：
+## 2. CI 矩阵
 
-```text
-target/aka-rk3588/aka-rk3588.tar.gz
-```
+本目录相关的最终矩阵包含普通 CI 的四条检查、AxVisor Nightly 的两条检查：
 
-已有归档可通过环境变量复用，进行无网络打包：
+| check id | 调度 | board selector | board_type | 入口 |
+| --- | --- | --- | --- | --- |
+| `test-orangepi-5-plus-robot-native-starryos` | 普通 CI | `orangepi-5-plus-robot` | `OrangePi-5-Plus` | 在 `/home/orangepi/robot-ci/aka-rk3588-virtual` 运行 `./run_vision_usb_ci_once.sh 28.0` |
+| `test-orangepi-5-plus-robot-axvisor-starryos-guest` | 普通 CI | `orangepi-5-plus-robot-starry` | `OrangePi-5-Plus` | 同上，AxVisor 运行当前 checkout 构建的 StarryOS guest |
+| `test-orangepi-5-plus-robot-axvisor-linux-guest` | 普通 CI | `orangepi-5-plus-robot-linux` | `OrangePi-5-Plus` | 同上，AxVisor 运行 Linux guest |
+| `test-orangepi-5-plus-robot-real-native-starryos` | 普通 CI | `orangepi-5-plus-robot-real` | `OrangePi-5-Plus-robot` | 在 `/home/orangepi/robot-ci/aka-rk3588` 运行 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0` |
+| `test-orangepi-5-plus-robot-real-axvisor-starryos-guest` | AxVisor Nightly | `orangepi-5-plus-robot-real-starry` | `OrangePi-5-Plus-robot` | 同上，AxVisor 运行当前 checkout 构建的 StarryOS guest |
+| `test-orangepi-5-plus-robot-real-axvisor-linux-guest` | AxVisor Nightly | `orangepi-5-plus-robot-real-linux` | `OrangePi-5-Plus-robot` | 同上，AxVisor 运行 Linux guest |
 
-```bash
-AKA_RK3588_SOURCE_ARCHIVE=/path/to/aka-rk3588-f5d2c731a13692a1e3bc7136188df3f2ffc541c1.tar.gz \
-  ./prepare-package.sh
-```
+三条 virtual 检查使用普通 `OrangePi-5-Plus` 板卡类型。部署前需确认候选板带 UVC
+摄像头和 `0403:6001` FT232 回环接线。
 
-## Linux 部署
+三条 real 检查统一使用板服务已注册的
+`board_type = "OrangePi-5-Plus-robot"`，对应物理板 ID
+`OrangePi-5-Plus-robot-1`。三条 TOML 都使用该类型。
 
-先启动开发板 Linux，将部署包传入开发板。不要覆盖一台已经完成实机校准的机器人
-配置；部署前应备份：
+资源组按物理板类型分开：三条 virtual 检查使用 `resource_group = "orangepi-5-plus"`，
+三条 real 检查使用 `resource_group = "orangepi-5-plus-robot"`。
 
-```text
-/home/orangepi/robot-ci/aka-rk3588/config
-```
+## 3. 客户机内核与根文件系统
 
-然后将部署包解压到：
+virtual 和 real 的 AxVisor StarryOS guest 都使用 `image_location = "memory"`，内核为
+当前 checkout 构建的
+`target/aarch64-unknown-none-softfloat/release/starryos.bin`。real StarryOS guest 不
+覆盖 `cmdline`，沿用宿主 bootargs。
 
-```text
-/home/orangepi/robot-ci/aka-rk3588
-```
+AxVisor Linux guest 使用 `image_location = "fs"`、内核
+`/guest/linux/orangepi-5-plus-6.1.99` 和 `console=ttyS2`。virtual 普通板使用
+`root=/dev/mmcblk0p2`；单客户机 USB 机器人板实测 guest 根为
+`/dev/mmcblk1p2`，real Linux 检查使用该根。宿主的 `/guest/linux/` 由人工维护，
+仓库只引用路径。
 
-每台机器人的 `lekiwi_calibration.json` 和 `lekiwi_pick_config.txt` 应继续使用各自的
-实机校准与调试结果。
+普通 CI 的 virtual 检查消费共享 eMMC 根 `/dev/mmcblk0p2`；real Linux 使用 USB 机器人板
+实测的 `/dev/mmcblk1p2`。三条 real 检查（普通 CI 的原生 Starry 和 AxVisor Nightly 的
+两条 guest 检查）消费单客户机 USB 机器人板上的部署目录；它们都不使用 SoC UART6
+`/dev/ttyS6`。
 
-首次迁移时，从本板旧目录 `/home/orangepi/robot/aka-rk3588/config` 复制校准配置到
-新目录；保留整个旧目录，供合入前的 CI 使用。先部署并验证新目录，再合入路径修改，
-避免新旧程序与启动脚本混用。不要用其他板卡的校准文件覆盖本板配置。
+## 4. PASS/FAIL 判定
 
-## StarryOS 安全演示
+应用内部判定和启动器对外判定必须配套使用：
 
-完成 Linux 部署后执行：
+- virtual：`run_vision_usb_ci_once.sh 28.0` 只有在应用 `APPLICATION_PASS`、两个完整
+  性能窗口、FT232 回环校验和零退出码全部通过后，才输出
+  `[VISION_USB_CI] RESULT=PASS attempts=1`。board 配置只接受这一条最终标记，不接受
+  中间日志或诊断汇总；任何失败路径返回非零并输出
+  `[VISION_USB_CI] RESULT=FAIL`。
+- real：`run_robot_ci_once.sh 28.0` 只有在应用完整判定和零退出码后，才输出
+  `[ROBOT_CI] RESULT=PASS attempts=1` 或 `attempts=2`。board 命令不再使用
+  `|| echo` 吞掉退出码，因此非零退出直接让步骤失败；成功标记仍由最终启动器输出。
 
-```bash
-cargo xtask starry app board -t aka-rk3588 \
-  -b OrangePi-5-Plus-robot
-```
+两个入口的 FPS 门槛都写在对应 board TOML 中，不能靠宿主环境变量覆盖。成功正则只
+匹配最终生产者标记，命令回显中没有任何成功标记。
 
-默认演示直接从共享根文件系统运行一次摄像头采集和 RKNN 网球识别，不驱动车轮和
-机械臂。成功标志为：
+## 5. 覆盖边界
 
-```text
-AKA_RK3588_DEMO_PASSED
-```
+| 能力 | virtual 三条 | real 三条 |
+| --- | --- | --- |
+| UVC 采集 / JPEG 解码 / RKNN 推理 | 覆盖 | 覆盖 |
+| FT232 TX/RX 回环 | 覆盖 | 不适用 |
+| USB 相机 `0ac8:0346` 与控制器 `1a86:55d3` | 不声明 | 覆盖 |
+| 车轮、机械臂和停车流程 | 不驱动 | 覆盖完整控制流程 |
+| 抓球成功率、长期稳定性、急停 | 不覆盖 | 只覆盖单次完整流程 |
 
-完整捡球流程必须在已校准且周边安全的机器人上手动执行：
+real 检查需要现场满足机械臂活动空间、车体架空或安全停靠、标定文件和控制器连接等
+前置条件。任何一种检查通过都不能替代物理安全评审或人工验收。
 
-```bash
-cd /home/orangepi/robot-ci/aka-rk3588
-export LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}"
-./run_lekiwi_full.sh
-```
+## 6. 人工重编译与打包
 
-## 更新版本
+重编译和部署始终由人工完成，CI 只消费板上已有包。不要提交 `target/` 产物、部署包或
+新的 prebuilt 目录。
 
-更新时应使用新的完整提交号和真实源码归档 SHA256，并在目标兼容的 AArch64 Linux
-环境重新生成 `tennis`。替换预编译程序后同步更新 `source.env` 中的二进制 SHA256。
-不要使用分支名或 `HEAD` 作为下载和构建输入。
+### 6.1 virtual 链路
 
-## CI 正确性与性能门槛
+1. 准备源码。脚本在开始时把分支解析成完整提交 SHA，源码只写到 `target/` 下：
 
-固定版本 `f5d2c73` 要求真实推理成功、两个完整性能窗口、控制流程完成和零退出码。
-性能窗口前须通过三轮双向速度反馈检查，流程结束时须连续三次读到三轮速度均为零；
-应用在上述检查和模型释放均成功后输出唯一 `APPLICATION_PASS`；启动器要求该结果及
-零退出码，不再根据中间诊断拼出成功结论。命令错误不会被后续
-成功停车清除，推理失败或提前中断也不会输出总 PASS。部署包使用真实 Feetech 执行器。
-启动脚本优先从自身 `lib/` 加载 RKNN 运行库，支持独立 CI 目录部署。
+   ```bash
+   cd apps/starry/aka-rk3588
+   ./prepare-vision-usb-source.sh
+   # 或使用本地 virtual checkout：
+   ./prepare-vision-usb-source.sh --checkout /path/to/aka-rk3588-virtual-work
+   ```
 
-robot Starry guest 使用专用
-`test-suit/axvisor/normal/board-orangepi-5-plus/robot-starry/guest.toml`，
-保持单 CPU 0（MPIDR `0x00`），并嵌入当前工作区构建的 Starry 镜像。
-CI 同时响应 AxVisor 和 Starry 的相关修改，先构建 guest 再运行板卡测试。
-手动运行也必须按同样顺序准备 guest，避免复用陈旧的 target 产物：
+   默认输出 `target/aka-rk3588-vision-usb/source/` 和
+   `target/aka-rk3588-vision-usb/SOURCE`。`SOURCE` 记录仓库、ref、完整 commit、源码
+   归档哈希和源码树哈希。
 
-```sh
-cargo xtask starry build \
-  --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml \
-  --smp 1
-cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
-```
+2. 在兼容 AArch64 的 Jammy 环境中，用准备好的源码完成构建，得到 `build/tennis`，
+   并把运行库 `libuvc.so.0`、`libusb-1.0.so.0`、`libturbojpeg.so.0`、
+   `libjpeg.so.8`、`libudev.so.1` 放到构建输出的 `lib/` 下。
 
-三个 robot board TOML 的 `shell_check_steps.shell_cmd` 显式传入
-`./run_robot_ci_once.sh 28.0`。调整性能门槛应修改对应配置文件中的参数，
-不通过宿主环境变量覆盖。程序的 `PERF_BEGIN` 输出实际门槛，
-`PERF_WINDOW` 和 `PERF_SUMMARY` 输出处理帧数、实际耗时及 FPS。
-性能窗口使用真实摄像头和 RKNN；完整通过还要求执行器控制和最终停车成功。
+3. 从本次构建输出生成部署包：
 
-当前 Direct DMA NPU 提交要求调用进程持有 `CAP_SYS_RAWIO`；
-这不提供无特权 IOMMU 隔离。修复原因、引入提交和性能基线见
-[`rknpu-privileged-submit.md`](../../../docs/design/rknpu-privileged-submit.md)。
-`tests/rknpu-submit-access.c` 验证无效对象、GEM 归属、越界和降权后继承 fd 的拒绝路径；
-仅在 Starry root shell 执行，不在 Linux vendor 驱动上执行这些无效对象测试。
+   ```bash
+   ./prepare-vision-usb-package.sh \
+     --source-dir target/aka-rk3588-vision-usb/source \
+     --build-dir /path/to/build-output
+   ```
 
-## 部署兼容性与基线
+   输出 `target/aka-rk3588-vision-usb/aka-rk3588-vision-usb.tar.gz` 和同目录 `SOURCE`。
+   脚本只使用命令参数给出的源码树和本次构建输出，不访问网络，也不部署到板卡；
+   `SOURCE` 记录源码树哈希、`tennis`、启动器、模型、`librknnrt.so` 和运行库清单哈希。
 
-运行目录固定为 `/home/orangepi/robot-ci/aka-rk3588`，源码提交号和产物哈希记录在
-部署目录的 `SOURCE` 文件中。部署时持有板卡租约，确认没有程序运行，先备份当前
-目录，再整体切换包含程序、启动器、运行库、模型和本板校准配置的暂存目录。
-不要逐个覆盖正在使用的文件。更早的 `/home/orangepi/robot/aka-rk3588` 保留不变。
+4. 持有板卡租约后，人工把同一个包部署到 `/home/orangepi/robot-ci/aka-rk3588-virtual`。
+   部署前确认没有检查在运行，整目录切换并保留上一版回滚。
 
-程序内部使用新版 `APPLICATION_PASS`，启动器对外仍输出原有 `RESULT=PASS/FAIL`，
-因此合入前后使用同一固定路径的 board 配置均可识别结果。新旧程序和启动器不能混用。
+### 6.2 real 链路
 
-基线约 30 FPS，三个正式配置的门槛为 28 FPS；成功以两个约 10 秒窗口的总帧数除以
-总耗时判断。最终性能汇总延后到动作、停车和清理完成后输出。该基线验证真实 NPU
-和执行器控制，不要求球存在，也不表示验证了真实抓球成功率。
+`prepare-package.sh` 读取 `source.env`，下载并校验固定提交的源码归档，复制本仓库
+跟踪的 `prebuilt/aarch64/build/tennis`，输出
+`target/aka-rk3588/aka-rk3588.tar.gz`。包内 `SOURCE` 记录仓库、提交、源码归档哈希和
+二进制哈希。
+
+更换 real 程序版本时，`source.env` 中的提交号、源码归档 SHA256 和二进制 SHA256
+必须一起更新。部署到 `/home/orangepi/robot-ci/aka-rk3588` 由人工完成；CI 不自动
+打包、编译或部署。
+
+## 7. 文件说明
+
+| 文件 | 用途 |
+| --- | --- |
+| `prepare-package.sh` | 组装 real 机器人包 |
+| `prepare-vision-usb-source.sh` | 解析 virtual 提交并准备源码 |
+| `prepare-vision-usb-package.sh` | 从源码和本次构建输出组装 virtual 包 |
+| `board-orangepi-5-plus.toml` | `cargo xtask starry app board -t aka-rk3588` 的 real 板卡入口 |
+| `init.sh` | `starry app board` 使用的 real 板上最小视觉冒烟 |
