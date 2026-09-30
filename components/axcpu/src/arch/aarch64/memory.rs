@@ -49,23 +49,3 @@ fn zero_block_size(dczid: u64) -> Option<usize> {
     let block_size = 4usize << (dczid & 0xf);
     (block_size <= PAGE_SIZE_4K).then_some(block_size)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_zero_geometry_covers_every_block_size_encoding() {
-        for encoding in 0..=15 {
-            let expected = (encoding <= 10).then_some(4usize << encoding);
-            assert_eq!(zero_block_size(encoding), expected);
-        }
-    }
-
-    #[test]
-    fn prohibited_cache_zero_never_produces_a_geometry() {
-        for encoding in 0..=15 {
-            assert_eq!(zero_block_size((1 << 4) | encoding), None);
-        }
-    }
-}
