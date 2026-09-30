@@ -680,14 +680,18 @@ fn stalled_release_submits_without_resetting_the_device() {
 
     host.lock().unwrap().stall = true;
     // The old contract reset the device here when the inline drain timed
-    // out; the submission is fire-and-forget now, so a stalled host no
-    // longer wedges or resets on release.
-    device.release_buffer(buffer).unwrap();
+    // out; the submission is fire-and-forget with a fence now, so a stalled
+    // host no longer wedges or resets on release.
+    let completion = device.release_buffer(buffer).unwrap();
+    let Completion::Pending(fence) = completion else {
+        panic!("a stalled release must report a pending fence, got {completion:?}")
+    };
 
-    // The queue is not drained yet — the drain proof is the caller's wait —
-    // and the query succeeding proves the device was NOT reset: a lost
-    // device fails every operation fast with DeviceLost.
-    assert!(!device.queue_idle().unwrap());
+    // The completion proof is the caller's fence wait now: the fence has
+    // not fired under the stall, and the query succeeding proves the device
+    // was NOT reset — a lost device fails every operation fast with
+    // DeviceLost.
+    assert!(!device.fence_completed(fence.get()).unwrap());
     assert!(weak.upgrade().is_none());
 }
 

@@ -616,17 +616,30 @@ impl Drop for GpuResource {
 }
 
 /// Releases a GPU buffer and waits, outside the device control lock, until
-/// the host finished with its backing. The drain used to spin inside the
-/// driver's `RESOURCE_UNREF` while holding the global lock; it moved here so
-/// the completion pump (IRQ worker or any ioctl) keeps making progress while
-/// the releaser sleeps. On a drain timeout the release itself stays submitted
-/// and the caller proceeds with its teardown: the host is unrecoverably
-/// stalled at that point — the same accepted tradeoff the driver documents
-/// for its bounded waits.
+/// the host finished with its backing: the fenced UNREF submission returns a
+/// completion token, and observing it outside the lock is the proof (the
+/// used ring is FIFO, so the fenced pop implies every earlier command's pop
+/// — the same ordering submits rely on, so concurrent producers cannot
+/// starve the wait the way a whole-queue drain outside the lock would).
+/// On a timeout the release itself stays submitted and the caller proceeds
+/// with its teardown: the host is unrecoverably stalled at that point — the
+/// same accepted tradeoff the driver documents for its bounded waits.
 fn release_gpu_buffer_and_drain(handle: BufferHandle) -> Result<(), GpuError> {
-    ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(handle))
+    let completion = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(handle))
         .and_then(core::convert::identity)?;
-    ax_gpu::virgl_wait_drain(ax_gpu::GPU_WAIT_TIMEOUT)
+    wait_completion_outside_lock(completion)
+}
+
+/// Observes a driver completion token outside the device control lock,
+/// sleeping until its fence fires (or the bounded wait expires). A
+/// `Complete` token needs no wait.
+fn wait_completion_outside_lock(completion: Completion) -> Result<(), GpuError> {
+    match completion {
+        Completion::Complete => Ok(()),
+        Completion::Pending(fence) => {
+            ax_gpu::virgl_wait_fence(fence.get(), ax_gpu::GPU_WAIT_TIMEOUT)
+        }
+    }
 }
 
 /// Kernel-side dma-buf for a *host* 3D resource (blob or classic virgl

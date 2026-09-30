@@ -682,7 +682,7 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
             .ok_or(GpuError::InvalidHandle)
     }
 
-    fn release_buffer(&mut self, buffer: BufferHandle) -> Result<(), GpuError> {
+    fn release_buffer(&mut self, buffer: BufferHandle) -> Result<Completion, GpuError> {
         self.ensure_ready()?;
         let key = buffer.id().get();
         let id = self.resource_id(buffer)?;
@@ -712,21 +712,26 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
             }
             self.resources.get_mut(&key).unwrap().attached = false;
         }
-        // `resource_unref` only submits and delivers now: the drain proof
-        // that the host stopped touching the backing moved to the caller,
-        // which waits outside the device lock (see the OS layer's drain
-        // wait). A submission failure is ambiguous — reset stops all DMA
-        // before the caller can release the backing.
+        // The fenced UNREF submission carries its own completion proof: the
+        // caller observes the returned fence outside the device lock before
+        // freeing the backing (the used ring is FIFO, so the fenced pop
+        // implies every earlier command's pop too). A submission failure is
+        // ambiguous — reset stops all DMA before the caller can release the
+        // backing.
         match self.raw.resource_unref(id) {
-            Ok(()) => {}
-            Err(Error::QueueBusy) => return Err(GpuError::Busy),
+            Ok(fence) => {
+                // The fence counter starts at 1 and only increases, so the
+                // token always fits the NonZeroU64 the completion carries.
+                let fence = NonZeroU64::new(fence).expect("fence ids start at 1 and only increase");
+                self.resources.remove(&key);
+                Ok(Completion::Pending(fence))
+            }
+            Err(Error::QueueBusy) => Err(GpuError::Busy),
             Err(_) => {
                 self.mark_lost();
-                return Err(GpuError::DeviceLost);
+                Err(GpuError::DeviceLost)
             }
         }
-        self.resources.remove(&key);
-        Ok(())
     }
 
     fn completion_status(&mut self, completion: Completion) -> Result<CompletionStatus, GpuError> {
@@ -1050,14 +1055,13 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
     fn transfer_from_host(&mut self, transfer: Transfer3d) -> Result<Completion, GpuError> {
         self.ensure_ready()?;
         let command = self.transfer_command(transfer)?;
-        // The raw path delivers and drains before returning: the caller reads
-        // the guest memory right after this returns, so completion has to be
-        // observed before the data is valid.
-        self.raw.transfer_from_host_3d(command).map_err(map_error)?;
-        if let Some(backing) = &self.resources[&transfer.resource.id().get()].backing {
-            backing.sync_for_cpu(0..backing.len())?;
-        }
-        Ok(Completion::Complete)
+        // Fenced fire-and-forget: the guest data becomes readable once the
+        // returned fence is observed, and only then may the backing be
+        // synced for the CPU. Syncing here — before the wait that moved out
+        // of the device lock — would race the host write.
+        let fence = self.raw.transfer_from_host_3d(command).map_err(map_error)?;
+        let fence = NonZeroU64::new(fence).expect("fence ids start at 1 and only increase");
+        Ok(Completion::Pending(fence))
     }
 
     fn submit(&mut self, context: ContextHandle, commands: &[u8]) -> Result<Completion, GpuError> {

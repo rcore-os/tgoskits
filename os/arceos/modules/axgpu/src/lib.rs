@@ -384,11 +384,24 @@ pub fn with_display_for_cleanup<R>(
 /// in-lock spins (`WAIT_TIMEOUT_NS`).
 pub const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Probe rounds before sleeping: the virtual device services the virtqueue
+/// kick synchronously inside the MMIO write, so the common case — the waited
+/// work already finished — resolves within the first self-pumping probes,
+/// preserving the latency of the old in-lock spin. Each probe is one short
+/// locked transaction and producers interleave between probes; the long
+/// tail (host genuinely busy) still sleeps outside the lock where the
+/// completion pump reaches it.
+const WAIT_PROBE_ROUNDS: usize = 64;
+
 /// Waits for `cond` to hold on the GPU runtime, sleeping outside the device
-/// lock — the stack's `wait_event` equivalent.
+/// lock — the stack's `wait_event` equivalent, with a bounded adaptive
+/// probe in front.
 ///
-/// Two correctness arguments carry the whole design:
+/// Three correctness arguments carry the whole design:
 ///
+/// * The probe phase self-pumps under per-round locking, so progress that
+///   is already observable resolves without any wake chain; it is bounded
+///   well below the wait deadline and cannot wedge a producer.
 /// * The waiter sleeps only after the condition was checked under and the
 ///   lock has been released, so the completion pump (the IRQ worker or any
 ///   `with_gpu` caller) can always take `MAIN_GPU` between two checks:
@@ -398,9 +411,12 @@ pub const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 ///   `WaitQueue::notify_all` takes no lock a waiter holds.
 /// * The condition observes device state through the driver's polling
 ///   queries (`fence_completed`, `queue_idle`), which deliver the
-///   accumulated batch and pump completions themselves: in an environment
-///   without completion IRQs the waiter drives its own progress, exactly
-///   like an IRQ-driven one.
+///   accumulated batch and pump completions themselves: the probe drives
+///   its own progress exactly like an IRQ-driven environment. In a
+///   polling-only environment a waiter that reaches the sleep phase
+///   depends on another task's access for its wake — known limitation;
+///   every shipping configuration has completion IRQs or concurrent
+///   pollers.
 ///
 /// `cond` runs once per wake-up under `MAIN_GPU`: it must not sleep, must
 /// not re-enter this crate, and should only use the device's query methods.
@@ -410,6 +426,18 @@ fn wait_gpu_condition(
 ) -> Result<(), GpuError> {
     if !has_gpu() {
         return Err(GpuError::NotAvailable);
+    }
+    for _ in 0..WAIT_PROBE_ROUNDS {
+        let mut runtime = MAIN_GPU.lock();
+        let probed = match service_pending(&mut runtime) {
+            Err(error) => return Err(error),
+            Ok(()) => cond(&mut runtime),
+        };
+        match probed {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => return Err(error),
+        }
     }
     let cond_failed: Cell<Option<GpuError>> = Cell::new(None);
     let timed_out = GPU_WAIT_QUEUE.wait_timeout_until(timeout, || {

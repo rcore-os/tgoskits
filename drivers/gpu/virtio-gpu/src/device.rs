@@ -626,29 +626,31 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     ///
     /// The protocol has a single `RESOURCE_UNREF` for 2D and 3D resources, so
     /// this is also the only way to destroy a 3D resource. The command is
-    /// submitted fire-and-forget and delivered; this call returns as soon as
-    /// it is on the ring. The guest memory previously attached to the
-    /// resource may only be freed by its owner after the host popped
-    /// everything — that completion proof moved to the OS layer, which
-    /// drains through [`VirtIoGpu::queue_idle`] outside the device lock
-    /// (Linux instead defers the free to its completion callback).
-    /// Teardown paths inside this crate that must not return without the
-    /// proof drain explicitly via [`VirtIoGpu::wait_idle`].
-    pub fn resource_unref(&mut self, resource_id: u32) -> Result<(), Error> {
+    /// submitted fire-and-forget with a fence and delivered; this returns the
+    /// fence id as soon as it is on the ring. The fence's completion is the
+    /// proof that the host stopped touching the released backing: the used
+    /// ring is FIFO, so the pop of the fenced unref implies the pop of every
+    /// earlier command (the same implicit ordering submits rely on). The
+    /// guest memory previously attached to the resource may only be freed
+    /// after the OS layer observes that fence outside the device lock.
+    /// Cold recovery paths inside this crate that must not return without
+    /// the proof drain explicitly via [`VirtIoGpu::wait_idle`].
+    pub fn resource_unref(&mut self, resource_id: u32) -> Result<u64, Error> {
+        let fence_id = self.alloc_fence()?;
         self.ctrl
             .enqueue(
                 &mut self.transport,
                 &ResourceUnref {
-                    header: CtrlHeader::with_type(Command::RESOURCE_UNREF),
+                    header: CtrlHeader::with_fence(Command::RESOURCE_UNREF, 0, fence_id),
                     resource_id,
                     _padding: 0,
                 },
                 None,
-                0,
+                fence_id,
             )
             .map(|_| ())?;
         self.ctrl_notify();
-        Ok(())
+        Ok(fence_id)
     }
 
     // --- 3D (virgl) commands ---
@@ -888,21 +890,24 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     }
 
     /// Transfers a 3D resource from the host to guest memory. The command is
-    /// submitted fire-and-forget: the guest memory only becomes valid once
-    /// the host applied the transfer, so the OS layer observes completion
-    /// before letting its caller read back — it drains through
-    /// [`VirtIoGpu::queue_idle`] outside the device lock (Linux instead
-    /// relies on dma_resv deferred destruction and returns without
-    /// waiting).
-    pub fn transfer_from_host_3d(&mut self, params: Transfer3d) -> Result<(), Error> {
+    /// submitted fire-and-forget **with a fence** and returns the fence id:
+    /// the fence's completion proves the host applied the transfer (the used
+    /// ring is FIFO, so its pop implies the pop of every earlier command),
+    /// which is what makes the guest memory valid to read. The OS layer
+    /// observes that fence outside the device lock and syncs the backing for
+    /// the CPU before letting its caller read back (Linux instead relies on
+    /// dma_resv deferred destruction and returns without waiting).
+    pub fn transfer_from_host_3d(&mut self, params: Transfer3d) -> Result<u64, Error> {
         self.require_virgl()?;
+        let fence_id = self.alloc_fence()?;
         self.ctrl
             .enqueue(
                 &mut self.transport,
                 &CmdTransferHost3D {
-                    header: CtrlHeader::with_type_and_ctx(
+                    header: CtrlHeader::with_fence(
                         Command::TRANSFER_FROM_HOST_3D,
                         params.ctx_id,
+                        fence_id,
                     ),
                     box_: params.box_,
                     offset: params.offset,
@@ -912,11 +917,11 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
                     layer_stride: params.layer_stride,
                 },
                 None,
-                0,
+                fence_id,
             )
             .map(|_| ())?;
         self.ctrl_notify();
-        Ok(())
+        Ok(fence_id)
     }
 
     /// Submits a virgl command stream to a rendering context and returns the

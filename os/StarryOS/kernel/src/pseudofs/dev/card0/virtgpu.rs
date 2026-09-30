@@ -732,15 +732,17 @@ impl Card0 {
         file.attach_resource(&resource)?;
 
         // The read-back completion proof sits outside the device layer now:
-        // the transfer is submitted fire-and-forget like Linux
+        // the transfer is submitted fire-and-forget with a fence like Linux
         // `virtio_gpu_transfer_from_host_ioctl()`, and the ioctl still
-        // returns only after the host applied the data — but the drain
+        // returns only after the host applied the data — but the fence wait
         // sleeps without the control lock, so the completion pump keeps
-        // running while we block. Linux relies on dma_resv deferred
-        // destruction for memory safety instead; our unref/backing release
-        // has no dma_resv equivalent, so the drain remains the proof that
-        // the host no longer touches the guest memory.
-        with_virgl(|virgl| virgl.transfer_from_host(rdif_gpu::Transfer3d {
+        // running while we block. Waiting the transfer's own fence (not a
+        // whole-queue drain) also means concurrent producers cannot starve
+        // the readback. Linux relies on dma_resv deferred destruction for
+        // memory safety instead; our unref/backing release has no dma_resv
+        // equivalent, so the fence observation remains the proof that the
+        // host no longer touches the guest memory.
+        let completion = with_virgl(|virgl| virgl.transfer_from_host(rdif_gpu::Transfer3d {
             context: ctx_id,
             resource: resource.device_handle,
             box_: rdif_gpu::TransferBox {
@@ -756,7 +758,16 @@ impl Card0 {
             stride: t.stride,
             layer_stride: t.layer_stride,
         }))?;
-        ax_gpu::virgl_wait_drain(ax_gpu::GPU_WAIT_TIMEOUT).map_err(map_gpu_err)?;
+        wait_completion_outside_lock(completion).map_err(map_gpu_err)?;
+        // Only now — after the host write completed — make the bytes
+        // CPU-visible. The sync used to run inside the device layer's inline
+        // drain; running it before observing the fence would race the host
+        // write it exists to order against.
+        let backing = ax_gpu::with_gpu(|device| device.buffer_backing(resource.device_handle))
+            .and_then(core::convert::identity)
+            .map_err(map_gpu_err)?
+            .ok_or(VfsError::NotFound)?;
+        backing.sync_for_cpu(0..backing.len()).map_err(map_gpu_err)?;
 
         Ok(0)
     }

@@ -263,7 +263,11 @@ pub trait GpuDevice: DriverGeneric {
 
     /// Fails with `Busy` while context, scanout or in-flight work still uses
     /// the buffer; its backing remains owned by the device in that case.
-    fn release_buffer(&mut self, buffer: BufferHandle) -> Result<(), GpuError>;
+    /// On success the submission is fire-and-forget and carries a fence; the
+    /// returned completion is the caller's proof that the host stopped
+    /// touching the backing — observe it (outside the device lock) before
+    /// freeing the backing memory.
+    fn release_buffer(&mut self, buffer: BufferHandle) -> Result<Completion, GpuError>;
 
     /// `DeviceLost` ends every outstanding completion for this device.
     fn completion_status(&mut self, completion: Completion) -> Result<CompletionStatus, GpuError>;
