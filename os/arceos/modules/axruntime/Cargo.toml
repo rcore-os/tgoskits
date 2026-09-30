@@ -53,6 +53,8 @@ fs = [
 ]
 # Select the Linux early-userspace root when rdinit or /init is accessible.
 starry-init = ["fs"]
+# Let Axvisor install its archive resources before committing a disk root.
+deferred-rootfs = ["fs"]
 ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
 input = ["paging", "dep:ax-input", "ax-driver/input"]

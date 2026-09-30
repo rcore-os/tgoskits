@@ -196,6 +196,11 @@ impl BlockRuntime {
         &self.devices
     }
 
+    /// Returns the devices registered during boot without taking ownership.
+    pub fn installed_devices() -> Option<&'static [Arc<BlockDeviceHandle>]> {
+        BLOCK_RUNTIME.get().map(|runtime| runtime.devices())
+    }
+
     fn online_smp(&self) -> Result<(), BlkError> {
         for device in &self.devices {
             device.online_smp()?;

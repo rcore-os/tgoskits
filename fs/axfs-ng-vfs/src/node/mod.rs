@@ -97,6 +97,12 @@ pub trait NodeOps: Send + Sync + 'static {
     fn xattr_ops(&self) -> Option<&dyn XattrOps> {
         None
     }
+
+    /// Returns inode-owned state that survives eviction of directory entries.
+    /// Memory filesystems use this for file contents shared by hard links.
+    fn inode_user_data(&self) -> Option<&Mutex<TypeMap>> {
+        None
+    }
 }
 
 /// Persistent extended-attribute capability owned by a filesystem inode.
@@ -410,7 +416,10 @@ impl DirEntry {
     }
 
     pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
-        self.0.user_data.lock()
+        match self.0.node.inode_user_data() {
+            Some(state) => state.lock(),
+            None => self.0.user_data.lock(),
+        }
     }
 
     pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {

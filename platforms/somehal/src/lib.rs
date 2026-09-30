@@ -31,7 +31,7 @@ pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
     InitramfsRange, boot_entropy, bootargs, console, entry, fdt_addr, fdt_addr_phys,
-    initramfs_range, mem, power, rsdp_addr_phys, smp,
+    initramfs_range, mem, power, rsdp_addr_phys, smp, take_initramfs_range,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 

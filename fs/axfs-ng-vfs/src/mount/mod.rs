@@ -550,13 +550,12 @@ impl Mountpoint {
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let new_root = new_root_mp.root_location();
-        // put_old must be strictly below the new root in the resolved mount
-        // tree. This rejects both sibling locations and new_root itself.
-        if !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
-            || put_old.ptr_eq(&new_root)
+        if Arc::ptr_eq(self, new_root_mp)
+            || !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
             || !put_old.is_descendant_of(&new_root)
+            || !new_root.is_descendant_of(&self.root_location())
         {
             return Err(VfsError::InvalidInput);
         }
@@ -566,34 +565,38 @@ impl Mountpoint {
             return Err(VfsError::ResourceBusy);
         }
 
-        // 1. Detach new_root from old root's children and clear the old mount
-        //    slot (where new_root was attached in the old root).
-        let (removed_child, old_location) = {
-            let mut new_root_loc = new_root_mp.location.lock();
-            let removed_child = new_root_loc.as_ref().and_then(|old_loc| {
-                old_loc
-                    .mountpoint
-                    .children
-                    .lock()
-                    .remove(&old_loc.entry.key())
-            });
-            // new_root becomes the global root.
-            let old_location = new_root_loc.take();
-            (removed_child, old_location)
-        };
-        drop(removed_child);
-        drop(old_location);
-
-        // 2. Attach old root at put_old under new_root.
-        {
-            new_root_mp
+        let new_parent = new_root_mp.location().ok_or(VfsError::InvalidInput)?;
+        let old_parent = self.location();
+        let removed_new = new_parent
+            .mountpoint
+            .children
+            .lock()
+            .remove(&new_parent.entry.key());
+        let removed_old = old_parent.as_ref().and_then(|parent| {
+            parent
+                .mountpoint
                 .children
                 .lock()
-                .insert(put_old.entry.key(), self.clone());
-            *self.location.lock() = Some(put_old.clone());
+                .remove(&parent.entry.key())
+        });
+        if let Some(parent) = &old_parent {
+            parent
+                .mountpoint
+                .children
+                .lock()
+                .insert(parent.entry.key(), new_root_mp.clone());
         }
-
+        let previous_new = core::mem::replace(&mut *new_root_mp.location.lock(), old_parent);
+        let previous_old = self.location.lock().replace(put_old.clone());
+        new_root_mp
+            .children
+            .lock()
+            .insert(put_old.entry.key(), self.clone());
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        drop(topology);
+        // Final mount leases can clear caches and release pages; never run
+        // those destructors while serializing topology mutations.
+        drop((removed_new, removed_old, previous_new, previous_old));
         Ok(())
     }
 

@@ -14,7 +14,7 @@ extern crate ax_runtime;
 #[macro_use]
 extern crate log;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use axfs_ng_vfs::{Filesystem, Location};
 pub use axfs_ng_vfs::{VfsError, VfsResult};
@@ -39,11 +39,13 @@ pub(crate) use error::block_error_to_vfs_error;
 pub use error::{BlockError, BlockResult};
 pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
 
-static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
+static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<axfs_ng_vfs::WeakFilesystem>> =
     os::sync::IrqMutex::new(Vec::new());
 
 fn register_mounted_filesystem(fs: Filesystem) {
-    MOUNTED_FILESYSTEMS.lock().push(fs);
+    let mut registry = MOUNTED_FILESYSTEMS.lock();
+    registry.retain(|entry| entry.upgrade().is_some());
+    registry.push(fs.downgrade());
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -75,50 +77,20 @@ pub enum FilesystemKind {
 }
 
 /// Initializes the filesystem subsystem from a runtime-selected block region.
-pub(crate) fn init_filesystem(
-    dev: Arc<BlockDeviceHandle>,
-    region: BlockRegion,
-    description: &str,
-    source: &str,
-) -> Location {
-    info!("Initialize filesystem subsystem...");
-    info!("  selected root device: {}", description);
-
-    let fs = fs::new_from_handle(dev, region).unwrap_or_else(|err| {
-        panic!(
-            "failed to initialize filesystem on {}: {err:?}",
-            description
-        )
-    });
-    finish_filesystem_init(fs, source)
-}
-
-pub(crate) fn init_detected_filesystem(
-    dev: Arc<BlockDeviceHandle>,
-    region: BlockRegion,
-    kind: FilesystemKind,
-    description: &str,
-    source: &str,
-) -> Location {
-    info!("Initialize filesystem subsystem...");
-    info!("  selected root device: {}", description);
-
-    let fs = fs::new_from_handle_with_kind(dev, region, kind).unwrap_or_else(|err| {
-        panic!(
-            "failed to initialize filesystem on {}: {err:?}",
-            description
-        )
-    });
-    finish_filesystem_init(fs, source)
-}
-
 fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location {
     info!("  filesystem type: {:?}", fs.name());
 
-    let mp = axfs_ng_vfs::Mountpoint::new_root_with_source(&fs, source);
+    // A namespace keeps an immutable anchor; the actual root is a normal mount
+    // above it and can therefore be pivoted and detached like Linux rootfs.
+    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs");
+    anchor.set_readonly(true);
+    let mp = anchor
+        .root_location()
+        .mount_with_source(&fs, source)
+        .expect("initial filesystem mount");
     let root = mp.root_location();
     register_mounted_filesystem(fs);
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
+    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()).into_shared());
     root
 }
 
@@ -132,7 +104,11 @@ pub fn shutdown_filesystems() -> axfs_ng_vfs::VfsResult {
 fn shutdown_registered_filesystems() -> axfs_ng_vfs::VfsResult {
     let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock());
     let mut first_error = None;
-    for fs in filesystems.into_iter().rev() {
+    for fs in filesystems
+        .into_iter()
+        .rev()
+        .filter_map(|entry| entry.upgrade())
+    {
         if let Err(error) = fs.shutdown() {
             first_error.get_or_insert(error);
         }

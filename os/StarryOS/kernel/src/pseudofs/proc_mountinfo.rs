@@ -19,6 +19,9 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (mount_id, parent_id, mp) in entries {
         let root_loc = mp.root_location();
+        if !root_loc.is_descendant_of(fs_context.root_dir()) {
+            continue;
+        }
 
         let mount_point = root_loc
             .absolute_path()
@@ -67,6 +70,9 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (_, _, mp) in entries {
         let root_loc = mp.root_location();
+        if !root_loc.is_descendant_of(fs_context.root_dir()) {
+            continue;
+        }
 
         let mount_point = root_loc
             .absolute_path()

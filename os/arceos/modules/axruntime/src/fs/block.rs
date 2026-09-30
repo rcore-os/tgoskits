@@ -312,7 +312,7 @@ pub(super) fn init(bootargs: Option<&str>) {
         irq_registrar(),
         None,
     );
-    let archive = ax_hal::boot::initramfs_range();
+    let archive = ax_hal::boot::take_initramfs_range();
     let memory = (archive.is_some() || !BUILTIN_INITRAMFS.is_empty()).then(|| {
         let external = archive.map(|range| {
             let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(range.start));
@@ -346,12 +346,13 @@ pub(super) fn init(bootargs: Option<&str>) {
     );
     #[cfg(not(feature = "starry-init"))]
     let early_init: Option<String> = None;
-    let kind = ax_fs_ng::root::init_root_from_rdif_sources_with_memory(
+    let kind = ax_fs_ng::root::init_root_from_rdif_sources_with_policy(
         take_rdif_block_devices(),
         take_rdif_block_groups(),
         bootargs,
         memory,
         early_init.as_deref(),
+        cfg!(feature = "deferred-rootfs"),
     );
     info!("host root selected: {kind:?}");
 }

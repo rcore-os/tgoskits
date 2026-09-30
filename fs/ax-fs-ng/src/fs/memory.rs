@@ -15,9 +15,9 @@ use core::{
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
-    FileRangeOperation, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
-    VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
+    FileRangeOperation, Filesystem, FilesystemMountLease, FilesystemOps, Metadata, MetadataUpdate,
+    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference, RenameOptions,
+    StatFs, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -71,6 +71,7 @@ impl Borrow<str> for FileName {
 
 /// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
+    self_ref: Weak<Self>,
     name: &'static str,
     fs_type: u32,
     size_limit: Option<u64>,
@@ -80,7 +81,53 @@ pub struct MemoryFs {
     inodes: IrqMutex<Slab<Arc<Inode>>>,
     // root_dir() is used while mounting pseudofs during early startup, before
     // Starry has reached a sleepable task context.
-    root: IrqMutex<Option<DirEntry>>,
+    root: IrqMutex<Option<WeakDirEntry>>,
+    mount_lease: IrqMutex<Weak<MemoryMountLease>>,
+}
+
+#[derive(Debug)]
+struct MemoryMountLease {
+    filesystem: Arc<MemoryFs>,
+}
+
+impl core::fmt::Debug for MemoryFs {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MemoryFs")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FilesystemMountLease for MemoryMountLease {}
+
+impl Drop for MemoryMountLease {
+    fn drop(&mut self) {
+        let installed = self.filesystem.mount_lease.lock();
+        if installed.strong_count() != 0 {
+            return;
+        }
+        let root = self
+            .filesystem
+            .root
+            .lock()
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade);
+        if let Some(root) = root {
+            root.as_dir()
+                .expect("memory root directory")
+                .clear_cached_entries();
+        }
+    }
+}
+
+impl Drop for MemoryFs {
+    fn drop(&mut self) {
+        log::info!(
+            "releasing decoded {} filesystem ({} file bytes)",
+            self.name,
+            self.used_bytes.load(AtomicOrdering::Relaxed)
+        );
+    }
 }
 
 impl MemoryFs {
@@ -121,13 +168,15 @@ impl MemoryFs {
         fs_type: u32,
         size_limit: Option<u64>,
     ) -> (Filesystem, Arc<Self>) {
-        let handle = Arc::new(Self {
+        let handle = Arc::new_cyclic(|this| Self {
+            self_ref: this.clone(),
             name,
             fs_type,
             size_limit,
             used_bytes: AtomicU64::new(0),
             inodes: IrqMutex::new(Slab::new()),
             root: IrqMutex::new(None),
+            mount_lease: IrqMutex::new(Weak::new()),
         });
         let root_ino = Inode::new(
             &handle,
@@ -138,10 +187,11 @@ impl MemoryFs {
             0,
             0,
         );
-        *handle.root.lock() = Some(DirEntry::new_dir(
+        let root = DirEntry::new_dir(
             |this| DirNode::new(MemoryNode::new(handle.clone(), root_ino, Some(this))),
             Reference::root(),
-        ));
+        );
+        *handle.root.lock() = Some(root.downgrade());
         (Filesystem::new(handle.clone()), handle)
     }
 
@@ -196,12 +246,36 @@ impl MemoryFs {
 }
 
 impl FilesystemOps for MemoryFs {
+    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+        let mut installed = self.mount_lease.lock();
+        if let Some(lease) = installed.upgrade() {
+            return Some(lease);
+        }
+        let lease = Arc::new(MemoryMountLease {
+            filesystem: self.self_ref.upgrade().expect("live memory filesystem"),
+        });
+        *installed = Arc::downgrade(&lease);
+        Some(lease)
+    }
+
     fn name(&self) -> &str {
         self.name
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root.lock().clone().unwrap()
+        let mut installed = self.root.lock();
+        if let Some(root) = installed.as_ref().and_then(WeakDirEntry::upgrade) {
+            return root;
+        }
+        let owner = self.self_ref.upgrade().expect("live memory filesystem");
+        // The first inode is the root. Its directory links keep it allocated.
+        let inode = self.get(1);
+        let root = DirEntry::new_dir(
+            |this| DirNode::new(MemoryNode::new(owner, inode, Some(this))),
+            Reference::root(),
+        );
+        *installed = Some(root.downgrade());
+        root
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -239,9 +313,11 @@ fn release_inode(fs: &MemoryFs, inode: &Arc<Inode>, nlink: u64) {
     let mut inodes = fs.inodes.lock();
     let mut metadata = inode.metadata.lock();
     metadata.nlink -= nlink;
-    if metadata.nlink == 0 && Arc::strong_count(inode) == 2 {
-        inodes.remove(metadata.inode as usize - 1);
-    }
+    let removed = (metadata.nlink == 0 && Arc::strong_count(inode) == 2)
+        .then(|| inodes.remove(metadata.inode as usize - 1));
+    drop(metadata);
+    drop(inodes);
+    drop(removed);
 }
 
 #[derive(Default)]
@@ -281,6 +357,7 @@ struct Inode {
     ino: u64,
     metadata: IrqMutex<Metadata>,
     content: NodeContent,
+    user_data: axfs_ng_vfs::Mutex<TypeMap>,
     // Extended attributes belong to the inode so hard links observe the same
     // values. Syscall xattr paths are sleepable and never hold a directory
     // entries guard while acquiring this lock.
@@ -327,6 +404,7 @@ impl Inode {
             ino,
             metadata: IrqMutex::new(metadata),
             content,
+            user_data: axfs_ng_vfs::Mutex::new(TypeMap::new()),
             xattrs: FsMutex::new(BTreeMap::new()),
         });
         entry.insert(result.clone());
@@ -416,7 +494,7 @@ impl XattrOps for Inode {
 }
 
 struct InodeRef {
-    fs: Arc<MemoryFs>,
+    fs: Weak<MemoryFs>,
     ino: u64,
     node_type: NodeType,
     cookie: u64,
@@ -426,7 +504,7 @@ impl InodeRef {
     pub fn new(fs: Arc<MemoryFs>, ino: u64, node_type: NodeType, cookie: u64) -> Self {
         fs.get(ino).metadata.lock().nlink += 1;
         Self {
-            fs,
+            fs: Arc::downgrade(&fs),
             ino,
             node_type,
             cookie,
@@ -434,7 +512,10 @@ impl InodeRef {
     }
 
     fn get(&self) -> Arc<Inode> {
-        self.fs.get(self.ino)
+        self.fs
+            .upgrade()
+            .expect("directory operation retains filesystem")
+            .get(self.ino)
     }
 
     fn metadata_for_readdir(&self) -> (u64, NodeType) {
@@ -444,7 +525,9 @@ impl InodeRef {
 
 impl Drop for InodeRef {
     fn drop(&mut self) {
-        release_inode(&self.fs, &self.get(), 1);
+        if let Some(fs) = self.fs.upgrade() {
+            release_inode(&fs, &fs.get(self.ino), 1);
+        }
     }
 }
 
@@ -490,6 +573,9 @@ impl MemoryNode {
 }
 
 impl NodeOps for MemoryNode {
+    fn inode_user_data(&self) -> Option<&axfs_ng_vfs::Mutex<TypeMap>> {
+        Some(&self.inode.user_data)
+    }
     fn inode(&self) -> u64 {
         self.inode.ino
     }
@@ -845,12 +931,8 @@ impl DirNodeOps for MemoryNode {
         };
         let dst_dir = dst_node.inode.as_dir()?;
         let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-        let moved_entry = InodeRef::new(
-            src_entry.fs.clone(),
-            src_entry.ino,
-            src_entry.node_type,
-            cookie,
-        );
+        let moved_entry =
+            InodeRef::new(self.fs.clone(), src_entry.ino, src_entry.node_type, cookie);
         let overwritten = {
             let mut entries = dst_dir.entries.lock();
             entries.insert(dst_name.into(), moved_entry)
@@ -911,6 +993,68 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "vfs")]
+    #[test]
+    fn pivot_detaches_old_root_and_defers_pages_until_last_open_reference() {
+        use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType};
+
+        use crate::{file::CachedFile, highlevel::FsContext};
+
+        crate::os::memory::test_support::with_test_page_provider(true, |pages| {
+            let (filesystem, owner) = super::MemoryFs::new_with_handle();
+            let lifetime = alloc::sync::Arc::downgrade(&owner);
+            let anchor = Mountpoint::new_root(&super::MemoryFs::new());
+            let old = anchor
+                .root_location()
+                .mount(&filesystem)
+                .unwrap()
+                .root_location();
+            let mut context = FsContext::new(old.clone());
+            let entry = old
+                .create(
+                    "data",
+                    NodeType::RegularFile,
+                    NodePermission::default(),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let file = CachedFile::get_or_create(entry).unwrap();
+            file.write_at(&b"archive contents"[..], 0).unwrap();
+            let pin = file.pin_cached_page(0).unwrap();
+            let stage = old
+                .create(
+                    "stage",
+                    NodeType::Directory,
+                    NodePermission::default(),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let new = stage
+                .mount(&super::MemoryFs::new())
+                .unwrap()
+                .root_location();
+            context.pivot_root(new.clone(), new.clone()).unwrap();
+            old.detach_mount().unwrap();
+            assert!(alloc::sync::Arc::ptr_eq(
+                context.mount_namespace().root_mount(),
+                &anchor
+            ));
+            assert!(context.resolve("/data").is_err());
+            let mut content = [0; 16];
+            assert_eq!(file.read_at(&mut content[..], 0).unwrap(), 16);
+            assert_eq!(&content, b"archive contents");
+            drop((old, stage, filesystem, owner));
+            assert!(lifetime.upgrade().is_some());
+            drop(file);
+            assert!(lifetime.upgrade().is_none());
+            assert_eq!(pages.dealloc_count(), 0, "mapped page remains pinned");
+            drop(pin);
+            assert_eq!(pages.dealloc_count(), pages.alloc_count());
+        });
+    }
+
     #[test]
     fn unpublished_filesystem_and_detached_nodes_release_their_owner() {
         let (filesystem, owner) = super::MemoryFs::new_with_handle();
@@ -918,15 +1062,24 @@ mod tests {
         let root = filesystem.root_dir();
         drop(owner);
         drop(filesystem);
-        assert!(lifetime.upgrade().is_some(), "live node must retain its filesystem");
+        assert!(
+            lifetime.upgrade().is_some(),
+            "live node must retain its filesystem"
+        );
         drop(root);
-        assert!(lifetime.upgrade().is_none(), "root cache and directory links must not retain the filesystem");
+        assert!(
+            lifetime.upgrade().is_none(),
+            "root cache and directory links must not retain the filesystem"
+        );
 
         let (filesystem, owner) = super::MemoryFs::new_with_handle();
         let lifetime = alloc::sync::Arc::downgrade(&owner);
         drop(owner);
         drop(filesystem);
-        assert!(lifetime.upgrade().is_none(), "unpublished filesystem must also be reclaimed");
+        assert!(
+            lifetime.upgrade().is_none(),
+            "unpublished filesystem must also be reclaimed"
+        );
     }
 
     #[cfg(all(test, axtest))]
