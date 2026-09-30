@@ -81,10 +81,11 @@ pub(crate) fn new_from_handle_with_kind(
     let mut registry = NATIVE_FILESYSTEMS.lock();
     registry.retain(|entry| entry.filesystem.is_alive());
     for entry in &*registry {
-        if entry.region == region && entry.device.ptr_eq(&Arc::downgrade(&dev)) {
-            if let Some(fs) = entry.filesystem.upgrade() {
-                return Ok(fs);
-            }
+        if entry.region == region
+            && entry.device.ptr_eq(&Arc::downgrade(&dev))
+            && let Some(fs) = entry.filesystem.upgrade()
+        {
+            return Ok(fs);
         }
     }
     let device = Arc::downgrade(&dev);

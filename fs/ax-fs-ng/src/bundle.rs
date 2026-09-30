@@ -346,7 +346,6 @@ mod tests {
                 };
                 mkdir_parents(&target, "/guest/builtin").unwrap();
                 write(&target, "/guest/builtin/old", b"old");
-                failure.fail_at.store(fail_at, Ordering::Relaxed);
                 assert_eq!(
                     install_with_flush(
                         &source,
