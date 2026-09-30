@@ -12,7 +12,7 @@ use rsext4::{
 };
 use rsext4::{SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE, endian::DiskFormat, superblock::Ext4Superblock};
 
-use super::options::FilesystemFormat;
+use super::options::FileImageFormat;
 
 #[cfg(test)]
 struct Ext4Image<'a> {
@@ -149,7 +149,7 @@ impl fmt::Display for ImagePreparationError {
 pub(crate) fn inspect_file_image<R: ImageReader>(
     reader: &mut R,
     configured_capacity: Option<u64>,
-    filesystem: FilesystemFormat,
+    image_format: FileImageFormat,
 ) -> Result<u64, ImagePreparationError> {
     let existing_len = reader
         .len()
@@ -157,7 +157,7 @@ pub(crate) fn inspect_file_image<R: ImageReader>(
     if existing_len == 0 {
         return Err(ImagePreparationError::new(
             "validate backing file",
-            "backing file must contain an existing filesystem image",
+            "backing file must contain an existing disk image",
         ));
     }
     if !existing_len.is_multiple_of(512) {
@@ -178,6 +178,10 @@ pub(crate) fn inspect_file_image<R: ImageReader>(
         ));
     }
 
+    if image_format == FileImageFormat::Raw {
+        return Ok(existing_len);
+    }
+
     if existing_len < SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE as u64 {
         return Err(ImagePreparationError::new(
             "validate ext4 image",
@@ -195,9 +199,10 @@ pub(crate) fn inspect_file_image<R: ImageReader>(
         ));
     }
 
-    match filesystem {
-        FilesystemFormat::Ext4 => validate_ext4_image(&bytes, existing_len)
+    match image_format {
+        FileImageFormat::Ext4 => validate_ext4_image(&bytes, existing_len)
             .map_err(|error| ImagePreparationError::new("validate ext4 image", error))?,
+        FileImageFormat::Raw => unreachable!(),
     }
     Ok(existing_len)
 }
@@ -262,7 +267,7 @@ mod tests {
         }
         let mut reader = LargeImage(ext4_image());
         assert_eq!(
-            inspect_file_image(&mut reader, None, FilesystemFormat::Ext4)
+            inspect_file_image(&mut reader, None, FileImageFormat::Ext4)
                 .expect("inspect a large image with bounded memory"),
             1 << 40
         );
@@ -279,7 +284,7 @@ mod tests {
         let capacity = inspect_file_image(
             &mut reader,
             Some(TEST_IMAGE_CAPACITY),
-            FilesystemFormat::Ext4,
+            FileImageFormat::Ext4,
         )
         .expect("load existing ext4 image");
 
@@ -288,10 +293,28 @@ mod tests {
     }
 
     #[test]
+    fn raw_file_accepts_partitioned_bytes_without_ext4_probe() {
+        let mut bytes = vec![0_u8; 4096];
+        bytes[512..520].copy_from_slice(b"EFI PART");
+        let mut reader = MemoryReader {
+            bytes: bytes.clone(),
+            fail_read: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            inspect_file_image(&mut reader, Some(4096), FileImageFormat::Raw).unwrap(),
+            4096
+        );
+        assert_eq!(reader.bytes, bytes);
+        assert!(inspect_file_image(&mut reader, None, FileImageFormat::Ext4).is_err());
+    }
+
+    #[test]
     fn empty_ext4_file_is_rejected() {
         let mut reader = MemoryReader::default();
 
-        let error = inspect_file_image(&mut reader, None, FilesystemFormat::Ext4)
+        let error = inspect_file_image(&mut reader, None, FileImageFormat::Ext4)
             .expect_err("an empty backing file must be rejected");
 
         assert_eq!(error.operation, "validate backing file");
@@ -305,7 +328,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = inspect_file_image(&mut reader, None, FilesystemFormat::Ext4)
+        let error = inspect_file_image(&mut reader, None, FileImageFormat::Ext4)
             .expect_err("a non-ext4 backing file must be rejected");
 
         assert_eq!(error.operation, "validate ext4 image");
@@ -322,7 +345,7 @@ mod tests {
         let error = inspect_file_image(
             &mut reader,
             Some(TEST_IMAGE_CAPACITY + 512),
-            FilesystemFormat::Ext4,
+            FileImageFormat::Ext4,
         )
         .expect_err("capacity mismatch must be rejected");
 
@@ -337,7 +360,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = inspect_file_image(&mut reader, None, FilesystemFormat::Ext4)
+        let error = inspect_file_image(&mut reader, None, FileImageFormat::Ext4)
             .expect_err("unaligned backing file must be rejected");
 
         assert_eq!(error.operation, "validate backing file");
@@ -352,7 +375,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = inspect_file_image(&mut reader, None, FilesystemFormat::Ext4)
+        let error = inspect_file_image(&mut reader, None, FileImageFormat::Ext4)
             .expect_err("read failure must abort loading");
 
         assert_eq!(error.operation, "load backing file");
@@ -367,7 +390,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = inspect_file_image(&mut reader, None, FilesystemFormat::Ext4)
+        let error = inspect_file_image(&mut reader, None, FileImageFormat::Ext4)
             .expect_err("short read must be rejected");
 
         assert_eq!(error.operation, "load backing file");
