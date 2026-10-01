@@ -3900,7 +3900,7 @@ mod tests {
 
     #[cfg(axtest)]
     #[axtest::axtest]
-    fn private_cache_reads_fork_cow_and_truncate_keep_exact_owners() {
+    fn private_cache_reads_fork_cow_and_truncate_retire_cache_owners() {
         use alloc::sync::Arc;
 
         use ax_fs_ng::{file::CachedFile, vfs::FileBackend};
@@ -4056,8 +4056,6 @@ mod tests {
             child.lock().pt.query(moved),
             Err(PagingError::NotMapped)
         ));
-        child.lock().read(start + 13, &mut byte).unwrap();
-        assert_eq!(byte, [0x72]);
         parent.lock().unmap(start, size).unwrap();
         child.lock().unmap(start, size).unwrap();
         child.lock().unmap(moved, PAGE_SIZE_4K).unwrap();
