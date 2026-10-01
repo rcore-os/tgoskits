@@ -543,7 +543,8 @@ pub fn virgl_wait_fence(fence: u64, timeout: Duration) -> Result<(), GpuError> {
 /// observed. Capability-independent: the fenced command completes on the
 /// control queue like every other one, so this works on a plain 2D device
 /// without virgl just as on a 3D one. A stalled host returns
-/// [`GpuError::TimedOut`] and stays usable; the caller may retry.
+/// [`GpuError::TimedOut`] and stays usable; the caller may retry. The
+/// virgl-scoped counterpart for a raw submit fence is [`virgl_wait_fence`].
 ///
 /// `timeout` bounds the sleep phase; the probe phase in front of it is a
 /// separate fixed budget (see `wait_gpu_condition`), so the worst case is
