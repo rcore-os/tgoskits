@@ -12,7 +12,7 @@ use ax_memory_addr::{
 };
 use ax_runtime::hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageTable, PagingError},
+    paging::{MappingFlags, PageTable, PageTableEntry, PagingError},
 };
 
 #[cfg(all(test, axtest))]
@@ -1672,15 +1672,18 @@ impl PageTableCowCloneRollback<'_> {
         expected_paddr: PhysAddr,
         expected_size: usize,
     ) -> bool {
-        let leaf = match self.page_table.query_occupied_leaf(vaddr) {
-            Ok(leaf) => leaf,
+        let (pte, level) = match self.page_table.query_occupied(vaddr) {
+            Ok(occupied) => occupied,
             Err(PagingError::NotMapped) => return true,
             Err(err) => {
                 warn!("failed to query cloned COW page {vaddr:?} during rollback: {err}");
                 return false;
             }
         };
-        if leaf.vaddr != vaddr || leaf.paddr != expected_paddr || leaf.size != expected_size {
+        if self.page_table.mapping_size_for_level(level) != Some(expected_size)
+            || !vaddr.is_aligned(expected_size)
+            || pte.paddr(level > 1) != expected_paddr
+        {
             warn!(
                 "COW rollback leaf identity differs from frame {expected_paddr:?}, size \
                  {expected_size} at {vaddr:?}"

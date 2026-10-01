@@ -2912,8 +2912,10 @@ impl AddrSpace {
         }
         // Publication validates ownership even when PROT_NONE disables
         // translation. This does not grant access to the mapped bytes.
-        match self.pt.query_occupied_leaf(va) {
-            Ok(leaf) if leaf.vaddr == va && leaf.paddr == paddr && leaf.size == page_size => {}
+        match self.pt.query_occupied(va) {
+            Ok((pte, level))
+                if self.pt.mapping_size_for_level(level) == Some(page_size)
+                    && pte.paddr(level > 1) == paddr => {}
             Ok(_) | Err(_) => return Err(StarryError::BadState),
         }
         if !matches!(page.state(), PageState::Present | PageState::LazyFree) {
@@ -3198,10 +3200,17 @@ impl AddrSpace {
             return Err(StarryError::BadState);
         }
 
-        let leaf = self.pt.query_occupied_leaf(key.va)?;
-        let paddr = leaf.paddr;
-        let flags = leaf.config;
-        if leaf.vaddr != key.va || slot.mapped_paddr() != Some(paddr) || leaf.size != PAGE_SIZE_4K {
+        let (pte, level) = self.pt.query_occupied(key.va)?;
+        let page_size = self
+            .pt
+            .mapping_size_for_level(level)
+            .ok_or(StarryError::BadState)?;
+        let paddr = pte.paddr(level > 1);
+        let flags = pte.config(level > 1);
+        if !key.va.is_aligned(page_size)
+            || slot.mapped_paddr() != Some(paddr)
+            || page_size != PAGE_SIZE_4K
+        {
             return Err(StarryError::BadState);
         }
         if !flags.contains(MappingFlags::WRITE) {
