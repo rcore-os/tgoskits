@@ -249,16 +249,18 @@ fn create_default_scanout(
 
 /// Waits for a rollback `release_buffer` completion while the device is
 /// registration-exclusive — not yet published in `MAIN_GPU`, so the
-/// `with_gpu*` accessors and the wait queue cannot reach it. The poll drives
-/// the pump itself (`completion_status` delivers and pumps like every
-/// query), and the virtual device services the kick synchronously, so the
-/// first check almost always observes `Complete`; the bounded burn only
-/// matters for a backlogged host. Like the probe phase of
-/// [`wait_gpu_condition`], the bound is a fixed [`WAIT_PROBE_ROUNDS`] round
-/// budget rather than a wall-clock timeout. On expiry the backing is
-/// released while the host may still DMA it — the same accepted tradeoff
-/// the driver documents for its bounded waits, here on a boot-time rollback
-/// path for a scanout state that already failed validation.
+/// `with_gpu*` accessors, the wait queue and the IRQ worker cannot reach
+/// it, and nothing else pumps this device. The poll works because
+/// `completion_status` itself delivers the accumulated batch and pumps
+/// (`GpuDevice::completion_status` contract), and the virtual device
+/// services the kick synchronously, so the first check already observes
+/// `Complete`; the bounded burn only matters for a backlogged host. Like
+/// the probe phase of [`wait_gpu_condition`], the bound is a fixed
+/// [`WAIT_PROBE_ROUNDS`] round budget rather than a wall-clock timeout. On
+/// expiry the backing is released while the host may still DMA it — the
+/// same accepted tradeoff the driver documents for its bounded waits, here
+/// on a boot-time rollback path for a scanout state that already failed
+/// validation.
 fn wait_rollback_completion_exclusive<D: GpuDevice + ?Sized>(
     device: &mut D,
     completion: Completion,
@@ -519,9 +521,12 @@ fn wait_gpu_condition(
     Ok(())
 }
 
-/// Waits, outside the device control lock, for `fence` and everything
-/// submitted before it to complete. Task context only. A stalled host
-/// returns [`GpuError::TimedOut`] and stays usable; the caller may retry.
+/// Waits, outside the device control lock, for the virgl fence `fence` and
+/// everything submitted before it to complete. The virgl-scoped counterpart
+/// of [`wait_completion`]: a submit fence only exists on a 3D device, so the
+/// query goes through [`VirglOps::fence_completed`]. Task context only. A
+/// stalled host returns [`GpuError::TimedOut`] and stays usable; the caller
+/// may retry.
 ///
 /// `timeout` bounds the sleep phase; the probe phase in front of it is a
 /// separate fixed budget (see `wait_gpu_condition`), so the worst case is
@@ -531,6 +536,31 @@ pub fn virgl_wait_fence(fence: u64, timeout: Duration) -> Result<(), GpuError> {
         Some(virgl) => virgl.fence_completed(fence),
         None => Err(GpuError::Unsupported),
     })
+}
+
+/// Waits, outside the device control lock, for a fenced fire-and-forget
+/// completion (`submit`, `transfer_from_host`, `release_buffer`) to be
+/// observed. Capability-independent: the fenced command completes on the
+/// control queue like every other one, so this works on a plain 2D device
+/// without virgl just as on a 3D one. A stalled host returns
+/// [`GpuError::TimedOut`] and stays usable; the caller may retry.
+///
+/// `timeout` bounds the sleep phase; the probe phase in front of it is a
+/// separate fixed budget (see `wait_gpu_condition`), so the worst case is
+/// probe burn + `timeout`.
+pub fn wait_completion(completion: Completion, timeout: Duration) -> Result<(), GpuError> {
+    match completion {
+        Completion::Complete => Ok(()),
+        Completion::Pending(fence) => wait_gpu_condition(timeout, |runtime| {
+            Ok(matches!(
+                runtime
+                    .device
+                    .gpu()
+                    .completion_status(Completion::Pending(fence))?,
+                CompletionStatus::Complete
+            ))
+        }),
+    }
 }
 
 /// Returns the active framebuffer backing, retaining its memory after the

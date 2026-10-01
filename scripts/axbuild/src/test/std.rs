@@ -102,7 +102,7 @@ const VIRTIO_GPU_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePr
         "rdif_test::scanout_rejects_a_3d_resource_with_an_incompatible_format",
         "rdif_test::stale_context_handle_is_rejected",
         "rdif_test::stalled_release_submits_without_resetting_the_device",
-        "rdif_test::submit_returns_a_fence_that_completes_through_the_service_path",
+        "rdif_test::completion_status_delivers_and_pumps_before_reporting",
         "rdif_test::sync_response_with_wrong_fence_resets_the_device",
         "rdif_test::test_only_and_release_keep_scanout_and_backing",
         "rdif_test::unconfirmed_context_destroy_resets_before_releasing_backing",

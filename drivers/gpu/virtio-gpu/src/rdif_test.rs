@@ -695,11 +695,17 @@ fn stalled_release_submits_without_resetting_the_device() {
     assert!(weak.upgrade().is_none());
 }
 
-/// Async submit semantics: `submit` returns a pending fence token without
-/// waiting, the token completes once the service path pumps the host's
-/// completion, and `wait_fence` blocks until then.
+/// Async submit semantics: `submit` returns a pending fence token, and the
+/// completion becomes observable through `completion_status` itself — the
+/// query delivers the accumulated batch and pumps, with no service path,
+/// IRQ worker or polling loop in between.
+///
+/// Regression (registration-rollback release): the query used to be a pure
+/// level read, so the exclusive rollback wait before `MAIN_GPU` is
+/// published — where no service path exists — could never observe its own
+/// fenced UNREF complete and always burned its whole budget.
 #[test]
-fn submit_returns_a_fence_that_completes_through_the_service_path() {
+fn completion_status_delivers_and_pumps_before_reporting() {
     let host = Arc::new(Mutex::new(Host {
         device_features: 1,
         ..Host::default()
@@ -712,14 +718,8 @@ fn submit_returns_a_fence_that_completes_through_the_service_path() {
     let Completion::Pending(fence) = completion else {
         panic!("submit must return a pending fence, got {completion:?}")
     };
-    // Nothing has been delivered or pumped yet: the fence is outstanding and
-    // a completion query reports Pending.
-    assert_eq!(
-        device.completion_status(completion).unwrap(),
-        rdif_gpu::CompletionStatus::Pending
-    );
-    // The service path delivers the batch and pumps the completion.
-    device.service_pending().unwrap();
+    // The first query observes the completion by itself: delivery and the
+    // completion pump happen inside it.
     assert_eq!(
         device.completion_status(completion).unwrap(),
         rdif_gpu::CompletionStatus::Complete

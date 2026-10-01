@@ -738,14 +738,22 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
         self.ensure_ready()?;
         match completion {
             Completion::Complete => Ok(CompletionStatus::Complete),
-            // A submit's fence: the level check reflects every completion the
-            // service path has pumped so far; the caller's polling loop goes
-            // through the device lock, which pumps on entry.
-            Completion::Pending(fence) => Ok(if self.raw.fence_completed(fence.get()) {
-                CompletionStatus::Complete
-            } else {
-                CompletionStatus::Pending
-            }),
+            // A query must make progress on its own: deliver anything still
+            // accumulated (a no-op after a well-formed transaction boundary)
+            // and pump — the high-water mark only advances when completed
+            // entries are popped. This is what lets a caller with no service
+            // path at all (a registration-time rollback, before the runtime
+            // publishes the device and the IRQ worker can pump) still
+            // observe its own fenced submissions complete.
+            Completion::Pending(fence) => {
+                self.raw.ctrl_notify();
+                self.raw.pump_completions().map_err(map_error)?;
+                Ok(if self.raw.fence_completed(fence.get()) {
+                    CompletionStatus::Complete
+                } else {
+                    CompletionStatus::Pending
+                })
+            }
         }
     }
 

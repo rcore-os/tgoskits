@@ -276,6 +276,12 @@ pub trait GpuDevice: DriverGeneric {
     /// freeing the backing memory.
     fn release_buffer(&mut self, buffer: BufferHandle) -> Result<Completion, GpuError>;
 
+    /// Reports whether a fenced submission is complete. Like
+    /// [`VirglOps::fence_completed`], implementations advance their
+    /// completion view first (deliver the accumulated batch and pump), so a
+    /// caller with no other service path still observes its own fenced
+    /// submissions complete.
+    ///
     /// `DeviceLost` ends every outstanding completion for this device.
     fn completion_status(&mut self, completion: Completion) -> Result<CompletionStatus, GpuError>;
 

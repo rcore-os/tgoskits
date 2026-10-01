@@ -766,12 +766,17 @@ impl Card0 {
         // Only now — after the host write completed — make the bytes
         // CPU-visible. The sync used to run inside the device layer's inline
         // drain; running it before observing the fence would race the host
-        // write it exists to order against.
-        let backing = ax_gpu::with_gpu(|device| device.buffer_backing(resource.device_handle))
-            .and_then(core::convert::identity)
-            .map_err(map_gpu_err)?
-            .ok_or(VfsError::NotFound)?;
-        backing.sync_for_cpu(0..backing.len()).map_err(map_gpu_err)?;
+        // write it exists to order against. A host-side resource (a blob
+        // created with guest_blob == false) has no CPU-visible bytes at
+        // all: Linux `virtio_gpu_transfer_from_host_ioctl()` submits,
+        // returns 0 and syncs nothing for it, and so do we.
+        if let Some(backing) =
+            ax_gpu::with_gpu(|device| device.buffer_backing(resource.device_handle))
+                .and_then(core::convert::identity)
+                .map_err(map_gpu_err)?
+        {
+            backing.sync_for_cpu(0..backing.len()).map_err(map_gpu_err)?;
+        }
 
         Ok(0)
     }

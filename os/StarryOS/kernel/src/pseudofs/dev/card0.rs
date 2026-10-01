@@ -633,13 +633,14 @@ fn release_gpu_buffer_and_drain(handle: BufferHandle) -> Result<(), GpuError> {
 /// Observes a driver completion token outside the device control lock,
 /// sleeping until its fence fires (or the bounded wait expires). A
 /// `Complete` token needs no wait.
+/// Observes a driver completion token outside the device control lock,
+/// sleeping until its fence fires (or the bounded wait expires). A
+/// `Complete` token needs no wait. Capability-independent: the fenced
+/// command completes on the control queue of any device, so this is also
+/// the release proof for 2D dumb buffers on a non-virgl virtio-gpu —
+/// `GpuResource::drop` serves both kinds.
 fn wait_completion_outside_lock(completion: Completion) -> Result<(), GpuError> {
-    match completion {
-        Completion::Complete => Ok(()),
-        Completion::Pending(fence) => {
-            ax_gpu::virgl_wait_fence(fence.get(), ax_gpu::GPU_WAIT_TIMEOUT)
-        }
-    }
+    ax_gpu::wait_completion(completion, ax_gpu::GPU_WAIT_TIMEOUT)
 }
 
 /// Kernel-side dma-buf for a *host* 3D resource (blob or classic virgl
