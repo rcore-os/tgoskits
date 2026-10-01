@@ -222,11 +222,6 @@ impl CachedFileShared {
         Ok(())
     }
 
-    #[cfg(feature = "vfs")]
-    pub(super) fn has_dirty_pages(&self) -> bool {
-        self.page_cache.lock().iter().any(|(_, page)| page.dirty)
-    }
-
     pub(super) fn protect_dirty_pages_before_writeback(&self, pns: &[u32]) -> VfsResult<()> {
         for pn in pns {
             let paddr = {

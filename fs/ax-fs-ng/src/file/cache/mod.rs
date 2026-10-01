@@ -25,6 +25,8 @@ use ax_io::prelude::*;
 use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use pages::CachedPages;
 use readahead::ReadAheadState;
+#[cfg(all(feature = "vfs", feature = "ext4"))]
+pub(crate) use reclaim::prune_cached_files;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 #[cfg(feature = "vfs")]
@@ -1004,6 +1006,7 @@ impl CachedFile {
 
     /// Marks one cached mmap page dirty through the shared cached-I/O protocol.
     pub fn mark_mmap_dirty_page(&self, pn: u32) -> VfsResult<()> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         if self.in_memory {
             return Ok(());
         }
@@ -1185,18 +1188,47 @@ impl CachedFile {
 
     /// Writes `buf` to the file at `offset`.
     pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
-        let _layout = self.shared.mapping_layout_lock.lock();
-        let mut update = self.shared.lock_for_update();
-        self.write_at_locked(buf, offset, &mut update)
+        self.write_at_with_completion(buf, offset, |_| Ok(()))
+    }
+
+    /// Runs completion after releasing cache locks while retaining write admission.
+    pub(crate) fn write_at_with_completion(
+        &self,
+        buf: impl Read + IoBuf,
+        offset: u64,
+        complete: impl FnOnce(usize) -> VfsResult<()>,
+    ) -> VfsResult<usize> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let written = {
+            let _layout = self.shared.mapping_layout_lock.lock();
+            let mut update = self.shared.lock_for_update();
+            self.write_at_locked(buf, offset, &mut update)
+        }?;
+        complete(written)?;
+        Ok(written)
     }
 
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
-        let _layout = self.shared.mapping_layout_lock.lock();
-        let mut update = self.shared.lock_for_update();
-        let len = self.shared.len();
-        self.write_at_locked(buf, len, &mut update)
-            .map(|written| (written, len + written as u64))
+        self.append_with_completion(buf, |_| Ok(()))
+    }
+
+    /// Runs completion after releasing cache locks while retaining write admission.
+    pub(crate) fn append_with_completion(
+        &self,
+        buf: impl Read + IoBuf,
+        complete: impl FnOnce(usize) -> VfsResult<()>,
+    ) -> VfsResult<(usize, u64)> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let (written, end) = {
+            let _layout = self.shared.mapping_layout_lock.lock();
+            let mut update = self.shared.lock_for_update();
+            let len = self.shared.len();
+            self.write_at_locked(buf, len, &mut update)
+                .map(|written| (written, len + written as u64))
+        }?;
+        complete(written)?;
+        Ok((written, end))
     }
 
     pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
@@ -1327,3 +1359,28 @@ impl Drop for CachedFile {
 mod tests;
 #[cfg(all(test, feature = "vfs"))]
 pub(crate) use tests::BusyDirtyCachedFile;
+
+/// Flushes this filesystem's buffered pages before the filesystem commits metadata.
+#[cfg(feature = "ext4")]
+pub(crate) fn writeback_filesystem_pages(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    #[cfg(feature = "vfs")]
+    {
+        reclaim::sync_filesystem_cached_files(filesystem)
+    }
+    #[cfg(not(feature = "vfs"))]
+    {
+        let key = filesystem_key(filesystem);
+        let files: Vec<_> = CACHED_FILE_BY_INODE
+            .lock()
+            .range((key, 0)..=(key, u64::MAX))
+            .filter_map(|(_, cached)| cached.upgrade())
+            .collect();
+        let mut first_error = None;
+        for file in files {
+            if let Err(error) = file.writeback_dirty_for_global_sync() {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
