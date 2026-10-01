@@ -253,10 +253,12 @@ fn create_default_scanout(
 /// the pump itself (`completion_status` delivers and pumps like every
 /// query), and the virtual device services the kick synchronously, so the
 /// first check almost always observes `Complete`; the bounded burn only
-/// matters for a backlogged host. On expiry the backing is released while
-/// the host may still DMA it — the same accepted tradeoff the driver
-/// documents for its bounded waits, here on a boot-time rollback path for a
-/// scanout state that already failed validation.
+/// matters for a backlogged host. Like the probe phase of
+/// [`wait_gpu_condition`], the bound is a fixed [`WAIT_PROBE_ROUNDS`] round
+/// budget rather than a wall-clock timeout. On expiry the backing is
+/// released while the host may still DMA it — the same accepted tradeoff
+/// the driver documents for its bounded waits, here on a boot-time rollback
+/// path for a scanout state that already failed validation.
 fn wait_rollback_completion_exclusive<D: GpuDevice + ?Sized>(
     device: &mut D,
     completion: Completion,
