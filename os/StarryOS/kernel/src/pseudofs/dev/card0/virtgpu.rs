@@ -678,7 +678,11 @@ impl Card0 {
             .ok_or(VfsError::NotFound)?;
         file.attach_resource(&resource)?;
 
-        with_virgl(|virgl| virgl.transfer_to_host(rdif_gpu::Transfer3d {
+        // Intentionally unobserved completion: TRANSFER_TO_HOST writes
+        // guest data that was already in memory before the submit, so the
+        // direction is fire-and-forget (Linux does not fence it either);
+        // the completion token carries no release proof to observe.
+        let _ = with_virgl(|virgl| virgl.transfer_to_host(rdif_gpu::Transfer3d {
             context: ctx_id,
             resource: resource.device_handle,
             box_: rdif_gpu::TransferBox {

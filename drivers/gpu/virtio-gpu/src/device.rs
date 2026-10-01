@@ -308,8 +308,10 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             unsafe { self.resource_attach_backing(FRAMEBUFFER_RESOURCE_ID, paddr, size) }
         {
             // The resource exists but has no backing; release it so a failed
-            // attach does not leak a host resource. The DMA drops here because
-            // the device never received the range.
+            // attach does not leak a host resource. No completion observation
+            // is needed before the DMA drops here: the attach failed, so the
+            // device never received the range and cannot DMA into it — the
+            // unref only frees the empty host-side resource object.
             let _ = self.resource_unref(FRAMEBUFFER_RESOURCE_ID);
             return Err(err);
         }
@@ -317,15 +319,16 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         // Bind the resource to the scanout. If that fails we must stop the
         // device from using the backing before freeing it: detach first, then
         // unref. `detached` must mean the host has actually finished the
-        // teardown: `resource_unref` enqueues the unref after the detach (FIFO
-        // order) and drains the whole queue before returning, so its success
-        // is the completion proof for both. On TimedOut/QueueBroken the DMA
-        // is kept alive here and released by a later retry or the device
-        // reset in `Drop`.
+        // teardown: `resource_unref` only enqueues the unref (fire-and-forget
+        // with a fence), so this cold rollback path drains explicitly — the
+        // FIFO pop covers the detach and the unref alike. On
+        // TimedOut/QueueBroken the DMA is kept alive here and released by a
+        // later retry or the device reset in `Drop`.
         if let Err(err) = self.set_scanout(rect, SCANOUT_ID, FRAMEBUFFER_RESOURCE_ID) {
             let detached = self
                 .resource_detach_backing(FRAMEBUFFER_RESOURCE_ID)
                 .and_then(|()| self.resource_unref(FRAMEBUFFER_RESOURCE_ID))
+                .and_then(|_fence| self.wait_idle())
                 .is_ok();
             if !detached {
                 // Keep the DMA alive: the device may still be writing into it.
@@ -361,10 +364,13 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         self.rect = None;
         self.resource_detach_backing(FRAMEBUFFER_RESOURCE_ID)?;
         self.resource_unref(FRAMEBUFFER_RESOURCE_ID)?;
-        // Fire-and-forget teardown: the device must be provably done with the
-        // backing before it is handed back to the allocator, so drain the
-        // ring before releasing the DMA (`resource_unref` already drains; a
-        // second drain is a no-op that keeps this path's proof local).
+        // The device must be provably done with the backing before it is
+        // handed back to the allocator: `resource_unref` only enqueues the
+        // unref (fire-and-forget with a fence), so this cold teardown path
+        // drains explicitly — the FIFO pop covers the stop-scanout, the
+        // detach and the unref alike. On failure the `?` keeps the DMA in
+        // `self.frame_buffer_dma` for a later retry or the reset in `Drop`.
+        self.wait_idle()?;
         self.frame_buffer_dma = None;
         Ok(())
     }
@@ -605,8 +611,12 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// Detaches the backing memory from a resource.
     ///
     /// After the host processes this command it no longer reads or writes the
-    /// ranges that were attached. Fire-and-forget: teardown callers drain the
-    /// queue ([`VirtIoGpu::resource_unref`] does) before releasing the memory.
+    /// ranges that were attached. Fire-and-forget: the caller is responsible
+    /// for the completion proof — drain ([`VirtIoGpu::wait_idle`]) or observe
+    /// a later fenced command's fence — before releasing the memory. The
+    /// driver's teardown paths pair this command with the fenced
+    /// `resource_unref` and drain explicitly; the OS layer waits on the
+    /// unref's fence.
     pub fn resource_detach_backing(&mut self, resource_id: u32) -> Result<(), Error> {
         self.ctrl
             .enqueue(
@@ -1160,32 +1170,6 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// `virtio_gpu_wait_ioctl` (virtgpu_ioctl.c).
     pub fn fence_completed(&self, fence_id: u64) -> bool {
         self.ctrl.fence_completed(fence_id)
-    }
-
-    /// Non-blocking whole-queue drain query — the predicate
-    /// [`VirtIoGpu::wait_idle`] waits on, without delivering or pumping
-    /// (a poll-only caller must drive progress itself, as
-    /// [`VirtIoGpu::fence_completed`] requires). The completion proof the
-    /// OS layer needs before releasing backing, so it can wait outside the
-    /// device lock instead of spinning inside it.
-    pub fn queue_idle(&self) -> bool {
-        self.ctrl.queue_idle()
-    }
-
-    /// The completion high-water mark: every fence up to and including this
-    /// id fired. Pairs with [`VirtIoGpu::in_flight_fences`] for windowed
-    /// submission throttling.
-    pub fn completed_fence(&self) -> u64 {
-        self.ctrl.completed_fence()
-    }
-
-    /// Fences submitted but not yet observed complete — the in-flight window
-    /// depth an OS layer may throttle submissions against. Shrinks only when
-    /// completions are pumped.
-    pub fn in_flight_fences(&self) -> u64 {
-        self.next_fence
-            .saturating_sub(1)
-            .saturating_sub(self.ctrl.completed_fence())
     }
 
     // --- Command plumbing ---

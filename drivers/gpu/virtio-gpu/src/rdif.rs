@@ -1090,23 +1090,6 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
         Ok(self.raw.fence_completed(fence))
     }
 
-    fn queue_idle(&mut self) -> Result<bool, GpuError> {
-        self.ensure_ready()?;
-        // Same self-pumping contract as `fence_completed`: a drain poll must
-        // deliver the accumulated batch and pop completions, or a never
-        // delivered command would keep the queue busy forever.
-        self.raw.ctrl_notify();
-        self.raw.pump_completions().map_err(map_error)?;
-        Ok(self.raw.queue_idle())
-    }
-
-    fn in_flight_fences(&mut self) -> Result<u64, GpuError> {
-        self.ensure_ready()?;
-        self.raw.ctrl_notify();
-        self.raw.pump_completions().map_err(map_error)?;
-        Ok(self.raw.in_flight_fences())
-    }
-
     fn ctrl_notify(&mut self) {
         self.raw.ctrl_notify();
     }

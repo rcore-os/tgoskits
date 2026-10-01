@@ -140,6 +140,13 @@ impl ContextHandle {
 /// queue ordering so that every later tracked completion subsumes it.
 /// `Pending` carries the fence token for [`VirglOps::wait_fence`] and
 /// [`VirglOps::fence_completed`].
+///
+/// The token is the completion proof for fenced fire-and-forget submissions
+/// (`submit`, `transfer_from_host`, `release_buffer`): dropping it without
+/// observing it releases the caller's share of the ordering proof, so the
+/// compiler flags every discard — silence it with `let _ =` only where the
+/// direction is intentionally fire-and-forget.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Completion {
     Complete,
@@ -390,17 +397,6 @@ pub trait VirglOps {
     /// completed. Implementations advance their completion view first, so a
     /// caller that only polls still observes progress.
     fn fence_completed(&mut self, fence: u64) -> Result<bool, GpuError>;
-    /// Whether every enqueued command — fire-and-forget and synchronous
-    /// alike — has completed and been reclaimed, with nothing parked.
-    /// Implementations advance their completion view first, like
-    /// [`Self::fence_completed`], so a poll-only caller still observes
-    /// progress. The completion proof a teardown caller needs before
-    /// releasing backing the device may still DMA into.
-    fn queue_idle(&mut self) -> Result<bool, GpuError>;
-    /// Fences submitted but not yet observed complete: the in-flight window
-    /// depth a caller may throttle submissions against. Pumps completions
-    /// first, like [`Self::fence_completed`].
-    fn in_flight_fences(&mut self) -> Result<u64, GpuError>;
     /// Delivers the fire-and-forget commands accumulated in the current
     /// transaction, mirroring Linux `virtio_gpu_notify()` at the end of a DRM
     /// ioctl. Every transaction that enqueued commands must end with this;

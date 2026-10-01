@@ -25,8 +25,8 @@ use rdif_display::{
 };
 pub use rdif_gpu;
 use rdif_gpu::{
-    Backing, BufferDescriptor, GpuCapabilities, GpuDevice, GpuError, GpuIdentity, GpuIrqEndpoint,
-    PixelFormat,
+    Backing, BufferDescriptor, Completion, CompletionStatus, GpuCapabilities, GpuDevice, GpuError,
+    GpuIdentity, GpuIrqEndpoint, PixelFormat,
 };
 
 /// One device object. Headless GPUs do not need to implement display control.
@@ -222,7 +222,10 @@ fn create_default_scanout(
         };
         if let Err(error) = device.check(&state) {
             if let ScanoutBuffer::Gpu(handle) = buffer {
-                device.release_buffer(handle)?;
+                let completion = device.release_buffer(handle)?;
+                // The mapping leaves scope below: observe the fenced unref's
+                // completion before the DMA goes back to the allocator.
+                wait_rollback_completion_exclusive(device, completion);
             }
             if matches!(
                 error,
@@ -234,13 +237,52 @@ fn create_default_scanout(
         }
         if let Err(error) = device.commit(&state) {
             if let ScanoutBuffer::Gpu(handle) = buffer {
-                device.release_buffer(handle)?;
+                let completion = device.release_buffer(handle)?;
+                wait_rollback_completion_exclusive(device, completion);
             }
             return Err(error);
         }
         return Ok(Some((state, mapping)));
     }
     Err(DisplayError::Unsupported)
+}
+
+/// Waits for a rollback `release_buffer` completion while the device is
+/// registration-exclusive — not yet published in `MAIN_GPU`, so the
+/// `with_gpu*` accessors and the wait queue cannot reach it. The poll drives
+/// the pump itself (`completion_status` delivers and pumps like every
+/// query), and the virtual device services the kick synchronously, so the
+/// first check almost always observes `Complete`; the bounded burn only
+/// matters for a backlogged host. On expiry the backing is released while
+/// the host may still DMA it — the same accepted tradeoff the driver
+/// documents for its bounded waits, here on a boot-time rollback path for a
+/// scanout state that already failed validation.
+fn wait_rollback_completion_exclusive<D: GpuDevice + ?Sized>(
+    device: &mut D,
+    completion: Completion,
+) {
+    let fence = match completion {
+        Completion::Complete => return,
+        Completion::Pending(fence) => fence,
+    };
+    for round in 0..WAIT_PROBE_ROUNDS {
+        match device.completion_status(Completion::Pending(fence)) {
+            Ok(CompletionStatus::Complete) => return,
+            Ok(CompletionStatus::Pending) => {
+                if round + 1 == WAIT_PROBE_ROUNDS {
+                    log::warn!(
+                        "ax-gpu: rollback release completion unconfirmed; the backing is released \
+                         while the host may still DMA it"
+                    );
+                }
+                core::hint::spin_loop();
+            }
+            // The device is failing anyway (this path only runs after a
+            // failed scanout check or commit); the caller's original error
+            // carries the failure.
+            Err(_) => return,
+        }
+    }
 }
 
 /// Whether a GPU was registered, including a headless rendering device.
@@ -399,11 +441,18 @@ const WAIT_PROBE_ROUNDS: usize = 32768;
 /// lock — the stack's `wait_event` equivalent, with a bounded adaptive
 /// probe in front.
 ///
+/// Timeout semantics: `timeout` bounds the *sleep* phase (measured from the
+/// moment the sleep starts). The probe phase in front of it is bounded
+/// separately, by the fixed [`WAIT_PROBE_ROUNDS`] round budget, so the
+/// caller's worst-case wait is *probe burn + timeout*; with short timeouts
+/// the probe budget can dominate. Every in-tree caller passes
+/// [`GPU_WAIT_TIMEOUT`], against which the probe burn is noise.
+///
 /// Three correctness arguments carry the whole design:
 ///
 /// * The probe phase self-pumps under per-round locking, so progress that
-///   is already observable resolves without any wake chain; it is bounded
-///   well below the wait deadline and cannot wedge a producer.
+///   is already observable resolves without any wake chain; the budget
+///   cannot wedge a producer because every round releases the lock.
 /// * The waiter sleeps only after the condition was checked under and the
 ///   lock has been released, so the completion pump (the IRQ worker or any
 ///   `with_gpu` caller) can always take `MAIN_GPU` between two checks:
@@ -412,13 +461,12 @@ const WAIT_PROBE_ROUNDS: usize = 32768;
 ///   [`notify_completions`] runs while a pump holds `MAIN_GPU`, and
 ///   `WaitQueue::notify_all` takes no lock a waiter holds.
 /// * The condition observes device state through the driver's polling
-///   queries (`fence_completed`, `queue_idle`), which deliver the
-///   accumulated batch and pump completions themselves: the probe drives
-///   its own progress exactly like an IRQ-driven environment. In a
-///   polling-only environment a waiter that reaches the sleep phase
-///   depends on another task's access for its wake — known limitation;
-///   every shipping configuration has completion IRQs or concurrent
-///   pollers.
+///   queries (`fence_completed`), which deliver the accumulated batch and
+///   pump completions themselves: the probe drives its own progress exactly
+///   like an IRQ-driven environment. In a polling-only environment a waiter
+///   that reaches the sleep phase depends on another task's access for its
+///   wake — known limitation; every shipping configuration has completion
+///   IRQs or concurrent pollers.
 ///
 /// `cond` runs once per wake-up under `MAIN_GPU`: it must not sleep, must
 /// not re-enter this crate, and should only use the device's query methods.
@@ -472,30 +520,13 @@ fn wait_gpu_condition(
 /// Waits, outside the device control lock, for `fence` and everything
 /// submitted before it to complete. Task context only. A stalled host
 /// returns [`GpuError::TimedOut`] and stays usable; the caller may retry.
+///
+/// `timeout` bounds the sleep phase; the probe phase in front of it is a
+/// separate fixed budget (see `wait_gpu_condition`), so the worst case is
+/// probe burn + `timeout`.
 pub fn virgl_wait_fence(fence: u64, timeout: Duration) -> Result<(), GpuError> {
     wait_gpu_condition(timeout, |runtime| match runtime.device.gpu().virgl() {
         Some(virgl) => virgl.fence_completed(fence),
-        None => Err(GpuError::Unsupported),
-    })
-}
-
-/// Waits, outside the device control lock, for the whole control queue to
-/// drain — the completion proof a teardown caller needs before releasing
-/// backing the device may still DMA into.
-pub fn virgl_wait_drain(timeout: Duration) -> Result<(), GpuError> {
-    wait_gpu_condition(timeout, |runtime| match runtime.device.gpu().virgl() {
-        Some(virgl) => virgl.queue_idle(),
-        None => Err(GpuError::Unsupported),
-    })
-}
-
-/// Waits, outside the device control lock, until fewer than `window`
-/// submitted fences remain uncompleted — the submission throttle a caller
-/// may apply ahead of enqueueing more work. Query-side helper for windowed
-/// throttling; no call site in this workspace yet.
-pub fn virgl_wait_window_room(window: u64, timeout: Duration) -> Result<(), GpuError> {
-    wait_gpu_condition(timeout, |runtime| match runtime.device.gpu().virgl() {
-        Some(virgl) => virgl.in_flight_fences().map(|in_flight| in_flight < window),
         None => Err(GpuError::Unsupported),
     })
 }
@@ -534,7 +565,10 @@ pub fn restore_default_scanout() -> Result<(), DisplayError> {
         .default_scanout
         .clone()
         .ok_or(DisplayError::NotAvailable)?;
-    runtime
+    // The present completion needs no observation here: the boot
+    // framebuffer's mapping is retained in `GpuRuntime` for the runtime's
+    // lifetime, so no backing is released that the host could still DMA.
+    let _ = runtime
         .device
         .display()
         .ok_or(DisplayError::NotAvailable)?

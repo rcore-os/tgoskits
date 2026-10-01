@@ -129,7 +129,11 @@ pub fn framebuffer_flush() -> DisplayResult {
             width: framebuffer.width,
             height: framebuffer.height,
         }];
-        device.commit(&state)?;
+        // The present completion needs no observation: this only re-commits
+        // the boot framebuffer, whose mapping is retained by the GPU runtime
+        // for its lifetime, so no backing is released that the host could
+        // still DMA.
+        let _ = device.commit(&state)?;
         Ok(())
     })?
 }
