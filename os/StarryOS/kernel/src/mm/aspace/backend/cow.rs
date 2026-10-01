@@ -4047,6 +4047,9 @@ mod tests {
             let pin = cache.pin_cached_page(1).unwrap();
             assert_eq!(aspace.pt.query(moved).unwrap().0.as_usize(), pin.paddr());
         }
+        // TODO: Linux truncate unmaps private COW pages past EOF
+        // (unmap_mapping_range(..., even_cows=1)); StarryOS still leaves
+        // their stale anonymous copies mapped. See #2524 for the known gap.
         cache.set_len(0).unwrap();
         assert!(matches!(
             parent.lock().pt.query(start),
