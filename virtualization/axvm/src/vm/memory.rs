@@ -2,6 +2,7 @@
 
 use std::{alloc::Layout, vec::Vec};
 
+use axaddrspace::MappingFlags;
 use axvm_types::{GuestPhysAddr, VmMemConfig, VmMemMappingType};
 
 use super::{AxVM, VMMemoryRegion};
@@ -42,7 +43,12 @@ impl PreparedMemoryLayout {
 pub(crate) trait MemoryRegionMapper {
     fn prepared_memory_regions(&self) -> Vec<VMMemoryRegion>;
     fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult<()>;
-    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult;
+    fn map_reserved_memory_region(
+        &self,
+        layout: Layout,
+        gpa: Option<GuestPhysAddr>,
+        flags: MappingFlags,
+    ) -> AxVmResult;
 }
 
 impl MemoryRegionMapper for AxVM {
@@ -54,8 +60,13 @@ impl MemoryRegionMapper for AxVM {
         self.alloc_memory_region(layout, gpa).map(|_| ())
     }
 
-    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult {
-        self.map_reserved_memory_region(layout, gpa)
+    fn map_reserved_memory_region(
+        &self,
+        layout: Layout,
+        gpa: Option<GuestPhysAddr>,
+        flags: MappingFlags,
+    ) -> AxVmResult {
+        self.map_reserved_memory_region(layout, gpa, flags)
     }
 }
 
@@ -78,8 +89,11 @@ impl<'a, M: MemoryRegionMapper + ?Sized> MemoryLayoutBuilder<'a, M> {
         for config in self.configs {
             let plan = MemoryRegionPlan::from_config(config)?;
             if plan.maps_reserved_memory() {
-                self.mapper
-                    .map_reserved_memory_region(plan.layout(), plan.configured_gpa())?;
+                self.mapper.map_reserved_memory_region(
+                    plan.layout(),
+                    plan.configured_gpa(),
+                    plan.flags,
+                )?;
             } else {
                 self.mapper
                     .allocate_memory_region(plan.layout(), plan.configured_gpa())?;
@@ -96,6 +110,7 @@ pub(crate) struct MemoryRegionPlan {
     configured_gpa: Option<GuestPhysAddr>,
     layout: Layout,
     map_type: VmMemMappingType,
+    flags: MappingFlags,
 }
 
 impl MemoryRegionPlan {
@@ -116,6 +131,8 @@ impl MemoryRegionPlan {
             configured_gpa,
             layout,
             map_type: config.map_type.clone(),
+            flags: MappingFlags::from_bits(config.flags)
+                .ok_or_else(|| ax_err_type!(InvalidInput, "invalid VM memory permissions"))?,
         })
     }
 
@@ -145,6 +162,7 @@ mod tests {
     struct FakeMemoryMapper {
         regions: RefCell<Vec<VMMemoryRegion>>,
         map_reserved_calls: Cell<usize>,
+        reserved_flags: Cell<Option<MappingFlags>>,
     }
 
     impl MemoryRegionMapper for FakeMemoryMapper {
@@ -171,8 +189,10 @@ mod tests {
             &self,
             layout: Layout,
             gpa: Option<GuestPhysAddr>,
+            flags: MappingFlags,
         ) -> AxVmResult {
             let gpa = gpa.ok_or_else(|| ax_err_type!(InvalidInput, "reserved GPA is required"))?;
+            self.reserved_flags.set(Some(flags));
             self.map_reserved_calls
                 .set(self.map_reserved_calls.get() + 1);
             self.regions.borrow_mut().push(VMMemoryRegion {
@@ -236,7 +256,7 @@ mod tests {
         let configs = vec![VmMemConfig {
             gpa: 0x4000_0000,
             size: 0x20_0000,
-            flags: 0,
+            flags: MappingFlags::READ.bits(),
             map_type: VmMemMappingType::MapReserved,
         }];
         let builder = MemoryLayoutBuilder::new(&mapper, &configs);
@@ -248,5 +268,6 @@ mod tests {
         assert_eq!(layout.regions().len(), 1);
         assert_eq!(again.regions().len(), 1);
         assert_eq!(mapper.map_reserved_calls.get(), 1);
+        assert_eq!(mapper.reserved_flags.get(), Some(MappingFlags::READ));
     }
 }

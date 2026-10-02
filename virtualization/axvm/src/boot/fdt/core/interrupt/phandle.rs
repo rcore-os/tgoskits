@@ -8,55 +8,41 @@ use crate::{AxVmResult, ax_err_type};
 pub(super) fn install(
     tree: &mut FdtTree,
     controller: NodeId,
-    phandle: u32,
-    controller_name: &str,
+    preferred: Option<u32>,
 ) -> AxVmResult {
-    if let Some(existing) = tree.inner().get_by_phandle(phandle.into())
-        && existing.id() != controller
-    {
+    let path = tree.inner().path_of(controller);
+    let handle = match tree.replacement_phandle(&path, preferred)? {
+        Some(handle) => handle,
+        None => return Ok(()),
+    };
+    tree.set_property(controller, prop_u32("phandle", handle))?;
+    tree.set_property(controller, prop_u32("linux,phandle", handle))
+}
+
+/// Resolves a machine role, not a coincidentally equal host phandle or path.
+/// Multiple candidates require an explicit binding rather than first-match selection.
+pub(crate) fn controller_node(
+    tree: &FdtTree,
+    matches: impl Fn(&fdt_edit::Node) -> bool,
+    name: &str,
+) -> AxVmResult<NodeId> {
+    let mut candidates = tree
+        .inner()
+        .iter_node_ids()
+        .filter(|id| tree.inner().node(*id).is_some_and(&matches));
+    let node = candidates.next().ok_or_else(|| {
+        ax_err_type!(
+            InvalidData,
+            std::format!("guest FDT has no {name} controller")
+        )
+    })?;
+    if candidates.next().is_some() {
         return Err(ax_err_type!(
             InvalidData,
-            std::format!(
-                "host {controller_name} phandle {phandle:#x} conflicts with another guest node"
-            )
+            std::format!("guest FDT has ambiguous {name} controllers")
         ));
     }
-    let old_phandle = tree
-        .inner()
-        .node(controller)
-        .and_then(|node| {
-            node.get_property("phandle")
-                .or_else(|| node.get_property("linux,phandle"))
-        })
-        .and_then(Property::get_u32);
-    if let Some(old_phandle) = old_phandle.filter(|old| *old != phandle) {
-        let references = tree
-            .inner()
-            .iter_node_ids()
-            .filter(|node_id| {
-                tree.inner().node(*node_id).is_some_and(|node| {
-                    ["interrupt-parent", "msi-parent"].into_iter().any(|name| {
-                        node.get_property(name).and_then(Property::get_u32) == Some(old_phandle)
-                    })
-                })
-            })
-            .collect::<std::vec::Vec<_>>();
-        for node_id in references {
-            for name in ["interrupt-parent", "msi-parent"] {
-                let matches = tree
-                    .inner()
-                    .node(node_id)
-                    .and_then(|node| node.get_property(name))
-                    .and_then(Property::get_u32)
-                    == Some(old_phandle);
-                if matches {
-                    tree.set_property(node_id, prop_u32(name, phandle))?;
-                }
-            }
-        }
-    }
-    tree.set_property(controller, prop_u32("phandle", phandle))?;
-    tree.set_property(controller, prop_u32("linux,phandle", phandle))
+    Ok(node)
 }
 
 pub(super) fn prop_u32(name: &str, value: u32) -> Property {

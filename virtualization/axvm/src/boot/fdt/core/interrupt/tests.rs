@@ -13,13 +13,18 @@ use super::{
 use crate::machine::*;
 
 #[test]
-fn replaces_host_gic_windows_with_virtual_machine_windows() {
+fn replaces_controller_resources_without_changing_guest_references() {
     let mut tree = FdtTree::new();
     let root = tree.inner().root_id();
     let controller = tree.add_node(root, Node::new("intc@8000000"));
     tree.set_property(controller, prop_string("compatible", "arm,gic-v3"))
         .unwrap();
     tree.set_property(controller, Property::new("interrupt-controller", vec![]))
+        .unwrap();
+    tree.set_property(controller, prop_u32("phandle", 9))
+        .unwrap();
+    let unrelated = tree.add_node(root, Node::new("unrelated"));
+    tree.set_property(unrelated, prop_u32("phandle", 1))
         .unwrap();
     let its = tree.add_node(root, Node::new("its@8080000"));
     tree.set_property(its, prop_string("compatible", "arm,gic-v3-its"))
@@ -87,7 +92,7 @@ fn replaces_host_gic_windows_with_virtual_machine_windows() {
             .get_property("linux,phandle")
             .unwrap()
             .get_u32(),
-        Some(1)
+        Some(9)
     );
     assert_eq!(
         controller
@@ -109,7 +114,7 @@ fn replaces_host_gic_windows_with_virtual_machine_windows() {
     assert_eq!(its.regs()[0].address, 0x0808_0000);
     assert_eq!(
         its.as_node().get_property("phandle").unwrap().get_u32(),
-        Some(4)
+        Some(7)
     );
     assert_eq!(
         fdt.get_by_path("/virtio@a000000")
@@ -118,7 +123,7 @@ fn replaces_host_gic_windows_with_virtual_machine_windows() {
             .get_property("msi-parent")
             .unwrap()
             .get_u32(),
-        Some(4)
+        Some(7)
     );
 }
 
@@ -336,4 +341,53 @@ fn resolves_and_reuses_host_plic_window_and_phandle() {
             .get_u32(),
         Some(1)
     );
+}
+
+#[test]
+fn explicit_guest_gic_survives_runtime_firmware_installation() {
+    let host = machine_profile_for(MachineArchitecture::Aarch64, 1)
+        .gic
+        .unwrap();
+    let mut guest = host.clone();
+    guest.distributor.base = 0xfe60_0000;
+    guest.node_path = "/interrupt-controller@fe600000".into();
+    guest.cpu_region = GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
+        regions: vec![GuestMmioRegion {
+            base: 0xfe68_0000,
+            length: 0x10_0000,
+        }],
+        stride: 0x2_0000,
+    });
+    let mut tree = FdtTree::new();
+    let root = tree.inner().root_id();
+    let controller = tree.add_node(root, Node::new("interrupt-controller@fe600000"));
+    tree.set_property(controller, prop_string("compatible", "arm,gic-v3"))
+        .unwrap();
+    tree.set_property(controller, Property::new("interrupt-controller", vec![]))
+        .unwrap();
+    gic::install_registers(&mut tree, &guest).unwrap();
+    let provided = tree.finish();
+    for (dtb, passthrough, expected) in [
+        (Some(provided.as_slice()), false, &guest),
+        (Some(provided.as_slice()), true, &host),
+        (None, false, &host),
+    ] {
+        let selected = super::select_guest_gic(&host, dtb, passthrough)
+            .unwrap()
+            .normalized_for_vcpus(1)
+            .unwrap();
+        assert_eq!(&selected, expected);
+        let mut final_tree = FdtTree::from_bytes(&provided).unwrap();
+        super::install_machine_interrupt_controller(&mut final_tree, 1, Some(&selected), None)
+            .unwrap();
+        let bytes = final_tree.finish();
+        let parsed = host_gic_profile(&Fdt::from_bytes(&bytes).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.distributor, selected.distributor);
+        assert_eq!(parsed.cpu_region, selected.cpu_region);
+    }
+    let empty = FdtTree::new().finish();
+    assert!(super::select_guest_gic(&host, Some(&empty), false).is_err());
+    assert!(super::select_guest_gic(&host, Some(b"invalid DTB"), false).is_err());
 }

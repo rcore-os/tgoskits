@@ -69,7 +69,7 @@ pub struct GuestSerialFdtIdentity {
     pub node_path: String,
     /// UART node phandle, when supplied by firmware.
     pub node_phandle: Option<u32>,
-    /// Effective interrupt-controller phandle.
+    /// Validated interrupt-controller phandle from the source firmware tree.
     pub interrupt_parent: u32,
     /// Raw firmware interrupt specifier.
     pub interrupt_specifier: Vec<u32>,

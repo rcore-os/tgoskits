@@ -9,7 +9,7 @@ pub struct GuestTimerProfile {
     pub node_path: String,
     /// Timer-node phandle retained from host firmware, when present.
     pub node_phandle: Option<u32>,
-    /// Effective virtual-GIC phandle used by every interrupt specifier.
+    /// Validated interrupt-controller phandle from the source firmware tree.
     pub interrupt_parent: Option<u32>,
     /// Raw interrupt specifiers in the binding-defined firmware order.
     pub interrupt_specifiers: Vec<Vec<u32>>,

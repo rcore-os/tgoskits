@@ -69,29 +69,72 @@ pub(super) fn host_profiles(fdt: &Fdt) -> AxVmResult<std::vec::Vec<GuestItsProfi
 }
 
 pub(super) fn install_registers(tree: &mut FdtTree, profiles: &[GuestItsProfile]) -> AxVmResult {
-    let configured_paths = profiles
-        .iter()
-        .map(|profile| profile.node_path.as_str())
-        .collect::<std::vec::Vec<_>>();
-    let stale_paths = tree
+    let existing = tree
         .inner()
         .iter_node_ids()
-        .filter_map(|node_id| {
-            let node = tree.inner().node(node_id)?;
-            let path = tree.inner().path_of(node_id);
-            (node
-                .compatibles()
-                .any(|compatible| compatible == "arm,gic-v3-its")
-                && !configured_paths.contains(&path.as_str()))
-            .then_some(path)
+        .filter(|id| {
+            tree.inner().node(*id).is_some_and(|node| {
+                node.compatibles()
+                    .any(|compatible| compatible == "arm,gic-v3-its")
+            })
         })
         .collect::<std::vec::Vec<_>>();
-    for path in stale_paths {
-        tree.inner_mut().remove_by_path(&path);
-    }
-
+    let mut selected = std::collections::BTreeSet::new();
+    let mut bindings = std::vec::Vec::new();
     for profile in profiles {
-        let node_id = tree.ensure_path(&profile.node_path)?;
+        let named = tree.inner().get_by_path_id(&profile.node_path);
+        let target = if let Some(named) = named {
+            if !existing.contains(&named) {
+                return Err(ax_err_type!(
+                    InvalidData,
+                    std::format!(
+                        "ITS path {} belongs to another guest device",
+                        profile.node_path
+                    )
+                ));
+            }
+            Some(named)
+        } else {
+            // Identity-mapped physical ITS instances can have different node paths.
+            // Register identity is required; ordinal or compatible-only matching is ambiguous.
+            let mut candidates = existing.iter().copied().filter(|id| {
+                tree.inner().view_typed(*id).is_some_and(|node| {
+                    let regs = node.regs();
+                    regs.len() == 1
+                        && regs[0].address == profile.registers.base as u64
+                        && regs[0].size == Some(profile.registers.length as u64)
+                })
+            });
+            let first = candidates.next();
+            if candidates.next().is_some() {
+                return Err(ax_err_type!(
+                    InvalidData,
+                    "ambiguous guest ITS register binding"
+                ));
+            }
+            first
+        };
+        if let Some(target) = target
+            && !selected.insert(target)
+        {
+            return Err(ax_err_type!(
+                InvalidData,
+                "multiple ITS profiles bind the same guest node"
+            ));
+        }
+        bindings.push((profile, target));
+    }
+    if existing.iter().any(|id| !selected.contains(id)) {
+        return Err(ax_err_type!(
+            InvalidData,
+            "guest ITS has no matching machine instance; explicit binding is required"
+        ));
+    }
+    for (profile, target) in bindings {
+        let node_id = match target {
+            Some(id) => id,
+            None => tree.ensure_path(&profile.node_path)?,
+        };
         tree.inner_mut()
             .view_typed_mut(node_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "guest ITS node is missing"))?
@@ -102,9 +145,7 @@ pub(super) fn install_registers(tree: &mut FdtTree, profiles: &[GuestItsProfile]
         tree.set_property(node_id, prop_string("compatible", "arm,gic-v3-its"))?;
         tree.set_property(node_id, Property::new("msi-controller", std::vec![]))?;
         tree.set_property(node_id, prop_u32("#msi-cells", 1))?;
-        if let Some(phandle) = profile.node_phandle {
-            phandle::install(tree, node_id, phandle, "ITS")?;
-        }
+        phandle::install(tree, node_id, profile.node_phandle)?;
     }
     Ok(())
 }

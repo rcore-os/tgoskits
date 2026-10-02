@@ -370,7 +370,7 @@ impl AxVMConfig {
         self.serial_firmware_identity.as_ref()
     }
 
-    /// Replaces the virtual GIC windows with host firmware resources.
+    /// Replaces the virtual GIC windows with validated firmware resources.
     pub fn replace_machine_gic(&mut self, profile: GuestGicProfile) -> crate::AxVmResult {
         if self.gic_profile.is_none() {
             return Err(crate::AxVmError::invalid_config(
@@ -382,7 +382,7 @@ impl AxVMConfig {
         Ok(())
     }
 
-    /// Returns host firmware resources retained by the virtual GIC.
+    /// Returns the selected firmware resources retained by the virtual GIC.
     pub fn gic_profile(&self) -> Option<&GuestGicProfile> {
         self.gic_profile.as_ref()
     }

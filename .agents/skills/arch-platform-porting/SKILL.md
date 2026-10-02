@@ -24,6 +24,12 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 5. 最终补丁不得留下临时调试标记，除非用户明确要求保留。
 6. 修改 axloader UEFI 网络发现、HTTP 启动或 QEMU smoke 时，按 `references/boot-debugging.md` 的“axloader UEFI 网络启动”检查同网卡协议束、串口边界、发现响应注入和 `ExitBootServices` 前资源释放。
 
+## Axvisor 客户机设备树身份
+
+修改 DTB 继承或设备替换时遵循[设备树身份设计](../../../docs/design/axvisor-fdt-identity.md)。宿主 profile 中的 phandle 仅是来源树身份，不能覆盖已有客户机节点编号；新设备的引用必须从最终客户机树取得。跨树复制通过 `FdtTree::copy_subtree_from()` 的来源节点到目标节点对应表转换已知绑定，子树外依赖、未知属性绑定或歧义对应必须报错。显式 AArch64 客户机的 CPU 投影只继承执行属性，保留按硬件身份或唯一单 CPU 角色对应的客户机编号，不复制宿主调频、供电、idle-state 依赖或整机 `cpu-map`。ITS 多实例按 profile 路径或唯一寄存器区间对应，不按遍历顺序配对。 显式 CPU 投影后，`prune_cpu_references()` 按替换前客户机树的绑定布局删除失去 CPU cooling 能力的引用，保留非 CPU 条目与参数，删除空 cooling-map；保留 phandle 不代表保留调频能力。显式禁用检查通过 `is_architectural_timer_node()` 按完整 compatible 保护 ARM 架构定时器，不能用普通 `timer@...` 节点名扩大禁止范围；原有机器定时器安装与物理资源保护策略保持独立。
+
+`/reserved-memory` 只描述客户机内存，不能据 DTB 自动追加宿主身份映射。静态保留区在配置预检与最终 DTB 输出时分别校验，`MapIdentical` 以实际分配 GPA 为准；显式 `MapReserved` 使用配置权限。为兼容旧板卡，保留区未被内存记录覆盖时只告警并保留节点，不阻止启动、不新增映射；不能把 `memory_regions` 当作完整地址空间映射清单，passthrough 的整体身份映射及排除区间仍由 `GuestRegionPlanner` 决定。格式错误和地址溢出继续报错。引用导入、依赖发现和禁用检查共用 `references::reference_offsets()`；specifier 参数不参与设备匹配，有 MMIO 的依赖需要显式选择。`devices.disabled` 同时约束提供与派生 DTB、物理资源和最终输出，启用消费者引用显式禁用 provider 或设备模型重建禁用路径时应失败。固件已有的 inactive graph endpoint 可保留身份，但不分配其 MMIO/IRQ。 机器中断 provider 由 `interrupt::is_machine_interrupt_provider()` 按受支持的完整 compatible 判断，不能按节点名前缀或子串扩大机器豁免。依赖闭包按绑定保留 regulator 状态和 OPP 条目，并解析 `required-opps`；不能盲目保留所有后代，描述性子节点涉及 MMIO/IRQ 时仍需显式授权。
+
 ## 对称多处理前的运行时控制台
 
 - 中断处理和多任务调度是强制运行时能力。先初始化调度器与中断框架，探测串口，创建按所有者处理器亲和的串口工作任务，尝试完成公共运行时控制台移交，再释放任何次处理器。不得增加独立 `serial` 或 `runtime-console` 功能。探测后全部运行时保持休眠；可以注册禁用的控制器中断，但选中或显式打开串口前不得屏蔽、复位或重新配置硬件。
