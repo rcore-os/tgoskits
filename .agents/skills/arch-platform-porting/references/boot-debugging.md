@@ -73,6 +73,10 @@ Axvisor x86 嵌套 OVMF 用例按下列顺序调试：
 
 这些嵌套开放虚拟机固件用例仍通过 `fw_cfg` 提供 Linux 内核、初始内存文件系统和命令行，不证明客户机外围部件互连总线启动磁盘、固件系统分区或 Linux 固件存根启动路径。后续能力失败不能通过修改这些只用于验证的用例解决。
 
+磁盘启动用例使用 `VMKernelConfig::boot_source = "pci-disk"`，只适用于 x86_64 的 UEFI 固件启动。`BootImagePlatform for X86_64Arch` 必须保留基于已解析设备图的高级配置与电源接口及 `fw_cfg` 平台数据，但不把配置中的占位内核或初始内存文件系统发布为 `fw_cfg` 载荷，也不直接装载进客户机内存。启动盘由 VirtIO PCI `file` 后端以 `image_format = "raw"` 提供 GPT＋ESP 整盘字节；数据盘仍以 `filesystem = "ext4"` 提供。验证时区分外层 Axvisor rootfs、内层 OVMF 和两台客户机 VirtIO 盘，并要求 Linux 内层启动脚本检查 GPT 签名、启动盘独有参数以及第二块 ext4 盘的读写回读。
+
+这组 OVMF 镜像还会探测 `0xfed40000` 的 TPM TIS 窗口。客户机没有 TPM 时，`X86UnassignedTpmMmioModel` 在这个固定范围返回按访问宽度填充的全 1，模拟设备不存在；否则固件读取会变成未处理的嵌套页故障。该模型只覆盖 4 KiB 探测窗口，不把其他未分配地址都视为可读设备。
+
 AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步长，与传给运行时的 `ArmVgicConfig` 比较。不得通过向下转换已注册 GIC 前端推断配置。宿主 GIC 内存映射区域保持陷入，客户机写入不能改变宿主 GICD 或 GICR。
 
 ## OrangePi-5-Plus Linux 网卡直通

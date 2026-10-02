@@ -98,6 +98,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `kernel_load_addr` | 非负整数 | `0` | 内核加载 GPA；部分架构启动流程会按镜像格式进一步调整 |
 | `enable_bios` | 布尔值 | `false` | 旧启动开关；必须与 `boot_protocol` 一致 |
 | `boot_protocol` | `"direct"`、`"multiboot"`、`"uefi"` 或省略 | 省略 | 省略时由 `enable_bios` 推导，见 3.3 节 |
+| `boot_source` | `"kernel"` 或 `"pci-disk"` | `"kernel"` | `pci-disk` 仅供 x86_64 UEFI 从 PCI 磁盘加载启动程序 |
 | `bios_path` | 字符串或省略 | `None` | Multiboot 固件路径；UEFI 下也可作为兼容固件路径 |
 | `uefi_firmware_path` | 字符串或省略 | `None` | UEFI 固件路径，优先于 `bios_path` |
 | `bios_load_addr` | 非负整数或省略 | `None` | BIOS/UEFI 固件加载 GPA |
@@ -123,7 +124,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 
 ### 3.3 启动协议矩阵
 
-`BOOT_PROTOCOL_MATRIX` 定义在 `axvmconfig/src/lib.rs:218-240`。`validate_boot_config()` 先检查 `enable_bios` 与协议是否冲突，再按编译目标检查架构和固件输入。
+`BOOT_PROTOCOL_MATRIX` 定义在 `axvmconfig/src/lib.rs`。`validate_boot_config()` 先检查 `boot_source`、`enable_bios` 与协议是否冲突，再按编译目标检查架构和固件输入。
 
 | 有效协议 | `enable_bios` | 支持架构 | 固件要求 |
 | --- | --- | --- | --- |
@@ -132,6 +133,8 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `uefi` | `true` | `x86_64`、`loongarch64` | 必须提供 `uefi_firmware_path` 或兼容的 `bios_path`，并提供 `bios_load_addr` |
 
 省略 `boot_protocol` 时，`enable_bios = false` 推导为 `direct`，`enable_bios = true` 推导为 `multiboot`。例如 `enable_bios = false` 配合 `boot_protocol = "uefi"` 会返回 `BootProtocolConflict`，不会等到固件加载时才失败。
+
+设置 `boot_source = "pci-disk"` 时仍需 `enable_bios = true`、`boot_protocol = "uefi"`、有效固件路径和加载地址。x86 启动路径会向 OVMF 提供 ACPI 与 `fw_cfg` 平台数据，但不会通过 `fw_cfg` 提供配置中的占位内核和 initramfs；固件从客户机 PCI 磁盘的 ESP 读取启动程序。该磁盘可用 `virtio-blk` 的 `backend = "file"`、`image_format = "raw"` 配置。
 
 ### 3.4 客户机类型与兼容字段
 

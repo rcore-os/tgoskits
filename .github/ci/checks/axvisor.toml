@@ -171,34 +171,36 @@ cases = ["pci-enumeration-svm"]
 [[check]]
 id = "test-axvisor-x86-64-pci-block-vmx"
 impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · VirtIO PCI block RW/RO"
+name = "VMX x86_64 · VirtIO PCI block RW/RO + UEFI file dual disk"
 runner = "kvm-intel"
 timeout_minutes = 45
 command = '''
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-vmx
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case uefi-file-vmx
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["pci-block-rw-vmx", "pci-block-ro-vmx"]
+cases = ["pci-block-rw-vmx", "pci-block-ro-vmx", "uefi-file-vmx"]
 
 [[check]]
 id = "test-axvisor-x86-64-pci-block-svm"
 impact_targets = ["axvisor:x86_64"]
-name = "SVM x86_64 · VirtIO PCI block RW/RO"
+name = "SVM x86_64 · VirtIO PCI block RW/RO + UEFI file dual disk"
 runner = "kvm-amd"
 timeout_minutes = 45
 command = '''
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-svm
 cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-svm
+cargo xtask axvisor test qemu --arch x86_64 --test-case uefi-file-svm
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["pci-block-rw-svm", "pci-block-ro-svm"]
+cases = ["pci-block-rw-svm", "pci-block-ro-svm", "uefi-file-svm"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry"

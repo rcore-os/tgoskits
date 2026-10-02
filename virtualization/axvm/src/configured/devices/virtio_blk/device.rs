@@ -29,7 +29,7 @@ use axvmconfig::VirtualDeviceRequest;
 
 use super::{
     super::virtio_pci::{VirtioPciFunction, virtio_capabilities},
-    options::{BackendConfig, FilesystemFormat, parse_backend},
+    options::{BackendConfig, FileImageFormat, parse_backend},
 };
 #[cfg(feature = "fs")]
 use super::{
@@ -147,6 +147,7 @@ fn validate_known_options(request: &VirtualDeviceRequest) -> Result<(), Configur
                 | "path"
                 | "read_only"
                 | "filesystem"
+                | "image_format"
         ) {
             return Err(invalid_options(
                 request,
@@ -457,14 +458,14 @@ impl VirtioBlkBackend {
                 let capacity = capacity_bytes.unwrap_or(DEFAULT_CAPACITY_BYTES);
                 Ok(Self::RamDisk(RamDiskBackend::new(capacity)?))
             }
-            BackendConfig::File { path, filesystem } => {
+            BackendConfig::File { path, image_format } => {
                 let vm_id = vm_id.ok_or_else(|| {
                     invalid_device_config(
                         "open virtio-blk backing file",
                         "file backend requires a VM identity",
                     )
                 })?;
-                open_file_backend(path, capacity_bytes, *filesystem, vm_id)
+                open_file_backend(path, capacity_bytes, *image_format, vm_id)
             }
         }
     }
@@ -490,7 +491,7 @@ impl VirtioBlkBackend {
 fn open_file_backend(
     path: &str,
     configured_capacity: Option<u64>,
-    filesystem: FilesystemFormat,
+    image_format: FileImageFormat,
     vm_id: usize,
 ) -> DeviceManagerResult<VirtioBlkBackend> {
     let mut options = ax_api::fs::AxOpenOptions::new();
@@ -504,7 +505,7 @@ fn open_file_backend(
     })?;
     let mut reader = AxFileReader { file: &file };
     let capacity =
-        inspect_file_image(&mut reader, configured_capacity, filesystem).map_err(|error| {
+        inspect_file_image(&mut reader, configured_capacity, image_format).map_err(|error| {
             invalid_device_config(
                 "prepare virtio-blk backing file",
                 &format!("failed to prepare `{path}`: {error}"),
@@ -535,7 +536,7 @@ impl ImageReader for AxFileReader<'_> {
 fn open_file_backend(
     path: &str,
     _configured_capacity: Option<u64>,
-    _filesystem: FilesystemFormat,
+    _image_format: FileImageFormat,
     _vm_id: usize,
 ) -> DeviceManagerResult<VirtioBlkBackend> {
     Err(invalid_device_config(

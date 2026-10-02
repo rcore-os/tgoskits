@@ -3,16 +3,24 @@
 use std::{
     fmt, fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, ensure};
-use ostool::ovmf::Arch;
+use ostool::{build::config::Cargo, ovmf::Arch};
 use tempfile::NamedTempFile;
 
-use crate::support::{download::file_sha256, ovmf::OvmfFirmware};
+use crate::{
+    context::ResolvedAxvisorRequest,
+    support::{download::file_sha256, ovmf::OvmfFirmware},
+};
 
 const OVMF_SIZE: usize = 4 * 1024 * 1024;
+const FILE_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_UEFI_FILE_OVMF_OUTPUT";
+const FILE_CODE_ENV: &str = "AXVISOR_TEST_X86_UEFI_FILE_OVMF_CODE";
+const FILE_VARS_ENV: &str = "AXVISOR_TEST_X86_UEFI_FILE_OVMF_VARS";
+const FILE_CODE_SHA256: &str = "4be36bffc62a85538e5c2df2882da63c21a7f5683a5b439701d0823e26dcaee3";
+const FILE_VARS_SHA256: &str = "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OvmfLayout {
@@ -86,6 +94,74 @@ impl fmt::Display for OvmfEvidence {
 pub(super) async fn prepare_x86_ovmf(output_path: &Path) -> anyhow::Result<OvmfEvidence> {
     let firmware = OvmfFirmware::fetch(Arch::X64).await?;
     prepare_x86_ovmf_from_firmware(output_path, &firmware)
+}
+
+pub(super) async fn prepare_configured_x86_ovmf(
+    request: &ResolvedAxvisorRequest,
+    cargo: &Cargo,
+    workspace_root: &Path,
+) -> anyhow::Result<()> {
+    let Some(output) = cargo.env.get(FILE_OUTPUT_ENV) else {
+        ensure!(
+            !cargo.env.contains_key(FILE_CODE_ENV) && !cargo.env.contains_key(FILE_VARS_ENV),
+            "OVMF input requires {FILE_OUTPUT_ENV}"
+        );
+        return Ok(());
+    };
+    ensure!(
+        request.arch == "x86_64",
+        "{FILE_OUTPUT_ENV} requires x86_64"
+    );
+    let code = cargo
+        .env
+        .get(FILE_CODE_ENV)
+        .context("missing UEFI file test OVMF CODE")?;
+    let vars = cargo
+        .env
+        .get(FILE_VARS_ENV)
+        .context("missing UEFI file test OVMF VARS")?;
+    let output = workspace_relative_path(workspace_root, output, FILE_OUTPUT_ENV)?;
+    let code = workspace_relative_path(workspace_root, code, FILE_CODE_ENV)?;
+    let vars = workspace_relative_path(workspace_root, vars, FILE_VARS_ENV)?;
+    for path in [&code, &vars] {
+        ensure!(
+            fs::symlink_metadata(path)?.file_type().is_file(),
+            "{} is not a regular file",
+            path.display()
+        );
+        ensure!(
+            path.canonicalize()?.starts_with(workspace_root),
+            "OVMF input escapes workspace"
+        );
+    }
+    ensure!(
+        file_sha256(&code)? == FILE_CODE_SHA256,
+        "UEFI file test OVMF CODE digest mismatch"
+    );
+    ensure!(
+        file_sha256(&vars)? == FILE_VARS_SHA256,
+        "UEFI file test OVMF VARS digest mismatch"
+    );
+    let firmware = OvmfFirmware::from_paths(code, vars);
+    let evidence = prepare_x86_ovmf_from_firmware(&output, &firmware)?;
+    println!("{evidence}");
+    Ok(())
+}
+
+fn workspace_relative_path(
+    root: &Path,
+    configured: &str,
+    variable: &str,
+) -> anyhow::Result<PathBuf> {
+    let path = Path::new(configured);
+    ensure!(
+        !path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::CurDir | Component::Normal(_))),
+        "{variable} must be a workspace-relative path without parent traversal"
+    );
+    Ok(root.join(path))
 }
 
 fn prepare_x86_ovmf_from_firmware(

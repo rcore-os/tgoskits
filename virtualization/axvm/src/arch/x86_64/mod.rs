@@ -53,6 +53,7 @@ mod pci_config;
 mod pic;
 pub(crate) mod port;
 mod resource_pools;
+mod unassigned_mmio;
 mod vm;
 use exit::*;
 pub(crate) use vm::X86VmPlan;
