@@ -1,0 +1,46 @@
+/dts-v1/;
+
+/ {
+	description = "TGOSKits StarryOS OrangePi 5 Plus self-build";
+	#address-cells = <1>;
+
+	images {
+		kernel {
+			description = "StarryOS kernel";
+			data = /incbin/("starryos.bin");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <0x00400000>;
+			entry = <0x00400000>;
+
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+
+		fdt {
+			description = "OrangePi 5 Plus Linux device tree";
+			data = /incbin/("board.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			load = <0x0a100000>;
+
+			hash-1 {
+				algo = "sha256";
+			};
+		};
+	};
+
+	configurations {
+		default = "config-starry-selfbuild";
+
+		config-starry-selfbuild {
+			description = "StarryOS self-build on OrangePi 5 Plus";
+			kernel = "kernel";
+			fdt = "fdt";
+		};
+	};
+};

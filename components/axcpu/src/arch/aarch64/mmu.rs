@@ -162,7 +162,11 @@ impl El1 {
                 + SCTLR_EL1::DZE::DontTrap
                 + SCTLR_EL1::UCI::DontTrap,
         );
-        SCTLR_EL1.set(SCTLR_EL1.get() | (1 << 23));
+        // Firmware may enable alignment checking; Linux-compatible userspace
+        // requires unaligned Normal-memory accesses. Preserve the SPAN setting.
+        const ALIGNMENT_CHECK: u64 = 1 << 1;
+        const SPAN: u64 = 1 << 23;
+        SCTLR_EL1.set((SCTLR_EL1.get() & !ALIGNMENT_CHECK) | SPAN);
         Self::flush_tlb(None);
         barrier::dsb(barrier::SY);
         barrier::isb(barrier::SY);

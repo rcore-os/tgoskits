@@ -703,7 +703,16 @@ pub fn sys_unlink(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
 }
 
 pub fn sys_getcwd(current: &UserTaskRef, buf: *mut u8, size: usize) -> StarryResult<isize> {
-    let cwd = current_fs_context().lock().current_dir().absolute_path()?;
+    let fs_context = current_fs_context();
+    let fs = fs_context.lock();
+    let current_dir = fs.current_dir();
+    let cwd = match current_dir.path_from(fs.root_dir()) {
+        Some(path) => path,
+        None => {
+            let absolute_path = current_dir.absolute_path()?;
+            alloc::format!("(unreachable){absolute_path}").into()
+        }
+    };
     debug!("sys_getcwd => cwd: {cwd}");
 
     let cwd = CString::new(cwd.as_str()).map_err(|_| StarryError::InvalidInput)?;
