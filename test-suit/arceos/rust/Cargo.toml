@@ -42,6 +42,20 @@ task-mutex = ["task-runtime", "ax-std/alloc"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 # Owns the Unix namespace provider; run separately from the filesystem suite.
 net-unix-path = ["task-runtime", "ax-driver/virtio-net", "ax-std/net"]
+# Owns raw block controllers; must run outside the filesystem-enabled all kernel.
+virtio-block-lifecycle = [
+    "dep:ax-runtime",
+    "ax-std",
+    "ax-driver/virtio-blk",
+    "ax-std/alloc",
+    "dep:ax-alloc",
+    "dep:axklib",
+    "dep:dma-api",
+    "dep:rdif-block",
+    "dep:rdrive",
+    "dep:virtio-drivers",
+    "dep:zerocopy",
+]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
 iommu-dma = [
     "ax-std",
@@ -106,6 +120,13 @@ all = [
 ]
 
 [dependencies]
+ax-alloc = { workspace = true, optional = true }
+axklib = { workspace = true, optional = true }
+dma-api = { workspace = true, optional = true }
+rdif-block = { workspace = true, optional = true }
+rdrive = { workspace = true, optional = true }
+virtio-drivers = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
 ax-mm = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 ax-task = { workspace = true, optional = true }
@@ -116,10 +137,8 @@ ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
-dma-api = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 libc = { workspace = true, optional = true }
 mmio-api = { workspace = true, optional = true }
 rdif-iommu = { workspace = true, optional = true }
-rdrive = { workspace = true, optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

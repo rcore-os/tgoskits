@@ -146,6 +146,30 @@ fn host_fdt_pointer_rejects_null() {
 }
 
 #[test]
+fn phandle_validation_rejects_reserved_and_conflicting_values() {
+    let mut tree = FdtTree::new();
+    let root = tree.inner().root_id();
+    let reserved = tree.add_node(root, Node::new("reserved"));
+    tree.set_property(reserved, prop_u32("phandle", u32::MAX))
+        .unwrap();
+    assert!(tree.allocate_phandle().is_err());
+
+    tree.set_property(reserved, prop_u32("phandle", 1)).unwrap();
+    tree.set_property(reserved, prop_u32("linux,phandle", 2))
+        .unwrap();
+    assert!(tree.allocate_phandle().is_err());
+    tree.set_property(reserved, prop_u32("linux,phandle", 1))
+        .unwrap();
+    let duplicate = tree.ensure_path("/duplicate").unwrap();
+    tree.set_property(duplicate, prop_u32("phandle", 1))
+        .unwrap();
+    assert!(tree.validate_phandles().is_err());
+    tree.set_property(duplicate, Property::new("phandle", vec![0; 8]))
+        .unwrap();
+    assert!(tree.validate_phandles().is_err());
+}
+
+#[test]
 fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
     let mut source = Fdt::new();
     let source_root = source.root_id();
@@ -316,4 +340,133 @@ fn clone_filtered_preserves_guest_cpu_power_management_props_on_rk3588() {
         cpu_node.get_property("cpu-supply").unwrap().get_u32(),
         Some(5)
     );
+}
+
+#[test]
+fn subtree_import_rebinds_source_references_without_touching_guest_numbers() {
+    let mut source = FdtTree::new();
+    let bus = source.ensure_path("/imported").unwrap();
+    let provider = source.ensure_path("/imported/clock").unwrap();
+    source
+        .set_property(provider, prop_u32("phandle", 1))
+        .unwrap();
+    source
+        .set_property(provider, prop_u32("#clock-cells", 1))
+        .unwrap();
+    let consumer = source.ensure_path("/imported/device").unwrap();
+    let mut clocks = Property::new("clocks", vec![]);
+    clocks.set_u32_ls(&[1, 1]);
+    source.set_property(consumer, clocks.clone()).unwrap();
+    for name in ["#iommu-cells", "#interrupt-cells"] {
+        source.set_property(provider, prop_u32(name, 1)).unwrap();
+    }
+    source
+        .set_property(provider, prop_u32("#address-cells", 0))
+        .unwrap();
+    source
+        .set_property(consumer, prop_u32("#address-cells", 0))
+        .unwrap();
+    source
+        .set_property(consumer, prop_u32("#interrupt-cells", 1))
+        .unwrap();
+    for (name, cells) in [
+        ("iommus", &[1, 1][..]),
+        ("interrupts-extended", &[1, 1][..]),
+        ("interrupt-map", &[1, 1, 1][..]),
+        ("msi-map", &[1, 1, 1, 1][..]),
+    ] {
+        let mut property = Property::new(name, vec![]);
+        property.set_u32_ls(cells);
+        source.set_property(consumer, property).unwrap();
+    }
+
+    let mut guest = FdtTree::new();
+    let existing = guest.ensure_path("/existing").unwrap();
+    guest
+        .set_property(existing, prop_u32("phandle", 1))
+        .unwrap();
+    guest.set_property(existing, clocks).unwrap();
+    // A high occupied handle must not hide free values below it.
+    let last = guest.ensure_path("/last").unwrap();
+    guest
+        .set_property(last, prop_u32("phandle", u32::MAX - 1))
+        .unwrap();
+
+    guest
+        .copy_subtree_from(source.inner(), bus, guest.inner().root_id(), false)
+        .unwrap();
+
+    let bytes = guest.finish();
+    let fdt = Fdt::from_bytes(&bytes).unwrap();
+    let imported = fdt.get_by_path("/imported/clock").unwrap();
+    let handle = imported
+        .as_node()
+        .get_property("phandle")
+        .unwrap()
+        .get_u32()
+        .unwrap();
+    assert!(handle > 1 && handle < u32::MAX - 1);
+    let reference = fdt.get_by_path("/imported/device").unwrap();
+    assert_eq!(
+        reference
+            .as_node()
+            .get_property("clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [handle, 1]
+    );
+    assert_eq!(
+        fdt.get_by_path("/existing")
+            .unwrap()
+            .as_node()
+            .get_property("clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [1, 1]
+    );
+    for (name, expected) in [
+        ("iommus", vec![handle, 1]),
+        ("interrupts-extended", vec![handle, 1]),
+        ("interrupt-map", vec![1, handle, 1]),
+        ("msi-map", vec![1, handle, 1, 1]),
+    ] {
+        assert_eq!(
+            reference
+                .as_node()
+                .get_property(name)
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            expected,
+            "{name}"
+        );
+    }
+    assert_eq!(source.node_phandle(provider).unwrap(), Some(1));
+}
+
+#[test]
+fn subtree_import_rejects_unbound_dependencies_without_changing_destination() {
+    let mut source = FdtTree::new();
+    let provider = source.ensure_path("/clock").unwrap();
+    source
+        .set_property(provider, prop_u32("phandle", 7))
+        .unwrap();
+    source
+        .set_property(provider, prop_u32("#clock-cells", 0))
+        .unwrap();
+    let device = source.ensure_path("/device").unwrap();
+    source.set_property(device, prop_u32("clocks", 7)).unwrap();
+    let mut guest = FdtTree::new();
+    let unrelated = guest.ensure_path("/unrelated").unwrap();
+    guest
+        .set_property(unrelated, prop_u32("phandle", 7))
+        .unwrap();
+    let before = guest.inner().encode().as_ref().to_vec();
+    let error = guest
+        .copy_subtree_from(source.inner(), device, guest.inner().root_id(), false)
+        .unwrap_err();
+    assert!(error.to_string().contains("outside the imported subtree"));
+    assert_eq!(guest.inner().encode().as_ref(), before);
 }

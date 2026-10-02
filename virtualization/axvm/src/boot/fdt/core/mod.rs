@@ -10,12 +10,18 @@ use crate::{
     config::AxVMConfig,
 };
 
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) mod cpu;
 pub(crate) mod create;
 mod device;
+mod disabled;
+mod import;
 pub(crate) mod interrupt;
 mod parser;
 mod policy;
 mod print;
+mod references;
+mod reserved;
 pub(crate) mod serial;
 pub(crate) mod timer;
 pub(crate) mod tree;
@@ -127,6 +133,7 @@ fn build_guest_dtb(
     host_fdt_bytes: Option<&'static [u8]>,
 ) -> AxVmResult<Option<GuestDtbImage>> {
     let provided_dtb = get_developer_provided_dtb(vm_config, vm_create_config, provider)?;
+    select_guest_machine_resources(vm_config, provided_dtb.as_deref())?;
 
     match (host_fdt_bytes, provided_dtb) {
         (Some(host_bytes), Some(provided)) => {
@@ -164,6 +171,44 @@ fn build_guest_dtb(
             Ok(None)
         }
     }
+}
+
+// Explicit guest firmware owns virtualized GIC and UART resources. Resolve
+// them before reserving MMIO ranges and constructing the immutable device plan.
+fn select_guest_machine_resources(
+    vm_config: &mut AxVMConfig,
+    provided_dtb: Option<&[u8]>,
+) -> AxVmResult {
+    if let Some(current) = vm_config.gic_profile() {
+        let gic = interrupt::select_guest_gic(
+            current,
+            provided_dtb,
+            vm_config.uses_passthrough_address_space(),
+        )?;
+        vm_config.replace_machine_gic(gic)?;
+    }
+    let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
+    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+        && let Some(serial) = serial::select_guest_serial(
+            vm_config.serial_profile(),
+            provided_dtb,
+            vm_config.uses_passthrough_address_space(),
+            interrupt_encoding,
+        )?
+    {
+        info!(
+            "VM[{}] virtual UART follows explicit guest firmware: {:?}",
+            vm_config.id(),
+            serial.profile
+        );
+        vm_config.replace_machine_serial(
+            serial.profile,
+            Some(crate::machine::GuestSerialFirmwareIdentity::Fdt(
+                serial.identity,
+            )),
+        )?;
+    }
+    Ok(())
 }
 
 fn parse_host_fdt(host_fdt_bytes: &'static [u8]) -> AxVmResult<fdt_edit::Fdt> {

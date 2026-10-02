@@ -4,7 +4,7 @@ use std::vec::Vec;
 
 use fdt_edit::Fdt;
 
-use crate::{AxVmResult, ax_err_type, boot::fdt::core};
+use crate::{AxVmResult, boot::fdt::core};
 
 pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
     core::interrupt::host_gic_maintenance_intid(fdt)
@@ -40,43 +40,8 @@ pub(super) fn update_cpu_node(
     host_fdt: Option<&Fdt>,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
-    let Some(host_fdt) = host_fdt else {
-        return Ok(fdt.encode().as_ref().to_vec());
-    };
-
-    let phys_cpu_ids = crate_config
-        .base
-        .phys_cpu_ids
-        .as_deref()
-        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
-    let mut tree = core::tree::FdtTree::from_fdt(fdt.clone());
-    tree.inner_mut().remove_by_path("/cpus");
-
-    if let Some(host_cpus_id) = host_fdt.get_by_path_id("/cpus") {
-        let cpus_id =
-            tree.copy_subtree_from(host_fdt, host_cpus_id, tree.inner().root_id(), true)?;
-        let cpu_paths = tree
-            .node_paths()
-            .into_iter()
-            .filter_map(|(id, path)| {
-                (path.starts_with("/cpus/cpu@")
-                    && !core::create::need_cpu_node(phys_cpu_ids, tree.inner(), id, &path))
-                .then_some(path)
-            })
-            .collect::<Vec<_>>();
-        for path in cpu_paths {
-            tree.inner_mut().remove_by_path(&path);
-        }
-        if let Some(cpus) = tree.inner_mut().node_mut(cpus_id) {
-            for property in [
-                "riscv,cbop-block-size",
-                "riscv,cboz-block-size",
-                "riscv,cbom-block-size",
-            ] {
-                cpus.remove_property(property);
-            }
-        }
+    match host_fdt {
+        Some(host) => core::cpu::project_cpus(fdt, host, crate_config),
+        None => Ok(fdt.encode().as_ref().to_vec()),
     }
-
-    Ok(tree.finish())
 }

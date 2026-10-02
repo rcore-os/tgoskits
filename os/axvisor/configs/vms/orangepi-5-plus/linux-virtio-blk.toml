@@ -1,0 +1,27 @@
+[base]
+id = 1
+name = "linux-guest-tests"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+
+[kernel]
+entry_point = 0x2_4008_0000
+image_location = "fs"
+kernel_load_addr = 0x2_4008_0000
+kernel_path = "/guest/linux/orangepi-5-plus"
+cmdline = "root=/dev/vda rw console=ttyS0,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 devtmpfs.mount=1 init=/bin/sh loglevel=4"
+dtb_load_addr = 0x2_4000_0000
+memory_regions = [
+  [0x2_4000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "guest-rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
+filesystem = "ext4"

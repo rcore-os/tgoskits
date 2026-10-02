@@ -1,0 +1,24 @@
+args = [
+    "-machine", "virt,gic-version=2",
+    "-cpu", "cortex-a72",
+    "-m", "256M",
+    "-smp", "2",
+    "-global", "virtio-mmio.force-legacy=false",
+    "-drive", "if=none,id=stop-disk,format=raw,file.driver=null-co,file.size=1048576,snapshot=on",
+    "-device", "virtio-blk-device,drive=stop-disk",
+    "-blockdev", "driver=null-co,node-name=delayed-disk,size=4194304",
+    "-device", "virtio-blk-device,drive=delayed-disk",
+    "-blockdev", "driver=null-co,node-name=stalled-disk,size=8388608",
+    "-device", "virtio-blk-device,drive=stalled-disk",
+    "-blockdev", "driver=null-co,node-name=rejected-disk,size=16777216",
+    "-device", "virtio-blk-device,drive=rejected-disk",
+    "-display", "none",
+    "-serial", "mon:stdio",
+]
+timeout = 90
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+success_regex = ["ArceOS test suite run OK!"]

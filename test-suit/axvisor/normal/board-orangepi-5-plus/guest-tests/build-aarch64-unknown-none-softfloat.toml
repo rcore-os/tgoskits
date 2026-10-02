@@ -1,0 +1,12 @@
+features = [
+  "ax-driver/rk3588-cpufreq",
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "os/axvisor/configs/vms/orangepi-5-plus/linux-virtio-blk.toml",
+  "os/axvisor/configs/vms/orangepi-5-plus/starry-virtio-blk.toml",
+  "os/axvisor/configs/vms/orangepi-5-plus/zephyr-robot.toml",
+]

@@ -210,7 +210,7 @@ teardown 中取消当前 handle。下一次 arm 取得新的 generation；`ArmTi
 - 可选且非零的 `clock-frequency`；
 - 可选的 timer phandle。
 
-客户机 FDT 会删除已有 Arm timer 节点，并创建一个标准 `arm,armv8-timer` 节点。它保留中断顺序、parent identity、raw specifier flag、可选 phandle，以及显式有效的频率；不复制 host errata 或 suspend 属性。
+客户机 FDT 通过唯一的 Arm architectural timer 角色识别已有节点，保留其客户机路径和 phandle，再创建标准 `arm,armv8-timer` 描述。它保留宿主中断顺序和 raw specifier flag，按最终客户机 GIC 绑定 interrupt-parent，并继承显式有效的频率；不复制 host errata 或 suspend 属性。多个 architectural timer 候选会报错，宿主与客户机编号的边界见[设备树身份设计](./axvisor-fdt-identity.md)。
 
 Runtime vCPU 绑定和 FDT 安装校验并消费同一份 `GuestTimerProfile`；开发者提供的 DTB 不能引入独立的定时器资源定义。
 

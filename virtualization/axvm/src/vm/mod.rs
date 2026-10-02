@@ -2475,11 +2475,12 @@ impl AxVM {
         Ok(layout)
     }
 
-    /// Maps a reserved memory region for the VM.
+    /// Maps an explicitly configured identity region with the granted permissions.
     pub fn map_reserved_memory_region(
         &self,
         layout: Layout,
         gpa: Option<GuestPhysAddr>,
+        flags: MappingFlags,
     ) -> AxVmResult {
         assert!(
             layout.size() > 0,
@@ -2494,10 +2495,7 @@ impl AxVM {
                     gpa,
                     gpa.as_usize().into(),
                     layout.size(),
-                    MappingFlags::READ
-                        | MappingFlags::WRITE
-                        | MappingFlags::EXECUTE
-                        | MappingFlags::USER,
+                    flags | MappingFlags::USER,
                 )
                 .map_err(|error| AxVmError::from_addrspace("map reserved guest memory", error))?;
             let hva = gpa.as_usize().into();

@@ -14,23 +14,14 @@
 
 //! Device passthrough and dependency analysis for FDT processing.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    string::{String, ToString},
-    vec::Vec,
-};
+use std::{collections::BTreeSet, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, NodeId};
 
-use crate::config::AxVMConfig;
+use super::references::{phandle_index, reference_offsets};
+use crate::{AxVmResult, ax_err_type, config::AxVMConfig};
 
-type NodeCache = BTreeMap<String, Vec<NodeId>>;
-type PhandleMap = BTreeMap<u32, (String, BTreeMap<String, u32>)>;
-
-/// Returns whether a passthrough selector includes the node at `node_path`.
-///
-/// A selector includes both the node named by the selector and its descendants,
-/// but not a similarly prefixed sibling such as `/peripherals-extra`.
+/// Selects a node and its descendants, never a similarly prefixed sibling.
 pub(crate) fn selector_includes_path(selector: &str, node_path: &str) -> bool {
     selector == node_path
         || node_path
@@ -38,334 +29,338 @@ pub(crate) fn selector_includes_path(selector: &str, node_path: &str) -> bool {
             .is_some_and(|suffix| selector == "/" || suffix.starts_with('/'))
 }
 
-/// Return all passthrough device paths, including descendants and phandle dependencies.
-pub fn find_all_passthrough_devices(vm_cfg: &AxVMConfig, fdt: &Fdt) -> Vec<String> {
-    let initial_device_names = vm_cfg
+/// Returns assigned device paths and their descriptive firmware dependencies.
+pub fn find_all_passthrough_devices(vm_cfg: &AxVMConfig, fdt: &Fdt) -> AxVmResult<Vec<String>> {
+    let selected = vm_cfg
         .pass_through_devices()
         .iter()
         .map(|dev| dev.name.clone())
         .collect::<Vec<_>>();
-    let excluded_device_paths = vm_cfg
+    let excluded = vm_cfg
         .excluded_devices()
         .iter()
         .flatten()
         .cloned()
         .collect::<Vec<_>>();
-    find_all_passthrough_devices_from_paths(&initial_device_names, &excluded_device_paths, fdt)
+    find_all_passthrough_devices_from_paths(&selected, &excluded, fdt)
 }
 
-/// Return passthrough paths selected by configuration, including dependencies.
+/// Resolves references without granting unselected providers MMIO or IRQ access.
 pub(crate) fn find_all_passthrough_devices_from_paths(
-    initial_device_names: &[String],
-    excluded_device_paths: &[String],
+    selectors: &[String],
+    excluded: &[String],
     fdt: &Fdt,
-) -> Vec<String> {
-    let initial_device_count = initial_device_names.len();
-    let node_cache = build_optimized_node_cache(fdt);
-    let mut configured_device_names: BTreeSet<String> =
-        initial_device_names.iter().cloned().collect();
-    let mut additional_device_names = Vec::new();
-
-    for device_name in initial_device_names {
-        let descendant_paths = get_descendant_nodes_by_path(&node_cache, device_name);
-        trace!(
-            "Found {} descendant paths for {}",
-            descendant_paths.len(),
-            device_name
-        );
-
-        for descendant_path in descendant_paths {
-            if configured_device_names.insert(descendant_path.clone()) {
-                trace!("Found descendant device: {descendant_path}");
-                additional_device_names.push(descendant_path);
-            }
-        }
-    }
-
-    let mut dependency_device_names = Vec::new();
-    let mut devices_to_process: Vec<String> = configured_device_names.iter().cloned().collect();
-    let mut processed_devices: BTreeSet<String> = BTreeSet::new();
-    let phandle_map = build_phandle_map(fdt);
-
-    while let Some(device_node_path) = devices_to_process.pop() {
-        if !processed_devices.insert(device_node_path.clone()) {
+) -> AxVmResult<Vec<String>> {
+    let handles = phandle_index(fdt)?;
+    let excluded_path = |path: &str| excluded.iter().any(|p| selector_includes_path(p, path));
+    let assigned = |path: &str| selectors.iter().any(|p| selector_includes_path(p, path));
+    let mut pending = fdt
+        .iter_node_ids()
+        .filter(|&id| {
+            let path = fdt.path_of(id);
+            assigned(&path) && !excluded_path(&path) && node_enabled(fdt, id)
+        })
+        .collect::<Vec<_>>();
+    let mut selected = pending.iter().copied().collect::<BTreeSet<_>>();
+    let mut visited = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
             continue;
         }
-
-        let dependencies =
-            find_device_dependencies(fdt, &device_node_path, &phandle_map, &node_cache);
-        for dep_node_name in dependencies {
-            if configured_device_names.insert(dep_node_name.clone()) {
-                trace!("Found new dependency device: {dep_node_name}");
-                dependency_device_names.push(dep_node_name.clone());
-                devices_to_process.push(dep_node_name);
-            }
-        }
-    }
-
-    let mut all_excluded_devices = excluded_device_paths.to_vec();
-    let mut processed_excluded: BTreeSet<String> = excluded_device_paths.iter().cloned().collect();
-
-    for device_path in excluded_device_paths {
-        for descendant_path in get_descendant_nodes_by_path(&node_cache, device_path) {
-            if processed_excluded.insert(descendant_path.clone()) {
-                all_excluded_devices.push(descendant_path);
-            }
-        }
-    }
-    info!("Found excluded devices: {all_excluded_devices:?}");
-
-    let mut all_device_names = initial_device_names.to_vec();
-    all_device_names.extend(additional_device_names);
-    all_device_names.extend(dependency_device_names);
-
-    if !all_excluded_devices.is_empty() {
-        let excluded_set: BTreeSet<String> = all_excluded_devices.into_iter().collect();
-        all_device_names.retain(|device_name| {
-            let directly_excluded = excluded_set.contains(device_name);
-            let covers_excluded_subtree = !directly_excluded
-                && excluded_device_paths.iter().any(|excluded_path| {
-                    node_cache.contains_key(excluded_path)
-                        && is_path_or_ancestor(device_name, excluded_path)
-                });
-            if directly_excluded {
-                info!("Excluding device: {device_name}");
-            } else if covers_excluded_subtree {
-                info!(
-                    "Excluding passthrough ancestor {device_name} because it covers a disabled \
-                     device subtree"
-                );
-            }
-            !directly_excluded && !covers_excluded_subtree
-        });
-    }
-
-    all_device_names.retain(|device_name| device_name != "/");
-
-    debug!(
-        "Passthrough devices analysis completed. Total devices: {} (added: {})",
-        all_device_names.len(),
-        all_device_names.len().saturating_sub(initial_device_count)
-    );
-    all_device_names
-}
-
-fn is_path_or_ancestor(candidate: &str, path: &str) -> bool {
-    candidate == path
-        || path
-            .strip_prefix(candidate)
-            .is_some_and(|suffix| candidate == "/" || suffix.starts_with('/'))
-}
-
-pub fn build_optimized_node_cache(fdt: &Fdt) -> NodeCache {
-    let mut node_cache = BTreeMap::new();
-
-    for node_id in fdt.iter_node_ids() {
-        let node_path = fdt.path_of(node_id);
-        node_cache
-            .entry(node_path)
-            .or_insert_with(Vec::new)
-            .push(node_id);
-    }
-
-    debug!(
-        "Built simplified node cache with {} unique device paths",
-        node_cache.len()
-    );
-    node_cache
-}
-
-fn build_phandle_map(fdt: &Fdt) -> PhandleMap {
-    let mut phandle_map = BTreeMap::new();
-
-    for node_id in fdt.iter_node_ids() {
-        let Some(node) = fdt.node(node_id) else {
-            continue;
-        };
-        let node_path = fdt.path_of(node_id);
-        let mut phandle = None;
-        let mut cells_map = BTreeMap::new();
-
-        for prop in node.properties() {
-            match prop.name() {
-                "phandle" | "linux,phandle" => phandle = prop.get_u32(),
-                "#address-cells"
-                | "#size-cells"
-                | "#clock-cells"
-                | "#reset-cells"
-                | "#gpio-cells"
-                | "#interrupt-cells"
-                | "#power-domain-cells"
-                | "#thermal-sensor-cells"
-                | "#phy-cells"
-                | "#dma-cells"
-                | "#sound-dai-cells"
-                | "#mbox-cells"
-                | "#pwm-cells"
-                | "#iommu-cells" => {
-                    if let Some(value) = prop.get_u32() {
-                        cells_map.insert(prop.name().to_string(), value);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(ph) = phandle {
-            phandle_map.insert(ph, (node_path, cells_map));
-        }
-    }
-    phandle_map
-}
-
-fn parse_phandle_property_with_cells(
-    prop_data: &[u8],
-    prop_name: &str,
-    phandle_map: &PhandleMap,
-) -> Vec<(u32, Vec<u32>)> {
-    let mut results = Vec::new();
-
-    if prop_data.is_empty() || !prop_data.len().is_multiple_of(4) {
-        return results;
-    }
-
-    let u32_values: Vec<u32> = prop_data
-        .chunks(4)
-        .map(|chunk| u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect();
-
-    let mut i = 0;
-    while i < u32_values.len() {
-        let potential_phandle = u32_values[i];
-        if let Some((device_name, cells_info)) = phandle_map.get(&potential_phandle) {
-            let cells_count = get_cells_count_for_property(prop_name, cells_info);
-            if i + cells_count < u32_values.len() {
-                let specifiers = u32_values[i + 1..=i + cells_count].to_vec();
-                debug!(
-                    "Parsed {prop_name} phandle reference: phandle={potential_phandle:#x}, \
-                     device={device_name}, specifiers={specifiers:?}"
-                );
-                results.push((potential_phandle, specifiers));
-                i += cells_count + 1;
-            } else {
-                break;
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    results
-}
-
-fn get_cells_count_for_property(prop_name: &str, cells_info: &BTreeMap<String, u32>) -> usize {
-    let cells_property = match prop_name {
-        "clocks" | "assigned-clocks" => "#clock-cells",
-        "resets" => "#reset-cells",
-        "power-domains" => "#power-domain-cells",
-        "phys" => "#phy-cells",
-        "interrupts" | "interrupts-extended" => "#interrupt-cells",
-        "gpios" => "#gpio-cells",
-        _ if prop_name.ends_with("-gpios") || prop_name.ends_with("-gpio") => "#gpio-cells",
-        "dmas" => "#dma-cells",
-        "thermal-sensors" => "#thermal-sensor-cells",
-        "sound-dai" => "#sound-dai-cells",
-        "mboxes" => "#mbox-cells",
-        "pwms" => "#pwm-cells",
-        _ => return 0,
-    };
-
-    cells_info.get(cells_property).copied().unwrap_or(0) as usize
-}
-
-fn parse_phandle_property(
-    prop_data: &[u8],
-    prop_name: &str,
-    phandle_map: &PhandleMap,
-) -> Vec<String> {
-    parse_phandle_property_with_cells(prop_data, prop_name, phandle_map)
-        .into_iter()
-        .filter_map(|(phandle, _)| phandle_map.get(&phandle).map(|(path, _)| path.clone()))
-        .collect()
-}
-
-struct DevicePropertyClassifier;
-
-impl DevicePropertyClassifier {
-    const PHANDLE_PROPERTIES: &'static [&'static str] = &[
-        "clocks",
-        "power-domains",
-        "phys",
-        "resets",
-        "dmas",
-        "thermal-sensors",
-        "mboxes",
-        "assigned-clocks",
-        "interrupt-parent",
-        "phy-handle",
-        "msi-parent",
-        "memory-region",
-        "syscon",
-        "regmap",
-        "iommus",
-        "interconnects",
-        "nvmem-cells",
-        "sound-dai",
-        "pinctrl-0",
-        "pinctrl-1",
-        "pinctrl-2",
-        "pinctrl-3",
-        "pinctrl-4",
-    ];
-
-    fn is_phandle_property(prop_name: &str) -> bool {
-        Self::PHANDLE_PROPERTIES.contains(&prop_name)
-            || prop_name.ends_with("-supply")
-            || prop_name == "gpios"
-            || prop_name.ends_with("-gpios")
-            || prop_name.ends_with("-gpio")
-            || (prop_name.contains("cells") && !prop_name.starts_with('#') && prop_name.len() >= 4)
-    }
-}
-
-fn find_device_dependencies(
-    fdt: &Fdt,
-    device_node_path: &str,
-    phandle_map: &PhandleMap,
-    node_cache: &NodeCache,
-) -> Vec<String> {
-    let mut dependencies = Vec::new();
-
-    if let Some(nodes) = node_cache.get(device_node_path) {
-        for node_id in nodes {
-            let Some(node) = fdt.node(*node_id) else {
+        let node = fdt.node(id).unwrap();
+        for property in node.properties() {
+            let Some(offsets) = reference_offsets(fdt, &handles, id, property)? else {
                 continue;
             };
-            for prop in node.properties() {
-                if DevicePropertyClassifier::is_phandle_property(prop.name()) {
-                    dependencies.extend(parse_phandle_property(
-                        &prop.data,
-                        prop.name(),
-                        phandle_map,
-                    ));
+            let cells = property.get_u32_iter().collect::<Vec<_>>();
+            for offset in offsets {
+                let provider = handles[&cells[offset]];
+                for dependency in provider_nodes(fdt, provider, property.name()) {
+                    let path = fdt.path_of(dependency);
+                    // Explicit exclusions can omit optional descriptive children.
+                    if dependency != provider && excluded_path(&path) {
+                        continue;
+                    }
+                    // Machine interrupt providers are installed by their device models.
+                    if super::interrupt::is_machine_interrupt_provider(
+                        fdt.node(dependency).unwrap(),
+                    ) {
+                        continue;
+                    }
+                    if excluded_path(&path) {
+                        return Err(ax_err_type!(
+                            InvalidInput,
+                            std::format!(
+                                "{}:{} depends on disabled provider {path}",
+                                fdt.path_of(id),
+                                property.name()
+                            )
+                        ));
+                    }
+                    selected.insert(dependency);
+                    // Firmware graphs may legally point at an inactive endpoint.
+                    // Keep its identity without assigning its resources or dependencies.
+                    if !node_enabled(fdt, dependency) {
+                        continue;
+                    }
+                    let mut ancestor = Some(dependency);
+                    while let Some(current) = ancestor {
+                        let path = fdt.path_of(current);
+                        let node = fdt.node(current).unwrap();
+                        let owns_resources = owns_device_resources(node);
+                        if owns_resources
+                            && !assigned(&path)
+                            && !selector_includes_path("/reserved-memory", &path)
+                            && !selector_includes_path("/cpus", &path)
+                        {
+                            return Err(ax_err_type!(
+                                InvalidInput,
+                                std::format!(
+                                    "{}:{} requires explicit passthrough assignment of {path}",
+                                    fdt.path_of(id),
+                                    property.name()
+                                )
+                            ));
+                        }
+                        if current != fdt.root_id() {
+                            pending.push(current);
+                        }
+                        ancestor = fdt.parent_of(current);
+                    }
                 }
             }
         }
     }
-
-    dependencies
+    let mut paths = selected
+        .into_iter()
+        .map(|id| fdt.path_of(id))
+        .filter(|path| {
+            path != "/"
+                && !excluded_path(path)
+                && (!owns_device_resources(fdt.get_by_path(path).unwrap().as_node())
+                    || !excluded.iter().any(|p| {
+                        fdt.get_by_path_id(p).is_some() && selector_includes_path(path, p)
+                    }))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
 }
 
-fn get_descendant_nodes_by_path(node_cache: &NodeCache, parent_path: &str) -> Vec<String> {
-    let search_prefix = if parent_path == "/" {
-        "/".to_string()
-    } else {
-        parent_path.to_string() + "/"
-    };
+// These children describe their provider; other children may be independent devices.
+fn provider_nodes(fdt: &Fdt, provider: NodeId, reference: &str) -> Vec<NodeId> {
+    let mut nodes = std::vec![provider];
+    if !node_enabled(fdt, provider) {
+        return nodes;
+    }
+    nodes.extend(
+        fdt.node(provider)
+            .unwrap()
+            .children()
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let name = fdt.node(id).unwrap().name();
+                if reference == "operating-points-v2" {
+                    // An OPP table's children are its entries; names vary by binding.
+                    true
+                } else if reference.ends_with("-supply") {
+                    matches!(
+                        name,
+                        "regulator-state-standby" | "regulator-state-mem" | "regulator-state-disk"
+                    )
+                } else {
+                    false
+                }
+            }),
+    );
+    nodes
+}
 
-    node_cache
-        .keys()
-        .filter(|path| path.starts_with(&search_prefix) && path.len() > search_prefix.len())
-        .cloned()
-        .collect()
+fn owns_device_resources(node: &fdt_edit::Node) -> bool {
+    ["reg", "ranges", "interrupts", "interrupts-extended"]
+        .iter()
+        .any(|name| node.get_property(name).is_some_and(|p| !p.data.is_empty()))
+}
+
+/// A disabled ancestor also disables its entire device subtree.
+pub(super) fn node_enabled(fdt: &Fdt, mut id: NodeId) -> bool {
+    loop {
+        if let Some(status) = fdt.node(id).and_then(|n| n.get_property("status"))
+            && !matches!(status.data.as_slice(), b"okay\0" | b"ok\0")
+        {
+            return false;
+        }
+        match fdt.parent_of(id) {
+            Some(parent) => id = parent,
+            None => return true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fdt_edit::{Node, Property};
+
+    use super::*;
+
+    fn cells(name: &str, values: &[u32]) -> Property {
+        let mut property = Property::new(name, Vec::new());
+        property.set_u32_ls(values);
+        property
+    }
+
+    #[test]
+    fn dependency_discovery_keeps_descriptive_children_without_assigning_sibling_devices() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let device = fdt.add_node(root, Node::new("device"));
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(cells("vdd-supply", &[1]));
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(cells("operating-points-v2", &[2]));
+        let regulator = fdt.add_node(root, Node::new("regulator"));
+        fdt.node_mut(regulator)
+            .unwrap()
+            .set_property(cells("phandle", &[1]));
+        let state = fdt.add_node(regulator, Node::new("regulator-state-mem"));
+        fdt.node_mut(state)
+            .unwrap()
+            .set_property(cells("regulator-suspend-microvolt", &[900_000]));
+        let table = fdt.add_node(root, Node::new("opp-table"));
+        fdt.node_mut(table)
+            .unwrap()
+            .set_property(cells("phandle", &[2]));
+        let opp = fdt.add_node(table, Node::new("opp100000000"));
+        fdt.node_mut(opp)
+            .unwrap()
+            .set_property(cells("opp-hz", &[0, 100_000_000]));
+        fdt.node_mut(opp)
+            .unwrap()
+            .set_property(cells("required-opps", &[3]));
+        let required_table = fdt.add_node(root, Node::new("required-table"));
+        let required_opp = fdt.add_node(required_table, Node::new("opp-1"));
+        fdt.node_mut(required_opp)
+            .unwrap()
+            .set_property(cells("phandle", &[3]));
+        let unrelated = fdt.add_node(regulator, Node::new("device@1000"));
+        fdt.node_mut(unrelated)
+            .unwrap()
+            .set_property(cells("reg", &[0x1000, 0x100]));
+        let selectors = ["/device".into()];
+        let selected = find_all_passthrough_devices_from_paths(&selectors, &[], &fdt).unwrap();
+        let mut cfg = axvmconfig::GuestConfig::default();
+        cfg.base.phys_cpu_ids = Some(std::vec![0]);
+        let bytes = super::super::create::create_guest_fdt(&fdt, &selected, &cfg, &[]).unwrap();
+        let guest = Fdt::from_bytes(&bytes).unwrap();
+        let state = guest.get_by_path("/regulator/regulator-state-mem").unwrap();
+        assert_eq!(
+            state
+                .as_node()
+                .get_property("regulator-suspend-microvolt")
+                .unwrap()
+                .get_u32(),
+            Some(900_000)
+        );
+        let point = guest.get_by_path("/opp-table/opp100000000").unwrap();
+        assert_eq!(
+            point
+                .as_node()
+                .get_property("opp-hz")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            [0, 100_000_000]
+        );
+        assert!(guest.get_by_path_id("/required-table/opp-1").is_some());
+        assert!(guest.get_by_path_id("/regulator/device@1000").is_none());
+        assert!(
+            find_all_passthrough_devices_from_paths(
+                &selectors,
+                &["/required-table/opp-1".into()],
+                &fdt
+            )
+            .is_err()
+        );
+        let excluded = ["/regulator/regulator-state-mem".into()];
+        let selected =
+            find_all_passthrough_devices_from_paths(&selectors, &excluded, &fdt).unwrap();
+        let bytes =
+            super::super::create::create_guest_fdt(&fdt, &selected, &cfg, &excluded).unwrap();
+        let guest = Fdt::from_bytes(&bytes).unwrap();
+        assert!(guest.get_by_path_id("/regulator").is_some());
+        assert!(guest.get_by_path_id(&excluded[0]).is_none());
+        fdt.node_mut(opp)
+            .unwrap()
+            .set_property(cells("interrupts", &[1]));
+        assert!(find_all_passthrough_devices_from_paths(&selectors, &[], &fdt).is_err());
+        fdt.node_mut(opp).unwrap().remove_property("interrupts");
+        fdt.node_mut(opp)
+            .unwrap()
+            .set_property(cells("reg", &[0x2000, 0x100]));
+        assert!(find_all_passthrough_devices_from_paths(&selectors, &[], &fdt).is_err());
+    }
+
+    #[test]
+    fn dependency_discovery_does_not_interpret_provider_arguments_as_devices() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let device = fdt.add_node(root, Node::new("device"));
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(cells("iommus", &[1, 2]));
+        let fabric = fdt.add_node(root, Node::new("fabric"));
+        let provider = fdt.add_node(fabric, Node::new("iommu"));
+        fdt.node_mut(provider)
+            .unwrap()
+            .set_property(cells("phandle", &[1]));
+        fdt.node_mut(provider)
+            .unwrap()
+            .set_property(cells("#iommu-cells", &[1]));
+        let unrelated = fdt.add_node(fabric, Node::new("unrelated"));
+        fdt.node_mut(unrelated)
+            .unwrap()
+            .set_property(cells("phandle", &[2]));
+        let selected =
+            find_all_passthrough_devices_from_paths(&["/device".into()], &[], &fdt).unwrap();
+        assert!(selected.contains(&"/fabric/iommu".into()));
+        assert!(!selected.contains(&"/fabric".into()));
+        let mut cfg = axvmconfig::GuestConfig::default();
+        cfg.base.phys_cpu_ids = Some(std::vec![0]);
+        let bytes = super::super::create::create_guest_fdt(&fdt, &selected, &cfg, &[]).unwrap();
+        let guest = Fdt::from_bytes(&bytes).unwrap();
+        assert!(guest.get_by_path_id("/fabric/iommu").is_some());
+        assert!(guest.get_by_path_id("/fabric/unrelated").is_none());
+        assert!(!selected.contains(&"/fabric/unrelated".into()));
+        let selectors = ["/device".into()];
+        assert!(
+            find_all_passthrough_devices_from_paths(&selectors, &["/fabric/iommu".into()], &fdt)
+                .is_err()
+        );
+        fdt.node_mut(provider)
+            .unwrap()
+            .set_property(cells("reg", &[0, 0x1000, 0x100]));
+        assert!(find_all_passthrough_devices_from_paths(&selectors, &[], &fdt).is_err());
+        let selected = find_all_passthrough_devices_from_paths(
+            &["/device".into(), "/fabric/iommu".into()],
+            &[],
+            &fdt,
+        )
+        .unwrap();
+        assert!(!selected.contains(&"/fabric/unrelated".into()));
+        fdt.node_mut(provider).unwrap().remove_property("reg");
+        for malformed in [&[1][..], &[99, 2][..]] {
+            fdt.node_mut(device)
+                .unwrap()
+                .set_property(cells("iommus", malformed));
+            assert!(find_all_passthrough_devices_from_paths(&selectors, &[], &fdt).is_err());
+        }
+        fdt.node_mut(device).unwrap().remove_property("iommus");
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(cells("interrupt-parent", &[1, 2]));
+        assert!(find_all_passthrough_devices_from_paths(&selectors, &[], &fdt).is_err());
+    }
 }

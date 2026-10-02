@@ -18,7 +18,6 @@ use std::{
     collections::BTreeSet,
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 
@@ -95,7 +94,7 @@ pub fn setup_guest_fdt_from_vmm(
         &selected_device_names,
         &excluded_device_paths,
         &fdt,
-    );
+    )?;
     super::create::create_guest_fdt(
         &fdt,
         &passthrough_device_names,
@@ -137,49 +136,6 @@ fn align_reserved_region_4k(gpa: usize, size: usize) -> Option<(usize, usize)> {
     let aligned_size = aligned_end.saturating_sub(aligned_gpa);
 
     (aligned_size > 0).then_some((aligned_gpa, aligned_size))
-}
-
-fn subtract_memory_region_overlap(
-    start: usize,
-    size: usize,
-    existing_regions: &[VmMemConfig],
-) -> Vec<(usize, usize)> {
-    let mut remaining = vec![(start, start.saturating_add(size))];
-    let mut overlaps = existing_regions.to_vec();
-    overlaps.sort_by_key(|region| region.gpa);
-
-    for region in overlaps {
-        let overlap_start = region.gpa;
-        let overlap_end = region.gpa.saturating_add(region.size);
-        let mut next_remaining = Vec::new();
-
-        for (seg_start, seg_end) in remaining {
-            if overlap_end <= seg_start || overlap_start >= seg_end {
-                next_remaining.push((seg_start, seg_end));
-                continue;
-            }
-
-            if seg_start < overlap_start {
-                next_remaining.push((seg_start, overlap_start.min(seg_end)));
-            }
-            if overlap_end < seg_end {
-                next_remaining.push((overlap_end.max(seg_start), seg_end));
-            }
-        }
-
-        remaining = next_remaining;
-        if remaining.is_empty() {
-            break;
-        }
-    }
-
-    remaining
-        .into_iter()
-        .filter_map(|(seg_start, seg_end)| {
-            let seg_size = seg_end.saturating_sub(seg_start);
-            (seg_size > 0).then_some((seg_start, seg_size))
-        })
-        .collect()
 }
 
 fn reserved_memory_regions(crate_cfg: &GuestConfig) -> impl Iterator<Item = &VmMemConfig> {
@@ -281,6 +237,9 @@ pub fn reserve_excluded_device_ranges(
         )
     })?;
     protect_machine_owned_firmware_devices(vm_cfg, crate_cfg, &fdt)?;
+    for device in &crate_cfg.devices.disabled {
+        vm_cfg.exclude_device_path(device.path.clone());
+    }
     let excluded_paths = excluded_device_paths(vm_cfg, crate_cfg);
     if excluded_paths.is_empty() {
         return Ok(());
@@ -367,8 +326,9 @@ fn protect_machine_owned_firmware_devices(
     });
     host_owned_paths.extend(fdt.iter_node_ids().filter_map(|node_id| {
         let node = fdt.node(node_id)?;
-        (is_machine_interrupt_controller(node) || super::timer::is_machine_timer_node(node))
-            .then(|| fdt.path_of(node_id))
+        (super::interrupt::is_machine_interrupt_provider(node)
+            || super::timer::is_machine_timer_node(node))
+        .then(|| fdt.path_of(node_id))
     }));
     host_owned_paths.sort();
     host_owned_paths.dedup();
@@ -386,23 +346,6 @@ fn protect_machine_owned_firmware_devices(
         vm_cfg.exclude_device_path(path);
     }
     Ok(())
-}
-
-fn is_machine_interrupt_controller(node: &Node) -> bool {
-    if node.get_property("interrupt-controller").is_none() {
-        return false;
-    }
-    node.name().starts_with("interrupt-controller")
-        || node.name().starts_with("intc")
-        || node.name().starts_with("its")
-        || node.compatibles().any(|compatible| {
-            compatible.contains("gic")
-                || compatible.contains("plic")
-                || compatible.contains("eiointc")
-                || compatible.contains("extioi")
-                || compatible.contains("liointc")
-                || compatible.contains("pch-pic")
-        })
 }
 
 fn is_memory_like_compatible(node: &Node) -> bool {
@@ -458,51 +401,9 @@ fn should_skip_passthrough_node(
     false
 }
 
-pub fn parse_reserved_memory_regions(crate_cfg: &mut GuestConfig, dtb: &[u8]) -> AxVmResult {
-    let fdt = Fdt::from_bytes(dtb).map_err(|e| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse DTB image while reading reserved memory: {e:#?}")
-        )
-    })?;
-    let default_flags = (MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE).bits();
-
-    let mut added_count = 0usize;
-    for node_id in fdt.iter_node_ids() {
-        let node_path = fdt.path_of(node_id);
-        if !is_reserved_memory_path(&node_path) {
-            continue;
-        }
-
-        for reg in node_regs(&fdt, node_id) {
-            let original_gpa = reg.address as usize;
-            let original_size = reg.size.unwrap_or(0) as usize;
-            let Some((gpa, size)) = align_reserved_region_4k(original_gpa, original_size) else {
-                continue;
-            };
-
-            let remaining_segments =
-                subtract_memory_region_overlap(gpa, size, &crate_cfg.kernel.memory_regions);
-
-            for (seg_gpa, seg_size) in remaining_segments {
-                crate_cfg.kernel.memory_regions.push(VmMemConfig {
-                    gpa: seg_gpa,
-                    size: seg_size,
-                    flags: default_flags,
-                    map_type: VmMemMappingType::MapReserved,
-                });
-                added_count += 1;
-            }
-        }
-    }
-
-    if added_count > 0 {
-        debug!(
-            "Added {} reserved-memory region(s) from DTB into VM kernel memory_regions",
-            added_count
-        );
-    }
-    Ok(())
+pub fn parse_reserved_memory_regions(crate_cfg: &GuestConfig, dtb: &[u8]) -> AxVmResult {
+    let tree = super::tree::FdtTree::from_bytes(dtb)?;
+    super::reserved::validate_configured(tree.inner(), crate_cfg)
 }
 
 pub fn set_phys_cpu_sets(
@@ -679,7 +580,7 @@ pub fn parse_passthrough_devices_address(
         )
     })?;
 
-    let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)
+    let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)?
         .into_iter()
         .collect::<BTreeSet<_>>();
     vm_cfg.clear_pass_through_devices();
@@ -692,6 +593,7 @@ pub fn parse_passthrough_devices_address(
         let node_path = fdt.path_of(node_id);
 
         if !selected_paths.contains(&node_path)
+            || !super::device::node_enabled(&fdt, node_id)
             || node_path == "/"
             || node.name().starts_with("memory")
             || is_reserved_memory_path(&node_path)
@@ -749,7 +651,7 @@ pub fn parse_vm_interrupt(
             format!("Failed to parse DTB image while reading interrupts: {e:#?}")
         )
     })?;
-    let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)
+    let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)?
         .into_iter()
         .collect::<BTreeSet<_>>();
     let excluded_paths = excluded_device_paths(vm_cfg, crate_cfg);
@@ -763,11 +665,10 @@ pub fn parse_vm_interrupt(
         let name = node.name();
         let path = fdt.path_of(node_id);
         if !selected_paths.contains(&path)
+            || !super::device::node_enabled(&fdt, node_id)
             || is_excluded_node_path(&path, &excluded_paths)
             || name.starts_with("memory")
-            || name.starts_with("interrupt-controller")
-            || name.starts_with("intc")
-            || name.starts_with("its")
+            || super::interrupt::is_machine_interrupt_provider(node)
             || host_owned_serial_paths.contains(&path)
         {
             continue;
@@ -808,14 +709,17 @@ pub fn update_provided_fdt(
     crate_config: &GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
     let patch_provided = super::selected_guest_fdt_policy().patch_provided;
-    patch_provided(provided_dtb, host_dtb, crate_config)
+    let bytes = patch_provided(provided_dtb, host_dtb, crate_config)?;
+    let mut tree = super::tree::FdtTree::from_bytes(&bytes)?;
+    super::disabled::apply(&mut tree, crate_config)?;
+    Ok(tree.finish())
 }
 
 #[cfg(test)]
 mod tests {
     use std::{string::ToString, vec, vec::Vec};
 
-    use axvm_types::{AddressSpacePolicy, HostDeviceAssignment, VmMemConfig, VmMemMappingType};
+    use axvm_types::{AddressSpacePolicy, HostDeviceAssignment};
     use axvmconfig::{GuestConfig, GuestDevices, GuestType, PhysicalDeviceRef};
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
@@ -825,6 +729,104 @@ mod tests {
         reserve_excluded_device_ranges, resolve_phys_cpu_sets, setup_guest_fdt_from_vmm,
     };
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
+
+    #[test]
+    fn reserved_memory_outside_guest_ram_keeps_firmware_without_adding_mappings() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let reserved = fdt.add_node(root, Node::new("reserved-memory"));
+        fdt.node_mut(reserved)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(reserved)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        let region = fdt.add_node(reserved, Node::new("buffer@4000"));
+        fdt.view_typed_mut(region)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x4000, Some(0x1000))]);
+        let cfg = GuestConfig::default();
+        let bytes = super::update_provided_fdt(fdt.encode().as_ref(), None, &cfg).unwrap();
+        super::parse_reserved_memory_regions(&cfg, &bytes).unwrap();
+        let guest = Fdt::from_bytes(&bytes).unwrap();
+        super::super::reserved::validate_allocated(&guest, &[]).unwrap();
+        let retained = guest.get_by_path("/reserved-memory/buffer@4000").unwrap();
+        assert_eq!(retained.regs()[0].address, 0x4000);
+        assert_eq!(retained.regs()[0].size, Some(0x1000));
+
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/reserved-memory".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        parse_passthrough_devices_address(&mut vm_cfg, &cfg, &bytes).unwrap();
+        assert!(vm_cfg.pass_through_devices().is_empty());
+        fdt.node_mut(region)
+            .unwrap()
+            .set_property(prop_u32_list("reg", &[u32::MAX, u32::MAX, 0, 1]));
+        assert!(super::parse_reserved_memory_regions(&cfg, fdt.encode().as_ref()).is_err());
+    }
+
+    #[test]
+    fn provided_fdt_removes_disabled_device_subtrees() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let disabled = fdt.add_node(root, Node::new("interrupt-controller@1000"));
+        fdt.add_node(disabled, Node::new("child"));
+        fdt.node_mut(disabled)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
+        fdt.node_mut(disabled)
+            .unwrap()
+            .set_property(super::super::tree::prop_string(
+                "compatible",
+                "brcm,bcm2711-l2-intc",
+            ));
+        let consumer = fdt.add_node(root, Node::new("interrupt-controller@1000-other"));
+        fdt.node_mut(disabled)
+            .unwrap()
+            .set_property(prop_u32("phandle", 1));
+        fdt.node_mut(disabled)
+            .unwrap()
+            .set_property(prop_u32("#clock-cells", 0));
+        let aliases = fdt.add_node(root, Node::new("aliases"));
+        fdt.node_mut(aliases)
+            .unwrap()
+            .set_property(super::super::tree::prop_string(
+                "serial0",
+                "/interrupt-controller@1000",
+            ));
+        let mut cfg = GuestConfig::default();
+        cfg.devices.disabled.push(PhysicalDeviceRef {
+            path: "/interrupt-controller@1000".into(),
+        });
+        let bytes = super::update_provided_fdt(fdt.encode().as_ref(), None, &cfg).unwrap();
+        let guest = Fdt::from_bytes(&bytes).unwrap();
+        assert!(guest.get_by_path_id("/interrupt-controller@1000").is_none());
+        assert!(
+            guest
+                .get_by_path_id("/interrupt-controller@1000-other")
+                .is_some()
+        );
+        assert!(
+            guest
+                .node(guest.get_by_path_id("/aliases").unwrap())
+                .unwrap()
+                .get_property("serial0")
+                .is_none()
+        );
+        fdt.node_mut(consumer)
+            .unwrap()
+            .set_property(prop_u32("clocks", 1));
+        let error = super::update_provided_fdt(fdt.encode().as_ref(), None, &cfg).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("disabled provider /interrupt-controller@1000")
+        );
+    }
 
     fn prop_u32(name: &str, value: u32) -> fdt_edit::Property {
         let mut prop = fdt_edit::Property::new(name, std::vec![]);
@@ -1207,48 +1209,6 @@ mod tests {
         let error = resolve_phys_cpu_sets(&[3], &[(3, 3)], 4, |_| Some(4)).unwrap_err();
 
         assert!(error.to_string().contains("outside the 4 usable host CPUs"));
-    }
-
-    #[test]
-    fn subtract_memory_region_overlap_keeps_non_overlapping_range() {
-        let existing = vec![VmMemConfig {
-            gpa: 0x4000,
-            size: 0x1000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
-
-        assert_eq!(
-            super::subtract_memory_region_overlap(0x1000, 0x1000, &existing),
-            vec![(0x1000, 0x1000)]
-        );
-    }
-
-    #[test]
-    fn subtract_memory_region_overlap_splits_range_around_overlap() {
-        let existing = vec![VmMemConfig {
-            gpa: 0x3000,
-            size: 0x2000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
-
-        assert_eq!(
-            super::subtract_memory_region_overlap(0x1000, 0x6000, &existing),
-            vec![(0x1000, 0x2000), (0x5000, 0x2000)]
-        );
-    }
-
-    #[test]
-    fn subtract_memory_region_overlap_drops_fully_covered_range() {
-        let existing = vec![VmMemConfig {
-            gpa: 0x1000,
-            size: 0x4000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
-
-        assert!(super::subtract_memory_region_overlap(0x2000, 0x1000, &existing).is_empty());
     }
 
     #[test]
