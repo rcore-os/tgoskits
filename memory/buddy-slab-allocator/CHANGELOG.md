@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.6.1...buddy-slab-allocator-v0.6.2) - 2026-10-02
+
+### Added
+
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.6.0...buddy-slab-allocator-v0.6.1) - 2026-09-12
 
 ### Other

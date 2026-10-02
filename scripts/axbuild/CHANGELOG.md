@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.1...axbuild-v0.10.0) - 2026-10-02
+
+### Added
+
+- *(axloader)* serve HTTP boot with A/B OTA recovery ([#2535](https://github.com/rcore-os/tgoskits/pull/2535))
+- *(virtio-gpu)* async fire-and-forget submission with real fences ([#2536](https://github.com/rcore-os/tgoskits/pull/2536))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(starry)* migrate network throughput tests to ostool HTTP ([#2529](https://github.com/rcore-os/tgoskits/pull/2529))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+- *(axbuild)* run one Starry LTP case in QEMU ([#2495](https://github.com/rcore-os/tgoskits/pull/2495))
+
+### Fixed
+
+- *(axbuild)* match Linux PCI ECAM resource name ([#2523](https://github.com/rcore-os/tgoskits/pull/2523))
+
+### Other
+
+- *(gpu)* move all control-queue waits out of the device lock ([#2557](https://github.com/rcore-os/tgoskits/pull/2557))
+- *(sg2002)* drop the stale host initramfs claim from the device trees ([#2548](https://github.com/rcore-os/tgoskits/pull/2548))
+- *(axbuild)* retain functional tests and remove parameter cases ([#2496](https://github.com/rcore-os/tgoskits/pull/2496))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.0...axbuild-v0.9.1) - 2026-09-22
 
 ### Added

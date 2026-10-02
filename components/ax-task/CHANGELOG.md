@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.4...ax-task-v0.8.5) - 2026-10-02
+
+### Other
+
+- *(axvm)* reduce GICv3 virtual CPU interface switch overhead ([#2503](https://github.com/rcore-os/tgoskits/pull/2503))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.3...ax-task-v0.8.4) - 2026-09-22
 
 ### Other

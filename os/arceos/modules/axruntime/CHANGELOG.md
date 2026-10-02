@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.6](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.5...ax-runtime-v0.13.6) - 2026-10-02
+
+### Added
+
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+
+### Fixed
+
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+
+### Other
+
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.13.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.4...ax-runtime-v0.13.5) - 2026-09-22
 
 ### Fixed
