@@ -3,10 +3,10 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{
     boxed::Box,
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     format,
     string::String,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     vec::Vec,
 };
 
@@ -19,7 +19,7 @@ use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, VirtioError};
 use axvirtio_net::{
     DeviceEvent, NetworkBackend, NetworkBackendError, RxOutcome, VirtioMmioNetDevice,
     VirtioNetConfig,
-    switch::{SwitchPort, SwitchPortId, SwitchPortRegistration, VirtualSwitch},
+    switch::{EgressOutcome, SwitchPort, SwitchPortId, SwitchPortRegistration, VirtualSwitch},
 };
 use axvm_types::GuestPhysAddr;
 use axvmconfig::VirtualDeviceRequest;
@@ -33,6 +33,71 @@ const INGRESS_CAPACITY: usize = 64;
 
 static NEXT_PORT_ID: AtomicUsize = AtomicUsize::new(0);
 static INTERNAL_SWITCH: Mutex<Option<Arc<VirtualSwitch>>> = Mutex::new(None);
+
+/// MACs owned by a live guest port, so the physical-ingress glue can drop its
+/// own transmitted frames instead of looping guest broadcasts back into the
+/// switch. Only task contexts (device build/teardown and the protocol
+/// executor's ingress check) touch it, never a vCPU MMIO write or a hard IRQ.
+static GUEST_MACS: Mutex<BTreeSet<[u8; 6]>> = Mutex::new(BTreeSet::new());
+
+/// Host NIC MACs a guest port must never claim, so the host interface address
+/// stays unambiguous on the LAN.
+static HOST_MACS: Mutex<BTreeSet<[u8; 6]>> = Mutex::new(BTreeSet::new());
+
+/// Hypervisor-side adapter for the single physical host uplink, implemented by
+/// the platform glue that owns the host network stack. It is the only channel
+/// by which a guest egress frame reaches the wire.
+pub trait PhysicalUplink: Send + Sync {
+    /// Submits one guest-originated frame for physical transmission.
+    ///
+    /// Returns `true` when the frame was accepted, `false` when it was dropped
+    /// (for example a full bounded ring). Must not block or allocate, because it
+    /// runs in the guest's vCPU MMIO-write context.
+    fn submit_guest_egress(&self, frame: &[u8]) -> bool;
+}
+
+/// Physical uplink adapter, published exactly once before any guest can send.
+///
+/// `OnceLock` keeps the guest TX path a lock-free load, so a vCPU MMIO write
+/// never blocks on the uplink and host tests without a kernel lock runtime can
+/// still transmit through this module.
+static PHYSICAL_UPLINK: OnceLock<Arc<dyn PhysicalUplink>> = OnceLock::new();
+
+/// Publishes the physical uplink adapter; returns `false` if one is installed.
+pub fn install_physical_uplink(uplink: Arc<dyn PhysicalUplink>) -> bool {
+    PHYSICAL_UPLINK.set(uplink).is_ok()
+}
+
+/// Reserves a host-owned MAC that no guest port may claim.
+pub fn reserve_host_mac(mac: [u8; 6]) {
+    HOST_MACS
+        .lock()
+        .expect("virtio-net host MAC set poisoned")
+        .insert(mac);
+}
+
+/// Returns whether `mac` is reserved for the host interface.
+fn is_reserved_host_mac(mac: &[u8; 6]) -> bool {
+    HOST_MACS
+        .lock()
+        .expect("virtio-net host MAC set poisoned")
+        .contains(mac)
+}
+
+/// Removes a guest MAC when its port is torn down so a VM restart cannot leak
+/// stale L2 ownership.
+struct GuestMacReservation {
+    mac: [u8; 6],
+}
+
+impl Drop for GuestMacReservation {
+    fn drop(&mut self) {
+        GUEST_MACS
+            .lock()
+            .expect("virtio-net guest MAC set poisoned")
+            .remove(&self.mac);
+    }
+}
 
 /// Catalog entry for `[[devices.virtual]] model = "virtio-net"`.
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
@@ -52,6 +117,12 @@ fn create_device_node(
     context: &DeviceInstantiationContext,
 ) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
     let guest_mac = parse_mac(request, "guest_mac")?;
+    if is_reserved_host_mac(&guest_mac) {
+        return Err(invalid_options(
+            request,
+            "`guest_mac` must differ from the host interface MAC".into(),
+        ));
+    }
     let controller =
         context
             .default_wired_controller()
@@ -175,6 +246,15 @@ impl DeviceModel for VirtioNetModel {
                 detail: format!("{error:?}"),
             }
         })?;
+        // Mirror the switch's MAC ownership so the ingress path can reject our
+        // own transmitted frames.
+        GUEST_MACS
+            .lock()
+            .expect("virtio-net guest MAC set poisoned")
+            .insert(self.guest_mac);
+        let mac_reservation = GuestMacReservation {
+            mac: self.guest_mac,
+        };
         endpoint.activate();
 
         let backend = SwitchBackend {
@@ -201,6 +281,7 @@ impl DeviceModel for VirtioNetModel {
             grant: grant.clone(),
             endpoint,
             _registration: registration,
+            _mac_reservation: mac_reservation,
             resources: std::vec![
                 Resource::MmioRange { base, size },
                 Resource::IrqLine {
@@ -216,11 +297,32 @@ impl DeviceModel for VirtioNetModel {
     }
 }
 
+/// Returns the process-wide internal L2 switch, creating it on first use.
 fn internal_switch() -> Arc<VirtualSwitch> {
     let mut slot = INTERNAL_SWITCH
         .lock()
         .expect("virtio-net switch mutex poisoned");
     slot.get_or_insert_with(VirtualSwitch::new).clone()
+}
+
+/// Delivers one physical RX frame into the internal L2 switch.
+///
+/// Frames whose source MAC is owned by a live guest port are dropped, since
+/// they are our own transmitted guest traffic reflected back by the LAN and
+/// must not be looped into the fabric a second time.
+pub fn switch_from_physical_rx(frame: &[u8]) {
+    if frame.len() >= 12 {
+        let mut source = [0u8; 6];
+        source.copy_from_slice(&frame[6..12]);
+        if GUEST_MACS
+            .lock()
+            .expect("virtio-net guest MAC set poisoned")
+            .contains(&source)
+        {
+            return;
+        }
+    }
+    internal_switch().switch_from_uplink(frame);
 }
 
 #[derive(Clone)]
@@ -231,8 +333,30 @@ struct SwitchBackend {
 
 impl NetworkBackend for SwitchBackend {
     fn transmit(&self, frame: &[u8]) -> Result<(), NetworkBackendError> {
-        let _ = self.switch.switch_from_port(self.endpoint.id(), frame);
+        if let EgressOutcome::Forwarded { uplink: true } =
+            self.switch.switch_from_port(self.endpoint.id(), frame)
+        {
+            // Frames that must leave the virtual fabric go to the single
+            // physical uplink when one is installed; without a bridge the frame
+            // is dropped silently, as before this adapter existed.
+            if let Some(uplink) = PHYSICAL_UPLINK.get() {
+                let _ = uplink.submit_guest_egress(frame);
+            }
+        }
         Ok(())
+    }
+
+    fn rx_queue_notified(&self) {
+        // A kick means the guest published more RX buffers, so a frame that
+        // `poll_dma` retained after `RxOutcome::NoGuestBuffer` can now be
+        // delivered; wake only while such a frame is pending so an idle kick
+        // does not force a pointless vCPU exit. The ingress lock must be
+        // released before the wake: `notify` publishes a poll request whose
+        // later `poll_dma` takes the same lock, so holding it would invert the
+        // lock order.
+        if self.endpoint.has_retained_ingress() {
+            self.endpoint.notify_ingress();
+        }
     }
 }
 
@@ -301,6 +425,21 @@ impl PortEndpoint {
             .lock()
             .expect("virtio-net ingress mutex poisoned")
     }
+
+    /// Reports whether a retained frame waits for a guest RX buffer. Releases
+    /// the ingress lock before returning so the caller can wake lock-free.
+    fn has_retained_ingress(&self) -> bool {
+        !self.lock_ingress().is_empty()
+    }
+}
+
+#[cfg(test)]
+impl PortEndpoint {
+    /// Non-blocking ingress probe used by tests to prove the wake path does not
+    /// observe the endpoint's ingress lock as held.
+    fn try_lock_ingress(&self) -> Result<MutexGuard<'_, VecDeque<Vec<u8>>>, ()> {
+        self.ingress.try_lock().map_err(|_| ())
+    }
 }
 
 impl SwitchPort for PortEndpoint {
@@ -355,6 +494,8 @@ struct VirtioNetRuntimeDevice {
     grant: DmaGrant,
     endpoint: Arc<PortEndpoint>,
     _registration: SwitchPortRegistration,
+    /// Removes this guest MAC from the loop-guard set when the device drops.
+    _mac_reservation: GuestMacReservation,
     resources: Box<[Resource]>,
 }
 
@@ -464,5 +605,115 @@ fn map_virtio_error(error: VirtioError) -> DeviceError {
     DeviceError::InvalidInput {
         operation: "access virtio-net MMIO transport",
         detail: format!("{error:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Weak;
+
+    use super::*;
+
+    /// `WakeTarget` that records the wake count and re-enters the endpoint from
+    /// inside `notify`, mirroring what a real wake does: `notify_vm` publishes a
+    /// device poll request whose later `poll_dma` run takes the ingress lock
+    /// again.
+    ///
+    /// The endpoint is held weakly so the endpoint -> wake-target -> endpoint
+    /// ownership chain stays acyclic.
+    #[derive(Default)]
+    struct RecordingWakeTarget {
+        notifications: AtomicUsize,
+        ingress_lock_free_in_notify: AtomicBool,
+        endpoint: Mutex<Option<Weak<PortEndpoint>>>,
+    }
+
+    impl WakeTarget for RecordingWakeTarget {
+        fn notify(&self) {
+            let endpoint = {
+                let slot = self.endpoint.lock().expect("wake endpoint slot poisoned");
+                slot.as_ref().and_then(Weak::upgrade)
+            };
+            if let Some(endpoint) = endpoint {
+                // `try_lock` rather than `lock` keeps a lock-order regression
+                // from hanging the test thread; it fails the assertion instead.
+                if endpoint.try_lock_ingress().is_ok() {
+                    self.ingress_lock_free_in_notify
+                        .store(true, Ordering::Release);
+                }
+            }
+            self.notifications.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Builds an active port whose wake target records notifications and can
+    /// re-enter the endpoint, plus the backend the guest device would drive.
+    fn backend_with_recorder() -> (Arc<PortEndpoint>, Arc<RecordingWakeTarget>, SwitchBackend) {
+        let switch = VirtualSwitch::new();
+        let wake_target = Arc::new(RecordingWakeTarget::default());
+        let endpoint = PortEndpoint::new(
+            SwitchPortId::new(0, 0, 1),
+            [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+            switch.clone(),
+            wake_target.clone(),
+        );
+        *wake_target
+            .endpoint
+            .lock()
+            .expect("wake endpoint slot poisoned") = Some(Arc::downgrade(&endpoint));
+        endpoint.activate();
+        let backend = SwitchBackend {
+            endpoint: endpoint.clone(),
+            switch,
+        };
+        (endpoint, wake_target, backend)
+    }
+
+    #[test]
+    fn rx_queue_notify_with_empty_ingress_does_not_wake() {
+        let (_endpoint, wake_target, backend) = backend_with_recorder();
+
+        backend.rx_queue_notified();
+
+        assert_eq!(wake_target.notifications.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn rx_queue_notify_with_retained_frame_wakes_once_and_keeps_frame_in_order() {
+        let (endpoint, wake_target, backend) = backend_with_recorder();
+        assert!(endpoint.deliver_ingress(&[0xde, 0xad, 0xbe, 0xef]));
+
+        // One RX queue notify edge wakes exactly once: the count is per call,
+        // not an artificial de-duplication of repeated kicks.
+        backend.rx_queue_notified();
+
+        assert_eq!(wake_target.notifications.load(Ordering::Acquire), 1);
+        // The edge only re-publishes the poll request; `poll_dma` stays the
+        // sole consumer and still sees the retained frame first.
+        assert_eq!(
+            endpoint.pop_ingress().as_deref(),
+            Some(&[0xde, 0xad, 0xbe, 0xef][..])
+        );
+
+        // Once the frame is consumed, the ingress is empty again and a further
+        // idle kick must not wake the VM.
+        backend.rx_queue_notified();
+        assert_eq!(wake_target.notifications.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn rx_queue_notify_releases_ingress_lock_before_waking() {
+        let (endpoint, wake_target, backend) = backend_with_recorder();
+        assert!(endpoint.deliver_ingress(&[0x01, 0x02, 0x03, 0x04]));
+
+        backend.rx_queue_notified();
+
+        assert_eq!(wake_target.notifications.load(Ordering::Acquire), 1);
+        assert!(
+            wake_target
+                .ingress_lock_free_in_notify
+                .load(Ordering::Acquire),
+            "WakeTarget::notify re-entered the endpoint, so the ingress lock must already be free"
+        );
     }
 }

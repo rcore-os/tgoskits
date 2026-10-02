@@ -20,7 +20,7 @@
 //! and does not inspect TCP/UDP socket state. Route selection is performed by
 //! the router before Ethernet sees the packet.
 
-use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
 
 use hashbrown::HashMap;
 use smoltcp::{
@@ -53,6 +53,21 @@ fn accepts_destination(
         || destination == EMPTY_MAC
         || destination == own
         || (accept_multicast && destination.is_multicast())
+}
+
+/// Returns the uplink runtime bound to `interface_name`, if any, so a second
+/// NIC cannot drain guest egress or feed the switch with foreign frames.
+fn uplink_for(interface_name: &str) -> Option<Arc<crate::uplink::UplinkRuntime>> {
+    crate::uplink::runtime().filter(|uplink| uplink.matches_device(interface_name))
+}
+
+/// Forwards a copy of one received physical frame to the L2 uplink sink before
+/// the destination-MAC filter, so the switch still sees frames addressed to
+/// guest MACs that the host interface would drop.
+fn dispatch_uplink_ingress(uplink: Option<&crate::uplink::UplinkRuntime>, frame: &[u8]) {
+    if let Some(uplink) = uplink {
+        uplink.deliver_ingress(frame);
+    }
 }
 
 struct Neighbor {
@@ -141,6 +156,35 @@ impl EthernetDevice {
             deferred_rx_errors: 0,
             deferred_rx_drops: 0,
         }
+    }
+
+    /// Moves queued guest frames onto the physical NIC TX path.
+    ///
+    /// Runs on the protocol executor, the only producer of this port's TX ring,
+    /// so the fixed-CPU queue owner still performs the actual DMA submission.
+    /// The pass is bounded so a flooding guest cannot starve host traffic
+    /// within one poll.
+    fn flush_uplink_egress(&mut self) {
+        let Some(uplink) = uplink_for(&self.name) else {
+            return;
+        };
+        let name = &self.name;
+        let port = &mut *self.inner;
+        uplink.drain_egress(crate::uplink::EGRESS_DRAIN_BUDGET, &mut |frame| {
+            match port.transmit_frame_with_options(
+                frame.len(),
+                TxSubmitOptions::default(),
+                &mut |target| target.copy_from_slice(frame),
+            ) {
+                Ok(()) => true,
+                // Transient pressure: keep the frame queued for the next poll.
+                Err(NetDeviceError::Again) => false,
+                Err(error) => {
+                    warn!("{name}: uplink transmit failed: {error:?}");
+                    true
+                }
+            }
+        });
     }
 
     #[inline]
@@ -286,6 +330,7 @@ impl EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
         let frame_len = frame.len();
+        let raw = frame;
         let frame = EthernetFrame::new_unchecked(frame);
         let Ok(repr) = EthernetRepr::parse(&frame) else {
             warn!("Dropping malformed Ethernet frame");
@@ -293,6 +338,8 @@ impl EthernetDevice {
             return 0;
         };
 
+        // The uplink sees the frame before this host-only MAC filter drops it.
+        dispatch_uplink_ingress(uplink_for(&self.name).as_deref(), raw);
         if !accepts_destination(
             repr.dst_addr,
             self.hardware_address(),
@@ -571,6 +618,7 @@ impl Device for EthernetDevice {
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
+        self.flush_uplink_egress();
         // TX completions already wake the protocol executor. Retry control
         // traffic on that poll even if no new RX packet or IP send arrives.
         self.flush_arp_replies();
@@ -601,6 +649,8 @@ impl Device for EthernetDevice {
 
     fn poll_owned_rx(&mut self, timestamp: Instant) -> DeviceRxPoll {
         self.flush_arp_replies();
+        self.flush_uplink_egress();
+        let uplink = uplink_for(&self.name);
         loop {
             let frame = match self.inner.receive_owned() {
                 Ok(Some(frame)) => frame,
@@ -626,6 +676,7 @@ impl Device for EthernetDevice {
                     malformed = true;
                     return None;
                 };
+                dispatch_uplink_ingress(uplink.as_deref(), packet);
                 if !accepts_destination(repr.dst_addr, hardware_address, accept_multicast) {
                     return None;
                 }
@@ -665,6 +716,8 @@ impl Device for EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> Option<usize> {
         self.flush_arp_replies();
+        self.flush_uplink_egress();
+        let uplink = uplink_for(&self.name);
         loop {
             let hardware_address = self.hardware_address();
             let accept_multicast = self.accept_multicast;
@@ -681,6 +734,7 @@ impl Device for EthernetDevice {
                     malformed = true;
                     return 0;
                 };
+                dispatch_uplink_ingress(uplink.as_deref(), packet);
                 if !accepts_destination(repr.dst_addr, hardware_address, accept_multicast) {
                     return 0;
                 }

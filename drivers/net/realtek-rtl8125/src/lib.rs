@@ -41,6 +41,21 @@ const RX_IDLE_LOG_INTERVAL: u64 = 262_144;
 const RX_OVERFLOW_REARM_IDLE_POLLS: u64 = 2048;
 const OCP_STD_PHY_BASE: u32 = 0xa400;
 
+/// Opt-in request for hardware acceptance of every physical unicast address,
+/// consulted each time the RX filter is programmed. Default-off so the host
+/// default stays "accept only my MAC".
+static RX_ACCEPT_ALL_PHYS: AtomicBool = AtomicBool::new(false);
+
+/// Requests that this driver accept frames for every physical unicast address,
+/// so a hypervisor can bridge guest MACs without changing the host default.
+pub fn request_rx_accept_all_phys(enabled: bool) {
+    RX_ACCEPT_ALL_PHYS.store(enabled, Ordering::Release);
+}
+
+fn rx_accept_all_phys_requested() -> bool {
+    RX_ACCEPT_ALL_PHYS.load(Ordering::Acquire)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
     Rtl8125A,
@@ -437,7 +452,7 @@ fn read_status(regs: Regs) -> Rtl8125Status {
 
 pub(crate) fn set_rx_mode(regs: Regs) {
     regs.set_multicast_filter_all();
-    regs.set_rx_accept_mode();
+    regs.set_rx_accept_mode(rx_accept_all_phys_requested());
 }
 
 fn chip_version(xid: u16) -> ChipVersion {
