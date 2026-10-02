@@ -275,6 +275,9 @@ pub fn enable_fp() {
 #[cfg(feature = "uspace")]
 core::arch::global_asm!(include_str!("user_copy.S"), include_str!("user_atomic.S"),);
 
+#[cfg(feature = "kernel-access")]
+core::arch::global_asm!(include_str!("kernel_copy.S"));
+
 #[cfg(feature = "uspace")]
 unsafe extern "C" {
     /// Copies data from source to destination, where addresses may be in user

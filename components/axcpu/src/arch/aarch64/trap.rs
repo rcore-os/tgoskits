@@ -245,6 +245,16 @@ unsafe extern "C" fn aarch64_trap_handler(
                 }
                 0x3c => handle_breakpoint(&mut tf),
                 _ => {
+                    // The same recovery covers the synchronous exceptions that
+                    // are not page faults: an address no translation can name
+                    // raises an address size fault, which arrives here rather
+                    // than through the page-fault path. Only a site that
+                    // registered a recovery entry is rescued; any other kernel
+                    // fault still reaches the panic below.
+                    #[cfg(feature = "exception-table")]
+                    if tf.raw.0.fixup_nofault_exception() {
+                        return;
+                    }
                     let snapshot = tf.snapshot();
                     let bt =
                         crate::trap::diagnostics::BacktraceDisplay(snapshot.backtrace_registers());

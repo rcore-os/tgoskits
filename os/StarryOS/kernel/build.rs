@@ -7,6 +7,20 @@ fn main() {
         // Host tests use the native linker rather than Starry's linker script,
         // which keeps the scope-local registry section for kernel images.
         println!("cargo::rustc-link-arg=-Wl,-z,nostart-stop-gc");
+        // The scripts that delimit the recovery tables, and the boot template
+        // that publishes the TSS offset, are linker input for a kernel image
+        // and are absent here. Name the symbols they would have defined so the
+        // code that reads them still links: the host registers no recovery
+        // entry, and the trap entry that reads the offset never runs.
+        for symbol in [
+            "_ex_table_start",
+            "_ex_table_end",
+            "_nofault_ex_table_start",
+            "_nofault_ex_table_end",
+            "__CPU_LOCAL_TSS_OFFSET",
+        ] {
+            println!("cargo::rustc-link-arg=-Wl,--defsym={symbol}=0");
+        }
     }
 
     let out_dir = std::env::var("OUT_DIR").unwrap();

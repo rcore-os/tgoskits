@@ -10,8 +10,8 @@ ax-std = ["dep:ax-std"]
 
 [dependencies]
 ax-alloc = { workspace = true, features = ["global-allocator"] }
-ax-cpu = { workspace = true, features = ["uspace", "pmu"] }
+ax-cpu = { workspace = true, features = ["uspace", "pmu", "kernel-access"] }
 ax-std = { workspace = true, optional = true, default-features = false, features = ["alloc", "paging", "uspace", "ipi", "smp"] }
 
 [package.metadata.docs.rs]
-targets = ["aarch64-unknown-none-softfloat"]
+targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

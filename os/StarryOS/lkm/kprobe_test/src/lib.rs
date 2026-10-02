@@ -58,7 +58,10 @@ pub fn kprobe_test() {
         .with_pre_handler(pre_handler)
         .with_post_handler(post_handler);
 
-    let kprobe = register_kprobe(kprobe_builder);
+    let Ok(kprobe) = register_kprobe(kprobe_builder) else {
+        ax_println!("[kprobe] register kprobe at [detect_func] rejected");
+        return;
+    };
     let new_pre_handler = |_data: &dyn ProbeData, pt_regs: &mut PtRegs| {
         ax_println!(
             "[kprobe] new_pre_handler: arg0: {}, arg1: {}, arg2: {}",
@@ -76,7 +79,11 @@ pub fn kprobe_test() {
         .with_pre_handler(new_pre_handler)
         .with_post_handler(post_handler);
 
-    let kprobe2 = register_kprobe(builder2);
+    let Ok(kprobe2) = register_kprobe(builder2) else {
+        ax_println!("[kprobe] register second kprobe at [detect_func] rejected");
+        unregister_kprobe(kprobe);
+        return;
+    };
     ax_println!(
         "[kprobe] install 2 kprobes at [detect_func]: {:#x}",
         detect_func as *const () as usize
@@ -96,7 +103,10 @@ pub fn kprobe_test() {
         .with_enable(true)
         .with_ret_handler(kret_post_handler);
 
-    let kretprobe = register_kretprobe(kretprobe_builder);
+    let Ok(kretprobe) = register_kretprobe(kretprobe_builder) else {
+        ax_println!("[kprobe] register kretprobe at [detect_func] rejected");
+        return;
+    };
     ax_println!(
         "[kretprobe] install kretprobe at [detect_func]: {:#x}",
         detect_func as *const () as usize

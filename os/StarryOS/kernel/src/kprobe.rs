@@ -342,10 +342,27 @@ where
 }
 
 /// Register a kprobe into the global manager, returning the live handle.
+///
+/// # Errors
+///
+/// Returns [`StarryError::InvalidInput`] when the target address cannot host a
+/// breakpoint: the instruction at the entry could not be decoded, relocated or
+/// patched, or is not supported by the architecture.  Attaching a probe is a
+/// diagnostic action, so a rejected probe point must not take the kernel down.
+///
+/// The rejection is reported as a bad argument rather than as an absent
+/// feature, which is what the callers of `perf_event_open` act on: an address
+/// that cannot host a breakpoint is one they chose, not a capability this
+/// kernel lacks.
 #[inline(never)]
-pub fn register_kprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelKprobe> {
+pub fn register_kprobe(
+    builder: ProbeBuilder<KernelKprobeOps>,
+) -> StarryResult<Arc<KernelKprobe>> {
     with_manager_and_list(|mgr, list| {
-        kprobe_crate_register_kprobe(mgr, list, builder).expect("Failed to register kprobe")
+        kprobe_crate_register_kprobe(mgr, list, builder).map_err(|error| {
+            warn!("kprobe registration rejected: {error:?}");
+            StarryError::InvalidInput
+        })
     })
 }
 
@@ -356,11 +373,21 @@ pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
 }
 
 /// Register a kretprobe and return its live handle.
+///
+/// # Errors
+///
+/// Returns [`StarryError::InvalidInput`] under the same conditions as
+/// [`register_kprobe`].
 #[inline(never)]
-pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
+pub fn register_kretprobe(
+    builder: KretprobeBuilder<KernelRawMutex>,
+) -> StarryResult<Arc<KernelKretprobe>> {
     INSTANCE.get_or_init(|| IrqMutex::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
     with_manager_and_list(|mgr, list| {
-        kprobe_crate_register_kretprobe(mgr, list, builder).expect("Failed to register kretprobe")
+        kprobe_crate_register_kretprobe(mgr, list, builder).map_err(|error| {
+            warn!("kretprobe registration rejected: {error:?}");
+            StarryError::InvalidInput
+        })
     })
 }
 

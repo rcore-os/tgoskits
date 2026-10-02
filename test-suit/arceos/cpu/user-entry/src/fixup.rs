@@ -33,34 +33,10 @@ unsafe extern "C" {
 }
 
 pub fn run() {
-    use std::os::arceos::{modules::ax_hal, sync::IrqSaveGuard};
-    let table = ax_hal::paging::PageTable::new(ax_hal::paging::PagingAllocator).unwrap();
-    let _irq = IrqSaveGuard::new();
-    struct RestoreRoot(u64);
-    impl Drop for RestoreRoot {
-        fn drop(&mut self) {
-            // SAFETY: IRQ exclusion retains this CPU and the original complete
-            // TTBR0 image. The temporary table is still alive through this drop.
-            unsafe {
-                core::arch::asm!("msr ttbr0_el1, {}", in(reg) self.0, options(nostack));
-            }
-            ax_cpu::mmu::flush_tlb(None);
-        }
-    }
-    let saved;
-    // SAFETY: the test owns this IRQ-disabled EL1 window. Retain the entire
-    // TTBR0 value, including ASID, rather than assuming boot left it zero.
-    unsafe {
-        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) saved, options(nomem, nostack));
-    }
-    let _restore = RestoreRoot(saved);
-    // SAFETY: this owned empty root is valid RAM and outlives all probes. A null
-    // access must encounter an invalid descriptor, not walk physical address 0
-    // and cause a platform-dependent synchronous external abort.
-    unsafe {
-        ax_cpu::mmu::write_user_page_table(table.root_paddr());
-    }
-    ax_cpu::mmu::flush_tlb(None);
+    // The null page stays unmapped for this window: a null access must meet an
+    // invalid descriptor, not walk physical address 0 and cause a
+    // platform-dependent synchronous external abort.
+    let _table = super::empty_user_table::EmptyUserTable::install();
     // SAFETY: both helpers fault on a genuinely unmapped null page and declare
     // linker-owned recovery entries. Real CPU vectors and the kernel stack
     // anchor are installed, and the restoration guard precedes table release.

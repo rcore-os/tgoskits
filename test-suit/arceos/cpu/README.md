@@ -44,7 +44,15 @@ x86 的 `paging/src/tlb.rs` 创建两个私有内核别名，预热真实 TLB，
 
 原实现把内核 trap 当作不含 RSP/SS 的短帧，报告的 SP 比实际值小 16 字节；同一用例确定性失败。64 位模式始终保存 SS:RSP，修正后两个入口均通过。该用例覆盖 CPU 入口与现场复制，不替代中断控制器投递、用户态 IRQ 或上层嵌套作用域的验证。
 
-### 1.6 x86 控制区生命周期
+### 1.6 无故障内核拷贝
+
+`user-entry/src/kernel_access.rs` 调用 `ax_cpu::kernel_access::copy_from_kernel_nofault`，验证两个已映射区间整段拷贝成功且内容一致，以及任一侧不可访问时返回 `KernelAccessError::Fault`：源不可访问时不复制任何字节，目的地保持原内容。
+
+不可访问地址取位 63:57 不是位 56 符号扩展的地址：任何翻译宽度都不覆盖它，各架构据此产生各自的故障类别（AArch64 地址长度故障、LoongArch 访存地址错误、RISC-V 页错误），与当前页表映射了什么无关。
+
+AArch64 另做一次翻译故障探测：在真实 EL1 下装入空用户页表，使整个用户地址段无映射，探查期间由 `user-entry/src/empty_user_table.rs` 持有该表并在释放之前恢复 TTBR0，`user-entry/src/fixup.rs` 的既有缺页恢复断言改用同一守卫。
+
+### 1.7 x86 控制区生命周期
 
 `virtualization-lifecycle` 的默认 x86 配置使用 SVM TCG，`virtualization-lifecycle-vmx` 使用嵌套 VMX/KVM。内存由 ArceOS 实际分配器提供 `ControlMemory` 租约，验证错位拒绝、重复启停、活动状态不允许回收，以及关闭后恢复原始 CR0/CR4/EFER。SVM 用例保留另一块实际 HSAVE 页，旧关闭操作错误地清零原 HSAVE 指针，修复后恢复原地址。
 

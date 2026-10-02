@@ -5,10 +5,14 @@ extern crate ax_std as std;
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
 #[cfg(target_arch = "aarch64")]
+mod empty_user_table;
+#[cfg(target_arch = "aarch64")]
 mod fixup;
+mod kernel_access;
 #[cfg(target_arch = "aarch64")]
 mod managed;
 
+#[cfg(target_arch = "aarch64")]
 fn pin_to(cpu: usize) {
     use std::os::arceos::{
         api::task::{AxCpuMask, ax_set_current_affinity},
@@ -26,7 +30,10 @@ fn pin_to(cpu: usize) {
 
 #[unsafe(no_mangle)]
 fn main() {
+    #[cfg(target_arch = "aarch64")]
     fixup::run();
+    kernel_access::run();
+    #[cfg(target_arch = "aarch64")]
     aarch64::run();
     std::process::exit(0);
 }

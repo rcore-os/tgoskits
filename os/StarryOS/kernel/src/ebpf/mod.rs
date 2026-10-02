@@ -39,6 +39,7 @@ pub(crate) mod error;
 pub mod map;
 pub mod prog;
 pub mod transform;
+pub(crate) mod verify;
 
 pub use transform::EbpfKernelAuxiliary;
 
@@ -57,15 +58,82 @@ pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyIni
 
 /// BPF helper ID for `bpf_probe_read` (legacy, address-space-agnostic).
 const BPF_FUNC_PROBE_READ: u32 = 4;
+/// Largest read `bpf_probe_read` performs, in bytes.
+///
+/// Linux lets the verifier bound the size instead. Nothing bounds it here, and
+/// the helper runs in whatever context its probe fired from — interrupt
+/// context included — so a program that asks for gigabytes would stall or
+/// overwrite the kernel before anyone could react. One page covers the
+/// context samples and protocol headers the helper is used for.
+const BPF_PROBE_READ_MAX: u64 = 4096;
 /// BPF helper ID for `bpf_get_current_pid_tgid`. kbpf-basic does not register
 /// this helper, so we implement it directly in StarryOS.
 const BPF_FUNC_GET_CURRENT_PID_TGID: u32 = 14;
 /// BPF helper ID for `bpf_get_current_comm`. kbpf-basic does not register
 /// this helper, so we implement it directly in StarryOS.
 const BPF_FUNC_GET_CURRENT_COMM: u32 = 16;
-/// BPF helper ID for `bpf_probe_read_kernel`. kbpf-basic only registers
-/// `bpf_probe_read` so we alias 113 onto the same raw helper.
+/// BPF helper ID for `bpf_probe_read_kernel`. Both ids name the same read in
+/// this VM, and both are installed from [`bpf_probe_read`].
 const BPF_FUNC_PROBE_READ_KERNEL: u32 = 113;
+
+/// `bpf_probe_read(void *dst, u32 size, const void *unsafe_ptr)` — copies
+/// kernel memory into a BPF-visible buffer without resolving a fault.
+///
+/// kbpf-basic's helper is a plain `memcpy` that always reports success, so an
+/// address outside the mapped ranges takes the kernel down instead of failing
+/// the helper. Probe programs run from call sites that include interrupt
+/// context, where a page fault is not recoverable, so the read has to report
+/// the failure instead.
+///
+/// Returns 0 on success, or `-EFAULT` with the destination zeroed, matching
+/// the Linux helper ABI; `size` beyond [`BPF_PROBE_READ_MAX`] is `-EINVAL`.
+///
+/// The destination is the address the program named. Programs run with the
+/// whole address space registered as allowed memory, so this only keeps an
+/// inaccessible range from faulting; it does not establish that the program was
+/// entitled to write there.
+fn bpf_probe_read(dst: u64, size: u64, unsafe_ptr: u64, _c: u64, _e: u64) -> u64 {
+    if size > BPF_PROBE_READ_MAX {
+        return (-22i64) as u64; // -EINVAL
+    }
+    let len = size as usize;
+    // SAFETY: both ranges come from the BPF program. An inaccessible range is
+    // reported as a fault by the exception table instead of reaching the page
+    // fault handler.
+    let read = unsafe {
+        ax_cpu::kernel_access::copy_from_kernel_nofault(
+            dst as *mut u8,
+            unsafe_ptr as *const u8,
+            len,
+        )
+    };
+    if read.is_ok() {
+        return 0;
+    }
+
+    // Linux clears the destination on failure so that a program which ignores
+    // the return value reads zeros rather than whatever the buffer held. A
+    // destination that faults here leaves the remainder untouched.
+    let zeros = [0u8; 64];
+    let mut written = 0;
+    while written < len {
+        let chunk = (len - written).min(zeros.len());
+        // SAFETY: the destination range is the caller's buffer; the source is
+        // this frame's zero array.
+        let cleared = unsafe {
+            ax_cpu::kernel_access::copy_from_kernel_nofault(
+                (dst as *mut u8).add(written),
+                zeros.as_ptr(),
+                chunk,
+            )
+        };
+        if cleared.is_err() {
+            break;
+        }
+        written += chunk;
+    }
+    (-14i64) as u64 // -EFAULT
+}
 
 /// `bpf_get_current_pid_tgid()` — returns `(tgid << 32) | tid` of the
 /// currently running task, matching the Linux kernel helper ABI.
@@ -138,14 +206,15 @@ fn bpf_get_current_comm(buf: u64, size_of_buf: u64, _c: u64, _d: u64, _e: u64) -
 /// programs can resolve the helper ids referenced in their instructions.
 pub fn init_ebpf() {
     let mut set = kbpf_basic::helper::init_helper_functions::<EbpfKernelAuxiliary>();
+    // Install the fault-safe reader under both ids. `insert` rather than
+    // `entry(..).or_insert(..)`: keeping a plain `memcpy` out of the probe path
+    // is the point of the replacement, so it has to win the id whatever
+    // kbpf-basic registers there itself.
+    set.insert(BPF_FUNC_PROBE_READ, bpf_probe_read);
     // aya emits `bpf_probe_read_kernel` (helper id 113) for reads of kernel
     // context memory — e.g. `TracePointContext::read_at`, which a cooked
     // tracepoint program uses to pull fields out of its sample buffer.
-    // kbpf-basic only registers the legacy `bpf_probe_read` (id 4), whose raw
-    // reader is address-space-agnostic in this VM, so alias 113 onto it.
-    if let Some(&probe_read) = set.get(&BPF_FUNC_PROBE_READ) {
-        set.entry(BPF_FUNC_PROBE_READ_KERNEL).or_insert(probe_read);
-    }
+    set.insert(BPF_FUNC_PROBE_READ_KERNEL, bpf_probe_read);
     // Register helpers that kbpf-basic does not yet provide (#14, #16).
     set.entry(BPF_FUNC_GET_CURRENT_PID_TGID)
         .or_insert(bpf_get_current_pid_tgid);
@@ -278,8 +347,35 @@ pub(crate) fn bpf_unknown_command_is_invalid_for_test() -> bool {
 
 #[cfg(all(test, not(axtest)))]
 mod tests {
+    use super::{BPF_PROBE_READ_MAX, bpf_probe_read};
+
     #[test]
     fn bpf_unknown_command_is_invalid() {
         assert!(super::bpf_unknown_command_is_invalid_for_test());
+    }
+
+    #[test]
+    fn probe_read_copies_a_size_at_the_cap() {
+        // The cap is a limit on what is refused, not on what is served: a read
+        // of exactly the cap is still copied whole.
+        let source = [7u8; BPF_PROBE_READ_MAX as usize];
+        let mut destination = [0u8; BPF_PROBE_READ_MAX as usize];
+        let read = bpf_probe_read(
+            destination.as_mut_ptr() as u64,
+            BPF_PROBE_READ_MAX,
+            source.as_ptr() as u64,
+            0,
+            0,
+        );
+        assert_eq!(read, 0);
+        assert_eq!(destination, source);
+    }
+
+    #[test]
+    fn probe_read_refuses_a_size_beyond_the_cap() {
+        // The size has to be decided before either range is touched: a copy
+        // first would follow these null pointers into a fault.
+        let read = bpf_probe_read(0, BPF_PROBE_READ_MAX + 1, 0, 0, 0);
+        assert_eq!(read, (-22i64) as u64);
     }
 }
