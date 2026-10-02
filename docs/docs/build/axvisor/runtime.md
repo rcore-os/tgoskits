@@ -65,6 +65,49 @@ guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 
 
 找到后临时把目录置于 `PATH` 前端，结束后恢复。其余 QEMU 参数仍由 TOML 给出。
 
+### 1.4 网页管理台
+
+带管理台的运行需要先生成前端产物，再用端口转发把内核的监听地址暴露到宿主机。内核读取 `web-ui/dist`，而 Cargo 不调用 npm，产物缺失时内核构建会直接失败，因此产物构建必须排在二进制构建之前。
+
+```bash
+cd os/axvisor/web-ui
+npm ci
+npm run build
+```
+
+产物就绪后，用 `web-ui` 特性内嵌静态资源、用 `browser-console` 启用终端网关，并在 QEMU 配置里加入端口转发。使用 `no-auto-start` 可以让默认客户机停在 `Ready`，便于观察登记表与配置池。
+
+```bash
+cargo xtask axvisor qemu \
+  -c test-suit/axvisor/normal/qemu-web-ui/build-aarch64-unknown-none-softfloat.toml \
+  --qemu-config test-suit/axvisor/normal/qemu-web-ui/web-ui/qemu-aarch64-hostfwd.toml \
+  --arch aarch64
+```
+
+转发参数由用例目录里的 `web-ui/qemu-aarch64.toml` 派生：把它 `args` 中的网络项换成下面这一对，另存为 `qemu-aarch64-hostfwd.toml`，其余字段保持不变。
+
+```text
+-netdev user,id=net0,hostfwd=tcp::8080-:8080 -device virtio-net-pci,netdev=net0
+```
+
+启动日志出现下面这行说明监听已就绪，此时浏览器访问 `http://localhost:8080/`。控制面按 local host 信任模型设计，没有鉴权，也不需要填写任何票据。
+
+```text
+management HTTP server (axum) listening on 0.0.0.0:8080
+```
+
+手工检查覆盖自动化用例之外的部分：根路径返回内嵌页面，`/assets/` 下的资源带不可变缓存策略，未知路径返回 404；`GET /api/vms/pool` 的不可用条目带原因；同一终端通道的第二个订阅者收到 409；`/ws/events` 先发全量快照再发增量帧，而登记表仍以 `GET /api/vms` 为准。
+
+| 现象 | 原因 | 处理 |
+| :-- | :-- | :-- |
+| 构建报缺少 UI 资产 | `web-ui/dist` 为空或没有生成 | 先执行产物构建步骤再重建 |
+| 产物已存在但仍报缺少 UI 资产 | 复用了缺少产物那次生成的资源表，把产物目录整份移走再移回不会改变时间戳 | 删除构建目录下对应的 axvisor 产物目录后重建，或更新产物目录内文件的时间戳 |
+| 页面返回 404 但日志显示监听成功 | 该构建没有启用 `web-ui` | 在构建配置里启用该特性 |
+| 浏览器无法连接 | QEMU 配置没有 `hostfwd` | 加入端口转发参数 |
+| 界面看不到终端面板 | 该构建没有启用 `browser-console` | 启用该特性 |
+
+五种现象分别落在产物、端口与特性配置三处，按处理栏的提示逐项排查即可。
+
 ## 2. U-Boot 启动
 
 `axvisor uboot` 通过 `--uboot-config` 或 ostool 的配置发现执行 build+run。

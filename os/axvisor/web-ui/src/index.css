@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 20% 98%;
+    --foreground: 255 12% 16%;
+    --card: 0 0% 100%;
+    --card-foreground: 255 12% 16%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 255 12% 16%;
+    /* One accent for the whole dashboard: warm vermilion, the daylight end of
+       the same gradient the dark scheme uses. The active navigation entry, the
+       primary button and the focus ring are all this one colour. */
+    --primary: 14 67% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 12% 94%;
+    --secondary-foreground: 240 10% 28%;
+    --muted: 240 12% 94%;
+    --muted-foreground: 240 8% 42%;
+    --accent: 240 12% 92%;
+    --accent-foreground: 14 67% 38%;
+    --destructive: 0 65% 48%;
+    --destructive-foreground: 0 0% 100%;
+    /* The three tones a guest can be in, named for what they mean rather than
+       for a colour: a guest is running, is mid-transition, or has failed. They
+       are variables like the rest, so a scheme changes their value and no
+       component carries a second copy of a tone. */
+    --signal: 165 55% 36%;
+    --warn: 32 90% 42%;
+    --alert: 0 65% 48%;
+    --border: 240 9% 86%;
+    --input: 240 9% 84%;
+    --ring: 14 67% 47%;
+    --radius: 0.375rem;
+  }
+
+  /* The dark scheme is the default and the stage theme: a near-black ground
+     with the faintest violet cast, hairline separations instead of cards, and
+     one warm amber for everything that is alive or actionable. A dashboard
+     whose main content is a terminal is read for hours; a lit page next to a
+     dark terminal is the one combination nobody chooses on purpose. */
+  .dark {
+    --background: 255 25% 6%;
+    --foreground: 260 20% 96%;
+    --card: 255 20% 10%;
+    --card-foreground: 260 20% 96%;
+    --popover: 255 20% 11%;
+    --popover-foreground: 260 20% 96%;
+    --primary: 41 85% 62%;
+    --primary-foreground: 35 45% 12%;
+    --secondary: 255 14% 16%;
+    --secondary-foreground: 260 12% 82%;
+    --muted: 255 16% 13%;
+    --muted-foreground: 260 10% 58%;
+    --accent: 255 14% 19%;
+    --accent-foreground: 260 15% 88%;
+    --destructive: 358 72% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --signal: 165 45% 52%;
+    --warn: 41 85% 62%;
+    --alert: 0 72% 60%;
+    --border: 255 13% 18%;
+    --input: 255 13% 21%;
+    --ring: 41 85% 62%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+      'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+    /* The panel bodies hold counters and sizes side by side; proportional
+       digits make a column of numbers look ragged and make a value that is
+       updating jitter by a pixel or two on every refresh. */
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Scrollbars follow the scheme: the default light trough is the one thing on
+     a dark page a reader cannot stop noticing. */
+  * {
+    scrollbar-color: hsl(var(--border)) transparent;
+    scrollbar-width: thin;
+  }
+  /* The separations in this dashboard are hairlines, not cards: a row of
+     solid panels reads as a form, and a form is not what someone opens a
+     hypervisor console to look at. */
+  hr {
+    @apply border-border;
+  }
+}
+
+@layer utilities {
+  /* One name for "this is a figure, not a label": used by every counter that
+     refreshes, so they all stop jittering together. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Figures that carry the page — counts, sizes, ratios — are set in the mono
+     face: a readout in the mono reads as an instrument, the same numeral in the
+     UI face reads as emphasis. */
+  .figure {
+    font-family: ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Menlo,
+      Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  /* A caption over a figure: the small upper label that says what the number
+     is counting, set wide so it does not compete with the figure below it. */
+  .eyebrow {
+    @apply text-[11px] uppercase tracking-[0.08em] text-muted-foreground;
+  }
+}

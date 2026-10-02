@@ -818,7 +818,10 @@ impl SerialBackend for GuestSerialBackend {
             .core
             .write_guest_output(self.vm_id, self.generation, bytes);
         #[cfg(any(feature = "browser-console", all(test, axtest)))]
-        if accepted != 0 && crate::network_console::guest_output_connected(self.vm_id) {
+        if accepted != 0 {
+            // Submitted with no connection attached too: the network hub's
+            // per-lane queue retains these bytes so a browser that attaches
+            // later replays the console history it missed.
             crate::network_console::submit_guest_output(self.vm_id, &bytes[..accepted]);
         }
         accepted

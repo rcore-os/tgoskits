@@ -65,13 +65,13 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 
 | Profile | 主 CI 声明数 | Starry Apps 声明数 | 任务范围 |
 | --- | --- | --- | --- |
-| `qcs` | 10 | 0 | Formatting/publish 预检，Workspace Clippy/std，ArceOS 四架构套件，AxVisor AArch64/RISC-V 场景 |
-| `ubuntu-base` | 6 | 5 | sync-lint、qperf、Starry 四架构套件；定时完整 Clippy 和四架构应用 smoke |
+| `qcs` | 14 | 0 | Formatting/publish 预检，Axvisor 控制面分层，Workspace Clippy/std，ArceOS 四架构套件，AxVisor AArch64/RISC-V 场景 |
+| `ubuntu-base` | 7 | 5 | sync-lint、qperf、Starry 四架构套件；定时完整 Clippy 和四架构应用 smoke |
 | `ubuntu-host` | 0 | 1 | Starry NixOS x86_64 Stage-2 |
-| `ubuntu-axvisor-lvz` | 1 | 0 | AxVisor LoongArch QEMU 套件 |
-| `kvm-intel` | 3 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
-| `kvm-amd` | 2 | 0 | SVM、ACPI/OVMF 和 PCI 枚举 |
-| `board` | 11 | 0 | Starry 原生板卡测试和 AxVisor 板卡 guest 场景 |
+| `ubuntu-axvisor-lvz` | 2 | 0 | AxVisor LoongArch QEMU 套件 |
+| `kvm-intel` | 5 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
+| `kvm-amd` | 3 | 0 | SVM、ACPI/OVMF 和 PCI 枚举 |
+| `board` | 17 | 0 | Starry 原生板卡测试和 AxVisor 板卡 guest 场景 |
 
 修改清单时应同步更新这张表。`qcs` 在普通外部 fork 上回退为托管环境，表中仍按声明的 profile 分类；它不表示外部 fork 可以使用组织的 QCS 机器。
 
@@ -79,7 +79,7 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 
 `qcs` 承担较通用的构建与运行工作，但不是“所有测试的默认机器”。`arceos.toml`、`workspace.toml` 和 `axvisor.toml` 使用它作为文件默认值，单项仍可以覆盖；全局默认其实是 `ubuntu-base`。
 
-ArceOS 的四个架构聚合检查使用 QCS。AxVisor 的两个 AArch64 检查分别覆盖 smoke/virtio-blk/axtest/timer stress 和 panic/HTTP 控制面/浏览器控制台/IVC，另一个 RISC-V 检查覆盖 smoke、IPI 与 panic 模式。`static.toml` 只有 formatting/publish 使用 QCS，sync-lint 走托管 base 环境。
+ArceOS 的四个架构聚合检查使用 QCS。AxVisor 的两个 AArch64 检查分别覆盖 smoke/virtio-blk/axtest/timer stress 和 panic/HTTP 控制面/浏览器控制台/IVC，另一个 RISC-V 检查覆盖 smoke、IPI 与 panic 模式。`static.toml` 中 formatting/publish 预检与 Axvisor 控制面分层检查使用 QCS，sync-lint 走托管 base 环境。
 
 Starry 的四个架构 QEMU 套件使用托管 base 环境，并在各自行中追加内核测试；不能因为它们运行内核就推断必须申请自托管 runner。`workspace.toml` 中的 qperf 同样显式选择 `ubuntu-base`。
 

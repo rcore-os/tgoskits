@@ -53,7 +53,7 @@ fn wait_for_ready_interface() {
 }
 
 fn ready_interface() -> Option<InterfaceAddress> {
-    if !crate::http::is_listening() {
+    if !crate::control::is_listening() {
         return None;
     }
     ax_net::interfaces().into_iter().find_map(|interface| {
@@ -77,7 +77,7 @@ fn submit_access_banner(interface: &InterfaceAddress) {
         "  ipv4 = {address}/{}\r\n",
         interface.ipv4.address.prefix_len()
     );
-    append_web_console_endpoint(&mut banner, address, crate::http::bind_addr());
+    append_web_console_endpoint(&mut banner, address, crate::control::bind_addr());
     guest_console::submit_host_bytes(banner.as_bytes());
 }
 

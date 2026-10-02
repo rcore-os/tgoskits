@@ -57,9 +57,9 @@ impl board_test::BoardTestGroupInfo for BoardTestGroup {
 /// case as an executable probe asset (see [`probe_script`](Self::probe_script));
 /// the generic runner only orchestrates: forward the port, execute the asset,
 /// collect its exit code, and report the result. This config is
-/// AxVisor-specific: it carries the bearer token, timeouts, and probe-asset
-/// name the runner passes on, so it lives in the AxVisor test layer rather than
-/// the generic test layer.
+/// AxVisor-specific: it carries the timeouts and probe-asset name the runner
+/// passes on, so it lives in the AxVisor test layer rather than the generic
+/// test layer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct AxvisorHttpProbeConfig {
     /// Guest-side port the in-guest HTTP server binds to. The harness forwards a
@@ -85,13 +85,6 @@ pub(crate) struct AxvisorHttpProbeConfig {
     /// exit code as the verdict (0 = pass). Defaults to `http_probe.py`.
     #[serde(default = "default_probe_script")]
     pub(crate) probe_script: PathBuf,
-    /// Bearer token the probe must send on authenticated requests, matching the
-    /// guest build's `[env] AXVM_HTTP_TOKEN`. The probe also asserts that an
-    /// *unauthenticated* write request is rejected with 401 (the access-denied
-    /// regression the management-control-plane security review requires).
-    /// Passed to the probe asset as `AXVISOR_HTTP_TOKEN`.
-    #[serde(default)]
-    pub(crate) token: Option<String>,
 }
 
 /// Default probe-asset file name inside the case directory.

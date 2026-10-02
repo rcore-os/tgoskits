@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::*;
+use crate::{
+    templates::{VmTemplateParams, get_vm_config_template},
+    *,
+};
 
 const MINIMAL_CONFIG: &str = r#"
 [base]
@@ -369,4 +372,35 @@ fn boot_config_validation_preserves_typed_errors() {
 fn rejects_invalid_toml_with_public_error() {
     let result = GuestConfig::from_toml("[base");
     assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
+}
+
+#[test]
+fn template_names_the_memory_region_it_was_parameterized_with() {
+    let config = get_vm_config_template(VmTemplateParams {
+        id: 3,
+        name: "sized-guest".into(),
+        guest_type: GuestType::Virtualized,
+        cpu_num: 1,
+        entry_point: 0x8020_0000,
+        kernel_path: "/guest/linux/linux-qemu".into(),
+        kernel_load_addr: 0x8020_0000,
+        image_location: "fs".into(),
+        cmdline: None,
+        memory_base: 0x8000_0000,
+        memory_mb: 256,
+    });
+
+    // A guest with no region has no memory, and the creation path refuses such a
+    // configuration outright, so a template has to be one that can be created:
+    // the region is the caller's own RAM, at the address and size it gave.
+    assert_eq!(config.kernel.memory_regions.len(), 1);
+    let region = &config.kernel.memory_regions[0];
+    assert_eq!(region.gpa, 0x8000_0000);
+    assert_eq!(region.size, 256 * 1024 * 1024);
+    assert_eq!(region.flags, 0x7);
+    assert_eq!(region.map_type, VmMemMappingType::MapAlloc);
+    // The count says the region above is a configured one. This is the value
+    // that parsing the same template back from TOML produces, so a template
+    // built here and one read back agree on which regions are configured.
+    assert_eq!(config.kernel.configured_memory_region_count, 1);
 }

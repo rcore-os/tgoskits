@@ -1,0 +1,29 @@
+# QEMU config for manually running the http-control-plane hypervisor with host
+# port forwarding, so the management API is reachable from the host at
+# http://localhost:8080/. Companion to
+# build-aarch64-unknown-none-softfloat.toml (same guest / NVMe-less setup).
+#
+# The hypervisor always listens on 0.0.0.0:8080 inside the VM; hostfwd maps the
+# host side (8080 here) to that. Use a different host port if 8080 is taken on
+# the host (e.g. tcp::18081-:8080) and set BASE accordingly.
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "2",
+  "-append",
+  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7",
+  "-netdev",
+  "user,id=net0,hostfwd=tcp::8080-:8080",
+  "-device",
+  "virtio-net-pci,netdev=net0",
+  "-m",
+  "1g",
+]
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

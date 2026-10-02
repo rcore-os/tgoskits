@@ -5,7 +5,7 @@ extern crate alloc;
 #[cfg(not(feature = "fs"))]
 use alloc::vec::Vec;
 #[cfg(feature = "fs")]
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 #[cfg(feature = "fs")]
 use anyhow::anyhow;
@@ -45,7 +45,14 @@ impl AxvmManager {
         )
     )]
     pub fn launch_default_vms(&self) -> Vec<VMId> {
-        self.runtime.launch_default_vms()
+        let launched = self.runtime.launch_default_vms();
+        // The auto-start path bypasses `Self::start_vm`, so it republishes the
+        // console state itself: without this, browser input on an auto-started
+        // guest's lane is dropped exactly as it is on a control-plane start.
+        for vm_id in &launched {
+            crate::guest_console::mark_running(*vm_id);
+        }
+        launched
     }
 
     /// Wait until every running VM has stopped.
@@ -66,15 +73,58 @@ impl AxvmManager {
         crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")
     }
 
+    /// Create one VM from a configuration the control plane already built.
+    pub fn create_vm_from_config(config: axvmconfig::GuestConfig) -> Result<VMId> {
+        crate::config::init_guest_vm_from_config(config).context("create VM from form fields")
+    }
+
+    /// Make sure `vm_id` is registered, creating it from the VM pool if needed.
+    ///
+    /// A start request names a VM, not a config file: when the id has no
+    /// registered VM yet, the pool entry claiming that id is created now. The
+    /// pool is re-read here, so a config repaired on the host takes effect on
+    /// the next start request. Returns `Ok(false)` when neither the registry
+    /// nor the pool knows the id.
+    #[cfg(feature = "fs")]
+    pub fn ensure_registered(vm_id: VMId) -> Result<bool> {
+        if Self::vm_by_id(vm_id).is_some() {
+            return Ok(true);
+        }
+
+        let pool = crate::control::domain::pool::scan();
+        let Some(entry) = pool.entry(vm_id) else {
+            crate::control::domain::pool::log_issues(&pool);
+            return Ok(false);
+        };
+
+        Self::create_vm_from_toml(entry.toml())
+            .with_context(|| format!("create VM[{vm_id}] from VM pool entry `{}`", entry.path()))?;
+        Ok(true)
+    }
+
     /// Start a VM by ID.
+    ///
+    /// A successful start is published to the guest console mux, exactly like
+    /// the shell's own `vm start`: the mux keeps its own `running` set and gates
+    /// guest input (`guest_console::route_network_input`) and host-log
+    /// formatting on it, so a start that only changes the VMM state silently
+    /// drops every byte a browser sends to that guest's console lane.
     #[cfg(any(feature = "fs", feature = "http-axum"))]
     pub fn start_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))
+        AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))?;
+        crate::guest_console::mark_running(vm_id);
+        Ok(())
     }
 
     /// Stop a VM by ID.
+    ///
+    /// The console mux stops treating the guest as running as soon as the
+    /// shutdown request is accepted, so bytes typed during the transition are
+    /// not queued for a guest that is already leaving.
     pub fn stop_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::stop_vm(vm_id).with_context(|| format!("stop VM[{vm_id}]"))
+        AxvmRuntime::stop_vm(vm_id).with_context(|| format!("stop VM[{vm_id}]"))?;
+        crate::guest_console::mark_stopped(vm_id);
+        Ok(())
     }
 
     /// Pause a VM by ID.
@@ -84,13 +134,22 @@ impl AxvmManager {
     }
 
     /// Resume a VM by ID.
+    ///
+    /// See [`Self::start_vm`] for why a resume republishes the console state.
     pub fn resume_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::resume_vm(vm_id).with_context(|| format!("resume VM[{vm_id}]"))
+        AxvmRuntime::resume_vm(vm_id).with_context(|| format!("resume VM[{vm_id}]"))?;
+        crate::guest_console::mark_running(vm_id);
+        Ok(())
     }
 
     /// Reset a VM by ID.
+    ///
+    /// A reset reboots the guest, so it re-enters the same running state as a
+    /// start and has to be published the same way.
     pub fn reset_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))
+        AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))?;
+        crate::guest_console::mark_running(vm_id);
+        Ok(())
     }
 
     /// Wake the primary vCPU so it can consume newly queued console input.
@@ -99,8 +158,16 @@ impl AxvmManager {
     }
 
     /// Remove a VM by ID.
+    ///
+    /// The browser console lane belongs to the registry entry, so it is freed
+    /// with the entry: the next VM can take the slot, and the previous
+    /// occupant's console session is stopped first (see
+    /// [`crate::network_console::release_guest`]).
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
-        AxvmRuntime::remove_vm(vm_id)
+        let vm = AxvmRuntime::remove_vm(vm_id)?;
+        #[cfg(feature = "browser-console")]
+        crate::network_console::release_guest(vm_id);
+        Some(vm)
     }
 
     /// Run a closure with a VM by ID.
@@ -147,70 +214,6 @@ impl AxvmManager {
         )
     )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
-
-    /// Read VM config files from an Axvisor-owned directory.
-    #[cfg(feature = "fs")]
-    pub fn filesystem_vm_configs(config_dir: &str) -> Vec<String> {
-        let mut configs = Vec::new();
-
-        debug!("Read VM config files from filesystem.");
-
-        let entries = match ax_std::fs::read_dir(config_dir) {
-            Ok(entries) => {
-                info!("Find dir: {}", config_dir);
-                entries
-            }
-            Err(_) => {
-                info!("NOT find dir: {} in filesystem", config_dir);
-                return configs;
-            }
-        };
-
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(e) => {
-                    warn!("Failed to read config directory entry: {e:?}");
-                    continue;
-                }
-            };
-            let path = entry.path();
-            let path_str = path.as_str();
-            debug!("Considering file: {}", path_str);
-            if !path_str.ends_with(".toml") {
-                continue;
-            }
-
-            let file_size = match Self::file_size(path_str) {
-                Ok(file_size) => file_size,
-                Err(e) => {
-                    error!("Failed to get config file {path_str} metadata: {e:#}");
-                    continue;
-                }
-            };
-            info!("File {} size: {}", path_str, file_size);
-
-            if file_size == 0 {
-                warn!("File {} is empty", path_str);
-                continue;
-            }
-
-            let buffer = match Self::read_file_exact(path_str, file_size) {
-                Ok(buffer) => buffer,
-                Err(e) => {
-                    error!("Failed to read file {path_str}: {e:#}");
-                    continue;
-                }
-            };
-
-            match String::from_utf8(buffer) {
-                Ok(content) => configs.push(content),
-                Err(e) => error!("Config file {} is not valid UTF-8: {:?}", path_str, e),
-            }
-        }
-
-        configs
-    }
 
     #[cfg(feature = "fs")]
     fn open_file(file_name: &str) -> Result<ax_std::fs::File> {

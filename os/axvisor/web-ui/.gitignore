@@ -1,0 +1,6 @@
+node_modules/
+dist/
+# `os/axvisor/.gitignore` carries an unanchored `lib/` from its Python template
+# block, which would otherwise swallow this directory: the dashboard's helpers
+# would build locally and vanish from a fresh checkout.
+!src/lib/

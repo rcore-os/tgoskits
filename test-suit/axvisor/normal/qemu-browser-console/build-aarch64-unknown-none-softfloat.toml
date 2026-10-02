@@ -1,6 +1,9 @@
-# Minimal browser-console build. No VM image or filesystem is required: the
-# host-side probe validates Axvisor's own console lane and the embedded page,
-# while axtest covers startup layouts containing one to three guests.
+# Minimal browser-console build: the terminal gateway alone, with no dashboard
+# (`web-ui`) and no VM image or filesystem. The host-side probe validates
+# Axvisor's own console lane and that this build deliberately owns no page
+# (`/` and `/assets/*` stay 404), while axtest covers how a guest takes and
+# releases a console lane. Only the management console exists here, so the probe
+# also pins the console-only shape of the capability declaration.
 features = ["browser-console"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

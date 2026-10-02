@@ -33,6 +33,11 @@
 //! A function `get_memory_images` is also provided to get every vm image from the configuration
 //! files.
 //!
+//! With the `web-ui` feature, the build script additionally reads the prebuilt dashboard in
+//! `web-ui/dist` and writes `$(OUT_DIR)/ui_assets.rs`, a compile-time table of the assets keyed by
+//! request path. Cargo never invokes npm: producing `dist` is a manual step, and a missing or
+//! unexpected tree becomes a `compile_error!` naming the exact command to run.
+//!
 //! This build script reruns if the `AXVISOR_VM_CONFIGS` environment variable changes, or if the
 //! `build.rs` file changes, or if any of the files in the paths specified by `AXVISOR_VM_CONFIGS`
 //! change.
@@ -100,15 +105,24 @@ fn get_configs() -> Result<Vec<ConfigFile>, String> {
 ///
 /// Returns the file handle.
 fn open_output_file() -> fs::File {
+    open_generated_file("vm_configs.rs")
+}
+
+/// Opens the generated `ui_assets.rs` for writing.
+fn open_ui_assets_file() -> fs::File {
+    open_generated_file("ui_assets.rs")
+}
+
+fn open_generated_file(name: &str) -> fs::File {
     let output_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set by Cargo"));
-    let output_file = output_dir.join("vm_configs.rs");
+    let output_file = output_dir.join(name);
 
     fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(output_file)
-        .expect("failed to open generated vm_configs.rs")
+        .unwrap_or_else(|error| panic!("failed to open generated {name}: {error}"))
 }
 
 fn write_tokens(out_file: &mut fs::File, tokens: proc_macro2::TokenStream) -> anyhow::Result<()> {
@@ -346,6 +360,152 @@ fn generate_firmware_img_loading_functions(
     Ok(())
 }
 
+/// File types the dashboard may embed, mapped to the MIME type served for them.
+///
+/// Anything else is rejected so a stray file cannot be smuggled into the
+/// hypervisor image through the dist tree.
+const UI_ASSET_TYPES: &[(&str, &str)] = &[
+    ("html", "text/html; charset=utf-8"),
+    ("js", "text/javascript; charset=utf-8"),
+    ("css", "text/css; charset=utf-8"),
+    ("svg", "image/svg+xml"),
+];
+
+/// Hard caps on the embedded tree: a runaway build fails loudly instead of
+/// bloating the hypervisor image.
+const UI_MAX_FILES: usize = 32;
+const UI_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+const UI_BUILD_HINT: &str =
+    "web-ui: UI assets are missing; run `cd os/axvisor/web-ui && npm ci && npm run build`";
+
+/// Emits `UI_ASSETS` for the embedded React dashboard.
+///
+/// `npm run build` runs outside cargo by design (cargo never invokes npm), so
+/// this only reads what is already in `web-ui/dist`. A missing, oversized, or
+/// unexpected tree becomes a `compile_error!` carrying the fix command — the
+/// same "fail the build with a readable message" style as the VM-config path.
+fn generate_ui_assets(out_file: &mut fs::File) -> anyhow::Result<()> {
+    // `include_bytes!` resolves relative paths against the file that contains
+    // the macro — the generated file in OUT_DIR — so the table must carry
+    // absolute paths.
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
+    let dist = manifest_dir.join("web-ui/dist");
+    println!("cargo:rerun-if-changed={}", dist.display());
+
+    match collect_ui_assets(&dist) {
+        Ok(entries) => {
+            for (_, _, absolute) in &entries {
+                println!("cargo:rerun-if-changed={}", absolute.display());
+            }
+            let items = entries.iter().map(|(url, mime, absolute)| {
+                let url = LitStr::new(url, proc_macro2::Span::call_site());
+                let mime = LitStr::new(mime, proc_macro2::Span::call_site());
+                let absolute =
+                    LitStr::new(&absolute.to_string_lossy(), proc_macro2::Span::call_site());
+                quote! { (#url, #mime, include_bytes!(#absolute)), }
+            });
+            write_tokens(
+                out_file,
+                quote! {
+                    /// Dashboard assets embedded at build time, keyed by request path.
+                    pub const UI_ASSETS: &[(&str, &str, &[u8])] = &[ #(#items)* ];
+                },
+            )
+        }
+        Err(message) => {
+            let error = LitStr::new(&message, proc_macro2::Span::call_site());
+            write_tokens(
+                out_file,
+                quote! {
+                    pub const UI_ASSETS: &[(&str, &str, &[u8])] = {
+                        compile_error!(#error);
+                        &[]
+                    };
+                },
+            )
+        }
+    }
+}
+
+/// Walks `dist` and returns `(request path, mime, absolute path)` entries.
+fn collect_ui_assets(dist: &Path) -> Result<Vec<(String, String, PathBuf)>, String> {
+    if !dist.join("index.html").is_file() {
+        return Err(UI_BUILD_HINT.to_string());
+    }
+
+    let mut entries = Vec::new();
+    collect_ui_assets_in(dist, dist, &mut entries)?;
+    entries.sort();
+
+    if entries.len() > UI_MAX_FILES {
+        return Err(format!(
+            "{UI_BUILD_HINT}: dist holds {} files, the limit is {UI_MAX_FILES}",
+            entries.len()
+        ));
+    }
+    Ok(entries)
+}
+
+fn collect_ui_assets_in(
+    dist: &Path,
+    dir: &Path,
+    entries: &mut Vec<(String, String, PathBuf)>,
+) -> Result<(), String> {
+    let children = fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+
+    for child in children {
+        let child = child.map_err(|error| error.to_string())?;
+        let path = child.path();
+        let file_type = child.file_type().map_err(|error| error.to_string())?;
+
+        if file_type.is_dir() {
+            collect_ui_assets_in(dist, &path, entries)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let Some((_, mime)) = UI_ASSET_TYPES.iter().find(|(known, _)| *known == extension) else {
+            return Err(format!(
+                "{UI_BUILD_HINT}: {} is not an embeddable asset type",
+                path.display()
+            ));
+        };
+
+        let size = fs::metadata(&path)
+            .map_err(|error| error.to_string())?
+            .len();
+        if size > UI_MAX_FILE_BYTES {
+            return Err(format!(
+                "{UI_BUILD_HINT}: {} is {size} bytes, the limit is {UI_MAX_FILE_BYTES}",
+                path.display()
+            ));
+        }
+
+        let relative = path
+            .strip_prefix(dist)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        // index.html is the app shell; everything else keeps its dist path.
+        let url = if relative == "index.html" {
+            "/".to_string()
+        } else {
+            format!("/{relative}")
+        };
+        entries.push((url, mime.to_string(), path));
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=linker.ld");
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
@@ -411,5 +571,10 @@ fn main() -> anyhow::Result<()> {
             write_tokens(&mut output_file, output)?;
         }
     }
+
+    if env::var_os("CARGO_FEATURE_WEB_UI").is_some() {
+        generate_ui_assets(&mut open_ui_assets_file())?;
+    }
+
     Ok(())
 }
