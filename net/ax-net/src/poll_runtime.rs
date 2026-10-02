@@ -7,6 +7,8 @@ use core::{
 
 use ax_task::sync::WaitQueue;
 
+use crate::observe::ProtoYieldReason;
+
 /// Bounds consecutive protocol polls across immediately runnable generations.
 /// The limits follow Linux's softirq restart/time budget; neither a pending
 /// socket nor an expired soft deadline grants unbounded CPU ownership.
@@ -26,9 +28,18 @@ impl ProtocolPollBudget {
         }
     }
 
-    pub(super) fn consume(&mut self, now_nanos: u64) -> bool {
+    /// Consumes one poll and reports why the budget now asks for a yield.
+    ///
+    /// The two limits are separate facts, so the caller can report which one
+    /// ended the run of polls; a check that reaches both reports that too.
+    pub(super) fn consume(&mut self, now_nanos: u64) -> Option<ProtoYieldReason> {
         self.remaining = self.remaining.saturating_sub(1);
-        self.remaining == 0 || now_nanos >= self.deadline_nanos
+        match (self.remaining == 0, now_nanos >= self.deadline_nanos) {
+            (false, false) => None,
+            (true, false) => Some(ProtoYieldReason::PollCount),
+            (false, true) => Some(ProtoYieldReason::Deadline),
+            (true, true) => Some(ProtoYieldReason::Both),
+        }
     }
 
     pub(super) fn reset(&mut self, now_nanos: u64) {
@@ -131,26 +142,51 @@ impl ProtocolPollRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observe::ProtoYieldReason;
 
     #[test]
     fn immediate_protocol_work_yields_within_a_bounded_number_of_polls() {
         let mut budget = ProtocolPollBudget::new(0);
         for poll in 1..ProtocolPollBudget::MAX_POLLS {
-            assert!(!budget.consume(0), "yielded before poll budget at {poll}");
+            assert_eq!(
+                budget.consume(0),
+                None,
+                "yielded before poll budget at {poll}"
+            );
         }
-        assert!(
+        assert_eq!(
             budget.consume(0),
+            Some(ProtoYieldReason::PollCount),
             "immediate work monopolizes the owner CPU"
         );
         budget.reset(7);
-        assert!(!budget.consume(7));
+        assert_eq!(budget.consume(7), None);
     }
 
     #[test]
     fn expensive_protocol_work_yields_at_the_time_budget() {
         let mut budget = ProtocolPollBudget::new(19);
-        assert!(!budget.consume(19 + ProtocolPollBudget::MAX_NANOS - 1));
-        assert!(budget.consume(19 + ProtocolPollBudget::MAX_NANOS));
+        assert_eq!(budget.consume(19 + ProtocolPollBudget::MAX_NANOS - 1), None);
+        assert_eq!(
+            budget.consume(19 + ProtocolPollBudget::MAX_NANOS),
+            Some(ProtoYieldReason::Deadline)
+        );
+    }
+
+    #[test]
+    fn a_check_reaching_both_budget_limits_reports_both() {
+        let mut budget = ProtocolPollBudget::new(0);
+        for poll in 1..ProtocolPollBudget::MAX_POLLS {
+            assert_eq!(
+                budget.consume(0),
+                None,
+                "yielded before poll budget at {poll}"
+            );
+        }
+        assert_eq!(
+            budget.consume(ProtocolPollBudget::MAX_NANOS),
+            Some(ProtoYieldReason::Both)
+        );
     }
 
     #[test]

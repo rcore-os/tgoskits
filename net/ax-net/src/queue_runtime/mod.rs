@@ -25,9 +25,21 @@ use rd_net::{
     WifiLinkPolicy, WifiTransaction,
 };
 
-pub use self::state::NetQueueStats;
+pub use self::state::{NetQueueIdentity, NetQueueStats};
 use self::{executor::*, notify::QueueNotification, spsc::*, state::PollGroupState};
-use crate::device::{EthernetFramePort, EthernetFramePortList};
+pub use crate::observe::{
+    QueueBackpressureObserver, QueueBackpressureReason, QueueBackpressureReport,
+    QueueBackpressureStage, QueuePollObserver, QueuePollOutcome, QueuePollReport,
+    QueueRearmObserver, QueueRearmOutcome, QueueRearmReport, RxPublishObserver, RxPublishReport,
+    TxSubmitObserver, TxSubmitReport, install_queue_backpressure_observer,
+    install_queue_poll_observer, install_queue_rearm_observer, install_rx_publish_observer,
+    install_tx_submit_observer, publish_queue_backpressure_gate, publish_queue_poll_gate,
+    publish_queue_rearm_gate, publish_rx_publish_gate, publish_tx_submit_gate,
+};
+use crate::{
+    config::InterfaceId,
+    device::{EthernetFramePort, EthernetFramePortList},
+};
 
 const QUEUE_BUDGET: usize = 64;
 const CPU_ROUND_BUDGET: usize = 256;
@@ -280,6 +292,22 @@ struct RegisteredEndpoint {
     shared: Arc<PollGroupState>,
 }
 
+/// Read-only view of one poll group: its identity, the interface its device is
+/// published as, and its counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetQueueSnapshot {
+    /// Identity fixed when the group was built.
+    pub identity: NetQueueIdentity,
+    /// Interface the group's device is published as.  The binding happens
+    /// before the runtime becomes reachable, so a published runtime reports
+    /// `Some` for every group; only a runtime that is still under
+    /// construction reports `None`.
+    pub interface: Option<InterfaceId>,
+    /// Counters of the group, read field by field; see [`NetQueueStats`] for
+    /// what that does and does not guarantee.
+    pub stats: NetQueueStats,
+}
+
 /// Live queue runtime.  Dropping it masks IRQs before stopping executors.
 pub struct NetworkQueueRuntime {
     registrations: Vec<Box<dyn PinnedNetIrqRegistration>>,
@@ -289,6 +317,9 @@ pub struct NetworkQueueRuntime {
     wifi_handles: Vec<WifiRuntimeHandle>,
     initial_wifi_policies: Vec<(usize, WifiLinkPolicy)>,
     device_index_map: Vec<Option<usize>>,
+    /// Interfaces of the published devices, in published order; empty until
+    /// [`NetworkQueueRuntime::bind_published_interfaces`] runs.
+    published_interfaces: Vec<InterfaceId>,
     protocol_owner_cpu: usize,
 }
 
@@ -304,11 +335,48 @@ impl NetworkQueueRuntime {
         self.protocol_owner_cpu
     }
 
-    pub fn stats(&self) -> Vec<NetQueueStats> {
+    /// Returns one snapshot per surviving poll group, currently in the order
+    /// the groups were built.  The order is not a contract: identify a group
+    /// by its [`NetQueueIdentity`] rather than by position.
+    pub fn queue_snapshots(&self) -> Vec<NetQueueSnapshot> {
         self.group_states
             .iter()
-            .map(|state| state.stats.snapshot(state.owner_cpu))
+            .map(|state| NetQueueSnapshot {
+                identity: state.identity,
+                interface: self.interface_of(state.identity.discovery_order),
+                stats: state.stats.snapshot(),
+            })
             .collect()
+    }
+
+    /// Resolves the interface of the device a group belongs to.  A device that
+    /// was not published, or a runtime that has not bound its interfaces yet,
+    /// has no interface to report.
+    ///
+    /// The lookups stay tolerant rather than panicking: a diagnostic read must
+    /// not be able to take the kernel down.  A binding that does not match the
+    /// published devices is a caller contract violation, checked by
+    /// `bind_published_interfaces` in debug builds.
+    fn interface_of(&self, discovery_order: usize) -> Option<InterfaceId> {
+        let published_order = (*self.device_index_map.get(discovery_order)?)?;
+        self.published_interfaces.get(published_order).copied()
+    }
+
+    /// Binds the interface of every published device, in published order.
+    ///
+    /// `init_network` calls this exactly once, after the devices are published
+    /// and before the runtime becomes reachable through the crate-level
+    /// accessor; the binding is immutable for every subsequent reader.  The
+    /// caller must pass one interface per published device and keep the order,
+    /// so that `published_interfaces[published_order]` is the interface of the
+    /// device the startup prune published at that position.
+    pub(crate) fn bind_published_interfaces(&mut self, interfaces: Vec<InterfaceId>) {
+        debug_assert_eq!(
+            interfaces.len(),
+            self.device_index_map.iter().flatten().count(),
+            "every published device must bind exactly one interface"
+        );
+        self.published_interfaces = interfaces;
     }
 
     pub(crate) fn wifi_handle(&self, device_index: usize) -> Option<WifiRuntimeHandle> {
@@ -408,7 +476,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         let mut group_states = Vec::new();
         let mut flat_group = 0;
 
-        for (device_index, input) in self.devices.into_iter().enumerate() {
+        for (discovery_order, input) in self.devices.into_iter().enumerate() {
             let port_name = input.name.clone();
             let PreparedNetDevice {
                 info,
@@ -430,7 +498,11 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 let owner_cpu = group_owners[flat_group];
                 let owner_group_index = groups_by_cpu[owner_cpu].len();
                 let shared = Arc::new(PollGroupState::new(
-                    owner_cpu,
+                    NetQueueIdentity {
+                        discovery_order,
+                        group_id: group.id,
+                        owner_cpu,
+                    },
                     Arc::clone(&cpu_notifies[owner_cpu]),
                 ));
                 let rx_capacity = group.rx.capacity();
@@ -499,8 +571,10 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                         Some(Arc::clone(&startup_group));
                 }
                 let queue = Arc::new(WifiControlQueue::new());
+                // Held as the discovery order until the surviving devices are
+                // renumbered into the published order below.
                 let handle = WifiRuntimeHandle {
-                    device_index,
+                    device_index: discovery_order,
                     owner_cpu,
                     queue: Arc::clone(&queue),
                     notify: Arc::clone(&cpu_notifies[owner_cpu]),
@@ -769,7 +843,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             .collect::<Vec<_>>();
         let active_group_owners = group_states
             .iter()
-            .map(|state| state.owner_cpu)
+            .map(|state| state.identity.owner_cpu)
             .collect::<Vec<_>>();
         let protocol_owner_cpu = select_protocol_owner(&active_group_owners, &active_cpus);
         let mut runtime = NetworkQueueRuntime {
@@ -780,6 +854,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             wifi_handles,
             initial_wifi_policies: Vec::new(),
             device_index_map,
+            published_interfaces: Vec::new(),
             protocol_owner_cpu,
         };
         for (handle, transaction) in startup_transactions {

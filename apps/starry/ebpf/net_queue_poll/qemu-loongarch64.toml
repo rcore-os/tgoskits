@@ -1,0 +1,26 @@
+args = [
+    "-machine",
+    "virt",
+    "-cpu",
+    "la464",
+    "-nographic",
+    "-m",
+    "512M",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = true
+to_bin = true
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^Error: ", "(?m)^NET_QUEUE_POLL_FAIL"]
+timeout = 240
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/net_queue_poll"
+success_regex = ["(?m)^NET_QUEUE_POLL_PASS"]

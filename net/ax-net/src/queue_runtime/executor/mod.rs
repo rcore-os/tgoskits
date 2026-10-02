@@ -13,9 +13,17 @@ use super::{
     STATE_SCHEDULED, STATUS_EMPTY, STATUS_FAILED, STATUS_PENDING, STATUS_READY, SpscConsumer,
     SpscProducer, TxQueueDiscipline,
 };
-use crate::device::{
-    ETH_ZLEN, EthernetFramePort, NetDeviceError, NetDeviceResult, ProtocolEthernetFrame,
-    ProtocolRxFrame, RxBufferRecycler,
+use crate::{
+    device::{
+        ETH_ZLEN, EthernetFramePort, NetDeviceError, NetDeviceResult, ProtocolEthernetFrame,
+        ProtocolRxFrame, RxBufferRecycler,
+    },
+    observe::{
+        QueueBackpressureReason, QueueBackpressureReport, QueueBackpressureStage, QueuePollOutcome,
+        QueuePollReport, QueueRearmOutcome, QueueRearmReport, RxPublishReport, TxSubmitReport,
+        report_queue_backpressure, report_queue_poll, report_queue_rearm, report_rx_publish,
+        report_tx_submit,
+    },
 };
 
 mod wifi;
@@ -192,7 +200,7 @@ impl EthernetFramePort for QueueFramePort {
     fn drain_rx_drops(&mut self) -> u64 {
         self.groups
             .iter()
-            .map(|group| group.shared.take_rx_drops())
+            .map(|group| group.shared.take_pending_rx_drops())
             .sum()
     }
 
@@ -367,11 +375,33 @@ impl QueueFramePort {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GroupPollOutcome {
     Idle(usize),
     More(usize),
     Blocked(usize),
-    Failed,
+    /// A failed round still carries the work completed before the failure, so
+    /// the report never claims that no work happened.
+    Failed(usize),
+}
+
+impl GroupPollOutcome {
+    /// Executor work units completed by the round.
+    fn work(&self) -> usize {
+        match self {
+            Self::Idle(work) | Self::More(work) | Self::Blocked(work) | Self::Failed(work) => *work,
+        }
+    }
+
+    /// Reported result code for the round.
+    fn kind(&self) -> QueuePollOutcome {
+        match self {
+            Self::Idle(_) => QueuePollOutcome::Idle,
+            Self::More(_) => QueuePollOutcome::More,
+            Self::Blocked(_) => QueuePollOutcome::Blocked,
+            Self::Failed(_) => QueuePollOutcome::Failed,
+        }
+    }
 }
 
 pub(super) struct PendingRxRefill {
@@ -387,8 +417,17 @@ pub(super) const fn hardware_retry_outcome(work: usize) -> GroupPollOutcome {
     GroupPollOutcome::Idle(work)
 }
 
-pub(super) const fn waits_for_hardware_event(reason: &NetError) -> bool {
-    matches!(reason, NetError::Retry | NetError::LinkDown)
+/// Classifies a device refusal as a backpressure reason, if it is retryable.
+///
+/// This is the single decision behind both the admission check and the
+/// reported reason code: an outcome that is not classified here takes the
+/// permanent-failure path and is never reported as backpressure.
+pub(super) const fn backpressure_reason(reason: &NetError) -> Option<QueueBackpressureReason> {
+    match reason {
+        NetError::Retry => Some(QueueBackpressureReason::Retry),
+        NetError::LinkDown => Some(QueueBackpressureReason::LinkDown),
+        _ => None,
+    }
 }
 
 pub(super) const fn rx_refill_retry_outcome(work: usize, received: usize) -> GroupPollOutcome {
@@ -457,7 +496,7 @@ impl QueueGroupExecutor {
         log::error!(
             "network poll group {} on CPU {} disabled during {operation}: {error}",
             self.group.id.get(),
-            self.shared.owner_cpu,
+            self.shared.identity.owner_cpu,
         );
         self.shared.disable();
     }
@@ -537,13 +576,25 @@ impl QueueGroupExecutor {
         Ok(())
     }
 
+    /// Runs one poll round and reports it exactly once.
     fn poll(&mut self, cpu_budget: usize) -> GroupPollOutcome {
+        let outcome = self.poll_inner(cpu_budget);
+        report_queue_poll(QueuePollReport {
+            identity: self.shared.identity,
+            budget: cpu_budget,
+            work_units: outcome.work(),
+            outcome: outcome.kind(),
+        });
+        outcome
+    }
+
+    fn poll_inner(&mut self, cpu_budget: usize) -> GroupPollOutcome {
         if self.shared.is_disabled() {
-            return GroupPollOutcome::Failed;
+            return GroupPollOutcome::Failed(0);
         }
         if let Err(error) = self.group.irq_control.quiesce() {
             self.disable_after_error("IRQ quiesce", &error);
-            return GroupPollOutcome::Failed;
+            return GroupPollOutcome::Failed(0);
         }
 
         let mut work = 0;
@@ -577,6 +628,9 @@ impl QueueGroupExecutor {
                 Some(request) => request,
                 None => break,
             };
+            // The protocol sets the buffer length to the frame length before
+            // queueing the request, so this is what the driver receives.
+            let frame_len = request.buffer.len();
             match self
                 .group
                 .tx
@@ -585,10 +639,19 @@ impl QueueGroupExecutor {
                 Ok(()) => {
                     submitted += 1;
                     work += 1;
+                    report_tx_submit(TxSubmitReport {
+                        identity: self.shared.identity,
+                        len: frame_len,
+                    });
                 }
                 Err(error) => {
                     let (buffer, reason) = error.into_parts();
-                    if waits_for_hardware_event(&reason) {
+                    if let Some(reported) = backpressure_reason(&reason) {
+                        report_queue_backpressure(QueueBackpressureReport {
+                            identity: self.shared.identity,
+                            stage: QueueBackpressureStage::TxSubmit,
+                            reason: reported,
+                        });
                         self.pending_tx = Some(TxRequest {
                             buffer,
                             options: request.options,
@@ -613,8 +676,15 @@ impl QueueGroupExecutor {
         }
 
         if let Some(completion) = self.pending_rx.take() {
+            let len = completion.packet_len;
             match self.rx_ready.push(completion) {
-                Ok(()) => crate::request_poll(),
+                Ok(()) => {
+                    report_rx_publish(RxPublishReport {
+                        identity: self.shared.identity,
+                        len,
+                    });
+                    crate::request_poll();
+                }
                 Err(completion) => {
                     self.pending_rx = Some(completion);
                     return GroupPollOutcome::Blocked(work);
@@ -640,10 +710,15 @@ impl QueueGroupExecutor {
                     Ok(()) => {
                         work += 1;
                         if let Some(completion) = pending.completion {
+                            let len = completion.packet_len;
                             if let Err(completion) = self.rx_ready.push(completion) {
                                 self.pending_rx = Some(completion);
                                 return GroupPollOutcome::Blocked(work);
                             }
+                            report_rx_publish(RxPublishReport {
+                                identity: self.shared.identity,
+                                len,
+                            });
                             crate::request_poll();
                         }
                     }
@@ -655,8 +730,16 @@ impl QueueGroupExecutor {
                         });
                         if !matches!(reason, NetError::Retry) {
                             self.disable_after_error("RX refill", &reason);
-                            return GroupPollOutcome::Failed;
+                            return GroupPollOutcome::Failed(work);
                         }
+                        // The device asked to wait; the token stays retained.
+                        // Only a retry is retryable here: a link-down during
+                        // RX refill fails the round above instead.
+                        report_queue_backpressure(QueueBackpressureReport {
+                            identity: self.shared.identity,
+                            stage: QueueBackpressureStage::RxRefill,
+                            reason: QueueBackpressureReason::Retry,
+                        });
                         rx_refill_blocked = true;
                     }
                 }
@@ -720,6 +803,10 @@ impl QueueGroupExecutor {
 
     fn finish_idle(&mut self) {
         if !self.shared.begin_rearm() {
+            // No rearm happens here, so this path reports nothing: the group
+            // left polling, or an IRQ arrived during the round and
+            // `begin_rearm` already reported the race from the transition
+            // itself.
             return;
         }
         match self
@@ -731,11 +818,25 @@ impl QueueGroupExecutor {
             Ok(NetRearmResult::WorkPending(_)) => {
                 self.shared.stats.rearm_race.fetch_add(1, Ordering::Relaxed);
                 self.shared.schedule_task();
+                report_queue_rearm(QueueRearmReport {
+                    identity: self.shared.identity,
+                    outcome: QueueRearmOutcome::WorkPending,
+                });
             }
             Ok(NetRearmResult::RetryAt { deadline_nanos }) => {
                 self.retry_at = Some(deadline_nanos);
+                report_queue_rearm(QueueRearmReport {
+                    identity: self.shared.identity,
+                    outcome: QueueRearmOutcome::RetryAt,
+                });
             }
-            Err(error) => self.disable_after_error("IRQ rearm", &error),
+            Err(error) => {
+                self.disable_after_error("IRQ rearm", &error);
+                report_queue_rearm(QueueRearmReport {
+                    identity: self.shared.identity,
+                    outcome: QueueRearmOutcome::Failed,
+                });
+            }
         }
     }
 
@@ -907,7 +1008,10 @@ pub(super) fn queue_executor_main(
                 GroupPollOutcome::Blocked(work) => {
                     cpu_work += work;
                 }
-                GroupPollOutcome::Failed => {}
+                // A failed round reports its work through the event port, but
+                // the round budget keeps the previous accounting and does not
+                // charge it.
+                GroupPollOutcome::Failed(_) => {}
             }
         }
         if runnable && cpu_work >= CPU_ROUND_BUDGET {

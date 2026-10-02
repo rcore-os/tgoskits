@@ -1,12 +1,40 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
+use rd_net::NetPollGroupId;
+
 use super::{
     QueueNotification, STATE_DISABLED, STATE_IDLE, STATE_MASK, STATE_MISSED, STATE_POLLING,
     STATE_SCHEDULED,
 };
+use crate::observe::{QueueRearmOutcome, QueueRearmReport, report_queue_rearm};
 
-/// Observable queue statistics used by SMP contract tests.
+/// Immutable identity of one poll group.
+///
+/// The fields are fixed while the runtime is built and never change afterwards,
+/// so a snapshot taken at any time can be attributed to the same queue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetQueueIdentity {
+    /// Index of the device in the order the runtime was built with, i.e. its
+    /// discovery order.  Startup can skip a device, so this index is not the
+    /// published interface order that `InterfaceId` and the interface names
+    /// follow; the runtime keeps the two apart.
+    pub discovery_order: usize,
+    /// Queue group id assigned by the device driver.  It is local to its
+    /// device, so `(discovery_order, group_id)` is the key that identifies a
+    /// poll group.
+    pub group_id: NetPollGroupId,
+    /// CPU that owns the group's hard IRQ callback and queue executor.
+    pub owner_cpu: usize,
+}
+
+/// Counters observed for one poll group, captured as a copyable snapshot.
+///
+/// Every field is read from its own atomic, so the values are independent
+/// samples rather than one instant of the group: a single field is monotonic
+/// and current, but combinations of fields may not describe the same moment.
+/// Consumers must not derive cross-field invariants (for example that
+/// `irq_to_poll_remote_wake` never exceeds `irq`) from one snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NetQueueStats {
     pub irq: u64,
@@ -17,10 +45,15 @@ pub struct NetQueueStats {
     pub spurious: u64,
     pub probe_deferred: u64,
     pub rearm_race: u64,
-    pub owner_cpu: usize,
     pub last_irq_cpu: Option<usize>,
     pub last_poll_cpu: Option<usize>,
     pub irq_to_poll_remote_wake: u64,
+    /// Frames dropped on this group's RX path; never reset.
+    ///
+    /// The device layer folds the same drops, through a separate increment,
+    /// into the interface `rx_dropped` counter; the two count the same events
+    /// and must not be added together.
+    pub rx_drops: u64,
 }
 
 pub(super) struct QueueStatsAtomic {
@@ -35,6 +68,7 @@ pub(super) struct QueueStatsAtomic {
     pub(super) last_irq_cpu: AtomicUsize,
     pub(super) last_poll_cpu: AtomicUsize,
     pub(super) irq_to_poll_remote_wake: AtomicU64,
+    pub(super) rx_drops: AtomicU64,
 }
 
 impl QueueStatsAtomic {
@@ -51,10 +85,11 @@ impl QueueStatsAtomic {
             last_irq_cpu: AtomicUsize::new(usize::MAX),
             last_poll_cpu: AtomicUsize::new(usize::MAX),
             irq_to_poll_remote_wake: AtomicU64::new(0),
+            rx_drops: AtomicU64::new(0),
         }
     }
 
-    pub(super) fn snapshot(&self, owner_cpu: usize) -> NetQueueStats {
+    pub(super) fn snapshot(&self) -> NetQueueStats {
         let optional_cpu = |cpu| (cpu != usize::MAX).then_some(cpu);
         NetQueueStats {
             irq: self.irq.load(Ordering::Relaxed),
@@ -65,33 +100,35 @@ impl QueueStatsAtomic {
             spurious: self.spurious.load(Ordering::Relaxed),
             probe_deferred: self.probe_deferred.load(Ordering::Relaxed),
             rearm_race: self.rearm_race.load(Ordering::Relaxed),
-            owner_cpu,
             last_irq_cpu: optional_cpu(self.last_irq_cpu.load(Ordering::Acquire)),
             last_poll_cpu: optional_cpu(self.last_poll_cpu.load(Ordering::Acquire)),
             irq_to_poll_remote_wake: self.irq_to_poll_remote_wake.load(Ordering::Relaxed),
+            rx_drops: self.rx_drops.load(Ordering::Relaxed),
         }
     }
 }
 
 /// Shared atomic state for one poll group.
 pub(super) struct PollGroupState {
+    pub(super) identity: NetQueueIdentity,
     pub(super) state: AtomicU8,
     startup_absent: AtomicBool,
-    pub(super) owner_cpu: usize,
     notify: Arc<QueueNotification>,
     pub(super) stats: QueueStatsAtomic,
-    rx_drops: AtomicU64,
+    /// RX drops not yet folded into the interface counter.  The device layer
+    /// drains this increment while `stats.rx_drops` keeps the cumulative value.
+    rx_drops_pending: AtomicU64,
 }
 
 impl PollGroupState {
-    pub(super) fn new(owner_cpu: usize, notify: Arc<QueueNotification>) -> Self {
+    pub(super) fn new(identity: NetQueueIdentity, notify: Arc<QueueNotification>) -> Self {
         Self {
             state: AtomicU8::new(STATE_DISABLED),
             startup_absent: AtomicBool::new(false),
-            owner_cpu,
+            identity,
             notify,
             stats: QueueStatsAtomic::new(),
-            rx_drops: AtomicU64::new(0),
+            rx_drops_pending: AtomicU64::new(0),
         }
     }
 
@@ -108,11 +145,16 @@ impl PollGroupState {
 
     pub(super) fn record_rx_drop(&self) {
         // Statistics only; packet ownership is published through the queues.
-        self.rx_drops.fetch_add(1, Ordering::Relaxed);
+        // The cumulative value stays with the group while the pending
+        // increment is what the device layer folds into the interface counter.
+        self.stats.rx_drops.fetch_add(1, Ordering::Relaxed);
+        self.rx_drops_pending.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(super) fn take_rx_drops(&self) -> u64 {
-        self.rx_drops.swap(0, Ordering::Relaxed)
+    /// Takes the RX drops observed since the previous call.  The cumulative
+    /// value reported by `stats.rx_drops` is left untouched.
+    pub(super) fn take_pending_rx_drops(&self) -> u64 {
+        self.rx_drops_pending.swap(0, Ordering::Relaxed)
     }
 
     pub(super) fn activate(&self, pending: bool) {
@@ -129,7 +171,7 @@ impl PollGroupState {
         if self.startup_absent() {
             return;
         }
-        if cpu != self.owner_cpu {
+        if cpu != self.identity.owner_cpu {
             self.stats
                 .irq_to_poll_remote_wake
                 .fetch_add(1, Ordering::Relaxed);
@@ -212,7 +254,7 @@ impl PollGroupState {
 
     pub(super) fn claim(&self) -> bool {
         let current_cpu = ax_hal::percpu::this_cpu_id();
-        if current_cpu != self.owner_cpu {
+        if current_cpu != self.identity.owner_cpu {
             self.disable();
             return false;
         }
@@ -265,6 +307,15 @@ impl PollGroupState {
                     .compare_exchange(old, STATE_SCHEDULED, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
+                    // An IRQ arrived while the round was polling: the group
+                    // goes straight back to scheduled and the hardware rearm
+                    // is skipped.  This is the only place the race outcome is
+                    // observable, so the event is reported from the
+                    // transition itself.
+                    report_queue_rearm(QueueRearmReport {
+                        identity: self.identity,
+                        outcome: QueueRearmOutcome::Race,
+                    });
                     return false;
                 }
                 continue;

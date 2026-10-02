@@ -191,7 +191,7 @@ sequenceDiagram
 
 ### 7.1 工作状态
 
-网络 `NetworkQueueRuntime::stats()` 保存 owner、IRQ 和 poll CPU，以及 remote wake、missed、budget、deferred、rearm 等计数。回归位置包括 `queue_runtime/tests.rs`、`executor/queue_tests.rs` 及 `rd-net` 测试。块运行时有自己的 metrics、completion 和 waiter 状态，USB 使用命令码、完成地址及端点状态。
+网络 `NetworkQueueRuntime::queue_snapshots()` 按 poll group 返回设备发现序索引、group ID、接口与 owner CPU，以及 IRQ、poll CPU、remote wake、missed、budget、deferred、rearm、RX 丢弃等计数。回归位置包括 `queue_runtime/tests.rs`、`executor/queue_tests.rs` 及 `rd-net` 测试。块运行时有自己的 metrics、completion 和 waiter 状态，USB 使用命令码、完成地址及端点状态。
 
 这些源码位置说明观测对象与测试覆盖，不证明当前目标运行已经通过。停止与隔离条件由[生命周期](lifecycle.md)定义。
 

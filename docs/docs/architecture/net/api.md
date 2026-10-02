@@ -17,11 +17,25 @@ pub use self::{
         RouteInfo, StaticIpConfig,
     },
     device::{ArpEntry, EthernetFramePort, EthernetFramePortList, NetDeviceError, NetDeviceResult},
+    observe::{
+        ProtoYieldObserver, ProtoYieldReason, ProtoYieldReport, install_proto_yield_observer,
+        publish_proto_yield_gate,
+    },
     queue_runtime::{
-        NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime,
-        NetworkRuntimeBuilder, NetworkRuntimeError, PinnedNetIrqAction,
-        PinnedNetIrqError, PinnedNetIrqOutcome, PinnedNetIrqRegistrar,
-        PinnedNetIrqRegistration, ResolvedNetIrqSource, TxQueueDiscipline,
+        NetQueueIdentity, NetQueueSnapshot, NetQueueStats, NetworkDeviceInput,
+        NetworkQueueRuntime, NetworkRuntimeBuilder, NetworkRuntimeError,
+        PinnedNetIrqAction, PinnedNetIrqError, PinnedNetIrqOutcome,
+        PinnedNetIrqRegistrar, PinnedNetIrqRegistration, ResolvedNetIrqSource,
+        QueueBackpressureObserver, QueueBackpressureReason, QueueBackpressureReport,
+        QueueBackpressureStage, QueuePollObserver, QueuePollOutcome, QueuePollReport,
+        QueueRearmObserver, QueueRearmOutcome, QueueRearmReport,
+        RxPublishObserver, RxPublishReport, TxQueueDiscipline,
+        TxSubmitObserver, TxSubmitReport,
+        install_queue_backpressure_observer, install_queue_poll_observer,
+        install_queue_rearm_observer, install_rx_publish_observer,
+        install_tx_submit_observer, publish_queue_backpressure_gate,
+        publish_queue_poll_gate, publish_queue_rearm_gate,
+        publish_rx_publish_gate, publish_tx_submit_gate,
     },
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions,
@@ -30,7 +44,7 @@ pub use self::{
     router::NetDevStats,
 };
 pub use error::{NetError, NetResult};
-pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
+pub use rd_net::{NetPollGroupId, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
 ```
 
 re-export 列表构成调用方可依赖的稳定表面，内部 `Service`、Router queue 与 smoltcp handle 均未公开。API 分层据此按能力和生命周期组织这些类型，而不是按内部模块目录暴露实现。
@@ -204,6 +218,7 @@ pub fn interface_by_name(name: &str) -> Option<InterfaceInfo>;
 pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo>;
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig>;
 pub fn net_dev_stats() -> Vec<NetDevStats>;
+pub fn net_queue_snapshots() -> Vec<NetQueueSnapshot>;
 pub fn set_interface_ipv4(
     interface_id: InterfaceId,
     ip: Ipv4Addr,
@@ -219,6 +234,8 @@ pub fn remove_interface_ipv4(
 `set_interface_ipv4()` / `remove_interface_ipv4()` 是 StarryOS rtnetlink 使用的运行期控制入口。当前每个 Ethernet 接口最多保存一个 IPv4 地址：设置第二个地址返回 `AlreadyExists`，删除必须与现有地址和 prefix 完全一致。设置操作会移除该接口的 DHCP 状态、安装 connected route，但不会创建 default route 或 gateway；删除也会关闭该接口 DHCP 并移除它贡献的路由和 DHCP DNS。
 
 `NetDevStats` 按接口返回累计的 `rx/tx bytes`、`packets`、`errors` 和 `dropped`。Ethernet 的字节口径是“不含 FCS 的 L2 frame”，loopback 则按 IP packet 长度；统计快照由 `net/ax-net/src/router.rs` 的 `Router::net_dev_stats()` 汇总。
+
+`NetQueueSnapshot` 按 poll group 返回队列运行状态，是 `NetQueueStats` 的对外视图；列表顺序当前是 group 建立顺序，不构成契约，定位 group 用身份而不是位置。每项由三部分组成：不可变身份 `NetQueueIdentity`（设备发现序索引、驱动分配的 `NetPollGroupId`、owner CPU）、该设备发布成的接口 `InterfaceId`，以及计数 `NetQueueStats`。发现序索引是 group 建立时设备在运行时输入列表中的位置，启动跳过设备后与接口发布序不同，仅用于定位运行时内部设备；接口归属看 `InterfaceId`，同一设备的所有 group 共享它；`group_id` 只在设备内唯一，识别一个 group 需要 `(discovery_order, group_id)` 并用。身份在 build 时固定，接口在 `init_network` 发布接口时绑定，且绑定先于运行时对外可达，因此公开入口只会看到空列表或已经绑定好接口的 group；运行时尚未发布（未配置网络或初始化未完成）时返回空列表。计数按各自原子量逐字段读出，**不保证是同一时刻的一致视图**，只用于诊断定位，不能据此推导跨字段不变量（例如 `irq_to_poll_remote_wake ≤ irq`）；`rx_drops` 是只增不减的累计值；同一批丢弃随后也由设备层折入接口 `rx_dropped`，两处统计的是同一批事件，不可相加。`/sys/kernel/debug/net_queue` 渲染同一份快照，是诊断视图而非 ABI。
 
 `InterfaceId` 是稳定接口 ID，同时作为 StarryOS/Linux ifindex 来源：
 
@@ -259,7 +276,34 @@ let id = InterfaceId::from_linux_ifindex(linux_ifindex).unwrap();
 
 示例强调名称只用于查找，跨 ABI 保存和比较应使用 `InterfaceId`。路由快照沿用同一接口身份，使 route dump 可以和 ioctl、AF_PACKET 结果稳定关联。
 
-### 3.2 路由快照
+### 3.2 事件观察端口
+
+网络运行时把状态转移的事实交给一组窄观察端口，每个事件一个端口实例：
+
+```rust
+pub struct QueuePollReport { pub identity: NetQueueIdentity, pub budget: usize,
+                             pub work_units: usize, pub outcome: QueuePollOutcome }
+pub struct QueueRearmReport { pub identity: NetQueueIdentity, pub outcome: QueueRearmOutcome }
+pub struct QueueBackpressureReport { pub identity: NetQueueIdentity,
+                                     pub stage: QueueBackpressureStage,
+                                     pub reason: QueueBackpressureReason }
+pub struct TxSubmitReport { pub identity: NetQueueIdentity, pub len: usize }
+pub struct RxPublishReport { pub identity: NetQueueIdentity, pub len: usize }
+pub struct ProtoYieldReport { pub owner_cpu: usize, pub reason: ProtoYieldReason,
+                              pub work_pending: bool }
+
+pub fn install_queue_poll_observer(observer: QueuePollObserver);
+pub fn publish_queue_poll_gate(enabled: bool);
+// 其余五个事件各自一对 install_<event>_observer / publish_<event>_gate。
+```
+
+队列边界的事实由队列运行时报告，协议执行器的让出由协议执行器报告；端口类型与契约对两者相同。
+`install_<event>_observer()` 每进程安装一次，重复安装同一函数幂等，替换存活消费者是不变量违背；端口不卸载，
+未安装等价于没有消费者。`publish_<event>_gate()` 由操作系统适配层写入：启用事实由 `ax-tracepoint` 的门控拥有，
+运行时不维护第二份真相，查询与触发之间的竞争由生成的事件函数做最终检查。端口在进入后只读一个已发布标志与一个
+函数指针槽，不分配、不读时钟、不取网络锁。各事件的字段语义、结果码与成本口径见[网络事件](events.md)。
+
+### 3.3 路由快照
 
 路由查询将内部 `RouteTable` 的规则转换为稳定的 `RouteInfo`，其中 default route 与普通前缀路由共享 metric 和接口标识语义。该快照服务于 StarryOS route dump 和诊断展示，实际发包仍由 `Router::dispatch()` 在最新共享路由表上重新决策。
 
@@ -281,7 +325,7 @@ pub struct RouteInfo {
 
 调用方可用它实现 route 诊断、默认网关展示或 Linux 兼容查询；socket 发送路径不应自行遍历 `RouteInfo`，而应通过 socket backend 调用控制面的 route decision。
 
-### 3.3 ARP 快照
+### 3.4 ARP 快照
 
 `arp_entries()` 聚合各 Ethernet 设备当前可见的邻居缓存，并把驱动内部表示收敛为可供 procfs 或管理接口消费的 `ArpEntry`。返回值是瞬时快照，既不承诺缓存项持续有效，也不会把 ARP 生命周期控制权交给查询方。
 

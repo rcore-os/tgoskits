@@ -7,7 +7,7 @@ use std::{
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
-    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion,
+    DmaBuffer, NetControlEndpoint, NetDeviceInfo, NetPollGroupId, PreparedNetDevice, RxCompletion,
     TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol, WifiOperation,
     WifiTransaction, Wpa2Pmk,
     dma_api::{
@@ -300,6 +300,7 @@ fn absent_ports_preserve_discovery_order_for_interface_configuration() {
             wifi_handles: Vec::new(),
             initial_wifi_policies: Vec::new(),
             device_index_map,
+            published_interfaces: Vec::new(),
             protocol_owner_cpu: 0,
         };
         let surviving_orders = (0..3)
@@ -807,9 +808,21 @@ fn direct_tx_fills_dma_and_preserves_submission_options() {
 }
 
 fn group_state(initial: u8) -> PollGroupState {
-    let state = PollGroupState::new(0, Arc::new(QueueNotification::new()));
+    group_state_with_identity(initial, test_identity(0))
+}
+
+fn group_state_with_identity(initial: u8, identity: NetQueueIdentity) -> PollGroupState {
+    let state = PollGroupState::new(identity, Arc::new(QueueNotification::new()));
     state.state.store(initial, Ordering::Release);
     state
+}
+
+fn test_identity(owner_cpu: usize) -> NetQueueIdentity {
+    NetQueueIdentity {
+        discovery_order: 0,
+        group_id: NetPollGroupId::new(0),
+        owner_cpu,
+    }
 }
 
 fn apply_model_operation(state: &PollGroupState, operation: ModelOperation) {
@@ -856,7 +869,7 @@ fn independent_sources_can_use_different_cpus() {
 #[test]
 fn missed_event_survives_poll_completion() {
     let notify = Arc::new(QueueNotification::new());
-    let state = PollGroupState::new(0, notify);
+    let state = PollGroupState::new(test_identity(0), notify);
     state.activate(false);
     state.schedule_task();
     state.state.store(STATE_POLLING, Ordering::Release);
@@ -945,9 +958,16 @@ fn hardware_retry_rearms_instead_of_immediately_rescheduling() {
         hardware_retry_outcome(0),
         GroupPollOutcome::Idle(0)
     ));
-    assert!(waits_for_hardware_event(&NetError::Retry));
-    assert!(waits_for_hardware_event(&NetError::LinkDown));
-    assert!(!waits_for_hardware_event(&NetError::NotSupported));
+    // The admission check and the reported reason come from one classifier.
+    assert_eq!(
+        backpressure_reason(&NetError::Retry),
+        Some(QueueBackpressureReason::Retry)
+    );
+    assert_eq!(
+        backpressure_reason(&NetError::LinkDown),
+        Some(QueueBackpressureReason::LinkDown)
+    );
+    assert_eq!(backpressure_reason(&NetError::NotSupported), None);
     assert!(matches!(
         rx_refill_retry_outcome(0, 0),
         GroupPollOutcome::Idle(0)
@@ -981,6 +1001,98 @@ fn secure_startup_transaction_receives_runtime_owned_entropy() {
         panic!("expected station transaction");
     };
     assert_eq!(entropy, &Some([0x22; 32]));
+}
+
+#[test]
+fn rx_drop_total_keeps_counting_after_the_device_layer_drains_the_increment() {
+    let state = group_state(STATE_IDLE);
+
+    state.record_rx_drop();
+    state.record_rx_drop();
+
+    // The device layer takes the increment once, folds it into the interface
+    // counter, and finds nothing left to take.
+    assert_eq!(state.take_pending_rx_drops(), 2);
+    assert_eq!(state.take_pending_rx_drops(), 0);
+
+    // The queue keeps reporting every drop it observed.
+    assert_eq!(state.stats.snapshot().rx_drops, 2);
+}
+
+#[test]
+fn queue_snapshots_pair_group_identity_with_its_published_interface() {
+    use crate::config::InterfaceId;
+
+    // Device 0 was skipped at startup, so the surviving devices keep their
+    // discovery order while being published as the first two interfaces.
+    let dropped = group_state_with_identity(
+        STATE_IDLE,
+        NetQueueIdentity {
+            discovery_order: 1,
+            group_id: NetPollGroupId::new(3),
+            owner_cpu: 1,
+        },
+    );
+    dropped.record_rx_drop();
+    let second_queue = group_state_with_identity(
+        STATE_IDLE,
+        NetQueueIdentity {
+            discovery_order: 1,
+            group_id: NetPollGroupId::new(4),
+            owner_cpu: 2,
+        },
+    );
+    let other_device = group_state_with_identity(
+        STATE_IDLE,
+        NetQueueIdentity {
+            discovery_order: 2,
+            group_id: NetPollGroupId::new(0),
+            owner_cpu: 3,
+        },
+    );
+    let mut runtime = NetworkQueueRuntime {
+        registrations: Vec::new(),
+        executors: Vec::new(),
+        group_states: vec![
+            Arc::new(dropped),
+            Arc::new(second_queue),
+            Arc::new(other_device),
+        ],
+        _controls: Vec::new(),
+        wifi_handles: Vec::new(),
+        initial_wifi_policies: Vec::new(),
+        device_index_map: vec![None, Some(0), Some(1)],
+        published_interfaces: Vec::new(),
+        protocol_owner_cpu: 0,
+    };
+
+    // Until `init_network` binds the published interfaces, a group has no
+    // interface to name but keeps its full identity.
+    let unbound = runtime.queue_snapshots();
+    assert_eq!(unbound.len(), 3);
+    assert!(unbound.iter().all(|snapshot| snapshot.interface.is_none()));
+    assert_eq!(unbound[0].identity.group_id, NetPollGroupId::new(3));
+
+    runtime.bind_published_interfaces(vec![InterfaceId::new(2), InterfaceId::new(3)]);
+
+    // Both queues of one device report that device's published interface and
+    // keep their own group id, owner CPU and counters; the interface lookup
+    // goes through the discovery-order map rather than the raw index.
+    let snapshots = runtime.queue_snapshots();
+    assert_eq!(snapshots[0].identity.discovery_order, 1);
+    assert_eq!(snapshots[0].interface, Some(InterfaceId::new(2)));
+    assert_eq!(snapshots[0].identity.group_id, NetPollGroupId::new(3));
+    assert_eq!(snapshots[0].identity.owner_cpu, 1);
+    assert_eq!(snapshots[0].stats.rx_drops, 1);
+    assert_eq!(snapshots[1].identity.discovery_order, 1);
+    assert_eq!(snapshots[1].interface, Some(InterfaceId::new(2)));
+    assert_eq!(snapshots[1].identity.group_id, NetPollGroupId::new(4));
+    assert_eq!(snapshots[1].identity.owner_cpu, 2);
+    assert_eq!(snapshots[1].stats.rx_drops, 0);
+    assert_eq!(snapshots[2].identity.discovery_order, 2);
+    assert_eq!(snapshots[2].interface, Some(InterfaceId::new(3)));
+    assert_eq!(snapshots[2].identity.group_id, NetPollGroupId::new(0));
+    assert_eq!(snapshots[2].identity.owner_cpu, 3);
 }
 
 #[test]

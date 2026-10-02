@@ -1,0 +1,16 @@
+[package]
+name = "net_queue_poll-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+net_queue_poll-common = { path = "../net_queue_poll-common" }
+
+aya-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "net_queue_poll"
+path = "src/main.rs"
