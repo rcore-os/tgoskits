@@ -13,6 +13,7 @@ mod fb;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 mod irq_service;
+mod ivc_legacy;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;

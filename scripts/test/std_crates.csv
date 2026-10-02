@@ -59,6 +59,7 @@ axaddrspace
 axdevice
 x86_vlapic
 axhvc
+axivc
 axvirtio-blk
 axvirtio-common
 axvm

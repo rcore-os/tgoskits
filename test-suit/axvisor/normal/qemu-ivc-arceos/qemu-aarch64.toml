@@ -19,16 +19,31 @@ args = [
     "-m",
     "8g",
 ]
+timeout = 300
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
     "(?i)unhandled page fault",
     "(?i)page fault",
+    "VM\\[\\d+\\] boot failed",
     "ivc publish failed",
-    "(?m)^linux ivc demo failed\\s*$",
+    "ivc subscribe failed",
+    "ivc validation failed",
+    "ivc recv error",
+    "ivc send error",
 ]
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+
+[[shell_check_steps]]
+# Both ArceOS tasks must finish after sending all Data and the final ACK.
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?ivc subscriber full-duplex demo complete\\s*$",
+]
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
@@ -36,16 +51,5 @@ shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
 success_regex = [
-    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc ack seq=5 msg=ack from linux subscriber\\s*$",
-]
-
-[[shell_check_steps]]
-shell_prefix = "axvisor:/$"
-    shell_cmd = "vm console 2"
-
-[[shell_check_steps]]
-# Match only after the Linux guest validates every Message V1 exchange and
-# successfully tears down its endpoint and manager.
-success_regex = [
-    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?linux ivc demo pass\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc ack seq=5 msg=ack from arceos subscriber\\s*$",
 ]

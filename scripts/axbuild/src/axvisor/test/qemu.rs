@@ -146,6 +146,8 @@ impl Axvisor {
         // embedded VM configuration, so a later build would otherwise replace
         // the executable belonging to an earlier group.
         for (index, build_group) in build_groups.iter_mut().enumerate() {
+            // Embedded guest images must exist before the host build script reads them.
+            super::guest_build::prepare(&mut self.app, build_group.group.build_config_path).await?;
             let diskless_host_only = build_group
                 .group
                 .cases
