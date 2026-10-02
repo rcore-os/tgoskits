@@ -149,8 +149,8 @@ int parts_dup_dup3_fcntl(void)
 
     /* PART 9: fcntl F_SETFL 清除标志 */
 
-    fd = openat(AT_FDCWD, TMPFILE, O_RDWR | O_APPEND);
-    CHECK(fd >= 0, "打开文件带 O_APPEND 标志");
+    fd = openat(AT_FDCWD, TMPFILE, O_RDWR | O_APPEND | O_NONBLOCK);
+    CHECK(fd >= 0, "打开文件带 O_APPEND 和 O_NONBLOCK 标志");
 
     int fl_before = fcntl(fd, F_GETFL);
     CHECK(fl_before >= 0, "F_GETFL 获取标志成功");
@@ -160,6 +160,7 @@ int parts_dup_dup3_fcntl(void)
     int fl_after = fcntl(fd, F_GETFL);
     CHECK(fl_after >= 0, "清除后 F_GETFL 成功");
     CHECK((fl_after & O_APPEND) == 0, "O_APPEND 已被清除");
+    CHECK((fl_after & O_NONBLOCK) == 0, "O_NONBLOCK 已被清除");
 
     lseek(fd, 0, SEEK_SET);
     write(fd, "X", 1);
@@ -182,6 +183,29 @@ int parts_dup_dup3_fcntl(void)
     CHECK((fl_complete & O_NONBLOCK) != 0, "F_GETFL: O_NONBLOCK 已设置");
 
     close(fd);
+
+    /* Directory status flags belong to the shared open file description. */
+    fd = openat(AT_FDCWD, "/tmp", O_RDONLY | O_DIRECTORY | O_NONBLOCK);
+    CHECK(fd >= 0, "打开非阻塞目录");
+    if (fd >= 0) {
+        int dir_flags = fcntl(fd, F_GETFL);
+        CHECK(dir_flags >= 0 && (dir_flags & O_NONBLOCK) != 0,
+              "目录 F_GETFL 保留打开时的 O_NONBLOCK");
+        int dir_dup = dup(fd);
+        CHECK(dir_dup >= 0, "复制目录描述符");
+        if (dir_dup >= 0) {
+            CHECK_RET(fcntl(dir_dup, F_SETFL, 0), 0, "通过副本清除目录 O_NONBLOCK");
+            dir_flags = fcntl(fd, F_GETFL);
+            CHECK(dir_flags >= 0 && (dir_flags & O_NONBLOCK) == 0,
+                  "目录副本共享清除后的状态");
+            CHECK_RET(fcntl(fd, F_SETFL, O_NONBLOCK), 0, "重新设置目录 O_NONBLOCK");
+            dir_flags = fcntl(dir_dup, F_GETFL);
+            CHECK(dir_flags >= 0 && (dir_flags & O_NONBLOCK) != 0,
+                  "目录副本共享重新设置的状态");
+            close(dir_dup);
+        }
+        close(fd);
+    }
 
     /* PART 18: fcntl F_GETFL 基础验证 */
 

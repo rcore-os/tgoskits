@@ -43,6 +43,8 @@ model_register!(
     probe_kinds: &[],
 );
 
+#[cfg(feature = "sg2002-audio")]
+pub mod audio;
 mod binding_info;
 mod binding_resolver;
 #[cfg(any(feature = "cv181x-sdhci", feature = "aic8800-wifi"))]

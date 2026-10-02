@@ -10,7 +10,7 @@ use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL, O_NONBLOCK},
     ioctl::TIOCSCTTY,
 };
 
@@ -412,6 +412,7 @@ pub struct Directory {
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
     open_flags: u32,
+    nonblock: AtomicBool,
     /// Whether this is the original handle returned by fsmount(2).
     /// Reopening it as a normal directory deliberately drops this authority.
     detached_mount_handle: bool,
@@ -432,6 +433,7 @@ impl Directory {
             }),
             open_flags,
             detached_mount_handle: false,
+            nonblock: AtomicBool::new(open_flags & O_NONBLOCK != 0),
         }
     }
 
@@ -444,6 +446,7 @@ impl Directory {
             }),
             open_flags,
             detached_mount_handle: true,
+            nonblock: AtomicBool::new(open_flags & O_NONBLOCK != 0),
         }
     }
 
@@ -458,6 +461,15 @@ impl Directory {
 }
 
 impl FileLike for Directory {
+    fn set_nonblocking(&self, flag: bool) -> StarryResult {
+        self.nonblock.store(flag, Ordering::Release);
+        Ok(())
+    }
+
+    fn nonblocking(&self) -> bool {
+        self.nonblock.load(Ordering::Acquire)
+    }
+
     fn supports_epoll(&self) -> bool {
         false
     }

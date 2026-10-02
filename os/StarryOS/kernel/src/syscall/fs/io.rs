@@ -144,7 +144,7 @@ pub fn sys_readv(
 ) -> StarryResult<isize> {
     debug!("sys_readv <= fd: {fd}, iovcnt: {iovcnt}");
     let f = get_file_like(fd)?;
-    f.read(&mut IoVectorBuf::new(current, iov, iovcnt)?.into_io())
+    f.read_vectored(&mut IoVectorBuf::new(current, iov, iovcnt)?.into_io())
         .map(|n| n as _)
 }
 

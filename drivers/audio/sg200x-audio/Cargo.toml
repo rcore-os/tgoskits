@@ -1,0 +1,18 @@
+[package]
+name = "sg200x-audio"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "GPL-2.0-or-later"
+description = "SG200x onboard ADC and cyclic DMA capture"
+
+[[package.metadata.clippy.configurations]]
+name = "riscv64"
+target = "riscv64gc-unknown-none-elf"
+
+[dependencies]
+dma-api.workspace = true
+mmio-api.workspace = true
+mbarrier = "0.1"
+thiserror.workspace = true
