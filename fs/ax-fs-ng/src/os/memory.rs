@@ -94,6 +94,7 @@ pub mod test_support {
         generation: AtomicU64,
         alloc_count: AtomicUsize,
         dealloc_count: AtomicUsize,
+        remaining_allocations: AtomicUsize,
     }
 
     impl TestPageProvider {
@@ -103,6 +104,7 @@ pub mod test_support {
                 generation: AtomicU64::new(0),
                 alloc_count: AtomicUsize::new(0),
                 dealloc_count: AtomicUsize::new(0),
+                remaining_allocations: AtomicUsize::new(usize::MAX),
             }
         }
 
@@ -114,16 +116,28 @@ pub mod test_support {
             self.dealloc_count.load(Ordering::Acquire)
         }
 
+        pub fn fail_after(&self, successful_allocations: usize) {
+            self.remaining_allocations
+                .store(successful_allocations, Ordering::Release);
+        }
+
         fn reset(&self, translate: bool) {
             self.generation.fetch_add(1, Ordering::AcqRel);
             self.translate.store(translate, Ordering::Release);
             self.alloc_count.store(0, Ordering::Release);
             self.dealloc_count.store(0, Ordering::Release);
+            self.remaining_allocations
+                .store(usize::MAX, Ordering::Release);
         }
     }
 
     impl FsPageProvider for TestPageProvider {
         fn alloc_page(&self) -> VfsResult<FsPage> {
+            self.remaining_allocations
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .map_err(|_| VfsError::NoMemory)?;
             let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
             // SAFETY: `layout` has non-zero size and page alignment. The
             // returned allocation is owned by `FsPage` and released with the

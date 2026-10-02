@@ -41,7 +41,7 @@ struct aio_sigset_arg {
 static void test_aio_read_completion_after_fd_close(void)
 {
     static char buffer[8];
-    const char expected[8] = "aio-data";
+    const char expected[8] = {'a', 'i', 'o', '-', 'd', 'a', 't', 'a'};
     int fd = (int)syscall(SYS_memfd_create, "aio-read-owner", 0);
     CHECK(fd >= 0, "create AIO read source");
     if (fd < 0)

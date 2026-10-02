@@ -4,11 +4,10 @@ use core::num::NonZeroUsize;
 
 use hashbrown::HashMap;
 
-use super::folio::CacheFolio;
 use crate::{BlockError, BlockResult};
 
-struct CachedFolio {
-    folio: CacheFolio,
+struct CachedFolio<T> {
+    folio: T,
     more_recent: Option<u64>,
     less_recent: Option<u64>,
 }
@@ -18,14 +17,14 @@ struct CachedFolio {
 /// Hash-table growth is reserved fallibly immediately before insertion.
 /// The links use frame indices rather than pointers so rehashing cannot
 /// invalidate the LRU order.
-pub(super) struct FolioCache {
-    entries: HashMap<u64, CachedFolio>,
+pub(super) struct FolioCache<T> {
+    entries: HashMap<u64, CachedFolio<T>>,
     capacity: NonZeroUsize,
     most_recent: Option<u64>,
     least_recent: Option<u64>,
 }
 
-impl FolioCache {
+impl<T> FolioCache<T> {
     pub(super) fn new(capacity: NonZeroUsize) -> Self {
         Self {
             entries: HashMap::new(),
@@ -35,11 +34,11 @@ impl FolioCache {
         }
     }
 
-    #[cfg(feature = "vfs")]
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(super) fn contains(&self, frame: &u64) -> bool {
         self.entries.contains_key(frame)
     }
@@ -48,11 +47,11 @@ impl FolioCache {
         self.entries.len() >= self.capacity.get()
     }
 
-    pub(super) fn get(&self, frame: &u64) -> Option<&CacheFolio> {
+    pub(super) fn get(&self, frame: &u64) -> Option<&T> {
         self.entries.get(frame).map(|entry| &entry.folio)
     }
 
-    pub(super) fn get_mut(&mut self, frame: &u64) -> Option<&mut CacheFolio> {
+    pub(super) fn get_mut(&mut self, frame: &u64) -> Option<&mut T> {
         self.touch(*frame);
         self.entries.get_mut(frame).map(|entry| &mut entry.folio)
     }
@@ -118,9 +117,9 @@ impl FolioCache {
     }
 
     /// Inserts after [`Self::try_reserve_entry`] has succeeded.
-    pub(super) fn insert_reserved(&mut self, frame: u64, folio: CacheFolio) {
+    pub(super) fn insert_reserved(&mut self, frame: u64, folio: T) {
         debug_assert!(!self.entries.contains_key(&frame));
-        debug_assert!(self.entries.len() < self.capacity.get());
+        debug_assert!(!self.is_full());
         let previous_most_recent = self.most_recent;
         self.entries.insert(
             frame,
@@ -141,7 +140,7 @@ impl FolioCache {
         self.most_recent = Some(frame);
     }
 
-    pub(super) fn remove(&mut self, frame: &u64) -> Option<CacheFolio> {
+    pub(super) fn remove(&mut self, frame: &u64) -> Option<T> {
         let entry = self.entries.remove(frame)?;
         if let Some(more_recent) = entry.more_recent {
             self.entries
@@ -164,5 +163,9 @@ impl FolioCache {
 
     pub(super) fn least_recent(&self) -> Option<u64> {
         self.least_recent
+    }
+
+    pub(super) fn frames(&self) -> impl Iterator<Item = u64> + '_ {
+        self.entries.keys().copied()
     }
 }

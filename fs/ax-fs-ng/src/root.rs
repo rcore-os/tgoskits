@@ -487,7 +487,13 @@ fn collect_disks(
 
     for (disk_index, dev) in block_devs.into_iter().enumerate() {
         let handle = dev.clone();
-        let mut dev = boxed_native_handle_block_device(dev)?;
+        let mut dev = match boxed_native_handle_block_device(dev) {
+            Ok(device) => device,
+            Err(error) => {
+                warn!("failed to attach block cache to disk {disk_index}: {error:?}");
+                continue;
+            }
+        };
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
@@ -1085,14 +1091,14 @@ mod tests {
     use core::{any::Any, time::Duration};
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
-        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-        Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
+        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
+        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, RenameOptions,
+        StatFs, VfsResult, WeakDirEntry,
     };
     use rdif_block::DeviceInfo;
 
     use super::*;
-    use crate::{BlockError, BlockResult, shutdown_registered_filesystems};
+    use crate::{BlockError, BlockResult, mounts::shutdown_registered_filesystems};
 
     #[test]
     fn initramfs_selection_follows_pid1_and_explicit_root_rules() {
@@ -1271,9 +1277,20 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
         fn read_dir(
             &self,
-            _cursor: DirectoryCursor,
+            _cursor: axfs_ng_vfs::DirectoryCursor,
             _sink: &mut dyn DirEntrySink,
         ) -> VfsResult<usize> {
             Ok(0)
@@ -1318,17 +1335,6 @@ mod tests {
             &self,
             _name: &str,
             _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
             _permission: NodePermission,
             _uid: u32,
             _gid: u32,
@@ -1709,7 +1715,7 @@ mod tests {
 
     impl Drop for MountedRegistryGuard {
         fn drop(&mut self) {
-            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock());
+            crate::mounts::clear_registered_filesystems_for_test();
         }
     }
 

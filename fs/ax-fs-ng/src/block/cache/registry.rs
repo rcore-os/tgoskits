@@ -4,8 +4,10 @@
 //! address) of the runtime `BlockDeviceHandle`.
 //!
 //! Key stability holds for live entries because each cached device keeps its
-//! own `Arc` clone of the handle alive. Entries hold only weak references to
-//! the tree. The last filesystem consumer writes the tree back while it is
+//! own `Arc` clone of the handle alive. Entries normally hold weak references
+//! to the tree. A failed final writeback retains a strong retry owner until a
+//! later successful sync, without allocating on the error path.
+//! The last filesystem consumer writes the tree back while it is
 //! still upgradeable; the tree's final drop releases the endpoint and removes
 //! its entry when the registry is immediately available. A contended drop may
 //! leave a stale weak entry, which cache creation or global sync prunes before
@@ -34,13 +36,14 @@ use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex}
 struct DeviceCacheEntry {
     device_key: usize,
     cache: Weak<BlockCacheShared>,
+    failed_writeback: Option<Arc<BlockCacheShared>>,
     #[cfg(feature = "vfs")]
-    reclaim: Weak<SleepMutex<BlockAddressSpace>>,
+    reclaim: Weak<BlockAddressSpace>,
 }
 
 impl DeviceCacheEntry {
     #[cfg(feature = "vfs")]
-    fn reclaim_tree(&self) -> Option<Arc<SleepMutex<BlockAddressSpace>>> {
+    fn reclaim_tree(&self) -> Option<Arc<BlockAddressSpace>> {
         self.reclaim.upgrade()
     }
 }
@@ -68,8 +71,7 @@ pub(crate) fn shared_cache_for(
     endpoint: Box<dyn FsBlockDevice>,
 ) -> BlockResult<Arc<BlockCacheShared>> {
     let geometry = FolioGeometry::new(block_size)?;
-    // Lock order: registry first, then the device tree lock. No path takes
-    // them in the opposite order.
+    // Geometry is immutable; a registry lookup never waits for folio I/O.
     let mut registry = BLOCK_CACHE_REGISTRY.lock();
     prune_stale_entries(&mut registry);
     let stale_index = if let Some(index) = registry
@@ -101,6 +103,7 @@ pub(crate) fn shared_cache_for(
     let entry = DeviceCacheEntry {
         device_key,
         cache: Arc::downgrade(&shared),
+        failed_writeback: None,
         #[cfg(feature = "vfs")]
         reclaim: shared.reclaim_state(),
     };
@@ -144,6 +147,28 @@ pub(super) fn unregister_cache(device_key: usize, cache: *const BlockCacheShared
     registry.swap_remove(index);
 }
 
+/// Keeps failed final writeback reachable without growing the registry.
+pub(super) fn retain_failed_writeback(shared: &Arc<BlockCacheShared>) {
+    let mut registry = BLOCK_CACHE_REGISTRY.lock();
+    let entry = registry
+        .iter_mut()
+        .find(|entry| core::ptr::eq(entry.cache.as_ptr(), Arc::as_ptr(shared)))
+        .expect("a live cache keeps its preallocated registry entry");
+    entry.failed_writeback = Some(Arc::clone(shared));
+}
+
+/// Drops the retained endpoint only after releasing registry exclusion.
+pub(super) fn release_successful_writeback(shared: &Arc<BlockCacheShared>) {
+    let retained = {
+        let mut registry = BLOCK_CACHE_REGISTRY.lock();
+        registry
+            .iter_mut()
+            .find(|entry| core::ptr::eq(entry.cache.as_ptr(), Arc::as_ptr(shared)))
+            .and_then(|entry| entry.failed_writeback.take())
+    };
+    drop(retained);
+}
+
 #[cfg(all(test, feature = "vfs"))]
 pub(super) fn unregister_while_locked_for_test(device_key: usize, cache: *const BlockCacheShared) {
     let _registry = BLOCK_CACHE_REGISTRY.lock();
@@ -163,6 +188,9 @@ pub fn sync_all_block_caches() -> BlockResult<()> {
     let mut first_error = None;
     for shared in live_trees()? {
         let result = shared.sync_to_registered_device();
+        if result.is_ok() {
+            release_successful_writeback(&shared);
+        }
         if let Err(error) = result
             && first_error.is_none()
         {
@@ -198,9 +226,7 @@ pub(crate) fn reclaim_clean_folios(num_folios: usize) -> usize {
         let Some(shared) = try_live_tree(index) else {
             continue;
         };
-        if let Some(mut state) = shared.try_lock() {
-            reclaimed += state.reclaim_clean_folios(num_folios - reclaimed);
-        }
+        reclaimed += shared.reclaim_clean_folios(num_folios - reclaimed);
     }
     reclaimed
 }
@@ -211,7 +237,7 @@ pub(crate) fn reclaim_clean_folios(num_folios: usize) -> usize {
 /// removed or contended entry is skipped; the returned strong reference is
 /// dropped only after the registry guard has gone out of scope.
 #[cfg(feature = "vfs")]
-fn try_live_tree(index: usize) -> Option<Arc<SleepMutex<BlockAddressSpace>>> {
+fn try_live_tree(index: usize) -> Option<Arc<BlockAddressSpace>> {
     let registry = BLOCK_CACHE_REGISTRY.try_lock()?;
     registry.get(index)?.reclaim_tree()
 }
@@ -284,6 +310,7 @@ mod tests {
         let entry = DeviceCacheEntry {
             device_key: usize::MAX,
             cache: Arc::downgrade(&owner),
+            failed_writeback: None,
             reclaim: owner.reclaim_state(),
         };
         let reclaim = entry.reclaim_tree().unwrap();

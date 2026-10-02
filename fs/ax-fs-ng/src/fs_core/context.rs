@@ -1523,6 +1523,9 @@ impl Iterator for ReadDir {
                 &mut *self.state,
                 self.cursor,
                 &mut |name: &[u8], ino: u64, node_type: NodeType, cursor: DirectoryCursor| {
+                    if self.buf.len() == Self::BUF_SIZE {
+                        return false;
+                    }
                     let Ok(name) = core::str::from_utf8(name) else {
                         invalid_name = true;
                         return false;
@@ -1534,7 +1537,7 @@ impl Iterator for ReadDir {
                         offset: cursor.offset(),
                     });
                     self.cursor = cursor;
-                    self.buf.len() < Self::BUF_SIZE
+                    true
                 },
             );
 

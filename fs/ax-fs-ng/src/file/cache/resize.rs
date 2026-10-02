@@ -115,6 +115,7 @@ impl CachedFile {
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.entry().as_file()?;
         let _layout = self.shared.mapping_layout_lock.lock();
+        let _writeback = self.shared.writeback_lock.lock();
         let _io = self.shared.io_lock.lock();
         let next_epoch = (mode == PreallocationMode::ExtendSize && end > self.shared.len())
             .then(|| self.shared.prepare_mapping_epoch())
@@ -175,6 +176,7 @@ impl CachedFile {
                 self.writeback_pages(&affected_pages)?;
             }
 
+            let _writeback = self.shared.writeback_lock.lock();
             let _io = self.shared.io_lock.lock();
             if self.shared.len() != observed_len
                 || !self.cached_page_set_matches(start_page, end_page, &affected_pages)
@@ -268,6 +270,7 @@ impl CachedFile {
             }
 
             let mut discarded = DetachedPageBatch::prepare(affected_pages.len())?;
+            let _writeback = self.shared.writeback_lock.lock();
             let io = self.shared.io_lock.lock();
             if self.shared.len() != observed_len {
                 continue;
@@ -586,6 +589,7 @@ impl CachedFile {
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let file = self.inner.entry().as_file()?;
         loop {
             let observed_len = self.shared.len();
@@ -599,6 +603,7 @@ impl CachedFile {
             let _mapping_update = (observed_len != len)
                 .then(|| self.begin_mapping_update())
                 .transpose()?;
+            let _writeback = self.shared.writeback_lock.lock();
             if self.shared.len() != observed_len
                 || prepared_epoch
                     .is_some_and(|epoch| !self.shared.prepared_mapping_epoch_is_current(epoch))

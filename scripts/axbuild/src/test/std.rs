@@ -164,6 +164,15 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         expected_tests: &["block::cache::registry::tests::reclaim_capability_does_not_defer_last_endpoint_drop"],
     },
     PackageFeatureProfile {
+        name: "host-test+ext4-final-mount-writeback",
+        no_default_features: false,
+        features: &["host-test", "ext4"],
+        name_filter: Some("failed_final_mount_writeback_keeps_dirty_cache_for_retry"),
+        expected_tests: &[
+            "fs::ext4::rsext4::fs::tests::writeback::failed_final_mount_writeback_keeps_dirty_cache_for_retry",
+        ],
+    },
+    PackageFeatureProfile {
         name: "host-test-non-vfs-writeback-discovery",
         no_default_features: false,
         features: &["host-test"],

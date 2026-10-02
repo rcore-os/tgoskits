@@ -17,7 +17,6 @@ lockdep = []
 ax-sync = { workspace = true, features = ["sleep"] }
 axpoll.workspace = true
 bitflags = "2.10"
-cfg-if = "1"
 hashbrown = "0.16"
 inherit-methods-macro = "0.1"
 log = "0.4"
@@ -26,6 +25,11 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ax-sync = { workspace = true, features = ["host-test"] }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Host tests link the workspace runtime's synchronization provider. The
+# path-only dependency is omitted on publish to avoid a release-order cycle.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 
 [[test]]
 name = "std"

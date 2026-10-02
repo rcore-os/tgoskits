@@ -16,6 +16,7 @@ use crate::{BlockError, BlockResult};
 pub(crate) struct CacheFolio {
     data: Vec<u8>,
     heads: Vec<BufferHead>,
+    generation: u64,
 }
 
 impl CacheFolio {
@@ -38,7 +39,11 @@ impl CacheFolio {
             .map_err(|_| BlockError::NoMemory)?;
         heads.resize(slots, BufferHead::default());
 
-        Ok(Self { data, heads })
+        Ok(Self {
+            data,
+            heads,
+            generation: 0,
+        })
     }
 
     pub(crate) fn slot(&self, slot: usize) -> &BufferHead {
@@ -63,9 +68,20 @@ impl CacheFolio {
         dst.copy_from_slice(&self.data[range]);
     }
 
-    pub(crate) fn copy_into_slots(&mut self, slot: usize, count: usize, src: &[u8]) {
+    pub(crate) fn copy_into_slots(
+        &mut self,
+        slot: usize,
+        count: usize,
+        src: &[u8],
+    ) -> BlockResult<()> {
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or(BlockError::InvalidState)?;
         let range = self.slot_bytes(slot, count);
         self.data[range].copy_from_slice(src);
+        self.generation = generation;
+        Ok(())
     }
 
     pub(crate) fn mark_slots_uptodate(&mut self, slot: usize, count: usize) {
@@ -139,6 +155,39 @@ impl CacheFolio {
             heads: &self.heads,
             cursor: 0,
         }
+    }
+
+    /// Copies one immutable writeback generation into a budgeted frame.
+    pub(super) fn snapshot(&self) -> BlockResult<Self> {
+        let mut snapshot = Self::try_new(self.data.len(), self.heads.len())?;
+        snapshot.data.copy_from_slice(&self.data);
+        snapshot.heads.clone_from_slice(&self.heads);
+        snapshot.generation = self.generation;
+        Ok(snapshot)
+    }
+
+    /// Redirty never becomes clean because an older write completed.
+    pub(super) fn finish_writeback(&mut self, snapshot: &Self, slot: usize, count: usize) {
+        self.finish_writeback_generation(snapshot.generation, slot, count);
+    }
+
+    pub(super) fn dirty_generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(super) fn finish_writeback_generation(
+        &mut self,
+        generation: u64,
+        slot: usize,
+        count: usize,
+    ) {
+        if self.generation == generation {
+            self.clear_dirty_slots(slot, count);
+        }
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.heads.fill(BufferHead::default());
     }
 }
 
