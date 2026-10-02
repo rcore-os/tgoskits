@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.6.2...arm_vgic-v0.6.3) - 2026-10-02
+
+### Other
+
+- *(axvm)* reduce GICv3 virtual CPU interface switch overhead ([#2503](https://github.com/rcore-os/tgoskits/pull/2503))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.6.1...arm_vgic-v0.6.2) - 2026-09-09
 
 ### Other

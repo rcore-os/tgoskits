@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.3...ax-cpu-v0.10.4) - 2026-10-02
+
+### Other
+
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.10.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.2...ax-cpu-v0.10.3) - 2026-09-22
 
 ### Other

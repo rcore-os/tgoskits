@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.3.3...realtek-rtl8125-v0.3.4) - 2026-10-02
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.3.3](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.3.2...realtek-rtl8125-v0.3.3) - 2026-09-09
 
 ### Other

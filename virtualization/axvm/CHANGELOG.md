@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.5...axvm-v0.9.0) - 2026-10-02
+
+### Added
+
+- *(axloader)* serve HTTP boot with A/B OTA recovery ([#2535](https://github.com/rcore-os/tgoskits/pull/2535))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+
+### Fixed
+
+- *(axvm)* [**breaking**] destroy VM resources outside the machine lock ([#2467](https://github.com/rcore-os/tgoskits/pull/2467))
+- *(axvm)* preserve legacy PIC interrupt delivery ([#2518](https://github.com/rcore-os/tgoskits/pull/2518))
+- *(axvirtio-blk)* honor negotiated request limits ([#2510](https://github.com/rcore-os/tgoskits/pull/2510))
+- *(axvm)* follow host console by default and fix OrangePi Nightly ([#2490](https://github.com/rcore-os/tgoskits/pull/2490))
+
+### Other
+
+- *(axvm)* reduce GICv3 virtual CPU interface switch overhead ([#2503](https://github.com/rcore-os/tgoskits/pull/2503))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.4...axvm-v0.8.5) - 2026-09-22
 
 ### Other

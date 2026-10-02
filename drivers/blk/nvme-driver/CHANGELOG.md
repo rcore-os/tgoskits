@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.8.2...nvme-driver-v0.8.3) - 2026-10-02
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.8.1...nvme-driver-v0.8.2) - 2026-09-09
 
 ### Other

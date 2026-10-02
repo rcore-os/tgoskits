@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.18.1...ax-driver-v0.19.0) - 2026-10-02
+
+### Added
+
+- *(virtio-gpu)* async fire-and-forget submission with real fences ([#2536](https://github.com/rcore-os/tgoskits/pull/2536))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
+### Other
+
+- *(aic8800)* aggregate transmit writes and cache firmware credits ([#2547](https://github.com/rcore-os/tgoskits/pull/2547))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.18.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.18.0...ax-driver-v0.18.1) - 2026-09-22
 
 ### Added
