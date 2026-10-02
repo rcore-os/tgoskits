@@ -94,25 +94,29 @@ pub(crate) fn prepare_rust_case_overlay_sync(
     let spec = cross_compile_spec(arch)?;
     write_cross_bin_wrappers(layout, spec)?;
 
-    // Run prebuild.sh if present — runs inside the Alpine staging root via
-    // qemu-user, same as C cases.  Use this to install native deps (e.g.
-    // `apk add dbus-dev`) that the cargo build needs via pkg-config.
+    // Run prebuild.sh if present inside the target Alpine environment, using
+    // qemu-user when available or a minimal qemu-system Linux boot otherwise.
+    // Use this to install native deps (e.g. `apk add dbus-dev`) that the cargo
+    // build needs via pkg-config.
     let prebuild_script = case_rust_prebuild_script_path(case);
     if prebuild_script.is_file() {
         let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
-        let prebuild_env =
-            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
-        let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
-        // Override current_dir to rust/ — build_prebuild_command defaults to c/.
-        command.current_dir(&rust_dir);
-        command
-            .exec()
-            .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
+        run_guest_prebuild(GuestPrebuildRequest {
+            arch,
+            case,
+            case_rootfs,
+            script: &prebuild_script,
+            work_dir: &rust_dir,
+            layout,
+            extra_envs: &extra_script_envs,
+            config,
+        })
+        .with_context(|| format!("failed to run rust case prebuild.sh for `{}`", case.name))?;
     }
 
     // Some Rust cases need host-side artifact preparation (for example,
     // downloading a checksum-pinned runtime bundle). Keep it separate from
-    // `prebuild.sh`, whose contract is to run target binaries through qemu-user.
+    // `prebuild.sh`, whose contract is to run inside the target environment.
     let host_prebuild_script = rust_dir.join("host-prebuild.sh");
     if host_prebuild_script.is_file() {
         let mut command = Command::new("bash");

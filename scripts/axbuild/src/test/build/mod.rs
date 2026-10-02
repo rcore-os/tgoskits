@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     context::CrossCompileSpec,
-    support::process::{ProcessExt, find_host_binary_candidates},
+    support::process::{ProcessExt, find_host_binary_candidates, find_optional_host_binary},
 };
 
 const CASE_C_DIR_NAME: &str = "c";
@@ -59,6 +59,7 @@ mod grouped_c;
 mod prebuild;
 mod python;
 mod rust;
+mod system_prebuild;
 mod toolchain;
 mod wrappers;
 
@@ -72,9 +73,11 @@ use cmake::{
     build_cmake_configure_command_with_source_dir, build_cmake_install_command,
     build_grouped_c_root_project_configure_command,
 };
-use env::{prepare_guest_package_env, prepare_guest_prebuild_env, prepare_host_cross_build_env};
+use env::{
+    prepare_guest_package_env, prepare_guest_prebuild_env_with_runner, prepare_host_cross_build_env,
+};
 pub(crate) use grouped_c::prepare_grouped_case_assets_sync;
-use prebuild::{build_prebuild_command, build_prebuild_command_with_work_dir};
+use prebuild::{GuestPrebuildRequest, run_guest_prebuild};
 use python::write_musl_loader_search_path;
 pub(crate) use python::{case_python_source_dir, prepare_python_case_assets_sync};
 pub(crate) use rust::{
@@ -84,7 +87,7 @@ pub(crate) use toolchain::find_cross_tool_qemu;
 use toolchain::{cross_compile_spec, write_cmake_toolchain_file, write_cross_bin_wrappers};
 use wrappers::{
     apply_case_script_envs, case_script_envs, ensure_guest_tool_exists, guest_library_path,
-    write_guest_command_wrappers, write_guest_exec_wrapper,
+    write_guest_command_wrappers, write_guest_exec_wrapper, write_wrapper_script,
 };
 
 #[cfg(test)]

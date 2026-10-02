@@ -169,7 +169,7 @@ Rust pipeline（`test/build/rust.rs`）交叉编译用例 `rust/` 目录下的 C
 1. `rust_musl_target(arch)` 把架构名映射到 musl target triple（如 `aarch64` → `aarch64-unknown-linux-musl`）；
 2. `rustup target add <triple>` 确保目标已安装；
 3. 解压 rootfs 获取目标 sysroot，由 `write_cross_bin_wrappers()` 生成交叉工具包装器；
-4. 可选执行 `prebuild.sh`（在 Alpine staging root 内通过 qemu-user 运行，用于 `apk add` 原生依赖）；
+4. 可选执行 `prebuild.sh`（在目标 Alpine 环境中运行，用于 `apk add` 原生依赖）；
 5. 设置 `CARGO_TARGET_<TRIPLE>_LINKER` 指向 `cross-bin/ld`，执行 `cargo build --release`；
 6. 产物复制到 overlay 的 `/usr/bin/`。
 
@@ -190,7 +190,13 @@ rootfs 解包（`debugfs rdump`）的权限决策：Linux 上按有效 uid、完
 
 两条路径均保留 staging root 作为目标 sysroot。宿主 binutils 版本必须能够处理该 sysroot 的 ELF 特性；例如旧工具不识别 `.relr.dyn` 时，链接错误会向外传播，需要升级交叉工具链。`rootfs::runtime::sync_runtime_dependencies()` 按 `readelf`、`llvm-readelf`、`<gnu_tool_prefix>-readelf` 的顺序选择宿主 ELF 检查工具，继续使用已有的递归依赖同步逻辑。
 
-原生 binutils 只能替代构建工具，不能执行客户机脚本。存在 `prebuild.sh` 的用例仍通过 `prepare_guest_prebuild_env()` 要求 qemu-user；缺失时在资产准备阶段报错，不跳过脚本或删去依赖其产物的子用例。因此不带 prebuild 的 C、分组 C 和 Rust 资产可以使用原生工具，当前 `qemu/system` 等带共享 prebuild 的套件仍需要 qemu-user。这项支持不代表 macOS 上完整 Starry 套件已经可用；需要完整套件时使用提供 qemu-user 的 Linux 环境。
+原生 binutils 只能替代构建工具，不能直接执行目标脚本。`prebuild.sh` 因此使用统一的
+目标环境入口：找到 qemu-user 时沿用 staging root 的 linux-user 路径；否则启动目标
+架构 `qemu-system-*` 和 rootfs 内 `/guest/linux/linux-qemu`，以只读快照根盘启动最小
+Linux，通过 9P 暴露 staging、case 与工作目录，并在客户机内执行原脚本。APK wrapper
+仍把包安装到 staging root，完成标记前执行 `sync`；失败、提前退出或十分钟超时都会
+使资产准备失败。该回退供 C、Grouped C、Rust 及复用这些构建器的板卡用例共同使用，
+不增加第二种脚本名称，也不跳过任何用例。
 
 ## 7. 资产准备与 rootfs 缓存
 
