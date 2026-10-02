@@ -457,18 +457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-task-switch-bench"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-memory-addr",
- "ax-mm",
- "ax-runtime",
- "ax-std",
- "rockchip-soc",
-]
-
-[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
@@ -8264,6 +8252,18 @@ name = "target-tuple"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
+
+[[package]]
+name = "task-switch"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu 9.4.0",
+ "ax-memory-addr",
+ "ax-mm",
+ "ax-runtime",
+ "ax-std",
+ "rockchip-soc",
+]
 
 [[package]]
 name = "tempfile"
