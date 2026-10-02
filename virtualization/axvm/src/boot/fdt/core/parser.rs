@@ -516,6 +516,49 @@ pub fn set_phys_cpu_sets(
         .as_ref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
+    let policy = super::selected_guest_fdt_policy();
+    let host_cpu_count = (policy.host_cpu_count)();
+
+    // When `phys_cpu_sets` is configured explicitly, each entry is the final
+    // physical-CPU affinity mask of the corresponding vCPU, so `phys_cpu_ids`
+    // only carries the guest-visible virtual CPU id (the low bits of the
+    // virtualized MPIDR) and must not be required to exist in the host FDT.
+    // This is what makes vCPU over-subscription possible: more guest vCPUs
+    // than host physical CPUs, all scheduled on the CPUs selected by the mask.
+    if let Some(phys_cpu_sets) = crate_config.base.phys_cpu_sets.as_ref() {
+        if phys_cpu_sets.len() != phys_cpu_ids.len() {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!(
+                    "phys_cpu_sets length ({}) must equal phys_cpu_ids length ({})",
+                    phys_cpu_sets.len(),
+                    phys_cpu_ids.len()
+                )
+            ));
+        }
+        let Some(valid_masks) = host_affinity_mask(host_cpu_count) else {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!("host CPU count {host_cpu_count} exceeds the affinity mask width")
+            ));
+        };
+        for &mask in phys_cpu_sets {
+            if mask == 0 || mask & !valid_masks != 0 {
+                return Err(ax_err_type!(
+                    InvalidInput,
+                    format!(
+                        "phys_cpu_sets mask 0x{mask:x} is not within the {host_cpu_count} host \
+                         CPUs"
+                    )
+                ));
+            }
+        }
+        let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
+        phys_cpu_ls.set_guest_cpu_sets(phys_cpu_sets.clone());
+        phys_cpu_ls.set_guest_phys_cpu_ids(phys_cpu_ids.clone());
+        return Ok(());
+    }
+
     let cpu_nodes_info: Vec<_> = fdt
         .iter_node_ids()
         .filter_map(|node_id| {
@@ -534,11 +577,10 @@ pub fn set_phys_cpu_sets(
         .collect();
     info!("Found {} host CPU nodes", cpu_nodes_info.len());
 
-    let policy = super::selected_guest_fdt_policy();
     let (new_phys_cpu_sets, guest_phys_cpu_ids) = resolve_phys_cpu_sets(
         phys_cpu_ids,
         &cpu_nodes_info,
-        (policy.host_cpu_count)(),
+        host_cpu_count,
         policy.resolve_cpu_index,
     )?;
 
@@ -546,6 +588,23 @@ pub fn set_phys_cpu_sets(
     phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
     phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
     Ok(())
+}
+
+/// Returns the affinity mask that selects every usable host CPU.
+///
+/// `None` means the CPU count cannot be represented by an affinity mask at all.
+/// A count equal to the mask width stays valid: it covers CPUs
+/// `0..usize::BITS`, which is exactly what `usize::MAX` selects, so it must not
+/// be rejected by the shift below.
+fn host_affinity_mask(host_cpu_count: usize) -> Option<usize> {
+    if host_cpu_count > usize::BITS as usize {
+        return None;
+    }
+    Some(match host_cpu_count {
+        0 => 0,
+        width if width == usize::BITS as usize => usize::MAX,
+        width => (1usize << width) - 1,
+    })
 }
 
 fn resolve_phys_cpu_sets(
@@ -821,8 +880,9 @@ mod tests {
     use fdt_raw::RegInfo;
 
     use super::{
-        align_reserved_region_4k, parse_passthrough_devices_address, parse_vm_interrupt,
-        reserve_excluded_device_ranges, resolve_phys_cpu_sets, setup_guest_fdt_from_vmm,
+        align_reserved_region_4k, host_affinity_mask, parse_passthrough_devices_address,
+        parse_vm_interrupt, reserve_excluded_device_ranges, resolve_phys_cpu_sets,
+        setup_guest_fdt_from_vmm,
     };
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
 
@@ -870,6 +930,23 @@ mod tests {
         fdt.node_mut(root)
             .unwrap()
             .set_property(prop_u32("#size-cells", 2));
+        // A host FDT advertises its CPUs, and the guest keeps one
+        // `/cpus/cpu@<id>` node per configured vCPU id, so the fixture carries
+        // the CPU node the `phys_cpu_ids: [0]` configs below refer to.
+        let cpus = fdt.add_node(root, Node::new("cpus"));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 1));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 0));
+        let cpu0 = fdt.add_node(cpus, Node::new("cpu@0"));
+        fdt.node_mut(cpu0)
+            .unwrap()
+            .set_property(super::super::tree::prop_string("device_type", "cpu"));
+        fdt.view_typed_mut(cpu0)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0, None)]);
         let intc = fdt.add_node(root, Node::new("interrupt-controller@0"));
         fdt.node_mut(intc)
             .unwrap()
@@ -1207,6 +1284,17 @@ mod tests {
         let error = resolve_phys_cpu_sets(&[3], &[(3, 3)], 4, |_| Some(4)).unwrap_err();
 
         assert!(error.to_string().contains("outside the 4 usable host CPUs"));
+    }
+
+    #[test]
+    fn host_affinity_mask_covers_every_host_cpu_up_to_the_mask_width() {
+        assert_eq!(host_affinity_mask(0), Some(0));
+        assert_eq!(host_affinity_mask(1), Some(0b1));
+        assert_eq!(host_affinity_mask(4), Some(0b1111));
+        // A host CPU count equal to the mask width is legal: usize::MAX selects
+        // exactly those CPUs, so it must not be rejected as out of range.
+        assert_eq!(host_affinity_mask(usize::BITS as usize), Some(usize::MAX));
+        assert_eq!(host_affinity_mask(usize::BITS as usize + 1), None);
     }
 
     #[test]

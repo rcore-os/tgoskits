@@ -15,8 +15,16 @@ echo "==> axvisor aarch64 host initramfs"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
+echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
+timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
+echo "==> axvm aarch64 provided-DTB CPU map regression"
+cargo xtask cross-test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib arch::aarch64::fdt
+echo "==> axvm aarch64 cloned CPU identity regression"
+cargo xtask cross-test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
 '''
 
 [[check.suite]]

@@ -2,18 +2,19 @@ args = [
   "-nographic",
   "-cpu", "cortex-a72",
   "-machine", "virt,virtualization=on,gic-version=3",
-  # The four guests use pCPU0..pCPU3; AxVisor shares pCPU0.
-  "-smp", "8",
+  # Five guest vCPUs share two host pCPUs; VM1's two vCPUs both use pCPU0.
+  "-smp", "2",
   "-m", "4g",
 ]
 fail_regex = [
+  "Failed to initialize guest VM",
   "VM1_VIRTIO_NET_FAIL",
   "VM2_VIRTIO_NET_FAIL",
   "VM3_VIRTIO_NET_FAIL",
   "VM4_VIRTIO_NET_FAIL",
   "(?i)panic",
 ]
-timeout = 240
+timeout = 360
 to_bin = true
 uefi = false
 
@@ -21,14 +22,14 @@ uefi = false
 shell_prefix = "axvisor:$"
 shell_cmd = "vm console 1"
 
-# Each guest is both a server and a client, so `role=client` proves the session
-# towards the next guest of the chain (VM1 -> VM2 -> VM3 -> VM4) is up.
+# ArceOS enters the application only after all configured CPUs finish init;
+# VM1's second vCPU has guest ID 2, cloned from the host's CPU 0 node.
+[[shell_check_steps]]
+success_regex = ["VM1_VIRTIO_NET_READY.*cpus=2"]
+
 [[shell_check_steps]]
 success_regex = ["VM1_VIRTIO_NET_PASS role=client"]
 
-# The guests heartbeat forever now, so a console never returns to the axvisor
-# shell on its own. Wait for a client heartbeat on the attached console, then
-# send Ctrl-X h (`\u0018` is the shortcut prefix) to detach from it.
 [[shell_check_steps]]
 shell_prefix = "VM1_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
@@ -59,12 +60,8 @@ shell_cmd = "\u0018h"
 shell_prefix = "axvisor:$"
 shell_cmd = "vm console 4"
 
-# VM4 closes the chain: it answers VM3's heartbeats and has no further neighbour
-# to connect to (its client only logs CONNECT_RETRY for 10.0.2.19).
 [[shell_check_steps]]
 success_regex = ["VM4_VIRTIO_NET_PASS role=server"]
 
-# Attaching to VM4's console replays its backlog, so this asserts the tail of
-# the chain keeps exchanging heartbeats for a while after the pass markers.
 [[shell_check_steps]]
 success_regex = ["VM4_VIRTIO_NET_HB_RX.*count=5"]
