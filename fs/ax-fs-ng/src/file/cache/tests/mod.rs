@@ -1234,6 +1234,37 @@ fn periodic_writeback_flushes_dirty_pages_below_the_background_watermark() {
 
 #[cfg(feature = "vfs")]
 #[test]
+fn periodic_writeback_flushes_available_pages_and_retries_busy_pages() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0; 2 * PAGE_SIZE]));
+        let cached = reopen_cached_file(backing.clone());
+        let data = vec![0x51; 2 * PAGE_SIZE];
+        assert_eq!(cached.write_at(data.as_slice(), 0), Ok(data.len()));
+        assert_eq!(cached.shared.dirty_page_count(), 2);
+
+        let busy_once = AtomicBool::new(true);
+        let _endpoint = install_shared_test_endpoint(&cached.shared, move |event| match event {
+            CacheMappingEvent::WritebackProtect(identity)
+                if identity.page_number() == 0 && busy_once.swap(false, Ordering::AcqRel) =>
+            {
+                CacheMappingResult::Busy
+            }
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        });
+
+        assert_eq!(cached.shared.writeback_dirty_for_periodic(), Ok(()));
+        assert_eq!(backing.write_lengths(), vec![PAGE_SIZE]);
+        assert_eq!(cached.shared.dirty_page_count(), 1);
+
+        assert_eq!(cached.shared.writeback_dirty_for_periodic(), Ok(()));
+        assert_eq!(backing.write_lengths(), vec![PAGE_SIZE, PAGE_SIZE]);
+        assert_eq!(cached.shared.dirty_page_count(), 0);
+    });
+}
+
+#[cfg(feature = "vfs")]
+#[test]
 fn periodic_writeback_skips_a_retired_registry_snapshot() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(Vec::new()));
