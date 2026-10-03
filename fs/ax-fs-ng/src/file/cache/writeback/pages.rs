@@ -50,7 +50,11 @@ impl<'a> WritebackPages<'a> {
                     let pins = page.pins.checked_add(1).ok_or(VfsError::ValueOverflow)?;
                     page.begin_writeback()?;
                     page.pins = pins;
-                    round.pages.push(WritebackPage { number, paddr });
+                    round.pages.push(WritebackPage {
+                        number,
+                        paddr,
+                        protected: false,
+                    });
                 }
             }
             Ok(())
@@ -61,10 +65,27 @@ impl<'a> WritebackPages<'a> {
         Ok(round)
     }
 
-    pub(super) fn protect(&self) -> VfsResult<()> {
-        for page in &self.pages {
+    pub(super) fn protect(&mut self) -> VfsResult<()> {
+        for page in &mut self.pages {
             self.shared
                 .protect_dirty_pages_before_writeback(core::slice::from_ref(&page.number))?;
+            page.protected = true;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "vfs")]
+    pub(super) fn protect_available(&mut self) -> VfsResult<()> {
+        for page in &mut self.pages {
+            match self
+                .shared
+                .protect_dirty_pages_before_writeback(core::slice::from_ref(&page.number))
+            {
+                Ok(()) => page.protected = true,
+                // Background rounds leave contended pages dirty for the next scan.
+                Err(VfsError::ResourceBusy) => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }

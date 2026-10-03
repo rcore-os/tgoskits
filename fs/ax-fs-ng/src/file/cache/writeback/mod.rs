@@ -19,6 +19,14 @@ mod pages;
 struct WritebackPage {
     number: u32,
     paddr: usize,
+    protected: bool,
+}
+
+#[cfg(any(feature = "vfs", feature = "ext4"))]
+enum WritebackProtection {
+    Required,
+    #[cfg(feature = "vfs")]
+    Opportunistic,
 }
 
 struct WritebackPages<'a> {
@@ -69,7 +77,7 @@ impl CachedFileShared {
             1
         };
         let selected = self.oldest_dirty_pages(count)?;
-        let round = WritebackPages::begin(self, Some(&selected))?;
+        let mut round = WritebackPages::begin(self, Some(&selected))?;
         round.protect()?;
         round.write_back()?;
         drop(round);
@@ -124,25 +132,33 @@ impl CachedFileShared {
             return Ok(());
         }
         let selected = self.oldest_dirty_pages(count - DIRTY_PAGE_LOW_WATERMARK)?;
-        self.writeback_registered_pages(Some(&selected))
+        self.writeback_registered_pages(Some(&selected), WritebackProtection::Opportunistic)
     }
 
     #[cfg(feature = "vfs")]
     pub(super) fn writeback_dirty_for_periodic(&self) -> VfsResult<()> {
         let _writeback = self.writeback_lock.lock();
-        self.writeback_registered_pages(None)
+        self.writeback_registered_pages(None, WritebackProtection::Opportunistic)
     }
 
     #[cfg(any(feature = "vfs", feature = "ext4"))]
     pub(super) fn writeback_dirty_for_global_sync(&self) -> VfsResult<()> {
         let _writeback = self.writeback_lock.lock();
-        self.writeback_registered_pages(None)
+        self.writeback_registered_pages(None, WritebackProtection::Required)
     }
 
     #[cfg(any(feature = "vfs", feature = "ext4"))]
-    fn writeback_registered_pages(&self, requested: Option<&[u32]>) -> VfsResult<()> {
-        let round = WritebackPages::begin(self, requested)?;
-        round.protect()?;
+    fn writeback_registered_pages(
+        &self,
+        requested: Option<&[u32]>,
+        protection: WritebackProtection,
+    ) -> VfsResult<()> {
+        let mut round = WritebackPages::begin(self, requested)?;
+        match protection {
+            WritebackProtection::Required => round.protect()?,
+            #[cfg(feature = "vfs")]
+            WritebackProtection::Opportunistic => round.protect_available()?,
+        }
         #[cfg(feature = "vfs")]
         if self.retired.load(core::sync::atomic::Ordering::Acquire)
             || self.unlinked.load(core::sync::atomic::Ordering::Acquire)
@@ -154,7 +170,7 @@ impl CachedFileShared {
 
     pub(super) fn writeback(&self) -> VfsResult<Vec<u32>> {
         let _writeback = self.writeback_lock.lock();
-        let round = WritebackPages::begin(self, None)?;
+        let mut round = WritebackPages::begin(self, None)?;
         let numbers = round.numbers()?;
         round.protect()?;
         round.write_back()?;
@@ -165,7 +181,7 @@ impl CachedFileShared {
 
     pub(super) fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
         let _writeback = self.writeback_lock.lock();
-        let round = WritebackPages::begin(self, Some(pns))?;
+        let mut round = WritebackPages::begin(self, Some(pns))?;
         round.protect()?;
         round.write_back()?;
         drop(round);
@@ -174,7 +190,7 @@ impl CachedFileShared {
 
     pub(super) fn sync(&self, data_only: bool) -> VfsResult<()> {
         let _writeback = self.writeback_lock.lock();
-        let round = WritebackPages::begin(self, None)?;
+        let mut round = WritebackPages::begin(self, None)?;
         round.protect()?;
         round.write_back()?;
         drop(round);
@@ -192,7 +208,7 @@ impl CachedFileShared {
                 .store(true, core::sync::atomic::Ordering::Release);
         }
         let result = (|| {
-            let round = WritebackPages::begin(self, None)?;
+            let mut round = WritebackPages::begin(self, None)?;
             round.protect()?;
             round.write_back()
         })();

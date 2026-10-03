@@ -39,6 +39,13 @@ impl WritebackPages<'_> {
         let mut cache = self.shared.page_cache.lock();
         while *cursor < self.pages.len() && batch.versions.len() < MAX_BATCH_PAGES {
             let tracked = &self.pages[*cursor];
+            if !tracked.protected {
+                if batch.bytes.is_empty() {
+                    *cursor += 1;
+                    continue;
+                }
+                break;
+            }
             let current = cache
                 .get_mut(&tracked.number)
                 .filter(|page| page.paddr() == Ok(tracked.paddr) && page.dirty);
