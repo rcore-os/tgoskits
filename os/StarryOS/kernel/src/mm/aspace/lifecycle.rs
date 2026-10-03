@@ -20,7 +20,7 @@ use core::{
 };
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use ax_runtime::hal::trap::PageFaultFlags;
+use ax_runtime::{hal::trap::PageFaultFlags, task::sync::WaitQueue};
 
 use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
 use crate::sync::{IrqMutex, Mutex};
@@ -349,6 +349,9 @@ struct MmInner {
     /// Allocated with the MM, like Linux's mm_struct::async_put_work. Token
     /// destruction never needs to allocate a separate deferred-work node.
     work_link: IrqMutex<MmWorkLink>,
+    /// Reclaim publishes Freed/NeedsRepair before waking task-context cache
+    /// invalidators. Waiting retains metadata, not a kernel pin or activation.
+    reclaim_done: WaitQueue,
 }
 
 #[derive(Clone, Copy)]
@@ -654,6 +657,46 @@ pub(crate) fn pin_mm_for_rmap(id: AddressSpaceId) -> Result<MmPin, RmapMmLookupE
     }
 }
 
+/// Resolves a cache invalidation without treating queued, quiescent teardown
+/// as a userspace EBUSY. None proves that this registered MM finished clearing
+/// its PTEs and reverse mappings. A missing registry entry alone is not proof.
+///
+/// Callers hold no MM, page graph, cached-I/O or IRQ lock. A Retiring MM may
+/// sleep only after its last kernel pin has drained: new pins require Live,
+/// so no fault continuation can need this cache layout update. Remaining CPU
+/// activations finish their scheduler handoff before reclaim can proceed.
+pub(crate) fn pin_mm_for_cache_invalidation(
+    id: AddressSpaceId,
+) -> Result<Option<MmPin>, RmapMmLookupError> {
+    let weak = registered_mm(id).ok_or(RmapMmLookupError::Gone)?;
+    let Some(inner) = weak.upgrade() else {
+        remove_registered_mm(id);
+        return Err(RmapMmLookupError::Gone);
+    };
+    loop {
+        match inner.state() {
+            MmState::Live => match MmInner::try_pin(&inner) {
+                Ok(pin) => return Ok(Some(pin)),
+                Err(PinError::Retired) => continue,
+                Err(PinError::Overflow) => return Err(RmapMmLookupError::Busy),
+            },
+            state @ (MmState::Retiring | MmState::Retired | MmState::Reclaiming) => {
+                if state == MmState::Retiring && inner.kernel_pins.load(Ordering::Acquire) != 0 {
+                    return Err(RmapMmLookupError::Busy);
+                }
+                inner
+                    .reclaim_done
+                    .try_wait_until(|| {
+                        matches!(inner.state(), MmState::Freed | MmState::NeedsRepair)
+                    })
+                    .map_err(|_| RmapMmLookupError::Busy)?;
+            }
+            MmState::Freed => return Ok(None),
+            MmState::NeedsRepair => return Err(RmapMmLookupError::Busy),
+        }
+    }
+}
+
 /// Explicit process ownership of an address space.
 pub struct MmHandle {
     inner: Arc<MmInner>,
@@ -717,6 +760,7 @@ impl MmHandle {
                 active_per_cpu: core::array::from_fn(|_| AtomicUsize::new(0)),
                 retire_queued: AtomicBool::new(false),
                 work_link: IrqMutex::new(MmWorkLink::default()),
+                reclaim_done: WaitQueue::new(),
             }),
             owner: AtomicBool::new(true),
         };
@@ -1530,6 +1574,7 @@ impl RetirePermit {
                     inner.state.store(MmState::Freed as u8, Ordering::Release);
                 }
                 unregister_mm(inner);
+                inner.reclaim_done.notify_all();
                 Ok(())
             }
             Err(_) => {
@@ -1540,6 +1585,7 @@ impl RetirePermit {
                         .store(MmState::NeedsRepair as u8, Ordering::Release);
                     inner.retire_queued.store(false, Ordering::Release);
                 }
+                inner.reclaim_done.notify_all();
                 Err(ReclaimError::Backend)
             }
         }
@@ -1610,6 +1656,10 @@ mod tests {
             .upgrade()
             .expect("failed reclaim must retain its MM for repair");
         assert_eq!(inner.state(), MmState::NeedsRepair);
+        assert!(matches!(
+            pin_mm_for_cache_invalidation(inner.id),
+            Err(RmapMmLookupError::Busy)
+        ));
         // Taking and abandoning a repair token must not silently discard it.
         drop(take_repair_candidates(usize::MAX));
         drop(inner);
@@ -1971,7 +2021,7 @@ mod tests {
         let pin = handle.pin().unwrap();
         let activation = handle.activation(2).unwrap();
         assert_eq!(
-            pin.handle_page_fault_result(start, PageFaultFlags::READ | PageFaultFlags::USER,),
+            pin.handle_page_fault_result(start, PageFaultFlags::WRITE | PageFaultFlags::USER,),
             FaultResult::Handled
         );
         {
@@ -2060,6 +2110,12 @@ mod tests {
 
         assert!(handle.release_user_ref().is_none());
         assert_eq!(handle.state(), MmState::Retiring);
+        // Invalidation must not wait on this continuation: its fault may need
+        // the same cache layout update that the invalidator currently owns.
+        assert!(matches!(
+            pin_mm_for_cache_invalidation(handle.id()),
+            Err(RmapMmLookupError::Busy)
+        ));
 
         let activation = pin
             .activation_for_switch(2)

@@ -1,18 +1,20 @@
-use alloc::{borrow::ToOwned, boxed::Box, string::String, sync::Arc};
+//! Directory operations, namespace mutations, and cached name resolution.
+
+use alloc::{borrow::ToOwned, boxed::Box, sync::Arc};
 use core::{
     any::Any,
     mem,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicU64, Ordering},
 };
-
-use hashbrown::HashMap;
 
 use super::{DirEntry, FileExtentMap, FileExtentTarget};
 use crate::{
     Mountpoint, Mutex, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
     path::{DOT, DOTDOT, verify_entry_name},
 };
+
+mod cache;
+use cache::DirectoryCache;
 
 /// A trait for a sink that can receive directory entries.
 pub trait DirEntrySink {
@@ -114,8 +116,6 @@ impl<T: Any + Send> DirectoryReadState for T {
         self
     }
 }
-
-type DirChildren = HashMap<String, DirEntry>;
 
 /// Typed filesystem rename behavior independent from Linux numeric flags.
 ///
@@ -319,8 +319,7 @@ impl Default for OpenOptions {
 
 pub struct DirNode {
     ops: Arc<dyn DirNodeOps>,
-    cache: Mutex<DirChildren>,
-    cache_generation: AtomicU64,
+    cache: Mutex<DirectoryCache>,
     pub(crate) mountpoint: Mutex<Option<Arc<Mountpoint>>>,
 }
 
@@ -342,8 +341,7 @@ impl DirNode {
     pub fn new(ops: Arc<dyn DirNodeOps>) -> Self {
         Self {
             ops,
-            cache: Mutex::new(DirChildren::default()),
-            cache_generation: AtomicU64::new(0),
+            cache: Mutex::new(DirectoryCache::default()),
             mountpoint: Mutex::new(None),
         }
     }
@@ -368,71 +366,10 @@ impl DirNode {
         }
     }
 
-    fn lookup_and_cache(&self, name: &str) -> VfsResult<DirEntry> {
-        if !self.ops.is_cacheable_child(name) {
-            return self.ops.lookup(name);
-        }
-
-        let generation = self.cache_generation.load(Ordering::Acquire);
-        if let Some(entry) = self.cache.lock().get(name).cloned() {
-            return Ok(entry);
-        }
-
-        let node = self.ops.lookup(name)?;
-        let mut cache = self.cache.lock();
-        if self.cache_generation.load(Ordering::Acquire) != generation {
-            return Ok(node);
-        }
-
-        use hashbrown::hash_map::Entry;
-        Ok(match cache.entry(name.to_owned()) {
-            Entry::Occupied(e) => e.get().clone(),
-            Entry::Vacant(e) => e.insert(node).clone(),
-        })
-    }
-
-    fn bump_cache_generation(&self) {
-        self.cache_generation.fetch_add(1, Ordering::AcqRel);
-    }
-
-    fn remove_cache_after_mutation(&self, name: &str) -> Option<DirEntry> {
-        if !self.ops.is_cacheable_child(name) {
-            self.bump_cache_generation();
-            return None;
-        }
-
-        {
-            let mut cache = self.cache.lock();
-            let removed = cache.remove(name);
-            self.bump_cache_generation();
-            removed
-        }
-    }
-
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
         self.lookup_and_cache(name)
-    }
-
-    /// Looks up a directory entry by name in cache.
-    pub fn lookup_cache(&self, name: &str) -> Option<DirEntry> {
-        if self.ops.is_cacheable_child(name) {
-            self.cache.lock().get(name).cloned()
-        } else {
-            None
-        }
-    }
-
-    /// Inserts a directory entry into the cache.
-    pub fn insert_cache(&self, name: String, entry: DirEntry) -> Option<DirEntry> {
-        if self.ops.is_cacheable_child(&name) {
-            let previous = self.cache.lock().insert(name, entry);
-            self.bump_cache_generation();
-            previous
-        } else {
-            None
-        }
     }
 
     pub fn read_dir(
@@ -462,22 +399,18 @@ impl DirNode {
     pub fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
 
-        self.ops.link(name, node).inspect(|entry| {
-            // Hard links must share the same page cache (user_data) as the
-            // source node.  Without this, in-memory filesystems like tmpfs
-            // would create a new empty page cache for the link, losing the
-            // file content.
-            let user_data = node.user_data().clone();
-            *entry.user_data() = user_data;
-            if self.ops.is_cacheable_child(name) {
-                let previous = {
-                    let mut cache = self.cache.lock();
-                    cache.insert(name.to_owned(), entry.clone())
-                };
-                drop(previous);
-                self.bump_cache_generation();
-            }
-        })
+        self.ops
+            .link(name, node)
+            .inspect_err(|_| self.invalidate_lookup_generation())
+            .inspect(|entry| {
+                // Hard links must share the same page cache (user_data) as the
+                // source node.  Without this, in-memory filesystems like tmpfs
+                // would create a new empty page cache for the link, losing the
+                // file content.
+                let user_data = node.user_data().clone();
+                *entry.user_data() = user_data;
+                drop(self.insert_cache(name.to_owned(), entry.clone()));
+            })
     }
 
     /// Unlinks a directory entry by name.
@@ -491,7 +424,9 @@ impl DirNode {
             _ => {}
         }
 
-        self.ops.unlink(name, is_dir)?;
+        self.ops
+            .unlink(name, is_dir)
+            .inspect_err(|_| self.invalidate_lookup_generation())?;
         let removed = self.remove_cache_after_mutation(name);
         Self::forget_removed_entry(removed);
         Ok(())
@@ -513,15 +448,11 @@ impl DirNode {
         if node_type == NodeType::Symlink {
             return Err(VfsError::InvalidInput);
         }
-        let entry = self.ops.create(name, node_type, permission, uid, gid)?;
-        if self.ops.is_cacheable_child(name) {
-            let previous = {
-                let mut cache = self.cache.lock();
-                cache.insert(name.to_owned(), entry.clone())
-            };
-            drop(previous);
-            self.bump_cache_generation();
-        }
+        let entry = self
+            .ops
+            .create(name, node_type, permission, uid, gid)
+            .inspect_err(|_| self.invalidate_lookup_generation())?;
+        drop(self.insert_cache(name.to_owned(), entry.clone()));
         Ok(entry)
     }
 
@@ -550,15 +481,9 @@ impl DirNode {
         verify_entry_name(name)?;
         let entry = self
             .ops
-            .create_symlink(name, target, permission, uid, gid)?;
-        if self.ops.is_cacheable_child(name) {
-            let previous = {
-                let mut cache = self.cache.lock();
-                cache.insert(name.to_owned(), entry.clone())
-            };
-            drop(previous);
-            self.bump_cache_generation();
-        }
+            .create_symlink(name, target, permission, uid, gid)
+            .inspect_err(|_| self.invalidate_lookup_generation())?;
+        drop(self.insert_cache(name.to_owned(), entry.clone()));
         Ok(entry)
     }
 
@@ -588,14 +513,7 @@ impl DirNode {
             && self.ops.is_cacheable_child(dst_name)
         {
             let mut children = self.cache.lock();
-            let source = children.remove(src_name);
-            let target = if src_name == dst_name {
-                None
-            } else {
-                children.remove(dst_name)
-            };
-            self.bump_cache_generation();
-            (source, target)
+            children.remove_renamed(src_name, dst_name)
         } else {
             (
                 self.remove_cache_after_mutation(src_name),
@@ -685,6 +603,10 @@ impl DirNode {
 
         self.ops
             .rename(src_name, dst_dir, dst_name, options)
+            .inspect_err(|_| {
+                self.invalidate_lookup_generation();
+                dst_dir.invalidate_lookup_generation();
+            })
             .inspect(|_| self.update_cache_after_rename(src_name, dst_dir, dst_name, options))
     }
 
@@ -728,15 +650,7 @@ impl DirNode {
     pub fn is_mountpoint(&self) -> bool {
         self.mountpoint.lock().is_some()
     }
-
-    /// Clears the cache of directory entries & user data, allowing them to be
-    /// released. This does not unlink backing entries; open locations remain valid.
-    pub fn clear_cached_entries(&self) {
-        let children = mem::take(self.cache.lock().deref_mut());
-        for (_, child) in children {
-            if let Ok(dir) = child.as_dir() {
-                dir.clear_cached_entries();
-            }
-        }
-    }
 }
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests;

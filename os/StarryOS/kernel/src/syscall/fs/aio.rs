@@ -548,7 +548,7 @@ fn read_user_segments(aspace: &MmPin, buf: &UserBuffer) -> StarryResult<Vec<u8>>
 // Copy a kernel buffer back into user segments.
 fn write_user_segments(aspace: &MmPin, buf: &UserBuffer, data: &[u8]) -> StarryResult<()> {
     let mut offset = 0usize;
-    let guard = aspace.lock();
+    let mut guard = aspace.lock();
     for segment in &buf.segments {
         if offset >= data.len() {
             break;

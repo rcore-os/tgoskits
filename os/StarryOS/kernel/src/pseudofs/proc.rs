@@ -1401,7 +1401,7 @@ impl DirectRwFsFileOps for ProcMemFile {
         let addr = usize::try_from(offset).map_err(|_| VfsError::BadAddress)?;
         self.populate_remote_range(addr, buf.len(), MappingFlags::WRITE)?;
         let aspace = self.proc_data.pin_aspace().map_err(VfsError::from)?;
-        let aspace = aspace.lock();
+        let mut aspace = aspace.lock();
         aspace.write(VirtAddr::from_usize(addr), buf)?;
         drop(aspace);
         ax_cpu::cache::flush_icache_all();

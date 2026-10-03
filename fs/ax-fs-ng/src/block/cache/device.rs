@@ -21,17 +21,15 @@ use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex}
 
 /// The shared per-device cache tree and its global-writeback endpoint.
 ///
-/// All filesystem instances on one physical device serialize through this
-/// lock (Linux instead locks folios individually; see module documentation
-/// for why that split has no effect in the synchronous IO model). The
-/// independent consumer count excludes temporary global-sync references and
+/// Filesystems on one physical device share a short index and independently
+/// pinned folios. The consumer count excludes global-sync references and
 /// elects exactly one last wrapper to perform drop-time writeback.
 pub(crate) struct BlockCacheShared {
     device_key: usize,
     consumers: AtomicUsize,
     // Allocator reclaim may retain this data without retaining the device
     // endpoint, whose final drop can wait for IO or scheduler work.
-    state: Arc<SleepMutex<BlockAddressSpace>>,
+    state: Arc<BlockAddressSpace>,
     endpoint: SleepMutex<Box<dyn FsBlockDevice>>,
 }
 
@@ -44,7 +42,7 @@ impl BlockCacheShared {
         Self {
             device_key,
             consumers: AtomicUsize::new(0),
-            state: Arc::new(SleepMutex::new(BlockAddressSpace::new(geometry))),
+            state: Arc::new(BlockAddressSpace::new(geometry)),
             endpoint: SleepMutex::new(endpoint),
         }
     }
@@ -52,7 +50,7 @@ impl BlockCacheShared {
     /// Whether the tree was built for `block_size`; a registry hit with a
     /// different size means the device key collides across geometries.
     pub(crate) fn matches_block_size(&self, block_size: usize) -> bool {
-        self.state.lock().geometry().block_size() == block_size
+        self.state.geometry().block_size() == block_size
     }
 
     fn acquire_consumer(&self) -> BlockResult<()> {
@@ -78,10 +76,7 @@ impl BlockCacheShared {
     /// flush barrier; used by global sync when no wrapper device drives
     /// the tree.
     pub(crate) fn sync_to_device_with(&self, endpoint: &mut dyn FsBlockDevice) -> BlockResult<()> {
-        let mut state = self.state.lock();
-        if state.has_dirty() {
-            state.writeback_dirty(&mut *endpoint, None)?;
-        }
+        self.state.writeback_dirty(endpoint, None)?;
         endpoint.flush()
     }
 
@@ -93,7 +88,7 @@ impl BlockCacheShared {
     /// Publishes a data-only capability for allocator reclaim. Its last
     /// release frees cache storage without running a device destructor.
     #[cfg(feature = "vfs")]
-    pub(super) fn reclaim_state(&self) -> alloc::sync::Weak<SleepMutex<BlockAddressSpace>> {
+    pub(super) fn reclaim_state(&self) -> alloc::sync::Weak<BlockAddressSpace> {
         Arc::downgrade(&self.state)
     }
 }
@@ -142,17 +137,16 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
     /// ordering is what keeps journal commit sequences crash-safe when
     /// block writes are deferred into this layer.
     fn sync_to_device(&mut self) -> BlockResult<()> {
-        let mut state = self.shared.state.lock();
-        if state.has_dirty() {
-            state.writeback_dirty(&mut self.inner, None)?;
-        }
-        self.inner.flush()
+        self.shared.state.writeback_dirty(&mut self.inner, None)?;
+        self.inner.flush()?;
+        super::registry::release_successful_writeback(&self.shared);
+        Ok(())
     }
 
     /// Splits a request into `(first_block, block_count)`, validating the
     /// buffer geometry against the device block size.
     fn split_request(&self, block_id: u64, buf_len: usize) -> BlockResult<(u64, u64)> {
-        let block_size = self.shared.state.lock().geometry().block_size();
+        let block_size = self.shared.state.geometry().block_size();
         if block_size == 0 || buf_len == 0 || !buf_len.is_multiple_of(block_size) {
             return Err(BlockError::InvalidRequest);
         }
@@ -162,8 +156,7 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
 
     #[cfg(all(test, feature = "vfs"))]
     pub(super) fn reclaim_from_allocator_while_state_locked_for_test(&self) -> usize {
-        let _state = self.shared.state.lock();
-        super::registry::reclaim_clean_folios(usize::MAX)
+        self.shared.state.reclaim_while_index_locked_for_test()
     }
 
     #[cfg(all(test, feature = "vfs"))]
@@ -210,62 +203,40 @@ impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
 
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
         let (first, count) = self.split_request(block_id, buf.len())?;
-        let mut state = self.shared.state.lock();
+        let state = &self.shared.state;
         if state.geometry().spans_one_folio(first, count) {
-            return state.read_buffered(&mut self.inner, first, count, buf);
+            state.read_buffered(&mut self.inner, first, count, buf)
+        } else {
+            state.read_direct(&mut self.inner, first, count, buf)
         }
-        // Direct read: write overlapping dirty slots back first so stale
-        // device bytes cannot bypass newer cached data.
-        state.writeback_dirty(&mut self.inner, Some((first, count)))?;
-        self.inner.read_block(block_id, buf)?;
-        state.apply_direct(first, count, buf, true);
-        Ok(())
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
         let (first, count) = self.split_request(block_id, buf.len())?;
-        let mut state = self.shared.state.lock();
+        let state = &self.shared.state;
         if state.geometry().spans_one_folio(first, count) {
-            return state.write_buffered(&mut self.inner, first, count, buf);
-        }
-        // Direct write: the device must absorb overlapping dirty slots
-        // before the newer direct bytes land, then the folios are overlaid.
-        state.writeback_dirty(&mut self.inner, Some((first, count)))?;
-        match self.inner.write_block(block_id, buf) {
-            Ok(()) => {
-                state.apply_direct(first, count, buf, false);
-                Ok(())
-            }
-            Err(error) => {
-                // The device contract reports no completed prefix. Some
-                // blocks may already be durable, so every overlapping folio
-                // must be refetched before it can become authoritative again.
-                state.invalidate_range(first, count);
-                Err(error)
-            }
+            state.write_buffered(&mut self.inner, first, count, buf)
+        } else {
+            state.write_direct(
+                &mut self.inner,
+                first,
+                count,
+                buf,
+                FsBlockDevice::write_block,
+            )
         }
     }
 
     #[cfg(feature = "ext4")]
     fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
         let (first, count) = self.split_request(block_id, buf.len())?;
-        let mut state = self.shared.state.lock();
-
-        // FUA is a durability request, never a deferred buffered write. Older
-        // dirty bytes in the same range must reach the device first; then the
-        // FUA request is sent unchanged and the shared cache is refreshed from
-        // the completed image.
-        state.writeback_dirty(&mut self.inner, Some((first, count)))?;
-        match self.inner.write_block_fua(block_id, buf) {
-            Ok(()) => {
-                state.apply_direct(first, count, buf, false);
-                Ok(())
-            }
-            Err(error) => {
-                state.invalidate_range(first, count);
-                Err(error)
-            }
-        }
+        self.shared.state.write_direct(
+            &mut self.inner,
+            first,
+            count,
+            buf,
+            FsBlockDevice::write_block_fua,
+        )
     }
 
     fn flush(&mut self) -> BlockResult<()> {
@@ -283,6 +254,7 @@ impl<T: FsBlockDevice> Drop for BufferedBlockDevice<T> {
             && let Err(error) = self.sync_to_device()
         {
             error!("failed to flush block cache while dropping device: {error:?}");
+            super::registry::retain_failed_writeback(&self.shared);
         }
     }
 }

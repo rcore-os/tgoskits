@@ -1,5 +1,7 @@
 #![no_std]
 extern crate alloc;
+#[cfg(all(test, not(target_os = "none")))]
+extern crate ax_runtime as _;
 #[cfg(test)]
 extern crate std;
 

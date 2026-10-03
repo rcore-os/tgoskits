@@ -1484,10 +1484,10 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.8.1"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axpoll",
  "bitflags 2.13.2",
- "cfg-if",
  "hashbrown 0.16.1",
  "inherit-methods-macro",
  "log",

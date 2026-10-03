@@ -310,11 +310,7 @@ fn write_is_deferred_until_flush() {
     let data = [0x5Au8; 512];
     cached.write_block(3, &data).unwrap();
     assert_eq!(count_ops(&state, |op| op.is_write_of(3, 1)), 0);
-    assert!(
-        !state.lock().unwrap().storage[3 * 512..4 * 512]
-            .iter()
-            .any(|&b| b == 0x5A)
-    );
+    assert!(!state.lock().unwrap().storage[3 * 512..4 * 512].contains(&0x5A));
 
     cached.flush().unwrap();
     assert_eq!(count_ops(&state, |op| op.is_write_of(3, 1)), 1);
@@ -436,7 +432,7 @@ fn lru_eviction_writes_back_dirty_victim() {
     // and touching two other frames must write frame 0 back before it is
     // dropped.
     let (mut inner, state) = RecordingDevice::new(64, 512);
-    let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
 
     let data = [0x77u8; 512];
     tree.write_buffered(&mut inner, 0, 1, &data).unwrap();
@@ -461,7 +457,7 @@ fn lru_eviction_writes_back_dirty_victim() {
 fn lru_hit_preserves_the_recently_used_folio() {
     let _registry_test = REGISTRY_TEST.lock().unwrap();
     let (mut inner, state) = RecordingDevice::new(64, 512);
-    let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
     let mut buf = [0u8; 512];
 
     tree.read_buffered(&mut inner, 0, 1, &mut buf).unwrap();
@@ -701,11 +697,40 @@ fn dropping_last_consumer_releases_registry_endpoint() {
 }
 
 #[test]
+fn failed_last_drop_retains_dirty_cache_until_global_retry() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let endpoint = ShutdownTrackedDevice {
+        inner: device.clone(),
+        shutdowns: shutdowns.clone(),
+    };
+    let key = KEY_A + 31;
+    let mut cached = BufferedBlockDevice::with_device_key(key, Box::new(endpoint), device).unwrap();
+    cached.write_block(6, &[0x73; 512]).unwrap();
+    state.lock().unwrap().fail_writes = true;
+    drop(cached);
+    assert_eq!(
+        shutdowns.load(Ordering::Acquire),
+        0,
+        "failed dirt must retain its device owner"
+    );
+    assert!(registry::registry_contains_key_for_test(key));
+    state.lock().unwrap().fail_writes = false;
+    registry::sync_all_block_caches().unwrap();
+    assert_eq!(
+        &state.lock().unwrap().storage[6 * 512..7 * 512],
+        &[0x73; 512]
+    );
+    assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn folio_allocation_failure_returns_no_memory_without_io() {
     let _registry_test = REGISTRY_TEST.lock().unwrap();
     let block_size = 1usize << (usize::BITS - 1);
     let geometry = FolioGeometry::new(block_size).unwrap();
-    let mut tree = BlockAddressSpace::with_capacity(geometry, 1);
+    let tree = BlockAddressSpace::with_capacity(geometry, 1);
     let io_calls = Arc::new(AtomicUsize::new(0));
     let mut device = GeometryOnlyDevice {
         block_size,
@@ -734,7 +759,7 @@ fn failed_writeback_retains_dirty_data_for_retry() {
     // registry, where a live failing endpoint would break registry-wide
     // sync in concurrently running tests.
     let (mut inner, state) = RecordingDevice::new(64, 512);
-    let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 4);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 8);
 
     let data = [0xD7u8; 512];
     tree.write_buffered(&mut inner, 7, 1, &data).unwrap();
@@ -838,7 +863,7 @@ fn reclaim_clean_folios_drops_only_clean_frames() {
     // A direct tree pins the exact dirty/clean layout without interference
     // from the process-global registry.
     let (mut inner, state) = RecordingDevice::new(64, 512);
-    let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 8);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 8);
 
     let data = [0x55u8; 512];
     tree.write_buffered(&mut inner, 0, 1, &data).unwrap();

@@ -1,6 +1,9 @@
 //! Local cache operations.
 
-pub use super::asm::{dcache_line_size_from_ctr, flush_icache_all, icache_line_size_from_ctr};
+pub use super::{
+    asm::{dcache_line_size_from_ctr, flush_icache_all, icache_line_size_from_ctr},
+    memory::try_zero_page,
+};
 
 /// Data-cache maintenance performed to the point of coherency.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
