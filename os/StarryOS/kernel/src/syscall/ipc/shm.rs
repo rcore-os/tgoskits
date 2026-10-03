@@ -143,9 +143,13 @@ pub fn sys_shmat(
     // SHM_RND and SHM_REMAP retain their existing unsupported behavior here.
     let start_aligned = ax_memory_addr::align_down_4k(addr);
     let length = mapping.length;
+    let as_limit = proc_data.rlimit_current(linux_raw_sys::general::RLIMIT_AS);
     let aspace_arc = proc_data.pin_aspace()?;
     let (start_addr, outcome) = {
         let mut aspace = aspace_arc.lock();
+        // shmat() maps through do_mmap(), whose may_expand_vm() charges the
+        // whole attachment against RLIMIT_AS.
+        crate::syscall::check_rlimit_as(&aspace, 0, length, as_limit)?;
         let range = VirtAddrRange::new(aspace.base(), aspace.end());
         let start_addr = aspace
             .find_free_area(VirtAddr::from(start_aligned), length, range, PAGE_SIZE_4K)

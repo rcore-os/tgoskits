@@ -13,7 +13,7 @@ use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::user::UserContext;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW, RLIMIT_AS};
 use starry_vm::VmError;
 
 use crate::{
@@ -206,6 +206,21 @@ fn do_execve(
     let former_tid = thr.pid_identity().snapshot();
     let leader_tid = TidNumber::from(proc_data.proc.pid().pid_number());
 
+    // Linux copies the filename and both vectors into the new stack before the
+    // point of no return, below the pointer slot at its top, so strings that
+    // do not fit RLIMIT_AS fail the call. Limits survive exec: the caller's is
+    // the one the new image runs under.
+    let as_limit = proc_data.rlimit_current(RLIMIT_AS);
+    let string_bytes = core::iter::once(&path)
+        .chain(&args)
+        .chain(&envs)
+        .fold(size_of::<usize>(), |bytes, string| {
+            bytes.saturating_add(string.len() + 1)
+        });
+    if crate::syscall::exec_strings_exceed_rlimit_as(string_bytes, as_limit) {
+        return Err(StarryError::ArgumentListTooLong);
+    }
+
     // Serialize concurrent execve from sibling threads.
     //
     // `try_lock` alone would let a loser fail with EINTR even while the
@@ -251,6 +266,14 @@ fn do_execve(
     let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
+
+    // Linux maps the image after the point of no return, each mapping through
+    // may_expand_vm(), so one past RLIMIT_AS cannot fail the call any more:
+    // bprm_execve() kills the caller with SIGSEGV.
+    if crate::syscall::check_rlimit_as(&new_aspace, 0, 0, as_limit).is_err() {
+        crate::task::force_fatal_sig(starry_signal::Signo::SIGSEGV, uctx)?;
+        return Err(StarryError::NoMemory);
+    }
 
     // Registration, runtime ownership and process metadata must all be ready
     // before the first sibling is killed, which is already irreversible.
