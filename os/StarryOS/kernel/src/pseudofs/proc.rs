@@ -152,14 +152,7 @@ fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
 fn render_meminfo() -> String {
     let total = ax_runtime::hal::mem::total_ram_size();
     let usages = ax_alloc::global_allocator().usages();
-    // Sum all allocator categories to estimate kernel-consumed memory.
-    let used = usages.get(ax_alloc::UsageKind::RustHeap)
-        + usages.get(ax_alloc::UsageKind::VirtMem)
-        + usages.get(ax_alloc::UsageKind::PageCache)
-        + usages.get(ax_alloc::UsageKind::PageTable)
-        + usages.get(ax_alloc::UsageKind::TaskStack)
-        + usages.get(ax_alloc::UsageKind::Dma)
-        + usages.get(ax_alloc::UsageKind::Global);
+    let used = super::allocator_used_bytes(&usages);
     let cached = usages.get(ax_alloc::UsageKind::PageCache);
     let page_tables = usages.get(ax_alloc::UsageKind::PageTable);
     let anon_pages = usages.get(ax_alloc::UsageKind::VirtMem);
@@ -217,13 +210,7 @@ fn render_vmstat() -> String {
     // static stub.
     let total = ax_runtime::hal::mem::total_ram_size();
     let usages = ax_alloc::global_allocator().usages();
-    let used = usages.get(ax_alloc::UsageKind::RustHeap)
-        + usages.get(ax_alloc::UsageKind::VirtMem)
-        + usages.get(ax_alloc::UsageKind::PageCache)
-        + usages.get(ax_alloc::UsageKind::PageTable)
-        + usages.get(ax_alloc::UsageKind::TaskStack)
-        + usages.get(ax_alloc::UsageKind::Dma)
-        + usages.get(ax_alloc::UsageKind::Global);
+    let used = super::allocator_used_bytes(&usages);
     let free_pages = total.saturating_sub(used) / 4096;
     let pgfault = crate::mm::PAGE_FAULT_COUNT.load(Ordering::Relaxed);
     format!("nr_free_pages {free_pages}\npgfault {pgfault}\n")

@@ -71,6 +71,18 @@ pub fn tmp_tmpfs() -> Option<Arc<MemoryFs>> {
     TMP_TMPFS.get().map(Arc::clone)
 }
 
+/// Bytes the global allocator has handed out, which `/proc/meminfo` and the
+/// per-node meminfo both subtract from total RAM so the two views agree.
+fn allocator_used_bytes(usages: &ax_alloc::Usages) -> usize {
+    usages.get(ax_alloc::UsageKind::RustHeap)
+        + usages.get(ax_alloc::UsageKind::VirtMem)
+        + usages.get(ax_alloc::UsageKind::PageCache)
+        + usages.get(ax_alloc::UsageKind::PageTable)
+        + usages.get(ax_alloc::UsageKind::TaskStack)
+        + usages.get(ax_alloc::UsageKind::Dma)
+        + usages.get(ax_alloc::UsageKind::Global)
+}
+
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> StarryResult<()> {
     let initial_resolve = fs.resolve(path);
     if initial_resolve.is_err() {
@@ -110,6 +122,9 @@ pub fn mount_all() -> StarryResult<()> {
         proc::new_procfs(crate::task::ROOT_PID_NS.clone()),
     )?;
 
+    // Each CPU samples its own cache registers here, before `/sys` exists, so
+    // `cpuN/cache` always serves `cpuN`'s snapshot whichever CPU reads it.
+    sysfs::init_cpu_cache();
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
     if usbfs::has_manager() {
         mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;
