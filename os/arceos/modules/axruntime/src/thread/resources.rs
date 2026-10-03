@@ -292,10 +292,16 @@ fn release_runtime_stack(stack: RuntimeStack) {
         }
         #[cfg(feature = "paging")]
         StackBacking::VirtualPages { allocation, .. } => {
-            if let Err(error) = allocation.release() {
-                // The MM metadata retains the frames and VA across failure.
-                // The consumed stack handle itself no longer owns resources.
-                warn!("task stack retained in kernel virtual quarantine: {error}");
+            match allocation.release() {
+                Ok(()) => {}
+                // Another retire pass owns the lease. The MM metadata keeps
+                // this range queued, and allocation pressure retries it.
+                Err(ax_mm::KernelVirtualReleaseError::Busy) => {}
+                Err(error) => {
+                    // The MM metadata retains the frames and VA across failure.
+                    // The consumed stack handle itself no longer owns resources.
+                    warn!("task stack retained in kernel virtual quarantine: {error}");
+                }
             }
         }
     }
