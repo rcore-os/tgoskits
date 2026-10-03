@@ -545,6 +545,7 @@ pub fn sys_pread64(
         return Err(StarryError::InvalidInput);
     }
     let f = file_or_espipe(fd)?;
+    f.wait_device_readable(current)?;
     let read = f
         .inner()
         .read_at(VmBytesMut::new(current, buf, len), offset as _)?;
@@ -651,6 +652,7 @@ pub fn sys_preadv2(
         f.read(&mut io_buf).map(|n| n as _)
     } else {
         let f = file_or_espipe(fd)?;
+        f.wait_device_readable(current)?;
         Ok(f.inner().read_at(io_buf, offset as _).map(|n| n as _)?)
     }
 }

@@ -229,6 +229,17 @@ impl File {
     fn is_blocking(&self) -> bool {
         self.inner.location().flags().contains(NodeFlags::BLOCKING)
     }
+
+    /// Runs a device's own wait ahead of a blocking read; O_NONBLOCK readers
+    /// skip it and take the device's EAGAIN.
+    pub fn wait_device_readable(&self, task: &crate::task::UserTaskRef) -> StarryResult {
+        if !self.nonblocking()
+            && let Ok(device) = self.inner.location().entry().downcast::<Device>()
+        {
+            device.inner().wait_readable(task)?;
+        }
+        Ok(())
+    }
 }
 
 fn path_for(loc: &Location) -> Cow<'static, str> {
@@ -251,6 +262,7 @@ impl FileLike for File {
             Ok(inner.read(dst)?)
         } else {
             let task = current_user_task();
+            self.wait_device_readable(&task)?;
             block_on_user(
                 &task,
                 poll_io(self, IoEvents::IN, self.nonblocking(), || {

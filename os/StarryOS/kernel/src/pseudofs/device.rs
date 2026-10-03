@@ -106,6 +106,12 @@ pub trait DeviceOps: Send + Sync {
         Ok(())
     }
 
+    /// Waits on the reader's own task before a blocking read, for a device
+    /// whose wait has work of its own to do.
+    fn wait_readable(&self, _task: &crate::task::UserTaskRef) -> crate::StarryResult {
+        Ok(())
+    }
+
     /// Called when the last file descriptor to this device is closed.
     fn close(&self, _exclusive: bool) {}
 }

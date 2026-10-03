@@ -29,6 +29,7 @@ pub fn init(args: &[String], envs: &[String]) {
 pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) {
     // Install task-context diagnostics and contention backoff before userspace.
     crate::rdrive_osal::init();
+    crate::random::init();
 
     crate::stop_machine::init();
     crate::trap::init_handlers();
