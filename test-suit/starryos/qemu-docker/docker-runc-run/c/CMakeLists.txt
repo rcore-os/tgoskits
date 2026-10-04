@@ -42,3 +42,5 @@ install(PROGRAMS "${BUSYBOX_BIN}" DESTINATION opt/pids-bundle/rootfs RENAME busy
 install(PROGRAMS check.sh DESTINATION opt/ns-bundle/rootfs)
 install(TARGETS docker-runc-run-probe RUNTIME
         DESTINATION opt/pids-bundle/rootfs RENAME probe)
+
+install(FILES starry-prompt.sh DESTINATION etc/profile.d)
