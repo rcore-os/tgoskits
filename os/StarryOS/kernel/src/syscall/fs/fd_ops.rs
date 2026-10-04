@@ -399,7 +399,12 @@ fn try_open_proc_exe(
     }
     let proc_data = match proc_exe_target(current, path)? {
         Ok(proc_data) => proc_data,
-        Err(err) => return Some(Err(err)),
+        // Linux `proc_exe_link` reports ENOENT both when `proc_pid_lookup`
+        // misses and when the target has no mm left (zombie): the exe link
+        // names the live mm's executable. Report ENOENT instead of the pid
+        // resolver's ESRCH, and instead of falling through to the generic
+        // walk, which would re-parse a zombie's stale display path.
+        Err(_) => return Some(Err(StarryError::NotFound)),
     };
     let cred = current.as_thread().cred();
     // The backing object is only reachable when the caller's current root and
@@ -868,43 +873,21 @@ pub fn sys_openat2(
         return Err(StarryError::WouldBlock);
     }
 
-    // Magic links are intercepted by pathname before the VFS walker ever
-    // sees them, so whenever a restriction has to observe the resolution —
-    // link restrictions (which reject them in the walker, with the walker's
-    // existence-first error precedence) or spatial restrictions (which scope
-    // where they may resolve) — the interception is skipped and the
-    // constrained walker decides. Unconstrained (link-allowed) opens keep
-    // the fast jump to the backing object.
-    let magic_forbidden = constraints.is_no_symlinks() || constraints.is_no_magiclinks();
-    let spatially_scoped =
-        constraints.is_beneath() || constraints.is_in_root() || constraints.is_no_xdev();
-    let intercept_magic = !magic_forbidden && !spatially_scoped;
+    // Every valid RESOLVE_* bit is either a link restriction (NO_SYMLINKS /
+    // NO_MAGICLINKS) or a spatial restriction (BENEATH / IN_ROOT / NO_XDEV) —
+    // bare RESOLVE_CACHED already returned EAGAIN above — so a constrained
+    // open never takes the pathname-based magic-link interceptions: the
+    // constraint walker must observe the resolution. It enforces link
+    // restrictions itself (existence-first ELOOP via the real procfs entries)
+    // and refuses magic-link jumps under spatial scopes with EXDEV, matching
+    // Linux `pick_link`/`nd_jump_link`. Unconstrained opens (resolve == 0)
+    // keep the fast `sys_openat` path with its interceptions.
 
     let thread = current.as_thread();
     let mode = mode & !thread.proc_data.umask();
     let cred = thread.cred();
     let mutation_cred = mutation_credentials(&cred);
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
-
-    // Magic-link jumps bypass the constrained walker; only take them when no
-    // restriction has to observe the resolution.
-    let intercepted = intercept_magic
-        .then(|| {
-            try_reopen_self_pipe(&path, uflags)
-                .or_else(|| try_reopen_self_file(current, &path, uflags))
-        })
-        .flatten();
-    if let Some(result) = intercepted {
-        return result;
-    }
-    if intercept_magic {
-        if let Some(result) = try_open_proc_exe(current, &path, uflags) {
-            return result.map(|fd| fd as isize);
-        }
-        if let Some(result) = try_open_nsfd(current, dirfd, &path, uflags) {
-            return result.map(|fd| fd as isize);
-        }
-    }
 
     // The resolved dirfd is only meaningful for RESOLVE_IN_ROOT; every other
     // combination already normalized an absolute path to AT_FDCWD.
