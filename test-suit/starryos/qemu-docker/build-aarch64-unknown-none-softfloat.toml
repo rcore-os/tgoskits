@@ -1,9 +1,10 @@
-# Build config for the Debian container-host QEMU cases. That image carries
-# its own BusyBox `/sbin/init` + `/etc/init.d/rcS` instead of Starry's OpenRC
-# assets and does not claim the console from userspace, so select the built-in
-# init shell (`legacy-board-init`) like the board images.
+# Build config for the Debian container-host QEMU cases. The image carries its
+# own BusyBox `/sbin/init` + `/etc/inittab` instead of Starry's OpenRC assets,
+# so the unified init chain boots it through `DEFAULT_INITS`: BusyBox init runs
+# `rcS` and respawns a console login shell. The per-case overlay installs
+# `/etc/profile.d/starry-prompt.sh` so that shell shows the conventional
+# `root@starry:` prompt the cases wait for.
 features = [
-  "legacy-board-init",
   "ax-runtime/display",
   "ax-runtime/rtc",
   "ax-driver/serial",
