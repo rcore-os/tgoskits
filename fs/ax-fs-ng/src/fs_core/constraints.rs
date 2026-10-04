@@ -37,10 +37,15 @@ pub struct ResolveConstraints {
     root: Option<Location>,
 }
 
+impl Default for ResolveConstraints {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResolveConstraints {
     /// Creates an empty constraint set: path walking behaves like plain
     /// `openat(2)`.
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             flags: ResolveFlags::empty(),
