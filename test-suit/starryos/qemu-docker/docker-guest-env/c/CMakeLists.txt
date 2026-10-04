@@ -15,3 +15,4 @@ install(TARGETS docker-guest-env-probe RUNTIME DESTINATION usr/bin)
 install(PROGRAMS docker-guest-env-smoke.sh DESTINATION usr/bin)
 
 install(FILES starry-prompt.sh DESTINATION etc/profile.d)
+install(PROGRAMS rcS DESTINATION etc/init.d)
