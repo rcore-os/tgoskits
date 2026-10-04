@@ -838,6 +838,20 @@ static int run_exe_acl(void)
         fail("O_CREAT|O_EXCL on /proc/self/exe reports EEXIST");
     }
 
+    /* A missing target reports ENOENT like Linux proc_exe_link, not the pid
+     * resolver's ESRCH. */
+    errno = 0;
+    int missing = open("/proc/1073741824/exe", O_RDONLY | O_CLOEXEC);
+    if (missing >= 0) {
+        close(missing);
+        errno = 0;
+        fail("exe of a missing pid reports ENOENT");
+    } else if (errno == ENOENT) {
+        pass("exe of a missing pid reports ENOENT");
+    } else {
+        fail("exe of a missing pid reports ENOENT");
+    }
+
     pid_t child = fork();
     if (child < 0) {
         fail("fork exe-acl child");
