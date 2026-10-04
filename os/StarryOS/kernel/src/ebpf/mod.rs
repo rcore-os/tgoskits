@@ -330,7 +330,7 @@ pub fn sys_bpf(
     let attr = read_bpf_attr(current, uattr, size)?;
     // Non-rootless runc programs the cgroup-v2 device controller
     // unconditionally; intercept those commands before the real handlers.
-    if let Some(result) = device_controller::try_handle(current, cmd, &attr, uattr, size) {
+    if let Some(result) = device_controller::try_handle(cmd, &attr, size) {
         return result;
     }
     match cmd {
