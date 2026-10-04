@@ -25,7 +25,6 @@ pub struct ProcessImage {
 }
 
 impl ProcessImage {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         exe_path: String,
         exe_location: Option<Location>,
