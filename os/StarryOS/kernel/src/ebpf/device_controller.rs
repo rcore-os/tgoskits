@@ -27,6 +27,8 @@
 //! `BPF_PROG_GET_NEXT_ID`/`BPF_PROG_GET_FD_BY_ID`/`BPF_OBJ_GET_INFO_BY_FD`
 //! keep their existing (unsupported) fall-through.
 
+use core::mem::size_of;
+
 use kbpf_basic::linux_bpf::{bpf_attach_type, bpf_attr, bpf_cmd, bpf_prog_type};
 
 use crate::{StarryError, StarryResult};
@@ -46,16 +48,15 @@ const MIN_PROG_ATTR_SIZE: u32 = 4;
 /// Minimum `union bpf_attr` size covering the `link_create` `attach_type`.
 const MIN_LINK_ATTR_SIZE: u32 = 12;
 
-/// Entry point wired into [`super::sys_bpf`]. `uattr` is the raw user-space
-/// address of `union bpf_attr`.
+/// Entry point wired into [`super::sys_bpf`]. `attr` is the kernel-local copy
+/// of the caller's `union bpf_attr`, and `size` is the caller-declared byte
+/// length of that attribute.
 ///
 /// Returns `None` when `cmd` does not target the cgroup device controller, so
 /// the caller falls through to the real `bpf(2)` handlers.
 pub(crate) fn try_handle(
-    current: &crate::task::UserTaskRef,
     cmd: bpf_cmd,
     attr: &bpf_attr,
-    uattr: usize,
     size: u32,
 ) -> Option<StarryResult<isize>> {
     let device_attach_type = bpf_attach_type::BPF_CGROUP_DEVICE as u32;
@@ -77,7 +78,7 @@ pub(crate) fn try_handle(
             if size < MIN_ATTACH_ATTR_SIZE {
                 return Some(Err(StarryError::InvalidInput));
             }
-            match read_attr_u32(current, uattr, ATTR_ATTACH_TYPE_OFFSET) {
+            match read_attr_u32(attr, size, ATTR_ATTACH_TYPE_OFFSET) {
                 Ok(attach_type) if attach_type == device_attach_type => refuse(),
                 Ok(_) => None,
                 Err(err) => Some(Err(err)),
@@ -87,7 +88,7 @@ pub(crate) fn try_handle(
             if size < MIN_QUERY_ATTR_SIZE {
                 return Some(Err(StarryError::InvalidInput));
             }
-            match read_attr_u32(current, uattr, ATTR_QUERY_ATTACH_TYPE_OFFSET) {
+            match read_attr_u32(attr, size, ATTR_QUERY_ATTACH_TYPE_OFFSET) {
                 Ok(attach_type) if attach_type == device_attach_type => refuse(),
                 Ok(_) => None,
                 Err(err) => Some(Err(err)),
@@ -97,7 +98,7 @@ pub(crate) fn try_handle(
             if size < MIN_LINK_ATTR_SIZE {
                 return Some(Err(StarryError::InvalidInput));
             }
-            match read_attr_u32(current, uattr, ATTR_LINK_ATTACH_TYPE_OFFSET) {
+            match read_attr_u32(attr, size, ATTR_LINK_ATTACH_TYPE_OFFSET) {
                 Ok(attach_type) if attach_type == device_attach_type => refuse(),
                 Ok(_) => None,
                 Err(err) => Some(Err(err)),
@@ -107,16 +108,30 @@ pub(crate) fn try_handle(
     }
 }
 
-/// Reads one `u32` field of the user-space `union bpf_attr` at `uattr`.
-fn read_attr_u32(
-    current: &crate::task::UserTaskRef,
-    uattr: usize,
-    offset: usize,
-) -> StarryResult<u32> {
-    // The pointer targets the caller's `union bpf_attr` in user memory; the
-    // offset was bounds-checked by the classify min-size table. The VM
-    // backend translates and copies per access.
-    let loaded = crate::mm::vm_load(current, (uattr + offset) as *const u32, 1)
-        .map_err(|_| StarryError::BadAddress)?;
-    Ok(loaded[0])
+/// Reads one `u32` field of the already-imported `union bpf_attr` copy at
+/// `offset`.
+///
+/// Reading the kernel-local copy (not the user memory `uattr` points at)
+/// keeps classification consistent with the `attr` the real handlers
+/// receive, so a racing user write cannot make the device-controller gate
+/// and the fall-through handler observe different attribute values.
+fn read_attr_u32(attr: &bpf_attr, size: u32, offset: usize) -> StarryResult<u32> {
+    let end = offset + size_of::<u32>();
+    if end > attr_size_max(size) {
+        // The classify min-size table checked this before dispatch; a miss
+        // means the table and the command layout drifted apart.
+        return Err(StarryError::InvalidInput);
+    }
+    // SAFETY: `attr` is a kernel-local union copy imported from user memory;
+    // `offset..end` lies within the caller-declared `size`, which the
+    // per-command min-size check verified covers the command's uapi layout.
+    // Reading a `u32` at that offset only requires the bytes to be
+    // initialized, which the import guarantees for the declared prefix.
+    Ok(unsafe { *(core::ptr::addr_of!(*attr) as *const u32).add(offset / size_of::<u32>()) })
+}
+
+/// Upper bound of imported bytes for one attribute copy: the declared size,
+/// never beyond the union itself.
+fn attr_size_max(size: u32) -> usize {
+    (size as usize).min(size_of::<bpf_attr>())
 }
