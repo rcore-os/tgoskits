@@ -44,3 +44,4 @@ install(TARGETS docker-runc-run-probe RUNTIME
         DESTINATION opt/pids-bundle/rootfs RENAME probe)
 
 install(FILES starry-prompt.sh DESTINATION etc/profile.d)
+install(PROGRAMS rcS DESTINATION etc/init.d)
