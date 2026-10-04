@@ -13,3 +13,5 @@ target_link_options(docker-guest-env-probe PRIVATE -static)
 
 install(TARGETS docker-guest-env-probe RUNTIME DESTINATION usr/bin)
 install(PROGRAMS docker-guest-env-smoke.sh DESTINATION usr/bin)
+
+install(FILES starry-prompt.sh DESTINATION etc/profile.d)
