@@ -144,19 +144,43 @@ pub fn sys_execveat(
     // has no path but wraps a tmpfs-backed `Location` we can still load — this
     // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
     // fds (sockets, eventfd, …) are not executable.
-    let (loc, disp_path) = match resolve_at(dirfd, Some(path.as_str()), flags)? {
-        ResolveAtResult::File(loc) => {
-            let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
-            (loc, disp)
-        }
-        ResolveAtResult::Other(f) => {
-            let memfd = f.downcast_ref::<Memfd>().ok_or_else(|| {
-                warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
-                StarryError::PermissionDenied
-            })?;
-            let loc = memfd.inner().inner().location().clone();
-            let disp = format!("/memfd:{} (deleted)", memfd.name());
-            (loc, disp)
+    //
+    // Metadata syscalls resolve a memfd to its backing location, which has no
+    // parent directory, so `absolute_path()` cannot recover a display name
+    // there. Keep the wrapper's `/memfd:<name> (deleted)` display name for
+    // exec (Linux `d_path` on the memfd file), resolved from the wrapper
+    // before the generic classification hides it.
+    let memfd_exec = if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
+        crate::file::get_file_like(dirfd)
+            .ok()
+            .and_then(|file_like| {
+                file_like.downcast_ref::<Memfd>().map(|memfd| {
+                    (
+                        memfd.inner().inner().location().clone(),
+                        format!("/memfd:{} (deleted)", memfd.name()),
+                    )
+                })
+            })
+    } else {
+        None
+    };
+    let (loc, disp_path) = if let Some((loc, disp)) = memfd_exec {
+        (loc, disp)
+    } else {
+        match resolve_at(dirfd, Some(path.as_str()), flags)? {
+            ResolveAtResult::File(loc) => {
+                let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
+                (loc, disp)
+            }
+            ResolveAtResult::Other(f) => {
+                let memfd = f.downcast_ref::<Memfd>().ok_or_else(|| {
+                    warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
+                    StarryError::PermissionDenied
+                })?;
+                let loc = memfd.inner().inner().location().clone();
+                let disp = format!("/memfd:{} (deleted)", memfd.name());
+                (loc, disp)
+            }
         }
     };
 

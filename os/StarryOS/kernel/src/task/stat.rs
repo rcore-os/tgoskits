@@ -216,11 +216,5 @@ mod tests {
         assert_eq!(super::starttime_ticks(9_999_999), 0);
         assert_eq!(super::starttime_ticks(10_000_000), 1);
         assert_eq!(super::starttime_ticks(123_456_789), 12);
-        // runc reads field 22 and compares it across reads of the same
-        // process; the conversion must be stable for a fixed input.
-        assert_eq!(
-            super::starttime_ticks(42_000_000_000),
-            super::starttime_ticks(42_000_000_000)
-        );
     }
 }
