@@ -402,10 +402,6 @@ static void check_namespaces(void)
         fail("open /proc/self/ns/mnt before unshare");
         return;
     }
-    if (unshare(CLONE_NEWNS) != 0) {
-        fail("unshare CLONE_NEWNS");
-close(mnt_fd);
-
     /* A dirfd-relative open against /proc/self/ns must build the same
      * namespace handle as the absolute spelling, but a magic link must never
      * be followed under O_NOFOLLOW. */
@@ -485,6 +481,10 @@ close(mnt_fd);
     } else {
         fail("O_CREAT|O_EXCL on the absolute namespace path reports EEXIST");
     }
+
+    if (unshare(CLONE_NEWNS) != 0) {
+        fail("unshare CLONE_NEWNS");
+        close(mnt_fd);
         return;
     }
     if (ns_identity("mnt", &after) == 0 && after != before) {
@@ -615,6 +615,64 @@ close(mnt_fd);
         fail("child pid namespace differs from the parent");
     } else {
         pass("child pid namespace differs from the parent");
+    }
+
+    /* An inherited parent-namespace procfs keeps parent numbering: inside a
+     * fresh PID namespace the text "1" names this process, but the inherited
+     * /proc/1 is the real init. Opening /proc/1/exe must yield the executable
+     * the resolved entry owns — the file its own magic-link text names — not
+     * the caller the caller's PID view would map the text to. */
+    pid_t pchild = fork();
+    if (pchild == 0) {
+        if (unshare(CLONE_NEWPID) != 0) {
+            _exit(20);
+        }
+        pid_t inner = fork();
+        if (inner == 0) {
+            char target[256];
+            ssize_t n = readlink("/proc/1/exe", target, sizeof(target) - 1);
+            if (n <= 0) {
+                _exit(21);
+            }
+            target[n] = '\0';
+            struct stat want, got;
+            if (stat(target, &want) != 0) {
+                _exit(22);
+            }
+            int fd = open("/proc/1/exe", O_RDONLY | O_CLOEXEC);
+            if (fd < 0) {
+                _exit(23);
+            }
+            if (fstat(fd, &got) != 0) {
+                close(fd);
+                _exit(24);
+            }
+            close(fd);
+            if (got.st_dev != want.st_dev || got.st_ino != want.st_ino) {
+                _exit(25);
+            }
+            _exit(0);
+        }
+        if (inner <= 0) {
+            _exit(26);
+        }
+        int inner_status = 0;
+        if (waitpid(inner, &inner_status, 0) != inner || !WIFEXITED(inner_status)) {
+            _exit(27);
+        }
+        _exit(WEXITSTATUS(inner_status));
+    }
+    int pstatus = 0;
+    if (waitpid(pchild, &pstatus, 0) != pchild || !WIFEXITED(pstatus)) {
+        printf("  FAIL: inherited-proc exe consistency child wait\n");
+        failures++;
+    } else if (WEXITSTATUS(pstatus) != 0) {
+        printf("  FAIL: exe of /proc/1 follows the procfs entry across a pid "
+               "namespace (child exit %d)\n",
+               WEXITSTATUS(pstatus));
+        failures++;
+    } else {
+        pass("exe of /proc/1 follows the procfs entry across a pid namespace");
     }
 }
 
