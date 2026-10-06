@@ -12,6 +12,8 @@
  *                   write runc's nsexec issues (first NUL terminates)
  *   memfd-mode      memfd_create files carry exec permission (runc's
  *                   CVE-2019-5736 self-reexec execveat()s the memfd)
+ *   memfd-exec      execveat(memfd, "", AT_EMPTY_PATH) keeps the
+ *                   /memfd:<name> (deleted) exe display name
  *   pipe-fchown     fchown/fchmod succeed on pipe fds (runc adjusts its
  *                   container stdio pipes)
  *   stageb-gate     emits whether the bpf(2) cgroup-device stub is present,
@@ -44,6 +46,14 @@
 
 #ifndef __NR_bpf
 #error "__NR_bpf required"
+#endif
+
+#ifndef SYS_execveat
+#error "SYS_execveat required"
+#endif
+
+#ifndef AT_EMPTY_PATH
+#define AT_EMPTY_PATH 0x1000
 #endif
 
 /* enum bpf_cmd / bpf_attach_type values from Linux uapi/linux/bpf.h. */
@@ -276,6 +286,88 @@ static void check_memfd_mode(void)
         failures++;
     }
     close(fd);
+}
+
+/* execveat(memfd, "", AT_EMPTY_PATH) must keep the anonymous display name:
+ * after the exec, /proc/self/exe still shows "/memfd:<name> (deleted)"
+ * (Linux d_path), not an empty string from the unparented backing inode. */
+static void check_memfd_exec(void)
+{
+    section("memfd-exec");
+
+    int src = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+    if (src < 0) {
+        fail("open own /proc/self/exe for memfd exec");
+        return;
+    }
+    struct stat st;
+    if (fstat(src, &st) != 0) {
+        fail("fstat own executable");
+        close(src);
+        return;
+    }
+    int fd = (int)syscall(SYS_memfd_create, "docker-runc-run-exec", 0);
+    if (fd < 0) {
+        fail("memfd_create for exec");
+        close(src);
+        return;
+    }
+    char buffer[65536];
+    ssize_t total = 0;
+    ssize_t n;
+    while ((n = read(src, buffer, sizeof(buffer))) > 0) {
+        ssize_t written = 0;
+        while (written < n) {
+            ssize_t w = write(fd, buffer + written, (size_t)(n - written));
+            if (w <= 0) {
+                fail("copy own executable into memfd");
+                close(src);
+                close(fd);
+                return;
+            }
+            written += w;
+        }
+        total += n;
+    }
+    close(src);
+    if (total <= 0) {
+        fail("read own executable");
+        close(fd);
+        return;
+    }
+    if (lseek(fd, 0, SEEK_SET) != 0) {
+        fail("rewind memfd for exec");
+        close(fd);
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fail("fork memfd-exec child");
+        close(fd);
+        return;
+    }
+    if (pid == 0) {
+        /* Executed from the memfd, the probe re-runs with argv[1] ==
+         * "memfd-exe-child" and verifies its own /proc/self/exe text. */
+        char *child_argv[] = { "/proc/self/exe", "memfd-exe-child", NULL };
+        syscall(SYS_execveat, fd, "", child_argv, environ, AT_EMPTY_PATH);
+        _exit(120);
+    }
+    close(fd);
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
+        fail("wait memfd-exec child");
+        return;
+    }
+    if (WEXITSTATUS(status) == 42) {
+        pass("execveat(memfd, AT_EMPTY_PATH) keeps the /memfd: exe name");
+    } else {
+        printf("  FAIL: execveat(memfd, AT_EMPTY_PATH) keeps the /memfd: exe "
+               "name (child exit %d)\n",
+               WEXITSTATUS(status));
+        failures++;
+    }
 }
 
 static void *pipe_chmod_worker(void *arg)
@@ -693,10 +785,25 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "epoll-spin") == 0) {
         return run_epoll_spin();
     }
+    if (argc > 1 && strcmp(argv[1], "memfd-exe-child") == 0) {
+        char name[256];
+        ssize_t n = readlink("/proc/self/exe", name, sizeof(name) - 1);
+        if (n <= 0) {
+            return 43;
+        }
+        name[n] = '\0';
+        if (strncmp(name, "/memfd:", 7) != 0 ||
+            strstr(name, "docker-runc-run-exec") == NULL ||
+            strcmp(name + n - 10, " (deleted)") != 0) {
+            return 44;
+        }
+        return 42;
+    }
 
     check_starttime();
     check_oom_nul_write();
     check_memfd_mode();
+    check_memfd_exec();
     check_pipe_fchown();
     check_stageb_gate();
 
