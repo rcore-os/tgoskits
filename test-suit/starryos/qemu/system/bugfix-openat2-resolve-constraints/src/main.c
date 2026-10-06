@@ -100,6 +100,7 @@ int main(void)
     char rel[64];
     char abs[64];
     char pid_stat[64];
+    struct stat st;
 
     snprintf(sub, sizeof(sub), "%s/sub", root);
     snprintf(rel, sizeof(rel), "%s/rel", root);
@@ -162,6 +163,58 @@ int main(void)
     expect_errno("BENEATH rejects an escaping dangling symlink", rootfd,
                  "sub/link-out", RESOLVE_BENEATH,
                  O_CREAT | O_WRONLY | O_CLOEXEC, EXDEV);
+
+    /* A dangling link whose target carries a trailing slash demands a
+     * directory: O_CREAT must fail EISDIR and leave no created file behind
+     * (Linux lookup_fast_for_open), on either side of the slash. */
+    char sub_link_slash[64];
+    char sub_link_bare[64];
+    char created_slash[64];
+    char created_bare[64];
+    snprintf(sub_link_slash, sizeof(sub_link_slash), "%s/sub/link-slash", root);
+    snprintf(sub_link_bare, sizeof(sub_link_bare), "%s/sub/link-bare", root);
+    snprintf(created_slash, sizeof(created_slash), "%s/dangling-slash", root);
+    snprintf(created_bare, sizeof(created_bare), "%s/dangling-bare", root);
+    CHECK(symlink("../dangling-slash/", sub_link_slash) == 0,
+          "create slash-target dangling link fixture");
+    expect_errno("slash link target keeps its directory demand", rootfd,
+                 "sub/link-slash", RESOLVE_BENEATH,
+                 O_CREAT | O_WRONLY | O_CLOEXEC, EISDIR);
+    CHECK(symlink("../dangling-bare", sub_link_bare) == 0,
+          "create bare-target dangling link fixture");
+    expect_errno("caller trailing slash keeps its directory demand", rootfd,
+                 "sub/link-bare/", RESOLVE_BENEATH,
+                 O_CREAT | O_WRONLY | O_CLOEXEC, EISDIR);
+    errno = 0;
+    if (stat(created_slash, &st) == 0 || errno != ENOENT) {
+        CHECK(0, "slash link target creation leaves no file");
+    } else {
+        CHECK(1, "slash link target creation leaves no file");
+    }
+    errno = 0;
+    if (stat(created_bare, &st) == 0 || errno != ENOENT) {
+        CHECK(0, "caller trailing slash creation leaves no file");
+    } else {
+        CHECK(1, "caller trailing slash creation leaves no file");
+    }
+
+    /* The dot-only spelling names an existing entry: O_CREAT|O_EXCL reports
+     * EEXIST on both the plain openat path and the constrained openat2 path
+     * (Linux do_last). */
+    errno = 0;
+    int dot_excl = open(".", O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (dot_excl >= 0) {
+        close(dot_excl);
+        errno = 0;
+        CHECK(0, "plain openat O_CREAT|O_EXCL on . reports EEXIST");
+    } else if (errno == EEXIST) {
+        CHECK(1, "plain openat O_CREAT|O_EXCL on . reports EEXIST");
+    } else {
+        CHECK(0, "plain openat O_CREAT|O_EXCL on . reports EEXIST");
+    }
+    expect_errno("openat2 O_CREAT|O_EXCL on . reports EEXIST", rootfd, ".",
+                 RESOLVE_BENEATH,
+                 O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, EEXIST);
 
     /* RESOLVE_IN_ROOT: the dirfd acts as a chroot root. */
     expect_open("IN_ROOT resolves an absolute path inside the root", rootfd,

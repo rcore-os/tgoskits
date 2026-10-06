@@ -40,7 +40,7 @@
 | `madvise` 提示字（NORMAL/RANDOM/SEQUENTIAL/WILLNEED） | ✅ 已接受（bbolt 依赖） | `syscall/mm/mmap.rs:997` |
 | `epoll_pwait` sigsetsize 条件校验 | ✅ 与 Linux 一致（仅 sigmask 非空时校验） | `syscall/io_mpx/epoll.rs` `do_epoll_wait` |
 | `/proc/<pid>/stat` starttime | ✅ 已填充（`ThreadAccounting::start_time_ns` 捕获，渲染为 ticks，单测覆盖） | `task/stat.rs`、`task/thread.rs` |
-| `openat2(2)` RESOLVE_* 约束（BENEATH/IN_ROOT/NO_XDEV/NO_SYMLINKS/NO_MAGICLINKS） | ✅ 已强制执行（`RESOLVE_CACHED` 暂不支持 dcache-only 查找、统一返回 EAGAIN；错误优先级对齐 `link_path_walk`） | `fs/ax-fs-ng/src/fs_core/{constraints.rs,context.rs}`、`file/open.rs`、`syscall/fs/fd_ops.rs` |
+| `openat2(2)` RESOLVE_* 约束（BENEATH/IN_ROOT/NO_XDEV/NO_SYMLINKS/NO_MAGICLINKS） | ✅ 已强制执行（`RESOLVE_CACHED` 暂不支持 dcache-only 查找，任何携带该标志的打开统一返回 EAGAIN，调用方按 openat2(2) 约定去掉该标志重试；错误优先级对齐 `link_path_walk`） | `fs/ax-fs-ng/src/fs_core/{constraints.rs,context.rs}`、`file/open.rs`、`syscall/fs/fd_ops.rs` |
 | procfs magic link（`exe`/`fd/N`/`ns/<type>`）在 `openat2` 空间约束下的跳转 | ⚠️ 有意保守：带 `RESOLVE_BENEATH`/`IN_ROOT`/`NO_XDEV` 时一律返回 `EXDEV`。本内核取不到 magic link 目标的对象级挂载身份，而 procfs link 的目标对象（可执行文件/管道/命名空间 inode）实际位于与 procfs 不同的挂载，Linux `nd_jump_link()` 对这种受限跳转同样返回 `EXDEV`；仅当目标与链接同挂载时 Linux 放行，本内核无此情形 | `fs/ax-fs-ng/src/fs_core/context.rs` `try_resolve_symlink_constrained` |
 | `pivot_root(".", ".")` 惯用法（runc/docker 标准 pivot 流程） | ✅ 已支持（old root 堆叠于新根 `/`，`umount2(".", MNT_DETACH)` 收尾） | `fs/axfs-ng-vfs/src/mount/mod.rs` `pivot_mount`、`syscall/fs/mount.rs` |
 | cgroup v2 设备控制器 `bpf(2)`（`BPF_PROG_TYPE_CGROUP_DEVICE` / `BPF_CGROUP_DEVICE`） | ❌ 不实现，整族显式返回 `EOPNOTSUPP`，不伪造设备策略生效；非 rootless runc 的探针据此禁用设备过滤 | `os/StarryOS/kernel/src/ebpf/device_controller.rs` |
@@ -53,15 +53,16 @@
 
 ## 3. 已知缺口（阻塞默认 docker 运行）
 
-### 3.1 内核缺陷：ELF 加载校验缺失（已在本分支修复）
+### 3.1 内核缺陷：ELF 加载校验缺失（未落地）
 
-> 本分支（`debin/docker-startup`）已把 `kernel-elf-parser` vendor 到 `components/kernel-elf-parser` 并完成以下两项修复（4 架构自适应），详见该 crate 的提交与测试。
+> 历史分支 `debin/docker-startup` 曾把 `kernel-elf-parser` vendor 到 `components/kernel-elf-parser` 并完成下述两项修复（移植自 x-kernel `boot/kernel_elf_parser` 的提交 `c33a5c481`、`1491fd9c7`，四架构自适应，含 `test_machine_guard.rs` 单测）；该 vendor 与测试**不在本仓库，也不在本 PR**，当前分支没有这些文件。
 
-1. ~~execve 不校验 `e_machine`~~ **已修复**：`ELFHeadersBuilder::new` 校验 `e_machine`，非当前架构（aarch64/x86_64/riscv64/loongarch64 按 `target_arch` 适配）返回 `Err("unsupported ELF machine")`，经 `loader.rs` 映射为 `ENOEXEC`。
+当前内核经 crates.io 依赖发布的 `kernel-elf-parser 0.3.4`，该版本**不包含**这两项修复：
 
-2. ~~无 PT_PHDR 覆盖程序头表的 ELF 触发内核 panic~~ **已修复**：`phdr()` 改为返回 `Option<usize>`，`aux_vector()` 仅在存在覆盖 `PT_PHDR` 的段时发射 `AT_PHDR`，不再 `expect` panic。
+1. `e_machine` 无校验：非当前架构 ELF 的行为未定义（不保证 `ENOEXEC`）。
+2. `phdr()`（`info.rs`）在找不到覆盖程序头表的段时 `expect` panic，且 `aux_vector()` 无条件发射 `AT_PHDR`——无 `PT_PHDR` 覆盖的 ELF 仍可能触发内核 panic。
 
-> 两处均移植自 x-kernel `boot/kernel_elf_parser` 的对应修复（x-kernel 提交 `c33a5c481`、`1491fd9c7`），并改为四架构自适应；新增单元测试 `test_machine_guard.rs` 覆盖异构机器拒绝与无 `PT_PHDR` 场景。
+两项修复仍以待实现项记录：把 x-kernel 的两个提交适配为四架构版本，向上游发布新版本或在内核 `mm/loader.rs` 增加等价校验，并补 `test_machine_guard.rs` 风格的回归。
 
 ### 3.2 存储：无 overlayfs
 
@@ -83,15 +84,15 @@
 
 ## 4. 分阶段启动路径
 
-### Phase 0 — 内核补丁（已完成，见 3.1）
+### Phase 0 — 内核补丁（未完成，见 3.1）
 
-- [x] `e_machine` 校验：非当前架构 ELF 返回 `ENOEXEC`。
-- [x] `AT_PHDR` 可选化：消除 `phdr()` 的 `expect` panic。
-- [x] 验证：`cargo test -p kernel-elf-parser` 全绿 + `cargo xtask starry build`（aarch64）全量内核构建通过。
+- [ ] `e_machine` 校验：非当前架构 ELF 返回 `ENOEXEC`。
+- [ ] `AT_PHDR` 可选化：消除 `phdr()` 的 `expect` panic。
+- [ ] 验证：`cargo test -p kernel-elf-parser` 覆盖异构机器拒绝与无 `PT_PHDR` 场景 + 全量内核构建。
 
-验收：arm64 guest 内 `execve` 一个 amd64 ELF 返回 126（shell 场景）而非内核崩溃；无 PT_PHDR 工具链二进制可正常启动。
+验收（未取得）：arm64 guest 内 `execve` 一个 amd64 ELF 返回 126（shell 场景）而非内核崩溃；无 PT_PHDR 工具链二进制可正常启动。本 PR 的两个 Docker 用例不触达这两类输入，不能作为本项证据。
 
-### Phase 1 — guest 最小运行环境（已完成：`qemu/docker-guest-env`）
+### Phase 1 — guest 最小运行环境（已完成：`qemu-docker/docker-guest-env`）
 
 - [x] rootfs：Debian arm64 用户态；`/proc`、`/sys`、`/dev` 挂载，`/sys/fs/cgroup` 预建 cgroup2 挂载点。
 - [x] 验证 `/proc/self/ns/*` 可读、`unshare` / `setns` 回退、`mount -t tmpfs`、`/dev/ptmx`、AF_UNIX `SCM_RIGHTS` 传递。
@@ -146,7 +147,7 @@
 | --- | --- | --- |
 | 无 overlayfs | 镜像层效率低、空间放大 | ax-fs-ng overlayfs（upper/lower/merged）后切 overlay2 |
 | 无 netfilter/iptables | 只能 host/none 网络，无端口发布 | netfilter 框架 + veth/bridge，或把 host 网络固化为交付边界 |
-| ELF 两个缺陷 | dockerd 启动崩溃/panic | Phase 0 先行修复（可移植 x-kernel 补丁） |
+| ELF 两个缺陷 | dockerd 启动崩溃/panic | 待实现：x-kernel 补丁（`c33a5c481`、`1491fd9c7`）四架构适配，见 3.1/Phase 0；本 PR 未包含 |
 | 未知 syscall 缺口 | runc/containerd 中途失败 | 按内核 unimplemented 日志逐项补齐，每个缺口带独立验证 |
 | 性能（vfs 驱动 + host 网络） | 不适合生产负载 | 依赖 overlayfs/iptables 增量后缓解 |
 
