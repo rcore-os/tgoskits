@@ -93,12 +93,6 @@ impl ResolveConstraints {
         self
     }
 
-    /// Returns whether no restriction is active, in which case callers may
-    /// take the unconstrained fast path.
-    pub fn is_unconstrained(&self) -> bool {
-        self.flags.is_empty()
-    }
-
     /// Whether the walk must stay beneath its starting directory.
     pub fn is_beneath(&self) -> bool {
         self.flags.contains(ResolveFlags::BENEATH)

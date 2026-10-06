@@ -1180,7 +1180,7 @@ impl SimpleDirOps for NsDir {
 }
 
 /// The /proc/[pid] directory
-struct ThreadDir {
+pub(crate) struct ThreadDir {
     fs: Arc<SimpleFs>,
     task: WeakUserTaskRef,
     /// Authoritative process state for memory counters (`path_pid` lookup).
@@ -1189,6 +1189,18 @@ struct ThreadDir {
     path_pid: u32,
     procfs_pid: Option<u32>,
     view: PidView,
+}
+
+impl ThreadDir {
+    /// Upgrades the owning task so consumers of an actually-resolved entry
+    /// (for example the `/proc/<pid>/exe` fast path) take the process from
+    /// the entry itself instead of re-parsing the path text — a bind mount
+    /// that redirects `/proc/<pid>` then resolves to the mounted directory's
+    /// owner. `None` means the owning task has exited (Linux reports ENOENT
+    /// for the exe link of a process with no remaining mm).
+    pub(crate) fn thread_task(&self) -> Option<crate::task::UserTaskRef> {
+        upgrade_proc_task(&self.task).ok().flatten()
+    }
 }
 
 fn render_thread_maps(task: &WeakUserTaskRef) -> VfsResult<String> {

@@ -333,6 +333,21 @@ impl OpenOptions {
         path: impl AsRef<Path>,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<OpenResult> {
+        self.open_with_credentials_inherited(context, path.as_ref(), credentials, false)
+    }
+
+    /// Shared body of [`Self::open_with_credentials`]. `inherited_dir`
+    /// carries a trailing-slash requirement from a symlink-target recursion:
+    /// `open("link/", O_CREAT)` with `link -> missing` must keep demanding a
+    /// directory even though the recursion re-enters on the slash-less
+    /// target.
+    fn open_with_credentials_inherited(
+        &self,
+        context: &FsContext,
+        path: &Path,
+        credentials: &MutationCredentials<'_>,
+        inherited_dir: bool,
+    ) -> VfsResult<OpenResult> {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
@@ -342,7 +357,7 @@ impl OpenOptions {
         // return cwd itself which lets open() succeed — wrong per POSIX.
         // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
         // Fixes bug-openat-empty-path-no-enoent.
-        if path.as_ref().as_str().is_empty() {
+        if path.as_str().is_empty() {
             return Err(VfsError::NotFound);
         }
 
@@ -351,7 +366,7 @@ impl OpenOptions {
         // component, so we use Path::has_trailing_slash() to recover the
         // signal. Captured early; the post-resolution check below enforces
         // it. Fixes bug-open-trailing-slash.
-        let must_be_dir = path.as_ref().has_trailing_slash();
+        let must_be_dir = path.has_trailing_slash() || inherited_dir;
 
         if let Some(constraints) = self.resolve.clone() {
             return self.open_constrained(
@@ -365,7 +380,7 @@ impl OpenOptions {
         }
 
         let (loc, newly_created) =
-            match context.resolve_parent_with_search_checked(path.as_ref(), |directory| {
+            match context.resolve_parent_with_search_checked(path, |directory| {
                 context.check_search_path(directory, context.permission_boundary(), credentials)
             }) {
                 Ok((parent, name, searched)) => {
@@ -385,6 +400,12 @@ impl OpenOptions {
                         Err(VfsError::NotFound) => false,
                         Err(error) => return Err(error),
                     };
+                    // Linux `lookup_fast_for_open`: a trailing slash demands a
+                    // directory, so a requested creation on a missing entry
+                    // fails EISDIR instead of creating a regular file.
+                    if must_be_dir && !existing && (self.create || self.create_new) {
+                        return Err(VfsError::IsADirectory);
+                    }
                     // A trailing slash prevents creation of a missing regular
                     // file, but an existing directory must still see the
                     // original O_CREAT flag so _open() returns EISDIR.
@@ -431,13 +452,16 @@ impl OpenOptions {
                                 // O_CREAT on a dangling symlink: man — Linux follows
                                 // the symlink and creates the target file (provided
                                 // its parent directory exists). Recurse with the
-                                // symlink target as the new path.
+                                // symlink target as the new path, carrying the
+                                // caller's trailing-slash requirement so a
+                                // slash-demanding link never creates a plain file.
                                 // Fixes bug-open-creat-dangling-no-create.
                                 let target = symlink_target.unwrap();
-                                return self.open_with_credentials(
+                                return self.open_with_credentials_inherited(
                                     &context.with_current_dir(parent)?,
-                                    &target,
+                                    Path::new(&target),
                                     credentials,
+                                    must_be_dir,
                                 );
                             }
                             Err(e) => return Err(e),
@@ -468,7 +492,14 @@ impl OpenOptions {
                     // a relative `.` whose current directory is a detached mount
                     // root. Resolve the path itself so openat(dirfd, ".") keeps
                     // the supplied directory instead of falling back to `/`.
-                    (context.resolve(path.as_ref())?, false)
+                    let loc = context.resolve(path)?;
+                    // The dot-only spelling names an existing entry, so
+                    // O_CREAT|O_EXCL reports EEXIST (Linux `do_last`), matching
+                    // the constrained path's dot-only handling.
+                    if self.create_new {
+                        return Err(VfsError::AlreadyExists);
+                    }
+                    (loc, false)
                 }
                 Err(err) => return Err(err),
             };
@@ -557,6 +588,14 @@ impl OpenOptions {
             }
         }
 
+        // Linux `lookup_fast_for_open`: a trailing slash demands a directory,
+        // so a requested creation on a missing entry fails EISDIR instead of
+        // creating a regular file. Placed after the link-rejection probe so
+        // NO_SYMLINKS/NO_MAGICLINKS keep their ELOOP precedence.
+        if must_be_dir && !existing && (self.create || self.create_new) {
+            return Err(VfsError::IsADirectory);
+        }
+
         // A trailing slash prevents creation of a missing regular file, but an
         // existing directory must still see the original O_CREAT flag so
         // _open() returns EISDIR.
@@ -609,12 +648,15 @@ impl OpenOptions {
                     let target = symlink_target.unwrap();
                     // Re-enter at the link's parent, resuming the BENEATH
                     // depth count there: the link target resolves within the
-                    // same boundary, not from scratch.
+                    // same boundary, not from scratch. A trailing slash on
+                    // either the original path or the link target keeps
+                    // demanding a directory, so a slash-demanding dangling
+                    // link never creates a plain file (Linux EISDIR).
                     return self.open_constrained(
                         &context.with_current_dir(parent.clone())?,
                         Path::new(&target),
                         constraints,
-                        false,
+                        must_be_dir || Path::new(target.as_str()).has_trailing_slash(),
                         credentials,
                         depth0 + parent_depth,
                     );

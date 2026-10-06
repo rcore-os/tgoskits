@@ -20,10 +20,7 @@ use crate::{
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
     sync::RawSpinRwLock,
-    task::{
-        TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
-        get_user_task_by_number,
-    },
+    task::{TidNumber, current_pid_view, get_user_task_by_number},
 };
 
 use super::mutation_credentials;
@@ -327,20 +324,39 @@ fn try_reopen_self_file(
 
 /// Resolves the [`ProcessData`] referenced by a `/proc/<pid>/exe` or
 /// `/proc/self/exe` path, or `None` when the path is not an exe magic link.
-fn proc_exe_target(
-    current: &crate::task::UserTaskRef,
-    path: &str,
-) -> Option<StarryResult<Arc<crate::task::ProcessData>>> {
+/// Whether `path` is the absolute `/proc/<pid>/exe` (or `/proc/self/exe`)
+/// spelling that the exe fast path intercepts.
+fn looks_like_proc_exe(path: &str) -> bool {
     if path == "/proc/self/exe" {
-        return Some(Ok(current.as_thread().proc_data.clone()));
+        return true;
     }
-    let rest = path.strip_prefix("/proc/")?;
-    let (pid_str, suffix) = rest.split_once('/')?;
-    if suffix != "exe" || pid_str == "self" {
-        return None;
-    }
-    let tgid = TgidNumber::try_from(pid_str.parse::<u32>().ok()?).ok()?;
-    Some(get_user_process_data_by_number(tgid))
+    path.strip_prefix("/proc/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(pid_str, suffix)| {
+            suffix == "exe"
+                && pid_str != "self"
+                && !pid_str.is_empty()
+                && pid_str.parse::<u32>().is_ok()
+        })
+}
+
+/// Resolves the owning task of an actually-reached `/proc/<pid>/exe` magic
+/// link from the entry itself (`ThreadDir`), not from the path text: procfs
+/// entries belong to the mount's PID view and the resolved mount target, so
+/// a bind mount redirecting `/proc/<pid>` yields the mounted directory's
+/// owner and an inherited parent-namespace procfs keeps its own numbering
+/// (Linux `proc_exe_link` uses the task associated with the procfs inode).
+///
+/// `None` means the owning task has exited: Linux reports ENOENT for the exe
+/// link of a process with no remaining mm, and falling through to the
+/// generic walk would re-parse the stale display path instead.
+fn exe_task_from_link(loc: &Location) -> Option<crate::task::UserTaskRef> {
+    let parent = loc.parent()?;
+    let dir = parent.entry().as_dir().ok()?;
+    let thread_dir = dir
+        .downcast::<crate::pseudofs::SimpleDir<crate::pseudofs::proc::ThreadDir>>()
+        .ok()?;
+    thread_dir.ops().thread_task()
 }
 
 /// Applies Linux's `PTRACE_MODE_READ_FSCREDS` task-access check
@@ -394,32 +410,34 @@ fn try_open_proc_exe(
     path: &str,
     flags: u32,
 ) -> Option<StarryResult<i32>> {
+    if !looks_like_proc_exe(path) {
+        return None;
+    }
     if flags & O_NOFOLLOW != 0 {
         return None;
     }
-    let proc_data = match proc_exe_target(current, path)? {
-        Ok(proc_data) => proc_data,
-        // Linux `proc_exe_link` reports ENOENT both when `proc_pid_lookup`
-        // misses and when the target has no mm left (zombie): the exe link
-        // names the live mm's executable. Report ENOENT instead of the pid
-        // resolver's ESRCH, and instead of falling through to the generic
-        // walk, which would re-parse a zombie's stale display path.
-        Err(_) => return Some(Err(StarryError::NotFound)),
-    };
     let cred = current.as_thread().cred();
     // The backing object is only reachable when the caller's current root and
     // mount namespace actually expose the procfs magic link *and* every
     // directory on the way is searchable by the caller. A chroot/pivot root
     // without `/proc`, a tmpfs over `/proc`, or a non-searchable `/proc` must
     // observe the normal lookup result (ENOENT/EACCES); fall through so the
-    // generic walk reports it rather than opening the executable.
-    let _ = resolve_magic_link(current, AT_FDCWD, path)?;
+    // generic walk reports it rather than opening the executable. The same
+    // resolved entry also decides WHICH process the link belongs to.
+    let loc = resolve_magic_link(current, AT_FDCWD, path)?;
     // `O_CREAT|O_EXCL` implies no-follow (Linux `build_open_flags`): the magic
-    // link already exists, so the exclusivity check wins with EEXIST before the
-    // backing executable is opened.
+    // link already exists, so the exclusivity check wins with EEXIST before
+    // anything examines the target — even a zombie whose mm is already gone.
     if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
         return Some(Err(StarryError::AlreadyExists));
     }
+    let task = match exe_task_from_link(&loc) {
+        Some(task) => task,
+        // The entry exists but its owning task has exited: Linux
+        // `proc_exe_link` reports ENOENT once the target has no mm left.
+        None => return Some(Err(StarryError::NotFound)),
+    };
+    let proc_data = task.as_thread().proc_data.clone();
     // /proc/<pid>/exe of another process requires ptrace-style read
     // permission (`PTRACE_MODE_READ_FSCREDS`, fs/proc/base.c
     // `proc_fd_access_allowed`): same-thread-group callers pass, CAP_SYS_PTRACE
@@ -866,9 +884,13 @@ pub fn sys_openat2(
     }
 
     // RESOLVE_CACHED cannot be honored: this kernel has no dcache-only
-    // lookup fast path, so any resolution may perform filesystem I/O. Linux
-    // fails such opens with EAGAIN and advises the caller to retry without
-    // the flag (fs/open.c build_open_flags).
+    // lookup fast path, so EVERY open carrying the flag fails with EAGAIN —
+    // even when the entry would be cacheable. The contract for callers is
+    // the documented openat2(2) retry: drop RESOLVE_CACHED and call again.
+    // This is a deliberate, recorded simplification (see
+    // docs/design/docker-startup.md), not a caller-facing error-code bug;
+    // widening it later requires implementing Linux's `try_to_unlazy()`
+    // dcache-hit fast path plus a cache-hit-success / miss-EAGAIN regression.
     if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
         return Err(StarryError::WouldBlock);
     }
