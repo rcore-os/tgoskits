@@ -1,0 +1,8 @@
+--- a/sherpa-onnx/csrc/online-zipformer2-transducer-model.cc
++++ b/sherpa-onnx/csrc/online-zipformer2-transducer-model.cc
+@@ -9,0 +10 @@
++#include <cstdlib>
+@@ -88,0 +90,3 @@
++  if (const char *library = std::getenv("VOICE_CUSTOM_OP_LIBRARY")) {
++    encoder_sess_opts_.RegisterCustomOpsLibrary(library);
++  }

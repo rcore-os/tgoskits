@@ -19,6 +19,7 @@ apps/starry/wayland
 apps/starry/resource-monitor
 apps/starry/claw-code-regression
 apps/starry/aka00-tennis-yolo
+apps/starry/sg2002-voice-commands
 apps/starry/ebpf/kret
 apps/starry/ebpf/mytrace
 apps/starry/ebpf/rawtp
