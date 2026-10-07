@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Ubuntu 24.04 host; output is private glibc, never installed over system musl.
 set -euo pipefail
+for tool in clang clang++ ld.lld cmake ninja git curl unzip dpkg-deb apt patchelf sha256sum python3 readelf flock timeout; do
+  command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
+done
 APP=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(realpath "${1:-$(git rev-parse --show-toplevel)}")
 DEPS="$ROOT/target/voice-deps"; WORK="$ROOT/target/voice-riscv-runtime"
@@ -8,9 +11,6 @@ SRC="$DEPS/sherpa-source"; SYS="$DEPS/sysroot"
 SDK="$WORK/sdk"
 mkdir -p "$DEPS/sysroot-debs" "$WORK/build" "$SDK/lib" "$SDK/include/sherpa-onnx/c-api"
 exec 9>"$WORK/build-runtime.lock"; flock -n 9 || { echo "Runtime build already running" >&2; exit 1; }
-for tool in clang clang++ ld.lld cmake ninja git curl unzip dpkg-deb apt patchelf sha256sum python3 readelf; do
-  command -v "$tool" >/dev/null
-done
 verify() { printf '%s  %s\n' "$2" "$1" | sha256sum -c -; }
 fetch() {
   local file=$1 sha=$2 url=$3 fallback=${4:-} cached

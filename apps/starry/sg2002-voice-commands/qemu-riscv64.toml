@@ -9,7 +9,8 @@ args = [
 ]
 uefi = false
 to_bin = true
-timeout = 180
+# Three model startups under CPU emulation need headroom on slower hosts.
+timeout = 600
 fail_regex = [
     "VOICE_COMMANDS_TEST_FAILED",
     "(?i)panicked at",
