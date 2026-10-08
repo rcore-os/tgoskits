@@ -70,7 +70,7 @@ int main(int argc, char **argv)
     closedir(dir);
     if (!hardware) {
         if (chip[0]) { fprintf(stderr, "unexpected PWM device on QEMU\n"); goto failed; }
-        puts("PWM_SYSFS_PASSED");
+        puts("\nPWM_SYSFS_PASSED");
         return 0;
     }
     if (!chip[0]) { fprintf(stderr, "no PWM device on hardware\n"); goto failed; }
@@ -111,7 +111,8 @@ int main(int argc, char **argv)
     CHECK(attribute_write("unexport", "0\n", 0));
     exported = 0;
     CHECK(attribute_write("unexport", "0\n", ENODEV));
-    puts("PWM_SYSFS_PASSED");
+    // Interactive shell prompts may leave the console at an unterminated line.
+    puts("\nPWM_SYSFS_PASSED");
     return 0;
 failed:
     if (stale_fd >= 0) syscall(SYS_close, stale_fd);
@@ -119,6 +120,6 @@ failed:
         attribute_write("pwm0/enable", "0\n", 0);
         attribute_write("unexport", "0\n", 0);
     }
-    puts("PWM_SYSFS_FAILED");
+    puts("\nPWM_SYSFS_FAILED");
     return 1;
 }

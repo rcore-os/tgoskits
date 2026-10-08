@@ -10,10 +10,10 @@ shell_cmd = '''
 i=0
 while ! wget -q -O /tmp/test-pwm-sysfs "${sessionFile:usr/bin/test-pwm-sysfs}"; do
   i=$((i + 1))
-  if [ "$i" -ge 15 ]; then printf '%s%s\n' PWM_SYSFS_ FAILED; exit 1; fi
+  if [ "$i" -ge 15 ]; then printf '\n%s%s\n' PWM_SYSFS_ FAILED; exit 1; fi
   sleep 1
 done
 chmod +x /tmp/test-pwm-sysfs
-/tmp/test-pwm-sysfs --hardware || printf '%s%s\n' PWM_SYSFS_ FAILED
+/tmp/test-pwm-sysfs --hardware || printf '\n%s%s\n' PWM_SYSFS_ FAILED
 '''
 success_regex = ["(?m)^PWM_SYSFS_PASSED\\s*$"]
