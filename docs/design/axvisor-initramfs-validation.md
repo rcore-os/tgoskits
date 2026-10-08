@@ -215,3 +215,29 @@ ASUS 原作业在加载器串口尚未完成身份绑定时由服务端于 60 �
 随后 `dev` 合入 NVMe 格式与传输限制修复，分支变基到 `35c653e55ec6a42a982d9cf5ac0817a0bbd16426`；42 个提交经 `range-diff` 核对内容一致。格式化和差异检查通过，CI 规划测试 140/140；`cargo xtask clippy --package axbuild --package ax-fs-ng` 两个软件包共 7/7 检查通过；`cargo xtask test --since origin/dev` 在该基线选择的 17 个软件包全部通过，axbuild 为 437 项测试。日志分别为 `/tmp/pr2567-ci-tests-rebase-35c.log`、`/tmp/pr2567-clippy-rebase-35c.log` 和 `/tmp/pr2567-std-rebase-35c.log`。
 
 最新基线的 SVM 同一六用例命令 6/6 通过，日志 `/tmp/pr2567-svm-rebase-35c.log` 只有一次 `Compiling axvisor`，六次内核 SHA-256 均为 `a323070329426ee1b6a4bd4bb95584d8fa8249fc85dff91e7b79ab3b69adb6e4`；Smoke 确认切到 NVMe 根、脱离旧根并继续验证宿主读写及客户机磁盘隔离。上述远程 CI 对应 `da2f4afa7b`，最新基线提交的 CI 需单独核对；性能板卡入口未在本次 NVMe 变基后重复运行。
+
+
+### 6.6 审查问题修复
+
+本轮从 `e14e185b87d7396ea573b452dfefdedb0d5a31df` 开始，恢复 `root.rs` 中两个独立磁盘保护测试及瞬时元数据读取的保护区域断言。它们分别经过真实 `scan_volumes()`、`collect_partitions()` 和 `axtest_protected_regions()`，证明已识别的整盘文件系统不能进入破坏性测试区域，以及探测失败后即使设备恢复也不能撤销未知布局保护；未修改生产探测逻辑。`cargo xtask test --since e14e185b87d7396ea573b452dfefdedb0d5a31df` 在测试恢复提交后选择 15 个软件包，全部通过，两项恢复测试均实际执行。`cargo xtask clippy --package ax-fs-ng --package axvisor` 中 ax-fs-ng 六项检查通过；工具明确跳过需要专用构建配置的 Axvisor，不把跳过视为通过。
+
+`builtin::validate_builtin()` 只解析自带包内镜像，外部资源必须是绝对路径，但其存在性延迟到相应 VM 加载。`install_builtin()` 通过私有 `validate_builtin_assets()` 显式传入准备好的目标根，继续在发布和切根前拒绝缺失、空或非普通文件的外部资源。增强现有无盘启动回归，提供完整自带内核及不存在的外部设备树：原实现因 `/board/missing.dtb` 返回 NotFound 并触发恐慌，`cargo xtask ktest qemu` 返回非零；修复后同一入口 86/86 通过，并继续断言空自带内核被拒绝。已有外部资源安装回归仍验证缺失、空资源保留旧包以及补齐后的整包替换。
+
+`.github/ci/checks/arceos.toml` 的 AArch64 应用与套件作业现在先通过 `cargo xtask image pack-initramfs` 生成归档、通过 `cargo xtask image pull --arch aarch64` 准备并校验 Alpine 根盘，再执行 `FEATURES=block-root-smoke cargo xtask arceos qemu -p arceos-helloworld --arch aarch64 --qemu-config apps/arceos/helloworld/qemu-host-initramfs-root-aarch64.toml`。同一命令本地成功，输出 `HOST_CMDLINE: root=/dev/nvme0n1 rw` 和 `HOST_DISK_ROOT_PASSED`。持续集成规划、路由和报告测试 140/140 通过。
+
+### 6.7 挂载可见性依据
+
+审查建议将不可达挂载点回退为 `/`，但 [Linux v6.12 `show_vfsmnt()` 和 `show_mountinfo()`](https://github.com/torvalds/linux/blob/v6.12/fs/proc_namespace.c#L94-L179) 都通过 [`seq_path_root()`](https://github.com/torvalds/linux/blob/v6.12/fs/seq_file.c#L480-L504) 对进程根之外的挂载返回 `SEQ_SKIP`。因此保留 `render_mounts()` 和 `render_mountinfo()` 跳过不可达条目的实现，只补充源码注释与依据。
+
+现有 `qemu/system/test-mount-bind` 增强了真实系统边界的证明：子进程直接调用 `SYS_chroot` 改变根目录，再经 `SYS_openat`、`SYS_read` 读取两个 procfs 文件，要求恰有一个可达根和一个 procfs 挂载。临时恢复错误的 `/` 回退后，相同用例明确报出 14 个根挂载条目，分组运行器与最外层任务均失败；临时错误实现已恢复。
+
+恢复正确实现后，`cargo xtask starry test qemu --arch aarch64 -c qemu/system/test-mount-bind` 为 1/1，通过 `TEST_MOUNT_BIND_PASSED` 和最外层 `all starry qemu tests passed`。其他体系结构的新挂载可见性判定本轮未本地执行；现有四架构 system 持续集成会运行该增强用例。此处仅证明根外挂载过滤，不将结果扩大为全部 procfs 或文件系统调用兼容性。
+
+`cargo xtask clippy --package starry-kernel` 四架构共 80 项检查全部通过。格式化及差异检查通过。
+
+本轮没有修改 StarryOS 系统调用或 procfs 的生产行为，下表记录新增系统回归直接证明的读取语义；其他读取入口不能由该测试推定兼容。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| read/AArch64:63 | [Linux v6.12](https://github.com/torvalds/linux/blob/v6.12/fs/proc_namespace.c#L94-L179)、[`seq_path_root`](https://github.com/torvalds/linux/blob/v6.12/fs/seq_file.c#L480-L504) | 读取 mounts、mountinfo 时隐藏进程根之外的挂载；可达挂载只按根内路径显示 | sys_read → get_file_like → MountTableFile::read → File::read → VFS File::read → SimpleFile::read_at → procfs 生成器 → render_mountinfo/render_mounts → FsContext::root_dir；根和挂载命名空间由任务的 FS_CONTEXT 引用 | 正确 | 增强 test-mount-bind；错误回退时 14 个根条目并失败，恢复后 AArch64 同一 QEMU 入口 1/1 通过 |
+| read/x86_64:0、RISC-V:63、LoongArch:63 | 同上固定 Linux 源码 | 同上根内可见性要求 | 同一共享实现与 FS_CONTEXT 所有权 | 无法确认 | 本轮未在这些架构执行新增判定，需当前提交的对应 system 持续集成结果 |

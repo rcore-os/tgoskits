@@ -44,7 +44,7 @@ pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
     let validation_error = RefCell::new(None);
     let installed =
         ax_fs_ng::bundle::install_directory(source, target, BUILTIN_GUEST_DIR, |context, path| {
-            validate_builtin(context, path).map_err(|error| {
+            validate_builtin_assets(context, path, Some(context)).map_err(|error| {
                 // Recovery may reject the published directory and restore its
                 // backup. Only staging validation aborts this installation.
                 if path != BUILTIN_GUEST_DIR {
@@ -97,8 +97,17 @@ fn config_files(context: &FsContext, directory: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-/// Validates the staged package while preserving its final absolute paths.
+/// Validates archive-owned assets while preserving their final absolute paths.
+/// External absolute assets are deferred to VM loading on an initramfs root.
 pub fn validate_builtin(context: &FsContext, staged: &str) -> Result<()> {
+    validate_builtin_assets(context, staged, None)
+}
+
+fn validate_builtin_assets(
+    context: &FsContext,
+    staged: &str,
+    external_root: Option<&FsContext>,
+) -> Result<()> {
     let entries = match context.read_dir(staged) {
         Ok(entries) => entries,
         Err(VfsError::NotFound) => return Ok(()),
@@ -143,7 +152,10 @@ pub fn validate_builtin(context: &FsContext, staged: &str) -> Result<()> {
                     path.starts_with('/'),
                     "boot asset path must be absolute: {path}"
                 );
-                context.resolve(path)
+                let Some(external_root) = external_root else {
+                    continue;
+                };
+                external_root.resolve(path)
             }
             .with_context(|| format!("resolve guest boot asset {path}"))?;
             resource

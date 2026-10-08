@@ -113,6 +113,8 @@ Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令
 
 源目录缺失时保留已安装版本，空包清空旧资源。只读目标、空间不足或安装失败时保持原根并停止 VM 启动。`selected_configs()` 优先有效非空 `/guest/vm_default`；空目录或缺失才回退到自带配置，无效用户配置明确报错。
 
+没有显式磁盘根或没有宿主块设备时，`prepare_root()` 保留 initramfs 根，`validate_builtin()` 只校验包内配置及 `/guest/builtin/images/**` 的文件类型、存在性和非空长度。外部绝对路径仍须是合法配置路径，但在此阶段不解析；对应 VM 加载时才报告外部资源缺失。磁盘根安装由 `install_builtin()` 在准备好的目标根上同时校验包内与外部资源，失败仍保留原根及旧包。 本次调整只限定根准备的校验范围；默认 VM 配置实际加载失败时，`init_guest_vms()` 仍按既有策略停止默认 VM 集初始化，不承诺逐 VM 容错。
+
 ### 5.2 资源生命周期
 
 `take_initramfs()` 一次领取并清除外部启动范围；解包借用结束后只回收确知归属的完整页。内置归档、边界共享页和固件保留页保留。原始归档页回收与解包 ramfs 释放分别记录，仍在使用的无盘内存根保留到正常生命周期结束。
@@ -127,15 +129,21 @@ Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令
 
 Starry 早期 init 可挂载物理块设备的 Ext4，再切根并用 `umount2(MNT_DETACH)` 脱离旧根。`mount_ext4()` 复用共享块运行时、选盘命名和分区扫描；native filesystem 登记为弱引用，重复挂载同一块区域复用超级块。物理块节点的原始 read/write 仍不支持，文件系统 I/O 经共享 native handle 后端执行。
 
+`render_mountinfo()` 与 `render_mounts()` 只输出进程根内可达的挂载。`Location::path_from()` 无法到达当前根时跳过条目，不能将其挂载点伪装成 `/`。这与 [Linux v6.12 的 `show_mountinfo()`、`show_vfsmnt()`](https://github.com/torvalds/linux/blob/v6.12/fs/proc_namespace.c) 调用 [`seq_path_root()`](https://github.com/torvalds/linux/blob/v6.12/fs/seq_file.c#L480-L504) 并以 `SEQ_SKIP` 隐藏根外挂载的行为一致。`qemu/system/test-mount-bind` 复用真实绑定挂载，改变子进程根目录后核对 `/proc/self/mountinfo` 和 `/proc/mounts` 只有可达根与 procfs 挂载。
+
 ### 6.2 验证入口
 
 `qemu/host-initramfs-switch-root` 在 AArch64 直接执行 mount、chdir、pivot_root 和 umount2，读取磁盘根 `/etc/alpine-release`，再从磁盘 exec `/sbin/init`。ArceOS 的 `block-root-smoke` 显式启用 Ext4 和 NVMe，验证应用启动时已读取磁盘文件。
 
 ```bash
 cargo xtask starry test qemu --arch aarch64 --test-case qemu/host-initramfs-switch-root
+cargo xtask image pack-initramfs test-suit/host-initramfs target/axbuild/host-initramfs/host-test.cpio
+cargo xtask image pull --arch aarch64
 FEATURES=block-root-smoke cargo xtask arceos qemu -p arceos-helloworld --arch aarch64 --qemu-config apps/arceos/helloworld/qemu-host-initramfs-root-aarch64.toml
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 ```
+
+ArceOS 配置通过 `-device nvme,drive=disk0` 接入下载后的 Alpine 根盘，并以 `root=/dev/nvme0n1 rw` 选择该盘。应用断言根类型为块设备、`/etc/alpine-release` 非空且 `/etc/issue` 不再来自测试归档，最后输出 `HOST_DISK_ROOT_PASSED`；该完整入口已纳入 `.github/ci/checks/arceos.toml` 的 AArch64 应用与套件作业。
 
 Axvisor HTTP 用例显式切到 NVMe 根，删除、重建并再次启动 VM，创建请求使用打包后的自带配置和镜像路径；无需旧 initramfs 或内核内嵌镜像。
 
