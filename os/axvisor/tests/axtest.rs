@@ -65,7 +65,21 @@ mod tests {
             ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
                 .is_none_or(|devices| devices.is_empty())
         );
-        axvisor::builtin::prepare_root().expect("diskless boot keeps the initramfs root");
+        // The bundled kernel exists, but the board DTB is outside the archive.
+        // Its absence must affect that VM at load time, not host preparation.
+        std::fs::create_dir_all("/guest/builtin/configs").unwrap();
+        std::fs::create_dir_all("/guest/builtin/images").unwrap();
+        std::fs::write("/guest/builtin/images/kernel", "kernel").unwrap();
+        std::fs::write(
+            "/guest/builtin/configs/default.toml",
+            "[base]\nid=1\nname='diskless'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\ndtb_path='/board/missing.dtb'\n[devices]\n",
+        )
+        .unwrap();
+        axvisor::builtin::prepare_root().expect("external assets must not abort diskless boot");
+        // Package-owned resources must still be present and nonempty.
+        std::fs::write("/guest/builtin/images/kernel", "").unwrap();
+        ax_assert!(axvisor::builtin::prepare_root().is_err());
+        std::fs::remove_dir_all("/guest/builtin").unwrap();
         ax_assert_eq!(
             ax_fs_ng::root::root_kind(),
             Some(ax_fs_ng::root::RootKind::Memory)
