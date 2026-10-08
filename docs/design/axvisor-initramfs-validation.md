@@ -27,7 +27,7 @@
 | 检查 | 结果 | 本地证据 |
 | --- | --- | --- |
 | `cargo fmt --all`、`git diff --check` | 通过 | 工作区最终差异 |
-| `cargo xtask test --since 72a5528bf6a2f0a4e2998f420ef34f8339a8f652` | 17 个软件包全部通过；axbuild 427 项测试 | `/tmp/axvisor-dev2-std.log` |
+| `cargo xtask test --since 72a5528bf6a2f0a4e2998f420ef34f8339a8f652` | 17 个软件包全部通过；axbuild 427 项测试 | `/tmp/axvisor-dev2-std-final.log` |
 | 变基后定向 Clippy：ax-fs-ng、axbuild、axvm、arceos-helloworld | 4 个软件包、37 个检查通过 | `/tmp/axvisor-dev2-clippy.log` |
 | CI 规划器测试 | 85 项通过 | `/tmp/axvisor-dev2-ci-plan.log` |
 
