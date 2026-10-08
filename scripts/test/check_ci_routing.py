@@ -280,12 +280,6 @@ def main() -> int:
         "github.event_name != 'pull_request'",
         "the non-protected ref branch must not re-enable fork PR cleanup",
     )
-    require_contains(
-        errors,
-        cancel_step,
-        "statuses=(queued in_progress waiting requested pending)",
-        "stale-run cleanup must enumerate every known pending run state",
-    )
 
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,

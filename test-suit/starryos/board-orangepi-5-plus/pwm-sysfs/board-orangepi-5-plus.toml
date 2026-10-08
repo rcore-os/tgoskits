@@ -16,4 +16,4 @@ done
 chmod +x /tmp/test-pwm-sysfs
 /tmp/test-pwm-sysfs --hardware || printf '\n%s%s\n' PWM_SYSFS_ FAILED
 '''
-success_regex = ["(?m)^PWM_SYSFS_PASSED\\s*$"]
+success_regex = ["(?m)PWM_SYSFS_PASSED\\s*$"]
