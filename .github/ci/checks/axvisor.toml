@@ -16,7 +16,9 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 axtest"
-cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
+cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
+  --config os/axvisor/tests/build-memory-root-aarch64.toml \
+  --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml
 '''
 
 [[check.suite]]

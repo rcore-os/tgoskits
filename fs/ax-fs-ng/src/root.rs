@@ -235,7 +235,20 @@ impl PreparedRoot {
             .ok_or(VfsError::InvalidInput)?;
         let old_root = context.lock().root_dir().clone();
         let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
-        let mount = mount_dir.mount_with_source(&self.filesystem, &self.source)?;
+        let identity = block_identity(self.selected.handle.device_info(), self.selected.disk_index);
+        let device = self
+            .selected_partition
+            .and_then(|index| {
+                self.selected
+                    .partitions
+                    .iter()
+                    .find(|partition| partition.info.index == index)
+                    .map(|_| identity.minor.saturating_add(index as u32 + 1))
+            })
+            .unwrap_or(identity.minor);
+        let root_device = axfs_ng_vfs::DeviceId::new(identity.major, device).0;
+        let mount =
+            mount_dir.mount_with_device_source(&self.filesystem, root_device, &self.source)?;
         mount.set_readonly(self.context.root_dir().is_readonly());
         let new_root = mount.root_location();
         #[cfg(feature = "vfs")]

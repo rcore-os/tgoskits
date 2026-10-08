@@ -390,10 +390,26 @@ impl Mountpoint {
         location_in_parent: Option<Location>,
         source: &str,
     ) -> Arc<Self> {
+        Self::new_with_device_source(
+            fs,
+            location_in_parent,
+            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source,
+        )
+    }
+
+    /// Creates a mountpoint with an explicitly selected filesystem device
+    /// number. The mount identifier remains independently allocated.
+    pub fn new_with_device_source(
+        fs: &Filesystem,
+        location_in_parent: Option<Location>,
+        device: u64,
+        source: &str,
+    ) -> Arc<Self> {
         let result = Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
-            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            device,
             source.to_owned(),
             fs.mount_state.clone(),
         );
@@ -408,6 +424,12 @@ impl Mountpoint {
     /// Creates the root mountpoint with the source name exposed through mount metadata.
     pub fn new_root_with_source(fs: &Filesystem, source: &str) -> Arc<Self> {
         Self::new_with_source(fs, None, source)
+    }
+
+    /// Creates a root mountpoint with an explicitly selected filesystem
+    /// device number.
+    pub fn new_root_with_device_source(fs: &Filesystem, device: u64, source: &str) -> Arc<Self> {
+        Self::new_with_device_source(fs, None, device, source)
     }
 
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
@@ -672,8 +694,9 @@ impl Mountpoint {
     /// Walk the mount tree rooted at `self`, collecting `(mount_id, parent_id,
     /// mountpoint)` tuples in DFS order.
     ///
-    /// `mount_id` is the mount's [`device()`](Self::device) (unique per mount,
-    /// assigned incrementally from `DEVICE_COUNTER` — the root mount is 1).
+    /// `mount_id` is the mount's independent identifier. `device()` is the
+    /// filesystem device number and may be shared by bind mounts or selected
+    /// explicitly for a physical root.
     /// `parent_id` for the root mount is itself (Linux convention:
     /// `mount_id == parent_id` for the root mount); for non-root mounts it is
     /// the parent mount's `device()`.
@@ -1237,11 +1260,22 @@ impl Location {
 
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
+        self.mount_with_device_source(fs, DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed), source)
+    }
+
+    /// Mounts a filesystem with an explicitly selected device number and
+    /// source name. Bind mounts keep the source mount's device number.
+    pub fn mount_with_device_source(
+        &self,
+        fs: &Filesystem,
+        device: u64,
+        source: &str,
+    ) -> VfsResult<Arc<Mountpoint>> {
         // Filesystem callbacks may acquire sleepable locks. Prepare the
         // unpublished mount before entering the non-preemptible topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
-        let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
+        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source);
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;

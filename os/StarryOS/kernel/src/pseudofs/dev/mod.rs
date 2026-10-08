@@ -509,8 +509,13 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // Root block device node. Its rdev must equal the root filesystem's st_dev
     // so that tools resolving the root device by scanning /dev (e.g. busybox
     // `rdev`, which stats "/" then looks for a block node with a matching
-    // st_rdev) can find it. The root mount is the first mount, so its
-    // `DEVICE_COUNTER` id is 1 (== `DeviceId::new(0, 1).0`).
+    // `st_rdev`) can find it. Disk roots use their Linux device number; a
+    // memory root keeps the synthetic mount device assigned by the VFS.
+    let root_mount_device = ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .root_dir()
+        .mountpoint()
+        .device();
     let block_nodes = ax_fs_ng::root::block_device_nodes()
         .unwrap_or_else(|error| panic!("failed to discover block device nodes: {error:?}"));
     let root_name = ax_fs_ng::root::root_block_identity().name;
@@ -520,7 +525,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         Device::new(
             fs.clone(),
             NodeType::BlockDevice,
-            DeviceId::new(0, 1),
+            DeviceId(root_mount_device),
             Arc::new(RootBlk),
         ),
     );

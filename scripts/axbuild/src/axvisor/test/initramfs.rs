@@ -659,6 +659,10 @@ pub(super) async fn prepare_configured_busybox_initramfs(
 ) -> anyhow::Result<()> {
     if let Some(configured_output) = inputs.busybox_initramfs.as_deref() {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
+        // Diskless AxVisor cases still derive their guest initramfs from the
+        // managed rootfs. Prepare it here as well as in the host-root path so
+        // a fresh runner cannot silently read a stale or missing image.
+        rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?;
         prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
         println!(
@@ -733,12 +737,18 @@ fn prepare_busybox_initramfs(
 }
 
 fn required_rootfs_file(rootfs_path: &Path, guest_path: &str) -> anyhow::Result<Vec<u8>> {
-    read_binary_file(rootfs_path, guest_path)?.with_context(|| {
+    let contents = read_binary_file(rootfs_path, guest_path)?.with_context(|| {
         format!(
             "managed rootfs {} does not contain required file {guest_path}",
             rootfs_path.display()
         )
-    })
+    })?;
+    ensure!(
+        !contents.is_empty(),
+        "managed rootfs {} contains an empty required file {guest_path}",
+        rootfs_path.display()
+    );
+    Ok(contents)
 }
 
 fn musl_loader_path(arch: &str) -> anyhow::Result<&'static str> {
