@@ -650,6 +650,23 @@ fn install_mmio_serial_preserving(
             "device-tree serial profile is not MMIO"
         ));
     };
+    // Resolve the firmware UART layout before any node is replaced or removed.
+    // `physical_serial_paths` re-reads the `/chosen` console selector, and the
+    // install below deletes the firmware serial node; resolving afterwards would
+    // let a still-valid Zephyr phandle selector dangle.
+    let mut firmware_uart_paths: Vec<String> = if console {
+        let mut paths = physical_serial_paths(tree.inner())?;
+        paths.retain(|path| {
+            !preserved_physical_selectors
+                .iter()
+                .any(|selector| super::device::selector_includes_path(selector, path))
+        });
+        paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
+        paths
+    } else {
+        Vec::new()
+    };
+
     // Firmware phandles are local to each tree; the host identity cannot
     // select the controller after explicit guest firmware replaces it.
     let interrupt_parent = interrupt_controller_phandle(tree, interrupt_encoding)?;
@@ -666,17 +683,8 @@ fn install_mmio_serial_preserving(
         identity.and_then(|identity| identity.node_phandle),
     )?;
 
-    if console {
-        let mut old_paths = physical_serial_paths(tree.inner())?;
-        old_paths.retain(|path| {
-            !preserved_physical_selectors
-                .iter()
-                .any(|selector| super::device::selector_includes_path(selector, path))
-        });
-        old_paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
-        for path in old_paths {
-            tree.inner_mut().remove_by_path(&path);
-        }
+    for path in firmware_uart_paths.drain(..) {
+        tree.inner_mut().remove_by_path(&path);
     }
 
     let (parent_path, node_name) = serial_path.rsplit_once('/').ok_or_else(|| {
@@ -1054,16 +1062,30 @@ fn resolve_stdout_selector(fdt: &Fdt, name: &str, raw: &str) -> AxVmResult<Selec
 }
 
 fn resolve_phandle_selector(fdt: &Fdt, name: &str, phandle: u32) -> AxVmResult<SelectedConsole> {
-    let node = fdt.get_by_phandle(phandle.into()).ok_or_else(|| {
+    let path = phandle_target_path(fdt, phandle).ok_or_else(|| {
         ax_err_type!(
             InvalidData,
             format!("/chosen {name} references missing phandle {phandle:#x}")
         )
     })?;
-    let path = node.path();
     Ok(SelectedConsole {
         raw: path.clone(),
         path,
+    })
+}
+
+/// Resolves a phandle to the path of the live node that declares it.
+///
+/// `fdt_edit::Fdt::get_by_phandle` answers from a phandle cache populated when
+/// the tree was parsed; adding or rewriting a `phandle` property afterwards does
+/// not refresh that cache. Console selectors must follow the live properties so
+/// a selector that firmware still declares keeps resolving while the tree is
+/// patched, instead of dangling against the stale cache.
+fn phandle_target_path(fdt: &Fdt, phandle: u32) -> Option<String> {
+    fdt.iter_node_ids().find_map(|node_id| {
+        let node = fdt.node(node_id)?;
+        (node.get_property("phandle").and_then(Property::get_u32) == Some(phandle))
+            .then(|| fdt.path_of(node_id))
     })
 }
 
@@ -1097,7 +1119,7 @@ fn zephyr_console_selection(fdt: &Fdt) -> Option<(String, String)> {
     let phandle = ["zephyr,console", "zephyr,shell-uart"]
         .into_iter()
         .find_map(|name| chosen.as_node().get_property(name)?.get_u32())?;
-    let path = fdt.get_by_phandle(phandle.into())?.path();
+    let path = phandle_target_path(fdt, phandle)?;
     Some((path.clone(), path))
 }
 
