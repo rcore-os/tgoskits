@@ -664,7 +664,34 @@ pub(super) async fn prepare_configured_busybox_initramfs(
         // a fresh runner cannot silently read a stale or missing image.
         rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?;
-        prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
+        if let Err(first_error) =
+            prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)
+        {
+            // A managed image may have been left partially extracted by an
+            // interrupted runner. Rebuild only that owned path; never remove
+            // an explicit user supplied rootfs.
+            let managed_path =
+                rootfs::managed_rootfs_path(request, workspace_root, target_dir, None)?;
+            if managed_path.as_deref() != Some(rootfs_path.as_path()) {
+                return Err(first_error);
+            }
+            fs::remove_file(&rootfs_path).with_context(|| {
+                format!(
+                    "failed to remove invalid managed rootfs {} after initramfs preparation failed",
+                    rootfs_path.display()
+                )
+            })?;
+            rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
+            prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch).with_context(
+                || {
+                    format!(
+                        "managed rootfs {} remained invalid after re-extraction (initial error: \
+                         {first_error:#})",
+                        rootfs_path.display()
+                    )
+                },
+            )?;
+        }
         println!(
             "prepared Axvisor QEMU test initramfs: {}",
             output_path.display()
