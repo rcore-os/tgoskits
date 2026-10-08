@@ -270,7 +270,7 @@ class CiPlanTests(unittest.TestCase):
             "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
-            "benchmarks/axvisor/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
             "benchmarks/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml",
         ):

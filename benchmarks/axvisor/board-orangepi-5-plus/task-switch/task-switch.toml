@@ -31,7 +31,6 @@ phys_cpu_ids = [0x400]
 # The guest receives the 1 GiB physical region starting at 0x4000_0000, with the
 # device-tree blob at the region base and the kernel image at 0x4008_0000.
 entry_point = 0x4008_0000
-image_location = "memory"
 kernel_load_addr = 0x4008_0000
 kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/task-switch.bin"
 dtb_load_addr = 0x4000_0000

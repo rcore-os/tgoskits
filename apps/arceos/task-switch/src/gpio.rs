@@ -7,7 +7,7 @@
 //!
 //! Physical device windows are reached through `ax_mm::iomap`. The AxVisor board
 //! guest is configured as a passthrough guest in
-//! `test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/task-switch.toml`,
+//! `benchmarks/axvisor/board-orangepi-5-plus/task-switch/task-switch.toml`,
 //! whose `guest_type = "passthrough"` is what maps these device windows into the
 //! guest address space. This ArceOS standard-library application is not a user
 //! process, so its tasks stay at EL1; the passthrough windows are what let those

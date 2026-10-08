@@ -9,5 +9,5 @@ features = [
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
-  "test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/task-switch.toml",
+  "benchmarks/axvisor/board-orangepi-5-plus/task-switch/task-switch.toml",
 ]

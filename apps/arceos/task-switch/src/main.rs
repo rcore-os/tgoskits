@@ -3,7 +3,7 @@
 //! The application only supports the AArch64 RK3588 board guest. Its tasks run
 //! at EL1: they read the PMU cycle counter and the System Counter, and drive the
 //! physical GPIO3_C6 pin through direct memory-mapped I/O. The build inputs live
-//! in `test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/`.
+//! in `benchmarks/axvisor/board-orangepi-5-plus/task-switch/`.
 //!
 //! Only the pure counter/time conversions in [`convert`] build on their own;
 //! they are what `cargo xtask cross-test --no-default-features` exercises. The
@@ -133,10 +133,12 @@ fn bench_spawn() {
 ///
 /// `iter` is the switch count, so the loop performs `iter / 2` main/peer round
 /// trips (each round trip is two switches). Returns
-/// `(system_counter_ticks, pmu_cycle_counts, samples)`; `samples` is the switch
-/// count the round reports, matching `Bencher::reset`'s count.
+/// `(system_counter_ticks, pmu_cycle_counts, samples, min_cycles, max_cycles)`;
+/// `samples` is the switch count the round reports, matching `Bencher::reset`'s
+/// count, while `min_cycles`/`max_cycles` are the fastest and slowest per-switch
+/// PMU cycle counts observed in the round.
 #[cfg(all(feature = "arceos", target_arch = "aarch64"))]
-fn bench_switch(iter: u64) -> (u64, u64, u64) {
+fn bench_switch(iter: u64) -> (u64, u64, u64, u64, u64) {
     // FIFO handshake state: the main thread owns the initial turn, and the
     // peer publishes readiness before it starts waiting.
     #[cfg(feature = "bench-fifo-policy")]
@@ -234,8 +236,10 @@ fn bench_switch(iter: u64) -> (u64, u64, u64) {
         bencher_switch.set_max_tsc(tsc / 2);
     }
 
+    let min_cycles = bencher_switch.min_cpu_cycle();
+    let max_cycles = bencher_switch.max_cpu_cycle();
     bencher_switch.reset(iter, sum_tsc, sum_cpu_cycle).show();
-    (sum_tsc, sum_cpu_cycle, iter)
+    (sum_tsc, sum_cpu_cycle, iter, min_cycles, max_cycles)
 }
 
 #[cfg(all(feature = "arceos", target_arch = "aarch64"))]
@@ -336,7 +340,8 @@ fn main() {
             round, SWITCHES_PER_ROUND
         );
 
-        let (round_tsc, round_cpu_cycle, round_samples) = bench_switch(SWITCHES_PER_ROUND);
+        let (round_tsc, round_cpu_cycle, round_samples, round_min_cycles, round_max_cycles) =
+            bench_switch(SWITCHES_PER_ROUND);
 
         let Some(round_avg_cycles) = convert::div_round(round_cpu_cycle, round_samples) else {
             println!("BENCHER_MEASUREMENT_FAILED reason=round-cycles round={round}");
@@ -354,6 +359,23 @@ fn main() {
             println!("BENCHER_MEASUREMENT_FAILED reason=zero-measurement round={round}");
             return;
         }
+
+        // Legacy performance-report marker. `scripts/test/ci_perf_report.py`
+        // keys the nightly `task-switch/avg_cycles/index-<n>` metric on this
+        // line, so the prefix and field names stay as they were when the
+        // benchmark ran as the Rust-Shyper guest. `samples_per_direction`
+        // counts the switches in one direction (`iter / 2`), matching the
+        // original guest's `min(main_to_child, child_to_main)` reporting, and
+        // `min_cycles`/`max_cycles` are the round's per-switch extremes.
+        println!(
+            "AXVISOR_TASK_SWITCH_GROUP_SUMMARY index={} samples_per_direction={} avg_cycles={} \
+             min_cycles={} max_cycles={}",
+            round,
+            round_samples / 2,
+            round_avg_cycles,
+            round_min_cycles,
+            round_max_cycles,
+        );
 
         avg_ns_sum += u128::from(round_avg_ns);
         avg_cycles_sum += u128::from(round_avg_cycles);

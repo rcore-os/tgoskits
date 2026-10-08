@@ -52,10 +52,13 @@ flowchart TD
 | --- | --- | --- |
 | `BENCHER_GPIO_FAILED reason=<token>` | `main()` 调用 `gpio::init()` 失败 | GPIO3_C6 无法映射或配置，基准停止且不测量 |
 | `BENCHER_MEASUREMENT_FAILED reason=<token>` | `main()` 的换算或逐轮零值检查 | 读数或换算无效，主任务提前返回 |
+| `AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=<n> samples_per_direction=<n> avg_cycles=<n> min_cycles=<n> max_cycles=<n>` | `main()` 每个有效轮次测量完成 | 供 nightly 性能报告采集的逐轮摘要 |
 | `TASK_SWITCH_SUMMARY ...` | `main()` 聚合完成 | 30 轮均得到非零均值 |
 | `Bencher end` | `main()` 末尾 | 基准正常结束 |
 
-表中前两项属于失败信号，后两项是成功证据；`fail_regex` 与两段 `success_regex` 共同保证测量恒为零或换算异常时用例无法通过。整次板卡执行仍受 `timeout = 7200` 约束，该超时只是基础设施上限，不是性能门槛。
+表中前三项是客户机的过程输出，后两项是成功证据；`fail_regex` 与两段 `success_regex` 共同保证测量恒为零或换算异常时用例无法通过。整次板卡执行仍受 `timeout = 3600` 约束，该超时只是基础设施上限，不是性能门槛。
+
+每个有效轮次结束后，客户机额外打印一行 `AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=<n> samples_per_direction=<n> avg_cycles=<n> min_cycles=<n> max_cycles=<n>`：`index` 是轮次编号，`samples_per_direction` 是单向切换次数（`SWITCHES_PER_ROUND / 2`），`avg_cycles` 是该轮每次切换的平均 PMU 周期数，`min_cycles`/`max_cycles` 是该轮每次切换的最小与最大周期数。这是原 Rust-Shyper 客户机沿用的性能报告标记格式，`scripts/test/ci_perf_report.py` 的 `task-switch/avg_cycles/index-<n>` 指标取自该行，因此前缀与字段名保持不变；该行只在有效（非零）轮次后打印，不改变由 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 两步承担的成功门禁强度。
 
 ## 3. 配置与运行入口
 
@@ -69,7 +72,7 @@ flowchart TD
 
 ### 3.2 标准命令
 
-本地与持续集成共用标准入口：只构建客户机时执行 `cargo xtask arceos build --config test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/guest-build.toml`，只构建宿主时执行 `cargo xtask axvisor build --config test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml`。需要实体板卡与已配置板卡服务时执行 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch`。
+本地与持续集成共用标准入口：只构建客户机时执行 `cargo xtask arceos build --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/guest-build.toml`，只构建宿主时执行 `cargo xtask axvisor build --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml`。需要实体板卡与已配置板卡服务时执行 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch`。
 
 纯算术换算（`convert::ticks_to_nanos()`、`convert::cpu_freq_hz()`、`convert::div_round()`）可以从对应单元测试确定性验证，不需要读取硬件寄存器：
 
@@ -77,8 +80,22 @@ flowchart TD
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 ```
 
-该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`。板卡运行入口只接受 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 同时出现，纯算术测试通过并不代表板卡测量通过。
+该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `test-task-switch-convert` 在持续集成中以同一命令运行它。板卡运行入口只接受 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 同时出现，纯算术测试通过并不代表板卡测量通过。
 
-## 4. 目录迁移衔接
+## 4. 目录布局与用例发现
 
-开放中的 PR2504 计划把性能测例统一迁入 `apps/benchmark/` 并扩展用例发现、选择与报告链路，但该目录尚未合入。本用例当前的目录布局、配置字段与成功/失败标记应作为迁移后的基线参照：迁移时按 PR2504 的新布局改写发现路径与板卡 suite 路由，并保持 `TASK_SWITCH_SUMMARY`/`Bencher end` 的判定强度，不把尚未合入的目录直接复制到本 PR。迁移完成前，本用例继续以现有 `test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/` 路径被发现与执行。
+性能测例已由已合入的 PR2504 统一到 `benchmarks/` 下，AxVisor 板卡用例发现逻辑在 `test-suit/axvisor/<group>` 之外同时搜索 `benchmarks/axvisor`。本用例因此位于：
+
+```text
+benchmarks/axvisor/board-orangepi-5-plus/task-switch/
+├── README.md
+├── board-orangepi-5-plus-task-switch.toml     # 板卡运行与成功/失败判定
+├── build-aarch64-unknown-none-softfloat.toml  # AxVisor 宿主构建
+├── guest-build.toml                           # 客户机构建
+├── guest-builds.toml                          # 板卡运行前先构建客户机
+└── task-switch.toml                           # AxVisor 客户机描述
+```
+
+`normal` 组除 `test-suit/axvisor/normal` 外还搜索 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 直接按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名 `orangepi-5-plus-task-switch` 选中本用例，无需额外的目录注册或用例路由。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
+
+与 QEMU `scheduler-latency-bench` 的分工见 1.1：两者测量同类切换开销，本用例提供实体 RK3588 板卡上的 PMU/CNTVCT 计数与 GPIO 引脚证据，QEMU 用例提供宿主时钟下的快速回归，二者互补而不互为替代。

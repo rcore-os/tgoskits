@@ -74,6 +74,23 @@ impl Bencher {
         }
     }
 
+    /// Smallest per-switch CPU cycle count passed to [`Bencher::set_a_cpu_cycle`].
+    ///
+    /// `bench_switch` stores `cpu_cycle / 2` for every round trip, so this is
+    /// the fastest switch seen so far. It stays `0` until the first call records
+    /// a value.
+    pub fn min_cpu_cycle(&self) -> u64 {
+        self.min_cpu_cycle
+    }
+
+    /// Largest per-switch CPU cycle count passed to [`Bencher::set_a_cpu_cycle`].
+    ///
+    /// This is the slowest switch seen so far, in the same per-switch unit as
+    /// [`Bencher::min_cpu_cycle`].
+    pub fn max_cpu_cycle(&self) -> u64 {
+        self.max_cpu_cycle
+    }
+
     pub fn bench_many<T>(&mut self, f: impl Fn() -> T, warmup: usize, run: usize) -> &mut Self {
         for _ in 0..warmup {
             let _ = f();

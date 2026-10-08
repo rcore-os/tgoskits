@@ -465,18 +465,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-task-switch-bench"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-memory-addr",
- "ax-mm",
- "ax-runtime",
- "ax-std",
- "rockchip-soc",
-]
-
-[[package]]
 name = "arceos-test-acpica-interpreter"
 version = "0.1.0"
 dependencies = [
