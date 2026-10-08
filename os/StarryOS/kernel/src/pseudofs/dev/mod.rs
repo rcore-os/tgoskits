@@ -1,6 +1,8 @@
 //! Special devices
 
 mod axivc;
+#[cfg(feature = "sg2002-audio")]
+pub(crate) mod audio;
 pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
 pub(crate) mod card1;
@@ -705,6 +707,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
     }
 
+    #[cfg(feature = "sg2002-audio")]
+    if let Some(snd) = audio::devices(fs.clone()) {
+        root.add("snd", SimpleDir::new_maker(fs.clone(), Arc::new(snd)));
+    }
     let mut dri_dir = DirMapping::new();
     if ax_gpu::has_gpu() {
         let dri_card0 = card0::Card0::new();

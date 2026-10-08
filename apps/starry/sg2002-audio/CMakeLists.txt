@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(sg2002_audio_check C)
+set(CMAKE_C_STANDARD 11)
+add_executable(sg2002-audio-check audio-check.c)
+target_compile_options(sg2002-audio-check PRIVATE -Wall -Wextra -Werror)
+install(TARGETS sg2002-audio-check RUNTIME DESTINATION bin)
