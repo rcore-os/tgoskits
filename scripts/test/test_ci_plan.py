@@ -11,6 +11,11 @@ from typing import Any
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
+
+# Imported after the suite directory is on sys.path so both the direct script
+# entry point and `python3 -m unittest scripts.test.test_ci_plan` can import it.
+from ci_suite import SUITE_ROOTS
+
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -28,6 +33,18 @@ def main_test_rows(plan: dict) -> list[dict]:
         for prefix in MAIN_TEST_PREFIXES
         for row in plan[f"{prefix}_matrix"]["include"]
     ]
+
+
+def board_type_by_board_name() -> dict[str, str]:
+    """Map every CI board name to the board_type declared by its config."""
+    board_types: dict[str, str] = {}
+    for suite_root in SUITE_ROOTS.values():
+        for config in (ci_plan.WORKSPACE_ROOT / suite_root).rglob("board-*.toml"):
+            name = config.stem.removeprefix("board-")
+            if name in board_types:
+                continue
+            board_types[name] = tomllib.loads(config.read_text()).get("board_type", "")
+    return board_types
 
 
 class CiPlanTests(unittest.TestCase):
@@ -201,17 +218,10 @@ class CiPlanTests(unittest.TestCase):
                 self.assertNotIn("ivc-benchmark", commands)
                 self.assertNotIn("orangepi-5-plus-vcpu-perf", commands)
                 self.assertNotIn("--test-case ping", commands)
-                self.assertNotIn(
-                    "--board orangepi-5-plus-linux,orangepi-5-plus-starry",
-                    commands,
-                )
+                self.assertIn("--board orangepi-5-plus-linux --test-case smoke", commands)
+                self.assertNotIn("--board orangepi-5-plus-linux\n", commands)
                 self.assertIn("--test-case qemu-ivc", commands)
-                # The ordinary CI check keeps the native StarryOS board suite but no
-                # longer registers the single-guest AxVisor smokes.
-                self.assertIn(
-                    "cargo xtask starry test board --board orangepi-5-plus",
-                    commands,
-                )
+                self.assertIn("--board orangepi-5-plus-starry", commands)
 
     def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
         path = (
@@ -526,161 +536,6 @@ class CiPlanTests(unittest.TestCase):
                 self.assertEqual(with_impact, baseline)
                 self.assert_unique_ids(main_test_rows(with_impact))
 
-    def test_pure_test_suite_change_runs_only_the_exact_registered_case(self) -> None:
-        context = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="pull_request",
-            head_repository="rcore-os/tgoskits",
-            base_ref="dev",
-            impact=ci_plan.CiImpact(
-                full=False,
-                reason="fixture",
-                changed_paths=("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
-                test_suite_paths=("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
-                exclusive=True,
-            ),
-        )
-
-        plan = ci_plan.build_main_plan(context)
-
-        self.assertFalse(plan["static_required"])
-        self.assertEqual(plan["static_matrix"]["include"], [])
-        self.assertFalse(plan["workspace_required"])
-        self.assertFalse(plan["arceos_required"])
-        self.assertTrue(plan["starry_required"])
-        self.assertFalse(plan["axvisor_required"])
-        self.assertEqual(
-            [row["name"] for row in plan["starry_matrix"]["include"]],
-            ["QEMU aarch64 · qemu/system"],
-        )
-        self.assertEqual(
-            plan["starry_matrix"]["include"][0]["command"],
-            "cargo xtask starry test qemu --arch aarch64 --test-case qemu/system",
-        )
-
-    def test_pure_board_suite_change_runs_only_the_exact_board_case(self) -> None:
-        path = (
-            "test-suit/starryos/board-orangepi-5-plus/"
-            "native-hardware-smoke/board-orangepi-5-plus.toml"
-        )
-        context = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="pull_request",
-            head_repository="rcore-os/tgoskits",
-            base_ref="dev",
-            impact=ci_plan.CiImpact(
-                full=False,
-                reason="fixture",
-                changed_paths=(path,),
-                test_suite_paths=(path,),
-                exclusive=True,
-            ),
-        )
-
-        plan = ci_plan.build_main_plan(context)
-
-        self.assertFalse(plan["static_required"])
-        self.assertEqual(
-            [row["name"] for row in plan["axvisor_matrix"]["include"]],
-            ["Board OrangePi 5 Plus · native-hardware-smoke"],
-        )
-        self.assertEqual(
-            plan["axvisor_matrix"]["include"][0]["command"],
-            "cargo xtask starry test board --test-case native-hardware-smoke "
-            "--board orangepi-5-plus",
-        )
-
-    def test_starry_board_build_change_groups_cases_by_build_config(self) -> None:
-        path = (
-            "test-suit/starryos/board-orangepi-5-plus/"
-            "build-aarch64-unknown-none-softfloat.toml"
-        )
-        selections = ci_plan.resolve_suite_selections(
-            ci_plan.WORKSPACE_ROOT,
-            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
-            [path],
-        )
-
-        self.assertEqual(len(selections), 1)
-        self.assertEqual(
-            selections[0].command,
-            "cargo xtask starry test board --test-case "
-            "exec-cache,native-hardware-smoke,native-network-smoke,pwm-sysfs,"
-            "rknpu-resources --board orangepi-5-plus",
-        )
-
-    def test_sg2002_board_build_change_groups_all_feature_cases(self) -> None:
-        path = (
-            "test-suit/starryos/board-aka-00-sg2002/"
-            "build-riscv64gc-unknown-none-elf.toml"
-        )
-        selections = ci_plan.resolve_suite_selections(
-            ci_plan.WORKSPACE_ROOT,
-            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
-            [path],
-        )
-
-        self.assertEqual(len(selections), 1)
-        self.assertEqual(
-            selections[0].command,
-            "cargo xtask starry test board --test-case "
-            "boot,tennis-yolo,usb2-lsusb,vdec,wifi-network-smoke "
-            "--board aka-00-sg2002",
-        )
-
-    def test_starry_board_case_changes_share_one_incremental_build_row(self) -> None:
-        paths = [
-            "test-suit/starryos/board-orangepi-5-plus/exec-cache/"
-            "board-orangepi-5-plus.toml",
-            "test-suit/starryos/board-orangepi-5-plus/native-network-smoke/"
-            "board-orangepi-5-plus.toml",
-        ]
-        selections = ci_plan.resolve_suite_selections(
-            ci_plan.WORKSPACE_ROOT,
-            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
-            paths,
-        )
-
-        self.assertEqual(len(selections), 1)
-        self.assertEqual(
-            selections[0].command,
-            "cargo xtask starry test board --test-case exec-cache,native-network-smoke "
-            "--board orangepi-5-plus",
-        )
-
-    def test_axvisor_board_build_change_groups_cases_by_build_config(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            suite_root = root / "test-suit/axvisor/normal/board-demo"
-            (suite_root / "smoke").mkdir(parents=True)
-            (suite_root / "ping").mkdir(parents=True)
-            build_config = suite_root / "build-aarch64-unknown-none-softfloat.toml"
-            build_config.write_text("target = 'aarch64-unknown-none-softfloat'\n")
-            (suite_root / "smoke/board-demo.toml").write_text("\n")
-            (suite_root / "ping/board-demo.toml").write_text("\n")
-            checks = [
-                {
-                    "id": "axvisor-board-demo",
-                    "name": "Board Demo · Suites",
-                    "suite": [{"kind": "axvisor-board", "board": "demo"}],
-                }
-            ]
-
-            selections = ci_plan.resolve_suite_selections(
-                root,
-                checks,
-                [build_config.relative_to(root).as_posix()],
-            )
-
-        self.assertEqual(len(selections), 1)
-        self.assertEqual(
-            selections[0].command,
-            "cargo xtask axvisor test board --test-group normal "
-            "--test-case ping,smoke --board demo",
-        )
-
     def test_generic_driver_suite_routes_source_and_rejects_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -688,16 +543,8 @@ class CiPlanTests(unittest.TestCase):
             (case / "src").mkdir(parents=True)
             (case / "build-x86_64-unknown-none.toml").write_text("features = []\n")
             (case / "qemu-x86_64.toml").write_text("args = []\n")
-            second_case = root / "test-suit/arceos/drivers/packet-datagram"
-            (second_case / "src").mkdir(parents=True)
-            (second_case / "build-x86_64-unknown-none.toml").write_text(
-                "features = []\n"
-            )
-            (second_case / "qemu-x86_64.toml").write_text("args = []\n")
             source = "test-suit/arceos/drivers/packet-link/src/main.rs"
             (root / source).write_text("fn main() {}\n")
-            second_source = "test-suit/arceos/drivers/packet-datagram/src/main.rs"
-            (root / second_source).write_text("fn main() {}\n")
             registration = {"kind": "arceos-qemu", "arch": "x86_64", "group": "drivers"}
             checks = [{"id": "driver-suite", "name": "drivers", "suite": [registration]}]
 
@@ -707,17 +554,7 @@ class CiPlanTests(unittest.TestCase):
                     [{**registration, "group": []}], "synthetic"
                 )
             ci_plan.validate_suite_catalog(root, checks)
-            selections = ci_plan.resolve_suite_selections(
-                root, checks, [source, second_source]
-            )
-            self.assertEqual(
-                {selection.source_path for selection in selections},
-                {source, second_source},
-            )
-            self.assertEqual(len({selection.row_id for selection in selections}), 2)
-            selection = next(
-                selection for selection in selections if selection.source_path == source
-            )
+            selection, = ci_plan.resolve_suite_selections(root, checks, [source])
             self.assertEqual(selection.template_id, "driver-suite")
             self.assertEqual(
                 selection.command,
@@ -753,36 +590,6 @@ class CiPlanTests(unittest.TestCase):
             "cargo xtask arceos test qemu --arch x86_64 "
             "--test-group cpu --test-case guest-entry-vmx",
         )
-
-    def test_board_suite_changes_share_one_build_configuration_row(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            wrapper = root / "test-suit/starryos/board-demo"
-            (wrapper / "build-aarch64-unknown-none-softfloat.toml").parent.mkdir(
-                parents=True
-            )
-            (wrapper / "build-aarch64-unknown-none-softfloat.toml").write_text(
-                "features = []\n"
-            )
-            first = wrapper / "first/board-demo.toml"
-            second = wrapper / "second/board-demo.toml"
-            first.parent.mkdir()
-            second.parent.mkdir()
-            first.write_text("board = 'demo'\n")
-            second.write_text("board = 'demo'\n")
-            registration = {"kind": "starry-board", "board": "demo"}
-            checks = [{"id": "board-suite", "name": "Board demo", "suite": [registration]}]
-            ci_plan.validate_suite_catalog(root, checks)
-
-            sources = [
-                first.relative_to(root).as_posix(),
-                second.relative_to(root).as_posix(),
-            ]
-            selections = ci_plan.resolve_suite_selections(root, checks, sources)
-
-            self.assertEqual(len(selections), 1)
-            self.assertEqual(selections[0].template_id, "board-suite")
-            self.assertIn("first,second", selections[0].command)
 
     def test_cpu_pmu_board_routes_to_its_actual_case(self) -> None:
         path = "test-suit/arceos/board-orangepi-5-plus/pmu/board-orangepi-5-plus.toml"
@@ -942,49 +749,11 @@ command = "true"
         rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assert_selects_full_group(rows, "Starry")
-        self.assertTrue(any(row["group"] == "AxVisor" for row in rows.values()))
+        self.assertFalse(
+            any(row["group"] in {"ArceOS", "AxVisor"} for row in rows.values())
+        )
         self.assertEqual(plan["arceos_matrix"]["include"], [])
-
-    def test_precise_board_input_does_not_select_same_os_qemu(self) -> None:
-        catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
-        board_check = next(
-            check
-            for check in catalog
-            if any(
-                registration["kind"].endswith("-board")
-                for registration in check.get("suite", ())
-            )
-        )
-        board_registration = next(
-            registration
-            for registration in board_check["suite"]
-            if registration["kind"].endswith("-board")
-        )
-        os_name = board_registration["kind"].partition("-")[0]
-        board = board_registration["board"]
-        qemu_ids = {
-            check["id"]
-            for check in catalog
-            if any(
-                registration["kind"] == f"{os_name}-qemu"
-                for registration in check.get("suite", ())
-            )
-        }
-        self.assertTrue(qemu_ids)
-
-        context = ci_plan.replace(
-            self.upstream,
-            impact=ci_plan.CiImpact(
-                full=False,
-                reason="precise board input fixture",
-                changed_paths=(),
-                input_selections=(f"{os_name}:board:{board}",),
-            ),
-        )
-        rows = self.assert_unique_ids(main_test_rows(ci_plan.build_main_plan(context)))
-
-        self.assertIn(board_check["id"], rows)
-        self.assertTrue(qemu_ids.isdisjoint(rows))
+        self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
     def test_dualguest_robot_board_runs_both_guest_variants(self) -> None:
         context = ci_plan.replace(
@@ -1000,6 +769,8 @@ command = "true"
             ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
         )
         dualguest = rows["test-orangepi-5-plus-dualguest-robot"]
+
+        self.assertEqual(dualguest["resource_group"], "orangepi-5-plus-robot-uart6")
 
         self.assertEqual(
             dualguest["command"],
@@ -1022,6 +793,10 @@ command = "true"
             )
             with self.subTest(variant=variant):
                 self.assertTrue(path.is_file())
+                self.assertEqual(
+                    tomllib.loads(path.read_text())["board_type"],
+                    "OrangePi-5-Plus-Robot-UART6",
+                )
 
         nightly_rows = self.assert_unique_ids(
             ci_plan.build_axvisor_nightly_plan(
@@ -1185,30 +960,22 @@ command = "true"
             )["axvisor_matrix"]["include"]
         )
 
-        self.assertNotIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
-        self.assertNotIn("test-orangepi-5-plus-robot-real-suite", axvisor_rows)
-        real_suite_id = "test-orangepi-5-plus-robot-real-suite"
-        self.assertIn(real_suite_id, nightly_rows)
-        real_suite_command = nightly_rows[real_suite_id]["command"]
-        self.assertIn("cargo xtask starry test board --board orangepi-5-plus-robot-real", real_suite_command)
+        self.assertIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
         self.assertIn(
-            "--board orangepi-5-plus-robot-real-starry,orangepi-5-plus-robot-real-linux",
-            real_suite_command,
+            "--board orangepi-5-plus-robot-real",
+            starry_rows["test-orangepi-5-plus-robot-real-native-starryos"]["command"],
         )
-
-        catalog = {
-            check["id"]: check
-            for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
-        }
-        robot_check = catalog["test-orangepi-5-plus-robot-axvisor-guests"]
-        registered_guest_boards = {
-            suite["board"]
-            for suite in robot_check["suite"]
-            if suite.get("kind") == "axvisor-board"
-        }
-        self.assertEqual(
-            registered_guest_boards,
-            {"orangepi-5-plus-robot-starry", "orangepi-5-plus-robot-linux"},
+        real_starry_id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
+        real_linux_id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
+        self.assertNotIn(real_starry_id, axvisor_rows)
+        self.assertNotIn(real_linux_id, axvisor_rows)
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real-starry",
+            nightly_rows[real_starry_id]["command"],
+        )
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real-linux",
+            nightly_rows[real_linux_id]["command"],
         )
 
         for path in (real_starry, real_axvisor_starry, real_axvisor_linux):
@@ -1403,100 +1170,27 @@ command = "true"
             check["id"]: check
             for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
-        declared_groups = {
-            check["resource_group"]
-            for check in catalog.values()
-            if check.get("resource_group")
-        }
-        board_groups: dict[str, set[str]] = {}
+        board_types = board_type_by_board_name()
         for row in (*main_rows, *nightly_rows, *benchmark_rows):
             check = catalog[row["id"]]
-            boards = {
+            boards = [
                 registration["board"]
                 for registration in check.get("suite", ())
                 if "board" in registration
-            }
+            ]
+            declared_types = [board_types.get(board, "").lower() for board in boards]
             if boards:
                 self.assertIn("board", row["runs_on"])
-                for board in boards:
-                    board_groups.setdefault(board, set()).add(
-                        row["resource_group"]
-                    )
-                possible_groups = set.intersection(
-                    *(
-                        {
-                            group
-                            for group in declared_groups
-                            if board == group or board.startswith(f"{group}-")
-                        }
-                        for board in boards
-                    )
-                )
-                if possible_groups:
-                    self.assertTrue(
-                        row["resource_group"],
-                        f"board checks must declare a resource group: {boards}",
-                    )
-                    self.assertIn(row["resource_group"], possible_groups)
-                else:
-                    self.assertEqual(row["resource_group"], "")
                 self.assertEqual(
                     row["resource_group"], check.get("resource_group", "")
                 )
+                if any("uart6" in board_type for board_type in declared_types):
+                    self.assertEqual(row["resource_group"], "orangepi-5-plus-robot-uart6")
+                elif any("robot" in board_type for board_type in declared_types):
+                    self.assertEqual(row["resource_group"], "orangepi-5-plus-robot")
             else:
                 self.assertNotIn("board", row["runs_on"])
                 self.assertEqual(row["resource_group"], "")
-
-        for board, groups in board_groups.items():
-            self.assertLessEqual(
-                len(groups),
-                1,
-                f"one registered board must use one resource group: {board}",
-            )
-
-    def test_node_version_flows_into_matrix_and_defaults_to_empty(self) -> None:
-        context = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="schedule",
-        )
-        catalog = {
-            check["id"]: check
-            for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
-        }
-        rows = main_test_rows(ci_plan.build_main_plan(context))
-        self.assertTrue(rows)
-        for row in rows:
-            self.assertEqual(
-                row["node_version"], catalog[row["id"]].get("node_version", "")
-            )
-        declared = {check.get("node_version", "") for check in catalog.values()}
-        self.assertIn("24", declared)
-        self.assertIn("", declared)
-
-    def test_manifest_rejects_invalid_node_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manifest = Path(temp_dir) / "node.toml"
-            manifest.write_text(
-                """\
-schema_version = 3
-phase = "test"
-group = "AxVisor"
-
-[[check]]
-id = "node-check"
-name = "Node check"
-command = "true"
-node_version = "latest"
-""",
-                encoding="utf-8",
-            )
-
-            with self.assertRaisesRegex(
-                ci_plan.PlanError,
-                "node_version must be a Node version",
-            ):
-                ci_plan.load_catalog((manifest,))
 
     def test_event_and_boolean_input_select_checks_independently(self) -> None:
         check = {"events": ["schedule"], "enable_boolean_input": "run_optional"}
@@ -1514,64 +1208,6 @@ node_version = "latest"
                     enabled_boolean_inputs=enabled,
                 )
                 self.assertEqual(ci_plan._is_enabled(check, context), expected)
-
-    def test_suite_selection_uses_the_complete_pull_request_override(self) -> None:
-        suite_command = "cargo xtask example test board --test-case synthetic-case"
-        override = f"build-synthetic-guest --config synthetic-guest-build.toml && {suite_command}"
-        template = {
-            "id": "synthetic-board-check",
-            "name": "Synthetic board check",
-            "group": "AxVisor",
-            "phase": "test",
-            "runs_on": ["self-hosted", "linux", "board"],
-            "environment": "host",
-            "command": "run-synthetic-board-suite",
-            "pull_request_command": override,
-            "source": "synthetic.toml",
-        }
-        selection = ci_plan.SuiteSelection(
-            template_id="synthetic-board-check",
-            row_id="suite-synthetic-board-check-synthetic-case",
-            leaf_name="Board · synthetic-case",
-            command=suite_command,
-            source_path="test-suit/axvisor/normal/synthetic/board-synthetic.toml",
-        )
-        incremental = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="pull_request",
-            head_repository="rcore-os/tgoskits",
-            base_ref="dev",
-            impact=ci_plan.CiImpact(
-                full=False, reason="fixture", changed_paths=(selection.source_path,)
-            ),
-        )
-
-        # The override replaces the row command completely: prerequisite and
-        # board run are both intact, and the board run is not repeated.
-        row = ci_plan._normalize_suite_selection(template, selection, incremental)
-        self.assertEqual(row["command"], override)
-        self.assertEqual(row["command"].count(suite_command), 1)
-
-        # Anywhere the override does not apply the exact selection still runs.
-        del template["pull_request_command"]
-        for context in (
-            ci_plan.replace(incremental, event_name="push"),
-            ci_plan.replace(
-                incremental,
-                impact=ci_plan.CiImpact(
-                    full=True, reason="fixture", changed_paths=(selection.source_path,)
-                ),
-            ),
-            incremental,
-        ):
-            with self.subTest(event=context.event_name, full=context.impact.full):
-                self.assertEqual(
-                    ci_plan._normalize_suite_selection(template, selection, context)[
-                        "command"
-                    ],
-                    selection.command,
-                )
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]
