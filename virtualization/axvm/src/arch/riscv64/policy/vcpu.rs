@@ -54,13 +54,43 @@ fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
 }
 
-/// A virtual CPU within a guest
-pub struct RiscvVcpu<H: RiscvHostOps> {
+/// A virtual CPU within a guest.
+///
+/// The value is confined to the architecture adapter; it is not part of any
+/// crate-public API. Its block-local hardware binding is installed and retired
+/// only through the crate-private [`Self::bind`]/[`Self::unbind`] pair.
+pub(crate) struct RiscvVcpu<H: RiscvHostOps> {
     regs: Vcpu,
     sbi: RISCVVCpuSbi,
     binding: Option<GuestBinding>,
+    hart_id: usize,
     _host: PhantomData<fn() -> H>,
 }
+
+// `GuestBinding` is intentionally `!Send`: it owns the saved host VS/HS CSR
+// banks of one hart and must be released on that same hart. That capability is
+// the only non-`Send` payload of this otherwise plain value.
+//
+// SAFETY: the type is crate-private and its binding API is crate-private, so no
+// downstream crate can name it. Within this crate a `GuestBinding` is installed
+// only by [`RiscvVcpu::bind`], whose sole caller is
+// `AxVCpu::with_backend_bound_current_cpu` through `BackendBinding::bind`
+// (`virtualization/axvm/src/vcpu.rs`). That scope holds the vCPU exclusively by
+// `&mut`, pins the host CPU, keeps the binding loaded until
+// `BackendBinding::finish`/`Drop` calls [`RiscvVcpu::unbind`] on the same hart,
+// and aborts the process if that retirement fails. The unique `&mut` borrow
+// means the value cannot be moved across the load/run/unload window, and
+// [`RiscvVcpu::bind`] rejects a second load, so the field carries a binding only
+// while the value is pinned. Moving the value between execution contexts
+// (construction, `Default`, and after `unbind`) always happens with an empty
+// binding. Every other field (`regs`, `sbi`, `hart_id`, and the `fn() -> H`
+// phantom) is `Send` and owns no hart-local hardware capability. Making the
+// whole crate trusted is why this `unsafe impl` is sound even though safe crate
+// code could, in principle, invoke `VmArchVcpuOps::bind` through the
+// `AxvmRiscvVcpu` wrapper; that is a private capability the engine never
+// exposes, and the review in the migration notes records this as the single
+// residual obligation on the engine.
+unsafe impl<H: RiscvHostOps> Send for RiscvVcpu<H> {}
 
 #[derive(RustSBI)]
 struct RISCVVCpuSbi {
@@ -102,6 +132,7 @@ impl<H: RiscvHostOps> Default for RiscvVcpu<H> {
             regs: Vcpu::default(),
             sbi: RISCVVCpuSbi::default(),
             binding: None,
+            hart_id: 0,
             _host: PhantomData,
         }
     }
@@ -125,6 +156,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             regs,
             sbi: RISCVVCpuSbi::default(),
             binding: None,
+            hart_id: config.hart_id,
             _host: PhantomData,
         })
     }
@@ -138,6 +170,22 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     /// Sets the guest entry point.
     pub fn set_entry(&mut self, entry: RiscvGuestPhysAddr) -> RiscvVcpuResult {
         self.regs.guest_regs.sepc = entry.as_usize();
+        Ok(())
+    }
+
+    /// Initializes a hart started through the SBI HSM extension.
+    ///
+    /// The caller owns the target backend. `a0` carries the guest-visible hart
+    /// ID and `a1` carries the opaque guest context, matching the SBI calling
+    /// convention used by HSM.
+    pub fn initialize_cpu_on(
+        &mut self,
+        entry: RiscvGuestPhysAddr,
+        context_id: usize,
+    ) -> RiscvVcpuResult {
+        self.set_entry(entry)?;
+        self.set_gpr_from_gpr_index(GprIndex::A0, self.hart_id);
+        self.set_gpr_from_gpr_index(GprIndex::A1, context_id);
         Ok(())
     }
 
@@ -166,7 +214,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Runs only the machine transaction; SBI and device interpretation follow later.
-    pub fn run_machine(&mut self) -> RiscvVcpuResult<ax_cpu::virtualization::Exit> {
+    pub(crate) fn run_machine(&mut self) -> RiscvVcpuResult<ax_cpu::virtualization::Exit> {
         if self.binding.is_none() {
             return Err(RiscvVcpuError::BadState);
         }
@@ -182,7 +230,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Interprets the captured exit outside the final machine IRQ window.
-    pub fn process_exit(
+    pub(crate) fn process_exit(
         &mut self,
         exit: ax_cpu::virtualization::Exit,
     ) -> RiscvVcpuResult<RiscvVmExit> {
@@ -194,7 +242,12 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Binds the vCPU to the current physical CPU.
-    pub fn bind(&mut self) -> RiscvVcpuResult {
+    ///
+    /// Crate-private on purpose: the only caller is the CPU-pinned
+    /// `BackendBinding` scope, which owns the value by `&mut` and retires the
+    /// binding with [`Self::unbind`] before releasing the host CPU. No other
+    /// module may install a live binding and then move the value.
+    pub(crate) fn bind(&mut self) -> RiscvVcpuResult {
         if self.binding.is_some() {
             return Err(RiscvVcpuError::BadState);
         }
@@ -206,7 +259,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Saves the guest bank and restores the original host bank.
-    pub fn unbind(&mut self) -> RiscvVcpuResult {
+    pub(crate) fn unbind(&mut self) -> RiscvVcpuResult {
         let binding = self.binding.take().ok_or(RiscvVcpuError::BadState)?;
         self.sbi.pmu.backend_unbind();
         // SAFETY: the caller retains the same current-CPU scope and excludes
@@ -241,17 +294,19 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.set_virtual_interrupt_pending(vector, true)
     }
 
-    /// Sets the controller-derived VSEIP line level for this vCPU.
+    /// Synchronizes controller-derived VSEIP state on the loaded owner.
     ///
-    /// The virtual PLIC remains the owner of pending and delivery state. This
-    /// method always updates the vCPU-owned saved CSR image and reflects the
-    /// line into hardware only while the vCPU is loaded on the current CPU.
-    pub fn set_vseip_level(&mut self, asserted: bool) {
+    /// The virtual PLIC remains the owner of pending and delivery state. The
+    /// caller must be the target vCPU owner and must have loaded the backend on
+    /// the prebound host hart; remote register writes are not permitted.
+    pub fn sync_vseip_level(&mut self, asserted: bool) -> RiscvVcpuResult {
+        // Reject an unbound owner before touching the register image, so the
+        // error path leaves no partial controller-derived state behind.
+        let binding = self.binding.as_mut().ok_or(RiscvVcpuError::BadState)?;
         self.regs
             .set_interrupt_pending(GuestInterrupt::External, asserted);
-        if let Some(binding) = &mut self.binding {
-            binding.sync_interrupt(&self.regs, GuestInterrupt::External);
-        }
+        binding.sync_interrupt(&self.regs, GuestInterrupt::External);
+        Ok(())
     }
 
     /// Sets the guest return value register.
@@ -286,21 +341,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             binding.sync_interrupt(&self.regs, interrupt);
         }
         Ok(())
-    }
-}
-
-impl<H: RiscvHostOps> RiscvVcpu<H> {
-    /// Attempts to decode the current guest-page-fault trap as an MMIO access.
-    pub fn decode_mmio_fault(
-        &mut self,
-        _fault_addr: RiscvGuestPhysAddr,
-        access_flags: RiscvAccessFlags,
-    ) -> Option<RiscvVmExit> {
-        let writing = access_flags.contains(RiscvAccessFlags::WRITE);
-        match self.handle_guest_page_fault(writing).ok()? {
-            exit @ (RiscvVmExit::MmioRead { .. } | RiscvVmExit::MmioWrite { .. }) => Some(exit),
-            _ => None,
-        }
     }
 }
 
@@ -1007,9 +1047,10 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             }
         };
 
-        // WARN: This is a temporary place to add the instruction length to the guest's sepc.
-        self.advance_pc(instr_len);
-
+        // The instruction pointer is not advanced here. The captured length is
+        // retired by the vCPU owner only after the task-layer device access
+        // succeeds, so a faulted or unconsumed access leaves the retry state
+        // intact.
         Ok(match op {
             Read {
                 i,
@@ -1023,6 +1064,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                     reg: i.rd() as _,
                     reg_width: RiscvAccessWidth::Qword,
                     signed_ext,
+                    advance: instr_len,
                 }
             }
             Write { s, width } => {
@@ -1035,6 +1077,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                     addr: fault_addr,
                     width,
                     data: value as _,
+                    advance: instr_len,
                 }
             }
         })

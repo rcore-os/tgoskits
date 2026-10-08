@@ -23,6 +23,9 @@ extern crate log;
 
 mod consts;
 pub mod host;
+#[cfg(test)]
+mod host_lock_provider;
+#[cfg(test)]
 mod lock;
 mod pit;
 mod regs;
@@ -54,7 +57,7 @@ pub struct EmulatedLocalApic<H: host::X86VlapicHostOps> {
 }
 
 pub use self::{
-    host::X86VlapicHostOps,
+    host::{X86VlapicHostOps, X86VlapicRuntimeOps},
     pit::EmulatedPit,
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
@@ -67,9 +70,9 @@ pub use self::{
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
     /// Create a new `EmulatedLocalApic`.
-    pub fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+    pub fn new(runtime: H::Runtime, vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
         EmulatedLocalApic {
-            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(vm_id, vcpu_id)),
+            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(runtime, vm_id, vcpu_id)),
             _host: PhantomData,
         }
     }

@@ -1,9 +1,11 @@
 //! AxVM-owned adapter from VirtIO transport state to a generic PCI endpoint.
 
 use core::sync::atomic::AtomicBool;
-use std::{sync::Arc, vec::Vec};
+use std::{
+    sync::{Arc, Mutex},
+    vec::Vec,
+};
 
-use ax_sync::SpinLock;
 use axdevice::{PciCommandRevision, PciConfigEffectId};
 use axdevice_base::{DeviceResult, DmaGrant, IrqLine, Resource};
 use axvirtio_common::pci::{VIRTIO_PCI_CONFIG_EFFECT_ID, VirtioDeviceCore, VirtioPciTransport};
@@ -23,10 +25,10 @@ pub struct VirtioPciFunction<D: VirtioDeviceCore> {
     pub(super) dma_grant: DmaGrant,
     pub(super) irq_line: IrqLine,
     pub(super) resources: Vec<Resource>,
-    pub(super) command_revision: SpinLock<Option<PciCommandRevision>>,
+    pub(super) command_revision: Mutex<Option<PciCommandRevision>>,
     pub(super) queue_pending: Arc<AtomicBool>,
     #[cfg(test)]
-    pub(super) command_revision_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    pub(super) command_revision_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
@@ -59,10 +61,10 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
             dma_grant,
             irq_line,
             resources: Vec::new(),
-            command_revision: SpinLock::new(None),
+            command_revision: Mutex::new(None),
             queue_pending,
             #[cfg(test)]
-            command_revision_hook: SpinLock::new(None),
+            command_revision_hook: Mutex::new(None),
         })
     }
 
@@ -76,12 +78,12 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        *self.command_revision_hook.lock() = Some(Arc::new(hook));
+        *self.command_revision_hook.lock_unpoisoned() = Some(Arc::new(hook));
     }
 
     #[cfg(test)]
     pub(super) fn notify_command_revision_hook(&self) {
-        let hook = self.command_revision_hook.lock().clone();
+        let hook = self.command_revision_hook.lock_unpoisoned().clone();
         if let Some(hook) = hook {
             hook();
         }

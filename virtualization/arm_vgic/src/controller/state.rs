@@ -227,14 +227,21 @@ impl ControllerState {
         Ok(Some(redistributor.wake()))
     }
 
+    /// Applies one decoded LPI delivery effect.
+    ///
+    /// Returns the detached target when that vCPU has no Redistributor, so a
+    /// raw-guard caller reports `detached_lpi_target` after releasing the lock
+    /// instead of formatting an error message while canonical state is held.
     pub(super) fn set_lpi_pending(
         &mut self,
         target: GicVcpuId,
         lpi: LpiId,
         pending: bool,
-    ) -> VgicResult<Option<Arc<dyn GicV3VcpuWake>>> {
+    ) -> Result<Option<Arc<dyn GicV3VcpuWake>>, GicVcpuId> {
         let loaded = self.vcpu_interfaces.get(&target) == Some(&super::CpuInterfacePhase::Loaded);
-        let redistributor = self.redistributor_mut(target, "deliver LPI")?;
+        let Some(redistributor) = self.redistributors.get_mut(&target) else {
+            return Err(target);
+        };
         let canceled = !pending && redistributor.withdraw_pending_delivery(IntId::Lpi(lpi), loaded);
         let interrupt = redistributor.lpi_mut(lpi);
         interrupt.set_pending(pending);
@@ -244,7 +251,12 @@ impl ControllerState {
         if !pending {
             return Ok(None);
         }
-        self.queue_local_if_deliverable(target, IntId::Lpi(lpi))
+        // An LPI only fails the queue step for a detached Redistributor, which
+        // this guard has just proven is still attached.
+        Ok(self
+            .queue_local_if_deliverable(target, IntId::Lpi(lpi))
+            .ok()
+            .flatten())
     }
 
     pub(super) fn interrupt_state(
@@ -659,4 +671,15 @@ fn require_vcpu(
         operation,
         detail: "a vCPU must be specified".into(),
     })
+}
+
+/// Builds the detached-target error for one decoded LPI delivery.
+///
+/// Native delivery paths call this only after the raw state guard is released,
+/// so no error message is allocated while the canonical state is locked.
+pub(super) fn detached_lpi_target(target: GicVcpuId) -> VgicError {
+    VgicError::ResourceNotFound {
+        resource: alloc::format!("Redistributor for vCPU {}", target.raw()),
+        operation: "deliver LPI",
+    }
 }

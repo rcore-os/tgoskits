@@ -115,6 +115,7 @@ impl ExecutionContext {
 
     /// Copies one RAM byte through the entry's pre-bound immutable decode view.
     /// This context cannot be cloned or escape the pinned publication scope.
+    #[cfg(any(test, not(target_arch = "aarch64")))]
     pub(crate) fn read_guest_byte(&self, address: GuestPhysAddr) -> Option<u8> {
         let memory = self.signals().decode_memory.load(Ordering::Acquire);
         // SAFETY: this execution is borrowed from the current CPU's scoped
@@ -185,16 +186,8 @@ pub(crate) struct VcpuSignals {
     stop_requested: AtomicBool,
     admission: AtomicUsize,
     decode_memory: AtomicPtr<crate::guest_memory::DecodeMemory>,
+    execution_target: AtomicPtr<crate::services::RunSignals>,
     entry_loop_active: AtomicBool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(target_arch = "x86_64")]
-pub(crate) enum HardIrqExitClaim {
-    OutsideGuest,
-    LocalGuest,
-    RemoteGuest,
-    AlreadyClaimed,
 }
 
 impl VcpuSignals {
@@ -206,6 +199,7 @@ impl VcpuSignals {
             stop_requested: AtomicBool::new(false),
             admission: AtomicUsize::new(ENTRY_PARKED),
             decode_memory: AtomicPtr::new(ptr::null_mut()),
+            execution_target: AtomicPtr::new(ptr::null_mut()),
             entry_loop_active: AtomicBool::new(false),
         }
     }
@@ -335,35 +329,6 @@ impl VcpuSignals {
         }
     }
 
-    /// Classifies the guest-exit work left after a local hard IRQ.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn claim_hard_irq_exit(&self, current_cpu: usize) -> HardIrqExitClaim {
-        loop {
-            let mode = self.mode.load(Ordering::Acquire);
-            if mode == OUTSIDE_GUEST_MODE {
-                return HardIrqExitClaim::OutsideGuest;
-            }
-            if mode & EXITING_GUEST_MODE_BIT != 0 {
-                return HardIrqExitClaim::AlreadyClaimed;
-            }
-            if Self::guest_cpu(mode) != current_cpu {
-                return HardIrqExitClaim::RemoteGuest;
-            }
-            if self
-                .mode
-                .compare_exchange(
-                    mode,
-                    mode | EXITING_GUEST_MODE_BIT,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                return HardIrqExitClaim::LocalGuest;
-            }
-        }
-    }
-
     /// Claims the guest-entry loop for the current backend scope.
     ///
     /// Panics if the same execution already owns the loop, matching the
@@ -419,7 +384,6 @@ pub(crate) enum VcpuRunResult<E> {
     VmExit(E),
 }
 
-#[allow(dead_code)]
 fn reserve_cpu_on_state(state: &mut VmVcpuState) -> AxVmResult {
     if *state != VmVcpuState::Free {
         let current_state = *state;
@@ -432,7 +396,6 @@ fn reserve_cpu_on_state(state: &mut VmVcpuState) -> AxVmResult {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn rollback_cpu_on_state(state: &mut VmVcpuState) {
     if *state == VmVcpuState::Starting {
         *state = VmVcpuState::Free;
@@ -452,18 +415,6 @@ fn finish_cpu_on_start_state(state: &mut VmVcpuState, bind_succeeded: bool) -> A
     } else {
         VmVcpuState::Free
     };
-    Ok(())
-}
-
-fn cpu_off_state(state: &mut VmVcpuState) -> AxVmResult {
-    if *state != VmVcpuState::Ready {
-        let current_state = *state;
-        return ax_err!(
-            BadState,
-            format!("VCpu state is not Ready, but {current_state:?}")
-        );
-    }
-    *state = VmVcpuState::Free;
     Ok(())
 }
 
@@ -575,7 +526,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Reserves a free vCPU for PSCI CPU_ON.
-    #[allow(dead_code)]
     pub(crate) fn reserve_for_cpu_on(&mut self) -> AxVmResult {
         reserve_cpu_on_state(&mut self.state)
     }
@@ -593,14 +543,8 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Rolls a failed PSCI CPU_ON reservation back to Free.
-    #[allow(dead_code)]
     pub(crate) fn rollback_cpu_on(&mut self) {
         rollback_cpu_on_state(&mut self.state);
-    }
-
-    /// Powers off a vCPU after PSCI CPU_OFF so it can be started again.
-    pub(crate) fn power_off_after_cpu_off(&mut self) -> AxVmResult {
-        cpu_off_state(&mut self.state)
     }
 
     /// Runs `f` if the current state equals `from`, then stores `to`.
@@ -769,17 +713,19 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub(crate) fn with_engine_scope<T>(
         &mut self,
         memory: &crate::guest_memory::DecodeMemory,
+        target: &crate::services::RunSignals,
         operation: impl FnOnce(&mut Self) -> AxVmResult<T>,
     ) -> AxVmResult<T> {
         let signals = Arc::clone(&self.run_state);
         let publication = DecodePublication::new(&signals, memory);
+        let target_publication = ExecutionTargetPublication::new(&signals, target);
         let result = self.with_backend_bound_current_cpu(operation);
+        drop(target_publication);
         drop(publication);
         result
     }
 
     /// Sets the guest entry point.
-    #[allow(dead_code)]
     pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxVmResult {
         self.arch_vcpu
             .set_entry(entry)
@@ -818,6 +764,40 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
 /// The decode pointer is readable only through the current CPU's non-cloneable
 /// ExecutionContext. The owner retains this borrowed view until that context
 /// and its hardware binding have both been retired.
+struct ExecutionTargetPublication<'scope> {
+    signals: &'scope VcpuSignals,
+    _target: &'scope crate::services::RunSignals,
+}
+
+impl<'scope> ExecutionTargetPublication<'scope> {
+    fn new(signals: &'scope VcpuSignals, target: &'scope crate::services::RunSignals) -> Self {
+        assert!(
+            signals
+                .execution_target
+                .compare_exchange(
+                    ptr::null_mut(),
+                    ptr::from_ref(target).cast_mut(),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok(),
+            "nested execution signal publication"
+        );
+        Self {
+            signals,
+            _target: target,
+        }
+    }
+}
+
+impl Drop for ExecutionTargetPublication<'_> {
+    fn drop(&mut self) {
+        self.signals
+            .execution_target
+            .store(ptr::null_mut(), Ordering::Release);
+    }
+}
+
 struct DecodePublication<'entry> {
     signals: &'entry VcpuSignals,
     _memory: &'entry crate::guest_memory::DecodeMemory,
@@ -1165,31 +1145,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn hard_irq_exit_claim_distinguishes_outside_local_and_remote_guest() {
-        let signals = VcpuSignals::new();
-        assert!(signals.open_entry());
-
-        assert_eq!(
-            signals.claim_hard_irq_exit(2),
-            HardIrqExitClaim::OutsideGuest
-        );
-
-        let local_entry = signals.enter(2);
-        assert!(!local_entry.exit_requested());
-        assert_eq!(signals.claim_hard_irq_exit(2), HardIrqExitClaim::LocalGuest);
-        drop(local_entry);
-
-        let remote_entry = signals.enter(5);
-        assert!(!remote_entry.exit_requested());
-        assert_eq!(
-            signals.claim_hard_irq_exit(2),
-            HardIrqExitClaim::RemoteGuest
-        );
-        drop(remote_entry);
-    }
-
-    #[test]
     fn task_kick_claims_one_remote_guest_exit() {
         let signals = VcpuSignals::new();
         assert!(signals.open_entry());
@@ -1293,37 +1248,6 @@ mod tests {
         finish_cpu_on_start_state(&mut state, false).unwrap();
 
         assert_eq!(state, VmVcpuState::Free);
-    }
-
-    #[test]
-    fn vcpu_cpu_off_returns_ready_to_free_for_reon() {
-        let mut state = VmVcpuState::Free;
-
-        reserve_cpu_on_state(&mut state).unwrap();
-        assert_eq!(state, VmVcpuState::Starting);
-
-        state = VmVcpuState::Ready;
-        cpu_off_state(&mut state).unwrap();
-        assert_eq!(state, VmVcpuState::Free);
-
-        reserve_cpu_on_state(&mut state).unwrap();
-        assert_eq!(state, VmVcpuState::Starting);
-    }
-
-    #[test]
-    fn vcpu_cpu_off_rejects_non_ready_states() {
-        for initial_state in [
-            VmVcpuState::Created,
-            VmVcpuState::Free,
-            VmVcpuState::Starting,
-            VmVcpuState::Running,
-            VmVcpuState::Invalid,
-        ] {
-            let mut state = initial_state;
-
-            assert!(cpu_off_state(&mut state).is_err());
-            assert_eq!(state, initial_state);
-        }
     }
 
     #[test]

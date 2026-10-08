@@ -13,6 +13,13 @@ use super::{
 };
 use crate::{DeviceManagerError, DeviceManagerResult};
 
+/// Operation marker for a suspend whose compensating resume also failed.
+///
+/// The root binding treats this as a fail-closed quiesce: at least one endpoint
+/// may still be suspended, so admissions must not be re-opened as if the root
+/// were running.
+pub(super) const ENDPOINT_SUSPEND_ROLLBACK_FAILED: &str = "roll back PCI endpoint suspend";
+
 struct AdmissionState {
     open: bool,
     leases: usize,
@@ -497,6 +504,107 @@ impl EndpointRouter {
             if let Err(error) = endpoint
                 .withdraw_irq(&mut permit)
                 .map_err(DeviceManagerError::Device)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Quiesces every bound endpoint after route admissions have been drained.
+    ///
+    /// The endpoint callbacks run outside the router lock. If one endpoint
+    /// cannot quiesce, the endpoints already suspended in this pass are resumed
+    /// in reverse order. When every earlier endpoint is restored the failure is
+    /// recoverable and the original error is returned; when a compensating
+    /// resume also fails the error reports the failed compensation with
+    /// [`ENDPOINT_SUSPEND_ROLLBACK_FAILED`].
+    pub(super) fn suspend_endpoints(&self) -> DeviceManagerResult {
+        let endpoints = self.endpoint_functions();
+        let mut suspended: Vec<Arc<dyn PciFunction>> = Vec::new();
+        for endpoint in endpoints {
+            match endpoint.suspend().map_err(DeviceManagerError::Device) {
+                Ok(()) => suspended.push(endpoint),
+                Err(suspend_error) => {
+                    let mut rollback_error = None;
+                    for endpoint in suspended.iter().rev() {
+                        if let Err(rollback) = endpoint.resume().map_err(DeviceManagerError::Device)
+                        {
+                            warn!(
+                                "PCI endpoint suspend rollback could not resume an endpoint: \
+                                 {rollback}"
+                            );
+                            if rollback_error.is_none() {
+                                rollback_error = Some(rollback);
+                            }
+                        }
+                    }
+                    return Err(match rollback_error {
+                        Some(rollback_error) => DeviceManagerError::InvalidState {
+                            operation: ENDPOINT_SUSPEND_ROLLBACK_FAILED,
+                            detail: alloc::format!(
+                                "PCI endpoint suspend failed with {suspend_error}; compensating \
+                                 resume failed with {rollback_error}, so an endpoint may still be \
+                                 quiesced"
+                            ),
+                        },
+                        None => suspend_error,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-opens every bound endpoint that was quiesced by
+    /// [`suspend_endpoints`](Self::suspend_endpoints).
+    ///
+    /// If one endpoint cannot resume, the endpoints already resumed in this
+    /// pass are suspended again in reverse order so the root stays quiesced
+    /// while the error is reported.
+    pub(super) fn resume_endpoints(&self) -> DeviceManagerResult {
+        let endpoints = self.endpoint_functions();
+        let mut resumed: Vec<Arc<dyn PciFunction>> = Vec::new();
+        for endpoint in endpoints {
+            match endpoint.resume().map_err(DeviceManagerError::Device) {
+                Ok(()) => resumed.push(endpoint),
+                Err(error) => {
+                    for endpoint in resumed.iter().rev() {
+                        if let Err(rollback) =
+                            endpoint.suspend().map_err(DeviceManagerError::Device)
+                        {
+                            warn!(
+                                "PCI endpoint resume rollback could not suspend an endpoint: \
+                                 {rollback}"
+                            );
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn endpoint_functions(&self) -> Vec<Arc<dyn PciFunction>> {
+        self.state
+            .lock_irqsave()
+            .endpoints
+            .values()
+            .map(|endpoint| endpoint.function.clone())
+            .collect()
+    }
+
+    /// Stops every bound endpoint before its owner is released.
+    ///
+    /// The endpoint callbacks run outside the router lock and the first error
+    /// is reported only after every endpoint has been asked to stop.
+    pub(super) fn stop_endpoints(&self) -> DeviceManagerResult {
+        let endpoints = self.endpoint_functions();
+        let mut first_error = None;
+        for endpoint in endpoints {
+            if let Err(error) = endpoint.stop().map_err(DeviceManagerError::Device)
                 && first_error.is_none()
             {
                 first_error = Some(error);

@@ -134,7 +134,7 @@ FAT adapter 使用 `starry-fatfs`：
 - `FatFileNode`/`FatDirNode` 实现 VFS trait；
 - DOS 时间与 Unix `Duration` 在 `util.rs` 转换并裁剪到 FAT 可表示范围。
 
-共享 FAT 状态使用 `SleepMutex`，根 entry 仅用短暂 `IrqMutex<Option<_>>` 发布。FAT inode number 是本次 mount 的内存身份，不是稳定 on-disk inode；不能把它当跨重启标识。
+共享 FAT 状态使用 `Mutex`，根 entry 仅用短暂 `RawSpinLock<Option<_>>` 发布。FAT inode number 是本次 mount 的内存身份，不是稳定 on-disk inode；不能把它当跨重启标识。
 
 ## 4. 组合边界
 

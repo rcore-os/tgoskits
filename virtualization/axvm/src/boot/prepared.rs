@@ -8,7 +8,7 @@ use super::{BootImageProvider, fdt::GuestDtbImage, images::ImageLoaderCore};
 use crate::{AxVM, AxVmResult, VMMemoryRegion, ax_err, config::AxVMConfig};
 
 /// Architecture-prepared VM configuration and optional guest DTB.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PreparedGuestBoot {
     config: GuestConfig,
     guest_dtb: Option<GuestDtbImage>,

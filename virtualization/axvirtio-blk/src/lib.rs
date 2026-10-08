@@ -57,14 +57,14 @@
 #![no_std]
 
 extern crate alloc;
-#[cfg(test)]
-extern crate ax_runtime as _;
 
 extern crate log;
 
 mod backend;
 mod block;
 mod constants;
+#[cfg(any(test, doctest))]
+mod host_lock_provider;
 mod managed;
 mod mmio;
 mod pci;

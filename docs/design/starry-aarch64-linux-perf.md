@@ -55,7 +55,7 @@ PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只�
 
 ### 2.1 每核状态
 
-`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `IrqMutex` 内维护可迁移 task cycle 的全局保留状态，以及 system sampling 与 flexible slice 共用的每 CPU programmable bitmap。programmable counting 不在 open 时保留固定槽；generic/named cycles 优先申请专用 cycle，耗尽时也进入 flexible 队列。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
+`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `RawSpinLock` 内维护可迁移 task cycle 的全局保留状态，以及 system sampling 与 flexible slice 共用的每 CPU programmable bitmap。programmable counting 不在 open 时保留固定槽；generic/named cycles 优先申请专用 cycle，耗尽时也进入 flexible 队列。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
 
 `perf-hw-cpu-slots` 在四个 CPU 上各启用两个 system event，分别测试 sampling 与 counting。总数超过 QEMU 单核六个 programmable slot，但每核需求仍有余量。所有事件同时存在时读取非零计数，关闭后重复整个流程，验证独立容量与槽回收；旧全局 bitmap 在第七次 open 返回 `EBUSY`。
 

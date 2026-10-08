@@ -381,7 +381,7 @@ memfd 计数。
 
 CPU offline 的 runtime hook 处于 IRQ-off、scheduler lock 持有阶段。所有可能失败的 kernel gather
 重试必须先完成；之后才以不可失败 commit 安装安全 root、撤 active bit。这里不能获取 Starry
-`PiMutex` 或析构可能睡眠的 file/backend owner。因而 Starry per-mm quarantine 在 CPU bit 撤销后
+`Mutex` 或析构可能睡眠的 file/backend owner。因而 Starry per-mm quarantine 在 CPU bit 撤销后
 变为可重试，但资源释放仍由
 下一次 task-context mutation 或 teardown 执行。这是有意的上下文边界，不把可睡眠回收塞进
 offline guard。

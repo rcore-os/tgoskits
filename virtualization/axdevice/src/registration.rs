@@ -51,10 +51,23 @@ pub trait DeviceLifecycle: Send + Sync {
     fn reset(&self) -> DeviceManagerResult;
 
     /// Quiesces the device before the VM is suspended.
+    ///
+    /// A successful return is a hard guarantee that the device stops
+    /// performing worker and DMA work: no asynchronous request may still be
+    /// reading or writing storage or guest memory, and no new work is started
+    /// until [`resume`](Self::resume) re-opens the device.
     fn suspend(&self) -> DeviceManagerResult;
 
     /// Restores a suspended device.
     fn resume(&self) -> DeviceManagerResult;
+
+    /// Stops the device permanently.
+    ///
+    /// Unlike dropping a device, a successful return means every worker has
+    /// stopped and been joined and no device or backing work continues. A
+    /// failure must leave the device ownership and backing intact so a later
+    /// teardown can surface the same error instead of masking it.
+    fn stop(&self) -> DeviceManagerResult;
 }
 
 /// One strongly typed capability contributed by a device.

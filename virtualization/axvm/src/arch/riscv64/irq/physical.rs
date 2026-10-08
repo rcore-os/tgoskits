@@ -14,7 +14,7 @@ use std::{
 use axvm_types::InterruptTriggerMode;
 use riscv_vplic::{PLIC_NUM_SOURCES, VPlicGlobal};
 
-use super::DeferredVcpuKick;
+use super::RunKickBinding;
 use crate::{
     AxVmError, AxVmResult, ThreadHandle, ax_err, host::task::IrqNotification, sync::MutexExt,
 };
@@ -47,7 +47,7 @@ impl PhysicalIrqBridge {
     pub(super) fn new(
         vm_id: usize,
         vplic: Arc<VPlicGlobal>,
-        kick: Arc<DeferredVcpuKick>,
+        kick: Arc<RunKickBinding>,
         vcpu_count: usize,
         routes: &[crate::config::PassthroughInterrupt],
         target_cpu: usize,
@@ -291,7 +291,7 @@ impl Drop for PhysicalIrqBridge {
 struct PhysicalBridgeShared {
     vm_id: usize,
     vplic: Arc<VPlicGlobal>,
-    kick: Arc<DeferredVcpuKick>,
+    kick: Arc<RunKickBinding>,
     vcpu_count: usize,
     notify: IrqNotification,
     stopping: AtomicBool,
@@ -356,10 +356,10 @@ impl PhysicalSourceBinding {
             return;
         }
         for vcpu_id in 0..self.shared.vcpu_count {
-            if let Err(error) = self.shared.kick.publish_from_irq(vcpu_id) {
+            // The vPLIC pending state is visible before this task-context wake.
+            if let Err(error) = self.shared.kick.kick(vcpu_id) {
                 warn!(
-                    "VM[{}] failed to publish physical PLIC source {} wake for vCPU {vcpu_id}: \
-                     {error:?}",
+                    "VM[{}] failed to wake vCPU {vcpu_id} for physical PLIC source {}: {error:?}",
                     self.shared.vm_id, self.source
                 );
             }
@@ -494,7 +494,7 @@ mod tests {
         PhysicalIrqBridge::new(
             7,
             vplic,
-            DeferredVcpuKick::new(7),
+            Arc::new(RunKickBinding::new()),
             1,
             &[crate::config::PassthroughInterrupt { source: 8, trigger }],
             0,

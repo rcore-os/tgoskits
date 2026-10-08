@@ -51,7 +51,7 @@ registry 和 trace pipe。
 ## 非目标
 
 - 不提取 #1775 的 `ax-task`、调度策略、IPI、timer、RT/Deadline 或 runtime 重构；
-- 不把 callback 移出 Starry 当前的 `NoPreemptMutex` 临界区，不引入 generation/RCU
+- 不把 callback 移出 Starry 当前的 `RawSpinLock` 临界区，不引入 generation/RCU
   registry、retire worker 或新的 trace ingress ring；
 - 不新增 tracefs 文件，不改变 syscall/Linux ABI，不改变现有事件字段布局；
 - 不承诺与 crates.io `ktracepoint` 的源码级名称兼容；仓库内消费者一次性迁移到新名。
@@ -86,7 +86,7 @@ jump-label/text patch；callback 注销安全由宿主 registry 的锁或更强�
 `KernelTraceOps::write_tracepoint_state -> KernelExtTracePoint::update`；后者是唯一实际
 mutation owner：
 
-1. 以 `NoPreemptMutex` 保护 `ExtTracePoint`；
+1. 以 `RawSpinLock` 保护 `ExtTracePoint`；
 2. 在同一锁内完成注册、注销或其它状态修改；
 3. 依据修改后的 callback 集合以 Release store 更新 gate；
 4. 快路径以 Acquire load 检查 gate，再通过同一 registry 锁读取并执行 callback。
@@ -95,7 +95,7 @@ mutation owner：
 旧的 `true`，它随后获取同一锁时也只会看到空集合。该边界保持当前 Starry callback
 执行上下文，不依赖 #1775 更早提交中的 ingress 和调度器改造。
 
-callback 在 `KernelExtTracePoint::read` 持 `NoPreemptMutex` 时执行，这是当前 Starry
+callback 在 `KernelExtTracePoint::read` 持 `RawSpinLock` 时执行，这是当前 Starry
 语义：callback 不得注册/注销 callback、更新 filter，或递归触发同一 registry 的事件。
 默认 trace pipe、perf 与 raw-BPF 路径继续遵守已有上下文约束；放宽该限制需要独立的
 generation/ingress 设计，不能在本次 crate rename 中隐式改变。
@@ -113,7 +113,7 @@ generation/ingress 设计，不能在本次 crate rename 中隐式改变。
 
 ### 未采用：在当前 dev 上只搬 generation registry
 
-generation registry 会把 callback 移出 `NoPreemptMutex`，但当前 `sched_switch` callback
+generation registry 会把 callback 移出 `RawSpinLock`，但当前 `sched_switch` callback
 仍沿用现有触发上下文和 trace pipe 路径。缺少配套 IRQ-safe ingress 时，单独改变锁边界
 会扩大上下文语义，不能作为本 PR 的安全迁移。
 

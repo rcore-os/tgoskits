@@ -244,7 +244,8 @@ impl AxVmError {
                 "guest address range",
                 format_args!("{operation} failed: {error}"),
             ),
-            AddrSpaceError::MappingState
+            AddrSpaceError::UnleasedBacking
+            | AddrSpaceError::MappingState
             | AddrSpaceError::NeedsRepair
             | AddrSpaceError::Unmapped { .. }
             | AddrSpaceError::InsufficientAccess { .. } => Self::memory(operation, error),
@@ -597,5 +598,11 @@ mod tests {
         assert!(matches!(cases[5], AxVmError::Memory { .. }));
         assert!(matches!(cases[6], AxVmError::Unsupported { .. }));
         assert!(matches!(cases[7], AxVmError::Host { .. }));
+    }
+}
+
+impl From<crate::services::SignalError> for AxVmError {
+    fn from(error: crate::services::SignalError) -> Self {
+        Self::interrupt("runtime signal", error)
     }
 }

@@ -10,14 +10,14 @@ use arm_vgic::{
     ListRegisterBacking, ListRegisterState, PhysicalIrqId, Priority, VgicBackendCapabilities,
 };
 use ax_cpu::virtualization::HostIrqConfig;
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use ax_std::os::arceos::sync::RawSpinLock;
 
 const V2_SGI_TOKEN: usize = 1usize << (usize::BITS as usize - 1);
 const V2_SGI_SOURCE_SHIFT: usize = 24;
 
 pub(super) enum HostCpuInterface {
     V2 {
-        hypervisor: IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
+        hypervisor: RawSpinLock<arm_gic_driver::v2::HypervisorInterface>,
         trap: arm_gic_driver::v2::TrapOp,
         capabilities: VgicBackendCapabilities,
         irq_config: HostIrqConfig,
@@ -78,7 +78,7 @@ pub(super) fn discover() -> Result<HostCpuInterface, GicV3BackendError> {
                 false,
             );
             return Ok(HostCpuInterface::V2 {
-                hypervisor: IrqSafeMutex::new(interface),
+                hypervisor: RawSpinLock::new(interface),
                 trap: gic.cpu_interface().trap_operations(),
                 capabilities,
                 irq_config,
@@ -206,10 +206,10 @@ fn checked_host_cpu_interface(
 }
 
 fn load_v2(
-    hypervisor: &IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
+    hypervisor: &RawSpinLock<arm_gic_driver::v2::HypervisorInterface>,
     state: &CpuInterfaceState,
 ) -> Result<(), GicV3BackendError> {
-    let interface = hypervisor.lock();
+    let interface = hypervisor.lock_irqsave();
     require_lr_count(
         state.list_registers().len(),
         interface.get_list_register_count().min(16),
@@ -234,10 +234,10 @@ fn load_v2(
 }
 
 fn save_v2(
-    hypervisor: &IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
+    hypervisor: &RawSpinLock<arm_gic_driver::v2::HypervisorInterface>,
     state: &mut CpuInterfaceState,
 ) -> Result<(), GicV3BackendError> {
-    let interface = hypervisor.lock();
+    let interface = hypervisor.lock_irqsave();
     require_lr_count(
         state.list_registers().len(),
         interface.get_list_register_count().min(16),

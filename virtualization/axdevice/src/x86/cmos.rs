@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 
-use ax_sync::RawSpinLock;
+use ax_sync::Mutex;
 use axdevice_base::*;
 
 const INDEX_PORT: u16 = 0x70;
@@ -14,7 +14,7 @@ const RTC_VALID: u8 = 0x80;
 
 /// CMOS device exposing the guest memory size and a valid static RTC value.
 pub struct X86CmosDevice {
-    state: RawSpinLock<CmosState>,
+    state: Mutex<CmosState>,
     resources: Box<[Resource]>,
 }
 
@@ -27,7 +27,7 @@ impl X86CmosDevice {
     /// Creates CMOS contents for a guest whose contiguous low RAM ends at `low_memory_size`.
     pub fn new(low_memory_size: u64) -> Self {
         Self {
-            state: RawSpinLock::new(CmosState::new(low_memory_size)),
+            state: Mutex::new(CmosState::new(low_memory_size)),
             resources: alloc::vec![Resource::PortRange {
                 base: INDEX_PORT,
                 size: 2,
@@ -89,7 +89,7 @@ impl Device for X86CmosDevice {
 
     fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
         validate_access(access)?;
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         match access.address() {
             addr if addr == u64::from(INDEX_PORT) => Ok(u64::from(state.index)),
             addr if addr == u64::from(DATA_PORT) => {
@@ -111,7 +111,7 @@ impl Device for X86CmosDevice {
         _context: &mut dyn DeviceContext,
     ) -> DeviceResult {
         validate_access(access)?;
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         match access.address() {
             addr if addr == u64::from(INDEX_PORT) => {
                 state.index = value as u8 & 0x7f;

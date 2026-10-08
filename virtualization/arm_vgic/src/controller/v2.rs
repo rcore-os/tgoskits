@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axvm_types::AccessWidth;
 
-use super::{GicV3Controller, GicV3VcpuWake, state::DeliveryRetirement};
+use super::{GicV3Native, GicV3VcpuWake, state::DeliveryRetirement};
 use crate::{
     GicVcpuId, IntId, InterruptState, RegisterRegion, SgiId, SgiTarget, SpiId, VgicError,
     VgicResult, backend_result,
@@ -20,7 +20,7 @@ use crate::{
 const GIC_SPURIOUS_INTID: u64 = 1023;
 const GICV2_MAX_INTIDS: u64 = 1020;
 
-impl GicV3Controller {
+impl GicV3Native {
     /// Reads the GICv2 Distributor view for one accessing vCPU.
     pub fn read_v2_distributor(
         &self,

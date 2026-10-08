@@ -23,7 +23,7 @@ host-test = ["ax-sync/host-test"]
 vgicv3 = []
 
 [dependencies]
-ax-sync.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 aarch64-cpu = "11.0"

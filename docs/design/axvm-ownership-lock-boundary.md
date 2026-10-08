@@ -1,10 +1,10 @@
 # AxVM 所有权与锁边界
 
-本文记录基于 `5284316aeaac` 实施的公共契约。该重构允许破坏 Rust 源码接口，保留 TOML、设备资源规划和 guest ABI。实现期间以本文件中的后置条件验收，构建通过不代表生命周期或硬件协议已经得到运行证明。
+本文记录由 `5284316aeaac` 方案迁移到最新 `dev` 基线 `135ad7af001a` 实施的公共契约。该重构允许破坏 Rust 源码接口，保留 TOML、设备资源规划和 guest ABI。实现期间以本文件中的后置条件验收，构建通过不代表生命周期或硬件协议已经得到运行证明。
 
 ## 1. 架构与所有权
 
-`VmManager` 拥有注册表和跨 VM 通道。每个 VM 的 `VmControl` 任务独占生命周期、资源转换和当前操作。每个 `VcpuTask` 独占可变硬件后端；设备只取得一个运行期的窄端口。
+`VmManager` 拥有注册表和跨 VM 通道。每个 VM 的控制任务由 `control::Owner` 实现，独占生命周期、资源转换和当前操作。每个 `VcpuTask` 独占可变硬件后端；设备只取得一个运行期的窄端口。
 
 ### 1.1 执行上下文
 
@@ -38,7 +38,7 @@ raw guard 只修改它拥有的短状态。唤醒、IPI、设备回调、join �
 
 ## 2. 管理与完成协议
 
-`VmKey` 包含 VM ID 和实例代次；`RunId` 包含实例和运行代次；`OperationId` 在实例内唯一；`VcpuInstance` 另有激活代次。递增使用受检运算。旧端口和旧确认只能指向原对象。
+`VmKey` 包含 VM ID 和实例代次；`RunId` 包含实例和运行代次；`OperationId` 在实例内唯一；`VcpuInstance` 另有激活代次。递增使用受检运算。旧端口和旧确认只能指向原对象。实例代次由受检的宿主原子计数分配，注册表仍由每个 manager 自己持有；多个 manager 不会产生相同 `VmKey`。宿主虚拟化初始化由 `OnceLock` 只执行一次，失败结果保留，不能让并发构造重复初始化 pCPU。
 
 ### 2.1 公共入口
 
@@ -63,6 +63,41 @@ mailbox 与完成状态使用睡眠 mutex。Future 的检查和 Waker 注册在�
 start/resume 不强制执行第一条 guest 指令；实际执行进展另行观察。聚合 entry/park 计数用于诊断，不能代替逐参与者确认。
 
 普通操作按接收顺序串行；等待确认期间继续消费事件和 guest 请求。重复 stop 合并完成观察；已达到 pause/resume/stop/destroy 目标时幂等返回。部分失败逆序补偿，补偿失败关闭入口并保留资源进入 `Failed`。观察者超时不证明资源可以释放。清理失败保留注册项和所有权，允许重试 destroy。
+
+### 2.3 接口形状
+
+管理调用只提交拥有参数的操作，完成观察不取得 owner 的内部对象。`VmSnapshot` 保留 `run`、`current_operation`、`last_failure`、`last_stop_reason` 及设备、内存和逐 vCPU 观察值。公共入口位于 `manager`、`operation` 与 `identity`，由 crate 根重导。
+
+```rust
+impl VmManager {
+    pub fn new() -> AxVmResult<Self>;
+    pub fn create(&self, plan: VmCreatePlan) -> AxVmResult<VmOperation<VmHandle>>;
+    pub fn get(&self, id: VMId) -> Option<VmHandle>;
+    pub fn list(&self) -> Vec<VmHandle>;
+    pub fn shutdown(&self) -> AxVmResult<()>;
+}
+impl VmHandle {
+    pub fn key(&self) -> VmKey;
+    pub fn snapshot(&self) -> VmSnapshot;
+    pub fn start(&self) -> AxVmResult<VmOperation<RunId>>;
+    pub fn pause(&self) -> AxVmResult<VmOperation<()>>;
+    pub fn resume(&self) -> AxVmResult<VmOperation<()>>;
+    pub fn stop(&self, reason: StopReason) -> AxVmResult<VmOperation<()>>;
+    pub fn reset(&self) -> AxVmResult<VmOperation<RunId>>;
+    pub fn destroy(&self) -> AxVmResult<VmOperation<()>>;
+    pub fn join_control_task(&self) -> AxVmResult<()>;
+}
+impl<T> VmOperation<T> {
+    pub fn id(&self) -> OperationId;
+    pub fn accepted(&self) -> impl Future<Output = AxVmResult<()>> + '_;
+    pub fn wait(self) -> AxVmResult<T>;
+}
+impl<T> Future for VmOperation<T> {
+    type Output = AxVmResult<T>;
+}
+```
+
+`destroy` 的完成由宿主普通任务退出回调确认，回调不能 join 自己；同步调用方可再通过 `join_control_task` 回收管理句柄，`shutdown` 统一执行这一步。并发 join 共享一次结果，失败保留原句柄，后续调用可重试。取消但尚未完成回收的 staged vCPU 同样保留后端 transfer 和任务句柄，禁止提前释放运行资源。
 
 ## 3. 硬件与运行服务
 
@@ -105,11 +140,31 @@ CPU_ON 的拓扑解析和预约由控制任务执行，目标 owner 初始化寄
 
 AArch64 也执行静默协议，保留架构广播/本地 TLBI。准备失败保持旧运行期；安装/失效失败保持入口关闭并保留新旧资源。缺少可证明 DMA 静默或撤销能力的直通设备返回明确错误并保留 backing。新旧根同时存在产生临时页表开销。
 
+x86 EPT 使用真实 INVEPT。SVM 的失效采用逻辑退休：静默期间没有 owner 使用旧翻译，`axcpu` 的每次 VMRUN 在客户机执行之前都无条件设置 `FlushAll` 并清零 clean bits，因此旧缓存不能被新运行使用。完成时不声称 SVM 已立即执行物理缓存刷新；这个契约依赖现有 VMRUN 的必经刷新，后续优化不得移除该边界。RISC-V 使用 HFENCE.GVMA，LoongArch 使用对应 GID 的 INVTLB，AArch64 保留广播 TLBI 与完成屏障。
+
 ### 4.2 停机与跨 VM 通道
 
 stop 先关闭 guest-entry 与 IRQ 准入，再发布停止并 kick/wake，随后屏蔽注销 producer，确认 vCPU、回调、worker/DMA 静默，join 并退休，最后发布 `Stopped`。kick 必须先于远端退出或注销的等待。
 
 IVC 通道表归 manager，内部发布者键使用 `VmKey`，通知绑定目标 `RunId`，guest ABI 仍使用 VM ID/channel key。通道锁外通知。回收遵循关闭端点、撤销自身 GPA 并确认翻译退休、释放 aperture、提交通道移除、最后 backing owner 释放共享页。一个 VM 退出不能释放另一个 VM 仍持有的页。
+
+### 4.3 受控内存入口
+
+`VmHandle::update_memory` 消费新的映射所有权或校验过的撤销范围；`expected_run` 防止旧端口变更新运行。`MappingLease::allocate` 在任务上下文分配 page-aligned RAM，并校验权限和地址翻译；不能用它把 MMIO 当普通 RAM。设备授权和 IVC 使用各自既有规划入口建立 lease。
+
+```rust
+pub enum MemoryUpdate {
+    Map(MappingLease),
+    Unmap(GuestRange),
+}
+impl VmHandle {
+    pub fn update_memory(&self, expected_run: RunId, update: MemoryUpdate)
+        -> AxVmResult<VmOperation<MemoryRevision>>;
+    pub fn guest_memory(&self, expected_run: RunId) -> AxVmResult<GuestMemoryPort>;
+}
+```
+
+`GuestMemoryPort` 的复制固定 revision，并在关闭准入之后等待所有在途访问结束。`GuestRange` 和 `MemoryRevision` 的表示私有，只暴露校验构造或观察方法；不返回可以绕过退休协议的普通 Rust 引用。IVC 撤销必须提交严格晚于已安装 revision 的退休确认。
 
 ## 5. 迁移与证据
 
@@ -121,7 +176,13 @@ IVC 通道表归 manager，内部发布者键使用 `VmKey`，通知绑定目标
 
 Rust 修改执行 `cargo fmt` 和定向 Clippy；全仓名称迁移后执行全工作区 Clippy。提交后 `cargo xtask test --since` 核对真实软件包和功能选择。高风险所有权与 unsafe 协议在合入前需要独立领域审查；测试不能替代安全证明。
 
-### 5.2 上游取舍
+### 5.2 资源成本
+
+每 VM 控制任务配置 256 KiB 栈，每次运行的 IRQ signal worker 配置 64 KiB 栈；vCPU owner 继续使用 256 KiB 栈。固定 IRQ 槽在运行准备时分配，硬 IRQ 发布期间不增长。内存更新同时保留新旧翻译根、decode 快照及被移除 backing，直到失效和访问退休完成；额外页表占用随映射形状变化，不能仅按 RAM 字节数估算。
+
+同环境的启动、重入与设备 I/O 比较仍需真实运行记录。该段记录配置成本，不把静态栈配置当实测峰值，不把编译通过当性能结果。
+
+### 5.3 上游取舍
 
 Linux KVM 的调用线程执行 ioctl/KVM_RUN，没有通用每 VM 控制任务；采用其 request/kick 和进入复查协议。[KVM request 协议](https://docs.kernel.org/virt/kvm/vcpu-requests.html)。
 

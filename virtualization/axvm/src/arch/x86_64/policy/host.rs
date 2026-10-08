@@ -2,13 +2,10 @@
 
 use x86_vlapic::X86VlapicHostOps;
 
-use crate::arch::x86_64::policy::{X86GuestPhysAddr, X86VcpuResult};
+use crate::arch::x86_64::policy::{X86GuestPhysAddr, X86VcpuError, X86VcpuResult};
 
 /// Guest memory, time, and interrupt policy required by the x86 VMM.
 pub trait X86HostOps: X86VlapicHostOps {
-    /// Read one byte from guest physical memory.
-    fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8>;
-
     /// Convert nanoseconds to host ticks.
     fn nanos_to_ticks(nanos: u64) -> u64;
 
@@ -30,7 +27,13 @@ pub trait X86HostOps: X86VlapicHostOps {
 }
 
 pub(crate) fn read_guest_u8<H: X86HostOps>(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
-    H::read_guest_u8(paddr)
+    let _ = core::marker::PhantomData::<H>;
+    crate::vcpu::with_current_execution(|context| {
+        context.and_then(|context| {
+            context.read_guest_byte(axvm_types::GuestPhysAddr::from(paddr.as_usize()))
+        })
+    })
+    .ok_or(X86VcpuError::BadState)
 }
 
 pub(crate) fn nanos_to_ticks<H: X86HostOps>(nanos: u64) -> u64 {

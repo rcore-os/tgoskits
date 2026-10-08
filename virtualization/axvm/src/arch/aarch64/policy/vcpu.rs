@@ -114,6 +114,16 @@ impl ArmVcpu {
         Ok(())
     }
 
+    /// Advances the saved guest PC past one emulated faulting instruction.
+    ///
+    /// This is invoked from the owned completion of a data abort that a device
+    /// accepted. A nested-fault fallback does not call it, so the guest retries
+    /// the very instruction that faulted once the mapping is satisfiable.
+    pub fn advance_exception_pc(&mut self, step: usize) {
+        let pc = self.machine.context.exception_pc();
+        self.machine.context.set_exception_pc(pc.wrapping_add(step));
+    }
+
     /// Sets the nested page table selected by the embedding VMM.
     pub fn set_nested_page_table(&mut self, config: ArmNestedPagingConfig) -> ArmVcpuResult {
         debug!("set vcpu stage-2 root:{:#x}", config.root_paddr);

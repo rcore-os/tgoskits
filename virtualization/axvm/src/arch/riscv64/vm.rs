@@ -24,7 +24,7 @@ impl Riscv64Arch {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels)
         })
     }

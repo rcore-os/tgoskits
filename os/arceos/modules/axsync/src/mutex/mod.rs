@@ -8,7 +8,7 @@ use core::{
     sync::atomic::AtomicU64,
 };
 
-use crate::interface::{LockMetadata, PiMutexStorage};
+use crate::interface::{LockMetadata, MutexStorage};
 
 /// A lockdep subclass identifier.
 pub type LockSubclass = u32;
@@ -16,7 +16,7 @@ pub type LockSubclass = u32;
 /// Native ownership and opaque wait-queue storage backing a [`Mutex`].
 #[repr(C)]
 pub struct MutexBackend {
-    storage: PiMutexStorage,
+    storage: MutexStorage,
     next_waiter_sequence: AtomicU64,
     metadata: LockMetadata,
 }
@@ -26,7 +26,7 @@ impl MutexBackend {
     #[track_caller]
     pub const fn new() -> Self {
         Self {
-            storage: PiMutexStorage::new(),
+            storage: MutexStorage::new(),
             next_waiter_sequence: AtomicU64::new(0),
             metadata: LockMetadata::new(),
         }

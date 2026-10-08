@@ -9,7 +9,7 @@ use core::{
     time::Duration,
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use bitflags::bitflags;
 use dma_api::{
     DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaDomainId, InFlightDma,
@@ -95,7 +95,7 @@ bitflags! {
 }
 
 struct RawBlock<T: Transport> {
-    control: Arc<SpinLock<TransportControl<T>>>,
+    control: Arc<RawSpinLock<TransportControl<T>>>,
     queue: ManuallyDrop<VirtQueue<VirtIoHalImpl, QUEUE_SIZE>>,
     device: DeviceInfo,
     flush_supported: bool,
@@ -126,7 +126,7 @@ impl<T: Transport> RawBlock<T> {
         device.read_only = features.contains(BlockFeatures::READ_ONLY);
         device.name = Some("virtio-blk");
         Ok(Self {
-            control: Arc::new(SpinLock::new(TransportControl {
+            control: Arc::new(RawSpinLock::new(TransportControl {
                 transport,
                 state: ResetState::Running,
             })),
@@ -276,7 +276,7 @@ struct VirtioBlockController<T: Transport + Send + 'static> {
     device: DeviceInfo,
     dma: DmaDeviceInfo,
     started: bool,
-    control: Arc<SpinLock<TransportControl<T>>>,
+    control: Arc<RawSpinLock<TransportControl<T>>>,
 }
 
 impl<T: Transport + Send + 'static> DriverGeneric for VirtioBlockController<T> {

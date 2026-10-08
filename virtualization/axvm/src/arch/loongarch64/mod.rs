@@ -1,4 +1,4 @@
-use std::{boxed::Box, time::Duration};
+use std::{boxed::Box, sync::Arc, time::Duration};
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -7,7 +7,20 @@ use policy::*;
 mod policy;
 
 use super::*;
-use crate::{AxVmError, AxVmResult, host::*};
+use crate::{
+    AxVmError, AxVmResult,
+    architecture::{
+        HypercallExit, MmioReadExit, MmioWriteExit, exit as shared_exit, ops::RegisterCompletion,
+    },
+    engine::{VcpuAction, WaitReason},
+    host::*,
+    runtime::{
+        QueuedVcpuInterrupt,
+        hvc::{GuestRequest, HyperCallAbi},
+    },
+    services::{RunServices, RunSignals, VcpuWait},
+    vm::AxVMResources,
+};
 
 pub(crate) mod boot;
 mod capabilities;
@@ -20,247 +33,463 @@ pub(crate) use vm::LoongArchVmPlan;
 
 pub(crate) struct LoongArch64Arch;
 
+/// Run-bound native controller state prepared by the control owner.
+///
+/// The entry holds narrow, immutable per-run values only: the guest-visible
+/// PCH-PIC output port and the exact run-bound publication capability. A queued
+/// physical source is resolved against pre-bound short controller state instead
+/// of a per-exit VM lookup, and no VM handle or sleeping lock is retained.
+pub(crate) struct LoongArchEntry {
+    pch_pic: Arc<dyn axdevice::PchPicOutputPort>,
+    run: irq::LoongArchRunPort,
+}
+
+/// Durable exit value interpreted only after the hardware binding is retired.
+pub(crate) struct LoongArchExit {
+    kind: LoongArchExitKind,
+    pch_pic: Arc<dyn axdevice::PchPicOutputPort>,
+    run: irq::LoongArchRunPort,
+}
+
+enum LoongArchExitKind {
+    Hypercall {
+        nr: u64,
+        args: [u64; 6],
+    },
+    MmioRead {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        reg: usize,
+        reg_width: AccessWidth,
+        signed_ext: bool,
+        /// Original fault flags when the access was decoded from a nested page
+        /// fault; `None` for a direct MMIO exit that has no page-fault fallback.
+        fallback: Option<MappingFlags>,
+    },
+    MmioWrite {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        data: u64,
+        /// Original fault flags when the access was decoded from a nested page
+        /// fault; `None` for a direct MMIO exit that has no page-fault fallback.
+        fallback: Option<MappingFlags>,
+    },
+    NestedPageFault {
+        addr: GuestPhysAddr,
+        access_flags: MappingFlags,
+    },
+    Idle,
+    Halt,
+    Nothing,
+}
+
+/// Guest register effects committed by the vCPU owner before the next entry.
+///
+/// The instruction PC advances only here: a device access is committed after a
+/// device has claimed it, while an unclaimed access falls back to a nested page
+/// fault that must re-execute the same instruction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LoongArchCompletion {
+    register: RegisterCompletion,
+    advance_pc: bool,
+}
+
+impl LoongArchCompletion {
+    /// Completion for one device access that a device accepted.
+    const fn device(register: RegisterCompletion) -> Self {
+        Self {
+            register,
+            advance_pc: true,
+        }
+    }
+}
+
+impl From<RegisterCompletion> for LoongArchCompletion {
+    fn from(register: RegisterCompletion) -> Self {
+        Self {
+            register,
+            advance_pc: false,
+        }
+    }
+}
+
 impl ArchOps for LoongArch64Arch {
     type VCpu = AxvmLoongArchVcpu;
     type PerCpu = AxvmLoongArchPerCpu;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
+    type Entry = LoongArchEntry;
+    type Exit = LoongArchExit;
+    type Completion = LoongArchCompletion;
 
     fn has_hardware_support() -> bool {
         ax_cpu::capability::has_hypervisor_extension()
     }
 
-    fn inject_arch_interrupt(
-        vm_id: usize,
-        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
-        interrupt: crate::runtime::QueuedVcpuInterrupt,
-    ) {
-        let (vector, physical_irq) = match interrupt {
-            crate::runtime::QueuedVcpuInterrupt::Physical {
-                vector,
-                physical_irq,
-            } => (vector, Some(physical_irq)),
-            crate::runtime::QueuedVcpuInterrupt::External { vector } => (vector, None),
-            crate::runtime::QueuedVcpuInterrupt::Virtual(_) => {
-                unreachable!("virtual interrupts are consumed by the common injection path")
-            }
-        };
-        if physical_irq.is_none() {
-            if let Err(err) = vcpu.get_arch_vcpu().inject_eiointc_interrupt(vector) {
-                warn!(
-                    "Failed to inject queued LoongArch EIOINTC vector={vector:#x} into \
-                     VM[{vm_id}] VCpu[{}]: {err:?}",
-                    vcpu.id()
-                );
-            }
-            return;
-        }
-        let physical_irq = physical_irq.expect("physical interrupt identity was checked above");
-        let Some(vm) = crate::get_vm_by_id(vm_id) else {
-            warn!("VM[{vm_id}] disappeared before physical interrupt injection");
-            return;
-        };
-        let Some(vector) = loongarch_external_irq_vector(&vm, vector, physical_irq) else {
-            trace!(
-                "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is masked in \
-                 VM[{vm_id}]"
-            );
-            return;
-        };
-        trace!(
-            "Injecting queued LoongArch external interrupt vector={vector:#x}, \
-             physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{}]",
-            vcpu.id()
-        );
-        if let Err(err) = vcpu
-            .get_arch_vcpu()
-            .inject_external_interrupt(vector, physical_irq)
-        {
-            warn!(
-                "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
-                 physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{}]: {err:?}",
-                vcpu.id()
-            );
-        }
+    /// Drops every locally cached guest translation for the retired root.
+    ///
+    /// The control owner calls this in a synchronous host-CPU rendezvous after
+    /// every vCPU has unloaded, once per CPU that could cache the old root. It
+    /// performs a real `INVTLB_ALLGID` invalidation instead of relying on the
+    /// next guest entry to refresh the translation window.
+    fn invalidate_translations(
+        _entry: &Self::Entry,
+        _old_root: axvm_types::NestedPagingConfig,
+    ) -> AxVmResult {
+        // SAFETY: the caller guarantees this runs in root mode with local
+        // interrupts disabled on an LVZ CPU that has unloaded every guest, so
+        // no guest can observe a partially invalidated translation window.
+        // `invtlb 0x12` drops all cached guest translations, including entries
+        // tagged with another guest id, for this CPU only.
+        unsafe { ax_cpu::virtualization::invalidate_guest_translations() };
+        Ok(())
     }
 
-    fn before_vcpu_run(
-        _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    fn prepare_entry(
+        resources: &AxVMResources,
+        signals: Arc<RunSignals>,
+    ) -> AxVmResult<Self::Entry> {
+        let run = irq::LoongArchRunPort::new(signals);
+        let devices = resources.devices()?;
+        let pch_pic = devices
+            .services()
+            .require::<axdevice::PchPicOutputPortKey>()?;
+        // The per-run controller runtime is built with the devices and is bound
+        // here, before guest entry is admitted.
+        let runtime = devices
+            .services()
+            .require::<irq::LoongArchPchPicRuntimeKey>()?;
+        runtime.activate(run.clone());
+        Ok(Self::Entry { pch_pic, run })
+    }
+
+    fn enter_runtime(vm: &mut crate::AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
+        irq::enter_runtime(vm.id(), &irq::LoongArchRunPort::new(Arc::clone(signals)))
+    }
+
+    fn exit_runtime(vm: &mut crate::AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
+        irq::exit_runtime(vm.id(), signals.run_id());
+        if let Ok(devices) = vm.get_devices()
+            && let Ok(runtime) = devices
+                .services()
+                .require::<irq::LoongArchPchPicRuntimeKey>()
+        {
+            runtime.deactivate();
+        }
+        Ok(())
+    }
+
+    fn prepare_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult {
+        vcpu.get_arch_vcpu().0.set_run_port(entry.run.clone());
+        Ok(())
+    }
+
+    fn before_guest(
+        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        _entry: &Self::Entry,
     ) -> AxVmResult {
         vcpu.get_arch_vcpu().0.prepare_entry();
         Ok(())
     }
 
-    fn handle_vcpu_exit_unbound(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    fn complete(
+        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        _entry: &Self::Entry,
+        completion: Self::Completion,
+    ) -> AxVmResult {
+        match completion.register {
+            RegisterCompletion::None => {}
+            RegisterCompletion::Gpr { register, value } => vcpu.set_gpr(register, value),
+            RegisterCompletion::Return(value) => vcpu.set_return_value(value),
+        }
+        if completion.advance_pc {
+            vcpu.get_arch_vcpu().advance_guest_pc();
+        }
+        Ok(())
+    }
+
+    fn capture_exit(
+        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<VcpuExitAction> {
-        let exit = match exit {
-            LoongArchVmExit::Machine(exit) => {
-                loongarch_result(vcpu.get_arch_vcpu().0.process_exit(exit))
-                    .map_err(|error| AxVmError::vcpu("interpret LVZ exit", error))?
-            }
-            exit => exit,
-        };
-        match exit {
-            LoongArchVmExit::Machine(_) => unreachable!("machine exit was interpreted"),
-            LoongArchVmExit::Hypercall { nr, args } => super::handle_hypercall(
-                vm,
-                vcpu,
-                HypercallExit { nr, args },
-                crate::runtime::hvc::HyperCallAbi::Generic,
-            ),
-            LoongArchVmExit::MmioRead {
-                addr,
-                width,
-                reg,
-                reg_width,
-                signed_ext,
-            } => super::handle_mmio_read(
-                vm,
-                vcpu,
-                MmioReadExit {
-                    addr: loong_guest_phys_addr_to_ax(addr),
-                    width: loong_access_width_to_ax(width),
-                    reg,
-                    reg_width: loong_access_width_to_ax(reg_width),
-                    signed_ext,
-                },
-            ),
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
-                vm,
-                vcpu,
-                MmioWriteExit {
-                    addr: loong_guest_phys_addr_to_ax(addr),
-                    width: loong_access_width_to_ax(width),
-                    data,
-                },
-            ),
-            LoongArchVmExit::NestedPageFault { addr, access_flags } => {
-                handle_loongarch_nested_page_fault(vm, vcpu, addr, access_flags)
-            }
-            LoongArchVmExit::Idle => {
-                trace!("VM[{}] run VCpu[{}] Idle", vm.id(), vcpu.id());
-                Ok(VcpuExitAction::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
-            }
-            LoongArchVmExit::Halt => {
-                debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(VcpuExitAction::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
-            }
-            LoongArchVmExit::Nothing => Ok(VcpuExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-                resets_vm: false,
-                exits_vcpu: false,
-            })),
-        }
-    }
-
-    fn wait_for_vcpu_event(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        runtime: &crate::vm::VmRuntimeHandle,
-    ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot(vcpu.run_state());
-        crate::vm::wait_for_vcpu_event_if_idle_with(
-            runtime,
-            &wait_snapshot,
-            || vm.running(),
-            || {
-                runtime.has_pending_interrupt(vcpu.id())
-                    || vcpu.get_arch_vcpu().has_enabled_pending_interrupt()
-            },
-            |condition| runtime.wait_until(condition),
-        );
-    }
-}
-
-fn handle_loongarch_nested_page_fault(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
-    addr: LoongArchGuestPhysAddr,
-    access_flags: LoongArchAccessFlags,
-) -> AxVmResult<VcpuExitAction> {
-    let ax_addr = loong_guest_phys_addr_to_ax(addr);
-    if let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) {
-        let handled = match decoded {
-            LoongArchVmExit::MmioRead {
-                addr,
-                width,
-                reg,
-                reg_width,
-                signed_ext,
-            } => super::try_handle_mmio_read(
-                vm,
-                vcpu,
-                MmioReadExit {
-                    addr: loong_guest_phys_addr_to_ax(addr),
-                    width: loong_access_width_to_ax(width),
-                    reg,
-                    reg_width: loong_access_width_to_ax(reg_width),
-                    signed_ext,
-                },
-            )?,
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::try_handle_mmio_write(
-                vm,
-                vcpu,
-                MmioWriteExit {
-                    addr: loong_guest_phys_addr_to_ax(addr),
-                    width: loong_access_width_to_ax(width),
-                    data,
-                },
-            )?,
-            _ => false,
-        };
-        if handled {
-            return Ok(VcpuExitAction::Continue);
-        }
-    }
-
-    let ax_flags = loong_access_flags_to_ax(access_flags);
-    if vm.handle_nested_page_fault(ax_addr, ax_flags) {
-        Ok(VcpuExitAction::Continue)
-    } else {
-        warn!(
-            "VM[{}] VCpu[{}] unhandled nested page fault at {:#x}, access={:?}",
-            vm.id(),
-            vcpu.id(),
-            ax_addr.as_usize(),
-            ax_flags
-        );
-        Ok(VcpuExitAction::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        }))
-    }
-}
-
-fn loongarch_external_irq_vector(
-    vm: &crate::AxVMRef,
-    fallback_vector: usize,
-    _physical_irq: usize,
-) -> Option<usize> {
-    let devices = vm.get_devices().ok()?;
-    devices
-        .services()
-        .require::<axdevice::PchPicOutputPortKey>()
-        .ok()
-        .map_or(Some(fallback_vector), |port| {
-            port.set_input_level(fallback_vector, true)
+    ) -> AxVmResult<Self::Exit> {
+        let kind = capture_loongarch_exit(vcpu.get_arch_vcpu(), exit)?;
+        Ok(LoongArchExit {
+            kind,
+            pch_pic: Arc::clone(&entry.pch_pic),
+            run: entry.run.clone(),
         })
+    }
+
+    fn handle_exit(
+        exit: Self::Exit,
+        vcpu_id: usize,
+        services: &RunServices,
+    ) -> AxVmResult<VcpuAction<Self::Completion, GuestRequest>> {
+        let LoongArchExit { kind, pch_pic, run } = exit;
+        match kind {
+            LoongArchExitKind::Hypercall { nr, args } => {
+                // The shared exit interpreter already produces this
+                // architecture's completion type.
+                shared_exit::handle_hypercall::<Self>(
+                    services,
+                    vcpu_id,
+                    HypercallExit { nr, args },
+                    HyperCallAbi::Generic,
+                )
+            }
+            LoongArchExitKind::MmioRead {
+                addr,
+                width,
+                reg,
+                reg_width,
+                signed_ext,
+                fallback,
+            } => {
+                let access = MmioReadExit {
+                    addr,
+                    width,
+                    reg,
+                    reg_width,
+                    signed_ext,
+                };
+                match fallback {
+                    Some(access_flags) => {
+                        let Some(completion) =
+                            shared_exit::try_handle_mmio_read(services, vcpu_id, access)?
+                        else {
+                            // The fault decoded as a load but no device owns the
+                            // address: hand it back as a nested page fault so the
+                            // control owner can map guest memory lazily.
+                            return Ok(VcpuAction::Control(GuestRequest::NestedFault {
+                                addr,
+                                access_flags,
+                            }));
+                        };
+                        publish_pch_pic_outputs(&pch_pic, &run)?;
+                        Ok(VcpuAction::Reenter(LoongArchCompletion::device(completion)))
+                    }
+                    None => {
+                        // A direct device access has no page-fault retry, so the
+                        // shared register effect is retired immediately.
+                        let action =
+                            shared_exit::handle_mmio_read::<Self>(services, vcpu_id, access)?;
+                        publish_pch_pic_outputs(&pch_pic, &run)?;
+                        Ok(retire_device_action(action))
+                    }
+                }
+            }
+            LoongArchExitKind::MmioWrite {
+                addr,
+                width,
+                data,
+                fallback,
+            } => {
+                let access = MmioWriteExit { addr, width, data };
+                match fallback {
+                    Some(access_flags) => {
+                        if !shared_exit::try_handle_mmio_write(services, vcpu_id, access)? {
+                            // No device accepted the decoded store: report the
+                            // original nested page fault to the control owner.
+                            return Ok(VcpuAction::Control(GuestRequest::NestedFault {
+                                addr,
+                                access_flags,
+                            }));
+                        }
+                        publish_pch_pic_outputs(&pch_pic, &run)?;
+                        Ok(VcpuAction::Reenter(LoongArchCompletion::device(
+                            RegisterCompletion::None,
+                        )))
+                    }
+                    None => {
+                        let action =
+                            shared_exit::handle_mmio_write::<Self>(services, vcpu_id, access)?;
+                        publish_pch_pic_outputs(&pch_pic, &run)?;
+                        Ok(retire_device_action(action))
+                    }
+                }
+            }
+            LoongArchExitKind::NestedPageFault { addr, access_flags } => {
+                Ok(VcpuAction::Control(GuestRequest::NestedFault {
+                    addr,
+                    access_flags,
+                }))
+            }
+            LoongArchExitKind::Idle => {
+                trace!("VCpu[{vcpu_id}] LoongArch idle");
+                Ok(VcpuAction::Wait(WaitReason::Idle))
+            }
+            LoongArchExitKind::Halt => {
+                debug!("VCpu[{vcpu_id}] LoongArch halt");
+                Ok(VcpuAction::Wait(WaitReason::Idle))
+            }
+            LoongArchExitKind::Nothing => Ok(VcpuAction::Reenter(LoongArchCompletion::default())),
+        }
+    }
+
+    fn inject_arch_interrupt(
+        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        entry: &Self::Entry,
+        interrupt: QueuedVcpuInterrupt,
+    ) -> AxVmResult {
+        let (vector, physical_irq) = match interrupt {
+            QueuedVcpuInterrupt::Physical {
+                vector,
+                physical_irq,
+            } => (vector, Some(physical_irq)),
+            QueuedVcpuInterrupt::External { vector } => (vector, None),
+            QueuedVcpuInterrupt::Virtual(_) => {
+                return Err(AxVmError::unsupported(
+                    "inject LoongArch interrupt",
+                    "virtual interrupt reached the architecture queue",
+                ));
+            }
+        };
+        let Some(physical_irq) = physical_irq else {
+            vcpu.get_arch_vcpu()
+                .inject_eiointc_interrupt(vector)
+                .map_err(|error| {
+                    AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error)
+                })?;
+            return Ok(());
+        };
+
+        // The physical source identity, rather than the current guest vector,
+        // selects the native controller input. Distinct sources therefore stay
+        // distinct even when they are currently routed to the same vector.
+        let Some(vector) = entry.pch_pic.set_input_level(physical_irq, true) else {
+            trace!(
+                "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is masked in \
+                 VM[{}]",
+                vcpu.vm_id()
+            );
+            return Ok(());
+        };
+        trace!(
+            "Injecting queued LoongArch external interrupt vector={vector:#x}, \
+             physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]",
+            vcpu.vm_id(),
+            vcpu.id()
+        );
+        vcpu.get_arch_vcpu()
+            .inject_external_interrupt(vector, physical_irq)
+            .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))?;
+        Ok(())
+    }
+
+    fn wait_for_event(
+        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        _entry: &Self::Entry,
+        wait: &VcpuWait,
+    ) -> AxVmResult {
+        // The predicate only reads this vCPU's own pending-interrupt state, so
+        // the backend borrow is hoisted out and shared by the `Fn` closure.
+        let backend = vcpu.get_arch_vcpu();
+        wait.wait_until(|| backend.has_enabled_pending_interrupt());
+        Ok(())
+    }
+}
+
+fn capture_loongarch_exit(
+    backend: &mut AxvmLoongArchVcpu,
+    exit: LoongArchVmExit,
+) -> AxVmResult<LoongArchExitKind> {
+    match exit {
+        LoongArchVmExit::Machine(machine_exit) => {
+            let interpreted = backend
+                .0
+                .process_exit(machine_exit)
+                .map_err(|error| AxVmError::vcpu("interpret LVZ exit", error))?;
+            capture_loongarch_exit(backend, interpreted)
+        }
+        LoongArchVmExit::Hypercall { nr, args } => Ok(LoongArchExitKind::Hypercall { nr, args }),
+        LoongArchVmExit::MmioRead {
+            addr,
+            width,
+            reg,
+            reg_width,
+            signed_ext,
+        } => Ok(LoongArchExitKind::MmioRead {
+            addr: loong_guest_phys_addr_to_ax(addr),
+            width: loong_access_width_to_ax(width),
+            reg,
+            reg_width: loong_access_width_to_ax(reg_width),
+            signed_ext,
+            fallback: None,
+        }),
+        LoongArchVmExit::MmioWrite { addr, width, data } => Ok(LoongArchExitKind::MmioWrite {
+            addr: loong_guest_phys_addr_to_ax(addr),
+            width: loong_access_width_to_ax(width),
+            data,
+            fallback: None,
+        }),
+        LoongArchVmExit::NestedPageFault { addr, access_flags } => {
+            let fault_flags = loong_access_flags_to_ax(access_flags);
+            if let Some(decoded) = backend.decode_mmio_fault(addr, access_flags) {
+                match decoded {
+                    LoongArchVmExit::MmioRead {
+                        addr,
+                        width,
+                        reg,
+                        reg_width,
+                        signed_ext,
+                    } => {
+                        return Ok(LoongArchExitKind::MmioRead {
+                            addr: loong_guest_phys_addr_to_ax(addr),
+                            width: loong_access_width_to_ax(width),
+                            reg,
+                            reg_width: loong_access_width_to_ax(reg_width),
+                            signed_ext,
+                            fallback: Some(fault_flags),
+                        });
+                    }
+                    LoongArchVmExit::MmioWrite { addr, width, data } => {
+                        return Ok(LoongArchExitKind::MmioWrite {
+                            addr: loong_guest_phys_addr_to_ax(addr),
+                            width: loong_access_width_to_ax(width),
+                            data,
+                            fallback: Some(fault_flags),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            Ok(LoongArchExitKind::NestedPageFault {
+                addr: loong_guest_phys_addr_to_ax(addr),
+                access_flags: fault_flags,
+            })
+        }
+        LoongArchVmExit::Idle => Ok(LoongArchExitKind::Idle),
+        LoongArchVmExit::Halt => Ok(LoongArchExitKind::Halt),
+        LoongArchVmExit::Nothing => Ok(LoongArchExitKind::Nothing),
+    }
+}
+
+/// Retires the guest PC for a device access that had no page-fault fallback.
+fn retire_device_action(
+    action: VcpuAction<LoongArchCompletion, GuestRequest>,
+) -> VcpuAction<LoongArchCompletion, GuestRequest> {
+    match action {
+        VcpuAction::Reenter(completion) => VcpuAction::Reenter(LoongArchCompletion {
+            advance_pc: true,
+            ..completion
+        }),
+        other => other,
+    }
+}
+
+fn publish_pch_pic_outputs(
+    pch_pic: &Arc<dyn axdevice::PchPicOutputPort>,
+    run: &irq::LoongArchRunPort,
+) -> AxVmResult {
+    while let Some(event) = pch_pic.take_output_event() {
+        if !event.asserted {
+            continue;
+        }
+        run.publish_external(0, event.vector).map_err(|error| {
+            AxVmError::interrupt("publish LoongArch PCH-PIC output", format!("{error:?}"))
+        })?;
+    }
+    Ok(())
 }
 
 struct AxvmLoongArchHostOps;
@@ -299,20 +528,15 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
             .map(|_| ())
             .map_err(|_| LoongArchVcpuError::TimerUnavailable)
     }
-
-    fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
-        if let Err(err) = crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector) {
-            warn!(
-                "failed to queue LoongArch interrupt {vector:#x} for VM[{vm_id}] VCpu[{vcpu_id}]: \
-                 {err:?}"
-            );
-        }
-    }
 }
 
 pub(crate) struct AxvmLoongArchVcpu(LoongArchVcpu<AxvmLoongArchHostOps>);
 
 impl AxvmLoongArchVcpu {
+    fn advance_guest_pc(&mut self) {
+        self.0.advance_guest_pc();
+    }
+
     fn inject_eiointc_interrupt(&mut self, vector: usize) -> AxVmResult {
         loongarch_result(self.0.inject_eiointc_interrupt(vector))
             .map_err(|error| AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error))

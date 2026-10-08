@@ -26,6 +26,8 @@ mod constants;
 mod device;
 mod error;
 mod header;
+#[cfg(any(test, doctest))]
+mod host_lock_provider;
 mod managed;
 pub mod switch;
 

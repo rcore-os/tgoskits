@@ -56,7 +56,7 @@
 <text x="448" y="746" font-size="15" fill="#334155">配置变化时替换完成路由</text>
 <rect x="820" y="610" width="340" height="160" rx="12" fill="#fff7ed" stroke="#94a3b8"/>
 <text x="838" y="641" font-size="19" font-weight="700" fill="#0f172a">EventHandler / Event Ring</text>
-<text x="838" y="671" font-size="15" fill="#334155">SpinLock 保护事件状态</text>
+<text x="838" y="671" font-size="15" fill="#334155">RawSpinLock 保护事件状态</text>
 <text x="838" y="696" font-size="15" fill="#334155">读取 cycle 与消费事件</text>
 <text x="838" y="721" font-size="15" fill="#334155">更新 ERDP 并处理 IRQ</text>
 <text x="838" y="746" font-size="15" fill="#334155">发布完成或端口变化通知</text>

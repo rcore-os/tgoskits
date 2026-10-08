@@ -21,7 +21,13 @@
 //! [`VcpuAction`]. Shared runtime services and the fixed [`VcpuSignals`] target
 //! are borrowed by the task; the architecture backend is never published.
 
-use std::sync::Arc;
+use std::{
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use axvm_types::VmBackendResult;
 
@@ -40,8 +46,175 @@ pub(crate) enum EngineOutcome<E> {
 pub(crate) enum WaitReason {
     /// No guest work is currently pending; park until an external event.
     Idle,
-    /// The vCPU must wait for a lifecycle transition to complete.
-    Lifecycle,
+    /// PSCI standby commits its return register before arming the wait.
+    IdleWithReturn(usize),
+}
+
+/// All values used while hardware is loaded are prepared in task context.
+pub(crate) struct ExecutionEntry<A: crate::architecture::ArchOps> {
+    pub(crate) root: axvm_types::NestedPagingConfig,
+    pub(crate) revision: crate::guest_memory::MemoryRevision,
+    pub(crate) decode: Arc<crate::guest_memory::DecodeMemory>,
+    pub(crate) architecture: Arc<A::Entry>,
+    pub(crate) signals: Arc<crate::services::RunSignals>,
+    pub(crate) admission: Arc<AtomicBool>,
+}
+
+/// The only generic hardware entry and exit implementation.
+pub(crate) struct OwnedVcpuEngine<A: crate::architecture::ArchOps> {
+    vcpu: crate::vcpu::AxVCpu<A::VCpu>,
+}
+
+impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
+    pub(crate) fn new(vcpu: crate::vcpu::AxVCpu<A::VCpu>) -> Self {
+        Self { vcpu }
+    }
+
+    pub(crate) fn vcpu_mut(&mut self) -> &mut crate::vcpu::AxVCpu<A::VCpu> {
+        &mut self.vcpu
+    }
+
+    pub(crate) fn into_backend(mut self) -> (crate::vcpu::AxVCpu<A::VCpu>, AxVmResult) {
+        let result = self.vcpu.unbind();
+        (self.vcpu, result)
+    }
+
+    pub(crate) fn install_root(
+        &mut self,
+        entry: &mut ExecutionEntry<A>,
+        root: axvm_types::NestedPagingConfig,
+        revision: crate::guest_memory::MemoryRevision,
+        decode: Arc<crate::guest_memory::DecodeMemory>,
+    ) -> AxVmResult {
+        use axvm_types::VmArchVcpuOps;
+        self.vcpu
+            .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
+                vcpu.get_arch_vcpu()
+                    .set_nested_page_table(root)
+                    .map_err(|error| {
+                        crate::vcpu::map_vcpu_backend_error("install translation root", error)
+                    })
+            })?;
+        entry.root = root;
+        entry.revision = revision;
+        entry.decode = decode;
+        Ok(())
+    }
+
+    pub(crate) fn commit_only(
+        &mut self,
+        entry: &ExecutionEntry<A>,
+        completion: A::Completion,
+    ) -> AxVmResult {
+        self.vcpu
+            .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
+                A::complete(vcpu, &entry.architecture, completion)
+            })
+    }
+}
+
+impl<A: crate::architecture::ArchOps> VcpuEngine for OwnedVcpuEngine<A> {
+    type Entry = ExecutionEntry<A>;
+    type Exit = A::Exit;
+    type Completion = A::Completion;
+
+    fn run_once(
+        &mut self,
+        entry: &Self::Entry,
+        completion: Option<Self::Completion>,
+        signals: &VcpuSignals,
+    ) -> VmBackendResult<EngineOutcome<Self::Exit>> {
+        use ax_std::os::arceos::guard::IrqSaveGuard;
+
+        use crate::vcpu::VcpuRunResult;
+        let attempt = (|| {
+            debug_assert!(std::ptr::eq(signals, &*self.vcpu.run_state()));
+            A::prepare_vcpu(&mut self.vcpu, &entry.architecture)?;
+            // Draining allocates its return buffer before CPU binding. Producers
+            // publish canonical pending before a lock-free final recheck.
+            let pending = entry.signals.drain(
+                self.vcpu.id(),
+                crate::task::current_task_context()
+                    .expect("vCPU engine runs on its owning task")
+                    .instance
+                    .activation,
+            );
+            let outcome = self
+                .vcpu
+                .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
+                    if let Some(completion) = completion {
+                        A::complete(vcpu, &entry.architecture, completion)?;
+                    }
+                    for &interrupt in &pending {
+                        match interrupt.into_virtual() {
+                            Ok(interrupt) => A::inject_vcpu_interrupt(vcpu, interrupt)?,
+                            Err(interrupt) => {
+                                A::inject_arch_interrupt(vcpu, &entry.architecture, interrupt)?
+                            }
+                        }
+                    }
+                    A::before_guest(vcpu, &entry.architecture)?;
+                    let irq = IrqSaveGuard::new();
+                    let vcpu_id = vcpu.id();
+                    let result = vcpu.run_loaded(|| {
+                        !entry.admission.load(Ordering::Acquire)
+                            || entry.signals.has_pending(vcpu_id)
+                    });
+                    drop(irq);
+                    match result? {
+                        VcpuRunResult::Retry | VcpuRunResult::ExitRequested => {
+                            Ok(EngineOutcome::Interrupted)
+                        }
+                        VcpuRunResult::VmExit(exit) => {
+                            A::capture_exit(vcpu, &entry.architecture, exit)
+                                .map(EngineOutcome::Exit)
+                        }
+                    }
+                })?;
+            match outcome {
+                EngineOutcome::Exit(exit) => {
+                    A::finish_exit(&mut self.vcpu, &entry.architecture, exit)
+                        .map(EngineOutcome::Exit)
+                }
+                EngineOutcome::Interrupted => Ok(EngineOutcome::Interrupted),
+            }
+        })();
+        attempt.map_err(|error| {
+            error!("vCPU hardware attempt failed after context retirement: {error}");
+            match error {
+                crate::AxVmError::OutOfMemory { .. } => axvm_types::VmBackendError::OutOfMemory,
+                _ => axvm_types::VmBackendError::InvalidState,
+            }
+        })
+    }
+}
+
+pub(crate) struct ArchitectureExitHandler<A: crate::architecture::ArchOps> {
+    vcpu_id: usize,
+    architecture: PhantomData<fn() -> A>,
+}
+
+impl<A: crate::architecture::ArchOps> ArchitectureExitHandler<A> {
+    pub(crate) const fn new(vcpu_id: usize) -> Self {
+        Self {
+            vcpu_id,
+            architecture: PhantomData,
+        }
+    }
+}
+
+impl<A: crate::architecture::ArchOps> ExitHandler<OwnedVcpuEngine<A>>
+    for ArchitectureExitHandler<A>
+{
+    type Request = crate::runtime::hvc::GuestRequest;
+
+    fn handle(
+        &mut self,
+        exit: A::Exit,
+        services: &RunServices,
+    ) -> AxVmResult<VcpuAction<A::Completion, Self::Request>> {
+        A::handle_exit(exit, self.vcpu_id, services)
+    }
 }
 
 /// Next action selected after one backend exit has been interpreted.
@@ -104,16 +277,15 @@ pub(crate) trait ExitHandler<E: VcpuEngine> {
 /// the fixed signal target are held as `Arc`s. The engine is never published
 /// through CPU-local state; only the identity-only execution context is.
 pub(crate) struct VcpuTask<E: VcpuEngine, H: ExitHandler<E>> {
-    engine: E,
-    entry: E::Entry,
-    completion: Option<E::Completion>,
-    exits: H,
-    services: Arc<RunServices>,
+    pub(crate) engine: E,
+    pub(crate) entry: E::Entry,
+    pub(crate) completion: Option<E::Completion>,
+    pub(crate) exits: H,
+    pub(crate) services: Arc<RunServices>,
     signals: Arc<VcpuSignals>,
 }
 
 impl<E: VcpuEngine, H: ExitHandler<E>> VcpuTask<E, H> {
-    /// Creates a task that owns `engine` and interprets its exits with `exits`.
     pub(crate) fn new(
         engine: E,
         entry: E::Entry,
@@ -131,49 +303,8 @@ impl<E: VcpuEngine, H: ExitHandler<E>> VcpuTask<E, H> {
         }
     }
 
-    /// Runs one guest-entry attempt with the task-owned engine and payload.
     pub(crate) fn run_once(&mut self) -> VmBackendResult<EngineOutcome<E::Exit>> {
-        let completion = self.completion.take();
-        self.engine.run_once(&self.entry, completion, &self.signals)
-    }
-
-    /// Returns the task-owned execution engine.
-    pub(crate) fn engine(&self) -> &E {
-        &self.engine
-    }
-
-    /// Returns the task-owned execution engine for mutation.
-    pub(crate) fn engine_mut(&mut self) -> &mut E {
-        &mut self.engine
-    }
-
-    /// Returns the per-entry guest payload.
-    pub(crate) fn entry(&self) -> &E::Entry {
-        &self.entry
-    }
-
-    /// Returns the completion committed before the next guest entry.
-    pub(crate) fn completion(&self) -> Option<&E::Completion> {
-        self.completion.as_ref()
-    }
-
-    /// Sets the completion committed before the next guest entry.
-    pub(crate) fn set_completion(&mut self, completion: E::Completion) {
-        self.completion = Some(completion);
-    }
-
-    /// Returns the exit interpreter.
-    pub(crate) fn exits_mut(&mut self) -> &mut H {
-        &mut self.exits
-    }
-
-    /// Returns the shared runtime services.
-    pub(crate) fn services(&self) -> &Arc<RunServices> {
-        &self.services
-    }
-
-    /// Returns the fixed signal target of this task.
-    pub(crate) fn signals(&self) -> &Arc<VcpuSignals> {
-        &self.signals
+        self.engine
+            .run_once(&self.entry, self.completion.take(), &self.signals)
     }
 }

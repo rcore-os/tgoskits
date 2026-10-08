@@ -17,6 +17,7 @@ use super::{
         LoongArchVmExit, LoongArchVmId,
     },
 };
+use crate::arch::loongarch64::irq::LoongArchRunPort;
 
 const GUEST_RESET_CRMD_DIRECT: usize = 1 << 3;
 const GUEST_BOOT_PRMD: usize = 1 << 2;
@@ -209,6 +210,20 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.machine.context.set_gpr(idx, val);
     }
 
+    /// Advances the guest PC past one fully emulated instruction.
+    pub fn advance_guest_pc(&mut self) {
+        self.machine.context.advance_guest_pc();
+    }
+
+    /// Binds the run-bound publication capability into every lower callback
+    /// carrier owned by this backend.
+    ///
+    /// Task context, called once per run before the vCPU can enter the guest.
+    pub fn set_run_port(&mut self, port: LoongArchRunPort) {
+        self.guest_timer.set_run_port(port.clone());
+        self.iocsr_state.set_run_port(port);
+    }
+
     pub fn decode_mmio_fault(
         &mut self,
         fault_addr: LoongArchGuestPhysAddr,
@@ -216,7 +231,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
     ) -> Option<LoongArchVmExit> {
         let gcsr_badi = self.machine.context.gcsr_badi;
         let exit = super::mmio::decode_mmio_fault(
-            &mut self.machine.context,
+            &self.machine.context,
             self.last_badi,
             fault_addr,
             access_flags,
@@ -226,7 +241,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 None
             } else {
                 super::mmio::decode_mmio_fault(
-                    &mut self.machine.context,
+                    &self.machine.context,
                     gcsr_badi,
                     fault_addr,
                     access_flags,

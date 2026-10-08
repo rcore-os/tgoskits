@@ -10,8 +10,8 @@ use std::{
 };
 
 use aarch64_cpu_ext::registers::{CNTPCT_EL0, Readable};
-use arm_vgic::{GicVcpuId, PpiId, VgicCore, VgicResult};
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use arm_vgic::{GicV3Native, GicVcpuId, PpiId, VgicResult};
+use ax_std::os::arceos::sync::RawSpinLock;
 
 use crate::{
     arch::aarch64::{
@@ -139,7 +139,7 @@ impl Aarch64TimerWaitState {
 /// interrupt conditions remain in the VM timer policy; pending/active/EOI state remains
 /// in the VGIC.
 pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
-    vgic: Arc<VgicCore>,
+    vgic: GicV3Native,
     backend: Arc<AxvmVgicBackend>,
     vcpu: GicVcpuId,
     virtual_ppi: PpiId,
@@ -148,13 +148,13 @@ pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
     frequency: u64,
     registered: AtomicBool,
     wait_state: Arc<Aarch64TimerWaitState>,
-    scheduled: IrqSafeMutex<Option<ScheduledWaitTimer>>,
-    host_activation: IrqSafeMutex<Option<HostTimerActivation>>,
+    scheduled: RawSpinLock<Option<ScheduledWaitTimer>>,
+    host_activation: RawSpinLock<Option<HostTimerActivation>>,
 }
 
 impl Aarch64TimerBinding {
     pub(in crate::arch::aarch64) fn new(
-        vgic: Arc<VgicCore>,
+        vgic: GicV3Native,
         backend: Arc<AxvmVgicBackend>,
         vcpu: GicVcpuId,
         virtual_ppi: PpiId,
@@ -172,8 +172,8 @@ impl Aarch64TimerBinding {
             frequency,
             registered: AtomicBool::new(false),
             wait_state: Arc::new(Aarch64TimerWaitState::new()),
-            scheduled: IrqSafeMutex::new(None),
-            host_activation: IrqSafeMutex::new(None),
+            scheduled: RawSpinLock::new(None),
+            host_activation: RawSpinLock::new(None),
         });
         backend.register_timer_ppi(vcpu, virtual_ppi, Arc::downgrade(&binding))?;
         binding.registered.store(true, Ordering::Release);
@@ -184,7 +184,7 @@ impl Aarch64TimerBinding {
     pub(in crate::arch::aarch64) fn prepare_run(&self) -> VgicResult {
         let current_cpu = default_host().this_cpu_id();
         let activation = {
-            let mut active = self.host_activation.lock();
+            let mut active = self.host_activation.lock_irqsave();
             if active
                 .as_ref()
                 .is_some_and(|activation| activation.owner_cpu != current_cpu)
@@ -197,7 +197,7 @@ impl Aarch64TimerBinding {
         if let Some(activation) = activation
             && let Err(error) = self.complete_host_activation(activation)
         {
-            *self.host_activation.lock() = Some(activation);
+            *self.host_activation.lock_irqsave() = Some(activation);
             return Err(error);
         }
         Ok(())
@@ -212,7 +212,7 @@ impl Aarch64TimerBinding {
             token,
             owner_cpu: default_host().this_cpu_id(),
         };
-        let mut active = self.host_activation.lock();
+        let mut active = self.host_activation.lock_irqsave();
         if active.is_some() {
             drop(active);
             super::super::gic::deactivate_host_irq(token);
@@ -257,7 +257,7 @@ impl Aarch64TimerBinding {
         let current_cpu = default_host().this_cpu_id();
         let current_thread = crate::host::task::current_thread();
         let owner_thread = current_thread.id();
-        let existing = *self.scheduled.lock();
+        let existing = *self.scheduled.lock_irqsave();
         if let Some(existing) = existing
             && wait_timer_owner_matches(
                 existing.owner_cpu,
@@ -279,7 +279,8 @@ impl Aarch64TimerBinding {
             return Ok(Some(wait_token));
         }
 
-        if let Some(previous) = self.scheduled.lock().take() {
+        let previous = self.scheduled.lock_irqsave().take();
+        if let Some(previous) = previous {
             self.wait_state.retire_timer_epoch(previous.epoch);
             cancel_wait_timer(previous.handle);
         }
@@ -325,7 +326,7 @@ impl Aarch64TimerBinding {
                 detail: std::format!("stable hard timer registration failed: {error}"),
             }
         })?;
-        *self.scheduled.lock() = Some(ScheduledWaitTimer {
+        *self.scheduled.lock_irqsave() = Some(ScheduledWaitTimer {
             handle,
             owner_cpu: current_cpu,
             owner_thread,
@@ -346,7 +347,7 @@ impl Aarch64TimerBinding {
         if !self.wait_state.invalidate() {
             return;
         }
-        let scheduled = *self.scheduled.lock();
+        let scheduled = *self.scheduled.lock_irqsave();
         if let Some(scheduled) = scheduled
             && let Err(error) = default_host().disarm_hard_timer(scheduled.handle)
         {
@@ -357,9 +358,10 @@ impl Aarch64TimerBinding {
     /// Clears both private timer lines and invalidates all scheduled work.
     pub(in crate::arch::aarch64) fn reset(&self) -> VgicResult {
         self.invalidate_wait();
-        let controller = self.vgic.controller();
-        controller.set_ppi_level(self.vcpu, self.virtual_ppi, false)?;
-        controller.set_ppi_level(self.vcpu, self.physical_ppi, false)?;
+        self.vgic
+            .set_ppi_level(self.vcpu, self.virtual_ppi, false)?;
+        self.vgic
+            .set_ppi_level(self.vcpu, self.physical_ppi, false)?;
         self.retire_host_activation()
     }
 
@@ -370,19 +372,20 @@ impl Aarch64TimerBinding {
     ) -> VgicResult<bool> {
         let virtual_level = snapshot.irq_asserted(ArmTimerKind::Virtual, physical_counter);
         let physical_level = snapshot.irq_asserted(ArmTimerKind::Physical, physical_counter);
-        let controller = self.vgic.controller();
-        controller.set_ppi_level(self.vcpu, self.virtual_ppi, virtual_level)?;
-        controller.set_ppi_level(self.vcpu, self.physical_ppi, physical_level)?;
+        self.vgic
+            .set_ppi_level(self.vcpu, self.virtual_ppi, virtual_level)?;
+        self.vgic
+            .set_ppi_level(self.vcpu, self.physical_ppi, physical_level)?;
         Ok(virtual_level || physical_level)
     }
 
     pub(in crate::arch::aarch64) fn retire_host_activation(&self) -> VgicResult {
-        let activation = self.host_activation.lock().take();
+        let activation = self.host_activation.lock_irqsave().take();
         let Some(activation) = activation else {
             return Ok(());
         };
         if let Err(error) = self.complete_host_activation(activation) {
-            *self.host_activation.lock() = Some(activation);
+            *self.host_activation.lock_irqsave() = Some(activation);
             return Err(error);
         }
         Ok(())
@@ -464,11 +467,13 @@ impl Drop for Aarch64TimerBinding {
                 .unregister_timer_ppi(self.vcpu, self.virtual_ppi);
         }
         self.wait_state.invalidate();
-        if let Some(scheduled) = self.scheduled.lock().take() {
+        let scheduled = self.scheduled.lock_irqsave().take();
+        if let Some(scheduled) = scheduled {
             self.wait_state.retire_timer_epoch(scheduled.epoch);
             cancel_wait_timer(scheduled.handle);
         }
-        if let Some(activation) = self.host_activation.lock().take()
+        let activation = self.host_activation.lock_irqsave().take();
+        if let Some(activation) = activation
             && let Err(error) = self.complete_host_activation(activation)
         {
             warn!("failed to complete host timer PPI while dropping binding: {error}");

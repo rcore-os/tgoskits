@@ -15,8 +15,8 @@ use std::{
     vec::Vec,
 };
 
-use arm_vgic::{GicV3BackendError, PhysicalIrqId, VgicCore};
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use arm_vgic::{AssignedSpiConfig, GicV3BackendError, GicV3Native, PhysicalIrqId};
+use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice_base::HostIrqId;
 
 use super::{deactivate_host_irq, dispatch_acknowledged_host_irq, host_irq_intid};
@@ -29,32 +29,33 @@ static ASSIGNED_SPI_ROUTES: [AssignedSpiRouteSlot; GIC_INTID_COUNT] =
 /// Owns every fixed host-INTID route installed for one VM.
 pub(crate) struct AssignedSpiRoutes {
     bindings: Box<[Arc<AssignedSpiBinding>]>,
-    registrations: IrqSafeMutex<Vec<AssignedSpiRouteRegistration>>,
+    registrations: RawSpinLock<Vec<AssignedSpiRouteRegistration>>,
 }
 
 impl AssignedSpiRoutes {
-    pub(super) fn register(controller: &Arc<VgicCore>) -> Result<Arc<Self>, GicV3BackendError> {
-        let bindings = controller
-            .config()
-            .assigned_spis()
+    pub(super) fn register(
+        controller: &GicV3Native,
+        assigned_spis: &[AssignedSpiConfig],
+    ) -> Result<Arc<Self>, GicV3BackendError> {
+        let bindings = assigned_spis
             .iter()
             .map(|assigned| {
                 Arc::new(AssignedSpiBinding {
                     irq: assigned.host_irq(),
                     controller: controller.clone(),
                     accepting: AtomicBool::new(false),
-                    delivery: IrqSafeMutex::new(AssignedSpiDelivery::Idle),
+                    delivery: RawSpinLock::new(AssignedSpiDelivery::Idle),
                 })
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let routes = Arc::new(Self {
             bindings,
-            registrations: IrqSafeMutex::new(Vec::new()),
+            registrations: RawSpinLock::new(Vec::new()),
         });
 
         {
-            let mut registrations = routes.registrations.lock();
+            let mut registrations = routes.registrations.lock_irqsave();
             for binding in &routes.bindings {
                 match AssignedSpiRouteRegistration::install(binding) {
                     Ok(registration) => registrations.push(registration),
@@ -95,15 +96,15 @@ impl AssignedSpiRoutes {
 impl Drop for AssignedSpiRoutes {
     fn drop(&mut self) {
         self.quiesce();
-        self.registrations.lock().clear();
+        self.registrations.lock_irqsave().clear();
     }
 }
 
 struct AssignedSpiBinding {
     irq: HostIrqId,
-    controller: Arc<VgicCore>,
+    controller: GicV3Native,
     accepting: AtomicBool,
-    delivery: IrqSafeMutex<AssignedSpiDelivery>,
+    delivery: RawSpinLock<AssignedSpiDelivery>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,7 +117,7 @@ enum AssignedSpiDelivery {
 impl AssignedSpiBinding {
     /// Publishes one acknowledged activation without VM lookup or allocation.
     fn publish_from_irq(&self, token: usize) -> bool {
-        let mut delivery = self.delivery.lock();
+        let mut delivery = self.delivery.lock_irqsave();
         if !self.accepting.load(Ordering::Acquire) {
             deactivate_host_irq(token);
             return true;
@@ -146,7 +147,7 @@ impl AssignedSpiBinding {
         &self,
         finish: impl FnOnce() -> Result<(), GicV3BackendError>,
     ) -> Result<bool, GicV3BackendError> {
-        let mut delivery = self.delivery.lock();
+        let mut delivery = self.delivery.lock_irqsave();
         if *delivery != AssignedSpiDelivery::Active {
             return Ok(false);
         }
@@ -164,7 +165,7 @@ impl AssignedSpiBinding {
     }
 
     fn wait_for_publication(&self) {
-        drop(self.delivery.lock());
+        drop(self.delivery.lock_irqsave());
     }
 }
 

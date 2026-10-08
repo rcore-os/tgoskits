@@ -8,9 +8,10 @@
 
 extern crate alloc;
 #[cfg(test)]
-extern crate ax_runtime as _;
-#[cfg(test)]
 extern crate std;
+
+#[cfg(any(test, doctest))]
+mod host_lock_provider;
 
 /// Re-export commonly used modules
 /// VirtIO device configuration structures and utilities

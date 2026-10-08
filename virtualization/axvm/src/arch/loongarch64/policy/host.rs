@@ -27,7 +27,4 @@ pub trait LoongArchHostOps {
 
     /// Cancel a guest timer callback.
     fn cancel_timer(handle: Self::TimerHandle) -> LoongArchVcpuResult;
-
-    /// Queue an interrupt for a vCPU.
-    fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize);
 }

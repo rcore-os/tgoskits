@@ -1,6 +1,8 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::{boxed::Box, sync::Arc};
 
+use ax_std::os::arceos::sync::RawSpinLock;
+
 use super::{
     LoongArchContextFrame,
     guest_csr::inject_guest_interrupt_at,
@@ -21,6 +23,7 @@ use super::{
     },
     types::{LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId},
 };
+use crate::arch::loongarch64::irq::LoongArchRunPort;
 
 pub(crate) const EIOINTC_ISR_BASE: usize = 0x1800;
 pub(crate) const EIOINTC_ISR_REG_COUNT: usize = 4;
@@ -69,6 +72,7 @@ pub type LoongArchIocsrStateRef = Arc<LoongArchIocsrState>;
 #[derive(Debug)]
 pub struct LoongArchIocsrState {
     vcpus: Box<[LoongArchVcpuIocsrState]>,
+    run: RawSpinLock<Option<LoongArchRunPort>>,
 }
 
 impl LoongArchIocsrState {
@@ -79,7 +83,19 @@ impl LoongArchIocsrState {
         }
         Ok(Arc::new(Self {
             vcpus: vcpus.into_boxed_slice(),
+            run: RawSpinLock::new(None),
         }))
+    }
+
+    /// Binds the exact run-bound publication capability for this execution
+    /// period. Task context, before any guest entry is admitted.
+    pub(crate) fn set_run_port(&self, port: LoongArchRunPort) {
+        *self.run.lock_irqsave() = Some(port);
+    }
+
+    /// Clones the bound run capability without holding the guard across a wake.
+    fn run_port(&self) -> Option<LoongArchRunPort> {
+        self.run.lock_irqsave().as_ref().cloned()
     }
 
     fn vcpu(&self, vcpu_id: LoongArchVcpuId) -> Option<&LoongArchVcpuIocsrState> {
@@ -491,8 +507,27 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
                     .fetch_or(1usize << action, Ordering::AcqRel);
                 if target_cpu == vcpu_id {
                     ctx.gcsr_estat |= IPI_BIT;
+                } else if let Some(run) = state.run_port() {
+                    // The exact run is resolved from the pre-bound capability, so
+                    // an IPI from a retired run can never reach a newer one.
+                    match LoongArchRunPort::virtual_interrupt(INT_IPI) {
+                        Ok(interrupt) => {
+                            if let Err(error) = run.publish_virtual_irq(target_cpu, interrupt) {
+                                log::trace!(
+                                    "LoongArch guest IOCSR IPI for VM[{vm_id}] VCpu[{target_cpu}] \
+                                     was not delivered: {error:?}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            log::trace!("LoongArch guest IOCSR IPI vector is invalid: {error:?}");
+                        }
+                    }
                 } else {
-                    H::inject_interrupt(vm_id, target_cpu, INT_IPI);
+                    log::trace!(
+                        "LoongArch guest IOCSR IPI for VM[{vm_id}] VCpu[{target_cpu}] ignored: no \
+                         bound run"
+                    );
                 }
             } else {
                 log::debug!(

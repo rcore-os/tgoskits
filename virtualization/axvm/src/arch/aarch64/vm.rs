@@ -4,16 +4,16 @@ use std::{sync::Arc, vec::Vec};
 
 use axvm_types::NestedPagingConfig;
 
-use super::*;
+use super::{Aarch64Arch, Aarch64VgicRuntimeKey, Aarch64VmPlan, npt};
 use crate::{
     AxVmError, AxVmResult,
     arch::aarch64::policy::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig},
     ax_err,
-    config::*,
-    machine::*,
+    config::AxVMConfig,
+    machine::GuestTimerProfile,
     vm::{
-        prepare::{devices::*, vcpus::*, *},
-        *,
+        AxVM, AxVMResources,
+        prepare::{PreparedVm, devices::PreparedDevices, vcpus::PreparedVcpus},
     },
 };
 
@@ -26,7 +26,7 @@ impl Aarch64Arch {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels, &placements)
         })
     }
@@ -62,7 +62,7 @@ impl Aarch64Arch {
                         crate::AxVmError::interrupt("attach vCPU to virtual GIC", error)
                     })?;
                 vcpu.get_arch_vcpu().attach_vgic(
-                    vgic_runtime.core().clone(),
+                    vgic_runtime.native().clone(),
                     binding,
                     timer_config,
                 )?;

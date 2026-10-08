@@ -63,13 +63,6 @@ fn create_device_node(
     let model: Arc<dyn DeviceModel> = Arc::new(VirtioNetModel {
         guest_mac,
         controller,
-        vm_id: context
-            .vm_id()
-            .ok_or_else(|| ConfiguredDeviceError::Instantiation {
-                device: request.id.clone(),
-                model: request.model.clone(),
-                detail: "virtio-net requires a VM identity".into(),
-            })?,
     });
     let mut node = DeviceNodeSpec::virtual_device(id, model);
     if let Some(controller_node) = context.default_wired_controller_node() {
@@ -117,7 +110,6 @@ fn invalid_options(request: &VirtualDeviceRequest, detail: String) -> Configured
 struct VirtioNetModel {
     guest_mac: [u8; 6],
     controller: axdevice_base::InterruptControllerId,
-    vm_id: usize,
 }
 
 impl DeviceModel for VirtioNetModel {
@@ -167,7 +159,17 @@ impl DeviceModel for VirtioNetModel {
             port_id,
             self.guest_mac,
             switch.clone(),
-            Arc::new(AxvmWakeTarget { vm_id: self.vm_id }),
+            Arc::new(AxvmWakeTarget {
+                port: crate::services::DeviceWorkPort::from_device_signal(
+                    context
+                        .work_port()
+                        .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                            operation: "bind virtio-net work port",
+                            detail: "runtime work capability is unavailable".into(),
+                        })?,
+                    context.work_device_id(),
+                ),
+            }),
         );
         let registration = switch.register_owned(endpoint.clone()).map_err(|error| {
             DeviceManagerError::InvalidConfig {
@@ -250,7 +252,7 @@ trait WakeTarget: Send + Sync {
 }
 
 struct AxvmWakeTarget {
-    vm_id: usize,
+    port: crate::services::DeviceWorkPort,
 }
 
 impl WakeTarget for AxvmWakeTarget {
@@ -258,11 +260,8 @@ impl WakeTarget for AxvmWakeTarget {
         // Publish the poll request before kicking vCPU0. Polling synchronously
         // from the sender's device access would let two VM device runtimes
         // re-enter each other.
-        if let Err(error) = crate::runtime::notify_vm(self.vm_id) {
-            warn!(
-                "failed to kick VM[{}] for virtio-net RX: {error:#}",
-                self.vm_id
-            );
+        if let Err(error) = self.port.notify() {
+            debug!("virtio-net RX work port rejected notification: {error}");
         }
     }
 }

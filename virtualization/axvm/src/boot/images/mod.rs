@@ -242,7 +242,7 @@ pub(super) fn memory_images_for_vm(
         })
 }
 
-pub fn load_vm_image_from_memory(
+pub(crate) fn load_vm_image_from_memory(
     image_buffer: &[u8],
     load_addr: GuestPhysAddr,
     vm: &mut AxVM,

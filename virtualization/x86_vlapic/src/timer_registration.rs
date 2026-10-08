@@ -3,14 +3,13 @@
 use alloc::sync::Arc;
 use core::{
     hint::spin_loop,
-    marker::PhantomData,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use ax_sync::RawSpinLock;
+
 use crate::{
-    X86TimerAction, X86TimerCallback, X86VlapicError, X86VlapicResult,
-    host::{self, X86VlapicHostOps},
-    lock::RawSpinLockStorage,
+    X86TimerAction, X86TimerCallback, X86VlapicError, X86VlapicResult, host::X86VlapicRuntimeOps,
 };
 
 /// Linux KVM's default lower bound for periodic PIT and LAPIC host timers.
@@ -64,14 +63,14 @@ struct TimerArmState<T> {
 
 struct TimerArm<T> {
     identity: usize,
-    state: RawSpinLockStorage<TimerArmState<T>>,
+    state: RawSpinLock<TimerArmState<T>>,
 }
 
 impl<T: Copy> TimerArm<T> {
     fn new(identity: usize) -> Self {
         Self {
             identity,
-            state: RawSpinLockStorage::new(TimerArmState {
+            state: RawSpinLock::new(TimerArmState {
                 phase: TimerArmPhase::Armed,
                 cancel_requested: false,
                 registration_complete: false,
@@ -81,7 +80,7 @@ impl<T: Copy> TimerArm<T> {
     }
 
     fn begin_fire(&self) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if state.cancel_requested || state.phase != TimerArmPhase::Armed {
             return false;
         }
@@ -90,7 +89,7 @@ impl<T: Copy> TimerArm<T> {
     }
 
     fn finish_fire(&self, requested: X86TimerAction) -> TimerFireCompletion {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert_eq!(
             state.phase,
             TimerArmPhase::Firing,
@@ -122,7 +121,7 @@ impl<T: Copy> TimerArm<T> {
     }
 
     fn finish_registration(&self, handle: T) -> TimerRegistrationCompletion {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(
             !state.registration_complete,
             "x86 timer host registration completed twice"
@@ -140,7 +139,7 @@ impl<T: Copy> TimerArm<T> {
     }
 
     fn fail_registration(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         state.registration_complete = true;
         state.phase = TimerArmPhase::Retired;
     }
@@ -148,7 +147,7 @@ impl<T: Copy> TimerArm<T> {
     fn request_cancel_and_take_handle(&self) -> Option<T> {
         loop {
             {
-                let mut state = self.state.lock();
+                let mut state = self.state.lock_irqsave();
                 state.cancel_requested = true;
                 if state.phase == TimerArmPhase::Armed {
                     state.phase = TimerArmPhase::Retired;
@@ -165,7 +164,7 @@ impl<T: Copy> TimerArm<T> {
     }
 
     fn restore_cancel_handle(&self, handle: T) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(state.handle.replace(handle).is_none());
     }
 }
@@ -188,27 +187,31 @@ enum TimerRegistrationCompletion {
 /// waits for a callback that already claimed it, matching Linux
 /// `hrtimer_cancel()` ordering. The arm identity is the only stale-callback
 /// authority; there is no parallel generation or polling owner.
-pub(crate) struct TimerRegistration<H: X86VlapicHostOps> {
+pub(crate) struct TimerRegistration<R: X86VlapicRuntimeOps> {
     next_arm_identity: AtomicUsize,
-    current: RawSpinLockStorage<Option<Arc<TimerArm<H::TimerHandle>>>>,
-    _host: PhantomData<fn() -> H>,
+    current: RawSpinLock<Option<Arc<TimerArm<R::TimerHandle>>>>,
 }
 
-impl<H: X86VlapicHostOps> TimerRegistration<H> {
+impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
     pub(crate) const fn new() -> Self {
         Self {
             next_arm_identity: AtomicUsize::new(0),
-            current: RawSpinLockStorage::new(None),
-            _host: PhantomData,
+            current: RawSpinLock::new(None),
         }
     }
 
     pub(crate) fn register(
         self: &Arc<Self>,
+        runtime: &R,
         deadline_ns: u64,
         callback: X86TimerCallback,
     ) -> X86VlapicResult {
-        self.register_with(deadline_ns, callback, host::register_timer::<H>)
+        self.register_with(
+            runtime,
+            deadline_ns,
+            callback,
+            |runtime, deadline_ns, callback| runtime.register_timer(deadline_ns, callback),
+        )
     }
 
     /// Registers a callback through the host hard-timer capability.
@@ -219,24 +222,32 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
     /// must remain bounded and valid in hard IRQ context.
     pub(crate) unsafe fn register_hard(
         self: &Arc<Self>,
+        runtime: &R,
         deadline_ns: u64,
         callback: X86TimerCallback,
     ) -> X86VlapicResult {
-        self.register_with(deadline_ns, callback, |deadline_ns, callback| unsafe {
-            host::register_hard_timer::<H>(deadline_ns, callback)
-        })
+        self.register_with(
+            runtime,
+            deadline_ns,
+            callback,
+            |runtime, deadline_ns, callback| unsafe {
+                runtime.register_hard_timer(deadline_ns, callback)
+            },
+        )
     }
 
     fn register_with(
         self: &Arc<Self>,
+        runtime: &R,
         deadline_ns: u64,
         mut callback: X86TimerCallback,
-        register: impl FnOnce(u64, X86TimerCallback) -> X86VlapicResult<H::TimerHandle>,
+        register: impl FnOnce(&R, u64, X86TimerCallback) -> X86VlapicResult<R::TimerHandle>,
     ) -> X86VlapicResult {
         let arm = self.begin_arm()?;
         let callback_arm = Arc::clone(&arm);
         let callback_registration = Arc::clone(self);
         let handle = match register(
+            runtime,
             deadline_ns,
             alloc::boxed::Box::new(move |now_ns| {
                 if !callback_arm.begin_fire() {
@@ -268,16 +279,16 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
     }
 
     pub(crate) fn is_armed(&self) -> bool {
-        self.current.lock().is_some()
+        self.current.lock_irqsave().is_some()
     }
 
-    pub(crate) fn invalidate_and_cancel(&self) -> X86VlapicResult {
-        let Some(arm) = self.current.lock().as_ref().cloned() else {
+    pub(crate) fn invalidate_and_cancel(&self, runtime: &R) -> X86VlapicResult {
+        let Some(arm) = self.current.lock_irqsave().as_ref().cloned() else {
             return Ok(());
         };
         let handle = arm.request_cancel_and_take_handle();
         if let Some(handle) = handle
-            && let Err(error) = host::cancel_timer::<H>(handle)
+            && let Err(error) = runtime.cancel_timer(handle)
         {
             arm.restore_cancel_handle(handle);
             self.restore(&arm);
@@ -287,7 +298,7 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
         Ok(())
     }
 
-    fn begin_arm(&self) -> X86VlapicResult<Arc<TimerArm<H::TimerHandle>>> {
+    fn begin_arm(&self) -> X86VlapicResult<Arc<TimerArm<R::TimerHandle>>> {
         let identity = self
             .next_arm_identity
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |identity| {
@@ -297,7 +308,7 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
             .checked_add(1)
             .ok_or(X86VlapicError::BadState)?;
         let arm = Arc::new(TimerArm::new(identity));
-        let mut current = self.current.lock();
+        let mut current = self.current.lock_irqsave();
         if current.is_some() {
             return Err(X86VlapicError::BadState);
         }
@@ -305,8 +316,8 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
         Ok(arm)
     }
 
-    fn retire(&self, arm: &TimerArm<H::TimerHandle>) {
-        let mut current = self.current.lock();
+    fn retire(&self, arm: &TimerArm<R::TimerHandle>) {
+        let mut current = self.current.lock_irqsave();
         if current
             .as_ref()
             .is_some_and(|candidate| candidate.identity == arm.identity)
@@ -315,8 +326,8 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
         }
     }
 
-    fn restore(&self, arm: &Arc<TimerArm<H::TimerHandle>>) {
-        let mut current = self.current.lock();
+    fn restore(&self, arm: &Arc<TimerArm<R::TimerHandle>>) {
+        let mut current = self.current.lock_irqsave();
         if current.is_none() {
             *current = Some(Arc::clone(arm));
         }

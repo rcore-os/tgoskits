@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use axdevice_base::{InterruptTrigger, ItsId};
 
-use super::{ControllerInner, ControllerState, GicV3Controller, MsiBacking, SpiBacking};
+use super::{ControllerInner, ControllerState, GicV3Native, MsiBacking, SpiBacking};
 use crate::{
     EventId, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalInterruptBinding, PhysicalIrqId,
     PhysicalMsiBinding, RedistributorState, SpiId, VgicError, VgicResult, backend_result,
@@ -37,7 +37,7 @@ pub(super) struct PhysicalInterruptStateChange {
     current: PhysicalInterruptState,
 }
 
-impl GicV3Controller {
+impl GicV3Native {
     /// Queues an acknowledged assigned SPI for hardware-backed LR delivery.
     pub fn forward_physical_spi(&self, spi: SpiId) -> VgicResult {
         let wake = {

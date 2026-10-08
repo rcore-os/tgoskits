@@ -75,6 +75,7 @@ pub(crate) struct GuestTimerRegistration<H: LoongArchHostOps> {
     handle: Option<H::TimerHandle>,
     next_generation: u64,
     active_generation: Arc<AtomicU64>,
+    run: Option<super::super::irq::LoongArchRunPort>,
 }
 
 impl<H: LoongArchHostOps> fmt::Debug for GuestTimerRegistration<H> {
@@ -87,6 +88,7 @@ impl<H: LoongArchHostOps> fmt::Debug for GuestTimerRegistration<H> {
                 "active_generation",
                 &self.active_generation.load(Ordering::Relaxed),
             )
+            .field("run_bound", &self.run.is_some())
             .finish()
     }
 }
@@ -97,7 +99,14 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
             handle: None,
             next_generation: 0,
             active_generation: Arc::new(AtomicU64::new(0)),
+            run: None,
         }
+    }
+
+    /// Binds the exact run-bound publication capability for this execution
+    /// period. Task context, before the guest timer can be armed.
+    pub(crate) fn set_run_port(&mut self, port: super::super::irq::LoongArchRunPort) {
+        self.run = Some(port);
     }
 
     fn next_generation(&mut self) -> LoongArchVcpuResult<u64> {
@@ -435,11 +444,35 @@ fn register_guest_timer<H: LoongArchHostOps>(
         .active_generation
         .store(generation, Ordering::Release);
     let active_generation = Arc::clone(&guest_timer.active_generation);
+    // Capture the exact run capability now, so a timer that outlives its run
+    // publishes into that closed run and is rejected instead of resolving a
+    // newer run.
+    let run = guest_timer.run.clone();
     let registration = H::register_timer(
         Duration::from_nanos(deadline_ns),
         Box::new(move |_| {
-            if claim_guest_timer_generation(&active_generation, generation) {
-                H::inject_interrupt(vm_id, vcpu_id, INT_TIMER);
+            if !claim_guest_timer_generation(&active_generation, generation) {
+                return;
+            }
+            let Some(run) = run.as_ref() else {
+                log::trace!(
+                    "LoongArch guest timer for VM[{vm_id}] VCpu[{vcpu_id}] fired without a bound \
+                     run"
+                );
+                return;
+            };
+            match super::super::irq::LoongArchRunPort::virtual_interrupt(INT_TIMER) {
+                Ok(interrupt) => {
+                    if let Err(error) = run.publish_virtual_irq(vcpu_id, interrupt) {
+                        log::trace!(
+                            "LoongArch guest timer interrupt for VM[{vm_id}] VCpu[{vcpu_id}] was \
+                             not delivered: {error:?}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    log::trace!("LoongArch guest timer vector is invalid: {error:?}");
+                }
             }
         }),
     );
@@ -624,8 +657,6 @@ mod tests {
             CANCELS.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
-
-        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
     }
 
     impl LoongArchHostOps for FailOnceCancelHost {
@@ -662,8 +693,6 @@ mod tests {
             }
             Ok(())
         }
-
-        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
     }
 
     #[test]

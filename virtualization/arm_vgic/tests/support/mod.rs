@@ -75,3 +75,57 @@ impl ax_sync::interface::SpinOps for TestSpinOps {
         locked.load(Ordering::Acquire)
     }
 }
+
+struct TestMutexOps;
+
+#[ax_crate_interface::impl_interface]
+impl ax_sync::interface::MutexOps for TestMutexOps {
+    fn acquire(
+        storage: &ax_sync::interface::MutexStorage,
+        _next_waiter_sequence: &core::sync::atomic::AtomicU64,
+        _metadata: &LockMetadata,
+        _lock_addr: usize,
+        _subclass: u32,
+        _caller: &'static Location<'static>,
+    ) {
+        let word = storage.owner_word();
+        while word
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::thread::yield_now();
+        }
+    }
+
+    fn try_acquire(
+        storage: &ax_sync::interface::MutexStorage,
+        _next_waiter_sequence: &core::sync::atomic::AtomicU64,
+        _metadata: &LockMetadata,
+        _lock_addr: usize,
+        _subclass: u32,
+        _caller: &'static Location<'static>,
+    ) -> bool {
+        storage
+            .owner_word()
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    fn release(storage: &ax_sync::interface::MutexStorage, _lock_addr: usize) {
+        storage.owner_word().store(0, Ordering::Release);
+    }
+
+    fn force_release(storage: &ax_sync::interface::MutexStorage, _lock_addr: usize) {
+        storage.owner_word().store(0, Ordering::Release);
+    }
+
+    fn is_owned_by_current(storage: &ax_sync::interface::MutexStorage) -> bool {
+        storage.owner_word().load(Ordering::Acquire) != 0
+    }
+
+    fn is_locked(storage: &ax_sync::interface::MutexStorage) -> bool {
+        storage.owner_word().load(Ordering::Acquire) != 0
+    }
+
+    fn destroy(_storage: &mut ax_sync::interface::MutexStorage) {}
+}

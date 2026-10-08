@@ -57,6 +57,6 @@ pub(crate) use distributor::DistributorState;
 pub use error::*;
 pub(crate) use interrupt::InterruptRecord;
 pub use its::{GuestMemory, GuestMemoryError};
-pub(crate) use its::{ItsAction, ItsState};
+pub(crate) use its::{ItsAction, ItsCommandProgress, ItsState};
 pub(crate) use redistributor::{QueuedDelivery, RedistributorState};
 pub use types::*;

@@ -1,119 +1,90 @@
-# AxVM vCPU kick 分层与状态机
+# AxVM vCPU 请求与进入协议
 
-## 1. 问题与结论
+中断控制器保存 pending、active 与物理源身份，运行期 `RunSignals` 保存预绑定执行目标和有限 IRQ 发布状态，`VcpuSignals` 保存 guest mode、准入、退出与 unblock 请求。kick 在权威状态发布之后执行，不能代替 pending，也不能由一次线程唤醒推断等待条件成立。
 
-PR #1775 的 x86 定时器链曾在每次 vLAPIC 到期后无条件执行共享 wait queue 唤醒、deferred worker 和物理 IPI。VMX 已经因本地 host timer IRQ 退出 guest 时，这会制造第二条 kick 链；在 PREEMPT_RT 调度压力下，它会放大 worker、IPI 和 vCPU entry 的竞争。
+## 1. 运行期能力
 
-AxVM 现在把一次通知拆成三个互不替代的阶段：
+每个端口绑定完整 `RunId` 和目标，reset 关闭旧运行对象并建立新对象。IRQ 和硬件路径不按 VM ID 查询注册表，也不通过完整 VM 对象解析“当前 runtime”。
 
-1. 生产者发布权威 pending 或业务状态；
-2. runtime 推进 wait condition 并解除 WFI、HLT 或生命周期等待；
-3. 只有远端 CPU 仍处于 guest mode 时，才发送物理 IPI。
+### 1.1 发布者
 
-这对应 Linux KVM 的 request bit、`KVM_REQ_UNBLOCK`、`vcpu->mode` 和 `kvm_vcpu_kick()` 分工。kick 不是 pending state 的所有者，也不能用一次线程唤醒代替 wait condition。
+`VcpuSignalSlot` 的注册包含 `VcpuInstance`、`Arc<VcpuSignals>` 和 `ThreadWakeHandle`。控制 owner 在启动前发布整组能力，退出和 join 确认后退休；旧 callback 只能指向旧运行对象。
 
-## 2. 生产者分类
-
-不同生产者必须根据权威状态能否被下一次 backend entry 直接读取，选择不同入口。
-
-| 生产者 | 权威状态 | runtime 入口 |
+| 发布者 | 权威状态 | 通知入口 |
 | --- | --- | --- |
-| VGIC、vLAPIC、架构中断后端 | 控制器自己的 pending、level、LR 或 APIC 状态 | `VmRuntimeHandle::kick_vcpu()` |
-| `VcpuIrqDispatcher` | 按 vCPU 线程世代登记的 queue entry | enqueue 后调用 `kick_vcpu()` |
-| device poll、访问端口工作 | runtime 或设备自己的工作标志 | `VmRuntimeHandle::request_vcpu()` |
-| stop、pause、resume、reset | VM 或设备生命周期状态 | `VmRuntimeHandle::request_all_vcpus()` |
-| IVC notify | endpoint 已发布的 guest IRQ | `VmRuntimeHandle::kick_all_vcpus()` |
-| x86 vLAPIC hard timer | `x86_vlapic` 的原子到期和 pending 状态 | `VcpuKickHandle::kick_from_hard_irq()` |
+| GIC / vLAPIC / vPLIC | 控制器的 pending / active | native 状态提交后 `RunSignals::kick_from_irq` |
+| 通用与 LoongArch 源 | 固定容量、区分源身份的队列 | `publish_queued` 后 kick |
+| 设备后台完成 | 设备持久完成记录与 work flag | `DeviceWorkPort::notify` |
+| 生命周期 owner | mailbox command 与准入请求 | `VcpuPort::send` |
+| IVC | 运行代次绑定的目标 IRQ endpoint | 通道表锁外通知 |
 
-`kick_vcpu()` 要求调用者已经发布可被 vCPU 读取的权威状态。`request_vcpu()` 还会发布 sticky entry request，适用于 pending 不由架构 backend 直接消费的工作。公共 `kick_vm_vcpu(vm_id, vcpu_id)` 只提供“状态已发布”的 task-context 入口。
+队列和注册都在准备阶段建立容量，hard IRQ 不动态增长。关闭准入后，旧端口返回 `SignalError::Closed`；不同运行或激活的确认不能作用于新 owner。
 
-## 3. capability 与生命周期
+### 1.2 等待条件
 
-`VcpuKickHandle` 绑定一个 vCPU host thread 世代，只保存：
+`VcpuWait::wait_pending` 只读取自身 stop、entry admission、sticky unblock、native pending、固定队列和指定 poller 的 work。它不取得生命周期、mailbox 或设备 mutex。控制回复等待期间的 vCPU 已卸载后端，仍处理 park、stop 和取消。
 
-- `Arc<VcpuRunState>`：vCPU 生命周期内稳定的 guest-entry ownership；
-- `ThreadWakeHandle`：当前 host thread 世代的直接调度 capability。
+`RunSignals::notify_work` 先提交 owner-independent work，再唤醒当前 poller；没有在线 poller 时 work 保持，owner 变更不会清除它。`set_poll_owner` 在指定值提交后于锁外唤醒，非指定 vCPU 不消费 work。
 
-`VmRuntimeHandle::add_vcpu_task()` 把 thread、kick capability 和 IRQ dispatcher owner 一起登记。CPU_OFF 先把整组对象从 active registry 转入 retired registry；join 后一起释放。旧 hard callback 只能命中旧 wake handle，或者向 VM-owned deferred worker 发布一个 vCPU bit；worker 会重新从 active registry 获取当前世代。
+## 2. 进入握手
 
-kick capability 不携带 IRQ 号、虚拟控制器、VM registry、设备或调度器 CPU 快照。vCPU 的 guest owner 只能从 `VcpuRunState::mode` 读取。
+`VcpuSignals::mode` 为 `OUTSIDE`、`IN_GUEST(cpu)` 或 `EXITING(cpu)`，`exit_requested` 是跨 outside 窗口保留的请求。`VcpuGuestEntry` 在所有正常、重试和失败路径恢复 outside。
 
-## 4. guest-entry 事务
+### 2.1 最后检查
 
-`VcpuRunState` 有两个原子字段：
-
-- `mode`：`OUTSIDE`、`IN_GUEST(cpu)` 或 `EXITING(cpu)`；
-- `exit_requested`：为设备和生命周期工作保留的 sticky entry request。
-
-entry 顺序如下：
+进入方在 pin 与 IRQ-save 作用域内发布 mode，执行 SeqCst 屏障，然后复查准入、canonical pending 和退出请求。发布方在 canonical state 与 sticky 请求提交后执行配对屏障，再观察并认领 guest mode。
 
 ```mermaid
 sequenceDiagram
-    participant V as vCPU task
+    participant V as vCPU owner
     participant P as producer
-    participant H as hardware guest
-    V->>V: disable local IRQ and pin CPU
-    V->>V: publish IN_GUEST(cpu)
-    V->>V: final canonical-pending recheck
-    alt pending existed before IN_GUEST
-        V->>V: restore OUTSIDE and drain pending
-    else producer races after IN_GUEST
-        P->>P: publish canonical state
-        P->>V: claim EXITING and conditional IPI
-        V->>V: final sticky/EXITING check
-        V->>H: enter guest only if no request
+    participant H as guest hardware
+    V->>V: prepare / bind / Completion / native pending
+    V->>V: IRQ-off / IN_GUEST / barrier
+    P->>P: canonical pending / exit request / barrier
+    P->>V: claim mode and conditional remote IPI
+    V->>V: final request / admission / pending check
+    alt request visible
+        V->>V: unload and return Interrupted
+    else guest admitted
+        V->>H: enter guest
+        H->>V: hardware exit
+        V->>V: capture / unload / restore
     end
 ```
 
-发布 `IN_GUEST` 必须早于最终 queue recheck。这样，较早的 enqueue 由 recheck 发现，较晚的 enqueue 一定观察到 `IN_GUEST` 并认领退出，不需要给每个控制器事件附加 generic sticky request。
+较早请求由最终检查观察，较晚请求观察 IN_GUEST 并留下 doorbell。Release / Acquire mode 标记本身不替代这条配对协议；设备和控制服务只在卸载及上下文恢复后调用。
 
-`VcpuGuestEntry::Drop` 在正常 VM exit、entry retry、entry cancellation 和错误展开时都恢复 `OUTSIDE`，并断言一次 entry 期间 owner CPU 没有变化。entry 全程位于 `PreemptGuard` 和 `IrqSaveGuard` 保护下；迁移必须先离开 guest mode。
+### 2.2 task kick
 
-## 5. task-context kick
+`runtime::kick::kick_target` 在 raw guard 外发布 unblock 和退出请求，`request_exit` 原子认领 mode。outside 不发送 IPI，本地 guest 只认领退出，远端 guest 发送 IPI；线程唤醒通过预绑定 `ThreadWakeHandle` 执行。
 
-task-context 的顺序固定为：
+相同 guest mode 的多个发布者只认领一次远端退出。进入窗口结束后 mode 恢复，后续请求可以对新一次进入重新认领。CPU 迁移只能发生在后端已卸载时。
 
-1. 生产者发布权威状态；若没有 backend pending，再发布 sticky entry request；
-2. `notification_generation` 以 Release 推进，并唤醒共享 wait queue；
-3. `ThreadWakeHandle` 唤醒目标 host thread；
-4. `request_exit()` 原子读取 guest owner；
-5. `OUTSIDE` 不发 IPI，本地 guest 只认领 `EXITING`，远端 guest 返回 owner CPU；
-6. runtime 在 registry 锁外发送远端 IPI。
+## 3. 硬中断与回收
 
-`notification_generation` 是逻辑 unblock 条件。只调用 `ThreadWakeHandle::wake()` 不能保证 `WaitQueue::wait_until` 的谓词变真，线程可能醒来后再次睡眠。
+hard IRQ 路径在 canonical pending 发布后调用 `RunSignals::kick_from_irq`，该对象只有原子、短 raw 状态和预绑定目标。睡眠锁、owner mailbox、设备回调和动态注册表均不可达。
 
-## 6. hard-IRQ 边界
+### 3.1 IRQ kick
 
-`VcpuKickHandle::kick_from_hard_irq(current_cpu)` 只执行原子操作和 generation-bound thread wake。它不查询 VM registry，不获取普通锁，也不直接发送可能等待 APIC delivery 的 IPI。
+`kick_from_irq` 立即发布 sticky 请求并执行 `request_exit` 的配对屏障。远端 guest 通过宿主 `ax-ipi::notify_cpu` 接收不阻塞、可合并的 doorbell；其发送中状态允许 IRQ 重入，不等待另一个发送者。任务 wake 由 `RunSignalWorker` 消费预分配 bitmap 后执行。
 
-| guest 状态 | hard-IRQ 结果 | 后续动作 |
-| --- | --- | --- |
-| 当前 CPU 的 guest | `Complete` | 当前 host IRQ 已经完成本地 VM exit，只认领 `EXITING` |
-| 已有调用者认领 `EXITING` | `Complete` | 不重复提交 doorbell |
-| `OUTSIDE` | `Defer` | worker 推进逻辑 unblock，防止 waiter 重新睡眠 |
-| 远端 CPU 的 guest | `Defer` | worker 刷新 active 世代并条件发送 IPI |
-| wake handle 已退出或不可用 | `Defer` | worker 从 active registry 重新解析目标 |
+不能只向 worker 排队而省略进入请求：native pending 可能在 `before_guest` 与最后入场检查之间到达，控制器快照还未同步，延后的 wake 也尚未执行。立即请求与 doorbell 封闭这条窗口。
 
-x86 vLAPIC hard timer callback 先发布 APIC pending，再调用这个接口。相同 CPU 上的 VMX external-interrupt exit 本身就是 doorbell；只有 timer owner 与 guest owner 不同，或 vCPU 已在 guest 外等待时，才提交 `DeferredVcpuKick`。
+### 3.2 静默确认
 
-AArch64 的 blocked-vCPU software timer 不是控制器 kick：它按 `(owner_cpu, owner_thread)` 绑定 registration 和 wake handle，完成 `Aarch64TimerWaitState` token 后直接唤醒同一 host wait 世代；CPU migration 或 CPU_OFF/CPU_ON 会先废弃旧 timer epoch。vCPU 恢复后才重新计算 timer level 并发布 VGIC PPI。真实 VGIC pending 和 host timer PPI 仍通过 `Aarch64VcpuWake`、deferred worker 和 task-context `kick_vcpu()` 解除 wait。两条链不能混为一个 callback。
+`IrqProducerGuard` 覆盖发布、请求和通知，`close_interrupts` 关闭新发布，`interrupts_quiet` 只有在所有 producer 退出后成立。停止顺序先关闭准入、发 stop 并 kick，再注销 producer；控制任务等待期间继续消费 vCPU 事件和 guest 请求。
 
-## 7. 失败与回收语义
+`RunSignalWorker::stop` 在任务上下文 join，失败保留原句柄用于重试。控制 owner 在 vCPU、worker、timer、IRQ callback 和内存访问确认静默后才退休路由与 backing。陈旧 callback 不重新绑定未来运行。
 
-deferred publisher 使用预分配 bitset 合并同一 vCPU 的重复请求。worker 启停跟随 VM 架构 runtime；停止后清空残留 bit。worker 找不到运行中的 VM 或 active vCPU 时丢弃 bit，因为 controller pending 已由对应 VM 生命周期回收，不能把旧世代请求转交给未来新线程。
+## 4. 验证
 
-`kick_all_vcpus()` 只用于调用者已经发布了规范状态的广播通知；`request_all_vcpus()` 先对所有 active capability 发布 sticky request。两者都只推进一次共享 notification generation，随后在 registry 锁外逐个执行条件 IPI。即使 active 集合为空，它们也推进 wait condition，使控制面等待者能观察已经发布的状态。
+确定性交错负责证明发布与确认规则，真实 SMP 和中断执行负责证明宿主与机器行为。两类证据各自记录，不能由其中一种替代另一种。
 
-## 8. 验证要求
+### 4.1 组件协议
 
-确定性测试至少覆盖：
+现有 `VcpuSignals`、`RunSignals`、操作完成和 confirmation 测试覆盖 sticky outside 请求、最后检查、单次 mode claim、旧运行拒绝、固定队列源身份、持续 work 与 poll owner 交接。增强同一行为证明时确认错误实现必然失败，不使用源码关键字作为行为判据。
 
-1. `OUTSIDE` sticky request 只取消下一次 entry；
-2. 最终 entry check 能看到本地 `EXITING` claim；
-3. local hard IRQ 不提交远端 doorbell；
-4. `OUTSIDE` 和 remote guest 会转交 task-context worker；
-5. 多个 task kick 只能认领一次 remote exit；
-6. queue publish 发生在逻辑 unblock 和物理 kick 之前；
-7. waiter 在 park 边界前后都不会丢失 notification generation。
+### 4.2 真实运行
 
-运行时验证包括 x86 VMX direct ACPI、MP fallback、OVMF ACPI，以及 AArch64 GICv2、GICv3 timer stress。实体机结果必须记录 board、guest、精确提交和 CI job。
+通过项目 Axvisor SMP 入口运行 CPU_ON / pause / stop 竞争以及 timer、块设备和 IVC 用例。AArch64 保留 GICv2/v3 ACK、priority drop 和 physical LR 身份；x86 分别验证 VMX/SVM 的物理 IRQ 服务点和 EOI；RISC-V 验证 PLIC claim/complete 与 owner VSEIP；LoongArch 验证物理源、路由和 ACK/EOI。没有执行的目标列为未验证。

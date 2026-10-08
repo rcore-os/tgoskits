@@ -1,71 +1,41 @@
-//! RISC-V HSM exit handling through the VM-owned hart topology.
+//! Fixed RISC-V hart topology for SBI HSM and IPI routing.
+//!
+//! The control owner plans the guest-visible hart id of every vCPU before any
+//! guest can run. A vCPU task captures that plan in its entry payload, so an
+//! unbound exit handler resolves HSM and IPI targets from a fixed snapshot
+//! instead of querying the complete VM.
 
-use axvm_types::GuestPhysAddr;
+use std::{boxed::Box, vec::Vec};
 
-use super::AxvmRiscvVcpu;
-use crate::{
-    AxVmResult,
-    architecture::{VcpuExitAction, VcpuRunAction},
-};
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct HartStart {
-    pub(crate) target_cpu: u64,
-    pub(crate) entry_point: GuestPhysAddr,
-    pub(crate) arg: u64,
+/// Guest-visible hart ids paired with their VM-local vCPU ids.
+#[derive(Clone, Debug)]
+pub(crate) struct HartTopology {
+    entries: Box<[(usize, usize)]>,
 }
 
-pub(super) fn target_vcpu_id(vm: &crate::AxVMRef, hart: usize) -> Option<usize> {
-    vm.get_vcpu_affinities_pcpu_ids()
-        .into_iter()
-        .find_map(|(vcpu_id, _, configured_hart)| (configured_hart == hart).then_some(vcpu_id))
-}
-
-pub(crate) fn handle(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
-    exit: HartStart,
-) -> AxVmResult<VcpuExitAction> {
-    let vm_id = vm.id();
-    let vcpu_id = vcpu.id();
-    info!(
-        "VM[{vm_id}]'s VCpu[{vcpu_id}] try to boot target_cpu [{}] entry_point={:x} arg={:#x}",
-        exit.target_cpu, exit.entry_point, exit.arg
-    );
-
-    let Some(target_vcpu_id) = usize::try_from(exit.target_cpu)
-        .ok()
-        .and_then(|hart| target_vcpu_id(vm, hart))
-    else {
-        warn!(
-            "VM[{vm_id}] cannot resolve architecture CPU target {} to a VM-local vCPU",
-            exit.target_cpu
-        );
-        vcpu.set_return_value(usize::MAX);
-        return Ok(VcpuExitAction::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        }));
-    };
-
-    match crate::runtime::vcpus::vcpu_on(
-        vm.clone(),
-        target_vcpu_id,
-        exit.entry_point,
-        exit.arg as _,
-    ) {
-        Ok(()) => vcpu.set_gpr(ax_cpu::registers::GprIndex::A0 as usize, 0),
-        Err(err) => {
-            warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
-            vcpu.set_return_value(usize::MAX);
-        }
+impl HartTopology {
+    /// Snapshots the fixed vCPU placement list as `(vcpu_id, guest_hart_id)`.
+    pub(crate) fn new(placements: &[(usize, Option<usize>, usize)]) -> Self {
+        let entries = placements
+            .iter()
+            .map(|(vcpu_id, _cpu_set, guest_hart_id)| (*vcpu_id, *guest_hart_id))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { entries }
     }
-    Ok(VcpuExitAction::Complete(VcpuRunAction {
-        waits_for_event: false,
-        stop_reason: None,
-        resets_vm: false,
-        exits_vcpu: false,
-    }))
+
+    /// Returns every planned vCPU id in placement order.
+    pub(crate) fn vcpu_ids(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .map(|(vcpu_id, _guest_hart_id)| *vcpu_id)
+            .collect()
+    }
+
+    /// Resolves one guest hart id to its VM-local vCPU id.
+    pub(crate) fn resolve_hart(&self, guest_hart_id: usize) -> Option<usize> {
+        self.entries
+            .iter()
+            .find_map(|(vcpu_id, configured)| (*configured == guest_hart_id).then_some(*vcpu_id))
+    }
 }

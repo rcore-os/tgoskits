@@ -4,8 +4,7 @@ use std::{alloc::Layout, boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use axaddrspace::AddrSpace;
 use axdevice::{
-    DeviceRuntime, FwCfgKernelPayload, FwCfgPayloadConfig, FwCfgPayloadSlot, FwCfgPlatformConfig,
-    RuntimeAccessPorts,
+    DeviceRuntime, FwCfgKernelPayload, FwCfgPayloadSlot, FwCfgPlatformConfig, RuntimeAccessPorts,
 };
 use axvm_types::*;
 
@@ -13,7 +12,7 @@ use crate::{
     AxVmError, AxVmResult,
     arch::current::{ArchNestedPageTable, ArchVCpu},
     ax_err_type,
-    boot::{GuestAcpiTables, GuestBootDescription, GuestFdtBuilder},
+    boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList},
     guest_memory::{GuestRange, MappingLease, MemoryBacking},
     host::{HostMemory, default_host, paging::virt_to_phys},
@@ -60,7 +59,6 @@ pub(crate) fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
 }
 
 pub(crate) struct AxVMResources {
-    vm_id: VMId,
     pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
     pub(crate) nested_paging: NestedPagingConfig,
     pub(crate) memory_regions: Vec<VMMemoryRegion>,
@@ -76,7 +74,6 @@ pub(crate) struct AxVMResources {
 
 impl AxVMResources {
     pub(crate) fn from_page_table(
-        vm_id: VMId,
         page_table: ArchNestedPageTable,
         device_plan: crate::arch::current::ArchVmPlan,
         build_nested_paging: impl FnOnce(HostPhysAddr) -> AxVmResult<NestedPagingConfig>,
@@ -89,7 +86,6 @@ impl AxVMResources {
         .map_err(|error| AxVmError::from_addrspace("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
         Ok(Self {
-            vm_id,
             address_space,
             nested_paging,
             memory_regions: Vec::new(),
@@ -108,10 +104,6 @@ impl AxVMResources {
         use crate::vm::prepare::device_plan::ArchitectureVmPlan;
 
         self.device_plan.devices()
-    }
-
-    pub(crate) fn architecture_plan(&self) -> &crate::arch::current::ArchVmPlan {
-        &self.device_plan
     }
 
     pub(crate) fn devices(&self) -> AxVmResult<Arc<DeviceRuntime>> {
@@ -223,6 +215,7 @@ impl AxVM {
     pub(crate) fn config_mut(&mut self) -> &mut AxVMConfig {
         &mut self.config
     }
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn uses_passthrough_address_space(&self) -> bool {
         self.config.uses_passthrough_address_space()
     }
@@ -272,12 +265,14 @@ impl AxVM {
             .as_ref()
             .map_or(0, |devices| devices.devices().count())
     }
+    #[cfg(target_arch = "aarch64")]
     pub(crate) fn with_architecture_plan<R>(
         &self,
         read: impl FnOnce(&crate::arch::current::ArchVmPlan) -> AxVmResult<R>,
     ) -> AxVmResult<R> {
         read(&self.resources.device_plan)
     }
+    #[cfg(not(target_arch = "aarch64"))]
     pub(crate) fn with_planned_device_graph<R>(
         &self,
         read: impl FnOnce(&axdevice::ResolvedDeviceGraph) -> AxVmResult<R>,
@@ -295,6 +290,7 @@ impl AxVM {
             .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(address));
         Ok(())
     }
+    #[cfg(target_arch = "x86_64")]
     pub(crate) fn set_guest_acpi_tables(
         &mut self,
         address: GuestPhysAddr,
@@ -302,12 +298,13 @@ impl AxVM {
     ) -> AxVmResult {
         self.resources
             .boot_description
-            .set_acpi_tables(GuestAcpiTables::generated(address, bytes));
+            .set_acpi_tables(crate::boot::GuestAcpiTables::generated(address, bytes));
         Ok(())
     }
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
     pub(crate) fn add_fw_cfg_device(&mut self, config: FwCfgDeviceConfig) -> AxVmResult {
         self.fw_cfg_payload
-            .set(FwCfgPayloadConfig {
+            .set(axdevice::FwCfgPayloadConfig {
                 base: config.base,
                 size: config.size,
                 kernel: config.kernel,
@@ -318,8 +315,10 @@ impl AxVM {
             })
             .map_err(Into::into)
     }
-    pub(crate) fn fw_cfg_payload(&self) -> Option<FwCfgPayloadConfig> {
-        self.fw_cfg_payload.get()
+
+    /// Discards the previous boot input after its run has fully retired.
+    pub(crate) fn clear_boot_payload(&mut self) {
+        drop(self.fw_cfg_payload.clear());
     }
 
     pub(crate) fn alloc_memory_region(
@@ -399,19 +398,6 @@ impl AxVM {
         Ok(layout)
     }
 
-    pub(crate) fn read_from_guest(&self, guest: GuestPhysAddr, output: &mut [u8]) -> AxVmResult {
-        copy_owner_memory(
-            &self.resources.address_space,
-            guest,
-            output.len(),
-            |offset, address| {
-                // SAFETY: this byte was translated and the control owner retains
-                // the complete backing and translation root through the copy.
-                output[offset] = unsafe { address.read_volatile() };
-            },
-        )
-    }
-
     pub(crate) fn write_to_guest(&mut self, guest: GuestPhysAddr, input: &[u8]) -> AxVmResult {
         copy_owner_memory(
             &self.resources.address_space,
@@ -460,7 +446,7 @@ fn copy_owner_memory(
             .translate(start + offset)
             .ok_or_else(|| ax_err_type!(InvalidInput, "unmapped guest copy"))?;
         let count = (0x1000 - address.as_usize() % 0x1000).min(length - offset);
-        let pointer = default_host().phys_to_virt(address).as_mut_ptr::<u8>();
+        let pointer = default_host().phys_to_virt(address).as_mut_ptr();
         for index in 0..count {
             copy(offset + index, pointer.wrapping_add(index));
         }

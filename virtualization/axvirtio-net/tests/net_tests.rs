@@ -1,5 +1,7 @@
 //! Integration tests for axvirtio-net (plan sections 13.3-13.6).
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use ax_memory_addr::PhysAddr;

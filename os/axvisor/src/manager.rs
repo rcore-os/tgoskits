@@ -99,6 +99,18 @@ impl AxvmManager {
             .context("stop VM")
     }
 
+    pub fn start_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?
+            .start()?
+            .wait()
+            .map(|_run| ())
+            .context("start VM")
+    }
+
+    pub fn pause_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?.pause()?.wait().context("pause VM")
+    }
+
     pub fn resume_vm(&self, vm_id: VMId) -> Result<()> {
         self.require_vm(vm_id)?
             .resume()?
@@ -112,6 +124,12 @@ impl AxvmManager {
             .wait()
             .map(|_| ())
             .context("reset VM")
+    }
+
+    pub fn destroy_vm(&self, vm_id: VMId) -> Result<()> {
+        let vm = self.require_vm(vm_id)?;
+        vm.destroy()?.wait().context("destroy VM")?;
+        vm.join_control_task().context("join VM control task")
     }
 
     pub fn notify_vm(&self, vm_id: VMId) -> Result<()> {

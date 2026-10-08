@@ -91,7 +91,7 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
     pub fn new_with_config(
         vm_id: usize,
         vcpu_id: usize,
-        config: X86VcpuCreateConfig,
+        config: X86VcpuCreateConfig<H::Runtime>,
         memory: VcpuControlMemory<M>,
         xstate: GuestXstate<M>,
     ) -> X86VcpuResult<Self> {
@@ -187,6 +187,15 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
     /// Set the architectural RSP according to the destination-operand width.
     pub fn set_gpr_rsp(&mut self, width: X86AccessWidth, value: u64) {
         dispatch_vcpu!(self, set_gpr_rsp, width, value)
+    }
+
+    /// Install the guest `RIP` a device-serviced access retires.
+    ///
+    /// # Errors
+    ///
+    /// Propagates backend state-write failures.
+    pub fn set_rip(&mut self, rip: u64) -> X86VcpuResult {
+        dispatch_vcpu!(self, set_rip, rip)
     }
 
     /// Commits one string-I/O element after the VMM completed its memory and device access.

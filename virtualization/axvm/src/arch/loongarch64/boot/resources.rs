@@ -1,10 +1,16 @@
-use std::{collections::BTreeMap, format, string::String, sync::OnceLock, vec::Vec};
+use std::{
+    collections::BTreeMap,
+    format,
+    string::String,
+    sync::{Mutex, OnceLock},
+    vec::Vec,
+};
 
-use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal, sync::IrqSafeMutex as Mutex};
+use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal};
 use axvmconfig::GuestConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
-use crate::{config::*, *};
+use crate::{config::*, sync::MutexExt, *};
 
 static LOONGARCH_GUEST_IRQ_ROUTES: OnceLock<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
     OnceLock::new();
@@ -22,14 +28,14 @@ pub fn init() {
 pub fn store_guest_irq_routes(vm_id: usize, routes: Vec<LoongArchGuestIrqRoute>) {
     let mut cache_lock = LOONGARCH_GUEST_IRQ_ROUTES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock();
+        .lock_unpoisoned();
     cache_lock.insert(vm_id, routes);
 }
 
 pub fn get_guest_irq_routes(vm_id: usize) -> Vec<LoongArchGuestIrqRoute> {
     LOONGARCH_GUEST_IRQ_ROUTES
         .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
+        .lock_unpoisoned()
         .get(&vm_id)
         .cloned()
         .unwrap_or_default()

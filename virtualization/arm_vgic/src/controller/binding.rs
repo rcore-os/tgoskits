@@ -2,13 +2,13 @@
 
 use ax_sync::RawSpinLockIrqSaveGuard;
 
-use super::{ControllerState, CpuInterfacePhase, GicV3Controller, state::DeliveryRetirement};
+use super::{ControllerState, CpuInterfacePhase, GicV3Native, state::DeliveryRetirement};
 use crate::{CpuInterfaceState, GicVcpuId, IntId, VgicError, VgicResult, backend_result};
 
-/// Per-vCPU lifecycle handle returned by [`GicV3Controller::attach_vcpu`].
+/// Per-vCPU lifecycle handle returned by `attach_vcpu`.
 #[must_use = "dropping the binding detaches the vCPU from its Redistributor"]
 pub struct GicV3VcpuBinding {
-    controller: GicV3Controller,
+    controller: GicV3Native,
     vcpu: GicVcpuId,
 }
 
@@ -34,7 +34,7 @@ impl Drop for GicV3VcpuBinding {
 }
 
 impl GicV3VcpuBinding {
-    pub(super) const fn new(controller: GicV3Controller, vcpu: GicVcpuId) -> Self {
+    pub(super) const fn new(controller: GicV3Native, vcpu: GicVcpuId) -> Self {
         Self { controller, vcpu }
     }
 
@@ -323,7 +323,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        GicAffinity, GicV3Config, GicV3MmioRegion, GicV3SpiOwnership, SoftwareGicV3Backend,
+        GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership,
+        SoftwareGicV3Backend,
     };
 
     struct NoopWake;

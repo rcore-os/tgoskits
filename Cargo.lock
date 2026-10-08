@@ -1468,7 +1468,7 @@ dependencies = [
 name = "axdevice"
 version = "0.8.5"
 dependencies = [
- "ax-runtime",
+ "ax-crate-interface",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -1677,8 +1677,8 @@ dependencies = [
 name = "axvirtio-blk"
 version = "0.4.2"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
- "ax-runtime",
  "ax-sync",
  "axaddrspace",
  "axdevice_base",
@@ -1691,8 +1691,8 @@ dependencies = [
 name = "axvirtio-common"
 version = "0.2.7"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
- "ax-runtime",
  "ax-sync",
  "axaddrspace",
  "axdevice_base",
@@ -1705,6 +1705,7 @@ dependencies = [
 name = "axvirtio-net"
 version = "0.2.1"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
  "ax-sync",
  "axaddrspace",

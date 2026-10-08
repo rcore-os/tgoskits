@@ -261,9 +261,13 @@ impl<H: X86VlapicHostOps> X86PitDevice<H> {
         Self::new_for_vcpu(0, 0)
     }
 
-    /// Creates a PIT adapter whose IRQ0 targets one VM vCPU.
-    pub fn new_for_vcpu(vm_id: usize, vcpu_id: usize) -> Self {
-        let inner = EmulatedPit::<H>::new_for_vcpu(vm_id, vcpu_id);
+    /// Creates a PIT adapter whose IRQ0 uses the supplied run-scoped port.
+    ///
+    /// The port is pre-bound to one run's lower capabilities, so the PIT timer
+    /// callback retains that binding for its whole lifetime instead of looking
+    /// up a VM identity when the timer expires.
+    pub fn new_for_vcpu_with_runtime(runtime: H::Runtime, vm_id: usize, vcpu_id: usize) -> Self {
+        let inner = EmulatedPit::<H>::new_for_vcpu_with_runtime(runtime, vm_id, vcpu_id);
         let resources = EmulatedPit::<H>::port_ranges()
             .map(port_resource)
             .to_vec()
@@ -274,6 +278,15 @@ impl<H: X86VlapicHostOps> X86PitDevice<H> {
             resources,
             _host: PhantomData,
         }
+    }
+
+    /// Creates a host-side PIT adapter that is not attached to a guest run.
+    ///
+    /// Its timer path returns a run-state error until a real run binds it, so
+    /// AxVM installs its PIT through [`Self::new_for_vcpu_with_runtime`].
+    pub fn new_for_vcpu(vm_id: usize, vcpu_id: usize) -> Self {
+        let runtime = H::unbound_runtime(vm_id, vcpu_id);
+        Self::new_for_vcpu_with_runtime(runtime, vm_id, vcpu_id)
     }
 
     /// Returns the wrapped OS-neutral PIT core.

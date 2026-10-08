@@ -13,24 +13,46 @@ use crate::{AxVmError, AxVmResult, RunId, sync::MutexExt};
 
 /// The translation revision installed for one run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MemoryRevision {
+pub struct MemoryRevision {
     pub(crate) run: RunId,
     pub(crate) sequence: u64,
 }
 
 /// A validated half-open guest range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct GuestRange {
+pub struct GuestRange {
     pub(crate) start: GuestPhysAddr,
     pub(crate) length: usize,
 }
 
 impl GuestRange {
-    pub(crate) fn new(start: GuestPhysAddr, length: usize) -> AxVmResult<Self> {
+    pub fn new(start: GuestPhysAddr, length: usize) -> AxVmResult<Self> {
         if length == 0 || start.as_usize().checked_add(length).is_none() {
             return Err(AxVmError::invalid_config("invalid guest mapping range"));
         }
         Ok(Self { start, length })
+    }
+}
+
+impl GuestRange {
+    /// Returns the guest physical start of the validated range.
+    pub const fn start(self) -> GuestPhysAddr {
+        self.start
+    }
+    /// Returns the byte length of the validated range.
+    pub const fn length(self) -> usize {
+        self.length
+    }
+}
+
+impl MemoryRevision {
+    /// Returns the execution period whose mappings this revision identifies.
+    pub const fn run(self) -> RunId {
+        self.run
+    }
+    /// Returns the monotonically increasing mapping revision in that run.
+    pub const fn sequence(self) -> u64 {
+        self.sequence
     }
 }
 
@@ -100,7 +122,7 @@ impl Drop for MemoryBacking {
 
 /// A mapping and the ownership needed to keep its physical backing valid.
 #[derive(Clone)]
-pub(crate) struct MappingLease {
+pub struct MappingLease {
     pub(crate) range: GuestRange,
     pub(crate) host: HostPhysAddr,
     pub(crate) flags: MappingFlags,
@@ -109,6 +131,28 @@ pub(crate) struct MappingLease {
 }
 
 impl MappingLease {
+    /// Allocates page-aligned RAM retained until the mapping and all accesses retire.
+    ///
+    /// This task-context constructor rejects unaligned ranges and device memory.
+    pub fn allocate(range: GuestRange, flags: MappingFlags) -> AxVmResult<Self> {
+        let page_size = ax_memory_addr::PAGE_SIZE_4K;
+        if !range.start.as_usize().is_multiple_of(page_size)
+            || !range.length.is_multiple_of(page_size)
+            || flags.contains(MappingFlags::DEVICE)
+        {
+            return Err(AxVmError::invalid_input(
+                "allocate guest mapping",
+                "RAM range must be page-aligned",
+            ));
+        }
+        let layout = Layout::from_size_align(range.length, page_size).map_err(|_| {
+            AxVmError::invalid_input("allocate guest mapping", "invalid RAM allocation layout")
+        })?;
+        let backing = MemoryBacking::allocate(layout)?;
+        let host = crate::host::paging::virt_to_phys(backing.address());
+        Self::new(range, host, flags, backing, 0)
+    }
+
     pub(crate) fn new(
         range: GuestRange,
         host: HostPhysAddr,
@@ -121,6 +165,7 @@ impl MappingLease {
             .is_none_or(|end| end > backing.length)
             || host.as_usize().checked_add(range.length).is_none()
             || flags.contains(MappingFlags::DEVICE)
+            || crate::host::paging::virt_to_phys(backing.address() + backing_offset) != host
         {
             return Err(AxVmError::invalid_config(
                 "mapping exceeds its RAM backing lease",
@@ -134,10 +179,36 @@ impl MappingLease {
             backing_offset,
         })
     }
+
+    pub(crate) fn subrange(&self, range: GuestRange) -> AxVmResult<Self> {
+        let offset = range
+            .start
+            .as_usize()
+            .checked_sub(self.range.start.as_usize())
+            .ok_or_else(|| AxVmError::invalid_config("mapping subrange starts before backing"))?;
+        if offset
+            .checked_add(range.length)
+            .is_none_or(|end| end > self.range.length)
+        {
+            return Err(AxVmError::invalid_config(
+                "mapping subrange exceeds backing",
+            ));
+        }
+        Self::new(
+            range,
+            self.host + offset,
+            self.flags,
+            self.backing.clone(),
+            self.backing_offset + offset,
+        )
+    }
 }
 
-pub(crate) enum MemoryUpdate {
+/// A control-owner transaction that installs RAM or retires a guest range.
+pub enum MemoryUpdate {
+    /// Installs a mapping with an owned RAM lifetime lease.
     Map(MappingLease),
+    /// Removes a range after access and architecture translation retirement.
     Unmap(GuestRange),
 }
 
@@ -151,14 +222,19 @@ struct MemorySnapshot {
 /// This view owns its backing leases. It has no publication mutex or callback;
 /// the control owner replaces it only after the corresponding vCPU parks.
 pub(crate) struct DecodeMemory {
+    #[cfg(any(test, not(target_arch = "aarch64")))]
     mappings: Vec<MappingLease>,
 }
 
 impl DecodeMemory {
-    pub(crate) fn new(mappings: Vec<MappingLease>) -> Self {
-        Self { mappings }
+    pub(crate) fn new(_mappings: Vec<MappingLease>) -> Self {
+        Self {
+            #[cfg(any(test, not(target_arch = "aarch64")))]
+            mappings: _mappings,
+        }
     }
 
+    #[cfg(any(test, not(target_arch = "aarch64")))]
     pub(crate) fn read_byte(&self, address: GuestPhysAddr) -> DeviceResult<u8> {
         let current = address.as_usize();
         let mapping = self
@@ -196,11 +272,27 @@ struct MemoryState {
 
 /// Copies guest bytes while retaining one complete mapping revision.
 #[derive(Clone)]
-pub(crate) struct GuestMemoryPort {
+pub struct GuestMemoryPort {
     state: Arc<MemoryState>,
 }
 
 impl GuestMemoryPort {
+    /// Copies from one revision while retaining its backing for the whole call.
+    /// This task-context operation returns an error while access is closed.
+    pub fn read_bytes(&self, address: GuestPhysAddr, output: &mut [u8]) -> AxVmResult {
+        self.with_access(|access| access.read(address, output))
+            .map_err(|error| AxVmError::device("admit guest memory read", error))?
+            .map_err(|error| AxVmError::device("copy guest memory read", error))
+    }
+
+    /// Copies into guest RAM without returning a guest reference. Access may
+    /// block in task context; it is refused during translation publication.
+    pub fn write_bytes(&self, address: GuestPhysAddr, input: &[u8]) -> AxVmResult {
+        self.with_access(|access| access.write(address, input))
+            .map_err(|error| AxVmError::device("admit guest memory write", error))?
+            .map_err(|error| AxVmError::device("copy guest memory write", error))
+    }
+
     pub(crate) fn new(
         revision: MemoryRevision,
         mappings: Vec<MappingLease>,
@@ -255,6 +347,12 @@ impl GuestMemoryPort {
         };
         drop(retired);
         Ok(())
+    }
+
+    /// Withdraws backing ownership from closed ports after hardware retirement.
+    pub(crate) fn retire(&self) -> AxVmResult {
+        let revision = self.state.publication.lock_unpoisoned().snapshot.revision;
+        self.publish(revision, Vec::new())
     }
 
     pub(crate) fn reopen(&self, expected: MemoryRevision) -> AxVmResult<()> {

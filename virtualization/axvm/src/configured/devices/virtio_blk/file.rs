@@ -1,20 +1,28 @@
 //! On-demand file I/O with one bounded, owned request in flight.
 //!
 //! The virtqueue retries its pending head after `WouldBlock`. Only the worker
-//! touches storage; guest memory never escapes the scoped polling call.
-//! Reset discards queued/completed work and drains running I/O before reuse.
+//! thread touches storage; guest memory never escapes the scoped polling call,
+//! and no guest page is retained between polls.
+//!
+//! Lifecycle guarantees:
+//! - `reset` discards queued/completed work and invalidates running I/O.
+//! - `suspend` drains the queued and in-flight request, then leaves the worker
+//!   silent while retaining the completion for a resumed poll.
+//! - `resume` re-opens submissions.
+//! - `stop` closes submissions, cancels a not-yet-started request, joins the
+//!   worker outside the state lock, and reports a failed join as an error
+//!   instead of faking success.
 
 use std::{
     format,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     vec::Vec,
 };
 
-use ax_std::os::arceos::sync::IrqSafeMutex;
 use axvirtio_blk::{BlockBackend, VirtioBlockConfig};
 use axvirtio_common::{VirtioError, VirtioResult};
 
@@ -26,10 +34,17 @@ const IO_CHUNK_BYTES: usize = 4096;
 const WORKER_STACK_BYTES: usize = 1024 * 1024;
 
 pub(super) struct FileBackend {
-    shared: Arc<IrqSafeMutex<Shared>>,
-    worker: Option<JoinHandle<()>>,
+    shared: Arc<Mutex<Shared>>,
+    /// Signalled whenever a queued/running request finishes or lifecycle state
+    /// changes, so `suspend`/`stop` can wait for quiescence.
+    idle: Arc<Condvar>,
+    /// Joined exactly once, by `stop_worker` or by `Drop`.
+    worker: Mutex<Option<JoinHandle<()>>>,
     queue_pending: Arc<AtomicBool>,
     pub(super) capacity_sectors: u64,
+    /// Latched once a failed `join` is observed, so a later stop reports the
+    /// same failure instead of pretending the worker stopped cleanly.
+    join_failed: AtomicBool,
 }
 
 trait Storage: Send + 'static {
@@ -101,6 +116,13 @@ enum State {
 struct Shared {
     state: State,
     stopping: bool,
+    suspended: bool,
+    /// Set by the worker's exit guard once the worker thread has left, on both
+    /// a clean exit and a panic, so waiters never block on a dead worker.
+    terminated: bool,
+    /// Set when the worker left by unwinding; surfaced as an error instead of
+    /// a silent success by `suspend`/`stop`.
+    worker_panicked: bool,
 }
 
 impl Shared {
@@ -132,18 +154,67 @@ impl Shared {
             _ => State::Idle,
         };
     }
+
+    /// Discards a request that has not started yet.
+    fn cancel_queued(&mut self) {
+        if matches!(self.state, State::Queued(_)) {
+            self.state = State::Idle;
+        }
+    }
+
+    /// Whether the worker owns no queued or in-flight request.
+    fn is_quiescent(&self) -> bool {
+        matches!(self.state, State::Idle | State::Complete { .. })
+    }
+}
+
+/// Locks the worker state, recovering from poisoning.
+///
+/// A worker panic can poison the state mutex; lifecycle waiters must still
+/// observe `terminated`/`worker_panicked` and report an error instead of
+/// panicking or waiting forever.
+fn lock_state(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Marks the worker as terminated on every exit path, including unwinding.
+///
+/// Dropping this guard sets `terminated` (and `worker_panicked` while
+/// unwinding) under the state lock and wakes every waiter, so a `suspend` or
+/// `stop` blocked on the condvar can never wait on a worker that is already
+/// gone.
+struct WorkerExitGuard {
+    shared: Arc<Mutex<Shared>>,
+    idle: Arc<Condvar>,
+}
+
+impl Drop for WorkerExitGuard {
+    fn drop(&mut self) {
+        {
+            let mut shared = lock_state(&self.shared);
+            shared.terminated = true;
+            if std::thread::panicking() {
+                shared.worker_panicked = true;
+            }
+            shared.stopping = true;
+        }
+        self.idle.notify_all();
+    }
 }
 
 impl FileBackend {
     pub(super) fn new(
         file: ax_api::fs::AxFileHandle,
         capacity_sectors: u64,
-        vm_id: usize,
+        port: crate::services::DeviceWorkPort,
     ) -> axdevice::DeviceManagerResult<Self> {
         Self::spawn(AxStorage(file), capacity_sectors, pin_worker, move |_| {
-            // notify_vm publishes device work and requests execution on vCPU0.
-            if let Err(error) = crate::AxvmRuntime::notify_vm(vm_id) {
-                log::warn!("failed to notify VM[{vm_id}] of file I/O completion: {error}");
+            // The completion level state is published before this wake, so the
+            // port only asks the owning vCPU context to run a pollable pass.
+            if let Err(error) = port.notify() {
+                log::warn!("failed to signal virtio-blk file I/O completion: {error}");
             }
         })
         .map_err(|error| axdevice::DeviceManagerError::InvalidConfig {
@@ -152,52 +223,78 @@ impl FileBackend {
         })
     }
 
-    fn spawn<S: Storage>(
+    fn spawn<S: Storage, N>(
         mut storage: S,
         capacity_sectors: u64,
         start: fn(),
-        notify: impl Fn(&AtomicBool) + Send + 'static,
-    ) -> std::io::Result<Self> {
-        let shared = Arc::new(IrqSafeMutex::new(Shared::default()));
+        notify: N,
+    ) -> std::io::Result<Self>
+    where
+        N: Fn(&AtomicBool) + Send + 'static,
+    {
+        let shared = Arc::new(Mutex::new(Shared::default()));
         let worker_shared = shared.clone();
+        let idle = Arc::new(Condvar::new());
+        let worker_idle = idle.clone();
         let queue_pending = Arc::new(AtomicBool::new(false));
         let worker_queue_pending = Arc::clone(&queue_pending);
         let worker = std::thread::Builder::new()
             .name("virtio-blk-file".into())
             .stack_size(WORKER_STACK_BYTES)
             .spawn(move || {
+                // First declared so it drops last: on both a clean exit and an
+                // unwind it marks the worker terminated and wakes waiters.
+                let _exit = WorkerExitGuard {
+                    shared: worker_shared.clone(),
+                    idle: worker_idle.clone(),
+                };
                 start();
+                let mut shared = lock_state(&worker_shared);
                 loop {
-                    // Never hold the state lock across storage I/O or notification.
-                    let operation = {
-                        let mut shared = worker_shared.lock();
-                        let work = shared.take_work();
-                        if work.is_none() && shared.stopping {
-                            break;
-                        }
-                        work
-                    };
-                    if let Some(mut operation) = operation {
+                    if shared.stopping {
+                        // Terminal stop: discard a request that never started;
+                        // any request already in flight has completed above.
+                        shared.cancel_queued();
+                        break;
+                    }
+                    if let Some(mut operation) = shared.take_work() {
+                        // A suspend may arrive after this point; drain the
+                        // in-flight request before the worker goes silent.
+                        drop(shared);
                         let result = execute(&mut storage, &mut operation);
-                        worker_shared.lock().finish(operation, result);
+                        shared = lock_state(&worker_shared);
+                        shared.finish(operation, result);
                         // A wake is only a hint. Publish the level state first
-                        // so an immediately running poller observes the work.
+                        // so an immediately running poller observes the work,
+                        // then release the lock before notifying the port.
                         worker_queue_pending.store(true, Ordering::Release);
+                        drop(shared);
                         notify(&worker_queue_pending);
+                        shared = lock_state(&worker_shared);
+                        // Only after the port wake completes does the worker
+                        // report itself quiescent to a waiting suspend/stop.
+                        worker_idle.notify_all();
                     } else {
-                        // unpark retains a token when it races this call.
-                        std::thread::park();
+                        // No queued work: wait for a submission, suspend, or
+                        // stop. `notify_all` from every such transition keeps
+                        // the wait free of lost wakeups.
+                        shared = worker_idle
+                            .wait(shared)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
                     }
                 }
+                drop(shared);
                 if let Err(error) = storage.sync() {
                     log::error!("virtio-blk shutdown sync failed: {error:?}");
                 }
             })?;
         Ok(Self {
             shared,
-            worker: Some(worker),
+            idle,
+            worker: Mutex::new(Some(worker)),
             queue_pending,
             capacity_sectors,
+            join_failed: AtomicBool::new(false),
         })
     }
 
@@ -220,9 +317,15 @@ impl FileBackend {
     }
 
     fn poll(&self, key: RequestKey, write_bytes: Option<&[u8]>) -> VirtioResult<Operation> {
-        let mut shared = self.shared.lock();
+        let mut shared = lock_state(&self.shared);
         if shared.stopping {
             return Err(VirtioError::DeviceNotReady);
+        }
+        // While suspended, a new request is deferred rather than failed, so a
+        // later resume can still serve it. A completion retained across the
+        // suspend boundary stays consumable.
+        if shared.suspended && !matches!(shared.state, State::Complete { .. }) {
+            return Err(VirtioError::WouldBlock);
         }
         match &shared.state {
             State::Idle => {
@@ -265,8 +368,98 @@ impl FileBackend {
     }
 
     fn wake_worker(&self) {
-        if let Some(worker) = &self.worker {
-            worker.thread().unpark();
+        self.idle.notify_all();
+    }
+
+    /// Quiesces the worker: any queued or in-flight request is drained, and no
+    /// new request is started until [`resume_worker`](Self::resume_worker). The
+    /// retained completion stays available for a resumed poll.
+    fn suspend_worker(&self) -> VirtioResult<()> {
+        let mut shared = lock_state(&self.shared);
+        if shared.worker_panicked {
+            return Err(VirtioError::BackendError);
+        }
+        if shared.stopping {
+            return Err(VirtioError::DeviceNotReady);
+        }
+        shared.suspended = true;
+        self.wake_worker();
+        loop {
+            if shared.worker_panicked {
+                return Err(VirtioError::BackendError);
+            }
+            if shared.terminated || shared.stopping {
+                // The worker is gone without reaching quiescence: never report
+                // a silent success.
+                return Err(VirtioError::DeviceNotReady);
+            }
+            if shared.is_quiescent() {
+                return Ok(());
+            }
+            shared = self
+                .idle
+                .wait(shared)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    /// Re-opens a suspended worker and wakes it so queued work can run again.
+    fn resume_worker(&self) -> VirtioResult<()> {
+        let mut shared = lock_state(&self.shared);
+        if shared.worker_panicked {
+            return Err(VirtioError::BackendError);
+        }
+        if shared.stopping {
+            return Err(VirtioError::DeviceNotReady);
+        }
+        shared.suspended = false;
+        drop(shared);
+        self.wake_worker();
+        Ok(())
+    }
+
+    /// Stops the worker permanently: closes new submissions, discards a
+    /// not-yet-started request, joins the worker outside the state lock, and
+    /// reports a failed join instead of faking success.
+    fn stop_worker(&self) -> VirtioResult<()> {
+        if self.join_failed.load(Ordering::Acquire) {
+            return Err(VirtioError::BackendError);
+        }
+        {
+            let mut shared = lock_state(&self.shared);
+            shared.stopping = true;
+            shared.cancel_queued();
+            self.wake_worker();
+        }
+        let handle = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        let Some(handle) = handle else {
+            // No live handle: only a cleanly stopped worker is success. A dead
+            // worker with queued/in-flight work must not be reported as a
+            // silent success.
+            let shared = lock_state(&self.shared);
+            return if shared.worker_panicked {
+                Err(VirtioError::BackendError)
+            } else {
+                Ok(())
+            };
+        };
+        match handle.join() {
+            Ok(()) => {
+                let shared = lock_state(&self.shared);
+                if shared.worker_panicked {
+                    Err(VirtioError::BackendError)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(_) => {
+                self.join_failed.store(true, Ordering::Release);
+                Err(VirtioError::BackendError)
+            }
         }
     }
 
@@ -305,12 +498,24 @@ fn execute(storage: &mut impl Storage, operation: &mut Operation) -> VirtioResul
 
 impl BlockBackend for FileBackend {
     fn pending_request_ready(&self) -> bool {
-        let shared = self.shared.lock();
+        let shared = lock_state(&self.shared);
         shared.stopping || matches!(shared.state, State::Idle | State::Complete { .. })
     }
 
     fn requires_deferred_processing(&self) -> bool {
         true
+    }
+
+    fn suspend(&self) -> VirtioResult<()> {
+        self.suspend_worker()
+    }
+
+    fn resume(&self) -> VirtioResult<()> {
+        self.resume_worker()
+    }
+
+    fn stop(&self) -> VirtioResult<()> {
+        self.stop_worker()
     }
 
     fn read(&self, sector: u64, buffer: &mut [u8]) -> VirtioResult<usize> {
@@ -339,18 +544,15 @@ impl BlockBackend for FileBackend {
     }
 
     fn cancel_pending_request(&self) {
-        self.shared.lock().cancel();
+        lock_state(&self.shared).cancel();
     }
 }
 
 impl Drop for FileBackend {
     fn drop(&mut self) {
-        self.shared.lock().stopping = true;
-        self.wake_worker();
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            log::error!("virtio-blk file worker failed during teardown");
+        // Best-effort fallback for a backend that was not explicitly stopped.
+        if let Err(error) = self.stop_worker() {
+            log::error!("virtio-blk file worker failed during teardown: {error:?}");
         }
     }
 }
@@ -363,26 +565,13 @@ mod tests {
 
     fn manual_backend() -> FileBackend {
         FileBackend {
-            shared: Arc::new(IrqSafeMutex::new(Shared::default())),
-            worker: None,
+            shared: Arc::new(Mutex::new(Shared::default())),
+            idle: Arc::new(Condvar::new()),
+            worker: Mutex::new(None),
             queue_pending: Arc::new(AtomicBool::new(false)),
             capacity_sectors: (1 << 40) / 512,
+            join_failed: AtomicBool::new(false),
         }
-    }
-
-    /// Compile-time contract only: the shared backend state must stay behind an
-    /// IRQ-safe mutex so the deferred virtio-blk queue path can lock it while
-    /// the virtqueue lease already keeps local interrupts disabled. This is a
-    /// bare function signature check, so it never constructs a backend and
-    /// never acquires the privileged IRQ-save lock; regressing the field to a
-    /// sleeping mutex fails to compile here instead of resurfacing as a
-    /// `TaskError::UnsafeContext` at runtime.
-    #[test]
-    fn shared_state_stays_an_irq_safe_mutex() {
-        fn state_is_irq_safe(backend: &FileBackend) -> &IrqSafeMutex<Shared> {
-            &*backend.shared
-        }
-        let _contract: fn(&FileBackend) -> &IrqSafeMutex<Shared> = state_is_irq_safe;
     }
 
     #[test]
@@ -507,7 +696,7 @@ mod tests {
                 model.process_pending_queue(0, &mut memory),
                 Ok(BlockDeviceEvent::QueuePending(0))
             );
-            let mut old = Some(shared.lock().take_work().unwrap());
+            let mut old = Some(shared.lock().unwrap().take_work().unwrap());
             let reads_before_wait = memory.read_calls;
             for _ in 0..32 {
                 assert_eq!(
@@ -520,7 +709,7 @@ mod tests {
                 "waiting for storage must not reread descriptors or copy guest data"
             );
             if complete_before_failure {
-                shared.lock().finish(old.take().unwrap(), Ok(()));
+                shared.lock().unwrap().finish(old.take().unwrap(), Ok(()));
             }
             memory.fail_data = true;
             if !complete_before_failure {
@@ -528,12 +717,12 @@ mod tests {
                     model.process_pending_queue(0, &mut memory),
                     Ok(BlockDeviceEvent::QueuePending(0))
                 );
-                shared.lock().finish(old.take().unwrap(), Ok(()));
+                shared.lock().unwrap().finish(old.take().unwrap(), Ok(()));
             }
             model.process_pending_queue(0, &mut memory).unwrap();
             assert_eq!(memory.bytes[0x800], 1, "the failed retry must report IOERR");
             if let Some(old) = old {
-                shared.lock().finish(old, Ok(()));
+                shared.lock().unwrap().finish(old, Ok(()));
             }
             // Reuse the returned descriptor with the same range but new contents.
             memory.fail_data = false;
@@ -546,9 +735,13 @@ mod tests {
                 "a later write must issue fresh I/O, not consume the abandoned result"
             );
             assert_eq!(memory.bytes[0x800], 0xff);
-            let fresh = shared.lock().take_work().expect("new storage write");
+            let fresh = shared
+                .lock()
+                .unwrap()
+                .take_work()
+                .expect("new storage write");
             assert_eq!(fresh.bytes, vec![0x22; 512]);
-            shared.lock().finish(fresh, Ok(()));
+            shared.lock().unwrap().finish(fresh, Ok(()));
             model.process_pending_queue(0, &mut memory).unwrap();
             assert_eq!(memory.bytes[0x800], 0);
         }
@@ -560,15 +753,15 @@ mod tests {
         let mut bytes = [0xcc; 512];
         assert_eq!(backend.read(100, &mut bytes), Err(VirtioError::WouldBlock));
         assert_eq!(bytes, [0xcc; 512]);
-        let mut work = backend.shared.lock().take_work().unwrap();
+        let mut work = backend.shared.lock().unwrap().take_work().unwrap();
         assert_eq!(work.key.offset, 100 * 512);
         assert_eq!(work.bytes.len(), 512);
         assert_eq!(backend.read(100, &mut bytes), Err(VirtioError::WouldBlock));
         work.bytes.fill(0x42);
-        backend.shared.lock().finish(work, Ok(()));
+        backend.shared.lock().unwrap().finish(work, Ok(()));
         assert_eq!(backend.read(100, &mut bytes), Ok(512));
         assert_eq!(bytes, [0x42; 512]);
-        assert!(matches!(backend.shared.lock().state, State::Idle));
+        assert!(matches!(backend.shared.lock().unwrap().state, State::Idle));
     }
 
     #[test]
@@ -578,27 +771,29 @@ mod tests {
         assert_eq!(backend.write(7, &bytes), Err(VirtioError::WouldBlock));
         bytes.fill(0x99);
         assert_eq!(backend.write(7, &bytes), Err(VirtioError::WouldBlock));
-        let work = backend.shared.lock().take_work().unwrap();
+        let work = backend.shared.lock().unwrap().take_work().unwrap();
         assert_eq!(work.bytes, [0x31; 512]);
         backend
             .shared
             .lock()
+            .unwrap()
             .finish(work, Err(VirtioError::BackendError));
         assert_eq!(backend.write(7, &bytes), Err(VirtioError::BackendError));
-        assert!(matches!(backend.shared.lock().state, State::Idle));
+        assert!(matches!(backend.shared.lock().unwrap().state, State::Idle));
     }
 
     #[test]
     fn flush_waits_for_sync_and_propagates_failure() {
         let backend = manual_backend();
         assert_eq!(backend.flush(), Err(VirtioError::WouldBlock));
-        let work = backend.shared.lock().take_work().unwrap();
+        let work = backend.shared.lock().unwrap().take_work().unwrap();
         assert_eq!(work.key.kind, Kind::Flush);
         assert!(work.bytes.is_empty());
         assert_eq!(backend.flush(), Err(VirtioError::WouldBlock));
         backend
             .shared
             .lock()
+            .unwrap()
             .finish(work, Err(VirtioError::BackendError));
         assert_eq!(backend.flush(), Err(VirtioError::BackendError));
     }
@@ -609,16 +804,16 @@ mod tests {
         let mut bytes = [0; 512];
         assert_eq!(backend.read(0, &mut bytes), Err(VirtioError::WouldBlock));
         backend.reset();
-        assert!(backend.shared.lock().take_work().is_none());
+        assert!(backend.shared.lock().unwrap().take_work().is_none());
         assert_eq!(backend.read(0, &mut bytes), Err(VirtioError::WouldBlock));
-        let old = backend.shared.lock().take_work().unwrap();
+        let old = backend.shared.lock().unwrap().take_work().unwrap();
         backend.reset();
         assert_eq!(backend.read(0, &mut bytes), Err(VirtioError::WouldBlock));
-        backend.shared.lock().finish(old, Ok(()));
+        backend.shared.lock().unwrap().finish(old, Ok(()));
         // Even an identical request after reset must issue fresh storage I/O.
         assert_eq!(backend.read(0, &mut bytes), Err(VirtioError::WouldBlock));
-        let fresh = backend.shared.lock().take_work().unwrap();
-        backend.shared.lock().finish(fresh, Ok(()));
+        let fresh = backend.shared.lock().unwrap().take_work().unwrap();
+        backend.shared.lock().unwrap().finish(fresh, Ok(()));
         backend.reset();
         assert_eq!(backend.read(0, &mut bytes), Err(VirtioError::WouldBlock));
     }
@@ -638,7 +833,7 @@ mod tests {
             backend.read(backend.capacity_sectors, &mut [0; 512]),
             Err(VirtioError::InvalidAddress)
         );
-        assert!(matches!(backend.shared.lock().state, State::Idle));
+        assert!(matches!(backend.shared.lock().unwrap().state, State::Idle));
     }
 
     struct PartialStorage {
@@ -785,5 +980,192 @@ mod tests {
         assert_eq!(backend.read(sector, &mut bytes), Ok(512));
         assert_eq!(bytes, [0x4b; 512]);
         drop(backend);
+    }
+
+    /// Storage that blocks reads/writes until `release` is observed and records
+    /// when the worker has entered storage, for deterministic interleavings.
+    #[derive(Clone)]
+    struct GatedStorage {
+        inner: Arc<GatedStorageInner>,
+    }
+
+    struct GatedStorageInner {
+        bytes: Mutex<Vec<u8>>,
+        entered: Mutex<bool>,
+        entered_cv: Condvar,
+        release: Mutex<bool>,
+        release_cv: Condvar,
+    }
+
+    impl GatedStorage {
+        fn blocked(bytes: Vec<u8>) -> Self {
+            Self {
+                inner: Arc::new(GatedStorageInner {
+                    bytes: Mutex::new(bytes),
+                    entered: Mutex::new(false),
+                    entered_cv: Condvar::new(),
+                    release: Mutex::new(false),
+                    release_cv: Condvar::new(),
+                }),
+            }
+        }
+
+        fn ready(bytes: Vec<u8>) -> Self {
+            let storage = Self::blocked(bytes);
+            *storage.inner.release.lock().unwrap() = true;
+            storage
+        }
+
+        fn wait_entered(&self) {
+            let mut entered = self.inner.entered.lock().unwrap();
+            while !*entered {
+                entered = self.inner.entered_cv.wait(entered).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            *self.inner.release.lock().unwrap() = true;
+            self.inner.release_cv.notify_all();
+        }
+
+        fn await_release(&self) {
+            let mut entered = self.inner.entered.lock().unwrap();
+            *entered = true;
+            self.inner.entered_cv.notify_all();
+            drop(entered);
+            let mut release = self.inner.release.lock().unwrap();
+            while !*release {
+                release = self.inner.release_cv.wait(release).unwrap();
+            }
+        }
+    }
+
+    impl Storage for GatedStorage {
+        fn read_at(&mut self, offset: u64, bytes: &mut [u8]) -> VirtioResult<usize> {
+            self.await_release();
+            let data = self.inner.bytes.lock().unwrap();
+            let start = offset as usize;
+            bytes.copy_from_slice(&data[start..start + bytes.len()]);
+            Ok(bytes.len())
+        }
+
+        fn write_at(&mut self, offset: u64, bytes: &[u8]) -> VirtioResult<usize> {
+            self.await_release();
+            let mut data = self.inner.bytes.lock().unwrap();
+            let start = offset as usize;
+            data[start..start + bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn sync(&mut self) -> VirtioResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn suspend_waits_for_the_in_flight_completion_and_resume_keeps_it() {
+        let storage = GatedStorage::blocked(vec![0x7a; 8192]);
+        let observer = storage.clone();
+        let backend =
+            Arc::new(FileBackend::spawn(storage, 16, || {}, |_queue_pending| {}).unwrap());
+
+        let mut buffer = [0u8; 512];
+        assert_eq!(backend.read(0, &mut buffer), Err(VirtioError::WouldBlock));
+        // The worker is now blocked inside storage I/O.
+        observer.wait_entered();
+
+        let suspend_backend = backend.clone();
+        let suspend = std::thread::spawn(move || suspend_backend.suspend_worker());
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !suspend.is_finished(),
+            "suspend must not succeed while a read is still running"
+        );
+
+        observer.release();
+        suspend.join().unwrap().unwrap();
+
+        // Resume re-opens the device and the completion produced during the
+        // suspend is still consumable.
+        backend.resume_worker().unwrap();
+        assert_eq!(backend.read(0, &mut buffer), Ok(512));
+        assert_eq!(buffer, [0x7a; 512]);
+        backend.stop_worker().unwrap();
+    }
+
+    #[test]
+    fn completion_state_is_published_before_the_worker_notifies_the_port() {
+        let storage = GatedStorage::ready(vec![0x11; 8192]);
+        let (send, receive) = mpsc::channel();
+        let backend = Arc::new(
+            FileBackend::spawn(
+                storage,
+                16,
+                || {},
+                move |queue_pending| {
+                    assert!(
+                        queue_pending.load(Ordering::Acquire),
+                        "completion state must be published before the port notify"
+                    );
+                    let _ = send.send(());
+                },
+            )
+            .unwrap(),
+        );
+
+        let mut buffer = [0u8; 512];
+        assert_eq!(backend.read(0, &mut buffer), Err(VirtioError::WouldBlock));
+        receive.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(backend.queue_pending.swap(false, Ordering::Acquire));
+        assert_eq!(backend.read(0, &mut buffer), Ok(512));
+        assert_eq!(buffer, [0x11; 512]);
+        backend.stop_worker().unwrap();
+    }
+
+    #[test]
+    fn stop_joins_the_worker_and_rejects_later_submissions() {
+        let storage = GatedStorage::blocked(vec![0; 8192]);
+        let backend = FileBackend::spawn(storage, 16, || {}, |_queue_pending| {}).unwrap();
+
+        backend.stop_worker().unwrap();
+        let mut buffer = [0u8; 512];
+        assert_eq!(
+            backend.read(0, &mut buffer),
+            Err(VirtioError::DeviceNotReady)
+        );
+        assert_eq!(
+            backend.write(0, &[0u8; 512]),
+            Err(VirtioError::DeviceNotReady)
+        );
+        // A repeated stop is idempotent once the worker has been joined.
+        backend.stop_worker().unwrap();
+    }
+
+    struct PanicStorage;
+
+    impl Storage for PanicStorage {
+        fn read_at(&mut self, _offset: u64, _bytes: &mut [u8]) -> VirtioResult<usize> {
+            panic!("injected storage read panic");
+        }
+
+        fn write_at(&mut self, _offset: u64, _bytes: &[u8]) -> VirtioResult<usize> {
+            panic!("injected storage write panic");
+        }
+
+        fn sync(&mut self) -> VirtioResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn worker_panic_makes_suspend_and_stop_fail_instead_of_hanging() {
+        let backend = FileBackend::spawn(PanicStorage, 16, || {}, |_queue_pending| {}).unwrap();
+        let mut buffer = [0u8; 512];
+        assert_eq!(backend.read(0, &mut buffer), Err(VirtioError::WouldBlock));
+
+        // A dead worker must surface an error to suspend/stop waiters instead
+        // of blocking forever or being treated as a silent success.
+        assert_eq!(backend.suspend_worker(), Err(VirtioError::BackendError));
+        assert_eq!(backend.stop_worker(), Err(VirtioError::BackendError));
     }
 }

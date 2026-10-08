@@ -30,7 +30,7 @@ impl LoongArch64Arch {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(page_table, device_plan, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
                 4 => 48,
@@ -92,16 +92,17 @@ fn plan_devices(
     const FW_CFG_BASE: usize = 0x1e02_0000;
     const FW_CFG_SIZE: usize = 0x18;
     let controller_id = DeviceNodeId::new("pch-pic")?;
+    // The plan owns one lower run cell; the device model and its per-run
+    // interrupt runtime share it, so no callback has to resolve a run by id.
+    let run = super::irq::new_run_binding();
+    let pch_pic = super::irq::LoongArchPchPicModel::new(
+        PCH_PIC_BASE,
+        PCH_PIC_SIZE,
+        Arc::clone(&run),
+        Arc::new(super::irq::LoongArchPchPicOutputSink::new(Arc::clone(&run))),
+    );
     let mut nodes = std::vec![
-        DeviceNodeSpec::host_replacement(
-            controller_id.clone(),
-            Arc::new(axdevice::LoongArchPchPicFactory::new(
-                PCH_PIC_BASE,
-                PCH_PIC_SIZE,
-                Arc::new(LoongArchDomainFactory { vm_id: config.id() }),
-                Arc::new(super::irq::LoongArchPchPicOutputSink::new(config.id())),
-            )),
-        ),
+        DeviceNodeSpec::host_replacement(controller_id.clone(), pch_pic),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("fw-cfg")?,
             Arc::new(axdevice::FwCfgPayloadFactory::deferred(
@@ -126,19 +127,6 @@ fn plan_devices(
         super::resource_pools::create()?,
         super::pci_config::provider()?,
     )?))
-}
-
-struct LoongArchDomainFactory {
-    vm_id: usize,
-}
-
-impl axdevice::LoongArchInterruptDomainFactory for LoongArchDomainFactory {
-    fn create(
-        &self,
-        pic: Arc<axdevice::LoongArchPchPic>,
-    ) -> Arc<dyn axdevice_base::VirtualInterruptController> {
-        irq::create_interrupt_domain(self.vm_id, pic)
-    }
 }
 
 fn build_vcpu_setup_config(

@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
-use core::marker::PhantomData;
+
+use ax_sync::Mutex;
 
 use crate::{
     host::*,
-    lock::RawSpinLockStorage,
     timer_registration::{
         TimerRegistration, limit_periodic_timer_period_ns, restart_periodic_deadline_ns,
     },
@@ -268,16 +268,28 @@ impl PitState {
 
 /// A minimal emulated x86 PIT/8254 device.
 pub struct EmulatedPit<H: X86VlapicHostOps> {
-    state: RawSpinLockStorage<PitState>,
-    irq0_timer: RawSpinLockStorage<PitIrqTimer<H>>,
-    _host: PhantomData<fn() -> H>,
+    state: Mutex<PitState>,
+    /// Task-side serialization of the IRQ0 host timer.
+    ///
+    /// Registering or cancelling a host timer runs external host code that may
+    /// allocate or wait, so this uses a sleepable mutex instead of a raw lock.
+    /// The hard-timer callback never takes this mutex; it only owns the short
+    /// IRQ-safe arm state inside [`TimerRegistration`].
+    irq0_timer: Mutex<PitIrqTimer<H::Runtime>>,
 }
 
-struct PitIrqTimer<H: X86VlapicHostOps> {
-    registration: Arc<TimerRegistration<H>>,
-    vm_id: X86VmId,
-    vcpu_id: X86VcpuId,
-    _host: PhantomData<fn() -> H>,
+struct PitIrqTimer<R: X86VlapicRuntimeOps> {
+    registration: Arc<TimerRegistration<R>>,
+    runtime: R,
+}
+
+impl<R: X86VlapicRuntimeOps> PitIrqTimer<R> {
+    fn new(runtime: R) -> Self {
+        Self {
+            registration: Arc::new(TimerRegistration::new()),
+            runtime,
+        }
+    }
 }
 
 impl<H: X86VlapicHostOps> EmulatedPit<H> {
@@ -286,15 +298,34 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         Self::new_for_vcpu(0, 0)
     }
 
-    /// Create a PIT whose IRQ0 is routed to one VM vCPU by the host adapter.
-    pub fn new_for_vcpu(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+    /// Create a PIT whose IRQ0 uses the supplied run-scoped port.
+    pub fn new_for_vcpu_with_runtime(
+        runtime: H::Runtime,
+        _vm_id: X86VmId,
+        _vcpu_id: X86VcpuId,
+    ) -> Self {
         Self {
-            state: RawSpinLockStorage::new(PitState::new()),
-            irq0_timer: RawSpinLockStorage::new(PitIrqTimer::new(vm_id, vcpu_id)),
-            _host: PhantomData,
+            state: Mutex::new(PitState::new()),
+            irq0_timer: Mutex::new(PitIrqTimer::new(runtime)),
         }
     }
 
+    /// Create a host-side adapter that is not attached to a guest run.
+    ///
+    /// Programming its timer returns a run-state error. AxVM creates its real
+    /// PIT with [`Self::new_for_vcpu_with_runtime`] from the run owner.
+    pub fn new_for_vcpu(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+        Self::new_for_vcpu_with_runtime(H::unbound_runtime(vm_id, vcpu_id), vm_id, vcpu_id)
+    }
+}
+
+impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<H: X86VlapicHostOps> EmulatedPit<H> {
     fn channel_mut(state: &mut PitState, channel: u8) -> Option<&mut PitChannel> {
         match channel {
             0 => Some(&mut state.channel0),
@@ -355,39 +386,23 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
     }
 }
 
-impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<H: X86VlapicHostOps> PitIrqTimer<H> {
-    fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
-        Self {
-            registration: Arc::new(TimerRegistration::new()),
-            vm_id,
-            vcpu_id,
-            _host: PhantomData,
-        }
-    }
-
+impl<R: X86VlapicRuntimeOps> PitIrqTimer<R> {
     fn schedule(&mut self, deadline_ns: u64, period_ns: Option<u64>) -> X86VlapicResult {
-        self.registration.invalidate_and_cancel()?;
-        schedule_irq0::<H>(
+        self.registration.invalidate_and_cancel(&self.runtime)?;
+        schedule_irq0(
             deadline_ns,
             period_ns,
             Arc::clone(&self.registration),
-            self.vm_id,
-            self.vcpu_id,
+            self.runtime.clone(),
         )
     }
 
     fn cancel(&mut self) -> X86VlapicResult {
-        self.registration.invalidate_and_cancel()
+        self.registration.invalidate_and_cancel(&self.runtime)
     }
 }
 
-impl<H: X86VlapicHostOps> Drop for PitIrqTimer<H> {
+impl<R: X86VlapicRuntimeOps> Drop for PitIrqTimer<R> {
     fn drop(&mut self) {
         if let Err(error) = self.cancel() {
             log::warn!("failed to cancel x86 PIT timer during teardown: {error:?}");
@@ -395,24 +410,21 @@ impl<H: X86VlapicHostOps> Drop for PitIrqTimer<H> {
     }
 }
 
-fn schedule_irq0<H: X86VlapicHostOps>(
+fn schedule_irq0<R: X86VlapicRuntimeOps>(
     deadline_ns: u64,
     period_ns: Option<u64>,
-    registration: Arc<TimerRegistration<H>>,
-    vm_id: X86VmId,
-    vcpu_id: X86VcpuId,
+    registration: Arc<TimerRegistration<R>>,
+    runtime: R,
 ) -> X86VlapicResult {
     let mut next_deadline_ns = deadline_ns;
     registration.register(
+        &runtime,
         deadline_ns,
-        alloc::boxed::Box::new(move |_| {
-            let _ = H::inject_pit_irq(vm_id, vcpu_id);
+        alloc::boxed::Box::new(move |now_ns| {
+            let _ = runtime.inject_pit_irq();
             if let Some(period_ns) = period_ns {
-                next_deadline_ns = restart_periodic_deadline_ns(
-                    next_deadline_ns,
-                    period_ns,
-                    host::current_time_nanos::<H>(),
-                );
+                next_deadline_ns =
+                    restart_periodic_deadline_ns(next_deadline_ns, period_ns, now_ns);
                 return X86TimerAction::Rearm(next_deadline_ns);
             }
             X86TimerAction::Complete
@@ -495,7 +507,12 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         };
         drop(state);
         if let Some((deadline_ns, period_ns)) = irq0_schedule {
-            self.irq0_timer.lock().schedule(deadline_ns, period_ns)?;
+            // Task-side serialization only: this sleepable guard is held across
+            // the host timer register/cancel, which may allocate or wait. The
+            // hard-timer callback retires the previous arm through
+            // `TimerRegistration`'s short IRQ-safe state and never takes it.
+            let mut timer = self.irq0_timer.lock();
+            timer.schedule(deadline_ns, period_ns)?;
         }
         Ok(())
     }

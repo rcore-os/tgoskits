@@ -229,6 +229,13 @@ pub enum ArmVmExit {
         reg_width: ArmAccessWidth,
         /// Whether the value should be sign-extended.
         signed_ext: bool,
+        /// Instruction length in bytes used to resume after the emulated access.
+        ///
+        /// The saved guest PC is deliberately not advanced by the fault decoder:
+        /// an access that falls back to a nested page fault must retry the same
+        /// instruction, so the successful device path advances the PC through
+        /// its owned completion instead.
+        step: usize,
     },
     /// The guest performed an MMIO write.
     MmioWrite {
@@ -238,6 +245,11 @@ pub enum ArmVmExit {
         width: ArmAccessWidth,
         /// Value written by the guest.
         data: u64,
+        /// Instruction length in bytes used to resume after the emulated access.
+        ///
+        /// See [`ArmVmExit::MmioRead`] for why the decoder leaves the PC at the
+        /// faulting instruction.
+        step: usize,
     },
     /// The guest performed a system-register read.
     SysRegRead {
