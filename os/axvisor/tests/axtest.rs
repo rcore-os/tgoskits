@@ -57,7 +57,7 @@ mod tests {
     use ax_fs_ng::vfs::FsContext;
     use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
     use axtest::prelude::*;
-    use axvisor::builtin::{selected_configs, validate_builtin};
+    use axvisor::builtin::{install_builtin, selected_configs};
 
     #[test]
     fn diskless_boot_keeps_memory_root_with_inherited_root_parameter() {
@@ -163,21 +163,13 @@ mod tests {
         target
             .write("/guest/builtin/images/obsolete", "old resource")
             .unwrap();
-        let install = || {
-            ax_fs_ng::bundle::install_directory(
-                &source,
-                &target,
-                "/guest/builtin",
-                |context, staged| {
-                    validate_builtin(context, staged).map_err(|_| ax_fs_ng::VfsError::InvalidData)
-                },
-            )
-        };
+        let install = || install_builtin(&source, &target);
         for empty_file in [false, true] {
             if empty_file {
                 target.write("/board/guest.dtb", "").unwrap();
             }
-            ax_assert!(install().is_err());
+            let error = install().unwrap_err();
+            ax_assert!(alloc::format!("{error:#}").contains("/board/guest.dtb"));
             ax_assert_eq!(
                 target
                     .read_to_string("/guest/builtin/configs/default.toml")

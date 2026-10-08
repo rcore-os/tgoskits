@@ -78,6 +78,12 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 替换显式 `dtb_path` 的 UART 节点时，保留客户机 DTB 中的中断类型、编号及三单元或四单元宽度，但把 GIC trigger flags 统一写成 level-high（`4`），使输出描述与虚拟 UART 的电平线行为一致。宿主只用中断类型和编号建立虚拟设备资源，不根据输入 DTB 的 trigger flags 改变虚拟线语义。最终 GIC 保留客户机已有的 `#interrupt-cells`；四单元 binding 的末单元继续使用客户机已有的优先级，输入只有三单元而目标要求四单元时填默认值 `0`。
 
+## Axvisor 板卡资源与磁盘根
+
+`prepare_guest_payload()` 将构建机存在的镜像复制进宿主 initramfs；板卡磁盘提供的绝对路径保留到 `install_builtin()`，在准备好的磁盘根中校验后才发布配置、提交切根。准备阶段包含附加分区，提交时递归绑定整个已校验的挂载树。OrangePi 普通 Linux CI 使用 `AXVISOR_GUEST_ASSETS=/guest`；ROC 使用 `AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest`，镜像位于单独的 `/userdata` 分区。缺失的环境变量会展开为空字符串，不能让它把板卡路径变成 `/linux/...`。定制 BSP 打包仍可把该变量指向构建机资源目录。
+
+ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中的 `ro` 会覆盖普通 `bootargs` 中较早的 `rw`；只修改 FIT 内 DTB 不能消除该参数。用例通过 `BootPayloadConfig.cmdline` 显式指定磁盘根及 `rw`，并在本次启动的 U-Boot 命令中执行 `fdt addr ${fdtcontroladdr}`、`fdt set /chosen bootargs rw`，覆盖内存中的控制 DTB 参数。该流程使用发布版 ostool `0.30.3`。不要保存环境变量或写入固件，也不要改变内核对最后一个 `ro` 或 `rw` 生效的规则；磁盘根确实只读时必须拒绝安装和切根。
+
 ## OrangePi-5-Plus Linux 网卡直通
 
 物理网卡用例位于 `test-suit/axvisor/normal/board-orangepi-5-plus/pci-network`。

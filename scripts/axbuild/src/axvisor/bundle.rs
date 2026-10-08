@@ -45,7 +45,7 @@ pub(super) fn attach(
 /// images may already be installed at paths such as `/linux/...` on the
 /// target.  Any image that is available to axbuild is copied into the
 /// immutable builtin package and its path is rewritten; unavailable images
-/// remain external and are checked after the disk root is published.
+/// remain external and are checked on the prepared root before publication.
 pub(super) fn attach_with_external_assets(
     vmconfigs: &[PathBuf],
     empty_package: bool,

@@ -210,15 +210,15 @@ impl RootCandidate {
     }
 }
 
-/// A mounted disk filesystem prepared without changing the active root.
+/// A disk root and its additional partition mounts prepared without changing the active root.
 /// Dropping it leaves the current root and its namespace untouched.
 pub struct PreparedRoot {
     filesystem: axfs_ng_vfs::Filesystem,
     context: crate::highlevel::FsContext,
     source: String,
     selected: DiscoveredDisk,
+    #[cfg(axtest)]
     selected_partition: Option<usize>,
-    other_disks: Vec<DiscoveredDisk>,
 }
 
 impl PreparedRoot {
@@ -235,21 +235,9 @@ impl PreparedRoot {
             .ok_or(VfsError::InvalidInput)?;
         let old_root = context.lock().root_dir().clone();
         let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
-        let identity = block_identity(self.selected.handle.device_info(), self.selected.disk_index);
-        let device = self
-            .selected_partition
-            .and_then(|index| {
-                self.selected
-                    .partitions
-                    .iter()
-                    .find(|partition| partition.info.index == index)
-                    .map(|_| identity.minor.saturating_add(index as u32 + 1))
-            })
-            .unwrap_or(identity.minor);
-        let root_device = axfs_ng_vfs::DeviceId::new(identity.major, device).0;
-        let mount =
-            mount_dir.mount_with_device_source(&self.filesystem, root_device, &self.source)?;
-        mount.set_readonly(self.context.root_dir().is_readonly());
+        // Preserve the complete tree that resource installation validated,
+        // including mounts on other partitions and their open filesystem owners.
+        let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
         let new_root = mount.root_location();
         #[cfg(feature = "vfs")]
         let namespace = context.lock().mount_namespace().clone();
@@ -293,10 +281,6 @@ impl PreparedRoot {
                         |partition| partition.info.region,
                     )
             });
-        }
-        mount_additional_partitions(&new_root, &self.selected, self.selected_partition);
-        for disk in &self.other_disks {
-            mount_additional_partitions(&new_root, disk, None);
         }
         info!("host root switched to {}; old root detached", self.source);
         Ok(())
@@ -394,8 +378,16 @@ fn prepare_root(
         Some(kind) => fs::new_from_handle_with_kind(selected.handle.clone(), region, kind)?,
         None => fs::new_from_handle(selected.handle.clone(), region)?,
     };
+    let identity = block_identity(selected.handle.device_info(), selected.disk_index);
+    let minor = partition.map_or(identity.minor, |partition| {
+        identity
+            .minor
+            .saturating_add(partition.info.index as u32 + 1)
+    });
+    let root_device = axfs_ng_vfs::DeviceId::new(identity.major, minor).0;
     let context = crate::highlevel::FsContext::new(
-        axfs_ng_vfs::Mountpoint::new_root_with_source(&filesystem, &source).root_location(),
+        axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
+            .root_location(),
     );
     if bootargs
         .and_then(|args| {
@@ -410,13 +402,17 @@ fn prepare_root(
     {
         context.root_dir().mountpoint().set_readonly(true);
     }
+    mount_additional_partitions(context.root_dir(), &selected, selected_partition);
+    for disk in &disks {
+        mount_additional_partitions(context.root_dir(), disk, None);
+    }
     Ok(PreparedRoot {
         filesystem,
         context,
         source,
         selected,
+        #[cfg(axtest)]
         selected_partition,
-        other_disks: disks,
     })
 }
 

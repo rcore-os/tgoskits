@@ -176,4 +176,18 @@ ROC 固件的 `CONFIG_FIT_IMAGE_POST_PROCESS` 要求 ramdisk 带 `load` 属性�
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
 | statx(设备号) / LoongArch 291、x86_64 332 | [v7.1 `8cd9520d35a6`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L729) | 根文件系统设备号拆成主次号，与对应块节点的 rdev 一致 | sys_statx → resolve_at → ResolveAtResult::stat → Location::metadata → metadata_to_kstat → From<Kstat> for statx → write_statx；任务 FsContext 与挂载元数据 | 正确 | 两架构 `qemu/system/syscall-test-rdev-nvme` 均 1/1，通过原始 statx 与 libc stat 验证根设备关系；LoongArch 同一用例修复前失败 |
-| statx(设备号) / AArch64 291、RISC-V 291 | [v7.1 `8cd9520d35a6`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L729) | 根文件系统设备号拆成主次号，与对应块节点的 rdev 一致 | sys_statx → resolve_at → ResolveAtResult::stat → Location::metadata → metadata_to_kstat → From<Kstat> for statx → write_statx；任务 FsContext 与挂载元数据 | 无法确认 | 共用字段转换；增强后的直接 statx 用例尚未在这两个架构执行，待当前 CI 复核 |
+| statx(设备号) / AArch64 291、RISC-V 291 | [v7.1 `8cd9520d35a6`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L729) | 根文件系统设备号拆成主次号，与对应块节点的 rdev 一致 | sys_statx → resolve_at → ResolveAtResult::stat → Location::metadata → metadata_to_kstat → From<Kstat> for statx → write_statx；任务 FsContext 与挂载元数据 | 正确 | `e24f520188` CI 的两架构 `test-rdev-nvme` 均实际执行，原始 statx 与 libc stat 的设备号断言通过；各 10 通过、0 失败 |
+
+### 6.3 板卡 CI 失败与修复
+
+`e24f520188` 的 [CI 运行 37757626026](https://github.com/rcore-os/tgoskits/actions/runs/37757626026) 已终止：38 个作业成功，3 个作业失败。全部六个 SVM 用例通过，日志仅出现一次 `Compiling axvisor`，六次启动的内核 SHA-256 均为 `3b47d1e96d2eabed325464be6582e5fe1839d128a21bd7044e5333a33d693303`；每次启动使用独立宿主归档。这些结果只对应上述提交。
+
+OrangePi 普通 Linux CI 没有设置 `AXVISOR_GUEST_ASSETS`，变量展开为空，生成 `/linux/orangepi-5-plus`，但板卡镜像实际位于 `/guest/linux/orangepi-5-plus`。CI 现在显式使用 `/guest`。相同 Smoke 用例本地通过：先切到 `/dev/mmcblk0p2` 并脱离旧根，再启动 Linux 客户机。日志为 `/tmp/pr2567-orange-local.log`。失败匹配补齐宿主 panic，防止启动失败退化为 shell 等待超时。
+
+ROC 镜像位于 `/userdata/rootfs_overlay/guest`。旧实现直到提交切根后才挂载附加分区，资源安装的预先校验因此无法读取该路径。准备阶段现在挂载附加分区；提交阶段递归绑定已校验的完整挂载树，保持准备时的设备号、source 和只读属性。相同板卡用例在修复前明确报出缺失 `/userdata/rootfs_overlay/guest/linux/roc-rk3568-pc`，日志为 `/tmp/pr2567-roc-prepared-partitions-before.log`。
+
+ROC 固件还会在交接时追加控制 DTB 中的旧 `ro`，覆盖测试命令行里的 `rw`。测试通过 U-Boot 命令只修改本次启动内存中的控制 DTB，使用发布版 ostool `0.30.3`；未写入固件或保存环境。具体命令与资源路径约定见 [启动调试参考](../../.agents/skills/arch-platform-porting/references/boot-debugging.md)。
+
+资源安装错误现在保留缺失或空文件的具体路径。已有整包替换 axtest 修复前 85 通过、1 失败（`/tmp/pr2567-install-error-before.log`），修复后 86/86（`/tmp/pr2567-install-error-after.log`）；仍检查安装失败保留旧包、补齐资源后替换并删除旧独有文件。
+
+ASUS 作业在加载器串口尚未完成身份绑定时由服务端于 60 秒截止关闭，未进入 Axvisor。其错误不能当作内核或客户机已验证；需要正常发布内核的板卡入口与服务端状态一起定位。

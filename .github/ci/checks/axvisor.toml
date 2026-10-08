@@ -176,7 +176,7 @@ resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> axvisor OrangePi 5 Plus Linux guest"
-cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case smoke
+AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case smoke
 echo "==> build the StarryOS guest from this checkout"
 cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
 echo "==> axvisor OrangePi 5 Plus StarryOS guest"
@@ -198,7 +198,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board ROC-RK3568-PC · Linux guest"
 runner = "board"
 command = '''
-cargo xtask axvisor test board --board roc-rk3568-pc-linux
+AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest cargo xtask axvisor test board --board roc-rk3568-pc-linux
 '''
 
 [[check.suite]]

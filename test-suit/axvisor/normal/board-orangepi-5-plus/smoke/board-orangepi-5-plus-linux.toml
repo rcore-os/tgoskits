@@ -1,5 +1,5 @@
 board_type = "OrangePi-5-Plus"
-fail_regex = []
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
 shell_check_steps = [
   { shell_prefix = "axvisor:/$", shell_cmd = "vm console 1" },
   { shell_prefix = "orangepi@orangepi5plus:~", shell_cmd = "pwd && echo 'test pass'", success_regex = ["(?m)^test pass\\s*$"], fail_regex = ["(?i)failed|panic"] },

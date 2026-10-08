@@ -1,6 +1,7 @@
 //! Axvisor policy for archive-owned guest configuration and boot assets.
 
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
+use core::cell::RefCell;
 
 use anyhow::{Context, Result, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
@@ -29,22 +30,35 @@ pub fn prepare_root() -> Result<()> {
     if prepared.context().root_dir().is_readonly() {
         bail!("Axvisor disk root is read-only; keeping the initramfs root");
     }
-    ax_fs_ng::bundle::install_directory(
-        &source,
-        prepared.context(),
-        BUILTIN_GUEST_DIR,
-        |context, path| {
-            validate_builtin(context, path).map_err(|error| {
-                log::error!("invalid built-in guest package: {error:#}");
-                VfsError::InvalidData
-            })
-        },
-    )
-    .context("install built-in guest package")?;
+    install_builtin(&source, prepared.context())?;
     // Release the copied archive context before committing; the runtime's root
     // and task contexts are replaced by commit and are then the last old owners.
     drop(source);
     prepared.commit().context("commit Axvisor disk root")
+}
+
+/// Replaces the built-in package after validating its assets on the target root.
+/// A missing source preserves the installed version and returns `false`.
+/// The caller must exclude concurrent writers until installation finishes.
+pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
+    let validation_error = RefCell::new(None);
+    let installed =
+        ax_fs_ng::bundle::install_directory(source, target, BUILTIN_GUEST_DIR, |context, path| {
+            validate_builtin(context, path).map_err(|error| {
+                // Recovery may reject the published directory and restore its
+                // backup. Only staging validation aborts this installation.
+                if path != BUILTIN_GUEST_DIR {
+                    validation_error.replace(Some(error));
+                }
+                VfsError::InvalidData
+            })
+        });
+    installed
+        .map_err(|error| match validation_error.into_inner() {
+            Some(validation) if error == VfsError::InvalidData => validation,
+            _ => error.into(),
+        })
+        .context("install built-in guest package")
 }
 
 fn config_files(context: &FsContext, directory: &str) -> Result<Vec<String>> {
