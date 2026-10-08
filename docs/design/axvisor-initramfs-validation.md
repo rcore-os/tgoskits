@@ -205,3 +205,13 @@ ASUS 原作业在加载器串口尚未完成身份绑定时由服务端于 60 �
 同一 SVM 命令再次通过六个用例，同时覆盖重复参数与逗号列表。日志 `/tmp/pr2567-svm-rebase-134c.log` 只有一次 `Compiling axvisor`，六次启动的内核 SHA-256 均为 `61e011981a89c4f961badc4ff3f19b37c0b3dad79da93f172f407d94ca254325`，宿主归档分别对应各用例。以上本地结果覆盖性能目录迁移后的源码；随后纳入 `dev` 文档更新 `67268da829fa2c5b36eb5ef7795f84103d24b55e`，没有改变构建或运行代码。上述完整 CI 结果属于 `e05d31a7cd`，后续提交的 CI 需分别核对。
 
 迁移后的板卡入口 `cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf --server 10.3.10.194 --port 2999` 在 `OrangePi-5-Plus-2` 通过，日志为 `/tmp/pr2567-vcpu-perf-rebase-134c.log`。构建配置未启用块驱动，客户机随宿主归档打包，归档 SHA-256 为 `1e63f456a6bb6843559081bf440d577a128cd8d655c69bb96e9ab9606707c2ff`；实际执行负载就绪、文件系统 shell 控制台连接和客户机性能判定，输出 `VCPU_PERF_PASS`。该运行验证迁移后的资源准备与无盘启动入口；其他两个性能板卡场景本轮未运行。
+
+### 6.5 NVMe 更新变基
+
+`da2f4afa7b371e770a94d94236b97d52bf444fd4` 的 [完整 CI 37781177893](https://github.com/rcore-os/tgoskits/actions/runs/37781177893) 最终 41/41 作业成功，增量 Clippy 为 204 个软件包、778 项检查。SVM 六用例只有一次内核编译，内核 SHA-256 均为 `403e08351837f90683e98e148258f5880037be369bb512ef36974ee19a4c1008`，六个归档哈希不同。四架构 Starry 的 NVMe 设备号、普通 pivot_root 与命名空间隔离均通过；AArch64 三种根策略、HTTP 切根后重建 VM，以及所有 Axvisor 功能板卡实际执行并通过。
+
+首轮 ArceOS 的 RISC-V `task-ipi` 在普通批次通过，但绑到宿主 CPU 0 的单独入口 15 秒超时，导致另外六个作业取消。同一绑核命令本地 4/4 通过；补跑失败和取消项后，原始 SMP4、single-thread TCG 及绑核条件下的 IPI 用例通过，耗时 644 毫秒。首次超时缺少阶段与 PC 观测，根因尚未确认；未将重跑通过写成内核缺陷已修复。证据为 `/tmp/pr2567-arceos-riscv-da2-ci.log`、`/tmp/pr2567-riscv-task-ipi-local-before.log`、`/tmp/pr2567-riscv-task-ipi-local-repeat-{1,2,3}.log` 和 `/tmp/pr2567-riscv-ipi-da2-retry.log`。
+
+随后 `dev` 合入 NVMe 格式与传输限制修复，分支变基到 `35c653e55ec6a42a982d9cf5ac0817a0bbd16426`；42 个提交经 `range-diff` 核对内容一致。格式化和差异检查通过，CI 规划测试 140/140；`cargo xtask clippy --package axbuild --package ax-fs-ng` 两个软件包共 7/7 检查通过；`cargo xtask test --since origin/dev` 在该基线选择的 17 个软件包全部通过，axbuild 为 437 项测试。日志分别为 `/tmp/pr2567-ci-tests-rebase-35c.log`、`/tmp/pr2567-clippy-rebase-35c.log` 和 `/tmp/pr2567-std-rebase-35c.log`。
+
+最新基线的 SVM 同一六用例命令 6/6 通过，日志 `/tmp/pr2567-svm-rebase-35c.log` 只有一次 `Compiling axvisor`，六次内核 SHA-256 均为 `a323070329426ee1b6a4bd4bb95584d8fa8249fc85dff91e7b79ab3b69adb6e4`；Smoke 确认切到 NVMe 根、脱离旧根并继续验证宿主读写及客户机磁盘隔离。上述远程 CI 对应 `da2f4afa7b`，最新基线提交的 CI 需单独核对；性能板卡入口未在本次 NVMe 变基后重复运行。
