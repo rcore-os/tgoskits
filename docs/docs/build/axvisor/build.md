@@ -31,7 +31,7 @@ sidebar_label: "构建"
 
 CLI 的 `--vmconfig <PATH>` 可重复，`--vmconfigs` 为兼容别名；非空 CLI 列表覆盖 Build Config 的 `vm_configs`。测试用例可在自己的 `host-initramfs.toml` 中指定列表，与共享 Build Config 分离。
 
-`kernel_path`、`dtb_path`、`bios_path`、`uefi_firmware_path`、`ramdisk_path` 是构建机文件路径，支持 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:NAME}`；相对路径按 VM TOML 所在目录解释。板卡自行构建的资源使用 `${env:AXVISOR_GUEST_ASSETS}` 指定本地资产目录。客户机可写磁盘路径维持原值。
+`kernel_path`、`dtb_path`、`bios_path`、`uefi_firmware_path`、`ramdisk_path` 可引用构建机文件，支持 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:NAME}`；相对路径按 VM TOML 所在目录解释。板卡自行构建的资源使用 `${env:AXVISOR_GUEST_ASSETS}` 指定本地资产目录。板卡启动也允许保留 rootfs 已提供的绝对资源路径；可取得的本地文件仍优先复制到自带包。客户机可写磁盘路径维持原值。
 
 ### 2.2 归档发布
 

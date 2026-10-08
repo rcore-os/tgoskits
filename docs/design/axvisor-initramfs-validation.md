@@ -163,7 +163,7 @@ cargo xtask axvisor test qemu --arch x86_64 \
 
 `boot_payload::publish()` 在 MMU 开启前使用原子交换，AArch64 实体板卡停在独占指令重试循环。改用启动 CPU 独占的 load/store 发布；运行时一次性领取保留原子交换。现有 AArch64 机器码测试增强后修复前失败、修复后通过，Axvisor 的 `qemu-host-initramfs` 通过。OrangePi 和 Phytium 的诊断 CI 均停在 `initramfs properties decoded` 后，证明故障位置；实体板卡修复结果待当前 CI 复核。
 
-ROC 固件的 `CONFIG_FIT_IMAGE_POST_PROCESS` 要求 ramdisk 带 `load` 属性。依赖固定到 [ostool #207](https://github.com/drivercraft/ostool/pull/207) 的 `99f318c3f1ab94ce41112a810c50eedc24b8140e`，生成 `load = 0`，满足检查且保留 FIT 内归档地址。真实 FIT 编码回归修复前失败、修复后通过，10 个 FIT 测试和上游两条 CI 均通过；尚未发布新的 crates.io 版本。
+ROC 固件的 `CONFIG_FIT_IMAGE_POST_PROCESS` 要求 ramdisk 带 `load` 属性。[ostool #207](https://github.com/drivercraft/ostool/pull/207) 已合并，依赖采用包含修复的 crates.io `ostool 0.30.3`，生成 `load = 0`，满足检查且保留 FIT 内归档地址。真实 FIT 编码回归修复前失败、修复后通过，10 个 FIT 测试和上游两条 CI 均通过；已核对发布版 FIT 源码与通过回归的实现相同。
 
 最新 `dev` 的 virtual/real 机器人配置同步删除 `fs` 和 `image_location`，保留各自客户机根盘与板卡镜像路径；38 个 CI 规划器测试通过。Axvisor LoongArch 本地 Smoke 通过，包含宿主 NVMe 读写和客户机 Ext4 挂载；CI 曾在挂载步骤超时，仍需新提交复核。
 

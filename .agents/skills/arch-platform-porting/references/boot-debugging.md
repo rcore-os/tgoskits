@@ -81,7 +81,8 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 ## OrangePi-5-Plus Linux 网卡直通
 
 物理网卡用例位于 `test-suit/axvisor/normal/board-orangepi-5-plus/pci-network`。
-它读取板卡 `/boot/Image`（已验证 Linux 6.1.99）和匹配根文件系统中的 `r8125`
+它从构建机 `${env:AXVISOR_GUEST_ASSETS}/boot/Image` 打包内核（已验证 Linux 6.1.99），
+并使用匹配客户机根文件系统中的 `r8125`
 模块；旧 `/guest/linux/orangepi-5-plus` 的 6.1.43 映像在相同设备树下出现 PCIe
 链路训练失败。网线连接 `fe180000.pcie` 下的 RTL8125，客户机接口为 `enP3p49s0`，
 目标为板卡网络中的 `192.168.1.2`。用例显式选择 PCIe 控制器，并保留 `aliases`、
