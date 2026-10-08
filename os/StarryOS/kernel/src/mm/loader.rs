@@ -195,7 +195,11 @@ fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usi
         sp - data.len()
     };
 
-    let random_str_pos = push(b"0123456789abcdef");
+    // Linux `create_elf_tables()` fills AT_RANDOM with `get_random_bytes()`;
+    // libc derives its stack protector canary and pointer guard from it.
+    let mut random = [0; 16];
+    crate::random::get_random_bytes(&mut random);
+    let random_str_pos = push(&random);
     let envs_slice: Vec<_> = envs
         .iter()
         .map(|env| {
@@ -795,6 +799,9 @@ impl ElfLoader {
         auxv.push(AuxEntry::new(AuxType::GID, 0));
         auxv.push(AuxEntry::new(AuxType::EGID, 0));
         auxv.push(AuxEntry::new(AuxType::SECURE, 0));
+        // `USER_HZ`, reported by libc as `sysconf(_SC_CLK_TCK)`.
+        auxv.push(AuxEntry::new(AuxType::CLKTCK, 100));
+        auxv.push(AuxEntry::new(AuxType::FLAGS, 0));
 
         debug!(
             "loader: entry={:#x} auxv_len={} has_ldso={} auxv_last_type={}",

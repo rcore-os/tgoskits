@@ -144,11 +144,14 @@ ax-memory-set = { workspace = true }
 num_enum = { version = "0.7", default-features = false }
 ouroboros = { version = "0.18", default-features = false }
 ax-percpu = { workspace = true }
+chacha20 = { version = "0.10", default-features = false, features = ["rng", "zeroize"] }
 rand = { version = "0.10", default-features = false, features = ["alloc", "chacha"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
+sha2 = { version = "0.10", default-features = false }
 slab = { version = "0.4.9", default-features = false }
 starry-signal = { workspace = true }
+zeroize = { workspace = true }
 starry-vm = { workspace = true }
 strum = { version = "0.28", default-features = false, features = ["derive"] }
 syscalls.workspace = true

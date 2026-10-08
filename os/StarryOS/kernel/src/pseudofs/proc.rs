@@ -100,8 +100,18 @@ fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {
 }
 
 fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
-    let generated_boot_id = boot_id_from_entropy(ax_runtime::hal::boot::boot_entropy())?;
-    let boot_id = BOOT_ID.get_or_init(|| generated_boot_id).clone();
+    // Linux `proc_do_uuid()` draws boot_id from the CRNG. An unseeded CRNG
+    // would publish a predictable identifier, so the file stays absent.
+    if !crate::random::rng_is_initialized() {
+        return None;
+    }
+    let boot_id = BOOT_ID
+        .get_or_init(|| {
+            let mut random_bytes = [0; 16];
+            crate::random::get_random_bytes(&mut random_bytes);
+            format_boot_id(random_bytes)
+        })
+        .clone();
     let file = SimpleFile::new_regular(fs, move || Ok(boot_id.clone()));
     let now = wall_time();
     file.set_attrs(
@@ -113,14 +123,6 @@ fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
         now,
     );
     Some(file)
-}
-
-fn boot_id_from_entropy(boot_entropy: Option<[u8; 32]>) -> Option<String> {
-    let boot_entropy = boot_entropy?;
-    let random_bytes = boot_entropy[..16]
-        .try_into()
-        .expect("boot entropy contains 16 UUID bytes");
-    Some(format_boot_id(random_bytes))
 }
 
 fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
