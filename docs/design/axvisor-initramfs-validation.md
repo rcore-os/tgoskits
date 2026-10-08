@@ -184,10 +184,12 @@ ROC 固件的 `CONFIG_FIT_IMAGE_POST_PROCESS` 要求 ramdisk 带 `load` 属性�
 
 OrangePi 普通 Linux CI 没有设置 `AXVISOR_GUEST_ASSETS`，变量展开为空，生成 `/linux/orangepi-5-plus`，但板卡镜像实际位于 `/guest/linux/orangepi-5-plus`。CI 现在显式使用 `/guest`。相同 Smoke 用例本地通过：先切到 `/dev/mmcblk0p2` 并脱离旧根，再启动 Linux 客户机。日志为 `/tmp/pr2567-orange-local.log`。失败匹配补齐宿主 panic，防止启动失败退化为 shell 等待超时。
 
-ROC 镜像位于 `/userdata/rootfs_overlay/guest`。旧实现直到提交切根后才挂载附加分区，资源安装的预先校验因此无法读取该路径。准备阶段现在挂载附加分区；提交阶段递归绑定已校验的完整挂载树，保持准备时的设备号、source 和只读属性。相同板卡用例在修复前明确报出缺失 `/userdata/rootfs_overlay/guest/linux/roc-rk3568-pc`，日志为 `/tmp/pr2567-roc-prepared-partitions-before.log`。
+ROC 镜像位于 `/userdata/rootfs_overlay/guest`。旧实现直到提交切根后才挂载附加分区，资源安装的预先校验因此无法读取该路径。准备阶段现在挂载附加分区；提交阶段递归绑定已校验的完整挂载树，保持准备时的设备号、source 和只读属性。相同板卡用例在修复前明确报出缺失 `/userdata/rootfs_overlay/guest/linux/roc-rk3568-pc`，日志为 `/tmp/pr2567-roc-prepared-partitions-before.log`；修复后 1/1 通过（`/tmp/pr2567-roc-prepared-partitions-after.log`），日志确认 `/userdata` 在切根前挂载、旧根脱离、解包 ramfs 释放，Linux 客户机进入登录界面。
 
 ROC 固件还会在交接时追加控制 DTB 中的旧 `ro`，覆盖测试命令行里的 `rw`。测试通过 U-Boot 命令只修改本次启动内存中的控制 DTB，使用发布版 ostool `0.30.3`；未写入固件或保存环境。具体命令与资源路径约定见 [启动调试参考](../../.agents/skills/arch-platform-porting/references/boot-debugging.md)。
 
 资源安装错误现在保留缺失或空文件的具体路径。已有整包替换 axtest 修复前 85 通过、1 失败（`/tmp/pr2567-install-error-before.log`），修复后 86/86（`/tmp/pr2567-install-error-after.log`）；仍检查安装失败保留旧包、补齐资源后替换并删除旧独有文件。
 
-ASUS 作业在加载器串口尚未完成身份绑定时由服务端于 60 秒截止关闭，未进入 Axvisor。其错误不能当作内核或客户机已验证；需要正常发布内核的板卡入口与服务端状态一起定位。
+ASUS 原作业在加载器串口尚未完成身份绑定时由服务端于 60 秒截止关闭，未进入 Axvisor。后续使用正常发布内核的板卡入口复测时，服务端状态已变为 `bound`，识别 `/dev/ttyUSB6`、启动代次和绑定 ID；未改动服务器或固件。用例 1/1 通过（`/tmp/pr2567-asus-published-boot.log`），宿主无盘直接使用 initramfs，Linux 客户机输出 `test pass!`；外部归档回收 31490048 字节，仍在使用的解包内存根按正常生命周期保留。
+
+本轮 `cargo xtask clippy --package ax-fs-ng` 六项检查全部通过，CI 规划器 38 项测试通过；标准库增量检查使用已提交差异 `cargo xtask test --since e24f520188401f9351a13752c5ba80f3cb420eea`，选中的 16 个软件包全部通过（`/tmp/pr2567-std-prepared-partitions.log`），包括真实 VFS、根切换、MemoryFs 生命周期和目录替换回归，axbuild 为 428 项测试。
