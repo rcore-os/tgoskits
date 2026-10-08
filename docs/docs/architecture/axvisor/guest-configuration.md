@@ -17,19 +17,19 @@ sidebar_label: "客户机配置"
 | --- | --- | --- | --- |
 | `virtualization/axvmconfig/src/lib.rs` | `GuestConfig`、`VMBaseConfig`、`VMKernelConfig`、`GuestDevices`、`VirtualDeviceRequest` | 定义持久化 schema，完成 Serde 解析、boot/device 校验和兼容字段读取 | 配置读取 |
 | `virtualization/axvmconfig/src/error.rs` | `AxVmConfigError` | 区分 TOML 形状错误、启动组合错误和设备选择错误 | 配置读取与校验 |
-| `os/axvisor/src/config.rs:183` | `build_axvm_config` | 把配置字段转换为 AxVM 参数，注入应用拥有的串口后端，并在默认 catalog 上注册 `virtio-blk`、`virtio-net` | 应用层转换 |
-| `virtualization/axvm/src/config.rs:115` | `AxVMConfigParams`、`AxVMConfig` | 承接 CPU、镜像、地址空间策略、内存、物理设备 selector、虚拟设备请求和 catalog | VM 创建前 |
-| `virtualization/axvm/src/boot/prepared.rs:45` | `prepare_guest_boot`、`PreparedGuestBoot` | 按架构处理 DTB、固件和启动资源，返回准备后的 `GuestConfig` 与客户机 DTB | boot prepare |
-| `os/axvisor/src/config.rs:132-134` | `sync_axvm_config_from_crate_config`、`set_boot_policy` | 把准备阶段新增的内存区域同步到 draft `AxVMConfig`，并设置 boot policy | 应用层同步 |
-| `virtualization/axvm/src/configured.rs:184` | `ConfiguredDeviceCatalog`、`instantiate_node` | 按 model 查找构造器，把 `VirtualDeviceRequest` 的 model/options 转成 `DeviceNodeSpec` | device prepare |
-| `virtualization/axvm/src/configured/append.rs:13` | `append_configured_devices` | 合并默认串口请求和用户请求，逐项调用 catalog，加入待规划设备图 | device prepare |
-| `scripts/axbuild/src/axvisor/mod.rs:320` | `jkconfig::run::<GuestConfig>` | 通过 `schemars::JsonSchema` 生成 menuconfig 所需 schema 并编辑 TOML | 构建工具运行期 |
+| `os/axvisor/src/config.rs` | `build_axvm_config` | 把配置字段转换为 AxVM 参数，注入应用拥有的串口后端，并在默认 catalog 上注册 `virtio-blk`、`virtio-net` | 应用层转换 |
+| `virtualization/axvm/src/config.rs` | `AxVMConfigParams`、`AxVMConfig` | 承接 CPU、镜像、地址空间策略、内存、物理设备 selector、虚拟设备请求和 catalog | VM 创建前 |
+| `virtualization/axvm/src/boot/prepared.rs` | `prepare_guest_boot`、`PreparedGuestBoot` | 按架构处理 DTB、固件和启动资源，返回准备后的 `GuestConfig` 与客户机 DTB | boot prepare |
+| `os/axvisor/src/config.rs` | `sync_axvm_config_from_crate_config`、`set_boot_policy` | 把准备阶段新增的内存区域同步到 draft `AxVMConfig`，并设置 boot policy | 应用层同步 |
+| `virtualization/axvm/src/configured.rs` | `ConfiguredDeviceCatalog`、`instantiate_node` | 按 model 查找构造器，把 `VirtualDeviceRequest` 的 model/options 转成 `DeviceNodeSpec` | device prepare |
+| `virtualization/axvm/src/configured/append.rs` | `append_configured_devices` | 合并默认串口请求和用户请求，逐项调用 catalog，加入待规划设备图 | device prepare |
+| `scripts/axbuild/src/axvisor/mod.rs` | `jkconfig::run::<GuestConfig>` | 通过 `schemars::JsonSchema` 生成 menuconfig 所需 schema 并编辑 TOML | 构建工具运行期 |
 
 `axvmconfig` 不依赖具体 Machine，也不分配硬件资源。`ConfiguredDeviceCatalog` 是请求进入设备图的转换点；catalog 的内置 model 和应用扩展项不是持久化 schema 的枚举。
 
 ## 2. 从 TOML 到设备图
 
-`GuestConfig::from_toml()` 的顺序固定在 `axvmconfig/src/lib.rs:691`：先调用 `toml::from_str`，再执行 `validate_boot_config()` 和 `GuestDevices::validate()`，最后记录用户提供的 `memory_regions` 数量。这个计数不序列化，用于 boot prepare 区分用户内存和准备阶段追加的区域。
+`GuestConfig::from_toml()` 的顺序固定在 `axvmconfig/src/lib.rs`：先调用 `toml::from_str`，再执行 `validate_boot_config()` 和 `GuestDevices::validate()`，最后记录用户提供的 `memory_regions` 数量。这个计数不序列化，用于 boot prepare 区分用户内存和准备阶段追加的区域。
 
 ```mermaid
 flowchart LR
@@ -62,7 +62,7 @@ flowchart LR
 - `entry_point`、镜像加载地址、CPU 参数和 `memory_regions` 写入 `AxVMConfigParams`。
 - `devices.virtual` 原样保留为请求，catalog 由 AxVM 内置注册项与 Axvisor 的 `virtio-blk`、`virtio-net` 注册项组成。
 - 若 `guest_type = "passthrough"`、用户没有填写 `devices.passthrough`，且 Machine 提供 `default_passthrough_device_path`，`build_axvm_config()` 会注入一个内部 selector。当前 AArch64、RISC-V 和 LoongArch Machine 使用 `/` 作为发现根；x86_64 不注入。
-- `prepare_guest_boot()` 可以根据 host 固件和架构启动方式补充 DTB 或保留内存，返回持有准备后 `GuestConfig` 与客户机 DTB 的 `PreparedGuestBoot`。随后应用层在 `os/axvisor/src/config.rs:132-134` 调用 `sync_axvm_config_from_crate_config()`，把新增 `memory_regions` 写回 draft `AxVMConfig`，再设置 boot policy。设备 prepare 在这之后才把请求实例化为图节点。
+- `prepare_guest_boot()` 可以根据 host 固件和架构启动方式补充 DTB 或保留内存，返回持有准备后 `GuestConfig` 与客户机 DTB 的 `PreparedGuestBoot`。随后应用层在 `os/axvisor/src/config.rs` 调用 `sync_axvm_config_from_crate_config()`，把新增 `memory_regions` 写回 draft `AxVMConfig`，再设置 boot policy。设备 prepare 在这之后才把请求实例化为图节点。
 
 Machine 负责选择固定串口、中断控制器与地址池，规划器负责解析图节点的资源。配置层只保留用户请求。相关算法见 [Machine 与资源规划架构](./machine-profile.md)。
 
@@ -123,7 +123,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 
 ### 3.3 启动协议矩阵
 
-`BOOT_PROTOCOL_MATRIX` 定义在 `axvmconfig/src/lib.rs:218-240`。`validate_boot_config()` 先检查 `enable_bios` 与协议是否冲突，再按编译目标检查架构和固件输入。
+`BOOT_PROTOCOL_MATRIX` 定义在 `axvmconfig/src/lib.rs`。`validate_boot_config()` 先检查 `enable_bios` 与协议是否冲突，再按编译目标检查架构和固件输入。
 
 | 有效协议 | `enable_bios` | 支持架构 | 固件要求 |
 | --- | --- | --- | --- |

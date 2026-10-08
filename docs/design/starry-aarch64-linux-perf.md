@@ -10,7 +10,7 @@
 
 `sys_perf_event_open()` 先执行 flags 与 `perf_event_attr` 版本拷贝，再解析目标和 group。下表记录本分支必须保持的用户可见语义，错误码由 `perf::uapi` 的显式校验转换，不依赖 `kbpf` 当前结构体大小。
 
-对照源码是本地 `/home/zhourui/opensource/linux/linux` 的精确标签 v7.1（`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`）：[`perf_copy_attr()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13544-L13611)、[`perf_event_open()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L13844-L14172)、[`_perf_ioctl()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L6598-L6704)、[`group_sched_in()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L2859-L2897) 和 [`perf_output_read_group()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c#L8128-L8175) 分别约束 attr、target、ioctl、组调度与采样读布局；ARM event 映射以 [`arm_pmuv3.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmuv3.c#L1195-L1273) 为准。
+对照源码是本地 `/home/zhourui/opensource/linux/linux` 的精确标签 v7.1（`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`）：[`perf_copy_attr()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c)、[`perf_event_open()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c)、[`_perf_ioctl()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c)、[`group_sched_in()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c) 和 [`perf_output_read_group()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/events/core.c) 分别约束 attr、target、ioctl、组调度与采样读布局；ARM event 映射以 [`arm_pmuv3.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmuv3.c) 为准。
 
 | 能力 | Linux v7.1 语义 | StarryOS 实现锚点 |
 | --- | --- | --- |
@@ -27,7 +27,7 @@
 
 `hw_open::validate_perf_event_open_hw()` 在创建事件和分配计数器前，使用 `percpu::event_supported_for_target()` 检查目标 PMU 能力。通用硬件、缓存、RAW 和命名 PMU 类型均拒绝 `PmuInfo::event_support()` 明确报告为 `Unsupported` 的编码，返回 `ENOENT`；可迁移 task 检查全部目标 CPU，fixed-CPU 事件检查指定 CPU。这样 open 接受的事件不会在调度时因底层 `Pmu::configure()` 拒绝编码而触发断言。格式错误返回 `EINVAL`，错误 fd 返回 `EBADF`，目标线程消失返回 `ESRCH`。
 
-RAW 和命名 PMU 的 `config` 仍取低 16 位，超出 PMCEID 覆盖范围的编码仍按 `ImplementationDefined` 接受。这里的拒绝边界比 Linux v7.1 更严格：[Linux `armpmu_map_event()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu.c#L178-L203) 的 RAW/命名 PMU 路径直接掩码编码，并不统一拒绝缺失 PMCEID 位。当前 Starry 保留底层驱动的能力约束，不宣称这类拒绝行为与 Linux 完全一致。既有 `perf-open-abi` 在 QEMU 上检查 task/system 的明确拒绝、低位掩码和实现自定义编码接受行为。
+RAW 和命名 PMU 的 `config` 仍取低 16 位，超出 PMCEID 覆盖范围的编码仍按 `ImplementationDefined` 接受。这里的拒绝边界比 Linux v7.1 更严格：[Linux `armpmu_map_event()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu.c) 的 RAW/命名 PMU 路径直接掩码编码，并不统一拒绝缺失 PMCEID 位。当前 Starry 保留底层驱动的能力约束，不宣称这类拒绝行为与 Linux 完全一致。既有 `perf-open-abi` 在 QEMU 上检查 task/system 的明确拒绝、低位掩码和实现自定义编码接受行为。
 
 `uapi::read_zero_extended()` 对截在字段中间的 `attr.size` 保留已传入字节，仅将缺失字节补零，和 `perf_copy_attr()` 的完整结构零填充一致。`perf-open-abi` 分别用 111、117 字节的属性检查部分 `reserved_2` 与 AUX 保留位返回 `EINVAL`，并保留部分字段全零时可以成功打开的对照。
 
@@ -70,7 +70,7 @@ flowchart LR
 
 task event 用 `PmuRunState` 和携带 owner CPU、counter、registration 的 `PmuRunLease` 约束当前硬件代。RESET 先禁止重新调入并完成当前代停表，再清值和恢复原启用意图。disable、close 和线程退出先在 owner CPU 撤下 counter 与 `SampleSlot`，再释放保存 ring 生命周期的锚点，避免旧事件清除已经复用的槽或让 IRQ 看到失效指针。
 
-`hw_open::perf_event_open_hw()` 只对需要 programmable overflow 的路径要求 PMU IRQ；无 IRQ 描述的平台仍可使用 64 位专用 cycle 做非继承计数。sampling、programmable counting、cycle 回退和 task inherit 在缺少 IRQ 时返回 `ENODEV`，检查在创建 worker 前完成，已保留的专用槽在失败时回收。Linux v7.1 的 [`arm_pmu_platform.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu_platform.c#L93-L114) 也保留无 IRQ 的 PMU，但仅对 sampling 返回 `EOPNOTSUPP`；Starry 的 programmable 软件扩展依赖 overflow，故这部分支持范围和错误码仍有明确差异。
+`hw_open::perf_event_open_hw()` 只对需要 programmable overflow 的路径要求 PMU IRQ；无 IRQ 描述的平台仍可使用 64 位专用 cycle 做非继承计数。sampling、programmable counting、cycle 回退和 task inherit 在缺少 IRQ 时返回 `ENODEV`，检查在创建 worker 前完成，已保留的专用槽在失败时回收。Linux v7.1 的 [`arm_pmu_platform.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu_platform.c) 也保留无 IRQ 的 PMU，但仅对 sampling 返回 `EOPNOTSUPP`；Starry 的 programmable 软件扩展依赖 overflow，故这部分支持范围和错误码仍有明确差异。
 
 ### 2.2 调度与复用
 
@@ -210,7 +210,7 @@ CI run `34438510466` 证明不能将 icount 扩展到整个 system suite：四�
 
 只撤销 icount 会重新暴露 PMU 计数跳变，维持全局 icount 又会改变非 perf 时间测试的环境；复制或搬迁整套 perf 源码则会引入双重维护或破坏现有选择路径。因此复用 `load_qemu_cases_for_selection()` 的选择结果，仅在准备 rootfs 前扩展成互斥 profile。原始 TOML 是配置所有者；每个 profile 使用独立工作目录、完整运行配置和同一构建包装目录，错误配置在启动前返回错误。没有 profile 的配置保持原行为，没有持久格式迁移；回滚时必须同时回滚分组配置与加载逻辑，不能只用旧工具忽略新增字段。
 
-`icount` 让虚拟定时器与 vCPU 指令执行使用同一时间线，保留四个 guest CPU，但不使用 MTTCG 宿主并行。因此这些结果不能代替真实并行硬件验收。选择它是为了避免 QEMU PMU 的跨线程状态转换空窗：[QEMU v11.1.1 的异常返回](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/tcg/helper-a64.c#L694-L763) 分别锁住前后 EL-change hook，中间释放 BQL；[PMU 定时器](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/cpregs-pmu.c#L615-L639) 同样修改两阶段计数基线。定时器在空窗插入时可能丢掉 preload，表现为组成员突然增加约半个 32 位范围。原 CI 及 focused case 均观察到该原始值跳变；保留组计数断言，不在内核中裁剪异常增量。
+`icount` 让虚拟定时器与 vCPU 指令执行使用同一时间线，保留四个 guest CPU，但不使用 MTTCG 宿主并行。因此这些结果不能代替真实并行硬件验收。选择它是为了避免 QEMU PMU 的跨线程状态转换空窗：[QEMU v11.1.1 的异常返回](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/tcg/helper-a64.c) 分别锁住前后 EL-change hook，中间释放 BQL；[PMU 定时器](https://github.com/qemu/qemu/blob/v11.1.1/target/arm/cpregs-pmu.c) 同样修改两阶段计数基线。定时器在空窗插入时可能丢掉 preload，表现为组成员突然增加约半个 32 位范围。原 CI 及 focused case 均观察到该原始值跳变；保留组计数断言，不在内核中裁剪异常增量。
 
 ```bash
 cargo xtask starry test qemu --arch aarch64 -c qemu/system

@@ -1652,11 +1652,11 @@ LinuxCurrent，`ax-cpu` 也禁止 `uspace + tls`；内核不拥有 FS 寄存器�
 `WRMSR`，其中一读一写只为保存并恢复不存在的 kernel FS。与此同时，`UserContext.fs_base`
 在用户执行期间还被临时复用为 kernel continuation stack，迫使入口重新读取用户 FS。
 
-Linux v7.1 `entry_SYSCALL_64`（`arch/x86/entry/entry_64.S:87-121`）不在普通 syscall
+Linux v7.1 `entry_SYSCALL_64`（`arch/x86/entry/entry_64.S`）不在普通 syscall
 入口读写 FS/GS MSR。非 FSGSBASE 的上下文切换路径在
-`arch/x86/kernel/process_64.c:231-292` 对 selector 0 的常见 64 位线程直接信任已保存 base，
+`arch/x86/kernel/process_64.c` 对 selector 0 的常见 64 位线程直接信任已保存 base，
 明确以避免热路径 `RDMSR`；真正的 FS/GS owner 切换收敛在 `__switch_to()` 的
-`save_fsgs()`（同文件 `610-632`）。
+`save_fsgs()`（同文件）。
 
 当前 x86 LinuxCurrent 路径据此完成以下破坏型收敛：
 
@@ -3302,9 +3302,9 @@ Linux `do_sched_rt_period_timer()` 在无 runnable 但仍有 `rt_time` 时继续
 强制停表或测试延时掩盖。定向 `task-rt-policy` 和 CI 对应的 `all` 序列均已通过。
 
 第六项重复 owner 位于 timed park 的 hrtimer 注册/取消。Linux
-`kernel/time/hrtimer.c:1471-1495` 在一次 `lock_hrtimer_base()` 事务内完成 enqueue 与需要时的
+`kernel/time/hrtimer.c` 在一次 `lock_hrtimer_base()` 事务内完成 enqueue 与需要时的
 `hrtimer_reprogram()`；取消同样在一次 base lock 内完成 `remove_hrtimer()`
-（`kernel/time/hrtimer.c:1509-1534`）。ax-task 此前先以 Registration guard 修改 task deadline
+（`kernel/time/hrtimer.c`）。ax-task 此前先以 Registration guard 修改 task deadline
 queue，释放后重新取得 rq observation，最后再以 Publication guard 读取同一个 timer head 并提交
 物理 deadline。一次 park arm/cancel 因而为同一个 base 状态取得两把 IRQ-save 锁；取消失败回滚还
 会第三次重进 base，并遗留了只服务该分段事务的 publication invalidation 路径。
@@ -4263,11 +4263,10 @@ Rust QEMU `task-fair-wake-idle-sibling` 1/1 通过；`cargo xtask clippy --packa
 
 Linux v7.1 的 waitqueue 以栈上 `wait_queue_entry` 的 `private=current` 指向 scheduler 已拥有的
 `task_struct`，`prepare_to_wait_event()`、`finish_wait()` 和 pipe wait 路径不会为每次 park 增加、释放
-一对 `task_struct` 引用计数（`include/linux/wait.h:302-326`、`kernel/sched/wait.c:280-323,375-399`、
-`fs/pipe.c:388,573,1101-1109`）。其安全性来自 scheduler current/rq 所有权、`on_cpu` 的
+一对 `task_struct` 引用计数（`include/linux/wait.h`、`kernel/sched/wait.c`、
+`fs/pipe.c`）。其安全性来自 scheduler current/rq 所有权、`on_cpu` 的
 Release/Acquire 交接以及 exit/RCU 回收协议，而不是 waitqueue 临时持有；`try_to_wake_up()` 与
-`__schedule()` 同样围绕这些 owner/ordering 约束工作（`kernel/sched/core.c:4152-4182,4950-4975,
-6582-6627,7017-7040,7064-7100`）。
+`__schedule()` 同样围绕这些 owner/ordering 约束工作（`kernel/sched/core.c`）。
 
 TGOS 的 `ThreadCore` 生命周期也已有明确 owner：registry 的 `ThreadRecord.core` 负责长期登记，只有
 线程为 `Exited`、不在 CPU 上且没有 lease 后才允许 reap；rq/current/switch handoff 在调度事务中持有
@@ -4290,7 +4289,7 @@ process/20 为 1.286/1.471/1.429/1.473/1.461 s，中位数 1.461 s，仍为 Linu
 质量验证覆盖 ax-task 104 个单元测试、4 个集成测试和 12 个文档测试；x86_64 ArceOS Rust QEMU
 `task-wait-queue` 的 wait/wake 与 timeout 1/1 通过；`cargo xtask clippy --package ax-task` 的 5 个
 目标/特性组合和 `git diff --check` 通过。目标新增测试与 `park_exit.rs` 的 rustfmt 检查通过；crate 级
-rustfmt 仍报告 4 个既有文件中的排版差异，其中 `deadline.rs` 的报告位于本检查点未修改的第 198 行，
+rustfmt 仍报告 4 个既有文件中的排版差异，其中 `deadline.rs` 的报告位于本检查点未修改的代码中，
 没有把这些无关改写混入提交。下一步继续量化
 `PreparedCurrentPark` 跨 block 边界的 owner 交接及 wait/notify guard nesting；只有能以现有
 rq/current/handoff owner 证明完整生命周期时，才进一步移除跨边界 `Arc`。
@@ -4303,7 +4302,7 @@ current publication 取得 scheduler-owned 强引用，跨 wait registration、d
 `SwitchHandoff` 则分别拥有其跨线程、rq 和 `on_cpu` 交接阶段的独立引用。这与 Linux v7.1 在
 `__schedule()` 持有 rq/current 所有权、切换后由 `finish_task_switch()` 在 rq lock 下通过
 `smp_store_release(&prev->on_cpu, 0)` 完成 previous 生命周期交接的语义一致
-（`kernel/sched/core.c:4950-4975,5202-5245,7017-7100`）。因此不能为了减少引用计数而删除跨切换 owner，
+（`kernel/sched/core.c`）。因此不能为了减少引用计数而删除跨切换 owner，
 也不能仅依赖 registry owner 替代 `on_cpu`/switch-tail 协议。
 
 `commit_park_owner()` 原来却在调用期间从 `PreparedCurrentPark.thread` 再 clone 一个
@@ -4335,8 +4334,8 @@ switch 都无条件 XSAVE/XRSTOR，而 TLS MSR 路径并未在该构建启用。
 Linux v7.1 x86_64 不在每次 scheduler context switch 中无条件恢复 incoming FPU image。
 `switch_fpu_prepare()` 只在 outgoing task 是当前 CPU 的 FPU owner 时保存并失效 owner，incoming task
 则通过 `TIF_NEED_FPU_LOAD` 保持待恢复状态；真正的 `fpregs_restore_userregs()` 位于返回用户态边界
-（`arch/x86/include/asm/fpu/sched.h:18-53`、`arch/x86/kernel/fpu/context.h:8-39,53-80`、
-`arch/x86/kernel/fpu/core.c:878-887`）。旧 ax-cpu 的 `TaskContext::prepare_switch_to()` 每次都执行
+（`arch/x86/include/asm/fpu/sched.h`、`arch/x86/kernel/fpu/context.h`、
+`arch/x86/kernel/fpu/core.c`）。旧 ax-cpu 的 `TaskContext::prepare_switch_to()` 每次都执行
 outgoing XSAVE/FXSAVE 和 incoming XRSTOR/FXRSTOR，即使 incoming 仍在内核中运行且这次调度之后不会立即
 返回用户态。这既增加了固定 switch 成本，也没有表达物理 FPU image 的单一 CPU owner。
 
@@ -4377,7 +4376,7 @@ exec reset、ptrace owner 同步/XSAVE regset 和 signal frame/sigreturn FP stat
 Linux v7.1 成功替换 executable image 后由 `flush_thread()` 调用 `fpu_flush_thread()`；后者先
 `fpstate_reset(x86_task_fpu(current))` 重置 task-owned memory image，再调用
 `fpu_reset_fpstate_regs()` 把当前物理寄存器恢复为架构初始状态
-（`arch/x86/kernel/process.c:284-293`、`arch/x86/kernel/fpu/core.c:836-876`）。Starry 的 exec
+（`arch/x86/kernel/process.c`、`arch/x86/kernel/fpu/core.c`）。Starry 的 exec
 commit 原来只用 `UserContext::new()` 重建 GP/IP/SP/TLS，既不修改 runtime `TaskContext.ext_state`，也不
 更新 CPU-local `user_fp_owner`。未发生调度时 owner 仍匹配 current，最终 user-return 会跳过 restore；
 发生过调度时旧 image 又会被保存回同一个 `TaskContext`。两条路径都会把旧程序的 x87/MXCSR/XMM/YMM
@@ -4416,13 +4415,13 @@ ax-runtime x86_64 `fp-simd + uspace + smp`、Starry kernel x86_64 `smp` 定向 c
 
 Linux v7.1 的 `arch_dup_task_struct()` 不通过 `task_struct` memcpy 复制 FPU，明确把目标 fpstate 的
 初始化交给后续 `fpu_clone()`；`copy_thread()` 在子 task 已分配但尚未发布时调用它
-（`arch/x86/kernel/process.c:105-114,170-226`）。普通用户 clone 先为子 task 重置独立 fpstate 并设置
+（`arch/x86/kernel/process.c`）。普通用户 clone 先为子 task 重置独立 fpstate 并设置
 lazy-load 状态；若父 task 当前需要恢复，则先执行 `fpregs_restore_userregs()`，随后把当前父硬件寄存器
 直接 `save_fpregs_to_fpstate(dst_fpu)` 到子 image。子 `last_cpu=-1`，所以继承 fpstate 而不继承物理 CPU
-owner（`arch/x86/kernel/fpu/core.c:660-721`、`arch/x86/kernel/fpu/context.h:10-20,53-80`）。
+owner（`arch/x86/kernel/fpu/core.c`、`arch/x86/kernel/fpu/context.h`）。
 PREEMPT_RT 不改变复制与 owner 算法，只把 `fpregs_lock()` 的实现从普通内核的 bottom-half exclusion 改为
 `preempt_disable()`，因为 RT bottom half 在线程上下文执行
-（`arch/x86/include/asm/fpu/api.h:51-80`）。
+（`arch/x86/include/asm/fpu/api.h`）。
 
 旧 Starry clone 只复制 `UserContext` 的通用寄存器。RISC-V 已把 clone-point `FpState` 传入未发布
 `TaskContext`，x86 却一直由 `TaskContext::new()` 安装默认 `ExtendedState`。确定性 x86_64 QEMU 回归在
@@ -4463,9 +4462,9 @@ tracee 的硬件寄存器保存到内存，`NT_PRFPREG` 暴露 512 字节标准 
 完整 xstate SET 校验 header、enabled feature mask 和 CPU 的 `mxcsr_feature_mask`，随后使旧硬件缓存
 失效；下一次返回用户态必须从修改后的 task fpstate 恢复。PREEMPT_RT 不改变这些 regset、UABI 或
 owner 算法，只把 `fpregs_lock()` 的实现换成禁抢占
-（`arch/x86/kernel/ptrace.c:1246-1262,1365-1374`、
-`arch/x86/kernel/fpu/regset.c:36-175`、`arch/x86/kernel/fpu/xstate.c:1290-1405`、
-`arch/x86/kernel/fpu/context.h:10-80`）。
+（`arch/x86/kernel/ptrace.c`、
+`arch/x86/kernel/fpu/regset.c`、`arch/x86/kernel/fpu/xstate.c`、
+`arch/x86/kernel/fpu/context.h`）。
 
 旧 Starry 在 tracee 自己进入 ptrace stop 时直接 `_fxsave64` 到独立 512 字节 map，既丢失 YMM upper
 128-bit，也没有 `NT_X86_XSTATE`；resume 又直接 `_fxrstor64`，但没有同步当前
@@ -4513,10 +4512,10 @@ xstate size），使用 standard/non-compacted xstate header，并在 payload �
 对没有有效 magic 的 payload 按 legacy FX-only 帧恢复，空 `fpstate` 指针则恢复初始 FPU 状态；最终
 恢复必须同时更新 task-owned fpstate 和当前 CPU 的物理 owner。PREEMPT_RT 只改变
 `fpregs_lock()` 的抢占保护实现，不改变 signal UABI 或 owner 算法
-（`arch/x86/kernel/fpu/signal.c:27-65,101-147,327-360,449-492`、
-`arch/x86/kernel/signal_64.c:50-190,243-279`、
-`arch/x86/include/uapi/asm/sigcontext.h:21-197`、
-`arch/x86/include/asm/fpu/context.h:10-80`）。
+（`arch/x86/kernel/fpu/signal.c`、
+`arch/x86/kernel/signal_64.c`、
+`arch/x86/include/uapi/asm/sigcontext.h`、
+`arch/x86/include/asm/fpu/context.h`）。
 
 旧 Starry 始终把 `MContext.fpstate` 写成 0，signal delivery 不保存 x87/SSE/AVX，handler 返回后的
 `rt_sigreturn` 也不解析用户 signal xstate、不更新 `TaskContext.ext_state` 或 CPU-local
@@ -4557,9 +4556,9 @@ Linux 等价。现存的通用寄存器/SS/RFLAGS 校验、altstack 与 signal m
 
 Linux v7.1 的 pipe ring 保存完整 `pipe_buffer.offset/len`。部分读取会同时推进 `offset`、缩短 `len`；
 后续 anonymous pipe write 只有在 `offset + len + bytes <= PAGE_SIZE` 时才允许合并到尾 buffer，不能
-把已经消费的页首空间当作可复用尾部容量（`fs/pipe.c:343-352,477-484`）。此外每次
+把已经消费的页首空间当作可复用尾部容量（`fs/pipe.c`）。此外每次
 `pipe_poll()` 都会发布 `poll_usage = true`，不区分普通、shared 或 exclusive poll waiter；write
-路径据此决定非空管道是否仍需通知 poll waitqueue（`fs/pipe.c:592-599,658-668`）。PREEMPT_RT 不
+路径据此决定非空管道是否仍需通知 poll waitqueue（`fs/pipe.c`）。PREEMPT_RT 不
 改变 pipe buffer 的页内边界或 poll publication 语义。
 
 旧 Starry 的 `PipeState.buffers: VecDeque<usize>` 只保存剩余长度。一个满页 buffer 被部分读取后，
@@ -4592,7 +4591,7 @@ Linux v7.1 `anon_pipe_write()` 在一次 syscall 内维护 `was_empty` 与 `wake
 时，才先用 `wake_up_interruptible_sync_poll()` 通知 reader 以保证进展；等待返回后重新取锁采样
 `was_empty`，并记录 writer handoff。成功、部分写、`EAGAIN`、`EINTR`、`EPIPE` 和 copy failure 最终
 都进入同一出口：`was_empty || poll_usage` 时通知 reader，等待返回且最终管道未满时才通知下一个
-exclusive writer（`fs/pipe.c:431-600`）。`WF_SYNC` 是调度 hint，PREEMPT_RT 不改变该 pipe 状态机、
+exclusive writer（`fs/pipe.c`）。`WF_SYNC` 是调度 hint，PREEMPT_RT 不改变该 pipe 状态机、
 poll key 或 exclusive wake budget。
 
 旧 Starry 把 reader/writer wake 放在每次内部 `operation()` 成功写入之后。非空 pipe 一旦使用过 poll，
@@ -4968,17 +4967,17 @@ collect_futex_wakes (0xffffffff800171e0)
 ## 2026-09-02：唤醒选核 ownership 成本复核
 
 本检查点基于当前代码提交 `c306f2ece7`。在保持 Linux RT 状态事务的前提下，
-`ThreadLifecycle::consume_wake_and_transition()`（`components/ax-task/src/thread/state.rs:125-163`）
+`ThreadLifecycle::consume_wake_and_transition()`（`components/ax-task/src/thread/state.rs`）
 把 wake publication 消费和 `Blocked -> Waking` 合并为一个 CAS；
-`TaskSystem::consume_wake_locked()`（`components/ax-task/src/system/task_system/dispatch/wake.rs:130-142`）
-与 `consume_on_rq_wake_locked()`（`:151-158`）分别对应 off-rq 和 `ttwu_runnable()` 的状态边界。
-`select_wake_target()`（`:160-244`）现在只为 Deadline 读取 detached entity，RT/Fair 直接使用
+`TaskSystem::consume_wake_locked()`（`components/ax-task/src/system/task_system/dispatch/wake.rs`）
+与同文件的 `consume_on_rq_wake_locked()` 分别对应 off-rq 和 `ttwu_runnable()` 的状态边界。
+`select_wake_target()` 现在只为 Deadline 读取 detached entity，RT/Fair 直接使用
 `ThreadCore::effective_policy_snapshot()`；共享的 `select_priority_cpu()`（
-`components/ax-task/src/system/task_system/switch.rs:476-526`）以 `Option<&SchedulingEntity>` 表示
+`components/ax-task/src/system/task_system/switch.rs`）以 `Option<&SchedulingEntity>` 表示
 该 Linux 语义差异，避免为 RT/Fair 做一次无意义的 detached `Box` ownership 往返。x86 的
-`cpu_local::current_cpu_index()`（`components/cpu-local/src/register/x86_64.rs:18-34`）通过 GS
+`cpu_local::current_cpu_index()`（`components/cpu-local/src/register/x86_64.rs`）通过 GS
 标量读取 CPU index，`ArceOsTaskRuntime::current_cpu_id()`（
-`os/arceos/modules/axruntime/src/task/runtime_impl.rs:92-97`）不再构造 `CpuPin` 快照。
+`os/arceos/modules/axruntime/src/task/runtime_impl.rs`）不再构造 `CpuPin` 快照。
 
 同一 `q35,accel=tcg,-cpu max,-smp 2,-m 512M` 配置下，release ELF
 `target/x86_64-unknown-none/release/starryos` 的 SHA-256 为

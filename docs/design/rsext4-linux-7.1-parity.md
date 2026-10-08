@@ -71,11 +71,11 @@ offset、长度和已经校验过的 mutation context。
 | `fs/jbd2/transaction.c`, `commit.c` | handles/credits、ordered data、commit record ordering | journal transaction owner | core | multi-transaction restart + phase fault injection |
 | `fs/jbd2/recovery.c`, `revoke.c`, `checkpoint.c` | scan/revoke/replay、tail/checkpoint reclamation | journal recovery owner | core | Linux-created journal 与 restart power-cut replay |
 
-Linux v7.1 `fs/ext4/super.c:5504-5510,5886-5960` 在 root inode 之前装载
+Linux v7.1 `fs/ext4/super.c` 在 root inode 之前装载
 internal journal，并拒绝不存在、`i_nlink == 0`、非 regular 或加密的 journal
 inode。`rsext4` 的普通 mount 同样只校验并装载既有 inode；创建默认 inode 8
 被限制在 `mkfs` 的 crate-private bootstrap 路径，不能由损坏镜像触发修复写入。
-`super.c:6080-6116` 还要求 internal inode 与 external device 二选一。core 在任何
+`super.c` 还要求 internal inode 与 external device 二选一。core 在任何
 mount mutation 前拒绝二者同时声明或均缺失；external-only 镜像则返回 typed
 `UnsupportedCapability(block_io:external_journal)`，直到双设备 journal/home I/O
 ownership、UUID 与 durability 边界完整实现，而不是静默退回主设备上的 inode。
@@ -160,52 +160,52 @@ cookie 并清空 continuation。VFS directory sink 接收 raw `&[u8]` 名称，�
 | `owned-mount-boundary` | caller 分别持有公开字段的 `Ext4FileSystem` 和公开 `Jbd2Dev`，且 block device 必须同时实现 `Clock` | 私有 `Ext4<D, S>` 独占 device/cache/journal/services；`BlockIo` 与 `Clock` 分离；只公开 typed operations/DTO | portable core skeleton | 进行中：`Ext4<D, MountedServices<...>>` 已消费 device 与 `MountServices`，独立 clock callback 驱动 metadata 链路；ax-fs-ng 现由一个 sleepable mutex 独占 `MountedExt4`，mount、inode I/O、readdir、namespace mutation、sync/unmount 不再 split 或访问 core cache/superblock/JBD2，手写 `unsafe Send/Sync` 已删除。host harness 也已改用 typed `format` 与 owned inode I/O，不再依赖 legacy path/JBD2 proxy。`InodeInfo::file_type`/`is_directory` 和根级 `InodeNumber` re-export 已移除 adapter 对 `disknode::Ext4Inode` 与 `bmalloc` 模块路径的生产依赖。mount fallback 只在 mount 前明确读到 `EXT4_ERROR_FS` 时选择只读 replay，RW/replay failure 不再复用已污染或 abort 的 owner；invalid revoke 红测证明旧实现把首个 `Corrupted` 覆盖成 `JournalAborted`，同一测试现保留首错。显式 forensic no-replay 继续由 typed mount options 提供。descriptor-style fd API 与未消费的 crypto/key provider 已直接删除，不保留兼容 wrapper；低层 path helper、公开 `Ext4FileSystem`/`Jbd2Dev` 与 `initial_jbd2dev` 仍待 crate differential/fault tests 迁移后删除，因此尚不能转绿 |
 | `typed-inode-metadata` | owned DTO 无 project ID 和 inode flags，adapter 只能访问磁盘 inode 或调用 path helper | `InodeInfo` 仅公开 typed project ID/用户可见 flags；`InodeMetadataUpdate` 仅能改 Linux user-modifiable bits；未启用 project feature 时 0 为 no-op，非 0 返回 unsupported | inode/capability boundary | 进行中：旧公共 API 编译红测缺少 `InodeFlags`/project 字段；同一 owned 测试现验证内部 `EXTENTS` 保留、`NO_DUMP|NO_ATIME` typed 更新和未启用 feature 时的 project 0 no-op/非 0 unsupported。固定 `mkfs.ext4 -I 256 -O project` 镜像现由 owned core 设置 project 1234/`PROJINHERIT`，子 inode 继承后 Linux `debugfs stat` 解码一致且 `e2fsck -fn` clean。quota transfer 和同一 filesystem-owned transaction 仍为红项 |
 | `directory-name-no-truncate` | `insert_dir_entry` 对超过 255 byte 的名称静默截断并仍返回成功 | raw name 在任何 inode/dirent mutation 前校验；非 UTF-8 合法，空串、NUL、`/`、超过 255 byte 明确拒绝 | namespace boundary | 绿：256-byte 名称确定性红测证明旧实现创建截断 dentry；`FileName` 与 strict insert 现在在分配/插入前返回 `InvalidInput`，同一测试验证没有遗留 255-byte truncated entry |
-| `typed-namespace-create` | create/mkdir 接收 absolute UTF-8 path，core 自动创建父目录并在创建后由 adapter 二次修改 mode | `parent inode + FileName + FilePermissions + MutationContext`，path/permission policy 留在 VFS | namespace boundary | 进行中：owned API 已提供 raw-byte regular-file/directory/special-inode/symlink create，并在首次 metadata publish 时应用 uid/gid/umask；ax-fs-ng create 已迁移到 resolved parent inode 与 typed DTO，不再路径查找或二次直改 inode。regular/special/symlink/mkdir 现共用 Linux extent/no-quota 的 `24 + 12 + 3 = 39` credit owner：payload data 在 metadata commit 前 ordered write，child/parent inode、dentry/dir block、本次变化的 block/inode bitmap、GDT、superblock 与 `used_dirs` 在同一 handle 发布。file 与 directory 的目录块写后故障红测均证明旧实现返回 I/O error 后仍留下可达名称；同一测试现经重挂载验证名称、free block/inode、parent nlink 与 `used_dirs` 完整恢复。legacy `create_symbol_link` 也已删除重复分配实现并复用 typed primitive。VFS 已删除 create/set 两阶段 symlink 合约并迁移为必选 typed atomic create；project inheritance/quota 与 caller context 贯通仍为红项。Linux v7.1 依据为 `fs/ext4/namei.c:2815-2880,2990-3050,3370-3445`、`fs/ext4/ext4_jbd2.h:21-50,78-84` |
+| `typed-namespace-create` | create/mkdir 接收 absolute UTF-8 path，core 自动创建父目录并在创建后由 adapter 二次修改 mode | `parent inode + FileName + FilePermissions + MutationContext`，path/permission policy 留在 VFS | namespace boundary | 进行中：owned API 已提供 raw-byte regular-file/directory/special-inode/symlink create，并在首次 metadata publish 时应用 uid/gid/umask；ax-fs-ng create 已迁移到 resolved parent inode 与 typed DTO，不再路径查找或二次直改 inode。regular/special/symlink/mkdir 现共用 Linux extent/no-quota 的 `24 + 12 + 3 = 39` credit owner：payload data 在 metadata commit 前 ordered write，child/parent inode、dentry/dir block、本次变化的 block/inode bitmap、GDT、superblock 与 `used_dirs` 在同一 handle 发布。file 与 directory 的目录块写后故障红测均证明旧实现返回 I/O error 后仍留下可达名称；同一测试现经重挂载验证名称、free block/inode、parent nlink 与 `used_dirs` 完整恢复。legacy `create_symbol_link` 也已删除重复分配实现并复用 typed primitive。VFS 已删除 create/set 两阶段 symlink 合约并迁移为必选 typed atomic create；project inheritance/quota 与 caller context 贯通仍为红项。Linux v7.1 依据为 `fs/ext4/namei.c`、`fs/ext4/ext4_jbd2.h` |
 | `special-inode-rdev` | extents-enabled filesystem 对 CHR/BLK/FIFO/SOCK 无条件写 extent header，且 core 没有 `i_rdev` codec，special inode 还能错误携带普通文件 payload | 仅 DIR/REG/normal symlink 初始化 extent tree；CHR/BLK 使用 Linux old/new device codec，FIFO/SOCK 保持空 `i_block`；typed create 拒绝类型/payload 不匹配 | inode codec/namespace boundary | 绿（typed primitive）：确定性红测证明旧 char inode 带 `EXT4_EXTENTS_FL`；同一测试现要求零 size/block 且拒绝 payload。`DeviceNumber` checked major/minor 与 old/new codec 单测通过，owned `create_special_inode` 持久化 259:511 后由 Linux `debugfs` 解码一致且 `e2fsck -fn` clean。rename whiteout 的同 transaction 创建/回滚仍归属 `typed-rename-flags` 与 `rename-mutation-rollback` 红项 |
-| `typed-hard-link` | hard link 重新解析两个 UTF-8 absolute path，并把 target nlink、目录块和 parent inode 分开发布 | `target inode + parent inode + FileName`；target nlink/ctime、raw dentry block、parent inode 以及目录扩块的 allocation metadata 必须属于同一 filesystem-owned JBD2 handle | namespace/JBD2 boundary | 进行中：raw 非 UTF-8 hard-link test 验证同 inode/nlink=2；确定性 direct-write fault 红测证明旧实现返回 I/O error 后仍把 destination dentry 留在磁盘，同一测试现通过 metadata-aware directory cache 与 COW cache snapshot 在重挂载后恢复旧 nlink 且不出现 destination。第二条红测用 15 个 255-byte 名称填满首块，证明旧实现因 block bitmap 未在 handle 内写回而错误返回成功；同一测试现按本次 group free-count 变化定向物化 block bitmap/GDT/superblock，故障后恢复目录 size/mapping、free count、nlink 与 dentry。credit 已按 Linux extent/no-quota 的 `24 + 12 + 1 = 37` 校正。HTree split、quota credit 和 nlink=0 tmpfile/orphan resurrection 尚未实现，因此仍不能宣称完整 hard-link parity。Linux v7.1 依据为 `fs/ext4/namei.c:53-88,2108-2157,2356-2457,3455-3487,3492-3518`、`fs/ext4/ext4_jbd2.h:21-50,77-90` |
-| `typed-unlink-open-lifecycle` | core final unlink 立即释放 inode/data block，可能破坏仍由 VFS 引用的 open inode；adapter 另写一套 zero-link 逻辑 | `parent inode + FileName -> UnlinkOutcome`；最后 dentry 消失后 inode 保持 allocated/readable，VFS 最后引用释放后显式 reap | namespace/lifecycle boundary | 绿（名称发布与运行时生命周期）：typed raw-name unlink 返回剩余 nlink，zero-link inode 持续按 inode number 可读写，显式 reap 才释放。dentry、parent/target metadata 与 classic orphan head 位于同一 24-credit transaction，定点写故障重挂载保持名称、nlink、orphan head、allocation 与内容。ax-fs-ng 用唯一、失败可重试的 reap claim 串行 unlink 与 final drop；global page-cache registry 在 final unlink 后解除 filesystem-wide owner，打开的 fd/mmap 仍保有自己的 cache 并可显式 fsync，不可达的 dirty cache 在最终 drop 丢弃。LoongArch64 grouped QEMU 中 open-unlink 与 ext4-unlink-pagecache 测例通过，1400 文件 page-cache 压力由 timeout 收敛到 66s，紧后 `sync` 为 0s。最终 reap bitmap crash atomicity 继续归属 `classic-orphan-recovery`。Linux v7.1 依据为 `fs/ext4/namei.c:3148-3208`、`fs/ext4/ext4_jbd2.h:20-50,86-104` |
-| `typed-rmdir-open-lifecycle` | path-based `delete_dir` 递归回收目录，无法保留 VFS 已打开目录的 inode 生命周期 | 仅删除空目录名称，target 进 orphan/zero-link，最后 VFS ref 释放后才降 `used_dirs` 并回收 | namespace/lifecycle/JBD2 boundary | 进行中：owned `remove_empty_directory` 与 ax-fs-ng rmdir 已共用 `UnlinkOutcome`/reap tracker，空目录持有时 inode 保持 allocated，非空目录确定性无变更，`used_dirs` 仅在 reap 降低。empty-dir scan 现严格验证 inode size、首块、dir/dx checksum、record 长度/对齐/name/inode 上界，首两项必须为 self `.` 与非零 `..`，后续 hole 可跳过但任何非零 inode 均判非空；重算合法 checksum 后把 `.` 指向 root 的确定性红测证明旧实现误报 empty，同一测试现返回 typed corruption。rmdir 名称发布现与 unlink 共用 24-credit owner，把 dentry、target zero-link/size、orphan head、parent nlink/ctime/mtime 置于同一 transaction，替代无法覆盖后写故障的手工补偿。最终 reap/`used_dirs` 的 bitmap crash atomicity 仍为红项。Linux v7.1 依据为 `fs/ext4/namei.c:3236-3319`、`fs/ext4/ext4_jbd2.h:20-50,86-104` |
-| `symlink-target-transaction` | VFS 先发布空 symlink，再经 `FileNodeOps::set_symlink` 和 rsext4 `set_symlink_target` 二次改目标；第二步失败会留下可见空链接，原地替换旧块也会泄漏部分状态 | Linux 仅提供创建时给定 final target 的 symlink operation；59-byte fast/60-byte long，long disk payload 含 NUL，inode/payload/dentry/allocation 在同一 handle 发布；改变既有 target 必须 unlink/new inode 或 rename replacement | inode/namespace/JBD2 boundary | 绿：先把 `FsContext::symlink` 改为 typed call 得到缺少 `create_symlink` 的确定性编译红；VFS 随后增加必选、对象安全且无两阶段默认实现的 `DirNodeOps::create_symlink`，通用 `create(NodeType::Symlink)` 在进入 backend 前返回 `InvalidInput`。ext4 adapter 一次调用 owned `create_symlink`，tmpfs 在目录项可见前预留容量并初始化 target，overlay copy-up 先读取 target 再一次创建 upper link；FAT/read-only/pseudofs 明确拒绝。`FileNodeOps::set_symlink`、rsext4 `set_symlink_target` 及其不符合 Linux 的 replace 测试均已删除。host VFS 回归验证 generic create 零 backend 调用且 typed create 首次即可读完整 target；tmpfs axtest 验证容量失败后名称不存在且成功路径首次即可读取 final target；成功路径先初始化 sleepable symlink mutex，再以 IRQ-safe directory lock 二次检查并发布，避免把阻塞锁带入 atomic context，竞争失败则回滚 inode 与容量。LoongArch64 原 CI panic 的完整 grouped QEMU 命令现为 system 424/424、总计 2/2。owned 59/60 boundary 回归继续验证 fast/long 编码。Linux v7.1 依据为 `fs/namei.c:5617-5657`、`fs/ext4/namei.c:2778-2802,3335-3358,3361-3446` |
+| `typed-hard-link` | hard link 重新解析两个 UTF-8 absolute path，并把 target nlink、目录块和 parent inode 分开发布 | `target inode + parent inode + FileName`；target nlink/ctime、raw dentry block、parent inode 以及目录扩块的 allocation metadata 必须属于同一 filesystem-owned JBD2 handle | namespace/JBD2 boundary | 进行中：raw 非 UTF-8 hard-link test 验证同 inode/nlink=2；确定性 direct-write fault 红测证明旧实现返回 I/O error 后仍把 destination dentry 留在磁盘，同一测试现通过 metadata-aware directory cache 与 COW cache snapshot 在重挂载后恢复旧 nlink 且不出现 destination。第二条红测用 15 个 255-byte 名称填满首块，证明旧实现因 block bitmap 未在 handle 内写回而错误返回成功；同一测试现按本次 group free-count 变化定向物化 block bitmap/GDT/superblock，故障后恢复目录 size/mapping、free count、nlink 与 dentry。credit 已按 Linux extent/no-quota 的 `24 + 12 + 1 = 37` 校正。HTree split、quota credit 和 nlink=0 tmpfile/orphan resurrection 尚未实现，因此仍不能宣称完整 hard-link parity。Linux v7.1 依据为 `fs/ext4/namei.c`、`fs/ext4/ext4_jbd2.h` |
+| `typed-unlink-open-lifecycle` | core final unlink 立即释放 inode/data block，可能破坏仍由 VFS 引用的 open inode；adapter 另写一套 zero-link 逻辑 | `parent inode + FileName -> UnlinkOutcome`；最后 dentry 消失后 inode 保持 allocated/readable，VFS 最后引用释放后显式 reap | namespace/lifecycle boundary | 绿（名称发布与运行时生命周期）：typed raw-name unlink 返回剩余 nlink，zero-link inode 持续按 inode number 可读写，显式 reap 才释放。dentry、parent/target metadata 与 classic orphan head 位于同一 24-credit transaction，定点写故障重挂载保持名称、nlink、orphan head、allocation 与内容。ax-fs-ng 用唯一、失败可重试的 reap claim 串行 unlink 与 final drop；global page-cache registry 在 final unlink 后解除 filesystem-wide owner，打开的 fd/mmap 仍保有自己的 cache 并可显式 fsync，不可达的 dirty cache 在最终 drop 丢弃。LoongArch64 grouped QEMU 中 open-unlink 与 ext4-unlink-pagecache 测例通过，1400 文件 page-cache 压力由 timeout 收敛到 66s，紧后 `sync` 为 0s。最终 reap bitmap crash atomicity 继续归属 `classic-orphan-recovery`。Linux v7.1 依据为 `fs/ext4/namei.c`、`fs/ext4/ext4_jbd2.h` |
+| `typed-rmdir-open-lifecycle` | path-based `delete_dir` 递归回收目录，无法保留 VFS 已打开目录的 inode 生命周期 | 仅删除空目录名称，target 进 orphan/zero-link，最后 VFS ref 释放后才降 `used_dirs` 并回收 | namespace/lifecycle/JBD2 boundary | 进行中：owned `remove_empty_directory` 与 ax-fs-ng rmdir 已共用 `UnlinkOutcome`/reap tracker，空目录持有时 inode 保持 allocated，非空目录确定性无变更，`used_dirs` 仅在 reap 降低。empty-dir scan 现严格验证 inode size、首块、dir/dx checksum、record 长度/对齐/name/inode 上界，首两项必须为 self `.` 与非零 `..`，后续 hole 可跳过但任何非零 inode 均判非空；重算合法 checksum 后把 `.` 指向 root 的确定性红测证明旧实现误报 empty，同一测试现返回 typed corruption。rmdir 名称发布现与 unlink 共用 24-credit owner，把 dentry、target zero-link/size、orphan head、parent nlink/ctime/mtime 置于同一 transaction，替代无法覆盖后写故障的手工补偿。最终 reap/`used_dirs` 的 bitmap crash atomicity 仍为红项。Linux v7.1 依据为 `fs/ext4/namei.c`、`fs/ext4/ext4_jbd2.h` |
+| `symlink-target-transaction` | VFS 先发布空 symlink，再经 `FileNodeOps::set_symlink` 和 rsext4 `set_symlink_target` 二次改目标；第二步失败会留下可见空链接，原地替换旧块也会泄漏部分状态 | Linux 仅提供创建时给定 final target 的 symlink operation；59-byte fast/60-byte long，long disk payload 含 NUL，inode/payload/dentry/allocation 在同一 handle 发布；改变既有 target 必须 unlink/new inode 或 rename replacement | inode/namespace/JBD2 boundary | 绿：先把 `FsContext::symlink` 改为 typed call 得到缺少 `create_symlink` 的确定性编译红；VFS 随后增加必选、对象安全且无两阶段默认实现的 `DirNodeOps::create_symlink`，通用 `create(NodeType::Symlink)` 在进入 backend 前返回 `InvalidInput`。ext4 adapter 一次调用 owned `create_symlink`，tmpfs 在目录项可见前预留容量并初始化 target，overlay copy-up 先读取 target 再一次创建 upper link；FAT/read-only/pseudofs 明确拒绝。`FileNodeOps::set_symlink`、rsext4 `set_symlink_target` 及其不符合 Linux 的 replace 测试均已删除。host VFS 回归验证 generic create 零 backend 调用且 typed create 首次即可读完整 target；tmpfs axtest 验证容量失败后名称不存在且成功路径首次即可读取 final target；成功路径先初始化 sleepable symlink mutex，再以 IRQ-safe directory lock 二次检查并发布，避免把阻塞锁带入 atomic context，竞争失败则回滚 inode 与容量。LoongArch64 原 CI panic 的完整 grouped QEMU 命令现为 system 424/424、总计 2/2。owned 59/60 boundary 回归继续验证 fast/long 编码。Linux v7.1 依据为 `fs/namei.c`、`fs/ext4/namei.c` |
 | `typed-rename-flags` | path-based rename 先删除目标再移动，same-path 会删除自身；Starry 在 syscall 层预查 `NOREPLACE` 后丢弃 flags，存在 TOCTOU；无 `EXCHANGE` | `old/new parent inode + raw FileName + RenameOptions -> RenameOutcome`；same-inode no-op，`NOREPLACE` 与 mutation 同锁判定，`EXCHANGE` 原位交换，替换目标沿 orphan/reap 生命周期处理 | namespace/VFS boundary | 进行中：same-path 确定性红测证明旧实现返回 `NotFound` 且删除源项；owned core 已支持 raw-name `REPLACE`/`NOREPLACE`/`EXCHANGE`，覆盖非 UTF-8 跨目录交换、目录环、跨父目录 `..`/nlink 和替换目标延迟 reap。VFS、ax-fs-ng 与 Starry 已贯通不可构造非法组合的 typed options，ext4 adapter 按真实 `RenameOutcome` 发布 zero-link。普通 rename 现按 Linux extent/no-quota 的 `2 * 24 + 12 + 2 = 62` credits，exchange 按 `2 * 24 + 2 * 12 + 2 = 74` credits，共同发布两侧 dentry/parent inode、source/target inode、目录 `..`、orphan head 及可能变化的 allocation metadata；1 KiB journal 会通过 multi-descriptor writer 保持单 transaction。`WHITEOUT`、tmpfs/overlay 的完整 exchange/whiteout 与 legacy path/split-state 删除仍为红项 |
-| `classic-orphan-recovery` | `s_last_orphan`/`i_dtime` 只有 codec，无 add/del、mount recovery 或链损坏防护 | replay 后校验经典 orphan 链；zero-link inode 可重启回收；范围、未分配 inode 与环明确拒绝 | inode/JBD2 lifecycle | 进行中：zero-link unlink 头插经典链，显式 reap 支持头/中间节点摘除并在最终 bitmap free 前保留 orphan-next；dentry、target nlink、parent metadata 与 orphan-head publication 现已统一进入 unlink/rmdir 的 24-credit transaction。不干净提交后的两节点链在 JBD2 replay 后、root/`lost+found` 修复前完成回收，自环确定性镜像拒绝挂载。linked extent truncate 现在按已提交 `i_size` 强制清理 EOF 后映射，成功后才摘链；三块 extent/一块 size 的确定性磁盘红测证明旧 mount 返回 `orphan:linked_inode_recovery`，同一测试现保留 nlink=1、仅 logical block 0 且完成摘链。legacy indirect final unlink 现仅发布 zero-link/orphan，保留 data 与 pointer blocks 供 open inode 使用，显式 reap 才释放 mapping。非空 mapping 继续按 Linux `ext4_blocks_for_truncate + 6 - 3`（无 quota）计算上界；restart 已清空 mapping 后的最终 reap 按真实 touched block 收敛到 5 credits，覆盖目标/前驱 inode table、inode bitmap、GDT 与 superblock。非头 orphan 的精确 5-credit 测试验证 predecessor rewrite，block-bitmap 写后报错测试验证物理前像恢复，跨 direct/single/double/triple 的 zero-link legacy reap 则验证 mapping transaction 与最终 inode transaction 分离。Linux image 内的 linked legacy truncate 与 zero-link legacy reap 经非干净 journal commit、重挂载恢复后验证 mapping/accounting/content，并通过 `e2fsck -fn`。local-value external xattr block 现于同一 reap transaction 内按 refcount 减引用或 revoke/free，并在 bitmap 写故障时完整保留 orphan、`i_file_acl` 与 allocation。orphan-file feature、EA-inode value 引用删除、quota credits 与完整 orphan fault matrix 仍为红项，不能宣称 Linux crash parity。Linux v7.1 依据为 `fs/ext4/inode.c:169-334`、`fs/ext4/truncate.h:30-50`、`fs/ext4/orphan.c:90-187,321-376`、`fs/ext4/ialloc.c:255-345`、`fs/ext4/xattr.c:2906-3014` |
+| `classic-orphan-recovery` | `s_last_orphan`/`i_dtime` 只有 codec，无 add/del、mount recovery 或链损坏防护 | replay 后校验经典 orphan 链；zero-link inode 可重启回收；范围、未分配 inode 与环明确拒绝 | inode/JBD2 lifecycle | 进行中：zero-link unlink 头插经典链，显式 reap 支持头/中间节点摘除并在最终 bitmap free 前保留 orphan-next；dentry、target nlink、parent metadata 与 orphan-head publication 现已统一进入 unlink/rmdir 的 24-credit transaction。不干净提交后的两节点链在 JBD2 replay 后、root/`lost+found` 修复前完成回收，自环确定性镜像拒绝挂载。linked extent truncate 现在按已提交 `i_size` 强制清理 EOF 后映射，成功后才摘链；三块 extent/一块 size 的确定性磁盘红测证明旧 mount 返回 `orphan:linked_inode_recovery`，同一测试现保留 nlink=1、仅 logical block 0 且完成摘链。legacy indirect final unlink 现仅发布 zero-link/orphan，保留 data 与 pointer blocks 供 open inode 使用，显式 reap 才释放 mapping。非空 mapping 继续按 Linux `ext4_blocks_for_truncate + 6 - 3`（无 quota）计算上界；restart 已清空 mapping 后的最终 reap 按真实 touched block 收敛到 5 credits，覆盖目标/前驱 inode table、inode bitmap、GDT 与 superblock。非头 orphan 的精确 5-credit 测试验证 predecessor rewrite，block-bitmap 写后报错测试验证物理前像恢复，跨 direct/single/double/triple 的 zero-link legacy reap 则验证 mapping transaction 与最终 inode transaction 分离。Linux image 内的 linked legacy truncate 与 zero-link legacy reap 经非干净 journal commit、重挂载恢复后验证 mapping/accounting/content，并通过 `e2fsck -fn`。local-value external xattr block 现于同一 reap transaction 内按 refcount 减引用或 revoke/free，并在 bitmap 写故障时完整保留 orphan、`i_file_acl` 与 allocation。orphan-file feature、EA-inode value 引用删除、quota credits 与完整 orphan fault matrix 仍为红项，不能宣称 Linux crash parity。Linux v7.1 依据为 `fs/ext4/inode.c`、`fs/ext4/truncate.h`、`fs/ext4/orphan.c`、`fs/ext4/ialloc.c`、`fs/ext4/xattr.c` |
 | `mkdir-publish-rollback` | child inode/block finalize 后 parent dentry 扩块失败会泄漏分配，并提前增加 parent nlink/used-dirs | 失败时恢复 child allocation、parent link count 与 group directory accounting；最终由统一 journal handle 保证原子性 | namespace/JBD2 boundary | 绿：确定性 ENOSPC 红测中旧实现把 root nlink 从 3 留成 4 且消耗最后 block/inode；resolved-parent primitive 先使同一测试转绿。后续目录块写后故障又证明 best-effort cleanup 会把失败的名称留在磁盘；mkdir 现由 39-credit filesystem transaction 共同拥有 child inode/dir block、parent dentry/inode、allocation bitmap/GDT/superblock 与 `used_dirs`，同一红测重挂载后全部恢复 |
 | `feature-gate-strict` | unknown incompat、ENCRYPT、RW QUOTA 均被接受 | incompat 拒绝；未实现 RO_COMPAT 只允许 RO | codec/feature negotiation | 绿：四项确定性单测完成红绿验证 |
 | `device-sector-map` | filesystem block number 被直接作为 device sector，512-byte 设备只读一个 sector | typed `SectorId` + private filesystem-block mapper | portable I/O core | 绿：512-byte sector 聚合与 byte-offset superblock 红绿回归通过 |
 | `filesystem-block-dynamic` | core 算法仍大量引用 4 KiB 常量 | 1/2/4 KiB geometry、cache、JBD2 与 codec 全部按 mount 派生 | codec/geometry | 绿：Linux 与 rsext4 各自创建的 1/2/4 KiB 镜像均在 512-byte sector 上完成跨块写入、rename、remount 与 `e2fsck -fn`；cache、extent 与 JBD2 buffer 均按 mount geometry 分配 |
-| `htree-hash-checked-lookup` | legacy/half-MD4/TEA 是占位算法，未知版本静默返回 0；root parser 用 Rust `size_of` 和目录 inode 号推导磁盘偏移，合法 Linux root 也无法读取；count/limit、depth、entry order、logical block range、cycle 与 checksum 未形成统一 checked path | hash version/depth 只来自 root block；signed/unsigned hash 与 Linux 7.1 一致并返回 major/minor typed result；root/internal block 按固定 wire offset、动态 block size和 dx tail 校验；坏 index 只能走 Linux 的 `ERR_BAD_DX_DIR` linear fallback，I/O/checksum 错误必须保留 typed cause | directory mapping/codec | 进行中：`debugfs dx_hash` 的 default seed、UUID seed、UTF-8 signed/unsigned 六版本向量固定了旧算法红测；同一测试现全部通过。SIPHASH wire version 可被 checked parser 识别，但 fscrypt/casefold prepared-name 与 key hash 尚未实现，相关 incompat feature 在可写 mount negotiation 即被拒绝，不能把格式识别误报为算法支持。合法 4 KiB root 红测证明旧 parser 返回 corruption；当前 root/internal parser 校验 dot/dotdot、reserved/info/version/flags/depth、metadata-csum tail limit、count、排序、Linux 28-bit block 与重复 path，并解码 64 KiB index fake-dirent 的 compact `rec_len`。lookup 采用 root version 和 superblock signedness policy，index/leaf checksum failure 不再降级；mount negotiation 拒绝 default hash 6 或更大值，RW indexed mount 在 policy flags 均为空时持久化 reference architecture 的 signed policy，避免 core 语义依赖 OS/compiler plain-char signedness。collision continuation 按 low-bit 边界推进 frame，覆盖同一 index leaf、跨 parent index、真实 I/O 传播与准确 dirent byte offset；完整 probe 未找到不再触发全目录 linear scan。写侧已完成单块 linear→HTree conversion、existing-leaf insert、按 Linux 记录长度平衡的 leaf split、collision continuation separator、root promotion 和通用多级 internal growth/split planner；planner 从 leaf parent 向 root 寻找首个有容量的祖先，全部满时提升 root，separator 只保留在 parent。Linux `e2fsck -D` fixture 经 9000 项长名称增长后报告 `Indirect levels: 1`，重挂载与 `e2fsck -fn` clean。post-write fault 分别证明 conversion 与 split 的 inode/data/bitmap/index 更新整体回滚。indexed delete/rename 只压缩 leaf dirent 并保持 index 高度与分配，符合 Linux 不做 deletion rebalance 的状态机。HTree readdir 现只遍历 checked leaf，按完整 hash 排序并以 typed cursor 保存 collision ordinal；64-bit Linux cookie/EOF 与外部 seek reset 已贯通 VFS、Starry 和 ArceOS。目录 `i_size_high` 现按 Linux 仅在 `LARGEDIR` 启用时参与解码；当前 writable feature mask 仍拒绝 `LARGEDIR`，因此 feature-enabled 的二级 internal split、真实多级 image differential 与 rollback/credit matrix 仍为红项。casefold/fscrypt name preparation 仍为红项。Linux v7.1 依据为 `fs/ext4/dir.c:346-410,526-637`、`fs/ext4/hash.c:1-322`、`fs/ext4/namei.c:537-540,771-1030,1280-1359,1843-2032,2209-2343,2473-2746`、`fs/ext4/super.c:5230-5271`、`fs/ext4/ext4.h:2483-2525,2635-2650,3413-3429` |
+| `htree-hash-checked-lookup` | legacy/half-MD4/TEA 是占位算法，未知版本静默返回 0；root parser 用 Rust `size_of` 和目录 inode 号推导磁盘偏移，合法 Linux root 也无法读取；count/limit、depth、entry order、logical block range、cycle 与 checksum 未形成统一 checked path | hash version/depth 只来自 root block；signed/unsigned hash 与 Linux 7.1 一致并返回 major/minor typed result；root/internal block 按固定 wire offset、动态 block size和 dx tail 校验；坏 index 只能走 Linux 的 `ERR_BAD_DX_DIR` linear fallback，I/O/checksum 错误必须保留 typed cause | directory mapping/codec | 进行中：`debugfs dx_hash` 的 default seed、UUID seed、UTF-8 signed/unsigned 六版本向量固定了旧算法红测；同一测试现全部通过。SIPHASH wire version 可被 checked parser 识别，但 fscrypt/casefold prepared-name 与 key hash 尚未实现，相关 incompat feature 在可写 mount negotiation 即被拒绝，不能把格式识别误报为算法支持。合法 4 KiB root 红测证明旧 parser 返回 corruption；当前 root/internal parser 校验 dot/dotdot、reserved/info/version/flags/depth、metadata-csum tail limit、count、排序、Linux 28-bit block 与重复 path，并解码 64 KiB index fake-dirent 的 compact `rec_len`。lookup 采用 root version 和 superblock signedness policy，index/leaf checksum failure 不再降级；mount negotiation 拒绝 default hash 6 或更大值，RW indexed mount 在 policy flags 均为空时持久化 reference architecture 的 signed policy，避免 core 语义依赖 OS/compiler plain-char signedness。collision continuation 按 low-bit 边界推进 frame，覆盖同一 index leaf、跨 parent index、真实 I/O 传播与准确 dirent byte offset；完整 probe 未找到不再触发全目录 linear scan。写侧已完成单块 linear→HTree conversion、existing-leaf insert、按 Linux 记录长度平衡的 leaf split、collision continuation separator、root promotion 和通用多级 internal growth/split planner；planner 从 leaf parent 向 root 寻找首个有容量的祖先，全部满时提升 root，separator 只保留在 parent。Linux `e2fsck -D` fixture 经 9000 项长名称增长后报告 `Indirect levels: 1`，重挂载与 `e2fsck -fn` clean。post-write fault 分别证明 conversion 与 split 的 inode/data/bitmap/index 更新整体回滚。indexed delete/rename 只压缩 leaf dirent 并保持 index 高度与分配，符合 Linux 不做 deletion rebalance 的状态机。HTree readdir 现只遍历 checked leaf，按完整 hash 排序并以 typed cursor 保存 collision ordinal；64-bit Linux cookie/EOF 与外部 seek reset 已贯通 VFS、Starry 和 ArceOS。目录 `i_size_high` 现按 Linux 仅在 `LARGEDIR` 启用时参与解码；当前 writable feature mask 仍拒绝 `LARGEDIR`，因此 feature-enabled 的二级 internal split、真实多级 image differential 与 rollback/credit matrix 仍为红项。casefold/fscrypt name preparation 仍为红项。Linux v7.1 依据为 `fs/ext4/dir.c`、`fs/ext4/hash.c`、`fs/ext4/namei.c`、`fs/ext4/super.c`、`fs/ext4/ext4.h` |
 | `linux-default-rocompat-rw` | Linux mkfs 默认设置 `HUGE_FILE`、`DIR_NLINK` | 完整读写语义后纳入 writable mask | inode/namespace lifecycle | 绿：`HUGE_FILE` 统一按 Linux 的 32-bit sector、48-bit sector、filesystem-block 三级 codec 读写，所有 block accounting mutation 使用 checked 状态转换；`DIR_NLINK` 覆盖 65000 到 sentinel 1、连续 mutation 保持 sentinel、无 feature 时分配前返回 `EMLINK`；Linux 默认 feature 的 1/2/4 KiB round-trip、extent/JBD2 replay 与 `e2fsck -fn` 全部通过 |
 | `journal-no-direct-fallback` | uninitialized JBD2 performs home write | typed journal-aborted error | JBD2 rewrite | 绿：确定性红绿回归已覆盖 write/umount |
-| `jbd2-handle-credits` | metadata queue 满时会在 bulk mutation 中间自动提交，失败后 pending image 无法恢复 | operation handle 预留 credits，禁止 operation 内切 transaction，并在 operation error 时恢复 running queue | JBD2 rewrite | 进行中：私有 handle 按 distinct metadata block 计 credit，handle 内禁止 auto-commit，credit overrun/error 恢复 queue snapshot；journal-disabled handle 也保存并逆序恢复 physical preimage。单 transaction 上限现按 Linux 的 `j_total_len / 3` 再扣 descriptor/commit bookkeeping，首次 dirty 前必须先回收出完整 `j_max_transaction_buffers` 空间；best-effort extend 只检查 running transaction 上限，不等待 log space，失败保持原 reservation 并显式返回 restart-required。descriptor continuation、running/committed/checkpoint owner、durable tail 与环绕写入已有确定性覆盖。nested same-owner start 已按 Linux `h_ref` 语义复用 outer handle 与既有 credit budget；nested error 只恢复该 scope 的 queue/revoke/touched snapshot，outer owner 继续有效。revoke record 已拆为 requested/remaining 独立预算，handle start/extend 仅按 revoke-block ceil 与跨 descriptor 边界的差额占用 buffer credits；未申请或超额 revoke 会在发布前返回 typed `NoSpace`，nested rollback 同时恢复 revoke table 与 remaining credits。reserved handle 由 journal-owned ledger 与 non-copy typed ID 表达，单项和全局 reservation 受半 transaction 上限约束；ordinary start/raw metadata 会保留 detached credits，`start_reserved` 消费 token 后不 commit/checkpoint。首个真实 owner已迁移 unwritten extent 的 prepare→data I/O→conversion。通用 scope-boundary `restart_transaction` 现先提交旧 transaction，再将下一 filesystem step 附着到新 transaction，并保持 detached reserved owner；extent 与 legacy truncate/reap/punch 已作为真实调用方迁移。commit owner 现显式执行受检 `Running → Locked → Switch`，active scoped handle 在进入 Locked 前返回 typed `Busy`，旧 owner 到达 Switch 后才转移给 committing transaction，新 running owner 再回到 Running。metadata mutation 已从可泄漏的 `read_block → buffer_mut → write_block` 三段式迁移为 closure-owned `update_block`；closure/write failure 丢弃未发布 image，commit/checkpoint 在 phase 变化或 home write 前拒绝任何遗留 dirty edit，cache refresh 只 discard clean derived image。已迁移 xattr、namespace、rename、preallocation、shift、range removal。大 shift、其他 extent split/merge、`journal_lock_updates` 特殊操作 barrier 与跨执行流并发 handle 仍是红项。Linux v7.1 依据为 `fs/jbd2/transaction.c:184-907,1883-2025`、`fs/jbd2/journal.c:1397-1452`、`fs/jbd2/commit.c:466-605,631-738`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/recovery.c:198-761` |
-| `inode-allocator-reserved-range` | `s_first_ino - 1` 被当成每个 block group 的 bitmap 起点，非首组前若干合法 inode 永远不会被分配 | 仅 group 0 跳过全局 reserved inode；其余组从 relative index 0 扫描 | allocator service | 绿：全空 group 1、16 inodes/group、`s_first_ino=11` 的确定性红测证明旧实现返回 relative index 10/global inode 27；同一测试现返回 relative index 0/global inode 17。bitmap publication、group/super free counter、`itable_unused` 与 rollback owner 未改变。Linux v7.1 依据为 `fs/ext4/ialloc.c:725-735,1073-1083` |
-| `jbd2-writer-revoke-checkpoint` | commit 同步覆盖 home block，detach 只删除当前 pending image；较早 committed metadata 可在 block 复用后覆盖新 owner | running、committed 与 checkpoint owner 分离；writer 生成 Linux revoke；descriptor/payload preflush 后 FUA commit，home write durable 后 FUA tail | JBD2 lifecycle/revoke | 进行中（writer revoke、bounded lifecycle 与 tail reclamation 子路径已绿）：commit 不再同步 checkpoint，committed image 在 owner 内可见；csum-v3/64-bit revoke 与三阶段 replay 保护 block reuse。checkpoint 反向扫描选定前缀，同一 home block 只写最新可见 image；一次 home flush 后以一次 FUA 发布新 tail。tail FUA 失败时恢复内存 superblock 且不 drain queue，部分 checkpoint 和 ring wrap 后剩余 transaction 可由 replay 恢复。当前仍是同步单 owner，独立 committing transaction、并发 handle、external journal 与完整 persistence-boundary fault matrix 仍为红项。Linux v7.1 依据为 `fs/jbd2/commit.c:114-175,538-605`、`fs/jbd2/checkpoint.c:126-353,559-729`、`fs/jbd2/revoke.c:300-721`、`fs/jbd2/journal.c:1056-1091` |
+| `jbd2-handle-credits` | metadata queue 满时会在 bulk mutation 中间自动提交，失败后 pending image 无法恢复 | operation handle 预留 credits，禁止 operation 内切 transaction，并在 operation error 时恢复 running queue | JBD2 rewrite | 进行中：私有 handle 按 distinct metadata block 计 credit，handle 内禁止 auto-commit，credit overrun/error 恢复 queue snapshot；journal-disabled handle 也保存并逆序恢复 physical preimage。单 transaction 上限现按 Linux 的 `j_total_len / 3` 再扣 descriptor/commit bookkeeping，首次 dirty 前必须先回收出完整 `j_max_transaction_buffers` 空间；best-effort extend 只检查 running transaction 上限，不等待 log space，失败保持原 reservation 并显式返回 restart-required。descriptor continuation、running/committed/checkpoint owner、durable tail 与环绕写入已有确定性覆盖。nested same-owner start 已按 Linux `h_ref` 语义复用 outer handle 与既有 credit budget；nested error 只恢复该 scope 的 queue/revoke/touched snapshot，outer owner 继续有效。revoke record 已拆为 requested/remaining 独立预算，handle start/extend 仅按 revoke-block ceil 与跨 descriptor 边界的差额占用 buffer credits；未申请或超额 revoke 会在发布前返回 typed `NoSpace`，nested rollback 同时恢复 revoke table 与 remaining credits。reserved handle 由 journal-owned ledger 与 non-copy typed ID 表达，单项和全局 reservation 受半 transaction 上限约束；ordinary start/raw metadata 会保留 detached credits，`start_reserved` 消费 token 后不 commit/checkpoint。首个真实 owner已迁移 unwritten extent 的 prepare→data I/O→conversion。通用 scope-boundary `restart_transaction` 现先提交旧 transaction，再将下一 filesystem step 附着到新 transaction，并保持 detached reserved owner；extent 与 legacy truncate/reap/punch 已作为真实调用方迁移。commit owner 现显式执行受检 `Running → Locked → Switch`，active scoped handle 在进入 Locked 前返回 typed `Busy`，旧 owner 到达 Switch 后才转移给 committing transaction，新 running owner 再回到 Running。metadata mutation 已从可泄漏的 `read_block → buffer_mut → write_block` 三段式迁移为 closure-owned `update_block`；closure/write failure 丢弃未发布 image，commit/checkpoint 在 phase 变化或 home write 前拒绝任何遗留 dirty edit，cache refresh 只 discard clean derived image。已迁移 xattr、namespace、rename、preallocation、shift、range removal。大 shift、其他 extent split/merge、`journal_lock_updates` 特殊操作 barrier 与跨执行流并发 handle 仍是红项。Linux v7.1 依据为 `fs/jbd2/transaction.c`、`fs/jbd2/journal.c`、`fs/jbd2/commit.c`、`fs/jbd2/checkpoint.c`、`fs/jbd2/revoke.c`、`fs/jbd2/recovery.c` |
+| `inode-allocator-reserved-range` | `s_first_ino - 1` 被当成每个 block group 的 bitmap 起点，非首组前若干合法 inode 永远不会被分配 | 仅 group 0 跳过全局 reserved inode；其余组从 relative index 0 扫描 | allocator service | 绿：全空 group 1、16 inodes/group、`s_first_ino=11` 的确定性红测证明旧实现返回 relative index 10/global inode 27；同一测试现返回 relative index 0/global inode 17。bitmap publication、group/super free counter、`itable_unused` 与 rollback owner 未改变。Linux v7.1 依据为 `fs/ext4/ialloc.c` |
+| `jbd2-writer-revoke-checkpoint` | commit 同步覆盖 home block，detach 只删除当前 pending image；较早 committed metadata 可在 block 复用后覆盖新 owner | running、committed 与 checkpoint owner 分离；writer 生成 Linux revoke；descriptor/payload preflush 后 FUA commit，home write durable 后 FUA tail | JBD2 lifecycle/revoke | 进行中（writer revoke、bounded lifecycle 与 tail reclamation 子路径已绿）：commit 不再同步 checkpoint，committed image 在 owner 内可见；csum-v3/64-bit revoke 与三阶段 replay 保护 block reuse。checkpoint 反向扫描选定前缀，同一 home block 只写最新可见 image；一次 home flush 后以一次 FUA 发布新 tail。tail FUA 失败时恢复内存 superblock 且不 drain queue，部分 checkpoint 和 ring wrap 后剩余 transaction 可由 replay 恢复。当前仍是同步单 owner，独立 committing transaction、并发 handle、external journal 与完整 persistence-boundary fault matrix 仍为红项。Linux v7.1 依据为 `fs/jbd2/commit.c`、`fs/jbd2/checkpoint.c`、`fs/jbd2/revoke.c`、`fs/jbd2/journal.c` |
 | `jbd2-abort-sticky` | descriptor/payload flush 失败只返回一次 I/O error，随后仍可从已推进的 ring cursor 重试、继续 metadata write 或关闭 journal 绕过错误 | 首次提交/恢复错误保留原始 cause；同一 mount 的后续 mutation、handle、flush、unmount 全部稳定拒绝，并持久化 journal errno | JBD2 rewrite | 进行中：所有 auto-commit、handle precommit 与 unmount commit 已收口到单一 transaction owner；任一 commit/persistence failure 锁存首个 cause，本次返回原始 typed error，后续 write/handle/flush/unmount/reinstall 返回 `JournalAborted`。未发布 mutable cache image 属于 operation ownership 错误，在任何 journal I/O 前返回 typed `Busy`，不会伪装成 persistence abort。journal mode 切换改为 fallible state transition：abort 时拒绝，pending queue 或 active handle 时返回 busy，不能再关闭 journal 后绕过未提交 metadata。replay 现在以 typed `JournalReplayPhase` 区分 initialize/scan/revoke/replay/persist，保留 I/O、checksum 与 corruption 原始 domain cause、事务 restart 位置和 progress 持久化次错；mount 返回首错并通过 `Observer` 发送完整 typed failure，不再统一伪装为 corruption，越界 `s_start` 也不再清日志报成功。descriptor read 确定性红测已在旧实现证明 `Corrupted != Io`，payload read、home write、checksum+flush 首错优先、final flush 与 replay superblock write fault 均有定点测试。首次 abort 同时以私有 JBD2 wire code 持久化 `s_errno`，重新计算 checksum，并通过原生 FUA 或明确的 write-then-flush fallback 等待 durability；两种能力都缺失时返回 unsupported，record 失败单独保存且不覆盖首次 cause。当前 single-payload transaction 的 open-superblock、descriptor、payload、commit、checkpoint、close-superblock 六次 write 与四个 flush barrier 已逐项注入并验证 sticky first-error。recovery 已拆为不写 home block 的完整 committed-range scan、按 transaction ID 建表的 revoke pass、以及 sequence-aware replay pass；`T1 payload + T2 revoke` 的确定性红测证明旧 transaction-local set 会错误覆盖 home block，同一测试现保留旧值，反向 `T1 revoke + T2 payload` 与 `u32` TID wrap 比较也已覆盖。精细 on-disk error mapping、scan/pass-end 与 fast-commit 一致性、`ACK_ERR`/shutdown、ext4 `continue`/`remount-ro` policy，以及 multi-payload checkpoint/revoke 的完整 fault matrix 仍为红项 |
 | `jbd2-csum-v3-write-replay` | writer emits legacy tags while accepted CSUM_V3/64BIT journals require tag3/high block numbers | Linux-compatible descriptor tags and checksum followed by self/Linux replay | JBD2 rewrite | 绿：writer 生成 tag3/64-bit block number、escaped payload CRC32C、descriptor/commit checksum；replay 在任何 home write 前校验 commit 与全部非 revoke payload，并校验 descriptor/revoke tail；Linux `debugfs` 多块事务与逐边界损坏测试通过；mkfs 将 ext4 `metadata_csum`/`64bit` 映射为对应 JBD2 feature |
-| `jbd2-partial-commit-replay` | replay 只接受完整 commit block CRC32C，拒绝 Linux 会按已持久化 commit header 接受的零尾 partial-write 事务 | CSUM_V2/V3 完整校验失败后，以 60-byte wire header 和全零 block tail 重算；匹配则仍作为 committed transaction 回放 | JBD2 checksum/recovery | 绿：确定性用例只污染 commit header 后第一个 tail byte，旧实现返回 `ChecksumMismatch` 且不写 home block；同一测试现完成 payload replay。完整 checksum 匹配时通过短路保持单次 CRC，COMPAT/无 checksum 模式不进入回退。Linux v7.1 依据为 `include/linux/jbd2.h:167-177`、`fs/jbd2/recovery.c:431-468,820-878` |
-| `jbd2-stale-checksum-tail` | PASS_SCAN 遇到 descriptor/revoke/commit checksum 失败时立即 abort，无法区分当前 transaction 损坏与 lazy journal initialization 遗留的 stale block；writer 同时把 commit time 固定写 0 | scan 只延迟 block-checksum failure，在结构可解析的 commit block 上按 `commit_time < last_commit_time` 识别 stale tail，相等或递增仍拒绝；真实 writer 由 filesystem clock 写入 seconds/nanoseconds | JBD2 commit/recovery | 绿：CSUM_V3 两个 transaction 的 descriptor、commit 和 revoke 三种定点损坏矩阵均证明 10→9 只回放前一个 transaction；旧实现均返回 incomplete，当前实现正常结束 scan。显式 10→10/11 三类损坏矩阵均保持 `ChecksumMismatch`。32-byte block 改为 typed corruption；纯 header+零尾 descriptor 明确 clean-end，已有 tag 却无 `LAST_TAG` 则拒绝，不再 panic/接受相邻伪 commit。注入时钟用例证明非空 commit 的 `h_commit_sec/h_commit_nsec` 精确写入，负秒/越界纳秒在 owner switch 前返回 `InvalidInput`。Linux v7.1 依据为 `fs/jbd2/commit.c:114-144`、`fs/jbd2/recovery.c:588-645,703-721,794-904` |
+| `jbd2-partial-commit-replay` | replay 只接受完整 commit block CRC32C，拒绝 Linux 会按已持久化 commit header 接受的零尾 partial-write 事务 | CSUM_V2/V3 完整校验失败后，以 60-byte wire header 和全零 block tail 重算；匹配则仍作为 committed transaction 回放 | JBD2 checksum/recovery | 绿：确定性用例只污染 commit header 后第一个 tail byte，旧实现返回 `ChecksumMismatch` 且不写 home block；同一测试现完成 payload replay。完整 checksum 匹配时通过短路保持单次 CRC，COMPAT/无 checksum 模式不进入回退。Linux v7.1 依据为 `include/linux/jbd2.h`、`fs/jbd2/recovery.c` |
+| `jbd2-stale-checksum-tail` | PASS_SCAN 遇到 descriptor/revoke/commit checksum 失败时立即 abort，无法区分当前 transaction 损坏与 lazy journal initialization 遗留的 stale block；writer 同时把 commit time 固定写 0 | scan 只延迟 block-checksum failure，在结构可解析的 commit block 上按 `commit_time < last_commit_time` 识别 stale tail，相等或递增仍拒绝；真实 writer 由 filesystem clock 写入 seconds/nanoseconds | JBD2 commit/recovery | 绿：CSUM_V3 两个 transaction 的 descriptor、commit 和 revoke 三种定点损坏矩阵均证明 10→9 只回放前一个 transaction；旧实现均返回 incomplete，当前实现正常结束 scan。显式 10→10/11 三类损坏矩阵均保持 `ChecksumMismatch`。32-byte block 改为 typed corruption；纯 header+零尾 descriptor 明确 clean-end，已有 tag 却无 `LAST_TAG` 则拒绝，不再 panic/接受相邻伪 commit。注入时钟用例证明非空 commit 的 `h_commit_sec/h_commit_nsec` 精确写入，负秒/越界纳秒在 owner switch 前返回 `InvalidInput`。Linux v7.1 依据为 `fs/jbd2/commit.c`、`fs/jbd2/recovery.c` |
 | `jbd2-legacy-checksum-write-replay` | validator 拒绝 `FEATURE_COMPAT_CHECKSUM`/`CSUM_V2`，非 CSUM_V3 writer 把 tag/commit checksum 写成零，replay 也不校验旧格式 transaction | checksum mode 必须互斥协商；compat checksum 使用 descriptor+payload 的 raw CRC32-BE；CSUM_V2 使用 10/14-byte tag、低 16-bit payload CRC32C 及 descriptor/revoke/commit block checksum | JBD2 codec/commit/recovery | 绿：私有 typed mode 统一 `None`/`CompatChecksum`/`CsumV2`/`CsumV3`，拒绝混合 feature 与 checksum type 错配；writer/replay 覆盖 compat aggregate、CSUM_V2 32/64-bit tag padding、descriptor/revoke tail、commit 与 payload corruption。e2fsprogs `journal_open -c -v 2` 生成的多块 compat transaction 已由 Linux/debugfs 与 rsext4 分别 replay，rsext4 结果通过 `e2fsck -fn`；现代 e2fsprogs 不直接生成 legacy CSUM_V2，因此该模式由 Linux 7.1 源码布局和独立合成 corruption vectors 覆盖。external journal、async commit 与 fast commit 仍为红项 |
-| `jbd2-superblock-checked-codec` | journal superblock 对短于 1024-byte 的块直接 slice/`unwrap` panic，且错误拒绝 Linux V1 | mount 只使用 checked 1024-byte prefix codec；V1/V2 按版本分别校验，V1 不读取或改写 V2 extension fields | JBD2 codec/mount | 绿：deterministic 编译红测先证明 checked decode/encode 缺失，同一 0/1023-byte matrix 现返回 typed corruption；V1 validator 红测证明旧实现以 `jbd2:superblock_header` 拒绝，现有 validator、真实 mount 与 metadata commit 均忽略 V2 feature/UUID/checksum 尾部，sequence/start 写回保持尾部原值。错误公开名 `JournalSuperBllockS` 已破坏性改为 `JournalSuperBlock`。Linux v7.1 依据为 `include/linux/jbd2.h:226-277,1328-1389`、`fs/jbd2/journal.c:1309-1394,1458-1507` |
-| `extent-checked-codec` | raw extent nodes are sorted after parsing and malformed roots/children can be treated as holes | checked structural validation preserves on-disk order and propagates corruption | mapping rewrite | 绿：root/child codec 检查 magic、Linux on-disk depth 上限 5、capacity、非空 index、logical/physical overflow 与 leaf/index ordering；确定性红测证明旧 parser 会接受结构合法但 depth=6 的 index，同一测试现固定 depth=5 接受、6/32/33 拒绝，parse、递归校验与 split/promotion 共用同一上限。`EXT4_EXTENTS_FL` 是唯一格式判据，坏 magic 不再降级为 legacy/hole；读取、查找、插入、删除、HTree 和 block resolver 均传播 typed error，不再排序或吞错；hard-link parent corruption 完成确定性红绿验证。Linux v7.1 依据为 `ext4_extents.h:86-87`、`extents.c:491-494,900-906` |
+| `jbd2-superblock-checked-codec` | journal superblock 对短于 1024-byte 的块直接 slice/`unwrap` panic，且错误拒绝 Linux V1 | mount 只使用 checked 1024-byte prefix codec；V1/V2 按版本分别校验，V1 不读取或改写 V2 extension fields | JBD2 codec/mount | 绿：deterministic 编译红测先证明 checked decode/encode 缺失，同一 0/1023-byte matrix 现返回 typed corruption；V1 validator 红测证明旧实现以 `jbd2:superblock_header` 拒绝，现有 validator、真实 mount 与 metadata commit 均忽略 V2 feature/UUID/checksum 尾部，sequence/start 写回保持尾部原值。错误公开名 `JournalSuperBllockS` 已破坏性改为 `JournalSuperBlock`。Linux v7.1 依据为 `include/linux/jbd2.h`、`fs/jbd2/journal.c` |
+| `extent-checked-codec` | raw extent nodes are sorted after parsing and malformed roots/children can be treated as holes | checked structural validation preserves on-disk order and propagates corruption | mapping rewrite | 绿：root/child codec 检查 magic、Linux on-disk depth 上限 5、capacity、非空 index、logical/physical overflow 与 leaf/index ordering；确定性红测证明旧 parser 会接受结构合法但 depth=6 的 index，同一测试现固定 depth=5 接受、6/32/33 拒绝，parse、递归校验与 split/promotion 共用同一上限。`EXT4_EXTENTS_FL` 是唯一格式判据，坏 magic 不再降级为 legacy/hole；读取、查找、插入、删除、HTree 和 block resolver 均传播 typed error，不再排序或吞错；hard-link parent corruption 完成确定性红绿验证。Linux v7.1 依据为 `ext4_extents.h`、`extents.c` |
 | `extent-empty-index` | crafted empty or malformed internal child can panic | corruption error, no mutation | mapping rewrite | 绿：root 与 external child 在 mutation 前统一 checked decode；空 index、坏 child 与超过 inline root 容量均返回 corruption，确定性测试验证 inode 不被截断或修改 |
-| `inode-checked-codec` | `Ext4Inode::from_disk_bytes` 对小于 128 bytes 的输入直接 slice panic，且非法 `i_extra_isize` 被当作字段不存在 | inode cache 在读取任何字段前检查 fixed record 长度、extra region 边界和 4-byte 对齐，并返回 typed corruption | inode codec | 绿：新增的 deterministic 编译红测先证明 checked decode 边界缺失；同一测试现覆盖 0/127/129-byte record、越界与未对齐 `i_extra_isize`，生产 inode cache 只调用 checked decoder。Linux v7.1 依据为 `fs/ext4/inode.c:5275-5287` |
-| `group-desc-checked-codec` | 非 32-byte group descriptor 一律按 64-byte 解码，40/48/56-byte 损坏 geometry 可触发 slice panic；非 64-bit 镜像错误采用磁盘 `s_desc_size`；大于 64-byte 的 Linux 合法 descriptor 校验和与写回丢失扩展尾部 | mount 仅走 checked decoder；非 64-bit 固定 32 byte，64-bit 仅接受 64..1024 的 2 次幂；checksum 覆盖完整 record，写回保留 byte 64 后扩展区 | group descriptor codec/geometry | 绿：deterministic 编译红测先证明 `decode_checked` 缺失；同一 size matrix 现拒绝 0/31/33/63/65/96/2048，接受 32/128。128-byte reserved tail 在 encode/sync 路径保持不变且参与 checksum，单 bit 损坏返回 `ChecksumMismatch`。Linux v7.1 依据为 `fs/ext4/ext4.h:453-456`、`fs/ext4/super.c:3243-3267,5284-5295` |
+| `inode-checked-codec` | `Ext4Inode::from_disk_bytes` 对小于 128 bytes 的输入直接 slice panic，且非法 `i_extra_isize` 被当作字段不存在 | inode cache 在读取任何字段前检查 fixed record 长度、extra region 边界和 4-byte 对齐，并返回 typed corruption | inode codec | 绿：新增的 deterministic 编译红测先证明 checked decode 边界缺失；同一测试现覆盖 0/127/129-byte record、越界与未对齐 `i_extra_isize`，生产 inode cache 只调用 checked decoder。Linux v7.1 依据为 `fs/ext4/inode.c` |
+| `group-desc-checked-codec` | 非 32-byte group descriptor 一律按 64-byte 解码，40/48/56-byte 损坏 geometry 可触发 slice panic；非 64-bit 镜像错误采用磁盘 `s_desc_size`；大于 64-byte 的 Linux 合法 descriptor 校验和与写回丢失扩展尾部 | mount 仅走 checked decoder；非 64-bit 固定 32 byte，64-bit 仅接受 64..1024 的 2 次幂；checksum 覆盖完整 record，写回保留 byte 64 后扩展区 | group descriptor codec/geometry | 绿：deterministic 编译红测先证明 `decode_checked` 缺失；同一 size matrix 现拒绝 0/31/33/63/65/96/2048，接受 32/128。128-byte reserved tail 在 encode/sync 路径保持不变且参与 checksum，单 bit 损坏返回 `ChecksumMismatch`。Linux v7.1 依据为 `fs/ext4/ext4.h`、`fs/ext4/super.c` |
 | `extent-block-checksum` | extent block lookup lacks the inode number required by metadata checksum and assumes the checksum tail is always at the end of the block | every resolver carries typed inode identity and verifies the Linux `eh_max`-derived checksum tail | mapping rewrite | 绿：resolver/HTree/mount/adapter 调用链显式传递 `InodeNumber`；external node 读写按 inode generation/number 校验 CRC32C，2 KiB `eh_max` tail offset 与损坏测试通过 |
 | `extent-system-zone-validity` | physical extents are checked only against filesystem/device bounds | reject overlap with ext4 system metadata zones, with Linux's owning-inode exception | mapping rewrite | 绿：mount/replay 后完整构建并一次发布 immutable zone index，覆盖 per-group super/GDT/reserved GDT、bitmap、inode table 与 internal journal blocks；普通 inode 指向 block bitmap 的确定性红绿测试完成，journal inode owner exception 单测通过；first-data、溢出和 filesystem/device 上界继续共同生效 |
-| `extent-unwritten-preallocation` | resolver 把 unwritten extent 折叠成 hole，partial write 会另行分配重叠 extent；core 没有预分配 API | 保留 hole/initialized/unwritten 三态；按 Linux `ee_len` 边界编码；data I/O 前拆出精确 unwritten 范围，partial write 全块零化，成功后才转 initialized；普通/KEEP_SIZE 预分配只填 hole | mapping rewrite | 绿（core preallocation）：确定性红测证明旧路径以 `extent:overlap_or_order` 失败；同一测试现保持原物理块、data `i_blocks` 与 free count，仅把中间块转 initialized、左右继续 unwritten，未覆盖字节和未写 extent 均读零。满 inline root 的三段拆分会先扩为 external tree 并计入 metadata blocks；普通与 KEEP_SIZE 预分配支持跨 partial block、跳过既有 mapping、最大 32767-block unwritten run。每个 hole chunk 现在按 Linux `ext4_alloc_file_blocks()` 使用独立、由 geometry 推导的 `ext4_chunk_trans_blocks()` 等价 credits，并在同一 filesystem transaction 中发布 extent tree、inode、allocation bitmap、GDT 与 superblock；满 inline root 分裂后的首次 metadata post-write 故障红测曾稳定泄漏一个未发布 leaf，现重挂载后 mapping、`i_blocks` 和 free count 均恢复。写路径先发布仍为 unwritten 的 split/preallocation，再写 data，最后转 initialized；external-leaf finish 的定点 I/O 失败会恢复 leaf 与 prepared inode，即使关闭 journal，底层已写 payload 仍不可见。truncate 现直接枚举 initialized/unwritten extent，确定性红测证明旧 initialized-only resolver 会泄漏 4 个预分配块，同一测试现恢复 free count 与 `i_blocks`。1/2/4 KiB Linux image 与 4 KiB partial-write image 均通过 umount/remount 和 `e2fsck -fn`。Linux v7.1 依据为 `ext4_extents.h:136-203`、`inode.c:6220-6332`、`extents.c:2390-2460,3790-3891,3992-4054,4574-4845`。extent merge 和 delalloc/writeback adapter 仍为红项 |
+| `extent-unwritten-preallocation` | resolver 把 unwritten extent 折叠成 hole，partial write 会另行分配重叠 extent；core 没有预分配 API | 保留 hole/initialized/unwritten 三态；按 Linux `ee_len` 边界编码；data I/O 前拆出精确 unwritten 范围，partial write 全块零化，成功后才转 initialized；普通/KEEP_SIZE 预分配只填 hole | mapping rewrite | 绿（core preallocation）：确定性红测证明旧路径以 `extent:overlap_or_order` 失败；同一测试现保持原物理块、data `i_blocks` 与 free count，仅把中间块转 initialized、左右继续 unwritten，未覆盖字节和未写 extent 均读零。满 inline root 的三段拆分会先扩为 external tree 并计入 metadata blocks；普通与 KEEP_SIZE 预分配支持跨 partial block、跳过既有 mapping、最大 32767-block unwritten run。每个 hole chunk 现在按 Linux `ext4_alloc_file_blocks()` 使用独立、由 geometry 推导的 `ext4_chunk_trans_blocks()` 等价 credits，并在同一 filesystem transaction 中发布 extent tree、inode、allocation bitmap、GDT 与 superblock；满 inline root 分裂后的首次 metadata post-write 故障红测曾稳定泄漏一个未发布 leaf，现重挂载后 mapping、`i_blocks` 和 free count 均恢复。写路径先发布仍为 unwritten 的 split/preallocation，再写 data，最后转 initialized；external-leaf finish 的定点 I/O 失败会恢复 leaf 与 prepared inode，即使关闭 journal，底层已写 payload 仍不可见。truncate 现直接枚举 initialized/unwritten extent，确定性红测证明旧 initialized-only resolver 会泄漏 4 个预分配块，同一测试现恢复 free count 与 `i_blocks`。1/2/4 KiB Linux image 与 4 KiB partial-write image 均通过 umount/remount 和 `e2fsck -fn`。Linux v7.1 依据为 `ext4_extents.h`、`inode.c`、`extents.c`。extent merge 和 delalloc/writeback adapter 仍为红项 |
 | `fallocate-preallocation-full-stack` | Starry `mode=0` 仅用 `set_len` 创建 sparse file，`KEEP_SIZE` 直接返回 `EOPNOTSUPP`；VFS 无预分配边界 | syscall 仅解析 Linux flags/errno/seal；VFS 传递 typed extend/keep-size 语义；ext4 adapter 按 inode number 调用 OS-independent core；cached length 与底层 inode 一致 | VFS/Starry integration | 绿（普通与 KEEP_SIZE）：同一直接 ABI 测试在旧实现稳定失败 3 项（普通分配 `st_blocks=0`、KEEP_SIZE 返回 `EOPNOTSUPP`、KEEP_SIZE `st_blocks=0`）。测试现先用 `statfs` 证明 fixture 为 ext4，再严格要求普通/KEEP_SIZE 都预留至少一个 4 KiB 块，KEEP_SIZE 保持 `st_size=0`；x86_64 Starry QEMU 纳入下列 range case 后总计 121 pass/0 fail。 |
 | `fallocate-range-zero-punch` | Starry 用 userspace-visible zero writes 模拟 `ZERO_RANGE`/`PUNCH_HOLE`，不会建立 unwritten extent 或释放完整物理块 | typed range API 贯穿 VFS/cache/ext4；ZERO_RANGE 保留 allocation 并把完整块转 unwritten；PUNCH_HOLE 释放完整块并只清零两侧 partial block；保持 size 与 Linux errno 优先级 | mapping/VFS/Starry integration | 绿（功能与 bounded restart）：core 确定性测试覆盖非对齐边界、allocation/free count、legacy direct→single finite punch 与 unwritten truncate；x86_64 Starry 直接 C ABI 测试在 ext4 上严格检查内容、`st_size`、`st_blocks`，与 collapse/insert case 合计 121 pass/0 fail。extent-backed punch 现先完整枚举 initialized/unwritten mapping，再以一个 filesystem transaction 删除全部 full-block segment；第二次 external-leaf write 定点故障在旧实现留下第一段已释放，同一测试现经重挂载恢复全部 extent、`i_blocks` 与 free count。legacy direct/single/double/triple punch 超出 ring 时按当前 committed tree 分段重新规划，保持 `i_size` 且不建立 Linux 不存在的 orphan/range intent；commit block 落盘后、journal tail 更新前断电可 replay 到一致的部分 punch 状态，重试同一区间可完成剩余工作。两侧 partial block 按 Linux 顺序在 metadata transaction 前清零，之后的 metadata 故障不承诺回滚已完成的数据清零。 |
-| `fallocate-range-collapse-insert` | core/VFS 无法表达逻辑区间左移或右移，Starry 对两个 mode 返回 `EOPNOTSUPP`；缓存页在映射移动后可继续代表旧 offset | extent core 保持 initialized/unwritten 物理映射并重建 logical keys；按 cluster 对齐，严格执行 EOF/overflow/mode 规则；VFS 在 sleepable I/O lock 下写回并失效 shift point 后全部缓存页 | mapping/VFS/Starry integration | 绿（功能与单次 shift transaction）：旧实现的 core happy-path 测试稳定返回 `Unsupported`，Starry C ABI 初始为 88 pass/9 fail；同一测试现验证内容左/右移、插入 hole、size、对齐、EOF、KEEP_SIZE 互斥和 fd/range/mode errno 顺序，x86_64 QEMU 为 121 pass/0 fail。block-aligned 但 bigalloc cluster-unaligned 的两个确定性测试曾分别暴露后置 checksum 失败与错误成功，现均在 mutation 前返回 typed `InvalidInput`。Linux image 覆盖 1/2/4 KiB block size、360 个稀疏 initialized extent 形成的多 external leaf、unwritten 状态、umount/remount 和两次 `e2fsck -fn`。page-cache listener 定点插入的 clean-page 竞态证明首次 snapshot 会留下 stale offset，同一测例现要求最终持 `io_lock` 后集合稳定才执行 shift。replacement tree、inode root/size/final `i_blocks`、旧 data/metadata block 释放、受影响 bitmap/GDT 与 superblock 现由一个 geometry-bounded filesystem transaction 共同拥有；新 leaf 首次 post-write 和最终 bitmap publish 两个定点故障都经重挂载保持旧 mapping、inode accounting 与 free count。Linux v7.1 依据为 `open.c:250-338`、`extents.c:4859-4933,5278-5739`，其中 collapse 的单 truncate handle 见 `5561-5606`、insert 的预扩 size 与 shift 见 `5659-5731`、handle restart 见 `5300-5513`。超过当前单 transaction ring capacity 的大 shift 仍需实现 Linux 式 restart，继续由 `jbd2-handle-credits` 跟踪。 |
-| `fiemap-full-stack` | core/VFS 没有稳定的 inode mapping inspection DTO，Starry 对 `FS_IOC_FIEMAP` 返回 `ENOTTY`，且最初误把 ext4 目录 FIEMAP 当成 unsupported | core 以 byte-addressed typed target/state DTO 枚举 extent 与 legacy mapping；VFS 同时为 file/dir 转发；Starry 精确实现 header/extent ABI、flags、count-only、range、LAST 与 errno 顺序 | mapping/VFS/Starry integration | 进行中：确定性 core 红测证明旧实现返回 `Unsupported`；目录 ABI 断言改为 Linux 语义后，旧链路在 x86_64 QEMU 稳定以 `EOPNOTSUPP` 失败。data mapping 已覆盖 sparse hole、initialized/unwritten、legacy `MERGED`、bounded/count-only、非对齐查询保留完整 extent、regular file 与 directory、1/2/4 KiB Linux image、remount 和两轮 `e2fsck -fn`。`FIEMAP_FLAG_XATTR` 的确定性 Linux-image 红测在旧实现稳定返回 `Unsupported`；同一测试现覆盖 inline inode body、external xattr block、无 xattr 空结果、count-only/range、1/2/4 KiB geometry 与两轮 `e2fsck -fn`。inline checked parser 按 Linux 检查 magic、entry/name/value bounds、EA inode feature/inode number 和 value/name overlap；Starry 对 inline mapping 输出 `DATA_INLINE|NOT_ALIGNED`，新增 XATTR ABI 断言后 x86_64 QEMU 整体为 37 pass/0 fail。Linux 7.1 的 inline physical ABI 特意只使用 inode-table block base 加 `128+i_extra_isize`、不加入 inode slot offset，core 保留这一可见语义并由断言固定。`start == maxbytes` 的复核红测证明先前 `>=` 检查错误返回 `FileTooLarge`；同一断言现要求等于上限成功返回空映射、仅大于上限失败，并继续按 `ext4_max_size`/`ext4_max_bitmap_size` 纳入 i_blocks metadata overhead 与 `HUGE_FILE` 限制。Linux v7.1 依据为 `super.c:3427-3552`、`ext4.h:3454-3459`、`fs/ioctl.c:186-227`、`fs/iomap/fiemap.c:1-88`、`extents.c:5120-5171,5178-5271`、`xattr.c:180-295`、`inode.c:3860-3905,4873-4888`、`file.c:993-1007`、`namei.c:4225-4243`。file inline-data mapping、delalloc `UNKNOWN|DELALLOC` 与独立 extent-status precache 尚未实现，继续登记为红项。 |
-| `inode-inline-xattr-preservation` | inode cache 从结构体写回全新零缓冲，普通 data/metadata mutation 会擦除未建模的 inline xattr 尾部；checksum 也只覆盖结构体字段 | cache 保存并写回完整 raw inode；codec 仅覆盖 `i_extra_isize` 声明存在的字段；checksum 覆盖 raw inode 全部字节 | inode codec/xattr | 绿：Linux-image 确定性红测先证明普通文件写后 `debugfs ea_list` 读不到原 inline xattr；同一测试现覆盖 1/2/4 KiB、unmount 和 `e2fsck -fn`。raw-tail checksum 与小 `i_extra_isize` codec 单测固定未建模区域的保真语义。Linux v7.1 依据为 `fs/ext4/inode.c:60-128` 与 `fs/ext4/xattr.h:65-73`。 |
-| `persistent-xattr-inline-external` | core 只能检查 xattr 的 FIEMAP 位置，Starry 把 xattr 放在 `Location::user_data` 的临时 map，重查 dentry、hardlink、copy-up 或重挂载后会丢失 | core 以 inode number 提供 checked get/list/create/replace/remove，完整支持 inline/external block、checksum、refcount COW 与 transaction rollback；VFS 仅声明 inode capability，ext4 adapter 落盘，tmpfs inode 自有内存状态，Starry 只负责 Linux ABI/errno/namespace | xattr core/VFS/Starry/JBD2 | 进行中：1/2/4 KiB Linux image 已覆盖 Linux/debugfs 创建的 inline、external 与 absent store，typed CREATE/REPLACE、inline→external→inline、free-block accounting、remount、`debugfs ea_list` 和 `e2fsck -fn` 均通过；VFS/ax-fs-ng 已用 `XattrOps` 取代 dentry side store，Starry x86_64 QEMU xattr case 从 38 pass/45 fail 转为 89 pass/0 fail，覆盖 path/fd、short buffer、hardlink 与 symlink nofollow。overlay read-only/missing-remove 的无副作用红测从 116 pass/3 fail 转为 119 pass/0 fail。当前 local-value external block 的 Linux hash/checksum/refcount COW 已实现；单属性先尝试 inode body、ENOSPC 后只把该属性放入 external block，反向缩小时也只迁回该属性，无关 sibling 保持原 store。filesystem-owned metadata transaction 现为 xattr 同时拥有 superblock/GDT/bitmap/inode cache undo，并在成功返回前把 inode、受影响 bitmap/GDT 与 superblock 定向加入同一 bounded handle；关闭 journal 的 inode-table 定点写失败红测证明旧 cache 泄漏新 inline xattr，同一测例现恢复完整 raw inode。shared-block fixture 现固定两个 inode/refcount=2，验证成功 COW 保留另一 inode；无关 inline update 不再复制或重写 unchanged shared external block。journal credit failure 与 no-journal old-refcount write failure 均经重挂载保持两个旧值、refcount=2、inode 指针与 free count。final reap 现在验证 external block header/checksum/refcount，refcount=2→1 时保留另一 inode，refcount=1 时 revoke/free；bitmap publish 故障后 retry 回归验证 orphan、`i_file_acl`、xattr value 与 free count 全部恢复。EA inode value、ACL/security/trusted policy 和 external deletion 的断电 replay 矩阵仍为红项，不能宣称完整 xattr parity。Linux v7.1 依据为 `fs/ext4/xattr.c:132-300,939-959,1271-1363,1629-2226,2337-2498,2906-3014,3141-3210`、`fs/ext4/xattr.h:30-73` 与 `fs/overlayfs/xattrs.c:35-77`。 |
+| `fallocate-range-collapse-insert` | core/VFS 无法表达逻辑区间左移或右移，Starry 对两个 mode 返回 `EOPNOTSUPP`；缓存页在映射移动后可继续代表旧 offset | extent core 保持 initialized/unwritten 物理映射并重建 logical keys；按 cluster 对齐，严格执行 EOF/overflow/mode 规则；VFS 在 sleepable I/O lock 下写回并失效 shift point 后全部缓存页 | mapping/VFS/Starry integration | 绿（功能与单次 shift transaction）：旧实现的 core happy-path 测试稳定返回 `Unsupported`，Starry C ABI 初始为 88 pass/9 fail；同一测试现验证内容左/右移、插入 hole、size、对齐、EOF、KEEP_SIZE 互斥和 fd/range/mode errno 顺序，x86_64 QEMU 为 121 pass/0 fail。block-aligned 但 bigalloc cluster-unaligned 的两个确定性测试曾分别暴露后置 checksum 失败与错误成功，现均在 mutation 前返回 typed `InvalidInput`。Linux image 覆盖 1/2/4 KiB block size、360 个稀疏 initialized extent 形成的多 external leaf、unwritten 状态、umount/remount 和两次 `e2fsck -fn`。page-cache listener 定点插入的 clean-page 竞态证明首次 snapshot 会留下 stale offset，同一测例现要求最终持 `io_lock` 后集合稳定才执行 shift。replacement tree、inode root/size/final `i_blocks`、旧 data/metadata block 释放、受影响 bitmap/GDT 与 superblock 现由一个 geometry-bounded filesystem transaction 共同拥有；新 leaf 首次 post-write 和最终 bitmap publish 两个定点故障都经重挂载保持旧 mapping、inode accounting 与 free count。Linux v7.1 依据为 `open.c`、`extents.c`，其中 collapse 的单 truncate handle、insert 的预扩 size 与 shift、handle restart 均由 `extents.c` 中的相应路径约束。超过当前单 transaction ring capacity 的大 shift 仍需实现 Linux 式 restart，继续由 `jbd2-handle-credits` 跟踪。 |
+| `fiemap-full-stack` | core/VFS 没有稳定的 inode mapping inspection DTO，Starry 对 `FS_IOC_FIEMAP` 返回 `ENOTTY`，且最初误把 ext4 目录 FIEMAP 当成 unsupported | core 以 byte-addressed typed target/state DTO 枚举 extent 与 legacy mapping；VFS 同时为 file/dir 转发；Starry 精确实现 header/extent ABI、flags、count-only、range、LAST 与 errno 顺序 | mapping/VFS/Starry integration | 进行中：确定性 core 红测证明旧实现返回 `Unsupported`；目录 ABI 断言改为 Linux 语义后，旧链路在 x86_64 QEMU 稳定以 `EOPNOTSUPP` 失败。data mapping 已覆盖 sparse hole、initialized/unwritten、legacy `MERGED`、bounded/count-only、非对齐查询保留完整 extent、regular file 与 directory、1/2/4 KiB Linux image、remount 和两轮 `e2fsck -fn`。`FIEMAP_FLAG_XATTR` 的确定性 Linux-image 红测在旧实现稳定返回 `Unsupported`；同一测试现覆盖 inline inode body、external xattr block、无 xattr 空结果、count-only/range、1/2/4 KiB geometry 与两轮 `e2fsck -fn`。inline checked parser 按 Linux 检查 magic、entry/name/value bounds、EA inode feature/inode number 和 value/name overlap；Starry 对 inline mapping 输出 `DATA_INLINE|NOT_ALIGNED`，新增 XATTR ABI 断言后 x86_64 QEMU 整体为 37 pass/0 fail。Linux 7.1 的 inline physical ABI 特意只使用 inode-table block base 加 `128+i_extra_isize`、不加入 inode slot offset，core 保留这一可见语义并由断言固定。`start == maxbytes` 的复核红测证明先前 `>=` 检查错误返回 `FileTooLarge`；同一断言现要求等于上限成功返回空映射、仅大于上限失败，并继续按 `ext4_max_size`/`ext4_max_bitmap_size` 纳入 i_blocks metadata overhead 与 `HUGE_FILE` 限制。Linux v7.1 依据为 `super.c`、`ext4.h`、`fs/ioctl.c`、`fs/iomap/fiemap.c`、`extents.c`、`xattr.c`、`inode.c`、`file.c`、`namei.c`。file inline-data mapping、delalloc `UNKNOWN|DELALLOC` 与独立 extent-status precache 尚未实现，继续登记为红项。 |
+| `inode-inline-xattr-preservation` | inode cache 从结构体写回全新零缓冲，普通 data/metadata mutation 会擦除未建模的 inline xattr 尾部；checksum 也只覆盖结构体字段 | cache 保存并写回完整 raw inode；codec 仅覆盖 `i_extra_isize` 声明存在的字段；checksum 覆盖 raw inode 全部字节 | inode codec/xattr | 绿：Linux-image 确定性红测先证明普通文件写后 `debugfs ea_list` 读不到原 inline xattr；同一测试现覆盖 1/2/4 KiB、unmount 和 `e2fsck -fn`。raw-tail checksum 与小 `i_extra_isize` codec 单测固定未建模区域的保真语义。Linux v7.1 依据为 `fs/ext4/inode.c` 与 `fs/ext4/xattr.h`。 |
+| `persistent-xattr-inline-external` | core 只能检查 xattr 的 FIEMAP 位置，Starry 把 xattr 放在 `Location::user_data` 的临时 map，重查 dentry、hardlink、copy-up 或重挂载后会丢失 | core 以 inode number 提供 checked get/list/create/replace/remove，完整支持 inline/external block、checksum、refcount COW 与 transaction rollback；VFS 仅声明 inode capability，ext4 adapter 落盘，tmpfs inode 自有内存状态，Starry 只负责 Linux ABI/errno/namespace | xattr core/VFS/Starry/JBD2 | 进行中：1/2/4 KiB Linux image 已覆盖 Linux/debugfs 创建的 inline、external 与 absent store，typed CREATE/REPLACE、inline→external→inline、free-block accounting、remount、`debugfs ea_list` 和 `e2fsck -fn` 均通过；VFS/ax-fs-ng 已用 `XattrOps` 取代 dentry side store，Starry x86_64 QEMU xattr case 从 38 pass/45 fail 转为 89 pass/0 fail，覆盖 path/fd、short buffer、hardlink 与 symlink nofollow。overlay read-only/missing-remove 的无副作用红测从 116 pass/3 fail 转为 119 pass/0 fail。当前 local-value external block 的 Linux hash/checksum/refcount COW 已实现；单属性先尝试 inode body、ENOSPC 后只把该属性放入 external block，反向缩小时也只迁回该属性，无关 sibling 保持原 store。filesystem-owned metadata transaction 现为 xattr 同时拥有 superblock/GDT/bitmap/inode cache undo，并在成功返回前把 inode、受影响 bitmap/GDT 与 superblock 定向加入同一 bounded handle；关闭 journal 的 inode-table 定点写失败红测证明旧 cache 泄漏新 inline xattr，同一测例现恢复完整 raw inode。shared-block fixture 现固定两个 inode/refcount=2，验证成功 COW 保留另一 inode；无关 inline update 不再复制或重写 unchanged shared external block。journal credit failure 与 no-journal old-refcount write failure 均经重挂载保持两个旧值、refcount=2、inode 指针与 free count。final reap 现在验证 external block header/checksum/refcount，refcount=2→1 时保留另一 inode，refcount=1 时 revoke/free；bitmap publish 故障后 retry 回归验证 orphan、`i_file_acl`、xattr value 与 free count 全部恢复。EA inode value、ACL/security/trusted policy 和 external deletion 的断电 replay 矩阵仍为红项，不能宣称完整 xattr parity。Linux v7.1 依据为 `fs/ext4/xattr.c`、`fs/ext4/xattr.h` 与 `fs/overlayfs/xattrs.c`。 |
 | `mount-option-block-validity` | core did not protect system metadata blocks | default `block_validity` plus Linux-compatible `noblock_validity` mount/remount lifecycle | mount/remount options | 绿：RW/RO mount 默认建立 layout + internal-journal owner system-zone index，`with_block_validity(false)` 在 initial mount 与 replay reload 保持空索引；owned `remount` 禁用时释放，重新启用时先完整构建后一次发布。crafted block-bitmap extent 确定性红测证明仅修改 option 但不释放 index 仍拒绝；同一测试现要求 disable 允许、reenable 再拒绝，extent 与 legacy indirect 共用同一 index |
 | `mmp-readonly-mount` | known MMP incompat 在 Linux 允许的只读 inspection mount 也被无条件拒绝 | 只读 mount 完全跳过 MMP block I/O；可写 mount 必须在任何其他 mutation 前 claim owner，周期 refresh，并在 RW→RO/unmount 的 ext4/JBD2 clean 持久化后发布 MMP clean | mount feature negotiation / MMP lifecycle | 进行中（portable core 与 adapter lifecycle 绿）：feature 单测在旧实现稳定返回 `UnsupportedFeature(bits=0x100)`；当前 Linux `mkfs.ext4 -O mmp` 镜像可 RO/no-replay mount 并读取根 inode，卸载后 64 MiB 镜像逐字节不变。注入确定性 entropy/delay 后，同一镜像完成 magic/checksum 校验、随机 sequence claim、稳定性复查、refresh 与 clean unmount，写序确认 MMP clean 是最后一次 metadata write，最终 `e2fsck -fn` clean；缺少 capability 时初始 RW 与 RO→RW 都在 mutation 前返回 typed `UnsupportedCapability`并保留 options。当前 ArceOS 没有可信 entropy provider，因此其 writable MMP 保持 `EOPNOTSUPP`；平台 RNG、真实多主机互斥和完整断电故障矩阵仍为红项 |
 | `mount-remount-full` | mount options 仅有 readonly/replay，remount 无统一 state transition | 完整对齐 Linux ext4 mount/remount options，ro↔rw、journal/data mode、barrier/discard/error policy 与失败回滚 | mount/remount/JBD2 options | 进行中：owned core 已实现 RW→RO 的 pending metadata sync/journal checkpoint/clean-superblock 后发布，以及 RO→RW 的 device-readonly、writable feature、recovery/orphan、journal-state 预检和 dirty/recovery superblock 持久化后发布；replay policy 仍是 mount-time immutable option。确定性红测证明旧实现无条件返回 `remount:mode`，同一测试现完成 RW→RO mutation gate 与 RO→RW 恢复；one-shot flush fault 保持旧 options，物理只读设备返回 typed `ReadOnly`，read-only unmount 不再向设备写入且已卸载 owner 拒绝原地 remount。MMP 初始 RW 与 RO→RW 现先 claim owner；RW→RO 与 unmount 保持 owner 到 ext4/JBD2 clean 持久化完成后才发布 MMP clean。clean release 失败的 remount 会重新 claim 并恢复 RW 持久状态，无法恢复则锁存 failed state；refresh I/O 失败同样拒绝后续 mutation。ax-fs-ng 的只读 sync/shutdown 现也在 sleepable mutex 下调用同一 owned core，MMP worker 在锁外等待、仅在 refresh 时取得独占 owner；adapter 的 read-only 查询也直接读取 core options，不再维护第二状态源，但 VFS 仍未提供 remount 入口。journal/data mode、barrier/discard/error policy、quota、平台 entropy 与更完整的磁盘副作用回滚仍为红项，不能声称 Linux remount 完整性 |
-| `extent-mutation-rollback` | split/remove/rebuild 的 metadata write 或 bitmap I/O 失败可留下泄漏、部分释放或不可达节点 | plan/validate/journal persist，任一失败保持旧树与 bitmap/i_blocks 一致 | mapping rewrite | 红（preallocation、shift、单 ring range-remove、leaf insertion normalization/merge-up 与 restartable legacy truncate/reap/punch 子路径已绿）：HUGE_FILE checked accounting 已在分配/释放前预检；preallocation 的每个 extent insertion chunk 现由 filesystem transaction 完整拥有，新 metadata 构建与 bitmap/GDT/superblock/inode 发布任一步失败都会共同撤销。collapse/insert 先只读规划，再在一个 transaction 内保留旧树、构建 replacement、共同发布 root/size/final `i_blocks`、释放旧 data/metadata block，并显式刷新新旧 block 所在 group；不能仅凭最终 free counter 判断 bitmap dirty，因为同组 alloc/free 可能抵消。replacement node post-write 与 block-bitmap publish 的确定性红测曾分别留下未发布 leaf 或部分 allocator 状态，同一测试现经重挂载验证 mapping、free count 与 inode accounting 完整恢复。leaf insertion 依照 `extents.c:1786-1932` 先尝试左邻，再持续合并右邻；initialized/unwritten 状态、逻辑/物理连续性或 wire length 上限任一不满足时保持两个完整 extent，不能把左侧填满后制造 Linux 不会生成的 tail。punch/truncate 也先读取完整 external tree 与 initialized/unwritten extent 集合，按所有旧节点、涉及 allocation group、inode 和 superblock 预留 credits，再在同一 transaction 中逐段删除并最终发布 inode、bitmap/GDT 与 superblock；第二次 leaf write 故障的 punch/truncate 红测现均恢复全部 mapping、size、`i_blocks` 与 free count。被移除的空 extent 或 legacy indirect metadata block 现在与 detach mutation 位于同一 handle，并生成 writer revoke；稍后 transaction 的 revoke 会抑制较早 committed image 的 replay/checkpoint，同 transaction metadata reuse 则取消 revoke。其他尚未迁移的 extent split/merge fault matrix 与独立 committing owner 仍未完成，故本总项继续保持红色。Linux split failure 恢复原 extent 依据为 `extents.c:3226-3302`；punch/truncate 事务与 restart 依据为 `inode.c:4255-4533,4566-4697`、`extents.c:2701-2728,2837-3090`；revoke/checkpoint 依据为 `fs/jbd2/revoke.c:300-660`、`fs/jbd2/checkpoint.c:126-353`。 |
+| `extent-mutation-rollback` | split/remove/rebuild 的 metadata write 或 bitmap I/O 失败可留下泄漏、部分释放或不可达节点 | plan/validate/journal persist，任一失败保持旧树与 bitmap/i_blocks 一致 | mapping rewrite | 红（preallocation、shift、单 ring range-remove、leaf insertion normalization/merge-up 与 restartable legacy truncate/reap/punch 子路径已绿）：HUGE_FILE checked accounting 已在分配/释放前预检；preallocation 的每个 extent insertion chunk 现由 filesystem transaction 完整拥有，新 metadata 构建与 bitmap/GDT/superblock/inode 发布任一步失败都会共同撤销。collapse/insert 先只读规划，再在一个 transaction 内保留旧树、构建 replacement、共同发布 root/size/final `i_blocks`、释放旧 data/metadata block，并显式刷新新旧 block 所在 group；不能仅凭最终 free counter 判断 bitmap dirty，因为同组 alloc/free 可能抵消。replacement node post-write 与 block-bitmap publish 的确定性红测曾分别留下未发布 leaf 或部分 allocator 状态，同一测试现经重挂载验证 mapping、free count 与 inode accounting 完整恢复。leaf insertion 依照 `extents.c` 先尝试左邻，再持续合并右邻；initialized/unwritten 状态、逻辑/物理连续性或 wire length 上限任一不满足时保持两个完整 extent，不能把左侧填满后制造 Linux 不会生成的 tail。punch/truncate 也先读取完整 external tree 与 initialized/unwritten extent 集合，按所有旧节点、涉及 allocation group、inode 和 superblock 预留 credits，再在同一 transaction 中逐段删除并最终发布 inode、bitmap/GDT 与 superblock；第二次 leaf write 故障的 punch/truncate 红测现均恢复全部 mapping、size、`i_blocks` 与 free count。被移除的空 extent 或 legacy indirect metadata block 现在与 detach mutation 位于同一 handle，并生成 writer revoke；稍后 transaction 的 revoke 会抑制较早 committed image 的 replay/checkpoint，同 transaction metadata reuse 则取消 revoke。其他尚未迁移的 extent split/merge fault matrix 与独立 committing owner 仍未完成，故本总项继续保持红色。Linux split failure 恢复原 extent 依据为 `extents.c`；punch/truncate 事务与 restart 依据为 `inode.c`、`extents.c`；revoke/checkpoint 依据为 `fs/jbd2/revoke.c`、`fs/jbd2/checkpoint.c`。 |
 | `mkdir-mutation-rollback` | child inode 初始化后，父 link/group accounting 或目录项插入失败可留下孤儿 inode、泄漏块或部分发布的计数 | mkdir 的 inode、block、父目录项、父 link count 与 group stats 属于同一可回滚 transaction | namespace/JBD2 rewrite | 绿：link 上限在分配前预检；39-credit namespace transaction 共同恢复 child inode/block、parent dentry/inode、allocation bitmap/GDT/superblock 与 directory count。ENOSPC 和目录块写后 I/O 两类确定性红测分别覆盖分配失败与持久化失败，均保持重挂载状态不变 |
-| `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 绿（已实现 flags）：查找、same-inode/no-replace/type/ancestry/link-count/free preflight 在独占 `&mut` owner 下完成，真正 mutation 由 62/74-credit filesystem transaction 统一拥有。旧目录块写后故障红测证明旧实现返 I/O error 后仍丢失源名；同一测试现重挂载恢复源名/内容并移除目标名。exchange 第二侧目录块、跨父目录 `..` 块、replacement inode-table 三个附加故障点分别验证两侧名称、父 nlink/`..`、target nlink/orphan head 全部恢复。手工局部 rollback 已删除。`WHITEOUT` 尚未进入 mutation，因此继续由 `typed-rename-flags` 红项追踪。Linux v7.1 依据为 `fs/ext4/namei.c:3765-4195`、`fs/ext4/ext4_jbd2.h:21-50,78-90` |
+| `rename-mutation-rollback` | 跨父目录 rename 在新项、旧项、父 link count 或 `..` 更新任一步失败时可留下部分状态 | rename 的全部目录项、link count、`..` 与被替换 inode 更新崩溃原子且可回滚 | namespace/JBD2 rewrite | 绿（已实现 flags）：查找、same-inode/no-replace/type/ancestry/link-count/free preflight 在独占 `&mut` owner 下完成，真正 mutation 由 62/74-credit filesystem transaction 统一拥有。旧目录块写后故障红测证明旧实现返 I/O error 后仍丢失源名；同一测试现重挂载恢复源名/内容并移除目标名。exchange 第二侧目录块、跨父目录 `..` 块、replacement inode-table 三个附加故障点分别验证两侧名称、父 nlink/`..`、target nlink/orphan head 全部恢复。手工局部 rollback 已删除。`WHITEOUT` 尚未进入 mutation，因此继续由 `typed-rename-flags` 红项追踪。Linux v7.1 依据为 `fs/ext4/namei.c`、`fs/ext4/ext4_jbd2.h` |
 | `io-failure-no-panic` | mount/commit paths contain `expect` | all errors propagated | codec/JBD2 rewrite | 进行中：mount/JBD2 与 extent root/child traversal 已移除 panic/静默失败；inode allocation bitmap 查询由吞掉 I/O/corruption 并返回 `false` 改为 `Ext4Result<bool>`，共享故障开关确定性红测已证明旧实现将 read failure 报作 free，同一测试现保留原始 `Io`。缓存中的四处 `unwrap` 已逐控制流复核，均由 non-empty cache-line 不变量支配，不属于可达错误；其余生产路径仍待继续审计 |
 | `legacy-indirect-13-blocks` | non-extent path is unsupported | Linux-compatible mapping | mapping rewrite | 进行中：checked read 与 allocate-before-publish write 已覆盖 direct/single/double/triple、hole、整块 pointer validity、system zone、cycle、data+metadata `i_blocks` 与运行时失败反向 rollback；跨 direct/single 的 Linux image 已通过 umount、e2fsck、remount/read、再次 e2fsck。full ownership preflight 不受 `i_size` 裁剪，完整收集 data 与 child-first metadata，拒绝跨树重复物理块和隐藏损坏。recursive shrink 先做完整 ownership preflight，再仅沿 cutoff 路径与右侧子树自底向上、从右向左规划 pointer edit 和 data/metadata free；inode image 先移除映射并重算 `i_blocks`，随后才把块归还 allocator。确定性红测已覆盖 EOF 外 hidden single tree、single/double/triple partial leaf、double/triple 子树边界和 full-root 回收；inode finalize 定点 I/O 失败会恢复 pointer block、inode image 与 free-count。4 KiB Linux image 现以稀疏 marker 分别建立 single/double/triple 根（triple EOF 约 4 GiB），裁剪完整根后验证 `i_blocks`、重挂载内容并两次通过 `e2fsck -fn`。final unlink 只改变 dentry/nlink/orphan，显式 reap 复用强制 mapping cleanup；data、pointer metadata、orphan 和 inode bitmap 的成功路径均有 unit 与 Linux image recovery/e2fsck 回归。truncate grow 对 extent/legacy 都只发布 sparse `i_size`，旧 partial EOF 在 grow 前清零，1/2/4 KiB Linux image 既有回归保持通过。单 ring 容量内的 punch/truncate 已由同一个 filesystem transaction 发布 pointer、inode、allocator 与计数；超容量 truncate/reap/punch 已按 allocation group 和连续 logical run 分段 restart，并覆盖 sparse direct/single/double/triple。punch 保持 Linux 的非 orphan 语义，每个 committed chunk 自洽，崩溃后可从当前树重试而不会自动补完操作 |
-| `legacy-indirect-truncate-atomicity` | pointer/inode/bitmap/free 的任一后置 I/O 失败可能留下部分裁剪、泄漏或 accounting 不一致 | 一个 filesystem-owned journal handle 同时拥有 pointer、inode、bitmap、group/super counters 与完整 undo；replay 后只出现旧树或新树 | mapping/JBD2 rewrite | 进行中（bounded transaction、超 ring truncate/reap/punch restart 与 writer revoke 子路径已绿）：完整 ownership plan 先收集 pointer home block 和 allocation group，以 `pointer edits + detached metadata revokes + 2 * groups + inode + superblock` 预留 distinct credits；已经作为 pointer edit 写入的同一 metadata block 不重复计 revoke。完整计划超出 ring 时，先验证最小 chunk 可容纳，再由 UserResize transaction 原子发布目标 `i_size` 与 classic orphan。后续每个 chunk 从当前已提交 pointer tree 重新进行不受 `i_size` 限制的 ownership scan，只在 commit 成功后推进内存 cursor；崩溃不依赖持久化 cursor，只依赖 orphan、目标 size 与当前 committed tree。sparse direct/single/double/triple fixture 同时覆盖 logical hole、两个 allocation group和多个 commit；首个 chunk commit block 落盘后、journal tail 更新前断电的 truncate 测试经 replay + orphan recovery 释放全部十个 data/metadata block。punch 复用同一 child-first chunk 与 writer revoke，但按 Linux `ext4_punch_hole()` 保持 `i_size` 且不加 orphan；相同 commit boundary 断电只 replay 已 durable chunk，重试同一区间完成剩余树。zero-link reap 保持 orphan，分段清空 mapping 后再以精确 5-credit transaction 回收非头 orphan、inode bitmap/GDT/superblock；此最终 transaction 已无待 detach 的 mapping metadata，因此仍为 5 credits。单 chunk 仍无法容纳时在 partial EOF 清零、size/orphan publication 和 commit 前返回 `NoSpace`。已脱链 pointer metadata 现在在同一 handle 记录 writer revoke，较早 committed image 不会在 allocator reuse 后通过 replay 或 checkpoint 覆盖新 owner。完整 persistence-boundary fault matrix 与独立 committing owner 仍未实现，故本总项不能转绿。Linux v7.1 依据为 `fs/ext4/indirect.c:689-746,724-748,857-985,1000-1110,1112-1215,1225-1419`、`fs/ext4/inode.c:4427-4543,4567-4693`、`fs/ext4/orphan.c:90-187,321-376`、`fs/jbd2/revoke.c:300-660` |
+| `legacy-indirect-truncate-atomicity` | pointer/inode/bitmap/free 的任一后置 I/O 失败可能留下部分裁剪、泄漏或 accounting 不一致 | 一个 filesystem-owned journal handle 同时拥有 pointer、inode、bitmap、group/super counters 与完整 undo；replay 后只出现旧树或新树 | mapping/JBD2 rewrite | 进行中（bounded transaction、超 ring truncate/reap/punch restart 与 writer revoke 子路径已绿）：完整 ownership plan 先收集 pointer home block 和 allocation group，以 `pointer edits + detached metadata revokes + 2 * groups + inode + superblock` 预留 distinct credits；已经作为 pointer edit 写入的同一 metadata block 不重复计 revoke。完整计划超出 ring 时，先验证最小 chunk 可容纳，再由 UserResize transaction 原子发布目标 `i_size` 与 classic orphan。后续每个 chunk 从当前已提交 pointer tree 重新进行不受 `i_size` 限制的 ownership scan，只在 commit 成功后推进内存 cursor；崩溃不依赖持久化 cursor，只依赖 orphan、目标 size 与当前 committed tree。sparse direct/single/double/triple fixture 同时覆盖 logical hole、两个 allocation group和多个 commit；首个 chunk commit block 落盘后、journal tail 更新前断电的 truncate 测试经 replay + orphan recovery 释放全部十个 data/metadata block。punch 复用同一 child-first chunk 与 writer revoke，但按 Linux `ext4_punch_hole()` 保持 `i_size` 且不加 orphan；相同 commit boundary 断电只 replay 已 durable chunk，重试同一区间完成剩余树。zero-link reap 保持 orphan，分段清空 mapping 后再以精确 5-credit transaction 回收非头 orphan、inode bitmap/GDT/superblock；此最终 transaction 已无待 detach 的 mapping metadata，因此仍为 5 credits。单 chunk 仍无法容纳时在 partial EOF 清零、size/orphan publication 和 commit 前返回 `NoSpace`。已脱链 pointer metadata 现在在同一 handle 记录 writer revoke，较早 committed image 不会在 allocator reuse 后通过 replay 或 checkpoint 覆盖新 owner。完整 persistence-boundary fault matrix 与独立 committing owner 仍未实现，故本总项不能转绿。Linux v7.1 依据为 `fs/ext4/indirect.c`、`fs/ext4/inode.c`、`fs/ext4/orphan.c`、`fs/jbd2/revoke.c` |
 
 2026-08-12 的 extent range-removal restart 检查点将表中“超过 ring capacity 的
 extent handle restart”子项推进为绿色：完整计划超过 JBD2 capacity 时，punch 与
@@ -960,7 +960,7 @@ dev/final A/B；下一阶段必须继续优化 sync p95 并在固定 governor �
 
 ### 7.31 Linux FUA commit publication 检查点
 
-Linux v7.1 `fs/jbd2/commit.c:115-168,805-915` 在非 async commit 路径以
+Linux v7.1 `fs/jbd2/commit.c` 在非 async commit 路径以
 `REQ_PREFLUSH | REQ_FUA` 的 commit record 作为 transaction publication：
 preflush 排序 descriptor/payload，FUA 使 commit record 本身 durable；等待该同步
 write 完成后不会再提交第二个 post-commit flush。旧 core 在显式 preflush 和 FUA
@@ -1048,7 +1048,7 @@ format 与 dependency boundary 已通过。
 
 ### 7.34 JBD2 committing transaction owner 检查点
 
-Linux v7.1 `fs/jbd2/commit.c:434-590,1115-1162` 在任何 journal I/O 前先锁定
+Linux v7.1 `fs/jbd2/commit.c` 在任何 journal I/O 前先锁定
 `j_running_transaction`，随后在 `T_FLUSH` 阶段把它发布为
 `j_committing_transaction` 并清空 running owner；提交完成后再从 committing owner
 移入 checkpoint list。旧 Rust core 直到 FUA commit 成功后才从同一个
@@ -1118,9 +1118,9 @@ sync 中，而 dev 的旧 transaction owner 与 durability 语义并不完整。
 
 ### 7.36 JBD2 checkpoint 最终持久化边界检查点
 
-Linux v7.1 `fs/jbd2/checkpoint.c:326-353` 在回收 journal tail 前先 flush
+Linux v7.1 `fs/jbd2/checkpoint.c` 在回收 journal tail 前先 flush
 filesystem device，再由 `__jbd2_update_log_tail()` 以 `REQ_FUA` 发布新 tail；
-`fs/jbd2/journal.c:2419-2473` 的 `jbd2_journal_flush()` 完成该序列后不会再执行一次
+`fs/jbd2/journal.c` 的 `jbd2_journal_flush()` 完成该序列后不会再执行一次
 无条件 device flush。旧 Rust core 已经在 checkpoint 中完成 home-block flush 和 FUA tail
 publication，却仍在 `Jbd2Dev::flush()` 末尾重复调用 `inner.flush()`。
 
@@ -1150,10 +1150,10 @@ preflush、FUA commit、checkpoint home flush 或 FUA tail publication 中任一
 
 ### 7.37 Linux sync commit/checkpoint 分界检查点
 
-Linux v7.1 `fs/ext4/super.c:6430-6473` 的 `ext4_sync_fs(wait=1)` 只启动并等待最新
+Linux v7.1 `fs/ext4/super.c` 的 `ext4_sync_fs(wait=1)` 只启动并等待最新
 transaction commit；它不调用 `jbd2_journal_flush()`，不强制 checkpoint，也不把 journal
 标记为空。完整 checkpoint、home metadata writeback、tail cleanup 和 FUA empty publication
-属于 `fs/jbd2/journal.c:2419-2473` 的 full journal flush/unmount 路径。旧 Rust
+属于 `fs/jbd2/journal.c` 的 full journal flush/unmount 路径。旧 Rust
 `Ext4::sync()` 通过 `Jbd2Dev::flush()` 同时 commit 和 checkpoint，因而普通 sync 比 Linux
 更强并把 home-write 成本错误归入 dirty-sync 阶段。
 
@@ -1190,7 +1190,7 @@ checkpoint 成本移回 unmount 后，unmount 相对 dev 仍在 5%/10% 门槛内
 
 ### 7.38 JBD2 transaction payload 借用检查点
 
-Linux v7.1 `fs/jbd2/commit.c:631-915` 让 descriptor tag checksum 和 journal write 直接
+Linux v7.1 `fs/jbd2/commit.c` 让 descriptor tag checksum 和 journal write 直接
 消费 transaction-owned metadata buffer；只有 payload 首四字节等于 JBD2 magic 时才建立
 escaped image。旧 Rust writer 在任何 journal I/O 前都把每个 `Box<[u8]>` 无条件复制到
 `Vec<u8>`，当前 sync-cycle 的六个 metadata update 因而额外分配并复制 24 KiB。
@@ -1261,9 +1261,9 @@ FUA commit 或其他 Linux durability boundary。
 
 ### 7.40 legacy indirect punch restart 检查点
 
-Linux v7.1 `fs/ext4/inode.c:4427-4543` 的 `ext4_punch_hole()` 与 truncate 有一个关键
+Linux v7.1 `fs/ext4/inode.c` 的 `ext4_punch_hole()` 与 truncate 有一个关键
 差异：它不调用 `ext4_orphan_add()`，也不把 punch range 编码进 inode 或其他磁盘结构。
-legacy 路径进入 `ext4_ind_remove_space()`；`fs/ext4/indirect.c:724-748` 在 credit 不足时
+legacy 路径进入 `ext4_ind_remove_space()`；`fs/ext4/indirect.c` 在 credit 不足时
 通过 `ext4_journal_ensure_credits_fn()` 结束当前 transaction、重新取得 handle 后继续。
 因此 Linux 保证的是每个 commit boundary 上 pointer tree、inode accounting 与 allocator
 自洽，而不是掉电后自动补完整次 punch。掉电可能留下已经提交的部分 hole；调用方重试同一
@@ -1288,16 +1288,15 @@ handle、独立 committing owner 与大 shift restart 仍保持红色。reserved
 
 ### 7.41 JBD2 legacy checksum mode 检查点
 
-Linux v7.1 `include/linux/jbd2.h:150-204` 明确规定 checksum v1、v2、v3 互斥。
+Linux v7.1 `include/linux/jbd2.h` 明确规定 checksum v1、v2、v3 互斥。
 `FEATURE_COMPAT_CHECKSUM` 不是 journal superblock v1：它在 v2 superblock 上使用从
 `0xffff_ffff` 开始、不做 final XOR 的 big-endian CRC32，依次覆盖每个完整 descriptor block
 及其 journal payload，并把结果写入 commit header 的 type `1`、size `4`、checksum[0]。
 `CSUM_V2` 与 `CSUM_V3` 都使用 UUID-seeded CRC32C；区别在于 v2 tag 只保存低 16 bit，
 32/64-bit block number 的 wire size 分别是 10/14 bytes，v3 则使用固定 16-byte tag 保存
 完整 32 bit。二者都在 descriptor/revoke 尾部保存 whole-block CRC32C，并对 checksum 字段
-清零后的完整 commit block 计算 CRC32C。对应证据为 `fs/jbd2/commit.c:90-144,329-369,
-391-409,620-760`、`fs/jbd2/recovery.c:175-220,400-488,810-850` 与
-`fs/jbd2/journal.c:2312-2350,2688-2699`。
+清零后的完整 commit block 计算 CRC32C。对应证据为 `fs/jbd2/commit.c`、`fs/jbd2/recovery.c` 与
+`fs/jbd2/journal.c`。
 
 旧实现只接受 CSUM_V3：COMPAT/CSUM_V2 superblock 会返回 `Unsupported`，legacy tag
 checksum 和 commit tuple 始终为零，payload corruption 因而可通过 replay。确定性红测先分别
@@ -1335,7 +1334,7 @@ preflush、FUA commit、checksum 覆盖范围或 checkpoint/tail durability boun
 
 ### 7.42 JBD2 scratch block 复用检查点
 
-Linux v7.1 `fs/jbd2/commit.c:579-805` 复用 journal descriptor/payload submission 所需的
+Linux v7.1 `fs/jbd2/commit.c` 复用 journal descriptor/payload submission 所需的
 buffer owner；持久化语义来自 descriptor/tag/checksum、提交顺序与 completion/error 检查，
 不是每条 record 新建 heap object。Rust writer 此前对每个 revoke record、每个 descriptor
 record 和最终 commit block 分别创建一个 filesystem-block-sized `Vec`。默认 sync-cycle 虽然
@@ -1370,7 +1369,7 @@ RSEXT4_BENCH_SUMMARY commit=2ffe3de0b-repeat arch=x86_64 backend=memory feature=
 
 ### 7.43 JBD2 nested same-owner handle 检查点
 
-Linux v7.1 `fs/jbd2/transaction.c:470-481,1883-1893` 在当前 task 已持有同一 journal
+Linux v7.1 `fs/jbd2/transaction.c` 在当前 task 已持有同一 journal
 handle 时不创建第二个 reservation，也不拒绝调用；它只递增 `h_ref`，最后一次 stop 才把
 handle 从 transaction 分离。nested start 传入的 `nblocks` 不扩展 outer credit budget。
 
@@ -1394,10 +1393,10 @@ inner block 不会进入最终 commit，而 outer 随后仍能更新并提交自
 
 ### 7.44 HTree hash 与 checked lookup 检查点
 
-Linux v7.1 `fs/ext4/hash.c:1-322` 的目录哈希不是通用 digest crate 的直接调用：legacy
+Linux v7.1 `fs/ext4/hash.c` 的目录哈希不是通用 digest crate 的直接调用：legacy
 hash 有 signed/unsigned byte 两种历史语义，half-MD4 每 32 bytes 更新四字 seed，TEA 每
 16 bytes 更新 state，二者都返回 major/minor；全零 UUID seed 必须替换为 ext4 固定 seed，
-major 最低 collision bit 清零且保留 EOF sentinel。`fs/ext4/namei.c:771-932` 又规定 root
+major 最低 collision bit 清零且保留 EOF sentinel。`fs/ext4/namei.c` 又规定 root
 只保存 base version 0/1/2 或 fscrypt SIPHASH 6，unsigned policy 来自 superblock flag；root
 depth、count/limit 与每级 block path 在选择 leaf 前验证。
 
@@ -1433,7 +1432,7 @@ rename/unlink 修改错误位置。写侧 insert/split/index growth 的后续检
 
 ### 7.45 HTree insert、leaf split 与 index growth 检查点
 
-Linux v7.1 `fs/ext4/namei.c:1280-1359,1843-2032,2473-2650` 把 HTree 写入分成三个
+Linux v7.1 `fs/ext4/namei.c` 把 HTree 写入分成三个
 不可拆散的状态转换：先把 active dirent 以稳定 hash 顺序建立 map，并保留其原始磁盘
 `rec_len`；leaf 满时按原始长度从高 hash 端累计到半块附近，再把两侧压缩为最小长度并重建
 dirent checksum tail；最后把
@@ -1476,7 +1475,7 @@ rollback/credit matrix 与 fscrypt SipHash/casefold prepared name 继续登记�
 
 ### 7.46 HTree leaf-only delete 检查点
 
-Linux v7.1 `fs/ext4/namei.c:2657-2746` 的 `ext4_generic_delete_entry()` 与
+Linux v7.1 `fs/ext4/namei.c` 的 `ext4_generic_delete_entry()` 与
 `ext4_delete_entry()` 不删除 dx entry、不释放空 leaf，也不重平衡或降低 HTree 高度。有前驱的
 目标把其 `rec_len` 合并进前驱并清零整个旧 record；块首目标保留原 `rec_len`，但清零 inode、
 name length、file type 与 payload。随后只重算 leaf dirblock checksum 并在原 namespace
@@ -1491,10 +1490,10 @@ leaf-only delete。
 
 ### 7.47 HTree readdir cookie 与 OS 游标检查点
 
-Linux v7.1 `fs/ext4/dir.c:346-410,526-637` 以 `(major, minor)` 表示 HTree 位置：64-bit
+Linux v7.1 `fs/ext4/dir.c` 以 `(major, minor)` 表示 HTree 位置：64-bit
 cookie 为 `((major >> 1) << 32) | minor`，EOF 为 `2^63-1`；同一完整 hash 的碰撞项共享
 ABI cookie，由每个打开目录的 `extra_fname` 私有状态保存精确续读位置。外部 `llseek` 会使该
-私有状态失效并从 cookie 解码后的碰撞链首项重建。`fs/readdir.c:341-410` 还规定前一条记录的
+私有状态失效并从 cookie 解码后的碰撞链首项重建。`fs/readdir.c` 还规定前一条记录的
 `d_off` 在下一条 emit 时覆写，最后一条使用最终 `ctx->pos`，因此 filesystem sink 必须返回“下一
 候选项”的 cursor。
 
@@ -1528,8 +1527,8 @@ Linux `dir_private_info` 不跨 hash range 保留 dx probe path；它为一个 o
 语义。确定性红测先在已缓存首个 range 后 unlink 并 reap 后续项：去掉 i_version cache clear 会
 稳定重新返回已删除名称，恢复失效逻辑后同一 reader 从原 cookie 续读且镜像经 `e2fsck -fn` clean。
 
-Linux `fs/ext4/namei.c:2148-2156,2675-2698,3641-3665` 在目录项插入、删除和替换后递增目录
-inode version；`fs/ext4/inode.c:4822-4832,5453-5461` 始终持久化低 32 位，仅在
+Linux `fs/ext4/namei.c` 在目录项插入、删除和替换后递增目录
+inode version；`fs/ext4/inode.c` 始终持久化低 32 位，仅在
 `i_version_hi` 落入 `i_extra_isize` 声明的范围时读写高 32 位。确定性红测先证明旧 core 在
 create 后父目录版本保持不变；当前所有 linear/HTree create、link、unlink、rmdir、rename mutation
 统一经 parent metadata update 递增 on-disk version，`InodeInfo::change_attribute` 以稳定 DTO 暴露
@@ -1580,9 +1579,9 @@ path cache 误列为 parity 目标。casefold/fscrypt prepared-name hash 仍在�
 
 ### 7.48 JBD2 transaction limit、start reservation 与 credit extend 检查点
 
-Linux v7.1 `fs/jbd2/journal.c:1412-1452` 把 `j_max_transaction_buffers` 固定为
+Linux v7.1 `fs/jbd2/journal.c` 把 `j_max_transaction_buffers` 固定为
 `(j_total_len - j_fc_wbufsize) / 3`，再为每个 transaction 预留一个 commit block 与覆盖最大
-transaction 的 descriptor blocks；`fs/jbd2/transaction.c:190-303` 从中扣除 bookkeeping 得到
+transaction 的 descriptor blocks；`fs/jbd2/transaction.c` 从中扣除 bookkeeping 得到
 user credits。更关键的是，handle 在第一次 dirty 任何可能仍被旧 transaction checkpoint 拥有的
 buffer 前，必须先保证 `jbd2_log_space_left() >= j_max_transaction_buffers`。commit path 因锁顺序
 不能在写 transaction 时再强迫 checkpoint，这个 start-time reservation 是避免 checkpoint/commit
@@ -1639,12 +1638,12 @@ attachment 继续登记为红项。
 
 ### 7.49 JBD2 revoke requested/remaining 与 descriptor credit 检查点
 
-Linux v7.1 `fs/jbd2/transaction.c:470-500,642-729` 与 `fs/jbd2/revoke.c:376-401` 将
+Linux v7.1 `fs/jbd2/transaction.c` 与 `fs/jbd2/revoke.c` 将
 metadata buffer credits、revoke descriptor buffer credits 和 revoke record credits 分开：start 把
 `ceil(revoke_records / j_revoke_records_per_block)` 加入 total buffer credits，同时保存 requested 与
 remaining revoke records；每个实际 revoke 只消耗 remaining record。extend 只为跨过新的 revoke
 descriptor 边界增加 buffer credit，stop 再按本 handle 实际使用的 revoke 数修正 transaction
-outstanding credits。Linux `fs/jbd2/journal.c:1397-1410` 还规定每块记录数必须同时考虑 32/64-bit
+outstanding credits。Linux `fs/jbd2/journal.c` 还规定每块记录数必须同时考虑 32/64-bit
 block number 与 CSUM_V2/V3 tail。
 
 旧实现把每个 distinct revoke block 当一个普通 metadata credit。加入 typed request 后，同一确定性
@@ -1693,14 +1692,14 @@ revision 对称扩为 10 次预热、500 次测量，最终 sync 判定使用
 
 ### 7.50 JBD2 reserved handle ownership 检查点
 
-Linux v7.1 `fs/jbd2/transaction.c:184-619,698-815,1883-2025` 把 reserved handle 定义为尚未
+Linux v7.1 `fs/jbd2/transaction.c` 把 reserved handle 定义为尚未
 附着 transaction 的 credits owner。普通 parent start 同时把 `blocks + rsv_blocks` 计入 running
 transaction outstanding，并把 `rsv_blocks` 加入 journal-wide `j_reserved_credits`；单项 reservation
 与全局 reservation 都不能超过 user transaction capacity 的一半，parent stop 若未 transfer token
 则自动 unreserve。调用方移交后必须清空 parent 的 `h_rsv_handle`，随后 `start_reserved()` 消费 token
 并附着 running transaction；该路径不能等待 commit、checkpoint 或 log space。Linux ext4 的真实
-owner 是 delayed-allocation writeback：`fs/ext4/inode.c:2920-2944` 创建 reservation，
-`inode.c:2396-2405` 转移给 `io_end`，`fs/ext4/extents.c:5089-5117` 在 data I/O 完成后启动 token，
+owner 是 delayed-allocation writeback：`fs/ext4/inode.c` 创建 reservation，
+`inode.c` 转移给 `io_end`，`fs/ext4/extents.c` 在 data I/O 完成后启动 token，
 将 unwritten extent 转为 initialized。
 
 为固定旧实现差异，64-block CSUM_V3 journal 的 user capacity 是 19：测试让 parent 申请 1 个
@@ -1728,7 +1727,7 @@ still-unwritten split；最后一个 prepare handle 在 finish footprint 同时�
 handle 路径，不以 reservation 绕过容量上限。现有 external-leaf finish fault、inline-root split、
 partial write、preallocation、truncate/punch/zero/insert/collapse 的确定性用例保持原断言。
 
-这一检查点还把 `fs/jbd2/transaction.c:184-815,1883-2025` 从 whole-file coarse 清单拆为 symbol-level
+这一检查点还把 `fs/jbd2/transaction.c` 中 handle attachment 与 reserved handle 的相关条目从 whole-file coarse 清单拆为 symbol-level
 segment，绑定 Rust owner、差异理由和 `jbd2-handle-credits` 测试 ID；其余区间仍明确保持 coarse。
 `T_LOCKED/T_SWITCH` barrier、真正跨执行流 attachment 与通用 in-closure `journal_restart` 尚未完成，
 不能因为 adapter 当前串行就标 N/A。
@@ -1774,7 +1773,7 @@ dev 的全局 dirty-sync 红项。
 
 ### 7.52 JBD2 transaction restart 检查点
 
-Linux v7.1 `fs/jbd2/transaction.c:642-697,698-742,743-806,807-815` 依次定义 best-effort
+Linux v7.1 `fs/jbd2/transaction.c` 依次定义 best-effort
 extend、旧 handle stop accounting、`jbd2__journal_restart()` 与 metadata-only wrapper。restart 先让
 旧 handle 脱离 transaction，再请求旧 TID commit，重建普通/revoke credits，最后把同一个 handle
 附着到可保证新预算的 transaction；attached reserved handle 的所有权必须跨越这个切换。
@@ -1801,7 +1800,7 @@ truncate/reap/punch 的首个 chunk 继续允许加入已经建立的 truncate/o
 chunk 明确走 restart，pointer/extent edit、inode image、bitmap/GDT、superblock 与 cache invalidation
 仍由各自完整 step 共同拥有。
 
-源码映射把原 `transaction.c:642-815` coarse segment 无缺口拆为四个 symbol-level segment，分别绑定
+源码映射把原 `transaction.c` 中 handle 生命周期的 coarse segment 无缺口拆为四个 symbol-level segment，分别绑定
 extend、stop、restart 和 barrier precondition 的 Rust owner/差异理由/测试 ID。三个 journal unit
 回归覆盖 sequence switch、reserved owner 和 active-handle rejection；既有 `extent_restart` 八个
 bounded restart/power-cut case 覆盖真实 extent/legacy owner、replay、orphan 与最终 accounting。
@@ -1834,9 +1833,9 @@ portable-core boundary 同步通过。
 
 ### 7.53 JBD2 running/locked/switch phase 检查点
 
-Linux v7.1 `fs/jbd2/commit.c:466-505` 在 commit thread 取得 running owner 后，先将
+Linux v7.1 `fs/jbd2/commit.c` 在 commit thread 取得 running owner 后，先将
 `T_RUNNING` 改为 `T_LOCKED`，等待 `t_updates == 0`，再进入 `T_SWITCH`；只有完成该 admission
-closure 后才能把旧 transaction 转为 committing owner。`fs/jbd2/transaction.c:817-906` 分别定义
+closure 后才能把旧 transaction 转为 committing owner。`fs/jbd2/transaction.c` 分别定义
 update drain、特殊操作 barrier 和 balanced unlock。reserved handle 可以加入 Locked，但 Switch 已不再
 等待 handle；普通 handle 从 Locked 起就不能新加入。
 
@@ -1852,8 +1851,8 @@ adapter 的 sleepable mutex 与 core `&mut` 独占保证两次 phase transition 
 flow 可以进入，所以 update drain 是受类型所有权证明的立即条件，而不是忙等。现有 active-handle
 回归补充断言：失败的 unmount/flush 必须保持 Running，随后同一 handle 仍可发布 update。
 
-源码映射把 `commit.c:466-537` 拆为 phase transition 与仍待细化的 Linux reserved-buffer/checkpoint
-cleanup；把 `transaction.c:816-907` 拆为 wait-updates、lock-updates、unlock-updates。普通 commit phase
+源码映射把 `commit.c` 中 running owner 的交接流程拆为 phase transition 与仍待细化的 Linux reserved-buffer/checkpoint
+cleanup；把 `transaction.c` 中 update 同步的相关条目拆为 wait-updates、lock-updates、unlock-updates。普通 commit phase
 已实现，但 `jbd2_journal_lock_updates()` 面向 freeze/特殊操作的 reservation-drain 与 balanced barrier
 owner 尚未实现，继续保持同一红测台账，不能把 `&mut` 独占误报为该 API 全语义完成。
 
@@ -1883,9 +1882,9 @@ image/e2fsck 绿，三组目标 clippy、格式与 portable-core boundary 同步
 
 ### 7.54 JBD2 unused buffer access 与 cache publication 检查点
 
-Linux v7.1 `fs/jbd2/commit.c:506-527` 在 transaction 已进入 `T_SWITCH` 后遍历
+Linux v7.1 `fs/jbd2/commit.c` 在 transaction 已进入 `T_SWITCH` 后遍历
 `t_reserved_list`：未实际 dirty 的 `BJ_Reserved` 必须 refile，`b_committed_data` undo image 必须释放，
-但绝不能因为 commit cleanup 而写 home block。`commit.c:528-537` 随后只回收已经异步写回的
+但绝不能因为 commit cleanup 而写 home block。`commit.c` 随后只回收已经异步写回的
 checkpoint `buffer_head` 内存；它同样不能推进 journal tail 或丢失 replay owner。
 
 旧 Rust API 将一个 block mutation 拆为公开的 `read_block()`、`buffer_mut()`、`write_block()`。
@@ -1903,11 +1902,11 @@ home write 前检查 cache 不存在 unfinished edit；回放、commit、checkpo
 保持为零，后续独立 transaction 仍可正常 commit，journal 不被错误 abort；第三个回归在 closure 成功
 后注入 direct publish failure，再调用 flush，证明失败镜像已经丢弃，不会被通用 cache writeback 重试。
 
-源码映射将 `commit.c:506-527` 标为 Rust 表示中不适用的 `buffer_head` reservation mechanics：完成的
+源码映射将 `commit.c` 中 reserved-buffer cleanup 标为 Rust 表示中不适用的 `buffer_head` reservation mechanics：完成的
 metadata image 直接由 transaction-owned copy 表达，未完成 image 无法从 closure 逃逸。Linux 由
 `j_state_lock` 串行化的 `t_reserved_list` refile、`BJ_Reserved` write-access reservation 与
 `b_committed_data` undo-image release 均没有对应的可逃逸 Rust 对象；这些对象生命周期由 closure 返回及
-transaction copy 的所有权转移一次性表达，而不是遗漏清理。`528-537` 的
+transaction copy 的所有权转移一次性表达，而不是遗漏清理。`commit.c` 中的
 异步 checkpoint-buffer reclamation 也因 core 使用同步 checkpoint transaction owner 而不适用；
 immutable image 只有在 home flush 与 FUA tail publication 均成功后才 drain。这里的 N/A 只针对
 Linux 内存/cache mechanics，checkpoint、replay 与 durable tail 的磁盘语义仍由后续 core 区间承担。
@@ -1937,8 +1936,8 @@ image/e2fsck 绿；三组目标 clippy、格式与 portable-core boundary 同步
 
 ### 7.55 ax-fs-ng native FUA capability 检查点
 
-Linux v7.1 `fs/jbd2/commit.c:152-156` 在 barrier 开启且非 async commit 时用
-`REQ_PREFLUSH | REQ_FUA` 发布 commit record；`fs/jbd2/journal.c:1767-1774` 也要求以
+Linux v7.1 `fs/jbd2/commit.c` 在 barrier 开启且非 async commit 时用
+`REQ_PREFLUSH | REQ_FUA` 发布 commit record；`fs/jbd2/journal.c` 也要求以
 `REQ_FUA` 发布 journal tail，避免复用日志空间前旧 tail 尚未落盘。portable core 因而只接受两种
 明确的 durability：底层真实实现 `WriteFlags::FUA`，或设备不支持 FUA 但支持 flush 时由私有
 `BlockDev` 同步执行普通 write 后 flush。底层 `BlockIo` 默认实现继续拒绝 FUA，adapter 不能把
@@ -1968,10 +1967,10 @@ block size 由下一检查点接通；discard capability 继续保留在 `blocki
 
 ### 7.56 logical/physical block geometry 检查点
 
-Linux v7.1 `include/linux/blkdev.h:389-394` 将 logical、physical、alignment offset、minimum I/O
-和 optimal I/O 作为不同 queue limit；`block/ioctl.c:683-692` 也分别通过 `BLKSSZGET` 与
+Linux v7.1 `include/linux/blkdev.h` 将 logical、physical、alignment offset、minimum I/O
+和 optimal I/O 作为不同 queue limit；`block/ioctl.c` 也分别通过 `BLKSSZGET` 与
 `BLKPBSZGET` 对外报告。ext4 的块寻址仍以 logical sector 为单位：例如 external journal mount 在
-`fs/ext4/super.c:5985-5998` 只要求 filesystem block 不小于设备 logical block；mballoc 的 stripe
+`fs/ext4/super.c` 只要求 filesystem block 不小于设备 logical block；mballoc 的 stripe
 对齐来自 ext4/RAID geometry，不是把 filesystem block 强制提升到 physical block。
 
 旧 rdif `DeviceInfo` 只有 `logical_block_size`，`NativeHandleBlockDevice` 与 `Ext4Disk` 因而把设备
@@ -1981,7 +1980,7 @@ physical geometry 永久压成 logical。确定性 adapter 红测构造 512-byte
 覆盖。region adapter 只改变 LBA 范围和起点，不改变底层 physical block size；partition alignment
 offset 尚未建模，不能用拒绝非 physical-aligned partition 的方式伪造该语义。
 
-rdif transfer planner 在请求 admission 前按 Linux `block/blk-settings.c:340-365` 规范化 geometry：未
+rdif transfer planner 在请求 admission 前按 Linux `block/blk-settings.c` 规范化 geometry：未
 报告或比 logical 更小的 physical size 提升为 logical，只有规范化后非 2 次幂的 descriptor 被拒绝。
 portable core 对 injected service 执行同一规则，但不会使用 physical size 改写 LBA 或 block mapping。
 专门回归验证 1 KiB filesystem block 在 4 KiB physical/512-byte logical device 上可用，防止后续把
@@ -1996,20 +1995,20 @@ io_min/io_opt 和 discard 继续作为独立 capability 红项，而不是把尚
 
 ### 7.57 MMP mount lifecycle 检查点
 
-Linux v7.1 `fs/ext4/super.c:5496-5500` 只在可写 mount 时调用
+Linux v7.1 `fs/ext4/super.c` 只在可写 mount 时调用
 `ext4_multi_mount_protect()`；只读 mount 不读取、不校验也不写入 MMP block。`RO→RW` remount 则会在
-`super.c:6769-6775` 重新检查 writable feature 并建立 MMP owner。旧 rsext4 把
+`super.c` 重新检查 writable feature 并建立 MMP owner。旧 rsext4 把
 `EXT4_FEATURE_INCOMPAT_MMP` 一律视作 unsupported incompat，确定性 feature 红测因此在只读协商时
 返回 `UnsupportedFeature(bits=0x100)`。
 
 当前 feature negotiation 为只读与可写维护不同的最小 incompat mask：只读额外接受 MMP 且
 完全不进入 protection block I/O；可写路径则在 superblock、journal 或 namespace mutation 前建立
-MMP owner。`rsext4` core 实现 `fs/ext4/mmp.c:1-404` 的 checked codec、metadata checksum、
+MMP owner。`rsext4` core 实现 `fs/ext4/mmp.c` 的 checked codec、metadata checksum、
 clean/FSCK/stale-sequence 策略、均匀随机 sequence claim、超时后二次确认、周期 refresh 与 clean
 release。claim/release 持久化使用 metadata+FUA 语义；refresh 再读取时同时比较 sequence 和
 node identity，任一错误都锁存 failed owner，阻止后续可写操作。初始 mount、RO→RW、
 RW→RO 和 unmount 的回滚共用这一份 core state；Linux 依据还包括
-`fs/ext4/super.c:6769-6775,6828-6829`。
+`fs/ext4/super.c`。
 
 OS 边界没有被压成巨型 runtime trait。Core 仅声明小型 `EntropySource` 和 `Delay`，并接收纯数据
 `MmpIdentity`；wall clock 只写磁盘 timestamp，monotonic clock 只计算 refresh elapsed。周期调度、
@@ -2040,7 +2039,7 @@ terminal unmounted state，保留原始 I/O error，并拒绝 sync、remount 和
 
 ### 7.58 extent leaf insertion normalization 检查点
 
-Linux v7.1 `fs/ext4/extents.c:1786-1860` 的 leaf normalization 先用
+Linux v7.1 `fs/ext4/extents.c` 的 leaf normalization 先用
 `ext4_can_extents_be_merged()` 检查 initialized/unwritten 状态一致、逻辑与物理区间都连续，并要求合并
 长度能由对应的 on-disk `ee_len` 表示。`ext4_ext_try_to_merge()` 优先把新 extent 向左合并；若左侧没有
 发生合并，才从新 extent 开始向右合并。`ext4_ext_try_to_merge_right()` 会继续扫描同一 leaf 的全部可合并
@@ -2065,7 +2064,7 @@ Linux 精确扩展 2 个 metadata credit 和 1 个 revoke credit。无 scoped ha
 
 回归矩阵覆盖 bridge 同时合并左右邻、状态不同时只合并合法一侧、initialized 超限时不做 partial merge、
 unwritten 恰好到上限与超过上限、以及 external leaf reload。本检查点只对齐 Linux
-`extents.c:1786-1932`，不宣称整个 `extents.c` 已完成。
+`extents.c` 中的 leaf insertion normalization，不宣称整个 `extents.c` 已完成。
 
 首个正确性实现 `dae8d9499` 相对 `4cf9505a3` 的 500+500 交错 A/B 发现 dirty-sync median +7.51%、
 clean-sync p95 +10.76%、unmount median +5.15%，因此保留为性能红证据，没有用功能测试绿色掩盖热路径
@@ -2093,10 +2092,10 @@ sequential 使用 25 个交错批次、每批每端 3 次预热与 20 次测量�
 
 ### 7.59 insertion-time extent merge-up 检查点
 
-Linux v7.1 `fs/ext4/extents.c:1862-1906` 只在 root depth 为 1、root 恰有一个 child、child entries 不超过
+Linux v7.1 `fs/ext4/extents.c` 只在 root depth 为 1、root 恰有一个 child、child entries 不超过
 inode root capacity 时执行 `ext4_ext_try_to_merge_up()`。它不能先释放 child 再发布 inode：必须先取得
 额外 journal credits，把 leaf image 拷回 inode，随后以 revoke-aware metadata free 回收 external block。
-`1912-1932` 的 wrapper 在 leaf 邻接合并后无条件尝试该 best-effort normalization。
+`ext4_ext_try_to_merge()` wrapper 在 leaf 邻接合并后无条件尝试该 best-effort normalization。
 
 旧 Rust insert 在 external child 写回后只保存原 index root。确定性红测手工建立一个合法 depth-1、
 single-child tree，child 只有一个 extent；在同一 scoped journal transaction 内插入第二个仍可内联的
@@ -2111,8 +2110,7 @@ revoke、block bitmap/GDT 回收、`i_blocks` 扣减的顺序完成状态转换�
 内联后定点使 block bitmap publish 失败，并证明 transaction 返回原始 I/O error 后，inode root、external
 child、extent 集合、free count 与 `i_blocks` 全部恢复，child 也没有提前重入 allocator。
 
-本检查点补齐 `extents.c:1861-1932`，与 7.58 的 right-merge 一起使 `1786-1932` 成为连续 reviewed
-segment。
+本检查点补齐 `extents.c` 中的 merge-up，与 7.58 的 right-merge 一起完成 leaf 邻接合并与 root 内联合并的连续审查。
 
 首个功能提交 `9af7a5f36` 相对 `3acc11385` 的完整 A/B 汇总如下：sequential 为 500+500，sync-cycle 在
 独立重复后为 1,000+1,000。dirty-sync 与 sequential 已过门槛，但第二轮 clean-sync median 仍为
@@ -2138,8 +2136,8 @@ memory backend、4 KiB block、20 MiB payload，10 个交错批次、每批每�
 
 ### 7.60 非首组 inode reserved-range 检查点
 
-Linux v7.1 `fs/ext4/ialloc.c:725-735` 在选定 block group 的 bitmap 上从 group-local candidate
-offset 查找空位；`1073-1083` 只在 `group == 0` 时用 `EXT4_FIRST_INO` 检查全局 reserved inode。
+Linux v7.1 `fs/ext4/ialloc.c` 在选定 block group 的 bitmap 上从 group-local candidate
+offset 查找空位；同文件只在 `group == 0` 时用 `EXT4_FIRST_INO` 检查全局 reserved inode。
 旧 Rust allocator 却对每个 group 都从 `s_first_ino - 1` 开始扫描，使非首组前若干合法 inode
 永久不可分配，并让后续分配选择与 inode-table accounting 偏移。
 
@@ -2154,7 +2152,7 @@ transaction owner 在完整请求成功后发布，bitmap checksum、group/super
 
 ### 7.61 external xattr orphan reap 检查点
 
-Linux v7.1 `fs/ext4/xattr.c:2906-3014` 在 inode 最终释放前调用
+Linux v7.1 `fs/ext4/xattr.c` 在 inode 最终释放前调用
 `ext4_xattr_delete_inode()`：先读取并校验 `i_file_acl` block，shared block 减引用并更新
 checksum，最终引用则以 metadata revoke 释放；`i_file_acl=0` 必须和 release 位于同一
 transaction。EA-inode value 的引用遍历是另一项 feature，本检查点不把它伪装成已支持。
@@ -2173,8 +2171,8 @@ free count；同一 inode 随后可重试 reap 成功。refcount 0 与 1025 也�
 
 ### 7.62 JBD2 partial commit block recovery 检查点
 
-Linux v7.1 `include/linux/jbd2.h:167-177` 定义的 `struct commit_header` 线格式长度为 60 bytes。
-`fs/jbd2/recovery.c:431-468,820-878` 在 CSUM_V2/V3 commit 的完整 block CRC32C 失败后，建立一个
+Linux v7.1 `include/linux/jbd2.h` 定义的 `struct commit_header` 线格式长度为 60 bytes。
+`fs/jbd2/recovery.c` 在 CSUM_V2/V3 commit 的完整 block CRC32C 失败后，建立一个
 全零 journal block，只拷贝该 60-byte header、清零 `h_chksum[0]` 后重新校验；若匹配则把它识别为
 tail 未完整持久化但已提交的 transaction，继续推进 sequence 并在后续 pass 回放。COMPAT checksum
 使用 descriptor/payload 聚合 CRC32-BE，不进入这条回退。
@@ -2189,14 +2187,14 @@ constant 处理 60-byte header，以固定小块增量喂入零 tail，不分配
 
 这一冷恢复分支不改变 writer、正常完整 commit replay、sync 或 unmount 热路径，本检查点不单独声明
 性能收益；最终 PR 仍以冻结 dev/head workload 做整体性能验收。本检查点只对齐
-`recovery.c:431-468,820-878`，不宣称其余 recovery 路径已经完成。
+`recovery.c` 中的 partial commit block 校验与回放，不宣称其余 recovery 路径已经完成。
 
 ### 7.63 JBD2 stale checksum tail 与 commit time 检查点
 
-Linux v7.1 `fs/jbd2/recovery.c:588-645` 在每个 recovery pass 中把
+Linux v7.1 `fs/jbd2/recovery.c` 在每个 recovery pass 中把
 `need_check_commit_time=false`、`last_trans_commit_time=0` 作为 scanner-owned state。descriptor checksum
-失败在 PASS_SCAN 只设置 deferred flag（`703-721`），revoke checksum 失败也共用该 flag
-（`880-904`）；之后遇到结构可解析的 commit block，`794-878` 仅在 commit time 小于
+失败在 PASS_SCAN 只设置 deferred flag，revoke checksum 失败也共用该 flag；
+之后遇到结构可解析的 commit block，仅在 commit time 小于
 上一个已接受 transaction 时把损坏解释为 lazy-initialized stale tail 并正常结束恢复；
 时间相等或递增意味着同一 journal 内的真实损坏，必须拒绝。commit block 自身的
 COMPAT/CSUM_V2/CSUM_V3 checksum 失败也进入同一时间判定。
@@ -2216,7 +2214,7 @@ COMPAT/CSUM_V2/CSUM_V3 checksum 失败也进入同一时间判定。
 tag 却没有 `LAST_TAG` 则返回 typed corruption。单元用例在空 descriptor 后放置相邻 commit
 仍要求 clean-end；原有 Linux-image 集成用例继续要求空 descriptor tail 正常丢弃。
 
-Linux v7.1 `fs/jbd2/commit.c:114-144` 在 commit record checksum 之前写入 coarse realtime seconds/
+Linux v7.1 `fs/jbd2/commit.c` 在 commit record checksum 之前写入 coarse realtime seconds/
 nanoseconds。旧 Rust writer 一直写 0，使上述 stale 判定在自身产生的 journal 上缺失时间
 信号。现在只有非空 running transaction 会读取已注入的 filesystem clock，并在
 CRC/FUA publication 前写入 commit header；空 commit 仍不读时钟。定点用例要求
@@ -2246,10 +2244,10 @@ transaction 上读时钟和进入 commit state machine。同样配置独立重�
 
 ### 7.64 xattr inode-body/external placement 检查点
 
-Linux v7.1 `fs/ext4/xattr.c:1629-1853` 先在单个 store 内计算 entry/name/value 的真实
-可用空间并原子完成该 entry 的增删改；`2337-2498` 在 `ext4_xattr_set_handle()` 中先查和
+Linux v7.1 `fs/ext4/xattr.c` 先在单个 store 内计算 entry/name/value 的真实
+可用空间并原子完成该 entry 的增删改；`ext4_xattr_set_handle()` 先查和
 尝试 inode body，只有 `-ENOSPC` 才写 external block。目标属性在新 store 成功后，只从旧
-store 删除同名 entry，不迁移无关 sibling。`fs/ext4/extents.c:5120-5160` 的
+store 删除同名 entry，不迁移无关 sibling。`fs/ext4/extents.c` 的
 `FIEMAP_FLAG_XATTR` 也先报告 inode-body store，只有 inode body 不存在时才报告 `i_file_acl`。
 
 旧 Rust `persist_xattrs()` 把两处 entry 合成一个 `Vec`：只要整体放不进 inode tail，就把所有
@@ -2267,7 +2265,7 @@ raw inode、inline sibling 与 free-block accounting 在当前 mount 和重挂�
 1/2/4 KiB Linux image 用例按 `block_size - 80` 构造 large value：该值单独能装入 external
 block，但与 Linux/debugfs 预置的 inline sibling 合装必然超过 block。三个几何均完成
 inline→external→inline、free-block accounting、FIEMAP inode-body-first、unmount/remount、
-`debugfs ea_list` 和 `e2fsck -fn`。本检查点只对齐 `xattr.c:1629-1853,2337-2498`；
+`debugfs ea_list` 和 `e2fsck -fn`。本检查点只对齐 `xattr.c` 中的单 store 更新与 inode-body/external placement；
 EA-inode value、ACL/security/trusted policy 与 external deletion power-cut replay 仍保持
 红项。本检查点不声称性能提升；最终 PR 继续按冻结的 dev/head workload 做整体性能验收。
 
@@ -2303,7 +2301,7 @@ dirty-sync median 的额外成本保留了 Linux JBD2 descriptor/payload preflus
 durability boundary；p95 没有回退，不能通过删减持久化顺序换取更低 median。综合 workload
 中的 read I/O 数与 dev 相同，差异来自 ax-fs-ng shared block cache 对 multi-folio direct read
 增加的锁与 folio overlay。Linux v7.1 的普通 buffered data cache 由 VFS/mm page cache 持有：
-`fs/ext4/file.c:130-148,302-323` 进入 generic file read/write，`fs/ext4/fsync.c:167-187`
+`fs/ext4/file.c` 进入 generic file read/write，`fs/ext4/fsync.c`
 先等待 file page cache writeback，再提交 ext4 journal。因此本 PR 不在 rsext4 内重建第二套
 inode/page-offset cache；后续若继续收敛上述两项，应在 ax-fs-ng shared cache 与 VFS page cache
 边界处理，而不是扩大 rsext4 `DataBlockCache`。该边界的后续工作已登记为

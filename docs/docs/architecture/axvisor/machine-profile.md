@@ -143,7 +143,7 @@ machine replacement snapshot 进入 config 前必须形成能实现的客户机�
 
 `GuestRegionPlanner` 处理的是最终 stage-2 可见性，不是设备访问分派。`AddressSpacePolicy::Virtualized` 从空映射开始，只加入显式 passthrough；`Passthrough` 从整个可用 GPA 恒等窗口开始，再逐个打孔。这些步骤的顺序就是 `GuestRegionPlanner` 的收集顺序：先声明的区间先占用地址空间，后续与之冲突的固定资源会让 prepare 失败，而不是被自动挪动。
 
-1. 计算 guest address-space 上限。GPA 能力来自 VM 的所有目标物理 CPU：`minimum_recorded_target_cpu_capability()` 对 `virtualization/axvm/src/percpu.rs:18-21` 发布的 `CPU_MAX_GPT_LEVELS` / `CPU_GPA_BITS` 取最小值；缺少任一目标 CPU snapshot 直接报 unsupported。x86/LoongArch 3/4 级换算为 39/48 位，RISC-V 3/4 级为 41/50 位，AArch64 由 stage-2 levels 得到 39/48 位。最终 size 是架构 `VM_ASPACE_SIZE` 与 `1 << gpa_bits` 的较小值。
+1. 计算 guest address-space 上限。GPA 能力来自 VM 的所有目标物理 CPU：`minimum_recorded_target_cpu_capability()` 对 `virtualization/axvm/src/percpu.rs` 发布的 `CPU_MAX_GPT_LEVELS` / `CPU_GPA_BITS` 取最小值；缺少任一目标 CPU snapshot 直接报 unsupported。x86/LoongArch 3/4 级换算为 39/48 位，RISC-V 3/4 级为 41/50 位，AArch64 由 stage-2 levels 得到 39/48 位。最终 size 是架构 `VM_ASPACE_SIZE` 与 `1 << gpa_bits` 的较小值。
 2. 收集 guest RAM，标为 `Memory` owned region。
 3. 收集 `boot_description.occupied_ranges()`，包括 DTB、ACPI、MP table 等已注册启动描述，标为 `BootDescription`。
 4. 收集用户/host parser 写入的 configured `Reserved` 范围。
@@ -196,7 +196,7 @@ MADT 发布 vCPU APIC IDs、local APIC 和 IOAPIC；FADT/DSDT 发布 PM timer、
 
 `GuestPlatform::discover()` 先调用 `resolved_fw_cfg()` 和 `resolved_serial()` 从 resolved graph 取得 `fw-cfg` 与 `console0`；graph 缺少 `fw-cfg` 会立即返回 `NotFound`，当前 discover 路径不会使用 `defaults.fw_cfg`。随后 host ACPI probe 才补充可复用的平台拓扑。这里要区分两种 ACPI 消费：创建 VM 前的 SPCR serial replacement 解析失败会返回错误；`GuestPlatformBuilder::apply_host_acpi()` 对 PCI、中断和固件设备的拓扑 probe 则是 best-effort。
 
-`apply_host_acpi()` 保留 collector 返回 `Err` 时记录 warning 的防御分支。当前 `host_acpi_resources()` 主要把 ACPI 字段不存在解释为资源缺失：PCI 和 interrupt 缺失由 `build()` 的 defaults 补齐；firmware devices 在 collector 内以 `QemuVirtDefaults` 为基线，再按探测结果覆盖。RTC 资源查询失败由 `.ok()?` 转成“没有 RTC snapshot”，不会触发该 warning。最终 IRQ routes 按补齐后的拓扑生成（`virtualization/axvm/src/arch/loongarch64/boot/probe.rs:70-98`）。
+`apply_host_acpi()` 保留 collector 返回 `Err` 时记录 warning 的防御分支。当前 `host_acpi_resources()` 主要把 ACPI 字段不存在解释为资源缺失：PCI 和 interrupt 缺失由 `build()` 的 defaults 补齐；firmware devices 在 collector 内以 `QemuVirtDefaults` 为基线，再按探测结果覆盖。RTC 资源查询失败由 `.ok()?` 转成“没有 RTC snapshot”，不会触发该 warning。最终 IRQ routes 按补齐后的拓扑生成（`virtualization/axvm/src/arch/loongarch64/boot/probe.rs`）。
 
 UEFI FDT 在 `0x0010_0000` 发布 memory、CPU、CPUIC/EIOINTC/PCH-PIC/PCH-MSI、PCI、RTC、flash、GED、fw_cfg、serial 和普通配置设备；fw_cfg ACPI composer 生成 FACS、DSDT、FADT、MADT、SRAT、SPCR、MCFG、RSDT、RSDP 及普通配置设备 AML。
 
@@ -229,7 +229,7 @@ Machine 层的失败大多发生在 VM prepare 阶段，错误信息通常能直
 | firmware plan missing device/slot、selected interface unsupported 或 transport mismatch | FDT/ACPI composer | composer 是否在读取同一 resolved graph；model 是否声明平台选中的 FDT/ACPI contribution；`console0` binding 是否仍与 host identity 匹配；LoongArch 是否误用了 PIO |
 | 地址存在但客户机访问 stage-2 fault | address layout | 该区间是否属于 disabled、host-owned、x86 local APIC、replacement hole，或超过所有目标 CPU 的最小 GPA 能力 |
 
-现有覆盖包括 machine fallback 常量、host serial/GIC/PLIC/timer 解析与畸形输入、设备图 fixed conflict 与 pool exhaustion、host-owned 显式选择、x86 local APIC hole、目标 CPU 最小能力和 FDT/ACPI composer 的表指针/checksum。`virtualization/axvm/src/configured/append.rs:231` 是 `console_override_and_extra_serial_share_deterministic_planning` 的位置。该测试只覆盖不兼容 model 的重新分配；兼容 model 保留 fixed resources 与 firmware identity 尚无直接测试。
+现有覆盖包括 machine fallback 常量、host serial/GIC/PLIC/timer 解析与畸形输入、设备图 fixed conflict 与 pool exhaustion、host-owned 显式选择、x86 local APIC hole、目标 CPU 最小能力和 FDT/ACPI composer 的表指针/checksum。`virtualization/axvm/src/configured/append.rs` 是 `console_override_and_extra_serial_share_deterministic_planning` 的位置。该测试只覆盖不兼容 model 的重新分配；兼容 model 保留 fixed resources 与 firmware identity 尚无直接测试。
 
 最小验证命令：
 

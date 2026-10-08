@@ -94,14 +94,14 @@ exec、任务退出、normal schedule 和 CPU offline 使用同一 active-mm 状
 ### 3.1 AArch64 lazy 进入与保留 ASID 恢复
 
 AArch64 在用户线程暂时切到内核线程时走 `enter_lazy_kernel_address_space()`（
-[address_space.rs:566-592](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L566-L592)）。
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）。
 当本 CPU 仍有 active mm 且当前安装的是非零 tag 时，它把整个 `TTBR0_EL1` 写成 0，也就是低半 root 归零并
 同时把 ASID 切换到预留 ASID 0，并且**不做 TLBI**；`write_user_page_table()`（
-[asm.rs:150-160](../../components/axcpu/src/arch/aarch64/asm.rs#L150-L160)）的文档也明确它不失效 TLB。
+[asm.rs](../../components/axcpu/src/arch/aarch64/asm.rs)）的文档也明确它不失效 TLB。
 这一状态同时保留 active-mm lease 和 active CPU bit，并要求调用者处于 IRQ 排除区间，三者共同构成它安全的
 前提。若当前已是 root 0、tag 0，函数直接返回；对于 FullFlush（tag 0）或没有 active mm 的 CPU，函数改走
 `install_hardware_root(0, DifferentAddressSpace)`，由
-[address_space.rs:546-562](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L546-L562)
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)
 在非 x86 后端执行全量 `flush_tlb(None)`。
 
 下表对照 lazy 进入的两条路径，说明它们在硬件动作与失效范围上的差别，同 mm 恢复的省略前提见本节下段。
@@ -112,19 +112,19 @@ AArch64 在用户线程暂时切到内核线程时走 `enter_lazy_kernel_address
 | user → kernel，tag 为 0 或无 active mm | 安装 replacement root 0 | 全量 `flush_tlb(None)` |
 
 同 mm 从保留根恢复由 `install_mm_identity()`（
-[address_space.rs:410-456](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L410-L456)）
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）
 判定：仅当 `transition == SameAddressSpace`、`current_root == 0`、`installed.hardware_tag() != 0` 且该 tag
-小于 `address_space_tag_capacity()` 时才允许省略 TLBI（同文件 `:416-419`）。命中后顺序固定为
+小于 `address_space_tag_capacity()` 时才允许省略 TLBI。命中后顺序固定为
 `synchronize_page_table_writes()`（`dsb ishst`）→ `El1::write_user_address_space()`（写回 `TTBR0_EL1`）
-→ `instruction_sync()`（`isb`）（同文件 `:435-439`），不再发 TLBI。省略的书面前提是：保留的 activation
+→ `instruction_sync()`（`isb`），不再发 TLBI。省略的书面前提是：保留的 activation
 属于同一逻辑 mm，lazy 进入时安装的是保留 ASID 0，所有用户叶子为非全局，此后本 CPU 未运行过其它用户 mm，
-且 active 目标位持续发布以接收同步 shootdown（同文件 `:428-434`）。lease 只固定逻辑 mm 身份，不预留数值
+且 active 目标位持续发布以接收同步 shootdown。lease 只固定逻辑 mm 身份，不预留数值
 ASID，因此“持有 lease”本身不能让跨 mm 安装跳过失效。
 
 ### 3.2 跨 mm 失效、FullFlush 与混合模式 ASID 0 卫生
 
 安装新用户身份统一进入 `install_user_address_space()`（
-[asm.rs:48-63](../../components/axcpu/src/arch/aarch64/asm.rs#L48-L63)）：tag 非零且小于
+[asm.rs](../../components/axcpu/src/arch/aarch64/asm.rs)）：tag 非零且小于
 `address_space_tag_capacity()` 时先 `flush_tlb_asid(tag)`（`tlbi aside1is`）再写带 tag 的 `TTBR0_EL1`，
 否则写裸 root 后执行全量 `flush_tlb(None)`。在前句那条合法 tagged 安装（tag 非零且小于
 `address_space_tag_capacity()`）上，且为不同逻辑 mm 的切换时，安装前总是先失效 incoming ASID，因此不同
@@ -132,14 +132,14 @@ ASID，因此“持有 lease”本身不能让跨 mm 安装跳过失效。
 [reuse.rs](../../test-suit/arceos/cpu/user-entry/src/aarch64/reuse.rs) 覆盖的场景（两个 mm 都用 tag 1）。
 
 `hardware_root_install_required()`（
-[address_space.rs:537-543](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L537-L543)）
-在 root 不同或 transition 为 `DifferentAddressSpace` 时要求安装，而 `same_logical_address_space()`（同文件
-`:647`）只比较共享 tracker 的对象身份；因此“不同 mm、root 数值相同”仍按不同身份安装并失效 incoming tag。
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）
+在 root 不同或 transition 为 `DifferentAddressSpace` 时要求安装，而同文件的
+`same_logical_address_space()` 只比较共享 tracker 的对象身份；因此“不同 mm、root 数值相同”仍按不同身份安装并失效 incoming tag。
 tag 非零但达到或超过 ASID 容量时，`install_user_address_space()` 落入与 FullFlush 相同的全量失效分支，
 未 tagged 的安装同样全量失效，这两条回退不依赖调用点记忆。
 
 混合模式分支位于 `install_mm_identity()` 的 else 路径（
-[address_space.rs:442-453](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L442-L453)）：
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）：
 当 `current_root != 0`、当前读取到的 `TTBR0_EL1` tag 为 0、而将安装的 tag 非零时，在安装前补一次
 `flush_tlb(None)`。原因是一次直接的 FullFlush→tagged 切换会把旧的非全局 ASID 0 翻译留在本 CPU，只失效
 incoming tag 不足以清除它们；之后本 CPU 进入“保留 root + ASID 0”的 lazy 状态时，这些旧翻译会与保留
@@ -149,9 +149,9 @@ ASID 0 共用同一缓存域。
 而在于该 mm 离开本 CPU 时是否已被正确清理，使之后以保留 ASID 0 运行的根不再命中它的旧翻译；执行 AT/EL1
 探测本身也不破坏不变量，只有当保留根允许访问未清理的旧翻译，或无有效身份就进入用户态时才会出问题。
 AArch64 用户叶子在 `leaf_attr()`（
-[stage1.rs:148-166](../../components/axcpu/src/arch/aarch64/paging/stage1.rs#L148-L166)）中带 `NON_GLOBAL`，
+[stage1.rs](../../components/axcpu/src/arch/aarch64/paging/stage1.rs)）中带 `NON_GLOBAL`，
 因此 tagged 翻译不会与保留 ASID 0 混用；跨 CPU 页表写入仍由 `synchronize_page_table_writes()`（`dsb ishst`，
-[asm.rs:162-170](../../components/axcpu/src/arch/aarch64/asm.rs#L162-L170)）先发布，再进入同步 shootdown，
+[asm.rs](../../components/axcpu/src/arch/aarch64/asm.rs)）先发布，再进入同步 shootdown，
 这条顺序不因省去本地 TLBI 而改变。
 
 上述省略 TLBI 的静态前提一旦被破坏，就不能再套用省 TLBI 的论证，必须重新验证映射生命周期、IRQ 排除和
@@ -390,19 +390,19 @@ offline guard。
 
 本地 Linux v7.1 的关键顺序如下：
 
-- `kernel/sched/core.c:5325-5375`：`context_switch()` 对 kernel thread 借用 previous
+- `kernel/sched/core.c`：`context_switch()` 对 kernel thread 借用 previous
   `active_mm`，user task 在切换 mm 前执行 membarrier 相关顺序；
-- `kernel/fork.c:672-740`：`cleanup_lazy_tlbs()` / `__mmdrop()` 在释放 mm 前先把 lazy CPU
+- `kernel/fork.c`：`cleanup_lazy_tlbs()` / `__mmdrop()` 在释放 mm 前先把 lazy CPU
   切离；
-- `kernel/cpu.c:908-920`、`kernel/sched/core.c:8342-8357`：CPU offline 先切到
+- `kernel/cpu.c`、`kernel/sched/core.c`：CPU offline 先切到
   `init_mm`，再 drop 旧 active_mm；
-- `arch/x86/mm/tlb.c:909-965`：以 `LOADED_MM_SWITCHING` 和 CPU mask 包住 CR3/
+- `arch/x86/mm/tlb.c`：以 `LOADED_MM_SWITCHING` 和 CPU mask 包住 CR3/
   `loaded_mm` 切换；
-- `arch/x86/mm/tlb.c:1276-1355`：mm 切换采用保守 flush，`freed_tables` 要求所有 CPU
+- `arch/x86/mm/tlb.c`：mm 切换采用保守 flush，`freed_tables` 要求所有 CPU
   参与；
-- `arch/x86/mm/tlb.c:1428-1463`：generation 发布和同步确认形成回收屏障；
-- `mm/mmu_gather.c:427-555`：页表/TLB flush 完成后才执行批量 free。
-- `arch/arm64/include/asm/tlbflush.h:593-644`：range TLBI 先执行 `dsb(ishst)` 发布页表写入，
+- `arch/x86/mm/tlb.c`：generation 发布和同步确认形成回收屏障；
+- `mm/mmu_gather.c`：页表/TLB flush 完成后才执行批量 free。
+- `arch/arm64/include/asm/tlbflush.h`：range TLBI 先执行 `dsb(ishst)` 发布页表写入，
   再发出 TLBI 并以同步屏障收尾。
 
 TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语义顺序，再用 Rust ownership、
@@ -481,7 +481,7 @@ ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部�
 ### 9.1 FullFlush 到 tagged 混合模式的静态登记
 
 当前实现的 `install_mm_identity()` 在混合分支（
-[address_space.rs:442-453](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L442-L453)）
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）
 安装非零 tag 前补一次 `flush_tlb(None)`，**该 ASID 0 防护仅有静态分析支撑**：现有 QEMU 套件没有能让
 “删除该行”确定性失败的用例。预期触发序列是：(1) 以 FullFlush 身份（tag 0）安装 mm A，并让 EL0 访问其
 `DATA`，在 ASID 0 下留下翻译；(2) 不经过中间清理，直接切到 tagged mm B；(3) 让 B 阻塞，使本 CPU 进入
@@ -506,7 +506,7 @@ ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部�
 完整归档，只有日志与元数据，因此复现能力受限。
 
 该序列在已核验的归档模型上无法构造稳定红绿：归档的 QEMU v11.1.1 `target/arm/helper.c` 中
-`vmsa_ttbr_write()`（2812-2822 行）在 64 位 TTBR 写入使 16 位 ASID 字段变化时执行整 TLB `tlb_flush`，
+`vmsa_ttbr_write()` 在 64 位 TTBR 写入使 16 位 ASID 字段变化时执行整 TLB `tlb_flush`，
 而混合序列的 0→1 和随后进入 lazy 的 1→0 都会触发，从而抹掉本应残留的 ASID 0 翻译。这里参考固定版本
 官方源码 [qemu v11.1.1 的 target/arm/helper.c](https://raw.githubusercontent.com/qemu/qemu/v11.1.1/target/arm/helper.c)，归档副本 sha256 为
 `5f20c7fc533d89e42277956c10d6951d90192049a9b6aef321b7a92f303427b6`；这不代表已核验当前安装的 QEMU

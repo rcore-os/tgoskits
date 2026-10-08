@@ -29,19 +29,19 @@ live 阶段打开的 pidfd 保存 `ProcessData` event，exit 后打开的 pidfd 
 
 原修复参考 Linux `v7.2-rc4` 提交 `1590cf0329716306e948a8fc29f1d3ee87d3989f` 及 `7.2-rc4-rt3`。RT patch 未改变相关 `pid`、pidfs、exit、signal 生命周期，因此主线语义同样适用。
 
-- [`struct pid` is reference-counted and owns `wait_pidfd`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/include/linux/pid.h#L35-L75).
+- [`struct pid` is reference-counted and owns `wait_pidfd`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/include/linux/pid.h).
   Numeric PID reuse allocates a different object, so a pidfd cannot suffer ABA.
-- [`pidfd_poll`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/fs/pidfs.c#L305-L323)
+- [`pidfd_poll`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/fs/pidfs.c)
   returns `EPOLLIN | EPOLLRDNORM` for an observable exited task and additionally
   returns `EPOLLHUP` after the task is detached during reap.
-- [`do_notify_pidfd`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/signal.c#L2158-L2166)
+- [`do_notify_pidfd`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/signal.c)
   publishes exit readiness.
-- [`__unhash_process`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c#L132-L145)
+- [`__unhash_process`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c)
   detaches the task and wakes the stable pidfd wait queue at reap.
-- [`wait_task_zombie`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c#L1207-L1250)
+- [`wait_task_zombie`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c)
   leaves `WNOWAIT` non-consuming and uses an atomic state transition for the
   consuming waiter.
-- [`pidfd_send_signal`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/signal.c#L4020-L4058)
+- [`pidfd_send_signal`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/signal.c)
   resolves the stable PID object. It returns `ESRCH` after reap; before reap,
   signal zero and a permitted nonzero signal can resolve the zombie identity
   without changing the recorded exit status.

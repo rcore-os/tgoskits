@@ -39,14 +39,14 @@ writing and `EFAULT` applies to an inaccessible buffer
 ([`write(2)`](https://man7.org/linux/man-pages/man2/write.2.html)). The man page
 does not define their priority, so the fixed Linux source is authoritative:
 
-- [`vfs_write`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L666-L675)
+- [`vfs_write`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c)
   checks `FMODE_WRITE` before `access_ok`;
-- [`vfs_writev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1028-L1045)
+- [`vfs_writev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c)
   checks `FMODE_WRITE` before `import_iovec`;
-- [`do_pwritev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1141-L1154)
+- [`do_pwritev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c)
   returns `ESPIPE` unless the descriptor supports positioned writes, then calls
   `vfs_writev`, which distinguishes a read-only file with `EBADF`;
-- [`pwritev2`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1194-L1211)
+- [`pwritev2`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c)
   routes offset `-1` through stream `writev` and other offsets through
   positioned `pwritev`.
 
@@ -75,11 +75,11 @@ The standard mapping required for the shared helper is:
 
 | Syscall | Conclusion | Reference | Basis |
 | --- | --- | --- | --- |
-| `write` | Aligned after this change | [`write(2)`](https://man7.org/linux/man-pages/man2/write.2.html), [Linux `vfs_write`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L666-L675) | Write mode is checked before scalar user-buffer access. |
-| `writev` | Aligned after this change | [`writev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `vfs_writev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1028-L1045) | Write mode is checked before importing the `iovec` array. |
-| `pwritev` | Aligned after this change | [`pwritev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `do_pwritev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1141-L1154) | Nonseekable descriptors return `ESPIPE`; a read-only seekable file reaches the write-mode check and returns `EBADF`. |
-| `pwritev2` | Aligned after this change | [`pwritev2(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `pwritev2` routing](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1202-L1211) | Offset `-1` uses stream ordering; positioned offsets use `pwritev` ordering. |
-| `io_uring_enter` | Indirectly aligned after this change | [`io_uring_enter(2)`](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html), [Linux write-mode boundary](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c#L1028-L1045) | Starry executes write SQEs through the same corrected syscall helpers and reports their errno in CQEs. |
+| `write` | Aligned after this change | [`write(2)`](https://man7.org/linux/man-pages/man2/write.2.html), [Linux `vfs_write`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c) | Write mode is checked before scalar user-buffer access. |
+| `writev` | Aligned after this change | [`writev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `vfs_writev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c) | Write mode is checked before importing the `iovec` array. |
+| `pwritev` | Aligned after this change | [`pwritev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `do_pwritev`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c) | Nonseekable descriptors return `ESPIPE`; a read-only seekable file reaches the write-mode check and returns `EBADF`. |
+| `pwritev2` | Aligned after this change | [`pwritev2(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `pwritev2` routing](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c) | Offset `-1` uses stream ordering; positioned offsets use `pwritev` ordering. |
+| `io_uring_enter` | Indirectly aligned after this change | [`io_uring_enter(2)`](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html), [Linux write-mode boundary](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/read_write.c) | Starry executes write SQEs through the same corrected syscall helpers and reports their errno in CQEs. |
 
 No ABI layout, syscall number, credential, namespace, shared-resource, blocking,
 signal, or restart behavior changes. The new check reads immutable/open-file

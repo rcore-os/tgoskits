@@ -166,7 +166,7 @@ pub trait PlatOp {
 }
 ```
 
-外层包装 `ActiveIrq`（`irq.rs` 约 L228）持有架构特定的 `Plat::ActiveIrq`，`Drop` 时调用控制器的 complete/EOI。
+外层包装 `ActiveIrq`（`irq.rs`）持有架构特定的 `Plat::ActiveIrq`，`Drop` 时调用控制器的 complete/EOI。
 
 ### 公共 IRQ free functions
 

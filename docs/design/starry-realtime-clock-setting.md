@@ -18,19 +18,19 @@ output timestamps.
 
 This was a syscall-dispatch gap rather than a platform RTC read failure. On the
 base revision, Starry's
-[`time` dispatch group](https://github.com/rcore-os/tgoskits/blob/7c5bbd13320bae42110f83e9418b4167e4dd7943/os/StarryOS/kernel/src/syscall/mod.rs#L883-L893)
+[`time` dispatch group](https://github.com/rcore-os/tgoskits/blob/7c5bbd13320bae42110f83e9418b4167e4dd7943/os/StarryOS/kernel/src/syscall/mod.rs)
 contained the realtime readers but neither `clock_settime` nor
 `settimeofday`. Its
-[`time.rs`](https://github.com/rcore-os/tgoskits/blob/7c5bbd13320bae42110f83e9418b4167e4dd7943/os/StarryOS/kernel/src/syscall/time.rs#L1-L91)
+[`time.rs`](https://github.com/rcore-os/tgoskits/blob/7c5bbd13320bae42110f83e9418b4167e4dd7943/os/StarryOS/kernel/src/syscall/time.rs)
 likewise contained no setter. Both syscall numbers are valid entries in the
 `syscalls` crate, so they reached the dispatch match and fell through to the
-[`Unimplemented syscall` fallback](https://github.com/rcore-os/tgoskits/blob/7c5bbd13320bae42110f83e9418b4167e4dd7943/os/StarryOS/kernel/src/syscall/mod.rs#L1061-L1065),
+[`Unimplemented syscall` fallback](https://github.com/rcore-os/tgoskits/blob/7c5bbd13320bae42110f83e9418b4167e4dd7943/os/StarryOS/kernel/src/syscall/mod.rs),
 which maps `StarryError::Unsupported` to Linux `ENOSYS`.
 
 The board reproduced that path for both calls: BusyBox `date -s` first reached
 `clock_settime`, then a direct syscall diagnostic reached the obsolete
 `settimeofday` entry. BuildStorm's actual date-setting implementation is
-[`clock_settime(CLOCK_REALTIME, ...)`](https://github.com/oscomp/testsuits-for-oskernel/blob/6852e65d1cb570d9d98a3a6511e81f1e3999f7b8/busybox/coreutils/date.c#L289-L292).
+[`clock_settime(CLOCK_REALTIME, ...)`](https://github.com/oscomp/testsuits-for-oskernel/blob/6852e65d1cb570d9d98a3a6511e81f1e3999f7b8/busybox/coreutils/date.c).
 The direct `settimeofday` call was only a fallback diagnostic after the real
 path had failed; its timezone and first-call RTC-warp ABI remain outside this
 focused change.
@@ -65,22 +65,22 @@ The compatibility target is Linux v6.16 at commit
 
 Linux performs the relevant operations in this order:
 
-1. [`clock_settime`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c#L1116-L1134)
+1. [`clock_settime`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c)
    resolves the clock and rejects a non-settable clock before copying the user
    timespec.
-2. [`do_sys_settimeofday64`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/time.c#L169-L200)
+2. [`do_sys_settimeofday64`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/time.c)
    validates the timestamp before running the security hook.
-3. [`cap_settime`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/security/commoncap.c#L142-L146)
+3. [`cap_settime`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/security/commoncap.c)
    requires `CAP_SYS_TIME`.
-4. [`do_settimeofday64`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/timekeeping.c#L1376-L1413)
+4. [`do_settimeofday64`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/timekeeping.c)
    rejects realtime values before current monotonic time, publishes the new
    wall-to-monotonic offset, and notifies clock-change observers.
-5. [`timerfd`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c#L90-L173)
+5. [`timerfd`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c)
    distinguishes monotonic and realtime timers; a cancel-on-set realtime timer
    reports `ECANCELED` from
-   [`read`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c#L263-L307).
+   [`read`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c).
 6. Periodic POSIX timers use
-   [`hrtimer_forward`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c#L287-L327)
+   [`hrtimer_forward`](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c)
    to move directly past every elapsed interval, merge the missed expirations
    into one notification, and clamp the reported `si_overrun` to `INT_MAX`.
 
@@ -90,7 +90,7 @@ and [`timerfd_create(2)`](https://man7.org/linux/man-pages/man2/timerfd_create.2
 
 `TFD_TIMER_CANCEL_ON_SET` is accepted for relative timers and non-realtime
 clocks, but has no cancellation effect in those modes. Linux's
-[`timerfd_setup_cancel`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c#L157-L173)
+[`timerfd_setup_cancel`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c)
 removes the timer from the cancellation list instead of returning `EINVAL`.
 The realtime lower bound is a separate check in `do_settimeofday64`, after
 `timespec64_valid_settod`; validating the timespec alone does not replace it.
@@ -188,13 +188,13 @@ never marked for cancellation.
 A timerfd expiration publishes one tick and parks the timer task. A normal
 `read` or `timerfd_gettime` advances an expired periodic deadline past all
 missed intervals and rearms it. This matches Linux's lazy periodic restart:
-[`do_timerfd_gettime`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c#L497-L525)
+[`do_timerfd_gettime`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c)
 also clears `expired`, adds missed ticks, and restarts the periodic timer;
 it is not a read-only snapshot of the internal state. Pending ticks remain
 available to `read`.
 
 Before returning `old_value`,
-[`do_timerfd_settime`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c#L473-L485)
+[`do_timerfd_settime`](https://github.com/torvalds/linux/blob/v6.16/fs/timerfd.c)
 advances an expired periodic deadline to the next interval. The old remaining
 time is therefore positive, while an expired one-shot returns zero. Starry
 performs the same advance under the state lock before replacing the setting
@@ -291,19 +291,19 @@ is not part of this syscall change.
 
 | Syscall | Conclusion | Standard/reference | Basis |
 | --- | --- | --- | --- |
-| `clock_settime` | compatible for `CLOCK_REALTIME` | [`clock_settime(2)`](https://man7.org/linux/man-pages/man2/clock_settime.2.html), [Linux implementation](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c#L1116-L1134) | Matches supported clock, pointer/field/capability error order, range validation, publication, and notifications. |
+| `clock_settime` | compatible for `CLOCK_REALTIME` | [`clock_settime(2)`](https://man7.org/linux/man-pages/man2/clock_settime.2.html), [Linux implementation](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c) | Matches supported clock, pointer/field/capability error order, range validation, publication, and notifications. |
 | `clock_gettime` | no regression | [`clock_gettime(2)`](https://man7.org/linux/man-pages/man2/clock_gettime.2.html) | Realtime reads the shared adjustment; monotonic clocks remain unchanged. |
 | `gettimeofday` | no regression | [`gettimeofday(2)`](https://man7.org/linux/man-pages/man2/gettimeofday.2.html) | Reads the same adjusted realtime value. |
 | `time` | no regression | [`time(2)`](https://man7.org/linux/man-pages/man2/time.2.html) | The x86_64 entry reads the same adjusted realtime seconds. |
-| `timerfd_settime` | compatible for clock-step behavior | [`timerfd_create(2)`](https://man7.org/linux/man-pages/man2/timerfd_create.2.html), [Linux timerfd clock-change path](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c#L90-L173) | Relative timers stay monotonic; absolute realtime timers are re-evaluated; cancel-on-set is armed only for that domain. |
+| `timerfd_settime` | compatible for clock-step behavior | [`timerfd_create(2)`](https://man7.org/linux/man-pages/man2/timerfd_create.2.html), [Linux timerfd clock-change path](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c) | Relative timers stay monotonic; absolute realtime timers are re-evaluated; cancel-on-set is armed only for that domain. |
 | `timerfd_gettime` | compatible for adjusted deadlines | [`timerfd_create(2)`](https://man7.org/linux/man-pages/man2/timerfd_create.2.html) | Remaining time is computed in the deadline's explicit clock domain. |
-| `read` (timerfd) | compatible for cancel-on-set | [Linux timerfd read path](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c#L263-L307) | One read consumes cancellation and ticks, returns `ECANCELED`, and does not restart an expired timer. A future, unexpired deadline remains armed. |
-| `timer_settime` | improved clock-step compatibility | [`timer_settime(2)`](https://man7.org/linux/man-pages/man2/timer_settime.2.html), [Linux periodic rearm](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c#L287-L327) | Relative timers use monotonic deadlines; absolute `CLOCK_REALTIME` timers retain realtime deadlines and are re-evaluated. Missed periodic expirations are merged into one notification, the next deadline skips all elapsed intervals, and `si_overrun` is clamped to `INT_MAX`. |
+| `read` (timerfd) | compatible for cancel-on-set | [Linux timerfd read path](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/fs/timerfd.c) | One read consumes cancellation and ticks, returns `ECANCELED`, and does not restart an expired timer. A future, unexpired deadline remains armed. |
+| `timer_settime` | improved clock-step compatibility | [`timer_settime(2)`](https://man7.org/linux/man-pages/man2/timer_settime.2.html), [Linux periodic rearm](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/time/posix-timers.c) | Relative timers use monotonic deadlines; absolute `CLOCK_REALTIME` timers retain realtime deadlines and are re-evaluated. Missed periodic expirations are merged into one notification, the next deadline skips all elapsed intervals, and `si_overrun` is clamped to `INT_MAX`. |
 | `timer_gettime` | no regression | [`timer_gettime(2)`](https://man7.org/linux/man-pages/man2/timer_gettime.2.html) | Remaining time is derived from the timer's tagged domain. |
 | `setitimer` | no regression | [`getitimer(2)`](https://man7.org/linux/man-pages/man2/getitimer.2.html) | `ITIMER_REAL` remains an elapsed-time interval across realtime changes. |
 | `getitimer` | no regression | [`getitimer(2)`](https://man7.org/linux/man-pages/man2/getitimer.2.html) | Reports monotonic remaining duration. |
 | `alarm` | no regression | [`alarm(2)`](https://man7.org/linux/man-pages/man2/alarm.2.html) | Uses the same monotonic process-real-timer state. |
-| `futex` | improved realtime absolute-wait behavior | [`futex(2)`](https://man7.org/linux/man-pages/man2/futex.2.html), [Linux operation validation](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/futex/syscalls.c#L88-L97) | `FUTEX_WAIT_BITSET` with `FUTEX_CLOCK_REALTIME` rebuilds its absolute realtime wait after a clock step; unsupported clock-flag combinations return `ENOSYS`. |
+| `futex` | improved realtime absolute-wait behavior | [`futex(2)`](https://man7.org/linux/man-pages/man2/futex.2.html), [Linux operation validation](https://github.com/torvalds/linux/blob/038d61fd642278bab63ee8ef722c50d10ab01e8f/kernel/futex/syscalls.c) | `FUTEX_WAIT_BITSET` with `FUTEX_CLOCK_REALTIME` rebuilds its absolute realtime wait after a clock step; unsupported clock-flag combinations return `ENOSYS`. |
 | `mq_timedsend` | no regression | [`mq_timedsend(3)`](https://man7.org/linux/man-pages/man3/mq_timedsend.3.html) | Existing wall-deadline wait now receives realtime-change notifications. |
 | `mq_timedreceive` | no regression | [`mq_timedreceive(3)`](https://man7.org/linux/man-pages/man3/mq_timedreceive.3.html) | Existing wall-deadline wait now receives realtime-change notifications. |
 | `io_getevents` | corrected relative-time behavior | [`io_getevents(2)`](https://man7.org/linux/man-pages/man2/io_getevents.2.html) | Its relative timeout now uses monotonic time. |

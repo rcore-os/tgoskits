@@ -36,12 +36,12 @@ the pipe state machine are outside this change.
 
 At the fixed target commit:
 
-- [`vfs_readv`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/fs/read_write.c#L991-L1026)
+- [`vfs_readv`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/fs/read_write.c)
   checks descriptor read capability and then imports the vector;
-- [`import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443)
+- [`import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c)
   copies the vector array, retains count and length validation, and applies
   `access_ok` to each segment without requiring mapped pages;
-- [`anon_pipe_read`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/fs/pipe.c#L361-L491)
+- [`anon_pipe_read`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/fs/pipe.c)
   returns `EAGAIN` for an empty nonblocking pipe before copying to the iterator,
   while a short copy returns `EFAULT` before advancing the pipe buffer.
 
@@ -65,17 +65,17 @@ into a general user-pointer policy update.
 
 | Syscall | Conclusion | Reference | Basis |
 | --- | --- | --- | --- |
-| `readv` | Aligned by this change | [`readv(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `vfs_readv` and import](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/fs/read_write.c#L991-L1026) | A valid vector record with an in-range unmapped base reaches the underlying read before the mapping fault. |
-| `preadv` | Uses the corrected boundary | [`preadv(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443) | Starry routes it through `sys_preadv2`, which constructs the shared iterator. |
-| `preadv2` | Uses the corrected boundary | [`preadv2(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443) | Both stream and positioned read routes use `IoVectorBuf`. |
-| `writev` | No intended ordering change | [`writev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443) | Starry explicitly validates readable user segments before the shared iterator copies them. |
-| `pwritev` | No intended ordering change | [`pwritev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443) | It shares the prevalidated `pwritev2` copy path. |
-| `pwritev2` | No intended ordering change | [`pwritev2(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443) | Its stream and positioned write paths validate mappings before copying. |
-| `io_uring_enter` | Indirectly uses the corrected boundary | [`io_uring_enter(2)`](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c#L1342-L1443) | Starry routes `IORING_OP_READV` through `sys_preadv2`; completion reports that helper's result. |
-| `sendmsg` | Uses Linux-style segment import | [`sendmsg(2)`](https://man7.org/linux/man-pages/man2/sendmsg.2.html), [Linux message iovec import](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c#L2606-L2624) | The outer message and vector records are imported immediately, while an in-range segment faults only if socket transmission reads it. |
-| `recvmsg` | Uses Linux-style segment import | [`recvmsg(2)`](https://man7.org/linux/man-pages/man2/recvmsg.2.html), [Linux receive routing](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c#L2934-L2979) | Destination mapping faults are deferred until received data is copied. |
-| `sendmmsg` | Uses Linux-style segment import per message | [`sendmmsg(2)`](https://man7.org/linux/man-pages/man2/sendmmsg.2.html), [Linux send batch routing](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c#L2782-L2848) | Each Starry message constructs the shared iterator before attempting its send. |
-| `recvmmsg` | Uses Linux-style segment import per message | [`recvmmsg(2)`](https://man7.org/linux/man-pages/man2/recvmmsg.2.html), [Linux receive batch routing](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c#L2992-L3097) | Each Starry destination iterator defers mapping access until a datagram is copied. |
+| `readv` | Aligned by this change | [`readv(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `vfs_readv` and import](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/fs/read_write.c) | A valid vector record with an in-range unmapped base reaches the underlying read before the mapping fault. |
+| `preadv` | Uses the corrected boundary | [`preadv(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c) | Starry routes it through `sys_preadv2`, which constructs the shared iterator. |
+| `preadv2` | Uses the corrected boundary | [`preadv2(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c) | Both stream and positioned read routes use `IoVectorBuf`. |
+| `writev` | No intended ordering change | [`writev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c) | Starry explicitly validates readable user segments before the shared iterator copies them. |
+| `pwritev` | No intended ordering change | [`pwritev(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c) | It shares the prevalidated `pwritev2` copy path. |
+| `pwritev2` | No intended ordering change | [`pwritev2(2)`](https://man7.org/linux/man-pages/man2/readv.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c) | Its stream and positioned write paths validate mappings before copying. |
+| `io_uring_enter` | Indirectly uses the corrected boundary | [`io_uring_enter(2)`](https://man7.org/linux/man-pages/man2/io_uring_enter.2.html), [Linux `import_iovec`](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/lib/iov_iter.c) | Starry routes `IORING_OP_READV` through `sys_preadv2`; completion reports that helper's result. |
+| `sendmsg` | Uses Linux-style segment import | [`sendmsg(2)`](https://man7.org/linux/man-pages/man2/sendmsg.2.html), [Linux message iovec import](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c) | The outer message and vector records are imported immediately, while an in-range segment faults only if socket transmission reads it. |
+| `recvmsg` | Uses Linux-style segment import | [`recvmsg(2)`](https://man7.org/linux/man-pages/man2/recvmsg.2.html), [Linux receive routing](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c) | Destination mapping faults are deferred until received data is copied. |
+| `sendmmsg` | Uses Linux-style segment import per message | [`sendmmsg(2)`](https://man7.org/linux/man-pages/man2/sendmmsg.2.html), [Linux send batch routing](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c) | Each Starry message constructs the shared iterator before attempting its send. |
+| `recvmmsg` | Uses Linux-style segment import per message | [`recvmmsg(2)`](https://man7.org/linux/man-pages/man2/recvmmsg.2.html), [Linux receive batch routing](https://github.com/torvalds/linux/blob/a2cf4ef33184df0ae9e1a2b05b550133dde1698c/net/socket.c) | Each Starry destination iterator defers mapping access until a datagram is copied. |
 
 The compatibility risk is that socket and positioned-I/O callers can now
 surface an fd, readiness, or protocol error before `EFAULT` for a low unmapped
