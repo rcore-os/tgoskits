@@ -151,4 +151,4 @@ Axvisor HTTP 用例显式切到 NVMe 根，删除、重建并再次启动 VM，�
 
 配置中的 `${env:AXVISOR_GUEST_ASSETS}` 指向构建机资产目录，必须由相应发布或板卡 CI 环境提供。ROC-RK3568-PC、OrangePi 的定制 BSP/initrd、Zephyr 控制程序和 ROCK 4D DTB 沿用各自生产者，不用通用 BusyBox 镜像代替。机器人 Linux 6.1.99 AXIVC 配置保留板卡 rootfs 上的 `/guest/linux/...` 路径；机器人 Zephyr 使用 TGOSImages 的 `scripts/apps/aka-rk3588-zephyr.sh`，生成的二进制及 DTB 放到资产目录的 `zephyr/`。该环境变量是归档输入，不进入 Axvisor 内核构建依赖。
 
-缺失环境变量、缺失或空镜像在上传前报错。自托管 board runner 升级时须把原先部署到板卡的启动资源同步到构建机并设置该变量；客户机磁盘、模型、标定与用户态程序仍按各自部署流程维护。没有对应 BSP 或设备时，FIT/HTTP Boot 的实机交接和客户机运行均标为未验证。
+缺失环境变量和读取到的空镜像在上传前报错；保留的绝对外部路径由 `validate_builtin()` 在准备好的 rootfs 上检查文件存在性和长度，失败时不发布新包、不提交切根。自托管 board runner 可把启动资源同步到构建机并设置资产变量，也可继续维护已声明的 rootfs 绝对路径。客户机磁盘、模型、标定与用户态程序仍按各自部署流程维护。没有对应 BSP 或设备时，FIT/HTTP Boot 的实机交接和客户机运行均标为未验证。

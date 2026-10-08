@@ -167,6 +167,8 @@ ROC 固件的 `CONFIG_FIT_IMAGE_POST_PROCESS` 要求 ramdisk 带 `load` 属性�
 
 最新 `dev` 的 virtual/real 机器人配置同步删除 `fs` 和 `image_location`，保留各自客户机根盘与板卡镜像路径；38 个 CI 规划器测试通过。Axvisor LoongArch 本地 Smoke 通过，包含宿主 NVMe 读写和客户机 Ext4 挂载；CI 曾在挂载步骤超时，仍需新提交复核。
 
+板卡 rootfs 的外部镜像也必须在提交切根前完整可用。`validate_builtin()` 原先只检查外部路径为绝对路径，未检查文件存在或为空；现在直接在准备好的目标上下文解析并验证。`package_install_validates_external_assets_before_replacing_defaults` 经真实 MemoryFs 和 `install_directory()` 验证缺失、空镜像时保留旧包，补齐后发布新包并删除旧独有文件。同一 AArch64 axtest 修复前 85 通过、1 失败，修复后 86/86 通过；补充资源路径诊断后再次 86/86 通过。HTTP control plane 同轮 1/1 通过，包含切根后的 VM 删除、重建和启动。通用 Clippy 入口仍明确跳过 Axvisor，未将该跳过作为通过；代码由专用目标的实际编译与 QEMU 测试验证。
+
 ### 6.2 根设备状态
 
 磁盘根使用 Linux 设备号后，`From<Kstat> for statx` 转换先正确解码设备号，末尾又覆盖主次号。LoongArch musl 用 `statx` 实现 `stat()`，因此根目录 `st_dev` 与块节点 `st_rdev` 不一致。删除重复赋值，并增强现有 `syscall-test-rdev-nvme`，直接调用系统调用比较主次号。LoongArch 同一用例修复前失败、修复后 1/1 通过；x86_64 同一用例也 1/1 通过。原始设备 read 的 `EIO` 判定继续通过。变基后的 `cargo xtask clippy --package starry-kernel --jobs 4` 共 80 项检查全部通过。

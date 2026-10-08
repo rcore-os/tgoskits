@@ -113,28 +113,30 @@ pub fn validate_builtin(context: &FsContext, staged: &str) -> Result<()> {
     for content in config_files(context, &format!("{staged}/configs"))? {
         let config = GuestConfig::from_toml(&content)?;
         for path in config.kernel.boot_image_paths() {
-            let Some(suffix) = path
+            let resource = if let Some(suffix) = path
                 .strip_prefix(BUILTIN_GUEST_DIR)
                 .filter(|suffix| suffix.starts_with("/images/"))
-            else {
+            {
+                if suffix.split('/').any(|part| matches!(part, "." | "..")) {
+                    bail!("invalid built-in boot asset path: {path}");
+                }
+                context.resolve(format!("{staged}{suffix}"))
+            } else {
                 // Physical-board handoffs may provide guest images from the
-                // published disk root (for example `/linux/...`).  The
-                // configuration itself is still carried by the builtin
-                // package; those external paths are resolved only after a
-                // disk root has been selected.
+                // prepared disk root. Validate them before publishing the
+                // package or committing the root switch.
                 ensure!(
                     path.starts_with('/'),
                     "boot asset path must be absolute: {path}"
                 );
-                continue;
-            };
-            if suffix.split('/').any(|part| matches!(part, "." | "..")) {
-                bail!("invalid built-in boot asset path: {path}");
+                context.resolve(path)
             }
-            let resource = context.resolve(format!("{staged}{suffix}"))?;
-            resource.check_is_file()?;
+            .with_context(|| format!("resolve guest boot asset {path}"))?;
+            resource
+                .check_is_file()
+                .with_context(|| format!("guest boot asset is not a file: {path}"))?;
             if resource.len()? == 0 {
-                bail!("empty built-in boot asset: {path}");
+                bail!("empty guest boot asset: {path}");
             }
         }
     }

@@ -57,7 +57,7 @@ mod tests {
     use ax_fs_ng::vfs::FsContext;
     use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
     use axtest::prelude::*;
-    use axvisor::builtin::selected_configs;
+    use axvisor::builtin::{selected_configs, validate_builtin};
 
     #[test]
     fn diskless_boot_keeps_memory_root_with_inherited_root_parameter() {
@@ -117,6 +117,95 @@ mod tests {
             selected_configs(&context).unwrap(),
             alloc::vec![builtin.to_owned()]
         );
+    }
+
+    #[test]
+    fn package_install_validates_external_assets_before_replacing_defaults() {
+        let source =
+            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        let target =
+            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        for context in [&source, &target] {
+            for path in [
+                "/guest",
+                "/guest/builtin",
+                "/guest/builtin/configs",
+                "/guest/builtin/images",
+                "/board",
+            ] {
+                context
+                    .create_dir(
+                        path,
+                        NodePermission::from_bits_truncate(0o755),
+                        0,
+                        0,
+                        &MutationCredentials::root(),
+                    )
+                    .unwrap();
+            }
+        }
+        let installed = "[base]\nid=1\nname='installed'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\n[devices]\n";
+        let incoming = installed
+            .replace("installed'", "incoming'")
+            .replace("[devices]", "dtb_path='/board/guest.dtb'\n[devices]");
+        source
+            .write("/guest/builtin/configs/default.toml", &incoming)
+            .unwrap();
+        source
+            .write("/guest/builtin/images/kernel", "new kernel")
+            .unwrap();
+        target
+            .write("/guest/builtin/configs/default.toml", installed)
+            .unwrap();
+        target
+            .write("/guest/builtin/images/kernel", "old kernel")
+            .unwrap();
+        target
+            .write("/guest/builtin/images/obsolete", "old resource")
+            .unwrap();
+        let install = || {
+            ax_fs_ng::bundle::install_directory(
+                &source,
+                &target,
+                "/guest/builtin",
+                |context, staged| {
+                    validate_builtin(context, staged).map_err(|_| ax_fs_ng::VfsError::InvalidData)
+                },
+            )
+        };
+        for empty_file in [false, true] {
+            if empty_file {
+                target.write("/board/guest.dtb", "").unwrap();
+            }
+            ax_assert!(install().is_err());
+            ax_assert_eq!(
+                target
+                    .read_to_string("/guest/builtin/configs/default.toml")
+                    .unwrap(),
+                installed
+            );
+            ax_assert_eq!(
+                target
+                    .read_to_string("/guest/builtin/images/kernel")
+                    .unwrap(),
+                "old kernel"
+            );
+        }
+        target.write("/board/guest.dtb", "guest DTB").unwrap();
+        ax_assert!(install().unwrap());
+        ax_assert_eq!(
+            target
+                .read_to_string("/guest/builtin/configs/default.toml")
+                .unwrap(),
+            incoming
+        );
+        ax_assert_eq!(
+            target
+                .read_to_string("/guest/builtin/images/kernel")
+                .unwrap(),
+            "new kernel"
+        );
+        ax_assert!(target.resolve("/guest/builtin/images/obsolete").is_err());
     }
 
     fn remove_guest_console(vm_id: usize) {
