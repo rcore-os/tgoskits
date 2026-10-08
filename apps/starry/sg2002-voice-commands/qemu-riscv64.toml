@@ -1,0 +1,26 @@
+args = [
+    "-nographic",
+    "-m", "256M",
+    "-cpu", "rv64",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+# Three model startups under CPU emulation need headroom on slower hosts.
+timeout = 600
+fail_regex = [
+    "VOICE_COMMANDS_TEST_FAILED",
+    "(?i)panicked at",
+    "(?i)segmentation fault",
+    "(?i)illegal instruction",
+    "(?i)out of memory",
+    "(?i)error while loading shared libraries",
+]
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/opt/voice-commands/validate.sh"
+success_regex = ["(?m)^VOICE_COMMANDS_TEST_PASSED\\s*$"]

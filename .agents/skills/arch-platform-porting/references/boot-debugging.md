@@ -416,6 +416,38 @@ AArch64 客户机向量中的致命宿主异常通过 `ax_cpu::trap::fatal::Fata
 Starry 的可执行文件页、COW 拷贝及预填充由 `PageObject::prepare_executable_mapping` 在可执行 PTE 发布前完成缓存同步，mprotect 同样先同步被保留的叶子页。AArch64 使用直接映射别名清理 D-cache 到 PoU，再以 `ic ialluis; dsb ish; isb` 完成 Inner Shareable 指令缓存失效；远端 CPU 的用户异常返回提供 context synchronization。只执行 TLBI、加原子屏障或只在首次进入用户态清缓存不能覆盖后续缺页。
 
 对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `__set_ptes_anysz -> __sync_cache_and_tags -> __sync_icache_dcache`。用 `cargo xtask starry test board --board orangepi-5-plus --test-case exec-cache` 验证文件页内核写入后的重新取指；QEMU 只作为执行路径检查，不作为 I-cache/D-cache 实机红绿证明。完整所有权与证据见 `docs/design/user-executable-cache-coherence.md`。
+
+## SG2002 SD 临时启动
+
+LicheeRV Nano SG2002 已验证可以由 U-Boot 从 SD 第二分区加载 `cargo xtask`
+生成的同一份 Starry FIT，避免反复通过 115200 波特率串口传输内核。先在板端
+核对 FIT 的 SHA256 和字节数并执行 `sync`，保留原 Linux 内核、`fip.bin` 和
+持久 U-Boot 环境。以下路径为临时镜像示例，`setenv` 后不执行 `saveenv`：
+
+```text
+ext4ls mmc 0:2 /root
+ext4load mmc 0:2 0x82200000 /root/starry.fit
+setenv bootargs 'root=/dev/mmcblk0p2 rootwait rw console=ttyS0,115200 earlycon=sbi riscv.fwsz=0x80000 init=/bin/sh HOME=/root TERM=linux PS1=starry-voice> PATH=/usr/sbin:/usr/bin:/sbin:/bin -- -i'
+bootm 0x82200000
+```
+
+此配置只被动等待行首 `(?m)^starry-voice>`，不设置会在 bootargs 回显中命中的
+`shell_prefix`，看到真正的提示符后再发命令。需要自动 shell 步骤时，按后文
+“宿主 initramfs”在 shell 内派生提示符。串口归单个完整事务独占；上传子进程
+释放端口不表示其父脚本已结束。每次运行使用独立日志，避免截断仍在写入的文件。
+
+2026-10-07 的实板中，Starry 新写文件经校验和 `sync` 后暂未出现在 U-Boot
+`ext4ls` 中；原 Linux 启动后能读到同一散列，Linux 同步并正常重启后，U-Boot
+成功加载。遇到相同现象先通过原 Linux 检查，不重写 SD 或直接判定文件丢失；
+具体日志恢复或目录索引原因仍需另行定位。Starry 软件重启未回到 U-Boot 时，
+先核对实际输出，再请求物理 RESET，不循环重发重启命令。Linux 正常重启需要
+等待服务关闭，不能把中途仍有 shell 回显当作失败。
+
+当前固件继承的串口线路为 115200。临时文件传送应保留该线路配置，仅调整
+回显和原始输入模式；不要根据尚未与硬件同步的 `Terminal::default()` 波特率
+重设设备。本次显式写入 115200 后，宿主 120192 才能稳定通信，复位后恢复
+115200；这是分数分频支持的诊断线索，不是所有 SG2002 的固定波特率约定。
+
 ## 宿主 initramfs
 
 板卡测试停在 systemd 的 `Freezing execution`，或 BusyBox 持续启动不存在的

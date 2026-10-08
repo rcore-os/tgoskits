@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.16)
+project(sg2002_voice_commands C)
+
+set(SHERPA_ONNX_ROOT "" CACHE PATH "sherpa-onnx SDK installation prefix")
+if(NOT SHERPA_ONNX_ROOT)
+    message(FATAL_ERROR "Set SHERPA_ONNX_ROOT to the target sherpa-onnx SDK prefix")
+endif()
+unset(SHERPA_ONNX_INCLUDE_DIR CACHE)
+unset(SHERPA_ONNX_C_API_LIBRARY CACHE)
+find_path(SHERPA_ONNX_INCLUDE_DIR sherpa-onnx/c-api/c-api.h
+    PATHS "${SHERPA_ONNX_ROOT}/include" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(SHERPA_ONNX_C_API_LIBRARY NAMES sherpa-onnx-c-api
+    PATHS "${SHERPA_ONNX_ROOT}/lib" "${SHERPA_ONNX_ROOT}/lib64"
+    NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT SHERPA_ONNX_INCLUDE_DIR OR NOT SHERPA_ONNX_C_API_LIBRARY)
+    message(FATAL_ERROR "SHERPA_ONNX_ROOT must contain the C API header and library")
+endif()
+
+add_executable(voice-commands voice-commands.c)
+set_target_properties(voice-commands PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+target_compile_options(voice-commands PRIVATE -Wall -Wextra -Werror)
+target_include_directories(voice-commands PRIVATE "${SHERPA_ONNX_INCLUDE_DIR}")
+target_link_libraries(voice-commands PRIVATE "${SHERPA_ONNX_C_API_LIBRARY}")
+install(TARGETS voice-commands RUNTIME DESTINATION bin)
+
+option(VOICE_TPU_FRONTEND "Build the SG2002 frontend process bridge" OFF)
+if(VOICE_TPU_FRONTEND)
+    enable_language(CXX)
+    if(NOT EXISTS "${SHERPA_ONNX_ROOT}/include/onnxruntime/onnxruntime_cxx_api.h")
+        message(FATAL_ERROR "Rebuild the SDK with build-runtime.sh for the matching ORT headers")
+    endif()
+    add_library(voice_frontend SHARED frontend-op.cc)
+    target_compile_features(voice_frontend PRIVATE cxx_std_17)
+    target_compile_options(voice_frontend PRIVATE -Wall -Wextra -Werror)
+    target_link_options(voice_frontend PRIVATE -Wl,--no-undefined)
+    target_include_directories(voice_frontend PRIVATE "${SHERPA_ONNX_ROOT}/include/onnxruntime")
+    install(TARGETS voice_frontend LIBRARY DESTINATION lib)
+endif()

@@ -1,0 +1,22 @@
+These are synthetic functional fixtures, not a speech accuracy evaluation set.
+
+Generated locally with sherpa-onnx 1.12.26 and the Piper huayan Mandarin voice:
+https://huggingface.co/csukuangfj/vits-piper-zh_CN-huayan-medium
+Voice revision: 8baec97632a57257b09073b7986f4d319efdc29a
+Voice ONNX SHA256: 04234ec24907e9efa7e153669e07d4e0cf6d260adc005323aa929386dae53f86
+Phonemizer data comes from that same voice revision.
+Only generated WAV files are included; the TTS model is not part of deployment.
+
+commands.wav: generate each utterance separately at speed=0.85, then append
+one second of silence after each utterance, concatenate, and resample from
+22050 Hz to 16000 Hz mono S16_LE using FFmpeg.
+Utterances: 小车前进 / 小车后退 / 小车左转 / 小车右转 / 停止
+Expected events: forward, backward, left, right, stop.
+
+noncommands.wav: generate at speed=1.0, resample identically.
+Text: 今天天气不错。我们明天再讨论。前进，后退，左转，右转。
+Expected events: none.
+
+The runtime input/decoder path is identical for WAV files and raw microphone PCM.
+Microphone acoustics, different speakers, motor noise and real-board processing
+latency are not represented by these fixtures.
