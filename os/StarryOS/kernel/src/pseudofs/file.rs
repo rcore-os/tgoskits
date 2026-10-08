@@ -132,7 +132,7 @@ impl SimpleFile {
         mtime: core::time::Duration,
         ctime: core::time::Duration,
     ) {
-        let mut metadata = self.node.metadata.lock();
+        let mut metadata = self.node.metadata.lock_irqsave();
         metadata.mode = mode;
         metadata.uid = uid;
         metadata.gid = gid;
@@ -150,7 +150,7 @@ impl SimpleFile {
     /// [`SimpleFsNode::metadata`], which now honors a non-zero stored size
     /// instead of always recomputing from the live content length.
     pub fn set_fixed_size(&self, size: u64) {
-        self.node.metadata.lock().size = size;
+        self.node.metadata.lock_irqsave().size = size;
     }
 }
 

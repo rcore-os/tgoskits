@@ -4,7 +4,7 @@ mod linux;
 pub(super) mod probe;
 mod resources;
 
-use std::{format, sync::Arc, vec::Vec};
+use std::{sync::Arc, vec::Vec};
 
 use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion};
 use axdevice_base::InterruptControllerId;
@@ -113,7 +113,7 @@ pub struct GedDevice {
 }
 
 impl GuestPlatform {
-    pub fn discover(vm: &AxVMRef, _config: &GuestConfig) -> AxVmResult<Self> {
+    pub fn discover(vm: &AxVM, _config: &GuestConfig) -> AxVmResult<Self> {
         let serial = resolved_serial(vm)?;
         let (fdt_firmware, acpi_firmware) = vm.with_planned_device_graph(|graph| {
             Ok((
@@ -464,7 +464,7 @@ fn single_acpi_special<'a>(
     Ok(special)
 }
 
-fn resolved_serial(vm: &AxVMRef) -> AxVmResult<SerialDevice> {
+fn resolved_serial(vm: &AxVM) -> AxVmResult<SerialDevice> {
     vm.with_planned_device_graph(|graph| {
         let serials = crate::machine::resolved_serial_devices(graph)?;
         let serial = serials
@@ -500,7 +500,7 @@ fn resolved_serial(vm: &AxVMRef) -> AxVmResult<SerialDevice> {
 }
 
 fn build_firmware_fdt(
-    vm: &AxVMRef,
+    vm: &AxVM,
     config: &GuestConfig,
     cmdline: Option<&str>,
     initrd: Option<(u64, u64)>,
@@ -509,26 +509,21 @@ fn build_firmware_fdt(
     fdt::guest_firmware_dtb::build(&platform, cmdline, initrd)
 }
 
-fn install_firmware_fdt(vm: &AxVMRef, config: &GuestConfig, fdt: Vec<u8>) -> AxVmResult {
+fn install_firmware_fdt(vm: &mut AxVM, config: &GuestConfig, fdt: Vec<u8>) -> AxVmResult {
     debug!(
         "VM[{}] loading LoongArch guest FDT: {} bytes at {:#x}",
         config.base.id,
         fdt.len(),
         UEFI_FIRMWARE_FDT_BASE
     );
-    vm.with_config(|config| {
-        config.set_dtb_load_gpa(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE));
-    });
-    load_vm_image_from_memory(
-        &fdt,
-        GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE),
-        vm.clone(),
-    )?;
+    vm.config_mut()
+        .set_dtb_load_gpa(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE));
+    load_vm_image_from_memory(&fdt, GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE), vm)?;
     vm.set_guest_device_tree(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE), fdt)
 }
 
 pub fn guest_irq_routes(
-    vm: &AxVMRef,
+    vm: &AxVM,
     config: &GuestConfig,
 ) -> AxVmResult<Vec<LoongArchGuestIrqRoute>> {
     Ok(GuestPlatform::discover(vm, config)?
@@ -579,9 +574,9 @@ impl BootImagePlatform for super::LoongArch64Arch {
                 &loader.config.kernel.kernel_path,
                 loader.provider,
             )?;
-            let ramdisk = if let Some(path) = &loader.config.kernel.ramdisk_path {
+            let ramdisk = if let Some(path) = loader.config.kernel.ramdisk_path.clone() {
                 Some(crate::boot::images::fs::read_full_image(
-                    path,
+                    &path,
                     loader.provider,
                 )?)
             } else {
@@ -597,8 +592,8 @@ impl BootImagePlatform for super::LoongArch64Arch {
             loader.provider,
         )?;
         let kernel = Arc::from(kernel);
-        let ramdisk = if let Some(path) = &loader.config.kernel.ramdisk_path {
-            let ramdisk = crate::boot::images::fs::read_full_image(path, loader.provider)?;
+        let ramdisk = if let Some(path) = loader.config.kernel.ramdisk_path.clone() {
+            let ramdisk = crate::boot::images::fs::read_full_image(&path, loader.provider)?;
             Some(Arc::from(ramdisk))
         } else {
             None
@@ -623,14 +618,14 @@ fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     }
 }
 
-fn load_uefi_firmware_dtb(loader: &ImageLoaderCore<'_>) -> AxVmResult {
-    prepare_uefi_runtime_config(&loader.vm, &loader.config)?;
-    let fdt = build_firmware_fdt(&loader.vm, &loader.config, None, None)?;
-    install_firmware_fdt(&loader.vm, &loader.config, fdt)
+fn load_uefi_firmware_dtb(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
+    prepare_uefi_runtime_config(&*loader.vm, &loader.config)?;
+    let fdt = build_firmware_fdt(&*loader.vm, &loader.config, None, None)?;
+    install_firmware_fdt(&mut *loader.vm, &loader.config, fdt)
 }
 
 fn load_direct_linux(
-    loader: &ImageLoaderCore<'_>,
+    loader: &mut ImageLoaderCore<'_>,
     kernel: &[u8],
     ramdisk: Option<&[u8]>,
 ) -> AxVmResult {
@@ -640,7 +635,7 @@ fn load_direct_linux(
             Ok((load_gpa, ramdisk.len()))
         })
         .transpose()?;
-    prepare_uefi_runtime_config(&loader.vm, &loader.config)?;
+    prepare_uefi_runtime_config(&*loader.vm, &loader.config)?;
     let initrd_fdt = initrd
         .map(|(start, size)| -> AxVmResult<(u64, u64)> {
             let start = start.as_usize() as u64;
@@ -651,7 +646,7 @@ fn load_direct_linux(
         })
         .transpose()?;
     let fdt = build_firmware_fdt(
-        &loader.vm,
+        &*loader.vm,
         &loader.config,
         loader.config.kernel.cmdline.as_deref(),
         initrd_fdt,
@@ -664,7 +659,7 @@ fn load_direct_linux(
     }
     linux::load_boot_info(loader)?;
     add_fw_cfg(loader, FwCfgKernelPayload::empty(), None)?;
-    install_firmware_fdt(&loader.vm, &loader.config, fdt)
+    install_firmware_fdt(&mut *loader.vm, &loader.config, fdt)
 }
 
 pub(super) const fn direct_linux_boot_args() -> [usize; 3] {
@@ -672,11 +667,11 @@ pub(super) const fn direct_linux_boot_args() -> [usize; 3] {
 }
 
 fn add_fw_cfg(
-    loader: &ImageLoaderCore<'_>,
+    loader: &mut ImageLoaderCore<'_>,
     kernel: FwCfgKernelPayload,
     ramdisk: Option<Arc<[u8]>>,
 ) -> AxVmResult {
-    let platform = GuestPlatform::discover(&loader.vm, &loader.config)?;
+    let platform = GuestPlatform::discover(&*loader.vm, &loader.config)?;
     let fw_cfg = platform.fw_cfg;
     loader.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
         base: GuestPhysAddr::from(
@@ -702,7 +697,7 @@ fn provider_firmware_image(loader: &ImageLoaderCore<'_>) -> Option<&'static [u8]
         .and_then(|image| image.bios)
 }
 
-fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> AxVmResult {
+fn load_uefi_firmware_image(loader: &mut ImageLoaderCore<'_>, firmware: &[u8]) -> AxVmResult {
     let load_gpa = loader
         .bios_load_gpa
         .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI firmware load addr is missed"))?;
@@ -713,34 +708,28 @@ fn load_uefi_firmware_image(loader: &ImageLoaderCore<'_>, firmware: &[u8]) -> Ax
         .iter()
         .find(|region| region.gpa == load_gpa.as_usize())
         .map_or(firmware.len(), |region| region.size);
-    fill_vm_region(load_gpa, flash_len, 0xff, loader.vm.clone())?;
-    load_vm_image_from_memory(firmware, load_gpa, loader.vm.clone())
+    fill_vm_region(load_gpa, flash_len, 0xff, &mut *loader.vm)?;
+    load_vm_image_from_memory(firmware, load_gpa, &mut *loader.vm)
 }
 
-fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) -> AxVmResult {
-    let regions = vm.get_image_load_region(load_addr, size)?;
-    let mut filled_size = 0;
-    for region in regions {
-        // SAFETY: AxVM returned this writable guest-memory region and the fill
-        // is bounded by its length.
-        unsafe { std::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
-        crate::arch::current::make_guest_memory_visible(
-            (region.as_ptr() as usize).into(),
-            region.len(),
-        );
-        filled_size += region.len();
+fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: &mut AxVM) -> AxVmResult {
+    // Bytes written per guest-memory fill step.
+    const FILL_CHUNK_SIZE: usize = 0x40_0000;
+
+    let chunk = std::vec![byte; size.min(FILL_CHUNK_SIZE)];
+    let mut offset = 0;
+    while offset < size {
+        let chunk_len = (size - offset).min(chunk.len());
+        vm.write_to_guest(
+            GuestPhysAddr::from(load_addr.as_usize() + offset),
+            &chunk[..chunk_len],
+        )?;
+        offset += chunk_len;
     }
-    if filled_size == size {
-        Ok(())
-    } else {
-        ax_err!(
-            InvalidData,
-            format!("VM memory was only partially filled: {filled_size}/{size} bytes")
-        )
-    }
+    Ok(())
 }
 
-fn ram_regions(vm: &AxVMRef) -> Vec<MemoryRegion> {
+fn ram_regions(vm: &AxVM) -> Vec<MemoryRegion> {
     let mut regions = vm
         .memory_regions()
         .into_iter()

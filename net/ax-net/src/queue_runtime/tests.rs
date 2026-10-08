@@ -1,9 +1,6 @@
 use alloc::vec;
 use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull, sync::atomic::AtomicUsize};
-use std::{
-    alloc::{alloc_zeroed, dealloc},
-    sync::Mutex as StdMutex,
-};
+use std::alloc::{alloc_zeroed, dealloc};
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
@@ -175,7 +172,7 @@ pub(super) fn tx_test_port(
     (
         QueueFramePort {
             name: String::from("test0"),
-            mac: Arc::new(SpinLock::new([0; 6])),
+            mac: Arc::new(RawSpinLock::new([0; 6])),
             groups: vec![group],
             tx_queue_discipline,
             pending_tx: VecDeque::new(),
@@ -389,7 +386,7 @@ fn device_qdisc_limits_and_backlogs_are_isolated() {
 
 struct RecordingRegistration {
     id: usize,
-    order: Arc<StdMutex<Vec<usize>>>,
+    order: Arc<std::sync::Mutex<Vec<usize>>>,
 }
 
 impl PinnedNetIrqRegistration for RecordingRegistration {
@@ -456,7 +453,7 @@ fn spsc_ring_is_bounded_and_preserves_move_order() {
 
 #[test]
 fn failed_initialization_unwinds_irq_leases_in_reverse_order() {
-    let order = Arc::new(StdMutex::new(Vec::new()));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let registrations = (0..3)
         .map(|id| {
             Box::new(RecordingRegistration {
@@ -472,7 +469,7 @@ fn failed_initialization_unwinds_irq_leases_in_reverse_order() {
 
 #[test]
 fn absent_startup_group_synchronizes_only_its_irq_registration() {
-    let order = Arc::new(StdMutex::new(Vec::new()));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let started = Arc::new(group_state(STATE_IDLE));
     let absent = Arc::new(group_state(STATE_DISABLED));
     absent.mark_startup_absent();
@@ -504,7 +501,7 @@ fn absent_startup_group_synchronizes_only_its_irq_registration() {
 #[test]
 fn absent_irq_sync_failure_rejects_publication_and_releases_other_registrations() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let order = Arc::new(StdMutex::new(Vec::new()));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let absent = Arc::new(group_state(STATE_DISABLED));
     absent.mark_startup_absent();
     let registrations = vec![

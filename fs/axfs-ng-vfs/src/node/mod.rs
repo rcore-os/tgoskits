@@ -22,8 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
-    path::PathBuf,
+    FilesystemOps, Metadata, MetadataUpdate, NodeType, RawSpinLock, RawSpinLockGuard, VfsError,
+    VfsResult, path::PathBuf,
 };
 
 bitflags! {
@@ -217,7 +217,7 @@ struct Inner {
     node: Node,
     node_type: NodeType,
     reference: Reference,
-    user_data: Mutex<TypeMap>,
+    user_data: RawSpinLock<TypeMap>,
 }
 
 impl fmt::Debug for Inner {
@@ -273,7 +273,7 @@ impl DirEntry {
             node: Node::File(node),
             node_type,
             reference,
-            user_data: Mutex::new(TypeMap::default()),
+            user_data: RawSpinLock::new(TypeMap::default()),
         }))
     }
 
@@ -282,7 +282,7 @@ impl DirEntry {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
-            user_data: Mutex::new(TypeMap::default()),
+            user_data: RawSpinLock::new(TypeMap::default()),
         }))
     }
 
@@ -409,7 +409,7 @@ impl DirEntry {
         }
     }
 
-    pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
+    pub fn user_data(&self) -> RawSpinLockGuard<'_, TypeMap> {
         self.0.user_data.lock()
     }
 

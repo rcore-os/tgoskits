@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axdevice_base::*;
 
 use crate::{ConfigOffset, PciBdf, PciRootBinding, PciSegment, all_ones, read_bytes};
@@ -21,7 +21,7 @@ struct ConfigWindow {
 
 /// CF8/CFC frontend that only decodes x86 port accesses.
 pub struct X86PciConfigFrontend {
-    address: SpinLock<u32>,
+    address: RawSpinLock<u32>,
     binding: Arc<PciRootBinding>,
     resources: Box<[Resource]>,
 }
@@ -34,7 +34,7 @@ impl X86PciConfigFrontend {
     /// Creates a frontend for one generic PCI root.
     pub fn new(binding: Arc<PciRootBinding>) -> Self {
         Self {
-            address: SpinLock::new(0),
+            address: RawSpinLock::new(0),
             binding,
             resources: alloc::vec![Resource::PortRange {
                 base: Self::PORT_BASE,

@@ -45,7 +45,9 @@ impl LoongArch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+    pub(crate) fn init_vm(vm: &mut AxVM) -> AxVmResult {
+        let vm_id = vm.id();
+        let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let placements = resources.vcpu_placements(config);
             let state_count = placements
@@ -59,7 +61,7 @@ impl LoongArch64Arch {
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
             let firmware_boot = uses_firmware_boot(config);
             let boot_args = direct_boot_args(firmware_boot);
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            let mut vcpus = PreparedVcpus::create(vm_id, &placements, |placement| {
                 Ok(LoongArchVCpuCreateConfig {
                     cpu_id: placement.id,
                     dtb_addr: dtb_addr.as_usize(),
@@ -69,11 +71,11 @@ impl LoongArch64Arch {
                     iocsr_state: iocsr_state.clone(),
                 })
             })?;
-            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let devices = PreparedDevices::build_planned(resources, ports)?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            resources.prepare_guest_address_space(vm_id, config, &[])?;
             vcpus.setup(resources, config, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))

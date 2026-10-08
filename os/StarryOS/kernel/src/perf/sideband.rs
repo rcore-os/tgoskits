@@ -34,7 +34,7 @@ use ax_lazyinit::LazyInit;
 
 use super::output::PerfRingOutput;
 use crate::{
-    sync::IrqMutex,
+    sync::RawSpinLock,
     task::{PidNamespaceId, TgidNumber, Thread, TidNumber},
 };
 
@@ -54,11 +54,11 @@ const PERF_RECORD_MISC_COMM_EXEC: u16 = 1 << 13;
 /// `comm` is capped at Linux's `TASK_COMM_LEN` (16, including the NUL).
 const COMM_MAX: usize = 15;
 
-static SYSTEM_SOURCES: LazyInit<IrqMutex<Vec<Weak<SystemSidebandSource>>>> = LazyInit::new();
+static SYSTEM_SOURCES: LazyInit<RawSpinLock<Vec<Weak<SystemSidebandSource>>>> = LazyInit::new();
 static SYSTEM_SOURCE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn initialize() {
-    SYSTEM_SOURCES.init_once(IrqMutex::new(Vec::new()));
+    SYSTEM_SOURCES.init_once(RawSpinLock::new(Vec::new()));
 }
 
 /// Side-band-only subscription for one fixed CPU perf context.
@@ -72,7 +72,7 @@ pub struct SystemSidebandSource {
     want_task: bool,
     sample_id: AtomicU64,
     enabled: AtomicBool,
-    redirect: IrqMutex<Option<PerfRingOutput>>,
+    redirect: RawSpinLock<Option<PerfRingOutput>>,
 }
 
 impl SystemSidebandSource {
@@ -100,7 +100,7 @@ impl SystemSidebandSource {
             want_task,
             sample_id: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
-            redirect: IrqMutex::new(None),
+            redirect: RawSpinLock::new(None),
         });
         SYSTEM_SOURCES
             .get()
@@ -120,7 +120,7 @@ impl SystemSidebandSource {
     }
 
     pub fn set_redirect(&self, redirect: Option<PerfRingOutput>) {
-        *self.redirect.lock() = redirect;
+        *self.redirect.lock_irqsave() = redirect;
     }
 
     pub fn output_scope(&self) -> super::output::PerfOutputScope {
@@ -131,7 +131,7 @@ impl SystemSidebandSource {
         if !self.enabled.load(Ordering::Acquire) {
             return None;
         }
-        let ring = self.redirect.lock().clone()?;
+        let ring = self.redirect.lock_irqsave().clone()?;
         let pid = thread
             .proc_data
             .identity()

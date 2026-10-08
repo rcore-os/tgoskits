@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTrigger, IrqError,
     IrqResult, ItsId, LpiId as EndpointLpiId, MessageInterruptController, MessageInterruptSink,
@@ -21,7 +21,7 @@ use crate::{
 pub struct VgicCore {
     config: ArmVgicConfig,
     controller: VgicController,
-    inputs: SpinLock<BTreeMap<ControllerInputId, WiredIrqInput>>,
+    inputs: RawSpinLock<BTreeMap<ControllerInputId, WiredIrqInput>>,
     sink: Arc<VgicWiredSink>,
     message_sink: Arc<VgicMessageSink>,
 }
@@ -52,11 +52,11 @@ impl VgicCore {
                 id,
             }),
             controller,
-            inputs: SpinLock::new(BTreeMap::new()),
+            inputs: RawSpinLock::new(BTreeMap::new()),
         })
     }
 
-    fn inputs(&self) -> RawSpinLockGuard<'_, BTreeMap<ControllerInputId, WiredIrqInput>> {
+    fn inputs(&self) -> RawSpinLockUnpinnedGuard<'_, BTreeMap<ControllerInputId, WiredIrqInput>> {
         // SAFETY: input opening is serialized by the VM device graph and
         // excludes same-vCPU re-entry.
         unsafe { self.inputs.lock_raw() }

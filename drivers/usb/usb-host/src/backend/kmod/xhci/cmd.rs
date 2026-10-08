@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
+use ax_sync::{RawSpinLock, RawSpinRwLock};
 use dma_api::DmaDirection;
 use mbarrier::wmb;
 use usb_if::err::TransferError;
@@ -13,17 +13,17 @@ use super::{reg::XhciRegisters, ring::SendRing};
 use crate::{err::ConvertXhciError, osal::Kernel, queue::Finished};
 
 #[derive(Clone)]
-pub struct CommandRing(Arc<Mutex<Inner>>);
+pub struct CommandRing(Arc<RawSpinLock<Inner>>);
 
 impl CommandRing {
     pub fn new(
         direction: DmaDirection,
         dma: &Kernel,
-        reg: Arc<RwLock<XhciRegisters>>,
+        reg: Arc<RawSpinRwLock<XhciRegisters>>,
     ) -> crate::err::Result<Self> {
         let ring = SendRing::new(direction, dma)?;
         let inner = Inner { ring, reg };
-        Ok(Self(Arc::new(Mutex::new(inner))))
+        Ok(Self(Arc::new(RawSpinLock::new(inner))))
     }
 
     pub fn bus_addr(&self) -> crate::BusAddr {
@@ -75,5 +75,5 @@ impl CommandRing {
 
 struct Inner {
     ring: SendRing<CommandCompletion>,
-    reg: Arc<RwLock<XhciRegisters>>,
+    reg: Arc<RawSpinRwLock<XhciRegisters>>,
 }

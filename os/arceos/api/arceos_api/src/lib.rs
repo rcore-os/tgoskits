@@ -94,7 +94,7 @@ pub mod task {
         pub type AxTaskHandle;
         pub type AxWaitQueueHandle;
         pub type AxCpuMask;
-        pub type AxRawMutex;
+        pub type MutexBackend;
     }
 
     define_api! {

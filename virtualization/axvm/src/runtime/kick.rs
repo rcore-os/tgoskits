@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::vcpu::VcpuRunState;
+use crate::vcpu::VcpuSignals;
 #[cfg(target_arch = "x86_64")]
 use crate::{host::task::WakeResult, vcpu::HardIrqExitClaim};
 
@@ -29,13 +29,13 @@ pub(crate) enum HardIrqKick {
 /// architecture backend has published its authoritative pending state.
 #[derive(Clone)]
 pub(crate) struct VcpuKickHandle {
-    run_state: Arc<VcpuRunState>,
+    run_state: Arc<VcpuSignals>,
     wake: crate::host::task::ThreadWakeHandle,
 }
 
 impl VcpuKickHandle {
     pub(crate) fn new(
-        run_state: Arc<VcpuRunState>,
+        run_state: Arc<VcpuSignals>,
         wake: crate::host::task::ThreadWakeHandle,
     ) -> Self {
         Self { run_state, wake }

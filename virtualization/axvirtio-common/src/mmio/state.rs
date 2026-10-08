@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use ax_sync::{SpinLock as Mutex, SpinLockIrqSaveGuard as MutexGuard};
+use ax_sync::{RawSpinLock, RawSpinLockIrqSaveGuard};
 use axaddrspace::GuestMemoryAccessor;
 use axvm_types::{AccessWidth, GuestPhysAddr};
 
@@ -43,7 +43,7 @@ pub enum MmioWriteAction {
 /// and queue reconfiguration from replacing the selected queue while a device
 /// core processes it or updates transport-owned deferred state.
 pub struct MmioQueueProcessingLease<'a, T: GuestMemoryAccessor + Clone> {
-    queues: MutexGuard<'a, Vec<VirtioQueue<T>>>,
+    queues: RawSpinLockIrqSaveGuard<'a, Vec<VirtioQueue<T>>>,
     queue_index: usize,
     negotiated_features: u64,
 }
@@ -77,17 +77,17 @@ pub struct VirtioMmioState<T: GuestMemoryAccessor + Clone> {
     device_id: u32,
     vendor_id: u32,
     device_features: u64,
-    status: Mutex<u32>,
-    driver_features: Mutex<u64>,
-    features_sealed: Mutex<bool>,
-    device_features_sel: Mutex<u32>,
-    driver_features_sel: Mutex<u32>,
-    queue_sel: Mutex<u16>,
+    status: RawSpinLock<u32>,
+    driver_features: RawSpinLock<u64>,
+    features_sealed: RawSpinLock<bool>,
+    device_features_sel: RawSpinLock<u32>,
+    driver_features_sel: RawSpinLock<u32>,
+    queue_sel: RawSpinLock<u16>,
     /// Serializes queue configuration register writes without blocking the data path.
-    queue_config_transaction: Mutex<()>,
-    queues: Mutex<Vec<VirtioQueue<T>>>,
-    interrupt_status: Mutex<InterruptState>,
-    config_generation: Mutex<u32>,
+    queue_config_transaction: RawSpinLock<()>,
+    queues: RawSpinLock<Vec<VirtioQueue<T>>>,
+    interrupt_status: RawSpinLock<InterruptState>,
+    config_generation: RawSpinLock<u32>,
 }
 
 impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
@@ -107,16 +107,16 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             device_id,
             vendor_id,
             device_features,
-            status: Mutex::new(0),
-            driver_features: Mutex::new(0),
-            features_sealed: Mutex::new(false),
-            device_features_sel: Mutex::new(0),
-            driver_features_sel: Mutex::new(0),
-            queue_sel: Mutex::new(0),
-            queue_config_transaction: Mutex::new(()),
-            queues: Mutex::new(queues),
-            interrupt_status: Mutex::new(InterruptState::default()),
-            config_generation: Mutex::new(0),
+            status: RawSpinLock::new(0),
+            driver_features: RawSpinLock::new(0),
+            features_sealed: RawSpinLock::new(false),
+            device_features_sel: RawSpinLock::new(0),
+            driver_features_sel: RawSpinLock::new(0),
+            queue_sel: RawSpinLock::new(0),
+            queue_config_transaction: RawSpinLock::new(()),
+            queues: RawSpinLock::new(queues),
+            interrupt_status: RawSpinLock::new(InterruptState::default()),
+            config_generation: RawSpinLock::new(0),
         }
     }
 
@@ -131,7 +131,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     }
 
     /// Lock the queue vector for a device data path.
-    pub fn queues_lock(&self) -> MutexGuard<'_, Vec<VirtioQueue<T>>> {
+    pub fn queues_lock(&self) -> RawSpinLockIrqSaveGuard<'_, Vec<VirtioQueue<T>>> {
         self.queues.lock_irqsave()
     }
 

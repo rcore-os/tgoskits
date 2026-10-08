@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::cell::RefCell;
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use axdevice_base::*;
 use axvm_types::GuestPhysAddr;
 
@@ -127,7 +127,7 @@ pub struct FwCfg {
     acpi_loader: Vec<u8>,
     cpu_num: u16,
     ram_size: u64,
-    state: Mutex<FwCfgState>,
+    state: RawSpinLock<FwCfgState>,
 }
 
 impl FwCfg {
@@ -228,7 +228,7 @@ impl FwCfg {
             acpi_loader: acpi.loader,
             cpu_num,
             ram_size,
-            state: Mutex::new(FwCfgState {
+            state: RawSpinLock::new(FwCfgState {
                 selected: FW_CFG_SIGNATURE,
                 offset: 0,
                 dma_address: 0,

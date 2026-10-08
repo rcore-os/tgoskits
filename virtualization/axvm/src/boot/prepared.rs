@@ -5,7 +5,7 @@ use std::format;
 use axvmconfig::GuestConfig;
 
 use super::{BootImageProvider, fdt::GuestDtbImage, images::ImageLoaderCore};
-use crate::{AxVMRef, AxVmResult, VMMemoryRegion, ax_err, config::AxVMConfig};
+use crate::{AxVM, AxVmResult, VMMemoryRegion, ax_err, config::AxVMConfig};
 
 /// Architecture-prepared VM configuration and optional guest DTB.
 #[derive(Debug)]
@@ -26,10 +26,10 @@ impl PreparedGuestBoot {
     ///
     /// Returns an error when an image source is unavailable, an image layout is
     /// invalid, or guest memory cannot hold the configured image.
-    pub fn load_images(
+    pub(crate) fn load_images(
         self,
         main_memory: VMMemoryRegion,
-        vm: AxVMRef,
+        vm: &mut AxVM,
         provider: &dyn BootImageProvider,
     ) -> AxVmResult {
         let mut loader =

@@ -1,7 +1,7 @@
 use super::{resource_rollback::DropTrackedQueue, *};
 
 struct BlockingGate {
-    state: StdMutex<BlockingGateState>,
+    state: std::sync::Mutex<BlockingGateState>,
     changed: std::sync::Condvar,
 }
 
@@ -13,7 +13,7 @@ struct BlockingGateState {
 impl BlockingGate {
     fn new() -> Self {
         Self {
-            state: StdMutex::new(BlockingGateState {
+            state: std::sync::Mutex::new(BlockingGateState {
                 entered: false,
                 released: false,
             }),
@@ -166,8 +166,8 @@ fn group_teardown_wakes_every_concurrent_waiter() {
     crate::os::task::install_test_runtime_ops();
     let group = Arc::new(BlockGroupHandle {
         name: String::from("concurrent-teardown"),
-        controller: IrqMutex::new(None),
-        registrations: IrqMutex::new(Vec::new()),
+        controller: RawSpinLock::new(None),
+        registrations: RawSpinLock::new(Vec::new()),
         members: Vec::new(),
         teardown_state: AtomicU8::new(GROUP_STOPPING),
         teardown_waiters: TaskWaiters::new(),
@@ -202,7 +202,7 @@ fn group_teardown_wakes_every_concurrent_waiter() {
 fn last_device_handle_drop_owns_teardown_despite_internal_references() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -237,7 +237,7 @@ fn last_device_handle_drop_owns_teardown_despite_internal_references() {
 #[test]
 fn active_queue_shutdown_failure_is_reported_and_quarantined() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "active-queue-shutdown-failure",
         [],
@@ -271,7 +271,7 @@ fn active_queue_shutdown_failure_is_reported_and_quarantined() {
 #[test]
 fn detached_queue_shutdown_failure_is_reported_and_quarantined() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "detached-queue-shutdown-failure",
         [],
@@ -285,7 +285,7 @@ fn detached_queue_shutdown_failure_is_reported_and_quarantined() {
         }),
     ))
     .unwrap();
-    handle.inner.detached_queues.lock().extend([
+    handle.inner.detached_queues.lock_irqsave().extend([
         Box::new(DropTrackedQueue::shutdown_failure(
             1,
             "failed_detached_queue_drop",
@@ -307,7 +307,7 @@ fn detached_queue_shutdown_failure_is_reported_and_quarantined() {
 
     let first_result = handle.inner.shutdown_result();
     let second_result = handle.inner.shutdown_result();
-    let detached_is_empty = handle.inner.detached_queues.lock().is_empty();
+    let detached_is_empty = handle.inner.detached_queues.lock_irqsave().is_empty();
     let (active_dropped, successful_dropped, failed_dropped, second_failed_dropped) = {
         let log = log.lock().unwrap();
         (
@@ -340,7 +340,7 @@ fn detached_queue_shutdown_failure_is_reported_and_quarantined() {
 fn teardown_shutdowns_queue_rolled_back_while_shutdown_is_queued() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -379,7 +379,7 @@ fn teardown_shutdowns_queue_rolled_back_while_shutdown_is_queued() {
     handle
         .inner
         .irq_registrations
-        .lock()
+        .lock_irqsave()
         .push(InstalledIrqRegistration {
             registration: Box::new(BlockingIrqRegistration {
                 disable_gate: Arc::clone(&disable_gate),
@@ -413,8 +413,8 @@ fn teardown_shutdowns_queue_rolled_back_while_shutdown_is_queued() {
     update_gate.release();
 
     let result = shutdown.join().unwrap();
-    let detached_is_empty = handle.inner.detached_queues.lock().is_empty();
-    let registrations_are_empty = handle.inner.irq_registrations.lock().is_empty();
+    let detached_is_empty = handle.inner.detached_queues.lock_irqsave().is_empty();
+    let registrations_are_empty = handle.inner.irq_registrations.lock_irqsave().is_empty();
     let (active_dropped, late_irq_registered, late_queue_dropped) = {
         let log = log.lock().unwrap();
         (
@@ -440,7 +440,7 @@ fn teardown_shutdowns_queue_rolled_back_while_shutdown_is_queued() {
 #[test]
 fn runtime_teardown_continues_after_terminal_device_error() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime = BlockRuntime::from_rdif_sources(
         [
             RdifBlockDevice::new_with_irqs(
@@ -494,7 +494,7 @@ fn runtime_teardown_continues_after_terminal_device_error() {
 fn group_queue_shutdown_failure_is_reported_and_quarantined() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -622,7 +622,7 @@ fn group_queue_shutdown_failure_is_reported_and_quarantined() {
 fn group_irq_failure_does_not_bypass_shared_owner() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -682,7 +682,7 @@ fn group_irq_failure_does_not_bypass_shared_owner() {
 #[test]
 fn rejected_shutdown_update_keeps_emitted_queue_quarantined() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "shutdown-update-queue",
         [],
@@ -702,7 +702,7 @@ fn rejected_shutdown_update_keeps_emitted_queue_quarantined() {
     .unwrap();
 
     let result = handle.inner.shutdown_result();
-    let detached_count = handle.inner.detached_queues.lock().len();
+    let detached_count = handle.inner.detached_queues.lock_irqsave().len();
     let queue_dropped = log.lock().unwrap().contains(&"shutdown_update_queue_drop");
     drop(handle);
     assert_eq!(result, Err(BlockError::Io));
@@ -717,7 +717,7 @@ fn rejected_shutdown_update_keeps_emitted_queue_quarantined() {
 #[test]
 fn provisional_group_terminal_waits_for_shared_irq_owner() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let group_owner = Arc::new(GroupOwnerLink::new());
     let handle = BlockDeviceHandle::bootstrap_group_member(
         0,
@@ -749,7 +749,7 @@ fn provisional_group_terminal_waits_for_shared_irq_owner() {
 fn failed_terminal_teardown_quarantines_standalone_irq_registration() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -780,13 +780,13 @@ fn failed_terminal_teardown_quarantines_standalone_irq_registration() {
 #[test]
 fn failed_terminal_teardown_quarantines_group_controller() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let group = BlockGroupHandle {
         name: String::from("failed-group-drop-teardown"),
-        controller: IrqMutex::new(Some(Box::new(DropTrackedShutdownFailureGroup {
+        controller: RawSpinLock::new(Some(Box::new(DropTrackedShutdownFailureGroup {
             log: Arc::clone(&log),
         }))),
-        registrations: IrqMutex::new(Vec::new()),
+        registrations: RawSpinLock::new(Vec::new()),
         members: Vec::new(),
         teardown_state: AtomicU8::new(GROUP_RUNNING),
         teardown_waiters: TaskWaiters::new(),
@@ -804,7 +804,7 @@ fn failed_terminal_teardown_quarantines_group_controller() {
 fn partial_group_irq_enable_with_failed_synchronize_quarantines_all_owners() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -865,7 +865,7 @@ fn partial_group_irq_enable_with_failed_synchronize_quarantines_all_owners() {
 fn member_shutdown_failure_quarantines_unstopped_group_controller() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -907,7 +907,7 @@ fn member_shutdown_failure_quarantines_unstopped_group_controller() {
 fn failed_irq_registration_stops_controller_before_dropping_emitted_queue() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -944,7 +944,7 @@ fn failed_irq_registration_stops_controller_before_dropping_emitted_queue() {
 fn teardown_accepts_repeated_device_info_and_releases_resources_in_order() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -966,7 +966,7 @@ fn teardown_accepts_repeated_device_info_and_releases_resources_in_order() {
     ))
     .unwrap();
 
-    let hctxs = handle.inner.hctxs.lock().clone();
+    let hctxs = handle.inner.hctxs.lock_irqsave().clone();
     let cpu_channels = create_cpu_channels(&hctxs, 8).unwrap();
     assert_eq!(cpu_channels.len(), 8);
     assert!(cpu_channels.iter().all(|channel| channel.hctx.id() == 0));
@@ -993,7 +993,7 @@ fn teardown_accepts_repeated_device_info_and_releases_resources_in_order() {
 fn controller_group_enables_shared_irq_before_unmasking_sources_and_tears_down_once() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -1067,7 +1067,7 @@ fn controller_group_enables_shared_irq_before_unmasking_sources_and_tears_down_o
 fn group_member_terminal_is_escalated_to_shared_irq_owner() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -1123,7 +1123,7 @@ fn group_member_terminal_is_escalated_to_shared_irq_owner() {
 fn group_member_watchdog_terminal_is_escalated_to_shared_irq_owner() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -1179,7 +1179,7 @@ fn group_member_watchdog_terminal_is_escalated_to_shared_irq_owner() {
 fn irq_synchronize_failure_blocks_hardware_shutdown() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -1215,7 +1215,7 @@ fn irq_synchronize_failure_blocks_hardware_shutdown() {
 fn closed_submission_channel_is_retryable_only_while_device_is_ready() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::new(StdMutex::new(Vec::new())));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::new(std::sync::Mutex::new(Vec::new())));
     TEST_IRQ_REGISTRAR
         .fail_registration
         .store(false, Ordering::Release);
@@ -1229,9 +1229,9 @@ fn closed_submission_channel_is_retryable_only_while_device_is_ready() {
         }],
         Box::new(LifecycleController {
             queue: Some(LifecycleQueue {
-                log: Arc::new(StdMutex::new(Vec::new())),
+                log: Arc::new(std::sync::Mutex::new(Vec::new())),
             }),
-            log: Arc::new(StdMutex::new(Vec::new())),
+            log: Arc::new(std::sync::Mutex::new(Vec::new())),
             repeat_device_info_on_quiesce: false,
         }),
     ))
@@ -1251,7 +1251,7 @@ fn closed_submission_channel_is_retryable_only_while_device_is_ready() {
     };
     assert_eq!(error.error, BlkError::Retry);
 
-    handle.inner.lifecycle_gate.lock().phase = DevicePhase::Stopping;
+    handle.inner.lifecycle_gate.lock_irqsave().phase = DevicePhase::Stopping;
     handle.inner.accepting.store(true, Ordering::Release);
     let error = match handle.submit_owned(OwnedRequest {
         op: RequestOp::Flush,
@@ -1270,7 +1270,7 @@ fn closed_submission_channel_is_retryable_only_while_device_is_ready() {
 fn late_hctx_failure_cannot_resurrect_a_stopped_device() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -1310,7 +1310,7 @@ fn late_hctx_failure_cannot_resurrect_a_stopped_device() {
 fn teardown_releases_queue_when_quiesce_confirms_prior_watchdog_shutdown() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -1351,7 +1351,7 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     crate::os::task::reset_test_wait_timeout_count();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
         .fail_registration
@@ -1379,8 +1379,8 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
         crate::os::task::test_wait_timeout_count() >= 1,
         "register retry must sleep on the runtime notification"
     );
-    assert_eq!(handle.inner.hctxs.lock().len(), 1);
-    assert_eq!(handle.inner.cpu_channels.lock().len(), 1);
+    assert_eq!(handle.inner.hctxs.lock_irqsave().len(), 1);
+    assert_eq!(handle.inner.cpu_channels.lock_irqsave().len(), 1);
     assert_eq!(handle.shutdown(), 1);
 }
 
@@ -1388,7 +1388,7 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
 fn bootstrap_preserves_waiting_for_irq_controller_without_io_queue() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -1407,6 +1407,6 @@ fn bootstrap_preserves_waiting_for_irq_controller_without_io_queue() {
     .expect("a control IRQ may precede creation of the first I/O queue");
 
     assert_eq!(handle.inner.state.load(Ordering::Acquire), DEVICE_STARTING);
-    assert!(handle.inner.hctxs.lock().is_empty());
+    assert!(handle.inner.hctxs.lock_irqsave().is_empty());
     assert_eq!(handle.shutdown(), 1);
 }

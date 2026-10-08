@@ -291,8 +291,8 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
 fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
-        FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, Mutex, NodeFlags, NodeOps,
-        NodePermission, NodeType, OpenOptions, Reference, RenameOptions, VfsError, VfsResult,
+        FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
+        NodeType, OpenOptions, RawSpinLock, Reference, RenameOptions, VfsError, VfsResult,
         WeakDirEntry,
     };
     use axpoll::{IoEvents, Pollable};
@@ -394,7 +394,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     struct DirTestDir {
         inode: u64,
         self_ref: WeakDirEntry,
-        children: Mutex<Vec<(String, DirEntry)>>,
+        children: RawSpinLock<Vec<(String, DirEntry)>>,
         next_inode: AtomicU64,
         lookup_count: AtomicUsize,
     }
@@ -565,7 +565,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             DirNode::new(Arc::new(DirTestDir {
                 inode: 10,
                 self_ref: weak,
-                children: Mutex::new(Vec::new()),
+                children: RawSpinLock::new(Vec::new()),
                 next_inode: AtomicU64::new(100),
                 lookup_count: AtomicUsize::new(0),
             }))
@@ -647,8 +647,9 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
 fn axfs_ng_vfs_mount_tree_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
-        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mountpoint, Mutex,
-        NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult,
+        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mountpoint, NodeOps,
+        NodePermission, NodeType, RawSpinLock, Reference, RenameOptions, StatFs, VfsError,
+        VfsResult,
     };
     use axpoll::{IoEvents, Pollable};
 
@@ -772,7 +773,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     struct MountTestDir {
         inode: u64,
         self_ref: axfs_ng_vfs::WeakDirEntry,
-        children: Mutex<Vec<(String, DirEntry)>>,
+        children: RawSpinLock<Vec<(String, DirEntry)>>,
         next_inode: AtomicU64,
     }
 
@@ -789,7 +790,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
                         DirNode::new(Arc::new(MountTestDir {
                             inode,
                             self_ref: weak,
-                            children: Mutex::new(Vec::new()),
+                            children: RawSpinLock::new(Vec::new()),
                             next_inode: AtomicU64::new(inode * 10),
                         }))
                     },
@@ -948,7 +949,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
                 DirNode::new(Arc::new(MountTestDir {
                     inode,
                     self_ref: weak,
-                    children: Mutex::new(Vec::new()),
+                    children: RawSpinLock::new(Vec::new()),
                     next_inode: AtomicU64::new(inode * 10),
                 }))
             },
@@ -1218,7 +1219,7 @@ impl axfs_ng_vfs::FileNodeOps for MoreTestFile {
 struct MoreTestDir {
     inode: u64,
     self_ref: axfs_ng_vfs::WeakDirEntry,
-    children: axfs_ng_vfs::Mutex<Vec<(String, axfs_ng_vfs::DirEntry)>>,
+    children: axfs_ng_vfs::RawSpinLock<Vec<(String, axfs_ng_vfs::DirEntry)>>,
     next_inode: AtomicU64,
 }
 
@@ -1235,7 +1236,7 @@ impl MoreTestDir {
                     axfs_ng_vfs::DirNode::new(Arc::new(MoreTestDir {
                         inode,
                         self_ref: weak,
-                        children: axfs_ng_vfs::Mutex::new(Vec::new()),
+                        children: axfs_ng_vfs::RawSpinLock::new(Vec::new()),
                         next_inode: AtomicU64::new(inode * 10),
                     }))
                 },
@@ -1452,7 +1453,7 @@ fn new_more_root(inode: u64, child_dirs: &[&str], child_files: &[&str]) -> axfs_
             axfs_ng_vfs::DirNode::new(Arc::new(MoreTestDir {
                 inode,
                 self_ref: weak,
-                children: axfs_ng_vfs::Mutex::new(Vec::new()),
+                children: axfs_ng_vfs::RawSpinLock::new(Vec::new()),
                 next_inode: AtomicU64::new(inode * 10),
             }))
         },

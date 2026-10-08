@@ -9,7 +9,7 @@ use alloc::{string::String, vec::Vec};
 use ax_cpu::pmu::PmuInfo;
 
 use super::event_map::{self as pmu, ClusterId};
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 pub(super) const MAX_TRACKED_CPUS: usize = 64;
 
@@ -28,17 +28,17 @@ impl CpuPmuState {
     };
 }
 
-static CPU_STATES: IrqMutex<[CpuPmuState; MAX_TRACKED_CPUS]> =
-    IrqMutex::new([CpuPmuState::EMPTY; MAX_TRACKED_CPUS]);
+static CPU_STATES: RawSpinLock<[CpuPmuState; MAX_TRACKED_CPUS]> =
+    RawSpinLock::new([CpuPmuState::EMPTY; MAX_TRACKED_CPUS]);
 
 /// Initializes the PMU owned by the executing CPU exactly once.
 pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
-    let _guard = crate::sync::NoPreemptIrqSave::new();
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
     let cpu = ax_hal::percpu::this_cpu_id();
     if cpu >= MAX_TRACKED_CPUS {
         return None;
     }
-    if let Some(state) = CPU_STATES.lock().get(cpu).copied()
+    if let Some(state) = CPU_STATES.lock_irqsave().get(cpu).copied()
         && state.initialized
     {
         return state.info;
@@ -56,7 +56,7 @@ pub(super) fn ensure_current_cpu_initialized() -> Option<PmuInfo> {
             pmu.info()
         })
     };
-    CPU_STATES.lock()[cpu] = CpuPmuState {
+    CPU_STATES.lock_irqsave()[cpu] = CpuPmuState {
         initialized: true,
         info,
         rotation_cursor: 0,
@@ -83,7 +83,7 @@ pub(super) fn next_rotation_start(len: usize) -> usize {
         return 0;
     }
     let cpu = ax_hal::percpu::this_cpu_id();
-    let mut states = CPU_STATES.lock();
+    let mut states = CPU_STATES.lock_irqsave();
     let state = states
         .get_mut(cpu)
         .expect("perf CPU exceeds PMU state capacity");
@@ -94,11 +94,14 @@ pub(super) fn next_rotation_start(len: usize) -> usize {
 
 /// Returns the cached PMU information for one logical CPU.
 pub fn cpu_info(cpu: usize) -> Option<PmuInfo> {
-    CPU_STATES.lock().get(cpu).and_then(|state| state.info)
+    CPU_STATES
+        .lock_irqsave()
+        .get(cpu)
+        .and_then(|state| state.info)
 }
 
 fn target_infos(cpu: Option<usize>, cluster: Option<ClusterId>) -> impl Iterator<Item = PmuInfo> {
-    let states = CPU_STATES.lock();
+    let states = CPU_STATES.lock_irqsave();
     let infos: Vec<_> = states
         .iter()
         .enumerate()
@@ -146,7 +149,7 @@ pub(super) fn counter_count_for_target(
 
 /// Returns whether at least one initialized PMU belongs to `cluster`.
 pub fn has_cluster(cluster: ClusterId) -> bool {
-    CPU_STATES.lock().iter().any(|state| {
+    CPU_STATES.lock_irqsave().iter().any(|state| {
         state
             .info
             .is_some_and(|info| pmu::classify_midr(info.midr) == cluster)
@@ -155,12 +158,15 @@ pub fn has_cluster(cluster: ClusterId) -> bool {
 
 /// Returns whether at least one online CPU has an initialized PMU.
 pub fn has_pmu() -> bool {
-    CPU_STATES.lock().iter().any(|state| state.info.is_some())
+    CPU_STATES
+        .lock_irqsave()
+        .iter()
+        .any(|state| state.info.is_some())
 }
 
 /// Returns whether every CPU represented by one sysfs PMU implements `event`.
 pub fn event_supported_on(cluster: Option<ClusterId>, event: u16) -> bool {
-    let states = CPU_STATES.lock();
+    let states = CPU_STATES.lock_irqsave();
     let mut matched = false;
     for info in states.iter().filter_map(|state| state.info) {
         if cluster.is_some_and(|cluster| pmu::classify_midr(info.midr) != cluster) {
@@ -176,7 +182,7 @@ pub fn event_supported_on(cluster: Option<ClusterId>, event: u16) -> bool {
 
 /// Resolves the Linux generic branch event to one encoding for a sysfs PMU.
 pub fn branch_event_for(cluster: Option<ClusterId>) -> Option<u16> {
-    let states = CPU_STATES.lock();
+    let states = CPU_STATES.lock_irqsave();
     let mut encoding = None;
     for info in states.iter().filter_map(|state| state.info) {
         if cluster.is_some_and(|cluster| pmu::classify_midr(info.midr) != cluster) {
@@ -195,7 +201,7 @@ pub fn branch_event_for(cluster: Option<ClusterId>) -> Option<u16> {
 pub fn cpu_list(cluster: Option<ClusterId>) -> String {
     use core::fmt::Write;
 
-    let states = CPU_STATES.lock();
+    let states = CPU_STATES.lock_irqsave();
     let cpus: Vec<_> = states
         .iter()
         .enumerate()

@@ -1,14 +1,14 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
 
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 static NEXT_IPC_NS_ID: AtomicU64 = AtomicU64::new(0);
 
 /// The initial root IPC namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWIPC)` or `clone(CLONE_NEWIPC)`.
-pub static ROOT_IPC_NS: ax_lazyinit::LazyLock<Arc<IrqMutex<IpcNamespace>>> =
-    ax_lazyinit::LazyLock::new(|| Arc::new(IrqMutex::new(IpcNamespace::new_root())));
+pub static ROOT_IPC_NS: ax_lazyinit::LazyLock<Arc<RawSpinLock<IpcNamespace>>> =
+    ax_lazyinit::LazyLock::new(|| Arc::new(RawSpinLock::new(IpcNamespace::new_root())));
 
 /// Per-process IPC namespace.
 ///

@@ -758,7 +758,7 @@ pub fn sys_mount(
             let (cgroup_root, cgroup_root_pin) = {
                 let task = current;
                 let nsproxy = task.as_thread().proc_data.namespace_snapshot();
-                let namespace = nsproxy.cgroup_ns.lock();
+                let namespace = nsproxy.cgroup_ns.lock_irqsave();
                 (namespace.root(), namespace.pin_root())
             };
             let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);

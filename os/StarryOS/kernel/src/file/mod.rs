@@ -65,7 +65,7 @@ pub use self::{
 use crate::{
     StarryError, StarryResult,
     pseudofs::DeviceMmap,
-    sync::RwLock,
+    sync::RawSpinRwLock,
     task::{AX_FILE_LIMIT, PidIdentityId, current_user_task, tasks},
 };
 
@@ -567,7 +567,7 @@ impl FileLookupCache {
 }
 
 pub(crate) struct FileTableScope {
-    table: Arc<RwLock<FileTable>>,
+    table: Arc<RawSpinRwLock<FileTable>>,
     generation: Arc<AtomicUsize>,
     cache: UnsafeCell<FileLookupCache>,
 }
@@ -581,7 +581,7 @@ unsafe impl Send for FileTableScope {}
 
 impl FileTableScope {
     fn new() -> Self {
-        let table = Arc::new(RwLock::new(FileTable::new()));
+        let table = Arc::new(RawSpinRwLock::new(FileTable::new()));
         let generation = table.read().generation();
         Self {
             table,
@@ -590,7 +590,7 @@ impl FileTableScope {
         }
     }
 
-    fn from_table(table: Arc<RwLock<FileTable>>) -> Self {
+    fn from_table(table: Arc<RawSpinRwLock<FileTable>>) -> Self {
         let generation = table.read().generation();
         Self {
             table,
@@ -647,17 +647,17 @@ impl Clone for FileTableScope {
     }
 }
 
-pub(crate) fn new_file_table_scope(table: Arc<RwLock<FileTable>>) -> FileTableScope {
+pub(crate) fn new_file_table_scope(table: Arc<RawSpinRwLock<FileTable>>) -> FileTableScope {
     FileTableScope::from_table(table)
 }
 
 /// Copies an fd table into a private scope and binds its cache to the copy.
-pub(crate) fn clone_file_table_scope(table: &Arc<RwLock<FileTable>>) -> FileTableScope {
-    FileTableScope::from_table(Arc::new(RwLock::new(table.read().clone())))
+pub(crate) fn clone_file_table_scope(table: &Arc<RawSpinRwLock<FileTable>>) -> FileTableScope {
+    FileTableScope::from_table(Arc::new(RawSpinRwLock::new(table.read().clone())))
 }
 
 impl Deref for FileTableScope {
-    type Target = Arc<RwLock<FileTable>>;
+    type Target = Arc<RawSpinRwLock<FileTable>>;
 
     fn deref(&self) -> &Self::Target {
         &self.table
@@ -679,7 +679,7 @@ scope_local::scope_local! {
 ///
 /// The CPU pin is released after cloning the `Arc`, before callers acquire the
 /// table lock or run descriptor destructors.
-pub fn current_fd_table() -> Arc<RwLock<FileTable>> {
+pub fn current_fd_table() -> Arc<RawSpinRwLock<FileTable>> {
     FD_TABLE.clone_current().table
 }
 
@@ -688,7 +688,7 @@ static FD_TABLE_LOOKUP_READ_LOCKS: AtomicUsize = AtomicUsize::new(0);
 
 /// An unpublished fd slot reserved before an operation can block.
 pub(crate) struct FileDescriptorReservation {
-    table: Arc<RwLock<FileTable>>,
+    table: Arc<RawSpinRwLock<FileTable>>,
     fd: Option<usize>,
 }
 
@@ -745,7 +745,7 @@ impl Drop for FileDescriptorReservation {
 /// Dropping it before [`PreparedFileDescriptor::install`] rolls the descriptor
 /// back from its originating table.
 pub struct PreparedFileDescriptor {
-    table: Arc<RwLock<FileTable>>,
+    table: Arc<RawSpinRwLock<FileTable>>,
     fd: usize,
     state: DescriptorPreparation,
 }
@@ -758,7 +758,7 @@ enum DescriptorPreparation {
 
 impl PreparedFileDescriptor {
     fn prepare_in(
-        table: Arc<RwLock<FileTable>>,
+        table: Arc<RawSpinRwLock<FileTable>>,
         create: impl FnOnce() -> StarryResult<FileDescriptor>,
         max_entries: usize,
     ) -> StarryResult<Self> {
@@ -769,7 +769,7 @@ impl PreparedFileDescriptor {
         Ok(prepared)
     }
 
-    fn reserve_in(table: Arc<RwLock<FileTable>>, max_entries: usize) -> StarryResult<Self> {
+    fn reserve_in(table: Arc<RawSpinRwLock<FileTable>>, max_entries: usize) -> StarryResult<Self> {
         let fd = {
             let mut table = table.write();
             if table.count() >= max_entries {
@@ -1063,7 +1063,7 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
         }
     }
 
-    let table = Arc::new(RwLock::new(FileTable::new()));
+    let table = Arc::new(RawSpinRwLock::new(FileTable::new()));
     let prepared =
         PreparedFileDescriptor::prepare_in(table.clone(), || Ok(descriptor()), AX_FILE_LIMIT)
             .unwrap();
@@ -1087,7 +1087,7 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     };
     let rollback_released_number = reused_fd == reserved_fd;
 
-    let install_table = Arc::new(RwLock::new(FileTable::new()));
+    let install_table = Arc::new(RawSpinRwLock::new(FileTable::new()));
     let prepared = PreparedFileDescriptor::prepare_in(
         install_table.clone(),
         || Ok(descriptor()),
@@ -1237,7 +1237,7 @@ mod tests {
     #[axtest::axtest]
     fn descriptor_reservation_precedes_fallible_file_creation() {
         use super::*;
-        let table = Arc::new(RwLock::new(FileTable::new()));
+        let table = Arc::new(RawSpinRwLock::new(FileTable::new()));
         let result = PreparedFileDescriptor::prepare_in(
             table.clone(),
             || {

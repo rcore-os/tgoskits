@@ -7,19 +7,19 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-pub(crate) struct SpinMutex<T> {
+pub(crate) struct RawSpinLockStorage<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
 }
 
-pub(crate) struct SpinMutexGuard<'a, T> {
-    lock: &'a SpinMutex<T>,
+pub(crate) struct RawSpinLockStorageGuard<'a, T> {
+    lock: &'a RawSpinLockStorage<T>,
 }
 
-unsafe impl<T: Send> Send for SpinMutex<T> {}
-unsafe impl<T: Send> Sync for SpinMutex<T> {}
+unsafe impl<T: Send> Send for RawSpinLockStorage<T> {}
+unsafe impl<T: Send> Sync for RawSpinLockStorage<T> {}
 
-impl<T> SpinMutex<T> {
+impl<T> RawSpinLockStorage<T> {
     pub(crate) const fn new(value: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
@@ -27,7 +27,7 @@ impl<T> SpinMutex<T> {
         }
     }
 
-    pub(crate) fn lock(&self) -> SpinMutexGuard<'_, T> {
+    pub(crate) fn lock(&self) -> RawSpinLockStorageGuard<'_, T> {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -35,11 +35,11 @@ impl<T> SpinMutex<T> {
         {
             spin_loop();
         }
-        SpinMutexGuard { lock: self }
+        RawSpinLockStorageGuard { lock: self }
     }
 }
 
-impl<T> Deref for SpinMutexGuard<'_, T> {
+impl<T> Deref for RawSpinLockStorageGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -47,13 +47,13 @@ impl<T> Deref for SpinMutexGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for SpinMutexGuard<'_, T> {
+impl<T> DerefMut for RawSpinLockStorageGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.lock.value.get() }
     }
 }
 
-impl<T> Drop for SpinMutexGuard<'_, T> {
+impl<T> Drop for RawSpinLockStorageGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.locked.store(false, Ordering::Release);
     }

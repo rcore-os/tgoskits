@@ -7,7 +7,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 
 /// Typed identity of one switch port.
 ///
@@ -104,7 +104,7 @@ struct SwitchRegistry {
 
 /// The shared layer-2 switch.
 pub struct VirtualSwitch {
-    registry: Mutex<SwitchRegistry>,
+    registry: RawSpinLock<SwitchRegistry>,
     stats: SwitchStats,
 }
 
@@ -113,7 +113,7 @@ impl VirtualSwitch {
     /// port registry, the uplink worker and every guest delivery worker.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            registry: Mutex::new(SwitchRegistry::default()),
+            registry: RawSpinLock::new(SwitchRegistry::default()),
             stats: SwitchStats::default(),
         })
     }
@@ -464,7 +464,7 @@ mod tests {
         id: SwitchPortId,
         mac: [u8; 6],
         active: AtomicBool,
-        delivered: Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
+        delivered: RawSpinLock<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
         accept: AtomicUsize,
         notifications: AtomicUsize,
     }
@@ -475,7 +475,7 @@ mod tests {
                 id,
                 mac,
                 active: AtomicBool::new(true),
-                delivered: Mutex::new(alloc::vec::Vec::new()),
+                delivered: RawSpinLock::new(alloc::vec::Vec::new()),
                 accept: AtomicUsize::new(usize::MAX),
                 notifications: AtomicUsize::new(0),
             })

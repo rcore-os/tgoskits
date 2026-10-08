@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::{any::Any, fmt::Debug};
 
 #[cfg(kmod)]
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use futures::future::BoxFuture;
 use usb_if::descriptor::{ConfigurationDescriptor, DeviceDescriptor};
 
@@ -39,7 +39,7 @@ pub(crate) struct ControllerIrqState {
 #[cfg(kmod)]
 struct ControllerIrqStateInner {
     enabled: AtomicBool,
-    control: SpinLock<()>,
+    control: RawSpinLock<()>,
 }
 
 #[cfg(kmod)]
@@ -48,7 +48,7 @@ impl ControllerIrqState {
         Self {
             inner: Arc::new(ControllerIrqStateInner {
                 enabled: AtomicBool::new(enabled),
-                control: SpinLock::new(()),
+                control: RawSpinLock::new(()),
             }),
         }
     }

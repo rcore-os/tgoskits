@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
-use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockIrqSaveGuard};
+use ax_sync::{RawSpinLock, RawSpinLockIrqSaveGuard, RawSpinLockUnpinnedGuard};
 pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
@@ -64,21 +64,21 @@ struct IrqRoute {
     leaf: IrqId,
 }
 
-static IRQ_DOMAINS: SpinLock<Vec<IrqDomain>> = SpinLock::new(Vec::new());
+static IRQ_DOMAINS: RawSpinLock<Vec<IrqDomain>> = RawSpinLock::new(Vec::new());
 
 /// Global IRQ routes are resolved from hard-IRQ context.
 ///
 /// Keep the IRQ-save policy at the field boundary so a future read-side call
 /// cannot accidentally reintroduce local interrupt re-entry while the route
 /// registry is locked.
-struct IrqRouteLock(SpinLock<Vec<IrqRoute>>);
+struct IrqRouteLock(RawSpinLock<Vec<IrqRoute>>);
 
 impl IrqRouteLock {
     const fn new() -> Self {
-        Self(SpinLock::new(Vec::new()))
+        Self(RawSpinLock::new(Vec::new()))
     }
 
-    fn lock(&self) -> SpinLockIrqSaveGuard<'_, Vec<IrqRoute>> {
+    fn lock(&self) -> RawSpinLockIrqSaveGuard<'_, Vec<IrqRoute>> {
         self.0.lock_irqsave()
     }
 }
@@ -111,13 +111,13 @@ fn withdraw_routed_parent_domain(domain: IrqDomainId) {
     word.fetch_and(!mask, Ordering::Release);
 }
 
-fn irq_domains() -> RawSpinLockGuard<'static, Vec<IrqDomain>> {
+fn irq_domains() -> RawSpinLockUnpinnedGuard<'static, Vec<IrqDomain>> {
     // SAFETY: callers preserve the legacy raw-lock contract and exclude local
     // re-entry while mutating the global domain registry.
     unsafe { IRQ_DOMAINS.lock_raw() }
 }
 
-fn irq_routes() -> SpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
+fn irq_routes() -> RawSpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
     IRQ_ROUTES.lock()
 }
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);

@@ -8,7 +8,7 @@ use core::{
     task::{Context, Poll},
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 #[cfg(any(kmod, umod))]
 use usb_if::endpoint::{IsoPacketResult, TransferStatus};
 use usb_if::{
@@ -59,7 +59,7 @@ struct EndpointInner {
 #[derive(Clone)]
 pub struct EndpointHandle {
     info: EndpointInfo,
-    inner: Arc<SpinLock<EndpointInner>>,
+    inner: Arc<RawSpinLock<EndpointInner>>,
 }
 
 impl EndpointHandle {
@@ -67,7 +67,7 @@ impl EndpointHandle {
     pub(crate) fn new(info: EndpointInfo, raw: impl EndpointOp) -> Self {
         Self {
             info,
-            inner: Arc::new(SpinLock::new(EndpointInner {
+            inner: Arc::new(RawSpinLock::new(EndpointInner {
                 raw: Box::new(raw),
                 lifecycle: EndpointLifecycle::Active,
             })),

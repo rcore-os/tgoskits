@@ -1,13 +1,13 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 
-use ax_sync::{RawSpinLockGuard as SpinMutexGuard, SpinLock as SpinMutex, SpinRwLock as RwLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard, RawSpinRwLock};
 
 use super::reg::{DisableIrqGuard, XhciRegisters};
 
 pub(crate) struct IrqLock<T> {
-    inner: SpinMutex<()>,
-    reg: Arc<RwLock<XhciRegisters>>,
+    inner: RawSpinLock<()>,
+    reg: Arc<RawSpinRwLock<XhciRegisters>>,
     data: UnsafeCell<T>,
 }
 
@@ -15,9 +15,9 @@ unsafe impl<T> Sync for IrqLock<T> where T: Send {}
 unsafe impl<T> Send for IrqLock<T> where T: Send {}
 
 impl<T> IrqLock<T> {
-    pub fn new(data: T, reg: Arc<RwLock<XhciRegisters>>) -> Self {
+    pub fn new(data: T, reg: Arc<RawSpinRwLock<XhciRegisters>>) -> Self {
         Self {
-            inner: SpinMutex::new(()),
+            inner: RawSpinLock::new(()),
             reg,
             data: UnsafeCell::new(data),
         }
@@ -49,7 +49,7 @@ impl<T> IrqLock<T> {
 }
 
 pub(crate) struct IrqLockGuard<'a, T> {
-    _guard: SpinMutexGuard<'a, ()>,
+    _guard: RawSpinLockUnpinnedGuard<'a, ()>,
     data: &'a mut T,
     _disable_guard: DisableIrqGuard,
 }

@@ -10,7 +10,7 @@ use core::{
     time::Duration,
 };
 
-use ax_runtime::task::sync::RawSpinLock as Mutex;
+use ax_runtime::task::sync::RawSpinLock;
 use syscalls::Errno;
 
 #[cfg(feature = "fs")]
@@ -2001,11 +2001,11 @@ unsafe fn futex_timeout(
     super::futex::timeout_from_timespec(ts, mode, clocks).map(Some)
 }
 
-static FUTEX_QUEUES: Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
-    Mutex::new(BTreeMap::new());
-static MMAP_ALLOCS: Mutex<BTreeMap<usize, SizeT>> = Mutex::new(BTreeMap::new());
+static FUTEX_QUEUES: RawSpinLock<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
+    RawSpinLock::new(BTreeMap::new());
+static MMAP_ALLOCS: RawSpinLock<BTreeMap<usize, SizeT>> = RawSpinLock::new(BTreeMap::new());
 #[cfg(feature = "fs")]
-static FD_PATHS: Mutex<BTreeMap<c_int, FdPath>> = Mutex::new(BTreeMap::new());
+static FD_PATHS: RawSpinLock<BTreeMap<c_int, FdPath>> = RawSpinLock::new(BTreeMap::new());
 
 mod pthread {
     use super::*;
@@ -2018,12 +2018,12 @@ mod pthread {
     type PthreadTlsMap = BTreeMap<u64, ForceSendSync<PthreadTlsValues>>;
     type CxaThreadDtorMap = BTreeMap<u64, Vec<CxaThreadDtor>>;
 
-    static KEY_SLOTS: Mutex<Vec<Option<TlsKey>>> = Mutex::new(Vec::new());
-    static TLS_VALUES: Mutex<PthreadTlsMap> = Mutex::new(BTreeMap::new());
-    static CXA_THREAD_DTORS: Mutex<CxaThreadDtorMap> = Mutex::new(BTreeMap::new());
+    static KEY_SLOTS: RawSpinLock<Vec<Option<TlsKey>>> = RawSpinLock::new(Vec::new());
+    static TLS_VALUES: RawSpinLock<PthreadTlsMap> = RawSpinLock::new(BTreeMap::new());
+    static CXA_THREAD_DTORS: RawSpinLock<CxaThreadDtorMap> = RawSpinLock::new(BTreeMap::new());
     static NEXT_COND_ID: AtomicUsize = AtomicUsize::new(1);
-    static CONDVARS: Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
-        Mutex::new(BTreeMap::new());
+    static CONDVARS: RawSpinLock<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
+        RawSpinLock::new(BTreeMap::new());
 
     struct TlsKey {
         destructor: Option<unsafe extern "C" fn(*mut c_void)>,

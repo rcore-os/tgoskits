@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axdevice_base::DeviceId;
 
 use super::{
@@ -352,16 +352,16 @@ pub struct PciRootBinding {
     pub(super) host: DeviceNodeId,
     pub(super) root: Arc<PciRootState>,
     pub(super) router: Arc<EndpointRouter>,
-    pub(super) lifecycle: SpinLock<LifecycleSlot>,
-    pub(super) pending_irq_withdrawals: SpinLock<Vec<PendingIrqWithdrawal>>,
+    pub(super) lifecycle: RawSpinLock<LifecycleSlot>,
+    pub(super) pending_irq_withdrawals: RawSpinLock<Vec<PendingIrqWithdrawal>>,
     #[cfg(test)]
-    reset_handoff_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    reset_handoff_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    deferred_withdrawal_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    deferred_withdrawal_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    admission_open_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    admission_open_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    completion_closing_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    completion_closing_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 pub(super) struct PendingIrqWithdrawal {
@@ -377,16 +377,16 @@ impl PciRootBinding {
             host,
             root,
             router: Arc::new(EndpointRouter::new()),
-            lifecycle: SpinLock::new(LifecycleSlot::new()),
-            pending_irq_withdrawals: SpinLock::new(Vec::new()),
+            lifecycle: RawSpinLock::new(LifecycleSlot::new()),
+            pending_irq_withdrawals: RawSpinLock::new(Vec::new()),
             #[cfg(test)]
-            reset_handoff_hook: SpinLock::new(None),
+            reset_handoff_hook: RawSpinLock::new(None),
             #[cfg(test)]
-            deferred_withdrawal_hook: SpinLock::new(None),
+            deferred_withdrawal_hook: RawSpinLock::new(None),
             #[cfg(test)]
-            admission_open_hook: SpinLock::new(None),
+            admission_open_hook: RawSpinLock::new(None),
             #[cfg(test)]
-            completion_closing_hook: SpinLock::new(None),
+            completion_closing_hook: RawSpinLock::new(None),
         }
     }
 
@@ -663,7 +663,7 @@ impl PciRootBinding {
 }
 
 pub(super) fn retry_pending_irq_withdrawals(
-    pending_storage: &SpinLock<Vec<PendingIrqWithdrawal>>,
+    pending_storage: &RawSpinLock<Vec<PendingIrqWithdrawal>>,
 ) -> DeviceManagerResult {
     let pending = core::mem::take(&mut *pending_storage.lock_irqsave());
     let mut remaining = Vec::new();
@@ -691,7 +691,7 @@ pub(super) fn retry_pending_irq_withdrawals(
 }
 
 pub(super) fn transfer_pending_irq_withdrawals(
-    pending_storage: &SpinLock<Vec<PendingIrqWithdrawal>>,
+    pending_storage: &RawSpinLock<Vec<PendingIrqWithdrawal>>,
 ) {
     let pending = core::mem::take(&mut *pending_storage.lock_irqsave());
     if pending.is_empty() {

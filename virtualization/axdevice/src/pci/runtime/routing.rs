@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::fmt;
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axdevice_base::{
     DeviceError, DeviceId, DeviceResult, RoutedAdmissionEpoch as RoutedGrantAdmissionEpoch,
     RoutedBindingGeneration, RoutedDeviceGrant, RoutedGrantScope,
@@ -22,9 +22,9 @@ struct AdmissionState {
 pub(super) struct EndpointAdmission {
     generation: EndpointBindingGeneration,
     epoch: RoutedAdmissionEpoch,
-    state: SpinLock<AdmissionState>,
+    state: RawSpinLock<AdmissionState>,
     #[cfg(test)]
-    drain_observed_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    drain_observed_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl EndpointAdmission {
@@ -32,13 +32,13 @@ impl EndpointAdmission {
         Self {
             generation,
             epoch,
-            state: SpinLock::new(AdmissionState {
+            state: RawSpinLock::new(AdmissionState {
                 open: true,
                 leases: 0,
                 permits: 0,
             }),
             #[cfg(test)]
-            drain_observed_hook: SpinLock::new(None),
+            drain_observed_hook: RawSpinLock::new(None),
         }
     }
 
@@ -314,17 +314,17 @@ pub(super) struct EndpointRouterState {
 }
 
 pub(super) struct EndpointRouter {
-    pub(super) state: SpinLock<EndpointRouterState>,
+    pub(super) state: RawSpinLock<EndpointRouterState>,
     #[cfg(test)]
-    reset_admission_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    reset_admission_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl EndpointRouter {
     pub(super) fn new() -> Self {
         Self {
-            state: SpinLock::new(EndpointRouterState::default()),
+            state: RawSpinLock::new(EndpointRouterState::default()),
             #[cfg(test)]
-            reset_admission_hook: SpinLock::new(None),
+            reset_admission_hook: RawSpinLock::new(None),
         }
     }
 

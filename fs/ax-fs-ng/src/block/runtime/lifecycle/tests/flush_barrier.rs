@@ -5,13 +5,13 @@ pub(super) fn barrier_test_inner() -> Arc<DeviceInner> {
     let controller_notification = ops.notification();
     Arc::new(DeviceInner {
         name: String::from("barrier-test"),
-        device_info: IrqMutex::new(DeviceInfoEpoch::new(test_queue_info().device)),
+        device_info: RawSpinLock::new(DeviceInfoEpoch::new(test_queue_info().device)),
         max_io_queues: 1,
         irq_sources: Vec::new(),
-        hctxs: IrqMutex::new(Vec::new()),
-        detached_queues: IrqMutex::new(Vec::new()),
-        cpu_channels: IrqMutex::new(Vec::new()),
-        irq_registrations: IrqMutex::new(Vec::new()),
+        hctxs: RawSpinLock::new(Vec::new()),
+        detached_queues: RawSpinLock::new(Vec::new()),
+        cpu_channels: RawSpinLock::new(Vec::new()),
+        irq_registrations: RawSpinLock::new(Vec::new()),
         controller: Arc::new(ControllerPort {
             commands: BoundedChannel::with_item_notification(
                 1,
@@ -19,19 +19,19 @@ pub(super) fn barrier_test_inner() -> Arc<DeviceInner> {
             )
             .unwrap(),
             notification: controller_notification,
-            irq_latches: IrqMutex::new(Vec::new()),
+            irq_latches: RawSpinLock::new(Vec::new()),
             terminal_confirmed: AtomicBool::new(false),
         }),
-        controller_thread: IrqMutex::new(None),
+        controller_thread: RawSpinLock::new(None),
         state: AtomicU8::new(DEVICE_READY),
         accepting: AtomicBool::new(true),
         data_gate_waiters: TaskWaiters::new(),
         flush_gate_waiters: TaskWaiters::new(),
         data_drain_waiters: TaskWaiters::new(),
         admission_async_waiters: AsyncWaiters::new(),
-        admission_wait_hook: IrqMutex::new(None),
+        admission_wait_hook: RawSpinLock::new(None),
         state_notification: ops.notification(),
-        lifecycle_gate: IrqMutex::new(LifecycleGateState {
+        lifecycle_gate: RawSpinLock::new(LifecycleGateState {
             phase: DevicePhase::Ready,
             submission_ready_hctx_count: 0,
             active_data: 0,
@@ -62,7 +62,7 @@ fn flush_barrier_waits_for_prior_data_and_holds_later_data() {
         flush_tx.send(()).unwrap();
     });
     let deadline = Instant::now() + Duration::from_secs(1);
-    while !inner.lifecycle_gate.lock().flush_active {
+    while !inner.lifecycle_gate.lock_irqsave().flush_active {
         assert!(Instant::now() < deadline, "flush gate was not acquired");
         thread::yield_now();
     }
@@ -93,28 +93,28 @@ fn flush_barrier_waits_for_prior_data_and_holds_later_data() {
 fn nowait_admission_never_sleeps_behind_flush_barrier() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     assert_eq!(
         inner.enter_data_submissions(1, SubmissionAdmission::Nowait),
         Err(BlkError::Retry)
     );
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
 
-    inner.lifecycle_gate.lock().flush_active = false;
-    inner.lifecycle_gate.lock().active_data = 1;
+    inner.lifecycle_gate.lock_irqsave().flush_active = false;
+    inner.lifecycle_gate.lock_irqsave().active_data = 1;
     assert_eq!(
         inner.begin_flush_barrier(SubmissionAdmission::Nowait),
         Err(BlkError::Retry)
     );
-    assert!(!inner.lifecycle_gate.lock().flush_active);
+    assert!(!inner.lifecycle_gate.lock_irqsave().flush_active);
 }
 
 #[test]
 fn flush_completion_wakes_every_blocked_data_submitter() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     let (done_tx, done_rx) = mpsc::channel();
     let mut joins = Vec::new();

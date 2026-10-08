@@ -873,7 +873,7 @@ impl Device for EthernetDevice {
 mod ethernet_counter_tests {
     use alloc::{collections::VecDeque, sync::Arc};
 
-    use ax_sync::SpinLock;
+    use ax_sync::RawSpinLock;
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
     use super::*;
@@ -940,10 +940,10 @@ mod ethernet_counter_tests {
 
     #[derive(Default)]
     struct TxProbe {
-        requests: SpinLock<Vec<(Vec<u8>, TxSubmitOptions)>>,
-        failure: SpinLock<Option<NetDeviceError>>,
-        rx_frames: SpinLock<VecDeque<Vec<u8>>>,
-        blocked: SpinLock<bool>,
+        requests: RawSpinLock<Vec<(Vec<u8>, TxSubmitOptions)>>,
+        failure: RawSpinLock<Option<NetDeviceError>>,
+        rx_frames: RawSpinLock<VecDeque<Vec<u8>>>,
+        blocked: RawSpinLock<bool>,
     }
 
     struct RecordingFramePort {

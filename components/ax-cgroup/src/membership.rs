@@ -4,7 +4,7 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyInit;
 
-use crate::{CgroupError, CgroupNode, CgroupResult, ProcessId, sync::CgroupMutex};
+use crate::{CgroupError, CgroupNode, CgroupResult, ProcessId, sync::RawSpinLock};
 
 /// Whether a new task is also a new process in `cgroup.procs`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,16 +38,16 @@ impl MembershipState {
     }
 }
 
-static STATE: LazyInit<CgroupMutex<MembershipState>> = LazyInit::new();
+static STATE: LazyInit<RawSpinLock<MembershipState>> = LazyInit::new();
 
 pub(crate) fn init() {
-    STATE.init_once(CgroupMutex::new(MembershipState {
+    STATE.init_once(RawSpinLock::new(MembershipState {
         pending_tasks: BTreeMap::new(),
         tasks: BTreeMap::new(),
     }));
 }
 
-fn state() -> CgroupResult<&'static CgroupMutex<MembershipState>> {
+fn state() -> CgroupResult<&'static RawSpinLock<MembershipState>> {
     STATE.get().ok_or(CgroupError::NotInitialized)
 }
 

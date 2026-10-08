@@ -60,13 +60,13 @@ fn reset_reclaims_lease_dropped_during_completion_handoff() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -417,13 +417,13 @@ fn full_lifecycle_reset_resets_endpoint_before_reopening_admission() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: Some(line),
         supports_effects: false,
         pending: false,
@@ -493,13 +493,13 @@ fn full_lifecycle_reset_failure_keeps_endpoint_admission_closed() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(1),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(1),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: Some(line),
         supports_effects: false,
         pending: false,
@@ -574,13 +574,13 @@ fn reset_irq_cleanup_failure_stays_closed_until_teardown_retries_withdrawal() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(1),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(1),
         irq_line: Some(line),
         supports_effects: false,
         pending: false,
@@ -955,7 +955,7 @@ fn binding_completion_drains_a_concurrent_lease_drop() {
         .unwrap();
     let dropped_grant = dropped.token.grant(false);
 
-    let dropped_lease = Arc::new(SpinLock::new(Some(dropped)));
+    let dropped_lease = Arc::new(RawSpinLock::new(Some(dropped)));
     binding.set_completion_closing_hook({
         let dropped_lease = Arc::clone(&dropped_lease);
         Arc::new(move || {
@@ -1029,7 +1029,7 @@ fn withdrawal_completion_drains_a_last_window_lease_drop() {
         .unwrap();
     let second_grant = second.token.grant(false);
 
-    let second_lease = Arc::new(SpinLock::new(Some(second)));
+    let second_lease = Arc::new(RawSpinLock::new(Some(second)));
     binding.set_completion_closing_hook({
         let second_lease = Arc::clone(&second_lease);
         Arc::new(move || {
@@ -1170,13 +1170,13 @@ fn late_withdrawal_failure_does_not_rollback_published_reset() {
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&root),
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -1190,7 +1190,7 @@ fn late_withdrawal_failure_does_not_rollback_published_reset() {
             &mut grants,
         )
         .unwrap();
-    let lease = Arc::new(SpinLock::new(Some(lease)));
+    let lease = Arc::new(RawSpinLock::new(Some(lease)));
     binding.set_admission_open_hook({
         let lease = Arc::clone(&lease);
         let recording = Arc::clone(&recording);
@@ -1246,13 +1246,13 @@ fn old_lease_retracts_the_current_root_route_after_epoch_replacement() {
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&root),
         bdf,
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,

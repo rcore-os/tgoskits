@@ -1,4 +1,4 @@
-use ax_sync::SpinRwLock as RwLock;
+use ax_sync::RawSpinRwLock;
 use rdif_base::custom_type;
 
 custom_type!(#[doc="Process ID"],Pid, usize, "{:?}");
@@ -39,11 +39,11 @@ impl Osal for DefaultOsal {
     }
 }
 
-struct OsalSlot(RwLock<&'static dyn Osal>);
+struct OsalSlot(RawSpinRwLock<&'static dyn Osal>);
 
 impl OsalSlot {
     const fn new(osal: &'static dyn Osal) -> Self {
-        Self(RwLock::new(osal))
+        Self(RawSpinRwLock::new(osal))
     }
 
     fn get_pid(&self) -> Pid {

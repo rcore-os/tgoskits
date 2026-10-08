@@ -407,7 +407,7 @@ pub fn init_network(
 
     validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();

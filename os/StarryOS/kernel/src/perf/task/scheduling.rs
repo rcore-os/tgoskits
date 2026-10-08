@@ -57,7 +57,7 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
             ptc.begin_enabled_context(now);
         }
         if group.iter().any(|ptc| {
-            ptc.run_state.lock().running().is_some()
+            ptc.run_state.lock_irqsave().running().is_some()
                 || ptc.cpu_filter.is_some_and(|cpu| cpu != current_cpu)
                 || ptc.required_cluster.is_some_and(|cluster| {
                     super::super::percpu::cpu_info(current_cpu.as_usize()).is_none_or(|info| {
@@ -104,9 +104,9 @@ fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
             // No counter has been enabled: roll back all prepared registries
             // and every reservation that was not passed to prepare_counter.
             for ptc in group.iter().take(prepared) {
-                let lease = ptc.run_state.lock().claim_schedule_out().unwrap();
+                let lease = ptc.run_state.lock_irqsave().claim_schedule_out().unwrap();
                 stop_hardware_on_owner(ptc, lease, now).expect("local group rollback");
-                ptc.run_state.lock().finish_owner_stop(lease);
+                ptc.run_state.lock_irqsave().finish_owner_stop(lease);
             }
             for (ptc, counter) in group.iter().zip(&reserved).skip(prepared + 1) {
                 if ptc.flexible {
@@ -145,7 +145,7 @@ fn prepare_counter(
     } else {
         None
     };
-    let mut run_state = ptc.run_state.lock();
+    let mut run_state = ptc.run_state.lock_irqsave();
     let Some(ticket) = run_state.begin_arm(current_cpu, counter) else {
         if ptc.flexible {
             super::super::percpu::free_current_programmable(
@@ -331,12 +331,12 @@ fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
     let now = now_ns();
     for ptc in counters.iter() {
         ptc.finish_enabled_context(now);
-        let Some(lease) = ptc.run_state.lock().claim_schedule_out() else {
+        let Some(lease) = ptc.run_state.lock_irqsave().claim_schedule_out() else {
             continue;
         };
         stop_hardware_on_owner(ptc, lease, now)
             .unwrap_or_else(|error| panic!("scheduler PMU stop failed: {error}"));
-        ptc.run_state.lock().finish_owner_stop(lease);
+        ptc.run_state.lock_irqsave().finish_owner_stop(lease);
     }
 }
 
@@ -415,14 +415,14 @@ pub(crate) fn stop_requested_on_owner(
     // the completion path takes it again. A lock expression used directly as a
     // `match` scrutinee lives through the whole match and self-deadlocks in the
     // `Claimed` arm.
-    let claim = ptc.run_state.lock().claim_requested_stop(lease);
+    let claim = ptc.run_state.lock_irqsave().claim_requested_stop(lease);
     match claim {
         PmuStopClaim::Claimed(claimed) => {
             if let Err(error) = stop_hardware_on_owner(ptc, claimed, now_ns()) {
-                ptc.run_state.lock().abort_owner_stop(claimed);
+                ptc.run_state.lock_irqsave().abort_owner_stop(claimed);
                 return Err(error);
             }
-            ptc.run_state.lock().finish_owner_stop(claimed);
+            ptc.run_state.lock_irqsave().finish_owner_stop(claimed);
             Ok(())
         }
         PmuStopClaim::AlreadyComplete => Ok(()),

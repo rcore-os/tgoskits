@@ -1,6 +1,6 @@
 //! vCPU CPU-interface lifecycle binding.
 
-use ax_sync::SpinLockIrqSaveGuard;
+use ax_sync::RawSpinLockIrqSaveGuard;
 
 use super::{ControllerState, CpuInterfacePhase, GicV3Controller, state::DeliveryRetirement};
 use crate::{CpuInterfaceState, GicVcpuId, IntId, VgicError, VgicResult, backend_result};
@@ -43,7 +43,7 @@ impl GicV3VcpuBinding {
         self.vcpu
     }
 
-    fn controller_state(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+    fn controller_state(&self) -> RawSpinLockIrqSaveGuard<'_, ControllerState> {
         self.controller.inner.state.lock_irqsave()
     }
 

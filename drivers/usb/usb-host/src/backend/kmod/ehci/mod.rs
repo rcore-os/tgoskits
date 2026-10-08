@@ -6,7 +6,7 @@ use core::{
     time::Duration,
 };
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use dma_api::{CoherentArray, CoherentBox, DeviceDma};
 use futures::{
     FutureExt,
@@ -358,9 +358,9 @@ pub struct EhciNewParams {
 
 #[derive(Clone)]
 struct AsyncSchedule {
-    inner: Arc<Mutex<AsyncScheduleInner>>,
+    inner: Arc<RawSpinLock<AsyncScheduleInner>>,
     advance: Arc<AsyncAdvanceState>,
-    periodic: Arc<Mutex<PeriodicScheduleInner>>,
+    periodic: Arc<RawSpinLock<PeriodicScheduleInner>>,
     regs: EhciRegisters,
 }
 
@@ -399,7 +399,7 @@ impl AsyncSchedule {
             .map_err(HostError::from)?;
         frame_list.write_with_cpu(1024, |entries| entries.fill(EHCI_LINK_TERMINATE));
         Ok(Self {
-            inner: Arc::new(Mutex::new(AsyncScheduleInner {
+            inner: Arc::new(RawSpinLock::new(AsyncScheduleInner {
                 head,
                 active_qhs: BTreeMap::new(),
             })),
@@ -409,7 +409,7 @@ impl AsyncSchedule {
                 in_progress: AtomicBool::new(false),
                 waker: AtomicWaker::new(),
             }),
-            periodic: Arc::new(Mutex::new(PeriodicScheduleInner {
+            periodic: Arc::new(RawSpinLock::new(PeriodicScheduleInner {
                 frame_list,
                 active_qhs: BTreeMap::new(),
             })),

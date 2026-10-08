@@ -46,9 +46,9 @@ pub use transform::EbpfKernelAuxiliary;
 use crate::{
     ebpf::{error::BpfResultExt, map::create_map, prog::load_prog},
     file::add_file_like,
-    kprobe::KernelRawMutex,
     mm::VmBytes,
     perf::raw_tracepoint::bpf_raw_tracepoint_open,
+    sync::RawSpinLockIrqSaveBackend,
 };
 
 /// The global BPF helper-function table (id → `RawBPFHelperFn`). Populated by
@@ -265,37 +265,41 @@ fn handle_prog_load(attr: &bpf_attr) -> StarryResult<isize> {
 
 fn handle_map_update(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_update_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
+    bpf_map_update_elem::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(arg)
+        .into_starry_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_lookup_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
+    bpf_lookup_elem::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(arg).into_starry_result()?;
     Ok(0)
 }
 
 fn handle_map_delete(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
+    bpf_map_delete_elem::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(arg)
+        .into_starry_result()?;
     Ok(0)
 }
 
 fn handle_map_get_next_key(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapGetNextKeyArg::from(attr);
-    bpf_map_get_next_key::<EbpfKernelAuxiliary, KernelRawMutex>(arg).into_starry_result()?;
+    bpf_map_get_next_key::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(arg)
+        .into_starry_result()?;
     Ok(0)
 }
 
 fn handle_map_freeze(attr: &bpf_attr) -> StarryResult<isize> {
     let map_fd = unsafe { attr.__bindgen_anon_2.map_fd };
-    bpf_map_freeze::<EbpfKernelAuxiliary, KernelRawMutex>(map_fd).into_starry_result()?;
+    bpf_map_freeze::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(map_fd)
+        .into_starry_result()?;
     Ok(0)
 }
 
 fn handle_map_lookup_and_delete(attr: &bpf_attr) -> StarryResult<isize> {
     let arg = BpfMapUpdateArg::from(attr);
-    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary, KernelRawMutex>(arg)
+    bpf_map_lookup_and_delete_elem::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(arg)
         .into_starry_result()?;
     Ok(0)
 }

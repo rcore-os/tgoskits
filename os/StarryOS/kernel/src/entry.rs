@@ -11,7 +11,7 @@ use crate::{
     mm::{MmHandle, load_user_app, new_user_image_builder},
     namespace::NsProxy,
     pseudofs::{self, dev::tty},
-    sync::{Mutex, RwLock},
+    sync::{Mutex, RawSpinRwLock},
     task::{
         PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
         ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, kernel_thread_builder,
@@ -64,8 +64,8 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
         let Ok(loc) = current_fs_context().lock().resolve(candidate) else {
             continue;
         };
-        let mut builder = new_user_image_builder()
-            .expect("Failed to create unpublished user address space");
+        let mut builder =
+            new_user_image_builder().expect("Failed to create unpublished user address space");
         let mut args = alloc::vec![candidate.clone()];
         args.extend_from_slice(init_args);
         match load_user_app(
@@ -83,8 +83,8 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
             Err(error) => warn!("Failed to execute init {candidate}: {error:?}"),
         }
     }
-    let (loc, image_builder, loaded_image, args) = selected
-        .unwrap_or_else(|| panic!("No working init found among candidates: {paths:?}"));
+    let (loc, image_builder, loaded_image, args) =
+        selected.unwrap_or_else(|| panic!("No working init found among candidates: {paths:?}"));
     let path = loc
         .absolute_path()
         .expect("Failed to get executable absolute path");
@@ -154,7 +154,7 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     let mut scope = scope_local::Scope::new();
     let mut fd_table = FileTable::new();
     crate::file::add_stdio(&mut fd_table).expect("Failed to add stdio");
-    *FD_TABLE.scope_mut(&mut scope) = new_file_table_scope(Arc::new(RwLock::new(fd_table)));
+    *FD_TABLE.scope_mut(&mut scope) = new_file_table_scope(Arc::new(RawSpinRwLock::new(fd_table)));
 
     let thr = Thread::new(
         identity.clone(),

@@ -17,7 +17,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use ax_task::{sched::CpuSet, sync::WaitQueue};
 use irq_framework::IrqId;
 use rd_net::{
@@ -65,14 +65,14 @@ const STATUS_FAILED: u8 = 2;
 const STATUS_EMPTY: u8 = 3;
 
 struct WifiCommandCompletion {
-    result: SpinLock<Option<Result<(), NetError>>>,
+    result: RawSpinLock<Option<Result<(), NetError>>>,
     wait: WaitQueue,
 }
 
 impl WifiCommandCompletion {
     fn new() -> Self {
         Self {
-            result: SpinLock::new(None),
+            result: RawSpinLock::new(None),
             wait: WaitQueue::new(),
         }
     }
@@ -98,14 +98,14 @@ struct WifiControlRequest {
 }
 
 struct WifiControlQueue {
-    requests: SpinLock<VecDeque<WifiControlRequest>>,
+    requests: RawSpinLock<VecDeque<WifiControlRequest>>,
     stopped: AtomicBool,
 }
 
 impl WifiControlQueue {
     fn new() -> Self {
         Self {
-            requests: SpinLock::new(VecDeque::with_capacity(WIFI_CONTROL_QUEUE_CAPACITY)),
+            requests: RawSpinLock::new(VecDeque::with_capacity(WIFI_CONTROL_QUEUE_CAPACITY)),
             stopped: AtomicBool::new(false),
         }
     }
@@ -592,7 +592,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 wifi_handles.push(handle);
             }
             controls.push(control);
-            let port_mac = Arc::new(SpinLock::new(info.mac_address));
+            let port_mac = Arc::new(RawSpinLock::new(info.mac_address));
             port_macs.push(Arc::clone(&port_mac));
             ports.push(QueueFramePort {
                 name: port_name,
@@ -619,7 +619,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 startup_status: AtomicU8::new(STATUS_PENDING),
                 prune_status: AtomicU8::new(STATUS_PENDING),
                 publication_status: AtomicU8::new(STATUS_PENDING),
-                startup_error: SpinLock::new(None),
+                startup_error: RawSpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
             let mut affinity = CpuSet::empty(topology_len);

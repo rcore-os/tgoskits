@@ -297,7 +297,11 @@ impl CloneArgs {
         } else if flags.contains(CloneFlags::NEWPID) {
             crate::namespace::PidNamespace::new_child(parent_pid_ns.clone())
         } else {
-            old_proc_data.nsproxy.lock().pid_ns_for_children.clone()
+            old_proc_data
+                .nsproxy
+                .lock_irqsave()
+                .pid_ns_for_children
+                .clone()
         };
         let reservation_kind = if flags.contains(CloneFlags::THREAD) {
             PidReservationKind::Thread
@@ -344,7 +348,7 @@ impl CloneArgs {
         };
         let child_cgroup = cgroup_guard.cgroup();
         let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
-            let mut nsproxy = old_proc_data.nsproxy.lock().clone_all();
+            let mut nsproxy = old_proc_data.nsproxy.lock_irqsave().clone_all();
             if flags.contains(CloneFlags::NEWUTS) {
                 nsproxy.unshare_uts();
             }

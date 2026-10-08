@@ -28,7 +28,7 @@ pub(crate) use crate::boot::fdt::device::{
     ResolvedFdtDevice, ResolvedFdtInterrupt, ResolvedFdtProperty,
 };
 use crate::{
-    AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
+    AxVM, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
     boot::images::load_vm_image_from_memory,
     machine::GuestSerialFdtInterrupt as FdtInterruptEncoding,
 };
@@ -301,26 +301,26 @@ fn initrd_range_from_image_config(
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
-    vm: AxVMRef,
+    vm: &mut AxVM,
     crate_config: &GuestConfig,
 ) -> AxVmResult {
     let patch_runtime = super::selected_guest_fdt_policy().patch_runtime;
     // SAFETY: `fdt_src` originates from `GuestDtbImage::as_bytes`, and the
     // caller supplies the exact slice length while the image remains borrowed.
     let fdt_bytes = unsafe { std::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
-    let new_fdt_bytes = patch_runtime(fdt_bytes, &vm, crate_config)?;
+    let new_fdt_bytes = patch_runtime(fdt_bytes, &*vm, crate_config)?;
 
     load_patched_fdt(vm, new_fdt_bytes)
 }
 
-fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
-    let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
+fn load_patched_fdt(vm: &mut AxVM, new_fdt_bytes: Vec<u8>) -> AxVmResult {
+    let dest_addr = calculate_dtb_load_addr(&mut *vm, new_fdt_bytes.len())?;
     debug!(
         "New FDT will be loaded at {:x}, size: 0x{:x}",
         dest_addr,
         new_fdt_bytes.len()
     );
-    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm.clone())?;
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, &mut *vm)?;
     vm.set_guest_device_tree(dest_addr, new_fdt_bytes)
 }
 
@@ -568,7 +568,7 @@ fn fdt_interrupt_binding(
     }
 }
 
-pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
+pub(crate) fn calculate_dtb_load_addr(vm: &mut AxVM, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
     let main_memory =
@@ -576,7 +576,8 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResul
             ax_err_type!(InvalidInput, "VM has no memory region for DTB placement")
         })?;
 
-    let dtb_addr = vm.with_config(|config| {
+    let dtb_addr = {
+        let config = vm.config_mut();
         let use_configured_dtb_addr =
             config.image_config.dtb_load_gpa.is_some() && !main_memory.is_identical();
 
@@ -596,7 +597,7 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResul
         };
         config.image_config.dtb_load_gpa = Some(dtb_addr);
         dtb_addr
-    });
+    };
 
     Ok(dtb_addr)
 }

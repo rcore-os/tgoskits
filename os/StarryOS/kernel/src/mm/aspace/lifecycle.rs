@@ -23,7 +23,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::trap::PageFaultFlags;
 
 use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{Mutex, RawSpinLock};
 
 mod work_queue;
 use work_queue::{MmWorkLink, MmWorkQueue};
@@ -218,10 +218,10 @@ impl AddressSpaceTagAllocator {
 // zero and a full flush for every installation.
 // Architecture code invalidates an incoming nonzero tag before installing it,
 // so a generation rollover cannot expose an inactive stale translation.
-static TAG_ALLOCATOR: IrqMutex<Option<AddressSpaceTagAllocator>> = IrqMutex::new(None);
+static TAG_ALLOCATOR: RawSpinLock<Option<AddressSpaceTagAllocator>> = RawSpinLock::new(None);
 
 fn allocate_default_tag(epoch: u64) -> AddressSpaceTag {
-    let mut allocator_slot = TAG_ALLOCATOR.lock();
+    let mut allocator_slot = TAG_ALLOCATOR.lock_irqsave();
     let allocator = allocator_slot.get_or_insert_with(|| {
         AddressSpaceTagAllocator::new(ax_runtime::hal::cache::freeze_address_space_tag_capacity())
     });
@@ -334,7 +334,7 @@ struct MmInner {
     /// Linearizes ownership-count changes with `Retiring -> Retired` and
     /// `RetirePermit` creation. The gate is IRQ-safe and never covers page
     /// table work, allocation, I/O, callbacks, or reclaim.
-    lifecycle_gate: IrqMutex<()>,
+    lifecycle_gate: RawSpinLock<()>,
     state: AtomicU8,
     user_refs: AtomicUsize,
     kernel_pins: AtomicUsize,
@@ -348,7 +348,7 @@ struct MmInner {
     retire_queued: AtomicBool,
     /// Allocated with the MM, like Linux's mm_struct::async_put_work. Token
     /// destruction never needs to allocate a separate deferred-work node.
-    work_link: IrqMutex<MmWorkLink>,
+    work_link: RawSpinLock<MmWorkLink>,
 }
 
 #[derive(Clone, Copy)]
@@ -407,7 +407,7 @@ impl MmInner {
     }
 
     fn take_retire_permit(inner: &Arc<Self>) -> Option<RetirePermit> {
-        let _gate = inner.lifecycle_gate.lock();
+        let _gate = inner.lifecycle_gate.lock_irqsave();
         inner.maybe_retire_locked();
         if inner.state() != MmState::Retired
             || !inner.is_quiescent_locked()
@@ -422,7 +422,7 @@ impl MmInner {
     }
 
     fn try_pin(inner: &Arc<Self>) -> Result<MmPin, PinError> {
-        let _gate = inner.lifecycle_gate.lock();
+        let _gate = inner.lifecycle_gate.lock_irqsave();
         if inner.state() != MmState::Live {
             return Err(PinError::Retired);
         }
@@ -470,7 +470,7 @@ impl MmInner {
         if cpu >= ax_runtime::hal::cpu_num().min(usize::BITS as usize) {
             return Err(ActivationError::InvalidCpu);
         }
-        let _gate = inner.lifecycle_gate.lock();
+        let _gate = inner.lifecycle_gate.lock_irqsave();
         if !authority.permits(inner.state()) {
             return Err(ActivationError::Retired);
         }
@@ -702,7 +702,7 @@ impl MmHandle {
                 tag,
                 transparent_huge_page_mode: AtomicU8::new(TransparentHugePageMode::Enabled as u8),
                 install_seq: AtomicU64::new(0),
-                lifecycle_gate: IrqMutex::new(()),
+                lifecycle_gate: RawSpinLock::new(()),
                 state: AtomicU8::new(MmState::Live as u8),
                 user_refs: AtomicUsize::new(1),
                 kernel_pins: AtomicUsize::new(0),
@@ -716,7 +716,7 @@ impl MmHandle {
                 active_mask,
                 active_per_cpu: core::array::from_fn(|_| AtomicUsize::new(0)),
                 retire_queued: AtomicBool::new(false),
-                work_link: IrqMutex::new(MmWorkLink::default()),
+                work_link: RawSpinLock::new(MmWorkLink::default()),
             }),
             owner: AtomicBool::new(true),
         };
@@ -784,7 +784,7 @@ impl MmHandle {
         let guard = self.inner.aspace.lock();
         // A switch can read the descriptor in IRQ context. Exclude that reader
         // while the sequence is odd, including on a preemptible RT kernel.
-        let _gate = self.inner.lifecycle_gate.lock();
+        let _gate = self.inner.lifecycle_gate.lock_irqsave();
         self.inner.install_seq.fetch_add(1, Ordering::AcqRel);
         self.inner
             .root
@@ -797,7 +797,7 @@ impl MmHandle {
 
     /// Explicitly duplicates a process owner (`fork`, `CLONE_VM`, or `vfork`).
     pub fn clone_user_ref(&self) -> Result<Self, CloneUserRefError> {
-        let _gate = self.inner.lifecycle_gate.lock();
+        let _gate = self.inner.lifecycle_gate.lock_irqsave();
         if !self.owner.load(Ordering::Relaxed) || self.inner.state() != MmState::Live {
             return Err(CloneUserRefError::Retired);
         }
@@ -838,7 +838,7 @@ impl MmHandle {
     pub fn release_user_ref(&self) -> Option<RetirePermit> {
         let mut last_user = false;
         {
-            let _gate = self.inner.lifecycle_gate.lock();
+            let _gate = self.inner.lifecycle_gate.lock_irqsave();
             if self.owner.swap(false, Ordering::Relaxed) {
                 let previous = self.inner.user_refs.load(Ordering::Relaxed);
                 debug_assert!(previous > 0, "MmHandle user reference underflow");
@@ -871,7 +871,7 @@ impl MmHandle {
 impl Drop for MmHandle {
     fn drop(&mut self) {
         {
-            let _gate = self.inner.lifecycle_gate.lock();
+            let _gate = self.inner.lifecycle_gate.lock_irqsave();
             if !self.owner.swap(false, Ordering::Relaxed) {
                 return;
             }
@@ -1033,7 +1033,7 @@ impl Deref for MmPin {
 impl Drop for MmPin {
     fn drop(&mut self) {
         {
-            let _gate = self.0.lifecycle_gate.lock();
+            let _gate = self.0.lifecycle_gate.lock_irqsave();
             let previous = self.0.kernel_pins.load(Ordering::Relaxed);
             debug_assert!(previous > 0, "MmPin reference underflow");
             self.0.kernel_pins.store(previous - 1, Ordering::Release);
@@ -1102,7 +1102,7 @@ impl Drop for ActivationLease {
 
 fn abandon_activation(inner: Arc<MmInner>, cpu: usize) {
     {
-        let _gate = inner.lifecycle_gate.lock();
+        let _gate = inner.lifecycle_gate.lock_irqsave();
         inner
             .state
             .store(MmState::NeedsRepair as u8, Ordering::Release);
@@ -1117,7 +1117,7 @@ fn abandon_activation(inner: Arc<MmInner>, cpu: usize) {
 
 fn release_activation_accounting(inner: &Arc<MmInner>, cpu: usize) {
     {
-        let _gate = inner.lifecycle_gate.lock();
+        let _gate = inner.lifecycle_gate.lock_irqsave();
         let previous = inner.active_count.load(Ordering::Relaxed);
         debug_assert!(previous > 0, "ActivationLease reference underflow");
         inner.active_count.store(previous - 1, Ordering::Release);
@@ -1173,7 +1173,7 @@ fn task_address_space(installed: InstalledAddressSpace) -> ax_hal::context::Inst
 /// inner Arc anchors callback storage until the runtime reaps its owning token.
 struct RuntimeMmOwner {
     _inner: Arc<MmInner>,
-    pin: IrqMutex<Option<MmPin>>,
+    pin: RawSpinLock<Option<MmPin>>,
 }
 
 // SAFETY: the pin permits activations of Live/Retiring MM state. Each activation
@@ -1189,7 +1189,7 @@ unsafe impl ax_runtime::thread::UserAddressSpaceOwner for RuntimeMmOwner {
         ax_runtime::task::thread::TaskError,
     > {
         self.pin
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .ok_or(ax_runtime::task::thread::TaskError::InvalidRuntimeHandle)?
             .activation_for_switch(cpu)
@@ -1198,7 +1198,7 @@ unsafe impl ax_runtime::thread::UserAddressSpaceOwner for RuntimeMmOwner {
     }
 
     fn detach_from_task(&self) {
-        let pin = self.pin.lock().take();
+        let pin = self.pin.lock_irqsave().take();
         drop(pin);
     }
 }
@@ -1216,7 +1216,7 @@ impl MmHandle {
             self.inner.runtime_cpu_state.clone(),
             RuntimeMmOwner {
                 _inner: self.inner.clone(),
-                pin: IrqMutex::new(Some(pin)),
+                pin: RawSpinLock::new(Some(pin)),
             },
         )
     }
@@ -1253,8 +1253,8 @@ pub struct RetirePermit(Option<Arc<MmInner>>);
 /// Retired MMs are queued as inert permits; a sleepable reaper must call
 /// [`reap_retired`] from process context.  No page-table or backend cleanup is
 /// performed by `Drop` of a handle/pin/activation token.
-static RETIRE_QUEUE: IrqMutex<MmWorkQueue> = IrqMutex::new(MmWorkQueue::new());
-static REPAIR_QUEUE: IrqMutex<MmWorkQueue> = IrqMutex::new(MmWorkQueue::new());
+static RETIRE_QUEUE: RawSpinLock<MmWorkQueue> = RawSpinLock::new(MmWorkQueue::new());
+static REPAIR_QUEUE: RawSpinLock<MmWorkQueue> = RawSpinLock::new(MmWorkQueue::new());
 static RECLAIMER_STARTED: AtomicBool = AtomicBool::new(false);
 static REPAIR_RETRY_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -1319,8 +1319,8 @@ pub fn enqueue_retire(permit: RetirePermit) {
     drop(permit);
 }
 
-fn enqueue_mm_work(queue: &IrqMutex<MmWorkQueue>, inner: Arc<MmInner>) {
-    let duplicate = queue.lock().push(inner);
+fn enqueue_mm_work(queue: &RawSpinLock<MmWorkQueue>, inner: Arc<MmInner>) {
+    let duplicate = queue.lock_irqsave().push(inner);
     // The existing queue entry owns the MM on this path; release the extra
     // reference only after dropping the IRQ-safe queue guard.
     drop(duplicate);
@@ -1338,13 +1338,13 @@ pub fn reap_retired(limit: usize) -> (usize, usize) {
         return (0, 0);
     }
     let count = {
-        let queue = RETIRE_QUEUE.lock();
+        let queue = RETIRE_QUEUE.lock_irqsave();
         limit.min(queue.len())
     };
     let mut reclaimed = 0;
     let mut failed = 0;
     for _ in 0..count {
-        let Some(inner) = RETIRE_QUEUE.lock().pop() else {
+        let Some(inner) = RETIRE_QUEUE.lock_irqsave().pop() else {
             break;
         };
         if inner.state() == MmState::Freed {
@@ -1384,7 +1384,7 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
             let Ok(pin) = MmInner::try_pin(&inner) else {
                 return 0;
             };
-            match pin.lock().reclaim_lazy_free_pages(remaining) {
+            match pin.lock_irqsave().reclaim_lazy_free_pages(remaining) {
                 Ok(pages) => pages,
                 Err(error) => {
                     warn!(
@@ -1405,7 +1405,7 @@ pub struct RepairPermit(Arc<MmInner>);
 
 pub fn take_repair_candidates(limit: usize) -> Vec<RepairPermit> {
     let count = {
-        let queue = REPAIR_QUEUE.lock();
+        let queue = REPAIR_QUEUE.lock_irqsave();
         limit.min(queue.len())
     };
     let mut candidates: Vec<RepairPermit> = Vec::new();
@@ -1413,7 +1413,7 @@ pub fn take_repair_candidates(limit: usize) -> Vec<RepairPermit> {
         return candidates;
     }
     for _ in 0..count {
-        let Some(inner) = REPAIR_QUEUE.lock().pop() else {
+        let Some(inner) = REPAIR_QUEUE.lock_irqsave().pop() else {
             break;
         };
         candidates.push(RepairPermit(inner));
@@ -1434,7 +1434,7 @@ pub fn request_repair_retry() {
 impl RepairPermit {
     pub fn retry(self) -> Result<(), ReclaimError> {
         {
-            let _gate = self.0.lifecycle_gate.lock();
+            let _gate = self.0.lifecycle_gate.lock_irqsave();
             if !self.0.is_quiescent_locked()
                 || self
                     .0
@@ -1507,7 +1507,7 @@ impl RetirePermit {
 
     fn reclaim_inner(inner: &Arc<MmInner>) -> Result<(), ReclaimError> {
         {
-            let _gate = inner.lifecycle_gate.lock();
+            let _gate = inner.lifecycle_gate.lock_irqsave();
             if !inner.is_quiescent_locked()
                 || inner
                     .state
@@ -1526,7 +1526,7 @@ impl RetirePermit {
         match result {
             Ok(()) => {
                 {
-                    let _gate = inner.lifecycle_gate.lock();
+                    let _gate = inner.lifecycle_gate.lock_irqsave();
                     inner.state.store(MmState::Freed as u8, Ordering::Release);
                 }
                 unregister_mm(inner);
@@ -1534,7 +1534,7 @@ impl RetirePermit {
             }
             Err(_) => {
                 {
-                    let _gate = inner.lifecycle_gate.lock();
+                    let _gate = inner.lifecycle_gate.lock_irqsave();
                     inner
                         .state
                         .store(MmState::NeedsRepair as u8, Ordering::Release);
@@ -1635,7 +1635,7 @@ mod tests {
         let handle = MmHandle::from_arc(aspace).unwrap();
         let pin = handle.pin().unwrap();
         {
-            let mut aspace = pin.lock();
+            let mut aspace = pin.lock_irqsave();
             aspace
                 .map(
                     start,
@@ -1658,7 +1658,7 @@ mod tests {
             pin.handle_page_fault_result(start, access),
             FaultResult::Retry
         ));
-        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
+        assert_eq!(pin.lock_irqsave().pending_tlb_obligations(), 0);
         assert!(matches!(
             pin.handle_page_fault_result(start, access),
             FaultResult::Handled
@@ -1680,7 +1680,7 @@ mod tests {
         let handle = MmHandle::from_arc(aspace).unwrap();
         let pin = handle.pin().unwrap();
         {
-            let mut aspace = pin.lock();
+            let mut aspace = pin.lock_irqsave();
             aspace
                 .map(
                     start,
@@ -1701,9 +1701,9 @@ mod tests {
         // A kernel copy faults without USER, unlike a userspace instruction.
         // The old discard receipt forces the first attempt to return Retry.
         assert!(pin.handle_page_fault(start, PageFaultFlags::WRITE));
-        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
+        assert_eq!(pin.lock_irqsave().pending_tlb_obligations(), 0);
         assert!(
-            pin.lock()
+            pin.lock_irqsave()
                 .pt
                 .query(start)
                 .is_ok_and(|(_, flags, _)| flags.contains(MappingFlags::WRITE))
@@ -1711,10 +1711,10 @@ mod tests {
         assert!(!pin.handle_page_fault(start, PageFaultFlags::EXECUTE));
         assert!(!pin.handle_page_fault(start + 0x1000, PageFaultFlags::WRITE));
         let exhausted = AddrSpace::classify_fault_error(false, crate::StarryError::NoMemory);
-        pin.lock().mutation_gate.mark_needs_repair();
+        pin.lock_irqsave().mutation_gate.mark_needs_repair();
         let quarantined = pin.handle_page_fault_result(start, PageFaultFlags::WRITE);
         // This test did not damage any PTE; release its synthetic quarantine.
-        pin.lock().mutation_gate.clear_repair();
+        pin.lock_irqsave().mutation_gate.clear_repair();
         drop(pin);
         let permit = handle.release_user_ref().unwrap();
         drop(handle);
@@ -1752,7 +1752,7 @@ mod tests {
         assert_eq!(inner.active_count.load(Ordering::Acquire), 1);
         // Only the test can supply this proof: no CPU ever installed the MM.
         {
-            let _gate = inner.lifecycle_gate.lock();
+            let _gate = inner.lifecycle_gate.lock_irqsave();
             inner.active_count.store(0, Ordering::Release);
             inner.active_mask.store(0, Ordering::Release);
             inner.active_per_cpu[0].store(0, Ordering::Release);
@@ -2090,7 +2090,7 @@ mod tests {
         // stale zero counters. Permit creation must independently revalidate
         // quiescence under the same gate instead of trusting state alone.
         {
-            let _gate = handle.inner.lifecycle_gate.lock();
+            let _gate = handle.inner.lifecycle_gate.lock_irqsave();
             handle
                 .inner
                 .state
@@ -2100,7 +2100,7 @@ mod tests {
         assert!(!handle.inner.retire_queued.load(Ordering::Acquire));
 
         {
-            let _gate = handle.inner.lifecycle_gate.lock();
+            let _gate = handle.inner.lifecycle_gate.lock_irqsave();
             handle
                 .inner
                 .state

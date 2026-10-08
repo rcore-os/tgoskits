@@ -2,7 +2,7 @@
 
 use core::mem::size_of;
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
 use axvirtio_common::{
     GuestMemory, NoGuestMemoryAccessor, VirtioDeviceID, VirtioQueue,
@@ -26,7 +26,7 @@ const DEVICE_CONFIG_SIZE: usize = 16;
 /// policy and translates queue notifications to the common VirtIO contract.
 pub struct VirtioBlockPciAdapter<B: BlockBackend> {
     core: VirtioBlockRequestCore<B>,
-    pending_head: SpinLock<Option<u16>>,
+    pending_head: RawSpinLock<Option<u16>>,
 }
 
 impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
@@ -34,7 +34,7 @@ impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
     pub const fn new(backend: B, config: VirtioBlockConfig) -> Self {
         Self {
             core: VirtioBlockRequestCore::new(backend, config),
-            pending_head: SpinLock::new(None),
+            pending_head: RawSpinLock::new(None),
         }
     }
 

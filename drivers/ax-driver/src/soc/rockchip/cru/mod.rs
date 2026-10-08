@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 use rdrive::{DriverGeneric, KError};
 use rockchip_soc::{
     ClkId, ClockAssignmentProtection, ClockMmioWriteProtection, ClockOp, Cru, ResetOp, RstId,
@@ -10,9 +10,9 @@ mod rk3568;
 mod rk3576;
 mod rk3588;
 
-type SharedCru = Arc<Mutex<Cru>>;
+type SharedCru = Arc<RawSpinLock<Cru>>;
 
-fn lock_cru(cru: &SharedCru) -> RawSpinLockGuard<'_, Cru> {
+fn lock_cru(cru: &SharedCru) -> RawSpinLockUnpinnedGuard<'_, Cru> {
     // SAFETY: CRU operations are serialized by the platform discovery/control
     // path, which excludes same-CPU re-entry around register transactions.
     unsafe { cru.lock_raw() }

@@ -67,7 +67,7 @@ pub(crate) use self::{
 use crate::{
     mm::MmHandle,
     namespace::NsProxy,
-    sync::{IrqMutex, Mutex, MutexGuard, RawSpinLock},
+    sync::{Mutex, MutexGuard, RawSpinLock},
 };
 
 /// Resources shared by every thread in one Linux process generation.
@@ -75,7 +75,7 @@ pub struct ProcessData {
     /// TGID role ownership transferred into the zombie at final exit.
     /// Keep this before the identity pins: failed clone can leave deferred
     /// task reclamation as the last owner after PID reservation rollback.
-    tgid_lease: IrqMutex<Option<PidRoleLease<Tgid>>>,
+    tgid_lease: RawSpinLock<Option<PidRoleLease<Tgid>>>,
     /// Process topology object.
     pub proc: Arc<Process>,
     /// Stable identity shared by PID namespaces, pidfds, and observers.
@@ -89,7 +89,7 @@ pub struct ProcessData {
     /// Per-process uprobe point list.
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// Immutable namespace snapshot published under a short IRQ-safe lock.
-    pub(crate) nsproxy: IrqMutex<Arc<NsProxy>>,
+    pub(crate) nsproxy: RawSpinLock<Arc<NsProxy>>,
     /// Sleepable writer transaction gate for namespace replacement.
     namespace_update: Mutex<()>,
     /// Authoritative cgroup membership and exit serialization.
@@ -188,7 +188,7 @@ impl ProcessData {
         let this = Arc::new(Self {
             proc: proc.clone(),
             identity: identity.clone(),
-            tgid_lease: IrqMutex::new(Some(tgid_lease)),
+            tgid_lease: RawSpinLock::new(Some(tgid_lease)),
             image: ProcessImageState::new(image),
             memory: ProcessMemoryState::new(aspace, shared_memory),
             wait,
@@ -197,7 +197,7 @@ impl ProcessData {
             policy: ProcessPolicyState::new(),
             accounting: ProcessAccountingState::new(),
             signal: Arc::new(signal),
-            nsproxy: IrqMutex::new(Arc::new(nsproxy)),
+            nsproxy: RawSpinLock::new(Arc::new(nsproxy)),
             namespace_update: Mutex::new(()),
             cgroup: ProcessCgroupState::new(&identity, cgroup),
             ptrace: ProcessPtraceState::new(),
@@ -215,7 +215,7 @@ impl ProcessData {
     /// Transfers the process-owned TGID lease into its immutable zombie.
     pub(crate) fn take_tgid_lease(&self) -> PidRoleLease<Tgid> {
         self.tgid_lease
-            .lock()
+            .lock_irqsave()
             .take()
             .expect("process TGID lease transferred twice")
     }
@@ -262,7 +262,7 @@ impl ProcessData {
 
     /// Returns a stable namespace aggregate without retaining the raw lock.
     pub(crate) fn namespace_snapshot(&self) -> Arc<NsProxy> {
-        self.nsproxy.lock().clone()
+        self.nsproxy.lock_irqsave().clone()
     }
 
     /// Serializes one process-wide namespace mutation or replacement.
@@ -290,19 +290,19 @@ impl Drop for ProcessData {
 
 /// Serialized copy-on-write namespace publication.
 pub(crate) struct ProcessNamespaceUpdate<'a> {
-    publication: &'a IrqMutex<Arc<NsProxy>>,
+    publication: &'a RawSpinLock<Arc<NsProxy>>,
     _guard: MutexGuard<'a, ()>,
 }
 
 impl ProcessNamespaceUpdate<'_> {
     pub(crate) fn snapshot(&self) -> Arc<NsProxy> {
-        self.publication.lock().clone()
+        self.publication.lock_irqsave().clone()
     }
 
     pub(crate) fn publish(self, replacement: NsProxy) {
         let replacement = Arc::new(replacement);
         let previous = {
-            let mut current = self.publication.lock();
+            let mut current = self.publication.lock_irqsave();
             core::mem::replace(&mut *current, replacement)
         };
         drop(self);
@@ -344,11 +344,11 @@ pub(crate) fn new_test_process_data(
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use super::ProcessData;
-    use crate::{namespace::NsProxy, sync::IrqMutex};
+    use crate::{namespace::NsProxy, sync::RawSpinLock};
 
     #[test]
     fn namespace_publication_lock_only_contains_a_shared_snapshot() {
-        fn assert_snapshot_lock(_: &IrqMutex<alloc::sync::Arc<NsProxy>>) {}
+        fn assert_snapshot_lock(_: &RawSpinLock<alloc::sync::Arc<NsProxy>>) {}
         fn assert_process_lock_type(process: &ProcessData) {
             assert_snapshot_lock(&process.nsproxy);
         }

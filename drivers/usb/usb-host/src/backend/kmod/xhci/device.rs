@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
 use usb_if::{
@@ -45,7 +45,7 @@ pub struct Device {
     desc: DeviceDescriptor,
     ctrl_ep: Option<EndpointHandle>,
     transfer_result_handler: TransferResultHandler,
-    bell: Arc<Mutex<SlotBell>>,
+    bell: Arc<RawSpinLock<SlotBell>>,
     kernel: Kernel,
     current_config_value: Option<u8>,
     config_desc: Vec<ConfigurationDescriptor>,
@@ -69,7 +69,7 @@ impl Device {
         let dma = host.kernel.clone();
         let ctx = host.dev_mut()?.new_ctx(slot_id, is_64, &dma)?;
         let bell = host.new_slot_bell(slot_id);
-        let bell = Arc::new(Mutex::new(bell));
+        let bell = Arc::new(RawSpinLock::new(bell));
         // let port_speed = host.port_speed(port);
         let desc = unsafe { core::mem::zeroed() };
 

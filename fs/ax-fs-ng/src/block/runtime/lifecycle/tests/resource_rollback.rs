@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct DropTrackedQueue {
     info: QueueInfo,
     drop_event: &'static str,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
     shutdown_error: Option<BlkError>,
 }
 
@@ -11,7 +11,7 @@ impl DropTrackedQueue {
     pub(super) fn startable(
         id: usize,
         drop_event: &'static str,
-        log: Arc<StdMutex<Vec<&'static str>>>,
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
     ) -> Self {
         Self {
             info: QueueInfo {
@@ -27,7 +27,7 @@ impl DropTrackedQueue {
     pub(super) fn shutdown_failure(
         id: usize,
         drop_event: &'static str,
-        log: Arc<StdMutex<Vec<&'static str>>>,
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
         error: BlkError,
     ) -> Self {
         Self {
@@ -44,7 +44,7 @@ impl DropTrackedQueue {
     fn invalid_limits(
         id: usize,
         drop_event: &'static str,
-        log: Arc<StdMutex<Vec<&'static str>>>,
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
     ) -> Self {
         let mut info = QueueInfo {
             id,
@@ -98,7 +98,7 @@ impl HardwareQueue for DropTrackedQueue {
 }
 
 struct DropTrackedHandler {
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 impl Drop for DropTrackedHandler {
@@ -118,13 +118,13 @@ struct RejectedResourceUpdateController {
     emitted_queue: Option<DropTrackedQueue>,
     emitted_handler: Option<DropTrackedHandler>,
     changed_info: DeviceInfo,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 struct RejectedQueueBatchController {
     bootstrap_queue: Option<LifecycleQueue>,
     emitted_queues: Option<Vec<Box<dyn HardwareQueue>>>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 impl DriverGeneric for RejectedResourceUpdateController {
@@ -216,7 +216,7 @@ impl BlockController for RejectedQueueBatchController {
 fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -266,7 +266,7 @@ fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
 }
 
 fn assert_rejected_queue_batch_is_retained(
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
     emitted_queues: Vec<Box<dyn HardwareQueue>>,
     expected_drop_events: &[&str],
 ) {
@@ -299,7 +299,7 @@ fn assert_rejected_queue_batch_is_retained(
 
 #[test]
 fn duplicate_queue_update_keeps_current_and_trailing_queues_until_controller_shutdown() {
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     assert_rejected_queue_batch_is_retained(
         Arc::clone(&log),
         vec![
@@ -320,7 +320,7 @@ fn duplicate_queue_update_keeps_current_and_trailing_queues_until_controller_shu
 
 #[test]
 fn failed_hctx_start_keeps_current_and_trailing_queues_until_controller_shutdown() {
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     assert_rejected_queue_batch_is_retained(
         Arc::clone(&log),
         vec![

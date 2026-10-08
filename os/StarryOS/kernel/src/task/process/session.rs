@@ -5,9 +5,10 @@ use core::{any::Any, fmt};
 
 #[cfg(all(test, axtest))]
 use super::ProcessGroup;
-use super::{RelationLock, SessionGroups};
+use super::SessionGroups;
 use crate::{
     StarryResult,
+    sync::Mutex,
     task::{PidIdentity, PidRoleLease, Sid, SidNumber},
 };
 
@@ -16,8 +17,8 @@ pub struct Session {
     sid: SidNumber,
     identity: Weak<PidIdentity>,
     _role: PidRoleLease<Sid>,
-    pub(crate) process_groups: RelationLock<SessionGroups>,
-    terminal: RelationLock<Option<Arc<dyn Any + Send + Sync>>>,
+    pub(crate) process_groups: Mutex<SessionGroups>,
+    terminal: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Session {
@@ -29,8 +30,8 @@ impl Session {
             sid,
             identity: Arc::downgrade(&identity),
             _role: role,
-            process_groups: RelationLock::new(SessionGroups::with_capacity(1)),
-            terminal: RelationLock::new(None),
+            process_groups: Mutex::new(SessionGroups::with_capacity(1)),
+            terminal: Mutex::new(None),
         });
         identity.bind_session(&session);
         Ok(session)

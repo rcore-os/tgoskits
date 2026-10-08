@@ -39,11 +39,11 @@ pub(crate) use error::block_error_to_vfs_error;
 pub use error::{BlockError, BlockResult};
 pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
 
-static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
-    os::sync::IrqMutex::new(Vec::new());
+static MOUNTED_FILESYSTEMS: os::sync::RawSpinLock<Vec<Filesystem>> =
+    os::sync::RawSpinLock::new(Vec::new());
 
 fn register_mounted_filesystem(fs: Filesystem) {
-    MOUNTED_FILESYSTEMS.lock().push(fs);
+    MOUNTED_FILESYSTEMS.lock_irqsave().push(fs);
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -130,7 +130,7 @@ pub fn shutdown_filesystems() -> axfs_ng_vfs::VfsResult {
 
 /// Shuts down the registered filesystems in reverse mount order.
 fn shutdown_registered_filesystems() -> axfs_ng_vfs::VfsResult {
-    let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock());
+    let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock_irqsave());
     let mut first_error = None;
     for fs in filesystems.into_iter().rev() {
         if let Err(error) = fs.shutdown() {

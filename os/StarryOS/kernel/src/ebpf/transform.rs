@@ -28,9 +28,10 @@ use kbpf_basic::{
 use rbpf::ebpf::Insn;
 
 use crate::{
-    ebpf::{KernelRawMutex, map::BpfMap},
+    ebpf::map::BpfMap,
     file::get_file_like,
     mm::{VmBytes, VmBytesMut, vm_load_string},
+    sync::RawSpinLockIrqSaveBackend,
 };
 
 /// Per-cpu variants implementation backed by a fixed-length `Vec<T>` of
@@ -126,7 +127,7 @@ impl<T: Send + Sync + Clone> PerCpuVariants<T> for PerCpuVariantsImpl<T> {
 pub struct EbpfKernelAuxiliary;
 
 impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
-    type MapLock = KernelRawMutex;
+    type MapLock = RawSpinLockIrqSaveBackend;
     fn get_unified_map_from_ptr<F, R>(ptr: *const u8, func: F) -> kbpf_basic::BpfResult<R>
     where
         F: FnOnce(&UnifiedMap<Self::MapLock>) -> kbpf_basic::BpfResult<R>,

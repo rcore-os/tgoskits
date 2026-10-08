@@ -29,24 +29,24 @@ use ax_lazyinit::LazyLock;
 #[cfg(feature = "vfs")]
 use super::address_space::BlockAddressSpace;
 use super::{address_space::FolioGeometry, device::BlockCacheShared};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::Mutex};
 
 struct DeviceCacheEntry {
     device_key: usize,
     cache: Weak<BlockCacheShared>,
     #[cfg(feature = "vfs")]
-    reclaim: Weak<SleepMutex<BlockAddressSpace>>,
+    reclaim: Weak<Mutex<BlockAddressSpace>>,
 }
 
 impl DeviceCacheEntry {
     #[cfg(feature = "vfs")]
-    fn reclaim_tree(&self) -> Option<Arc<SleepMutex<BlockAddressSpace>>> {
+    fn reclaim_tree(&self) -> Option<Arc<Mutex<BlockAddressSpace>>> {
         self.reclaim.upgrade()
     }
 }
 
-static BLOCK_CACHE_REGISTRY: LazyLock<SleepMutex<Vec<DeviceCacheEntry>>> =
-    LazyLock::new(|| SleepMutex::new(Vec::new()));
+static BLOCK_CACHE_REGISTRY: LazyLock<Mutex<Vec<DeviceCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[cfg(test)]
 static FAIL_REGISTRY_RESERVE_FOR_KEY: AtomicUsize = AtomicUsize::new(0);
@@ -211,7 +211,7 @@ pub(crate) fn reclaim_clean_folios(num_folios: usize) -> usize {
 /// removed or contended entry is skipped; the returned strong reference is
 /// dropped only after the registry guard has gone out of scope.
 #[cfg(feature = "vfs")]
-fn try_live_tree(index: usize) -> Option<Arc<SleepMutex<BlockAddressSpace>>> {
+fn try_live_tree(index: usize) -> Option<Arc<Mutex<BlockAddressSpace>>> {
     let registry = BLOCK_CACHE_REGISTRY.try_lock()?;
     registry.get(index)?.reclaim_tree()
 }

@@ -65,7 +65,7 @@ use crate::{
         DeviceOps,
         dev::{IrqRegistration, request_shared_disabled},
     },
-    sync::IrqMutex,
+    sync::RawSpinLock,
 };
 
 /// 一个 TPU 推理任务（OS glue 侧）。
@@ -87,9 +87,9 @@ struct TpuTask {
 }
 
 /// 待执行任务队列（对应 Linux `task_list`）。
-static TASK_LIST: IrqMutex<VecDeque<TpuTask>> = IrqMutex::new(VecDeque::new());
+static TASK_LIST: RawSpinLock<VecDeque<TpuTask>> = RawSpinLock::new(VecDeque::new());
 /// 已完成任务队列（对应 Linux `done_list`）。
-static DONE_LIST: IrqMutex<VecDeque<TpuTask>> = IrqMutex::new(VecDeque::new());
+static DONE_LIST: RawSpinLock<VecDeque<TpuTask>> = RawSpinLock::new(VecDeque::new());
 /// `DONE_LIST` 上限。每个滞留完成项持有一个 `Arc<IonBuffer>`，提交后不 wait
 /// 的线程会令其无限累积；超限丢弃最旧项以释放 buffer（对应原驱动
 /// `DONE_LIST_MAX`）。
@@ -309,10 +309,10 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
         // 取一个任务；队列空则睡在 TASK_WQ 上让出 CPU。
         // 注意：拿到 guard 后立即在表达式内释放，绝不持锁调用 wait*。
         let mut task = loop {
-            if let Some(task) = TASK_LIST.lock().pop_front() {
+            if let Some(task) = TASK_LIST.lock_irqsave().pop_front() {
                 break task;
             }
-            TASK_WQ.wait_until(|| !TASK_LIST.lock().is_empty());
+            TASK_WQ.wait_until(|| !TASK_LIST.lock_irqsave().is_empty());
         };
 
         // 跑硬件：内部等待 TDMA 完成时经注入的 tpu_wait_irq 睡眠让出 CPU。
@@ -325,7 +325,7 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
         // 超限时丢弃最旧项（连带释放其 buffer 强引用），对应原 Linux 驱动的
         // `cvi_tpu_cleanup_done_list`。
         {
-            let mut done = DONE_LIST.lock();
+            let mut done = DONE_LIST.lock_irqsave();
             done.push_back(task);
             while done.len() > DONE_LIST_MAX {
                 let dropped = done.pop_front();
@@ -440,7 +440,7 @@ impl TpuDevice {
         };
 
         // 入队并唤醒 worker，随后立即返回（submit 不等推理）。
-        TASK_LIST.lock().push_back(task);
+        TASK_LIST.lock_irqsave().push_back(task);
         TASK_WQ.notify_one();
 
         Ok(0)
@@ -465,14 +465,14 @@ impl TpuDevice {
         // wait_timeout_until 睡前复检谓词，等价 Linux wait_event。
         let timed_out = DONE_WQ.wait_timeout_until(TPU_WAIT_TIMEOUT, || {
             DONE_LIST
-                .lock()
+                .lock_irqsave()
                 .iter()
                 .any(|t| t.task_id == task_id && t.seq_no == seq_no)
         });
 
         // 取出该任务结果（即使超时也再查一次，处理临界完成）。
         let found = {
-            let mut done = DONE_LIST.lock();
+            let mut done = DONE_LIST.lock_irqsave();
             done.iter()
                 .position(|t| t.task_id == task_id && t.seq_no == seq_no)
                 .map(|idx| done.remove(idx).unwrap())

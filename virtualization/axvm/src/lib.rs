@@ -27,13 +27,16 @@ mod architecture;
 pub mod boot;
 mod configured;
 mod error;
+mod guest_memory;
 pub mod host;
+mod identity;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
 pub mod machine;
 mod manager;
 mod npt;
+mod operation;
 mod percpu;
 mod runtime;
 mod sync;
@@ -60,11 +63,13 @@ pub(crate) use host::{
     paging::HostPagingHandler,
     task::{ThreadHandle, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
+pub use identity::{OperationId, RunId, VmKey};
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, dispatch_current_vcpu_interrupt, get_vm_by_id,
     get_vm_list, inject_current_vcpu_interrupt, kick_vm_vcpu, register_vm,
 };
+pub use operation::VmOperation;
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{
     AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,

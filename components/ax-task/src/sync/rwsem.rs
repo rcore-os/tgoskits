@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{Mutex, RawMutex, RawSpinLock};
+use super::{Mutex, MutexBackend, RawSpinLock};
 use crate::{
     runtime::{context::runtime_task_system, sync::rt_lock::RtLockWaitGuard},
     thread::{
@@ -17,7 +17,7 @@ use crate::{
 /// A writer prevents new readers through its PI mutex, then waits for existing
 /// readers to drain. Existing readers have no single owner to receive PI;
 /// they must finish their critical sections, as with Linux `rwbase_rt`.
-pub struct RawRwSemaphore {
+pub struct RwSemaphoreBackend {
     gate: Mutex<()>,
     readers: AtomicUsize,
     drain: RawSpinLock<Option<DrainWake>>,
@@ -47,7 +47,7 @@ impl DrainWake {
     }
 }
 
-impl RawRwSemaphore {
+impl RwSemaphoreBackend {
     /// Creates a sleeping reader/writer semaphore with ordinary task waits.
     pub const fn new() -> Self {
         Self::with_wait_state(false)
@@ -57,9 +57,9 @@ impl RawRwSemaphore {
         Self {
             gate: Mutex::const_new(
                 if rt_lock {
-                    RawMutex::new_rt_lock()
+                    MutexBackend::new_rt_lock()
                 } else {
-                    RawMutex::new()
+                    MutexBackend::new()
                 },
                 (),
             ),
@@ -117,7 +117,7 @@ impl RawRwSemaphore {
     }
 }
 
-impl Default for RawRwSemaphore {
+impl Default for RwSemaphoreBackend {
     fn default() -> Self {
         Self::new()
     }
@@ -128,7 +128,7 @@ impl Default for RawRwSemaphore {
 // release. Reader release publishes protected reads before the writer's
 // Acquire observation of zero. Gate's PI ownership serializes all writers.
 // GuardNoSend prevents transfer of task-owned unlock authority.
-unsafe impl lock_api::RawRwLock for RawRwSemaphore {
+unsafe impl lock_api::RawRwLock for RwSemaphoreBackend {
     const INIT: Self = Self::new();
     type GuardMarker = lock_api::GuardNoSend;
 
@@ -182,8 +182,8 @@ unsafe impl lock_api::RawRwLock for RawRwSemaphore {
 }
 
 /// A sleeping reader/writer semaphore; holding it does not pin the CPU.
-pub type RwSemaphore<T> = lock_api::RwLock<RawRwSemaphore, T>;
+pub type RwSemaphore<T> = lock_api::RwLock<RwSemaphoreBackend, T>;
 /// A shared, task-bound semaphore guard.
-pub type RwSemaphoreReadGuard<'a, T> = lock_api::RwLockReadGuard<'a, RawRwSemaphore, T>;
+pub type RwSemaphoreReadGuard<'a, T> = lock_api::RwLockReadGuard<'a, RwSemaphoreBackend, T>;
 /// An exclusive, task-bound semaphore guard.
-pub type RwSemaphoreWriteGuard<'a, T> = lock_api::RwLockWriteGuard<'a, RawRwSemaphore, T>;
+pub type RwSemaphoreWriteGuard<'a, T> = lock_api::RwLockWriteGuard<'a, RwSemaphoreBackend, T>;

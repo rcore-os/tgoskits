@@ -41,7 +41,7 @@ use alloc::{
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_sync::SpinRwLock as RwLock;
+use ax_sync::RawSpinRwLock;
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium, PacketMeta},
@@ -477,7 +477,7 @@ impl RouteTable {
     }
 }
 
-pub(crate) type SharedRouteTable = Arc<RwLock<RouteTable>>;
+pub(crate) type SharedRouteTable = Arc<RawSpinRwLock<RouteTable>>;
 
 /// Virtual smoltcp device that multiplexes all concrete devices.
 pub struct Router {
@@ -1161,7 +1161,7 @@ mod tests {
             wire::{HardwareAddress, UdpPacket},
         };
 
-        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        let mut router = Router::new(Arc::new(RawSpinRwLock::new(RouteTable::new())));
         router.add_device(
             IF0,
             Box::new(crate::device::EthernetDevice::new(
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn loopback_preserves_raw_udp_checksum() {
-        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let table = Arc::new(RawSpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(table);
         let mut sockets = SocketSet::new(vec![]);
         for checksum in [0u16, 0x1234] {
@@ -1371,7 +1371,7 @@ mod tests {
 
     #[test]
     fn transient_tx_backpressure_keeps_the_router_packet_queued() {
-        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let table = Arc::new(RawSpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(Arc::clone(&table));
         router.add_device(IF0, Box::new(RetryDevice));
         router.add_rule(Rule::new(
@@ -1404,7 +1404,7 @@ mod tests {
     fn drained_tx_queue_reuses_packet_storage() {
         use smoltcp::phy::RxToken as _;
 
-        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+        let mut router = Router::new(Arc::new(RawSpinRwLock::new(RouteTable::new())));
         router.add_device(InterfaceId::LOOPBACK, Box::new(EmptyDevice));
         router.add_rule(Rule::new(
             ipv4_cidr(Ipv4Address::LOCALHOST, 8),
@@ -1453,7 +1453,7 @@ mod tests {
     }
 
     fn check_tx_token_after_payload_wrap(reply_to_rx: bool) {
-        use ax_sync::SpinLock;
+        use ax_sync::RawSpinLock;
         use smoltcp::phy::RxToken as _;
 
         #[derive(Default)]
@@ -1462,7 +1462,7 @@ mod tests {
             packets: Vec<Vec<u8>>,
         }
 
-        struct BackpressureDevice(Arc<SpinLock<TxProbe>>);
+        struct BackpressureDevice(Arc<RawSpinLock<TxProbe>>);
 
         impl Device for BackpressureDevice {
             fn name(&self) -> &str {
@@ -1508,8 +1508,8 @@ mod tests {
             packet
         }
 
-        let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
-        let probe = Arc::new(SpinLock::new(TxProbe::default()));
+        let mut router = Router::new(Arc::new(RawSpinRwLock::new(RouteTable::new())));
+        let probe = Arc::new(RawSpinLock::new(TxProbe::default()));
         router.add_device(IF0, Box::new(BackpressureDevice(Arc::clone(&probe))));
         router.add_rule(Rule::new(
             ipv4_cidr(Ipv4Address::UNSPECIFIED, 0),
@@ -1590,7 +1590,7 @@ mod tests {
 
     #[test]
     fn fanout_retries_only_blocked_ports_without_repeating_accepted_packets() {
-        use ax_sync::SpinLock;
+        use ax_sync::RawSpinLock;
 
         #[derive(Default)]
         struct TxProbe {
@@ -1599,7 +1599,7 @@ mod tests {
             packets: Vec<Vec<u8>>,
         }
 
-        struct FanoutDevice(Arc<SpinLock<TxProbe>>);
+        struct FanoutDevice(Arc<RawSpinLock<TxProbe>>);
 
         impl Device for FanoutDevice {
             fn name(&self) -> &str {
@@ -1648,7 +1648,7 @@ mod tests {
                 packet[2..4].copy_from_slice(&20u16.to_be_bytes());
                 packet[16..20].fill(0xff);
             }
-            let mut router = Router::new(Arc::new(RwLock::new(RouteTable::new())));
+            let mut router = Router::new(Arc::new(RawSpinRwLock::new(RouteTable::new())));
             let probes: Vec<_> = [
                 vec![],
                 vec![NetDeviceError::Again, NetDeviceError::Again],
@@ -1659,7 +1659,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, failures)| {
-                let probe = Arc::new(SpinLock::new(TxProbe {
+                let probe = Arc::new(RawSpinLock::new(TxProbe {
                     failures: failures.into(),
                     ..TxProbe::default()
                 }));
@@ -1727,7 +1727,7 @@ mod tests {
 
     #[test]
     fn router_keeps_software_checksums_even_with_offload_capable_devices() {
-        let table = Arc::new(RwLock::new(RouteTable::new()));
+        let table = Arc::new(RawSpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(table);
         router.add_device(
             IF0,
@@ -1936,7 +1936,7 @@ mod tests {
             SRC0,
             100,
         ));
-        let shared_table: SharedRouteTable = Arc::new(RwLock::new(route_table));
+        let shared_table: SharedRouteTable = Arc::new(RawSpinRwLock::new(route_table));
 
         let mut rx_buffer: RouterPacketBuffer = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; 1],

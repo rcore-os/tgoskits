@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use axdevice_base::*;
 
 const INDEX_PORT: u16 = 0x70;
@@ -14,7 +14,7 @@ const RTC_VALID: u8 = 0x80;
 
 /// CMOS device exposing the guest memory size and a valid static RTC value.
 pub struct X86CmosDevice {
-    state: Mutex<CmosState>,
+    state: RawSpinLock<CmosState>,
     resources: Box<[Resource]>,
 }
 
@@ -27,7 +27,7 @@ impl X86CmosDevice {
     /// Creates CMOS contents for a guest whose contiguous low RAM ends at `low_memory_size`.
     pub fn new(low_memory_size: u64) -> Self {
         Self {
-            state: Mutex::new(CmosState::new(low_memory_size)),
+            state: RawSpinLock::new(CmosState::new(low_memory_size)),
             resources: alloc::vec![Resource::PortRange {
                 base: INDEX_PORT,
                 size: 2,

@@ -9,7 +9,7 @@
 use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
@@ -29,11 +29,11 @@ const TUN_QUEUE_LEN: usize = 500;
 /// `ETH_HLEN`, the link header a TAP carries on top of its MTU.
 const ETH_HLEN: usize = 14;
 
-struct TunQueue(SpinLock<VecDeque<Box<[u8]>>>);
+struct TunQueue(RawSpinLock<VecDeque<Box<[u8]>>>);
 
 impl TunQueue {
     const fn new() -> Self {
-        Self(SpinLock::new(VecDeque::new()))
+        Self(RawSpinLock::new(VecDeque::new()))
     }
 
     /// Appends a frame, or returns `false` when the queue is full.
@@ -83,7 +83,7 @@ pub struct TunShared {
     /// Frames the stack routed to the interface, drained by `read(2)`.
     tx: TunQueue,
     readers: Arc<PollSet>,
-    attach: SpinLock<AttachState>,
+    attach: RawSpinLock<AttachState>,
     /// Device-level `IFF_PERSIST`, shared by every file that attaches.
     persist: AtomicBool,
     up: AtomicBool,
@@ -101,7 +101,7 @@ impl TunShared {
             rx: TunQueue::new(),
             tx: TunQueue::new(),
             readers: Arc::new(PollSet::new()),
-            attach: SpinLock::new(AttachState::Free),
+            attach: RawSpinLock::new(AttachState::Free),
             persist: AtomicBool::new(false),
             up: AtomicBool::new(false),
             frame_limit: AtomicUsize::new(STANDARD_MTU + header_len),

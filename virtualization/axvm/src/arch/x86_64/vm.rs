@@ -50,15 +50,17 @@ impl X86_64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+    pub(crate) fn init_vm(vm: &mut AxVM) -> AxVmResult {
+        let vm_id = vm.id();
+        let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let placements = resources.vcpu_placements(config);
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
-            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let mut vcpus = PreparedVcpus::create(vm_id, &placements, |_| Ok(X86VcpuCreateConfig))?;
+            let devices = PreparedDevices::build_planned(resources, ports)?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), config, &ARCH_OWNED_REGIONS)?;
+            resources.prepare_guest_address_space(vm_id, config, &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
             let intercepted_mmio = resources.resolved_mmio_intercepts()?;

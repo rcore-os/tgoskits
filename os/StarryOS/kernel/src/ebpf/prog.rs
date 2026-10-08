@@ -10,8 +10,9 @@ use kbpf_basic::{preprocessor::EbpfPreProcessor, prog::BpfProgMeta};
 
 use crate::{
     StarryError, StarryResult,
-    ebpf::{KernelRawMutex, map::BpfMap, transform::EbpfKernelAuxiliary},
+    ebpf::{map::BpfMap, transform::EbpfKernelAuxiliary},
     file::FileLike,
+    sync::RawSpinLockIrqSaveBackend,
 };
 
 /// File-like handle for a loaded BPF program. Owns the (preprocessed) byte
@@ -109,7 +110,7 @@ pub fn load_prog(meta: &mut BpfProgMeta) -> kbpf_basic::BpfResult<BpfProg> {
         error!("bpf prog rejected: {rejection:?}");
         return Err(kbpf_basic::BpfError::EINVAL);
     }
-    let preprocessor = EbpfPreProcessor::preprocess::<EbpfKernelAuxiliary, KernelRawMutex>(insns)?;
+    let preprocessor = EbpfPreProcessor::preprocess::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(insns)?;
     Ok(BpfProg::new(
         BpfProgMeta {
             prog_flags: meta.prog_flags,

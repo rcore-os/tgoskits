@@ -65,7 +65,12 @@ pub fn sys_shmget(
     let thread = curr.as_thread();
     let operator = thread.proc_data.identity().snapshot();
     let cred = thread.cred();
-    let ns_id = thread.proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
+    let ns_id = thread
+        .proc_data
+        .namespace_snapshot()
+        .ipc_ns
+        .lock_irqsave()
+        .ns_id;
     let mut shm_manager = SHM_MANAGER.lock();
 
     if key != IPC_PRIVATE {
@@ -132,7 +137,7 @@ pub fn sys_shmat(
 
     info!("shmat pid={pid} shmid={shmid} enter");
 
-    let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
+    let ns_id = proc_data.namespace_snapshot().ipc_ns.lock_irqsave().ns_id;
     let preparation = ShmAttachPreparation::prepare(shmid, ns_id)?;
     let mapping = preparation.mapping()?;
     let mut mapping_flags = mapping.flags;
@@ -181,7 +186,13 @@ pub fn sys_shmctl(
     let curr = current;
     let thread = curr.as_thread();
     let cred = thread.cred();
-    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let ns_id = thread
+        .proc_data
+        .nsproxy
+        .lock_irqsave()
+        .ipc_ns
+        .lock_irqsave()
+        .ns_id;
     let pid_observer = thread.active_pid_namespace().id();
 
     // IPC_INFO: system-wide shared memory limits (no segment lookup).
@@ -310,7 +321,7 @@ pub fn sys_shmdt(current: &crate::task::UserTaskRef, shmaddr: usize) -> crate::S
     // Look up shmid and grab the inner Arc while holding SHM_MANAGER.
     let (shmid, shm_inner_arc) = {
         let shm_manager = SHM_MANAGER.lock();
-        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock_irqsave().ns_id;
         let shmid = shm_manager
             .get_shmid_by_vaddr(owner, shmaddr)
             .ok_or(StarryError::InvalidInput)?;

@@ -8,7 +8,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use axdevice_base::*;
 use axvm_types::GuestPhysAddr;
 
@@ -135,7 +135,7 @@ pub struct LoongArchPchPic {
     base: GuestPhysAddr,
     size: usize,
     resources: Box<[Resource]>,
-    state: Mutex<PchPicState>,
+    state: RawSpinLock<PchPicState>,
 }
 
 impl LoongArchPchPic {
@@ -148,7 +148,7 @@ impl LoongArchPchPic {
                 size: size as u64,
             }]
             .into_boxed_slice(),
-            state: Mutex::new(PchPicState::default()),
+            state: RawSpinLock::new(PchPicState::default()),
         }
     }
 

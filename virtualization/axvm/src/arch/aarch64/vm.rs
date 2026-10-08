@@ -31,7 +31,9 @@ impl Aarch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+    pub(crate) fn init_vm(vm: &mut AxVM) -> AxVmResult {
+        let vm_id = vm.id();
+        let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
             let placements = resources.vcpu_placements(config);
@@ -42,18 +44,18 @@ impl Aarch64Arch {
             let host_irq_config = super::gic::host_irq_config()
                 .map_err(|error| AxVmError::interrupt("discover host IRQ CPU interface", error))?;
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            let mut vcpus = PreparedVcpus::create(vm_id, &placements, |placement| {
                 Ok(ArmVcpuCreateConfig {
                     mpidr_el1: placement.phys_cpu_id as _,
                     dtb_addr: dtb_addr.as_usize(),
                 })
             })?;
-            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let devices = PreparedDevices::build_planned(resources, ports)?;
             let vgic_runtime = devices
                 .devices()
                 .services()
                 .require::<Aarch64VgicRuntimeKey>()?;
-            for vcpu in &vcpus {
+            for vcpu in &mut vcpus {
                 let binding = vgic_runtime
                     .attach_vcpu(vcpu.id(), &timer_profile)
                     .map_err(|error| {
@@ -66,7 +68,7 @@ impl Aarch64Arch {
                 )?;
             }
 
-            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            resources.prepare_guest_address_space(vm_id, config, &[])?;
             vcpus.setup(resources, config, move |_config, _memory_regions| {
                 Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
             })?;

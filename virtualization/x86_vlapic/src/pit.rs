@@ -3,7 +3,7 @@ use core::marker::PhantomData;
 
 use crate::{
     host::*,
-    lock::SpinMutex as Mutex,
+    lock::RawSpinLockStorage,
     timer_registration::{
         TimerRegistration, limit_periodic_timer_period_ns, restart_periodic_deadline_ns,
     },
@@ -268,8 +268,8 @@ impl PitState {
 
 /// A minimal emulated x86 PIT/8254 device.
 pub struct EmulatedPit<H: X86VlapicHostOps> {
-    state: Mutex<PitState>,
-    irq0_timer: Mutex<PitIrqTimer<H>>,
+    state: RawSpinLockStorage<PitState>,
+    irq0_timer: RawSpinLockStorage<PitIrqTimer<H>>,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -289,8 +289,8 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
     /// Create a PIT whose IRQ0 is routed to one VM vCPU by the host adapter.
     pub fn new_for_vcpu(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
         Self {
-            state: Mutex::new(PitState::new()),
-            irq0_timer: Mutex::new(PitIrqTimer::new(vm_id, vcpu_id)),
+            state: RawSpinLockStorage::new(PitState::new()),
+            irq0_timer: RawSpinLockStorage::new(PitIrqTimer::new(vm_id, vcpu_id)),
             _host: PhantomData,
         }
     }

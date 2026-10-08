@@ -60,7 +60,7 @@ pub fn prepare_direct_fdt_config(vm_config: &mut AxVMConfig, vm_create_config: &
     vm_create_config.kernel.dtb_load_addr = Some(UEFI_FIRMWARE_FDT_BASE);
 }
 
-pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) -> AxVmResult {
+pub fn prepare_uefi_runtime_config(vm: &AxVM, vm_create_config: &GuestConfig) -> AxVmResult {
     store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config)?);
     Ok(())
 }

@@ -22,7 +22,7 @@
 ))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
 use axvm::{boot::*, config::*, *};
@@ -102,11 +102,12 @@ pub fn init_guest_vms() {
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
-    let image_provider = AxvisorBootImageProvider;
-    let vm_create_config =
-        GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
-    let configured_vm_id = vm_create_config.base.id;
-
+    let plan = prepare_guest_vm(raw_cfg)?;
+    let vm_id = plan.config.id();
+    crate::manager::manager()
+        .create_plan(plan)?
+        .wait()
+        .with_context(|| format!("create VM[{vm_id}]"))?;
     #[cfg(all(
         feature = "fs",
         any(
@@ -115,7 +116,17 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
             target_arch = "loongarch64"
         )
     ))]
-    let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
+    if vm_config_needs_host_filesystem_release(&GuestConfig::from_toml(raw_cfg)?) {
+        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+    }
+    Ok(vm_id)
+}
+
+pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
+    let image_provider = AxvisorBootImageProvider;
+    let vm_create_config =
+        GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+    let configured_vm_id = vm_create_config.base.id;
 
     if let Some(linux) = get_image_header(&vm_create_config, &image_provider) {
         debug!(
@@ -133,47 +144,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
 
     vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
-    // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
-    info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
-
-    // Create VM.
-    let vm = AxVM::new(vm_config).with_context(|| format!("create VM[{configured_vm_id}]"))?;
-    let vm_id = vm.id();
-
-    let memory_layout = vm
-        .prepare_memory_layout()
-        .with_context(|| format!("prepare memory layout for VM[{vm_id}]"))?;
-    let main_mem = memory_layout.main_memory().clone();
-
-    // Load corresponding images for VM.
-    info!("VM[{}] created success, loading images...", vm.id());
-
-    prepared_boot
-        .load_images(main_mem, vm.clone(), &image_provider)
-        .with_context(|| format!("load boot images for VM[{vm_id}]"))?;
-
-    vm.prepare()
-        .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
-
-    if !axvm::register_vm(vm.clone()) {
-        bail!("register VM[{vm_id}]: a VM with this ID already exists");
-    }
-
-    #[cfg(all(
-        feature = "fs",
-        any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "loongarch64"
-        )
-    ))]
-    if release_host_filesystem {
-        axvm::host::register_block_passthrough_irq(&vm)
-            .context("register host block passthrough IRQ route")?;
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
-    }
-
-    Ok(vm_id)
+    Ok(VmCreatePlan {
+        config: vm_config,
+        boot: prepared_boot,
+        images: std::sync::Arc::new(image_provider),
+    })
 }
 
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {

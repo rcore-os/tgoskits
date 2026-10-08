@@ -14,7 +14,7 @@ use crate::{
         CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace,
         UserNamespace, UtNamespace,
     },
-    sync::IrqMutex,
+    sync::RawSpinLock,
 };
 
 /// A file descriptor that references a specific kernel namespace.
@@ -22,16 +22,16 @@ use crate::{
 /// Created by opening a file under `/proc/<pid>/ns/<type>`.  The fd is
 /// passed to `setns(2)` to join the referenced namespace.
 pub enum NsFd {
-    Uts(Arc<IrqMutex<UtNamespace>>),
-    Ipc(Arc<IrqMutex<IpcNamespace>>),
+    Uts(Arc<RawSpinLock<UtNamespace>>),
+    Ipc(Arc<RawSpinLock<IpcNamespace>>),
     Mnt {
-        ns: Arc<IrqMutex<ProxyMntNamespace>>,
+        ns: Arc<RawSpinLock<ProxyMntNamespace>>,
         fs_ns: Arc<FsMountNamespace>,
     },
     Pid(crate::namespace::PidNamespaceRef),
-    Net(Arc<IrqMutex<NetNamespace>>),
-    User(Arc<IrqMutex<UserNamespace>>),
-    Cgroup(Arc<IrqMutex<CgroupNamespace>>),
+    Net(Arc<RawSpinLock<NetNamespace>>),
+    User(Arc<RawSpinLock<UserNamespace>>),
+    Cgroup(Arc<RawSpinLock<CgroupNamespace>>),
 }
 
 impl NsFd {
@@ -68,13 +68,13 @@ impl FileLike for NsFd {
 
     fn stat(&self) -> StarryResult<super::Kstat> {
         let ino = match self {
-            NsFd::Uts(ns) => ns.lock().id,
-            NsFd::Ipc(ns) => ns.lock().ns_id,
-            NsFd::Mnt { ns, .. } => ns.lock().id(),
+            NsFd::Uts(ns) => ns.lock_irqsave().id,
+            NsFd::Ipc(ns) => ns.lock_irqsave().ns_id,
+            NsFd::Mnt { ns, .. } => ns.lock_irqsave().id(),
             NsFd::Pid(ns) => ns.id().get(),
-            NsFd::Net(ns) => ns.lock().ns_id,
-            NsFd::User(ns) => ns.lock().id,
-            NsFd::Cgroup(ns) => ns.lock().id(),
+            NsFd::Net(ns) => ns.lock_irqsave().ns_id,
+            NsFd::User(ns) => ns.lock_irqsave().id,
+            NsFd::Cgroup(ns) => ns.lock_irqsave().id(),
         };
         Ok(super::Kstat {
             ino,

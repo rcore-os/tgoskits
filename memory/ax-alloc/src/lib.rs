@@ -31,7 +31,8 @@ const MAX_RECLAIM_ATTEMPTS: usize = 4;
 /// clean file-backed page cache pages). Returns the number of pages freed.
 pub type PageReclaimFn = fn(num_pages: usize) -> usize;
 
-static PAGE_RECLAIM_FN: ax_sync::SpinLock<Option<PageReclaimFn>> = ax_sync::SpinLock::new(None);
+static PAGE_RECLAIM_FN: ax_sync::RawSpinLock<Option<PageReclaimFn>> =
+    ax_sync::RawSpinLock::new(None);
 static PAGE_RECLAIM_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct PageReclaimLease;

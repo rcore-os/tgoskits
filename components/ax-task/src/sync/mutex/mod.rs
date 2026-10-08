@@ -19,7 +19,7 @@ pub use self::pi_core::*;
 /// bit forces contenders through the metadata lock while waiter publication,
 /// donation registration, and handoff are in progress. Blocking and targeted
 /// wake happen after that metadata guard has been released.
-pub struct RawMutex {
+pub struct MutexBackend {
     rt_lock: bool,
     core: PiMutexCore,
     next_waiter_sequence: AtomicU64,
@@ -99,7 +99,7 @@ impl<T: ?Sized> LockdepMutexExt<T> for Mutex<T> {
     }
 }
 
-impl RawMutex {
+impl MutexBackend {
     /// Creates an unlocked PI mutex.
     pub const fn new() -> Self {
         Self {
@@ -464,7 +464,7 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 }
 
-impl RawMutex {
+impl MutexBackend {
     fn lock_pi(&self) {
         self.algorithm().lock_pi();
     }
@@ -516,7 +516,7 @@ impl RawMutex {
     }
 }
 
-impl Default for RawMutex {
+impl Default for MutexBackend {
     fn default() -> Self {
         Self::new()
     }
@@ -526,7 +526,7 @@ impl Default for RawMutex {
 // gate. Hard IRQ paths never access this state. A lock_api guard is created only
 // after scheduler ownership registration or an explicit PI handoff grants the
 // calling thread.
-unsafe impl lock_api::RawMutex for RawMutex {
+unsafe impl lock_api::RawMutex for MutexBackend {
     type GuardMarker = lock_api::GuardNoSend;
 
     const INIT: Self = Self::new();
@@ -586,10 +586,10 @@ where
     result.unwrap_or_else(|error| panic!("{operation} failed: {error}"))
 }
 
-/// A safe PI mutex using [`RawMutex`].
-pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
+/// A safe PI mutex using [`MutexBackend`].
+pub type Mutex<T> = lock_api::Mutex<MutexBackend, T>;
 /// A non-send guard returned by [`Mutex`].
-pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
+pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, MutexBackend, T>;
 
 impl<T: ?Sized> InterruptibleMutexExt<T> for Mutex<T> {
     #[track_caller]

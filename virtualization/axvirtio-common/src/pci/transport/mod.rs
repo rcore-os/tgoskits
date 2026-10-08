@@ -8,7 +8,7 @@
 
 use alloc::{format, sync::Arc};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
 
 use crate::{
@@ -178,14 +178,14 @@ pub enum VirtioPciWriteOutcome {
 /// Common VirtIO PCI transport state machine.
 pub struct VirtioPciTransport<D: VirtioDeviceCore> {
     core: D,
-    state: SpinLock<TransportState>,
+    state: RawSpinLock<TransportState>,
     interrupts: Arc<VirtioPciInterruptCoordinator>,
     activity: Arc<QueueActivity>,
     device_config_size: u32,
     #[cfg(test)]
-    notify_admission_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    notify_admission_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    reset_before_core_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    reset_before_core_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
@@ -212,14 +212,14 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
         }
         Ok(Self {
             device_config_size: core.device_config_size(),
-            state: SpinLock::new(TransportState::new(queue_num_max, queue_size_max)),
+            state: RawSpinLock::new(TransportState::new(queue_num_max, queue_size_max)),
             interrupts: Arc::new(VirtioPciInterruptCoordinator::new()),
             activity: Arc::new(QueueActivity::new()),
             core,
             #[cfg(test)]
-            notify_admission_hook: SpinLock::new(None),
+            notify_admission_hook: RawSpinLock::new(None),
             #[cfg(test)]
-            reset_before_core_hook: SpinLock::new(None),
+            reset_before_core_hook: RawSpinLock::new(None),
         })
     }
 

@@ -1709,7 +1709,7 @@ mod tests {
 
     impl Drop for MountedRegistryGuard {
         fn drop(&mut self) {
-            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock());
+            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock_irqsave());
         }
     }
 

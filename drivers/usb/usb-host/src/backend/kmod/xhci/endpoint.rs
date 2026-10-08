@@ -7,7 +7,7 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use dma_api::DmaDirection;
 use futures::task::AtomicWaker;
 use mbarrier::mb;
@@ -112,7 +112,7 @@ pub struct Endpoint {
     slot_id: SlotId,
     dci: Dci,
     ring: SendRing<TransferEvent>,
-    bell: Arc<Mutex<SlotBell>>,
+    bell: Arc<RawSpinLock<SlotBell>>,
     cmd: CommandRing,
     halted: Arc<AtomicBool>,
     reset_in_progress: Arc<AtomicBool>,
@@ -136,7 +136,7 @@ impl Endpoint {
         slot_id: SlotId,
         dci: Dci,
         kernel: &Kernel,
-        bell: Arc<Mutex<SlotBell>>,
+        bell: Arc<RawSpinLock<SlotBell>>,
         cmd: CommandRing,
     ) -> crate::err::Result<Self> {
         let ring =
@@ -1062,7 +1062,7 @@ mod tests {
         sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     };
 
-    use ax_sync::SpinRwLock as RwLock;
+    use ax_sync::RawSpinRwLock;
     use dma_api::{DmaAllocHandle, DmaConstraints, DmaError, DmaMapHandle, DmaOp};
     use usb_if::{endpoint::TransferRequest, err::TransferError};
 
@@ -1173,9 +1173,12 @@ mod tests {
         // The xHCI accessor requires a doorbell entry for slot one and a port array.
         mmio.0[1] = 2 | (1 << 24);
         let mmio_base = NonNull::new(mmio.0.as_mut_ptr().cast::<u8>()).unwrap();
-        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let registers = Arc::new(RawSpinRwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
-        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let bell = Arc::new(RawSpinLock::new(SlotBell::new(
+            slot_id,
+            registers.read().clone(),
+        )));
         let kernel = test_kernel();
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers).unwrap();
@@ -1215,9 +1218,12 @@ mod tests {
         let mut mmio = Box::new(AlignedMmio([0; 4096]));
         mmio.0[1] = 2 | (1 << 24);
         let mmio_base = NonNull::new(mmio.0.as_mut_ptr().cast::<u8>()).unwrap();
-        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let registers = Arc::new(RawSpinRwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
-        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let bell = Arc::new(RawSpinLock::new(SlotBell::new(
+            slot_id,
+            registers.read().clone(),
+        )));
         let kernel = test_kernel();
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
@@ -1252,9 +1258,12 @@ mod tests {
         let mut mmio = Box::new(AlignedMmio([0; 4096]));
         mmio.0[1] = 2 | (1 << 24);
         let mmio_base = NonNull::new(mmio.0.as_mut_ptr().cast::<u8>()).unwrap();
-        let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
+        let registers = Arc::new(RawSpinRwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
-        let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
+        let bell = Arc::new(RawSpinLock::new(SlotBell::new(
+            slot_id,
+            registers.read().clone(),
+        )));
         let kernel = test_kernel();
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();

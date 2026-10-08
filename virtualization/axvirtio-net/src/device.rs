@@ -2,7 +2,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
     DescriptorChain, MmioReadOutcome, MmioWriteAction, VirtioMmioState, VirtioQueue, VirtioResult,
@@ -50,7 +50,7 @@ pub struct VirtioMmioNetDevice<B: NetworkBackend, T: GuestMemoryAccessor + Clone
     state: VirtioMmioState<T>,
     mac: [u8; 6],
     mtu: Option<u16>,
-    link: Mutex<LinkStatus>,
+    link: RawSpinLock<LinkStatus>,
     backend: B,
     accessor: Arc<T>,
 }
@@ -89,7 +89,7 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
             state,
             mac: net_config.mac,
             mtu: net_config.mtu,
-            link: Mutex::new(net_config.link),
+            link: RawSpinLock::new(net_config.link),
             backend,
             accessor,
         })

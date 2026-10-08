@@ -48,7 +48,7 @@ pub struct PerTaskCounter {
     /// Userspace wants this event counting (see the struct-level state machine).
     pub(super) enabled: AtomicBool,
     /// Sole owner of schedule-in, schedule-out, remote stop, and close state.
-    pub(super) run_state: IrqMutex<PmuRunState>,
+    pub(super) run_state: RawSpinLock<PmuRunState>,
     /// Sum of completed-slice deltas (raw event count).
     pub(super) accumulated: AtomicU64,
     /// Greatest raw value published through `PERF_SAMPLE_READ`.
@@ -59,7 +59,7 @@ pub struct PerTaskCounter {
     /// backwards between samples unless userspace explicitly resets the event.
     pub(super) sample_read_floor: AtomicU64,
     /// Owner-CPU state extending the current finite-width hardware slice.
-    pub(super) counting_extender: Arc<IrqMutex<super::super::counting::CounterExtender>>,
+    pub(super) counting_extender: Arc<RawSpinLock<super::super::counting::CounterExtender>>,
     /// Raw sampling deltas for this slice; reloads do not change its total.
     pub(super) sampling_count: Arc<sampling::SamplingCount>,
     /// Accumulated enabled time across past windows (ns).
@@ -112,11 +112,11 @@ pub struct PerTaskCounter {
     pub(super) observer: PidNamespaceId,
     /// Target task identity in the event's captured PID namespace.
     pub(super) owner_ids: Option<(TgidNumber, TidNumber)>,
-    group_leader: IrqMutex<Option<Weak<PerTaskCounter>>>,
-    group_members: IrqMutex<Vec<Weak<PerTaskCounter>>>,
+    group_leader: RawSpinLock<Option<Weak<PerTaskCounter>>>,
+    group_members: RawSpinLock<Vec<Weak<PerTaskCounter>>>,
     /// Weak fd-owned family identity. The family owns members strongly, so a
     /// weak back-reference avoids a root/member cycle.
-    family: IrqMutex<Option<FamilyBinding>>,
+    family: RawSpinLock<Option<FamilyBinding>>,
     /// Ensures the reserved PMU slot and global active count are reclaimed once
     /// when fd close races task exit.
     pub(super) resources: PmuResourceRelease,
@@ -128,13 +128,13 @@ pub struct PerTaskCounter {
     /// The own ring is weakly retained so `munmap` permits a later mmap; a
     /// redirect is strongly retained while this event can publish into it.
     /// Scheduler/sideband readers clone one complete effective output.
-    pub(super) output: IrqMutex<PerfOutputRoute>,
+    pub(super) output: RawSpinLock<PerfOutputRoute>,
     /// An inherited redirect targets the root event's poll worker, unlike an
     /// explicit `SET_OUTPUT` redirect whose wake ownership belongs to the target
     /// event.
     inherited_output_wake: AtomicBool,
     /// Strong notification and deferred poll machinery.
-    anchors: IrqMutex<Option<SamplingAnchors>>,
+    anchors: RawSpinLock<Option<SamplingAnchors>>,
 }
 
 #[derive(Clone, Debug)]
@@ -267,11 +267,11 @@ impl PerTaskCounter {
             cpu_filter: cfg.cpu_filter,
             required_cluster: cfg.required_cluster,
             enabled: AtomicBool::new(cfg.enabled),
-            run_state: IrqMutex::new(PmuRunState::new()),
+            run_state: RawSpinLock::new(PmuRunState::new()),
             accumulated: AtomicU64::new(0),
             sampling_count: Arc::new(sampling::SamplingCount::new()),
             sample_read_floor: AtomicU64::new(0),
-            counting_extender: Arc::new(IrqMutex::new(
+            counting_extender: Arc::new(RawSpinLock::new(
                 super::super::counting::CounterExtender::new(),
             )),
             time_enabled_ns: AtomicU64::new(0),
@@ -294,14 +294,14 @@ impl PerTaskCounter {
             inherit: cfg.inherit,
             observer: cfg.observer,
             owner_ids: cfg.owner_ids,
-            group_leader: IrqMutex::new(None),
-            group_members: IrqMutex::new(Vec::new()),
-            family: IrqMutex::new(None),
+            group_leader: RawSpinLock::new(None),
+            group_members: RawSpinLock::new(Vec::new()),
+            family: RawSpinLock::new(None),
             resources: PmuResourceRelease::new(),
             rdpmc: RdpmcMapping::new(),
-            output: IrqMutex::new(PerfOutputRoute::new()),
+            output: RawSpinLock::new(PerfOutputRoute::new()),
             inherited_output_wake: AtomicBool::new(false),
-            anchors: IrqMutex::new(None),
+            anchors: RawSpinLock::new(None),
         }
     }
 
@@ -378,14 +378,14 @@ impl PerTaskCounter {
     }
 
     pub(super) fn reset_counting_slice(&self, counter: Counter) {
-        self.counting_extender.lock().reset();
+        self.counting_extender.lock_irqsave().reset();
         if let Some(index) = counter.programmable_index() {
             crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << index));
         }
     }
 
     pub(super) fn read_counting_slice(&self, counter: Counter) -> u64 {
-        let mut extender = self.counting_extender.lock();
+        let mut extender = self.counting_extender.lock_irqsave();
         if let Some(index) = counter.programmable_index() {
             let bit = 1 << index;
             if (crate::perf::hw_owner::on_pmu(|pmu| pmu.overflow_status()) as u32) & bit != 0 {
@@ -502,17 +502,20 @@ impl PerTaskCounter {
     }
 
     pub(crate) fn bind_family(&self, family: PerfInheritanceFamilyWeak, root: bool) {
-        let old = self.family.lock().replace(FamilyBinding { family, root });
+        let old = self
+            .family
+            .lock_irqsave()
+            .replace(FamilyBinding { family, root });
         assert!(old.is_none(), "a task perf counter joined two families");
     }
 
     pub(crate) fn family(&self) -> Option<Arc<PerfInheritanceFamily>> {
-        self.family.lock().as_ref()?.family.upgrade()
+        self.family.lock_irqsave().as_ref()?.family.upgrade()
     }
 
     pub(super) fn is_family_root(&self) -> bool {
         self.family
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .is_some_and(|binding| binding.root)
     }
@@ -555,7 +558,7 @@ impl PerTaskCounter {
     }
 
     pub(in crate::perf) fn inheritable(&self) -> bool {
-        self.inherit && !self.run_state.lock().is_stopping()
+        self.inherit && !self.run_state.lock_irqsave().is_stopping()
     }
 
     pub(in crate::perf) fn enabled_for_inheritance(&self) -> bool {
@@ -584,19 +587,19 @@ impl PerTaskCounter {
         {
             return Err(crate::StarryError::InvalidInput);
         }
-        let mut members = leader.group_members.lock();
+        let mut members = leader.group_members.lock_irqsave();
         members.retain(|member| member.strong_count() != 0);
         if members.len() + 1 >= MAX_SAMPLE_READ_EVENTS {
             return Err(crate::StarryError::InvalidInput);
         }
-        *member.group_leader.lock() = Some(Arc::downgrade(leader));
+        *member.group_leader.lock_irqsave() = Some(Arc::downgrade(leader));
         members.push(Arc::downgrade(member));
         Ok(())
     }
 
     pub(in crate::perf) fn live_group_leader(&self) -> Option<Arc<Self>> {
         self.group_leader
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .and_then(Weak::upgrade)
             .filter(|leader| !leader.resources_released())
@@ -614,7 +617,12 @@ impl PerTaskCounter {
         let leader = leader.as_ref().unwrap_or(self);
         entries[0] = leader.sample_read_entry();
         let mut len = 1;
-        for member in leader.group_members.lock().iter().filter_map(Weak::upgrade) {
+        for member in leader
+            .group_members
+            .lock_irqsave()
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
             if member.resources_released() {
                 continue;
             }
@@ -634,9 +642,9 @@ impl PerTaskCounter {
     /// Stores the strong [`SamplingAnchors`] (pinning the ring pages + notify)
     /// and publishes the ring geometry after the anchors are installed.
     pub(crate) fn install_root_output(&self, output: &PerfRingOutput, anchors: SamplingAnchors) {
-        *self.anchors.lock() = Some(anchors);
+        *self.anchors.lock_irqsave() = Some(anchors);
         self.inherited_output_wake.store(false, Ordering::Release);
-        self.output.lock().publish_owned(output);
+        self.output.lock_irqsave().publish_owned(output);
     }
 
     pub(crate) fn install_family_output(
@@ -646,14 +654,14 @@ impl PerTaskCounter {
     ) {
         self.inherited_output_wake
             .store(anchors.is_some(), Ordering::Release);
-        *self.anchors.lock() = anchors;
-        self.output.lock().redirect(output);
+        *self.anchors.lock_irqsave() = anchors;
+        self.output.lock_irqsave().redirect(output);
     }
 
     pub(crate) fn clear_family_output(&self) {
         self.inherited_output_wake.store(false, Ordering::Release);
-        self.anchors.lock().take();
-        self.output.lock().clear();
+        self.anchors.lock_irqsave().take();
+        self.output.lock_irqsave().clear();
     }
 
     /// Whether a sampling ring has been mmap'd and is therefore armable.
@@ -661,13 +669,13 @@ impl PerTaskCounter {
     /// Read by [`perf_sched_in`] (to decide whether to arm the slice) and by the
     /// fd's `device_mmap` (to reject a second mapping).
     pub fn ring_mapped(&self) -> bool {
-        self.output.lock().owned().is_some()
+        self.output.lock_irqsave().owned().is_some()
     }
 
     /// Expose the effective ring for a `PERF_EVENT_IOC_SET_OUTPUT` redirect
     /// target, following an existing redirect chain.
     pub(crate) fn output_ring(&self) -> Option<PerfRingOutput> {
-        self.output.lock().effective_output()
+        self.output.lock_irqsave().effective_output()
     }
 
     /// Point this counter's samples at *another* event's ring
@@ -679,23 +687,23 @@ impl PerTaskCounter {
     /// observes the advancing `data_head`.
     pub(crate) fn set_redirect_ring(&self, output: PerfRingOutput) {
         self.inherited_output_wake.store(false, Ordering::Release);
-        self.output.lock().redirect(output);
+        self.output.lock_irqsave().redirect(output);
     }
 
     /// Detaches an explicit redirect.
     pub(crate) fn detach_redirect(&self) {
         self.inherited_output_wake.store(false, Ordering::Release);
-        self.output.lock().detach();
+        self.output.lock_irqsave().detach();
     }
 
     /// Builds one owned IRQ registry output from the currently published ring.
     pub(super) fn sample_output(&self) -> Option<SampleOutput> {
-        let (ring, redirected) = self.output.lock().effective()?;
+        let (ring, redirected) = self.output.lock_irqsave().effective()?;
         let notify = if redirected && !self.inherited_output_wake.load(Ordering::Acquire) {
             None
         } else {
             self.anchors
-                .lock()
+                .lock_irqsave()
                 .as_ref()
                 .map(|anchors| Arc::clone(&anchors.notify))
         };
@@ -712,7 +720,7 @@ impl PerTaskCounter {
     /// [`super::hw::HwPerfEvent::poll`]. Returns `false` before the ring is
     /// mapped or once it is torn down.
     pub fn ring_has_data(&self) -> bool {
-        let Some(ring) = self.output.lock().owned() else {
+        let Some(ring) = self.output.lock_irqsave().owned() else {
             return false;
         };
         let header = ring.ring_vaddr() as *const kbpf_basic::linux_bpf::perf_event_mmap_page;
@@ -732,14 +740,14 @@ impl PerTaskCounter {
     /// Mirrors the M2 `register`: the notify worker wakes this `PollSet` after
     /// each sample. No-op if the ring has not been mmap'd yet (no `PollSet`).
     pub unsafe fn register_poll_shared(&self, sink: &mut dyn axpoll::SharedRegistrationSink) {
-        let guard = self.anchors.lock();
+        let guard = self.anchors.lock_irqsave();
         if let Some(anchors) = guard.as_ref() {
             unsafe { sink.register_shared(&anchors.poll_ready, axpoll::IoEvents::IN) };
         }
     }
 
     pub unsafe fn register_poll_exclusive(&self, sink: &mut dyn axpoll::ExclusiveRegistrationSink) {
-        let guard = self.anchors.lock();
+        let guard = self.anchors.lock_irqsave();
         if let Some(anchors) = guard.as_ref() {
             unsafe { sink.register_exclusive(&anchors.poll_ready, axpoll::IoEvents::IN) };
         }
@@ -757,7 +765,7 @@ unsafe fn per_task_sample_read_irq(
     // Retain the generation lock through the physical read, not merely while
     // copying the lease: its slot and sampling baseline must describe the
     // same scheduling generation throughout the snapshot.
-    let run_state = counter.run_state.lock();
+    let run_state = counter.run_state.lock_irqsave();
     let mut value = counter.accumulated.load(Ordering::Acquire);
     let running = run_state.running();
     if let Some(lease) = running

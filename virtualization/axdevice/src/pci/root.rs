@@ -13,7 +13,7 @@ use alloc::{
 };
 use core::{fmt, ops::Range};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axdevice_base::DeviceId;
 
 #[cfg(target_arch = "x86_64")]
@@ -59,7 +59,7 @@ pub(crate) enum PciConfigWriteOutcome {
 /// Shared root state for one frozen PCI topology.
 pub struct PciRootState {
     topology: Arc<ResolvedPciTopology>,
-    state: SpinLock<RootState>,
+    state: RawSpinLock<RootState>,
 }
 
 /// Owns a pending endpoint binding until it is either published or dropped.
@@ -128,7 +128,7 @@ impl PciRootState {
             })
             .collect();
         Self {
-            state: SpinLock::new(RootState {
+            state: RawSpinLock::new(RootState {
                 functions,
                 bindings: BTreeMap::new(),
                 pending_bindings: BTreeSet::new(),

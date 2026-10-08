@@ -1,7 +1,7 @@
 use alloc::{format, string::ToString, sync::Arc};
 
 use arm_scmi_rs::{Scmi, Shmem, Smc};
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use fdt_edit::Phandle;
 use log::{info, warn};
 
@@ -11,7 +11,7 @@ const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
 const SCMI_CLOCK_PROTOCOL_ID: u32 = 0x14;
 
-type ScmiAgent = Arc<Mutex<Scmi<Smc>>>;
+type ScmiAgent = Arc<RawSpinLock<Scmi<Smc>>>;
 
 crate::model_register!(
     name: "ARM SCMI SMC",
@@ -68,7 +68,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         bus_address: shmem_addr,
         size: shmem_size,
     };
-    let agent = Arc::new(Mutex::new(Scmi::new(Smc::new(smc_id, None), shmem)));
+    let agent = Arc::new(RawSpinLock::new(Scmi::new(Smc::new(smc_id, None), shmem)));
     if let Some(clock_child) = clock_protocol_child(&info) {
         let clock_path = clock_child.path().to_string();
         let clock_phandle = clock_child.node().as_node().phandle();

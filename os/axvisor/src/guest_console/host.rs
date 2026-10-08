@@ -9,12 +9,13 @@ use ax_std::os::arceos::modules::ax_runtime::console::{
     TaskConsoleOutput,
 };
 use std::sync::{Mutex, OnceLock};
+
+use crate::sync::MutexExt;
 use {
     ax_std::os::arceos::modules::ax_runtime::RuntimeError,
     ax_std::os::arceos::modules::ax_runtime::RuntimeResult,
     ax_std::os::arceos::modules::ax_runtime::emergency_console,
     ax_std::os::arceos::modules::ax_runtime::irq::FixedIrqWorkerSignal,
-    ax_std::os::arceos::sync::NoPreemptMutex,
 };
 
 use axvisor::console_mux::HostOutputQueue;
@@ -30,7 +31,7 @@ struct HostConsole {
 }
 
 struct HostOutput {
-    queue: NoPreemptMutex<HostOutputQueue<HOST_OUTPUT_QUEUE_CAPACITY>>,
+    queue: Mutex<HostOutputQueue<HOST_OUTPUT_QUEUE_CAPACITY>>,
     ready: FixedIrqWorkerSignal,
     failed: AtomicBool,
 }
@@ -48,8 +49,8 @@ static HOST_OUTPUT: HostOutput = HostOutput::new();
 /// Takes the sole task-context input and log subscription before any vCPU starts.
 ///
 /// The returned runtime output capability is moved into one dedicated task.
-/// Every guest/vCPU producer only submits to [`HOST_OUTPUT`] and therefore can
-/// never acquire a sleepable lock or wait for UART backpressure.
+/// Guest/vCPU producers submit through [`HOST_OUTPUT`] in task context.
+/// The worker alone waits for UART backpressure.
 pub(crate) fn configure_host_console() -> Result<()> {
     let _configure_guard = HOST_CONSOLE_CONFIGURE
         .lock()
@@ -159,7 +160,7 @@ pub(crate) fn submit_host_bytes(bytes: &[u8]) {
 
 /// Builds one non-interleaved host-output transaction in the fixed queue.
 ///
-/// `transaction` runs while the queue's non-sleeping lock is held. It must not
+/// `transaction` runs while the queue mutex is held. It must not
 /// allocate, sleep, or call back into a physical console API.
 pub(crate) fn submit_host_transaction(transaction: impl FnOnce(&mut dyn FnMut(&[u8]))) {
     if host_console().is_none() {
@@ -219,7 +220,7 @@ fn write_host_output_batch(
 impl HostOutput {
     const fn new() -> Self {
         Self {
-            queue: NoPreemptMutex::new(HostOutputQueue::new()),
+            queue: Mutex::new(HostOutputQueue::new()),
             ready: FixedIrqWorkerSignal::new(),
             failed: AtomicBool::new(false),
         }
@@ -237,10 +238,9 @@ impl HostOutput {
             return;
         }
 
-        // No hard-IRQ path uses this queue. Disabling preemption is sufficient
-        // for vCPU callbacks and avoids extending local IRQ-off latency across
-        // a complete producer transaction.
-        let mut queue = self.queue.lock();
+        // No hard-IRQ path uses this queue. The task mutex preserves output
+        // transaction ordering while permitting the producer to be scheduled.
+        let mut queue = self.queue.lock_unpoisoned();
         if self.failed.load(Ordering::Acquire) {
             return;
         }
@@ -262,7 +262,7 @@ impl HostOutput {
             len: 0,
             dropped_bytes: 0,
         };
-        let mut queue = self.queue.lock();
+        let mut queue = self.queue.lock_unpoisoned();
         batch.dropped_bytes = queue.take_dropped_bytes();
         batch.len = queue.dequeue(&mut batch.bytes);
         batch

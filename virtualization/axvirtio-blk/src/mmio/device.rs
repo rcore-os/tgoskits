@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
     AddressSpaceMemory, MmioReadOutcome, MmioWriteAction, VirtioDeviceID, VirtioMmioState,
@@ -42,7 +42,7 @@ pub struct VirtioMmioBlockDevice<B: BlockBackend, T: GuestMemoryAccessor + Clone
     /// Transport-independent block request processing.
     core: VirtioBlockRequestCore<B>,
     /// Deferred request head owned by this MMIO transport.
-    pending_head: SpinLock<Option<u16>>,
+    pending_head: RawSpinLock<Option<u16>>,
     /// Guest memory accessor.
     accessor: Arc<T>,
 }
@@ -78,7 +78,7 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
         Ok(Self {
             state,
             core: VirtioBlockRequestCore::new(block_backend, block_config),
-            pending_head: SpinLock::new(None),
+            pending_head: RawSpinLock::new(None),
             accessor,
         })
     }

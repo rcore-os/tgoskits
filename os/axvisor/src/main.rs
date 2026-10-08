@@ -42,6 +42,7 @@ mod network_status;
 #[cfg(feature = "vcpu-perf-load")]
 mod perf_load;
 mod shell;
+mod sync;
 #[cfg(feature = "test-virq-delivery")]
 mod virq_regression;
 
@@ -119,7 +120,7 @@ fn main() {
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()
         .name("axvisor-vm-wait".into())
-        .spawn(manager::AxvmManager::wait_for_default_vms)
+        .spawn(move || manager.wait_for_default_vms())
         .unwrap_or_else(|error| panic!("failed to start VM completion waiter: {error}"));
 
     #[cfg(not(feature = "no-auto-start"))]

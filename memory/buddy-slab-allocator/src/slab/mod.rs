@@ -16,7 +16,7 @@ use core::{
     sync::atomic::{AtomicU16, Ordering},
 };
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 use cache::{CacheDeallocResult, SlabCache};
 pub use page::SlabPageHeader;
 pub use size_class::SizeClass;
@@ -190,7 +190,7 @@ pub struct SlabAllocator<const PAGE_SIZE: usize = 0x1000> {
 /// Default per-CPU slab wrapper used by EII integrators.
 pub struct PerCpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: u16,
-    inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
+    inner: RawSpinLock<SlabAllocator<PAGE_SIZE>>,
     remote_hint: RemoteFreeHint,
 }
 
@@ -205,13 +205,13 @@ impl<const PAGE_SIZE: usize> PerCpuSlab<PAGE_SIZE> {
     pub const fn new(cpu_id: u16) -> Self {
         Self {
             cpu_id,
-            inner: SpinLock::new(SlabAllocator::new()),
+            inner: RawSpinLock::new(SlabAllocator::new()),
             remote_hint: RemoteFreeHint::new(),
         }
     }
 
     #[inline]
-    fn inner(&self) -> RawSpinLockGuard<'_, SlabAllocator<PAGE_SIZE>> {
+    fn inner(&self) -> RawSpinLockUnpinnedGuard<'_, SlabAllocator<PAGE_SIZE>> {
         // SAFETY: per-CPU slab access preserves the legacy raw-lock contract:
         // the pool selects one owner CPU and callers exclude local re-entry.
         unsafe { self.inner.lock_raw() }

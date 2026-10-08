@@ -9,7 +9,7 @@ use alloc::{
 };
 use core::fmt;
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId};
 
 use super::{resolved::*, *};
@@ -37,7 +37,7 @@ struct ClaimRecord {
 #[derive(Debug)]
 pub(super) struct ResourceClaimDomain {
     device_ids: BTreeSet<String>,
-    records: SpinLock<BTreeMap<ClaimKey, ClaimRecord>>,
+    records: RawSpinLock<BTreeMap<ClaimKey, ClaimRecord>>,
 }
 
 impl ResourceClaimDomain {
@@ -59,11 +59,11 @@ impl ResourceClaimDomain {
         }
         Arc::new(Self {
             device_ids: devices.keys().cloned().collect(),
-            records: SpinLock::new(records),
+            records: RawSpinLock::new(records),
         })
     }
 
-    fn records(&self) -> RawSpinLockGuard<'_, BTreeMap<ClaimKey, ClaimRecord>> {
+    fn records(&self) -> RawSpinLockUnpinnedGuard<'_, BTreeMap<ClaimKey, ClaimRecord>> {
         // SAFETY: claim state transitions are entered through the serialized
         // VM resource planner and exclude local re-entry.
         unsafe { self.records.lock_raw() }

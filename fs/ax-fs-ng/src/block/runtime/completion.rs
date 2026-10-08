@@ -8,7 +8,7 @@ use core::{
 use atomic_waker::AtomicWaker;
 use rdif_block::{BlkError, CompletedRequest};
 
-use crate::os::{BlockNotification, runtime_ops, sync::IrqMutex};
+use crate::os::{BlockNotification, runtime_ops, sync::RawSpinLock};
 
 /// One-shot receiver for one owned block request.
 pub struct CompletionSubscription {
@@ -25,11 +25,11 @@ pub(super) struct CompletionSender {
 }
 
 struct CompletionCell {
-    state: IrqMutex<CompletionState>,
+    state: RawSpinLock<CompletionState>,
     waker: AtomicWaker,
     group: Arc<CompletionBarrier>,
     #[cfg(test)]
-    poll_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
+    poll_hook: RawSpinLock<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
 }
 
 struct CompletionBarrier {
@@ -64,14 +64,14 @@ impl CompletionSubscription {
 
     fn pair_with_group(group: Arc<CompletionBarrier>) -> (Self, CompletionSender) {
         let cell = Arc::new(CompletionCell {
-            state: IrqMutex::new(CompletionState {
+            state: RawSpinLock::new(CompletionState {
                 result: None,
                 receiver_alive: true,
             }),
             waker: AtomicWaker::new(),
             group,
             #[cfg(test)]
-            poll_hook: IrqMutex::new(None),
+            poll_hook: RawSpinLock::new(None),
         });
         (
             Self {
@@ -99,7 +99,7 @@ impl CompletionSubscription {
         }
         loop {
             let result = {
-                let mut state = self.cell.state.lock();
+                let mut state = self.cell.state.lock_irqsave();
                 let result = state.result.take();
                 if result.is_some() {
                     state.receiver_alive = false;
@@ -125,7 +125,7 @@ impl CompletionSubscription {
             #[cfg(test)]
             self.cell.run_poll_hook();
             let result = {
-                let mut state = self.cell.state.lock();
+                let mut state = self.cell.state.lock_irqsave();
                 let result = state.result.take();
                 if result.is_some() {
                     state.receiver_alive = false;
@@ -146,12 +146,15 @@ impl CompletionSubscription {
 #[cfg(test)]
 impl CompletionCell {
     fn set_poll_hook(&self, hook: impl FnOnce() + Send + 'static) {
-        let previous = self.poll_hook.lock().replace(alloc::boxed::Box::new(hook));
+        let previous = self
+            .poll_hook
+            .lock_irqsave()
+            .replace(alloc::boxed::Box::new(hook));
         assert!(previous.is_none(), "completion poll hook already installed");
     }
 
     fn run_poll_hook(&self) {
-        let hook = self.poll_hook.lock().take();
+        let hook = self.poll_hook.lock_irqsave().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -236,7 +239,7 @@ impl CompletionGroup {
 impl Drop for CompletionSubscription {
     fn drop(&mut self) {
         let result = {
-            let mut state = self.cell.state.lock();
+            let mut state = self.cell.state.lock_irqsave();
             state.receiver_alive = false;
             state.result.take()
         };
@@ -248,7 +251,7 @@ impl Drop for CompletionSubscription {
 impl CompletionSender {
     pub(super) fn complete(self, request: CompletedRequest) {
         let unclaimed = {
-            let mut state = self.cell.state.lock();
+            let mut state = self.cell.state.lock_irqsave();
             if state.receiver_alive {
                 state.result = Some(request);
                 None
@@ -339,7 +342,7 @@ mod tests {
                 self.wakes.fetch_add(1, Ordering::AcqRel);
                 return;
             };
-            let Some(state) = cell.state.try_lock() else {
+            let Some(state) = cell.state.try_lock_irqsave() else {
                 self.lock_failures.fetch_add(1, Ordering::AcqRel);
                 self.wakes.fetch_add(1, Ordering::AcqRel);
                 return;
@@ -384,7 +387,7 @@ mod tests {
             let lock_available = self
                 .cell
                 .upgrade()
-                .is_some_and(|cell| cell.state.try_lock().is_some());
+                .is_some_and(|cell| cell.state.try_lock_irqsave().is_some());
             if !lock_available {
                 self.observation
                     .lock_failures
@@ -447,7 +450,7 @@ mod tests {
             let lock_available = self
                 .cell
                 .upgrade()
-                .is_some_and(|cell| cell.state.try_lock().is_some());
+                .is_some_and(|cell| cell.state.try_lock_irqsave().is_some());
             if !lock_available {
                 self.observation
                     .lock_failures

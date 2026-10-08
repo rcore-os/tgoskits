@@ -142,13 +142,13 @@ fn vm_create(cmd: &ParsedCommand) {
         return;
     }
 
-    let initial_vm_count = crate::manager::AxvmManager::vm_list().len();
+    let initial_vm_count = crate::manager::manager().list().len();
 
     for config_path in args.iter() {
         println!("Creating VM from config: {}", config_path);
 
         match read_to_string(config_path) {
-            Ok(raw_cfg) => match crate::manager::AxvmManager::create_vm_from_toml(&raw_cfg) {
+            Ok(raw_cfg) => match crate::manager::manager().create_vm_from_toml(&raw_cfg) {
                 Ok(vm_id) => {
                     println!(
                         "✓ Successfully created VM[{}] from config: {}",
@@ -166,7 +166,7 @@ fn vm_create(cmd: &ParsedCommand) {
     }
 
     // Check the actual number of VMs created
-    let final_vm_count = crate::manager::AxvmManager::vm_list().len();
+    let final_vm_count = crate::manager::manager().list().len();
     let created_count = final_vm_count - initial_vm_count;
 
     if created_count > 0 {
@@ -198,7 +198,7 @@ fn vm_start(cmd: &ParsedCommand) {
         info!("VMM starting, booting all VMs...");
         let mut started_count = 0;
 
-        for vm in crate::manager::AxvmManager::vm_list() {
+        for vm in crate::manager::manager().list() {
             // Check current status before starting
             let status: VmStatus = vm.status();
             if status == VmStatus::Running {
@@ -254,7 +254,10 @@ fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
 
 #[cfg(feature = "fs")]
 fn start_vm_by_id(vm_id: usize, attach_console: bool) {
-    match crate::manager::AxvmManager::with_vm(vm_id, |vm| start_single_vm(vm.clone())) {
+    match crate::manager::manager()
+        .get(vm_id)
+        .map(|vm| start_single_vm(vm.clone()))
+    {
         Some(Ok(_)) => {
             println!("✓ VM[{}] started successfully", vm_id);
             if attach_console {
@@ -302,7 +305,7 @@ fn vm_stop(cmd: &ParsedCommand) {
 }
 
 fn stop_vm_by_id(vm_id: usize, force: bool) {
-    match crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    match crate::manager::manager().get(vm_id).map(|vm| {
         let status = vm.status();
 
         // Validate state transition using helper function
@@ -330,7 +333,8 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
         }
 
         // Call shutdown
-        crate::manager::AxvmManager::stop_vm(vm_id)
+        crate::manager::manager()
+            .stop_vm(vm_id)
             .with_context(|| format!("send shutdown request to VM[{vm_id}]"))
     }) {
         Some(Ok(_)) => {
@@ -370,7 +374,7 @@ fn vm_reset(cmd: &ParsedCommand) {
 
 fn reset_vm_by_id(vm_id: usize) {
     println!("Resetting VM[{}]...", vm_id);
-    match crate::manager::AxvmManager::reset_vm(vm_id) {
+    match crate::manager::manager().reset_vm(vm_id) {
         Ok(()) => {
             crate::guest_console::mark_running(vm_id);
             println!("✓ VM[{}] reset and started successfully", vm_id);
@@ -401,7 +405,7 @@ fn vm_suspend(cmd: &ParsedCommand) {
 fn suspend_vm_by_id(vm_id: usize) {
     println!("Suspending VM[{}]...", vm_id);
 
-    let result: Option<anyhow::Result<()>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    let result: Option<anyhow::Result<()>> = crate::manager::manager().get(vm_id).map(|vm| {
         let status = vm.status();
 
         // Check if VM can be suspended
@@ -418,8 +422,10 @@ fn suspend_vm_by_id(vm_id: usize) {
             println!("✓ VM[{}] suspend signal sent", vm_id);
 
             // Get VM to check VCpu count
-            let vcpu_count =
-                crate::manager::AxvmManager::with_vm(vm_id, |vm| vm.vcpu_num()).unwrap_or(0);
+            let vcpu_count = crate::manager::manager()
+                .get(vm_id)
+                .map(|vm| vm.vcpu_num())
+                .unwrap_or(0);
             println!(
                 "  Note: {} VCpu task(s) will enter wait queue at next VMExit",
                 vcpu_count
@@ -433,7 +439,7 @@ fn suspend_vm_by_id(vm_id: usize) {
 
             while iterations < max_wait_iterations {
                 // Check if all VCpus are in blocked state
-                if let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) {
+                if let Some(vm) = crate::manager::manager().get(vm_id) {
                     let vcpu_states: Vec<_> =
                         vm.vcpu_snapshots().iter().map(|vcpu| vcpu.state).collect();
 
@@ -498,13 +504,14 @@ fn vm_resume(cmd: &ParsedCommand) {
 fn resume_vm_by_id(vm_id: usize) {
     println!("Resuming VM[{}]...", vm_id);
 
-    let result: Option<anyhow::Result<()>> = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    let result: Option<anyhow::Result<()>> = crate::manager::manager().get(vm_id).map(|vm| {
         let status = vm.status();
 
         // Check if VM can be resumed
         can_resume_vm(status).map_err(anyhow::Error::msg)?;
 
-        crate::manager::AxvmManager::resume_vm(vm_id)
+        crate::manager::manager()
+            .resume_vm(vm_id)
             .with_context(|| format!("resume suspended VM[{vm_id}]"))?;
 
         info!("VM[{}] resumed", vm_id);
@@ -540,7 +547,7 @@ fn vm_delete(cmd: &ParsedCommand) {
 
     if let Ok(vm_id) = vm_name.parse::<usize>() {
         // Check if VM exists and get its status first
-        let Some(status) = crate::manager::AxvmManager::with_vm(vm_id, |vm| vm.status()) else {
+        let Some(status) = crate::manager::manager().get(vm_id).map(|vm| vm.status()) else {
             println!("✗ VM[{}] not found", vm_id);
             return;
         };
@@ -586,7 +593,7 @@ fn vm_delete(cmd: &ParsedCommand) {
 
 fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
     // First check VM status and try to stop it if running
-    let vm_status = crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    let vm_status = crate::manager::manager().get(vm_id).map(|vm| {
         let status = vm.status();
 
         // If VM is running, suspended, or stopping, send shutdown signal
@@ -596,7 +603,7 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
                     "  VM[{}] is {:?}, sending shutdown signal...",
                     vm_id, status
                 );
-                let _ = crate::manager::AxvmManager::stop_vm(vm_id);
+                let _ = crate::manager::manager().stop_vm(vm_id);
             }
             VmStatus::Ready => {
                 let _ = vm.stop(StopReason::Forced);
@@ -673,7 +680,7 @@ fn vm_console(cmd: &ParsedCommand) {
 
 #[cfg(feature = "fs")]
 fn vm_list_simple() {
-    let vms = crate::manager::AxvmManager::vm_list();
+    let vms = crate::manager::manager().list();
     println!("ID    NAME           STATE      VCPU   MEMORY");
     println!("----  -----------    -------    ----   ------");
     for vm in vms {
@@ -697,7 +704,7 @@ fn vm_list(cmd: &ParsedCommand) {
     let binding = "table".to_string();
     let format = cmd.options.get("format").unwrap_or(&binding);
 
-    let display_vms = crate::manager::AxvmManager::vm_list();
+    let display_vms = crate::manager::manager().list();
 
     if display_vms.is_empty() {
         println!("No virtual machines found.");
@@ -819,7 +826,7 @@ fn vm_show(cmd: &ParsedCommand) {
 
 /// Show basic VM information (default view)
 fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
-    match crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    match crate::manager::manager().get(vm_id).map(|vm| {
         let status = vm.status();
 
         println!("VM Details: {}", vm_id);
@@ -922,7 +929,7 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
 
 /// Show full detailed information about a specific VM (--full flag)
 fn show_vm_full_details(vm_id: usize) {
-    match crate::manager::AxvmManager::with_vm(vm_id, |vm| {
+    match crate::manager::manager().get(vm_id).map(|vm| {
         let status = vm.status();
 
         println!("=== VM Details: {} ===", vm_id);

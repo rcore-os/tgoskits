@@ -24,7 +24,7 @@ mod error;
 mod memory_accessor;
 mod paging;
 
-pub use address_space::{AddrSpace, Backend};
+pub use address_space::{AddrSpace, Backend, LinearMapping};
 pub use axvm_types::MappingFlags;
 pub use error::{AddrSpaceError, AddrSpaceResult};
 pub use memory_accessor::GuestMemoryAccessor;

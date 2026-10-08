@@ -16,6 +16,18 @@ pub type AxVmResult<T = ()> = Result<T, AxVmError>;
 /// Errors reported by AxVM to a hypervisor application.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AxVmError {
+    /// The operation belongs to an execution period that has retired.
+    #[error("stale VM run {expected:?}; current run is {current:?}")]
+    StaleRun {
+        expected: crate::RunId,
+        current: Option<crate::RunId>,
+    },
+    /// The control endpoint no longer admits commands for this instance.
+    #[error("VM {vm:?} command entry is closed")]
+    EntryClosed { vm: crate::VmKey },
+    /// The command owner exited before publishing a final result.
+    #[error("VM operation {operation:?} was cancelled")]
+    OperationCancelled { operation: crate::OperationId },
     /// The VM configuration is internally inconsistent or malformed.
     #[error("invalid VM configuration: {detail}")]
     InvalidConfig { detail: String },

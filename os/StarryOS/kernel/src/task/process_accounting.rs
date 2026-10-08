@@ -15,14 +15,14 @@ use super::{
     PosixTimerTable, ProcessCpuTimeAccounting, ProcessCpuTimeSnapshot, ProcessData,
     ProcessTimerManager, SetITimerOutcome, get_task_by_number,
 };
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{Mutex, RawSpinLock};
 
 const CPU_INTERVAL_TIMER_MASK: u8 =
     (1 << ITimerType::Virtual as usize) | (1 << ITimerType::Prof as usize);
 
 /// Accounting state and timer tables shared by a thread group.
 pub(super) struct ProcessAccountingState {
-    children_cpu_time: IrqMutex<(TimeValue, TimeValue)>,
+    children_cpu_time: RawSpinLock<(TimeValue, TimeValue)>,
     process_cpu_time: ProcessCpuTimeAccounting,
     interval_timers: Mutex<ProcessTimerManager>,
     active_interval_timers: AtomicU8,
@@ -31,14 +31,14 @@ pub(super) struct ProcessAccountingState {
     scheduler_tick_gate: Arc<SchedulerTickGate>,
     realtime_tick_gate: Arc<SchedulerTickGate>,
     /// Serializes source observation with scheduler gate publication.
-    scheduler_tick_publish: IrqMutex<()>,
+    scheduler_tick_publish: RawSpinLock<()>,
     posix_timers: Arc<PosixTimerTable>,
 }
 
 impl ProcessAccountingState {
     pub(super) fn new() -> Self {
         Self {
-            children_cpu_time: IrqMutex::new((TimeValue::ZERO, TimeValue::ZERO)),
+            children_cpu_time: RawSpinLock::new((TimeValue::ZERO, TimeValue::ZERO)),
             process_cpu_time: ProcessCpuTimeAccounting::new(),
             interval_timers: Mutex::new(ProcessTimerManager::new()),
             active_interval_timers: AtomicU8::new(0),
@@ -46,7 +46,7 @@ impl ProcessAccountingState {
             perf_scheduler_tick_users: AtomicUsize::new(0),
             scheduler_tick_gate: Arc::new(SchedulerTickGate::new()),
             realtime_tick_gate: Arc::new(SchedulerTickGate::new()),
-            scheduler_tick_publish: IrqMutex::new(()),
+            scheduler_tick_publish: RawSpinLock::new(()),
             posix_timers: Arc::new(PosixTimerTable::default()),
         }
     }
@@ -63,7 +63,9 @@ impl ProcessData {
                     & CPU_INTERVAL_TIMER_MASK
                     != 0;
                 let has_rttime_watchdog = self.rlimit_current(RLIMIT_RTTIME) != u64::MAX;
-                self.accounting.realtime_tick_gate.set_enabled(has_rttime_watchdog);
+                self.accounting
+                    .realtime_tick_gate
+                    .set_enabled(has_rttime_watchdog);
                 let enabled = has_cpu_interval_timer || has_rttime_watchdog;
                 #[cfg(target_arch = "aarch64")]
                 let enabled = enabled
@@ -117,12 +119,12 @@ impl ProcessData {
 
     /// Returns accumulated CPU time of waited children.
     pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
-        *self.accounting.children_cpu_time.lock()
+        *self.accounting.children_cpu_time.lock_irqsave()
     }
 
     /// Adds a reaped child's CPU time to this process.
     pub fn add_child_cpu_time(&self, utime: TimeValue, stime: TimeValue) {
-        let mut time = self.accounting.children_cpu_time.lock();
+        let mut time = self.accounting.children_cpu_time.lock_irqsave();
         time.0 += utime;
         time.1 += stime;
     }
@@ -246,7 +248,7 @@ impl ProcessAccountingState {
         // observation/store pair so an older refresh cannot disable a gate
         // that a later interest acquisition has already enabled. This region
         // reads atomics only and never takes timer or scheduler task locks.
-        let _publish = self.scheduler_tick_publish.lock();
+        let _publish = self.scheduler_tick_publish.lock_irqsave();
         let enabled = sources_enabled();
         before_publish();
         self.scheduler_tick_gate.set_enabled(enabled);
@@ -286,7 +288,8 @@ mod tests {
             || {
                 // A competing refresher must not publish a newer enabled state
                 // between this caller's source snapshot and its disabled store.
-                if let Some(_other_publisher) = accounting.scheduler_tick_publish.try_lock() {
+                if let Some(_other_publisher) = accounting.scheduler_tick_publish.try_lock_irqsave()
+                {
                     accounting.scheduler_tick_gate.set_enabled(true);
                     intervened.set(true);
                 }

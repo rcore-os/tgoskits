@@ -7,7 +7,7 @@ use axvmconfig::GuestConfig;
 
 use crate::AxVmResult;
 
-pub type RuntimeFdtPatch = fn(&[u8], &crate::AxVMRef, &GuestConfig) -> AxVmResult<Vec<u8>>;
+pub type RuntimeFdtPatch = fn(&[u8], &crate::AxVM, &GuestConfig) -> AxVmResult<Vec<u8>>;
 pub type ProvidedFdtPatch = fn(&[u8], Option<&[u8]>, &GuestConfig) -> AxVmResult<Vec<u8>>;
 
 /// Interrupt source and trigger semantics decoded from one firmware specifier.

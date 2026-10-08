@@ -12,7 +12,7 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_sync::{SpinLock, SpinLockIrqSaveGuard};
+use ax_sync::{RawSpinLock, RawSpinLockIrqSaveGuard};
 use axdevice_base::ItsId;
 pub use binding::GicV3VcpuBinding;
 
@@ -60,18 +60,18 @@ struct ControllerInner {
     state: ControllerStateLock,
 }
 
-struct ControllerStateLock(SpinLock<ControllerState>);
+struct ControllerStateLock(RawSpinLock<ControllerState>);
 
 impl ControllerStateLock {
     const fn new(state: ControllerState) -> Self {
-        Self(SpinLock::new(state))
+        Self(RawSpinLock::new(state))
     }
 
-    fn lock(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+    fn lock(&self) -> RawSpinLockIrqSaveGuard<'_, ControllerState> {
         self.0.lock_irqsave()
     }
 
-    fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
+    fn lock_irqsave(&self) -> RawSpinLockIrqSaveGuard<'_, ControllerState> {
         self.lock()
     }
 }

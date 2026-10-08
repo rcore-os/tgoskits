@@ -10,7 +10,7 @@ use core::{
 use crate::{
     X86TimerAction, X86TimerCallback, X86VlapicError, X86VlapicResult,
     host::{self, X86VlapicHostOps},
-    lock::SpinMutex,
+    lock::RawSpinLockStorage,
 };
 
 /// Linux KVM's default lower bound for periodic PIT and LAPIC host timers.
@@ -64,14 +64,14 @@ struct TimerArmState<T> {
 
 struct TimerArm<T> {
     identity: usize,
-    state: SpinMutex<TimerArmState<T>>,
+    state: RawSpinLockStorage<TimerArmState<T>>,
 }
 
 impl<T: Copy> TimerArm<T> {
     fn new(identity: usize) -> Self {
         Self {
             identity,
-            state: SpinMutex::new(TimerArmState {
+            state: RawSpinLockStorage::new(TimerArmState {
                 phase: TimerArmPhase::Armed,
                 cancel_requested: false,
                 registration_complete: false,
@@ -190,7 +190,7 @@ enum TimerRegistrationCompletion {
 /// authority; there is no parallel generation or polling owner.
 pub(crate) struct TimerRegistration<H: X86VlapicHostOps> {
     next_arm_identity: AtomicUsize,
-    current: SpinMutex<Option<Arc<TimerArm<H::TimerHandle>>>>,
+    current: RawSpinLockStorage<Option<Arc<TimerArm<H::TimerHandle>>>>,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -198,7 +198,7 @@ impl<H: X86VlapicHostOps> TimerRegistration<H> {
     pub(crate) const fn new() -> Self {
         Self {
             next_arm_identity: AtomicUsize::new(0),
-            current: SpinMutex::new(None),
+            current: RawSpinLockStorage::new(None),
             _host: PhantomData,
         }
     }

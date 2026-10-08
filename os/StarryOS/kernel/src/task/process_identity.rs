@@ -171,7 +171,7 @@ mod reap_test_support {
 
     use super::*;
     #[cfg(axtest)]
-    use crate::sync::IrqMutex;
+    use crate::sync::RawSpinLock;
     use crate::task::{PidReservation, PidReservationKind, Tid};
 
     static REAP_CLAIM_BARRIER_PID: AtomicU32 = AtomicU32::new(0);
@@ -219,12 +219,12 @@ mod reap_test_support {
         REAP_CLAIM_RELEASED.store(false, Ordering::Release);
         REAP_CLAIM_BARRIER_PID.store(test_tgid.get(), Ordering::Release);
 
-        let reaped_cpu_time = Arc::new(IrqMutex::new(None));
+        let reaped_cpu_time = Arc::new(RawSpinLock::new(None));
         let reap_task = {
             let process = process.clone();
             let reaped_cpu_time = reaped_cpu_time.clone();
             ax_std::thread::spawn(move || {
-                *reaped_cpu_time.lock() = reap_process(&process);
+                *reaped_cpu_time.lock_irqsave() = reap_process(&process);
             })
         };
 
@@ -246,7 +246,7 @@ mod reap_test_support {
             .is_some_and(|registered| registered.id() == identity.id());
         let view_hidden = matches!(process_lookup, Err(StarryError::NoSuchProcess));
         let identity_hidden = matches!(identity_process_lookup, Err(StarryError::NoSuchProcess));
-        let reaped_once = *reaped_cpu_time.lock() == Some(ProcessCpuTime::default());
+        let reaped_once = *reaped_cpu_time.lock_irqsave() == Some(ProcessCpuTime::default());
         group_and_session_number_retained && view_hidden && identity_hidden && reaped_once
     }
 

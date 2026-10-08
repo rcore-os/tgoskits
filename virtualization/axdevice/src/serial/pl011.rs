@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
 use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
@@ -123,7 +123,7 @@ impl Pl011State {
 
 /// PL011 UART core with an external byte backend and virtual IRQ.
 pub struct Pl011 {
-    state: SpinLock<Pl011State>,
+    state: RawSpinLock<Pl011State>,
     endpoint: SerialEndpoint,
 }
 
@@ -131,12 +131,12 @@ impl Pl011 {
     /// Creates a powered-on PL011 UART.
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
-            state: SpinLock::new(Pl011State::new()),
+            state: RawSpinLock::new(Pl011State::new()),
             endpoint: SerialEndpoint::new(backend, irq, "signal PL011 IRQ"),
         }
     }
 
-    fn state(&self) -> RawSpinLockGuard<'_, Pl011State> {
+    fn state(&self) -> RawSpinLockUnpinnedGuard<'_, Pl011State> {
         // SAFETY: the virtual UART frontend serializes a vCPU's MMIO/poll
         // entry and the raw lock excludes other vCPUs.
         unsafe { self.state.lock_raw() }

@@ -5,13 +5,13 @@ pub(crate) mod device_plan;
 pub(crate) mod devices;
 pub(crate) mod vcpus;
 
-use std::{format, sync::Arc};
+use std::sync::Arc;
 
 use axdevice_base::VirtualInterruptController;
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
-use crate::{config::AxVMConfig, sync::MutexExt, *};
+use crate::{config::AxVMConfig, *};
 
 pub(crate) struct PreparedVm {
     vcpus: PreparedVcpus,
@@ -34,69 +34,29 @@ impl PreparedVm {
 }
 
 impl AxVM {
-    /// Sets up the VM before booting.
-    pub fn prepare(self: &Arc<Self>) -> AxVmResult {
+    pub(crate) fn prepare(&mut self) -> AxVmResult {
         crate::arch::current::CurrentArch::init_vm(self)
     }
 
     pub(crate) fn prepare_resources_with(
-        &self,
+        &mut self,
         initialize: impl FnOnce(&mut AxVMResources, &AxVMConfig) -> AxVmResult<PreparedVm>,
     ) -> AxVmResult {
-        // Configuration is task-context state. Always acquire it before the
-        // IRQ-safe machine lock so this path never waits for config while
-        // holding `machine`.
-        let config = self.config.lock_unpoisoned();
-        // Device sets detached while resetting are retired only after the
-        // IRQ-safe machine guard below is released: dropping the last
-        // `Arc<DeviceRuntime>` joins device worker threads. Declared before the
-        // guard so it outlives every return path.
-        let mut retired_devices = Vec::new();
-        let mut machine = self.machine.lock();
-        if !matches!(
-            machine.status(),
-            crate::lifecycle::VmStatus::Ready | crate::lifecycle::VmStatus::Stopped
-        ) {
-            return ax_err!(
-                BadState,
-                format!(
-                    "VM[{}] cannot prepare from {:?}",
-                    self.id(),
-                    machine.status()
-                )
-            );
-        }
-        let resources = machine
-            .resources_mut()
-            .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available for prepare"))?;
-        if let Some(devices) = resources.reset_transient_resources()? {
-            retired_devices.push(devices);
-        }
-        let prepared = match initialize(resources, &config) {
-            Ok(prepared) => prepared,
-            Err(err) => {
-                match resources.reset_transient_resources() {
-                    Ok(Some(devices)) => retired_devices.push(devices),
-                    Ok(None) => {}
-                    Err(reset_err) => {
-                        warn!(
-                            "VM[{}] failed to reset transient resources after initialization \
-                             error: {reset_err:?}",
-                            self.id()
-                        );
-                    }
-                }
-                return Err(err);
-            }
-        };
-        resources.phys_cpu_ls = config.phys_cpu_ls.clone();
-        resources.vcpu_list = Some(prepared.vcpus.into_boxed_slice());
-        resources.devices = Some(Arc::new(prepared.devices.into_inner()));
-        resources.interrupt_controller = Some(prepared.interrupt_controller);
-
-        info!("VM setup: id={}", self.id());
-        drop(machine);
-        drop(retired_devices);
+        let retired = self.resources.reset_transient_resources()?;
+        drop(retired);
+        let prepared = initialize(&mut self.resources, &self.config)?;
+        self.resources.phys_cpu_ls = self.config.phys_cpu_ls.clone();
+        self.resources.vcpu_list = Some(
+            prepared
+                .vcpus
+                .into_boxed_slice()
+                .into_vec()
+                .into_iter()
+                .map(Some)
+                .collect(),
+        );
+        self.resources.devices = Some(Arc::new(prepared.devices.into_inner()));
+        self.resources.interrupt_controller = Some(prepared.interrupt_controller);
         Ok(())
     }
 }

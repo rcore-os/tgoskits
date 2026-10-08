@@ -1,4 +1,4 @@
-use crate::{lock::SpinMutex as Mutex, *};
+use crate::{lock::RawSpinLockStorage, *};
 
 const MASTER_COMMAND: u16 = 0x20;
 const MASTER_DATA: u16 = 0x21;
@@ -215,14 +215,14 @@ impl PicInterruptClaim {
 
 /// Guest-owned pair of legacy 8259-compatible interrupt controllers.
 pub struct EmulatedPic {
-    state: Mutex<PicState>,
+    state: RawSpinLockStorage<PicState>,
 }
 
 impl EmulatedPic {
     /// Creates the reset-compatible master and slave PIC state.
     pub const fn new() -> Self {
         Self {
-            state: Mutex::new(PicState::new()),
+            state: RawSpinLockStorage::new(PicState::new()),
         }
     }
 

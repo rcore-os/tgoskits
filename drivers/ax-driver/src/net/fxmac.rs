@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use dma_api::DeviceDma;
 use fxmac_rs::{
     FXMAC_MMIO_REQUIRED_SIZE, FXmac, FXmacIrqStatus, FXmacLwipPortTx, FXmacRecvHandler,
@@ -126,9 +126,9 @@ fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe:
 }
 
 struct FxmacNet {
-    hw: Arc<Mutex<FxmacHw>>,
-    tx_state: Arc<Mutex<FxmacTxState>>,
-    rx_state: Arc<Mutex<FxmacRxState>>,
+    hw: Arc<RawSpinLock<FxmacHw>>,
+    tx_state: Arc<RawSpinLock<FxmacTxState>>,
+    rx_state: Arc<RawSpinLock<FxmacRxState>>,
     irq_state: Arc<FxmacIrqState>,
     irq_endpoint: FxmacIrqEndpoint,
     hwaddr: [u8; 6],
@@ -143,11 +143,11 @@ impl FxmacNet {
         let (device, irq_endpoint) = xmac_init(dma, mmio, hardware)?;
         let hwaddr = device.mac_address();
         Ok(Self {
-            hw: Arc::new(Mutex::new(FxmacHw { device })),
-            tx_state: Arc::new(Mutex::new(FxmacTxState {
+            hw: Arc::new(RawSpinLock::new(FxmacHw { device })),
+            tx_state: Arc::new(RawSpinLock::new(FxmacTxState {
                 tx_done: VecDeque::with_capacity(QUEUE_SIZE),
             })),
-            rx_state: Arc::new(Mutex::new(FxmacRxState {
+            rx_state: Arc::new(RawSpinLock::new(FxmacRxState {
                 rx_buffers: VecDeque::with_capacity(QUEUE_SIZE),
                 rx_packets: VecDeque::with_capacity(QUEUE_SIZE),
             })),
@@ -296,7 +296,7 @@ impl NetHardIrqHandler for FxmacIrqHandler {
 }
 
 struct FxmacIrqControl {
-    hw: Arc<Mutex<FxmacHw>>,
+    hw: Arc<RawSpinLock<FxmacHw>>,
     irq_state: Arc<FxmacIrqState>,
 }
 
@@ -333,8 +333,8 @@ impl NetPollIrqControl for FxmacIrqControl {
 }
 
 struct FxmacTxQueue {
-    hw: Arc<Mutex<FxmacHw>>,
-    tx_state: Arc<Mutex<FxmacTxState>>,
+    hw: Arc<RawSpinLock<FxmacHw>>,
+    tx_state: Arc<RawSpinLock<FxmacTxState>>,
     irq_state: Arc<FxmacIrqState>,
 }
 
@@ -376,8 +376,8 @@ impl ITxQueue for FxmacTxQueue {
 }
 
 struct FxmacRxQueue {
-    hw: Arc<Mutex<FxmacHw>>,
-    rx_state: Arc<Mutex<FxmacRxState>>,
+    hw: Arc<RawSpinLock<FxmacHw>>,
+    rx_state: Arc<RawSpinLock<FxmacRxState>>,
     irq_state: Arc<FxmacIrqState>,
 }
 

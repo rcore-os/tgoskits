@@ -13,8 +13,8 @@ use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
-    ProcessData, ROOT_PID_NS, SeccompDecision, SeccompState, SeccompStateStore,
-    SockFilter, Tid, TidNumber, UserTaskRef,
+    ProcessData, ROOT_PID_NS, SeccompDecision, SeccompState, SeccompStateStore, SockFilter, Tid,
+    TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     future,
@@ -24,7 +24,7 @@ use super::{
     user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
     wait_on_pollset,
 };
-use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave};
+use crate::sync::{Mutex, PreemptIrqSaveGuard, RawSpinLock};
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
 const SYSCALL_WORK_SECCOMP: u32 = 1 << 0;
@@ -75,7 +75,7 @@ impl ThreadScope {
 
     fn with_current_mut<R>(&self, operation: impl FnOnce(&mut Scope) -> R) -> R {
         let _access = self.access.lock();
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         // SAFETY: `access` excludes remote scope readers and the IRQ/preempt
         // guard excludes every local active-scope access. The scheduler's
         // current publication proves that this thread owns the selected scope.
@@ -154,7 +154,7 @@ struct ThreadLifecycle {
     user_memory_access: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
-    vfork_done: IrqMutex<Option<VforkDone>>,
+    vfork_done: RawSpinLock<Option<VforkDone>>,
     exit_request: OneShotFlag,
     deadline_overrun: OneShotFlag,
     rseq_area: AtomicUsize,
@@ -184,7 +184,7 @@ impl ThreadLifecycle {
             user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: super::allocation::try_arc(PollSet::new())?,
-            vfork_done: IrqMutex::new(None),
+            vfork_done: RawSpinLock::new(None),
             exit_request: OneShotFlag::new(),
             deadline_overrun: OneShotFlag::new(),
             rseq_area: AtomicUsize::new(0),
@@ -197,7 +197,7 @@ impl ThreadLifecycle {
 struct ThreadSignals {
     manager: Arc<ThreadSignalManager>,
     signalfd_waker: PollSet,
-    deferred_mask_restore: IrqMutex<Option<SignalSet>>,
+    deferred_mask_restore: RawSpinLock<Option<SignalSet>>,
     deferred_mask_restore_pending: AtomicBool,
 }
 
@@ -210,7 +210,7 @@ impl ThreadSignals {
         Ok(Self {
             manager: ThreadSignalManager::new_with_blocked(tid, process_signal, signal_mask)?,
             signalfd_waker: PollSet::new(),
-            deferred_mask_restore: IrqMutex::new(None),
+            deferred_mask_restore: RawSpinLock::new(None),
             deferred_mask_restore_pending: AtomicBool::new(false),
         })
     }
@@ -250,7 +250,7 @@ impl ThreadSecurity {
 struct ThreadTrace {
     fault_dump_signo: AtomicU8,
     kretprobe_stack:
-        IrqMutex<BoundedStack<kprobe::retprobe::RetprobeInstance, KRETPROBE_STACK_CAPACITY>>,
+        RawSpinLock<BoundedStack<kprobe::retprobe::RetprobeInstance, KRETPROBE_STACK_CAPACITY>>,
     #[cfg(target_arch = "aarch64")]
     perf: crate::perf::task_context::ThreadPerfContext,
 }
@@ -259,7 +259,7 @@ impl ThreadTrace {
     fn new() -> Self {
         Self {
             fault_dump_signo: AtomicU8::new(0),
-            kretprobe_stack: IrqMutex::new(BoundedStack::new()),
+            kretprobe_stack: RawSpinLock::new(BoundedStack::new()),
             #[cfg(target_arch = "aarch64")]
             perf: crate::perf::task_context::ThreadPerfContext::new(),
         }
@@ -325,7 +325,7 @@ impl NextSignalCheckBlock {
 /// The Starry state attached to one generation-bearing scheduler thread.
 pub struct Thread {
     identity: ThreadIdentity,
-    pid: IrqMutex<ThreadPidOwnership>,
+    pid: RawSpinLock<ThreadPidOwnership>,
 
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
@@ -348,7 +348,7 @@ impl Thread {
     /// Prepares this unpublished child's MM-release completion.
     pub(crate) fn prepare_vfork_done(&self) -> crate::StarryResult<()> {
         let poll = super::allocation::try_arc(PollSet::new())?;
-        let mut completion = self.lifecycle.vfork_done.lock();
+        let mut completion = self.lifecycle.vfork_done.lock_irqsave();
         assert!(completion.is_none(), "vfork completion installed twice");
         *completion = Some(VforkDone { done: false, poll });
         Ok(())
@@ -358,7 +358,7 @@ impl Thread {
     /// Returns whether the child completed the wait (and permits VFORK_DONE).
     pub(crate) fn wait_vfork_done(&self, parent: &UserTaskRef) -> bool {
         let poll = {
-            let guard = self.lifecycle.vfork_done.lock();
+            let guard = self.lifecycle.vfork_done.lock_irqsave();
             match guard.as_ref() {
                 Some(vfork) => vfork.poll.clone(),
                 None => return true,
@@ -371,7 +371,7 @@ impl Thread {
                 wait_on_pollset(&poll, || {
                     self.lifecycle
                         .vfork_done
-                        .lock()
+                        .lock_irqsave()
                         .as_ref()
                         .map(|vfork| vfork.done)
                         .unwrap_or(true)
@@ -387,7 +387,7 @@ impl Thread {
                     // Linux clears child->vfork_done under task_lock before
                     // letting a killed parent leave its completion wait. Drop
                     // the detached poll owner after releasing our IRQ lock.
-                    let detached = self.lifecycle.vfork_done.lock().take();
+                    let detached = self.lifecycle.vfork_done.lock_irqsave().take();
                     drop(detached);
                     return false;
                 }
@@ -402,7 +402,7 @@ impl Thread {
     /// Publishes vfork completion before waking the parent.
     pub(crate) fn notify_vfork_done(&self) {
         let poll = {
-            let mut guard = self.lifecycle.vfork_done.lock();
+            let mut guard = self.lifecycle.vfork_done.lock_irqsave();
             match guard.as_mut() {
                 Some(vfork) => {
                     vfork.done = true;
@@ -431,7 +431,7 @@ impl Thread {
         let accounting = ThreadAccounting::new(proc_data.realtime_tick_gate())?;
         let thread = Self {
             identity: ThreadIdentity::new(),
-            pid: IrqMutex::new(ThreadPidOwnership {
+            pid: RawSpinLock::new(ThreadPidOwnership {
                 identity: identity.clone(),
                 tid_lease: Some(tid_lease),
             }),
@@ -484,7 +484,7 @@ impl Thread {
     pub(crate) fn tid_number(&self) -> TidNumber {
         TidNumber::from(
             self.pid
-                .lock()
+                .lock_irqsave()
                 .identity
                 .visible_number(&ROOT_PID_NS)
                 .expect("live thread lost its root PID binding"),
@@ -493,17 +493,17 @@ impl Thread {
 
     /// Returns this thread's stable PID generation.
     pub(crate) fn pid_identity(&self) -> Arc<PidIdentity> {
-        self.pid.lock().identity.clone()
+        self.pid.lock_irqsave().identity.clone()
     }
 
     /// Returns the active PID namespace derived from the identity itself.
     pub(crate) fn active_pid_namespace(&self) -> PidNamespaceRef {
-        self.pid.lock().identity.active_namespace()
+        self.pid.lock_irqsave().identity.active_namespace()
     }
 
     /// Returns the TID as observed from this thread's active namespace.
     pub(crate) fn user_tid(&self) -> TidNumber {
-        let pid = self.pid.lock();
+        let pid = self.pid.lock_irqsave();
         let active = pid.identity.active_namespace();
         TidNumber::from(
             pid.identity
@@ -514,7 +514,7 @@ impl Thread {
 
     /// Publishes the runtime link immediately before scheduler activation.
     pub(crate) fn attach_pid_task(&self, task: &UserTaskRef) {
-        self.pid.lock().identity.attach_task(task);
+        self.pid.lock_irqsave().identity.attach_task(task);
     }
 
     /// Releases the runtime link while transferring the TID role and the
@@ -525,7 +525,7 @@ impl Thread {
     /// publication, parent notification, and relation close finished.
     pub(crate) fn retire_pid_retaining_tid(&self) -> (PidRoleLease<Tid>, ExitPathLease) {
         let (identity, lease) = {
-            let mut pid = self.pid.lock();
+            let mut pid = self.pid.lock_irqsave();
             (pid.identity.clone(), pid.tid_lease.take())
         };
         let exit_path = identity.mark_task_exited();
@@ -560,8 +560,8 @@ impl Thread {
         tid_lease: PidRoleLease<Tid>,
     ) {
         let previous = {
-            let mut pid = self.pid.lock();
-            let _irq_guard = NoPreemptIrqSave::new();
+            let mut pid = self.pid.lock_irqsave();
+            let _irq_guard = PreemptIrqSaveGuard::new();
             task.transfer_irq_pid_identity(&identity)
                 .expect("exec leader identity differs from the cached process identity");
             core::mem::replace(
@@ -640,10 +640,7 @@ impl Thread {
         crate::perf::sw::sched_in(self);
     }
 
-    pub(super) fn scheduler_switch_out(
-        &self,
-        cpu_pin: &CpuPin<'_>,
-    ) {
+    pub(super) fn scheduler_switch_out(&self, cpu_pin: &CpuPin<'_>) {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_out(self);
         crate::perf::sw::sched_out(self);
@@ -811,7 +808,11 @@ impl Thread {
 
     /// Defers restoration of a temporary syscall signal mask until delivery.
     pub(crate) fn defer_signal_mask_restore(&self, mask: SignalSet) {
-        let previous = self.signals.deferred_mask_restore.lock().replace(mask);
+        let previous = self
+            .signals
+            .deferred_mask_restore
+            .lock_irqsave()
+            .replace(mask);
         assert!(
             previous.is_none(),
             "one thread cannot own nested deferred signal-mask restores"
@@ -830,7 +831,7 @@ impl Thread {
         {
             return None;
         }
-        let restore = self.signals.deferred_mask_restore.lock().take();
+        let restore = self.signals.deferred_mask_restore.lock_irqsave().take();
         self.signals
             .deferred_mask_restore_pending
             .store(false, Ordering::Release);
@@ -1051,7 +1052,7 @@ impl Thread {
     }
 
     pub(super) fn push_kretprobe(&self, instance: kprobe::retprobe::RetprobeInstance) {
-        let Some(mut stack) = self.trace.kretprobe_stack.try_lock() else {
+        let Some(mut stack) = self.trace.kretprobe_stack.try_lock_irqsave() else {
             panic!("nested kretprobe tried to re-enter the current task stack");
         };
         if let Err(instance) = stack.try_push(instance) {
@@ -1061,7 +1062,7 @@ impl Thread {
     }
 
     pub(super) fn pop_kretprobe(&self) -> kprobe::retprobe::RetprobeInstance {
-        let Some(mut stack) = self.trace.kretprobe_stack.try_lock() else {
+        let Some(mut stack) = self.trace.kretprobe_stack.try_lock_irqsave() else {
             panic!("nested kretprobe tried to re-enter the current task stack");
         };
         stack.pop().expect("kretprobe instance stack underflow")
@@ -1199,7 +1200,7 @@ fn thread_state_creation_returns_allocation_failure() {
             assert_eq!(error.linux_errno(), syscalls::Errno::ENOMEM);
             assert_eq!(probe.attempts(), 1);
             drop(probe);
-            assert!(thread.lifecycle.vfork_done.lock().is_none());
+            assert!(thread.lifecycle.vfork_done.lock_irqsave().is_none());
             thread.prepare_vfork_done().unwrap();
             drop(thread);
         } else {

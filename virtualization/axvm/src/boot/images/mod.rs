@@ -1,12 +1,10 @@
 //! Architecture-neutral guest image loading and source access.
 
-use std::format;
-
 use axvmconfig::GuestConfig;
 use byte_unit::Byte;
 
 use super::{BootImageProvider, StaticVmImage};
-use crate::{AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err, ax_err_type};
+use crate::{AxVM, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err, ax_err_type};
 
 mod linux;
 
@@ -34,7 +32,7 @@ pub fn get_image_header(
 pub(crate) struct ImageLoaderCore<'a> {
     pub(crate) provider: &'a dyn BootImageProvider,
     pub(crate) main_memory: VMMemoryRegion,
-    pub(crate) vm: AxVMRef,
+    pub(crate) vm: &'a mut AxVM,
     pub(crate) config: GuestConfig,
     guest_dtb: Option<crate::boot::fdt::GuestDtbImage>,
     pub(crate) kernel_load_gpa: GuestPhysAddr,
@@ -46,7 +44,7 @@ impl<'a> ImageLoaderCore<'a> {
     pub(crate) fn new(
         main_memory: VMMemoryRegion,
         config: GuestConfig,
-        vm: AxVMRef,
+        vm: &'a mut AxVM,
         provider: &'a dyn BootImageProvider,
         guest_dtb: Option<crate::boot::fdt::GuestDtbImage>,
     ) -> Self {
@@ -90,40 +88,47 @@ impl<'a> ImageLoaderCore<'a> {
     pub(crate) fn load_standard_images_from_memory(
         &mut self,
         images: StaticVmImage,
-        load_guest_dtb: fn(&Self, &crate::boot::fdt::GuestDtbImage) -> AxVmResult,
+        load_guest_dtb: fn(&mut Self, &crate::boot::fdt::GuestDtbImage) -> AxVmResult,
     ) -> AxVmResult {
-        load_vm_image_from_memory(images.kernel, self.kernel_load_gpa, self.vm.clone())?;
+        load_vm_image_from_memory(images.kernel, self.kernel_load_gpa, &mut *self.vm)?;
         if let Some(ramdisk) = images.ramdisk {
             self.load_ramdisk_from_memory(ramdisk)?;
         }
-        if let Some(dtb) = self.guest_dtb.as_ref() {
+        // Take the guest DTB out of `self` so the architecture callback can
+        // mutate the owned VM while borrowing the DTB bytes independently.
+        let guest_dtb = self.guest_dtb.take();
+        if let Some(dtb) = guest_dtb.as_ref() {
             load_guest_dtb(self, dtb)?;
         }
+        self.guest_dtb = guest_dtb;
         self.load_boot_image_from_memory(images.bios)
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub(crate) fn load_standard_images_from_filesystem(
         &mut self,
-        load_guest_dtb: fn(&Self, &crate::boot::fdt::GuestDtbImage) -> AxVmResult,
+        load_guest_dtb: fn(&mut Self, &crate::boot::fdt::GuestDtbImage) -> AxVmResult,
     ) -> AxVmResult {
+        let kernel_load_gpa = self.kernel_load_gpa;
         fs::load_vm_image(
             &self.config.kernel.kernel_path,
-            self.kernel_load_gpa,
-            self.vm.clone(),
+            kernel_load_gpa,
+            &mut *self.vm,
             self.provider,
         )?;
         self.load_boot_image_from_filesystem()?;
-        if let Some(ramdisk_path) = &self.config.kernel.ramdisk_path {
-            self.load_ramdisk_from_filesystem(ramdisk_path)?;
+        if let Some(ramdisk_path) = self.config.kernel.ramdisk_path.clone() {
+            self.load_ramdisk_from_filesystem(&ramdisk_path)?;
         }
-        if let Some(dtb) = self.guest_dtb.as_ref() {
+        let guest_dtb = self.guest_dtb.take();
+        if let Some(dtb) = guest_dtb.as_ref() {
             load_guest_dtb(self, dtb)?;
         }
+        self.guest_dtb = guest_dtb;
         Ok(())
     }
 
-    pub(crate) fn load_ramdisk_from_memory(&self, ramdisk: &[u8]) -> AxVmResult {
+    pub(crate) fn load_ramdisk_from_memory(&mut self, ramdisk: &[u8]) -> AxVmResult {
         let load_gpa = self.ramdisk_load_gpa()?;
         self.record_ramdisk_size(ramdisk.len());
         info!(
@@ -131,7 +136,7 @@ impl<'a> ImageLoaderCore<'a> {
             ramdisk.len(),
             load_gpa.as_usize()
         );
-        load_vm_image_from_memory(ramdisk, load_gpa, self.vm.clone())
+        load_vm_image_from_memory(ramdisk, load_gpa, &mut *self.vm)
     }
 
     pub(crate) fn ramdisk_load_gpa(&self) -> AxVmResult<GuestPhysAddr> {
@@ -140,14 +145,24 @@ impl<'a> ImageLoaderCore<'a> {
     }
 
     fn capture_prepared_load_addresses(&mut self) {
-        self.vm.with_config(|config| {
-            self.kernel_load_gpa = config.image_config.kernel_load_gpa;
-            self.bios_load_gpa = config.image_config.bios_load_gpa;
-            self.ramdisk_load_gpa = config.image_config.ramdisk.as_ref().map(|r| r.load_gpa);
-        });
+        let (kernel_load_gpa, bios_load_gpa, ramdisk_load_gpa) = {
+            let config = self.vm.config();
+            (
+                config.image_config.kernel_load_gpa,
+                config.image_config.bios_load_gpa,
+                config
+                    .image_config
+                    .ramdisk
+                    .as_ref()
+                    .map(|ramdisk| ramdisk.load_gpa),
+            )
+        };
+        self.kernel_load_gpa = kernel_load_gpa;
+        self.bios_load_gpa = bios_load_gpa;
+        self.ramdisk_load_gpa = ramdisk_load_gpa;
     }
 
-    fn load_boot_image_from_memory(&self, bios: Option<&[u8]>) -> AxVmResult {
+    fn load_boot_image_from_memory(&mut self, bios: Option<&[u8]>) -> AxVmResult {
         if !self.config.kernel.enable_bios {
             return Ok(());
         }
@@ -157,11 +172,11 @@ impl<'a> ImageLoaderCore<'a> {
         let load_gpa = self
             .bios_load_gpa
             .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
-        load_vm_image_from_memory(bios, load_gpa, self.vm.clone())
+        load_vm_image_from_memory(bios, load_gpa, &mut *self.vm)
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    fn load_boot_image_from_filesystem(&self) -> AxVmResult {
+    fn load_boot_image_from_filesystem(&mut self) -> AxVmResult {
         if !self.config.kernel.enable_bios {
             return Ok(());
         }
@@ -171,11 +186,11 @@ impl<'a> ImageLoaderCore<'a> {
         let load_gpa = self
             .bios_load_gpa
             .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
-        fs::load_vm_image(path, load_gpa, self.vm.clone(), self.provider)
+        fs::load_vm_image(path, load_gpa, &mut *self.vm, self.provider)
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    pub(crate) fn load_ramdisk_from_filesystem(&self, ramdisk_path: &str) -> AxVmResult {
+    pub(crate) fn load_ramdisk_from_filesystem(&mut self, ramdisk_path: &str) -> AxVmResult {
         let load_gpa = self.ramdisk_load_gpa()?;
         let ramdisk_size = fs::image_size(ramdisk_path, self.provider)?;
         self.record_ramdisk_size(ramdisk_size);
@@ -185,15 +200,13 @@ impl<'a> ImageLoaderCore<'a> {
             ramdisk_size,
             load_gpa.as_usize()
         );
-        fs::load_vm_image(ramdisk_path, load_gpa, self.vm.clone(), self.provider)
+        fs::load_vm_image(ramdisk_path, load_gpa, &mut *self.vm, self.provider)
     }
 
-    fn record_ramdisk_size(&self, size: usize) {
-        self.vm.with_config(|config| {
-            if let Some(ramdisk) = config.image_config.ramdisk.as_mut() {
-                ramdisk.size = Some(size);
-            }
-        });
+    fn record_ramdisk_size(&mut self, size: usize) {
+        if let Some(ramdisk) = self.vm.config_mut().image_config.ramdisk.as_mut() {
+            ramdisk.size = Some(size);
+        }
     }
 }
 
@@ -232,41 +245,11 @@ pub(super) fn memory_images_for_vm(
 pub fn load_vm_image_from_memory(
     image_buffer: &[u8],
     load_addr: GuestPhysAddr,
-    vm: AxVMRef,
+    vm: &mut AxVM,
 ) -> AxVmResult {
-    let mut buffer_pos = 0;
-    let image_size = image_buffer.len();
-    let image_load_regions = vm.get_image_load_region(load_addr, image_size)?;
-
-    for region in image_load_regions {
-        let bytes_to_write = region.len().min(image_size - buffer_pos);
-        // SAFETY: The destination comes from `get_image_load_region`, the source
-        // contains `bytes_to_write` bytes, and guest memory cannot overlap the image.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                image_buffer[buffer_pos..].as_ptr(),
-                region.as_mut_ptr().cast(),
-                bytes_to_write,
-            );
-        }
-        crate::arch::current::make_guest_memory_visible(
-            (region.as_ptr() as usize).into(),
-            bytes_to_write,
-        );
-        buffer_pos += bytes_to_write;
-        if buffer_pos == image_size {
-            break;
-        }
-    }
-
-    if buffer_pos == image_size {
-        Ok(())
-    } else {
-        ax_err!(
-            InvalidData,
-            format!("VM image was only partially loaded: {buffer_pos}/{image_size} bytes")
-        )
-    }
+    // The owning VM copies the bytes into guest memory and makes them visible to
+    // the guest; no escaping guest-memory reference leaves this call.
+    vm.write_to_guest(load_addr, image_buffer)
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
@@ -275,7 +258,10 @@ pub mod fs {
 
     use axvmconfig::GuestConfig;
 
-    use crate::{AxVMRef, AxVmResult, GuestPhysAddr, ax_err_type, boot::BootImageProvider};
+    use crate::{AxVM, AxVmResult, GuestPhysAddr, ax_err_type, boot::BootImageProvider};
+
+    /// Bytes copied from a host file into guest memory per ranged read.
+    const FS_LOAD_CHUNK_SIZE: usize = 0x40_0000;
 
     pub fn kernel_read(
         config: &GuestConfig,
@@ -288,26 +274,25 @@ pub mod fs {
     pub(crate) fn load_vm_image(
         image_path: &str,
         image_load_gpa: GuestPhysAddr,
-        vm: AxVMRef,
+        vm: &mut AxVM,
         provider: &dyn BootImageProvider,
     ) -> AxVmResult {
-        let image = provider.read_file(image_path)?;
-        let image_load_regions = vm.get_image_load_region(image_load_gpa, image.len())?;
+        let image_size = provider.file_size(image_path)?;
         let mut offset = 0;
-        for buffer in image_load_regions {
-            let end = offset + buffer.len();
-            let data = image.get(offset..end).ok_or_else(|| {
-                ax_err_type!(
+        while offset < image_size {
+            let chunk_len = (image_size - offset).min(FS_LOAD_CHUNK_SIZE);
+            let data = provider.read_file_range(image_path, offset, chunk_len)?;
+            if data.len() != chunk_len {
+                return Err(ax_err_type!(
                     InvalidData,
-                    format!("Image {image_path} has an invalid load region layout")
-                )
-            })?;
-            buffer.copy_from_slice(data);
-            offset = end;
-            crate::arch::current::make_guest_memory_visible(
-                (buffer.as_ptr() as usize).into(),
-                buffer.len(),
-            );
+                    format!("Image {image_path} returned a short ranged read")
+                ));
+            }
+            vm.write_to_guest(
+                GuestPhysAddr::from(image_load_gpa.as_usize() + offset),
+                &data,
+            )?;
+            offset += chunk_len;
         }
         Ok(())
     }

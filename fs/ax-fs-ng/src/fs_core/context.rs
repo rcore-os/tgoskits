@@ -25,7 +25,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     file::File,
-    os::sync::{IrqMutex, SleepMutex as Mutex},
+    os::sync::{Mutex, RawSpinLock},
 };
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
@@ -43,13 +43,13 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
+static FS_REGISTRY: RawSpinLock<Vec<Weak<Mutex<FsContext>>>> = RawSpinLock::new(Vec::new());
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
 fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
-    let mut registry = FS_REGISTRY.lock();
+    let mut registry = FS_REGISTRY.lock_irqsave();
     // Prune dead weak references so the registry does not grow unboundedly
     // in long-running scenarios where pivot_root is never invoked.
     registry.retain(|weak| weak.upgrade().is_some());
@@ -61,7 +61,7 @@ fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
 #[cfg(feature = "vfs")]
 pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
     let refs: Vec<Arc<Mutex<FsContext>>> = {
-        let mut registry = FS_REGISTRY.lock();
+        let mut registry = FS_REGISTRY.lock_irqsave();
         registry.retain(|weak| weak.upgrade().is_some());
         registry.iter().filter_map(|weak| weak.upgrade()).collect()
     };
@@ -1466,7 +1466,7 @@ impl FsContext {
         // 1. Collect strong references while holding the registry lock, then
         //    release it so we never nest two PI mutex guards.
         let refs: Vec<Arc<Mutex<FsContext>>> = {
-            let mut registry = FS_REGISTRY.lock();
+            let mut registry = FS_REGISTRY.lock_irqsave();
             registry.retain(|weak| weak.upgrade().is_some());
             registry.iter().filter_map(|weak| weak.upgrade()).collect()
         };

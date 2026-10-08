@@ -7,7 +7,7 @@ use core::{
     ptr::NonNull,
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use dma_api::{
     DeviceDma, DmaAddr, DmaAllocHandle, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaDomainId,
     DmaError, DmaMapHandle, DmaOp,
@@ -48,7 +48,7 @@ struct Record {
 pub(crate) struct IommuDma {
     domain: Arc<dyn IommuDomain>,
     physical: &'static dyn DmaOp,
-    records: SpinLock<BTreeMap<u64, Record>>,
+    records: RawSpinLock<BTreeMap<u64, Record>>,
 }
 
 impl IommuDma {
@@ -61,7 +61,7 @@ impl IommuDma {
         Self {
             domain,
             physical,
-            records: SpinLock::new(BTreeMap::new()),
+            records: RawSpinLock::new(BTreeMap::new()),
         }
     }
 

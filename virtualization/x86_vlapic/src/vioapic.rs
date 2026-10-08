@@ -1,6 +1,6 @@
 use crate::{
     X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86VlapicError, X86VlapicResult,
-    lock::SpinMutex as Mutex,
+    lock::RawSpinLockStorage,
 };
 
 const IOAPIC_BASE: usize = 0xfec0_0000;
@@ -122,7 +122,7 @@ pub struct IoApicEoi {
 pub struct EmulatedIoApic {
     base: X86GuestPhysAddr,
     size: usize,
-    state: Mutex<IoApicState>,
+    state: RawSpinLockStorage<IoApicState>,
 }
 
 impl EmulatedIoApic {
@@ -131,7 +131,7 @@ impl EmulatedIoApic {
         Self {
             base,
             size: size.unwrap_or(IOAPIC_SIZE),
-            state: Mutex::new(IoApicState::new()),
+            state: RawSpinLockStorage::new(IoApicState::new()),
         }
     }
 

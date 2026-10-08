@@ -81,7 +81,7 @@ fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAdd
 #[cfg(all(test, not(any(target_arch = "aarch64", target_arch = "riscv64"))))]
 fn test_runtime_patch(
     fdt: &[u8],
-    _vm: &crate::AxVMRef,
+    _vm: &crate::AxVM,
     _config: &axvmconfig::GuestConfig,
 ) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())

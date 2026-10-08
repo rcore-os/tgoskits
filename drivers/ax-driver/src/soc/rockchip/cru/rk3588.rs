@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{Cru, SocType};
@@ -70,7 +70,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     )?;
     let grf_base = iomap(RK3588_CRU_GRF_BASE, RK3588_CRU_GRF_SIZE)?;
 
-    let cru = alloc::sync::Arc::new(Mutex::new(Cru::new(SocType::Rk3588, mmio_base, grf_base)));
+    let cru = alloc::sync::Arc::new(RawSpinLock::new(Cru::new(
+        SocType::Rk3588,
+        mmio_base,
+        grf_base,
+    )));
     plat_dev.register(rdif_reset::Reset::new(ResetDrv::new(
         "rk3588-cru-reset",
         cru.clone(),

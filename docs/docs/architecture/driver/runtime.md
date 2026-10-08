@@ -98,7 +98,7 @@ USB 主机运行时把拓扑、请求和硬件事件分开。`drivers/usb/usb-ho
 
 `xhci/ring.rs` 的 `SendRing::enqueue_transfer_td()` 先让首 TRB 不可见，填写其余描述符并清理完成槽，屏障后发布首 TRB 的 cycle。一个请求可以使用多条 TRB，future 不等于每条 TRB 创建一个任务。
 
-`queue.rs` 的 `Finished` 按总线地址预登记槽；`TWaiter::poll()` 先检查结果、注册 waker、再检查结果，覆盖登记期间到达的完成。原子槽的存在不意味着整个路径无锁，`EventHandlerState` 使用 `SpinLock`。
+`queue.rs` 的 `Finished` 按总线地址预登记槽；`TWaiter::poll()` 先检查结果、注册 waker、再检查结果，覆盖登记期间到达的完成。原子槽的存在不意味着整个路径无锁，`EventHandlerState` 使用 `RawSpinLock`。
 
 ### 4.2 完成与拓扑推进
 

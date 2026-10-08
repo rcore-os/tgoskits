@@ -22,7 +22,7 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_io::{IoBuf, Read, Write};
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use ringbuf::{
@@ -57,7 +57,7 @@ struct PendingCmsg {
     cmsg: Vec<CMsgData>,
 }
 
-type CmsgQueue = Arc<SpinLock<VecDeque<PendingCmsg>>>;
+type CmsgQueue = Arc<RawSpinLock<VecDeque<PendingCmsg>>>;
 
 fn new_uni_channel() -> (HeapProd<u8>, HeapCons<u8>) {
     let rb = HeapRb::new(BUF_SIZE);
@@ -195,9 +195,9 @@ struct ConnRequest {
 /// Stream transport for Unix domain sockets.
 pub struct StreamTransport {
     /// Connected channel, if this endpoint is connected or accepted.
-    channel: SpinLock<Option<Channel>>,
+    channel: RawSpinLock<Option<Channel>>,
     /// Listener receive queue installed by bind/listen.
-    conn_rx: SpinLock<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
+    conn_rx: RawSpinLock<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
     /// True after `listen` publishes the bound endpoint for connection attempts.
     listening: Arc<AtomicBool>,
     /// Poll set for local stream state.
@@ -225,8 +225,8 @@ impl StreamTransport {
         receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         StreamTransport {
-            channel: SpinLock::new(channel),
-            conn_rx: SpinLock::new(None),
+            channel: RawSpinLock::new(channel),
+            conn_rx: RawSpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: PollSet::new(),
             general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
