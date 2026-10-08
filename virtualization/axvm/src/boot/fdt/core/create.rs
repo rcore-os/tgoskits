@@ -68,9 +68,6 @@ pub(crate) fn create_guest_fdt(
     // the host FDT does not carry a CPU node for every guest virtual CPU id,
     // so clone the missing ones to keep the guest SMP bootstrap functional.
     guest_tree.ensure_guest_cpu_nodes(fdt, phys_cpu_ids)?;
-    // `/cpus/cpu-map` is copied from the host, so it can still point at host CPUs
-    // the guest did not keep.
-    guest_tree.prune_stale_cpu_map_entries()?;
     Ok(guest_tree.finish())
 }
 

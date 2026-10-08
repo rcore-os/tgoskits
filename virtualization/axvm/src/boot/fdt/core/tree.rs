@@ -313,11 +313,10 @@ impl FdtTree {
     /// the secondaries up via PSCI.
     ///
     /// A clone never inherits the template's `phandle`/`linux,phandle`: a
-    /// phandle identifies exactly one node, and the guest nodes that already
-    /// point at the template (for example `/cpus/cpu-map`) must keep resolving
-    /// to it. The replacement value is taken above every phandle of the host
-    /// tree as well, so a clone cannot take over the identity of a host CPU that
-    /// the guest dropped and still refers to.
+    /// phandle identifies exactly one node, and a cloned CPU is a distinct
+    /// guest identity. The replacement value is taken above every phandle of
+    /// the host tree as well, so a clone cannot take over the identity of a
+    /// source node that the guest dropped.
     pub(crate) fn ensure_guest_cpu_nodes(
         &mut self,
         host: &Fdt,
@@ -383,68 +382,6 @@ impl FdtTree {
             }
         }
         Ok(())
-    }
-
-    /// Removes the `/cpus/cpu-map` entries that reference a CPU the guest does
-    /// not have.
-    ///
-    /// `cpu-map` is copied from the host FDT, where it describes every host CPU,
-    /// but the guest keeps only the CPU nodes selected by `phys_cpu_ids` and an
-    /// over-subscribed vCPU has no host CPU at all. Each entry that lost its CPU,
-    /// together with the `core`/`cluster` nodes that only carried it, is dropped
-    /// so the guest tree never references a phandle it does not define. Guest SMP
-    /// enumeration reads `/cpus/cpu@<id>` with its `reg` and `enable-method`
-    /// properties instead of this map, so the guest boots the same way either.
-    pub(crate) fn prune_stale_cpu_map_entries(&mut self) -> AxVmResult {
-        const CPU_MAP: &str = "/cpus/cpu-map";
-        if self.fdt.get_by_path_id(CPU_MAP).is_none() {
-            return Ok(());
-        }
-
-        let present = self.phandles_in_use();
-        let stale_cores = self
-            .node_paths()
-            .into_iter()
-            .filter(|(_, path)| path.starts_with("/cpus/cpu-map/"))
-            .filter_map(|(node_id, path)| {
-                let referenced = self.fdt.node(node_id)?.get_property("cpu")?;
-                (!referenced.get_u32_iter().all(|cpu| present.contains(&cpu))).then_some(path)
-            })
-            .collect::<Vec<_>>();
-        self.remove_paths_deepest_first(stale_cores);
-
-        // A `core` node only exists to point at a CPU, so containers that lost
-        // their last child go away as well. Each pass peels one level and ends
-        // once nothing is empty any more.
-        loop {
-            let empty = self
-                .node_paths()
-                .into_iter()
-                .filter(|(_, path)| path == CPU_MAP || path.starts_with("/cpus/cpu-map/"))
-                .filter(|(node_id, _)| {
-                    self.fdt.node(*node_id).is_some_and(|node| {
-                        node.properties().is_empty() && node.children().is_empty()
-                    })
-                })
-                .map(|(_, path)| path)
-                .collect::<Vec<_>>();
-            if empty.is_empty() {
-                return Ok(());
-            }
-            self.remove_paths_deepest_first(empty);
-        }
-    }
-
-    /// Returns every phandle that some node of this tree defines.
-    ///
-    /// The lookup walks the properties instead of the phandle cache, which only
-    /// tracks the values seen when the tree was parsed and, on a duplicate, keeps
-    /// a single node.
-    fn phandles_in_use(&self) -> BTreeSet<u32> {
-        self.fdt
-            .iter_node_ids()
-            .filter_map(|node_id| self.fdt.node(node_id).and_then(node_phandle))
-            .collect()
     }
 
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {

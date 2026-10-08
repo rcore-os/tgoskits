@@ -53,7 +53,6 @@ pub(super) fn update_cpu_node(
     // Explicit affinity configurations may expose guest CPU ids that have no
     // host CPU node. Complete those nodes after projecting the host identities.
     tree.ensure_guest_cpu_nodes(host, phys_cpu_ids)?;
-    tree.prune_stale_cpu_map_entries()?;
     Ok(tree.finish())
 }
 
@@ -71,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn provided_guest_dtb_projects_cpu_nodes_without_stale_cpu_map_references() {
+    fn provided_guest_dtb_projects_cpu_nodes_without_host_cpu_map() {
         let mut host = Fdt::new();
         let cpus = host.add_node(host.root_id(), Node::new("cpus"));
         for (name, id, phandle) in [("cpu@0", 0, 7), ("cpu@1", 1, 8)] {

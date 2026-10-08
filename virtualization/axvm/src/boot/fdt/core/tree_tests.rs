@@ -10,7 +10,6 @@ fn prop_u32(name: &str, value: u32) -> Property {
     prop.set_u32_ls(&[value]);
     prop
 }
-
 fn prop_str(name: &str, value: &str) -> Property {
     let mut prop = Property::new(name, vec![]);
     prop.set_string(value);
@@ -100,7 +99,6 @@ fn tree_patches_chosen_bootargs_and_initrd() {
         Some(0xa000_1234)
     );
 }
-
 #[test]
 fn tree_removes_stale_initrd_when_no_ramdisk_is_present() {
     let mut tree = FdtTree::from_bytes(&sample_dtb()).unwrap();
@@ -629,62 +627,4 @@ fn tree_clones_missing_guest_cpu_nodes_with_fresh_phandles() {
         phandle_of(&guest, "/cpus/cpu@1"),
         phandle_of(&guest, "/cpus/cpu@2")
     );
-}
-
-#[test]
-fn tree_prunes_cpu_map_entries_of_cpus_the_guest_does_not_have() {
-    let mut tree = FdtTree::new();
-    let cpus = tree.ensure_path("/cpus").unwrap();
-    let cpu = tree.add_node(cpus, Node::new("cpu@0"));
-    tree.set_property(cpu, prop_u32("phandle", 7)).unwrap();
-    let cpu_map = tree.add_node(cpus, Node::new("cpu-map"));
-    let cluster0 = tree.add_node(cpu_map, Node::new("cluster0"));
-    let core0 = tree.add_node(cluster0, Node::new("core0"));
-    tree.set_property(core0, prop_u32("cpu", 7)).unwrap();
-    let core1 = tree.add_node(cluster0, Node::new("core1"));
-    tree.set_property(core1, prop_u32("cpu", 8)).unwrap();
-    let cluster1 = tree.add_node(cpu_map, Node::new("cluster1"));
-    let core2 = tree.add_node(cluster1, Node::new("core0"));
-    tree.set_property(core2, prop_u32("cpu", 9)).unwrap();
-
-    tree.prune_stale_cpu_map_entries().unwrap();
-    let bytes = tree.finish();
-    let reparsed = Fdt::from_bytes(&bytes).unwrap();
-
-    // The entry that still names a CPU of this tree stays, together with the
-    // cluster that holds it.
-    assert_eq!(
-        reparsed
-            .get_by_path("/cpus/cpu-map/cluster0/core0")
-            .unwrap()
-            .as_node()
-            .get_property("cpu")
-            .unwrap()
-            .get_u32(),
-        Some(7)
-    );
-    // The entries of the missing CPUs go, and so does the cluster they emptied.
-    assert!(
-        reparsed
-            .get_by_path_id("/cpus/cpu-map/cluster0/core1")
-            .is_none()
-    );
-    assert!(reparsed.get_by_path_id("/cpus/cpu-map/cluster1").is_none());
-}
-
-#[test]
-fn tree_prunes_cpu_map_that_lost_every_cpu() {
-    let mut tree = FdtTree::new();
-    let cpus = tree.ensure_path("/cpus").unwrap();
-    tree.add_node(cpus, Node::new("cpu@0"));
-    let cpu_map = tree.add_node(cpus, Node::new("cpu-map"));
-    let cluster0 = tree.add_node(cpu_map, Node::new("cluster0"));
-    let core0 = tree.add_node(cluster0, Node::new("core0"));
-    tree.set_property(core0, prop_u32("cpu", 7)).unwrap();
-
-    tree.prune_stale_cpu_map_entries().unwrap();
-    let bytes = tree.finish();
-    let reparsed = Fdt::from_bytes(&bytes).unwrap();
-
-    assert!(reparsed.get_by_path_id("/cpus/cpu-map").is_none());
 }

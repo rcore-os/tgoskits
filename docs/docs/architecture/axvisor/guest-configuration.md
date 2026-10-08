@@ -80,10 +80,10 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `name` | 字符串 | 空字符串 | VM 名称 |
 | `guest_type` | `"virtualized"` 或 `"passthrough"` | `"virtualized"` | 决定地址空间的初始策略，见 3.4 节 |
 | `cpu_num` | 非负整数 | `0` | vCPU 数量 |
-| `phys_cpu_ids` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 对客户机暴露的物理 CPU ID；未覆盖的位置保留 vCPU ID，多余项忽略 |
-| `phys_cpu_sets` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 的宿主 pCPU affinity 位图；未覆盖的位置保持无显式 affinity，多余项忽略 |
+| `phys_cpu_ids` | 整数数组或省略 | `None` | 配置 `phys_cpu_sets` 时表示各 vCPU 对客户机暴露的 ID；未配置时同时作为宿主 FDT CPU selector 与客户机 ID |
+| `phys_cpu_sets` | 整数数组或省略 | `None` | 按数组位置给出各 vCPU 的最终宿主 pCPU affinity 位图；在 FDT-backed AArch64/RISC-V 路径中必须与 `phys_cpu_ids` 等长且每项只选择一个宿主 pCPU |
 
-`phys_cpu_ids` 和 `phys_cpu_sets` 是 CPU selector，不是设备资源。当前 `PhysCpuList::new()` 不校验数组长度；`phys_cpu_ids` 长度与 `cpu_num` 不同时只记录日志，`default_vcpu_affinities()` 仍按已有位置应用，缺项使用默认值，多余项忽略。配置方不能依赖长度或拓扑不匹配一定在 prepare 阶段被拒绝，应主动保证数组长度与 `cpu_num` 一致，并使用目标平台存在的 CPU ID 和 affinity 位。
+`phys_cpu_ids` 和 `phys_cpu_sets` 是 CPU selector，不是设备资源。当显式提供 `phys_cpu_sets` 时，FDT-backed AArch64/RISC-V 的 boot prepare 要求同时提供等长的 `phys_cpu_ids`；每个 mask 必须非零、落在宿主 CPU 位宽内并且只包含一个 bit，否则返回 `InvalidInput`。此模式下 `phys_cpu_ids` 只表达客户机可见的 vCPU ID，不要求该 ID 出现在宿主 FDT；缺失的 CPU 节点由 `FdtTree::ensure_guest_cpu_nodes()` 克隆并写入客户机 `reg`。未提供 `phys_cpu_sets` 时，`phys_cpu_ids` 仍按宿主 FDT CPU 节点解析并转换为单核 affinity。`PhysCpuList` 对 `cpu_num` 与数组长度的通用日志和缺省行为保持不变，配置方仍应主动保证 vCPU 数量与数组一致。
 
 默认 `console0` 模拟宿主调试串口的型号、地址、中断和固件身份：AArch64/RISC-V 从宿主 FDT 中选定的控制台读取，x86/LoongArch 从 ACPI SPCR 读取。没有选定串口时使用 machine profile 的固定资源；已经选定但描述无效时直接报错。镜像需要固定串口地址时，可在 `[[devices.virtual]]` 的串口 model 下指定 `address`。例如 Orange Pi 5 Plus 上使用 QEMU PL011 地址的 Linux 客户机配置 `model = "pl011-mmio"` 和 `address = 0x09000000`；此时串口地址优先于宿主，中断自动分配，固件描述使用最终资源。
 
@@ -252,7 +252,7 @@ model = "ivc-channel"
 
 应用层 `build_axvm_config()` 当前返回 `AxVMConfig` 而不是 `Result`，所以它没有独立的可恢复错误枚举。它之后的 boot prepare、`AxVM::new`、memory prepare、image load 和 `vm.prepare()` 都由 `init_guest_vm()` 添加 `VM[id]` context。日志中若已经出现 `prepare devices and vCPUs`，问题就不在 TOML Serde 阶段。
 
-CPU selector 长度不一致不在表中作为失败项，因为当前路径不保证拒绝：`phys_cpu_ids` 可能只产生一条日志，缺项继续使用默认值，多余项被忽略；`phys_cpu_sets` 同样按已有位置应用。排错时应直接对照 `cpu_num` 检查两个数组，而不是等待某个固定错误类型。
+CPU selector 与 `cpu_num` 的通用长度不一致仍不在表中作为统一失败项：`PhysCpuList` 可能只产生一条日志，缺项继续使用默认值，多余项被忽略；排错时应直接对照 `cpu_num` 检查数组。例外是 FDT-backed AArch64/RISC-V 的显式 affinity 路径：`phys_cpu_ids` 与 `phys_cpu_sets` 不等长、mask 越界、为零或包含多个 bit 时，boot prepare 会以 `InvalidInput` 失败，因为这些值会直接决定客户机 CPU 投影和宿主调度亲和性。
 
 ## 6. 测试覆盖
 

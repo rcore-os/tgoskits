@@ -24,7 +24,7 @@ ITS 允许多实例。`its::install_registers()` 先按 profile 路径绑定；�
 
 ### 2.1 CPU 投影
 
-按 `phys_cpu_ids` 选择宿主 CPU，只投影执行所需的标量属性。已有客户机 CPU 优先按相同硬件地址对应；宿主选中集合与客户机均为单 CPU 时允许唯一角色对应，并保留客户机 phandle。其他无法确定的对应关系直接报错。投影不复制宿主 OPP、供电、idle-state、cache provider 引用，也不保留整机 `cpu-map`，避免描述未分配的硬件与拓扑。
+未配置显式 `phys_cpu_sets` 时，按 `phys_cpu_ids` 选择宿主 CPU，并只投影执行所需的标量属性；配置显式 affinity 时，`phys_cpu_ids` 只表示客户机 CPU 身份，宿主选择由最终 mask 决定。已有客户机 CPU 优先按相同硬件地址对应；宿主选中集合与客户机均为单 CPU 时允许唯一角色对应，并保留客户机 phandle。其他无法确定的对应关系直接报错。投影不复制宿主 OPP、供电、idle-state、cache provider 引用，也不保留整机 `cpu-map`，避免描述未分配的硬件与拓扑。
 
 这一限制作用于显式 DTB 的 CPU 替换路径。从宿主完整派生设备树的资源筛选策略仍由 `create_guest_fdt()` 负责。本次不新增独立客户机直通设备的任意路径或 GPA 重定位配置；既有直通资源映射仍需遵循已有配置契约，不能把本次身份修复解释为该能力已经可用。
 

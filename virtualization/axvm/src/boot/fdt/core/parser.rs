@@ -444,15 +444,7 @@ pub fn set_phys_cpu_sets(
             ));
         };
         for &mask in phys_cpu_sets {
-            if mask == 0 || mask & !valid_masks != 0 {
-                return Err(ax_err_type!(
-                    InvalidInput,
-                    format!(
-                        "phys_cpu_sets mask 0x{mask:x} is not within the {host_cpu_count} host \
-                         CPUs"
-                    )
-                ));
-            }
+            validate_phys_cpu_set(mask, valid_masks, host_cpu_count)?;
         }
         let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
         phys_cpu_ls.set_guest_cpu_sets(phys_cpu_sets.clone());
@@ -506,6 +498,22 @@ fn host_affinity_mask(host_cpu_count: usize) -> Option<usize> {
         width if width == usize::BITS as usize => usize::MAX,
         width => (1usize << width) - 1,
     })
+}
+
+fn validate_phys_cpu_set(mask: usize, valid_masks: usize, host_cpu_count: usize) -> AxVmResult {
+    if mask == 0 || mask & !valid_masks != 0 {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!("phys_cpu_sets mask 0x{mask:x} is not within the {host_cpu_count} host CPUs")
+        ));
+    }
+    if mask.count_ones() != 1 {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!("phys_cpu_sets mask 0x{mask:x} must select exactly one host CPU")
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_phys_cpu_sets(
@@ -1297,6 +1305,18 @@ mod tests {
         // exactly those CPUs, so it must not be rejected as out of range.
         assert_eq!(host_affinity_mask(usize::BITS as usize), Some(usize::MAX));
         assert_eq!(host_affinity_mask(usize::BITS as usize + 1), None);
+    }
+
+    #[test]
+    fn explicit_fdt_affinity_rejects_multi_cpu_masks() {
+        let mask = 0b0011usize;
+        let valid_masks = host_affinity_mask(4).unwrap();
+        let error = super::validate_phys_cpu_set(mask, valid_masks, 4).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must select exactly one host CPU")
+        );
     }
 
     #[test]
