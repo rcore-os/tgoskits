@@ -2,7 +2,7 @@
 
 ## 1. 实现边界
 
-本次改动基于最新 `dev`：`ef80dc4e764b0ad9f1e01a89e997123b6c2058f8`，验证日期为 2026-10-08。共享根切换与归档回收对照本地 Linux v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`；主要依据是 `init/initramfs.c`、`init/main.c` 和 `fs/namespace.c`。启动契约、资源生产者与板卡迁移要求保存在 [宿主 initramfs 启动契约](host-initramfs.md)。
+本次改动基于最新 `dev`：`72a5528bf6a2f0a4e2998f420ef34f8339a8f652`，验证日期为 2026-10-08。共享根切换与归档回收对照本地 Linux v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`；主要依据是 `init/initramfs.c`、`init/main.c` 和 `fs/namespace.c`。启动契约、资源生产者与板卡迁移要求保存在 [宿主 initramfs 启动契约](host-initramfs.md)。
 
 ### 1.1 无盘启动
 
@@ -27,9 +27,9 @@
 | 检查 | 结果 | 本地证据 |
 | --- | --- | --- |
 | `cargo fmt --all`、`git diff --check` | 通过 | 工作区最终差异 |
-| `cargo xtask test --since ef80dc4e764b0ad9f1e01a89e997123b6c2058f8` | 17 个软件包全部通过；axbuild 427 项测试 | `/tmp/axvisor-dev-std.log` |
-| 变基后定向 Clippy：ax-fs-ng、axbuild、axvm、arceos-helloworld | 4 个软件包、37 个检查通过 | `/tmp/axvisor-dev-clippy.log` |
-| CI 规划器测试 | 85 项通过 | `/tmp/axvisor-dev-ci-plan.log` |
+| `cargo xtask test --since 72a5528bf6a2f0a4e2998f420ef34f8339a8f652` | 17 个软件包全部通过；axbuild 427 项测试 | `/tmp/axvisor-dev2-std.log` |
+| 变基后定向 Clippy：ax-fs-ng、axbuild、axvm、arceos-helloworld | 4 个软件包、37 个检查通过 | `/tmp/axvisor-dev2-clippy.log` |
+| CI 规划器测试 | 85 项通过 | `/tmp/axvisor-dev2-ci-plan.log` |
 
 Clippy 命令同时请求过 `--package axvisor`，现有通用入口明确跳过该软件包，因为需要专用目标及构建配置；没有把这项跳过写成通过。Axvisor 本身由实际目标构建、AArch64 内核测试及 SVM/HTTP 系统测试验证。
 
@@ -45,7 +45,7 @@ CI 规划器检查使用 `uv run --python 3.13 --no-project python3 -m unittest 
 | 同点 pivot 后旧根不可遍历，旧文件及页 pin 继续可用 | `/tmp/axvisor-pivot-red.log` | `pivot_detaches_old_root_and_defers_pages_until_last_open_reference` 的最终标准库结果 |
 | 切根后的命名空间复制保留实际根 | `/tmp/axvisor-namespace-red-2.log` | 同一生命周期测试，最终标准库结果 |
 | 未接宿主盘时继承 root 参数不补盘 | `/tmp/axvisor-diskless-std-red.log` | `explicit_diskless_qemu_keeps_host_rootfs_unattached`，最终标准库结果 |
-| 没有块驱动时继承 root 参数不切根 | `/tmp/axvisor-no-driver-red.log` | `/tmp/axvisor-no-driver-green.log`：85 通过、0 失败，`AXTEST_SUITE_OK` |
+| 没有块驱动时继承 root 参数不切根 | `/tmp/axvisor-no-driver-red.log` | `/tmp/axvisor-dev2-no-driver.log`：85 通过、0 失败，`AXTEST_SUITE_OK` |
 | 不存在的显式根返回错误，保持当前根 | `/tmp/axvisor-root-prepare-red.log` | `missing_requested_root_returns_an_error_without_publishing`，最终标准库结果 |
 
 `pivot_detaches_old_root_and_defers_pages_until_last_open_reference` 在关闭文件后确认 MemoryFs owner 已释放，只有映射页 pin 继续持有一页；关闭最后 pin 后分配与释放计数完全相等。测试名称及实现位于 `fs/ax-fs-ng/src/fs/memory.rs`。
@@ -62,16 +62,16 @@ CI 规划器检查使用 `uv run --python 3.13 --no-project python3 -m unittest 
 
 | 系统与入口 | 已验证行为 | 本地证据 |
 | --- | --- | --- |
-| ArceOS `FEATURES=initramfs-smoke`，helloworld `qemu-host-initramfs-aarch64.toml` | 应用从外部归档内存根读取文件 | `/tmp/arceos-dev-memory-root-green.log` |
-| ArceOS `FEATURES=block-root-smoke`，helloworld `qemu-host-initramfs-root-aarch64.toml` | 应用启动前切到 NVMe 根，读取磁盘独有 `/etc/alpine-release` | `/tmp/arceos-dev-disk-root.log` |
-| Starry `qemu/host-initramfs` | 内存根上的早期 init | `/tmp/starry-ramfs-root-2.log` |
-| Starry `qemu/host-initramfs-disk-fallback` | 无早期 init 时内核切到磁盘根 | `/tmp/starry-kernel-root-switch.log` |
-| Starry `qemu/host-initramfs-switch-root` | init 自行切根、detach；旧 FD 读取；成功 close 后 mmap 读取；munmap；磁盘 exec | `/tmp/starry-dev-user-root.log` |
-| Starry `qemu/system/test-pivot-root` | 普通 pivot、非挂载目录 EINVAL、脱离后旧根不可遍历 | `/tmp/starry-pivot-contract-2.log` |
-| Starry `qemu/system/test-pivot-root-namespace` | 子进程私有命名空间切根不改变父进程根 | `/tmp/starry-pivot-namespace-final.log` |
-| Starry `qemu/system/syscall-test-mountinfo` | 实际根、source、bind、传播字段与 detach 可见性 | `/tmp/starry-mountinfo-final.log` |
-| Axvisor `ktest qemu -p axvisor --test axtest --arch aarch64`，`build-memory-root-aarch64.toml`、`qemu-memory-root-aarch64.toml` | 无块驱动、继承 root 参数保留内存根；用户配置优先、无效用户配置拒绝 | `/tmp/axvisor-no-driver-green.log`：85/85 |
-| Axvisor `axvisor test qemu --arch aarch64 --test-case http-control-plane` | 安装自带资源、切根后删除并重新创建和启动 VM | `/tmp/axvisor-dev-http-root.log`：1/1 |
+| ArceOS `FEATURES=initramfs-smoke`，helloworld `qemu-host-initramfs-aarch64.toml` | 应用从外部归档内存根读取文件 | `/tmp/arceos-dev2-memory-root.log` |
+| ArceOS `FEATURES=block-root-smoke`，helloworld `qemu-host-initramfs-root-aarch64.toml` | 应用启动前切到 NVMe 根，读取磁盘独有 `/etc/alpine-release` | `/tmp/arceos-dev2-disk-root.log` |
+| Starry `qemu/host-initramfs` | 内存根上的早期 init | `/tmp/starry-dev2-ramfs-root.log` |
+| Starry `qemu/host-initramfs-disk-fallback` | 无早期 init 时内核切到磁盘根 | `/tmp/starry-dev2-kernel-root.log` |
+| Starry `qemu/host-initramfs-switch-root` | init 自行切根、detach；旧 FD 读取；成功 close 后 mmap 读取；munmap；磁盘 exec | `/tmp/starry-dev2-user-root.log` |
+| Starry `qemu/system/test-pivot-root` | 普通 pivot、非挂载目录 EINVAL、脱离后旧根不可遍历 | `/tmp/starry-dev2-pivot-root.log` |
+| Starry `qemu/system/test-pivot-root-namespace` | 子进程私有命名空间切根不改变父进程根 | 未重新运行（本轮仅运行 `test-pivot-root`） |
+| Starry `qemu/system/syscall-test-mountinfo` | 实际根、source、bind、传播字段与 detach 可见性 | 未重新运行 |
+| Axvisor `ktest qemu -p axvisor --test axtest --arch aarch64`，`build-memory-root-aarch64.toml`、`qemu-memory-root-aarch64.toml` | 无块驱动、继承 root 参数保留内存根；用户配置优先、无效用户配置拒绝 | `/tmp/axvisor-dev2-no-driver.log`：85/85 |
+| Axvisor `axvisor test qemu --arch aarch64 --test-case http-control-plane` | 安装自带资源、切根后删除并重新创建和启动 VM | `/tmp/axvisor-dev2-http-root-rerun.log`：1/1 |
 
 无驱动内核测试的完整选择命令显式使用不启用块驱动的构建配置，避免默认测试配置把无驱动分支变成已注册磁盘的分支。
 
@@ -81,11 +81,11 @@ cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
   --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml
 ```
 
-Axvisor HTTP 日志分别记录原始归档回收 `53,370,880` 字节，以及切根后 `releasing decoded ramfs filesystem (53532221 file bytes)`；客户机重建使用已经安装的配置与镜像。SVM Smoke 同时检查宿主 NVMe 读写和双 VM 可写磁盘隔离。内核测试工具会自动接测试盘，因此无驱动用例证明驱动不可用的分支；SVM direct ACPI 使用编入 NVMe 驱动但未接宿主盘、继承 `root=/dev/nvme0n1 rw` 的配置，证明无宿主设备分支。
+Axvisor HTTP 日志分别记录切根后 `releasing decoded ramfs filesystem (53532221 file bytes)`；客户机重建使用已经安装的配置与镜像。SVM Smoke 同时检查宿主 NVMe 读写和双 VM 可写磁盘隔离。内核测试工具会自动接测试盘，因此无驱动用例证明驱动不可用的分支；SVM direct ACPI 使用编入 NVMe 驱动但未接宿主盘、继承 `root=/dev/nvme0n1 rw` 的配置，证明无宿主设备分支。
 
 ### 3.2 SVM 单次构建
 
-六个用例共享 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`，配置包含 `vpci-test-device`；每个用例独立准备宿主归档。日志 `/tmp/axvisor-dev-svm.log` 中只有一次 Axvisor 构建开始和一次 `Compiling axvisor`，六次启动的内核 SHA-256 全部为 `d8fd9200f90c10ff2d5c9b33e0933fa17bd3e5d5dba506b4bb90671746b202fe`。
+六个用例共享 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`，配置包含 `vpci-test-device`；每个用例独立准备宿主归档。日志 `/tmp/axvisor-dev2-svm.log` 中只有一次 Axvisor 构建开始和一次 `Compiling axvisor`，六次启动的内核 SHA-256 全部为 `c30ab4772de7db35a10cd09811ef22ede88391331a08f635c0e7cf3688e46fb8`。
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
@@ -97,12 +97,12 @@ cargo xtask axvisor test qemu --arch x86_64 \
 
 | 用例 | 结果与用例耗时 | 宿主归档 SHA-256 |
 | --- | --- | --- |
-| Smoke | 通过，117.48s | `224c515bd2bbdec936d031cfc26808620874c2535157b68a114c4640c19d21b6` |
-| direct ACPI | 通过，11.54s | `2ffa68262719306a661388535c601fcde4753d6ce88264b15b7b2f61f0f19f54` |
-| OVMF ACPI | 通过，26.98s | `4abf46f2a7ed357722bac6e6b7f9f891c667246112e257760fdd9e2398e3d6cb` |
-| PCI 枚举 | 通过，14.58s | `2db66b31491948e75dc30ae58f8c70bb238c3683e8f024a08cf206fba91e152d` |
-| PCI block RW | 通过，15.14s | `164bb03c15ef85733de63cb563f05b5334747f0681aabe9aa8127be62b7795d6` |
-| PCI block RO | 通过，14.69s | `70ad20583cbfad392a4176489d267eacb817a9c7001da8e410e1fb393c3fa326` |
+| Smoke | 通过，39.85s | `224c515bd2bbdec936d031cfc26808620874c2535157b68a114c4640c19d21b6` |
+| direct ACPI | 通过，11.67s | `2ffa68262719306a661388535c601fcde4753d6ce88264b15b7b2f61f0f19f54` |
+| OVMF ACPI | 通过，26.88s | `4abf46f2a7ed357722bac6e6b7f9f891c667246112e257760fdd9e2398e3d6cb` |
+| PCI 枚举 | 通过，14.57s | `2db66b31491948e75dc30ae58f8c70bb238c3683e8f024a08cf206fba91e152d` |
+| PCI block RW | 通过，19.74s | `164bb03c15ef85733de63cb563f05b5334747f0681aabe9aa8127be62b7795d6` |
+| PCI block RO | 通过，14.86s | `70ad20583cbfad392a4176489d267eacb817a9c7001da8e410e1fb393c3fa326` |
 
 ## 4. 未运行目标
 
