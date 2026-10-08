@@ -249,8 +249,7 @@ resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
-robot_board_type="$(python3 scripts/test/select_board_type.py OrangePi-5-Plus-Robot-USB OrangePi-5-Plus-robot)"
-cargo xtask axvisor test board --board orangepi-5-plus-robot-starry --board-type "$robot_board_type"
+cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 '''
 
 [[check.suite]]
@@ -265,8 +264,7 @@ runner = "board"
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-robot_board_type="$(python3 scripts/test/select_board_type.py OrangePi-5-Plus-Robot-USB OrangePi-5-Plus-robot)"
-cargo xtask axvisor test board --board orangepi-5-plus-robot-linux --board-type "$robot_board_type"
+cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
 '''
 
 [[check.suite]]
