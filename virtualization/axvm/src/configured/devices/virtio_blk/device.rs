@@ -275,6 +275,27 @@ enum VirtioBlkTransport {
 }
 
 impl VirtioBlkModel {
+    fn work_port(
+        &self,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<Option<crate::services::DeviceWorkPort>> {
+        match &self.backend_config {
+            BackendConfig::RamDisk => Ok(None),
+            BackendConfig::File { .. } => {
+                let signal = context.work_port().ok_or_else(|| {
+                    invalid_device_config(
+                        "bind virtio-blk work port",
+                        "file backend requires a runtime device work port",
+                    )
+                })?;
+                Ok(Some(crate::services::DeviceWorkPort::from_device_signal(
+                    signal,
+                    context.work_device_id(),
+                )))
+            }
+        }
+    }
+
     /// Opens a fresh backing backend for one runtime build.
     ///
     /// File backends bind their worker to the run-scoped work port copied into
@@ -283,22 +304,11 @@ impl VirtioBlkModel {
         &self,
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<VirtioBlkBackend> {
-        let work_port = match &self.backend_config {
-            BackendConfig::RamDisk => None,
-            BackendConfig::File { .. } => {
-                let signal = context.work_port().ok_or_else(|| {
-                    invalid_device_config(
-                        "open virtio-blk backing file",
-                        "file backend requires a runtime device work port",
-                    )
-                })?;
-                Some(crate::services::DeviceWorkPort::from_device_signal(
-                    signal,
-                    context.work_device_id(),
-                ))
-            }
-        };
-        VirtioBlkBackend::open(&self.backend_config, self.capacity_bytes, work_port)
+        VirtioBlkBackend::open(
+            &self.backend_config,
+            self.capacity_bytes,
+            self.work_port(context)?,
+        )
     }
 }
 
@@ -365,6 +375,7 @@ impl DeviceModel for VirtioBlkModel {
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         // Every build opens a brand-new backend and worker so a VM reset can
         // rebuild the device from the same immutable model.
+        let work_port = self.work_port(context)?;
         let backend = self.open_backend(context)?;
         let queue_pending = backend.queue_pending();
         let config = VirtioBlockConfig {
@@ -397,6 +408,7 @@ impl DeviceModel for VirtioBlkModel {
                     irq,
                     grant: grant.clone(),
                     queue_pending,
+                    work_port,
                     resources: runtime_resources(base, size, resolved_irq),
                 });
                 let mut bundle = DeviceBundle::new();
@@ -409,11 +421,12 @@ impl DeviceModel for VirtioBlkModel {
                 let irq = context.irq(PCI_INTX_SLOT)?;
                 let grant = DmaGrant::new();
                 let function = Arc::new(
-                    VirtioPciFunction::try_new_with_queue_pending(
+                    VirtioPciFunction::try_new_with_queue_pending_and_work_port(
                         VirtioBlockPciAdapter::new(backend, config),
                         grant.clone(),
                         irq,
                         queue_pending,
+                        work_port,
                     )
                     .map_err(DeviceManagerError::Device)?,
                 );
@@ -711,6 +724,7 @@ struct VirtioBlkRuntimeDevice {
     irq: IrqLine,
     grant: DmaGrant,
     queue_pending: Arc<AtomicBool>,
+    work_port: Option<crate::services::DeviceWorkPort>,
     resources: Box<[Resource]>,
 }
 
@@ -770,6 +784,12 @@ impl Device for VirtioBlkRuntimeDevice {
             BlockDeviceEvent::InterruptPending => {}
             BlockDeviceEvent::QueuePending(0) => {
                 self.queue_pending.store(true, Ordering::Release);
+                if let Some(port) = &self.work_port {
+                    port.notify().map_err(|error| DeviceError::Backend {
+                        operation: "notify virtio-blk queue work",
+                        detail: format!("{error}"),
+                    })?;
+                }
             }
             BlockDeviceEvent::QueuePending(_) => {
                 return Err(DeviceError::InvalidInput {

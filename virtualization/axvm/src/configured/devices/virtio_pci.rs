@@ -30,6 +30,7 @@ pub struct VirtioPciFunction<D: VirtioDeviceCore> {
     pub(super) resources: Vec<Resource>,
     pub(super) command_revision: Mutex<Option<PciCommandRevision>>,
     pub(super) queue_pending: Arc<AtomicBool>,
+    pub(super) work_port: Option<crate::services::DeviceWorkPort>,
     #[cfg(test)]
     pub(super) command_revision_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -59,6 +60,22 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
         irq_line: IrqLine,
         queue_pending: Arc<AtomicBool>,
     ) -> DeviceResult<Self> {
+        Self::try_new_with_queue_pending_and_work_port(
+            transport_core,
+            dma_grant,
+            irq_line,
+            queue_pending,
+            None,
+        )
+    }
+
+    pub(super) fn try_new_with_queue_pending_and_work_port(
+        transport_core: D,
+        dma_grant: DmaGrant,
+        irq_line: IrqLine,
+        queue_pending: Arc<AtomicBool>,
+        work_port: Option<crate::services::DeviceWorkPort>,
+    ) -> DeviceResult<Self> {
         Ok(Self {
             transport: VirtioPciTransport::try_new(transport_core)?,
             dma_grant,
@@ -66,6 +83,7 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
             resources: Vec::new(),
             command_revision: Mutex::new(None),
             queue_pending,
+            work_port,
             #[cfg(test)]
             command_revision_hook: Mutex::new(None),
         })

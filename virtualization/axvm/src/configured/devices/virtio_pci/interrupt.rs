@@ -34,12 +34,22 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
         })
     }
 
-    fn record_queue_pending(&self, notification: &axvirtio_common::pci::QueueNotification) {
+    fn record_queue_pending(
+        &self,
+        notification: &axvirtio_common::pci::QueueNotification,
+    ) -> DeviceResult {
         if notification.requires_poll() {
             // Only the poller consumes this flag. Clearing it here could lose
             // a concurrent notification that deferred after this operation.
             self.queue_pending.store(true, Ordering::Release);
+            if let Some(port) = &self.work_port {
+                port.notify().map_err(|error| DeviceError::Backend {
+                    operation: "notify VirtIO PCI queue work",
+                    detail: std::format!("{error}"),
+                })?;
+            }
         }
+        Ok(())
     }
 
     fn execute_permitted_transition(
@@ -209,7 +219,7 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
                 Err(error)
             }
             VirtioPciWriteOutcome::QueueNotified(notification) => {
-                self.record_queue_pending(&notification);
+                self.record_queue_pending(&notification)?;
                 self.publish_queue_notification(notification, context)
             }
         }
@@ -232,7 +242,7 @@ impl<D: VirtioDeviceCore> DmaPollableDeviceOps for VirtioPciFunction<D> {
         };
         match outcome {
             VirtioPciWriteOutcome::QueueNotified(notification) => {
-                self.record_queue_pending(&notification);
+                self.record_queue_pending(&notification)?;
                 notification.publish(|transition| self.execute_polled_transition(transition))?;
                 Ok(())
             }
