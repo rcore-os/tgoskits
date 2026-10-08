@@ -200,4 +200,8 @@ ASUS 原作业在加载器串口尚未完成身份绑定时由服务端于 60 �
 
 该提交的 SVM 六用例 6/6，日志只有一次 `Compiling axvisor`，六次内核 SHA-256 均为 `403e08351837f90683e98e148258f5880037be369bb512ef36974ee19a4c1008`，各归档哈希不同。Starry 四架构的 NVMe 设备号、普通 pivot_root 与命名空间隔离均实际执行；AArch64 的纯内存根、内核磁盘回退和用户态切根均通过。HTTP 控制面在切根及旧 ramfs 释放后删除、重建并启动 VM。
 
-最终核对时 `dev` 合并了性能目录迁移 #2504，本分支再次变基到 `134cb196e25603097d373659062d9449d81f70a2`。原 `ivc-benchmark`、`task-switch-overhead` 与 `vcpu-perf` 改动迁移到 `benchmarks/axvisor`，保持归档输入、文件加载和文件系统 shell 语义；性能资源说明移到对应基准文档。变基后 CI 规划、路由与报告测试共 139 项全部通过，axbuild 定向 Clippy 1/1。上述完整 CI 结果属于 `e05d31a7cd`，后续提交的 CI 需分别核对。
+最终核对时 `dev` 合并了性能目录迁移 #2504，本分支再次变基到 `134cb196e25603097d373659062d9449d81f70a2`。原 `ivc-benchmark`、`task-switch-overhead` 与 `vcpu-perf` 改动迁移到 `benchmarks/axvisor`，保持归档输入、文件加载和文件系统 shell 语义；性能资源说明移到对应基准文档。变基后 CI 规划、路由与报告测试共 139 项全部通过，axbuild 定向 Clippy 1/1。`cargo xtask test --since aac162847b` 选中的 16 个软件包全部通过，axbuild 437 项测试；日志分别为 `/tmp/pr2567-ci-tests-rebase-134c-before.log`、`/tmp/pr2567-axbuild-clippy-rebase-134c.log` 和 `/tmp/pr2567-std-rebase-134c.log`。
+
+同一 SVM 命令再次通过六个用例，同时覆盖重复参数与逗号列表。日志 `/tmp/pr2567-svm-rebase-134c.log` 只有一次 `Compiling axvisor`，六次启动的内核 SHA-256 均为 `61e011981a89c4f961badc4ff3f19b37c0b3dad79da93f172f407d94ca254325`，宿主归档分别对应各用例。以上本地结果覆盖性能目录迁移后的源码；随后纳入 `dev` 文档更新 `67268da829fa2c5b36eb5ef7795f84103d24b55e`，没有改变构建或运行代码。上述完整 CI 结果属于 `e05d31a7cd`，后续提交的 CI 需分别核对。
+
+迁移后的板卡入口 `cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf --server 10.3.10.194 --port 2999` 在 `OrangePi-5-Plus-2` 通过，日志为 `/tmp/pr2567-vcpu-perf-rebase-134c.log`。构建配置未启用块驱动，客户机随宿主归档打包，归档 SHA-256 为 `1e63f456a6bb6843559081bf440d577a128cd8d655c69bb96e9ab9606707c2ff`；实际执行负载就绪、文件系统 shell 控制台连接和客户机性能判定，输出 `VCPU_PERF_PASS`。该运行验证迁移后的资源准备与无盘启动入口；其他两个性能板卡场景本轮未运行。

@@ -72,7 +72,7 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 | `ubuntu-host` | 0 | 1 | 0 | 0 | Starry NixOS x86_64 Stage-2 |
 | `ubuntu-axvisor-lvz` | 1 | 0 | 0 | 0 | AxVisor LoongArch QEMU 套件 |
 | `kvm-intel` | 3 | 0 | 0 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
-| `kvm-amd` | 2 | 0 | 0 | 0 | SVM、ACPI/OVMF 和 PCI 枚举 |
+| `kvm-amd` | 1 | 0 | 0 | 0 | SVM smoke、direct/OVMF ACPI、PCI 枚举和 PCI block RW/RO |
 | `board` | 11 | 0 | 2 | 8 | 主 CI、AxVisor nightly 和性能清单中的板卡场景 |
 
 修改清单时应同步更新这张表。`qcs` 在普通外部 fork 上回退为托管环境，表中仍按声明的 profile 分类；它不表示外部 fork 可以使用组织的 QCS 机器。
@@ -96,8 +96,7 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 | `kvm-intel` | `test-axvisor-self-hosted-x86-64-vmx-smoke-pci-enumeration` | VMX smoke、通用 PCI 枚举 |
 | `kvm-intel` | `test-axloader-http-smoke` | AxLoader 的 x86_64 UEFI HTTP 启动 |
 | `kvm-intel` | `test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx` | direct ACPI、MP fallback、OVMF ACPI |
-| `kvm-amd` | `test-axvisor-self-hosted-x86-64-svm-smoke-acpi` | SVM smoke、direct ACPI、OVMF ACPI |
-| `kvm-amd` | `test-axvisor-x86-64-pci-enumeration-svm` | SVM 通用 PCI 枚举 |
+| `kvm-amd` | `test-axvisor-self-hosted-x86-64-svm` | SVM smoke、direct ACPI、OVMF ACPI、PCI 枚举、PCI block RW/RO；一次构建运行六用例 |
 
 `require_kvm` 只让执行器检查 `/dev/kvm` 可读写，并未完整验证 CPU 虚拟化特性、嵌套虚拟化、固件镜像或 guest 能力。预检通过后仍可能在特定启动场景失败，应以相应 case 的日志定位。
 
