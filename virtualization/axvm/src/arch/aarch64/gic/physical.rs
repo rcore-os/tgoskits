@@ -241,9 +241,10 @@ impl AssignedSpiRouteRegistration {
     fn install(binding: &Arc<AssignedSpiBinding>) -> Result<Self, GicV3BackendError> {
         let intid = binding.irq.value();
         let Some(route) = ASSIGNED_SPI_ROUTES.get(intid) else {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::value(
                 "register assigned physical SPI route",
-                std::format!("host INTID {intid} is outside the assignable GIC range"),
+                "the host INTID is outside the assignable GIC range",
+                intid as u64,
             ));
         };
         let raw = Arc::into_raw(binding.clone()) as *mut AssignedSpiBinding;
@@ -255,9 +256,10 @@ impl AssignedSpiRouteRegistration {
             // SAFETY: the compare-exchange did not publish this strong
             // reference, so this call consumes exactly the reference above.
             drop(unsafe { Arc::from_raw(raw) });
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::value(
                 "register assigned physical SPI route",
-                std::format!("host INTID {intid} is already assigned to another VM"),
+                "the host INTID is already assigned to another VM",
+                intid as u64,
             ));
         }
         Ok(Self {

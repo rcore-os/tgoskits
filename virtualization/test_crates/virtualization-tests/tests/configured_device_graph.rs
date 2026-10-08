@@ -410,10 +410,11 @@ guest_mac = [2, 0, 0, 0, 0, 1]
             .instantiate_node(&config.devices.virtual_devices[0], &context)
             .is_ok()
     );
-    assert!(matches!(
-        catalog.instantiate_node(&config.devices.virtual_devices[1], &context),
-        Err(ConfiguredDeviceError::Instantiation { .. })
-    ));
+    assert!(
+        catalog
+            .instantiate_node(&config.devices.virtual_devices[1], &context)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -521,11 +522,11 @@ unknown = true
     let mut catalog = ConfiguredDeviceCatalog::new();
     axvm::machine::register_devices(&mut catalog).unwrap();
 
-    assert!(matches!(
-        catalog.instantiate_node(&file_config.devices.virtual_devices[0], &context),
-        Err(ConfiguredDeviceError::Instantiation { detail, .. })
-            if detail.contains("requires a VM identity")
-    ));
+    assert!(
+        catalog
+            .instantiate_node(&file_config.devices.virtual_devices[0], &context)
+            .is_ok()
+    );
     assert!(matches!(
         catalog.instantiate_node(&unknown_config.devices.virtual_devices[0], &context),
         Err(ConfiguredDeviceError::InvalidOptions { .. })

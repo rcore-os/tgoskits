@@ -19,15 +19,24 @@ mod support;
 const GICD_CTLR: u64 = 0x0000;
 const GICD_ISENABLER: u64 = 0x0100;
 const GICD_ICENABLER: u64 = 0x0180;
+const GICD_ISPENDR: u64 = 0x0200;
+const GICD_IPRIORITYR: u64 = 0x0400;
 const GICD_ITARGETSR: u64 = 0x0800;
 const GICD_CPENDSGIR: u64 = 0x0f10;
 const GICD_SPENDSGIR: u64 = 0x0f20;
 const GICC_CTLR: u64 = 0x0000;
 const GICC_PMR: u64 = 0x0004;
+const GICC_BPR: u64 = 0x0008;
 const GICC_IAR: u64 = 0x000c;
 const GICC_EOIR: u64 = 0x0010;
+const GICC_RPR: u64 = 0x0014;
 const GICC_HPPIR: u64 = 0x0018;
 const GICC_DIR: u64 = 0x1000;
+
+/// GIC INTID reported for an acknowledge that no delivery may satisfy.
+const GIC_SPURIOUS_INTID: u64 = 1023;
+/// Idle running priority of the GICv2 CPU interface.
+const GIC_IDLE_RUNNING_PRIORITY: u64 = 0xff;
 
 #[derive(Default)]
 struct TestBackend {
@@ -579,4 +588,270 @@ fn v2_eoi_for_a_non_running_intid_is_write_ignored() {
     );
     core.write_v2_cpu_interface(vcpu, GICC_EOIR, AccessWidth::Dword, iar)
         .unwrap();
+}
+
+/// Enables one guest-owned SPI on `vcpu` with a fixed priority through the
+/// public GICv2 Distributor registers.
+fn configure_v2_spi(core: &VgicCore, vcpu: GicVcpuId, spi: u32, priority: u8) {
+    core.write_v2_distributor(vcpu, GICD_CTLR, AccessWidth::Dword, 1)
+        .unwrap();
+    core.write_v2_distributor(
+        vcpu,
+        GICD_ITARGETSR + u64::from(spi),
+        AccessWidth::Byte,
+        0b01,
+    )
+    .unwrap();
+    core.write_v2_distributor(
+        vcpu,
+        GICD_IPRIORITYR + u64::from(spi),
+        AccessWidth::Byte,
+        u64::from(priority),
+    )
+    .unwrap();
+    core.write_v2_distributor(
+        vcpu,
+        GICD_ISENABLER + u64::from(spi / 32 * 4),
+        AccessWidth::Dword,
+        1u64 << (spi % 32),
+    )
+    .unwrap();
+}
+
+/// Enables the GICv2 CPU interface with an explicit binary point and PMR.
+fn enable_v2_cpu_interface(core: &VgicCore, vcpu: GicVcpuId, binary_point: u8, priority_mask: u8) {
+    core.write_v2_cpu_interface(vcpu, GICC_PMR, AccessWidth::Dword, u64::from(priority_mask))
+        .unwrap();
+    core.write_v2_cpu_interface(vcpu, GICC_BPR, AccessWidth::Dword, u64::from(binary_point))
+        .unwrap();
+    core.write_v2_cpu_interface(vcpu, GICC_CTLR, AccessWidth::Dword, 1)
+        .unwrap();
+}
+
+/// Latches one SPI pending through the public GICv2 Distributor register.
+fn pend_v2_spi(core: &VgicCore, vcpu: GicVcpuId, spi: u32) {
+    core.write_v2_distributor(
+        vcpu,
+        GICD_ISPENDR + u64::from(spi / 32 * 4),
+        AccessWidth::Dword,
+        1u64 << (spi % 32),
+    )
+    .unwrap();
+}
+
+fn v2_iar(core: &VgicCore, vcpu: GicVcpuId) -> u64 {
+    core.read_v2_cpu_interface(vcpu, GICC_IAR, AccessWidth::Dword)
+        .unwrap()
+}
+
+fn v2_rpr(core: &VgicCore, vcpu: GicVcpuId) -> u64 {
+    core.read_v2_cpu_interface(vcpu, GICC_RPR, AccessWidth::Dword)
+        .unwrap()
+}
+
+fn v2_eoi(core: &VgicCore, vcpu: GicVcpuId, iar: u64) {
+    core.write_v2_cpu_interface(vcpu, GICC_EOIR, AccessWidth::Dword, iar)
+        .unwrap();
+}
+
+/// A pending delivery that does not strictly raise the group priority must not
+/// be acknowledged while a higher-priority delivery is active. It stays
+/// pending and becomes acknowledgeable again once the active one is EOIed.
+#[test]
+fn v2_acknowledge_requires_a_strictly_higher_group_priority() {
+    let (core, _) = core();
+    let _binding = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
+    let vcpu = GicVcpuId::new(0);
+    let active = 40u32;
+    let equal = 41u32;
+    let lower = 42u32;
+
+    configure_v2_spi(&core, vcpu, active, 0x40);
+    configure_v2_spi(&core, vcpu, equal, 0x40);
+    configure_v2_spi(&core, vcpu, lower, 0x60);
+    // Binary point 0 makes the whole byte the group priority, so this test
+    // does not depend on the subpriority split.
+    enable_v2_cpu_interface(&core, vcpu, 0, 0xff);
+
+    pend_v2_spi(&core, vcpu, active);
+    let iar = v2_iar(&core, vcpu);
+    assert_eq!(iar & 0x3ff, u64::from(active));
+    assert_eq!(v2_rpr(&core, vcpu), 0x40);
+    assert_eq!(
+        core.controller()
+            .interrupt_state(Some(vcpu), IntId::new(active).unwrap())
+            .unwrap(),
+        InterruptState::Active
+    );
+
+    // An equal group priority cannot preempt the running delivery.
+    pend_v2_spi(&core, vcpu, equal);
+    assert_eq!(v2_iar(&core, vcpu), GIC_SPURIOUS_INTID);
+    assert_eq!(v2_rpr(&core, vcpu), 0x40);
+    assert_eq!(
+        core.controller()
+            .interrupt_state(Some(vcpu), IntId::new(equal).unwrap())
+            .unwrap(),
+        InterruptState::Pending
+    );
+
+    // A strictly lower group priority cannot preempt either, even though the
+    // PMR allows it, and the higher-priority pending delivery is still the one
+    // reported to the guest.
+    pend_v2_spi(&core, vcpu, lower);
+    assert_eq!(v2_iar(&core, vcpu), GIC_SPURIOUS_INTID);
+    assert_eq!(
+        core.read_v2_cpu_interface(vcpu, GICC_HPPIR, AccessWidth::Dword)
+            .unwrap(),
+        u64::from(equal)
+    );
+    assert_eq!(
+        core.controller()
+            .interrupt_state(Some(vcpu), IntId::new(lower).unwrap())
+            .unwrap(),
+        InterruptState::Pending
+    );
+
+    // EOIing the active delivery re-opens acknowledgement for the pending
+    // higher-priority one, then the remaining lower-priority one.
+    v2_eoi(&core, vcpu, iar);
+    assert_eq!(v2_rpr(&core, vcpu), GIC_IDLE_RUNNING_PRIORITY);
+    assert_eq!(
+        core.controller()
+            .interrupt_state(Some(vcpu), IntId::new(active).unwrap())
+            .unwrap(),
+        InterruptState::Inactive
+    );
+    let equal_iar = v2_iar(&core, vcpu);
+    assert_eq!(equal_iar & 0x3ff, u64::from(equal));
+    assert_eq!(v2_rpr(&core, vcpu), 0x40);
+    v2_eoi(&core, vcpu, equal_iar);
+    let lower_iar = v2_iar(&core, vcpu);
+    assert_eq!(lower_iar & 0x3ff, u64::from(lower));
+    assert_eq!(v2_rpr(&core, vcpu), 0x60);
+    v2_eoi(&core, vcpu, lower_iar);
+    assert_eq!(v2_rpr(&core, vcpu), GIC_IDLE_RUNNING_PRIORITY);
+}
+
+/// A strictly higher group priority nests on top of the running delivery and
+/// unwinds in order as each layer is EOIed.
+#[test]
+fn v2_acknowledge_nests_a_strictly_higher_group_priority() {
+    let (core, _) = core();
+    let _binding = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
+    let vcpu = GicVcpuId::new(0);
+    let outer = 44u32;
+    let inner = 45u32;
+
+    configure_v2_spi(&core, vcpu, outer, 0x40);
+    configure_v2_spi(&core, vcpu, inner, 0x20);
+    enable_v2_cpu_interface(&core, vcpu, 0, 0xff);
+
+    pend_v2_spi(&core, vcpu, outer);
+    let outer_iar = v2_iar(&core, vcpu);
+    assert_eq!(outer_iar & 0x3ff, u64::from(outer));
+    assert_eq!(v2_rpr(&core, vcpu), 0x40);
+
+    pend_v2_spi(&core, vcpu, inner);
+    let inner_iar = v2_iar(&core, vcpu);
+    assert_eq!(inner_iar & 0x3ff, u64::from(inner));
+    assert_eq!(v2_rpr(&core, vcpu), 0x20);
+
+    v2_eoi(&core, vcpu, inner_iar);
+    assert_eq!(v2_rpr(&core, vcpu), 0x40);
+    assert_eq!(
+        core.controller()
+            .interrupt_state(Some(vcpu), IntId::new(inner).unwrap())
+            .unwrap(),
+        InterruptState::Inactive
+    );
+    v2_eoi(&core, vcpu, outer_iar);
+    assert_eq!(v2_rpr(&core, vcpu), GIC_IDLE_RUNNING_PRIORITY);
+}
+
+/// The binary point decides how many low priority bits are subpriority, so a
+/// candidate that differs only in subpriority cannot preempt. This asserts the
+/// ARM split convention: bits [BinaryPoint:0] are subpriority and the
+/// remaining high bits are the group priority.
+#[test]
+fn v2_binary_point_masks_subpriority_bits_from_preemption() {
+    let (core, _) = core();
+    let _binding = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
+    let vcpu = GicVcpuId::new(0);
+    let running = 46u32;
+    let candidate = 47u32;
+
+    configure_v2_spi(&core, vcpu, running, 0x82);
+    configure_v2_spi(&core, vcpu, candidate, 0x80);
+    // Binary point 1: the low two bits are subpriority, so 0x80 and 0x82 share the
+    // 0x80 group priority and the candidate may not preempt.
+    enable_v2_cpu_interface(&core, vcpu, 1, 0xff);
+
+    pend_v2_spi(&core, vcpu, running);
+    let running_iar = v2_iar(&core, vcpu);
+    assert_eq!(running_iar & 0x3ff, u64::from(running));
+    pend_v2_spi(&core, vcpu, candidate);
+    assert_eq!(v2_iar(&core, vcpu), GIC_SPURIOUS_INTID);
+    assert_eq!(v2_rpr(&core, vcpu), 0x80);
+    v2_eoi(&core, vcpu, running_iar);
+    let candidate_iar = v2_iar(&core, vcpu);
+    assert_eq!(
+        candidate_iar & 0x3ff,
+        u64::from(candidate),
+        "the blocked subpriority candidate must be acknowledgeable once the stack is idle"
+    );
+    v2_eoi(&core, vcpu, candidate_iar);
+    assert_eq!(v2_rpr(&core, vcpu), GIC_IDLE_RUNNING_PRIORITY);
+
+    // With binary point 0 only bit zero is subpriority, so the same pair of
+    // priorities does preempt.
+    let running2 = 48u32;
+    let candidate2 = 49u32;
+    configure_v2_spi(&core, vcpu, running2, 0x82);
+    configure_v2_spi(&core, vcpu, candidate2, 0x80);
+    enable_v2_cpu_interface(&core, vcpu, 0, 0xff);
+
+    pend_v2_spi(&core, vcpu, running2);
+    assert_eq!(v2_iar(&core, vcpu) & 0x3ff, u64::from(running2));
+    pend_v2_spi(&core, vcpu, candidate2);
+    assert_eq!(v2_iar(&core, vcpu) & 0x3ff, u64::from(candidate2));
+    assert_eq!(v2_rpr(&core, vcpu), 0x80);
+}
+
+/// A real CPU-interface save/load round trip with a non-empty active stack must
+/// preserve the nesting order, observed through GICC_RPR and EOI.
+#[test]
+fn v2_save_load_preserves_a_nonempty_active_priority_stack() {
+    let (core, _) = core();
+    let binding = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
+    let vcpu = GicVcpuId::new(0);
+    let outer = 50u32;
+    let inner = 51u32;
+
+    configure_v2_spi(&core, vcpu, outer, 0x40);
+    configure_v2_spi(&core, vcpu, inner, 0x20);
+    enable_v2_cpu_interface(&core, vcpu, 0, 0xff);
+
+    pend_v2_spi(&core, vcpu, outer);
+    let outer_iar = v2_iar(&core, vcpu);
+    assert_eq!(outer_iar & 0x3ff, u64::from(outer));
+    pend_v2_spi(&core, vcpu, inner);
+    let inner_iar = v2_iar(&core, vcpu);
+    assert_eq!(inner_iar & 0x3ff, u64::from(inner));
+    assert_eq!(v2_rpr(&core, vcpu), 0x20);
+
+    // Two active layers are live across a save/load round trip.
+    binding.load().unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert_eq!(
+        v2_rpr(&core, vcpu),
+        0x20,
+        "the innermost active priority must stay on top across save/load"
+    );
+
+    v2_eoi(&core, vcpu, inner_iar);
+    assert_eq!(v2_rpr(&core, vcpu), 0x40);
+    v2_eoi(&core, vcpu, outer_iar);
+    assert_eq!(v2_rpr(&core, vcpu), GIC_IDLE_RUNNING_PRIORITY);
 }

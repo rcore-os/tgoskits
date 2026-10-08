@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::fmt;
 
-use ax_sync::RawSpinLock;
+use ax_sync::Mutex;
 use axdevice_base::{
     DeviceError, DeviceId, DeviceResult, RoutedAdmissionEpoch as RoutedGrantAdmissionEpoch,
     RoutedBindingGeneration, RoutedDeviceGrant, RoutedGrantScope,
@@ -29,9 +29,9 @@ struct AdmissionState {
 pub(super) struct EndpointAdmission {
     generation: EndpointBindingGeneration,
     epoch: RoutedAdmissionEpoch,
-    state: RawSpinLock<AdmissionState>,
+    state: Mutex<AdmissionState>,
     #[cfg(test)]
-    drain_observed_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    drain_observed_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl EndpointAdmission {
@@ -39,24 +39,24 @@ impl EndpointAdmission {
         Self {
             generation,
             epoch,
-            state: RawSpinLock::new(AdmissionState {
+            state: Mutex::new(AdmissionState {
                 open: true,
                 leases: 0,
                 permits: 0,
             }),
             #[cfg(test)]
-            drain_observed_hook: RawSpinLock::new(None),
+            drain_observed_hook: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub(super) fn set_drain_observed_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.drain_observed_hook.lock_irqsave() = Some(hook);
+        *self.drain_observed_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]
     fn notify_drain_observed(&self) {
-        let hook = self.drain_observed_hook.lock_irqsave().take();
+        let hook = self.drain_observed_hook.lock().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -67,7 +67,7 @@ impl EndpointAdmission {
         self: &Arc<Self>,
         token: &EndpointRouteToken,
     ) -> DeviceResult<AdmissionLease> {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         Self::validate_route(&state, self.generation, self.epoch, token)?;
         state.leases = state
             .leases
@@ -89,7 +89,7 @@ impl EndpointAdmission {
         token: &EndpointRouteToken,
         dma_enabled: bool,
     ) -> DeviceResult<(AdmissionLease, RoutedDeviceGrant, RoutedGrantScope)> {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         Self::validate_route(&state, self.generation, self.epoch, token)?;
         let (grant, grant_scope) =
             token
@@ -131,7 +131,7 @@ impl EndpointAdmission {
     }
 
     pub(super) fn acquire_irq_permit(self: &Arc<Self>) -> DeviceResult<IrqPermitLease> {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         if !state.open {
             return Err(DeviceError::InvalidState {
                 operation: "publish PCI endpoint interrupt state",
@@ -152,12 +152,12 @@ impl EndpointAdmission {
 
     #[cfg(test)]
     pub(super) fn close(&self) {
-        self.state.lock_irqsave().open = false;
+        self.state.lock().open = false;
     }
 
     /// Closes new route admission and its ordinary grant under one gate.
     pub(super) fn close_with_grant(&self, grant: &RoutedDeviceGrant) {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         state.open = false;
         grant.close_admission();
     }
@@ -168,7 +168,7 @@ impl EndpointAdmission {
 
     pub(super) fn wait_for_irq_permits_with_budget(&self, attempts: usize) -> DeviceManagerResult {
         for _ in 0..=attempts {
-            if self.state.lock_irqsave().permits == 0 {
+            if self.state.lock().permits == 0 {
                 return Ok(());
             }
             core::hint::spin_loop();
@@ -186,7 +186,7 @@ impl EndpointAdmission {
     fn wait_for_idle_with_budget(&self, attempts: usize) -> DeviceManagerResult {
         for _ in 0..=attempts {
             let idle = {
-                let state = self.state.lock_irqsave();
+                let state = self.state.lock();
                 state.leases == 0 && state.permits == 0
             };
             if idle {
@@ -209,7 +209,7 @@ impl EndpointAdmission {
         grant: &RoutedDeviceGrant,
         epoch: RoutedGrantAdmissionEpoch,
     ) {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         state.open = true;
         grant.reopen_admission(epoch);
     }
@@ -221,7 +221,7 @@ pub(super) struct AdmissionLease {
 
 impl Drop for AdmissionLease {
     fn drop(&mut self) {
-        self.admission.state.lock_irqsave().leases -= 1;
+        self.admission.state.lock().leases -= 1;
     }
 }
 
@@ -231,7 +231,7 @@ pub(super) struct IrqPermitLease {
 
 impl Drop for IrqPermitLease {
     fn drop(&mut self) {
-        self.admission.state.lock_irqsave().permits -= 1;
+        self.admission.state.lock().permits -= 1;
     }
 }
 
@@ -273,7 +273,7 @@ impl EndpointRouteToken {
     }
 
     pub(crate) fn snapshot_if_admitted(&self) -> Option<Self> {
-        let state = self.admission.state.lock_irqsave();
+        let state = self.admission.state.lock();
         state.open.then(|| self.clone())
     }
 }
@@ -321,28 +321,28 @@ pub(super) struct EndpointRouterState {
 }
 
 pub(super) struct EndpointRouter {
-    pub(super) state: RawSpinLock<EndpointRouterState>,
+    pub(super) state: Mutex<EndpointRouterState>,
     #[cfg(test)]
-    reset_admission_hook: RawSpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    reset_admission_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl EndpointRouter {
     pub(super) fn new() -> Self {
         Self {
-            state: RawSpinLock::new(EndpointRouterState::default()),
+            state: Mutex::new(EndpointRouterState::default()),
             #[cfg(test)]
-            reset_admission_hook: RawSpinLock::new(None),
+            reset_admission_hook: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub(super) fn set_reset_admission_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.reset_admission_hook.lock_irqsave() = Some(hook);
+        *self.reset_admission_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]
     fn notify_reset_admission(&self) {
-        let hook = self.reset_admission_hook.lock_irqsave().take();
+        let hook = self.reset_admission_hook.lock().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -353,7 +353,7 @@ impl EndpointRouter {
         device: DeviceId,
         function: Arc<dyn PciFunction>,
     ) -> DeviceManagerResult<EndpointRouteToken> {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         if state.endpoints.contains_key(&device) {
             return Err(DeviceManagerError::ResourceConflict {
                 operation: "bind PCI endpoint route",
@@ -398,7 +398,7 @@ impl EndpointRouter {
     pub(super) fn acquire_irq_permit(&self, device: DeviceId) -> DeviceResult<IrqPermitLease> {
         let admission = self
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .get(&device)
             .map(|endpoint| endpoint.token.admission.clone())
@@ -410,7 +410,7 @@ impl EndpointRouter {
     }
 
     pub(super) fn invalidate(&self, token: &EndpointRouteToken) -> Option<Arc<dyn PciFunction>> {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         if state
             .endpoints
             .get(&token.device)
@@ -427,7 +427,7 @@ impl EndpointRouter {
         &self,
         device: DeviceId,
     ) -> Option<(Arc<dyn PciFunction>, Arc<EndpointAdmission>)> {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         let entry = state.endpoints.remove(&device)?;
         entry.token.admission.close_with_grant(&entry.token.grant);
         Some((entry.function, entry.token.admission))
@@ -437,7 +437,7 @@ impl EndpointRouter {
         &self,
         token: &EndpointRouteToken,
     ) -> DeviceResult<Arc<dyn PciFunction>> {
-        let state = self.state.lock_irqsave();
+        let state = self.state.lock();
         state
             .endpoints
             .get(&token.device)
@@ -471,7 +471,7 @@ impl EndpointRouter {
         commands: &[(DeviceId, PciCommandState)],
     ) -> DeviceManagerResult {
         let endpoints = {
-            let state = self.state.lock_irqsave();
+            let state = self.state.lock();
             if commands.len() != state.endpoints.len() {
                 return Err(DeviceManagerError::InvalidState {
                     operation: "reset PCI endpoints",
@@ -589,7 +589,7 @@ impl EndpointRouter {
 
     pub(super) fn endpoint_functions(&self) -> Vec<Arc<dyn PciFunction>> {
         self.state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .values()
             .map(|endpoint| endpoint.function.clone())
@@ -617,7 +617,7 @@ impl EndpointRouter {
         &self,
     ) -> DeviceManagerResult<Vec<(EndpointRouteToken, EndpointRouteToken)>> {
         let (replacements, old_admissions) = {
-            let mut state = self.state.lock_irqsave();
+            let mut state = self.state.lock();
             for endpoint in state.endpoints.values() {
                 if endpoint.token.admission_epoch() == u64::MAX {
                     return Err(DeviceManagerError::InvalidState {
@@ -663,7 +663,7 @@ impl EndpointRouter {
 
     pub(super) fn close_admissions_and_drain(&self) -> DeviceManagerResult {
         let admissions = {
-            let state = self.state.lock_irqsave();
+            let state = self.state.lock();
             for endpoint in state.endpoints.values() {
                 endpoint
                     .token
@@ -684,7 +684,7 @@ impl EndpointRouter {
 
     pub(super) fn invalidate_all(&self) -> (Vec<PendingIrqWithdrawal>, DeviceManagerResult) {
         let pending = {
-            let mut state = self.state.lock_irqsave();
+            let mut state = self.state.lock();
             let pending = state
                 .endpoints
                 .values()
@@ -715,7 +715,7 @@ impl EndpointRouter {
     }
 
     pub(super) fn open_admissions(&self) {
-        let state = self.state.lock_irqsave();
+        let state = self.state.lock();
         for endpoint in state.endpoints.values() {
             endpoint.token.admission.open_with_grant(
                 &endpoint.token.grant,

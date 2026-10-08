@@ -22,6 +22,13 @@ pub enum AxVmError {
         operation: &'static str,
         source: axvm_types::VmBackendError,
     },
+    /// Carries native GIC facts out of a hardware binding without formatting.
+    #[cfg(target_arch = "aarch64")]
+    #[error("virtual interrupt operation {operation} failed: {source}")]
+    InterruptController {
+        operation: &'static str,
+        source: arm_vgic::VgicError,
+    },
     /// A vCPU transition was rejected without formatting in a pinned scope.
     #[error("invalid vCPU state: expected {expected:?}, observed {actual:?}")]
     VcpuState {
@@ -146,6 +153,14 @@ pub enum AxVmError {
 }
 
 impl AxVmError {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn interrupt_controller(
+        operation: &'static str,
+        source: arm_vgic::VgicError,
+    ) -> Self {
+        Self::InterruptController { operation, source }
+    }
+
     pub(crate) const fn invalid_transition(
         from: VmStatus,
         to: VmStatus,
@@ -452,6 +467,12 @@ macro_rules! ax_err {
 pub(crate) use ax_err;
 pub(crate) use ax_err_type;
 
+impl From<crate::services::SignalError> for AxVmError {
+    fn from(error: crate::services::SignalError) -> Self {
+        Self::interrupt("runtime signal", error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::string::ToString;
@@ -610,11 +631,5 @@ mod tests {
         assert!(matches!(cases[5], AxVmError::Memory { .. }));
         assert!(matches!(cases[6], AxVmError::Unsupported { .. }));
         assert!(matches!(cases[7], AxVmError::Host { .. }));
-    }
-}
-
-impl From<crate::services::SignalError> for AxVmError {
-    fn from(error: crate::services::SignalError) -> Self {
-        Self::interrupt("runtime signal", error)
     }
 }

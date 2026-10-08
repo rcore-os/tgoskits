@@ -30,6 +30,7 @@ use crate::{
 };
 
 mod capabilities;
+mod console;
 pub(crate) mod fdt;
 mod hsm;
 mod ipi;
@@ -109,8 +110,9 @@ impl RiscvEntry {
                 entry_point,
                 context_id: arg as usize,
             },
+            RiscvVmExit::SbiCall(call) => RiscvExit::SbiCall(call),
             RiscvVmExit::CpuDown => RiscvExit::CpuOff,
-            RiscvVmExit::Halt => RiscvExit::Halt,
+            RiscvVmExit::SbiStandby => RiscvExit::SbiStandby,
             RiscvVmExit::SystemDown => RiscvExit::SystemDown,
             RiscvVmExit::Nothing => RiscvExit::Nothing,
         }
@@ -243,7 +245,7 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn finish_exit(
-        _vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut AxVCpu<Self::VCpu>,
         entry: &Self::Entry,
         mut exit: Self::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -258,6 +260,23 @@ impl ArchOps for Riscv64Arch {
             )
             .ok()
             .map(Vec::into_boxed_slice);
+        }
+        if let RiscvExit::SbiCall(call) = exit
+            && !console::is_console_call(call)
+        {
+            let result = vcpu
+                .get_arch_vcpu()
+                .forward_task_sbi(call)
+                .map_err(|error| {
+                    crate::vcpu::map_vcpu_backend_error(
+                        "forward RISC-V SBI call",
+                        riscv_error_to_backend(error),
+                    )
+                })?;
+            exit = RiscvExit::SbiResult {
+                error: result.error,
+                value: result.value,
+            };
         }
         Ok(exit)
     }
@@ -384,7 +403,16 @@ impl ArchOps for Riscv64Arch {
             RiscvExit::CpuOff => Ok(VcpuAction::Control(GuestRequest::CpuOff {
                 abi: HyperCallAbi::native(),
             })),
-            RiscvExit::Halt => Ok(VcpuAction::Wait(WaitReason::Idle)),
+            RiscvExit::SbiCall(call) => Ok(VcpuAction::Reenter(console::handle(call, services))),
+            RiscvExit::SbiResult { error, value } => {
+                Ok(VcpuAction::Reenter(RiscvCompletion::SbiRet {
+                    error,
+                    value,
+                }))
+            }
+            RiscvExit::SbiStandby => Ok(VcpuAction::Wait(WaitReason {
+                return_value: Some(0),
+            })),
             RiscvExit::SystemDown => Ok(VcpuAction::Stop(StopReason::SystemDown)),
             RiscvExit::Nothing => Ok(VcpuAction::Reenter(RiscvCompletion::None)),
         }
@@ -507,6 +535,10 @@ impl AxvmRiscvVcpu {
     /// Completes a previously returned SBI IPI request with its original ABI.
     fn complete_ipi(&mut self, request: RiscvIpiRequest, completion: RiscvIpiCompletion) {
         self.0.complete_ipi(request, completion);
+    }
+
+    fn forward_task_sbi(&mut self, call: RiscvSbiCall) -> RiscvVcpuResult<SbiRet> {
+        self.0.forward_task_sbi(call)
     }
 
     /// Steps the saved guest instruction pointer by one retired emulation.

@@ -19,7 +19,7 @@ use crate::{
     architecture::{ArchOps, ops::RegisterCompletion},
     engine::{
         ArchitectureExitHandler, EngineOutcome, ExecutionEntry, ExitHandler, OwnedVcpuEngine,
-        VcpuAction, VcpuTask, WaitReason,
+        VcpuAction, VcpuTask,
     },
     guest_memory::{DecodeMemory, MemoryRevision},
     host::task::{StagedThread, ThreadHandle},
@@ -245,7 +245,7 @@ pub(crate) fn prepare_vcpu_thread(
     services: Arc<RunServices>,
     control: Arc<ControlShared>,
     cpu_on: Option<CpuOnArgs>,
-) -> Result<PreparedVcpuThread, (AxVmError, StartupOwnership)> {
+) -> Result<PreparedVcpuThread, (Box<AxVmError>, StartupOwnership)> {
     let signals = backend.run_state();
     let port = VcpuPort::new(instance, signals.clone(), entry.signals.clone());
     let transfer = Arc::new(Mutex::new(Some(backend)));
@@ -257,7 +257,9 @@ pub(crate) fn prepare_vcpu_thread(
     let selected = requested_affinity.unwrap_or(available) & available;
     if selected == 0 {
         return Err((
-            AxVmError::invalid_config("vCPU affinity has no enabled virtualization CPU"),
+            Box::new(AxVmError::invalid_config(
+                "vCPU affinity has no enabled virtualization CPU",
+            )),
             StartupOwnership::Backend(Box::new(
                 transfer
                     .lock_unpoisoned()
@@ -291,7 +293,7 @@ pub(crate) fn prepare_vcpu_thread(
         Ok(prepared) => prepared,
         Err(error) => {
             return Err((
-                AxVmError::host("prepare vCPU owner", error),
+                Box::new(AxVmError::host("prepare vCPU owner", error)),
                 StartupOwnership::Backend(Box::new(
                     transfer
                         .lock_unpoisoned()
@@ -308,7 +310,7 @@ pub(crate) fn prepare_vcpu_thread(
             // PreparedThread::drop queues cancellation. Keep both its task
             // handle and backend transfer until the control owner joins it.
             return Err((
-                AxVmError::host("stage vCPU owner", error),
+                Box::new(AxVmError::host("stage vCPU owner", error)),
                 StartupOwnership::Cancelled(Box::new(PreparedVcpuThread {
                     staged: None,
                     task,
@@ -560,7 +562,7 @@ fn run_owner(
         match action {
             VcpuAction::Reenter(value) => task.completion = Some(value),
             VcpuAction::Wait(reason) => {
-                if let WaitReason::IdleWithReturn(value) = reason
+                if let Some(value) = reason.return_value
                     && let Err(error) = task
                         .engine
                         .commit_only(&task.entry, RegisterCompletion::Return(value).into())

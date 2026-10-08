@@ -235,6 +235,14 @@ impl RiscvNestedPagingConfig {
     }
 }
 
+/// Owned SBI ABI values captured before backend retirement.
+#[derive(Clone, Copy, Debug)]
+pub struct RiscvSbiCall {
+    pub extension: usize,
+    pub function: usize,
+    pub arguments: [usize; 6],
+}
+
 /// VM exits returned by the RISC-V vCPU core.
 #[derive(Debug)]
 pub enum RiscvVmExit {
@@ -281,6 +289,8 @@ pub enum RiscvVmExit {
 
     /// Guest requested supervisor software interrupts for other harts.
     SendIpi(RiscvIpiRequest),
+    /// SBI work interpreted only after unloading the hardware backend.
+    SbiCall(RiscvSbiCall),
     /// Guest requested another CPU to start.
     CpuUp {
         /// Target vCPU or hart ID.
@@ -292,8 +302,8 @@ pub enum RiscvVmExit {
     },
     /// Guest requested this CPU to stop.
     CpuDown,
-    /// Guest halted.
-    Halt,
+    /// Retentive SBI hart suspend returns an ABI success after wake.
+    SbiStandby,
     /// Guest requested system shutdown.
     SystemDown,
     /// No host-visible action is needed.
@@ -348,8 +358,12 @@ pub enum RiscvExit {
     },
     /// Guest requested this hart to stop.
     CpuOff,
-    /// Guest halted or suspended and must wait for a lifecycle event.
-    Halt,
+    /// An SBI console request whose guest memory is accessed in task context.
+    SbiCall(RiscvSbiCall),
+    /// Task-side forwarding produced an owned ABI result.
+    SbiResult { error: usize, value: usize },
+    /// Retentive SBI hart suspend completes its ABI before parking.
+    SbiStandby,
     /// Guest requested system shutdown.
     SystemDown,
     /// Re-enter the guest without a register completion.

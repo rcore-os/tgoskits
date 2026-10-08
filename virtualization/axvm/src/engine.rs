@@ -43,11 +43,9 @@ pub(crate) enum EngineOutcome<E> {
 
 /// Why a vCPU task leaves the guest-entry loop and parks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WaitReason {
-    /// No guest work is currently pending; park until an external event.
-    Idle,
-    /// PSCI standby commits its return register before arming the wait.
-    IdleWithReturn(usize),
+pub(crate) struct WaitReason {
+    /// Optional ABI result committed before parking; ordinary WFI/HLT preserves registers.
+    pub(crate) return_value: Option<usize>,
 }
 
 /// All values used while hardware is loaded are prepared in task context.
@@ -152,6 +150,12 @@ impl<A: crate::architecture::ArchOps> VcpuEngine for OwnedVcpuEngine<A> {
                                 A::inject_arch_interrupt(vcpu, &entry.architecture, interrupt)?
                             }
                         }
+                    }
+                    // Completion and drained interrupts are committed to owned
+                    // backend/canonical state even when migration cancels entry.
+                    // Retrying must not lose either publication.
+                    if !A::entry_cpu_is_ready(vcpu) {
+                        return Ok(EngineOutcome::Interrupted);
                     }
                     A::before_guest(vcpu, &entry.architecture)?;
                     let irq = IrqSaveGuard::new();

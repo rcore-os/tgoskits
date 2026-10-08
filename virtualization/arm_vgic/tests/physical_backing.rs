@@ -57,15 +57,24 @@ fn physical_spi_backing_rejects_software_signals_and_releases_ownership() {
         .unwrap();
     assert!(matches!(
         controller.configure_spi_input(spi, TriggerMode::Level),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
     assert!(matches!(
         controller.set_spi_level(spi, true),
-        Err(VgicError::Unsupported { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::Unsupported,
+            ..
+        })
     ));
     assert!(matches!(
         controller.pulse_spi(spi),
-        Err(VgicError::Unsupported { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::Unsupported,
+            ..
+        })
     ));
     binding1.load().unwrap();
     controller
@@ -119,7 +128,10 @@ fn physical_spi_unbind_failure_preserves_ownership_for_retry() {
     ));
     assert!(matches!(
         controller.bind_physical_spi(spi, host, GicVcpuId::new(0)),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
 
     controller.unbind_physical_spi(spi).unwrap();
@@ -161,7 +173,10 @@ fn physical_spi_teardown_retires_inflight_delivery_before_unbind() {
 
     assert!(matches!(
         controller.unbind_physical_spi(spi),
-        Err(VgicError::InvalidStateTransition { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::InvalidState,
+            ..
+        })
     ));
     controller.teardown_physical_spi(spi).unwrap();
     controller
@@ -439,14 +454,20 @@ fn physical_backing_rejects_missing_affinity_and_duplicate_ownership() {
 
     assert!(matches!(
         controller.bind_physical_spi(spi, PhysicalIrqId::new(1), GicVcpuId::new(1)),
-        Err(VgicError::ResourceNotFound { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::NotFound,
+            ..
+        })
     ));
     controller
         .bind_physical_spi(spi, PhysicalIrqId::new(1), GicVcpuId::new(0))
         .unwrap();
     assert!(matches!(
         controller.bind_physical_spi(spi, PhysicalIrqId::new(2), GicVcpuId::new(0)),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
     assert!(matches!(
         controller.bind_physical_spi(
@@ -454,7 +475,10 @@ fn physical_backing_rejects_missing_affinity_and_duplicate_ownership() {
             PhysicalIrqId::new(1),
             GicVcpuId::new(0)
         ),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
 
     controller
@@ -472,7 +496,10 @@ fn physical_backing_rejects_missing_affinity_and_duplicate_ownership() {
             LpiId::new(9000).unwrap(),
             GicVcpuId::new(0)
         ),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
     controller
         .signal_msi(ItsDeviceId::new(7), EventId::new(1))
@@ -508,7 +535,10 @@ fn msi_event_cannot_mix_software_and_physical_backings() {
             LpiId::new(9000).unwrap(),
             GicVcpuId::new(0),
         ),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
 
     controller
@@ -521,7 +551,10 @@ fn msi_event_cannot_mix_software_and_physical_backings() {
         .unwrap();
     assert!(matches!(
         controller.configure_msi_input(physical_device, physical_event),
-        Err(VgicError::ResourceConflict { .. })
+        Err(VgicError::NativeState {
+            kind: arm_vgic::StateErrorKind::ResourceBusy,
+            ..
+        })
     ));
 }
 
@@ -981,7 +1014,10 @@ fn physical_spi_cannot_be_unbound_while_save_completes_its_activation() {
     backend.set_complete_hook(move || {
         *observed.lock().unwrap() = Some(matches!(
             controller_during_completion.teardown_physical_spi(physical_spi),
-            Err(VgicError::InvalidStateTransition { .. })
+            Err(VgicError::NativeState {
+                kind: arm_vgic::StateErrorKind::InvalidState,
+                ..
+            })
         ));
     });
     backend.set_eoi_count(GicVcpuId::new(0), 1);
@@ -1383,7 +1419,12 @@ impl GicV3Backend for ReentrantMsiBackend {
         controller
             .software_pending_count(GicVcpuId::new(0))
             .map(|_| ())
-            .map_err(|error| GicV3BackendError::new("re-enter controller", format!("{error}")))
+            .map_err(|_| {
+                GicV3BackendError::new(
+                    "re-enter controller",
+                    "the re-entrant controller call failed",
+                )
+            })
     }
 }
 

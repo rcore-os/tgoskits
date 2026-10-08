@@ -43,12 +43,12 @@ impl PciRootBinding {
     }
 
     pub(super) fn queue_irq_withdrawal(&self, withdrawal: PendingIrqWithdrawal) {
-        self.pending_irq_withdrawals.lock_irqsave().push(withdrawal);
+        self.pending_irq_withdrawals.lock().push(withdrawal);
     }
 
     fn has_pending_irq_withdrawal(&self, device: DeviceId) -> bool {
         self.pending_irq_withdrawals
-            .lock_irqsave()
+            .lock()
             .iter()
             .any(|withdrawal| withdrawal.device == device)
     }
@@ -154,7 +154,7 @@ impl PciRootBinding {
         // its hardware, so repeating the stop is an idempotent success. A dead
         // binding that still owns routes failed earlier and must report that
         // failure instead of masking it.
-        if self.lifecycle.lock_irqsave().state == BindingLifecycleState::Dead {
+        if self.lifecycle.lock().state == BindingLifecycleState::Dead {
             return if self.router.endpoint_functions().is_empty() {
                 Ok(())
             } else {
@@ -189,7 +189,7 @@ impl PciRootBinding {
     }
 
     fn is_running(&self) -> bool {
-        self.lifecycle.lock_irqsave().state == BindingLifecycleState::Running
+        self.lifecycle.lock().state == BindingLifecycleState::Running
     }
 
     fn reset_routes(&self) -> DeviceManagerResult {

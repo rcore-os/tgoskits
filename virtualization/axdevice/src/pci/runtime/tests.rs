@@ -2,6 +2,7 @@ use alloc::{sync::Weak, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use ax_sync::RawSpinLock;
 use axdevice_base::{
     ControllerInputId, DeviceAccess, InterruptControllerId, InterruptEndpoint, InterruptSharing,
     InterruptTrigger, IrqError, IrqResult, Resource, WiredIrqInput, WiredIrqSink,
@@ -240,7 +241,7 @@ impl PciFunction for ReentrantLifecycleFunction {
             operation: "re-enter PCI lifecycle from command callback",
             detail: "test binding was dropped".into(),
         })?;
-        assert!(binding.lifecycle.try_lock_irqsave().is_some());
+        assert!(binding.lifecycle.try_lock().is_some());
         assert!(matches!(
             binding.reset_lifecycle(),
             Err(DeviceManagerError::InvalidState { .. })

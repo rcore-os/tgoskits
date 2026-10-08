@@ -164,9 +164,11 @@ impl Owner {
                 match outcome {
                     VcpuExitOutcome::CpuOff => member.cpu_off = true,
                     VcpuExitOutcome::Fault(error) if startup_failed => {
+                        log::error!("vCPU {instance:?} failed during startup: {error}");
                         self.last_failure = Some(error);
                     }
                     VcpuExitOutcome::Fault(error) => {
+                        log::error!("vCPU {instance:?} exited with a fault: {error}");
                         self.last_stop_reason = Some(crate::StopReason::Fault(error.to_string()));
                         run.failure.get_or_insert(error.clone());
                         self.last_failure = Some(error);

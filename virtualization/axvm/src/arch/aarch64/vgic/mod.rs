@@ -322,14 +322,21 @@ fn publish_irq_kick(run: &RawSpinLock<Option<Arc<RunSignals>>>, vcpu_id: usize) 
     let Some(signals) = signals else {
         return Err(VgicError::Backend {
             operation: "kick AArch64 vCPU from IRQ",
-            detail: "the VGIC runtime is not bound to a run".to_string(),
+            source: arm_vgic::GicV3BackendError::new(
+                "kick AArch64 vCPU from IRQ",
+                "the VGIC runtime is not bound to a run",
+            ),
         });
     };
     signals
         .kick_from_irq(vcpu_id)
-        .map_err(|error| VgicError::Backend {
+        .map_err(|_| VgicError::Backend {
             operation: "kick AArch64 vCPU from IRQ",
-            detail: std::format!("{error:?}"),
+            source: arm_vgic::GicV3BackendError::value(
+                "kick AArch64 vCPU from IRQ",
+                "the bound signal target rejected publication",
+                vcpu_id as u64,
+            ),
         })
 }
 

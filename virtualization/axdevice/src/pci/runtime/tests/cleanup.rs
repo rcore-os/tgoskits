@@ -135,9 +135,19 @@ fn failed_owner_irq_withdrawal_is_retryable() {
         )
         .unwrap();
 
-    drop(lease);
+    assert!(matches!(
+        binding.stop_lifecycle(),
+        Err(DeviceManagerError::Device(DeviceError::Backend { .. }))
+    ));
     assert_eq!(*recording.withdrawals.lock_irqsave(), 0);
-    assert!(binding.retry_irq_withdrawals().is_ok());
+    // A subsequent stop must retire the retained IRQ owner, even though its
+    // route has already been withdrawn. An empty route table is not proof
+    // that the previous stop completed.
+    binding.stop_lifecycle().unwrap();
+    assert_eq!(*recording.withdrawals.lock_irqsave(), 1);
+    assert_eq!(binding.lifecycle.lock().state, BindingLifecycleState::Dead);
+    drop(lease);
+    binding.stop_lifecycle().unwrap();
     assert_eq!(*recording.withdrawals.lock_irqsave(), 1);
 }
 
@@ -224,7 +234,7 @@ fn binding_rolls_back_route_and_grant_when_initial_sync_fails() {
         Err(DeviceManagerError::Device(DeviceError::Unsupported { .. }))
     ));
     assert!(grants.is_empty());
-    assert!(binding.router.state.lock_irqsave().endpoints.is_empty());
+    assert!(binding.router.state.lock().endpoints.is_empty());
 }
 
 #[test]

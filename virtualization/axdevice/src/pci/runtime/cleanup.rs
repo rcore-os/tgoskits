@@ -4,7 +4,7 @@ use axdevice_base::DeviceId;
 
 use super::{
     EndpointIrqTransitionPermit, EndpointRouteToken, PciRootBinding,
-    lifecycle::PendingIrqWithdrawal,
+    lifecycle::{PendingIrqWithdrawal, transfer_pending_irq_withdrawals},
 };
 use crate::{DeviceManagerError, DeviceManagerResult, ServiceCardinality, ServiceKey};
 
@@ -17,6 +17,9 @@ impl Drop for PciRootBinding {
         if let Err(error) = self.stop_lifecycle() {
             warn!("PCI root teardown lifecycle handoff could not complete: {error}");
         }
+        // Destruction cannot retain a retry queue in this binding. Transfer
+        // closed endpoint owners before their last local references disappear.
+        transfer_pending_irq_withdrawals(&self.pending_irq_withdrawals);
     }
 }
 

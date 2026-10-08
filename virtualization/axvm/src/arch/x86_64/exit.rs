@@ -49,10 +49,32 @@ pub(crate) fn handle_io_read(
         .read_device(&access)?
         .map(|value| value as usize)
         .unwrap_or_else(|| unmapped_port_value(exit.width));
-    // The guest reads the port operand from the accumulator (AL/AX/EAX/RAX).
-    Ok(VcpuAction::Reenter(X86Completion::Register(
-        RegisterCompletion::Gpr { register: 0, value },
-    )))
+    // IN preserves the remaining accumulator bits for byte and word operands.
+    let completion = match exit.width {
+        AccessWidth::Byte => X86Completion::ByteGpr {
+            register: policy::X86ByteRegister {
+                gpr: 0,
+                high: false,
+            },
+            value: value as u8,
+        },
+        AccessWidth::Word => X86Completion::WordGpr {
+            register: 0,
+            value: value as u16,
+        },
+        AccessWidth::Dword => RegisterCompletion::Gpr {
+            register: 0,
+            value: value as u32 as usize,
+        }
+        .into(),
+        AccessWidth::Qword => {
+            return Err(AxVmError::invalid_input(
+                "read x86 I/O port",
+                "IN has no 64-bit operand",
+            ));
+        }
+    };
+    Ok(VcpuAction::Reenter(completion))
 }
 
 pub(crate) fn handle_io_write(

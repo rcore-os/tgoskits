@@ -16,7 +16,7 @@ mod consts;
 /// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
 mod guest_mem;
 pub mod host;
-mod sbi_console;
+pub(super) mod sbi_console;
 mod sbi_ipi;
 pub mod types;
 mod vcpu;
@@ -26,7 +26,7 @@ pub use ax_cpu::registers::GprIndex;
 pub use types::{
     RiscvAccessFlags, RiscvAccessWidth, RiscvCompletion, RiscvExit, RiscvGuestPhysAddr,
     RiscvHostPhysAddr, RiscvHostVirtAddr, RiscvIpiCompletion, RiscvIpiRequest,
-    RiscvNestedPagingConfig, RiscvVcpuError, RiscvVcpuResult, RiscvVmExit,
+    RiscvNestedPagingConfig, RiscvSbiCall, RiscvVcpuError, RiscvVcpuResult, RiscvVmExit,
 };
 
 pub use self::host::RiscvHostOps;

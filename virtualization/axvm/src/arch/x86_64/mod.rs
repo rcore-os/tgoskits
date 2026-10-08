@@ -352,7 +352,7 @@ impl X86Exit {
                 }
                 Ok(VcpuAction::Reenter(X86Completion::default()))
             }
-            Self::Halt => Ok(VcpuAction::Wait(WaitReason::Idle)),
+            Self::Halt => Ok(VcpuAction::Wait(WaitReason { return_value: None })),
             Self::SystemDown => Ok(VcpuAction::Stop(StopReason::SystemDown)),
             Self::FailEntry(reason) => {
                 warn!("x86 vCPU[{vcpu_id}] guest entry failed: {reason:#x}");

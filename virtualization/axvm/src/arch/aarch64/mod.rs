@@ -55,8 +55,8 @@ pub(crate) struct Aarch64Arch;
 /// The control owner calls this after `AxVM::prepare` has built the device graph
 /// and after the run's `GuestMemoryPort` exists, but before
 /// [`ArchOps::prepare_entry`] extracts the hardware entry. The capability stays
-/// in the task-only ITS adapter inside the VGIC service. `Aarch64Entry` retains
-/// only the controller, and the only operation that consumes the capability is
+/// in the task-only ITS adapter inside the VGIC service. The vCPU backend
+/// retains only the native controller; the only operation consuming this capability is
 /// the task-context GITS MMIO write that drains the command queue with the
 /// backend unloaded; the IRQ-reachable controller callbacks never reach it.
 pub(crate) fn bind_task_memory(resources: &AxVMResources, memory: GuestMemoryPort) -> AxVmResult {
@@ -98,25 +98,6 @@ impl From<RegisterCompletion> for Aarch64Completion {
     }
 }
 
-/// Hardware prepared once per run and shared by every owned vCPU backend.
-///
-/// The entry retains only the native VGIC delivery/CPU-interface port: canonical
-/// raw interrupt state, the checked backend and immutable configuration. It
-/// never holds the `AxVM`, `RunServices`, `DeviceRuntime`, the full controller,
-/// the software-ITS state, or a sleepable lock. The run-bound signals consumed
-/// by the controller's host-IRQ wake path are published into the VGIC runtime
-/// service by `Aarch64VgicRuntime::bind_run`, so they are reachable without a
-/// full VM lookup while the hardware entry stays free of task-context state.
-pub(crate) struct Aarch64Entry {
-    native: GicV3Native,
-}
-
-impl Aarch64Entry {
-    fn new(native: GicV3Native) -> Self {
-        Self { native }
-    }
-}
-
 /// Owned AArch64 VM exit produced after the backend has been unloaded.
 ///
 /// Portable device exits keep the shared owned records. Only the GIC
@@ -151,7 +132,7 @@ impl ArchOps for Aarch64Arch {
     type VCpu = AxvmArmVcpu;
     type PerCpu = AxvmArmPerCpu;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
-    type Entry = Aarch64Entry;
+    type Entry = ();
     type Exit = Aarch64Exit;
     type Completion = Aarch64Completion;
 
@@ -190,7 +171,7 @@ impl ArchOps for Aarch64Arch {
         // already bound to a different run refuses the new binding, so a stale
         // port can never re-target a fresh runtime.
         runtime.bind_run(&signals)?;
-        Ok(Aarch64Entry::new(runtime.native().clone()))
+        Ok(())
     }
 
     fn enter_runtime(vm: &mut AxVM, _signals: &Arc<RunSignals>) -> AxVmResult {
@@ -209,14 +190,32 @@ impl ArchOps for Aarch64Arch {
     fn prepare_vcpu(vcpu: &mut AxVCpu<Self::VCpu>, _entry: &Self::Entry) -> AxVmResult {
         // Task-side preparation runs before CPU binding and IRQ masking, so it
         // may discard any timer wait that a previous migration left armed.
-        vcpu.get_arch_vcpu().invalidate_virtual_timer_wait();
-        Ok(())
+        let arch = vcpu.get_arch_vcpu();
+        let binding = arch
+            .timer_binding
+            .as_ref()
+            .ok_or(crate::AxVmError::Backend {
+                operation: "prepare architectural timer",
+                source: BackendError::InvalidState,
+            })?;
+        binding.disarm_wait().map_err(|source| {
+            crate::AxVmError::interrupt_controller("disarm architectural timer", source)
+        })?;
+        binding.prepare_run().map_err(|source| {
+            crate::AxVmError::interrupt_controller("retire architectural timer activation", source)
+        })
+    }
+
+    fn entry_cpu_is_ready(vcpu: &mut AxVCpu<Self::VCpu>) -> bool {
+        vcpu.get_arch_vcpu()
+            .timer_binding
+            .as_ref()
+            .is_none_or(|binding| binding.entry_cpu_is_ready())
     }
 
     fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, _entry: &Self::Entry) -> AxVmResult {
-        // The backend is loaded but host IRQs are still enabled. Publishing the
-        // timer PPIs here keeps the sleeping-capable host timer path outside the
-        // IRQ-disabled guest-entry window.
+        // Only canonical timer levels are published while the backend is
+        // loaded; host cancellation and remote completion ran before CPU pin.
         vcpu.get_arch_vcpu().prepare_timer_entry()
     }
 
@@ -367,25 +366,24 @@ impl ArchOps for Aarch64Arch {
                 }
                 .into(),
             )),
-            Aarch64Exit::WaitForInterrupt => Ok(VcpuAction::Wait(WaitReason::Idle)),
+            Aarch64Exit::WaitForInterrupt => {
+                Ok(VcpuAction::Wait(WaitReason { return_value: None }))
+            }
             Aarch64Exit::Nothing => Ok(VcpuAction::Reenter(Aarch64Completion::default())),
         }
     }
 
     fn inject_arch_interrupt(
         _vcpu: &mut AxVCpu<Self::VCpu>,
-        entry: &Self::Entry,
-        interrupt: QueuedVcpuInterrupt,
+        _entry: &Self::Entry,
+        _interrupt: QueuedVcpuInterrupt,
     ) -> AxVmResult {
         // AArch64 delivers every queued interrupt through the VM-local VGIC;
         // there is no separate architecture-only interrupt class.
-        Err(crate::AxVmError::unsupported(
-            "inject AArch64 architecture interrupt",
-            std::format!(
-                "interrupt {interrupt:?} is not routable through controller {}",
-                entry.native.id().value()
-            ),
-        ))
+        Err(crate::AxVmError::Backend {
+            operation: "inject AArch64 architecture interrupt",
+            source: BackendError::Unsupported,
+        })
     }
 
     fn wait_for_event(
@@ -497,7 +495,9 @@ impl AxvmArmVcpu {
             host_virtual_timer_intid,
             timer_config.frequency(),
         )
-        .map_err(|error| crate::AxVmError::interrupt("bind host virtual-timer PPI", error))?;
+        .map_err(|error| {
+            crate::AxVmError::interrupt_controller("bind host virtual-timer PPI", error)
+        })?;
         self.vgic = Some(vgic);
         self.vgic_binding = Some(binding);
         self.timer_binding = Some(timer_binding);
@@ -505,9 +505,10 @@ impl AxvmArmVcpu {
     }
 
     fn binding(&self) -> AxVmResult<&GicV3VcpuBinding> {
-        self.vgic_binding
-            .as_ref()
-            .ok_or_else(|| crate::AxVmError::resource_unavailable("VGIC vCPU binding", "missing"))
+        self.vgic_binding.as_ref().ok_or(crate::AxVmError::Backend {
+            operation: "locate VGIC vCPU binding",
+            source: BackendError::InvalidState,
+        })
     }
 
     /// Advances the saved guest PC past one emulated faulting instruction.
@@ -521,7 +522,7 @@ impl AxvmArmVcpu {
     fn write_sgi1r(&self, value: u64) -> AxVmResult {
         self.binding()?
             .write_sgi1r(value)
-            .map_err(|error| crate::AxVmError::interrupt("write ICC_SGI1R_EL1", error))
+            .map_err(|error| crate::AxVmError::interrupt_controller("write ICC_SGI1R_EL1", error))
     }
 
     fn read_icc(&self, register: ArmGicCpuInterfaceRegister) -> AxVmResult<u64> {
@@ -531,7 +532,9 @@ impl AxvmArmVcpu {
             ArmGicCpuInterfaceRegister::PriorityMask => binding.read_icc_priority_mask(),
             ArmGicCpuInterfaceRegister::RunningPriority => binding.read_icc_running_priority(),
         };
-        result.map_err(|error| crate::AxVmError::interrupt("read virtual ICC register", error))
+        result.map_err(|error| {
+            crate::AxVmError::interrupt_controller("read virtual ICC register", error)
+        })
     }
 
     fn write_icc(&self, register: ArmGicCpuInterfaceRegister, value: u64) -> AxVmResult {
@@ -541,15 +544,18 @@ impl AxvmArmVcpu {
             ArmGicCpuInterfaceRegister::PriorityMask => binding.write_icc_priority_mask(value),
             ArmGicCpuInterfaceRegister::RunningPriority => Ok(()),
         };
-        result.map_err(|error| crate::AxVmError::interrupt("write virtual ICC register", error))
+        result.map_err(|error| {
+            crate::AxVmError::interrupt_controller("write virtual ICC register", error)
+        })
     }
 
     fn deactivate(&self, intid: u32) -> AxVmResult {
-        let intid = IntId::new(intid)
-            .map_err(|error| crate::AxVmError::interrupt("validate ICC_DIR_EL1 INTID", error))?;
-        self.binding()?
-            .deactivate_saved(intid)
-            .map_err(|error| crate::AxVmError::interrupt("deactivate virtual interrupt", error))
+        let intid = IntId::new(intid).map_err(|error| {
+            crate::AxVmError::interrupt_controller("validate ICC_DIR_EL1 INTID", error)
+        })?;
+        self.binding()?.deactivate_saved(intid).map_err(|error| {
+            crate::AxVmError::interrupt_controller("deactivate virtual interrupt", error)
+        })
     }
 
     fn synchronize_timer(&self) -> BackendResult {
@@ -574,7 +580,9 @@ impl AxvmArmVcpu {
                 crate::AxVmError::resource_unavailable("AArch64 timer binding", "missing")
             })?
             .arm_wait(snapshot)
-            .map_err(|error| crate::AxVmError::interrupt("arm architectural timer wait", error))
+            .map_err(|error| {
+                crate::AxVmError::interrupt_controller("arm architectural timer wait", error)
+            })
     }
 
     fn timer_wait_completed(&self, token: vtimer::Aarch64TimerWaitToken) -> bool {
@@ -583,28 +591,23 @@ impl AxvmArmVcpu {
             .is_some_and(|binding| binding.timer_wait_completed(token))
     }
 
-    fn invalidate_virtual_timer_wait(&self) {
-        if let Some(binding) = &self.timer_binding {
-            binding.invalidate_wait();
-        }
-    }
-
     fn prepare_timer_entry(&self) -> AxVmResult {
-        let binding = self.timer_binding.as_ref().ok_or_else(|| {
-            crate::AxVmError::resource_unavailable("AArch64 timer binding", "missing")
-        })?;
-        binding
-            .prepare_run()
-            .map_err(|error| crate::AxVmError::interrupt("prepare timer PPI route", error))?;
+        let binding = self
+            .timer_binding
+            .as_ref()
+            .ok_or(crate::AxVmError::Backend {
+                operation: "locate architectural timer binding",
+                source: BackendError::InvalidState,
+            })?;
         let snapshot = self.inner.timer_snapshot().map_err(|error| {
-            crate::AxVmError::vcpu(
+            crate::vcpu::map_vcpu_backend_error(
                 "snapshot AArch64 architectural timers before entry",
-                std::format!("{error:?}"),
+                arm_error_to_backend(error),
             )
         })?;
-        binding
-            .publish_for_entry(snapshot)
-            .map_err(|error| crate::AxVmError::interrupt("publish timer PPI before entry", error))
+        binding.publish_for_entry(snapshot).map_err(|error| {
+            crate::AxVmError::interrupt_controller("publish timer PPI before entry", error)
+        })
     }
 
     fn accept_host_timer_irq(&self, token: usize) -> bool {
@@ -614,9 +617,9 @@ impl AxvmArmVcpu {
     }
 
     fn has_pending_interrupt(&self) -> AxVmResult<bool> {
-        self.binding()?
-            .has_pending_interrupt()
-            .map_err(|error| crate::AxVmError::interrupt("query pending virtual interrupt", error))
+        self.binding()?.has_pending_interrupt().map_err(|error| {
+            crate::AxVmError::interrupt_controller("query pending virtual interrupt", error)
+        })
     }
 }
 
@@ -804,9 +807,18 @@ fn vgic_backend_result<T>(result: arm_vgic::VgicResult<T>) -> BackendResult<T> {
         arm_vgic::VgicError::ResourceConflict { .. } => BackendError::ResourceBusy,
         arm_vgic::VgicError::DeliveryQueueFull { .. } => BackendError::OutOfMemory,
         arm_vgic::VgicError::Unsupported { .. } => BackendError::Unsupported,
+        arm_vgic::VgicError::NativeState { kind, .. } => match kind {
+            arm_vgic::StateErrorKind::ResourceBusy => BackendError::ResourceBusy,
+            arm_vgic::StateErrorKind::Unsupported => BackendError::Unsupported,
+            arm_vgic::StateErrorKind::InvalidInput => BackendError::InvalidInput,
+            arm_vgic::StateErrorKind::NotFound | arm_vgic::StateErrorKind::InvalidState => {
+                BackendError::InvalidState
+            }
+        },
         arm_vgic::VgicError::ResourceNotFound { .. }
         | arm_vgic::VgicError::InvalidStateTransition { .. }
         | arm_vgic::VgicError::Backend { .. }
+        | arm_vgic::VgicError::HostService { .. }
         | arm_vgic::VgicError::GuestMemory { .. } => BackendError::InvalidState,
     })
 }

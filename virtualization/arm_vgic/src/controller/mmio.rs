@@ -1,14 +1,18 @@
 //! Checked guest-visible GICv3 MMIO views.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use axdevice_base::ItsId;
 use axvm_types::AccessWidth;
 
-use super::{ControllerConfig, GicV3Controller, GicV3Native, state::detached_lpi_target};
+use super::{
+    ControllerConfig, GicV3Controller, GicV3Native,
+    physical::{PhysicalInterruptSnapshot, PhysicalInterruptStateChange},
+    state::LpiDeliveryFailure,
+};
 use crate::{
-    GicVcpuId, GuestMemory, ItsAction, ItsCommandProgress, ItsState, RegisterRegion, VgicError,
-    VgicResult,
+    GicV3VcpuWake, GicVcpuId, GuestMemory, ItsAction, ItsCommandProgress, ItsState, LpiId,
+    RegisterRegion, SpiId, VgicError, VgicResult,
     register::{
         GITS_BASER, GITS_BASER_COUNT, GITS_CBASER, GITS_CREADR, GITS_CTLR, GITS_CWRITER, GITS_IIDR,
         GITS_TYPER, GicComponent, component_id,
@@ -27,37 +31,58 @@ impl GicV3Native {
 
     /// Writes a Distributor register and schedules newly deliverable SPIs.
     pub fn write_distributor(&self, offset: u64, width: AccessWidth, value: u64) -> VgicResult {
-        let (wakes, physical_state_changes) = {
+        // Prepare every buffer the raw guard needs from immutable configuration
+        // before the guard is taken: one wake per software candidate, one per
+        // re-published acknowledgement, and one physical snapshot and change
+        // record per assigned SPI.
+        let spi_count = self.inner.config.spi_count();
+        let mut wakes: Vec<Arc<dyn GicV3VcpuWake>> = Vec::with_capacity(spi_count * 2 + 32);
+        let mut candidates: Vec<SpiId> = Vec::with_capacity(spi_count.max(32));
+        let mut acknowledged: Vec<SpiId> = Vec::with_capacity(spi_count);
+        let mut physical_snapshot: Vec<PhysicalInterruptSnapshot> = Vec::with_capacity(spi_count);
+        let mut physical_state_changes: Vec<PhysicalInterruptStateChange> =
+            Vec::with_capacity(spi_count);
+        let mut physical_failure = None;
+        {
             let mut state = self.inner.state.lock_irqsave();
-            let physical_snapshot = state.physical_interrupt_snapshot()?;
-            let write = state
+            state.physical_interrupt_snapshot_into(&mut physical_snapshot)?;
+            state
                 .distributor
-                .write(offset, width, value, &self.inner.config)?;
-            let candidates = write.into_candidates();
-            let mut wakes = Vec::new();
-            for spi in candidates {
-                if state.has_software_backing(spi, &self.inner.config)
-                    && let Some(wake) = state.queue_spi_if_deliverable(spi)?
+                .write(offset, width, value, &self.inner.config, &mut candidates)?;
+            for spi in &candidates {
+                if state.has_software_backing(*spi, &self.inner.config)
+                    && let Some(wake) = state.queue_spi_if_deliverable(*spi)?
                 {
                     wakes.push(wake);
                 }
             }
-            let acknowledged_physical_spis = state
-                .physical_spi_acknowledged
-                .iter()
-                .filter_map(|(spi, acknowledged)| acknowledged.then_some(*spi))
-                .collect::<Vec<_>>();
-            for spi in acknowledged_physical_spis {
-                if let Some(wake) = state.queue_acknowledged_physical_spi_if_deliverable(spi)? {
-                    wakes.push(wake);
+            acknowledged.extend(
+                state
+                    .physical_spi_acknowledged
+                    .iter()
+                    .filter_map(|(spi, acknowledged)| acknowledged.then_some(*spi)),
+            );
+            for spi in &acknowledged {
+                // The record step is allocation-free; a failure is formatted
+                // only after the raw guard is released.
+                match state.stage_acknowledged_physical_spi(*spi) {
+                    Ok(Some(wake)) => wakes.push(wake),
+                    Ok(None) => {}
+                    Err(failure) => {
+                        physical_failure.get_or_insert(failure);
+                    }
                 }
             }
-            let physical_state_changes =
-                state.physical_interrupt_state_changes(&physical_snapshot)?;
-            (wakes, physical_state_changes)
-        };
-        self.apply_physical_interrupt_state_changes(physical_state_changes)?;
-        for wake in wakes {
+            state.physical_interrupt_state_changes_into(
+                &physical_snapshot,
+                &mut physical_state_changes,
+            )?;
+        }
+        if let Some(failure) = physical_failure {
+            return Err(failure.into_vgic_error());
+        }
+        self.apply_physical_interrupt_state_changes(&physical_state_changes)?;
+        for wake in &wakes {
             wake.wake()?;
         }
         Ok(())
@@ -85,21 +110,21 @@ impl GicV3Native {
         width: AccessWidth,
         value: u64,
     ) -> VgicResult {
-        let wakes = {
+        // The write stages its own newly deliverable interrupts, so the guard
+        // only has to hand back this vCPU's pre-bound wake.
+        let wake = {
             let mut state = self.inner.state.lock_irqsave();
             let loaded = state.cpu_interface_loaded(vcpu);
-            let candidates = state
+            let staged = state
                 .redistributor_mut(vcpu, "write Redistributor")?
                 .write(offset, width, value, &self.inner.config, loaded)?;
-            let mut wakes = Vec::new();
-            for intid in candidates {
-                if let Some(wake) = state.queue_local_if_deliverable(vcpu, intid)? {
-                    wakes.push(wake);
-                }
+            if staged {
+                Some(state.redistributor(vcpu, "write Redistributor")?.wake())
+            } else {
+                None
             }
-            wakes
         };
-        for wake in wakes {
+        if let Some(wake) = wake {
             wake.wake()?;
         }
         Ok(())
@@ -187,16 +212,48 @@ impl GicV3Controller {
         let mut states = self.its.states().lock();
         let progress = write_its_register(&mut states, its_id, offset, width, value, &context)?;
         let (actions, failure) = progress.into_parts();
+        // Materialize the LPI records the decoded deliveries need before the
+        // raw guard is taken, so the in-guard apply only looks up existing
+        // records and never allocates under the lock.
+        let mut prepared: Vec<(GicVcpuId, Vec<LpiId>)> = Vec::new();
+        for action in &actions {
+            let (target, lpi) = match action {
+                ItsAction::Prepare { target, lpi } => (target, lpi),
+                ItsAction::SetPending {
+                    target,
+                    lpi,
+                    pending: true,
+                } => (target, lpi),
+                ItsAction::SetPending { .. } => continue,
+            };
+            match prepared
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == *target)
+            {
+                Some((_, lpis)) => {
+                    if !lpis.contains(lpi) {
+                        lpis.push(*lpi);
+                    }
+                }
+                None => prepared.push((*target, alloc::vec![*lpi])),
+            }
+        }
+        for (target, lpis) in &prepared {
+            self.native.ensure_lpi_records(*target, lpis);
+        }
         // Reserve one wake per decoded delivery effect outside the native raw
         // lock; the loop below only pushes into that capacity and never grows.
         let mut wakes = Vec::with_capacity(actions.len());
-        let mut detached = None;
+        let mut delivery_failure: Option<LpiDeliveryFailure> = None;
         // Apply pre-decoded delivery effects while the ITS lock is still held so
         // concurrent software-ITS MMIO keeps its program order on this instance.
         {
             let mut state = self.native.inner.state.lock_irqsave();
             for action in actions {
                 match action {
+                    // The record storage was already reserved above, outside
+                    // the guard; there is nothing left to apply here.
+                    ItsAction::Prepare { .. } => {}
                     ItsAction::SetPending {
                         target,
                         lpi,
@@ -204,10 +261,11 @@ impl GicV3Controller {
                     } => match state.set_lpi_pending(target, lpi, pending) {
                         Ok(Some(wake)) => wakes.push(wake),
                         Ok(None) => {}
-                        // The target only detaches while the VM is torn down.
+                        // The target only detaches while the VM is torn down,
+                        // and an unmaterialized record is an invariant break.
                         // Keep the queue position and report after the guard.
-                        Err(detached_target) => {
-                            detached.get_or_insert(detached_target);
+                        Err(failure) => {
+                            delivery_failure.get_or_insert(failure);
                         }
                     },
                 }
@@ -220,8 +278,8 @@ impl GicV3Controller {
         if let Some(failure) = failure {
             return Err(failure);
         }
-        if let Some(target) = detached {
-            return Err(detached_lpi_target(target));
+        if let Some(failure) = delivery_failure {
+            return Err(failure.into_vgic_error());
         }
         Ok(())
     }
@@ -268,12 +326,12 @@ fn write_its_register(
                 process_its_commands(states, its_id, context)
             }
             _ => {
-                let index = baser_index(base).ok_or_else(|| VgicError::InvalidAccess {
+                let index = baser_index(base).ok_or(VgicError::InvalidAccess {
                     region: RegisterRegion::Its,
                     operation: "write",
                     offset,
                     width,
-                    detail: "wide register does not belong to an ITS register bank".into(),
+                    reason: "wide register does not belong to an ITS register bank",
                 })?;
                 let its = its_state_mut(states, its_id, "write BASER")?;
                 if !its.enabled() {
@@ -341,15 +399,13 @@ fn its_wide_register(
         GITS_CBASER => Ok(its.cbaser()),
         GITS_CWRITER => Ok(its.cwriter()),
         GITS_CREADR => Ok(its.creadr()),
-        _ => Ok(
-            its.baser(baser_index(base).ok_or_else(|| VgicError::InvalidAccess {
-                region: RegisterRegion::Its,
-                operation: "access ITS register bank",
-                offset,
-                width,
-                detail: "wide register does not belong to an ITS register bank".into(),
-            })?),
-        ),
+        _ => Ok(its.baser(baser_index(base).ok_or(VgicError::InvalidAccess {
+            region: RegisterRegion::Its,
+            operation: "access ITS register bank",
+            offset,
+            width,
+            reason: "wide register does not belong to an ITS register bank",
+        })?)),
     }
 }
 
@@ -378,7 +434,7 @@ fn validate_its_access(
             operation,
             offset,
             width,
-            detail: "access is unaligned or outside the ITS frame".into(),
+            reason: "access is unaligned or outside the ITS frame",
         });
     }
     let valid_width = if matches!(offset, GITS_CTLR | GITS_IIDR)
@@ -396,7 +452,7 @@ fn validate_its_access(
             operation,
             offset,
             width,
-            detail: "register requires a Dword half or an aligned Qword access".into(),
+            reason: "register requires a Dword half or an aligned Qword access",
         });
     }
     Ok(())

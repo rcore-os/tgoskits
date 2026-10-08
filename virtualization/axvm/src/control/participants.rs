@@ -81,7 +81,8 @@ impl Owner {
             cpu_on,
         ) {
             Ok(prepared) => prepared,
-            Err((mut error, ownership)) => {
+            Err((error, ownership)) => {
+                let mut error = *error;
                 let mut backend = match ownership {
                     StartupOwnership::Backend(backend) => *backend,
                     StartupOwnership::Cancelled(cancelled) => match cancelled.abort() {

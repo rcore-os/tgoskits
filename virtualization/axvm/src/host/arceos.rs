@@ -78,10 +78,22 @@ impl HostMemory for ArceOsHost {
     }
 
     fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr {
+        #[cfg(all(feature = "host-test", not(target_os = "none")))]
+        {
+            // Host component tests own real std allocations in an identity
+            // address domain, without native paging or a dummy zero mapping.
+            HostVirtAddr::from_usize(paddr.as_usize())
+        }
+        #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
         modules::ax_hal::mem::phys_to_virt(paddr)
     }
 
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr {
+        #[cfg(all(feature = "host-test", not(target_os = "none")))]
+        {
+            HostPhysAddr::from_usize(vaddr.as_usize())
+        }
+        #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
         modules::ax_hal::mem::virt_to_phys(vaddr)
     }
 }

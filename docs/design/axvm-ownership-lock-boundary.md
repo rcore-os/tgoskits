@@ -114,6 +114,10 @@ impl<T> Future for VmOperation<T> {
 
 `VcpuEngine::run_once(&mut self, entry, completion, signals)` 返回拥有所有权的退出记录或 `Interrupted`。返回任务层时必须已卸载后端并恢复上下文。不能恢复硬件绑定的错误使用既有致命终止约定。MMIO/PIO、推进指令和寄存器写入形成下一次进入提交的 `Completion`。
 
+AArch64 的 `prepare_vcpu` 在 pin 前取消旧等待；迁移到其他 pCPU 时，先在任务上下文完成旧 CPU 的宿主定时器激活。相同 pCPU 保留 active claim，直到客户机撤销该电平，避免到期 CNTV 重复触发宿主退出。pin 后通过 `entry_cpu_is_ready` 再核对归属；准备与 pin 之间发生迁移时，提交已有 Completion 和 pending 后取消本次进入，返回任务层重试远端交接。绑定内只发布 canonical 电平或执行本 CPU ACK/DIR。GIC native 错误携带静态操作与类型化数值，不在 IRQ-off 路径格式化。GICv2 active stack 与退休批次使用固定容量；有限控制器表在构造时准备存储，动态 MSI 表在任务层分配替换缓冲区后短暂交换，raw guard 内不分配或释放节点。
+
+RISC-V 的 SBI ecall 捕获拥有值的 `RiscvSbiCall`，卸载后执行控制台或固件调用。DBCn 使用固定 512 字节缓冲区和规范允许的部分传输，访问租约先校验完整地址范围再调用固件。retentive HSM suspend 先退休 ecall 并准备成功返回值，再等待本 vCPU 信号；没有实现的 non-retentive 状态返回明确不支持。普通 WFI/HLT 不覆盖客户机返回寄存器。
+
 CPU_ON 的拓扑解析和预约由控制任务执行，目标 owner 初始化寄存器并确认启动。CPU_OFF 的后端在退出和 join 后交还控制任务。等待控制回复的 vCPU 已 unbound，仍处理 park/stop/取消。确认匹配实例、运行、激活代次及操作号，过期 startup 成功不能重新打开 guest 入口。
 
 ### 3.2 端口与设备
@@ -122,7 +126,7 @@ CPU_ON 的拓扑解析和预约由控制任务执行，目标 owner 初始化寄
 
 `DeviceWorkPort` 在持久完成状态发布后唤醒指定 poller；poller 退出时由 owner 转交给其他在线 vCPU。设备 stop/reset 使用异步请求端口，不能同步等待控制 owner。
 
-`DeviceLifecycle::suspend` 成功表示后台执行静默，结果可保留到 resume；`stop` 成功表示 worker/硬件活动结束。文件块设备和 PCI 子设备纳入此契约，join 在设备状态锁外执行。
+`DeviceLifecycle::suspend` 成功表示后台执行静默，结果可保留到 resume；`stop` 成功表示 worker/硬件活动结束。文件块设备和 PCI 子设备纳入此契约，join 在设备状态锁外执行。PCI 根路由、准入与生命周期短状态使用任务 `Mutex`；并发 stop 等待独立的操作完成 latch，回调不持有状态锁。IRQ 撤销失败保持 `Stopping` 和资源归属，后续 stop 继续退休；不能把失败发布为 `Dead`。真正的硬 IRQ 发布仍只访问预绑定的 `RunSignals` 和 raw 源槽。
 
 ## 4. 内存与回收
 

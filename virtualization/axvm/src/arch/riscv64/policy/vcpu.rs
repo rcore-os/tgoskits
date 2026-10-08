@@ -24,7 +24,7 @@ use riscv_decode::{
     types::{IType, SType},
 };
 use rustsbi::{Forward, RustSBI, SbiRet};
-use sbi_spec::{hsm, legacy, pmu, rfnc, spi, srst};
+use sbi_spec::{hsm, legacy, rfnc, spi, srst};
 
 use crate::arch::riscv64::policy::{
     EID_HVC, RiscvVcpuCreateConfig,
@@ -34,7 +34,7 @@ use crate::arch::riscv64::policy::{
     sbi_console::*,
     types::{
         RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvGuestVirtAddr, RiscvIpiAbi,
-        RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig, RiscvVcpuError,
+        RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig, RiscvSbiCall, RiscvVcpuError,
         RiscvVcpuResult, RiscvVmExit,
     },
     vpmu::VirtualPmu,
@@ -460,13 +460,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 let extension_id = a[7];
                 let function_id = a[6];
 
-                trace!(
-                    "sbi_call: eid {:#x} ('{}') fid {:#x} param {:?}",
-                    extension_id,
-                    std::string::String::from_utf8_lossy(&(extension_id as u32).to_be_bytes()),
-                    function_id,
-                    param
-                );
+                trace!("sbi_call: eid {extension_id:#x} fid {function_id:#x} param {param:?}");
                 match extension_id {
                     // Compatibility with Legacy Extensions.
                     legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
@@ -477,12 +471,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
-                        legacy::LEGACY_CONSOLE_PUTCHAR => {
-                            sbi_call_legacy_1(legacy::LEGACY_CONSOLE_PUTCHAR, param[0]);
-                        }
-                        legacy::LEGACY_CONSOLE_GETCHAR => {
-                            let c = sbi_call_legacy_0(legacy::LEGACY_CONSOLE_GETCHAR);
-                            self.set_gpr_from_gpr_index(GprIndex::A0, c);
+                        legacy::LEGACY_CONSOLE_PUTCHAR | legacy::LEGACY_CONSOLE_GETCHAR => {
+                            return Ok(self.task_sbi_call(extension_id, function_id, param));
                         }
                         legacy::LEGACY_SEND_IPI => {
                             return self.handle_legacy_send_ipi(param[0], |guest_va, bytes| {
@@ -551,11 +541,19 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             return Ok(RiscvVmExit::CpuDown);
                         }
                         hsm::HART_SUSPEND => {
-                            // These parameters are reserved for a future suspend-state model.
-                            let _suspend_type = a[0];
-                            let _resume_addr = a[1];
-                            let _opaque = a[2];
-                            return Ok(RiscvVmExit::Halt);
+                            match a[0] {
+                                value if value == hsm::suspend_type::RETENTIVE as usize => {
+                                    // Retentive suspend preserves register state and resumes
+                                    // after this ecall; the task owner commits SBI_SUCCESS.
+                                    self.advance_pc(4);
+                                    return Ok(RiscvVmExit::SbiStandby);
+                                }
+                                value if value == hsm::suspend_type::NON_RETENTIVE as usize => {
+                                    self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                                }
+                                _ => self.sbi_return(SbiRet::invalid_param().error, 0),
+                            }
+                            return Ok(RiscvVmExit::Nothing);
                         }
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
@@ -577,75 +575,11 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             ],
                         });
                     }
-                    // Debug Console Extension
-                    EID_DBCN => match function_id {
-                        // Write from memory region to debug console.
-                        FID_CONSOLE_WRITE => {
-                            let num_bytes = param[0];
-                            let gpa = join_u64(param[1], param[2]);
-
-                            if num_bytes == 0 {
-                                self.sbi_return(RET_SUCCESS, 0);
-                                return Ok(RiscvVmExit::Nothing);
-                            }
-
-                            let mut buf = std::vec![0u8; num_bytes];
-                            let copied = guest_mem::copy_from_guest(
-                                &mut buf,
-                                RiscvGuestPhysAddr::from(gpa as usize),
-                            );
-
-                            if copied == buf.len() {
-                                let ret = console_write::<H>(&buf);
-                                self.sbi_return(ret.error, ret.value);
-                            } else {
-                                self.sbi_return(RET_ERR_FAILED, 0);
-                            }
-
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                        // Read to memory region from debug console.
-                        FID_CONSOLE_READ => {
-                            let num_bytes = param[0];
-                            let gpa = join_u64(param[1], param[2]);
-
-                            if num_bytes == 0 {
-                                self.sbi_return(RET_SUCCESS, 0);
-                                return Ok(RiscvVmExit::Nothing);
-                            }
-
-                            let mut buf = std::vec![0u8; num_bytes];
-                            let ret = console_read::<H>(&mut buf);
-
-                            if ret.is_ok() && ret.value <= buf.len() {
-                                let copied = guest_mem::copy_to_guest(
-                                    &buf[..ret.value],
-                                    RiscvGuestPhysAddr::from(gpa as usize),
-                                );
-                                if copied == ret.value {
-                                    self.sbi_return(RET_SUCCESS, ret.value);
-                                } else {
-                                    self.sbi_return(RET_ERR_FAILED, 0);
-                                }
-                            } else {
-                                self.sbi_return(ret.error, ret.value);
-                            }
-
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                        // Write a single byte to debug console.
-                        FID_CONSOLE_WRITE_BYTE => {
-                            let byte = (param[0] & 0xff) as u8;
-                            print_byte(byte);
-                            self.sbi_return(RET_SUCCESS, 0);
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                        // Unknown FID.
-                        _ => {
-                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                    },
+                    // Guest memory and console firmware may block. Capture only
+                    // ABI values while pinned; the task-side handler owns the copy.
+                    EID_DBCN => {
+                        return Ok(self.task_sbi_call(extension_id, function_id, param));
+                    }
                     srst::EID_SRST => match function_id {
                         srst::SYSTEM_RESET => {
                             let reset_type = param[0];
@@ -662,45 +596,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             return Ok(RiscvVmExit::Nothing);
                         }
                     },
-                    pmu::EID_PMU => {
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
-                    }
-                    rfnc::EID_RFNC => {
-                        match function_id {
-                            rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
-                            rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
-                            rfnc::REMOTE_SFENCE_VMA_ASID => {
-                                self.sbi.pmu.record_sfence_vma_asid_sent();
-                            }
-                            rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
-                            rfnc::REMOTE_HFENCE_GVMA_VMID => {
-                                self.sbi.pmu.record_hfence_gvma_vmid_sent();
-                            }
-                            rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
-                            rfnc::REMOTE_HFENCE_VVMA_ASID => {
-                                self.sbi.pmu.record_hfence_vvma_asid_sent();
-                            }
-                            _ => {}
-                        }
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
-                    }
-                    // By default, forward the SBI call to the RustSBI implementation.
-                    // See [`RISCVVCpuSbi`].
                     _ => {
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        if ret.is_err() {
-                            warn!(
-                                "forward ecall eid {:#x} fid {:#x} param {:#x?} err {:#x} value \
-                                 {:#x}",
-                                extension_id, function_id, param, ret.error, ret.value
-                            );
-                        }
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                        return Ok(self.task_sbi_call(extension_id, function_id, param));
                     }
                 };
 
@@ -742,6 +639,42 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Err(RiscvVcpuError::Unsupported)
             }
         }
+    }
+
+    fn task_sbi_call(
+        &mut self,
+        extension: usize,
+        function: usize,
+        arguments: [usize; 6],
+    ) -> RiscvVmExit {
+        self.advance_pc(4);
+        RiscvVmExit::SbiCall(RiscvSbiCall {
+            extension,
+            function,
+            arguments,
+        })
+    }
+
+    /// Forwards firmware and virtual PMU requests after CPU binding retirement.
+    pub(crate) fn forward_task_sbi(&mut self, call: RiscvSbiCall) -> RiscvVcpuResult<SbiRet> {
+        if self.binding.is_some() {
+            return Err(RiscvVcpuError::BadState);
+        }
+        if call.extension == rfnc::EID_RFNC {
+            match call.function {
+                rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
+                rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
+                rfnc::REMOTE_SFENCE_VMA_ASID => self.sbi.pmu.record_sfence_vma_asid_sent(),
+                rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
+                rfnc::REMOTE_HFENCE_GVMA_VMID => self.sbi.pmu.record_hfence_gvma_vmid_sent(),
+                rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
+                rfnc::REMOTE_HFENCE_VVMA_ASID => self.sbi.pmu.record_hfence_vvma_asid_sent(),
+                _ => {}
+            }
+        }
+        Ok(self
+            .sbi
+            .handle_ecall(call.extension, call.function, call.arguments))
     }
 
     #[inline]
@@ -1084,32 +1017,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 }
 
-#[inline(always)]
-fn sbi_call_legacy_0(eid: usize) -> usize {
-    let error;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") eid,
-            lateout("a0") error,
-        );
-    }
-    error
-}
-
-#[inline(always)]
-fn sbi_call_legacy_1(eid: usize, arg0: usize) -> usize {
-    let error;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") eid,
-            inlateout("a0") arg0 => error,
-        );
-    }
-    error
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -1122,6 +1029,56 @@ mod tests {
         fn virt_to_phys(_vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
             RiscvHostPhysAddr::from_usize(0)
         }
+    }
+
+    #[test]
+    fn retentive_suspend_retires_the_ecall_and_rejects_unsupported_states() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        vcpu.regs.trap_csrs.scause = 10;
+        vcpu.regs.guest_regs.sepc = 0x8020_0000;
+        vcpu.set_gpr_from_gpr_index(GprIndex::A7, hsm::EID_HSM);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A6, hsm::HART_SUSPEND);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A0, hsm::suspend_type::RETENTIVE as usize);
+        assert!(matches!(
+            vcpu.vmexit_handler().unwrap(),
+            RiscvVmExit::SbiStandby
+        ));
+        assert_eq!(vcpu.regs.guest_regs.sepc, 0x8020_0004);
+
+        for (kind, expected) in [
+            (
+                hsm::suspend_type::NON_RETENTIVE as usize,
+                SbiRet::not_supported(),
+            ),
+            (1, SbiRet::invalid_param()),
+        ] {
+            vcpu.set_gpr_from_gpr_index(GprIndex::A0, kind);
+            assert!(matches!(
+                vcpu.vmexit_handler().unwrap(),
+                RiscvVmExit::Nothing
+            ));
+            assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
+            assert_eq!(vcpu.get_gpr(GprIndex::A1), expected.value);
+        }
+        assert_eq!(vcpu.regs.guest_regs.sepc, 0x8020_000c);
+    }
+
+    #[test]
+    fn console_decode_returns_owned_abi_values_without_firmware_access() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        vcpu.regs.trap_csrs.scause = 10;
+        vcpu.regs.guest_regs.sepc = 0x8020_0000;
+        vcpu.set_gpr_from_gpr_index(GprIndex::A7, EID_DBCN);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A6, FID_CONSOLE_WRITE);
+        // A zero-sized write also goes through the durable boundary; the old
+        // inline implementation returned Nothing and cannot satisfy this test.
+        vcpu.set_gpr_from_gpr_index(GprIndex::A0, 0);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A1, 0x9000_0000);
+        let RiscvVmExit::SbiCall(call) = vcpu.vmexit_handler().unwrap() else {
+            panic!("console work must be interpreted after hardware unloading");
+        };
+        assert_eq!(call.arguments[..3], [0, 0x9000_0000, 0]);
+        assert_eq!(vcpu.regs.guest_regs.sepc, 0x8020_0004);
     }
 
     #[test]

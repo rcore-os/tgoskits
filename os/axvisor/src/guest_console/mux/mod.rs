@@ -159,6 +159,7 @@ impl GuestConsoleMux {
         }
     }
 
+    #[cfg(test)]
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         let generations = self.core.backend_generations();
         let running = running

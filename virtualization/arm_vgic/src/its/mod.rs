@@ -54,6 +54,13 @@ struct Translation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ItsAction {
+    /// Materialize the target's LPI record before it can be delivered.
+    ///
+    /// The software ITS learns `(target, lpi)` from an architectural
+    /// translation command, which is always decoded in task context. Emitting
+    /// this effect lets the controller reserve the record storage here instead
+    /// of allocating on a later, possibly hard-IRQ, MSI signal.
+    Prepare { target: GicVcpuId, lpi: LpiId },
     SetPending {
         target: GicVcpuId,
         lpi: LpiId,

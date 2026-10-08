@@ -43,10 +43,7 @@ impl AxvmManager {
         self.release_host_filesystem_for_guest_passthrough();
     }
 
-    #[cfg_attr(
-        feature = "no-auto-start",
-        expect(dead_code, reason = "auto-start path")
-    )]
+    #[cfg(not(feature = "no-auto-start"))]
     pub fn launch_default_vms(&self) -> Vec<VMId> {
         let mut started = Vec::new();
         for vm in self.runtime.list() {
@@ -58,10 +55,7 @@ impl AxvmManager {
         started
     }
 
-    #[cfg_attr(
-        feature = "no-auto-start",
-        expect(dead_code, reason = "auto-start path")
-    )]
+    #[cfg(not(feature = "no-auto-start"))]
     pub fn wait_for_default_vms(&self) {
         while self.runtime.list().iter().any(|vm| {
             matches!(
@@ -73,6 +67,7 @@ impl AxvmManager {
         }
     }
 
+    #[cfg(any(feature = "fs", feature = "http-axum"))]
     pub fn create_vm_from_toml(&self, raw_cfg: &str) -> Result<VmOperation<VmHandle>> {
         let plan = crate::config::prepare_guest_vm(raw_cfg)?;
         self.create_plan(plan)
@@ -99,6 +94,7 @@ impl AxvmManager {
             .context("stop VM")
     }
 
+    #[cfg(feature = "fs")]
     pub fn start_vm(&self, vm_id: VMId) -> Result<()> {
         self.require_vm(vm_id)?
             .start()?

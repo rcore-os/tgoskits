@@ -5,10 +5,7 @@ use std::{format, vec::Vec};
 use super::Riscv64Arch;
 use crate::{
     AxVmResult,
-    architecture::{
-        Architecture, BootImagePlatform, GuestBootPlatform, MachinePlatform,
-        capabilities::default_vcpu_affinities,
-    },
+    architecture::{Architecture, BootImagePlatform, GuestBootPlatform, MachinePlatform},
     ax_err_type,
 };
 
@@ -17,20 +14,6 @@ impl Architecture for Riscv64Arch {}
 impl MachinePlatform for Riscv64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
         crate::machine::MachineArchitecture::Riscv64;
-
-    fn vcpu_affinities(
-        cpu_num: usize,
-        phys_cpu_ids: Option<&[usize]>,
-        phys_cpu_sets: Option<&[usize]>,
-    ) -> Vec<(usize, Option<usize>, usize)> {
-        let mut vcpus = default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets);
-        if phys_cpu_sets.is_none() {
-            for (_, mask, phys_id) in &mut vcpus {
-                *mask = Some(1 << *phys_id);
-            }
-        }
-        vcpus
-    }
 }
 
 impl BootImagePlatform for Riscv64Arch {

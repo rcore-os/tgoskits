@@ -1078,7 +1078,7 @@ mod tests {
 
     use super::{IvcApertureAllocator, IvcEndpointPlan, IvcManager, IvcNotifyEndpoint};
     use crate::{
-        RunId, VmKey, guest_memory::MemoryRevision, host::paging::HostPagingHandler,
+        RunId, VmKey, guest_memory::MemoryRevision, host::paging::test_frames::TestFrames,
         services::RunSignals,
     };
 
@@ -1202,7 +1202,7 @@ mod tests {
 
     #[test]
     fn publish_subscribe_commit_and_teardown_release_each_range_once() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let publisher = VmKey::new(1, 1);
         let subscriber = VmKey::new(2, 1);
         let publisher_run = RunId::new(publisher, 1);
@@ -1280,7 +1280,7 @@ mod tests {
 
     #[test]
     fn teardown_reclaims_a_reservation_left_by_a_failed_commit() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let owner = VmKey::new(7, 1);
         let owner_run = RunId::new(owner, 1);
         let aperture = TrackingAperture::new(0x3000_0000);
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn failed_cancel_uninstalled_stays_reclaimable_through_teardown() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let owner = VmKey::new(8, 1);
         let owner_run = RunId::new(owner, 1);
         let aperture = TrackingAperture::new(0xa000_0000);
@@ -1346,7 +1346,7 @@ mod tests {
 
     #[test]
     fn failed_aperture_release_keeps_the_detach_retryable() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let owner = VmKey::new(3, 1);
         let owner_run = RunId::new(owner, 1);
         let aperture = TrackingAperture::new(0x4000_0000);
@@ -1382,7 +1382,7 @@ mod tests {
 
     #[test]
     fn detach_commit_rejects_stale_or_foreign_revisions() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let owner = VmKey::new(4, 1);
         let owner_run = RunId::new(owner, 1);
         let aperture = TrackingAperture::new(0x5000_0000);
@@ -1438,7 +1438,7 @@ mod tests {
 
     #[test]
     fn teardown_returns_one_token_per_role_owned_by_the_vm() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let publisher = VmKey::new(10, 1);
         let owner = VmKey::new(11, 1);
         let publisher_run = RunId::new(publisher, 1);
@@ -1498,7 +1498,7 @@ mod tests {
 
     #[test]
     fn channel_key_reuse_isolates_the_previous_generation() {
-        let manager = Arc::new(IvcManager::<HostPagingHandler>::new());
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
         let first = VmKey::new(20, 1);
         let second = VmKey::new(20, 2);
         let first_run = RunId::new(first, 1);

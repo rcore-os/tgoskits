@@ -414,11 +414,11 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchExitKind::Idle => {
                 trace!("VCpu[{vcpu_id}] LoongArch idle");
-                Ok(VcpuAction::Wait(WaitReason::Idle))
+                Ok(VcpuAction::Wait(WaitReason { return_value: None }))
             }
             LoongArchExitKind::Halt => {
                 debug!("VCpu[{vcpu_id}] LoongArch halt");
-                Ok(VcpuAction::Wait(WaitReason::Idle))
+                Ok(VcpuAction::Wait(WaitReason { return_value: None }))
             }
             LoongArchExitKind::Nothing => Ok(VcpuAction::Reenter(LoongArchCompletion::default())),
         }

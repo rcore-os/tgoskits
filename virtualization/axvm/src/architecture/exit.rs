@@ -124,9 +124,9 @@ pub(crate) fn handle_hypercall<A: ArchOps>(
             RegisterCompletion::Return(value).into(),
         )),
         HyperCallOutcome::Deferred(request) => Ok(VcpuAction::Control(request)),
-        HyperCallOutcome::CpuSuspendStandby { return_value } => {
-            Ok(VcpuAction::Wait(WaitReason::IdleWithReturn(return_value)))
-        }
+        HyperCallOutcome::CpuSuspendStandby { return_value } => Ok(VcpuAction::Wait(WaitReason {
+            return_value: Some(return_value),
+        })),
         HyperCallOutcome::CpuOff => Ok(VcpuAction::Control(GuestRequest::CpuOff {
             abi: crate::runtime::hvc::HyperCallAbi::AArch64,
         })),

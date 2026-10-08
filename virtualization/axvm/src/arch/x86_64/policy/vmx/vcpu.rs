@@ -228,8 +228,11 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         })();
         if result.is_err() {
             // SAFETY: initialization has not entered a guest and still owns
-            // the IRQ-excluded CPU. Failed retirement retains every lease.
-            let _ = unsafe { self.cpu.unbind() };
+            // the IRQ-excluded CPU. A failed retirement cannot return the
+            // still-current VMCS to a different owner or release the CPU pin.
+            if unsafe { self.cpu.unbind() }.is_err() {
+                std::process::abort();
+            }
         }
         result
     }

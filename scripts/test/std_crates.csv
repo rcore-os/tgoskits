@@ -61,6 +61,7 @@ x86_vlapic
 axhvc
 axvirtio-blk
 axvirtio-common
+axvirtio-net
 axvm
 axvmconfig
 riscv-h

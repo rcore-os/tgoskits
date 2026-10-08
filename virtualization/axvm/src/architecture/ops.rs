@@ -72,6 +72,14 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    /// Rechecks CPU-local resource ownership after task preparation and pinning.
+    /// False retires this attempt without guest entry; preparation may then
+    /// perform a remote handoff in task context before the next pinned attempt.
+    /// Backends without retained CPU-local claims are immediately ready.
+    fn entry_cpu_is_ready(_vcpu: &mut AxVCpu<Self::VCpu>) -> bool {
+        true
+    }
+
     fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult;
     fn complete(
         vcpu: &mut AxVCpu<Self::VCpu>,

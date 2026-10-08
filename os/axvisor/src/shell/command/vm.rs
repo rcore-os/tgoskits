@@ -777,6 +777,9 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
     println!("  Status:    {}", status.as_str_with_icon());
     println!("  VCPUs:     {}", snapshot.cpu.vcpu_num);
     println!("  Memory:    {}", format_memory_size(total_memory));
+    if let Some(error) = &snapshot.last_failure {
+        println!("  Last failure: {error}");
+    }
 
     // Add state-specific information
     match status {
@@ -867,6 +870,9 @@ fn show_vm_full_details(vm_id: usize) {
     println!("  Status:    {}", status.as_str_with_icon());
     println!("  VCPUs:     {}", snapshot.cpu.vcpu_num);
     println!("  Memory:    {}", format_memory_size(total_memory));
+    if let Some(error) = &snapshot.last_failure {
+        println!("  Last failure: {error}");
+    }
     match snapshot.memory.nested_page_table_root {
         Some(root) => println!("  NPT Root:  {:#x}", root.as_usize()),
         None => println!("  NPT Root:  unavailable (no backing address space)"),

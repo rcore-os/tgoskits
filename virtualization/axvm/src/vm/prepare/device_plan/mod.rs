@@ -150,7 +150,7 @@ mod tests {
                 ResourceSlot::new("registers")?,
                 0x1_0000,
                 0x1000,
-                ResourceRequest::Fixed(0x1000_0000),
+                ResourceRequest::Fixed(0x4000_0000),
             )
         }
 
@@ -213,7 +213,7 @@ mod tests {
         let mut pools = ResourcePools::new();
         pools
             .add_auto_mmio(
-                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+                0x4000_0000..0x4000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
             )
             .unwrap();
         pools
@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(
             (base, size),
             (
-                0x1000_0000,
+                0x4000_0000,
                 crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
             )
         );
@@ -261,10 +261,10 @@ mod tests {
         let mut pools = ResourcePools::new();
         pools
             .add_auto_mmio(
-                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+                0x4000_0000..0x4000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
             )
             .unwrap();
-        pools.allow_fixed_mmio(0x1000_0000..0x1001_0000).unwrap();
+        pools.allow_fixed_mmio(0x4000_0000..0x4001_0000).unwrap();
         pools
             .add_auto_controller_inputs(
                 InterruptControllerId::new(0),
@@ -289,7 +289,7 @@ mod tests {
         let mut pools = ResourcePools::new();
         pools
             .add_auto_mmio(
-                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
+                0x4000_0000..0x4000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
             )
             .unwrap();
         pools

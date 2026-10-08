@@ -2904,8 +2904,8 @@ mod tests {
         devices
             .register_bundle(
                 DeviceBundle::new()
-                    .with_lifecycle(healthy.clone())
-                    .with_lifecycle(broken.clone()),
+                    .with_lifecycle(broken.clone())
+                    .with_lifecycle(healthy.clone()),
             )
             .unwrap();
 
@@ -2936,8 +2936,8 @@ mod tests {
         devices
             .register_bundle(
                 DeviceBundle::new()
-                    .with_lifecycle(healthy.clone())
-                    .with_lifecycle(broken.clone()),
+                    .with_lifecycle(broken.clone())
+                    .with_lifecycle(healthy.clone()),
             )
             .unwrap();
 

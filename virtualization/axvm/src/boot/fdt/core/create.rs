@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{ptr::NonNull, string::String, vec::Vec};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use std::ptr::NonNull;
+use std::{string::String, vec::Vec};
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
 use axdevice_base::InterruptTrigger;
 use axvmconfig::GuestConfig;
@@ -27,9 +30,10 @@ use super::{
 pub(crate) use crate::boot::fdt::device::{
     ResolvedFdtDevice, ResolvedFdtInterrupt, ResolvedFdtProperty,
 };
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::{AxVM, GuestPhysAddr, boot::images::load_vm_image_from_memory};
 use crate::{
-    AxVM, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
-    boot::images::load_vm_image_from_memory,
+    AxVmResult, VMMemoryRegion, ax_err_type,
     machine::GuestSerialFdtInterrupt as FdtInterruptEncoding,
 };
 
@@ -298,6 +302,7 @@ fn initrd_range_from_image_config(
     Some((start, start.saturating_add(size)))
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
@@ -313,6 +318,7 @@ pub fn update_fdt(
     load_patched_fdt(vm, new_fdt_bytes)
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn load_patched_fdt(vm: &mut AxVM, new_fdt_bytes: Vec<u8>) -> AxVmResult {
     let dest_addr = calculate_dtb_load_addr(&mut *vm, new_fdt_bytes.len())?;
     debug!(
@@ -568,6 +574,7 @@ fn fdt_interrupt_binding(
     }
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) fn calculate_dtb_load_addr(vm: &mut AxVM, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
@@ -911,13 +918,48 @@ mod tests {
         );
     }
 
+    fn runtime_controller_fixture() -> (
+        Vec<u8>,
+        Option<crate::machine::GuestGicProfile>,
+        Option<crate::machine::GuestPlicProfile>,
+    ) {
+        let machine = crate::machine::current_machine_profile(1);
+        let mut tree = FdtTree::new();
+        let (gic, plic, path, compatible, cells) = if let Some(mut plic) = machine.plic {
+            plic.node_phandle = Some(7);
+            let path = plic.node_path.clone();
+            (None, Some(plic), path, "riscv,plic0", 1)
+        } else {
+            let gic = gic_profile(7);
+            let path = gic.node_path.clone();
+            (Some(gic), None, path, "arm,gic-v3", 4)
+        };
+        let intc = tree.ensure_path(&path).unwrap();
+        tree.set_property(intc, prop_string("compatible", compatible))
+            .unwrap();
+        tree.set_property(intc, Property::new("interrupt-controller", std::vec![]))
+            .unwrap();
+        tree.set_property(intc, u32_property("#interrupt-cells", cells))
+            .unwrap();
+        (tree.finish(), gic, plic)
+    }
+
     #[test]
     fn runtime_patch_can_leave_missing_chosen_for_host_copy() {
-        let fdt = Fdt::new();
-        let dtb = fdt.encode().as_ref().to_vec();
+        let (dtb, gic, plic) = runtime_controller_fixture();
         let cfg = GuestConfig::default();
 
-        let serial = crate::machine::current_machine_profile(1).serial;
+        // A port UART has no FDT stdout node; isolate the chosen creation policy
+        // from the MMIO console's independent requirement to publish stdout.
+        let serial = crate::machine::GuestSerialProfile {
+            model: crate::machine::GuestSerialModel::Uart16550,
+            transport: crate::machine::GuestSerialTransport::Port {
+                base: 0x3f8,
+                length: 8,
+            },
+            irq: 4,
+            clock_hz: 1_843_200,
+        };
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
@@ -926,8 +968,8 @@ mod tests {
             serial_profile: serial,
             serial_identity: None,
             additional_serials: &[],
-            gic_profile: None,
-            plic_profile: None,
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: false,
@@ -937,7 +979,6 @@ mod tests {
 
         assert!(reparsed.get_by_path_id("/chosen").is_none());
 
-        let serial = crate::machine::current_machine_profile(1).serial;
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
@@ -946,8 +987,8 @@ mod tests {
             serial_profile: serial,
             serial_identity: None,
             additional_serials: &[],
-            gic_profile: None,
-            plic_profile: None,
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: true,
@@ -960,15 +1001,7 @@ mod tests {
 
     #[test]
     fn runtime_patch_adds_ivc_channel_node() {
-        let mut tree = FdtTree::new();
-        let intc = tree.ensure_path("/intc@8000000").unwrap();
-        tree.set_property(intc, prop_string("compatible", "arm,gic-v3"))
-            .unwrap();
-        tree.set_property(intc, Property::new("interrupt-controller", std::vec![]))
-            .unwrap();
-        tree.set_property(intc, u32_property("#interrupt-cells", 4))
-            .unwrap();
-        let dtb = tree.finish();
+        let (dtb, gic, plic) = runtime_controller_fixture();
         let cfg = GuestConfig::default();
         let devices = std::vec![super::ResolvedFdtDevice {
             id: "ivc0".into(),
@@ -987,7 +1020,6 @@ mod tests {
             ],
         }];
         let serial = crate::machine::current_machine_profile(1).serial;
-        let gic = gic_profile(7);
 
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
@@ -997,8 +1029,8 @@ mod tests {
             serial_profile: serial,
             serial_identity: None,
             additional_serials: &[],
-            gic_profile: Some(&gic),
-            plic_profile: None,
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: false,
@@ -1028,7 +1060,11 @@ mod tests {
                 .unwrap()
                 .get_u32_iter()
                 .collect::<std::vec::Vec<_>>(),
-            [0, 28, 1, 0]
+            if plic.is_some() {
+                std::vec![60]
+            } else {
+                std::vec![0, 28, 1, 0]
+            }
         );
     }
 

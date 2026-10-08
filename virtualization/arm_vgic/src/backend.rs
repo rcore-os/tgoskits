@@ -1,7 +1,5 @@
 //! Checked physical GICv3 and CPU-interface capability boundary.
 
-use alloc::string::String;
-
 use axdevice_base::{InterruptTrigger, ItsId};
 
 use crate::{
@@ -64,20 +62,81 @@ impl VgicBackendCapabilities {
     }
 }
 
+/// Optional numeric diagnostic attached to a [`GicV3BackendError`].
+///
+/// The adapter boundary is reachable from IRQ-masked, CPU-pinned, and raw-lock
+/// paths, so a backend failure carries only `Copy` facts: a static reason plus
+/// an optional numeric observation. It never formats or allocates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BackendErrorDetail {
+    /// No numeric diagnostic.
+    #[default]
+    None,
+    /// One observed value.
+    Value(u64),
+    /// An expected/observed pair.
+    Mismatch {
+        /// Value the backend required.
+        expected: u64,
+        /// Value the backend observed.
+        actual: u64,
+    },
+}
+
+impl core::fmt::Display for BackendErrorDetail {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::None => Ok(()),
+            Self::Value(value) => write!(formatter, " (value {value})"),
+            Self::Mismatch { expected, actual } => {
+                write!(formatter, " (expected {expected}, actual {actual})")
+            }
+        }
+    }
+}
+
 /// Backend-specific failure without leaking a platform error type.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("backend operation {operation} failed: {detail}")]
+///
+/// Every field is `Copy` and `Display` formats in place, so a backend failure
+/// can be produced and carried through a raw guard without allocating.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("backend operation {operation} failed: {reason}{detail}")]
 pub struct GicV3BackendError {
     operation: &'static str,
-    detail: String,
+    reason: &'static str,
+    detail: BackendErrorDetail,
 }
 
 impl GicV3BackendError {
-    /// Creates a backend failure at an adapter boundary.
-    pub fn new(operation: &'static str, detail: impl Into<String>) -> Self {
+    /// Creates a backend failure from a static operation and reason.
+    pub const fn new(operation: &'static str, reason: &'static str) -> Self {
         Self {
             operation,
-            detail: detail.into(),
+            reason,
+            detail: BackendErrorDetail::None,
+        }
+    }
+
+    /// Creates a backend failure that reports one observed value.
+    pub const fn value(operation: &'static str, reason: &'static str, value: u64) -> Self {
+        Self {
+            operation,
+            reason,
+            detail: BackendErrorDetail::Value(value),
+        }
+    }
+
+    /// Creates a backend failure that reports an expected/observed pair.
+    pub const fn mismatch(
+        operation: &'static str,
+        reason: &'static str,
+        expected: u64,
+        actual: u64,
+    ) -> Self {
+        Self {
+            operation,
+            reason,
+            detail: BackendErrorDetail::Mismatch { expected, actual },
         }
     }
 
@@ -86,9 +145,31 @@ impl GicV3BackendError {
         self.operation
     }
 
-    /// Returns backend-provided detail.
-    pub fn detail(&self) -> &str {
-        &self.detail
+    /// Returns the static backend reason.
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// Returns the static backend reason.
+    ///
+    /// The detail is a `&'static str` reason now that the boundary is
+    /// allocation-free; it never borrows a formatted string.
+    pub const fn detail(&self) -> &'static str {
+        self.reason
+    }
+
+    /// Returns the optional numeric diagnostic.
+    pub const fn value_detail(&self) -> BackendErrorDetail {
+        self.detail
+    }
+
+    /// Returns the observed value when a numeric diagnostic is attached.
+    pub const fn observed(&self) -> Option<u64> {
+        match self.detail {
+            BackendErrorDetail::Value(value) => Some(value),
+            BackendErrorDetail::Mismatch { actual, .. } => Some(actual),
+            BackendErrorDetail::None => None,
+        }
     }
 }
 
@@ -96,7 +177,7 @@ impl From<GicV3BackendError> for VgicError {
     fn from(error: GicV3BackendError) -> Self {
         Self::Backend {
             operation: error.operation,
-            detail: error.detail,
+            source: error,
         }
     }
 }

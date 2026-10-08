@@ -31,6 +31,7 @@ use crate::{config::*, *};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn try_get_host_fdt() -> Option<&'static [u8]> {
     let bootarg = super::super::host_fdt_bootarg();
     if bootarg == 0 {
@@ -406,6 +407,7 @@ pub fn parse_reserved_memory_regions(crate_cfg: &GuestConfig, dtb: &[u8]) -> AxV
     super::reserved::validate_configured(tree.inner(), crate_cfg)
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn set_phys_cpu_sets(
     vm_cfg: &mut AxVMConfig,
     fdt: &Fdt,

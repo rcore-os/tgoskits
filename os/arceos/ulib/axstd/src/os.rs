@@ -27,7 +27,7 @@ pub mod arceos {
     #[doc(no_inline)]
     pub use ax_percpu as percpu;
 
-    /// Non-sleeping synchronization for ArceOS kernel contexts.
+    /// Task and native synchronization for ArceOS kernel contexts.
     pub mod sync {
         pub use ax_runtime::task::sync::*;
     }

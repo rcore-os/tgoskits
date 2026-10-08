@@ -323,6 +323,21 @@ impl GuestMemoryPort {
         Ok(operation(&mut access))
     }
 
+    /// Validates an entire RAM buffer before an external operation consumes it.
+    /// The access lease retains this exact revision through the operation.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn with_access_range<T>(
+        &self,
+        address: GuestPhysAddr,
+        length: usize,
+        required: MappingFlags,
+        operation: impl FnOnce(&mut dyn GuestMemoryAccess) -> T,
+    ) -> DeviceResult<T> {
+        let mut access = self.acquire()?;
+        access.validate_range(address, length, required)?;
+        Ok(operation(&mut access))
+    }
+
     pub(crate) fn quiescent(&self) -> bool {
         self.state.publication.lock_unpoisoned().accesses == 0
     }
@@ -389,6 +404,43 @@ struct AccessLease {
 }
 
 impl AccessLease {
+    #[cfg(target_arch = "riscv64")]
+    fn validate_range(
+        &self,
+        start: GuestPhysAddr,
+        length: usize,
+        required: MappingFlags,
+    ) -> DeviceResult {
+        let end = start
+            .as_usize()
+            .checked_add(length)
+            .ok_or(DeviceError::OutOfRange {
+                addr: start.as_usize() as u64,
+            })?;
+        let mut current = start.as_usize();
+        while current < end {
+            let mapping = self
+                .snapshot
+                .mappings
+                .iter()
+                .find(|mapping| {
+                    let begin = mapping.range.start.as_usize();
+                    current >= begin && current - begin < mapping.range.length
+                })
+                .ok_or(DeviceError::NotFound)?;
+            if !mapping.flags.contains(required) {
+                return Err(if required.contains(MappingFlags::WRITE) {
+                    DeviceError::ReadOnly
+                } else {
+                    DeviceError::WriteOnly
+                });
+            }
+            current += (mapping.range.length - (current - mapping.range.start.as_usize()))
+                .min(end - current);
+        }
+        Ok(())
+    }
+
     fn copy(
         &self,
         start: GuestPhysAddr,

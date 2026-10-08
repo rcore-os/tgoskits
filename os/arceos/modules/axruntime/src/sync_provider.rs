@@ -1,10 +1,15 @@
 //! Native ArceOS lock facade and `ax-sync` bridge provider.
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+use core::sync::atomic::AtomicU64;
 use core::{
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicUsize},
 };
 
 use ax_task::runtime::{cpu::LocalIrqState, task_runtime};
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+mod host_mutex;
 
 fn context_preempt_enter() -> usize {
     crate::guard::enter_lock_preempt().map_or(0, cpu_local::PreemptionToken::into_raw)
@@ -265,7 +270,9 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
         ax_task::runtime::sync::rwlock_force_read_decrement(state, lock_addr, context);
     }
 }
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 struct RuntimeMutexOps;
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 fn into_task_pi_storage(
     storage: &ax_sync::interface::MutexStorage,
 ) -> ax_task::runtime::sync::MutexStorage<'_> {
@@ -276,6 +283,7 @@ fn into_task_pi_storage(
         wait_words: storage.wait_storage(),
     }
 }
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::interface::MutexOps for RuntimeMutexOps {
     fn acquire(

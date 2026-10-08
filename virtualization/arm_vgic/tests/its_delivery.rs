@@ -670,9 +670,10 @@ impl GicV3Backend for TrackingBackend {
             .enumerate()
         {
             if expected.is_none() && actual.is_some() {
-                return Err(GicV3BackendError::new(
+                return Err(GicV3BackendError::value(
                     "save CPU interface",
-                    format!("LR{index} became live without a saved delivery"),
+                    "a list register became live without a saved delivery",
+                    index as u64,
                 ));
             }
         }

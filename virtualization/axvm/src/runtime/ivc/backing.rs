@@ -133,18 +133,17 @@ impl<H: PagingHandler + 'static> SharedBacking<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use ax_memory_addr::PAGE_SIZE_4K;
     use axvm_types::GuestPhysAddr;
 
     use super::{IVCChannelHeader, SharedBacking};
-    use crate::host::paging::{HostPagingHandler, PagingHandler};
+    use crate::host::paging::{PagingHandler, test_frames::TestFrames};
 
     #[test]
     fn shared_region_writes_the_guest_abi_header_and_zeroes_the_payload() {
-        let backing = SharedBacking::<HostPagingHandler>::new(3, 0x55, PAGE_SIZE_4K).unwrap();
-        let bytes = HostPagingHandler::phys_to_virt(backing.physical_base).as_ptr();
+        let backing = SharedBacking::<TestFrames>::new(3, 0x55, PAGE_SIZE_4K).unwrap();
+        let bytes = TestFrames::phys_to_virt(backing.physical_base).as_ptr();
 
         // SAFETY: the backing owns one contiguous mapped page, so both header
         // fields are in bounds and aligned.
@@ -161,15 +160,31 @@ mod tests {
 
     #[test]
     fn a_peer_lease_retains_the_shared_backing_owner() {
-        let backing = SharedBacking::<HostPagingHandler>::new(1, 1, PAGE_SIZE_4K).unwrap();
+        let backing = SharedBacking::<TestFrames>::new(1, 1, PAGE_SIZE_4K).unwrap();
         let lease = backing
             .lease(GuestPhysAddr::from_usize(0x7000_0000), PAGE_SIZE_4K)
             .unwrap();
 
-        // The mapping holds its own strong reference to the same backing, so a
-        // peer exiting cannot free frames another peer still maps.
-        assert_eq!(Arc::strong_count(&backing.backing), 2);
+        let address = backing.physical_base;
+        let identity = TestFrames::identity(address);
+        drop(backing);
+        assert!(
+            TestFrames::is_live(address, identity),
+            "a peer mapping must retain its RAM"
+        );
+        // SAFETY: the live allocation is retained by this mapping lease and its
+        // first two aligned words contain the header written during preparation.
+        let publisher = unsafe {
+            TestFrames::phys_to_virt(address)
+                .as_ptr()
+                .cast::<u64>()
+                .read_volatile()
+        };
+        assert_eq!(publisher, 1);
         drop(lease);
-        assert_eq!(Arc::strong_count(&backing.backing), 1);
+        assert!(
+            !TestFrames::is_live(address, identity),
+            "the final lease must release its RAM"
+        );
     }
 }

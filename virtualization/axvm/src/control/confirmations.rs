@@ -33,17 +33,11 @@ mod tests {
     use std::{
         future::Future,
         pin::Pin,
-        sync::Arc,
-        task::{Context, Poll, Wake},
+        task::{Context, Poll, Waker},
     };
 
     use super::*;
     use crate::{RunId, VmKey, VmOperation};
-
-    struct Observer;
-    impl Wake for Observer {
-        fn wake(self: Arc<Self>) {}
-    }
 
     #[test]
     fn superseded_and_foreign_confirmations_do_not_finish_the_operation() {
@@ -60,8 +54,7 @@ mod tests {
         let mut receipt = ConfirmationReceipt::default();
         receipt.request(instance, old);
         receipt.request(instance, current);
-        let waker = std::task::Waker::from(Arc::new(Observer));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         for (source, operation) in [
             (instance, old),
             (
