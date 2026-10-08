@@ -2,7 +2,7 @@
 
 ## 1. 实现边界
 
-本次改动基于最新 `dev`：`72a5528bf6a2f0a4e2998f420ef34f8339a8f652`，验证日期为 2026-10-08。共享根切换与归档回收对照本地 Linux v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`；主要依据是 `init/initramfs.c`、`init/main.c` 和 `fs/namespace.c`。启动契约、资源生产者与板卡迁移要求保存在 [宿主 initramfs 启动契约](host-initramfs.md)。
+初次本地验收基于 `dev` `72a5528bf6a2f0a4e2998f420ef34f8339a8f652`，日期为 2026-10-08；后续变基到 `8c2160843220803f101c131a6a33ebb10d94e2e3`，增量验证见第 6 节。共享根切换与归档回收对照本地 Linux v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`；主要依据是 `init/initramfs.c`、`init/main.c` 和 `fs/namespace.c`。启动契约、资源生产者与板卡迁移要求保存在 [宿主 initramfs 启动契约](host-initramfs.md)。
 
 ### 1.1 无盘启动
 
@@ -18,7 +18,7 @@
 
 ## 2. 项目检查
 
-验证使用仓库 `cargo xtask` 入口和固定 `nightly-2026-09-04` 工具链。下面的日志均为本次工作区的本地执行记录，不能代替远程 CI 或未运行目标的结果。
+验证使用仓库 `cargo xtask` 入口和固定 `nightly-2026-09-04` 工具链。本节和第 3 节保存初次本地验收日志，不能代替后续提交的远程 CI 或未运行目标的结果。
 
 ### 2.1 静态与标准库检查
 
@@ -108,7 +108,7 @@ cargo xtask axvisor test qemu --arch x86_64 \
 
 `ensure_guest_image_bundles()` 的宿主测试覆盖全部五类启动资源的获取、文件检查及缺失拒绝。OrangePi 与 Phytium 的发布资源实际经过 `cargo xtask image pull` 下载、校验和解包；定制 BSP、initrd、AXIVC Linux 与机器人 Zephyr 仍需板卡 runner 提供 `AXVISOR_GUEST_ASSETS`，不能由通用镜像替代。
 
-本机未运行实体板卡 FIT、U-Boot、HTTP Boot 客户机启动、VMX、LoongArch/RISC-V 客户机及三套 OS 的全部架构矩阵；这些目标的迁移不等于运行通过。实际 FAT 媒体故障、断电恢复未验证。没有触发远程 CI，CI 证据是本地规划器和 AMD/KVM 实际运行。通用 Clippy 没有 Axvisor 的专用 lint 入口。
+初次本地验收未运行实体板卡 FIT、U-Boot、HTTP Boot 客户机启动、VMX、LoongArch/RISC-V 客户机及三套 OS 的全部架构矩阵。后续 CI 和定向执行记录见第 6 节；迁移、旧提交通过和运行中的任务都不等于当前提交通过。实际 FAT 媒体故障、断电恢复未验证。通用 Clippy 没有 Axvisor 的专用 lint 入口。
 
 ## 5. 系统调用兼容性
 
@@ -152,3 +152,26 @@ cargo xtask axvisor test qemu --arch x86_64 \
 | mount_setattr / 442/442/442/442 | [v7.1 `8cd9520d35a6`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L5137) | 按目标挂载与标志修改挂载属性 | sys_mount_setattr → Mountpoint 属性 → namespace 通知 | 无法确认 | 未运行 AT_EMPTY_PATH 与属性变更系统回归 |
 
 普通卸载、新挂载 API、chroot/getcwd、setns、clone3 与 openat2 等未执行入口采用“无法确认”，不把其他入口的成功作为其运行证据。Starry 的物理块节点原始 read/write 仍未实现；本次 Ext4 挂载通过共享 native handle 完成文件系统 I/O。
+
+## 6. CI 回归修复
+
+后续提交基于 `dev` `8c2160843220803f101c131a6a33ebb10d94e2e3`。PR 为 [#2567](https://github.com/rcore-os/tgoskits/pull/2567)；下面分别记录根因与已取得的证据，当前提交的完整 CI 状态仍需单独核对。
+
+### 6.1 启动与资源交接
+
+`pseudofs::mount_all()` 已持有 `FsContext`，devfs 构建再次锁定同一上下文导致 Starry 启动恐慌。修复通过参数传递已有根设备号；同一 x86_64 PID1 QEMU 用例修复前触发 `PI mutex waiter already owns the lock`，修复后通过，变基后再次通过。
+
+`boot_payload::publish()` 在 MMU 开启前使用原子交换，AArch64 实体板卡停在独占指令重试循环。改用启动 CPU 独占的 load/store 发布；运行时一次性领取保留原子交换。现有 AArch64 机器码测试增强后修复前失败、修复后通过，Axvisor 的 `qemu-host-initramfs` 通过。OrangePi 和 Phytium 的诊断 CI 均停在 `initramfs properties decoded` 后，证明故障位置；实体板卡修复结果待当前 CI 复核。
+
+ROC 固件的 `CONFIG_FIT_IMAGE_POST_PROCESS` 要求 ramdisk 带 `load` 属性。依赖固定到 [ostool #207](https://github.com/drivercraft/ostool/pull/207) 的 `99f318c3f1ab94ce41112a810c50eedc24b8140e`，生成 `load = 0`，满足检查且保留 FIT 内归档地址。真实 FIT 编码回归修复前失败、修复后通过，10 个 FIT 测试和上游两条 CI 均通过；尚未发布新的 crates.io 版本。
+
+最新 `dev` 的 virtual/real 机器人配置同步删除 `fs` 和 `image_location`，保留各自客户机根盘与板卡镜像路径；38 个 CI 规划器测试通过。Axvisor LoongArch 本地 Smoke 通过，包含宿主 NVMe 读写和客户机 Ext4 挂载；CI 曾在挂载步骤超时，仍需新提交复核。
+
+### 6.2 根设备状态
+
+磁盘根使用 Linux 设备号后，`From<Kstat> for statx` 转换先正确解码设备号，末尾又覆盖主次号。LoongArch musl 用 `statx` 实现 `stat()`，因此根目录 `st_dev` 与块节点 `st_rdev` 不一致。删除重复赋值，并增强现有 `syscall-test-rdev-nvme`，直接调用系统调用比较主次号。LoongArch 同一用例修复前失败、修复后 1/1 通过；x86_64 同一用例也 1/1 通过。原始设备 read 的 `EIO` 判定继续通过。变基后的 `cargo xtask clippy --package starry-kernel --jobs 4` 共 80 项检查全部通过。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| statx(设备号) / LoongArch 291、x86_64 332 | [v7.1 `8cd9520d35a6`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L729) | 根文件系统设备号拆成主次号，与对应块节点的 rdev 一致 | sys_statx → resolve_at → ResolveAtResult::stat → Location::metadata → metadata_to_kstat → From<Kstat> for statx → write_statx；任务 FsContext 与挂载元数据 | 正确 | 两架构 `qemu/system/syscall-test-rdev-nvme` 均 1/1，通过原始 statx 与 libc stat 验证根设备关系；LoongArch 同一用例修复前失败 |
+| statx(设备号) / AArch64 291、RISC-V 291 | [v7.1 `8cd9520d35a6`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L729) | 根文件系统设备号拆成主次号，与对应块节点的 rdev 一致 | sys_statx → resolve_at → ResolveAtResult::stat → Location::metadata → metadata_to_kstat → From<Kstat> for statx → write_statx；任务 FsContext 与挂载元数据 | 无法确认 | 共用字段转换；增强后的直接 statx 用例尚未在这两个架构执行，待当前 CI 复核 |

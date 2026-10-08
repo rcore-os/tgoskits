@@ -186,9 +186,6 @@ impl From<Kstat> for statx {
         statx.stx_ctime = time_to_statx(&value.ctime);
         statx.stx_mtime = time_to_statx(&value.mtime);
 
-        statx.stx_dev_major = (value.dev >> 32) as _;
-        statx.stx_dev_minor = value.dev as _;
-
         statx
     }
 }

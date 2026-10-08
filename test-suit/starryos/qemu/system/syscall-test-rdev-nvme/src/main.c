@@ -16,6 +16,8 @@
 #include "test_framework.h"
 
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -33,6 +35,22 @@ int main(void)
         CHECK(S_ISBLK(nvme_st.st_mode), "/dev/nvme0n1 is a block device (S_ISBLK)");
         CHECK(nvme_st.st_rdev == root_st.st_dev,
               "/dev/nvme0n1 st_rdev == root filesystem st_dev (busybox rdev resolves \"/\" -> /dev/nvme0n1)");
+
+        struct statx root_stx, nvme_stx;
+        int have_root_stx = (syscall(SYS_statx, AT_FDCWD, "/", 0,
+                                    STATX_BASIC_STATS, &root_stx) == 0);
+        int have_nvme_stx = (syscall(SYS_statx, AT_FDCWD, "/dev/nvme0n1", 0,
+                                    STATX_BASIC_STATS, &nvme_stx) == 0);
+        CHECK(have_root_stx, "statx / (root mount)");
+        CHECK(have_nvme_stx, "statx /dev/nvme0n1");
+        if (have_root_stx && have_nvme_stx) {
+            CHECK(root_stx.stx_dev_major == nvme_stx.stx_rdev_major &&
+                  root_stx.stx_dev_minor == nvme_stx.stx_rdev_minor,
+                  "statx root device matches block node major/minor");
+            CHECK(root_stx.stx_dev_major == major(root_st.st_dev) &&
+                  root_stx.stx_dev_minor == minor(root_st.st_dev),
+                  "statx and stat expose the same root device");
+        }
 
         /* RootBlk returns EIO on real I/O — it is a resolver placeholder, not a
          * working disk; it must not silently succeed for dd/blkid/fsck. */
