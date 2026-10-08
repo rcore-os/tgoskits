@@ -6633,7 +6633,7 @@ name = "rdif-cpufreq"
 version = "0.1.0"
 dependencies = [
  "rdif-base",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
