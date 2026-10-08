@@ -1,15 +1,15 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
 use std::{
-    collections::BTreeMap,
     sync::{Arc, Weak},
+    vec::Vec,
 };
 
 use arm_gic_driver::v3::Trigger;
 use arm_vgic::{
     AssignedSpiConfig, CpuInterfaceState, GicV3Backend, GicV3BackendError,
     GicV3HardwareCapabilities, GicV3Native, GicVcpuId, HostGicVersion, IntId,
-    PhysicalInterruptBinding, PhysicalIrqId, PpiId, VgicBackendCapabilities, VgicError, VgicResult,
+    PhysicalInterruptBinding, PpiId, VgicBackendCapabilities, VgicError, VgicResult,
 };
 use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice_base::InterruptTrigger;
@@ -66,17 +66,20 @@ enum PhysicalSpiTarget {
 /// Checked bridge from the VM-local controller to the current host GIC.
 pub(crate) struct AxvmVgicBackend {
     capabilities: VgicBackendCapabilities,
-    physical_spis: RawSpinLock<BTreeMap<PhysicalIrqId, PhysicalSpiSnapshot>>,
-    timer_ppis: RawSpinLock<BTreeMap<(GicVcpuId, IntId), Weak<Aarch64TimerBinding>>>,
+    physical_spis: RawSpinLock<Vec<Option<PhysicalSpiSnapshot>>>,
+    timer_ppis: RawSpinLock<Vec<Option<Weak<Aarch64TimerBinding>>>>,
 }
 
 impl AxvmVgicBackend {
     /// Uses the host CPU-interface capabilities committed before CPU enable.
-    pub(crate) fn new() -> Result<Self, GicV3BackendError> {
+    pub(crate) fn new(vcpu_count: usize) -> Result<Self, GicV3BackendError> {
+        let timer_slots = vcpu_count.checked_mul(32).ok_or_else(|| {
+            GicV3BackendError::new("prepare timer PPI slots", "vCPU slot count overflow")
+        })?;
         Ok(Self {
             capabilities: cpu_interface::capabilities()?,
-            physical_spis: RawSpinLock::new(BTreeMap::new()),
-            timer_ppis: RawSpinLock::new(BTreeMap::new()),
+            physical_spis: RawSpinLock::new(std::vec![None; 1020]),
+            timer_ppis: RawSpinLock::new(std::vec![None; timer_slots]),
         })
     }
 
@@ -86,16 +89,18 @@ impl AxvmVgicBackend {
         ppi: PpiId,
         binding: Weak<Aarch64TimerBinding>,
     ) -> VgicResult {
-        let key = (vcpu, IntId::Ppi(ppi));
-        let conflict = {
+        let key = timer_ppi_slot(vcpu, IntId::Ppi(ppi));
+        let (conflict, previous) = {
             let mut timer_ppis = self.timer_ppis.lock_irqsave();
-            if timer_ppis.get(&key).and_then(Weak::upgrade).is_some() {
-                true
-            } else {
-                timer_ppis.insert(key, binding);
-                false
+            match key.and_then(|key| timer_ppis.get_mut(key)) {
+                Some(slot) if !slot.as_ref().is_some_and(|weak| weak.strong_count() != 0) => {
+                    (false, slot.replace(binding))
+                }
+                _ => (true, Some(binding)),
             }
         };
+        // A displaced Weak may release the final control allocation.
+        drop(previous);
         if conflict {
             // The raw guard is released before the error allocates a message.
             return Err(VgicError::ResourceConflict {
@@ -111,9 +116,13 @@ impl AxvmVgicBackend {
     }
 
     pub(in crate::arch::aarch64) fn unregister_timer_ppi(&self, vcpu: GicVcpuId, ppi: PpiId) {
-        self.timer_ppis
-            .lock_irqsave()
-            .remove(&(vcpu, IntId::Ppi(ppi)));
+        let previous = timer_ppi_slot(vcpu, IntId::Ppi(ppi)).and_then(|key| {
+            self.timer_ppis
+                .lock_irqsave()
+                .get_mut(key)
+                .and_then(Option::take)
+        });
+        drop(previous);
     }
 
     fn physical_intid(
@@ -174,7 +183,10 @@ impl GicV3Backend for AxvmVgicBackend {
         let binding = self
             .timer_ppis
             .lock_irqsave()
-            .get(&(vcpu, intid))
+            .get(timer_ppi_slot(vcpu, intid).ok_or_else(|| {
+                GicV3BackendError::new("retire timer PPI", "invalid timer PPI identity")
+            })?)
+            .and_then(Option::as_ref)
             .and_then(Weak::upgrade);
         let Some(binding) = binding else {
             return Ok(());
@@ -218,13 +230,13 @@ impl GicV3Backend for AxvmVgicBackend {
             InterruptTrigger::LevelTriggered => Trigger::Level,
         };
         let mut bindings = self.physical_spis.lock_irqsave();
-        if bindings.contains_key(&binding.host()) {
+        if bindings[binding.host().raw()].is_some() {
             return Err(GicV3BackendError::new(
                 "bind physical interrupt",
                 std::format!("host INTID {} is already bound", binding.host().raw()),
             ));
         }
-        bindings.insert(binding.host(), snapshot);
+        bindings[binding.host().raw()] = Some(snapshot);
         drop(bindings);
         if let Err(error) = configure_physical_interrupt(
             self.capabilities.host_version(),
@@ -232,7 +244,7 @@ impl GicV3Backend for AxvmVgicBackend {
             expected_trigger,
             target,
         ) {
-            self.physical_spis.lock_irqsave().remove(&binding.host());
+            self.physical_spis.lock_irqsave()[binding.host().raw()].take();
             return Err(error);
         }
         Ok(())
@@ -244,11 +256,7 @@ impl GicV3Backend for AxvmVgicBackend {
         enabled: bool,
     ) -> Result<(), GicV3BackendError> {
         let intid = self.physical_intid(binding, "set physical interrupt enable state")?;
-        if !self
-            .physical_spis
-            .lock_irqsave()
-            .contains_key(&binding.host())
-        {
+        if self.physical_spis.lock_irqsave()[binding.host().raw()].is_none() {
             return Err(GicV3BackendError::new(
                 "set physical interrupt enable state",
                 std::format!("host INTID {} is not bound", binding.host().raw()),
@@ -327,10 +335,8 @@ impl GicV3Backend for AxvmVgicBackend {
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
         let intid = self.physical_intid(binding, "unbind physical interrupt")?;
-        let snapshot = self
-            .physical_spis
-            .lock_irqsave()
-            .remove(&binding.host())
+        let snapshot = self.physical_spis.lock_irqsave()[binding.host().raw()]
+            .take()
             .ok_or_else(|| {
                 GicV3BackendError::new(
                     "unbind physical interrupt",
@@ -340,9 +346,7 @@ impl GicV3Backend for AxvmVgicBackend {
         if let Err(error) =
             restore_physical_interrupt(self.capabilities.host_version(), intid, snapshot)
         {
-            self.physical_spis
-                .lock_irqsave()
-                .insert(binding.host(), snapshot);
+            self.physical_spis.lock_irqsave()[binding.host().raw()] = Some(snapshot);
             return Err(error);
         }
         Ok(())
@@ -476,8 +480,15 @@ fn instruction_sync_barrier() {
     unsafe { std::arch::asm!("isb", options(nostack, preserves_flags)) };
 }
 
-pub(crate) fn backend() -> Result<Arc<AxvmVgicBackend>, GicV3BackendError> {
-    AxvmVgicBackend::new().map(Arc::new)
+pub(crate) fn backend(vcpu_count: usize) -> Result<Arc<AxvmVgicBackend>, GicV3BackendError> {
+    AxvmVgicBackend::new(vcpu_count).map(Arc::new)
+}
+
+fn timer_ppi_slot(vcpu: GicVcpuId, intid: IntId) -> Option<usize> {
+    let IntId::Ppi(ppi) = intid else {
+        return None;
+    };
+    vcpu.raw().checked_mul(32)?.checked_add(ppi.raw() as usize)
 }
 
 pub(crate) fn host_irq_config() -> Result<ax_cpu::virtualization::HostIrqConfig, GicV3BackendError>

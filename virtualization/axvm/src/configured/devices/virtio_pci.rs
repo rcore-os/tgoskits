@@ -10,6 +10,9 @@ use axdevice::{PciCommandRevision, PciConfigEffectId};
 use axdevice_base::{DeviceResult, DmaGrant, IrqLine, Resource};
 use axvirtio_common::pci::{VIRTIO_PCI_CONFIG_EFFECT_ID, VirtioDeviceCore, VirtioPciTransport};
 
+#[cfg(test)]
+use crate::sync::MutexExt;
+
 pub(super) const PCI_CFG_EFFECTS: [PciConfigEffectId; 1] =
     [PciConfigEffectId::new(VIRTIO_PCI_CONFIG_EFFECT_ID)];
 const PCI_CFG_DATA_OFFSET: u32 = 16;

@@ -158,7 +158,7 @@ fn existing_companion(lock_addr: usize) -> Option<Arc<HostSleepMutex>> {
         .cloned()
 }
 
-thread_local! {
+std::thread_local! {
     static OWNED: RefCell<BTreeSet<usize>> = const { RefCell::new(BTreeSet::new()) };
 }
 

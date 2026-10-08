@@ -225,7 +225,7 @@ fn write_blocks_drains_submitted_windows_before_returning_error() {
     while handle
         .inner
         .cpu_channels
-        .lock()
+        .lock_irqsave()
         .iter()
         .map(|channel| channel.channel.queued_len())
         .sum::<usize>()

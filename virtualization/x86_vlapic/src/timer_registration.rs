@@ -152,9 +152,9 @@ impl<T: Copy> TimerArm<T> {
                     state.resume_owed = state.phase != TimerArmPhase::Retired;
                 }
                 state.cancel_requested = true;
-                if state.phase == TimerArmPhase::Armed {
-                    state.phase = TimerArmPhase::Retired;
-                }
+                // Retain the logical arm until the host confirms retirement.
+                // A failed cancellation must preserve the countdown for retry;
+                // cancel_requested already prevents a new callback claim.
                 if state.registration_complete && state.phase != TimerArmPhase::Firing {
                     return state
                         .handle

@@ -3,11 +3,14 @@
 use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
 use axvm_types::{AccessWidth, SysRegAddr};
 
-use super::{ArchOps, ops::RegisterCompletion};
+use super::ArchOps;
+#[cfg(target_arch = "aarch64")]
+use super::ops::RegisterCompletion;
 use crate::{
     AxVmError, AxVmResult, engine::VcpuAction, runtime::hvc::GuestRequest, services::RunServices,
 };
 
+#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SysRegReadExit {
     pub(crate) addr: SysRegAddr,
@@ -19,6 +22,7 @@ pub(crate) struct SysRegWriteExit {
     pub(crate) value: u64,
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn handle_read<A: ArchOps>(
     services: &RunServices,
     vcpu_id: usize,

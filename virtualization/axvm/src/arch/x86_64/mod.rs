@@ -57,7 +57,7 @@ use exit::*;
 use runtime_port::{AxvmX86VlapicRuntime, X86RunBinding, X86TimerHandle};
 pub(crate) use vm::X86VmPlan;
 
-use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
+use crate::architecture::sysreg::{self, SysRegWriteExit};
 
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
@@ -110,7 +110,7 @@ pub(crate) enum X86Exit {
         next_rip: u64,
     },
     MsrRead {
-        exit: SysRegReadExit,
+        addr: SysRegAddr,
         next_rip: u64,
     },
     MsrWrite {
@@ -212,10 +212,7 @@ impl X86Exit {
                 next_rip,
             },
             X86VmExit::MsrRead { addr, next_rip } => Self::MsrRead {
-                exit: SysRegReadExit {
-                    addr: x86_msr_addr_to_ax(addr),
-                    reg: 0,
-                },
+                addr: x86_msr_addr_to_ax(addr),
                 next_rip,
             },
             X86VmExit::MsrWrite {
@@ -331,11 +328,11 @@ impl X86Exit {
                     .retire(next_rip),
                 ))
             }
-            Self::MsrRead { exit, next_rip } => {
+            Self::MsrRead { addr, next_rip } => {
                 // `RDMSR` must land in `EDX:EAX`, so this reads the raw 64-bit
                 // value from the device service and builds the x86-specific
                 // completion instead of the generic single-register one.
-                let value = read_msr_value(services, vcpu_id, exit.addr)?;
+                let value = read_msr_value(services, vcpu_id, addr)?;
                 Ok(VcpuAction::Reenter(
                     X86Completion::MsrRead { value }.retire(next_rip),
                 ))

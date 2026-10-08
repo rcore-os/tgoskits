@@ -1384,7 +1384,7 @@ pub fn reclaim_live_lazy_free_pages(limit: usize) -> usize {
             let Ok(pin) = MmInner::try_pin(&inner) else {
                 return 0;
             };
-            match pin.lock_irqsave().reclaim_lazy_free_pages(remaining) {
+            match pin.lock().reclaim_lazy_free_pages(remaining) {
                 Ok(pages) => pages,
                 Err(error) => {
                     warn!(

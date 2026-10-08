@@ -220,8 +220,6 @@ impl HostCpu for ArceOsHost {
 
 pub(crate) type ArceOsThreadHandle = runtime_task::thread::ThreadHandle;
 pub(crate) type ArceOsThreadWakeHandle = runtime_task::thread::ThreadWakeHandle;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsWakeResult = runtime_task::thread::WakeResult;
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 use runtime_task::time::MonotonicDeadline as ArceOsMonotonicDeadline;

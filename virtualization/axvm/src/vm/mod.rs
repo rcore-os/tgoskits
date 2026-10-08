@@ -12,7 +12,7 @@ use crate::{
     AxVmError, AxVmResult,
     arch::current::{ArchNestedPageTable, ArchVCpu},
     ax_err_type,
-    boot::{GuestBootDescription, GuestFdtBuilder},
+    boot::GuestBootDescription,
     config::{AxVMConfig, PhysCpuList},
     guest_memory::{GuestRange, MappingLease, MemoryBacking},
     host::{HostMemory, default_host, paging::virt_to_phys},
@@ -279,6 +279,7 @@ impl AxVM {
     ) -> AxVmResult<R> {
         read(self.resources.planned_devices().graph())
     }
+    #[cfg(not(target_arch = "x86_64"))]
     pub(crate) fn set_guest_device_tree(
         &mut self,
         address: GuestPhysAddr,
@@ -287,7 +288,7 @@ impl AxVM {
         self.config.set_dtb_load_gpa(address);
         self.resources
             .boot_description
-            .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(address));
+            .set_device_tree(crate::boot::GuestFdtBuilder::from_bytes(bytes).build(address));
         Ok(())
     }
     #[cfg(target_arch = "x86_64")]

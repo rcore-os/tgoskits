@@ -9,8 +9,9 @@ use x86_vlapic::{
 };
 
 use crate::{
+    InterruptTriggerMode,
     host::{HostHardTimerAction, HostTimer, HostTimerAction, default_host},
-    irq::model::{InterruptTriggerMode, PendingVcpuInterrupt, VirtualInterruptId},
+    irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
     services::{RunSignals, SignalError},
 };
 

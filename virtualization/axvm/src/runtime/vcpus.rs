@@ -505,6 +505,9 @@ fn run_owner(
                             if matches!(request, GuestRequest::NestedFault { .. }) {
                                 break VcpuExitOutcome::Fault(error);
                             }
+                            if matches!(request, GuestRequest::Reset) {
+                                break VcpuExitOutcome::Stopped;
+                            }
                             warn!("guest control request failed: {error}");
                             task.completion = Some(RegisterCompletion::Return(usize::MAX).into());
                         }

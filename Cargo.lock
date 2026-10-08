@@ -853,6 +853,7 @@ dependencies = [
 name = "ax-cgroup"
 version = "0.3.0"
 dependencies = [
+ "ax-crate-interface",
  "ax-lazyinit",
  "ax-sync",
  "thiserror 2.0.21",

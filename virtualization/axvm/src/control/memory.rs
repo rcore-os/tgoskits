@@ -271,7 +271,10 @@ impl Owner {
         match result {
             Ok(revision) => {
                 if was_running {
-                    self.resume(operation)?;
+                    if let Err(error) = self.resume(operation) {
+                        self.record_failure(error.clone());
+                        return Err(error);
+                    }
                 } else if was_ready {
                     let run = self.run.as_ref().expect("resume prepared devices");
                     let resumed = run
