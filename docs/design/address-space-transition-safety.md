@@ -396,11 +396,12 @@ offline guard。
   切离；
 - `kernel/cpu.c`、`kernel/sched/core.c`：CPU offline 先切到
   `init_mm`，再 drop 旧 active_mm；
-- `arch/x86/mm/tlb.c`：以 `LOADED_MM_SWITCHING` 和 CPU mask 包住 CR3/
+- `arch/x86/mm/tlb.c`：`switch_mm_irqs_off()` 以 `LOADED_MM_SWITCHING` 和 CPU mask 包住 CR3/
   `loaded_mm` 切换；
-- `arch/x86/mm/tlb.c`：mm 切换采用保守 flush，`freed_tables` 要求所有 CPU
-  参与；
-- `arch/x86/mm/tlb.c`：generation 发布和同步确认形成回收屏障；
+- `arch/x86/mm/tlb.c`：`should_flush_tlb()` 对正在切换 mm 的 CPU 采用保守 flush；
+  `native_flush_tlb_multi()` 在 `freed_tables` 为真时要求目标 CPU mask 中的所有 CPU 参与，包括 lazy CPU；
+- `arch/x86/mm/tlb.c`：`flush_tlb_mm_range()` 发布 generation，`flush_tlb_func()` 更新本地 generation，
+  `native_flush_tlb_multi()` 等待目标 CPU 的回调完成，形成回收屏障；
 - `mm/mmu_gather.c`：页表/TLB flush 完成后才执行批量 free。
 - `arch/arm64/include/asm/tlbflush.h`：range TLBI 先执行 `dsb(ishst)` 发布页表写入，
   再发出 TLBI 并以同步屏障收尾。

@@ -132,11 +132,11 @@ sidebar_label: "平台实现"
 | 配置 | 断点策略 | 典型命中位置 |
 |------|---------|-------------|
 | ArceOS Main | 单个软件断点 + `continue` | `apps/arceos/helloworld/src/main.rs` |
-| ArceOS Boot | 多个符号/行号断点（不自动 continue） | `ax_plat::call_main`、`axruntime/src/lib.rs`、`main.rs` |
+| ArceOS Boot | 多个符号/行号断点（不自动 continue） | `ax_plat::call_main`、`os/arceos/modules/axruntime/src/lib.rs`、`apps/arceos/helloworld/src/main.rs` |
 | Axvisor Main | 单个软件断点 + `continue` | `os/axvisor/src/main.rs` |
-| Axvisor Boot | 多个行号断点（不自动 continue） | `platforms/axplat-dyn/src/boot.rs`、`axvisor/src/main.rs` |
+| Axvisor Boot | 多个行号断点（不自动 continue） | `platforms/axplat-dyn/src/boot.rs`、`os/axvisor/src/main.rs` |
 | StarryOS Main | **单个硬件断点** + `continue` | `os/StarryOS/starryos/src/main.rs` |
-| StarryOS Boot | 混合符号/行号断点（不自动 continue） | `ax_plat::call_main`、`axruntime/src/lib.rs`、`starry_kernel::entry::init`、`starryos/src/main.rs` |
+| StarryOS Boot | 混合符号/行号断点（不自动 continue） | `ax_plat::call_main`、`os/arceos/modules/axruntime/src/lib.rs`、`starry_kernel::entry::init`、`os/StarryOS/starryos/src/main.rs` |
 
 #### StarryOS 硬件断点
 
