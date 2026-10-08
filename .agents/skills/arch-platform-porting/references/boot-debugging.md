@@ -17,8 +17,9 @@
 QEMU `hostfwd` 发 `GET /api/v1/ota/status` 才能证明客户端可访问。
 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 使用真实 FAT
 镜像跨 QEMU 启动，避免 `fat:rw:` 的实验性写入语义污染回滚结论。
-首次迁移覆盖启动器时仍可能断电，需要保留
-`EFI/AXLOADER/BOOTX64.ORIGINAL.EFI` 及外部启动介质。没有同网卡 TCP4
+迁移覆盖启动器时仍可能断电，需要保留
+`EFI/AXLOADER/BOOTX64.ORIGINAL.EFI`；全新安装若原来存在启动器则保留
+`BOOTX64.PREVIOUS.EFI`，两种安装都需要外部启动介质。没有同网卡 TCP4
 服务绑定时观察 `ota_direct_unavailable`，服务端启动功能仍可使用。
 
 本文件记录 LoongArch 动态统一可扩展固件接口平台启动、someboot 对称多处理、StarryOS 测试和 Axvisor LoongArch 虚拟化扩展 QEMU 冒烟测试的项目经验。

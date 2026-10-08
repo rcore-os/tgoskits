@@ -88,9 +88,29 @@ OTA 实现集中在 `bootloader/axloader/src/ota/`。`state.rs` 维护纯状态�
 | `PUT /api/v1/ota/image` | 流式写非活动槽，核对长度、SHA-256、PE/COFF 和 UEFI LoadImage 后重启 |
 | `POST /api/v1/ota/confirm` | 仅由匹配升级 ID 与来源的待试槽提交为稳定槽 |
 
-EFI 镜像上限 32 MiB。待试槽确认前拒绝内核启动；启动失败、掉电或复位后，启动器清除未确认槽的可信摘要并回到稳定槽。首次替换 `BOOTX64.EFI` 仍有断电窗口，安装时必须保留原文件和外部恢复介质。
+EFI 镜像上限 32 MiB。待试槽确认前拒绝内核启动；启动失败、掉电或复位后，启动器清除未确认槽的可信摘要并回到稳定槽。替换 `BOOTX64.EFI` 仍有断电窗口，安装时必须准备外部恢复介质；迁移模式另保留旧装载器备份。
 
-## 3. 本地验证
+## 3. 安装与本地验证
+
+安装脚本支持两种入口：
+
+```bash
+# 全新安装：不要求 ESP 中存在旧 BOOTX64.EFI
+./bootloader/axloader/scripts/build-install-efi.sh \
+  --fresh --device /dev/sdb1
+
+# 迁移已有装载器：把旧 BOOTX64.EFI 保存为 A
+./bootloader/axloader/scripts/build-install-efi.sh \
+  --device /dev/sdb1
+```
+
+`--fresh` 在 ESP 上创建 `EFI/AXLOADER/A.EFI`、`B.EFI`、两份状态记录和
+`EFI/BOOT/BOOTX64.EFI` launcher。A、B 初始是同一份新装载器，A 稳定启动，
+首次启动不需要试运行确认。ESP 中若已有 `BOOTX64.EFI`，脚本只保存为
+`EFI/AXLOADER/BOOTX64.PREVIOUS.EFI`，不把它纳入自动回滚。迁移模式要求旧
+`BOOTX64.EFI`，将其保存为 `BOOTX64.ORIGINAL.EFI`，并让 B 首次作为待试槽。
+两种模式都拒绝覆盖已有 `EFI/AXLOADER` 文件；首次替换 launcher 仍须准备外部
+恢复介质。
 
 QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/axbuild/src/axloader/ota_qemu.rs` 属于宿主测试编排层，负责创建 ESP、启动 QEMU、调用设备 HTTP 接口并跨多次启动复用同一磁盘。
 

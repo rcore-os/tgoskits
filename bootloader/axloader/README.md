@@ -112,9 +112,10 @@ initramfs 和两者都有，并以目标内核输出的 `HOST_CMDLINE`、
 
 ## x86_64 OTA 布局与状态
 
-首次迁移后，ESP 中的 `EFI/BOOT/BOOTX64.EFI` 是独立构建的
-`axloader-launcher.efi`；`EFI/AXLOADER/A.EFI` 是迁移前的装载器，
-`B.EFI` 是新装载器。`STATE0.BIN` 与 `STATE1.BIN` 分别存放 256 字节
+安装后，ESP 中的 `EFI/BOOT/BOOTX64.EFI` 是独立构建的
+`axloader-launcher.efi`；`EFI/AXLOADER/A.EFI`、`B.EFI` 是可升级装载器。
+全新安装时 A、B 初始使用同一份新装载器，A 为稳定槽且没有待试升级；迁移安装时
+A 保存旧装载器，B 使用新装载器。`STATE0.BIN` 与 `STATE1.BIN` 分别存放 256 字节
 `State::encode()` 记录。记录包含代次、稳定槽、待试槽、两槽 SHA-256、
 升级 ID、来源、试运行标志、上次结果和记录校验和。`OtaDisk::load()` 只选择
 校验通过且代次较新的记录，`OtaDisk::commit()` 只写另一份，Flush 后读回
@@ -149,19 +150,32 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
 
 ## Install to removable media
 
-本脚本只做首次迁移，必须在尚有旧版 `BOOTX64.EFI` 的 x86_64 可写 ESP 上运行：
+脚本支持全新安装和旧布局迁移。全新安装适用于已经格式化但没有可用
+`BOOTX64.EFI` 的 x86_64 可写 FAT ESP，不需要旧装载器：
+
+```bash
+./bootloader/axloader/scripts/build-install-efi.sh \
+  --fresh --device /dev/sdb1
+```
+
+全新安装会把新装载器复制到 A、B，生成稳定状态记录，再写入 launcher。
+如果 ESP 原先有 `BOOTX64.EFI`，脚本会把它保存为
+`EFI/AXLOADER/BOOTX64.PREVIOUS.EFI`，但不会把它作为回滚槽使用。首次启动不需要
+确认；后续 OTA 从非活动槽开始试运行。首次替换 launcher 仍有断电窗口，必须保留
+外部恢复介质。
+
+迁移已有系统时，保留旧版 `BOOTX64.EFI` 并省略 `--fresh`：
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh
 ./bootloader/axloader/scripts/build-install-efi.sh --device /dev/sdb1
 ```
 
-默认按 `OSTOOLBOOT` 查找分区。脚本先构建并校验两份 PE 映像、检查空闲
-空间，把旧文件备份为 `EFI/AXLOADER/BOOTX64.ORIGINAL.EFI` 与 A，写入 B、
-双状态记录和临时启动器并同步、逐项核对；最后才覆盖 `BOOTX64.EFI`。
-首次替换启动器仍有断电窗口；保留原文件备份和外部启动介质。B 首次作为
-直连待试槽，安装命令打印升级 ID，上传方须在首次启动后核对摘要并调用
-确认接口。脚本发现已有布局会中止，需离线修复后再尝试。
+默认按 `OSTOOLBOOT` 查找分区。脚本会构建并校验两个 PE 映像、检查空闲空间、
+写入 A/B 和双状态记录、同步并逐项核对，最后替换 `BOOTX64.EFI`。迁移模式还会
+把旧文件保存为 `EFI/AXLOADER/BOOTX64.ORIGINAL.EFI`，B 首次作为直连待试槽，
+安装命令打印升级 ID，上传方须在首次启动后核对摘要并调用确认接口。两种模式都
+会拒绝已有 `EFI/AXLOADER` 文件的 ESP，避免覆盖未知状态；请先离线恢复或清理。
 
 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 使用同一块真实
 FAT 映像跨多次启动，检查 `hostfwd` 上的直连、错误摘要、短请求、待试复位、
