@@ -699,7 +699,7 @@ impl Mountpoint {
     /// explicitly for a physical root.
     /// `parent_id` for the root mount is itself (Linux convention:
     /// `mount_id == parent_id` for the root mount); for non-root mounts it is
-    /// the parent mount's `device()`.
+    /// the parent mount's `mount_id()`.
     ///
     /// Lock safety: children are collected into a `Vec` by cloning the `Arc`s
     /// outside the lock before recursion, so no `Mutex` guard is held during
