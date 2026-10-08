@@ -48,33 +48,67 @@ static EPOLL_NOTIFY: IrqNotify = IrqNotify::new();
 static EPOLL_NOTIFY_QUEUE: IrqMutex<()> = IrqMutex::new(());
 static EPOLL_NOTIFY_HEAD: AtomicPtr<EpollInner> = AtomicPtr::new(ptr::null_mut());
 static EPOLL_NOTIFY_STARTED: OnceLock<()> = OnceLock::new();
+/// Published once by the notification worker before it first enters its wait
+/// loop. Axtest uses it to wait for worker startup instead of racing the first
+/// `EPOLL_NOTIFY.wait` registration; production builds compile it away.
+#[cfg(all(test, axtest))]
+static EPOLL_NOTIFY_WORKER_READY: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn start_epoll_notify_worker() {
     EPOLL_NOTIFY_STARTED.call_once(|| {
         crate::task::kernel_thread_builder("epoll-notify".into())
-            .spawn(|| loop {
-                EPOLL_NOTIFY.wait();
-                let mut current = {
-                    let _queue = EPOLL_NOTIFY_QUEUE.lock();
-                    EPOLL_NOTIFY_HEAD.swap(ptr::null_mut(), Ordering::AcqRel)
-                };
-                while !current.is_null() {
-                    let epoll = unsafe {
-                        // SAFETY: queue insertion transfers exactly one strong
-                        // reference through Arc::into_raw. The queue lock gives
-                        // this sole consumer exclusive ownership of the detached
-                        // list, so each node is reconstructed exactly once.
-                        Arc::from_raw(current)
+            .spawn(|| {
+                // Publish readiness before the first notification registration
+                // so an axtest can observe that this thread has actually been
+                // scheduled rather than racing its startup.
+                #[cfg(all(test, axtest))]
+                EPOLL_NOTIFY_WORKER_READY.store(true, Ordering::Release);
+                loop {
+                    EPOLL_NOTIFY.wait();
+                    let mut current = {
+                        let _queue = EPOLL_NOTIFY_QUEUE.lock();
+                        EPOLL_NOTIFY_HEAD.swap(ptr::null_mut(), Ordering::AcqRel)
                     };
-                    let next = epoll.notify_next.swap(ptr::null_mut(), Ordering::Acquire);
-                    epoll.notify_queued.store(false, Ordering::SeqCst);
-                    epoll.flush_ready_waiters();
-                    current = next;
+                    while !current.is_null() {
+                        let epoll = unsafe {
+                            // SAFETY: queue insertion transfers exactly one
+                            // strong reference through Arc::into_raw. The queue
+                            // lock gives this sole consumer exclusive ownership
+                            // of the detached list, so each node is
+                            // reconstructed exactly once.
+                            Arc::from_raw(current)
+                        };
+                        let next = epoll.notify_next.swap(ptr::null_mut(), Ordering::Acquire);
+                        epoll.notify_queued.store(false, Ordering::SeqCst);
+                        epoll.flush_ready_waiters();
+                        current = next;
+                    }
                 }
             })
             .expect("failed to spawn epoll notification worker");
     });
 }
+
+/// Waits, with a bounded budget, for the notification worker to publish its
+/// startup readiness.
+///
+/// Returns `false` if the worker never reached its wait loop because it was
+/// never scheduled or the spawn silently failed, so an axtest can distinguish
+/// a startup race from a deferred-wake delivery failure.
+#[cfg(all(test, axtest))]
+pub(super) fn wait_epoll_notify_worker_ready() -> bool {
+    for _ in 0..EPOLL_NOTIFY_WORKER_READY_YIELDS {
+        if EPOLL_NOTIFY_WORKER_READY.load(Ordering::Acquire) {
+            return true;
+        }
+        crate::task::yield_now();
+    }
+    EPOLL_NOTIFY_WORKER_READY.load(Ordering::Acquire)
+}
+
+/// Bounded yield budget for the worker startup handshake.
+#[cfg(all(test, axtest))]
+const EPOLL_NOTIFY_WORKER_READY_YIELDS: usize = 4096;
 
 pub struct EpollEvent {
     pub events: IoEvents,

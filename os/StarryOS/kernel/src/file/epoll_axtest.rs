@@ -100,6 +100,14 @@ impl Wake for DeferredWakeWaiter {
 
 #[cfg(all(test, axtest))]
 fn epoll_notify_worker_flushes_deferred_wake_for_test() -> bool {
+    // The worker registers its first wait only after it is scheduled. Waiting
+    // for that readiness removes the startup race that could otherwise let the
+    // notification land before the worker is ready to consume it.
+    if !super::epoll::wait_epoll_notify_worker_ready() {
+        warn!("epoll-notify worker never reached its wait loop before the deferred-wake test");
+        return false;
+    }
+
     let epoll = Epoll::new();
     let waiter = Arc::new(DeferredWakeWaiter {
         woken: AtomicBool::new(false),

@@ -3,8 +3,8 @@ board_type = "OrangePi-5-Plus"
 # 100 rounds of 100,000,000 yields at roughly 35 s per round, plus bring-up. The
 # current case measures 30 rounds of 10,000,000 task switches. The harness
 # timeout is infrastructure that only bounds the run; it is not a benchmark
-# threshold, and 7200 s is retained unchanged.
-timeout = 7200
+# threshold, and 3600 s is retained unchanged.
+timeout = 3600
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "Failed to initialize guest VM",
