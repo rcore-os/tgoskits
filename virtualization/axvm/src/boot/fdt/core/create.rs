@@ -1407,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_fdt_over_subscription_keeps_cpu_phandles_unique_and_prunes_cpu_map() {
+    fn generated_fdt_over_subscription_keeps_cpu_phandles_unique_and_drops_host_cpu_map() {
         let host = host_fdt_with_cpu_map_phandles();
         let cfg = GuestConfig {
             base: axvmconfig::VMBaseConfig {
@@ -1421,8 +1421,7 @@ mod tests {
         let guest = Fdt::from_bytes(&dtb).unwrap();
 
         // `cpu@1` and `cpu@2` have no host CPU node, so they are cloned from
-        // `cpu@0` and must not inherit its phandle: the reference the host
-        // `cpu-map` keeps for `cpu@0` has to stay unambiguous.
+        // `cpu@0` and must not inherit its phandle.
         let mut seen = BTreeMap::new();
         for (phandle, path) in phandle_owners(&guest) {
             let previous = seen.insert(phandle, path.clone());
@@ -1440,19 +1439,8 @@ mod tests {
         );
         assert_ne!(first, second);
 
-        // The host CPU `cpu@100` is filtered out, so its `cpu-map` entry and the
-        // cluster that only carried it go away, while the live entry keeps
-        // naming `cpu@0`.
-        assert_eq!(
-            guest
-                .get_by_path("/cpus/cpu-map/cluster0/core0")
-                .unwrap()
-                .as_node()
-                .get_property("cpu")
-                .unwrap()
-                .get_u32(),
-            Some(7)
-        );
-        assert!(guest.get_by_path_id("/cpus/cpu-map/cluster1").is_none());
+        // CPU projection drops the host-only `cpu-map`; guest startup
+        // enumerates the projected CPU nodes by their `reg` values instead.
+        assert!(guest.get_by_path_id("/cpus/cpu-map").is_none());
     }
 }

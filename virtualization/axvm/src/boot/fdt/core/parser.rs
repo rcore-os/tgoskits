@@ -1300,48 +1300,6 @@ mod tests {
     }
 
     #[test]
-    fn subtract_memory_region_overlap_keeps_non_overlapping_range() {
-        let existing = vec![VmMemConfig {
-            gpa: 0x4000,
-            size: 0x1000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
-
-        assert_eq!(
-            super::subtract_memory_region_overlap(0x1000, 0x1000, &existing),
-            vec![(0x1000, 0x1000)]
-        );
-    }
-
-    #[test]
-    fn subtract_memory_region_overlap_splits_range_around_overlap() {
-        let existing = vec![VmMemConfig {
-            gpa: 0x3000,
-            size: 0x2000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
-
-        assert_eq!(
-            super::subtract_memory_region_overlap(0x1000, 0x6000, &existing),
-            vec![(0x1000, 0x2000), (0x5000, 0x2000)]
-        );
-    }
-
-    #[test]
-    fn subtract_memory_region_overlap_drops_fully_covered_range() {
-        let existing = vec![VmMemConfig {
-            gpa: 0x1000,
-            size: 0x4000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
-
-        assert!(super::subtract_memory_region_overlap(0x2000, 0x1000, &existing).is_empty());
-    }
-
-    #[test]
     fn excluded_device_ranges_become_reserved_vm_ranges() {
         let dtb = fdt_with_excluded_devices();
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {

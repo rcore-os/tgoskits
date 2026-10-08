@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn provided_guest_dtb_drops_cpu_map_references_to_removed_host_cpus() {
+    fn provided_guest_dtb_projects_cpu_nodes_without_stale_cpu_map_references() {
         let mut host = Fdt::new();
         let cpus = host.add_node(host.root_id(), Node::new("cpus"));
         for (name, id, phandle) in [("cpu@0", 0, 7), ("cpu@1", 1, 8)] {
@@ -101,7 +101,8 @@ mod tests {
         assert!(guest.get_by_path("/cpus/cpu@0").is_some());
         assert!(guest.get_by_path("/cpus/cpu@2").is_some());
         assert!(guest.get_by_path("/cpus/cpu@1").is_none());
-        assert!(guest.get_by_path("/cpus/cpu-map/cluster0/core0").is_some());
-        assert!(guest.get_by_path("/cpus/cpu-map/cluster0/core1").is_none());
+        // CPU projection intentionally drops the host-only `cpu-map`; guest
+        // startup enumerates the projected CPU nodes by `reg` instead.
+        assert!(guest.get_by_path_id("/cpus/cpu-map").is_none());
     }
 }

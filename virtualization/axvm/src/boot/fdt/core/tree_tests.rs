@@ -497,6 +497,8 @@ fn subtree_import_rejects_unbound_dependencies_without_changing_destination() {
         .unwrap_err();
     assert!(error.to_string().contains("outside the imported subtree"));
     assert_eq!(guest.inner().encode().as_ref(), before);
+}
+
 /// Builds a host FDT whose CPU nodes carry phandles.
 fn host_fdt_with_cpu_phandles() -> Fdt {
     let mut fdt = Fdt::new();
