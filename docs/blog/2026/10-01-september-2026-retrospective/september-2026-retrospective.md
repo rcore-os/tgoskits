@@ -5,8 +5,6 @@ date: 2026-10-01T23:00:00+08:00
 authors: [tgoskits-team]
 tags: [monthly-report, arceos, starryos, axvisor, axbuild, testing]
 ---
-# 2026 年 9 月开发月报
-
 2026 年 9 月，TGOSKits 围绕 [9 月开发计划 #2373](https://github.com/rcore-os/tgoskits/discussions/2373)，把 Axvisor 的客户机、IVC、调度和管理能力接入 RK3588 机器人场景。Linux/StarryOS 感知域与 Zephyr 控制域完成了实板基础验证，IVC 留下了超过 1 Gbps 的四档带宽记录，vCPU 超分实验推进到 8 个物理核运行 24 个 VM；调度器重构、任务切换测量和夜间性能历史也进入主线。月度总结会议判断机器人平台已基本进入收尾阶段，主要重构已经完成，后续开发重点转向性能优化、可靠性提升和安全性补充。
 
 计划 #2373 的 128 实例、任务切换最大值小于 800 cycles 和无人干预捡球闭环尚未完成；双客户机机器人自动 CI 在月内因回归暂停。栈溢出、CPU 调度异常和系统崩溃问题仍需通过长稳测试、统一镜像构建和稳定版发布周期处理。
@@ -35,11 +33,11 @@ tags: [monthly-report, arceos, starryos, axvisor, axbuild, testing]
 
 ### 1.2 主要贡献者
 
-贡献者提交数按作者邮箱统计。
+贡献者提交数按作者邮箱统计，均为非合并提交；周睿的两个邮箱合计 98 次。
 
 | 贡献者              | 提交数 |
 | ------------------- | ------ |
-| 周睿（ZR233）       | 99     |
+| 周睿（ZR233）       | 98     |
 | ZCShou              | 29     |
 | 禾可（Lfan-ke）     | 16     |
 | Josen-B             | 14     |
