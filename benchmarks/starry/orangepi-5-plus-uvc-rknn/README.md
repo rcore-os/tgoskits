@@ -245,7 +245,7 @@ cargo starry board \
   -c benchmarks/starry/orangepi-5-plus-uvc-rknn/build-aarch64-unknown-none-softfloat.toml \
   --target aarch64-unknown-none-softfloat \
   --board-config benchmarks/starry/orangepi-5-plus-uvc-rknn/board-orangepi-5-plus.toml \
-  -b OrangePi-5-Plus-robot \
+  -b OrangePi-5-Plus \
   --server 10.30.12.60 \
   --port 2999
 ```

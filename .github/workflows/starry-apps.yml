@@ -91,3 +91,5 @@ jobs:
             echo "| Plan | ${PLAN_RESULT} |"
             echo "| Apps | ${CHECKS_RESULT} |"
           } >> "$GITHUB_STEP_SUMMARY"
+          test "$PLAN_RESULT" = success
+          test "$CHECKS_RESULT" = success

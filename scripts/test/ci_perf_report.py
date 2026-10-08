@@ -41,9 +41,6 @@ STARRY_HACKBENCH_SPEEDUP_PATTERN = re.compile(
 STARRY_NETSTRESS_PATTERN = re.compile(
     r"LTP_NETSTRESS_RESULT\s+case=(?P<case>\S+)\s+median_ms=(?P<value>[-+]?\d+(?:\.\d+)?)"
 )
-STARRY_SCHEDULER_PATTERN = re.compile(
-    r"(?P<case>kernel_thread_[a-z0-9_]+)\s+p50_ns=(?P<value>\d+)"
-)
 STARRY_WAKEUP_PATTERN = re.compile(
     r"WAKEUP_LATENCY_RESULT\s+(?P<payload>\{.*\})"
 )
@@ -308,9 +305,6 @@ def render_starry_benchmarks(log_text: str) -> list[dict[str, object]]:
 
         if match := STARRY_NETSTRESS_PATTERN.search(line):
             _append_metric(metrics, f"netstress/{match['case']}", "ms", match["value"])
-
-        if match := STARRY_SCHEDULER_PATTERN.search(line):
-            _append_metric(metrics, f"scheduler/{match['case']}", "ns", match["value"])
 
         if match := STARRY_WAKEUP_PATTERN.search(line):
             try:

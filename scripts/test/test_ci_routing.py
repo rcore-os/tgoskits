@@ -251,6 +251,42 @@ class AxvisorNightlyWorkflowTests(unittest.TestCase):
         self.assertNotIn("perf-history", workflow)
 
 
+class NightlyResultPropagationTests(unittest.TestCase):
+    def _result_scripts(self) -> dict[str, str]:
+        return {
+            "starry-apps": workflow_step_script_in(
+                STARRY_APPS_WORKFLOW.read_text(encoding="utf-8"),
+                "Report result",
+            ),
+            "axvisor-nightly": workflow_step_script_in(
+                AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8"),
+                "Report result",
+            ),
+        }
+
+    def test_result_jobs_propagate_a_failed_plan(self) -> None:
+        for label, script in self._result_scripts().items():
+            with self.subTest(workflow=label):
+                completed = run_result_summary_step(
+                    script, PLAN_RESULT="failure"
+                )
+                self.assertNotEqual(completed.returncode, 0)
+
+    def test_result_jobs_propagate_failed_checks(self) -> None:
+        for label, script in self._result_scripts().items():
+            with self.subTest(workflow=label):
+                completed = run_result_summary_step(
+                    script, CHECKS_RESULT="failure"
+                )
+                self.assertNotEqual(completed.returncode, 0)
+
+    def test_result_jobs_succeed_when_every_stage_passes(self) -> None:
+        for label, script in self._result_scripts().items():
+            with self.subTest(workflow=label):
+                completed = run_result_summary_step(script)
+                self.assertEqual(completed.returncode, 0)
+
+
 class MatrixParallelismTests(unittest.TestCase):
     def test_self_hosted_matrix_waits_for_preflight_then_runs_in_parallel(
         self,
@@ -994,13 +1030,51 @@ def cancelled_runs(result: RouteResult) -> set[int]:
 
 
 def workflow_step_script(step_name: str) -> str:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    return workflow_step_script_in(
+        CI_WORKFLOW.read_text(encoding="utf-8"), step_name
+    )
+
+
+def workflow_step_script_in(workflow: str, step_name: str) -> str:
     step = named_step_block(workflow, step_name)
     lines = step.splitlines()
     run_index = next(
         index for index, line in enumerate(lines) if line.strip() == "run: |"
     )
     return textwrap.dedent("\n".join(lines[run_index + 1 :]))
+
+
+def run_result_summary_step(
+    script: str, **env_overrides: str
+) -> subprocess.CompletedProcess:
+    """Execute a workflow's result-summary step against a temporary summary.
+
+    The step only reads stage results from the environment and appends to
+    ``GITHUB_STEP_SUMMARY``, so a local bash run reproduces the workflow's exit
+    status without touching any external state.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        summary = Path(temp_dir_name) / "summary"
+        env = os.environ.copy()
+        env.update(
+            {
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "PLAN_RESULT": "success",
+                "CHECKS_RESULT": "success",
+                "REVISION": "fixture",
+            }
+        )
+        env.update(env_overrides)
+        # GitHub runs `run:` steps with `bash -e`, so a failing `test` aborts
+        # the step even though the script does not set errexit itself.
+        return subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=WORKSPACE_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 FAKE_GH = r'''#!/usr/bin/env python3

@@ -44,7 +44,6 @@ CHART_DESCRIPTIONS = {
         "hackbench": "调度器、进程/线程和 pipe IPC 工作负载的耗时。",
         "netstress": "StarryOS 回环 TCP/UDP 请求响应耗时。",
         "wakeup": "futex、timer 和调度 yield 的唤醒延迟分布。",
-        "scheduler": "StarryOS 内核线程创建、唤醒和线程切换延迟。",
         "iperf3": "OrangePi 上 StarryOS 真实网络链路的 TCP 吞吐量。",
         "uvc": "StarryOS UVC 摄像头采集帧率和数据吞吐量。",
         "uvc-rknn": "UVC 采集与 RKNN 推理流水线的帧率、吞吐量和延迟。",
