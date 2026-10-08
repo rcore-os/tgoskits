@@ -175,7 +175,9 @@ register_bitfields! {u32,
         INTER_FRAME_GAP OFFSET(24) NUMBITS(2) [],
         DMA_BURST OFFSET(8) NUMBITS(3) []
     ],
-    RX_CONFIG [
+    // Crate-visible so host tests can assert the ACCEPT_ALL_PHYS contract
+    // directly instead of hard-coding register bits.
+    pub(crate) RX_CONFIG [
         FETCH_DFLT OFFSET(27) NUMBITS(4) [],
         PAUSE_SLOT_ON OFFSET(11) NUMBITS(1) [],
         DMA_BURST OFFSET(8) NUMBITS(3) [],

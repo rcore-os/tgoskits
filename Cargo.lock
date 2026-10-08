@@ -6805,6 +6805,7 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.3.3"
 dependencies = [
+ "ax-crate-interface",
  "ax-sync",
  "dma-api",
  "log",

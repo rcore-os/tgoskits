@@ -1107,3 +1107,122 @@ fn open_startup_transaction_does_not_consume_secure_entropy() {
 
     assert!(!transaction.needs_connect_entropy());
 }
+
+/// Control endpoint that records every address-filter request it receives.
+struct RecordingFilterControl {
+    calls: Arc<StdMutex<Vec<bool>>>,
+}
+
+impl RecordingFilterControl {
+    fn new() -> (Self, Arc<StdMutex<Vec<bool>>>) {
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        (
+            Self {
+                calls: Arc::clone(&calls),
+            },
+            calls,
+        )
+    }
+}
+
+impl NetControlEndpoint for RecordingFilterControl {
+    fn mac_address(&mut self) -> Result<[u8; 6], NetError> {
+        Ok([0; 6])
+    }
+
+    fn set_rx_accept_all_phys(&mut self, enabled: bool) -> Result<(), NetError> {
+        self.calls.lock().unwrap().push(enabled);
+        Ok(())
+    }
+}
+
+/// Builds a runtime already in the post-prune state `NetworkRuntimeBuilder`
+/// produces: `_controls` holds only the published devices and
+/// `published_interfaces` is bound in the same order.
+fn filter_routing_runtime(
+    controls: Vec<Box<dyn NetControlEndpoint>>,
+    device_index_map: Vec<Option<usize>>,
+    published_interfaces: Vec<InterfaceId>,
+) -> NetworkQueueRuntime {
+    let mut runtime = NetworkQueueRuntime {
+        registrations: Vec::new(),
+        executors: Vec::new(),
+        group_states: Vec::new(),
+        _controls: controls,
+        wifi_handles: Vec::new(),
+        initial_wifi_policies: Vec::new(),
+        device_index_map,
+        published_interfaces: Vec::new(),
+        protocol_owner_cpu: 0,
+    };
+    runtime.bind_published_interfaces(published_interfaces);
+    runtime
+}
+
+#[test]
+fn filter_request_reaches_the_control_published_after_an_intermediate_prune() {
+    let (control0, calls0) = RecordingFilterControl::new();
+    let (control2, calls2) = RecordingFilterControl::new();
+    // Discovery orders 0 and 2 survive; discovery order 1 was pruned, so the
+    // published controls are [0, 2]. The interface ids are deliberately not
+    // contiguous, which any id-arithmetic routing would misroute.
+    let published0: Box<dyn NetControlEndpoint> = Box::new(control0);
+    let published2: Box<dyn NetControlEndpoint> = Box::new(control2);
+    let controls: Vec<Box<dyn NetControlEndpoint>> = vec![published0, published2];
+    let mut runtime = filter_routing_runtime(
+        controls,
+        vec![Some(0), None, Some(1)],
+        vec![InterfaceId::new(2), InterfaceId::new(5)],
+    );
+
+    runtime
+        .set_interface_rx_accept_all_phys(InterfaceId::new(5), true)
+        .unwrap();
+    assert_eq!(*calls2.lock().unwrap(), vec![true]);
+    assert!(calls0.lock().unwrap().is_empty());
+
+    runtime
+        .set_interface_rx_accept_all_phys(InterfaceId::new(2), false)
+        .unwrap();
+    assert_eq!(*calls0.lock().unwrap(), vec![false]);
+    assert_eq!(*calls2.lock().unwrap(), vec![true]);
+
+    // The pruned id and an unknown id must not reach any published control.
+    assert!(matches!(
+        runtime.set_interface_rx_accept_all_phys(InterfaceId::new(3), true),
+        Err(NetError::NotSupported)
+    ));
+    assert!(matches!(
+        runtime.set_interface_rx_accept_all_phys(InterfaceId::new(99), true),
+        Err(NetError::NotSupported)
+    ));
+    assert_eq!(*calls0.lock().unwrap(), vec![false]);
+    assert_eq!(*calls2.lock().unwrap(), vec![true]);
+}
+
+#[test]
+fn unsupported_filter_control_is_reported_without_touching_other_devices() {
+    use rd_net::FixedNetControl;
+
+    let (control0, calls0) = RecordingFilterControl::new();
+    // `FixedNetControl` keeps the trait default, so it reports `NotSupported`.
+    let supported: Box<dyn NetControlEndpoint> = Box::new(control0);
+    let unsupported: Box<dyn NetControlEndpoint> = Box::new(FixedNetControl::new([0; 6]));
+    let controls: Vec<Box<dyn NetControlEndpoint>> = vec![supported, unsupported];
+    let mut runtime = filter_routing_runtime(
+        controls,
+        vec![Some(0), Some(1)],
+        vec![InterfaceId::new(7), InterfaceId::new(9)],
+    );
+
+    assert!(matches!(
+        runtime.set_interface_rx_accept_all_phys(InterfaceId::new(9), true),
+        Err(NetError::NotSupported)
+    ));
+    assert!(calls0.lock().unwrap().is_empty());
+
+    runtime
+        .set_interface_rx_accept_all_phys(InterfaceId::new(7), true)
+        .unwrap();
+    assert_eq!(*calls0.lock().unwrap(), vec![true]);
+}

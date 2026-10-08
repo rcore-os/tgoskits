@@ -5,9 +5,10 @@
 //! into that single owner instead:
 //!
 //! * **Egress (guest -> wire):** a guest device submits a complete Ethernet
-//!   frame into a bounded, lock-free, non-blocking ring. The protocol executor
-//!   drains that ring into the existing NIC TX path, so the frame reaches the
-//!   hardware only through the queue owner that already holds the DMA tokens.
+//!   frame into a bounded, non-blocking ring whose two ends are serialized by
+//!   single-shot gates. The protocol executor drains that ring into the
+//!   existing NIC TX path, so the frame reaches the hardware only through the
+//!   queue owner that already holds the DMA tokens.
 //! * **Ingress (wire -> guest):** every received physical frame is copied to
 //!   the registered ingress sink *before* the host stack applies its
 //!   host-MAC-only filter, because the switch must see frames addressed to
@@ -18,19 +19,24 @@
 //! caller that registers the sink.
 //!
 //! [`UplinkRuntime::submit_egress`] may run in a vCPU MMIO-write context and
-//! therefore never allocates, sleeps, or takes any lock. Shared state is a fixed
-//! slot array plus atomics, and the ingress sink and bound device name are
-//! published once through [`OnceLock`]. A full ring rejects the frame instead of
-//! blocking or growing, so the same code runs in a bare-metal kernel and in a
-//! pure host test.
+//! therefore never allocates, sleeps, or waits: it either wins a single
+//! non-blocking gate or is rejected. The ring preallocates its frame slots once,
+//! and the ingress sink and bound device name are published once through
+//! [`OnceLock`]. A full or busy ring rejects the frame instead of blocking or
+//! growing, so the same code runs in a bare-metal kernel and in a pure host
+//! test.
 
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{string::String, sync::Arc};
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ax_lazyinit::OnceLock;
+use ringbuf::{
+    HeapCons, HeapProd, HeapRb,
+    traits::{Consumer, Producer, Split},
+};
 
 use crate::device::ETHERNET_FRAME_CAPACITY;
 
@@ -49,7 +55,8 @@ pub const DEFAULT_EGRESS_DEPTH: usize = 64;
 /// Result of one bounded egress submission.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
 pub enum UplinkEgressError {
-    /// The bounded ring is full; the caller must drop or retry later.
+    /// The bounded ring is full, or another producer currently holds the
+    /// producer gate; the caller must drop or retry later.
     #[error("physical uplink egress ring is full")]
     Full,
     /// The frame is shorter than an Ethernet header or larger than the port.
@@ -67,94 +74,111 @@ pub trait IngressSink: Send + Sync {
     fn deliver_physical_rx(&self, frame: &[u8]);
 }
 
-/// One egress slot state. The ordering of these transitions is the whole
-/// publication protocol: `EMPTY -> FILLING -> READY -> DRAINING -> EMPTY`.
-const SLOT_EMPTY: u8 = 0;
-const SLOT_FILLING: u8 = 1;
-const SLOT_READY: u8 = 2;
-const SLOT_DRAINING: u8 = 3;
-
-struct EgressSlot {
-    state: AtomicU8,
-    frame_len: AtomicUsize,
-    data: UnsafeCell<[u8; ETHERNET_FRAME_CAPACITY]>,
+/// One queued egress frame with its payload stored inline.
+///
+/// The ring preallocates `depth` of these, so `submit` and `drain` only move
+/// and copy fixed-size payloads and never allocate.
+struct EgressFrame {
+    len: usize,
+    data: [u8; ETHERNET_FRAME_CAPACITY],
 }
 
-impl EgressSlot {
-    /// Copies one frame into the slot payload.
-    ///
-    /// # Safety
-    ///
-    /// The caller must have claimed this slot with `EMPTY -> FILLING` and must
-    /// not publish it as `READY` until this returns, so no other execution
-    /// context can access `data` concurrently. `frame.len()` is checked against
-    /// [`ETHERNET_FRAME_CAPACITY`] by the caller.
-    unsafe fn write_frame(&self, frame: &[u8]) {
-        debug_assert!(frame.len() <= ETHERNET_FRAME_CAPACITY);
-        // SAFETY: `self.data` is an `UnsafeCell`, so a raw pointer is the only
-        // way to reach the payload; the caller's `FILLING` ownership makes the
-        // pointer the unique mutable borrow for `frame.len()` bytes, which the
-        // caller bounded by the slot capacity.
-        let destination =
-            unsafe { core::slice::from_raw_parts_mut(self.data.get().cast::<u8>(), frame.len()) };
-        destination.copy_from_slice(frame);
+impl EgressFrame {
+    /// Creates an empty frame slot.
+    const fn empty() -> Self {
+        Self {
+            len: 0,
+            data: [0; ETHERNET_FRAME_CAPACITY],
+        }
     }
 
-    /// Returns the slot payload as a bounded shared slice.
-    ///
-    /// # Safety
-    ///
-    /// The caller must have claimed this slot with `READY -> DRAINING` and must
-    /// keep it out of `EMPTY` for as long as the returned slice is used, so the
-    /// producer cannot reuse the slot while it is being read. `frame_len` must
-    /// be the length published with the frame and must not exceed
-    /// [`ETHERNET_FRAME_CAPACITY`].
-    unsafe fn frame(&self, frame_len: usize) -> &[u8] {
-        debug_assert!(frame_len <= ETHERNET_FRAME_CAPACITY);
-        // SAFETY: the `DRAINING` claim gives this single reader exclusive
-        // access to the payload, and the producer only reuses the slot after
-        // the state returns to `EMPTY`.
-        unsafe { core::slice::from_raw_parts(self.data.get().cast::<u8>(), frame_len) }
+    /// Returns the initialized prefix that holds the frame.
+    fn payload(&self) -> &[u8] {
+        &self.data[..self.len]
     }
 }
 
-// SAFETY: the payload is written only by the producer that won the slot's
-// `EMPTY -> FILLING` compare-and-swap and read only by the single drainer after
-// it claims `READY -> DRAINING` with an acquire. Those states are mutually
-// exclusive, and the `Release`/`Acquire` pair on `state` publishes the payload
-// and `frame_len` before any read, so the module-private `unsafe` accessors are
-// the only ways to reach the payload.
-unsafe impl Sync for EgressSlot {}
+/// RAII single-shot gate for one ring half.
+///
+/// Acquisition is one non-blocking compare-exchange, so a held gate rejects the
+/// caller instead of spinning or waiting. Only the successful compare-exchange
+/// creates a guard; a rejected acquisition constructs nothing and writes
+/// nothing, so it cannot disturb the current holder. `Drop` releases the gate,
+/// which also covers unwinding out of the guarded section.
+struct EgressGate<'a> {
+    gate: &'a AtomicBool,
+}
+
+impl<'a> EgressGate<'a> {
+    fn try_acquire(gate: &'a AtomicBool) -> Option<Self> {
+        match gate.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed) {
+            Ok(_) => Some(Self { gate }),
+            Err(_) => None,
+        }
+    }
+}
+
+impl Drop for EgressGate<'_> {
+    fn drop(&mut self) {
+        self.gate.store(false, Ordering::Release);
+    }
+}
 
 /// Bounded multi-producer / single-consumer egress ring.
 ///
-/// Producer registration is by monotonically increasing ticket, so concurrent
-/// vCPUs of several guests never touch the same slot unless the ring is full;
-/// a full ring rejects the frame instead of blocking.
+/// `ringbuf`'s heap SPSC buffer owns the preallocated frame slots, so neither
+/// `submit` nor `drain` allocates. Each half is wrapped in an `UnsafeCell` and
+/// guarded by its own single-shot gate:
+///
+/// * A producer must win the producer gate to reach the write half. Only one
+///   producer runs there at a time, so a vCPU that finds the gate held is
+///   rejected as [`UplinkEgressError::Full`] instead of waiting.
+/// * A consumer must win the consumer gate to reach the read half, so a
+///   concurrent or recursive `drain` returns `0` without touching the ring.
+///
+/// The two gates are independent and `drain` never takes the producer gate, so
+/// a transmit callback may call `submit`, which only competes with other
+/// producers for the producer gate.
 struct EgressRing {
-    slots: Box<[EgressSlot]>,
-    ticket: AtomicUsize,
-    /// Round-robin start for the single drainer: a drain pass bounded to fewer
-    /// slots than the ring depth must not always restart at slot 0, or a busy
-    /// producer that refills the low slots would starve the high ones.
-    cursor: AtomicUsize,
+    producer_gate: AtomicBool,
+    producer: UnsafeCell<HeapProd<EgressFrame>>,
+    consumer_gate: AtomicBool,
+    consumer: UnsafeCell<HeapCons<EgressFrame>>,
 }
+
+// SAFETY: `EgressRing` is shared between vCPU producer contexts and the single
+// protocol-executor consumer, and `UplinkRuntime` wraps it in an `Arc`, so it
+// must be `Sync`.
+//
+// Two different things are shared through this type:
+// * The ring *ends* (`HeapProd`/`HeapCons`) hold non-`Sync` cached index state
+//   in `Cell`s. Each end lives in its own `UnsafeCell` and is touched only by
+//   the context that won that end's single-shot `AtomicBool` gate: `submit`
+//   creates the `&mut HeapProd` only after winning `producer_gate`, and `drain`
+//   creates the `&mut HeapCons` only after winning `consumer_gate`. The RAII
+//   guard releases the gate only after that `&mut` is dead, and a recursive
+//   `drain` fails the consumer gate before it can touch the end, so no two live
+//   `&mut`s to one end can exist. The acquire/release pair on each gate orders
+//   the previous holder's cached indices for the next holder.
+// * The frame *payload slots* are one shared ring buffer, not two disjoint
+//   allocations. Their ownership is what `ringbuf`'s SPSC contract provides: a
+//   slot becomes exclusively writable only after the consumer reclaimed it
+//   (published by the read-index update of `try_pop`) and exclusively readable
+//   only after the producer published it (the write-index update of
+//   `try_push`), both with release/acquire ordering. The gates above turn
+//   several producers plus one consumer into a valid SPSC pair, so at most one
+//   live `&mut EgressFrame` or `&EgressFrame` exists per slot.
+// Every `&mut` stays inside its guarded section, so no `&`/`&mut` can alias it.
+unsafe impl Sync for EgressRing {}
 
 impl EgressRing {
     fn new(depth: usize) -> Self {
-        let depth = depth.max(1);
-        let slots = (0..depth)
-            .map(|_| EgressSlot {
-                state: AtomicU8::new(SLOT_EMPTY),
-                frame_len: AtomicUsize::new(0),
-                data: UnsafeCell::new([0u8; ETHERNET_FRAME_CAPACITY]),
-            })
-            .collect::<alloc::vec::Vec<_>>()
-            .into_boxed_slice();
+        let (producer, consumer) = HeapRb::<EgressFrame>::new(depth.max(1)).split();
         Self {
-            slots,
-            ticket: AtomicUsize::new(0),
-            cursor: AtomicUsize::new(0),
+            producer_gate: AtomicBool::new(false),
+            producer: UnsafeCell::new(producer),
+            consumer_gate: AtomicBool::new(false),
+            consumer: UnsafeCell::new(consumer),
         }
     }
 
@@ -163,94 +187,69 @@ impl EgressRing {
             return Err(UplinkEgressError::InvalidFrame);
         }
 
-        let ticket = self.ticket.fetch_add(1, Ordering::Relaxed);
-        let slot = &self.slots[ticket % self.slots.len()];
-        if slot
-            .state
-            .compare_exchange(
-                SLOT_EMPTY,
-                SLOT_FILLING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
+        let Some(_producer_gate) = EgressGate::try_acquire(&self.producer_gate) else {
+            // Another producer is already inside the ring. Reject instead of
+            // waiting, because `submit` runs in a vCPU MMIO-write path.
             return Err(UplinkEgressError::Full);
-        }
-
-        // SAFETY: this producer holds the slot in `FILLING`, and `frame.len()`
-        // was just checked against the slot capacity.
-        unsafe { slot.write_frame(frame) };
-        slot.frame_len.store(frame.len(), Ordering::Relaxed);
-        slot.state.store(SLOT_READY, Ordering::Release);
-        Ok(())
+        };
+        // SAFETY: `_producer_gate` is the only producer-side gate for this
+        // ring, so no other execution context can create a reference into
+        // `producer` while this `&mut` is alive; the gate is released only
+        // after the reference is dead.
+        let producer = unsafe { &mut *self.producer.get() };
+        let mut item = EgressFrame::empty();
+        item.len = frame.len();
+        item.data[..frame.len()].copy_from_slice(frame);
+        producer.try_push(item).map_err(|_| UplinkEgressError::Full)
     }
 
-    /// Drains up to `budget` ready frames.
+    /// Drains up to `budget` frames, oldest first.
     ///
     /// Must have exactly one concurrent caller: the protocol executor of the
     /// interface this uplink is bound to. `transmit` returns `true` once it has
-    /// taken ownership of the frame; `false` leaves the slot ready for the next
-    /// poll and stops this pass.
-    ///
-    /// The scan starts at a round-robin cursor that advances past each drained
-    /// slot, so a budget smaller than the ring depth still serves every slot in
-    /// turn. A frame a producer published behind the cursor is picked up by the
-    /// next pass. Work per call stays bounded by `slots.len()`.
+    /// taken ownership of the frame; `false` leaves the frame at the head of
+    /// the ring and stops this pass, so the next poll retries the oldest frame
+    /// first. Work per call stays bounded by `budget`.
     fn drain(&self, budget: usize, transmit: &mut dyn FnMut(&[u8]) -> bool) -> usize {
-        let depth = self.slots.len();
-        let mut cursor = self.cursor.load(Ordering::Relaxed);
+        let Some(_consumer_gate) = EgressGate::try_acquire(&self.consumer_gate) else {
+            // A concurrent or recursive drain already owns the read side.
+            return 0;
+        };
+        // SAFETY: `_consumer_gate` is the only consumer-side gate, so no other
+        // execution context can create a second `&mut` into `consumer`; a
+        // recursive `drain` fails the gate above before it could do so.
+        let consumer = unsafe { &mut *self.consumer.get() };
+
         let mut drained = 0;
-        for _ in 0..depth {
-            if drained >= budget {
+        while drained < budget {
+            // Peek rather than pop, so a rejected transmit leaves the oldest
+            // frame in place for the next pass. `ringbuf` stops a producer from
+            // writing an occupied slot, so this borrow stays valid even if
+            // `transmit` re-enters `submit`.
+            let accepted = match consumer.first() {
+                Some(frame) => transmit(frame.payload()),
+                None => break,
+            };
+            if !accepted {
                 break;
             }
-            let index = cursor % depth;
-            let slot = &self.slots[index];
-            if slot
-                .state
-                .compare_exchange(
-                    SLOT_READY,
-                    SLOT_DRAINING,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_err()
-            {
-                cursor = index + 1;
-                continue;
-            }
-            let frame_len = slot.frame_len.load(Ordering::Relaxed);
-            if frame_len == 0 || frame_len > ETHERNET_FRAME_CAPACITY {
-                slot.state.store(SLOT_EMPTY, Ordering::Release);
-                cursor = index + 1;
-                continue;
-            }
-            // SAFETY: this drainer holds the slot in `DRAINING` and
-            // `frame_len` was validated against the slot capacity above.
-            let accepted = transmit(unsafe { slot.frame(frame_len) });
-            if accepted {
-                slot.state.store(SLOT_EMPTY, Ordering::Release);
-                cursor = index + 1;
-                drained += 1;
-            } else {
-                // Keep the cursor on the rejected slot: it still holds a frame
-                // and must be retried first on the next pass.
-                slot.state.store(SLOT_READY, Ordering::Release);
+            // The `first` borrow ended with the `match` above.
+            if consumer.try_pop().is_none() {
                 break;
             }
+            drained += 1;
         }
-        self.cursor.store(cursor % depth, Ordering::Relaxed);
         drained
     }
 }
 
 /// Shared physical-uplink runtime for one host NIC.
 ///
-/// Synchronization is runtime-agnostic on purpose: the hot paths do not take
-/// any lock. The egress ring is atomic, and the ingress sink and bound device
-/// name are published once with `OnceLock`, so this type is equally usable from
-/// a bare-metal kernel and from a pure host test that never boots a kernel.
+/// Synchronization is runtime-agnostic on purpose: the hot paths take no lock
+/// and never wait. The egress ring uses one non-blocking gate per half, and the
+/// ingress sink and bound device name are published once with `OnceLock`, so
+/// this type is equally usable from a bare-metal kernel and from a pure host
+/// test that never boots a kernel.
 pub struct UplinkRuntime {
     egress: EgressRing,
     ingress: OnceLock<Arc<dyn IngressSink>>,
@@ -292,7 +291,8 @@ impl UplinkRuntime {
     /// Submits one complete guest frame for transmission on the physical NIC.
     ///
     /// Bounded and non-blocking: safe in a vCPU MMIO-write path. A successful
-    /// submission requests a protocol poll so the frame is drained promptly.
+    /// submission requests a protocol poll so the frame is drained promptly; a
+    /// full or busy ring returns [`UplinkEgressError::Full`] without waiting.
     pub fn submit_egress(&self, frame: &[u8]) -> Result<(), UplinkEgressError> {
         self.egress.submit(frame)?;
         crate::request_poll();
@@ -343,6 +343,8 @@ pub fn runtime() -> Option<Arc<UplinkRuntime>> {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::AtomicUsize;
+
     use super::*;
 
     fn frame(src_tag: u8, len: usize) -> alloc::vec::Vec<u8> {
@@ -358,7 +360,8 @@ mod tests {
         ring.submit(&frame(2, 64)).unwrap();
         assert_eq!(ring.submit(&frame(3, 64)), Err(UplinkEgressError::Full));
 
-        // The two queued frames still reach the TX path, then free their slots.
+        // The two queued frames still reach the TX path in submission order,
+        // then free their slots.
         let mut seen = alloc::vec::Vec::new();
         assert_eq!(
             ring.drain(8, &mut |f| {
@@ -367,13 +370,46 @@ mod tests {
             }),
             2
         );
-        seen.sort_unstable();
         assert_eq!(seen, alloc::vec![1, 2]);
         ring.submit(&frame(4, 64)).unwrap();
 
         // A frame below the Ethernet header is rejected before it can consume a
         // ring slot.
         assert_eq!(ring.submit(&[0u8; 8]), Err(UplinkEgressError::InvalidFrame));
+    }
+
+    #[test]
+    fn egress_ring_preserves_fifo_order_across_slot_reuse() {
+        // Depth 2 makes buffer reuse observable. After A/B drain, the next two
+        // submissions reuse the same storage; an implementation that does not
+        // preserve submission order drains the second burst as E/D.
+        let ring = EgressRing::new(2);
+        ring.submit(&frame(0xa1, 64)).unwrap();
+        ring.submit(&frame(0xb2, 64)).unwrap();
+        assert_eq!(ring.submit(&frame(0xc3, 64)), Err(UplinkEgressError::Full));
+
+        let mut drained = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(8, &mut |f| {
+                drained.push(f[6]);
+                true
+            }),
+            2
+        );
+        assert_eq!(drained, alloc::vec![0xa1, 0xb2]);
+
+        ring.submit(&frame(0xd4, 64)).unwrap();
+        ring.submit(&frame(0xe5, 64)).unwrap();
+
+        let mut redrained = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(8, &mut |f| {
+                redrained.push(f[6]);
+                true
+            }),
+            2
+        );
+        assert_eq!(redrained, alloc::vec![0xd4, 0xe5]);
     }
 
     #[test]
@@ -396,5 +432,172 @@ mod tests {
         // A guest egress frame drains into the physical TX path.
         runtime.submit_egress(&frame(2, 64)).unwrap();
         assert_eq!(runtime.drain_egress(8, &mut |_| true), 1);
+    }
+
+    #[test]
+    fn drain_budget_bounds_one_pass_and_keeps_the_rest_queued() {
+        let ring = EgressRing::new(4);
+        for tag in 1..=3u8 {
+            ring.submit(&frame(tag, 64)).unwrap();
+        }
+
+        let mut first = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(2, &mut |f| {
+                first.push(f[6]);
+                true
+            }),
+            2
+        );
+        assert_eq!(first, alloc::vec![1, 2]);
+
+        // The remaining frame is still queued and drains in order next pass.
+        let mut rest = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(2, &mut |f| {
+                rest.push(f[6]);
+                true
+            }),
+            1
+        );
+        assert_eq!(rest, alloc::vec![3]);
+    }
+
+    #[test]
+    fn rejected_transmit_keeps_the_oldest_frame() {
+        let ring = EgressRing::new(4);
+        ring.submit(&frame(0x41, 64)).unwrap();
+        ring.submit(&frame(0x42, 64)).unwrap();
+
+        // Backpressure refuses the head frame, so nothing is consumed and the
+        // pass stops at once.
+        let mut attempts = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(4, &mut |f| {
+                attempts.push(f[6]);
+                false
+            }),
+            0
+        );
+        assert_eq!(attempts, alloc::vec![0x41]);
+
+        // A later pass retries from the same oldest frame.
+        let mut seen = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(4, &mut |f| {
+                seen.push(f[6]);
+                true
+            }),
+            2
+        );
+        assert_eq!(seen, alloc::vec![0x41, 0x42]);
+    }
+
+    #[test]
+    fn busy_producer_gate_rejects_repeatedly_without_clearing_the_holder() {
+        let ring = EgressRing::new(4);
+        // Model a vCPU already inside `submit`: hold the real producer gate and
+        // check that two consecutive submissions are rejected rather than
+        // blocking, and that neither rejected attempt releases the holder's
+        // gate. This test holds no `&mut` into the ring.
+        let held = EgressGate::try_acquire(&ring.producer_gate).expect("gate starts free");
+        assert_eq!(ring.submit(&frame(0x51, 64)), Err(UplinkEgressError::Full));
+        assert!(
+            ring.producer_gate.load(Ordering::Acquire),
+            "a rejected submit must not clear the holder's gate"
+        );
+        assert_eq!(ring.submit(&frame(0x52, 64)), Err(UplinkEgressError::Full));
+        assert!(
+            ring.producer_gate.load(Ordering::Acquire),
+            "a second rejected submit must not clear the holder's gate"
+        );
+
+        // Only the holder releases the gate, and then a submission succeeds.
+        drop(held);
+        assert!(!ring.producer_gate.load(Ordering::Acquire));
+        ring.submit(&frame(0x53, 64)).unwrap();
+        let mut seen = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(4, &mut |f| {
+                seen.push(f[6]);
+                true
+            }),
+            1
+        );
+        assert_eq!(seen, alloc::vec![0x53]);
+    }
+
+    #[test]
+    fn concurrent_drain_is_rejected_without_touching_the_ring() {
+        let ring = EgressRing::new(4);
+        ring.submit(&frame(0x61, 64)).unwrap();
+        ring.submit(&frame(0x62, 64)).unwrap();
+
+        let mut seen = alloc::vec::Vec::new();
+        let mut recursive = alloc::vec::Vec::new();
+        let drained = ring.drain(4, &mut |f| {
+            seen.push(f[6]);
+            // A recursive drain must fail the consumer gate and consume
+            // nothing, leaving the outer pass in charge of the read side.
+            let inner = ring.drain(4, &mut |g| {
+                recursive.push(g[6]);
+                true
+            });
+            assert_eq!(inner, 0);
+            true
+        });
+        assert_eq!(drained, 2);
+        assert_eq!(seen, alloc::vec![0x61, 0x62]);
+        assert!(recursive.is_empty());
+    }
+
+    #[test]
+    fn transmit_callback_may_reenter_submit() {
+        let ring = EgressRing::new(4);
+        ring.submit(&frame(0x71, 64)).unwrap();
+
+        let mut pushed = false;
+        let mut seen = alloc::vec::Vec::new();
+        let drained = ring.drain(4, &mut |f| {
+            seen.push(f[6]);
+            if !pushed {
+                pushed = true;
+                // The consumer holds only the consumer gate, so a frame queued
+                // from the callback is accepted and becomes the next head.
+                ring.submit(&frame(0x72, 64)).expect("submit from callback");
+            }
+            true
+        });
+        assert!(pushed);
+        assert_eq!(drained, 2);
+        assert_eq!(seen, alloc::vec![0x71, 0x72]);
+    }
+
+    // Host-only: `catch_unwind` needs the standard library, which the ax-net
+    // test build links.
+    #[test]
+    fn panicking_transmit_releases_the_consumer_gate() {
+        let ring = EgressRing::new(4);
+        ring.submit(&frame(0x81, 64)).unwrap();
+
+        // A panic inside the transmit callback must release the consumer gate
+        // through the guard's `Drop`, so the ring stays usable.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ring.drain(4, &mut |_| panic!("transmit callback panicked"));
+        }))
+        .is_err();
+        assert!(panicked);
+
+        // The frame was only peeked before the panic, so it is still the head
+        // and a later pass drains it.
+        let mut seen = alloc::vec::Vec::new();
+        assert_eq!(
+            ring.drain(4, &mut |f| {
+                seen.push(f[6]);
+                true
+            }),
+            1
+        );
+        assert_eq!(seen, alloc::vec![0x81]);
     }
 }

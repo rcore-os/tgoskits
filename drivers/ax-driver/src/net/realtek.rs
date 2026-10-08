@@ -26,12 +26,6 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         return Err(OnProbeError::NotMatch);
     }
 
-    // AxVisor's physical L2 uplink bridges guest MACs onto this single NIC, so
-    // the hardware filter must stop discarding guest-addressed unicast. Opt-in:
-    // the request is applied when the queue starts, before any frame arrives.
-    #[cfg(feature = "net-l2-uplink")]
-    realtek_rtl8125::request_rx_accept_all_phys(true);
-
     let address = endpoint.address();
     let Some((bar_index, bar)) = first_mmio_bar(endpoint) else {
         warn!("RTL8125 at {address} left unused: no PCI MMIO BAR found");

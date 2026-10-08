@@ -840,6 +840,26 @@ pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
     get_control().interface_by_id(id)
 }
 
+/// Enables or disables hardware acceptance of every physical unicast address
+/// on the interface `id`.
+///
+/// The physical L2 uplink bridge calls this on the wired interface it selected
+/// so the NIC stops dropping frames addressed to guest MACs. The request goes
+/// to the published device's own control endpoint, so the capability and the
+/// register window belong to that exact instance instead of a name- or
+/// address-based guess. A driver without an address-filter control reports
+/// [`NetError::OperationNotSupported`], and the caller may then try another
+/// interface that does support it; a request that succeeds enables the filter on
+/// that exact interface, so the caller must bridge through it and must not leave
+/// the filter enabled on an unrelated port.
+pub fn set_interface_rx_accept_all_phys(id: InterfaceId, enabled: bool) -> NetResult {
+    let runtime = QUEUE_RUNTIME.get().ok_or(NetError::NoSuchDevice)?;
+    runtime
+        .lock()
+        .set_interface_rx_accept_all_phys(id, enabled)
+        .map_err(map_driver_net_error)
+}
+
 /// Returns the IPv4 configuration for an interface by name.
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
     get_control().ipv4_config(name)

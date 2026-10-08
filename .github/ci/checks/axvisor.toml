@@ -11,6 +11,8 @@ timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 smoke"
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+echo "==> axvisor aarch64 net-l2-uplink compile"
+FEATURES=net-l2-uplink cargo xtask axvisor build --arch aarch64 --config os/axvisor/configs/board/qemu-aarch64.toml
 echo "==> axvisor aarch64 host initramfs"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"

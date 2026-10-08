@@ -13,11 +13,11 @@ use rdif_eth::{
 use crate::{
     DMA_ALIGN, LINK_DOWN_DROP_LOG_INTERVAL, MAX_PACKET, QUEUE_ID0, QUEUE_SIZE, RX_BUF_SIZE,
     RX_IDLE_LOG_INTERVAL, RX_OVERFLOW_REARM_IDLE_POLLS, RX_QUEUE_CONFIG_SIZE,
-    RX_RECLAIM_LOG_INTERVAL, RX_START_THRESHOLD, TX_RECLAIM_LOG_INTERVAL, TX_SUBMIT_LOG_INTERVAL,
+    RX_RECLAIM_LOG_INTERVAL, RX_START_THRESHOLD, RxFilter, TX_RECLAIM_LOG_INTERVAL,
+    TX_SUBMIT_LOG_INTERVAL,
     descriptor::{RxDesc, TxDesc},
     read_status,
     registers::{Regs, irq_has_rx_overflow},
-    set_rx_mode,
 };
 
 pub(crate) type QueueStart = Arc<Mutex<QueueStartState>>;
@@ -220,6 +220,7 @@ pub(crate) struct Rtl8125RxQueue {
     pub(crate) desc: CoherentArray<RxDesc>,
     pub(crate) dma_mask: u64,
     pub(crate) start: QueueStart,
+    pub(crate) filter: Arc<RxFilter>,
     pub(crate) buffers: [Option<DmaBuffer>; QUEUE_SIZE],
     pub(crate) next_submit: usize,
     pub(crate) next_reclaim: usize,
@@ -286,7 +287,7 @@ impl IRxQueue for Rtl8125RxQueue {
                     self.submitted, last_opts1
                 );
             }
-            try_start_queues(self.regs, self.dma_mask, &self.start);
+            try_start_queues(self.regs, self.dma_mask, &self.start, &self.filter);
         }
         Ok(())
     }
@@ -309,7 +310,9 @@ impl IRxQueue for Rtl8125RxQueue {
                     desc.opts1, self.submitted, self.reclaimed
                 );
                 self.regs.write_interrupt_status(status.intr_status);
-                set_rx_mode(self.regs);
+                // Reapply the per-instance address policy under the shared
+                // RX_CONFIG guard so the decision survives the rearm.
+                self.filter.reprogram();
                 self.regs.enable_tx_rx();
                 self.regs.commit();
             }
@@ -403,7 +406,7 @@ fn acquire_dma_descriptor() {
     fence(AtomicOrdering::Acquire);
 }
 
-pub(crate) fn try_start_queues(regs: Regs, dma_mask: u64, start: &QueueStart) {
+pub(crate) fn try_start_queues(regs: Regs, dma_mask: u64, start: &QueueStart, filter: &RxFilter) {
     let (tx_base, rx_base) = {
         // SAFETY: queue initialization is serialized before publication.
         let mut start = unsafe { start.lock_raw() };
@@ -425,10 +428,9 @@ pub(crate) fn try_start_queues(regs: Regs, dma_mask: u64, start: &QueueStart) {
     info!("RTL8125 queue DMA bases: tx={tx_base:#x}, rx={rx_base:#x}, mask={dma_mask:#x}");
     regs.write_rx_max_size(RX_BUF_SIZE as u16 + 1);
     regs.enable_tx_rx();
-    regs.write_default_rx_config_8125b();
     regs.write_default_tx_config();
     regs.write_interrupt_status(u32::MAX);
-    set_rx_mode(regs);
+    filter.program_start();
     regs.write_interrupt_mask(0);
     regs.commit();
     info!("RTL8125 queues started: status={:?}", read_status(regs));

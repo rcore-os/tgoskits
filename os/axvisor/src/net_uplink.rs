@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use ax_std::os::arceos::modules::ax_net::{self, InterfaceKind, uplink as net_uplink};
+use ax_std::os::arceos::modules::ax_net::{
+    self, InterfaceInfo, InterfaceKind, uplink as net_uplink,
+};
 
 /// Physical ingress adapter feeding host-received frames into the switch.
 struct SwitchIngress;
@@ -44,13 +46,25 @@ impl axvm::PhysicalUplink for UplinkEgress {
 pub(crate) fn start() {
     reserve_host_macs();
 
-    let Some((physical, physical_mac)) = physical_interface() else {
-        warn!("AxVisor physical uplink skipped: no wired Ethernet host interface is present");
+    // Selecting the interface and enabling its filter are one step: a port
+    // whose driver has no address-filter control cannot carry guest MACs, so
+    // the search moves to the next candidate. The uplink is bound to the
+    // interface whose own filter request succeeded, so no unrelated port is
+    // left with the filter enabled.
+    let Some(physical) = physical_interface() else {
+        warn!(
+            "AxVisor physical uplink skipped: no wired Ethernet host interface accepts guest \
+             MACs (no RX address-filter control)"
+        );
+        return;
+    };
+    let Some(physical_mac) = physical.mac else {
+        warn!("AxVisor physical uplink skipped: selected interface has no MAC address");
         return;
     };
 
     let runtime = net_uplink::install(net_uplink::DEFAULT_EGRESS_DEPTH);
-    runtime.bind_device(&physical);
+    runtime.bind_device(&physical.name);
     runtime.set_ingress_sink(Arc::new(SwitchIngress));
     let egress = Arc::new(UplinkEgress {
         runtime: runtime.clone(),
@@ -62,13 +76,13 @@ pub(crate) fn start() {
     info!(
         "AxVisor physical uplink ready: interface={}, \
          mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, egress_depth={}, host_macs={}",
-        physical,
-        physical_mac[0],
-        physical_mac[1],
-        physical_mac[2],
-        physical_mac[3],
-        physical_mac[4],
-        physical_mac[5],
+        physical.name,
+        physical_mac.0[0],
+        physical_mac.0[1],
+        physical_mac.0[2],
+        physical_mac.0[3],
+        physical_mac.0[4],
+        physical_mac.0[5],
         net_uplink::DEFAULT_EGRESS_DEPTH,
         host_mac_count(),
     );
@@ -83,36 +97,39 @@ fn reserve_host_macs() {
     }
 }
 
-/// Selects the wired Ethernet interface whose MAC filter the driver flipped.
+/// Selects the wired Ethernet interface whose own control instance can accept
+/// every physical unicast address.
 ///
-/// The driver-side `net-l2-uplink` request only opens the RTL8125 filter, so
-/// the bridge has to bind that same port. Orange Pi 5 Plus has exactly one
-/// wired NIC, and AxVisor names wired devices `eth*` while Wi-Fi keeps its
-/// driver name; the selection prefers `eth*` and otherwise falls back to the
-/// first Ethernet interface with a MAC, warning when several candidates exist
-/// so a board log makes the binding explicit.
-fn physical_interface() -> Option<(String, [u8; 6])> {
-    let candidates: Vec<(String, [u8; 6])> = ax_net::interfaces()
-        .into_iter()
-        .filter(|interface| interface.kind == InterfaceKind::Ethernet)
-        .filter_map(|interface| interface.mac.map(|mac| (interface.name, mac.0)))
-        .collect();
-    match candidates.len() {
-        0 => None,
-        1 => candidates.into_iter().next(),
-        _ => {
-            warn!(
-                "AxVisor physical uplink sees {} Ethernet interfaces; binding the first wired \
-                 (eth*) interface so the RTL8125 filter and the bridge target match",
-                candidates.len()
-            );
-            let wired = candidates
-                .iter()
-                .find(|(name, _)| name.starts_with("eth"))
-                .cloned();
-            wired.or_else(|| candidates.into_iter().next())
+/// The choice is driven by device capability rather than by interface name or
+/// probe order: AxVisor enables the hardware filter through the published
+/// interface's control endpoint and then binds the uplink to that exact
+/// interface. AxVisor publishes Wi-Fi under the same `Ethernet` kind, but a
+/// Wi-Fi driver has no address-filter control, so it reports
+/// `OperationNotSupported` and the search moves on. A candidate is used only
+/// when its own request succeeded, so the filter is already active on the
+/// selected NIC before the uplink becomes reachable and no unrelated port is
+/// left with the filter enabled.
+fn physical_interface() -> Option<InterfaceInfo> {
+    for interface in ax_net::interfaces() {
+        if interface.kind != InterfaceKind::Ethernet || interface.mac.is_none() {
+            continue;
+        }
+        match ax_net::set_interface_rx_accept_all_phys(interface.id, true) {
+            Ok(()) => {
+                info!(
+                    "AxVisor physical uplink enabling guest-MAC RX filter on {}",
+                    interface.name
+                );
+                return Some(interface);
+            }
+            Err(error) => info!(
+                "AxVisor physical uplink skipping {}: RX address-filter control unavailable \
+                 ({error})",
+                interface.name
+            ),
         }
     }
+    None
 }
 
 fn host_mac_count() -> usize {
