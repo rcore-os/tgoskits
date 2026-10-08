@@ -58,8 +58,9 @@ vCPU 与计数器字段。
 ### 已接受（accepted）与已完成（completion）
 
 - `create`、`start`、`resume`、`delete`：handler **等待操作完成**再响应。
-  因此 200 已经蕴含后置条件——guest 已进入、parked vCPU 已被唤醒、资源已
-  释放。
+  创建完成表示资源已准备；启动／恢复完成表示 vCPU owner 已初始化／恢复、
+  准入已打开且已唤醒；销毁完成表示资源与实例已释放。首个真实 guest 执行进展
+  另行轮询 `guest_entry_count`，不由启动／恢复的 200 同步保证。
 - `pause`、`stop`：handler 在操作被**接受**后立即响应（`"async": true`）。
   `Paused`/`Stopped` 状态只有在 owner 真正让所有参与者 park、让设备/端口
   安静（pause），或完成整轮拆除（stop）之后才出现。调用方应轮询详情取得
@@ -88,10 +89,11 @@ vCPU 与计数器字段。
 ## 运行计数器
 
 `guest_entry_count` 与 `guest_park_count` 是 **按 run** 的 VM 级聚合计数，
-由 vCPU 运行循环维护：
+由 vCPU owner 维护。`VmHandle::snapshot` 从 owner 发布的本运行观察集合读取
+实时原子计数，不要求再发生生命周期事件：
 
-- `guest_entry_count` 只在 guest 真正（重）进入之后自增；失败、未真正进入
-  guest 的 wake 不会推进它。
+- `guest_entry_count` 只在一次真实 guest 执行返回 VM exit 后递增；失败 wake
+  或 `EngineOutcome::Interrupted` 重试不会推进它。
 - `guest_park_count` 在 vCPU 真正观察到暂停态并 park 时自增。
 
 两者只能证明“至少有一个 vCPU 取得了进展”，不是逐 vCPU 的静默保证。VM 处于
@@ -114,4 +116,4 @@ vCPU 与计数器字段。
 - 用例与探针：`test-suit/axvisor/normal/qemu-http-control-plane/`
 - HTTP handler：`os/axvisor/src/http/vm.rs`、`os/axvisor/src/http/server.rs`、
   `os/axvisor/src/http/auth.rs`
-- owner 生命周期：`virtualization/axvm/src/control.rs`
+- owner 生命周期：`virtualization/axvm/src/control/`

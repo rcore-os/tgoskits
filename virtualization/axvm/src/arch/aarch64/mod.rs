@@ -206,6 +206,26 @@ impl ArchOps for Aarch64Arch {
         })
     }
 
+    fn suspend_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        // Guest registers remain owned and saved. Only host producers, line
+        // levels and the banked physical activation become quiescent here.
+        vcpu.get_arch_vcpu()
+            .timer_binding
+            .as_ref()
+            .ok_or(crate::AxVmError::Backend {
+                operation: "quiesce architectural timer",
+                source: BackendError::InvalidState,
+            })?
+            .reset()
+            .map_err(|source| {
+                crate::AxVmError::interrupt_controller("quiesce architectural timer", source)
+            })
+    }
+
+    fn quiet_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        Self::suspend_vcpu(vcpu)
+    }
+
     fn entry_cpu_is_ready(vcpu: &mut AxVCpu<Self::VCpu>) -> bool {
         vcpu.get_arch_vcpu()
             .timer_binding

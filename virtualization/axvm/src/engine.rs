@@ -84,9 +84,14 @@ impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
         revision: crate::guest_memory::MemoryRevision,
         decode: Arc<crate::guest_memory::DecodeMemory>,
     ) -> AxVmResult {
-        use axvm_types::VmArchVcpuOps;
+        // Root changes are committed through the normal backend binding. This
+        // keeps architecture backends that mirror translation state in their
+        // CPU-local control image synchronized before the owner publishes the
+        // new revision.
         self.vcpu
             .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
+                use axvm_types::VmArchVcpuOps;
+
                 vcpu.get_arch_vcpu()
                     .set_nested_page_table(root)
                     .map_err(|error| {

@@ -232,10 +232,10 @@ impl Owner {
             run.joined_activations[id] = member.instance.activation;
             run.retired_entries = run
                 .retired_entries
-                .saturating_add(member.port.entries.load(Ordering::Relaxed));
+                .saturating_add(member.port.progress.entries.load(Ordering::Relaxed));
             run.retired_parks = run
                 .retired_parks
-                .saturating_add(member.port.parks.load(Ordering::Relaxed));
+                .saturating_add(member.port.progress.parks.load(Ordering::Relaxed));
             run.participants.remove(&id);
         }
         Ok(())

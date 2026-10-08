@@ -1,9 +1,7 @@
 //! Normalized LoongArch firmware inputs.
 
 use super::super::GuestPlatform;
-
-const VIRT_PCI_CFG_BASE: u64 = 0x2000_0000;
-const VIRT_PCI_CFG_SIZE: u64 = 0x0800_0000;
+use crate::arch::loongarch64::pci_config::*;
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::arch::loongarch64::boot) struct LoongArchFwCfgSerialConfig {
@@ -40,12 +38,12 @@ pub(in crate::arch::loongarch64::boot) struct LoongArchFwCfgPciConfig {
 impl Default for LoongArchFwCfgPciConfig {
     fn default() -> Self {
         Self {
-            ecam_base: VIRT_PCI_CFG_BASE,
-            ecam_size: VIRT_PCI_CFG_SIZE,
-            mmio_base: 0x4000_0000,
-            mmio_size: 0x4000_0000,
-            io_base: 0x1800_0000,
-            io_size: 0x0001_0000,
+            ecam_base: PCI_CONFIG_BASE,
+            ecam_size: PCI_CONFIG_SIZE,
+            mmio_base: PCI_MEMORY_BASE,
+            mmio_size: PCI_MEMORY_SIZE,
+            io_base: PCI_IO_BASE,
+            io_size: PCI_IO_SIZE as u32,
             intx_base: 80,
         }
     }

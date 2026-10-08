@@ -9,10 +9,7 @@ use std::{sync::Arc, vec::Vec};
 use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion};
 use axdevice_base::InterruptControllerId;
 use axvmconfig::{GuestConfig, VMBootProtocol};
-pub(crate) use resources::{
-    LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_direct_fdt_config,
-    prepare_uefi_fdt_config, prepare_uefi_runtime_config,
-};
+pub(crate) use resources::{prepare_direct_fdt_config, prepare_uefi_fdt_config};
 
 use crate::{
     architecture::*,
@@ -22,10 +19,6 @@ use crate::{
 
 pub(crate) const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
 
-pub fn init() {
-    resources::init();
-}
-
 #[derive(Clone, Debug)]
 pub struct GuestPlatform {
     pub ram_regions: Vec<MemoryRegion>,
@@ -34,7 +27,6 @@ pub struct GuestPlatform {
     pub interrupt: InterruptTopology,
     pub fw_cfg: MmioRegion,
     pub firmware_devices: FirmwareDevices,
-    pub irq_routes: Vec<probe::GuestIrqRoute>,
     pub(crate) configured_fdt_devices: Vec<crate::boot::fdt::device::ResolvedFdtDevice>,
     pub(crate) configured_acpi_devices: Vec<crate::boot::acpi::ResolvedAcpiDevice>,
 }
@@ -131,6 +123,8 @@ impl GuestPlatform {
         platform.interrupt.pch_pic = special.pch_pic;
         platform.pci.ecam = special.pci_ecam;
         platform.pci.mmio = special.pci_memory;
+        platform.pci.io_base = special.pci_io.base;
+        platform.pci.io_size = special.pci_io.size;
         platform.configured_fdt_devices = fdt_firmware.devices;
         platform.configured_acpi_devices = acpi_firmware.devices;
         Ok(platform)
@@ -156,6 +150,7 @@ struct LoongArchSpecialFirmware {
     pch_pic: MmioRegion,
     pci_ecam: MmioRegion,
     pci_memory: MmioRegion,
+    pci_io: MmioRegion,
     fw_cfg: MmioRegion,
 }
 
@@ -244,9 +239,9 @@ fn resolve_special_firmware(
         |kind| kind == ResolvedAcpiSpecialKind::PciHostBridge,
         "PCI host bridge",
     )?;
-    let [pci_ecam, pci_memory] = fdt_pci.registers.as_slice() else {
+    let [pci_ecam, pci_memory, pci_io] = fdt_pci.registers.as_slice() else {
         return Err(AxVmError::invalid_config(
-            "LoongArch FDT PCI host contribution must resolve ECAM and memory windows",
+            "LoongArch FDT PCI host contribution must resolve ECAM, memory, and I/O windows",
         ));
     };
     let [
@@ -258,14 +253,19 @@ fn resolve_special_firmware(
             base: acpi_memory_base,
             size: acpi_memory_size,
         },
+        ResolvedAcpiRegister::Mmio {
+            base: acpi_io_base,
+            size: acpi_io_size,
+        },
     ] = acpi_pci.registers.as_slice()
     else {
         return Err(AxVmError::invalid_config(
-            "LoongArch ACPI PCI host contribution must resolve ECAM and memory windows",
+            "LoongArch ACPI PCI host contribution must resolve ECAM, memory, and I/O windows",
         ));
     };
     if *pci_ecam != (*acpi_ecam_base, *acpi_ecam_size)
         || *pci_memory != (*acpi_memory_base, *acpi_memory_size)
+        || *pci_io != (*acpi_io_base, *acpi_io_size)
         || fdt_pci.node_name != "pcie"
         || fdt_pci.compatible.as_slice() != ["pci-host-ecam-generic"]
         || !fdt_pci.interrupts.is_empty()
@@ -421,6 +421,10 @@ fn resolve_special_firmware(
             base: pci_memory.0,
             size: pci_memory.1,
         },
+        pci_io: MmioRegion {
+            base: pci_io.0,
+            size: pci_io.1,
+        },
         fw_cfg: MmioRegion {
             base: fw_cfg.0,
             size: fw_cfg.1,
@@ -522,20 +526,6 @@ fn install_firmware_fdt(vm: &mut AxVM, config: &GuestConfig, fdt: Vec<u8>) -> Ax
     vm.set_guest_device_tree(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE), fdt)
 }
 
-pub fn guest_irq_routes(
-    vm: &AxVM,
-    config: &GuestConfig,
-) -> AxVmResult<Vec<LoongArchGuestIrqRoute>> {
-    Ok(GuestPlatform::discover(vm, config)?
-        .irq_routes
-        .into_iter()
-        .map(|route| LoongArchGuestIrqRoute {
-            physical_irq: route.physical_irq,
-            guest_vector: route.guest_vector,
-        })
-        .collect())
-}
-
 impl BootImagePlatform for super::LoongArch64Arch {
     fn make_guest_memory_visible(addr: ax_memory_addr::VirtAddr, size: usize) {
         super::make_guest_memory_visible(addr, size);
@@ -619,7 +609,6 @@ fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxVmResult {
 }
 
 fn load_uefi_firmware_dtb(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
-    prepare_uefi_runtime_config(&*loader.vm, &loader.config)?;
     let fdt = build_firmware_fdt(&*loader.vm, &loader.config, None, None)?;
     install_firmware_fdt(&mut *loader.vm, &loader.config, fdt)
 }
@@ -635,7 +624,6 @@ fn load_direct_linux(
             Ok((load_gpa, ramdisk.len()))
         })
         .transpose()?;
-    prepare_uefi_runtime_config(&*loader.vm, &loader.config)?;
     let initrd_fdt = initrd
         .map(|(start, size)| -> AxVmResult<(u64, u64)> {
             let start = start.as_usize() as u64;

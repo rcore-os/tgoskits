@@ -262,6 +262,14 @@ impl Owner {
                 {
                     reply.completion.finish(Ok(cpu_on_failure(reply.abi)));
                 }
+                // A TASK_NEW cancellation emits no vCPU event. Drive its
+                // retained transfer now; on failure freeze admission and let
+                // the owner perform the normal stop/retirement transaction.
+                if let Err(cleanup) = self.reap_participants() {
+                    self.record_failure(cleanup);
+                    self.guest_stop = self.run.as_ref().map(|run| run.id);
+                    break;
+                }
             }
         }
     }
@@ -292,6 +300,7 @@ impl Owner {
         code: HyperCallCode,
         args: [u64; 6],
     ) -> AxVmResult<usize> {
+        debug!("owner guest hypercall {code:?}, operation={operation:?}");
         match code {
             HyperCallCode::HIVCPublishChannel | HyperCallCode::HIVCSubscribChannel => {
                 let subscribing = code == HyperCallCode::HIVCSubscribChannel;
@@ -353,7 +362,17 @@ impl Owner {
                 let size = attach.size();
                 let binding = attach.commit(revision)?;
                 self.ivc_bindings.push(binding);
-                let write = memory
+                // The memory port is reacquired after the owner publishes the
+                // new revision. This keeps the result copy coupled to the
+                // active run service instead of a port captured before the
+                // translation transaction.
+                let result_memory = self
+                    .run
+                    .as_ref()
+                    .expect("IVC result memory run")
+                    .services
+                    .memory();
+                let write = result_memory
                     .with_access(|access| {
                         access
                             .write((base_ptr as usize).into(), &address.to_le_bytes())

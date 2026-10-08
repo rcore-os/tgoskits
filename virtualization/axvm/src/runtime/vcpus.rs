@@ -107,14 +107,20 @@ struct Mailbox {
     pending: AtomicBool,
 }
 
+/// Atomic progress only; retaining it keeps no backend or task resource alive.
+#[derive(Default)]
+pub(crate) struct VcpuProgress {
+    pub(crate) entries: AtomicU64,
+    pub(crate) parks: AtomicU64,
+}
+
 /// Task-side command port, absent from hardware entries and IRQ endpoints.
 pub(crate) struct VcpuPort {
     pub(crate) instance: VcpuInstance,
     pub(crate) signals: Arc<VcpuSignals>,
     mailbox: Mailbox,
     queue: crate::HostWaitQueueHandle,
-    pub(crate) entries: AtomicU64,
-    pub(crate) parks: AtomicU64,
+    pub(crate) progress: Arc<VcpuProgress>,
     run: Arc<crate::services::RunSignals>,
 }
 
@@ -133,8 +139,7 @@ impl VcpuPort {
                 pending: AtomicBool::new(false),
             },
             queue: crate::HostWaitQueueHandle::new(),
-            entries: AtomicU64::new(0),
-            parks: AtomicU64::new(0),
+            progress: Arc::new(VcpuProgress::default()),
         })
     }
 
@@ -420,7 +425,7 @@ fn run_owner(
                 VcpuCommand::Park { operation } => {
                     parked = true;
                     CurrentArch::suspend_vcpu(task.engine.vcpu_mut()).map(|()| {
-                        port.parks.fetch_add(1, Ordering::Relaxed);
+                        port.progress.parks.fetch_add(1, Ordering::Relaxed);
                         control.post_event(VcpuEvent::Parked {
                             instance: port.instance,
                             operation,
@@ -544,7 +549,7 @@ fn run_owner(
                 .and_then(|outcome| match outcome {
                     EngineOutcome::Interrupted => Ok(None),
                     EngineOutcome::Exit(exit) => {
-                        let count = port.entries.fetch_add(1, Ordering::Relaxed);
+                        let count = port.progress.entries.fetch_add(1, Ordering::Relaxed);
                         if count == 0 {
                             control.post_event(VcpuEvent::FirstEntered {
                                 instance: port.instance,

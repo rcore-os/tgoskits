@@ -154,7 +154,9 @@ CNTV host 中断处理分为以下阶段：
 
 拉低 timer line 不会完成 host activation。当客户机先清除 CVAL 或 CTL、再写 DIR 时，virtual line 可能已为低电平，但此前的投递在架构上仍是 active；因此这一点不可省略。
 
-迁移可以在新 pCPU 装载 vCPU 前，强制完成旧 pCPU 上的 activation。Reset、stop 和 drop 同样会先使旧 timer generation 失效、取消 owner CPU 上的注册，再完成并丢弃 host activation。这些是显式生命周期操作，不可替代普通客户机退休路径。
+`prepare_vcpu` 在 CPU pin 前 disarm 旧等待，迁移时通过 owner CPU 完成旧 CNTV activation；相同 pCPU 保留 active claim，避免到期 timer 在虚拟中断退休前反复触发宿主退出。pin 后 `entry_cpu_is_ready` 再核对 activation 归属。准备与 pin 之间发生迁移时，engine 先提交 Completion 和已 drain 的 pending，再取消本次硬件进入，返回任务上下文重试远端交接。
+
+暂停／停止通过 `suspend_vcpu`／`quiet_vcpu` 调用 timer binding 的 `reset`：失效并 disarm 旧等待、拉低输入线路、完成宿主 activation，保留已保存的客户机寄存器与控制器 pending/active 状态。恢复后在进入前按当前 counter 重新发布 timer 电平。这些显式生命周期操作不能替代普通客户机退休路径。
 
 ## Assigned Physical SPI 生命周期
 
@@ -194,10 +196,11 @@ generation：timer IRQ 先 claim 当前 arm，再推进 `components/ax-task` 的
 scheduler tick 和最早逻辑期限合并并只编程一次。逻辑 deadline owner 不推断硬件
 pending/active 状态，也不跨 CPU 编程 comparator。
 
-Reset、stop 和 drop 通过 `Aarch64TimerBinding::invalidate_wait` 清除 armed generation，并在
-teardown 中取消当前 handle。下一次 arm 取得新的 generation；`ArmTimerContext` 只保存架构
-寄存器状态和 loaded 标志，不拥有调度代次，因此清空 timer context 不会让旧 callback 再次
-有效。
+`reset`、暂停和停止调用 `Aarch64TimerBinding::disarm_wait`，失效当前 armed generation
+并使后台执行静默；stable registration 保留供同 owner 复用。owner CPU/thread 变化时，
+`arm_wait` 退休旧 epoch、cancel 旧 handle，再创建新 registration。最终 `Drop` 失效等待、
+退休 epoch 并取消 handle。下一次 arm 取得新的 generation；`ArmTimerContext` 只保存架构
+寄存器和 loaded 标志，清空寄存器不会重新授权旧 callback。
 
 ## 固件契约
 
@@ -256,5 +259,5 @@ Runtime vCPU 绑定和 FDT 安装校验并消费同一份 `GuestTimerProfile`；
 - 现有 x86 VMX/SVM、RISC-V 与 Phytium smoke；
 - RK3568 连续三次启动到达客户机 marker，且不发生 epoch jump；
 - RK3588/OrangePi-5-Plus 重复通过，防止破坏既有路径；
-- `arm_vcpu`、`arm_vgic` 与 `axvm` 定向 clippy 无新增 warning；
+- `ax-cpu`、`arm_vgic` 与 `axvm` 定向 clippy 无新增 warning；
 - 保留结构化 clockevent generation、timer promotion、vCPU entry/wake 诊断，删除无界或平台特判式临时日志。

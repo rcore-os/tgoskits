@@ -992,7 +992,15 @@ pub fn reconcile_vm_states() -> Option<VMId> {
         .collect::<Vec<_>>();
     let running = vm_states
         .iter()
-        .filter(|(_, status)| *status == VmStatus::Running)
+        // A lifecycle owner may briefly pause a running guest while it
+        // publishes a new translation root. Keep an attached console active
+        // across that transaction; only terminal states detach it.
+        .filter(|(_, status)| {
+            matches!(
+                status,
+                VmStatus::Running | VmStatus::Pausing | VmStatus::Paused
+            )
+        })
         .filter_map(|(vm_id, _)| {
             generations
                 .get(vm_id)

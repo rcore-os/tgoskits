@@ -10,7 +10,9 @@ use alloc::{string::String, vec, vec::Vec};
 #[cfg(feature = "fs")]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
-use axvm::{StopReason, VMId, VmHandle, VmManager, VmOperation, VmStatus};
+#[cfg(not(feature = "no-auto-start"))]
+use axvm::VmStatus;
+use axvm::{StopReason, VMId, VmHandle, VmManager, VmOperation};
 use std::sync::{Arc, OnceLock};
 
 /// Application policy and its instance-owned VM registry.

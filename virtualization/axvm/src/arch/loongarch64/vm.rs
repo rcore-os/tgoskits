@@ -1,8 +1,12 @@
 //! LoongArch64 VM resource creation and initialization.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use axdevice::{DeviceNodeId, DeviceNodeSpec};
+use axdevice::{
+    DeviceBuildContext, DeviceBundle, DeviceManagerResult, DeviceModel, DeviceNodeId,
+    DeviceNodeSpec, DeviceRequirements, ResourceRequest, ResourceSlot,
+};
+use axdevice_base::{AccessWidth, Device, DeviceAccess, DeviceContext, DeviceResult, Resource};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 
 use super::{
@@ -18,7 +22,17 @@ use crate::{
     },
 };
 
-pub(crate) type LoongArchVmPlan = SimpleVmPlan;
+/// Frozen device ownership and host-source routes, retained by this VM only.
+pub(crate) struct LoongArchVmPlan {
+    devices: VmDevicePlan,
+    pub(super) physical_routes: Box<[super::irq::LoongArchPhysicalRoute]>,
+}
+
+impl ArchitectureVmPlan for LoongArchVmPlan {
+    fn devices(&self) -> &VmDevicePlan {
+        &self.devices
+    }
+}
 
 impl LoongArch64Arch {
     pub(crate) fn create_vm_resources(
@@ -111,6 +125,10 @@ fn plan_devices(
                 fw_cfg_payload,
             )),
         ),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("loongarch-firmware-mmio")?,
+            Arc::new(LoongArchFirmwareMmioModel),
+        ),
     ];
     crate::configured::append_configured_devices(
         config,
@@ -120,13 +138,119 @@ fn plan_devices(
         Some(super::pci_config::host_key()),
     )?;
     let pch_pic_range = PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64;
-    Ok(SimpleVmPlan::new(VmDevicePlan::with_pci_host_for_vm(
+    let devices = VmDevicePlan::with_pci_host_for_vm(
         config,
         nodes,
         std::slice::from_ref(&pch_pic_range),
         super::resource_pools::create()?,
         super::pci_config::provider()?,
-    )?))
+    )?;
+    let physical_routes = physical_routes(config, devices.graph())?;
+    Ok(LoongArchVmPlan {
+        devices,
+        physical_routes,
+    })
+}
+
+const RTC_MMIO_BASE: u64 = 0x100d_0100;
+const RTC_MMIO_SIZE: u64 = 0x100;
+// The FDT GED registers live at 0x100e001c, while resource claims use the
+// enclosing aligned page required by the graph allocator.
+const GED_MMIO_BASE: u64 = 0x100e_0000;
+const GED_MMIO_SIZE: u64 = 0x1000;
+const FLASH0_MMIO_BASE: u64 = 0x1c00_0000;
+const FLASH1_MMIO_BASE: u64 = 0x1d00_0000;
+const FLASH_MMIO_SIZE: u64 = 0x0100_0000;
+
+const RTC_SLOT: &str = "rtc";
+const GED_SLOT: &str = "ged";
+const FLASH0_SLOT: &str = "flash0";
+const FLASH1_SLOT: &str = "flash1";
+
+/// Owns the fixed QEMU firmware windows advertised by the LoongArch guest
+/// FDT/ACPI tables. The firmware table is part of the guest contract even
+/// when AxVM does not emulate a full RTC, flash, or GED implementation, so a
+/// typed open-bus device retires those accesses instead of allowing an
+/// unclaimed MMIO fault to escape the execution layer.
+struct LoongArchFirmwareMmioModel;
+
+impl DeviceModel for LoongArchFirmwareMmioModel {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new()
+            .with_mmio(
+                ResourceSlot::new(RTC_SLOT)?,
+                RTC_MMIO_SIZE,
+                RTC_MMIO_SIZE,
+                ResourceRequest::Fixed(RTC_MMIO_BASE),
+            )?
+            .with_mmio(
+                ResourceSlot::new(GED_SLOT)?,
+                GED_MMIO_SIZE,
+                GED_MMIO_SIZE,
+                ResourceRequest::Fixed(GED_MMIO_BASE),
+            )?
+            .with_mmio(
+                ResourceSlot::new(FLASH0_SLOT)?,
+                FLASH_MMIO_SIZE,
+                FLASH_MMIO_SIZE,
+                ResourceRequest::Fixed(FLASH0_MMIO_BASE),
+            )?
+            .with_mmio(
+                ResourceSlot::new(FLASH1_SLOT)?,
+                FLASH_MMIO_SIZE,
+                FLASH_MMIO_SIZE,
+                ResourceRequest::Fixed(FLASH1_MMIO_BASE),
+            )
+    }
+
+    fn firmware(&self) -> axdevice::DeviceFirmwareSpec {
+        axdevice::DeviceFirmwareSpec::None
+    }
+
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let mut bundle = DeviceBundle::new();
+        for slot in [RTC_SLOT, GED_SLOT, FLASH0_SLOT, FLASH1_SLOT] {
+            let (base, size) = context.mmio(slot)?;
+            bundle.add_device(Arc::new(LoongArchFirmwareMmioAperture {
+                name: slot,
+                resource: [Resource::MmioRange { base, size }],
+            }));
+        }
+        Ok(bundle)
+    }
+}
+
+struct LoongArchFirmwareMmioAperture {
+    name: &'static str,
+    resource: [Resource; 1],
+}
+
+impl Device for LoongArchFirmwareMmioAperture {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resource
+    }
+
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        Ok(match access.width() {
+            AccessWidth::Byte => u8::MAX as u64,
+            AccessWidth::Word => u16::MAX as u64,
+            AccessWidth::Dword => u32::MAX as u64,
+            AccessWidth::Qword => u64::MAX,
+        })
+    }
+
+    fn write(
+        &self,
+        _access: &DeviceAccess,
+        _value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        Ok(())
+    }
 }
 
 fn build_vcpu_setup_config(
@@ -175,4 +299,74 @@ fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> A
             error,
         )
     })
+}
+
+/// Select only actual host mappings after virtual-device replacements were
+/// subtracted. Guest firmware defaults do not assign a host interrupt source.
+fn physical_routes(
+    config: &AxVMConfig,
+    graph: &axdevice::ResolvedDeviceGraph,
+) -> AxVmResult<Box<[super::irq::LoongArchPhysicalRoute]>> {
+    let mappings: Vec<_> = graph
+        .nodes()
+        .filter_map(|node| node.host_mapping())
+        .collect();
+    if mappings.is_empty() && config.pass_through_irqs().is_empty() {
+        return Ok(Box::new([]));
+    }
+    ax_std::os::arceos::driver::probe::acpi::with_acpi(|acpi| {
+        let mut sources = BTreeMap::new();
+        for device in acpi.resource_devices().map_err(|error| {
+            AxVmError::invalid_config(std::format!("collect LoongArch assigned IRQs: {error}"))
+        })? {
+            let assigned = device.memory_ranges.iter().any(|range| {
+                range.base.checked_add(range.size).is_some_and(|end| {
+                    mappings.iter().any(|mapping| {
+                        mapping.host_base() <= range.base
+                            && end <= mapping.host_base() + mapping.length()
+                    })
+                })
+            });
+            if assigned {
+                for route in device.irq_routes {
+                    sources.insert(route.gsi, usize::from(route.controller_input));
+                }
+            }
+        }
+        for interrupt in config.pass_through_irqs() {
+            let route = acpi
+                .routing()
+                .resolve_gsi(interrupt.source)
+                .ok_or_else(|| {
+                    AxVmError::invalid_config(std::format!(
+                        "assigned LoongArch GSI {} has no host controller",
+                        interrupt.source
+                    ))
+                })?;
+            sources.insert(route.gsi, usize::from(route.controller_input));
+        }
+        sources
+            .into_iter()
+            .map(|(source, guest_input)| {
+                let physical_irq = source as usize;
+                if physical_irq >= super::irq::LOONGARCH_MAX_IRQ_COUNT || guest_input >= 64 {
+                    return Err(AxVmError::unsupported(
+                        "bind LoongArch assigned IRQ",
+                        "source or controller input exceeds the fixed route capacity",
+                    ));
+                }
+                Ok(super::irq::LoongArchPhysicalRoute {
+                    physical_irq,
+                    guest_input,
+                })
+            })
+            .collect::<AxVmResult<Vec<_>>>()
+            .map(Vec::into_boxed_slice)
+    })
+    .ok_or_else(|| {
+        AxVmError::unsupported(
+            "bind LoongArch assigned IRQ",
+            "host ACPI routing is unavailable",
+        )
+    })?
 }

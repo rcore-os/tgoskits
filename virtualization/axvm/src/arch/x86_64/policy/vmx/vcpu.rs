@@ -141,6 +141,7 @@ pub struct VmxVcpu<H: X86HostOps, M: ControlMemory> {
     entry: Option<X86GuestPhysAddr>,
     /// The EPT root address.
     nested_page_table_root: Option<X86HostPhysAddr>,
+    translation_root_dirty: bool,
     /// Resolved device MMIO ranges decoded as emulated MMIO exits.
     intercepted_mmio: Vec<X86InterceptedMmioRange>,
     // /// Whether this VCPU is a host VCpu. Used in type 1.5 hypervisor.
@@ -181,6 +182,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             cpu,
             entry: None,
             nested_page_table_root: None,
+            translation_root_dirty: true,
             intercepted_mmio: Vec::new(),
             setup_ready: false,
             configured: false,
@@ -223,7 +225,13 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                     true,
                 )?;
                 self.configured = true;
+            } else if self.translation_root_dirty {
+                vmcs::set_ept_pointer(
+                    self.cpu.vmx_controls_mut().expect("VMX policy CPU"),
+                    self.nested_page_table_root.ok_or(X86VcpuError::BadState)?,
+                )?;
             }
+            self.translation_root_dirty = false;
             Ok(())
         })();
         if result.is_err() {
@@ -2087,6 +2095,9 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
     }
 
     pub fn set_nested_page_table(&mut self, config: X86NestedPagingConfig) -> X86VcpuResult {
+        if self.nested_page_table_root != Some(config.root_paddr) {
+            self.translation_root_dirty = true;
+        }
         self.nested_page_table_root = Some(config.root_paddr);
         Ok(())
     }

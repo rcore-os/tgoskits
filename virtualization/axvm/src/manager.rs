@@ -59,7 +59,10 @@ use crate::{
     },
     identity::VcpuInstance,
     operation::OperationCompletion,
-    runtime::{hvc::GuestRequest, vcpus::VcpuEvent},
+    runtime::{
+        hvc::GuestRequest,
+        vcpus::{VcpuEvent, VcpuProgress},
+    },
     services::{RunServices, VcpuInterruptPort},
     sync::MutexExt,
     vm::{VMMemoryRegion, VcpuSnapshot},
@@ -143,6 +146,30 @@ pub struct VmSnapshot {
     pub park_count: u64,
 }
 
+/// Lifecycle and its exact activation counters share one publication boundary.
+/// Counters have no command, task or backend capability; an old observation
+/// cannot sample a later run that reused the same numeric VM identifier.
+#[derive(Clone)]
+struct PublishedSnapshot {
+    value: VmSnapshot,
+    progress: Vec<Arc<VcpuProgress>>,
+}
+
+impl PublishedSnapshot {
+    fn sample(self) -> VmSnapshot {
+        let mut value = self.value;
+        for progress in self.progress {
+            value.entry_count = value
+                .entry_count
+                .saturating_add(progress.entries.load(Ordering::Relaxed));
+            value.park_count = value
+                .park_count
+                .saturating_add(progress.parks.load(Ordering::Relaxed));
+        }
+        value
+    }
+}
+
 /// CPU observation values for one VM.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuObservation {
@@ -191,16 +218,18 @@ impl VmHandle {
         self.shared.key().vm_id()
     }
 
-    /// Returns the last observation published by the control owner.
+    /// Returns owner-published lifecycle data with freshly sampled run progress.
     ///
     /// A handle is only handed out after the owner published its first snapshot,
     /// so this always observes a fully initialized instance.
     pub fn snapshot(&self) -> VmSnapshot {
-        self.shared
+        let published = self
+            .shared
             .snapshot
             .lock_unpoisoned()
             .clone()
-            .expect("a ready handle always retains a published snapshot")
+            .expect("a ready handle always retains a published snapshot");
+        published.sample()
     }
 
     /// Starts the guest and returns the new execution generation on success.
@@ -876,7 +905,7 @@ pub(crate) struct ControlShared {
     sequence: AtomicU64,
     mailbox: Mutex<Mailbox>,
     mailbox_ready: Condvar,
-    snapshot: Mutex<Option<VmSnapshot>>,
+    snapshot: Mutex<Option<PublishedSnapshot>>,
     run_services: Mutex<Option<Arc<RunServices>>>,
     task: Mutex<TaskState>,
     task_ready: Condvar,
@@ -944,8 +973,12 @@ impl ControlShared {
     }
 
     /// Publishes the owner's latest observation snapshot.
-    pub(crate) fn publish(&self, snapshot: VmSnapshot) {
-        *self.snapshot.lock_unpoisoned() = Some(snapshot);
+    pub(crate) fn publish(&self, snapshot: VmSnapshot, progress: Vec<Arc<VcpuProgress>>) {
+        let retired = self.snapshot.lock_unpoisoned().replace(PublishedSnapshot {
+            value: snapshot,
+            progress,
+        });
+        drop(retired);
     }
 
     /// Returns a handle to this instance.
@@ -1381,39 +1414,42 @@ mod tests {
         // must merge, not observe `EntryClosed`.
         // The owner publishes its final state before the exit callback. That
         // observation cannot prove resource release or finish another destroy.
-        shared.publish(VmSnapshot {
-            key: shared.key(),
-            vm_id: shared.key().vm_id(),
-            name: "test instance".into(),
-            state: VmStatus::Destroyed,
-            run: None,
-            current_operation: None,
-            last_failure: None,
-            last_stop_reason: None,
-            cpu: CpuObservation {
-                vcpu_num: 0,
-                running_vcpu_count: 0,
+        shared.publish(
+            VmSnapshot {
+                key: shared.key(),
+                vm_id: shared.key().vm_id(),
+                name: "test instance".into(),
+                state: VmStatus::Destroyed,
+                run: None,
+                current_operation: None,
+                last_failure: None,
+                last_stop_reason: None,
+                cpu: CpuObservation {
+                    vcpu_num: 0,
+                    running_vcpu_count: 0,
+                },
+                memory: MemoryObservation {
+                    nested_page_table_root: None,
+                    total_bytes: 0,
+                    regions: vec![],
+                },
+                device: DeviceObservation { device_count: 0 },
+                vcpu: vec![],
+                description: VmConfigSnapshot {
+                    bsp_entry: GuestPhysAddr::from(0),
+                    ap_entry: GuestPhysAddr::from(0),
+                    image: VMImageConfig::default(),
+                    address_space_policy: AddressSpacePolicy::default(),
+                    vcpu_affinities: vec![],
+                    passthrough_devices: vec![],
+                    passthrough_addresses: vec![],
+                    passthrough_irqs: vec![],
+                },
+                entry_count: 0,
+                park_count: 0,
             },
-            memory: MemoryObservation {
-                nested_page_table_root: None,
-                total_bytes: 0,
-                regions: vec![],
-            },
-            device: DeviceObservation { device_count: 0 },
-            vcpu: vec![],
-            description: VmConfigSnapshot {
-                bsp_entry: GuestPhysAddr::from(0),
-                ap_entry: GuestPhysAddr::from(0),
-                image: VMImageConfig::default(),
-                address_space_policy: AddressSpacePolicy::default(),
-                vcpu_affinities: vec![],
-                passthrough_devices: vec![],
-                passthrough_addresses: vec![],
-                passthrough_irqs: vec![],
-            },
-            entry_count: 0,
-            park_count: 0,
-        });
+            Vec::new(),
+        );
         let mut operation = shared.handle().destroy().unwrap();
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(

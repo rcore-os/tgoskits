@@ -1,7 +1,5 @@
 //! Observations responsibilities of the unique lifecycle owner.
 
-use std::sync::atomic::Ordering;
-
 use super::Owner;
 use crate::{
     VmVcpuState,
@@ -24,19 +22,25 @@ impl Owner {
         let mut vcpu = self.vm.vcpu_snapshots();
         let mut entry_count = 0;
         let mut park_count = 0;
+        let mut progress = Vec::new();
         if let Some(run) = &self.run {
             entry_count = run.retired_entries;
             park_count = run.retired_parks;
             for member in run.participants.values() {
-                entry_count =
-                    entry_count.saturating_add(member.port.entries.load(Ordering::Relaxed));
-                park_count = park_count.saturating_add(member.port.parks.load(Ordering::Relaxed));
+                progress.push(member.port.progress.clone());
                 if member.returned {
                     continue;
                 }
                 vcpu.push(VcpuSnapshot {
                     id: member.instance.vcpu_id,
-                    state: if member.started {
+                    state: if self.state == crate::VmStatus::Paused
+                        || (self.state == crate::VmStatus::Pausing
+                            && self.current_operation.is_some_and(|operation| {
+                                member.parked.completed(member.instance, operation)
+                            }))
+                    {
+                        VmVcpuState::Blocked
+                    } else if member.started {
                         VmVcpuState::Ready
                     } else {
                         VmVcpuState::Starting
@@ -51,36 +55,39 @@ impl Owner {
         }
         vcpu.sort_by_key(|cpu| cpu.id);
         let regions = self.vm.memory_regions();
-        self.shared.publish(VmSnapshot {
-            key: self.shared.key(),
-            vm_id: self.vm.id(),
-            name: self.vm.name(),
-            state: self.state,
-            run: self.last_run,
-            current_operation: self.current_operation,
-            last_failure: self.last_failure.clone(),
-            last_stop_reason: self.last_stop_reason.clone(),
-            cpu: CpuObservation {
-                vcpu_num: self.vm.config().phys_cpu_ls.cpu_num(),
-                running_vcpu_count: self.run.as_ref().map_or(0, |run| {
-                    run.participants
-                        .values()
-                        .filter(|member| member.started && !member.returned)
-                        .count()
-                }),
+        self.shared.publish(
+            VmSnapshot {
+                key: self.shared.key(),
+                vm_id: self.vm.id(),
+                name: self.vm.name(),
+                state: self.state,
+                run: self.last_run,
+                current_operation: self.current_operation,
+                last_failure: self.last_failure.clone(),
+                last_stop_reason: self.last_stop_reason.clone(),
+                cpu: CpuObservation {
+                    vcpu_num: self.vm.config().phys_cpu_ls.cpu_num(),
+                    running_vcpu_count: self.run.as_ref().map_or(0, |run| {
+                        run.participants
+                            .values()
+                            .filter(|member| member.started && !member.returned)
+                            .count()
+                    }),
+                },
+                memory: MemoryObservation {
+                    nested_page_table_root: Some(self.vm.nested_page_table_root()),
+                    total_bytes: regions.iter().map(|region| region.size()).sum(),
+                    regions,
+                },
+                device: DeviceObservation {
+                    device_count: self.vm.device_count(),
+                },
+                vcpu,
+                description,
+                entry_count,
+                park_count,
             },
-            memory: MemoryObservation {
-                nested_page_table_root: Some(self.vm.nested_page_table_root()),
-                total_bytes: regions.iter().map(|region| region.size()).sum(),
-                regions,
-            },
-            device: DeviceObservation {
-                device_count: self.vm.device_count(),
-            },
-            vcpu,
-            description,
-            entry_count,
-            park_count,
-        });
+            progress,
+        );
     }
 }

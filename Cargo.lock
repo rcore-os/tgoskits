@@ -1470,7 +1470,6 @@ dependencies = [
  "ax-sync",
  "axdevice_base",
  "axvm-types",
- "cfg-if",
  "divan",
  "log",
  "paste",

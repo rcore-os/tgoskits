@@ -455,6 +455,7 @@ fn suspend_vm_by_id(vm_id: usize) {
                 .iter()
                 .filter(|vcpu| matches!(vcpu.state, VmVcpuState::Blocked))
                 .count();
+            log::info!("VM[{vm_id}] paused");
             println!("✓ VM[{}] suspended", vm_id);
             println!(
                 "  {}/{} VCpu task(s) parked at the VMExit boundary",
@@ -503,6 +504,7 @@ fn resume_vm_by_id(vm_id: usize) {
     match crate::manager::manager().resume_vm(vm_id) {
         Ok(()) => {
             crate::guest_console::mark_running(vm_id);
+            log::info!("VM[{vm_id}] resumed");
             println!("✓ VM[{}] resumed successfully", vm_id);
         }
         Err(err) => {

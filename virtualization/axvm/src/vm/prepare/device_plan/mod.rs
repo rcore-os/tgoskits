@@ -86,17 +86,17 @@ pub(crate) trait ArchitectureVmPlan {
 }
 
 /// Plan used by architectures with no extra immutable controller metadata.
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 pub(crate) struct SimpleVmPlan(VmDevicePlan);
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 impl SimpleVmPlan {
     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
         Self(devices)
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 impl ArchitectureVmPlan for SimpleVmPlan {
     fn devices(&self) -> &VmDevicePlan {
         &self.0

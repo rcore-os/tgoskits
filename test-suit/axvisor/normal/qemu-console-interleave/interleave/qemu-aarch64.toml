@@ -40,8 +40,9 @@ timeout = 60
 [[shell_check_steps]]
 shell_cmd = "vm suspend 1"
 success_regex = [
-    '(?m)^\[.*VM\[1\] status set to Paused',
-    '(?m)^✓ VM\[1\] suspend signal sent\s*$',
+    '(?m)^\[.*VM\[1\] paused\s*$',
+    '(?m)^✓ VM\[1\] suspended\s*$',
+    '(?m)^  1/1 VCpu task\(s\) parked at the VMExit boundary\s*$',
 ]
 timeout = 60
 

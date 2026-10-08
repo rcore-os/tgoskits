@@ -106,8 +106,7 @@ impl FwCfgPayloadSlot {
         // `lock()` yields a temporary guard dropped at the end of this
         // statement, so the removed payload is handed to the caller with the
         // slot already unlocked.
-        let removed = self.payload.lock().take();
-        removed
+        self.payload.lock().take()
     }
 }
 

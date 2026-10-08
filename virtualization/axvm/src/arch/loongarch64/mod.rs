@@ -42,6 +42,7 @@ pub(crate) struct LoongArch64Arch;
 pub(crate) struct LoongArchEntry {
     pch_pic: Arc<dyn axdevice::PchPicOutputPort>,
     run: irq::LoongArchRunPort,
+    physical_inputs: [Option<usize>; irq::LOONGARCH_MAX_IRQ_COUNT],
 }
 
 /// Backend exit awaiting the task-context finish stage.
@@ -177,11 +178,22 @@ impl ArchOps for LoongArch64Arch {
             .services()
             .require::<irq::LoongArchPchPicRuntimeKey>()?;
         runtime.activate(run.clone());
-        Ok(Self::Entry { pch_pic, run })
+        let mut physical_inputs = [None; irq::LOONGARCH_MAX_IRQ_COUNT];
+        for route in &resources.device_plan.physical_routes {
+            physical_inputs[route.physical_irq] = Some(route.guest_input);
+        }
+        Ok(Self::Entry {
+            pch_pic,
+            run,
+            physical_inputs,
+        })
     }
 
     fn enter_runtime(vm: &mut crate::AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
-        irq::enter_runtime(vm.id(), &irq::LoongArchRunPort::new(Arc::clone(signals)))
+        irq::enter_runtime(
+            &vm.resources.device_plan.physical_routes,
+            &irq::LoongArchRunPort::new(Arc::clone(signals)),
+        )
     }
 
     fn exit_runtime(vm: &mut crate::AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
@@ -451,10 +463,20 @@ impl ArchOps for LoongArch64Arch {
             return Ok(());
         };
 
-        // The physical source identity, rather than the current guest vector,
-        // selects the native controller input. Distinct sources therefore stay
-        // distinct even when they are currently routed to the same vector.
-        let Some(vector) = entry.pch_pic.set_input_level(physical_irq, true) else {
+        // Physical GSIs and guest PCH-PIC inputs are separate namespaces.
+        // The immutable route preserves the source identity even when guest
+        // controller programming changes its output vector.
+        let input = entry
+            .physical_inputs
+            .get(physical_irq)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                AxVmError::invalid_config(
+                    "queued LoongArch physical source has no prepared guest input",
+                )
+            })?;
+        let Some(vector) = entry.pch_pic.set_input_level(input, true) else {
             trace!(
                 "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is masked in \
                  VM[{}]",

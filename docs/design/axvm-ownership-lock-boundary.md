@@ -60,7 +60,7 @@ mailbox 与完成状态使用睡眠 mutex。Future 的检查和 Waker 注册在�
 | reset | 旧运行期停止并回收，新运行期启动，返回新 `RunId` |
 | destroy | 资源释放、精确实例注销，控制任务退出得到确认 |
 
-start/resume 不强制执行第一条 guest 指令；实际执行进展另行观察。聚合 entry/park 计数用于诊断，不能代替逐参与者确认。
+start/resume 不强制执行第一条 guest 指令；实际执行进展另行观察。聚合 entry/park 计数用于诊断，不能代替逐参与者确认。 owner 在同一快照发布事务中固定生命周期、退休计数和参与者的 `VcpuProgress` 观察集合；`VmHandle::snapshot` 在锁外采样其中的原子计数，使持续进入可见。观察对象不保留后端或任务，新运行发布替换整组观察，旧查询不会混入新运行的计数。
 
 普通操作按接收顺序串行；等待确认期间继续消费事件和 guest 请求。重复 stop 合并完成观察；已达到 pause/resume/stop/destroy 目标时幂等返回。部分失败逆序补偿，补偿失败关闭入口并保留资源进入 `Failed`。观察者超时不证明资源可以释放。清理失败保留注册项和所有权，允许重试 destroy。
 

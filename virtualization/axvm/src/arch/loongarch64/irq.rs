@@ -437,36 +437,41 @@ pub(crate) fn register_platform_irq_injector() {
 ///
 /// The routes are registered with the platform only after every slot is bound,
 /// so the first hard IRQ can never observe a stale or missing run.
-pub(crate) fn enter_runtime(vm_id: usize, port: &LoongArchRunPort) -> AxVmResult {
-    let routes = super::boot::get_guest_irq_routes(vm_id);
-    for route in &routes {
-        if route.guest_vector >= 256 {
-            return ax_err!(
-                InvalidInput,
-                format!(
-                    "guest IRQ vector {} is outside LoongArch EIOINTC",
-                    route.guest_vector
-                )
-            );
+pub(super) fn enter_runtime(
+    routes: &[LoongArchPhysicalRoute],
+    port: &LoongArchRunPort,
+) -> AxVmResult {
+    for route in routes {
+        if let Err(error) = bind_platform_source(route.physical_irq, port) {
+            unbind_run_sources(port.run_id());
+            return Err(error);
         }
     }
-    for route in &routes {
-        bind_platform_source(route.physical_irq, port)?;
-    }
-    for route in &routes {
+    for route in routes {
         ax_plat::irq::loongarch64_hv::register_guest_irq_route(
             route.physical_irq,
-            vm_id,
+            port.vm_id(),
             EXTERNAL_TARGET_VCPU,
-            route.guest_vector,
+            route.guest_input,
         );
     }
     Ok(())
 }
 
+/// One physical GSI bound to a guest controller input before run admission.
+#[derive(Clone, Copy)]
+pub(super) struct LoongArchPhysicalRoute {
+    pub(super) physical_irq: usize,
+    pub(super) guest_input: usize,
+}
+
 /// Removes every route and run binding owned by the retiring run.
 pub(crate) fn exit_runtime(vm_id: usize, run: RunId) {
     ax_plat::irq::loongarch64_hv::unregister_guest_irq_routes(vm_id);
+    unbind_run_sources(run);
+}
+
+fn unbind_run_sources(run: RunId) {
     for slot in &PLATFORM_SOURCE_SLOTS {
         let previous = {
             let mut binding = slot.0.lock_irqsave();

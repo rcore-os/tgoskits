@@ -15,7 +15,6 @@ host-test = ["ax-sync/host-test"]
 
 [dependencies]
 log = "0.4"
-cfg-if = "1.0"
 # Ordinary device state uses the task-sleepable `ax_sync::Mutex`, which is
 # gated behind `ax-sync/sleep`; the native provider is supplied by the kernel
 # runtime and a host test provider by the packages' test support modules.

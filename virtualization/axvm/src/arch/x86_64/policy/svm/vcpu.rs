@@ -1995,6 +1995,14 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
 
     pub fn set_nested_page_table(&mut self, config: X86NestedPagingConfig) -> X86VcpuResult {
         self.npt_root = Some(config.root_paddr);
+        self.cpu
+            .svm_controls_mut()
+            .expect("SVM policy CPU")
+            .image_mut()
+            .control
+            .nested_cr3
+            .set(config.root_paddr.as_usize() as u64);
+        self.flush_guest_tlb();
         Ok(())
     }
 
