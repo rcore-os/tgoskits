@@ -1,7 +1,7 @@
 [package]
 name = "task-switch"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "Luoyuan Xiao <xiaoluoyuan@163.com>"]
 publish = false
 
@@ -22,6 +22,7 @@ arceos = [
     "dep:ax-mm",
     "dep:ax-memory-addr",
     "dep:rockchip-soc",
+    "dep:aarch64-cpu",
     "ax-std/arceos",
 ]
 # Board-benchmark-local FIFO(80) scheduling, applied by the benchmark itself
@@ -32,8 +33,6 @@ arceos = [
 # The FIFO scope only exists in the ArceOS guest build, so this feature always
 # carries the guest capability set with it.
 bench-fifo-policy = ["arceos", "dep:ax-runtime"]
-# QEMU builds have no RK3588 GPIO3_C6 pin to toggle.
-qemu = []
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
@@ -43,5 +42,7 @@ ax-memory-addr = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-aarch64-cpu = "9.4"
+# Board-only: selected by the `arceos` capability set, so a pure conversion
+# test build without the board program does not pull it in.
+aarch64-cpu = { version = "9.4", optional = true }
 rockchip-soc = { path = "../../../drivers/soc/rockchip/rockchip-soc", optional = true }

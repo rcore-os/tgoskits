@@ -5,19 +5,19 @@
 //! is written through direct memory-mapped I/O because the timed interval must
 //! not take a driver lock or call a sleeping interface.
 //!
-//! Physical device windows are reached through `ax_mm::iomap`. The AxVisor
-//! board guest is configured as a passthrough guest (see
-//! `test-suit/axvisor/normal/board-orangepi-5-plus/rust-shyper-bencher`), which
-//! is the same device access model the verified ArceOS task-switch benchmark
-//! guest uses on this board.
+//! Physical device windows are reached through `ax_mm::iomap`. The AxVisor board
+//! guest is configured as a passthrough guest in
+//! `test-suit/axvisor/normal/board-orangepi-5-plus/task-switch/task-switch.toml`,
+//! whose `guest_type = "passthrough"` is what maps these device windows into the
+//! guest address space. This ArceOS standard-library application is not a user
+//! process, so its tasks stay at EL1; the passthrough windows are what let those
+//! EL1 physical MMIO reads and writes reach the hardware. That is the same
+//! device-access model the sibling `vcpu-perf` case on this board relies on.
 //!
 //! The `init` entry point maps every window the pin needs before the benchmark
 //! starts and reports a failure instead of degrading into pin writes that go
 //! nowhere, so the caller can stop the run when the signal is unavailable.
 
-// The RK3588 device registers only exist on AArch64. Other targets keep the
-// call sites of this module compilable, but have no pin to drive.
-#[cfg(target_arch = "aarch64")]
 mod rk3588 {
     use core::{
         ptr::NonNull,
@@ -174,32 +174,29 @@ mod rk3588 {
 
     #[inline]
     fn mmio_read32(vaddr: usize) -> u32 {
-        // SAFETY: `vaddr` points inside a window returned by `ax_mm::iomap`
-        // that is at least four bytes long, and the register is a 32-bit MMIO
-        // register, so the access is aligned and does not alias Rust memory.
+        // SAFETY: `vaddr` points inside a window returned by `ax_mm::iomap` that
+        // is at least four bytes long, and the register is a 32-bit MMIO
+        // register, so the access is aligned, in-bounds, and does not alias Rust
+        // memory. The mapping stays valid for the benchmark's lifetime, so the
+        // pointer is dereferenceable. A volatile read is performed exactly once,
+        // is not elided, and is ordered relative to other externally observable
+        // events; volatile provides neither mutual exclusion nor a hardware
+        // barrier.
         unsafe { (vaddr as *const u32).read_volatile() }
     }
 
     #[inline]
     fn mmio_write32(vaddr: usize, value: u32) {
-        // SAFETY: see `mmio_read32`.
+        // SAFETY: `vaddr` points inside a window returned by `ax_mm::iomap` that
+        // is at least four bytes long, and the register is a 32-bit MMIO
+        // register, so the access is aligned, in-bounds, and does not alias Rust
+        // memory. The mapping stays valid for the benchmark's lifetime, so the
+        // pointer is dereferenceable. A volatile write is performed exactly once,
+        // is not elided, and is ordered relative to other externally observable
+        // events; volatile provides neither mutual exclusion nor a hardware
+        // barrier.
         unsafe { (vaddr as *mut u32).write_volatile(value) }
     }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-mod rk3588 {
-    /// Non-AArch64 builds keep the benchmark compilable but have no RK3588 pin.
-    pub fn init() -> Result<(), &'static str> {
-        Ok(())
-    }
-    pub fn gpio3_output_high() {}
-    pub fn gpio3_output_low() {}
-    pub fn gpio3_clear_all() {}
-    pub fn gpio3_led_red_on() {}
-    pub fn gpio3_led_green_on() {}
-    pub fn gpio3_ver_id_get() {}
-    pub fn gpio3_ext_port_signals_get() {}
 }
 
 pub use rk3588::*;

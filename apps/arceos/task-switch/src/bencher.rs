@@ -1,67 +1,23 @@
-#[cfg(target_arch = "x86_64")]
-const TSC_FREQ_MHZ: u64 = 4000;
+//! Task-switch benchmark harness.
+//!
+//! [`Bencher`] accumulates raw System Counter ticks (`CNTVCT_EL0`) and PMU cycle
+//! counts. The tick/frequency unit conversions live in [`crate::convert`] so
+//! they can be exercised without reading hardware registers.
 
-pub const fn div_round(n: u64, d: u64) -> u64 {
-    (n + d / 2) / d
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub fn now_tsc() -> u64 {
-    unsafe { core::arch::x86_64::__rdtscp(&mut 0) }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-#[allow(dead_code)]
-pub fn now_ns() -> u64 {
-    now_tsc() * 1000 / TSC_FREQ_MHZ
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn ticks_to_nanos(ticks: u64) -> u64 {
-    ticks * 1_000 / TSC_FREQ_MHZ
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub fn timer_freq() -> u64 {
-    TSC_FREQ_MHZ * 1_000_000
-}
-
-#[cfg(target_arch = "aarch64")]
-use core::sync::atomic::AtomicU64;
-
-#[cfg(target_arch = "aarch64")]
 use aarch64_cpu::registers::{CNTFRQ_EL0, CNTVCT_EL0, Readable};
 
-#[cfg(target_arch = "aarch64")]
-pub static CPUFRQ_HZ: AtomicU64 = AtomicU64::new(2_400_000_000); // RK3588 CPU主频2.4GHz
+use crate::convert;
 
-#[cfg(target_arch = "aarch64")]
+/// Reads the System Counter frequency (`CNTFRQ_EL0`) in Hz.
 #[inline]
 pub fn timer_freq() -> u64 {
     CNTFRQ_EL0.get()
 }
 
-#[cfg(target_arch = "aarch64")]
+/// Reads the System Counter (`CNTVCT_EL0`) in ticks.
 #[inline]
 pub fn now_tsc() -> u64 {
     CNTVCT_EL0.get()
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-#[allow(dead_code)]
-pub fn now_ns() -> u64 {
-    let freq = CNTFRQ_EL0.get();
-    now_tsc() * (1_000_000_000 / freq)
-}
-
-#[cfg(target_arch = "aarch64")]
-pub fn ticks_to_nanos(ticks: u64) -> u64 {
-    let freq = CNTFRQ_EL0.get();
-    ticks * (1_000_000_000 / freq)
 }
 
 pub struct Bencher {
@@ -85,14 +41,6 @@ impl Bencher {
             max_cpu_cycle: 0,
             min_cpu_cycle: 0,
         }
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn bench_fn(f: impl FnOnce()) -> u64 {
-        let start = now_tsc();
-        f();
-        now_tsc() - start
     }
 
     #[inline]
@@ -139,7 +87,9 @@ impl Bencher {
 
         self.count += run as u64;
         self.sum_tsc += elapsed;
-        self.set_max_tsc(div_round(elapsed, run as u64));
+        if let Some(average) = convert::div_round(elapsed, run as u64) {
+            self.set_max_tsc(average);
+        }
         self
     }
 
@@ -149,8 +99,10 @@ impl Bencher {
         self.sum_tsc += elapsed;
         self.sum_cpu_cycle += cpu_cycle;
 
-        if self.max_tsc == 0 {
-            self.set_max_tsc(div_round(elapsed, run));
+        if self.max_tsc == 0
+            && let Some(average) = convert::div_round(elapsed, run)
+        {
+            self.set_max_tsc(average);
         }
 
         self
@@ -162,70 +114,33 @@ impl Bencher {
         if self.count == 0 {
             return;
         }
-        println!(
-            "  Benchmark total duration: {} s",
-            self.sum_tsc / timer_freq()
-        );
-        // println!("  Max Timer cycles: {}", self.max_tsc);
-        // println!("  Average Timer cycles: {}", div_round(self.sum_tsc, self.count));
 
-        println!(
-            "  Average timer nanoseconds: {} ns",
-            div_round(ticks_to_nanos(self.sum_tsc), self.count)
-        );
+        let freq = timer_freq();
+        if let Some(seconds) = self.sum_tsc.checked_div(freq) {
+            println!("  Benchmark total duration: {} s", seconds);
+        }
 
-        #[cfg(target_arch = "aarch64")]
+        if let Some(average_ns) = convert::ticks_to_nanos(self.sum_tsc, freq)
+            .and_then(|nanos| convert::div_round(nanos, self.count))
         {
-            // let timer_freq = timer_freq();
-            // println!("  Average RK3588(2.4GHz) CPU cycles: {}", div_round(self.sum_tsc, self.count) * (CPUFRQ_HZ.load(core::sync::atomic::Ordering::Relaxed) / timer_freq) );
+            println!("  Average timer nanoseconds: {} ns", average_ns);
+        }
 
-            if self.max_cpu_cycle != 0 {
-                // println!("  Min CPU cycles: {}", self.min_cpu_cycle);
-                println!(
-                    "  Average CPU cycles: {}",
-                    div_round(self.sum_cpu_cycle, self.count)
-                );
-                // println!("  Max CPU cycles: {}", self.max_cpu_cycle);
+        if self.max_cpu_cycle != 0 {
+            if let Some(average_cycles) = convert::div_round(self.sum_cpu_cycle, self.count) {
+                println!("  Average CPU cycles: {}", average_cycles);
+            }
 
-                let cpu_freq = crate::cycle::cpu_freq(self.sum_cpu_cycle, self.sum_tsc);
+            if let Some(cpu_freq) = convert::cpu_freq_hz(self.sum_cpu_cycle, self.sum_tsc, freq)
+                && let Some(ghz_fraction) = convert::div_round(cpu_freq % 1_000_000_000, 1_000_000)
+            {
                 println!(
                     "\n  CPU Freq: {} Hz ({}.{} GHz)",
                     cpu_freq,
                     cpu_freq / 1_000_000_000,
-                    div_round(cpu_freq % 1_000_000_000, 1_000_000)
+                    ghz_fraction
                 );
             }
         }
     }
 }
-
-// macro_rules! bench_expr {
-//     ($f:expr) => {{
-//         let start = now_ns();
-//         $f;
-//         now_ns() - start
-//     }};
-// }
-
-// macro_rules! bench {
-//     ($f:expr, $name:expr, $iter:expr) => {{
-//         // warmup
-//         for _ in 0..10000 {
-//             $f();
-//         }
-
-//         let elapsed = bench_expr!({
-//             for _ in 0..$iter {
-//                 $f();
-//             }
-//         });
-//         println!("Benchmark: {}", $name);
-//         println!("  Iterations: {}", $iter);
-//         println!(
-//             "  Elapsed: {}.{:03} s",
-//             elapsed.as_secs(),
-//             elapsed.subsec_millis()
-//         );
-//         println!("  Latency: {} ns", elapsed.as_nanos() / $iter as u128);
-//     }};
-// }
