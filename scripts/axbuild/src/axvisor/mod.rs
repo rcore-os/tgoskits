@@ -284,10 +284,9 @@ impl Axvisor {
         let mut board_config = self
             .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
-        // Board guest images are supplied by the board's existing boot
-        // handoff (for example `${env:AXVISOR_GUEST_ASSETS}`); they are not
-        // host files that can be copied into a QEMU initramfs.
-        self.prepare_guest_payload(&mut request, &mut board_config.boot, false)
+        // Board-only handoffs may resolve guest images to paths published by
+        // the board root filesystem (for example `/linux/...`).
+        self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
             .await?;
         self.app
             .board(
@@ -409,7 +408,7 @@ impl Axvisor {
         self.prepare_guest_payload(
             &mut request,
             &mut ostool::BootPayloadConfig::default(),
-            true,
+            false,
         )
         .await
     }
@@ -424,7 +423,7 @@ impl Axvisor {
             Some(config) => config,
             None => self.app.ensure_uboot_config_for_cargo(&cargo).await?,
         };
-        self.prepare_guest_payload(&mut request, &mut uboot.boot, false)
+        self.prepare_guest_payload(&mut request, &mut uboot.boot, true)
             .await?;
         self.app
             .uboot(cargo, request.build_info_path, Some(uboot))
@@ -435,17 +434,15 @@ impl Axvisor {
         &mut self,
         request: &mut ResolvedAxvisorRequest,
         boot: &mut ostool::BootPayloadConfig,
-        package_guest_assets: bool,
+        allow_external_assets: bool,
     ) -> anyhow::Result<()> {
         request.vmconfigs = build::load_vmconfigs(request, self.app.workspace_context())?;
-        if package_guest_assets {
-            rootfs::ensure_guest_image_bundles(
-                request,
-                self.app.workspace_root(),
-                self.app.target_dir(),
-            )
-            .await?;
-        }
+        rootfs::ensure_guest_image_bundles(
+            request,
+            self.app.workspace_root(),
+            self.app.target_dir(),
+        )
+        .await?;
         let output = self
             .app
             .target_dir()
@@ -456,7 +453,7 @@ impl Axvisor {
             false,
             &output,
             &mut boot.initramfs,
-            !package_guest_assets,
+            allow_external_assets,
         )
     }
 }
