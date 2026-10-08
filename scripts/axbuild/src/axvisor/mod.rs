@@ -438,21 +438,26 @@ impl Axvisor {
         package_guest_assets: bool,
     ) -> anyhow::Result<()> {
         request.vmconfigs = build::load_vmconfigs(request, self.app.workspace_context())?;
-        if !package_guest_assets {
-            return Ok(());
+        if package_guest_assets {
+            rootfs::ensure_guest_image_bundles(
+                request,
+                self.app.workspace_root(),
+                self.app.target_dir(),
+            )
+            .await?;
         }
-        rootfs::ensure_guest_image_bundles(
-            request,
-            self.app.workspace_root(),
-            self.app.target_dir(),
-        )
-        .await?;
         let output = self
             .app
             .target_dir()
             .join("axbuild/axvisor/host-initramfs")
             .join(format!("{}.cpio", request.arch));
-        bundle::attach(&request.vmconfigs, false, &output, &mut boot.initramfs)
+        bundle::attach_with_external_assets(
+            &request.vmconfigs,
+            false,
+            &output,
+            &mut boot.initramfs,
+            !package_guest_assets,
+        )
     }
 }
 

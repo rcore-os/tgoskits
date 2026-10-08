@@ -36,6 +36,23 @@ pub(super) fn attach(
     output: &Path,
     initramfs: &mut Option<String>,
 ) -> anyhow::Result<()> {
+    attach_with_external_assets(vmconfigs, empty_package, output, initramfs, false)
+}
+
+/// Attach board guest configurations while preserving image paths that are
+/// supplied by the board root filesystem.  Board HTTP Boot and U-Boot flows
+/// still need the configuration in the host archive, but their large guest
+/// images may already be installed at paths such as `/linux/...` on the
+/// target.  Any image that is available to axbuild is copied into the
+/// immutable builtin package and its path is rewritten; unavailable images
+/// remain external and are checked after the disk root is published.
+pub(super) fn attach_with_external_assets(
+    vmconfigs: &[PathBuf],
+    empty_package: bool,
+    output: &Path,
+    initramfs: &mut Option<String>,
+    allow_external_assets: bool,
+) -> anyhow::Result<()> {
     if vmconfigs.is_empty() && !empty_package {
         return Ok(());
     }
@@ -75,6 +92,15 @@ pub(super) fn attach(
                     .context("guest configuration has no parent")?
                     .join(source)
             };
+            if allow_external_assets && !source.is_file() {
+                ensure!(
+                    Path::new(path).is_absolute(),
+                    "missing guest boot asset {} in {}",
+                    source.display(),
+                    config.display()
+                );
+                continue;
+            }
             ensure!(
                 source.is_file(),
                 "missing guest boot asset {} in {}",
@@ -221,5 +247,53 @@ mod tests {
         fs::remove_file(directory.path().join("kernel_path")).unwrap();
         assert!(attach(&[config], false, &output, &mut None).is_err());
         assert_eq!(fs::read(&output).unwrap(), prior);
+    }
+
+    #[test]
+    fn board_package_keeps_missing_absolute_boot_assets_external() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut document = toml::Table::try_from(&GuestConfig::default()).unwrap();
+        document
+            .get_mut("kernel")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "kernel_path".into(),
+                toml::Value::String("/linux/board-kernel".into()),
+            );
+        let config = directory.path().join("guest.toml");
+        fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
+        let output = directory.path().join("host.cpio");
+        let mut archive = None;
+
+        attach_with_external_assets(&[config], false, &output, &mut archive, true).unwrap();
+
+        let extracted = directory.path().join("extracted");
+        fs::create_dir(&extracted).unwrap();
+        assert!(
+            Command::new("cpio")
+                .args(["--extract", "--quiet"])
+                .current_dir(&extracted)
+                .stdin(Stdio::from(fs::File::open(&output).unwrap()))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let contents = fs::read_to_string(extracted.join(format!(
+            "guest/builtin/configs/vm-{}.toml",
+            GuestConfig::default().base.id
+        )))
+        .unwrap();
+        let packed = GuestConfig::from_toml(&contents).unwrap();
+        assert_eq!(packed.kernel.kernel_path, "/linux/board-kernel");
+        assert!(
+            extracted
+                .join("guest/builtin/images")
+                .read_dir()
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 }

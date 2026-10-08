@@ -1,4 +1,7 @@
 board_type = "ROC-RK3568-PC"
+uboot_cmd = [
+  "setenv bootargs root=PARTLABEL=rootfs rw rootfstype=ext4 console=ttyFIQ0 earlycon=uart8250,mmio32,0xfe660000",
+]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

@@ -38,3 +38,4 @@ uefi = false
 
 [host_http_probe]
 token = "axvisor-http-test-token"
+request_timeout_secs = 15

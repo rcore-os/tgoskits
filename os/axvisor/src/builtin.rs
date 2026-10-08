@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
 use ax_fs_ng::current_fs_context;
 use ax_fs_ng::{VfsError, vfs::FsContext};
@@ -113,14 +113,21 @@ pub fn validate_builtin(context: &FsContext, staged: &str) -> Result<()> {
     for content in config_files(context, &format!("{staged}/configs"))? {
         let config = GuestConfig::from_toml(&content)?;
         for path in config.kernel.boot_image_paths() {
-            let suffix = path
+            let Some(suffix) = path
                 .strip_prefix(BUILTIN_GUEST_DIR)
                 .filter(|suffix| suffix.starts_with("/images/"))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "boot asset must reside under {BUILTIN_GUEST_DIR}/images: {path}"
-                    )
-                })?;
+            else {
+                // Physical-board handoffs may provide guest images from the
+                // published disk root (for example `/linux/...`).  The
+                // configuration itself is still carried by the builtin
+                // package; those external paths are resolved only after a
+                // disk root has been selected.
+                ensure!(
+                    path.starts_with('/'),
+                    "boot asset path must be absolute: {path}"
+                );
+                continue;
+            };
             if suffix.split('/').any(|part| matches!(part, "." | "..")) {
                 bail!("invalid built-in boot asset path: {path}");
             }

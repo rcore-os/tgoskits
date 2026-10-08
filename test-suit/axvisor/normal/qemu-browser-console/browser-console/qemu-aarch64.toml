@@ -19,3 +19,4 @@ to_bin = true
 uefi = false
 
 [host_http_probe]
+request_timeout_secs = 15
