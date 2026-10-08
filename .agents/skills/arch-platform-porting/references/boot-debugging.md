@@ -484,6 +484,11 @@ UEFI 内存图负责 RAM 分类，FDT 只补充保留区；LoongArch UEFI 入口
 启动分配器之外。UEFI/HTTP 镜像必须在 `ExitBootServices` 前完成读取和校验。
 UEFI 配置表和 ESP cmdline 含内部 NUL 时必须拒绝，不能静默截断启动参数。
 内置归档通过同一解包器，但不能代替外部传输验证。
+FIT 或 FDT initramfs 在 `VM Load` 后、`Memory Map` 前停住时，核对
+`boot_payload::publish()` 的实际机器码。该发布只由启动 CPU 在次处理器和
+消费者启动前执行，必须使用普通 load/store；AArch64 在 MMU 开启前不能
+依赖 `LDXR/LDAXR` 等独占原子操作完成。运行时一次性领取仍使用原子交换。
+`someboot/tests/aarch64_pre_mmu_entropy.rs` 同时检查熵与宿主归档的早期发布。
 QEMU 定向回归使用 `cargo xtask starry test qemu --arch aarch64 --test-case
 qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask
 axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs`。

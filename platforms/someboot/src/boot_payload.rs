@@ -43,7 +43,10 @@ pub fn take_initramfs_range() -> Option<InitramfsRange> {
 }
 
 pub(crate) fn publish(start: usize, end: usize, reclaimable: bool) {
-    assert!(start < end && !PUBLISHED.swap(true, Ordering::AcqRel));
+    // Only the boot CPU publishes, before secondary CPUs or archive consumers
+    // can run. AArch64 exclusive atomics cannot be used before MMU enablement.
+    assert!(start < end && !PUBLISHED.load(Ordering::Relaxed));
+    PUBLISHED.store(true, Ordering::Relaxed);
     RECLAIMABLE.store(reclaimable, Ordering::Relaxed);
     START.store(start, Ordering::Relaxed);
     END.store(end, Ordering::Release);

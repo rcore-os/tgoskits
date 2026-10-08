@@ -59,8 +59,6 @@ fn initramfs_from_fdt(fdt: fdt_raw::Fdt<'_>) -> Option<Result<InitramfsRange, &'
 pub fn init_memory_map() -> Option<()> {
     let fdt = super::fdt_base()?;
 
-    println!("FDT memory map: scan begin");
-
     #[cfg(efi)]
     let add_fdt_ram = !crate::efi_stub::is_uefi_available();
     #[cfg(not(efi))]
@@ -82,8 +80,6 @@ pub fn init_memory_map() -> Option<()> {
         }
     }
 
-    println!("FDT memory map: RAM scan complete");
-
     for reserved in fdt.memory_reservations() {
         let Some(region) = normalize_region(reserved.address, reserved.size) else {
             continue;
@@ -96,8 +92,6 @@ pub fn init_memory_map() -> Option<()> {
         ))
         .unwrap();
     }
-
-    println!("FDT memory map: reservations scan complete");
 
     for reserved in fdt.reserved_memory() {
         if let Some(mut itr) = reserved.reg()
@@ -114,12 +108,9 @@ pub fn init_memory_map() -> Option<()> {
         }
     }
 
-    println!("FDT memory map: reserved-memory scan complete");
-
     if let Some(range) = initramfs_from_fdt(fdt)
         && crate::boot_payload::initramfs_range().is_none()
     {
-        println!("FDT memory map: initramfs properties decoded");
         let range = range.unwrap_or_else(|error| panic!("invalid host initramfs: {error}"));
         let reservation = MemoryDescriptor::new_aligned(
             range.start,
