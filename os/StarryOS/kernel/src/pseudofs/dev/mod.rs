@@ -114,8 +114,10 @@ pub(super) fn request_shared_disabled(
     ax_runtime::hal::irq::request_irq(irq, request).map(IrqRegistration::new)
 }
 
-pub(crate) fn new_devfs() -> Filesystem {
-    SimpleFs::new_with("devfs".into(), 0x01021994, builder)
+pub(crate) fn new_devfs(root_mount_device: u64) -> Filesystem {
+    SimpleFs::new_with("devfs".into(), 0x01021994, move |fs| {
+        builder(fs, root_mount_device)
+    })
 }
 
 pub(crate) fn new_devptsfs(mount: tty::DevPtsMount) -> Filesystem {
@@ -449,7 +451,7 @@ impl DeviceOps for CpuDmaLatency {
     }
 }
 
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     let mut root = DirMapping::new();
     let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
 
@@ -511,11 +513,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // `rdev`, which stats "/" then looks for a block node with a matching
     // `st_rdev`) can find it. Disk roots use their Linux device number; a
     // memory root keeps the synthetic mount device assigned by the VFS.
-    let root_mount_device = ax_fs_ng::vfs::current_fs_context()
-        .lock()
-        .root_dir()
-        .mountpoint()
-        .device();
     let block_nodes = ax_fs_ng::root::block_device_nodes()
         .unwrap_or_else(|error| panic!("failed to discover block device nodes: {error:?}"));
     let root_name = ax_fs_ng::root::root_block_identity().name;
