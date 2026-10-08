@@ -56,8 +56,12 @@ pub(crate) fn install_additional_serial(
 }
 
 /// Returns every physical UART node described by the firmware.
-pub(crate) fn physical_serial_paths(fdt: &Fdt) -> Vec<String> {
-    let console_path = console_path(fdt);
+///
+/// A malformed or conflicting `/chosen` console selector is a hard error rather
+/// than being treated as "no console": callers must not silently overwrite the
+/// firmware-selected UART when the selector cannot be parsed.
+pub(crate) fn physical_serial_paths(fdt: &Fdt) -> AxVmResult<Vec<String>> {
+    let console_path = console_path(fdt)?;
     let mut paths = fdt
         .iter_node_ids()
         .filter_map(|node_id| {
@@ -79,12 +83,12 @@ pub(crate) fn physical_serial_paths(fdt: &Fdt) -> Vec<String> {
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
-    paths
+    Ok(paths)
 }
 
 /// Returns the firmware-selected UART that must remain owned by the host.
-pub(crate) fn host_owned_serial_paths(fdt: &Fdt) -> Vec<String> {
-    console_path(fdt).into_iter().collect()
+pub(crate) fn host_owned_serial_paths(fdt: &Fdt) -> AxVmResult<Vec<String>> {
+    console_path(fdt).map(|path| path.into_iter().collect())
 }
 
 /// Resolves the guest virtual UART identity from the firmware-selected host UART.
@@ -663,7 +667,7 @@ fn install_mmio_serial_preserving(
     )?;
 
     if console {
-        let mut old_paths = physical_serial_paths(tree.inner());
+        let mut old_paths = physical_serial_paths(tree.inner())?;
         old_paths.retain(|path| {
             !preserved_physical_selectors
                 .iter()
@@ -1141,8 +1145,12 @@ fn serial_model(node: &Node) -> Option<GuestSerialModel> {
     uart_16550.then_some(GuestSerialModel::Uart16550)
 }
 
-fn console_path(fdt: &Fdt) -> Option<String> {
-    console_selection(fdt).ok().flatten().map(|(_, path)| path)
+/// Resolves the firmware-selected console node path.
+///
+/// Malformed or conflicting `/chosen` selectors propagate as errors so the
+/// protective callers fail closed instead of dropping the console selection.
+fn console_path(fdt: &Fdt) -> AxVmResult<Option<String>> {
+    console_selection(fdt).map(|selection| selection.map(|(_, path)| path))
 }
 
 fn prop_u32(name: &str, value: u32) -> Property {

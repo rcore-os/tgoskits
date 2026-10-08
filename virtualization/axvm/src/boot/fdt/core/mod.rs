@@ -54,6 +54,12 @@ pub fn prepare_dtb_guest(
     } else {
         get_developer_provided_dtb(vm_config, vm_create_config, provider)?
     };
+    // Explicit guest firmware owns the virtualized GIC and UART resources.
+    // Resolve them exactly once so the console contract validated below is the
+    // one the immutable device plan is actually built from.
+    if !uefi {
+        select_guest_machine_resources(vm_config, provided_dtb.as_deref())?;
+    }
     resolve_console_profile(vm_config, host_fdt_bytes, provided_dtb.as_deref())?;
 
     if uefi {
@@ -261,8 +267,6 @@ fn build_guest_dtb(
     provided_dtb: Option<Vec<u8>>,
     host_fdt_bytes: Option<&'static [u8]>,
 ) -> AxVmResult<Option<GuestDtbImage>> {
-    select_guest_machine_resources(vm_config, provided_dtb.as_deref())?;
-
     match (host_fdt_bytes, provided_dtb) {
         (Some(host_bytes), Some(provided)) => {
             let host_fdt = parse_host_fdt(host_bytes)?;

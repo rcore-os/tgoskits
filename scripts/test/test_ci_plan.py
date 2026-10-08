@@ -11,6 +11,11 @@ from typing import Any
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
+
+# Imported after the suite directory is on sys.path so both the direct script
+# entry point and `python3 -m unittest scripts.test.test_ci_plan` can import it.
+from ci_suite import SUITE_ROOTS
+
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -28,6 +33,18 @@ def main_test_rows(plan: dict) -> list[dict]:
         for prefix in MAIN_TEST_PREFIXES
         for row in plan[f"{prefix}_matrix"]["include"]
     ]
+
+
+def board_type_by_board_name() -> dict[str, str]:
+    """Map every CI board name to the board_type declared by its config."""
+    board_types: dict[str, str] = {}
+    for suite_root in SUITE_ROOTS.values():
+        for config in (ci_plan.WORKSPACE_ROOT / suite_root).rglob("board-*.toml"):
+            name = config.stem.removeprefix("board-")
+            if name in board_types:
+                continue
+            board_types[name] = tomllib.loads(config.read_text()).get("board_type", "")
+    return board_types
 
 
 class CiPlanTests(unittest.TestCase):
@@ -753,6 +770,8 @@ command = "true"
         )
         dualguest = rows["test-orangepi-5-plus-dualguest-robot"]
 
+        self.assertEqual(dualguest["resource_group"], "orangepi-5-plus-robot-uart6")
+
         self.assertEqual(
             dualguest["command"],
             "cargo xtask starry build --config "
@@ -774,6 +793,10 @@ command = "true"
             )
             with self.subTest(variant=variant):
                 self.assertTrue(path.is_file())
+                self.assertEqual(
+                    tomllib.loads(path.read_text())["board_type"],
+                    "OrangePi-5-Plus-Robot-UART6",
+                )
 
         nightly_rows = self.assert_unique_ids(
             ci_plan.build_axvisor_nightly_plan(
@@ -1147,18 +1170,24 @@ command = "true"
             check["id"]: check
             for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
+        board_types = board_type_by_board_name()
         for row in (*main_rows, *nightly_rows, *benchmark_rows):
             check = catalog[row["id"]]
-            boards = {
+            boards = [
                 registration["board"]
                 for registration in check.get("suite", ())
                 if "board" in registration
-            }
+            ]
+            declared_types = [board_types.get(board, "").lower() for board in boards]
             if boards:
                 self.assertIn("board", row["runs_on"])
                 self.assertEqual(
                     row["resource_group"], check.get("resource_group", "")
                 )
+                if any("uart6" in board_type for board_type in declared_types):
+                    self.assertEqual(row["resource_group"], "orangepi-5-plus-robot-uart6")
+                elif any("robot" in board_type for board_type in declared_types):
+                    self.assertEqual(row["resource_group"], "orangepi-5-plus-robot")
             else:
                 self.assertNotIn("board", row["runs_on"])
                 self.assertEqual(row["resource_group"], "")

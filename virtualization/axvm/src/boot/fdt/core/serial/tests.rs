@@ -280,6 +280,69 @@ fn preserves_physical_serial_selected_through_parent_path() {
 }
 
 #[test]
+fn conflicting_console_selector_fails_installation_instead_of_dropping_console() {
+    // The protection path resolves the console node before removing firmware
+    // UARTs. A conflicting `/chosen` selector must propagate that error and
+    // leave the firmware consoles untouched, not be swallowed by an `.ok()`
+    // that treats the firmware as having no console at all.
+    let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@8000000");
+    let root = tree.inner().root_id();
+    for (name, base, phandle) in [
+        ("serial@feb50000", 0xfeb5_0000, 0x11),
+        ("serial@feb80000", 0xfeb8_0000, 0x22),
+    ] {
+        let serial = tree.add_node(root, Node::new(name));
+        tree.set_property(serial, prop_string("compatible", "ns16550a"))
+            .unwrap();
+        tree.inner_mut()
+            .view_typed_mut(serial)
+            .unwrap()
+            .set_regs(&[RegInfo::new(base, Some(0x100))]);
+        tree.set_property(serial, prop_u32("phandle", phandle))
+            .unwrap();
+    }
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(
+        chosen,
+        prop_string("stdout-path", "/serial@feb50000:1500000"),
+    )
+    .unwrap();
+    // `zephyr,console` names a different node, so the console selector conflicts.
+    tree.set_property(chosen, prop_u32("zephyr,console", 0x22))
+        .unwrap();
+
+    let profile = GuestSerialProfile {
+        model: GuestSerialModel::Uart16550,
+        transport: GuestSerialTransport::Mmio {
+            base: 0x0900_0000,
+            length: 0x100,
+            register_shift: 0,
+            register_width: AccessWidth::Byte,
+        },
+        irq: 33,
+        clock_hz: 24_000_000,
+    };
+
+    let result = install_mmio_serial_preserving(
+        &mut tree,
+        profile,
+        GuestSerialFdtInterrupt::GicSpi,
+        None,
+        true,
+        &[],
+    );
+
+    assert!(
+        result.is_err(),
+        "conflicting /chosen console selector must fail closed"
+    );
+    // Without the propagated error the installation would have removed both
+    // firmware consoles. The error must leave them in place.
+    assert!(tree.inner().get_by_path_id("/serial@feb50000").is_some());
+    assert!(tree.inner().get_by_path_id("/serial@feb80000").is_some());
+}
+
+#[test]
 fn installs_ns16550a_with_plic_source() {
     let mut tree = tree_with_controller("riscv,plic0", "plic@c000000");
     let profile = GuestSerialProfile {
