@@ -1252,7 +1252,7 @@ mod tests {
             .lock()
             .link_group(&mut **leader.event.lock())
             .unwrap();
-        *member.group_leader.lock_irqsave() = Some(Arc::downgrade(&leader));
+        *member.group_leader.lock() = Some(Arc::downgrade(&leader));
         leader.members.lock().push(Arc::downgrade(&member));
 
         let entered = Arc::new(AtomicBool::new(false));

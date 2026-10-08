@@ -1635,7 +1635,7 @@ mod tests {
         let handle = MmHandle::from_arc(aspace).unwrap();
         let pin = handle.pin().unwrap();
         {
-            let mut aspace = pin.lock_irqsave();
+            let mut aspace = pin.lock();
             aspace
                 .map(
                     start,
@@ -1658,7 +1658,7 @@ mod tests {
             pin.handle_page_fault_result(start, access),
             FaultResult::Retry
         ));
-        assert_eq!(pin.lock_irqsave().pending_tlb_obligations(), 0);
+        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
         assert!(matches!(
             pin.handle_page_fault_result(start, access),
             FaultResult::Handled
@@ -1680,7 +1680,7 @@ mod tests {
         let handle = MmHandle::from_arc(aspace).unwrap();
         let pin = handle.pin().unwrap();
         {
-            let mut aspace = pin.lock_irqsave();
+            let mut aspace = pin.lock();
             aspace
                 .map(
                     start,
@@ -1701,9 +1701,9 @@ mod tests {
         // A kernel copy faults without USER, unlike a userspace instruction.
         // The old discard receipt forces the first attempt to return Retry.
         assert!(pin.handle_page_fault(start, PageFaultFlags::WRITE));
-        assert_eq!(pin.lock_irqsave().pending_tlb_obligations(), 0);
+        assert_eq!(pin.lock().pending_tlb_obligations(), 0);
         assert!(
-            pin.lock_irqsave()
+            pin.lock()
                 .pt
                 .query(start)
                 .is_ok_and(|(_, flags, _)| flags.contains(MappingFlags::WRITE))
@@ -1711,10 +1711,10 @@ mod tests {
         assert!(!pin.handle_page_fault(start, PageFaultFlags::EXECUTE));
         assert!(!pin.handle_page_fault(start + 0x1000, PageFaultFlags::WRITE));
         let exhausted = AddrSpace::classify_fault_error(false, crate::StarryError::NoMemory);
-        pin.lock_irqsave().mutation_gate.mark_needs_repair();
+        pin.lock().mutation_gate.mark_needs_repair();
         let quarantined = pin.handle_page_fault_result(start, PageFaultFlags::WRITE);
         // This test did not damage any PTE; release its synthetic quarantine.
-        pin.lock_irqsave().mutation_gate.clear_repair();
+        pin.lock().mutation_gate.clear_repair();
         drop(pin);
         let permit = handle.release_user_ref().unwrap();
         drop(handle);
