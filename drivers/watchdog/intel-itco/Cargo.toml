@@ -1,0 +1,16 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Portable Intel iTCO watchdog register core"
+edition.workspace = true
+keywords = ["intel", "watchdog", "no-std"]
+license = "Apache-2.0"
+name = "intel-itco-watchdog"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+thiserror.workspace = true
+
+[package.metadata.clippy]
+configurations = [{ name = "x86_64-none", target = "x86_64-unknown-none" }]

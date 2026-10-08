@@ -486,6 +486,7 @@ dependencies = [
  "axklib",
  "dma-api",
  "embedded-graphics",
+ "intel-itco-watchdog",
  "libc",
  "mmio-api",
  "rand 0.8.8",
@@ -4495,6 +4496,13 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "intel-itco-watchdog"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]

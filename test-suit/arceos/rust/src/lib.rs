@@ -47,6 +47,12 @@ pub mod exception;
 pub mod fs;
 #[cfg(all(feature = "futex-errno-order", feature = "ax-std"))]
 pub mod futex;
+#[cfg(all(
+    feature = "intel-itco-qemu",
+    feature = "ax-std",
+    target_arch = "x86_64"
+))]
+pub mod intel_itco;
 #[cfg(all(feature = "eventfd-epoll", feature = "ax-std"))]
 pub mod io_mpx;
 #[cfg(all(feature = "iommu-dma", feature = "ax-std"))]
@@ -137,6 +143,8 @@ test_runner!(
 );
 test_runner!("fs-basic", run_fs_basic, fs::basic::run);
 test_runner!("iommu-dma", run_iommu_dma, iommu_dma::run);
+#[cfg(target_arch = "x86_64")]
+test_runner!("intel-itco-qemu", run_intel_itco_qemu, intel_itco::run);
 test_runner!("futex-errno-order", run_futex_errno_order, futex::run);
 test_runner!(
     "lockdep-baseline",
@@ -277,6 +285,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "iommu-dma",
         "SMMUv3 PCI DMA translation and isolation",
         run_iommu_dma,
+    ),
+    #[cfg(all(feature = "intel-itco-qemu", target_arch = "x86_64"))]
+    TestCase::new(
+        "intel-itco-qemu",
+        "Q35 ICH9 iTCO v2 watchdog state transitions",
+        run_intel_itco_qemu,
     ),
     #[cfg(feature = "futex-errno-order")]
     TestCase::new(

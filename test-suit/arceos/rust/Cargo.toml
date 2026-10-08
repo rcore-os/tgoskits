@@ -57,6 +57,7 @@ virtio-block-lifecycle = [
     "dep:zerocopy",
 ]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
+intel-itco-qemu = ["ax-std", "dep:intel-itco-watchdog"]
 iommu-dma = [
     "ax-std",
     "ax-driver/nvme",
@@ -137,6 +138,7 @@ ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
+intel-itco-watchdog = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
 libc = { workspace = true, optional = true }
 mmio-api = { workspace = true, optional = true }
