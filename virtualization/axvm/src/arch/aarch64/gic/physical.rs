@@ -116,27 +116,62 @@ enum AssignedSpiDelivery {
 
 impl AssignedSpiBinding {
     /// Publishes one acknowledged activation without VM lookup or allocation.
+    ///
+    /// The ACK/DIR gate is held only across the canonical record step and, when
+    /// that record fails, the matching rollback. The pre-bound vCPU wake (which
+    /// publishes a deferred kick and may send an IPI) and every host-side failure
+    /// callback run after the gate is released, so a raw guard never covers an
+    /// external callback.
     fn publish_from_irq(&self, token: usize) -> bool {
-        let mut delivery = self.delivery.lock_irqsave();
-        if !self.accepting.load(Ordering::Acquire) {
-            deactivate_host_irq(token);
-            return true;
-        }
+        let spi = arm_vgic::SpiId::new(self.irq.value() as u32)
+            .expect("assigned host IRQ is a validated SPI");
         // With a HW-backed LR, normal guest deactivation is performed by the
         // physical GIC and does not call the backend completion hook. A new
         // host acknowledgement is therefore the architectural proof that an
         // older `Active` marker has already retired and may be replaced.
-        // Keep local IRQs and preemption disabled until canonical forwarding
-        // and host activation ownership agree. Completion takes the same gate
-        // across DIR, so a level source cannot publish a new activation into
-        // the old completion window.
-        *delivery = AssignedSpiDelivery::Active;
-        if let Err(error) = self.controller.forward_physical_spi(self.irq) {
-            *delivery = AssignedSpiDelivery::Idle;
+        // Completion takes the same gate across DIR, so a level source cannot
+        // publish a new activation into the old completion window. The record
+        // and its rollback therefore share one gate acquisition: releasing the
+        // gate between them would let a concurrent DIR completion consume a
+        // half-published activation. Only the wake and the host callback below
+        // run outside the gate.
+        let (wake, failure, rejected) = {
+            let mut delivery = self.delivery.lock_irqsave();
+            if self.accepting.load(Ordering::Acquire) {
+                *delivery = AssignedSpiDelivery::Active;
+                match self.controller.acknowledge_physical_spi(spi) {
+                    Ok(wake) => (wake, None, false),
+                    Err(error) => {
+                        // Roll back while the gate is still held, so a
+                        // concurrent DIR completion cannot observe the
+                        // half-published activation.
+                        *delivery = AssignedSpiDelivery::Idle;
+                        (None, Some(error), false)
+                    }
+                }
+            } else {
+                (None, None, true)
+            }
+        };
+        // The gate is released: run every host-side callback and diagnostic here.
+        if rejected || failure.is_some() {
+            // Ownership already transferred, or the record rolled back: consume
+            // the rejected host token outside the gate.
             deactivate_host_irq(token);
-            drop(delivery);
+        }
+        if let Some(error) = failure {
             warn!(
                 "failed to forward assigned physical SPI {} into the VGIC: {error}",
+                self.irq.value()
+            );
+        }
+        // The canonical activation, when recorded, stays `Active` until its DIR
+        // completion, so a failed kick is reported without touching the gate.
+        if let Some(wake) = wake
+            && let Err(error) = wake.wake()
+        {
+            warn!(
+                "failed to kick the target vCPU for assigned physical SPI {}: {error}",
                 self.irq.value()
             );
         }

@@ -247,6 +247,35 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
         dispatch_vcpu!(self, handle_eoi)
     }
 
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend's host timer cancellation failure so the caller
+    /// retries instead of retiring a live registration.
+    pub fn suspend_timer(&mut self) -> X86VcpuResult {
+        dispatch_vcpu!(self, suspend_timer)
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend's host timer registration failure.
+    pub fn resume_timer(&mut self) -> X86VcpuResult {
+        dispatch_vcpu!(self, resume_timer)
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend's host timer cancellation failure so the caller
+    /// retries instead of retiring a live registration.
+    pub fn stop_timer(&mut self) -> X86VcpuResult {
+        dispatch_vcpu!(self, stop_timer)
+    }
+
     /// Set the guest return register value.
     pub fn set_return_value(&mut self, value: usize) {
         dispatch_vcpu!(self, set_return_value, value)

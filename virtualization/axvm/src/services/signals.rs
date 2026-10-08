@@ -48,6 +48,12 @@ const IRQ_INFLIGHT_MASK: usize = !IRQ_CLOSED_BIT;
 const POLL_OWNER_NONE: usize = usize::MAX;
 
 /// Per-run, per-vCPU interrupt and work signal state.
+///
+/// Queues belong to the run and the vCPU identity, not to one activation. The
+/// run owner retires the whole object after [`Self::close_interrupts`] and
+/// [`Self::interrupts_quiet`], and that retirement is the only thing that drops
+/// sources still pending for an inactive vCPU. Because a closed object rejects
+/// every new publication, a stale run can never inject into its successor.
 pub(crate) struct RunSignals {
     run: RunId,
     vcpu_count: usize,
@@ -206,10 +212,18 @@ impl RunSignals {
         self.publish_queued(vcpu_id, interrupt.into())
     }
 
-    /// Publishes one concrete architecture interrupt source.
+    /// Publishes one concrete architecture interrupt source into the run queue.
     ///
-    /// Like [`Self::kick_from_irq`] this is safe from hard IRQ: it takes only
-    /// the short raw queue guard and the non-blocking producer counter, and it
+    /// The queue belongs to the run and the vCPU identity, not to one activation,
+    /// so an accepted publication is retained even when no execution target is
+    /// registered: an acknowledged controller source (LoongArch physical IRQ or
+    /// emulated EIOINTC vector) survives a `CPU_OFF` until a later activation
+    /// drains it. Only an identity outside the architecture's accepted
+    /// namespaces is rejected with [`SignalError::InvalidSource`], and nothing is
+    /// recorded then.
+    ///
+    /// Like [`Self::kick_from_irq`] this is safe from hard IRQ: it takes only the
+    /// short raw queue guard and the non-blocking producer counter, and it
     /// allocates nothing. Taking the producer counter here means
     /// [`Self::interrupts_quiet`] observes *every* in-flight publication, not
     /// only the deferred kick publications.
@@ -283,20 +297,31 @@ impl RunSignals {
         Ok(())
     }
 
-    /// Returns whether the current registration has any queued source.
+    /// Returns whether this vCPU's run-owned queue has any pending source.
+    ///
+    /// The flag also covers sources published while the vCPU was inactive, so a
+    /// retained controller source stays visible to the activation that later
+    /// drains it.
     pub(crate) fn has_pending(&self, vcpu_id: usize) -> bool {
         self.slot(vcpu_id).is_some_and(VcpuSignalSlot::has_pending)
     }
 
     /// Drains exactly `activation`'s fixed queue.
     ///
-    /// The output vector is allocated with the complete fixed capacity before
-    /// the raw queue guard is taken; no allocation can occur in that guard.
+    /// The run's pending flag is consulted first, so the common empty case does
+    /// not reserve the complete ring. When a source is queued the output vector
+    /// is allocated with the complete fixed capacity *before* the raw queue guard
+    /// is taken; no allocation can occur inside that guard. A stale `activation`
+    /// drains nothing and leaves the source pending for the current activation.
     pub(crate) fn drain(&self, vcpu_id: usize, activation: u64) -> Vec<QueuedVcpuInterrupt> {
-        let mut output = Vec::with_capacity(INTERRUPT_SOURCE_CAPACITY);
-        if let Some(slot) = self.slot(vcpu_id) {
-            slot.drain_into(activation, &mut output);
+        let Some(slot) = self.slot(vcpu_id) else {
+            return Vec::new();
+        };
+        if !slot.has_pending() {
+            return Vec::new();
         }
+        let mut output = Vec::with_capacity(INTERRUPT_SOURCE_CAPACITY);
+        slot.drain_into(activation, &mut output);
         output
     }
 
@@ -508,8 +533,10 @@ impl VcpuWait {
     /// returns so the owner can consume its mailbox command, while an admitted
     /// (open) execution keeps waiting for a genuine native interrupt. Only the
     /// sticky wake request is consumed here; the canonical queue publication
-    /// stays published for [`RunSignals::drain`]. No term queries a VM, device
-    /// runtime, lifecycle state, or sleeping lock.
+    /// stays published for [`RunSignals::drain`], and a source retained across a
+    /// `CPU_OFF` is visible through [`RunSignals::has_pending`], so a later
+    /// activation observes it even when it starts parked. No term queries a VM,
+    /// device runtime, lifecycle state, or sleeping lock.
     fn wait_pending(&self, additional_pending: &dyn Fn() -> bool) -> bool {
         if self.signals.stop_requested() || !self.signals.entry_is_open() {
             return true;
@@ -615,19 +642,30 @@ mod tests {
         assert!(!wait.wait_pending(&none));
         assert!(wait.wait_pending(&|| true));
 
+        // An accepted source is retained by the run even though no execution
+        // target is registered, and the waiting owner observes it.
+        assert_eq!(run.publish_queued(0, edge(3)), Ok(()));
+        assert!(run.has_pending(0));
+        assert!(wait.wait_pending(&none));
+        // Nothing drains it until an activation is registered, so the retained
+        // source survives until the run retires after quiescence.
+        assert!(run.drain(0, target.activation).is_empty());
+        assert!(run.has_pending(0));
+
         // A closed admission (park command) or a stop returns to the owner.
         signals.close_entry();
         assert!(wait.wait_pending(&none));
         signals.request_stop();
         assert!(wait.wait_pending(&none));
 
-        // An unregistered target rejects publication instead of dropping it.
+        // A source identity outside the architecture's accepted namespaces is
+        // rejected instead of being recorded. Arm and RISC-V relay their native
+        // controllers' canonical state and accept every virtual identity here.
+        #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
         assert_eq!(
-            run.publish_queued(0, edge(3)),
-            Err(SignalError::InactiveTarget)
+            run.publish_queued(0, edge(u32::MAX)),
+            Err(SignalError::InvalidSource)
         );
-        assert!(!run.has_pending(0));
-        assert!(run.drain(0, target.activation).is_empty());
     }
 
     /// The closed/in-flight boundary is shared by every publisher, so a closed

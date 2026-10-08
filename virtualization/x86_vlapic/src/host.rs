@@ -60,7 +60,20 @@ pub trait X86VlapicRuntimeOps: Send + Sync + 'static {
         callback: X86TimerCallback,
     ) -> X86VlapicResult<Self::TimerHandle>;
 
-    /// Cancels a timer returned by this port.
+    /// Yields the calling task while a timer callback or its host payload
+    /// reclamation is still in flight.
+    ///
+    /// Task-side cancellation uses this instead of spinning so a callback that
+    /// was preempted on the same CPU can run and retire its arm. It must not
+    /// busy-wait, and it must not require any lock the callback acquires.
+    fn wait_timer_progress(&self);
+
+    /// Cancels a timer returned by this port and waits for its completion.
+    ///
+    /// Returns only once the callback has left the host timer queue and its
+    /// payload is reclaimed (an already-completed registration reports
+    /// success). A merely accepted but still-in-flight cancellation is not
+    /// quiescence and must not be reported as success.
     fn cancel_timer(&self, handle: Self::TimerHandle) -> X86VlapicResult;
 }
 

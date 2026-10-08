@@ -10,7 +10,8 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-#[cfg(any(test, doctest))]
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
 mod host_lock_provider;
 
 /// Re-export commonly used modules

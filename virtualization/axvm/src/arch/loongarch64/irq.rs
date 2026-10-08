@@ -34,7 +34,7 @@ use crate::{
 };
 
 const PCH_PIC_INPUT_COUNT: usize = 64;
-const LOONGARCH_MAX_IRQ_COUNT: usize = 256;
+pub(crate) const LOONGARCH_MAX_IRQ_COUNT: usize = 256;
 /// Every emulated PCH-PIC output is delivered to the boot vCPU, matching the
 /// guest EIOINTC topology programmed by firmware.
 const EXTERNAL_TARGET_VCPU: usize = 0;
@@ -76,7 +76,7 @@ impl LoongArchRunPort {
         interrupt: PendingVcpuInterrupt,
     ) -> Result<(), SignalError> {
         self.signals.publish_queued(vcpu_id, interrupt.into())?;
-        self.signals.kick_from_irq(vcpu_id)
+        self.wake_recorded(vcpu_id)
     }
 
     /// Publishes one queued source from hard-IRQ context.
@@ -86,7 +86,7 @@ impl LoongArchRunPort {
         interrupt: QueuedVcpuInterrupt,
     ) -> Result<(), SignalError> {
         self.signals.publish_queued(vcpu_id, interrupt)?;
-        self.signals.kick_from_irq(vcpu_id)
+        self.wake_recorded(vcpu_id)
     }
 
     /// Publishes one EIOINTC output vector produced by guest MMIO handling.
@@ -97,7 +97,22 @@ impl LoongArchRunPort {
     ) -> Result<(), SignalError> {
         self.signals
             .publish_queued(vcpu_id, QueuedVcpuInterrupt::External { vector })?;
-        self.signals.kick_from_irq(vcpu_id)
+        self.wake_recorded(vcpu_id)
+    }
+
+    /// Completes a publication whose source is already in the run's fixed queue.
+    ///
+    /// [`RunSignals::publish_queued`] is the only step that records the source:
+    /// when it rejects the publication nothing is pending and no later owner
+    /// entry can observe it, so its error is reported to the caller instead of
+    /// being presented as delivery. Once it returns, the queue owns the record;
+    /// a target activation that retired before this wake leaves the source
+    /// pending for its successor, so a skipped wake is not a delivery failure.
+    fn wake_recorded(&self, vcpu_id: usize) -> Result<(), SignalError> {
+        match self.signals.kick_from_irq(vcpu_id) {
+            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Builds the virtual source identity for one guest-internal vector.
@@ -129,7 +144,7 @@ impl std::fmt::Debug for LoongArchRunPort {
 /// The owner binds the exact run port before guest entry is admitted and clears
 /// it only after IRQ input is quiesced; a callback that observes no binding is
 /// rejected instead of resolving a newer run.
-struct LoongArchRunCell(RawSpinLock<Option<LoongArchRunPort>>);
+pub(crate) struct LoongArchRunCell(RawSpinLock<Option<LoongArchRunPort>>);
 
 impl LoongArchRunCell {
     const fn new() -> Self {
@@ -281,10 +296,12 @@ impl WiredIrqSink for LoongArchPchPicIrqSink {
         let Some(vector) = vector else {
             return Ok(());
         };
-        // The controller state is already published. A missing run-bound target
-        // only means no execution is active to wake, which is not a failure.
+        // The controller state is already latched, but the queued EIOINTC
+        // vector is the only record this guest can observe. A publication the
+        // run rejects is therefore a real delivery failure, not a silent
+        // success; only a skipped wake of an already-recorded source is benign.
         match self.run.publish_external(EXTERNAL_TARGET_VCPU, vector) {
-            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            Ok(()) => Ok(()),
             Err(error) => Err(IrqError::Backend {
                 endpoint: InterruptEndpoint::Wired {
                     controller: InterruptControllerId::new(0),
@@ -326,7 +343,9 @@ impl PchPicOutputSink for LoongArchPchPicOutputSink {
             .run
             .publish_external(EXTERNAL_TARGET_VCPU, event.vector)
         {
-            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            // As above: a rejection means the guest never observes this vector,
+            // so surface it; a recorded source whose wake was skipped is fine.
+            Ok(()) => Ok(()),
             Err(error) => Err(DeviceManagerError::InvalidState {
                 operation: "publish LoongArch PCH-PIC output",
                 detail: error.to_string(),
@@ -420,6 +439,17 @@ pub(crate) fn register_platform_irq_injector() {
 /// so the first hard IRQ can never observe a stale or missing run.
 pub(crate) fn enter_runtime(vm_id: usize, port: &LoongArchRunPort) -> AxVmResult {
     let routes = super::boot::get_guest_irq_routes(vm_id);
+    for route in &routes {
+        if route.guest_vector >= 256 {
+            return ax_err!(
+                InvalidInput,
+                format!(
+                    "guest IRQ vector {} is outside LoongArch EIOINTC",
+                    route.guest_vector
+                )
+            );
+        }
+    }
     for route in &routes {
         bind_platform_source(route.physical_irq, port)?;
     }

@@ -334,8 +334,6 @@ mod tests {
         assert_eq!(super::psci_cpu_off_result(true), super::PSCI_RET_SUCCESS);
     }
 
-    use super::*;
-
     #[test]
     fn hvc_decodes_psci_version_and_dispatches_0_2() {
         let code = decode_hypercall_code(0x8400_0000, HyperCallAbi::AArch64).unwrap();

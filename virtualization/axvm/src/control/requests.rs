@@ -1,11 +1,12 @@
 //! Guest requests execute on the lifecycle owner with exact activation identity.
 
+use axaddrspace::NestedPageTableOps;
 use axdevice_base::GuestMemoryAccess;
 use axhvc::HyperCallCode;
 
 use super::{Owner, StartupReply};
 use crate::{
-    AxVmError, AxVmResult, OperationId, RunId, VmStatus, VmVcpuState,
+    AxVmError, AxVmResult, OperationId, VmStatus, VmVcpuState,
     guest_memory::MemoryUpdate,
     identity::VcpuInstance,
     operation::OperationCompletion,
@@ -118,29 +119,23 @@ impl Owner {
                 // The caller remains unbound and exits after its reply. The
                 // accepted reset is a normal owner command; no callback waits
                 // synchronously for a command whose completion needs this task.
-                let result = if self.state != VmStatus::Running {
-                    Err(AxVmError::OperationCancelled {
-                        operation: completion.id(),
-                    })
+                if self.state != VmStatus::Running {
+                    let operation = completion.id();
+                    completion.finish(Err(AxVmError::OperationCancelled { operation }));
                 } else {
-                    self.shared
-                        .new_operation::<RunId>()
-                        .and_then(|(observer, reset)| {
-                            drop(observer);
-                            self.shared
-                                .dispatch_command(crate::manager::Command::GuestReset {
-                                    run: instance.run,
-                                    completion: reset,
-                                })
-                                .map(|()| 0)
-                        })
-                };
-                completion.finish(result);
+                    let _result =
+                        self.shared
+                            .dispatch_command(crate::manager::Command::GuestReset {
+                                run: instance.run,
+                                completion,
+                            });
+                }
             }
             GuestRequest::NestedFault { addr, access_flags } => {
                 // Linear RAM mappings are populated eagerly. A permission or
                 // missing-mapping fault cannot be repaired by granting access.
-                let mapping = self.vm.resources.address_space.page_table().query(addr);
+                let mapping =
+                    NestedPageTableOps::query(self.vm.resources.address_space.page_table(), addr);
                 let result = match mapping {
                     Ok((_, flags, _)) if flags.contains(access_flags) => Ok(0),
                     _ => Err(AxVmError::memory(

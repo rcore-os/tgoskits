@@ -222,19 +222,19 @@ struct MemorySnapshot {
 /// This view owns its backing leases. It has no publication mutex or callback;
 /// the control owner replaces it only after the corresponding vCPU parks.
 pub(crate) struct DecodeMemory {
-    #[cfg(any(test, not(target_arch = "aarch64")))]
+    #[cfg(any(test, target_arch = "x86_64"))]
     mappings: Vec<MappingLease>,
 }
 
 impl DecodeMemory {
     pub(crate) fn new(_mappings: Vec<MappingLease>) -> Self {
         Self {
-            #[cfg(any(test, not(target_arch = "aarch64")))]
+            #[cfg(any(test, target_arch = "x86_64"))]
             mappings: _mappings,
         }
     }
 
-    #[cfg(any(test, not(target_arch = "aarch64")))]
+    #[cfg(any(test, target_arch = "x86_64"))]
     pub(crate) fn read_byte(&self, address: GuestPhysAddr) -> DeviceResult<u8> {
         let current = address.as_usize();
         let mapping = self

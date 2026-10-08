@@ -13,7 +13,7 @@ use axvm_types::AccessWidth;
 
 use crate::{
     ArmVgicConfig, EventId, GicV3Backend, GicV3Native, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId,
-    GuestMemory, HostGicVersion, IntId, ItsDeviceId, LpiId, PhysicalIrqId, SpiId, TriggerMode,
+    GuestMemory, HostGicVersion, ItsDeviceId, LpiId, PhysicalIrqId, SpiId, TriggerMode,
     VgicController, VgicError, VgicResult,
 };
 
@@ -212,29 +212,7 @@ impl VgicCore {
 
     /// Injects one private or shared interrupt through canonical state.
     pub fn inject(&self, vcpu: usize, intid: u32, trigger: InterruptTrigger) -> VgicResult {
-        match IntId::new(intid)? {
-            IntId::Sgi(sgi) => {
-                self.controller
-                    .send_sgi(GicVcpuId::new(vcpu), sgi, crate::SgiTarget::SelfOnly)
-            }
-            IntId::Ppi(ppi) => match trigger {
-                InterruptTrigger::EdgeTriggered => {
-                    self.controller.pulse_ppi(GicVcpuId::new(vcpu), ppi)
-                }
-                InterruptTrigger::LevelTriggered => {
-                    self.controller
-                        .set_ppi_level(GicVcpuId::new(vcpu), ppi, true)
-                }
-            },
-            IntId::Spi(spi) => match trigger {
-                InterruptTrigger::EdgeTriggered => self.controller.pulse_spi(spi),
-                InterruptTrigger::LevelTriggered => self.controller.set_spi_level(spi, true),
-            },
-            IntId::Lpi(_) => Err(crate::VgicError::Unsupported {
-                operation: "inject wired interrupt",
-                detail: "LPIs must be delivered through an ITS endpoint".into(),
-            }),
-        }
+        self.controller.native_port().inject(vcpu, intid, trigger)
     }
 
     fn open_input(

@@ -1,9 +1,34 @@
-//! Host-only `ax_sync` lock provider shared by the `axdevice` integration tests.
+//! Host-only `ax_sync` lock provider for the `axdevice` test binaries.
 //!
-//! Integration test binaries cannot use the library's `#[cfg(test)]`
-//! `host_lock_provider` module, so this is an independent minimal copy of the
-//! same host-only provider. Production links the native scheduler provider
-//! instead; see the library module for the full contract note.
+//! A single fixture file serves every `axdevice` test surface, so the
+//! `MutexOps`/`ContextOps`/`SpinOps` implementations exist exactly once per
+//! test binary:
+//!
+//! * the crate's own unit tests include it through
+//!   `#[cfg(test)] #[path = "../tests/common/mod.rs"] mod host_lock_provider;`
+//! * each integration test includes it through `mod common;`
+//!
+//! Production links the native scheduler provider instead: `MutexOps` is a
+//! scheduler-aware PI mutex, and `ContextOps`/`SpinOps` own real IRQ and
+//! preemption state. A host test binary has no scheduled task and no hardware
+//! IRQ source, so this fixture links a genuine blocking `std::sync::Mutex` +
+//! `Condvar` `MutexOps` plus formal primitive-boundary `ContextOps`/`SpinOps`
+//! helpers. It proves borrow, locking and blocking contracts only: it models no
+//! hardware IRQ, no preemption and no PI donate/runqueue behaviour, which stay a
+//! root/board QEMU concern. No production code path depends on this fixture and
+//! the production mutex backend is never replaced by a spin loop here.
+//!
+//! # Companion lifetime
+//!
+//! Each `ax_sync::Mutex` gets one `HostSleepMutex` companion, addressed by its
+//! mutex storage address. The companion is inserted into `COMPANIONS` on the
+//! first `acquire` (or `try_acquire` probe) and removed by `MutexOps::destroy`,
+//! which the `ax_sync` `Mutex` wrapper calls exactly once from its `Drop`, with
+//! no live guard and no waiter. Removing it on `unlock` instead would strand a
+//! waiter already queued on the companion condvar, so `destroy` is the only
+//! race-free cleanup point. The table is therefore bounded by the number of
+//! live mutexes; a mutex that is never dropped (a `static` or a deliberately
+//! leaked instance) keeps its single entry for the process lifetime.
 
 use core::{
     panic::Location,

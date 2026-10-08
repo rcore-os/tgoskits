@@ -55,7 +55,7 @@ impl GicV3Native {
             _ if is_private_register(offset) => self
                 .inner
                 .state
-                .lock()
+                .lock_irqsave()
                 .redistributor(vcpu, "read GICv2 private Distributor register")?
                 .read_private_register(offset, width, &self.inner.config),
             _ if (GICD_ITARGETSR..GICD_ITARGETSR + GICV2_MAX_INTIDS).contains(&offset) => {
@@ -189,7 +189,7 @@ impl GicV3Native {
             GICC_CTLR => {
                 self.inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .redistributor_mut(vcpu, "write GICC_CTLR")?
                     .cpu_interface_mut()
                     .set_v2_control(value as u32);
@@ -198,7 +198,7 @@ impl GicV3Native {
             GICC_PMR => {
                 self.inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .redistributor_mut(vcpu, "write GICC_PMR")?
                     .cpu_interface_mut()
                     .set_v2_priority_mask(value as u8);
@@ -207,7 +207,7 @@ impl GicV3Native {
             GICC_BPR | GICC_ABPR => {
                 self.inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .redistributor_mut(vcpu, "write GICC_BPR")?
                     .cpu_interface_mut()
                     .set_v2_binary_point(value as u8);
@@ -500,7 +500,7 @@ impl GicV3Native {
         Ok(self
             .inner
             .state
-            .lock()
+            .lock_irqsave()
             .redistributor(vcpu, operation)?
             .cpu_interface()
             .clone())

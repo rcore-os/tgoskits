@@ -32,12 +32,6 @@ pub(crate) struct Aarch64VcpuIrqBinding {
 /// Typed VM-local service for vCPU attachment and physical-source lifecycle.
 pub(crate) struct Aarch64VgicRuntimeKey;
 
-/// Raw run-bound vCPU kick slot shared with the IRQ wake callback.
-///
-/// The callback shares only this raw slot, so an IRQ-reachable wake never
-/// transitively retains the runtime's task-context (sleepable) state.
-type RunKickSlot = RawSpinLock<Option<Arc<RunSignals>>>;
-
 impl ServiceKey for Aarch64VgicRuntimeKey {
     type Service = Aarch64VgicRuntime;
 
@@ -74,7 +68,7 @@ pub(crate) struct Aarch64VgicRuntime {
     /// the VGIC host-IRQ wake path, so the value uses a raw lock and the guard
     /// is released before the deferred kick is published. The wake callback
     /// shares only this raw slot, never the full runtime.
-    run: Arc<RunKickSlot>,
+    run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
 }
 
 impl Aarch64VgicRuntime {
@@ -294,7 +288,7 @@ impl Drop for Aarch64VgicRuntime {
 }
 
 struct Aarch64VcpuWake {
-    run: Arc<RunKickSlot>,
+    run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
     vm_id: VMId,
     vcpu_id: usize,
 }
@@ -323,7 +317,7 @@ impl GicV3VcpuWake for Aarch64VcpuWake {
 /// Publishes one deferred vCPU kick from a hard-IRQ or device callback.
 ///
 /// The raw guard is released before the deferred worker is notified.
-fn publish_irq_kick(run: &RunKickSlot, vcpu_id: usize) -> VgicResult {
+fn publish_irq_kick(run: &RawSpinLock<Option<Arc<RunSignals>>>, vcpu_id: usize) -> VgicResult {
     let signals = run.lock_irqsave().clone();
     let Some(signals) = signals else {
         return Err(VgicError::Backend {

@@ -115,7 +115,7 @@ impl ExecutionContext {
 
     /// Copies one RAM byte through the entry's pre-bound immutable decode view.
     /// This context cannot be cloned or escape the pinned publication scope.
-    #[cfg(any(test, not(target_arch = "aarch64")))]
+    #[cfg(any(test, target_arch = "x86_64"))]
     pub(crate) fn read_guest_byte(&self, address: GuestPhysAddr) -> Option<u8> {
         let memory = self.signals().decode_memory.load(Ordering::Acquire);
         // SAFETY: this execution is borrowed from the current CPU's scoped
@@ -558,11 +558,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         f: impl FnOnce(&mut Self) -> AxVmResult<T>,
     ) -> AxVmResult<T> {
         if self.state != from {
-            let current_state = self.state;
-            return ax_err!(
-                BadState,
-                format!("VCpu state is not {from:?}, but {current_state:?}")
-            );
+            return Err(AxVmError::VcpuState {
+                expected: from,
+                actual: self.state,
+            });
         }
 
         let result = f(self);
@@ -741,7 +740,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn inject_interrupt(&mut self, vector: usize) -> AxVmResult {
         self.arch_vcpu
             .inject_interrupt(vector)
-            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+            .map_err(|error| map_vcpu_backend_error("inject vCPU interrupt", error))
     }
 
     /// Injects an interrupt while preserving its trigger-mode metadata.
@@ -752,7 +751,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     ) -> AxVmResult {
         self.arch_vcpu
             .inject_interrupt_with_trigger(vector, trigger)
-            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+            .map_err(|error| map_vcpu_backend_error("inject vCPU interrupt", error))
     }
 
     /// Sets the guest return value.
@@ -943,7 +942,7 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
         } else {
             self.cpu_id = Some(cpu_id);
             self.arch.write(A::new(cpu_id).map_err(|error| {
-                map_host_backend_error("initialize per-CPU virtualization", error)
+                map_vcpu_backend_error("initialize per-CPU virtualization", error)
             })?);
             Ok(())
         }
@@ -970,14 +969,14 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
     pub fn hardware_enable(&mut self) -> AxVmResult {
         self.arch_checked_mut()
             .hardware_enable()
-            .map_err(|error| map_host_backend_error("enable hardware virtualization", error))
+            .map_err(|error| map_vcpu_backend_error("enable hardware virtualization", error))
     }
 
     /// Disables virtualization on the current CPU.
     pub fn hardware_disable(&mut self) -> AxVmResult {
         self.arch_checked_mut()
             .hardware_disable()
-            .map_err(|error| map_host_backend_error("disable hardware virtualization", error))
+            .map_err(|error| map_vcpu_backend_error("disable hardware virtualization", error))
     }
 }
 
@@ -989,45 +988,11 @@ impl<A: VmArchPerCpuOps> Drop for AxPerCpu<A> {
     }
 }
 
+/// Keeps the machine failure owned and allocation-free until context restoration.
 pub(crate) fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
     match error {
-        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
-        VmBackendError::InvalidData => AxVmError::vcpu(operation, error),
-        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
-        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
         VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
-        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
-            "vCPU backend",
-            format_args!("{operation} failed: {error}"),
-        ),
-    }
-}
-
-fn map_host_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
-    match error {
-        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
-        VmBackendError::InvalidData => AxVmError::host(operation, error),
-        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
-        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
-        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
-        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
-            "host virtualization backend",
-            format_args!("{operation} failed: {error}"),
-        ),
-    }
-}
-
-fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
-    match error {
-        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
-        VmBackendError::InvalidData => AxVmError::interrupt(operation, error),
-        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
-        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
-        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
-        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
-            "interrupt backend",
-            format_args!("{operation} failed: {error}"),
-        ),
+        source => AxVmError::Backend { operation, source },
     }
 }
 
@@ -1254,9 +1219,9 @@ mod tests {
     fn vcpu_backend_errors_keep_domain_context() {
         assert!(matches!(
             map_vcpu_backend_error("run vCPU", VmBackendError::InvalidState),
-            AxVmError::InvalidState {
+            AxVmError::Backend {
                 operation: "run vCPU",
-                ..
+                source: VmBackendError::InvalidState
             }
         ));
         assert!(matches!(
@@ -1267,9 +1232,9 @@ mod tests {
         ));
         assert!(matches!(
             map_vcpu_backend_error("bind vCPU", VmBackendError::ResourceBusy),
-            AxVmError::ResourceConflict {
-                resource: "vCPU backend",
-                ..
+            AxVmError::Backend {
+                operation: "bind vCPU",
+                source: VmBackendError::ResourceBusy
             }
         ));
     }
@@ -1277,23 +1242,23 @@ mod tests {
     #[test]
     fn host_backend_errors_keep_domain_context() {
         assert!(matches!(
-            map_host_backend_error(
+            map_vcpu_backend_error(
                 "enable hardware virtualization",
                 VmBackendError::Unsupported
             ),
-            AxVmError::Unsupported {
+            AxVmError::Backend {
                 operation: "enable hardware virtualization",
-                ..
+                source: VmBackendError::Unsupported
             }
         ));
         assert!(matches!(
-            map_host_backend_error(
+            map_vcpu_backend_error(
                 "initialize per-CPU virtualization",
                 VmBackendError::InvalidData
             ),
-            AxVmError::Host {
+            AxVmError::Backend {
                 operation: "initialize per-CPU virtualization",
-                ..
+                source: VmBackendError::InvalidData
             }
         ));
     }
@@ -1301,17 +1266,17 @@ mod tests {
     #[test]
     fn interrupt_backend_errors_keep_domain_context() {
         assert!(matches!(
-            map_interrupt_backend_error("inject vCPU interrupt", VmBackendError::InvalidData),
-            AxVmError::Interrupt {
+            map_vcpu_backend_error("inject vCPU interrupt", VmBackendError::InvalidData),
+            AxVmError::Backend {
                 operation: "inject vCPU interrupt",
-                ..
+                source: VmBackendError::InvalidData
             }
         ));
         assert!(matches!(
-            map_interrupt_backend_error("inject vCPU interrupt", VmBackendError::ResourceBusy),
-            AxVmError::ResourceConflict {
-                resource: "interrupt backend",
-                ..
+            map_vcpu_backend_error("inject vCPU interrupt", VmBackendError::ResourceBusy),
+            AxVmError::Backend {
+                operation: "inject vCPU interrupt",
+                source: VmBackendError::ResourceBusy
             }
         ));
     }

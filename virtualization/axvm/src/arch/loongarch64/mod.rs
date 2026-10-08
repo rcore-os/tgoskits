@@ -44,8 +44,26 @@ pub(crate) struct LoongArchEntry {
     run: irq::LoongArchRunPort,
 }
 
-/// Durable exit value interpreted only after the hardware binding is retired.
-pub(crate) struct LoongArchExit {
+/// Backend exit awaiting the task-context finish stage.
+///
+/// `capture_exit` snapshots the raw LVZ exit plus the host CPU-local operands the
+/// software emulator needs, while the backend is still bound. Software CSR and
+/// guest-timer interpretation runs in `finish_exit`, after the engine has
+/// unloaded the backend and restored the host CPU and IRQs, so no host timer
+/// registration or other sleepable host service runs inside the pinned
+/// guest-entry scope and no task-stage read touches the wrong CPU's local state.
+pub(crate) enum LoongArchExit {
+    /// Raw LVZ exit plus its pinned host-local operand snapshot.
+    Machine {
+        exit: ax_cpu::virtualization::Exit,
+        host: LoongArchPinnedHost,
+    },
+    /// Fully interpreted, owned record consumed by `handle_exit`.
+    Record(LoongArchExitRecord),
+}
+
+/// Owned LoongArch exit record plus the run-bound capabilities it needs.
+pub(crate) struct LoongArchExitRecord {
     kind: LoongArchExitKind,
     pch_pic: Arc<dyn axdevice::PchPicOutputPort>,
     run: irq::LoongArchRunPort,
@@ -183,6 +201,29 @@ impl ArchOps for LoongArch64Arch {
         Ok(())
     }
 
+    /// Quiesces the guest timer producer while preserving its logical deadline.
+    fn suspend_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>) -> AxVmResult {
+        vcpu.get_arch_vcpu()
+            .0
+            .suspend_timer()
+            .map_err(|error| AxVmError::vcpu("suspend LoongArch timer", error))
+    }
+
+    /// Re-arms a suspended guest timer before guest admission reopens.
+    fn resume_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>) -> AxVmResult {
+        vcpu.get_arch_vcpu()
+            .0
+            .resume_timer()
+            .map_err(|error| AxVmError::vcpu("resume LoongArch timer", error))
+    }
+
+    fn quiet_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>) -> AxVmResult {
+        vcpu.get_arch_vcpu()
+            .0
+            .quiet_timer()
+            .map_err(|error| AxVmError::vcpu("quiet LoongArch timer", error))
+    }
+
     fn before_guest(
         vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
         _entry: &Self::Entry,
@@ -212,12 +253,64 @@ impl ArchOps for LoongArch64Arch {
         entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<Self::Exit> {
-        let kind = capture_loongarch_exit(vcpu.get_arch_vcpu(), exit)?;
-        Ok(LoongArchExit {
+        match exit {
+            // The LVZ backend reports every guest exit through `run_machine`.
+            // Only the raw record plus the pinned host-local operands are taken
+            // here; `finish_exit` owns the software interpretation.
+            LoongArchVmExit::Machine(machine_exit) => {
+                let host = vcpu.get_arch_vcpu().capture_pinned_host(&machine_exit);
+                Ok(LoongArchExit::Machine {
+                    exit: machine_exit,
+                    host,
+                })
+            }
+            // A pre-decoded exit produced outside the LVZ interpreter path is
+            // already durable; no further backend work is pending for it.
+            decoded => {
+                let kind = interpret_loongarch_exit(vcpu.get_arch_vcpu(), decoded)?;
+                Ok(LoongArchExit::Record(LoongArchExitRecord {
+                    kind,
+                    pch_pic: Arc::clone(&entry.pch_pic),
+                    run: entry.run.clone(),
+                }))
+            }
+        }
+    }
+
+    /// Interprets software-only exits after the backend has been unloaded.
+    ///
+    /// The engine calls this outside `with_engine_scope`, so guest CSR
+    /// emulation and its `H::register_timer`/`H::cancel_timer` calls run in
+    /// plain task context instead of inside the pinned guest-entry scope. Every
+    /// host CPU-local read and the native IOCSR passthrough write were resolved
+    /// while the backend was pinned and are carried in `LoongArchPinnedHost`, so
+    /// this stage never reads or writes the CPUCFG or IOCSR bank of the CPU it
+    /// happens to run on. MMIO decoding still reads only the saved guest context
+    /// and faulting instruction.
+    fn finish_exit(
+        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        entry: &Self::Entry,
+        exit: Self::Exit,
+    ) -> AxVmResult<Self::Exit> {
+        let (machine_exit, pinned) = match exit {
+            LoongArchExit::Machine {
+                exit: machine_exit,
+                host,
+            } => (machine_exit, host),
+            // Already durable; nothing further to interpret.
+            record => return Ok(record),
+        };
+        let backend = vcpu.get_arch_vcpu();
+        let interpreted = backend
+            .0
+            .process_exit(machine_exit, pinned)
+            .map_err(|error| AxVmError::vcpu("interpret LVZ exit", error))?;
+        let kind = interpret_loongarch_exit(backend, interpreted)?;
+        Ok(LoongArchExit::Record(LoongArchExitRecord {
             kind,
             pch_pic: Arc::clone(&entry.pch_pic),
             run: entry.run.clone(),
-        })
+        }))
     }
 
     fn handle_exit(
@@ -225,7 +318,12 @@ impl ArchOps for LoongArch64Arch {
         vcpu_id: usize,
         services: &RunServices,
     ) -> AxVmResult<VcpuAction<Self::Completion, GuestRequest>> {
-        let LoongArchExit { kind, pch_pic, run } = exit;
+        let LoongArchExit::Record(LoongArchExitRecord { kind, pch_pic, run }) = exit else {
+            return Err(AxVmError::vcpu(
+                "interpret LVZ exit",
+                "exit reached the handler without the task-context finish stage",
+            ));
+        };
         match kind {
             LoongArchExitKind::Hypercall { nr, args } => {
                 // The shared exit interpreter already produces this
@@ -234,7 +332,7 @@ impl ArchOps for LoongArch64Arch {
                     services,
                     vcpu_id,
                     HypercallExit { nr, args },
-                    HyperCallAbi::Generic,
+                    HyperCallAbi::native(),
                 )
             }
             LoongArchExitKind::MmioRead {
@@ -389,18 +487,17 @@ impl ArchOps for LoongArch64Arch {
     }
 }
 
-fn capture_loongarch_exit(
+fn interpret_loongarch_exit(
     backend: &mut AxvmLoongArchVcpu,
     exit: LoongArchVmExit,
 ) -> AxVmResult<LoongArchExitKind> {
     match exit {
-        LoongArchVmExit::Machine(machine_exit) => {
-            let interpreted = backend
-                .0
-                .process_exit(machine_exit)
-                .map_err(|error| AxVmError::vcpu("interpret LVZ exit", error))?;
-            capture_loongarch_exit(backend, interpreted)
-        }
+        // The LVZ interpreter never nests a raw machine exit inside an
+        // interpreted one; `finish_exit` unwraps it before this runs.
+        LoongArchVmExit::Machine(_) => Err(AxVmError::vcpu(
+            "interpret LVZ exit",
+            "nested LVZ machine exit reached the software interpreter",
+        )),
         LoongArchVmExit::Hypercall { nr, args } => Ok(LoongArchExitKind::Hypercall { nr, args }),
         LoongArchVmExit::MmioRead {
             addr,
@@ -524,7 +621,7 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
 
     fn cancel_timer(handle: Self::TimerHandle) -> LoongArchVcpuResult {
         default_host()
-            .cancel_timer(handle)
+            .cancel_timer_and_wait(handle)
             .map(|_| ())
             .map_err(|_| LoongArchVcpuError::TimerUnavailable)
     }
@@ -557,6 +654,16 @@ impl AxvmLoongArchVcpu {
         access_flags: LoongArchAccessFlags,
     ) -> Option<LoongArchVmExit> {
         self.0.decode_mmio_fault(addr, access_flags)
+    }
+
+    /// Resolves the pinned host CPU-local operands of one raw LVZ exit.
+    ///
+    /// Runs inside the pinned guest-entry scope, so it may read and write this
+    /// CPU's CPUCFG and IOCSR banks directly. It performs only those bounded
+    /// local accesses: no timer registration, allocation, device service or
+    /// sleeping lock is touched while the backend is bound.
+    fn capture_pinned_host(&self, exit: &ax_cpu::virtualization::Exit) -> LoongArchPinnedHost {
+        self.0.capture_pinned_host(exit)
     }
 }
 

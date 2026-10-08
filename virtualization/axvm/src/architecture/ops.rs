@@ -56,6 +56,22 @@ pub(crate) trait ArchOps {
 
     /// All task-side preparation finishes before CPU binding and IRQ masking.
     fn prepare_vcpu(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult;
+    /// Quiesces per-vCPU task producers while preserving their guest state.
+    fn suspend_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        Ok(())
+    }
+
+    /// Restarts quiesced per-vCPU producers before opening guest admission.
+    fn resume_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        Ok(())
+    }
+
+    /// Stops task-side vCPU producers before returning or releasing a backend.
+    /// Architectures without a per-vCPU producer need no retirement work.
+    fn quiet_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        Ok(())
+    }
+
     fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult;
     fn complete(
         vcpu: &mut AxVCpu<Self::VCpu>,

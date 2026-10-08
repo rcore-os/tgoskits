@@ -11,8 +11,9 @@ pub(crate) use capabilities::{
     BootImagePlatform, GuestBootPlatform, MachinePlatform, minimum_recorded_target_cpu_capability,
     unsupported_target_cpu_capability,
 };
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) use exit::handle_hypercall;
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(target_arch = "riscv64")]
 pub(crate) use exit::{try_handle_mmio_read, try_handle_mmio_write};
 pub(crate) use ops::ArchOps;
 pub(crate) use types::{HypercallExit, MmioReadExit, MmioWriteExit};

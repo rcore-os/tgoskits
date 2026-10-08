@@ -279,23 +279,8 @@ impl VmHandle {
     /// Returns an error when the command entry is closed (for a command other
     /// than destroy) or the operation sequence is exhausted.
     pub fn destroy(&self) -> AxVmResult<VmOperation<()>> {
-        // A stale handle to an already-destroyed instance reports a fresh
-        // accepted-and-completed success instead of `EntryClosed`. A missing
-        // snapshot only means creation is still pending; it never panics here and
-        // falls through to the normal command path.
-        let already_destroyed = {
-            let snapshot = self.shared.snapshot.lock_unpoisoned();
-            snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.state == VmStatus::Destroyed)
-        };
-        if already_destroyed {
-            // The snapshot guard is released before waking any observer.
-            let (operation, completion) = self.shared.new_operation()?;
-            completion.accept();
-            completion.finish(Ok(()));
-            return Ok(operation);
-        }
+        // Every observer goes through the exit observation. The owner's final
+        // snapshot may already say Destroyed while its task still holds resources.
         let (operation, completion) = self.shared.new_operation()?;
         self.shared.dispatch_command(Command::Destroy(completion))?;
         Ok(operation)
@@ -760,7 +745,7 @@ pub(crate) enum Command {
     /// A guest reset remains valid only for the run that requested it.
     GuestReset {
         run: RunId,
-        completion: OperationCompletion<RunId>,
+        completion: OperationCompletion<usize>,
     },
     /// Destroy the instance and unregister it.
     Destroy(OperationCompletion<()>),
@@ -1140,7 +1125,7 @@ impl ControlShared {
         self.is_ready().then(|| self.handle())
     }
 
-    fn dispatch_command(&self, command: Command) -> AxVmResult<()> {
+    pub(crate) fn dispatch_command(&self, command: Command) -> AxVmResult<()> {
         let mut mailbox = self.mailbox.lock_unpoisoned();
         if !mailbox.closed {
             mailbox.queue.push_back(ControlMessage::Command(command));
@@ -1394,9 +1379,50 @@ mod tests {
         shared.close_for_destroy(&exit);
         // A destroy accepted after the entry closed but before the exit callback
         // must merge, not observe `EntryClosed`.
-        let operation = shared.handle().destroy().unwrap();
+        // The owner publishes its final state before the exit callback. That
+        // observation cannot prove resource release or finish another destroy.
+        shared.publish(VmSnapshot {
+            key: shared.key(),
+            vm_id: shared.key().vm_id(),
+            name: "test instance".into(),
+            state: VmStatus::Destroyed,
+            run: None,
+            current_operation: None,
+            last_failure: None,
+            last_stop_reason: None,
+            cpu: CpuObservation {
+                vcpu_num: 0,
+                running_vcpu_count: 0,
+            },
+            memory: MemoryObservation {
+                nested_page_table_root: None,
+                total_bytes: 0,
+                regions: vec![],
+            },
+            device: DeviceObservation { device_count: 0 },
+            vcpu: vec![],
+            description: VmConfigSnapshot {
+                bsp_entry: GuestPhysAddr::from(0),
+                ap_entry: GuestPhysAddr::from(0),
+                image: VMImageConfig::default(),
+                address_space_policy: AddressSpacePolicy::default(),
+                vcpu_affinities: vec![],
+                passthrough_devices: vec![],
+                passthrough_addresses: vec![],
+                passthrough_irqs: vec![],
+            },
+            entry_count: 0,
+            park_count: 0,
+        });
+        let mut operation = shared.handle().destroy().unwrap();
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            std::future::Future::poll(std::pin::Pin::new(&mut operation), &mut context)
+                .is_pending()
+        );
         exit.on_task_exit();
         assert_eq!(operation.wait(), Ok(()));
+        assert_eq!(shared.handle().destroy().unwrap().wait(), Ok(()));
     }
 
     #[test]

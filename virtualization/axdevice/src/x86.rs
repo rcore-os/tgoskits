@@ -10,7 +10,9 @@ use core::marker::PhantomData;
 use axdevice_base::*;
 use x86_vlapic::*;
 
-use crate::{DeviceManagerError, DeviceManagerResult, ServiceCardinality, ServiceKey};
+use crate::{
+    DeviceLifecycle, DeviceManagerError, DeviceManagerResult, ServiceCardinality, ServiceKey,
+};
 
 #[path = "x86/acpi_pm_timer.rs"]
 mod acpi_pm_timer;
@@ -329,6 +331,34 @@ impl<H: X86VlapicHostOps + 'static> Device for X86PitDevice<H> {
             .handle_write(port, x86_access_width(access.width()), value as usize)
             .map(|_| ())
             .map_err(|_| DeviceError::Internal)
+    }
+}
+
+impl<H: X86VlapicHostOps + 'static> DeviceLifecycle for X86PitDevice<H> {
+    fn stop(&self) -> DeviceManagerResult {
+        self.inner
+            .stop()
+            .map_err(|_| DeviceManagerError::from(DeviceError::Internal))
+    }
+    /// Retires the IRQ0 host timer and the guest-visible 8254 state.
+    fn reset(&self) -> DeviceManagerResult {
+        self.inner
+            .stop()
+            .map_err(|_| DeviceManagerError::from(DeviceError::Internal))
+    }
+
+    /// Quiesces the IRQ0 host timer before a task-side VM pause is ACKed.
+    fn suspend(&self) -> DeviceManagerResult {
+        self.inner
+            .suspend()
+            .map_err(|_| DeviceManagerError::from(DeviceError::Internal))
+    }
+
+    /// Reinstalls the IRQ0 host timer before guest entry reopens.
+    fn resume(&self) -> DeviceManagerResult {
+        self.inner
+            .resume()
+            .map_err(|_| DeviceManagerError::from(DeviceError::Internal))
     }
 }
 

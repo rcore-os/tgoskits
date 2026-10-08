@@ -34,7 +34,8 @@ mod device;
 mod error;
 mod fw_cfg;
 mod graph;
-#[cfg(any(test, doctest))]
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
 mod host_lock_provider;
 mod interrupt;
 mod model;

@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::{
     X86TimerAction, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     consts::RESET_LVT_REG,
-    host::{self, X86VlapicHostOps},
+    host::{self, X86VlapicHostOps, X86VlapicRuntimeOps},
     regs::lvt::{
         LVT_TIMER::{self, TimerMode::Value as TimerMode},
         LvtTimerRegisterLocal,
@@ -67,11 +67,16 @@ pub struct ApicTimer<H: X86VlapicHostOps> {
     // internal states
     divide_shift: u8,
 
+    /// Set while a VM suspend quiesced a live host arm that still owes a
+    /// resume. Task-side only; the guest registers and the canonical
+    /// deadline/interval/pending live in `shared`.
+    suspended: bool,
+
     runtime: H::Runtime,
     shared: Arc<ApicTimerShared<H::Runtime>>,
 }
 
-struct ApicTimerShared<R> {
+struct ApicTimerShared<R: X86VlapicRuntimeOps> {
     registration: Arc<TimerRegistration<R>>,
     lvt_timer_register: AtomicU32,
     interval_ns: AtomicU64,
@@ -87,6 +92,7 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
             divide_configuration_register: 0,                              // divide by 2
 
             divide_shift: 1, /* as `divide_configuration_register` is 0, the shift is 1 (divide by 2) */
+            suspended: false,
             shared: Arc::new(ApicTimerShared {
                 registration: Arc::new(TimerRegistration::new()),
                 lvt_timer_register: AtomicU32::new(RESET_LVT_REG),
@@ -203,8 +209,9 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
 
     /// Check whether the timer is started.
     pub fn is_started(&self) -> bool {
-        // these two conditions are equivalent actually, we check both for clarity and robustness
-        self.initial_count_register > 0 && self.shared.registration.is_armed()
+        // A completed one-shot callback leaves a retained host handle but no
+        // live arm, so the guest-visible running state keys on the arm phase.
+        self.initial_count_register > 0 && self.shared.registration.is_active()
     }
 
     /// Returns whether an unmasked timer edge is waiting for vCPU entry.
@@ -256,16 +263,66 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
     }
 
     pub fn stop_timer(&mut self) -> X86VlapicResult {
-        // TODO: maybe disable irq here?
+        // Cancel before retiring the guest-visible state: a host cancellation
+        // failure must leave both the retained handle and the deadline/interval
+        // intact so the caller can retry instead of dropping a live timer. The
+        // cancel barrier also covers a callback that already completed but whose
+        // host handle has not been reclaimed yet, so "stopped" really means the
+        // producer is quiet.
+        self.shared
+            .registration
+            .invalidate_and_cancel(&self.runtime)?;
         self.shared.interval_ns.store(0, Ordering::Release);
         self.shared.deadline_ns.store(0, Ordering::Release);
+        self.shared.pending.store(0, Ordering::Release);
+        self.suspended = false;
+        Ok(())
+    }
 
-        let cancellation = self
+    /// Quiesces the host timer for a task-side VM suspend.
+    ///
+    /// The guest LVT/ICR/DCR registers, the canonical deadline and interval,
+    /// and any already published pending edge are all retained, so
+    /// [`Self::resume_timer`] reinstalls the same timer instead of restarting
+    /// the countdown. A host cancellation failure keeps the arm and returns the
+    /// error so the caller retries rather than silently dropping the handle.
+    ///
+    /// The full cancel barrier runs even when the callback already completed,
+    /// so the pause ACK only happens once no callback or payload reclamation is
+    /// still in flight. A completed one-shot owes no resume.
+    pub fn suspend_timer(&mut self) -> X86VlapicResult {
+        if self.suspended {
+            return Ok(());
+        }
+        let resume_owed = self
             .shared
             .registration
-            .invalidate_and_cancel(&self.runtime);
-        self.shared.pending.store(0, Ordering::Release);
-        cancellation
+            .invalidate_and_cancel(&self.runtime)?;
+        self.suspended = resume_owed;
+        Ok(())
+    }
+
+    /// Reinstalls the host timer quiesced by [`Self::suspend_timer`].
+    ///
+    /// The retained absolute deadline is reused, so a deadline that expired
+    /// while the VM was suspended fires one edge promptly instead of being
+    /// pushed into the future. Reinstalling happens at most once per suspend;
+    /// a second resume is a no-op, and a registration failure keeps the
+    /// suspend outstanding for retry.
+    pub fn resume_timer(&mut self) -> X86VlapicResult {
+        if !self.suspended {
+            return Ok(());
+        }
+        if self.shared.registration.has_registration() {
+            self.suspended = false;
+            return Ok(());
+        }
+        let deadline_ns = self.shared.deadline_ns.load(Ordering::Acquire);
+        if deadline_ns != 0 {
+            schedule_apic_timer::<H>(deadline_ns, self.runtime.clone(), Arc::clone(&self.shared))?;
+        }
+        self.suspended = false;
+        Ok(())
     }
 
     /// Whether the timer mode is periodic.
@@ -281,16 +338,16 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
 
 impl<H: X86VlapicHostOps> Drop for ApicTimer<H> {
     fn drop(&mut self) {
-        self.shared.interval_ns.store(0, Ordering::Release);
-        self.shared.deadline_ns.store(0, Ordering::Release);
-        self.shared.pending.store(0, Ordering::Release);
-        if let Err(error) = self
-            .shared
-            .registration
-            .invalidate_and_cancel(&self.runtime)
-        {
-            log::warn!("failed to cancel x86 APIC timer during teardown: {error:?}");
-        }
+        // The task-side lifecycle must quiesce this producer before the owning
+        // backend is retired: `stop_timer`/`suspend_timer` return cancellation
+        // failures so the caller retries. Reaching drop with a live arm is a
+        // contract violation that must not be hidden behind a warn-and-drop.
+        // A completed one-shot may still carry a retained (retired) handle; that
+        // is not a live producer and needs no cancellation.
+        assert!(
+            !self.shared.registration.is_active(),
+            "x86 APIC timer dropped while its host registration was live",
+        );
     }
 }
 
@@ -346,6 +403,12 @@ fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) ->
     deadline_ns.saturating_add(interval_ns.saturating_mul(missed_intervals))
 }
 
+// Component-protocol tests for the vLAPIC timer state machine.
+//
+// The host timer below is a deterministic registration/cancel/deadline ledger
+// substitute, not a hardware timer: it proves the component protocol (retained
+// pending, cancel-failure retry, resume-once) and deliberately makes no claim
+// about native IRQ delivery, which the owner verifies on QEMU.
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -357,9 +420,10 @@ mod tests {
         vec::Vec,
     };
     use crate::{
-        X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerAction, X86TimerCallback,
-        X86VcpuId, X86VlapicHostOps, X86VlapicResult, X86VlapicRuntimeOps, X86VmId,
-        regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode, timer::ApicTimer,
+        EmulatedPit, X86AccessWidth, X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86Port,
+        X86TimerAction, X86TimerCallback, X86VcpuId, X86VlapicHostOps, X86VlapicResult,
+        X86VlapicRuntimeOps, X86VmId, regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode,
+        timer::ApicTimer,
     };
 
     struct DummyHost;
@@ -373,6 +437,8 @@ mod tests {
     struct TestTimerState {
         callbacks: Vec<Option<X86TimerCallback>>,
         cancelled: Vec<usize>,
+        deadlines: Vec<u64>,
+        fail_cancels: usize,
         block_time_read: bool,
         time_read_started: bool,
         allow_time_read: bool,
@@ -381,6 +447,8 @@ mod tests {
     static TEST_TIMER_STATE: Mutex<TestTimerState> = Mutex::new(TestTimerState {
         callbacks: Vec::new(),
         cancelled: Vec::new(),
+        deadlines: Vec::new(),
+        fail_cancels: 0,
         block_time_read: false,
         time_read_started: false,
         allow_time_read: false,
@@ -401,6 +469,8 @@ mod tests {
             let mut state = TEST_TIMER_STATE.lock().unwrap();
             state.callbacks.clear();
             state.cancelled.clear();
+            state.deadlines.clear();
+            state.fail_cancels = 0;
             state.block_time_read = false;
             state.time_read_started = false;
             state.allow_time_read = false;
@@ -423,6 +493,14 @@ mod tests {
 
         fn registration_count() -> usize {
             TEST_TIMER_STATE.lock().unwrap().callbacks.len()
+        }
+
+        fn deadlines() -> Vec<u64> {
+            TEST_TIMER_STATE.lock().unwrap().deadlines.clone()
+        }
+
+        fn fail_next_cancel() {
+            TEST_TIMER_STATE.lock().unwrap().fail_cancels += 1;
         }
 
         fn block_time_read() {
@@ -520,6 +598,11 @@ mod tests {
             self.register_timer(deadline_nanos, callback)
         }
 
+        fn wait_timer_progress(&self) {
+            // This fixture never keeps an arm registered, so cancellation never
+            // needs to wait for a callback.
+        }
+
         fn cancel_timer(&self, _handle: Self::TimerHandle) -> X86VlapicResult {
             Ok(())
         }
@@ -593,11 +676,12 @@ mod tests {
 
         fn register_timer(
             &self,
-            _deadline_nanos: u64,
+            deadline_nanos: u64,
             callback: X86TimerCallback,
         ) -> X86VlapicResult<Self::TimerHandle> {
             let mut state = TEST_TIMER_STATE.lock().unwrap();
             state.callbacks.push(Some(callback));
+            state.deadlines.push(deadline_nanos);
             Ok(state.callbacks.len())
         }
 
@@ -609,8 +693,18 @@ mod tests {
             self.register_timer(deadline_nanos, callback)
         }
 
+        fn wait_timer_progress(&self) {
+            // Real task-context yield, never a spin: a cancel barrier may be
+            // waiting for this test's in-flight callback thread.
+            thread::yield_now();
+        }
+
         fn cancel_timer(&self, token: Self::TimerHandle) -> X86VlapicResult {
             let mut state = TEST_TIMER_STATE.lock().unwrap();
+            if state.fail_cancels > 0 {
+                state.fail_cancels -= 1;
+                return Err(crate::X86VlapicError::TimerUnavailable);
+            }
             state.cancelled.push(token);
             state.callbacks[token - 1].take();
             Ok(())
@@ -798,5 +892,267 @@ mod tests {
             "timer stop returned before its claimed callback completed"
         );
         cancellation.unwrap();
+        assert_eq!(
+            TimerHost::cancelled(),
+            self::std::vec![1],
+            "the claimed callback's handle must be cancelled exactly once after it retires",
+        );
+        assert!(
+            !timer.lock().unwrap().is_started(),
+            "a completed stop must leave the guest timer stopped",
+        );
+    }
+
+    #[test]
+    fn suspend_keeps_pending_and_resume_reinstalls_at_most_once() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let mut timer = ApicTimer::<TimerHost>::new(
+            TimerRuntime {
+                vm_id: 1,
+                vcpu_id: 0,
+            },
+            1,
+            0,
+        );
+        // Periodic, unmasked, vector 0x40: the arm stays live across expiry.
+        timer.write_lvt(0x20040).unwrap();
+        timer.write_icr(1).unwrap();
+
+        TimerHost::fire(1, 2);
+        assert!(timer.has_pending_interrupt());
+        let live_deadline = TimerHost::deadlines()[0];
+
+        timer.suspend_timer().unwrap();
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1]);
+        assert!(
+            timer.has_pending_interrupt(),
+            "a quiesced timer must retain its published pending edge",
+        );
+
+        timer.resume_timer().unwrap();
+        timer.resume_timer().unwrap();
+        assert_eq!(
+            TimerHost::registration_count(),
+            2,
+            "resume must reinstall exactly one host registration",
+        );
+        assert!(
+            TimerHost::deadlines()[1] > live_deadline,
+            "resume must reuse the retained advanced deadline, not restart the countdown",
+        );
+        assert!(
+            timer.has_pending_interrupt(),
+            "resume must not discard the retained pending edge",
+        );
+
+        // The reinstalled registration is the live producer again.
+        TimerHost::fire(2, live_deadline);
+        timer.stop_timer().unwrap();
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1, 2]);
+    }
+
+    #[test]
+    fn stop_keeps_state_until_a_failed_cancel_is_retried() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let mut timer = ApicTimer::<TimerHost>::new(
+            TimerRuntime {
+                vm_id: 1,
+                vcpu_id: 0,
+            },
+            1,
+            0,
+        );
+        timer.write_lvt(0x20040).unwrap();
+        timer.write_icr(7).unwrap();
+        assert!(timer.is_started());
+
+        TimerHost::fail_next_cancel();
+        assert!(
+            timer.stop_timer().is_err(),
+            "a failed host cancel must be reported, not dropped",
+        );
+        assert!(
+            timer.is_started(),
+            "a failed cancel must keep the live arm for retry",
+        );
+        assert_eq!(
+            timer.read_icr(),
+            7,
+            "a failed cancel must keep the guest timer state",
+        );
+        assert!(
+            TimerHost::cancelled().is_empty(),
+            "a failed cancel must not retire the host registration",
+        );
+
+        timer.stop_timer().unwrap();
+        assert!(!timer.is_started());
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1]);
+    }
+
+    /// A callback that completes before any task-side cancel must not erase the
+    /// registration: the stable host handle is retained so a later stop still
+    /// observes the real host retirement instead of falsely claiming quiet.
+    #[test]
+    fn completed_one_shot_keeps_its_handle_until_a_cancel_observes_retirement() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let mut timer = ApicTimer::<TimerHost>::new(
+            TimerRuntime {
+                vm_id: 1,
+                vcpu_id: 0,
+            },
+            1,
+            0,
+        );
+        // One-shot, unmasked, vector 0x40.
+        timer.write_lvt(0x40).unwrap();
+        timer.write_icr(1).unwrap();
+        assert!(timer.is_started());
+
+        // The callback completes and retires the arm; the handle stays owned.
+        TimerHost::fire(1, 2);
+        assert!(
+            !timer.is_started(),
+            "a completed one-shot must leave no live arm",
+        );
+        assert!(timer.has_pending_interrupt());
+
+        // Stopping still has to cancel the retained handle and reclaim it.
+        timer.stop_timer().unwrap();
+        assert_eq!(
+            TimerHost::cancelled(),
+            self::std::vec![1],
+            "a completed callback must not be mistaken for host quiescence",
+        );
+        assert!(!timer.has_pending_interrupt());
+    }
+
+    /// New guest programming must retire a completed arm behind the full cancel
+    /// barrier before installing exactly one fresh registration.
+    #[test]
+    fn reprogram_after_a_completed_arm_cancels_the_retained_handle_first() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let mut timer = ApicTimer::<TimerHost>::new(
+            TimerRuntime {
+                vm_id: 1,
+                vcpu_id: 0,
+            },
+            1,
+            0,
+        );
+        timer.write_lvt(0x40).unwrap();
+        timer.write_icr(1).unwrap();
+        TimerHost::fire(1, 2);
+        assert!(!timer.is_started());
+
+        timer.write_icr(4).unwrap();
+        assert!(timer.is_started());
+        assert_eq!(
+            TimerHost::cancelled(),
+            self::std::vec![1],
+            "the completed arm must be cancelled before the new arm is installed",
+        );
+        assert_eq!(
+            TimerHost::registration_count(),
+            2,
+            "reprogram must install exactly one fresh host registration",
+        );
+
+        timer.stop_timer().unwrap();
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1, 2]);
+    }
+
+    /// The PIT core shares the same host-timer protocol and reuses this ledger
+    /// harness instead of introducing a parallel constructor or substitute.
+    #[test]
+    fn pit_core_suspends_resumes_and_stops_through_the_same_lifecycle() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let pit = EmulatedPit::<TimerHost>::new_for_vcpu_with_runtime(
+            TimerRuntime {
+                vm_id: 1,
+                vcpu_id: 0,
+            },
+            1,
+            0,
+        );
+
+        // Channel 0, low-then-high, rate generator: a live periodic IRQ0.
+        pit.handle_write(X86Port::new(0x43), X86AccessWidth::Byte, 0x34)
+            .unwrap();
+        pit.handle_write(X86Port::new(0x40), X86AccessWidth::Byte, 0x00)
+            .unwrap();
+        pit.handle_write(X86Port::new(0x40), X86AccessWidth::Byte, 0x00)
+            .unwrap();
+        assert_eq!(TimerHost::registration_count(), 1);
+        let live_deadline = TimerHost::deadlines()[0];
+
+        TimerHost::fire(1, 1);
+        pit.suspend().unwrap();
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1]);
+
+        pit.resume().unwrap();
+        pit.resume().unwrap();
+        assert_eq!(
+            TimerHost::registration_count(),
+            2,
+            "PIT resume must reinstall exactly one host registration",
+        );
+        assert!(
+            TimerHost::deadlines()[1] > live_deadline,
+            "PIT resume must reuse the callback-advanced deadline, not the program-time reload",
+        );
+
+        pit.stop().unwrap();
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1, 2]);
+    }
+
+    /// A completed one-shot IRQ0 registration must be retired behind the cancel
+    /// barrier before the guest can program a fresh countdown, so a stale host
+    /// handle is never leaked or double-owned.
+    #[test]
+    fn pit_reprogram_after_a_completed_arm_cancels_the_retained_handle_first() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let pit = EmulatedPit::<TimerHost>::new_for_vcpu_with_runtime(
+            TimerRuntime {
+                vm_id: 1,
+                vcpu_id: 0,
+            },
+            1,
+            0,
+        );
+
+        // Channel 0, low-then-high, mode 0 (interrupt on terminal count): a
+        // one-shot IRQ0 that completes after a single edge.
+        pit.handle_write(X86Port::new(0x43), X86AccessWidth::Byte, 0x30)
+            .unwrap();
+        pit.handle_write(X86Port::new(0x40), X86AccessWidth::Byte, 0x00)
+            .unwrap();
+        pit.handle_write(X86Port::new(0x40), X86AccessWidth::Byte, 0x00)
+            .unwrap();
+        assert_eq!(TimerHost::registration_count(), 1);
+
+        TimerHost::fire(1, 1);
+
+        // Reprogramming must cancel the completed arm first and then install a
+        // single fresh registration.
+        pit.handle_write(X86Port::new(0x40), X86AccessWidth::Byte, 0x00)
+            .unwrap();
+        pit.handle_write(X86Port::new(0x40), X86AccessWidth::Byte, 0x00)
+            .unwrap();
+        assert_eq!(
+            TimerHost::cancelled(),
+            self::std::vec![1],
+            "a completed IRQ0 arm must be cancelled before the new arm",
+        );
+        assert_eq!(TimerHost::registration_count(), 2);
+
+        pit.stop().unwrap();
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1, 2]);
     }
 }

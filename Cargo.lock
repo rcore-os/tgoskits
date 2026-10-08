@@ -9975,6 +9975,8 @@ dependencies = [
 name = "x86_vlapic"
 version = "0.5.4"
 dependencies = [
+ "ax-crate-interface",
+ "ax-sync",
  "bit",
  "log",
  "paste",

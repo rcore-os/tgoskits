@@ -105,6 +105,24 @@ pub trait HostTimer {
     fn disarm_hard_timer(&self, handle: Self::HardTimerHandle) -> AxVmResult;
 
     fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<HostTimerCancelOutcome>;
+
+    /// Cancels and waits for callback execution and payload reclamation.
+    ///
+    /// Task context only, outside locks needed by the callback. A deferred
+    /// cancellation closes restart admission but is not a completion barrier;
+    /// the same stable registration identity is retained until the host reports
+    /// retirement. Timer callbacks must not synchronously wait for this owner.
+    #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+    fn cancel_timer_and_wait(&self, handle: Self::TimerHandle) -> AxVmResult<()> {
+        loop {
+            match self.cancel_timer(handle)? {
+                HostTimerCancelOutcome::Cancelled | HostTimerCancelOutcome::AlreadyCompleted => {
+                    return Ok(());
+                }
+                HostTimerCancelOutcome::CancellationDeferred => crate::host::task::yield_now(),
+            }
+        }
+    }
 }
 
 /// Host CPU topology and affinity operations.

@@ -87,6 +87,7 @@ pub(crate) fn handle_io_string(
             services
                 .memory()
                 .with_access(|memory| memory.write(guest_paddr, &bytes[..size]))
+                .and_then(|result| result)
                 .map_err(|error| AxVmError::device("write guest string I/O memory", error))?;
         }
         X86PortIoDirection::Out => {
@@ -97,6 +98,7 @@ pub(crate) fn handle_io_string(
                     memory.read(guest_paddr, &mut bytes[..size])?;
                     Ok::<_, axdevice_base::DeviceError>(bytes)
                 })
+                .and_then(|result| result)
                 .map_err(|error| AxVmError::device("read guest string I/O memory", error))?;
             services.write_device(&access, u64::from_le_bytes(bytes))?;
             publish_pic_interrupt_if_needed(services, vcpu_id, port)?;

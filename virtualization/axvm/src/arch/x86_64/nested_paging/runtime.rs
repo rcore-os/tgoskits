@@ -179,9 +179,12 @@ pub(super) fn flush_nested_page_table(_vaddr: Option<ptg::VirtAddr>) {}
 pub(crate) fn invalidate_translations(
     old_root: axvm_types::NestedPagingConfig,
 ) -> crate::AxVmResult {
-    match crate::arch::x86_64::policy::selected_nested_paging_format()
-        .map_err(|error| crate::AxVmError::vcpu("select x86 nested paging format", error))?
-    {
+    match crate::arch::x86_64::policy::selected_nested_paging_format().map_err(|error| {
+        crate::vcpu::map_vcpu_backend_error(
+            "select x86 nested paging format",
+            super::super::x86_error_to_backend(error),
+        )
+    })? {
         crate::arch::x86_64::policy::X86NestedPagingFormat::Ept => {
             // SAFETY: the control owner unloaded every vCPU and pinned this CPU,
             // which independently derived translations from the retired EPTP.

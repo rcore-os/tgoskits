@@ -20,7 +20,7 @@ impl GicV3Native {
     pub fn read_distributor(&self, offset: u64, width: AccessWidth) -> VgicResult<u64> {
         self.inner
             .state
-            .lock()
+            .lock_irqsave()
             .distributor
             .read(offset, width, &self.inner.config)
     }
@@ -72,7 +72,7 @@ impl GicV3Native {
     ) -> VgicResult<u64> {
         self.inner
             .state
-            .lock()
+            .lock_irqsave()
             .redistributor(vcpu, "read Redistributor")?
             .read(offset, width, &self.inner.config)
     }
@@ -341,13 +341,15 @@ fn its_wide_register(
         GITS_CBASER => Ok(its.cbaser()),
         GITS_CWRITER => Ok(its.cwriter()),
         GITS_CREADR => Ok(its.creadr()),
-        _ => its.baser(baser_index(base).ok_or_else(|| VgicError::InvalidAccess {
-            region: RegisterRegion::Its,
-            operation: "access ITS register bank",
-            offset,
-            width,
-            detail: "wide register does not belong to an ITS register bank".into(),
-        })),
+        _ => Ok(
+            its.baser(baser_index(base).ok_or_else(|| VgicError::InvalidAccess {
+                region: RegisterRegion::Its,
+                operation: "access ITS register bank",
+                offset,
+                width,
+                detail: "wide register does not belong to an ITS register bank".into(),
+            })?),
+        ),
     }
 }
 

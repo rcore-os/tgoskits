@@ -16,6 +16,18 @@ pub type AxVmResult<T = ()> = Result<T, AxVmError>;
 /// Errors reported by AxVM to a hypervisor application.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AxVmError {
+    /// Allocation-free hardware failure carried out of a CPU-bound scope.
+    #[error("virtualization operation {operation} failed: {source}")]
+    Backend {
+        operation: &'static str,
+        source: axvm_types::VmBackendError,
+    },
+    /// A vCPU transition was rejected without formatting in a pinned scope.
+    #[error("invalid vCPU state: expected {expected:?}, observed {actual:?}")]
+    VcpuState {
+        expected: crate::VmVcpuState,
+        actual: crate::VmVcpuState,
+    },
     /// The operation belongs to an execution period that has retired.
     #[error("stale VM run {expected:?}; current run is {current:?}")]
     StaleRun {

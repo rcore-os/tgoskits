@@ -24,7 +24,7 @@ use crate::{
         APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
         RESET_SPURIOUS_INTERRUPT_VECTOR, xapic::DEFAULT_APIC_BASE,
     },
-    host::{PhysFrame, X86VlapicHostOps},
+    host::{PhysFrame, X86VlapicHostOps, X86VlapicRuntimeOps},
     regs::{
         APIC_BASE, ApicBaseRegisterMsr,
         DESTINATION_FORMAT::{self, Model::Value as APICDestinationFormat},
@@ -410,6 +410,22 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
 
     pub fn take_pending_timer_interrupt(&self) -> Option<u8> {
         self.virtual_timer.take_pending_interrupt()
+    }
+
+    /// Quiesces the local-APIC timer for a task-side VM suspend while keeping
+    /// the guest registers, canonical deadline and pending edge intact.
+    pub fn suspend_timer(&mut self) -> X86VlapicResult {
+        self.virtual_timer.suspend_timer()
+    }
+
+    /// Reinstalls the local-APIC timer quiesced by [`Self::suspend_timer`].
+    pub fn resume_timer(&mut self) -> X86VlapicResult {
+        self.virtual_timer.resume_timer()
+    }
+
+    /// Cancels the local-APIC timer and retires its guest-visible state.
+    pub fn stop_timer(&mut self) -> X86VlapicResult {
+        self.virtual_timer.stop_timer()
     }
 
     fn inject_nmi(&mut self, vcpu_id: u32) {

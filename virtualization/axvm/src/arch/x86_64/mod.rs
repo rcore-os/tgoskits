@@ -258,7 +258,7 @@ impl X86Exit {
                     services,
                     vcpu_id,
                     HypercallExit { nr, args },
-                    crate::runtime::hvc::HyperCallAbi::Generic,
+                    crate::runtime::hvc::HyperCallAbi::native(),
                 )
             }
             Self::PortIoRead { exit, next_rip } => Ok(retire_action(
@@ -587,6 +587,27 @@ impl ArchOps for X86_64Arch {
         entry.prepare_vcpu(vcpu)
     }
 
+    /// Quiesces the per-vCPU LAPIC timer before a task-side pause is ACKed.
+    fn suspend_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        vcpu.get_arch_vcpu()
+            .suspend_timer()
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("suspend x86 vCPU timer", error))
+    }
+
+    /// Reinstalls the per-vCPU LAPIC timer before reopening the guest entry.
+    fn resume_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        vcpu.get_arch_vcpu()
+            .resume_timer()
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("resume x86 vCPU timer", error))
+    }
+
+    /// Stops the per-vCPU LAPIC producer before a backend is released or reaped.
+    fn quiet_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+        vcpu.get_arch_vcpu()
+            .stop_timer()
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("quiesce x86 vCPU timer", error))
+    }
+
     fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult {
         entry.before_guest(vcpu)
     }
@@ -788,6 +809,16 @@ impl X86HostOps for AxvmX86HostOps {
 /// [`X86Completion`] rather than stored on the backend.
 pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps, control_memory::ControlPages>);
 
+// SAFETY: this private adapter transfers exclusively owned, stable ControlPages
+// between the VM control task and one vCPU owner. Every CPU-local VMCS/VMCB
+// binding is enclosed by AxVCpu::with_backend_bound_current_cpu, which unloads
+// before releasing its pin and aborts if retirement fails. No bound adapter is
+// published or transferred; reap_participants joins the old owner before reuse.
+// Software registers and xstate/control leases are owned values; shared IRQ and
+// timer ports contain only synchronized run state. This does not make the
+// underlying CPU-bound Vmcs or this mutable adapter shareable through Sync.
+unsafe impl Send for AxvmX86Vcpu {}
+
 impl AxvmX86Vcpu {
     fn has_pending_event(&self) -> bool {
         self.0.has_pending_event()
@@ -806,6 +837,21 @@ impl AxvmX86Vcpu {
 
     pub(crate) fn inject_legacy_pic_interrupt(&mut self, vector: u8) -> BackendResult {
         x86_result(self.0.inject_legacy_pic_interrupt(vector))
+    }
+
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    fn suspend_timer(&mut self) -> BackendResult {
+        x86_result(self.0.suspend_timer())
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    fn resume_timer(&mut self) -> BackendResult {
+        x86_result(self.0.resume_timer())
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    fn stop_timer(&mut self) -> BackendResult {
+        x86_result(self.0.stop_timer())
     }
 
     fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
@@ -1388,9 +1434,15 @@ impl DeviceModel for X86PitModel {
                 runtime, self.vm_id, 0,
             ),
         );
-        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            pit,
-        )))
+        // The PIT IRQ0 host timer is a task-side producer, so it registers the
+        // same device as its lifecycle owner: pause quiesces it before the
+        // pause is ACKed and resume reinstalls it before guest entry reopens.
+        let device: Arc<dyn Device> = pit.clone();
+        let lifecycle: Arc<dyn DeviceLifecycle> = pit;
+        Ok(
+            DeviceBundle::from_registration(DeviceRegistration::Device(device))
+                .with_lifecycle(lifecycle),
+        )
     }
 }
 

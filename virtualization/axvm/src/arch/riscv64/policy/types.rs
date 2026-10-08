@@ -291,10 +291,7 @@ pub enum RiscvVmExit {
         arg: u64,
     },
     /// Guest requested this CPU to stop.
-    CpuDown {
-        /// Guest CPU state value.
-        state: u64,
-    },
+    CpuDown,
     /// Guest halted.
     Halt,
     /// Guest requested system shutdown.
@@ -321,7 +318,6 @@ pub enum RiscvExit {
         signed_ext: bool,
         /// Instruction length retired only after the device access succeeds.
         advance: usize,
-        touches_vplic: bool,
     },
     /// Guest MMIO write.
     MmioWrite {

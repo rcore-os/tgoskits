@@ -86,10 +86,10 @@ impl ControllerState {
                 operation: "queue SPI",
             })?;
         let mut canceled_inflight = false;
-        let vcpu_interfaces = &self.vcpu_interfaces;
+        let cpu_interfaces = &self.cpu_interfaces;
         for (vcpu, redistributor) in &mut self.redistributors {
             if *vcpu != target {
-                let loaded = vcpu_interfaces.get(vcpu) == Some(&super::CpuInterfacePhase::Loaded);
+                let loaded = cpu_interfaces.phase(*vcpu) == super::CpuInterfacePhase::Loaded;
                 canceled_inflight |=
                     redistributor.withdraw_pending_delivery(IntId::Spi(spi), loaded);
             }
@@ -238,7 +238,7 @@ impl ControllerState {
         lpi: LpiId,
         pending: bool,
     ) -> Result<Option<Arc<dyn GicV3VcpuWake>>, GicVcpuId> {
-        let loaded = self.vcpu_interfaces.get(&target) == Some(&super::CpuInterfacePhase::Loaded);
+        let loaded = self.cpu_interface_phase(target) == super::CpuInterfacePhase::Loaded;
         let Some(redistributor) = self.redistributors.get_mut(&target) else {
             return Err(target);
         };
@@ -316,12 +316,20 @@ impl ControllerState {
         ))
     }
 
+    /// Folds one harvested CPU-interface image back into canonical state.
+    ///
+    /// Decoded retirements are appended to the caller-owned `retirements`
+    /// buffer, which the binding reserves before it takes the canonical raw
+    /// lock (see `GicV3VcpuBinding::retirement_capacity`). The merge therefore
+    /// never grows or frees a heap buffer while raw state is locked, and the
+    /// caller applies the batch after releasing the lock.
     pub(super) fn merge_cpu_interface(
         &mut self,
         vcpu: GicVcpuId,
         mut saved: CpuInterfaceState,
         refill: bool,
-    ) -> VgicResult<Vec<DeliveryRetirement>> {
+        retirements: &mut Vec<DeliveryRetirement>,
+    ) -> VgicResult<()> {
         let mut previous_list_registers = [None; MAX_LIST_REGISTERS];
         let mut current_list_registers = [None; MAX_LIST_REGISTERS];
         let count = saved.list_registers().len();
@@ -333,7 +341,6 @@ impl ControllerState {
         current_list_registers[..count].copy_from_slice(saved.list_registers());
         self.redistributor_mut(vcpu, "merge CPU interface")?
             .replace_cpu_interface(saved);
-        let mut retirements = Vec::new();
         for (index, (old, current)) in previous_list_registers[..count]
             .iter()
             .zip(&current_list_registers[..count])
@@ -400,32 +407,48 @@ impl ControllerState {
         if refill {
             self.refill_cpu_interface(vcpu)?;
         }
-        Ok(retirements)
+        Ok(())
     }
 
     pub(super) fn refill_cpu_interface(
         &mut self,
         vcpu: GicVcpuId,
     ) -> VgicResult<CpuInterfaceState> {
-        let acknowledged_physical_spis = self
-            .physical_spi_acknowledged
-            .iter()
-            .filter_map(|(spi, acknowledged)| acknowledged.then_some(*spi))
-            .collect::<Vec<_>>();
-        for spi in acknowledged_physical_spis {
+        // Snapshot the owned acknowledgements into the buffer reserved at
+        // controller creation: one slot exists per configured SPI, so this
+        // sweep neither allocates nor frees while the raw lock is held. The
+        // buffer is taken by value only because queueing needs `&mut self`.
+        let mut acknowledged = core::mem::take(&mut self.acknowledged_scratch);
+        acknowledged.clear();
+        acknowledged.extend(
+            self.physical_spi_acknowledged
+                .iter()
+                .filter_map(|(spi, acknowledged)| acknowledged.then_some(*spi)),
+        );
+        let mut failure = None;
+        for index in 0..acknowledged.len() {
+            let spi = acknowledged[index];
             let target = match self.spi_backings.get(&spi).copied() {
                 Some(SpiBacking::Physical(binding)) => binding.target(),
                 _ => {
-                    return Err(VgicError::InvalidStateTransition {
+                    failure = Some(VgicError::InvalidStateTransition {
                         intid: IntId::Spi(spi),
                         operation: "refill CPU interface",
                         detail: "an acknowledged host interrupt has no physical binding".into(),
                     });
+                    break;
                 }
             };
-            if target == vcpu {
-                let _ = self.queue_acknowledged_physical_spi_if_deliverable(spi)?;
+            if target == vcpu
+                && let Err(error) = self.queue_acknowledged_physical_spi_if_deliverable(spi)
+            {
+                failure = Some(error);
+                break;
             }
+        }
+        self.acknowledged_scratch = acknowledged;
+        if let Some(error) = failure {
+            return Err(error);
         }
         let (loaded, snapshot) = {
             let distributor = &self.distributor;

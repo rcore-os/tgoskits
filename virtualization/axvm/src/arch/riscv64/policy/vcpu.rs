@@ -548,7 +548,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             });
                         }
                         hsm::HART_STOP => {
-                            return Ok(RiscvVmExit::CpuDown { state: 0 });
+                            return Ok(RiscvVmExit::CpuDown);
                         }
                         hsm::HART_SUSPEND => {
                             // These parameters are reserved for a future suspend-state model.

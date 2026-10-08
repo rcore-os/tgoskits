@@ -554,6 +554,7 @@ fn run_std_tests<R: CargoRunner>(
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
         "arm_vgic"
+        | "x86_vlapic"
         | "axdevice"
         | "axfs-ng-vfs"
         | "rsext4"

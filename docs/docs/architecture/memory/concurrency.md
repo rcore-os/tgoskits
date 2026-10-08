@@ -39,7 +39,7 @@ sidebar_label: "锁与并发"
 | `RawSpinLock<Usages>` | `ax-alloc/src/buddy_slab.rs` | `UsageKind` 字节计数 | 统计锁不发布资源，释放正确性由 allocator 锁和 owner 协议保证 |
 | `RawSpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
 | `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个 MM 的短期 mutation serialization | 生命周期由 `MmHandle`/`MmPin`/`ActivationLease` 表达；锁不代表 CPU root 已失活 |
-| `Mutex<Machine<...>>`（`IrqSafeMutex` 别名） | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
+| VM 控制任务拥有值，发布与访问状态使用 `std::sync::Mutex` | `axvm/src/control/mod.rs`、`guest_memory.rs` | 生命周期资源、翻译根更新和访问租约 | 在任务上下文准备新根；全部 owner 静默、访问结束和翻译失效确认后才退休旧资源 |
 | `PageObject::mapping_graph` | Starry `kernel/src/mm/aspace/objects.rs` | `MappingSlot`、rmap 与 mapping reference 的同一次变更 | 不在 graph lock 内发布 VMA、发 TLB IPI 或执行文件 I/O |
 | `ResidentWatermark` | `os/StarryOS/kernel/src/mm/aspace/accounting.rs` | 已发布 `MappingSlot` 派生出的历史 RSS 峰值 | 不保存当前 RSS 或按 VA charge map |
 | `AtomicU64/AtomicI64` | Starry kernel mm stat/accounting | VSS、commit 与历史统计 | 当前 RSS 从 slot graph 派生；当前 `/proc/meminfo` 的 `Committed_AS` 固定展示 0 |
@@ -141,9 +141,9 @@ sequenceDiagram
 | ArceOS kernel | `RawSpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
 | ArceOS user address space | 由进程/调用链持有可变访问 | 不允许另一个线程并发修改同一实例 |
 | StarryOS process | `MmHandle`、`MmPin`、`ActivationLease` 与内部 `Mutex<AddrSpace>` | user owner、kernel pin、CPU root 存活分别计数；修改经 receipt 提交 |
-| Axvisor guest | `Mutex<Machine<AxVMResources, ...>>`（`IrqSafeMutex`） | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
+| Axvisor guest | 控制 owner、`MappingLease`、`GuestMemoryPort` | 内存事务串行化；复制与 DMA 固定 revision，停止前关闭准入并收齐静默确认 |
 
-`ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
+`ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的翻译退休和访问租约见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
 
 ### 4.2 地址转换缓存失效
 

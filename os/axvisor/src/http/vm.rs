@@ -134,11 +134,21 @@ fn map_management_error(error: anyhow::Error) -> StatusCode {
 fn map_axvm_error(error: AxVmError) -> StatusCode {
     match error {
         AxVmError::InvalidTransition { .. }
+        | AxVmError::VcpuState { .. }
+        | AxVmError::Backend {
+            source: axvm::VmBackendError::InvalidState | axvm::VmBackendError::ResourceBusy,
+            ..
+        }
         | AxVmError::InvalidState { .. }
         | AxVmError::ResourceConflict { .. }
         | AxVmError::EntryClosed { .. }
         | AxVmError::StaleRun { .. } => StatusCode::CONFLICT,
-        AxVmError::InvalidInput { .. } | AxVmError::InvalidConfig { .. } => StatusCode::BAD_REQUEST,
+        AxVmError::InvalidInput { .. }
+        | AxVmError::InvalidConfig { .. }
+        | AxVmError::Backend {
+            source: axvm::VmBackendError::InvalidInput,
+            ..
+        } => StatusCode::BAD_REQUEST,
         AxVmError::OutOfMemory { .. }
         | AxVmError::ResourceUnavailable { .. }
         | AxVmError::OperationCancelled { .. } => StatusCode::SERVICE_UNAVAILABLE,

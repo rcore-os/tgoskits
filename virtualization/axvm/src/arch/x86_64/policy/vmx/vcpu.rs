@@ -2466,6 +2466,21 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         self.vlapic.handle_eoi()
     }
 
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    pub fn suspend_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.suspend_timer().map_err(Into::into)
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    pub fn resume_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.resume_timer().map_err(Into::into)
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    pub fn stop_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.stop_timer().map_err(Into::into)
+    }
+
     pub fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
     }

@@ -14,9 +14,16 @@
 
 //! Fixed-capacity, run-bound interrupt storage for one vCPU.
 //!
-//! The ring is allocated when a run is created and never grows. Hard-IRQ
-//! publishers may therefore take only the short raw lock below and get a typed
-//! capacity result; vector or map growth is not part of the publish path.
+//! The ring is allocated when a run is created and never grows, and it is sized
+//! from the architecture's validated finite source-identity namespaces. Hard-IRQ
+//! publishers therefore take only the short raw lock below and get a typed
+//! result; vector or map growth is not part of the publish path.
+//!
+//! A slot's queue belongs to the run and the vCPU identity rather than to one
+//! activation. A controller source that was already acknowledged survives a
+//! `CPU_OFF`, and only the exact current activation may drain it; the run
+//! owner's retirement of the whole [`RunSignals`](crate::services::RunSignals)
+//! after quiescence is what finally drops an undrained source.
 
 use std::{
     sync::{
@@ -56,10 +63,51 @@ pub enum SignalError {
     StaleInstance,
 }
 
-/// Number of distinct interrupt sources retained per active vCPU.
+/// Width of the LoongArch fixed platform physical-source table.
 ///
-/// This is a hard per-run bound, not a growth hint. A new source receives
-/// [`SignalError::Capacity`]; duplicate sources coalesce until they are drained.
+/// Number of pre-registered physical source slots owned by the platform adapter.
+#[cfg(target_arch = "loongarch64")]
+const LOONGARCH_PHYSICAL_IRQ_COUNT: usize = crate::arch::current::LOONGARCH_MAX_IRQ_COUNT;
+
+/// Width of the guest interrupt-vector namespace accepted by this ring.
+///
+/// LoongArch routes guest EIOINTC/PCH-PIC vectors and x86 delivers LAPIC and
+/// legacy-PIC ExtINT vectors; both namespaces hold 256 guest vectors.
+#[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+const GUEST_VECTOR_COUNT: usize = 256;
+
+/// Width of the x86 emulated legacy PIC vector namespace.
+///
+/// `QueuedVcpuInterrupt::LegacyPic` carries the guest-programmed ExtINT vector,
+/// so the authentic accepted bound is the complete `u8` vector space rather
+/// than the 16 PIC input lines.
+#[cfg(target_arch = "x86_64")]
+const LEGACY_PIC_VECTOR_COUNT: usize = 256;
+
+/// Number of distinct interrupt sources one vCPU retains at once.
+///
+/// This is a hard per-run bound, not a growth hint: every slot is preallocated
+/// when the run is created, publication never grows storage, and a source that
+/// would exceed the bound is rejected with [`SignalError::Capacity`].
+///
+/// The size is the sum of the architecture's *validated* source-identity
+/// namespaces (see [`QueuedVcpuInterrupt::validate_source`]), so a legitimate
+/// interrupt source cannot exhaust the ring:
+///
+/// * LoongArch: the fixed physical-source table (256), the emulated EIOINTC
+///   output vectors (256) and the direct guest-internal vectors (256). The guest
+///   vector routed with a physical source is validated but is carried inside the
+///   physical entry, so it is not a separate identity.
+/// * x86: the 256 guest/LAPIC vectors plus the legacy PIC's 256-wide ExtINT
+///   vector namespace.
+/// * Arm and RISC-V keep their native controllers' canonical pending state and
+///   only relay a small, coalesced virtual set through this ring.
+#[cfg(target_arch = "loongarch64")]
+pub(crate) const INTERRUPT_SOURCE_CAPACITY: usize =
+    LOONGARCH_PHYSICAL_IRQ_COUNT + 2 * GUEST_VECTOR_COUNT;
+#[cfg(target_arch = "x86_64")]
+pub(crate) const INTERRUPT_SOURCE_CAPACITY: usize = GUEST_VECTOR_COUNT + LEGACY_PIC_VECTOR_COUNT;
+#[cfg(not(any(target_arch = "loongarch64", target_arch = "x86_64")))]
 pub(crate) const INTERRUPT_SOURCE_CAPACITY: usize = 64;
 
 /// One interrupt delivery owned by the target vCPU runtime.
@@ -115,6 +163,63 @@ impl QueuedVcpuInterrupt {
             _ => false,
         }
     }
+
+    /// Validates that this value names an accepted, finite source identity.
+    ///
+    /// Architecture publication boundaries run this before a source can enter
+    /// the fixed ring. A producer that carries an unroutable identity therefore
+    /// fails loudly with [`SignalError::InvalidSource`] instead of silently
+    /// occupying a slot or overflowing the queue, and the ring size derived from
+    /// these namespaces stays a provable bound on legitimate sources.
+    ///
+    /// The rejected identities are:
+    ///
+    /// * a virtual id outside the 256-wide guest vector space (LoongArch and
+    ///   x86),
+    /// * a LoongArch physical source outside the 256 fixed platform slots or
+    ///   with a routed guest vector outside the 256 guest vectors,
+    /// * a LoongArch emulated EIOINTC output vector outside the 256 guest
+    ///   vectors.
+    ///
+    /// Arm and RISC-V relay native controller state whose identity width is not
+    /// this ring's concern, so every value is accepted there.
+    pub(crate) fn validate_source(self) -> Result<(), SignalError> {
+        match self {
+            #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+            Self::Virtual(interrupt) => {
+                if (interrupt.id.0 as usize) < GUEST_VECTOR_COUNT {
+                    Ok(())
+                } else {
+                    Err(SignalError::InvalidSource)
+                }
+            }
+            #[cfg(not(any(target_arch = "loongarch64", target_arch = "x86_64")))]
+            Self::Virtual(_) => Ok(()),
+            // The legacy PIC delivers a guest-programmed ExtINT vector, so its
+            // accepted namespace is the complete `u8` vector space.
+            #[cfg(target_arch = "x86_64")]
+            Self::LegacyPic { .. } => Ok(()),
+            #[cfg(target_arch = "loongarch64")]
+            Self::Physical {
+                vector,
+                physical_irq,
+            } => {
+                if physical_irq < LOONGARCH_PHYSICAL_IRQ_COUNT && vector < GUEST_VECTOR_COUNT {
+                    Ok(())
+                } else {
+                    Err(SignalError::InvalidSource)
+                }
+            }
+            #[cfg(target_arch = "loongarch64")]
+            Self::External { vector } => {
+                if vector < GUEST_VECTOR_COUNT {
+                    Ok(())
+                } else {
+                    Err(SignalError::InvalidSource)
+                }
+            }
+        }
+    }
 }
 
 impl From<PendingVcpuInterrupt> for QueuedVcpuInterrupt {
@@ -131,20 +236,22 @@ struct FixedInterruptQueue {
 }
 
 impl FixedInterruptQueue {
-    #[cfg(test)]
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
-            entries: std::array::from_fn(|_| None),
+            entries: [None; INTERRUPT_SOURCE_CAPACITY],
             head: 0,
             len: 0,
         }
     }
 
-    /// Inserts a source and reports whether this call created new pending work.
+    /// Validates, coalesces, and inserts one source.
     ///
-    /// The scan is bounded by [`INTERRUPT_SOURCE_CAPACITY`] and allocation is
-    /// impossible after construction.
+    /// Rejects an identity outside the architecture's accepted namespaces with
+    /// [`SignalError::InvalidSource`] before it can occupy a slot, then scans the
+    /// bounded ring (allocation is impossible after construction) so a duplicate
+    /// source coalesces instead of consuming capacity.
     fn push(&mut self, interrupt: QueuedVcpuInterrupt) -> Result<bool, SignalError> {
+        interrupt.validate_source()?;
         for offset in 0..self.len {
             let index = (self.head + offset) % INTERRUPT_SOURCE_CAPACITY;
             if let Some(queued) = self.entries[index]
@@ -153,6 +260,9 @@ impl FixedInterruptQueue {
                 return Ok(false);
             }
         }
+        // Unreachable for validated legitimate sources: their distinct
+        // identities are exactly the namespaces this ring is sized from. Kept as
+        // a defensive bound so a future namespace change fails loudly.
         if self.len == INTERRUPT_SOURCE_CAPACITY {
             return Err(SignalError::Capacity);
         }
@@ -172,12 +282,6 @@ impl FixedInterruptQueue {
                 output.push(interrupt);
             }
         }
-    }
-
-    fn clear(&mut self) {
-        self.entries.fill(None);
-        self.head = 0;
-        self.len = 0;
     }
 }
 
@@ -240,21 +344,21 @@ impl VcpuSignalSlot {
         Self {
             state: RawSpinLock::new(VcpuSignalState {
                 registration: None,
-                queue: FixedInterruptQueue {
-                    entries: [None; INTERRUPT_SOURCE_CAPACITY],
-                    head: 0,
-                    len: 0,
-                },
+                queue: FixedInterruptQueue::new(),
             }),
             pending: AtomicBool::new(false),
         }
     }
 
-    /// Binds `instance` to this slot.
+    /// Installs `instance` as this vCPU's execution target.
     ///
-    /// A slot that already owns a *different*, not-yet-retired activation is not
-    /// overwritten; the owner must [`Self::unregister`] the retired activation
-    /// first. Re-registering the same activation retains its queued sources.
+    /// The run's queued sources are *not* touched: they belong to the run and
+    /// the vCPU identity, so a controller source that was published while the
+    /// vCPU was inactive is preserved for this activation to drain. A slot that
+    /// still owns a *different*, not-yet-retired activation is not overwritten;
+    /// the owner must [`Self::unregister`] it first. Re-registering the same
+    /// activation installs the supplied execution target and returns the retired
+    /// one for the caller to drop outside the guard.
     pub(crate) fn register(
         &self,
         instance: VcpuInstance,
@@ -262,26 +366,30 @@ impl VcpuSignalSlot {
         wake: ThreadWakeHandle,
     ) -> Result<SlotUpdate, SignalError> {
         let mut state = self.state.lock_irqsave();
-        if let Some(registration) = state.registration.as_ref() {
-            return if registration.instance == instance {
-                Ok(SlotUpdate::Registered)
-            } else {
-                Err(SignalError::StaleInstance)
-            };
+        let conflicts = state
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.instance != instance);
+        if conflicts {
+            return Err(SignalError::StaleInstance);
         }
         let previous = state.registration.replace(VcpuRegistration {
             instance,
             signals,
             wake,
         });
-        state.queue.clear();
-        self.pending.store(false, Ordering::Release);
         Ok(match previous {
             Some(previous) => SlotUpdate::Replaced(previous),
             None => SlotUpdate::Registered,
         })
     }
 
+    /// Retires exactly `instance`'s execution target.
+    ///
+    /// Only the registration retires. The run keeps every queued source pending
+    /// because a `CPU_OFF` does not retract an interrupt the controller already
+    /// acknowledged; a later activation of this vCPU, or the run's own
+    /// retirement after quiescence, consumes it.
     pub(crate) fn unregister(&self, instance: VcpuInstance) -> SlotUpdate {
         let mut state = self.state.lock_irqsave();
         let matches = state
@@ -293,8 +401,6 @@ impl VcpuSignalSlot {
         }
 
         let previous = state.registration.take();
-        state.queue.clear();
-        self.pending.store(false, Ordering::Release);
         match previous {
             Some(previous) => SlotUpdate::Unregistered(previous),
             None => SlotUpdate::AlreadyUnregistered,
@@ -312,15 +418,19 @@ impl VcpuSignalSlot {
             })
     }
 
-    /// Publishes into the currently registered activation.
+    /// Publishes one source into this vCPU's run-owned queue.
     ///
-    /// The pending publication happens while the queue guard is held, so a
-    /// concurrent drain cannot clear a newly inserted source.
+    /// The queue and the pending flag belong to the run and the vCPU identity,
+    /// not to the current activation. A publication accepted with no execution
+    /// target registered is therefore retained: an acknowledged controller
+    /// source (LoongArch physical IRQ / emulated EIOINTC vector) survives until a
+    /// later activation drains it. This call only records the source and reports
+    /// whether it created new pending work; it never wakes. The publication
+    /// happens while the raw queue guard is held, so a concurrent drain cannot
+    /// observe a half-inserted source, and no allocation or destructor runs
+    /// inside that guard.
     pub(crate) fn publish(&self, interrupt: QueuedVcpuInterrupt) -> Result<bool, SignalError> {
         let mut state = self.state.lock_irqsave();
-        if state.registration.is_none() {
-            return Err(SignalError::InactiveTarget);
-        }
         let created_work = state.queue.push(interrupt)?;
         if created_work {
             self.pending.store(true, Ordering::Release);
@@ -328,8 +438,10 @@ impl VcpuSignalSlot {
         Ok(created_work)
     }
 
-    /// Drains only the activation named by the target vCPU task.
+    /// Drains only when `activation` is the slot's exact current registration.
     ///
+    /// A stale activation (a retired execution observing an old identity) drains
+    /// nothing and leaves the run's sources pending for the current activation.
     /// `output` must already have capacity for the complete fixed queue and is
     /// allocated by the caller outside the raw guard.
     pub(crate) fn drain_into(
@@ -380,8 +492,67 @@ mod tests {
         .into()
     }
 
+    /// Every distinct accepted source identity of this architecture's ring.
+    #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
+    fn all_accepted_sources() -> Vec<QueuedVcpuInterrupt> {
+        let mut sources = Vec::with_capacity(INTERRUPT_SOURCE_CAPACITY);
+        for id in 0..GUEST_VECTOR_COUNT {
+            sources.push(edge(id as u32));
+        }
+        #[cfg(target_arch = "loongarch64")]
+        for vector in 0..GUEST_VECTOR_COUNT {
+            sources.push(QueuedVcpuInterrupt::External { vector });
+        }
+        #[cfg(target_arch = "loongarch64")]
+        for physical_irq in 0..LOONGARCH_PHYSICAL_IRQ_COUNT {
+            sources.push(QueuedVcpuInterrupt::Physical {
+                vector: physical_irq % GUEST_VECTOR_COUNT,
+                physical_irq,
+            });
+        }
+        #[cfg(target_arch = "x86_64")]
+        for vector in 0..LEGACY_PIC_VECTOR_COUNT {
+            sources.push(QueuedVcpuInterrupt::LegacyPic {
+                vector: vector as u8,
+            });
+        }
+        sources
+    }
+
+    /// The ring is sized from the validated namespaces, so every legitimate
+    /// source identity is accepted, coalesced when repeated, and drained in FIFO
+    /// order without ever hitting the defensive capacity bound.
+    #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
     #[test]
-    fn bounded_queue_preserves_fifo_and_rejects_a_new_source_when_full() {
+    fn every_accepted_source_identity_fits_the_ring() {
+        let sources = all_accepted_sources();
+        assert_eq!(sources.len(), INTERRUPT_SOURCE_CAPACITY);
+
+        let mut queue = FixedInterruptQueue::new();
+        for source in &sources {
+            assert_eq!(queue.push(*source), Ok(true), "source {source:?} must fit");
+        }
+        for source in &sources {
+            assert_eq!(
+                queue.push(*source),
+                Ok(false),
+                "duplicate source {source:?} must coalesce"
+            );
+        }
+
+        let mut drained = Vec::new();
+        queue.drain_into(&mut drained);
+        assert_eq!(drained, sources);
+
+        // Storage is reusable after a complete drain.
+        assert_eq!(queue.push(sources[0]), Ok(true));
+    }
+
+    /// Arm and RISC-V relay native controller state and keep the small bounded
+    /// ring that this layer already had.
+    #[cfg(not(any(target_arch = "loongarch64", target_arch = "x86_64")))]
+    #[test]
+    fn native_controller_relay_keeps_its_small_bounded_ring() {
         let mut queue = FixedInterruptQueue::new();
         for id in 0..INTERRUPT_SOURCE_CAPACITY {
             assert_eq!(queue.push(edge(id as u32)), Ok(true));
@@ -401,6 +572,76 @@ mod tests {
             Some(&edge((INTERRUPT_SOURCE_CAPACITY - 1) as u32))
         );
         assert_eq!(queue.push(edge(0)), Ok(true));
+    }
+
+    /// An identity outside LoongArch's finite namespaces is rejected at the
+    /// publication boundary and never occupies a slot.
+    #[cfg(target_arch = "loongarch64")]
+    #[test]
+    fn loongarch_rejects_sources_outside_its_finite_namespaces() {
+        let slot = VcpuSignalSlot::new();
+        let rejected = [
+            QueuedVcpuInterrupt::Physical {
+                vector: 0,
+                physical_irq: LOONGARCH_PHYSICAL_IRQ_COUNT,
+            },
+            QueuedVcpuInterrupt::Physical {
+                vector: GUEST_VECTOR_COUNT,
+                physical_irq: 0,
+            },
+            QueuedVcpuInterrupt::External {
+                vector: GUEST_VECTOR_COUNT,
+            },
+            edge(GUEST_VECTOR_COUNT as u32),
+        ];
+        for source in rejected {
+            assert_eq!(
+                slot.publish(source),
+                Err(SignalError::InvalidSource),
+                "{source:?} must be rejected"
+            );
+            assert!(!slot.has_pending());
+        }
+
+        // Boundary identities remain accepted.
+        assert_eq!(
+            slot.publish(QueuedVcpuInterrupt::Physical {
+                vector: GUEST_VECTOR_COUNT - 1,
+                physical_irq: LOONGARCH_PHYSICAL_IRQ_COUNT - 1,
+            }),
+            Ok(true)
+        );
+        assert_eq!(
+            slot.publish(QueuedVcpuInterrupt::External {
+                vector: GUEST_VECTOR_COUNT - 1,
+            }),
+            Ok(true)
+        );
+        assert_eq!(
+            slot.publish(edge((GUEST_VECTOR_COUNT - 1) as u32)),
+            Ok(true)
+        );
+    }
+
+    /// x86 accepts the complete `u8` legacy-PIC vector namespace but rejects a
+    /// virtual id outside the guest vector space.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_rejects_virtual_ids_outside_the_guest_vector_space() {
+        let slot = VcpuSignalSlot::new();
+        assert_eq!(
+            slot.publish(edge(GUEST_VECTOR_COUNT as u32)),
+            Err(SignalError::InvalidSource)
+        );
+        assert!(!slot.has_pending());
+        assert_eq!(
+            slot.publish(QueuedVcpuInterrupt::LegacyPic { vector: u8::MAX }),
+            Ok(true)
+        );
+        assert_eq!(
+            slot.publish(edge((GUEST_VECTOR_COUNT - 1) as u32)),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -442,20 +683,27 @@ mod tests {
     }
 
     #[test]
-    fn slot_drain_accepts_only_a_registration_activation() {
-        let slot = VcpuSignalSlot::new();
-        let mut wrong_activation = Vec::new();
-
-        assert!(!slot.has_pending());
-        assert!(!slot.drain_into(1, &mut wrong_activation));
-        assert!(wrong_activation.is_empty());
-    }
-
-    #[test]
-    fn unregistered_slot_rejects_publication_instead_of_queueing_it() {
+    fn inactive_slot_retains_sources_until_a_matching_activation_drains() {
         let slot = VcpuSignalSlot::new();
         assert!(!slot.is_registered());
-        assert_eq!(slot.publish(edge(1)), Err(SignalError::InactiveTarget));
         assert!(!slot.has_pending());
+
+        // The run still owns an acknowledged controller source even though this
+        // vCPU currently has no execution target.
+        assert_eq!(slot.publish(edge(3)), Ok(true));
+        assert!(slot.has_pending());
+        // A duplicate identity coalesces instead of taking a second slot.
+        assert_eq!(slot.publish(edge(3)), Ok(false));
+
+        // Neither a retired activation nor any other identity may drain or clear
+        // it: only the exact current activation can, and a `CPU_OFF` leaves the
+        // source for a later activation. The matching-activation drain itself
+        // needs a real registration and is a system-entry check.
+        for activation in [0, 1, u64::MAX] {
+            let mut drained = Vec::new();
+            assert!(!slot.drain_into(activation, &mut drained));
+            assert!(drained.is_empty());
+            assert!(slot.has_pending());
+        }
     }
 }

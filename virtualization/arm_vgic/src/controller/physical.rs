@@ -1,13 +1,14 @@
 //! Physical GIC and ITS backing lifecycle.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
 use axdevice_base::{InterruptTrigger, ItsId};
 
 use super::{ControllerInner, ControllerState, GicV3Native, MsiBacking, SpiBacking};
 use crate::{
-    EventId, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalInterruptBinding, PhysicalIrqId,
-    PhysicalMsiBinding, RedistributorState, SpiId, VgicError, VgicResult, backend_result,
+    EventId, GicV3VcpuWake, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalInterruptBinding,
+    PhysicalIrqId, PhysicalMsiBinding, RedistributorState, SpiId, VgicError, VgicResult,
+    backend_result,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,21 +39,38 @@ pub(super) struct PhysicalInterruptStateChange {
 }
 
 impl GicV3Native {
-    /// Queues an acknowledged assigned SPI for hardware-backed LR delivery.
-    pub fn forward_physical_spi(&self, spi: SpiId) -> VgicResult {
-        let wake = {
-            let mut state = self.inner.state.lock_irqsave();
-            let binding = match state.spi_backings.get(&spi).copied() {
-                Some(SpiBacking::Physical(binding)) => binding,
-                _ => {
-                    return Err(VgicError::Unsupported {
-                        operation: "forward physical SPI",
-                        detail: alloc::format!("SPI {} has no physical binding", spi.raw()),
-                    });
-                }
-            };
-            state.queue_physical_spi(spi, binding)?
+    /// Records one acknowledged assigned SPI in canonical delivery state.
+    ///
+    /// This is the record half of physical forwarding: it latches the
+    /// architectural pending state and returns the pre-bound wake capability of
+    /// the target vCPU. A caller that already holds a raw guard of its own must
+    /// use this form and notify the returned capability after releasing that
+    /// guard, because the notification sends a deferred kick/IPI. The physical
+    /// source identity stays owned by the binding, so the acknowledgement is
+    /// never merged into another source by guest vector.
+    pub fn acknowledge_physical_spi(
+        &self,
+        spi: SpiId,
+    ) -> VgicResult<Option<Arc<dyn GicV3VcpuWake>>> {
+        let mut state = self.inner.state.lock_irqsave();
+        let Some(SpiBacking::Physical(binding)) = state.spi_backings.get(&spi).copied() else {
+            // Report the unbound source after the canonical guard is released,
+            // so no error message is allocated while raw state is locked.
+            drop(state);
+            return Err(VgicError::Unsupported {
+                operation: "forward physical SPI",
+                detail: alloc::format!("SPI {} has no physical binding", spi.raw()),
+            });
         };
+        state.queue_physical_spi(spi, binding)
+    }
+
+    /// Records and immediately notifies one acknowledged assigned SPI.
+    ///
+    /// Convenience for callers that hold no raw guard of their own; the wake is
+    /// published after the canonical state lock is released.
+    pub fn forward_physical_spi(&self, spi: SpiId) -> VgicResult {
+        let wake = self.acknowledge_physical_spi(spi)?;
         if let Some(wake) = wake {
             wake.wake()?;
         }
@@ -217,7 +235,7 @@ impl GicV3Native {
                     });
                 }
             };
-            if !state.vcpu_interfaces.is_empty() {
+            if state.any_cpu_interface_active() {
                 return Err(VgicError::InvalidStateTransition {
                     intid: IntId::Spi(spi),
                     operation: "tear down physical SPI",
@@ -266,7 +284,7 @@ impl GicV3Native {
         // quiescent binding and must not issue DIR for the same activation.
         self.inner
             .state
-            .lock()
+            .lock_irqsave()
             .clear_physical_spi_delivery(spi, binding);
 
         if let Err(error) = backend_result(self.inner.backend.unbind_physical_interrupt(binding)) {
@@ -310,7 +328,7 @@ impl GicV3Native {
                 if let Err(rollback_error) = self
                     .inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .restore_physical_interrupt_state_changes(&changes)
                 {
                     log::warn!(
@@ -421,7 +439,7 @@ impl GicV3Native {
         if let Err(error) = backend_result(self.inner.backend.bind_physical_msi(binding)) {
             self.inner
                 .state
-                .lock()
+                .lock_irqsave()
                 .msi_backings
                 .remove(&(its, device, event));
             return Err(error);
@@ -464,7 +482,7 @@ impl ControllerState {
         spi: SpiId,
         binding: PhysicalInterruptBinding,
     ) -> VgicResult {
-        if !self.vcpu_interfaces.is_empty() {
+        if self.any_cpu_interface_active() {
             return Err(VgicError::InvalidStateTransition {
                 intid: IntId::Spi(spi),
                 operation: "unbind physical SPI",

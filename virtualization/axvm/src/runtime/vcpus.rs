@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use axvm_types::{GuestPhysAddr, NestedPagingConfig};
+use axvm_types::{GuestPhysAddr, NestedPagingConfig, VmArchVcpuOps};
 
 use crate::{
     AxVmError, AxVmResult, OperationId, VmOperation,
@@ -347,6 +347,20 @@ fn run_owner(
         } else {
             backend.bind()?;
         }
+        // An inactive backend may still store the previous translation root.
+        // Install this run's revision before startup is acknowledged or guest
+        // entry is admitted, including activations after a memory update.
+        backend.with_engine_scope(&entry.decode, &entry.signals, |backend| {
+            backend
+                .get_arch_vcpu()
+                .set_nested_page_table(entry.root)
+                .map_err(|error| {
+                    crate::vcpu::map_vcpu_backend_error(
+                        "install activation translation root",
+                        error,
+                    )
+                })
+        })?;
         CurrentArch::prepare_vcpu(&mut backend, &entry.architecture)
     })();
     if let Err(mut error) = initialized {
@@ -403,22 +417,24 @@ fn run_owner(
             let result = match command {
                 VcpuCommand::Park { operation } => {
                     parked = true;
-                    port.parks.fetch_add(1, Ordering::Relaxed);
-                    control.post_event(VcpuEvent::Parked {
-                        instance: port.instance,
-                        operation,
-                    });
-                    Ok(())
-                }
-                VcpuCommand::Resume { operation } => {
-                    if port.signals.open_entry() {
-                        parked = false;
-                        control.post_event(VcpuEvent::Resumed {
+                    CurrentArch::suspend_vcpu(task.engine.vcpu_mut()).map(|()| {
+                        port.parks.fetch_add(1, Ordering::Relaxed);
+                        control.post_event(VcpuEvent::Parked {
                             instance: port.instance,
                             operation,
                         });
-                    }
-                    Ok(())
+                    })
+                }
+                VcpuCommand::Resume { operation } => {
+                    CurrentArch::resume_vcpu(task.engine.vcpu_mut()).map(|()| {
+                        if port.signals.open_entry() {
+                            parked = false;
+                            control.post_event(VcpuEvent::Resumed {
+                                instance: port.instance,
+                                operation,
+                            });
+                        }
+                    })
                 }
                 VcpuCommand::InstallRoot {
                     operation,
@@ -427,8 +443,11 @@ fn run_owner(
                     decode,
                 } => {
                     parked = true;
-                    task.engine
-                        .install_root(&mut task.entry, root, revision, decode)
+                    CurrentArch::suspend_vcpu(task.engine.vcpu_mut())
+                        .and_then(|()| {
+                            task.engine
+                                .install_root(&mut task.entry, root, revision, decode)
+                        })
                         .map(|()| {
                             control.post_event(VcpuEvent::RootInstalled {
                                 instance: port.instance,

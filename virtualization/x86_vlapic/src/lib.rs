@@ -150,6 +150,22 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
         self.get_vlapic_regs().take_pending_timer_interrupt()
     }
 
+    /// Quiesces the local APIC timer for a task-side VM suspend while retaining
+    /// the guest registers, canonical deadline and pending edge.
+    pub fn suspend_timer(&self) -> X86VlapicResult {
+        self.get_mut_vlapic_regs().suspend_timer()
+    }
+
+    /// Reinstalls the local APIC timer quiesced by [`Self::suspend_timer`].
+    pub fn resume_timer(&self) -> X86VlapicResult {
+        self.get_mut_vlapic_regs().resume_timer()
+    }
+
+    /// Cancels the local APIC timer and retires its guest-visible state.
+    pub fn stop_timer(&self) -> X86VlapicResult {
+        self.get_mut_vlapic_regs().stop_timer()
+    }
+
     /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
     pub fn handle_eoi(&self) -> Option<u8> {
         self.get_mut_vlapic_regs().handle_eoi()

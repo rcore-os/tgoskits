@@ -1,10 +1,7 @@
 //! Shared ownership state for host-backed x86 device timers.
 
 use alloc::sync::Arc;
-use core::{
-    hint::spin_loop,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_sync::RawSpinLock;
 
@@ -59,6 +56,11 @@ struct TimerArmState<T> {
     cancel_requested: bool,
     registration_complete: bool,
     handle: Option<T>,
+    /// Set with the first cancel request: whether the arm could still deliver
+    /// an edge at that moment, so the caller knows a resume is owed once the
+    /// arm is quiesced. Persisted on the arm so a retried cancel reports the
+    /// same answer.
+    resume_owed: bool,
 }
 
 struct TimerArm<T> {
@@ -75,6 +77,7 @@ impl<T: Copy> TimerArm<T> {
                 cancel_requested: false,
                 registration_complete: false,
                 handle: None,
+                resume_owed: false,
             }),
         }
     }
@@ -88,7 +91,7 @@ impl<T: Copy> TimerArm<T> {
         true
     }
 
-    fn finish_fire(&self, requested: X86TimerAction) -> TimerFireCompletion {
+    fn finish_fire(&self, requested: X86TimerAction) -> X86TimerAction {
         let mut state = self.state.lock_irqsave();
         assert_eq!(
             state.phase,
@@ -96,46 +99,37 @@ impl<T: Copy> TimerArm<T> {
             "x86 timer callback must finish one claimed arm"
         );
         if state.cancel_requested {
+            // A cancel already claimed this arm; the callback collapses to a
+            // single completion. `current` is deliberately kept so a task-side
+            // cancel barrier can still observe the host retirement.
             state.phase = TimerArmPhase::Retired;
-            return TimerFireCompletion {
-                action: X86TimerAction::Complete,
-                retire_registration: false,
-            };
+            return X86TimerAction::Complete;
         }
         match requested {
             X86TimerAction::Complete => {
                 state.phase = TimerArmPhase::Retired;
-                TimerFireCompletion {
-                    action: X86TimerAction::Complete,
-                    retire_registration: true,
-                }
+                X86TimerAction::Complete
             }
             X86TimerAction::Rearm(deadline_ns) => {
                 state.phase = TimerArmPhase::Armed;
-                TimerFireCompletion {
-                    action: X86TimerAction::Rearm(deadline_ns),
-                    retire_registration: false,
-                }
+                X86TimerAction::Rearm(deadline_ns)
             }
         }
     }
 
-    fn finish_registration(&self, handle: T) -> TimerRegistrationCompletion {
+    /// Publishes the stable host handle for this arm.
+    ///
+    /// The handle is retained even when the callback already completed, so a
+    /// later task-side cancel barrier can observe the host retirement instead
+    /// of mistaking a finished callback for quiescence.
+    fn finish_registration(&self, handle: T) {
         let mut state = self.state.lock_irqsave();
         assert!(
             !state.registration_complete,
             "x86 timer host registration completed twice"
         );
         state.registration_complete = true;
-        if state.cancel_requested {
-            state.handle = Some(handle);
-            TimerRegistrationCompletion::CancellationOwnsHandle
-        } else if state.phase == TimerArmPhase::Retired {
-            TimerRegistrationCompletion::CallbackCompleted
-        } else {
-            state.handle = Some(handle);
-            TimerRegistrationCompletion::Active
-        }
+        state.handle = Some(handle);
     }
 
     fn fail_registration(&self) {
@@ -144,40 +138,46 @@ impl<T: Copy> TimerArm<T> {
         state.phase = TimerArmPhase::Retired;
     }
 
-    fn request_cancel_and_take_handle(&self) -> Option<T> {
+    /// Requests cancellation and returns the stable handle once the callback
+    /// that claimed the arm has retired, together with whether a resume is owed.
+    ///
+    /// Waiting uses the runtime's task-yield capability, never a spin: the
+    /// callback may have been preempted on this same CPU. All waiting happens
+    /// outside the raw arm state guard.
+    fn request_cancel_and_take_handle(&self, mut wait_progress: impl FnMut()) -> Option<(T, bool)> {
         loop {
             {
                 let mut state = self.state.lock_irqsave();
+                if !state.cancel_requested {
+                    state.resume_owed = state.phase != TimerArmPhase::Retired;
+                }
                 state.cancel_requested = true;
                 if state.phase == TimerArmPhase::Armed {
                     state.phase = TimerArmPhase::Retired;
                 }
                 if state.registration_complete && state.phase != TimerArmPhase::Firing {
-                    return state.handle.take();
+                    return state
+                        .handle
+                        .take()
+                        .map(|handle| (handle, state.resume_owed));
                 }
             }
             // Mirrors hrtimer_cancel(): once a callback has claimed the arm,
             // cancellation does not return until that callback has retired.
-            // No timer/device lock is held while waiting.
-            spin_loop();
+            // Yield so a preempted callback on this CPU can make progress.
+            wait_progress();
         }
+    }
+
+    /// Whether the arm can still deliver an edge (armed or firing).
+    fn is_active(&self) -> bool {
+        self.state.lock_irqsave().phase != TimerArmPhase::Retired
     }
 
     fn restore_cancel_handle(&self, handle: T) {
         let mut state = self.state.lock_irqsave();
         assert!(state.handle.replace(handle).is_none());
     }
-}
-
-struct TimerFireCompletion {
-    action: X86TimerAction,
-    retire_registration: bool,
-}
-
-enum TimerRegistrationCompletion {
-    Active,
-    CallbackCompleted,
-    CancellationOwnsHandle,
 }
 
 /// Owns the single host registration for one x86 device timer.
@@ -216,6 +216,9 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
 
     /// Registers a callback through the host hard-timer capability.
     ///
+    /// This is called from task context; only the callback itself runs in hard
+    /// IRQ context, so the registration barrier above may yield.
+    ///
     /// # Safety
     ///
     /// `callback` and the registration state transitions executed around it
@@ -243,9 +246,15 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
         mut callback: X86TimerCallback,
         register: impl FnOnce(&R, u64, X86TimerCallback) -> X86VlapicResult<R::TimerHandle>,
     ) -> X86VlapicResult {
+        // A previous arm may have run its callback to completion without being
+        // cancelled yet; its stable handle is retained for exactly this
+        // barrier. Retire it through the full host cancel barrier before
+        // arming a newer timer so a retired callback can never race a new guest
+        // reprogram, and so a stale handle is never silently dropped.
+        self.invalidate_and_cancel(runtime)?;
+
         let arm = self.begin_arm()?;
         let callback_arm = Arc::clone(&arm);
-        let callback_registration = Arc::clone(self);
         let handle = match register(
             runtime,
             deadline_ns,
@@ -253,11 +262,10 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
                 if !callback_arm.begin_fire() {
                     return X86TimerAction::Complete;
                 }
-                let completion = callback_arm.finish_fire(callback(now_ns));
-                if completion.retire_registration {
-                    callback_registration.retire(&callback_arm);
-                }
-                completion.action
+                // The callback never retires its own registration: the stable
+                // host handle must stay reachable for the task-side cancel
+                // barrier. `finish_fire` only retires the *arm phase*.
+                callback_arm.finish_fire(callback(now_ns))
             }),
         ) {
             Ok(handle) => handle,
@@ -268,34 +276,58 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
             }
         };
 
-        match arm.finish_registration(handle) {
-            TimerRegistrationCompletion::Active
-            | TimerRegistrationCompletion::CancellationOwnsHandle => Ok(()),
-            TimerRegistrationCompletion::CallbackCompleted => {
-                self.retire(&arm);
-                Ok(())
-            }
-        }
+        arm.finish_registration(handle);
+        Ok(())
     }
 
-    pub(crate) fn is_armed(&self) -> bool {
+    /// Whether a host registration is still owned by this object.
+    ///
+    /// This stays `true` after a one-shot callback completed: the stable handle
+    /// is retained until the task side cancels and observes the host
+    /// retirement. Callers that must guarantee the producer is quiet (suspend,
+    /// stop, reprogram) therefore key on this instead of on the arm phase.
+    pub(crate) fn has_registration(&self) -> bool {
         self.current.lock_irqsave().is_some()
     }
 
-    pub(crate) fn invalidate_and_cancel(&self, runtime: &R) -> X86VlapicResult {
+    /// Whether the current arm can still deliver an edge (armed or firing).
+    ///
+    /// A completed one-shot callback leaves a retained handle but no live arm,
+    /// so guest-visible "timer running" state keys on this instead of on the
+    /// handle's presence.
+    pub(crate) fn is_active(&self) -> bool {
+        self.current
+            .lock_irqsave()
+            .as_ref()
+            .is_some_and(|arm| arm.is_active())
+    }
+
+    /// Quiesces the current host registration, if any, behind the full cancel
+    /// barrier and retires it.
+    ///
+    /// The barrier waits, outside every raw guard, for a callback that already
+    /// claimed the arm and for the host to reclaim its payload. Returns whether
+    /// a resume is owed: `true` when the arm could still deliver an edge when
+    /// this cancellation began. On a host cancellation failure the retained
+    /// handle and arm are restored so the caller can retry.
+    pub(crate) fn invalidate_and_cancel(&self, runtime: &R) -> X86VlapicResult<bool> {
         let Some(arm) = self.current.lock_irqsave().as_ref().cloned() else {
-            return Ok(());
+            return Ok(false);
         };
-        let handle = arm.request_cancel_and_take_handle();
-        if let Some(handle) = handle
-            && let Err(error) = runtime.cancel_timer(handle)
-        {
+        let Some((handle, resume_owed)) =
+            arm.request_cancel_and_take_handle(|| runtime.wait_timer_progress())
+        else {
+            // A prior cancel already took the handle; nothing is left to retire.
+            self.retire(&arm);
+            return Ok(false);
+        };
+        if let Err(error) = runtime.cancel_timer(handle) {
             arm.restore_cancel_handle(handle);
             self.restore(&arm);
             return Err(error);
         }
         self.retire(&arm);
-        Ok(())
+        Ok(resume_owed)
     }
 
     fn begin_arm(&self) -> X86VlapicResult<Arc<TimerArm<R::TimerHandle>>> {
@@ -317,13 +349,22 @@ impl<R: X86VlapicRuntimeOps> TimerRegistration<R> {
     }
 
     fn retire(&self, arm: &TimerArm<R::TimerHandle>) {
-        let mut current = self.current.lock_irqsave();
-        if current
-            .as_ref()
-            .is_some_and(|candidate| candidate.identity == arm.identity)
-        {
-            current.take();
-        }
+        // Take the shared `Arc` out under the guard but drop it after the guard
+        // is released: the callback may still hold the last reference, and
+        // dropping it inside the short IRQ-safe critical section could run
+        // task-context teardown with interrupts disabled.
+        let retired = {
+            let mut current = self.current.lock_irqsave();
+            if current
+                .as_ref()
+                .is_some_and(|candidate| candidate.identity == arm.identity)
+            {
+                current.take()
+            } else {
+                None
+            }
+        };
+        drop(retired);
     }
 
     fn restore(&self, arm: &Arc<TimerArm<R::TimerHandle>>) {

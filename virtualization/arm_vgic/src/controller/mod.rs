@@ -14,7 +14,7 @@ use alloc::{
 };
 use core::ops::Deref;
 
-use ax_sync::{RawSpinLock, RawSpinLockIrqSaveGuard};
+use ax_sync::RawSpinLock;
 use axdevice_base::{InterruptControllerId, ItsId};
 pub use binding::GicV3VcpuBinding;
 use its_service::ItsService;
@@ -94,23 +94,7 @@ struct ControllerInner {
     // while the vCPU run path is folding LR state on the same CPU. Saving
     // local IRQ state before taking the canonical state lock prevents that
     // re-entry from spinning on a lock interrupted code already owns.
-    state: ControllerStateLock,
-}
-
-struct ControllerStateLock(RawSpinLock<ControllerState>);
-
-impl ControllerStateLock {
-    const fn new(state: ControllerState) -> Self {
-        Self(RawSpinLock::new(state))
-    }
-
-    fn lock(&self) -> RawSpinLockIrqSaveGuard<'_, ControllerState> {
-        self.0.lock_irqsave()
-    }
-
-    fn lock_irqsave(&self) -> RawSpinLockIrqSaveGuard<'_, ControllerState> {
-        self.lock()
-    }
+    state: RawSpinLock<ControllerState>,
 }
 
 #[derive(Clone, Debug)]
@@ -221,19 +205,83 @@ struct ControllerState {
     physical_spi_acknowledged: BTreeMap<SpiId, bool>,
     releasing_physical_spis: BTreeSet<SpiId>,
     msi_backings: BTreeMap<(ItsId, ItsDeviceId, EventId), MsiBacking>,
-    vcpu_interfaces: BTreeMap<GicVcpuId, CpuInterfacePhase>,
+    cpu_interfaces: CpuInterfacePhases,
+    /// Preallocated sweep buffer for one CPU-interface refill.
+    ///
+    /// The refill must snapshot the owned SPIs before it can queue them,
+    /// because queueing needs `&mut self`. Reserving the capacity at controller
+    /// creation keeps that snapshot allocation-free, and taking the buffer by
+    /// value keeps the reserved capacity for the next refill.
+    acknowledged_scratch: Vec<SpiId>,
+}
+
+/// Fixed per-vCPU CPU-interface phases.
+///
+/// The array is sized once from immutable configuration, so folding a hardware
+/// load or save writes a slot instead of inserting or removing a map entry. The
+/// CPU-pinned, IRQ-masked load/save path therefore never allocates or frees
+/// while the canonical state lock is held.
+struct CpuInterfacePhases {
+    slots: Vec<CpuInterfacePhase>,
+}
+
+impl CpuInterfacePhases {
+    fn new(vcpu_count: usize) -> Self {
+        Self {
+            slots: alloc::vec![CpuInterfacePhase::Idle; vcpu_count],
+        }
+    }
+
+    /// Returns one vCPU's phase.
+    ///
+    /// An id without a Redistributor is `Idle`: `attach_vcpu` rejects ids at or
+    /// above the configured vCPU count, so the slots cover every attachable id.
+    fn phase(&self, vcpu: GicVcpuId) -> CpuInterfacePhase {
+        self.slots
+            .get(vcpu.raw())
+            .copied()
+            .unwrap_or(CpuInterfacePhase::Idle)
+    }
+
+    fn set(&mut self, vcpu: GicVcpuId, phase: CpuInterfacePhase) {
+        if let Some(slot) = self.slots.get_mut(vcpu.raw()) {
+            *slot = phase;
+        }
+    }
+
+    /// Whether any vCPU still owns a loaded or retiring CPU interface.
+    fn any_active(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|phase| *phase != CpuInterfacePhase::Idle)
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CpuInterfacePhase {
+    /// No CPU interface is loaded for this vCPU.
+    Idle,
     Loaded,
     // Hardware state is saved, but lock-free backing retirements still own it.
     Retiring,
 }
 
 impl ControllerState {
+    fn cpu_interface_phase(&self, vcpu: GicVcpuId) -> CpuInterfacePhase {
+        self.cpu_interfaces.phase(vcpu)
+    }
+
+    fn set_cpu_interface_phase(&mut self, vcpu: GicVcpuId, phase: CpuInterfacePhase) {
+        self.cpu_interfaces.set(vcpu, phase);
+    }
+
     fn cpu_interface_loaded(&self, vcpu: GicVcpuId) -> bool {
-        self.vcpu_interfaces.get(&vcpu) == Some(&CpuInterfacePhase::Loaded)
+        self.cpu_interface_phase(vcpu) == CpuInterfacePhase::Loaded
+    }
+
+    /// Whether any vCPU still owns a loaded or retiring CPU interface.
+    fn any_cpu_interface_active(&self) -> bool {
+        self.cpu_interfaces.any_active()
     }
 }
 
@@ -258,20 +306,23 @@ impl GicV3Native {
         backend: Arc<dyn GicV3Backend>,
     ) -> VgicResult<Self> {
         let distributor = DistributorState::new(config.spi_count())?;
+        let cpu_interfaces = CpuInterfacePhases::new(config.vcpu_count());
+        let acknowledged_scratch = Vec::with_capacity(config.spi_count());
         Ok(Self {
             inner: Arc::new(ControllerInner {
                 id,
                 config,
                 gicv3_config,
                 backend,
-                state: ControllerStateLock::new(ControllerState {
+                state: RawSpinLock::new(ControllerState {
                     distributor,
                     redistributors: BTreeMap::new(),
                     spi_backings: BTreeMap::new(),
                     physical_spi_acknowledged: BTreeMap::new(),
                     releasing_physical_spis: BTreeSet::new(),
                     msi_backings: BTreeMap::new(),
-                    vcpu_interfaces: BTreeMap::new(),
+                    cpu_interfaces,
+                    acknowledged_scratch,
                 }),
             }),
         })
@@ -297,7 +348,8 @@ impl GicV3Controller {
         }
         let common = ControllerConfig::from_gicv3(&config);
         let its = Arc::new(ItsService::new(guest_memory, common.its_instances()));
-        let native = GicV3Native::new(config.controller_id(), common, Some(config), backend)?;
+        let native =
+            GicV3Native::new(InterruptControllerId::new(0), common, Some(config), backend)?;
         Ok(Self { native, its })
     }
 
@@ -425,9 +477,9 @@ impl GicV3Native {
             if !asserted {
                 let mut canceled = false;
                 let state = &mut *state;
-                let vcpu_interfaces = &state.vcpu_interfaces;
+                let cpu_interfaces = &state.cpu_interfaces;
                 for (vcpu, redistributor) in &mut state.redistributors {
-                    let loaded = vcpu_interfaces.get(vcpu) == Some(&CpuInterfacePhase::Loaded);
+                    let loaded = cpu_interfaces.phase(*vcpu) == CpuInterfacePhase::Loaded;
                     canceled |= redistributor.withdraw_pending_delivery(IntId::Spi(spi), loaded);
                 }
                 if canceled {
@@ -735,4 +787,34 @@ fn wake_vcpu(wake: Option<Arc<dyn GicV3VcpuWake>>) -> VgicResult {
         wake.wake()?;
     }
     Ok(())
+}
+
+impl GicV3Native {
+    /// Publishes a wired interrupt into canonical native state.
+    pub fn inject(
+        &self,
+        vcpu: usize,
+        intid: u32,
+        trigger: axvm_types::InterruptTriggerMode,
+    ) -> VgicResult {
+        match IntId::new(intid)? {
+            IntId::Sgi(sgi) => self.send_sgi(GicVcpuId::new(vcpu), sgi, crate::SgiTarget::SelfOnly),
+            IntId::Ppi(ppi) => match trigger {
+                axvm_types::InterruptTriggerMode::EdgeTriggered => {
+                    self.pulse_ppi(GicVcpuId::new(vcpu), ppi)
+                }
+                axvm_types::InterruptTriggerMode::LevelTriggered => {
+                    self.set_ppi_level(GicVcpuId::new(vcpu), ppi, true)
+                }
+            },
+            IntId::Spi(spi) => match trigger {
+                axvm_types::InterruptTriggerMode::EdgeTriggered => self.pulse_spi(spi),
+                axvm_types::InterruptTriggerMode::LevelTriggered => self.set_spi_level(spi, true),
+            },
+            IntId::Lpi(_) => Err(crate::VgicError::Unsupported {
+                operation: "inject wired interrupt",
+                detail: "LPIs must be delivered through an ITS endpoint".into(),
+            }),
+        }
+    }
 }

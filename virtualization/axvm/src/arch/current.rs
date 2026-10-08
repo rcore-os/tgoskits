@@ -1,5 +1,7 @@
 //! Compile-time binding to the architecture selected by the build target.
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) use target::irq::LOONGARCH_MAX_IRQ_COUNT;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use target::{Aarch64Arch as CurrentArch, Aarch64VmPlan as ArchVmPlan};
 #[cfg(target_arch = "loongarch64")]

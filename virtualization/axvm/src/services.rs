@@ -61,6 +61,13 @@ impl VcpuInterruptPort {
                 "invalid target vCPU",
             ));
         }
+        #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+        if vector >= 256 || (cfg!(target_arch = "x86_64") && vector < 32) {
+            return Err(AxVmError::invalid_input(
+                "bind vCPU interrupt",
+                "vector is outside the guest interrupt namespace",
+            ));
+        }
         Ok(Self {
             signals,
             vcpu_id,
@@ -68,8 +75,8 @@ impl VcpuInterruptPort {
         })
     }
 
-    /// Publishes the edge before waking its original owner. An inactive target,
-    /// retired run, or exhausted fixed source set is reported without allocation.
+    /// Publishes the edge before waking its current owner. An inactive target
+    /// retains the source for a later activation; a closed run rejects it.
     pub fn pulse(&self) -> Result<(), SignalError> {
         self.signals.publish(
             self.vcpu_id,
@@ -78,7 +85,10 @@ impl VcpuInterruptPort {
                 trigger: crate::InterruptTriggerMode::EdgeTriggered,
             },
         )?;
-        self.signals.kick_from_irq(self.vcpu_id)
+        match self.signals.kick_from_irq(self.vcpu_id) {
+            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 

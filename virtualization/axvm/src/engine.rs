@@ -75,7 +75,7 @@ impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
     }
 
     pub(crate) fn into_backend(mut self) -> (crate::vcpu::AxVCpu<A::VCpu>, AxVmResult) {
-        let result = self.vcpu.unbind();
+        let result = A::quiet_vcpu(&mut self.vcpu).and_then(|()| self.vcpu.unbind());
         (self.vcpu, result)
     }
 

@@ -346,9 +346,17 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
 
     fn cancel_timer(&self, handle: Self::TimerHandle) -> X86VlapicResult {
         default_host()
-            .cancel_timer(handle)
+            .cancel_timer_and_wait(handle)
             .map(|_| ())
             .map_err(|_| X86VlapicError::TimerUnavailable)
+    }
+
+    fn wait_timer_progress(&self) {
+        // Task context only: the cancel barrier for a timer whose callback was
+        // preempted on this same CPU (or whose host payload is still being
+        // reclaimed) must yield so that work can run. This never spins, and it
+        // is always called outside every raw/task lock the callback needs.
+        crate::host::task::yield_now();
     }
 }
 

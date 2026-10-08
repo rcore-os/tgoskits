@@ -76,9 +76,6 @@ impl RiscvEntry {
                 reg_width,
                 signed_ext,
                 advance,
-                touches_vplic: self
-                    .plic
-                    .contains_guest_addr(riscv_guest_phys_addr_to_ax(addr)),
             },
             RiscvVmExit::MmioWrite {
                 addr,
@@ -99,14 +96,7 @@ impl RiscvEntry {
             }
             RiscvVmExit::SendIpi(request) => RiscvExit::SendIpi {
                 request,
-                targets: ipi::resolve_targets(
-                    request.hart_mask(),
-                    request.hart_mask_base(),
-                    || self.topology.vcpu_ids(),
-                    |guest_hart_id| self.topology.resolve_hart(guest_hart_id),
-                )
-                .ok()
-                .map(Vec::into_boxed_slice),
+                targets: None,
             },
             RiscvVmExit::CpuUp {
                 target_cpu,
@@ -119,7 +109,7 @@ impl RiscvEntry {
                 entry_point,
                 context_id: arg as usize,
             },
-            RiscvVmExit::CpuDown { .. } => RiscvExit::CpuOff,
+            RiscvVmExit::CpuDown => RiscvExit::CpuOff,
             RiscvVmExit::Halt => RiscvExit::Halt,
             RiscvVmExit::SystemDown => RiscvExit::SystemDown,
             RiscvVmExit::Nothing => RiscvExit::Nothing,
@@ -167,7 +157,9 @@ impl ArchOps for Riscv64Arch {
             .devices()?
             .services()
             .require::<irq::RiscvPlicRuntimeKey>()
-            .map_err(Into::into)?
+            .map_err(|error| {
+                crate::AxVmError::device("resolve RISC-V interrupt controller", error)
+            })?
             .delivery_port();
         let topology =
             hsm::HartTopology::new(&resources.phys_cpu_ls.get_vcpu_affinities_pcpu_ids());
@@ -250,6 +242,26 @@ impl ArchOps for Riscv64Arch {
         Ok(entry.resolve_exit(vm_exit))
     }
 
+    fn finish_exit(
+        _vcpu: &mut AxVCpu<Self::VCpu>,
+        entry: &Self::Entry,
+        mut exit: Self::Exit,
+    ) -> AxVmResult<Self::Exit> {
+        // Resolving a hart set allocates its owned target list. Hardware is
+        // unloaded and CPU/IRQ context restored before this task-side stage.
+        if let RiscvExit::SendIpi { request, targets } = &mut exit {
+            *targets = ipi::resolve_targets(
+                request.hart_mask(),
+                request.hart_mask_base(),
+                || entry.topology.vcpu_ids(),
+                |hart| entry.topology.resolve_hart(hart),
+            )
+            .ok()
+            .map(Vec::into_boxed_slice);
+        }
+        Ok(exit)
+    }
+
     fn handle_exit(
         exit: Self::Exit,
         vcpu_id: usize,
@@ -260,7 +272,7 @@ impl ArchOps for Riscv64Arch {
                 services,
                 vcpu_id,
                 HypercallExit { nr, args },
-                HyperCallAbi::Generic,
+                HyperCallAbi::native(),
             ),
             RiscvExit::MmioRead {
                 addr,
@@ -269,10 +281,6 @@ impl ArchOps for Riscv64Arch {
                 reg_width,
                 signed_ext,
                 advance,
-                // A claim only clears controller pending state, so it can never
-                // make another context deliverable; the accessing vCPU
-                // rederives its own VSEIP at the next bound entry.
-                touches_vplic: _,
             } => {
                 let access = MmioReadExit {
                     addr: riscv_guest_phys_addr_to_ax(addr),
@@ -366,7 +374,7 @@ impl ArchOps for Riscv64Arch {
                     target_vcpu_id,
                     entry_point: riscv_guest_phys_addr_to_ax(entry_point),
                     context_id,
-                    abi: HyperCallAbi::Generic,
+                    abi: HyperCallAbi::native(),
                 })),
                 None => Ok(VcpuAction::Reenter(RiscvCompletion::SbiRet {
                     error: SbiRet::invalid_param().error,
@@ -374,9 +382,9 @@ impl ArchOps for Riscv64Arch {
                 })),
             },
             RiscvExit::CpuOff => Ok(VcpuAction::Control(GuestRequest::CpuOff {
-                abi: HyperCallAbi::Generic,
+                abi: HyperCallAbi::native(),
             })),
-            RiscvExit::Halt => Ok(VcpuAction::Wait(WaitReason::Lifecycle)),
+            RiscvExit::Halt => Ok(VcpuAction::Wait(WaitReason::Idle)),
             RiscvExit::SystemDown => Ok(VcpuAction::Stop(StopReason::SystemDown)),
             RiscvExit::Nothing => Ok(VcpuAction::Reenter(RiscvCompletion::None)),
         }
