@@ -742,20 +742,6 @@ fn interrupt_priority_above_ppr(vector: u8, ppr: u8) -> bool {
     vector & 0xf0 > ppr & 0xf0
 }
 
-#[cfg(test)]
-mod interrupt_priority_tests {
-    use super::interrupt_priority_above_ppr;
-
-    #[test]
-    fn fixed_interrupt_must_have_a_higher_priority_class_than_ppr() {
-        assert!(!interrupt_priority_above_ppr(0x5f, 0x50));
-        assert!(!interrupt_priority_above_ppr(0x50, 0x5f));
-        assert!(!interrupt_priority_above_ppr(0x4f, 0x50));
-        assert!(interrupt_priority_above_ppr(0x6f, 0x5f));
-        assert!(interrupt_priority_above_ppr(0x50, 0x4f));
-    }
-}
-
 fn extract_index_u32(vector: u32) -> usize {
     vector as usize >> 5
 }
@@ -1024,5 +1010,19 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
     /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.process_eoi()
+    }
+}
+
+#[cfg(test)]
+mod interrupt_priority_tests {
+    use super::interrupt_priority_above_ppr;
+
+    #[test]
+    fn fixed_interrupt_must_have_a_higher_priority_class_than_ppr() {
+        assert!(!interrupt_priority_above_ppr(0x5f, 0x50));
+        assert!(!interrupt_priority_above_ppr(0x50, 0x5f));
+        assert!(!interrupt_priority_above_ppr(0x4f, 0x50));
+        assert!(interrupt_priority_above_ppr(0x6f, 0x5f));
+        assert!(interrupt_priority_above_ppr(0x50, 0x4f));
     }
 }
