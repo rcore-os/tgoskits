@@ -2,7 +2,6 @@ features = [
   "ax-driver/rk3588-cpufreq",
   "ax-driver/rockchip-dwmmc",
   "ax-driver/rockchip-sdhci",
-  "fs",
 ]
 log = "Warn"
 target = "aarch64-unknown-none-softfloat"

@@ -141,10 +141,11 @@ StarryOS guest 和 AxVisor + Linux guest 标记 `nightly_only`，只由 AxVisor 
 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`；AxVisor Linux guest 通过
 `sudo -S env FEETECH_DEV=auto` 运行同一入口。它们使用原 USB 摄像头 `0ac8:0346` 和
 USB 控制器 `1a86:55d3`，不使用 SoC UART6 `/dev/ttyS6`，也不在 VM 配置中注入额外的
-UART6 设备选择；USB 控制器仍可能在系统中呈现 USB 串口节点。AxVisor 的两条检查分别使用
-`image_location = "memory"`（StarryOS，当前 checkout 构建）和
-`image_location = "fs"`（Linux，`/guest/linux/orangepi-5-plus-6.1.99`、
-`root=/dev/mmcblk1p2`、`console=ttyS2`）。real Linux 使用 USB 机器人板实测的
+UART6 设备选择；USB 控制器仍可能在系统中呈现 USB 串口节点。AxVisor 的两条检查都从文件
+加载客户机：StarryOS 使用当前 checkout 构建的内核，由 `vm_configs` 装入宿主 initramfs
+并安装到 `/guest/builtin/images`；Linux 使用板卡已有的
+`/guest/linux/orangepi-5-plus-6.1.99`、`root=/dev/mmcblk1p2`、`console=ttyS2`。
+real Linux 使用 USB 机器人板实测的
 `/dev/mmcblk1p2`；virtual 普通板仍为 `/dev/mmcblk0p2`。
 
 所有板卡检查都依赖人工部署：CI 不下载、编译、打包或部署应用。virtual 包由
