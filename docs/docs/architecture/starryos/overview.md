@@ -148,7 +148,7 @@ sequenceDiagram
 
 ## 启动流程
 
-StarryOS 的启动分为两个阶段：`ax-runtime` 完成宿主归档解包和根选择；启动包（`starryos`）解析 `rdinit=`、`init=`、`--`、参数与环境变量，随后调用 `starry_kernel::entry::init_candidates()`。伪文件系统挂载、PID 1 创建及 ELF 加载发生在 `kernel/src/entry.rs` 中。内存根与磁盘根的选择见 [`host-initramfs.md`](../../../design/host-initramfs.md)。
+StarryOS 的启动分为两个阶段：`ax-runtime` 完成宿主归档解包和根选择；启动包（`starryos`）解析 `rdinit=`、`init=`、`--`、参数与环境变量，随后调用 `starry_kernel::entry::init_candidates()`。伪文件系统挂载、PID 1 创建及 ELF 加载发生在 `kernel/src/entry.rs` 中。内存根与磁盘根的选择见 [`host-initramfs.md`](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/host-initramfs.md)。
 
 `os/StarryOS/starryos/src/main.rs` 不再编入 shell 启动脚本。默认候选路径按 Linux 顺序为 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`；早期 `/init` 或 `rdinit=` 可用时先尝试它。
 
