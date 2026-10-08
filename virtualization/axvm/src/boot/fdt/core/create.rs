@@ -62,9 +62,45 @@ pub(crate) fn create_guest_fdt(
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
     })?;
+    // A derived guest tree must not inherit the host CPU's DVFS controls. The
+    // CPU clock, OPP and regulator providers are physical host resources; the
+    // guest may still use the rest of the passthrough tree, but it must not be
+    // given bindings that make its cpufreq driver a second owner of those
+    // resources.
+    strip_cpu_power_dependencies(&mut guest_tree)?;
     prune_cpu_references(fdt, &mut guest_tree)?;
     super::disabled::apply(&mut guest_tree, crate_config)?;
     Ok(guest_tree.finish())
+}
+
+fn strip_cpu_power_dependencies(guest: &mut FdtTree) -> AxVmResult {
+    const HOST_POWER_PROPERTIES: &[&str] = &[
+        "#cooling-cells",
+        "clock-names",
+        "clocks",
+        "cpu-supply",
+        "dynamic-power-coefficient",
+        "mem-supply",
+        "nvmem-cell-names",
+        "nvmem-cells",
+        "operating-points-v2",
+        "rockchip,pvtm-freq",
+        "rockchip,pvtm-low-len-sel",
+        "rockchip,pvtm-voltage-sel",
+    ];
+
+    for (node_id, path) in guest.node_paths() {
+        if !path.starts_with("/cpus/cpu@") || path["/cpus/cpu@".len()..].contains('/') {
+            continue;
+        }
+        let node = guest.inner_mut().node_mut(node_id).ok_or_else(|| {
+            ax_err_type!(InvalidData, "guest CPU node disappeared during filtering")
+        })?;
+        for name in HOST_POWER_PROPERTIES {
+            node.remove_property(name);
+        }
+    }
+    Ok(())
 }
 
 struct GeneratedNodePolicy<'a> {
@@ -618,7 +654,7 @@ mod tests {
             device::find_all_passthrough_devices,
             tree::{FdtTree, prop_string, sanitize_bootargs},
         },
-        find_node_by_phandle, initrd_range_from_image_config, u32_property,
+        initrd_range_from_image_config, u32_property,
     };
     use crate::{
         GuestPhysAddr,
@@ -1297,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn orangepi_5_plus_guest_fdt_keeps_cpu_power_dependencies_resolvable() {
+    fn orangepi_5_plus_guest_fdt_does_not_expose_host_cpu_power_controls() {
         let host = Fdt::from_bytes(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../os/axvisor/configs/board/orangepi-5-plus.dtb"
@@ -1326,16 +1362,18 @@ mod tests {
         find_all_passthrough_devices(&vm_cfg, &guest).unwrap();
         let cpu = guest.get_by_path("/cpus/cpu@0").unwrap().as_node();
 
-        assert!(cpu.get_property("#cooling-cells").is_some());
-        assert!(cpu.get_property("dynamic-power-coefficient").is_some());
-        for property_name in ["operating-points-v2", "cpu-supply"] {
-            let phandle = cpu
-                .get_property(property_name)
-                .and_then(Property::get_u32)
-                .unwrap();
+        for property_name in [
+            "#cooling-cells",
+            "clocks",
+            "cpu-supply",
+            "dynamic-power-coefficient",
+            "mem-supply",
+            "nvmem-cells",
+            "operating-points-v2",
+        ] {
             assert!(
-                find_node_by_phandle(&guest, phandle).is_some(),
-                "{property_name} references missing guest phandle {phandle:#x}"
+                cpu.get_property(property_name).is_none(),
+                "host CPU control property {property_name} leaked into guest FDT"
             );
         }
     }
