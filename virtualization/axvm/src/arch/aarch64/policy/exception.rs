@@ -252,9 +252,6 @@ fn handle_psci_call(ctx: &TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
 /// Otherwise, it will forward the SMC call to the ATF directly.
 fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     const PSCI_VERSION_32: u64 = 0x8400_0000;
-    const SCMI_SMC_1_0: u64 = 0x8200_0010;
-    const SCMI_SMC_1_1: u64 = 0x8200_0011;
-    const SMCCC_RET_NOT_SUPPORTED: u64 = u64::MAX;
 
     // Is this a psci call?
     // Keep virtual CPU lifecycle calls inside AxVisor, but expose the physical
@@ -266,16 +263,10 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
         return result;
     }
 
-    // SCMI is host-owned on a passthrough Axvisor machine. Forwarding its SMC
-    // mailbox call would let a guest change the host CPU clock or regulator
-    // behind the shared cpufreq worker. Return the standard SMCCC refusal and
-    // keep the call inside the guest boundary.
-    if matches!(ctx.gpr[0], SCMI_SMC_1_0 | SCMI_SMC_1_1) {
-        ctx.set_gpr(0, SMCCC_RET_NOT_SUPPORTED as usize);
-        return Ok(ArmVmExit::Nothing);
-    }
-
-    // We just forward the SMC call to the ATF directly.
+    // SCMI remains available for guest-owned peripheral clocks and regulators.
+    // CPU clock and OPP bindings are removed from the derived guest FDT, so a
+    // normal guest cpufreq driver has no host CPU control surface while device
+    // drivers can still use the shared firmware service they require.
     // The args are from lower EL, so it is safe to call the ATF.
     (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
         unsafe { super::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
@@ -287,7 +278,6 @@ mod tests {
     use super::*;
 
     const PSCI_VERSION_32: u64 = 0x8400_0000;
-    const SCMI_SMC_1_0: u64 = 0x8200_0010;
     const GENERIC_HVC_NR: u64 = 0x1234_5678;
     const TEST_PC: usize = 0x8020_0000;
 
@@ -324,16 +314,5 @@ mod tests {
                 args: [1, 2, _, _, _, _],
             }
         ));
-    }
-
-    #[test]
-    fn scmi_smc_is_rejected_without_forwarding_to_firmware() {
-        let mut ctx = TrapFrame::default();
-        ctx.set_gpr(0, SCMI_SMC_1_0 as usize);
-
-        let exit = handle_smc64_exception(&mut ctx).expect("SCMI SMC should be handled");
-
-        assert!(matches!(exit, ArmVmExit::Nothing));
-        assert_eq!(ctx.gpr[0], usize::MAX);
     }
 }

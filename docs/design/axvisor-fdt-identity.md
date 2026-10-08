@@ -26,7 +26,7 @@ ITS 允许多实例。`its::install_registers()` 先按 profile 路径绑定；�
 
 按 `phys_cpu_ids` 选择宿主 CPU，只投影执行所需的标量属性。已有客户机 CPU 优先按相同硬件地址对应；宿主选中集合与客户机均为单 CPU 时允许唯一角色对应，并保留客户机 phandle。其他无法确定的对应关系直接报错。投影不复制宿主 OPP、供电、idle-state、cache provider 引用，也不保留整机 `cpu-map`，避免描述未分配的硬件与拓扑。
 
-这一限制作用于显式 DTB 的 CPU 替换路径。宿主完整派生设备树的 `create_guest_fdt()` 也会删除选中 CPU 上的 OPP、时钟、供电、PVTM、NVMEM 和 thermal cooling 绑定；SCMI SMC mailbox ID 在 Axvisor 的客户机异常路径中返回 `SMCCC_RET_NOT_SUPPORTED`。这样客户机仍可使用其分配的设备，但不会获得宿主 CPU 调频和电源轨的第二个所有者。本次不新增独立客户机直通设备的任意路径或 GPA 重定位配置；既有直通资源映射仍需遵循已有配置契约，不能把本次身份修复解释为该能力已经可用。
+这一限制作用于显式 DTB 的 CPU 替换路径。宿主完整派生设备树的 `create_guest_fdt()` 也会删除选中 CPU 上的 OPP、时钟、供电、PVTM、NVMEM 和 thermal cooling 绑定；Axvisor 继续转发 SCMI mailbox，以便客户机使用分配设备所需的时钟和供电服务。由于客户机 CPU 节点不再引用宿主 CPU 的 SCMI clock、OPP 和 regulator，标准 cpufreq 驱动没有宿主 CPU 调频入口，不会成为 CPU 电源轨的第二个所有者。本次不新增独立客户机直通设备的任意路径或 GPA 重定位配置；既有直通资源映射仍需遵循已有配置契约，不能把本次身份修复解释为该能力已经可用。
 
 ### 2.2 失败与验证
 
