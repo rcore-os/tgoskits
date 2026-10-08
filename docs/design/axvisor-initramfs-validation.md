@@ -193,3 +193,11 @@ ROC 固件还会在交接时追加控制 DTB 中的旧 `ro`，覆盖测试命令
 ASUS 原作业在加载器串口尚未完成身份绑定时由服务端于 60 秒截止关闭，未进入 Axvisor。后续使用正常发布内核的板卡入口复测时，服务端状态已变为 `bound`，识别 `/dev/ttyUSB6`、启动代次和绑定 ID；未改动服务器或固件。用例 1/1 通过（`/tmp/pr2567-asus-published-boot.log`），宿主无盘直接使用 initramfs，Linux 客户机输出 `test pass!`；外部归档回收 31490048 字节，仍在使用的解包内存根按正常生命周期保留。
 
 本轮 `cargo xtask clippy --package ax-fs-ng` 六项检查全部通过，CI 规划器 38 项测试通过；标准库增量检查使用已提交差异 `cargo xtask test --since e24f520188401f9351a13752c5ba80f3cb420eea`，选中的 16 个软件包全部通过（`/tmp/pr2567-std-prepared-partitions.log`），包括真实 VFS、根切换、MemoryFs 生命周期和目录替换回归，axbuild 为 428 项测试。
+
+### 6.4 性能目录迁移变基
+
+`e05d31a7cd213440a9b33b810a497e7d7c899a29` 的 [完整 CI 37768045833](https://github.com/rcore-os/tgoskits/actions/runs/37768045833) 最终 41 个作业全部通过。首次失败是 ROC 2 号板缺少 `/userdata/rootfs_overlay/guest/linux/roc-rk3568-pc`，原生 Linux 确认该目录为空；补齐同型号 1 号板使用的镜像并刷盘，重启后读回 36692480 字节、SHA-256 `383159149d60e4381a55f0d81501daef5ab9e6c9c2c0cd72c76a32d67a3a62b3` 一致。同一 Smoke 用例本地与 CI 均明确分配到 2 号板并通过，确认旧根脱离、748 字节解包 ramfs 释放及 Linux 客户机登录。临时文件已清理。
+
+该提交的 SVM 六用例 6/6，日志只有一次 `Compiling axvisor`，六次内核 SHA-256 均为 `403e08351837f90683e98e148258f5880037be369bb512ef36974ee19a4c1008`，各归档哈希不同。Starry 四架构的 NVMe 设备号、普通 pivot_root 与命名空间隔离均实际执行；AArch64 的纯内存根、内核磁盘回退和用户态切根均通过。HTTP 控制面在切根及旧 ramfs 释放后删除、重建并启动 VM。
+
+最终核对时 `dev` 合并了性能目录迁移 #2504，本分支再次变基到 `134cb196e25603097d373659062d9449d81f70a2`。原 `ivc-benchmark`、`task-switch-overhead` 与 `vcpu-perf` 改动迁移到 `benchmarks/axvisor`，保持归档输入、文件加载和文件系统 shell 语义；性能资源说明移到对应基准文档。变基后 CI 规划、路由与报告测试共 139 项全部通过，axbuild 定向 Clippy 1/1。上述完整 CI 结果属于 `e05d31a7cd`，后续提交的 CI 需分别核对。

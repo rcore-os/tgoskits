@@ -5,7 +5,7 @@ guest_type = "passthrough"
 cpu_num = 1
 phys_cpu_ids = [0x00]
 
-# Use the Starry kernel built by the nightly job from the same checkout.
+# Use the Starry kernel built by the benchmark job from the same checkout.
 [kernel]
 entry_point = 0x4008_0000
 kernel_load_addr = 0x4008_0000
