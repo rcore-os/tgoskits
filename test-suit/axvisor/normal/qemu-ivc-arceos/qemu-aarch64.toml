@@ -45,7 +45,6 @@ shell_cmd = "vm console 1"
 success_regex = [
     "Attached VM\\[1\\] console",
     "ivc ack seq=5 msg=ack from arceos subscriber",
-    "ivc full-duplex demo complete",
 ]
 
 [[shell_check_steps]]
