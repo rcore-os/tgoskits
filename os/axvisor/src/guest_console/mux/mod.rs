@@ -11,9 +11,7 @@ use ax_std::os::arceos::modules::ax_runtime::RuntimeError;
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
 use core::ops::Bound::{Excluded, Unbounded};
 use log::warn;
-use std::sync::{LazyLock, Mutex, MutexGuard};
-
-use crate::sync::MutexExt;
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use super::host::{submit_host_bytes, submit_host_transaction};
 
@@ -159,7 +157,7 @@ impl GuestConsoleMux {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         let generations = self.core.backend_generations();
         let running = running
@@ -557,11 +555,13 @@ impl GuestConsoleMux {
 
 impl ConsoleCore {
     fn lock_state(&self) -> MutexGuard<'_, ConsoleState> {
-        self.state.lock_unpoisoned()
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn lock_output(&self) -> MutexGuard<'_, ()> {
-        self.output_lock.lock_unpoisoned()
+        self.output_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn backend_generations(&self) -> BTreeMap<VMId, BackendGeneration> {

@@ -82,7 +82,7 @@ impl TestVm {
 }
 
 /// Manager stub mirroring the production application manager.
-struct TestManager;
+pub(crate) struct TestManager;
 
 impl TestManager {
     pub(crate) fn notify_vm(&self, vm_id: VMId) -> Result<()> {
