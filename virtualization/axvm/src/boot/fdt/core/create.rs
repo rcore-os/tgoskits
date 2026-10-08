@@ -235,18 +235,6 @@ pub(super) fn prune_cpu_references(source: &Fdt, guest: &mut FdtTree) -> AxVmRes
     Ok(())
 }
 
-#[cfg(test)]
-fn find_node_by_phandle(fdt: &Fdt, phandle: u32) -> Option<NodeId> {
-    fdt.iter_node_ids().find(|node_id| {
-        fdt.node(*node_id).is_some_and(|node| {
-            node.get_property("phandle")
-                .or_else(|| node.get_property("linux,phandle"))
-                .and_then(Property::get_u32)
-                == Some(phandle)
-        })
-    })
-}
-
 fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: &[String]) -> bool {
     passthrough_device_names.iter().any(|passthrough_path| {
         passthrough_path
