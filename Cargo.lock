@@ -1819,8 +1819,6 @@ name = "axvmconfig"
 version = "0.8.9"
 dependencies = [
  "axvm-types",
- "clap",
- "env_logger",
  "log",
  "schemars",
  "serde",

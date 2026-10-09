@@ -476,7 +476,6 @@ const BUILD_TARGET_ARCH: &str = "unknown";
 /// guests start with all guest-assignable physical devices and then remove the
 /// devices listed in [`GuestDevices::disabled`].
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(clap::ValueEnum))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuestType {
