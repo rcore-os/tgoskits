@@ -37,7 +37,6 @@ use core::{
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
-use ax_std::os::arceos::task::thread::ThreadState;
 use axfs_ng_vfs::{DeviceId, FilesystemId, Location};
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
@@ -66,7 +65,7 @@ use crate::{
     StarryError, StarryResult,
     pseudofs::DeviceMmap,
     sync::RwLock,
-    task::{AX_FILE_LIMIT, PidIdentityId, current_user_task, tasks},
+    task::{AX_FILE_LIMIT, PidIdentityId, current_user_task},
 };
 
 /// Mount-independent identity for inode-scoped state.
@@ -913,20 +912,6 @@ pub fn close_file_like(fd: c_int) -> StarryResult {
     Err(StarryError::BadFileDescriptor)
 }
 
-fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
-    tasks().into_iter().any(|task| {
-        if task.state() == ThreadState::Exited {
-            return false;
-        }
-        let thread = task.as_thread();
-        let scoped_fd_table = thread.clone_scope_item(&FD_TABLE);
-        let table = scoped_fd_table.read();
-        table
-            .ids()
-            .any(|id| table.get(id).is_some_and(|fd| Arc::ptr_eq(&fd.inner, file)))
-    })
-}
-
 fn notify_close_write(fd: &FileDescriptor) {
     let access = fd.inner.open_flags() & O_ACCMODE;
     let filesystem_backed = fd.inner.is::<File>()
@@ -966,10 +951,10 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
     fd.inner.on_close(owner);
     notify_close_write(&fd);
     if let Some(k) = key {
+        // Only the POSIX record locks this pid owns go now: an flock belongs to
+        // the open file description, which outlives this descriptor whenever
+        // anything else still refers to it.
         crate::syscall::release_inode_posix_locks(owner, k);
-        if !fd_tables_contain_file(&fd.inner) {
-            crate::syscall::release_flock_lock(k, &fd.inner);
-        }
     }
     drop(fd);
     if let Some(k) = key {

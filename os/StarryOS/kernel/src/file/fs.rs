@@ -217,6 +217,14 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
+        // This is the last reference to the open file description, which is
+        // where Linux releases its flock entry (`locks_remove_file()` from
+        // `__fput()`); a descriptor still queued in an SCM_RIGHTS message keeps
+        // the lock until the receiver closes it.
+        crate::syscall::release_ofd_flock(
+            InodeKey::for_location(self.inner.location()),
+            self as *const File as usize,
+        );
         if self.open_flags & linux_raw_sys::general::O_PATH == 0
             && let Ok(device) = self.inner.location().entry().downcast::<Device>()
         {

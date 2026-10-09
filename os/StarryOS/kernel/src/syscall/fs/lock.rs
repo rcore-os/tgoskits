@@ -1313,8 +1313,9 @@ fn try_flock_once(
 /// is gone, so any flock it held must be released and waiters woken.
 /// POSIX fcntl locks are handled by [`release_inode_posix_locks`] (pid-scoped,
 /// not OFD-scoped).
-pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
-    let addr = ofd_addr(file);
+/// Drops the entry an open file description held, once that description is
+/// gone for good. Linux does this in `locks_remove_file()` from `__fput()`.
+pub fn release_ofd_flock(key: InodeKey, addr: OfdAddr) {
     let mutated = {
         let Some(state) = existing_flock_state(key) else {
             return;

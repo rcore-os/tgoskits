@@ -40,7 +40,8 @@ pub use self::{
     io::*,
     io_uring::*,
     lock::{
-        release_flock_lock, release_inode_posix_locks, release_pid_flock_locks, release_pid_locks,
+        release_inode_posix_locks, release_ofd_flock, release_pid_flock_locks,
+        release_pid_locks,
         wake_flock_waiters, wake_lock_waiters,
     },
     memfd::*,

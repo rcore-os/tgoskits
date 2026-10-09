@@ -767,12 +767,11 @@ pub fn sys_close_range(
     let cloexec = flags.contains(CloseRangeFlags::CLOEXEC);
     let current_fd_table = crate::file::current_fd_table();
     let mut fd_table = current_fd_table.write();
-    // Collect closed fds and defer `release_locks_on_close` until after the
-    // table write lock is dropped. `release_locks_on_close()` walks every fd
-    // table through `fd_tables_contain_file()` (which acquires `FD_TABLE`),
-    // so running it under the write guard self-deadlocks on the first closed
-    // fd — every `dup2()`/`dup3()` that replaces an open fd (shell pipeline
-    // setup) hangs. Mirrors the `close_all_fds` / execve CLOEXEC pattern.
+    // Collect closed fds and release their locks after the table write lock
+    // is dropped: the release, and the destructor that runs when the last
+    // reference goes with it, take the lock tables, so keeping them outside
+    // the fd table guard leaves the lock order one way. Mirrors the
+    // `close_all_fds` / execve CLOEXEC pattern.
     let mut closing = alloc::vec::Vec::new();
     if let Some(max_index) = fd_table.last_id() {
         for fd in first..=last.min(max_index as u32) {
@@ -870,10 +869,9 @@ pub fn sys_dup3(old_fd: c_int, new_fd: c_int, flags: c_int) -> StarryResult<isiz
         .add_at(new_fd as _, f)
         .map_err(|_| StarryError::BadFileDescriptor)?;
     drop(fd_table);
-    // `release_locks_on_close()` walks all fd tables via
-    // `fd_tables_contain_file()` (acquiring `FD_TABLE`), so it must run AFTER
-    // the write lock is released — otherwise every dup2()/dup3() that replaces
-    // an open fd self-deadlocks (shell pipeline redirection, etc.).
+    // The replaced descriptor releases its locks, and runs its destructor if
+    // it was the last reference, so it goes after the write lock is released
+    // and the lock order stays one way.
     if let Some(prev) = prev {
         crate::file::release_locks_on_close(prev);
     }
