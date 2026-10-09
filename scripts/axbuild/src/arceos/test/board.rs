@@ -234,11 +234,13 @@ impl ArceOS {
                 let board_config = self
                     .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
+                let mut request = prepared.request.clone();
+                request.build_info_path = group.build_config_path.clone();
                 self.app
                     .board_prepared_elf(
                         prepared.elf_path.clone(),
                         prepared.cargo.to_bin,
-                        prepared.request.build_info_path.clone(),
+                        request.build_info_path,
                         board_config,
                         RunBoardOptions {
                             board_type: args.board_type.clone(),
