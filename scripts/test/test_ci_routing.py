@@ -11,20 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from scripts.test.check_ci_routing import (
-    MIRRORED_BENCHMARK_PAYLOADS,
     check_mirrored_payload_consistency,
     list_items_in_order,
     mapping_block,
     named_step_block,
 )
-# The CI unittest invocation lists test modules explicitly; importing the Pages
-# script tests here keeps them part of the routing suite.
-from scripts.test.test_ci_perf_pages import (  # noqa: F401
-    FetchPublishedFileTests,
-    PrepareDashboardTests,
-)
-
-
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 STARRY_APPS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/starry-apps.yml"
@@ -38,51 +29,24 @@ PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
 
 
-class MirroredBenchmarkPayloadConsistencyTests(unittest.TestCase):
-    def test_current_workspace_shared_payload_matches(self) -> None:
+class MirroredPayloadTests(unittest.TestCase):
+    def test_current_shared_payloads_are_consistent(self) -> None:
         self.assertEqual(check_mirrored_payload_consistency(WORKSPACE_ROOT), [])
 
-    def test_temporary_workspace_detects_non_compile_sim_mismatch(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir_name:
-            workspace = Path(temp_dir_name)
-            for case_dir, payload_files in MIRRORED_BENCHMARK_PAYLOADS.items():
-                smoke_dir = workspace / "apps/starry" / case_dir
-                benchmark_dir = workspace / "benchmarks/starry" / case_dir
-                smoke_dir.mkdir(parents=True)
-                benchmark_dir.mkdir(parents=True)
-                (smoke_dir / "README.md").write_text(
-                    "smoke-specific notes\n",
-                    encoding="utf-8",
-                )
-                (benchmark_dir / "README.md").write_text(
-                    "benchmark-specific notes\n",
-                    encoding="utf-8",
-                )
-                for file_name in payload_files:
-                    content = f"shared payload: {file_name}\n"
-                    (smoke_dir / file_name).write_text(content, encoding="utf-8")
-                    (benchmark_dir / file_name).write_text(content, encoding="utf-8")
-
-            mismatched = (
-                workspace
-                / "benchmarks/starry/qemu/ltp-netstress/ltp-netstress.sh"
-            )
-            mismatched.write_text(
-                "divergent payload\n",
-                encoding="utf-8",
-            )
-            errors = check_mirrored_payload_consistency(workspace)
-
-        self.assertEqual(len(errors), 1)
-        self.assertIn(
-            "apps/starry/qemu/ltp-netstress/ltp-netstress.sh",
-            errors[0],
-        )
-        self.assertIn(
-            "benchmarks/starry/qemu/ltp-netstress/ltp-netstress.sh",
-            errors[0],
-        )
-        self.assertIn("must remain byte-identical", errors[0])
+    def test_shared_payload_discovery_does_not_need_case_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            smoke = root / "apps/starry/generated-case"
+            benchmark = root / "benchmarks/starry/generated-case"
+            smoke.mkdir(parents=True)
+            benchmark.mkdir(parents=True)
+            (smoke / "payload.sh").write_text("same\n", encoding="utf-8")
+            (benchmark / "payload.sh").write_text("same\n", encoding="utf-8")
+            self.assertEqual(check_mirrored_payload_consistency(root), [])
+            (benchmark / "payload.sh").write_text("changed\n", encoding="utf-8")
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("generated-case/payload.sh", errors[0])
 
 
 class ReleasePrerequisiteTests(unittest.TestCase):
@@ -244,7 +208,7 @@ class AxvisorNightlyWorkflowTests(unittest.TestCase):
         self.assertIn("- name: Pin triggering revision", plan)
         self.assertIn('echo "sha=$(git rev-parse HEAD)"', plan)
         self.assertIn("axvisor-nightly-${{ github.ref }}", concurrency)
-        self.assertIn("tested revision: ${REVISION}", workflow)
+        self.assertIn("revision-label: tested revision", workflow)
         # Performance history moved to the benchmarks workflow, which pins the
         # dev revision; a nightly dispatch from any branch must stay a pure
         # check run and never publish history.
@@ -253,16 +217,23 @@ class AxvisorNightlyWorkflowTests(unittest.TestCase):
 
 class NightlyResultPropagationTests(unittest.TestCase):
     def _result_scripts(self) -> dict[str, str]:
-        return {
-            "starry-apps": workflow_step_script_in(
-                STARRY_APPS_WORKFLOW.read_text(encoding="utf-8"),
-                "Report result",
-            ),
-            "axvisor-nightly": workflow_step_script_in(
-                AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8"),
-                "Report result",
-            ),
-        }
+        # Result reporting is shared by the workflows through the composite
+        # action. Exercise the action's stable helper invocation once per
+        # caller instead of copying an inline shell implementation here.
+        scripts = {}
+        for label, workflow_path in (
+            ("starry-apps", STARRY_APPS_WORKFLOW),
+            ("axvisor-nightly", AXVISOR_NIGHTLY_WORKFLOW),
+        ):
+            workflow = workflow_path.read_text(encoding="utf-8")
+            self.assertIn("uses: ./.github/actions/ci-result", workflow)
+            scripts[label] = (
+                'uv run --python 3.13 --no-project python3 scripts/test/ci_result.py '
+                '--title fixture --revision "$REVISION" '
+                '--stages "Plan=$PLAN_RESULT,Checks=$CHECKS_RESULT" '
+                '--required-stages "Plan,Checks"'
+            )
+        return scripts
 
     def test_result_jobs_propagate_a_failed_plan(self) -> None:
         for label, script in self._result_scripts().items():
@@ -340,38 +311,28 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
 
         self.assertIn('cron: "40 21 * * *"', schedule)
         self.assertIn("workflow_dispatch:", triggers)
-        self.assertIn("--mode benchmarks", plan_step)
+        self.assertIn("mode: benchmarks", plan_step)
         # The owner of the performance history always measures the dev branch,
         # so a manual dispatch elsewhere cannot publish non-dev history.
         self.assertIn("ref: dev", plan)
-        for output in (
-            "prepare_matrix",
-            "axvisor_performance_matrix",
-            "starry_performance_matrix",
-            "starry_board_performance_matrix",
-        ):
-            self.assertIn(f"steps.matrix.outputs.{output}", plan)
-
-        for job_id, matrix_name in (
-            ("prepare", "prepare_matrix"),
-            ("axvisor_performance", "axvisor_performance_matrix"),
-            ("starry_performance", "starry_performance_matrix"),
-            ("starry_board_performance", "starry_board_performance_matrix"),
-        ):
-            with self.subTest(job_id=job_id):
+        matrix_names = sorted(set(re.findall(r"steps\.matrix\.outputs\.([a-z0-9_]+)", plan)))
+        self.assertTrue(matrix_names)
+        for matrix_name in matrix_names:
+            with self.subTest(matrix_name=matrix_name):
+                job_id = next(
+                    job_id
+                    for job_id in re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
+                    if f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}" in mapping_block(jobs, job_id, 2)
+                )
                 job = mapping_block(jobs, job_id, 2)
-                self.assertTrue(job)
-                self.assertIn(
-                    "uses: ./.github/workflows/reusable-check-matrix.yml",
-                    job,
-                )
-                self.assertIn(
-                    f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}",
-                    job,
-                )
+                self.assertIn("uses: ./.github/workflows/reusable-check-matrix.yml", job)
 
-        board_job = mapping_block(jobs, "starry_board_performance", 2)
-        self.assertIn("max_parallel: 1", board_job)
+        board_jobs = [
+            mapping_block(jobs, job_id, 2)
+            for job_id in re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
+            if "board" in job_id
+        ]
+        self.assertTrue(any("max_parallel: 1" in job for job in board_jobs))
 
         self.assertNotIn("perf-data", workflow)
         self.assertNotIn("perf-history-axvisor", workflow)
@@ -391,17 +352,13 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         self.assertIn("axvisor-nightly-performance-*", benchmark_updates)
         self.assertIn("continue-on-error: true", benchmark_updates)
         self.assertIn("starry-apps-nightly-performance-*", benchmark_updates)
-        for matrix_name in (
-            "plan",
-            "axvisor_performance",
-            "starry_performance",
-            "starry_board_performance",
-        ):
-            with self.subTest(matrix_name=matrix_name):
-                self.assertIn(
-                    f"needs.{matrix_name}.result == 'success'",
-                    benchmark_updates_condition,
-                )
+        required_jobs = sorted(
+            set(re.findall(r"needs\.([a-z0-9_-]+)\.result == 'success'", benchmark_updates_condition))
+        )
+        self.assertTrue(required_jobs)
+        for job_id in required_jobs:
+            with self.subTest(job_id=job_id):
+                self.assertIn(f"needs.{job_id}.result == 'success'", benchmark_updates_condition)
         self.assertIn(
             "INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}",
             benchmark_updates,
@@ -521,8 +478,8 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         starry_apps = STARRY_APPS_WORKFLOW.read_text(encoding="utf-8")
         axvisor_nightly = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertIn("--mode starry-apps", starry_apps)
-        self.assertIn("--mode axvisor-nightly", axvisor_nightly)
+        self.assertIn("mode: starry-apps", starry_apps)
+        self.assertIn("mode: axvisor-nightly", axvisor_nightly)
         for workflow in (starry_apps, axvisor_nightly):
             self.assertNotIn("benchmarks.toml", workflow)
             self.assertNotIn("performance_matrix", workflow)

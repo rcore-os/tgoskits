@@ -332,7 +332,12 @@ class CiImpactTests(unittest.TestCase):
             metadata_failure.ignored_markdown,
             ("components/shared/README.md",),
         )
-        self.assertEqual(len(metadata_failure.targets), 12)
+        expected_targets = {
+            f"{os_name}:{arch}"
+            for os_name in ("arceos", "starry", "axvisor")
+            for arch in ci_impact.ARCH_TARGETS
+        }
+        self.assertEqual(set(metadata_failure.targets), expected_targets)
 
     def test_global_change_skips_unneeded_metadata_loading(self) -> None:
         with (

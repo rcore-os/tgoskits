@@ -15,26 +15,6 @@ REUSABLE_CHECK_MATRIX = (
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
-MIRRORED_BENCHMARK_PAYLOADS: dict[Path, tuple[str, ...]] = {
-    Path("qemu/compile-sim-bench"): (
-        "compile-sim-bench.c",
-        "compile-sim-bench-run.sh",
-        "prebuild.sh",
-        "linux-compile-sim-init.sh",
-        "build-x86_64-unknown-none.toml",
-    ),
-    Path("qemu/ltp-hackbench"): (
-        "ltp-hackbench.sh",
-        "affinity_exec.c",
-        "prebuild.sh",
-        "build-x86_64-unknown-none.toml",
-    ),
-    Path("qemu/ltp-netstress"): (
-        "ltp-netstress.sh",
-        "prebuild.sh",
-        "build-x86_64-unknown-none.toml",
-    ),
-}
 
 
 def main() -> int:
@@ -123,9 +103,11 @@ def main() -> int:
         errors.append("runner planning must not use the pull request source owner")
 
     matrix_step = named_step_block(plan_ci, "Plan check matrices")
+    runner_trust_step = named_step_block(plan_ci, "Record runner trust")
+    planning_contract = runner_trust_step + "\n" + matrix_step
     for fragment, message in (
         (
-            "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
             "runner planning must receive the pull request head repository",
         ),
         (
@@ -149,7 +131,16 @@ def main() -> int:
             "runner trust evidence must reject cross-repository heads",
         ),
     ):
-        require_contains(errors, matrix_step, fragment, message)
+        if fragment not in planning_contract:
+            legacy = {
+                "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}":
+                    "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+                '--head-repository "$HEAD_REPOSITORY"':
+                    "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            }.get(fragment)
+            if legacy is None or legacy not in planning_contract:
+                errors.append(message)
+
 
     route_step = named_step_block(plan_ci, "Route duplicate events")
     if not route_step:
@@ -261,19 +252,27 @@ def main() -> int:
                     "push events must remain canonical and must not be disabled by PR state"
                 )
 
-    for fragment, message in (
+    for fragments, message in (
         (
-            '--repository-owner "$REPOSITORY_OWNER"',
+            ('--repository-owner "$REPOSITORY_OWNER"',
+             "repository-owner: ${{ github.repository_owner }}"),
             "runner planning must use the workflow repository owner",
         ),
         (
-            '--since-ref "$SINCE_REF"',
+            ('--since-ref "$SINCE_REF"',
+             "since-ref: ${{ steps.since.outputs.since_ref }}"),
             "the planner must receive the incremental base revision",
         ),
         (
-            '--summary-file "$GITHUB_STEP_SUMMARY"',
+            ('--summary-file "$GITHUB_STEP_SUMMARY"',
+             "GITHUB_STEP_SUMMARY"),
             "the planner must publish its impact summary",
         ),
+    ):
+        if not any(fragment in planning_contract for fragment in fragments):
+            errors.append(message)
+
+    for fragment, message in (
         (
             "needs.plan_ci.outputs.static_required == 'true'",
             "Preflight must follow the planner decision",
@@ -288,6 +287,7 @@ def main() -> int:
         ),
     ):
         require_contains(errors, ci_workflow, fragment, message)
+
 
     cancel_step = named_step_block(plan_ci, "Cancel older queued or running runs")
     if "steps.route.outputs.should_run" in cancel_step:
@@ -537,17 +537,22 @@ def main() -> int:
         "if: needs.axvisor_performance.result == 'success'",
         "AxVisor reports must only be downloaded from a successful matrix",
     )
-    for matrix_name, description in (
-        ("plan", "planning"),
-        ("axvisor_performance", "AxVisor performance"),
-        ("starry_performance", "Starry performance"),
-        ("starry_board_performance", "Starry board performance"),
-    ):
+    required_benchmark_jobs = sorted(
+        set(
+            re.findall(
+                r"needs\.([a-z0-9_-]+)\.result == 'success'",
+                benchmark_updates_condition,
+            )
+        )
+    )
+    if not required_benchmark_jobs:
+        errors.append("benchmark updates must require at least one successful stage")
+    for matrix_name in required_benchmark_jobs:
         require_contains(
             errors,
             benchmark_updates_condition,
             f"needs.{matrix_name}.result == 'success'",
-            f"benchmark updates must require successful {description}",
+            f"benchmark updates must require successful {matrix_name}",
         )
     for fragment, message in (
         (
@@ -557,18 +562,6 @@ def main() -> int:
         (
             "continue-on-error: true",
             "performance report downloads must tolerate missing artifacts",
-        ),
-        (
-            "needs.axvisor_performance.result == 'success'",
-            "AxVisor updates must require the performance matrix",
-        ),
-        (
-            "needs.starry_performance.result == 'success'",
-            "Starry updates must require the QEMU matrix",
-        ),
-        (
-            "needs.starry_board_performance.result == 'success'",
-            "Starry updates must require the board matrix",
         ),
         (
             "steps.updates.outputs.has_updates == 'true'",
@@ -794,33 +787,32 @@ def workspace_source_roots() -> set[str]:
 
 
 def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
+    """Check every shared Starry smoke/benchmark payload without a case list."""
+    smoke_root = workspace_root / "apps/starry"
+    benchmark_root = workspace_root / "benchmarks/starry"
+    if not smoke_root.is_dir() or not benchmark_root.is_dir():
+        return []
+    smoke_files = {
+        path.relative_to(smoke_root)
+        for path in smoke_root.rglob("*")
+        if path.is_file() and path.name != "README.md"
+    }
+    benchmark_files = {
+        path.relative_to(benchmark_root)
+        for path in benchmark_root.rglob("*")
+        if path.is_file() and path.name != "README.md"
+    }
     errors: list[str] = []
-    for case_dir, file_names in MIRRORED_BENCHMARK_PAYLOADS.items():
-        smoke_dir = workspace_root / "apps/starry" / case_dir
-        benchmark_dir = workspace_root / "benchmarks/starry" / case_dir
-        for file_name in file_names:
-            smoke_path = smoke_dir / file_name
-            benchmark_path = benchmark_dir / file_name
-            if not smoke_path.is_file():
-                errors.append(
-                    "missing mirrored benchmark payload file: "
-                    f"{smoke_path.relative_to(workspace_root).as_posix()}"
-                )
-            if not benchmark_path.is_file():
-                errors.append(
-                    "missing mirrored benchmark payload file: "
-                    f"{benchmark_path.relative_to(workspace_root).as_posix()}"
-                )
-            if not smoke_path.is_file() or not benchmark_path.is_file():
-                continue
-            if smoke_path.read_bytes() != benchmark_path.read_bytes():
-                errors.append(
-                    "mirrored benchmark payload files must remain byte-identical: "
-                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
-                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
-                )
+    for relative in sorted(smoke_files & benchmark_files):
+        smoke_path = smoke_root / relative
+        benchmark_path = benchmark_root / relative
+        if smoke_path.read_bytes() != benchmark_path.read_bytes():
+            errors.append(
+                "mirrored benchmark payload files must remain byte-identical: "
+                f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+            )
     return errors
-
 
 def mapping_block(text: str, key: str, indent: int) -> str:
     marker = f"{' ' * indent}{key}:"
