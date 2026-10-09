@@ -5,15 +5,13 @@
 //! a small BusyBox initramfs generated from the managed architecture rootfs.
 
 use std::{
-    collections::BTreeSet,
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, bail, ensure};
-use flate2::{Compression, write::GzEncoder};
-use tempfile::NamedTempFile;
+use flate2::Compression;
 
 use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::read_binary_file};
 
@@ -734,7 +732,6 @@ fn prepare_busybox_initramfs(
     let loader_path = musl_loader_path(arch)?;
     let loader = required_rootfs_file(rootfs_path, loader_path)?;
     let archive = build_busybox_initramfs(&busybox, loader_path, &loader)?;
-
     let output_parent = output_path.parent().with_context(|| {
         format!(
             "initramfs output path has no parent: {}",
@@ -747,15 +744,9 @@ fn prepare_busybox_initramfs(
             output_parent.display()
         )
     })?;
-    let mut temporary = NamedTempFile::new_in(output_parent).with_context(|| {
-        format!(
-            "failed to create temporary initramfs in {}",
-            output_parent.display()
-        )
-    })?;
-    temporary
-        .write_all(&archive)
-        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(output_parent)?;
+    temporary.write_all(&archive)?;
+    temporary.as_file_mut().sync_all()?;
     temporary
         .persist(output_path)
         .map_err(|error| error.error)
@@ -796,128 +787,35 @@ fn build_busybox_initramfs(
     loader: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
     let init_script = init_script();
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-    {
-        let mut archive = NewcArchive::new(&mut encoder);
-        let mut directories = BTreeSet::from([
-            "bin".to_string(),
-            "dev".to_string(),
-            "proc".to_string(),
-            "root".to_string(),
-            "sys".to_string(),
-            "tmp".to_string(),
-        ]);
-        let loader_archive_path = archive_path(loader_path)?;
-        add_parent_directories(loader_archive_path, &mut directories);
-        for directory in directories {
-            archive.append_directory(&directory)?;
-        }
-
-        archive.append_regular("bin/busybox", busybox)?;
-        archive.append_regular(loader_archive_path, loader)?;
-        archive.append_regular("init", &init_script)?;
-        for applet in [
-            "awk", "cat", "cmp", "date", "dd", "dmesg", "grep", "mount", "od", "sed", "sh", "sleep",
-        ] {
-            archive.append_symlink(&format!("bin/{applet}"), "busybox")?;
-        }
-        archive.finish()?;
-    }
-    encoder
-        .finish()
-        .context("failed to finish initramfs gzip stream")
-}
-
-fn archive_path(guest_path: &str) -> anyhow::Result<&str> {
-    let archive_path = guest_path
+    let loader_archive_path = loader_path
         .strip_prefix('/')
         .context("initramfs guest path must be absolute")?;
-    ensure!(
-        !archive_path.is_empty()
-            && Path::new(archive_path)
-                .components()
-                .all(|component| matches!(component, Component::Normal(_))),
-        "invalid initramfs guest path `{guest_path}`"
-    );
-    Ok(archive_path)
-}
-
-fn add_parent_directories(path: &str, directories: &mut BTreeSet<String>) {
-    let mut parent = Path::new(path).parent();
-    while let Some(path) = parent {
-        if path.as_os_str().is_empty() {
-            break;
+    let mut archive = crate::image::InitramfsBuilder::new();
+    for directory in ["bin", "dev", "proc", "root", "sys", "tmp"] {
+        archive.add_directory(directory, 0o755)?;
+    }
+    if let Some(parent) = Path::new(loader_archive_path).parent()
+        && parent != Path::new("")
+        && parent != Path::new(".")
+    {
+        let mut current = PathBuf::new();
+        for component in parent.components() {
+            if let Component::Normal(component) = component {
+                current.push(component);
+                archive
+                    .add_directory(current.to_str().context("loader path is not UTF-8")?, 0o755)?;
+            }
         }
-        directories.insert(path.to_string_lossy().into_owned());
-        parent = path.parent();
     }
-}
-
-struct NewcArchive<W> {
-    writer: W,
-    inode: u32,
-}
-
-impl<W: Write> NewcArchive<W> {
-    fn new(writer: W) -> Self {
-        Self { writer, inode: 1 }
+    archive.add_file("bin/busybox", busybox, 0o755)?;
+    archive.add_file(loader_archive_path, loader, 0o755)?;
+    archive.add_file("init", &init_script, 0o755)?;
+    for applet in [
+        "awk", "cat", "cmp", "date", "dd", "dmesg", "grep", "mount", "od", "sed", "sh", "sleep",
+    ] {
+        archive.add_symlink(&format!("bin/{applet}"), "busybox", 0o777)?;
     }
-
-    fn append_directory(&mut self, path: &str) -> anyhow::Result<()> {
-        self.append(path, 0o040755, 2, &[])
-    }
-
-    fn append_regular(&mut self, path: &str, contents: &[u8]) -> anyhow::Result<()> {
-        self.append(path, 0o100755, 1, contents)
-    }
-
-    fn append_symlink(&mut self, path: &str, target: &str) -> anyhow::Result<()> {
-        self.append(path, 0o120777, 1, target.as_bytes())
-    }
-
-    fn finish(&mut self) -> anyhow::Result<()> {
-        self.append("TRAILER!!!", 0, 1, &[])
-    }
-
-    fn append(
-        &mut self,
-        path: &str,
-        mode: u32,
-        link_count: u32,
-        contents: &[u8],
-    ) -> anyhow::Result<()> {
-        ensure!(!path.as_bytes().contains(&0), "cpio path contains NUL");
-        let file_size = u32::try_from(contents.len()).context("cpio entry is larger than 4 GiB")?;
-        let name_size = u32::try_from(path.len() + 1).context("cpio path is too long")?;
-        write!(
-            self.writer,
-            "070701{:08x}{mode:08x}{:08x}{:08x}{link_count:08x}{:08x}{file_size:08x}{:08x}{:08x}{:\
-             08x}{:08x}{name_size:08x}{:08x}",
-            self.inode, 0, 0, 0, 0, 0, 0, 0, 0,
-        )
-        .context("failed to write cpio header")?;
-        self.writer
-            .write_all(path.as_bytes())
-            .context("failed to write cpio path")?;
-        self.writer
-            .write_all(&[0])
-            .context("failed to terminate cpio path")?;
-        write_padding(&mut self.writer, 110 + path.len() + 1)?;
-        self.writer
-            .write_all(contents)
-            .context("failed to write cpio contents")?;
-        write_padding(&mut self.writer, contents.len())?;
-        self.inode = self.inode.checked_add(1).context("cpio inode overflow")?;
-        Ok(())
-    }
-}
-
-fn write_padding(writer: &mut impl Write, written: usize) -> anyhow::Result<()> {
-    const ZEROES: [u8; 3] = [0; 3];
-    let padding = (4 - written % 4) % 4;
-    writer
-        .write_all(&ZEROES[..padding])
-        .context("failed to write cpio alignment")
+    archive.build(crate::image::InitramfsCompression::Gzip(Compression::fast()))
 }
 
 #[cfg(test)]
