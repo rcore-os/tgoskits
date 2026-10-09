@@ -517,6 +517,27 @@ mod tests {
     }
 
     #[test]
+    fn profile_invocation_contains_only_real_feature_selection() {
+        let profile = PackageFeatureProfile {
+            name: "rdif",
+            no_default_features: true,
+            features: &["rdif"],
+        };
+
+        assert_eq!(
+            CargoTestInvocation::for_profile("alpha", &profile).args(),
+            [
+                "test",
+                "-p",
+                "alpha",
+                "--no-default-features",
+                "--features",
+                "rdif"
+            ]
+        );
+    }
+
+    #[test]
     fn cargo_execution_failures_do_not_stop_later_profiles() {
         let root = PathBuf::from("/tmp/workspace");
         const PROFILES: &[PackageFeatureProfile] = &[
