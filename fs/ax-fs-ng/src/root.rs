@@ -234,18 +234,26 @@ impl PreparedRoot {
             .get()
             .ok_or(VfsError::InvalidInput)?
             .clone();
-        let mut context_guard = context.lock();
-        let old_root = context_guard.root_dir().clone();
-        let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
-        // Preserve the complete tree that resource installation validated,
-        // including mounts on other partitions and their open filesystem owners.
-        let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
-        let new_root = mount.root_location();
+        let old_root;
+        let new_root;
         #[cfg(feature = "vfs")]
-        let namespace = context_guard.mount_namespace().clone();
-        if let Err(error) = context_guard.pivot_root(new_root.clone(), new_root.clone()) {
-            new_root.detach_mount()?;
-            return Err(error);
+        let namespace;
+        {
+            let mut context_guard = context.lock();
+            old_root = context_guard.root_dir().clone();
+            let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
+            // Preserve the complete tree that resource installation validated,
+            // including mounts on other partitions and their open filesystem owners.
+            let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
+            new_root = mount.root_location();
+            #[cfg(feature = "vfs")]
+            {
+                namespace = context_guard.mount_namespace().clone();
+            }
+            if let Err(error) = context_guard.pivot_root(new_root.clone(), new_root.clone()) {
+                new_root.detach_mount()?;
+                return Err(error);
+            }
         }
         crate::highlevel::FsContext::propagate_pivot_root(
             #[cfg(feature = "vfs")]
