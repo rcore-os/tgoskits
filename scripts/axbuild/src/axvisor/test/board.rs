@@ -160,14 +160,24 @@ impl Axvisor {
         }
 
         let mut build_groups = BTreeMap::<PathBuf, Vec<usize>>::new();
+        let mut resolved_build_configs = HashMap::<usize, PathBuf>::new();
+        let mut build_config_errors = HashMap::<usize, String>::new();
         for (position, (_, group)) in runnable.iter().enumerate() {
-            let build_config = group.build_config.canonicalize().with_context(|| {
-                format!(
-                    "failed to resolve Axvisor board build config `{}`",
-                    group.build_config.display()
-                )
-            })?;
-            build_groups.entry(build_config).or_default().push(position);
+            match group.build_config.canonicalize() {
+                Ok(build_config) => {
+                    resolved_build_configs.insert(position, build_config.clone());
+                    build_groups.entry(build_config).or_default().push(position);
+                }
+                Err(error) => {
+                    build_config_errors.insert(
+                        position,
+                        format!(
+                            "failed to resolve Axvisor board build config `{}`: {error}",
+                            group.build_config.display()
+                        ),
+                    );
+                }
+            }
         }
 
         // Board test TOMLs only select runtime payloads and checks. Build each
@@ -246,23 +256,24 @@ impl Axvisor {
             config_to_build.insert(build_config, index);
         }
 
-        for (group_label, group) in runnable {
+        for (position, (group_label, group)) in runnable.into_iter().enumerate() {
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-            let build_config = match group.build_config.canonicalize() {
-                Ok(path) => path,
-                Err(error) => {
-                    run_state.fail_group(
-                        group_label,
-                        anyhow::anyhow!(
-                            "failed to resolve Axvisor board build config `{}`: {error}",
-                            group.build_config.display()
-                        ),
-                    );
-                    continue;
-                }
+            if let Some(error) = build_config_errors.get(&position) {
+                run_state.fail_group(group_label, anyhow::anyhow!("{error}"));
+                continue;
+            }
+            let Some(build_config) = resolved_build_configs.get(&position) else {
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!(
+                        "missing resolved build config for `{}`",
+                        group.build_config.display()
+                    ),
+                );
+                continue;
             };
-            let Some(build_index) = config_to_build.get(&build_config) else {
+            let Some(build_index) = config_to_build.get(build_config) else {
                 run_state.fail_group(
                     group_label,
                     anyhow::anyhow!("missing prepared build for `{}`", build_config.display()),

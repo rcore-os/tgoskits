@@ -98,14 +98,24 @@ impl Starry {
         }
 
         let mut build_groups = BTreeMap::<PathBuf, Vec<usize>>::new();
+        let mut resolved_build_configs = HashMap::<usize, PathBuf>::new();
+        let mut build_config_errors = HashMap::<usize, String>::new();
         for (position, (_, _, group)) in runnable.iter().enumerate() {
-            let build_config = group.build_config_path.canonicalize().with_context(|| {
-                format!(
-                    "failed to resolve Starry board build config `{}`",
-                    group.build_config_path.display()
-                )
-            })?;
-            build_groups.entry(build_config).or_default().push(position);
+            match group.build_config_path.canonicalize() {
+                Ok(build_config) => {
+                    resolved_build_configs.insert(position, build_config.clone());
+                    build_groups.entry(build_config).or_default().push(position);
+                }
+                Err(error) => {
+                    build_config_errors.insert(
+                        position,
+                        format!(
+                            "failed to resolve Starry board build config `{}`: {error}",
+                            group.build_config_path.display()
+                        ),
+                    );
+                }
+            }
         }
 
         // Board TOMLs only select runtime checks and session files. Build each
@@ -180,16 +190,24 @@ impl Starry {
             config_to_build.insert(build_config, index);
         }
 
-        for (_, group_label, group) in runnable {
+        for (position, (_, group_label, group)) in runnable.into_iter().enumerate() {
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-            let build_config = group.build_config_path.canonicalize().with_context(|| {
-                format!(
-                    "failed to resolve Starry board build config `{}`",
-                    group.build_config_path.display()
-                )
-            })?;
-            let Some(build_index) = config_to_build.get(&build_config) else {
+            if let Some(error) = build_config_errors.get(&position) {
+                run_state.fail_group(group_label, anyhow::anyhow!("{error}"));
+                continue;
+            }
+            let Some(build_config) = resolved_build_configs.get(&position) else {
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!(
+                        "missing resolved build config for `{}`",
+                        group.build_config_path.display()
+                    ),
+                );
+                continue;
+            };
+            let Some(build_index) = config_to_build.get(build_config) else {
                 run_state.fail_group(
                     group_label,
                     anyhow::anyhow!("missing prepared build for `{}`", build_config.display()),
