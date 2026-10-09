@@ -210,7 +210,7 @@ mod tests {
         fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
         let output = directory.path().join("host.cpio");
         let mut archive = None;
-        attach(&[config.clone()], false, &output, &mut archive).unwrap();
+        attach(std::slice::from_ref(&config), false, &output, &mut archive).unwrap();
         let entries = parse_newc_entries(&fs::read(&output).unwrap());
         let contents = String::from_utf8(
             entries[&format!("guest/builtin/configs/vm-{}.toml", guest.base.id)].clone(),
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn board_package_keeps_missing_absolute_boot_assets_external() {
         let directory = tempfile::tempdir().unwrap();
-        let mut document = toml::Table::try_from(&GuestConfig::default()).unwrap();
+        let mut document = toml::Table::try_from(GuestConfig::default()).unwrap();
         document
             .get_mut("kernel")
             .unwrap()

@@ -456,11 +456,13 @@ fn init_root_with_policy(
     #[cfg(axtest)]
     AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
     let devices: Vec<_> = block_devs.into_iter().collect();
-    let use_memory = defer
-        || memory
-            .as_ref()
-            .is_some_and(|fs| should_use_memory_root(fs, bootargs, early_init))
-        || (devices.is_empty() && bootargs.and_then(root_value).is_none());
+    let use_memory = should_keep_memory_root(
+        devices.is_empty(),
+        memory.as_ref(),
+        bootargs,
+        early_init,
+        defer,
+    );
     crate::finish_filesystem_init(memory.unwrap_or_else(crate::MemoryFs::new_ramfs), "rootfs");
     ROOT_KIND.store(1, Ordering::Release);
     if use_memory {
@@ -470,6 +472,18 @@ fn init_root_with_policy(
         .and_then(PreparedRoot::commit)
         .unwrap_or_else(|error| panic!("failed to mount disk root: {error:?}"));
     RootKind::Block
+}
+
+fn should_keep_memory_root(
+    no_block_devices: bool,
+    memory: Option<&axfs_ng_vfs::Filesystem>,
+    bootargs: Option<&str>,
+    early_init: Option<&str>,
+    defer: bool,
+) -> bool {
+    no_block_devices
+        || defer
+        || memory.is_some_and(|fs| should_use_memory_root(fs, bootargs, early_init))
 }
 
 fn should_use_memory_root(
@@ -1311,6 +1325,24 @@ mod tests {
                 Some(String::from("PARTUUID=abcd"))
             );
         });
+    }
+
+    #[test]
+    fn inherited_root_keeps_memory_root_without_block_devices() {
+        assert!(should_keep_memory_root(
+            true,
+            None,
+            Some("root=/dev/nvme0n1"),
+            None,
+            false,
+        ));
+        assert!(!should_keep_memory_root(
+            false,
+            None,
+            Some("root=/dev/nvme0n1"),
+            None,
+            false,
+        ));
     }
 
     struct FlakyMetadataDevice {

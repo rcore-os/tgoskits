@@ -194,9 +194,10 @@ pub struct ArgsTestBoard {
     #[arg(
         long,
         value_name = "BOARD",
-        help = "Run all Axvisor board test cases for one board"
+        value_delimiter = ',',
+        help = "Run all Axvisor board test cases for one or more boards"
     )]
-    pub board: Option<String>,
+    pub board: Vec<String>,
 
     #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
     pub board_type: Option<String>,

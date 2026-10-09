@@ -201,10 +201,16 @@ class CiPlanTests(unittest.TestCase):
                 self.assertNotIn("ivc-benchmark", commands)
                 self.assertNotIn("orangepi-5-plus-vcpu-perf", commands)
                 self.assertNotIn("--test-case ping", commands)
-                self.assertIn("--board orangepi-5-plus-linux --test-case smoke", commands)
+                self.assertIn(
+                    "--board orangepi-5-plus-linux,orangepi-5-plus-starry --test-case smoke",
+                    commands,
+                )
                 self.assertNotIn("--board orangepi-5-plus-linux\n", commands)
                 self.assertIn("--test-case qemu-ivc", commands)
-                self.assertIn("--board orangepi-5-plus-starry", commands)
+                self.assertIn(
+                    "--board orangepi-5-plus-linux,orangepi-5-plus-starry",
+                    commands,
+                )
 
     def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
         path = (
@@ -1057,22 +1063,15 @@ command = "true"
             )["axvisor_matrix"]["include"]
         )
 
-        self.assertIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
+        self.assertNotIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
+        self.assertNotIn("test-orangepi-5-plus-robot-real-suite", axvisor_rows)
+        real_suite_id = "test-orangepi-5-plus-robot-real-suite"
+        self.assertIn(real_suite_id, nightly_rows)
+        real_suite_command = nightly_rows[real_suite_id]["command"]
+        self.assertIn("cargo xtask starry test board --board orangepi-5-plus-robot-real", real_suite_command)
         self.assertIn(
-            "--board orangepi-5-plus-robot-real",
-            starry_rows["test-orangepi-5-plus-robot-real-native-starryos"]["command"],
-        )
-        real_starry_id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
-        real_linux_id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
-        self.assertNotIn(real_starry_id, axvisor_rows)
-        self.assertNotIn(real_linux_id, axvisor_rows)
-        self.assertIn(
-            "--board orangepi-5-plus-robot-real-starry",
-            nightly_rows[real_starry_id]["command"],
-        )
-        self.assertIn(
-            "--board orangepi-5-plus-robot-real-linux",
-            nightly_rows[real_linux_id]["command"],
+            "--board orangepi-5-plus-robot-real-starry,orangepi-5-plus-robot-real-linux",
+            real_suite_command,
         )
 
         for path in (real_starry, real_axvisor_starry, real_axvisor_linux):

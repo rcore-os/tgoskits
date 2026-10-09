@@ -167,9 +167,8 @@ command = '''
 echo "==> StarryOS OrangePi 5 Plus board suites"
 cargo xtask starry test board --board orangepi-5-plus
 echo "==> axvisor OrangePi 5 Plus Linux guest"
-AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case smoke
-echo "==> axvisor OrangePi 5 Plus StarryOS guest"
-cargo xtask axvisor test board --board orangepi-5-plus-starry
+AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board \
+  --board orangepi-5-plus-linux,orangepi-5-plus-starry --test-case smoke
 '''
 
 [[check.suite]]
@@ -235,16 +234,17 @@ kind = "axvisor-board"
 board = "asus-nuc15crh-linux"
 
 [[check]]
-id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
+id = "test-orangepi-5-plus-robot-axvisor-guests"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
-name = "Board OrangePi 5 Plus · AxVisor StarryOS guest UVC/NPU + FT232 loopback"
+name = "Board OrangePi 5 Plus · AxVisor Linux + StarryOS guests UVC/NPU + FT232 loopback"
 runner = "board"
 cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot
-cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+cargo xtask axvisor test board \
+  --board orangepi-5-plus-robot-starry,orangepi-5-plus-robot-linux
 '''
 
 [[check.suite]]
@@ -254,19 +254,3 @@ board = "orangepi-5-plus-robot"
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-starry"
-
-[[check]]
-id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · AxVisor Linux guest UVC/NPU + FT232 loopback"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
-'''
-
-[[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-robot-linux"

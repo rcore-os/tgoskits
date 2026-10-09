@@ -54,8 +54,7 @@ GPT header、entry size/count 和 entry-array 范围必须完全位于设备内�
 - 裸 disk path（不带 partition）。
 
 设备 path 被解析成发现顺序中的 `disk_index` 和 zero-based `partition_index`。
-`PARTUUID` 比较不区分大小写，`PARTLABEL` 按原字符串精确匹配。进入磁盘根
-初始化后，显式 `root=` 无法解析或找不到候选时启动失败，不会猜测默认磁盘。
+`PARTUUID` 比较不区分大小写，`PARTLABEL` 按原字符串精确匹配。当至少一个块设备已注册并进入磁盘根初始化后，显式 `root=` 无法解析或找不到候选时启动失败，不会猜测默认磁盘。没有块设备驱动或没有可用块设备时，root policy 保留 initramfs 的内存根，即使启动参数继承了 `root=`，也不会尝试切换到不存在的磁盘根。
 
 ### 1.4 默认策略
 

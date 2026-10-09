@@ -419,7 +419,7 @@ fn returns_all_board_test_groups_when_no_filter_is_given() {
         "board_type = \"OrangePi-5-Plus\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(
         groups
@@ -441,7 +441,7 @@ fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
     let board_test_config = case_dir.join("board-custom.toml");
     fs::write(&board_test_config, "board_type = \"Custom\"\n").unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -482,7 +482,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
     )
     .unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 2);
     let benchmark = groups
@@ -504,7 +504,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
         root.path(),
         "normal",
         &[],
-        Some("orangepi-5-plus-vcpu-perf"),
+        &["orangepi-5-plus-vcpu-perf".to_string()],
     )
     .unwrap();
     assert_eq!(selected.len(), 1);
@@ -523,7 +523,7 @@ fn filters_board_test_group_by_case() {
     );
 
     let groups =
-        discover_board_test_groups(root.path(), "normal", &["smoke".to_string()], None).unwrap();
+        discover_board_test_groups(root.path(), "normal", &["smoke".to_string()], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -556,7 +556,8 @@ fn filters_board_test_groups_by_board() {
     );
 
     let groups =
-        discover_board_test_groups(root.path(), "normal", &[], Some("phytiumpi-linux")).unwrap();
+        discover_board_test_groups(root.path(), "normal", &[], &["phytiumpi-linux".to_string()])
+            .unwrap();
 
     assert_eq!(
         groups
@@ -616,7 +617,7 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         "board_type = \"OrangePi-5-Plus\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", &[], None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");

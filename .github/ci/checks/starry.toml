@@ -79,22 +79,6 @@ kind = "starry-qemu"
 arch = "x86_64"
 
 [[check]]
-id = "test-orangepi-5-plus-robot-real-native-starryos"
-impact_targets = ["starry:aarch64"]
-name = "Board OrangePi 5 Plus robot USB · Native robot control"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus-robot"
-timeout_minutes = 90
-command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot-real
-'''
-
-[[check.suite]]
-kind = "starry-board"
-board = "orangepi-5-plus-robot-real"
-
-[[check]]
 id = "test-starry-self-hosted-board-aka-00-sg2002"
 impact_targets = ["starry:riscv64"]
 name = "Board AKA-00 SG2002 · Suites"

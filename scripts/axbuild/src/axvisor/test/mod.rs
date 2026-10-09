@@ -39,9 +39,9 @@ pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
     group: &str,
     selected_cases: &[String],
-    board: Option<&str>,
+    boards: &[String],
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
-    discovery::discover_board_test_groups(workspace_root, group, selected_cases, board)
+    discovery::discover_board_test_groups(workspace_root, group, selected_cases, boards)
 }
 
 pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Result<()> {
