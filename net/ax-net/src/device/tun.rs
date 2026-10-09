@@ -341,13 +341,17 @@ pub(crate) fn create_tun(name: String) -> (TunDevice, Arc<TunShared>) {
 }
 
 /// Creates a TAP interface: the Ethernet adapter over a [`TapPort`].
-pub(crate) fn create_tap(name: String, mac: [u8; 6]) -> (EthernetDevice, Arc<TunShared>) {
+pub(crate) fn create_tap(
+    interface_id: InterfaceId,
+    name: String,
+    mac: [u8; 6],
+) -> (EthernetDevice, Arc<TunShared>) {
     let shared = TunShared::new(name.clone(), ETH_HLEN);
     let port = TapPort {
         shared: shared.clone(),
         mac,
     };
-    let mut device = EthernetDevice::new(name, Box::new(port), None);
+    let mut device = EthernetDevice::new(interface_id, name, Box::new(port), None);
     // `eth_type_trans` passes multicast frames up; unicast frames for another
     // host become `PACKET_OTHERHOST` and IP/ARP drop them.
     device.set_accept_multicast(true);
@@ -416,7 +420,11 @@ mod tests {
 
     #[test]
     fn a_tap_frame_dropped_at_a_full_queue_is_not_counted_as_sent() {
-        let (mut device, shared) = create_tap("tap0".to_string(), [0x02, 0, 0, 0, 0, 1]);
+        let (mut device, shared) = create_tap(
+            InterfaceId::new(2),
+            "tap0".to_string(),
+            [0x02, 0, 0, 0, 0, 1],
+        );
         for _ in 0..TUN_QUEUE_LEN {
             assert!(shared.tx.push_back(&[0u8; 60]));
         }

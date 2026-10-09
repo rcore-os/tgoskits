@@ -16,7 +16,8 @@ pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
 pub use devices::{
     virtio_net::{
-        PhysicalUplink, install_physical_uplink, reserve_host_mac, switch_from_physical_rx,
+        PhysicalUplink, PhysicalUplinkError, install_physical_uplink, physical_uplink_installed,
+        reserve_host_mac, switch_from_physical_rx,
     },
     virtio_pci::{VirtioPciFunction, virtio_capabilities},
 };

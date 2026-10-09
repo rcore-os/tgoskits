@@ -44,16 +44,26 @@ static GUEST_MACS: Mutex<BTreeSet<[u8; 6]>> = Mutex::new(BTreeSet::new());
 /// stays unambiguous on the LAN.
 static HOST_MACS: Mutex<BTreeSet<[u8; 6]>> = Mutex::new(BTreeSet::new());
 
-/// Hypervisor-side adapter for the single physical host uplink, implemented by
-/// the platform glue that owns the host network stack. It is the only channel
-/// by which a guest egress frame reaches the wire.
+/// Hypervisor-side adapter for one physical host uplink, implemented by the
+/// platform glue that owns the host network stack. It is the only channel by
+/// which a guest egress frame reaches that selected interface.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
+pub enum PhysicalUplinkError {
+    /// The bounded host queue cannot accept the frame at this instant.
+    #[error("physical uplink queue is full or busy")]
+    Backpressure,
+    /// The adapter rejected a frame that cannot be transmitted as Ethernet.
+    #[error("physical uplink rejected an invalid frame")]
+    InvalidFrame,
+}
+
 pub trait PhysicalUplink: Send + Sync {
     /// Submits one guest-originated frame for physical transmission.
     ///
-    /// Returns `true` when the frame was accepted, `false` when it was dropped
-    /// (for example a full bounded ring). Must not block or allocate, because it
-    /// runs in the guest's vCPU MMIO-write context.
-    fn submit_guest_egress(&self, frame: &[u8]) -> bool;
+    /// Returns an error when the bounded host queue cannot accept the frame.
+    /// Must not block or allocate, because it runs in the guest's vCPU
+    /// MMIO-write context.
+    fn submit_guest_egress(&self, frame: &[u8]) -> Result<(), PhysicalUplinkError>;
 }
 
 /// Physical uplink adapter, published exactly once before any guest can send.
@@ -66,6 +76,11 @@ static PHYSICAL_UPLINK: OnceLock<Arc<dyn PhysicalUplink>> = OnceLock::new();
 /// Publishes the physical uplink adapter; returns `false` if one is installed.
 pub fn install_physical_uplink(uplink: Arc<dyn PhysicalUplink>) -> bool {
     PHYSICAL_UPLINK.set(uplink).is_ok()
+}
+
+/// Returns whether this switch fabric already owns a physical uplink.
+pub fn physical_uplink_installed() -> bool {
+    PHYSICAL_UPLINK.get().is_some()
 }
 
 /// Reserves a host-owned MAC that no guest port may claim.
@@ -336,11 +351,14 @@ impl NetworkBackend for SwitchBackend {
         if let EgressOutcome::Forwarded { uplink: true } =
             self.switch.switch_from_port(self.endpoint.id(), frame)
         {
-            // Frames that must leave the virtual fabric go to the single
-            // physical uplink when one is installed; without a bridge the frame
-            // is dropped silently, as before this adapter existed.
+            // Frames that must leave the virtual fabric go to the physical
+            // uplink when one is installed. Without a bridge there is no host
+            // destination, so the switch still drops the frame locally.
             if let Some(uplink) = PHYSICAL_UPLINK.get() {
-                let _ = uplink.submit_guest_egress(frame);
+                uplink.submit_guest_egress(frame).map_err(|error| {
+                    warn!("physical uplink rejected guest egress: {error}");
+                    NetworkBackendError::TransmitFailed
+                })?;
             }
         }
         Ok(())

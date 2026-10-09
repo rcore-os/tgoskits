@@ -72,9 +72,9 @@ fn main() {
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
-    // Bridge guest virtio-net ports onto the single host NIC before any guest
-    // device is created, so the host DHCP/console stack keeps owning the wire
-    // and guest MACs are validated against the reserved host MACs.
+    // Bridge guest virtio-net ports onto the selected host interface before any
+    // guest device is created, so the host DHCP/console stack keeps owning the
+    // wire and guest MACs are validated against the reserved host MACs.
     #[cfg(feature = "net-l2-uplink")]
     net_uplink::start();
     manager

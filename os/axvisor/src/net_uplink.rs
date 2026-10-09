@@ -1,9 +1,9 @@
 //! Physical NIC layer-2 uplink wiring for AxVisor.
 //!
-//! AxVisor keeps exactly one physical NIC (the RTL8125) under the ArceOS host
-//! network stack so the host DHCP address and console keep working. Guest
-//! virtio-net devices on the internal `VirtualSwitch` are bridged to that single
-//! NIC through the bounded `ax-net` uplink instead of taking the device over,
+//! AxVisor keeps one capability-selected physical network interface under the
+//! ArceOS host network stack so the host DHCP address and console keep working.
+//! Guest virtio-net devices on the internal `VirtualSwitch` are bridged to that
+//! selected interface through the bounded `ax-net` uplink instead of taking the device over,
 //! which would break the host stack and cannot clone the driver.
 //!
 //! * Egress: [`UplinkEgress`] submits frames that must leave the fabric into the
@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use ax_std::os::arceos::modules::ax_net::{
-    self, InterfaceInfo, InterfaceKind, uplink as net_uplink,
+    self, InterfaceInfo, InterfaceKind, NetRxMode, uplink as net_uplink,
 };
 
 /// Physical ingress adapter feeding host-received frames into the switch.
@@ -33,8 +33,15 @@ struct UplinkEgress {
 }
 
 impl axvm::PhysicalUplink for UplinkEgress {
-    fn submit_guest_egress(&self, frame: &[u8]) -> bool {
-        self.runtime.submit_egress(frame).is_ok()
+    fn submit_guest_egress(&self, frame: &[u8]) -> Result<(), axvm::PhysicalUplinkError> {
+        self.runtime
+            .submit_egress(frame)
+            .map_err(|error| match error {
+                net_uplink::UplinkEgressError::Full => axvm::PhysicalUplinkError::Backpressure,
+                net_uplink::UplinkEgressError::InvalidFrame => {
+                    axvm::PhysicalUplinkError::InvalidFrame
+                }
+            })
     }
 }
 
@@ -44,6 +51,10 @@ impl axvm::PhysicalUplink for UplinkEgress {
 /// claim the host address; the switch itself is created lazily by the guest
 /// devices, so installing the ingress sink earlier is safe.
 pub(crate) fn start() {
+    if axvm::physical_uplink_installed() {
+        warn!("AxVisor physical uplink is already installed; skipping duplicate setup");
+        return;
+    }
     reserve_host_macs();
 
     // Selecting the interface and enabling its filter are one step: a port
@@ -53,7 +64,7 @@ pub(crate) fn start() {
     // left with the filter enabled.
     let Some(physical) = physical_interface() else {
         warn!(
-            "AxVisor physical uplink skipped: no wired Ethernet host interface accepts guest \
+            "AxVisor physical uplink skipped: no Ethernet host interface accepts guest \
              MACs (no RX address-filter control)"
         );
         return;
@@ -63,14 +74,28 @@ pub(crate) fn start() {
         return;
     };
 
-    let runtime = net_uplink::install(net_uplink::DEFAULT_EGRESS_DEPTH);
-    runtime.bind_device(&physical.name);
+    let runtime = Arc::new(net_uplink::UplinkRuntime::new(
+        net_uplink::DEFAULT_EGRESS_DEPTH,
+    ));
+    runtime.bind_interface(physical.id);
     runtime.set_ingress_sink(Arc::new(SwitchIngress));
     let egress = Arc::new(UplinkEgress {
         runtime: runtime.clone(),
     });
     if !axvm::install_physical_uplink(egress) {
+        // Do not leave a candidate NIC in all-unicast mode when another
+        // initializer won the fabric registration race.
+        let _ = ax_net::set_interface_rx_mode(physical.id, NetRxMode::normal());
         warn!("AxVisor physical uplink egress adapter was already installed");
+        return;
+    }
+    if !net_uplink::install(runtime.clone()) {
+        // A successful AxVM registration without a matching ax-net runtime is
+        // an initialization invariant violation. Keep the candidate NIC in
+        // host mode and leave guest creation to the caller's fail-closed path.
+        let _ = ax_net::set_interface_rx_mode(physical.id, NetRxMode::normal());
+        warn!("AxVisor physical uplink runtime was already published");
+        return;
     }
 
     info!(
@@ -97,24 +122,21 @@ fn reserve_host_macs() {
     }
 }
 
-/// Selects the wired Ethernet interface whose own control instance can accept
-/// every physical unicast address.
+/// Selects an Ethernet interface whose own control instance can accept
+/// every unicast destination needed by the bridge.
 ///
 /// The choice is driven by device capability rather than by interface name or
 /// probe order: AxVisor enables the hardware filter through the published
 /// interface's control endpoint and then binds the uplink to that exact
-/// interface. AxVisor publishes Wi-Fi under the same `Ethernet` kind, but a
-/// Wi-Fi driver has no address-filter control, so it reports
-/// `OperationNotSupported` and the search moves on. A candidate is used only
-/// when its own request succeeded, so the filter is already active on the
-/// selected NIC before the uplink becomes reachable and no unrelated port is
-/// left with the filter enabled.
+/// interface. A candidate is used only when its own request succeeds, so the
+/// filter is active on the selected NIC before the uplink becomes reachable
+/// and no unrelated port is left with the filter enabled.
 fn physical_interface() -> Option<InterfaceInfo> {
     for interface in ax_net::interfaces() {
         if interface.kind != InterfaceKind::Ethernet || interface.mac.is_none() {
             continue;
         }
-        match ax_net::set_interface_rx_accept_all_phys(interface.id, true) {
+        match ax_net::set_interface_rx_mode(interface.id, NetRxMode::all_unicast()) {
             Ok(()) => {
                 info!(
                     "AxVisor physical uplink enabling guest-MAC RX filter on {}",

@@ -1165,6 +1165,7 @@ mod tests {
         router.add_device(
             IF0,
             Box::new(crate::device::EthernetDevice::new(
+                IF0,
                 "checksum".into(),
                 Box::new(ChecksumPort),
                 None,
@@ -1732,6 +1733,7 @@ mod tests {
         router.add_device(
             IF0,
             Box::new(crate::device::EthernetDevice::new(
+                IF0,
                 "checksum".into(),
                 Box::new(ChecksumPort),
                 None,

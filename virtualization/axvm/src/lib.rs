@@ -52,8 +52,9 @@ pub use axvm_types::{
 pub use configured::{
     ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
     ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, VirtioPciFunction,
-    install_physical_uplink, reserve_host_mac, switch_from_physical_rx, virtio_capabilities,
+    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, PhysicalUplinkError, VirtioPciFunction,
+    install_physical_uplink, physical_uplink_installed, reserve_host_mac, switch_from_physical_rx,
+    virtio_capabilities,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
