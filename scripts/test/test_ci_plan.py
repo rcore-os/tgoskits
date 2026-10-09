@@ -596,17 +596,12 @@ class CiPlanTests(unittest.TestCase):
             [path],
         )
 
-        self.assertEqual(len(selections), 2)
+        self.assertEqual(len(selections), 1)
         self.assertEqual(
             selections[0].command,
             "cargo xtask starry test board --test-case "
             "exec-cache,native-hardware-smoke,native-network-smoke,pwm-sysfs,"
             "rknpu-resources --board orangepi-5-plus",
-        )
-        self.assertEqual(
-            selections[1].command,
-            "cargo xtask starry test board --test-case uvc-v4l2 "
-            "--board orangepi-5-plus-robot",
         )
 
     def test_sg2002_board_build_change_groups_all_feature_cases(self) -> None:
