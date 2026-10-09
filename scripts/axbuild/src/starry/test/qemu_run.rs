@@ -226,13 +226,15 @@ impl Starry {
                     starry_case.case.display_name
                 )
             })?;
-            qemu_test::prepare_host_initramfs(
+            let host_initramfs = qemu_test::prepare_host_initramfs(
                 self.app.workspace_root(),
                 self.app.target_dir(),
                 &starry_case.case.case_dir,
                 &request.arch,
                 &mut qemu,
             )?;
+            let diskless_host_initramfs =
+                host_initramfs && qemu_test::host_initramfs_without_rootfs_drive(&qemu);
             let timing_stage = timing::TimingStage::new(
                 "starry-qemu",
                 [
@@ -251,7 +253,7 @@ impl Starry {
                 &qemu,
                 default_rootfs_path,
             )?;
-            if !qemu_test::host_initramfs_without_rootfs_drive(&qemu) {
+            if !diskless_host_initramfs {
                 rootfs_paths.insert(rootfs_path.clone());
                 rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
                     self.app.workspace_root(),
@@ -274,6 +276,7 @@ impl Starry {
                 build_config_path: starry_case.build_config_path.clone(),
                 rootfs_path,
                 requirements,
+                diskless_host_initramfs,
             });
         }
 
@@ -493,7 +496,7 @@ impl Starry {
                 ("phase", "patch-rootfs".to_string()),
             ],
         );
-        if !qemu_test::host_initramfs_without_rootfs_drive(&qemu) {
+        if !prepared_case.diskless_host_initramfs {
             rootfs::patch_rootfs(
                 &mut qemu,
                 &prepared_assets.rootfs_path,

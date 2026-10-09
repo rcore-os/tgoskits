@@ -247,6 +247,7 @@ fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQ
         build_config_path,
         rootfs_path: PathBuf::from("/tmp/rootfs.img"),
         requirements: StarryQemuCaseRequirements { smp: 1 },
+        diskless_host_initramfs: false,
     }
 }
 

@@ -20,10 +20,10 @@ pub(crate) fn prepare_host_initramfs(
     case_dir: &Path,
     arch: &str,
     qemu: &mut QemuConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let manifest = case_dir.join("host-initramfs.toml");
     if !manifest.is_file() {
-        return Ok(());
+        return Ok(false);
     }
     let fixture: HostInitramfsFixture = toml::from_str(&fs::read_to_string(&manifest)?)
         .with_context(|| format!("failed to parse {}", manifest.display()))?;
@@ -32,7 +32,7 @@ pub(crate) fn prepare_host_initramfs(
             fixture.init_source.is_none(),
             "init_source requires a fixture source directory"
         );
-        return Ok(());
+        return Ok(false);
     };
     ensure!(
         qemu.boot.initramfs.is_none(),
@@ -75,7 +75,7 @@ pub(crate) fn prepare_host_initramfs(
 
     crate::image::pack_initramfs_dir(staging.path(), &output)?;
     qemu.boot.initramfs = Some(output.to_string_lossy().into_owned());
-    Ok(())
+    Ok(true)
 }
 
 /// Appends the map generated for the final target ELF to a prepared host
