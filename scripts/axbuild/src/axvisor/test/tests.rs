@@ -882,3 +882,163 @@ fn merges_group_names_from_every_suite_root() {
 
     assert_eq!(groups, vec!["nightly".to_string(), "normal".to_string()]);
 }
+
+fn write_healthy_aarch64_qemu_case(root: &Path) {
+    write_qemu_build_config(root, "normal", "qemu", "aarch64-unknown-none-softfloat");
+    write_qemu_config_in_group(
+        root,
+        "normal",
+        "qemu",
+        "smoke",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
+    );
+}
+
+/// A suite root with an unexpected config error must not be hidden behind a
+/// sibling root that already produced cases, which would silently shrink the
+/// discovered coverage.
+#[test]
+fn unexpected_root_error_is_not_swallowed_by_a_healthy_root() {
+    let root = tempdir().unwrap();
+    write_healthy_aarch64_qemu_case(root.path());
+
+    // The migrated root ships a legacy `build-<arch>.toml` instead of the
+    // required `build-<target>.toml`, so scanning it is an unexpected config
+    // error rather than an empty selection.
+    let faulty_wrapper = root.path().join(MIGRATED_SUITE_ROOT).join("normal/legacy");
+    fs::create_dir_all(&faulty_wrapper).unwrap();
+    fs::write(
+        faulty_wrapper.join("build-aarch64.toml"),
+        "target = \"aarch64-unknown-none-softfloat\"\n",
+    )
+    .unwrap();
+
+    // The error propagates with and without a selection that the healthy root
+    // can satisfy.
+    for selected_case in [None, Some("smoke")] {
+        let err = discover_qemu_cases(
+            root.path(),
+            "normal",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            selected_case,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported legacy build config"),
+            "{err}"
+        );
+    }
+
+    // Dropping the faulty wrapper proves the error came from it and that the
+    // healthy root discovers its case on its own.
+    fs::remove_dir_all(&faulty_wrapper).unwrap();
+    let cases = discover_qemu_cases(
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.case.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["smoke"]
+    );
+}
+
+/// A selected case that no suite root provides still fails instead of quietly
+/// returning an empty set.
+#[test]
+fn selected_case_missing_from_every_suite_root_is_reported() {
+    let root = tempdir().unwrap();
+    write_healthy_aarch64_qemu_case(root.path());
+    write_qemu_build_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "aarch64-unknown-none-softfloat",
+    );
+    write_qemu_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "gicv3-timer-stress",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"axvisor:/$\", shell_cmd = \"vm console 1\" \
+         }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
+    );
+
+    let err = discover_qemu_cases(
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("ghost"),
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("unknown"), "{err}");
+    assert!(err.to_string().contains("ghost"), "{err}");
+}
+
+/// Listing merges the functional and nightly roots and tolerates the root that
+/// lacks the selected case.
+#[test]
+fn lists_qemu_cases_from_every_suite_root_and_tolerates_missing_selection() {
+    let root = tempdir().unwrap();
+    write_healthy_aarch64_qemu_case(root.path());
+    write_qemu_build_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "aarch64-unknown-none-softfloat",
+    );
+    write_qemu_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "gicv3-timer-stress",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"axvisor:/$\", shell_cmd = \"vm console 1\" \
+         }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
+    );
+
+    let listed = discovery::list_all_qemu_cases(root.path(), "normal", None).unwrap();
+    assert_eq!(
+        listed,
+        vec!["smoke".to_string(), "gicv3-timer-stress".to_string()]
+    );
+
+    // The functional root lacks the nightly case; that per-root miss stays
+    // ignorable while the migrated root provides it.
+    let selected =
+        discovery::list_all_qemu_cases(root.path(), "normal", Some("gicv3-timer-stress")).unwrap();
+    assert_eq!(selected, vec!["gicv3-timer-stress".to_string()]);
+}
+
+/// Only a missing group or a missing selected case is ignorable per root; an
+/// unexpected error must surface so listing never hides part of the tree.
+#[test]
+fn list_qemu_case_error_classification_never_ignores_unexpected() {
+    use crate::test::qemu::ListQemuCasesErrorKind;
+
+    assert!(discovery::qemu_list_error_is_ignorable(
+        ListQemuCasesErrorKind::EmptyGroup
+    ));
+    assert!(discovery::qemu_list_error_is_ignorable(
+        ListQemuCasesErrorKind::UnknownSelectedCase
+    ));
+    assert!(!discovery::qemu_list_error_is_ignorable(
+        ListQemuCasesErrorKind::Unexpected
+    ));
+}

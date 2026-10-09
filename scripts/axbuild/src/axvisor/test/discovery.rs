@@ -42,24 +42,48 @@ pub(crate) fn discover_qemu_cases(
 ) -> anyhow::Result<Vec<AxvisorQemuCase>> {
     let roots = group_dirs(workspace_root, group)?;
     let mut cases = Vec::new();
-    let mut first_error = None;
+    let mut missing_selected_case = None;
     for root in &roots {
-        match test_qemu::discover_qemu_cases(root, arch, target, selected_case, "Axvisor", "qemu") {
+        match test_qemu::discover_qemu_cases_allow_empty(
+            root,
+            arch,
+            target,
+            selected_case,
+            "Axvisor",
+            "qemu",
+        ) {
             Ok(found) => {
                 for case in found {
                     cases.push(load_qemu_case(case)?);
                 }
             }
             Err(error) => {
-                first_error.get_or_insert(error);
+                // `allow_empty` already reports a root without cases for this
+                // arch/target as `Ok` when no case is selected, so an error here
+                // is a genuine config/scan failure that must propagate. With a
+                // selection the error may instead mean this root simply lacks
+                // the case, which a sibling root may still provide: re-scanning
+                // without a selection reproduces config/scan failures (they do
+                // not depend on the selection) and stays `Ok` for a root that
+                // only misses the case.
+                let missing_from_root = selected_case.is_some()
+                    && test_qemu::discover_qemu_cases_allow_empty(
+                        root, arch, target, None, "Axvisor", "qemu",
+                    )
+                    .is_ok();
+                if !missing_from_root {
+                    return Err(error);
+                }
+                missing_selected_case.get_or_insert(error);
             }
         }
     }
 
-    // A root without the requested case reports an empty selection; only
-    // surface that error when no root contributed cases.
+    // A root without the requested case reports an empty selection; surface the
+    // retained error only when no root contributed the case, so a case missing
+    // everywhere still fails instead of silently shrinking coverage.
     if cases.is_empty()
-        && let Some(error) = first_error
+        && let Some(error) = missing_selected_case
     {
         return Err(error);
     }
@@ -89,6 +113,11 @@ pub(super) fn list_all_qemu_cases_with_archs(
 }
 
 /// Merge the bare case names of every suite root for one group.
+///
+/// A root that does not provide the group or the selected case is ignorable so
+/// the nightly cases under `apps/axvisor` and the functional cases under
+/// `test-suit/axvisor` list together; any other error surfaces instead of being
+/// dropped.
 pub(super) fn list_all_qemu_cases(
     workspace_root: &Path,
     group: &str,
@@ -96,20 +125,12 @@ pub(super) fn list_all_qemu_cases(
 ) -> anyhow::Result<Vec<String>> {
     let roots = group_dirs(workspace_root, group)?;
     let mut cases = Vec::new();
-    let mut first_error = None;
     for root in &roots {
         match test_qemu::discover_all_qemu_cases(root, selected_case, "Axvisor", group) {
             Ok(found) => cases.extend(found),
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
+            Err(error) if qemu_list_error_is_ignorable(error.kind()) => {}
+            Err(error) => return Err(anyhow::Error::new(error)),
         }
-    }
-
-    if cases.is_empty()
-        && let Some(error) = first_error
-    {
-        return Err(anyhow::Error::new(error));
     }
     Ok(cases)
 }
