@@ -30,7 +30,13 @@ pub async fn vm_create(
         .and_then(Value::as_str)
         .ok_or(StatusCode::BAD_REQUEST)?
         .to_owned();
-    axvmconfig::GuestConfig::from_toml(&raw).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let config = axvmconfig::GuestConfig::from_toml(&raw).map_err(|_| StatusCode::BAD_REQUEST)?;
+    // Reject a duplicate before asynchronous boot preparation reads any guest
+    // image. The API contract exposes an existing VM as a conflict even when
+    // the submitted replacement payload references an unavailable image.
+    if manager().get(config.base.id).is_some() {
+        return Err(StatusCode::CONFLICT);
+    }
     // Boot preparation can read image files; keep it off the HTTP reactor.
     let operation = tokio::task::spawn_blocking(move || manager().create_vm_from_toml(&raw))
         .await
