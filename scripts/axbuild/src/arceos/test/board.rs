@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -91,6 +91,12 @@ struct PreparedBoardBuild {
     elf_path: PathBuf,
 }
 
+struct PreparedBoardBuildGroup {
+    cargo: Option<Cargo>,
+    mode: Option<build::ArceosBuildMode>,
+    result: Result<PreparedBoardBuild, String>,
+}
+
 impl ArceOS {
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
         let groups = discover_board_test_groups(
@@ -124,7 +130,7 @@ impl ArceOS {
             runnable.push((group_label, group));
         }
 
-        let mut build_groups = BTreeMap::<PathBuf, Vec<usize>>::new();
+        let mut build_configs = Vec::<(PathBuf, Vec<usize>)>::new();
         for (position, (_, group)) in runnable.iter().enumerate() {
             let build_config = group.build_config_path.canonicalize().with_context(|| {
                 format!(
@@ -132,7 +138,14 @@ impl ArceOS {
                     group.build_config_path.display()
                 )
             })?;
-            build_groups.entry(build_config).or_default().push(position);
+            if let Some((_, positions)) = build_configs
+                .iter_mut()
+                .find(|(config, _)| *config == build_config)
+            {
+                positions.push(position);
+            } else {
+                build_configs.push((build_config, vec![position]));
+            }
         }
 
         // Board test TOMLs only select runtime checks. Preserve each unique
@@ -148,10 +161,11 @@ impl ArceOS {
             .prefix("arceos-board-artifacts-")
             .tempdir_in(&artifact_parent)
             .context("failed to create temporary ArceOS board artifact directory")?;
-        let mut prepared_builds = HashMap::<PathBuf, Result<PreparedBoardBuild, String>>::new();
-        for (build_config, positions) in build_groups {
-            let result = async {
-                let group = &runnable[positions[0]].1;
+        let mut prepared_builds = Vec::<PreparedBoardBuildGroup>::new();
+        let mut config_to_build = HashMap::<PathBuf, usize>::new();
+        for (build_config, positions) in build_configs {
+            let group = &runnable[positions[0]].1;
+            let prepared = async {
                 let request = self.prepare_request(
                     test_board_build_args(group),
                     None,
@@ -160,40 +174,73 @@ impl ArceOS {
                 )?;
                 Self::validate_board_request(&request)?;
                 self.app.set_debug_mode(request.debug)?;
-
-                let (cargo, elf_path) =
-                    match build::load_arceos_build_mode(&request.build_info_path)? {
-                        build::ArceosBuildMode::Rust => {
-                            let cargo =
-                                build::load_cargo_config(&request, self.app.workspace_context())?;
-                            let output = self
-                                .app
-                                .build(cargo.clone(), request.build_info_path.clone())
-                                .await?;
-                            (cargo, output.elf_path().to_path_buf())
-                        }
-                        build::ArceosBuildMode::AppC { app_dir, app_name } => {
-                            let cargo = build::load_c_app_cargo_config(
-                                &request,
-                                self.app.workspace_context(),
-                            )?;
-                            let output = self.build_c_app_request(&request, app_dir, app_name)?;
-                            (cargo, output.elf_path)
-                        }
-                    };
+                let mode = build::load_arceos_build_mode(&request.build_info_path)?;
+                let cargo = match &mode {
+                    build::ArceosBuildMode::Rust => {
+                        build::load_cargo_config(&request, self.app.workspace_context())?
+                    }
+                    build::ArceosBuildMode::AppC { .. } => {
+                        build::load_c_app_cargo_config(&request, self.app.workspace_context())?
+                    }
+                };
+                Ok::<_, anyhow::Error>((request, mode, cargo))
+            }
+            .await;
+            let (request, mode, cargo) = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let index = prepared_builds.len();
+                    prepared_builds.push(PreparedBoardBuildGroup {
+                        cargo: None,
+                        mode: None,
+                        result: Err(format!("{error:#}")),
+                    });
+                    config_to_build.insert(build_config, index);
+                    continue;
+                }
+            };
+            if let Some(index) = prepared_builds.iter().position(|existing| {
+                existing.cargo.as_ref() == Some(&cargo)
+                    && existing.mode.as_ref() == Some(&mode)
+                    && existing.result.is_ok()
+            }) {
+                config_to_build.insert(build_config, index);
+                continue;
+            }
+            let result = async {
+                let elf_path = match &mode {
+                    build::ArceosBuildMode::Rust => {
+                        let output = self
+                            .app
+                            .build(cargo.clone(), request.build_info_path.clone())
+                            .await?;
+                        output.elf_path().to_path_buf()
+                    }
+                    build::ArceosBuildMode::AppC { app_dir, app_name } => {
+                        let output =
+                            self.build_c_app_request(&request, app_dir.clone(), app_name.clone())?;
+                        output.elf_path
+                    }
+                };
                 let elf_path = qemu_test::preserve_build_artifact(
                     &elf_path,
                     artifact_directory.path(),
-                    positions[0],
+                    prepared_builds.len(),
                 )?;
                 Ok::<_, anyhow::Error>(PreparedBoardBuild {
-                    cargo,
+                    cargo: cargo.clone(),
                     request,
                     elf_path,
                 })
             }
             .await;
-            prepared_builds.insert(build_config, result.map_err(|error| format!("{error:#}")));
+            let index = prepared_builds.len();
+            prepared_builds.push(PreparedBoardBuildGroup {
+                cargo: Some(cargo),
+                mode: Some(mode),
+                result: result.map_err(|error| format!("{error:#}")),
+            });
+            config_to_build.insert(build_config, index);
         }
 
         for (group_label, group) in runnable {
@@ -212,14 +259,14 @@ impl ArceOS {
                     continue;
                 }
             };
-            let Some(build_result) = prepared_builds.get(&build_config) else {
+            let Some(build_index) = config_to_build.get(&build_config) else {
                 run_state.fail_group(
                     group_label,
                     anyhow::anyhow!("missing prepared build for `{}`", build_config.display()),
                 );
                 continue;
             };
-            let prepared = match build_result {
+            let prepared = match &prepared_builds[*build_index].result {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     run_state.fail_group(
