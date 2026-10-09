@@ -462,3 +462,25 @@ impl Axvisor {
 fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
     axvisor_dir.join(format!("configs/qemu/qemu-{arch}.toml"))
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct BoardCli {
+        #[command(flatten)]
+        board: ArgsTestBoard,
+    }
+
+    #[test]
+    fn board_case_selector_accepts_repeated_and_comma_separated_values() {
+        let cli =
+            BoardCli::try_parse_from(["test", "--test-case", "smoke,direct", "--test-case", "pci"])
+                .unwrap();
+
+        assert_eq!(cli.board.test_case, ["smoke", "direct", "pci"]);
+    }
+}
