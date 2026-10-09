@@ -1,4 +1,4 @@
-features = ["ax-driver/nvme", "fs", "no-auto-start"]
+features = ["ax-driver/nvme", "no-auto-start"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
