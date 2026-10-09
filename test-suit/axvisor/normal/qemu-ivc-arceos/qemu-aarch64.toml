@@ -48,6 +48,14 @@ success_regex = [
 ]
 
 [[shell_check_steps]]
+shell_prefix = "ivc ack seq=5 msg=ack from arceos subscriber"
+shell_cmd = "\u0018h"
+success_regex = [
+    "detached VM\\[1\\] console",
+    "VM\\[1\\] stopped; returning to the management shell",
+]
+
+[[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 2"
 success_regex = [
