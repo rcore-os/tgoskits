@@ -124,36 +124,18 @@ pub(crate) fn select_voltage_grade(sample: u32, rows: &[[u32; 3]]) -> Option<u32
     selected
 }
 
-/// The BSP selects the hardware-bin PVTM table for J/M SKUs when its mask
-/// contains the OTP bin; other bins use the normal table.
-pub(crate) fn uses_hardware_bin_table(bin: u32, pvtm_hw_mask: u32) -> bool {
-    bin > 0
-        && 1_u32
-            .checked_shl(bin)
-            .is_some_and(|bit| pvtm_hw_mask & bit != 0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{select_voltage_grade, temperature_correct, uses_hardware_bin_table};
+    use super::{select_voltage_grade, temperature_correct};
 
     #[test]
-    fn bsp_temperature_and_bin_select_a_safe_voltage_grade() {
+    fn bsp_temperature_selects_a_safe_standard_voltage_grade() {
         // The BSP truncates 20.9 C to 20 C before applying the coefficient.
         let sample = temperature_correct(1600, 20_900, 25, [270, 270]).unwrap();
         assert_eq!(sample, 1599);
 
         let standard = [[0, 1595, 0], [1596, 1615, 1], [1616, 9999, 2]];
-        let hardware_bin = [[0, 1539, 0], [1540, 1564, 1], [1565, 9999, 2]];
-        let table = if uses_hardware_bin_table(2, 0x06) {
-            &hardware_bin
-        } else {
-            &standard
-        };
-        assert_eq!(select_voltage_grade(sample, table), Some(2));
         assert_eq!(select_voltage_grade(sample, &standard), Some(1));
-        assert!(!uses_hardware_bin_table(0, 0x06));
-        assert!(!uses_hardware_bin_table(3, 0x06));
     }
 
     #[test]

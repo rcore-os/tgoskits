@@ -386,10 +386,8 @@ fn apply_policies(
 
 fn sample_load(busy: &mut [CpuBusy], last_poll_ns: &mut Option<u64>) -> (Vec<(usize, u64)>, bool) {
     let now_ns = axklib::time::monotonic_nanos();
-    let priming = last_poll_ns.is_none();
-    let window_ns = now_ns
-        .saturating_sub(last_poll_ns.replace(now_ns).unwrap_or(now_ns))
-        .max(1);
+    let (window_ns, priming) = observe_window(now_ns, *last_poll_ns);
+    *last_poll_ns = Some(now_ns);
     let mut samples = Vec::with_capacity(busy.len());
     for entry in busy {
         let Ok(cpu) = u32::try_from(entry.cpu) else {
@@ -402,10 +400,28 @@ fn sample_load(busy: &mut [CpuBusy], last_poll_ns: &mut Option<u64>) -> (Vec<(us
         };
         let delta_ns = runtime_ns.saturating_sub(entry.last_ns);
         entry.last_ns = runtime_ns;
-        let pct = (delta_ns.saturating_mul(100) / window_ns).min(100);
+        let pct = busy_percent(delta_ns, window_ns);
         samples.push((entry.cpu, pct));
     }
     (samples, priming)
+}
+
+/// Returns the elapsed sampling window and whether this is the first sample.
+///
+/// Scheduler wakeups can make the worker run earlier or later than its target
+/// period. The load ratio must use that actual elapsed interval. A backwards
+/// clock value is treated as a one-nanosecond interval so a malformed sample
+/// cannot divide by zero or retain a stale elapsed window.
+fn observe_window(now_ns: u64, last_ns: Option<u64>) -> (u64, bool) {
+    let priming = last_ns.is_none();
+    let window_ns = now_ns.saturating_sub(last_ns.unwrap_or(now_ns)).max(1);
+    (window_ns, priming)
+}
+
+/// Converts busy runtime accumulated during one sampling window to a bounded
+/// percentage. Saturating arithmetic keeps a corrupt counter from wrapping.
+fn busy_percent(delta_ns: u64, window_ns: u64) -> u64 {
+    (delta_ns.saturating_mul(100) / window_ns.max(1)).min(100)
 }
 
 fn run_worker(device: Device, infos: Vec<DomainInfo>, initial: Governor) {
@@ -489,7 +505,10 @@ pub(crate) fn start_from_host_bootargs(bootargs: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Governor, OperatingPoint, fixed_target, next_ondemand_frequency, parse_governor};
+    use super::{
+        Governor, OperatingPoint, busy_percent, fixed_target, next_ondemand_frequency,
+        observe_window, parse_governor,
+    };
 
     #[test]
     fn boot_governor_selection() {
@@ -509,6 +528,22 @@ mod tests {
             parse_governor(Some("cpufreq.default_governor=bad")),
             Governor::Ondemand
         );
+    }
+
+    #[test]
+    fn busy_percent_uses_the_actual_elapsed_window() {
+        assert_eq!(busy_percent(50_000_000, 100_000_000), 50);
+        assert_eq!(busy_percent(100_000_000, 200_000_000), 50);
+        assert_eq!(busy_percent(200_000_000, 100_000_000), 100);
+        assert_eq!(busy_percent(1, 0), 100);
+        assert_eq!(busy_percent(u64::MAX, u64::MAX), 1);
+    }
+
+    #[test]
+    fn observe_window_tracks_priming_and_clock_jumps() {
+        assert_eq!(observe_window(10, None), (1, true));
+        assert_eq!(observe_window(110, Some(10)), (100, false));
+        assert_eq!(observe_window(90, Some(110)), (1, false));
     }
 
     #[test]

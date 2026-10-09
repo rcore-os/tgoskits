@@ -134,7 +134,7 @@ fn select_domain_opps(
     let bin = HardwareSelection::bin_from_serial(serial);
     if bin != 0 {
         warn!(
-            "cpufreq: {} SKU bin {bin} has no board-validated high OPP; retaining boot OPP",
+            "cpufreq: {} J/M SKU bin {bin} is not validated; disabling CPUFreq selection",
             cluster.name()
         );
         return Err(FrequencyError::NotReady);
@@ -255,12 +255,11 @@ fn select_domain_opps(
         [*below as i32, *above as i32],
     )
     .ok_or(FrequencyError::NotReady)?;
-    let pvtm_hw = property_u32("rockchip,pvtm-hw")?;
-    let grade_property = if cpufreq_pvtm::uses_hardware_bin_table(u32::from(bin), pvtm_hw) {
-        "rockchip,pvtm-voltage-sel-hw"
-    } else {
-        "rockchip,pvtm-voltage-sel"
-    };
+    // Non-standard J/M bins fail closed above until their board voltage and
+    // frequency measurements are validated. Keep the hardware-bin table out
+    // of this path so the implementation cannot imply that those bins are
+    // supported merely because a DTB contains `-hw` data.
+    let grade_property = "rockchip,pvtm-voltage-sel";
     let grade_cells = table_node
         .get_property(grade_property)
         .map(|property| property.get_u32_iter().collect::<Vec<_>>())

@@ -73,8 +73,13 @@ RK3588 驱动以板卡 DTB、OTP 和 PVTM 决定可用 OPP，再让 SoC 转换�
 
 CPU OPP 来自板卡 DTB 的三个 `operating-points-v2` 表。OTP byte 6 的低五位
 `0x0d`、`0x0a` 分别是 M/bin1、J/bin2，其余是标准/bin0。探测双读 OTP 缓存；
-PVTM 在表指定的 750 mV 和 1.416/1.608 GHz 测量点取 GRF 样本，按 TSADC 温度
-修正后，从 `rockchip,pvtm-voltage-sel*` 选择电压档。温度使用三个 CPU OPP 表共同
+bin 非零的 J/M SKU 当前在板级适配层直接返回 `NotReady`，不会进入 PVTM 或 OPP
+筛选；随后初始化会关闭 CPUFreq 三个域，保留固件已经建立的时钟/电压状态，接口
+对外返回 `NotReady`，而不是宣称这些域已经有可调的低档。DT 中的
+`rockchip,pvtm-voltage-sel-hw` 和 `rockchip,pvtm-hw` 仅保留为后续完成 J/M
+实体板验证时的输入，不会单凭存在该表就开放高档。标准/bin0 SKU 在 PVTM
+表指定的 750 mV 和 1.416/1.608 GHz 测量点取 GRF 样本，按 TSADC 温度
+修正后，从 `rockchip,pvtm-voltage-sel` 选择电压档。温度使用三个 CPU OPP 表共同
 指定的 `soc-thermal`，即 TSADC 通道 0；它也是 BSP system monitor 的输入。
 测量频率必须与这两个
 已确认的板级值严格相等，异常 DT 值在 SCMI 升频前拒绝。随后同时匹配
@@ -100,7 +105,8 @@ SCMI rate 请求，随后恢复普通 rate；除下述旧固件兼容路径外�
 length 是否生效，因而该例外必须由对应板卡的绑核 PMU 频率测量和领域审查共同约束。
 
 高档当前只对实体板验证过的标准 SKU 分档开放：A55 PVTM 档 0、1，
-两组大核 PVTM 档 0、3。J/M SKU 及其他未认证分档仅保留确认的低档；
+两组大核 PVTM 档 0、3。J/M SKU 的 CPUFreq 选择当前关闭；其他未认证分档
+也不会进入可用列表；
 大核未完成 PVTM/GRF 确认时回到 816 MHz。即使 DT
 列出更高频率，也不因静态表存在就开放。
 板卡适配层的 `cpufreq_board::verified_maximum_hz` 还限制已验证分档的频率：A55 档 0/1
@@ -170,7 +176,9 @@ OTP/PVTM/传感器、PMIC 读回、SCMI 时钟或 GRF 确认失败均不得通�
 索引开放档位。RK806 已在实体板上读回 buck2 选择码；任何无法再次读回的
 A55 实例仍不能进入需升压的 OPP。板卡 DTB 静态最高 A55 1.8 GHz、
 大核 2.4 GHz，并不意味着每颗芯片都能使用。标准 SKU 的某一 PVTM 档
-最高为 2.256 GHz，较高档可选择 2.352 GHz；实际以 OTP、PVTM 和表掩码为准。
+最高为 2.256 GHz，较高档可选择 2.352 GHz；标准 SKU 实际以 OTP、PVTM 和
+普通电压档表为准；J/M SKU 走前述 fail-closed 路径，CPUFreq 接口保持
+`NotReady`，不公布临时的低档 fallback。
 
 `initialize_post_boot` 对未通过 PVTM 筛选的大核不继续使用 1.2 GHz
 启动环频率：此时尚未确认该芯片的 GRF read margin 和实际送达频率。

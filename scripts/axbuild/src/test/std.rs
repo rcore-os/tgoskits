@@ -58,7 +58,9 @@ const AX_RUNTIME_CPUFREQ_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePr
     name_filter: Some("cpufreq::tests::"),
     expected_tests: &[
         "cpufreq::tests::boot_governor_selection",
+        "cpufreq::tests::busy_percent_uses_the_actual_elapsed_window",
         "cpufreq::tests::fixed_request_obeys_new_thermal_ceiling_and_dsu_floor",
+        "cpufreq::tests::observe_window_tracks_priming_and_clock_jumps",
         "cpufreq::tests::ondemand_uses_busiest_cpu_and_decays_one_opp",
     ],
 }];
@@ -71,7 +73,7 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         name_filter: Some("soc::rockchip::cpufreq"),
         expected_tests: &[
             "soc::rockchip::cpufreq_board::tests::unmeasured_grade_rates_are_excluded",
-            "soc::rockchip::cpufreq_pvtm::tests::bsp_temperature_and_bin_select_a_safe_voltage_grade",
+            "soc::rockchip::cpufreq_pvtm::tests::bsp_temperature_selects_a_safe_standard_voltage_grade",
             "soc::rockchip::cpufreq_pvtm::tests::malformed_measurement_or_table_cannot_authorize_an_opp",
             "soc::rockchip::cpufreq_margin::tests::bsp_thresholds_select_the_first_matching_voltage",
             "soc::rockchip::cpufreq_sensors::tests::rk3588_tsadc_thresholds_and_invalid_samples",
