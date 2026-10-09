@@ -405,7 +405,6 @@ fn normalize_archive_path(path: &str) -> anyhow::Result<String> {
         !path.is_empty() && !path.as_bytes().contains(&0),
         "invalid initramfs path"
     );
-    let path = path.strip_prefix('/').unwrap_or(path);
     let mut components = Vec::new();
     for component in Path::new(path).components() {
         match component {

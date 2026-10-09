@@ -48,26 +48,6 @@ pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<
         .collect()
 }
 
-pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
-    groups: Vec<T>,
-    selected_case: Option<&str>,
-    selected_board: Option<&str>,
-    suite_name: &str,
-    empty_message: impl FnOnce() -> String,
-) -> anyhow::Result<Vec<T>> {
-    let selected_cases = selected_case
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    filter_board_test_groups_by_names(
-        groups,
-        &selected_cases,
-        selected_board,
-        suite_name,
-        empty_message,
-    )
-}
-
 pub(crate) fn filter_board_test_groups_by_names<T: BoardTestGroupInfo>(
     mut groups: Vec<T>,
     selected_cases: &[String],

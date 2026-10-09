@@ -71,9 +71,10 @@ pub struct ArgsTestBoard {
         short = 'c',
         long = "test-case",
         value_name = "CASE",
-        help = "Run only one ArceOS board test case"
+        value_delimiter = ',',
+        help = "Run one or more ArceOS board test cases"
     )]
-    pub test_case: Option<String>,
+    pub test_case: Vec<String>,
 
     #[arg(
         long,

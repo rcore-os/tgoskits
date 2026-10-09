@@ -163,7 +163,7 @@ fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<Axvisor
 pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
     group: &str,
-    selected_case: Option<&str>,
+    selected_cases: &[String],
     board: Option<&str>,
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let roots = board_test_group_roots(workspace_root, group)?;
@@ -176,7 +176,7 @@ pub(crate) fn discover_board_test_groups(
         .map(|dir| dir.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    board_test::filter_board_test_groups(groups, selected_case, board, "axvisor", || {
+    board_test::filter_board_test_groups_by_names(groups, selected_cases, board, "axvisor", || {
         format!("no Axvisor board test groups found under {searched}")
     })
 }
@@ -247,12 +247,8 @@ pub(super) fn discover_uboot_test_group(
     guest: &str,
 ) -> anyhow::Result<BoardTestGroup> {
     let board_name = format!("{board}-{guest}");
-    let mut groups = discover_board_test_groups(
-        workspace_root,
-        AXVISOR_NORMAL_GROUP,
-        None,
-        Some(&board_name),
-    )?;
+    let mut groups =
+        discover_board_test_groups(workspace_root, AXVISOR_NORMAL_GROUP, &[], Some(&board_name))?;
 
     if groups.len() == 1 {
         return Ok(groups.remove(0));
