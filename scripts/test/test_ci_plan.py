@@ -670,15 +670,17 @@ command = "true"
             for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
         for row in (*main_rows, *nightly_rows, *benchmark_rows):
+            check = catalog[row["id"]]
             boards = {
                 registration["board"]
-                for registration in catalog[row["id"]].get("suite", ())
+                for registration in check.get("suite", ())
                 if "board" in registration
             }
             if boards:
                 self.assertIn("board", row["runs_on"])
-                if row["resource_group"]:
-                    self.assertTrue(row["resource_group"])
+                self.assertEqual(
+                    row["resource_group"], check.get("resource_group", "")
+                )
             else:
                 self.assertNotIn("board", row["runs_on"])
                 self.assertEqual(row["resource_group"], "")

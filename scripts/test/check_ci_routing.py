@@ -60,6 +60,7 @@ def main() -> int:
                 )
 
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    ci_plan_action = CI_PLAN_ACTION.read_text(encoding="utf-8")
     benchmarks_workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")
     docs_workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
     reusable_check_matrix = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
@@ -124,41 +125,46 @@ def main() -> int:
 
     matrix_step = named_step_block(plan_ci, "Plan check matrices")
     runner_trust_step = named_step_block(plan_ci, "Record runner trust")
-    planning_contract = runner_trust_step + "\n" + matrix_step
-    for fragment, message in (
+    for fragment, message, contract in (
         (
             "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
             "runner planning must receive the pull request head repository",
+            matrix_step,
         ),
         (
             '--head-repository "$HEAD_REPOSITORY"',
             "runner planning must distinguish fork pull requests",
+            matrix_step,
         ),
         (
             "ACTOR: ${{ github.actor }}",
             "runner trust evidence must record the workflow actor",
+            runner_trust_step,
         ),
         (
             "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
             "runner trust evidence must record the tested head revision",
+            runner_trust_step,
         ),
         (
             'if [ "$EVENT_NAME" = "pull_request" ]',
             "runner trust evidence must evaluate pull requests explicitly",
+            runner_trust_step,
         ),
         (
             '[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]',
             "runner trust evidence must reject cross-repository heads",
+            runner_trust_step,
         ),
     ):
-        if fragment not in planning_contract:
+        if fragment not in contract:
             legacy = {
                 "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}":
                     "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
                 '--head-repository "$HEAD_REPOSITORY"':
                     "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
             }.get(fragment)
-            if legacy is None or legacy not in planning_contract:
+            if legacy is None or legacy not in contract:
                 errors.append(message)
 
 
@@ -289,7 +295,10 @@ def main() -> int:
             "the planner must publish its impact summary",
         ),
     ):
-        if not any(fragment in planning_contract for fragment in fragments):
+        if not any(
+            fragment in matrix_step or fragment in ci_plan_action
+            for fragment in fragments
+        ):
             errors.append(message)
 
     for fragment, message in (
@@ -577,18 +586,6 @@ def main() -> int:
         errors.append(
             "benchmark updates must depend on every performance producer: "
             + ", ".join(sorted(missing_needs))
-        )
-    required_benchmark_jobs = set(
-        re.findall(
-            r"needs\.([a-z0-9_-]+)\.result == 'success'",
-            benchmark_updates_condition,
-        )
-    )
-    missing_conditions = expected_benchmark_jobs - required_benchmark_jobs
-    if missing_conditions:
-        errors.append(
-            "benchmark updates must gate every performance producer: "
-            + ", ".join(sorted(missing_conditions))
         )
     for matrix_name in sorted(expected_benchmark_jobs):
         require_contains(

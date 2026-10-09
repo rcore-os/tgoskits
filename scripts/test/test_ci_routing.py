@@ -396,13 +396,6 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         self.assertTrue(performance_jobs)
         update_needs = set(list_items_in_order(benchmark_updates, "needs", 4))
         self.assertTrue(expected_jobs <= update_needs)
-        required_jobs = set(
-            re.findall(
-                r"needs\.([a-z0-9_-]+)\.result == 'success'",
-                benchmark_updates_condition,
-            )
-        )
-        self.assertTrue(expected_jobs <= required_jobs)
         for job_id in sorted(expected_jobs):
             with self.subTest(job_id=job_id):
                 self.assertIn(f"needs.{job_id}.result == 'success'", benchmark_updates_condition)
