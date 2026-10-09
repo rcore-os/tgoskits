@@ -444,6 +444,86 @@ class CiPlanTests(unittest.TestCase):
             with self.assertRaisesRegex(ci_plan.SuiteRouteError, "missing"):
                 ci_plan.validate_suite_catalog(root, checks)
 
+    def test_cpu_vmx_suite_routes_to_the_registered_cpu_case(self) -> None:
+        path = "test-suit/arceos/cpu/guest-entry/qemu-x86_64-vmx.toml"
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                test_suite_paths=(path,),
+                exclusive=True,
+            ),
+        )
+        plan = ci_plan.build_main_plan(context)
+        rows = plan["arceos_matrix"]["include"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("intel", rows[0]["runs_on"])
+        self.assertEqual(
+            rows[0]["command"],
+            "cargo xtask arceos test qemu --arch x86_64 "
+            "--test-group cpu --test-case guest-entry-vmx",
+        )
+
+    def test_cpu_pmu_board_routes_to_its_actual_case(self) -> None:
+        path = "test-suit/arceos/board-orangepi-5-plus/pmu/board-orangepi-5-plus.toml"
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                test_suite_paths=(path,),
+                exclusive=True,
+            ),
+        )
+        plan = ci_plan.build_main_plan(context)
+        rows = plan["arceos_matrix"]["include"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("board", rows[0]["runs_on"])
+        self.assertEqual(
+            rows[0]["command"],
+            "cargo xtask arceos test board --test-case pmu --board orangepi-5-plus",
+        )
+
+    def test_cpu_cpufreq_board_requires_actual_orangepi_case(self) -> None:
+        path = (
+            "test-suit/arceos/board-orangepi-5-plus/cpufreq/"
+            "board-orangepi-5-plus.toml"
+        )
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                test_suite_paths=(path,),
+                exclusive=True,
+            ),
+        )
+        plan = ci_plan.build_main_plan(context)
+        rows = plan["arceos_matrix"]["include"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("board", rows[0]["runs_on"])
+        self.assertEqual(
+            rows[0]["command"],
+            "cargo xtask arceos test board --test-case cpufreq "
+            "--board orangepi-5-plus",
+        )
+
     def test_unregistered_test_suite_fails_planning(self) -> None:
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",

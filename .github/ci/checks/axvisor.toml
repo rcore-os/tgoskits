@@ -17,10 +17,33 @@ echo "==> axvisor aarch64 host initramfs"
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
+echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
+timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
   --config os/axvisor/tests/build-memory-root-aarch64.toml \
   --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml
+echo "==> axvm aarch64 provided-DTB CPU map regression"
+run_axvm_cross_test() {
+  local output
+  output="$(cargo xtask cross-test "$@" 2>&1)" || {
+    printf '%s\n' "$output"
+    return 1
+  }
+  printf '%s\n' "$output"
+  printf '%s\n' "$output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+    echo "cross-test filter matched no passing test" >&2
+    return 1
+  }
+}
+run_axvm_cross_test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib arch::aarch64::fdt
+echo "==> axvm aarch64 cloned CPU identity regression"
+run_axvm_cross_test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
+echo "==> axvm riscv64 cloned CPU identity regression"
+run_axvm_cross_test --arch riscv64 --package axvm \
+  --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
 '''
 
 [[check.suite]]

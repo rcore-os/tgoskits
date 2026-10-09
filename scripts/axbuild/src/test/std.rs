@@ -49,7 +49,54 @@ const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfil
     ],
 }];
 
+// The full host-test binary includes target-only runtime tests that cannot run
+// in a host process. Keep CPUFreq's pure policy rules executable in CI.
+const AX_RUNTIME_CPUFREQ_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "host-test-cpufreq",
+    no_default_features: false,
+    features: &["host-test"],
+    name_filter: Some("cpufreq::tests::"),
+    expected_tests: &[
+        "cpufreq::tests::boot_governor_selection",
+        "cpufreq::tests::busy_percent_uses_the_actual_elapsed_window",
+        "cpufreq::tests::fixed_request_obeys_new_thermal_ceiling_and_dsu_floor",
+        "cpufreq::tests::observe_window_tracks_priming_and_clock_jumps",
+        "cpufreq::tests::ondemand_uses_busiest_cpu_and_decays_one_opp",
+    ],
+}];
+
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+rk3588-cpufreq",
+        no_default_features: false,
+        features: &["host-test", "rk3588-cpufreq"],
+        name_filter: Some("soc::rockchip::cpufreq::"),
+        expected_tests: &[
+            "soc::rockchip::cpufreq::board::tests::unmeasured_grade_rates_are_excluded",
+            "soc::rockchip::cpufreq::margin::tests::bsp_thresholds_select_the_first_matching_voltage",
+            "soc::rockchip::cpufreq::pmic_i2c::tests::envelope_is_675k_to_1000k_inclusive",
+            "soc::rockchip::cpufreq::pmic_i2c::tests::step_size_is_four_lsb_25mv",
+            "soc::rockchip::cpufreq::pmic_i2c::tests::uv_encode_rejects_non_step_and_out_of_range",
+            "soc::rockchip::cpufreq::pmic_i2c::tests::uv_encode_roundtrips_board_points",
+            "soc::rockchip::cpufreq::pmic_i2c::tests::vsel_decode_matches_board_points",
+            "soc::rockchip::cpufreq::pmic_spi::tests::baud_divider_clamps_and_stays_even",
+            "soc::rockchip::cpufreq::pmic_spi::tests::baud_divider_even_and_under_target",
+            "soc::rockchip::cpufreq::pmic_spi::tests::ctrlr0_mode0_8bit_value",
+            "soc::rockchip::cpufreq::pmic_spi::tests::rk806_identity_and_rail_gate_rejects_loopback",
+            "soc::rockchip::cpufreq::pmic_spi::tests::spi2_reset_deassert_matches_reset_bits",
+            "soc::rockchip::cpufreq::pmic_spi::tests::spi2_ungate_value_matches_gate_bits",
+            "soc::rockchip::cpufreq::pmic_spi::tests::step_size_is_four_selectors",
+            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encode_rejects_out_of_range1",
+            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encode_rejects_unaligned_steps",
+            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encode_roundtrips_within_range1",
+            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encodes_opp_nominals_exactly",
+            "soc::rockchip::cpufreq::pmic_spi::tests::vsel_decodes_known_opp_nominals",
+            "soc::rockchip::cpufreq::pmic_spi::tests::vsel_decodes_upper_ranges",
+            "soc::rockchip::cpufreq::pvtm::tests::bsp_temperature_selects_a_safe_standard_voltage_grade",
+            "soc::rockchip::cpufreq::pvtm::tests::malformed_measurement_or_table_cannot_authorize_an_opp",
+            "soc::rockchip::cpufreq::sensors::tests::rk3588_tsadc_thresholds_and_invalid_samples",
+        ],
+    },
     PackageFeatureProfile {
         name: "host-test+rtc+starfive-jh7110-dwmmc",
         no_default_features: false,
@@ -63,25 +110,6 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         features: &["pci"],
         name_filter: Some(PCI_FDT_IRQ_CAPABILITY_TEST),
         expected_tests: &[PCI_FDT_IRQ_CAPABILITY_TEST],
-    },
-    // The rk3588-cpufreq feature gates the governor busy-attribution tests
-    // (the non-monotonic pin regression and its siblings), which are otherwise
-    // never compiled by the host-test profile above. This profile lists and
-    // runs exactly the `attribution` submodule so CI proves the regression is
-    // discovered and executed, not just compiled into a binary that is never
-    // asked to run it.
-    PackageFeatureProfile {
-        name: "host-test+rk3588-cpufreq",
-        no_default_features: false,
-        features: &["host-test", "rk3588-cpufreq"],
-        name_filter: Some("attribution::"),
-        expected_tests: &[
-            "soc::rockchip::cpufreq::tests::attribution::identity_order_books_each_cpu_under_its_own_cluster",
-            "soc::rockchip::cpufreq::tests::attribution::non_monotonic_pin_books_busy_under_the_cluster_it_runs_on",
-            "soc::rockchip::cpufreq::tests::attribution::offline_hardware_id_books_nowhere",
-            "soc::rockchip::cpufreq::tests::attribution::out_of_range_logical_index_is_refused",
-            "soc::rockchip::cpufreq::tests::attribution::single_vcpu_pin_books_under_its_pinned_cluster",
-        ],
     },
 ];
 
@@ -555,7 +583,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-input"
         | "ax-ipi"
         | "ax-log"
-        | "ax-runtime"
         | "ax-api"
         | "rdrive"
         | "ax-net"
@@ -565,6 +592,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
+        "ax-runtime" => Some(AX_RUNTIME_CPUFREQ_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
         "acpica-interpreter" => Some(ACPICA_FEATURE_PROFILES),

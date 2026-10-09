@@ -1,0 +1,67 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  # Five guest vCPUs share two host pCPUs; VM1's two vCPUs both use pCPU0.
+  "-smp", "2",
+  "-m", "4g",
+]
+fail_regex = [
+  "Failed to initialize guest VM",
+  "VM1_VIRTIO_NET_FAIL",
+  "VM2_VIRTIO_NET_FAIL",
+  "VM3_VIRTIO_NET_FAIL",
+  "VM4_VIRTIO_NET_FAIL",
+  "(?i)panic",
+]
+timeout = 360
+to_bin = true
+uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+# ArceOS enters the application only after all configured CPUs finish init;
+# VM1's second vCPU has guest ID 2, cloned from the host's CPU 0 node.
+[[shell_check_steps]]
+success_regex = ["VM1_VIRTIO_NET_READY.*cpus=2"]
+
+[[shell_check_steps]]
+success_regex = ["VM1_VIRTIO_NET_PASS role=client"]
+
+[[shell_check_steps]]
+shell_prefix = "VM1_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+
+[[shell_check_steps]]
+success_regex = ["VM2_VIRTIO_NET_PASS role=client"]
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+
+[[shell_check_steps]]
+success_regex = ["VM3_VIRTIO_NET_PASS role=client"]
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 4"
+
+[[shell_check_steps]]
+success_regex = ["VM4_VIRTIO_NET_PASS role=server"]
+
+[[shell_check_steps]]
+success_regex = ["VM4_VIRTIO_NET_HB_RX.*count=5"]

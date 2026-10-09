@@ -1,5 +1,7 @@
 #![cfg(feature = "pci")]
 
+mod common;
+
 use core::ptr::NonNull;
 
 use ax_driver::{BindingIrq, BindingIrqSource, DriverGeneric};

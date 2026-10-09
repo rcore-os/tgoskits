@@ -263,7 +263,10 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
         return result;
     }
 
-    // We just forward the SMC call to the ATF directly.
+    // SCMI remains available for guest-owned peripheral clocks and regulators.
+    // CPU clock and OPP bindings are removed from the derived guest FDT, so a
+    // normal guest cpufreq driver has no host CPU control surface while device
+    // drivers can still use the shared firmware service they require.
     // The args are from lower EL, so it is safe to call the ATF.
     (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
         unsafe { super::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
