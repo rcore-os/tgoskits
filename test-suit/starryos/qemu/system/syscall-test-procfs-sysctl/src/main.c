@@ -58,6 +58,16 @@ int main(void)
               "/proc/filesystems lists ext4");
     }
 
+    /* /proc/cmdline: readable and newline-terminated. systemd's PID 1
+     * environment fixup fails fatally (freeze) when it is ENOENT. */
+    {
+        char buf[4096];
+        long n = slurp("/proc/cmdline", buf, sizeof(buf));
+        CHECK(n >= 1, "/proc/cmdline readable");
+        CHECK(n >= 1 && buf[n - 1] == '\n',
+              "/proc/cmdline newline-terminated");
+    }
+
     check_uint_file("/proc/sys/vm/overcommit_memory", 0);
     check_uint_file("/proc/sys/vm/max_map_count", 1);
     check_uint_file("/proc/sys/fs/file-max", 1);
