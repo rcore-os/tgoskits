@@ -274,9 +274,6 @@ impl Owner {
                 failure.get_or_insert(error);
             }
         }
-        if let Err(error) = CurrentArch::exit_runtime(&mut self.vm, &run.signals) {
-            failure.get_or_insert(error);
-        }
         if let Err(error) = run.ports.suspend() {
             failure.get_or_insert(error);
         }
@@ -294,6 +291,13 @@ impl Owner {
         let run = self.run.as_mut().expect("retained stopping run");
         while !run.signals.interrupts_quiet() {
             crate::host::task::yield_now();
+        }
+        // Architecture runtime teardown may release physical interrupt
+        // bindings. Every vCPU must have returned and retired its backend
+        // before this call; AArch64 rejects SPI teardown while a CPU
+        // interface is still loaded.
+        if let Err(error) = CurrentArch::exit_runtime(&mut self.vm, &run.signals) {
+            failure.get_or_insert(error);
         }
         run.services.memory().close();
         self.pump_until(|owner| {

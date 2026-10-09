@@ -180,11 +180,13 @@ impl ArchOps for Aarch64Arch {
 
     fn exit_runtime(vm: &mut AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
         let runtime = vgic_runtime(vm)?;
-        let deactivated = runtime.deactivate();
+        // Keep the run binding while deactivation is retryable. IRQ routes
+        // remain installed when teardown is rejected, and their wake target
+        // must stay valid until the physical bindings are retired.
+        runtime.deactivate()?;
         // The binding is cleared only for the run that owns it; a retired run
         // can never release or re-target the service used by a newer run.
-        let unbound = runtime.unbind_run(signals.run_id());
-        deactivated.and(unbound)
+        runtime.unbind_run(signals.run_id())
     }
 
     fn prepare_vcpu(vcpu: &mut AxVCpu<Self::VCpu>, _entry: &Self::Entry) -> AxVmResult {
