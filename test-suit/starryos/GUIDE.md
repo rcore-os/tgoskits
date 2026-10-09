@@ -22,7 +22,7 @@ cargo xtask starry test qemu \
 `snapshot=on` 接入，客户机写入不会落回原镜像。
 
 如需复现某个既有内核制品，可再传入位于 Cargo target 目录之外的绝对路径
-`--fixed-elf /absolute/path/starryos`。运行器仍先完成当前源码构建与 `.kallsyms`
+`--fixed-elf /absolute/path/starryos`。运行器仍先完成当前源码构建并生成 `.axbt` sidecar
 后处理，再比较构建产物和固定 ELF 的架构、入口以及装载与覆盖率 section；验证成功后
 只从固定 ELF 的临时副本启动，因此不会改写固定文件本体。
 

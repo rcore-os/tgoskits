@@ -220,10 +220,13 @@ async fn build_and_run_c_test(
         build_config.build_info.features.clone(),
     );
     let output = cbuild::build_c_app(arceos.app.workspace_context(), &request, &input)?;
+    let map_path = output.elf_path.with_extension("axbt");
+    crate::build::symbol_map::generate_axbt_map(&output.elf_path, &map_path)?;
     qemu_test::validate_test_qemu_rootfs_write_policy(&test.qemu_config_path, "ArceOS")?;
     let mut qemu = qemu_config;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
     rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
+    qemu_test::append_backtrace_map(&mut qemu, &map_path)?;
     let _host_http_server = qemu_test::load_qemu_case_host_http_server(&test.qemu_config_path)?
         .as_ref()
         .map(|config| HostHttpServerGuard::start(config, &test.name))
@@ -232,7 +235,7 @@ async fn build_and_run_c_test(
         .app
         .prepare_elf_artifact(output.elf_path, qemu.to_bin)
         .await?;
-    arceos.app.run_prepared_qemu(qemu, None).await
+    arceos.app.run_prepared_qemu(qemu).await
 }
 
 fn c_test_build_input(

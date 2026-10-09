@@ -57,7 +57,6 @@ fn main() -> Result<()> {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?
-        .replace("%DWARF%", dwarf_sections())
         .replace(
             AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER,
             axtest_coverage_runtime_sections(),
@@ -230,30 +229,4 @@ fn parse_u64(value: &str) -> std::result::Result<u64, std::num::ParseIntError> {
 
 fn invalid_data(error: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::InvalidData, error.to_string())
-}
-
-fn dwarf_sections() -> &'static str {
-    if env_truthy("DWARF") {
-        r#"debug_abbrev : { . += SIZEOF(.debug_abbrev); }
-    debug_addr : { . += SIZEOF(.debug_addr); }
-    debug_aranges : { . += SIZEOF(.debug_aranges); }
-    debug_info : { . += SIZEOF(.debug_info); }
-    debug_line : { . += SIZEOF(.debug_line); }
-    debug_line_str : { . += SIZEOF(.debug_line_str); }
-    debug_ranges : { . += SIZEOF(.debug_ranges); }
-    debug_rnglists : { . += SIZEOF(.debug_rnglists); }
-    debug_str : { . += SIZEOF(.debug_str); }
-    debug_str_offsets : { . += SIZEOF(.debug_str_offsets); }"#
-    } else {
-        ""
-    }
-}
-
-fn env_truthy(key: &str) -> bool {
-    env::var(key).is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "y" | "yes" | "1" | "true" | "on"
-        )
-    })
 }

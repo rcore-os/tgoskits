@@ -1,8 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fs,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Instant,
 };
 
@@ -12,9 +10,8 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use super::{
     ArgsTestQemu, PreparedStarryQemuCase, StarryQemuCase, StarryQemuCaseOutcome,
     StarryQemuCaseReport, StarryQemuCaseRequirements, StarryQemuRunReport,
-    discover_all_qemu_cases_with_archs, discover_qemu_cases, ensure_host_symbolize_output_matches,
-    finalize_qemu_case_run, parse_test_target, starry_case_asset_config,
-    start_qemu_case_host_http_server,
+    discover_all_qemu_cases_with_archs, discover_qemu_cases, finalize_qemu_case_run,
+    parse_test_target, starry_case_asset_config, start_qemu_case_host_http_server,
 };
 use crate::{
     build::{append_cargo_rustflags, env_truthy},
@@ -432,51 +429,15 @@ impl Starry {
         let mut qemu = prepared_case.qemu.clone();
         case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_execution);
 
-        qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
-        qemu_test::apply_timeout_scale(&mut qemu);
-
-        let case_name = &case.name;
-        let auto_symbolize =
-            crate::build::build_info_enables_backtrace_path(&prepared_case.build_config_path);
-        if !case.host_symbolize_success_regex.is_empty() && !auto_symbolize {
-            bail!(
-                "Starry qemu case `{case_name}` requests host symbolize assertions but its build \
-                 config does not enable BACKTRACE=y or DWARF=y"
-            );
-        }
-
-        let keep_qemu_log = crate::backtrace::keep_qemu_log_from_env();
-        let elf = crate::backtrace::std_test_elf_path(
+        qemu_test::append_target_backtrace_map(
             self.app.target_dir(),
             &request.target,
-            crate::context::STARRY_PACKAGE,
             request.debug,
-        );
-        let stream_session = if auto_symbolize {
-            crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
-        } else {
-            None
-        };
-        let capture_backtrace = if auto_symbolize {
-            let dir = crate::context::axbuild_tmp_dir(self.app.workspace_root()).join("qemu-logs");
-            fs::create_dir_all(&dir)?;
-            Some(crate::backtrace::BacktraceQemuCapture {
-                log_path: dir.join(format!("starry-{case_name}-{}.log", request.target)),
-                stream_symbolize: stream_session.clone(),
-                suppress_terminal_raw_blocks: false,
-                write_log_during_capture: keep_qemu_log,
-                captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
-                success_output: None,
-            })
-        } else {
-            None
-        };
-        let log_path = capture_backtrace
-            .as_ref()
-            .map(|capture| capture.log_path.clone());
-        let memory_blocks = capture_backtrace
-            .as_ref()
-            .map(|capture| capture.captured_blocks.clone());
+            &mut qemu,
+        )?;
+
+        qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
+        qemu_test::apply_timeout_scale(&mut qemu);
 
         let prepare_stage = timing::TimingStage::new(
             "qemu-case",
@@ -565,7 +526,6 @@ impl Starry {
             &mut self.app,
             cargo,
             qemu,
-            capture_backtrace,
             &case.qemu_config_path,
             prepared_assets,
             case::RunPreparedQemuCaseOptions {
@@ -574,38 +534,6 @@ impl Starry {
             },
         )
         .await?;
-
-        if auto_symbolize && let Some(path) = log_path {
-            let blocks_snapshot = memory_blocks.and_then(|arc| arc.lock().ok().map(|b| b.clone()));
-            let symbolized_output = if !case.host_symbolize_success_regex.is_empty() {
-                match blocks_snapshot.as_deref() {
-                    Some(blocks) => crate::backtrace::symbolize_captured_blocks_to_string(
-                        &elf, case_name, blocks,
-                    )?,
-                    None => None,
-                }
-            } else {
-                None
-            };
-            let blocks_ref = blocks_snapshot.as_deref();
-            let outcome = crate::backtrace::maybe_symbolize_after_qemu(
-                &elf,
-                &path,
-                case_name,
-                keep_qemu_log,
-                stream_session.as_deref(),
-                blocks_ref,
-            )?;
-
-            if !case.host_symbolize_success_regex.is_empty() {
-                ensure_host_symbolize_output_matches(
-                    case_name,
-                    outcome,
-                    symbolized_output.as_deref(),
-                    &case.host_symbolize_success_regex,
-                )?;
-            }
-        }
 
         Ok(())
     }

@@ -15,6 +15,7 @@ use ax_fs_ng::{
 };
 use ax_lazyinit::LazyInit;
 use ax_task::runtime::RuntimeStatus;
+use axfs_ng_vfs::Mountpoint;
 
 use crate::task::{
     sched::{CpuId, CpuSet},
@@ -330,6 +331,25 @@ pub(super) fn init(bootargs: Option<&str>) {
             ax_fs_ng::initramfs::unpack_sources(&[BUILTIN_INITRAMFS, external.unwrap_or(&[])])
                 .unwrap_or_else(|error| panic!("host initramfs unpack failed: {error:?}"));
         info!("host initramfs unpacked: {report:?}");
+
+        // The archive pages are reclaimed immediately after this closure.  Copy
+        // the target-side map into an owned allocation before releasing them so
+        // panic paths never borrow initramfs memory.  Missing maps are expected
+        // for early or address-only builds and retain the raw fallback.
+        let context = ax_fs_ng::vfs::FsContext::new(Mountpoint::new_root(&fs).root_location());
+        for path in ["/symbols/kernel.axbt", "/boot/symbols/kernel.axbt"] {
+            match context.read(path) {
+                Ok(bytes) => {
+                    match axbacktrace::install_symbol_map_owned(bytes.into_boxed_slice()) {
+                        Ok(()) => info!("installed target backtrace map from {path}"),
+                        Err(error) => warn!("ignored target backtrace map {path}: {error:?}"),
+                    }
+                    break;
+                }
+                Err(axfs_ng_vfs::VfsError::NotFound) => {}
+                Err(error) => warn!("failed to read target backtrace map {path}: {error:?}"),
+            }
+        }
         fs
     });
     if let Some(range) = archive {

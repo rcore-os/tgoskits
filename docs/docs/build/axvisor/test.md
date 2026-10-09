@@ -81,7 +81,7 @@ flowchart TD
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
-单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 不生成 grouped runner，也不启用 backtrace capture（`capture_backtrace = None`）。
+单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 直接保留目标串口输出，由目标侧 AXBT map 完成回溯符号化。
 
 ### 3.2 U-Boot 测试
 

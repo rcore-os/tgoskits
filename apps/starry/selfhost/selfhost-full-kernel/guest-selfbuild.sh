@@ -150,8 +150,8 @@ install_rust() {
     [ -x "$toolchain_dir/bin/cargo" ] \
         || fail "pre-extracted cargo is missing: $toolchain_dir/bin/cargo"
 
-    # Install rustup to tmpfs (rsext4 is too slow for rustup's many small
-    # writes during cargo install of cargo-binutils / ksym).
+    # Install rustup to tmpfs because rsext4 is too slow for rustup's many
+    # small writes during guest toolchain setup.
     local tmp_rustup=/tmp/rustup-home
     local tmp_cargo=/tmp/cargo-home
     mkdir -p "$tmp_rustup" "$tmp_cargo"
@@ -188,21 +188,6 @@ install_rust() {
     echo "[self-compile] Rust toolchain ready."
     echo "[self-compile] $(rustc --version)"
     echo "[self-compile] $(cargo --version)"
-}
-
-install_kallsyms_tools() {
-    # cargo install downloads source + compiles — small enough to tolerate
-    # rsext4 throughput and slirp latency.
-    if ! cargo install --list | grep -q '^cargo-binutils v0.4.0:'; then
-        cargo install cargo-binutils --version 0.4.0 --locked
-    fi
-    if ! cargo install --list | grep -q '^ksym v0.6.0:'; then
-        cargo install ksym --version 0.6.0 --locked
-    fi
-
-    command -v rust-nm >/dev/null 2>&1 || fail "cargo-binutils did not install rust-nm"
-    command -v rust-objcopy >/dev/null 2>&1 || fail "cargo-binutils did not install rust-objcopy"
-    command -v gen_ksym >/dev/null 2>&1 || fail "ksym did not install gen_ksym"
 }
 
 prepare_source_tree() {
@@ -269,7 +254,6 @@ trap handle_exit EXIT
 echo "SELF_COMPILE_START"
 load_run_id
 export CARGO_BUILD_JOBS="${SELFHOST_CARGO_BUILD_JOBS:-2}"
-export AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0
 unset CARGO_BUILD_TARGET
 
 mark_phase packages
@@ -280,7 +264,6 @@ mark_phase rust
 configure_musl_toolchain_aliases
 install_rust
 mark_phase tools
-install_kallsyms_tools
 mark_phase source
 prepare_source_tree
 report_build_storage

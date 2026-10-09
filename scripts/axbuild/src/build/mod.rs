@@ -26,6 +26,7 @@ mod future_incompat;
 mod info;
 mod platform;
 mod std_build;
+pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
 pub(crate) use config_file::{
@@ -36,6 +37,7 @@ pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
+#[allow(unused_imports)]
 pub(crate) use info::{
     ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags,
     build_info_enables_backtrace_path, env_truthy, toolchain_rustflags,

@@ -78,6 +78,69 @@ pub(crate) fn prepare_host_initramfs(
     Ok(())
 }
 
+/// Appends the map generated for the final target ELF to a prepared host
+/// initramfs.  Newc archives may be concatenated and `ax-fs-ng` applies later
+/// entries last, so this does not rebuild or mutate the fixture tree.
+pub(crate) fn append_target_backtrace_map(
+    target_dir: &Path,
+    target: &str,
+    debug: bool,
+    qemu: &mut QemuConfig,
+) -> anyhow::Result<()> {
+    let profile = if debug { "debug" } else { "release" };
+    let map = target_dir.join(target).join(profile).join("starryos.axbt");
+    if !map.is_file() {
+        return Ok(());
+    }
+    append_backtrace_map(qemu, &map)
+}
+
+/// Appends an AXBT sidecar to an already prepared initramfs.
+pub(crate) fn append_backtrace_map(qemu: &mut QemuConfig, map: &Path) -> anyhow::Result<()> {
+    append_backtrace_map_to_initramfs(&mut qemu.boot.initramfs, map)
+}
+
+/// Appends an AXBT sidecar to a boot payload that is not represented by QEMU.
+/// U-Boot and board runners use the same initramfs contract as QEMU.
+pub(crate) fn append_backtrace_map_to_initramfs(
+    initramfs: &mut Option<String>,
+    map: &Path,
+) -> anyhow::Result<()> {
+    if !map.is_file() {
+        return Ok(());
+    }
+    if initramfs.is_none() {
+        let stage = tempfile::tempdir_in(map.parent().context("AXBT map has no parent")?)?;
+        let destination = stage.path().join("symbols/kernel.axbt");
+        fs::create_dir_all(destination.parent().expect("map has a parent"))?;
+        fs::copy(map, &destination)
+            .with_context(|| format!("failed to stage target backtrace map {}", map.display()))?;
+        let archive = map.with_extension("initramfs.cpio");
+        crate::image::pack_initramfs_dir(stage.path(), &archive)?;
+        *initramfs = Some(archive.to_string_lossy().into_owned());
+        return Ok(());
+    }
+    let initramfs = initramfs.as_deref().expect("checked above");
+    let initramfs = Path::new(initramfs);
+    let stage = tempfile::tempdir_in(
+        initramfs
+            .parent()
+            .context("host initramfs has no parent directory")?,
+    )?;
+    let destination = stage.path().join("symbols/kernel.axbt");
+    fs::create_dir_all(destination.parent().expect("map has a parent"))?;
+    fs::copy(map, &destination)
+        .with_context(|| format!("failed to stage target backtrace map {}", map.display()))?;
+    let map_archive = initramfs.with_extension("symbols.cpio");
+    crate::image::pack_initramfs_dir(stage.path(), &map_archive)?;
+    let mut output = fs::OpenOptions::new().append(true).open(initramfs)?;
+    let bytes = fs::read(&map_archive)?;
+    std::io::Write::write_all(&mut output, &bytes)?;
+    output.sync_all()?;
+    let _ = fs::remove_file(map_archive);
+    Ok(())
+}
+
 fn build_test_init(entry_source: &Path, init_source: &Path, output: &Path) -> anyhow::Result<()> {
     let objects = tempfile::tempdir_in(output.parent().expect("test init has a parent"))?;
     let entry_object = objects.path().join("entry.o");

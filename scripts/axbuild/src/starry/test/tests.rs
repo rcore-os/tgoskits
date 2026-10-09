@@ -205,7 +205,6 @@ fn grouped_host_http_test_case(
         qemu_config_path: case_dir.join("qemu-x86_64.toml"),
         test_commands: Vec::new(),
         grouped_command_selection: Default::default(),
-        host_symbolize_success_regex: Vec::new(),
         host_http_server: Some(crate::test::case::HostHttpServerConfig {
             bind: "127.0.0.1".to_string(),
             port: 18380,
@@ -238,7 +237,6 @@ fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQ
             qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
             test_commands: Vec::new(),
             grouped_command_selection: Default::default(),
-            host_symbolize_success_regex: Vec::new(),
             host_http_server: None,
             subcases: Vec::new(),
             grouped_subcase_filter: None,

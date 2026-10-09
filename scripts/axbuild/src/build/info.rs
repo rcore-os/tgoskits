@@ -359,13 +359,15 @@ fn append_rustflag_sequence(active_flags: &mut Vec<String>, flags: &[&str]) -> b
 
 /// Whether the build config enables target backtrace support (frame pointers / unwind).
 ///
-/// Matches [`toolchain_rustflags`]: `BACKTRACE=y` or `DWARF=y` in `[env]`.
+/// This remains a build-pipeline predicate; runtime symbolization is performed by the target.
+#[allow(dead_code)]
 pub(crate) fn build_info_enables_backtrace(info: &BuildInfo) -> bool {
     let dwarf = env_truthy(&info.env, "DWARF");
     env_truthy(&info.env, "BACKTRACE") || dwarf
 }
 
 /// Read a per-target `build-*.toml` and check [`build_info_enables_backtrace`].
+#[allow(dead_code)]
 pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
     load_build_info::<BuildInfo>(path)
         .ok()

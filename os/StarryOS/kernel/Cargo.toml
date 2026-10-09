@@ -171,7 +171,6 @@ sg200x-jpu = { workspace = true, optional = true }
 # must come from the same version as sg200x-bsp's ReadWrite types.
 tock-registers = { version = "0.10", optional = true }
 ax-tracepoint.workspace = true
-ksym = "0.6"
 kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 

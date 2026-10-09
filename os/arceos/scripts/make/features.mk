@@ -42,10 +42,6 @@ ifeq ($(filter $(LOG),off error warn info debug trace),)
   $(error "LOG" must be one of "off", "error", "warn", "info", "debug", "trace")
 endif
 
-ifeq ($(DWARF),y)
-  arceos_feature += dwarf
-endif
-
 ifeq ($(shell test $(SMP) -gt 1; echo $$?),0)
   lib_feat += smp
 endif

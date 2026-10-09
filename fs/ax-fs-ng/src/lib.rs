@@ -28,6 +28,7 @@ pub mod file;
 pub mod fops;
 mod fs;
 pub mod initramfs;
+pub mod migration;
 pub use fs::memory::MemoryFs;
 mod fs_core;
 mod highlevel;

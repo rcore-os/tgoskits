@@ -22,7 +22,6 @@ use ax_std::os::arceos::task::{
 };
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
-use ksym::KallsymsMapped;
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -63,36 +62,49 @@ fn require_proc_task(task: &WeakUserTaskRef) -> VfsResult<UserTaskRef> {
     upgrade_proc_task(task)?.ok_or(VfsError::NotFound)
 }
 
-pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
+/// Kernel symbol provider backed by the validated AXBT map copied from
+/// initramfs.  Keeping this adapter here preserves Linux-facing kallsyms,
+/// kprobe and kmod APIs without embedding a second ELF-derived table.
+pub struct KernelSymbols {
+    map: Option<&'static axbacktrace::SymbolMap<'static>>,
+}
+
+impl KernelSymbols {
+    pub fn lookup_name(&self, name: &str) -> Option<u64> {
+        let map = self.map?;
+        (0..map.len()).find_map(|index| {
+            let (start, _, symbol) = map.symbol_at(index)?;
+            (symbol.name == name).then_some(start as u64)
+        })
+    }
+
+    pub fn dump_all_symbols(&self) -> String {
+        let mut output = String::new();
+        let Some(map) = self.map else {
+            return output;
+        };
+        for index in 0..map.len() {
+            let Some((start, _, symbol)) = map.symbol_at(index) else {
+                continue;
+            };
+            let _ = writeln!(output, "{start:016x} T {}", symbol.name);
+        }
+        output
+    }
+}
+
+pub static KALLSYMS: LazyInit<KernelSymbols> = LazyInit::new();
 
 static BOOT_ID: LazyInit<String> = LazyInit::new();
 
-fn read_kallsyms() -> KallsymsMapped<'static> {
-    unsafe extern "C" {
-        fn _stext();
-        fn _etext();
-        fn __kallsyms_start();
-        fn __kallsyms_end();
+fn read_kallsyms() -> KernelSymbols {
+    let map = axbacktrace::symbol_map();
+    if let Some(map) = map {
+        info!("Read target AXBT map, functions={}", map.len());
+    } else {
+        warn!("Target AXBT map is not installed; /proc/kallsyms is empty");
     }
-
-    let kallsyms_start = __kallsyms_start as *const () as usize;
-    let kallsyms_end = __kallsyms_end as *const () as usize;
-    let kallsyms_sec_size = kallsyms_end - kallsyms_start;
-    let kallsyms_sec =
-        unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_sec_size) };
-
-    let total_size =
-        KallsymsMapped::check_total_bytes(kallsyms_sec).expect("Invalid kallsyms format");
-
-    let kallsyms = &kallsyms_sec[..total_size as usize];
-    // TODO: recycle unused space in .kallsyms section
-    info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
-    KallsymsMapped::from_blob(
-        kallsyms,
-        _stext as *const () as u64,
-        _etext as *const () as u64,
-    )
-    .expect("Failed to create KallsymsMapped")
+    KernelSymbols { map }
 }
 
 fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {

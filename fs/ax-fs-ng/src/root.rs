@@ -17,6 +17,7 @@ use crate::{
         runtime::{BlockRuntime, RdifBlockDevice, RdifBlockGroup},
     },
     detect_filesystem, fs,
+    migration::{MigrationPlan, MigrationReport},
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
         PartitionTableKind as VolumeTableKind, scan_volumes,
@@ -225,6 +226,15 @@ impl PreparedRoot {
     /// Provides file access for installing boot resources before publication.
     pub fn context(&self) -> &crate::highlevel::FsContext {
         &self.context
+    }
+
+    /// Migrates an explicit resource plan into this root before publication.
+    pub fn migrate(
+        &self,
+        source: &crate::highlevel::FsContext,
+        plan: &MigrationPlan,
+    ) -> axfs_ng_vfs::VfsResult<MigrationReport> {
+        plan.execute(source, &self.context)
     }
 
     /// Publishes this filesystem and detaches the previous root.
@@ -468,8 +478,25 @@ fn init_root_with_policy(
     if use_memory {
         return RootKind::Memory;
     }
-    prepare_root(devices, bootargs)
-        .and_then(PreparedRoot::commit)
+    let source = crate::highlevel::ROOT_FS_CONTEXT
+        .get()
+        .map(|context| context.lock().clone());
+    let prepared = prepare_root(devices, bootargs)
+        .unwrap_or_else(|error| panic!("failed to prepare disk root: {error:?}"));
+    if let Some(source) = source
+        && !prepared.context().root_dir().is_readonly()
+    {
+        let plan = MigrationPlan::boot_resources()
+            .unwrap_or_else(|error| panic!("failed to create boot migration plan: {error:?}"));
+        prepared
+            .migrate(&source, &plan)
+            .unwrap_or_else(|error| panic!("failed to migrate boot resources: {error:?}"));
+        drop(source);
+    } else if prepared.context().root_dir().is_readonly() {
+        warn!("disk root is read-only; skipping immutable boot resource migration");
+    }
+    prepared
+        .commit()
         .unwrap_or_else(|error| panic!("failed to mount disk root: {error:?}"));
     RootKind::Block
 }

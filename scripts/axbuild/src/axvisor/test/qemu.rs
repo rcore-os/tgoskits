@@ -250,8 +250,14 @@ impl Axvisor {
                 .await?;
                 let digest = sha2::Sha256::digest(std::fs::read(case_artifact.build_artifact)?);
                 println!("Axvisor kernel sha256={digest:x} case={case_name}");
-                self.run_qemu_case(&case_request, &build_group.cargo, case, &asset_config)
-                    .await
+                self.run_qemu_case(
+                    &case_request,
+                    &build_group.cargo,
+                    case,
+                    case_artifact.build_artifact,
+                    &asset_config,
+                )
+                .await
             }
             .await
             .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
@@ -404,12 +410,14 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
         case: &PreparedAxvisorQemuCase,
+        kernel: &Path,
         asset_config: &test_case::CaseAssetConfig,
     ) -> anyhow::Result<()> {
         let prepare_started = Instant::now();
         let (mut qemu, prepared_assets) = self
             .load_qemu_case_config(request, case, asset_config)
             .await?;
+        crate::test::qemu::append_backtrace_map(&mut qemu, &kernel.with_extension("axbt"))?;
 
         // Optional host->guest TCP probe over QEMU user-mode networking. When
         // `[host_http_probe]` is configured, the host acts as a *client* that
@@ -497,7 +505,6 @@ impl Axvisor {
             &mut self.app,
             cargo,
             qemu,
-            None,
             &case.case.case.qemu_config_path,
             prepared_assets,
             test_case::RunPreparedQemuCaseOptions {

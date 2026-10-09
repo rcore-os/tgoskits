@@ -153,7 +153,7 @@ Build Config 中 `[env]` 的以下键会补充 Rust 工具链选项：
 
 | 条件 | 追加 rustflags |
 | --- | --- |
-| `DWARF=y/yes/1/true/on` | `-Cdebuginfo=2 -Cstrip=none -Cforce-frame-pointers=yes` |
+| `DWARF=y/yes/1/true/on` | `-Cdebuginfo=2 -Cstrip=none -Cforce-frame-pointers=yes`；构建完成后从最终 ELF 生成 AXBT 函数、文件和行号 map |
 | `BACKTRACE=y/yes/1/true/on` | `-Cforce-frame-pointers=yes` |
 | feature 含 `stack-protector` | `-Zstack-protector=strong` |
 

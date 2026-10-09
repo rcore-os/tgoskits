@@ -77,6 +77,7 @@ impl Starry {
                 write_policy: RootfsWritePolicy::Discard,
             },
         )?;
+        qemu_test::append_backtrace_map(&mut qemu, &built_elf.with_extension("axbt"))?;
         qemu_test::apply_timeout_scale(&mut qemu);
 
         let staging = if let Some(fixed) = &fixed_elf {
@@ -96,10 +97,7 @@ impl Starry {
             println!("  fixed elf: {}", fixed.path.display());
         }
 
-        let run_result = self
-            .app
-            .run_qemu_with_axtest_coverage(&cargo, qemu, None)
-            .await;
+        let run_result = self.app.run_qemu_with_axtest_coverage(&cargo, qemu).await;
         drop(staging);
 
         let immutable_result = fixed_elf
@@ -271,7 +269,7 @@ fn comparable_elf_sections(
             .name()
             .with_context(|| format!("invalid section name in {}", path.display()))?;
         let coverage_metadata = matches!(name, "__llvm_covfun" | "__llvm_covmap");
-        if name == ".kallsyms" || section.address() == 0 && !coverage_metadata {
+        if section.address() == 0 && !coverage_metadata {
             continue;
         }
         sections.push(ComparableElfSection {

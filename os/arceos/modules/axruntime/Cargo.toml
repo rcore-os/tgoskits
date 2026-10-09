@@ -50,6 +50,7 @@ fs = [
   "dep:axfs-ng-vfs",
   "dep:rdif-block",
   "ax-driver/block",
+  "axbacktrace/alloc",
 ]
 # Select the Linux early-userspace root when rdinit or /init is accessible.
 starry-init = ["fs"]

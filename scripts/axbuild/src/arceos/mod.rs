@@ -416,10 +416,14 @@ impl ArceOS {
                     bail!("ArceOS board extra rustflags are only supported for Rust packages");
                 }
                 let cargo = build::load_c_app_cargo_config(&request, self.app.workspace_context())?;
-                let board_config = self
+                let mut board_config = self
                     .load_board_config(&cargo, board_config_path.as_deref())
                     .await?;
                 let output = self.build_c_app_request(&request, app_dir, app_name)?;
+                crate::test::qemu::append_backtrace_map_to_initramfs(
+                    &mut board_config.boot.initramfs,
+                    &output.elf_path.with_extension("axbt"),
+                )?;
                 self.app
                     .board_prepared_elf(
                         output.elf_path,
@@ -520,7 +524,10 @@ impl ArceOS {
             features: config.build_info.features,
         };
 
-        cbuild::build_c_app(self.app.workspace_context(), request, &input)
+        let output = cbuild::build_c_app(self.app.workspace_context(), request, &input)?;
+        let map_path = output.elf_path.with_extension("axbt");
+        crate::build::symbol_map::generate_axbt_map(&output.elf_path, &map_path)?;
+        Ok(output)
     }
 
     async fn run_c_app_qemu_request(
@@ -544,11 +551,15 @@ impl ArceOS {
         // See `run_qemu_request_with_cargo`: default ArceOS QEMU keeps a FAT32 rootfs.
         crate::test::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
         rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
+        crate::test::qemu::append_backtrace_map(
+            &mut qemu,
+            &output.elf_path.with_extension("axbt"),
+        )?;
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)
             .await?;
         let _host_http_server = start_qemu_host_http_server(&request)?;
-        self.app.run_prepared_qemu(qemu, None).await
+        self.app.run_prepared_qemu(qemu).await
     }
 
     async fn run_c_app_uboot_request(
@@ -569,6 +580,11 @@ impl ArceOS {
                 )
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
+        let mut uboot = uboot;
+        crate::test::qemu::append_backtrace_map_to_initramfs(
+            &mut uboot.boot.initramfs,
+            &output.elf_path.with_extension("axbt"),
+        )?;
         self.app.prepare_elf_artifact(output.elf_path, true).await?;
         self.app.run_prepared_uboot(uboot).await
     }

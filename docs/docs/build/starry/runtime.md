@@ -5,7 +5,7 @@ sidebar_label: "运行"
 
 # StarryOS 运行
 
-StarryOS 的 `qemu`、`uboot`、`board` 都先构建并后处理内核 ELF。QEMU 运行在此基础上选择 rootfs、读取启动 TOML、补充显式 SMP，并以配置要求决定是否准备 BIN。
+StarryOS 的 `qemu`、`uboot`、`board` 都先构建内核 ELF 并生成 AXBT sidecar。QEMU 运行在此基础上选择 rootfs、读取启动 TOML、补充显式 SMP，并以配置要求决定是否准备 BIN。
 
 ## 1. QEMU 启动
 
@@ -17,7 +17,7 @@ flowchart TD
     B --> C["准备选中的 rootfs"]
     C --> D["读取 QEMU TOML"]
     D --> E["替换 rootfs drive，注入 --smp"]
-    E --> F["构建 ELF + kallsyms / 可选 uImage"]
+    E --> F["构建 ELF + AXBT map / 可选 uImage"]
     F --> G["run_qemu"]
 ```
 
@@ -48,7 +48,7 @@ QEMU 的 machine、CPU、UEFI、firmware 和 device 全部来自该文件。`--s
 
 ## 2. U-Boot 启动
 
-`cargo xtask starry uboot` 读取 `--uboot-config`；未提供时使用 ostool 的 U-Boot 配置发现。构建完成的 ELF 先经过 kallsyms 和可选 ITS/uImage 后处理，再由 `run_prepared_uboot()` 启动。
+`cargo xtask starry uboot` 读取 `--uboot-config`；未提供时使用 ostool 的 U-Boot 配置发现。构建完成的 ELF 先生成 AXBT map，并按可选 ITS 生成 uImage，再由 `run_prepared_uboot()` 启动。
 
 ## 3. 板卡启动
 

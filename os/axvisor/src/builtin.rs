@@ -1,12 +1,15 @@
 //! Axvisor policy for archive-owned guest configuration and boot assets.
 
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
-use core::cell::RefCell;
 
 use anyhow::{Context, Result, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
 use ax_fs_ng::current_fs_context;
-use ax_fs_ng::{VfsError, vfs::FsContext};
+use ax_fs_ng::{
+    VfsError,
+    migration::{MigrationEntry, MigrationPlan, ResourceKind},
+    vfs::FsContext,
+};
 use axvmconfig::{BUILTIN_GUEST_DIR, GuestConfig};
 
 /// Installs archive assets before an explicitly requested disk root is committed.
@@ -41,24 +44,22 @@ pub fn prepare_root() -> Result<()> {
 /// A missing source preserves the installed version and returns `false`.
 /// The caller must exclude concurrent writers until installation finishes.
 pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
-    let validation_error = RefCell::new(None);
-    let installed =
-        ax_fs_ng::bundle::install_directory(source, target, BUILTIN_GUEST_DIR, |context, path| {
-            validate_builtin_assets(context, path, Some(context)).map_err(|error| {
-                // Recovery may reject the published directory and restore its
-                // backup. Only staging validation aborts this installation.
-                if path != BUILTIN_GUEST_DIR {
-                    validation_error.replace(Some(error));
-                }
-                VfsError::InvalidData
-            })
-        });
-    installed
-        .map_err(|error| match validation_error.into_inner() {
-            Some(validation) if error == VfsError::InvalidData => validation,
-            _ => error.into(),
-        })
-        .context("install built-in guest package")
+    let mut plan = MigrationPlan::new();
+    plan.add(
+        MigrationEntry::new(
+            ResourceKind::Immutable,
+            BUILTIN_GUEST_DIR,
+            BUILTIN_GUEST_DIR,
+        )
+        .with_validator(|context, path| {
+            validate_builtin_assets(context, path, Some(context)).map_err(|_| VfsError::InvalidData)
+        }),
+    )?;
+    let report = plan
+        .execute(source, target)
+        .map_err(anyhow::Error::from)
+        .context("install built-in guest package")?;
+    Ok(report.migrated != 0)
 }
 
 fn config_files(context: &FsContext, directory: &str) -> Result<Vec<String>> {
@@ -118,7 +119,7 @@ fn validate_builtin_assets(
         let entry = entry?;
         match entry.name.as_str() {
             "." | ".." => {}
-            "configs" | "images" => {
+            "configs" | "images" | "symbols" => {
                 nonempty = true;
                 context
                     .resolve(format!("{staged}/{}", entry.name))?
