@@ -314,9 +314,9 @@ impl FdtTree {
     ///
     /// A clone never inherits the template's `phandle`/`linux,phandle`: a
     /// phandle identifies exactly one node, and a cloned CPU is a distinct
-    /// guest identity. The replacement value is taken above every phandle of
-    /// the host tree as well, so a clone cannot take over the identity of a
-    /// source node that the guest dropped.
+    /// guest identity. The replacement value is preferably above every
+    /// phandle of the host and guest trees; at the upper bound, the allocator
+    /// reuses the smallest available gap without taking over an identity.
     pub(crate) fn ensure_guest_cpu_nodes(
         &mut self,
         host: &Fdt,
