@@ -202,7 +202,11 @@ impl FsContext {
     pub fn new(root_dir: Location) -> Self {
         #[cfg(feature = "vfs")]
         {
-            let mnt_ns = Arc::new(MountNamespace::new(root_dir.mountpoint().clone()));
+            let mut anchor = root_dir.mountpoint().clone();
+            while let Some(parent) = anchor.location() {
+                anchor = parent.mountpoint().clone();
+            }
+            let mnt_ns = Arc::new(MountNamespace::new(anchor));
             Self::new_in_namespace(mnt_ns, root_dir)
         }
         #[cfg(not(feature = "vfs"))]
@@ -296,7 +300,7 @@ impl FsContext {
             .as_ref()
             .map(Location::absolute_path)
             .transpose()?;
-        let new_root_loc = new_ns.root_mount().root_location();
+        let new_root_loc = new_ns.root_mount().root_location().resolve_mountpoint();
         let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
         let root_dir = resolver.resolve(root_path)?;
         let current_dir = resolver.resolve(current_path)?;
