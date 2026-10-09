@@ -53,6 +53,28 @@ class MirroredPayloadTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn("missing mirrored benchmark payload file", errors[0])
 
+    def test_shared_build_configuration_must_remain_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            smoke = root / "apps/starry/generated-case"
+            benchmark = root / "benchmarks/starry/generated-case"
+            smoke.mkdir(parents=True)
+            benchmark.mkdir(parents=True)
+            (smoke / "build-x86_64-unknown-none.toml").write_text(
+                "features = []\n", encoding="utf-8"
+            )
+            (benchmark / "build-x86_64-unknown-none.toml").write_text(
+                "features = []\n", encoding="utf-8"
+            )
+
+            self.assertEqual(check_mirrored_payload_consistency(root), [])
+            (benchmark / "build-x86_64-unknown-none.toml").write_text(
+                "features = ['changed']\n", encoding="utf-8"
+            )
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("build-x86_64-unknown-none.toml", errors[0])
+
 
 class ReleasePrerequisiteTests(unittest.TestCase):
     def test_semver_checks_install_libudev_before_release_plz(self) -> None:

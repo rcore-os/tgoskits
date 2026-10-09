@@ -842,12 +842,15 @@ def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
     if errors:
         return errors
 
+    def is_build_file(relative: Path) -> bool:
+        return relative.name.startswith("build-") and relative.suffix == ".toml"
+
     def is_variant_file(relative: Path) -> bool:
         return (
             relative.name == "README.md"
             or relative.name.startswith("RESULTS-")
             or (relative.name.startswith("qemu-") and relative.suffix == ".toml")
-            or (relative.name.startswith("build-") and relative.suffix == ".toml")
+            or is_build_file(relative)
         )
 
     smoke_dirs = {path.relative_to(smoke_root) for path in smoke_root.rglob("*") if path.is_dir()}
@@ -892,6 +895,25 @@ def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
             if smoke_path.read_bytes() != benchmark_path.read_bytes():
                 errors.append(
                     "mirrored benchmark payload files must remain byte-identical: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+                )
+        smoke_build_files = {
+            path.relative_to(smoke_dir)
+            for path in smoke_dir.rglob("*")
+            if path.is_file() and is_build_file(path.relative_to(smoke_dir))
+        }
+        benchmark_build_files = {
+            path.relative_to(benchmark_dir)
+            for path in benchmark_dir.rglob("*")
+            if path.is_file() and is_build_file(path.relative_to(benchmark_dir))
+        }
+        for relative in sorted(smoke_build_files & benchmark_build_files):
+            smoke_path = smoke_dir / relative
+            benchmark_path = benchmark_dir / relative
+            if smoke_path.read_bytes() != benchmark_path.read_bytes():
+                errors.append(
+                    "mirrored benchmark build files must remain byte-identical: "
                     f"{smoke_path.relative_to(workspace_root).as_posix()} and "
                     f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
                 )
