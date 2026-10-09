@@ -1,8 +1,9 @@
 //! Axvisor policy for archive-owned guest configuration and boot assets.
 
-use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
+use alloc::{collections::BTreeSet, format, rc::Rc, string::String, vec::Vec};
+use core::cell::RefCell;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
 use ax_fs_ng::current_fs_context;
 use ax_fs_ng::{
@@ -44,6 +45,8 @@ pub fn prepare_root() -> Result<()> {
 /// A missing source preserves the installed version and returns `false`.
 /// The caller must exclude concurrent writers until installation finishes.
 pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
+    let validation_error = Rc::new(RefCell::new(None));
+    let validation_error_for_validator = Rc::clone(&validation_error);
     let mut plan = MigrationPlan::new();
     plan.add(
         MigrationEntry::new(
@@ -51,13 +54,24 @@ pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
             BUILTIN_GUEST_DIR,
             BUILTIN_GUEST_DIR,
         )
-        .with_validator(|context, path| {
-            validate_builtin_assets(context, path, Some(context)).map_err(|_| VfsError::InvalidData)
+        .with_validator(move |context, path| {
+            validate_builtin_assets(context, path, Some(context)).map_err(|error| {
+                validation_error_for_validator.replace(Some(format!("{error:#}")));
+                VfsError::InvalidData
+            })
         }),
     )?;
-    let report = plan
-        .execute(source, target)
-        .map_err(anyhow::Error::from)
+    let result = plan.execute(source, target);
+    drop(plan);
+    let report = result
+        .map_err(|error| {
+            if error == VfsError::InvalidData {
+                if let Some(validation) = validation_error.borrow_mut().take() {
+                    return anyhow!(validation);
+                }
+            }
+            anyhow::Error::from(error)
+        })
         .context("install built-in guest package")?;
     Ok(report.migrated != 0)
 }
