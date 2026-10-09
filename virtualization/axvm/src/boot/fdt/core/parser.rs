@@ -548,7 +548,7 @@ fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_path: &str, range: &PciRa
         debug!(
             "Skipping passthrough PCI range for node {} [{:#x}~{:#x}] because it overlaps virtual \
              device {} {} [{:#x}~{:#x}]",
-            node_name,
+            node_path,
             base_address,
             addr_end,
             virtual_range.device,
@@ -963,12 +963,6 @@ mod tests {
     fn prop_u32_list(name: &str, values: &[u32]) -> fdt_edit::Property {
         let mut prop = fdt_edit::Property::new(name, std::vec![]);
         prop.set_u32_ls(values);
-        prop
-    }
-
-    fn prop_string(name: &str, value: &str) -> fdt_edit::Property {
-        let mut prop = fdt_edit::Property::new(name, alloc::vec![]);
-        prop.set_string(value);
         prop
     }
 

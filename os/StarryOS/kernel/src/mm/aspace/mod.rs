@@ -926,14 +926,6 @@ impl AddrSpace {
             .map_err(Into::into)
     }
 
-    /// Returns the size of the resident leaf containing `vaddr`.
-    ///
-    /// Absence means the VMA is lazy or has been reclaimed; callers must use
-    /// the immutable VMA snapshot to distinguish that from an invalid VA.
-    pub(crate) fn resident_span(&self, vaddr: VirtAddr) -> Option<usize> {
-        self.pt.query(vaddr).ok().map(|(_, _, size)| size)
-    }
-
     /// Returns resident bytes from an address to its owning leaf's end,
     /// including permissionless leaves. This is a residency snapshot, not an
     /// access capability; callers must validate VMA coverage separately.

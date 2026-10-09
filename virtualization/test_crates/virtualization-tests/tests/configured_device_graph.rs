@@ -265,122 +265,6 @@ capacity = "20GiB"
 }
 
 #[test]
-fn ivc_channel_uses_catalog_and_planned_mmio_aperture() {
-    const IVC_APERTURE_SIZE: u64 = 0x100_0000;
-
-    let config = GuestConfig::from_toml(
-        r#"
-[devices]
-[[devices.virtual]]
-id = "ivc0"
-model = "ivc-channel"
-"#,
-    )
-    .unwrap();
-
-    let mut catalog = ConfiguredDeviceCatalog::new();
-    axvm::machine::register_devices(&mut catalog).unwrap();
-    let controller_id = DeviceNodeId::new("controller").unwrap();
-    let context = DeviceInstantiationContext::new()
-        .with_default_wired_controller(controller_id.clone(), InterruptControllerId::new(0));
-    let mut graph = DeviceGraphBuilder::new();
-    graph
-        .add(DeviceNodeSpec::virtual_device(
-            controller_id,
-            Arc::new(ControllerModel),
-        ))
-        .unwrap();
-    for request in config.devices.virtual_device_requests() {
-        let node = catalog.instantiate_node(request, &context).unwrap();
-        graph.add(node).unwrap();
-    }
-
-    let mut pools = ResourcePools::new();
-    pools
-        .add_auto_mmio(0x1000_0000..0x1000_0000 + IVC_APERTURE_SIZE)
-        .unwrap();
-    pools
-        .add_auto_controller_inputs(
-            InterruptControllerId::new(0),
-            ControllerInputId::new(32)..ControllerInputId::new(33),
-        )
-        .unwrap();
-    let graph = graph.declare().unwrap().resolve(pools).unwrap();
-
-    let ivc_id = DeviceNodeId::new("ivc0").unwrap();
-    let registers = ResourceSlot::new("registers").unwrap();
-    let notify = ResourceSlot::new("notify").unwrap();
-    let resources = graph.resources_for(&ivc_id).unwrap();
-    assert_eq!(
-        resources.mmio(&registers).unwrap(),
-        (0x1000_0000, IVC_APERTURE_SIZE)
-    );
-    assert_eq!(resources.wired_irq(&notify).unwrap().input().value(), 32);
-
-    let ivc_node = graph
-        .nodes()
-        .find(|node| node.id() == &ivc_id)
-        .expect("IVC node is present in the resolved graph");
-    let [FdtContributionSpec::Conventional(fdt)] = ivc_node.firmware().fdt().unwrap() else {
-        panic!("IVC model must expose one conventional FDT node");
-    };
-    assert_eq!(fdt.node_name(), "ivc-channel");
-    assert_eq!(fdt.compatible(), ["axvisor,ivc-channel"]);
-    assert_eq!(
-        fdt.properties(),
-        [
-            DeviceFirmwareProperty::InterruptInput {
-                name: "axvisor,notify-irq".into(),
-                slot: notify.clone(),
-            },
-            DeviceFirmwareProperty::String {
-                name: "status".into(),
-                value: "okay".into(),
-            },
-            DeviceFirmwareProperty::U32 {
-                name: "axvisor,ivc-version".into(),
-                value: 1,
-            },
-        ]
-    );
-    assert_eq!(fdt.register_slots(), [registers]);
-    assert_eq!(fdt.interrupt_slots(), [notify]);
-
-    let mut runtime = axdevice::DeviceRuntimeBuilder::new(Default::default());
-    for node in graph.nodes() {
-        runtime
-            .build_graph_node(node, graph.resource_plan())
-            .unwrap();
-    }
-    let _runtime = runtime.finish(graph.resource_plan()).unwrap();
-}
-
-#[test]
-fn ivc_channel_rejects_raw_notify_irq_option() {
-    let config = GuestConfig::from_toml(
-        r#"
-[devices]
-[[devices.virtual]]
-id = "ivc0"
-model = "ivc-channel"
-notify_irq = 160
-"#,
-    )
-    .unwrap();
-    let request = config.devices.virtual_device_requests().first().unwrap();
-    let controller_id = DeviceNodeId::new("controller").unwrap();
-    let context = DeviceInstantiationContext::new()
-        .with_default_wired_controller(controller_id, InterruptControllerId::new(0));
-
-    let mut catalog = ConfiguredDeviceCatalog::new();
-    axvm::machine::register_devices(&mut catalog).unwrap();
-    assert!(matches!(
-        catalog.instantiate_node(request, &context),
-        Err(ConfiguredDeviceError::InvalidOptions { .. })
-    ));
-}
-
-#[test]
 fn axvm_catalog_owns_common_virtio_models() {
     let config = GuestConfig::from_toml(
         r#"
@@ -667,7 +551,7 @@ cache = "writeback"
 #[test]
 fn axvm_common_registration_rolls_back_the_complete_batch() {
     let conflicting_registration = ConfiguredModelRegistration {
-        model: "ivc-channel",
+        model: "virtio-blk",
         create: create_block_like,
     };
     let mut catalog = ConfiguredDeviceCatalog::new();

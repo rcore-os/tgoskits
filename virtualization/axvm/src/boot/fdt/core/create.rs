@@ -907,9 +907,9 @@ mod tests {
     use super::{
         super::{
             device::find_all_passthrough_devices,
-            tree::{FdtTree, prop_string, sanitize_bootargs},
+            tree::{FdtTree, sanitize_bootargs},
         },
-        find_node_by_phandle, initrd_range_from_image_config, u32_property,
+        find_node_by_phandle, initrd_range_from_image_config,
     };
     use crate::{
         GuestPhysAddr,
@@ -924,13 +924,9 @@ mod tests {
     }
 
     fn prop_string(name: &str, value: &str) -> Property {
-        let mut prop = Property::new(name, alloc::vec![]);
+        let mut prop = Property::new(name, std::vec![]);
         prop.set_string(value);
         prop
-    }
-
-    fn prop_empty(name: &str) -> Property {
-        Property::new(name, alloc::vec![])
     }
 
     fn test_fdt(dts: &str) -> Fdt {

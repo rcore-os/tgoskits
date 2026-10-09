@@ -1,10 +1,9 @@
 use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec};
 
-use ax_kspin::SpinNoIrq;
+use ax_sync::SpinLock;
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess,
-    DeviceError, DeviceResult, InterruptControllerId, InterruptSharing, InterruptTrigger, IrqLine,
-    Resource,
+    AccessWidth, BusKind, ControllerInputId, Device, DeviceAccess, DeviceContext, DeviceError,
+    DeviceResult, InterruptControllerId, InterruptSharing, InterruptTrigger, IrqLine, Resource,
 };
 use axvm_types::GuestPhysAddr;
 
@@ -61,13 +60,13 @@ const IVSHMEM_BAR0_FEATURE_FLAGS_OFFSET: usize = 0x1c;
 const IVSHMEM_LINK_READY: u32 = 1;
 const IVSHMEM_INT_STATUS_DOORBELL: u32 = 1;
 
-static IVSHMEM_DOORBELL_ENDPOINTS: SpinNoIrq<BTreeMap<(u32, u32), IvshmemDoorbellEndpoint>> =
-    SpinNoIrq::new(BTreeMap::new());
+static IVSHMEM_DOORBELL_ENDPOINTS: SpinLock<BTreeMap<(u32, u32), IvshmemDoorbellEndpoint>> =
+    SpinLock::new(BTreeMap::new());
 
 #[derive(Clone)]
 struct IvshmemDoorbellEndpoint {
     irq: Option<IrqLine>,
-    state: Arc<SpinNoIrq<VirtualPciState>>,
+    state: Arc<SpinLock<VirtualPciState>>,
 }
 
 /// Endpoint behavior exposed behind a virtual PCI host bridge.
@@ -272,7 +271,7 @@ pub struct VirtualPciHost {
     endpoint: VirtualPciEndpointConfig,
     resources: Box<[Resource]>,
     config_space: [u8; PCI_CONFIG_SPACE_SIZE],
-    state: Arc<SpinNoIrq<VirtualPciState>>,
+    state: Arc<SpinLock<VirtualPciState>>,
     irq: Option<IrqLine>,
 }
 
@@ -326,7 +325,7 @@ impl VirtualPciHost {
             },
         ]
         .into_boxed_slice();
-        let state = Arc::new(SpinNoIrq::new(VirtualPciState {
+        let state = Arc::new(SpinLock::new(VirtualPciState {
             command: 0,
             bar0_value: endpoint.bar0_base as u32 | PCI_BAR_MEM_SPACE,
             bar0_probe: false,
@@ -415,7 +414,7 @@ impl VirtualPciHost {
         };
 
         if register_access_touches(register, width, PCI_COMMAND_OFFSET, 4) {
-            let state = self.state.lock();
+            let state = self.state.lock_irqsave();
             let command = state.command;
             let mut status = read_le_u16(&self.config_space, PCI_STATUS_OFFSET);
             if matches!(self.endpoint.kind, VirtualPciEndpointKind::Ivshmem(_))
@@ -433,7 +432,7 @@ impl VirtualPciHost {
             ));
         }
         if register_access_touches(register, width, PCI_BAR0_OFFSET, 4) {
-            let state = self.state.lock();
+            let state = self.state.lock_irqsave();
             let value = if state.bar0_probe {
                 bar_size_mask(self.endpoint.bar0_size) | PCI_BAR_MEM_SPACE
             } else {
@@ -450,7 +449,7 @@ impl VirtualPciHost {
         if self.endpoint.bar2_size != 0
             && register_access_touches(register, width, PCI_BAR2_OFFSET, 4)
         {
-            let state = self.state.lock();
+            let state = self.state.lock_irqsave();
             let value = if state.bar2_probe {
                 bar_size_mask(self.endpoint.bar2_size) | PCI_BAR_MEM_SPACE
             } else {
@@ -491,7 +490,7 @@ impl VirtualPciHost {
             });
         }
         if register_access_touches(register, width, PCI_COMMAND_OFFSET, 2) {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let merged = merge_window(
                 state.command as u64,
                 value,
@@ -507,7 +506,7 @@ impl VirtualPciHost {
             return Ok(());
         }
         if register_access_touches(register, width, PCI_BAR0_OFFSET, 4) {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let merged = merge_window(
                 state.bar0_value as u64,
                 value,
@@ -527,7 +526,7 @@ impl VirtualPciHost {
         if self.endpoint.bar2_size != 0
             && register_access_touches(register, width, PCI_BAR2_OFFSET, 4)
         {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let merged = merge_window(
                 state.bar2_value as u64,
                 value,
@@ -553,7 +552,7 @@ impl VirtualPciHost {
                 addr: addr.as_usize() as u64,
             });
         };
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let mut update_irq = false;
         let value = match self.endpoint.kind {
             VirtualPciEndpointKind::Dummy => match offset {
@@ -594,7 +593,7 @@ impl VirtualPciHost {
             });
         };
         let mut doorbell = None;
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let mut update_irq = false;
         match self.endpoint.kind {
             VirtualPciEndpointKind::Dummy => {
@@ -669,32 +668,36 @@ impl Device for VirtualPciHost {
         &self.resources
     }
 
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> DeviceResult<BusResponse> {
-        if access.kind != BusKind::Mmio {
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
             return Err(DeviceError::NotFound);
         }
 
-        let addr = GuestPhysAddr::from(access.addr as usize);
+        let addr = GuestPhysAddr::from(access.address() as usize);
         if self.contains(addr) {
-            if access.is_read {
-                Ok(BusResponse::Read {
-                    value: self.read_config(addr, access.width)?,
-                })
-            } else {
-                self.write_config(addr, access.width, access.data)?;
-                Ok(BusResponse::Write)
-            }
-        } else if self.contains_bar0(addr) && access.is_read {
-            Ok(BusResponse::Read {
-                value: self.read_bar0(addr, access.width)?,
-            })
+            self.read_config(addr, access.width())
         } else if self.contains_bar0(addr) {
-            self.write_bar0(addr, access.width, access.data)?;
-            Ok(BusResponse::Write)
+            self.read_bar0(addr, access.width())
+        } else {
+            Err(DeviceError::NotFound)
+        }
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::NotFound);
+        }
+
+        let addr = GuestPhysAddr::from(access.address() as usize);
+        if self.contains(addr) {
+            self.write_config(addr, access.width(), value)
+        } else if self.contains_bar0(addr) {
+            self.write_bar0(addr, access.width(), value)
         } else {
             Err(DeviceError::NotFound)
         }
@@ -814,7 +817,7 @@ impl DeviceModel for VirtualPciHostModel {
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::default()
+        DeviceFirmwareSpec::None
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -846,11 +849,11 @@ impl DeviceModel for VirtualPciHostModel {
 fn register_ivshmem_doorbell_endpoint(
     link_id: u32,
     peer_id: u32,
-    state: Arc<SpinNoIrq<VirtualPciState>>,
+    state: Arc<SpinLock<VirtualPciState>>,
     irq: Option<IrqLine>,
 ) {
     IVSHMEM_DOORBELL_ENDPOINTS
-        .lock()
+        .lock_irqsave()
         .insert((link_id, peer_id), IvshmemDoorbellEndpoint { irq, state });
 }
 
@@ -868,7 +871,7 @@ fn pulse_ivshmem_doorbell(config: IvshmemPciConfig, value: u32) -> DeviceResult 
     }
 
     let target = IVSHMEM_DOORBELL_ENDPOINTS
-        .lock()
+        .lock_irqsave()
         .get(&(config.link_id, target_peer))
         .cloned()
         .ok_or_else(|| DeviceError::InvalidInput {
@@ -880,7 +883,7 @@ fn pulse_ivshmem_doorbell(config: IvshmemPciConfig, value: u32) -> DeviceResult 
         })?;
 
     let pulse_irq = {
-        let mut state = target.state.lock();
+        let mut state = target.state.lock_irqsave();
         state.int_status |= IVSHMEM_INT_STATUS_DOORBELL;
         state.last_doorbell = ((config.peer_id & 0xffff) << 16) | (vector & 0xffff);
         ivshmem_interrupt_asserted(&VirtualPciEndpointKind::Ivshmem(config), &state)
@@ -1021,7 +1024,7 @@ fn read_le_u16(bytes: &[u8], offset: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use axdevice_base::{DeviceId, NoopDeviceAccess};
+    use axdevice_base::{DeviceId, DeviceVcpuId, NoopDeviceContext};
 
     use super::*;
 
@@ -1093,42 +1096,20 @@ mod tests {
     }
 
     fn read_with_width(device: &VirtualPciHost, addr: usize, width: AccessWidth) -> u64 {
-        let mut access = NoopDeviceAccess::new(DeviceId::new(0));
-        match device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: true,
-                    addr: addr as u64,
-                    width,
-                    data: 0,
-                },
-                &mut access,
-            )
-            .unwrap()
-        {
-            BusResponse::Read { value } => value,
-            BusResponse::Write => panic!("unexpected write response"),
-        }
+        let access = DeviceAccess::new(DeviceVcpuId::new(0), BusKind::Mmio, addr as u64, width);
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        device.read(&access, &mut context).unwrap()
     }
 
     fn write(device: &VirtualPciHost, addr: usize, value: u64) {
-        let mut access = NoopDeviceAccess::new(DeviceId::new(0));
-        assert!(matches!(
-            device
-                .access(
-                    &BusAccess {
-                        kind: BusKind::Mmio,
-                        is_read: false,
-                        addr: addr as u64,
-                        width: AccessWidth::Dword,
-                        data: value,
-                    },
-                    &mut access,
-                )
-                .unwrap(),
-            BusResponse::Write
-        ));
+        let access = DeviceAccess::new(
+            DeviceVcpuId::new(0),
+            BusKind::Mmio,
+            addr as u64,
+            AccessWidth::Dword,
+        );
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        device.write(&access, value, &mut context).unwrap();
     }
 
     #[test]

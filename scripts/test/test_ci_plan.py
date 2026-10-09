@@ -233,12 +233,10 @@ class CiPlanTests(unittest.TestCase):
                 rows = ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
                 commands = "\n".join(row["command"] for row in rows)
                 self.assertNotIn("timer-stress", commands)
-                self.assertNotIn("ivc-benchmark", commands)
                 self.assertNotIn("orangepi-5-plus-vcpu-perf", commands)
                 self.assertNotIn("--test-case ping", commands)
                 self.assertIn("--board orangepi-5-plus-linux --test-case smoke", commands)
                 self.assertNotIn("--board orangepi-5-plus-linux\n", commands)
-                self.assertIn("--test-case qemu-ivc", commands)
                 self.assertIn("--board orangepi-5-plus-starry", commands)
 
     def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
@@ -267,7 +265,6 @@ class CiPlanTests(unittest.TestCase):
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
@@ -1499,137 +1496,6 @@ command = "true"
         )
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
-
-    def test_dualguest_robot_board_is_not_scheduled(self) -> None:
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
-        )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", rows)
-        nightly_rows = self.assert_unique_ids(
-            ci_plan.build_axvisor_nightly_plan(
-                ci_plan.replace(self.upstream, event_name="schedule")
-            )["axvisor_matrix"]["include"]
-        )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", nightly_rows)
-        self.assertNotIn(
-            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
-            nightly_rows,
-        )
-        benchmark_rows = self.assert_unique_ids(
-            ci_plan.build_benchmarks_plan(
-                ci_plan.replace(self.upstream, event_name="schedule")
-            )["axvisor_performance_matrix"]["include"]
-        )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", benchmark_rows)
-        self.assertIn(
-            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
-            benchmark_rows,
-        )
-
-    def test_dualguest_robot_board_markers_cannot_match_command_echo(self) -> None:
-        root = MODULE_PATH.parents[2]
-        configs = (
-            root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr"
-            / "board-orangepi-5-plus-dualguest-robot.toml",
-            root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr"
-            / "board-orangepi-5-plus-dualguest-robot.toml",
-        )
-
-        for path in configs:
-            with self.subTest(config=path):
-                config = tomllib.loads(path.read_text())
-                self.assertEqual(
-                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
-                )
-                step = config["shell_check_steps"][-1]
-                for pattern in step["success_regex"] + step["fail_regex"]:
-                    self.assertIsNone(re.search(pattern, step["shell_cmd"]))
-                guest = "linux-zephyr" if "dual-linux" in str(path) else "starry-zephyr"
-                self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_PASS guest={guest}\n")
-                                    for pattern in step["success_regex"]))
-                self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_FAIL guest={guest} status=1\n")
-                                    for pattern in step["fail_regex"]))
-
-    def test_ivc_benchmark_board_runs_benchmark_from_guest_shell(self) -> None:
-        root = MODULE_PATH.parents[2]
-        case_dir = (
-            root / "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark"
-        )
-        vm_config = tomllib.loads(
-            (case_dir / "starry-axivc-benchmark.toml").read_text()
-        )
-        board_config = tomllib.loads(
-            (
-                case_dir / "benchmark/board-orangepi-5-plus-ivc-benchmark.toml"
-            ).read_text()
-        )
-
-        benchmark = "/usr/bin/ivc-starry-bench"
-        cmdline = vm_config["kernel"]["cmdline"]
-        # The board route waits for the default Starry init shell prompt, and
-        # StarryOS panics when init exits, so the VM must keep that shell as
-        # init and run the benchmark as its child.
-        self.assertNotIn(benchmark, cmdline)
-        self.assertNotIn("init=", cmdline)
-
-        steps = board_config["shell_check_steps"]
-        attach_indices = [
-            index
-            for index, step in enumerate(steps)
-            if step.get("shell_cmd", "").strip() == "vm console 1"
-        ]
-        launch_indices = [
-            index
-            for index, step in enumerate(steps)
-            if benchmark in step.get("shell_cmd", "")
-        ]
-        self.assertEqual(len(attach_indices), 1)
-        self.assertEqual(len(launch_indices), 1)
-        self.assertLess(attach_indices[0], launch_indices[0])
-
-        launch = steps[launch_indices[0]]
-        self.assertEqual(launch["shell_prefix"], "root@starry:")
-        pass_pattern = (
-            "(?m)^(?:\\[VM 1\\] )?AXVISOR_IVC_BENCH_RESULT=PASS "
-            "cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$"
-        )
-        self.assertEqual(launch["success_regex"], [pass_pattern])
-        for pattern in launch["success_regex"]:
-            self.assertIsNone(re.search(pattern, launch["shell_cmd"]))
-        marker = (
-            "AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 "
-            "bytes=1232076800 chunks=400"
-        )
-        self.assertTrue(
-            any(
-                re.search(pattern, f"{marker}\n")
-                for pattern in launch["success_regex"]
-            )
-        )
-        self.assertTrue(
-            any(
-                re.search(pattern, f"[VM 1] {marker}\n")
-                for pattern in launch["success_regex"]
-            )
-        )
-        mismatch = marker.replace("bytes=1232076800", "bytes=1232076799")
-        self.assertIsNone(re.search(pass_pattern, f"{mismatch}\n"))
-
-        fail_patterns = board_config["fail_regex"]
-        for sample in (
-            "Kernel panic - not syncing\n",
-            "panicked at kernel/src/task/exit.rs: Attempted to kill init!\n",
-            "AXIVC Starry benchmark peer ready failed\n",
-            "AXIVC Starry benchmark send failed\n",
-            "AXIVC Starry benchmark recv failed\n",
-            "AXIVC Zephyr-Starry benchmark failed\n",
-        ):
-            with self.subTest(sample=sample):
-                self.assertTrue(
-                    any(re.search(pattern, sample) for pattern in fail_patterns)
-                )
 
     def test_single_client_robot_check_routing_and_real_board_contract(self) -> None:
         root = MODULE_PATH.parents[2]

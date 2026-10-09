@@ -51,6 +51,22 @@ cases = [
 ]
 
 [[check]]
+id = "test-axvisor-aarch64-qemu-ivshmem"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · ivshmem"
+timeout_minutes = 30
+cache_key = ""
+command = '''
+echo "==> axvisor aarch64 ivshmem"
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case ivshmem
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["ivshmem"]
+
+[[check]]
 id = "test-axvisor-riscv64-qemu-smoke-ipi"
 impact_targets = ["axvisor:riscv64"]
 name = "QEMU riscv64 · Smoke + IPI"

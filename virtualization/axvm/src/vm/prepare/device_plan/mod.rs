@@ -107,15 +107,12 @@ impl ArchitectureVmPlan for SimpleVmPlan {
 mod tests {
     use std::sync::Arc;
 
-    use axdevice_base::{ControllerInputId, InterruptControllerId};
     use axvm_types::{VmMemConfig, VmMemMappingType};
-    use axvmconfig::VirtualDeviceRequest;
 
     use super::*;
     use crate::{
-        AxVmError, ConfiguredDeviceCatalog,
+        AxVmError,
         config::{AxVMConfigParams, PhysCpuList},
-        configured::append_configured_devices,
     };
 
     struct FixedMmioInsideRamModel;
@@ -140,175 +137,6 @@ mod tests {
         ) -> DeviceManagerResult<DeviceBundle> {
             Ok(DeviceBundle::new())
         }
-    }
-
-    struct FixedMmioOccupantModel;
-
-    impl DeviceModel for FixedMmioOccupantModel {
-        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
-            DeviceRequirements::new().with_mmio(
-                ResourceSlot::new("registers")?,
-                0x1_0000,
-                0x1000,
-                ResourceRequest::Fixed(0x1000_0000),
-            )
-        }
-
-        fn firmware(&self) -> DeviceFirmwareSpec {
-            DeviceFirmwareSpec::None
-        }
-
-        fn build(
-            &self,
-            _context: &mut DeviceBuildContext<'_>,
-        ) -> DeviceManagerResult<DeviceBundle> {
-            Ok(DeviceBundle::new())
-        }
-    }
-
-    fn registered_catalog() -> Arc<ConfiguredDeviceCatalog> {
-        let mut catalog = ConfiguredDeviceCatalog::new();
-        crate::machine::register_devices(&mut catalog).unwrap();
-        Arc::new(catalog)
-    }
-
-    fn config_with_ivc() -> AxVMConfig {
-        AxVMConfig::new(AxVMConfigParams {
-            id: 1,
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
-            virtual_device_catalog: registered_catalog(),
-            memory_regions: vec![VmMemConfig {
-                gpa: 0x8000_0000,
-                size: 0x1000_0000,
-                flags: 0x7,
-                map_type: VmMemMappingType::MapIdentical,
-            }],
-            virtual_device_requests: vec![VirtualDeviceRequest {
-                id: "ivc0".into(),
-                model: "ivc-channel".into(),
-                options: Default::default(),
-            }],
-            ..Default::default()
-        })
-    }
-
-    fn ivc_nodes(config: &AxVMConfig) -> Vec<DeviceNodeSpec> {
-        let controller = DeviceNodeId::new("controller").unwrap();
-        let mut nodes = vec![DeviceNodeSpec::firmware_only(controller.clone())];
-        append_configured_devices(
-            config,
-            &mut nodes,
-            &controller,
-            InterruptControllerId::new(0),
-            None,
-        )
-        .unwrap();
-        nodes
-    }
-
-    #[test]
-    fn ivc_mmio_aperture_is_planned_outside_guest_ram() {
-        let config = config_with_ivc();
-        let nodes = ivc_nodes(&config);
-        let mut pools = ResourcePools::new();
-        pools
-            .add_auto_mmio(
-                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
-            )
-            .unwrap();
-        pools
-            .add_auto_controller_inputs(
-                InterruptControllerId::new(0),
-                ControllerInputId::new(32)..ControllerInputId::new(36),
-            )
-            .unwrap();
-        let plan = VmDevicePlan::with_pools_for_vm(&config, nodes, &[], pools).unwrap();
-        let registers = ResourceSlot::new("registers").unwrap();
-        let (base, size) = plan
-            .graph()
-            .resources_for(&DeviceNodeId::new("ivc0").unwrap())
-            .unwrap()
-            .mmio(&registers)
-            .unwrap();
-
-        assert_eq!(
-            (base, size),
-            (
-                0x1000_0000,
-                crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
-            )
-        );
-        for memory in config.memory_regions() {
-            let memory_base = memory.gpa as u64;
-            let memory_end = memory_base + memory.size as u64;
-            assert!(
-                base + size <= memory_base || memory_end <= base,
-                "IVC MMIO aperture {base:#x}..{:#x} overlaps System RAM {:#x}..{memory_end:#x}",
-                base + size,
-                memory_base
-            );
-        }
-    }
-
-    #[test]
-    fn ivc_mmio_aperture_uses_the_shared_mmio_allocator() {
-        let config = config_with_ivc();
-        let mut nodes = ivc_nodes(&config);
-        nodes.push(DeviceNodeSpec::virtual_device(
-            DeviceNodeId::new("mmio-occupant").unwrap(),
-            Arc::new(FixedMmioOccupantModel),
-        ));
-        let mut pools = ResourcePools::new();
-        pools
-            .add_auto_mmio(
-                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
-            )
-            .unwrap();
-        pools.allow_fixed_mmio(0x1000_0000..0x1001_0000).unwrap();
-        pools
-            .add_auto_controller_inputs(
-                InterruptControllerId::new(0),
-                ControllerInputId::new(32)..ControllerInputId::new(36),
-            )
-            .unwrap();
-
-        let error = VmDevicePlan::with_pools_for_vm(&config, nodes, &[], pools)
-            .err()
-            .expect("IVC must allocate from the common MMIO aperture pool");
-        let AxVmError::Device { detail, .. } = error else {
-            panic!("unexpected error: {error:?}");
-        };
-        assert!(detail.contains("mmio auto pool is exhausted"));
-        assert!(detail.contains("slot registers for ivc0"));
-    }
-
-    #[test]
-    fn ivc_notify_irq_is_allocated_from_the_machine_irq_domain() {
-        let config = config_with_ivc();
-        let nodes = ivc_nodes(&config);
-        let mut pools = ResourcePools::new();
-        pools
-            .add_auto_mmio(
-                0x1000_0000..0x1000_0000 + crate::runtime::ivc::MAX_IVC_CHANNEL_SIZE as u64,
-            )
-            .unwrap();
-        pools
-            .add_auto_controller_inputs(
-                InterruptControllerId::new(0),
-                ControllerInputId::new(32)..ControllerInputId::new(36),
-            )
-            .unwrap();
-
-        let plan = VmDevicePlan::with_pools_for_vm(&config, nodes, &[], pools).unwrap();
-        let notify = ResourceSlot::new("notify").unwrap();
-        let irq = plan
-            .graph()
-            .resources_for(&DeviceNodeId::new("ivc0").unwrap())
-            .unwrap()
-            .wired_irq(&notify)
-            .unwrap();
-
-        assert_eq!(irq.input(), ControllerInputId::new(32));
     }
 
     #[test]

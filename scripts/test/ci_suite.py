@@ -478,7 +478,15 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
                 if runtime_config.parent == wrapper_dir
                 else runtime_config.parent.name
             )
-            case = f"{base_case}-{variant}" if variant else base_case
+            # Match axbuild's `case_name_for_wrapper_variant`: a variant that
+            # duplicates the case directory name is not repeated in the case
+            # selector (e.g. `qemu/ivshmem/qemu-aarch64-ivshmem.toml` selects
+            # `ivshmem`, not `ivshmem-ivshmem`).
+            case = (
+                base_case
+                if variant is None or base_case == variant
+                else f"{base_case}-{variant}"
+            )
         cases.append(
             _RuntimeCase(
                 kind=qemu_kind,

@@ -187,26 +187,6 @@ fn rejects_removed_configuration_fields() {
 }
 
 #[test]
-fn parses_virtual_ivc_channel_device() {
-    let config = GuestConfig::from_toml(
-        r#"
-[devices]
-[[devices.virtual]]
-id = "ivc0"
-model = "ivc-channel"
-"#,
-    )
-    .unwrap();
-
-    let [request] = config.devices.virtual_devices.as_slice() else {
-        panic!("expected one virtual device request");
-    };
-    assert_eq!(request.id, "ivc0");
-    assert_eq!(request.model, "ivc-channel");
-    assert!(request.options.is_empty());
-}
-
-#[test]
 fn rejects_legacy_emulated_devices_entry() {
     let error = GuestConfig::from_toml(
         r#"

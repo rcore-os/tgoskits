@@ -422,26 +422,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-ivc-publisher"
-version = "0.1.0"
-dependencies = [
- "ax-mm",
- "ax-std",
- "axhvc",
- "axivc",
-]
-
-[[package]]
-name = "arceos-ivc-subscriber"
-version = "0.1.0"
-dependencies = [
- "ax-mm",
- "ax-std",
- "axhvc",
- "axivc",
-]
-
-[[package]]
 name = "arceos-loongarch-unaligned-fixup"
 version = "0.1.0"
 dependencies = [
@@ -1525,10 +1505,6 @@ version = "0.5.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
-
-[[package]]
-name = "axivc"
-version = "0.1.1"
 
 [[package]]
 name = "axklib"
@@ -7992,8 +7968,6 @@ dependencies = [
  "ax-tracepoint",
  "axbacktrace",
  "axfs-ng-vfs",
- "axhvc",
- "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",
