@@ -48,6 +48,11 @@ static EPOLL_NOTIFY: IrqNotify = IrqNotify::new();
 static EPOLL_NOTIFY_QUEUE: RawSpinLock<()> = RawSpinLock::new(());
 static EPOLL_NOTIFY_HEAD: AtomicPtr<EpollInner> = AtomicPtr::new(ptr::null_mut());
 static EPOLL_NOTIFY_STARTED: OnceLock<()> = OnceLock::new();
+/// Published once by the notification worker before it first enters its wait
+/// loop. Axtest uses it to wait for worker startup instead of racing the first
+/// `EPOLL_NOTIFY.wait` registration; production builds compile it away.
+#[cfg(all(test, axtest))]
+static EPOLL_NOTIFY_WORKER_READY: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn start_epoll_notify_worker() {
     EPOLL_NOTIFY_STARTED.call_once(|| {
@@ -82,6 +87,27 @@ pub(crate) fn start_epoll_notify_worker() {
             .expect("failed to spawn epoll notification worker");
     });
 }
+
+/// Waits, with a bounded budget, for the notification worker to publish its
+/// startup readiness.
+///
+/// Returns `false` if the worker never reached its wait loop because it was
+/// never scheduled or the spawn silently failed, so an axtest can distinguish
+/// a startup race from a deferred-wake delivery failure.
+#[cfg(all(test, axtest))]
+pub(super) fn wait_epoll_notify_worker_ready() -> bool {
+    for _ in 0..EPOLL_NOTIFY_WORKER_READY_YIELDS {
+        if EPOLL_NOTIFY_WORKER_READY.load(Ordering::Acquire) {
+            return true;
+        }
+        crate::task::yield_now();
+    }
+    EPOLL_NOTIFY_WORKER_READY.load(Ordering::Acquire)
+}
+
+/// Bounded yield budget for the worker startup handshake.
+#[cfg(all(test, axtest))]
+const EPOLL_NOTIFY_WORKER_READY_YIELDS: usize = 4096;
 
 pub struct EpollEvent {
     pub events: IoEvents,
