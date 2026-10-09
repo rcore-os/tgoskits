@@ -161,13 +161,12 @@ impl Starry {
                 println!("[{completed}/{total}] starry qemu {case_name}");
 
                 let case_started = Instant::now();
+                let case_request = Self::request_for_qemu_case_build_config(
+                    &build_group.request,
+                    &case.build_config_path,
+                );
                 match self
-                    .run_qemu_case(
-                        &build_group.request,
-                        &build_group.cargo,
-                        case,
-                        &asset_config,
-                    )
+                    .run_qemu_case(&case_request, &build_group.cargo, case, &asset_config)
                     .await
                     .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
                 {

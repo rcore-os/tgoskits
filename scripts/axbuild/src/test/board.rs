@@ -49,8 +49,28 @@ pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<
 }
 
 pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
-    mut groups: Vec<T>,
+    groups: Vec<T>,
     selected_case: Option<&str>,
+    selected_board: Option<&str>,
+    suite_name: &str,
+    empty_message: impl FnOnce() -> String,
+) -> anyhow::Result<Vec<T>> {
+    let selected_cases = selected_case
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    filter_board_test_groups_by_names(
+        groups,
+        &selected_cases,
+        selected_board,
+        suite_name,
+        empty_message,
+    )
+}
+
+pub(crate) fn filter_board_test_groups_by_names<T: BoardTestGroupInfo>(
+    mut groups: Vec<T>,
+    selected_cases: &[String],
     selected_board: Option<&str>,
     suite_name: &str,
     empty_message: impl FnOnce() -> String,
@@ -61,18 +81,36 @@ pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
             .then_with(|| left.board_name().cmp(right.board_name()))
     });
 
-    if let Some(case_name) = selected_case {
+    if !selected_cases.is_empty() {
         if groups.is_empty() {
             bail!("{}", empty_message());
         }
-        let available = available_values(groups.iter().map(BoardTestGroupInfo::name));
-        groups.retain(|group| group.name() == case_name);
-        if groups.is_empty() {
+        let available_names = groups
+            .iter()
+            .map(BoardTestGroupInfo::name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = selected_cases
+            .iter()
+            .filter(|case_name| !available_names.contains(case_name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let available = available_names
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !missing.is_empty() {
             return Err(anyhow!(
-                "unsupported {suite_name} board test case `{case_name}`. Supported cases are: \
+                "unsupported {suite_name} board test case(s) `{}`. Supported cases are: \
                  {available}",
+                missing.join(","),
             ));
         }
+        groups.retain(|group| {
+            selected_cases
+                .iter()
+                .any(|case_name| group.name() == case_name)
+        });
     }
 
     if let Some(board_name) = selected_board {

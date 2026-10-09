@@ -4,7 +4,7 @@ use super::*;
 
 impl TaskSystem {
     /// Implements Linux's rq-owned ordinary yield path.
-    #[inline(never)]
+    #[inline(always)]
     pub(super) fn yield_current_rq_owned<const LINKED_REALTIME: bool>(
         &self,
         mut cpu: Pin<&mut CpuLocal>,

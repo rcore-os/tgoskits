@@ -175,7 +175,16 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 当前用例仍由 fw_cfg 提供 Linux kernel、initramfs 和命令行。它不证明 OVMF 已枚举 Axvisor guest PCI 启动盘，也不证明 Linux 经 guest ESP 或 EFI stub 启动。
 
-## 6. SVM 合并任务
+## 6. VMX 合并任务
+
+七个 VMX 用例统一启用 `vpci-test-device`，其 build TOML 的 Cargo 编译身份保持一致；`vm_configs` 只作为每个用例的运行时输入。CI 使用一个 `kvm-intel` runner，先构建一次 AxVisor，再依次运行 smoke、ACPI、PCI 枚举和 PCI block 用例：
+
+```bash
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx
+```
+
+## 7. SVM 合并任务
 
 六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，包含 NVMe 和 `vpci-test-device`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按构建配置路径复用内核；各次启动打印相同内核哈希和各自的归档哈希。
 
