@@ -30,8 +30,9 @@ fn efi_main() -> Status {
             boot::stall(Duration::from_secs(2));
             continue;
         };
-        let identity = new_boot_epoch(nic)
-            .and_then(|epoch| new_boot_epoch(nic).map(|serial_id| (epoch, serial_id)));
+        let identity = new_boot_identity(nic, b"boot-epoch").and_then(|epoch| {
+            new_boot_identity(nic, b"serial-id").map(|serial_id| (epoch, serial_id))
+        });
         let (epoch, serial_id) = match identity {
             Ok(identity) => identity,
             Err(error) => {
@@ -118,7 +119,7 @@ fn efi_main() -> Status {
     }
 }
 
-fn new_boot_epoch(nic: network::NetworkInterface) -> uefi::Result<String> {
+fn new_boot_identity(nic: network::NetworkInterface, domain: &[u8]) -> uefi::Result<String> {
     let mut bytes = [0_u8; 16];
     if let Ok(handle) = boot::get_handle_for_protocol::<Rng>()
         && let Ok(mut rng) = boot::open_protocol_exclusive::<Rng>(handle)
@@ -126,7 +127,9 @@ fn new_boot_epoch(nic: network::NetworkInterface) -> uefi::Result<String> {
     {
         return Ok(hex(&bytes));
     }
-    // The epoch only distinguishes boots; it is not an authentication secret.
+    // These identities only distinguish boots and are not authentication secrets.
+    // Domain separation keeps the fallback epoch and serial ID independent even
+    // when both are derived from the same monotonic counter and clock sample.
     let mut count = 0_u64;
     let table = uefi::table::system_table_raw().ok_or(Status::NOT_READY)?;
     // SAFETY: this runs at APPLICATION before ExitBootServices, with the initialized
@@ -144,7 +147,8 @@ fn new_boot_epoch(nic: network::NetworkInterface) -> uefi::Result<String> {
     }
     let clock = uefi::runtime::get_time().ok();
     let mut hash = Sha256::new();
-    hash.update(format!("{count}:{clock:?}:{:?}", nic.mac_address));
+    hash.update(domain);
+    hash.update(format!(":{count}:{clock:?}:{:?}", nic.mac_address));
     bytes.copy_from_slice(&hash.finalize()[..16]);
     Ok(hex(&bytes))
 }

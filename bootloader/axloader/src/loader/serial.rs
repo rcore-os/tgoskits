@@ -1,5 +1,5 @@
 //! Firmware UART identity output. No protocol borrow crosses network polling.
-use alloc::{format, rc::Rc, vec::Vec};
+use alloc::{format, rc::Rc, string::String, vec::Vec};
 use core::cell::RefCell;
 
 use httpboot_protocol::{
@@ -31,7 +31,9 @@ impl SerialBeacon {
     pub fn new(serial_id: alloc::string::String) -> Self {
         let (handle, parameters, force_parameters, error) = match select_console() {
             Ok(handle) => match parameters(handle) {
-                Ok(parameters) => (Some(handle), Some(parameters), false, None),
+                Ok((parameters, warning)) => {
+                    (Some(handle), Some(parameters), warning.is_some(), warning)
+                }
                 Err(error) => (
                     Some(handle),
                     Some(default_serial_parameters()),
@@ -82,7 +84,12 @@ impl SerialBeacon {
             return;
         };
         let end = (self.offset + 4).min(self.frame.len());
-        let parameters = self.force_parameters.then(default_serial_parameters);
+        let parameters = self.force_parameters.then(|| {
+            self.state
+                .borrow()
+                .parameters
+                .unwrap_or_else(default_serial_parameters)
+        });
         match write_chunk(handle, &self.frame[self.offset..end], parameters) {
             Ok(size) => {
                 self.offset += size;
@@ -129,12 +136,25 @@ fn open<P: ProtocolPointer + ?Sized>(handle: Handle) -> uefi::Result<ScopedProto
         )
     }
 }
-fn parameters(handle: Handle) -> uefi::Result<SerialParameters> {
+fn parameters(handle: Handle) -> uefi::Result<(SerialParameters, Option<String>)> {
     // SAFETY: efi_main executes at APPLICATION. CALLBACK prevents competing serial
     // callbacks and is permitted for SerialIo. The guard restores TPL on every exit.
     let _tpl = unsafe { boot::raise_tpl(Tpl::CALLBACK) };
     let serial = open::<Serial>(handle)?;
     let mode = serial.io_mode();
+    let mut warning = None;
+    let flow_control = match serial.get_control_bits() {
+        Ok(bits) if bits.contains(ControlBits::HARDWARE_FLOW_CONTROL_ENABLE) => {
+            SerialFlowControl::RtsCts
+        }
+        Ok(_) => SerialFlowControl::None,
+        Err(error) => {
+            warning = Some(format!(
+                "UART flow-control unavailable: {error:?}; using none"
+            ));
+            SerialFlowControl::None
+        }
+    };
     let parameters = SerialParameters {
         baud_rate: mode.baud_rate,
         data_bits: u8::try_from(mode.data_bits)
@@ -153,19 +173,12 @@ fn parameters(handle: Handle) -> uefi::Result<SerialParameters> {
             StopBits::TWO => SerialStopBits::Two,
             _ => return Err(Status::UNSUPPORTED.into()),
         },
-        flow_control: if serial
-            .get_control_bits()?
-            .contains(ControlBits::HARDWARE_FLOW_CONTROL_ENABLE)
-        {
-            SerialFlowControl::RtsCts
-        } else {
-            SerialFlowControl::None
-        },
+        flow_control,
     };
     parameters
         .validate()
         .map_err(|_| uefi::Error::from(Status::UNSUPPORTED))?;
-    Ok(parameters)
+    Ok((parameters, warning))
 }
 fn write_chunk(
     handle: Handle,
