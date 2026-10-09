@@ -1218,6 +1218,45 @@ class CiPlanTests(unittest.TestCase):
             "--board orangepi-5-plus",
         )
 
+    def test_starry_board_build_change_groups_cases_by_build_config(self) -> None:
+        path = (
+            "test-suit/starryos/board-orangepi-5-plus/"
+            "build-aarch64-unknown-none-softfloat.toml"
+        )
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case "
+            "exec-cache,native-hardware-smoke,native-network-smoke,pwm-sysfs,"
+            "rknpu-resources --board orangepi-5-plus",
+        )
+
+    def test_starry_board_case_changes_share_one_incremental_build_row(self) -> None:
+        paths = [
+            "test-suit/starryos/board-orangepi-5-plus/exec-cache/"
+            "board-orangepi-5-plus.toml",
+            "test-suit/starryos/board-orangepi-5-plus/native-network-smoke/"
+            "board-orangepi-5-plus.toml",
+        ]
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            paths,
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case exec-cache,native-network-smoke "
+            "--board orangepi-5-plus",
+        )
+
     def test_generic_driver_suite_routes_source_and_rejects_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

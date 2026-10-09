@@ -226,6 +226,10 @@ impl Axvisor {
                     })?;
                 let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
                 let mut case_request = build_group.request.clone();
+                // Cargo identity is the compile boundary. The build TOML still
+                // owns per-case runtime inputs such as vm_configs, so restore
+                // its path before loading guest assets after a shared build.
+                case_request.build_info_path = case.case.build_config_path.clone();
                 case_request.vmconfigs = match &inputs.vm_configs {
                     Some(configs) => build::resolve_vmconfigs(
                         &case_request,
@@ -609,28 +613,7 @@ pub(super) fn preserve_qemu_build_artifact(
     artifact_directory: &Path,
     build_group_index: usize,
 ) -> anyhow::Result<PathBuf> {
-    let file_name = source.file_name().with_context(|| {
-        format!(
-            "Axvisor qemu build artifact {} has no file name",
-            source.display()
-        )
-    })?;
-    let group_directory = artifact_directory.join(format!("group-{build_group_index}"));
-    std::fs::create_dir_all(&group_directory).with_context(|| {
-        format!(
-            "failed to create Axvisor qemu build-group artifact directory {}",
-            group_directory.display()
-        )
-    })?;
-    let destination = group_directory.join(file_name);
-    std::fs::copy(source, &destination).with_context(|| {
-        format!(
-            "failed to preserve Axvisor qemu build artifact {} at {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    Ok(destination)
+    crate::test::qemu::preserve_build_artifact(source, artifact_directory, build_group_index)
 }
 
 #[derive(Debug)]

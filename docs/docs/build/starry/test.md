@@ -5,9 +5,9 @@ sidebar_label: "测试"
 
 # StarryOS 测试
 
-StarryOS 测试直接从 `test-suit/starryos/` 根目录发现用例，通过 **build wrapper**（含 `build-{target}.toml` 的目录）划分构建组。同一 wrapper 下的 case 共享一次内核构建，避免重复编译。
+StarryOS 测试直接从 `test-suit/starryos/` 根目录发现用例，通过 **build wrapper**（含 `build-{target}.toml` 的目录）确定构建配置。相同 Cargo 编译身份的 case 共享一次内核构建，避免重复编译；独立的 VM、rootfs 和板卡资源仍按 case 加载。
 
-测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——具有相同构建配置的用例归入同一 build wrapper，组内共享一次内核编译。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 StarryOS 特有的测试目录结构和用例组织方式。
+测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——用例先按 wrapper 发现，再按完整 Cargo 编译配置合并。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 StarryOS 特有的测试目录结构和用例组织方式。
 
 ## 1. 命令
 
@@ -83,7 +83,7 @@ flowchart TD
 |------|----------|------|
 | 用例发现 | `qemu_discovery.rs::discover_qemu_cases()` | 递归扫描 `test-suit/starryos/`，通过 `nearest_build_wrapper()` 关联每个用例到最近的 `build-*.toml` |
 | 默认 board | `board::default_board_for_target()` | 从 `os/StarryOS/configs/board/` 查找 target 匹配的 `qemu-*` board，缺失时报错 |
-| 构建分组 | `qemu_test::prepare_case_build_groups()` | 按 `build_config_path` 分组，每组共享 `(request, cargo)` |
+| 构建分组 | `qemu_test::prepare_case_build_groups()` | 先按 `build_config_path` 发现，再按 Cargo 编译身份合并；每组共享 `(request, cargo)` |
 | 内核编译 | `build_artifact()` | 调用共享 Cargo 装配 + `postprocess_starry_artifact()`（kallsyms + 可选 uImage） |
 | QEMU config | `read_qemu_config_from_path_for_cargo()` | 从用例的 `qemu-<arch>.toml` 加载，替换 managed rootfs 路径 |
 | rootfs 准备 | `ensure_qemu_case_rootfs_paths()` | 区分 default rootfs（`ensure_rootfs_in_tmp_dir`）和 managed rootfs（`ensure_optional_managed_rootfs`） |
@@ -107,7 +107,9 @@ StarryOS QEMU 测试采用**首例失败即中止**策略：任一 case 失败�
 
 ## 4. Board 测试
 
-板级用例通过 `board-{board_name}.toml` 配置文件定义，发现算法递归扫描目录匹配 `board-*.toml`，每个 board case 通过 `nearest_build_wrapper()` 向上查找最近的 build wrapper 确定构建配置。`--test-case` 和 `--board` 支持按用例名和板卡名过滤。
+板级用例通过 `board-{board_name}.toml` 配置文件定义，发现算法递归扫描目录匹配 `board-*.toml`，每个 board case 通过 `nearest_build_wrapper()` 向上查找最近的 build wrapper 确定构建配置。`--test-case` 和 `--board` 支持按用例名和板卡名过滤；`--test-case` 可以接收逗号分隔的多个用例。
+
+板卡执行分为两个阶段：先按规范化后的 `build-{target}.toml` 路径分组，每个构建配置只编译一次并保存 ELF；随后逐个加载各自的 board TOML、环境要求和 session 资产，用保存的 ELF 启动板卡。这样 CI 规划器可以把同一构建配置的增量用例合并为一行，例如 `--test-case exec-cache,native-hardware-smoke --board orangepi-5-plus`，同时保留不同 feature、SMP 或日志设置的构建配置边界。
 
 ## 5. GroupedCaseRunnerConfig
 
