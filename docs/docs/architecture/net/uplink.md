@@ -65,4 +65,3 @@ RTL8125 当前以硬件的 all-unicast 能力实现 `Normal`/`AllUnicast`，并�
 ### 3.2 当前边界
 
 当前 AxVisor 启动路径发布一个进程级上联和一个内部交换机，因此一次启动只选择一个 host interface；`InterfaceId` 和 per-device capability API 已经允许后续把上联对象下沉到 VM 或 switch 实例。`ax-net` 的 `ETHERNET_FRAME_CAPACITY` 当前为 2048 字节，而 virtio-net 接收路径的 `MAX_FRAME_SIZE` 为 65535 字节；超过前者的 guest TX 会得到 `PhysicalUplinkError::InvalidFrame` 并映射为 `TransmitFailed`，后续应通过 MTU 协商或按端口配置的 slab 消除这两个边界的重复定义。精确 MAC 地址表、promiscuous lease、多个独立交换机以及运行期热插拔仍不属于本接口，新增这些能力时应扩展 lease/address-set 语义，而不是重新引入厂商名称或接口名称匹配。
-

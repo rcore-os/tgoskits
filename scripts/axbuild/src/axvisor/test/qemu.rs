@@ -230,6 +230,11 @@ impl Axvisor {
                 // owns per-case runtime inputs such as vm_configs, so restore
                 // its path before loading guest assets after a shared build.
                 case_request.build_info_path = case.case.build_config_path.clone();
+                // The build-group request carries the first case's VM configs
+                // for compilation and bundling. Clear them before resolving
+                // this case's runtime configuration, otherwise a case whose
+                // build TOML has `vm_configs = []` would inherit stale guests.
+                case_request.vmconfigs.clear();
                 case_request.vmconfigs = match &inputs.vm_configs {
                     Some(configs) => build::resolve_vmconfigs(
                         &case_request,
