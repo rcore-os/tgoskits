@@ -113,6 +113,8 @@ StarryOS QEMU 测试采用**首例失败即中止**策略：任一 case 失败�
 
 板卡执行分为两个阶段：先按规范化后的 `build-{target}.toml` 路径分组，每个构建配置只编译一次并保存 ELF；随后逐个加载各自的 board TOML、环境要求和 session 资产，用保存的 ELF 启动板卡。这样 CI 规划器可以把同一构建配置的增量用例合并为一行，例如 `--test-case exec-cache,native-hardware-smoke --board orangepi-5-plus`，同时保留不同 feature、SMP 或日志设置的构建配置边界。
 
+OrangePi 5 Plus 的 `robot-flow` 是 robot 与 UVC board case 共用的构建 wrapper。它启用两类 case 所需的 feature 超集（包括 `starry-kernel/uvc`），因此 `--board orangepi-5-plus-robot` 只编译一次内核；两个 case 仍从各自的 `board-*.toml` 加载启动命令、判定规则和 session 文件。UVC 目录不再放置第二份 `build-{target}.toml`，避免最近 wrapper 规则把同一板卡测试拆成两个构建组。
+
 ## 5. GroupedCaseRunnerConfig
 
 StarryOS 的 grouped runner 标记前缀由 `GroupedCaseRunnerConfig` 定义（`starry/test/assets.rs`），生成的日志形如：

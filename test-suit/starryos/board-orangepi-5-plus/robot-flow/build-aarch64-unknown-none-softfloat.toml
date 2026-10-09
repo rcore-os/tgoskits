@@ -12,6 +12,10 @@ features = [
   "ax-driver/rockchip-dwmmc",
   "ax-driver/rk3588-cpufreq",
   "rknpu",
+  # The robot and UVC board cases share this superset kernel.  The UVC case
+  # keeps its own board TOML and session asset, so this feature does not merge
+  # their runtime workload.
+  "starry-kernel/uvc",
 ]
 log = "Warn"
 max_cpu_num = 8

@@ -519,6 +519,135 @@ class CiPlanTests(unittest.TestCase):
                 self.assertEqual(with_impact, baseline)
                 self.assert_unique_ids(main_test_rows(with_impact))
 
+    def test_pure_test_suite_change_runs_only_the_exact_registered_case(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
+                test_suite_paths=("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
+                exclusive=True,
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+
+        self.assertFalse(plan["static_required"])
+        self.assertEqual(plan["static_matrix"]["include"], [])
+        self.assertFalse(plan["workspace_required"])
+        self.assertFalse(plan["arceos_required"])
+        self.assertTrue(plan["starry_required"])
+        self.assertFalse(plan["axvisor_required"])
+        self.assertEqual(
+            [row["name"] for row in plan["starry_matrix"]["include"]],
+            ["QEMU aarch64 · qemu/system"],
+        )
+        self.assertEqual(
+            plan["starry_matrix"]["include"][0]["command"],
+            "cargo xtask starry test qemu --arch aarch64 --test-case qemu/system",
+        )
+
+    def test_pure_board_suite_change_runs_only_the_exact_board_case(self) -> None:
+        path = (
+            "test-suit/starryos/board-orangepi-5-plus/"
+            "native-hardware-smoke/board-orangepi-5-plus.toml"
+        )
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                test_suite_paths=(path,),
+                exclusive=True,
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+
+        self.assertFalse(plan["static_required"])
+        self.assertEqual(
+            [row["name"] for row in plan["starry_matrix"]["include"]],
+            ["Board OrangePi 5 Plus · native-hardware-smoke"],
+        )
+        self.assertEqual(
+            plan["starry_matrix"]["include"][0]["command"],
+            "cargo xtask starry test board --test-case native-hardware-smoke "
+            "--board orangepi-5-plus",
+        )
+
+    def test_starry_board_build_change_groups_cases_by_build_config(self) -> None:
+        path = (
+            "test-suit/starryos/board-orangepi-5-plus/"
+            "build-aarch64-unknown-none-softfloat.toml"
+        )
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 2)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case "
+            "exec-cache,native-hardware-smoke,native-network-smoke,pwm-sysfs,"
+            "rknpu-resources --board orangepi-5-plus",
+        )
+        self.assertEqual(
+            selections[1].command,
+            "cargo xtask starry test board --test-case uvc-v4l2 "
+            "--board orangepi-5-plus-robot",
+        )
+
+    def test_sg2002_board_build_change_groups_all_feature_cases(self) -> None:
+        path = (
+            "test-suit/starryos/board-aka-00-sg2002/"
+            "build-riscv64gc-unknown-none-elf.toml"
+        )
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case "
+            "boot,tennis-yolo,usb2-lsusb,vdec,wifi-network-smoke "
+            "--board aka-00-sg2002",
+        )
+
+    def test_starry_board_case_changes_share_one_incremental_build_row(self) -> None:
+        paths = [
+            "test-suit/starryos/board-orangepi-5-plus/exec-cache/"
+            "board-orangepi-5-plus.toml",
+            "test-suit/starryos/board-orangepi-5-plus/native-network-smoke/"
+            "board-orangepi-5-plus.toml",
+        ]
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            paths,
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case exec-cache,native-network-smoke "
+            "--board orangepi-5-plus",
+        )
+
     def test_generic_driver_suite_routes_source_and_rejects_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
