@@ -243,6 +243,26 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.test_suite_paths, (path.as_posix(),))
         self.assertEqual(impact.targets, ())
 
+    def test_migrated_axvisor_path_routes_to_axvisor_instead_of_ignored_app(
+        self,
+    ) -> None:
+        path = Path(
+            "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/"
+            "board-orangepi-5-plus-linux.toml"
+        )
+
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [path],
+            self.metadata_by_arch,
+        )
+
+        self.assertFalse(impact.full)
+        self.assertEqual(impact.ignored_apps, ())
+        self.assertTrue(impact.exclusive)
+        self.assertEqual(impact.test_suite_paths, (path.as_posix(),))
+        self.assertEqual(impact.targets, ())
+
     def test_apps_starry_functional_path_stays_ignored(self) -> None:
         path = Path("apps/starry/qemu/compile-sim-bench/qemu-x86_64.toml")
 

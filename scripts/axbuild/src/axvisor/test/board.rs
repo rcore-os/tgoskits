@@ -3,7 +3,7 @@ use ostool::{board::RunBoardOptions, run::uboot::UbootConfig};
 
 use super::{
     AXVISOR_NORMAL_GROUP, BoardTestGroup, discover_board_test_groups,
-    discovery::{discover_test_group_names, discover_uboot_test_group, test_suite_root},
+    discovery::{discover_test_group_names, discover_uboot_test_group, suite_roots_label},
 };
 use crate::{
     axvisor::{ArgsTestBoard, ArgsTestUboot, Axvisor, build},
@@ -99,7 +99,7 @@ impl Axvisor {
             if groups.is_empty() {
                 anyhow::bail!(
                     "no Axvisor board test groups found under {}",
-                    test_suite_root(self.app.workspace_root()).display()
+                    suite_roots_label(self.app.workspace_root())
                 );
             }
             println!(

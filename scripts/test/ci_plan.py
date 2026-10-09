@@ -771,6 +771,7 @@ def _suite_path_os(path: str) -> str | None:
         Path("test-suit/arceos"): "arceos",
         Path("test-suit/starryos"): "starry",
         Path("test-suit/axvisor"): "axvisor",
+        Path("apps/axvisor"): "axvisor",
         Path("benchmarks/axvisor"): "axvisor",
         Path("benchmarks/starry"): "starry",
     }

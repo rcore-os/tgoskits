@@ -264,11 +264,30 @@ class CiPlanTests(unittest.TestCase):
             "--test-case performance --board orangepi-5-plus-vcpu-perf",
         )
 
+    def test_migrated_axvisor_suite_path_resolves_to_nightly_check(self) -> None:
+        path = (
+            "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml"
+        )
+
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].template_id,
+            "test-axvisor-aarch64-qemu-timer-stress",
+        )
+        self.assertIn("--test-case gicv3-timer-stress", selections[0].command)
+
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
-            "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
+            "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
-            "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
+            "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
+            "apps/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/smoke/board-orangepi-5-plus-virtio-net-peer.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
@@ -1640,21 +1659,21 @@ command = "true"
         )
         real_axvisor_starry = (
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-starry/smoke"
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/smoke"
             / "board-orangepi-5-plus-robot-real-starry.toml"
         )
         real_axvisor_linux = (
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-linux/smoke"
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux/smoke"
             / "board-orangepi-5-plus-robot-real-linux.toml"
         )
         real_starry_guest = (
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-starry/guest.toml"
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/guest.toml"
         )
         real_linux_guest = (
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/robot-real-linux"
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux"
             / "linux-smp1-emmc.toml"
         )
 
