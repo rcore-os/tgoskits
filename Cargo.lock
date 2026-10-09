@@ -922,7 +922,6 @@ version = "0.18.1"
 dependencies = [
  "ahci-driver",
  "aic8800",
- "anyhow",
  "arm-scmi-rs",
  "arm-smmu-v3",
  "ax-alloc",
