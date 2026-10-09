@@ -45,7 +45,7 @@ shell_prefix = "VM2_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
 
 [[shell_check_steps]]
-shell_prefix = "axvisor:$"
+shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 3"
 
 [[shell_check_steps]]
@@ -56,7 +56,7 @@ shell_prefix = "VM3_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
 
 [[shell_check_steps]]
-shell_prefix = "axvisor:$"
+shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 4"
 
 # VM4 closes the chain: it answers VM3's heartbeats and has no further neighbour
