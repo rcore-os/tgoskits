@@ -75,9 +75,14 @@ mod tests {
         let cpus = host.add_node(host.root_id(), Node::new("cpus"));
         for (name, id, phandle) in [("cpu@0", 0, 7), ("cpu@1", 1, 8)] {
             let cpu = host.add_node(cpus, Node::new(name));
-            host.node_mut(cpu)
-                .unwrap()
-                .set_property(phandle_property("phandle", phandle));
+            let node = host.node_mut(cpu).unwrap();
+            node.set_property(phandle_property("phandle", phandle));
+            if id == 0 {
+                node.set_property(phandle_property("operating-points-v2", 0x51));
+                node.set_property(phandle_property("cpu-idle-states", 0x52));
+                node.set_property(phandle_property("cpu-supply", 0x53));
+                node.set_property(phandle_property("next-level-cache", 0x54));
+            }
             host.view_typed_mut(cpu)
                 .unwrap()
                 .set_regs(&[RegInfo::new(id, None)]);
@@ -100,6 +105,22 @@ mod tests {
         assert!(guest.get_by_path("/cpus/cpu@0").is_some());
         assert!(guest.get_by_path("/cpus/cpu@2").is_some());
         assert!(guest.get_by_path("/cpus/cpu@1").is_none());
+        for property in [
+            "operating-points-v2",
+            "cpu-idle-states",
+            "cpu-supply",
+            "next-level-cache",
+        ] {
+            assert!(
+                guest
+                    .get_by_path("/cpus/cpu@2")
+                    .unwrap()
+                    .as_node()
+                    .get_property(property)
+                    .is_none(),
+                "provided-DTB clone inherited host-only property {property}"
+            );
+        }
         // CPU projection intentionally drops the host-only `cpu-map`; guest
         // startup enumerates the projected CPU nodes by `reg` instead.
         assert!(guest.get_by_path_id("/cpus/cpu-map").is_none());

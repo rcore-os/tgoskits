@@ -359,7 +359,10 @@ impl FdtTree {
         for id in missing {
             let node_id = self.add_node(cpus_id, Node::new(&format!("cpu@{id:x}")));
             for prop in template.properties() {
-                if is_phandle_prop(prop.name()) || should_skip_guest_cpu_prop(host, prop.name()) {
+                if is_phandle_prop(prop.name())
+                    || !is_guest_cpu_execution_property(prop.name())
+                    || should_skip_guest_cpu_prop(host, prop.name())
+                {
                     continue;
                 }
                 self.set_property(node_id, prop.clone())?;
@@ -580,6 +583,23 @@ fn should_skip_guest_cpu_prop(source: &Fdt, prop_name: &str) -> bool {
             prop_name,
             "operating-points-v2" | "#cooling-cells" | "dynamic-power-coefficient" | "cpu-supply"
         ))
+}
+
+pub(crate) fn is_guest_cpu_execution_property(prop_name: &str) -> bool {
+    matches!(
+        prop_name,
+        "#address-cells"
+            | "#size-cells"
+            | "device_type"
+            | "compatible"
+            | "reg"
+            | "enable-method"
+            | "phandle"
+            | "linux,phandle"
+            | "capacity-dmips-mhz"
+            | "clock-frequency"
+            | "status"
+    )
 }
 
 fn is_roc_rk3568(source: &Fdt) -> bool {

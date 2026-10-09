@@ -36,22 +36,7 @@ pub(crate) fn project_cpus(
             let removed = node
                 .properties()
                 .iter()
-                .filter(|property| {
-                    !matches!(
-                        property.name(),
-                        "#address-cells"
-                            | "#size-cells"
-                            | "device_type"
-                            | "compatible"
-                            | "reg"
-                            | "enable-method"
-                            | "phandle"
-                            | "linux,phandle"
-                            | "capacity-dmips-mhz"
-                            | "clock-frequency"
-                            | "status"
-                    )
-                })
+                .filter(|property| !super::tree::is_guest_cpu_execution_property(property.name()))
                 .map(|property| std::string::String::from(property.name()))
                 .collect::<Vec<_>>();
             for name in removed {

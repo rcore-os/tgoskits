@@ -517,6 +517,12 @@ fn host_fdt_with_cpu_phandles() -> Fdt {
         node.set_property(prop_u32("mpidr-affinity", reg as u32));
         node.set_property(prop_u32("phandle", phandle));
         node.set_property(prop_u32("linux,phandle", phandle));
+        if reg == 0 {
+            node.set_property(prop_u32("operating-points-v2", 0x51));
+            node.set_property(prop_u32("cpu-idle-states", 0x52));
+            node.set_property(prop_u32("cpu-supply", 0x53));
+            node.set_property(prop_u32("next-level-cache", 0x54));
+        }
         fdt.view_typed_mut(cpu)
             .unwrap()
             .set_regs(&[RegInfo::new(reg, None)]);
@@ -580,6 +586,17 @@ fn tree_clones_missing_guest_cpu_nodes_with_fresh_phandles() {
                 .and_then(Property::get_u32),
             Some(id as u32)
         );
+        for property in [
+            "operating-points-v2",
+            "cpu-idle-states",
+            "cpu-supply",
+            "next-level-cache",
+        ] {
+            assert!(
+                cpu.as_node().get_property(property).is_none(),
+                "cloned CPU inherited host-only property {property}"
+            );
+        }
     }
 
     let mut seen = BTreeMap::new();
