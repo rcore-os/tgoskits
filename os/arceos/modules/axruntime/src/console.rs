@@ -592,11 +592,10 @@ mod tests {
     use ax_hal::console::ConsoleDeviceIdError;
 
     use super::{
-        ACTIVATION, ConsoleActivation, ConsoleUnavailable, RAW_OUTPUT_LOCK, assign_tty_numbers,
-        inactive_console_error, output, publish_raw_record, raw_hal_activation, select_candidate,
-        take_input,
+        ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
+        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
     };
-    use crate::{RuntimeError, structured_log::RuntimeLogContext};
+    use crate::RuntimeError;
 
     #[test]
     fn tty_numbering_preserves_aliases_and_fills_gaps() {
