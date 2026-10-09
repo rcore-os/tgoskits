@@ -273,7 +273,7 @@ fn select_domain_opps(
     )
     .map_err(|_| FrequencyError::NotReady)?;
     let Some(verified_maximum_hz) =
-        cpufreq_board::verified_maximum_hz(matches!(cluster, Cluster::A55), grade)
+        super::board::verified_maximum_hz(matches!(cluster, Cluster::A55), grade)
     else {
         warn!(
             "cpufreq: {} PVTM grade {grade} has no board-validated high OPP; retaining boot OPP",

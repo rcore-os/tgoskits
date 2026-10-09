@@ -77,7 +77,7 @@ const A55_NOMINAL_UV: u32 = 750_000;
 /// feeds the live boot core, so it is lowered last, and only via the stepped path
 /// (the voltage-coupled clock tracks the rail down with no undervolt transient).
 pub(super) fn align_rail_voltages_to_opp() {
-    use super::super::{pmic_i2c, pmic_spi};
+    use super::{pmic_i2c, pmic_spi};
 
     // --- A76 big0/big1 rails: RK8602 @0x42 / RK8603 @0x43 over I2C bus0 ---
     let a76_ok = pmic_i2c::init();

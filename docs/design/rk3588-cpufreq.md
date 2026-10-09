@@ -9,6 +9,14 @@ RK3588 的 OPP 表筛选、温度规则、DSU 约束和转换顺序位于 `rockc
 原 `ax-driver::cpufreq` 公共门面和 StarryOS 校准入口已移除；内核调用方通过
 `ax-runtime::cpufreq` 发起串行请求。
 
+调频策略属于通用运行时能力，`ax-runtime` 和 `ax-std` 只依赖
+`rdif-cpufreq`，不声明 RK3588 驱动 feature。板卡或测试构建在对应 TOML 的
+`features` 中直接选择 `ax-driver/rk3588-cpufreq`；未选择该 feature 时运行时查询返回
+`NotSupported`。驱动源码按 `drivers/ax-driver/src/soc/rockchip/cpufreq/` 分层：
+`rdif.rs` 是接口适配，`selection.rs` 负责硅片与 OPP 筛选，`transition.rs` 负责
+电源、GRF 和 SCMI 转换，`sensors.rs`、`pvtm.rs`、`margin.rs` 与 `board.rs` 提供
+独立硬件规则，`pmic_i2c.rs` 和 `pmic_spi.rs` 负责电源轨读写。
+
 ## 1. 启动与控制
 
 `ax-runtime::bootstrap` 在设备探测建立启动 OPP 后启动次级 CPU，随后创建唯一的

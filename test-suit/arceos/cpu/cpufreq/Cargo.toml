@@ -6,12 +6,12 @@ publish = false
 
 [features]
 default = ["ax-std"]
-ax-std = ["dep:ax-std", "ax-std/arceos", "ax-std/rk3588-cpufreq"]
+ax-std = ["dep:ax-std", "ax-std/arceos"]
 
 [dependencies]
 ax-cpu = { workspace = true, features = ["pmu"] }
 ax-driver = { workspace = true, features = ["rk3588-cpufreq-thermal-test"] }
-ax-runtime = { workspace = true, features = ["rk3588-cpufreq"] }
+ax-runtime = { workspace = true }
 ax-std = { workspace = true, optional = true, features = ["default", "ipi"] }
 
 [package.metadata.docs.rs]

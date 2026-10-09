@@ -15,27 +15,6 @@
 #[cfg(feature = "rk3588-cpufreq")]
 pub(crate) mod cpufreq;
 
-#[cfg(feature = "rk3588-cpufreq")]
-mod cpufreq_board;
-
-#[cfg(feature = "rk3588-cpufreq")]
-mod cpufreq_rdif;
-
-#[cfg(feature = "rk3588-cpufreq")]
-mod cpufreq_margin;
-
-#[cfg(feature = "rk3588-cpufreq")]
-mod cpufreq_pvtm;
-
-#[cfg(feature = "rk3588-cpufreq")]
-pub(crate) mod cpufreq_sensors;
-
-#[cfg(feature = "rk3588-cpufreq")]
-mod pmic_i2c;
-
-#[cfg(feature = "rk3588-cpufreq")]
-mod pmic_spi;
-
 #[cfg(feature = "rockchip-soc")]
 mod cru;
 

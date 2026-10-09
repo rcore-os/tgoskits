@@ -43,18 +43,23 @@ use rockchip_soc::rk3588::{
     cpufreq_opp::{self, HardwareSelection},
 };
 
-use super::{
-    cpufreq_board,
-    cpufreq_margin::{GrfResource, ReadMargin},
-    cpufreq_pvtm, cpufreq_sensors,
-};
 use crate::{probe::OnProbeError, register::ProbeFdt, soc::scmi};
 
+mod board;
+mod margin;
+mod pmic_i2c;
+mod pmic_spi;
+mod pvtm;
+mod rdif;
 mod selection;
+mod sensors;
 mod transition;
 
+use margin::{GrfResource, ReadMargin};
+use pvtm as cpufreq_pvtm;
 use selection::configure_pvtpll_low_temp;
 pub use selection::initialize_post_boot;
+use sensors as cpufreq_sensors;
 use transition::{align_rail_voltages_to_opp, apply_opp, read_mhz, set_and_verify};
 
 /// SCMI clock id of the A55 (little) cluster — cpu0..3.
@@ -99,7 +104,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             .map(|clock| clock.phandle)
             .ok_or_else(|| OnProbeError::other("RK3588 CPU node has no SCMI clock reference"))
     });
-    super::cpufreq_rdif::register(probe.into_platform_device());
+    rdif::register(probe.into_platform_device());
     let phandle = phandle?;
     match SCMI_CLOCK_PHANDLE.compare_exchange(0, phandle.raw(), Ordering::AcqRel, Ordering::Acquire)
     {
@@ -161,7 +166,6 @@ fn scmi_clock_phandle() -> Option<Phandle> {
 }
 
 fn rail_voltage(cluster: Cluster) -> Option<u32> {
-    use super::{pmic_i2c, pmic_spi};
     match cluster {
         Cluster::A55 => pmic_spi::get_uv(),
         Cluster::Big0 => pmic_i2c::get_uv(pmic_i2c::RK8602_BIG0_ADDR),
@@ -473,8 +477,6 @@ fn maximum_index(domain: FrequencyDomain) -> usize {
 /// Refresh BSP 10/15 C voltage floor and 85/80 C frequency cap. Only the
 /// runtime worker calls this function, serially with all OPP transitions.
 pub fn refresh_limits() -> Result<(), FrequencyError> {
-    use super::cpufreq_sensors;
-
     initialize_post_boot();
     let mut first_error = None;
     let mut previous = [soc_cpufreq::ThermalState::default(); 3];
@@ -645,7 +647,6 @@ impl Cluster {
     /// Set and read back this domain's rail voltage, including intermediate steps.
     /// RK806 supplies A55 over SPI; RK8602 and RK8603 supply the big clusters over I2C.
     fn set_voltage(self, uv: u32) -> bool {
-        use super::{pmic_i2c, pmic_spi};
         match self {
             Cluster::A55 => pmic_spi::set_uv_stepped_verified(uv),
             Cluster::Big0 => pmic_i2c::set_uv_stepped_verified(pmic_i2c::RK8602_BIG0_ADDR, uv),

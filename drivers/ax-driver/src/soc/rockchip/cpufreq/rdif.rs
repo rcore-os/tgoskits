@@ -12,7 +12,7 @@ use rdif_cpufreq::{
 use rdrive::{DriverGeneric, PlatformDevice};
 use rockchip_soc::rk3588::cpufreq::{self as soc_cpufreq, CpuDomainError};
 
-use super::cpufreq::{self, FrequencyDomain};
+use super::{FrequencyDomain, FrequencyError as DriverFrequencyError};
 
 const LITTLE_ID: DomainId = DomainId::new(0);
 const BIG0_ID: DomainId = DomainId::new(1);
@@ -92,19 +92,19 @@ impl Interface for Rk3588CpuFreq {
     }
 
     fn available_opps(&self, domain: DomainId) -> Result<Vec<OperatingPoint>, FrequencyError> {
-        cpufreq::available_opps(to_domain(domain)?)
+        super::available_opps(to_domain(domain)?)
             .map(|opps| opps.into_iter().map(to_opp).collect())
             .map_err(to_error)
     }
 
     fn current_opp(&self, domain: DomainId) -> Result<OperatingPoint, FrequencyError> {
-        cpufreq::current_opp(to_domain(domain)?)
+        super::current_opp(to_domain(domain)?)
             .map(to_opp)
             .map_err(to_error)
     }
 
     fn limits(&self, domain: DomainId) -> Result<FrequencyLimits, FrequencyError> {
-        cpufreq::limits(to_domain(domain)?)
+        super::limits(to_domain(domain)?)
             .map(|limits| FrequencyLimits {
                 min_hz: limits.min_hz,
                 max_hz: limits.max_hz,
@@ -113,11 +113,11 @@ impl Interface for Rk3588CpuFreq {
     }
 
     fn set_frequency(&mut self, domain: DomainId, frequency_hz: u64) -> Result<(), FrequencyError> {
-        cpufreq::set_frequency(to_domain(domain)?, frequency_hz).map_err(to_error)
+        super::set_frequency(to_domain(domain)?, frequency_hz).map_err(to_error)
     }
 
     fn refresh_limits(&mut self) -> Result<(), FrequencyError> {
-        cpufreq::refresh_limits().map_err(to_error)
+        super::refresh_limits().map_err(to_error)
     }
 }
 
@@ -130,17 +130,17 @@ fn to_domain(id: DomainId) -> Result<FrequencyDomain, FrequencyError> {
     }
 }
 
-fn to_opp(opp: cpufreq::OperatingPoint) -> OperatingPoint {
+fn to_opp(opp: super::OperatingPoint) -> OperatingPoint {
     OperatingPoint {
         frequency_hz: opp.frequency_hz,
         voltage_uv: Some(opp.voltage_uv),
     }
 }
 
-fn to_error(error: cpufreq::FrequencyError) -> FrequencyError {
+fn to_error(error: DriverFrequencyError) -> FrequencyError {
     match error {
-        cpufreq::FrequencyError::NotReady => FrequencyError::NotReady,
-        cpufreq::FrequencyError::OppUnavailable => FrequencyError::OppUnavailable,
-        cpufreq::FrequencyError::HardwareFailure => FrequencyError::HardwareFailure,
+        DriverFrequencyError::NotReady => FrequencyError::NotReady,
+        DriverFrequencyError::OppUnavailable => FrequencyError::OppUnavailable,
+        DriverFrequencyError::HardwareFailure => FrequencyError::HardwareFailure,
     }
 }

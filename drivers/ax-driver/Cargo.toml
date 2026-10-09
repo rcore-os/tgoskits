@@ -164,7 +164,6 @@ sg200x-pwm = { workspace = true, optional = true }
 cv181x-clock = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
 ahci-driver = { workspace = true, optional = true }
-anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
 smccc = { version = "0.2", optional = true }
 ax-lazyinit = { workspace = true, optional = true }
