@@ -170,6 +170,8 @@ profile 只描述调度条件，实际任务还依赖工具链、模拟器、存
 
 自托管行禁止非空 `cache_key`。不能为了套用托管缓存策略而开启 `rust-cache`，也不能把容器或缺少 fork secrets 当作保护宿主机器的充分隔离措施。缓存、artifact 和凭据传递详见[矩阵执行](execution.md)。
 
+`board` runner 还要为构建带 companion `.its` 的目标（如 `aka-00-sg2002` 的 RISC-V uImage）安装 `u-boot-tools`，否则 Starry 构建在 uImage 打包阶段失败；预检不覆盖该依赖，部署新 board runner 时须手动核实。
+
 ### 3.2 调度上限
 
 `max_parallel=256` 是单个矩阵的并发上限，不是 runner 预留数。主 CI 的四个测试分组独立调度，合计负载还会叠加其他 run、定时应用和共享组织中的其他任务。

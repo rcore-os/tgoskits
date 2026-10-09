@@ -424,6 +424,14 @@ fn generate_uimage_from_its(
         plan.source_its.display(),
         plan.output_uimg.display()
     ));
+    if !command_available("mkimage") {
+        bail!(
+            "mkimage is required to generate {} from {}; install u-boot-tools (Debian/Ubuntu) or \
+             run the build on a host that provides it",
+            plan.output_uimg.display(),
+            plan.source_its.display()
+        );
+    }
     let result = Command::new("mkimage")
         .current_dir(workspace_root)
         .args(mkimage_args_for_its(&plan.rendered_its, &plan.output_uimg))

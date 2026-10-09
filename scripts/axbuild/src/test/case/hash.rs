@@ -15,7 +15,7 @@ use super::types::{
     TestQemuCase,
 };
 
-const CMAKE_TOOLCHAIN_TEMPLATE_PATH: &str = "src/test/cmake-toolchain.cmake.in";
+const CMAKE_TOOLCHAIN_TEMPLATE_PATH: &str = "scripts/axbuild/src/test/cmake-toolchain.cmake.in";
 
 pub(super) fn case_asset_cache_key(
     arch: &str,
@@ -79,10 +79,12 @@ fn case_asset_cache_key_with_lookup(
     }
     // C and grouped-C pipelines use the CMake toolchain template. Keep it out
     // of unrelated pipeline keys while invalidating every compiled C image.
+    // Resolve from the runtime workspace root: the prebuilt tg-xtask binary is
+    // built once and may execute from a different checkout path.
     if matches!(pipeline, CasePipeline::C | CasePipeline::Grouped) {
         hash_file(
             &mut hasher,
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join(CMAKE_TOOLCHAIN_TEMPLATE_PATH),
+            &crate::context::workspace_root_path()?.join(CMAKE_TOOLCHAIN_TEMPLATE_PATH),
         )?;
     }
     if pipeline == CasePipeline::Python {

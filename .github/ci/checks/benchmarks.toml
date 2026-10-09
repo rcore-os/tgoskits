@@ -201,7 +201,10 @@ resource_group = "orangepi-5-plus"
 timeout_minutes = 60
 download_xtask_bin_artifact = true
 command = '''
-target/debug/tg-xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
+target/debug/tg-xtask starry app board \
+  -t benchmark/iperf3 \
+  --board-config board-orangepi-5-plus.toml \
+  -b OrangePi-5-Plus
 '''
 
 [[check.suite]]
