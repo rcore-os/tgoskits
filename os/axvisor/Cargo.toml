@@ -47,7 +47,10 @@ runtime = "axvisor"
 targets = ["aarch64-unknown-none-softfloat"]
 
 [features]
-default = []
+# AxVisor owns the host networking path by default.  The physical uplink is
+# capability-selected at runtime; board configurations still choose which
+# concrete NIC drivers are compiled into `ax-driver`.
+default = ["ax-std/net"]
 host-xtask = []
 axtest = []
 vpci-test-device = ["axvm/vpci-test-device"]
@@ -80,12 +83,6 @@ browser-console = [
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
-# Opt-in physical layer-2 uplink: bridge guest virtio-net MACs onto one host
-# network device through `ax-net`. The selected board still chooses its own
-# concrete NIC driver feature; this feature only enables the generic bridge
-# wiring and never pulls in a vendor driver.
-net-l2-uplink = ["ax-std/net"]
-
 [dependencies]
 anyhow.workspace = true
 axvmconfig = { workspace = true, default-features = false }

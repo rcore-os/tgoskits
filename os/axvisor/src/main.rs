@@ -35,7 +35,6 @@ mod guest_console;
 #[cfg(any(feature = "browser-console", feature = "http-axum"))]
 mod http;
 mod manager;
-#[cfg(feature = "net-l2-uplink")]
 mod net_uplink;
 #[cfg(feature = "browser-console")]
 mod network_console;
@@ -75,7 +74,6 @@ fn main() {
     // Bridge guest virtio-net ports onto the selected host interface before any
     // guest device is created, so the host DHCP/console stack keeps owning the
     // wire and guest MACs are validated against the reserved host MACs.
-    #[cfg(feature = "net-l2-uplink")]
     net_uplink::start();
     manager
         .init_default_vms()
