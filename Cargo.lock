@@ -1551,7 +1551,6 @@ name = "axloader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "host-boot-abi",
  "httpboot-protocol",
  "object 0.38.1",
  "serde",
@@ -4101,13 +4100,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
-]
-
-[[package]]
-name = "host-boot-abi"
-version = "0.1.0"
-dependencies = [
- "uefi",
 ]
 
 [[package]]
@@ -7874,7 +7866,6 @@ dependencies = [
  "fdt-edit",
  "fdt-raw",
  "heapless",
- "host-boot-abi",
  "kernutil",
  "libc",
  "log",
@@ -7893,6 +7884,7 @@ dependencies = [
  "tock-registers 0.10.1",
  "trait-ffi",
  "uefi",
+ "uefi-raw",
  "uguid",
  "x86",
 ]

@@ -38,8 +38,9 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 
 `cmdline` 与 `initramfs` 相互独立且都可省略。axloader 把命令行编码成带 NUL
 结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
-命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。只有归档
-存在时才安装 `host-boot-abi::BootPayload` 配置表。EFI 入口异常返回时会恢复
+命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。归档存在时，
+axloader 注册 Linux EFI initrd 约定的 `EFI_LOAD_FILE2_PROTOCOL` 提供者和
+`MEDIA/VENDOR` 设备路径；EFI 入口异常返回时会恢复
 原 LoadOptions，并释放本次事务持有的命令行与归档。
 
 ### 1.2 启动流程
@@ -105,7 +106,7 @@ target/x86_64-unknown-uefi/release/axloader-launcher.efi
 
 QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
 跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
-initramfs 和两者都有，并以目标内核输出的 `HOST_CMDLINE`、
+initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出的 `HOST_CMDLINE`、
 `HOST_INITRAMFS_PASSED` 为成功证据。测试还覆盖 SHA-256、OTA 待试槽确认和
 回滚。服务端协议测试另见 ostool 的
 `docs/axloader-network-control.md`。

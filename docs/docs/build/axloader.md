@@ -76,7 +76,7 @@ sequenceDiagram
 | `DELETE /api/v1/boot/jobs/{id}` | 取消尚未执行的事务 |
 | `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，回复 `202`，关闭网络对象后交接 |
 
-v5 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时才由 `payload::PreparedPayload` 安装 `BootPayload` 配置表。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。
+v5 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时由 `payload::PreparedPayload` 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。
 
 ### 2.3 OTA 事务
 
@@ -158,12 +158,12 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 
 ### 4.2 启动与恢复
 
-`ready_to_handoff` 后失败时检查 ELF 入口、EFI LoadOptions 和 `BootPayload` 配置表。OTA 复位循环则先读取两份状态记录的代次与校验和，再核对当前槽文件摘要。
+`ready_to_handoff` 后失败时检查 ELF 入口、EFI LoadOptions 和 Linux EFI initrd 提供者。OTA 复位循环则先读取两份状态记录的代次与校验和，再核对当前槽文件摘要。
 
 | 现象 | 优先检查 |
 | --- | --- |
 | cmdline 缺失 | 清单字段、`PreparedLoadOptions`、someboot 的 EFI image handle 与命令行优先级 |
-| initramfs 缺失 | 清单是否声明归档、上传状态、`BootPayload` 表是否在 ExitBootServices 前读取 |
+| initramfs 缺失 | 清单是否声明归档、上传状态、`LoadFile2` 提供者是否在 ExitBootServices 前读取 |
 | 待试槽重复回滚 | 升级 ID、`OtaSource`、运行摘要和确认请求是否匹配 |
 | 两份状态均无效 | 停止自动启动，使用备份的原装载器和外部介质恢复 |
 
