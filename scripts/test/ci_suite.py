@@ -26,7 +26,10 @@ SUITE_ROOTS = {
     "axvisor": Path("test-suit/axvisor"),
 }
 EXTRA_SUITE_ROOTS = {
-    "axvisor": (Path("benchmarks/axvisor"),),
+    # AxVisor nightly cases were migrated out of `test-suit/axvisor` into
+    # `apps/axvisor`; both trees (plus the benchmark tree) are registered
+    # AxVisor suites and must be discovered together.
+    "axvisor": (Path("benchmarks/axvisor"), Path("apps/axvisor")),
 }
 # Starry board/QEMU nightly measurements live under `benchmarks/starry` and are
 # selected through `cargo xtask starry app ...`, so they need their own suite

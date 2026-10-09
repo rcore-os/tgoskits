@@ -32,6 +32,8 @@ test-suit/axvisor/
 
 与 StarryOS 的平铺结构不同，Axvisor 用 `normal` 测试组目录组织用例。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
 
+普通功能用例位于 `test-suit/axvisor/`；只由 AxVisor Nightly 运行的用例已迁移到 `apps/axvisor/`，目录布局与 `test-suit/axvisor/` 一致。`discover_qemu_cases()`、板卡发现和 `discover_test_group_names()` 会同时扫描两棵目录树，因此两类用例共用同一套筛选参数。
+
 ## 3. 运行模式
 
 三种模式共享 case 发现和构建组概念，但宿主环境、启动链路及筛选参数不同。下表用于在 CI 或板端故障时选择正确的复现入口。
@@ -73,7 +75,7 @@ flowchart TD
 
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
-| 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/`，默认 group 为 `normal` |
+| 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/` 与 `apps/axvisor/<group>/`，默认 group 为 `normal` |
 | VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表 |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |

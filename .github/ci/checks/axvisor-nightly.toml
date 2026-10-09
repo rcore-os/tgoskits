@@ -7,6 +7,9 @@ default_runner = "qcs"
 # from `axvisor.toml` so the default main CI matrix never schedules them.
 # Every check in a `nightly` manifest is nightly-only by construction; do not
 # add a `nightly_only = true` field.
+#
+# The case files for these checks live under `apps/axvisor/`; commands select
+# them by `--board`/`--test-case` name, so no command embeds the path.
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"

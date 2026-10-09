@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import re
 import sys
 import tempfile
 import tomllib
@@ -189,10 +190,113 @@ class CiPlanTests(unittest.TestCase):
         for event in ("pull_request", "push", "workflow_dispatch", "schedule"):
             with self.subTest(event=event):
                 context = ci_plan.replace(self.upstream, event_name=event)
-                rows = main_test_rows(ci_plan.build_main_plan(context))
+                plan = ci_plan.build_main_plan(context)
+                rows = main_test_rows(plan)
                 self.assertTrue(rows)
                 self.assertTrue({row["id"] for row in rows}.isdisjoint(nightly_ids))
                 self.assertTrue(all(not row.get("nightly_only", False) for row in rows))
+                axvisor_rows = plan["axvisor_matrix"]["include"]
+                commands = "\n".join(row["command"] for row in axvisor_rows)
+                self.assertNotIn("timer-stress", commands)
+                self.assertNotIn("ivc-benchmark", commands)
+                self.assertNotIn("orangepi-5-plus-vcpu-perf", commands)
+                self.assertNotIn("--test-case ping", commands)
+                self.assertIn("--board orangepi-5-plus-linux --test-case smoke", commands)
+                self.assertNotIn("--board orangepi-5-plus-linux\n", commands)
+                self.assertIn("--test-case qemu-ivc", commands)
+                self.assertIn("--board orangepi-5-plus-starry", commands)
+
+    def test_benchmark_suite_path_resolves_to_registered_axvisor_check(self) -> None:
+        path = (
+            "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/"
+            "performance/board-orangepi-5-plus-vcpu-perf.toml"
+        )
+
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].template_id,
+            "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf",
+        )
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask axvisor test board --test-group normal "
+            "--test-case performance --board orangepi-5-plus-vcpu-perf",
+        )
+
+    def test_migrated_axvisor_suite_path_resolves_to_nightly_check(self) -> None:
+        path = (
+            "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml"
+        )
+
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].template_id,
+            "test-axvisor-aarch64-qemu-timer-stress",
+        )
+        self.assertIn("--test-case gicv3-timer-stress", selections[0].command)
+
+    def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
+        for path in (
+            "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
+            "apps/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/smoke/board-orangepi-5-plus-virtio-net-peer.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
+            "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
+            "benchmarks/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml",
+        ):
+            with self.subTest(path=path):
+                context = ci_plan.replace(
+                    self.upstream,
+                    impact=ci_plan.CiImpact(
+                        full=False, reason="fixture", changed_paths=(path,),
+                        test_suite_paths=(path,), exclusive=True,
+                    ),
+                )
+                plan = ci_plan.build_main_plan(context)
+                self.assertTrue(plan["static_required"])
+                self.assertFalse(main_test_rows(plan))
+                self.assertFalse(plan["axvisor_required"])
+                self.assertFalse(plan["starry_required"])
+
+    def test_benchmark_starry_path_resolves_to_registered_benchmark_check(self):
+        cases = {
+            "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml": (
+                "starry-performance-block-rw-orangepi-5-plus",
+                "-t benchmark/block-rw-bench",
+            ),
+            "benchmarks/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml": (
+                "starry-performance-ltp-hackbench",
+                "--qemu-config qemu-x86_64-benchmark.toml",
+            ),
+            "benchmarks/starry/orangepi-5-plus-uvc-rknn/configs/board-orangepi-5-plus-bench.toml": (
+                "starry-performance-uvc-rknn-orangepi-5-plus",
+                "--board-config configs/board-orangepi-5-plus-bench.toml",
+            ),
+        }
+        for path, (template_id, fragment) in cases.items():
+            with self.subTest(path=path):
+                selections = ci_plan.resolve_suite_selections(
+                    ci_plan.WORKSPACE_ROOT,
+                    ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+                    [path],
+                )
+                self.assertEqual(len(selections), 1)
+                self.assertEqual(selections[0].template_id, template_id)
+                self.assertIn(fragment, selections[0].command)
 
     def test_functional_smoke_path_does_not_route_to_the_nightly_benchmark_check(
         self,
@@ -633,6 +737,221 @@ command = "true"
         )
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
+
+    def test_dualguest_robot_board_is_not_scheduled(self) -> None:
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+        )
+        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", rows)
+        nightly_rows = self.assert_unique_ids(
+            ci_plan.build_axvisor_nightly_plan(
+                ci_plan.replace(self.upstream, event_name="schedule")
+            )["axvisor_matrix"]["include"]
+        )
+        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", nightly_rows)
+        self.assertNotIn(
+            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
+            nightly_rows,
+        )
+        benchmark_rows = self.assert_unique_ids(
+            ci_plan.build_benchmarks_plan(
+                ci_plan.replace(self.upstream, event_name="schedule")
+            )["axvisor_performance_matrix"]["include"]
+        )
+        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", benchmark_rows)
+        self.assertIn(
+            "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
+            benchmark_rows,
+        )
+
+    def test_dualguest_robot_board_markers_cannot_match_command_echo(self) -> None:
+        root = MODULE_PATH.parents[2]
+        configs = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr"
+            / "board-orangepi-5-plus-dualguest-robot.toml",
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr"
+            / "board-orangepi-5-plus-dualguest-robot.toml",
+        )
+
+        for path in configs:
+            with self.subTest(config=path):
+                config = tomllib.loads(path.read_text())
+                self.assertEqual(
+                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
+                )
+                step = config["shell_check_steps"][-1]
+                for pattern in step["success_regex"] + step["fail_regex"]:
+                    self.assertIsNone(re.search(pattern, step["shell_cmd"]))
+                guest = "linux-zephyr" if "dual-linux" in str(path) else "starry-zephyr"
+                self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_PASS guest={guest}\n")
+                                    for pattern in step["success_regex"]))
+                self.assertTrue(any(re.search(pattern, f"DUAL_PICK_CI_FAIL guest={guest} status=1\n")
+                                    for pattern in step["fail_regex"]))
+
+    def test_ivc_benchmark_board_runs_benchmark_from_guest_shell(self) -> None:
+        root = MODULE_PATH.parents[2]
+        case_dir = (
+            root / "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark"
+        )
+        vm_config = tomllib.loads(
+            (case_dir / "starry-axivc-benchmark.toml").read_text()
+        )
+        board_config = tomllib.loads(
+            (
+                case_dir / "benchmark/board-orangepi-5-plus-ivc-benchmark.toml"
+            ).read_text()
+        )
+
+        benchmark = "/usr/bin/ivc-starry-bench"
+        cmdline = vm_config["kernel"]["cmdline"]
+        # The board route waits for the default Starry init shell prompt, and
+        # StarryOS panics when init exits, so the VM must keep that shell as
+        # init and run the benchmark as its child.
+        self.assertNotIn(benchmark, cmdline)
+        self.assertNotIn("init=", cmdline)
+
+        steps = board_config["shell_check_steps"]
+        attach_indices = [
+            index
+            for index, step in enumerate(steps)
+            if step.get("shell_cmd", "").strip() == "vm console 1"
+        ]
+        launch_indices = [
+            index
+            for index, step in enumerate(steps)
+            if benchmark in step.get("shell_cmd", "")
+        ]
+        self.assertEqual(len(attach_indices), 1)
+        self.assertEqual(len(launch_indices), 1)
+        self.assertLess(attach_indices[0], launch_indices[0])
+
+        launch = steps[launch_indices[0]]
+        self.assertEqual(launch["shell_prefix"], "root@starry:")
+        pass_pattern = (
+            "(?m)^(?:\\[VM 1\\] )?AXVISOR_IVC_BENCH_RESULT=PASS "
+            "cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$"
+        )
+        self.assertEqual(launch["success_regex"], [pass_pattern])
+        for pattern in launch["success_regex"]:
+            self.assertIsNone(re.search(pattern, launch["shell_cmd"]))
+        marker = (
+            "AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 "
+            "bytes=1232076800 chunks=400"
+        )
+        self.assertTrue(
+            any(
+                re.search(pattern, f"{marker}\n")
+                for pattern in launch["success_regex"]
+            )
+        )
+        self.assertTrue(
+            any(
+                re.search(pattern, f"[VM 1] {marker}\n")
+                for pattern in launch["success_regex"]
+            )
+        )
+        mismatch = marker.replace("bytes=1232076800", "bytes=1232076799")
+        self.assertIsNone(re.search(pass_pattern, f"{mismatch}\n"))
+
+        fail_patterns = board_config["fail_regex"]
+        for sample in (
+            "Kernel panic - not syncing\n",
+            "panicked at kernel/src/task/exit.rs: Attempted to kill init!\n",
+            "AXIVC Starry benchmark peer ready failed\n",
+            "AXIVC Starry benchmark send failed\n",
+            "AXIVC Starry benchmark recv failed\n",
+            "AXIVC Zephyr-Starry benchmark failed\n",
+        ):
+            with self.subTest(sample=sample):
+                self.assertTrue(
+                    any(re.search(pattern, sample) for pattern in fail_patterns)
+                )
+
+    def test_single_client_robot_check_routing_and_real_board_contract(self) -> None:
+        root = MODULE_PATH.parents[2]
+        real_starry = (
+            root
+            / "test-suit/starryos/board-orangepi-5-plus/robot-flow"
+            / "board-orangepi-5-plus-robot-real.toml"
+        )
+        real_axvisor_starry = (
+            root
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/smoke"
+            / "board-orangepi-5-plus-robot-real-starry.toml"
+        )
+        real_axvisor_linux = (
+            root
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux/smoke"
+            / "board-orangepi-5-plus-robot-real-linux.toml"
+        )
+        real_starry_guest = (
+            root
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/guest.toml"
+        )
+        real_linux_guest = (
+            root
+            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux"
+            / "linux-smp1-emmc.toml"
+        )
+
+        main = ci_plan.build_main_plan(self.upstream)
+        starry_rows = self.assert_unique_ids(main["starry_matrix"]["include"])
+        axvisor_rows = self.assert_unique_ids(main["axvisor_matrix"]["include"])
+        nightly_rows = self.assert_unique_ids(
+            ci_plan.build_axvisor_nightly_plan(
+                ci_plan.replace(self.upstream, event_name="schedule")
+            )["axvisor_matrix"]["include"]
+        )
+
+        self.assertIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real",
+            starry_rows["test-orangepi-5-plus-robot-real-native-starryos"]["command"],
+        )
+        real_starry_id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
+        real_linux_id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
+        self.assertNotIn(real_starry_id, axvisor_rows)
+        self.assertNotIn(real_linux_id, axvisor_rows)
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real-starry",
+            nightly_rows[real_starry_id]["command"],
+        )
+        self.assertIn(
+            "--board orangepi-5-plus-robot-real-linux",
+            nightly_rows[real_linux_id]["command"],
+        )
+
+        for path in (real_starry, real_axvisor_starry, real_axvisor_linux):
+            with self.subTest(config=path):
+                config = tomllib.loads(path.read_text())
+                self.assertEqual(config["board_type"], "OrangePi-5-Plus-robot")
+                self.assertNotIn("uboot_cmd", config)
+                commands = "\n".join(
+                    step["shell_cmd"] for step in config["shell_check_steps"]
+                )
+                self.assertIn("FEETECH_DEV=auto", commands)
+                self.assertIn("./run_robot_ci_once.sh 28.0", commands)
+                self.assertNotIn("/dev/ttyS6", commands)
+                if path == real_axvisor_linux:
+                    self.assertIn("sudo -S env FEETECH_DEV=auto", commands)
+
+        for path in (real_starry_guest, real_linux_guest):
+            text = path.read_text()
+            self.assertNotIn("include_default_passthrough", text)
+            self.assertNotIn("/serial@feb90000", text)
+
+        starry_kernel = tomllib.loads(real_starry_guest.read_text())["kernel"]
+        self.assertEqual(
+            starry_kernel["kernel_path"],
+            "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin",
+        )
+        linux_kernel = tomllib.loads(real_linux_guest.read_text())["kernel"]
+        self.assertEqual(
+            linux_kernel["kernel_path"], "/guest/linux/orangepi-5-plus-6.1.99"
+        )
+        self.assertIn("root=/dev/mmcblk1p2", linux_kernel["cmdline"])
 
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,

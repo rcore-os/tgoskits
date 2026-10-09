@@ -1,8 +1,8 @@
 //! Physical NIC layer-2 uplink bridge.
 //!
-//! The host stack owns exactly one physical NIC through the fixed-CPU queue
-//! runtime, and a hypervisor cannot clone the driver, so a guest NIC is bridged
-//! into that single owner instead:
+//! Each [`UplinkRuntime`] attaches a guest fabric to one selected physical
+//! interface through the fixed-CPU queue runtime. A hypervisor cannot clone the
+//! driver, so guest traffic is handed to that existing owner:
 //!
 //! * **Egress (guest -> wire):** a guest device submits a complete Ethernet
 //!   frame into a bounded, non-blocking ring whose two ends are serialized by
@@ -21,12 +21,12 @@
 //! [`UplinkRuntime::submit_egress`] may run in a vCPU MMIO-write context and
 //! therefore never allocates, sleeps, or waits: it either wins a single
 //! non-blocking gate or is rejected. The ring preallocates its frame slots once,
-//! and the ingress sink and bound device name are published once through
+//! and the ingress sink and bound interface id are published once through
 //! [`OnceLock`]. A full or busy ring rejects the frame instead of blocking or
 //! growing, so the same code runs in a bare-metal kernel and in a pure host
 //! test.
 
-use alloc::{string::String, sync::Arc};
+use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, Ordering},
@@ -38,7 +38,7 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
 };
 
-use crate::device::ETHERNET_FRAME_CAPACITY;
+use crate::{config::InterfaceId, device::ETHERNET_FRAME_CAPACITY};
 
 /// Maximum frames a single drain pass moves to the NIC TX path.
 ///
@@ -243,44 +243,42 @@ impl EgressRing {
     }
 }
 
-/// Shared physical-uplink runtime for one host NIC.
+/// Shared physical-uplink runtime for one host network interface.
 ///
 /// Synchronization is runtime-agnostic on purpose: the hot paths take no lock
 /// and never wait. The egress ring uses one non-blocking gate per half, and the
-/// ingress sink and bound device name are published once with `OnceLock`, so
+/// ingress sink and bound interface id are published once with `OnceLock`, so
 /// this type is equally usable from a bare-metal kernel and from a pure host
 /// test that never boots a kernel.
 pub struct UplinkRuntime {
     egress: EgressRing,
     ingress: OnceLock<Arc<dyn IngressSink>>,
-    /// Host interface this uplink owns; frames on any other interface are left
-    /// to their own stack so a second NIC cannot steal guest traffic.
-    owner_device: OnceLock<String>,
+    /// Stable host interface this uplink owns; frames on any other interface
+    /// are left to their own stack so a second NIC cannot steal guest traffic.
+    owner_interface: OnceLock<InterfaceId>,
 }
 
 impl UplinkRuntime {
     /// Creates an uplink with a bounded egress ring of `depth` slots.
-    fn new(depth: usize) -> Self {
+    pub fn new(depth: usize) -> Self {
         Self {
             egress: EgressRing::new(depth),
             ingress: OnceLock::new(),
-            owner_device: OnceLock::new(),
+            owner_interface: OnceLock::new(),
         }
     }
 
-    /// Binds the uplink to one host interface by name.
+    /// Binds the uplink to one host interface by stable identifier.
     ///
     /// Installed exactly once, before any guest device exists; later calls are
     /// ignored so the binding cannot silently move to another NIC.
-    pub fn bind_device(&self, name: &str) {
-        let _ = self.owner_device.call_once(|| name.into());
+    pub fn bind_interface(&self, id: InterfaceId) {
+        let _ = self.owner_interface.call_once(|| id);
     }
 
-    /// Returns whether `name` is the interface bound to this uplink.
-    pub fn matches_device(&self, name: &str) -> bool {
-        self.owner_device
-            .get()
-            .is_some_and(|bound| bound.as_str() == name)
+    /// Returns whether `id` is the interface bound to this uplink.
+    pub fn matches_interface(&self, id: InterfaceId) -> bool {
+        self.owner_interface.get().is_some_and(|bound| *bound == id)
     }
 
     /// Installs the switch-side ingress sink once during hypervisor startup.
@@ -288,7 +286,7 @@ impl UplinkRuntime {
         let _ = self.ingress.call_once(|| sink);
     }
 
-    /// Submits one complete guest frame for transmission on the physical NIC.
+    /// Submits one complete guest frame for transmission on the physical device.
     ///
     /// Bounded and non-blocking: safe in a vCPU MMIO-write path. A successful
     /// submission requests a protocol poll so the frame is drained promptly; a
@@ -299,7 +297,7 @@ impl UplinkRuntime {
         Ok(())
     }
 
-    /// Drains queued guest frames into the NIC TX path.
+    /// Drains queued guest frames into the physical device TX path.
     ///
     /// Must run on the single protocol executor that owns the physical port;
     /// `transmit` reports `false` for transient backpressure.
@@ -325,15 +323,15 @@ impl UplinkRuntime {
 
 static UPLINK: OnceLock<Arc<UplinkRuntime>> = OnceLock::new();
 
-/// Installs the process-wide physical uplink, if it is not installed yet.
+/// Publishes a prepared physical uplink runtime, if no runtime is installed.
 ///
-/// Opt-in by construction: no uplink runtime exists until the hypervisor glue
-/// calls this, so a plain ArceOS application pays only one failed `OnceLock`
-/// lookup per received frame.
-pub fn install(depth: usize) -> Arc<UplinkRuntime> {
-    UPLINK
-        .call_once(|| Arc::new(UplinkRuntime::new(depth)))
-        .clone()
+/// The caller prepares the interface binding and ingress sink before publishing
+/// this pointer. AxVisor then installs its hypervisor adapter first, so a
+/// losing initializer never leaves a globally visible half-configured runtime.
+pub fn install(runtime: Arc<UplinkRuntime>) -> bool {
+    let candidate = Arc::clone(&runtime);
+    let selected = UPLINK.call_once(|| runtime);
+    Arc::ptr_eq(selected, &candidate)
 }
 
 /// Returns the installed uplink, if any.
@@ -432,6 +430,16 @@ mod tests {
         // A guest egress frame drains into the physical TX path.
         runtime.submit_egress(&frame(2, 64)).unwrap();
         assert_eq!(runtime.drain_egress(8, &mut |_| true), 1);
+    }
+
+    #[test]
+    fn binding_matches_the_stable_interface_id() {
+        let runtime = UplinkRuntime::new(2);
+        let selected = InterfaceId::new(37);
+        runtime.bind_interface(selected);
+
+        assert!(runtime.matches_interface(selected));
+        assert!(!runtime.matches_interface(InterfaceId::new(38)));
     }
 
     #[test]

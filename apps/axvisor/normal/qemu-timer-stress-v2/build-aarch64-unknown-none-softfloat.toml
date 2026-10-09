@@ -1,0 +1,4 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["apps/axvisor/normal/qemu-timer-stress/aarch64-linux-timer-stress-v2.toml"]

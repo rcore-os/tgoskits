@@ -362,21 +362,17 @@ impl NetworkQueueRuntime {
         self.published_interfaces.get(published_order).copied()
     }
 
-    /// Enables or disables hardware acceptance of every physical unicast
-    /// address on the published interface `id`.
+    /// Applies a receive filtering mode to the published interface `id`.
     ///
     /// The request is routed to that interface's own control endpoint, so the
     /// capability and register window belong to the exact device bound to the
     /// interface: no probe-order or name lookup can flip the filter on another
     /// port. A driver without an address-filter control reports
-    /// [`NetError::NotSupported`]; the caller may then try another interface,
-    /// but a request that succeeds enables the filter on that exact interface,
-    /// so the caller must bridge through it and must not leave the filter on an
-    /// unrelated port.
-    pub fn set_interface_rx_accept_all_phys(
+    /// [`NetError::NotSupported`]; the caller may then try another interface.
+    pub fn set_interface_rx_mode(
         &mut self,
         id: InterfaceId,
-        enabled: bool,
+        mode: rd_net::NetRxMode,
     ) -> Result<(), NetError> {
         let published_order = self
             .published_interfaces
@@ -387,7 +383,7 @@ impl NetworkQueueRuntime {
             ._controls
             .get_mut(published_order)
             .ok_or(NetError::NotSupported)?;
-        control.set_rx_accept_all_phys(enabled)
+        control.set_rx_mode(mode)
     }
 
     /// Binds the interface of every published device, in published order.

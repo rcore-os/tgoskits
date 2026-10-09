@@ -7,8 +7,8 @@ use std::{
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
-    DmaBuffer, NetControlEndpoint, NetDeviceInfo, NetPollGroupId, PreparedNetDevice, RxCompletion,
-    TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol, WifiOperation,
+    DmaBuffer, NetControlEndpoint, NetDeviceInfo, NetPollGroupId, NetRxMode, PreparedNetDevice,
+    RxCompletion, TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol, WifiOperation,
     WifiTransaction, Wpa2Pmk,
     dma_api::{
         DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
@@ -1110,11 +1110,11 @@ fn open_startup_transaction_does_not_consume_secure_entropy() {
 
 /// Control endpoint that records every address-filter request it receives.
 struct RecordingFilterControl {
-    calls: Arc<StdMutex<Vec<bool>>>,
+    calls: Arc<StdMutex<Vec<NetRxMode>>>,
 }
 
 impl RecordingFilterControl {
-    fn new() -> (Self, Arc<StdMutex<Vec<bool>>>) {
+    fn new() -> (Self, Arc<StdMutex<Vec<NetRxMode>>>) {
         let calls = Arc::new(StdMutex::new(Vec::new()));
         (
             Self {
@@ -1130,8 +1130,8 @@ impl NetControlEndpoint for RecordingFilterControl {
         Ok([0; 6])
     }
 
-    fn set_rx_accept_all_phys(&mut self, enabled: bool) -> Result<(), NetError> {
-        self.calls.lock().unwrap().push(enabled);
+    fn set_rx_mode(&mut self, mode: NetRxMode) -> Result<(), NetError> {
+        self.calls.lock().unwrap().push(mode);
         Ok(())
     }
 }
@@ -1176,28 +1176,28 @@ fn filter_request_reaches_the_control_published_after_an_intermediate_prune() {
     );
 
     runtime
-        .set_interface_rx_accept_all_phys(InterfaceId::new(5), true)
+        .set_interface_rx_mode(InterfaceId::new(5), NetRxMode::all_unicast())
         .unwrap();
-    assert_eq!(*calls2.lock().unwrap(), vec![true]);
+    assert_eq!(*calls2.lock().unwrap(), vec![NetRxMode::AllUnicast]);
     assert!(calls0.lock().unwrap().is_empty());
 
     runtime
-        .set_interface_rx_accept_all_phys(InterfaceId::new(2), false)
+        .set_interface_rx_mode(InterfaceId::new(2), NetRxMode::normal())
         .unwrap();
-    assert_eq!(*calls0.lock().unwrap(), vec![false]);
-    assert_eq!(*calls2.lock().unwrap(), vec![true]);
+    assert_eq!(*calls0.lock().unwrap(), vec![NetRxMode::Normal]);
+    assert_eq!(*calls2.lock().unwrap(), vec![NetRxMode::AllUnicast]);
 
     // The pruned id and an unknown id must not reach any published control.
     assert!(matches!(
-        runtime.set_interface_rx_accept_all_phys(InterfaceId::new(3), true),
+        runtime.set_interface_rx_mode(InterfaceId::new(3), NetRxMode::all_unicast()),
         Err(NetError::NotSupported)
     ));
     assert!(matches!(
-        runtime.set_interface_rx_accept_all_phys(InterfaceId::new(99), true),
+        runtime.set_interface_rx_mode(InterfaceId::new(99), NetRxMode::all_unicast()),
         Err(NetError::NotSupported)
     ));
-    assert_eq!(*calls0.lock().unwrap(), vec![false]);
-    assert_eq!(*calls2.lock().unwrap(), vec![true]);
+    assert_eq!(*calls0.lock().unwrap(), vec![NetRxMode::Normal]);
+    assert_eq!(*calls2.lock().unwrap(), vec![NetRxMode::AllUnicast]);
 }
 
 #[test]
@@ -1216,13 +1216,13 @@ fn unsupported_filter_control_is_reported_without_touching_other_devices() {
     );
 
     assert!(matches!(
-        runtime.set_interface_rx_accept_all_phys(InterfaceId::new(9), true),
+        runtime.set_interface_rx_mode(InterfaceId::new(9), NetRxMode::all_unicast()),
         Err(NetError::NotSupported)
     ));
     assert!(calls0.lock().unwrap().is_empty());
 
     runtime
-        .set_interface_rx_accept_all_phys(InterfaceId::new(7), true)
+        .set_interface_rx_mode(InterfaceId::new(7), NetRxMode::all_unicast())
         .unwrap();
-    assert_eq!(*calls0.lock().unwrap(), vec![true]);
+    assert_eq!(*calls0.lock().unwrap(), vec![NetRxMode::AllUnicast]);
 }
