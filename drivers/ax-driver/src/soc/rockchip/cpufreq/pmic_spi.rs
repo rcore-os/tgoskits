@@ -559,6 +559,15 @@ fn vsel_to_uv(sel: u8) -> u32 {
     }
 }
 
+/// Recognize an RK806 and an A55 rail selector within this board's OPP window.
+/// A floating/looped-back MISO must never become a plausible voltage read.
+#[cfg(test)]
+fn valid_identity_and_selector(name: u8, version: u8, selector: u8) -> bool {
+    name == 0x80
+        && (version & 0xf0) == 0x60
+        && (A55_MIN_UV..=950_000).contains(&vsel_to_uv(selector))
+}
+
 /// Encode microvolts to an RK806 buck selector byte, range 1 only (500 mV..
 /// 1493.75 mV — spanning the entire CPU-rail window). Requires an **exact**
 /// 6.25 mV-aligned value (like `pmic_i2c`'s encoder): returns `None` outside
@@ -972,6 +981,15 @@ mod tests {
         assert_eq!(vsel_to_uv(0), 500_000);
         // Selector 159 (range-1 max) is 1_493_750 uV; 1_500_000 is selector 160.
         assert_eq!(vsel_to_uv(RK806_VSEL_R1_MAX_SEL), 1_493_750);
+    }
+
+    #[test]
+    fn rk806_identity_and_rail_gate_rejects_loopback() {
+        assert!(valid_identity_and_selector(0x80, 0x62, 0x30));
+        assert!(!valid_identity_and_selector(0, 0, 0));
+        assert!(!valid_identity_and_selector(0x5a, 0x5b, 0x1b));
+        assert!(!valid_identity_and_selector(0x80, 0x62, 0));
+        assert!(!valid_identity_and_selector(0x80, 0x62, 0xff));
     }
 
     #[test]

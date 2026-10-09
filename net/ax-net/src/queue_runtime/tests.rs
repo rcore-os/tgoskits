@@ -1,6 +1,9 @@
 use alloc::vec;
 use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull, sync::atomic::AtomicUsize};
-use std::alloc::{alloc_zeroed, dealloc};
+use std::{
+    alloc::{alloc_zeroed, dealloc},
+    sync::Mutex as StdMutex,
+};
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
