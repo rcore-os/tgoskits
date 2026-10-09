@@ -672,7 +672,7 @@ impl Service {
             }
             InterfaceKind::Tap => {
                 let mac = tap_mac(id);
-                let (device, shared) = create_tap(name.clone(), mac);
+                let (device, shared) = create_tap(id, name.clone(), mac);
                 let flags = InterfaceFlags::BROADCAST | InterfaceFlags::MULTICAST;
                 (Box::new(device), shared, Some(EthernetAddress(mac)), flags)
             }

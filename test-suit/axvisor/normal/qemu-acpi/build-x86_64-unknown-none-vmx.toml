@@ -1,4 +1,4 @@
-features = []
+features = ["vpci-test-device"]
 log = "Info"
 target = "x86_64-unknown-none"
 vm_configs = ["test-suit/axvisor/normal/qemu-acpi/x86-linux-acpi-direct.toml"]

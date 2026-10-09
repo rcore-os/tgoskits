@@ -201,6 +201,7 @@ pub(super) fn node_enabled(fdt: &Fdt, mut id: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
     use fdt_edit::{Node, Property};
+    use fdt_raw::RegInfo;
 
     use super::*;
 
@@ -210,9 +211,18 @@ mod tests {
         property
     }
 
+    fn add_cpu_template(fdt: &mut Fdt) {
+        let cpus = fdt.add_node(fdt.root_id(), Node::new("cpus"));
+        let cpu = fdt.add_node(cpus, Node::new("cpu@0"));
+        fdt.view_typed_mut(cpu)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0, None)]);
+    }
+
     #[test]
     fn dependency_discovery_keeps_descriptive_children_without_assigning_sibling_devices() {
         let mut fdt = Fdt::new();
+        add_cpu_template(&mut fdt);
         let root = fdt.root_id();
         let device = fdt.add_node(root, Node::new("device"));
         fdt.node_mut(device)
@@ -306,6 +316,7 @@ mod tests {
     #[test]
     fn dependency_discovery_does_not_interpret_provider_arguments_as_devices() {
         let mut fdt = Fdt::new();
+        add_cpu_template(&mut fdt);
         let root = fdt.root_id();
         let device = fdt.add_node(root, Node::new("device"));
         fdt.node_mut(device)

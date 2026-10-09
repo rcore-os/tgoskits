@@ -46,6 +46,9 @@ class SuiteSelection:
     leaf_name: str
     command: str
     source_path: str
+    batch_key: tuple[str, str | None, Path] | None = None
+    batch_cases: tuple[str, ...] = ()
+    batch_command: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,7 @@ def resolve_suite_selections(
 ) -> list[SuiteSelection]:
     registrations = _suite_registrations(checks)
     selections: dict[tuple[str, str, str], SuiteSelection] = {}
+    batches: dict[tuple[str, tuple[str, str | None, Path]], tuple[SuiteSelection, list[str]]] = {}
     check_order = {check["id"]: index for index, check in enumerate(checks)}
 
     for rendered_path in sorted(set(changed_paths)):
@@ -81,8 +85,33 @@ def resolve_suite_selections(
                 f"test suite path `{rendered_path}` is not registered in CI"
             )
         for selection in path_selections:
+            if selection.batch_key is not None:
+                key = (selection.template_id, selection.batch_key)
+                if key not in batches:
+                    batches[key] = (selection, list(selection.batch_cases))
+                else:
+                    _, cases = batches[key]
+                    for case in selection.batch_cases:
+                        if case not in cases:
+                            cases.append(case)
+                continue
             key = (selection.template_id, selection.leaf_name, selection.command)
             selections.setdefault(key, selection)
+
+    for selection, cases in batches.values():
+        case_list = ",".join(cases)
+        platform, _, _ = selection.leaf_name.partition(" · ")
+        assert selection.batch_command is not None
+        command = selection.batch_command.format(cases=case_list)
+        leaf_name = f"{platform} · {case_list}"
+        row_id = _slugify(f"suite-{selection.template_id}-{case_list}")
+        selections[(selection.template_id, leaf_name, command)] = SuiteSelection(
+            template_id=selection.template_id,
+            row_id=row_id,
+            leaf_name=leaf_name,
+            command=command,
+            source_path=selection.source_path,
+        )
 
     return sorted(
         selections.values(),
@@ -400,6 +429,9 @@ def _runtime_selections(
     suite_group: str | None = None,
 ) -> list[SuiteSelection]:
     selections = []
+    board_batches: dict[
+        tuple[str, str | None, Path], list[tuple[str, _RuntimeCase, dict[str, Any]]]
+    ] = {}
     for runtime_case in cases:
         selector = selector_override or runtime_case.case
         template = _registered_template(
@@ -411,6 +443,11 @@ def _runtime_selections(
             group=suite_group,
         )
         if template is None:
+            continue
+
+        if runtime_case.kind == "starry-board":
+            key = (template["id"], runtime_case.board, runtime_case.build_config)
+            board_batches.setdefault(key, []).append((selector, runtime_case, template))
             continue
 
         if runtime_case.kind == "arceos-qemu":
@@ -449,6 +486,33 @@ def _runtime_selections(
                 )
 
         selections.append(_selection(template, platform, selector, command, path))
+
+    for batch in board_batches.values():
+        selectors = [selector for selector, _, _ in batch]
+        runtime_case = batch[0][1]
+        template = batch[0][2]
+        selector_list = ",".join(selectors)
+        platform = _platform_label(template)
+        command = (
+            f"cargo xtask starry test board --test-case {selector_list} "
+            f"--board {runtime_case.board}"
+        )
+        batch_command = (
+            f"cargo xtask starry test board --test-case {{cases}} "
+            f"--board {runtime_case.board}"
+        )
+        selections.append(
+            _selection(
+                template,
+                platform,
+                selector_list,
+                command,
+                path,
+                batch_key=(template["id"], runtime_case.board, runtime_case.build_config),
+                batch_cases=tuple(selectors),
+                batch_command=batch_command,
+            )
+        )
     return selections
 
 
@@ -685,6 +749,10 @@ def _selection(
     case: str,
     command: str,
     path: Path,
+    *,
+    batch_key: tuple[str, str | None, Path] | None = None,
+    batch_cases: tuple[str, ...] = (),
+    batch_command: str | None = None,
 ) -> SuiteSelection:
     row_id = _slugify(f"suite-{template['id']}-{case}")
     return SuiteSelection(
@@ -693,6 +761,9 @@ def _selection(
         leaf_name=f"{platform} · {case}",
         command=command,
         source_path=path.as_posix(),
+        batch_key=batch_key,
+        batch_cases=batch_cases,
+        batch_command=batch_command,
     )
 
 

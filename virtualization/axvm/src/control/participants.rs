@@ -9,7 +9,9 @@ use crate::{
     architecture::ArchOps,
     engine::ExecutionEntry,
     identity::{VcpuInstance, next_generation},
-    runtime::vcpus::{CpuOnArgs, StartupOwnership, VcpuCommand, prepare_vcpu_thread},
+    runtime::vcpus::{
+        CpuOnArgs, StartupOwnership, VcpuCommand, VcpuTaskOptions, prepare_vcpu_thread,
+    },
 };
 
 impl Owner {
@@ -78,7 +80,10 @@ impl Owner {
             entry,
             run.services.clone(),
             self.shared.clone(),
-            cpu_on,
+            VcpuTaskOptions {
+                cpu_on,
+                schedule_policy: self.vcpu_schedule_policy,
+            },
         ) {
             Ok(prepared) => prepared,
             Err((error, ownership)) => {

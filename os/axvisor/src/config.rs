@@ -65,6 +65,18 @@ pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
         config: vm_config,
         boot: prepared_boot,
         images: alloc::sync::Arc::new(image_provider),
+        vcpu_schedule_policy: {
+            #[cfg(feature = "bench-fifo-vcpu-policy")]
+            {
+                let priority = axvm::RtPriority::new(80)
+                    .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
+                axvm::SchedulePolicy::fifo(priority)
+            }
+            #[cfg(not(feature = "bench-fifo-vcpu-policy"))]
+            {
+                axvm::SchedulePolicy::default()
+            }
+        },
     })
 }
 

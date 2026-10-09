@@ -51,6 +51,7 @@ mod vm;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
+pub use ax_std::os::arceos::task::sched::{RtPriority, SchedulePolicy};
 pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
@@ -59,7 +60,9 @@ pub use axvm_types::{
 pub use configured::{
     ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
     ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding, VirtioPciFunction, virtio_capabilities,
+    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, PhysicalUplinkError, VirtioPciFunction,
+    install_physical_uplink, physical_uplink_installed, reserve_host_mac, switch_from_physical_rx,
+    virtio_capabilities,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};

@@ -270,7 +270,7 @@ class CiPlanTests(unittest.TestCase):
             "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "test-suit/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
-            "benchmarks/axvisor/board-orangepi-5-plus/task-switch-overhead/board-orangepi-5-plus-task-switch-overhead.toml",
+            "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
             "benchmarks/starry/qemu/ltp-hackbench/qemu-x86_64-benchmark.toml",
         ):
@@ -1218,6 +1218,64 @@ class CiPlanTests(unittest.TestCase):
             "--board orangepi-5-plus",
         )
 
+    def test_starry_board_build_change_groups_cases_by_build_config(self) -> None:
+        path = (
+            "test-suit/starryos/board-orangepi-5-plus/"
+            "build-aarch64-unknown-none-softfloat.toml"
+        )
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case "
+            "exec-cache,native-hardware-smoke,native-network-smoke,pwm-sysfs,"
+            "rknpu-resources --board orangepi-5-plus",
+        )
+
+    def test_sg2002_board_build_change_groups_all_feature_cases(self) -> None:
+        path = (
+            "test-suit/starryos/board-aka-00-sg2002/"
+            "build-riscv64gc-unknown-none-elf.toml"
+        )
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [path],
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case "
+            "boot,tennis-yolo,usb2-lsusb,vdec,wifi-network-smoke "
+            "--board aka-00-sg2002",
+        )
+
+    def test_starry_board_case_changes_share_one_incremental_build_row(self) -> None:
+        paths = [
+            "test-suit/starryos/board-orangepi-5-plus/exec-cache/"
+            "board-orangepi-5-plus.toml",
+            "test-suit/starryos/board-orangepi-5-plus/native-network-smoke/"
+            "board-orangepi-5-plus.toml",
+        ]
+        selections = ci_plan.resolve_suite_selections(
+            ci_plan.WORKSPACE_ROOT,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            paths,
+        )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask starry test board --test-case exec-cache,native-network-smoke "
+            "--board orangepi-5-plus",
+        )
+
     def test_generic_driver_suite_routes_source_and_rejects_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1296,6 +1354,35 @@ class CiPlanTests(unittest.TestCase):
         self.assertEqual(
             rows[0]["command"],
             "cargo xtask arceos test board --test-case pmu --board orangepi-5-plus",
+        )
+
+    def test_cpu_cpufreq_board_requires_actual_orangepi_case(self) -> None:
+        path = (
+            "test-suit/arceos/board-orangepi-5-plus/cpufreq/"
+            "board-orangepi-5-plus.toml"
+        )
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                test_suite_paths=(path,),
+                exclusive=True,
+            ),
+        )
+        plan = ci_plan.build_main_plan(context)
+        rows = plan["arceos_matrix"]["include"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("board", rows[0]["runs_on"])
+        self.assertEqual(
+            rows[0]["command"],
+            "cargo xtask arceos test board --test-case cpufreq "
+            "--board orangepi-5-plus",
         )
 
     def test_unregistered_test_suite_fails_planning(self) -> None:

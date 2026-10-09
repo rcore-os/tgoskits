@@ -72,6 +72,8 @@ pub mod tcp;
 pub mod udp;
 /// Unix domain socket implementation.
 pub mod unix;
+/// Physical NIC layer-2 uplink bridge for hypervisor guest NICs.
+pub mod uplink;
 /// Vsock socket implementation.
 #[cfg(feature = "vsock")]
 pub mod vsock;
@@ -93,7 +95,9 @@ use axpoll_set::PollSet;
 pub use error::{NetError, NetResult};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
-pub use rd_net::{NetPollGroupId, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
+pub use rd_net::{
+    NetPollGroupId, NetRxMode, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk,
+};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -459,7 +463,10 @@ pub fn init_network(
             (!cfg.gateway.is_unspecified()).then(|| Ipv4Address::from(cfg.gateway.octets()))
         });
         let dhcp_enabled = cfg.map_or(wifi_policy.is_none(), |cfg| cfg.dhcp);
-        let eth_dev = router.add_device(id, Box::new(EthernetDevice::new(name.clone(), dev, ipv4)));
+        let eth_dev = router.add_device(
+            id,
+            Box::new(EthernetDevice::new(id, name.clone(), dev, ipv4)),
+        );
 
         if let Some(handle) = queue_runtime.wifi_handle(order) {
             info!(
@@ -836,6 +843,21 @@ pub fn interface_by_name(name: &str) -> Option<InterfaceInfo> {
 /// Looks up an interface snapshot by stable interface id.
 pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
     get_control().interface_by_id(id)
+}
+
+/// Applies a receive filtering mode to the interface `id`.
+///
+/// The request is routed to the published device's own control endpoint, so
+/// the capability and register window belong to that exact instance instead
+/// of a name- or address-based guess. A driver without the requested mode
+/// reports [`NetError::OperationNotSupported`], allowing a caller to try a
+/// different interface.
+pub fn set_interface_rx_mode(id: InterfaceId, mode: NetRxMode) -> NetResult {
+    let runtime = QUEUE_RUNTIME.get().ok_or(NetError::NoSuchDevice)?;
+    runtime
+        .lock()
+        .set_interface_rx_mode(id, mode)
+        .map_err(map_driver_net_error)
 }
 
 /// Returns the IPv4 configuration for an interface by name.

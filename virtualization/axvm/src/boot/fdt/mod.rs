@@ -51,6 +51,7 @@ fn guest_fdt_policy() -> core::GuestFdtPolicy {
                     trigger: axdevice_base::InterruptTriggerMode::LevelTriggered,
                 })
         },
+        guest_cpu_execution_property: core::tree::is_guest_cpu_execution_property,
     }
 }
 

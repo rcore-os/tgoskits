@@ -1,6 +1,6 @@
 use alloc::{format, string::ToString, sync::Arc};
 
-use arm_scmi_rs::{Scmi, Shmem, Smc};
+use arm_scmi_rs::{Scmi, ScmiError, Shmem, Smc};
 use ax_sync::RawSpinLock;
 use fdt_edit::Phandle;
 use log::{info, warn};

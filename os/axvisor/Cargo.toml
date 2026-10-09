@@ -47,7 +47,10 @@ runtime = "axvisor"
 targets = ["aarch64-unknown-none-softfloat"]
 
 [features]
-default = []
+# AxVisor owns the host networking path by default.  The physical uplink is
+# capability-selected at runtime; board configurations still choose which
+# concrete NIC drivers are compiled into `ax-driver`.
+default = ["ax-std/net"]
 host-xtask = []
 axtest = []
 vpci-test-device = ["axvm/vpci-test-device"]
@@ -56,6 +59,11 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace"]
 test-virq-delivery = []
 vcpu-perf-load = []
+# Benchmark-local FIFO policy for the vCPU host task. Only the dedicated
+# Rust-Shyper task-switch benchmark board build enables it; it selects an
+# explicit FIFO policy at VM creation time, and default AxVisor builds keep the
+# Fair vCPU host task policy.
+bench-fifo-vcpu-policy = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
 # ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
 # tokio `TcpListener`) is enabled only when the control plane is built; a
@@ -75,7 +83,6 @@ browser-console = [
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
-
 [dependencies]
 anyhow.workspace = true
 axvmconfig = { workspace = true, default-features = false }

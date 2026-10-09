@@ -18,3 +18,8 @@ mmio-api.workspace = true
 rdif-eth.workspace = true
 thiserror = { version = "2", default-features = false }
 tock-registers = "0.10"
+
+[dev-dependencies]
+# Host tests link their own `ax_sync` lock backend through this macro; the
+# kernel builds never see it.
+ax-crate-interface.workspace = true

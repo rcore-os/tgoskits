@@ -44,21 +44,21 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-vcpu-perf"
 
 [[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-task-switch-bench"
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-task-switch"
 group = "AxVisor"
 impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · Task switch benchmark"
+name = "Board OrangePi 5 Plus · Task switch"
 runner = "board"
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-echo "==> axvisor OrangePi 5 Plus task switch benchmark"
-cargo xtask axvisor test board --board orangepi-5-plus-task-switch-overhead
+echo "==> axvisor OrangePi 5 Plus task switch"
+cargo xtask axvisor test board --board orangepi-5-plus-task-switch
 '''
 
 [[check.suite]]
 kind = "axvisor-board"
-board = "orangepi-5-plus-task-switch-overhead"
+board = "orangepi-5-plus-task-switch"
 
 # ---------------------------------------------------------------------------
 # Starry Apps performance checks (group = "Starry Apps")

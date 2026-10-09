@@ -1,3 +1,5 @@
+pub mod cpufreq;
+pub mod cpufreq_opp;
 pub(crate) mod cru;
 pub(crate) mod pinctrl;
 mod syscon;

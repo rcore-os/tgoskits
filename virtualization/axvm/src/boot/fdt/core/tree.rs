@@ -302,6 +302,93 @@ impl FdtTree {
         Ok(dest)
     }
 
+    /// Ensures the guest FDT exposes one `/cpus/cpu@<id>` node per guest
+    /// virtual CPU id in `phys_cpu_ids`.
+    ///
+    /// The CPU nodes are copied from the host FDT, so when the guest has more
+    /// vCPUs than host physical CPUs (vCPU over-subscription) some ids have no
+    /// host counterpart. For every missing id a fresh CPU node is cloned from
+    /// the first host CPU node, named `cpu@<id>` and re-registered with
+    /// `reg = <id>`, so that the guest SMP bootstrap sees all CPUs and powers
+    /// the secondaries up via PSCI.
+    ///
+    /// A clone never inherits the template's `phandle`/`linux,phandle`: a
+    /// phandle identifies exactly one node, and a cloned CPU is a distinct
+    /// guest identity. The replacement value is preferably above every
+    /// phandle of the host and guest trees; at the upper bound, the allocator
+    /// reuses the smallest available gap without taking over an identity.
+    pub(crate) fn ensure_guest_cpu_nodes(
+        &mut self,
+        host: &Fdt,
+        phys_cpu_ids: &[usize],
+    ) -> AxVmResult {
+        let existing = self
+            .node_paths()
+            .into_iter()
+            .filter_map(|(_, path)| {
+                path.strip_prefix("/cpus/cpu@")
+                    .and_then(|id| id.split('/').next())
+                    .and_then(|id| usize::from_str_radix(id, 16).ok())
+            })
+            .collect::<BTreeSet<_>>();
+
+        let missing = phys_cpu_ids
+            .iter()
+            .copied()
+            .filter(|id| !existing.contains(id))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let template_id = host
+            .iter_node_ids()
+            .find(|node_id| host.path_of(*node_id).starts_with("/cpus/cpu@"))
+            .ok_or_else(|| ax_err_type!(InvalidInput, "host FDT has no CPU node template"))?;
+        let template = host
+            .node(template_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "host FDT CPU node template is missing"))?;
+
+        let cpus_id = self.ensure_path("/cpus")?;
+        let template_has_affinity = template
+            .properties()
+            .iter()
+            .any(|prop| prop.name() == "mpidr-affinity");
+        let guest_cpu_execution_property =
+            super::selected_guest_fdt_policy().guest_cpu_execution_property;
+        let template_has_phandle = template.get_property("phandle").is_some();
+        let template_has_legacy_phandle = template.get_property("linux,phandle").is_some();
+        for id in missing {
+            let node_id = self.add_node(cpus_id, Node::new(&format!("cpu@{id:x}")));
+            for prop in template.properties() {
+                if is_phandle_prop(prop.name())
+                    || !guest_cpu_execution_property(prop.name())
+                    || should_skip_guest_cpu_prop(host, prop.name())
+                {
+                    continue;
+                }
+                self.set_property(node_id, prop.clone())?;
+            }
+            self.fdt
+                .view_typed_mut(node_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "new guest CPU node is missing"))?
+                .set_regs(&[RegInfo::new(id as u64, None)]);
+            // Keep `mpidr-affinity` consistent with the virtualized MPIDR
+            // (`VMPIDR_EL2 = 1<<31 | id`) when the host template carries it.
+            if template_has_affinity {
+                self.set_property(node_id, prop_u32_list("mpidr-affinity", &[id as u32]))?;
+            }
+            if template_has_phandle {
+                let phandle = next_free_phandle(&[host, self.inner()])?;
+                self.set_property(node_id, prop_u32_list("phandle", &[phandle]))?;
+                if template_has_legacy_phandle {
+                    self.set_property(node_id, prop_u32_list("linux,phandle", &[phandle]))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {
         paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
         for path in paths {
@@ -439,6 +526,56 @@ pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
     sanitized.join(" ")
 }
 
+/// Returns whether `prop_name` names the phandle of the node itself.
+///
+/// Both spellings identify one node, so a node cloned from a template must not
+/// inherit either of them.
+fn is_phandle_prop(prop_name: &str) -> bool {
+    matches!(prop_name, "phandle" | "linux,phandle")
+}
+
+/// Returns the phandle a node advertises, preferring `phandle` over the legacy
+/// `linux,phandle`.
+fn node_phandle(node: &Node) -> Option<u32> {
+    node.get_property("phandle")
+        .or_else(|| node.get_property("linux,phandle"))
+        .and_then(Property::get_u32)
+}
+
+/// Allocates a valid phandle unused by any tree in `trees`.
+///
+/// Every tree counts, so a caller that clones a node of one tree into another
+/// cannot pick a value that a remaining reference of either tree still means.
+/// Prefer a value above the highest handle; at the upper bound, reuse a gap.
+pub(crate) fn next_free_phandle(trees: &[&Fdt]) -> AxVmResult<u32> {
+    let used = trees
+        .iter()
+        .flat_map(|fdt| {
+            fdt.iter_node_ids()
+                .filter_map(|node_id| fdt.node(node_id).and_then(node_phandle))
+        })
+        .collect::<BTreeSet<_>>();
+    let highest = used.last().copied().unwrap_or(0);
+    if let Some(next) = highest.checked_add(1).filter(|next| *next < u32::MAX) {
+        return Ok(next);
+    }
+
+    let mut next = 1_u32;
+    for phandle in used {
+        if phandle > next {
+            break;
+        }
+        if phandle == next {
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| ax_err_type!(InvalidData, "no valid FDT phandle available"))?;
+        }
+    }
+    (next < u32::MAX)
+        .then_some(next)
+        .ok_or_else(|| ax_err_type!(InvalidData, "no valid FDT phandle available"))
+}
+
 fn should_skip_guest_cpu_prop(source: &Fdt, prop_name: &str) -> bool {
     matches!(
         prop_name,
@@ -448,6 +585,23 @@ fn should_skip_guest_cpu_prop(source: &Fdt, prop_name: &str) -> bool {
             prop_name,
             "operating-points-v2" | "#cooling-cells" | "dynamic-power-coefficient" | "cpu-supply"
         ))
+}
+
+pub(crate) fn is_guest_cpu_execution_property(prop_name: &str) -> bool {
+    matches!(
+        prop_name,
+        "#address-cells"
+            | "#size-cells"
+            | "device_type"
+            | "compatible"
+            | "reg"
+            | "enable-method"
+            | "phandle"
+            | "linux,phandle"
+            | "capacity-dmips-mhz"
+            | "clock-frequency"
+            | "status"
+    )
 }
 
 fn is_roc_rk3568(source: &Fdt) -> bool {
@@ -476,4 +630,10 @@ pub(super) fn copy_properties(
         }
         dest.set_property(prop.clone());
     }
+}
+
+fn prop_u32_list(name: &str, values: &[u32]) -> Property {
+    let mut property = Property::new(name, Vec::new());
+    property.set_u32_ls(values);
+    property
 }

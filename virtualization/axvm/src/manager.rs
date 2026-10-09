@@ -80,6 +80,8 @@ pub struct VmCreatePlan {
     pub boot: PreparedGuestBoot,
     /// Shared boot-image provider used to load the configured guest images.
     pub images: Arc<dyn BootImageProvider + Send + Sync>,
+    /// Immutable host scheduling policy applied to every vCPU owner task.
+    pub vcpu_schedule_policy: crate::SchedulePolicy,
 }
 
 /// Owned observation of the static VM configuration.

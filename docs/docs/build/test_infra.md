@@ -118,7 +118,7 @@ loop {
 
 ## 5. Build group 分组
 
-`grouping.rs` 把发现的用例按 `build_config_path` 去重分组：
+`grouping.rs` 先按 `build_config_path` 收集用例，再按最终 `Cargo` 配置合并编译身份相同的组：
 
 ```rust
 pub(crate) fn group_cases_by_build_config<T: BuildConfigRef>(
@@ -128,7 +128,7 @@ pub(crate) fn group_cases_by_build_config<T: BuildConfigRef>(
 }
 ```
 
-`prepare_case_build_groups()` 为每个 group 调用 `prepare_context(build_config_path)`，得到该组共享的 `(ResolvedRequest, Cargo)`。随后组内每个用例复用这一次内核构建产物，只各自准备运行资产和启动 QEMU。这就是"OS 只构建一次"的实现：**分组键是 build config 路径**，而非用例名或架构。
+`prepare_case_build_groups()` 为每个路径组调用 `prepare_context(build_config_path)`，得到 `(ResolvedRequest, Cargo)`，再用 `Cargo` 的完整编译字段合并等价组。随后组内每个用例复用这一次内核构建产物，只各自准备运行资产和启动 QEMU；运行阶段仍恢复用例自己的 build config 路径，读取独立的 VM 配置和 initramfs。这样 runtime 配置差异不会被错误地当作编译差异，同时避免重复 Cargo 编译。
 
 ## 6. Pipeline 类型与解析
 

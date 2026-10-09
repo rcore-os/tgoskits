@@ -20,7 +20,7 @@
 //! and does not inspect TCP/UDP socket state. Route selection is performed by
 //! the router before Ethernet sees the packet.
 
-use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
 
 use hashbrown::HashMap;
 use smoltcp::{
@@ -55,6 +55,21 @@ fn accepts_destination(
         || (accept_multicast && destination.is_multicast())
 }
 
+/// Returns the uplink runtime bound to `interface_id`, if any, so a second
+/// NIC cannot drain guest egress or feed the switch with foreign frames.
+fn uplink_for(interface_id: InterfaceId) -> Option<Arc<crate::uplink::UplinkRuntime>> {
+    crate::uplink::runtime().filter(|uplink| uplink.matches_interface(interface_id))
+}
+
+/// Forwards a copy of one received physical frame to the L2 uplink sink before
+/// the destination-MAC filter, so the switch still sees frames addressed to
+/// guest MACs that the host interface would drop.
+fn dispatch_uplink_ingress(uplink: Option<&crate::uplink::UplinkRuntime>, frame: &[u8]) {
+    if let Some(uplink) = uplink {
+        uplink.deliver_ingress(frame);
+    }
+}
+
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
@@ -65,6 +80,7 @@ struct PendingNeighbor {
 }
 
 pub struct EthernetDevice {
+    interface_id: InterfaceId,
     name: String,
     inner: Box<dyn EthernetFramePort>,
     neighbors: HashMap<IpAddress, Neighbor>,
@@ -115,7 +131,12 @@ impl EthernetDevice {
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
     /// Creates the protocol-side adapter for an IRQ-backed queue pipeline.
-    pub fn new(name: String, inner: Box<dyn EthernetFramePort>, ip: Option<Ipv4Cidr>) -> Self {
+    pub fn new(
+        interface_id: InterfaceId,
+        name: String,
+        inner: Box<dyn EthernetFramePort>,
+        ip: Option<Ipv4Cidr>,
+    ) -> Self {
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
             vec![
@@ -125,6 +146,7 @@ impl EthernetDevice {
             ],
         );
         Self {
+            interface_id,
             name,
             inner,
             neighbors: HashMap::new(),
@@ -141,6 +163,35 @@ impl EthernetDevice {
             deferred_rx_errors: 0,
             deferred_rx_drops: 0,
         }
+    }
+
+    /// Moves queued guest frames onto the physical device TX path.
+    ///
+    /// Runs on the protocol executor, the only producer of this port's TX ring,
+    /// so the fixed-CPU queue owner still performs the actual DMA submission.
+    /// The pass is bounded so a flooding guest cannot starve host traffic
+    /// within one poll.
+    fn flush_uplink_egress(&mut self) {
+        let Some(uplink) = uplink_for(self.interface_id) else {
+            return;
+        };
+        let name = &self.name;
+        let port = &mut *self.inner;
+        uplink.drain_egress(crate::uplink::EGRESS_DRAIN_BUDGET, &mut |frame| {
+            match port.transmit_frame_with_options(
+                frame.len(),
+                TxSubmitOptions::default(),
+                &mut |target| target.copy_from_slice(frame),
+            ) {
+                Ok(()) => true,
+                // Transient pressure: keep the frame queued for the next poll.
+                Err(NetDeviceError::Again) => false,
+                Err(error) => {
+                    warn!("{name}: uplink transmit failed: {error:?}");
+                    true
+                }
+            }
+        });
     }
 
     #[inline]
@@ -286,6 +337,7 @@ impl EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
         let frame_len = frame.len();
+        let raw = frame;
         let frame = EthernetFrame::new_unchecked(frame);
         let Ok(repr) = EthernetRepr::parse(&frame) else {
             warn!("Dropping malformed Ethernet frame");
@@ -293,6 +345,8 @@ impl EthernetDevice {
             return 0;
         };
 
+        // The uplink sees the frame before this host-only MAC filter drops it.
+        dispatch_uplink_ingress(uplink_for(self.interface_id).as_deref(), raw);
         if !accepts_destination(
             repr.dst_addr,
             self.hardware_address(),
@@ -571,6 +625,7 @@ impl Device for EthernetDevice {
         timestamp: Instant,
         snoop: &mut dyn FnMut(&[u8]),
     ) -> usize {
+        self.flush_uplink_egress();
         // TX completions already wake the protocol executor. Retry control
         // traffic on that poll even if no new RX packet or IP send arrives.
         self.flush_arp_replies();
@@ -601,6 +656,8 @@ impl Device for EthernetDevice {
 
     fn poll_owned_rx(&mut self, timestamp: Instant) -> DeviceRxPoll {
         self.flush_arp_replies();
+        self.flush_uplink_egress();
+        let uplink = uplink_for(self.interface_id);
         loop {
             let frame = match self.inner.receive_owned() {
                 Ok(Some(frame)) => frame,
@@ -626,6 +683,7 @@ impl Device for EthernetDevice {
                     malformed = true;
                     return None;
                 };
+                dispatch_uplink_ingress(uplink.as_deref(), packet);
                 if !accepts_destination(repr.dst_addr, hardware_address, accept_multicast) {
                     return None;
                 }
@@ -665,6 +723,8 @@ impl Device for EthernetDevice {
         snoop: &mut dyn FnMut(&[u8]),
     ) -> Option<usize> {
         self.flush_arp_replies();
+        self.flush_uplink_egress();
+        let uplink = uplink_for(self.interface_id);
         loop {
             let hardware_address = self.hardware_address();
             let accept_multicast = self.accept_multicast;
@@ -681,6 +741,7 @@ impl Device for EthernetDevice {
                     malformed = true;
                     return 0;
                 };
+                dispatch_uplink_ingress(uplink.as_deref(), packet);
                 if !accepts_destination(repr.dst_addr, hardware_address, accept_multicast) {
                     return 0;
                 }
@@ -1018,7 +1079,12 @@ mod ethernet_counter_tests {
     }
 
     fn make_test_device(mock: MockEthernetDriver) -> EthernetDevice {
-        EthernetDevice::new("mock0".into(), Box::new(mock), Some(device_ip_cidr()))
+        EthernetDevice::new(
+            InterfaceId::new(2),
+            "mock0".into(),
+            Box::new(mock),
+            Some(device_ip_cidr()),
+        )
     }
 
     fn make_recording_device(
@@ -1030,7 +1096,12 @@ mod ethernet_counter_tests {
             checksum_capabilities,
         };
         (
-            EthernetDevice::new("recording0".into(), Box::new(port), Some(device_ip_cidr())),
+            EthernetDevice::new(
+                InterfaceId::new(2),
+                "recording0".into(),
+                Box::new(port),
+                Some(device_ip_cidr()),
+            ),
             probe,
         )
     }

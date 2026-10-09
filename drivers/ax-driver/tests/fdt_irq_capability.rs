@@ -1,5 +1,7 @@
 #![cfg(not(feature = "pci"))]
 
+mod common;
+
 use core::ptr::NonNull;
 use std::sync::Mutex;
 

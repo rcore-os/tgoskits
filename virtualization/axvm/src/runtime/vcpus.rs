@@ -102,6 +102,11 @@ pub(crate) struct CpuOnArgs {
     pub(crate) argument: usize,
 }
 
+pub(crate) struct VcpuTaskOptions {
+    pub(crate) cpu_on: Option<CpuOnArgs>,
+    pub(crate) schedule_policy: crate::SchedulePolicy,
+}
+
 struct Mailbox {
     commands: Mutex<VecDeque<VcpuCommand>>,
     pending: AtomicBool,
@@ -249,8 +254,12 @@ pub(crate) fn prepare_vcpu_thread(
     entry: ExecutionEntry<CurrentArch>,
     services: Arc<RunServices>,
     control: Arc<ControlShared>,
-    cpu_on: Option<CpuOnArgs>,
+    options: VcpuTaskOptions,
 ) -> Result<PreparedVcpuThread, (Box<AxVmError>, StartupOwnership)> {
+    let VcpuTaskOptions {
+        cpu_on,
+        schedule_policy,
+    } = options;
     let signals = backend.run_state();
     let port = VcpuPort::new(instance, signals.clone(), entry.signals.clone());
     let transfer = Arc::new(Mutex::new(Some(backend)));
@@ -282,7 +291,8 @@ pub(crate) fn prepare_vcpu_thread(
         instance.vcpu_id
     ))
     .stack_size(0x40000)
-    .extension(extension);
+    .extension(extension)
+    .policy(schedule_policy);
     builder = builder.affinity(affinity);
     let task_port = port.clone();
     let task_transfer = transfer.clone();

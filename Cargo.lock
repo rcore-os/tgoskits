@@ -319,6 +319,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-cpu-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-driver",
+ "ax-runtime",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-cpu-fp-context"
 version = "0.1.0"
 dependencies = [
@@ -462,18 +472,6 @@ name = "arceos-shell"
 version = "0.3.1"
 dependencies = [
  "ax-std",
-]
-
-[[package]]
-name = "arceos-task-switch-bench"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-memory-addr",
- "ax-mm",
- "ax-runtime",
- "ax-std",
- "rockchip-soc",
 ]
 
 [[package]]
@@ -922,11 +920,12 @@ version = "0.18.1"
 dependencies = [
  "ahci-driver",
  "aic8800",
- "anyhow",
  "arm-scmi-rs",
  "arm-smmu-v3",
  "ax-alloc",
  "ax-arm-pl031",
+ "ax-crate-interface",
+ "ax-lazyinit",
  "ax-memory-addr",
  "ax-sync",
  "axklib",
@@ -950,6 +949,7 @@ dependencies = [
  "rd-net",
  "rdif-block",
  "rdif-clk",
+ "rdif-cpufreq",
  "rdif-display",
  "rdif-gpu",
  "rdif-input",
@@ -980,6 +980,7 @@ dependencies = [
  "sg200x-bsp",
  "sg200x-pwm",
  "sha1 0.11.0",
+ "smccc",
  "some-serial",
  "starfive-jh7110-dwmmc",
  "thiserror 2.0.21",
@@ -1316,6 +1317,7 @@ dependencies = [
  "quote",
  "rd-net",
  "rdif-block",
+ "rdif-cpufreq",
  "rdif-intc",
  "rdif-serial",
  "rdrive",
@@ -6624,6 +6626,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "rdif-def"
 version = "0.4.1"
 dependencies = [
@@ -6803,6 +6813,7 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.3.3"
 dependencies = [
+ "ax-crate-interface",
  "ax-sync",
  "dma-api",
  "log",
@@ -8282,6 +8293,18 @@ name = "target-tuple"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "876fef147edbcbddc8ac5cbbba92c7b86519e314e86638596c09673b2ed01e7f"
+
+[[package]]
+name = "task-switch"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu 9.4.0",
+ "ax-memory-addr",
+ "ax-mm",
+ "ax-runtime",
+ "ax-std",
+ "rockchip-soc",
+]
 
 [[package]]
 name = "tempfile"

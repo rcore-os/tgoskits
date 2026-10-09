@@ -31,4 +31,5 @@ pub struct GuestFdtPolicy {
     pub resolve_cpu_index: fn(usize) -> Option<usize>,
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     pub host_cpu_count: fn() -> usize,
+    pub guest_cpu_execution_property: fn(&str) -> bool,
 }

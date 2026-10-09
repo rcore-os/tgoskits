@@ -53,6 +53,11 @@ pub(crate) fn start_epoll_notify_worker() {
     EPOLL_NOTIFY_STARTED.call_once(|| {
         crate::task::kernel_thread_builder("epoll-notify".into())
             .spawn(|| {
+                // Publish readiness before the first notification registration
+                // so an axtest can observe that this thread has actually been
+                // scheduled rather than racing its startup.
+                #[cfg(all(test, axtest))]
+                EPOLL_NOTIFY_WORKER_READY.store(true, Ordering::Release);
                 loop {
                     EPOLL_NOTIFY.wait();
                     let mut current = {
