@@ -1,0 +1,3 @@
+vm_configs = ["test-suit/axvisor/normal/qemu-acpi-ovmf/x86-linux-acpi-ovmf.toml"]
+busybox_initramfs = "tmp/axbuild/axvisor/qemu-acpi-ovmf/initramfs-x86_64.cpio.gz"
+ovmf_firmware = "tmp/axbuild/axvisor/qemu-acpi-ovmf/OVMF_CODE_4M.fd"

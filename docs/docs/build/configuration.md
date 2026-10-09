@@ -178,7 +178,7 @@ to_bin = true
 
 ## 5. 虚拟化后端
 
-x86_64 的虚拟化后端属于 Build Config 的显式能力：Intel 配置声明 `vmx`，AMD 配置声明 `svm`。`patch_axvisor_cargo_config()` 将已解析的 feature 与 VM 配置写入 Cargo 环境；QEMU CPU flags 由测试或运行 TOML 声明，例如 VMX 用例使用 `+vmx-ept`，SVM 用例使用 `+svm,+npt,+nrip-save`。
+x86_64 的虚拟化后端属于 Build Config 的显式能力：Intel 配置声明 `vmx`，AMD 配置声明 `svm`。`patch_axvisor_cargo_config()` 将已解析的 feature、package/bin 和目标架构写入 Cargo 环境；VM 配置仅用于宿主 initramfs 打包。QEMU CPU flags 由测试或运行 TOML 声明，例如 VMX 用例使用 `+vmx-ept`，SVM 用例使用 `+svm,+npt,+nrip-save`。
 
 仓库中的参考配置包括：
 
@@ -210,4 +210,4 @@ guest 内核驱动不属于该迁移。
 | `TGOS_OVMF_DIR` | 覆盖 Ostool 格式的 OVMF 缓存根目录；不绕过版本选择和 SHA-256 校验 |
 | `TGOSKITS_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
 
-`AX_LOG`、`SMP`、`AX_TARGET`、`AX_ARCH` 和 `AXVISOR_VM_CONFIGS` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。
+`AX_LOG`、`SMP`、`AX_TARGET` 和 `AX_ARCH` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。

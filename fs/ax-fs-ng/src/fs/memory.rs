@@ -15,9 +15,9 @@ use core::{
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
-    FileRangeOperation, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, PreallocationMode, Reference, RenameOptions, StatFs, VfsError,
-    VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
+    FileRangeOperation, Filesystem, FilesystemMountLease, FilesystemOps, Metadata, MetadataUpdate,
+    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference, RenameOptions,
+    StatFs, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
@@ -71,6 +71,7 @@ impl Borrow<str> for FileName {
 
 /// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
+    self_ref: Weak<Self>,
     name: &'static str,
     fs_type: u32,
     size_limit: Option<u64>,
@@ -80,7 +81,53 @@ pub struct MemoryFs {
     inodes: RawSpinLock<Slab<Arc<Inode>>>,
     // root_dir() is used while mounting pseudofs during early startup, before
     // Starry has reached a sleepable task context.
-    root: RawSpinLock<Option<DirEntry>>,
+    root: RawSpinLock<Option<WeakDirEntry>>,
+    mount_lease: RawSpinLock<Weak<MemoryMountLease>>,
+}
+
+#[derive(Debug)]
+struct MemoryMountLease {
+    filesystem: Arc<MemoryFs>,
+}
+
+impl core::fmt::Debug for MemoryFs {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MemoryFs")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FilesystemMountLease for MemoryMountLease {}
+
+impl Drop for MemoryMountLease {
+    fn drop(&mut self) {
+        let last_lease = self.filesystem.mount_lease.lock_irqsave().strong_count() == 0;
+        if !last_lease {
+            return;
+        }
+        let root = self
+            .filesystem
+            .root
+            .lock_irqsave()
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade);
+        if let Some(root) = root {
+            root.as_dir()
+                .expect("memory root directory")
+                .clear_cached_entries();
+        }
+    }
+}
+
+impl Drop for MemoryFs {
+    fn drop(&mut self) {
+        log::info!(
+            "releasing decoded {} filesystem ({} file bytes)",
+            self.name,
+            self.used_bytes.load(AtomicOrdering::Relaxed)
+        );
+    }
 }
 
 impl MemoryFs {
@@ -121,13 +168,15 @@ impl MemoryFs {
         fs_type: u32,
         size_limit: Option<u64>,
     ) -> (Filesystem, Arc<Self>) {
-        let handle = Arc::new(Self {
+        let handle = Arc::new_cyclic(|this| Self {
+            self_ref: this.clone(),
             name,
             fs_type,
             size_limit,
             used_bytes: AtomicU64::new(0),
             inodes: RawSpinLock::new(Slab::new()),
             root: RawSpinLock::new(None),
+            mount_lease: RawSpinLock::new(Weak::new()),
         });
         let root_ino = Inode::new(
             &handle,
@@ -138,10 +187,11 @@ impl MemoryFs {
             0,
             0,
         );
-        *handle.root.lock_irqsave() = Some(DirEntry::new_dir(
+        let root = DirEntry::new_dir(
             |this| DirNode::new(MemoryNode::new(handle.clone(), root_ino, Some(this))),
             Reference::root(),
-        ));
+        );
+        *handle.root.lock_irqsave() = Some(root.downgrade());
         (Filesystem::new(handle.clone()), handle)
     }
 
@@ -196,12 +246,35 @@ impl MemoryFs {
 }
 
 impl FilesystemOps for MemoryFs {
+    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+        let mut installed = self.mount_lease.lock_irqsave();
+        if let Some(lease) = installed.upgrade() {
+            return Some(lease);
+        }
+        let lease = Arc::new(MemoryMountLease {
+            filesystem: self.self_ref.upgrade().expect("live memory filesystem"),
+        });
+        *installed = Arc::downgrade(&lease);
+        Some(lease)
+    }
+
     fn name(&self) -> &str {
         self.name
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root.lock_irqsave().clone().unwrap()
+        let mut installed = self.root.lock_irqsave();
+        if let Some(root) = installed.as_ref().and_then(WeakDirEntry::upgrade) {
+            return root;
+        }
+        let owner = self.self_ref.upgrade().expect("live memory filesystem");
+        let inode = self.get(1);
+        let root = DirEntry::new_dir(
+            |this| DirNode::new(MemoryNode::new(owner, inode, Some(this))),
+            Reference::root(),
+        );
+        *installed = Some(root.downgrade());
+        root
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -281,6 +354,8 @@ struct Inode {
     ino: u64,
     metadata: RawSpinLock<Metadata>,
     content: NodeContent,
+    // Page-cache and other inode state must survive dentry eviction and hard links.
+    user_data: axfs_ng_vfs::RawSpinLock<TypeMap>,
     // Extended attributes belong to the inode so hard links observe the same
     // values. Syscall xattr paths are sleepable and never hold a directory
     // entries guard while acquiring this lock.
@@ -327,6 +402,7 @@ impl Inode {
             ino,
             metadata: RawSpinLock::new(metadata),
             content,
+            user_data: axfs_ng_vfs::RawSpinLock::new(TypeMap::new()),
             xattrs: Mutex::new(BTreeMap::new()),
         });
         entry.insert(result.clone());
@@ -490,6 +566,10 @@ impl MemoryNode {
 }
 
 impl NodeOps for MemoryNode {
+    fn inode_user_data(&self) -> Option<&axfs_ng_vfs::RawSpinLock<TypeMap>> {
+        Some(&self.inode.user_data)
+    }
+
     fn inode(&self) -> u64 {
         self.inode.ino
     }

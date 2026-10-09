@@ -1,13 +1,11 @@
 # Converged HTTP control-plane build for the axum management API test
 # (http-control-plane).
-# `no-auto-start` keeps the default VM (`http-control-plane/vm-memory.toml`, a
-# build-time embedded `memory` guest) in `Ready` (registered but not booted); the
-# typed probe drives the full lifecycle through the HTTP control API. The guest
-# kernel and its BusyBox initramfs are embedded at build time, so no `fs`/NVMe
-# feature is needed. CI runs `cargo xtask image pull` before the test to
-# provision the QEMU images and the managed rootfs the initramfs is built from.
+# `no-auto-start` registers the default VM in Ready for HTTP start control.
+# Boot files are packaged into the host initramfs, installed on the NVMe root,
+# and reused by the HTTP delete/recreate/start resource lifecycle regression.
 features = [
     "http-axum",
+    "ax-driver/nvme",
     "no-auto-start",
 ]
 log = "Info"
@@ -22,4 +20,3 @@ vm_configs = ["test-suit/axvisor/normal/qemu-http-control-plane/http-control-pla
 [env]
 AXVM_HTTP_TOKEN = "axvisor-http-test-token"
 AXVM_HTTP_BIND = "0.0.0.0:8080"
-AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-http-control-plane/initramfs-aarch64.cpio.gz"

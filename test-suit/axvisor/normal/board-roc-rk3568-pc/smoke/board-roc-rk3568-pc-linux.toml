@@ -1,4 +1,9 @@
 board_type = "ROC-RK3568-PC"
+cmdline = "root=PARTLABEL=rootfs rw rootfstype=ext4 console=ttyFIQ0 earlycon=uart8250,mmio32,0xfe660000"
+uboot_cmd = [
+  'fdt addr ${fdtcontroladdr}',
+  'fdt set /chosen bootargs rw',
+]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

@@ -18,14 +18,12 @@ phys_cpu_ids = [0x00]
 [kernel]
 # The entry point of the kernel image.
 entry_point = 0x2_4008_0000
-# The location of image: "memory" | "fs".
 # Load from file system.
-image_location = "fs"
 # The load address of the kernel image.
 kernel_load_addr = 0x2_4008_0000
 # The file path of the kernel image.
 # kernel_path = "/guest/orangepi-5-plus"
-kernel_path = "/guest/linux/orangepi-5-plus"
+kernel_path = "${env:AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus"
 # The guest uses a fixed clock for its virtual UART, but the matching physical
 # UART clock remains host-owned inside the shared RK3588 clock controller.
 cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
@@ -34,7 +32,7 @@ dtb_load_addr = 0x2_4000_0000
 # The file path of the device tree blob (DTB).
 # dtb_path = "/path/to/axvisor/configs/vms/orangepi-5-plus/linux-smp1.dtb"
 
-ramdisk_path = "/guest/linux/initramfs.cpio"
+ramdisk_path = "${env:AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio"
 # The load address of the ramdisk image (U-Boot ramdisk_addr_r).
 ramdisk_load_addr = 0xc000_0000
 

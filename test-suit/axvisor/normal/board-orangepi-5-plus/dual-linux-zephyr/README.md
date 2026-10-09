@@ -20,13 +20,13 @@ Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末�
 
 ### 1.2 客户机镜像
 
-Axvisor 从宿主文件系统加载 Linux 内核、initramfs 和 Zephyr 镜像。板卡运行命令只上传 Axvisor FIT，不会自动安装这些客户机资产，因此启动前必须确认文件存在且非空。
+Axvisor 从宿主文件系统加载 Linux 内核、initramfs 和 Zephyr 镜像。`prepare_guest_payload()` 将构建机上的启动资源加入宿主 initramfs，并通过 FIT 或 HTTP Boot 交接。运行前设置 `AXVISOR_GUEST_ASSETS` 指向本地资产目录，确认文件存在且非空。
 
 ```text
-/guest/linux/orangepi-5-plus-6.1.99-axivc
-/guest/linux/initramfs.cpio
-/guest/zephyr/orangepi-robot-control-sdk
-/guest/zephyr/orangepi-robot-control-sdk.dtb
+${AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus-6.1.99-axivc
+${AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio
+${AXVISOR_GUEST_ASSETS}/zephyr/orangepi-robot-control-sdk
+${AXVISOR_GUEST_ASSETS}/zephyr/orangepi-robot-control-sdk.dtb
 ```
 
 Zephyr 控制镜像通过 `tgosimages` 的机器人应用入口构建，不从某个开发者的 AKA 工作目录
@@ -72,7 +72,6 @@ features = [
   "ax-driver/rockchip-sdhci",
   "ax-driver/rockchip-dwmmc",
   "browser-console",
-  "fs",
 ]
 
 [env]
@@ -106,7 +105,7 @@ Linux 使用 `guest_type = "passthrough"` 且 `passthrough = []`，因此从整�
 
 ## 3. 构建与启动流程
 
-启动前确认机器人活动范围安全、SD CI 板卡空闲，并确认第 1.2 节列出的客户机资产已同步到宿主文件系统。
+启动前确认机器人活动范围安全、SD CI 板卡空闲，并确认第 1.2 节列出的客户机启动资源已放到构建机的 `AXVISOR_GUEST_ASSETS` 目录。
 
 ### 3.1 SD 构建
 

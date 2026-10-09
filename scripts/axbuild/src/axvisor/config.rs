@@ -80,7 +80,7 @@ mod tests {
             "roc-rk3568-pc",
             r#"
 target = "aarch64-unknown-none-softfloat"
-features = ["fs", "ax-driver/rockchip-sdhci"]
+features = ["ax-driver/rockchip-sdhci"]
 log = "Info"
 vm_configs = []
 "#,

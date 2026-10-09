@@ -364,6 +364,7 @@ enum DynamicPciIrqSource {
 
 pub const fn has_pci_endpoint_drivers() -> bool {
     cfg!(any(
+        feature = "ahci",
         feature = "intel-net",
         feature = "realtek-rtl8125",
         feature = "nvme",

@@ -16,7 +16,7 @@
 
 `vcpu-perf-load` 启用 `perf_load::start()`：宿主竞争线程固定 A55 CPU 0，执行有限批次计算后主动让出；`vm.toml` 将单 vCPU 放在同核。负载安装亲和性并完成启动屏障后，才启动客户机。它不再自行运行 60 秒后停止，而是在测试期间持续运行；生命周期结束或线程提前退出输出失败标记。整次板卡执行受 `timeout = 120` 限制，后续运行会重新启动板卡。
 
-板卡配置先等待 `VCPU_PERF_LOAD_READY cpu=0`，再等待宿主 `axvisor:$` 并执行 `vm console 1`，最后只接受客户机 PASS。缺少负载就绪、负载退出、panic 或客户机 FAIL 都不能通过；无需新增 IVC 通道或宿主/客户机配置协议。
+板卡配置先等待 `VCPU_PERF_LOAD_READY cpu=0`，再等待宿主文件系统 shell 的 `axvisor:/$` 并执行 `vm console 1`，最后只接受客户机 PASS。缺少负载就绪、负载退出、panic 或客户机 FAIL 都不能通过；无需新增 IVC 通道或宿主/客户机配置协议。
 
 ## 2. 标准入口
 
@@ -24,7 +24,7 @@ CI、单项与手工运行共用标准板卡命令。需要仓库固定 Rust 工
 
 ### 2.1 运行命令
 
-从仓库根目录执行一次命令，自动构建当前客户机、嵌入 AxVisor 并运行测试：
+从仓库根目录执行一次命令，自动构建当前客户机、打入 AxVisor 宿主 initramfs 并运行测试：
 
 ```bash
 cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf
@@ -44,7 +44,7 @@ arceos_build_configs = ["../guest-build.toml"]
 
 ## 3. 基线与证据
 
-本测试没有 HTTP、网络控制台、根文件系统、摄像头、NPU 或机器人电机负载。它保护计算吞吐，不等同于机器人 FPS、抓取成功率或所有跨核中断路径。
+本测试没有 HTTP、网络控制台、磁盘根文件系统、摄像头、NPU 或机器人电机负载；客户机资源来自宿主 initramfs。它保护计算吞吐，不等同于机器人 FPS、抓取成功率或所有跨核中断路径。
 
 ### 3.1 固定门槛
 

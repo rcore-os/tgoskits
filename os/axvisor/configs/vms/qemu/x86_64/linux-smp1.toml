@@ -19,10 +19,8 @@ phys_cpu_sets = [1]
 # The entry point of the kernel image.
 # Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
-# The location of image: "memory" | "fs".
-image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "/guest/linux/linux-qemu"
+kernel_path = "${workspace}/target/axbuild/images/qemu-x86_64/linux/linux-qemu"
 # The load address of the kernel image.
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.

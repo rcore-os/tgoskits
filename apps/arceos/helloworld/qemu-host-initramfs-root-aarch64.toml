@@ -1,0 +1,19 @@
+initramfs = "${workspace}/target/axbuild/host-initramfs/host-test.cpio"
+cmdline = "root=/dev/nvme0n1 rw"
+args = [
+  "-machine", "virt",
+  "-cpu", "cortex-a72",
+  "-m", "512M",
+  "-smp", "1",
+  "-nographic",
+  "-serial", "mon:stdio",
+  "-device", "nvme,drive=disk0,serial=tgoskits",
+  "-drive", "id=disk0,if=none,format=raw,snapshot=on,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+]
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 60
+
+[[shell_check_steps]]
+success_regex = ["HOST_DISK_ROOT_PASSED"]

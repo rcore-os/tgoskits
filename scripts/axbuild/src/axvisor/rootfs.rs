@@ -32,6 +32,9 @@ struct VmRootfsProbe {
 struct VmKernelRootfsProbe {
     kernel_path: Option<String>,
     ramdisk_path: Option<String>,
+    dtb_path: Option<String>,
+    bios_path: Option<String>,
+    uefi_firmware_path: Option<String>,
 }
 
 pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
@@ -54,8 +57,8 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         })
         .transpose()?;
     let mut cargo = build::load_cargo_config(&request, axvisor.app.workspace_context())?;
-    request.vmconfigs = build::vmconfigs_from_cargo(&cargo);
-    let qemu =
+    request.vmconfigs = build::load_vmconfigs(&request, axvisor.app.workspace_context())?;
+    let mut qemu =
         load_patched_qemu_config(axvisor, &request, &cargo, explicit_rootfs.as_deref()).await?;
     if diskless_explicit_qemu(
         &qemu,
@@ -77,6 +80,17 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         )
         .await?;
     }
+    let bundle_path = axvisor
+        .app
+        .target_dir()
+        .join("axbuild/axvisor/host-initramfs")
+        .join(format!("{}.cpio", request.arch));
+    super::bundle::attach(
+        &request.vmconfigs,
+        false,
+        &bundle_path,
+        &mut qemu.boot.initramfs,
+    )?;
     cargo.to_bin = qemu_to_bin_requested(&qemu)?;
     axvisor
         .app
@@ -128,10 +142,7 @@ pub(super) fn diskless_explicit_qemu(
     explicit_config: bool,
     explicit_rootfs: bool,
 ) -> bool {
-    explicit_config
-        && !explicit_rootfs
-        && rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
-        && !has_explicit_root(qemu)
+    explicit_config && !explicit_rootfs && !rootfs::qemu::has_host_rootfs_wiring(&qemu.args)
 }
 
 fn has_explicit_root(qemu: &QemuConfig) -> bool {
@@ -260,9 +271,15 @@ fn guest_image_references(
         let Some(kernel) = probe.kernel else {
             continue;
         };
-        for kernel_path in [kernel.kernel_path, kernel.ramdisk_path]
-            .into_iter()
-            .flatten()
+        for kernel_path in [
+            kernel.kernel_path,
+            kernel.ramdisk_path,
+            kernel.dtb_path,
+            kernel.bios_path,
+            kernel.uefi_firmware_path,
+        ]
+        .into_iter()
+        .flatten()
         {
             let required_path =
                 resolve_vm_asset_path(vmconfig, workspace_root, target_dir, &kernel_path);
@@ -512,7 +529,13 @@ mod tests {
     #[tokio::test]
     async fn qemu_assets_prepare_guest_bundle_referenced_by_vm_config() {
         let root = tempdir().unwrap();
-        let archive = make_tar_gz(&[("linux/linux-qemu", b"kernel"), ("linux/initrd", b"initrd")]);
+        let archive = make_tar_gz(&[
+            ("linux/linux-qemu", b"kernel"),
+            ("linux/initrd", b"initrd"),
+            ("linux/guest.dtb", b"dtb"),
+            ("linux/bios", b"bios"),
+            ("linux/firmware", b"firmware"),
+        ]);
         let archive_url = test_support::register_bytes("qemu-aarch64.tar.gz", archive.clone());
         let registry = crate::image::registry::ImageRegistry {
             images: vec![ImageEntry {
@@ -546,6 +569,9 @@ mod tests {
 [kernel]
 kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
 ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
+dtb_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/guest.dtb"
+bios_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/bios"
+uefi_firmware_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/firmware"
 "#,
         )
         .unwrap();
@@ -559,6 +585,16 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
         let guest_initrd = target_dir.join("axbuild/images/qemu-aarch64/linux/initrd");
         assert_eq!(fs::read(&guest_kernel).unwrap(), b"kernel");
         assert_eq!(fs::read(&guest_initrd).unwrap(), b"initrd");
+        for (name, contents) in [
+            ("guest.dtb", b"dtb".as_slice()),
+            ("bios", b"bios"),
+            ("firmware", b"firmware"),
+        ] {
+            assert_eq!(
+                fs::read(guest_kernel.parent().unwrap().join(name)).unwrap(),
+                contents
+            );
+        }
 
         let default_rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
         fs::create_dir_all(default_rootfs.parent().unwrap()).unwrap();
@@ -569,6 +605,20 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
 
         assert_eq!(fs::read(guest_kernel).unwrap(), b"kernel");
         assert_eq!(fs::read(guest_initrd).unwrap(), b"initrd");
+        let config = &request.vmconfigs[0];
+        let original = fs::read_to_string(config).unwrap();
+        for name in ["guest.dtb", "bios", "firmware"] {
+            fs::write(
+                config,
+                original.replace(&format!("/linux/{name}"), "/linux/missing-asset"),
+            )
+            .unwrap();
+            let error = ensure_guest_image_bundles(&request, root.path(), &target_dir)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("missing-asset"));
+        }
+        fs::write(config, original).unwrap();
     }
 
     #[test]
@@ -617,7 +667,7 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
             args: vec!["-nographic".into()],
             ..Default::default()
         };
-        assert!(!diskless_explicit_qemu(&qemu, true, false));
+        assert!(diskless_explicit_qemu(&qemu, true, false));
         let qemu = QemuConfig {
             boot: ostool::BootPayloadConfig {
                 initramfs: Some("host.cpio".into()),
@@ -635,7 +685,7 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
         ];
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("root=/dev/sda".into());
-        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         assert!(
             patch_qemu_rootfs_path(
                 &mut with_guest_drive,
@@ -649,7 +699,7 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
         with_guest_drive.boot.cmdline = Some("-- root=/dev/sda".into());
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("\"root=/dev/sda\"".into());
-        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("root=\"\"".into());
         assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
         with_guest_drive.boot.cmdline = Some("label=\"not root=/dev/sda\"".into());
@@ -658,6 +708,6 @@ ramdisk_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/initrd"
         with_guest_drive
             .args
             .extend(["-append".into(), "root=/dev/sda".into()]);
-        assert!(!diskless_explicit_qemu(&with_guest_drive, true, false));
+        assert!(diskless_explicit_qemu(&with_guest_drive, true, false));
     }
 }

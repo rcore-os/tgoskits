@@ -1,7 +1,6 @@
 board_type = "OrangePi-5-Plus"
-# The board Linux rootfs must contain the QEMU busybox initramfs from tgosimages
-# (initramfs-aarch64-busybox.cpio.gz) at /guest/linux/initramfs-aarch64-busybox.cpio.gz.
-# The /guest/linux/linux-qemu kernel comes from the tgosimages rootfs-aarch64-alpine.img.tar.xz image.
+# axbuild downloads the managed QEMU kernel and BusyBox archive on the host
+# and includes both guests in the host initramfs.
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

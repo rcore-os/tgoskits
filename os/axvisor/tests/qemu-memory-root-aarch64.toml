@@ -1,0 +1,12 @@
+args = [
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-cpu", "cortex-a72",
+  "-m", "512M",
+  "-smp", "1",
+  "-nographic",
+  "-append", "root=/dev/nvme0n1 rw",
+]
+uefi = false
+to_bin = true
+timeout = 90
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

@@ -13,6 +13,7 @@ extern crate alloc;
 
 use ax_hal as _;
 use ax_std as _;
+use axvisor as _;
 use axvm as _;
 
 // Compile the production guest-console mux with narrow host/manager adapters
@@ -35,9 +36,183 @@ mod network_console;
 // These cases exercise the mux-to-network boundary through the stub above and
 // therefore must live beside the harness assembly instead of `mux/tests.rs`
 // (the binary is also compiled with `--cfg axtest` and has no network console).
-#[axtest::tests]
+fn prepare_filesystem() {
+    for path in ["/tmp", "/var", "/run"] {
+        std::fs::create_dir_all(path).expect("prepare memory-root test directory");
+    }
+    ax_fs_ng::current_fs_context()
+        .lock()
+        .symlink(
+            "/run",
+            "/var/run",
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .expect("prepare directory symlink fixture");
+}
+
+#[axtest::tests(setup = prepare_filesystem)]
 mod tests {
+    use ax_fs_ng::vfs::FsContext;
+    use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
     use axtest::prelude::*;
+    use axvisor::builtin::{install_builtin, selected_configs};
+
+    #[test]
+    fn diskless_boot_keeps_memory_root_with_inherited_root_parameter() {
+        ax_assert!(
+            ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
+                .is_none_or(|devices| devices.is_empty())
+        );
+        // The bundled kernel exists, but the board DTB is outside the archive.
+        // Its absence must affect that VM at load time, not host preparation.
+        std::fs::create_dir_all("/guest/builtin/configs").unwrap();
+        std::fs::create_dir_all("/guest/builtin/images").unwrap();
+        std::fs::write("/guest/builtin/images/kernel", "kernel").unwrap();
+        std::fs::write(
+            "/guest/builtin/configs/default.toml",
+            "[base]\nid=1\nname='diskless'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\ndtb_path='/board/missing.dtb'\n[devices]\n",
+        )
+        .unwrap();
+        axvisor::builtin::prepare_root().expect("external assets must not abort diskless boot");
+        // Package-owned resources must still be present and nonempty.
+        std::fs::write("/guest/builtin/images/kernel", "").unwrap();
+        ax_assert!(axvisor::builtin::prepare_root().is_err());
+        std::fs::remove_dir_all("/guest/builtin").unwrap();
+        ax_assert_eq!(
+            ax_fs_ng::root::root_kind(),
+            Some(ax_fs_ng::root::RootKind::Memory)
+        );
+    }
+
+    #[test]
+    fn user_configs_override_defaults_and_invalid_user_configs_stop_loading() {
+        let context =
+            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        for path in [
+            "/guest",
+            "/guest/builtin",
+            "/guest/builtin/configs",
+            "/guest/vm_default",
+        ] {
+            context
+                .create_dir(
+                    path,
+                    NodePermission::from_bits_truncate(0o755),
+                    0,
+                    0,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+        }
+        let builtin = "[base]\nid=1\nname='builtin'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\n[devices]\n";
+        let user = builtin.replace("builtin'", "user'").replace("id=1", "id=2");
+        context
+            .write("/guest/builtin/configs/default.toml", builtin)
+            .unwrap();
+        ax_assert_eq!(
+            selected_configs(&context).unwrap(),
+            alloc::vec![builtin.to_owned()]
+        );
+        context
+            .write("/guest/vm_default/custom.toml", &user)
+            .unwrap();
+        ax_assert_eq!(selected_configs(&context).unwrap(), alloc::vec![user]);
+        context.write("/guest/vm_default/custom.toml", "").unwrap();
+        ax_assert!(selected_configs(&context).is_err());
+        context
+            .remove_file(
+                "/guest/vm_default/custom.toml",
+                &MutationCredentials::root(),
+            )
+            .unwrap();
+        ax_assert_eq!(
+            selected_configs(&context).unwrap(),
+            alloc::vec![builtin.to_owned()]
+        );
+    }
+
+    #[test]
+    fn package_install_validates_external_assets_before_replacing_defaults() {
+        let source =
+            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        let target =
+            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        for context in [&source, &target] {
+            for path in [
+                "/guest",
+                "/guest/builtin",
+                "/guest/builtin/configs",
+                "/guest/builtin/images",
+                "/board",
+            ] {
+                context
+                    .create_dir(
+                        path,
+                        NodePermission::from_bits_truncate(0o755),
+                        0,
+                        0,
+                        &MutationCredentials::root(),
+                    )
+                    .unwrap();
+            }
+        }
+        let installed = "[base]\nid=1\nname='installed'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\n[devices]\n";
+        let incoming = installed
+            .replace("installed'", "incoming'")
+            .replace("[devices]", "dtb_path='/board/guest.dtb'\n[devices]");
+        source
+            .write("/guest/builtin/configs/default.toml", &incoming)
+            .unwrap();
+        source
+            .write("/guest/builtin/images/kernel", "new kernel")
+            .unwrap();
+        target
+            .write("/guest/builtin/configs/default.toml", installed)
+            .unwrap();
+        target
+            .write("/guest/builtin/images/kernel", "old kernel")
+            .unwrap();
+        target
+            .write("/guest/builtin/images/obsolete", "old resource")
+            .unwrap();
+        let install = || install_builtin(&source, &target);
+        for empty_file in [false, true] {
+            if empty_file {
+                target.write("/board/guest.dtb", "").unwrap();
+            }
+            let error = install().unwrap_err();
+            ax_assert!(alloc::format!("{error:#}").contains("/board/guest.dtb"));
+            ax_assert_eq!(
+                target
+                    .read_to_string("/guest/builtin/configs/default.toml")
+                    .unwrap(),
+                installed
+            );
+            ax_assert_eq!(
+                target
+                    .read_to_string("/guest/builtin/images/kernel")
+                    .unwrap(),
+                "old kernel"
+            );
+        }
+        target.write("/board/guest.dtb", "guest DTB").unwrap();
+        ax_assert!(install().unwrap());
+        ax_assert_eq!(
+            target
+                .read_to_string("/guest/builtin/configs/default.toml")
+                .unwrap(),
+            incoming
+        );
+        ax_assert_eq!(
+            target
+                .read_to_string("/guest/builtin/images/kernel")
+                .unwrap(),
+            "new kernel"
+        );
+        ax_assert!(target.resolve("/guest/builtin/images/obsolete").is_err());
+    }
 
     fn remove_guest_console(vm_id: usize) {
         use crate::guest_console_harness::mux;

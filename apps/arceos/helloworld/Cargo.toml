@@ -9,8 +9,10 @@ publish = false
 default = ["arceos"]
 arceos = ["dep:ax-std", "ax-std/arceos"]
 cmdline-smoke = ["arceos", "dep:ax-hal"]
-initramfs-smoke = ["cmdline-smoke", "ax-std/fs"]
+initramfs-smoke = ["cmdline-smoke", "ax-std/fs", "dep:ax-fs-ng"]
+block-root-smoke = ["initramfs-smoke", "ax-std/ext4fs", "ax-std/nvme"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
 ax-hal = { workspace = true, optional = true }
+ax-fs-ng = { workspace = true, optional = true }

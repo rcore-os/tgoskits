@@ -7,6 +7,8 @@ use std::vec::Vec;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use axvmconfig::{GuestConfig, VMBootProtocol};
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::boot::{BootImageProvider, fdt::GuestDtbImage};
 use crate::{AxVmResult, ax_err_type, config::AxVMConfig};
 
 #[cfg(any(target_arch = "aarch64", test))]
@@ -31,12 +33,6 @@ mod tree_tests;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use parser::*;
 pub use policy::{DecodedInterrupt, GuestFdtPolicy};
-
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-use crate::{
-    ax_err,
-    boot::{BootImageProvider, fdt::GuestDtbImage},
-};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn prepare_dtb_guest(
@@ -271,32 +267,16 @@ fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mu
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn get_developer_provided_dtb(
-    vm_config: &AxVMConfig,
-    crate_config: &GuestConfig,
+    _vm_config: &AxVMConfig,
+    config: &GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<Vec<u8>>> {
-    match crate_config.kernel.image_location.as_deref() {
-        Some("memory") => Ok(provider
-            .static_vm_images()
-            .iter()
-            .find(|image| image.id == vm_config.id())
-            .and_then(|images| images.dtb)
-            .map(|dtb| {
-                info!("DTB file in memory, size: 0x{:x}", dtb.len());
-                dtb.to_vec()
-            })),
-        #[cfg(any(feature = "fs", feature = "host-fs"))]
-        Some("fs") => crate_config
-            .kernel
-            .dtb_path
-            .as_deref()
-            .map(|path| crate::boot::images::fs::read_full_image(path, provider))
-            .transpose(),
-        _ => ax_err!(
-            InvalidInput,
-            "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
-        ),
-    }
+    config
+        .kernel
+        .dtb_path
+        .as_deref()
+        .map(|path| provider.read_file(path))
+        .transpose()
 }
 
 #[cfg(test)]

@@ -1705,7 +1705,10 @@ command = "true"
             self.assertNotIn("/serial@feb90000", text)
 
         starry_kernel = tomllib.loads(real_starry_guest.read_text())["kernel"]
-        self.assertEqual(starry_kernel["image_location"], "memory")
+        self.assertEqual(
+            starry_kernel["kernel_path"],
+            "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin",
+        )
         linux_kernel = tomllib.loads(real_linux_guest.read_text())["kernel"]
         self.assertEqual(
             linux_kernel["kernel_path"], "/guest/linux/orangepi-5-plus-6.1.99"

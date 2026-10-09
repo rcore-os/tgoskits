@@ -63,6 +63,7 @@ pub(crate) fn run(
     addr: &str,
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
+    builtin_configs: Option<&Path>,
     stop: Arc<AtomicBool>,
 ) -> HostHttpProbeOutcome {
     let script = case_dir.join(&config.probe_script);
@@ -74,7 +75,8 @@ pub(crate) fn run(
                 script.display()
             );
         }
-        let (mut child, output_capture) = spawn_probe_asset(&script, addr, config, case_dir)?;
+        let (mut child, output_capture) =
+            spawn_probe_asset(&script, addr, config, case_dir, builtin_configs)?;
         let status = wait_probe_asset(&mut child, &stop);
         let bytes = output_capture.finish()?;
         Ok((bytes, status))
@@ -193,12 +195,16 @@ fn spawn_probe_asset(
     addr: &str,
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
+    builtin_configs: Option<&Path>,
 ) -> anyhow::Result<(Child, ProbeOutputCapture)> {
     let (reader, stdout) = os_pipe::pipe().context("failed to create probe output pipe")?;
     let stderr = stdout
         .try_clone()
         .context("failed to clone probe output pipe")?;
     let mut command = Command::new(script);
+    if let Some(configs) = builtin_configs {
+        command.env("AXVISOR_BUILTIN_CONFIG_DIR", configs);
+    }
     command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
         .env(
@@ -332,7 +338,7 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let outcome = run("127.0.0.1:12345", &config, dir.path(), stop);
+        let outcome = run("127.0.0.1:12345", &config, dir.path(), None, stop);
 
         assert!(
             outcome.verdict.is_ok(),
@@ -358,7 +364,7 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let outcome = run("127.0.0.1:12345", &config, dir.path(), stop);
+        let outcome = run("127.0.0.1:12345", &config, dir.path(), None, stop);
 
         assert!(outcome.verdict.is_ok());
         assert!(outcome.output.starts_with(b"pipe:["));
@@ -379,7 +385,7 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop)
+        let error = run("127.0.0.1:12345", &config, dir.path(), None, stop)
             .verdict
             .unwrap_err();
         assert!(
@@ -394,7 +400,7 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop)
+        let error = run("127.0.0.1:12345", &config, dir.path(), None, stop)
             .verdict
             .unwrap_err();
         assert!(error.to_string().contains("does not exist"));
@@ -411,7 +417,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let run_stop = stop.clone();
         let probe_thread =
-            thread::spawn(move || run("127.0.0.1:12345", &config, &case_dir, run_stop));
+            thread::spawn(move || run("127.0.0.1:12345", &config, &case_dir, None, run_stop));
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while !started.is_file() {

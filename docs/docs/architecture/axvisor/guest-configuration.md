@@ -94,7 +94,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | 字段 | TOML 类型 | 缺省值 | 含义与当前约束 |
 | --- | --- | --- | --- |
 | `entry_point` | 非负整数 | `0` | BSP 和 AP 的初始入口 GPA |
-| `kernel_path` | 字符串 | 空字符串 | 内核镜像路径；`fs` 模式按文件路径读取，`memory` 模式由 image provider 按 VM ID 选择内置镜像，不使用此路径定位 |
+| `kernel_path` | 字符串 | 空字符串 | 内核镜像文件路径；打包输入为构建机路径，运行配置由 axbuild 重写为 `/guest/builtin/images/...` |
 | `kernel_load_addr` | 非负整数 | `0` | 内核加载 GPA；部分架构启动流程会按镜像格式进一步调整 |
 | `enable_bios` | 布尔值 | `false` | 旧启动开关；必须与 `boot_protocol` 一致 |
 | `boot_protocol` | `"direct"`、`"multiboot"`、`"uefi"` 或省略 | 省略 | 省略时由 `enable_bios` 推导，见 3.3 节 |
@@ -105,7 +105,6 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `dtb_load_addr` | 非负整数或省略 | `None` | DTB 加载 GPA；prepare 可能依据内存布局重新计算 |
 | `ramdisk_path` | 字符串或省略 | `None` | initramfs/ramdisk 镜像路径 |
 | `ramdisk_load_addr` | 非负整数或省略 | `None` | ramdisk 加载 GPA |
-| `image_location` | `"memory"` 或 `"fs"` | `None` | 镜像来源；`fs` 需要相应文件系统 feature。其他值或省略值会在 boot image prepare/load 阶段失败 |
 | `cmdline` | 字符串或省略 | `None` | 客户机内核命令行；x86 Linux direct boot 要求提供 |
 | `memory_regions` | 四元数组列表 | 空列表 | 客户机内存描述，格式为 `[gpa, size, flags, map_type]` |
 
@@ -203,7 +202,6 @@ phys_cpu_sets = [1]
 entry_point = 0x4008_0000
 kernel_path = "/guest/linux/Image"
 kernel_load_addr = 0x4008_0000
-image_location = "fs"
 cmdline = "console=ttyAMA0"
 memory_regions = [
   [0x4000_0000, 0x4000_0000, 0x7, 0],
@@ -247,10 +245,10 @@ model = "ivc-channel"
 | path 不是绝对具体路径，或同一路径同时出现在 `passthrough` 与 `disabled` | device validation | `InvalidPhysicalDevicePath`、`ConflictingPhysicalDeviceSelection` | 使用 host DT 中的完整节点路径；从两张列表中移除冲突项 |
 | 两个虚拟设备使用相同 `id` | device validation | `DuplicateVirtualDeviceId` | ID 是 VM 内稳定图节点标识，必须唯一 |
 | options 出现框架资源键 | device validation | `ForbiddenVirtualDeviceResourceOption` | 只检查 3.5 节列出的精确键；删除地址/IRQ/MSI/LPI 输入，让规划器分配 |
-| `image_location` 缺失、值不支持，`fs` feature 不可用，镜像路径或内存布局无效 | boot prepare/load | `prepare_guest_boot`、`prepare_memory_layout` 或 `load_images` 返回的 `AxVmError` | 确认来源是 `memory`/`fs`、构建 feature、镜像 ID/路径、加载地址和至少一段有效内存 |
 | model 名格式合法但未注册 | device prepare 的请求转换 | `ConfiguredDeviceError::UnknownVirtualDeviceModel`，随后映射成 `AxVmError::InvalidConfig` | 核对 model 拼写，并确认 AxVM/Axvisor catalog 装配点确实注册了该 model |
 | model 私有 option 类型错误或出现 model 不接受的键 | device prepare 的请求转换 | `ConfiguredDeviceError::InvalidOptions` | 对照该 model 的强类型 options；通用 JSON Schema 不校验这部分 |
 | model 已找到，但缺少架构能力或构造条件 | device prepare | `ConfiguredDeviceError::Instantiation` 或后续图/资源错误 | 先看设备名和 model，再查 Machine 能力及资源计划；细节见运行时和模拟设备文档 |
+| 镜像路径或内存布局无效 | boot prepare/load | `prepare_guest_boot`、`prepare_memory_layout` 或 `load_images` 返回的 `AxVmError` | 检查当前根中的文件路径、加载地址和至少一段有效内存 |
 
 应用层 `build_axvm_config()` 当前返回 `AxVMConfig` 而不是 `Result`，所以它没有独立的可恢复错误枚举。它之后的 boot prepare、`AxVM::new`、memory prepare、image load 和 `vm.prepare()` 都由 `init_guest_vm()` 添加 `VM[id]` context。日志中若已经出现 `prepare devices and vCPUs`，问题就不在 TOML Serde 阶段。
 

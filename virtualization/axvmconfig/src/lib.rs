@@ -32,6 +32,18 @@ pub use axvm_types::{
 
 mod error;
 
+/// Stable location of boot assets installed from the host initramfs.
+pub const BUILTIN_GUEST_DIR: &str = "/guest/builtin";
+
+/// TOML fields containing boot files, excluding writable guest disks.
+pub const BOOT_IMAGE_PATH_FIELDS: [&str; 5] = [
+    "kernel_path",
+    "dtb_path",
+    "bios_path",
+    "uefi_firmware_path",
+    "ramdisk_path",
+];
+
 pub use error::*;
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
@@ -329,8 +341,6 @@ pub struct VMKernelConfig {
     pub ramdisk_path: Option<String>,
     /// The load address of the ramdisk image, `None` if not used.
     pub ramdisk_load_addr: Option<usize>,
-    /// The location of the image, default is 'fs'.
-    pub image_location: Option<String>,
     /// The command line of the kernel.
     pub cmdline: Option<String>,
     /// Memory Information
@@ -346,6 +356,19 @@ pub struct VMKernelConfig {
 }
 
 impl VMKernelConfig {
+    /// Returns every configured boot file, including firmware and guest initrd.
+    pub fn boot_image_paths(&self) -> impl Iterator<Item = &str> {
+        [
+            Some(self.kernel_path.as_str()),
+            self.dtb_path.as_deref(),
+            self.bios_path.as_deref(),
+            self.uefi_firmware_path.as_deref(),
+            self.ramdisk_path.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// Returns the effective boot protocol.
     pub fn effective_boot_protocol(&self) -> VMBootProtocol {
         self.boot_protocol.unwrap_or({
@@ -453,7 +476,6 @@ const BUILD_TARGET_ARCH: &str = "unknown";
 /// guests start with all guest-assignable physical devices and then remove the
 /// devices listed in [`GuestDevices::disabled`].
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(clap::ValueEnum))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuestType {

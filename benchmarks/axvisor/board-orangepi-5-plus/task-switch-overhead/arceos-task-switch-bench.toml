@@ -7,7 +7,6 @@ phys_cpu_ids = [0x400]
 
 [kernel]
 entry_point = 0x4008_0000
-image_location = "memory"
 kernel_load_addr = 0x4008_0000
 kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-task-switch-bench.bin"
 dtb_load_addr = 0x4000_0000

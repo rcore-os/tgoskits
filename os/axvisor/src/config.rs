@@ -12,114 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(all(
-    feature = "fs",
-    any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )
-))]
+#[cfg(all(any(
+    target_arch = "aarch64",
+    target_arch = "x86_64",
+    target_arch = "loongarch64"
+)))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-#[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
 use axvm::{boot::*, config::*, *};
 use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
-#[cfg(all(
-    feature = "fs",
-    any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )
-))]
+#[cfg(all(any(
+    target_arch = "aarch64",
+    target_arch = "x86_64",
+    target_arch = "loongarch64"
+)))]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
-#[allow(dead_code)]
-pub mod vmcfg {
-    use alloc::{string::String, vec, vec::Vec};
-
-    /// Default static VM configs. Used when no VM config is provided.
-    pub fn default_static_vm_configs() -> Vec<&'static str> {
-        vec![]
-    }
-
-    /// Read VM configs from filesystem
-    #[cfg(feature = "fs")]
-    pub fn filesystem_vm_configs() -> Vec<String> {
-        let config_dir = "/guest/vm_default";
-        crate::manager::AxvmManager::filesystem_vm_configs(config_dir)
-            .into_iter()
-            .filter_map(
-                |content| match axvmconfig::GuestConfig::from_toml(&content) {
-                    Ok(_) => Some(content),
-                    Err(e) => {
-                        warn!("Filesystem VM config is invalid: {:?}", e);
-                        None
-                    }
-                },
-            )
-            .collect()
-    }
-
-    /// Fallback function for when "fs" feature is not enabled
-    #[cfg(not(feature = "fs"))]
-    pub fn filesystem_vm_configs() -> Vec<String> {
-        Vec::new()
-    }
-
-    include!(concat!(env!("OUT_DIR"), "/vm_configs.rs"));
-}
-
-pub fn init_guest_vms() {
+pub fn init_guest_vms() -> Result<()> {
     init_guest_boot_resources();
-
-    // First try to get configs from filesystem if fs feature is enabled
-    let mut gvm_raw_configs = vmcfg::filesystem_vm_configs();
-
-    // If no filesystem configs found, fallback to static configs
-    if gvm_raw_configs.is_empty() {
-        let static_configs = vmcfg::static_vm_configs();
-        if static_configs.is_empty() {
-            info!("Static VM configs are empty.");
-            info!("Now axvisor will entry the shell...");
-        } else {
-            info!("Using static VM configs.");
-        }
-        // Convert static configs to String type
-        gvm_raw_configs.extend(static_configs.into_iter().map(|s| s.into()));
+    let context = ax_fs_ng::current_fs_context();
+    let configs = axvisor::builtin::selected_configs(&context.lock())?;
+    for raw in configs {
+        init_guest_vm(&raw)?;
     }
-
-    for raw_cfg_str in gvm_raw_configs {
-        debug!("Initializing guest VM with config: {:#?}", raw_cfg_str);
-        if let Err(e) = init_guest_vm(&raw_cfg_str) {
-            error!("Failed to initialize guest VM: {e:#}");
-        }
-    }
-}
-
-pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
-    let plan = prepare_guest_vm(raw_cfg)?;
-    let vm_id = plan.config.id();
-    crate::manager::manager()
-        .create_plan(plan)?
-        .wait()
-        .with_context(|| format!("create VM[{vm_id}]"))?;
-    #[cfg(all(
-        feature = "fs",
-        any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "loongarch64"
-        )
-    ))]
-    if vm_config_needs_host_filesystem_release(&GuestConfig::from_toml(raw_cfg)?) {
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
-    }
-    Ok(vm_id)
+    Ok(())
 }
 
 pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
@@ -139,16 +58,44 @@ pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
-
     sync_axvm_config_from_crate_config(&mut vm_config, prepared_config);
-
     vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
     Ok(VmCreatePlan {
         config: vm_config,
         boot: prepared_boot,
-        images: std::sync::Arc::new(image_provider),
+        images: alloc::sync::Arc::new(image_provider),
     })
+}
+
+pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
+    let plan = prepare_guest_vm(raw_cfg)?;
+    let vm_id = plan.config.id();
+
+    #[cfg(all(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )))]
+    let release_host_filesystem = vm_config_needs_host_filesystem_release(
+        &GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?,
+    );
+
+    crate::manager::manager()
+        .create_plan(plan)?
+        .wait()
+        .with_context(|| format!("create VM[{vm_id}]"))?;
+
+    #[cfg(all(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )))]
+    if release_host_filesystem {
+        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+    }
+
+    Ok(vm_id)
 }
 
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
@@ -184,7 +131,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
         },
         image_config: VMImageConfig {
             kernel_load_gpa: GuestPhysAddr::from(cfg.kernel.kernel_load_addr),
-            loaded_from_filesystem: cfg.kernel.image_location.as_deref() == Some("fs"),
+            loaded_from_filesystem: true,
             bios_load_gpa: boot_firmware_load_gpa(cfg),
             dtb_load_gpa: cfg.kernel.dtb_load_addr.map(GuestPhysAddr::from),
             ramdisk: cfg.kernel.ramdisk_load_addr.map(|addr| RamdiskInfo {
@@ -211,28 +158,22 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestCon
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
-#[cfg(all(
-    feature = "fs",
-    any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )
-))]
+#[cfg(all(any(
+    target_arch = "aarch64",
+    target_arch = "x86_64",
+    target_arch = "loongarch64"
+)))]
 fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
-    config.kernel.image_location.as_deref() == Some("fs")
-        && (config.base.guest_type == GuestType::Passthrough
-            || !config.devices.passthrough.is_empty())
+    (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
+        && config.base.guest_type == GuestType::Passthrough)
+        || !config.devices.passthrough.is_empty()
 }
 
-#[cfg(all(
-    feature = "fs",
-    any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )
-))]
+#[cfg(all(any(
+    target_arch = "aarch64",
+    target_arch = "x86_64",
+    target_arch = "loongarch64"
+)))]
 pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
 }
@@ -240,22 +181,11 @@ pub fn host_filesystem_release_required() -> bool {
 struct AxvisorBootImageProvider;
 
 impl BootImageProvider for AxvisorBootImageProvider {
-    fn static_vm_images(&self) -> &'static [StaticVmImage] {
-        vmcfg::get_memory_images()
-    }
-
-    #[cfg(target_arch = "loongarch64")]
-    fn static_firmware_images(&self) -> &'static [StaticVmImage] {
-        vmcfg::get_firmware_images()
-    }
-
-    #[cfg(feature = "fs")]
     fn read_file(&self, file_name: &str) -> AxVmResult<alloc::vec::Vec<u8>> {
         crate::manager::AxvmManager::read_file(file_name)
             .map_err(|error| boot_file_error("read guest image file", file_name, error))
     }
 
-    #[cfg(feature = "fs")]
     fn read_file_exact(
         &self,
         file_name: &str,
@@ -265,14 +195,12 @@ impl BootImageProvider for AxvisorBootImageProvider {
             .map_err(|error| boot_file_error("read guest image file", file_name, error))
     }
 
-    #[cfg(feature = "fs")]
     fn file_size(&self, file_name: &str) -> AxVmResult<usize> {
         crate::manager::AxvmManager::file_size(file_name)
             .map_err(|error| boot_file_error("inspect guest image file", file_name, error))
     }
 }
 
-#[cfg(feature = "fs")]
 fn boot_file_error(operation: &'static str, file_name: &str, error: anyhow::Error) -> AxVmError {
     AxVmError::Boot {
         operation,

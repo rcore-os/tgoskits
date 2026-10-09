@@ -38,7 +38,7 @@ required-features = ["host-xtask"]
 name = "axtest"
 path = "tests/axtest.rs"
 harness = false
-required-features = ["axtest", "fs"]
+required-features = ["axtest"]
 
 [package.metadata.axtest]
 runtime = "axvisor"
@@ -50,7 +50,6 @@ targets = ["aarch64-unknown-none-softfloat"]
 default = []
 host-xtask = []
 axtest = []
-fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 vpci-test-device = ["axvm/vpci-test-device"]
 sstc = ["axvm/sstc"]
 stack-protector = ["ax-std/stack-protector"]
@@ -78,6 +77,10 @@ browser-console = [
 no-auto-start = []
 
 [dependencies]
+anyhow.workspace = true
+axvmconfig = { workspace = true, default-features = false }
+ax-fs-ng = { workspace = true, features = ["vfs"] }
+axfs-ng-vfs.workspace = true
 shlex.workspace = true
 axtest.workspace = true
 heapless.workspace = true
@@ -86,7 +89,6 @@ heapless.workspace = true
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
-anyhow.workspace = true
 log = "0.4"
 axum = { version = "0.8", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
@@ -97,8 +99,12 @@ serde_json = { version = "1", optional = true }
 tokio = { version = "1", optional = true, features = ["net", "rt"] }
 
 # System dependent modules provided by ArceOS.
+ax-hal.workspace = true
+ax-runtime = { workspace = true, features = ["deferred-rootfs"] }
 ax-api.workspace = true
 ax-std = { workspace = true, default-features = false, features = [
+  "ext4fs",
+  "fatfs",
   "alloc",
   "fd",
   "ext-ld",
@@ -111,8 +117,7 @@ ax-std = { workspace = true, default-features = false, features = [
 ] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "paging", "smp"] }
-axvm = { workspace = true, default-features = false, features = ["tls"] }
-axvmconfig = { workspace = true, default-features = false }
+axvm = { workspace = true, default-features = false, features = ["tls", "host-fs"] }
 axvm-types.workspace = true
 ax-driver = { workspace = true, optional = true }
 
@@ -122,15 +127,9 @@ ax-hal = { path = "../arceos/modules/axhal" }
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
-anyhow.workspace = true
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
 anyhow = { workspace = true, features = ["std"] }
-prettyplease = { workspace = true }
-proc-macro2 = { workspace = true }
-quote = { workspace = true }
-syn = { workspace = true }
-toml = { workspace = true, features = ["std", "serde", "parse", "display"] }

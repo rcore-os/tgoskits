@@ -13,24 +13,20 @@
 // limitations under the License.
 
 use std::collections::BTreeMap;
-#[cfg(feature = "fs")]
 use std::fs::{self, File, FileType};
-#[cfg(all(feature = "fs", target_os = "none"))]
+#[cfg(target_os = "none")]
 use std::fs::{FileTypeExt, PermissionsExt};
-#[cfg(feature = "fs")]
 use std::io::{self, Read, Write};
-#[cfg(all(feature = "fs", unix))]
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::string::{String, ToString};
 
 use crate::shell::command::{CommandNode, FlagDef, ParsedCommand};
-#[cfg(feature = "fs")]
 use axvisor::shell_fs::{
     CopyMode, RemoveOptions, collect_directory_entry_names, copy_operands, copy_path,
     move_file_or_dir, path_basename, remove_path, touch_file,
 };
 
-#[cfg(feature = "fs")]
 macro_rules! print_err {
     ($cmd: literal, $msg: expr) => {
         println!("{}: {}", $cmd, $msg);
@@ -41,7 +37,6 @@ macro_rules! print_err {
 }
 
 // Helper function: split whitespace
-#[cfg(feature = "fs")]
 fn split_whitespace(s: &str) -> (&str, &str) {
     let s = s.trim();
     if let Some(pos) = s.find(char::is_whitespace) {
@@ -52,7 +47,6 @@ fn split_whitespace(s: &str) -> (&str, &str) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn show_ls_entry(path: &str, entry: &str, show_long: bool) -> io::Result<()> {
     if show_long {
         let metadata = fs::metadata(path)?;
@@ -71,7 +65,6 @@ fn show_ls_entry(path: &str, entry: &str, show_long: bool) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "fs")]
 fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> io::Result<()> {
     if !fs::metadata(name)?.is_dir() {
         return show_ls_entry(name, name, show_long);
@@ -97,7 +90,6 @@ fn list_one(name: &str, print_name: bool, show_long: bool, show_all: bool) -> io
     Ok(())
 }
 
-#[cfg(feature = "fs")]
 fn do_ls(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let show_long = cmd.flags.contains("long");
@@ -119,7 +111,6 @@ fn do_ls(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_cat(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -148,7 +139,6 @@ fn do_cat(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_echo(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let no_newline = cmd.flags.contains("no-newline");
@@ -187,7 +177,6 @@ fn do_echo(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_mkdir(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let create_parents = cmd.flags.contains("parents");
@@ -212,7 +201,6 @@ fn do_mkdir(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_rm(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let rm_dir = cmd.flags.contains("dir");
@@ -236,7 +224,6 @@ fn do_rm(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_cd(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -254,7 +241,6 @@ fn do_cd(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_pwd(cmd: &ParsedCommand) {
     let _logical = cmd.flags.contains("logical");
 
@@ -339,7 +325,6 @@ fn do_log(cmd: &ParsedCommand) {
     println!("Log level set to: {:?}", log::max_level());
 }
 
-#[cfg(feature = "fs")]
 fn do_mv(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -417,7 +402,6 @@ fn do_mv(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_touch(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -433,7 +417,6 @@ fn do_touch(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn do_cp(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let recursive = cmd.flags.contains("recursive");
@@ -456,7 +439,6 @@ fn do_cp(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn file_type_to_char(ty: FileType) -> char {
     if ty.is_char_device() {
         'c'
@@ -478,7 +460,6 @@ fn file_type_to_char(ty: FileType) -> char {
 }
 
 #[rustfmt::skip]
-#[cfg(feature = "fs")]
 const fn file_perm_to_rwx(mode: u32) -> [u8; 9] {
     let mut perm = [b'-'; 9];
     macro_rules! set {
@@ -497,7 +478,6 @@ const fn file_perm_to_rwx(mode: u32) -> [u8; 9] {
 
 pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     // ls Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "ls".to_string(),
         CommandNode::new("List directory contents")
@@ -516,7 +496,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // cat Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "cat".to_string(),
         CommandNode::new("Display file contents")
@@ -525,7 +504,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // echo Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "echo".to_string(),
         CommandNode::new("Display text")
@@ -539,7 +517,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // mkdir Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "mkdir".to_string(),
         CommandNode::new("Create directories")
@@ -553,7 +530,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // rm Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "rm".to_string(),
         CommandNode::new("Remove files and directories")
@@ -577,7 +553,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // cd Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "cd".to_string(),
         CommandNode::new("Change directory")
@@ -586,7 +561,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // pwd Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "pwd".to_string(),
         CommandNode::new("Print working directory")
@@ -639,7 +613,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // touch Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "touch".to_string(),
         CommandNode::new("Create empty files")
@@ -648,7 +621,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // cp Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "cp".to_string(),
         CommandNode::new("Copy files")
@@ -662,7 +634,6 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
     );
 
     // mv Command
-    #[cfg(feature = "fs")]
     tree.insert(
         "mv".to_string(),
         CommandNode::new("Move/rename files")

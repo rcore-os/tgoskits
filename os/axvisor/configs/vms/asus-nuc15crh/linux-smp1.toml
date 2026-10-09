@@ -20,9 +20,7 @@ phys_cpu_sets = [2]
 # The entry point of the kernel image.
 # Linux direct boot uses the Linux-specific boot stub at this GPA.
 entry_point = 0x8000
-# The location of image: "memory" | "fs".
-# The ASUS NUC15CRH HTTP Boot flow embeds the Linux guest images into AxVisor.
-image_location = "memory"
+# The ASUS NUC15CRH HTTP Boot flow packages the Linux guest images in the host initramfs.
 # The file path of the kernel image.
 kernel_path = "${workspace}/target/axbuild/board-assets/asus-nuc15crh-linux/qemu-x86_64/linux/linux-qemu"
 # The load address of the kernel image.

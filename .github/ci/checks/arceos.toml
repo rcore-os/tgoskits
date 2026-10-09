@@ -44,6 +44,13 @@ command = '''
 echo "==> arceos aarch64 GICv2 SMP4 default app boot"
 cargo xtask arceos qemu --arch aarch64 --smp 4 \
   --qemu-config os/arceos/configs/qemu/qemu-aarch64-gicv2-boot.toml
+echo "==> arceos aarch64 explicit NVMe root before application startup"
+cargo xtask image pack-initramfs test-suit/host-initramfs \
+  target/axbuild/host-initramfs/host-test.cpio
+cargo xtask image pull --arch aarch64
+FEATURES=block-root-smoke cargo xtask arceos qemu -p arceos-helloworld \
+  --arch aarch64 \
+  --qemu-config apps/arceos/helloworld/qemu-host-initramfs-root-aarch64.toml
 echo "==> arceos aarch64 test suites (Rust GICv2 SMP4 IPI + C GICv3 SMP4)"
 cargo xtask arceos test qemu --arch aarch64 --test-group rust
 cargo xtask arceos test qemu --arch aarch64 --test-group c

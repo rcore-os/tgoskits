@@ -42,15 +42,17 @@ impl Axvisor {
             explicit_uboot_config.clone(),
             SnapshotPersistence::Discard,
         )?;
-        let request = Self::board_test_request(request);
+        let mut request = Self::board_test_request(request);
 
         let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let base_uboot = match request.uboot_config.as_deref() {
             Some(_) => self.load_uboot_config(&request, &cargo).await?,
             None => Some(self.app.ensure_uboot_config_for_cargo(&cargo).await?),
         };
-        let board_config = self
+        let mut board_config = self
             .load_board_config(&cargo, Some(board_test_config.as_path()))
+            .await?;
+        self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
             .await?;
         let uboot = Some(merge_board_test_uboot_config(base_uboot, board_config));
         self.app
@@ -144,10 +146,12 @@ impl Axvisor {
                     None,
                     SnapshotPersistence::Discard,
                 )?;
-                let request = Self::board_test_request(request);
+                let mut request = Self::board_test_request(request);
                 let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
-                let board_config = self
+                let mut board_config = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
+                    .await?;
+                self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
                     .await?;
                 self.app
                     .board(
@@ -195,6 +199,12 @@ fn merge_board_test_uboot_config(
 ) -> UbootConfig {
     let mut uboot = base.unwrap_or_default();
     let test_uboot = UbootConfig::from_board_run_config(&board_test);
+    if test_uboot.boot.initramfs.is_some() {
+        uboot.boot.initramfs = test_uboot.boot.initramfs;
+    }
+    if test_uboot.boot.cmdline.is_some() {
+        uboot.boot.cmdline = test_uboot.boot.cmdline;
+    }
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
     }

@@ -13,14 +13,14 @@ Axvisor 命令在固定 hypervisor package 上叠加 VM 描述选择；Build Con
 
 | 命令 | 职责 |
 | --- | --- |
-| `build` | 构建 Axvisor ELF |
+| `build` | 构建 Axvisor ELF 并准备客户机资源归档 |
 | `qemu` | 准备 rootfs、读取 QEMU TOML 并启动 |
 | `uboot` / `board` | 通过 U-Boot 或远程板卡启动 |
 | `test qemu` / `test board` | QEMU 与板卡回归 |
 | `test uboot` | Axvisor 专属的 U-Boot 真实板卡测试 |
 | `defconfig <board>` / `config ls` | 选择或列出 `os/axvisor/configs/board/` 模板 |
 
-通用参数是 `--config`、`--arch`、`--target`、`--smp`、`--debug`；`--vmconfigs <PATH>` 可以重复传入。QEMU 另有 `--qemu-config` 和 `--rootfs`。
+通用参数是 `--config`、`--arch`、`--target`、`--smp`、`--debug`；`--vmconfig <PATH>（兼容 `--vmconfigs`）` 可以重复传入。QEMU 另有 `--qemu-config` 和 `--rootfs`。
 
 ## 2. 配置布局
 
@@ -35,7 +35,7 @@ os/axvisor/configs/
 ├── qemu/                  # host QEMU boot contract
 │   └── qemu-x86_64.toml
 └── vms/                   # guest VM 描述，按 qemu/或具体板卡组织
-    └── qemu/x86_64/linux-vmx-smp1.toml
+    └── qemu/x86_64/linux-smp1.toml
 ```
 
 请使用 `configs/vms/`（复数）路径。`configs/vm/` 是过时的文档路径，当前源码树不存在该目录。
@@ -44,31 +44,22 @@ Axvisor board Build Config 的额外字段为：
 
 ```toml
 target = "x86_64-unknown-none"
-features = ["ax-driver/nvme", "vmx"]
-vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
+features = ["ax-driver/nvme"]
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]
 ```
 
 ### 2.2 VM 选择
 
 CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则使用 Build Config 中的列表。
 相对 VM config 路径相对于 workspace 根解析；其中五个 `[kernel]` 镜像路径字段支持 Ostool
-变量，并按原 VM config 目录解析相对路径。最终解析后的配置写入 `AXVISOR_VM_CONFIGS`，以
-平台路径分隔符连接。
+变量，并按原 VM config 目录解析相对路径。解析后的配置用于生成宿主 initramfs 的 `/guest/builtin/configs` 和
+`/guest/builtin/images`，与 Cargo 构建请求分离。Axvisor 统一按文件路径加载启动资源。
 
 ## 3. 虚拟化后端
 
-`vmx` 和 `svm` 是 Axvisor x86 Build Config 的显式 capability。Intel 配置选择 `vmx`，AMD 配置选择 `svm`；`BuildInfo` 将选中的 feature 传入 Axvisor Cargo 构建，测试 QEMU TOML 则定义对应 CPU 扩展。
+x86 后端由 CPUID 在运行时选择；QEMU TOML 暴露 VMX 或 SVM 扩展，Build Config 不选择同名 Cargo feature。SVM 六个用例共用 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`，每个子目录提供自己的 VM 打包输入及 QEMU 配置。
 
-相应 QEMU CPU flags 也属于启动配置。例如仓库的 VMX 和 SVM 测试 build 配置分别位于：
-
-```text
-test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml
-test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
-```
-
-这两个首阶段块运行时 smoke 配置不启动 guest，而是保留 VMX/SVM
-宿主初始化并直接验证 Axvisor 宿主 NVMe 根文件系统。guest block ABI
-继续由独立 VM 配置维护，不属于 NVMe 运行时配置。
+Smoke 显式使用 NVMe 磁盘根，并验证宿主文件读写和双 VM 磁盘隔离。其余 SVM 用例从各自的宿主 initramfs 加载客户机。没有显式 `root=` 时保持内存根，不切根；没有块设备驱动或磁盘根也可直接运行客户机。
 
 ## 4. 默认配置
 
@@ -91,7 +82,7 @@ tmp/axbuild/config/axvisor/build-<target>.toml
 cargo xtask axvisor qemu \
   --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
 
-# x86 VMX 和 SVM smoke 验证宿主能力与宿主 NVMe 根文件系统
+# x86 VMX 和 SVM smoke 验证宿主 NVMe 与双 VM 磁盘隔离
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
 

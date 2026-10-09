@@ -72,7 +72,7 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 | `ubuntu-host` | 0 | 1 | 0 | 0 | Starry NixOS x86_64 Stage-2 |
 | `ubuntu-axvisor-lvz` | 1 | 0 | 0 | 0 | AxVisor LoongArch QEMU 套件 |
 | `kvm-intel` | 3 | 0 | 0 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
-| `kvm-amd` | 2 | 0 | 0 | 0 | SVM、ACPI/OVMF 和 PCI 枚举 |
+| `kvm-amd` | 1 | 0 | 0 | 0 | SVM smoke、direct/OVMF ACPI、PCI 枚举和 PCI block RW/RO |
 | `board` | 11 | 0 | 2 | 8 | 主 CI、AxVisor nightly 和性能清单中的板卡场景 |
 
 修改清单时应同步更新这张表。`qcs` 在普通外部 fork 上回退为托管环境，表中仍按声明的 profile 分类；它不表示外部 fork 可以使用组织的 QCS 机器。
@@ -96,8 +96,7 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 | `kvm-intel` | `test-axvisor-self-hosted-x86-64-vmx-smoke-pci-enumeration` | VMX smoke、通用 PCI 枚举 |
 | `kvm-intel` | `test-axloader-http-smoke` | AxLoader 的 x86_64 UEFI HTTP 启动 |
 | `kvm-intel` | `test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx` | direct ACPI、MP fallback、OVMF ACPI |
-| `kvm-amd` | `test-axvisor-self-hosted-x86-64-svm-smoke-acpi` | SVM smoke、direct ACPI、OVMF ACPI |
-| `kvm-amd` | `test-axvisor-x86-64-pci-enumeration-svm` | SVM 通用 PCI 枚举 |
+| `kvm-amd` | `test-axvisor-self-hosted-x86-64-svm` | SVM smoke、direct ACPI、OVMF ACPI、PCI 枚举、PCI block RW/RO；一次构建运行六用例 |
 
 `require_kvm` 只让执行器检查 `/dev/kvm` 可读写，并未完整验证 CPU 虚拟化特性、嵌套虚拟化、固件镜像或 guest 能力。预检通过后仍可能在特定启动场景失败，应以相应 case 的日志定位。
 
@@ -141,10 +140,11 @@ StarryOS guest 和 AxVisor + Linux guest 标记 `nightly_only`，只由 AxVisor 
 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`；AxVisor Linux guest 通过
 `sudo -S env FEETECH_DEV=auto` 运行同一入口。它们使用原 USB 摄像头 `0ac8:0346` 和
 USB 控制器 `1a86:55d3`，不使用 SoC UART6 `/dev/ttyS6`，也不在 VM 配置中注入额外的
-UART6 设备选择；USB 控制器仍可能在系统中呈现 USB 串口节点。AxVisor 的两条检查分别使用
-`image_location = "memory"`（StarryOS，当前 checkout 构建）和
-`image_location = "fs"`（Linux，`/guest/linux/orangepi-5-plus-6.1.99`、
-`root=/dev/mmcblk1p2`、`console=ttyS2`）。real Linux 使用 USB 机器人板实测的
+UART6 设备选择；USB 控制器仍可能在系统中呈现 USB 串口节点。AxVisor 的两条检查都从文件
+加载客户机：StarryOS 使用当前 checkout 构建的内核，由 `vm_configs` 装入宿主 initramfs
+并安装到 `/guest/builtin/images`；Linux 使用板卡已有的
+`/guest/linux/orangepi-5-plus-6.1.99`、`root=/dev/mmcblk1p2`、`console=ttyS2`。
+real Linux 使用 USB 机器人板实测的
 `/dev/mmcblk1p2`；virtual 普通板仍为 `/dev/mmcblk0p2`。
 
 所有板卡检查都依赖人工部署：CI 不下载、编译、打包或部署应用。virtual 包由

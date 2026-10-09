@@ -226,7 +226,7 @@ def check_websocket():
     websocket = expect_upgrade("/ws/axvisor", 101)
     receive_until(websocket, b"Welcome to AxVisor Browser Shell!")
     websocket.send_binary(b"help\r")
-    help_output = receive_until(websocket, b"axvisor:$ ")
+    help_output = receive_until(websocket, b"axvisor:/$ ")
     if b"ArceOS Shell - Available Commands:" not in help_output:
         raise AssertionError("WebSocket help output was incomplete")
     print("  browser console probe: Axvisor WebSocket -> interactive")
@@ -235,7 +235,7 @@ def check_websocket():
         websocket.send_binary(b"x")
         time.sleep(BURST_CHARACTER_INTERVAL)
     websocket.send_binary(b"\r")
-    burst_output, burst_frames = receive_until_counting_frames(websocket, b"axvisor:$ ")
+    burst_output, burst_frames = receive_until_counting_frames(websocket, b"axvisor:/$ ")
     if b"x" * BURST_CHARACTER_COUNT not in burst_output:
         raise AssertionError("WebSocket burst output lost or reordered echoed bytes")
     if burst_frames > BURST_FRAME_LIMIT:

@@ -8,7 +8,7 @@ use super::QemuConfig;
 
 #[derive(Deserialize)]
 struct HostInitramfsFixture {
-    source: String,
+    source: Option<String>,
     #[serde(default)]
     init_source: Option<String>,
 }
@@ -25,14 +25,21 @@ pub(crate) fn prepare_host_initramfs(
     if !manifest.is_file() {
         return Ok(());
     }
+    let fixture: HostInitramfsFixture = toml::from_str(&fs::read_to_string(&manifest)?)
+        .with_context(|| format!("failed to parse {}", manifest.display()))?;
+    let Some(source_path) = &fixture.source else {
+        ensure!(
+            fixture.init_source.is_none(),
+            "init_source requires a fixture source directory"
+        );
+        return Ok(());
+    };
     ensure!(
         qemu.boot.initramfs.is_none(),
         "{} must not also set initramfs in qemu config",
         manifest.display()
     );
-    let fixture: HostInitramfsFixture = toml::from_str(&fs::read_to_string(&manifest)?)
-        .with_context(|| format!("failed to parse {}", manifest.display()))?;
-    let source = workspace_root.join(&fixture.source);
+    let source = workspace_root.join(source_path);
     ensure!(
         source.is_dir(),
         "missing initramfs source {}",

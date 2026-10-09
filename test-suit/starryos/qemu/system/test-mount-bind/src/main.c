@@ -1,10 +1,13 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define BUF_SIZE 65536
@@ -21,6 +24,96 @@ static int has_mount_option(const char *options, const char *expected) {
             return 1;
         }
         option = separator ? separator + 1 : NULL;
+    }
+    return 0;
+}
+
+/* Read through the real procfs boundary after changing the process root.
+ * The namespace still contains the original root and /bind_src mounts. */
+static int check_rooted_mounts(const char *path, int mountinfo) {
+    int fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
+    if (fd < 0) {
+        perror(path);
+        return 1;
+    }
+    char buf[BUF_SIZE];
+    size_t used = 0;
+    for (;;) {
+        long n = syscall(SYS_read, fd, buf + used, sizeof(buf) - 1 - used);
+        if (n < 0) {
+            perror("read rooted mounts");
+            close(fd);
+            return 1;
+        }
+        if (n == 0) {
+            break;
+        }
+        used += (size_t)n;
+        if (used == sizeof(buf) - 1) {
+            fprintf(stderr, "FAIL: rooted mount table exceeds buffer\n");
+            close(fd);
+            return 1;
+        }
+    }
+    close(fd);
+    buf[used] = '\0';
+    int root_count = 0, proc_count = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(buf, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char point[4096];
+        int fields = mountinfo
+            ? sscanf(line, "%*s %*s %*s %*s %4095s", point)
+            : sscanf(line, "%*s %4095s", point);
+        if (fields != 1) {
+            fprintf(stderr, "FAIL: malformed rooted mount row: %s\n", line);
+            return 1;
+        }
+        if (strcmp(point, "/") == 0) {
+            root_count++;
+        } else if (strcmp(point, "/proc") == 0) {
+            proc_count++;
+        } else {
+            fprintf(stderr, "FAIL: mount outside chroot is visible: %s\n", point);
+            return 1;
+        }
+    }
+    if (root_count != 1 || proc_count != 1) {
+        fprintf(stderr, "FAIL: %s has %d root rows and %d proc rows\n",
+                path, root_count, proc_count);
+        return 1;
+    }
+    return 0;
+}
+
+static int check_chroot_mount_visibility(void) {
+    if (mkdir("/bind_dst/proc", 0755) < 0 ||
+        mount("/proc", "/bind_dst/proc", NULL, MS_BIND, NULL) < 0) {
+        perror("prepare chroot procfs");
+        return 1;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        perror("fork chroot observer");
+        return 1;
+    }
+    if (child == 0) {
+        if (syscall(SYS_chroot, "/bind_dst") < 0 || chdir("/") < 0) {
+            perror("chroot bind destination");
+            _exit(1);
+        }
+        _exit(check_rooted_mounts("/proc/self/mountinfo", 1) ||
+              check_rooted_mounts("/proc/mounts", 0));
+    }
+    int status;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "FAIL: rooted mount visibility\n");
+        return 1;
+    }
+    if (umount("/bind_dst/proc") < 0 || rmdir("/bind_dst/proc") < 0) {
+        perror("cleanup chroot procfs");
+        return 1;
     }
     return 0;
 }
@@ -122,6 +215,10 @@ int main(void) {
 
     if (!found) {
         fprintf(stderr, "FAIL: /bind_dst not found in mountinfo\n");
+        return 1;
+    }
+
+    if (check_chroot_mount_visibility() != 0) {
         return 1;
     }
 

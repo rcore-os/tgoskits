@@ -34,7 +34,7 @@ type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
 pub const SYMLINKS_MAX: usize = 40;
 
 /// Global root filesystem context, initialized once during [`init_filesystems`](crate::init_filesystems).
-pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
+pub static ROOT_FS_CONTEXT: OnceLock<Arc<Mutex<FsContext>>> = OnceLock::new();
 
 /// Registry of all live `FsContext` instances (weak references).
 ///
@@ -137,6 +137,7 @@ scope_local::scope_local! {
         ROOT_FS_CONTEXT
             .get()
             .expect("Root FS context not initialized")
+            .lock()
             .clone()
             .into_shared()
     );

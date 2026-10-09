@@ -9,7 +9,6 @@ phys_cpu_sets = [1]
 entry_point = 0x4008_0000
 kernel_path = "arceos-aarch64.bin"
 kernel_load_addr = 0x4008_0000
-image_location = "fs"
 memory_regions = [
     [0x8000_0000, 0x4000_0000, 0x7, 1],
 ]

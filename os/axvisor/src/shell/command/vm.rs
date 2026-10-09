@@ -26,17 +26,14 @@ use std::{
     vec::Vec,
 };
 
-#[cfg(feature = "fs")]
 use anyhow::Context;
 use axvm::{VmStatus, VmVcpuState};
-#[cfg(feature = "fs")]
 use std::fs::read_to_string;
 
 use crate::shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand};
 
 /// Check if a VM can transition to Running state.
 /// Returns Ok(()) if the transition is valid, Err with a message otherwise.
-#[cfg(feature = "fs")]
 fn can_start_vm(status: VmStatus) -> Result<(), &'static str> {
     match status {
         VmStatus::Ready | VmStatus::Stopped => Ok(()),
@@ -164,7 +161,6 @@ fn vm_help(_cmd: &ParsedCommand) {
     println!("Use 'vm <command> --help' for more information on a specific command.");
 }
 
-#[cfg(feature = "fs")]
 fn vm_create(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -215,7 +211,6 @@ fn vm_create(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn vm_start(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
     let detach = cmd.flags.contains("detach");
@@ -278,7 +273,6 @@ fn vm_start(cmd: &ParsedCommand) {
 }
 
 /// Start a single VM and block until its start postcondition holds.
-#[cfg(feature = "fs")]
 fn start_single_vm(vm_id: usize) -> anyhow::Result<()> {
     let Some(vm) = crate::manager::manager().get(vm_id) else {
         anyhow::bail!("VM[{vm_id}] not found");
@@ -293,7 +287,6 @@ fn start_single_vm(vm_id: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "fs")]
 fn start_vm_by_id(vm_id: usize, attach_console: bool) {
     match start_single_vm(vm_id) {
         Ok(()) => {
@@ -624,7 +617,6 @@ fn vm_console(cmd: &ParsedCommand) {
     }
 }
 
-#[cfg(feature = "fs")]
 fn vm_list_simple() {
     let vms = crate::manager::manager().list();
     println!("ID    NAME           STATE      VCPU   MEMORY");
@@ -1065,7 +1057,6 @@ fn show_vm_full_details(vm_id: usize) {
 
 /// Build the VM command tree and register it.
 pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
-    #[cfg(feature = "fs")]
     let create_cmd = CommandNode::new("Create a new virtual machine")
         .with_handler(vm_create)
         .with_usage("vm create [OPTIONS] <CONFIG_FILE>...")
@@ -1090,7 +1081,6 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
                 .with_long("force"),
         );
 
-    #[cfg(feature = "fs")]
     let start_cmd = CommandNode::new("Start a virtual machine")
         .with_handler(vm_start)
         .with_usage("vm start [OPTIONS] [VM_ID...]")
@@ -1183,7 +1173,6 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
             CommandNode::new("Show VM help").with_handler(vm_help),
         );
 
-    #[cfg(feature = "fs")]
     {
         vm_node = vm_node
             .add_subcommand("create", create_cmd)

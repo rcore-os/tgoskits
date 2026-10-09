@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(efi)]
 use crate::mem::{MemoryDescriptor, MemoryType, add_memory_descriptor};
 
+static PUBLISHED: AtomicBool = AtomicBool::new(false);
 static START: AtomicUsize = AtomicUsize::new(0);
 static END: AtomicUsize = AtomicUsize::new(0);
 static RECLAIMABLE: AtomicBool = AtomicBool::new(false);
@@ -28,8 +29,24 @@ pub fn initramfs_range() -> Option<InitramfsRange> {
     })
 }
 
+/// Transfers the reserved archive to its sole runtime consumer.
+///
+/// The caller must finish every archive borrow before reclaiming owned pages.
+/// Subsequent callers and metadata queries cannot observe the consumed range.
+pub fn take_initramfs_range() -> Option<InitramfsRange> {
+    let end = END.swap(0, Ordering::AcqRel);
+    (end != 0).then(|| InitramfsRange {
+        start: START.load(Ordering::Relaxed),
+        end,
+        reclaimable: RECLAIMABLE.load(Ordering::Relaxed),
+    })
+}
+
 pub(crate) fn publish(start: usize, end: usize, reclaimable: bool) {
-    assert!(start < end && END.load(Ordering::Relaxed) == 0);
+    // Only the boot CPU publishes, before secondary CPUs or archive consumers
+    // can run. AArch64 exclusive atomics cannot be used before MMU enablement.
+    assert!(start < end && !PUBLISHED.load(Ordering::Relaxed));
+    PUBLISHED.store(true, Ordering::Relaxed);
     RECLAIMABLE.store(reclaimable, Ordering::Relaxed);
     START.store(start, Ordering::Relaxed);
     END.store(end, Ordering::Release);

@@ -6,7 +6,7 @@ fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize g
 success_regex = ['(?m)^VCPU_PERF_LOAD_READY cpu=0\s*$']
 
 [[shell_check_steps]]
-# AxVisor now starts in its shell. This no-filesystem build has no '/' in its prompt.
-shell_prefix = "axvisor:$"
+# This diskless build uses the host initramfs and its filesystem shell prompt.
+shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 success_regex = ['(?m)^(?:\[VM 1\] )?VCPU_PERF_PASS\s*$']

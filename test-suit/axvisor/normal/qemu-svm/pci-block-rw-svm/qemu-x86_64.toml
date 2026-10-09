@@ -18,17 +18,23 @@ args = [
   "1G",
   "-net",
   "none",
+  "-vga",
+  "none",
 ]
 timeout = 600
 fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
-  "(?m)^AXVISOR_X86_ACPI_FAILED\\s*$",
+  "(?i)page fault",
+  "(?i)vm exit failure",
+  "(?i)failed to initialize guest VM",
+  "(?m)^AXVISOR_X86_PCI_BLOCK_FAILED\\s*$",
   "(?m)^AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN\\s*$",
 ]
 to_bin = true
 uefi = true
 
 [[shell_check_steps]]
-shell_prefix = "axvisor:$"
+shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
-success_regex = ["(?m)^AXVISOR_X86_OVMF_ACPI_PASSED\\s*$"]
+success_regex = ["(?m)^AXVISOR_X86_PCI_BLOCK_RW_PASSED\\s*$"]

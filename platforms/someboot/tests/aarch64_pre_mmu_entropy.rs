@@ -12,9 +12,10 @@ const SYNCHRONIZED_INIT_CALL: &str =
     "<kernutil::staticcell::StaticCell<core::option::Option<someboot::entropy::BootEntropy>>>::init>";
 const SINGLE_CORE_INIT: &str =
     "<kernutil::staticcell::StaticCell<core::option::Option<someboot::entropy::BootEntropy>>>::init_single_core";
+const PUBLISH_PAYLOAD: &str = "someboot::boot_payload::publish";
 
 #[test]
-fn boot_entropy_publication_avoids_exclusive_atomics_before_mmu_enable() {
+fn boot_publication_avoids_exclusive_atomics_before_mmu_enable() {
     let temporary_directory = TemporaryDirectory::new();
     let archive = build_aarch64_archive(temporary_directory.path());
     let disassembly = run_output(
@@ -31,6 +32,11 @@ fn boot_entropy_publication_avoids_exclusive_atomics_before_mmu_enable() {
     assert!(
         !capture.contains(SYNCHRONIZED_INIT_CALL),
         "pre-MMU entropy publication must not call synchronized StaticCell::init:\n{capture}"
+    );
+    let publish = function_disassembly(&disassembly, PUBLISH_PAYLOAD);
+    assert!(
+        !publish.contains("::swap") && !publish.contains("::compare_exchange"),
+        "pre-MMU host payload publication must not use exclusive atomics:\n{publish}"
     );
 }
 
@@ -59,16 +65,23 @@ fn build_aarch64_archive(target_directory: &Path) -> PathBuf {
         "compile someboot for AArch64",
     );
 
-    let dependency_directory = target_directory.join(TARGET).join("debug").join("deps");
-    let mut archives = fs::read_dir(&dependency_directory)
-        .expect("read the isolated AArch64 dependency directory")
-        .map(|entry| entry.expect("read an archive directory entry").path())
-        .filter(|path| {
-            path.file_name()
+    let mut directories = vec![target_directory.to_path_buf()];
+    let mut archives = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).expect("read isolated build directory") {
+            let entry = entry.expect("read an archive directory entry");
+            let path = entry.path();
+            if entry.file_type().expect("read archive file type").is_dir() {
+                directories.push(path);
+            } else if path
+                .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with("libsomeboot-") && name.ends_with(".rlib"))
-        })
-        .collect::<Vec<_>>();
+            {
+                archives.push(path);
+            }
+        }
+    }
     assert_eq!(
         archives.len(),
         1,

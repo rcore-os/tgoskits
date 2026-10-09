@@ -169,6 +169,9 @@ impl From<Kstat> for statx {
         statx.stx_ino = value.ino as _;
         statx.stx_size = value.size as _;
         statx.stx_blocks = value.blocks as _;
+        let dev = DeviceId(value.dev);
+        statx.stx_dev_major = dev.major();
+        statx.stx_dev_minor = dev.minor();
         statx.stx_rdev_major = value.rdev.major();
         statx.stx_rdev_minor = value.rdev.minor();
 
@@ -182,9 +185,6 @@ impl From<Kstat> for statx {
         statx.stx_atime = time_to_statx(&value.atime);
         statx.stx_ctime = time_to_statx(&value.ctime);
         statx.stx_mtime = time_to_statx(&value.mtime);
-
-        statx.stx_dev_major = (value.dev >> 32) as _;
-        statx.stx_dev_minor = value.dev as _;
 
         statx
     }

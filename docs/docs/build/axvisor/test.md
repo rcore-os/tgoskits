@@ -14,7 +14,7 @@ Axvisor 复用了与 [StarryOS 测试](../starry/test) 相同的用例发现、�
 Axvisor 将 QEMU、U-Boot 和板卡测试置于同一入口下，但每种模式选择不同的运行资产和结果判定路径。命令参数如下，`test uboot` 是三套系统中唯一的 U-Boot 测试接口。
 
 ```text
-cargo xtask axvisor test qemu  [--test-group <g>] [--test-case <c>] [--list]
+cargo xtask axvisor test qemu  [--test-group <g>] [--test-case <c>[,<c>...]]... [--list]
 cargo xtask axvisor test uboot --board <type> [--guest <image>] [--uboot-config <cfg>]   # Axvisor 独有
 cargo xtask axvisor test board --board <type> --server <h> --port <p> [--test-case <c>] [--list]
 ```
@@ -53,12 +53,11 @@ flowchart TD
     C --> D["prepare_qemu_cases<br/>逐 case 加载 QEMU config + 校验"]
     D --> E["prepare_case_build_groups<br/>按 build config 分组"]
     E --> F["Phase 1: 编译全部 build group"]
-    F --> F1["逐 group：ensure_qemu_rootfs_ready"]
-    F1 --> F2["load_cargo_config + app.build"]
+    F --> F2["逐 group：load_cargo_config + app.build"]
     F2 --> G["Phase 2: 运行全部 QEMU 用例"]
     G --> H["逐 case：run_qemu_case"]
     H --> I["load_qemu_case_config<br/>保留显式步骤并调整 timeout"]
-    I --> J["prepare_case_assets<br/>rootfs 副本/overlay"]
+    I --> J["prepare_case_assets + 客户机资源打包<br/>rootfs 副本/overlay + 宿主 cpio"]
     J --> K["patch_qemu_rootfs_path(Discard)"]
     K --> L["run_qemu_with_prepared_case_assets"]
     L --> M{"success_regex?"}
@@ -75,8 +74,8 @@ flowchart TD
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
 | 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/`，默认 group 为 `normal` |
-| VM 配置 | `qemu_group_build_context()` | 读取 axbuild 已解析并写入 `AXVISOR_VM_CONFIGS` 的 VM 配置路径 |
-| rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 每个 build group 编译前准备当前 arch 的 managed rootfs |
+| VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表 |
+| rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
@@ -90,7 +89,7 @@ Axvisor 是唯一支持 U-Boot 测试模式的子系统。`cargo xtask axvisor t
 flowchart TD
     A["test_uboot(args)"] --> B["discover_uboot_test_group<br/>按 board + guest 定位 case"]
     B --> C["prepare_request<br/>加载 build config"]
-    C --> D["load_cargo_config"]
+    C --> D["load_cargo_config + prepare_guest_payload"]
     D --> E{"有显式 --uboot-config?"}
     E -->|是| F["load_uboot_config"]
     E -->|否| G["ensure_uboot_config_for_cargo<br/>自动发现"]
@@ -130,7 +129,7 @@ flowchart TD
 
 `--test-case` 和 `--board` 支持按用例名和板卡名过滤；`--list` 列出所有 board test group。发现算法通过 `discover_board_test_groups()` 递归扫描，board 配置按板卡名命名（`board-{name}.toml`），通过 `nearest_build_wrapper()` 向上查找最近的构建配置。
 
-ROCK 4D 用例从板卡文件系统加载 BSP kernel 和 guest DTB，运行前必须单独准备这两项持久化资产。完整命令见 [ROCK 4D Linux Guest](./rock-4d)。
+ROCK 4D 用例将构建机上的 BSP kernel 和 guest DTB 打入宿主归档，运行前必须准备这两项本地资产。完整命令见 [ROCK 4D Linux Guest](./rock-4d)。
 
 ## 4. 资产管线
 
@@ -160,7 +159,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-group normal \
 
 两者共用 `test-suit/axvisor/normal/qemu-acpi-ovmf/x86-linux-acpi-ovmf.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。
 
-两个 case 均已加入 CI 运行：`ovmf-acpi-vmx` 在 self-hosted Intel/KVM 宿主上运行（见 `.github/workflows/ci.yml` 中 "Test axvisor x86_64 ACPI direct and OVMF boot (vmx)" 任务），`ovmf-acpi-svm` 在 self-hosted AMD/KVM 宿主上运行（见 "Test axvisor self-hosted x86_64 (svm smoke + ACPI)" 任务）。
+两个 case 均已加入 CI 运行：`ovmf-acpi-vmx` 在 self-hosted Intel/KVM 宿主上运行（见 `.github/workflows/ci.yml` 中 "Test axvisor x86_64 ACPI direct and OVMF boot (vmx)" 任务），`ovmf-acpi-svm` 在 self-hosted AMD/KVM 宿主上运行（见单个 `kvm-amd` SVM 任务）。
 
 资产准备复用 Ostool 的 x86_64 OVMF 缓存，可先用以下命令确认来源路径：
 
@@ -175,3 +174,20 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 同一 MMCONFIG 检查也由 x86 `pci-enumeration` initramfs 执行；该用例继续通过 ECAM 验证客户机 PCI endpoint 枚举。Q35 固定 ECAM 的资源所有权、PCIEXBAR 只读语义及 direct/OVMF firmware 描述见 [x86 Q35 ECAM 设计](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/axvisor-x86-q35-ecam.md)。
 
 当前用例仍由 fw_cfg 提供 Linux kernel、initramfs 和命令行。它不证明 OVMF 已枚举 Axvisor guest PCI 启动盘，也不证明 Linux 经 guest ESP 或 EFI stub 启动。
+
+## 6. SVM 合并任务
+
+六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，包含 NVMe 和 `vpci-test-device`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按构建配置路径复用内核；各次启动打印相同内核哈希和各自的归档哈希。
+
+### 6.1 连续运行
+
+`--test-case` 支持重复参数及逗号列表；单例失败后继续其余用例，`QemuTestSummary` 汇总并返回非零。一次运行全部 SVM 的命令为：
+
+```bash
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-case smoke-svm,direct-acpi-svm,ovmf-acpi-svm,pci-enumeration-svm,pci-block-rw-svm,pci-block-ro-svm
+```
+
+### 6.2 持续集成
+
+`.github/ci/checks/axvisor.toml` 只生成一个 `kvm-amd` SVM 作业，`cache_key = ""`，上限 120 分钟。Smoke 使用 `root=/dev/nvme0n1 rw`，同时检查宿主磁盘读写和双 VM 磁盘隔离；其他用例从内存根加载对应归档。不同构建组保留各自产物。

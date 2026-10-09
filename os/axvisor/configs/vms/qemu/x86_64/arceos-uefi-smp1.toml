@@ -18,10 +18,8 @@ phys_cpu_sets = [1]
 [kernel]
 # The entry point of the UEFI firmware reset vector.
 entry_point = 0xffff_fff0
-# The location of image: "memory" | "fs".
-image_location = "fs"
 # The file path of the ArceOS x86_64 UEFI guest image.
-kernel_path = "/guest/arceos/arceos-x86_64-uefi.bin"
+kernel_path = "${env:AXVISOR_GUEST_ASSETS}/arceos/arceos-x86_64-uefi.bin"
 # The load address of the guest image.
 kernel_load_addr = 0x20_0000
 # Enable external firmware image loading.
@@ -29,7 +27,7 @@ enable_bios = true
 # Select UEFI firmware flow instead of the legacy axvm-bios multiboot trampoline.
 boot_protocol = "uefi"
 # The file path of the UEFI firmware image, for example OVMF_CODE.fd.
-uefi_firmware_path = "/guest/arceos/OVMF_CODE.fd"
+uefi_firmware_path = "${env:AXVISOR_GUEST_ASSETS}/arceos/OVMF_CODE.fd"
 # Load the UEFI firmware near the top of the 32-bit address space.
 bios_load_addr = 0xffc0_0000
 

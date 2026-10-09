@@ -1,4 +1,4 @@
-features = ["ax-driver/nvme", "fs"]
+features = ["ax-driver/nvme"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [

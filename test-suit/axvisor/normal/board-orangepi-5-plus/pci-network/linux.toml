@@ -7,12 +7,11 @@ phys_cpu_ids = [0]
 
 [kernel]
 entry_point = 0x2_4008_0000
-image_location = "fs"
 kernel_load_addr = 0x2_4008_0000
 # Use the board's Linux 6.1.99 image and matching rootfs modules.
-kernel_path = "/boot/Image"
+kernel_path = "${env:AXVISOR_GUEST_ASSETS}/boot/Image"
 dtb_load_addr = 0x2_4000_0000
-ramdisk_path = "/guest/linux/initramfs.cpio"
+ramdisk_path = "${env:AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio"
 ramdisk_load_addr = 0xc000_0000
 # Physical PCI MSI/ITS assignment is not wired into the AxVM host backend.
 # This case exercises the PCIe controller's physical INTx cascade instead.

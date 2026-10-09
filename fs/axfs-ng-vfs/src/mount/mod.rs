@@ -390,10 +390,26 @@ impl Mountpoint {
         location_in_parent: Option<Location>,
         source: &str,
     ) -> Arc<Self> {
+        Self::new_with_device_source(
+            fs,
+            location_in_parent,
+            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source,
+        )
+    }
+
+    /// Creates a mountpoint with an explicitly selected filesystem device
+    /// number. The mount identifier remains independently allocated.
+    pub fn new_with_device_source(
+        fs: &Filesystem,
+        location_in_parent: Option<Location>,
+        device: u64,
+        source: &str,
+    ) -> Arc<Self> {
         let result = Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
-            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            device,
             source.to_owned(),
             fs.mount_state.clone(),
         );
@@ -408,6 +424,12 @@ impl Mountpoint {
     /// Creates the root mountpoint with the source name exposed through mount metadata.
     pub fn new_root_with_source(fs: &Filesystem, source: &str) -> Arc<Self> {
         Self::new_with_source(fs, None, source)
+    }
+
+    /// Creates a root mountpoint with an explicitly selected filesystem
+    /// device number.
+    pub fn new_root_with_device_source(fs: &Filesystem, device: u64, source: &str) -> Arc<Self> {
+        Self::new_with_device_source(fs, None, device, source)
     }
 
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
@@ -550,13 +572,12 @@ impl Mountpoint {
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let new_root = new_root_mp.root_location();
-        // put_old must be strictly below the new root in the resolved mount
-        // tree. This rejects both sibling locations and new_root itself.
-        if !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
-            || put_old.ptr_eq(&new_root)
+        if Arc::ptr_eq(self, new_root_mp)
+            || !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
             || !put_old.is_descendant_of(&new_root)
+            || !new_root.is_descendant_of(&self.root_location())
         {
             return Err(VfsError::InvalidInput);
         }
@@ -566,34 +587,46 @@ impl Mountpoint {
             return Err(VfsError::ResourceBusy);
         }
 
-        // 1. Detach new_root from old root's children and clear the old mount
-        //    slot (where new_root was attached in the old root).
-        let (removed_child, old_location) = {
-            let mut new_root_loc = new_root_mp.location.lock();
-            let removed_child = new_root_loc.as_ref().and_then(|old_loc| {
-                old_loc
-                    .mountpoint
-                    .children
-                    .lock()
-                    .remove(&old_loc.entry.key())
-            });
-            // new_root becomes the global root.
-            let old_location = new_root_loc.take();
-            (removed_child, old_location)
-        };
-        drop(removed_child);
-        drop(old_location);
-
-        // 2. Attach old root at put_old under new_root.
+        let new_parent = new_root_mp.location().ok_or(VfsError::InvalidInput)?;
+        let old_parent = self.location();
+        if put_old.mountpoint().is_shared()
+            || new_parent.mountpoint().is_shared()
+            || old_parent
+                .as_ref()
+                .is_some_and(|parent| parent.mountpoint().is_shared())
         {
-            new_root_mp
+            return Err(VfsError::InvalidInput);
+        }
+        let removed_new = new_parent
+            .mountpoint
+            .children
+            .lock()
+            .remove(&new_parent.entry.key());
+        let removed_old = old_parent.as_ref().and_then(|parent| {
+            parent
+                .mountpoint
                 .children
                 .lock()
-                .insert(put_old.entry.key(), self.clone());
-            *self.location.lock() = Some(put_old.clone());
+                .remove(&parent.entry.key())
+        });
+        if let Some(parent) = &old_parent {
+            parent
+                .mountpoint
+                .children
+                .lock()
+                .insert(parent.entry.key(), new_root_mp.clone());
         }
-
+        let previous_new = core::mem::replace(&mut *new_root_mp.location.lock(), old_parent);
+        let previous_old = self.location.lock().replace(put_old.clone());
+        new_root_mp
+            .children
+            .lock()
+            .insert(put_old.entry.key(), self.clone());
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        drop(topology);
+        // Final mount leases can clear caches and release pages; never run
+        // those destructors while serializing topology mutations.
+        drop((removed_new, removed_old, previous_new, previous_old));
         Ok(())
     }
 
@@ -661,11 +694,12 @@ impl Mountpoint {
     /// Walk the mount tree rooted at `self`, collecting `(mount_id, parent_id,
     /// mountpoint)` tuples in DFS order.
     ///
-    /// `mount_id` is the mount's [`device()`](Self::device) (unique per mount,
-    /// assigned incrementally from `DEVICE_COUNTER` — the root mount is 1).
+    /// `mount_id` is the mount's independent identifier. `device()` is the
+    /// filesystem device number and may be shared by bind mounts or selected
+    /// explicitly for a physical root.
     /// `parent_id` for the root mount is itself (Linux convention:
     /// `mount_id == parent_id` for the root mount); for non-root mounts it is
-    /// the parent mount's `device()`.
+    /// the parent mount's `mount_id()`.
     ///
     /// Lock safety: children are collected into a `Vec` by cloning the `Arc`s
     /// outside the lock before recursion, so no `RawSpinLock` guard is held during
@@ -961,6 +995,19 @@ impl Location {
         Arc::ptr_eq(&self.mountpoint, &other.mountpoint) && self.entry.ptr_eq(&other.entry)
     }
 
+    /// Returns the visible absolute path within a process root.
+    pub fn path_from(&self, root: &Self) -> VfsResult<PathBuf> {
+        let mut components = Vec::new();
+        let mut current = self.clone();
+        while !current.ptr_eq(root) {
+            components.push(current.name().into_owned());
+            current = current.parent().ok_or(VfsError::InvalidInput)?;
+        }
+        Ok(iter::once("/")
+            .chain(components.iter().map(String::as_str).rev())
+            .collect())
+    }
+
     /// Returns whether this resolved location is equal to or below `ancestor`.
     ///
     /// The walk follows [`Self::parent`], which crosses from a mount root into
@@ -984,8 +1031,8 @@ impl Location {
             .contains_key(&self.entry.key())
     }
 
-    /// See [`Mountpoint::effective_mountpoint`].
-    fn resolve_mountpoint(self) -> Self {
+    /// Follows mounts stacked directly over this location.
+    pub fn resolve_mountpoint(self) -> Self {
         let Some(mountpoint) = self
             .mountpoint
             .children
@@ -1213,11 +1260,22 @@ impl Location {
 
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
+        self.mount_with_device_source(fs, DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed), source)
+    }
+
+    /// Mounts a filesystem with an explicitly selected device number and
+    /// source name. Bind mounts keep the source mount's device number.
+    pub fn mount_with_device_source(
+        &self,
+        fs: &Filesystem,
+        device: u64,
+        source: &str,
+    ) -> VfsResult<Arc<Mountpoint>> {
         // Filesystem callbacks may acquire sleepable locks. Prepare the
         // unpublished mount before entering the non-preemptible topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
-        let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
+        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source);
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;

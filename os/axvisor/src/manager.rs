@@ -2,12 +2,8 @@
 
 extern crate alloc;
 
-#[cfg(not(feature = "fs"))]
-use alloc::vec::Vec;
-#[cfg(feature = "fs")]
 use alloc::{string::String, vec, vec::Vec};
 
-#[cfg(feature = "fs")]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
 #[cfg(not(feature = "no-auto-start"))]
@@ -40,9 +36,10 @@ impl AxvmManager {
         Ok(manager)
     }
 
-    pub fn init_default_vms(&self) {
-        crate::config::init_guest_vms();
+    pub fn init_default_vms(&self) -> Result<()> {
+        crate::config::init_guest_vms()?;
         self.release_host_filesystem_for_guest_passthrough();
+        Ok(())
     }
 
     #[cfg(not(feature = "no-auto-start"))]
@@ -69,7 +66,6 @@ impl AxvmManager {
         }
     }
 
-    #[cfg(any(feature = "fs", feature = "http-axum"))]
     pub fn create_vm_from_toml(&self, raw_cfg: &str) -> Result<VmOperation<VmHandle>> {
         let plan = crate::config::prepare_guest_vm(raw_cfg)?;
         self.create_plan(plan)
@@ -96,7 +92,6 @@ impl AxvmManager {
             .context("stop VM")
     }
 
-    #[cfg(feature = "fs")]
     pub fn start_vm(&self, vm_id: VMId) -> Result<()> {
         self.require_vm(vm_id)?
             .start()?
@@ -141,13 +136,10 @@ impl AxvmManager {
             .ok_or_else(|| axvm::AxVmError::VmNotFound { vm_id }.into())
     }
 
-    #[cfg(all(
-        feature = "fs",
-        any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "loongarch64"
-        )
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
     ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
@@ -161,18 +153,14 @@ impl AxvmManager {
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 
-    #[cfg(not(all(
-        feature = "fs",
-        any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "loongarch64"
-        )
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
     )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.
-    #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs(config_dir: &str) -> Vec<String> {
         let mut configs = Vec::new();
 
@@ -235,13 +223,11 @@ impl AxvmManager {
         configs
     }
 
-    #[cfg(feature = "fs")]
     fn open_file(file_name: &str) -> Result<ax_std::fs::File> {
         ax_std::fs::File::open(file_name)
             .map_err(|error| anyhow!("open guest image file `{file_name}`: {error}"))
     }
 
-    #[cfg(feature = "fs")]
     pub fn file_size(file_name: &str) -> Result<usize> {
         Self::open_file(file_name)?
             .metadata()
@@ -249,7 +235,6 @@ impl AxvmManager {
             .map(|metadata| metadata.size() as usize)
     }
 
-    #[cfg(feature = "fs")]
     pub fn read_file_exact(file_name: &str, read_size: usize) -> Result<Vec<u8>> {
         use ax_std::io::Read;
 
@@ -261,7 +246,6 @@ impl AxvmManager {
         Ok(buffer)
     }
 
-    #[cfg(feature = "fs")]
     pub fn read_file(file_name: &str) -> Result<Vec<u8>> {
         let size = Self::file_size(file_name)?;
         Self::read_file_exact(file_name, size)

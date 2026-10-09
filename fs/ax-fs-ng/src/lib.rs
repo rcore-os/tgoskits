@@ -14,7 +14,7 @@ extern crate ax_runtime;
 #[macro_use]
 extern crate log;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use axfs_ng_vfs::{Filesystem, Location};
 pub use axfs_ng_vfs::{VfsError, VfsResult};
@@ -22,6 +22,7 @@ pub use axfs_ng_vfs::{VfsError, VfsResult};
 pub mod api;
 pub mod block;
 pub mod bootargs;
+pub mod bundle;
 mod error;
 pub mod file;
 pub mod fops;
@@ -74,51 +75,20 @@ pub enum FilesystemKind {
     Fat,
 }
 
-/// Initializes the filesystem subsystem from a runtime-selected block region.
-pub(crate) fn init_filesystem(
-    dev: Arc<BlockDeviceHandle>,
-    region: BlockRegion,
-    description: &str,
-    source: &str,
-) -> Location {
-    info!("Initialize filesystem subsystem...");
-    info!("  selected root device: {}", description);
-
-    let fs = fs::new_from_handle(dev, region).unwrap_or_else(|err| {
-        panic!(
-            "failed to initialize filesystem on {}: {err:?}",
-            description
-        )
-    });
-    finish_filesystem_init(fs, source)
-}
-
-pub(crate) fn init_detected_filesystem(
-    dev: Arc<BlockDeviceHandle>,
-    region: BlockRegion,
-    kind: FilesystemKind,
-    description: &str,
-    source: &str,
-) -> Location {
-    info!("Initialize filesystem subsystem...");
-    info!("  selected root device: {}", description);
-
-    let fs = fs::new_from_handle_with_kind(dev, region, kind).unwrap_or_else(|err| {
-        panic!(
-            "failed to initialize filesystem on {}: {err:?}",
-            description
-        )
-    });
-    finish_filesystem_init(fs, source)
-}
-
 fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location {
     info!("  filesystem type: {:?}", fs.name());
 
-    let mp = axfs_ng_vfs::Mountpoint::new_root_with_source(&fs, source);
+    // Keep an immutable namespace anchor; the actual root mount can then be
+    // pivoted and detached without invalidating the namespace itself.
+    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs");
+    anchor.set_readonly(true);
+    let mp = anchor
+        .root_location()
+        .mount_with_source(&fs, source)
+        .expect("initial filesystem mount");
     let root = mp.root_location();
     register_mounted_filesystem(fs);
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
+    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()).into_shared());
     root
 }
 

@@ -50,7 +50,7 @@ QEMU `hostfwd` 发 `GET /api/v1/ota/status` 才能证明客户端可访问。
 
 调试设备或中断缺失时，从 `DeviceModel::requirements()` 的一个资源槽，追踪到 `ResolvedDeviceGraph`，再追踪到扁平设备树或高级配置与电源接口计划及 `DeviceBuildContext`。运行时设备必须使用已解析地址和 `IrqLine.input()`。图保留的同一动态模型执行构建，所有 `ResourceClaimSet` 槽都成为租约后才能封装运行时。对 `console0`，先确认最终模型和固定绑定来自机器后备、宿主固件快照还是同标识用户覆盖。内存映射输入输出或端口输入输出退出只能执行一次可选分派；先 `find_*` 再第二次分派说明仍有陈旧路由。
 
-默认 `console0` 跟随宿主选定的调试串口：AArch64/RISC-V 从 FDT `/chosen/stdout-path`（或 earlycon）解析，x86/LoongArch 从 ACPI SPCR 解析，虚拟 UART 在客户机相同地址应答，物理串口仍归宿主。宿主未选定串口时使用 machine profile 的固定资源；已选定但描述无效时报错。`[[devices.virtual]]` 串口 model 的显式 `address` 优先：取消宿主节点身份和固定 IRQ，IRQ 由图分配；不同型号按显式 model 配置。核验 UART 修复时还要检查实际客户机内核来源：若 CI 构建了当前源码的 Starry 内核，测试配置必须使用对应 `image_location = "memory"` 和 `${workspace}` 路径，避免无版本板卡文件覆盖新内核。
+默认 `console0` 跟随宿主选定的调试串口：AArch64/RISC-V 从 FDT `/chosen/stdout-path`（或 earlycon）解析，x86/LoongArch 从 ACPI SPCR 解析，虚拟 UART 在客户机相同地址应答，物理串口仍归宿主。宿主未选定串口时使用 machine profile 的固定资源；已选定但描述无效时报错。`[[devices.virtual]]` 串口 model 的显式 `address` 优先：取消宿主节点身份和固定 IRQ，IRQ 由图分配；不同型号按显式 model 配置。核验 UART 修复时还要检查实际客户机内核来源：若 CI 构建了当前源码的 Starry 内核，测试配置必须使用对应 `${workspace}` 构建产物路径作为宿主 initramfs 打包输入，避免无版本板卡文件覆盖新内核。
 
 x86 直接启动 Linux 时，修改内核命令行策略前核验：
 
@@ -78,10 +78,17 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 替换显式 `dtb_path` 的 UART 节点时，保留客户机 DTB 中的中断类型、编号及三单元或四单元宽度，但把 GIC trigger flags 统一写成 level-high（`4`），使输出描述与虚拟 UART 的电平线行为一致。宿主只用中断类型和编号建立虚拟设备资源，不根据输入 DTB 的 trigger flags 改变虚拟线语义。最终 GIC 保留客户机已有的 `#interrupt-cells`；四单元 binding 的末单元继续使用客户机已有的优先级，输入只有三单元而目标要求四单元时填默认值 `0`。
 
+## Axvisor 板卡资源与磁盘根
+
+`prepare_guest_payload()` 将构建机存在的镜像复制进宿主 initramfs；板卡磁盘提供的绝对路径保留到 `install_builtin()`，在准备好的磁盘根中校验后才发布配置、提交切根。准备阶段包含附加分区，提交时递归绑定整个已校验的挂载树。OrangePi 普通 Linux CI 使用 `AXVISOR_GUEST_ASSETS=/guest`；ROC 使用 `AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest`，镜像位于单独的 `/userdata` 分区。缺失的环境变量会展开为空字符串，不能让它把板卡路径变成 `/linux/...`。定制 BSP 打包仍可把该变量指向构建机资源目录。
+
+ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中的 `ro` 会覆盖普通 `bootargs` 中较早的 `rw`；只修改 FIT 内 DTB 不能消除该参数。用例通过 `BootPayloadConfig.cmdline` 显式指定磁盘根及 `rw`，并在本次启动的 U-Boot 命令中执行 `fdt addr ${fdtcontroladdr}`、`fdt set /chosen bootargs rw`，覆盖内存中的控制 DTB 参数。该流程使用发布版 ostool `0.30.3`。不要保存环境变量或写入固件，也不要改变内核对最后一个 `ro` 或 `rw` 生效的规则；磁盘根确实只读时必须拒绝安装和切根。
+
 ## OrangePi-5-Plus Linux 网卡直通
 
 物理网卡用例位于 `test-suit/axvisor/normal/board-orangepi-5-plus/pci-network`。
-它读取板卡 `/boot/Image`（已验证 Linux 6.1.99）和匹配根文件系统中的 `r8125`
+它从构建机 `${env:AXVISOR_GUEST_ASSETS}/boot/Image` 打包内核（已验证 Linux 6.1.99），
+并使用匹配客户机根文件系统中的 `r8125`
 模块；旧 `/guest/linux/orangepi-5-plus` 的 6.1.43 映像在相同设备树下出现 PCIe
 链路训练失败。网线连接 `fe180000.pcie` 下的 RTL8125，客户机接口为 `enP3p49s0`，
 目标为板卡网络中的 `192.168.1.2`。用例显式选择 PCIe 控制器，并保留 `aliases`、
@@ -494,6 +501,11 @@ UEFI 内存图负责 RAM 分类，FDT 只补充保留区；LoongArch UEFI 入口
 启动分配器之外。UEFI/HTTP 镜像必须在 `ExitBootServices` 前完成读取和校验。
 UEFI 配置表和 ESP cmdline 含内部 NUL 时必须拒绝，不能静默截断启动参数。
 内置归档通过同一解包器，但不能代替外部传输验证。
+FIT 或 FDT initramfs 在 `VM Load` 后、`Memory Map` 前停住时，核对
+`boot_payload::publish()` 的实际机器码。该发布只由启动 CPU 在次处理器和
+消费者启动前执行，必须使用普通 load/store；AArch64 在 MMU 开启前不能
+依赖 `LDXR/LDAXR` 等独占原子操作完成。运行时一次性领取仍使用原子交换。
+`someboot/tests/aarch64_pre_mmu_entropy.rs` 同时检查熵与宿主归档的早期发布。
 QEMU 定向回归使用 `cargo xtask starry test qemu --arch aarch64 --test-case
 qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask
 axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs`。
@@ -508,3 +520,11 @@ Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是�
 宿主根盘若使用 `-blockdev`，axbuild 当前不能改写其链式后端，应明确报错并改用
 `-drive id=disk0`；不要让补盘器再插入一个同名 `-drive`。`-hda`、`-sd` 等
 直连盘别名也不能改写，补盘器会明确报错。
+
+### 宿主归档切根与回收
+
+对照本地 Linux v7.1 `8cd9520d35a6` 的 `init/initramfs.c`、`fs/namespace.c`，确认 `take_initramfs()` 一次领取外部归档，解包借用结束后才回收确知归属的完整页；共享边界页、固件保留页和内置归档不得交回分配器。日志须区分归档页回收与解包 ramfs 的最终释放。
+
+`prepare_block_root()` 不改变当前根；`PreparedRoot::commit()` 切根、更新同命名空间中的 root/cwd、脱离旧根。ArceOS 在应用启动前处理显式 `root=`；Starry 的 `rdinit=` 或 `/init` 可访问时由早期用户态切根，没有早期 init 时由内核切根。早期 init 执行失败不得再次挂载磁盘。
+
+Axvisor 使用 `deferred-rootfs`，在读取 VM 配置前安装 `/guest/builtin`，然后提交磁盘切根。无块设备驱动、无宿主块设备或未请求磁盘根时，直接在 initramfs 运行 VM，不切根；无块设备时即使继承了 `root=` 也保持内存根。已接入块设备且显式选择的根不可用时报告错误。HTTP 删除、重建 VM 的验证应使用打包后或已安装的资源路径，不能依赖内核内嵌镜像。

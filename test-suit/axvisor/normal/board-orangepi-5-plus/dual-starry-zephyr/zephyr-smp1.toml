@@ -7,10 +7,9 @@ phys_cpu_ids = [0x200]
 
 [kernel]
 entry_point = 0x4000_100c
-image_location = "fs"
 kernel_load_addr = 0x4000_0000
-kernel_path = "/guest/zephyr/orangepi-robot-control-sdk"
-dtb_path = "/guest/zephyr/orangepi-robot-control-sdk.dtb"
+kernel_path = "${env:AXVISOR_GUEST_ASSETS}/zephyr/orangepi-robot-control-sdk"
+dtb_path = "${env:AXVISOR_GUEST_ASSETS}/zephyr/orangepi-robot-control-sdk.dtb"
 # DTB GPA is selected automatically from the prepared guest memory layout.
 
 memory_regions = [
