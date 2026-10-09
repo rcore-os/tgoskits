@@ -448,7 +448,7 @@ def _runtime_selections(
         if template is None:
             continue
 
-        if runtime_case.kind == "starry-board":
+        if runtime_case.kind in {"starry-board", "axvisor-board"}:
             key = (template["id"], runtime_case.board, runtime_case.build_config)
             board_batches.setdefault(key, []).append((selector, runtime_case, template))
             continue
@@ -496,13 +496,15 @@ def _runtime_selections(
         template = batch[0][2]
         selector_list = ",".join(selectors)
         platform = _platform_label(template)
+        os_cli = _kind_os(runtime_case.kind)
+        group_option = " --test-group normal" if runtime_case.kind == "axvisor-board" else ""
         command = (
-            f"cargo xtask starry test board --test-case {selector_list} "
-            f"--board {runtime_case.board}"
+            f"cargo xtask {os_cli} test board{group_option} "
+            f"--test-case {selector_list} --board {runtime_case.board}"
         )
         batch_command = (
-            f"cargo xtask starry test board --test-case {{cases}} "
-            f"--board {runtime_case.board}"
+            f"cargo xtask {os_cli} test board{group_option} "
+            f"--test-case {{cases}} --board {runtime_case.board}"
         )
         selections.append(
             _selection(

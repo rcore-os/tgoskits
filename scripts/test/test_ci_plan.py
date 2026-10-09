@@ -576,11 +576,11 @@ class CiPlanTests(unittest.TestCase):
 
         self.assertFalse(plan["static_required"])
         self.assertEqual(
-            [row["name"] for row in plan["starry_matrix"]["include"]],
+            [row["name"] for row in plan["axvisor_matrix"]["include"]],
             ["Board OrangePi 5 Plus · native-hardware-smoke"],
         )
         self.assertEqual(
-            plan["starry_matrix"]["include"][0]["command"],
+            plan["axvisor_matrix"]["include"][0]["command"],
             "cargo xtask starry test board --test-case native-hardware-smoke "
             "--board orangepi-5-plus",
         )
@@ -641,6 +641,37 @@ class CiPlanTests(unittest.TestCase):
             selections[0].command,
             "cargo xtask starry test board --test-case exec-cache,native-network-smoke "
             "--board orangepi-5-plus",
+        )
+
+    def test_axvisor_board_build_change_groups_cases_by_build_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            suite_root = root / "test-suit/axvisor/normal/board-demo"
+            (suite_root / "smoke").mkdir(parents=True)
+            (suite_root / "ping").mkdir(parents=True)
+            build_config = suite_root / "build-aarch64-unknown-none-softfloat.toml"
+            build_config.write_text("target = 'aarch64-unknown-none-softfloat'\n")
+            (suite_root / "smoke/board-demo.toml").write_text("\n")
+            (suite_root / "ping/board-demo.toml").write_text("\n")
+            checks = [
+                {
+                    "id": "axvisor-board-demo",
+                    "name": "Board Demo · Suites",
+                    "suite": [{"kind": "axvisor-board", "board": "demo"}],
+                }
+            ]
+
+            selections = ci_plan.resolve_suite_selections(
+                root,
+                checks,
+                [build_config.relative_to(root).as_posix()],
+            )
+
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(
+            selections[0].command,
+            "cargo xtask axvisor test board --test-group normal "
+            "--test-case ping,smoke --board demo",
         )
 
     def test_generic_driver_suite_routes_source_and_rejects_missing_cases(self) -> None:
@@ -856,11 +887,8 @@ command = "true"
         rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assert_selects_full_group(rows, "Starry")
-        self.assertFalse(
-            any(row["group"] in {"ArceOS", "AxVisor"} for row in rows.values())
-        )
+        self.assertTrue(any(row["group"] == "AxVisor" for row in rows.values()))
         self.assertEqual(plan["arceos_matrix"]["include"], [])
-        self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
     def test_dualguest_robot_board_is_not_scheduled(self) -> None:
         rows = self.assert_unique_ids(
