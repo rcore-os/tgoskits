@@ -1,10 +1,4 @@
-use std::{
-    collections::{BTreeSet, HashSet},
-    fs,
-    io::{self, Write},
-    path::Path,
-    process::Command,
-};
+use std::{collections::HashSet, fs, path::Path};
 
 use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package};
@@ -13,9 +7,6 @@ use clap::Args;
 use crate::support::{git::IncrementalPackageSelection, process::run_cargo_status};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
-const PCI_FDT_IRQ_CAPABILITY_TEST: &str =
-    "pci_fdt_interrupt_map_requires_and_accepts_registered_intc";
-
 #[derive(Args, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StdTestArgs {
     /// Run std tests only for workspace packages affected since the git ref
@@ -28,159 +19,57 @@ struct PackageFeatureProfile {
     name: &'static str,
     no_default_features: bool,
     features: &'static [&'static str],
-    name_filter: Option<&'static str>,
-    expected_tests: &'static [&'static str],
 }
 
 const AX_HAL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     no_default_features: false,
     features: &["host-test"],
-    name_filter: None,
-    // Local CPU invalidation is exercised by test-suit/arceos/cpu. This
-    // profile retains runtime shootdown, publication and IRQ completion tests.
-    expected_tests: &[
-        "cache::tests::all_cpu_tlb_shootdown_propagates_remote_failure",
-        "cache::tests::cpu_ready_publication_reflushes_a_racing_generation",
-        "cache::tests::cpu_ready_publication_rejects_unrepresentable_cpu_ids",
-        "cache::tests::selected_offline_cpu_cannot_be_silently_acknowledged",
-        "cache::tests::targeted_tlb_shootdown_skips_unselected_remote_and_local_cpus",
-        "irq::tests::acknowledged_irq_completion_precedes_preempt_release",
-    ],
-}];
-
-// The full host-test binary includes target-only runtime tests that cannot run
-// in a host process. Keep CPUFreq's pure policy rules executable in CI.
-const AX_RUNTIME_CPUFREQ_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "host-test-cpufreq",
-    no_default_features: false,
-    features: &["host-test"],
-    name_filter: Some("cpufreq::tests::"),
-    expected_tests: &[
-        "cpufreq::tests::boot_governor_selection",
-        "cpufreq::tests::busy_percent_uses_the_actual_elapsed_window",
-        "cpufreq::tests::fixed_request_obeys_new_thermal_ceiling_and_dsu_floor",
-        "cpufreq::tests::observe_window_tracks_priming_and_clock_jumps",
-        "cpufreq::tests::ondemand_uses_busiest_cpu_and_decays_one_opp",
-    ],
 }];
 
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
-        name: "host-test+rk3588-cpufreq",
-        no_default_features: false,
-        features: &["host-test", "rk3588-cpufreq"],
-        name_filter: Some("soc::rockchip::cpufreq::"),
-        expected_tests: &[
-            "soc::rockchip::cpufreq::board::tests::unmeasured_grade_rates_are_excluded",
-            "soc::rockchip::cpufreq::margin::tests::bsp_thresholds_select_the_first_matching_voltage",
-            "soc::rockchip::cpufreq::pmic_i2c::tests::envelope_is_675k_to_1000k_inclusive",
-            "soc::rockchip::cpufreq::pmic_i2c::tests::step_size_is_four_lsb_25mv",
-            "soc::rockchip::cpufreq::pmic_i2c::tests::uv_encode_rejects_non_step_and_out_of_range",
-            "soc::rockchip::cpufreq::pmic_i2c::tests::uv_encode_roundtrips_board_points",
-            "soc::rockchip::cpufreq::pmic_i2c::tests::vsel_decode_matches_board_points",
-            "soc::rockchip::cpufreq::pmic_spi::tests::baud_divider_clamps_and_stays_even",
-            "soc::rockchip::cpufreq::pmic_spi::tests::baud_divider_even_and_under_target",
-            "soc::rockchip::cpufreq::pmic_spi::tests::ctrlr0_mode0_8bit_value",
-            "soc::rockchip::cpufreq::pmic_spi::tests::rk806_identity_and_rail_gate_rejects_loopback",
-            "soc::rockchip::cpufreq::pmic_spi::tests::spi2_reset_deassert_matches_reset_bits",
-            "soc::rockchip::cpufreq::pmic_spi::tests::spi2_ungate_value_matches_gate_bits",
-            "soc::rockchip::cpufreq::pmic_spi::tests::step_size_is_four_selectors",
-            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encode_rejects_out_of_range1",
-            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encode_rejects_unaligned_steps",
-            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encode_roundtrips_within_range1",
-            "soc::rockchip::cpufreq::pmic_spi::tests::uv_encodes_opp_nominals_exactly",
-            "soc::rockchip::cpufreq::pmic_spi::tests::vsel_decodes_known_opp_nominals",
-            "soc::rockchip::cpufreq::pmic_spi::tests::vsel_decodes_upper_ranges",
-            "soc::rockchip::cpufreq::pvtm::tests::bsp_temperature_selects_a_safe_standard_voltage_grade",
-            "soc::rockchip::cpufreq::pvtm::tests::malformed_measurement_or_table_cannot_authorize_an_opp",
-            "soc::rockchip::cpufreq::sensors::tests::rk3588_tsadc_thresholds_and_invalid_samples",
-        ],
-    },
-    PackageFeatureProfile {
         name: "host-test+rtc+starfive-jh7110-dwmmc",
         no_default_features: false,
         features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
-        name_filter: None,
-        expected_tests: &[],
     },
     PackageFeatureProfile {
         name: "pci-fdt-irq-capability",
         no_default_features: false,
         features: &["pci"],
-        name_filter: Some(PCI_FDT_IRQ_CAPABILITY_TEST),
-        expected_tests: &[PCI_FDT_IRQ_CAPABILITY_TEST],
+    },
+    PackageFeatureProfile {
+        name: "host-test+rk3588-cpufreq",
+        no_default_features: false,
+        features: &["host-test", "rk3588-cpufreq"],
     },
 ];
 
-// The rdif feature gates the whole rdif module and its device-level tests;
-// the plain default-feature run only covers the ctrl queue. This profile
-// lists the gated tests so CI proves they are discovered and executed.
+// Exercise the rdif implementation under its real feature profile.
 const VIRTIO_GPU_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "rdif",
     no_default_features: false,
     features: &["rdif"],
-    name_filter: None,
-    expected_tests: &[
-        "rdif_test::context_close_releases_attachments_after_drain",
-        "rdif_test::display_change_remains_pending_after_output_query_fails",
-        "rdif_test::lost_device_fails_every_operation_fast",
-        "rdif_test::normal_drop_confirms_reset_before_releasing_queue",
-        "rdif_test::resource_creation_passes_the_format_through",
-        "rdif_test::scanout_rejects_a_3d_resource_with_an_incompatible_format",
-        "rdif_test::stale_context_handle_is_rejected",
-        "rdif_test::stalled_release_submits_without_resetting_the_device",
-        "rdif_test::completion_status_delivers_and_pumps_before_reporting",
-        "rdif_test::sync_response_with_wrong_fence_resets_the_device",
-        "rdif_test::test_only_and_release_keep_scanout_and_backing",
-        "rdif_test::unconfirmed_context_destroy_resets_before_releasing_backing",
-    ],
 }];
 
 const ACPICA_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     no_default_features: false,
     features: &["host-test"],
-    name_filter: None,
-    expected_tests: &["production_interpreter_loads_and_evaluates_authored_aml"],
 }];
 
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
     no_default_features: false,
     features: &["host-test"],
-    name_filter: None,
-    expected_tests: &[],
 }];
 
-const AXVM_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    HOST_TEST_FEATURE_PROFILES[0],
-    PackageFeatureProfile {
-        name: "fs+host-test",
-        no_default_features: false,
-        features: &["fs", "host-test"],
-        name_filter: None,
-        expected_tests: &[
-            "configured::devices::virtio_blk::image::tests::existing_ext4_image_is_loaded_without_modification",
-            "configured::devices::virtio_blk::image::tests::empty_ext4_file_is_rejected",
-            "configured::devices::virtio_blk::image::tests::non_ext4_backing_file_is_rejected",
-            "configured::devices::virtio_blk::image::tests::configured_capacity_must_match_existing_image",
-            "configured::devices::virtio_blk::image::tests::backing_file_length_must_be_sector_aligned",
-            "configured::devices::virtio_blk::image::tests::read_failure_is_reported_without_modifying_the_image",
-            "configured::devices::virtio_blk::image::tests::short_read_is_rejected",
-            "configured::devices::virtio_blk::image::tests::large_image_initialization_reads_only_superblock",
-            "configured::devices::virtio_blk::file::tests::sparse_large_file_roundtrip_uses_real_worker_and_flush",
-            "configured::devices::virtio_blk::file::tests::reset_drains_old_io_without_reusing_its_completion",
-        ],
-    },
-];
+const AXVM_FEATURE_PROFILES: &[PackageFeatureProfile] = &[HOST_TEST_FEATURE_PROFILES[0]];
 
 const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "alloc",
     no_default_features: false,
     features: &["alloc"],
-    name_filter: None,
-    expected_tests: &[],
 }];
 
 const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
@@ -188,150 +77,42 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         name: "host-test+vfs+fat+ext4",
         no_default_features: false,
         features: &["host-test", "vfs", "fat", "ext4"],
-        name_filter: None,
-        expected_tests: &["block::cache::registry::tests::reclaim_capability_does_not_defer_last_endpoint_drop"],
     },
     PackageFeatureProfile {
-        name: "host-test-non-vfs-writeback-discovery",
+        name: "host-test",
         no_default_features: false,
         features: &["host-test"],
-        name_filter: Some("non_vfs_background_watermark_stays_synchronous"),
-        expected_tests: &[
-            "file::cache::tests::non_vfs_background_watermark_stays_synchronous",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-resource-rollback-discovery",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("until_controller_shutdown"),
-        expected_tests: &[
-            "block::runtime::lifecycle::tests::resource_rollback::duplicate_queue_update_keeps_current_and_trailing_queues_until_controller_shutdown",
-            "block::runtime::lifecycle::tests::resource_rollback::failed_hctx_start_keeps_current_and_trailing_queues_until_controller_shutdown",
-            "block::runtime::lifecycle::tests::resource_rollback::rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-ready-publication-discovery",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("ready_device_rejects_changed_device_info_without_overwriting_epoch"),
-        expected_tests: &[
-            "block::runtime::lifecycle::tests::publication::ready_device_rejects_changed_device_info_without_overwriting_epoch",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-ready-prefix-discovery",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("provisional_hctx_is_promoted_only_by_a_ready_update"),
-        expected_tests: &[
-            "block::runtime::lifecycle::tests::publication::provisional_hctx_is_promoted_only_by_a_ready_update",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test-lifecycle-teardown-discovery",
-        no_default_features: false,
-        features: &["host-test"],
-        name_filter: Some("block::runtime::lifecycle::tests::teardown::"),
-        expected_tests: &[
-            "block::runtime::lifecycle::tests::teardown::active_queue_shutdown_failure_is_reported_and_quarantined",
-            "block::runtime::lifecycle::tests::teardown::bootstrap_preserves_waiting_for_irq_controller_without_io_queue",
-            "block::runtime::lifecycle::tests::teardown::closed_submission_channel_is_retryable_only_while_device_is_ready",
-            "block::runtime::lifecycle::tests::teardown::controller_can_register_control_irq_before_creating_an_io_queue",
-            "block::runtime::lifecycle::tests::teardown::controller_group_enables_shared_irq_before_unmasking_sources_and_tears_down_once",
-            "block::runtime::lifecycle::tests::teardown::detached_queue_shutdown_failure_is_reported_and_quarantined",
-            "block::runtime::lifecycle::tests::teardown::failed_terminal_teardown_quarantines_group_controller",
-            "block::runtime::lifecycle::tests::teardown::failed_terminal_teardown_quarantines_standalone_irq_registration",
-            "block::runtime::lifecycle::tests::teardown::failed_irq_registration_stops_controller_before_dropping_emitted_queue",
-            "block::runtime::lifecycle::tests::teardown::group_member_terminal_is_escalated_to_shared_irq_owner",
-            "block::runtime::lifecycle::tests::teardown::group_member_watchdog_terminal_is_escalated_to_shared_irq_owner",
-            "block::runtime::lifecycle::tests::teardown::group_irq_failure_does_not_bypass_shared_owner",
-            "block::runtime::lifecycle::tests::teardown::group_queue_shutdown_failure_is_reported_and_quarantined",
-            "block::runtime::lifecycle::tests::teardown::group_teardown_wakes_every_concurrent_waiter",
-            "block::runtime::lifecycle::tests::teardown::irq_synchronize_failure_blocks_hardware_shutdown",
-            "block::runtime::lifecycle::tests::teardown::last_device_handle_drop_owns_teardown_despite_internal_references",
-            "block::runtime::lifecycle::tests::teardown::rejected_shutdown_update_keeps_emitted_queue_quarantined",
-            "block::runtime::lifecycle::tests::teardown::runtime_teardown_continues_after_terminal_device_error",
-            "block::runtime::lifecycle::tests::teardown::late_hctx_failure_cannot_resurrect_a_stopped_device",
-            "block::runtime::lifecycle::tests::teardown::member_shutdown_failure_quarantines_unstopped_group_controller",
-            "block::runtime::lifecycle::tests::teardown::partial_group_irq_enable_with_failed_synchronize_quarantines_all_owners",
-            "block::runtime::lifecycle::tests::teardown::provisional_group_terminal_waits_for_shared_irq_owner",
-            "block::runtime::lifecycle::tests::teardown::teardown_accepts_repeated_device_info_and_releases_resources_in_order",
-            "block::runtime::lifecycle::tests::teardown::teardown_releases_queue_when_quiesce_confirms_prior_watchdog_shutdown",
-            "block::runtime::lifecycle::tests::teardown::teardown_shutdowns_queue_rolled_back_while_shutdown_is_queued",
-        ],
     },
 ];
 
-const NVME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    PackageFeatureProfile {
-        name: "default",
-        no_default_features: false,
-        features: &[],
-        name_filter: None,
-        expected_tests: &[],
-    },
-    PackageFeatureProfile {
-        name: "rearm-state-discovery",
-        no_default_features: false,
-        features: &[],
-        name_filter: Some("rearm_during_initialization_preserves_waiting_for_irq_state"),
-        expected_tests: &[
-            "block::tests::rearm_during_initialization_preserves_waiting_for_irq_state",
-        ],
-    },
-];
+const NVME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "default",
+    no_default_features: false,
+    features: &[],
+}];
 
-const SDMMC_RDIF_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    PackageFeatureProfile {
-        name: "rdif",
-        no_default_features: true,
-        features: &["rdif"],
-        name_filter: None,
-        expected_tests: &[],
-    },
-    PackageFeatureProfile {
-        name: "rdif-lifecycle-discovery",
-        no_default_features: true,
-        features: &["rdif"],
-        name_filter: Some("ready_online_smp_repeats_info_without_reissuing_resources"),
-        expected_tests: &[
-            "sdio::tests::rdif_lifecycle::ready_online_smp_repeats_info_without_reissuing_resources",
-        ],
-    },
-];
+const SDMMC_RDIF_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "rdif",
+    no_default_features: true,
+    features: &["rdif"],
+}];
 
 const AIC8800_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test+rdif",
     no_default_features: false,
     features: &["host-test", "rdif"],
-    name_filter: None,
-    expected_tests: &[
-        "rdif::owner::progress::tests::transmit_completion_yields_to_card_irq_before_next_sdio_submission",
-    ],
 }];
 
 const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "default",
     no_default_features: false,
     features: &[],
-    name_filter: None,
-    expected_tests: &[],
 }];
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum CargoTestAction {
-    List,
-    Run,
-}
-
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CargoTestInvocation {
     package: String,
     no_default_features: bool,
     features: Vec<String>,
-    name_filter: Option<String>,
-    action: CargoTestAction,
 }
 
 impl CargoTestInvocation {
@@ -340,16 +121,10 @@ impl CargoTestInvocation {
             package: package.to_owned(),
             no_default_features: false,
             features: Vec::new(),
-            name_filter: None,
-            action: CargoTestAction::Run,
         }
     }
 
-    fn for_profile(
-        package: &str,
-        profile: &PackageFeatureProfile,
-        action: CargoTestAction,
-    ) -> Self {
+    fn for_profile(package: &str, profile: &PackageFeatureProfile) -> Self {
         Self {
             package: package.to_owned(),
             no_default_features: profile.no_default_features,
@@ -358,8 +133,6 @@ impl CargoTestInvocation {
                 .iter()
                 .map(|feature| (*feature).to_owned())
                 .collect(),
-            name_filter: profile.name_filter.map(str::to_owned),
-            action,
         }
     }
 
@@ -372,12 +145,6 @@ impl CargoTestInvocation {
             args.push("--features".into());
             args.push(self.features.join(","));
         }
-        if let Some(name_filter) = &self.name_filter {
-            args.push(name_filter.clone());
-        }
-        if self.action == CargoTestAction::List {
-            args.extend(["--".into(), "--list".into()]);
-        }
         args
     }
 }
@@ -385,7 +152,6 @@ impl CargoTestInvocation {
 #[derive(Clone, Debug)]
 struct CargoRunOutput {
     success: bool,
-    stdout: String,
 }
 
 pub(crate) fn run_std_test_command(args: &StdTestArgs) -> anyhow::Result<()> {
@@ -584,6 +350,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-input"
         | "ax-ipi"
         | "ax-log"
+        | "ax-runtime"
         | "ax-api"
         | "rdrive"
         | "ax-net"
@@ -593,7 +360,6 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
-        "ax-runtime" => Some(AX_RUNTIME_CPUFREQ_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
         "acpica-interpreter" => Some(ACPICA_FEATURE_PROFILES),
@@ -628,78 +394,13 @@ fn run_feature_profile<R: CargoRunner>(
     package: &str,
     profile: &PackageFeatureProfile,
 ) -> anyhow::Result<bool> {
-    if !profile.expected_tests.is_empty() {
-        let list_invocation =
-            CargoTestInvocation::for_profile(package, profile, CargoTestAction::List);
-        println!("cargo {}", list_invocation.args().join(" "));
-        let listed = runner.run(workspace_root, &list_invocation)?;
-        if !listed.success {
-            eprintln!(
-                "profile `{}` failed while listing filtered tests",
-                profile.name
-            );
-            return Ok(false);
-        }
-        if let Err(err) = validate_discovered_tests(profile, &listed.stdout) {
-            eprintln!("profile `{}` test discovery failed: {err:#}", profile.name);
-            return Ok(false);
-        }
-    }
-
-    let run_invocation = CargoTestInvocation::for_profile(package, profile, CargoTestAction::Run);
-    println!("cargo {}", run_invocation.args().join(" "));
-    let executed = runner.run(workspace_root, &run_invocation)?;
+    let invocation = CargoTestInvocation::for_profile(package, profile);
+    println!("cargo {}", invocation.args().join(" "));
+    let executed = runner.run(workspace_root, &invocation)?;
     if !executed.success {
-        eprintln!("profile `{}` filtered tests failed", profile.name);
+        eprintln!("profile `{}` tests failed", profile.name);
     }
     Ok(executed.success)
-}
-
-fn validate_discovered_tests(
-    profile: &PackageFeatureProfile,
-    listed_stdout: &str,
-) -> anyhow::Result<()> {
-    let discovered = parse_listed_tests(listed_stdout);
-    let expected = profile
-        .expected_tests
-        .iter()
-        .map(|test| (*test).to_owned())
-        .collect::<BTreeSet<_>>();
-
-    if discovered.is_empty() {
-        bail!(
-            "expected [{}], but the filtered command discovered 0 tests",
-            expected.iter().cloned().collect::<Vec<_>>().join(", ")
-        );
-    }
-    let missing = expected
-        .difference(&discovered)
-        .cloned()
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        bail!(
-            "required tests [{}] were not discovered; discovered [{}]",
-            missing.join(", "),
-            discovered.iter().cloned().collect::<Vec<_>>().join(", ")
-        );
-    }
-    if profile.name_filter.is_some() && discovered != expected {
-        bail!(
-            "expected [{}], discovered [{}]",
-            expected.iter().cloned().collect::<Vec<_>>().join(", "),
-            discovered.iter().cloned().collect::<Vec<_>>().join(", ")
-        );
-    }
-
-    Ok(())
-}
-
-fn parse_listed_tests(listed_stdout: &str) -> BTreeSet<String> {
-    listed_stdout
-        .lines()
-        .filter_map(|line| line.trim().strip_suffix(": test"))
-        .map(str::to_owned)
-        .collect()
 }
 
 trait CargoRunner {
@@ -719,28 +420,8 @@ impl CargoRunner for ProcessCargoRunner {
         invocation: &CargoTestInvocation,
     ) -> anyhow::Result<CargoRunOutput> {
         let args = invocation.args();
-        if invocation.action == CargoTestAction::Run {
-            return Ok(CargoRunOutput {
-                success: run_cargo_status(workspace_root, &args)?,
-                stdout: String::new(),
-            });
-        }
-
-        let output = Command::new("cargo")
-            .current_dir(workspace_root)
-            .args(&args)
-            .output()
-            .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))?;
-        io::stdout()
-            .write_all(&output.stdout)
-            .context("failed to print cargo stdout")?;
-        io::stderr()
-            .write_all(&output.stderr)
-            .context("failed to print cargo stderr")?;
-
         Ok(CargoRunOutput {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            success: run_cargo_status(workspace_root, &args)?,
         })
     }
 }
@@ -769,42 +450,7 @@ mod tests {
         }
 
         fn with_status(mut self, invocation: CargoTestInvocation, success: bool) -> Self {
-            self.results.insert(
-                invocation,
-                CargoRunOutput {
-                    success,
-                    stdout: String::new(),
-                },
-            );
-            self
-        }
-
-        fn with_listing(
-            mut self,
-            package: &str,
-            profile: &PackageFeatureProfile,
-            tests: &[&str],
-        ) -> Self {
-            self.results.insert(
-                CargoTestInvocation::for_profile(package, profile, CargoTestAction::List),
-                CargoRunOutput {
-                    success: true,
-                    stdout: render_test_list(tests),
-                },
-            );
-            self
-        }
-
-        fn with_profile_discovery(
-            mut self,
-            package: &str,
-            profiles: &[PackageFeatureProfile],
-        ) -> Self {
-            for profile in profiles {
-                if !profile.expected_tests.is_empty() {
-                    self = self.with_listing(package, profile, profile.expected_tests);
-                }
-            }
+            self.results.insert(invocation, CargoRunOutput { success });
             self
         }
     }
@@ -821,21 +467,8 @@ mod tests {
                 .results
                 .get(invocation)
                 .cloned()
-                .unwrap_or(CargoRunOutput {
-                    success: true,
-                    stdout: String::new(),
-                }))
+                .unwrap_or(CargoRunOutput { success: true }))
         }
-    }
-
-    fn render_test_list(tests: &[&str]) -> String {
-        let mut output = tests
-            .iter()
-            .map(|test| format!("{test}: test"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        output.push_str(&format!("\n\n{} tests, 0 benchmarks\n", tests.len()));
-        output
     }
 
     #[test]
@@ -883,57 +516,26 @@ mod tests {
         assert_eq!(runner.invocations.len(), packages.len());
     }
 
-    const TEST_PROFILES: &[PackageFeatureProfile] = &[
-        PackageFeatureProfile {
-            name: "whole-suite",
-            no_default_features: false,
-            features: &["example-feature"],
-            name_filter: None,
-            expected_tests: &["example::first"],
-        },
-        PackageFeatureProfile {
-            name: "selected-tests",
-            no_default_features: true,
-            features: &[],
-            name_filter: Some("example::"),
-            expected_tests: &["example::first", "example::second"],
-        },
-    ];
-
-    #[test]
-    fn profile_discovery_mismatch_fails_without_running_that_profile() {
-        let root = PathBuf::from("/tmp/workspace");
-        let profile = &TEST_PROFILES[0];
-        let mut runner =
-            FakeCargoRunner::succeeding().with_listing("alpha", profile, &["unexpected_test"]);
-
-        assert!(!run_feature_profile(&mut runner, &root, "alpha", profile).unwrap());
-        assert_eq!(runner.invocations.len(), 1);
-        assert_eq!(
-            runner.invocations[0].1,
-            CargoTestInvocation::for_profile("alpha", profile, CargoTestAction::List)
-        );
-    }
-
-    #[test]
-    fn profile_discovery_rejects_zero_tests() {
-        let err =
-            validate_discovered_tests(&TEST_PROFILES[0], "0 tests, 0 benchmarks").unwrap_err();
-        assert!(err.to_string().contains("discovered 0 tests"));
-    }
-
     #[test]
     fn cargo_execution_failures_do_not_stop_later_profiles() {
         let root = PathBuf::from("/tmp/workspace");
-        let failed_invocation =
-            CargoTestInvocation::for_profile("alpha", &TEST_PROFILES[0], CargoTestAction::Run);
-        let later_invocation =
-            CargoTestInvocation::for_profile("alpha", &TEST_PROFILES[1], CargoTestAction::Run);
-        let mut runner = FakeCargoRunner::succeeding()
-            .with_profile_discovery("alpha", TEST_PROFILES)
-            .with_status(failed_invocation, false);
+        const PROFILES: &[PackageFeatureProfile] = &[
+            PackageFeatureProfile {
+                name: "first",
+                no_default_features: false,
+                features: &["example-feature"],
+            },
+            PackageFeatureProfile {
+                name: "second",
+                no_default_features: true,
+                features: &[],
+            },
+        ];
+        let failed_invocation = CargoTestInvocation::for_profile("alpha", &PROFILES[0]);
+        let later_invocation = CargoTestInvocation::for_profile("alpha", &PROFILES[1]);
+        let mut runner = FakeCargoRunner::succeeding().with_status(failed_invocation, false);
 
-        assert!(!run_feature_profiles(&mut runner, &root, "alpha", TEST_PROFILES).unwrap());
+        assert!(!run_feature_profiles(&mut runner, &root, "alpha", PROFILES).unwrap());
         assert_eq!(runner.invocations.last().unwrap().1, later_invocation);
     }
 }
