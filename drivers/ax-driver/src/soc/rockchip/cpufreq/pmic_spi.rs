@@ -916,46 +916,9 @@ pub fn set_uv_stepped(target_uv: u32) -> bool {
     true
 }
 
-/// **Diagnostic** force-write of the A55 rail (DCDC2 `ON_VSEL`) — proves whether
-/// SPI *writes* physically reach the RK806 while reads are dead. Not part of the
-/// normal DVFS API; intended to be called once from a cpufreq test flag.
-///
-/// Safety: hard-clamped to `[675_000, 950_000]` uV — the A55 (little cluster) OPP
-/// voltage range (675 mV @ 1008 MHz up to 950 mV @ 1800 MHz, all Linux-proven
-/// freq/voltage pairs). The governor only ever passes OPP-matched voltages, so any
-/// accepted value is a proven-safe rail voltage regardless of the (currently
-/// unreadable) present value, and RK3588's voltage-coupled clock tracks the rail in
-/// lockstep. Unlike [`set_uv`] it deliberately SKIPS the read-current/down-only
-/// guard — the read path is a scope-wall (rx==tx loopback) and the write is what we
-/// have. If the SPI path can't reach the RK806, the write is simply a no-op.
-///
-/// This is the A55 voltage-set primitive for the ondemand governor (the read-back
-/// path is deferred pending the MISO scope fix). Attempts a read-back for the log
-/// (`0x00` while reads fail) and returns the write transfer's success.
-pub fn force_write_dcdc2(target_uv: u32) -> bool {
-    if !(675_000..=950_000).contains(&target_uv) {
-        warn!(
-            "pmic_spi: force_write_dcdc2 refused target {target_uv} uV (outside A55 OPP range \
-             [675000, 950000])"
-        );
-        return false;
-    }
-    let Some(bus) = BusGuard::claim() else {
-        warn!("pmic_spi: force_write_dcdc2 before init or busy; ignored");
-        return false;
-    };
-    let dev = &*bus;
-    let Some(sel) = uv_to_vsel(target_uv) else {
-        warn!("pmic_spi: force_write_dcdc2 target {target_uv} uV not encodable");
-        return false;
-    };
-    let wrote = dev.rk806_write(RK806_BUCK2_ON_VSEL, sel);
-    let readback = dev.rk806_read(RK806_BUCK2_ON_VSEL);
-    info!(
-        "pmic_spi: force_write_dcdc2: wrote vsel={sel:#04x} ({target_uv} uV) xfer_ok={wrote} \
-         readback={readback:#04x?}"
-    );
-    wrote
+/// Compatibility name used by the cpufreq transition path.
+pub fn set_uv_stepped_verified(target_uv: u32) -> bool {
+    set_uv_stepped(target_uv)
 }
 
 /// Shared down-only clamp: returns the encoded target selector, or `None`

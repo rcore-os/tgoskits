@@ -59,7 +59,7 @@ pub(crate) struct RxFilter {
     _mmio: Arc<Mmio>,
     /// Receive policy for this device instance.  The default accepts the
     /// device MAC plus multicast/broadcast traffic.
-    mode: Mutex<NetRxMode>,
+    mode: RawSpinLock<NetRxMode>,
 }
 
 impl RxFilter {
@@ -67,7 +67,7 @@ impl RxFilter {
         Arc::new(Self {
             regs,
             _mmio: mmio,
-            mode: Mutex::new(NetRxMode::normal()),
+            mode: RawSpinLock::new(NetRxMode::normal()),
         })
     }
 
