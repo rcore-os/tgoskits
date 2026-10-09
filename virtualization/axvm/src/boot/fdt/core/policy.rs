@@ -27,4 +27,5 @@ pub struct GuestFdtPolicy {
     pub decode_interrupt: fn(&[u32]) -> Option<DecodedInterrupt>,
     pub resolve_cpu_index: fn(usize) -> Option<usize>,
     pub host_cpu_count: fn() -> usize,
+    pub guest_cpu_execution_property: fn(&str) -> bool,
 }

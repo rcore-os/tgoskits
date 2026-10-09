@@ -17,6 +17,7 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
         decode_interrupt: super::capabilities::decode_gic_spi,
         resolve_cpu_index: super::capabilities::resolve_cpu_index,
         host_cpu_count: super::capabilities::host_cpu_count,
+        guest_cpu_execution_property: core::tree::is_guest_cpu_execution_property,
     }
 }
 

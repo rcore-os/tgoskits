@@ -522,6 +522,8 @@ fn host_fdt_with_cpu_phandles() -> Fdt {
             node.set_property(prop_u32("cpu-idle-states", 0x52));
             node.set_property(prop_u32("cpu-supply", 0x53));
             node.set_property(prop_u32("next-level-cache", 0x54));
+            node.set_property(prop_str("riscv,isa", "rv64imafdc"));
+            node.set_property(prop_str("mmu-type", "riscv,sv39"));
         }
         fdt.view_typed_mut(cpu)
             .unwrap()
@@ -595,6 +597,13 @@ fn tree_clones_missing_guest_cpu_nodes_with_fresh_phandles() {
             assert!(
                 cpu.as_node().get_property(property).is_none(),
                 "cloned CPU inherited host-only property {property}"
+            );
+        }
+        for property in ["riscv,isa", "mmu-type"] {
+            assert_eq!(
+                cpu.as_node().get_property(property).is_some(),
+                cfg!(target_arch = "riscv64"),
+                "RISC-V execution property policy mismatch for {property}"
             );
         }
     }

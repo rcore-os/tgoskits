@@ -29,6 +29,8 @@ pub(crate) fn project_cpus(
                 .is_some_and(|suffix| !suffix.contains('/'))
                 && super::create::need_cpu_node(phys_cpu_ids, host_fdt, id, path))
     })?;
+    let guest_cpu_execution_property =
+        super::selected_guest_fdt_policy().guest_cpu_execution_property;
     let paths = source.node_paths();
     for (id, path) in paths {
         if path == "/cpus" || path.starts_with("/cpus/cpu@") {
@@ -36,7 +38,7 @@ pub(crate) fn project_cpus(
             let removed = node
                 .properties()
                 .iter()
-                .filter(|property| !super::tree::is_guest_cpu_execution_property(property.name()))
+                .filter(|property| !guest_cpu_execution_property(property.name()))
                 .map(|property| std::string::String::from(property.name()))
                 .collect::<Vec<_>>();
             for name in removed {

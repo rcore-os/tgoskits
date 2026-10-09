@@ -39,6 +39,9 @@ run_axvm_cross_test --arch aarch64 --package axvm \
 echo "==> axvm aarch64 cloned CPU identity regression"
 run_axvm_cross_test --arch aarch64 --package axvm \
   --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
+echo "==> axvm riscv64 cloned CPU identity regression"
+run_axvm_cross_test --arch riscv64 --package axvm \
+  --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
 '''
 
 [[check.suite]]

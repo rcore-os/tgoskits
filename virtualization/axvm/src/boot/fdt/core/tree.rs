@@ -354,13 +354,15 @@ impl FdtTree {
             .properties()
             .iter()
             .any(|prop| prop.name() == "mpidr-affinity");
+        let guest_cpu_execution_property =
+            super::selected_guest_fdt_policy().guest_cpu_execution_property;
         let template_has_phandle = template.get_property("phandle").is_some();
         let template_has_legacy_phandle = template.get_property("linux,phandle").is_some();
         for id in missing {
             let node_id = self.add_node(cpus_id, Node::new(&format!("cpu@{id:x}")));
             for prop in template.properties() {
                 if is_phandle_prop(prop.name())
-                    || !is_guest_cpu_execution_property(prop.name())
+                    || !guest_cpu_execution_property(prop.name())
                     || should_skip_guest_cpu_prop(host, prop.name())
                 {
                     continue;

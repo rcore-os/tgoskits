@@ -55,6 +55,7 @@ fn guest_fdt_policy() -> core::GuestFdtPolicy {
         },
         resolve_cpu_index: Some,
         host_cpu_count: || usize::BITS as usize,
+        guest_cpu_execution_property: core::tree::is_guest_cpu_execution_property,
     }
 }
 
