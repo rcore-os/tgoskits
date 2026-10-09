@@ -7,8 +7,8 @@
 # binary (`AXVIRTIO_VM_TAG` / `AXVIRTIO_LOCAL_IP`, read with `option_env!`), and a
 # second build of the same package overwrites the first artifact. Each peer is
 # therefore built separately and copied to its own `${vm}.bin` name, which is the
-# path the generated vm config embeds into AxVisor via `include_bytes!`
-# (`image_location = "memory"`).
+# path that axbuild stages into the host initramfs at
+# `/guest/builtin/images`.
 #
 # The vm configs are generated at run time into `target/axvisor-vcpus-gen` by
 # `gen_configs` below. They only differ in the VM id, the identity baked into the
@@ -30,10 +30,11 @@
 # (MPIDR_EL1) and no longer has to name a host CPU.
 #
 # Memory: 24 x 128 MiB = 3 GiB of the 8 GiB board goes to guest RAM, leaving
-# about 5 GiB for AxVisor itself (including the 24 guest images it embeds).
+# about 5 GiB for AxVisor itself (including the 24 guest images staged in its
+# host initramfs).
 #
-# The guests are built first because AxVisor embeds them at build time, so a
-# guest rebuild always has to be followed by an AxVisor rebuild.
+# The guests are built first because axbuild stages them into the host
+# initramfs, so a guest rebuild always has to be followed by an AxVisor rebuild.
 #
 # Usage: orangepi-arceos-virtio-net-test.sh [gen|build|run]
 #   gen    generate the vm configs and check them against the case layout
@@ -110,9 +111,9 @@ gen_vm_config() {
 # connects to it), and VM${vm_count}'s client keeps retrying ${peer_ip}:5001,
 # which has no listener.
 #
-# image_location = "memory" makes the AxVisor build embed the image with
-# include_bytes! (os/axvisor/build.rs), so the board needs no guest file of its
-# own.
+# axbuild stages the kernel into the host initramfs at
+# `/guest/builtin/images`, so the board receives the guest asset with the
+# AxVisor payload.
 [base]
 id = ${n}
 name = "arceos-virtio-net-peer-vm${n}"
@@ -131,7 +132,6 @@ phys_cpu_sets = [${cpu_mask}]
 
 [kernel]
 entry_point = 0x8020_0000
-image_location = "memory"
 kernel_path = "\${workspace}/${artifact_dir}/arceos-virtio-net-peer-vm${n}.bin"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000
@@ -223,12 +223,12 @@ build_guests() {
     done
 }
 
-# AxVisor with every generated guest image embedded (the case-level build config
-# lists all generated vm configs).
+# AxVisor with every generated guest image staged in the host initramfs (the
+# case-level build config lists all generated vm configs).
 build_axvisor() {
     cargo xtask axvisor build -c "$build_config"
     "$objcopy" --strip-all -O binary "${artifact_dir}/axvisor" "${artifact_dir}/axvisor.bin"
-    log "installed hypervisor image: ${artifact_dir}/axvisor.bin ($(du -h "${artifact_dir}/axvisor.bin" | cut -f1), 24 embedded guest images)"
+    log "installed hypervisor image: ${artifact_dir}/axvisor.bin ($(du -h "${artifact_dir}/axvisor.bin" | cut -f1), 24 staged guest images)"
 }
 
 # Build, upload and run on the board. The board name of this variant is
