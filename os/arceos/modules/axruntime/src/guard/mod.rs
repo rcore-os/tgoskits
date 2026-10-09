@@ -343,6 +343,7 @@ fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToke
     }
 }
 
+#[cfg(not(test))]
 fn claim_preempt_exit_scheduler(origin: PreemptExitOrigin, irqs_were_enabled: bool) -> bool {
     with_current_cpu_pin(|pin| {
         let preempt_depth = current_preempt_depth_pinned(pin);
