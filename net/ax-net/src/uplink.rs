@@ -329,7 +329,9 @@ static UPLINK: OnceLock<Arc<UplinkRuntime>> = OnceLock::new();
 /// this pointer. AxVisor then installs its hypervisor adapter first, so a
 /// losing initializer never leaves a globally visible half-configured runtime.
 pub fn install(runtime: Arc<UplinkRuntime>) -> bool {
-    UPLINK.set(runtime).is_ok()
+    let candidate = Arc::clone(&runtime);
+    let selected = UPLINK.call_once(|| runtime);
+    Arc::ptr_eq(selected, &candidate)
 }
 
 /// Returns the installed uplink, if any.
