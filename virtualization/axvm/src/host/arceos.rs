@@ -13,14 +13,12 @@ use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::os::arceos::{api, modules, task as runtime_task};
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
-use crate::AxVmError;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use crate::host::HostHardTimerAction;
 #[cfg(target_arch = "x86_64")]
 use crate::host::HostTimerAction;
 use crate::{
-    AxVmResult,
+    AxVmError, AxVmResult,
     arch::current::CurrentArch,
     architecture::ArchOps,
     host::{HostCpu, HostMemory, HostPlatform, HostTime, HostTimer},
@@ -393,7 +391,6 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
     }
 }
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub fn shutdown_host_filesystems() -> AxVmResult {
     modules::ax_fs_ng::shutdown_filesystems()
         .map_err(|error| AxVmError::host("shut down host filesystems", error))?;

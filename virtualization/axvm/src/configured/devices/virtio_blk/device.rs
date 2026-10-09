@@ -3,11 +3,10 @@
 //! MMIO and PCI devices may use memory or file-backed storage.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "fs")]
-use std::string::String;
 use std::{
     boxed::Box,
     format,
+    string::String,
     sync::{Arc, Mutex},
     vec,
     vec::Vec,
@@ -29,12 +28,9 @@ use axvmconfig::VirtualDeviceRequest;
 
 use super::{
     super::virtio_pci::{VirtioPciFunction, virtio_capabilities},
-    options::{BackendConfig, FilesystemFormat, parse_backend},
-};
-#[cfg(feature = "fs")]
-use super::{
     file::FileBackend,
     image::{ImageReader, inspect_file_image},
+    options::{BackendConfig, FilesystemFormat, parse_backend},
 };
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
@@ -455,7 +451,6 @@ fn runtime_resources(base: u64, size: u64, resolved_irq: usize) -> Box<[Resource
 
 enum VirtioBlkBackend {
     RamDisk(RamDiskBackend),
-    #[cfg(feature = "fs")]
     File(FileBackend),
 }
 
@@ -485,7 +480,6 @@ impl VirtioBlkBackend {
     const fn capacity_sectors(&self) -> u64 {
         match self {
             Self::RamDisk(backend) => backend.capacity_sectors,
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.capacity_sectors,
         }
     }
@@ -493,13 +487,11 @@ impl VirtioBlkBackend {
     fn queue_pending(&self) -> Arc<AtomicBool> {
         match self {
             Self::RamDisk(_) => Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.queue_pending(),
         }
     }
 }
 
-#[cfg(feature = "fs")]
 fn open_file_backend(
     path: &str,
     configured_capacity: Option<u64>,
@@ -526,12 +518,10 @@ fn open_file_backend(
     FileBackend::new(file, capacity / SECTOR_SIZE as u64, port).map(VirtioBlkBackend::File)
 }
 
-#[cfg(feature = "fs")]
 struct AxFileReader<'a> {
     file: &'a ax_api::fs::AxFileHandle,
 }
 
-#[cfg(feature = "fs")]
 impl ImageReader for AxFileReader<'_> {
     fn len(&self) -> Result<u64, String> {
         ax_api::fs::ax_file_attr(self.file)
@@ -544,24 +534,10 @@ impl ImageReader for AxFileReader<'_> {
     }
 }
 
-#[cfg(not(feature = "fs"))]
-fn open_file_backend(
-    path: &str,
-    _configured_capacity: Option<u64>,
-    _filesystem: FilesystemFormat,
-    _port: crate::services::DeviceWorkPort,
-) -> DeviceManagerResult<VirtioBlkBackend> {
-    Err(invalid_device_config(
-        "open virtio-blk backing file",
-        &format!("file backend `{path}` requires the AxVM `fs` feature"),
-    ))
-}
-
 impl BlockBackend for VirtioBlkBackend {
     fn pending_request_ready(&self) -> bool {
         match self {
             Self::RamDisk(backend) => backend.pending_request_ready(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.pending_request_ready(),
         }
     }
@@ -569,7 +545,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn cancel_pending_request(&self) {
         match self {
             Self::RamDisk(backend) => backend.cancel_pending_request(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.cancel_pending_request(),
         }
     }
@@ -577,7 +552,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn reset(&self) {
         match self {
             Self::RamDisk(backend) => backend.reset(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.reset(),
         }
     }
@@ -585,31 +559,27 @@ impl BlockBackend for VirtioBlkBackend {
     fn suspend(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.suspend(),
-            #[cfg(feature = "fs")]
-            Self::File(backend) => backend.suspend(),
+                        Self::File(backend) => backend.suspend(),
         }
     }
 
     fn resume(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.resume(),
-            #[cfg(feature = "fs")]
-            Self::File(backend) => backend.resume(),
+                        Self::File(backend) => backend.resume(),
         }
     }
 
     fn stop(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.stop(),
-            #[cfg(feature = "fs")]
-            Self::File(backend) => backend.stop(),
+                        Self::File(backend) => backend.stop(),
         }
     }
 
     fn requires_deferred_processing(&self) -> bool {
         match self {
             Self::RamDisk(_) => false,
-            #[cfg(feature = "fs")]
             Self::File(_) => true,
         }
     }
@@ -617,7 +587,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn read(&self, sector: u64, buffer: &mut [u8]) -> VirtioResult<usize> {
         match self {
             Self::RamDisk(backend) => backend.read(sector, buffer),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.read(sector, buffer),
         }
     }
@@ -625,7 +594,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn write(&self, sector: u64, buffer: &[u8]) -> VirtioResult<usize> {
         match self {
             Self::RamDisk(backend) => backend.write(sector, buffer),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.write(sector, buffer),
         }
     }
@@ -633,7 +601,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn flush(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.flush(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.flush(),
         }
     }

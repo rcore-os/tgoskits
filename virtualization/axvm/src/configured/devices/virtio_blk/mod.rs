@@ -1,9 +1,7 @@
 //! AxVM-owned configured VirtIO block devices.
 
 mod device;
-#[cfg(feature = "fs")]
 mod file;
-#[cfg(feature = "fs")]
 mod image;
 mod options;
 

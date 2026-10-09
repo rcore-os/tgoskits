@@ -38,7 +38,6 @@ pub mod cpu {
 }
 
 /// Shut down host filesystems before their devices are transferred to a guest.
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub fn shutdown_filesystems() -> crate::AxVmResult {
     arceos::shutdown_host_filesystems()
 }
