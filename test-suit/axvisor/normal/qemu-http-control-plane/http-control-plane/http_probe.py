@@ -17,7 +17,9 @@ Environment (set by the generic runner):
 
     AXVISOR_HTTP_BASE            http://127.0.0.1:<host_port> (forwarded)
     AXVISOR_HTTP_TOKEN           bearer token for authenticated requests
-    AXVISOR_HTTP_CASE_DIR        case directory holding `vm-memory.toml`
+    AXVISOR_BUILTIN_CONFIG_DIR   directory holding packaged `vm-1.toml`
+                                 (default: this file's directory)
+    AXVISOR_HTTP_CASE_DIR        case directory holding test fixtures
                                  (default: this file's directory)
     AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
     AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
@@ -129,11 +131,10 @@ enter the guest before the next stop.
 
 The last recreate -> start -> stop -> delete block is the resource re-acquire
 regression: it proves destroy freed guest memory, vCPUs, devices, and the
-registry entry so a fresh VM can be rebuilt from the same embedded image.
-`vm-memory.toml` is matched by `base.id` against the build-time embedded
-images, so the create body carries that file verbatim (the `kernel_path` /
-`ramdisk_path` `${workspace}` placeholders are unused at runtime for memory
-images).
+registry entry so a fresh VM can be rebuilt from the installed boot files.
+The create body uses the exact packaged `vm-1.toml` supplied through
+`AXVISOR_BUILTIN_CONFIG_DIR`; its paths refer to `/guest/builtin/images` on
+the disk root after the host initramfs has been detached and released.
 """
 
 import json
@@ -443,8 +444,14 @@ def poll_vm_gone(vm_id):
 
 
 def main():
-    with open(os.path.join(CASE_DIR, "vm-memory.toml"), "r", encoding="utf-8") as f:
+    config_dir = os.environ.get("AXVISOR_BUILTIN_CONFIG_DIR", CASE_DIR)
+    config_path = os.path.join(config_dir, "vm-1.toml")
+    with open(config_path, "r", encoding="utf-8") as f:
         vm_config = f.read()
+    if "/guest/builtin/images/" not in vm_config:
+        raise AssertionError(
+            "VM recreate must use installed built-in boot assets: %s" % config_path
+        )
     create_body = json.dumps({"toml": vm_config})
     bad_body = json.dumps({"toml": "this is not [[ valid toml {{{"})
 
