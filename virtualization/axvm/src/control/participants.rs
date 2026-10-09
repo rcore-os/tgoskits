@@ -224,7 +224,7 @@ impl Owner {
                 .expect("run owns vCPU slots")[id]
                 .as_mut()
                 .expect("a returned activation retains its backend");
-            CurrentArch::quiet_vcpu(backend)?;
+            backend.with_backend(CurrentArch::quiet_vcpu)?;
             if backend.state() == VmVcpuState::Ready {
                 backend.unbind()?;
             }

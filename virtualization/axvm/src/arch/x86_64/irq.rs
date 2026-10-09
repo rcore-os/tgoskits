@@ -4,6 +4,7 @@ use std::{
 };
 
 use axdevice::*;
+use axvm_types::VmArchVcpuOps;
 
 use crate::{
     AxVmResult, InterruptTriggerMode,
@@ -13,7 +14,6 @@ use crate::{
     },
     services::{RunServices, RunSignals},
     sync::MutexExt,
-    vcpu::AxVCpu,
 };
 
 pub(super) const IOAPIC_GSI_COUNT: usize = 24;
@@ -533,8 +533,12 @@ fn register_qemu_block_passthrough_forwarding(domain: &Arc<X86InterruptDomain>) 
     Ok(())
 }
 
-pub fn drain_pending_wired_irqs(port: Option<&X86DeliveryPort>, vcpu: &mut AxVCpu<AxvmX86Vcpu>) {
-    if vcpu.id() != 0 {
+pub fn drain_pending_wired_irqs(
+    port: Option<&X86DeliveryPort>,
+    vcpu_id: usize,
+    vcpu: &mut AxvmX86Vcpu,
+) {
+    if vcpu_id != 0 {
         return;
     }
     let Some(port) = port else {
@@ -673,11 +677,15 @@ fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicI
     !pending.is_some_and(|irq| irq.level_triggered)
 }
 
-pub fn drain_pending_ioapic_irqs(port: Option<&X86DeliveryPort>, vcpu: &mut AxVCpu<AxvmX86Vcpu>) {
+pub fn drain_pending_ioapic_irqs(
+    port: Option<&X86DeliveryPort>,
+    vcpu_id: usize,
+    vcpu: &mut AxvmX86Vcpu,
+) {
     let Some(port) = port else {
         return;
     };
-    let Some((pending, pending_level)) = port.take_pending_forwarded_gsis_for(vcpu.id()) else {
+    let Some((pending, pending_level)) = port.take_pending_forwarded_gsis_for(vcpu_id) else {
         return;
     };
 
@@ -799,7 +807,7 @@ fn release_forwarding_hooks(domain: &X86InterruptDomain) {
 
 fn forward_passthrough_gsi(
     port: &X86DeliveryPort,
-    vcpu: &mut AxVCpu<AxvmX86Vcpu>,
+    vcpu: &mut AxvmX86Vcpu,
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {

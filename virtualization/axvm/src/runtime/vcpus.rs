@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use axvm_types::{GuestPhysAddr, NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{GuestPhysAddr, NestedPagingConfig};
 
 use crate::{
     AxVmError, AxVmResult, OperationId, VmOperation,
@@ -358,17 +358,9 @@ fn run_owner(
         // Install this run's revision before startup is acknowledged or guest
         // entry is admitted, including activations after a memory update.
         backend.with_engine_scope(&entry.decode, &entry.signals, |backend| {
-            backend
-                .get_arch_vcpu()
-                .set_nested_page_table(entry.root)
-                .map_err(|error| {
-                    crate::vcpu::map_vcpu_backend_error(
-                        "install activation translation root",
-                        error,
-                    )
-                })
+            backend.set_nested_page_table(entry.root)
         })?;
-        CurrentArch::prepare_vcpu(&mut backend, &entry.architecture)
+        backend.with_backend(|backend| CurrentArch::prepare_vcpu(backend, &entry.architecture))
     })();
     if let Err(mut error) = initialized {
         backend.rollback_cpu_on();
@@ -424,16 +416,22 @@ fn run_owner(
             let result = match command {
                 VcpuCommand::Park { operation } => {
                     parked = true;
-                    CurrentArch::suspend_vcpu(task.engine.vcpu_mut()).map(|()| {
-                        port.progress.parks.fetch_add(1, Ordering::Relaxed);
-                        control.post_event(VcpuEvent::Parked {
-                            instance: port.instance,
-                            operation,
-                        });
-                    })
+                    task.engine
+                        .vcpu_mut()
+                        .with_backend(CurrentArch::suspend_vcpu)
+                        .map(|()| {
+                            port.progress.parks.fetch_add(1, Ordering::Relaxed);
+                            control.post_event(VcpuEvent::Parked {
+                                instance: port.instance,
+                                operation,
+                            });
+                        })
                 }
-                VcpuCommand::Resume { operation } => {
-                    CurrentArch::resume_vcpu(task.engine.vcpu_mut()).map(|()| {
+                VcpuCommand::Resume { operation } => task
+                    .engine
+                    .vcpu_mut()
+                    .with_backend(CurrentArch::resume_vcpu)
+                    .map(|()| {
                         if port.signals.open_entry() {
                             parked = false;
                             control.post_event(VcpuEvent::Resumed {
@@ -441,8 +439,7 @@ fn run_owner(
                                 operation,
                             });
                         }
-                    })
-                }
+                    }),
                 VcpuCommand::InstallRoot {
                     operation,
                     root,
@@ -450,7 +447,9 @@ fn run_owner(
                     decode,
                 } => {
                     parked = true;
-                    CurrentArch::suspend_vcpu(task.engine.vcpu_mut())
+                    task.engine
+                        .vcpu_mut()
+                        .with_backend(CurrentArch::suspend_vcpu)
                         .and_then(|()| {
                             task.engine
                                 .install_root(&mut task.entry, root, revision, decode)
@@ -577,11 +576,16 @@ fn run_owner(
                 if let Err(error) = task.services.poll_devices(port.instance.vcpu_id, true) {
                     break VcpuExitOutcome::Fault(error);
                 }
-                if let Err(error) = CurrentArch::wait_for_event(
-                    task.engine.vcpu_mut(),
-                    &task.entry.architecture,
-                    &idle_wait,
-                ) {
+                let vcpu_id = port.instance.vcpu_id;
+                let result = task.engine.vcpu_mut().with_backend(|backend| {
+                    CurrentArch::wait_for_event(
+                        backend,
+                        vcpu_id,
+                        &task.entry.architecture,
+                        &idle_wait,
+                    )
+                });
+                if let Err(error) = result {
                     break VcpuExitOutcome::Fault(error);
                 }
             }

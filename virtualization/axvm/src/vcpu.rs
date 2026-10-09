@@ -632,9 +632,22 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.with_state_transition(from, to, |_| Ok(()))
     }
 
-    /// Returns the architecture-specific vCPU.
-    pub fn get_arch_vcpu(&mut self) -> &mut A {
-        &mut self.arch_vcpu
+    /// Runs an owner operation on the architecture backend.
+    ///
+    /// The backend is intentionally exposed only for the duration of this
+    /// closure. AxVM owns the surrounding state transition, CPU pin and IRQ
+    /// boundary; architecture code receives only its exclusive mutable value.
+    pub(crate) fn with_backend<T>(&mut self, operation: impl FnOnce(&mut A) -> T) -> T {
+        operation(&mut self.arch_vcpu)
+    }
+
+    /// Installs a nested page-table configuration through the owner boundary.
+    pub(crate) fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxVmResult {
+        self.with_backend(|backend| {
+            backend
+                .set_nested_page_table(config)
+                .map_err(|error| map_vcpu_backend_error("set nested page table", error))
+        })
     }
 
     /// Runs one already-loaded vCPU until a VM exit.

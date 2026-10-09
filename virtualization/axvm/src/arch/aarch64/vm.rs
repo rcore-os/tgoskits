@@ -61,11 +61,9 @@ impl Aarch64Arch {
                     .map_err(|error| {
                         crate::AxVmError::interrupt("attach vCPU to virtual GIC", error)
                     })?;
-                vcpu.get_arch_vcpu().attach_vgic(
-                    vgic_runtime.native().clone(),
-                    binding,
-                    timer_config,
-                )?;
+                vcpu.with_backend(|backend| {
+                    backend.attach_vgic(vgic_runtime.native().clone(), binding, timer_config)
+                })?;
             }
 
             resources.prepare_guest_address_space(vm_id, config, &[])?;

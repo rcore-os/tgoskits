@@ -36,7 +36,6 @@ use crate::{
     runtime::{QueuedVcpuInterrupt, hvc::GuestRequest},
     services::{RunServices, RunSignals, SignalError, VcpuWait},
     sync::MutexExt,
-    vcpu::*,
 };
 
 mod acpi_pm_timer;
@@ -462,48 +461,43 @@ impl X86Completion {
         }
     }
 
-    fn commit(self, vcpu: &mut AxVCpu<AxvmX86Vcpu>) -> AxVmResult {
+    fn commit(self, vcpu: &mut AxvmX86Vcpu) -> AxVmResult {
         match self {
             Self::Register(RegisterCompletion::None) => Ok(()),
             Self::Register(RegisterCompletion::Gpr { register, value }) => {
-                vcpu.get_arch_vcpu().set_gpr(register, value);
+                vcpu.set_gpr(register, value);
                 Ok(())
             }
             Self::Register(RegisterCompletion::Return(value)) => {
-                vcpu.get_arch_vcpu().set_return_value(value);
+                vcpu.set_return_value(value);
                 Ok(())
             }
             Self::Retire { next_rip, inner } => {
                 inner.commit(vcpu)?;
-                vcpu.get_arch_vcpu().set_rip(next_rip).map_err(|error| {
+                vcpu.set_rip(next_rip).map_err(|error| {
                     crate::vcpu::map_vcpu_backend_error("retire x86 guest RIP", error)
                 })
             }
             Self::ByteGpr { register, value } => {
-                vcpu.get_arch_vcpu().set_gpr_byte(register, value);
+                vcpu.set_gpr_byte(register, value);
                 Ok(())
             }
             Self::WordGpr { register, value } => {
-                vcpu.get_arch_vcpu().set_gpr_word(register, value);
+                vcpu.set_gpr_word(register, value);
                 Ok(())
             }
             Self::Rsp { width, value } => {
-                vcpu.get_arch_vcpu().set_gpr_rsp(width, value);
+                vcpu.set_gpr_rsp(width, value);
                 Ok(())
             }
             Self::MsrRead { value } => {
-                let arch = vcpu.get_arch_vcpu();
-                arch.set_gpr(0, (value & 0xffff_ffff) as usize);
-                arch.set_gpr(2, (value >> 32) as usize);
+                vcpu.set_gpr(0, (value & 0xffff_ffff) as usize);
+                vcpu.set_gpr(2, (value >> 32) as usize);
                 Ok(())
             }
-            Self::PortIoString(exit) => {
-                vcpu.get_arch_vcpu()
-                    .complete_port_io_string(exit)
-                    .map_err(|error| {
-                        crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error)
-                    })
-            }
+            Self::PortIoString(exit) => vcpu.complete_port_io_string(exit).map_err(|error| {
+                crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error)
+            }),
         }
     }
 }
@@ -533,13 +527,13 @@ impl X86Entry {
         Ok(Self { port })
     }
 
-    fn prepare_vcpu(&self, _vcpu: &mut AxVCpu<AxvmX86Vcpu>) -> AxVmResult {
+    fn prepare_vcpu(&self, _vcpu: &mut AxvmX86Vcpu) -> AxVmResult {
         Ok(())
     }
 
-    fn before_guest(&self, vcpu: &mut AxVCpu<AxvmX86Vcpu>) -> AxVmResult {
-        irq::drain_pending_wired_irqs(self.port.as_deref(), vcpu);
-        irq::drain_pending_ioapic_irqs(self.port.as_deref(), vcpu);
+    fn before_guest(&self, vcpu_id: usize, vcpu: &mut AxvmX86Vcpu) -> AxVmResult {
+        irq::drain_pending_wired_irqs(self.port.as_deref(), vcpu_id, vcpu);
+        irq::drain_pending_ioapic_irqs(self.port.as_deref(), vcpu_id, vcpu);
         irq::activate_ready_ioapic_forwarding_routes(self.port.as_deref());
         Ok(())
     }
@@ -580,37 +574,34 @@ impl ArchOps for X86_64Arch {
         irq::exit_runtime(vm)
     }
 
-    fn prepare_vcpu(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult {
+    fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult {
         entry.prepare_vcpu(vcpu)
     }
 
     /// Quiesces the per-vCPU LAPIC timer before a task-side pause is ACKed.
-    fn suspend_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .suspend_timer()
+    fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.suspend_timer()
             .map_err(|error| crate::vcpu::map_vcpu_backend_error("suspend x86 vCPU timer", error))
     }
 
     /// Reinstalls the per-vCPU LAPIC timer before reopening the guest entry.
-    fn resume_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .resume_timer()
+    fn resume_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.resume_timer()
             .map_err(|error| crate::vcpu::map_vcpu_backend_error("resume x86 vCPU timer", error))
     }
 
     /// Stops the per-vCPU LAPIC producer before a backend is released or reaped.
-    fn quiet_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .stop_timer()
+    fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.stop_timer()
             .map_err(|error| crate::vcpu::map_vcpu_backend_error("quiesce x86 vCPU timer", error))
     }
 
-    fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult {
-        entry.before_guest(vcpu)
+    fn before_guest(vcpu: &mut Self::VCpu, vcpu_id: usize, entry: &Self::Entry) -> AxVmResult {
+        entry.before_guest(vcpu_id, vcpu)
     }
 
     fn complete(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         completion: Self::Completion,
     ) -> AxVmResult {
@@ -618,7 +609,7 @@ impl ArchOps for X86_64Arch {
     }
 
     fn capture_exit(
-        _vcpu: &mut AxVCpu<Self::VCpu>,
+        _vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -634,29 +625,29 @@ impl ArchOps for X86_64Arch {
     }
 
     fn inject_arch_interrupt(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
         _entry: &Self::Entry,
         interrupt: crate::runtime::QueuedVcpuInterrupt,
     ) -> AxVmResult {
         let QueuedVcpuInterrupt::LegacyPic { vector } = interrupt else {
             unreachable!("x86 architecture interrupt sources are legacy PIC ExtINT vectors");
         };
-        vcpu.get_arch_vcpu()
-            .inject_legacy_pic_interrupt(vector)
-            .map_err(|error| {
-                crate::vcpu::map_vcpu_backend_error("inject x86 legacy PIC interrupt", error)
-            })
+        vcpu.inject_legacy_pic_interrupt(vector).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error("inject x86 legacy PIC interrupt", error)
+        })
     }
 
     fn wait_for_event(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
         _entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult {
         // `wait_until` takes an `Fn` predicate, so the backend is borrowed once
         // here and the closure only performs this vCPU's own lower-state read.
         // It never mutates the backend, queries the VM, or takes a sleep lock.
-        let backend: &AxvmX86Vcpu = vcpu.get_arch_vcpu();
+        let backend: &AxvmX86Vcpu = vcpu;
         wait.wait_until(|| backend.has_pending_event());
         Ok(())
     }

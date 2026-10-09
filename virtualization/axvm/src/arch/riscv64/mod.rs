@@ -25,7 +25,6 @@ use crate::{
         hvc::{GuestRequest, HyperCallAbi},
     },
     services::{RunServices, RunSignals, VcpuWait},
-    vcpu::AxVCpu,
     vm::AxVMResources,
 };
 
@@ -176,7 +175,7 @@ impl ArchOps for Riscv64Arch {
         vplic_runtime(vm)?.deactivate()
     }
 
-    fn prepare_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>, _entry: &Self::Entry) -> AxVmResult {
+    fn prepare_vcpu(_vcpu: &mut Self::VCpu, _entry: &Self::Entry) -> AxVmResult {
         Ok(())
     }
 
@@ -186,15 +185,14 @@ impl ArchOps for Riscv64Arch {
     /// remote register write ever reaches a different vCPU. This hook runs
     /// inside the engine's loaded scope, so the controller-derived level is
     /// committed to this vCPU's saved CSR image and reflected into hardware.
-    fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult {
-        let asserted = entry.plic.vcpu_has_deliverable_irq(vcpu.id())?;
-        vcpu.get_arch_vcpu()
-            .sync_vseip_level(asserted)
+    fn before_guest(vcpu: &mut Self::VCpu, vcpu_id: usize, entry: &Self::Entry) -> AxVmResult {
+        let asserted = entry.plic.vcpu_has_deliverable_irq(vcpu_id)?;
+        vcpu.sync_vseip_level(asserted)
             .map_err(|error| crate::vcpu::map_vcpu_backend_error("synchronize RISC-V VSEIP", error))
     }
 
     fn complete(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         completion: Self::Completion,
     ) -> AxVmResult {
@@ -209,7 +207,7 @@ impl ArchOps for Riscv64Arch {
                 if let Some(register) = register {
                     vcpu.set_gpr(register, value);
                 }
-                vcpu.get_arch_vcpu().advance_pc(advance);
+                vcpu.advance_pc(advance);
             }
             RiscvCompletion::SbiRet { error, value } => {
                 vcpu.set_gpr(RiscvGprIndex::A0 as usize, error);
@@ -219,7 +217,7 @@ impl ArchOps for Riscv64Arch {
                 request,
                 completion,
             } => {
-                vcpu.get_arch_vcpu().complete_ipi(request, completion);
+                vcpu.complete_ipi(request, completion);
             }
         }
         Ok(())
@@ -231,11 +229,11 @@ impl ArchOps for Riscv64Arch {
     /// the unbound handler receives an owned record and never re-enters the
     /// hardware backend or decodes a guest instruction after unloading.
     fn capture_exit(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<Self::Exit> {
-        let vm_exit = vcpu.get_arch_vcpu().process_exit(exit).map_err(|error| {
+        let vm_exit = vcpu.process_exit(exit).map_err(|error| {
             crate::vcpu::map_vcpu_backend_error(
                 "interpret RISC-V exit",
                 riscv_error_to_backend(error),
@@ -245,7 +243,7 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn finish_exit(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: &Self::Entry,
         mut exit: Self::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -264,15 +262,12 @@ impl ArchOps for Riscv64Arch {
         if let RiscvExit::SbiCall(call) = exit
             && !console::is_console_call(call)
         {
-            let result = vcpu
-                .get_arch_vcpu()
-                .forward_task_sbi(call)
-                .map_err(|error| {
-                    crate::vcpu::map_vcpu_backend_error(
-                        "forward RISC-V SBI call",
-                        riscv_error_to_backend(error),
-                    )
-                })?;
+            let result = vcpu.forward_task_sbi(call).map_err(|error| {
+                crate::vcpu::map_vcpu_backend_error(
+                    "forward RISC-V SBI call",
+                    riscv_error_to_backend(error),
+                )
+            })?;
             exit = RiscvExit::SbiResult {
                 error: result.error,
                 value: result.value,
@@ -421,18 +416,19 @@ impl ArchOps for Riscv64Arch {
     /// RISC-V consumes its supervisor-software source from `RunSignals::publish`
     /// rather than an architecture-neutral vector, so the injected cause carries
     /// the complete `scause` interrupt bit.
-    fn inject_vcpu_interrupt(
-        vcpu: &mut AxVCpu<Self::VCpu>,
-        interrupt: PendingVcpuInterrupt,
-    ) -> AxVmResult {
+    fn inject_vcpu_interrupt(vcpu: &mut Self::VCpu, interrupt: PendingVcpuInterrupt) -> AxVmResult {
         const SCAUSE_INTERRUPT_BIT: usize = 1 << (usize::BITS - 1);
 
         let vector = SCAUSE_INTERRUPT_BIT | interrupt.id.0 as usize;
         vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
+            .map_err(|error| {
+                crate::vcpu::map_vcpu_backend_error("inject RISC-V vCPU interrupt", error)
+            })
     }
 
     fn inject_arch_interrupt(
-        _vcpu: &mut AxVCpu<Self::VCpu>,
+        _vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
         _entry: &Self::Entry,
         _interrupt: QueuedVcpuInterrupt,
     ) -> AxVmResult {
@@ -442,11 +438,11 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn wait_for_event(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        _vcpu: &mut Self::VCpu,
+        vcpu_id: usize,
         entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult {
-        let vcpu_id = vcpu.id();
         let plic = entry.plic.clone();
         // The canonical predicate owns the wake, park, IRQ, and work atomics;
         // only the controller-derived VSEIP state is added here.
@@ -457,15 +453,13 @@ impl ArchOps for Riscv64Arch {
 
 impl CpuOn for Riscv64Arch {
     fn initialize_cpu_on(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: axvm_types::GuestPhysAddr,
         argument: usize,
     ) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .initialize_cpu_on(entry, argument)
-            .map_err(|error| {
-                crate::vcpu::map_vcpu_backend_error("initialize RISC-V CPU_ON target", error)
-            })
+        vcpu.initialize_cpu_on(entry, argument).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error("initialize RISC-V CPU_ON target", error)
+        })
     }
 }
 

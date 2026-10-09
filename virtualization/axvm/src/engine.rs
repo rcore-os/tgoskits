@@ -73,7 +73,10 @@ impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
     }
 
     pub(crate) fn into_backend(mut self) -> (crate::vcpu::AxVCpu<A::VCpu>, AxVmResult) {
-        let result = A::quiet_vcpu(&mut self.vcpu).and_then(|()| self.vcpu.unbind());
+        let result = self
+            .vcpu
+            .with_backend(A::quiet_vcpu)
+            .and_then(|()| self.vcpu.unbind());
         (self.vcpu, result)
     }
 
@@ -90,13 +93,7 @@ impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
         // new revision.
         self.vcpu
             .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
-                use axvm_types::VmArchVcpuOps;
-
-                vcpu.get_arch_vcpu()
-                    .set_nested_page_table(root)
-                    .map_err(|error| {
-                        crate::vcpu::map_vcpu_backend_error("install translation root", error)
-                    })
+                vcpu.set_nested_page_table(root)
             })?;
         entry.root = root;
         entry.revision = revision;
@@ -111,7 +108,7 @@ impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
     ) -> AxVmResult {
         self.vcpu
             .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
-                A::complete(vcpu, &entry.architecture, completion)
+                vcpu.with_backend(|backend| A::complete(backend, &entry.architecture, completion))
             })
     }
 }
@@ -132,7 +129,8 @@ impl<A: crate::architecture::ArchOps> VcpuEngine for OwnedVcpuEngine<A> {
         use crate::vcpu::VcpuRunResult;
         let attempt = (|| {
             debug_assert!(std::ptr::eq(signals, &*self.vcpu.run_state()));
-            A::prepare_vcpu(&mut self.vcpu, &entry.architecture)?;
+            self.vcpu
+                .with_backend(|backend| A::prepare_vcpu(backend, &entry.architecture))?;
             // Draining allocates its return buffer before CPU binding. Producers
             // publish canonical pending before a lock-free final recheck.
             let pending = entry.signals.drain(
@@ -145,26 +143,37 @@ impl<A: crate::architecture::ArchOps> VcpuEngine for OwnedVcpuEngine<A> {
             let outcome = self
                 .vcpu
                 .with_engine_scope(&entry.decode, &entry.signals, |vcpu| {
+                    let vcpu_id = vcpu.id();
                     if let Some(completion) = completion {
-                        A::complete(vcpu, &entry.architecture, completion)?;
+                        vcpu.with_backend(|backend| {
+                            A::complete(backend, &entry.architecture, completion)
+                        })?;
                     }
                     for &interrupt in &pending {
                         match interrupt.into_virtual() {
-                            Ok(interrupt) => A::inject_vcpu_interrupt(vcpu, interrupt)?,
-                            Err(interrupt) => {
-                                A::inject_arch_interrupt(vcpu, &entry.architecture, interrupt)?
-                            }
+                            Ok(interrupt) => vcpu.with_backend(|backend| {
+                                A::inject_vcpu_interrupt(backend, interrupt)
+                            })?,
+                            Err(interrupt) => vcpu.with_backend(|backend| {
+                                A::inject_arch_interrupt(
+                                    backend,
+                                    vcpu_id,
+                                    &entry.architecture,
+                                    interrupt,
+                                )
+                            })?,
                         }
                     }
                     // Completion and drained interrupts are committed to owned
                     // backend/canonical state even when migration cancels entry.
                     // Retrying must not lose either publication.
-                    if !A::entry_cpu_is_ready(vcpu) {
+                    if !vcpu.with_backend(A::entry_cpu_is_ready) {
                         return Ok(EngineOutcome::Interrupted);
                     }
-                    A::before_guest(vcpu, &entry.architecture)?;
+                    vcpu.with_backend(|backend| {
+                        A::before_guest(backend, vcpu_id, &entry.architecture)
+                    })?;
                     let irq = IrqSaveGuard::new();
-                    let vcpu_id = vcpu.id();
                     let result = vcpu.run_loaded(|| {
                         !entry.admission.load(Ordering::Acquire)
                             || entry.signals.has_pending(vcpu_id)
@@ -174,17 +183,17 @@ impl<A: crate::architecture::ArchOps> VcpuEngine for OwnedVcpuEngine<A> {
                         VcpuRunResult::Retry | VcpuRunResult::ExitRequested => {
                             Ok(EngineOutcome::Interrupted)
                         }
-                        VcpuRunResult::VmExit(exit) => {
-                            A::capture_exit(vcpu, &entry.architecture, exit)
+                        VcpuRunResult::VmExit(exit) => vcpu.with_backend(|backend| {
+                            A::capture_exit(backend, &entry.architecture, exit)
                                 .map(EngineOutcome::Exit)
-                        }
+                        }),
                     }
                 })?;
             match outcome {
-                EngineOutcome::Exit(exit) => {
-                    A::finish_exit(&mut self.vcpu, &entry.architecture, exit)
-                        .map(EngineOutcome::Exit)
-                }
+                EngineOutcome::Exit(exit) => self
+                    .vcpu
+                    .with_backend(|backend| A::finish_exit(backend, &entry.architecture, exit))
+                    .map(EngineOutcome::Exit),
                 EngineOutcome::Interrupted => Ok(EngineOutcome::Interrupted),
             }
         })();

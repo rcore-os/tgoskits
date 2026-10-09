@@ -208,44 +208,38 @@ impl ArchOps for LoongArch64Arch {
         Ok(())
     }
 
-    fn prepare_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult {
-        vcpu.get_arch_vcpu().0.set_run_port(entry.run.clone());
+    fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult {
+        vcpu.0.set_run_port(entry.run.clone());
         Ok(())
     }
 
     /// Quiesces the guest timer producer while preserving its logical deadline.
-    fn suspend_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .0
+    fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.0
             .suspend_timer()
             .map_err(|error| AxVmError::vcpu("suspend LoongArch timer", error))
     }
 
     /// Re-arms a suspended guest timer before guest admission reopens.
-    fn resume_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .0
+    fn resume_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.0
             .resume_timer()
             .map_err(|error| AxVmError::vcpu("resume LoongArch timer", error))
     }
 
-    fn quiet_vcpu(vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>) -> AxVmResult {
-        vcpu.get_arch_vcpu()
-            .0
+    fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.0
             .quiet_timer()
             .map_err(|error| AxVmError::vcpu("quiet LoongArch timer", error))
     }
 
-    fn before_guest(
-        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
-        _entry: &Self::Entry,
-    ) -> AxVmResult {
-        vcpu.get_arch_vcpu().0.prepare_entry();
+    fn before_guest(vcpu: &mut Self::VCpu, _vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
+        vcpu.0.prepare_entry();
         Ok(())
     }
 
     fn complete(
-        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         completion: Self::Completion,
     ) -> AxVmResult {
@@ -255,13 +249,13 @@ impl ArchOps for LoongArch64Arch {
             RegisterCompletion::Return(value) => vcpu.set_return_value(value),
         }
         if completion.advance_pc {
-            vcpu.get_arch_vcpu().advance_guest_pc();
+            vcpu.advance_guest_pc();
         }
         Ok(())
     }
 
     fn capture_exit(
-        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -270,7 +264,7 @@ impl ArchOps for LoongArch64Arch {
             // Only the raw record plus the pinned host-local operands are taken
             // here; `finish_exit` owns the software interpretation.
             LoongArchVmExit::Machine(machine_exit) => {
-                let host = vcpu.get_arch_vcpu().capture_pinned_host(&machine_exit);
+                let host = vcpu.capture_pinned_host(&machine_exit);
                 Ok(LoongArchExit::Machine {
                     exit: machine_exit,
                     host,
@@ -279,7 +273,7 @@ impl ArchOps for LoongArch64Arch {
             // A pre-decoded exit produced outside the LVZ interpreter path is
             // already durable; no further backend work is pending for it.
             decoded => {
-                let kind = interpret_loongarch_exit(vcpu.get_arch_vcpu(), decoded)?;
+                let kind = interpret_loongarch_exit(vcpu, decoded)?;
                 Ok(LoongArchExit::Record(LoongArchExitRecord {
                     kind,
                     pch_pic: Arc::clone(&entry.pch_pic),
@@ -300,7 +294,7 @@ impl ArchOps for LoongArch64Arch {
     /// happens to run on. MMIO decoding still reads only the saved guest context
     /// and faulting instruction.
     fn finish_exit(
-        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: &Self::Entry,
         exit: Self::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -312,7 +306,7 @@ impl ArchOps for LoongArch64Arch {
             // Already durable; nothing further to interpret.
             record => return Ok(record),
         };
-        let backend = vcpu.get_arch_vcpu();
+        let backend = vcpu;
         let interpreted = backend
             .0
             .process_exit(machine_exit, pinned)
@@ -437,7 +431,8 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn inject_arch_interrupt(
-        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        vcpu_id: usize,
         entry: &Self::Entry,
         interrupt: QueuedVcpuInterrupt,
     ) -> AxVmResult {
@@ -455,11 +450,9 @@ impl ArchOps for LoongArch64Arch {
             }
         };
         let Some(physical_irq) = physical_irq else {
-            vcpu.get_arch_vcpu()
-                .inject_eiointc_interrupt(vector)
-                .map_err(|error| {
-                    AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error)
-                })?;
+            vcpu.inject_eiointc_interrupt(vector).map_err(|error| {
+                AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error)
+            })?;
             return Ok(());
         };
 
@@ -479,31 +472,30 @@ impl ArchOps for LoongArch64Arch {
         let Some(vector) = entry.pch_pic.set_input_level(input, true) else {
             trace!(
                 "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is masked in \
-                 VM[{}]",
-                vcpu.vm_id()
+                 VCpu[{}]",
+                vcpu_id
             );
             return Ok(());
         };
         trace!(
             "Injecting queued LoongArch external interrupt vector={vector:#x}, \
-             physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]",
-            vcpu.vm_id(),
-            vcpu.id()
+             physical_irq={physical_irq:#x} into VCpu[{}]",
+            vcpu_id
         );
-        vcpu.get_arch_vcpu()
-            .inject_external_interrupt(vector, physical_irq)
+        vcpu.inject_external_interrupt(vector, physical_irq)
             .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))?;
         Ok(())
     }
 
     fn wait_for_event(
-        vcpu: &mut crate::vcpu::AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
         _entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult {
         // The predicate only reads this vCPU's own pending-interrupt state, so
         // the backend borrow is hoisted out and shared by the `Fn` closure.
-        let backend = vcpu.get_arch_vcpu();
+        let backend = vcpu;
         wait.wait_until(|| backend.has_enabled_pending_interrupt());
         Ok(())
     }

@@ -38,11 +38,11 @@ pub(crate) fn initialize_cpu_on(
     argument: usize,
 ) -> AxVmResult {
     cfg_select! {
-        any(target_arch = "aarch64", target_arch = "riscv64") => {
+        any(target_arch = "aarch64", target_arch = "riscv64") => vcpu.with_backend(|backend| {
             <CurrentArch as crate::architecture::ops::CpuOn>::initialize_cpu_on(
-                vcpu, entry, argument,
+                backend, entry, argument,
             )
-        }
+        }),
         _ => {
             let _ = (vcpu, entry, argument);
             Err(crate::AxVmError::unsupported(

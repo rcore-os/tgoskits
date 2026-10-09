@@ -26,7 +26,6 @@ use crate::{
         hvc::{GuestRequest, HyperCallAbi},
     },
     services::{RunServices, RunSignals, VcpuWait},
-    vcpu::AxVCpu,
     vm::{AxVM, AxVMResources},
     *,
 };
@@ -189,10 +188,10 @@ impl ArchOps for Aarch64Arch {
         runtime.unbind_run(signals.run_id())
     }
 
-    fn prepare_vcpu(vcpu: &mut AxVCpu<Self::VCpu>, _entry: &Self::Entry) -> AxVmResult {
+    fn prepare_vcpu(vcpu: &mut Self::VCpu, _entry: &Self::Entry) -> AxVmResult {
         // Task-side preparation runs before CPU binding and IRQ masking, so it
         // may discard any timer wait that a previous migration left armed.
-        let arch = vcpu.get_arch_vcpu();
+        let arch = vcpu;
         let binding = arch
             .timer_binding
             .as_ref()
@@ -208,11 +207,10 @@ impl ArchOps for Aarch64Arch {
         })
     }
 
-    fn suspend_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+    fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
         // Guest registers remain owned and saved. Only host producers, line
         // levels and the banked physical activation become quiescent here.
-        vcpu.get_arch_vcpu()
-            .timer_binding
+        vcpu.timer_binding
             .as_ref()
             .ok_or(crate::AxVmError::Backend {
                 operation: "quiesce architectural timer",
@@ -224,25 +222,24 @@ impl ArchOps for Aarch64Arch {
             })
     }
 
-    fn quiet_vcpu(vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+    fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
         Self::suspend_vcpu(vcpu)
     }
 
-    fn entry_cpu_is_ready(vcpu: &mut AxVCpu<Self::VCpu>) -> bool {
-        vcpu.get_arch_vcpu()
-            .timer_binding
+    fn entry_cpu_is_ready(vcpu: &mut Self::VCpu) -> bool {
+        vcpu.timer_binding
             .as_ref()
             .is_none_or(|binding| binding.entry_cpu_is_ready())
     }
 
-    fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, _entry: &Self::Entry) -> AxVmResult {
+    fn before_guest(vcpu: &mut Self::VCpu, _vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
         // Only canonical timer levels are published while the backend is
         // loaded; host cancellation and remote completion ran before CPU pin.
-        vcpu.get_arch_vcpu().prepare_timer_entry()
+        vcpu.prepare_timer_entry()
     }
 
     fn complete(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         completion: Self::Completion,
     ) -> AxVmResult {
@@ -256,13 +253,13 @@ impl ArchOps for Aarch64Arch {
             RegisterCompletion::Return(value) => vcpu.set_return_value(value),
         }
         if let Some(step) = advance {
-            vcpu.get_arch_vcpu().advance_exception_pc(step);
+            vcpu.advance_exception_pc(step);
         }
         Ok(())
     }
 
     fn capture_exit(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -313,22 +310,22 @@ impl ArchOps for Aarch64Arch {
                 register,
                 destination,
             } => {
-                let value = vcpu.get_arch_vcpu().read_icc(register)?;
+                let value = vcpu.read_icc(register)?;
                 Aarch64Exit::GprRead {
                     register: destination,
                     value,
                 }
             }
             ArmVmExit::GicCpuInterfaceWrite { register, value } => {
-                vcpu.get_arch_vcpu().write_icc(register, value)?;
+                vcpu.write_icc(register, value)?;
                 Aarch64Exit::Nothing
             }
             ArmVmExit::SendIPI { value } => {
-                vcpu.get_arch_vcpu().write_sgi1r(value)?;
+                vcpu.write_sgi1r(value)?;
                 Aarch64Exit::Nothing
             }
             ArmVmExit::DeactivateInterrupt { intid } => {
-                vcpu.get_arch_vcpu().deactivate(intid)?;
+                vcpu.deactivate(intid)?;
                 Aarch64Exit::Nothing
             }
             ArmVmExit::WaitForInterrupt => Aarch64Exit::WaitForInterrupt,
@@ -396,7 +393,8 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn inject_arch_interrupt(
-        _vcpu: &mut AxVCpu<Self::VCpu>,
+        _vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
         _entry: &Self::Entry,
         _interrupt: QueuedVcpuInterrupt,
     ) -> AxVmResult {
@@ -409,14 +407,15 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn wait_for_event(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
         _entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult {
         // The predicate uses only lower controller state and the pre-bound
         // timer-wait completion token; it never queries the VM, its devices, or
         // a sleepable lifecycle lock.
-        let arch: &AxvmArmVcpu = &*vcpu.get_arch_vcpu();
+        let arch: &AxvmArmVcpu = &*vcpu;
         if arch.has_pending_interrupt()? {
             return Ok(());
         }
@@ -434,7 +433,7 @@ impl ArchOps for Aarch64Arch {
 
 impl CpuOn for Aarch64Arch {
     fn initialize_cpu_on(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: axvm_types::GuestPhysAddr,
         argument: usize,
     ) -> AxVmResult {
@@ -442,10 +441,9 @@ impl CpuOn for Aarch64Arch {
         // The target owner installs the guest entry point and the handoff
         // context in x0 before the first entry; bind/rollback stays in the
         // common vCPU owner.
-        let arch = vcpu.get_arch_vcpu();
-        arch.set_entry(entry)
+        vcpu.set_entry(entry)
             .map_err(|error| crate::vcpu::map_vcpu_backend_error("set PSCI CPU_ON entry", error))?;
-        arch.set_gpr(0, argument);
+        vcpu.set_gpr(0, argument);
         Ok(())
     }
 }

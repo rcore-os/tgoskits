@@ -11,7 +11,6 @@ use crate::{
     irq::model::PendingVcpuInterrupt,
     runtime::{QueuedVcpuInterrupt, hvc::GuestRequest},
     services::{RunServices, RunSignals, VcpuWait},
-    vcpu::AxVCpu,
     vm::{AxVM, AxVMResources},
 };
 
@@ -30,6 +29,8 @@ pub(crate) enum RegisterCompletion {
 /// Each entry value retains only prepared hardware and interrupt capabilities.
 /// Device callbacks and task-service locks belong in `RunServices` instead.
 pub(crate) trait ArchOps {
+    /// Owner-local architecture backend. All mutable state is accessed through
+    /// `&mut`; scheduling, locking, and lifecycle ownership remain in AxVM.
     type VCpu: VmArchVcpuOps + Send;
     type PerCpu: VmArchPerCpuOps;
     type NestedPageTable: NestedPageTableOps;
@@ -55,20 +56,20 @@ pub(crate) trait ArchOps {
     fn exit_runtime(vm: &mut AxVM, signals: &Arc<RunSignals>) -> AxVmResult;
 
     /// All task-side preparation finishes before CPU binding and IRQ masking.
-    fn prepare_vcpu(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult;
+    fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult;
     /// Quiesces per-vCPU task producers while preserving their guest state.
-    fn suspend_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+    fn suspend_vcpu(_vcpu: &mut Self::VCpu) -> AxVmResult {
         Ok(())
     }
 
     /// Restarts quiesced per-vCPU producers before opening guest admission.
-    fn resume_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+    fn resume_vcpu(_vcpu: &mut Self::VCpu) -> AxVmResult {
         Ok(())
     }
 
     /// Stops task-side vCPU producers before returning or releasing a backend.
     /// Architectures without a per-vCPU producer need no retirement work.
-    fn quiet_vcpu(_vcpu: &mut AxVCpu<Self::VCpu>) -> AxVmResult {
+    fn quiet_vcpu(_vcpu: &mut Self::VCpu) -> AxVmResult {
         Ok(())
     }
 
@@ -76,18 +77,18 @@ pub(crate) trait ArchOps {
     /// False retires this attempt without guest entry; preparation may then
     /// perform a remote handoff in task context before the next pinned attempt.
     /// Backends without retained CPU-local claims are immediately ready.
-    fn entry_cpu_is_ready(_vcpu: &mut AxVCpu<Self::VCpu>) -> bool {
+    fn entry_cpu_is_ready(_vcpu: &mut Self::VCpu) -> bool {
         true
     }
 
-    fn before_guest(vcpu: &mut AxVCpu<Self::VCpu>, entry: &Self::Entry) -> AxVmResult;
+    fn before_guest(vcpu: &mut Self::VCpu, vcpu_id: usize, entry: &Self::Entry) -> AxVmResult;
     fn complete(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: &Self::Entry,
         completion: Self::Completion,
     ) -> AxVmResult;
     fn capture_exit(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<Self::Exit>;
@@ -95,7 +96,7 @@ pub(crate) trait ArchOps {
     /// Already durable exits need no further backend work. An architecture
     /// that defers CSR or timer emulation overrides this task-context stage.
     fn finish_exit(
-        _vcpu: &mut AxVCpu<Self::VCpu>,
+        _vcpu: &mut Self::VCpu,
         _entry: &Self::Entry,
         exit: Self::Exit,
     ) -> AxVmResult<Self::Exit> {
@@ -108,21 +109,21 @@ pub(crate) trait ArchOps {
     ) -> AxVmResult<VcpuAction<Self::Completion, GuestRequest>>;
 
     /// Arm/PLIC/LAPIC native pending and source state remains authoritative.
-    fn inject_vcpu_interrupt(
-        vcpu: &mut AxVCpu<Self::VCpu>,
-        interrupt: PendingVcpuInterrupt,
-    ) -> AxVmResult {
+    fn inject_vcpu_interrupt(vcpu: &mut Self::VCpu, interrupt: PendingVcpuInterrupt) -> AxVmResult {
         vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("inject vCPU interrupt", error))
     }
     fn inject_arch_interrupt(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        vcpu_id: usize,
         entry: &Self::Entry,
         interrupt: QueuedVcpuInterrupt,
     ) -> AxVmResult;
 
     /// Invoked with an unloaded backend; wait predicates use only lower state.
     fn wait_for_event(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
+        vcpu_id: usize,
         entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult;
@@ -132,7 +133,7 @@ pub(crate) trait ArchOps {
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub(crate) trait CpuOn: ArchOps {
     fn initialize_cpu_on(
-        vcpu: &mut AxVCpu<Self::VCpu>,
+        vcpu: &mut Self::VCpu,
         entry: axvm_types::GuestPhysAddr,
         argument: usize,
     ) -> AxVmResult;
