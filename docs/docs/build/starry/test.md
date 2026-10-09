@@ -51,6 +51,8 @@ test-suit/starryos/
 
 `qemu-smp1` 和 `qemu-smp4` 分别测试单核和多核场景，它们的构建配置不同（SMP 核数不同），因此必须分别编译；每个 wrapper 下的 `system` 聚合用例使用完全相同的内核，只需编译一次并启动一次。发现算法通过识别 `build-{target}.toml` 文件来自动划分构建边界，build wrapper 是含 `build-{target}.toml` 的目录，定义一组共享相同构建配置的用例。
 
+x86_64 的 QEMU wrapper 统一启用四组用例可能使用的驱动 feature（AHCI、Intel E1000、NVMe、VirtIO 和 PCI XHCI），并使用同一 `max_cpu_num`，因此 `qemu`、`qemu-e1000`、`timer-preemption-x86` 和 `ahci-single` 共用一次内核构建。驱动注册仍由 PCI/FDT probe 根据 QEMU 实际提供的设备完成；没有对应设备时不会创建驱动实例，所以合并 feature 不会改变各用例的设备语义。
+
 ## 3. QEMU 测试执行流程
 
 StarryOS 的 QEMU 测试执行链位于 `starry/test/qemu_run.rs::test_qemu()`。核心是 **build group 分组 → 每组一次内核编译 → 逐 case 注入 rootfs 资产并运行 QEMU**。下图描述从 CLI 到结果判定的完整数据流。
