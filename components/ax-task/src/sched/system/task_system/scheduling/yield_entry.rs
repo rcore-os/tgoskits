@@ -31,6 +31,7 @@ impl TaskSystem {
         self.yield_current_owner(cpu, None, OwnerRqEntry::SchedulerFrame)
     }
 
+    #[inline(always)]
     pub(super) fn yield_current_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
