@@ -26,7 +26,7 @@ def check_profile(root: Path, features: str, expected: bool) -> None:
     resolved = set(dependency.split("|", 1)[1].removesuffix(" (*)").split(","))
     assert set(filter(None, features.split(","))) <= resolved, dependency
     for package in ("ax-cpu", "cpu-local"):
-        command = ["cargo", "rustc", *args[:1], "-p", package, "--lib", "--no-default-features"]
+        command = ["cargo", "rustc", "--locked", "-p", package, "--lib", "--no-default-features"]
         if features:
             command += ["--features", features]
         cfg = subprocess.check_output(command + ["--", "--print", "cfg"], cwd=root, text=True)
@@ -36,10 +36,16 @@ def check_profile(root: Path, features: str, expected: bool) -> None:
 
 def main():
     root = Path(__file__).resolve().parents[2]
-    # Exercise each distinct state once; the old list repeated the `tls`
-    # profile and made adding another mode require editing test plumbing.
-    profiles = {"": False, "uspace": False, "tls,uspace": False, "tls": True}
-    for features, expected in profiles.items():
+    # Keep the repeated TLS profile: it verifies that a disabled transition
+    # does not leave stale build-script state in the reused target directory.
+    profiles = [
+        ("tls,uspace", False),
+        ("tls", True),
+        ("uspace", False),
+        ("", False),
+        ("tls", True),
+    ]
+    for features, expected in profiles:
         check_profile(root, features, expected)
 
 

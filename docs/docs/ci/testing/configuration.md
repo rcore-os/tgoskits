@@ -64,9 +64,11 @@ Starry 的性能应用通过 `cargo xtask starry app ...` 运行，使用单独�
 2. 选择已有 profile；只有机器能力确实不同才新增 profile。
 3. 在所属 manifest 添加唯一 `id`、显示名称、命令及影响范围；需要精确 suite 路由时同步注册 `check.suite`。
 4. 核对 artifact、缓存、超时和凭据。主 CI 必须恰好有一个静态阶段的任务工具 producer，不能让新消费者引用不存在的 artifact。
-5. 修改路由逻辑时补充必要的选择回归，并运行 `scripts/test` 下的 CI 配置回归检查受影响测试。
+5. 修改路由逻辑时补充必要的能力回归，并使用 uv 自动发现运行 `scripts/test` 下的 CI 配置测试；不要为新增 case 添加固定名称或数量断言。
 
 检查数量不是覆盖完整性的证明。一个新 case 即使能在本地运行，没有对应 CI suite 注册时仍可能在精确规划阶段失败；反过来，注册一个名称也不能代替真实测试入口。
+
+工作流只负责调用统一的 planner、矩阵执行器和结果汇总 action。新增检查优先进入 manifest，只有新增了不同的依赖、凭据、资源队列或失败门禁语义时才扩展 workflow job。复用逻辑不能绕过自托管 runner 的 owner、KVM、board resource group 和空 `cache_key` 约束。
 
 ## 2. runner 与环境
 

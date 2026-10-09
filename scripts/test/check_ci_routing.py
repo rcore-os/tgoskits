@@ -15,6 +15,8 @@ REUSABLE_CHECK_MATRIX = (
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
+CI_PLAN_ACTION = WORKSPACE_ROOT / ".github/actions/ci-plan/action.yml"
+CI_RESULT_ACTION = WORKSPACE_ROOT / ".github/actions/ci-result/action.yml"
 
 
 def main() -> int:
@@ -32,12 +34,30 @@ def main() -> int:
         errors.append("missing workflow: .github/workflows/docs.yml")
     if not CI_PERF_PAGES_SCRIPT.is_file():
         errors.append("missing script: scripts/test/ci_perf_pages.py")
+    if not CI_PLAN_ACTION.is_file():
+        errors.append("missing action: .github/actions/ci-plan/action.yml")
+    if not CI_RESULT_ACTION.is_file():
+        errors.append("missing action: .github/actions/ci-result/action.yml")
     if PR_CLEANUP_WORKFLOW.exists():
         errors.append("stale-run cleanup must reuse the Plan CI runner")
     if LEGACY_BRANCH_WORKFLOW.exists():
         errors.append("branch push routing must be part of ci.yml")
     if errors:
         return report(errors)
+
+    for action_path, action_name in (
+        (CI_PLAN_ACTION, "ci-plan"),
+        (CI_RESULT_ACTION, "ci-result"),
+    ):
+        action = action_path.read_text(encoding="utf-8")
+        for fragment in (
+            "python-version: '3.13'",
+            "uv run --python 3.13 --no-project python3",
+        ):
+            if fragment not in action:
+                errors.append(
+                    f"{action_name} action must use uv Python 3.13: {fragment}"
+                )
 
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     benchmarks_workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")

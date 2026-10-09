@@ -40,15 +40,12 @@ jobs:
 
       - name: Plan benchmark matrices
         id: matrix
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          python3 scripts/test/ci_plan.py \
-            --mode benchmarks \
-            --repository "$GITHUB_REPOSITORY" \
-            --repository-owner "$GITHUB_REPOSITORY_OWNER" \
-            --event-name "$EVENT_NAME" \
-            --output-file "$GITHUB_OUTPUT"
+        uses: ./.github/actions/ci-plan
+        with:
+          mode: benchmarks
+          repository: ${{ github.repository }}
+          repository-owner: ${{ github.repository_owner }}
+          event-name: ${{ github.event_name }}
 
   prepare:
     name: Prepare
@@ -118,6 +115,11 @@ jobs:
       - starry_board_performance
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout workflow helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision || github.sha }}
+
       - name: Download AxVisor performance reports
         if: always()
         uses: actions/download-artifact@v8
@@ -136,43 +138,41 @@ jobs:
           merge-multiple: true
         continue-on-error: true
 
-      - name: Report result
+      - name: Report performance details
+        if: always()
         env:
-          REVISION: ${{ needs.plan.outputs.revision }}
-          PLAN_RESULT: ${{ needs.plan.result }}
-          PREPARE_RESULT: ${{ needs.prepare.result }}
-          AXVISOR_PERFORMANCE_RESULT: ${{ needs.axvisor_performance.result }}
-          STARRY_PERFORMANCE_RESULT: ${{ needs.starry_performance.result }}
-          STARRY_BOARD_PERFORMANCE_RESULT: ${{ needs.starry_board_performance.result }}
           PERFORMANCE_REPORT_DIR: ${{ runner.temp }}/performance-reports
         run: |
-          {
-            echo "## Benchmarks"
-            echo ""
-            echo "dev revision: ${REVISION}"
-            echo ""
-            echo "| Stage | Result |"
-            echo "| --- | --- |"
-            echo "| Plan | ${PLAN_RESULT} |"
-            echo "| Prepare | ${PREPARE_RESULT} |"
-            echo "| AxVisor performance | ${AXVISOR_PERFORMANCE_RESULT} |"
-            echo "| Starry performance | ${STARRY_PERFORMANCE_RESULT} |"
-            echo "| Starry board performance | ${STARRY_BOARD_PERFORMANCE_RESULT} |"
-            if [ -d "${PERFORMANCE_REPORT_DIR}" ] && find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print -quit | grep -q .; then
-              echo ""
+          if [ -d "${PERFORMANCE_REPORT_DIR}" ] && find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print -quit | grep -q .; then
+            {
               echo "## Performance Results"
               echo ""
               find "${PERFORMANCE_REPORT_DIR}" -name '*.md' -print | sort | while read -r report; do
                 cat "${report}"
                 echo ""
               done
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$PLAN_RESULT" = success
-          test "$PREPARE_RESULT" = success
-          test "$AXVISOR_PERFORMANCE_RESULT" = success
-          test "$STARRY_PERFORMANCE_RESULT" = success
-          test "$STARRY_BOARD_PERFORMANCE_RESULT" = success
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Report result
+        if: always()
+        uses: ./.github/actions/ci-result
+        with:
+          title: Benchmarks
+          revision: ${{ needs.plan.outputs.revision }}
+          revision-label: dev revision
+          stages: |
+            Plan=${{ needs.plan.result }}
+            Prepare=${{ needs.prepare.result }}
+            AxVisor performance=${{ needs.axvisor_performance.result }}
+            Starry performance=${{ needs.starry_performance.result }}
+            Starry board performance=${{ needs.starry_board_performance.result }}
+          required-stages: |
+            Plan
+            Prepare
+            AxVisor performance
+            Starry performance
+            Starry board performance
 
   benchmark-updates:
     name: Prepare Benchmark Updates
@@ -218,6 +218,11 @@ jobs:
           merge-multiple: true
         continue-on-error: true
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+
       - name: Collect benchmark updates
         id: updates
         env:
@@ -230,48 +235,16 @@ jobs:
           output="${RUNNER_TEMP}/benchmark-updates"
           rm -rf "${output}"
           mkdir -p "${output}"
-
-          collect_reports() {
-            local reports="$1"
-            local output_file="$2"
-            if [ ! -d "${reports}" ]; then
-              echo 0
-              return 0
-            fi
-            python3 - "${reports}" "${output_file}" <<'EOF'
-          import json, pathlib, sys
-          reports = pathlib.Path(sys.argv[1])
-          metrics = [
-              metric
-              for path in sorted(reports.glob("*.json"))
-              for metric in json.loads(path.read_text(encoding="utf-8"))
-          ]
-          if metrics:
-              pathlib.Path(sys.argv[2]).write_text(
-                  json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
-              )
-          print(len(metrics))
-          EOF
-          }
-
-          axvisor_count=0
+          args=(
+            --output-dir "${output}"
+          )
           if [ "${INCLUDE_AXVISOR}" = "true" ]; then
-            axvisor_count="$(collect_reports "${AXVISOR_REPORTS}" "${output}/axvisor.json")"
+            args+=(--source "axvisor=${AXVISOR_REPORTS}")
           fi
-          echo "AxVisor metrics: ${axvisor_count}"
-
-          starry_count=0
           if [ "${INCLUDE_STARRY}" = "true" ]; then
-            starry_count="$(collect_reports "${STARRY_REPORTS}" "${output}/starry.json")"
+            args+=(--source "starry=${STARRY_REPORTS}")
           fi
-          echo "Starry metrics: ${starry_count}"
-
-          if [ "${axvisor_count}" -gt 0 ] || [ "${starry_count}" -gt 0 ]; then
-            echo "has_updates=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_updates=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          uv run --python 3.13 --no-project python3 scripts/test/ci_perf_updates.py "${args[@]}"
 
       - name: Upload benchmark updates
         if: steps.updates.outputs.has_updates == 'true'

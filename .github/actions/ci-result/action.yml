@@ -1,0 +1,52 @@
+name: Report CI result
+description: Render a stage summary and fail when a required stage did not succeed.
+
+inputs:
+  title:
+    description: Markdown heading for the result summary.
+    required: true
+  revision:
+    description: Revision tested by the workflow.
+    required: false
+    default: ''
+  revision-label:
+    description: Label shown before the tested revision.
+    required: false
+    default: tested revision
+  stages:
+    description: Newline or semicolon separated stage=result entries.
+    required: true
+  required-stages:
+    description: Newline or comma separated stage labels that must succeed.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        python-version: '3.13'
+
+    - name: Render result
+      shell: bash
+      env:
+        TITLE: ${{ inputs.title }}
+        REVISION: ${{ inputs.revision }}
+        REVISION_LABEL: ${{ inputs.revision-label }}
+        STAGES: ${{ inputs.stages }}
+        REQUIRED_STAGES: ${{ inputs.required-stages }}
+      run: |
+        set -euo pipefail
+        args=(
+          --title "$TITLE"
+          --revision "$REVISION"
+          --revision-label "$REVISION_LABEL"
+          --stages "$STAGES"
+          --required-stages "$REQUIRED_STAGES"
+        )
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          args+=(--summary-file "$GITHUB_STEP_SUMMARY")
+        fi
+        uv run --python 3.13 --no-project python3 scripts/test/ci_result.py "${args[@]}"

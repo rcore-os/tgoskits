@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import importlib.util
-import re
 import sys
 import tempfile
 import tomllib
@@ -198,7 +197,7 @@ class CiPlanTests(unittest.TestCase):
     def test_functional_smoke_path_does_not_route_to_the_nightly_benchmark_check(
         self,
     ):
-        path = "apps/starry/qemu/compile-sim-bench/qemu-x86_64.toml"
+        path = "apps/starry/generated-app/config.toml"
         context = ci_plan.replace(
             self.upstream,
             impact=ci_plan.CiImpact(
@@ -277,7 +276,7 @@ class CiPlanTests(unittest.TestCase):
                 affected_oses=("arceos",),
                 targets=tuple(
                     f"arceos:{arch}"
-                    for arch in ("aarch64", "x86_64", "riscv64", "loongarch64")
+                    for arch in ci_plan.ARCH_TARGETS
                 ),
             ),
         )
@@ -455,10 +454,10 @@ class CiPlanTests(unittest.TestCase):
                 full=False,
                 reason="fixture",
                 changed_paths=(
-                    "test-suit/starryos/board-fixture/boot/board-fixture.toml",
+                    "test-suit/starryos/generated-suite/config.toml",
                 ),
                 test_suite_paths=(
-                    "test-suit/starryos/board-fixture/boot/board-fixture.toml",
+                    "test-suit/starryos/generated-suite/config.toml",
                 ),
                 exclusive=True,
             ),
@@ -503,7 +502,7 @@ command = "true"
         # The suite path is deliberately synthetic: because the OS-wide crate
         # impact already covers Starry, planner routing must not depend on a
         # particular registered case being present.
-        path = "test-suit/starryos/qemu/fixture/qemu-aarch64.toml"
+        path = "test-suit/starryos/qemu/generated-suite/config.toml"
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
@@ -519,7 +518,7 @@ command = "true"
                 test_suite_paths=(path,),
                 targets=tuple(
                     f"starry:{arch}"
-                    for arch in ("aarch64", "x86_64", "riscv64", "loongarch64")
+                    for arch in ci_plan.ARCH_TARGETS
                 ),
             ),
         )

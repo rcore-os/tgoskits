@@ -29,15 +29,12 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Plan AxVisor nightly checks
         id: matrix
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          python3 scripts/test/ci_plan.py \
-            --mode axvisor-nightly \
-            --repository "$GITHUB_REPOSITORY" \
-            --repository-owner "$GITHUB_REPOSITORY_OWNER" \
-            --event-name "$EVENT_NAME" \
-            --output-file "$GITHUB_OUTPUT"
+        uses: ./.github/actions/ci-plan
+        with:
+          mode: axvisor-nightly
+          repository: ${{ github.repository }}
+          repository-owner: ${{ github.repository_owner }}
+          event-name: ${{ github.event_name }}
 
   checks:
     name: AxVisor
@@ -55,21 +52,18 @@ jobs:
     needs: [plan, checks]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision || github.sha }}
       - name: Report result
-        env:
-          REVISION: ${{ needs.plan.outputs.revision }}
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECKS_RESULT: ${{ needs.checks.result }}
-        run: |
-          {
-            echo "## AxVisor Nightly"
-            echo ""
-            echo "tested revision: ${REVISION}"
-            echo ""
-            echo "| Stage | Result |"
-            echo "| --- | --- |"
-            echo "| Plan | ${PLAN_RESULT} |"
-            echo "| Checks | ${CHECKS_RESULT} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$PLAN_RESULT" = success
-          test "$CHECKS_RESULT" = success
+        uses: ./.github/actions/ci-result
+        with:
+          title: AxVisor Nightly
+          revision: ${{ needs.plan.outputs.revision }}
+          revision-label: tested revision
+          stages: |
+            Plan=${{ needs.plan.result }}
+            Checks=${{ needs.checks.result }}
+          required-stages: |
+            Plan
+            Checks

@@ -7,6 +7,8 @@ sidebar_label: "检查规划"
 
 `scripts/test/ci_impact.py` 回答“改动影响哪些能力”，`ci_suite.py` 回答“具体套件对应哪些运行入口”，`ci_plan.py` 再把这两类结果与检查清单组合成矩阵。影响分析只收缩需要单独执行的 PR 矩阵，push 和手动运行不按路径收缩矩阵。
 
+规划器测试验证能力规则和失败边界，不复制当前 manifest 中的 case 名称、数量或命令参数。新增 suite case 应只更新运行目录和对应 `[[check.suite]]` 注册；通用测试通过临时 manifest 和等价类路径验证发现、选择、去重及缺失注册时的失败。
+
 ## 1. 基线与输入
 
 工作流的 `Resolve incremental base revision` 产生 `since_ref`，它既用于 PR 影响分析，也传给支持增量检查的命令。二者使用同一输入，但不是同一个选择过程。
@@ -111,3 +113,13 @@ suite 与普通软件包同时变化时，不自动进入 exclusive。若软件�
 | 修改 `ci_plan.py` 或检查清单 | 完整矩阵并运行 CI 配置回归 |
 
 Actions summary 同时列出选中与未选中的检查、平台输入和回退原因。看到额外架构被选中时，应先确认是否命中了 OS 级传播，而不是立即收窄测试。
+
+CI 配置回归统一使用仓库的 uv 环境：
+
+```bash
+uv run --python 3.13 --no-project python3 scripts/test/check_ci_routing.py
+uv run --python 3.13 --no-project python3 -m unittest discover \
+  -s scripts/test -p 'test_ci_*.py'
+```
+
+测试入口按文件自动发现，新增 `test_ci_*.py` 不需要再修改 workflow。真实 QEMU、板卡和 benchmark 参数由各自 `cargo xtask` 入口与配置负责，planner 测试只检查选择和装配契约。
