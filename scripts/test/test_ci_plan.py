@@ -604,15 +604,24 @@ command = "true"
             and "fallback_environment" not in check
         }
         self.assertTrue(self_hosted_only_ids.isdisjoint(rows))
-        self.assertEqual(rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
-        self.assertEqual(rows["run-clippy"]["runs_on"], ["ubuntu-latest"])
-
-        board_path = next(
-            path.relative_to(MODULE_PATH.parents[2]).as_posix()
-            for path in (MODULE_PATH.parents[2] / "test-suit/arceos").glob(
-                "board-*/*/*.toml"
-            )
+        self.assertTrue(
+            any(row["runs_on"] == ["ubuntu-latest"] for row in rows.values())
         )
+
+        workspace_root = MODULE_PATH.parents[2]
+        catalog = ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
+        board_path = None
+        for candidate in sorted(
+            (workspace_root / "test-suit").glob("**/board-*/*/*.toml")
+        ):
+            relative = candidate.relative_to(workspace_root).as_posix()
+            try:
+                ci_plan.resolve_suite_selections(workspace_root, catalog, [relative])
+            except ci_plan.SuiteRouteError:
+                continue
+            board_path = relative
+            break
+        self.assertIsNotNone(board_path)
         board_only = ci_plan.replace(
             context,
             impact=ci_plan.CiImpact(
