@@ -1430,7 +1430,6 @@ dependencies = [
  "ostool",
  "proc-macro2",
  "quote",
- "raw-cpuid 11.6.0",
  "regex",
  "regex-automata",
  "reqwest",
@@ -1446,8 +1445,6 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
- "tracing-log",
- "tracing-subscriber",
  "walkdir",
  "windows-sys 0.59.0",
  "xz2",
@@ -1538,7 +1535,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "host-boot-abi",
- "httpboot-protocol",
+ "httpboot-protocol 0.5.0",
  "object 0.38.1",
  "serde",
  "serde_json",
@@ -4152,6 +4149,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "httpboot-protocol"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5716,7 +5721,7 @@ dependencies = [
  "fitimage",
  "fs4",
  "futures",
- "httpboot-protocol",
+ "httpboot-protocol 0.4.1",
  "indicatif",
  "jkconfig 0.2.5",
  "keyring",
@@ -8533,7 +8538,6 @@ dependencies = [
  "powerfmt",
  "serde_core",
  "time-core",
- "time-macros",
 ]
 
 [[package]]
@@ -8541,16 +8545,6 @@ name = "time-core"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
-
-[[package]]
-name = "time-macros"
-version = "0.2.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
-dependencies = [
- "num-conv",
- "time-core",
-]
 
 [[package]]
 name = "tinystr"
@@ -8875,7 +8869,6 @@ dependencies = [
  "sharded-slab",
  "smallvec",
  "thread_local",
- "time",
  "tracing",
  "tracing-core",
  "tracing-log",
