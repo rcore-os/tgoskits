@@ -557,17 +557,40 @@ def main() -> int:
         "if: needs.axvisor_performance.result == 'success'",
         "AxVisor reports must only be downloaded from a successful matrix",
     )
-    required_benchmark_jobs = sorted(
-        set(
-            re.findall(
-                r"needs\.([a-z0-9_-]+)\.result == 'success'",
-                benchmark_updates_condition,
-            )
+    benchmark_job_ids = re.findall(
+        r"^  ([a-z0-9_-]+):$", benchmark_jobs, re.MULTILINE
+    )
+    performance_jobs = {
+        job_id
+        for job_id in benchmark_job_ids
+        if re.search(
+            r"matrix_json: \$\{\{ needs\.plan\.outputs\.[a-z0-9_-]*performance_matrix \}\}",
+            mapping_block(benchmark_jobs, job_id, 2),
+        )
+    }
+    expected_benchmark_jobs = {"plan", *performance_jobs}
+    if not performance_jobs:
+        errors.append("benchmark updates must have performance matrix producers")
+    update_needs = set(list_items_in_order(benchmark_updates, "needs", 4))
+    missing_needs = expected_benchmark_jobs - update_needs
+    if missing_needs:
+        errors.append(
+            "benchmark updates must depend on every performance producer: "
+            + ", ".join(sorted(missing_needs))
+        )
+    required_benchmark_jobs = set(
+        re.findall(
+            r"needs\.([a-z0-9_-]+)\.result == 'success'",
+            benchmark_updates_condition,
         )
     )
-    if not required_benchmark_jobs:
-        errors.append("benchmark updates must require at least one successful stage")
-    for matrix_name in required_benchmark_jobs:
+    missing_conditions = expected_benchmark_jobs - required_benchmark_jobs
+    if missing_conditions:
+        errors.append(
+            "benchmark updates must gate every performance producer: "
+            + ", ".join(sorted(missing_conditions))
+        )
+    for matrix_name in sorted(expected_benchmark_jobs):
         require_contains(
             errors,
             benchmark_updates_condition,
@@ -810,28 +833,71 @@ def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
     """Check every shared Starry smoke/benchmark payload without a case list."""
     smoke_root = workspace_root / "apps/starry"
     benchmark_root = workspace_root / "benchmarks/starry"
-    if not smoke_root.is_dir() or not benchmark_root.is_dir():
-        return []
-    smoke_files = {
-        path.relative_to(smoke_root)
-        for path in smoke_root.rglob("*")
-        if path.is_file() and path.name != "README.md"
-    }
-    benchmark_files = {
-        path.relative_to(benchmark_root)
-        for path in benchmark_root.rglob("*")
-        if path.is_file() and path.name != "README.md"
-    }
     errors: list[str] = []
-    for relative in sorted(smoke_files & benchmark_files):
-        smoke_path = smoke_root / relative
-        benchmark_path = benchmark_root / relative
-        if smoke_path.read_bytes() != benchmark_path.read_bytes():
-            errors.append(
-                "mirrored benchmark payload files must remain byte-identical: "
-                f"{smoke_path.relative_to(workspace_root).as_posix()} and "
-                f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
-            )
+    if not smoke_root.is_dir():
+        errors.append(
+            f"missing mirrored payload root: {smoke_root.relative_to(workspace_root)}"
+        )
+    if not benchmark_root.is_dir():
+        errors.append(
+            f"missing mirrored payload root: {benchmark_root.relative_to(workspace_root)}"
+        )
+    if errors:
+        return errors
+
+    def is_variant_file(relative: Path) -> bool:
+        return (
+            relative.name == "README.md"
+            or relative.name.startswith("RESULTS-")
+            or (relative.name.startswith("qemu-") and relative.suffix == ".toml")
+            or (relative.name.startswith("build-") and relative.suffix == ".toml")
+        )
+
+    smoke_dirs = {path.relative_to(smoke_root) for path in smoke_root.rglob("*") if path.is_dir()}
+    benchmark_dirs = {
+        path.relative_to(benchmark_root) for path in benchmark_root.rglob("*") if path.is_dir()
+    }
+    shared_dirs = sorted(smoke_dirs & benchmark_dirs, key=lambda path: len(path.parts), reverse=True)
+    leaf_shared_dirs: list[Path] = []
+    for shared_dir in shared_dirs:
+        if any(shared_dir in selected.parents for selected in leaf_shared_dirs):
+            continue
+        leaf_shared_dirs.append(shared_dir)
+
+    for shared_dir in leaf_shared_dirs:
+        smoke_dir = smoke_root / shared_dir
+        benchmark_dir = benchmark_root / shared_dir
+        smoke_files = {
+            path.relative_to(smoke_dir)
+            for path in smoke_dir.rglob("*")
+            if path.is_file() and not is_variant_file(path.relative_to(smoke_dir))
+        }
+        benchmark_files = {
+            path.relative_to(benchmark_dir)
+            for path in benchmark_dir.rglob("*")
+            if path.is_file() and not is_variant_file(path.relative_to(benchmark_dir))
+        }
+        for relative in sorted(smoke_files | benchmark_files):
+            smoke_path = smoke_dir / relative
+            benchmark_path = benchmark_dir / relative
+            if not smoke_path.is_file():
+                errors.append(
+                    "missing mirrored benchmark payload file: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()}"
+                )
+                continue
+            if not benchmark_path.is_file():
+                errors.append(
+                    "missing mirrored benchmark payload file: "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()}"
+                )
+                continue
+            if smoke_path.read_bytes() != benchmark_path.read_bytes():
+                errors.append(
+                    "mirrored benchmark payload files must remain byte-identical: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+                )
     return errors
 
 def mapping_block(text: str, key: str, indent: int) -> str:

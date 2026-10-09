@@ -48,6 +48,11 @@ class MirroredPayloadTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn("generated-case/payload.sh", errors[0])
 
+            (smoke / "payload.sh").unlink()
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("missing mirrored benchmark payload file", errors[0])
+
 
 class ReleasePrerequisiteTests(unittest.TestCase):
     def test_semver_checks_install_libudev_before_release_plz(self) -> None:
@@ -217,21 +222,47 @@ class AxvisorNightlyWorkflowTests(unittest.TestCase):
 
 class NightlyResultPropagationTests(unittest.TestCase):
     def _result_scripts(self) -> dict[str, str]:
-        # Result reporting is shared by the workflows through the composite
-        # action. Exercise the action's stable helper invocation once per
-        # caller instead of copying an inline shell implementation here.
+        # Verify each caller's with: mapping, then execute the actual shell body
+        # from the composite action so its inputs and failure propagation stay
+        # coupled to the implementation under test.
+        action = (
+            WORKSPACE_ROOT / ".github/actions/ci-result/action.yml"
+        ).read_text(encoding="utf-8")
+        action_step = named_step_block(action, "Render result")
+        run_lines = action_step.splitlines()
+        run_index = next(
+            index for index, line in enumerate(run_lines) if line.strip() == "run: |"
+        )
+        action_script = textwrap.dedent("\n".join(run_lines[run_index + 1 :]))
         scripts = {}
-        for label, workflow_path in (
-            ("starry-apps", STARRY_APPS_WORKFLOW),
-            ("axvisor-nightly", AXVISOR_NIGHTLY_WORKFLOW),
-        ):
+        expected = (
+            (
+                "starry-apps",
+                STARRY_APPS_WORKFLOW,
+                ("Plan=${{ needs.plan.result }}", "Apps=${{ needs.checks.result }}"),
+                ("Plan", "Apps"),
+            ),
+            (
+                "axvisor-nightly",
+                AXVISOR_NIGHTLY_WORKFLOW,
+                ("Plan=${{ needs.plan.result }}", "Checks=${{ needs.checks.result }}"),
+                ("Plan", "Checks"),
+            ),
+        )
+        for label, workflow_path, stages, required in expected:
             workflow = workflow_path.read_text(encoding="utf-8")
-            self.assertIn("uses: ./.github/actions/ci-result", workflow)
+            result_step = named_step_block(workflow, "Report result")
+            self.assertIn("uses: ./.github/actions/ci-result", result_step)
+            inputs = mapping_block(result_step, "with", 8)
+            for stage in stages:
+                self.assertIn(stage, inputs)
+            for required_stage in required:
+                self.assertIn(f"            {required_stage}", inputs)
             scripts[label] = (
-                'uv run --python 3.13 --no-project python3 scripts/test/ci_result.py '
-                '--title fixture --revision "$REVISION" '
-                '--stages "Plan=$PLAN_RESULT,Checks=$CHECKS_RESULT" '
-                '--required-stages "Plan,Checks"'
+                f"export STAGES=\"$(printf 'Plan=%s\\n{required[1]}=%s' "
+                '"$PLAN_RESULT" "$CHECKS_RESULT")"\n'
+                f"export REQUIRED_STAGES=\"$(printf 'Plan\\n{required[1]}')\"\n"
+                + action_script
             )
         return scripts
 
@@ -352,11 +383,27 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         self.assertIn("axvisor-nightly-performance-*", benchmark_updates)
         self.assertIn("continue-on-error: true", benchmark_updates)
         self.assertIn("starry-apps-nightly-performance-*", benchmark_updates)
-        required_jobs = sorted(
-            set(re.findall(r"needs\.([a-z0-9_-]+)\.result == 'success'", benchmark_updates_condition))
+        benchmark_job_ids = re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
+        performance_jobs = {
+            job_id
+            for job_id in benchmark_job_ids
+            if re.search(
+                r"matrix_json: \$\{\{ needs\.plan\.outputs\.[a-z0-9_-]*performance_matrix \}\}",
+                mapping_block(jobs, job_id, 2),
+            )
+        }
+        expected_jobs = {"plan", *performance_jobs}
+        self.assertTrue(performance_jobs)
+        update_needs = set(list_items_in_order(benchmark_updates, "needs", 4))
+        self.assertTrue(expected_jobs <= update_needs)
+        required_jobs = set(
+            re.findall(
+                r"needs\.([a-z0-9_-]+)\.result == 'success'",
+                benchmark_updates_condition,
+            )
         )
-        self.assertTrue(required_jobs)
-        for job_id in required_jobs:
+        self.assertTrue(expected_jobs <= required_jobs)
+        for job_id in sorted(expected_jobs):
             with self.subTest(job_id=job_id):
                 self.assertIn(f"needs.{job_id}.result == 'success'", benchmark_updates_condition)
         self.assertIn(
@@ -1016,6 +1063,8 @@ def run_result_summary_step(
         env.update(
             {
                 "GITHUB_STEP_SUMMARY": str(summary),
+                "TITLE": "fixture",
+                "REVISION_LABEL": "tested revision",
                 "PLAN_RESULT": "success",
                 "CHECKS_RESULT": "success",
                 "REVISION": "fixture",
