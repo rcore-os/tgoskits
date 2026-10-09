@@ -28,7 +28,6 @@ mod subscriber {
         option::Option::{None, Some},
         result::Result::{Err, Ok},
         sync::atomic::{AtomicU64, Ordering},
-        time::Duration,
     };
 
     use ax_std::{
@@ -137,11 +136,6 @@ mod subscriber {
                         println!("ivc subscribe retry attempt={attempt} err={err}");
                     }
                     waiter.wait_for_peer_event();
-                    // Publication is performed by another guest task. Give
-                    // that task a scheduling opportunity before retrying the
-                    // manager request so startup order does not become a
-                    // fixed-time race.
-                    thread::sleep(Duration::from_millis(100));
                 }
             }
         }
@@ -160,7 +154,6 @@ mod subscriber {
             // The publisher initializes the shared protocol after the host
             // accepts the subscription. Wait for that publication instead of
             // treating the first transient header state as a failure.
-            thread::sleep(Duration::from_millis(100));
         }
         false
     }
