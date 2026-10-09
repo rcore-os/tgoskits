@@ -38,6 +38,24 @@ disabled = [
   # StarryOS still owns the robot camera on USB1.
   { path = "/usbdrd3_0" },
   { path = "/phy@fed80000" },
+  # The FUSB302 connector's remote-endpoint refers to the disabled USB0 PHY
+  # above, which AxVisor keeps for the host; the guest must not parse it.
+  { path = "/i2c@fec80000/fusb302@22" },
+  # The guest does not use this DisplayPort node, so keep it out to avoid its
+  # references to the AxVisor-owned /phy@fed80000/dp-port.
+  { path = "/dp@fde50000" },
+  # The guest does not use the VOP display pipeline, so keep it out to avoid
+  # its references to the AxVisor-owned DisplayPort provider above.
+  { path = "/vop@fdd90000" },
+  # The guest does not use this HDMI output node, so keep it out to avoid its
+  # references to the AxVisor-owned VOP provider above.
+  { path = "/hdmi@fdea0000" },
+  # The guest does not use this HDMI output node, so keep it out to avoid its
+  # references to the AxVisor-owned VOP provider above.
+  { path = "/hdmi@fde80000" },
+  # The guest does not use the host IOMMU, so keep it out to avoid the
+  # passthrough sharing an AxVisor-owned interrupt source.
+  { path = "/iommu@fdd97e00" },
 ]
 
 [[devices.virtual]]
