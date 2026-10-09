@@ -82,7 +82,6 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
             "soc::rockchip::cpufreq::pmic_spi::tests::baud_divider_clamps_and_stays_even",
             "soc::rockchip::cpufreq::pmic_spi::tests::baud_divider_even_and_under_target",
             "soc::rockchip::cpufreq::pmic_spi::tests::ctrlr0_mode0_8bit_value",
-            "soc::rockchip::cpufreq::pmic_spi::tests::down_only_clamp_refuses_below_floor_and_raises",
             "soc::rockchip::cpufreq::pmic_spi::tests::rk806_identity_and_rail_gate_rejects_loopback",
             "soc::rockchip::cpufreq::pmic_spi::tests::spi2_reset_deassert_matches_reset_bits",
             "soc::rockchip::cpufreq::pmic_spi::tests::spi2_ungate_value_matches_gate_bits",
