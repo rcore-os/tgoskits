@@ -205,8 +205,6 @@ impl MigrationPlan {
     /// manifest and identity policy and are intentionally absent here.
     pub fn boot_resources() -> VfsResult<Self> {
         const RESOURCES: &[(ResourceKind, &str)] = &[
-            (ResourceKind::KernelMap, "/symbols/kernel.axbt"),
-            (ResourceKind::KernelMap, "/boot/symbols/kernel.axbt"),
             (ResourceKind::BootConfig, "/boot/config"),
             (ResourceKind::Kernel, "/boot/kernel"),
             (ResourceKind::DeviceTree, "/boot/dtb"),
