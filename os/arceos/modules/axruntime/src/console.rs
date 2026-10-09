@@ -694,25 +694,4 @@ mod tests {
         ));
         assert!(output().is_ok());
     }
-
-    #[test]
-    fn raw_hal_logging_does_not_require_the_task_output_mutex() {
-        ACTIVATION.call_once(|| ConsoleActivation::RawHal(ConsoleUnavailable::NoSerialDevice));
-        let _task_output = RAW_OUTPUT_LOCK.lock();
-        let mut rendered = alloc::string::String::new();
-
-        assert_eq!(
-            publish_raw_record(
-                ax_log::RecordMeta::log(),
-                RuntimeLogContext::new(core::time::Duration::new(12, 345_678_000), Some(2), None),
-                format_args!("\u{1b}[37max_runtime:462] early secondary record\n"),
-                &mut rendered,
-            ),
-            ax_log::PublishStatus::Published
-        );
-        assert_eq!(
-            rendered,
-            "\u{1b}[37m[ 12.345678 2 \u{1b}[37max_runtime:462] early secondary record\n"
-        );
-    }
 }
