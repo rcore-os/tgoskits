@@ -20,7 +20,7 @@
 //! so the clock overshoots the request while the rail stays at its 800 mV boot
 //! value. Lowering each A76 rail to its OPP-nominal 675 mV pulls the coupled
 //! clock down to the exact requested rate. This module provides the read/write
-//! API; `cpufreq.rs` owns when it is called.
+//! API; the parent `cpufreq` module owns when it is called.
 //!
 //! # Components
 //!

@@ -67,7 +67,7 @@
 //! rail:
 //!
 //! ```ignore
-//! use crate::soc::rockchip::pmic_spi;
+//! use crate::soc::rockchip::cpufreq::pmic_spi;
 //!
 //! pmic_spi::init();                             // map, configure and validate
 //! let boot_uv = pmic_spi::get_uv();             // read current A55 rail

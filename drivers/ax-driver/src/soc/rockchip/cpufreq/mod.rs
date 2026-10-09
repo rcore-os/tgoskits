@@ -56,10 +56,8 @@ mod sensors;
 mod transition;
 
 use margin::{GrfResource, ReadMargin};
-use pvtm as cpufreq_pvtm;
 use selection::configure_pvtpll_low_temp;
 pub use selection::initialize_post_boot;
-use sensors as cpufreq_sensors;
 use transition::{align_rail_voltages_to_opp, apply_opp, read_mhz, set_and_verify};
 
 /// SCMI clock id of the A55 (little) cluster — cpu0..3.
@@ -480,7 +478,7 @@ pub fn refresh_limits() -> Result<(), FrequencyError> {
     initialize_post_boot();
     let mut first_error = None;
     let mut previous = [soc_cpufreq::ThermalState::default(); 3];
-    let temperature = cpufreq_sensors::soc_temperature_millidegrees().ok();
+    let temperature = sensors::soc_temperature_millidegrees().ok();
     for domain in [
         FrequencyDomain::Big0,
         FrequencyDomain::Big1,

@@ -130,7 +130,7 @@ fn select_domain_opps(
         return Err(FrequencyError::NotReady);
     }
 
-    let serial = cpufreq_sensors::sku_serial().map_err(|_| FrequencyError::NotReady)?;
+    let serial = sensors::sku_serial().map_err(|_| FrequencyError::NotReady)?;
     let bin = HardwareSelection::bin_from_serial(serial);
     if bin != 0 {
         warn!(
@@ -151,7 +151,7 @@ fn select_domain_opps(
         .into_iter()
         .next()
         .ok_or(FrequencyError::NotReady)?;
-    let opp_info = cpufreq_sensors::read_otp_bytes(
+    let opp_info = sensors::read_otp_bytes(
         usize::try_from(cell_reg.address).map_err(|_| FrequencyError::NotReady)?,
         usize::try_from(cell_reg.size.ok_or(FrequencyError::NotReady)?)
             .map_err(|_| FrequencyError::NotReady)?,
@@ -159,7 +159,7 @@ fn select_domain_opps(
     .map_err(|_| FrequencyError::NotReady)?;
 
     let temperature =
-        cpufreq_sensors::soc_temperature_millidegrees().map_err(|_| FrequencyError::NotReady)?;
+        sensors::soc_temperature_millidegrees().map_err(|_| FrequencyError::NotReady)?;
     let firmware = pvtpll_firmware_info(cluster.clock_id())?;
     if firmware.low_temp && !configure_pvtpll_low_temp(cluster.clock_id(), temperature < 10_000) {
         return Err(FrequencyError::HardwareFailure);
@@ -233,7 +233,7 @@ fn select_domain_opps(
         return Err(FrequencyError::HardwareFailure);
     }
     axklib::time::busy_wait(core::time::Duration::from_micros(u64::from(delay_us)));
-    let sample = cpufreq_pvtm::read_raw_sample(grf.address, grf.size, offset);
+    let sample = pvtm::read_raw_sample(grf.address, grf.size, offset);
     if !hold_measurement_clock
         && !set_and_verify(phandle, cluster.clock_id(), boot_hz, measurement_hz)
     {
@@ -248,7 +248,7 @@ fn select_domain_opps(
     let [below, above] = temp_props.as_slice() else {
         return Err(FrequencyError::NotReady);
     };
-    let corrected = cpufreq_pvtm::temperature_correct(
+    let corrected = pvtm::temperature_correct(
         sample,
         temperature,
         property_u32("rockchip,pvtm-ref-temp")? as i32,
@@ -268,10 +268,9 @@ fn select_domain_opps(
     if !remainder.is_empty() {
         return Err(FrequencyError::NotReady);
     }
-    let grade = u8::try_from(
-        cpufreq_pvtm::select_voltage_grade(corrected, rows).ok_or(FrequencyError::NotReady)?,
-    )
-    .map_err(|_| FrequencyError::NotReady)?;
+    let grade =
+        u8::try_from(pvtm::select_voltage_grade(corrected, rows).ok_or(FrequencyError::NotReady)?)
+            .map_err(|_| FrequencyError::NotReady)?;
     let Some(verified_maximum_hz) =
         super::board::verified_maximum_hz(matches!(cluster, Cluster::A55), grade)
     else {
