@@ -1,0 +1,46 @@
+# AxVisor guest configuration for the Rust-Shyper task-switch benchmark.
+#
+# `guest-builds.toml` builds `task-switch` from this checkout through the
+# ArceOS standard-library guest pipeline, so the image loaded below is produced
+# by the same pipeline as the other ArceOS board guests.
+#
+# The benchmark drives the physical GPIO3_C6 pin inside every timed switch
+# interval. The pin needs the RK3588 MMIO registers at their physical
+# addresses, so this is a passthrough guest: `guest_type = "passthrough"`
+# identity-maps the guest-assignable physical devices into the guest address
+# space, which is what grants those EL1 MMIO accesses.
+#
+# PMU access is a separate deployment precondition, not something this source
+# guarantees: the EL1 guest cannot clear EL2's PMU traps, so reaching
+# PMCCNTR_EL0 depends on the board boot environment leaving the MDCR_EL2 TPM
+# and TPMCR traps open. AxVisor programs HCR_EL2 with only VM, TSC, TWI, RW,
+# IMO and FMO, none of which cover PMU trapping, and no MDCR_EL2 write exists
+# in the repository. If a PMU trap is armed at runtime, the guest cannot
+# continue measuring and the board case fails rather than reporting a reading.
+
+[base]
+id = 1
+name = "task-switch"
+guest_type = "passthrough"
+cpu_num = 1
+# Host FDT CPU node `/cpus/cpu@400`; the single vCPU is pinned to this physical
+# CPU.
+phys_cpu_ids = [0x400]
+
+[kernel]
+# The guest receives the 1 GiB physical region starting at 0x4000_0000, with the
+# device-tree blob at the region base and the kernel image at 0x4008_0000.
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/task-switch.bin"
+dtb_load_addr = 0x4000_0000
+
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+# `guest_type = "passthrough"` already maps every guest-assignable physical
+# device; nothing extra needs to be listed here.
+passthrough = []
+disabled = []

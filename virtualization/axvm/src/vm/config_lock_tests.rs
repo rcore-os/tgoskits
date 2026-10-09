@@ -27,6 +27,7 @@ fn test_vm_with_machine(
         #[cfg(not(target_arch = "aarch64"))]
         translations: translation::TranslationGate::new(),
         fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
+        vcpu_schedule_policy: SchedulePolicy::default(),
     })
 }
 

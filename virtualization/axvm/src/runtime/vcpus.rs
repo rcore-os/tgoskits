@@ -25,6 +25,7 @@ use crate::{
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
+
 /// Owns a reserved, non-runnable vCPU task until VM publication commits.
 #[must_use = "prepared vCPU threads must be activated or cancelled"]
 pub(crate) struct PreparedVcpuThread {
@@ -420,7 +421,8 @@ pub(crate) fn prepare_vcpu_thread(vm: &VMRef, vcpu: VCpuRef) -> AxVmResult<Prepa
     let extension = VCpuTask::new(vm, vcpu).into_thread_extension();
     let mut builder = crate::host::task::builder(name)
         .stack_size(KERNEL_STACK_SIZE)
-        .extension(extension);
+        .extension(extension)
+        .policy(vm.vcpu_schedule_policy());
     if let Some(affinity) = affinity {
         builder = builder.affinity(affinity);
     }

@@ -43,6 +43,11 @@ nvme = ["block", "pci", "dep:nvme-driver"]
 fxmac = ["net", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
+# Opt-in: pull in the RTL8125 driver whose per-instance control endpoint lets a
+# hypervisor enable guest-MAC acceptance for the single host NIC. The filter
+# stays host-only until that control request arrives, so every other board
+# keeps the default RX behavior.
+net-l2-uplink = ["realtek-rtl8125"]
 aic8800-wifi = [
     "net",
     "dep:aic8800",

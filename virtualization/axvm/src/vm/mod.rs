@@ -31,6 +31,9 @@ use std::{
 use ax_cpumask::CpuMask;
 use ax_memory_addr::align_up_4k;
 use ax_std::os::arceos::sync::IrqSafeMutex;
+// Re-export the host-task scheduling types the VM constructor consumes so
+// callers select a vCPU policy without naming the underlying scheduler crate.
+pub use ax_std::os::arceos::task::sched::{RtPriority, SchedulePolicy};
 use axaddrspace::AddrSpace;
 #[cfg(not(target_arch = "aarch64"))]
 use axaddrspace::NestedPageTableOps;
@@ -1453,10 +1456,16 @@ pub struct AxVM {
     #[cfg(not(target_arch = "aarch64"))]
     translations: translation::TranslationGate,
     fw_cfg_payload: Arc<FwCfgPayloadSlot>,
+    /// Host-task scheduling policy shared by every vCPU of this VM.
+    ///
+    /// Fixed when the VM is constructed and reused by every vCPU prepare and
+    /// restart path, so a VM never observes two different policies for its vCPU
+    /// host tasks.
+    vcpu_schedule_policy: SchedulePolicy,
 }
 
 impl AxVM {
-    /// Creates a ready VM with eagerly initialized architecture resources.
+    /// Creates a ready VM with the default Fair vCPU host-task scheduling policy.
     ///
     /// Initialize the host with [`crate::AxvmRuntime::new`] before creating VMs;
     /// resource planning uses the host capabilities recorded during CPU enable.
@@ -1466,7 +1475,30 @@ impl AxVM {
     ///
     /// Returns an error if nested paging is unsupported for the selected host
     /// CPUs or if the initial stage-2 address space cannot be allocated.
-    pub fn new(mut config: AxVMConfig) -> AxVmResult<AxVMRef> {
+    pub fn new(config: AxVMConfig) -> AxVmResult<AxVMRef> {
+        Self::new_with_vcpu_schedule_policy(config, SchedulePolicy::default())
+    }
+
+    /// Creates a ready VM whose vCPU host tasks run under `vcpu_schedule_policy`.
+    ///
+    /// Like [`Self::new`], the host must already be initialized with
+    /// [`crate::AxvmRuntime::new`]; this constructor keeps the same eager
+    /// architecture-resource initialization contract, using the host
+    /// capabilities recorded during CPU enable, and the VM stays unstarted
+    /// until [`Self::start`] is called.
+    ///
+    /// The policy is captured at construction time and applied to every vCPU
+    /// host task this VM prepares, including restart paths, so it cannot change
+    /// once the VM has been created.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if nested paging is unsupported for the selected host
+    /// CPUs or if the initial stage-2 address space cannot be allocated.
+    pub fn new_with_vcpu_schedule_policy(
+        mut config: AxVMConfig,
+        vcpu_schedule_policy: SchedulePolicy,
+    ) -> AxVmResult<AxVMRef> {
         let id = config.id();
         let name = config.name();
         let fw_cfg_payload = Arc::new(FwCfgPayloadSlot::new());
@@ -1483,6 +1515,7 @@ impl AxVM {
             #[cfg(not(target_arch = "aarch64"))]
             translations: translation::TranslationGate::new(),
             fw_cfg_payload,
+            vcpu_schedule_policy,
         });
 
         info!("VM created: id={}", result.id());
@@ -1499,6 +1532,11 @@ impl AxVM {
     /// Returns the configured VM name.
     pub fn name(&self) -> String {
         self.name.clone()
+    }
+
+    /// Returns the vCPU host-task scheduling policy fixed at construction.
+    pub(crate) fn vcpu_schedule_policy(&self) -> SchedulePolicy {
+        self.vcpu_schedule_policy
     }
 
     /// Returns the current lifecycle status.

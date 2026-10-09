@@ -563,6 +563,25 @@ impl NetDeviceInfo {
 pub trait NetControlEndpoint: Send + 'static {
     /// Returns the current link-layer address.
     fn mac_address(&mut self) -> Result<[u8; 6], NetError>;
+
+    /// Enables or disables hardware acceptance of every physical unicast
+    /// address.
+    ///
+    /// A hypervisor that bridges guest MACs through one physical NIC opts in
+    /// here so the device stops discarding frames addressed to guest unicast
+    /// addresses. The request targets this exact control instance, so the
+    /// capability and the register window belong to the device behind the
+    /// interface rather than to a name- or address-based guess.
+    ///
+    /// The default reports [`NetError::NotSupported`]. A caller that needs the
+    /// filter may then try another interface that does implement it, but a call
+    /// that returns `Ok` commits that exact interface: the caller must target
+    /// the same interface with its bridge and must not leave the filter enabled
+    /// on an unrelated port. Every device that does not implement an address
+    /// filter keeps the host-only default unchanged.
+    fn set_rx_accept_all_phys(&mut self, _enabled: bool) -> Result<(), NetError> {
+        Err(NetError::NotSupported)
+    }
 }
 
 /// Control endpoint for a device with an immutable link-layer address.

@@ -43,3 +43,11 @@ timeout_minutes = 5
 command = '''
 bash apps/starry/linux-perf/test-download.sh
 '''
+
+[[check]]
+id = "test-task-switch-convert"
+name = "task-switch convert unit tests"
+timeout_minutes = 15
+command = '''
+cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
+'''

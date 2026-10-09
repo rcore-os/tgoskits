@@ -1,0 +1,2 @@
+# Build the benchmark guest from this checkout before the AxVisor host.
+arceos_build_configs = ["guest-build.toml"]

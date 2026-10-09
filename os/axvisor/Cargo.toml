@@ -56,6 +56,11 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace"]
 test-virq-delivery = []
 vcpu-perf-load = []
+# Benchmark-local FIFO policy for the vCPU host task. Only the dedicated
+# Rust-Shyper task-switch benchmark board build enables it; it selects an
+# explicit FIFO policy at VM creation time, and default AxVisor builds keep the
+# Fair vCPU host task policy.
+bench-fifo-vcpu-policy = []
 # axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
 # ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
 # tokio `TcpListener`) is enabled only when the control plane is built; a
@@ -75,6 +80,12 @@ browser-console = [
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
+# Opt-in physical layer-2 uplink: bridge guest virtio-net MACs onto the single
+# host NIC through `ax-net`. Requires net, the RTL8125 driver, and the NIC
+# accepting guest MACs, so it pulls in `ax-driver/net-l2-uplink`. Required for
+# the all-virtualized board guests, which own no physical NIC and leave through
+# the single host RTL8125; other configurations can leave it off.
+net-l2-uplink = ["ax-std/net", "ax-driver/net-l2-uplink"]
 
 [dependencies]
 anyhow.workspace = true

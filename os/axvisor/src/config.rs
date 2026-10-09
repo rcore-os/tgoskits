@@ -74,7 +74,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
 
     // Create VM.
-    let vm = AxVM::new(vm_config).with_context(|| format!("create VM[{configured_vm_id}]"))?;
+    let vm =
+        create_guest_vm(vm_config).with_context(|| format!("create VM[{configured_vm_id}]"))?;
     let vm_id = vm.id();
 
     let memory_layout = vm
@@ -108,6 +109,33 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     }
 
     Ok(vm_id)
+}
+
+/// Fixed FIFO priority for the vCPU host tasks of the task-switch benchmark.
+///
+/// Only the dedicated Rust-Shyper task-switch board build enables
+/// `bench-fifo-vcpu-policy`; the value is well inside `RtPriority`'s `1..=99`
+/// range, so construction cannot fail for this constant.
+#[cfg(feature = "bench-fifo-vcpu-policy")]
+const BENCH_VCPU_FIFO_PRIORITY: u8 = 80;
+
+/// Creates a guest VM with the vCPU host-task scheduling policy of this build.
+///
+/// The default is AxVM's Fair policy. Only the benchmark build enables
+/// `bench-fifo-vcpu-policy` and selects an explicit FIFO policy at VM creation
+/// time, so every vCPU of the VM, including restart paths, shares one immutable
+/// policy.
+fn create_guest_vm(vm_config: AxVMConfig) -> AxVmResult<AxVMRef> {
+    #[cfg(feature = "bench-fifo-vcpu-policy")]
+    {
+        let priority = axvm::RtPriority::new(BENCH_VCPU_FIFO_PRIORITY)
+            .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
+        AxVM::new_with_vcpu_schedule_policy(vm_config, axvm::SchedulePolicy::fifo(priority))
+    }
+    #[cfg(not(feature = "bench-fifo-vcpu-policy"))]
+    {
+        AxVM::new(vm_config)
+    }
 }
 
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {

@@ -12,7 +12,7 @@ use log::info;
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
 use rdif_eth::{
-    FixedNetControl, NetDevice, NetDeviceInfo, NetDeviceParts, NetError, NetHardIrqEndpoint,
+    NetControlEndpoint, NetDevice, NetDeviceInfo, NetDeviceParts, NetError, NetHardIrqEndpoint,
     NetHardIrqHandler, NetHardIrqResult, NetIrqSnapshot, NetIrqSourceId, NetPollGroupId,
     NetPollGroupParts, NetPollIrqControl, NetQueueId, NetQueuePairParts, NetRearmResult,
 };
@@ -40,6 +40,80 @@ const RX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_IDLE_LOG_INTERVAL: u64 = 262_144;
 const RX_OVERFLOW_REARM_IDLE_POLLS: u64 = 2048;
 const OCP_STD_PHY_BASE: u32 = 0xa400;
+
+/// Per-instance RX address-filter policy and the serialization guard for this
+/// device's `RX_CONFIG` read-modify-write sequences.
+///
+/// The queue-start path, the RX-overflow rearm path, and the hypervisor control
+/// endpoint all update `RX_CONFIG::ACCEPT_*` on the same register window. One
+/// guard per instance keeps those read-modify-writes ordered, so a control
+/// request that lands between a queue read and its write cannot lose the
+/// update. An `AtomicBool` on its own stores the policy but does not serialize
+/// the surrounding register sequence.
+///
+/// The shared guard also *owns* the mapped register window, so the `Regs` raw
+/// pointer stays valid for as long as any queue owner or control endpoint holds
+/// the filter.
+pub(crate) struct RxFilter {
+    regs: Regs,
+    _mmio: Arc<Mmio>,
+    /// `true` accepts every physical unicast address; the host default is
+    /// `false` (accept only the device MAC plus multicast/broadcast).
+    accept_all_phys: Mutex<bool>,
+}
+
+impl RxFilter {
+    pub(crate) fn new(regs: Regs, mmio: Arc<Mmio>) -> Arc<Self> {
+        Arc::new(Self {
+            regs,
+            _mmio: mmio,
+            accept_all_phys: Mutex::new(false),
+        })
+    }
+
+    /// Programs the accept bits from the stored policy. Callers must hold the
+    /// guard ([`Self::program_start`], [`Self::reprogram`], or
+    /// [`Self::set_accept_all_phys`]) so the sequence is serialized.
+    fn program_accept(&self, accept_all_phys: bool) {
+        self.regs.set_multicast_filter_all();
+        self.regs.set_rx_accept_mode(accept_all_phys);
+    }
+
+    /// Writes the plain default `RX_CONFIG` value under the guard.
+    pub(crate) fn write_default(&self) {
+        let _guard = self.accept_all_phys.lock();
+        self.regs.write_default_rx_config();
+    }
+
+    /// Writes the queue-start `8125b` default `RX_CONFIG` value and then the
+    /// accept filter as one guarded unit, so a concurrent policy update is not
+    /// lost between the two writes.
+    pub(crate) fn program_start(&self) {
+        let accept_all_phys = self.accept_all_phys.lock();
+        self.regs.write_default_rx_config_8125b();
+        self.program_accept(*accept_all_phys);
+    }
+
+    /// Reapplies the stored policy during an RX-overflow rearm, so the
+    /// per-instance decision survives every hardware restart.
+    pub(crate) fn reprogram(&self) {
+        let accept_all_phys = self.accept_all_phys.lock();
+        self.program_accept(*accept_all_phys);
+    }
+
+    /// Records the policy and immediately applies it to hardware.
+    ///
+    /// This is what lets a hypervisor make an already-started NIC accept guest
+    /// MACs before its uplink becomes reachable: the request does not only
+    /// store a flag for the next rearm, it programs `RX_CONFIG` under the same
+    /// guard the queue owners use.
+    pub(crate) fn set_accept_all_phys(&self, enabled: bool) {
+        let mut accept_all_phys = self.accept_all_phys.lock();
+        *accept_all_phys = enabled;
+        self.program_accept(enabled);
+        self.regs.commit();
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
@@ -89,13 +163,14 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 pub struct Rtl8125 {
     regs: Regs,
-    _mmio: Mmio,
+    _mmio: Arc<Mmio>,
     dma: DeviceDma,
     mac: [u8; 6],
     chip: ChipVersion,
     phy_ocp_base: u32,
     queue_start: QueueStart,
     link_up: Arc<AtomicBool>,
+    rx_filter: Arc<RxFilter>,
 }
 
 impl Rtl8125 {
@@ -110,13 +185,17 @@ impl Rtl8125 {
         mmio_op: &'static dyn MmioOp,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
-        let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
+        let mmio = Arc::new(mmio_api::ioremap(
+            bar_addr.into(),
+            bar_size.max(RTL8125_REGS_SIZE),
+        )?);
         let regs = Regs::new(mmio.as_nonnull_ptr());
         let xid = rtl8125_xid(regs);
         let chip = chip_version(xid);
 
         let mut dev = Self {
             regs,
+            rx_filter: RxFilter::new(regs, Arc::clone(&mmio)),
             _mmio: mmio,
             dma,
             mac: [0; 6],
@@ -153,7 +232,7 @@ impl Rtl8125 {
         self.set_mac_address(self.mac);
         self.regs
             .configure_cplus(self.dma.info().constraints().addr_mask);
-        self.regs.write_default_rx_config();
+        self.rx_filter.write_default();
         self.regs.write_default_tx_config();
         self.regs.write_rx_max_size(RX_BUF_SIZE as u16 + 1);
         self.regs.disable_interrupt_mitigation();
@@ -227,6 +306,7 @@ impl NetDevice for Rtl8125 {
             phy_ocp_base: _,
             queue_start,
             link_up,
+            rx_filter,
         } = *self;
 
         let mut tx_desc = dma
@@ -277,6 +357,7 @@ impl NetDevice for Rtl8125 {
             desc: rx_desc,
             dma_mask: dma.info().constraints().addr_mask,
             start: queue_start.clone(),
+            filter: Arc::clone(&rx_filter),
             buffers: core::array::from_fn(|_| None),
             next_submit: 0,
             next_reclaim: 0,
@@ -289,7 +370,10 @@ impl NetDevice for Rtl8125 {
 
         Ok(NetDeviceParts {
             info: NetDeviceInfo::new(DRIVER_NAME, mac),
-            control: Box::new(FixedNetControl::new(mac)),
+            control: Box::new(Rtl8125NetControl {
+                mac,
+                filter: rx_filter,
+            }),
             wifi_control: None,
             poll_groups: vec![NetPollGroupParts {
                 id: GROUP_ID0,
@@ -313,9 +397,31 @@ impl NetDevice for Rtl8125 {
     }
 }
 
+/// Exclusive control endpoint for one RTL8125 instance.
+///
+/// The hypervisor glue reaches the hardware RX filter through this endpoint, so
+/// the capability belongs to the exact device published behind an interface.
+/// It holds the shared [`RxFilter`], which owns the mapped register window and
+/// serializes every `RX_CONFIG` update with the queue owners.
+struct Rtl8125NetControl {
+    mac: [u8; 6],
+    filter: Arc<RxFilter>,
+}
+
+impl NetControlEndpoint for Rtl8125NetControl {
+    fn mac_address(&mut self) -> core::result::Result<[u8; 6], NetError> {
+        Ok(self.mac)
+    }
+
+    fn set_rx_accept_all_phys(&mut self, enabled: bool) -> core::result::Result<(), NetError> {
+        self.filter.set_accept_all_phys(enabled);
+        Ok(())
+    }
+}
+
 struct Rtl8125IrqControl {
     regs: Regs,
-    _mmio: Mmio,
+    _mmio: Arc<Mmio>,
     queue_start: QueueStart,
     link_up: Arc<AtomicBool>,
 }
@@ -435,11 +541,6 @@ fn read_status(regs: Regs) -> Rtl8125Status {
     }
 }
 
-pub(crate) fn set_rx_mode(regs: Regs) {
-    regs.set_multicast_filter_all();
-    regs.set_rx_accept_mode();
-}
-
 fn chip_version(xid: u16) -> ChipVersion {
     if xid & 0x07cf == 0x0641 {
         ChipVersion::Rtl8125B
@@ -458,3 +559,234 @@ const _: () = {
     assert!(size_of::<TxDesc>() == 16);
     assert!(size_of::<RxDesc>() == 16);
 };
+
+#[cfg(test)]
+mod tests {
+    use core::{ptr::NonNull, sync::atomic::AtomicUsize};
+
+    use mmio_api::{MapError, MmioRaw};
+
+    use super::*;
+    use crate::registers::RX_CONFIG;
+
+    /// Minimal host lock backend for the `ax_sync` crate interface.
+    ///
+    /// `RxFilter` serializes its `RX_CONFIG` updates with `ax_sync::SpinLock`,
+    /// and a host test binary has no kernel runtime to provide that interface,
+    /// so this module links a plain atomic spin backend for the test, the same
+    /// way the other driver host tests do.
+    struct HostSpinOps;
+
+    #[ax_crate_interface::impl_interface]
+    impl ax_sync::interface::SpinOps for HostSpinOps {
+        fn acquire(
+            locked: &AtomicBool,
+            _metadata: &ax_sync::interface::LockMetadata,
+            _lock_addr: usize,
+            _context: u8,
+            _subclass: u32,
+            _caller: &'static core::panic::Location<'static>,
+        ) -> ax_sync::interface::ContextState {
+            while locked
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                core::hint::spin_loop();
+            }
+            ax_sync::interface::ContextState::new(0, 0)
+        }
+
+        fn try_acquire(
+            locked: &AtomicBool,
+            _metadata: &ax_sync::interface::LockMetadata,
+            _lock_addr: usize,
+            _context: u8,
+            _subclass: u32,
+            _caller: &'static core::panic::Location<'static>,
+        ) -> ax_sync::interface::AcquireResult {
+            let acquired = locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok();
+            ax_sync::interface::AcquireResult::new(
+                acquired,
+                ax_sync::interface::ContextState::new(0, 0),
+            )
+        }
+
+        fn release(
+            locked: &AtomicBool,
+            _lock_addr: usize,
+            _context: u8,
+            _state: ax_sync::interface::ContextState,
+        ) {
+            locked.store(false, Ordering::Release);
+        }
+
+        fn force_release(locked: &AtomicBool, _lock_addr: usize, _context: u8) {
+            locked.store(false, Ordering::Release);
+        }
+
+        fn is_locked(locked: &AtomicBool) -> bool {
+            locked.load(Ordering::Relaxed)
+        }
+    }
+
+    /// Independent page-aligned register windows the fake can hand out.
+    const FAKE_WINDOW_COUNT: usize = 4;
+
+    /// One page-aligned register window backed by static storage.
+    ///
+    /// A real MMIO window is page aligned, which also satisfies the alignment
+    /// the opaque `Registers` block needs; a plain byte buffer would only be
+    /// byte aligned. `repr(C)` is what makes the window start at its field, so
+    /// the `base + index * size_of::<FakeWindow>()` and field-0 address used
+    /// below are guaranteed rather than incidental.
+    #[repr(C, align(4096))]
+    struct FakeWindow(core::cell::UnsafeCell<[u8; RTL8125_REGS_SIZE]>);
+
+    // SAFETY: `FakeMmio` claims a window before handing it out and releases it
+    // in `iounmap`, so a window is behind at most one live mapping and its only
+    // mutation is through that mapping's `*mut u8`.
+    unsafe impl Sync for FakeWindow {}
+
+    static FAKE_WINDOWS: [FakeWindow; FAKE_WINDOW_COUNT] =
+        [const { FakeWindow(core::cell::UnsafeCell::new([0; RTL8125_REGS_SIZE])) };
+            FAKE_WINDOW_COUNT];
+
+    /// Fake `MmioOp` backed by those static windows.
+    ///
+    /// The windows are real memory, so the driver's register read-modify-writes
+    /// run through the production `Regs`/`RxFilter` path instead of a modelled
+    /// policy function. Each mapping is paired: `iounmap` releases the window it
+    /// was handed, so nothing leaks.
+    struct FakeMmio {
+        claimed: AtomicUsize,
+    }
+
+    impl FakeMmio {
+        /// Reserves one free window for the calling mapping.
+        fn claim(&self) -> Option<usize> {
+            let mask = (1usize << FAKE_WINDOW_COUNT) - 1;
+            let mut claimed = self.claimed.load(Ordering::Relaxed);
+            loop {
+                let free = !claimed & mask;
+                if free == 0 {
+                    return None;
+                }
+                let index = free.trailing_zeros() as usize;
+                match self.claimed.compare_exchange_weak(
+                    claimed,
+                    claimed | 1 << index,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return Some(index),
+                    Err(current) => claimed = current,
+                }
+            }
+        }
+
+        /// Releases the window `iounmap` was called with.
+        fn release(&self, mmio: &MmioRaw) {
+            let base = FAKE_WINDOWS.as_ptr() as usize;
+            let stride = core::mem::size_of::<FakeWindow>();
+            let addr = mmio.as_ptr() as usize;
+            assert!(
+                addr >= base && (addr - base).is_multiple_of(stride),
+                "iounmap of a mapping this fake did not hand out"
+            );
+            let index = (addr - base) / stride;
+            assert!(
+                index < FAKE_WINDOW_COUNT,
+                "iounmap of an unknown fake window"
+            );
+            self.claimed.fetch_and(!(1 << index), Ordering::Release);
+        }
+    }
+
+    impl MmioOp for FakeMmio {
+        // The trait requires the prelude `Result`, which the crate-wide
+        // `Result<T>` alias would otherwise shadow.
+        fn ioremap(&self, _addr: MmioAddr, size: usize) -> core::result::Result<MmioRaw, MapError> {
+            if size == 0 || size > RTL8125_REGS_SIZE {
+                return Err(MapError::Invalid);
+            }
+            let index = self.claim().ok_or(MapError::NoMemory)?;
+            let ptr = FAKE_WINDOWS[index].0.get().cast::<u8>();
+            // SAFETY: the window was just claimed for this mapping, so no other
+            // mapping aliases it; it is page aligned, at least `size` bytes
+            // long, and starts zeroed.
+            Ok(unsafe { MmioRaw::new(MmioAddr::from(0usize), NonNull::new_unchecked(ptr), size) })
+        }
+
+        fn iounmap(&self, mmio: &MmioRaw) {
+            self.release(mmio);
+        }
+    }
+
+    static FAKE_MMIO: FakeMmio = FakeMmio {
+        claimed: AtomicUsize::new(0),
+    };
+
+    /// Maps one fake register window and builds the production RX filter on it.
+    fn rx_filter() -> (Regs, Arc<RxFilter>) {
+        let mmio = Arc::new(
+            mmio_api::ioremap(MmioAddr::from(0usize), RTL8125_REGS_SIZE)
+                .expect("fake MMIO mapping"),
+        );
+        let regs = Regs::new(mmio.as_nonnull_ptr());
+        (regs, RxFilter::new(regs, mmio))
+    }
+
+    fn rx_config(regs: Regs) -> u32 {
+        regs.read_rx_config()
+    }
+
+    /// The one hardware bit that enables guest-MAC acceptance, taken from the
+    /// `registers::RX_CONFIG` contract.
+    const ACCEPT_ALL_PHYS_BIT: u32 = RX_CONFIG::ACCEPT_ALL_PHYS::SET.value;
+
+    #[test]
+    fn rx_filter_policy_is_per_instance_and_survives_start_and_rearm() {
+        mmio_api::init(&FAKE_MMIO);
+        let (regs_a, filter_a) = rx_filter();
+        let (regs_b, filter_b) = rx_filter();
+
+        // Both instances start host-only and program the same value.
+        filter_a.program_start();
+        filter_b.program_start();
+        let host_only_a = rx_config(regs_a);
+        let host_only_b = rx_config(regs_b);
+        assert_eq!(host_only_a, host_only_b);
+        assert_eq!(host_only_a & ACCEPT_ALL_PHYS_BIT, 0);
+
+        // Enabling guest-MAC acceptance on A sets exactly the ACCEPT_ALL_PHYS
+        // bit and leaves every other `RX_CONFIG` bit as it was. B keeps its
+        // host-only filter even across its own start and rearm, which a
+        // process-wide flag would flip.
+        filter_a.set_accept_all_phys(true);
+        let enabled_a = rx_config(regs_a);
+        assert_eq!(enabled_a, host_only_a | ACCEPT_ALL_PHYS_BIT);
+        filter_b.program_start();
+        assert_eq!(rx_config(regs_b), host_only_b);
+        filter_b.reprogram();
+        assert_eq!(rx_config(regs_b), host_only_b);
+
+        // A keeps its guest-MAC mode across its own start and rearm.
+        filter_a.program_start();
+        assert_eq!(rx_config(regs_a), enabled_a);
+        filter_a.reprogram();
+        assert_eq!(rx_config(regs_a), enabled_a);
+        assert_eq!(rx_config(regs_b), host_only_b);
+
+        // Disabling restores A's host-only filter and leaves B untouched.
+        filter_a.set_accept_all_phys(false);
+        assert_eq!(rx_config(regs_a), host_only_a);
+        filter_b.program_start();
+        assert_eq!(rx_config(regs_b), host_only_b);
+
+        // A start after disabling stays host-only.
+        filter_a.program_start();
+        assert_eq!(rx_config(regs_a), host_only_a);
+    }
+}
