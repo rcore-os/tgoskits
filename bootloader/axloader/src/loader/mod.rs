@@ -5,6 +5,7 @@ pub mod elf_loader;
 pub mod entry;
 pub mod network;
 pub mod payload;
+mod serial;
 pub mod smbios;
 
 use alloc::{format, string::String};
@@ -29,12 +30,24 @@ fn efi_main() -> Status {
             boot::stall(Duration::from_secs(2));
             continue;
         };
-        let epoch = new_boot_epoch(nic);
+        let identity = new_boot_identity(nic, b"boot-epoch").and_then(|epoch| {
+            new_boot_identity(nic, b"serial-id").map(|serial_id| (epoch, serial_id))
+        });
+        let (epoch, serial_id) = match identity {
+            Ok(identity) => identity,
+            Err(error) => {
+                logln!("loader_identity_unavailable: {error:?}");
+                boot::stall(Duration::from_secs(2));
+                continue;
+            }
+        };
+        let mut beacon = serial::SerialBeacon::new(serial_id);
         let mut server = boot_server::BootServer::new(
             epoch,
             nic.mac_address,
             nic.current_mac_address,
             smbios::hardware_info(),
+            beacon.state.clone(),
         );
         let mut announcer = match network::Announcer::new(nic, server.epoch()) {
             Ok(value) => Some(value),
@@ -58,11 +71,12 @@ fn efi_main() -> Status {
         let mut ticks = 200_u16;
         loop {
             let mut progress = || {
+                beacon.progress();
                 ticks = ticks.saturating_add(1);
                 if ticks >= 200 {
                     ticks = 0;
                     if let Some(announcer) = announcer.as_mut()
-                        && let Err(error) = announcer.broadcast()
+                        && let Err(error) = announcer.broadcast(&beacon.state.borrow())
                     {
                         logln!("loader_broadcast_error: {error:?}");
                     }
@@ -75,6 +89,7 @@ fn efi_main() -> Status {
                     logln!("ota_staged_reboot");
                     drop(listener);
                     drop(announcer);
+                    drop(beacon);
                     uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::SUCCESS, None);
                 }
                 direct::Action::Boot(execution) => {
@@ -82,7 +97,7 @@ fn efi_main() -> Status {
                         elf,
                         payload,
                         load_options,
-                    } = execution;
+                    } = *execution;
                     logln!(
                         "elf_loaded: load={:#x} end={:#x} entry={:#x}",
                         elf.load_addr,
@@ -92,6 +107,7 @@ fn efi_main() -> Status {
                     logln!("ready_to_handoff");
                     drop(listener);
                     drop(announcer);
+                    drop(beacon);
                     let result = entry::jump_to_uefi_entry(elf.entry_point, load_options);
                     drop(payload);
                     boot_server::free_loaded_elf(&elf);
@@ -103,20 +119,38 @@ fn efi_main() -> Status {
     }
 }
 
-fn new_boot_epoch(nic: network::NetworkInterface) -> String {
+fn new_boot_identity(nic: network::NetworkInterface, domain: &[u8]) -> uefi::Result<String> {
     let mut bytes = [0_u8; 16];
     if let Ok(handle) = boot::get_handle_for_protocol::<Rng>()
         && let Ok(mut rng) = boot::open_protocol_exclusive::<Rng>(handle)
         && rng.get_rng(None, &mut bytes).is_ok()
     {
-        return hex(&bytes);
+        return Ok(hex(&bytes));
     }
-    // The epoch only distinguishes boots; it is not an authentication secret.
+    // These identities only distinguish boots and are not authentication secrets.
+    // Domain separation keeps the fallback epoch and serial ID independent even
+    // when both are derived from the same monotonic counter and clock sample.
+    let mut count = 0_u64;
+    let table = uefi::table::system_table_raw().ok_or(Status::NOT_READY)?;
+    // SAFETY: this runs at APPLICATION before ExitBootServices, with the initialized
+    // firmware SystemTable. The call initializes the aligned local u64 and does not
+    // retain its address. No mutable Rust reference to the service table is created.
+    let status = unsafe {
+        let services = (*table.as_ptr()).boot_services;
+        if services.is_null() {
+            return Err(Status::NOT_READY.into());
+        }
+        ((*services).get_next_monotonic_count)(&mut count)
+    };
+    if status != Status::SUCCESS {
+        return Err(status.into());
+    }
     let clock = uefi::runtime::get_time().ok();
     let mut hash = Sha256::new();
-    hash.update(format!("{clock:?}:{:?}:{:p}", nic.mac_address, &clock));
+    hash.update(domain);
+    hash.update(format!(":{count}:{clock:?}:{:?}", nic.mac_address));
     bytes.copy_from_slice(&hash.finalize()[..16]);
-    hex(&bytes)
+    Ok(hex(&bytes))
 }
 
 fn hex(bytes: &[u8]) -> String {

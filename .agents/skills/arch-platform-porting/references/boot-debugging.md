@@ -343,13 +343,13 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 
 ### axloader UEFI 网络启动
 
-- axloader v5 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `TCP4 Service Binding` 必须来自同一个 UEFI 控制器；广播、MAC 和 HTTP 监听分别来自不同网卡不算可用实现。
-- `ConOut` 只输出诊断；不要从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或字符匹配协议。目标映像接管后，串口才作为交互终端。
-- 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。
-- QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。服务端联调时，`filter-mirror` 捕获客户机广播帧，宿主夹具解析四字节大端帧长和 UDP 长度后转交本地服务端；测试地址仅在夹具内映射到 `hostfwd`，服务端必须通过真实 HTTP 调用设备。
-- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v5 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，并从 Linux initrd 设备路径查找提供者；命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
+- axloader v6 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `TCP4 Service Binding` 必须来自同一个 UEFI 控制器；广播、MAC 和 HTTP 监听分别来自不同网卡不算可用实现。
+- `ConOut` 输出诊断；实际控制台对应的唯一 `SerialIo` 以受控非独占短借用输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧并上报生效线参数。单个线参数无法读取时使用 UEFI 常见的 115200/8N1、无硬件流控并记录诊断；无法唯一选择 UART 仍失败。不能从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或启动命令。借用限定 `TPL_CALLBACK`，写入有界且恢复原超时，guard 先于 TPL guard 释放。目标映像接管后，串口作为交互终端。
+- 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。
+- QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
+- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 - `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
-- 发送准备交接响应后先析构 TCP4 监听、子句柄、事件及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
+- 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。

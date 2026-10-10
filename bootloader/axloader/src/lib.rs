@@ -1,6 +1,5 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 
-#[cfg(target_os = "uefi")]
 extern crate alloc;
 
 #[cfg(any(windows, unix))]
@@ -8,6 +7,7 @@ pub mod elf_image;
 
 pub mod integrity;
 pub mod ota;
+pub mod serial_path;
 pub mod smbios;
 
 #[cfg(any(windows, unix))]

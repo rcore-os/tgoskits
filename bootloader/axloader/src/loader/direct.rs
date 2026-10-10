@@ -79,7 +79,7 @@ pub struct Listener {
 pub enum Action {
     None,
     Reset,
-    Boot(BootExecution),
+    Boot(alloc::boxed::Box<BootExecution>),
 }
 
 impl Listener {
@@ -191,7 +191,7 @@ impl Drop for Listener {
             if self.token.completion_token.status == Status::NOT_READY {
                 // SAFETY: Cancel completes the queued boxed token before it is freed.
                 let _ = unsafe { (tcp.0.cancel)(&mut tcp.0, &mut self.token.completion_token) };
-                while self.token.completion_token.status == Status::NOT_READY {
+                while completion_status(&self.token.completion_token.status) == Status::NOT_READY {
                     let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
                 }
             }
@@ -264,7 +264,7 @@ impl<'a> Connection<'a> {
         // SAFETY: Wait until Cancel has completed before stack-backed token
         // and fragment buffers are released.
         unsafe { (tcp.0.cancel)(&mut tcp.0, &mut token.completion_token) }.to_result()?;
-        while token.completion_token.status == Status::NOT_READY {
+        while completion_status(&token.completion_token.status) == Status::NOT_READY {
             let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
         }
         Err(Status::TIMEOUT.into())
@@ -408,6 +408,7 @@ impl<'a> Connection<'a> {
         let mut update_id = None;
         let mut source = OtaSource::Direct;
         let mut epoch = None;
+        let mut serial_binding = None;
         for line in request.split("\r\n").skip(1) {
             if line.is_empty() {
                 break;
@@ -448,6 +449,8 @@ impl<'a> Connection<'a> {
                     return Ok(Action::None);
                 }
                 source = OtaSource::Server;
+            } else if key.eq_ignore_ascii_case("x-serial-binding") {
+                serial_binding = Some(value);
             } else if key.eq_ignore_ascii_case("x-boot-epoch") {
                 epoch = Some(value);
             }
@@ -463,6 +466,7 @@ impl<'a> Connection<'a> {
                 loader_version: env!("CARGO_PKG_VERSION").into(),
                 hardware: boot_server.hardware().clone(),
                 boot: boot_server.status(),
+                serial: Some(boot_server.serial.borrow().clone()),
                 ota: ota.as_ref().map(OtaController::protocol_state),
             })
             .map_err(|_| Status::ABORTED)?;
@@ -494,6 +498,46 @@ impl<'a> Connection<'a> {
         }
         if epoch != Some(boot_server.epoch()) {
             self.reply("409 Conflict", br#"{"error":"stale_boot_epoch"}"#)?;
+            return Ok(Action::None);
+        }
+        if method == "POST" && path == "/api/v1/serial/continue" {
+            let Some(length) = content_length.filter(|n| *n > 0 && *n <= 1024) else {
+                self.reply("400 Bad Request", b"{}")?;
+                return Ok(Action::None);
+            };
+            let body = self.read_body(length, initial)?;
+            let binding = match serde_json::from_slice::<httpboot_protocol::SerialBinding>(&body) {
+                Ok(binding) => binding,
+                Err(_) => {
+                    self.reply("400 Bad Request", br#"{"error":"invalid_serial_binding"}"#)?;
+                    return Ok(Action::None);
+                }
+            };
+            let result = boot_server.serial.borrow_mut().grant(binding);
+            let status =
+                serde_json::to_vec(&*boot_server.serial.borrow()).map_err(|_| Status::ABORTED)?;
+            self.reply(
+                if result.is_ok() {
+                    "200 OK"
+                } else {
+                    "409 Conflict"
+                },
+                &status,
+            )?;
+            return Ok(Action::None);
+        }
+        if method == "DELETE"
+            && let Some(id) = path.strip_prefix("/api/v1/serial/bindings/")
+        {
+            let result = boot_server.serial.borrow_mut().revoke(id);
+            self.reply(
+                if result.is_ok() {
+                    "200 OK"
+                } else {
+                    "409 Conflict"
+                },
+                b"{}",
+            )?;
             return Ok(Action::None);
         }
         if let Some(ota) = ota.as_mut() {
@@ -672,10 +716,10 @@ impl<'a> Connection<'a> {
                 return Ok(Action::None);
             }
             if method == "POST" && operation == "start" {
-                match boot_server.prepare(id) {
+                match boot_server.prepare(id, serial_binding) {
                     Ok(execution) => {
                         self.reply("202 Accepted", br#"{"phase":"ready_to_handoff"}"#)?;
-                        return Ok(Action::Boot(execution));
+                        return Ok(Action::Boot(alloc::boxed::Box::new(execution)));
                     }
                     Err(error) => {
                         let body = serde_json::to_vec(&serde_json::json!({"error": error}))
@@ -711,7 +755,7 @@ impl<'a> Connection<'a> {
             }
             if token.completion_token.status == Status::NOT_READY {
                 let _ = unsafe { (tcp.0.cancel)(&mut tcp.0, &mut token.completion_token) };
-                while token.completion_token.status == Status::NOT_READY {
+                while completion_status(&token.completion_token.status) == Status::NOT_READY {
                     let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
                 }
             }
@@ -729,4 +773,10 @@ impl Drop for Connection<'_> {
         // SAFETY: No token or protocol guard refers to this accepted child.
         let _ = unsafe { (self.binding.0.destroy_child)(&mut self.binding.0, self.child.as_ptr()) };
     }
+}
+
+fn completion_status(status: &Status) -> Status {
+    // SAFETY: the live token owns this aligned field. Firmware may update it
+    // during Poll/Cancel; a volatile load observes each completion before reuse.
+    unsafe { ptr::read_volatile(status) }
 }

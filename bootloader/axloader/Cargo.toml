@@ -28,3 +28,7 @@ serde = { version = "1", default-features = false, features = ["alloc", "derive"
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }
 uefi-raw.workspace = true
+
+[[package.metadata.clippy.configurations]]
+name = "uefi"
+target = "x86_64-unknown-uefi"

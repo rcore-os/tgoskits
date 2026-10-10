@@ -5,7 +5,7 @@ sidebar_label: "Axloader"
 
 # Axloader
 
-`cargo xtask axloader` 负责构建 x86_64 UEFI 装载器，并在本地 OVMF/QEMU 中验证设备 HTTP 启动、可选 cmdline/initramfs 和 A/B OTA。axloader 启动后是 TCP4 HTTP 服务端；直连工具与 ostool-server 都调用同一组设备接口。串口只输出诊断，测试不会向串口注入控制命令。
+`cargo xtask axloader` 负责构建 x86_64 UEFI 装载器，并在本地 OVMF/QEMU 中验证设备 HTTP 启动、可选 cmdline/initramfs 和 A/B OTA。axloader 启动后是 TCP4 HTTP 服务端；直连工具与 ostool-server 都调用同一组设备接口。串口在启动前输出本次 `serial_id` 身份帧和诊断，绑定完成或交接后才交给目标系统，测试不会向串口注入控制命令。
 
 ## 1. 构建入口
 
@@ -42,7 +42,7 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 
 ## 2. 设备控制
 
-v5 把控制面放在设备上。`network::NetworkInterface` 要求同一 UEFI 控制器同时提供 SNP、IP4、UDP4 和 TCP4；`network::Announcer` 向 UDP `2998` 单向广播 `LoaderAnnouncement`，`direct::Listener` 在 TCP `2999` 接受请求。设备不再发现、轮询或下载 ostool-server 的资源。
+v6 把控制面放在设备上。`network::NetworkInterface` 要求同一 UEFI 控制器同时提供 SNP、IP4、UDP4 和 TCP4；`network::Announcer` 向 UDP `2998` 单向广播带 `serial_id` 与 `serial_ready` 的 `LoaderAnnouncement`，`direct::Listener` 在 TCP `2999` 接受请求。设备不再发现、轮询或下载 ostool-server 的资源。
 
 ### 2.1 发现与代次
 
@@ -51,13 +51,12 @@ v5 把控制面放在设备上。`network::NetworkInterface` 要求同一 UEFI �
 ```mermaid
 sequenceDiagram
     participant L as axloader/OVMF
-    participant F as QEMU filter mirror
     participant C as 直连工具或 ostool-server
 
-    L->>F: UDP 2998 LoaderAnnouncement
-    F->>C: 转交捕获的广播帧
+    L-->>C: UDP 2998 LoaderAnnouncement（可选转发）
     C->>L: GET /api/v1/status
-    L-->>C: LoaderDeviceStatus 与 boot_epoch
+    L-->>C: LoaderDeviceStatus、boot_epoch、serial_id 与参数
+    C->>L: POST /api/v1/serial/continue（bound 或 direct）
     C->>L: HTTP 修改请求与 X-Boot-Epoch
 ```
 
@@ -73,10 +72,17 @@ sequenceDiagram
 | `GET /api/v1/boot/jobs/{id}` | 查询文件接收状态和阶段 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核并核对 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 上传清单声明的可选归档 |
+| `POST /api/v1/serial/continue` | 携带 `X-Boot-Epoch`、`serial_id`、`binding_id` 和 `bound/direct`；相同请求幂等，`bound` 需要当前串口身份就绪 |
+| `DELETE /api/v1/serial/bindings/{binding_id}` | 撤销当前启动的绑定令牌并恢复身份帧 |
 | `DELETE /api/v1/boot/jobs/{id}` | 取消尚未执行的事务 |
-| `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，回复 `202`，关闭网络对象后交接 |
+| `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，核对 `X-Serial-Binding`，回复 `202`，关闭网络对象后交接 |
 
-v5 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时由 `payload::PreparedPayload` 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。
+v6 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时由 `payload::PreparedPayload` 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
+
+v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的 ostool-server
+配套，板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。启动返回
+`409 serial_binding_required` 时，先检查服务端与 loader 是否配套，再检查当前
+`serial_id` 是否已完成绑定；无需串口隧道时使用显式 `direct` continue。
 
 ### 2.3 OTA 事务
 
@@ -122,8 +128,8 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 2. 检查 `axloader` 的 `x86_64-unknown-uefi` 目标。
 3. release 构建启动器、装载器和真实 ArceOS UEFI ELF。
 4. 把启动器、A/B 槽和双状态记录写入真实 FAT 镜像。
-5. 用 `hostfwd` 调用客户机 TCP `2999`，覆盖直连启动、OTA、重启确认和回滚。
-6. 在四种可选载荷组合中观察启动后的内核输出。
+5. 用 `hostfwd` 调用客户机 TCP `2999`，先读取状态并完成 `bound/direct` continue，再覆盖直连启动、OTA、重启确认和回滚。
+6. 在五种可选载荷组合中观察启动后的内核输出。
 
 该流程不会安装 systemd 服务，不会修改 runner、板卡配置或实体设备。宿主需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、`mcopy`、`mmd` 和 `python3`。
 
@@ -134,6 +140,7 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 - 基础场景输出 `Hello, world!`。
 - cmdline 场景输出精确的 `HOST_CMDLINE`。
 - initramfs 场景输出 `HOST_INITRAMFS_PASSED`。
+- initramfs 回退场景验证 ESP 上的 Linux EFI initrd provider。
 - OTA 场景跨 QEMU 启动验证坏摘要、短请求、未确认复位回滚、确认持久化和再次启动。
 
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
@@ -150,7 +157,9 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 | --- | --- |
 | `loader_tcp4_unavailable` | 同一网卡是否同时发布 SNP、IP4、UDP4、TCP4 service binding |
 | `loader_tcp4_listen_failed` | 固件能否在 TCP `2999` 建立被动监听，端口是否已占用 |
-| `loader_broadcast_error` | UDP `2998` 的广播地址、帧捕获与转交；有设备 IP 时仍可直连 |
+| `loader_broadcast_error` | UDP `2998` 的广播地址和载荷大小；公告是可选发现路径，有设备 IP 时仍可直连 |
+| `serial_binding_required` | 先读取当前 `serial_id`，通过 `POST /api/v1/serial/continue` 完成 `bound` 或显式 `direct` continue，再在启动请求中携带返回的绑定令牌 |
+| `serial` 为 `ready=false` | 检查 `parameters`、`error` 和 `ConOut` 对应的唯一 `SerialIo`；无法唯一选择或读取参数时不能猜测串口 |
 | `409 stale_boot_epoch` | 重新读取 `/api/v1/status` 并使用新的启动代次 |
 | 上传被拒绝 | `Content-Length`、`X-Image-Sha256`、清单长度和当前事务 ID |
 
@@ -158,7 +167,7 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 
 ### 4.2 启动与恢复
 
-`ready_to_handoff` 后失败时检查 ELF 入口、EFI LoadOptions 和 Linux EFI initrd 提供者。OTA 复位循环则先读取两份状态记录的代次与校验和，再核对当前槽文件摘要。
+`ready_to_handoff` 后失败时检查 ELF 入口、EFI LoadOptions 和 Linux EFI initrd provider。OTA 复位循环则先读取两份状态记录的代次与校验和，再核对当前槽文件摘要。
 
 | 现象 | 优先检查 |
 | --- | --- |

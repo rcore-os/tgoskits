@@ -249,7 +249,7 @@ pub(super) async fn test_direct_ota(
         status(&client, port, root, |value| value["running_slot"] == "a").await?;
         server_assignment(&client, port, root, &loader).await?;
         drop(qemu);
-        println!("axloader OTA QEMU: assigned v5 upload and confirmation passed");
+        println!("axloader OTA QEMU: assigned v6 upload and confirmation passed");
         return Ok(());
     }
     let mut qemu = start_qemu(&firmware, root, port)?;
@@ -471,7 +471,7 @@ pub(super) async fn test_direct_ota(
     status(&client, port, root, |value| value["running_slot"] == "a").await?;
     server_assignment(&client, port, root, &loader).await?;
     drop(qemu);
-    println!("axloader OTA QEMU: assigned v5 confirmation and subsequent FAT boot passed");
+    println!("axloader OTA QEMU: assigned v6 confirmation and subsequent FAT boot passed");
     Ok(())
 }
 
@@ -647,7 +647,7 @@ async fn boot_smoke(
     let kernel = scenario.kernel;
     let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
     let epoch = epoch(client, port).await?;
-    let boot_id = format!("qemu-v5-{}", scenario.name);
+    let boot_id = format!("qemu-v6-{}", scenario.name);
     let mut manifest = serde_json::json!({
         "boot_id": boot_id,
         "arch": "x86_64",
@@ -760,9 +760,170 @@ async fn boot_smoke(
             response.status()
         );
     }
+    // Upload is allowed before binding; handoff requires an exact current token.
+    let gated = client
+        .post(format!("{base}/{boot_id}/start"))
+        .header("X-Boot-Epoch", &epoch)
+        .send()
+        .await?;
+    ensure!(
+        !gated.status().is_success(),
+        "unconfirmed boot was accepted"
+    );
+    let observed: serde_json::Value = client
+        .get(format!("http://127.0.0.1:{port}/api/v1/status"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let binding_id = "1234567890abcdef1234567890abcdef";
+    let bound = scenario.name == "no-options";
+    let frame = if bound {
+        let id = observed["serial"]["serial_id"]
+            .as_str()
+            .context("missing UART ID")?;
+        format!("AXLOADER-SERIAL/1 {id}")
+    } else {
+        String::new()
+    };
+    if bound {
+        ensure!(
+            observed["serial"]["ready"] == true,
+            "firmware UART unavailable: {}",
+            observed["serial"]
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
+            if log.lines().any(|line| line.trim_end_matches('\r') == frame) {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "UART identity frame did not arrive: {log}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        ensure!(
+            observed["serial"]["parameters"]
+                == serde_json::json!({
+                    "baud_rate": 115_200,
+                    "data_bits": 8,
+                    "parity": "none",
+                    "stop_bits": "one",
+                    "flow_control": "none",
+                }),
+            "unexpected effective UART parameters: {}",
+            observed["serial"]["parameters"]
+        );
+    }
+    let binding = serde_json::json!({"serial_id": observed["serial"]["serial_id"], "binding_id": binding_id, "mode": if bound { "bound" } else { "direct" }});
+    let continue_url = format!("http://127.0.0.1:{port}/api/v1/serial/continue");
+    let malformed = client
+        .post(&continue_url)
+        .header("X-Boot-Epoch", &epoch)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body("{")
+        .send()
+        .await?;
+    ensure!(
+        malformed.status() == reqwest::StatusCode::BAD_REQUEST,
+        "malformed serial binding was not rejected as bad request: {}",
+        malformed.status()
+    );
+    for _ in 0..2 {
+        let granted = client
+            .post(&continue_url)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&binding)
+            .send()
+            .await?;
+        ensure!(
+            granted.status().is_success(),
+            "serial continue failed: {}",
+            granted.text().await?
+        );
+    }
+    if bound {
+        let frames_before_revoke = fs::read_to_string(root.join("ota-qemu.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.trim_end_matches('\r') == frame)
+            .count();
+        let revoked = client
+            .delete(format!(
+                "http://127.0.0.1:{port}/api/v1/serial/bindings/{binding_id}"
+            ))
+            .header("X-Boot-Epoch", &epoch)
+            .send()
+            .await?;
+        ensure!(
+            revoked.status() == reqwest::StatusCode::OK,
+            "serial binding revoke failed: {}",
+            revoked.text().await?
+        );
+        let status_url = format!("http://127.0.0.1:{port}/api/v1/status");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let value: serde_json::Value = client
+                .get(&status_url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if value["serial"]["binding"].is_null() {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "serial binding was not revoked: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let frames = fs::read_to_string(root.join("ota-qemu.log"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.trim_end_matches('\r') == frame)
+                .count();
+            if frames > frames_before_revoke {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "UART identity frame did not resume after revoke"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let regranted = client
+            .post(&continue_url)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&binding)
+            .send()
+            .await?;
+        ensure!(
+            regranted.status().is_success(),
+            "serial continue after revoke failed: {}",
+            regranted.text().await?
+        );
+    }
+    let wrong = client
+        .post(format!("{base}/{boot_id}/start"))
+        .header("X-Boot-Epoch", &epoch)
+        .header("X-Serial-Binding", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .send()
+        .await?;
+    ensure!(
+        !wrong.status().is_success(),
+        "conflicting binding token authorized boot"
+    );
     let response = client
         .post(format!("{base}/{boot_id}/start"))
         .header("X-Boot-Epoch", &epoch)
+        .header("X-Serial-Binding", binding_id)
         .send()
         .await?;
     ensure!(
