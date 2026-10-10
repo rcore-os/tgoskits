@@ -69,6 +69,8 @@ push 和手动运行的 `_matches_impact()` 不缩小矩阵，但选中的 Clipp
 
 `Cargo.lock` 是 `SOFT_GLOBAL_PATHS` 中的软全局输入：仅有锁文件等软全局输入时回退全量；它与可解释的源码或套件一起变化时，不会单独扩大已有选择。普通 `apps/**` 被忽略，但 `apps/arceos/virtio-blk-test/**` 是显式的 AxVisor AArch64 QEMU 输入。
 
+通用增量 Clippy 还会在 `cargo xtask clippy --since "$SINCE_REF"` 内部按软件包重新选择检查。ArceOS 的 `os/arceos/configs/**` 不属于 workspace 软件包，具体 board 配置由上面的 CI 影响分析和注册 suite 覆盖，因此不会单独把通用 Clippy 扩大到整个 workspace；只有配置与软件包源码同时变化时，Clippy 才检查变更软件包及必要的 OS 根软件包。工具链、`.cargo/**` 和 Clippy 配置仍是硬全局输入，纯 `Cargo.lock` 变化仍按软全局规则回退全量。
+
 ## 3. 套件精确选择
 
 纯 `test-suit/**` 变更使用与普通软件包传播不同的路径。`resolve_suite_selections()` 将实际目录、配置和构建包装文件映射成 `SuiteSelection`，而不是直接把修改文件的父目录拼成命令。

@@ -318,7 +318,6 @@ fn global_clippy_input(path: &Path) -> Option<GlobalClippyInput> {
         || path == Path::new("clippy.toml")
         || path == Path::new(".clippy.toml")
         || path.starts_with(".cargo")
-        || path.starts_with("os/arceos/configs")
     {
         Some(GlobalClippyInput::Hard)
     } else {

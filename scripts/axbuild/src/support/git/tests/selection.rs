@@ -210,6 +210,51 @@ fn global_config_file_falls_back_to_full_run() {
 }
 
 #[test]
+fn arceos_board_config_selects_no_clippy_packages() {
+    let (root, metadata, workspace_packages) = test_workspace();
+    let selected = select_incremental_packages_for_paths(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [PathBuf::from(
+            "os/arceos/configs/board/orangepi-5-plus.toml",
+        )],
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: Vec::new(),
+            affected: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn arceos_board_config_does_not_hide_package_changes() {
+    let (root, metadata, workspace_packages) = test_workspace();
+    let selected = select_incremental_packages_for_paths(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [
+            PathBuf::from("os/arceos/configs/board/orangepi-5-plus.toml"),
+            PathBuf::from("crates/beta/src/lib.rs"),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["beta".into()],
+            affected: vec!["beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
 fn unrelated_outside_package_file_selects_no_packages() {
     let (root, metadata, workspace_packages) = test_workspace();
     let selected = select_incremental_packages_for_paths(
