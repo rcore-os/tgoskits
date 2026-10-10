@@ -39,6 +39,39 @@ pub enum CurrentParkStart {
     Prepared(PreparedCurrentPark),
 }
 
+/// Owns a prepared current-thread park and the preemption exclusion needed to
+/// publish its external waiter.
+///
+/// The scheduler park and the domain waiter are one publication transaction.
+/// Callers inspect the start state through [`Self::start`], publish or
+/// cancel their domain record, release the domain lock, and then call
+/// [`Self::into_start`] to end preemption exclusion before using the park.
+#[must_use = "a current-park publication must be completed or dropped after the domain waiter is \
+              resolved"]
+pub struct CurrentParkPublication {
+    start: CurrentParkStart,
+    preempt: crate::sync::PreemptGuard,
+}
+
+impl CurrentParkPublication {
+    /// Borrows the scheduler start while keeping publication preemption-disabled.
+    pub fn start(&self) -> &CurrentParkStart {
+        &self.start
+    }
+
+    /// Releases preemption exclusion and returns the scheduler park state.
+    ///
+    /// The caller must release its external waiter lock before calling this
+    /// method. This ordering keeps the queue publication atomic with respect
+    /// to same-CPU scheduler activity without extending the guard lifetime
+    /// into the blocking commit.
+    pub fn into_start(self) -> CurrentParkStart {
+        let Self { start, preempt } = self;
+        drop(preempt);
+        start
+    }
+}
+
 /// Move-only ownership of one prepared current-thread park transaction.
 #[must_use = "a prepared current-thread park must be committed or cancelled"]
 #[derive(Debug)]
@@ -191,6 +224,23 @@ impl Drop for PreparedCurrentPark {
 pub fn begin_current_park() -> Result<CurrentParkStart, TaskError> {
     let permit = acquire_blocking_permit()?;
     begin_current_park_with_permit(&permit)
+}
+
+/// Begins a scheduler-owned park while retaining preemption exclusion for the
+/// caller's domain-waiter publication.
+///
+/// The blocking-context check must run before the returned guard is acquired:
+/// preparing a park itself is a scheduler entry and therefore rejects an
+/// already guarded task context. The caller must keep the returned guard alive
+/// until its domain waiter has been linked or the prepared park has been
+/// cancelled. The returned publication must be finalized with
+/// [`CurrentParkPublication::into_start`] only after the domain lock is
+/// released.
+pub fn begin_current_park_with_preempt_guard() -> Result<CurrentParkPublication, TaskError> {
+    let permit = acquire_blocking_permit()?;
+    let preempt = crate::sync::PreemptGuard::new();
+    let start = begin_current_park_with_permit(&permit)?;
+    Ok(CurrentParkPublication { start, preempt })
 }
 
 pub(crate) fn begin_current_park_with_permit(

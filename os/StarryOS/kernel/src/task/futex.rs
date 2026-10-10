@@ -75,7 +75,9 @@ pub enum FutexAccessError {
     UserFault,
     /// A bounded architecture atomic sequence should be retried.
     Retry,
-    /// The futex operation failed without requiring a retry.
+    /// The futex operation failed without requiring a retry. `ENOMEM` is
+    /// reported before waiter publication when the bounded queue cannot
+    /// reserve its next slot.
     Operation(crate::Errno),
 }
 
@@ -144,6 +146,54 @@ fn map_park_error(error: scheduler::thread::TaskError) -> FutexAccessError {
         _ => crate::StarryError::BadState,
     };
     error.into()
+}
+
+fn reserve_waiter_slot<T>(queue: &mut VecDeque<T>, additional: usize) -> Result<(), FutexAccessError> {
+    queue
+        .try_reserve(additional)
+        .map_err(|_| FutexAccessError::Operation(crate::Errno::ENOMEM))
+}
+
+#[cfg(axtest)]
+const FUTEX_PUBLICATION_PROBE_ARMED: u8 = 1;
+#[cfg(axtest)]
+const FUTEX_PUBLICATION_PROBE_GUARDED: u8 = 2;
+#[cfg(axtest)]
+const FUTEX_PUBLICATION_PROBE_UNGUARDED: u8 = 3;
+#[cfg(axtest)]
+const FUTEX_PUBLICATION_PROBE_PASSED: u8 = 4;
+#[cfg(axtest)]
+const FUTEX_PUBLICATION_PROBE_FAILED: u8 = 5;
+
+#[cfg(axtest)]
+static FUTEX_PUBLICATION_PROBE: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(axtest)]
+fn futex_publication_probe(wake: &scheduler::thread::ThreadWakeHandle) {
+    if FUTEX_PUBLICATION_PROBE
+        .compare_exchange(
+            FUTEX_PUBLICATION_PROBE_ARMED,
+            0,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Relaxed,
+        )
+        .is_err()
+    {
+        return;
+    }
+    let guarded = scheduler::thread::current::validate_blocking_context().is_err();
+    FUTEX_PUBLICATION_PROBE.store(
+        if guarded {
+            FUTEX_PUBLICATION_PROBE_GUARDED
+        } else {
+            FUTEX_PUBLICATION_PROBE_UNGUARDED
+        },
+        AtomicOrdering::Release,
+    );
+    // Inject the wake before the domain waiter is linked. The scheduler must
+    // retain it as a sticky park notification so the test does not depend on
+    // a timing window or a second task.
+    let _ = wake.wake();
 }
 
 /// Wait queue used by futex.
@@ -351,6 +401,10 @@ impl WaitQueue {
     /// Returns `false` when no waiter was committed, either because the
     /// condition cleared or because a sticky scheduler notification requires
     /// the condition owner to retry after discarding its temporary state.
+    /// Queue capacity is reserved before scheduler park publication. A
+    /// reservation failure returns `ENOMEM` without changing scheduler or
+    /// waiter state; this Starry-specific bounded-queue extension is shared
+    /// by futex, file-lock, and System V message-queue waiters.
     pub fn wait_if(
         &self,
         task: &UserTaskRef,
@@ -387,6 +441,9 @@ impl WaitQueue {
     /// Architecture access retries remain [`FutexWaitError::Access`], while a
     /// scheduler wake-before-park is reported separately so callers do not
     /// confuse a scheduling hint with a user-memory fault protocol.
+    /// The futex queue reserves capacity before the non-preemptible
+    /// publication transaction. A failed reservation returns `ENOMEM` before
+    /// a waiter or scheduler park is published.
     pub fn wait_if_with_cleanup_nofault(
         &self,
         task: &UserTaskRef,
@@ -420,25 +477,36 @@ impl WaitQueue {
                 return Ok(false);
             }
             let task = task();
-            let park =
-                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
-                    CurrentParkStart::Notified => {
-                        let deadline_expired = deadline
-                            .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
-                        return match classify_park_notification(
-                            task.take_interrupt(),
-                            deadline_expired,
-                        )? {
-                            ParkNotificationAction::RecheckCondition => {
-                                Err(FutexWaitError::SchedulerNotification)
-                            }
-                        };
+            reserve_waiter_slot(&mut inner.queue, 1)?;
+            // Keep scheduler park preparation and domain-waiter publication
+            // in one non-preemptible transaction. Linux holds the futex
+            // hash-bucket lock across TASK_INTERRUPTIBLE publication and
+            // futex_queue(), so a same-CPU producer cannot run between those
+            // two steps and observe an incomplete waiter. The reservation is
+            // completed before this guard is acquired because VecDeque growth
+            // may sleep; its bounded allocation failure is reported as
+            // ENOMEM instead of entering the publication transaction.
+            let publication =
+                scheduler::thread::current::begin_current_park_with_preempt_guard()
+                .map_err(map_park_error)?;
+            if matches!(publication.start(), CurrentParkStart::Notified) {
+                let deadline_expired =
+                    deadline.is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
+                drop(inner);
+                drop(publication);
+                return match classify_park_notification(task.take_interrupt(), deadline_expired)? {
+                    ParkNotificationAction::RecheckCondition => {
+                        Err(FutexWaitError::SchedulerNotification)
                     }
-                    CurrentParkStart::Prepared(park) => park,
                 };
+            }
             let generation = match task.as_thread().wait_state().begin(cleanup) {
                 Ok(generation) => generation,
                 Err(error) => {
+                    drop(inner);
+                    let CurrentParkStart::Prepared(park) = publication.into_start() else {
+                        unreachable!("notified park was handled before waiter publication")
+                    };
                     park.cancel().map_err(map_park_error)?;
                     return Err(error.into());
                 }
@@ -448,6 +516,10 @@ impl WaitQueue {
                 bitset,
                 generation,
             });
+            drop(inner);
+            let CurrentParkStart::Prepared(park) = publication.into_start() else {
+                unreachable!("notified park was handled before waiter publication")
+            };
             (task, generation, park)
         };
 
@@ -959,29 +1031,51 @@ impl ResolvedFutex<'_> {
             if !condition()? {
                 return Ok(false);
             }
-            let park =
-                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
-                    CurrentParkStart::Notified => {
-                        let deadline_expired =
-                            deadline.is_some_and(|deadline| deadline.lag().is_some());
-                        return match classify_park_notification(
-                            task.take_interrupt(),
-                            deadline_expired,
-                        )? {
-                            ParkNotificationAction::RecheckCondition => {
-                                Err(FutexWaitError::SchedulerNotification)
-                            }
-                        };
+            // Complete queue growth before acquiring the publication guard.
+            // This bounded allocation failure is surfaced as ENOMEM so no
+            // allocator path can run while scheduler state is PARKING.
+            reserve_waiter_slot(&mut waiters, 1)?;
+            // Linux keeps the futex hash-bucket lock across TASK_INTERRUPTIBLE
+            // publication and futex_queue(). Keep the equivalent Starry
+            // scheduler and domain-queue publication non-preemptible so a
+            // same-CPU producer cannot observe the task as parked before its
+            // waiter is authoritative.
+            let publication =
+                scheduler::thread::current::begin_current_park_with_preempt_guard()
+                .map_err(map_park_error)?;
+            if matches!(publication.start(), CurrentParkStart::Notified) {
+                let deadline_expired = deadline.is_some_and(|deadline| deadline.lag().is_some());
+                drop(waiters);
+                drop(publication);
+                return match classify_park_notification(task.take_interrupt(), deadline_expired)? {
+                    ParkNotificationAction::RecheckCondition => {
+                        Err(FutexWaitError::SchedulerNotification)
                     }
-                    CurrentParkStart::Prepared(park) => park,
                 };
+            }
+            #[cfg(axtest)]
+            let publication_wake = match publication.start() {
+                CurrentParkStart::Prepared(park) => park.wake_handle(),
+                CurrentParkStart::Notified => {
+                    unreachable!("notified park was handled before waiter publication")
+                }
+            };
             let generation = match task.as_thread().wait_state().begin(Some(self.cleanup())) {
                 Ok(generation) => generation,
                 Err(error) => {
+                    drop(waiters);
+                    let CurrentParkStart::Prepared(park) = publication.into_start() else {
+                        unreachable!("notified park was handled before waiter publication")
+                    };
                     park.cancel().map_err(map_park_error)?;
                     return Err(error.into());
                 }
             };
+            #[cfg(axtest)]
+            {
+                futex_publication_probe(&publication_wake);
+                drop(publication_wake);
+            }
             waiters.push_back(FutexBucketWaiter {
                 key: self.key.clone(),
                 waiter: Waiter {
@@ -991,6 +1085,10 @@ impl ResolvedFutex<'_> {
                 },
             });
             reservation.commit();
+            drop(waiters);
+            let CurrentParkStart::Prepared(park) = publication.into_start() else {
+                unreachable!("notified park was handled before waiter publication")
+            };
             (generation, park)
         };
 
@@ -1541,6 +1639,114 @@ fn park_prepare_error_cleans_waiter_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+fn waiter_reservation_failure_is_transactional_for_test() -> bool {
+    let bucket = FutexBucket::new();
+    let reservation = bucket.reserve_waiter();
+    let mut waiters = bucket.waiters.lock();
+    let result = reserve_waiter_slot(&mut waiters, usize::MAX);
+    let queue_is_empty = waiters.is_empty();
+    drop(waiters);
+    drop(reservation);
+    result == Err(FutexAccessError::Operation(crate::Errno::ENOMEM))
+        && queue_is_empty
+        && !bucket.has_pending_waiters()
+}
+
+#[cfg(axtest)]
+fn futex_publication_guard_is_transactional_for_test() -> bool {
+    use alloc::{string::String, sync::Arc, vec::Vec};
+
+    use crate::{
+        namespace::NsProxy,
+        task::{
+            PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit,
+            ProcessImage, ROOT_PID_NS, Tgid, Tid, TidNumber, Thread, UserThreadOptions,
+            prepare_user_thread,
+        },
+    };
+
+    let reservation = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
+        .expect("futex publication probe must reserve a test identity");
+    let identity = reservation.identity();
+    let tid = identity
+        .acquire_role::<Tid>()
+        .expect("futex publication probe must reserve a TID");
+    let tgid = identity
+        .acquire_role::<Tgid>()
+        .expect("futex publication probe must reserve a TGID");
+    let mut aspace = crate::mm::new_user_aspace_empty().expect("test MM must be allocated");
+    crate::mm::copy_from_kernel(&mut aspace).expect("test MM must retain kernel mappings");
+    let mm = crate::mm::MmHandle::from_arc(Arc::new(crate::sync::Mutex::new(aspace)))
+        .expect("test MM identity must be unique");
+    let parent = TidNumber::from(identity.root_number());
+    let process = ProcessData::new(
+        Process::new_for_axtest(identity.clone()),
+        identity.clone(),
+        tgid,
+        ProcessDataInit::new(
+            ProcessImage::new(
+                String::new(),
+                Arc::new(Vec::new()),
+                Arc::new(Vec::new()),
+                Vec::new(),
+                String::from("/"),
+                String::from("/"),
+            ),
+            mm,
+            Arc::default(),
+            NsProxy::new_root(),
+            None,
+            parent,
+        ),
+    );
+    let thread = Thread::new(
+        identity,
+        tid,
+        process,
+        None,
+        Default::default(),
+        scope_local::Scope::new(),
+    )
+    .expect("futex publication probe must create a test thread");
+
+    FUTEX_PUBLICATION_PROBE.store(FUTEX_PUBLICATION_PROBE_ARMED, AtomicOrdering::Release);
+    let task = prepare_user_thread(
+        || {
+            let task = crate::task::current_user_task();
+            let context = FutexContext::new(&task);
+            let resolved = context.resolve(0x1000, FutexKeyMode::Private);
+            let wait_result = resolved.wait_nofault_until(&task, u32::MAX, None, || Ok(true));
+            let (_, bucket) = resolved.domain.domain().bucket(&resolved.key);
+            let queue_empty = bucket.waiters.lock().is_empty();
+            let probe = FUTEX_PUBLICATION_PROBE.load(AtomicOrdering::Acquire);
+            let clean = !bucket.has_pending_waiters();
+            let passed = probe == FUTEX_PUBLICATION_PROBE_GUARDED
+                && matches!(wait_result, Err(FutexWaitError::SchedulerNotification))
+                && queue_empty
+                && clean;
+            FUTEX_PUBLICATION_PROBE.store(
+                if passed {
+                    FUTEX_PUBLICATION_PROBE_PASSED
+                } else {
+                    FUTEX_PUBLICATION_PROBE_FAILED
+                },
+                AtomicOrdering::Release,
+            );
+        },
+        thread,
+        UserThreadOptions::new("futex-publication-probe")
+            .expect("futex publication probe must create a task name"),
+    )
+    .expect("futex publication probe must prepare a task")
+    .stage()
+    .expect("futex publication probe must stage a task")
+    .activate();
+    let _exit_code = task.join();
+    drop(reservation);
+    FUTEX_PUBLICATION_PROBE.load(AtomicOrdering::Acquire) == FUTEX_PUBLICATION_PROBE_PASSED
+}
+
+#[cfg(axtest)]
 fn park_notification_rechecks_condition_for_test() -> bool {
     matches!(
         classify_park_notification(false, false),
@@ -1611,6 +1817,16 @@ mod axtests {
     #[axtest::axtest]
     fn park_prepare_error_cleans_waiter() {
         assert!(super::park_prepare_error_cleans_waiter_for_test());
+    }
+
+    #[axtest::axtest]
+    fn waiter_reservation_failure_is_transactional() {
+        assert!(super::waiter_reservation_failure_is_transactional_for_test());
+    }
+
+    #[axtest::axtest]
+    fn futex_publication_guard_is_transactional() {
+        assert!(super::futex_publication_guard_is_transactional_for_test());
     }
 
     #[axtest::axtest]
