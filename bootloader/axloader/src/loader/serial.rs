@@ -2,6 +2,7 @@
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 use core::cell::RefCell;
 
+use axloader::serial_path::console_matches;
 use httpboot_protocol::{
     LoaderSerialStatus, SerialFlowControl, SerialParameters, SerialParity, SerialStopBits,
 };
@@ -18,8 +19,6 @@ use uefi::{
     },
     runtime::{self, VariableVendor},
 };
-
-use super::serial_path::console_matches;
 
 pub struct SerialBeacon {
     handle: Option<Handle>,

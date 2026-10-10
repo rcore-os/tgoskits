@@ -6,7 +6,6 @@ pub mod entry;
 pub mod network;
 pub mod payload;
 mod serial;
-mod serial_path;
 pub mod smbios;
 
 use alloc::{format, string::String};

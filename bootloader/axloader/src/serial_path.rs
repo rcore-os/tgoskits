@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 /// Match complete device-path nodes; UART attributes may use firmware defaults.
-pub(crate) fn console_matches(console: &[u8], serial: &[u8]) -> bool {
+pub fn console_matches(console: &[u8], serial: &[u8]) -> bool {
     let Some(serial_nodes) = nodes(serial) else {
         return false;
     };
@@ -42,7 +42,7 @@ pub(crate) fn console_matches(console: &[u8], serial: &[u8]) -> bool {
     false
 }
 
-pub(crate) fn nodes(mut bytes: &[u8]) -> Option<Vec<&[u8]>> {
+pub fn nodes(mut bytes: &[u8]) -> Option<Vec<&[u8]>> {
     let mut result = Vec::new();
     while !bytes.is_empty() {
         let head = bytes.get(..4)?;

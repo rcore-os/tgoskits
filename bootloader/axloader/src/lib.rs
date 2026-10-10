@@ -7,11 +7,8 @@ pub mod elf_image;
 
 pub mod integrity;
 pub mod ota;
+pub mod serial_path;
 pub mod smbios;
-
-#[cfg(test)]
-#[path = "loader/serial_path.rs"]
-mod serial_path;
 
 #[cfg(any(windows, unix))]
 pub use elf_image::{
