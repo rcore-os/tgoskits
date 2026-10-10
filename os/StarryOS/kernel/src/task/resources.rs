@@ -3,7 +3,7 @@
 use core::ops::{Index, IndexMut};
 
 use linux_raw_sys::general::{
-    RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_RTTIME,
+    RLIM_NLIMITS, RLIMIT_AS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_RTTIME,
     RLIMIT_STACK,
 };
 
@@ -61,6 +61,8 @@ impl Default for Rlimits {
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         // Linux default: RLIMIT_DATA is unlimited
         result[RLIMIT_DATA] = Rlimit::new(u64::MAX, u64::MAX);
+        // Linux INIT_RLIMITS leaves the address space unlimited.
+        result[RLIMIT_AS] = Rlimit::new(u64::MAX, u64::MAX);
         result[RLIMIT_MEMLOCK] = Rlimit::new(MLOCK_LIMIT, MLOCK_LIMIT);
         // Linux INIT_RLIMITS seeds the per-user POSIX message-queue ceiling.
         result[RLIMIT_MSGQUEUE] = Rlimit::new(MQ_BYTES_MAX, MQ_BYTES_MAX);
@@ -93,6 +95,8 @@ fn resource_limit_defaults_hold_for_test() -> bool {
         && limits[RLIMIT_STACK].max == crate::config::USER_STACK_SIZE as u64
         && limits[RLIMIT_DATA].current == u64::MAX
         && limits[RLIMIT_DATA].max == u64::MAX
+        && limits[RLIMIT_AS].current == u64::MAX
+        && limits[RLIMIT_AS].max == u64::MAX
         && limits[RLIMIT_MEMLOCK].current == MLOCK_LIMIT
         && limits[RLIMIT_MEMLOCK].max == MLOCK_LIMIT
         && limits[RLIMIT_NOFILE].current == 7

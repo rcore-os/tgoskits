@@ -1,4 +1,4 @@
-use linux_raw_sys::general::RLIMIT_DATA;
+use linux_raw_sys::general::{RLIMIT_AS, RLIMIT_DATA};
 
 use crate::{
     StarryError, StarryResult,
@@ -28,6 +28,7 @@ pub fn sys_brk(current: &crate::task::UserTaskRef, addr: usize) -> StarryResult<
     // Read process policy before taking the address-space lock. No MM path
     // takes rlim after entering an opposite lock order.
     let rlimit_data = proc_data.rlimit_current(RLIMIT_DATA);
+    let rlimit_as = proc_data.rlimit_current(RLIMIT_AS);
     let aspace_pin = proc_data.pin_aspace()?;
     let mut aspace = aspace_pin.lock();
     let current_top = aspace.heap_break();
@@ -78,6 +79,14 @@ pub fn sys_brk(current: &crate::task::UserTaskRef, addr: usize) -> StarryResult<
     let Some(initial_heap_end) = heap_start.checked_add(USER_HEAP_SIZE) else {
         return Ok(current_top as isize);
     };
+
+    // Linux do_brk_flags() asks may_expand_vm() for the pages the growth maps,
+    // which are the ones resize_heap_break() maps past the loader's region.
+    let grown = ax_memory_addr::align_up_4k(addr)
+        .saturating_sub(initial_heap_end.max(ax_memory_addr::align_up_4k(current_top)));
+    if grown > 0 && super::check_rlimit_as(&aspace, 0, grown, rlimit_as).is_err() {
+        return Ok(current_top as isize);
+    }
 
     match aspace.resize_heap_break(addr, initial_heap_end) {
         Ok(AddressSpaceMutationOutcome::Complete) => Ok(addr as isize),
