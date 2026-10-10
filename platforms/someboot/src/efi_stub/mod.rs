@@ -3,7 +3,7 @@ use core::arch::naked_asm;
 use core::{
     ffi::c_void,
     fmt::Write,
-    mem::MaybeUninit,
+    mem::{MaybeUninit, align_of, size_of},
     ptr::{addr_of_mut, null},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
@@ -46,6 +46,11 @@ const LINUX_EFI_INITRD_MEDIA_GUID: Guid = guid!("5568e427-68fc-4f3d-ac74-ca55523
 const LINUX_INITRD_DEVICE_PATH_SIZE: usize = 24;
 const MAX_UEFI_INITRAMFS_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_CMDLINE: usize = 4095;
+
+const _: () =
+    assert!(size_of::<LoadFile2>() == size_of::<uefi_raw::protocol::media::LoadFile2Protocol>());
+const _: () =
+    assert!(align_of::<LoadFile2>() == align_of::<uefi_raw::protocol::media::LoadFile2Protocol>());
 
 #[repr(align(8))]
 struct AlignedBytes<const N: usize>([u8; N]);
@@ -253,11 +258,20 @@ fn load_linux_initrd() -> bool {
     };
     let mut provider = boot::open_protocol_exclusive::<LoadFile2>(handle)
         .expect("failed to open Linux initrd provider");
+    // SAFETY: `open_protocol_exclusive` keeps this firmware protocol instance
+    // valid and uniquely borrowed for the lifetime of `provider`. `LoadFile2`
+    // is a `#[repr(transparent)]` wrapper around the raw UEFI protocol, and
+    // the size and alignment assertions above pin that representation at
+    // compile time.
     let raw_provider = unsafe {
         &mut *((&mut *provider) as *mut LoadFile2
             as *mut uefi_raw::protocol::media::LoadFile2Protocol)
     };
     let mut size = 0usize;
+    // SAFETY: the firmware-installed callback belongs to `raw_provider`; the
+    // finalized device path and `size` pointer are valid for this call, and a
+    // null buffer with `BootPolicy = FALSE` is the UEFI LoadFile2 size-query
+    // contract. The firmware does not retain any of these pointers.
     let status = unsafe {
         (raw_provider.load_file)(
             raw_provider,
@@ -280,6 +294,11 @@ fn load_linux_initrd() -> bool {
     let address = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
         .expect("failed to allocate Linux initrd");
     let mut loaded = size;
+    // SAFETY: this is the same exclusively opened provider and finalized
+    // device path as the size query. `address` owns `pages` writable
+    // `LOADER_DATA` pages, and the exact size reported by the query is passed
+    // as the buffer capacity, so the firmware callback may write only within
+    // that allocation through `address` and `loaded`.
     let status = unsafe {
         (raw_provider.load_file)(
             raw_provider,
