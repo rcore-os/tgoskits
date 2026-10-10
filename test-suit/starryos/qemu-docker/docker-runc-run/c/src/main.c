@@ -377,6 +377,24 @@ static void *pipe_chmod_worker(void *arg)
     return NULL;
 }
 
+static pthread_barrier_t chown_part_barrier;
+
+static void *pipe_chown_uid_worker(void *arg)
+{
+    int fd = *(int *)arg;
+    pthread_barrier_wait(&chown_part_barrier);
+    (void)fchown(fd, 2000, -1);
+    return NULL;
+}
+
+static void *pipe_chown_gid_worker(void *arg)
+{
+    int fd = *(int *)arg;
+    pthread_barrier_wait(&chown_part_barrier);
+    (void)fchown(fd, -1, 3000);
+    return NULL;
+}
+
 static void check_pipe_fchown(void)
 {
     section("pipe-fchown");
@@ -491,6 +509,44 @@ static void check_pipe_fchown(void)
     } else {
         fail("concurrent fchmod/fchown setup");
     }
+
+    /* Two partial fchowns must each commit only their named field: under any
+     * serial order of `fchown(2000, -1)` and `fchown(-1, 3000)` the final
+     * owner is 2000:3000. A snapshot-substituting implementation stores both
+     * fields per call and loses one of the two updates. */
+    if (fchown(p[0], 1000, 1000) != 0) {
+        fail("reset pipe owner for the partial-update race");
+        close(p[0]);
+        close(p[1]);
+        return;
+    }
+    if (pthread_barrier_init(&chown_part_barrier, NULL, 2) != 0) {
+        fail("init partial-fchown barrier");
+        close(p[0]);
+        close(p[1]);
+        return;
+    }
+    pthread_t uid_th, gid_th;
+    int uid_fd = p[0];
+    int gid_fd = p[0];
+    int spawned = pthread_create(&uid_th, NULL, pipe_chown_uid_worker, &uid_fd) == 0 &&
+                  pthread_create(&gid_th, NULL, pipe_chown_gid_worker, &gid_fd) == 0;
+    if (spawned) {
+        pthread_join(uid_th, NULL);
+        pthread_join(gid_th, NULL);
+        struct stat part;
+        if (fstat(p[0], &part) == 0 && part.st_uid == 2000 && part.st_gid == 3000) {
+            pass("partial fchowns commit only their named fields");
+        } else {
+            printf("  FAIL: partial fchowns commit only their named fields "
+                   "(uid=%lu gid=%lu)\n",
+                   (unsigned long)part.st_uid, (unsigned long)part.st_gid);
+            failures++;
+        }
+    } else {
+        fail("spawn partial-fchown workers");
+    }
+    pthread_barrier_destroy(&chown_part_barrier);
 
     close(p[0]);
     close(p[1]);

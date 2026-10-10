@@ -846,16 +846,19 @@ impl FileLike for Socket {
     fn set_inode_metadata(
         &self,
         mode: Option<u32>,
-        owner: Option<(u32, u32)>,
+        owner: Option<(Option<u32>, Option<u32>)>,
     ) -> StarryResult<()> {
         if let Some(mode) = mode {
             self.inode_mode
                 .store(S_IFSOCK | (mode & 0o7777), Ordering::Release);
         }
-        if let Some((uid, gid)) = owner {
-            // `chown_common()` clears SUID unconditionally and SGID when the
-            // group-execute bit is set, on the *current* mode with one atomic
-            // read-modify-write so a concurrent `fchmod` is not lost.
+        // `chown_common()` clears SUID unconditionally and SGID when the
+        // group-execute bit is set — even for `fchown(-1, -1)`, which names
+        // no owner field. Only `fchmod` carries a mode here, and chmod sets
+        // its bits absolutely instead of clearing privileged ones. Apply the
+        // clear on the *current* mode with one atomic read-modify-write so a
+        // concurrent `fchmod` is not lost.
+        if mode.is_none() {
             let _ = self.inode_mode.try_update(
                 Ordering::AcqRel,
                 Ordering::Acquire,
@@ -868,8 +871,16 @@ impl FileLike for Socket {
                     Some(S_IFSOCK | perm)
                 },
             );
-            self.inode_uid.store(uid, Ordering::Release);
-            self.inode_gid.store(gid, Ordering::Release);
+        }
+        if let Some((uid, gid)) = owner {
+            // Commit only the named fields: a partial `fchown` must not
+            // resurrect the other field from a stale snapshot.
+            if let Some(uid) = uid {
+                self.inode_uid.store(uid, Ordering::Release);
+            }
+            if let Some(gid) = gid {
+                self.inode_gid.store(gid, Ordering::Release);
+            }
         }
         Ok(())
     }
