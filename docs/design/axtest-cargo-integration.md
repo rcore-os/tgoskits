@@ -92,7 +92,7 @@ runtime = "arceos" # 或 starry、axvisor、board
 ```
 
 - `arceos` 复用 ArceOS build/QEMU 配置；
-- `starry` 保留 StarryOS 的 rootfs、kallsyms 和镜像后处理；
+- `starry` 保留 StarryOS 的 rootfs、AXBT map 和镜像后处理；
 - `axvisor` 保留 Axvisor 的 rootfs 与镜像契约；
 - `board` 不进入 workspace QEMU 计划，只能通过 `cargo xtask ktest board` 执行。
 

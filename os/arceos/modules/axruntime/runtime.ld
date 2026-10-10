@@ -41,7 +41,6 @@ SECTIONS {
         KEEP(*(scope_local))
     }
 
-    %DWARF%
 }
 INSERT AFTER .rodata;
 

@@ -32,7 +32,6 @@ pub(crate) struct TestQemuCase {
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
     pub(crate) grouped_command_selection: GroupedCommandSelection,
-    pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
     pub(crate) grouped_subcase_filter: Option<BTreeSet<String>>,

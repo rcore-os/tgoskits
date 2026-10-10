@@ -75,7 +75,6 @@ fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<Ar
             qemu_config_path: case.qemu_config_path,
             test_commands: Vec::new(),
             grouped_command_selection: Default::default(),
-            host_symbolize_success_regex: Vec::new(),
             host_http_server,
             subcases: Vec::new(),
             grouped_subcase_filter: None,
@@ -105,7 +104,6 @@ pub(super) fn load_arceos_test_suit_qemu_case(
             qemu_config_path,
             test_commands: Vec::new(),
             grouped_command_selection: Default::default(),
-            host_symbolize_success_regex: Vec::new(),
             host_http_server,
             subcases: Vec::new(),
             grouped_subcase_filter: None,
@@ -212,8 +210,6 @@ mod tests {
             package,
             only_rust,
             only_c,
-            no_symbolize: false,
-            keep_qemu_log: false,
         }
     }
 

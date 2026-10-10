@@ -83,6 +83,7 @@ pub(super) fn attach_with_external_assets(
         .join(BUILTIN_GUEST_DIR.trim_start_matches('/'));
     fs::create_dir_all(builtin.join("configs"))?;
     fs::create_dir_all(builtin.join("images"))?;
+    fs::create_dir_all(builtin.join("symbols"))?;
     let mut ids = BTreeSet::new();
     for config in vmconfigs {
         let raw = fs::read_to_string(config)
@@ -144,6 +145,19 @@ pub(super) fn attach_with_external_assets(
             let destination = builtin.join("images").join(&name);
             if !destination.exists() {
                 fs::copy(&source, &destination)?;
+            }
+            for (extension, bundle_extension) in [("axbt", "axbt"), ("axks", "axks")] {
+                if let Some(symbols) = [source.with_extension(extension)]
+                    .into_iter()
+                    .find(|candidate| candidate.is_file())
+                {
+                    let symbol_destination = builtin
+                        .join("symbols")
+                        .join(format!("{name}.{bundle_extension}"));
+                    if !symbol_destination.exists() {
+                        fs::copy(symbols, symbol_destination)?;
+                    }
+                }
             }
             kernel.insert(
                 field.into(),

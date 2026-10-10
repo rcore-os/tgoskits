@@ -199,11 +199,12 @@ panic/oops 递归保护用于提升异常路径健壮性，避免主故障之后
 - 细化 backtrace 策略，例如按平台、构建配置或异常类型选择是否打印完整 backtrace。
 - 将 BUG、die、fatal trap 等更多异常入口纳入统一的 oops 状态管理。
 
-## 5. [Backtrace Host 符号化](./backtrace-host-symbolize.md)
+## 5. [Target Backtrace map](./backtrace-map.md)
 
-Host 端 `cargo xtask backtrace symbolize` 对 target 输出的 raw backtrace 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`）做离线符号化。当前流程在 QEMU 运行结束后手动执行 symbolize。
+Target 在 QEMU 中直接输出 AXBT map 解析后的函数名和 `file:line`；测试只检查 target 回溯协议。
 
-主要实现：`scripts/axbuild/src/backtrace.rs`。
+主要实现：`components/axbacktrace/src/lib.rs`、
+`scripts/axbuild/src/build/symbol_map.rs`。
 
 ## 6. [`lockdep` 锁依赖检查](https://github.com/rcore-os/tgoskits/blob/dev/test-suit/arceos/rust/task/lockdep/README.md)
 

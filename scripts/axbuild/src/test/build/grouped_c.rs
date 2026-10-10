@@ -656,7 +656,6 @@ pub(super) fn subcase_as_case(case: &TestQemuCase, subcase: &TestQemuSubcase) ->
         qemu_config_path: case.qemu_config_path.clone(),
         test_commands: Vec::new(),
         grouped_command_selection: Default::default(),
-        host_symbolize_success_regex: Vec::new(),
         host_http_server: case.host_http_server.clone(),
         subcases: Vec::new(),
         grouped_subcase_filter: None,

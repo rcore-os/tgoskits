@@ -1,14 +1,12 @@
 use std::{
-    env, fs,
-    io::Write as _,
+    fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     time::Instant,
 };
 
 use anyhow::{Context as _, anyhow, bail};
 use cargo_metadata::Metadata;
-use object::{Object as _, ObjectSection as _};
 use ostool::build::config::Cargo;
 
 use super::{Starry, board};
@@ -21,6 +19,12 @@ use crate::{
     },
     support::process::ProcessExt,
 };
+
+const STARRY_SYMBOLIZATION_RUSTFLAGS: &[&str] = &[
+    "-Cdebuginfo=2",
+    "-Cstrip=none",
+    "-Cforce-frame-pointers=yes",
+];
 
 pub(crate) fn default_starry_build_info() -> StarryBuildInfo {
     // The package and board configuration own feature selection; a generated
@@ -108,6 +112,10 @@ pub(crate) fn load_cargo_config(
         BareKernelLinkMode::Pie,
     )?;
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
+    // Starry always ships target-side symbol maps. Keep the ELF information
+    // needed by the build-time AXBT generator and the frame-pointer walk
+    // independent of per-test environment variables.
+    crate::build::append_cargo_rustflags(&mut cargo, STARRY_SYMBOLIZATION_RUSTFLAGS);
     crate::build::append_cargo_rustflags(&mut cargo, &["-D", "warnings"]);
     Ok(cargo)
 }
@@ -164,7 +172,6 @@ pub(crate) fn postprocess_starry_artifact(
 ) -> anyhow::Result<()> {
     let elf = build_output.elf_path();
     println!("[axbuild] starry artifact elf={}", elf.display());
-    generate_kallsyms(elf)?;
     refresh_bin_if_present(elf)?;
 
     if let Some(plan) = uimage_generation_plan(
@@ -179,111 +186,6 @@ pub(crate) fn postprocess_starry_artifact(
     validate_riscv_image_artifact(&request.arch, elf)?;
 
     Ok(())
-}
-
-fn generate_kallsyms(kernel_elf: &Path) -> anyhow::Result<()> {
-    let stage = StageLog::start(format!("starry kallsyms elf={}", kernel_elf.display()));
-    ensure_kallsyms_tools()?;
-    let symbols = rust_nm_symbols(kernel_elf)?;
-    println!("[axbuild] starry kallsyms symbols={}", symbols.len());
-    let mut child = Command::new("gen_ksym")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("failed to spawn gen_ksym")?;
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .context("failed to open gen_ksym stdin")?;
-        for symbol in symbols {
-            writeln!(stdin, "{symbol}").context("failed to write symbols to gen_ksym")?;
-        }
-    }
-    let output = child
-        .wait_with_output()
-        .context("failed to wait for gen_ksym")?;
-    if !output.status.success() {
-        bail!("gen_ksym exited with status {}", output.status);
-    }
-
-    let section_size = kallsyms_section_size(kernel_elf)?;
-    let mut kallsyms = output.stdout;
-    if kallsyms.len() > section_size {
-        bail!(
-            "generated kallsyms ({} bytes) exceed .kallsyms section ({section_size} bytes); \
-             remove the stale kernel ELF or rebuild it so the linker script reserve is restored",
-            kallsyms.len()
-        );
-    }
-    kallsyms.resize(section_size, 0);
-
-    let temp = temp_file_path(kernel_elf, "kallsyms")?;
-    fs::write(&temp, &kallsyms).with_context(|| format!("failed to write {}", temp.display()))?;
-    let result = update_kallsyms_section(kernel_elf, &temp);
-    let cleanup =
-        fs::remove_file(&temp).with_context(|| format!("failed to remove {}", temp.display()));
-    result?;
-    cleanup?;
-    stage.done();
-    Ok(())
-}
-
-fn rust_nm_symbols(kernel_elf: &Path) -> anyhow::Result<Vec<String>> {
-    let output = Command::new("rust-nm")
-        .arg("-n")
-        .arg(kernel_elf)
-        .output()
-        .with_context(|| format!("failed to run rust-nm on {}", kernel_elf.display()))?;
-    if !output.status.success() {
-        bail!("rust-nm exited with status {}", output.status);
-    }
-
-    let mut symbols = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut fields = line.split_whitespace();
-        let Some(address) = fields.next() else {
-            continue;
-        };
-        let Some(kind) = fields.next() else {
-            continue;
-        };
-        let Some(name) = fields.next() else {
-            continue;
-        };
-        if matches!(kind, "T" | "t" | "D" | "B" | "R") && !name.starts_with(".L") && name != "$x" {
-            symbols.push(format!("{address} {kind} {name}"));
-        }
-    }
-    Ok(symbols)
-}
-
-fn kallsyms_section_size(kernel_elf: &Path) -> anyhow::Result<usize> {
-    let data =
-        fs::read(kernel_elf).with_context(|| format!("failed to read {}", kernel_elf.display()))?;
-    let file = object::File::parse(&*data)
-        .with_context(|| format!("failed to parse {}", kernel_elf.display()))?;
-    let section = file.section_by_name(".kallsyms").ok_or_else(|| {
-        anyhow!(
-            "failed to find .kallsyms section in {}",
-            kernel_elf.display()
-        )
-    })?;
-    usize::try_from(section.size()).with_context(|| {
-        format!(
-            ".kallsyms section in {} is too large for this host",
-            kernel_elf.display()
-        )
-    })
-}
-
-fn update_kallsyms_section(kernel_elf: &Path, kallsyms: &Path) -> anyhow::Result<()> {
-    Command::new("rust-objcopy")
-        .arg("--update-section")
-        .arg(format!(".kallsyms={}", kallsyms.display()))
-        .arg(kernel_elf)
-        .exec()
-        .with_context(|| format!("failed to update .kallsyms in {}", kernel_elf.display()))
 }
 
 fn refresh_bin_if_present(kernel_elf: &Path) -> anyhow::Result<()> {
@@ -476,114 +378,6 @@ fn mkimage_args_for_its(rendered_its: &Path, output_uimg: &Path) -> Vec<String> 
         rendered_its.display().to_string(),
         output_uimg.display().to_string(),
     ]
-}
-
-fn ensure_kallsyms_tools() -> anyhow::Result<()> {
-    ensure_llvm_tools()?;
-    if !command_available("rust-nm") || !command_available("rust-objcopy") {
-        install_rust_binutils()?;
-    }
-    if !command_available("gen_ksym") {
-        install_ksym()?;
-    }
-    require_command("rust-nm")?;
-    require_command("rust-objcopy")?;
-    require_command("gen_ksym")
-}
-
-fn ensure_llvm_tools() -> anyhow::Result<()> {
-    if command_available("rust-nm") && command_available("rust-objcopy") {
-        return Ok(());
-    }
-    if !command_available("rustup") {
-        return Ok(());
-    }
-    let output = Command::new("rustup")
-        .args(["component", "list", "--installed"])
-        .output()
-        .context("failed to list installed rustup components")?;
-    if String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.starts_with("llvm-tools"))
-    {
-        return Ok(());
-    }
-    if !kallsyms_auto_install_enabled() {
-        bail!(
-            "llvm-tools-preview is required; install it with: rustup component add \
-             llvm-tools-preview"
-        );
-    }
-    Command::new("rustup")
-        .args(["component", "add", "llvm-tools-preview"])
-        .exec()
-        .context("failed to install llvm-tools-preview")
-}
-
-fn install_rust_binutils() -> anyhow::Result<()> {
-    if !kallsyms_auto_install_enabled() {
-        bail!(
-            "rust-nm and rust-objcopy are required; install them with: rustup component add \
-             llvm-tools-preview && cargo install cargo-binutils"
-        );
-    }
-    if command_available("rustup") {
-        Command::new("rustup")
-            .args(["component", "add", "llvm-tools-preview"])
-            .exec()
-            .context("failed to install llvm-tools-preview")?;
-    }
-    Command::new("cargo")
-        .args(["install", "cargo-binutils"])
-        .exec()
-        .context("failed to install cargo-binutils")
-}
-
-fn install_ksym() -> anyhow::Result<()> {
-    if !kallsyms_auto_install_enabled() {
-        bail!("gen_ksym is required; install it with: cargo install ksym");
-    }
-    Command::new("cargo")
-        .args(["install", "ksym"])
-        .exec()
-        .context("failed to install ksym")
-}
-
-fn kallsyms_auto_install_enabled() -> bool {
-    !matches!(
-        env::var("AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL")
-            .unwrap_or_else(|_| "1".to_string())
-            .as_str(),
-        "0" | "n" | "no" | "false" | "off"
-    )
-}
-
-fn command_available(name: &str) -> bool {
-    let path = Path::new(name);
-    if path.components().count() > 1 {
-        return path.is_file();
-    }
-
-    env::var_os("PATH").is_some_and(|paths| {
-        env::split_paths(&paths).any(|dir| {
-            let candidate = dir.join(name);
-            candidate.is_file()
-                || cfg!(windows)
-                    && env::var_os("PATHEXT").is_some_and(|exts| {
-                        exts.to_string_lossy()
-                            .split(';')
-                            .any(|ext| dir.join(format!("{name}{ext}")).is_file())
-                    })
-        })
-    })
-}
-
-fn require_command(name: &str) -> anyhow::Result<()> {
-    if command_available(name) {
-        Ok(())
-    } else {
-        bail!("required command `{name}` is not available")
-    }
 }
 
 fn temp_file_path(path: &Path, suffix: &str) -> anyhow::Result<PathBuf> {

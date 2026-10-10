@@ -11,8 +11,7 @@ use log::info;
 use ostool::{
     board::{self as ostool_board, BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
     build::{
-        self as ostool_build, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
-        RuntimeArtifactInput,
+        self as ostool_build, CargoQemuRunnerArgs, CargoRunnerKind, RuntimeArtifactInput,
         config::{BuildConfig, BuildSystem, Cargo},
     },
     invocation::{Invocation, InvocationOptions},
@@ -173,6 +172,8 @@ impl AppContext {
             ostool_build::cargo_build(&mut self.invocation, &cargo, build_config_path.as_deref())
                 .await?;
         stage.done();
+        let map_path = output.elf_path().with_extension("axbt");
+        crate::build::symbol_map::generate_axbt_map(output.elf_path(), &map_path)?;
         println!("[axbuild] cargo build elf={}", output.elf_path().display());
         if cargo.to_bin {
             println!(
@@ -206,46 +207,53 @@ impl AppContext {
         let _path_guard = self.scoped_qemu_path(&cargo)?;
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
+        let Some(mut qemu) = qemu else {
+            return ostool_build::cargo_run(
+                &mut self.invocation,
+                &cargo,
+                build_config_path.as_deref(),
+                &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
+                    qemu: None,
+                    debug: self.debug,
+                    dtb_dump: false,
+                })),
+            )
+            .await;
+        };
         let stage = StageLog::start(format!(
             "qemu build+run package={} target={} config={}",
             cargo.package,
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let result = ostool_build::cargo_run(
-            &mut self.invocation,
-            &cargo,
-            build_config_path.as_deref(),
-            &CargoRunnerKind::Qemu(Box::new(CargoQemuRunnerArgs {
-                qemu,
-                debug: self.debug,
-                dtb_dump: false,
-            })),
-        )
-        .await;
+        let output = self
+            .build(cargo.clone(), build_config_path.unwrap_or_default())
+            .await?;
+        self.prepare_elf_artifact(output.elf_path().to_path_buf(), qemu.to_bin)
+            .await?;
+        crate::test::qemu::append_backtrace_map(
+            &mut qemu,
+            &output.elf_path().with_extension("axbt"),
+            &cargo.target,
+        )?;
+        let result = self.run_qemu(&cargo, qemu).await;
         if result.is_ok() {
             stage.done();
         }
         result
     }
 
-    pub(crate) async fn run_qemu(
-        &mut self,
-        cargo: &Cargo,
-        qemu: QemuConfig,
-        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
-    ) -> anyhow::Result<()> {
+    pub(crate) async fn run_qemu(&mut self, cargo: &Cargo, qemu: QemuConfig) -> anyhow::Result<()> {
         let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
-        let (capture_backtrace, success_output) =
-            crate::support::qemu_success::capture_required_success_output(
-                &success_regex,
-                capture_backtrace,
-            );
+        let success_output =
+            crate::support::qemu_success::capture_required_success_output(&success_regex);
         let stage = StageLog::start(format!(
             "qemu run package={} target={}",
             cargo.package, cargo.target
         ));
-        let result = self.run_qemu_captured(cargo, qemu, capture_backtrace).await;
+        let result = self
+            .run_qemu_captured(cargo, qemu, success_output.clone())
+            .await;
         let result = crate::support::qemu_success::verify_qemu_success_contract(
             result,
             success_output.as_ref(),
@@ -260,12 +268,16 @@ impl AppContext {
         &mut self,
         cargo: &Cargo,
         qemu: QemuConfig,
-        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
+        success_output: Option<crate::support::qemu_success::QemuSuccessOutput>,
     ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
-        let output_capture = capture_backtrace
+        let output_capture = success_output
             .as_ref()
-            .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
+            .map(|output| {
+                crate::support::qemu_output_capture::QemuOutputCaptureGuard::install(Some(
+                    output.clone(),
+                ))
+            })
             .transpose()
             .context("failed to install QEMU output capture")?;
         self.activate_cargo_build_context(cargo)?;
@@ -283,10 +295,9 @@ impl AppContext {
         &mut self,
         cargo: &Cargo,
         mut qemu: QemuConfig,
-        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
         if !crate::support::axtest_coverage::enabled(cargo) {
-            return self.run_qemu(cargo, qemu, capture_backtrace).await;
+            return self.run_qemu(cargo, qemu).await;
         }
 
         let paths = crate::support::axtest_coverage::AxtestCoveragePaths::new(
@@ -302,11 +313,8 @@ impl AppContext {
         crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
         crate::support::axtest_coverage::update_success_regex(&mut qemu);
         let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
-        let (capture_backtrace, success_output) =
-            crate::support::qemu_success::capture_required_success_output(
-                &success_regex,
-                capture_backtrace,
-            );
+        let success_output =
+            crate::support::qemu_success::capture_required_success_output(&success_regex);
         let success_output = success_output
             .context("axtest coverage requires a host completion success contract")?;
         let capture = crate::support::axtest_coverage::AxtestCoverageCaptureGuard::install(
@@ -318,7 +326,9 @@ impl AppContext {
             "qemu run package={} target={}",
             cargo.package, cargo.target
         ));
-        let result = self.run_qemu_captured(cargo, qemu, capture_backtrace).await;
+        let result = self
+            .run_qemu_captured(cargo, qemu, Some(success_output.clone()))
+            .await;
         let coverage_result = capture.finish();
         let qemu_result = crate::support::qemu_success::verify_qemu_success_contract(
             result,
@@ -334,20 +344,17 @@ impl AppContext {
         result
     }
 
-    pub(crate) async fn run_prepared_qemu(
-        &mut self,
-        qemu: QemuConfig,
-        capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
-    ) -> anyhow::Result<()> {
+    pub(crate) async fn run_prepared_qemu(&mut self, qemu: QemuConfig) -> anyhow::Result<()> {
         let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
-        let (capture_backtrace, success_output) =
-            crate::support::qemu_success::capture_required_success_output(
-                &success_regex,
-                capture_backtrace,
-            );
-        let output_capture = capture_backtrace
+        let success_output =
+            crate::support::qemu_success::capture_required_success_output(&success_regex);
+        let output_capture = success_output
             .as_ref()
-            .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
+            .map(|output| {
+                crate::support::qemu_output_capture::QemuOutputCaptureGuard::install(Some(
+                    output.clone(),
+                ))
+            })
             .transpose()
             .context("failed to install QEMU output capture")?;
         let stage = StageLog::start("qemu run prepared artifact");
@@ -381,25 +388,30 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        uboot: Option<UbootConfig>,
+        mut uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
+        let to_bin = cargo.to_bin;
         let stage = StageLog::start(format!(
             "uboot build+run package={} target={} config={}",
             cargo.package,
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let result = ostool_build::cargo_run(
-            &mut self.invocation,
-            &cargo,
-            build_config_path.as_deref(),
-            &CargoRunnerKind::Uboot(Box::new(CargoUbootRunnerArgs { uboot })),
-        )
-        .await;
+        let mut uboot = uboot.take().unwrap_or_default();
+        let output = self
+            .build(cargo.clone(), build_config_path.unwrap_or_default())
+            .await?;
+        crate::test::qemu::append_backtrace_map_to_initramfs(
+            &mut uboot.boot.initramfs,
+            &output.elf_path().with_extension("axbt"),
+        )?;
+        self.prepare_elf_artifact(output.elf_path().to_path_buf(), to_bin)
+            .await?;
+        let result = self.run_prepared_uboot(uboot).await;
         if result.is_ok() {
             stage.done();
         }
@@ -410,27 +422,36 @@ impl AppContext {
         &mut self,
         cargo: Cargo,
         build_config_path: PathBuf,
-        board_config: BoardRunConfig,
+        mut board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
         let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
+        let to_bin = cargo.to_bin;
         let stage = StageLog::start(format!(
             "board build+run package={} target={} config={}",
             cargo.package,
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let result = ostool_board::cargo_run_board(
-            &mut self.invocation,
-            &cargo,
-            build_config_path.as_deref(),
-            &board_config,
-            options,
-        )
-        .await;
+        let output = self
+            .build(cargo.clone(), build_config_path.unwrap_or_default())
+            .await?;
+        crate::test::qemu::append_backtrace_map_to_initramfs(
+            &mut board_config.boot.initramfs,
+            &output.elf_path().with_extension("axbt"),
+        )?;
+        let result = self
+            .board_prepared_elf(
+                output.elf_path().to_path_buf(),
+                to_bin,
+                self.build_config_path.clone().unwrap_or_default(),
+                board_config,
+                options,
+            )
+            .await;
         if result.is_ok() {
             stage.done();
         }

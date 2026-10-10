@@ -101,13 +101,11 @@ flowchart TD
 
 ### 单个 case 运行
 
-`run_rust_qemu_case()` 在 QEMU 运行前后的额外处理：
+`run_rust_qemu_case()` 在 QEMU 运行前准备测试资产。启用 `BACKTRACE=y` 或 `DWARF=y` 的构建会生成 ELF 旁的 AXBT map；带 host-initramfs 的用例把 map 放入 `/symbols/kernel.axbt`，目标输出直接包含函数名和 `file:line`。map 尚未就绪时保留地址级回溯，测试只应断言目标实际输出的协议和符号字段。
 
-1. **自动符号化判定**：`auto_symbolize = symbolize_after && build_info_enables_backtrace_path(build_config)`，即 Build Config 中 `BACKTRACE=y` 或 `DWARF=y` 时启用。
-2. **Backtrace capture**：启用时在 `tmp/axbuild/qemu-logs/<case>-<target>.log` 保存 QEMU 日志，并通过 `BacktraceQemuCapture` 流式捕获 `BACKTRACE_BLOCK` 块。
-3. **Host HTTP fixture**：若用例 QEMU TOML 声明了 `[host_http_server]`，启动 `HostHttpServerGuard`（见 [测试基础设施](../test_infra#10-host-http-fixture)）。
-4. **覆盖率**：`run_qemu_with_axtest_coverage()` 在启用 `AXTEST_COVERAGE` 时额外配置 QEMU monitor 和覆盖率正则。
-5. **后符号化断言**：`debug-backtrace` feature 要求符号化输出包含特定函数链（`nested_c → nested_b → nested_a`），通过 `host_symbolize_success_regex` 强制校验；该类 case 禁止 `--no-symbolize`。
+1. **Host HTTP fixture**：若用例 QEMU TOML 声明了 `[host_http_server]`，启动 `HostHttpServerGuard`（见 [测试基础设施](../test_infra#10-host-http-fixture)）。
+2. **覆盖率**：`run_qemu_with_axtest_coverage()` 在启用 `AXTEST_COVERAGE` 时额外配置 QEMU monitor 和覆盖率正则。
+3. **目标侧断言**：`debug-backtrace` feature 要求目标回溯包含特定函数链和 `file:line`；测试不依赖宿主 ELF、DWARF 或 `addr2line`。
 
 ### FAT32 rootfs 准备
 

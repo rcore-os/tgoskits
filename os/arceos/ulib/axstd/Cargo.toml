@@ -120,7 +120,6 @@ usb = ["ax-driver/usb"]
 rtc = ["ax-runtime/rtc"]
 # Backtrace
 backtrace = ["axbacktrace/alloc"]
-dwarf = ["axbacktrace/dwarf"]
 
 [dependencies]
 ax-api.workspace = true

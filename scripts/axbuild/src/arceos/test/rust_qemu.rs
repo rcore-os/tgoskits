@@ -1,14 +1,11 @@
-use std::{fs, sync::Arc};
-
 use anyhow::{Context, bail};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
-use regex::Regex;
 
 use super::{
-    ARCEOS_RUST_ALL_FEATURE, ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE,
-    ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE, ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
-    ARCEOS_RUST_LOCKDEP_DETECT_FEATURE, ARCEOS_RUST_QEMU_FEATURES,
-    ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE, ARCEOS_RUST_STANDALONE_FEATURES,
+    ARCEOS_RUST_ALL_FEATURE, ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE,
+    ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE, ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
+    ARCEOS_RUST_QEMU_FEATURES, ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
+    ARCEOS_RUST_STANDALONE_FEATURES,
     assets::test_build_args,
     discovery::discover_rust_qemu_cases,
     runner::run_prepared_qemu_groups,
@@ -26,8 +23,6 @@ pub(super) async fn test_rust_qemu(
     target: &str,
     selected_case: Option<&str>,
     allow_missing_selected_case: bool,
-    symbolize_after: bool,
-    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let cases = discover_rust_qemu_cases(
         arceos,
@@ -51,15 +46,7 @@ pub(super) async fn test_rust_qemu(
     );
 
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
-    run_prepared_qemu_groups(
-        arceos,
-        "rust",
-        "arceos rust",
-        &prepared,
-        symbolize_after,
-        keep_qemu_log,
-    )
-    .await
+    run_prepared_qemu_groups(arceos, "rust", "arceos rust", &prepared).await
 }
 
 pub(super) async fn prepare_rust_qemu_cases(
@@ -100,9 +87,6 @@ pub(super) async fn prepare_rust_qemu_cases(
         rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
         rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
         prepared.push(PreparedArceosRustQemuCase {
-            host_symbolize_success_regex: rust_qemu_host_symbolize_success_regex(
-                case.feature.as_deref(),
-            ),
             case,
             request,
             cargo,
@@ -112,23 +96,11 @@ pub(super) async fn prepare_rust_qemu_cases(
     Ok(prepared)
 }
 
-fn rust_qemu_host_symbolize_success_regex(feature: Option<&str>) -> Vec<String> {
-    match feature {
-        Some(ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE) => vec![
-            r"(?s)BACKTRACE_BLOCK\s+\d+\s+kind=arceos-test-suit-raw-normal\b.*\bdebug::backtrace::nested_c\b.*\bdebug::backtrace::nested_b\b.*\bdebug::backtrace::nested_a\b"
-                .to_string(),
-            r"(?s)BACKTRACE_BLOCK\s+\d+\s+kind=arceos-test-suit-raw-badfp\b.*BT\s+0\s+ip=0x[0-9a-fA-F]+"
-                .to_string(),
-        ],
-        _ => Vec::new(),
-    }
-}
-
 fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str>) {
     match feature {
         Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE) => {
             crate::support::qemu_success::replace_configured_success_regex(qemu, vec![
-                r"(?s)ARCEOS_PANIC_EMERGENCY(?-u:\b).*(?-u:\b)BACKTRACE_BEGIN(?-u:\b).*(?-u:\b)kind=panic(?-u:\b)"
+                r"(?s)ARCEOS_PANIC_EMERGENCY(?-u:\b).*(?-u:\b)BACKTRACE_BEGIN(?-u:\b).*(?-u:\b)kind=panic(?-u:\b).*symbol=[^\s]+ at .+:[0-9]+"
                     .to_string(),
             ]);
             qemu.fail_regex = vec!["ARCEOS_TEST_FAIL".to_string()];
@@ -179,52 +151,9 @@ fn add_cargo_feature(cargo: &mut Cargo, feature: &str) {
 pub(super) async fn run_rust_qemu_case(
     arceos: &mut ArceOS,
     case: &PreparedArceosRustQemuCase,
-    symbolize_after: bool,
-    keep_qemu_log: bool,
+    map_path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let workspace = arceos.app.workspace_root().to_path_buf();
     let case_name = &case.case.case.name;
-    let target = &case.request.target;
-    let package = &case.case.package;
-    let debug = case.request.debug;
-
-    let auto_symbolize = symbolize_after
-        && crate::build::build_info_enables_backtrace_path(&case.case.build_config_path);
-    if !case.host_symbolize_success_regex.is_empty() && !auto_symbolize {
-        bail!(
-            "ArceOS rust qemu case `{case_name}` requires host symbolize assertions; do not use \
-             --no-symbolize and keep BACKTRACE/DWARF enabled in the build config"
-        );
-    }
-
-    let elf = crate::backtrace::std_test_elf_path(arceos.app.target_dir(), target, package, debug);
-    let stream_session = if auto_symbolize {
-        crate::backtrace::BacktraceSymbolizeSession::try_new(&elf, case_name)
-    } else {
-        None
-    };
-
-    let capture_backtrace = if auto_symbolize {
-        let dir = crate::context::axbuild_tmp_dir(&workspace).join("qemu-logs");
-        fs::create_dir_all(&dir)?;
-        Some(crate::backtrace::BacktraceQemuCapture {
-            log_path: dir.join(format!("{case_name}-{target}.log")),
-            stream_symbolize: stream_session.clone(),
-            suppress_terminal_raw_blocks: true,
-            write_log_during_capture: keep_qemu_log,
-            captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
-            success_output: None,
-        })
-    } else {
-        None
-    };
-
-    let log_path = capture_backtrace
-        .as_ref()
-        .map(|capture| capture.log_path.clone());
-    let memory_blocks = capture_backtrace
-        .as_ref()
-        .map(|capture| capture.captured_blocks.clone());
 
     let _host_http_server = case
         .case
@@ -240,6 +169,7 @@ pub(super) async fn run_rust_qemu_case(
         arceos.app.target_dir(),
         &mut qemu,
     )?;
+    qemu_test::append_backtrace_map(&mut qemu, map_path, &case.request.target)?;
     let serial_rx = if case.case.feature.as_deref() == Some("serial-rx") {
         Some(super::serial_rx::SerialRxFixture::start(&mut qemu).await?)
     } else {
@@ -247,7 +177,7 @@ pub(super) async fn run_rust_qemu_case(
     };
     let result = arceos
         .app
-        .run_qemu_with_axtest_coverage(&case.cargo, qemu, capture_backtrace)
+        .run_qemu_with_axtest_coverage(&case.cargo, qemu)
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"));
     if let Some(fixture) = serial_rx {
@@ -258,61 +188,6 @@ pub(super) async fn run_rust_qemu_case(
         recording.verify()?;
     }
 
-    if auto_symbolize && let Some(path) = log_path {
-        let blocks_snapshot = memory_blocks.and_then(|arc| arc.lock().ok().map(|b| b.clone()));
-        let symbolized_output = if !case.host_symbolize_success_regex.is_empty() {
-            match blocks_snapshot.as_deref() {
-                Some(blocks) => {
-                    crate::backtrace::symbolize_captured_blocks_to_string(&elf, case_name, blocks)?
-                }
-                None => None,
-            }
-        } else {
-            None
-        };
-        let blocks_ref = blocks_snapshot.as_deref();
-        let outcome = crate::backtrace::maybe_symbolize_after_qemu(
-            &elf,
-            &path,
-            case_name,
-            keep_qemu_log,
-            stream_session.as_deref(),
-            blocks_ref,
-        )?;
-        if !case.host_symbolize_success_regex.is_empty() {
-            ensure_arceos_host_symbolize_output_matches(
-                case_name,
-                outcome,
-                symbolized_output.as_deref(),
-                &case.host_symbolize_success_regex,
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn ensure_arceos_host_symbolize_output_matches(
-    case_name: &str,
-    outcome: crate::backtrace::SymbolizeAfterQemuOutcome,
-    output: Option<&str>,
-    regexes: &[String],
-) -> anyhow::Result<()> {
-    if outcome != crate::backtrace::SymbolizeAfterQemuOutcome::Symbolized {
-        bail!("host backtrace symbolize did not run for ArceOS rust qemu case `{case_name}`");
-    }
-    let output =
-        output.ok_or_else(|| anyhow::anyhow!("host backtrace symbolize produced no output"))?;
-    for pattern in regexes {
-        let regex = Regex::new(pattern)
-            .with_context(|| format!("invalid host_symbolize_success_regex `{pattern}`"))?;
-        if !regex.is_match(output) {
-            bail!(
-                "host backtrace symbolize output for ArceOS rust qemu case `{case_name}` did not \
-                 match `{pattern}`"
-            );
-        }
-    }
     Ok(())
 }
 
@@ -411,7 +286,6 @@ mod tests {
                 qemu_config_path,
                 test_commands: Vec::new(),
                 grouped_command_selection: Default::default(),
-                host_symbolize_success_regex: Vec::new(),
                 host_http_server: None,
                 subcases: Vec::new(),
                 grouped_subcase_filter: None,

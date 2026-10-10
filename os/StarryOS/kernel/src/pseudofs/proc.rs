@@ -22,7 +22,6 @@ use ax_std::os::arceos::task::{
 };
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
-use ksym::KallsymsMapped;
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -63,36 +62,79 @@ fn require_proc_task(task: &WeakUserTaskRef) -> VfsResult<UserTaskRef> {
     upgrade_proc_task(task)?.ok_or(VfsError::NotFound)
 }
 
-pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
+/// Kernel symbol provider backed by the validated AXBT map copied from
+/// initramfs.  Keeping this adapter here preserves Linux-facing kallsyms,
+/// kprobe and kmod APIs without embedding a second ELF-derived table.
+pub struct KernelSymbols {
+    by_name: Vec<KernelEntry>,
+    by_address: Vec<usize>,
+}
+
+struct KernelEntry {
+    address: u64,
+    name: String,
+    kind: char,
+}
+
+impl KernelSymbols {
+    pub fn lookup_name(&self, name: &str) -> Option<u64> {
+        self.by_name
+            .binary_search_by(|entry| entry.name.as_str().cmp(name))
+            .ok()
+            .map(|index| self.by_name[index].address)
+    }
+
+    pub fn dump_all_symbols(&self) -> String {
+        let mut output = String::new();
+        for &index in &self.by_address {
+            let entry = &self.by_name[index];
+            let _ = writeln!(output, "{:016x} {} {}", entry.address, entry.kind, entry.name);
+        }
+        output
+    }
+}
+
+pub static KALLSYMS: LazyInit<KernelSymbols> = LazyInit::new();
 
 static BOOT_ID: LazyInit<String> = LazyInit::new();
 
-fn read_kallsyms() -> KallsymsMapped<'static> {
-    unsafe extern "C" {
-        fn _stext();
-        fn _etext();
-        fn __kallsyms_start();
-        fn __kallsyms_end();
+fn read_kallsyms() -> KernelSymbols {
+    let mut entries = Vec::new();
+    if let Some(map) = axbacktrace::kernel_symbol_map() {
+        info!("Read target AXKS map, symbols={}", map.len());
+        for index in 0..map.len() {
+            if let Some(symbol) = map.symbol_at(index) {
+                entries.push(KernelEntry {
+                    address: symbol.address as u64,
+                    name: symbol.name.into(),
+                    kind: symbol.kind.as_char(),
+                });
+            }
+        }
+    } else if let Some(map) = axbacktrace::symbol_map() {
+        // Keep a useful text-only fallback for older bundles.  New bundles
+        // carry AXKS so data/BSS/rodata symbols retain their Linux type.
+        warn!("Target AXKS map is not installed; /proc/kallsyms is text-only");
+        info!("Read target AXBT map as kallsyms fallback, functions={}", map.len());
+        for index in 0..map.len() {
+            if let Some((start, _, symbol)) = map.symbol_at(index) {
+                entries.push(KernelEntry {
+                    address: start as u64,
+                    name: symbol.name.into(),
+                    kind: 'T',
+                });
+            }
+        }
+    } else {
+        warn!("Target AXBT/AXKS map is not installed; /proc/kallsyms is empty");
     }
-
-    let kallsyms_start = __kallsyms_start as *const () as usize;
-    let kallsyms_end = __kallsyms_end as *const () as usize;
-    let kallsyms_sec_size = kallsyms_end - kallsyms_start;
-    let kallsyms_sec =
-        unsafe { core::slice::from_raw_parts(__kallsyms_start as *const u8, kallsyms_sec_size) };
-
-    let total_size =
-        KallsymsMapped::check_total_bytes(kallsyms_sec).expect("Invalid kallsyms format");
-
-    let kallsyms = &kallsyms_sec[..total_size as usize];
-    // TODO: recycle unused space in .kallsyms section
-    info!("Read kallsyms, size: {}KB", kallsyms.len() / 1024);
-    KallsymsMapped::from_blob(
-        kallsyms,
-        _stext as *const () as u64,
-        _etext as *const () as u64,
-    )
-    .expect("Failed to create KallsymsMapped")
+    entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    let mut by_address = (0..entries.len()).collect::<Vec<_>>();
+    by_address.sort_unstable_by_key(|&index| entries[index].address);
+    KernelSymbols {
+        by_name: entries,
+        by_address,
+    }
 }
 
 fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {

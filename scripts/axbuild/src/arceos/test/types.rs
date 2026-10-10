@@ -29,7 +29,6 @@ pub(super) struct PreparedArceosRustQemuCase {
     pub(super) request: ResolvedBuildRequest,
     pub(super) cargo: Cargo,
     pub(super) qemu: QemuConfig,
-    pub(super) host_symbolize_success_regex: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,8 +74,6 @@ pub(super) struct ArceosQemuBuildGroup<'a> {
 
 pub(super) struct GenericQemuRunOptions<'a> {
     pub(super) selected_case: Option<&'a str>,
-    pub(super) symbolize_after: bool,
-    pub(super) keep_qemu_log: bool,
     pub(super) allow_empty: bool,
 }
 

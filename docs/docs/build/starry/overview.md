@@ -53,7 +53,7 @@ tmp/axbuild/config/starryos/build-<target>.toml
 
 Starry 先用共享 std-aware Cargo 逻辑构建 ELF，之后 `postprocess_starry_artifact()` 进行两项处理：
 
-1. 用 `rust-nm -n` 收集符号、调用 `gen_ksym`，再用 `rust-objcopy --update-section` 写回保留的 `.kallsyms` section；生成内容超过该 section 时明确失败，避免静默截断。
+1. 从最终 ELF 生成同名 `.axbt` sidecar，包含函数区间、build-id、文件名和行号；QEMU host-initramfs 测试将它放入 `/symbols/kernel.axbt`，目标侧统一读取。
 2. 当 Build Config 旁存在 `.its` 时，以 `mkimage` 生成 uImage；ITS 文件提供镜像的启动描述。
 
 最终的构建产物依然是 ELF；运行配置的 `to_bin` 决定需要启动时是否额外准备 BIN。

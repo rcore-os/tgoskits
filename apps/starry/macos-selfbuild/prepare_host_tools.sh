@@ -209,56 +209,9 @@ prepend_rust_objcopy_dir() {
     fi
 }
 
-find_llvm_tool() {
-    local name="$1"
-    if command -v "$name" >/dev/null 2>&1; then
-        command -v "$name"
-        return
-    fi
-
-    for candidate in \
-        "/opt/homebrew/opt/llvm/bin/$name" \
-        "/opt/homebrew/opt/llvm@21/bin/$name" \
-        "/opt/homebrew/opt/llvm@20/bin/$name"; do
-        if [[ -x "$candidate" ]]; then
-            printf '%s\n' "$candidate"
-            return
-        fi
-    done
-}
-
-ensure_rust_binutils_wrappers() {
-    local rust_tool llvm_tool llvm_path wrapper
-    mkdir -p "$HOST_TOOLS_DIR"
-
-    for rust_tool in rust-nm rust-objdump; do
-        if command -v "$rust_tool" >/dev/null 2>&1 && "$rust_tool" --version >/dev/null 2>&1; then
-            continue
-        fi
-
-        llvm_tool="${rust_tool#rust-}"
-        llvm_tool="llvm-$llvm_tool"
-        llvm_path="$(find_llvm_tool "$llvm_tool")"
-        wrapper="$HOST_TOOLS_DIR/$rust_tool"
-
-        if [[ -z "$llvm_path" ]]; then
-            echo "$rust_tool is unavailable; install llvm-tools-preview or brew install llvm" >&2
-            exit 1
-        fi
-
-        cat >"$wrapper" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-exec "$llvm_path" "\$@"
-EOF
-        chmod +x "$wrapper"
-    done
-}
-
 prepare_macos_selfbuild_host_tools() {
     ensure_aarch64_musl_gcc
     prepend_rust_objcopy_dir
-    ensure_rust_binutils_wrappers
     mkdir -p "$ZIG_CACHE_DIR/local" "$ZIG_CACHE_DIR/global"
     export ZIG_LOCAL_CACHE_DIR="$ZIG_CACHE_DIR/local"
     export ZIG_GLOBAL_CACHE_DIR="$ZIG_CACHE_DIR/global"

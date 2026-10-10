@@ -20,10 +20,10 @@ pub(crate) fn prepare_host_initramfs(
     case_dir: &Path,
     arch: &str,
     qemu: &mut QemuConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let manifest = case_dir.join("host-initramfs.toml");
     if !manifest.is_file() {
-        return Ok(());
+        return Ok(false);
     }
     let fixture: HostInitramfsFixture = toml::from_str(&fs::read_to_string(&manifest)?)
         .with_context(|| format!("failed to parse {}", manifest.display()))?;
@@ -32,7 +32,7 @@ pub(crate) fn prepare_host_initramfs(
             fixture.init_source.is_none(),
             "init_source requires a fixture source directory"
         );
-        return Ok(());
+        return Ok(false);
     };
     ensure!(
         qemu.boot.initramfs.is_none(),
@@ -75,6 +75,105 @@ pub(crate) fn prepare_host_initramfs(
 
     crate::image::pack_initramfs_dir(staging.path(), &output)?;
     qemu.boot.initramfs = Some(output.to_string_lossy().into_owned());
+    Ok(true)
+}
+
+/// Appends the map generated for the final target ELF to a prepared host
+/// initramfs.  Newc archives may be concatenated and `ax-fs-ng` applies later
+/// entries last, so this does not rebuild or mutate the fixture tree.
+pub(crate) fn append_target_backtrace_map(
+    target_dir: &Path,
+    target: &str,
+    debug: bool,
+    qemu: &mut QemuConfig,
+) -> anyhow::Result<()> {
+    if target.starts_with("x86_64") && !qemu.uefi {
+        // ostool cannot hand a host initramfs to the direct x86_64 loader.
+        // UEFI cases and the aarch64/riscv64 direct loaders retain the normal
+        // initramfs contract; direct x86_64 cases must use a disk-visible map
+        // or switch to UEFI explicitly.
+        log::debug!("skip target symbol maps for direct x86_64 QEMU; host initramfs requires UEFI");
+        return Ok(());
+    }
+    let profile = if debug { "debug" } else { "release" };
+    let map = target_dir.join(target).join(profile).join("starryos.axbt");
+    if !map.is_file() {
+        return Ok(());
+    }
+    append_backtrace_map(qemu, &map, target)
+}
+
+/// Appends an AXBT sidecar to an already prepared initramfs.
+pub(crate) fn append_backtrace_map(
+    qemu: &mut QemuConfig,
+    map: &Path,
+    target: &str,
+) -> anyhow::Result<()> {
+    if target.starts_with("x86_64") && !qemu.uefi {
+        log::debug!("skip target symbol maps for direct x86_64 QEMU; host initramfs requires UEFI");
+        return Ok(());
+    }
+    append_backtrace_map_to_initramfs(&mut qemu.boot.initramfs, map)
+}
+
+/// Appends an AXBT sidecar to a boot payload that is not represented by QEMU.
+/// U-Boot and board runners use the same initramfs contract as QEMU.
+pub(crate) fn append_backtrace_map_to_initramfs(
+    initramfs: &mut Option<String>,
+    map: &Path,
+) -> anyhow::Result<()> {
+    append_file_to_initramfs(initramfs, map, "symbols/kernel.axbt")?;
+    let kernel_symbols = map.with_extension("axks");
+    if kernel_symbols.is_file() {
+        append_file_to_initramfs(initramfs, &kernel_symbols, "symbols/kernel.axks")?;
+    }
+    Ok(())
+}
+
+fn append_file_to_initramfs(
+    initramfs: &mut Option<String>,
+    source: &Path,
+    guest_path: &str,
+) -> anyhow::Result<()> {
+    if !source.is_file() {
+        return Ok(());
+    }
+    if initramfs.is_none() {
+        let stage = tempfile::tempdir_in(source.parent().context("map has no parent")?)?;
+        let destination = stage.path().join(guest_path.trim_start_matches('/'));
+        fs::create_dir_all(destination.parent().expect("map has a parent"))?;
+        fs::copy(source, &destination)
+            .with_context(|| format!("failed to stage target symbol map {}", source.display()))?;
+        let archive = source.with_extension("initramfs.cpio");
+        crate::image::pack_initramfs_dir(stage.path(), &archive)?;
+        *initramfs = Some(archive.to_string_lossy().into_owned());
+        return Ok(());
+    }
+    let initramfs = initramfs.as_deref().expect("checked above");
+    let initramfs = Path::new(initramfs);
+    let stage = tempfile::tempdir_in(
+        initramfs
+            .parent()
+            .context("host initramfs has no parent directory")?,
+    )?;
+    let destination = stage.path().join(guest_path.trim_start_matches('/'));
+    fs::create_dir_all(destination.parent().expect("map has a parent"))?;
+    fs::copy(source, &destination)
+        .with_context(|| format!("failed to stage target symbol map {}", source.display()))?;
+    let map_archive = initramfs.with_extension(format!("{}.cpio", guest_path.replace('/', "_")));
+    crate::image::pack_initramfs_dir(stage.path(), &map_archive)?;
+    let mut output = fs::OpenOptions::new().append(true).open(initramfs)?;
+    // Axvisor may have appended a gzip member for a large guest bundle. The
+    // compressed member need not end on a newc alignment boundary, while the
+    // next raw archive must start at one.
+    let padding = (4 - output.metadata()?.len() % 4) % 4;
+    if padding != 0 {
+        std::io::Write::write_all(&mut output, &vec![0; padding as usize])?;
+    }
+    let bytes = fs::read(&map_archive)?;
+    std::io::Write::write_all(&mut output, &bytes)?;
+    output.sync_all()?;
+    let _ = fs::remove_file(map_archive);
     Ok(())
 }
 
@@ -122,6 +221,33 @@ fn build_test_init(entry_source: &Path, init_source: &Path, output: &Path) -> an
 
 pub(crate) fn host_initramfs_without_rootfs_drive(qemu: &QemuConfig) -> bool {
     crate::rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn appending_map_aligns_after_compressed_bundle_member() {
+        let root = tempdir().unwrap();
+        let initramfs = root.path().join("host.cpio");
+        fs::write(&initramfs, b"gzip-member").unwrap();
+        let map = root.path().join("kernel.axbt");
+        fs::write(&map, b"AXBT").unwrap();
+        let mut archive = Some(initramfs.to_string_lossy().into_owned());
+
+        append_backtrace_map_to_initramfs(&mut archive, &map).unwrap();
+
+        let bytes = fs::read(archive.unwrap()).unwrap();
+        let map_offset = bytes
+            .windows(6)
+            .position(|window| window == b"070701")
+            .unwrap();
+        assert_eq!(map_offset % 4, 0);
+        assert_eq!(&bytes["gzip-member".len()..map_offset], b"\0");
+    }
 }
 
 fn copy_fixture(source: &Path, destination: &Path) -> anyhow::Result<()> {

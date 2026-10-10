@@ -57,12 +57,6 @@ pub struct ArgsTestQemu {
     /// Only run C tests; prefer `--test-group c`
     #[arg(long, conflicts_with = "only_rust", hide = true)]
     pub only_c: bool,
-    /// Skip host `backtrace symbolize` after each ArceOS **rust** QEMU case.
-    #[arg(long = "no-symbolize", help_heading = "Backtrace")]
-    pub no_symbolize: bool,
-    /// Keep the QEMU backtrace capture log after successful host symbolize (default: delete).
-    #[arg(long = "keep-qemu-log", help_heading = "Backtrace")]
-    pub keep_qemu_log: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -145,8 +139,6 @@ mod tests {
             package: Vec::new(),
             only_rust: false,
             only_c: false,
-            no_symbolize: false,
-            keep_qemu_log: false,
         };
 
         let err = reject_missing_qemu_target(&args).unwrap_err();

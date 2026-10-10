@@ -27,7 +27,7 @@ artifacts whenever the compilation inputs match.
 The existing tgoskits `cargo xtask starry kmod build` implementation bypassed
 that context by directly running `cargo build --manifest-path`. That loses the
 Starry-specific target JSON, feature normalization, platform
-selection, and kallsyms-compatible kernel configuration, so it is not a correct
+selection, and AXBT-compatible kernel configuration, so it is not a correct
 migration of the upstream flow.
 
 ## Target design
@@ -46,7 +46,7 @@ The `starry kmod build` command should:
    - set `package` to the module package name,
    - clear the `starryos` binary selection,
    - disable ELF-to-bin conversion,
-   - remove Starry kernel-only kallsyms and uimage post-processing hooks.
+   - remove Starry kernel-only symbol-map and uimage post-processing hooks.
 6. Keep the target, features, Cargo args, and environment intact. In
    particular, preserve `AX_PLATFORM`, `AX_ARCH`, `AX_TARGET`, `SMP`, target
    JSON arguments, and build-std arguments.
@@ -60,16 +60,20 @@ can point either at one module crate or at a directory to scan recursively.
 ## Runtime contract
 
 The kernel side already provides the kmod loader, syscall glue, shim symbols,
-and kallsyms-backed symbol resolution. A valid `.ko` is expected to remain a
+and AXBT-backed symbol resolution. A valid `.ko` is expected to remain a
 relocatable ELF with unresolved symbols that are resolved at load time through
-the in-kernel kallsyms table.
+the in-kernel AXBT symbol map.
+The Linux-facing `/proc/kallsyms` view is generated from that same provider.
 
 The kernel image itself must still be built by the normal Starry axbuild flow so
-the `.kallsyms` section is generated before testing positive module loading.
+the target AXBT map and its AXKS `/proc/kallsyms` sidecar are packaged before
+testing positive module loading. AXKS preserves T/t, D/d, B/b and R/r symbol
+types; when it is missing, the kernel logs a text-only fallback and data-symbol
+module references are expected to fail explicitly.
 
 ### LTO and exported Rust symbols
 
-StarryOS kmods currently rely on exact kallsyms lookup for undefined symbols in
+StarryOS kmods currently rely on exact AXBT lookup for undefined symbols in
 the module ELF. This includes not only explicit kernel shim symbols such as
 `write_char`, but also Rust `core` and `alloc` symbols that the module crate may
 reference after normal Rust code generation.
@@ -89,17 +93,17 @@ _RNvMs5_NtNtC..._4core3fmt8buildersNtB5_9DebugList5entry
 ```
 
 If the kernel ELF no longer contains the same global symbol after LTO, the
-symbol is absent from `.kallsyms` and `insmod` fails with `unknown symbol in
+symbol is absent from the target AXBT map and `insmod` fails with `unknown symbol in
 module`. Even if an equivalent implementation remains in the kernel as a local
-or LTO-renamed symbol, the loader cannot use it because kallsyms resolution is
+or LTO-renamed symbol, the loader cannot use it because AXBT resolution is
 an exact string match.
 
 When investigating this class of failure, do not change the module
 implementation first. Check the symbol contract directly:
 
 ```sh
-rust-nm -u target/<target>/release/<module>.ko
-rust-nm -n target/<target>/release/starryos
+nm -u target/<target>/release/<module>.ko
+nm -n target/<target>/release/starryos
 ```
 
 The undefined symbol name in the `.ko` must exist as the same global symbol in
@@ -155,7 +159,7 @@ Minimum validation after implementation:
 
    This step is required even if modules are built separately. The kernel ELF
    must be generated with release LTO disabled; otherwise Rust `core`/`alloc`
-   symbols needed by modules may be absent from `.kallsyms`.
+   symbols needed by modules may be absent from the target AXBT map.
 
 2. Build the module with the same Starry selectors:
 
@@ -174,18 +178,19 @@ Minimum validation after implementation:
 
    ```sh
    rust-readobj --file-headers target/<target>/release/hello.ko
-   rust-nm -u target/<target>/release/hello.ko
+   nm -u target/<target>/release/hello.ko
    ```
 
    The file must be an ET_REL relocatable ELF. Undefined symbols are expected,
-   because they are resolved by the kernel loader through kallsyms.
+because they are resolved by the kernel loader through the in-kernel AXKS/AXBT
+provider. Name lookup uses an index built while the provider is initialized.
 
 4. Compare module undefined symbols against the kernel ELF before changing the
    module implementation:
 
    ```sh
-   rust-nm -u target/<target>/release/hello.ko
-   rust-nm -n target/<target>/release/starryos
+   nm -u target/<target>/release/hello.ko
+   nm -n target/<target>/release/starryos
    ```
 
    Every required `.ko` symbol that is not provided by the module itself must

@@ -88,7 +88,7 @@ sudo apt install qemu-system-arm qemu-system-riscv64 qemu-system-x86 \
 rustup show
 ```
 
-其中 `u-boot-tools` 提供 `mkimage` 命令，后面校验 SG2002 内核镜像时必须用到；`cargo-binutils` 提供 `rust-objcopy` 和 `rust-nm`，内核构建要用这两个工具处理符号表。构建时还会用到生成符号表的 `gen_ksym`，它不在上面这些系统包里，默认由构建过程自己 `cargo install ksym` 装上（离线环境可以先手动装好）。要在本机编 SG2002 的内核，还需要额外准备 riscv64-linux-musl 交叉编译器（`riscv64-linux-musl-cross`，或玄铁 V3.4.0 工具链），并确保它的 gcc 在 `PATH` 里。这几样凑不齐就直接用容器，不要在本机上硬凑。
+其中 `u-boot-tools` 提供 `mkimage` 命令，后面校验 SG2002 内核镜像时必须用到；`cargo-binutils` 提供 `rust-objcopy`，仅在需要将 ELF 转换为启动 BIN 时使用。AXBT 符号 map 由 `cargo xtask` 在最终 ELF 构建阶段生成，不需要安装额外的符号生成工具或修改 ELF section。要在本机编 SG2002 的内核，还需要额外准备 riscv64-linux-musl 交叉编译器（`riscv64-linux-musl-cross`，或玄铁 V3.4.0 工具链），并确保它的 gcc 在 `PATH` 里。这几样凑不齐就直接用容器，不要在本机上硬凑。
 
 上面的包名是 Debian 和 Ubuntu 的写法。macOS 和 Windows 上默认没有 `mkimage` 这类命令，遇到它们的步骤改用容器执行，缺的命令在容器里临时装一次即可，写法见 9.1。
 
