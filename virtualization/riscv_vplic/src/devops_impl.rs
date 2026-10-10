@@ -136,7 +136,7 @@ impl VplicState {
     }
 
     /// Returns the next IRQ that should assert VSEIP for this context.
-    fn next_deliverable_irq(&self, context_id: usize) -> VplicResult<Option<usize>> {
+    pub(crate) fn next_deliverable_irq(&self, context_id: usize) -> VplicResult<Option<usize>> {
         let threshold = self.context_threshold(context_id)?;
         let candidate_irqs = self.pending_inactive_irqs();
         if let Some((irq_id, priority)) =
@@ -169,6 +169,19 @@ impl VplicState {
             return Ok(Some(irq_id));
         }
     }
+
+    /// Completes one active source and re-pends an asserted level source.
+    fn complete_source(&mut self, irq_id: usize) -> VplicResult<bool> {
+        self.validate_assigned_irq(irq_id)?;
+        if !self.active_irqs.get(irq_id) {
+            return Ok(false);
+        }
+        self.active_irqs.set(irq_id, false);
+        if self.line_asserted_irqs.get(irq_id) {
+            self.pending_irqs.set(irq_id, true);
+        }
+        Ok(true)
+    }
 }
 
 impl VPlicGlobal {
@@ -186,6 +199,14 @@ impl VPlicGlobal {
     /// updates across independent locks.
     pub fn set_irq_line_level(&self, irq_id: usize, asserted: bool) -> VplicResult<bool> {
         self.with_state_mut(|state| state.set_irq_line_level(irq_id, asserted))
+    }
+
+    /// Completes one source through the controller owner transaction.
+    ///
+    /// The active bit is cleared before a still-asserted level is re-pended,
+    /// so the next delivery observes one complete, atomic state transition.
+    pub fn complete_source(&self, irq_id: usize) -> VplicResult<bool> {
+        self.with_state_mut(|state| state.complete_source(irq_id))
     }
 
     /// Returns whether one source is pending.
@@ -316,6 +337,7 @@ impl VPlicGlobal {
                 }),
             }
         })();
+        self.with_state(|state| self.refresh_deliverable(state));
         Ok(result?)
     }
 
@@ -458,6 +480,7 @@ impl VPlicGlobal {
                 }),
             }
         })();
+        self.with_state(|state| self.refresh_deliverable(state));
         Ok(result?)
     }
 }

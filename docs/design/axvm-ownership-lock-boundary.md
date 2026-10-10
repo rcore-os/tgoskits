@@ -1,6 +1,6 @@
 # AxVM 所有权与锁边界
 
-本文记录由 `5284316aeaac` 方案迁移到最新 `dev` 基线 `cc6739725018ea0b71888d0f7f232ca63952294a` 实施的公共契约。该重构允许破坏 Rust 源码接口，保留 TOML、设备资源规划和 guest ABI。实现期间以本文件中的后置条件验收，构建通过不代表生命周期或硬件协议已经得到运行证明。
+本文记录由 `5284316aeaac` 方案迁移到最新 `dev` 基线 `05af0056eb2142972d81d6b87f5d6af66b3efd0a` 实施的公共契约。该重构允许破坏 Rust 源码接口，保留 TOML、设备资源规划和 guest ABI。实现期间以本文件中的后置条件验收，构建通过不代表生命周期或硬件协议已经得到运行证明。
 
 ## 1. 架构与所有权
 
@@ -40,11 +40,11 @@ raw guard 只修改它拥有的短状态。唤醒、IPI、设备回调、join �
 
 中断控制器的边界按硬件归属划分。每个 vCPU owner 直接持有自己的本地中断状态、EOI/ACK 状态、架构运行后端和 guest timer；它们只通过 `&mut` 访问，不从另一个 vCPU 或 VM 服务取得 getter。host timer callback 只更新 `VcpuTimerIngress` 的原子计数和代次，随后在 raw guard 外唤醒对应 vCPU。
 
-外设中断控制器属于 VM 的共享控制面。GIC Distributor/SPI/ITS、x86 PIC/IOAPIC/PIT、RISC-V PLIC/APLIC 和 LoongArch PCH-PIC/EIOINTC 的完整 pending、active、priority、route 与 level 状态由一个 owner 串行处理。设备和硬 IRQ 只持有 `WiredIrqInput`/`IrqLine` 或运行期 endpoint，通过 `SourceEvent` 提交事件；它们不取得控制器 core，也不查询当前 VM。
+外设中断控制器属于 VM 的共享控制面。GIC Distributor/SPI/ITS、x86 PIC/IOAPIC/PIT、RISC-V PLIC/APLIC 和 LoongArch PCH-PIC/EIOINTC 的完整 pending、active、priority、route 与 level 状态由一个 owner 串行处理。设备和硬 IRQ 只持有 `WiredIrqInput`/`IrqLine` 或运行期 endpoint，通过 `SourceEvent` 提交事件；它们不取得控制器 core，也不查询当前 VM。当前四个架构的 AxVM runtime 都提供 `InterruptControllerEndpoint` 适配：AArch64 将事件交给 VGIC SPI owner，x86 以 GSI 作为 source 身份交给 IOAPIC owner，RISC-V 交给 vPLIC owner，LoongArch 交给 PCH-PIC owner；已有设备图仍通过兼容的 `VirtualInterruptController` 注册入口获取 wired input。
 
 | 硬件对象 | 唯一 owner | 允许的同步 | 跨层入口 |
 | --- | --- | --- | --- |
-| vCPU local interrupt/timer、VMX/SVM、GIC Redistributor/LR、IMSIC/CSR、CPUINTC | 对应 `VcpuTask` | 普通值、`&mut`、CPU-local 原语 | `VcpuLocalInterrupts`、`VcpuLocalTimer` 的具体实现 |
+| vCPU local interrupt/timer、VMX/SVM、GIC Redistributor/LR、IMSIC/CSR、CPUINTC | 对应 `VcpuTask` | 普通值、`&mut`、CPU-local 原语 | x86 `X86Vcpu` 已接入 `VcpuLocalInterrupts`/`VcpuLocalTimer`；其他架构沿用各自 vCPU owner 入口并逐步收敛到相同 trait |
 | GIC Distributor/ITS、PIC/IOAPIC/PIT、PLIC/APLIC、PCH-PIC/EIOINTC | VM `InterruptOwner` | owner mailbox；设备侧只使用睡眠服务 | `InterruptControllerEndpoint`、`SourceEvent` |
 | 物理 IRQ、host timer、设备完成回调 | 固定 ingress 槽 | 原子、固定槽、必要的极短 raw leaf | `IrqLine`/`RunSignals`，锁外 kick/wake |
 

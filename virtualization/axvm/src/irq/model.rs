@@ -14,9 +14,12 @@
 
 //! Architecture-independent virtual interrupt model types.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use axdevice_base::{HostIrqId, InterruptControllerId, InterruptTriggerMode};
+use axdevice_base::{
+    ControllerInputId, HostIrqId, InterruptControllerId, InterruptTriggerMode, IrqResult,
+    WiredIrqInput,
+};
 
 use crate::identity::{RunId, VcpuInstance};
 
@@ -133,6 +136,13 @@ pub trait InterruptControllerEndpoint: Send + Sync {
 
     /// Returns the VM-local controller identity.
     fn id(&self) -> InterruptControllerId;
+    /// Opens a run-independent wired input. The returned input carries the
+    /// source identity used by subsequent [`SourceEvent`] submissions.
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput>;
     /// Submits an event through the fixed owner mailbox/ingress.
     fn submit(&self, event: SourceEvent) -> Result<(), Self::Error>;
 }
@@ -160,61 +170,103 @@ pub trait VcpuLocalTimer {
 /// vCPU, device, or VM lock. The vCPU owner consumes the counter after it has
 /// returned from hardware execution.
 pub struct VcpuTimerIngress {
-    pending: AtomicU64,
-    generation: AtomicU64,
-    accepting: AtomicBool,
+    /// Bit 63 is admission, bits 32..62 are the generation, and the lower
+    /// 32 bits count pending edges. One CAS word makes close/arm/publish
+    /// linearizable without taking a lock in a host timer callback.
+    state: AtomicU64,
 }
 
 impl VcpuTimerIngress {
+    const ACCEPTING: u64 = 1 << 63;
+    const PENDING_MASK: u64 = u32::MAX as u64;
+    const GENERATION_MASK: u64 = (1 << 31) - 1;
+    const GENERATION_SHIFT: u32 = 32;
+
     /// Creates a closed timer ingress with no pending expiries.
     pub const fn new() -> Self {
         Self {
-            pending: AtomicU64::new(0),
-            generation: AtomicU64::new(0),
-            accepting: AtomicBool::new(false),
+            state: AtomicU64::new(0),
         }
     }
 
     /// Opens a new timer activation and returns its generation.
     pub fn arm(&self) -> u64 {
-        let generation = self.next_generation();
-        self.pending.store(0, Ordering::Release);
-        self.accepting.store(true, Ordering::Release);
-        generation
+        self.transition(true)
     }
 
     /// Closes the ingress and retires callbacks from the current generation.
     pub fn close(&self) {
-        self.accepting.store(false, Ordering::Release);
-        let _ = self.next_generation();
+        let _ = self.transition(false);
     }
 
     /// Publishes one expiry from a host callback.
     pub fn publish_expiry(&self, generation: u64) -> bool {
-        if !self.accepting.load(Ordering::Acquire)
-            || self.generation.load(Ordering::Acquire) != generation
-        {
+        if generation > Self::GENERATION_MASK {
             return false;
         }
-        self.pending.fetch_add(1, Ordering::Release);
-        true
+        let expected_generation = generation;
+        loop {
+            let current = self.state.load(Ordering::Acquire);
+            if current & Self::ACCEPTING == 0
+                || Self::generation(current) != expected_generation
+                || current & Self::PENDING_MASK == Self::PENDING_MASK
+            {
+                return false;
+            }
+            if self
+                .state
+                .compare_exchange_weak(current, current + 1, Ordering::Release, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
     }
 
     /// Consumes all expiries for the expected generation.
     pub fn take_expiries(&self, generation: u64) -> u64 {
-        if self.generation.load(Ordering::Acquire) != generation {
+        if generation > Self::GENERATION_MASK {
             return 0;
         }
-        self.pending.swap(0, Ordering::AcqRel)
+        let expected_generation = generation;
+        loop {
+            let current = self.state.load(Ordering::Acquire);
+            if Self::generation(current) != expected_generation {
+                return 0;
+            }
+            let pending = current & Self::PENDING_MASK;
+            let next = current & !Self::PENDING_MASK;
+            if self
+                .state
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return pending;
+            }
+        }
     }
 
-    fn next_generation(&self) -> u64 {
-        self.generation
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(1)
-            })
-            .unwrap_or_else(|_| panic!("vCPU timer generation exhausted"))
-            + 1
+    fn generation(state: u64) -> u64 {
+        (state >> Self::GENERATION_SHIFT) & Self::GENERATION_MASK
+    }
+
+    fn transition(&self, accepting: bool) -> u64 {
+        loop {
+            let current = self.state.load(Ordering::Acquire);
+            let generation = Self::generation(current)
+                .checked_add(1)
+                .filter(|next| *next <= Self::GENERATION_MASK)
+                .unwrap_or_else(|| panic!("vCPU timer generation exhausted"));
+            let next = (generation << Self::GENERATION_SHIFT)
+                | if accepting { Self::ACCEPTING } else { 0 };
+            if self
+                .state
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return generation;
+            }
+        }
     }
 }
 
@@ -273,6 +325,11 @@ mod tests {
         ingress.close();
         let current = ingress.arm();
         assert!(!ingress.publish_expiry(old));
+        assert!(!ingress.publish_expiry(VcpuTimerIngress::GENERATION_MASK + 1));
+        assert_eq!(
+            ingress.take_expiries(VcpuTimerIngress::GENERATION_MASK + 1),
+            0
+        );
         assert!(ingress.publish_expiry(current));
         assert_eq!(ingress.take_expiries(current), 1);
     }

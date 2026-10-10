@@ -11,7 +11,7 @@ use x86_vlapic::{
 use crate::{
     InterruptTriggerMode,
     host::{HostHardTimerAction, HostTimer, HostTimerAction, default_host},
-    irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
+    irq::model::{PendingVcpuInterrupt, VcpuTimerIngress, VirtualInterruptId},
     services::{RunSignals, SignalError},
 };
 
@@ -101,6 +101,10 @@ impl X86RunBinding {
     fn snapshot(&self) -> X86RunBindingState {
         self.state.lock_irqsave().clone()
     }
+
+    pub(super) fn current_signals(&self) -> Option<Arc<RunSignals>> {
+        self.state.lock_irqsave().signals.clone()
+    }
 }
 
 impl Default for X86RunBinding {
@@ -132,6 +136,7 @@ pub(crate) struct AxvmX86VlapicRuntime {
     /// publish into the run that created them instead of into a later run that
     /// reuses the shared [`X86RunBinding`].
     port: OnceLock<X86RunBindingState>,
+    timer_ingress: Arc<VcpuTimerIngress>,
 }
 
 impl AxvmX86VlapicRuntime {
@@ -141,6 +146,7 @@ impl AxvmX86VlapicRuntime {
             vcpu_id,
             binding,
             port: OnceLock::new(),
+            timer_ingress: Arc::new(VcpuTimerIngress::new()),
         }
     }
 
@@ -298,10 +304,14 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
     ) -> X86VlapicResult<Self::TimerHandle> {
         let signals = self.bound_signals()?;
         let wake = self.clone();
+        let generation = self.timer_ingress.arm();
         default_host()
             .register_restartable_timer(
                 std::time::Duration::from_nanos(deadline_nanos),
                 Box::new(move |now| {
+                    if !wake.timer_ingress.publish_expiry(generation) {
+                        return HostTimerAction::Complete;
+                    }
                     let action = callback(now.as_nanos() as u64);
                     let _ = wake.wake_after_timer(&signals, false);
                     match action {
@@ -322,6 +332,7 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
     ) -> X86VlapicResult<Self::TimerHandle> {
         let signals = self.bound_signals()?;
         let wake = self.clone();
+        let generation = self.timer_ingress.arm();
         unsafe {
             // SAFETY: the vLAPIC callback publishes only atomics in its device
             // owner. This wrapper then uses the run-bound signal target; it
@@ -331,6 +342,9 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
                 .register_hard_restartable_timer(
                     std::time::Duration::from_nanos(deadline_nanos),
                     Box::new(move |now| {
+                        if !wake.timer_ingress.publish_expiry(generation) {
+                            return HostHardTimerAction::Complete;
+                        }
                         let action = callback(now.as_nanos() as u64);
                         let _ = wake.wake_after_timer(&signals, true);
                         match action {
@@ -349,7 +363,9 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
     fn cancel_timer(&self, handle: Self::TimerHandle) -> X86VlapicResult {
         default_host()
             .cancel_timer_and_wait(handle)
-            .map(|_| ())
+            .map(|_| {
+                self.timer_ingress.close();
+            })
             .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 

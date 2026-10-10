@@ -113,6 +113,10 @@ impl RunSignals {
         self.epoch.run()
     }
 
+    pub(crate) const fn epoch(&self) -> RunEpoch {
+        self.epoch
+    }
+
     #[cfg(target_arch = "x86_64")]
     pub(crate) const fn vcpu_count(&self) -> usize {
         self.vcpu_count

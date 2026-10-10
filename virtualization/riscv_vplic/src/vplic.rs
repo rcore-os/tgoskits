@@ -3,7 +3,7 @@
 //! This module implements the core data structure for managing a virtual PLIC device.
 
 use alloc::vec::Vec;
-use core::option::Option;
+use core::{option::Option, sync::atomic::AtomicBool};
 
 use ax_sync::Mutex;
 use axdevice_base::Resource;
@@ -49,6 +49,9 @@ pub struct VPlicGlobal {
     pub contexts_num: usize,
     /// Mutable state owned by the vPLIC controller task.
     pub(crate) state: Mutex<VplicState>,
+    /// Published VSEIP eligibility for each context. Entry code reads this
+    /// snapshot without taking the controller's sleepable state lock.
+    pub(crate) deliverable: Vec<AtomicBool>,
 }
 
 /// Complete guest-visible PLIC state owned by one controller task.
@@ -125,6 +128,7 @@ impl VPlicGlobal {
                     thresholds: alloc::vec![0; contexts_num],
                 },
             }),
+            deliverable: (0..contexts_num).map(|_| AtomicBool::new(false)).collect(),
         })
     }
 
@@ -135,7 +139,37 @@ impl VPlicGlobal {
 
     /// Runs one complete owner transaction against the mutable state.
     pub(crate) fn with_state_mut<R>(&self, update: impl FnOnce(&mut VplicState) -> R) -> R {
-        update(&mut self.state.lock())
+        let mut state = self.state.lock();
+        let result = update(&mut state);
+        self.refresh_deliverable(&state);
+        result
+    }
+
+    /// Publishes the controller-derived VSEIP eligibility after a complete
+    /// state transaction. The caller must hold the state lock while reading
+    /// `state`; stores are released before an entry path consumes them.
+    pub(crate) fn refresh_deliverable(&self, state: &VplicState) {
+        for (context_id, deliverable_slot) in
+            self.deliverable.iter().enumerate().take(self.contexts_num)
+        {
+            let deliverable = state
+                .next_deliverable_irq(context_id)
+                .ok()
+                .flatten()
+                .is_some();
+            deliverable_slot.store(deliverable, core::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Reads the published VSEIP eligibility without entering the owner lock.
+    pub fn context_deliverable(&self, context_id: usize) -> VplicResult<bool> {
+        if context_id >= self.contexts_num {
+            return Err(VplicError::InvalidContext {
+                context: context_id,
+                contexts: self.contexts_num,
+            });
+        }
+        Ok(self.deliverable[context_id].load(core::sync::atomic::Ordering::Acquire))
     }
 
     // pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {

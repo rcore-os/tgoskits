@@ -72,7 +72,7 @@ impl Aarch64Arch {
             })?;
 
             let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> =
-                vgic_runtime.core().clone();
+                vgic_runtime.clone();
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
         })
     }

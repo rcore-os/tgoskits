@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 use arm_vgic::*;
 use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::*;
-use axdevice_base::{MessageInterruptController, VirtualInterruptController};
+use axdevice_base::{
+    ControllerInputId, InterruptControllerId, InterruptTriggerMode, IrqResult,
+    MessageInterruptController, VirtualInterruptController, WiredIrqInput,
+};
 pub(super) use plan::VgicConstructionPlan;
 
 use super::{
@@ -16,8 +19,13 @@ use super::{
     vtimer,
 };
 use crate::{
-    AxVmResult, RunId, guest_memory::GuestMemoryPort, machine::*, services::RunSignals,
-    sync::MutexExt, *,
+    AxVmResult, RunId,
+    guest_memory::GuestMemoryPort,
+    irq::model::{InterruptControllerEndpoint, SourceEvent},
+    machine::*,
+    services::RunSignals,
+    sync::MutexExt,
+    *,
 };
 
 /// vCPU-local VGIC resources derived from the machine timer profile.
@@ -90,10 +98,6 @@ impl Aarch64VgicRuntime {
             phase: Mutex::new(RuntimePhase::Inactive),
             run: Arc::new(RawSpinLock::new(None)),
         })
-    }
-
-    pub(crate) fn core(&self) -> &Arc<VgicCore> {
-        &self.core
     }
 
     pub(crate) fn native(&self) -> &GicV3Native {
@@ -287,6 +291,89 @@ impl Drop for Aarch64VgicRuntime {
     }
 }
 
+impl InterruptControllerEndpoint for Aarch64VgicRuntime {
+    type Error = AxVmError;
+
+    fn id(&self) -> InterruptControllerId {
+        <VgicCore as VirtualInterruptController>::id(self.core.as_ref())
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        self.core.wired_input(input, trigger)
+    }
+
+    fn submit(&self, event: SourceEvent) -> AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let signals = self
+            .run
+            .lock_irqsave()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AxVmError::interrupt("submit AArch64 interrupt", "no active run"))?;
+        if signals.epoch() != epoch {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(signals.run_id()),
+            });
+        }
+        let source = match event {
+            SourceEvent::Pulse { source, .. } | SourceEvent::Level { source, .. } => source,
+            SourceEvent::Eoi { token, .. } => token.source,
+        };
+        if source.controller != <Self as InterruptControllerEndpoint>::id(self) {
+            return Err(AxVmError::invalid_input(
+                "submit AArch64 interrupt",
+                "source belongs to another controller",
+            ));
+        }
+        let spi = arm_vgic::SpiId::new(source.source)
+            .map_err(|error| AxVmError::interrupt("validate AArch64 SPI source", error))?;
+        match event {
+            SourceEvent::Pulse { .. } => self
+                .core
+                .controller()
+                .pulse_spi(spi)
+                .map_err(|error| AxVmError::interrupt("pulse AArch64 SPI", error))?,
+            SourceEvent::Level { asserted, .. } => self
+                .core
+                .controller()
+                .set_spi_level(spi, asserted)
+                .map_err(|error| AxVmError::interrupt("set AArch64 SPI level", error))?,
+            SourceEvent::Eoi { token, .. } => {
+                if token.target.run != epoch.run {
+                    return Err(AxVmError::invalid_input(
+                        "complete AArch64 interrupt",
+                        "delivery token belongs to another run",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl VirtualInterruptController for Aarch64VgicRuntime {
+    fn id(&self) -> InterruptControllerId {
+        <Self as InterruptControllerEndpoint>::id(self)
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        <Self as InterruptControllerEndpoint>::wired_input(self, input, trigger)
+    }
+}
+
 struct Aarch64VcpuWake {
     run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
     vm_id: VMId,
@@ -409,8 +496,11 @@ impl DeviceModel for Aarch64VgicFactory {
         for device in devices.into_devices() {
             bundle.push(DeviceRegistration::Device(device));
         }
-        let controller: Arc<dyn VirtualInterruptController> = runtime.core.clone();
-        let mut registration = ControllerRegistration::new(runtime.core.id(), controller);
+        let controller: Arc<dyn VirtualInterruptController> = runtime.clone();
+        let mut registration = ControllerRegistration::new(
+            <Aarch64VgicRuntime as VirtualInterruptController>::id(&runtime),
+            controller,
+        );
         if matches!(
             runtime.core.config(),
             ArmVgicConfig::V3(config) if !config.its().is_empty()
