@@ -559,21 +559,21 @@ impl BlockBackend for VirtioBlkBackend {
     fn suspend(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.suspend(),
-                        Self::File(backend) => backend.suspend(),
+            Self::File(backend) => backend.suspend(),
         }
     }
 
     fn resume(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.resume(),
-                        Self::File(backend) => backend.resume(),
+            Self::File(backend) => backend.resume(),
         }
     }
 
     fn stop(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.stop(),
-                        Self::File(backend) => backend.stop(),
+            Self::File(backend) => backend.stop(),
         }
     }
 

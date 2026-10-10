@@ -254,3 +254,7 @@ board = "orangepi-5-plus-robot"
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-starry"
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-linux"

@@ -1074,6 +1074,21 @@ command = "true"
             real_suite_command,
         )
 
+        catalog = {
+            check["id"]: check
+            for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
+        }
+        robot_check = catalog["test-orangepi-5-plus-robot-axvisor-guests"]
+        registered_guest_boards = {
+            suite["board"]
+            for suite in robot_check["suite"]
+            if suite.get("kind") == "axvisor-board"
+        }
+        self.assertEqual(
+            registered_guest_boards,
+            {"orangepi-5-plus-robot-starry", "orangepi-5-plus-robot-linux"},
+        )
+
         for path in (real_starry, real_axvisor_starry, real_axvisor_linux):
             with self.subTest(config=path):
                 config = tomllib.loads(path.read_text())

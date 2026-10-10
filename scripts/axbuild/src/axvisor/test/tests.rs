@@ -847,7 +847,7 @@ fn merges_migrated_suite_root_into_board_discovery() {
     let migrated_board = migrated_case.join("board-orangepi-5-plus-robot-real-starry.toml");
     fs::write(&migrated_board, "board_type = \"OrangePi-5-Plus-robot\"\n").unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
     let migrated = groups
         .iter()
         .find(|group| group.board_name == "orangepi-5-plus-robot-real-starry")
@@ -866,8 +866,8 @@ fn merges_migrated_suite_root_into_board_discovery() {
     let selected = discover_board_test_groups(
         root.path(),
         "normal",
-        None,
-        Some("orangepi-5-plus-robot-real-starry"),
+        &[],
+        &["orangepi-5-plus-robot-real-starry".to_string()],
     )
     .unwrap();
     assert_eq!(selected.len(), 1);

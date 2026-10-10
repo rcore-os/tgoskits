@@ -4,7 +4,7 @@ use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package};
 use clap::Args;
 
-use crate::support::{git::IncrementalPackageSelection, process::run_cargo_status};
+use crate::support::{git::IncrementalPackageSelection, process::run_cargo_output};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 #[derive(Args, Clone, Debug, Default, PartialEq, Eq)]
@@ -152,6 +152,7 @@ impl CargoTestInvocation {
 #[derive(Clone, Debug)]
 struct CargoRunOutput {
     success: bool,
+    tests_run: usize,
 }
 
 pub(crate) fn run_std_test_command(args: &StdTestArgs) -> anyhow::Result<()> {
@@ -323,7 +324,8 @@ fn run_std_tests<R: CargoRunner>(
                 packages.len(),
                 invocation.args().join(" ")
             );
-            runner.run(workspace_root, &invocation)?.success
+            let output = runner.run(workspace_root, &invocation)?;
+            output.success && output.tests_run > 0
         };
 
         if passed {
@@ -397,10 +399,10 @@ fn run_feature_profile<R: CargoRunner>(
     let invocation = CargoTestInvocation::for_profile(package, profile);
     println!("cargo {}", invocation.args().join(" "));
     let executed = runner.run(workspace_root, &invocation)?;
-    if !executed.success {
+    if !executed.success || executed.tests_run == 0 {
         eprintln!("profile `{}` tests failed", profile.name);
     }
-    Ok(executed.success)
+    Ok(executed.success && executed.tests_run > 0)
 }
 
 trait CargoRunner {
@@ -420,10 +422,30 @@ impl CargoRunner for ProcessCargoRunner {
         invocation: &CargoTestInvocation,
     ) -> anyhow::Result<CargoRunOutput> {
         let args = invocation.args();
+        let output = run_cargo_output(workspace_root, &args)?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        let tests_run = count_test_cases(&output.stdout);
         Ok(CargoRunOutput {
-            success: run_cargo_status(workspace_root, &args)?,
+            success: output.status.success() && tests_run > 0,
+            tests_run,
         })
     }
+}
+
+fn count_test_cases(output: &[u8]) -> usize {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix("running ")?;
+            let (count, suffix) = rest.split_once(' ')?;
+            if suffix == "test" || suffix == "tests" {
+                count.parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -450,7 +472,13 @@ mod tests {
         }
 
         fn with_status(mut self, invocation: CargoTestInvocation, success: bool) -> Self {
-            self.results.insert(invocation, CargoRunOutput { success });
+            self.results.insert(
+                invocation,
+                CargoRunOutput {
+                    success,
+                    tests_run: 1,
+                },
+            );
             self
         }
     }
@@ -467,7 +495,10 @@ mod tests {
                 .results
                 .get(invocation)
                 .cloned()
-                .unwrap_or(CargoRunOutput { success: true }))
+                .unwrap_or(CargoRunOutput {
+                    success: true,
+                    tests_run: 1,
+                }))
         }
     }
 
@@ -535,6 +566,34 @@ mod tests {
                 "rdif"
             ]
         );
+    }
+
+    #[test]
+    fn cargo_output_counts_running_test_cases() {
+        let output = b"running 3 tests\nrunning 1 test\nrunning 0 tests\n";
+
+        assert_eq!(count_test_cases(output), 4);
+    }
+
+    #[test]
+    fn zero_test_profile_is_rejected() {
+        let root = PathBuf::from("/tmp/workspace");
+        let invocation = CargoTestInvocation::default_for("alpha");
+        let mut runner = FakeCargoRunner {
+            results: HashMap::from([(
+                invocation.clone(),
+                CargoRunOutput {
+                    success: true,
+                    tests_run: 0,
+                },
+            )]),
+            invocations: Vec::new(),
+        };
+
+        let failed = run_std_tests(&mut runner, &root, &["alpha".to_owned()]).unwrap();
+
+        assert_eq!(failed, vec!["alpha"]);
+        assert_eq!(runner.invocations, vec![(root, invocation)]);
     }
 
     #[test]

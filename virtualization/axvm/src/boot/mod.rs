@@ -50,7 +50,6 @@ pub trait BootImageProvider {
     /// The default implementation adapts the whole-file `read_file` hook so
     /// existing providers keep working, but providers that can serve a real
     /// range should override this to avoid reading the entire image per chunk.
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn read_file_range(
         &self,
         file_name: &str,
