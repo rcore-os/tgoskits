@@ -18,15 +18,15 @@ use crate::{
     StarryError, StarryResult,
     ebpf::transform::{EbpfKernelAuxiliary, PerCpuImpl},
     file::{FileLike, Kstat},
-    kprobe::KernelRawMutex,
     pseudofs::DeviceMmap,
+    sync::RawSpinLockIrqSaveBackend,
 };
 
 /// File-like handle for a BPF map. Holds the `UnifiedMap` (the kbpf-basic
 /// abstraction over array / hash / lru / queue / perf-array maps) and a
 /// `PollSet` so `poll(2)`-based maps (e.g. ringbuf) can wake waiters.
 pub struct BpfMap {
-    unified_map: Arc<UnifiedMap<KernelRawMutex>>,
+    unified_map: Arc<UnifiedMap<RawSpinLockIrqSaveBackend>>,
     poll_ready: Arc<PollSetWrapper>,
 }
 
@@ -38,7 +38,10 @@ impl core::fmt::Debug for BpfMap {
 
 impl BpfMap {
     /// Wrap a freshly-created `UnifiedMap` in the kernel file-like layer.
-    pub fn new(unified_map: UnifiedMap<KernelRawMutex>, poll_ready: Arc<PollSetWrapper>) -> Self {
+    pub fn new(
+        unified_map: UnifiedMap<RawSpinLockIrqSaveBackend>,
+        poll_ready: Arc<PollSetWrapper>,
+    ) -> Self {
         BpfMap {
             unified_map: Arc::new(unified_map),
             poll_ready,
@@ -46,7 +49,7 @@ impl BpfMap {
     }
 
     /// Lock and access the underlying `UnifiedMap`.
-    pub fn unified_map(&self) -> &UnifiedMap<KernelRawMutex> {
+    pub fn unified_map(&self) -> &UnifiedMap<RawSpinLockIrqSaveBackend> {
         self.unified_map.as_ref()
     }
 }

@@ -1,4 +1,4 @@
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use log::info;
 use rdrive::{probe::OnProbeError, register::ProbeFdt};
 use rockchip_soc::{Cru, SocType};
@@ -60,7 +60,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     if let Cru::Rk3568(ref mut rk3568) = cru {
         rk3568.init_emmc();
     }
-    let cru = alloc::sync::Arc::new(Mutex::new(cru));
+    let cru = alloc::sync::Arc::new(RawSpinLock::new(cru));
     plat_dev.register(rdif_reset::Reset::new(ResetDrv::new(
         "rk3568-cru-reset",
         cru.clone(),

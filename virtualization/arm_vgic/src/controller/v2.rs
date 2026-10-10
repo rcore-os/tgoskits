@@ -4,10 +4,13 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axvm_types::AccessWidth;
 
-use super::{GicV3Controller, GicV3VcpuWake, state::DeliveryRetirement};
+use super::{
+    GicV3Native, GicV3VcpuWake,
+    state::{DeliveryRetirement, LoadPathFailure},
+};
 use crate::{
-    GicVcpuId, IntId, InterruptState, RegisterRegion, SgiId, SgiTarget, SpiId, VgicError,
-    VgicResult, backend_result,
+    GicAffinity, GicVcpuId, IntId, InterruptState, RegisterRegion, SgiId, SgiTarget, SpiId,
+    VgicError, VgicResult, backend_result,
     register::{
         GICC_ABPR, GICC_AEOIR, GICC_AHPPIR, GICC_AIAR, GICC_APR, GICC_BPR, GICC_CTLR, GICC_DIR,
         GICC_EOIR, GICC_HPPIR, GICC_IAR, GICC_IIDR, GICC_PMR, GICC_RPR, GICD_CPENDSGIR, GICD_CTLR,
@@ -20,7 +23,7 @@ use crate::{
 const GIC_SPURIOUS_INTID: u64 = 1023;
 const GICV2_MAX_INTIDS: u64 = 1020;
 
-impl GicV3Controller {
+impl GicV3Native {
     /// Reads the GICv2 Distributor view for one accessing vCPU.
     pub fn read_v2_distributor(
         &self,
@@ -55,7 +58,7 @@ impl GicV3Controller {
             _ if is_private_register(offset) => self
                 .inner
                 .state
-                .lock()
+                .lock_irqsave()
                 .redistributor(vcpu, "read GICv2 private Distributor register")?
                 .read_private_register(offset, width, &self.inner.config),
             _ if (GICD_ITARGETSR..GICD_ITARGETSR + GICV2_MAX_INTIDS).contains(&offset) => {
@@ -102,21 +105,26 @@ impl GicV3Controller {
                 require_width(RegisterRegion::Distributor, offset, width, "write")
             }
             _ if is_private_register(offset) => {
-                let wakes = {
+                let wake = {
                     let mut state = self.inner.state.lock_irqsave();
                     let loaded = state.cpu_interface_loaded(vcpu);
-                    let candidates = state
+                    let staged = state
                         .redistributor_mut(vcpu, "write GICv2 private Distributor register")?
                         .write_private_register(offset, width, value, &self.inner.config, loaded)?;
-                    let mut wakes = Vec::new();
-                    for intid in candidates {
-                        if let Some(wake) = state.queue_local_if_deliverable(vcpu, intid)? {
-                            wakes.push(wake);
-                        }
+                    if staged {
+                        Some(
+                            state
+                                .redistributor(vcpu, "write GICv2 private Distributor register")?
+                                .wake(),
+                        )
+                    } else {
+                        None
                     }
-                    wakes
                 };
-                wake_all(wakes)
+                if let Some(wake) = wake {
+                    wake.wake()?;
+                }
+                Ok(())
             }
             _ if (GICD_ITARGETSR..GICD_ITARGETSR + GICV2_MAX_INTIDS).contains(&offset) => {
                 self.write_v2_targets(offset, width, value)
@@ -189,7 +197,7 @@ impl GicV3Controller {
             GICC_CTLR => {
                 self.inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .redistributor_mut(vcpu, "write GICC_CTLR")?
                     .cpu_interface_mut()
                     .set_v2_control(value as u32);
@@ -198,7 +206,7 @@ impl GicV3Controller {
             GICC_PMR => {
                 self.inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .redistributor_mut(vcpu, "write GICC_PMR")?
                     .cpu_interface_mut()
                     .set_v2_priority_mask(value as u8);
@@ -207,7 +215,7 @@ impl GicV3Controller {
             GICC_BPR | GICC_ABPR => {
                 self.inner
                     .state
-                    .lock()
+                    .lock_irqsave()
                     .redistributor_mut(vcpu, "write GICC_BPR")?
                     .cpu_interface_mut()
                     .set_v2_binary_point(value as u8);
@@ -256,9 +264,11 @@ impl GicV3Controller {
             GICV2_MAX_INTIDS,
             "write",
         )?;
-        let wakes = {
+        // One wake per byte of the written register; reserved before the raw
+        // guard so the trap path never allocates while canonical state is held.
+        let mut wakes: Vec<Arc<dyn GicV3VcpuWake>> = Vec::with_capacity(8);
+        {
             let mut state = self.inner.state.lock_irqsave();
-            let mut wakes = Vec::new();
             for byte in 0..width.size() {
                 let raw = (offset - GICD_ITARGETSR) as u32 + byte as u32;
                 if raw < 32 || raw >= self.inner.config.spi_limit() {
@@ -278,23 +288,26 @@ impl GicV3Controller {
                     wakes.push(wake);
                 }
             }
-            wakes
-        };
+        }
         wake_all(wakes)
     }
 
     fn write_v2_sgir(&self, source: GicVcpuId, value: u32) -> VgicResult {
         let sgi = SgiId::new((value & 0xf) as u8)?;
+        // At most one affinity per configured vCPU; reserved before the raw
+        // guard so the trap path never allocates while canonical state is held.
+        let mut affinities: Vec<GicAffinity> = Vec::with_capacity(self.inner.config.vcpu_count());
         let targets = match (value >> 24) & 0b11 {
             0 => {
                 let mask = ((value >> 16) & 0xff) as u8;
                 let state = self.inner.state.lock_irqsave();
-                let affinities = state
-                    .redistributors
-                    .iter()
-                    .filter(|(vcpu, _)| vcpu.raw() < 8 && mask & (1 << vcpu.raw()) != 0)
-                    .map(|(_, redistributor)| redistributor.affinity())
-                    .collect();
+                affinities.extend(
+                    state
+                        .redistributors
+                        .iter()
+                        .filter(|(vcpu, _)| vcpu.raw() < 8 && mask & (1 << vcpu.raw()) != 0)
+                        .map(|(_, redistributor)| redistributor.affinity()),
+                );
                 SgiTarget::Affinities(affinities)
             }
             1 => SgiTarget::AllExceptSelf,
@@ -343,10 +356,12 @@ impl GicV3Controller {
             16,
             "write",
         )?;
-        let wakes = {
+        // One wake per byte of the written register; reserved before the raw
+        // guard so the trap path never allocates while canonical state is held.
+        let mut wakes: Vec<Arc<dyn GicV3VcpuWake>> = Vec::with_capacity(8);
+        {
             let mut state = self.inner.state.lock_irqsave();
             let loaded = state.cpu_interface_loaded(vcpu);
-            let mut wakes = Vec::new();
             for byte in 0..width.size() {
                 let sgi = SgiId::new((offset - bank) as u8 + byte as u8)?;
                 let mask = (value >> (byte * 8)) as u8;
@@ -367,8 +382,7 @@ impl GicV3Controller {
                         .clear_sgi_sources(sgi, mask, loaded);
                 }
             }
-            wakes
-        };
+        }
         wake_all(wakes)
     }
 
@@ -389,55 +403,11 @@ impl GicV3Controller {
     }
 
     fn acknowledge_v2(&self, vcpu: GicVcpuId) -> VgicResult<u64> {
-        let mut state = self.inner.state.lock_irqsave();
-        if !state.distributor.enabled() {
-            return Ok(GIC_SPURIOUS_INTID);
-        }
-        let (enabled, priority_mask) = {
-            let cpu = state.redistributor(vcpu, "read GICC_IAR")?.cpu_interface();
-            (cpu.v2_enabled(), cpu.v2_priority_mask())
+        let outcome = {
+            let mut state = self.inner.state.lock_irqsave();
+            acknowledge_v2_locked(&mut state, vcpu)
         };
-        if !enabled {
-            return Ok(GIC_SPURIOUS_INTID);
-        }
-        let Some((intid, priority)) = state
-            .redistributor(vcpu, "read GICC_IAR")?
-            .highest_pending(priority_mask, |spi| {
-                Ok(state.distributor.interrupt(spi)?.priority())
-            })?
-        else {
-            return Ok(GIC_SPURIOUS_INTID);
-        };
-        let mut delivery = state
-            .redistributor_mut(vcpu, "acknowledge GICv2 interrupt")?
-            .take_pending_delivery(intid)
-            .ok_or_else(|| VgicError::InvalidStateTransition {
-                intid,
-                operation: "read GICC_IAR",
-                detail: "the selected pending delivery disappeared".into(),
-            })?;
-        state.mark_inflight(vcpu, intid)?;
-        let mut active_state = state.synchronize_inflight(vcpu, intid, InterruptState::Active)?;
-        let source = if let IntId::Sgi(sgi) = intid {
-            let redistributor = state.redistributor_mut(vcpu, "acknowledge GICv2 SGI source")?;
-            let source = redistributor.take_sgi_source(sgi);
-            if redistributor.has_sgi_sources(sgi) {
-                redistributor.private_mut(intid)?.set_pending(true);
-                active_state = InterruptState::ActivePending;
-            }
-            source
-        } else {
-            0
-        };
-        delivery.set_state(active_state);
-        state
-            .redistributor_mut(vcpu, "record GICv2 active interrupt")?
-            .store_active_delivery(delivery, active_state);
-        state
-            .redistributor_mut(vcpu, "record GICv2 running priority")?
-            .cpu_interface_mut()
-            .push_v2_active(intid, priority);
-        Ok(u64::from(intid.raw()) | (u64::from(source) << 10))
+        outcome.map_err(LoadPathFailure::into_vgic_error)
     }
 
     fn eoi_v2(&self, vcpu: GicVcpuId, value: u64) -> VgicResult {
@@ -446,18 +416,9 @@ impl GicV3Controller {
         };
         let retirement = {
             let mut state = self.inner.state.lock_irqsave();
-            let (priority_dropped, eoi_mode) = {
-                let cpu = state
-                    .redistributor_mut(vcpu, "write GICC_EOIR")?
-                    .cpu_interface_mut();
-                (cpu.drop_v2_priority(intid), cpu.v2_eoi_mode())
-            };
-            if !priority_dropped || eoi_mode {
-                None
-            } else {
-                state.deactivate_interrupt(vcpu, intid)?
-            }
+            eoi_v2_locked(&mut state, vcpu, intid)
         };
+        let retirement = retirement.map_err(LoadPathFailure::into_vgic_error)?;
         self.apply_v2_retirement(vcpu, retirement)
     }
 
@@ -465,11 +426,11 @@ impl GicV3Controller {
         let Some(intid) = decode_eoi_intid(value) else {
             return Ok(());
         };
-        let retirement = self
-            .inner
-            .state
-            .lock_irqsave()
-            .deactivate_interrupt(vcpu, intid)?;
+        let retirement = {
+            let mut state = self.inner.state.lock_irqsave();
+            dir_v2_locked(&mut state, vcpu, intid)
+        };
+        let retirement = retirement.map_err(LoadPathFailure::into_vgic_error)?;
         self.apply_v2_retirement(vcpu, retirement)
     }
 
@@ -500,7 +461,7 @@ impl GicV3Controller {
         Ok(self
             .inner
             .state
-            .lock()
+            .lock_irqsave()
             .redistributor(vcpu, operation)?
             .cpu_interface()
             .clone())
@@ -552,7 +513,7 @@ fn validate_frame_access(
             operation,
             offset,
             width,
-            detail: "access is unaligned or outside the register frame".into(),
+            reason: "access is unaligned or outside the register frame",
         });
     }
     Ok(())
@@ -580,7 +541,7 @@ fn validate_byte_array_access(
             operation,
             offset,
             width,
-            detail: "byte-array access has an invalid width, alignment, or range".into(),
+            reason: "byte-array access has an invalid width, alignment, or range",
         });
     }
     Ok(())
@@ -600,7 +561,125 @@ fn require_width(
             operation,
             offset,
             width,
-            detail: "register requires a 32-bit access".into(),
+            reason: crate::width_requirement(AccessWidth::Dword),
         })
     }
+}
+
+/// Acknowledges one GICv2 interrupt while the canonical raw guard is held.
+///
+/// The body returns a `Copy` [`LoadPathFailure`], so the caller formats the
+/// failure only after releasing the guard.
+fn acknowledge_v2_locked(
+    state: &mut super::ControllerState,
+    vcpu: GicVcpuId,
+) -> Result<u64, LoadPathFailure> {
+    if !state.distributor.enabled() {
+        return Ok(GIC_SPURIOUS_INTID);
+    }
+    let (enabled, priority_mask) = {
+        let cpu = state
+            .redistributor_load(vcpu, "read GICC_IAR")?
+            .cpu_interface();
+        (cpu.v2_enabled(), cpu.v2_priority_mask())
+    };
+    if !enabled {
+        return Ok(GIC_SPURIOUS_INTID);
+    }
+    let Some((intid, priority)) = state
+        .redistributor_load(vcpu, "read GICC_IAR")?
+        .highest_pending(priority_mask, |spi| {
+            Ok(state.distributor.interrupt(spi)?.priority())
+        })
+        .map_err(LoadPathFailure::Refill)?
+    else {
+        return Ok(GIC_SPURIOUS_INTID);
+    };
+    // Gate the acknowledgement before any canonical delivery state changes.
+    // The highest-priority pending delivery is only signalled when it can
+    // strictly preempt the running group priority, and the inline active stack
+    // must have room; otherwise the delivery stays queued (or, for an exhausted
+    // stack, the guest sees a typed failure instead of a dropped interrupt).
+    {
+        let cpu = state
+            .redistributor_load(vcpu, "read GICC_IAR")?
+            .cpu_interface();
+        if cpu.v2_active_is_full() {
+            return Err(LoadPathFailure::NativeState {
+                operation: "acknowledge GICv2 interrupt",
+                vcpu: vcpu.raw(),
+                intid: Some(intid),
+                reason: "the GICv2 active priority stack is exhausted",
+            });
+        }
+        if !cpu.v2_preempts_running(priority) {
+            return Ok(GIC_SPURIOUS_INTID);
+        }
+    }
+    let mut delivery = state
+        .redistributor_load_mut(vcpu, "acknowledge GICv2 interrupt")?
+        .take_pending_delivery(intid)
+        .ok_or(LoadPathFailure::NativeState {
+            operation: "read GICC_IAR",
+            vcpu: vcpu.raw(),
+            intid: Some(intid),
+            reason: "the selected pending delivery disappeared",
+        })?;
+    state.mark_inflight(vcpu, intid)?;
+    let mut active_state = state.synchronize_inflight(vcpu, intid, InterruptState::Active)?;
+    let source = if let IntId::Sgi(sgi) = intid {
+        let redistributor = state.redistributor_load_mut(vcpu, "acknowledge GICv2 SGI source")?;
+        let source = redistributor.take_sgi_source(sgi);
+        if redistributor.has_sgi_sources(sgi) {
+            redistributor
+                .private_mut(intid)
+                .map_err(|_| LoadPathFailure::WrongIntIdClass {
+                    intid,
+                    operation: "acknowledge GICv2 SGI source",
+                })?
+                .set_pending(true);
+            active_state = InterruptState::ActivePending;
+        }
+        source
+    } else {
+        0
+    };
+    delivery.set_state(active_state);
+    state
+        .redistributor_load_mut(vcpu, "record GICv2 active interrupt")?
+        .store_active_delivery(delivery, active_state)
+        .map_err(LoadPathFailure::Refill)?;
+    state
+        .redistributor_load_mut(vcpu, "record GICv2 running priority")?
+        .cpu_interface_mut()
+        .push_v2_active(intid, priority);
+    Ok(u64::from(intid.raw()) | (u64::from(source) << 10))
+}
+
+/// Applies one GICv2 EOI while the canonical raw guard is held.
+fn eoi_v2_locked(
+    state: &mut super::ControllerState,
+    vcpu: GicVcpuId,
+    intid: IntId,
+) -> Result<Option<DeliveryRetirement>, LoadPathFailure> {
+    let (priority_dropped, eoi_mode) = {
+        let cpu = state
+            .redistributor_load_mut(vcpu, "write GICC_EOIR")?
+            .cpu_interface_mut();
+        (cpu.drop_v2_priority(intid), cpu.v2_eoi_mode())
+    };
+    if !priority_dropped || eoi_mode {
+        Ok(None)
+    } else {
+        state.deactivate_interrupt(vcpu, intid)
+    }
+}
+
+/// Applies one GICv2 DIR while the canonical raw guard is held.
+fn dir_v2_locked(
+    state: &mut super::ControllerState,
+    vcpu: GicVcpuId,
+    intid: IntId,
+) -> Result<Option<DeliveryRetirement>, LoadPathFailure> {
+    state.deactivate_interrupt(vcpu, intid)
 }

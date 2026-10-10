@@ -44,13 +44,13 @@ use kprobe::{
 
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, RawIrqSaveMutex},
+    sync::{RawSpinLock, RawSpinLockIrqSaveBackend},
     task::PidIdentity,
 };
 
 static NEXT_UPROBE_TARGET_ID: AtomicI32 = AtomicI32::new(1);
-static UPROBE_TARGETS: IrqMutex<BTreeMap<UprobeTargetId, Weak<PidIdentity>>> =
-    IrqMutex::new(BTreeMap::new());
+static UPROBE_TARGETS: RawSpinLock<BTreeMap<UprobeTargetId, Weak<PidIdentity>>> =
+    RawSpinLock::new(BTreeMap::new());
 
 /// Opaque handle passed through `kprobe`; it is never interpreted as a Linux PID.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -80,7 +80,9 @@ pub(crate) struct UprobeTargetLease {
 impl UprobeTargetLease {
     pub(crate) fn register(identity: Arc<PidIdentity>) -> StarryResult<Self> {
         let id = UprobeTargetId::allocate()?;
-        UPROBE_TARGETS.lock().insert(id, Arc::downgrade(&identity));
+        UPROBE_TARGETS
+            .lock_irqsave()
+            .insert(id, Arc::downgrade(&identity));
         Ok(Self { id, identity })
     }
 
@@ -100,7 +102,7 @@ impl fmt::Debug for UprobeTargetLease {
 
 impl Drop for UprobeTargetLease {
     fn drop(&mut self) {
-        UPROBE_TARGETS.lock().remove(&self.id);
+        UPROBE_TARGETS.lock_irqsave().remove(&self.id);
     }
 }
 
@@ -109,7 +111,7 @@ fn uprobe_target_task(opaque_id: i32) -> crate::task::UserTaskRef {
         .map(UprobeTargetId)
         .expect("uprobe target handle must be non-zero");
     let identity = UPROBE_TARGETS
-        .lock()
+        .lock_irqsave()
         .get(&id)
         .and_then(Weak::upgrade)
         .expect("uprobe target generation is no longer registered");
@@ -117,19 +119,6 @@ fn uprobe_target_task(opaque_id: i32) -> crate::task::UserTaskRef {
         .live_task()
         .expect("uprobe target task exited while probe remained armed")
 }
-
-/// Raw mutex used as the `L` type parameter for the `kprobe` crate's
-/// `ProbeManager` / `Kprobe` / `Kretprobe` (the perf subsystem refers to the
-/// concrete probe types parameterized on it — see [`KernelKprobe`] /
-/// [`KernelKretprobe`]).
-///
-/// Backed by [`RawIrqSaveMutex`], which disables kernel preemption and
-/// local IRQs across the critical section (`PreemptIrqGuard` semantics, the
-/// same as the rest of the kernel's spin locks). This matters because the lock
-/// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
-/// preemption and IRQs enabled could be re-entered on the same CPU and would
-/// then deadlock spinning on a lock it already holds.
-pub type KernelRawMutex = RawIrqSaveMutex;
 
 #[derive(Debug)]
 pub struct KernelKprobeOps;
@@ -283,7 +272,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
             task.push_kretprobe(instance);
             return;
         }
-        let Some(mut instances) = kernel_kretprobe_stack().try_lock() else {
+        let Some(mut instances) = kernel_kretprobe_stack().try_lock_irqsave() else {
             panic!("nested kretprobe tried to re-enter the kernel stack");
         };
         if instances.len() == KERNEL_KRETPROBE_STACK_CAPACITY {
@@ -297,30 +286,40 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         if let Some(task) = crate::task::try_current_user_irq_view() {
             return task.pop_kretprobe();
         }
-        let Some(mut instances) = kernel_kretprobe_stack().try_lock() else {
+        let Some(mut instances) = kernel_kretprobe_stack().try_lock_irqsave() else {
             panic!("nested kretprobe tried to re-enter the kernel stack");
         };
         instances.pop().expect("kernel kretprobe stack underflow")
     }
 }
 
-pub(crate) type KprobeManager = kprobe::ProbeManager<KernelRawMutex, KernelKprobeOps>;
+/// Manager for the kernel's global kprobes.
+///
+/// The `kprobe` crate parameterizes `ProbeManager`, `Kprobe` and `Kretprobe` on
+/// a raw-mutex backend. Starry uses [`RawSpinLockIrqSaveBackend`], which
+/// disables kernel preemption and local IRQs across the critical section (the
+/// same `PreemptIrqSaveGuard` semantics as the rest of the kernel's spin
+/// locks). This matters because the lock is taken on trap / kprobe-callback
+/// paths: a plain atomic spin lock that left preemption and IRQs enabled could
+/// be re-entered on the same CPU and would then deadlock spinning on a lock it
+/// already holds.
+pub(crate) type KprobeManager = kprobe::ProbeManager<RawSpinLockIrqSaveBackend, KernelKprobeOps>;
 pub(crate) type KprobePointList = ProbePointList<KernelKprobeOps>;
 
 /// Concrete `kprobe::Kprobe` parameterized on the kernel's `RawMutex` and
 /// auxiliary ops, named to match what the perf module expects.
-pub type KernelKprobe = kprobe::Kprobe<KernelRawMutex, KernelKprobeOps>;
+pub type KernelKprobe = kprobe::Kprobe<RawSpinLockIrqSaveBackend, KernelKprobeOps>;
 /// Concrete `kprobe::Kretprobe`.
-pub type KernelKretprobe = kprobe::Kretprobe<KernelRawMutex, KernelKprobeOps>;
+pub type KernelKretprobe = kprobe::Kretprobe<RawSpinLockIrqSaveBackend, KernelKprobeOps>;
 /// The `KprobeAuxiliaryOps` impl, aliased under the name the perf module uses.
 pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
-static KPROBE_POINT_LIST: IrqMutex<KprobePointList> = IrqMutex::new(KprobePointList::new());
+static KPROBE_POINT_LIST: RawSpinLock<KprobePointList> = RawSpinLock::new(KprobePointList::new());
 const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
-static INSTANCE: LazyInit<IrqMutex<Vec<RetprobeInstance>>> = LazyInit::new();
+static INSTANCE: LazyInit<RawSpinLock<Vec<RetprobeInstance>>> = LazyInit::new();
 
-fn kernel_kretprobe_stack() -> &'static IrqMutex<Vec<RetprobeInstance>> {
+fn kernel_kretprobe_stack() -> &'static RawSpinLock<Vec<RetprobeInstance>> {
     INSTANCE
         .get()
         .expect("kernel kretprobe stack must be prepared before probes are armed")
@@ -337,7 +336,7 @@ fn with_manager_and_list<F, R>(f: F) -> R
 where
     F: FnOnce(&KprobeManager, &mut KprobePointList) -> R,
 {
-    let mut list = KPROBE_POINT_LIST.try_lock().unwrap();
+    let mut list = KPROBE_POINT_LIST.try_lock_irqsave().unwrap();
     f(&KPROBE_MANAGER, &mut list)
 }
 
@@ -380,9 +379,9 @@ pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
 /// [`register_kprobe`].
 #[inline(never)]
 pub fn register_kretprobe(
-    builder: KretprobeBuilder<KernelRawMutex>,
+    builder: KretprobeBuilder<RawSpinLockIrqSaveBackend>,
 ) -> StarryResult<Arc<KernelKretprobe>> {
-    INSTANCE.get_or_init(|| IrqMutex::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
+    INSTANCE.get_or_init(|| RawSpinLock::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
     with_manager_and_list(|mgr, list| {
         kprobe_crate_register_kretprobe(mgr, list, builder).map_err(|error| {
             warn!("kretprobe registration rejected: {error:?}");

@@ -4,43 +4,22 @@ use axdevice_base::DeviceId;
 
 use super::{
     EndpointIrqTransitionPermit, EndpointRouteToken, PciRootBinding,
-    lifecycle::{
-        PendingIrqWithdrawal, retry_pending_irq_withdrawals, transfer_pending_irq_withdrawals,
-    },
+    lifecycle::{PendingIrqWithdrawal, transfer_pending_irq_withdrawals},
 };
 use crate::{DeviceManagerError, DeviceManagerResult, ServiceCardinality, ServiceKey};
 
 impl Drop for PciRootBinding {
     fn drop(&mut self) {
-        // Root BDF routes are the first teardown linearization point.  No
-        // route may remain reachable while router admissions and endpoint IRQ
-        // owners are being drained below.
-        self.root.unbind_all_routes();
-        let mut lifecycle = self.begin_stop_operation();
-        if let Err(error) = lifecycle.wait_for_claim() {
-            warn!("PCI root teardown lifecycle handoff could not claim ownership: {error}");
-            return;
-        }
-        if let Err(error) = self.drain_pending_binding_withdrawals() {
-            warn!("PCI root teardown could not drain deferred bindings: {error}");
-        }
-        let (pending, drain_result) = self.router.invalidate_all();
-        for withdrawal in pending {
-            self.queue_irq_withdrawal(withdrawal);
-        }
-        if let Err(error) = drain_result {
-            warn!("PCI root teardown could not drain IRQ permits: {error}");
-        }
-        if let Err(error) = retry_pending_irq_withdrawals(&self.pending_irq_withdrawals) {
-            warn!("PCI root teardown could not complete pending IRQ withdrawals: {error}");
-        }
-        if let Err(error) = self.drain_pending_binding_withdrawals() {
-            warn!("PCI root teardown could not finish deferred bindings: {error}");
-        }
-        transfer_pending_irq_withdrawals(&self.pending_irq_withdrawals);
-        if let Err(error) = lifecycle.finish_stop() {
+        // Drop is only a best-effort fallback for a root that was never
+        // explicitly stopped. The real teardown is `stop_lifecycle`, which
+        // reports errors instead of masking them; here the binding is being
+        // destroyed, so a failure can only be logged.
+        if let Err(error) = self.stop_lifecycle() {
             warn!("PCI root teardown lifecycle handoff could not complete: {error}");
         }
+        // Destruction cannot retain a retry queue in this binding. Transfer
+        // closed endpoint owners before their last local references disappear.
+        transfer_pending_irq_withdrawals(&self.pending_irq_withdrawals);
     }
 }
 

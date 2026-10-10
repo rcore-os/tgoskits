@@ -15,7 +15,7 @@ pub(crate) mod lockdep;
 mod raw;
 mod rwlock;
 
-pub use self::raw::RawIrqSaveMutex;
+pub use self::raw::RawSpinLockIrqSaveBackend;
 
 /// A non-sleeping mutual-exclusion lock.
 ///

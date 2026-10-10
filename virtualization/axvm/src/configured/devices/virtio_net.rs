@@ -44,16 +44,26 @@ static GUEST_MACS: Mutex<BTreeSet<[u8; 6]>> = Mutex::new(BTreeSet::new());
 /// stays unambiguous on the LAN.
 static HOST_MACS: Mutex<BTreeSet<[u8; 6]>> = Mutex::new(BTreeSet::new());
 
-/// Hypervisor-side adapter for the single physical host uplink, implemented by
-/// the platform glue that owns the host network stack. It is the only channel
-/// by which a guest egress frame reaches the wire.
+/// Hypervisor-side adapter for one physical host uplink, implemented by the
+/// platform glue that owns the host network stack. It is the only channel by
+/// which a guest egress frame reaches that selected interface.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
+pub enum PhysicalUplinkError {
+    /// The bounded host queue cannot accept the frame at this instant.
+    #[error("physical uplink queue is full or busy")]
+    Backpressure,
+    /// The adapter rejected a frame that cannot be transmitted as Ethernet.
+    #[error("physical uplink rejected an invalid frame")]
+    InvalidFrame,
+}
+
 pub trait PhysicalUplink: Send + Sync {
     /// Submits one guest-originated frame for physical transmission.
     ///
-    /// Returns `true` when the frame was accepted, `false` when it was dropped
-    /// (for example a full bounded ring). Must not block or allocate, because it
-    /// runs in the guest's vCPU MMIO-write context.
-    fn submit_guest_egress(&self, frame: &[u8]) -> bool;
+    /// Returns an error when the bounded host queue cannot accept the frame.
+    /// Must not block or allocate, because it runs in the guest's vCPU
+    /// MMIO-write context.
+    fn submit_guest_egress(&self, frame: &[u8]) -> Result<(), PhysicalUplinkError>;
 }
 
 /// Physical uplink adapter, published exactly once before any guest can send.
@@ -66,6 +76,11 @@ static PHYSICAL_UPLINK: OnceLock<Arc<dyn PhysicalUplink>> = OnceLock::new();
 /// Publishes the physical uplink adapter; returns `false` if one is installed.
 pub fn install_physical_uplink(uplink: Arc<dyn PhysicalUplink>) -> bool {
     PHYSICAL_UPLINK.set(uplink).is_ok()
+}
+
+/// Returns whether this switch fabric already owns a physical uplink.
+pub fn physical_uplink_installed() -> bool {
+    PHYSICAL_UPLINK.get().is_some()
 }
 
 /// Reserves a host-owned MAC that no guest port may claim.
@@ -134,13 +149,6 @@ fn create_device_node(
     let model: Arc<dyn DeviceModel> = Arc::new(VirtioNetModel {
         guest_mac,
         controller,
-        vm_id: context
-            .vm_id()
-            .ok_or_else(|| ConfiguredDeviceError::Instantiation {
-                device: request.id.clone(),
-                model: request.model.clone(),
-                detail: "virtio-net requires a VM identity".into(),
-            })?,
     });
     let mut node = DeviceNodeSpec::virtual_device(id, model);
     if let Some(controller_node) = context.default_wired_controller_node() {
@@ -188,7 +196,6 @@ fn invalid_options(request: &VirtualDeviceRequest, detail: String) -> Configured
 struct VirtioNetModel {
     guest_mac: [u8; 6],
     controller: axdevice_base::InterruptControllerId,
-    vm_id: usize,
 }
 
 impl DeviceModel for VirtioNetModel {
@@ -238,7 +245,17 @@ impl DeviceModel for VirtioNetModel {
             port_id,
             self.guest_mac,
             switch.clone(),
-            Arc::new(AxvmWakeTarget { vm_id: self.vm_id }),
+            Arc::new(AxvmWakeTarget {
+                port: crate::services::DeviceWorkPort::from_device_signal(
+                    context
+                        .work_port()
+                        .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                            operation: "bind virtio-net work port",
+                            detail: "runtime work capability is unavailable".into(),
+                        })?,
+                    context.work_device_id(),
+                ),
+            }),
         );
         let registration = switch.register_owned(endpoint.clone()).map_err(|error| {
             DeviceManagerError::InvalidConfig {
@@ -336,11 +353,14 @@ impl NetworkBackend for SwitchBackend {
         if let EgressOutcome::Forwarded { uplink: true } =
             self.switch.switch_from_port(self.endpoint.id(), frame)
         {
-            // Frames that must leave the virtual fabric go to the single
-            // physical uplink when one is installed; without a bridge the frame
-            // is dropped silently, as before this adapter existed.
+            // Frames that must leave the virtual fabric go to the physical
+            // uplink when one is installed. Without a bridge there is no host
+            // destination, so the switch still drops the frame locally.
             if let Some(uplink) = PHYSICAL_UPLINK.get() {
-                let _ = uplink.submit_guest_egress(frame);
+                uplink.submit_guest_egress(frame).map_err(|error| {
+                    warn!("physical uplink rejected guest egress: {error}");
+                    NetworkBackendError::TransmitFailed
+                })?;
             }
         }
         Ok(())
@@ -374,7 +394,7 @@ trait WakeTarget: Send + Sync {
 }
 
 struct AxvmWakeTarget {
-    vm_id: usize,
+    port: crate::services::DeviceWorkPort,
 }
 
 impl WakeTarget for AxvmWakeTarget {
@@ -382,11 +402,8 @@ impl WakeTarget for AxvmWakeTarget {
         // Publish the poll request before kicking vCPU0. Polling synchronously
         // from the sender's device access would let two VM device runtimes
         // re-enter each other.
-        if let Err(error) = crate::runtime::notify_vm(self.vm_id) {
-            warn!(
-                "failed to kick VM[{}] for virtio-net RX: {error:#}",
-                self.vm_id
-            );
+        if let Err(error) = self.port.notify() {
+            debug!("virtio-net RX work port rejected notification: {error}");
         }
     }
 }

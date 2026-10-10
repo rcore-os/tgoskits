@@ -51,8 +51,8 @@ Axvisor special contexts --------> ax_std::os::arceos::sync
 - `ax-runtime` 同时依赖 `ax-task` 与 `ax-sync`：它从 `ax-task::sync::api` 重导原生锁，
   并用 `ax-task::sync::bridge` 实现 `ax-sync` provider。
 - Starry kernel 只从 `crate::sync` 导入锁；`crate::sync` 只聚合
-  `ax-runtime::sync` 与少量语义明确的 wrapper。文件系统拥有的 `FsContext` 保持使用
-  `ax-fs-ng` 导出的 `SleepMutex`，并由 `crate::sync::FsMutex` 收口该所有权类型。
+  `ax-runtime::sync` 与少量语义明确的 wrapper。文件系统拥有的 `FsContext` 使用
+  `ax-fs-ng::Mutex`，与 OS 原生 `crate::sync::Mutex` 用模块路径区分来源。
 - ArceOS API、POSIX API、`ax-std` 和 `axlibc` 使用 `ax-runtime::sync`。
 - Axvisor 普通任务状态使用真实 `std::sync`；IRQ、guest-entry 和 no-preempt 路径使用
   `ax_std::os::arceos::sync`。
@@ -70,7 +70,8 @@ Axvisor special contexts --------> ax_std::os::arceos::sync
 
 - `api`：稳定的 native 锁与 guard 出口；
 - `context`：preempt、IRQ 与组合 guard 的进入、嵌套和逆序恢复；
-- `spin`：native `SpinLock`、`SpinRwLock`、raw/no-preempt/IRQ-save 获取；
+- `spin`：native `RawSpinLock`、`RawSpinRwLock` 与 raw/preempt/IRQ-save 获取；
+- `rt_spin` / `rt_rwlock`：可睡眠竞争并约束持锁任务迁移的 `RtSpinLock`、`RtSpinRwLock`；
 - `mutex`：本分支的 urgency-ordered PI mutex；
 - `lockdep`：lock class、依赖图、task held-lock stack、trace 与诊断；
 - `bridge`：只供 `ax-runtime` 调用的非泛型 external-layout 事务。
@@ -118,7 +119,7 @@ task-owned 状态，直接调整接口并迁移调用方；不得为兼容保留
 - `ContextOps`：独立 context guard enter/exit；
 - `SpinOps`：spin acquire/try/release 与受控 force-release；
 - `RwLockOps`：read/write acquire/try/release 与受控 read decrement；
-- `PiMutexOps`：PI acquire/try/release/cancel/force-release、owner 查询和 external storage
+- `MutexOps`：PI acquire/try/release/cancel/force-release、owner 查询和 external storage
   销毁；
 - `LockdepOps`：不隶属单次获取的 trace 控制与 dump。
 
@@ -136,9 +137,9 @@ ABI 只传固定布局的原子引用、裸指针、整数模式、`Location` �
 
 ## 5. 公共锁语义
 
-### 5.1 Spin lock 与执行上下文
+### 5.1 Raw 锁与执行上下文
 
-锁对象不固化获取上下文，调用方法表达本次约束：
+`RawSpinLock` 与 `RawSpinRwLock` 的竞争和持有均不可睡眠。锁对象不固化获取上下文，调用方法表达本次约束：
 
 | 获取方法 | 进入动作 | 退出动作 | 典型场景 |
 | --- | --- | --- | --- |
@@ -146,7 +147,7 @@ ABI 只传固定布局的原子引用、裸指针、整数模式、`Location` �
 | `lock_irqsave()` / `try_lock_irqsave()` | 禁止 preempt，再保存并关闭 IRQ | 恢复 IRQ，再恢复 preempt | IRQ 与任务共享状态 |
 | `unsafe lock_raw()` / `try_lock_raw()` | 不改变 context | 不改变 context | 外层已建立排他性 |
 
-`SpinRwLock<T>` 提供相同三种策略并保留非公平算法，不引入 writer preference。raw 获取
+`RawSpinRwLock<T>` 提供相同三种策略并保留非公平算法，不引入 writer preference。raw 获取
 保持 `unsafe`，调用方必须证明 UP 与 SMP 下都不会发生同 CPU 重入或违反共享/独占规则。
 
 所有 context guard 和锁 guard 都是 `!Send`。组合顺序固定为：
@@ -161,7 +162,7 @@ try 失败、lockdep 诊断 panic 或部分获取 unwind 时，pending RAII 状�
 
 ### 5.2 PI mutex
 
-`Mutex<T>` 与 `PiMutex<T>` 始终表示无 poison 的可睡眠 PI mutex；它们不会因 feature
+`ax_task::sync::Mutex<T>` 与 `ax_sync::Mutex<T>` 表示无 poison 的可睡眠 PI mutex；它们不会因 feature
 退化为 spin lock。当前 PI 语义必须完整迁入 `ax-task::sync::mutex`：
 
 1. lock-local state 包含 owner word、waiter bit、generation 和固定大小的 opaque waiter
@@ -181,6 +182,22 @@ native mutex 与 `ax-sync` wrapper 的字段可以位于不同对象，但算法
 POSIX pthread 因 C ABI 无法保存 Rust guard，只能经专用 wrapper 泄漏 guard，并调用隐藏
 的 `unsafe force_unlock`；该路径仍须验证当前 task 是 owner。
 
+### 5.3 RT 锁与标准名称
+
+`RtSpinLock` 与 `RtSpinRwLock` 由 native 任务同步实现，竞争可以睡眠，成功获取后保持迁移约束，硬件 IRQ 和任务抢占仍可发生。它们只提供普通获取接口；旧 `lock_irqsave` 拼写没有 IRQ 语义，已经删除。硬中断和调度器使用 raw 原语。
+
+公共名称按阻塞类别区分，facade 只重导标准名称；同名锁的 poison、PI 和运行时来源由模块说明。
+
+| 名称 | 阻塞类别 | 内部所有者 |
+| --- | --- | --- |
+| `Mutex` / `MutexBackend` | 可睡眠互斥 | native PI 算法或所属 `std` 实现 |
+| `RwSemaphore` / `RwSemaphoreBackend` | 可睡眠读写 | native 任务同步 |
+| `RtSpinLock` / `RtSpinRwLock` | 竞争可睡眠，持锁约束迁移 | native RT 锁 |
+| `RawSpinLock` / `RawSpinRwLock` | 获取与持有不可睡眠 | native raw 算法与 portable provider |
+| `LocalLock` | 当前 CPU 本地状态保护 | native 本地同步 |
+
+`IrqMutex`、`IrqSafeMutex`、`NoPreemptMutex`、`SleepMutex`、`PiMutex` 和纯同义领域锁别名不再导出。无数据 IRQ-save 后端命名为 `RawSpinLockIrqSaveBackend`；外部 `lock_api` trait 保持原名。external 固定布局使用 `MutexStorage`，内部 `PiMutexCore` 等真实 PI 算法名称继续说明算法职责。
+
 ## 6. Lockdep 所有权
 
 生产 lockdep 完全属于 `ax-task::sync::lockdep`：lock class、依赖图、task held-lock stack、
@@ -189,7 +206,7 @@ metadata，provider 将其借用为 ax-task 的 external lock class view。
 
 spin、rwlock 和 PI mutex 共享同一张图：
 
-- spin 获取标记 `sleep_forbidden=true`，PI mutex 标记 `false`；
+- raw 获取标记 `sleep_forbidden=true`，mutex 与 RT 锁的可睡眠竞争按实际上下文记录；
 - 获取前检查递归和反向可达路径，成功后再提交依赖边；
 - release 校验 task held-lock 栈顶与实例地址；
 - read、write、exclusive 和 subclass 是明确的 typed mode；
@@ -201,14 +218,16 @@ lockdep 被关闭时 trace API 是 no-op，但锁算法和执行上下文不改�
 
 `ax-sync` 在 host 与裸机目标上都只调用 external provider；crate 内不编译 std backend、
 TLS context、独立 waiter/condvar 或测试 lockdep 图。`host-test` 只标记测试组合，不改变
-wrapper 代码路径，也不选择算法。OS 无关组件的 host test 必须由测试 runtime 链接真实
-provider，经过 `ax-runtime -> ax-task::sync` 验证同一算法。
+wrapper 代码路径，也不选择算法。锁算法的 host test 由测试 runtime 链接真实
+provider，经过 `ax-runtime -> ax-task::sync` 验证同一算法。设备组件的宿主测试可以仅在正式
+`SpinOps` / `MutexOps` 接口提供测试环境，以验证真实设备行为和 wrapper 契约；这种环境
+不证明 native PI、硬件 IRQ 恢复或真实调度，不能作为这些门禁的替代。
 
 `ax-task` host test 使用测试 `TaskRuntime` provider 和真实 `TaskSystem/ThreadCore` 当前任务
 验证 native 算法；不得另建 TLS held-lock stack、host mutex engine，也不得通过依赖 feature
 反向选择 `ax-sync` 内部实现。最终 runtime 决定生产或 host 组合，底层 crate 不能自行猜测
-provider。未链接 provider 的独立 wrapper 测试只验证布局、RAII 类型和编译契约，不伪造
-锁语义。
+provider。未链接 provider 的独立 wrapper 测试只验证布局、RAII 类型和编译契约。测试辅助 provider
+不得进入生产依赖或成为第二套生产算法。
 
 ## 8. 子系统规则与机器约束
 

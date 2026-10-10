@@ -55,7 +55,7 @@ use crate::{
     StarryError, StarryResult,
     file::FileLike,
     mm::{VmMutPtr, VmPtr},
-    sync::IrqMutex,
+    sync::RawSpinLock,
     task::{UserTaskRef, kernel_thread_builder, sleep},
 };
 
@@ -133,7 +133,7 @@ pub struct SyncFile {
 /// task pumps the used ring and wakes matching pollers. Entries are `Weak`;
 /// dead ones are pruned by the same scan. The lock is an IRQ-save mutex so the
 /// IRQ path can never spin on it.
-static FENCE_WAITERS: IrqMutex<Vec<(u64, Weak<SyncFile>)>> = IrqMutex::new(Vec::new());
+static FENCE_WAITERS: RawSpinLock<Vec<(u64, Weak<SyncFile>)>> = RawSpinLock::new(Vec::new());
 
 /// One-shot guard so the refresher task is spawned exactly once (on the first
 /// registered out-fence).
@@ -219,7 +219,7 @@ impl SyncFile {
     /// completion IRQ can never spin on the registry while a task holds it.
     pub fn register(self: &Arc<Self>) {
         FENCE_WAITERS
-            .lock()
+            .lock_irqsave()
             .push((self.fence_id.load(Ordering::Relaxed), Arc::downgrade(self)));
         ensure_refresher();
     }
@@ -250,7 +250,6 @@ impl SyncFile {
         }
         self.signaled.load(Ordering::Acquire)
     }
-
 }
 
 impl Drop for SyncFile {
@@ -259,7 +258,7 @@ impl Drop for SyncFile {
         // submit), so removing every entry with this id is exact. The IRQ-save
         // lock discipline matches `register`.
         FENCE_WAITERS
-            .lock()
+            .lock_irqsave()
             .retain(|(id, _)| *id != self.fence_id.load(Ordering::Relaxed));
     }
 }
@@ -278,13 +277,15 @@ fn refresh_all_fences(live: &mut Vec<Arc<SyncFile>>) -> usize {
     // device lock with IRQs disabled. The upgrade itself is a plain atomic
     // refcount bump and touches no other lock.
     live.clear();
-    FENCE_WAITERS.lock().retain(|(_, w)| match w.upgrade() {
-        Some(sf) => {
-            live.push(sf);
-            true
-        }
-        None => false,
-    });
+    FENCE_WAITERS
+        .lock_irqsave()
+        .retain(|(_, w)| match w.upgrade() {
+            Some(sf) => {
+                live.push(sf);
+                true
+            }
+            None => false,
+        });
     let mut signaled = 0;
     for sf in live.iter() {
         let before = sf.signaled.load(Ordering::Acquire);
@@ -300,7 +301,9 @@ fn refresh_all_fences(live: &mut Vec<Arc<SyncFile>>) -> usize {
 /// scan stays bounded. The active scan prunes in its upgrade pass
 /// ([`refresh_all_fences`]); this is only for the idle backstop.
 fn prune_dead_waiters() {
-    FENCE_WAITERS.lock().retain(|(_, w)| w.strong_count() > 0);
+    FENCE_WAITERS
+        .lock_irqsave()
+        .retain(|(_, w)| w.strong_count() > 0);
 }
 
 /// Whether any live out-fence still waits for its host completion. The
@@ -309,9 +312,10 @@ fn prune_dead_waiters() {
 /// for the fd to close (pruned by the idle backstop). Every other wait path
 /// re-checks the fence level itself.
 fn has_live_waiters() -> bool {
-    FENCE_WAITERS.lock().iter().any(|(_, w)| {
+    FENCE_WAITERS.lock_irqsave().iter().any(|(_, w)| {
         w.strong_count() > 0
-            && w.upgrade().is_some_and(|sf| !sf.signaled.load(Ordering::Acquire))
+            && w.upgrade()
+                .is_some_and(|sf| !sf.signaled.load(Ordering::Acquire))
     })
 }
 
@@ -350,8 +354,8 @@ fn ensure_refresher() {
     if REFRESHER_SPAWNED.swap(true, Ordering::Relaxed) {
         return;
     }
-    if let Err(err) = kernel_thread_builder(String::from("fence-wait-refresher"))
-        .spawn(|| refresher_loop())
+    if let Err(err) =
+        kernel_thread_builder(String::from("fence-wait-refresher")).spawn(|| refresher_loop())
     {
         // Re-arm the one-shot guard so a later `register` retries: without
         // the refresher, a guest blocked in poll() is only woken by the

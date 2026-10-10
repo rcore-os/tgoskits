@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::cell::RefCell;
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::Mutex;
 use axdevice_base::*;
 use axvm_types::GuestPhysAddr;
 
@@ -282,7 +282,7 @@ impl FwCfg {
     }
 
     pub(crate) fn read_data(&self, width: AccessWidth) -> usize {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         let entry = self.selected_bytes(state.selected);
         let data = entry.as_slice();
         let mut value = 0usize;
@@ -318,11 +318,11 @@ impl FwCfg {
     }
 
     pub(crate) fn read_selector(&self) -> u16 {
-        self.state.lock_irqsave().selected
+        self.state.lock().selected
     }
 
     pub(crate) fn select(&self, selector: u16) {
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         state.selected = selector;
         state.offset = 0;
     }
@@ -355,7 +355,7 @@ impl FwCfg {
         }
         match addr.as_usize() - self.base.as_usize() {
             FW_CFG_DATA_OFFSET => Ok(self.read_data(width)),
-            FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock_irqsave().selected as usize),
+            FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock().selected as usize),
             _ => Ok(0),
         }
     }
@@ -425,7 +425,7 @@ impl FwCfg {
     ) -> DeviceManagerResult<Option<GuestPhysAddr>> {
         const LOW_DWORD_MASK: u64 = u32::MAX as u64;
 
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         match (offset, width) {
             (0, AccessWidth::Dword) => {
                 let high = (value as u32).swap_bytes() as u64;
@@ -522,7 +522,7 @@ impl FwCfg {
     {
         validate_dma_buffer(buffer_addr, length)?;
 
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         if control & FW_CFG_DMA_CTL_SELECT != 0 {
             state.selected = (control >> 16) as u16;
             state.offset = 0;

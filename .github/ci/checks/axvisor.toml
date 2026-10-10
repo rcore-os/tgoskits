@@ -9,18 +9,37 @@ impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · Smoke + virtio-blk guest + axtest"
 timeout_minutes = 30
 command = '''
-echo "==> axvisor aarch64 smoke"
-cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
-echo "==> axvisor aarch64 net-l2-uplink compile"
-FEATURES=net-l2-uplink cargo xtask axvisor build --arch aarch64 --config os/axvisor/configs/board/qemu-aarch64.toml
-echo "==> axvisor aarch64 host initramfs"
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs
+echo "==> axvisor aarch64 smoke + host initramfs"
+cargo xtask axvisor test qemu --arch aarch64 --test-case smoke,qemu-host-initramfs
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
+echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
+timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
   --config os/axvisor/tests/build-memory-root-aarch64.toml \
   --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml
+echo "==> axvm aarch64 provided-DTB CPU map regression"
+run_axvm_cross_test() {
+  local output
+  output="$(cargo xtask cross-test "$@" 2>&1)" || {
+    printf '%s\n' "$output"
+    return 1
+  }
+  printf '%s\n' "$output"
+  printf '%s\n' "$output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+    echo "cross-test filter matched no passing test" >&2
+    return 1
+  }
+}
+run_axvm_cross_test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib arch::aarch64::fdt
+echo "==> axvm aarch64 cloned CPU identity regression"
+run_axvm_cross_test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
+echo "==> axvm riscv64 cloned CPU identity regression"
+run_axvm_cross_test --arch riscv64 --package axvm \
+  --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
 '''
 
 [[check.suite]]
@@ -31,13 +50,15 @@ cases = ["smoke", "qemu-host-initramfs"]
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + browser console"
+name = "QEMU aarch64 · HTTP control-plane + browser console + ArceOS IVC"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
+echo "==> axvisor aarch64 ArceOS IVC owner teardown"
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc-arceos
 # Disabled until the Linux IVC guest image matches the v2 publisher protocol.
 # echo "==> axvisor aarch64 IVC"
 # cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
@@ -49,6 +70,7 @@ arch = "aarch64"
 cases = [
   "http-control-plane",
   "browser-console",
+  "qemu-ivc-arceos",
   # "qemu-ivc", # Linux guest image uses IVC v3; ArceOS publisher uses v2.
 ]
 
@@ -104,22 +126,22 @@ arch = "x86_64"
 cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm", "pci-enumeration-svm", "pci-block-rw-svm", "pci-block-ro-svm"]
 
 [[check]]
-id = "test-axvisor-self-hosted-x86-64-vmx-smoke-pci-enumeration"
+id = "test-axvisor-self-hosted-x86-64-vmx"
 impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · Smoke + Generic PCI enumeration"
+name = "VMX x86_64 · Smoke, ACPI and PCI"
 runner = "kvm-intel"
-timeout_minutes = 90
+cache_key = ""
+timeout_minutes = 120
 command = '''
-echo "==> axvisor x86_64 VMX smoke"
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
-echo "==> axvisor x86_64 VMX generic PCI enumeration"
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-enumeration-vmx
+echo "==> axvisor x86_64 VMX smoke, ACPI and PCI"
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["smoke-vmx", "pci-enumeration-vmx"]
+cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pci-enumeration-vmx", "pci-block-rw-vmx", "pci-block-ro-vmx"]
 
 [[check]]
 id = "test-axloader-http-smoke"
@@ -134,56 +156,24 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 '''
 
 [[check]]
-id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
-impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
-runner = "kvm-intel"
-timeout_minutes = 90
-command = '''
-echo "==> axvisor x86_64 VMX direct ACPI boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
-echo "==> axvisor x86_64 VMX MP fallback boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
-echo "==> axvisor x86_64 VMX OVMF ACPI boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "x86_64"
-cases = ["direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx"]
-
-[[check]]
-id = "test-axvisor-x86-64-pci-block-vmx"
-impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · VirtIO PCI block RW/RO"
-runner = "kvm-intel"
-timeout_minutes = 45
-command = '''
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-rw-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case pci-block-ro-vmx
-'''
-
-[[check.suite]]
-kind = "axvisor-qemu"
-arch = "x86_64"
-cases = ["pci-block-rw-vmx", "pci-block-ro-vmx"]
-
-[[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus · Linux + StarryOS"
 runner = "board"
+cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
+echo "==> StarryOS OrangePi 5 Plus board suites"
+cargo xtask starry test board --board orangepi-5-plus
 echo "==> axvisor OrangePi 5 Plus Linux guest"
-AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case smoke
-echo "==> build the StarryOS guest from this checkout"
-cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
-echo "==> axvisor OrangePi 5 Plus StarryOS guest"
-cargo xtask axvisor test board --board orangepi-5-plus-starry
+AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board \
+  --board orangepi-5-plus-linux,orangepi-5-plus-starry --test-case smoke
 '''
+
+[[check.suite]]
+kind = "starry-board"
+board = "orangepi-5-plus"
 
 [[check.suite]]
 kind = "axvisor-board"
@@ -199,6 +189,7 @@ id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board ROC-RK3568-PC · Linux guest"
 runner = "board"
+cache_key = ""
 command = '''
 AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest cargo xtask axvisor test board --board roc-rk3568-pc-linux
 '''
@@ -212,6 +203,7 @@ id = "test-axvisor-self-hosted-board-phytiumpi-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board Phytium Pi · Linux guest"
 runner = "board"
+cache_key = ""
 command = '''
 cargo xtask axvisor test board --board phytiumpi-linux
 '''
@@ -225,6 +217,7 @@ id = "test-axvisor-self-hosted-board-asus-nuc15crh-linux"
 impact_targets = ["axvisor:x86_64"]
 name = "Board ASUS NUC15CRH · Linux guest"
 runner = "board"
+cache_key = ""
 timeout_minutes = 45
 download_xtask_bin_artifact = true
 command = '''
@@ -241,31 +234,26 @@ kind = "axvisor-board"
 board = "asus-nuc15crh-linux"
 
 [[check]]
-id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
+id = "test-orangepi-5-plus-robot-axvisor-guests"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
-name = "Board OrangePi 5 Plus · AxVisor StarryOS guest UVC/NPU + FT232 loopback"
+name = "Board OrangePi 5 Plus · AxVisor Linux + StarryOS guests UVC/NPU + FT232 loopback"
 runner = "board"
+cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
-cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+cargo xtask starry test board --board orangepi-5-plus-robot
+cargo xtask axvisor test board \
+  --board orangepi-5-plus-robot-starry,orangepi-5-plus-robot-linux
 '''
+
+[[check.suite]]
+kind = "starry-board"
+board = "orangepi-5-plus-robot"
 
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-starry"
-
-[[check]]
-id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · AxVisor Linux guest UVC/NPU + FT232 loopback"
-runner = "board"
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
-'''
 
 [[check.suite]]
 kind = "axvisor-board"

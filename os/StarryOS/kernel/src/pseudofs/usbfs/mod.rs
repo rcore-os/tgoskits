@@ -35,7 +35,7 @@ use crate::{
     file::{File as KernelFile, FileLike, IoDst, IoSrc, Kstat},
     mm::{VmMutPtr, VmPtr, vm_load, vm_write_slice},
     pseudofs::{SimpleDir, SimpleFs},
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
 };
 
 fn create_filesystem(manager: Arc<UsbFsManager>) -> Filesystem {
@@ -69,18 +69,18 @@ pub(crate) fn new_usbfs() -> StarryResult<Option<Filesystem>> {
     // Controller initialization may await command completions delivered by it.
     irq::start_event_pump();
 
-    let init_result = Arc::new(IrqMutex::new(None));
+    let init_result = Arc::new(RawSpinLock::new(None));
     let worker_result = init_result.clone();
     let worker_manager = manager.clone();
     let init_worker = crate::task::kernel_thread_builder("usbfs-init".to_owned())
         .spawn(move || {
             let report = manager::initialize_hosts(&worker_manager);
-            *worker_result.lock() = Some(report);
+            *worker_result.lock_irqsave() = Some(report);
         })
         .expect("failed to spawn kernel thread");
     let _exit_code = init_worker.join().expect("failed to join kernel thread");
     let report = init_result
-        .lock()
+        .lock_irqsave()
         .take()
         .expect("joined USB initialization worker must publish a report");
     for failure in &report.failures {
@@ -243,9 +243,9 @@ pub(crate) fn open_usbfs_file(
         snapshot,
         lease: Mutex::new(None),
         lifecycle_lock: Mutex::new(()),
-        claimed_interfaces: IrqMutex::new(Default::default()),
+        claimed_interfaces: RawSpinLock::new(Default::default()),
         submitted_urbs: Arc::new(Mutex::new(VecDeque::new())),
-        pending_urbs: Arc::new(IrqMutex::new(VecDeque::new())),
+        pending_urbs: Arc::new(RawSpinLock::new(VecDeque::new())),
         poll_urbs: Arc::new(PollSet::new()),
         urb_worker: Arc::new(UrbWorker::new()),
     }))
@@ -262,9 +262,9 @@ struct UsbDeviceFile {
     snapshot: descriptor::UsbDeviceSnapshot,
     lease: Mutex<Option<Arc<manager::UsbDeviceLease>>>,
     lifecycle_lock: Mutex<()>,
-    claimed_interfaces: IrqMutex<alloc::collections::BTreeMap<u8, u8>>,
+    claimed_interfaces: RawSpinLock<alloc::collections::BTreeMap<u8, u8>>,
     submitted_urbs: Arc<Mutex<VecDeque<SubmittedUrb>>>,
-    pending_urbs: Arc<IrqMutex<VecDeque<CompletedUrb>>>,
+    pending_urbs: Arc<RawSpinLock<VecDeque<CompletedUrb>>>,
     poll_urbs: Arc<PollSet>,
     urb_worker: Arc<UrbWorker>,
 }
@@ -396,11 +396,12 @@ impl UsbDeviceFile {
             return Ok(lease.clone());
         }
 
-        let new_lease =
-            Arc::new(
-                self.manager
-                    .acquire_device(self.bus_num, self.device_num, None, Some(self.generation))?,
-            );
+        let new_lease = Arc::new(self.manager.acquire_device(
+            self.bus_num,
+            self.device_num,
+            None,
+            Some(self.generation),
+        )?);
         *lease = Some(new_lease.clone());
         Ok(new_lease)
     }
@@ -425,7 +426,7 @@ impl UsbDeviceFile {
                 snapshot_claimed_endpoint(
                     &self.snapshot,
                     index as u8,
-                    &self.claimed_interfaces.lock(),
+                    &self.claimed_interfaces.lock_irqsave(),
                 )
                 .map(|endpoint| endpoint.interface)
                 .or_else(|| snapshot_endpoint_interface(&self.snapshot, index as u8))
@@ -434,7 +435,10 @@ impl UsbDeviceFile {
             _ => None,
         };
         if let Some(interface) = interface {
-            let already_claimed = self.claimed_interfaces.lock().contains_key(&interface);
+            let already_claimed = self
+                .claimed_interfaces
+                .lock_irqsave()
+                .contains_key(&interface);
             if !already_claimed {
                 self.claim_interface(interface, 0, false)?;
             }
@@ -452,7 +456,13 @@ impl UsbDeviceFile {
         if !snapshot_has_interface(&self.snapshot, interface, alternate) {
             return Err(StarryError::NotFound);
         }
-        if self.claimed_interfaces.lock().get(&interface).copied() == Some(alternate) {
+        if self
+            .claimed_interfaces
+            .lock_irqsave()
+            .get(&interface)
+            .copied()
+            == Some(alternate)
+        {
             if force_reconfigure {
                 debug!(
                     "usbfs: interface {} alt {} already claimed on this fd, treating reconfigure \
@@ -464,11 +474,14 @@ impl UsbDeviceFile {
         }
 
         let submitted = self.drain_submitted_urbs_for_interface(interface);
-        if let Err(err) = self.with_live_lease(|lease| lease.claim_interface(interface, alternate)) {
+        if let Err(err) = self.with_live_lease(|lease| lease.claim_interface(interface, alternate))
+        {
             self.submitted_urbs.lock().extend(submitted);
             return Err(err);
         }
-        self.claimed_interfaces.lock().insert(interface, alternate);
+        self.claimed_interfaces
+            .lock_irqsave()
+            .insert(interface, alternate);
         // The alternate setting has changed and its old endpoints are quiesced.
         // Do not return while an old URB still owns a controller request.
         cleanup_submitted_urbs(submitted);
@@ -478,7 +491,7 @@ impl UsbDeviceFile {
     fn release_interface(&self, interface: u8) -> StarryResult<usize> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.claimed_interfaces
-            .lock()
+            .lock_irqsave()
             .get(&interface)
             .copied()
             .ok_or(StarryError::InvalidInput)?;
@@ -489,7 +502,7 @@ impl UsbDeviceFile {
             self.submitted_urbs.lock().extend(submitted);
             return Err(err);
         }
-        self.claimed_interfaces.lock().remove(&interface);
+        self.claimed_interfaces.lock_irqsave().remove(&interface);
         // Release quiesces the endpoint. Keep this fd alive until every URB
         // reaches a terminal state so user buffers can be reused on return.
         cleanup_submitted_urbs(submitted);
@@ -507,9 +520,9 @@ impl UsbDeviceFile {
             return Err(StarryError::InvalidInput);
         }
         self.collect_submitted_urbs(None);
-        if !self.claimed_interfaces.lock().is_empty()
+        if !self.claimed_interfaces.lock_irqsave().is_empty()
             || !self.submitted_urbs.lock().is_empty()
-            || !self.pending_urbs.lock().is_empty()
+            || !self.pending_urbs.lock_irqsave().is_empty()
         {
             return Err(StarryError::ResourceBusy);
         }
@@ -619,7 +632,7 @@ impl UsbDeviceFile {
     }
 
     fn claimed_endpoint(&self, endpoint: u8) -> StarryResult<ClaimedEndpoint> {
-        let claimed = self.claimed_interfaces.lock();
+        let claimed = self.claimed_interfaces.lock_irqsave();
         snapshot_claimed_endpoint(&self.snapshot, endpoint, &claimed)
             .ok_or(StarryError::OperationNotPermitted)
     }
@@ -628,9 +641,13 @@ impl UsbDeviceFile {
         if self.claimed_endpoint(endpoint).is_ok() {
             return Ok(());
         }
-        let interface = snapshot_endpoint_interface(&self.snapshot, endpoint)
-            .ok_or(StarryError::NotFound)?;
-        if !self.claimed_interfaces.lock().contains_key(&interface) {
+        let interface =
+            snapshot_endpoint_interface(&self.snapshot, endpoint).ok_or(StarryError::NotFound)?;
+        if !self
+            .claimed_interfaces
+            .lock_irqsave()
+            .contains_key(&interface)
+        {
             self.claim_interface(interface, 0, false)?;
         }
         Ok(())
@@ -1306,7 +1323,7 @@ impl UsbDeviceFile {
         let completed = if nonblocking {
             self.collect_submitted_urbs(None);
             self.pending_urbs
-                .lock()
+                .lock_irqsave()
                 .pop_front()
                 .ok_or(crate::StarryError::WouldBlock)?
         } else {
@@ -1316,7 +1333,7 @@ impl UsbDeviceFile {
                     || {
                         self.collect_submitted_urbs(None);
                         self.pending_urbs
-                            .lock()
+                            .lock_irqsave()
                             .pop_front()
                             .map_or(Poll::Pending, Poll::Ready)
                     },
@@ -1474,16 +1491,16 @@ impl FileLike for UsbDeviceFile {
             descriptor::USBDEVFS_SUBMITURB => self.submit_urb(current, arg),
             descriptor::USBDEVFS_REAPURB => self.reap_urb(current, arg, false),
             descriptor::USBDEVFS_REAPURBNDELAY => self.reap_urb(current, arg, true),
-            descriptor::USBDEVFS_CONNECTINFO | descriptor::USBDEVFS_GET_CAPABILITIES => self
-                .manager
-                .snapshot_device_ioctl(
+            descriptor::USBDEVFS_CONNECTINFO | descriptor::USBDEVFS_GET_CAPABILITIES => {
+                self.manager.snapshot_device_ioctl(
                     current,
                     self.bus_num,
                     self.device_num,
                     self.generation,
                     cmd,
                     arg,
-                ),
+                )
+            }
             _ => self.with_live_lease(|lease| lease.ioctl(current, cmd, arg)),
         }
     }
@@ -1504,7 +1521,7 @@ impl FileLike for UsbDeviceFile {
 impl Pollable for UsbDeviceFile {
     fn poll(&self) -> IoEvents {
         self.collect_submitted_urbs(None);
-        if self.pending_urbs.lock().is_empty() {
+        if self.pending_urbs.lock_irqsave().is_empty() {
             IoEvents::empty()
         } else {
             IoEvents::IN | IoEvents::OUT
@@ -1518,7 +1535,7 @@ impl Pollable for UsbDeviceFile {
         }
         unsafe { sink.register_shared(&self.poll_urbs, interests) };
         self.collect_submitted_urbs(None);
-        if !self.pending_urbs.lock().is_empty() {
+        if !self.pending_urbs.lock_irqsave().is_empty() {
             unsafe { self.poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
         }
     }
@@ -1534,7 +1551,7 @@ impl Pollable for UsbDeviceFile {
         }
         unsafe { sink.register_exclusive(&self.poll_urbs, interests) };
         self.collect_submitted_urbs(None);
-        if !self.pending_urbs.lock().is_empty() {
+        if !self.pending_urbs.lock_irqsave().is_empty() {
             unsafe { self.poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
         }
     }
@@ -1548,7 +1565,7 @@ impl Drop for UsbDeviceFile {
         if let Some(lease) = lease.as_ref() {
             let interfaces = self
                 .claimed_interfaces
-                .lock()
+                .lock_irqsave()
                 .keys()
                 .copied()
                 .collect::<Vec<_>>();
@@ -1569,7 +1586,7 @@ impl Drop for UsbDeviceFile {
                 }
             }
         }
-        self.pending_urbs.lock().clear();
+        self.pending_urbs.lock_irqsave().clear();
         if submitted.is_empty() {
             drop(lease);
             return;
@@ -1585,12 +1602,12 @@ impl Drop for UsbDeviceFile {
 }
 
 fn complete_urb(
-    pending_urbs: &Arc<IrqMutex<VecDeque<CompletedUrb>>>,
+    pending_urbs: &Arc<RawSpinLock<VecDeque<CompletedUrb>>>,
     poll_urbs: &Arc<PollSet>,
     completed: CompletedUrb,
 ) {
     {
-        pending_urbs.lock().push_back(completed);
+        pending_urbs.lock_irqsave().push_back(completed);
     }
     // Completed URB is queued before waking poll/reap waiters.
     unsafe { poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
@@ -1713,10 +1730,9 @@ fn snapshot_endpoint_interface(
                 interface = Some(snapshot.descriptor_blob[cursor + 2]);
                 alternate = snapshot.descriptor_blob[cursor + 3];
             }
-            0x05
-                if length >= 7
-                    && snapshot.descriptor_blob[cursor + 2] == endpoint
-                    && alternate == 0 =>
+            0x05 if length >= 7
+                && snapshot.descriptor_blob[cursor + 2] == endpoint
+                && alternate == 0 =>
             {
                 return interface;
             }
@@ -1875,7 +1891,6 @@ mod tests {
 
     use crab_usb::usb_if::endpoint::{RequestId, TransferStatus};
 
-    use self::std::sync::Mutex as TestMutex;
     use super::*;
 
     struct TestTransferState {
@@ -1884,11 +1899,11 @@ mod tests {
         completion_reclaims: usize,
     }
 
-    struct TestUsbfsAdapter(Arc<TestMutex<TestTransferState>>);
+    struct TestUsbfsAdapter(Arc<std::sync::Mutex<TestTransferState>>);
 
     impl TestUsbfsAdapter {
         fn new() -> Self {
-            Self(Arc::new(TestMutex::new(TestTransferState {
+            Self(Arc::new(std::sync::Mutex::new(TestTransferState {
                 inflight_requests: 0,
                 completion_pending: false,
                 completion_reclaims: 0,
@@ -1918,7 +1933,7 @@ mod tests {
         }
     }
 
-    pub(super) struct TestSubmittedTransfer(Arc<TestMutex<TestTransferState>>);
+    pub(super) struct TestSubmittedTransfer(Arc<std::sync::Mutex<TestTransferState>>);
 
     impl TestSubmittedTransfer {
         pub(super) fn try_reclaim(&self) -> StarryResult<Option<TransferCompletion>> {

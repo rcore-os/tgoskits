@@ -1,344 +1,142 @@
-# axvm VM 生命周期模型（API 使用指南）
+# AxVM 生命周期 API
 
-面向调用 axvm 公共 API 的 VMM 与控制面（shell 命令、HTTP 管理面、CLI、其他 VMM 等）。本文档
-回答一个问题：**调用某个生命周期方法后，状态如何变化、什么时候算完成**。只讲对外可观测的契约，
-不含实现细节。
+AxVM 为每个 VM 实例创建一个控制任务。调用方持有 `VmHandle`，提交命令并通过
+`VmOperation` 分别观察接受与完成；生命周期、资源转换与运行代次只由控制 owner 修改。
+实现细节见 [生命周期实现](lifecycle-internals.md)，总体边界见
+[所有权与锁分层](../../../docs/design/axvm-ownership-lock-boundary.md)。
 
-> **涉及文件**
->
-> - `src/vm/mod.rs` —— `AxVM` 公共生命周期 API 的实现（`new`/`start`/`pause`/`resume`/`stop`/
->   `reset`/`destroy`/`status`）。
-> - `src/lifecycle/status.rs` —— 对外枚举 `VmStatus` / `StopReason` 的定义。
-> - [lifecycle-internals.md](lifecycle-internals.md) —— 实现者视角：`Machine<R,H>` 状态机、转换
->   方法、runtime 资源双维度、锁语义与源码级行号对照。
+## 1. 实例与操作
 
-## 1. Overview
+`VmManager` 拥有实例注册表、宿主初始化与跨 VM 服务。VM ID 可复用，因此调用方应同时保留
+`VmKey`；每次运行使用新的 `RunId`。接口定义位于 `src/manager.rs` 与 `src/identity.rs`。
 
-**axvm 的控制状态转换是同步的；部分操作涉及异步的执行面收敛。**
+### 1.1 创建与查询
 
-- `start()` / `resume()`：**同步**，返回即完成状态转换。
-- `reset()` / `destroy()`：**同步阻塞**操作。成功返回时保证清理完成、达到目标状态；失败返回时
-  不保证（如停止等待超时返回 `AxVmError::InvalidState`，见 §4）。阻塞是**协作式等待**：调用 task 通过
-  `yield_now`/`join` **让出 CPU** 等 vCPU 退出，不忙等；但完成时机不固定（见 §4）。
-- `stop()` / `pause()`：**状态立即更新**（`Stopping`/`Paused`），但执行面收敛由运行中的 vCPU
-  异步完成，调用方无法预知何时生效。
+`VmManager::create(VmCreatePlan)` 消费配置、准备好的启动方案与镜像提供者，返回
+`VmOperation<VmHandle>`。控制任务完成资源建立与镜像装载后发布 `Ready` 句柄；注册表先
+保留 ID，拒绝重复创建，再发布已完成的句柄。查询 `get`、`list` 只复制句柄，锁外调用 VM 操作。
 
-**状态是"请求已接受"的信号，不是"执行面已静默"的确认**：禁止中断并持续执行 guest loop 的 guest
-永不 VM-exit → 状态声称 `Paused`/`Stopping` 而 vCPU 实际仍在跑（wedged）。需要确认完成的操作
-（`stop()` 须轮询到 `Stopped`；`destroy()` 是阻塞调用，返回即见结果）依赖 vCPU 是否真正收敛。
+| 对象 | 调用方获得的能力 |
+| --- | --- |
+| `VmKey` | VM ID 与 manager 分配的实例代次 |
+| `RunId` | 一个实例中的运行代次；重启、reset 后改变 |
+| `VmHandle` | 命令端点与查询快照，不包含可变硬件后端 |
+| `VmSnapshot` | owner 发布的状态、当前操作、最后错误、vCPU 观察值与运行计数 |
 
-最典型的误用：把 `stop()` 的返回当成停止完成。`stop()` 返回只表示请求已接受（`Stopping`），
-`Stopped` 要等最后一个 vCPU 退出；wedged guest 可能让 `Stopping` 无限期停留。正确做法见 §7。
+旧句柄始终指向原实例。成功销毁后该实例从注册表注销，同 ID 的新 VM 使用新的 `VmKey`，
+旧操作、IRQ 端口与 vCPU 确认不能修改它。
 
-## 2. VM states
+### 1.2 接受与完成
 
-状态由 `AxVM::status()` 返回（`VmStatus`）。实际运行中只能观测到 7 个状态：6 个常规稳定态 + 1 个
-异常终态 `Failed`（下表另列出 `Destroying` 以便对照，它是持锁期间的内部瞬态，`status()` 观测不到，
-见 §4）。创建用
-`AxVM::new(config)`（→ `Ready`，见 §7）；`new()` 本身不注册到全局注册表，注册由 manager
-（`register_vm` / AxVisor 的 `create_vm_from_toml`）完成。
+生命周期方法返回 `AxVmResult<VmOperation<T>>`。外层错误表示无法提交命令；
+`accepted().await` 表示 owner 已校验并开始处理，操作的 `.await` 或 `wait()` 返回最终结果。
+`OperationId` 标识本实例中的具体操作，拒绝与执行失败均沿用 `AxVmError`。
+
+```rust
+let operation = vm.stop(StopReason::Clean)?;
+operation.accepted().await?;
+operation.await?; // vCPU、设备与运行服务已静默并回收
+```
+
+丢弃观察句柄不取消 owner 的操作。同步 `wait()` 只用于可睡眠任务上下文；异步 handler 使用
+Future。句柄析构不阻塞销毁。调用方的超时或断开不证明资源已静默，不能据此释放 backing。
+
+## 2. 状态与完成条件
+
+`VmStatus` 定义于 `src/lifecycle/status.rs`，由控制任务发布到快照。过渡状态可被查询，
+稳定状态表示对应完成条件成立；硬件执行进展另由运行计数观察。
+
+### 2.1 稳定与过渡状态
+
+owner 通过 `Pausing`、`Stopping` 表达尚未收齐参与者确认的操作，不能把它们当作完成结果。
+`Failed` 保留失败信息与仍需回收的资源，后续停止或销毁可以重试清理。
 
 | 状态 | 含义 |
-|------|------|
-| `Ready` | 已创建，尚未启动 |
-| `Running` | `start()` 已完成，VM 进入运行状态，可接受 `pause()`/`stop()`/`reset()`/`destroy()` 请求；**不保证 guest 已执行第一条指令** |
-| `Paused` | 暂停请求已接受（置暂停标志并挂起设备，vCPU 会停止执行 guest 等待 `resume`）；**不保证暂停已完成** |
-| `Stopping` | 停止请求已接受，执行面收敛中 |
-| `Stopped` | 所有 vCPU 已停止执行 guest（vCPU 运行循环已结束），VM 不再执行 guest；**VM 对象与资源（内存/vCPU 后端/设备）仍保留**（runtime 是否已回收是内部细节，API 不承诺），可通过 `start()`/`reset()`/`destroy()` 继续管理 |
-| `Destroying` | **内部瞬态，不可观测**：仅在 `destroy()` 持锁移交资源所有权期间存在，锁释放前已被改写为 `Destroyed` 或还原原状态（见 §4） |
-| `Failed` | 生命周期进入失败状态，不能继续启动或恢复；需 `destroy()` 后重新创建 VM |
-| `Destroyed` | VM 已销毁，不能继续使用；重复 `destroy()` 幂等接受（返回成功、无副作用） |
+| --- | --- |
+| `Ready` | 资源与启动内容已准备，尚未打开客户机准入 |
+| `Running` | owner 初始化／恢复、设备与信号路径就绪，客户机准入已打开 |
+| `Pausing` | 已关闭准入，等待 vCPU park 与设备静默 |
+| `Paused` | 参与 vCPU 已卸载并 park，设备后台执行已静默 |
+| `Stopping` | 停止与资源退休正在进行 |
+| `Stopped` | 本运行的 vCPU、后台工作与端口已退休；实例保留，可重新启动 |
+| `Destroying` | 状态类型保留的销毁阶段；不能据此认定任务已退出 |
+| `Destroyed` | owner 已提交销毁；操作完成还包括资源释放、注销与任务退出确认 |
+| `Failed` | 操作或补偿失败；准入关闭，资源仍有明确 owner |
 
-> `Pausing` 与 `Destroying` 都是**内部瞬态**，观测不到（瞬态发生在持锁期间，`status()` 须等锁
-> 释放，因此只返回释放后的稳定态，见 §4）。`Failed`/`Destroyed` 是**终态**；`Stopped` 是
-> **静默态**（quiescent），不是终态——可 `start()`/`reset()` 恢复。
->
-> `destroy()` 释放 VM 资源（→`Destroyed`），但**不从全局注册表移除**；`remove_vm(id)` 才移除
-> （此后 `get_vm_by_id(id)` 返回 `None`）。`remove_vm` 对不存在或已移除的 id 返回 `None`
-> （幂等，不报错）。`Destroyed` 状态的 VM 仍可通过 `get_vm_by_id` 查到。
+`Running` 不保证客户机已执行第一条指令。`Destroyed` 的快照发布也不能替代 destroy 操作
+的完成观察；完成由宿主任务退出／资源退休链确认。
 
-### 2.1 Allowed operations
+### 2.2 操作后置条件
 
-控制面校验请求时以本表为准；状态不满足转换条件时返回 `InvalidTransition`（§5），状态不变。
+`start` 允许 `Ready`、`Stopped`，`pause` 允许 `Running`、`Paused`，`resume` 允许
+`Paused`、`Running`；重复 pause／resume 已达到目标时成功。停止、reset、destroy 通过 owner
+顺序处理；reset 先停止旧运行，再建立新运行。
 
-| 状态 | 允许的操作 |
-|------|-----------|
-| `Ready` | `start()` / `stop()` / `reset()` / `destroy()` |
-| `Running` | `pause()` / `stop()` / `reset()` / `destroy()` |
-| `Paused` | `resume()` / `stop()` / `reset()` / `destroy()` |
-| `Stopping` | `destroy()`（强制删除路径，阻塞等待停止完成） / `reset()`（先等 stop 完成） |
-| `Stopped` | `start()` / `reset()` / `destroy()` |
-| `Failed` | `destroy()` |
-| `Destroyed` | `destroy()`（幂等 no-op：重复调用返回 `Ok`、状态不变） |
+| 操作 | 完成结果 | 后置条件 |
+| --- | --- | --- |
+| `create` | `VmHandle` | 资源、设备与镜像已准备，状态为 `Ready` |
+| `start` | `RunId` | 必需 owner 已初始化、设备与路由就绪、准入打开且 owner 已唤醒 |
+| `pause` | `()` | 所有参与 vCPU 卸载并 park，设备后台执行已静默，状态为 `Paused` |
+| `resume` | `()` | 设备恢复、保留 work 可消费、准入打开且 owner 已唤醒 |
+| `stop` | `()` | 本运行已静默、join 与退休完成，状态为 `Stopped` |
+| `reset` | 新 `RunId` | 旧运行停止与回收，新运行满足 start 后置条件 |
+| `destroy` | `()` | 资源释放、该 `VmKey` 注销、控制任务退出得到确认 |
 
-> 上表列出**控制面推荐使用路径**。从 `Stopping` 直接 `destroy()` 是支持的**强制删除路径**
-> （内部阻塞等待停止完成）；控制面也可先 `stop()` 轮询到 `Stopped` 再 `destroy()`。两种模式
-> 都合法（见 §4）。表内不含 `Destroying`：它是不可观测的内部瞬态，控制面无需为它设计分支。
->
-> **重试安全（当前实现已验证，供重试逻辑参考）**：`stop()` 在 `Stopping`/`Stopped` 上重复调用
-> 返回 `Ok`（状态不变）。`destroy()` 在 `Destroyed` 上的幂等 no-op 已列主表。
+`start` 从 `Stopped` 与 reset 都重新准备运行对象和启动内容，不从上次指令恢复。
+暂停恢复保留寄存器与客户机内存；宿主单调时钟继续前进，到期 timer 在恢复时重新评估。
+`StopReason` 记录原因，不改变静默与退休要求。
 
-## 3. Lifecycle diagram
+## 3. 并发与失败
 
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Ready: create()
-    Ready --> Running: start()
-    Ready --> Failed: start() 失败
-    Ready --> Stopped: stop()（同步直达）
-    Running --> Paused: pause()（请求）
-    Paused --> Running: resume()
-    Running --> Stopping: stop()（异步请求）
-    Paused --> Stopping: stop()
-    Stopping --> Stopped: （内部完成，等最后一个 vCPU 退出）
-    Ready --> Running: reset()
-    Running --> Running: reset()
-    Paused --> Running: reset()
-    Stopping --> Running: reset()
-    Stopped --> Running: start()
-    Stopped --> Running: reset()
-    Failed --> Destroyed: destroy()
-    Ready --> Destroyed: destroy()
-    Running --> Destroyed: destroy()
-    Paused --> Destroyed: destroy()
-    Stopping --> Destroyed: destroy()
-    Stopped --> Destroyed: destroy()
-    Destroyed --> [*]: remove_vm(id) 从注册表移除
-```
+普通管理命令按 owner 接收顺序执行。等待执行确认时，owner 继续处理内部事件与 guest 请求，
+避免确认依赖 owner 本身却被同步等待阻塞。
 
-文本版（不支持 mermaid 的阅读器）——状态转换一览（每个操作列出"从哪些状态出发 → 到哪个状态"）：
+### 3.1 重试与回滚
 
-```
-  create()          → Ready
-  start()           → Running    从 Ready / Stopped（同步）
-  pause()(请求)      → Paused     从 Running；状态立即更新，不保证 vCPU 已暂停
-  resume()          → Running    从 Paused（同步）
-  stop()(异步请求)   → Stopping   从 Running / Paused；须轮询 status() 到 Stopped
-  stop()(同步直达)   → Stopped    从 Ready
-  （内部完成）        → Stopped    Stopping 等最后一个 vCPU 退出后进入
-  start()（重启）    → Running    从 Stopped
-  reset()           → Running    从 Ready / Running / Paused / Stopping / Stopped（见 §4）
-  destroy()         → Destroyed  可从任何可销毁状态发起（含 Failed；成功时；失败返回错误，见 §4）
-```
+同运行期重复 stop 共享停止完成，已停止时成功；重复 destroy 在原实例上观察同一退休结果。
+启动失败关闭准入并回收已发布 startup。pause／resume 的设备步骤失败执行逆向补偿，补偿失败
+进入 `Failed`。清理失败保留注册项、关闭的运行对象和 backing，后续清理重试不会提前释放。
 
-> `Paused*`：**仅状态机翻转，不保证 vCPU 已暂停**（*state transition only, vCPU quiescence not
-> guaranteed*）。图中 `destroy()` 边是**一步简写**：运行态实际先停止等待/清理再释放资源（见 §4），
-> 只表示**成功时**的最终结果；失败路径见 §4。`reset()` 边同理：从非 `Stopped` 状态发起时，内部
-> 先停止/清理旧状态再启动（见 §4）。
+错误由操作结果与 `VmSnapshot::last_failure` 提供。`StaleRun` 表示请求运行代次不匹配，
+`OperationCancelled` 表示操作依赖的参与者已取消，`EntryClosed` 表示实例入口关闭。
+观察者超时不取消任务，也不授权跳过 join、IRQ 退休或 DMA 静默。
 
-## 4. Operation semantics
+### 3.2 查询与执行进展
 
-| 操作 | 状态转换 | 完成语义 |
-|------|---------|---------|
-| `start()` | `Ready` / `Stopped` → `Running` | **同步**，返回即完成；失败：`Ready`→`Failed`，`Stopped`→保持 `Stopped` |
-| `stop()` | `Running` / `Paused` → `Stopping`（`Ready` → `Stopped` 直达） | 状态立即更新；执行面收敛**异步**，须轮询到 `Stopped`（从 `Ready` 直达：vCPU 从未运行，无需收敛） |
-| `pause()` | `Running` → `Paused` | 置暂停标志并挂起设备；vCPU 观察到后停止执行并等待 `resume`；**无确认 API** 保证暂停已完成（生效时机为 vCPU 下次 VM-exit，通常微秒级，取决于 guest 退出频率；掩中断忙循环的 guest 可能长时间不生效） |
-| `resume()` | `Paused` → `Running` | **同步**，返回即完成 |
-| `reset()` | `Ready` / `Running` / `Paused` / `Stopping` / `Stopped` → `Running`（内部经 `Ready` 瞬态） | **阻塞同步**：成功返回即完成清理与重启。失败分两类：停止等待超时 → 返回错误，VM **始终停留在 `Stopping`**（不回滚到原状态），可稍后重试；重建失败（`reset_transient_resources` 出错）→ 进入 `Failed`（`AxVMResources` 仍挂在 `Failed` 状态上，由随后的 `destroy()` 在锁外回收；VM 对象不可复用，`destroy()` 后重建）。从 `Stopping` 发起时，内部**先等本次 stop 完成**（`wait_until_stopped`）再重建，**不是取消 stop**，此时超时即本次 stop 等待超时（状态停留 `Stopping`）。`Failed`/`Destroyed` 不可 reset |
-| `destroy()` | 任何可销毁状态 → `Destroyed`（**成功时**） | **阻塞同步**：成功返回即资源释放完成；失败分两类：停止等待超时 → VM 停在 `Stopping`；资源清理失败 → 状态**已提交为 `Destroyed`**，错误只报告清理未完成（详见下方 bullet） |
+`VmHandle::snapshot` 复制 owner 发布的生命周期与对应激活集合，再在锁外读取
+`VcpuProgress` 原子计数。已退休激活的计数纳入该运行基数；旧观察集合只能读取原激活，
+不能混入 reset 或 ID 复用后的运行。
 
-关键语义：
+`entry_count` 在一次真实硬件执行返回 exit 后递增；`EngineOutcome::Interrupted` 重试不递增。
+`park_count` 记录参与者完成卸载／暂停。它们是 VM 级进展信号，不能替代逐参与者确认与设备
+静默契约；停止后退休该运行观察集合，重新启动从新运行计数开始。
 
-- **`stop()` 是请求不是完成**：返回只表示"已接受"（`Stopping`），真正完成是最后一个 vCPU 退出时
-  （内部路径）。控制面轮询到 `Stopped` 可确认停止完成再 `destroy()`/重建；直接从 `Stopping`
-  调 `destroy()` 也允许（内部阻塞等待停止完成），但无法先确认停止是否成功。**重试安全**：在
-  `Stopping`/`Stopped` 上重复 `stop()` 返回 `Ok`（状态不变），轮询/重试逻辑无需特判。
-- **`pause()` 与 `stop()` 语义不同**：`stop()` 请求 vCPU 退出、最终有 `Stopped` 终态；`pause()`
-  置暂停标志并挂起设备，vCPU 观察到后停止执行并等待 `resume`，但**没有确认 API** 能证明暂停已
-  完成。若需确认（快照/迁移场景），当前无 API 手段，属已知限制——需 guest 侧协作或后续扩展。
-  **变通方案（部署层，非 axvm 契约）**：在 guest 内部署 agent，通过虚拟串口/PV 通道向控制面
-  带外上报"已暂停"事件，控制面结合该信号与本地 `status()` 综合判断。该方案仅适用于 vCPU 正常
-  退出但暂停确认延迟的场景；wedged guest（永不 VM-exit）连 agent 都无法执行，无法上报。
-  **两者观察机制相同**：暂停/停止标志都只在 vCPU 下次 VM-exit 时被观察到；通知仅唤醒正等待在
-  等待队列上的 vCPU（不注入 guest 中断）。因此掩中断的忙循环 guest（永不 VM-exit）对两者都
-  不可见——`Paused`/`Stopping` 只是状态机翻转，vCPU 实际仍在跑；`Paused` 下 `stop()` 同样
-  不能兜底这种 wedged vCPU（它依赖的也是 VM-exit）。
-- **观察性计数器（HTTP 控制面用，非暂停完成 API）**：`AxVM` 暴露两个 VM 级单调聚合计数器
-  `guest_entry_count` / `guest_park_count`（见 `src/vm/mod.rs`），由 VM 内**所有** vCPU task
-  共享同一对计数，不是 per-vCPU：
-  - `guest_entry_count`：仅在 `run_vcpu` **成功返回后**递增（首次进 guest 与每次从 suspend 唤醒都计），
-    因此失败的 entry（`bind`/`before_vcpu_run`/`vcpu.run()`/退出处理返回 `Err`、guest 从未真正运行）
-    **不会**推进该计数；控制面据此区分"真实重入"与"仅翻转状态"。
-  - `guest_park_count`：仅当某个 vCPU 真正在 suspend wait 中 park（等待队列持锁、入队前发布）时递增，
-    观察的是"有 vCPU park"，**不是全部 vCPU/设备/timer 已 quiesce**——它**不是暂停完成确认 API**。
-  - 两者都是 VM 级聚合：一个 vCPU 的进度即可满足阈值，**不能证明其他 vCPU 也已 park 或重入**；
-    reset 会丢弃并重建 runtime，计数归零。控制面应把它当作"至少一个 vCPU 有进展"的弱信号，
-    而非"全部执行面已静默"的强保证。
-- **`Stopped` 下 `start()` vs `reset()`**：两者都 `Stopped → Running`，且都会**重新初始化 vCPU/
-  设备/中断架构**——`start()` 从 `Stopped` 会调 `prepare()`（内部 `reset_transient_resources`
-  + 按配置重建 vCPU/设备/中断架构）；`reset()` 同样经 `prepare()` 重建，只是额外显式多一次
-  `reset_transient_resources` 并经 `Ready` 瞬态。**两者都不从上次执行点恢复 guest**。从
-  `Running`/`Paused`/`Stopping` 重启只能 `reset()`（`start()` 返回 `InvalidTransition`）。
-  **guest 视角**：无论 `start()`（从 `Stopped`）还是 `reset()`，guest 都从配置的启动入口重新
-  开始（warm reboot，非 resume）；物理内存内容保留（重映射复用同一批 backing page），vCPU
-  寄存器/设备/中断架构被重建/清除。**安全提示**：重启**不清零物理内存**——若 VM 将分配给不同
-  安全域/租户，调用者须在重启前自行清零或重新分配 backing page。
-- **`reset()` ≠ 直接 `Stopped → Running`**：它先清理旧状态，再重新启动（内部经 `Ready` 瞬态），
-  外部看起来是"一次调用 → `Running`"（`start()` 从 `Stopped` 同样先 `prepare()` 重建，但不经
-  `Ready` 瞬态，见上）。
-- **`StopReason`**：`Clean`（正常）/ `SystemDown`（系统关机）/ `Forced`（强制）/ `Fault(String)`
-  （故障）。reason 仅记录停止原因（存入 `Stopped`），**不改变停止机制**；控制面按语义选值。
-  `Fault` 的 `String` 为自由文本（错误描述），仅作记录。
-- **`destroy()` 从运行态不是一步 `Running → Destroyed`**：内部先停止再释放资源，**成功**返回即
-  资源释放完成。失败分两类，`status()` 返回值确定：**① 停止等待超时**（从 `Running`/`Paused`/
-  `Stopping` 发起）→ VM **始终停留在 `Stopping`**（不回滚到 `Running`/`Paused`），`status()`
-  返回 `Stopping`；`Stopping` 允许 `destroy()`，直接重试 `destroy()` 会再次发起强制停止。**② 资源
-  清理失败**（`cleanup_resource_set` 出错，从 `Ready`/`Stopped` 或等待完成后发起）→ 状态已在
-  machine 锁内提交为 `Destroyed`，待回收的 resources 也在同一次提交中移出锁外，`status()` 返回
-  `Destroyed`；
-  `destroy()` 返回 `Err` 表示清理未完成，已部分释放的资源不会重做，重试 `destroy()` 只返回
-  `Ok(())`。需要"清理是否完整"的证据时只有这个错误返回值，控制面应记录并上报，不能靠查询状态
-  区分。阻塞是
-  **协作式等待**（`wait_until_stopped` 循环
-  `yield_now` + vCPU `task.join`），调用
-  task 让出 CPU 而非忙等，但**占用时间不固定**——依赖 vCPU 何时退出，无法预知何时返回。等待
-  期间**不持有生命周期锁**：同一 VM 上其他 task 调 `status()` 可正常返回当前状态（如
-  `Stopping`），不会被 `destroy()`/`reset()` 的等待阻塞（`status()` 只读、单次锁获取，§6）。等待有
-  上界：内部 `wait_until_stopped` 最多让出 10,000 次，超时返回错误（`AxVmError::InvalidState`，见 §5），因此 wedged
-  guest 会让 `destroy()` 长时间占用调用 task 甚至最终报错，而非无限卡死。**控制面实现
-  `destroy()` 时应避免同步等待**（如 HTTP `DELETE /vm/{id}`），包装为异步删除任务并配
-  timeout（§6）。
-- **并发 `destroy()` 被串行化**：整次 `destroy()`（含 `Destroyed` 提交之后的资源清理）由每 VM 的
-  destroy 门闩串行化，后到的调用会**等前一个调用的清理完成**再返回 `Ok`，因此 §1 的“成功返回即
-  清理完成”对并发调用同样成立。原因是先到的调用在锁外清理**按 VM id 索引的全局 IVC 通道**；若后到者
-  提前返回 `Ok`，控制面会注销并重建同 id 的 VM，而仍在运行的旧清理会误拆新 VM 的绑定。等待期间
-  同样不占用生命周期锁（§6），`status()` 仍可并发读取（读到的可能是 `Stopping`，也可能是清理已
-  完成而门闩尚未释放时的 `Destroyed`）。
+## 4. 控制面适配
 
-## 5. Error handling
+Axvisor 在 `os/axvisor/src/manager.rs` 持有实例化 `VmManager`，将 TOML 和镜像来源转换为
+`VmCreatePlan`。Shell 与 HTTP 通过同一 `VmHandle` 提交生命周期命令。
 
-会改变状态的**生命周期操作**（`start()` / `pause()` / `resume()` / `stop()` / `reset()` /
-`destroy()`）统一返回 `AxVmResult = Result<(), AxVmError>`：`Ok(())` 表示请求被接受（同步操作
-同时表示完成），`Err` 携带 `AxVmError`。**构造与查询 API 不适用此签名**：构造 `new(config) ->
-AxVmResult<AxVMRef>`（返回新建 VM 句柄）；查询 `status() -> VmStatus`、`running()`/`stopping()`/
-`stopped() -> bool`——查询不会失败，直接返回值。生命周期操作的主要错误：
+### 4.1 同步任务入口
 
-| 错误 | 含义 | 建议处理 |
-|------|------|---------|
-| `InvalidTransition` | 当前状态下不允许该操作（如在 `Running` 上 `start()`、非 `Paused` 上 `resume()`） | 状态不变；先查 `status()` 再重试 |
-| `ResourceUnavailable` / `OutOfMemory` | 资源不足 | 稍后重试 |
-| 转换初始化失败 | `start()`（从 `Ready`）或 `stop()`（从 `Ready`）的准备步骤失败；`reset()` 重建步骤失败 | 进入 `Failed`（不可恢复；资源保留到 `destroy()` 回收），之后须重建 VM |
-| 停止等待超时 | `reset()`/`destroy()` 内部 `wait_until_stopped` 超时 | 返回 **`AxVmError::InvalidState`**（错误枚举无 `Timeout` 变体），**不进入目标状态**；VM 处于 `Stopping`（§4），可直接重试 |
-| 资源清理失败 | `destroy()` 把 resources 交出后 `cleanup_resource_set` 出错 | 状态已是 `Destroyed`；错误表示清理未完成，重试不重做清理（§4）。记录错误并上报，勿当幂等成功处理 |
-
-`Failed` 是终态，只能 `destroy()` 离开；当前无独立 API 查询失败原因（原因随错误返回值提供）。
-`start()` 从 `Stopped` 失败则保持 `Stopped`（可重试），不进入 `Failed`。
-
-并发请求到达时，状态不满足转换条件的一方会收到 `InvalidTransition`（状态不变）；生命周期 API
-**不保证并发调用顺序**，控制面应避免对同一 VM 同时发起多个生命周期操作（见 §6）。
-
-## 6. Controller guidelines
-
-控制面本质是**状态机客户端**：发起请求 → 轮询状态 → 等待终态 → 继续下一操作。
-
-```
-request operation（如 stop()）
-        │
-        ▼
-   poll status()（带 timeout）
-        │
-        ▼
-  等待终态（Stopped / Destroyed）
-        │
-        ▼
-   继续下一个操作
-```
-
-**轮询必须带 timeout**，否则 wedged guest 会让调用方死循环：
+shell 可在任务上下文调用 `wait()`。完整生命周期用同一个句柄完成，销毁无需另行全局注销：
 
 ```rust
-let deadline = Instant::now() + timeout;
-loop {
-    if vm.status() == VmStatus::Stopped { break; }
-    if Instant::now() >= deadline { return Err(Timeout); }
-    sleep(Duration::from_millis(10));
-}
+let vm = manager.create(plan)?.wait()?;
+let run = vm.start()?.wait()?;
+vm.pause()?.wait()?;
+vm.resume()?.wait()?;
+vm.stop(StopReason::Clean)?.wait()?;
+vm.destroy()?.wait()?;
 ```
 
-**`status()` 是只读查询，线程安全**（内部一次锁获取 + O(1) 状态匹配，不遍历 vCPU，开销低），
-控制面可从多线程轮询，每 VM 每秒百次量级轮询可忽略，全局巡检频率不受它约束；但**生命周期操作**
-仍应串行化（见下）。状态查询只有 **VM 粒度**（无按 vCPU 查询的 API）；示例中的 10ms 轮询间隔
-是保守建议值，非硬性下限。`destroy()`/`reset()` 内部 `wait_until_stopped` 的 10,000 次让出
-是**硬编码活跃性上界**，不是时间保证——在核隔离的空闲核上单次 `yield_now` 为微秒级，10,000
-次通常远小于 1 秒；但若 vCPU 与等待 task 同核（未隔离），等待 task 无法调度（这正是核隔离的
-原因）。控制面**不要依赖该计数**，应设秒级 timeout（如 30–60s），超时后重试。
+`run` 可用于校验内部内存更新的预期运行。注册表锁、mailbox 锁和快照锁不跨上述等待持有。
+`VmManager::shutdown` 关闭创建入口，发出所有销毁请求，在注册表锁外等待并回收任务。
 
-**并发语义：** 生命周期 API 不保证并发调用顺序。控制面应避免对同一 VM 同时执行多个生命周期
-操作（如同时 `pause()` 与 `stop()`）；收到 `InvalidTransition` 表示状态不满足，应重新查询
-`status()` 后再决定。
+### 4.2 异步 HTTP 入口
 
-> **安全底线：** 并发调用是**内存安全**的——所有生命周期操作与 `status()` 共用 `AxVM.machine`
-> 内部 `Mutex` 串行化（`Mutex<Machine<..>>`），最坏结果是一方收到 `InvalidTransition`（状态
-> 不变），不会 panic、无未定义行为、不会损坏 VM 状态。因此控制面**不需要**额外锁来防 crash，
-> 只需在逻辑上处理 `InvalidTransition` 与超时。
+HTTP 的 pause／stop 在 owner 接受后响应，调用方轮询终态；create、start、resume、delete
+等待操作 Future 完成，handler 不使用阻塞 `wait()`。响应形状保持原契约。
 
-**竞态例子**：两个请求并发到达同一 VM——
-
-```
-T1: stop()   → Running → Stopping（请求接受）
-T2: start()  → InvalidTransition（Running 上 start 非法，状态不变）
-```
-
-生产控制面应串行化对同一 VM 的生命周期请求（如 per-VM 操作队列），避免依赖时序。
-
-**wedged guest 的恢复**：没有跳过 vCPU 等待的强制 API（资源释放依赖 vCPU 退出）。缓解（部署
-层面建议）：核隔离让僵死 vCPU 只烧自己的核、不阻塞管理面；`destroy()`/`stop()` 超时后可稍后
-重试。若 guest 永不恢复，vCPU 执行资源会滞留，需从 guest 侧治理（如加看门狗）。
-
-## 7. Examples
-
-轮询 stop（带 timeout）后再销毁：
-
-```rust
-use axvm::{AxvmRuntime, StopReason, VmStatus, get_vm_by_id};
-
-let vm = get_vm_by_id(id).ok_or(VmGone)?;   // 从全局注册表取句柄（不存在 → 404）
-vm.stop(StopReason::Clean)?;                 // 请求停止 → Stopping
-
-let deadline = Instant::now() + timeout;
-loop {
-    match vm.status() {
-        VmStatus::Stopped => break,
-        VmStatus::Destroyed => return Err(VmGone),      // 其他路径已 destroy
-        VmStatus::Failed => return Err(VmFailed),       // 并发 reset 重建失败等
-        _ if Instant::now() >= deadline => return Err(Timeout),
-        _ => sleep(Duration::from_millis(10)),
-    }
-}
-
-vm.destroy()?;                // 阻塞；成功 → Destroyed，资源释放完成
-AxvmRuntime::remove_vm(id);   // 从注册表移除（此后 get_vm_by_id(id) → None）
-```
-
-完整生命周期：
-
-```rust
-use axvm::{AxVM, StopReason};
-
-let vm = AxVM::new(config)?;      // Ready
-vm.start()?;                      // Running（同步）
-vm.pause()?;                      // Paused（状态立即更新；不保证 vCPU 已停）
-vm.resume()?;                     // Running（同步）
-vm.stop(StopReason::Clean)?;      // Stopping（请求；轮询到 Stopped，见上）
-vm.destroy()?;                    // Destroyed（阻塞，资源释放完成）
-```
-
-## 8. Contract summary
-
-对任何生命周期操作：
-
-1. **API 调用结果表示请求是否被接受**（同步操作同时表示完成；`stop()`/`pause()` 仅表示已接受）。
-2. **`status()` 表示生命周期状态**，调用后据此判断下一步。
-3. **状态语义 ≠ 操作完成语义**：
-   - `start()` / `resume()`：返回即完成 → `Running`
-   - `stop()`：完成是 `Stopped`（须轮询）；`Stopped` 是**静默态**，不是终态，可 `start()`/`reset()` 恢复
-   - `pause()`：无完成确认，vCPU 静默不可保证（同 `stop()`）
-   - `destroy()`：完成是成功返回 → `Destroyed`（终态）；失败返回不保证达到目标状态
-   - `Failed`：不可恢复错误态（终态）
-   `Stopping`/`Paused` 不代表执行面已静默；`destroy()` 资源清理失败时状态已提交为 `Destroyed`
-   而返回 `Err`，重试不会重做清理（§4）。
-4. **控制面必须处理 timeout 与 `InvalidTransition`**（见 §5、§6）。
-
-> **行为基准：** 本文描述的契约与当前实现同步——`destroy()` 在 machine 锁外回收 resources，并由
-> 每 VM 门闩串行化（§4）；源码级行号对照见 [lifecycle-internals.md](lifecycle-internals.md)。
+真实暂停／恢复、Stopped 后启动、销毁后重建与执行进展由现有
+`http-control-plane` QEMU 用例验证。该系统证据与组件的并发、取消、确认和失败测试分别保护
+实际宿主调度链及受控交错，不能互相替代。

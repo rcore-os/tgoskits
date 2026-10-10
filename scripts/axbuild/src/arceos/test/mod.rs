@@ -5,6 +5,7 @@ mod c_qemu;
 mod discovery;
 mod generic_qemu;
 mod listing;
+mod pcm_waveform;
 mod runner;
 mod rust_qemu;
 mod serial_rx;

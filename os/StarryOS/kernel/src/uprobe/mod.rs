@@ -20,13 +20,14 @@ use ax_runtime::hal::cpu::context::UserRegisters;
 use kprobe::{ProbeBuilder, Uprobe};
 
 use crate::{
-    kprobe::{KernelKprobeOps, KernelRawMutex, ptregs_write_back, trapframe_to_ptregs},
+    kprobe::{KernelKprobeOps, ptregs_write_back, trapframe_to_ptregs},
+    sync::RawSpinLockIrqSaveBackend,
     task::{UserTaskRef, current_user_task},
 };
 
 /// Concrete `kprobe::Uprobe` parameterized on the kernel's raw mutex and
 /// auxiliary ops (the same `L` / `F` the kprobe types use).
-pub type KernelUprobe = Uprobe<KernelRawMutex, KernelKprobeOps>;
+pub type KernelUprobe = Uprobe<RawSpinLockIrqSaveBackend, KernelKprobeOps>;
 
 /// Register a uprobe into the *current* process' per-process manager.
 pub fn register_uprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelUprobe> {

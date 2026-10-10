@@ -15,8 +15,10 @@ host-test = ["ax-sync/host-test"]
 
 [dependencies]
 log = "0.4"
-cfg-if = "1.0"
-ax-sync.workspace = true
+# Ordinary device state uses the task-sleepable `ax_sync::Mutex`, which is
+# gated behind `ax-sync/sleep`; the native provider is supplied by the kernel
+# runtime and a host test provider by the packages' test support modules.
+ax-sync = { workspace = true, features = ["sleep"] }
 
 # System independent crates provided by ArceOS.
 axdevice_base = { workspace = true, features = ["runtime-internal"] }
@@ -32,8 +34,8 @@ name = "lookup_DeviceRuntime"
 harness = false
 
 [dev-dependencies]
-ax-runtime = { workspace = true, features = ["host-test"] }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+ax-crate-interface = { workspace = true }
 divan = "0.1.21"
 paste = "1.0"
 rand = { version = "0.10", features = ["std_rng"] }

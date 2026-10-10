@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_sync::SpinLock;
+use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::DeviceId;
 
 use super::{
@@ -76,6 +76,9 @@ impl LifecycleSlot {
 pub(super) struct LifecycleOperation<'a> {
     binding: &'a PciRootBinding,
     completion: LifecycleCompletion,
+    // Only the logical owner holds this latch. It protects no callback data;
+    // a stop successor sleeps here until ownership has been handed off.
+    gate: Option<MutexGuard<'a, ()>>,
     owner: LifecycleOwner,
     claimed: bool,
     completed: bool,
@@ -114,24 +117,30 @@ impl LifecycleOperation<'_> {
         }
 
         debug_assert_eq!(self.owner, LifecycleOwner::Stop);
-        loop {
-            let mut slot = self.binding.lifecycle.lock_irqsave();
-            if slot.state == BindingLifecycleState::Dead {
-                return Err(DeviceManagerError::InvalidState {
-                    operation: "claim PCI root teardown lifecycle owner",
-                    detail: "PCI root binding is already dead".into(),
-                });
-            }
-            if slot.owner.is_none() && slot.phase == HandoffPhase::Open && slot.stop_requested {
-                slot.state = BindingLifecycleState::Stopping;
-                slot.owner = Some(LifecycleOwner::Stop);
-                slot.phase = HandoffPhase::Draining;
-                self.claimed = true;
-                return Ok(());
-            }
+        self.gate = Some(self.binding.operation_complete.lock());
+        let mut slot = self.binding.lifecycle.lock();
+        if slot.state == BindingLifecycleState::Dead {
+            self.completed = true;
             drop(slot);
-            core::hint::spin_loop();
+            drop(self.gate.take());
+            return Err(DeviceManagerError::InvalidState {
+                operation: "claim PCI root teardown lifecycle owner",
+                detail: "PCI root binding is already dead".into(),
+            });
         }
+        if slot.owner.is_some() || slot.phase != HandoffPhase::Open || !slot.stop_requested {
+            drop(slot);
+            drop(self.gate.take());
+            return Err(DeviceManagerError::InvalidState {
+                operation: "claim PCI root teardown lifecycle owner",
+                detail: "PCI lifecycle completion latch does not match its owner".into(),
+            });
+        }
+        slot.state = BindingLifecycleState::Stopping;
+        slot.owner = Some(LifecycleOwner::Stop);
+        slot.phase = HandoffPhase::Draining;
+        self.claimed = true;
+        Ok(())
     }
 
     fn complete(
@@ -161,7 +170,7 @@ impl LifecycleOperation<'_> {
                 }
 
                 let ready_to_seal = {
-                    let mut slot = self.binding.lifecycle.lock_irqsave();
+                    let mut slot = self.binding.lifecycle.lock();
                     debug_assert_eq!(slot.owner, Some(self.owner));
                     if slot.pending_withdrawals.is_empty() {
                         if reopen_admissions && first_error.is_none() && !slot.stop_requested {
@@ -220,14 +229,14 @@ impl LifecycleOperation<'_> {
                                  activity: {close_error}"
                             );
                         });
-                    let mut slot = self.binding.lifecycle.lock_irqsave();
+                    let mut slot = self.binding.lifecycle.lock();
                     debug_assert_eq!(slot.owner, Some(self.owner));
                     slot.state = BindingLifecycleState::ResetFailed;
                     slot.phase = HandoffPhase::Sealed;
                     continue;
                 }
                 let publish = {
-                    let mut slot = self.binding.lifecycle.lock_irqsave();
+                    let mut slot = self.binding.lifecycle.lock();
                     debug_assert_eq!(slot.owner, Some(self.owner));
                     if !slot.pending_withdrawals.is_empty() {
                         false
@@ -263,7 +272,7 @@ impl LifecycleOperation<'_> {
                          {error}"
                     );
                 }
-                let mut slot = self.binding.lifecycle.lock_irqsave();
+                let mut slot = self.binding.lifecycle.lock();
                 debug_assert_eq!(slot.owner, Some(self.owner));
                 slot.state = if slot.stop_requested {
                     stop_superseded = true;
@@ -285,14 +294,24 @@ impl LifecycleOperation<'_> {
             }
 
             let committed = {
-                let mut slot = self.binding.lifecycle.lock_irqsave();
+                let mut slot = self.binding.lifecycle.lock();
                 debug_assert_eq!(slot.owner, Some(self.owner));
                 if slot.pending_withdrawals.is_empty() {
+                    // Retire the latch before publishing the empty owner slot.
+                    // Every contender first checks this task-side state mutex,
+                    // so it cannot claim an operation before this commit.
+                    drop(self.gate.take());
                     slot.phase = HandoffPhase::Open;
                     slot.owner = None;
                     if matches!(self.completion, LifecycleCompletion::Stop) {
-                        slot.state = BindingLifecycleState::Dead;
-                        slot.stop_requested = false;
+                        let finished =
+                            success_state == BindingLifecycleState::Dead && first_error.is_none();
+                        slot.state = if finished {
+                            BindingLifecycleState::Dead
+                        } else {
+                            BindingLifecycleState::Stopping
+                        };
+                        slot.stop_requested = !finished;
                     } else if slot.stop_requested {
                         slot.state = BindingLifecycleState::Stopping;
                     }
@@ -339,7 +358,7 @@ impl Drop for LifecycleOperation<'_> {
             // A reset that unwinds before publishing its result must remain
             // fail-closed instead of reopening partially reset state.
             LifecycleCompletion::Reset => BindingLifecycleState::ResetFailed,
-            LifecycleCompletion::Stop => BindingLifecycleState::Dead,
+            LifecycleCompletion::Stop => BindingLifecycleState::Stopping,
         };
         if let Err(error) = self.complete(fallback, false, false) {
             warn!("PCI lifecycle abort could not complete deferred handoff: {error}");
@@ -352,16 +371,17 @@ pub struct PciRootBinding {
     pub(super) host: DeviceNodeId,
     pub(super) root: Arc<PciRootState>,
     pub(super) router: Arc<EndpointRouter>,
-    pub(super) lifecycle: SpinLock<LifecycleSlot>,
-    pub(super) pending_irq_withdrawals: SpinLock<Vec<PendingIrqWithdrawal>>,
+    pub(super) lifecycle: Mutex<LifecycleSlot>,
+    operation_complete: Mutex<()>,
+    pub(super) pending_irq_withdrawals: Mutex<Vec<PendingIrqWithdrawal>>,
     #[cfg(test)]
-    reset_handoff_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    reset_handoff_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    deferred_withdrawal_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    deferred_withdrawal_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    admission_open_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    admission_open_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    completion_closing_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    completion_closing_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 pub(super) struct PendingIrqWithdrawal {
@@ -377,52 +397,53 @@ impl PciRootBinding {
             host,
             root,
             router: Arc::new(EndpointRouter::new()),
-            lifecycle: SpinLock::new(LifecycleSlot::new()),
-            pending_irq_withdrawals: SpinLock::new(Vec::new()),
+            lifecycle: Mutex::new(LifecycleSlot::new()),
+            operation_complete: Mutex::new(()),
+            pending_irq_withdrawals: Mutex::new(Vec::new()),
             #[cfg(test)]
-            reset_handoff_hook: SpinLock::new(None),
+            reset_handoff_hook: Mutex::new(None),
             #[cfg(test)]
-            deferred_withdrawal_hook: SpinLock::new(None),
+            deferred_withdrawal_hook: Mutex::new(None),
             #[cfg(test)]
-            admission_open_hook: SpinLock::new(None),
+            admission_open_hook: Mutex::new(None),
             #[cfg(test)]
-            completion_closing_hook: SpinLock::new(None),
+            completion_closing_hook: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub(super) fn set_reset_handoff_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.reset_handoff_hook.lock_irqsave() = Some(hook);
+        *self.reset_handoff_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]
     pub(super) fn set_deferred_withdrawal_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.deferred_withdrawal_hook.lock_irqsave() = Some(hook);
+        *self.deferred_withdrawal_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]
     pub(super) fn set_admission_open_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.admission_open_hook.lock_irqsave() = Some(hook);
+        *self.admission_open_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]
     pub(super) fn set_completion_closing_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self.completion_closing_hook.lock_irqsave() = Some(hook);
+        *self.completion_closing_hook.lock() = Some(hook);
     }
 
     #[cfg(test)]
     pub(super) fn lifecycle_owner_is_reset(&self) -> bool {
-        self.lifecycle.lock_irqsave().owner == Some(LifecycleOwner::Reset)
+        self.lifecycle.lock().owner == Some(LifecycleOwner::Reset)
     }
 
     #[cfg(test)]
     pub(super) fn stop_requested(&self) -> bool {
-        self.lifecycle.lock_irqsave().stop_requested
+        self.lifecycle.lock().stop_requested
     }
 
     #[cfg(test)]
     fn notify_reset_handoff(&self) {
-        let hook = self.reset_handoff_hook.lock_irqsave().take();
+        let hook = self.reset_handoff_hook.lock().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -433,7 +454,7 @@ impl PciRootBinding {
 
     #[cfg(test)]
     fn notify_deferred_withdrawal(&self) {
-        let hook = self.deferred_withdrawal_hook.lock_irqsave().take();
+        let hook = self.deferred_withdrawal_hook.lock().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -444,7 +465,7 @@ impl PciRootBinding {
 
     #[cfg(test)]
     fn notify_admission_open(&self) {
-        let hook = self.admission_open_hook.lock_irqsave().take();
+        let hook = self.admission_open_hook.lock().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -455,7 +476,7 @@ impl PciRootBinding {
 
     #[cfg(test)]
     fn notify_completion_closing(&self) {
-        let hook = self.completion_closing_hook.lock_irqsave().take();
+        let hook = self.completion_closing_hook.lock().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -525,7 +546,7 @@ impl PciRootBinding {
     pub(super) fn try_begin_withdrawal_operation(
         &self,
     ) -> Result<LifecycleOperation<'_>, WithdrawalStartError> {
-        let mut slot = self.lifecycle.lock_irqsave();
+        let mut slot = self.lifecycle.lock();
         let previous = slot.state;
         if slot.stop_requested
             || !matches!(
@@ -543,12 +564,17 @@ impl PciRootBinding {
                 _ => WithdrawalStartError::Busy,
             });
         }
+        let gate = self
+            .operation_complete
+            .try_lock()
+            .expect("an empty lifecycle slot has no latch owner");
         slot.state = BindingLifecycleState::Withdrawing;
         slot.owner = Some(LifecycleOwner::Withdrawal);
         slot.phase = HandoffPhase::Draining;
         Ok(LifecycleOperation {
             binding: self,
             completion: LifecycleCompletion::Restore(previous),
+            gate: Some(gate),
             owner: LifecycleOwner::Withdrawal,
             claimed: true,
             completed: false,
@@ -559,7 +585,7 @@ impl PciRootBinding {
         &self,
         device: DeviceId,
     ) -> Option<LifecycleOperation<'_>> {
-        let mut slot = self.lifecycle.lock_irqsave();
+        let mut slot = self.lifecycle.lock();
         let previous = slot.state;
         if previous == BindingLifecycleState::Dead {
             return None;
@@ -580,12 +606,17 @@ impl PciRootBinding {
             self.notify_deferred_withdrawal();
             return None;
         }
+        let gate = self
+            .operation_complete
+            .try_lock()
+            .expect("an empty lifecycle slot has no latch owner");
         slot.state = BindingLifecycleState::Withdrawing;
         slot.owner = Some(LifecycleOwner::Withdrawal);
         slot.phase = HandoffPhase::Draining;
         Some(LifecycleOperation {
             binding: self,
             completion: LifecycleCompletion::Restore(previous),
+            gate: Some(gate),
             owner: LifecycleOwner::Withdrawal,
             claimed: true,
             completed: false,
@@ -593,22 +624,29 @@ impl PciRootBinding {
     }
 
     pub(super) fn begin_stop_operation(&self) -> LifecycleOperation<'_> {
-        let mut slot = self.lifecycle.lock_irqsave();
+        let mut slot = self.lifecycle.lock();
         slot.stop_requested = true;
+        let mut gate = None;
         let claimed = if slot.owner.is_none()
             && slot.phase == HandoffPhase::Open
             && slot.state != BindingLifecycleState::Dead
         {
-            slot.state = BindingLifecycleState::Stopping;
-            slot.owner = Some(LifecycleOwner::Stop);
-            slot.phase = HandoffPhase::Draining;
-            true
+            gate = self.operation_complete.try_lock();
+            if gate.is_some() {
+                slot.state = BindingLifecycleState::Stopping;
+                slot.owner = Some(LifecycleOwner::Stop);
+                slot.phase = HandoffPhase::Draining;
+                true
+            } else {
+                false
+            }
         } else {
             false
         };
         LifecycleOperation {
             binding: self,
             completion: LifecycleCompletion::Stop,
+            gate,
             owner: LifecycleOwner::Stop,
             claimed,
             completed: false,
@@ -621,7 +659,7 @@ impl PciRootBinding {
         next_state: BindingLifecycleState,
         operation: &'static str,
     ) -> DeviceManagerResult<LifecycleOperation<'_>> {
-        let mut slot = self.lifecycle.lock_irqsave();
+        let mut slot = self.lifecycle.lock();
         if slot.stop_requested
             || slot.owner.is_some()
             || slot.phase != HandoffPhase::Open
@@ -638,6 +676,10 @@ impl PciRootBinding {
                 detail: "PCI root binding is not running".into(),
             });
         }
+        let gate = self
+            .operation_complete
+            .try_lock()
+            .expect("an empty lifecycle slot has no latch owner");
         slot.state = next_state;
         slot.owner = Some(owner);
         slot.phase = HandoffPhase::Draining;
@@ -651,6 +693,7 @@ impl PciRootBinding {
         Ok(LifecycleOperation {
             binding: self,
             completion,
+            gate: Some(gate),
             owner,
             claimed: true,
             completed: false,
@@ -658,14 +701,14 @@ impl PciRootBinding {
     }
 
     pub(super) fn take_pending_binding_withdrawals(&self) -> Vec<DeviceId> {
-        core::mem::take(&mut self.lifecycle.lock_irqsave().pending_withdrawals)
+        core::mem::take(&mut self.lifecycle.lock().pending_withdrawals)
     }
 }
 
 pub(super) fn retry_pending_irq_withdrawals(
-    pending_storage: &SpinLock<Vec<PendingIrqWithdrawal>>,
+    pending_storage: &Mutex<Vec<PendingIrqWithdrawal>>,
 ) -> DeviceManagerResult {
-    let pending = core::mem::take(&mut *pending_storage.lock_irqsave());
+    let pending = core::mem::take(&mut *pending_storage.lock());
     let mut remaining = Vec::new();
     let mut first_error = None;
     for withdrawal in pending {
@@ -686,17 +729,15 @@ pub(super) fn retry_pending_irq_withdrawals(
     // A root teardown may transfer another owner while callbacks run. Merge
     // with the current queue instead of replacing it, preserving both the
     // retry results and owners arriving concurrently.
-    pending_storage.lock_irqsave().extend(remaining);
+    pending_storage.lock().extend(remaining);
     first_error.map_or(Ok(()), Err)
 }
 
-pub(super) fn transfer_pending_irq_withdrawals(
-    pending_storage: &SpinLock<Vec<PendingIrqWithdrawal>>,
-) {
-    let pending = core::mem::take(&mut *pending_storage.lock_irqsave());
+pub(super) fn transfer_pending_irq_withdrawals(pending_storage: &Mutex<Vec<PendingIrqWithdrawal>>) {
+    let pending = core::mem::take(&mut *pending_storage.lock());
     if pending.is_empty() {
         return;
     }
-    ORPHANED_IRQ_WITHDRAWALS.lock_irqsave().extend(pending);
+    ORPHANED_IRQ_WITHDRAWALS.lock().extend(pending);
     warn!("PCI endpoint IRQ withdrawals transferred to the fail-closed orphan queue");
 }

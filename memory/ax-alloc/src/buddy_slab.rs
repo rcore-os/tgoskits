@@ -6,7 +6,7 @@ use core::{
     slice,
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use buddy_slab_allocator::{
     GlobalAllocator as InnerAllocator, RemoteFreeHint, SizeClass, SlabAllocResult, SlabAllocator,
     SlabDeallocResult, SlabPoolTrait, SlabTrait, interface::BuddySlabIf,
@@ -33,7 +33,7 @@ static SLAB_POOL: SlabPool = SlabPool;
 
 struct PercpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: Option<u16>,
-    inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
+    inner: RawSpinLock<SlabAllocator<PAGE_SIZE>>,
     remote_hint: RemoteFreeHint,
 }
 
@@ -41,7 +41,7 @@ impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
     const fn new_uninit() -> Self {
         Self {
             cpu_id: None,
-            inner: SpinLock::new(SlabAllocator::new()),
+            inner: RawSpinLock::new(SlabAllocator::new()),
             remote_hint: RemoteFreeHint::new(),
         }
     }
@@ -140,8 +140,8 @@ impl BuddySlabIf for BuddySlabIfImpl {
 
 /// The global allocator used by ArceOS when `buddy-slab` is enabled.
 pub struct GlobalAllocator {
-    inner: SpinLock<InnerAllocator<PAGE_SIZE>>,
-    usages: SpinLock<Usages>,
+    inner: RawSpinLock<InnerAllocator<PAGE_SIZE>>,
+    usages: RawSpinLock<Usages>,
 }
 
 impl Default for GlobalAllocator {
@@ -154,8 +154,8 @@ impl GlobalAllocator {
     /// Creates an empty [`GlobalAllocator`].
     pub const fn new() -> Self {
         Self {
-            inner: SpinLock::new(InnerAllocator::<PAGE_SIZE>::new()),
-            usages: SpinLock::new(Usages::new()),
+            inner: RawSpinLock::new(InnerAllocator::<PAGE_SIZE>::new()),
+            usages: RawSpinLock::new(Usages::new()),
         }
     }
 

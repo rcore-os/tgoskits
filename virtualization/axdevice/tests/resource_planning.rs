@@ -1,4 +1,4 @@
-extern crate ax_runtime as _;
+mod common;
 
 use axdevice::*;
 use axdevice_base::*;

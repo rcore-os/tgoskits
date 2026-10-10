@@ -66,8 +66,17 @@ pub const X86_LOCAL_APIC_GPA: usize = 0xfee0_0000;
 pub const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 
 /// x86 vCPU creation configuration.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct X86VcpuCreateConfig;
+#[derive(Clone, Debug)]
+pub struct X86VcpuCreateConfig<R> {
+    /// Run-scoped interrupt and timer port owned by this vCPU backend.
+    pub runtime: R,
+}
+
+impl<R> X86VcpuCreateConfig<R> {
+    pub const fn new(runtime: R) -> Self {
+        Self { runtime }
+    }
+}
 
 /// Guest I/O port range that should trap and be handled by the VMM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

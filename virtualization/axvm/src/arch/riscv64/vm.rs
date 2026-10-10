@@ -24,26 +24,28 @@ impl Riscv64Arch {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels)
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+    pub(crate) fn init_vm(vm: &mut AxVM) -> AxVmResult {
+        let vm_id = vm.id();
+        let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let placements = resources.vcpu_placements(config);
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            let mut vcpus = PreparedVcpus::create(vm_id, &placements, |placement| {
                 Ok(RiscvVcpuCreateConfig {
                     hart_id: placement.phys_cpu_id,
                     dtb_addr: dtb_addr.as_usize(),
                 })
             })?;
-            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let devices = PreparedDevices::build_planned(resources, ports)?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            resources.prepare_guest_address_space(vm_id, config, &[])?;
             vcpus.setup(resources, config, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))

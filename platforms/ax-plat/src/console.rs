@@ -115,7 +115,7 @@ pub fn write_text_bytes(bytes: &[u8]) {
 }
 
 /// Lock for console operations to prevent mixed output from concurrent execution
-pub static CONSOLE_LOCK: ax_sync::SpinLock<()> = ax_sync::SpinLock::new(());
+pub static CONSOLE_LOCK: ax_sync::RawSpinLock<()> = ax_sync::RawSpinLock::new(());
 
 /// Simple console print operation.
 #[macro_export]

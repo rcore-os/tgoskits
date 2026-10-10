@@ -93,9 +93,8 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 
 | Profile | Check ID | 主要内容 |
 | --- | --- | --- |
-| `kvm-intel` | `test-axvisor-self-hosted-x86-64-vmx-smoke-pci-enumeration` | VMX smoke、通用 PCI 枚举 |
+| `kvm-intel` | `test-axvisor-self-hosted-x86-64-vmx` | VMX smoke、direct/MP/OVMF ACPI、通用 PCI 枚举、PCI block RW/RO；一次构建运行七用例 |
 | `kvm-intel` | `test-axloader-http-smoke` | AxLoader 的 x86_64 UEFI HTTP 启动 |
-| `kvm-intel` | `test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx` | direct ACPI、MP fallback、OVMF ACPI |
 | `kvm-amd` | `test-axvisor-self-hosted-x86-64-svm` | SVM smoke、direct ACPI、OVMF ACPI、PCI 枚举、PCI block RW/RO；一次构建运行六用例 |
 
 `require_kvm` 只让执行器检查 `/dev/kvm` 可读写，并未完整验证 CPU 虚拟化特性、嵌套虚拟化、固件镜像或 guest 能力。预检通过后仍可能在特定启动场景失败，应以相应 case 的日志定位。

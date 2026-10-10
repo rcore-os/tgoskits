@@ -22,7 +22,7 @@ use kbpf_basic::linux_bpf::{perf_event_attr, perf_sw_ids};
 use super::{PerfEventOps, PerfReadValues, access::AuthorizedPerfTarget};
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
     task::{PidIdentityId, Thread},
 };
 
@@ -33,7 +33,7 @@ static PERF_SW_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// Sentinel used before a task has run while software accounting is active.
 pub(crate) const CPU_UNSET: u32 = u32::MAX;
 
-static SYSTEM_COUNTERS: LazyInit<IrqMutex<Vec<Arc<SwSystemCounter>>>> = LazyInit::new();
+static SYSTEM_COUNTERS: LazyInit<RawSpinLock<Vec<Arc<SwSystemCounter>>>> = LazyInit::new();
 // Like perf_event_context::mutex, all CPU events share one task-context
 // transaction lock per CPU, including members reached through another FD.
 static SYSTEM_CONTEXTS: LazyInit<Vec<Mutex<()>>> = LazyInit::new();
@@ -43,7 +43,7 @@ static SYSTEM_CONTEXTS: LazyInit<Vec<Mutex<()>>> = LazyInit::new();
 #[derive(Default)]
 pub(crate) struct SwTaskContext {
     unobserved_cpu: AtomicUsize,
-    state: IrqMutex<SwTaskState>,
+    state: RawSpinLock<SwTaskState>,
 }
 
 #[derive(Default)]
@@ -74,8 +74,8 @@ impl SwTaskContext {
             .is_ok()
     }
 
-    fn lock(&self) -> crate::sync::IrqMutexGuard<'_, SwTaskState> {
-        let mut state = self.state.lock();
+    fn lock(&self) -> crate::sync::RawSpinLockIrqSaveGuard<'_, SwTaskState> {
+        let mut state = self.state.lock_irqsave();
         if self.unobserved_cpu.load(Ordering::Relaxed) != Self::OBSERVED {
             let previous = self.unobserved_cpu.swap(Self::OBSERVED, Ordering::AcqRel);
             // A switch whose CAS won is included in this value. If the
@@ -164,7 +164,7 @@ struct SwEventState {
     bindings: Mutex<Vec<Weak<SwPerTaskCounter>>>,
     dead: AtomicBool,
     count: AtomicU64,
-    clock: IrqMutex<SwClock>,
+    clock: RawSpinLock<SwClock>,
     time_enabled_ns: AtomicU64,
 }
 
@@ -205,13 +205,13 @@ impl SwEventState {
             bindings: Mutex::new(Vec::new()),
             dead: AtomicBool::new(false),
             count: AtomicU64::new(0),
-            clock: IrqMutex::new(SwClock::default()),
+            clock: RawSpinLock::new(SwClock::default()),
             time_enabled_ns: AtomicU64::new(0),
         }
     }
 
     fn reset(&self) {
-        let mut clock = self.clock.lock();
+        let mut clock = self.clock.lock_irqsave();
         clock.reset(now_ns());
         self.count.store(0, Ordering::Release);
     }
@@ -267,7 +267,7 @@ impl SwEventState {
         }
         // Each checkpoint advances its binding's cursors. A later switch-out
         // therefore commits only the remainder, not the interval just read.
-        let clock = self.clock.lock();
+        let clock = self.clock.lock_irqsave();
         PerfReadValues {
             value: if self.kind.is_clock() {
                 clock.count_ns
@@ -297,9 +297,9 @@ pub struct SwPerTaskCounter {
     run_since_ns: AtomicU64,
     /// A sibling keeps only weak ownership of its leader. Closing the leader
     /// therefore makes the sibling standalone instead of creating a cycle.
-    group_leader: IrqMutex<Option<Weak<SwPerTaskCounter>>>,
+    group_leader: RawSpinLock<Option<Weak<SwPerTaskCounter>>>,
     /// The leader owns no sibling; scheduler-visible task bindings retain them.
-    group_members: IrqMutex<Vec<Weak<SwPerTaskCounter>>>,
+    group_members: RawSpinLock<Vec<Weak<SwPerTaskCounter>>>,
 }
 
 impl SwPerTaskCounter {
@@ -321,8 +321,8 @@ impl SwPerTaskCounter {
             retired: AtomicBool::new(false),
             enabled_since_ns: AtomicU64::new(0),
             run_since_ns: AtomicU64::new(0),
-            group_leader: IrqMutex::new(None),
-            group_members: IrqMutex::new(Vec::new()),
+            group_leader: RawSpinLock::new(None),
+            group_members: RawSpinLock::new(Vec::new()),
         }
     }
 
@@ -343,7 +343,7 @@ impl SwPerTaskCounter {
 
     fn live_group_leader(&self) -> Option<Arc<Self>> {
         self.group_leader
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .and_then(Weak::upgrade)
             .filter(|leader| !leader.state.dead.load(Ordering::Acquire))
@@ -376,7 +376,7 @@ impl SwPerTaskCounter {
     }
 
     fn close_slice(&self, now: u64) {
-        let mut clock = self.state.clock.lock();
+        let mut clock = self.state.clock.lock_irqsave();
         let since = self.run_since_ns.swap(0, Ordering::AcqRel);
         if since != 0 {
             clock.finish_slice(since, now);
@@ -432,7 +432,12 @@ impl SwPerTaskCounter {
     fn set_enabled_on(&self, cpu: Option<usize>) {
         let now = now_ns();
         if self.enable_at(now, cpu) && self.live_group_leader().is_none() {
-            for member in self.group_members.lock().iter().filter_map(Weak::upgrade) {
+            for member in self
+                .group_members
+                .lock_irqsave()
+                .iter()
+                .filter_map(Weak::upgrade)
+            {
                 member.resume_for_group(now, cpu);
             }
         }
@@ -442,7 +447,12 @@ impl SwPerTaskCounter {
         let now = now_ns();
         let is_group_root = self.live_group_leader().is_none();
         if self.disable_at(now) && is_group_root {
-            for member in self.group_members.lock().iter().filter_map(Weak::upgrade) {
+            for member in self
+                .group_members
+                .lock_irqsave()
+                .iter()
+                .filter_map(Weak::upgrade)
+            {
                 member.pause_for_group(now);
             }
         }
@@ -461,7 +471,7 @@ impl SwPerTaskCounter {
     /// Commits live windows without stopping the binding. The caller holds
     /// its task context, excluding schedule, enable/disable, and exit updates.
     fn checkpoint(&self) {
-        let mut clock = self.state.clock.lock();
+        let mut clock = self.state.clock.lock_irqsave();
         let now = now_ns();
         let since = self.run_since_ns.load(Ordering::Acquire);
         if since != 0 {
@@ -515,8 +525,8 @@ impl SwPerTaskCounter {
         if reset_new_event {
             member.state.reset();
         }
-        *member.group_leader.lock() = Some(Arc::downgrade(leader));
-        let mut members = leader.group_members.lock();
+        *member.group_leader.lock_irqsave() = Some(Arc::downgrade(leader));
+        let mut members = leader.group_members.lock_irqsave();
         members.retain(|entry| {
             entry
                 .upgrade()
@@ -535,11 +545,11 @@ impl SwPerTaskCounter {
             return;
         };
         let context = context.lock();
-        let members = core::mem::take(&mut *leader.group_members.lock());
+        let members = core::mem::take(&mut *leader.group_members.lock_irqsave());
         let weak_leader = Arc::downgrade(leader);
         let now = now_ns();
         for member in members.into_iter().filter_map(|member| member.upgrade()) {
-            let mut group_leader = member.group_leader.lock();
+            let mut group_leader = member.group_leader.lock_irqsave();
             let attached = group_leader
                 .as_ref()
                 .is_some_and(|owner| Weak::ptr_eq(owner, &weak_leader));
@@ -564,8 +574,8 @@ struct SwSystemCounter {
     enabled: AtomicBool,
     enabled_since_ns: AtomicU64,
     clock_offset_ns: AtomicU64,
-    group_leader: IrqMutex<Option<Weak<SwSystemCounter>>>,
-    group_members: IrqMutex<Vec<Weak<SwSystemCounter>>>,
+    group_leader: RawSpinLock<Option<Weak<SwSystemCounter>>>,
+    group_members: RawSpinLock<Vec<Weak<SwSystemCounter>>>,
 }
 
 impl SwSystemCounter {
@@ -580,14 +590,14 @@ impl SwSystemCounter {
             enabled: AtomicBool::new(enabled),
             enabled_since_ns: AtomicU64::new(if enabled { now_ns() } else { 0 }),
             clock_offset_ns: AtomicU64::new(0),
-            group_leader: IrqMutex::new(None),
-            group_members: IrqMutex::new(Vec::new()),
+            group_leader: RawSpinLock::new(None),
+            group_members: RawSpinLock::new(Vec::new()),
         }
     }
 
     fn live_group_leader(&self) -> Option<Arc<Self>> {
         self.group_leader
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .and_then(Weak::upgrade)
             .filter(|leader| !leader.state.dead.load(Ordering::Acquire))
@@ -601,7 +611,7 @@ impl SwSystemCounter {
     }
 
     fn live_group_members(&self) -> Vec<Arc<Self>> {
-        let mut members = self.group_members.lock();
+        let mut members = self.group_members.lock_irqsave();
         let live = members
             .iter()
             .filter_map(Weak::upgrade)
@@ -739,8 +749,8 @@ impl SwSystemCounter {
         let now = now_ns();
         member.enabled_since_ns.store(0, Ordering::Release);
         member.state.reset();
-        *member.group_leader.lock() = Some(Arc::downgrade(leader));
-        let mut members = leader.group_members.lock();
+        *member.group_leader.lock_irqsave() = Some(Arc::downgrade(leader));
+        let mut members = leader.group_members.lock_irqsave();
         members.retain(|entry| {
             entry
                 .upgrade()
@@ -755,11 +765,11 @@ impl SwSystemCounter {
     }
 
     fn detach_group_members(leader: &Arc<Self>) {
-        let members = core::mem::take(&mut *leader.group_members.lock());
+        let members = core::mem::take(&mut *leader.group_members.lock_irqsave());
         let weak_leader = Arc::downgrade(leader);
         let now = now_ns();
         for member in members.into_iter().filter_map(|member| member.upgrade()) {
-            let mut group_leader = member.group_leader.lock();
+            let mut group_leader = member.group_leader.lock_irqsave();
             let attached = group_leader
                 .as_ref()
                 .is_some_and(|owner| Weak::ptr_eq(owner, &weak_leader));
@@ -896,7 +906,7 @@ pub fn initialize() {
             .map(|_| Mutex::new(()))
             .collect(),
     );
-    SYSTEM_COUNTERS.init_once(IrqMutex::new(Vec::new()));
+    SYSTEM_COUNTERS.init_once(RawSpinLock::new(Vec::new()));
 }
 
 fn attach_task(thread: &Thread, counter: Arc<SwPerTaskCounter>) -> StarryResult<()> {
@@ -1167,10 +1177,12 @@ mod tests {
         let state = context.lock();
         // Model a switch paused between its load and CAS while a remote
         // opener takes ownership. The stale CAS must not remove OBSERVED.
-        assert!(context
-            .unobserved_cpu
-            .compare_exchange(previous, 3, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err());
+        assert!(
+            context
+                .unobserved_cpu
+                .compare_exchange(previous, 3, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
+        );
         assert_eq!(state.running_cpu, None);
         assert!(!context.publish_unobserved(Some(2)));
     }

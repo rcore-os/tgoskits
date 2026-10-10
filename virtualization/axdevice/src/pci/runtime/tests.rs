@@ -2,6 +2,7 @@ use alloc::{sync::Weak, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use ax_sync::RawSpinLock;
 use axdevice_base::{
     ControllerInputId, DeviceAccess, InterruptControllerId, InterruptEndpoint, InterruptSharing,
     InterruptTrigger, IrqError, IrqResult, Resource, WiredIrqInput, WiredIrqSink,
@@ -240,7 +241,7 @@ impl PciFunction for ReentrantLifecycleFunction {
             operation: "re-enter PCI lifecycle from command callback",
             detail: "test binding was dropped".into(),
         })?;
-        assert!(binding.lifecycle.try_lock_irqsave().is_some());
+        assert!(binding.lifecycle.try_lock().is_some());
         assert!(matches!(
             binding.reset_lifecycle(),
             Err(DeviceManagerError::InvalidState { .. })
@@ -308,13 +309,13 @@ impl PciFunction for ToggleCommandFunction {
 struct RecordingFunction {
     root: Arc<PciRootState>,
     bdf: PciBdf,
-    reads: SpinLock<Vec<(PciConfigReadEffect, DeviceId, u64)>>,
-    writes: SpinLock<Vec<(PciConfigWriteEffect, DeviceId)>>,
-    commands: SpinLock<Vec<(PciCommandState, DeviceId)>>,
-    resets: SpinLock<Vec<PciCommandState>>,
-    reset_failures: SpinLock<usize>,
-    withdrawals: SpinLock<usize>,
-    withdraw_failures: SpinLock<usize>,
+    reads: RawSpinLock<Vec<(PciConfigReadEffect, DeviceId, u64)>>,
+    writes: RawSpinLock<Vec<(PciConfigWriteEffect, DeviceId)>>,
+    commands: RawSpinLock<Vec<(PciCommandState, DeviceId)>>,
+    resets: RawSpinLock<Vec<PciCommandState>>,
+    reset_failures: RawSpinLock<usize>,
+    withdrawals: RawSpinLock<usize>,
+    withdraw_failures: RawSpinLock<usize>,
     irq_line: Option<IrqLine>,
     supports_effects: bool,
     pending: bool,
@@ -527,13 +528,13 @@ fn config_effect_route_fixture(reset_failures: usize) -> ConfigEffectRouteFixtur
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&root),
         bdf,
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(reset_failures),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(reset_failures),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: true,
         pending: false,

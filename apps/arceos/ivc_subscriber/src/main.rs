@@ -151,6 +151,9 @@ mod subscriber {
                 return true;
             }
             waiter.wait_for_peer_event();
+            // The publisher initializes the shared protocol after the host
+            // accepts the subscription. Wait for that publication instead of
+            // treating the first transient header state as a failure.
         }
         false
     }

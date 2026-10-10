@@ -1,17 +1,17 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
 use std::{
-    collections::BTreeMap,
     sync::{Arc, Weak},
+    vec::Vec,
 };
 
 use arm_gic_driver::v3::Trigger;
 use arm_vgic::{
-    CpuInterfaceState, GicV3Backend, GicV3BackendError, GicV3HardwareCapabilities, GicVcpuId,
-    HostGicVersion, IntId, PhysicalInterruptBinding, PhysicalIrqId, PpiId, VgicBackendCapabilities,
-    VgicCore, VgicError, VgicResult,
+    AssignedSpiConfig, CpuInterfaceState, GicV3Backend, GicV3BackendError,
+    GicV3HardwareCapabilities, GicV3Native, GicVcpuId, HostGicVersion, IntId,
+    PhysicalInterruptBinding, PpiId, VgicBackendCapabilities, VgicError, VgicResult,
 };
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice_base::InterruptTrigger;
 
 use super::vtimer::Aarch64TimerBinding;
@@ -66,17 +66,20 @@ enum PhysicalSpiTarget {
 /// Checked bridge from the VM-local controller to the current host GIC.
 pub(crate) struct AxvmVgicBackend {
     capabilities: VgicBackendCapabilities,
-    physical_spis: IrqSafeMutex<BTreeMap<PhysicalIrqId, PhysicalSpiSnapshot>>,
-    timer_ppis: IrqSafeMutex<BTreeMap<(GicVcpuId, IntId), Weak<Aarch64TimerBinding>>>,
+    physical_spis: RawSpinLock<Vec<Option<PhysicalSpiSnapshot>>>,
+    timer_ppis: RawSpinLock<Vec<Option<Weak<Aarch64TimerBinding>>>>,
 }
 
 impl AxvmVgicBackend {
     /// Uses the host CPU-interface capabilities committed before CPU enable.
-    pub(crate) fn new() -> Result<Self, GicV3BackendError> {
+    pub(crate) fn new(vcpu_count: usize) -> Result<Self, GicV3BackendError> {
+        let timer_slots = vcpu_count.checked_mul(32).ok_or_else(|| {
+            GicV3BackendError::new("prepare timer PPI slots", "vCPU slot count overflow")
+        })?;
         Ok(Self {
             capabilities: cpu_interface::capabilities()?,
-            physical_spis: IrqSafeMutex::new(BTreeMap::new()),
-            timer_ppis: IrqSafeMutex::new(BTreeMap::new()),
+            physical_spis: RawSpinLock::new(std::vec![None; 1020]),
+            timer_ppis: RawSpinLock::new(std::vec![None; timer_slots]),
         })
     }
 
@@ -86,9 +89,20 @@ impl AxvmVgicBackend {
         ppi: PpiId,
         binding: Weak<Aarch64TimerBinding>,
     ) -> VgicResult {
-        let key = (vcpu, IntId::Ppi(ppi));
-        let mut timer_ppis = self.timer_ppis.lock();
-        if timer_ppis.get(&key).and_then(Weak::upgrade).is_some() {
+        let key = timer_ppi_slot(vcpu, IntId::Ppi(ppi));
+        let (conflict, previous) = {
+            let mut timer_ppis = self.timer_ppis.lock_irqsave();
+            match key.and_then(|key| timer_ppis.get_mut(key)) {
+                Some(slot) if !slot.as_ref().is_some_and(|weak| weak.strong_count() != 0) => {
+                    (false, slot.replace(binding))
+                }
+                _ => (true, Some(binding)),
+            }
+        };
+        // A displaced Weak may release the final control allocation.
+        drop(previous);
+        if conflict {
+            // The raw guard is released before the error allocates a message.
             return Err(VgicError::ResourceConflict {
                 resource: "host virtual-timer PPI binding",
                 detail: std::format!(
@@ -98,12 +112,17 @@ impl AxvmVgicBackend {
                 ),
             });
         }
-        timer_ppis.insert(key, binding);
         Ok(())
     }
 
     pub(in crate::arch::aarch64) fn unregister_timer_ppi(&self, vcpu: GicVcpuId, ppi: PpiId) {
-        self.timer_ppis.lock().remove(&(vcpu, IntId::Ppi(ppi)));
+        let previous = timer_ppi_slot(vcpu, IntId::Ppi(ppi)).and_then(|key| {
+            self.timer_ppis
+                .lock_irqsave()
+                .get_mut(key)
+                .and_then(Option::take)
+        });
+        drop(previous);
     }
 
     fn physical_intid(
@@ -112,24 +131,25 @@ impl AxvmVgicBackend {
         operation: &'static str,
     ) -> Result<arm_gic_driver::IntId, GicV3BackendError> {
         let raw = u32::try_from(binding.host().raw()).map_err(|_| {
-            GicV3BackendError::new(
+            GicV3BackendError::value(
                 operation,
-                std::format!("host IRQ {} does not fit a GIC INTID", binding.host().raw()),
+                "host IRQ does not fit a GIC INTID",
+                binding.host().raw(),
             )
         })?;
         if raw != binding.guest().raw() {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::mismatch(
                 operation,
-                std::format!(
-                    "identity forwarding requires guest INTID {} to equal host INTID {raw}",
-                    binding.guest().raw()
-                ),
+                "identity forwarding requires equal guest and host INTIDs",
+                binding.guest().raw() as u64,
+                raw as u64,
             ));
         }
         arm_gic_driver::checked_intid(raw, 1020).map_err(|_| {
-            GicV3BackendError::new(
+            GicV3BackendError::value(
                 operation,
-                std::format!("host INTID {raw} is outside the assignable GIC range"),
+                "host INTID is outside the assignable GIC range",
+                raw as u64,
             )
         })
     }
@@ -161,17 +181,19 @@ impl GicV3Backend for AxvmVgicBackend {
         vcpu: GicVcpuId,
         intid: IntId,
     ) -> Result<(), GicV3BackendError> {
+        let Some(key) = timer_ppi_slot(vcpu, intid) else {
+            return Ok(());
+        };
         let binding = self
             .timer_ppis
-            .lock()
-            .get(&(vcpu, intid))
+            .lock_irqsave()
+            .get(key)
+            .and_then(Option::as_ref)
             .and_then(Weak::upgrade);
         let Some(binding) = binding else {
             return Ok(());
         };
-        binding.retire_host_activation().map_err(|error| {
-            GicV3BackendError::new("retire host virtual-timer PPI", std::format!("{error}"))
-        })
+        binding.retire_local_host_activation()
     }
 
     fn bind_physical_interrupt(
@@ -207,14 +229,15 @@ impl GicV3Backend for AxvmVgicBackend {
             InterruptTrigger::EdgeTriggered => Trigger::Edge,
             InterruptTrigger::LevelTriggered => Trigger::Level,
         };
-        let mut bindings = self.physical_spis.lock();
-        if bindings.contains_key(&binding.host()) {
-            return Err(GicV3BackendError::new(
+        let mut bindings = self.physical_spis.lock_irqsave();
+        if bindings[binding.host().raw() as usize].is_some() {
+            return Err(GicV3BackendError::value(
                 "bind physical interrupt",
-                std::format!("host INTID {} is already bound", binding.host().raw()),
+                "host INTID is already bound",
+                binding.host().raw(),
             ));
         }
-        bindings.insert(binding.host(), snapshot);
+        bindings[binding.host().raw() as usize] = Some(snapshot);
         drop(bindings);
         if let Err(error) = configure_physical_interrupt(
             self.capabilities.host_version(),
@@ -222,7 +245,7 @@ impl GicV3Backend for AxvmVgicBackend {
             expected_trigger,
             target,
         ) {
-            self.physical_spis.lock().remove(&binding.host());
+            self.physical_spis.lock_irqsave()[binding.host().raw() as usize].take();
             return Err(error);
         }
         Ok(())
@@ -234,10 +257,11 @@ impl GicV3Backend for AxvmVgicBackend {
         enabled: bool,
     ) -> Result<(), GicV3BackendError> {
         let intid = self.physical_intid(binding, "set physical interrupt enable state")?;
-        if !self.physical_spis.lock().contains_key(&binding.host()) {
-            return Err(GicV3BackendError::new(
+        if self.physical_spis.lock_irqsave()[binding.host().raw() as usize].is_none() {
+            return Err(GicV3BackendError::value(
                 "set physical interrupt enable state",
-                std::format!("host INTID {} is not bound", binding.host().raw()),
+                "host INTID is not bound",
+                binding.host().raw(),
             ));
         }
         set_physical_enabled(self.capabilities.host_version(), intid, enabled)
@@ -249,13 +273,11 @@ impl GicV3Backend for AxvmVgicBackend {
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
         if vcpu != binding.target() {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::mismatch(
                 "complete physical interrupt",
-                std::format!(
-                    "binding targets vCPU {}, but vCPU {} issued DIR",
-                    binding.target().raw(),
-                    vcpu.raw()
-                ),
+                "vCPU does not own the physical activation",
+                binding.target().raw() as u64,
+                vcpu.raw() as u64,
             ));
         }
         let intid = self.physical_intid(binding, "complete physical interrupt")?;
@@ -265,12 +287,10 @@ impl GicV3Backend for AxvmVgicBackend {
             Ok(())
         })?
         .ok_or_else(|| {
-            GicV3BackendError::new(
+            GicV3BackendError::value(
                 "complete physical interrupt",
-                std::format!(
-                    "host INTID {} has no active assigned-SPI delivery",
-                    binding.host().raw()
-                ),
+                "host INTID has no active assigned-SPI delivery",
+                binding.host().raw(),
             )
         })
     }
@@ -281,13 +301,11 @@ impl GicV3Backend for AxvmVgicBackend {
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
         if vcpu != binding.target() {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::mismatch(
                 "deactivate physical interrupt",
-                std::format!(
-                    "binding targets vCPU {}, but vCPU {} requested forced deactivation",
-                    binding.target().raw(),
-                    vcpu.raw()
-                ),
+                "vCPU does not own the physical activation",
+                binding.target().raw() as u64,
+                vcpu.raw() as u64,
             ));
         }
         let intid = self.physical_intid(binding, "deactivate physical interrupt")?;
@@ -297,12 +315,10 @@ impl GicV3Backend for AxvmVgicBackend {
             Ok(())
         })?;
         if completed.is_none() {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::value(
                 "deactivate physical interrupt",
-                std::format!(
-                    "host INTID {} has no active assigned-SPI delivery",
-                    binding.host().raw()
-                ),
+                "host INTID has no active assigned-SPI delivery",
+                binding.host().raw(),
             ));
         }
         Ok(())
@@ -313,20 +329,19 @@ impl GicV3Backend for AxvmVgicBackend {
         binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
         let intid = self.physical_intid(binding, "unbind physical interrupt")?;
-        let snapshot = self
-            .physical_spis
-            .lock()
-            .remove(&binding.host())
+        let snapshot = self.physical_spis.lock_irqsave()[binding.host().raw() as usize]
+            .take()
             .ok_or_else(|| {
-                GicV3BackendError::new(
+                GicV3BackendError::value(
                     "unbind physical interrupt",
-                    std::format!("host INTID {} is not bound", binding.host().raw()),
+                    "host INTID is not bound",
+                    binding.host().raw(),
                 )
             })?;
         if let Err(error) =
             restore_physical_interrupt(self.capabilities.host_version(), intid, snapshot)
         {
-            self.physical_spis.lock().insert(binding.host(), snapshot);
+            self.physical_spis.lock_irqsave()[binding.host().raw() as usize] = Some(snapshot);
             return Err(error);
         }
         Ok(())
@@ -361,7 +376,7 @@ fn configure_physical_interrupt(
     .ok_or_else(|| {
         GicV3BackendError::new(
             "configure assigned physical interrupt",
-            std::format!("the registered interrupt controller does not match {version:?}"),
+            "the registered interrupt controller does not match the selected GIC version",
         )
     })
 }
@@ -374,9 +389,10 @@ fn physical_spi_target(
     match version {
         HostGicVersion::V2 => {
             let hardware_cpu_id = usize::try_from(affinity.mpidr()).map_err(|_| {
-                GicV3BackendError::new(
+                GicV3BackendError::value(
                     "target assigned physical interrupt",
-                    std::format!("host CPU affinity {affinity:?} does not fit usize"),
+                    "host CPU affinity does not fit usize",
+                    affinity.mpidr(),
                 )
             })?;
             let target = try_with_gic("target assigned physical interrupt", |intc| {
@@ -384,13 +400,10 @@ fn physical_spi_target(
                     .and_then(|gic| gic.cpu_interface_target_for_hardware_cpu(hardware_cpu_id))
             })?
             .ok_or_else(|| {
-                GicV3BackendError::new(
+                GicV3BackendError::value(
                     "target assigned physical interrupt",
-                    std::format!(
-                        "GICv2 cannot route host INTID {} to affinity {affinity:?}: the host CPU \
-                         route is not initialized",
-                        binding.host().raw()
-                    ),
+                    "GICv2 host CPU route is not initialized",
+                    affinity.mpidr(),
                 )
             })?;
             Ok(PhysicalSpiTarget::V2(target))
@@ -428,7 +441,7 @@ fn restore_physical_interrupt(
     .ok_or_else(|| {
         GicV3BackendError::new(
             "restore assigned physical interrupt",
-            std::format!("the registered interrupt controller does not match {version:?}"),
+            "the registered interrupt controller does not match the selected GIC version",
         )
     })
 }
@@ -449,7 +462,7 @@ fn set_physical_enabled(
     .ok_or_else(|| {
         GicV3BackendError::new(
             "set physical interrupt enable state",
-            std::format!("the registered interrupt controller does not match {version:?}"),
+            "the registered interrupt controller does not match the selected GIC version",
         )
     })
 }
@@ -460,8 +473,15 @@ fn instruction_sync_barrier() {
     unsafe { std::arch::asm!("isb", options(nostack, preserves_flags)) };
 }
 
-pub(crate) fn backend() -> Result<Arc<AxvmVgicBackend>, GicV3BackendError> {
-    AxvmVgicBackend::new().map(Arc::new)
+pub(crate) fn backend(vcpu_count: usize) -> Result<Arc<AxvmVgicBackend>, GicV3BackendError> {
+    AxvmVgicBackend::new(vcpu_count).map(Arc::new)
+}
+
+fn timer_ppi_slot(vcpu: GicVcpuId, intid: IntId) -> Option<usize> {
+    let IntId::Ppi(ppi) = intid else {
+        return None;
+    };
+    vcpu.raw().checked_mul(32)?.checked_add(ppi.raw() as usize)
 }
 
 pub(crate) fn host_irq_config() -> Result<ax_cpu::virtualization::HostIrqConfig, GicV3BackendError>
@@ -470,9 +490,10 @@ pub(crate) fn host_irq_config() -> Result<ax_cpu::virtualization::HostIrqConfig,
 }
 
 pub(crate) fn register_assigned_spi_routes(
-    controller: &Arc<VgicCore>,
+    controller: &GicV3Native,
+    assigned_spis: &[AssignedSpiConfig],
 ) -> Result<Arc<AssignedSpiRoutes>, GicV3BackendError> {
-    AssignedSpiRoutes::register(controller)
+    AssignedSpiRoutes::register(controller, assigned_spis)
 }
 
 pub(crate) fn host_spi_count() -> Result<usize, GicV3BackendError> {
@@ -494,8 +515,12 @@ pub(crate) fn host_spi_count() -> Result<usize, GicV3BackendError> {
     // host drivers and is not an SPI-count capability.
     GicV3HardwareCapabilities::from_distributor_typer(typer)
         .map(|capabilities| capabilities.spi_count())
-        .map_err(|error| {
-            GicV3BackendError::new("inspect host SPI capacity", std::format!("{error}"))
+        .map_err(|_| {
+            GicV3BackendError::value(
+                "inspect host SPI capacity",
+                "invalid distributor capacity",
+                typer as u64,
+            )
         })
 }
 

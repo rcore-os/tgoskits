@@ -1,44 +1,18 @@
-//! StarryOS synchronization facade.
+//! StarryOS synchronization re-exports and IRQ-safe queue helpers.
 //!
-//! Kernel code imports locks only through this module so the type name and
-//! acquisition operation preserve sleep, preemption, and IRQ semantics.
+//! Locks keep their canonical runtime names so that each call site states the
+//! acquisition context it needs: `lock` only disables preemption, while
+//! `lock_irqsave` also saves and disables local IRQs. Starry-specific lock
+//! names are intentionally absent. The helpers below grow an IRQ-protected
+//! vector without allocating under the IRQ-save critical section.
 
 use alloc::vec::Vec;
 
-pub(crate) use ax_fs_ng::os::sync::SleepMutex as FsMutex;
 pub(crate) use ax_runtime::task::sync::{
-    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PreemptGuard,
-    PreemptIrqSaveGuard as NoPreemptIrqSave, RawIrqSaveMutex, RawSpinLock, RawSpinLockGuard, RawSpinRwLock,
+    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PreemptGuard, PreemptIrqSaveGuard,
+    RawSpinLock, RawSpinLockGuard, RawSpinLockIrqSaveBackend, RawSpinLockIrqSaveGuard,
+    RawSpinRwLock,
 };
-
-/// An IRQ-save spin mutex for state reachable from interrupt context.
-#[repr(transparent)]
-pub(crate) struct IrqMutex<T: ?Sized>(ax_runtime::task::sync::RawSpinLock<T>);
-
-pub(crate) type IrqMutexGuard<'a, T> = ax_runtime::task::sync::RawSpinLockIrqSaveGuard<'a, T>;
-
-impl<T> IrqMutex<T> {
-    #[track_caller]
-    pub(crate) const fn new(value: T) -> Self {
-        Self(ax_runtime::task::sync::RawSpinLock::new(value))
-    }
-
-    #[track_caller]
-    pub(crate) fn lock(&self) -> IrqMutexGuard<'_, T> {
-        self.0.lock_irqsave()
-    }
-
-    #[track_caller]
-    pub(crate) fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
-        self.0.try_lock_irqsave()
-    }
-}
-
-impl<T: Default> Default for IrqMutex<T> {
-    fn default() -> Self {
-        Self::new(T::default())
-    }
-}
 
 /// Ensures that an IRQ-protected vector can accept `additional` elements
 /// without invoking the allocator while its guard is held.
@@ -50,7 +24,7 @@ impl<T: Default> Default for IrqMutex<T> {
 /// stale capacity observation.  The displaced allocation is destroyed only
 /// after the IRQ guard has been released.
 pub(crate) fn try_reserve_irq_vec<T>(
-    queue: &IrqMutex<Vec<T>>,
+    queue: &RawSpinLock<Vec<T>>,
     additional: usize,
 ) -> Result<(), ()> {
     if additional == 0 {
@@ -60,7 +34,7 @@ pub(crate) fn try_reserve_irq_vec<T>(
     let mut replacement = Vec::new();
     loop {
         let reserve_target = {
-            let entries = queue.lock();
+            let entries = queue.lock_irqsave();
             if entries.capacity().saturating_sub(entries.len()) >= additional {
                 return Ok(());
             }
@@ -76,7 +50,7 @@ pub(crate) fn try_reserve_irq_vec<T>(
             .try_reserve_exact(reserve_target)
             .map_err(|_| ())?;
 
-        let mut entries = queue.lock();
+        let mut entries = queue.lock_irqsave();
         if entries.capacity().saturating_sub(entries.len()) >= additional {
             return Ok(());
         }
@@ -100,12 +74,12 @@ pub(crate) fn try_reserve_irq_vec<T>(
 /// Appends one owned value without allocating or destroying it under the IRQ
 /// guard.  A racing producer may consume a prepared slot, so insertion
 /// rechecks and repeats the lock-external reservation until it owns capacity.
-pub(crate) fn try_push_irq_vec<T>(queue: &IrqMutex<Vec<T>>, value: T) -> Result<(), T> {
+pub(crate) fn try_push_irq_vec<T>(queue: &RawSpinLock<Vec<T>>, value: T) -> Result<(), T> {
     loop {
         if try_reserve_irq_vec(queue, 1).is_err() {
             return Err(value);
         }
-        let mut entries = queue.lock();
+        let mut entries = queue.lock_irqsave();
         if entries.len() == entries.capacity() {
             continue;
         }
@@ -113,12 +87,3 @@ pub(crate) fn try_push_irq_vec<T>(queue: &IrqMutex<Vec<T>>, value: T) -> Result<
         return Ok(());
     }
 }
-
-impl<T: core::fmt::Debug> core::fmt::Debug for IrqMutex<T> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-pub(crate) type NoPreemptMutex<T> = RawSpinLock<T>;
-pub(crate) type RwLock<T> = RawSpinRwLock<T>;

@@ -9,7 +9,7 @@
 //! | bdev inode `address_space`, keyed by page index | [`BlockAddressSpace`], keyed by folio frame index, one per device |
 //! | `folio` with attached buffers | [`CacheFolio`], 4 KiB or one device block, whichever is larger |
 //! | `buffer_head` `BH_Uptodate`/`BH_Dirty` bits | [`BufferHead`] slot state (`BH_Mapped` is implicit: the cache is an identity mapping) |
-//! | `PAGECACHE_TAG_DIRTY` tree mark | ordered `dirty_frames` index |
+//! | `PAGECACHE_TAG_DIRTY` tree mark | finite sorted frame snapshot, per-folio dirty state |
 //! | `getblk` / `bread` | [`BlockAddressSpace`] folio lookup / [`BufferedBlockDevice`] buffered reads |
 //! | `mark_buffer_dirty` | deferred one-folio writes (data reaches the device only at writeback) |
 //! | `sync_dirty_buffers` | [`BlockAddressSpace::writeback_dirty`], submitting merged dirty runs |
@@ -20,15 +20,15 @@
 //!
 //! # Deviations from Linux (recorded deliberately)
 //!
-//! * Writeback is synchronous and happens at `flush()`, eviction, and the
-//!   last filesystem consumer's drop;
-//!   Linux has per-BDI flusher threads. The current `FsBlockDevice` model
-//!   is fully synchronous, so a WRITEBACK mark and a background flusher
-//!   would have no observable effect.
-//! * One sleepable lock serializes each device tree instead of per-folio
-//!   locks. All current callers already serialize filesystem IO per
-//!   instance; the shared tree only adds serialization between partitions
-//!   of the same physical device.
+//! * Calls remain synchronous, but independent endpoints can progress in
+//!   parallel. A short index lock pins entries; each folio owns I/O and data
+//!   exclusion. Immutable writeback snapshots permit concurrent redirty.
+//! * Resident and in-flight frames share a 1024-frame budget. With no spare
+//!   frame, writeback locks only its folio's data until I/O completes.
+//! * One short reservation bitmap excludes overlapping direct and buffered
+//!   requests. Its sixty-four stripes are reserved atomically, not held as
+//!   nested OS locks. Disjoint ranges can collide on a stripe; conflict waits
+//!   happen outside the reservation and cache-index locks.
 //! * The metadata/data split is expressed at folio granularity: requests
 //!   inside one folio take the buffered path, multi-folio requests go
 //!   device-direct. Linux declares the same split at the filesystem layer
@@ -48,8 +48,12 @@ mod buffer_head;
 mod device;
 mod folio;
 mod folio_cache;
+mod folio_state;
+mod range_locks;
 mod registry;
 
+#[cfg(test)]
+mod concurrency_tests;
 #[cfg(test)]
 mod tests;
 

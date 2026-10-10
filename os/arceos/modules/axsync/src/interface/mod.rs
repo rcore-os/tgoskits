@@ -38,7 +38,7 @@ pub const PI_MUTEX_WAIT_STORAGE_WORDS: usize = 5;
 /// The provider interprets this storage as the native `ax-task` PI core. The
 /// wrapper never reads or mutates the state machine itself.
 #[repr(C)]
-pub struct PiMutexStorage {
+pub struct MutexStorage {
     owner_word: AtomicU64,
     generation: AtomicU64,
     wait_state: AtomicU8,
@@ -47,14 +47,14 @@ pub struct PiMutexStorage {
 
 /// Exclusive borrow of every field in one external PI-mutex storage object.
 #[doc(hidden)]
-pub struct PiMutexStoragePartsMut<'lock> {
+pub struct MutexStoragePartsMut<'lock> {
     pub owner_word: &'lock mut AtomicU64,
     pub generation: &'lock mut AtomicU64,
     pub wait_state: &'lock mut AtomicU8,
     pub wait_storage: &'lock mut UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
 }
 
-impl PiMutexStorage {
+impl MutexStorage {
     /// Creates storage for an unlocked, generation-free PI mutex.
     pub const fn new() -> Self {
         Self {
@@ -93,8 +93,8 @@ impl PiMutexStorage {
 
     /// Exclusively borrows every field for the native destruction transaction.
     #[doc(hidden)]
-    pub fn parts_mut(&mut self) -> PiMutexStoragePartsMut<'_> {
-        PiMutexStoragePartsMut {
+    pub fn parts_mut(&mut self) -> MutexStoragePartsMut<'_> {
+        MutexStoragePartsMut {
             owner_word: &mut self.owner_word,
             generation: &mut self.generation,
             wait_state: &mut self.wait_state,
@@ -103,7 +103,7 @@ impl PiMutexStorage {
     }
 }
 
-impl Default for PiMutexStorage {
+impl Default for MutexStorage {
     fn default() -> Self {
         Self::new()
     }
@@ -111,7 +111,7 @@ impl Default for PiMutexStorage {
 
 // SAFETY: the provider publishes initialization through `wait_state` and
 // serializes every access to the concrete object stored in `wait_storage`.
-unsafe impl Sync for PiMutexStorage {}
+unsafe impl Sync for MutexStorage {}
 
 /// Opaque execution-context restore state returned by the provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -294,7 +294,7 @@ pub trait RwLockOps {
 #[ax_crate_interface::def_interface]
 pub trait MutexOps {
     fn acquire(
-        storage: &PiMutexStorage,
+        storage: &MutexStorage,
         next_waiter_sequence: &AtomicU64,
         metadata: &LockMetadata,
         lock_addr: usize,
@@ -303,7 +303,7 @@ pub trait MutexOps {
     );
 
     fn try_acquire(
-        storage: &PiMutexStorage,
+        storage: &MutexStorage,
         next_waiter_sequence: &AtomicU64,
         metadata: &LockMetadata,
         lock_addr: usize,
@@ -311,15 +311,15 @@ pub trait MutexOps {
         caller: &'static Location<'static>,
     ) -> bool;
 
-    fn release(storage: &PiMutexStorage, lock_addr: usize);
+    fn release(storage: &MutexStorage, lock_addr: usize);
 
-    fn force_release(storage: &PiMutexStorage, lock_addr: usize);
+    fn force_release(storage: &MutexStorage, lock_addr: usize);
 
-    fn is_owned_by_current(storage: &PiMutexStorage) -> bool;
+    fn is_owned_by_current(storage: &MutexStorage) -> bool;
 
-    fn is_locked(storage: &PiMutexStorage) -> bool;
+    fn is_locked(storage: &MutexStorage) -> bool;
 
-    fn destroy(storage: &mut PiMutexStorage);
+    fn destroy(storage: &mut MutexStorage);
 }
 
 /// Runtime lockdep diagnostics which do not belong to one lock acquisition.
@@ -475,7 +475,7 @@ pub(crate) fn rwlock_force_read_decrement(state: &AtomicUsize, lock_addr: usize,
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_acquire(
-    storage: &PiMutexStorage,
+    storage: &MutexStorage,
     next_waiter_sequence: &AtomicU64,
     metadata: &LockMetadata,
     lock_addr: usize,
@@ -495,7 +495,7 @@ pub(crate) fn mutex_acquire(
 
 #[cfg(feature = "sleep")]
 pub(crate) fn mutex_try_acquire(
-    storage: &PiMutexStorage,
+    storage: &MutexStorage,
     next_waiter_sequence: &AtomicU64,
     metadata: &LockMetadata,
     lock_addr: usize,
@@ -514,27 +514,27 @@ pub(crate) fn mutex_try_acquire(
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_release(storage: &PiMutexStorage, lock_addr: usize) {
+pub(crate) fn mutex_release(storage: &MutexStorage, lock_addr: usize) {
     ax_crate_interface::call_interface!(MutexOps::release, storage, lock_addr);
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_force_release(storage: &PiMutexStorage, lock_addr: usize) {
+pub(crate) fn mutex_force_release(storage: &MutexStorage, lock_addr: usize) {
     ax_crate_interface::call_interface!(MutexOps::force_release, storage, lock_addr);
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_is_owned_by_current(storage: &PiMutexStorage) -> bool {
+pub(crate) fn mutex_is_owned_by_current(storage: &MutexStorage) -> bool {
     ax_crate_interface::call_interface!(MutexOps::is_owned_by_current, storage)
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_is_locked(storage: &PiMutexStorage) -> bool {
+pub(crate) fn mutex_is_locked(storage: &MutexStorage) -> bool {
     ax_crate_interface::call_interface!(MutexOps::is_locked, storage)
 }
 
 #[cfg(feature = "sleep")]
-pub(crate) fn mutex_destroy(storage: &mut PiMutexStorage) {
+pub(crate) fn mutex_destroy(storage: &mut MutexStorage) {
     ax_crate_interface::call_interface!(MutexOps::destroy, storage);
 }
 

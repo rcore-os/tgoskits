@@ -559,27 +559,51 @@ impl NetDeviceInfo {
     }
 }
 
+/// Receive address filtering policy requested from a network device.
+///
+/// The policy describes the observable receive mode, rather than a register
+/// bit from one NIC family.  A driver may implement `AllUnicast` with an exact
+/// address table or with a hardware promiscuous mode; it must return
+/// [`NetError::NotSupported`] when it cannot provide the requested coverage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetRxMode {
+    /// Accept the device address, broadcast, and the device's default multicast traffic.
+    Normal,
+    /// Accept every unicast destination in addition to normal traffic.
+    AllUnicast,
+    /// Accept every Ethernet frame that the device can deliver.
+    Promiscuous,
+}
+
+impl NetRxMode {
+    /// Returns the default host-only receive policy.
+    pub const fn normal() -> Self {
+        Self::Normal
+    }
+
+    /// Returns the policy needed by a lower device carrying guest MACs.
+    pub const fn all_unicast() -> Self {
+        Self::AllUnicast
+    }
+
+    /// Returns the broadest receive policy.
+    pub const fn promiscuous() -> Self {
+        Self::Promiscuous
+    }
+}
+
 /// Exclusive task-context control endpoint for a network device.
 pub trait NetControlEndpoint: Send + 'static {
     /// Returns the current link-layer address.
     fn mac_address(&mut self) -> Result<[u8; 6], NetError>;
 
-    /// Enables or disables hardware acceptance of every physical unicast
-    /// address.
+    /// Applies a receive address filtering policy to this device instance.
     ///
-    /// A hypervisor that bridges guest MACs through one physical NIC opts in
-    /// here so the device stops discarding frames addressed to guest unicast
-    /// addresses. The request targets this exact control instance, so the
-    /// capability and the register window belong to the device behind the
-    /// interface rather than to a name- or address-based guess.
-    ///
-    /// The default reports [`NetError::NotSupported`]. A caller that needs the
-    /// filter may then try another interface that does implement it, but a call
-    /// that returns `Ok` commits that exact interface: the caller must target
-    /// the same interface with its bridge and must not leave the filter enabled
-    /// on an unrelated port. Every device that does not implement an address
-    /// filter keeps the host-only default unchanged.
-    fn set_rx_accept_all_phys(&mut self, _enabled: bool) -> Result<(), NetError> {
+    /// The control endpoint owns the policy and the hardware resources for
+    /// this exact device.  A lower-device bridge can therefore probe
+    /// capabilities without relying on a driver name, interface name, or
+    /// process-global flag.  The default reports [`NetError::NotSupported`].
+    fn set_rx_mode(&mut self, _mode: NetRxMode) -> Result<(), NetError> {
         Err(NetError::NotSupported)
     }
 }

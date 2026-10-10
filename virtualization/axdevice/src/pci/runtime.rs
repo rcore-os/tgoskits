@@ -4,7 +4,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use ax_sync::SpinLock;
+use ax_sync::Mutex;
 use axdevice_base::DeviceError;
 #[cfg(test)]
 use axdevice_base::{Device, DeviceContext, DeviceId, DeviceResult, IrqLine};
@@ -40,7 +40,7 @@ use routing::{EndpointAdmission, EndpointBindingGeneration, EndpointRouter, Rout
 // A root binding may be dropped while an endpoint backend is temporarily
 // unable to withdraw its IRQ. Keep that owner in a process-lifetime,
 // fail-closed queue so dropping the root cannot drop an asserted line.
-static ORPHANED_IRQ_WITHDRAWALS: SpinLock<Vec<PendingIrqWithdrawal>> = SpinLock::new(Vec::new());
+static ORPHANED_IRQ_WITHDRAWALS: Mutex<Vec<PendingIrqWithdrawal>> = Mutex::new(Vec::new());
 
 pub(super) fn pci_config_error(error: super::PciError) -> DeviceError {
     DeviceError::InvalidInput {

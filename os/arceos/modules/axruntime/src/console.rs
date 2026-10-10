@@ -592,11 +592,10 @@ mod tests {
     use ax_hal::console::ConsoleDeviceIdError;
 
     use super::{
-        ACTIVATION, ConsoleActivation, ConsoleUnavailable, RAW_OUTPUT_LOCK, assign_tty_numbers,
-        inactive_console_error, output, publish_raw_record, raw_hal_activation, select_candidate,
-        take_input,
+        ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
+        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
     };
-    use crate::{RuntimeError, structured_log::RuntimeLogContext};
+    use crate::RuntimeError;
 
     #[test]
     fn tty_numbering_preserves_aliases_and_fills_gaps() {
@@ -693,26 +692,5 @@ mod tests {
             Err(RuntimeError::OperationNotSupported)
         ));
         assert!(output().is_ok());
-    }
-
-    #[test]
-    fn raw_hal_logging_does_not_require_the_task_output_mutex() {
-        ACTIVATION.call_once(|| ConsoleActivation::RawHal(ConsoleUnavailable::NoSerialDevice));
-        let _task_output = RAW_OUTPUT_LOCK.lock();
-        let mut rendered = alloc::string::String::new();
-
-        assert_eq!(
-            publish_raw_record(
-                ax_log::RecordMeta::log(),
-                RuntimeLogContext::new(core::time::Duration::new(12, 345_678_000), Some(2), None),
-                format_args!("\u{1b}[37max_runtime:462] early secondary record\n"),
-                &mut rendered,
-            ),
-            ax_log::PublishStatus::Published
-        );
-        assert_eq!(
-            rendered,
-            "\u{1b}[37m[ 12.345678 2 \u{1b}[37max_runtime:462] early secondary record\n"
-        );
     }
 }

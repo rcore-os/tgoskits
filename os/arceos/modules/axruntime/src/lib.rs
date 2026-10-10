@@ -56,6 +56,7 @@ mod mp;
 
 mod boot_memory;
 mod bootstrap;
+pub mod cpufreq;
 mod guard;
 #[cfg(feature = "irq-time-accounting")]
 mod irq_time;

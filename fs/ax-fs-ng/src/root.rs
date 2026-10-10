@@ -24,8 +24,8 @@ use crate::{
 };
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
-static ROOT_BLOCK_IDENTITY: crate::os::sync::IrqMutex<Option<RootBlockIdentity>> =
-    crate::os::sync::IrqMutex::new(None);
+static ROOT_BLOCK_IDENTITY: crate::os::sync::RawSpinLock<Option<RootBlockIdentity>> =
+    crate::os::sync::RawSpinLock::new(None);
 static ROOT_KIND: AtomicU8 = AtomicU8::new(0);
 #[cfg(axtest)]
 static ROOT_BLOCK_HANDLE: OnceLock<usize> = OnceLock::new();
@@ -68,7 +68,7 @@ const DEFAULT_ROOT_BLOCK_IDENTITY: RootBlockIdentity = RootBlockIdentity {
 
 /// Returns the identity selected while mounting the root filesystem.
 pub fn root_block_identity() -> RootBlockIdentity {
-    (*ROOT_BLOCK_IDENTITY.lock()).unwrap_or(DEFAULT_ROOT_BLOCK_IDENTITY)
+    (*ROOT_BLOCK_IDENTITY.lock_irqsave()).unwrap_or(DEFAULT_ROOT_BLOCK_IDENTITY)
 }
 
 /// Root filesystem selector parsed from boot arguments.
@@ -232,21 +232,28 @@ impl PreparedRoot {
     pub fn commit(self) -> axfs_ng_vfs::VfsResult<()> {
         let context = crate::highlevel::ROOT_FS_CONTEXT
             .get()
-            .ok_or(VfsError::InvalidInput)?;
-        let old_root = context.lock().root_dir().clone();
-        let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
-        // Preserve the complete tree that resource installation validated,
-        // including mounts on other partitions and their open filesystem owners.
-        let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
-        let new_root = mount.root_location();
+            .ok_or(VfsError::InvalidInput)?
+            .clone();
+        let old_root;
+        let new_root;
         #[cfg(feature = "vfs")]
-        let namespace = context.lock().mount_namespace().clone();
-        if let Err(error) = context
-            .lock()
-            .pivot_root(new_root.clone(), new_root.clone())
+        let namespace;
         {
-            new_root.detach_mount()?;
-            return Err(error);
+            let mut context_guard = context.lock();
+            old_root = context_guard.root_dir().clone();
+            let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
+            // Preserve the complete tree that resource installation validated,
+            // including mounts on other partitions and their open filesystem owners.
+            let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
+            new_root = mount.root_location();
+            #[cfg(feature = "vfs")]
+            {
+                namespace = context_guard.mount_namespace().clone();
+            }
+            if let Err(error) = context_guard.pivot_root(new_root.clone(), new_root.clone()) {
+                new_root.detach_mount()?;
+                return Err(error);
+            }
         }
         crate::highlevel::FsContext::propagate_pivot_root(
             #[cfg(feature = "vfs")]
@@ -256,7 +263,7 @@ impl PreparedRoot {
         );
         old_root.detach_mount()?;
         crate::register_mounted_filesystem(self.filesystem.clone());
-        *ROOT_BLOCK_IDENTITY.lock() = Some(block_identity(
+        *ROOT_BLOCK_IDENTITY.lock_irqsave() = Some(block_identity(
             self.selected.handle.device_info(),
             self.selected.disk_index,
         ));
@@ -449,11 +456,13 @@ fn init_root_with_policy(
     #[cfg(axtest)]
     AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
     let devices: Vec<_> = block_devs.into_iter().collect();
-    let use_memory = defer
-        || memory
-            .as_ref()
-            .is_some_and(|fs| should_use_memory_root(fs, bootargs, early_init))
-        || (devices.is_empty() && bootargs.and_then(root_value).is_none());
+    let use_memory = should_keep_memory_root(
+        devices.is_empty(),
+        memory.as_ref(),
+        bootargs,
+        early_init,
+        defer,
+    );
     crate::finish_filesystem_init(memory.unwrap_or_else(crate::MemoryFs::new_ramfs), "rootfs");
     ROOT_KIND.store(1, Ordering::Release);
     if use_memory {
@@ -463,6 +472,18 @@ fn init_root_with_policy(
         .and_then(PreparedRoot::commit)
         .unwrap_or_else(|error| panic!("failed to mount disk root: {error:?}"));
     RootKind::Block
+}
+
+fn should_keep_memory_root(
+    no_block_devices: bool,
+    memory: Option<&axfs_ng_vfs::Filesystem>,
+    bootargs: Option<&str>,
+    early_init: Option<&str>,
+    defer: bool,
+) -> bool {
+    no_block_devices
+        || defer
+        || memory.is_some_and(|fs| should_use_memory_root(fs, bootargs, early_init))
 }
 
 fn should_use_memory_root(
@@ -664,7 +685,13 @@ fn collect_disks(
 
     for (disk_index, dev) in block_devs.into_iter().enumerate() {
         let handle = dev.clone();
-        let mut dev = boxed_native_handle_block_device(dev)?;
+        let mut dev = match boxed_native_handle_block_device(dev) {
+            Ok(device) => device,
+            Err(error) => {
+                warn!("failed to attach block cache to disk {disk_index}: {error:?}");
+                continue;
+            }
+        };
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
@@ -1264,14 +1291,14 @@ mod tests {
     use core::{any::Any, time::Duration};
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
-        FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-        Reference, RenameOptions, StatFs, VfsResult, WeakDirEntry,
+        DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
+        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, RenameOptions,
+        StatFs, VfsResult, WeakDirEntry,
     };
     use rdif_block::DeviceInfo;
 
     use super::*;
-    use crate::{BlockError, BlockResult, shutdown_registered_filesystems};
+    use crate::{BlockError, BlockResult, mounts::shutdown_registered_filesystems};
 
     #[test]
     fn initramfs_selection_follows_pid1_and_explicit_root_rules() {
@@ -1304,6 +1331,24 @@ mod tests {
                 Some(String::from("PARTUUID=abcd"))
             );
         });
+    }
+
+    #[test]
+    fn inherited_root_keeps_memory_root_without_block_devices() {
+        assert!(should_keep_memory_root(
+            true,
+            None,
+            Some("root=/dev/nvme0n1"),
+            None,
+            false,
+        ));
+        assert!(!should_keep_memory_root(
+            false,
+            None,
+            Some("root=/dev/nvme0n1"),
+            None,
+            false,
+        ));
     }
 
     struct FlakyMetadataDevice {
@@ -1450,9 +1495,20 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
+        fn create_symlink(
+            &self,
+            _name: &str,
+            _target: &str,
+            _permission: NodePermission,
+            _uid: u32,
+            _gid: u32,
+        ) -> VfsResult<DirEntry> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
         fn read_dir(
             &self,
-            _cursor: DirectoryCursor,
+            _cursor: axfs_ng_vfs::DirectoryCursor,
             _sink: &mut dyn DirEntrySink,
         ) -> VfsResult<usize> {
             Ok(0)
@@ -1497,17 +1553,6 @@ mod tests {
             &self,
             _name: &str,
             _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
             _permission: NodePermission,
             _uid: u32,
             _gid: u32,
@@ -1925,7 +1970,7 @@ mod tests {
 
     impl Drop for MountedRegistryGuard {
         fn drop(&mut self) {
-            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock());
+            crate::mounts::clear_registered_filesystems_for_test();
         }
     }
 

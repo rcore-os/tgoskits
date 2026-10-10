@@ -214,7 +214,7 @@ fn commit_cred_with_id_rules(thread: &crate::task::Thread, new: crate::task::Cre
 fn user_ns_overflow_uid(current: &crate::task::UserTaskRef) -> u32 {
     let curr = current;
     let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
-    let ns = nsproxy.user_ns.lock();
+    let ns = nsproxy.user_ns.lock_irqsave();
     if ns.is_root || ns.uid_mapped {
         return 0;
     }
@@ -224,7 +224,7 @@ fn user_ns_overflow_uid(current: &crate::task::UserTaskRef) -> u32 {
 fn user_ns_overflow_gid(current: &crate::task::UserTaskRef) -> u32 {
     let curr = current;
     let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
-    let ns = nsproxy.user_ns.lock();
+    let ns = nsproxy.user_ns.lock_irqsave();
     if ns.is_root || ns.gid_mapped {
         return 0;
     }
@@ -742,7 +742,7 @@ pub fn sys_uname(
     // IRQs enabled, but the namespace lock disables them).
     let uts = {
         let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
-        let ns = nsproxy.uts_ns.lock();
+        let ns = nsproxy.uts_ns.lock_irqsave();
         crate::namespace::build_utsname(&ns)
     };
     write_utsname(current, name, uts)?;
@@ -789,7 +789,7 @@ pub fn sys_sethostname(
     }
     let proc_data = &curr.as_thread().proc_data;
     let update = proc_data.namespace_update();
-    update.snapshot().uts_ns.lock().nodename = nodename;
+    update.snapshot().uts_ns.lock_irqsave().nodename = nodename;
     Ok(0)
 }
 
@@ -819,7 +819,7 @@ pub fn sys_setdomainname(
     }
     let proc_data = &curr.as_thread().proc_data;
     let update = proc_data.namespace_update();
-    update.snapshot().uts_ns.lock().domainname = domainname;
+    update.snapshot().uts_ns.lock_irqsave().domainname = domainname;
     Ok(0)
 }
 

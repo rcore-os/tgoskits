@@ -1,9 +1,10 @@
 //! Default private ArceOS host adapter for AxVM.
 
-#[cfg(any(not(target_arch = "loongarch64"), test))]
-use std::sync::OnceLock;
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -12,14 +13,12 @@ use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::os::arceos::{api, modules, task as runtime_task};
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
-use crate::AxVmError;
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use crate::host::HostHardTimerAction;
 #[cfg(target_arch = "x86_64")]
 use crate::host::HostTimerAction;
 use crate::{
-    AxVmResult,
+    AxVmError, AxVmResult,
     arch::current::CurrentArch,
     architecture::ArchOps,
     host::{HostCpu, HostMemory, HostPlatform, HostTime, HostTimer},
@@ -77,10 +76,22 @@ impl HostMemory for ArceOsHost {
     }
 
     fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr {
+        #[cfg(all(feature = "host-test", not(target_os = "none")))]
+        {
+            // Host component tests own real std allocations in an identity
+            // address domain, without native paging or a dummy zero mapping.
+            HostVirtAddr::from_usize(paddr.as_usize())
+        }
+        #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
         modules::ax_hal::mem::phys_to_virt(paddr)
     }
 
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr {
+        #[cfg(all(feature = "host-test", not(target_os = "none")))]
+        {
+            HostPhysAddr::from_usize(vaddr.as_usize())
+        }
+        #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
         modules::ax_hal::mem::virt_to_phys(vaddr)
     }
 }
@@ -177,7 +188,6 @@ impl HostTimer for ArceOsHost {
             .map_err(|error| crate::AxVmError::host("disarm hard host timer", error))
     }
 
-    #[cfg(not(target_arch = "riscv64"))]
     fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<super::HostTimerCancelOutcome> {
         runtime_task::time::timer::cancel_kernel_timer(handle)
             .map(|outcome| match outcome {
@@ -220,13 +230,8 @@ impl HostCpu for ArceOsHost {
 
 pub(crate) type ArceOsThreadHandle = runtime_task::thread::ThreadHandle;
 pub(crate) type ArceOsThreadWakeHandle = runtime_task::thread::ThreadWakeHandle;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsWakeResult = runtime_task::thread::WakeResult;
-pub(crate) type ArceOsWaitQueue = runtime_task::sync::WaitQueue;
-#[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
-#[cfg(any(not(target_arch = "loongarch64"), test))]
 use runtime_task::time::MonotonicDeadline as ArceOsMonotonicDeadline;
 pub(crate) use runtime_task::{
     sched::{CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, SchedulePolicy as ArceOsSchedulePolicy},
@@ -237,20 +242,17 @@ pub(crate) use runtime_task::{
 };
 
 /// Hard-IRQ-safe event consumed by one fixed ArceOS service thread.
-#[cfg(any(not(target_arch = "loongarch64"), test))]
 pub(crate) struct ArceOsIrqNotification {
     event: runtime_task::sync::irq::IrqWaitCell,
     waiter: OnceLock<ArceOsIrqWaiter>,
 }
 
-#[cfg(any(not(target_arch = "loongarch64"), test))]
 struct ArceOsIrqWaiter {
     owner: ArceOsThreadId,
     registration: runtime_task::sync::irq::IrqWaitRegistration,
     park: runtime_task::sync::WaitQueue,
 }
 
-#[cfg(any(not(target_arch = "loongarch64"), test))]
 impl ArceOsIrqNotification {
     pub(crate) const fn new() -> Self {
         Self {
@@ -360,7 +362,6 @@ pub(crate) fn send_ipi(cpu_id: usize) {
         .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn run_on_cpu_sync(
     cpu_id: usize,
     f: unsafe fn(*mut ()),
@@ -390,7 +391,6 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
     }
 }
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub fn shutdown_host_filesystems() -> AxVmResult {
     modules::ax_fs_ng::shutdown_filesystems()
         .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
@@ -398,50 +398,6 @@ pub fn shutdown_host_filesystems() -> AxVmResult {
         .map_err(|error| AxVmError::host("release host filesystem block IRQs", error))?;
     if released != 0 {
         info!("Released {released} host filesystem block IRQ registration(s) during shutdown");
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmResult {
-    let (_, _, _, guest_gsi) = crate::boot::x86_qemu_passthrough_block_intx();
-    let info = qemu_block_passthrough_pci_info();
-
-    let route = match ax_driver::pci::resolve_intx_binding(info) {
-        Ok(Some(binding)) => {
-            let trigger = intx_forwarding_trigger(&binding);
-            resolve_binding_irq(binding).map(|host_irq| (host_irq, trigger))
-        }
-        Ok(None) => {
-            warn!("x86 QEMU block passthrough PCI INTx route was not found for {info:?}");
-            return Ok(());
-        }
-        Err(error) => {
-            warn!("failed to resolve x86 QEMU block passthrough PCI INTx route: {error:?}");
-            return Ok(());
-        }
-    };
-
-    match route {
-        Ok((host_irq, trigger)) => {
-            crate::arch::current::register_host_irq_forwarding_route_with_trigger(
-                vm, guest_gsi, host_irq, trigger,
-            )?;
-            crate::arch::current::register_host_irq_forwarding_activator(
-                vm,
-                guest_gsi,
-                unmask_qemu_block_passthrough_intx,
-            )?;
-            info!(
-                "Registered x86 QEMU block passthrough PCI INTx forwarding route: guest GSI \
-                 {guest_gsi} <- host IRQ {host_irq:?}, trigger {trigger:?}"
-            );
-        }
-        Err(error) => {
-            warn!(
-                "failed to resolve x86 QEMU block passthrough IRQ source into host IRQ: {error:?}"
-            );
-        }
     }
     Ok(())
 }
@@ -458,7 +414,7 @@ pub(crate) fn prepare_qemu_block_passthrough_device() {
 }
 
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-fn unmask_qemu_block_passthrough_intx() {
+pub(crate) fn unmask_qemu_block_passthrough_intx() {
     let info = qemu_block_passthrough_pci_info();
     match ax_driver::pci::unmask_intx_passthrough(info) {
         Ok(()) => info!("Unmasked x86 QEMU block PCI INTx passthrough device {info:?}"),
@@ -469,7 +425,7 @@ fn unmask_qemu_block_passthrough_intx() {
 }
 
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-fn qemu_block_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
+pub(crate) fn qemu_block_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
     use ax_driver::probe::pci::{PciAddress, PciInfo, PciIntxRoute};
 
     let (device, function, pin, _) = crate::boot::x86_qemu_passthrough_block_intx();
@@ -488,7 +444,7 @@ fn qemu_block_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
 }
 
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-fn resolve_binding_irq(
+pub(crate) fn resolve_binding_irq(
     binding: ax_driver::BindingIrq,
 ) -> Result<modules::ax_hal::irq::IrqId, modules::ax_hal::irq::IrqError> {
     use modules::ax_hal::irq;
@@ -503,7 +459,9 @@ fn resolve_binding_irq(
 }
 
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-fn intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> crate::InterruptTriggerMode {
+pub(crate) fn intx_forwarding_trigger(
+    binding: &ax_driver::BindingIrq,
+) -> crate::InterruptTriggerMode {
     match binding {
         ax_driver::BindingIrq::Source(ax_driver::BindingIrqSource::AcpiGsiRoute(route)) => {
             match route.trigger {

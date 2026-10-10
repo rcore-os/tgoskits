@@ -32,7 +32,7 @@
 use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 use hashbrown::HashMap;
@@ -113,18 +113,18 @@ impl ListenTableEntryInner {
     }
 }
 
-type ListenTableEntry = Arc<SpinLock<Vec<ListenTableEntryInner>>>;
+type ListenTableEntry = Arc<RawSpinLock<Vec<ListenTableEntryInner>>>;
 
 /// Per-port table of active TCP listeners.
 pub struct ListenTable {
-    tcp: SpinLock<HashMap<u16, ListenTableEntry>>,
+    tcp: RawSpinLock<HashMap<u16, ListenTableEntry>>,
 }
 
 impl ListenTable {
     /// Creates an empty listen table indexed by TCP port.
     pub fn new() -> Self {
         Self {
-            tcp: SpinLock::new(HashMap::new()),
+            tcp: RawSpinLock::new(HashMap::new()),
         }
     }
 

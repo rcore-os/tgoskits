@@ -1,31 +1,58 @@
-// Copyright 2025 The Axvisor Team
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+//! Guest hypercall decoding, separated from lifecycle and mapping ownership.
 
-use std::{format, string::ToString};
+use std::string::ToString;
 
 use axhvc::{HyperCallCode, HyperCallError, HyperCallResult};
 
-use crate::{
-    runtime::{ivc::*, *},
-    *,
-};
+use crate::{AxVmResult, GuestPhysAddr, MappingFlags, runtime::vcpus, services::RunServices};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HyperCallAbi {
-    #[cfg(any(not(target_arch = "aarch64"), test))]
     Generic,
     AArch64,
+}
+
+impl HyperCallAbi {
+    pub(crate) const fn native() -> Self {
+        if cfg!(target_arch = "aarch64") {
+            Self::AArch64
+        } else {
+            Self::Generic
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GuestRequest {
+    CpuOn {
+        target_vcpu_id: usize,
+        entry_point: GuestPhysAddr,
+        context_id: usize,
+        abi: HyperCallAbi,
+    },
+    CpuOff {
+        abi: HyperCallAbi,
+    },
+    Reset,
+    Hypercall {
+        code: HyperCallCode,
+        args: [u64; 6],
+    },
+    NestedFault {
+        addr: GuestPhysAddr,
+        access_flags: MappingFlags,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HyperCallOutcome {
+    Return(usize),
+    Deferred(GuestRequest),
+    CpuSuspendStandby { return_value: usize },
+    CpuOff,
+    SystemOff,
+    SystemReset,
+    Unrecognized,
 }
 
 fn is_psci_code(code: HyperCallCode) -> bool {
@@ -49,18 +76,15 @@ fn is_psci_code(code: HyperCallCode) -> bool {
             | HyperCallCode::PSCISystemReset
     )
 }
-const PSCI_RET_SUCCESS: usize = 0;
+pub(crate) const PSCI_RET_SUCCESS: usize = 0;
 const PSCI_VERSION_0_2: usize = 0x0000_0002;
 const ARM_SMCCC_VERSION_FUNC_ID: u64 = 0x8000_0000;
-const PSCI_RET_NOT_SUPPORTED: usize = usize::MAX;
-const PSCI_RET_INVALID_PARAMETERS: usize = (-2isize) as usize;
-const PSCI_RET_DENIED: usize = (-3isize) as usize;
-#[allow(dead_code)]
-const PSCI_RET_ALREADY_ON: usize = (-4isize) as usize;
-#[allow(dead_code)]
-const PSCI_RET_ON_PENDING: usize = (-5isize) as usize;
-#[allow(dead_code)]
-const PSCI_RET_INTERNAL_FAILURE: usize = (-6isize) as usize;
+pub(crate) const PSCI_RET_NOT_SUPPORTED: usize = usize::MAX;
+pub(crate) const PSCI_RET_INVALID_PARAMETERS: usize = (-2isize) as usize;
+pub(crate) const PSCI_RET_DENIED: usize = (-3isize) as usize;
+pub(crate) const PSCI_RET_ALREADY_ON: usize = (-4isize) as usize;
+pub(crate) const PSCI_RET_ON_PENDING: usize = (-5isize) as usize;
+pub(crate) const PSCI_RET_INTERNAL_FAILURE: usize = (-6isize) as usize;
 const PSCI_AFFINITY_LEVEL_ON: usize = 0;
 const PSCI_AFFINITY_LEVEL_OFF: usize = 1;
 const PSCI_AFFINITY_LEVEL_ON_PENDING: usize = 2;
@@ -68,6 +92,7 @@ const PSCI_MIGRATE_TYPE_TOS_NOT_PRESENT: usize = 2;
 const PSCI_POWER_STATE_TYPE_SHIFT: u64 = 16;
 const PSCI_POWER_STATE_TYPE_MASK: u64 = 0x1;
 const PSCI_POWER_STATE_TYPE_STANDBY: u64 = 0;
+#[cfg(test)]
 const PSCI_POWER_STATE_TYPE_POWERDOWN: u64 = 1;
 
 fn psci_power_state_type(power_state: u64) -> u64 {
@@ -82,8 +107,7 @@ fn psci_affinity_info_result(state: crate::VmVcpuState) -> usize {
     }
 }
 
-#[allow(dead_code)]
-fn psci_find_vcpu_by_mpidr<I>(target_cpu: u64, vcpus: I) -> Option<usize>
+pub(crate) fn psci_find_vcpu_by_mpidr<I>(target_cpu: u64, vcpus: I) -> Option<usize>
 where
     I: IntoIterator<Item = (usize, u64)>,
 {
@@ -111,7 +135,7 @@ fn psci_mpidr_matches_affinity_level(
         .is_some_and(|mask| (vcpu_mpidr & mask) == (target_affinity & mask))
 }
 
-fn psci_affinity_info_result_for_domain<I>(
+pub(crate) fn psci_affinity_info_result_for_domain<I>(
     target_affinity: u64,
     affinity_level: u64,
     vcpus: I,
@@ -145,54 +169,6 @@ where
         PSCI_AFFINITY_LEVEL_ON_PENDING
     } else {
         PSCI_AFFINITY_LEVEL_OFF
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HyperCallOutcome {
-    Return(usize),
-    Deferred(DeferredHyperCall),
-    CpuSuspendStandby { return_value: usize },
-    CpuOff,
-    SystemOff,
-    SystemReset,
-}
-
-fn psci_cpu_on_result(result: Result<(), vcpus::VcpuOnError>) -> usize {
-    match result {
-        Ok(()) => PSCI_RET_SUCCESS,
-        Err(vcpus::VcpuOnError::AlreadyOn) => PSCI_RET_ALREADY_ON,
-        Err(vcpus::VcpuOnError::OnPending) => PSCI_RET_ON_PENDING,
-        Err(vcpus::VcpuOnError::StartFailed) => PSCI_RET_INTERNAL_FAILURE,
-    }
-}
-
-/// Hypercall work that may block and therefore must run after the vCPU has
-/// released its host-CPU publication and architecture binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DeferredHyperCall {
-    PsciCpuOn {
-        target_vcpu_id: usize,
-        entry_point: GuestPhysAddr,
-        context_id: usize,
-    },
-}
-
-pub(crate) fn finish_deferred_hypercall(vm: VMRef, work: DeferredHyperCall) -> usize {
-    match work {
-        DeferredHyperCall::PsciCpuOn {
-            target_vcpu_id,
-            entry_point,
-            context_id,
-        } => psci_cpu_on_result(vcpus::vcpu_on(vm, target_vcpu_id, entry_point, context_id)),
-    }
-}
-
-fn psci_cpu_off_result(has_multiple_running_vcpus: bool) -> HyperCallOutcome {
-    if has_multiple_running_vcpus {
-        HyperCallOutcome::CpuOff
-    } else {
-        HyperCallOutcome::Return(PSCI_RET_DENIED)
     }
 }
 
@@ -231,7 +207,7 @@ fn psci_feature_result(function_id: u64) -> usize {
     }
 }
 
-fn dispatch_psci(code: HyperCallCode, args: [u64; 6]) -> Option<HyperCallResult> {
+pub(crate) fn dispatch_psci(code: HyperCallCode, args: [u64; 6]) -> Option<HyperCallResult> {
     match code {
         HyperCallCode::PSCIVersion => Some(Ok(PSCI_VERSION_0_2)),
         HyperCallCode::PSCIFeatures => Some(Ok(psci_feature_result(args[0]))),
@@ -255,539 +231,62 @@ fn dispatch_psci(code: HyperCallCode, args: [u64; 6]) -> Option<HyperCallResult>
     }
 }
 
-pub struct HyperCall {
-    vm: VMRef,
-    code: HyperCallCode,
-    args: [u64; 6],
+pub(crate) fn psci_cpu_on_result(result: Result<(), vcpus::VcpuOnError>) -> usize {
+    match result {
+        Ok(()) => PSCI_RET_SUCCESS,
+        Err(vcpus::VcpuOnError::AlreadyOn) => PSCI_RET_ALREADY_ON,
+        Err(vcpus::VcpuOnError::OnPending) => PSCI_RET_ON_PENDING,
+        Err(vcpus::VcpuOnError::StartFailed) => PSCI_RET_INTERNAL_FAILURE,
+    }
 }
 
-impl HyperCall {
-    pub fn new(vm: VMRef, code: u64, args: [u64; 6], abi: HyperCallAbi) -> HyperCallResult<Self> {
-        let code = decode_hypercall_code(code, abi)?;
-
-        Ok(Self { vm, code, args })
+pub(crate) fn psci_cpu_off_result(allowed: bool) -> usize {
+    if allowed {
+        PSCI_RET_SUCCESS
+    } else {
+        PSCI_RET_DENIED
     }
+}
 
-    pub(crate) fn execute(&self) -> Result<HyperCallOutcome, HyperCallError> {
-        match self.code {
-            HyperCallCode::PSCIVersion => {
-                info!("VM[{}] PSCI_VERSION", self.vm.id());
-                dispatch_psci(self.code, self.args)
-                    .unwrap()
-                    .map(HyperCallOutcome::Return)
-            }
-            HyperCallCode::PSCIFeatures => {
-                info!(
-                    "VM[{}] PSCI_FEATURES function_id={:#x}",
-                    self.vm.id(),
-                    self.args[0]
-                );
-                dispatch_psci(self.code, self.args)
-                    .unwrap()
-                    .map(HyperCallOutcome::Return)
-            }
-            HyperCallCode::PSCICpuOn | HyperCallCode::PSCICpuOn64 => {
-                let target_cpu = self.args[0];
-                let entry_point = GuestPhysAddr::from_usize(self.args[1] as usize);
-                let context_id = self.args[2] as usize;
-
-                info!(
-                    "VM[{}] PSCI_CPU_ON target={target_cpu:#x} entry={:#x} context={context_id:#x}",
-                    self.vm.id(),
-                    self.args[1]
-                );
-
-                let Some(target_vcpu_id) = psci_find_vcpu_by_mpidr(
-                    target_cpu,
-                    self.vm
-                        .get_vcpu_guest_mpidrs()
-                        .iter()
-                        .map(|(vcpu_id, mpidr)| (*vcpu_id, *mpidr)),
-                ) else {
-                    return Ok(HyperCallOutcome::Return(PSCI_RET_INVALID_PARAMETERS));
-                };
-
-                Ok(HyperCallOutcome::Deferred(DeferredHyperCall::PsciCpuOn {
-                    target_vcpu_id,
-                    entry_point,
-                    context_id,
-                }))
-            }
-            HyperCallCode::PSCICpuSuspend | HyperCallCode::PSCICpuSuspend64 => {
-                let power_state = self.args[0];
-                let state_type = psci_power_state_type(power_state);
-
-                match state_type {
-                    PSCI_POWER_STATE_TYPE_STANDBY => {
-                        info!("VM[{}] PSCI_CPU_SUSPEND standby", self.vm.id());
-                        Ok(HyperCallOutcome::CpuSuspendStandby {
-                            return_value: PSCI_RET_SUCCESS,
-                        })
-                    }
-                    PSCI_POWER_STATE_TYPE_POWERDOWN => {
-                        info!(
-                            "VM[{}] PSCI_CPU_SUSPEND powerdown is not supported before wake \
-                             lifecycle",
-                            self.vm.id()
-                        );
-                        Ok(HyperCallOutcome::Return(PSCI_RET_NOT_SUPPORTED))
-                    }
-                    _ => Ok(HyperCallOutcome::Return(PSCI_RET_INVALID_PARAMETERS)),
-                }
-            }
-            HyperCallCode::PSCICpuOff => {
-                info!("VM[{}] PSCI_CPU_OFF", self.vm.id());
-                let current = crate::host::task::current_thread();
-                let cpu_off_reserved = current
-                    .try_as_vcpu_task()
-                    .map(|task| task.vcpu.id())
-                    .and_then(|vcpu_id| {
-                        self.vm
-                            .runtime_handle()
-                            .map(|runtime| runtime.try_reserve_cpu_off(vcpu_id))
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                Ok(psci_cpu_off_result(cpu_off_reserved))
-            }
-            HyperCallCode::PSCIAffinityInfo | HyperCallCode::PSCIAffinityInfo64 => {
-                let target_affinity = self.args[0];
-                let affinity_level = self.args[1];
-                let vcpus = self.vm.vcpu_list();
-
-                let affinity = psci_affinity_info_result_for_domain(
-                    target_affinity,
-                    affinity_level,
-                    self.vm
-                        .get_vcpu_guest_mpidrs()
-                        .iter()
-                        .map(|(vcpu_id, mpidr)| (*mpidr, vcpus[*vcpu_id].state())),
-                );
-
-                Ok(HyperCallOutcome::Return(affinity))
-            }
-            HyperCallCode::PSCIMigrate
-            | HyperCallCode::PSCIMigrate64
-            | HyperCallCode::PSCIMigrateInfoType
-            | HyperCallCode::PSCIMigrateInfoUpCpu
-            | HyperCallCode::PSCIMigrateInfoUpCpu64 => dispatch_psci(self.code, self.args)
-                .unwrap()
-                .map(HyperCallOutcome::Return),
-            HyperCallCode::PSCISystemOff => {
-                warn!("VM[{}] PSCI_SYSTEM_OFF", self.vm.id());
-                Ok(HyperCallOutcome::SystemOff)
-            }
-            HyperCallCode::PSCISystemReset => {
-                info!("VM[{}] PSCI_SYSTEM_RESET", self.vm.id());
-                Ok(HyperCallOutcome::SystemReset)
-            }
-            HyperCallCode::HIVCPublishChannel => {
-                let key = self.args[0] as usize;
-                let shm_base_gpa_ptr = GuestPhysAddr::from_usize(self.args[1] as usize);
-                let shm_size_ptr = GuestPhysAddr::from_usize(self.args[2] as usize);
-
-                info!(
-                    "VM[{}] HyperCall {:?} key {:#x}",
-                    self.vm.id(),
-                    self.code,
-                    key
-                );
-                // User will pass the size of the shared memory region,
-                // we will allocate the shared memory region based on this size.
-                let shm_region_size =
-                    self.vm
-                        .read_from_guest_of::<usize>(shm_size_ptr)
-                        .map_err(|error| {
-                            self.guest_memory_error("read IVC channel size", shm_size_ptr, error)
-                        })?;
-                ivc::ensure_channel_absent(self.vm.id(), key).map_err(|error| {
-                    self.operation_error("check IVC channel availability", error)
-                })?;
-                let requested_size = shm_region_size.min(ivc::MAX_IVC_CHANNEL_SIZE);
-                let (shm_base_gpa, shm_region_size) =
-                    self.vm.alloc_ivc_channel(requested_size).map_err(|error| {
-                        self.operation_error("reserve IVC guest address range", error)
-                    })?;
-
-                let ivc_channel =
-                    match IVCChannel::alloc(self.vm.id(), key, shm_region_size, shm_base_gpa)
-                        .map_err(|error| self.operation_error("allocate IVC channel", error))
-                    {
-                        Ok(channel) => channel,
-                        Err(err) => {
-                            if let Err(release_err) =
-                                self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                            {
-                                warn!(
-                                    "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after \
-                                     channel allocation failure: {release_err:?}",
-                                    self.vm.id()
-                                );
-                            }
-                            return Err(err);
-                        }
-                    };
-
-                let actual_size = ivc_channel.size();
-
-                if let Err(err) = self.vm.map_region(
-                    shm_base_gpa,
-                    ivc_channel.base_hpa(),
-                    actual_size,
-                    shared_memory_mapping_flags(),
-                ) {
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after mapping \
-                             failure: {release_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    return Err(self.operation_error("map publisher IVC channel", err));
-                }
-
-                if let Err(err) = self
-                    .vm
-                    .write_to_guest_of(shm_base_gpa_ptr, &shm_base_gpa.as_usize())
-                    .and_then(|_| self.vm.write_to_guest_of(shm_size_ptr, &actual_size))
-                {
-                    if let Err(unmap_err) = self.vm.unmap_region(shm_base_gpa, actual_size) {
-                        warn!(
-                            "VM[{}] failed to unmap IVC GPA {shm_base_gpa:#x} after guest write \
-                             failure: {unmap_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after guest write \
-                             failure: {release_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    return Err(self.guest_memory_error(
-                        "write published IVC channel result",
-                        shm_base_gpa_ptr,
-                        err,
-                    ));
-                }
-
-                if let Err(err) = ivc::insert_channel(self.vm.id(), ivc_channel) {
-                    if let Err(unmap_err) = self.vm.unmap_region(shm_base_gpa, actual_size) {
-                        warn!(
-                            "VM[{}] failed to unmap IVC GPA {shm_base_gpa:#x} after channel \
-                             insert failure: {unmap_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    if let Err(release_err) =
-                        self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                    {
-                        warn!(
-                            "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after channel \
-                             insert failure: {release_err:?}",
-                            self.vm.id()
-                        );
-                    }
-                    return Err(self.operation_error("register published IVC channel", err));
-                }
-
-                Ok(HyperCallOutcome::Return(0))
-            }
-            HyperCallCode::HIVCUnPublishChannel => {
-                let key = self.args[0] as usize;
-
-                info!(
-                    "VM[{}] HyperCall {:?} with key {:#x}",
-                    self.vm.id(),
-                    self.code,
-                    key
-                );
-                let teardown = ivc::unpublish_channel(self.vm.id(), key)
-                    .map_err(|error| self.operation_error("unpublish IVC channel", error))?;
-                if !crate::vm::release_ivc_teardown_for_vm(self.vm.id(), teardown, &self.vm) {
-                    return Err(HyperCallError::Internal {
-                        code: self.code,
-                        operation: "release unpublished IVC channel",
-                        detail: "failed to unmap guest GPA or release the IVC aperture range"
-                            .into(),
-                    });
-                }
-
-                Ok(HyperCallOutcome::Return(0))
-            }
-            HyperCallCode::HIVCSubscribChannel => {
-                let publisher_vm_id = self.args[0] as usize;
-                let key = self.args[1] as usize;
-                let shm_base_gpa_ptr = GuestPhysAddr::from_usize(self.args[2] as usize);
-                let shm_size_ptr = GuestPhysAddr::from_usize(self.args[3] as usize);
-
-                info!(
-                    "VM[{}] HyperCall {:?} to VM[{}]",
-                    self.vm.id(),
-                    self.code,
-                    publisher_vm_id
-                );
-
-                let shm_size = ivc::prepare_subscribe_channel(publisher_vm_id, key, self.vm.id())
-                    .map_err(|error| {
-                    self.operation_error("prepare IVC channel subscription", error)
-                })?;
-                let (shm_base_gpa, shm_region_size) =
-                    self.vm.alloc_ivc_channel(shm_size).map_err(|error| {
-                        self.operation_error("reserve subscriber IVC guest address range", error)
-                    })?;
-
-                let subscribe_result = ivc::subscribe_to_channel_of_publisher(
-                    publisher_vm_id,
-                    key,
-                    self.vm.id(),
-                    shm_base_gpa,
-                );
-                let (base_hpa, actual_size) = match subscribe_result {
-                    Ok(channel) => channel,
-                    Err(err) => {
-                        if let Err(release_err) =
-                            self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                        {
-                            warn!(
-                                "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after \
-                                 subscribe registration failure: {release_err:?}",
-                                self.vm.id()
-                            );
-                        }
-                        return Err(self.operation_error("register IVC channel subscriber", err));
-                    }
-                };
-
-                if let Err(err) = self.vm.map_region(
-                    shm_base_gpa,
-                    base_hpa,
-                    actual_size,
-                    shared_memory_mapping_flags(),
-                ) {
-                    match ivc::unsubscribe_from_channel_of_publisher(
-                        publisher_vm_id,
-                        key,
-                        self.vm.id(),
-                    ) {
-                        Ok(teardown) => {
-                            if let Err(release_err) =
-                                self.vm.release_ivc_channel(shm_base_gpa, shm_region_size)
-                            {
-                                warn!(
-                                    "VM[{}] failed to release IVC GPA {shm_base_gpa:#x} after \
-                                     subscribe mapping failure: {release_err:?}",
-                                    self.vm.id()
-                                );
-                            } else {
-                                teardown.commit();
-                            }
-                        }
-                        Err(unsub_err) => {
-                            warn!(
-                                "VM[{}] failed to rollback IVC subscription to VM[{}] key \
-                                 {key:#x} after mapping failure: {unsub_err:?}",
-                                self.vm.id(),
-                                publisher_vm_id
-                            );
-                        }
-                    }
-                    return Err(self.operation_error("map subscriber IVC channel", err));
-                }
-
-                if let Err(err) = self
-                    .vm
-                    .write_to_guest_of(shm_base_gpa_ptr, &shm_base_gpa.as_usize())
-                    .and_then(|_| self.vm.write_to_guest_of(shm_size_ptr, &actual_size))
-                {
-                    match ivc::unsubscribe_from_channel_of_publisher(
-                        publisher_vm_id,
-                        key,
-                        self.vm.id(),
-                    ) {
-                        Ok(teardown) => {
-                            crate::vm::release_ivc_teardown_for_vm(
-                                self.vm.id(),
-                                teardown,
-                                &self.vm,
-                            );
-                        }
-                        Err(unsub_err) => {
-                            warn!(
-                                "VM[{}] failed to rollback IVC subscription to VM[{}] key \
-                                 {key:#x} after guest write failure: {unsub_err:?}",
-                                self.vm.id(),
-                                publisher_vm_id
-                            );
-                        }
-                    }
-                    return Err(self.guest_memory_error(
-                        "write subscribed IVC channel result",
-                        shm_base_gpa_ptr,
-                        err,
-                    ));
-                }
-
-                info!(
-                    "VM[{}] HyperCall HIVC_REGISTER_SUBSCRIBER success, base GPA: {:#x}, size: {}",
-                    self.vm.id(),
-                    shm_base_gpa,
-                    actual_size
-                );
-
-                Ok(HyperCallOutcome::Return(0))
-            }
-            HyperCallCode::HIVCUnSubscribChannel => {
-                let publisher_vm_id = self.args[0] as usize;
-                let key = self.args[1] as usize;
-
-                info!(
-                    "VM[{}] HyperCall {:?} from VM[{}]",
-                    self.vm.id(),
-                    self.code,
-                    publisher_vm_id
-                );
-                let teardown =
-                    ivc::unsubscribe_from_channel_of_publisher(publisher_vm_id, key, self.vm.id())
-                        .map_err(|error| {
-                            self.operation_error("unsubscribe from IVC channel", error)
-                        })?;
-                if !crate::vm::release_ivc_teardown_for_vm(self.vm.id(), teardown, &self.vm) {
-                    return Err(HyperCallError::Internal {
-                        code: self.code,
-                        operation: "release unsubscribed IVC channel",
-                        detail: "failed to unmap guest GPA or release the IVC aperture range"
-                            .into(),
-                    });
-                }
-
-                Ok(HyperCallOutcome::Return(0))
-            }
-            HyperCallCode::HIVCNotify => {
-                let publisher_vm_id = self.args[0] as usize;
-                let key = self.args[1] as usize;
-                let target_vm_id = self.args[2] as usize;
-
-                let route =
-                    ivc::prepare_notify_channel(publisher_vm_id, key, self.vm.id(), target_vm_id)
-                        .map_err(|error| self.operation_error("prepare IVC notify route", error))?;
-                let target_vm = crate::get_vm_by_id(route.target_vm_id).ok_or_else(|| {
-                    HyperCallError::ResourceNotFound {
-                        code: self.code,
-                        resource: format!("VM {}", route.target_vm_id),
-                        detail: "IVC notify target VM does not exist".into(),
-                    }
-                })?;
-                let target_devices = target_vm.get_devices().map_err(|error| {
-                    self.operation_error("get IVC notify target devices", error)
-                })?;
-                let notify_irq = ivc::notify_peer(&target_devices).map_err(|error| {
-                    self.operation_error("notify IVC peer interrupt", error.into())
-                })?;
-                let target_runtime = target_vm
-                    .runtime_handle()
-                    .map_err(|error| self.operation_error("kick IVC notify target VM", error))?;
-                target_runtime.kick_all_vcpus();
-                info!(
-                    "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x} irq={:?}",
-                    route.source_vm_id,
-                    route.target_vm_id,
-                    route.publisher_vm_id,
-                    route.key,
-                    notify_irq
-                );
-
-                Ok(HyperCallOutcome::Return(0))
-            }
-            _ => {
-                warn!("Unsupported hypercall code: {:?}", self.code);
-                Err(HyperCallError::Unsupported {
-                    code: self.code,
-                    detail: "the hypervisor does not implement this control hypercall".into(),
-                })
+pub(crate) fn handle(
+    raw_code: u64,
+    args: [u64; 6],
+    abi: HyperCallAbi,
+    _services: &RunServices,
+    _vcpu_id: usize,
+) -> AxVmResult<HyperCallOutcome> {
+    let code = match decode_hypercall_code(raw_code, abi) {
+        Ok(code) => code,
+        Err(_) => {
+            return Ok(if abi == HyperCallAbi::AArch64 {
+                HyperCallOutcome::Return(PSCI_RET_NOT_SUPPORTED)
+            } else {
+                HyperCallOutcome::Unrecognized
+            });
+        }
+    };
+    if let Some(result) = dispatch_psci(code, args) {
+        return result.map(HyperCallOutcome::Return).map_err(Into::into);
+    }
+    Ok(match code {
+        HyperCallCode::PSCICpuSuspend | HyperCallCode::PSCICpuSuspend64 => {
+            match psci_power_state_type(args[0]) {
+                PSCI_POWER_STATE_TYPE_STANDBY => HyperCallOutcome::CpuSuspendStandby {
+                    return_value: PSCI_RET_SUCCESS,
+                },
+                _ => HyperCallOutcome::Return(PSCI_RET_NOT_SUPPORTED),
             }
         }
-    }
-
-    fn operation_error(&self, operation: &'static str, error: AxVmError) -> HyperCallError {
-        let detail = format!("{operation}: {error}");
-        match error {
-            AxVmError::InvalidInput { .. } | AxVmError::HostOwnedDevice { .. } => {
-                HyperCallError::InvalidParameter {
-                    code: self.code,
-                    parameter: "arguments",
-                    detail,
-                }
-            }
-            AxVmError::InvalidState { .. } | AxVmError::InvalidTransition { .. } => {
-                HyperCallError::InvalidState {
-                    code: self.code,
-                    detail,
-                }
-            }
-            AxVmError::VmNotFound { vm_id } => HyperCallError::ResourceNotFound {
-                code: self.code,
-                resource: format!("VM {vm_id}"),
-                detail,
-            },
-            AxVmError::ResourceUnavailable { resource, .. } => HyperCallError::ResourceNotFound {
-                code: self.code,
-                resource: resource.into(),
-                detail,
-            },
-            AxVmError::ResourceConflict { resource, .. } => HyperCallError::ResourceConflict {
-                code: self.code,
-                resource: resource.into(),
-                detail,
-            },
-            AxVmError::Unsupported { .. } => HyperCallError::Unsupported {
-                code: self.code,
-                detail,
-            },
-            AxVmError::OutOfMemory { .. } => HyperCallError::OutOfMemory {
-                code: self.code,
-                operation,
-            },
-            AxVmError::InvalidConfig { .. }
-            | AxVmError::LifecycleRollback { .. }
-            | AxVmError::Boot { .. }
-            | AxVmError::Memory { .. }
-            | AxVmError::Device { .. }
-            | AxVmError::DeviceResourcePlanning(_)
-            | AxVmError::GuestGicProfile(_)
-            | AxVmError::GuestPlicProfile(_)
-            | AxVmError::Vcpu { .. }
-            | AxVmError::Interrupt { .. }
-            | AxVmError::Host { .. } => HyperCallError::Internal {
-                code: self.code,
-                operation,
-                detail,
-            },
-        }
-    }
-
-    fn guest_memory_error(
-        &self,
-        operation: &'static str,
-        address: GuestPhysAddr,
-        error: AxVmError,
-    ) -> HyperCallError {
-        HyperCallError::GuestMemoryAccess {
-            code: self.code,
-            operation,
-            address: address.as_usize(),
-            detail: format!("{error}"),
-        }
-    }
+        HyperCallCode::PSCICpuOff => HyperCallOutcome::CpuOff,
+        HyperCallCode::PSCISystemOff => HyperCallOutcome::SystemOff,
+        HyperCallCode::PSCISystemReset => HyperCallOutcome::SystemReset,
+        _ => HyperCallOutcome::Deferred(GuestRequest::Hypercall { code, args }),
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn hvc_psci_features_cpu_on_matches_execute_contract() {
@@ -831,17 +330,9 @@ mod tests {
 
     #[test]
     fn hvc_cpu_off_last_vcpu_denial_uses_psci_denied() {
-        assert_eq!(
-            super::psci_cpu_off_result(false),
-            super::HyperCallOutcome::Return(super::PSCI_RET_DENIED)
-        );
-        assert_eq!(
-            super::psci_cpu_off_result(true),
-            super::HyperCallOutcome::CpuOff
-        );
+        assert_eq!(super::psci_cpu_off_result(false), super::PSCI_RET_DENIED);
+        assert_eq!(super::psci_cpu_off_result(true), super::PSCI_RET_SUCCESS);
     }
-
-    use super::*;
 
     #[test]
     fn hvc_decodes_psci_version_and_dispatches_0_2() {

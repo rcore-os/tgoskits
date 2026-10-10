@@ -17,7 +17,7 @@ impl SubmissionRegistryLockCheckingWake {
         let unlocked = self
             .state
             .upgrade()
-            .is_some_and(|state| state.submission_channels.try_lock().is_some());
+            .is_some_and(|state| state.submission_channels.try_lock_irqsave().is_some());
         if !unlocked {
             self.lock_failures.fetch_add(1, Ordering::AcqRel);
         }
@@ -49,7 +49,7 @@ fn closing_channels_checks_state_after_releasing_submission_registry_lock() {
         id: 0,
         cpu: 0,
         state,
-        thread: IrqMutex::new(None),
+        thread: RawSpinLock::new(None),
     };
 
     hctx.close_submission_channels();
@@ -68,7 +68,7 @@ fn prune_checks_channel_state_after_releasing_submission_registry_lock() {
 
     prune_closed_submission_channels(&state);
 
-    assert!(state.submission_channels.lock().is_empty());
+    assert!(state.submission_channels.lock_irqsave().is_empty());
 }
 
 #[test]

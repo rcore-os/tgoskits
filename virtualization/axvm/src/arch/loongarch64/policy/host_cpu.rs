@@ -1,11 +1,5 @@
-use super::iocsr::{EIOINTC_ISR_BASE, EIOINTC_ISR_REG_COUNT};
-
 pub(crate) fn host_cpucfg(index: usize) -> usize {
     ax_cpu::capability::read_cpucfg(index)
-}
-
-pub(crate) fn host_eiointc_has_pending() -> bool {
-    (0..EIOINTC_ISR_REG_COUNT).any(|reg| host_iocsr_read_d(EIOINTC_ISR_BASE + reg * 8) != 0)
 }
 
 pub(crate) fn host_iocsr_read_b(address: usize) -> usize {

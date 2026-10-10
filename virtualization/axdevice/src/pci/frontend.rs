@@ -179,11 +179,15 @@ impl DeviceLifecycle for PciRootLifecycle {
     }
 
     fn suspend(&self) -> DeviceManagerResult {
-        Ok(())
+        self.0.suspend_lifecycle()
     }
 
     fn resume(&self) -> DeviceManagerResult {
-        Ok(())
+        self.0.resume_lifecycle()
+    }
+
+    fn stop(&self) -> DeviceManagerResult {
+        self.0.stop_lifecycle()
     }
 }
 

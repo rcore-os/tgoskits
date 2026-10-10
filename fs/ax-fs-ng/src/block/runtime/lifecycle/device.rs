@@ -2,11 +2,11 @@ use super::{super::waiters::AsyncWaiter, *};
 
 impl DeviceInner {
     pub(super) fn quarantine_resources(&self) {
-        let registrations = core::mem::take(&mut *self.irq_registrations.lock());
-        let hctxs = core::mem::take(&mut *self.hctxs.lock());
-        let queues = core::mem::take(&mut *self.detached_queues.lock());
-        let channels = core::mem::take(&mut *self.cpu_channels.lock());
-        let controller_thread = self.controller_thread.lock().take();
+        let registrations = core::mem::take(&mut *self.irq_registrations.lock_irqsave());
+        let hctxs = core::mem::take(&mut *self.hctxs.lock_irqsave());
+        let queues = core::mem::take(&mut *self.detached_queues.lock_irqsave());
+        let channels = core::mem::take(&mut *self.cpu_channels.lock_irqsave());
+        let controller_thread = self.controller_thread.lock_irqsave().take();
         let controller = Arc::clone(&self.controller);
         core::mem::forget(registrations);
         core::mem::forget(hctxs);
@@ -18,7 +18,7 @@ impl DeviceInner {
 
     pub(super) fn prepare_group_shutdown_local(&self) {
         {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             if gate.phase != DevicePhase::Stopped {
                 gate.phase = DevicePhase::Stopping;
                 gate.submission_ready_hctx_count = 0;
@@ -27,26 +27,26 @@ impl DeviceInner {
         self.state.store(DEVICE_STOPPED, Ordering::Release);
         self.accepting.store(false, Ordering::Release);
         self.notify_all_barrier_waiters();
-        let channels = core::mem::take(&mut *self.cpu_channels.lock());
+        let channels = core::mem::take(&mut *self.cpu_channels.lock_irqsave());
         for channel in channels {
             channel.channel.close();
         }
-        let hctxs = self.hctxs.lock().clone();
+        let hctxs = self.hctxs.lock_irqsave().clone();
         for hctx in hctxs {
             hctx.seal_submission_channels();
         }
     }
 
     pub(super) fn quiesce_hctxs_for_group(&self) {
-        let hctxs = self.hctxs.lock().clone();
+        let hctxs = self.hctxs.lock_irqsave().clone();
         quiesce_hctxs(&hctxs);
     }
 
     /// Completes member-local resource teardown after a shared group has
     /// already synchronized and stopped its physical IRQ owner.
     pub(super) fn finish_group_member_shutdown(&self) -> BlockResult {
-        let hctxs = self.hctxs.lock().clone();
-        let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
+        let hctxs = self.hctxs.lock_irqsave().clone();
+        let detached_queues = core::mem::take(&mut *self.detached_queues.lock_irqsave());
         quiesce_hctxs(&hctxs);
         let result = Self::shutdown_queues_after_controller_stop(&hctxs, detached_queues)
             .map_err(BlockError::from);
@@ -54,7 +54,7 @@ impl DeviceInner {
     }
 
     pub(super) fn join_controller_thread(&self) {
-        let thread = self.controller_thread.lock().take();
+        let thread = self.controller_thread.lock_irqsave().take();
         if let Some(thread) = thread {
             thread.join();
         }
@@ -74,7 +74,7 @@ impl DeviceInner {
 
     pub(super) fn mark_ready(&self) -> bool {
         let ready = {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             match gate.phase {
                 DevicePhase::Starting => {
                     gate.phase = DevicePhase::Ready;
@@ -94,7 +94,7 @@ impl DeviceInner {
 
     pub(super) fn mark_failed(&self) {
         let changed = {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             if matches!(gate.phase, DevicePhase::Starting | DevicePhase::Ready) {
                 gate.phase = DevicePhase::Failed;
                 self.state.store(DEVICE_FAILED, Ordering::Release);
@@ -105,9 +105,9 @@ impl DeviceInner {
         };
         self.accepting.store(false, Ordering::Release);
         if changed {
-            let channel_count = self.cpu_channels.lock().len();
+            let channel_count = self.cpu_channels.lock_irqsave().len();
             for index in (0..channel_count).rev() {
-                let channel = self.cpu_channels.lock().get(index).cloned();
+                let channel = self.cpu_channels.lock_irqsave().get(index).cloned();
                 if let Some(channel) = channel {
                     channel.channel.close();
                 }
@@ -118,7 +118,7 @@ impl DeviceInner {
     }
 
     pub(super) fn select_cpu_channel(&self) -> Option<CpuSubmissionChannel> {
-        let channels = self.cpu_channels.lock();
+        let channels = self.cpu_channels.lock_irqsave();
         if channels.is_empty() {
             return None;
         }
@@ -145,21 +145,21 @@ impl DeviceInner {
     pub(super) fn set_admission_wait_hook(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .admission_wait_hook
-            .lock()
+            .lock_irqsave()
             .replace(alloc::boxed::Box::new(hook));
         assert!(previous.is_none(), "admission wait hook already installed");
     }
 
     #[cfg(test)]
     pub(super) fn run_admission_wait_hook(&self) {
-        let hook = self.admission_wait_hook.lock().take();
+        let hook = self.admission_wait_hook.lock_irqsave().take();
         if let Some(hook) = hook {
             hook();
         }
     }
 
     pub(super) fn closed_submission_error(&self) -> BlkError {
-        if self.lifecycle_gate.lock().phase == DevicePhase::Ready {
+        if self.lifecycle_gate.lock_irqsave().phase == DevicePhase::Ready {
             BlkError::Retry
         } else {
             BlkError::Io
@@ -167,7 +167,7 @@ impl DeviceInner {
     }
 
     pub(super) fn published_device_info(&self) -> DeviceInfo {
-        self.device_info.lock().published()
+        self.device_info.lock_irqsave().published()
     }
 
     pub(super) fn enter_data_submissions(
@@ -176,7 +176,7 @@ impl DeviceInner {
         admission: SubmissionAdmission,
     ) -> Result<(), BlkError> {
         loop {
-            if self.lifecycle_gate.lock().try_admit_data(count)? {
+            if self.lifecycle_gate.lock_irqsave().try_admit_data(count)? {
                 return Ok(());
             }
             {
@@ -185,7 +185,7 @@ impl DeviceInner {
                 }
                 self.data_gate_waiters
                     .wait_while(|| {
-                        let gate = self.lifecycle_gate.lock();
+                        let gate = self.lifecycle_gate.lock_irqsave();
                         gate.flush_active && gate.phase == DevicePhase::Ready
                     })
                     .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
@@ -198,7 +198,12 @@ impl DeviceInner {
         admission: SubmissionAdmission,
     ) -> Result<(), BlkError> {
         loop {
-            if self.lifecycle_gate.lock().try_admit_flush()?.is_some() {
+            if self
+                .lifecycle_gate
+                .lock_irqsave()
+                .try_admit_flush()?
+                .is_some()
+            {
                 break;
             }
             if admission.cannot_wait() {
@@ -206,21 +211,21 @@ impl DeviceInner {
             }
             self.flush_gate_waiters
                 .wait_while(|| {
-                    let gate = self.lifecycle_gate.lock();
+                    let gate = self.lifecycle_gate.lock_irqsave();
                     gate.flush_active && gate.phase == DevicePhase::Ready
                 })
                 .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
         }
-        while self.lifecycle_gate.lock().active_data != 0 {
-            if self.lifecycle_gate.lock().phase != DevicePhase::Ready {
-                let mut gate = self.lifecycle_gate.lock();
+        while self.lifecycle_gate.lock_irqsave().active_data != 0 {
+            if self.lifecycle_gate.lock_irqsave().phase != DevicePhase::Ready {
+                let mut gate = self.lifecycle_gate.lock_irqsave();
                 gate.flush_active = false;
                 drop(gate);
                 self.notify_flush_gate_released();
                 return Err(BlkError::Io);
             }
             if admission.cannot_wait() {
-                let mut gate = self.lifecycle_gate.lock();
+                let mut gate = self.lifecycle_gate.lock_irqsave();
                 gate.flush_active = false;
                 drop(gate);
                 self.notify_flush_gate_released();
@@ -228,7 +233,7 @@ impl DeviceInner {
             }
             self.data_drain_waiters
                 .wait_while(|| {
-                    let gate = self.lifecycle_gate.lock();
+                    let gate = self.lifecycle_gate.lock_irqsave();
                     gate.active_data != 0 && gate.phase == DevicePhase::Ready
                 })
                 .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
@@ -240,7 +245,7 @@ impl DeviceInner {
         let mut notify_data = false;
         let mut notify_flush = false;
         {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             match op {
                 RequestOp::Read | RequestOp::Write => {
                     gate.active_data = gate.active_data.saturating_sub(count);
@@ -352,7 +357,7 @@ impl DeviceInner {
         member_id: usize,
         source_id: usize,
     ) -> Result<(GroupIrqMemberTarget, Vec<HctxIrqToken>, ControllerIrqToken), BlkError> {
-        let hctxs = self.hctxs.lock();
+        let hctxs = self.hctxs.lock_irqsave();
         let mut targets = Vec::new();
         let mut hctx_tokens = Vec::new();
         targets
@@ -375,7 +380,7 @@ impl DeviceInner {
     }
 
     pub(super) fn reserve_group_irq_targets(&self, additional: usize) -> Result<(), BlkError> {
-        let hctxs = self.hctxs.lock();
+        let hctxs = self.hctxs.lock_irqsave();
         for hctx in hctxs.iter() {
             hctx.reserve_irq_targets(additional)?;
         }
@@ -383,7 +388,7 @@ impl DeviceInner {
     }
 
     pub(super) fn first_hctx_cpu(&self) -> Option<usize> {
-        self.hctxs.lock().first().map(|hctx| hctx.cpu())
+        self.hctxs.lock_irqsave().first().map(|hctx| hctx.cpu())
     }
 
     pub(super) fn wait_until_ready(&self, timeout: Duration) -> Result<(), BlkError> {
@@ -426,7 +431,10 @@ impl DeviceInner {
                 return Err(error);
             }
         };
-        let ready_hctxs = self.lifecycle_gate.lock().submission_ready_hctx_count;
+        let ready_hctxs = self
+            .lifecycle_gate
+            .lock_irqsave()
+            .submission_ready_hctx_count;
         if state == ControllerState::Ready && ready_hctxs >= target {
             info!(
                 "block device {} online with {} hctxs across {} CPUs",
@@ -455,11 +463,11 @@ impl DeviceInner {
         }
         self.notify_all_barrier_waiters();
 
-        let hctxs = self.hctxs.lock().clone();
+        let hctxs = self.hctxs.lock_irqsave().clone();
         for hctx in &hctxs {
             hctx.seal_submission_channels();
         }
-        let cpu_channels = core::mem::take(&mut *self.cpu_channels.lock());
+        let cpu_channels = core::mem::take(&mut *self.cpu_channels.lock_irqsave());
         for channel in cpu_channels {
             channel.channel.close();
         }
@@ -472,10 +480,10 @@ impl DeviceInner {
             }
         };
 
-        let registrations = core::mem::take(&mut *self.irq_registrations.lock());
+        let registrations = core::mem::take(&mut *self.irq_registrations.lock_irqsave());
         let count = registrations.len();
         if let Err(error) = disable_registrations(&registrations) {
-            *self.irq_registrations.lock() = registrations;
+            *self.irq_registrations.lock_irqsave() = registrations;
             quiesce_hctxs(&hctxs);
             return self.finish_teardown(Err(error));
         }
@@ -497,10 +505,10 @@ impl DeviceInner {
             }
         }
 
-        let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
+        let detached_queues = core::mem::take(&mut *self.detached_queues.lock_irqsave());
         let queue_result = Self::shutdown_queues_after_controller_stop(&hctxs, detached_queues);
         self.controller.commands.close();
-        let thread = self.controller_thread.lock().take();
+        let thread = self.controller_thread.lock_irqsave().take();
         if let Some(thread) = thread {
             thread.join();
         }
@@ -509,11 +517,11 @@ impl DeviceInner {
 
     fn claim_teardown(&self) -> BlockResult<bool> {
         loop {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             if gate.teardown_in_progress {
                 drop(gate);
                 self.shutdown_waiters
-                    .wait_while(|| self.lifecycle_gate.lock().teardown_in_progress)?;
+                    .wait_while(|| self.lifecycle_gate.lock_irqsave().teardown_in_progress)?;
                 continue;
             }
             if gate.phase == DevicePhase::Stopped {
@@ -525,31 +533,31 @@ impl DeviceInner {
     }
 
     pub(super) fn shutdown_from_controller(&self) {
-        let mut gate = self.lifecycle_gate.lock();
+        let mut gate = self.lifecycle_gate.lock_irqsave();
         if gate.teardown_in_progress || gate.phase == DevicePhase::Stopped {
             return;
         }
         self.begin_teardown(&mut gate);
         drop(gate);
         self.notify_all_barrier_waiters();
-        let hctxs = self.hctxs.lock().clone();
+        let hctxs = self.hctxs.lock_irqsave().clone();
         for hctx in &hctxs {
             hctx.seal_submission_channels();
         }
-        let channels = core::mem::take(&mut *self.cpu_channels.lock());
+        let channels = core::mem::take(&mut *self.cpu_channels.lock_irqsave());
         for channel in channels {
             channel.channel.close();
         }
-        let registrations = core::mem::take(&mut *self.irq_registrations.lock());
+        let registrations = core::mem::take(&mut *self.irq_registrations.lock_irqsave());
         let count = registrations.len();
         if let Err(error) = disable_registrations(&registrations) {
-            *self.irq_registrations.lock() = registrations;
+            *self.irq_registrations.lock_irqsave() = registrations;
             quiesce_hctxs(&hctxs);
             let _ = self.finish_teardown(Err(error));
             return;
         }
         quiesce_hctxs(&hctxs);
-        let detached_queues = core::mem::take(&mut *self.detached_queues.lock());
+        let detached_queues = core::mem::take(&mut *self.detached_queues.lock_irqsave());
         let queue_result = Self::shutdown_queues_after_controller_stop(&hctxs, detached_queues);
         drop(registrations);
         let _ =
@@ -566,7 +574,7 @@ impl DeviceInner {
 
     fn finish_teardown(&self, result: BlockResult<usize>) -> BlockResult<usize> {
         {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             gate.teardown_in_progress = false;
             if result.is_ok() {
                 gate.phase = DevicePhase::Stopped;
@@ -579,7 +587,7 @@ impl DeviceInner {
     fn finish_terminal_teardown<T>(&self, result: BlockResult<T>) -> BlockResult<T> {
         let error = result.as_ref().err().copied();
         let terminal_error = {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             gate.phase = DevicePhase::Stopped;
             gate.teardown_in_progress = false;
             if gate.terminal_teardown_error.is_none() {
@@ -592,7 +600,7 @@ impl DeviceInner {
     }
 
     pub(super) fn terminal_teardown_error(&self) -> Option<BlockError> {
-        self.lifecycle_gate.lock().terminal_teardown_error
+        self.lifecycle_gate.lock_irqsave().terminal_teardown_error
     }
 
     fn shutdown_queues_after_controller_stop(
@@ -631,7 +639,7 @@ pub(super) fn create_cpu_channels(
 impl HctxObserver for DeviceInner {
     fn request_completed(&self, op: RequestOp, block_count: u32, result: Result<(), BlkError>) {
         let (notify_data, notify_flush) = {
-            let mut gate = self.lifecycle_gate.lock();
+            let mut gate = self.lifecycle_gate.lock_irqsave();
             match op {
                 RequestOp::Read | RequestOp::Write => {
                     gate.active_data = gate.active_data.saturating_sub(1);
@@ -762,10 +770,10 @@ impl CleanupBundle {
         if irq_result.is_err() {
             self.device
                 .irq_registrations
-                .lock()
+                .lock_irqsave()
                 .extend(self.registrations);
         }
-        let mut detached = self.device.detached_queues.lock();
+        let mut detached = self.device.detached_queues.lock_irqsave();
         if detached.try_reserve(self.queues.len()).is_err() {
             core::mem::forget(self.queues);
             drop(detached);
@@ -827,7 +835,7 @@ impl InstallUpdateTransaction {
 
     fn prepare(&mut self) -> Result<(), BlkError> {
         let teardown_started = matches!(
-            self.device.lifecycle_gate.lock().phase,
+            self.device.lifecycle_gate.lock_irqsave().phase,
             DevicePhase::Stopping | DevicePhase::Stopped
         );
         if teardown_started && (!self.queues.is_empty() || !self.endpoints.is_empty()) {
@@ -841,20 +849,26 @@ impl InstallUpdateTransaction {
         if self
             .device
             .detached_queues
-            .lock()
+            .lock_irqsave()
             .try_reserve(queue_count)
             .is_err()
         {
             core::mem::forget(core::mem::take(&mut self.queues));
             return Err(BlkError::NoMemory);
         }
-        if self.device.hctxs.lock().try_reserve(queue_count).is_err() {
+        if self
+            .device
+            .hctxs
+            .lock_irqsave()
+            .try_reserve(queue_count)
+            .is_err()
+        {
             return Err(self.fail(BlkError::NoMemory));
         }
         if self
             .device
             .irq_registrations
-            .lock()
+            .lock_irqsave()
             .try_reserve(self.endpoints.len())
             .is_err()
         {
@@ -876,9 +890,9 @@ impl InstallUpdateTransaction {
         self.existing_ready_hctx_count = self
             .device
             .lifecycle_gate
-            .lock()
+            .lock_irqsave()
             .submission_ready_hctx_count;
-        let existing = self.device.hctxs.lock();
+        let existing = self.device.hctxs.lock_irqsave();
         if self.existing_ready_hctx_count > existing.len() {
             drop(existing);
             return Err(self.fail(BlkError::Io));
@@ -944,14 +958,14 @@ impl InstallUpdateTransaction {
             }
         }
         let channels_installable = {
-            let gate = self.device.lifecycle_gate.lock();
+            let gate = self.device.lifecycle_gate.lock_irqsave();
             !matches!(gate.phase, DevicePhase::Stopping | DevicePhase::Stopped)
         };
         let rebuild = channels_installable
             && self.state == ControllerState::Ready
             && !self.candidates.is_empty()
             && (self.candidates.len() != self.existing_ready_hctx_count
-                || self.device.cpu_channels.lock().len() != online_cpus);
+                || self.device.cpu_channels.lock_irqsave().len() != online_cpus);
         if rebuild {
             let mut channels: Vec<CpuSubmissionChannel> = Vec::new();
             if channels.try_reserve(online_cpus).is_err() {
@@ -992,7 +1006,7 @@ impl InstallUpdateTransaction {
         let ready = self.state == ControllerState::Ready;
         let mut channels_rebuilt = false;
         {
-            let mut gate = self.device.lifecycle_gate.lock();
+            let mut gate = self.device.lifecycle_gate.lock_irqsave();
             if matches!(gate.phase, DevicePhase::Stopping | DevicePhase::Stopped) {
                 if !self.prepared_hctxs.is_empty() || !self.registrations.is_empty() {
                     drop(gate);
@@ -1000,7 +1014,7 @@ impl InstallUpdateTransaction {
                 }
                 if self
                     .device_info
-                    .is_some_and(|info| info != self.device.device_info.lock().published())
+                    .is_some_and(|info| info != self.device.device_info.lock_irqsave().published())
                 {
                     drop(gate);
                     return Err(self.fail(BlkError::InvalidRequest));
@@ -1021,7 +1035,7 @@ impl InstallUpdateTransaction {
                 return Err(self.fail(BlkError::Io));
             }
             if let Some(info) = self.device_info.take() {
-                let observe_result = self.device.device_info.lock().observe(info);
+                let observe_result = self.device.device_info.lock_irqsave().observe(info);
                 if let Err(error) = observe_result {
                     drop(gate);
                     return Err(self.fail(error));
@@ -1031,19 +1045,20 @@ impl InstallUpdateTransaction {
                 for hctx in &self.candidates {
                     hctx.freeze_queue_info();
                 }
-                self.device.device_info.lock().freeze();
+                self.device.device_info.lock_irqsave().freeze();
             }
 
-            self.device.hctxs.lock().extend(
+            self.device.hctxs.lock_irqsave().extend(
                 self.prepared_hctxs
                     .iter()
                     .map(|hctx| Arc::clone(hctx.hctx())),
             );
             if let Some(new_channels) = self.new_cpu_channels.take() {
-                let old = core::mem::replace(&mut *self.device.cpu_channels.lock(), new_channels);
+                let old =
+                    core::mem::replace(&mut *self.device.cpu_channels.lock_irqsave(), new_channels);
                 self.old_cpu_channels = old;
                 channels_rebuilt = true;
-                let channels = self.device.cpu_channels.lock();
+                let channels = self.device.cpu_channels.lock_irqsave();
                 for channel in channels.iter() {
                     channel
                         .hctx
@@ -1052,7 +1067,7 @@ impl InstallUpdateTransaction {
             }
             self.device
                 .irq_registrations
-                .lock()
+                .lock_irqsave()
                 .extend(self.registrations.drain(..));
             if ready {
                 gate.phase = DevicePhase::Ready;

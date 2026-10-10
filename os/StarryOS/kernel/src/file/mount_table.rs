@@ -11,19 +11,19 @@ use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 
 use super::{File, FileLike, InodeKey, IoDst, IoSrc, Kstat};
-use crate::{StarryResult, sync::IrqMutex};
+use crate::{StarryResult, sync::RawSpinLock};
 
 const MOUNT_CHANGE_EVENTS: IoEvents = IoEvents::PRI.union(IoEvents::ERR);
 
-static MOUNT_NAMESPACE_EVENTS: OnceLock<IrqMutex<BTreeMap<u64, Weak<MountNamespaceEvent>>>> =
+static MOUNT_NAMESPACE_EVENTS: OnceLock<RawSpinLock<BTreeMap<u64, Weak<MountNamespaceEvent>>>> =
     OnceLock::new();
 
-fn event_registry() -> &'static IrqMutex<BTreeMap<u64, Weak<MountNamespaceEvent>>> {
-    MOUNT_NAMESPACE_EVENTS.call_once(|| IrqMutex::new(BTreeMap::new()))
+fn event_registry() -> &'static RawSpinLock<BTreeMap<u64, Weak<MountNamespaceEvent>>> {
+    MOUNT_NAMESPACE_EVENTS.call_once(|| RawSpinLock::new(BTreeMap::new()))
 }
 
 fn event_for_open(namespace: &MountNamespace) -> Arc<MountNamespaceEvent> {
-    let mut registry = event_registry().lock();
+    let mut registry = event_registry().lock_irqsave();
     registry.retain(|_, event| event.strong_count() != 0);
     if let Some(event) = registry.get(&namespace.id()).and_then(Weak::upgrade) {
         return event;
@@ -37,7 +37,7 @@ fn event_for_open(namespace: &MountNamespace) -> Arc<MountNamespaceEvent> {
 /// Reports a mount table change to files opened in `namespace`.
 pub(crate) fn notify_mount_namespace_changed(namespace: &MountNamespace) {
     let event = event_registry()
-        .lock()
+        .lock_irqsave()
         .get(&namespace.id())
         .and_then(Weak::upgrade);
     if let Some(event) = event {

@@ -29,7 +29,7 @@ use axpoll::{IoEvents, Pollable};
 
 use crate::{
     pseudofs::dummy_stat_fs,
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
 };
 
 const COPY_BUF_SIZE: usize = 4096;
@@ -69,7 +69,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         lower_dirs: options.lower_dirs,
         upper_dir: options.upper_dir,
         _work_dir: options.work_dir,
-        root: IrqMutex::new(None),
+        root: RawSpinLock::new(None),
     });
     let root = OverlayDir::entry(
         fs.clone(),
@@ -78,7 +78,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         Vec::new(),
         None,
     );
-    *fs.root.lock() = Some(root);
+    *fs.root.lock_irqsave() = Some(root);
     Ok(Filesystem::new(fs))
 }
 
@@ -117,7 +117,7 @@ struct OverlayFs {
     upper_dir: Option<Location>,
     _work_dir: Option<Location>,
     // root_dir() may be called from VFS mount paths with preemption disabled.
-    root: IrqMutex<Option<DirEntry>>,
+    root: RawSpinLock<Option<DirEntry>>,
 }
 
 impl FilesystemOps for OverlayFs {
@@ -126,7 +126,7 @@ impl FilesystemOps for OverlayFs {
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root.lock().clone().unwrap()
+        self.root.lock_irqsave().clone().unwrap()
     }
 
     fn stat(&self) -> VfsResult<StatFs> {

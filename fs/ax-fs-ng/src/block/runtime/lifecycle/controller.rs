@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct ControllerPort {
     pub(super) commands: BoundedChannel<ControllerCommand>,
     pub(super) notification: Arc<dyn BlockNotification>,
-    pub(super) irq_latches: IrqMutex<Vec<Arc<ControllerIrqLatch>>>,
+    pub(super) irq_latches: RawSpinLock<Vec<Arc<ControllerIrqLatch>>>,
     pub(super) terminal_confirmed: AtomicBool,
 }
 
@@ -13,7 +13,7 @@ pub(super) struct ControllerCommand {
 }
 
 struct ControllerReply {
-    result: IrqMutex<Option<Result<ControllerState, BlkError>>>,
+    result: RawSpinLock<Option<Result<ControllerState, BlkError>>>,
     notification: Arc<dyn BlockNotification>,
 }
 
@@ -35,7 +35,7 @@ impl ControllerPort {
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
             .notification();
         let reply = Arc::new(ControllerReply {
-            result: IrqMutex::new(None),
+            result: RawSpinLock::new(None),
             notification,
         });
         let command = ControllerCommand {
@@ -56,7 +56,7 @@ impl ControllerPort {
             }
         }
         loop {
-            if let Some(result) = reply.result.lock().take() {
+            if let Some(result) = reply.result.lock_irqsave().take() {
                 return result;
             }
             reply.notification.wait();
@@ -84,7 +84,7 @@ impl ControllerPort {
 
     pub(super) fn reserve_irq_targets(&self, additional: usize) -> Result<(), BlkError> {
         self.irq_latches
-            .lock()
+            .lock_irqsave()
             .try_reserve(additional)
             .map_err(|_| BlkError::NoMemory)
     }
@@ -105,7 +105,7 @@ pub(super) struct ControllerIrqToken {
 impl ControllerIrqToken {
     pub(super) fn commit(&mut self) {
         if !self.committed {
-            let mut latches = self.port.irq_latches.lock();
+            let mut latches = self.port.irq_latches.lock_irqsave();
             debug_assert!(latches.len() < latches.capacity());
             latches.push(Arc::clone(&self.latch));
             self.committed = true;
@@ -116,7 +116,7 @@ impl ControllerIrqToken {
 impl Drop for ControllerIrqToken {
     fn drop(&mut self) {
         if self.committed {
-            let mut latches = self.port.irq_latches.lock();
+            let mut latches = self.port.irq_latches.lock_irqsave();
             if let Some(index) = latches
                 .iter()
                 .position(|latch| Arc::ptr_eq(latch, &self.latch))
@@ -144,7 +144,7 @@ impl ControllerEventPort for ControllerPort {
 
 impl ControllerReplySender {
     fn complete(self, result: Result<ControllerState, BlkError>) {
-        *self.inner.result.lock() = Some(result);
+        *self.inner.result.lock_irqsave() = Some(result);
         self.inner.notification.notify();
     }
 }
@@ -169,7 +169,7 @@ pub(super) fn run_controller(
         // register retries. This lets an IRQ resolve a transition even when its
         // retry timer expires concurrently.
         {
-            let latches = port.irq_latches.lock();
+            let latches = port.irq_latches.lock_irqsave();
             for latch in latches.iter() {
                 let event = latch.take();
                 if !event.control.is_empty() || event.needs_rearm {

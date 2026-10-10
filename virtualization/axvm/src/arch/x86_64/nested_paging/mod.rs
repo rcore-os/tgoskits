@@ -8,4 +8,4 @@ mod ept;
 mod npt;
 mod runtime;
 
-pub(crate) use runtime::NestedPageTable;
+pub(crate) use runtime::{NestedPageTable, invalidate_translations};

@@ -4,11 +4,7 @@ use super::arceos;
 
 pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
 pub(crate) type ThreadWakeHandle = arceos::ArceOsThreadWakeHandle;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type WakeResult = arceos::ArceOsWakeResult;
-#[cfg(any(not(target_arch = "loongarch64"), test))]
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
-pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{
     ArceOsCpuSet as CpuSet, ArceOsSchedulePolicy as SchedulePolicy,
@@ -34,7 +30,6 @@ pub(crate) fn current_cpu_id() -> usize {
     arceos::current_cpu_id()
 }
 
-#[cfg(target_arch = "aarch64")]
 pub(crate) fn run_on_cpu_sync(
     cpu_id: usize,
     operation: unsafe fn(*mut ()),

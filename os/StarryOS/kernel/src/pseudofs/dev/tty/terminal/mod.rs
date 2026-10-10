@@ -5,7 +5,7 @@ use core::sync::atomic::AtomicU32;
 
 use bytemuck::AnyBitPattern;
 
-use crate::sync::IrqMutex as TerminalStateLock;
+use crate::sync::RawSpinLock;
 
 pub mod job;
 pub mod ldisc;
@@ -22,15 +22,15 @@ pub struct WindowSize {
 
 pub struct Terminal {
     pub job_control: job::JobControl,
-    pub window_size: TerminalStateLock<WindowSize>,
-    pub termios: TerminalStateLock<Arc<termios::Termios2>>,
+    pub window_size: RawSpinLock<WindowSize>,
+    pub termios: RawSpinLock<Arc<termios::Termios2>>,
     pub pty_number: AtomicU32,
 }
 impl Default for Terminal {
     fn default() -> Self {
         Self {
             job_control: job::JobControl::new(),
-            window_size: TerminalStateLock::new(WindowSize {
+            window_size: RawSpinLock::new(WindowSize {
                 // 24x80 is the standard VT100 fallback that applications
                 // expect when TIOCGWINSZ reports a "default" terminal.
                 ws_row: 24,
@@ -38,13 +38,13 @@ impl Default for Terminal {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             }),
-            termios: TerminalStateLock::new(Arc::new(termios::Termios2::default())),
+            termios: RawSpinLock::new(Arc::new(termios::Termios2::default())),
             pty_number: AtomicU32::new(0),
         }
     }
 }
 impl Terminal {
     pub fn load_termios(&self) -> Arc<termios::Termios2> {
-        self.termios.lock().clone()
+        self.termios.lock_irqsave().clone()
     }
 }

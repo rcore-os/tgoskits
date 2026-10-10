@@ -11,7 +11,7 @@ use reader_epoch::ReaderEpoch;
 use super::ProcessData;
 use crate::{
     mm::{MmHandle, MmPin, TransparentHugePageMode},
-    sync::{IrqMutex, PreemptGuard},
+    sync::{PreemptGuard, RawSpinLock},
     task::futex::FutexDomain,
 };
 
@@ -30,7 +30,7 @@ struct ProcessMemoryOwner {
 struct ProcessMemoryOwnerCell<T> {
     current: AtomicPtr<T>,
     readers: ReaderEpoch,
-    writer: IrqMutex<()>,
+    writer: RawSpinLock<()>,
     #[cfg(axtest)]
     locked_snapshots: AtomicUsize,
 }
@@ -40,7 +40,7 @@ impl<T> ProcessMemoryOwnerCell<T> {
         Self {
             current: AtomicPtr::new(Arc::into_raw(current).cast_mut()),
             readers: ReaderEpoch::new(),
-            writer: IrqMutex::new(()),
+            writer: RawSpinLock::new(()),
             #[cfg(axtest)]
             locked_snapshots: AtomicUsize::new(0),
         }
@@ -82,7 +82,7 @@ impl<T> ProcessMemoryOwnerCell<T> {
     }
 
     fn replace_after_publish(&self, next: Arc<T>, after_publish: impl FnOnce()) -> Arc<T> {
-        let writer = self.writer.lock();
+        let writer = self.writer.lock_irqsave();
         let next = Arc::into_raw(next).cast_mut();
         let previous = self.current.swap(next, Ordering::AcqRel);
         let previous_epoch = self.readers.advance();

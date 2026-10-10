@@ -494,13 +494,24 @@ mod tests {
         }
         let mut pools = ResourcePools::new();
         pools
-            .add_auto_mmio(0x1000_0000..0x1000_0000 + super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE)
+            .add_auto_mmio(0x4000_0000..0x4000_0000 + super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE)
             .unwrap();
-        pools.allow_fixed_pio(0x3f8..0x400).unwrap();
+        let serial = config.serial_profile();
+        match serial.transport {
+            crate::machine::GuestSerialTransport::Port { base, length } => {
+                pools.allow_fixed_pio(base..base + length).unwrap();
+            }
+            crate::machine::GuestSerialTransport::Mmio { base, length, .. } => {
+                pools
+                    .allow_fixed_mmio(base as u64..(base + length) as u64)
+                    .unwrap();
+            }
+        }
+        let irq = serial.irq;
         pools
             .allow_fixed_controller_inputs(
                 InterruptControllerId::new(0),
-                ControllerInputId::new(4)..ControllerInputId::new(5),
+                ControllerInputId::new(irq)..ControllerInputId::new(irq + 1),
             )
             .unwrap();
         pools
@@ -518,7 +529,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             ivc.mmio(&registers).unwrap(),
-            (0x1000_0000, super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE,)
+            (0x4000_0000, super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE,)
         );
         assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 32);
 
@@ -531,7 +542,7 @@ mod tests {
         let runtime = runtime.finish(graph.resource_plan()).unwrap();
         assert_eq!(
             crate::runtime::ivc::alloc_guest_binding(&runtime, 0x1000).unwrap(),
-            GuestPhysAddr::from_usize(0x1000_0000)
+            GuestPhysAddr::from_usize(0x4000_0000)
         );
     }
 }

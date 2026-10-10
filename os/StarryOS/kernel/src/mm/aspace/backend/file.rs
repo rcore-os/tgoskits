@@ -9,7 +9,7 @@ use alloc::{
 use ax_fs_ng::{
     file::{
         CacheMappingEndpoint, CacheMappingEvent, CacheMappingResult, CachePageIdentity,
-        CachedFileIdentity, CachedPagePin,
+        CachedFileIdentity, CachedPageBacking, CachedPagePin,
     },
     vfs::{CachedFile, FileFlags},
 };
@@ -21,7 +21,7 @@ use axfs_ng_vfs::Location;
 use super::{
     super::{
         EvictMappingOutcome,
-        lifecycle::{RmapMmLookupError, pin_mm_for_rmap},
+        lifecycle::{RmapMmLookupError, pin_mm_for_cache_invalidation},
         objects::{EvictionError, FrameLease, PageId, PageObject, PageState},
         vma::{
             FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy, VmaDescriptor,
@@ -83,11 +83,24 @@ impl FilePageEntry {
 #[derive(Default)]
 struct FilePageIndex {
     pages: BTreeMap<u32, FilePageEntry>,
+    /// Models the last retired slot releasing its owner at lookup handoff.
+    #[cfg(all(test, axtest))]
+    retiring_lookup_page: Option<Arc<PageObject>>,
 }
 
 impl FilePageIndex {
-    fn prune_stale(&mut self) {
-        self.pages.retain(|_, entry| entry.page().is_some());
+    /// Holds one upgraded identity through validation and publication. A
+    /// separate liveness check cannot prevent the last slot from exiting.
+    /// Expired entries are removed on lookup; dropping the domain releases
+    /// untouched tombstones without a full file scan on every page fault.
+    fn retain_page(&mut self, page_number: u32) -> Option<Arc<PageObject>> {
+        let page = self.pages.get(&page_number).and_then(FilePageEntry::page);
+        #[cfg(all(test, axtest))]
+        drop(self.retiring_lookup_page.take());
+        if page.is_none() {
+            self.pages.remove(&page_number);
+        }
+        page
     }
 
     fn reserve_publication(
@@ -96,10 +109,12 @@ impl FilePageIndex {
         page_number: u32,
         pin: CachedPagePin,
     ) -> StarryResult<Arc<PageObject>> {
-        self.prune_stale();
         let paddr = PhysAddr::from_usize(pin.paddr());
-        if let Some(entry) = self.pages.get_mut(&page_number) {
-            let page = entry.page().ok_or(StarryError::BadState)?;
+        if let Some(page) = self.retain_page(page_number) {
+            let entry = self
+                .pages
+                .get_mut(&page_number)
+                .expect("retained identity remains indexed");
             if entry.file_epoch() > file_epoch {
                 return Err(StarryError::ResourceBusy);
             }
@@ -141,7 +156,12 @@ impl FilePageIndex {
             return Ok(page);
         }
 
-        let frame = FrameLease::borrowed(paddr, PAGE_SIZE_4K, None).ok_or(StarryError::BadState)?;
+        let source = Arc::new(CachedFilePage {
+            backing: pin.backing(),
+            page_number,
+        });
+        let frame =
+            FrameLease::borrowed(paddr, PAGE_SIZE_4K, Some(source)).ok_or(StarryError::BadState)?;
         let page = PageObject::new_present_with_resident_kind(
             PageId::allocate(),
             frame,
@@ -167,11 +187,13 @@ impl FilePageIndex {
         page_number: u32,
         paddr: PhysAddr,
     ) -> StarryResult<Option<Arc<PageObject>>> {
-        self.prune_stale();
-        let Some(entry) = self.pages.get(&page_number) else {
+        let Some(page) = self.retain_page(page_number) else {
             return Ok(None);
         };
-        let page = entry.page().ok_or(StarryError::BadState)?;
+        let entry = self
+            .pages
+            .get(&page_number)
+            .expect("retained identity remains indexed");
         if entry.file_epoch() > file_epoch || page.frame().paddr() != paddr {
             return Err(StarryError::BadState);
         }
@@ -231,14 +253,13 @@ impl FilePageIndex {
         }
         let pin = pins.pop().ok_or(StarryError::BadState)?;
         if pins.is_empty() {
-            if page.mapping_refs() == 0 {
-                self.pages.remove(&page_number);
-            } else {
-                *entry = FilePageEntry::Published {
-                    file_epoch: *file_epoch,
-                    page: Arc::downgrade(page),
-                };
-            }
+            // A canceled materialization still retains its PageObject until
+            // cleanup returns. Preserve its canonical identity for a racing
+            // retry without retaining either a frame owner or a cache pin.
+            *entry = FilePageEntry::Published {
+                file_epoch: *file_epoch,
+                page: Arc::downgrade(page),
+            };
         }
         Ok(Some(pin))
     }
@@ -249,9 +270,11 @@ impl FilePageIndex {
         page_number: u32,
         page: &Arc<PageObject>,
     ) -> StarryResult {
-        self.prune_stale();
-        if let Some(entry) = self.pages.get_mut(&page_number) {
-            let current = entry.page().ok_or(StarryError::BadState)?;
+        if let Some(current) = self.retain_page(page_number) {
+            let entry = self
+                .pages
+                .get_mut(&page_number)
+                .expect("retained identity remains indexed");
             if !Arc::ptr_eq(&current, page) || entry.file_epoch() > file_epoch {
                 return Err(StarryError::BadState);
             }
@@ -293,7 +316,13 @@ impl FilePageIndex {
     }
 }
 
-struct FilePageDomain {
+/// Provider capability retained by a PageObject through mapping retirement.
+pub(super) struct CachedFilePage {
+    pub(super) backing: CachedPageBacking,
+    pub(super) page_number: u32,
+}
+
+pub(super) struct FilePageDomain {
     identity: CachedFileIdentity,
     pages: Mutex<FilePageIndex>,
 }
@@ -304,7 +333,7 @@ static FILE_PAGE_DOMAINS: LazyLock<Mutex<FilePageDomains>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 impl FilePageDomain {
-    fn get_or_create(cache: &CachedFile) -> StarryResult<Arc<Self>> {
+    pub(super) fn get_or_create(cache: &CachedFile) -> StarryResult<Arc<Self>> {
         let identity = cache.identity();
         let domain = {
             let mut domains = FILE_PAGE_DOMAINS.lock();
@@ -325,7 +354,7 @@ impl FilePageDomain {
         Ok(domain)
     }
 
-    fn reserve_page(
+    pub(super) fn reserve_page(
         &self,
         file_epoch: u64,
         page_number: u32,
@@ -345,7 +374,7 @@ impl FilePageDomain {
         self.pages.lock().resolve(file_epoch, page_number, paddr)
     }
 
-    fn finish_page_publication(
+    pub(super) fn finish_page_publication(
         &self,
         file_epoch: u64,
         page_number: u32,
@@ -359,13 +388,17 @@ impl FilePageDomain {
         Ok(())
     }
 
-    fn cancel_page_publication(&self, page_number: u32, page: &Arc<PageObject>) -> StarryResult {
+    pub(super) fn cancel_page_publication(
+        &self,
+        page_number: u32,
+        page: &Arc<PageObject>,
+    ) -> StarryResult {
         let pin = self.pages.lock().cancel_publication(page_number, page)?;
         drop(pin);
         Ok(())
     }
 
-    fn ensure_page_identity(
+    pub(super) fn ensure_page_identity(
         &self,
         file_epoch: u64,
         page_number: u32,
@@ -423,8 +456,19 @@ impl FilePageDomain {
             }
         };
         for key in mappings {
-            let pin = match pin_mm_for_rmap(key.space_id) {
-                Ok(pin) => pin,
+            let pin = match pin_mm_for_cache_invalidation(key.space_id) {
+                Ok(Some(pin)) => pin,
+                Ok(None) => continue,
+                Err(RmapMmLookupError::Gone)
+                    if page
+                        .rmap
+                        .try_snapshot()
+                        .is_ok_and(|keys| !keys.contains(&key)) =>
+                {
+                    // Reclaim may finish and unregister after the rmap snapshot.
+                    // The exact key must also be gone before skipping it.
+                    continue;
+                }
                 Err(RmapMmLookupError::Gone | RmapMmLookupError::Busy) => {
                     let _ = lease.cancel();
                     return CacheMappingResult::Busy;
@@ -491,8 +535,17 @@ impl FilePageDomain {
             }
         };
         for key in mappings {
-            let pin = match pin_mm_for_rmap(key.space_id) {
-                Ok(pin) => pin,
+            let pin = match pin_mm_for_cache_invalidation(key.space_id) {
+                Ok(Some(pin)) => pin,
+                Ok(None) => continue,
+                Err(RmapMmLookupError::Gone)
+                    if page
+                        .rmap
+                        .try_snapshot()
+                        .is_ok_and(|keys| !keys.contains(&key)) =>
+                {
+                    continue;
+                }
                 Err(_) => {
                     let _ = lease.cancel();
                     return CacheMappingResult::Busy;
@@ -1236,6 +1289,8 @@ impl MappingOperation {
 fn independent_file_backends_share_page_object_for_test() -> bool {
     use axfs_ng_vfs::{Location, Mountpoint, NodePermission};
 
+    use super::super::{AddressSpaceId, MappingSlot, PageOrder};
+
     let (filesystem, memory_fs) = crate::pseudofs::MemoryFs::new_with_handle();
     let entry = memory_fs.create_anonymous_file(
         "file-page-object-domain",
@@ -1245,6 +1300,7 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
     );
     let cache =
         CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    cache.write_at(&[0x41; PAGE_SIZE_4K][..], 0).unwrap();
     let first_start = VirtAddr::from_usize(0x4000_0000);
     let second_start = VirtAddr::from_usize(0x5000_0000);
     let first_operation =
@@ -1262,7 +1318,48 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
     let first_page = first.0.get_or_create_page_object(0, first_pin).unwrap();
     let second_page = second.0.get_or_create_page_object(0, second_pin).unwrap();
 
-    first.cache().identity() == second.cache().identity() && Arc::ptr_eq(&first_page, &second_page)
+    assert_eq!(first.cache().identity(), second.cache().identity());
+    assert!(Arc::ptr_eq(&first_page, &second_page));
+    let slot = MappingSlot::new(
+        first.0.mapping_id,
+        AddressSpaceId::allocate(),
+        first_start,
+        PageOrder::BASE,
+        first_page.clone(),
+        Some(RssKind::File),
+    );
+    assert!(slot.publish());
+    first
+        .0
+        .finish_page_publication(first_start, &first_page)
+        .unwrap();
+    second
+        .0
+        .finish_page_publication(second_start, &second_page)
+        .unwrap();
+    assert!(slot.detach());
+    drop(slot);
+    drop(second_page);
+    first.0.page_domain.pages.lock().retiring_lookup_page = Some(first_page);
+    let replacement_pin = cache.pin_read_page(0).unwrap().unwrap();
+    let expected_frame = replacement_pin.paddr();
+    let replacement = first
+        .0
+        .get_or_create_page_object(0, replacement_pin)
+        .unwrap();
+    assert_eq!(replacement.frame().paddr().as_usize(), expected_frame);
+    let source = replacement.frame().provider::<CachedFilePage>().unwrap();
+    let mut bytes = [0; PAGE_SIZE_4K];
+    source
+        .backing
+        .copy_to(core::io::BorrowedBuf::from(&mut bytes[..]).unfilled())
+        .unwrap();
+    assert_eq!(bytes, [0x41; PAGE_SIZE_4K]);
+    first
+        .0
+        .cancel_page_publication(first_start, &replacement)
+        .unwrap();
+    true
 }
 
 #[cfg(all(axtest, test))]

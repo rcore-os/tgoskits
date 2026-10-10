@@ -22,7 +22,7 @@ sidebar_label: "客户机地址空间"
 | 客户机 RAM 策略 | `axaddrspace` | 区分外部线性内存与自身分配后备页 |
 | 第二阶段页表机制 | `page-table-generic` | 仅通过 `NestedPageTableOps` 使用 |
 | 宿主页分配与地址转换 | `axvm::HostPagingHandler` | 由页表适配器注入，不直接依赖 `ax-alloc` |
-| 虚拟机布局与生命周期 | `axvm` | 创建、加锁、装载、停止虚拟处理器并销毁资源 |
+| 虚拟机布局与生命周期 | `axvm` | 创建、装载、停止虚拟处理器并退休资源 |
 | 架构页表根寄存器 | 各架构虚拟处理器实现 | `axaddrspace` 只公开根物理地址和层数 |
 
 `axaddrspace` 的生产依赖中没有具体页表实现。组件测试通过开发依赖 `page-table-generic` 构造 mock nested page table；生产构建由 `axvm` 实现第二阶段页表并组合 `axaddrspace`。
@@ -285,84 +285,55 @@ sequenceDiagram
 
 ### 6.3 客户机内存访问
 
-AxVM 的 `read_from_guest()`、`write_to_guest()` 和镜像装载路径在持有虚拟机资源锁的闭包内调用 `translated_byte_buffer()`。该方法逐次查询第二阶段页表，将一个区域内的访问切成不跨页表映射边界的宿主 slice。
+AxVM 的镜像装载由控制 owner 通过内存写入入口完成；设备和应用使用 `GuestMemoryPort` 的受控复制，硬件执行使用预先准备好的 `DecodeMemory`。这些入口根据已发布映射检查范围和权限，并持有 `MappingLease` 对应 backing；不向普通调用方返回客户机内存的 Rust 引用。
 
-`translated_byte_buffer()` 不允许访问跨越两个 `MemoryArea`，即使两个区域地址相邻；范围终点超过当前区域就返回 `None`。它也不会为懒分配区域自动触发缺页，未建立页表项时查询失败。
-
-crate 还导出 `GuestMemoryAccessor`，为实现者提供对象和跨翻译区间的 buffer 读写默认方法。当前生产 AxVM 没有为 `AddrSpace` 实现该 trait，而是直接使用上述分片接口，因此两条能力不能混写成同一调用链。
+`axaddrspace::translated_byte_buffer()` 仍是组件现有的分片能力，不能据此建立跨 vCPU、DMA 或翻译切换的长期 `&mut` 借用。`GuestMemoryAccessor` 的默认访问也不承担 AxVM 的运行代次、访问准入和翻译退休协议，生产设备应通过受控端口访问。
 
 ### 6.4 销毁顺序
 
-虚拟机销毁先停止并等待虚拟处理器任务，再清除地址空间，最后释放外部 `VMMemoryRegion` 和设备对象。该顺序防止硬件继续使用已经解除映射或归还分配器的内存。
+`VmHandle::destroy()` 由控制任务先停止运行期，再注销实例。`stop` 关闭 guest entry 和新 IRQ 发布准入，kick 全部 owner，屏蔽外部 producer，确认 vCPU、timer、worker 与 DMA 静默并 join，随后释放运行资源。任何静默或清理失败都保留资源及注册项供重试，不能以句柄丢弃代替销毁确认。
 
-```text
-AxVM::destroy
-  -> stop_and_join_runtime
-  -> cleanup_resource_set
-     -> address_space.clear()
-        -> remove Stage-2 entries
-        -> finalize Alloc-owned frames
-     -> dealloc VMMemoryRegion with needs_dealloc = true
-     -> drop devices / vCPU list / interrupt fabric
-  -> drop nested page table
-```
-
-`AddrSpace::drop()` 也会调用 `clear()` 作为最后防线；`clear()` 内部对区域删除使用 `unwrap()`，清理失败会直接 panic 而不是记录后吞掉。`clear()` 本身返回 `()`，调用方无法在其返回值上处理错误，正常生命周期必须在 Drop 前显式完成清理并保证条件成立。
+`AddrSpace::drop()` 仍以 `clear()` 作为组件自身的最后清理动作。AxVM 必须在页表对象析构前完成硬件和访问租约退休；组件析构不能代替该协议。
 
 ## 7. 锁、并发与安全边界
 
-`AddrSpace`、`MemorySet` 和具体页表都不为单个实例内置全局锁。可变操作要求 `&mut self`，生产环境由 AxVM 的虚拟机资源 owner 提供串行化。
+`AddrSpace`、`MemorySet` 和具体页表不为单个实例内置全局锁。可变操作要求 `&mut self`，生产环境由 VM 控制 owner 串行执行；内存访问持有独立的映射租约，不借用 owner 的可变页表。
 
-### 7.1 外层锁
+### 7.1 控制与发布
 
-`virtualization/axvm/src/vm/mod.rs` 通过 `use ax_std::os::arceos::sync::IrqSafeMutex as Mutex` 引入关中断自旋锁，并以 `Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>` 保护地址空间和生命周期状态。映射、缺页、客户机缓冲区访问与 clear 都必须在这个 VM owner 下串行化，避免 slice 或页表查询跨越资源销毁。
+`virtualization/axvm/src/control/memory.rs` 在任务上下文准备新的 `AddrSpace<ArchNestedPageTable>` 和 `MemoryRevision`。页表分配、失败回滚、设备回调与等待都在可睡眠层完成，硬件进入路径只取得准备好的根与 revision。
 
-```rust
-fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
-where
-    F: FnOnce(&mut AxVMResources) -> AxVmResult<R>,
-{
-    let mut machine = self.machine.lock();
-    let resources = machine
-        .resources_mut()
-        .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available"))?;
-    f(resources)
-}
+映射更新使用 `VmHandle::update_memory(expected_run, MemoryUpdate)`。`Map(MappingLease)` 保留新增 RAM 的 backing；`Unmap(GuestRange)` 只允许撤销完整受控 RAM 范围。旧运行代次的请求返回错误，不能作用于 reset 后的新根。
+
+### 7.2 翻译退休
+
+控制 owner 先准备新根，再关闭 vCPU 入场并收齐静默确认；暂停设备 producer、关闭新内存访问准入并等待在途复制和 DMA。随后安装新根，对可能缓存旧翻译的宿主 CPU 完成架构退休，最后发布 revision 并恢复原运行状态。
+
+```mermaid
+flowchart TB
+    Prepare["任务侧准备新根和 backing"] --> Park["关闭入场并确认 owner 静默"]
+    Park --> Access["暂停设备并收齐访问租约"]
+    Access --> Install["安装新根并确认翻译退休"]
+    Install --> Publish["发布 MemoryRevision"]
+    Publish --> Retire["退休旧根与被移除的 backing"]
+    Retire --> Resume["按更新前状态恢复准入"]
 ```
 
-`map_region()`、`unmap_region()`、缺页处理和客户机内存读写均通过 `with_resources()` 或 `with_resources_mut()` 执行。单次区域操作期间锁不会释放，另一个虚拟处理器或设备处理路径不能并发修改同一页表。
+准备失败保留原运行对象。安装或失效失败保持入口关闭并保留新旧根及 backing，供后续停止清理。VMX 使用 EPT 失效；SVM 依靠下一次 VMRUN 前全 ASID flush 和干净位重置，先保证任何未来进入都不会使用旧翻译，不能把这种逻辑退休描述成已同步执行物理 flush。直通设备缺少可证明的 DMA 静默能力时拒绝更新并保留 backing。
 
-### 7.2 禁止中断临界区
+### 7.3 内存访问
 
-`IrqSafeMutex`（基于 `ax_sync::SpinLock` + `lock_irqsave`）表示地址空间操作期间本 CPU 中断关闭。页表遍历、页表页建立和宿主页分配都可能发生在该临界区，因此它保证一致性但不保证硬实时延迟。
-
-| 路径 | 临界区内可能发生的工作 | 约束 |
-| --- | --- | --- |
-| Linear map | 区间查询、页表页分配、大范围页表建立 | 不执行文件系统或回收 callback |
-| Alloc populate | 每个 4 KiB 页分配和映射 | 不用于硬实时路径；失败不回滚前缀（见 3.2 节） |
-| Alloc fault | 一个 frame 分配与 remap | 不阻塞、不内部重试 |
-| unmap/clear | 删除映射、失效翻译、释放 Alloc frame | 虚拟处理器必须已停止或与更新同步 |
-| guest buffer access | 查询页表并复制数据 | slice 不得逃逸出锁保护的闭包 |
-
-完整锁顺序和禁止组合只在[内存管理锁与并发](./concurrency.md)维护。该组件不得在持有分配器内部锁时反向获取虚拟机 `machine` 锁。
-
-### 7.3 不安全内存访问
-
-`translated_byte_buffer()` 使用 `phys_to_virt()` 得到的地址构造 `&'static mut [u8]`。`GuestMemoryAccessor` 默认方法还使用裸指针进行 volatile 或 non-overlapping copy。这些操作的安全性依赖 adapter 和调用方共同满足以下条件。
+`GuestMemoryPort` 在睡眠 mutex 的同步边界内取得已发布映射和访问租约，再释放锁执行复制；租约固定 `MemoryRevision` 并保留 backing。映射发布等待全部旧访问退出，硬件进入也只能使用该 revision 对应的根。
 
 | 前置条件 | 维护者 |
 | --- | --- |
-| HPA 对应有效且当前可访问的宿主直接映射 | `HostPagingHandler::phys_to_virt` 实现 |
-| slice 覆盖范围没有越过实际页表映射 | `query()` 返回的页尺寸与范围切分逻辑 |
-| 同一物理内存不存在并发可变 Rust 引用 | AxVM 外层锁和调用方生命周期 |
-| 返回 slice 不在解除映射、清理或释放后继续使用 | 调用方必须在锁闭包内立即消费 |
-| 设备或虚拟处理器不会在缺少协议时并发修改内容 | 虚拟机生命周期和设备队列协议 |
+| HPA 对应有效宿主映射 | `MemoryBacking` 与 `HostPagingHandler` |
+| GPA、长度和权限可访问 | 受控映射快照与端口范围检查 |
+| 复制和 DMA 期间 backing 保持有效 | `MappingLease` 与访问租约 |
+| CPU 不再使用被移除的翻译 | 控制 owner 的安装与失效确认 |
+| 普通 Rust 引用不与客户机或 DMA 可变访问重叠 | 复制和 scoped DMA 接口，不导出客户机引用 |
 
-`'static` 是当前接口表达宿主直接映射的方法，不表示数据真的可脱离虚拟机生命周期永久保存。任何把这些 slice 缓存到 `AxVMResources` 之外的实现都会破坏清理顺序和别名约束。
-
-`GuestMemoryAccessor` 的默认实现会把 `translate_and_get_limit()` 返回的 `PhysAddr` 数值直接转换为裸指针，而不会再调用 `phys_to_virt()`。因此实现该 trait 的 translator 当前必须返回可被宿主直接解引用的地址表示；仓库测试通过 mock 转换满足这一前提，生产 AxVM 没有使用该 trait。不能把普通 HPA 原样返回给默认方法，除非平台明确保证物理地址与可解引用虚拟地址恒等。
-
-`AddrSpace::translate_and_get_limit()` 当前返回整个 `MemoryArea::size()`，而不是从任意输入 GPA 到区域末尾的剩余长度；同时 `AddrSpace` 并未实现 `GuestMemoryAccessor`。在修正该语义前，不能把该方法直接接到以“剩余可访问字节数”为契约的通用 accessor。
+`translated_byte_buffer()` 与 `GuestMemoryAccessor` 是组件底层能力，不因存在平台直接映射就获得永久有效的生命周期。任何直接使用它们的调用方仍须独立证明地址、别名和退休条件；AxVM 的运行服务入口集中承担该责任。
 
 ## 8. 映射实例
 
@@ -442,7 +413,7 @@ guest writes GPA 0x4000_1234
 | `virtualization/axvm/src/npt.rs` | 通用 Stage-2 adapter 与 frame provider 桥接 |
 | `virtualization/axvm/src/arch/*/npt.rs` | 架构页表项元数据和失效实现 |
 | `virtualization/axvm/src/vm/prepare/address_space.rs` | 生产客户机布局到 Linear 映射的接线 |
-| `virtualization/axvm/src/vm/mod.rs` | 外层锁、内存访问和销毁顺序 |
+| `virtualization/axvm/src/control/memory.rs`、`guest_memory.rs` | 控制 owner 的根切换、访问租约与 backing 退休 |
 
 巨大 Linear 映射、frame 释放和各架构构建的测试见[内存管理测试](./testing.md)。
 

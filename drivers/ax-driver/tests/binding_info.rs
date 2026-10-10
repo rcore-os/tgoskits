@@ -1,3 +1,5 @@
+mod common;
+
 use std::{ptr::NonNull, sync::Mutex};
 
 #[cfg(feature = "pci")]

@@ -235,6 +235,11 @@ pub(super) async fn run_rust_qemu_case(
         .transpose()?;
 
     let mut qemu = case.qemu.clone();
+    let pcm_waveform = super::pcm_waveform::PcmWaveform::start(
+        &case.case.case.qemu_config_path,
+        arceos.app.target_dir(),
+        &mut qemu,
+    )?;
     let serial_rx = if case.case.feature.as_deref() == Some("serial-rx") {
         Some(super::serial_rx::SerialRxFixture::start(&mut qemu).await?)
     } else {
@@ -249,6 +254,9 @@ pub(super) async fn run_rust_qemu_case(
         fixture.finish().await?;
     }
     result?;
+    if let Some(recording) = pcm_waveform {
+        recording.verify()?;
+    }
 
     if auto_symbolize && let Some(path) = log_path {
         let blocks_snapshot = memory_blocks.and_then(|arc| arc.lock().ok().map(|b| b.clone()));

@@ -3,11 +3,10 @@
 //! MMIO and PCI devices may use memory or file-backed storage.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "fs")]
-use std::string::String;
 use std::{
     boxed::Box,
     format,
+    string::String,
     sync::{Arc, Mutex},
     vec,
     vec::Vec,
@@ -29,12 +28,9 @@ use axvmconfig::VirtualDeviceRequest;
 
 use super::{
     super::virtio_pci::{VirtioPciFunction, virtio_capabilities},
-    options::{BackendConfig, FilesystemFormat, parse_backend},
-};
-#[cfg(feature = "fs")]
-use super::{
     file::FileBackend,
     image::{ImageReader, inspect_file_image},
+    options::{BackendConfig, FilesystemFormat, parse_backend},
 };
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
@@ -89,28 +85,6 @@ fn create_device_node(
             })?)
         }
     };
-    let vm_id = match &backend_config {
-        BackendConfig::RamDisk => None,
-        BackendConfig::File { .. } => {
-            Some(
-                context
-                    .vm_id()
-                    .ok_or_else(|| ConfiguredDeviceError::Instantiation {
-                        device: request.id.clone(),
-                        model: request.model.clone(),
-                        detail: "virtio-blk file backend requires a VM identity".into(),
-                    })?,
-            )
-        }
-    };
-    let backend =
-        VirtioBlkBackend::open(&backend_config, capacity_bytes, vm_id).map_err(|error| {
-            ConfiguredDeviceError::Instantiation {
-                device: request.id.clone(),
-                model: request.model.clone(),
-                detail: format!("failed to initialize backing storage: {error}"),
-            }
-        })?;
     let controller =
         context
             .default_wired_controller()
@@ -120,7 +94,8 @@ fn create_device_node(
                 detail: "virtio-blk requires a wired interrupt controller".into(),
             })?;
     let model: Arc<dyn DeviceModel> = Arc::new(VirtioBlkModel {
-        backend: Mutex::new(Some(backend)),
+        backend_config,
+        capacity_bytes,
         controller,
         transport: match (transport, host) {
             (VirtioBlkTransport::Mmio, None) => VirtioBlkTransportConfig::Mmio,
@@ -275,7 +250,11 @@ fn allocate_zeroed_backend_buffer(
 }
 
 struct VirtioBlkModel {
-    backend: Mutex<Option<VirtioBlkBackend>>,
+    /// Immutable, run-independent backing selection. The actual backend and its
+    /// worker are opened fresh by every [`DeviceModel::build`]; pure planning
+    /// never opens a backend or spawns a thread.
+    backend_config: BackendConfig,
+    capacity_bytes: Option<u64>,
     controller: axdevice_base::InterruptControllerId,
     transport: VirtioBlkTransportConfig,
     read_only: bool,
@@ -289,6 +268,44 @@ enum VirtioBlkTransportConfig {
 enum VirtioBlkTransport {
     Mmio,
     Pci,
+}
+
+impl VirtioBlkModel {
+    fn work_port(
+        &self,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<Option<crate::services::DeviceWorkPort>> {
+        match &self.backend_config {
+            BackendConfig::RamDisk => Ok(None),
+            BackendConfig::File { .. } => {
+                let signal = context.work_port().ok_or_else(|| {
+                    invalid_device_config(
+                        "bind virtio-blk work port",
+                        "file backend requires a runtime device work port",
+                    )
+                })?;
+                Ok(Some(crate::services::DeviceWorkPort::from_device_signal(
+                    signal,
+                    context.work_device_id(),
+                )))
+            }
+        }
+    }
+
+    /// Opens a fresh backing backend for one runtime build.
+    ///
+    /// File backends bind their worker to the run-scoped work port copied into
+    /// the build context, so no static plan-time identity is required.
+    fn open_backend(
+        &self,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<VirtioBlkBackend> {
+        VirtioBlkBackend::open(
+            &self.backend_config,
+            self.capacity_bytes,
+            self.work_port(context)?,
+        )
+    }
 }
 
 impl DeviceModel for VirtioBlkModel {
@@ -352,22 +369,10 @@ impl DeviceModel for VirtioBlkModel {
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
-        let backend = self
-            .backend
-            .lock()
-            .map_err(|_| {
-                invalid_device_config(
-                    "take virtio-blk backing storage",
-                    "backing storage lock is poisoned",
-                )
-            })?
-            .take()
-            .ok_or_else(|| {
-                invalid_device_config(
-                    "take virtio-blk backing storage",
-                    "device model was built more than once",
-                )
-            })?;
+        // Every build opens a brand-new backend and worker so a VM reset can
+        // rebuild the device from the same immutable model.
+        let work_port = self.work_port(context)?;
+        let backend = self.open_backend(context)?;
         let queue_pending = backend.queue_pending();
         let config = VirtioBlockConfig {
             capacity: backend.capacity_sectors(),
@@ -399,21 +404,25 @@ impl DeviceModel for VirtioBlkModel {
                     irq,
                     grant: grant.clone(),
                     queue_pending,
+                    work_port,
                     resources: runtime_resources(base, size, resolved_irq),
                 });
                 let mut bundle = DeviceBundle::new();
+                let lifecycle: Arc<dyn DeviceLifecycle> = device.clone();
                 bundle.add_dma_pollable_device(device.clone(), device, grant);
+                bundle.add_lifecycle(lifecycle);
                 Ok(bundle)
             }
             VirtioBlkTransportConfig::Pci { .. } => {
                 let irq = context.irq(PCI_INTX_SLOT)?;
                 let grant = DmaGrant::new();
                 let function = Arc::new(
-                    VirtioPciFunction::try_new_with_queue_pending(
+                    VirtioPciFunction::try_new_with_queue_pending_and_work_port(
                         VirtioBlockPciAdapter::new(backend, config),
                         grant.clone(),
                         irq,
                         queue_pending,
+                        work_port,
                     )
                     .map_err(DeviceManagerError::Device)?,
                 );
@@ -442,7 +451,6 @@ fn runtime_resources(base: u64, size: u64, resolved_irq: usize) -> Box<[Resource
 
 enum VirtioBlkBackend {
     RamDisk(RamDiskBackend),
-    #[cfg(feature = "fs")]
     File(FileBackend),
 }
 
@@ -450,7 +458,7 @@ impl VirtioBlkBackend {
     fn open(
         config: &BackendConfig,
         capacity_bytes: Option<u64>,
-        vm_id: Option<usize>,
+        port: Option<crate::services::DeviceWorkPort>,
     ) -> DeviceManagerResult<Self> {
         match config {
             BackendConfig::RamDisk => {
@@ -458,13 +466,13 @@ impl VirtioBlkBackend {
                 Ok(Self::RamDisk(RamDiskBackend::new(capacity)?))
             }
             BackendConfig::File { path, filesystem } => {
-                let vm_id = vm_id.ok_or_else(|| {
+                let port = port.ok_or_else(|| {
                     invalid_device_config(
                         "open virtio-blk backing file",
-                        "file backend requires a VM identity",
+                        "file backend requires a device work port",
                     )
                 })?;
-                open_file_backend(path, capacity_bytes, *filesystem, vm_id)
+                open_file_backend(path, capacity_bytes, *filesystem, port)
             }
         }
     }
@@ -472,7 +480,6 @@ impl VirtioBlkBackend {
     const fn capacity_sectors(&self) -> u64 {
         match self {
             Self::RamDisk(backend) => backend.capacity_sectors,
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.capacity_sectors,
         }
     }
@@ -480,18 +487,16 @@ impl VirtioBlkBackend {
     fn queue_pending(&self) -> Arc<AtomicBool> {
         match self {
             Self::RamDisk(_) => Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.queue_pending(),
         }
     }
 }
 
-#[cfg(feature = "fs")]
 fn open_file_backend(
     path: &str,
     configured_capacity: Option<u64>,
     filesystem: FilesystemFormat,
-    vm_id: usize,
+    port: crate::services::DeviceWorkPort,
 ) -> DeviceManagerResult<VirtioBlkBackend> {
     let mut options = ax_api::fs::AxOpenOptions::new();
     options.read(true);
@@ -510,15 +515,13 @@ fn open_file_backend(
                 &format!("failed to prepare `{path}`: {error}"),
             )
         })?;
-    FileBackend::new(file, capacity / SECTOR_SIZE as u64, vm_id).map(VirtioBlkBackend::File)
+    FileBackend::new(file, capacity / SECTOR_SIZE as u64, port).map(VirtioBlkBackend::File)
 }
 
-#[cfg(feature = "fs")]
 struct AxFileReader<'a> {
     file: &'a ax_api::fs::AxFileHandle,
 }
 
-#[cfg(feature = "fs")]
 impl ImageReader for AxFileReader<'_> {
     fn len(&self) -> Result<u64, String> {
         ax_api::fs::ax_file_attr(self.file)
@@ -531,24 +534,10 @@ impl ImageReader for AxFileReader<'_> {
     }
 }
 
-#[cfg(not(feature = "fs"))]
-fn open_file_backend(
-    path: &str,
-    _configured_capacity: Option<u64>,
-    _filesystem: FilesystemFormat,
-    _vm_id: usize,
-) -> DeviceManagerResult<VirtioBlkBackend> {
-    Err(invalid_device_config(
-        "open virtio-blk backing file",
-        &format!("file backend `{path}` requires the AxVM `fs` feature"),
-    ))
-}
-
 impl BlockBackend for VirtioBlkBackend {
     fn pending_request_ready(&self) -> bool {
         match self {
             Self::RamDisk(backend) => backend.pending_request_ready(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.pending_request_ready(),
         }
     }
@@ -556,7 +545,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn cancel_pending_request(&self) {
         match self {
             Self::RamDisk(backend) => backend.cancel_pending_request(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.cancel_pending_request(),
         }
     }
@@ -564,15 +552,34 @@ impl BlockBackend for VirtioBlkBackend {
     fn reset(&self) {
         match self {
             Self::RamDisk(backend) => backend.reset(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.reset(),
+        }
+    }
+
+    fn suspend(&self) -> VirtioResult<()> {
+        match self {
+            Self::RamDisk(backend) => backend.suspend(),
+            Self::File(backend) => backend.suspend(),
+        }
+    }
+
+    fn resume(&self) -> VirtioResult<()> {
+        match self {
+            Self::RamDisk(backend) => backend.resume(),
+            Self::File(backend) => backend.resume(),
+        }
+    }
+
+    fn stop(&self) -> VirtioResult<()> {
+        match self {
+            Self::RamDisk(backend) => backend.stop(),
+            Self::File(backend) => backend.stop(),
         }
     }
 
     fn requires_deferred_processing(&self) -> bool {
         match self {
             Self::RamDisk(_) => false,
-            #[cfg(feature = "fs")]
             Self::File(_) => true,
         }
     }
@@ -580,7 +587,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn read(&self, sector: u64, buffer: &mut [u8]) -> VirtioResult<usize> {
         match self {
             Self::RamDisk(backend) => backend.read(sector, buffer),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.read(sector, buffer),
         }
     }
@@ -588,7 +594,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn write(&self, sector: u64, buffer: &[u8]) -> VirtioResult<usize> {
         match self {
             Self::RamDisk(backend) => backend.write(sector, buffer),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.write(sector, buffer),
         }
     }
@@ -596,7 +601,6 @@ impl BlockBackend for VirtioBlkBackend {
     fn flush(&self) -> VirtioResult<()> {
         match self {
             Self::RamDisk(backend) => backend.flush(),
-            #[cfg(feature = "fs")]
             Self::File(backend) => backend.flush(),
         }
     }
@@ -687,6 +691,7 @@ struct VirtioBlkRuntimeDevice {
     irq: IrqLine,
     grant: DmaGrant,
     queue_pending: Arc<AtomicBool>,
+    work_port: Option<crate::services::DeviceWorkPort>,
     resources: Box<[Resource]>,
 }
 
@@ -746,6 +751,12 @@ impl Device for VirtioBlkRuntimeDevice {
             BlockDeviceEvent::InterruptPending => {}
             BlockDeviceEvent::QueuePending(0) => {
                 self.queue_pending.store(true, Ordering::Release);
+                if let Some(port) = &self.work_port {
+                    port.notify().map_err(|error| DeviceError::Backend {
+                        operation: "notify virtio-blk queue work",
+                        detail: format!("{error}"),
+                    })?;
+                }
             }
             BlockDeviceEvent::QueuePending(_) => {
                 return Err(DeviceError::InvalidInput {
@@ -809,6 +820,46 @@ impl DmaPollableDeviceOps for VirtioBlkRuntimeDevice {
     }
 }
 
+impl DeviceLifecycle for VirtioBlkRuntimeDevice {
+    fn reset(&self) -> DeviceManagerResult {
+        self.queue_pending.store(false, Ordering::Release);
+        self.model.reset_transport();
+        synchronize_interrupt_line(&self.irq, self.model.interrupt_status()).map_err(|error| {
+            DeviceManagerError::InvalidState {
+                operation: "synchronize virtio-blk interrupt after reset",
+                detail: format!("{error}"),
+            }
+        })
+    }
+
+    fn suspend(&self) -> DeviceManagerResult {
+        self.model
+            .suspend_backend()
+            .map_err(|error| DeviceManagerError::InvalidState {
+                operation: "suspend virtio-blk backend",
+                detail: format!("{error:?}"),
+            })
+    }
+
+    fn resume(&self) -> DeviceManagerResult {
+        self.model
+            .resume_backend()
+            .map_err(|error| DeviceManagerError::InvalidState {
+                operation: "resume virtio-blk backend",
+                detail: format!("{error:?}"),
+            })
+    }
+
+    fn stop(&self) -> DeviceManagerResult {
+        self.model
+            .stop_backend()
+            .map_err(|error| DeviceManagerError::InvalidState {
+                operation: "stop virtio-blk backend",
+                detail: format!("{error:?}"),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axdevice_base::InterruptControllerId;
@@ -842,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn ramdisk_catalog_instantiation_does_not_require_vm_id() {
+    fn ramdisk_catalog_instantiation_does_not_require_a_work_port() {
         let mut request = virtual_device_request();
         request
             .options
@@ -850,28 +901,25 @@ mod tests {
 
         assert!(
             registered_catalog()
-                .instantiate_node(&request, &context_without_vm_id())
+                .instantiate_node(&request, &context_without_work_port())
                 .is_ok()
         );
     }
 
     #[test]
-    fn file_catalog_instantiation_requires_vm_id() {
+    fn file_catalog_instantiation_defers_backend_open_to_build() {
         let mut request = virtual_device_request();
         request
             .options
             .insert("filesystem".into(), toml::Value::String("ext4".into()));
-        let error = match registered_catalog().instantiate_node(&request, &context_without_vm_id())
-        {
-            Err(error) => error,
-            Ok(_) => panic!("file backend must require a VM identity"),
-        };
 
-        assert!(matches!(
-            error,
-            crate::ConfiguredDeviceError::Instantiation { detail, .. }
-                if detail.contains("requires a VM identity")
-        ));
+        // Planning must not open the file or bind a run identity; the backend
+        // and its worker are created later by `DeviceModel::build`.
+        assert!(
+            registered_catalog()
+                .instantiate_node(&request, &context_without_work_port())
+                .is_ok()
+        );
     }
 
     #[test]
@@ -932,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn pci_file_backend_reaches_vm_identity_validation() {
+    fn pci_file_backend_defers_backend_open_to_build() {
         let request = request(&[
             ("transport", toml::Value::String("pci".into())),
             ("filesystem", toml::Value::String("ext4".into())),
@@ -942,10 +990,7 @@ mod tests {
             &request,
             &context(true),
         );
-        assert!(matches!(
-            result,
-            Err(ConfiguredDeviceError::Instantiation { .. })
-        ));
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1011,7 +1056,7 @@ mod tests {
         catalog
     }
 
-    fn context_without_vm_id() -> DeviceInstantiationContext {
+    fn context_without_work_port() -> DeviceInstantiationContext {
         DeviceInstantiationContext::new().with_default_wired_controller(
             DeviceNodeId::new("controller").expect("valid controller node ID"),
             InterruptControllerId::new(0),

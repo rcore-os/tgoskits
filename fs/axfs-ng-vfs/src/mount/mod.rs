@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
     Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
-    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
-    Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry,
-    XattrSetMode,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock,
+    RawSpinLockGuard, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
+    WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -49,18 +49,18 @@ static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 // context in which a PI mutex could sleep. Keep that test boundary on the
 // existing non-sleeping VFS lock instead of installing a fake task runtime.
 #[cfg(test)]
-struct MountTopologyMutex<T> {
-    inner: Mutex<T>,
+struct TopologyTransactionGate<T> {
+    inner: RawSpinLock<T>,
 }
 
 #[cfg(test)]
 struct MountTopologyGuard<'a, T> {
-    inner: Option<MutexGuard<'a, T>>,
+    inner: Option<RawSpinLockGuard<'a, T>>,
 }
 
 #[cfg(test)]
 std::thread_local! {
-    /// Tracks ownership by the current host-test thread. `SpinLock::is_locked`
+    /// Tracks ownership by the current host-test thread. `RawSpinLock::is_locked`
     /// is process-wide and therefore cannot distinguish a callback made by
     /// this owner from an unrelated parallel test holding the topology lock.
     static MOUNT_TOPOLOGY_OWNED_BY_CURRENT: core::cell::Cell<bool> =
@@ -68,10 +68,10 @@ std::thread_local! {
 }
 
 #[cfg(test)]
-impl<T> MountTopologyMutex<T> {
+impl<T> TopologyTransactionGate<T> {
     const fn new(value: T) -> Self {
         Self {
-            inner: Mutex::new(value),
+            inner: RawSpinLock::new(value),
         }
     }
 
@@ -100,12 +100,12 @@ impl<T> Drop for MountTopologyGuard<'_, T> {
     }
 }
 
+#[cfg(test)]
+static MOUNT_TOPOLOGY_MUTATION: TopologyTransactionGate<()> = TopologyTransactionGate::new(());
 #[cfg(all(not(test), feature = "host-test"))]
-type MountTopologyMutex<T> = Mutex<T>;
+static MOUNT_TOPOLOGY_MUTATION: RawSpinLock<()> = RawSpinLock::new(());
 #[cfg(all(not(test), not(feature = "host-test")))]
-type MountTopologyMutex<T> = ax_sync::Mutex<T>;
-
-static MOUNT_TOPOLOGY_MUTATION: MountTopologyMutex<()> = MountTopologyMutex::new(());
+static MOUNT_TOPOLOGY_MUTATION: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
 
 struct SyntheticMountDir {
     parent: DirEntry,
@@ -280,9 +280,9 @@ pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
     root: DirEntry,
     /// Location in the parent mountpoint. `None` for the global root mount.
-    location: Mutex<Option<Location>>,
+    location: RawSpinLock<Option<Location>>,
     /// Children of the mountpoint in this namespace-local mount tree.
-    children: Mutex<HashMap<ReferenceKey, Arc<Self>>>,
+    children: RawSpinLock<HashMap<ReferenceKey, Arc<Self>>>,
     /// Device ID (filesystem superblock device — used for major:minor in mountinfo).
     device: u64,
     /// Source name supplied when this mount was created (Linux `mnt_devname`).
@@ -297,7 +297,7 @@ pub struct Mountpoint {
     /// Read-only flag for this mountpoint.
     readonly: AtomicBool,
     filesystem_state: Arc<FilesystemMountState>,
-    active_uses: Mutex<MountUseState>,
+    active_uses: RawSpinLock<MountUseState>,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
     /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
@@ -306,16 +306,16 @@ pub struct Mountpoint {
     /// Expire mark for umount2(MNT_EXPIRE).
     expired: AtomicBool,
     /// Mount propagation type.
-    propagation: Mutex<PropagationType>,
+    propagation: RawSpinLock<PropagationType>,
     /// Other shared peers in the same propagation group.
-    peers: Mutex<Vec<Weak<Self>>>,
+    peers: RawSpinLock<Vec<Weak<Self>>>,
     /// Slave mounts that receive propagation events from this shared mount.
-    slaves: Mutex<Vec<Weak<Self>>>,
+    slaves: RawSpinLock<Vec<Weak<Self>>>,
     /// Shared masters that this slave receives propagation events from.
-    masters: Mutex<Vec<Weak<Self>>>,
+    masters: RawSpinLock<Vec<Weak<Self>>>,
     /// Resource ownership tied to the active mount rather than the cached
     /// lifetime of this mountpoint object.
-    lifetime_guard: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
+    lifetime_guard: RawSpinLock<Option<Arc<dyn Any + Send + Sync>>>,
     // Declared last: dentries retire before the filesystem drains its caches.
     _filesystem_lease: Option<Arc<dyn FilesystemMountLease>>,
 }
@@ -360,22 +360,22 @@ impl Mountpoint {
         let filesystem_lease = root.filesystem().mount_lease();
         Arc::new(Self {
             root,
-            location: Mutex::new(location_in_parent),
-            children: Mutex::new(HashMap::default()),
+            location: RawSpinLock::new(location_in_parent),
+            children: RawSpinLock::new(HashMap::default()),
             device,
             source,
             mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             peer_group_id: AtomicU64::new(0),
             readonly: AtomicBool::new(false),
             filesystem_state,
-            active_uses: Mutex::new(MountUseState::default()),
+            active_uses: RawSpinLock::new(MountUseState::default()),
             mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
-            propagation: Mutex::new(PropagationType::Private),
-            peers: Mutex::default(),
-            slaves: Mutex::default(),
-            masters: Mutex::default(),
-            lifetime_guard: Mutex::new(None),
+            propagation: RawSpinLock::new(PropagationType::Private),
+            peers: RawSpinLock::default(),
+            slaves: RawSpinLock::default(),
+            masters: RawSpinLock::default(),
+            lifetime_guard: RawSpinLock::new(None),
             _filesystem_lease: filesystem_lease,
         })
     }
@@ -702,7 +702,7 @@ impl Mountpoint {
     /// the parent mount's `mount_id()`.
     ///
     /// Lock safety: children are collected into a `Vec` by cloning the `Arc`s
-    /// outside the lock before recursion, so no `Mutex` guard is held during
+    /// outside the lock before recursion, so no `RawSpinLock` guard is held during
     /// the recursive call.
     pub fn walk_tree(self: &Arc<Self>) -> Vec<(u64, u64, Arc<Mountpoint>)> {
         let mut result = Vec::new();
@@ -876,7 +876,7 @@ impl Location {
 
     pub fn flags(&self) -> NodeFlags;
 
-    pub fn user_data(&self) -> MutexGuard<'_, TypeMap>;
+    pub fn user_data(&self) -> RawSpinLockGuard<'_, TypeMap>;
 
     pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
 
@@ -932,7 +932,7 @@ impl Location {
     /// Returns the entry name.
     ///
     /// For mount roots the name is derived from the parent location (where this
-    /// mount was attached). Because `location` lives behind a `Mutex`, the
+    /// mount was attached). Because `location` lives behind a `RawSpinLock`, the
     /// mount-root case returns an owned `Cow::Owned`; the common non-root case
     /// returns a borrowed `Cow::Borrowed`.
     pub fn name(&self) -> Cow<'_, str> {
@@ -1069,10 +1069,11 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry
+        let entry = self
+            .entry
             .as_dir()?
-            .create(name, node_type, permission, uid, gid)
-            .map(|entry| self.wrap(entry))
+            .create(name, node_type, permission, uid, gid)?;
+        Ok(self.wrap(entry))
     }
 
     pub fn create_symlink(
@@ -1086,10 +1087,11 @@ impl Location {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry
+        let entry = self
+            .entry
             .as_dir()?
-            .create_symlink(name, target, permission, uid, gid)
-            .map(|entry| self.wrap(entry))
+            .create_symlink(name, target, permission, uid, gid)?;
+        Ok(self.wrap(entry))
     }
 
     /// Creates an in-memory directory entry that exists only as a mount target.
@@ -1148,10 +1150,8 @@ impl Location {
         if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        self.entry
-            .as_dir()?
-            .link(name, &node.entry)
-            .map(|entry| self.wrap(entry))
+        let entry = self.entry.as_dir()?.link(name, &node.entry)?;
+        Ok(self.wrap(entry))
     }
 
     pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
@@ -1195,7 +1195,8 @@ impl Location {
             dst_dir.entry.as_dir()?,
             dst_name,
             options,
-        )
+        )?;
+        Ok(())
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
@@ -1219,10 +1220,8 @@ impl Location {
         if self.is_readonly() && (options.create || options.create_new) {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        self.entry
-            .as_dir()?
-            .open_file_with_status(name, options)
-            .map(|(entry, created)| (self.wrap(entry).resolve_mountpoint(), created))
+        let opened = self.entry.as_dir()?.open_file_with_status(name, options)?;
+        Ok((self.wrap(opened.0).resolve_mountpoint(), opened.1))
     }
 
     pub fn read_dir(

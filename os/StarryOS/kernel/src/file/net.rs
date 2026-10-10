@@ -23,9 +23,9 @@ use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{CAP_NET_ADMIN, O_RDWR, S_IFSOCK},
     ioctl::{
-        FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
-        SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
-        SIOCGIFSLAVE, SIOCGIFTXQLEN, SIOCSIFFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFADDR, SIOCSIFMTU,
+        FIONREAD, SIOCADDRT, SIOCDELRT, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR,
+        SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU,
+        SIOCGIFNETMASK, SIOCGIFSLAVE, SIOCGIFTXQLEN, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMTU,
         SIOCSIFNETMASK,
     },
     net::{AF_INET, ifreq},
@@ -272,7 +272,7 @@ fn allocate_socket_staging(len: usize) -> StarryResult<Vec<u8>> {
 pub(super) fn in_root_net_ns() -> bool {
     let current = current_user_task();
     let namespace = current.as_thread().proc_data.namespace_snapshot();
-    namespace.net_ns.lock().ns_id == 0
+    namespace.net_ns.lock_irqsave().ns_id == 0
 }
 
 pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
@@ -613,7 +613,14 @@ fn write_route(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> Star
     let rt = read_user_bytes::<RTENTRY_LEN>(current, arg as *const u8)?;
     require_net_admin(current)?;
     let family = |offset: usize| u16::from_ne_bytes([rt[offset], rt[offset + 1]]);
-    let address = |offset: usize| [rt[offset + 4], rt[offset + 5], rt[offset + 6], rt[offset + 7]];
+    let address = |offset: usize| {
+        [
+            rt[offset + 4],
+            rt[offset + 5],
+            rt[offset + 6],
+            rt[offset + 7],
+        ]
+    };
     if family(RT_DST) != AF_INET as u16 {
         return Err(Errno::EAFNOSUPPORT.into());
     }
@@ -636,7 +643,10 @@ fn write_route(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> Star
         return Err(StarryError::NoSuchDevice);
     }
     let name = read_user_bytes::<{ IFREQ_NAME_LEN - 1 }>(current, device as *const u8)?;
-    let len = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+    let len = name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(name.len());
     // No interface carries alias labels, so a `name:label` device is absent.
     let info = core::str::from_utf8(&name[..len])
         .ok()
@@ -649,12 +659,12 @@ fn write_route(current: &crate::task::UserTaskRef, cmd: u32, arg: usize) -> Star
         .then(|| core::net::Ipv4Addr::from(address(RT_GATEWAY)));
     let destination = core::net::Ipv4Addr::from(destination);
     if cmd == SIOCDELRT {
-        return ax_net::del_route(info.id, destination, prefix, gateway).map_err(|error| {
-            match error {
+        return ax_net::del_route(info.id, destination, prefix, gateway).map_err(
+            |error| match error {
                 NetError::NotFound => Errno::ESRCH.into(),
                 error => error.into(),
-            }
-        });
+            },
+        );
     }
     if flags & RTF_GATEWAY != 0 && gateway.is_none() {
         return Err(StarryError::InvalidInput);

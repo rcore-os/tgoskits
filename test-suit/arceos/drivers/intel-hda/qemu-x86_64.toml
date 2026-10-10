@@ -1,0 +1,21 @@
+args = [
+    "-machine", "q35",
+    "-cpu", "max",
+    "-m", "512M",
+    "-smp", "1",
+    "-display", "none",
+    "-serial", "mon:stdio",
+    "-device", "intel-hda",
+    "-device", "hda-duplex,audiodev=pcm-capture",
+]
+
+timeout = 120
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+success_regex = ["(?m)^INTEL_HDA_QEMU_OK\\s*$"]
+
+[host_pcm_waveform]
+frames = 4096

@@ -13,58 +13,71 @@
 //!
 //! ## Usage
 //!
+//! The VMM supplies the concrete block backend and guest-address translator.
+//! This example keeps both as generic capabilities, so it type-checks the real
+//! public API without constructing a device.
+//!
 //! ```rust,no_run
-//! use ax_memory_addr::PhysAddr;
 //! use axaddrspace::GuestMemoryAccessor;
 //! use axvirtio_blk::{BlockBackend, VirtioBlockConfig, VirtioMmioBlockDevice, VirtioResult};
-//! use axvm_types::GuestPhysAddr;
+//! use axvirtio_common::{GuestMemory, VIRTIO_MMIO_QUEUE_NOTIFY};
+//! use axvm_types::{AccessWidth, GuestPhysAddr};
 //!
-//! // Implement your block backend
-//! struct MyBlockBackend;
-//! impl BlockBackend for MyBlockBackend {
-//!     fn read(&self, _sector: u64, _buffer: &mut [u8]) -> VirtioResult<usize> {
-//!         Ok(0)
-//!     }
-//!     fn write(&self, _sector: u64, _buffer: &[u8]) -> VirtioResult<usize> {
-//!         Ok(0)
-//!     }
-//!     fn flush(&self) -> VirtioResult<()> {
-//!         Ok(())
-//!     }
+//! /// Builds the MMIO block device from the runtime's backend and translator.
+//! fn build_block_device<B, T>(
+//!     backend: B,
+//!     translator: T,
+//! ) -> VirtioResult<VirtioMmioBlockDevice<B, T>>
+//! where
+//!     B: BlockBackend,
+//!     T: GuestMemoryAccessor + Clone,
+//! {
+//!     VirtioMmioBlockDevice::new(
+//!         GuestPhysAddr::from(0x0a00_0000),
+//!         0x200,
+//!         backend,
+//!         VirtioBlockConfig::default(),
+//!         translator,
+//!     )
 //! }
 //!
-//! #[derive(Clone)]
-//! struct MyTranslator;
-//! impl GuestMemoryAccessor for MyTranslator {
-//!     fn translate_and_get_limit(&self, guest_addr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
-//!         None
-//!     }
+//! /// Notifies the request queue with the guest-memory grant scoped to the
+//! /// current MMIO access. The grant backs both the ring-layout validation and
+//! /// the request data path, so a queue set up with a non-translating
+//! /// placeholder accessor can still become ready and be processed.
+//! fn notify_queue<B, T>(
+//!     device: &VirtioMmioBlockDevice<B, T>,
+//!     base: GuestPhysAddr,
+//!     grant: &mut dyn GuestMemory,
+//! ) -> VirtioResult<()>
+//! where
+//!     B: BlockBackend,
+//!     T: GuestMemoryAccessor + Clone,
+//! {
+//!     device.mmio_write_with_memory(
+//!         GuestPhysAddr::from(base.as_usize() + VIRTIO_MMIO_QUEUE_NOTIFY),
+//!         AccessWidth::Dword,
+//!         0,
+//!         grant,
+//!     )?;
+//!     Ok(())
 //! }
-//!
-//! // Create and use the VirtIO block device
-//! let backend = MyBlockBackend;
-//! let translator = MyTranslator;
-//! let block_config = VirtioBlockConfig::default();
-//! let device = VirtioMmioBlockDevice::new(
-//!     GuestPhysAddr::from(0x0a000000),
-//!     0x200,
-//!     backend,
-//!     block_config,
-//!     translator,
-//! );
 //! ```
 
 #![no_std]
 
 extern crate alloc;
 #[cfg(test)]
-extern crate ax_runtime as _;
+extern crate std;
 
 extern crate log;
 
 mod backend;
 mod block;
 mod constants;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod host_lock_provider;
 mod managed;
 mod mmio;
 mod pci;

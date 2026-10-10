@@ -371,7 +371,15 @@ impl X86NestedPagingConfig {
     }
 }
 
+/// Placeholder retirement `RIP` for a device-serviced exit still inside the decoder.
+pub(crate) const UNRESOLVED_NEXT_RIP: u64 = 0;
+
 /// VM-exit reason returned by the x86 vCPU core.
+///
+/// Device-serviced port-I/O, MMIO and MSR exits carry the guest `RIP` they must
+/// retire. The decode step builds them with [`UNRESOLVED_NEXT_RIP`]; the caller
+/// that knows the decoded instruction length replaces it with
+/// [`X86VmExit::with_next_rip`] before the exit leaves the x86 core.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum X86VmExit {
@@ -388,6 +396,8 @@ pub enum X86VmExit {
         port: X86Port,
         /// Access width.
         width: X86AccessWidth,
+        /// Guest `RIP` to install once the device read succeeds.
+        next_rip: u64,
     },
     /// The guest performed a port I/O write.
     PortIoWrite {
@@ -397,6 +407,8 @@ pub enum X86VmExit {
         width: X86AccessWidth,
         /// Value written by the guest.
         data: u64,
+        /// Guest `RIP` to install once the device write succeeds.
+        next_rip: u64,
     },
     /// The guest performed one element of a string port-I/O instruction.
     PortIoString(crate::arch::x86_64::policy::X86PortIoStringExit),
@@ -414,6 +426,8 @@ pub enum X86VmExit {
         signed_ext: bool,
         /// Byte-register destination for byte-width MOV reads.
         byte_reg: Option<X86ByteRegister>,
+        /// Guest `RIP` to install once the device read succeeds.
+        next_rip: u64,
     },
     /// The guest performed an MMIO write.
     MmioWrite {
@@ -423,11 +437,15 @@ pub enum X86VmExit {
         width: X86AccessWidth,
         /// Value written by the guest.
         data: u64,
+        /// Guest `RIP` to install once the device write succeeds.
+        next_rip: u64,
     },
     /// The guest performed an MSR read.
     MsrRead {
         /// MSR address.
         addr: X86MsrAddr,
+        /// Guest `RIP` to install once the device read succeeds.
+        next_rip: u64,
     },
     /// The guest performed an MSR write.
     MsrWrite {
@@ -435,6 +453,8 @@ pub enum X86VmExit {
         addr: X86MsrAddr,
         /// Value written by the guest.
         value: u64,
+        /// Guest `RIP` to install once the device write succeeds.
+        next_rip: u64,
     },
     /// A nested page fault occurred.
     NestedPageFault {
@@ -461,4 +481,64 @@ pub enum X86VmExit {
     },
     /// The exit was handled inside the x86 core.
     Nothing,
+}
+
+impl X86VmExit {
+    /// Attaches the guest `RIP` a device-serviced exit must retire.
+    ///
+    /// The backend decode step computes this value while the instruction is
+    /// still the current one. It is carried inside the owned exit record so the
+    /// task layer can install it on the next bound entry, after the device
+    /// service succeeded, instead of mutating a hardware register while the
+    /// access is still unresolved. Exits that are already handled inside the
+    /// x86 core keep their own instruction retirement and are returned as-is.
+    pub(crate) fn with_next_rip(self, next_rip: u64) -> Self {
+        match self {
+            Self::PortIoRead { port, width, .. } => Self::PortIoRead {
+                port,
+                width,
+                next_rip,
+            },
+            Self::PortIoWrite {
+                port, width, data, ..
+            } => Self::PortIoWrite {
+                port,
+                width,
+                data,
+                next_rip,
+            },
+            Self::MmioRead {
+                addr,
+                width,
+                reg,
+                reg_width,
+                signed_ext,
+                byte_reg,
+                ..
+            } => Self::MmioRead {
+                addr,
+                width,
+                reg,
+                reg_width,
+                signed_ext,
+                byte_reg,
+                next_rip,
+            },
+            Self::MmioWrite {
+                addr, width, data, ..
+            } => Self::MmioWrite {
+                addr,
+                width,
+                data,
+                next_rip,
+            },
+            Self::MsrRead { addr, .. } => Self::MsrRead { addr, next_rip },
+            Self::MsrWrite { addr, value, .. } => Self::MsrWrite {
+                addr,
+                value,
+                next_rip,
+            },
+            other => other,
+        }
+    }
 }

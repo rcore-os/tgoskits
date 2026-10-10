@@ -10,8 +10,12 @@ use super::{
         EndpointIrqTransitionPermit, LegacyPciEndpointContext, OwnerPciEndpointContext,
         PciEndpointContext, PciFunction, RoutedPciEndpointContext,
     },
-    lifecycle::PendingIrqWithdrawal,
+    lifecycle::{
+        BindingLifecycleState, PendingIrqWithdrawal, retry_pending_irq_withdrawals,
+        transfer_pending_irq_withdrawals,
+    },
     pci_config_error,
+    routing::ENDPOINT_SUSPEND_ROLLBACK_FAILED,
 };
 use crate::{
     AccessWidth, DeviceManagerError, DeviceNodeId,
@@ -39,12 +43,12 @@ impl PciRootBinding {
     }
 
     pub(super) fn queue_irq_withdrawal(&self, withdrawal: PendingIrqWithdrawal) {
-        self.pending_irq_withdrawals.lock_irqsave().push(withdrawal);
+        self.pending_irq_withdrawals.lock().push(withdrawal);
     }
 
     fn has_pending_irq_withdrawal(&self, device: DeviceId) -> bool {
         self.pending_irq_withdrawals
-            .lock_irqsave()
+            .lock()
             .iter()
             .any(|withdrawal| withdrawal.device == device)
     }
@@ -85,6 +89,107 @@ impl PciRootBinding {
             return result;
         }
         operation.finish_reset()
+    }
+
+    /// Quiesces the PCI root and every bound endpoint for a VM suspend.
+    ///
+    /// Routes are first closed and in-flight endpoint claims drained, then each
+    /// endpoint child is asked to stop its worker/DMA activity. When the
+    /// endpoint children restore themselves the root reopens its admissions and
+    /// returns to its entry state; when a compensating resume also fails the
+    /// root stays fail-closed with the offending endpoint still quiesced.
+    pub(crate) fn suspend_lifecycle(&self) -> DeviceManagerResult {
+        if let Err(error) = self.router.close_admissions_and_drain() {
+            self.reopen_running_admissions();
+            return Err(error);
+        }
+        match self.router.suspend_endpoints() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // Reopen admissions only when the endpoints were fully
+                // restored. A failed compensation leaves an endpoint quiesced,
+                // so the root must stay fail-closed instead of pretending to
+                // run with a still-suspended child.
+                let endpoints_restored = !matches!(
+                    &error,
+                    DeviceManagerError::InvalidState { operation, .. }
+                        if *operation == ENDPOINT_SUSPEND_ROLLBACK_FAILED
+                );
+                if endpoints_restored {
+                    self.reopen_running_admissions();
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn reopen_running_admissions(&self) {
+        if self.is_running() {
+            self.router.open_admissions();
+        }
+    }
+
+    /// Re-opens the PCI root and every bound endpoint after a suspend.
+    ///
+    /// A terminal (stopping or dead) root is not re-opened; only a running
+    /// root republishes endpoint admissions.
+    pub(crate) fn resume_lifecycle(&self) -> DeviceManagerResult {
+        if !self.is_running() {
+            return Ok(());
+        }
+        self.router.resume_endpoints()?;
+        self.router.open_admissions();
+        Ok(())
+    }
+
+    /// Stops the PCI root: closes routes/admissions, waits for in-flight
+    /// claims, then releases endpoint owners and their IRQ sources.
+    ///
+    /// This is the explicit, error-reporting teardown. Every step before
+    /// [`LifecycleOperation::finish_stop`] must succeed before the binding is
+    /// finished, so a failed stop leaves the endpoint hardware and its owners
+    /// reachable for a later retry instead of a false success.
+    pub(crate) fn stop_lifecycle(&self) -> DeviceManagerResult {
+        // A dead binding that no longer owns endpoint routes already released
+        // its hardware, so repeating the stop is an idempotent success. A dead
+        // binding that still owns routes failed earlier and must report that
+        // failure instead of masking it.
+        if self.lifecycle.lock().state == BindingLifecycleState::Dead {
+            return if self.router.endpoint_functions().is_empty() {
+                Ok(())
+            } else {
+                Err(DeviceManagerError::InvalidState {
+                    operation: "stop PCI root binding",
+                    detail: "PCI root teardown previously failed with endpoint owners still held"
+                        .into(),
+                })
+            };
+        }
+        // Route withdrawal is the first linearization point: no route may stay
+        // reachable while the stop owner closes admissions below.
+        self.root.unbind_all_routes();
+        let mut lifecycle = self.begin_stop_operation();
+        lifecycle.wait_for_claim()?;
+        // Phase one: close route admissions and wait for in-flight claims. The
+        // endpoint owners and their hardware are still held here.
+        self.router.close_admissions_and_drain()?;
+        self.drain_pending_binding_withdrawals()?;
+        // Phase two: join endpoint workers, then release their owners and
+        // withdraw their IRQ sources.
+        self.router.stop_endpoints()?;
+        let (pending, drain_result) = self.router.invalidate_all();
+        for withdrawal in pending {
+            self.queue_irq_withdrawal(withdrawal);
+        }
+        drain_result?;
+        retry_pending_irq_withdrawals(&self.pending_irq_withdrawals)?;
+        self.drain_pending_binding_withdrawals()?;
+        transfer_pending_irq_withdrawals(&self.pending_irq_withdrawals);
+        lifecycle.finish_stop()
+    }
+
+    fn is_running(&self) -> bool {
+        self.lifecycle.lock().state == BindingLifecycleState::Running
     }
 
     fn reset_routes(&self) -> DeviceManagerResult {

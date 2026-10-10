@@ -329,8 +329,8 @@ Linux 挂载结果，偶然成功的重试不能证明已修复丢失进展。
 - `ConOut` 输出诊断；实际控制台对应的唯一 `SerialIo` 以受控非独占短借用输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧并上报生效线参数。单个线参数无法读取时使用 UEFI 常见的 115200/8N1、无硬件流控并记录诊断；无法唯一选择 UART 仍失败。不能从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或启动命令。借用限定 `TPL_CALLBACK`，写入有界且恢复原超时，guard 先于 TPL guard 释放。目标映像接管后，串口作为交互终端。
 - 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。
 - QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
-- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 `BootPayload` 表交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、旧 `BootPayload.cmdline`、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
-- `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs 和两者都有；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
+- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
+- `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
 - 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。

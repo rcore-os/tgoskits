@@ -31,7 +31,7 @@ use core::{
 };
 
 use ax_io::prelude::*;
-use ax_sync::{Mutex, SpinLock};
+use ax_sync::{Mutex, RawSpinLock};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use smoltcp::{
@@ -85,7 +85,7 @@ pub struct UdpSocket {
     /// Generation published for each socket readiness wake.
     readiness_version: ReadinessVersion,
     /// Egress IP_TOS policies registered for recently used UDP destinations.
-    tos_keys: SpinLock<Vec<EgressIpTosKey>>,
+    tos_keys: RawSpinLock<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
     // Linux serializes UDP corking with the process-context socket lock. This
@@ -109,7 +109,7 @@ impl UdpSocket {
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
             poll_state: Arc::new(PollSet::new()),
             readiness_version: ReadinessVersion::new(),
-            tos_keys: SpinLock::new(Vec::new()),
+            tos_keys: RawSpinLock::new(Vec::new()),
             cork: Mutex::new(None),
         }
     }

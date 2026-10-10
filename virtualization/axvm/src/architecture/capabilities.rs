@@ -106,7 +106,7 @@ pub(crate) trait BootImagePlatform {
     }
 
     fn load_guest_dtb(
-        _loader: &crate::boot::images::ImageLoaderCore<'_>,
+        _loader: &mut crate::boot::images::ImageLoaderCore<'_>,
         _dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         Ok(())

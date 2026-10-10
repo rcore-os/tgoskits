@@ -19,9 +19,10 @@ impl ptg::TableMeta for Sv39x4MetaData {
     const STRICT_ADDRESS_WIDTH: bool = true;
 
     fn flush(_vaddr: Option<ptg::VirtAddr>) {
-        // The VM owner retires all guests before mutation; the CPU entry
-        // fences G-stage translations on every later entry, including reentry
-        // within an existing VS register-bank binding.
+        // Table mutation is serialized by the VM owner while every vCPU is
+        // unloaded. The owner then retires the old root on every pCPU that could
+        // cache it through `ArchOps::invalidate_translations`, so no per-write
+        // flush is needed here.
     }
 }
 

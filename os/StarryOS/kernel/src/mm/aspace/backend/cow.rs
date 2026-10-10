@@ -4,7 +4,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::slice;
+use core::{io::BorrowedBuf, mem::MaybeUninit, slice};
 
 use ax_fs_ng::vfs::FileBackend;
 use ax_memory_addr::{
@@ -12,7 +12,7 @@ use ax_memory_addr::{
 };
 use ax_runtime::hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageTable, PagingError},
+    paging::{MappingFlags, PageTable, PageTableEntry, PagingError},
 };
 
 #[cfg(all(test, axtest))]
@@ -22,6 +22,7 @@ use super::super::{AddrSpace, HugePageAdvice, MappingPermissions};
 use super::{
     super::{
         AddressSpaceId,
+        lifecycle::{RmapMmLookupError, pin_mm_for_rmap},
         objects::{FrameLease, PageId, PageObject},
         vma::{
             AnonymousSource, FileSource, MappingId, MappingSource, PageOffset, PageSizePolicy,
@@ -31,9 +32,14 @@ use super::{
     FaultFallback, FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingFileInfo,
     MappingMutationContext, MappingOperation, PopulateRequest, PreparedPteOwner,
     ProviderPublication, PteMaterialization, RssKind, alloc_frame, collect_occupied_leaves,
+    file::{CachedFilePage, FilePageDomain},
     occupied_leaf_ranges, pages_in, rollback_live_mapped_pages, validate_occupied_leaf_range,
+    zero::ZeroPage,
 };
-use crate::{StarryError, StarryResult, sync::IrqMutex};
+use crate::{
+    StarryError, StarryResult,
+    sync::{Mutex, RawSpinLock},
+};
 
 /// Non-owning lookup state scoped to one logical anonymous mapping source.
 ///
@@ -47,14 +53,25 @@ enum CowPageIndexOwner {
 }
 
 pub(super) struct CowRollbackOwner {
-    pages: Arc<IrqMutex<CowPageIndex>>,
+    pages: Arc<RawSpinLock<CowPageIndex>>,
     page: Arc<PageObject>,
+    cache_domain: Option<Arc<FilePageDomain>>,
 }
 
 impl CowRollbackOwner {
     pub(super) fn complete(self) -> StarryResult {
+        if ZeroPage::owns(&self.page) {
+            return Ok(());
+        }
+        if let Some(source) = self.page.frame().provider::<CachedFilePage>() {
+            return self
+                .cache_domain
+                .as_ref()
+                .ok_or(StarryError::BadState)?
+                .cancel_page_publication(source.page_number, &self.page);
+        }
         let retired = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages.discard_pending(&self.page)?
         };
         drop(retired);
@@ -127,6 +144,9 @@ struct CowPageIndex {
     /// allocation cheap; middle inserts move the shorter side. Capacity
     /// changes use storage prepared outside the IRQ-saving index lock.
     pages: VecDeque<CowPageIndexEntry>,
+    /// One source-local mapping identity for image-owned immutable RAM. This
+    /// never enters the Pending/Weak index of allocator-owned frames.
+    zero_page: Option<Arc<PageObject>>,
 }
 
 /// Heap storage prepared before entering the COW identity critical section.
@@ -173,7 +193,10 @@ impl CowPageIndexReservation {
 
 impl CowPageIndex {
     const fn new() -> Self {
-        Self { pages: VecDeque::new() }
+        Self {
+            pages: VecDeque::new(),
+            zero_page: None,
+        }
     }
 
     /// Returns the allocation size needed by the next insert. This method only
@@ -252,7 +275,9 @@ impl CowPageIndex {
         let mut index = 0;
         while index < reservation.replacement.len() {
             if reservation.replacement[index].is_live() {
-                let entry = reservation.replacement.swap_remove_back(index)
+                let entry = reservation
+                    .replacement
+                    .swap_remove_back(index)
                     .expect("compaction index is in bounds");
                 self.pages.push_back(entry);
             } else {
@@ -367,6 +392,11 @@ impl CowPageIndex {
     /// rebuilds from preallocated storage and retires expired entries outside
     /// the guard. Disjoint insertions can retain tombstones until then.
     fn get(&self, paddr: PhysAddr) -> Option<Arc<PageObject>> {
+        if let Some(page) = &self.zero_page
+            && page.frame().paddr() == paddr
+        {
+            return Some(page.clone());
+        }
         let address = paddr.as_usize();
         let position = self
             .pages
@@ -590,7 +620,10 @@ pub struct CowBackend {
     mapping_id: MappingId,
     /// Logical-source-local physical lookup. Published entries are weak; each
     /// installed MappingSlot is the only strong mapping owner.
-    pages: Arc<IrqMutex<CowPageIndex>>,
+    pages: Arc<RawSpinLock<CowPageIndex>>,
+    /// Lazily registered only for address spaces reachable by the rmap endpoint.
+    /// Forks and VMA fragments retain the same file-cache ownership domain.
+    cache_domain: Arc<Mutex<Option<Arc<FilePageDomain>>>>,
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
@@ -603,6 +636,7 @@ impl Clone for CowBackend {
             page_size: self.page_size,
             mapping_id: self.mapping_id,
             pages: self.pages.clone(),
+            cache_domain: self.cache_domain.clone(),
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
@@ -611,17 +645,109 @@ impl Clone for CowBackend {
 }
 
 impl CowBackend {
+    fn cache_epoch(&self) -> StarryResult<u64> {
+        match &self.file {
+            Some((FileBackend::Cached(cache), ..)) => Ok(cache.mapping_epoch()),
+            _ => Err(StarryError::BadState),
+        }
+    }
+
+    /// Uses the existing shared-file endpoint for private read-only pages.
+    /// Bare exec/fork preparation keeps its bounded copy path until the MM is
+    /// registered; an endpoint must be able to reach every published rmap.
+    fn prepare_read_cache_page(
+        &self,
+        space_id: AddressSpaceId,
+        vaddr: VirtAddr,
+        leaf_size: usize,
+        access: MappingFlags,
+    ) -> StarryResult<Option<Arc<PageObject>>> {
+        if self.shared || leaf_size != PAGE_SIZE_4K || access.contains(MappingFlags::WRITE) {
+            return Ok(None);
+        }
+        let Some((FileBackend::Cached(cache), base, start, end)) = &self.file else {
+            return Ok(None);
+        };
+        let Some(relative) = vaddr.as_usize().checked_sub(base.as_usize()) else {
+            return Ok(None);
+        };
+        let offset = start
+            .checked_add(relative as u64)
+            .ok_or(StarryError::InvalidInput)?;
+        let limit = offset
+            .checked_add(PAGE_SIZE_4K as u64)
+            .ok_or(StarryError::InvalidInput)?;
+        if !offset.is_multiple_of(PAGE_SIZE_4K as u64) || end.is_some_and(|end| limit > end) {
+            return Ok(None);
+        }
+        let _mm_pin = match pin_mm_for_rmap(space_id) {
+            Ok(pin) => pin,
+            Err(RmapMmLookupError::Gone) => return Ok(None),
+            Err(RmapMmLookupError::Busy) => return Err(StarryError::ResourceBusy),
+        };
+        let number =
+            u32::try_from(offset / PAGE_SIZE_4K as u64).map_err(|_| StarryError::InvalidInput)?;
+        let registered = self.cache_domain.lock().clone();
+        let domain = if let Some(domain) = registered {
+            domain
+        } else {
+            let domain = FilePageDomain::get_or_create(cache)?;
+            let mut owner = self.cache_domain.lock();
+            owner.get_or_insert_with(|| domain.clone()).clone()
+        };
+        let epoch = cache.mapping_epoch();
+        let Some(pin) = cache.pin_read_page(number)? else {
+            return Ok(None);
+        };
+        let page = domain.reserve_page(epoch, number, pin)?;
+        if let Err(error) = self.ensure_weak_page_identity(&page) {
+            domain.cancel_page_publication(number, &page)?;
+            return Err(error);
+        }
+        Ok(Some(page))
+    }
+
+    pub(super) fn with_current_page_backing<T, E>(
+        &self,
+        page: &PageObject,
+        publish: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
+        let Some(source) = page.frame().provider::<CachedFilePage>() else {
+            return publish().map(Some);
+        };
+        let Some((FileBackend::Cached(cache), ..)) = &self.file else {
+            return Ok(None);
+        };
+        cache.with_current_read_backing(
+            source.page_number,
+            cache.mapping_epoch(),
+            &source.backing,
+            publish,
+        )
+    }
+
     pub(crate) const fn mapping_id(&self) -> MappingId {
         self.mapping_id
     }
 
     pub(crate) fn page_object_for_frame(&self, paddr: PhysAddr) -> Option<Arc<PageObject>> {
-        self.pages.lock().get(paddr)
+        self.pages.lock_irqsave().get(paddr)
     }
 
     pub(crate) fn publish_page_object(&self, page: &Arc<PageObject>) -> StarryResult {
+        if ZeroPage::owns(page) {
+            return Ok(());
+        }
+        if let Some(source) = page.frame().provider::<CachedFilePage>() {
+            let domain = self
+                .cache_domain
+                .lock()
+                .clone()
+                .ok_or(StarryError::BadState)?;
+            return domain.finish_page_publication(self.cache_epoch()?, source.page_number, page);
+        }
         let displaced = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages.publish(page)?
         };
         drop(displaced);
@@ -629,14 +755,36 @@ impl CowBackend {
     }
 
     pub(crate) fn restore_page_identity(&self, page: &Arc<PageObject>) -> StarryResult {
+        if ZeroPage::owns(page) {
+            return self
+                .pages
+                .lock_irqsave()
+                .zero_page
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, page))
+                .then_some(())
+                .ok_or(StarryError::BadState);
+        }
+        if let Some(source) = page.frame().provider::<CachedFilePage>() {
+            let domain = self
+                .cache_domain
+                .lock()
+                .clone()
+                .ok_or(StarryError::BadState)?;
+            domain.ensure_page_identity(self.cache_epoch()?, source.page_number, page)?;
+        }
+        self.ensure_weak_page_identity(page)
+    }
+
+    fn ensure_weak_page_identity(&self, page: &Arc<PageObject>) -> StarryResult {
         loop {
             let capacity = {
-                let pages = self.pages.lock();
+                let pages = self.pages.lock_irqsave();
                 pages.ensure_published_reservation_capacity(page)?
             };
             let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
             let result = {
-                let mut pages = self.pages.lock();
+                let mut pages = self.pages.lock_irqsave();
                 pages.ensure_published_reserved(page, &mut reservation)
             };
             // A missing identity may replace storage and expired Weak owners;
@@ -680,16 +828,18 @@ impl CowBackend {
         cache.is_page_cached(page)
     }
 
-    pub fn with_start(&self, new_start: VirtAddr) -> Self {
-        Self {
-            start: new_start,
-            page_size: self.page_size,
-            mapping_id: self.mapping_id,
-            pages: self.pages.clone(),
-            file: self.file.clone(),
-            name: self.name.clone(),
-            shared: self.shared,
+    pub fn with_start(&self, new_start: VirtAddr) -> StarryResult<Self> {
+        let mut relocated = self.clone();
+        if let Some((_, virtual_base, ..)) = &mut relocated.file {
+            // Move immutable file coordinates by the same signed displacement
+            // as this fragment, preserving both split offsets and ELF prefixes.
+            let delta = new_start.as_usize() as i128 - self.start.as_usize() as i128;
+            let base = usize::try_from(virtual_base.as_usize() as i128 + delta)
+                .map_err(|_| StarryError::InvalidInput)?;
+            *virtual_base = VirtAddr::from(base);
         }
+        relocated.start = new_start;
+        Ok(relocated)
     }
 
     pub(crate) fn for_extent(&self, size: usize) -> StarryResult<Self> {
@@ -739,8 +889,11 @@ impl CowBackend {
         &self,
         vma_flags: MappingFlags,
         access_flags: MappingFlags,
+        page: &PageObject,
     ) -> MappingFlags {
-        if self.file.is_some() && !access_flags.contains(MappingFlags::WRITE) {
+        if ZeroPage::owns(page)
+            || (self.file.is_some() && !access_flags.contains(MappingFlags::WRITE))
+        {
             vma_flags - MappingFlags::WRITE
         } else {
             vma_flags
@@ -764,12 +917,24 @@ impl CowBackend {
         CowRollbackOwner {
             pages: self.pages.clone(),
             page,
+            cache_domain: self.cache_domain.lock().clone(),
         }
     }
 
     fn discard_pending_index_entry(&self, page: &Arc<PageObject>) -> StarryResult {
+        if ZeroPage::owns(page) {
+            return Ok(());
+        }
+        if let Some(source) = page.frame().provider::<CachedFilePage>() {
+            let domain = self
+                .cache_domain
+                .lock()
+                .clone()
+                .ok_or(StarryError::BadState)?;
+            return domain.cancel_page_publication(source.page_number, page);
+        }
         let retired = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages.discard_pending(page)?
         };
         drop(retired);
@@ -779,12 +944,12 @@ impl CowBackend {
     fn insert_pending_page(&self, page: &Arc<PageObject>) -> StarryResult {
         loop {
             let capacity = {
-                let pages = self.pages.lock();
+                let pages = self.pages.lock_irqsave();
                 pages.insert_reservation_capacity(page)?
             };
             let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
             let result = {
-                let mut pages = self.pages.lock();
+                let mut pages = self.pages.lock_irqsave();
                 pages.insert_pending_reserved(page, &mut reservation)
             };
             // This owns both replaced storage and expired Weak entries.
@@ -797,6 +962,24 @@ impl CowBackend {
                 Err(CowPageIndexInsertError::Invalid(error)) => return Err(error),
             }
         }
+    }
+
+    fn prepare_zero_page(&self) -> StarryResult<Arc<PageObject>> {
+        if let Some(page) = self.pages.lock_irqsave().zero_page.clone() {
+            return Ok(page);
+        }
+        let prepared = ZeroPage::object()?;
+        let page = {
+            let mut pages = self.pages.lock_irqsave();
+            pages
+                .zero_page
+                .get_or_insert_with(|| prepared.clone())
+                .clone()
+        };
+        // A competing initializer's unused object is destroyed after IRQs are
+        // restored, just like a discarded private-frame reservation.
+        drop(prepared);
+        Ok(page)
     }
 
     fn alloc_new_frame(
@@ -817,11 +1000,19 @@ impl CowBackend {
             return Err(StarryError::InvalidInput);
         }
         let frame = alloc_frame(zeroed, size)?;
+        // SAFETY: alloc_frame returned this unique allocation with the same
+        // size, and the lease takes over its only release duty.
+        self.index_new_frame(unsafe { FrameLease::owned(frame, size) }, resident_kind)
+    }
+
+    fn index_new_frame(
+        &self,
+        frame: FrameLease,
+        resident_kind: RssKind,
+    ) -> StarryResult<Arc<PageObject>> {
         let page = PageObject::new_present_with_resident_kind(
             PageId::allocate(),
-            // SAFETY: alloc_frame just returned this unique allocation with
-            // the same size, and the lease takes over its only release duty.
-            unsafe { FrameLease::owned(frame, size) },
+            frame,
             Some(resident_kind),
         );
         // The source-local index owns this page only while the PTE/slot pair
@@ -852,7 +1043,7 @@ impl CowBackend {
     ) -> StarryResult<Arc<PageObject>> {
         let page = self.prepare_new_at_sized(vaddr, leaf_size, access_flags)?;
         let frame = page.frame().paddr();
-        let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+        let pte_flags = self.pte_flags_for_fault_in(flags, access_flags, &page);
         page.prepare_executable_mapping(frame, leaf_size, pte_flags);
         if let Err(err) = pt.map_page(vaddr, frame, leaf_size, pte_flags) {
             self.discard_pending_page(&page);
@@ -874,54 +1065,66 @@ impl CowBackend {
         access_flags: MappingFlags,
     ) -> StarryResult<Arc<PageObject>> {
         let kind = self.rss_kind_for_fault(access_flags);
-        let page = self.alloc_new_frame_sized(true, kind, leaf_size)?;
-        let frame = page.frame().paddr();
-
-        if let Some((file, file_vaddr_base, file_start, file_end)) = &self.file {
-            let buf =
-                unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), leaf_size) };
-            // vaddr can be smaller than file_vaddr_base (at most 1 page) due to
-            // non-aligned mappings; compute page-internal write offset accordingly.
-            // The mapping invariant is: a virtual address `V` corresponds to
-            // file offset `file_start + (V - file_vaddr_base)`. The file-backed
-            // bytes of this page begin at buf[start] (= virtual address
-            // `file_vaddr_base` when the page starts below it, i.e. the
-            // unaligned first page), which therefore reads from `file_start`.
-            // `saturating_sub` yields exactly that: 0 when vaddr < file_vaddr_base
-            // (read from file_start) and the positive delta otherwise. Do NOT
-            // subtract the gap here — doing so reads the segment's bytes from
-            // the wrong offset and corrupts e.g. the dynamic linker's
-            // .dynamic/GOT, making ld-musl jump to a null pointer.
-            let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
-            if start >= leaf_size {
-                self.discard_pending_page(&page);
-                return Err(StarryError::InvalidInput);
-            }
-
-            let relative = vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize());
-            let file_read_offset = (*file_start).checked_add(relative as u64).ok_or_else(|| {
-                self.discard_pending_page(&page);
-                StarryError::InvalidInput
-            })?;
-            let available = buf
-                .len()
-                .checked_sub(start)
-                .ok_or(StarryError::InvalidInput)?;
-            let max_read = match cow_file_max_read(file, *file_end, file_read_offset, available) {
-                Ok(max_read) => max_read,
-                Err(err) => {
-                    self.discard_pending_page(&page);
-                    return Err(err);
-                }
-            };
-
-            if let Err(err) = file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)
+        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
+            if !self.shared
+                && leaf_size == PAGE_SIZE_4K
+                && !access_flags.contains(MappingFlags::WRITE)
             {
-                self.discard_pending_page(&page);
-                return Err(err.into());
+                return self.prepare_zero_page();
             }
+            return self.alloc_new_frame_sized(true, kind, leaf_size);
+        };
+        if leaf_size < PAGE_SIZE_4K || !leaf_size.is_power_of_two() {
+            return Err(StarryError::InvalidInput);
         }
-        Ok(page)
+        let frame = alloc_frame(false, leaf_size)?;
+        // SAFETY: this unique allocation is not indexed or mapped. The lease
+        // releases it on every error before an initialized PageObject exists.
+        let lease = unsafe { FrameLease::owned(frame, leaf_size) };
+        // SAFETY: the lease exclusively owns this writable direct-map range;
+        // MaybeUninit does not assert validity of the allocator's contents.
+        let buf = unsafe {
+            slice::from_raw_parts_mut(
+                phys_to_virt(frame).as_mut_ptr().cast::<MaybeUninit<u8>>(),
+                leaf_size,
+            )
+        };
+        // vaddr can be smaller than file_vaddr_base (at most 1 page) due to
+        // non-aligned mappings; compute page-internal write offset accordingly.
+        // The mapping invariant is: a virtual address `V` corresponds to
+        // file offset `file_start + (V - file_vaddr_base)`. The file-backed
+        // bytes of this page begin at buf[start] (= virtual address
+        // `file_vaddr_base` when the page starts below it, i.e. the
+        // unaligned first page), which therefore reads from `file_start`.
+        // `saturating_sub` yields exactly that: 0 when vaddr < file_vaddr_base
+        // (read from file_start) and the positive delta otherwise. Do NOT
+        // subtract the gap here — doing so reads the segment's bytes from
+        // the wrong offset and corrupts e.g. the dynamic linker's
+        // .dynamic/GOT, making ld-musl jump to a null pointer.
+        let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
+        if start >= leaf_size {
+            return Err(StarryError::InvalidInput);
+        }
+
+        let relative = vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize());
+        let file_read_offset = (*file_start)
+            .checked_add(relative as u64)
+            .ok_or(StarryError::InvalidInput)?;
+        let available = buf
+            .len()
+            .checked_sub(start)
+            .ok_or(StarryError::InvalidInput)?;
+        let max_read = cow_file_max_read(file, *file_end, file_read_offset, available)?;
+        let filled = {
+            let mut destination = BorrowedBuf::from(&mut buf[start..start + max_read]);
+            file.read_buf_at(destination.unfilled(), file_read_offset)?;
+            destination.len()
+        };
+        // File I/O owns the filled bytes. Clear only the unaligned prefix
+        // and unread suffix before publishing the frame in the page index.
+        buf[..start].fill(MaybeUninit::new(0));
+        buf[start + filled..].fill(MaybeUninit::new(0));
+        self.index_new_frame(lease, kind)
     }
 
     fn rollback_new_pages(
@@ -933,9 +1136,10 @@ impl CowBackend {
     ) {
         let complete = rollback_live_mapped_pages(
             pt,
-            pages.iter().rev().map(|(vaddr, page)| {
-                (*vaddr, page.frame().paddr(), self.page_size)
-            }),
+            pages
+                .iter()
+                .rev()
+                .map(|(vaddr, page)| (*vaddr, page.frame().paddr(), self.page_size)),
             range,
             context,
         );
@@ -954,6 +1158,7 @@ impl CowBackend {
     /// `read_at` (readahead), then allocate + map each page.
     fn alloc_file_run(
         &self,
+        space_id: AddressSpaceId,
         run: &[VirtAddr],
         flags: MappingFlags,
         access_flags: MappingFlags,
@@ -967,6 +1172,111 @@ impl CowBackend {
         let rollback_range = VirtAddrRange::try_from_start_size(run[0], rollback_size)
             .ok_or(StarryError::InvalidInput)?;
         let rollback_context = MappingMutationContext::for_rollback(run.len())?;
+        // Keep bulk copying for unregistered exec preparation, direct files,
+        // and unaligned ELF segments. Only a registered MM can be reached by
+        // the shared cache endpoint when backing mappings are invalidated.
+        let cache_read_run = if !self.shared
+            && self.page_size == PAGE_SIZE_4K
+            && !access_flags.contains(MappingFlags::WRITE)
+            && self.file.as_ref().is_some_and(|(file, base, start, _)| {
+                matches!(file, FileBackend::Cached(_))
+                    && run[0]
+                        .checked_sub_addr(*base)
+                        .and_then(|relative| start.checked_add(relative as u64))
+                        .is_some_and(|offset| offset.is_multiple_of(PAGE_SIZE_4K as u64))
+            }) {
+            match pin_mm_for_rmap(space_id) {
+                Ok(_) => true,
+                Err(RmapMmLookupError::Gone) => false,
+                Err(RmapMmLookupError::Busy) => return Err(StarryError::ResourceBusy),
+            }
+        } else {
+            false
+        };
+        if cache_read_run {
+            let mut mapped = Vec::new();
+            mapped
+                .try_reserve(run.len())
+                .map_err(|_| StarryError::NoMemory)?;
+            for &addr in run {
+                let prepared =
+                    self.prepare_read_cache_page(space_id, addr, self.page_size, access_flags);
+                let page = match prepared {
+                    Ok(Some(page)) => {
+                        let pte_flags = self.pte_flags_for_fault_in(flags, access_flags, &page);
+                        page.prepare_executable_mapping(
+                            page.frame().paddr(),
+                            self.page_size,
+                            pte_flags,
+                        );
+                        let deposit = pt
+                            .plan_map_page(addr, self.page_size)
+                            .and_then(|plan| plan.prepare(page.frame().paddr(), pte_flags));
+                        let deposit = match deposit {
+                            Ok(deposit) => deposit,
+                            Err(error) => {
+                                self.discard_pending_page(&page);
+                                self.rollback_new_pages(
+                                    &mut mapped,
+                                    rollback_range,
+                                    rollback_context,
+                                    pt,
+                                );
+                                return Err(error.into());
+                            }
+                        };
+                        let mut deposit = Some(deposit);
+                        let applied = self.with_current_page_backing(&page, || {
+                            match pt.try_map_page_with(
+                                deposit
+                                    .take()
+                                    .expect("prepared read page owns its map deposit"),
+                            ) {
+                                Ok(()) => Ok(()),
+                                Err(failure) => {
+                                    let (error, returned) = failure.into_parts();
+                                    deposit = Some(returned);
+                                    Err(error)
+                                }
+                            }
+                        });
+                        // Loser page tables are released outside cache exclusion.
+                        drop(deposit);
+                        match applied {
+                            Ok(Some(())) => Ok(page),
+                            Ok(None) => {
+                                self.discard_pending_page(&page);
+                                Err(StarryError::ResourceBusy)
+                            }
+                            Err(error) => {
+                                self.discard_pending_page(&page);
+                                Err(error.into())
+                            }
+                        }
+                    }
+                    Ok(None) => self.alloc_new_at(addr, flags, access_flags, pt),
+                    Err(error) => Err(error),
+                };
+                let page = match page {
+                    Ok(page) => page,
+                    Err(error) => {
+                        self.rollback_new_pages(&mut mapped, rollback_range, rollback_context, pt);
+                        return Err(error);
+                    }
+                };
+                materialization.push(PreparedPteOwner::installed(
+                    addr,
+                    page.frame().paddr(),
+                    self.page_size,
+                    page.clone(),
+                    page.resident_kind(),
+                    ProviderPublication::Pending,
+                ));
+                mapped.push((addr, page));
+            }
+            materialization.set_satisfied_pages(run.len());
+            return Ok(materialization);
+        }
         let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
             let mut mapped = Vec::new();
             mapped
@@ -976,12 +1286,7 @@ impl CowBackend {
                 let page = match self.alloc_new_at(addr, flags, access_flags, pt) {
                     Ok(page) => page,
                     Err(error) => {
-                        self.rollback_new_pages(
-                            &mut mapped,
-                            rollback_range,
-                            rollback_context,
-                            pt,
-                        );
+                        self.rollback_new_pages(&mut mapped, rollback_range, rollback_context, pt);
                         return Err(error);
                     }
                 };
@@ -1009,12 +1314,7 @@ impl CowBackend {
                 let page = match self.alloc_new_at(addr, flags, access_flags, pt) {
                     Ok(page) => page,
                     Err(error) => {
-                        self.rollback_new_pages(
-                            &mut mapped,
-                            rollback_range,
-                            rollback_context,
-                            pt,
-                        );
+                        self.rollback_new_pages(&mut mapped, rollback_range, rollback_context, pt);
                         return Err(error);
                     }
                 };
@@ -1042,7 +1342,8 @@ impl CowBackend {
             .map_err(|_| StarryError::NoMemory)?;
         buf.resize(total, 0);
         if max_read > 0 {
-            file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
+            let mut destination = BorrowedBuf::from(&mut buf[..max_read]);
+            file.read_buf_at(destination.unfilled(), file_read_offset)?;
         }
         let kind = self.rss_kind_for_fault(access_flags);
         let mut mapped_pages = Vec::new();
@@ -1065,36 +1366,21 @@ impl CowBackend {
             let frame = page.frame().paddr();
             let Some(chunk_start) = k.checked_mul(ps) else {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(
-                    &mut mapped_pages,
-                    rollback_range,
-                    rollback_context,
-                    pt,
-                );
+                self.rollback_new_pages(&mut mapped_pages, rollback_range, rollback_context, pt);
                 return Err(StarryError::InvalidInput);
             };
             let Some(chunk_end) = chunk_start.checked_add(ps) else {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(
-                    &mut mapped_pages,
-                    rollback_range,
-                    rollback_context,
-                    pt,
-                );
+                self.rollback_new_pages(&mut mapped_pages, rollback_range, rollback_context, pt);
                 return Err(StarryError::InvalidInput);
             };
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[chunk_start..chunk_end]);
-            let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+            let pte_flags = self.pte_flags_for_fault_in(flags, access_flags, &page);
             page.prepare_executable_mapping(frame, self.page_size, pte_flags);
             if let Err(err) = pt.map_page(addr, frame, self.page_size, pte_flags) {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(
-                    &mut mapped_pages,
-                    rollback_range,
-                    rollback_context,
-                    pt,
-                );
+                self.rollback_new_pages(&mut mapped_pages, rollback_range, rollback_context, pt);
                 return Err(err.into());
             }
             materialization.push(PreparedPteOwner::installed(
@@ -1163,7 +1449,9 @@ impl CowBackend {
         if leaf_size < PAGE_SIZE_4K || !leaf_size.is_power_of_two() {
             return Err(StarryError::BadState);
         }
-        if page.exclusively_mapped_by(space_id) {
+        let zero = ZeroPage::owns(&page);
+        let cached_source = page.frame().provider::<CachedFilePage>();
+        if !zero && cached_source.is_none() && page.exclusively_mapped_by(space_id) {
             let resident_kind = if self.file.is_some() && vma_flags.contains(MappingFlags::WRITE) {
                 Some(RssKind::Anon)
             } else {
@@ -1178,14 +1466,37 @@ impl CowBackend {
             ));
         }
 
-        let new_page = self.alloc_new_frame_sized(false, RssKind::Anon, leaf_size)?;
+        let new_page = self.alloc_new_frame_sized(zero, RssKind::Anon, leaf_size)?;
         let new_frame = new_page.frame().paddr();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                phys_to_virt(paddr).as_ptr(),
-                phys_to_virt(new_frame).as_mut_ptr(),
-                leaf_size,
-            );
+        if !zero {
+            if let Some(source) = cached_source {
+                // SAFETY: new_page owns an unpublished, exclusive 4 KiB frame.
+                // The source capability retains storage and serializes copies
+                // against kernel buffered writes without taking cache/MM locks.
+                let destination = unsafe {
+                    slice::from_raw_parts_mut::<MaybeUninit<u8>>(
+                        phys_to_virt(new_frame).as_mut_ptr().cast(),
+                        leaf_size,
+                    )
+                };
+                if let Err(error) = source
+                    .backing
+                    .copy_to(BorrowedBuf::from(destination).unfilled())
+                {
+                    self.discard_pending_page(&new_page);
+                    return Err(error.into());
+                }
+            } else {
+                // SAFETY: the retained source page stays alive through the copy;
+                // the destination is an unpublished, distinct owned allocation.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        phys_to_virt(paddr).as_ptr(),
+                        phys_to_virt(new_frame).as_mut_ptr(),
+                        leaf_size,
+                    );
+                }
+            }
         }
         // The enclosing address-space transaction replaces the MappingSlot,
         // records the old PageObject in its retire batch, and performs the
@@ -1229,9 +1540,8 @@ impl CowBackend {
                 .filter(|page| page.mapping_refs() == 0)
                 .map(|page| self.rollback_owner(page))
         };
-        let (frame, _flags, page_size, deferred) = pt
-            .unmap_page_deferred(addr)
-            .map_err(StarryError::from)?;
+        let (frame, _flags, page_size, deferred) =
+            pt.unmap_page_deferred(addr).map_err(StarryError::from)?;
         context.record_unmap(deferred);
         if let Some(owner) = rollback_owner {
             context.defer_cow_cleanup(owner);
@@ -1344,7 +1654,7 @@ impl Drop for CowChildCloneTransaction<'_> {
             // speculative walk may have cached the entry. The parent
             // MappingSlot keeps the PageObject alive while this child PTE is
             // cleared and synchronously invalidated.
-            if !self.rollback.rollback_page(vaddr, page_size) {
+            if !self.rollback.rollback_page(vaddr, paddr, page_size) {
                 warn!("could not confirm COW child rollback for frame {paddr:?} at {vaddr:?}");
             }
         }
@@ -1356,19 +1666,27 @@ struct PageTableCowCloneRollback<'a> {
 }
 
 impl PageTableCowCloneRollback<'_> {
-    fn rollback_page(&mut self, vaddr: VirtAddr, expected_size: usize) -> bool {
-        let (_paddr, _, page_size) = match self.page_table.query(vaddr) {
-            Ok(mapping) => mapping,
+    fn rollback_page(
+        &mut self,
+        vaddr: VirtAddr,
+        expected_paddr: PhysAddr,
+        expected_size: usize,
+    ) -> bool {
+        let (pte, level) = match self.page_table.query_occupied(vaddr) {
+            Ok(occupied) => occupied,
             Err(PagingError::NotMapped) => return true,
             Err(err) => {
                 warn!("failed to query cloned COW page {vaddr:?} during rollback: {err}");
                 return false;
             }
         };
-        if page_size != expected_size {
+        if self.page_table.mapping_size_for_level(level) != Some(expected_size)
+            || !vaddr.is_aligned(expected_size)
+            || pte.paddr(level > 1) != expected_paddr
+        {
             warn!(
-                "COW rollback encountered page size {page_size} (expected {expected_size}) at \
-                 {vaddr:?}"
+                "COW rollback leaf identity differs from frame {expected_paddr:?}, size \
+                 {expected_size} at {vaddr:?}"
             );
             return false;
         }
@@ -1476,6 +1794,12 @@ impl MappingExecution for CowBackend {
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
+        if context.backend_owners_deferred() {
+            pt.unmap_range_deferred(range.start..range.end, |tables| {
+                context.record_unmap(tables)
+            })?;
+            return Ok(());
+        }
         for (leaf_start, _) in occupied_leaf_ranges(range, pt)? {
             self.unmap_page(leaf_start, context, pt)?;
         }
@@ -1543,11 +1867,22 @@ impl MappingExecution for CowBackend {
                         },
                     )?
                 } else {
-                    let page =
-                        self.prepare_new_at_sized(range.start, preferred_leaf_size, access_flags)?;
+                    let page = match self.prepare_read_cache_page(
+                        space_id,
+                        range.start,
+                        preferred_leaf_size,
+                        access_flags,
+                    )? {
+                        Some(page) => page,
+                        None => self.prepare_new_at_sized(
+                            range.start,
+                            preferred_leaf_size,
+                            access_flags,
+                        )?,
+                    };
                     (range.start, preferred_leaf_size, page)
                 };
-                let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+                let pte_flags = self.pte_flags_for_fault_in(flags, access_flags, &page);
                 let owner = PreparedPteOwner::installed(
                     installed_addr,
                     page.frame().paddr(),
@@ -1663,6 +1998,7 @@ impl MappingExecution for CowBackend {
                             i += 1;
                         }
                         materialization.append(self.alloc_file_run(
+                            space_id,
                             &addrs[run_start..i],
                             flags,
                             access_flags,
@@ -1722,16 +2058,14 @@ impl MappingExecution for CowBackend {
         new_pt: &mut PageTable,
     ) -> StarryResult<(MappingOperation, PteMaterialization)> {
         let cow_flags = flags - MappingFlags::WRITE;
-        let leaves = collect_occupied_leaves(range, old_pt, |vaddr, size, paddr, present| {
-            (vaddr, size, paddr, present)
-        })?;
+        let leaves =
+            collect_occupied_leaves(range, old_pt, |vaddr, size, paddr, _| (vaddr, size, paddr))?;
         let capacity = leaves.len();
         let mut transaction = CowChildCloneTransaction::new(new_pt, capacity)?;
         let mut materialization = PteMaterialization::with_capacity(capacity)?;
-        for (vaddr, page_size, paddr, present) in leaves {
-            if !present {
-                return Err(PagingError::not_mapped().into());
-            }
+        for (vaddr, page_size, paddr) in leaves {
+            // PROT_NONE disables translation while retaining the physical
+            // owner. Fork must preserve that owner and its inaccessible PTE.
             let page = self
                 .page_object_for_frame(paddr)
                 .ok_or(StarryError::BadState)?;
@@ -1801,7 +2135,8 @@ impl MappingOperation {
             start: start.align_down_4k(),
             page_size: size,
             mapping_id: allocate_mapping_id(),
-            pages: Arc::new(IrqMutex::new(CowPageIndex::new())),
+            pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
+            cache_domain: Arc::new(Mutex::new(None)),
             file: Some((file, start, file_start, file_end)),
             name: None,
             shared,
@@ -1813,7 +2148,8 @@ impl MappingOperation {
             start: start.align_down_4k(),
             page_size: size,
             mapping_id: allocate_mapping_id(),
-            pages: Arc::new(IrqMutex::new(CowPageIndex::new())),
+            pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
+            cache_domain: Arc::new(Mutex::new(None)),
             file: None,
             name: Some(name.to_string()),
             shared: false,
@@ -1856,7 +2192,8 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         start,
         page_size: PAGE_SIZE_4K,
         mapping_id: allocate_mapping_id(),
-        pages: Arc::new(IrqMutex::new(CowPageIndex::new())),
+        pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
+        cache_domain: Arc::new(Mutex::new(None)),
         file: None,
         name: Some("[cow-clone-rollback-test]".to_string()),
         shared: false,
@@ -3376,7 +3713,7 @@ fn fault_receipt_records_resident_delta_for_test() -> bool {
     let handled = matches!(
         aspace.handle_page_fault_result(
             start,
-            ax_runtime::hal::trap::PageFaultFlags::READ
+            ax_runtime::hal::trap::PageFaultFlags::WRITE
                 | ax_runtime::hal::trap::PageFaultFlags::USER,
         ),
         super::super::FaultResult::Handled
@@ -3483,6 +3820,325 @@ fn sparse_mapping_mutations_walk_only_occupied_leaves_for_test() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn anonymous_zero_reads_share_backing_and_forced_writes_remain_private() {
+        use super::{AddrSpace, MappingFlags, MappingOperation, PAGE_SIZE_4K, VirtAddr, ZeroPage};
+
+        let start = VirtAddr::from_usize(0x7b00_0000);
+        let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        let mut parent = AddrSpace::new_empty(start, PAGE_SIZE_4K * 3).unwrap();
+        parent
+            .map(
+                start,
+                PAGE_SIZE_4K * 2,
+                flags,
+                false,
+                MappingOperation::new_alloc(start, PAGE_SIZE_4K, "[zero-read-test]"),
+            )
+            .unwrap();
+        parent
+            .populate_area(start, PAGE_SIZE_4K * 2, MappingFlags::READ)
+            .unwrap();
+        let first = parent.pt.query(start).unwrap();
+        let second = parent.pt.query(start + PAGE_SIZE_4K).unwrap();
+        assert_eq!(first.0, second.0);
+        assert!(!first.1.contains(MappingFlags::WRITE));
+        assert!(!second.1.contains(MappingFlags::WRITE));
+        assert_eq!(parent.resident_page_counts().total(), 0);
+        assert!(
+            parent
+                .mapping_slots
+                .values()
+                .all(|slot| ZeroPage::owns(&slot.page))
+        );
+
+        let child = parent.try_clone().unwrap();
+        let mut child = child.lock();
+        assert_eq!(child.resident_page_counts().total(), 0);
+        child
+            .protect(start, PAGE_SIZE_4K, MappingFlags::READ | MappingFlags::USER)
+            .unwrap();
+        // A forced kernel write to a read-only VMA must still break zero/COW.
+        child.write(start + 17, &[0x5a]).unwrap();
+        assert_ne!(child.pt.query(start).unwrap().0, first.0);
+        assert!(
+            !child
+                .pt
+                .query(start)
+                .unwrap()
+                .1
+                .contains(MappingFlags::WRITE)
+        );
+        assert_eq!(child.resident_page_counts().anon, 1);
+        let mut bytes = [0u8; PAGE_SIZE_4K];
+        child.read(start, &mut bytes).unwrap();
+        assert_eq!(bytes[17], 0x5a);
+        bytes[17] = 0;
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        parent.read(start, &mut bytes).unwrap();
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        child.read(start + PAGE_SIZE_4K, &mut bytes).unwrap();
+        assert!(bytes.iter().all(|byte| *byte == 0));
+        child.reset_uninstalled_for_loader().unwrap();
+        parent.discard_range(start, PAGE_SIZE_4K * 2).unwrap();
+        assert_eq!(parent.resident_page_counts().total(), 0);
+        parent
+            .populate_area(start, PAGE_SIZE_4K, MappingFlags::READ)
+            .unwrap();
+        parent.mark_lazy_free(start, PAGE_SIZE_4K).unwrap();
+        assert_eq!(parent.reclaim_lazy_free_pages(1).unwrap(), 0);
+        assert_eq!(parent.pt.query(start).unwrap().0, first.0);
+        parent.discard_range(start, PAGE_SIZE_4K).unwrap();
+        parent
+            .populate_area(start, PAGE_SIZE_4K, MappingFlags::WRITE)
+            .unwrap();
+        assert_ne!(parent.pt.query(start).unwrap().0, first.0);
+        assert_eq!(parent.resident_page_counts().anon, 1);
+        parent.reset_uninstalled_for_loader().unwrap();
+    }
+
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn private_cache_reads_fork_cow_and_truncate_retire_cache_owners() {
+        use alloc::sync::Arc;
+
+        use ax_fs_ng::{file::CachedFile, vfs::FileBackend};
+        use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+        use ax_runtime::hal::paging::{MappingFlags, PagingError};
+        use axfs_ng_vfs::{Location, Mountpoint, NodePermission};
+
+        use super::super::super::{AddrSpace, HugePageAdvice, lifecycle::MmHandle};
+        use crate::sync::Mutex;
+
+        let (filesystem, memory_fs) = crate::pseudofs::MemoryFs::new_with_handle();
+        let entry = memory_fs.create_anonymous_file(
+            "private-cache-owners",
+            NodePermission::from_bits_truncate(0o600),
+            0,
+            0,
+        );
+        let cache =
+            CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry))
+                .unwrap();
+        let contents = alloc::vec![0x41; PAGE_SIZE_4K * 2 + 17];
+        cache.write_at(contents.as_slice(), 0).unwrap();
+        let start = VirtAddr::from_usize(0x4a00_0000);
+        let size = PAGE_SIZE_4K * 3;
+        let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        let parent = Arc::new(Mutex::new(
+            AddrSpace::new_empty(start, PAGE_SIZE_4K * 6).unwrap(),
+        ));
+        let parent_owner = MmHandle::from_arc(parent.clone()).unwrap();
+        let operation = super::MappingOperation::new_cow(
+            start,
+            PAGE_SIZE_4K,
+            FileBackend::Cached(cache.clone()),
+            0,
+            None,
+            false,
+        );
+        parent
+            .lock()
+            .map(start, size, flags, false, operation.clone())
+            .unwrap();
+        let super::super::MappingOperationKind::Cow(backend) = &operation.kind else {
+            unreachable!();
+        };
+        let space_id = parent.lock().id;
+        let cancelled = backend
+            .prepare_read_cache_page(space_id, start, PAGE_SIZE_4K, MappingFlags::READ)
+            .unwrap()
+            .unwrap();
+        backend.cancel_page_publication(&cancelled).unwrap();
+        // A canceled fault still owns its prepared page until cleanup returns.
+        // A racing retry must reuse that exact cache-backed identity.
+        let retry = backend
+            .prepare_read_cache_page(space_id, start, PAGE_SIZE_4K, MappingFlags::READ)
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&cancelled, &retry));
+        backend.cancel_page_publication(&retry).unwrap();
+        drop(retry);
+        drop(cancelled);
+        {
+            let mut aspace = parent.lock();
+            aspace
+                .populate_area(start, size, MappingFlags::READ)
+                .unwrap();
+            for number in 0..2 {
+                let pin = cache.pin_cached_page(number).unwrap();
+                let (physical, pte_flags, _) = aspace
+                    .pt
+                    .query(start + number as usize * PAGE_SIZE_4K)
+                    .unwrap();
+                assert_eq!(physical.as_usize(), pin.paddr());
+                assert!(!pte_flags.contains(MappingFlags::WRITE));
+            }
+            assert_eq!(aspace.resident_page_counts().file, 3);
+            // Retained PROT_NONE leaves still own their backing, but already
+            // grant no writable access and need no writeback protection.
+            aspace
+                .protect(start, PAGE_SIZE_4K, MappingFlags::USER)
+                .unwrap();
+            let (key, slot) = aspace.mapping_slots.iter().next().unwrap();
+            let key = *key;
+            let page = slot.page.clone();
+            aspace.protect_file_mapping_slot(key, &page).unwrap();
+            aspace.protect(start, PAGE_SIZE_4K, flags).unwrap();
+            assert!(
+                !aspace
+                    .pt
+                    .query(start)
+                    .unwrap()
+                    .1
+                    .contains(MappingFlags::WRITE)
+            );
+        }
+        let child = parent.lock().try_clone().unwrap();
+        let child_owner = MmHandle::from_arc(child.clone()).unwrap();
+        {
+            let mut aspace = child.lock();
+            aspace
+                .protect(start, PAGE_SIZE_4K, MappingFlags::READ | MappingFlags::USER)
+                .unwrap();
+            aspace.write(start + 13, &[0x72]).unwrap();
+            assert_eq!(aspace.resident_page_counts().anon, 1);
+            assert!(
+                !aspace
+                    .pt
+                    .query(start)
+                    .unwrap()
+                    .1
+                    .contains(MappingFlags::WRITE)
+            );
+        }
+        cache.write_at(&[0x33][..], 13).unwrap();
+        let mut byte = [0];
+        parent.lock().read(start + 13, &mut byte).unwrap();
+        assert_eq!(byte, [0x33]);
+        child.lock().read(start + 13, &mut byte).unwrap();
+        assert_eq!(byte, [0x72]);
+        let moved = start + PAGE_SIZE_4K * 4;
+        {
+            let mut aspace = child.lock();
+            let old = start + PAGE_SIZE_4K;
+            let source = aspace.mremap_source(old).unwrap();
+            aspace
+                .mremap_move_from_source(
+                    &source,
+                    old,
+                    PAGE_SIZE_4K,
+                    moved,
+                    PAGE_SIZE_4K,
+                    HugePageAdvice::Default,
+                    false,
+                    0,
+                    false,
+                    None,
+                )
+                .unwrap();
+            // Drop the moved PTE and refault through the relocated file
+            // coordinates, rather than only observing the preserved old PFN.
+            aspace.discard_range(moved, PAGE_SIZE_4K).unwrap();
+            aspace
+                .populate_area(moved, PAGE_SIZE_4K, MappingFlags::READ)
+                .unwrap();
+            let pin = cache.pin_cached_page(1).unwrap();
+            assert_eq!(aspace.pt.query(moved).unwrap().0.as_usize(), pin.paddr());
+        }
+        // TODO: Linux truncate unmaps private COW pages past EOF
+        // (unmap_mapping_range(..., even_cows=1)); StarryOS still leaves
+        // their stale anonymous copies mapped. See #2524 for the known gap.
+        cache.set_len(0).unwrap();
+        assert!(matches!(
+            parent.lock().pt.query(start),
+            Err(PagingError::NotMapped)
+        ));
+        assert!(matches!(
+            child.lock().pt.query(moved),
+            Err(PagingError::NotMapped)
+        ));
+        parent.lock().unmap(start, size).unwrap();
+        child.lock().unmap(start, size).unwrap();
+        child.lock().unmap(moved, PAGE_SIZE_4K).unwrap();
+        drop(child_owner);
+        drop(parent_owner);
+    }
+
+    #[cfg(axtest)]
+    #[axtest::axtest]
+    fn private_file_fault_initializes_prefix_and_short_read_tail() {
+        use ax_fs_ng::{file::CachedFile, vfs::FileBackend};
+        use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+        use ax_runtime::hal::{mem::phys_to_virt, paging::MappingFlags};
+        use axfs_ng_vfs::{Location, Mountpoint, NodePermission};
+
+        let (filesystem, memory_fs) = crate::pseudofs::MemoryFs::new_with_handle();
+        let entry = memory_fs.create_anonymous_file(
+            "private-file-initialization",
+            NodePermission::from_bits_truncate(0o600),
+            0,
+            0,
+        );
+        let cache =
+            CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry))
+                .unwrap();
+        let contents: alloc::vec::Vec<u8> = (0..256).map(|byte| (byte % 251 + 1) as u8).collect();
+        assert_eq!(
+            cache.write_at(contents.as_slice(), 0).unwrap(),
+            contents.len()
+        );
+        let base = VirtAddr::from_usize(0x4800_0000);
+
+        for (prefix, offset, end) in [
+            (0, 0, None),
+            (37, 11, None),
+            (37, 11, Some(30)),
+            (37, 11, Some(8192)),
+            (0, 256, Some(256)),
+            (0, 256, None),
+        ] {
+            let operation = super::MappingOperation::new_cow(
+                base + prefix,
+                PAGE_SIZE_4K,
+                FileBackend::Cached(cache.clone()),
+                offset,
+                end,
+                false,
+            );
+            let super::super::MappingOperationKind::Cow(backend) = &operation.kind else {
+                unreachable!();
+            };
+            let prepared = backend.prepare_new_at_sized(base, PAGE_SIZE_4K, MappingFlags::READ);
+            if end.is_none() && offset >= contents.len() as u64 {
+                assert!(matches!(prepared, Err(crate::StarryError::BadAddress)));
+                assert!(backend.pages.lock_irqsave().pages.is_empty());
+                continue;
+            }
+            let page = prepared.unwrap();
+            let count = end
+                .unwrap_or(contents.len() as u64)
+                .min(contents.len() as u64)
+                .saturating_sub(offset)
+                .min((PAGE_SIZE_4K - prefix) as u64) as usize;
+            let mut expected = alloc::vec![0; PAGE_SIZE_4K];
+            expected[prefix..prefix + count]
+                .copy_from_slice(&contents[offset as usize..offset as usize + count]);
+            // SAFETY: successful preparation owns an initialized, unpublished
+            // frame. No PTE, other task, or device can mutate these bytes.
+            let actual = unsafe {
+                core::slice::from_raw_parts(
+                    phys_to_virt(page.frame().paddr()).as_ptr(),
+                    PAGE_SIZE_4K,
+                )
+            };
+            assert_eq!(actual, expected.as_slice());
+            backend.discard_pending_page(&page);
+            assert!(backend.pages.lock_irqsave().pages.is_empty());
+        }
+    }
+
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]
     fn cow_page_index_retired_capacity_does_not_compound() {
@@ -3571,16 +4227,28 @@ mod tests {
             Err(CowPageIndexInsertError::StaleReservation)
         ));
         assert!(index.get(next.frame().paddr()).is_none());
-        assert!(Arc::ptr_eq(&index.get(first.frame().paddr()).unwrap(), &first));
+        assert!(Arc::ptr_eq(
+            &index.get(first.frame().paddr()).unwrap(),
+            &first
+        ));
         drop(reservation);
         index.insert_pending_for_test(&next).unwrap();
-        assert!(Arc::ptr_eq(&index.get(next.frame().paddr()).unwrap(), &next));
+        assert!(Arc::ptr_eq(
+            &index.get(next.frame().paddr()).unwrap(),
+            &next
+        ));
 
         // Alternate descending and ascending addresses through repeated
         // growth. Lookups and rollback must retain each owner's identity
         // regardless of which end the sorted storage moves.
         let owners: alloc::vec::Vec<_> = (0..64)
-            .map(|number| make_page(if number % 2 == 0 { 200 - number } else { 200 + number }))
+            .map(|number| {
+                make_page(if number % 2 == 0 {
+                    200 - number
+                } else {
+                    200 + number
+                })
+            })
             .collect();
         for page in &owners {
             index.insert_pending_for_test(page).unwrap();

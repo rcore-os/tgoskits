@@ -48,10 +48,30 @@ pub(crate) fn labeled_board_cases<T: BoardTestGroupInfo>(groups: Vec<T>) -> Vec<
         .collect()
 }
 
-pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
-    mut groups: Vec<T>,
-    selected_case: Option<&str>,
+pub(crate) fn filter_board_test_groups_by_names<T: BoardTestGroupInfo>(
+    groups: Vec<T>,
+    selected_cases: &[String],
     selected_board: Option<&str>,
+    suite_name: &str,
+    empty_message: impl FnOnce() -> String,
+) -> anyhow::Result<Vec<T>> {
+    let selected_boards = selected_board
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    filter_board_test_groups_by_board_names(
+        groups,
+        selected_cases,
+        &selected_boards,
+        suite_name,
+        empty_message,
+    )
+}
+
+pub(crate) fn filter_board_test_groups_by_board_names<T: BoardTestGroupInfo>(
+    mut groups: Vec<T>,
+    selected_cases: &[String],
+    selected_boards: &[String],
     suite_name: &str,
     empty_message: impl FnOnce() -> String,
 ) -> anyhow::Result<Vec<T>> {
@@ -61,30 +81,75 @@ pub(crate) fn filter_board_test_groups<T: BoardTestGroupInfo>(
             .then_with(|| left.board_name().cmp(right.board_name()))
     });
 
-    if let Some(case_name) = selected_case {
+    if !selected_cases.is_empty() {
         if groups.is_empty() {
             bail!("{}", empty_message());
         }
-        let available = available_values(groups.iter().map(BoardTestGroupInfo::name));
-        groups.retain(|group| group.name() == case_name);
-        if groups.is_empty() {
+        let available_names = groups
+            .iter()
+            .map(BoardTestGroupInfo::name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = selected_cases
+            .iter()
+            .filter(|case_name| !available_names.contains(case_name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let available = available_names
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !missing.is_empty() {
             return Err(anyhow!(
-                "unsupported {suite_name} board test case `{case_name}`. Supported cases are: \
+                "unsupported {suite_name} board test case(s) `{}`. Supported cases are: \
                  {available}",
+                missing.join(","),
             ));
         }
+        groups.retain(|group| {
+            selected_cases
+                .iter()
+                .any(|case_name| group.name() == case_name)
+        });
     }
 
-    if let Some(board_name) = selected_board {
+    if !selected_boards.is_empty() {
         if groups.is_empty() {
             bail!("{}", empty_message());
         }
         let available = available_values(groups.iter().map(BoardTestGroupInfo::board_name));
-        groups.retain(|group| group.board_name() == board_name);
-        if groups.is_empty() {
+        let missing = selected_boards
+            .iter()
+            .filter(|board_name| !groups.iter().any(|group| group.board_name() == *board_name))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let noun = if selected_boards.len() == 1 {
+                "board"
+            } else {
+                "boards"
+            };
             return Err(anyhow!(
-                "unsupported {suite_name} board test board `{board_name}`. Supported boards are: \
+                "unsupported {suite_name} board test {noun} `{}`. Supported boards are: \
                  {available}",
+                missing.join(","),
+            ));
+        }
+        groups.retain(|group| {
+            selected_boards
+                .iter()
+                .any(|board_name| group.board_name() == board_name)
+        });
+        if groups.is_empty() {
+            let noun = if selected_boards.len() == 1 {
+                "board"
+            } else {
+                "boards"
+            };
+            return Err(anyhow!(
+                "unsupported {suite_name} board test {noun} `{}`. Supported boards are: \
+                 {available}",
+                selected_boards.join(","),
             ));
         }
     }

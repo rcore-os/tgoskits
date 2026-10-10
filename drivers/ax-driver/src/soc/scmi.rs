@@ -1,7 +1,7 @@
 use alloc::{format, string::ToString, sync::Arc};
 
-use arm_scmi_rs::{Scmi, Shmem, Smc};
-use ax_sync::SpinLock as Mutex;
+use arm_scmi_rs::{Scmi, ScmiError, Shmem, Smc};
+use ax_sync::RawSpinLock;
 use fdt_edit::Phandle;
 use log::{info, warn};
 
@@ -11,7 +11,7 @@ const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
 const SCMI_CLOCK_PROTOCOL_ID: u32 = 0x14;
 
-type ScmiAgent = Arc<Mutex<Scmi<Smc>>>;
+type ScmiAgent = Arc<RawSpinLock<Scmi<Smc>>>;
 
 crate::model_register!(
     name: "ARM SCMI SMC",
@@ -68,7 +68,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         bus_address: shmem_addr,
         size: shmem_size,
     };
-    let agent = Arc::new(Mutex::new(Scmi::new(Smc::new(smc_id, None), shmem)));
+    let agent = Arc::new(RawSpinLock::new(Scmi::new(Smc::new(smc_id, None), shmem)));
     if let Some(clock_child) = clock_protocol_child(&info) {
         let clock_path = clock_child.path().to_string();
         let clock_phandle = clock_child.node().as_node().phandle();
@@ -137,8 +137,14 @@ pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {
 }
 
 pub fn set_clock_rate(phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> {
-    let provider = clock_provider(phandle)?;
-    let mut provider = provider.lock().ok()?;
+    set_clock_rate_checked(phandle, clock_id, rate).ok()
+}
+
+/// Preserve the SCMI rejection reason for board-specific flagged rate requests.
+pub fn set_clock_rate_checked(phandle: Phandle, clock_id: u32, rate: u64) -> Result<(), KError> {
+    let provider =
+        clock_provider(phandle).ok_or(KError::Unknown("SCMI clock provider unavailable"))?;
+    let mut provider = provider.lock().map_err(|_| KError::Busy)?;
     provider
         .set_rate(rdif_clk::ClockId::from(clock_id as usize), rate)
         .map_err(|error| {
@@ -146,8 +152,8 @@ pub fn set_clock_rate(phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> 
                 "SCMI clock rate set failed: provider={phandle}, clock_id={clock_id:#x}, \
                  rate={rate} Hz, {error:?}"
             );
+            error
         })
-        .ok()
 }
 
 fn clock_provider(phandle: Phandle) -> Option<rdrive::Device<rdif_clk::Clk>> {
@@ -217,7 +223,10 @@ impl rdif_clk::Interface for ScmiClockProvider {
                 warn!(
                     "SCMI clock rate set failed: clock_id={clock_id:#x}, rate={rate} Hz, {error:?}"
                 );
-                KError::Io
+                match error {
+                    ScmiError::InvalidParameters => KError::InvalidArg { name: "rate" },
+                    _ => KError::Io,
+                }
             })
     }
 }

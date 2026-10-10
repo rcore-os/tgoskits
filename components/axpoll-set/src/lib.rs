@@ -12,7 +12,7 @@ use core::{
 };
 
 use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axpoll::{IoEvents, PollRegistration, PollSource, RegistrationMode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,11 +101,11 @@ impl Inner {
     }
 }
 
-struct PollState(SpinLock<Inner>);
+struct PollState(RawSpinLock<Inner>);
 
 impl PollState {
     const fn new() -> Self {
-        Self(SpinLock::new(Inner::new()))
+        Self(RawSpinLock::new(Inner::new()))
     }
 
     fn register(

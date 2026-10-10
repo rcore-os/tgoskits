@@ -11,7 +11,16 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
         decode_interrupt: super::capabilities::decode_plic_source,
         resolve_cpu_index: super::capabilities::resolve_cpu_index,
         host_cpu_count: super::capabilities::host_cpu_count,
+        guest_cpu_execution_property,
     }
+}
+
+fn guest_cpu_execution_property(name: &str) -> bool {
+    core::tree::is_guest_cpu_execution_property(name)
+        || matches!(
+            name,
+            "riscv,isa" | "riscv,isa-base" | "riscv,isa-extensions" | "mmu-type"
+        )
 }
 
 pub(crate) fn host_fdt_bootarg() -> usize {

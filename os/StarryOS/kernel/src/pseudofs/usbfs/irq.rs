@@ -6,7 +6,7 @@ use ax_runtime::hal::irq::{AutoEnable, IrqId, IrqRequest, ShareMode};
 use rdrive::DeviceId as RDriveDeviceId;
 
 use super::manager::UsbFsManager;
-use crate::{sync::IrqMutex, task::future::IrqNotify};
+use crate::{sync::RawSpinLock, task::future::IrqNotify};
 
 const USBFS_EVENT_BATCH_LIMIT: usize = 64;
 const USB_EVENT_ACTIVE: u8 = 1 << 0;
@@ -31,7 +31,7 @@ pub(super) struct UsbIrqSlot {
     handler: ax_driver::usb::UsbHostIrqHandler,
     event_gate: UsbEventGate,
     dirty: AtomicBool,
-    handle: IrqMutex<Option<ax_runtime::hal::irq::IrqHandle>>,
+    handle: RawSpinLock<Option<ax_runtime::hal::irq::IrqHandle>>,
 }
 
 struct UsbEventGate {
@@ -137,7 +137,7 @@ impl UsbIrqRegistry {
                 handler: slot.handler,
                 event_gate: UsbEventGate::new(),
                 dirty: AtomicBool::new(false),
-                handle: IrqMutex::new(None),
+                handle: RawSpinLock::new(None),
             });
         }
         Self {
@@ -180,7 +180,7 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
                     .auto_enable(AutoEnable::No);
             match ax_runtime::hal::irq::request_irq(irq, request) {
                 Ok(handle) => {
-                    *slot.handle.lock() = Some(handle);
+                    *slot.handle.lock_irqsave() = Some(handle);
                 }
                 Err(err) => {
                     warn!("usbfs: failed to register IRQ callback for IRQ {irq:?}: {err:?}");
@@ -216,7 +216,7 @@ pub(super) fn free_device_irq(device_id: RDriveDeviceId) {
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
     {
-        if let Some(handle) = slot.handle.lock().take()
+        if let Some(handle) = slot.handle.lock_irqsave().take()
             && let Err(err) = ax_runtime::hal::irq::free_irq(handle)
         {
             warn!("usbfs: failed to free IRQ callback for host {device_id:?}: {err:?}");
@@ -262,7 +262,7 @@ pub(super) fn enable_device_irq(device_id: RDriveDeviceId) -> bool {
     }
 
     let enabled = enable_actions_transactionally(
-        slots.iter().map(|slot| *slot.handle.lock()),
+        slots.iter().map(|slot| *slot.handle.lock_irqsave()),
         |handle| match ax_runtime::hal::irq::enable_irq(handle) {
             Ok(()) => true,
             Err(err) => {
@@ -314,7 +314,7 @@ pub(super) fn disable_device(device_id: RDriveDeviceId) {
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
     {
-        if let Some(handle) = *slot.handle.lock()
+        if let Some(handle) = *slot.handle.lock_irqsave()
             && let Err(err) = ax_runtime::hal::irq::disable_irq(handle)
         {
             warn!("usbfs: failed to disable IRQ callback for host {device_id:?}: {err:?}");

@@ -9,15 +9,11 @@ use core::{
     time::Duration,
 };
 
-use super::{
-    ChildRelations, GroupMoveScope, ProcessGroup, ProcessRelationTxn, RelationLock, Session,
-};
+use super::{ChildRelations, GroupMoveScope, ProcessGroup, ProcessRelationTxn, Session};
 use crate::{
     sync::Mutex,
     task::{PidIdentity, TgidNumber, TidNumber},
 };
-
-type ThreadGroupLock<T> = Mutex<T>;
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
@@ -116,11 +112,11 @@ pub struct Process {
     identity: Arc<PidIdentity>,
     is_child_subreaper: AtomicBool,
     group_exit: Arc<starry_signal::api::GroupExit>,
-    pub(crate) tg: ThreadGroupLock<ThreadGroup>,
+    pub(crate) tg: Mutex<ThreadGroup>,
 
-    pub(crate) children: RelationLock<ChildRelations>,
-    pub(crate) parent: RelationLock<Weak<Process>>,
-    pub(crate) group: RelationLock<Arc<ProcessGroup>>,
+    pub(crate) children: Mutex<ChildRelations>,
+    pub(crate) parent: Mutex<Weak<Process>>,
+    pub(crate) group: Mutex<Arc<ProcessGroup>>,
 }
 
 /// A forked process whose topology is not visible until commit.
@@ -501,10 +497,10 @@ impl Process {
             identity,
             is_child_subreaper: AtomicBool::new(false),
             group_exit,
-            tg: ThreadGroupLock::new(ThreadGroup::default()),
-            children: RelationLock::new(ChildRelations::new()),
-            parent: RelationLock::new(parent.map(Arc::downgrade).unwrap_or_default()),
-            group: RelationLock::new(group),
+            tg: Mutex::new(ThreadGroup::default()),
+            children: Mutex::new(ChildRelations::new()),
+            parent: Mutex::new(parent.map(Arc::downgrade).unwrap_or_default()),
+            group: Mutex::new(group),
         })?)
     }
 

@@ -25,7 +25,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, FileLike, event::EventFd, get_file_like, memfd::Memfd},
     mm::{AddrSpace, IoVec, MappingOperation, MmPin, VmMutPtr, VmPtr},
-    sync::{Mutex, RwLock},
+    sync::{Mutex, RawSpinRwLock},
     syscall::signal::check_sigset_size,
     task::{
         PidIdentityId,
@@ -233,7 +233,8 @@ impl AioContext {
 
 static NEXT_AIO_CONTEXT_ID: AtomicUsize = AtomicUsize::new(1);
 static NEXT_AIO_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-static AIO_CONTEXTS: RwLock<BTreeMap<AioContextId, Arc<AioContext>>> = RwLock::new(BTreeMap::new());
+static AIO_CONTEXTS: RawSpinRwLock<BTreeMap<AioContextId, Arc<AioContext>>> =
+    RawSpinRwLock::new(BTreeMap::new());
 
 // Return the process id that owns newly created or looked-up contexts.
 fn current_process_identity_id(current: &crate::task::UserTaskRef) -> PidIdentityId {
@@ -548,7 +549,7 @@ fn read_user_segments(aspace: &MmPin, buf: &UserBuffer) -> StarryResult<Vec<u8>>
 // Copy a kernel buffer back into user segments.
 fn write_user_segments(aspace: &MmPin, buf: &UserBuffer, data: &[u8]) -> StarryResult<()> {
     let mut offset = 0usize;
-    let guard = aspace.lock();
+    let mut guard = aspace.lock();
     for segment in &buf.segments {
         if offset >= data.len() {
             break;

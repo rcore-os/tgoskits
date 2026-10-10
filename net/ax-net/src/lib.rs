@@ -95,7 +95,9 @@ use axpoll_set::PollSet;
 pub use error::{NetError, NetResult};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
-pub use rd_net::{NetPollGroupId, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
+pub use rd_net::{
+    NetPollGroupId, NetRxMode, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk,
+};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -409,7 +411,7 @@ pub fn init_network(
 
     validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
@@ -461,7 +463,10 @@ pub fn init_network(
             (!cfg.gateway.is_unspecified()).then(|| Ipv4Address::from(cfg.gateway.octets()))
         });
         let dhcp_enabled = cfg.map_or(wifi_policy.is_none(), |cfg| cfg.dhcp);
-        let eth_dev = router.add_device(id, Box::new(EthernetDevice::new(name.clone(), dev, ipv4)));
+        let eth_dev = router.add_device(
+            id,
+            Box::new(EthernetDevice::new(id, name.clone(), dev, ipv4)),
+        );
 
         if let Some(handle) = queue_runtime.wifi_handle(order) {
             info!(
@@ -840,23 +845,18 @@ pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
     get_control().interface_by_id(id)
 }
 
-/// Enables or disables hardware acceptance of every physical unicast address
-/// on the interface `id`.
+/// Applies a receive filtering mode to the interface `id`.
 ///
-/// The physical L2 uplink bridge calls this on the wired interface it selected
-/// so the NIC stops dropping frames addressed to guest MACs. The request goes
-/// to the published device's own control endpoint, so the capability and the
-/// register window belong to that exact instance instead of a name- or
-/// address-based guess. A driver without an address-filter control reports
-/// [`NetError::OperationNotSupported`], and the caller may then try another
-/// interface that does support it; a request that succeeds enables the filter on
-/// that exact interface, so the caller must bridge through it and must not leave
-/// the filter enabled on an unrelated port.
-pub fn set_interface_rx_accept_all_phys(id: InterfaceId, enabled: bool) -> NetResult {
+/// The request is routed to the published device's own control endpoint, so
+/// the capability and register window belong to that exact instance instead
+/// of a name- or address-based guess. A driver without the requested mode
+/// reports [`NetError::OperationNotSupported`], allowing a caller to try a
+/// different interface.
+pub fn set_interface_rx_mode(id: InterfaceId, mode: NetRxMode) -> NetResult {
     let runtime = QUEUE_RUNTIME.get().ok_or(NetError::NoSuchDevice)?;
     runtime
         .lock()
-        .set_interface_rx_accept_all_phys(id, enabled)
+        .set_interface_rx_mode(id, mode)
         .map_err(map_driver_net_error)
 }
 

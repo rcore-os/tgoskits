@@ -1,0 +1,12 @@
+[package]
+name = "rdif-audio"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable, single-owner PCM playback interface"
+
+[dependencies]
+rdif-base.workspace = true
+thiserror.workspace = true

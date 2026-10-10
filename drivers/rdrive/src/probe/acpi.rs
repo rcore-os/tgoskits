@@ -29,7 +29,7 @@ use acpi::{
     sdt::spcr::{Spcr, SpcrInterfaceType},
 };
 use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 pub use rdif_base::irq::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
 use crate::{
@@ -47,7 +47,7 @@ const LOONGARCH_PCH_PIC_GSI_COUNT: u16 = 256;
 const PCI_ROOT_FALLBACK_PATHS: &[&str] = &["\\_SB.PCI0", "\\_SB.PCI1", "\\_SB.PC00", "\\_SB.PC01"];
 
 static SYSTEM: OnceLock<System> = OnceLock::new();
-static NULL_LOCK: Mutex<()> = Mutex::new(());
+static NULL_LOCK: RawSpinLock<()> = RawSpinLock::new(());
 
 #[derive(Clone, Copy)]
 pub struct AcpiRoot {
@@ -302,8 +302,8 @@ mod tests {
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiPciEcam, AcpiPciNamespace, AcpiPciRoot,
-        AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource, LinkIrqResourceKind, Mutex,
-        PciLinkAllocator, System, apply_pci_root_dma_coherency, inherited_device_cca,
+        AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource, LinkIrqResourceKind,
+        PciLinkAllocator, RawSpinLock, System, apply_pci_root_dma_coherency, inherited_device_cca,
         irq_descriptor_gsi, is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
         pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
     };
@@ -406,13 +406,13 @@ mod tests {
             interpreter: Some(interpreter_with_devices(handler.clone())),
             handler,
             pci: None,
-            probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
-            populated_paths: Mutex::new(alloc::collections::BTreeMap::new()),
-            populated_resources: Mutex::new(alloc::collections::BTreeMap::new()),
+            probed_names: RawSpinLock::new(alloc::collections::BTreeSet::new()),
+            populated_paths: RawSpinLock::new(alloc::collections::BTreeMap::new()),
+            populated_resources: RawSpinLock::new(alloc::collections::BTreeMap::new()),
         }
     }
 
-    static LAST_PATH: Mutex<Option<String>> = Mutex::new(None);
+    static LAST_PATH: RawSpinLock<Option<String>> = RawSpinLock::new(None);
 
     fn probe_rtc(probe: super::ProbeAcpi<'_>) -> Result<(), crate::probe::OnProbeError> {
         let info = probe.info();
@@ -508,7 +508,7 @@ mod tests {
             dma_coherent: None,
         }];
         let pci = AcpiPciNamespace {
-            link_allocator: Mutex::new(PciLinkAllocator::default()),
+            link_allocator: RawSpinLock::new(PciLinkAllocator::default()),
             roots: vec![AcpiPciRoot {
                 segment: 0,
                 bus: 0,
@@ -542,7 +542,7 @@ mod tests {
             link_prt: None,
         };
         let pci = AcpiPciNamespace {
-            link_allocator: Mutex::new(PciLinkAllocator::default()),
+            link_allocator: RawSpinLock::new(PciLinkAllocator::default()),
             roots: vec![root(0, true), root(0x80, false)],
         };
 
@@ -1362,16 +1362,16 @@ pub struct System {
     interpreter: Option<Interpreter<AcpiHandler>>,
     handler: AcpiHandler,
     pci: Option<AcpiPciNamespace>,
-    probed_names: Mutex<BTreeSet<&'static str>>,
-    populated_paths: Mutex<BTreeMap<String, DeviceId>>,
-    populated_resources: Mutex<BTreeMap<AcpiResourceAddress, DeviceId>>,
+    probed_names: RawSpinLock<BTreeSet<&'static str>>,
+    populated_paths: RawSpinLock<BTreeMap<String, DeviceId>>,
+    populated_resources: RawSpinLock<BTreeMap<AcpiResourceAddress, DeviceId>>,
 }
 
 unsafe impl Send for System {}
 unsafe impl Sync for System {}
 
 struct AcpiPciNamespace {
-    link_allocator: Mutex<PciLinkAllocator>,
+    link_allocator: RawSpinLock<PciLinkAllocator>,
     roots: Vec<AcpiPciRoot>,
 }
 
@@ -1426,9 +1426,9 @@ impl System {
             interpreter,
             handler: namespace_handler,
             pci,
-            probed_names: Mutex::new(BTreeSet::new()),
-            populated_paths: Mutex::new(BTreeMap::new()),
-            populated_resources: Mutex::new(BTreeMap::new()),
+            probed_names: RawSpinLock::new(BTreeSet::new()),
+            populated_paths: RawSpinLock::new(BTreeMap::new()),
+            populated_resources: RawSpinLock::new(BTreeMap::new()),
         })
     }
 
@@ -2103,7 +2103,7 @@ fn read_pci_namespace(
     }
 
     Ok(AcpiPciNamespace {
-        link_allocator: Mutex::new(PciLinkAllocator::default()),
+        link_allocator: RawSpinLock::new(PciLinkAllocator::default()),
         roots,
     })
 }

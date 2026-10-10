@@ -326,6 +326,26 @@ pub(super) async fn test_direct_ota(
         drop(qemu);
         qemu = start_qemu(&firmware, root, port)?;
     }
+    drop(qemu);
+    write_esp_file(&disk, "EFI/BOOT/initramfs.cpio", &host_initramfs)?;
+    qemu = start_qemu(&firmware, root, port)?;
+    status(&client, port, root, |value| value["running_slot"] == "b").await?;
+    boot_smoke(
+        &client,
+        port,
+        root,
+        BootScenario {
+            name: "esp-initramfs-fallback",
+            kernel: &kernels.initramfs,
+            initramfs: None,
+            cmdline: None,
+            expected_lines: &["HOST_CMDLINE: ", "HOST_INITRAMFS_PASSED", "Hello, world!"],
+            check_retries: false,
+        },
+    )
+    .await?;
+    drop(qemu);
+    qemu = start_qemu(&firmware, root, port)?;
     status(&client, port, root, |value| value["running_slot"] == "b").await?;
     println!("axloader OTA QEMU: checking failed uploads on stable B");
 

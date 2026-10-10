@@ -13,6 +13,8 @@ on:
     paths:
       - ".cargo/**"
       - ".github/actions/publish-container/action.yml"
+      - ".github/actions/ci-plan/**"
+      - ".github/actions/ci-result/**"
       - ".github/ci/**"
       - ".github/workflows/container-publish.yml"
       - ".github/workflows/ci.yml"
@@ -299,15 +301,28 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Set up uv for CI configuration
+        if: steps.route.outputs.should_run == 'true'
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+
       - name: Validate CI configuration
         if: steps.route.outputs.should_run == 'true'
         run: |
           set -euo pipefail
-          python3 scripts/test/check_ci_routing.py
-          python3 -m unittest \
-            scripts/test/test_ci_impact.py \
-            scripts/test/test_ci_plan.py \
-            scripts/test/test_ci_routing.py
+          uv run --python 3.13 --no-project python3 scripts/test/check_ci_routing.py
+          test_log="$RUNNER_TEMP/ci-tests.log"
+          if ! uv run --python 3.13 --no-project python3 -m unittest discover \
+            -s scripts/test -p 'test_ci_*.py' >"$test_log" 2>&1; then
+            cat "$test_log"
+            exit 1
+          fi
+          cat "$test_log"
+          grep -Eq '^Ran [1-9][0-9]* tests? in ' "$test_log" || {
+            echo "CI test discovery found no tests" >&2
+            exit 1
+          }
 
       - name: Resolve incremental base revision
         id: since
@@ -343,8 +358,7 @@ jobs:
 
           echo "since_ref=${since_ref}" >> "$GITHUB_OUTPUT"
 
-      - name: Plan check matrices
-        id: matrix
+      - name: Record runner trust
         if: steps.route.outputs.should_run == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -372,16 +386,18 @@ jobs:
             echo "- Eligibility rule: non-PR event or PR head repository equals \`${GITHUB_REPOSITORY}\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/test/ci_plan.py \
-            --mode main \
-            --repository "$GITHUB_REPOSITORY" \
-            --repository-owner "$REPOSITORY_OWNER" \
-            --event-name "$EVENT_NAME" \
-            --head-repository "$HEAD_REPOSITORY" \
-            --base-ref "$BASE_REF" \
-            --since-ref "$SINCE_REF" \
-            --summary-file "$GITHUB_STEP_SUMMARY" \
-            --output-file "$GITHUB_OUTPUT"
+      - name: Plan check matrices
+        id: matrix
+        if: steps.route.outputs.should_run == 'true'
+        uses: ./.github/actions/ci-plan
+        with:
+          mode: main
+          repository: ${{ github.repository }}
+          repository-owner: ${{ github.repository_owner }}
+          event-name: ${{ github.event_name }}
+          head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          base-ref: ${{ github.base_ref }}
+          since-ref: ${{ steps.since.outputs.since_ref }}
 
   static_checks:
     name: Preflight

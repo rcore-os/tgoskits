@@ -25,8 +25,8 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
 | `AxvmManager` 接入 | 提供 VM registry/status；输入入队后、以及 ordered record 被消费释放容量后唤醒对应 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
 
-`GuestConsoleMux` 持有一个共享的 `ConsoleCore`。`ConsoleCore` 有两把不可睡眠的
-`NoPreemptMutex`：`state` 保护以上全部可变状态以及 `backend_generation`/`backend_identity`，
+`GuestConsoleMux` 持有一个共享的 `ConsoleCore`。`ConsoleCore` 有两把任务上下文可睡眠的
+`std::sync::Mutex`：`state` 保护以上全部可变状态以及 `backend_generation`/`backend_identity`，
 `output_lock` 串行化输出提交以及 backend replacement/invalidation。客户机输出路径的固定
 顺序是 `output_lock` → `state`（active admission）→ ordered `ConsoleLogSubscription`
 record queue；提交阶段只做 admission 并把记录入队，不触碰物理 UART。其他同时使用两把 mux
@@ -306,18 +306,18 @@ active admission/stable identity 语义一致。
 
 ## 7. 并发边界与当前限制
 
-控制台的并发正确性依赖几个显式约束：宿主输入单 reader、双锁固定顺序、vCPU0 独占设备 poll。下表逐条列出这些边界的当前保证与已知限制。
+控制台的并发正确性依赖几个显式约束：宿主输入单 reader、双锁固定顺序、运行期指定一个设备 poll owner。下表逐条列出这些边界的当前保证与已知限制。
 
 | 边界 | 当前保证 | 限制 |
 | --- | --- | --- |
 | 宿主 RX | shell loop 独占 `TaskConsoleInput`；runtime RX IRQ/worker 或 RawHal fallback 保持单 owner | capability 已被取得或 runtime 停止时，初始化/等待返回明确错误 |
 | 宿主日志 | 唯一 `ConsoleLogSubscription` 按完整 record 投递；guest raw output 以 `(VMId, generation)` tag 进入同一 ordered queue；编辑行清除后重画，guest 前台期间有界缓存 | guest 提交遇到满队列时返回 `WouldBlock`，由 PL011 retained TX FIFO 重试且不计 host-log drop；释放容量后的 retry 唤醒只在 record 被消费时按 `retained_tx` 发布；只有 runtime 实际丢弃的记录才报告摘要，panic/emergency 不保证重画 |
-| mux 锁 | 双锁路径固定 `output_lock` → `state`；vCPU 回调使用 `NoPreemptMutex`，不进入可睡眠 API | hard IRQ 不进入 mux；新增路径必须保持同一锁顺序 |
+| mux 锁 | 双锁路径固定 `output_lock` → `state`；卸载硬件后的 vCPU 任务通过 `std::sync::Mutex` 调用 mux | hard IRQ 不进入 mux；新增路径必须保持同一锁顺序 |
 | VM notify | 输入入队后、以及任何 ordered record 被消费后按 `retained_tx`，都在锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll；唤醒只针对被阻塞且 generation 仍有效的 VM |
-| 虚拟设备 poll | 只有 vCPU0 调用 `poll_vm_devices()`，它是串口 backend 的唯一 poll owner | secondary vCPU 不消费串口输入 |
-| 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；vCPU0 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
-| SMP guest | 与单 vCPU guest 一样先发布 pending device-poll flag，再通过线程世代绑定的 capability 定向 kick vCPU0 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
-| 输出并发 | `output_lock` 覆盖 active admission、record 入队、`retained_tx` 记/清与 retry drain；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试，并由 pop 路径锁外 `notify_vm()` 唤醒；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径都不阻塞 vCPU writer |
+| 虚拟设备 poll | `RunSignals::poll_owner()` 指定一个在线 vCPU；其退出时 control owner 转交给其他在线 vCPU | 非指定 vCPU 不消费串口输入 |
+| 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；指定 poll owner 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
+| SMP guest | 与单 vCPU guest 一样先发布 pending device-poll flag，再通过线程世代绑定的 capability 定向 kick 当前 poll owner | flag 只表达“需要 poll”，不计数；队列才保存字节 |
+| 输出并发 | `output_lock` 覆盖 active admission、record 入队、`retained_tx` 记/清与 retry drain；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试，并由 pop 路径锁外 `notify_vm()` 唤醒；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径不等待 UART；任务 mutex 竞争可以睡眠 |
 | 网络输出 | 每端点独立 64 KiB 固定队列；有连接时 vCPU 只复制原始字节并通过 `IrqNotify` 唤醒对应网页输出任务 | 无连接时不保留历史也不获取网络队列锁；慢客户端只影响自身通道并最终触发该端点队列丢弃摘要 |
 
 `browser-console` 在默认 VM 初始化后只获取一次运行时 VM 列表并按 VM ID 排序。网页通过 `/api/consoles` 获取这个启动快照，
@@ -456,7 +456,7 @@ disabled = [
 验证：没有在 QEMU 中真正让 guest 进入 WFI 再走 PL011 retry 的完整中断路径，也没有覆盖真实
 UART、SMP kick 与真实 manager/runtime 的 `notify_vm()` 组合。
 
-`mux/output.rs` 另有 16 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`console_mux/transport.rs` 的 4 个测试验证 FIFO、队列满、超大事务和分块溢出时的整事务回滚。顶层 mux 测试还覆盖宿主完整日志隔离、guest 前台缓存与返回 shell 后回放；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
+`mux/output.rs` 另有 16 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`console_mux/transport.rs` 的 4 个测试验证 FIFO、队列满、超大事务和分块溢出时的整事务回滚。顶层 mux 测试还覆盖宿主完整日志隔离、guest 前台缓存与返回 shell 后回放；`RunSignals` 的测试验证持久 work 发布、指定 poll owner 与退出后转交，单 vCPU 和 SMP 共用相同语义。
 
 现有测试仍没有直接断言 shell 命令解析。以上测试也不是完整的真实 UART、VM lifecycle 和终端端到端覆盖，不能把顶层 mux 测试泛化为所有边界都已验证。
 

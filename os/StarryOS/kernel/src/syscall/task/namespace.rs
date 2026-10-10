@@ -11,7 +11,7 @@ use crate::{
     StarryError,
     file::{FD_TABLE, FileTable, NsFd, PidFd, get_file_like},
     namespace::NsProxy,
-    sync::{FsMutex, RwLock},
+    sync::RawSpinRwLock,
     task::{ProcessNamespaceUpdate, Thread},
 };
 
@@ -30,18 +30,14 @@ const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 /// Capabilities are not scoped to user namespaces yet, so only CAP_SYS_ADMIN
 /// held in the initial user namespace may join a namespace.
 fn may_join(thread: &Thread) -> bool {
-    thread.cred().has_cap_sys_admin()
-        && thread
-            .proc_data
-            .namespace_snapshot()
-            .in_initial_user_ns()
+    thread.cred().has_cap_sys_admin() && thread.proc_data.namespace_snapshot().in_initial_user_ns()
 }
 
-type SharedFileTable = Arc<RwLock<FileTable>>;
+type SharedFileTable = Arc<RawSpinRwLock<FileTable>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<FsMutex<FsContext>>>,
+    fs_context: Option<Arc<ax_fs_ng::os::sync::Mutex<FsContext>>>,
     nsproxy: Option<NsProxy>,
 }
 
@@ -51,8 +47,11 @@ impl PreparedUnshare {
         thread: &Thread,
         namespace_update: Option<&ProcessNamespaceUpdate<'_>>,
     ) -> crate::StarryResult<Self> {
-        let file_table = (flags & CLONE_FILES != 0)
-            .then(|| Arc::new(RwLock::new(crate::file::current_fd_table().read().clone())));
+        let file_table = (flags & CLONE_FILES != 0).then(|| {
+            Arc::new(RawSpinRwLock::new(
+                crate::file::current_fd_table().read().clone(),
+            ))
+        });
 
         let mut nsproxy = namespace_update
             .map(ProcessNamespaceUpdate::snapshot)

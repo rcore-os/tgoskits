@@ -27,13 +27,21 @@ impl ItsState {
             0x09 => self.map_collection(words, processor_targets, opcode, offset),
             0x0a => {
                 let lpi = checked_lpi((words[1] >> 32) as u32, lpi_limit, opcode, offset)?;
-                self.map_translation(device, event, lpi, words, opcode, offset)
+                self.map_translation(device, event, lpi, words, opcode, offset)?;
+                self.push_prepare(device, event, actions);
+                Ok(())
             }
             0x0b => {
                 let lpi = checked_lpi(event.raw(), lpi_limit, opcode, offset)?;
-                self.map_translation(device, event, lpi, words, opcode, offset)
+                self.map_translation(device, event, lpi, words, opcode, offset)?;
+                self.push_prepare(device, event, actions);
+                Ok(())
             }
-            0x01 => self.move_translation(device, event, words, offset),
+            0x01 => {
+                self.move_translation(device, event, words, offset)?;
+                self.push_prepare(device, event, actions);
+                Ok(())
+            }
             0x03 | 0x04 => {
                 let (lpi, target) = self.translate(device, event)?;
                 actions.push(ItsAction::SetPending {
@@ -133,6 +141,24 @@ impl ItsState {
             .ok_or_else(|| invalid_mapping(0x01, offset, device, event))?;
         translation.collection = collection;
         Ok(())
+    }
+
+    /// Emits one [`ItsAction::Prepare`] for a translation that now names a target.
+    ///
+    /// `map_translation` and `move_translation` both require the collection to
+    /// exist, so this resolves whenever the command itself succeeded; an
+    /// internal inconsistency simply emits no effect rather than a guest error.
+    fn push_prepare(&self, device: ItsDeviceId, event: EventId, actions: &mut Vec<ItsAction>) {
+        let Some(translation) = self.translations.get(&(device, event)) else {
+            return;
+        };
+        let Some(target) = self.collections.get(&translation.collection).copied() else {
+            return;
+        };
+        actions.push(ItsAction::Prepare {
+            target,
+            lpi: translation.lpi,
+        });
     }
 
     fn require_device_event_capacity(

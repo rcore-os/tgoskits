@@ -7,7 +7,7 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::Mutex;
 
 /// Typed identity of one switch port.
 ///
@@ -135,7 +135,7 @@ impl VirtualSwitch {
     ) -> Result<SwitchPortRegistration, SwitchError> {
         let id = port.id();
         let mac = port.guest_mac();
-        let mut registry = self.registry.lock_irqsave();
+        let mut registry = self.registry.lock();
         if registry.by_id.contains_key(&id) {
             self.stats.inc(&self.stats.duplicate_mac_rejected);
             return Err(SwitchError::DuplicatePortId(id));
@@ -156,7 +156,7 @@ impl VirtualSwitch {
     /// Removes a port from both indices. Idempotent: a second removal (e.g.
     /// explicit deactivate after RAII drop) is a no-op.
     pub fn unregister(&self, id: SwitchPortId) {
-        let mut registry = self.registry.lock_irqsave();
+        let mut registry = self.registry.lock();
         let Some(port) = registry.by_id.remove(&id) else {
             return;
         };
@@ -172,7 +172,7 @@ impl VirtualSwitch {
     /// table lock while draining (design §5.3).
     pub fn active_port_ids(&self) -> alloc::vec::Vec<SwitchPortId> {
         self.registry
-            .lock_irqsave()
+            .lock()
             .by_id
             .iter()
             .filter(|(_, port)| port.is_active())
@@ -197,7 +197,7 @@ impl VirtualSwitch {
 
         // Snapshot the decision under the table lock; deliver outside it.
         let decision = {
-            let registry = self.registry.lock_irqsave();
+            let registry = self.registry.lock();
             let Some(src_port) = registry.by_id.get(&src_id) else {
                 drop(registry);
                 self.stats.inc(&self.stats.inactive_generation_drop);
@@ -256,7 +256,7 @@ impl VirtualSwitch {
         };
 
         let targets: alloc::vec::Vec<Arc<dyn SwitchPort>> = {
-            let registry = self.registry.lock_irqsave();
+            let registry = self.registry.lock();
             match header.class() {
                 DestinationClass::Unicast => match registry.by_mac.get(&header.dst) {
                     Some(id) => registry.by_id.get(id).cloned().into_iter().collect(),
@@ -490,7 +490,7 @@ mod tests {
         }
 
         fn delivered(&self) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
-            self.delivered.lock_irqsave().clone()
+            self.delivered.lock().clone()
         }
 
         fn notifications(&self) -> usize {
@@ -512,7 +512,7 @@ mod tests {
             if !self.is_active() {
                 return false;
             }
-            let mut delivered = self.delivered.lock_irqsave();
+            let mut delivered = self.delivered.lock();
             if delivered.len() >= self.accept.load(Ordering::Acquire) {
                 return false;
             }

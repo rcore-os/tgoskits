@@ -44,6 +44,27 @@ pub trait BootImageProvider {
     fn file_size(&self, file_name: &str) -> crate::AxVmResult<usize> {
         self.read_file(file_name).map(|buffer| buffer.len())
     }
+
+    /// Reads a bounded byte range from a host file.
+    ///
+    /// The default implementation adapts the whole-file `read_file` hook so
+    /// existing providers keep working, but providers that can serve a real
+    /// range should override this to avoid reading the entire image per chunk.
+    fn read_file_range(
+        &self,
+        file_name: &str,
+        offset: usize,
+        read_size: usize,
+    ) -> crate::AxVmResult<std::vec::Vec<u8>> {
+        let buffer = self.read_file(file_name)?;
+        let end = offset
+            .checked_add(read_size)
+            .ok_or_else(|| ax_err_type!(InvalidData, "requested file range overflows"))?;
+        buffer
+            .get(offset..end)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| ax_err_type!(InvalidData, "requested file range exceeds file size"))
+    }
 }
 #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64", test))]
 pub(crate) mod acpi;

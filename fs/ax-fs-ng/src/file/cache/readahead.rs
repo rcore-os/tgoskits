@@ -1,7 +1,7 @@
 use crate::os::memory::PAGE_SIZE;
 
 const INITIAL_READAHEAD_PAGES: usize = 4;
-const MAX_READAHEAD_PAGES: usize = 32;
+pub(super) const MAX_READAHEAD_PAGES: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ReadAheadPlan {

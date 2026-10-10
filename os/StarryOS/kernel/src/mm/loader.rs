@@ -831,14 +831,14 @@ pub fn clear_elf_cache() {
 /// caller resolves and opens it once (mirroring Linux's `do_open_execat`,
 /// which honors `AT_SYMLINK_NOFOLLOW` at that single lookup), and this never
 /// re-resolves the main executable from its pathname. Interpreters reached
-/// through a `.sh` redirect or a `#!` shebang are resolved here by path, which
+/// through a `#!` shebang are resolved here by path, which
 /// is Linux's `open_exec(interp)` and legitimately follows symlinks.
 ///
 /// # Arguments
 /// - `uspace`: The address space of the user app.
 /// - `loc`: The resolved executable to load.
-/// - `path`: The pathname the executable was invoked as, used for the `.sh`
-///   redirect and for the script name an interpreter receives in `argv`.
+/// - `path`: The pathname the executable was invoked as, used for the script
+///   name an interpreter receives in `argv`.
 /// - `args`: The arguments of the user app.
 /// - `envs`: The environment variables of the user app.
 ///

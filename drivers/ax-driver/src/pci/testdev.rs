@@ -1,13 +1,13 @@
 //! QEMU IOMMU test device discovery for the ArceOS integration test.
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use pcie::CommandRegister;
 use rdrive::probe::{
     OnProbeError,
     pci::{PciAddress, ProbePci},
 };
 
-static TESTDEV: SpinLock<Option<(PciAddress, usize)>> = SpinLock::new(None);
+static TESTDEV: RawSpinLock<Option<(PciAddress, usize)>> = RawSpinLock::new(None);
 
 crate::model_register!(
     name: "QEMU IOMMU test device",

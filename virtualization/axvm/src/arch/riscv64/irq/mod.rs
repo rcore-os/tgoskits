@@ -16,17 +16,67 @@
 
 use std::{collections::BTreeMap, sync::Arc, vec::Vec};
 
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{GuestPhysAddr, InterruptTriggerMode};
 use riscv_vplic::*;
 
-use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::deferred::DeferredVcpuKick};
+use crate::{
+    AxVmError, AxVmResult, ax_err, ax_err_type,
+    services::{RunSignals, SignalError},
+};
 
 mod physical;
 
-/// Typed VM-local access to vPLIC state and deferred wake lifecycle.
+/// Run-bound vCPU wake target captured for one execution period.
+///
+/// The controller publishes its pending state before calling this binding, so
+/// the binding carries no interrupt identity and never looks up the VM. The
+/// owner installs the run-bound target before IRQ input is enabled and clears
+/// it only after input is quiesced.
+pub(super) struct RunKickBinding {
+    signals: RawSpinLock<Option<Arc<RunSignals>>>,
+}
+
+impl RunKickBinding {
+    fn new() -> Self {
+        Self {
+            signals: RawSpinLock::new(None),
+        }
+    }
+
+    fn bind(&self, signals: Arc<RunSignals>) {
+        *self.signals.lock_irqsave() = Some(signals);
+    }
+
+    fn clear(&self) {
+        *self.signals.lock_irqsave() = None;
+    }
+
+    /// Clones the published target without holding the raw guard across a wake.
+    fn current(&self) -> Option<Arc<RunSignals>> {
+        self.signals.lock_irqsave().as_ref().cloned()
+    }
+
+    /// Wakes one vCPU from hard-IRQ context after controller state is visible.
+    fn kick_from_irq(&self, vcpu_id: usize) -> Result<(), SignalError> {
+        match self.current() {
+            Some(signals) => signals.kick_from_irq(vcpu_id),
+            None => Err(SignalError::Closed),
+        }
+    }
+
+    /// Wakes one vCPU from task context after controller state is visible.
+    fn kick(&self, vcpu_id: usize) -> Result<(), SignalError> {
+        match self.current() {
+            Some(signals) => signals.kick(vcpu_id),
+            None => Err(SignalError::Closed),
+        }
+    }
+}
+
+/// Typed VM-local access to vPLIC state and run-bound wake lifecycle.
 pub(crate) struct RiscvPlicRuntimeKey;
 
 impl ServiceKey for RiscvPlicRuntimeKey {
@@ -39,14 +89,14 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 /// VM-owned RISC-V interrupt-controller runtime.
 ///
 /// `VPlicGlobal` is the sole owner of pending, active, enable, priority,
-/// threshold, and level state. The deferred kick bitmap carries only the
-/// identity of vCPUs that must re-evaluate that state.
+/// threshold, and level state. A wake carries only the identity of a vCPU that
+/// must rederive its VSEIP from that state and is published through the
+/// run-bound target captured at activation.
 pub(crate) struct RiscvPlicRuntime {
-    vm_id: usize,
     vplic: Arc<VPlicGlobal>,
     sink: Arc<RiscvPlicWiredSink>,
-    inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
-    kick: Arc<DeferredVcpuKick>,
+    inputs: RawSpinLock<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    kick: Arc<RunKickBinding>,
     physical: Arc<physical::PhysicalIrqBridge>,
     vcpu_count: usize,
 }
@@ -66,12 +116,13 @@ impl RiscvPlicRuntime {
             return ax_err!(
                 Unsupported,
                 std::format!(
-                    "RISC-V VM has {vcpu_count} vCPUs, but deferred IRQ wake supports at most {}",
+                    "RISC-V VM has {vcpu_count} vCPUs, but the run-bound wake bitmap supports at \
+                     most {}",
                     usize::BITS
                 )
             );
         }
-        let kick = DeferredVcpuKick::new(vm_id);
+        let kick = Arc::new(RunKickBinding::new());
         let sink = Arc::new(RiscvPlicWiredSink {
             vplic: vplic.clone(),
             kick: kick.clone(),
@@ -86,43 +137,68 @@ impl RiscvPlicRuntime {
             physical_target_cpu,
         )?;
         Ok(Arc::new(Self {
-            vm_id,
             vplic,
             sink,
-            inputs: IrqSafeMutex::new(BTreeMap::new()),
+            inputs: RawSpinLock::new(BTreeMap::new()),
             kick,
             physical,
             vcpu_count,
         }))
     }
 
-    pub(crate) fn activate(self: &Arc<Self>) -> AxVmResult {
-        self.kick.start()?;
+    /// Publishes the run-bound wake target and enables physical IRQ input.
+    ///
+    /// The target is installed before IRQ input is enabled, so the first
+    /// controller publication can never observe a stale run.
+    pub(crate) fn activate(self: &Arc<Self>, signals: Arc<RunSignals>) -> AxVmResult {
+        self.kick.bind(signals);
         if let Err(error) = self.physical.start() {
-            return match self.kick.stop() {
-                Ok(()) => Err(error),
-                Err(rollback) => Err(AxVmError::lifecycle_rollback(
-                    "activate RISC-V PLIC runtime",
-                    error,
-                    rollback,
-                )),
-            };
+            self.kick.clear();
+            return Err(error);
         }
         Ok(())
     }
 
     pub(crate) fn deactivate(&self) -> AxVmResult {
         let physical = self.physical.stop();
-        let kick = self.kick.stop();
-        match (physical, kick) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(error), Err(rollback)) => Err(AxVmError::lifecycle_rollback(
-                "deactivate RISC-V PLIC runtime",
-                error,
-                rollback,
-            )),
+        // Physical input is quiesced before the wake target is retired, so no
+        // publication can observe a cleared binding.
+        self.kick.clear();
+        physical
+    }
+
+    /// Extracts the narrow delivery capability carried by an entry or exit.
+    ///
+    /// The returned port reaches only the VM-local vPLIC controller, never the
+    /// physical IRQ bridge, run services, or the sleeping registration locks,
+    /// so a hardware entry can rederive VSEIP without acquiring a sleepable
+    /// lock or querying the complete VM.
+    pub(crate) fn delivery_port(&self) -> VplicDeliveryPort {
+        VplicDeliveryPort {
+            vplic: Arc::clone(&self.vplic),
+            vcpu_count: self.vcpu_count,
         }
+    }
+}
+
+/// Narrow read-only vPLIC delivery capability owned by an entry and its exits.
+///
+/// It exposes only the two controller-derived queries the RISC-V adapter needs
+/// and owns nothing but the immutable vPLIC controller plus the fixed vCPU
+/// count, so no sleeping lock is reachable through it.
+#[derive(Clone)]
+pub(crate) struct VplicDeliveryPort {
+    vplic: Arc<VPlicGlobal>,
+    vcpu_count: usize,
+}
+
+impl VplicDeliveryPort {
+    /// Returns whether `addr` belongs to this VM's vPLIC register window.
+    pub(crate) fn contains_guest_addr(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.vplic.addr.as_usize();
+        let end = base.saturating_add(self.vplic.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
     }
 
     /// Returns the controller-derived VSEIP state for one vCPU.
@@ -144,17 +220,12 @@ impl RiscvPlicRuntime {
             .context_has_deliverable_irq(context_id)
             .map_err(|error| AxVmError::interrupt("derive RISC-V VSEIP state", error))
     }
-
-    #[cfg(test)]
-    fn take_pending_kicks_for_test(&self) -> usize {
-        self.kick.take_pending_for_test()
-    }
 }
 
 impl Drop for RiscvPlicRuntime {
     fn drop(&mut self) {
         let _ = self.physical.stop();
-        let _ = self.kick.stop();
+        self.kick.clear();
     }
 }
 
@@ -182,7 +253,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
             });
         }
 
-        let mut inputs = self.inputs.lock();
+        let mut inputs = self.inputs.lock_irqsave();
         if let Some((registered_trigger, registered)) = inputs.get(&source) {
             if *registered_trigger != trigger {
                 return Err(IrqError::InvalidInput {
@@ -208,7 +279,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
 
 struct RiscvPlicWiredSink {
     vplic: Arc<VPlicGlobal>,
-    kick: Arc<DeferredVcpuKick>,
+    kick: Arc<RunKickBinding>,
     vcpu_count: usize,
 }
 
@@ -234,9 +305,15 @@ impl RiscvPlicWiredSink {
 
     fn publish_vcpu_kicks(&self, input: ControllerInputId) -> IrqResult {
         for vcpu_id in 0..self.vcpu_count {
-            self.kick.publish_from_irq(vcpu_id).map_err(|error| {
-                Self::backend_error(input, "publish deferred RISC-V vCPU kick", error)
-            })?;
+            // The controller state is already published. A missing run-bound
+            // target only means no execution is active to wake, which is not a
+            // device failure.
+            if let Err(error) = self.kick.kick_from_irq(vcpu_id) {
+                trace!(
+                    "RISC-V vPLIC input {} could not wake vCPU {vcpu_id}: {error:?}",
+                    input.value()
+                );
+            }
         }
         Ok(())
     }
@@ -287,16 +364,16 @@ impl Device for RiscvPlicDevice {
                 addr: access.address(),
             });
         }
-        let value = self
-            .runtime
+        // The vPLIC remains the sole owner of pending, active, enable,
+        // priority, and threshold state. The accessing vCPU rederives VSEIP
+        // from this controller on its next bound guest entry.
+        self.runtime
             .vplic
             .read_register(
                 GuestPhysAddr::from_usize(access.address() as usize),
                 access.width(),
             )
-            .map(|value| value as u64)?;
-        self.publish_vseip(access)?;
-        Ok(value)
+            .map(|value| value as u64)
     }
 
     fn write(
@@ -318,35 +395,7 @@ impl Device for RiscvPlicDevice {
         if let Some(completion) = completion {
             self.runtime.physical.complete_source(completion.source());
         }
-        self.publish_vseip(access)?;
         Ok(())
-    }
-}
-
-impl RiscvPlicDevice {
-    fn publish_vseip(&self, access: &DeviceAccess) -> DeviceResult {
-        let vcpu_id = access.source_vcpu().as_usize();
-        let asserted = self
-            .runtime
-            .vcpu_has_deliverable_irq(vcpu_id)
-            .map_err(vplic_device_error)?;
-        let vm = crate::get_vm_by_id(self.runtime.vm_id).ok_or_else(|| DeviceError::Backend {
-            operation: "publish vPLIC VSEIP after device access",
-            detail: std::format!("VM[{}] is not registered", self.runtime.vm_id),
-        })?;
-        let vcpu = vm.vcpu(vcpu_id).ok_or_else(|| DeviceError::Backend {
-            operation: "publish vPLIC VSEIP after device access",
-            detail: std::format!("RISC-V vCPU {vcpu_id} is not registered"),
-        })?;
-        vcpu.get_arch_vcpu().set_vseip_level(asserted);
-        Ok(())
-    }
-}
-
-fn vplic_device_error(error: AxVmError) -> DeviceError {
-    DeviceError::Backend {
-        operation: "publish vPLIC VSEIP after device access",
-        detail: std::format!("{error}"),
     }
 }
 
@@ -512,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn level_transition_updates_controller_state_and_only_publishes_vcpu_bits() {
+    fn level_transition_updates_controller_state_without_a_bound_run() {
         let runtime = runtime();
         let line = runtime
             .wired_input(
@@ -523,12 +572,12 @@ mod tests {
             .connect()
             .unwrap();
 
+        // The controller is the sole owner of line and pending state. A wake
+        // with no bound run must not turn a device transition into an error.
         line.assert().unwrap();
         assert!(runtime.vplic.is_pending(10).unwrap());
-        assert_eq!(runtime.take_pending_kicks_for_test(), 0b11);
 
         line.deassert().unwrap();
         assert!(!runtime.vplic.is_pending(10).unwrap());
-        assert_eq!(runtime.take_pending_kicks_for_test(), 0b11);
     }
 }

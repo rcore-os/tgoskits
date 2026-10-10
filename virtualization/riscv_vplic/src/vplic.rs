@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 use core::option::Option;
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use axdevice_base::Resource;
 use axvm_types::GuestPhysAddr;
 use bitmaps::Bitmap;
@@ -47,21 +47,21 @@ pub struct VPlicGlobal {
     /// Num of contexts.
     pub contexts_num: usize,
     /// IRQs assigned to this VPlicGlobal.
-    pub assigned_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub assigned_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Pending IRQs for this VPlicGlobal.
-    pub pending_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub pending_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Active IRQs for this VPlicGlobal.
-    pub active_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub active_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Level-triggered inputs that remain electrically asserted.
     ///
     /// This is controller-owned state: completing a claimed source re-pends
     /// it until the device lowers the line.
-    pub(crate) line_asserted_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    pub(crate) line_asserted_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Guest-programmable PLIC registers owned by this virtual controller.
     ///
     /// They must not alias host PLIC registers: guest configuration and
     /// claim/complete accesses belong to the VM, not the host interrupt domain.
-    pub(crate) registers: Mutex<VPlicRegisters>,
+    pub(crate) registers: RawSpinLock<VPlicRegisters>,
 }
 
 /// Guest-visible PLIC priority, enable, and threshold registers.
@@ -107,12 +107,12 @@ impl VPlicGlobal {
                 base: addr.as_usize() as u64,
                 size: size as u64,
             }],
-            assigned_irqs: Mutex::new(Bitmap::new()),
-            pending_irqs: Mutex::new(Bitmap::new()),
-            active_irqs: Mutex::new(Bitmap::new()),
-            line_asserted_irqs: Mutex::new(Bitmap::new()),
+            assigned_irqs: RawSpinLock::new(Bitmap::new()),
+            pending_irqs: RawSpinLock::new(Bitmap::new()),
+            active_irqs: RawSpinLock::new(Bitmap::new()),
+            line_asserted_irqs: RawSpinLock::new(Bitmap::new()),
             contexts_num,
-            registers: Mutex::new(VPlicRegisters {
+            registers: RawSpinLock::new(VPlicRegisters {
                 priorities: [0; PLIC_NUM_SOURCES],
                 enable_masks: alloc::vec![[0; PLIC_NUM_SOURCES / 32]; contexts_num],
                 thresholds: alloc::vec![0; contexts_num],

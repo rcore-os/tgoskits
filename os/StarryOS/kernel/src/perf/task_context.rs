@@ -12,7 +12,7 @@ use super::{
     task::PerTaskCounter,
     task_context_state::{PerfAttachError, PerfTaskContextState},
 };
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 const PERF_COUNTER_CAPACITY: usize = 32;
 
@@ -21,20 +21,20 @@ pub(super) static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// One task's fixed, IRQ-safe scheduler list and exit admission state.
 pub(crate) struct ThreadPerfContext {
-    state: IrqMutex<PerfTaskContextState<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY>>,
+    state: RawSpinLock<PerfTaskContextState<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY>>,
 }
 
 impl ThreadPerfContext {
     /// Creates an empty context that accepts event installation.
     pub(crate) const fn new() -> Self {
         Self {
-            state: IrqMutex::new(PerfTaskContextState::new()),
+            state: RawSpinLock::new(PerfTaskContextState::new()),
         }
     }
 
     /// Commits one scheduler-visible counter or rejects a tombstoned task.
     pub(crate) fn attach(&self, counter: Arc<PerTaskCounter>) -> crate::StarryResult<()> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         // Closed events may remain family-owned for aggregate reads. Reclaim
         // their list slots in task context before admitting a new live event.
         // A sampling sibling may retain this closed counter until its current
@@ -62,7 +62,7 @@ impl ThreadPerfContext {
     pub(crate) fn detach_unpublished(&self, counter: &Arc<PerTaskCounter>) {
         let removed = self
             .state
-            .lock()
+            .lock_irqsave()
             .remove(|candidate| Arc::ptr_eq(candidate, counter));
         // A later attach may reclaim this list slot after `free_hw` completes
         // but before the failed opener reaches its final detach. Missing is
@@ -75,21 +75,21 @@ impl ThreadPerfContext {
 
     /// Snapshots counters for task-context sideband/control work.
     pub(crate) fn snapshot(&self) -> heapless::Vec<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY> {
-        self.state.lock().snapshot()
+        self.state.lock_irqsave().snapshot()
     }
 
     /// Snapshots a live parent context for pre-publication inheritance.
     pub(crate) fn snapshot_for_inherit(
         &self,
     ) -> Option<heapless::Vec<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY>> {
-        self.state.lock().snapshot_if_accepting()
+        self.state.lock_irqsave().snapshot_if_accepting()
     }
 
     /// Permanently rejects later opens and returns the complete exit snapshot.
     pub(crate) fn close_and_snapshot(
         &self,
     ) -> heapless::Vec<Arc<PerTaskCounter>, PERF_COUNTER_CAPACITY> {
-        self.state.lock().close_snapshot()
+        self.state.lock_irqsave().close_snapshot()
     }
 
     /// Runs one bounded scheduler hook while retaining list stability.
@@ -97,7 +97,7 @@ impl ThreadPerfContext {
         &self,
         operation: impl FnOnce(&[Arc<PerTaskCounter>]) -> R,
     ) -> R {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         operation(state.counters())
     }
 }

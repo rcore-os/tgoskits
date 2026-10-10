@@ -16,7 +16,7 @@ mod consts;
 /// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
 mod guest_mem;
 pub mod host;
-mod sbi_console;
+pub(super) mod sbi_console;
 mod sbi_ipi;
 pub mod types;
 mod vcpu;
@@ -24,12 +24,13 @@ mod vpmu;
 
 pub use ax_cpu::registers::GprIndex;
 pub use types::{
-    RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvHostPhysAddr, RiscvHostVirtAddr,
-    RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig, RiscvVcpuError, RiscvVcpuResult,
-    RiscvVmExit,
+    RiscvAccessFlags, RiscvAccessWidth, RiscvCompletion, RiscvExit, RiscvGuestPhysAddr,
+    RiscvHostPhysAddr, RiscvHostVirtAddr, RiscvIpiCompletion, RiscvIpiRequest,
+    RiscvNestedPagingConfig, RiscvSbiCall, RiscvVcpuError, RiscvVcpuResult, RiscvVmExit,
 };
 
-pub use self::{host::RiscvHostOps, vcpu::RiscvVcpu};
+pub use self::host::RiscvHostOps;
+pub(crate) use self::vcpu::RiscvVcpu;
 
 /// Extension ID for hypercall, defined by ourselves.
 /// `0x48`, `0x56`, `0x43` is "HVC" in ASCII.

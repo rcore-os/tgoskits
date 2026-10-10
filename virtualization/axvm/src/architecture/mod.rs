@@ -11,13 +11,12 @@ pub(crate) use capabilities::{
     BootImagePlatform, GuestBootPlatform, MachinePlatform, minimum_recorded_target_cpu_capability,
     unsupported_target_cpu_capability,
 };
-pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) use exit::handle_hypercall;
+#[cfg(target_arch = "riscv64")]
 pub(crate) use exit::{try_handle_mmio_read, try_handle_mmio_write};
 pub(crate) use ops::ArchOps;
-pub(crate) use types::{
-    HypercallExit, MmioReadExit, MmioWriteExit, VcpuExitAction, VcpuRunAction, VcpuRunOutcome,
-};
+pub(crate) use types::{HypercallExit, MmioReadExit, MmioWriteExit};
 
 /// Complete compile-time contract implemented by every selected guest architecture.
 ///

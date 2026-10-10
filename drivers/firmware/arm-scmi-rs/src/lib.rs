@@ -48,10 +48,10 @@ mod transport;
 
 use alloc::sync::Arc;
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 pub use transport::{Smc, Transport};
 
-type Data<T> = Arc<Mutex<ScmiData<T>>>;
+type Data<T> = Arc<RawSpinLock<ScmiData<T>>>;
 
 const SCMI_CLOCK_PROTOCOL: u32 = 0x14;
 const SCMI_CLOCK_RATE_SET: u8 = 0x05;
@@ -78,7 +78,7 @@ impl<T: Transport> Scmi<T> {
             shmem,
         };
         Scmi {
-            data: Arc::new(Mutex::new(data)),
+            data: Arc::new(RawSpinLock::new(data)),
         }
     }
 

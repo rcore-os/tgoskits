@@ -125,7 +125,7 @@ impl Device {
         ops: Arc<dyn DeviceOps>,
     ) -> Arc<Self> {
         let node = SimpleFsNode::new(fs, node_type, NodePermission::default());
-        node.metadata.lock().rdev = device_id;
+        node.metadata.lock_irqsave().rdev = device_id;
         Arc::new(Self { node, ops })
     }
 
@@ -136,7 +136,7 @@ impl Device {
 
     /// Updates the device ID.
     pub fn set_device_id(&self, device_id: DeviceId) {
-        self.node.metadata.lock().rdev = device_id;
+        self.node.metadata.lock_irqsave().rdev = device_id;
     }
 
     /// Returns the memory mapping behavior of the device for the given offset.

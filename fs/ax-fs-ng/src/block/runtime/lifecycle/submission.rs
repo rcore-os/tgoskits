@@ -56,7 +56,7 @@ impl DeviceInner {
         debug_assert!(matches!(op, RequestOp::Read | RequestOp::Write));
         loop {
             let listener = self.listen_for_admission();
-            if self.lifecycle_gate.lock().try_admit_data(count)? {
+            if self.lifecycle_gate.lock_irqsave().try_admit_data(count)? {
                 return Ok(AdmissionPermit::new(Arc::clone(self), op, count));
             }
             if nowait {
@@ -74,7 +74,7 @@ impl DeviceInner {
     ) -> Result<AdmissionPermit, BlkError> {
         let drained = loop {
             let listener = self.listen_for_admission();
-            let result = self.lifecycle_gate.lock().try_admit_flush()?;
+            let result = self.lifecycle_gate.lock_irqsave().try_admit_flush()?;
             match result {
                 Some(drained) => break drained,
                 None if nowait => return Err(BlkError::Retry),
@@ -94,7 +94,7 @@ impl DeviceInner {
         loop {
             let listener = self.listen_for_admission();
             let ready = {
-                let gate = self.lifecycle_gate.lock();
+                let gate = self.lifecycle_gate.lock_irqsave();
                 if gate.phase != DevicePhase::Ready {
                     return Err(BlkError::Io);
                 }

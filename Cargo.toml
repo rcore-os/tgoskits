@@ -22,7 +22,6 @@ members = [
     "components/cpu-local",
     "components/ax-cgroup",
     "components/ax-lazyinit",
-    "components/host-boot-abi",
     "components/ax-task",
     "components/axbacktrace",
     "components/axcpu",
@@ -80,6 +79,7 @@ members = [
     "drivers/serial/*",
     "drivers/soc/rockchip/*",
     "drivers/soc/cv181x-clock",
+    "drivers/audio/intel-hda",
     "drivers/test_crates/*",
     "drivers/tpu/*",
     "drivers/vpu/*",
@@ -115,6 +115,7 @@ members = [
     "scripts/axbuild",
     "test-suit/arceos/loongarch/unaligned-fixup",
     "test-suit/arceos/cpu/pmu",
+    "test-suit/arceos/cpu/cpufreq",
     "test-suit/arceos/cpu/user-entry",
     "test-suit/arceos/cpu/paging",
     "test-suit/arceos/cpu/hypervisor-probe",
@@ -124,6 +125,7 @@ members = [
     "test-suit/arceos/cpu/trap-entry",
     "test-suit/arceos/axtest/sg2002-usb-msc",
     "test-suit/arceos/rust",
+    "test-suit/arceos/drivers/intel-hda",
     "test-suit/arceos/drivers/acpica-interpreter",
     "apps/arceos/*",
     "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/guest",
@@ -222,12 +224,15 @@ x86-apic-driver = { version = "0.2", path = "drivers/intc/x86-apic-driver" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
 riscv_vplic = { version = "0.5", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.8", path = "drivers/blk/nvme-driver" }
+intel-hda = { version = "0.1", path = "drivers/audio/intel-hda" }
 acpica-interpreter = { version = "0.1", path = "drivers/firmware/acpica-interpreter" }
 pcie = { version = "0.7", path = "drivers/pci/pcie" }
 rd-net = { version = "0.3", path = "drivers/net/rd-net" }
+rdif-audio = { version = "0.1", path = "drivers/interface/rdif-audio" }
 rdif-base = { version = "0.9", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.13", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5", path = "drivers/interface/rdif-clk" }
+rdif-cpufreq = { version = "0.1", path = "drivers/interface/rdif-cpufreq" }
 rdif-def = { version = "0.4", path = "drivers/interface/rdif-def" }
 rdif-display = { version = "0.5", path = "drivers/interface/rdif-display" }
 rdif-gpu = { version = "0.1", path = "drivers/interface/rdif-gpu" }
@@ -279,7 +284,6 @@ starry-kernel = { version = "0.12", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.10", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
 httpboot-protocol = { version = "0.5.0", default-features = false, features = ["alloc", "json"] }
-host-boot-abi = { version = "0.1.0", path = "components/host-boot-abi" }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
 someboot = { version = "0.7.2", path = "platforms/someboot" }
@@ -334,6 +338,7 @@ ostool = "0.30.3"
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"
+uefi-raw = "0.14.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }

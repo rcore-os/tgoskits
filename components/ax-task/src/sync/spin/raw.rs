@@ -122,4 +122,4 @@ unsafe impl<G: GuardState + Send + Sync + 'static> lock_api::RawMutex for BaseRa
 /// A raw spin lock that disables kernel preemption and local IRQs while held,
 /// mirroring [`RawSpinLock::lock_irqsave`](super::RawSpinLock::lock_irqsave) but exposed as a
 /// [`lock_api::RawMutex`] for use with foreign generic code.
-pub type RawIrqSaveMutex = BaseRawSpinLock<PreemptIrqSaveState>;
+pub type RawSpinLockIrqSaveBackend = BaseRawSpinLock<PreemptIrqSaveState>;

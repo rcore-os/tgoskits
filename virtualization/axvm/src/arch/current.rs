@@ -1,5 +1,7 @@
 //! Compile-time binding to the architecture selected by the build target.
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) use target::irq::LOONGARCH_MAX_IRQ_COUNT;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use target::{Aarch64Arch as CurrentArch, Aarch64VmPlan as ArchVmPlan};
 #[cfg(target_arch = "loongarch64")]
@@ -22,6 +24,34 @@ use super::*;
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
+
+pub(crate) fn boot_vcpu_ids(count: usize) -> std::ops::Range<usize> {
+    cfg_select! {
+        any(target_arch = "aarch64", target_arch = "riscv64") => 0..count.min(1),
+        _ => 0..count,
+    }
+}
+
+pub(crate) fn initialize_cpu_on(
+    vcpu: &mut crate::vm::VCpu,
+    entry: crate::GuestPhysAddr,
+    argument: usize,
+) -> AxVmResult {
+    cfg_select! {
+        any(target_arch = "aarch64", target_arch = "riscv64") => vcpu.with_backend(|backend| {
+            <CurrentArch as crate::architecture::ops::CpuOn>::initialize_cpu_on(
+                backend, entry, argument,
+            )
+        }),
+        _ => {
+            let _ = (vcpu, entry, argument);
+            Err(crate::AxVmError::unsupported(
+                "CPU_ON",
+                "architecture has no CPU_ON capability",
+            ))
+        }
+    }
+}
 
 fn assert_architecture<T: Architecture>() {}
 const _: fn() = assert_architecture::<CurrentArch>;
@@ -48,39 +78,6 @@ pub(crate) fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_ad
 pub(crate) fn register_platform_irq_injector() {
     #[cfg(target_arch = "loongarch64")]
     target::irq::register_platform_irq_injector();
-}
-
-pub(crate) fn register_vm_platform_resources(vm: &crate::AxVMRef) {
-    #[cfg(target_arch = "loongarch64")]
-    target::irq::register_vm_guest_irq_routes(vm);
-    #[cfg(not(target_arch = "loongarch64"))]
-    let _ = vm;
-}
-
-pub(crate) fn unregister_vm_platform_resources(vm_id: crate::VMId) {
-    #[cfg(target_arch = "loongarch64")]
-    target::irq::unregister_guest_irq_routes(vm_id);
-    #[cfg(not(target_arch = "loongarch64"))]
-    let _ = vm_id;
-}
-
-#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-pub(crate) fn register_host_irq_forwarding_route_with_trigger(
-    vm: &crate::AxVMRef,
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-    trigger: crate::InterruptTriggerMode,
-) -> AxVmResult {
-    target::irq::register_ioapic_irq_forwarding_route_with_trigger(vm, guest_gsi, host_irq, trigger)
-}
-
-#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-pub(crate) fn register_host_irq_forwarding_activator(
-    vm: &crate::AxVMRef,
-    guest_gsi: usize,
-    activator: fn(),
-) -> AxVmResult {
-    target::irq::register_ioapic_irq_forwarding_activator(vm, guest_gsi, activator)
 }
 
 pub(crate) fn init_guest_boot_resources() {
@@ -119,4 +116,18 @@ pub(crate) fn prepare_host_virtualization() -> AxVmResult {
     #[cfg(target_arch = "aarch64")]
     target::prepare_host_virtualization()?;
     Ok(())
+}
+
+/// Binds task services before sealing the architecture's execution entry.
+pub(crate) fn prepare_task_services(
+    resources: &crate::vm::AxVMResources,
+    memory: crate::GuestMemoryPort,
+) -> AxVmResult {
+    cfg_select! {
+        target_arch = "aarch64" => target::bind_task_memory(resources, memory),
+        _ => {
+            let _ = (resources, memory);
+            Ok(())
+        }
+    }
 }

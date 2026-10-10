@@ -18,7 +18,7 @@ endpoint，hard IRQ 工作有固定上限，runtime 接管失败进入确定的�
 稳定 errno，并由确定性测试覆盖关键并发窗口。
 
 本次明确不引入公共 channel、全局 lock-free MPSC、自适应高低水位、串口专用调度类或
-RT priority。RX SPSC、TTY 有界 `SpinLock` 队列、控制队列和 `FixedIrqWorkerSignal` 继续承担原有
+RT priority。RX SPSC、TTY 有界 `RawSpinLock` 队列、控制队列和 `FixedIrqWorkerSignal` 继续承担原有
 职责；普通内核日志改用 runtime 私有的每 CPU 有界 record ring，避免日志生产者争用同一
 TX ingress，并使日志背压不再占用 TTY 容量。扩大调度器或通用通信抽象不能直接修复
 寄存器所有权问题。
@@ -296,7 +296,7 @@ Axvisor 在打印 banner、发布普通启动日志或启动任何 vCPU 前取�
 subscription。`TaskConsoleOutput` 随后 move 给唯一的 `axvisor-console-output` 任务；
 GuestConsoleMux、虚拟串口 backend 和其他可能位于 vCPU 禁止抢占区内的 producer 只在
 backend 创建阶段预分配每 guest 的 16 KiB backlog；回调使用无分配的流式格式化，在
-`NoPreemptMutex` 下把同一 transaction 直接写入固定 64 KiB 字节队列，不取得 sleepable
+`RawSpinLock` 下把同一 transaction 直接写入固定 64 KiB 字节队列，不取得 sleepable
 output lock，也不等待 UART 背压。该任务按 512 字节批次调用公共可睡眠 output；队列满时
 完整回滚并丢弃当前 transaction，在下一批前报告丢失总数，已经排队的 transaction 不会被
 截断；物理 output 失败时停止接受新提交并通过 emergency console 报告终态，不创建 timeout

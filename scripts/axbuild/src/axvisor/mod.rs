@@ -186,16 +186,18 @@ pub struct ArgsTestBoard {
         short = 'c',
         long = "test-case",
         value_name = "CASE",
-        help = "Run only one Axvisor board test case"
+        value_delimiter = ',',
+        help = "Run one or more Axvisor board test cases"
     )]
-    pub test_case: Option<String>,
+    pub test_case: Vec<String>,
 
     #[arg(
         long,
         value_name = "BOARD",
-        help = "Run all Axvisor board test cases for one board"
+        value_delimiter = ',',
+        help = "Run all Axvisor board test cases for one or more boards"
     )]
-    pub board: Option<String>,
+    pub board: Vec<String>,
 
     #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
     pub board_type: Option<String>,
@@ -460,4 +462,26 @@ impl Axvisor {
 
 fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {
     axvisor_dir.join(format!("configs/qemu/qemu-{arch}.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct BoardCli {
+        #[command(flatten)]
+        board: ArgsTestBoard,
+    }
+
+    #[test]
+    fn board_case_selector_accepts_repeated_and_comma_separated_values() {
+        let cli =
+            BoardCli::try_parse_from(["test", "--test-case", "smoke,direct", "--test-case", "pci"])
+                .unwrap();
+
+        assert_eq!(cli.board.test_case, ["smoke", "direct", "pci"]);
+    }
 }

@@ -17,7 +17,7 @@ use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 /// Values published atomically to one perf mmap page.
 #[derive(Clone, Copy, Debug)]
@@ -35,7 +35,7 @@ pub(super) struct PerfRdpmcPage {
     /// Serializes the bounded ABI publication transaction across scheduler and
     /// sleepable control paths. The lock never covers PMU access, allocation,
     /// wakeup, or an owner-CPU rendezvous.
-    publish_gate: IrqMutex<()>,
+    publish_gate: RawSpinLock<()>,
 }
 
 impl core::fmt::Debug for PerfRdpmcPage {
@@ -56,7 +56,7 @@ impl PerfRdpmcPage {
             _pages: pages,
             kernel_address,
             physical_address,
-            publish_gate: IrqMutex::new(()),
+            publish_gate: RawSpinLock::new(()),
         });
 
         let header = page.header();
@@ -69,8 +69,7 @@ impl PerfRdpmcPage {
             // revoked at every scheduling/slot handoff. No such grant is
             // established by this metadata mapping; readers must use read(2).
             core::ptr::addr_of_mut!((*header).pmc_width).write_volatile(0);
-            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities)
-                .write_volatile(0);
+            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities).write_volatile(0);
         }
         page.publish(initial);
         Ok(page)
@@ -87,7 +86,7 @@ impl PerfRdpmcPage {
     }
 
     fn publish(&self, snapshot: RdpmcSnapshot) {
-        let _publish = self.publish_gate.lock();
+        let _publish = self.publish_gate.lock_irqsave();
         let sequence = self.sequence();
         let odd = sequence.load(Ordering::Relaxed).wrapping_add(1) | 1;
 
@@ -116,13 +115,13 @@ impl PerfRdpmcPage {
 /// Weak event-side publication for at most one live VMA.
 #[derive(Debug)]
 pub(super) struct RdpmcMapping {
-    page: IrqMutex<Option<Weak<PerfRdpmcPage>>>,
+    page: RawSpinLock<Option<Weak<PerfRdpmcPage>>>,
 }
 
 impl RdpmcMapping {
     pub(super) const fn new() -> Self {
         Self {
-            page: IrqMutex::new(None),
+            page: RawSpinLock::new(None),
         }
     }
 
@@ -138,7 +137,7 @@ impl RdpmcMapping {
             return Err(crate::StarryError::InvalidInput);
         }
         let page = PerfRdpmcPage::allocate(initial)?;
-        let mut published = self.page.lock();
+        let mut published = self.page.lock_irqsave();
         if published.as_ref().and_then(Weak::upgrade).is_some() {
             return Err(crate::StarryError::ResourceBusy);
         }
@@ -148,7 +147,7 @@ impl RdpmcMapping {
 
     /// Withdraws a page whose mmap transaction failed before VMA publication.
     pub(super) fn withdraw(&self, page: &Arc<PerfRdpmcPage>) {
-        let mut published = self.page.lock();
+        let mut published = self.page.lock_irqsave();
         if published
             .as_ref()
             .is_some_and(|weak| Weak::ptr_eq(weak, &Arc::downgrade(page)))
@@ -158,13 +157,13 @@ impl RdpmcMapping {
     }
 
     pub(super) fn publish_active(&self, snapshot: RdpmcSnapshot) {
-        if let Some(page) = self.page.lock().as_ref().and_then(Weak::upgrade) {
+        if let Some(page) = self.page.lock_irqsave().as_ref().and_then(Weak::upgrade) {
             page.publish(snapshot);
         }
     }
 
     pub(super) fn publish_inactive(&self, snapshot: RdpmcSnapshot) {
-        if let Some(page) = self.page.lock().as_ref().and_then(Weak::upgrade) {
+        if let Some(page) = self.page.lock_irqsave().as_ref().and_then(Weak::upgrade) {
             page.publish(snapshot);
         }
     }

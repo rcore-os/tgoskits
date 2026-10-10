@@ -37,20 +37,19 @@ use core::{
 
 #[cfg(feature = "qperf-metrics")]
 mod metrics;
-#[cfg(feature = "qperf-metrics")]
-pub(crate) use metrics::render_file_lock_metrics;
-
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
     SEEK_SET, flock64,
 };
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use metrics::render_file_lock_metrics;
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{File, FileLike, InodeKey, Pipe, get_file_like},
     mm::UserPtr,
-    sync::RwLock,
+    sync::RawSpinRwLock,
     task::{PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
 };
 
@@ -121,14 +120,14 @@ struct FLockEntry {
 }
 
 struct LockState<T> {
-    entries: RwLock<Vec<T>>,
+    entries: RawSpinRwLock<Vec<T>>,
     pin_state: AtomicUsize,
 }
 
 impl<T> LockState<T> {
     fn new() -> Self {
         Self {
-            entries: RwLock::new(Vec::new()),
+            entries: RawSpinRwLock::new(Vec::new()),
             pin_state: AtomicUsize::new(0),
         }
     }
@@ -152,11 +151,11 @@ const PIN_UNIT: usize = 2;
 struct StatePin<'a, K: Copy + Ord, T> {
     key: K,
     state: Arc<LockState<T>>,
-    index: &'a RwLock<LockIndex<K, T>>,
+    index: &'a RawSpinRwLock<LockIndex<K, T>>,
 }
 
 impl<K: Copy + Ord, T> Deref for StatePin<'_, K, T> {
-    type Target = RwLock<Vec<T>>;
+    type Target = RawSpinRwLock<Vec<T>>;
 
     fn deref(&self) -> &Self::Target {
         &self.state.entries
@@ -190,7 +189,7 @@ impl<K: Copy + Ord, T> LockIndex<K, T> {
         }
     }
 
-    fn pin<'a>(&self, key: K, index: &'a RwLock<Self>) -> Option<StatePin<'a, K, T>> {
+    fn pin<'a>(&self, key: K, index: &'a RawSpinRwLock<Self>) -> Option<StatePin<'a, K, T>> {
         let state = self.states.get(&key)?;
         state.pin_state.fetch_add(PIN_UNIT, Ordering::Relaxed);
         Some(StatePin {
@@ -231,7 +230,9 @@ impl<K: Copy + Ord, T> LockIndex<K, T> {
             self.idle.remove(cursor);
             true
         } else if oversized || self.idle.len() > self.idle_limit {
-            let previous = state.pin_state.fetch_or(DEFERRED_REAP_BIT, Ordering::AcqRel);
+            let previous = state
+                .pin_state
+                .fetch_or(DEFERRED_REAP_BIT, Ordering::AcqRel);
             if previous & !DEFERRED_REAP_BIT == 0 {
                 self.states.remove(&key);
                 self.idle.remove(cursor);
@@ -279,12 +280,14 @@ type FcntlIndex = LockIndex<InodeKey, FLockEntry>;
 // also hold POSIX_LOCK_WAITS while reading index and inode states.
 const FCNTL_IDLE_LIMIT: usize = 32;
 const FCNTL_CACHED_CAPACITY_LIMIT: usize = 8;
-static FCNTL_LOCKS: RwLock<FcntlIndex> =
-    RwLock::new(FcntlIndex::new(FCNTL_IDLE_LIMIT, FCNTL_CACHED_CAPACITY_LIMIT));
+static FCNTL_LOCKS: RawSpinRwLock<FcntlIndex> = RawSpinRwLock::new(FcntlIndex::new(
+    FCNTL_IDLE_LIMIT,
+    FCNTL_CACHED_CAPACITY_LIMIT,
+));
 
 // Readers permit independent inode updates; a writer freezes all record-lock
 // mutations while deadlock detection walks the wait-for graph.
-static POSIX_LOCK_GRAPH: RwLock<()> = RwLock::new(());
+static POSIX_LOCK_GRAPH: RawSpinRwLock<()> = RawSpinRwLock::new(());
 
 fn fcntl_state(key: InodeKey) -> FcntlLockState {
     #[cfg(feature = "qperf-metrics")]
@@ -306,7 +309,10 @@ fn fcntl_state(key: InodeKey) -> FcntlLockState {
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
     index.reclaim_idle();
-    index.states.entry(key).or_insert_with(|| Arc::new(LockState::new()));
+    index
+        .states
+        .entry(key)
+        .or_insert_with(|| Arc::new(LockState::new()));
     let state = index.pin(key, &FCNTL_LOCKS).unwrap();
     drop(index);
     #[cfg(feature = "qperf-metrics")]
@@ -345,14 +351,15 @@ fn reap_fcntl_state(key: InodeKey, state: &FcntlLockState) {
 /// conflicting lock is released. Wakers are called from every code path
 /// that may shrink an inode's `FCNTL_LOCKS` entries (explicit `F_UNLCK`,
 /// process exit, close-eats-locks, OFD release on last close).
-static LOCK_WAITERS: RwLock<BTreeMap<InodeKey, Arc<WaitQueue>>> = RwLock::new(BTreeMap::new());
+static LOCK_WAITERS: RawSpinRwLock<BTreeMap<InodeKey, Arc<WaitQueue>>> =
+    RawSpinRwLock::new(BTreeMap::new());
 
 /// POSIX `F_SETLKW` requests that are actually parked on a wait queue.
 /// These entries form the dynamic wait-for graph used for Linux-compatible
 /// `EDEADLK` detection. OFD waits are excluded because they are not owned by
 /// a process pid.
-static POSIX_LOCK_WAITS: RwLock<BTreeMap<PidIdentityId, Vec<WaitingLock>>> =
-    RwLock::new(BTreeMap::new());
+static POSIX_LOCK_WAITS: RawSpinRwLock<BTreeMap<PidIdentityId, Vec<WaitingLock>>> =
+    RawSpinRwLock::new(BTreeMap::new());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WaitingLock {
@@ -380,8 +387,14 @@ impl PosixLockWaitGuard {
         };
         let mut entries = state.write();
         entries.retain(|e| !e.owner.is_dead());
-        let still_blocked =
-            find_conflict(&mut entries, owner, request.start, request.end, request.kind).is_some();
+        let still_blocked = find_conflict(
+            &mut entries,
+            owner,
+            request.start,
+            request.end,
+            request.kind,
+        )
+        .is_some();
         if !still_blocked {
             let empty = entries.is_empty();
             drop(entries);
@@ -438,8 +451,10 @@ type FlockIndex = LockIndex<InodeKey, FlockEntry>;
 // temporarily pinned empty states are revisited after their last pin drops.
 const FLOCK_IDLE_LIMIT: usize = 32;
 const FLOCK_CACHED_CAPACITY_LIMIT: usize = 8;
-static FLOCK_LOCKS: RwLock<FlockIndex> =
-    RwLock::new(FlockIndex::new(FLOCK_IDLE_LIMIT, FLOCK_CACHED_CAPACITY_LIMIT));
+static FLOCK_LOCKS: RawSpinRwLock<FlockIndex> = RawSpinRwLock::new(FlockIndex::new(
+    FLOCK_IDLE_LIMIT,
+    FLOCK_CACHED_CAPACITY_LIMIT,
+));
 
 fn flock_state(key: InodeKey) -> FlockLockState {
     #[cfg(feature = "qperf-metrics")]
@@ -461,7 +476,10 @@ fn flock_state(key: InodeKey) -> FlockLockState {
     #[cfg(feature = "qperf-metrics")]
     let acquired = ax_runtime::hal::time::monotonic_time();
     index.reclaim_idle();
-    index.states.entry(key).or_insert_with(|| Arc::new(LockState::new()));
+    index
+        .states
+        .entry(key)
+        .or_insert_with(|| Arc::new(LockState::new()));
     let state = index.pin(key, &FLOCK_LOCKS).unwrap();
     drop(index);
     #[cfg(feature = "qperf-metrics")]
@@ -500,7 +518,8 @@ fn reap_flock_state(key: InodeKey, state: &FlockLockState) {
 /// separate conflict spaces (Linux `fs/locks.c`: `FL_POSIX` vs `FL_FLOCK`).
 /// Wakers fire from every path that shrinks [`FLOCK_LOCKS`] — explicit
 /// `LOCK_UN`, downgrades, and OFD release on last close.
-static FLOCK_WAITERS: RwLock<BTreeMap<InodeKey, Arc<WaitQueue>>> = RwLock::new(BTreeMap::new());
+static FLOCK_WAITERS: RawSpinRwLock<BTreeMap<InodeKey, Arc<WaitQueue>>> =
+    RawSpinRwLock::new(BTreeMap::new());
 
 // ─── helpers ───────────────────────────────────────────────────────────
 
@@ -1160,7 +1179,11 @@ pub fn release_pid_locks(owner: PidIdentityId) {
         let _graph = POSIX_LOCK_GRAPH.read();
         let states: Vec<_> = {
             let index = FCNTL_LOCKS.read();
-            index.states.keys().filter_map(|key| index.pin(*key, &FCNTL_LOCKS).map(|pin| (*key, pin))).collect()
+            index
+                .states
+                .keys()
+                .filter_map(|key| index.pin(*key, &FCNTL_LOCKS).map(|pin| (*key, pin)))
+                .collect()
         };
         for (inode, state) in states {
             let mut entries = state.write();
@@ -1345,7 +1368,11 @@ pub fn release_pid_flock_locks(owner: PidIdentityId) {
     {
         let states: Vec<_> = {
             let index = FLOCK_LOCKS.read();
-            index.states.keys().filter_map(|key| index.pin(*key, &FLOCK_LOCKS).map(|pin| (*key, pin))).collect()
+            index
+                .states
+                .keys()
+                .filter_map(|key| index.pin(*key, &FLOCK_LOCKS).map(|pin| (*key, pin)))
+                .collect()
         };
         for (inode, state) in states {
             let mut entries = state.write();
@@ -1422,8 +1449,8 @@ pub fn flock_op(
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{DEFERRED_REAP_BIT, LockIndex, LockState, PIN_UNIT, RwLock};
     use alloc::sync::Arc;
+
     use loom::{
         sync::{
             Arc as LoomArc,
@@ -1431,6 +1458,8 @@ mod tests {
         },
         thread,
     };
+
+    use super::{DEFERRED_REAP_BIT, LockIndex, LockState, PIN_UNIT, RawSpinRwLock};
 
     #[test]
     fn deferred_reap_and_last_pin_cannot_both_miss() {
@@ -1460,7 +1489,7 @@ mod tests {
     #[test]
     fn deferred_empty_state_reclaims_after_last_pin_without_new_inode() {
         for (idle_limit, records) in [(1, 32), (0, 0)] {
-            let index = RwLock::new(LockIndex::<u64, u8>::new(idle_limit, 8));
+            let index = RawSpinRwLock::new(LockIndex::<u64, u8>::new(idle_limit, 8));
             let state = Arc::new(LockState::new());
             state.entries.write().extend(0..records);
             index.write().states.insert(7, state);
@@ -1477,7 +1506,7 @@ mod tests {
             assert!(!index.read().states.contains_key(&7));
         }
 
-        let index = RwLock::new(LockIndex::<u64, u8>::new(1, 8));
+        let index = RawSpinRwLock::new(LockIndex::<u64, u8>::new(1, 8));
         index.write().states.insert(7, Arc::new(LockState::new()));
         let cached = index.read().pin(7, &index).unwrap();
         index.write().reap_empty(7, &cached);
@@ -1494,7 +1523,7 @@ mod tests {
 
     #[test]
     fn reactivated_deferred_state_keeps_its_records() {
-        let index = RwLock::new(LockIndex::<u64, u8>::new(1, 8));
+        let index = RawSpinRwLock::new(LockIndex::<u64, u8>::new(1, 8));
         let state = Arc::new(LockState::new());
         state.entries.write().extend(0..32);
         index.write().states.insert(7, state);

@@ -319,6 +319,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-cpu-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-driver",
+ "ax-runtime",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-cpu-fp-context"
 version = "0.1.0"
 dependencies = [
@@ -475,6 +485,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-test-intel-hda"
+version = "0.1.0"
+dependencies = [
+ "ax-alloc",
+ "ax-driver",
+ "ax-hal",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
@@ -585,8 +605,6 @@ dependencies = [
 name = "arm_vgic"
 version = "0.6.2"
 dependencies = [
- "aarch64-cpu 11.2.0",
- "aarch64_sysreg",
  "ax-crate-interface",
  "ax-sync",
  "axdevice_base",
@@ -594,7 +612,6 @@ dependencies = [
  "bitmaps",
  "log",
  "thiserror 2.0.21",
- "tock-registers 0.10.1",
 ]
 
 [[package]]
@@ -842,6 +859,7 @@ dependencies = [
 name = "ax-cgroup"
 version = "0.3.0"
 dependencies = [
+ "ax-crate-interface",
  "ax-lazyinit",
  "ax-sync",
  "thiserror 2.0.21",
@@ -912,11 +930,12 @@ version = "0.18.1"
 dependencies = [
  "ahci-driver",
  "aic8800",
- "anyhow",
  "arm-scmi-rs",
  "arm-smmu-v3",
  "ax-alloc",
  "ax-arm-pl031",
+ "ax-crate-interface",
+ "ax-lazyinit",
  "ax-memory-addr",
  "ax-sync",
  "axklib",
@@ -930,6 +949,7 @@ dependencies = [
  "fdt-edit",
  "fxmac_rs",
  "heapless",
+ "intel-hda",
  "irq-framework",
  "log",
  "mmio-api",
@@ -938,8 +958,10 @@ dependencies = [
  "pcie",
  "phytium-mci-host",
  "rd-net",
+ "rdif-audio",
  "rdif-block",
  "rdif-clk",
+ "rdif-cpufreq",
  "rdif-display",
  "rdif-gpu",
  "rdif-input",
@@ -970,6 +992,7 @@ dependencies = [
  "sg200x-bsp",
  "sg200x-pwm",
  "sha1 0.11.0",
+ "smccc",
  "some-serial",
  "starfive-jh7110-dwmmc",
  "thiserror 2.0.21",
@@ -1306,6 +1329,7 @@ dependencies = [
  "quote",
  "rd-net",
  "rdif-block",
+ "rdif-cpufreq",
  "rdif-intc",
  "rdif-serial",
  "rdrive",
@@ -1454,11 +1478,10 @@ dependencies = [
 name = "axdevice"
 version = "0.8.5"
 dependencies = [
- "ax-runtime",
+ "ax-crate-interface",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
- "cfg-if",
  "divan",
  "log",
  "paste",
@@ -1493,10 +1516,10 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.8.1"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axpoll",
  "bitflags 2.13.2",
- "cfg-if",
  "hashbrown 0.16.1",
  "inherit-methods-macro",
  "log",
@@ -1534,7 +1557,6 @@ name = "axloader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "host-boot-abi",
  "httpboot-protocol 0.5.0",
  "object 0.38.1",
  "serde",
@@ -1663,8 +1685,8 @@ dependencies = [
 name = "axvirtio-blk"
 version = "0.4.2"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
- "ax-runtime",
  "ax-sync",
  "axaddrspace",
  "axdevice_base",
@@ -1677,8 +1699,8 @@ dependencies = [
 name = "axvirtio-common"
 version = "0.2.7"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
- "ax-runtime",
  "ax-sync",
  "axaddrspace",
  "axdevice_base",
@@ -1691,6 +1713,7 @@ dependencies = [
 name = "axvirtio-net"
 version = "0.2.1"
 dependencies = [
+ "ax-crate-interface",
  "ax-memory-addr",
  "ax-sync",
  "axaddrspace",
@@ -4087,13 +4110,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "host-boot-abi"
-version = "0.1.0"
-dependencies = [
- "uefi",
-]
-
-[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4151,8 +4167,6 @@ dependencies = [
 [[package]]
 name = "httpboot-protocol"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e763493125efcacde753b2728c1f9617123fd82d2b04da76a75d75a4f24e947a"
 dependencies = [
  "serde",
  "serde_json",
@@ -4505,6 +4519,16 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "intel-hda"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "mmio-api",
+ "rdif-audio",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -6593,6 +6617,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-audio"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "rdif-base"
 version = "0.9.1"
 dependencies = [
@@ -6618,6 +6650,14 @@ name = "rdif-clk"
 version = "0.5.7"
 dependencies = [
  "rdif-base",
+]
+
+[[package]]
+name = "rdif-cpufreq"
+version = "0.1.0"
+dependencies = [
+ "rdif-base",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -7859,7 +7899,6 @@ dependencies = [
  "fdt-edit",
  "fdt-raw",
  "heapless",
- "host-boot-abi",
  "kernutil",
  "libc",
  "log",
@@ -7878,6 +7917,7 @@ dependencies = [
  "tock-registers 0.10.1",
  "trait-ffi",
  "uefi",
+ "uefi-raw",
  "uguid",
  "x86",
 ]
@@ -9967,6 +10007,8 @@ dependencies = [
 name = "x86_vlapic"
 version = "0.5.4"
 dependencies = [
+ "ax-crate-interface",
+ "ax-sync",
  "bit",
  "log",
  "paste",

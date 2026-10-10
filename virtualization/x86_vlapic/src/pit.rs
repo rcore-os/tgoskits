@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
-use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use ax_sync::Mutex;
 
 use crate::{
     host::*,
-    lock::SpinMutex as Mutex,
     timer_registration::{
         TimerRegistration, limit_periodic_timer_period_ns, restart_periodic_deadline_ns,
     },
@@ -266,18 +267,44 @@ impl PitState {
     }
 }
 
-/// A minimal emulated x86 PIT/8254 device.
-pub struct EmulatedPit<H: X86VlapicHostOps> {
-    state: Mutex<PitState>,
-    irq0_timer: Mutex<PitIrqTimer<H>>,
-    _host: PhantomData<fn() -> H>,
+/// Task-owned PIT service: the 8254 register file and its IRQ0 host timer.
+///
+/// A guest programming write updates the register file and then (re)registers
+/// the host timer. Both live under one sleepable mutex so two concurrent writes
+/// cannot interleave and leave a stale timer armed after a newer reload, and so
+/// suspend/resume/stop observe the register file and the registration together.
+/// The hard-timer callback never takes this mutex; it only owns the short
+/// IRQ-safe arm state inside [`TimerRegistration`].
+struct PitService<R: X86VlapicRuntimeOps> {
+    state: PitState,
+    timer: PitIrqTimer<R>,
+    /// Set while a VM suspend quiesced a live arm that still owes a resume.
+    suspended: bool,
 }
 
-struct PitIrqTimer<H: X86VlapicHostOps> {
-    registration: Arc<TimerRegistration<H>>,
-    vm_id: X86VmId,
-    vcpu_id: X86VcpuId,
-    _host: PhantomData<fn() -> H>,
+/// A minimal emulated x86 PIT/8254 device.
+pub struct EmulatedPit<H: X86VlapicHostOps> {
+    service: Mutex<PitService<H::Runtime>>,
+}
+
+struct PitIrqTimer<R: X86VlapicRuntimeOps> {
+    registration: Arc<TimerRegistration<R>>,
+    runtime: R,
+    /// Canonical absolute deadline of the armed IRQ0 host timer. The callback
+    /// publishes each periodic rearm and clears it when a one-shot completes,
+    /// so resume can reinstall the exact countdown instead of the stale
+    /// program-time reload deadline.
+    deadline_ns: Arc<AtomicU64>,
+}
+
+impl<R: X86VlapicRuntimeOps + Clone> PitIrqTimer<R> {
+    fn new(runtime: R) -> Self {
+        Self {
+            registration: Arc::new(TimerRegistration::new()),
+            runtime,
+            deadline_ns: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 impl<H: X86VlapicHostOps> EmulatedPit<H> {
@@ -286,15 +313,37 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         Self::new_for_vcpu(0, 0)
     }
 
-    /// Create a PIT whose IRQ0 is routed to one VM vCPU by the host adapter.
-    pub fn new_for_vcpu(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+    /// Create a PIT whose IRQ0 uses the supplied run-scoped port.
+    pub fn new_for_vcpu_with_runtime(
+        runtime: H::Runtime,
+        _vm_id: X86VmId,
+        _vcpu_id: X86VcpuId,
+    ) -> Self {
         Self {
-            state: Mutex::new(PitState::new()),
-            irq0_timer: Mutex::new(PitIrqTimer::new(vm_id, vcpu_id)),
-            _host: PhantomData,
+            service: Mutex::new(PitService {
+                state: PitState::new(),
+                timer: PitIrqTimer::new(runtime),
+                suspended: false,
+            }),
         }
     }
 
+    /// Create a host-side adapter that is not attached to a guest run.
+    ///
+    /// Programming its timer returns a run-state error. AxVM creates its real
+    /// PIT with [`Self::new_for_vcpu_with_runtime`] from the run owner.
+    pub fn new_for_vcpu(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+        Self::new_for_vcpu_with_runtime(H::unbound_runtime(vm_id, vcpu_id), vm_id, vcpu_id)
+    }
+}
+
+impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<H: X86VlapicHostOps> EmulatedPit<H> {
     fn channel_mut(state: &mut PitState, channel: u8) -> Option<&mut PitChannel> {
         match channel {
             0 => Some(&mut state.channel0),
@@ -355,66 +404,66 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
     }
 }
 
-impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<H: X86VlapicHostOps> PitIrqTimer<H> {
-    fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
-        Self {
-            registration: Arc::new(TimerRegistration::new()),
-            vm_id,
-            vcpu_id,
-            _host: PhantomData,
-        }
-    }
-
+impl<R: X86VlapicRuntimeOps + Clone> PitIrqTimer<R> {
     fn schedule(&mut self, deadline_ns: u64, period_ns: Option<u64>) -> X86VlapicResult {
-        self.registration.invalidate_and_cancel()?;
-        schedule_irq0::<H>(
+        // Retire any prior arm through the full host cancel barrier first,
+        // including a callback that already completed but whose stable handle
+        // has not been reclaimed yet.
+        self.registration.invalidate_and_cancel(&self.runtime)?;
+        // Publish the initial deadline before arming so a callback that fires
+        // during registration can only overwrite it with a newer rearm.
+        self.deadline_ns.store(deadline_ns, Ordering::Release);
+        schedule_irq0(
             deadline_ns,
             period_ns,
             Arc::clone(&self.registration),
-            self.vm_id,
-            self.vcpu_id,
+            self.runtime.clone(),
+            Arc::clone(&self.deadline_ns),
         )
     }
 
     fn cancel(&mut self) -> X86VlapicResult {
-        self.registration.invalidate_and_cancel()
+        self.registration
+            .invalidate_and_cancel(&self.runtime)
+            .map(|_| ())
     }
 }
 
-impl<H: X86VlapicHostOps> Drop for PitIrqTimer<H> {
+impl<R: X86VlapicRuntimeOps> Drop for PitIrqTimer<R> {
     fn drop(&mut self) {
-        if let Err(error) = self.cancel() {
-            log::warn!("failed to cancel x86 PIT timer during teardown: {error:?}");
-        }
+        // The task-side lifecycle must quiesce this producer before the PIT is
+        // released: `suspend`/`stop` return cancellation failures so the caller
+        // retries. Reaching drop with a live arm is a contract violation that
+        // must not be hidden behind a warn-and-drop. A completed one-shot may
+        // still carry a retained (retired) handle and is not a live producer.
+        assert!(
+            !self.registration.is_active(),
+            "x86 PIT timer dropped while its host registration was live",
+        );
     }
 }
 
-fn schedule_irq0<H: X86VlapicHostOps>(
+fn schedule_irq0<R: X86VlapicRuntimeOps + Clone>(
     deadline_ns: u64,
     period_ns: Option<u64>,
-    registration: Arc<TimerRegistration<H>>,
-    vm_id: X86VmId,
-    vcpu_id: X86VcpuId,
+    registration: Arc<TimerRegistration<R>>,
+    runtime: R,
+    canonical_deadline_ns: Arc<AtomicU64>,
 ) -> X86VlapicResult {
     let mut next_deadline_ns = deadline_ns;
+    let callback_runtime = runtime.clone();
     registration.register(
+        &runtime,
         deadline_ns,
-        alloc::boxed::Box::new(move |_| {
-            let _ = H::inject_pit_irq(vm_id, vcpu_id);
+        alloc::boxed::Box::new(move |now_ns| {
+            let _ = callback_runtime.inject_pit_irq();
             if let Some(period_ns) = period_ns {
-                next_deadline_ns = restart_periodic_deadline_ns(
-                    next_deadline_ns,
-                    period_ns,
-                    host::current_time_nanos::<H>(),
-                );
+                next_deadline_ns =
+                    restart_periodic_deadline_ns(next_deadline_ns, period_ns, now_ns);
+                canonical_deadline_ns.store(next_deadline_ns, Ordering::Release);
                 return X86TimerAction::Rearm(next_deadline_ns);
             }
+            canonical_deadline_ns.store(0, Ordering::Release);
             X86TimerAction::Complete
         }),
     )
@@ -439,7 +488,8 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         }
 
         let now_ns = host::current_time_nanos::<H>();
-        let mut state = self.state.lock();
+        let mut service = self.service.lock();
+        let state = &mut service.state;
         let value = match port.number() {
             PIT_CHANNEL0 => state.channel0.read_count(now_ns),
             PIT_CHANNEL2 => state.channel2.read_count(now_ns),
@@ -465,38 +515,111 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         }
 
         let now_ns = host::current_time_nanos::<H>();
-        let mut state = self.state.lock();
+        // The register update and the host timer (re)registration share this
+        // one sleepable guard, so concurrent writes cannot reorder a stale
+        // timer arm after a newer reload. The hard-timer callback retires the
+        // previous arm through `TimerRegistration`'s short IRQ-safe state and
+        // never takes this mutex.
+        let mut service = self.service.lock();
         let irq0_schedule = match port.number() {
-            PIT_CHANNEL0 if state.channel0.write_count(val as u8, now_ns) => {
-                let period_ns = state.channel0.period_ns;
-                let repeat_ns = state
+            PIT_CHANNEL0 if service.state.channel0.write_count(val as u8, now_ns) => {
+                let period_ns = service.state.channel0.period_ns;
+                let repeat_ns = service
+                    .state
                     .channel0
                     .mode
                     .is_periodic_irq()
                     .then_some(period_ns)
                     .flatten()
                     .map(limit_periodic_timer_period_ns);
-                Some((state.channel0.next_deadline_ns, repeat_ns))
+                Some((service.state.channel0.next_deadline_ns, repeat_ns))
             }
             PIT_CHANNEL0 => None,
             PIT_CHANNEL2 => {
-                state.channel2.write_count(val as u8, now_ns);
+                service.state.channel2.write_count(val as u8, now_ns);
                 None
             }
             PIT_COMMAND => {
-                Self::write_command(&mut state, val as u8, now_ns);
+                Self::write_command(&mut service.state, val as u8, now_ns);
                 None
             }
             PIT_SPEAKER_CONTROL => {
-                state.speaker_control = val as u8;
+                service.state.speaker_control = val as u8;
                 None
             }
             _ => return Err(X86VlapicError::Unsupported),
         };
-        drop(state);
         if let Some((deadline_ns, period_ns)) = irq0_schedule {
-            self.irq0_timer.lock().schedule(deadline_ns, period_ns)?;
+            service.timer.schedule(deadline_ns, period_ns)?;
         }
+        Ok(())
+    }
+
+    /// Quiesces the IRQ0 host timer before a task-side VM pause is ACKed.
+    ///
+    /// The 8254 register file is retained so [`Self::resume`] re-arms the same
+    /// countdown from its canonical deadline. A host cancellation failure keeps
+    /// the retained handle and returns the error so the caller retries.
+    pub fn suspend(&self) -> X86VlapicResult {
+        let mut service = self.service.lock();
+        if service.suspended {
+            return Ok(());
+        }
+        // The full cancel barrier runs even when the callback already
+        // completed, so the pause ACK only happens once no callback or payload
+        // reclamation is still in flight. Only a live arm owes a resume.
+        let resume_owed = service
+            .timer
+            .registration
+            .invalidate_and_cancel(&service.timer.runtime)?;
+        service.suspended = resume_owed;
+        Ok(())
+    }
+
+    /// Reinstalls the IRQ0 host timer quiesced by [`Self::suspend`].
+    ///
+    /// Re-arming happens at most once per suspend; a second resume is a no-op,
+    /// and a registration failure keeps the suspend outstanding for retry.
+    pub fn resume(&self) -> X86VlapicResult {
+        let mut service = self.service.lock();
+        if !service.suspended {
+            return Ok(());
+        }
+        if service.timer.registration.has_registration() {
+            service.suspended = false;
+            return Ok(());
+        }
+        let Some(period_ns) = service.state.channel0.period_ns else {
+            service.suspended = false;
+            return Ok(());
+        };
+        let deadline_ns = service.timer.deadline_ns.load(Ordering::Acquire);
+        if deadline_ns == 0 {
+            service.suspended = false;
+            return Ok(());
+        }
+        let repeat_ns = service
+            .state
+            .channel0
+            .mode
+            .is_periodic_irq()
+            .then_some(period_ns)
+            .map(limit_periodic_timer_period_ns);
+        service.timer.schedule(deadline_ns, repeat_ns)?;
+        service.suspended = false;
+        Ok(())
+    }
+
+    /// Cancels the IRQ0 host timer and retires the guest-visible PIT state.
+    ///
+    /// A host cancellation failure keeps both the retained handle and the
+    /// register file so the caller can retry instead of dropping a live timer.
+    pub fn stop(&self) -> X86VlapicResult {
+        let mut service = self.service.lock();
+        service.timer.cancel()?;
+        service.timer.deadline_ns.store(0, Ordering::Release);
+        service.state = PitState::new();
+        service.suspended = false;
         Ok(())
     }
 }

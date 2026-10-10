@@ -43,8 +43,13 @@ const LDX_B_OP: usize = 0x7040;
 const LDX_H_OP: usize = 0x7048;
 const LDX_WU_OP: usize = 0x7050;
 
+/// Decodes one faulting load/store into an owned device access record.
+///
+/// The guest PC is deliberately left at the faulting instruction: the access is
+/// only committed once a device claims it, and an unclaimed access falls back to
+/// a nested page fault that must retry the same instruction.
 pub fn decode_mmio_fault(
-    ctx: &mut LoongArchContextFrame,
+    ctx: &LoongArchContextFrame,
     insn: usize,
     fault_addr: LoongArchGuestPhysAddr,
     access_flags: LoongArchAccessFlags,
@@ -143,7 +148,6 @@ pub fn decode_mmio_fault(
         }
     };
 
-    ctx.advance_guest_pc();
     Some(exit_reason)
 }
 
@@ -201,7 +205,7 @@ pub fn describe_mmio_fault(
 }
 
 fn decode_ptr_mmio_fault(
-    ctx: &mut LoongArchContextFrame,
+    ctx: &LoongArchContextFrame,
     insn: usize,
     fault_addr: usize,
     access_flags: LoongArchAccessFlags,
@@ -244,12 +248,11 @@ fn decode_ptr_mmio_fault(
         _ => return decode_indexed_mmio_fault(ctx, insn, fault_addr, access_flags),
     };
 
-    ctx.advance_guest_pc();
     Some(exit_reason)
 }
 
 fn decode_indexed_mmio_fault(
-    ctx: &mut LoongArchContextFrame,
+    ctx: &LoongArchContextFrame,
     insn: usize,
     fault_addr: usize,
     access_flags: LoongArchAccessFlags,
@@ -352,7 +355,6 @@ fn decode_indexed_mmio_fault(
         _ => return None,
     };
 
-    ctx.advance_guest_pc();
     Some(exit_reason)
 }
 

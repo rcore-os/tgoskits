@@ -12,7 +12,7 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange
 use ax_runtime::hal::paging::HugeSplitDeposit;
 
 use super::{AddressSpaceId, MappingId, PageOrder, RssKind};
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageId(u64);
@@ -90,6 +90,12 @@ fn release_data_frame(paddr: PhysAddr, align: usize) {
 }
 
 impl FrameLease {
+    /// Looks up the provider capability retained by this allocation, including
+    /// subleases. It grants no ownership beyond the lifetime of this lease.
+    pub(crate) fn provider<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.allocation._anchor.as_ref()?.downcast_ref()
+    }
+
     pub fn new(paddr: PhysAddr) -> Self {
         Self {
             paddr,
@@ -239,7 +245,7 @@ impl PageState {
 /// VMAs.  A slot remains in this set until its PTE invalidation is acknowledged.
 #[derive(Debug, Default)]
 pub struct RmapSet {
-    entries: IrqMutex<RmapEntries>,
+    entries: RawSpinLock<RmapEntries>,
 }
 
 #[derive(Debug, Default)]
@@ -270,7 +276,7 @@ pub(crate) struct MappingGraphReservation<'a> {
 impl Drop for MappingGraphReservation<'_> {
     fn drop(&mut self) {
         if self.additional != 0 {
-            let mut entries = self.owner.entries.lock();
+            let mut entries = self.owner.entries.lock_irqsave();
             entries.reserved -= self.additional;
         }
         // Free backing storage only after the cancellation guard has gone away.
@@ -292,7 +298,7 @@ impl RmapSet {
     ) -> Result<MappingGraphReservation<'_>, MappingGraphError> {
         let mut replacement = Vec::new();
         loop {
-            let mut entries = self.entries.lock();
+            let mut entries = self.entries.lock_irqsave();
             let reserved = entries
                 .reserved
                 .checked_add(additional)
@@ -336,16 +342,14 @@ impl RmapSet {
         if new.len().saturating_sub(old.len()) > reservation.additional {
             return Err(MappingGraphError::SlotStateConflict);
         }
-        let mut entries = self.entries.lock();
+        let mut entries = self.entries.lock_irqsave();
         for (index, key) in old.iter().enumerate() {
             if old[..index].contains(key) || !entries.keys.contains(key) {
                 return Err(MappingGraphError::MissingOldSlot);
             }
         }
         for (index, key) in new.iter().enumerate() {
-            if new[..index].contains(key)
-                || (entries.keys.contains(key) && !old.contains(key))
-            {
+            if new[..index].contains(key) || (entries.keys.contains(key) && !old.contains(key)) {
                 return Err(MappingGraphError::DuplicateNewSlot);
             }
         }
@@ -366,13 +370,13 @@ impl RmapSet {
     pub fn try_snapshot(&self) -> Result<Vec<MappingSlotKey>, MappingGraphError> {
         let mut snapshot = Vec::new();
         loop {
-            let required = self.entries.lock().keys.len();
+            let required = self.entries.lock_irqsave().keys.len();
             if snapshot.capacity() < required {
                 snapshot
                     .try_reserve_exact(required.saturating_sub(snapshot.len()))
                     .map_err(|_| MappingGraphError::ResourceExhausted)?;
             }
-            let entries = self.entries.lock();
+            let entries = self.entries.lock_irqsave();
             if entries.keys.len() > snapshot.capacity() {
                 drop(entries);
                 continue;
@@ -390,13 +394,13 @@ impl RmapSet {
     }
 
     fn all_mappings_belong_to(&self, mm_id: AddressSpaceId, expected: u32) -> bool {
-        let entries = self.entries.lock();
+        let entries = self.entries.lock_irqsave();
         usize::try_from(expected).is_ok_and(|expected| entries.keys.len() == expected)
             && entries.keys.iter().all(|entry| entry.space_id == mm_id)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.lock().keys.is_empty()
+        self.entries.lock_irqsave().keys.is_empty()
     }
 }
 
@@ -422,7 +426,7 @@ pub struct PageObject {
     /// This is the Rust ownership boundary corresponding to Linux's page/rmap
     /// locking layer; it is deliberately independent from VMA publication and
     /// PTE stripe locks.
-    mapping_graph: IrqMutex<()>,
+    mapping_graph: RawSpinLock<()>,
     pub rmap: RmapSet,
 }
 
@@ -444,7 +448,7 @@ impl PageObject {
             mapping_refs: core::sync::atomic::AtomicU32::new(0),
             writeback_generation: core::sync::atomic::AtomicU64::new(0),
             eviction_tlb_ready: AtomicBool::new(false),
-            mapping_graph: IrqMutex::new(()),
+            mapping_graph: RawSpinLock::new(()),
             rmap: RmapSet::default(),
         })
     }
@@ -532,7 +536,7 @@ impl PageObject {
     /// belongs to this MM; fork introduces another MM identity and therefore
     /// forces a base-page COW copy.
     pub(crate) fn exclusively_mapped_by(&self, mm_id: AddressSpaceId) -> bool {
-        let _graph = self.mapping_graph.lock();
+        let _graph = self.mapping_graph.lock_irqsave();
         if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
             return false;
         }
@@ -545,7 +549,7 @@ impl PageObject {
             return false;
         };
         let published = {
-            let _graph = self.mapping_graph.lock();
+            let _graph = self.mapping_graph.lock_irqsave();
             if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
                 false
             } else {
@@ -577,7 +581,7 @@ impl PageObject {
             return false;
         };
         let (detached, became_exclusive) = {
-            let _graph = self.mapping_graph.lock();
+            let _graph = self.mapping_graph.lock_irqsave();
             let current = self.mapping_refs.load(Ordering::Acquire);
             let Some(next) = current.checked_sub(1) else {
                 return false;
@@ -620,7 +624,7 @@ impl PageObject {
         reservation: &mut MappingGraphReservation<'_>,
     ) -> Result<(), MappingGraphError> {
         let became_exclusive = {
-            let _graph = self.mapping_graph.lock();
+            let _graph = self.mapping_graph.lock_irqsave();
             if !matches!(self.state(), PageState::Present | PageState::LazyFree) {
                 return Err(MappingGraphError::PageNotPresent);
             }
@@ -702,7 +706,7 @@ impl PageObject {
     /// in `Evicting`, so a failed caller cannot accidentally make a page
     /// reclaimable while a stale PTE still exists.
     pub(crate) fn eviction_lease(self: &Arc<Self>) -> Result<EvictionLease, EvictionError> {
-        let _graph = self.mapping_graph.lock();
+        let _graph = self.mapping_graph.lock_irqsave();
         if !self.transition(PageState::Present, PageState::Evicting) {
             return Err(EvictionError::NotPresent);
         }
@@ -737,7 +741,7 @@ impl PageObject {
     /// new mapping slot cannot be published and eviction cannot retire the
     /// frame; the caller must protect every rmap entry before completing it.
     pub(crate) fn writeback_lease(self: &Arc<Self>) -> Result<WritebackLease, WritebackError> {
-        let _graph = self.mapping_graph.lock();
+        let _graph = self.mapping_graph.lock_irqsave();
         if !self.transition(PageState::Present, PageState::Writeback) {
             return Err(WritebackError::Busy);
         }
@@ -883,7 +887,7 @@ pub struct MappingSlot {
     /// Preallocated child table bound to this slot's huge leaf. A freshly
     /// prepared deposit has never been visible to hardware; a deposit returned
     /// by rollback remains retired until remote TLB confirmation.
-    huge_split_deposit: IrqMutex<Option<HugeSplitDeposit>>,
+    huge_split_deposit: RawSpinLock<Option<HugeSplitDeposit>>,
     state: AtomicU8,
 }
 
@@ -905,7 +909,7 @@ impl MappingSlot {
             page,
             frame_offset: 0,
             resident_kind: AtomicU8::new(RssKind::slot_value(resident_kind)),
-            huge_split_deposit: IrqMutex::new(None),
+            huge_split_deposit: RawSpinLock::new(None),
             state: AtomicU8::new(SlotState::Reserved as u8),
         }
     }
@@ -932,7 +936,7 @@ impl MappingSlot {
             page,
             frame_offset,
             resident_kind: AtomicU8::new(RssKind::slot_value(resident_kind)),
-            huge_split_deposit: IrqMutex::new(None),
+            huge_split_deposit: RawSpinLock::new(None),
             state: AtomicU8::new(SlotState::Reserved as u8),
         })
     }
@@ -953,7 +957,7 @@ impl MappingSlot {
         deposit: HugeSplitDeposit,
     ) -> Result<Self, HugeSplitDeposit> {
         {
-            let mut owner = self.huge_split_deposit.lock();
+            let mut owner = self.huge_split_deposit.lock_irqsave();
             if owner.is_some() {
                 return Err(deposit);
             }
@@ -963,18 +967,18 @@ impl MappingSlot {
     }
 
     pub(crate) fn has_huge_split_deposit(&self) -> bool {
-        self.huge_split_deposit.lock().is_some()
+        self.huge_split_deposit.lock_irqsave().is_some()
     }
 
     pub(crate) fn take_huge_split_deposit(&self) -> Option<HugeSplitDeposit> {
-        self.huge_split_deposit.lock().take()
+        self.huge_split_deposit.lock_irqsave().take()
     }
 
     pub(crate) fn restore_huge_split_deposit(
         &self,
         deposit: HugeSplitDeposit,
     ) -> Result<(), HugeSplitDeposit> {
-        let mut owner = self.huge_split_deposit.lock();
+        let mut owner = self.huge_split_deposit.lock_irqsave();
         if owner.is_some() {
             return Err(deposit);
         }
@@ -989,7 +993,7 @@ impl MappingSlot {
     /// The address-space owner must prove that no CPU can still use this page
     /// table root, including a pending walk or unacknowledged TLB request.
     pub(crate) unsafe fn confirm_quiescent_huge_split_deposit(&self) {
-        if let Some(deposit) = self.huge_split_deposit.lock().as_mut() {
+        if let Some(deposit) = self.huge_split_deposit.lock_irqsave().as_mut() {
             // SAFETY: the caller supplies the root-wide quiescence proof.
             unsafe { deposit.confirm_tlb_retirement() };
         }
@@ -1297,7 +1301,7 @@ mod tests {
         assert!(mappings.contains(&second));
         let cancelled = page.prepare_mapping_graph_replace(&[], &[first]).unwrap();
         drop(cancelled);
-        assert_eq!(page.rmap.entries.lock().reserved, 0);
+        assert_eq!(page.rmap.entries.lock_irqsave().reserved, 0);
         assert_eq!(page.mapping_refs(), 2);
         page.replace_mapping_graph(&[first, second], &[]).unwrap();
         assert_eq!(page.mapping_refs(), 0);

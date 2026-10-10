@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering, fence};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use dma_api::CoherentArray;
 use log::{Level, debug, info, warn};
 use mbarrier::wmb;
@@ -20,7 +20,7 @@ use crate::{
     registers::{Regs, irq_has_rx_overflow},
 };
 
-pub(crate) type QueueStart = Arc<Mutex<QueueStartState>>;
+pub(crate) type QueueStart = Arc<RawSpinLock<QueueStartState>>;
 
 #[derive(Default)]
 pub(crate) struct TxNotificationState {

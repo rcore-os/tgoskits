@@ -4,7 +4,7 @@
 //! transition intents to its caller; the endpoint context is responsible for
 //! executing those intents through an admitted `EndpointIrqTransitionPermit`.
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 
 /// A physical interrupt transition requested by the coordinator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,15 +36,22 @@ struct InterruptState {
 }
 
 /// VirtIO PCI ISR and level-INTx state machine.
+///
+/// This coordinator holds only a few bytes of ISR/line state behind a
+/// non-sleeping [`RawSpinLock`]: every method is a short read-modify-write that
+/// returns a transition intent, and none of them performs a blocking or
+/// guest-memory callback. It stays non-sleeping because the endpoint queries
+/// and updates it from the level-triggered interrupt transition paths, not from
+/// the sleepable queue-processing/transport-state path.
 pub struct VirtioPciInterruptCoordinator {
-    state: SpinLock<InterruptState>,
+    state: RawSpinLock<InterruptState>,
 }
 
 impl VirtioPciInterruptCoordinator {
     /// Creates an idle, interrupt-enabled coordinator.
     pub const fn new() -> Self {
         Self {
-            state: SpinLock::new(InterruptState {
+            state: RawSpinLock::new(InterruptState {
                 isr: 0,
                 asserted: false,
                 disabled: false,

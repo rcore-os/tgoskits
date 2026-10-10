@@ -9,7 +9,7 @@ use core::{
 };
 use std::{
     alloc::{alloc_zeroed, dealloc},
-    sync::{Mutex as StdMutex, mpsc},
+    sync::mpsc,
     thread,
     time::Instant,
 };
@@ -92,12 +92,12 @@ impl DmaOp for TestDmaOp {
 static TEST_DMA_OP: TestDmaOp = TestDmaOp;
 
 struct LifecycleQueue {
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 struct IndexedLifecycleQueue {
     id: usize,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 impl HardwareQueue for LifecycleQueue {
@@ -362,7 +362,7 @@ impl BlockController for BatchingReadController {
 
 struct LifecycleController {
     queue: Option<LifecycleQueue>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
     repeat_device_info_on_quiesce: bool,
 }
 
@@ -380,17 +380,17 @@ struct QuiesceFailureController {
 }
 
 struct DropTrackedShutdownFailureGroup {
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 struct GroupMemberShutdownFailureController {
     queue: Option<LifecycleQueue>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 struct DropTrackedMemberFailureGroup {
     members: Option<Vec<BlockGroupMember>>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 impl DriverGeneric for TerminalBeforeShutdownController {
@@ -632,7 +632,7 @@ impl BlockController for LifecycleController {
 struct GroupMemberController {
     name: &'static str,
     queue: Option<LifecycleQueue>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
     terminal_on_rearm: bool,
     rearm_count: usize,
 }
@@ -683,12 +683,12 @@ impl BlockController for GroupMemberController {
 
 struct TestControllerGroup {
     members: Option<Vec<BlockGroupMember>>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 struct TwoIrqControllerGroup {
     members: Option<Vec<BlockGroupMember>>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 impl DriverGeneric for TestControllerGroup {
@@ -755,7 +755,7 @@ impl BlockControllerGroup for TwoIrqControllerGroup {
 struct EndpointFirstController {
     queue: Option<LifecycleQueue>,
     register_retries: Arc<AtomicUsize>,
-    log: Arc<StdMutex<Vec<&'static str>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
 struct WaitingForIrqController;
@@ -858,22 +858,22 @@ impl BlockController for EndpointFirstController {
 }
 
 struct TestIrqRegistrar {
-    log: StdMutex<Option<Arc<StdMutex<Vec<&'static str>>>>>,
-    action: StdMutex<Option<Arc<StdMutex<Option<BlockIrqAction>>>>>,
+    log: std::sync::Mutex<Option<Arc<std::sync::Mutex<Vec<&'static str>>>>>,
+    action: std::sync::Mutex<Option<Arc<std::sync::Mutex<Option<BlockIrqAction>>>>>,
     fail_registration: AtomicBool,
     next_registration: AtomicUsize,
     fail_enable_at: AtomicUsize,
 }
 
 static TEST_IRQ_REGISTRAR: TestIrqRegistrar = TestIrqRegistrar {
-    log: StdMutex::new(None),
-    action: StdMutex::new(None),
+    log: std::sync::Mutex::new(None),
+    action: std::sync::Mutex::new(None),
     fail_registration: AtomicBool::new(false),
     next_registration: AtomicUsize::new(0),
     fail_enable_at: AtomicUsize::new(usize::MAX),
 };
 static TEST_IRQ_FAIL_SYNCHRONIZE: AtomicBool = AtomicBool::new(false);
-static TEST_IRQ_REGISTRAR_SERIAL: StdMutex<()> = StdMutex::new(());
+static TEST_IRQ_REGISTRAR_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn lock_test_irq_registrar() -> std::sync::MutexGuard<'static, ()> {
     TEST_IRQ_REGISTRAR_SERIAL
@@ -881,7 +881,7 @@ fn lock_test_irq_registrar() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn configure_test_irq_registrar(log: Arc<StdMutex<Vec<&'static str>>>) {
+fn configure_test_irq_registrar(log: Arc<std::sync::Mutex<Vec<&'static str>>>) {
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -899,19 +899,19 @@ fn configure_test_irq_registrar(log: Arc<StdMutex<Vec<&'static str>>>) {
 
 fn wait_for_device_teardown(device: &DeviceInner) {
     loop {
-        if device.lifecycle_gate.lock().phase == DevicePhase::Stopped {
+        if device.lifecycle_gate.lock_irqsave().phase == DevicePhase::Stopped {
             return;
         }
         device
             .shutdown_waiters
-            .wait_while(|| device.lifecycle_gate.lock().phase != DevicePhase::Stopped)
+            .wait_while(|| device.lifecycle_gate.lock_irqsave().phase != DevicePhase::Stopped)
             .unwrap();
     }
 }
 
 struct TestIrqRegistration {
-    log: Arc<StdMutex<Vec<&'static str>>>,
-    action: Arc<StdMutex<Option<BlockIrqAction>>>,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    action: Arc<std::sync::Mutex<Option<BlockIrqAction>>>,
     fail_enable: bool,
 }
 
@@ -980,7 +980,7 @@ impl BlockIrqRegistrar for TestIrqRegistrar {
         }
         let registration_index = self.next_registration.fetch_add(1, Ordering::AcqRel);
         log.lock().unwrap().push("irq_register_disabled");
-        let action = Arc::new(StdMutex::new(Some(action)));
+        let action = Arc::new(std::sync::Mutex::new(Some(action)));
         *self.action.lock().unwrap() = Some(Arc::clone(&action));
         Ok(Box::new(TestIrqRegistration {
             log,

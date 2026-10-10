@@ -2,6 +2,7 @@
 target = "riscv64gc-unknown-none-elf"
 features = [
   "starry-kernel/sg2002",
+  "starry-kernel/sg2002-cvi-usb-camera",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",

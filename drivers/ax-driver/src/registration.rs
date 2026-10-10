@@ -1,4 +1,9 @@
-#[cfg(any(feature = "display", feature = "input", feature = "vsock"))]
+#[cfg(any(
+    feature = "display",
+    feature = "input",
+    feature = "vsock",
+    feature = "audio-playback"
+))]
 use rdrive::Device;
 use rdrive::DriverGeneric;
 
@@ -21,14 +26,24 @@ where
     irq
 }
 
-#[cfg(any(feature = "display", feature = "input", feature = "vsock"))]
+#[cfg(any(
+    feature = "display",
+    feature = "input",
+    feature = "vsock",
+    feature = "audio-playback"
+))]
 pub trait TakeRegistered {
     type Output;
 
     fn take_registered(&mut self) -> Option<Self::Output>;
 }
 
-#[cfg(any(feature = "display", feature = "input", feature = "vsock"))]
+#[cfg(any(
+    feature = "display",
+    feature = "input",
+    feature = "vsock",
+    feature = "audio-playback"
+))]
 pub fn take_registered_device<T>(device: Device<T>) -> Option<T::Output>
 where
     T: TakeRegistered + 'static,

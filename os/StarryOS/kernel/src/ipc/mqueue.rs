@@ -34,7 +34,7 @@ use starry_signal::{SignalInfo, Signo};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc, Kstat},
-    sync::{IrqMutex, Mutex, RawSpinLock},
+    sync::{Mutex, RawSpinLock},
     task::{
         PidIdentity, PidIdentityId, PidNumber, current_pid_view, current_user_task,
         future::{UserWaitOutcome, block_on_user_until_wall, poll_io},
@@ -265,7 +265,7 @@ struct Message {
 /// (`pipelined_send` -> `__pipelined_op`, ipc/mqueue.c:993,1010), so the queue
 /// itself stays empty and no message is enqueued.
 ///
-/// The handoff slot is a `IrqMutex<Option<Message>>` because the shared `Arc`
+/// The handoff slot is a `RawSpinLock<Option<Message>>` because the shared `Arc`
 /// is touched by two parties - the sender that fills it and the receiver that
 /// drains it - but *always* while the queue's [`Inner`] lock is held, so it is
 /// an uncontended leaf lock (acquired and released without ever sleeping),
@@ -275,19 +275,19 @@ struct Message {
 struct RecvWaiter {
     /// The directly-handed message (Linux `ext_wait_queue::msg`). `Some` means
     /// the waiter has been served and must consume this instead of the queue.
-    msg: IrqMutex<Option<Message>>,
+    msg: RawSpinLock<Option<Message>>,
 }
 
 impl RecvWaiter {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            msg: IrqMutex::new(None),
+            msg: RawSpinLock::new(None),
         })
     }
 
     /// Take a directly-handed message if one was published (STATE_READY).
     fn take_handed(&self) -> Option<Message> {
-        self.msg.lock().take()
+        self.msg.lock_irqsave().take()
     }
 }
 
@@ -551,7 +551,7 @@ impl MessageQueue {
                 // slot (STATE_READY) and remove it from the wait list, mirroring
                 // `pipelined_send` -> `__pipelined_op`'s `receiver->msg = message`
                 // + `list_del`. No enqueue, no notification: a receiver took it.
-                *waiter.msg.lock() = Some(msg);
+                *waiter.msg.lock_irqsave() = Some(msg);
                 None
             } else {
                 // No waiter: enqueue. Linux fires the notification only when this

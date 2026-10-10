@@ -25,7 +25,7 @@ use super::{
     completion::CompletionSender,
     irq::{IrqEventLatch, IrqTarget, LatchedIrqEvent},
 };
-use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::IrqMutex, wall_time};
+use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::RawSpinLock, wall_time};
 
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,7 +54,7 @@ pub(super) struct Hctx {
     id: usize,
     cpu: usize,
     state: Arc<HctxState>,
-    thread: IrqMutex<Option<Box<dyn BlockThread>>>,
+    thread: RawSpinLock<Option<Box<dyn BlockThread>>>,
 }
 
 const HCTX_PREPARED: u8 = 0;
@@ -94,20 +94,20 @@ impl fmt::Debug for HctxStartError {
 }
 
 struct HctxState {
-    queue_info: IrqMutex<QueueInfoEpoch>,
-    submission_channels: IrqMutex<Vec<Arc<BoundedChannel<Submission>>>>,
+    queue_info: RawSpinLock<QueueInfoEpoch>,
+    submission_channels: RawSpinLock<Vec<Arc<BoundedChannel<Submission>>>>,
     submission_channels_sealed: AtomicBool,
     notification: Arc<dyn BlockNotification>,
     lifecycle_notification: Arc<dyn BlockNotification>,
-    irq_latches: IrqMutex<Vec<Arc<IrqEventLatch>>>,
+    irq_latches: RawSpinLock<Vec<Arc<IrqEventLatch>>>,
     quiescing: AtomicBool,
     quiesced: AtomicBool,
     stopping: AtomicBool,
     terminated: AtomicBool,
-    teardown_error: IrqMutex<Option<BlkError>>,
+    teardown_error: RawSpinLock<Option<BlkError>>,
     activation: AtomicU8,
     activation_notification: Arc<dyn BlockNotification>,
-    prepared_queue: IrqMutex<Option<Box<dyn HardwareQueue>>>,
+    prepared_queue: RawSpinLock<Option<Box<dyn HardwareQueue>>>,
 }
 
 #[cfg(test)]
@@ -118,20 +118,20 @@ impl HctxState {
     ) -> Self {
         let ops = runtime_ops().expect("test runtime is installed");
         Self {
-            queue_info: IrqMutex::new(QueueInfoEpoch::new(queue_info)),
-            submission_channels: IrqMutex::new(submission_channels),
+            queue_info: RawSpinLock::new(QueueInfoEpoch::new(queue_info)),
+            submission_channels: RawSpinLock::new(submission_channels),
             submission_channels_sealed: AtomicBool::new(false),
             notification: ops.notification(),
             lifecycle_notification: ops.notification(),
-            irq_latches: IrqMutex::new(Vec::new()),
+            irq_latches: RawSpinLock::new(Vec::new()),
             quiescing: AtomicBool::new(false),
             quiesced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             terminated: AtomicBool::new(false),
-            teardown_error: IrqMutex::new(None),
+            teardown_error: RawSpinLock::new(None),
             activation: AtomicU8::new(HCTX_ACTIVE),
             activation_notification: ops.notification(),
-            prepared_queue: IrqMutex::new(None),
+            prepared_queue: RawSpinLock::new(None),
         }
     }
 }
@@ -174,29 +174,29 @@ impl Hctx {
         let notification = ops.notification();
         let activation_notification = ops.notification();
         let state = Arc::new(HctxState {
-            queue_info: IrqMutex::new(QueueInfoEpoch::new(info)),
-            submission_channels: IrqMutex::new(Vec::new()),
+            queue_info: RawSpinLock::new(QueueInfoEpoch::new(info)),
+            submission_channels: RawSpinLock::new(Vec::new()),
             submission_channels_sealed: AtomicBool::new(false),
             notification,
             lifecycle_notification: ops.notification(),
-            irq_latches: IrqMutex::new(Vec::new()),
+            irq_latches: RawSpinLock::new(Vec::new()),
             quiescing: AtomicBool::new(false),
             quiesced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             terminated: AtomicBool::new(false),
-            teardown_error: IrqMutex::new(None),
+            teardown_error: RawSpinLock::new(None),
             activation: AtomicU8::new(HCTX_PREPARED),
             activation_notification,
-            prepared_queue: IrqMutex::new(None),
+            prepared_queue: RawSpinLock::new(None),
         });
         let hctx = Arc::new(Self {
             id: info.id,
             cpu,
             state: Arc::clone(&state),
-            thread: IrqMutex::new(None),
+            thread: RawSpinLock::new(None),
         });
         let name = format!("blk-hctx/{}", info.id);
-        let queue_slot = Arc::new(IrqMutex::new(Some(queue)));
+        let queue_slot = Arc::new(RawSpinLock::new(Some(queue)));
         let worker_queue_slot = Arc::clone(&queue_slot);
         let worker_state = Arc::clone(&state);
         let thread = match ops.spawn_pinned(
@@ -204,7 +204,7 @@ impl Hctx {
             cpu,
             Box::new(move || {
                 let queue = {
-                    let mut slot = worker_queue_slot.lock();
+                    let mut slot = worker_queue_slot.lock_irqsave();
                     let queue = slot.take().expect("new hctx worker owns its startup queue");
                     drop(slot);
                     queue
@@ -213,7 +213,7 @@ impl Hctx {
                     worker_state.activation_notification.wait();
                 }
                 if worker_state.activation.load(Ordering::Acquire) == HCTX_ABORTED {
-                    *worker_state.prepared_queue.lock() = Some(queue);
+                    *worker_state.prepared_queue.lock_irqsave() = Some(queue);
                     worker_state.terminated.store(true, Ordering::Release);
                     worker_state.lifecycle_notification.notify();
                     return;
@@ -224,7 +224,7 @@ impl Hctx {
             Ok(thread) => thread,
             Err(_) => {
                 let queue = queue_slot
-                    .lock()
+                    .lock_irqsave()
                     .take()
                     .expect("failed hctx spawn retains its startup queue");
                 return Err(HctxStartError {
@@ -233,7 +233,7 @@ impl Hctx {
                 });
             }
         };
-        *hctx.thread.lock() = Some(thread);
+        *hctx.thread.lock_irqsave() = Some(thread);
         info!(
             "prepared block hctx {} on CPU {} with hardware depth {}",
             info.id, cpu, info.limits.max_inflight
@@ -262,11 +262,11 @@ impl Hctx {
     }
 
     pub(super) fn info(&self) -> QueueInfo {
-        self.state.queue_info.lock().published()
+        self.state.queue_info.lock_irqsave().published()
     }
 
     pub(super) fn freeze_queue_info(&self) {
-        self.state.queue_info.lock().freeze();
+        self.state.queue_info.lock_irqsave().freeze();
     }
 
     #[cfg(test)]
@@ -299,7 +299,7 @@ impl Hctx {
     }
 
     pub(super) fn reserve_submission_channels(&self, additional: usize) -> Result<(), BlkError> {
-        let mut channels = self.state.submission_channels.lock();
+        let mut channels = self.state.submission_channels.lock_irqsave();
         if self
             .state
             .submission_channels_sealed
@@ -317,7 +317,7 @@ impl Hctx {
         &self,
         channel: Arc<BoundedChannel<Submission>>,
     ) -> Result<(), BlkError> {
-        let mut channels = self.state.submission_channels.lock();
+        let mut channels = self.state.submission_channels.lock_irqsave();
         if self
             .state
             .submission_channels_sealed
@@ -341,7 +341,7 @@ impl Hctx {
                 .submission_channels_sealed
                 .load(Ordering::Acquire)
         );
-        let mut channels = self.state.submission_channels.lock();
+        let mut channels = self.state.submission_channels.lock_irqsave();
         debug_assert!(channels.len() < channels.capacity());
         channels.push(channel);
     }
@@ -352,11 +352,11 @@ impl Hctx {
 
     #[cfg(test)]
     pub(super) fn submission_channel_count(&self) -> usize {
-        self.state.submission_channels.lock().len()
+        self.state.submission_channels.lock_irqsave().len()
     }
 
     pub(super) fn seal_submission_channels(&self) {
-        let _channels = self.state.submission_channels.lock();
+        let _channels = self.state.submission_channels.lock_irqsave();
         self.state
             .submission_channels_sealed
             .store(true, Ordering::Release);
@@ -366,11 +366,11 @@ impl Hctx {
         // The worker may concurrently swap-remove closed channels. Repeat a
         // pass when the registry changed so a moved channel is not skipped.
         loop {
-            let channel_count = self.state.submission_channels.lock().len();
+            let channel_count = self.state.submission_channels.lock_irqsave().len();
             let mut scanned = 0;
             while scanned < channel_count {
                 let channel = {
-                    let channels = self.state.submission_channels.lock();
+                    let channels = self.state.submission_channels.lock_irqsave();
                     channels.get(scanned).cloned()
                 };
                 let Some(channel) = channel else {
@@ -382,7 +382,7 @@ impl Hctx {
                 scanned += 1;
             }
             if scanned == channel_count
-                && self.state.submission_channels.lock().len() == channel_count
+                && self.state.submission_channels.lock_irqsave().len() == channel_count
             {
                 return;
             }
@@ -392,7 +392,10 @@ impl Hctx {
     #[cfg(test)]
     pub(super) fn irq_target(&self, source_id: usize) -> IrqTarget {
         let latch = Arc::new(IrqEventLatch::new(source_id));
-        self.state.irq_latches.lock().push(Arc::clone(&latch));
+        self.state
+            .irq_latches
+            .lock_irqsave()
+            .push(Arc::clone(&latch));
         IrqTarget::new(self.id, latch, Arc::clone(&self.state.notification))
     }
 
@@ -415,7 +418,7 @@ impl Hctx {
     pub(super) fn reserve_irq_targets(&self, additional: usize) -> Result<(), BlkError> {
         self.state
             .irq_latches
-            .lock()
+            .lock_irqsave()
             .try_reserve(additional)
             .map_err(|_| BlkError::NoMemory)
     }
@@ -430,13 +433,13 @@ impl Hctx {
             self.state.lifecycle_notification.notify();
         }
         // Drop the IRQ-disabling slot guard before `join`, which may sleep.
-        let thread = self.thread.lock().take();
+        let thread = self.thread.lock_irqsave().take();
         if let Some(thread) = thread {
             thread.join();
         } else if !self.state.terminated.load(Ordering::Acquire) {
             return Err(BlkError::Io);
         }
-        self.state.teardown_error.lock().map_or(Ok(()), Err)
+        self.state.teardown_error.lock_irqsave().map_or(Ok(()), Err)
     }
 
     /// Stops queue mutation while retaining the hardware queue and its DMA
@@ -466,7 +469,7 @@ pub(super) struct HctxIrqToken {
 impl HctxIrqToken {
     pub(super) fn commit(&mut self) {
         if !self.committed {
-            let mut latches = self.state.irq_latches.lock();
+            let mut latches = self.state.irq_latches.lock_irqsave();
             debug_assert!(latches.len() < latches.capacity());
             latches.push(Arc::clone(&self.latch));
             self.committed = true;
@@ -477,7 +480,7 @@ impl HctxIrqToken {
 impl Drop for HctxIrqToken {
     fn drop(&mut self) {
         if self.committed {
-            let mut latches = self.state.irq_latches.lock();
+            let mut latches = self.state.irq_latches.lock_irqsave();
             if let Some(index) = latches
                 .iter()
                 .position(|latch| Arc::ptr_eq(latch, &self.latch))
@@ -507,11 +510,11 @@ impl PreparedHctx {
         let hctx = self.hctx.take().expect("prepared hctx aborted once");
         hctx.state.activation.store(HCTX_ABORTED, Ordering::Release);
         hctx.state.activation_notification.notify();
-        let thread = hctx.thread.lock().take();
+        let thread = hctx.thread.lock_irqsave().take();
         if let Some(thread) = thread {
             thread.join();
         }
-        hctx.state.prepared_queue.lock().take()
+        hctx.state.prepared_queue.lock_irqsave().take()
     }
 }
 
@@ -521,11 +524,11 @@ impl Drop for PreparedHctx {
             let hctx = self.hctx.take().expect("prepared hctx drop owns worker");
             hctx.state.activation.store(HCTX_ABORTED, Ordering::Release);
             hctx.state.activation_notification.notify();
-            let thread = hctx.thread.lock().take();
+            let thread = hctx.thread.lock_irqsave().take();
             if let Some(thread) = thread {
                 thread.join();
             }
-            if let Some(queue) = hctx.state.prepared_queue.lock().take() {
+            if let Some(queue) = hctx.state.prepared_queue.lock_irqsave().take() {
                 // The controller has not confirmed a terminal state, so the
                 // queue may still own DMA memory visible to hardware.
                 core::mem::forget(queue);
@@ -702,7 +705,7 @@ fn run_hctx(
     while let Some(submission) = retry_submissions.pop_front() {
         reject_unsubmitted(submission, &observer);
     }
-    let channels = core::mem::take(&mut *state.submission_channels.lock());
+    let channels = core::mem::take(&mut *state.submission_channels.lock_irqsave());
     for channel in channels {
         channel.close();
         while let Some(submission) = channel.try_recv() {
@@ -747,7 +750,7 @@ fn run_hctx(
     } else {
         drop(queue);
     }
-    *state.teardown_error.lock() = teardown_error;
+    *state.teardown_error.lock_irqsave() = teardown_error;
     state.terminated.store(true, Ordering::Release);
     state.lifecycle_notification.notify();
 }
@@ -756,7 +759,7 @@ fn prune_closed_submission_channels(state: &HctxState) {
     let mut index = 0;
     loop {
         let channel = {
-            let channels = state.submission_channels.lock();
+            let channels = state.submission_channels.lock_irqsave();
             let Some(channel) = channels.get(index) else {
                 return;
             };
@@ -768,7 +771,7 @@ fn prune_closed_submission_channels(state: &HctxState) {
         }
 
         let retired = {
-            let mut channels = state.submission_channels.lock();
+            let mut channels = state.submission_channels.lock_irqsave();
             match channels.get(index) {
                 Some(current) if Arc::ptr_eq(current, &channel) => {
                     Some(channels.swap_remove(index))
@@ -877,7 +880,7 @@ fn drain_latched_irqs(
 ) -> bool {
     debug_assert!(events.is_empty());
     {
-        let latches = state.irq_latches.lock();
+        let latches = state.irq_latches.lock_irqsave();
         for latch in latches.iter() {
             let event = latch.take();
             if event.queue_ready || event.needs_rearm || !event.control.is_empty() {
@@ -930,7 +933,7 @@ fn drain_latched_irqs(
 
 fn refresh_queue_info(queue: &dyn HardwareQueue, state: &HctxState) -> Result<(), BlkError> {
     let observed = queue.info();
-    state.queue_info.lock().observe(observed)
+    state.queue_info.lock_irqsave().observe(observed)
 }
 
 fn queue_info_fits_provisioned(provisioned: QueueInfo, observed: QueueInfo) -> bool {

@@ -1,10 +1,10 @@
 //! Architecture-neutral vCPU collection construction and setup.
 
-use std::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, vec::Vec};
 
 use axvm_types::VmArchVcpuOps;
 
-use super::super::{AxVCpuRef, AxVMResources, VCpu};
+use super::super::{AxVMResources, VCpu};
 use crate::AxVmResult;
 
 #[derive(Clone, Copy, Debug)]
@@ -15,7 +15,7 @@ pub(crate) struct VcpuPlacement {
 }
 
 pub(crate) struct PreparedVcpus {
-    vcpus: Vec<AxVCpuRef>,
+    vcpus: Vec<VCpu>,
 }
 
 impl PreparedVcpus {
@@ -38,23 +38,19 @@ impl PreparedVcpus {
             );
             let arch_config = build_config(placement)?;
 
-            // FIXME: VCpu is neither `Send` nor `Sync` by design, check whether
-            // 1. we should make it `Send` and `Sync`, or
-            // 2. we can guarantee that no cross-thread access is performed
-            #[allow(clippy::arc_with_non_send_sync)]
-            vcpus.push(Arc::new(VCpu::new(
+            vcpus.push(VCpu::new(
                 vm_id,
                 placement.id,
                 placement.phys_cpu_set,
                 arch_config,
-            )?));
+            )?);
         }
 
         Ok(Self { vcpus })
     }
 
     pub(crate) fn setup(
-        &self,
+        &mut self,
         resources: &AxVMResources,
         config: &crate::config::AxVMConfig,
         mut build_config: impl FnMut(
@@ -64,7 +60,7 @@ impl PreparedVcpus {
             <crate::arch::current::ArchVCpu as VmArchVcpuOps>::SetupConfig,
         >,
     ) -> AxVmResult {
-        for vcpu in &self.vcpus {
+        for vcpu in &mut self.vcpus {
             let entry = if vcpu.id() == 0 {
                 config.bsp_entry()
             } else {
@@ -81,17 +77,17 @@ impl PreparedVcpus {
         Ok(())
     }
 
-    pub(crate) fn into_boxed_slice(self) -> Box<[AxVCpuRef]> {
+    pub(crate) fn into_boxed_slice(self) -> Box<[VCpu]> {
         self.vcpus.into_boxed_slice()
     }
 }
 
-impl<'a> IntoIterator for &'a PreparedVcpus {
-    type Item = &'a AxVCpuRef;
-    type IntoIter = std::slice::Iter<'a, AxVCpuRef>;
+impl<'a> IntoIterator for &'a mut PreparedVcpus {
+    type Item = &'a mut VCpu;
+    type IntoIter = std::slice::IterMut<'a, VCpu>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.vcpus.iter()
+        self.vcpus.iter_mut()
     }
 }
 

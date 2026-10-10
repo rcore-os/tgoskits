@@ -100,7 +100,7 @@ pub const fn slab_pages(self, page_size: usize) -> usize {
 
 超过 Slab 上限的 byte allocation 被向上取整为 4 KiB 页数，由 Buddy 直接完成。它仍以请求的 `Layout` 通过 `GlobalAlloc` 对称释放，不应和显式页 API 混用。
 
-`RustHeap` 记账是无条件的：本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都经 `SpinLock<Usages>` 计入该 bucket，没有独立 feature 开关。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
+`RustHeap` 记账是无条件的：本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都经 `RawSpinLock<Usages>` 计入该 bucket，没有独立 feature 开关。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
 
 ## 3. 显式页接口
 
@@ -174,7 +174,7 @@ pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
 }
 ```
 
-当前代码中的 `SpinLock::lock_irqsave()` 负责禁止本地中断并保护 allocator 内部状态；`ax_percpu::with_cpu_pin` 负责在取得 CPU-local 指针时建立 pinning 前提。该约束是 `current_percpu_slab()` 拿到本 CPU pointer 的安全前提。
+当前代码中的 `RawSpinLock::lock_irqsave()` 负责禁止本地中断并保护 allocator 内部状态；`ax_percpu::with_cpu_pin` 负责在取得 CPU-local 指针时建立 pinning 前提。该约束是 `current_percpu_slab()` 拿到本 CPU pointer 的安全前提。
 
 ## 4. 统计与失败语义
 
@@ -182,7 +182,7 @@ pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
 
 ### 4.1 单一用途统计表
 
-`Usages` 保存一张按 `UsageKind` 索引的字节计数表。每次成功 allocation 只增加一个 bucket，释放只减少原 bucket；当前 buddy-slab wrapper 用 `SpinLock<Usages>` 保护统计，而不是 per-bucket 原子。
+`Usages` 保存一张按 `UsageKind` 索引的字节计数表。每次成功 allocation 只增加一个 bucket，释放只减少原 bucket；当前 buddy-slab wrapper 用 `RawSpinLock<Usages>` 保护统计，而不是 per-bucket 原子。
 
 | 数据 | 当前枚举或接口 | 含义 |
 | --- | --- | --- |

@@ -24,7 +24,7 @@ use crate::{
         APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
         RESET_SPURIOUS_INTERRUPT_VECTOR, xapic::DEFAULT_APIC_BASE,
     },
-    host::{self, PhysFrame, X86VlapicHostOps},
+    host::{PhysFrame, X86VlapicHostOps, X86VlapicRuntimeOps},
     regs::{
         APIC_BASE, ApicBaseRegisterMsr,
         DESTINATION_FORMAT::{self, Model::Value as APICDestinationFormat},
@@ -64,6 +64,7 @@ pub struct VirtualApicRegs<H: X86VlapicHostOps> {
     esr_firing: i32,
 
     virtual_timer: ApicTimer<H>,
+    runtime: H::Runtime,
 
     /// Vector number for the highest priority bit that is set in the ISR
     isrv: u32,
@@ -81,7 +82,7 @@ pub struct VirtualApicRegs<H: X86VlapicHostOps> {
 
 impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
     /// Create new virtual-APIC registers by allocating a 4-KByte page for the virtual-APIC page.
-    pub fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+    pub fn new(runtime: H::Runtime, vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
         let apic_frame = PhysFrame::<H>::alloc_zero().expect("allocate virtual-APIC page failed");
         let regs = Self {
             // virtual-APIC ID is the same as the VCPU ID.
@@ -98,7 +99,8 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
                     | APIC_BASE_ENABLE
                     | if vcpu_id == 0 { APIC_BASE_BSP } else { 0 },
             ),
-            virtual_timer: ApicTimer::<H>::new(vm_id, vcpu_id),
+            virtual_timer: ApicTimer::<H>::new(runtime.clone(), vm_id, vcpu_id),
+            runtime,
         };
         regs.regs().ID.set((vcpu_id as u32) << 24);
         regs.regs()
@@ -304,7 +306,7 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
 
         if is_broadcast {
             // Broadcast in both logical and physical modes.
-            dmask = host::current_vm_active_vcpus::<H>() as u64;
+            dmask = self.runtime.active_vcpu_mask() as u64;
         } else if is_phys {
             // Physical mode: "dest" is local APIC ID.
             // Todo: distinguish between APIC ID and vCPU ID.
@@ -317,8 +319,8 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
             // Logical mode: "dest" is message destination addr
             // to be compared with the logical APIC ID in LDR.
 
-            let vcpu_mask = host::active_vcpus::<H>(H::current_vm_id()).unwrap();
-            for i in 0..host::current_vm_vcpu_num::<H>() {
+            let vcpu_mask = self.runtime.active_vcpu_mask();
+            for i in 0..self.runtime.vcpu_count() {
                 if vcpu_mask & (1 << i) != 0 {
                     if !self.is_dest_field_matched(dest)? {
                         continue;
@@ -348,10 +350,10 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
                 dmask.set_bit(self.vapic_id as usize, true);
             }
             APICDestination::AllIncludingSelf => {
-                dmask = host::current_vm_active_vcpus::<H>() as u64;
+                dmask = self.runtime.active_vcpu_mask() as u64;
             }
             APICDestination::AllExcludingSelf => {
-                dmask = host::current_vm_active_vcpus::<H>() as u64;
+                dmask = self.runtime.active_vcpu_mask() as u64;
                 dmask &= !(1 << self.vapic_id);
             }
         }
@@ -376,7 +378,9 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         }
 
         debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
-        let _ = host::inject_interrupt::<H>(H::current_vm_id(), vcpu_id as usize, vector as u8);
+        let _ = self
+            .runtime
+            .inject_interrupt(vcpu_id as usize, vector as u8);
     }
 
     /// Returns whether the local APIC priority permits accepting `vector`.
@@ -406,6 +410,22 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
 
     pub fn take_pending_timer_interrupt(&self) -> Option<u8> {
         self.virtual_timer.take_pending_interrupt()
+    }
+
+    /// Quiesces the local-APIC timer for a task-side VM suspend while keeping
+    /// the guest registers, canonical deadline and pending edge intact.
+    pub fn suspend_timer(&mut self) -> X86VlapicResult {
+        self.virtual_timer.suspend_timer()
+    }
+
+    /// Reinstalls the local-APIC timer quiesced by [`Self::suspend_timer`].
+    pub fn resume_timer(&mut self) -> X86VlapicResult {
+        self.virtual_timer.resume_timer()
+    }
+
+    /// Cancels the local-APIC timer and retires its guest-visible state.
+    pub fn stop_timer(&mut self) -> X86VlapicResult {
+        self.virtual_timer.stop_timer()
     }
 
     fn inject_nmi(&mut self, vcpu_id: u32) {
@@ -551,7 +571,7 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
             let dmask = self.calculate_dest(shorthand, is_broadcast, dest, is_phys, false)?;
 
             // TODO: we need to get the specific vcpu number somehow.
-            for i in 0..host::current_vm_vcpu_num::<H>() as u32 {
+            for i in 0..self.runtime.vcpu_count() as u32 {
                 if dmask & (1 << i) != 0 {
                     match mode {
                         APICDeliveryMode::Fixed => {
@@ -720,20 +740,6 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
 
 fn interrupt_priority_above_ppr(vector: u8, ppr: u8) -> bool {
     vector & 0xf0 > ppr & 0xf0
-}
-
-#[cfg(test)]
-mod interrupt_priority_tests {
-    use super::interrupt_priority_above_ppr;
-
-    #[test]
-    fn fixed_interrupt_must_have_a_higher_priority_class_than_ppr() {
-        assert!(!interrupt_priority_above_ppr(0x5f, 0x50));
-        assert!(!interrupt_priority_above_ppr(0x50, 0x5f));
-        assert!(!interrupt_priority_above_ppr(0x4f, 0x50));
-        assert!(interrupt_priority_above_ppr(0x6f, 0x5f));
-        assert!(interrupt_priority_above_ppr(0x50, 0x4f));
-    }
 }
 
 fn extract_index_u32(vector: u32) -> usize {
@@ -1004,5 +1010,19 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
     /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.process_eoi()
+    }
+}
+
+#[cfg(test)]
+mod interrupt_priority_tests {
+    use super::interrupt_priority_above_ppr;
+
+    #[test]
+    fn fixed_interrupt_must_have_a_higher_priority_class_than_ppr() {
+        assert!(!interrupt_priority_above_ppr(0x5f, 0x50));
+        assert!(!interrupt_priority_above_ppr(0x50, 0x5f));
+        assert!(!interrupt_priority_above_ppr(0x4f, 0x50));
+        assert!(interrupt_priority_above_ppr(0x6f, 0x5f));
+        assert!(interrupt_priority_above_ppr(0x50, 0x4f));
     }
 }

@@ -15,19 +15,18 @@
 //! AxVM-owned architecture-independent vCPU wrapper.
 
 use std::{
-    cell::UnsafeCell,
     format,
     mem::MaybeUninit,
+    ptr::{self, NonNull},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
     },
 };
 
 use ax_std::os::arceos::{
     guard::PreemptGuard,
     percpu::{self as ax_percpu, CpuAreaRef, CpuPin},
-    sync::IrqSafeMutex as Mutex,
 };
 use axvm_types::{
     GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
@@ -82,58 +81,126 @@ impl<'pin, 'cpu> PinnedCpuContext<'pin, 'cpu> {
     }
 }
 
-struct CurrentVcpuPublication<'scope, 'cpu> {
-    pin: &'scope CpuPin<'cpu>,
+/// CPU-local publication describing the execution that owns this host CPU.
+///
+/// The value carries only the identity of the current execution and a fixed
+/// signal target. It cannot reach `AxVCpu<A>` or the architecture backend: the
+/// exclusive backend borrow lives on the owning scope's stack while this
+/// publication is active, and the publication is cleared before that scope
+/// returns.
+pub(crate) struct ExecutionContext {
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+    signals: NonNull<VcpuSignals>,
 }
 
-impl Drop for CurrentVcpuPublication<'_, '_> {
+impl ExecutionContext {
+    /// Returns the VM id of the current execution.
+    pub(crate) const fn vm_id(&self) -> VMId {
+        self.vm_id
+    }
+
+    /// Returns the vCPU id of the current execution.
+    pub(crate) const fn vcpu_id(&self) -> VCpuId {
+        self.vcpu_id
+    }
+
+    /// Returns the fixed signal target bound to this execution.
+    pub(crate) fn signals(&self) -> &VcpuSignals {
+        // SAFETY: the publishing scope keeps the `Arc<VcpuSignals>` alive until
+        // the CPU-local slot is cleared, and readers only observe the value on
+        // the CPU that owns the publication.
+        unsafe { self.signals.as_ref() }
+    }
+
+    /// Copies one RAM byte through the entry's pre-bound immutable decode view.
+    /// This context cannot be cloned or escape the pinned publication scope.
+    #[cfg(any(test, target_arch = "x86_64"))]
+    pub(crate) fn read_guest_byte(&self, address: GuestPhysAddr) -> Option<u8> {
+        let memory = self.signals().decode_memory.load(Ordering::Acquire);
+        // SAFETY: this execution is borrowed from the current CPU's scoped
+        // publication. DecodePublication retains the immutable RAM view until
+        // the backend is unloaded and that publication has been cleared.
+        unsafe { memory.as_ref() }?.read_byte(address).ok()
+    }
+
+    /// Whether the current execution still owns the guest-entry loop.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn entry_loop_is_active(&self) -> bool {
+        self.signals().entry_loop_is_active()
+    }
+}
+
+/// Clears the CPU-local execution publication when the exclusive scope exits.
+struct CurrentExecutionPublication<'scope, 'cpu> {
+    pin: &'scope CpuPin<'cpu>,
+    _signals: Arc<VcpuSignals>,
+}
+
+impl<'scope, 'cpu> CurrentExecutionPublication<'scope, 'cpu> {
+    fn publish(
+        context: &ExecutionContext,
+        signals: Arc<VcpuSignals>,
+        pin: &'scope CpuPin<'cpu>,
+    ) -> Self {
+        assert_eq!(
+            CURRENT_VCPU.read_current(pin),
+            0,
+            "current execution publication must be empty"
+        );
+        CURRENT_VCPU.write_current(pin, context as *const ExecutionContext as usize);
+        Self {
+            pin,
+            _signals: signals,
+        }
+    }
+}
+
+impl Drop for CurrentExecutionPublication<'_, '_> {
     fn drop(&mut self) {
         CURRENT_VCPU.write_current(self.pin, 0);
     }
 }
 
-/// Mutable runtime state of a virtual CPU.
-pub struct AxVCpuInnerMut {
-    state: VmVcpuState,
-}
-
-struct AxVCpuInnerConst {
-    vm_id: VMId,
-    vcpu_id: VCpuId,
-    phys_cpu_set: Option<usize>,
-    guest_mpidr: Option<u64>,
-}
-
 const OUTSIDE_GUEST_MODE: usize = 0;
 const EXITING_GUEST_MODE_BIT: usize = 1;
+const ENTRY_PARKED: usize = 0;
+const ENTRY_OPEN: usize = 1;
+const ENTRY_STOPPED: usize = 2;
 
-/// Architecture-independent ownership of one vCPU's guest-entry window.
+/// Shared, architecture-independent signals for one vCPU execution.
 ///
-/// The packed mode carries both the host CPU and whether an exit request has
-/// already claimed the running guest. `exit_requested` is sticky across the
-/// outside-guest window so a request racing the final entry check cannot be
-/// lost.
-pub(crate) struct VcpuRunState {
+/// The value is owned by an `Arc` shared with the runtime kick path and the
+/// vCPU task. It contains only atomics: the guest-mode publication, the sticky
+/// entry request, the logical unblock request, the stop request, and the
+/// guest-entry-loop flag. It never contains or reaches the architecture
+/// backend, and it exposes no upper-layer VM or lifecycle state.
+///
+/// `exit_requested` is sticky across the outside-guest window so a request
+/// racing the final entry check cannot be lost. `stop_requested` additionally
+/// closes the entry and park paths at once.
+pub(crate) struct VcpuSignals {
     mode: AtomicUsize,
     exit_requested: AtomicBool,
     unblock_requested: AtomicBool,
+    stop_requested: AtomicBool,
+    admission: AtomicUsize,
+    decode_memory: AtomicPtr<crate::guest_memory::DecodeMemory>,
+    execution_target: AtomicPtr<crate::services::RunSignals>,
+    entry_loop_active: AtomicBool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(target_arch = "x86_64")]
-pub(crate) enum HardIrqExitClaim {
-    OutsideGuest,
-    LocalGuest,
-    RemoteGuest,
-    AlreadyClaimed,
-}
-
-impl VcpuRunState {
+impl VcpuSignals {
     pub(crate) const fn new() -> Self {
         Self {
             mode: AtomicUsize::new(OUTSIDE_GUEST_MODE),
             exit_requested: AtomicBool::new(false),
             unblock_requested: AtomicBool::new(false),
+            stop_requested: AtomicBool::new(false),
+            admission: AtomicUsize::new(ENTRY_PARKED),
+            decode_memory: AtomicPtr::new(ptr::null_mut()),
+            execution_target: AtomicPtr::new(ptr::null_mut()),
+            entry_loop_active: AtomicBool::new(false),
         }
     }
 
@@ -160,8 +227,12 @@ impl VcpuRunState {
             .unwrap_or_else(|mode| {
                 panic!("vCPU guest mode was not outside before entry: {mode:#x}")
             });
+        // Paired with the producer's fence in request_exit: either the final
+        // request/admission check sees the publication or the producer sees
+        // IN_GUEST and leaves a doorbell pending for this entry.
+        std::sync::atomic::fence(Ordering::SeqCst);
         VcpuGuestEntry {
-            run_state: self,
+            signals: self,
             guest_mode,
         }
     }
@@ -180,8 +251,63 @@ impl VcpuRunState {
         self.exit_requested.store(true, Ordering::Release);
     }
 
+    /// Opens only a parked activation. A stopped activation cannot reopen.
+    pub(crate) fn open_entry(&self) -> bool {
+        let opened = self
+            .admission
+            .compare_exchange(
+                ENTRY_PARKED,
+                ENTRY_OPEN,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            || self.admission.load(Ordering::Acquire) == ENTRY_OPEN;
+        if opened {
+            self.request_unblock();
+        }
+        opened
+    }
+
+    /// Closes admission before the owner publishes a park command and kicks.
+    pub(crate) fn close_entry(&self) {
+        let _ = self.admission.compare_exchange(
+            ENTRY_OPEN,
+            ENTRY_PARKED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.publish_exit_request();
+        self.request_unblock();
+    }
+
+    /// An atomic-only predicate suitable for the host wait-queue boundary.
+    pub(crate) fn entry_is_open(&self) -> bool {
+        self.admission.load(Ordering::Acquire) == ENTRY_OPEN
+    }
+
+    /// Atomically closes the entry, park, and stop paths of this execution.
+    ///
+    /// A stop request stays published: the next entry publication observes the
+    /// sticky exit request, a parked waiter observes the unblock request, and
+    /// the task loop can retire towards `Stop`.
+    pub(crate) fn request_stop(&self) {
+        self.admission.store(ENTRY_STOPPED, Ordering::Release);
+        self.stop_requested.store(true, Ordering::Release);
+        self.exit_requested.store(true, Ordering::Release);
+        self.unblock_requested.store(true, Ordering::Release);
+    }
+
+    /// Whether a stop has been requested for this execution.
+    pub(crate) fn stop_requested(&self) -> bool {
+        self.stop_requested.load(Ordering::Acquire)
+    }
+
     /// Returns the remote CPU that must receive a guest-exit doorbell.
     pub(crate) fn request_exit(&self, current_cpu: usize) -> Option<usize> {
+        // The caller publishes canonical pending/request state before this
+        // fence. It pairs with the vCPU's publication and final entry check.
+        std::sync::atomic::fence(Ordering::SeqCst);
         loop {
             let mode = self.mode.load(Ordering::Acquire);
             if mode == OUTSIDE_GUEST_MODE || mode & EXITING_GUEST_MODE_BIT != 0 {
@@ -203,52 +329,46 @@ impl VcpuRunState {
         }
     }
 
-    /// Classifies the guest-exit work left after a local hard IRQ.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn claim_hard_irq_exit(&self, current_cpu: usize) -> HardIrqExitClaim {
-        loop {
-            let mode = self.mode.load(Ordering::Acquire);
-            if mode == OUTSIDE_GUEST_MODE {
-                return HardIrqExitClaim::OutsideGuest;
-            }
-            if mode & EXITING_GUEST_MODE_BIT != 0 {
-                return HardIrqExitClaim::AlreadyClaimed;
-            }
-            if Self::guest_cpu(mode) != current_cpu {
-                return HardIrqExitClaim::RemoteGuest;
-            }
-            if self
-                .mode
-                .compare_exchange(
-                    mode,
-                    mode | EXITING_GUEST_MODE_BIT,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                return HardIrqExitClaim::LocalGuest;
-            }
-        }
+    /// Claims the guest-entry loop for the current backend scope.
+    ///
+    /// Panics if the same execution already owns the loop, matching the
+    /// prohibition on nested guest-entry scopes.
+    fn begin_entry_loop(&self) {
+        assert!(
+            !self.entry_loop_active.swap(true, Ordering::AcqRel),
+            "nested vCPU entry loop"
+        );
+    }
+
+    fn end_entry_loop(&self) {
+        self.entry_loop_active.store(false, Ordering::Release);
+    }
+
+    /// Whether this execution currently owns the guest-entry loop.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn entry_loop_is_active(&self) -> bool {
+        self.entry_loop_active.load(Ordering::Acquire)
     }
 }
 
-struct VcpuGuestEntry<'state> {
-    run_state: &'state VcpuRunState,
+struct VcpuGuestEntry<'signals> {
+    signals: &'signals VcpuSignals,
     guest_mode: usize,
 }
 
 impl VcpuGuestEntry<'_> {
     fn exit_requested(&self) -> bool {
-        self.run_state.exit_requested.swap(false, Ordering::AcqRel)
-            || self.run_state.mode.load(Ordering::Acquire) & EXITING_GUEST_MODE_BIT != 0
+        !self.signals.entry_is_open()
+            || self.signals.stop_requested()
+            || self.signals.exit_requested.swap(false, Ordering::AcqRel)
+            || self.signals.mode.load(Ordering::Acquire) & EXITING_GUEST_MODE_BIT != 0
     }
 }
 
 impl Drop for VcpuGuestEntry<'_> {
     fn drop(&mut self) {
         let previous = self
-            .run_state
+            .signals
             .mode
             .swap(OUTSIDE_GUEST_MODE, Ordering::Release);
         assert!(
@@ -264,7 +384,6 @@ pub(crate) enum VcpuRunResult<E> {
     VmExit(E),
 }
 
-#[allow(dead_code)]
 fn reserve_cpu_on_state(state: &mut VmVcpuState) -> AxVmResult {
     if *state != VmVcpuState::Free {
         let current_state = *state;
@@ -277,7 +396,6 @@ fn reserve_cpu_on_state(state: &mut VmVcpuState) -> AxVmResult {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn rollback_cpu_on_state(state: &mut VmVcpuState) {
     if *state == VmVcpuState::Starting {
         *state = VmVcpuState::Free;
@@ -300,25 +418,25 @@ fn finish_cpu_on_start_state(state: &mut VmVcpuState, bind_succeeded: bool) -> A
     Ok(())
 }
 
-fn cpu_off_state(state: &mut VmVcpuState) -> AxVmResult {
-    if *state != VmVcpuState::Ready {
-        let current_state = *state;
-        return ax_err!(
-            BadState,
-            format!("VCpu state is not Ready, but {current_state:?}")
-        );
-    }
-    *state = VmVcpuState::Free;
-    Ok(())
-}
-
 /// AxVM-owned architecture-independent vCPU wrapper.
+///
+/// The wrapper exclusively owns the architecture backend `A` and the plain
+/// `VmVcpuState`. Shared kick state lives only in the `Arc<VcpuSignals>`; the
+/// architecture backend is never published and cannot be observed or mutated
+/// through a shared reference. Every backend-touching operation therefore takes
+/// `&mut self`.
 pub struct AxVCpu<A: VmArchVcpuOps> {
     inner_const: AxVCpuInnerConst,
-    inner_mut: Mutex<AxVCpuInnerMut>,
-    run_state: Arc<VcpuRunState>,
-    entry_loop_active: AtomicBool,
-    arch_vcpu: UnsafeCell<A>,
+    state: VmVcpuState,
+    run_state: Arc<VcpuSignals>,
+    arch_vcpu: A,
+}
+
+struct AxVCpuInnerConst {
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+    phys_cpu_set: Option<usize>,
+    guest_mpidr: Option<u64>,
 }
 
 impl<A: VmArchVcpuOps> AxVCpu<A> {
@@ -337,21 +455,16 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                 phys_cpu_set,
                 guest_mpidr,
             },
-            inner_mut: Mutex::new(AxVCpuInnerMut {
-                state: VmVcpuState::Created,
-            }),
-            run_state: Arc::new(VcpuRunState::new()),
-            entry_loop_active: AtomicBool::new(false),
-            arch_vcpu: UnsafeCell::new(
-                A::new(vm_id, vcpu_id, arch_config)
-                    .map_err(|error| map_vcpu_backend_error("create vCPU", error))?,
-            ),
+            state: VmVcpuState::Created,
+            run_state: Arc::new(VcpuSignals::new()),
+            arch_vcpu: A::new(vm_id, vcpu_id, arch_config)
+                .map_err(|error| map_vcpu_backend_error("create vCPU", error))?,
         })
     }
 
     /// Sets up this vCPU for execution.
     pub fn setup(
-        &self,
+        &mut self,
         entry: GuestPhysAddr,
         nested_paging: NestedPagingConfig,
         arch_config: A::SetupConfig,
@@ -390,74 +503,69 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.inner_const.guest_mpidr
     }
 
-    pub(crate) fn run_state(&self) -> Arc<VcpuRunState> {
+    /// Returns the shared signal target used by the runtime kick path.
+    pub(crate) fn run_state(&self) -> Arc<VcpuSignals> {
         Arc::clone(&self.run_state)
+    }
+
+    /// Rebinds a retired backend to one fresh activation's fixed signal target.
+    pub(crate) fn replace_signals(&mut self, signals: Arc<VcpuSignals>) -> AxVmResult {
+        if self.state != VmVcpuState::Free {
+            return Err(AxVmError::invalid_state(
+                "replace vCPU signals",
+                "backend is not retired",
+            ));
+        }
+        self.run_state = signals;
+        Ok(())
     }
 
     /// Returns the current vCPU state.
     pub fn state(&self) -> VmVcpuState {
-        self.inner_mut.lock().state
+        self.state
     }
 
     /// Reserves a free vCPU for PSCI CPU_ON.
-    #[allow(dead_code)]
-    pub(crate) fn reserve_for_cpu_on(&self) -> AxVmResult {
-        let mut inner_mut = self.inner_mut.lock();
-        reserve_cpu_on_state(&mut inner_mut.state)
+    pub(crate) fn reserve_for_cpu_on(&mut self) -> AxVmResult {
+        reserve_cpu_on_state(&mut self.state)
     }
 
     /// Binds a CPU_ON-started vCPU and rolls it back to Free if bind fails.
-    pub(crate) fn bind_after_cpu_on_or_rollback(&self) -> AxVmResult {
-        {
-            let inner_mut = self.inner_mut.lock();
-            if inner_mut.state != VmVcpuState::Starting {
-                let current_state = inner_mut.state;
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not Starting, but {current_state:?}")
-                );
-            }
+    pub(crate) fn bind_after_cpu_on_or_rollback(&mut self) -> AxVmResult {
+        if self.state != VmVcpuState::Starting {
+            let current_state = self.state;
+            return ax_err!(
+                BadState,
+                format!("VCpu state is not Starting, but {current_state:?}")
+            );
         }
-
-        finish_cpu_on_start_state(&mut self.inner_mut.lock().state, true)
+        finish_cpu_on_start_state(&mut self.state, true)
     }
 
     /// Rolls a failed PSCI CPU_ON reservation back to Free.
-    #[allow(dead_code)]
-    pub(crate) fn rollback_cpu_on(&self) {
-        let mut inner_mut = self.inner_mut.lock();
-        rollback_cpu_on_state(&mut inner_mut.state);
-    }
-
-    /// Powers off a vCPU after PSCI CPU_OFF so it can be started again.
-    pub(crate) fn power_off_after_cpu_off(&self) -> AxVmResult {
-        let mut inner_mut = self.inner_mut.lock();
-        cpu_off_state(&mut inner_mut.state)
+    pub(crate) fn rollback_cpu_on(&mut self) {
+        rollback_cpu_on_state(&mut self.state);
     }
 
     /// Runs `f` if the current state equals `from`, then stores `to`.
-    pub fn with_state_transition<F, T>(
-        &self,
+    ///
+    /// On failure the vCPU is parked in [`VmVcpuState::Invalid`]; the caller must
+    /// re-create it rather than retry.
+    pub fn with_state_transition<T>(
+        &mut self,
         from: VmVcpuState,
         to: VmVcpuState,
-        f: F,
-    ) -> AxVmResult<T>
-    where
-        F: FnOnce() -> AxVmResult<T>,
-    {
-        {
-            let inner_mut = self.inner_mut.lock();
-            if inner_mut.state != from {
-                let current_state = inner_mut.state;
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not {from:?}, but {current_state:?}")
-                );
-            }
+        f: impl FnOnce(&mut Self) -> AxVmResult<T>,
+    ) -> AxVmResult<T> {
+        if self.state != from {
+            return Err(AxVmError::VcpuState {
+                expected: from,
+                actual: self.state,
+            });
         }
 
-        let result = f();
-        self.inner_mut.lock().state = if result.is_err() {
+        let result = f(self);
+        self.state = if result.is_err() {
             VmVcpuState::Invalid
         } else {
             to
@@ -465,30 +573,39 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         result
     }
 
-    /// Runs `f` with this vCPU recorded as current on the physical CPU.
-    pub(crate) fn with_current_cpu_set<F, T>(&self, f: F) -> T
-    where
-        F: FnOnce() -> T,
-    {
+    /// Runs `operation` while this execution exclusively owns the host CPU.
+    ///
+    /// The scope pins the host CPU, publishes the identity-only
+    /// [`ExecutionContext`] for CPU-local lookups, runs the operation, verifies
+    /// that the architecture transition restored the host CPU binding, and
+    /// clears the publication. The backend is borrowed exclusively for the
+    /// whole scope, so no observer can reach `A` through the publication.
+    pub(crate) fn with_exclusive_scope<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
         let _guard = PreemptGuard::new();
-        // SAFETY: the guard prevents migration through the backend operation,
-        // guest run, restoration check, and publication withdrawal.
+        // SAFETY: the guard prevents migration through the closure, the
+        // publication withdrawal, and the host CPU binding check.
         unsafe {
             ax_std::os::arceos::percpu::with_cpu_pin(|cpu_pin| {
                 let pinned_cpu = PinnedCpuContext::new(cpu_pin);
+                let signals = Arc::clone(&self.run_state);
 
-                if let Some(current_vcpu) = get_current_vcpu::<A>(cpu_pin) {
-                    if std::ptr::eq(current_vcpu, self) {
-                        let result = f();
+                if let Some(current) = get_current_execution(cpu_pin) {
+                    if ptr::eq(current.signals(), &*signals) {
+                        let result = operation(self);
                         pinned_cpu.assert_host_cpu_binding();
                         result
                     } else {
                         panic!("nested vCPU operation is not allowed");
                     }
                 } else {
-                    set_current_vcpu(self, cpu_pin);
-                    let publication = CurrentVcpuPublication { pin: cpu_pin };
-                    let result = f();
+                    let context = ExecutionContext {
+                        vm_id: self.inner_const.vm_id,
+                        vcpu_id: self.inner_const.vcpu_id,
+                        signals: NonNull::from(&*signals),
+                    };
+                    let publication =
+                        CurrentExecutionPublication::publish(&context, signals, cpu_pin);
+                    let result = operation(self);
                     pinned_cpu.assert_host_cpu_binding();
                     drop(publication);
                     result
@@ -499,29 +616,38 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Runs an architecture operation under a state transition.
-    pub fn manipulate_arch_vcpu<F, T>(
-        &self,
+    pub fn manipulate_arch_vcpu<T>(
+        &mut self,
         from: VmVcpuState,
         to: VmVcpuState,
-        f: F,
-    ) -> AxVmResult<T>
-    where
-        F: FnOnce(&mut A) -> AxVmResult<T>,
-    {
-        self.with_state_transition(from, to, || {
-            self.with_current_cpu_set(|| f(self.get_arch_vcpu()))
+        f: impl FnOnce(&mut A) -> AxVmResult<T>,
+    ) -> AxVmResult<T> {
+        self.with_state_transition(from, to, |vcpu| {
+            vcpu.with_exclusive_scope(|vcpu| f(&mut vcpu.arch_vcpu))
         })
     }
 
     /// Transitions the vCPU state without calling the architecture backend.
-    pub fn transition_state(&self, from: VmVcpuState, to: VmVcpuState) -> AxVmResult {
-        self.with_state_transition(from, to, || Ok(()))
+    pub fn transition_state(&mut self, from: VmVcpuState, to: VmVcpuState) -> AxVmResult {
+        self.with_state_transition(from, to, |_| Ok(()))
     }
 
-    /// Returns the architecture-specific vCPU.
-    #[allow(clippy::mut_from_ref)]
-    pub fn get_arch_vcpu(&self) -> &mut A {
-        unsafe { &mut *self.arch_vcpu.get() }
+    /// Runs an owner operation on the architecture backend.
+    ///
+    /// The backend is intentionally exposed only for the duration of this
+    /// closure. AxVM owns the surrounding state transition, CPU pin and IRQ
+    /// boundary; architecture code receives only its exclusive mutable value.
+    pub(crate) fn with_backend<T>(&mut self, operation: impl FnOnce(&mut A) -> T) -> T {
+        operation(&mut self.arch_vcpu)
+    }
+
+    /// Installs a nested page-table configuration through the owner boundary.
+    pub(crate) fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> AxVmResult {
+        self.with_backend(|backend| {
+            backend
+                .set_nested_page_table(config)
+                .map_err(|error| map_vcpu_backend_error("set nested page table", error))
+        })
     }
 
     /// Runs one already-loaded vCPU until a VM exit.
@@ -531,12 +657,12 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// and must keep host IRQs disabled until this method returns. The x86 VMX
     /// backend uses that interval to switch host-owned syscall MSRs.
     pub(crate) fn run_loaded(
-        &self,
+        &mut self,
         retry_before_entry: impl FnOnce() -> bool,
     ) -> AxVmResult<VcpuRunResult<A::Exit>> {
         self.transition_state(VmVcpuState::Ready, VmVcpuState::Running)?;
-        self.with_state_transition(VmVcpuState::Running, VmVcpuState::Ready, || {
-            let guest_entry = self.run_state.enter(crate::host::task::current_cpu_id());
+        self.with_state_transition(VmVcpuState::Running, VmVcpuState::Ready, |vcpu| {
+            let guest_entry = vcpu.run_state.enter(crate::host::task::current_cpu_id());
             // Publish IN_GUEST before the final canonical-pending recheck.
             // A producer before this point is observed by the recheck; a
             // producer after it must observe IN_GUEST and request an exit.
@@ -546,8 +672,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             if guest_entry.exit_requested() {
                 return Ok(VcpuRunResult::ExitRequested);
             }
-            let arch_vcpu = self.get_arch_vcpu();
-            arch_vcpu
+            vcpu.arch_vcpu
                 .run()
                 .map(VcpuRunResult::VmExit)
                 .map_err(|error| map_vcpu_backend_error("run vCPU", error))
@@ -558,12 +683,12 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     ///
     /// Architecture CPU-local state is loaded separately for every guest
     /// entry by [`Self::with_backend_bound_current_cpu`].
-    pub fn bind(&self) -> AxVmResult {
+    pub fn bind(&mut self) -> AxVmResult {
         self.transition_state(VmVcpuState::Free, VmVcpuState::Ready)
     }
 
     /// Finishes one logical vCPU run slice.
-    pub fn unbind(&self) -> AxVmResult {
+    pub fn unbind(&mut self) -> AxVmResult {
         self.transition_state(VmVcpuState::Ready, VmVcpuState::Free)
     }
 
@@ -573,122 +698,193 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// This is AxVM's `vcpu_load()`/`vcpu_put()` boundary. Code that can block,
     /// allocate through a sleepable runtime, or invoke external device
     /// callbacks must execute after this method returns.
-    pub(crate) fn with_backend_bound_current_cpu<F, T>(&self, operation: F) -> AxVmResult<T>
-    where
-        F: FnOnce() -> AxVmResult<T>,
-    {
-        self.with_current_cpu_set(|| {
-            let _entry_loop = EntryLoopGuard::new(&self.entry_loop_active);
-            self.get_arch_vcpu()
-                .bind()
-                .map_err(|error| map_vcpu_backend_error("load vCPU on host CPU", error))?;
+    pub(crate) fn with_backend_bound_current_cpu<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> AxVmResult<T>,
+    ) -> AxVmResult<T> {
+        self.with_exclusive_scope(|vcpu| {
+            let signals = Arc::clone(&vcpu.run_state);
+            let _entry_loop = EntryLoopGuard::new(&signals);
+            let mut binding = BackendBinding::bind(vcpu)?;
 
-            with_backend_cleanup(operation, || {
-                if let Err(error) = self.get_arch_vcpu().unbind() {
-                    // A failed hardware retirement still owns this CPU and
-                    // its control leases. Returning or unwinding would release
-                    // the pin and permit migration with an active binding.
-                    // This runtime cannot recover that ownership transition;
-                    // abort without running the surrounding guard destructors.
-                    error!("cannot retire vCPU hardware on its binding CPU: {error:?}");
-                    std::process::abort();
-                }
-                Ok(())
-            })
+            let result = binding.run(operation);
+            if let Err(error) = binding.finish() {
+                // A failed hardware retirement still owns this CPU and its
+                // control leases. Returning or unwinding would release the pin
+                // and permit migration with an active binding. This runtime
+                // cannot recover that ownership transition; abort without
+                // running the surrounding guard destructors.
+                error!("cannot retire vCPU hardware on its binding CPU: {error:?}");
+                std::process::abort();
+            }
+            result
         })
     }
 
-    /// Whether the current backend scope belongs to the guest-entry loop,
-    /// rather than a control-plane setup/manipulation operation.
-    #[cfg(target_arch = "aarch64")]
-    pub(crate) fn entry_loop_is_active(&self) -> bool {
-        self.entry_loop_active.load(Ordering::Acquire)
+    /// Runs the engine with an immutable decode view prepared in task context.
+    pub(crate) fn with_engine_scope<T>(
+        &mut self,
+        memory: &crate::guest_memory::DecodeMemory,
+        target: &crate::services::RunSignals,
+        operation: impl FnOnce(&mut Self) -> AxVmResult<T>,
+    ) -> AxVmResult<T> {
+        let signals = Arc::clone(&self.run_state);
+        let publication = DecodePublication::new(&signals, memory);
+        let target_publication = ExecutionTargetPublication::new(&signals, target);
+        let result = self.with_backend_bound_current_cpu(operation);
+        drop(target_publication);
+        drop(publication);
+        result
     }
 
     /// Sets the guest entry point.
-    #[allow(dead_code)]
-    pub fn set_entry(&self, entry: GuestPhysAddr) -> AxVmResult {
-        self.get_arch_vcpu()
+    pub fn set_entry(&mut self, entry: GuestPhysAddr) -> AxVmResult {
+        self.arch_vcpu
             .set_entry(entry)
             .map_err(|error| map_vcpu_backend_error("set vCPU entry", error))
     }
 
     /// Sets a guest general-purpose register.
-    pub fn set_gpr(&self, reg: usize, val: usize) {
-        self.get_arch_vcpu().set_gpr(reg, val);
+    pub fn set_gpr(&mut self, reg: usize, val: usize) {
+        self.arch_vcpu.set_gpr(reg, val);
     }
 
     /// Injects an interrupt into the vCPU.
-    pub fn inject_interrupt(&self, vector: usize) -> AxVmResult {
-        self.get_arch_vcpu()
+    pub fn inject_interrupt(&mut self, vector: usize) -> AxVmResult {
+        self.arch_vcpu
             .inject_interrupt(vector)
-            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+            .map_err(|error| map_vcpu_backend_error("inject vCPU interrupt", error))
     }
 
     /// Injects an interrupt while preserving its trigger-mode metadata.
     pub fn inject_interrupt_with_trigger(
-        &self,
+        &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
     ) -> AxVmResult {
-        self.get_arch_vcpu()
+        self.arch_vcpu
             .inject_interrupt_with_trigger(vector, trigger)
-            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+            .map_err(|error| map_vcpu_backend_error("inject vCPU interrupt", error))
     }
 
     /// Sets the guest return value.
-    pub fn set_return_value(&self, val: usize) {
-        self.get_arch_vcpu().set_return_value(val);
+    pub fn set_return_value(&mut self, val: usize) {
+        self.arch_vcpu.set_return_value(val);
     }
 }
 
-/// Runs backend cleanup before its containing CPU pin and publication expire.
-/// The closure borrows the vCPU owner without holding a mutable backend borrow
-/// across exit interpretation, which may itself borrow the backend.
-struct BackendCleanup<F: FnOnce() -> AxVmResult> {
-    unload: Option<F>,
+/// The decode pointer is readable only through the current CPU's non-cloneable
+/// ExecutionContext. The owner retains this borrowed view until that context
+/// and its hardware binding have both been retired.
+struct ExecutionTargetPublication<'scope> {
+    signals: &'scope VcpuSignals,
+    _target: &'scope crate::services::RunSignals,
 }
 
-impl<F: FnOnce() -> AxVmResult> BackendCleanup<F> {
-    fn finish(mut self) -> AxVmResult {
-        // A cleanup can only be consumed once. Disarm before calling the backend
-        // so a backend panic cannot attempt the same unload again from Drop.
-        self.unload
-            .take()
-            .expect("backend cleanup is consumed once")()
+impl<'scope> ExecutionTargetPublication<'scope> {
+    fn new(signals: &'scope VcpuSignals, target: &'scope crate::services::RunSignals) -> Self {
+        assert!(
+            signals
+                .execution_target
+                .compare_exchange(
+                    ptr::null_mut(),
+                    ptr::from_ref(target).cast_mut(),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok(),
+            "nested execution signal publication"
+        );
+        Self {
+            signals,
+            _target: target,
+        }
     }
 }
 
-impl<F: FnOnce() -> AxVmResult> Drop for BackendCleanup<F> {
+impl Drop for ExecutionTargetPublication<'_> {
     fn drop(&mut self) {
-        if let Some(unload) = self.unload.take()
-            && let Err(error) = unload()
-        {
-            warn!("vCPU unload during unwinding failed: {error:?}");
+        self.signals
+            .execution_target
+            .store(ptr::null_mut(), Ordering::Release);
+    }
+}
+
+struct DecodePublication<'entry> {
+    signals: &'entry VcpuSignals,
+    _memory: &'entry crate::guest_memory::DecodeMemory,
+}
+
+impl<'entry> DecodePublication<'entry> {
+    fn new(
+        signals: &'entry VcpuSignals,
+        memory: &'entry crate::guest_memory::DecodeMemory,
+    ) -> Self {
+        signals
+            .decode_memory
+            .compare_exchange(
+                ptr::null_mut(),
+                ptr::from_ref(memory).cast_mut(),
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .expect("nested instruction-memory publication");
+        Self {
+            signals,
+            _memory: memory,
         }
     }
 }
 
-/// Completes backend ownership before the surrounding pinned scope returns.
-fn with_backend_cleanup<T>(
-    operation: impl FnOnce() -> AxVmResult<T>,
-    unload: impl FnOnce() -> AxVmResult,
-) -> AxVmResult<T> {
-    let cleanup = BackendCleanup {
-        unload: Some(unload),
-    };
-    let result = operation();
-    let unload_result = cleanup.finish();
-    match result {
-        Ok(value) => {
-            unload_result?;
-            Ok(value)
-        }
-        Err(error) => {
-            if let Err(unload_error) = unload_result {
-                warn!("vCPU unload after operation failure also failed: {unload_error:?}");
-            }
-            Err(error)
+impl Drop for DecodePublication<'_> {
+    fn drop(&mut self) {
+        self.signals
+            .decode_memory
+            .store(ptr::null_mut(), Ordering::Release);
+    }
+}
+
+/// Owns one exclusive architecture backend binding on the current host CPU.
+///
+/// [`Self::bind`] loads the backend and [`Self::finish`] retires it on the
+/// normal path. If the guest-entry operation panics, `Drop` retires the backend
+/// before the surrounding CPU pin is released, so hardware ownership is never
+/// left active on a migrating host CPU.
+struct BackendBinding<'vcpu, A: VmArchVcpuOps> {
+    vcpu: &'vcpu mut AxVCpu<A>,
+    bound: bool,
+}
+
+impl<'vcpu, A: VmArchVcpuOps> BackendBinding<'vcpu, A> {
+    fn bind(vcpu: &'vcpu mut AxVCpu<A>) -> AxVmResult<Self> {
+        vcpu.arch_vcpu
+            .bind()
+            .map_err(|error| map_vcpu_backend_error("load vCPU on host CPU", error))?;
+        Ok(Self { vcpu, bound: true })
+    }
+
+    fn run<R>(&mut self, operation: impl FnOnce(&mut AxVCpu<A>) -> R) -> R {
+        operation(&mut *self.vcpu)
+    }
+
+    fn finish(mut self) -> AxVmResult {
+        self.bound = false;
+        self.vcpu
+            .arch_vcpu
+            .unbind()
+            .map_err(|error| map_vcpu_backend_error("load vCPU on host CPU", error))
+    }
+}
+
+impl<A: VmArchVcpuOps> Drop for BackendBinding<'_, A> {
+    fn drop(&mut self) {
+        if self.bound
+            && let Err(error) = self.vcpu.arch_vcpu.unbind()
+        {
+            // Releasing the enclosing CPU pin after failed unloading could
+            // migrate an active hardware binding. Retirement is unrecoverable.
+            error!("vCPU unload during unwinding failed: {error:?}");
+            std::process::abort();
         }
     }
 }
@@ -696,51 +892,45 @@ fn with_backend_cleanup<T>(
 #[ax_percpu::def_percpu]
 static CURRENT_VCPU: usize = 0;
 
-struct EntryLoopGuard<'a>(&'a AtomicBool);
+/// Owns the guest-entry-loop flag for one backend scope.
+struct EntryLoopGuard<'signals> {
+    signals: &'signals VcpuSignals,
+}
 
-impl<'a> EntryLoopGuard<'a> {
-    fn new(active: &'a AtomicBool) -> Self {
-        assert!(
-            !active.swap(true, Ordering::AcqRel),
-            "nested vCPU entry loop"
-        );
-        Self(active)
+impl<'signals> EntryLoopGuard<'signals> {
+    fn new(signals: &'signals VcpuSignals) -> Self {
+        signals.begin_entry_loop();
+        Self { signals }
     }
 }
 
 impl Drop for EntryLoopGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.signals.end_entry_loop();
     }
 }
 
-/// Gets the current AxVM vCPU on this physical CPU.
-pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
-    pin: &'pin CpuPin<'_>,
-) -> Option<&'pin AxVCpu<A>> {
+/// Gets the current execution published on this physical CPU.
+fn get_current_execution<'pin>(pin: &'pin CpuPin<'_>) -> Option<&'pin ExecutionContext> {
     let pointer = CURRENT_VCPU.read_current(pin);
-    // SAFETY: publication is scoped by with_current_cpu_set, which borrows the
-    // live AxVCpu and clears this pointer before its CPU pin expires.
-    unsafe { (pointer as *const AxVCpu<A>).as_ref() }
+    // SAFETY: publication is scoped by `with_exclusive_scope`, which keeps the
+    // `ExecutionContext` and its `Arc<VcpuSignals>` alive and clears this slot
+    // before the surrounding CPU pin expires.
+    unsafe { (pointer as *const ExecutionContext).as_ref() }
 }
 
-fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &CpuPin<'_>) {
-    assert_eq!(
-        CURRENT_VCPU.read_current(pin),
-        0,
-        "current vCPU publication must be empty"
-    );
-    CURRENT_VCPU.write_current(pin, vcpu as *const _ as usize);
-}
-
-/// Runs `operation` with the current vCPU borrowed only for a pinned CPU scope.
-pub(crate) fn with_current_vcpu<A: VmArchVcpuOps, R>(
-    operation: impl FnOnce(Option<&AxVCpu<A>>) -> R,
+/// Runs `operation` with the identity-only current execution.
+///
+/// The closure receives the current execution's identity and fixed signal
+/// target, but never the architecture backend. The lookup is only valid for a
+/// pinned CPU scope.
+pub(crate) fn with_current_execution<R>(
+    operation: impl FnOnce(Option<&ExecutionContext>) -> R,
 ) -> R {
     let _guard = PreemptGuard::new();
     // SAFETY: the guard prevents migration through the closure.
-    unsafe { ax_std::os::arceos::percpu::with_cpu_pin(|pin| operation(get_current_vcpu(pin))) }
-        .expect("current vCPU lookup requires an installed CPU-local area")
+    unsafe { ax_std::os::arceos::percpu::with_cpu_pin(|pin| operation(get_current_execution(pin))) }
+        .expect("current execution lookup requires an installed CPU-local area")
 }
 
 /// Host per-CPU virtualization state wrapper owned by AxVM.
@@ -765,7 +955,7 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
         } else {
             self.cpu_id = Some(cpu_id);
             self.arch.write(A::new(cpu_id).map_err(|error| {
-                map_host_backend_error("initialize per-CPU virtualization", error)
+                map_vcpu_backend_error("initialize per-CPU virtualization", error)
             })?);
             Ok(())
         }
@@ -792,14 +982,14 @@ impl<A: VmArchPerCpuOps> AxPerCpu<A> {
     pub fn hardware_enable(&mut self) -> AxVmResult {
         self.arch_checked_mut()
             .hardware_enable()
-            .map_err(|error| map_host_backend_error("enable hardware virtualization", error))
+            .map_err(|error| map_vcpu_backend_error("enable hardware virtualization", error))
     }
 
     /// Disables virtualization on the current CPU.
     pub fn hardware_disable(&mut self) -> AxVmResult {
         self.arch_checked_mut()
             .hardware_disable()
-            .map_err(|error| map_host_backend_error("disable hardware virtualization", error))
+            .map_err(|error| map_vcpu_backend_error("disable hardware virtualization", error))
     }
 }
 
@@ -811,137 +1001,147 @@ impl<A: VmArchPerCpuOps> Drop for AxPerCpu<A> {
     }
 }
 
+/// Keeps the machine failure owned and allocation-free until context restoration.
 pub(crate) fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
     match error {
-        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
-        VmBackendError::InvalidData => AxVmError::vcpu(operation, error),
-        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
-        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
         VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
-        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
-            "vCPU backend",
-            format_args!("{operation} failed: {error}"),
-        ),
-    }
-}
-
-fn map_host_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
-    match error {
-        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
-        VmBackendError::InvalidData => AxVmError::host(operation, error),
-        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
-        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
-        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
-        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
-            "host virtualization backend",
-            format_args!("{operation} failed: {error}"),
-        ),
-    }
-}
-
-fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
-    match error {
-        VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
-        VmBackendError::InvalidData => AxVmError::interrupt(operation, error),
-        VmBackendError::InvalidState => AxVmError::invalid_state(operation, error),
-        VmBackendError::Unsupported => AxVmError::unsupported(operation, error),
-        VmBackendError::OutOfMemory => AxVmError::OutOfMemory { operation },
-        VmBackendError::ResourceBusy => AxVmError::resource_conflict(
-            "interrupt backend",
-            format_args!("{operation} failed: {error}"),
-        ),
+        source => AxVmError::Backend { operation, source },
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    };
+
+    use axvm_types::VmBackendResult;
+
     use super::*;
 
-    #[test]
-    fn backend_operation_unwind_runs_cleanup_once() {
-        let unloads = std::cell::Cell::new(0);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_backend_cleanup::<()>(
-                || panic!("exit interpretation failed"),
-                || {
-                    unloads.set(unloads.get() + 1);
-                    Ok(())
-                },
-            )
-        }));
-        assert!(result.is_err());
-        assert_eq!(unloads.get(), 1, "unwinding must release backend ownership");
+    #[derive(Default)]
+    struct BindLog {
+        binds: AtomicUsize,
+        unbinds: AtomicUsize,
     }
 
-    #[test]
-    fn backend_cleanup_preserves_operation_error_priority() {
-        for operation_fails in [false, true] {
-            let unloads = std::cell::Cell::new(0);
-            let result = with_backend_cleanup(
-                || {
-                    if operation_fails {
-                        Err(AxVmError::OutOfMemory {
-                            operation: "operation",
-                        })
-                    } else {
-                        Ok(())
-                    }
-                },
-                || {
-                    unloads.set(unloads.get() + 1);
-                    Err(AxVmError::OutOfMemory {
-                        operation: "unload",
-                    })
-                },
-            );
-            let expected = if operation_fails {
-                "operation"
-            } else {
-                "unload"
-            };
-            assert!(
-                matches!(result, Err(AxVmError::OutOfMemory { operation }) if operation == expected)
-            );
-            assert_eq!(unloads.get(), 1);
+    struct TestVcpu {
+        log: Arc<BindLog>,
+    }
+
+    impl VmArchVcpuOps for TestVcpu {
+        type CreateConfig = Arc<BindLog>;
+        type SetupConfig = ();
+        type Exit = ();
+
+        fn new(_vm_id: VMId, _vcpu_id: VCpuId, log: Self::CreateConfig) -> VmBackendResult<Self> {
+            Ok(Self { log })
         }
+
+        fn set_entry(&mut self, _entry: GuestPhysAddr) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn setup(&mut self, _config: Self::SetupConfig) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn run(&mut self) -> VmBackendResult<Self::Exit> {
+            Ok(())
+        }
+
+        fn bind(&mut self) -> VmBackendResult {
+            self.log.binds.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+
+        fn unbind(&mut self) -> VmBackendResult {
+            self.log.unbinds.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+
+        fn set_gpr(&mut self, _reg: usize, _val: usize) {}
+
+        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_return_value(&mut self, _val: usize) {}
+    }
+
+    fn test_vcpu() -> (AxVCpu<TestVcpu>, Arc<BindLog>) {
+        let log = Arc::new(BindLog::default());
+        let vcpu = AxVCpu::<TestVcpu>::new(1, 0, None, Arc::clone(&log)).unwrap();
+        (vcpu, log)
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn hard_irq_exit_claim_distinguishes_outside_local_and_remote_guest() {
-        let state = VcpuRunState::new();
+    fn backend_binding_retires_exactly_once_on_the_normal_path() {
+        let (mut vcpu, log) = test_vcpu();
 
-        assert_eq!(state.claim_hard_irq_exit(2), HardIrqExitClaim::OutsideGuest);
+        let mut binding = BackendBinding::bind(&mut vcpu).unwrap();
+        let result: AxVmResult<u8> = binding.run(|_| Ok(7));
+        binding.finish().unwrap();
 
-        let local_entry = state.enter(2);
-        assert!(!local_entry.exit_requested());
-        assert_eq!(state.claim_hard_irq_exit(2), HardIrqExitClaim::LocalGuest);
-        drop(local_entry);
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(log.binds.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(log.unbinds.load(AtomicOrdering::SeqCst), 1);
+    }
 
-        let remote_entry = state.enter(5);
-        assert!(!remote_entry.exit_requested());
-        assert_eq!(state.claim_hard_irq_exit(2), HardIrqExitClaim::RemoteGuest);
-        drop(remote_entry);
+    #[test]
+    fn backend_binding_unwinds_before_the_cpu_pin_is_released() {
+        let (mut vcpu, log) = test_vcpu();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut binding = BackendBinding::bind(&mut vcpu).unwrap();
+            let _ = binding.run(|_| -> AxVmResult<()> { panic!("exit interpretation failed") });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(log.binds.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(
+            log.unbinds.load(AtomicOrdering::SeqCst),
+            1,
+            "unwinding must release backend ownership"
+        );
+    }
+
+    #[test]
+    fn backend_binding_does_not_unbind_twice_after_finish() {
+        let (mut vcpu, log) = test_vcpu();
+
+        let binding = BackendBinding::bind(&mut vcpu).unwrap();
+        binding.finish().unwrap();
+
+        assert_eq!(log.binds.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(log.unbinds.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[test]
     fn task_kick_claims_one_remote_guest_exit() {
-        let state = VcpuRunState::new();
-        let entry = state.enter(7);
+        let signals = VcpuSignals::new();
+        assert!(signals.open_entry());
+        let entry = signals.enter(7);
 
-        state.publish_exit_request();
-        assert_eq!(state.request_exit(3), Some(7));
-        assert_eq!(state.request_exit(3), None);
+        signals.publish_exit_request();
+        assert_eq!(signals.request_exit(3), Some(7));
+        assert_eq!(signals.request_exit(3), None);
 
         drop(entry);
     }
 
     #[test]
     fn local_exit_claim_cancels_the_pending_guest_entry() {
-        let state = VcpuRunState::new();
-        let entry = state.enter(7);
+        let signals = VcpuSignals::new();
+        assert!(signals.open_entry());
+        let entry = signals.enter(7);
 
-        assert_eq!(state.request_exit(7), None);
+        assert_eq!(signals.request_exit(7), None);
         assert!(entry.exit_requested());
 
         drop(entry);
@@ -949,16 +1149,43 @@ mod tests {
 
     #[test]
     fn outside_guest_request_aborts_the_next_entry_once() {
-        let state = VcpuRunState::new();
-        state.publish_exit_request();
+        let signals = VcpuSignals::new();
+        assert!(signals.open_entry());
+        signals.publish_exit_request();
 
-        let first = state.enter(1);
+        let first = signals.enter(1);
         assert!(first.exit_requested());
         drop(first);
 
-        let second = state.enter(4);
+        let second = signals.enter(4);
         assert!(!second.exit_requested());
         drop(second);
+    }
+
+    #[test]
+    fn stop_request_closes_entry_park_and_stop_paths() {
+        let signals = VcpuSignals::new();
+        assert!(signals.open_entry());
+
+        // A park after IN_GUEST publication must prevent the pending entry.
+        let parked = signals.enter(1);
+        signals.close_entry();
+        assert!(parked.exit_requested());
+        drop(parked);
+        assert!(!signals.entry_is_open());
+        assert!(signals.open_entry());
+
+        signals.request_stop();
+
+        assert!(signals.stop_requested());
+        assert!(signals.take_unblock_request());
+        let entry = signals.enter(1);
+        assert!(entry.exit_requested());
+        drop(entry);
+        assert!(!signals.open_entry());
+        // Consuming the one-shot request cannot reopen stopped admission.
+        let late = signals.enter(1);
+        assert!(late.exit_requested());
     }
 
     #[test]
@@ -1002,43 +1229,12 @@ mod tests {
     }
 
     #[test]
-    fn vcpu_cpu_off_returns_ready_to_free_for_reon() {
-        let mut state = VmVcpuState::Free;
-
-        reserve_cpu_on_state(&mut state).unwrap();
-        assert_eq!(state, VmVcpuState::Starting);
-
-        state = VmVcpuState::Ready;
-        cpu_off_state(&mut state).unwrap();
-        assert_eq!(state, VmVcpuState::Free);
-
-        reserve_cpu_on_state(&mut state).unwrap();
-        assert_eq!(state, VmVcpuState::Starting);
-    }
-
-    #[test]
-    fn vcpu_cpu_off_rejects_non_ready_states() {
-        for initial_state in [
-            VmVcpuState::Created,
-            VmVcpuState::Free,
-            VmVcpuState::Starting,
-            VmVcpuState::Running,
-            VmVcpuState::Invalid,
-        ] {
-            let mut state = initial_state;
-
-            assert!(cpu_off_state(&mut state).is_err());
-            assert_eq!(state, initial_state);
-        }
-    }
-
-    #[test]
     fn vcpu_backend_errors_keep_domain_context() {
         assert!(matches!(
             map_vcpu_backend_error("run vCPU", VmBackendError::InvalidState),
-            AxVmError::InvalidState {
+            AxVmError::Backend {
                 operation: "run vCPU",
-                ..
+                source: VmBackendError::InvalidState
             }
         ));
         assert!(matches!(
@@ -1049,9 +1245,9 @@ mod tests {
         ));
         assert!(matches!(
             map_vcpu_backend_error("bind vCPU", VmBackendError::ResourceBusy),
-            AxVmError::ResourceConflict {
-                resource: "vCPU backend",
-                ..
+            AxVmError::Backend {
+                operation: "bind vCPU",
+                source: VmBackendError::ResourceBusy
             }
         ));
     }
@@ -1059,23 +1255,23 @@ mod tests {
     #[test]
     fn host_backend_errors_keep_domain_context() {
         assert!(matches!(
-            map_host_backend_error(
+            map_vcpu_backend_error(
                 "enable hardware virtualization",
                 VmBackendError::Unsupported
             ),
-            AxVmError::Unsupported {
+            AxVmError::Backend {
                 operation: "enable hardware virtualization",
-                ..
+                source: VmBackendError::Unsupported
             }
         ));
         assert!(matches!(
-            map_host_backend_error(
+            map_vcpu_backend_error(
                 "initialize per-CPU virtualization",
                 VmBackendError::InvalidData
             ),
-            AxVmError::Host {
+            AxVmError::Backend {
                 operation: "initialize per-CPU virtualization",
-                ..
+                source: VmBackendError::InvalidData
             }
         ));
     }
@@ -1083,17 +1279,17 @@ mod tests {
     #[test]
     fn interrupt_backend_errors_keep_domain_context() {
         assert!(matches!(
-            map_interrupt_backend_error("inject vCPU interrupt", VmBackendError::InvalidData),
-            AxVmError::Interrupt {
+            map_vcpu_backend_error("inject vCPU interrupt", VmBackendError::InvalidData),
+            AxVmError::Backend {
                 operation: "inject vCPU interrupt",
-                ..
+                source: VmBackendError::InvalidData
             }
         ));
         assert!(matches!(
-            map_interrupt_backend_error("inject vCPU interrupt", VmBackendError::ResourceBusy),
-            AxVmError::ResourceConflict {
-                resource: "interrupt backend",
-                ..
+            map_vcpu_backend_error("inject vCPU interrupt", VmBackendError::ResourceBusy),
+            AxVmError::Backend {
+                operation: "inject vCPU interrupt",
+                source: VmBackendError::ResourceBusy
             }
         ));
     }

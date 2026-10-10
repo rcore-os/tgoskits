@@ -189,7 +189,7 @@ fn drain_submission_channels(
     if limit == 0 {
         return 0;
     }
-    let channel_count = state.submission_channels.lock().len();
+    let channel_count = state.submission_channels.lock_irqsave().len();
     if channel_count == 0 {
         return 0;
     }
@@ -304,7 +304,7 @@ fn pending_from_metadata(metadata: SubmissionMetadata, deadline: Duration) -> Pe
 }
 
 fn try_recv_submission(state: &HctxState, next_channel: &mut usize) -> Option<Submission> {
-    let channel_count = state.submission_channels.lock().len();
+    let channel_count = state.submission_channels.lock_irqsave().len();
     for _ in 0..channel_count {
         let channel = clone_submission_channel(state, next_channel)?;
         if let Some(submission) = channel.try_recv() {
@@ -318,7 +318,7 @@ fn clone_submission_channel(
     state: &HctxState,
     next_channel: &mut usize,
 ) -> Option<Arc<BoundedChannel<Submission>>> {
-    let channels = state.submission_channels.lock();
+    let channels = state.submission_channels.lock_irqsave();
     if channels.is_empty() {
         return None;
     }

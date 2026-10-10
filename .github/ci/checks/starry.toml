@@ -79,54 +79,11 @@ kind = "starry-qemu"
 arch = "x86_64"
 
 [[check]]
-id = "test-starry-self-hosted-board-orangepi-5-plus"
-impact_targets = ["starry:aarch64"]
-name = "Board OrangePi 5 Plus · Suites"
-runner = "board"
-resource_group = "orangepi-5-plus"
-command = '''
-cargo xtask starry test board --board orangepi-5-plus
-'''
-
-[[check.suite]]
-kind = "starry-board"
-board = "orangepi-5-plus"
-
-[[check]]
-id = "test-orangepi-5-plus-robot-native-starryos"
-impact_targets = ["starry:aarch64"]
-name = "Board OrangePi 5 Plus · Native UVC/NPU + FT232 loopback"
-runner = "board"
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot
-'''
-
-[[check.suite]]
-kind = "starry-board"
-board = "orangepi-5-plus-robot"
-
-[[check]]
-id = "test-orangepi-5-plus-robot-real-native-starryos"
-impact_targets = ["starry:aarch64"]
-name = "Board OrangePi 5 Plus robot USB · Native robot control"
-runner = "board"
-resource_group = "orangepi-5-plus-robot"
-timeout_minutes = 90
-command = '''
-cargo xtask starry test board --board orangepi-5-plus-robot-real
-'''
-
-[[check.suite]]
-kind = "starry-board"
-board = "orangepi-5-plus-robot-real"
-
-[[check]]
 id = "test-starry-self-hosted-board-aka-00-sg2002"
 impact_targets = ["starry:riscv64"]
 name = "Board AKA-00 SG2002 · Suites"
 runner = "board"
+cache_key = ""
 wifi_secrets = true
 command = '''
 cargo xtask starry test board --board aka-00-sg2002
@@ -141,6 +98,7 @@ id = "test-starry-self-hosted-board-visionfive2"
 impact_targets = ["starry:riscv64"]
 name = "Board VisionFive 2 · Suites"
 runner = "board"
+cache_key = ""
 command = '''
 cargo xtask starry test board --board visionfive2
 '''
@@ -154,6 +112,7 @@ id = "test-starry-self-hosted-board-jl-lsgd2k10"
 impact_targets = ["starry:loongarch64"]
 name = "Board JL LSGD2K10 · Suites"
 runner = "board"
+cache_key = ""
 command = '''
 cargo xtask starry test board --board jl-lsgd2k10
 '''

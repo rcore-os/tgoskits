@@ -1,26 +1,26 @@
-//! Per-device folio tree of the block cache, modeled on the
-//! `address_space` of a Linux block-device inode (`block/bdev.c`).
-//!
-//! The tree maps folio frame index to [`CacheFolio`] (Linux: XArray page
-//! index to folio). An ordered frame index records the frame-level DIRTY
-//! mark (Linux `PAGECACHE_TAG_DIRTY`): "does the device have pending
-//! writeback" is answerable in O(1), and writeback always visits frames in
-//! ascending block order for deterministic device-visible ordering.
-//!
-//! A WRITEBACK mark has no state here: writeback is synchronous under the
-//! device lock, so an intermediate mark would never be observed. It is
-//! the extension point if writeback becomes asynchronous.
+//! Per-device cache with short index exclusion and independently pinned folios.
+//! Device I/O never holds the index lock. Both resident frames and writeback
+//! snapshots consume the same bounded frame budget.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::num::NonZeroUsize;
 
-use super::{folio::CacheFolio, folio_cache::FolioCache};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::memory::PAGE_SIZE};
+use super::{
+    folio::CacheFolio,
+    folio_cache::FolioCache,
+    folio_state::{FolioEntry, FolioPin, FrameBudget},
+    range_locks::RangeLocks,
+};
+use crate::{
+    BlockError, BlockResult,
+    block::FsBlockDevice,
+    os::{memory::PAGE_SIZE, sync::Mutex},
+};
 
 /// Folios cached per device: 1024 frames of 4 KiB = 4 MiB with 512-byte
 /// device blocks.
 pub(crate) const BLOCK_CACHE_FOLIO_CAP: usize = 1024;
-/// Limit temporary staging while letting the runtime split smaller device requests.
+
 const WRITEBACK_BATCH_BYTES: usize = 128 * 1024;
 
 /// Fixed folio layout of one device: folio size, device block size, and
@@ -93,14 +93,14 @@ impl FolioGeometry {
     }
 }
 
-/// The cached-folio tree of one device (the bdev `address_space`).
+/// Shared cache index; entries remain pinned while their I/O runs unlocked.
 pub(crate) struct BlockAddressSpace {
     geometry: FolioGeometry,
-    folios: FolioCache,
-    /// Frame-level DIRTY mark: frames with at least one dirty slot.
-    /// Kept sorted so writeback order is deterministic. Capacity growth is
-    /// reserved before any folio state is changed.
-    dirty_frames: Vec<u64>,
+    folios: Mutex<FolioCache<Arc<FolioEntry>>>,
+    budget: Arc<FrameBudget>,
+    // Serialize misses only. Hits and unrelated folio writeback bypass it.
+    insertion: Mutex<()>,
+    ranges: RangeLocks,
 }
 
 impl BlockAddressSpace {
@@ -108,14 +108,14 @@ impl BlockAddressSpace {
         Self::with_capacity(geometry, BLOCK_CACHE_FOLIO_CAP)
     }
 
-    /// Builds a tree with an explicit frame capacity (used by tests to
-    /// exercise LRU eviction deterministically).
     pub(crate) fn with_capacity(geometry: FolioGeometry, capacity: usize) -> Self {
         let capacity = NonZeroUsize::new(capacity.max(1)).expect("capacity is clamped to >= 1");
         Self {
             geometry,
-            folios: FolioCache::new(capacity),
-            dirty_frames: Vec::new(),
+            folios: Mutex::new(FolioCache::new(capacity)),
+            budget: FrameBudget::new(capacity.get()),
+            insertion: Mutex::new(()),
+            ranges: RangeLocks::new(),
         }
     }
 
@@ -123,310 +123,422 @@ impl BlockAddressSpace {
         self.geometry
     }
 
+    #[cfg(test)]
     pub(crate) fn has_dirty(&self) -> bool {
-        !self.dirty_frames.is_empty()
+        self.frames()
+            .expect("test cache index snapshot")
+            .into_iter()
+            .any(|frame| {
+                self.pin(frame)
+                    .is_some_and(|pin| pin.entry.data.lock().has_dirty_slots())
+            })
     }
 
-    /// Drops up to `target` clean folios from the LRU end and returns how
-    /// many were dropped. Dirty folios are pushed back to the
-    /// most-recently-used end: reclaim runs from the allocator's pressure
-    /// hook, where device IO must not happen.
-    #[cfg(feature = "vfs")]
-    pub(crate) fn reclaim_clean_folios(&mut self, target: usize) -> usize {
-        let mut reclaimed = 0;
-        let mut dirty_skips = 0;
-        while reclaimed < target {
-            let len = self.folios.len();
-            if len == 0 || dirty_skips >= len {
-                break;
+    pub(crate) fn read_buffered<T: FsBlockDevice>(
+        &self,
+        dev: &mut T,
+        first: u64,
+        count: u64,
+        out: &mut [u8],
+    ) -> BlockResult<()> {
+        let frame = self.geometry.frame_of(first);
+        let _range = self.ranges.lock(frame, frame)?;
+        let pin = self.getblk(dev, frame)?;
+        let slot = self.geometry.slot_of(first);
+        let count = usize::try_from(count).map_err(|_| BlockError::InvalidRequest)?;
+        {
+            let folio = pin.entry.data.lock();
+            if (slot..slot + count).all(|slot| folio.slot(slot).is_uptodate()) {
+                folio.copy_from_slots(slot, count, out);
+                return Ok(());
             }
-            let Some(frame) = self.folios.least_recent() else {
-                break;
-            };
-            if self
-                .folios
-                .get(&frame)
-                .is_some_and(CacheFolio::has_dirty_slots)
-            {
-                self.folios.touch(frame);
-                dirty_skips += 1;
+        }
+        let _io = pin.entry.io.lock();
+        let mut folio = pin.entry.data.lock();
+        fill_missing_slots(dev, &mut folio, &self.geometry, frame, slot, count)?;
+        folio.copy_from_slots(slot, count, out);
+        Ok(())
+    }
+
+    pub(crate) fn write_buffered<T: FsBlockDevice>(
+        &self,
+        dev: &mut T,
+        first: u64,
+        count: u64,
+        src: &[u8],
+    ) -> BlockResult<()> {
+        let frame = self.geometry.frame_of(first);
+        let _range = self.ranges.lock(frame, frame)?;
+        let pin = self.getblk(dev, frame)?;
+        // Writes may redirty a folio while an immutable snapshot is in flight.
+        let mut folio = pin.entry.data.lock();
+        let slot = self.geometry.slot_of(first);
+        let count = usize::try_from(count).map_err(|_| BlockError::InvalidRequest)?;
+        folio.copy_into_slots(slot, count, src)?;
+        folio.mark_slots_dirty(slot, count);
+        Ok(())
+    }
+
+    /// Captures a finite frame set; later dirtying does not extend this pass.
+    pub(crate) fn writeback_dirty<T: FsBlockDevice + ?Sized>(
+        &self,
+        dev: &mut T,
+        range: Option<(u64, u64)>,
+    ) -> BlockResult<()> {
+        let bounds = match range {
+            Some((first, count)) => Some(self.frame_bounds(first, count)?),
+            None => None,
+        };
+        let frames = self.frames()?;
+        let mut index = 0;
+        while index < frames.len() {
+            let frame = frames[index];
+            if bounds.is_some_and(|(first, last)| frame < first || frame > last) {
+                index += 1;
                 continue;
             }
-            self.folios.remove(&frame);
+            let written = self.writeback_full_run(
+                dev,
+                &frames[index..],
+                bounds.map_or(u64::MAX, |(_, last)| last),
+            )?;
+            if written != 0 {
+                index += written;
+                continue;
+            }
+            if let Some(pin) = self.pin(frame) {
+                self.writeback_folio(dev, frame, &pin.entry)?;
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    /// Copies contiguous full folios under the same budget as individual
+    /// snapshots. I/O owners are acquired in ascending frame order, while
+    /// ordinary writes remain free to redirty the data behind the snapshot.
+    fn writeback_full_run<T: FsBlockDevice + ?Sized>(
+        &self,
+        dev: &mut T,
+        frames: &[u64],
+        last: u64,
+    ) -> BlockResult<usize> {
+        let max_frames = WRITEBACK_BATCH_BYTES / self.geometry.folio_size();
+        if max_frames < 2 {
+            return Ok(0);
+        }
+        let mut pins = Vec::new();
+        let mut permits = Vec::new();
+        if pins.try_reserve_exact(max_frames).is_err()
+            || permits.try_reserve_exact(max_frames).is_err()
+        {
+            return Ok(0);
+        }
+        for &frame in frames.iter().take(max_frames) {
+            if frame > last || frames[0].checked_add(pins.len() as u64) != Some(frame) {
+                break;
+            }
+            let Some(permit) = self.budget.acquire() else {
+                break;
+            };
+            let Some(pin) = self.pin(frame) else {
+                break;
+            };
+            if pin.entry.data.lock().dirty_runs().next() != Some((0, self.geometry.slots())) {
+                break;
+            }
+            pins.push(pin);
+            permits.push(permit);
+        }
+        if pins.len() < 2 {
+            return Ok(0);
+        }
+        let mut owners = Vec::new();
+        let mut generations = Vec::new();
+        let mut bytes = Vec::new();
+        if owners.try_reserve_exact(pins.len()).is_err()
+            || generations.try_reserve_exact(pins.len()).is_err()
+            || bytes
+                .try_reserve_exact(pins.len() * self.geometry.folio_size())
+                .is_err()
+        {
+            return Ok(0);
+        }
+        for pin in &pins {
+            owners.push(pin.entry.io.lock());
+            let mut folio = pin.entry.data.lock();
+            if folio.dirty_runs().next() != Some((0, self.geometry.slots())) {
+                return Ok(0);
+            }
+            generations.push(folio.dirty_generation());
+            bytes.extend_from_slice(folio.slot_bytes_mut(0, self.geometry.slots()));
+        }
+        // On an indeterminate failure every generation remains dirty. The
+        // permits outlive `bytes`, including this error path.
+        dev.write_block(self.geometry.frame_base_block(frames[0]), &bytes)?;
+        for (pin, generation) in pins.iter().zip(generations) {
+            pin.entry
+                .data
+                .lock()
+                .finish_writeback_generation(generation, 0, self.geometry.slots());
+        }
+        Ok(pins.len())
+    }
+
+    pub(crate) fn read_direct<T: FsBlockDevice>(
+        &self,
+        dev: &mut T,
+        first: u64,
+        count: u64,
+        out: &mut [u8],
+    ) -> BlockResult<()> {
+        let (start, end) = self.frame_bounds(first, count)?;
+        let _range = self.ranges.lock(start, end)?;
+        self.writeback_dirty(dev, Some((first, count)))?;
+        dev.read_block(first, out)?;
+        self.apply_direct(first, count, out, true)?;
+        Ok(())
+    }
+
+    pub(crate) fn write_direct<T: FsBlockDevice>(
+        &self,
+        dev: &mut T,
+        first: u64,
+        count: u64,
+        src: &[u8],
+        submit: impl FnOnce(&mut T, u64, &[u8]) -> BlockResult<()>,
+    ) -> BlockResult<()> {
+        let (start, end) = self.frame_bounds(first, count)?;
+        let _range = self.ranges.lock(start, end)?;
+        self.writeback_dirty(dev, Some((first, count)))?;
+        match submit(dev, first, src) {
+            Ok(()) => self.apply_direct(first, count, src, false),
+            Err(error) => {
+                self.invalidate_range(first, count)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn frame_bounds(&self, first: u64, count: u64) -> BlockResult<(u64, u64)> {
+        let last = count
+            .checked_sub(1)
+            .and_then(|count| first.checked_add(count))
+            .ok_or(BlockError::InvalidRequest)?;
+        Ok((self.geometry.frame_of(first), self.geometry.frame_of(last)))
+    }
+
+    fn frames(&self) -> BlockResult<Vec<u64>> {
+        let folios = self.folios.lock();
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(folios.len())
+            .map_err(|_| BlockError::NoMemory)?;
+        frames.extend(folios.frames());
+        drop(folios);
+        frames.sort_unstable();
+        Ok(frames)
+    }
+
+    fn pin(&self, frame: u64) -> Option<FolioPin<'_>> {
+        let entry = self.folios.lock().get_mut(&frame).cloned()?;
+        Some(FolioPin::new(entry, &self.budget))
+    }
+
+    fn getblk<T: FsBlockDevice + ?Sized>(
+        &self,
+        dev: &mut T,
+        frame: u64,
+    ) -> BlockResult<FolioPin<'_>> {
+        if let Some(pin) = self.pin(frame) {
+            return Ok(pin);
+        }
+        let _insertion = self.insertion.lock();
+        if let Some(pin) = self.pin(frame) {
+            return Ok(pin);
+        }
+        self.folios.lock().try_reserve_entry()?;
+        let permit = loop {
+            if let Some(permit) = self.budget.acquire() {
+                break permit;
+            }
+            if self.evict_one(dev)? {
+                continue;
+            }
+            self.budget
+                .waiters
+                .wait_while(|| !self.budget.available() && !self.has_unpinned_folio())?;
+        };
+        // The permit is acquired before the backing frame is allocated.
+        let folio = CacheFolio::try_new(self.geometry.folio_size(), self.geometry.slots())?;
+        let entry = Arc::new(FolioEntry::new(folio, permit));
+        self.folios
+            .lock()
+            .insert_reserved(frame, Arc::clone(&entry));
+        Ok(FolioPin::new(entry, &self.budget))
+    }
+
+    fn has_unpinned_folio(&self) -> bool {
+        let folios = self.folios.lock();
+        folios.frames().any(|frame| {
+            folios
+                .get(&frame)
+                .is_some_and(|entry| Arc::strong_count(entry) == 1)
+        })
+    }
+
+    fn eviction_candidate(&self) -> Option<(u64, FolioPin<'_>)> {
+        let mut folios = self.folios.lock();
+        for _ in 0..folios.len() {
+            let frame = folios.least_recent()?;
+            let entry = folios.get(&frame)?;
+            if Arc::strong_count(entry) == 1 {
+                return Some((frame, FolioPin::new(Arc::clone(entry), &self.budget)));
+            }
+            folios.touch(frame);
+        }
+        None
+    }
+
+    fn evict_one<T: FsBlockDevice + ?Sized>(&self, dev: &mut T) -> BlockResult<bool> {
+        let Some((frame, pin)) = self.eviction_candidate() else {
+            return Ok(false);
+        };
+        self.writeback_folio(dev, frame, &pin.entry)?;
+        let removed = {
+            let mut folios = self.folios.lock();
+            // An index lookup racing the writeback can pin or redirty it.
+            let clean = Arc::strong_count(&pin.entry) == 2
+                && pin
+                    .entry
+                    .data
+                    .try_lock()
+                    .is_some_and(|folio| !folio.has_dirty_slots());
+            if clean {
+                folios.remove(&frame)
+            } else {
+                folios.touch(frame);
+                None
+            }
+        };
+        let evicted = removed.is_some();
+        drop(removed);
+        drop(pin);
+        Ok(evicted)
+    }
+
+    fn writeback_folio<T: FsBlockDevice + ?Sized>(
+        &self,
+        dev: &mut T,
+        frame: u64,
+        entry: &FolioEntry,
+    ) -> BlockResult<()> {
+        let _io = entry.io.lock();
+        let mut folio = entry.data.lock();
+        if !folio.has_dirty_slots() {
+            return Ok(());
+        }
+        let base = self.geometry.frame_base_block(frame);
+        if let Some(permit) = self.budget.acquire() {
+            let mut snapshot = folio.snapshot()?;
+            drop(folio);
+            while let Some((slot, count)) = snapshot.dirty_runs().next() {
+                dev.write_block(base + slot as u64, snapshot.slot_bytes_mut(slot, count))?;
+                entry.data.lock().finish_writeback(&snapshot, slot, count);
+                snapshot.clear_dirty_slots(slot, count);
+            }
+            drop(snapshot);
+            drop(permit);
+        } else {
+            // A full budget cannot allocate a hidden extra frame. Write this
+            // one folio in place; unrelated folios and index hits still run.
+            while let Some((slot, count)) = folio.dirty_runs().next() {
+                dev.write_block(base + slot as u64, folio.slot_bytes_mut(slot, count))?;
+                folio.clear_dirty_slots(slot, count);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_direct(
+        &self,
+        first: u64,
+        count: u64,
+        data: &[u8],
+        preserve_dirty: bool,
+    ) -> BlockResult<()> {
+        let (start, end) = self.frame_bounds(first, count)?;
+        let last = first + count - 1;
+        for frame in start..=end {
+            let Some(pin) = self.pin(frame) else {
+                continue;
+            };
+            let (lo, hi) = overlap_slots(&self.geometry, frame, first, last);
+            let begin = (self.geometry.frame_base_block(frame) + lo as u64 - first) as usize
+                * self.geometry.block_size;
+            let end = begin + (hi - lo) * self.geometry.block_size;
+            pin.entry
+                .data
+                .lock()
+                .overlay_external(lo, hi - lo, &data[begin..end], preserve_dirty);
+        }
+        Ok(())
+    }
+
+    fn invalidate_range(&self, first: u64, count: u64) -> BlockResult<()> {
+        let (start, end) = self.frame_bounds(first, count)?;
+        for frame in start..=end {
+            if let Some(pin) = self.pin(frame) {
+                // Range exclusion prevents dirtying/loading this folio until
+                // all indeterminate device bytes have lost authority.
+                pin.entry.data.lock().invalidate();
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "vfs")]
+    pub(crate) fn reclaim_clean_folios(&self, target: usize) -> usize {
+        let mut reclaimed = 0;
+        let mut skipped = 0;
+        loop {
+            let Some(mut folios) = self.folios.try_lock() else {
+                break;
+            };
+            if reclaimed >= target || skipped >= folios.len() {
+                break;
+            }
+            let Some(frame) = folios.least_recent() else {
+                break;
+            };
+            let entry = folios.get(&frame).expect("LRU frame belongs to the index");
+            let clean = Arc::strong_count(entry) == 1
+                && entry
+                    .data
+                    .try_lock()
+                    .is_some_and(|folio| !folio.has_dirty_slots());
+            if !clean {
+                folios.touch(frame);
+                skipped += 1;
+                continue;
+            }
+            let removed = folios.remove(&frame);
+            drop(folios);
+            drop(removed);
             reclaimed += 1;
         }
         reclaimed
     }
 
-    /// Buffered read of a one-folio request (`bread` semantics): slots that
-    /// are uptodate are copied out without IO, missing ones are read from
-    /// the device into the folio as merged runs.
-    pub(crate) fn read_buffered<T: FsBlockDevice>(
-        &mut self,
-        dev: &mut T,
-        first_block: u64,
-        count: u64,
-        out: &mut [u8],
-    ) -> BlockResult<()> {
-        let geometry = self.geometry;
-        let frame = geometry.frame_of(first_block);
-        let first_slot = geometry.slot_of(first_block);
-        let count = usize::try_from(count).map_err(|_| crate::BlockError::InvalidRequest)?;
-        let folio = self.getblk(dev, frame)?;
-        fill_missing_slots(dev, folio, &geometry, frame, first_slot, count)?;
-        folio.copy_from_slots(first_slot, count, out);
-        Ok(())
+    #[cfg(all(test, feature = "vfs"))]
+    pub(crate) fn reclaim_while_index_locked_for_test(&self) -> usize {
+        let _index = self.folios.lock();
+        super::registry::reclaim_clean_folios(usize::MAX)
     }
 
-    /// Deferred write of a one-folio request (`mark_buffer_dirty`
-    /// semantics): data lands only in the folio; the device copy is
-    /// updated by [`writeback_dirty`](Self::writeback_dirty).
-    pub(crate) fn write_buffered<T: FsBlockDevice>(
-        &mut self,
-        dev: &mut T,
-        first_block: u64,
-        count: u64,
-        src: &[u8],
-    ) -> BlockResult<()> {
-        let geometry = self.geometry;
-        let frame = geometry.frame_of(first_block);
-        let first_slot = geometry.slot_of(first_block);
-        let count = usize::try_from(count).map_err(|_| crate::BlockError::InvalidRequest)?;
-        if self.dirty_frames.binary_search(&frame).is_err() {
-            self.dirty_frames
-                .try_reserve(1)
-                .map_err(|_| BlockError::NoMemory)?;
-        }
-        let newly_dirty = {
-            let folio = self.getblk(dev, frame)?;
-            folio.copy_into_slots(first_slot, count, src);
-            folio.mark_slots_dirty(first_slot, count)
-        };
-        if newly_dirty > 0
-            && let Err(index) = self.dirty_frames.binary_search(&frame)
-        {
-            self.dirty_frames.insert(index, frame);
-        }
-        Ok(())
-    }
-
-    /// Writes back dirty slots (`sync_dirty_buffers`). Every run of
-    /// consecutive dirty slots becomes one merged device write; adjacent
-    /// fully dirty folios are submitted in bounded batches. Frames are
-    /// visited in ascending order. `range` restricts writeback to frames
-    /// overlapping the block range.
-    pub(crate) fn writeback_dirty<T: FsBlockDevice + ?Sized>(
-        &mut self,
-        dev: &mut T,
-        range: Option<(u64, u64)>,
-    ) -> BlockResult<()> {
-        let frame_range = range.and_then(|(first, count)| {
-            let last = count.checked_sub(1).and_then(|n| first.checked_add(n))?;
-            Some((self.geometry.frame_of(first), self.geometry.frame_of(last)))
-        });
-        let mut batch = Vec::new();
-        loop {
-            let target = match frame_range {
-                None if range.is_some() => None,
-                None => self.dirty_frames.first().copied(),
-                Some((first, last)) => {
-                    let index = self.dirty_frames.partition_point(|frame| *frame < first);
-                    self.dirty_frames
-                        .get(index)
-                        .copied()
-                        .filter(|frame| *frame <= last)
-                }
-            };
-            let Some(frame) = target else {
-                break;
-            };
-            if self.writeback_full_folio_run(
-                dev,
-                frame,
-                frame_range.map_or(u64::MAX, |(_, last)| last),
-                &mut batch,
-            )? {
-                continue;
-            }
-            self.writeback_folio(dev, frame)?;
-        }
-        Ok(())
-    }
-
-    /// Submits consecutive fully dirty folios together. A failed request may
-    /// have written an unknown prefix, so all folios stay dirty for retry.
-    fn writeback_full_folio_run<T: FsBlockDevice + ?Sized>(
-        &mut self,
-        dev: &mut T,
-        first: u64,
-        last: u64,
-        batch: &mut Vec<u8>,
-    ) -> BlockResult<bool> {
-        let geometry = self.geometry;
-        let max_frames = WRITEBACK_BATCH_BYTES / geometry.folio_size();
-        if max_frames < 2 {
-            return Ok(false);
-        }
-        let index = self
-            .dirty_frames
-            .binary_search(&first)
-            .expect("writeback target is a dirty frame");
-        let mut frames = 0;
-        let mut expected = first;
-        for &frame in self.dirty_frames[index..].iter().take(max_frames) {
-            if frame != expected || frame > last {
-                break;
-            }
-            let Some(folio) = self.folios.get(&frame) else {
-                break;
-            };
-            if folio.dirty_runs().next() != Some((0, geometry.slots())) {
-                break;
-            }
-            frames += 1;
-            let Some(next) = frame.checked_add(1) else {
-                break;
-            };
-            expected = next;
-        }
-        if frames < 2 {
-            return Ok(false);
-        }
-
-        batch.clear();
-        if batch.try_reserve(frames * geometry.folio_size()).is_err() {
-            return Ok(false);
-        }
-        for &frame in &self.dirty_frames[index..index + frames] {
-            let folio = self.folios.get_mut(&frame).expect("dirty folio is cached");
-            batch.extend_from_slice(folio.slot_bytes_mut(0, geometry.slots()));
-        }
-        dev.write_block(geometry.frame_base_block(first), batch)?;
-        for &frame in &self.dirty_frames[index..index + frames] {
-            self.folios
-                .get_mut(&frame)
-                .expect("dirty folio is cached")
-                .clear_dirty_slots(0, geometry.slots());
-        }
-        self.dirty_frames.drain(index..index + frames);
-        Ok(true)
-    }
-
-    /// Overlays a device-direct request result onto overlapping folios so
-    /// cached slots stay coherent with the bytes the device just saw.
-    /// Dirty slots keep their newer bytes when `preserve_dirty` is set
-    /// (direct reads); direct writes clear dirty state beforehand.
-    pub(crate) fn apply_direct(
-        &mut self,
-        first: u64,
-        count: u64,
-        data: &[u8],
-        preserve_dirty: bool,
-    ) {
-        let geometry = self.geometry;
-        let Some(last) = count.checked_sub(1).and_then(|n| first.checked_add(n)) else {
-            return;
-        };
-        for frame in geometry.frame_of(first)..=geometry.frame_of(last) {
-            let Some(folio) = self.folios.get_mut(&frame) else {
-                continue;
-            };
-            let (slot_lo, slot_hi) = overlap_slots(&geometry, frame, first, last);
-            let data_begin = (geometry.frame_base_block(frame) + slot_lo as u64 - first) as usize
-                * geometry.block_size;
-            let data_end = data_begin + (slot_hi - slot_lo) * geometry.block_size;
-            folio.overlay_external(
-                slot_lo,
-                slot_hi - slot_lo,
-                &data[data_begin..data_end],
-                preserve_dirty,
-            );
-        }
-    }
-
-    /// Discards every cached folio overlapping a device-direct request.
-    ///
-    /// A failed write does not report its completed prefix, so none of the
-    /// overlapping cache bytes can remain authoritative. Whole folios are
-    /// discarded even when only some slots overlap; retaining neighboring
-    /// slots would require tracking an error-completion bitmap that the
-    /// current [`FsBlockDevice`] contract does not expose.
-    pub(crate) fn invalidate_range(&mut self, first: u64, count: u64) {
-        let Some(last) = count.checked_sub(1).and_then(|n| first.checked_add(n)) else {
-            return;
-        };
-        for frame in self.geometry.frame_of(first)..=self.geometry.frame_of(last) {
-            self.clear_dirty_frame(frame);
-            self.folios.remove(&frame);
-        }
-    }
-
-    /// Writes back one dirty folio: merged dirty-slot runs become device
-    /// writes; on success the slot state is clean again.
-    fn writeback_folio<T: FsBlockDevice + ?Sized>(
-        &mut self,
-        dev: &mut T,
-        frame: u64,
-    ) -> BlockResult<()> {
-        let geometry = self.geometry;
-        let Some(folio) = self.folios.get_mut(&frame) else {
-            self.clear_dirty_frame(frame);
-            return Ok(());
-        };
-        let base = geometry.frame_base_block(frame);
-        while let Some((slot, count)) = folio.dirty_runs().next() {
-            let lba = base + slot as u64;
-            dev.write_block(lba, folio.slot_bytes_mut(slot, count))?;
-            folio.clear_dirty_slots(slot, count);
-        }
-        if !folio.has_dirty_slots() {
-            self.clear_dirty_frame(frame);
-        }
-        Ok(())
-    }
-
-    /// Finds-or-allocates a folio (`getblk`). When the tree is full, the
-    /// LRU folio is evicted; a dirty victim is written back before it is
-    /// dropped so eviction never discards modifications.
-    fn getblk<T: FsBlockDevice + ?Sized>(
-        &mut self,
-        dev: &mut T,
-        frame: u64,
-    ) -> BlockResult<&mut CacheFolio> {
-        if self.folios.contains(&frame) {
-            return Ok(self.folios.get_mut(&frame).expect("folio was found above"));
-        }
-
-        // Allocate before eviction: a failed folio allocation leaves the
-        // existing cache contents and LRU order unchanged.
-        let folio = CacheFolio::try_new(self.geometry.folio_size(), self.geometry.slots())?;
-        self.folios.try_reserve_entry()?;
-        if self.folios.is_full() {
-            self.evict_lru(dev)?;
-        }
-        self.folios.insert_reserved(frame, folio);
-        Ok(self
-            .folios
-            .get_mut(&frame)
-            .expect("folio was just inserted or found above"))
-    }
-
-    fn evict_lru<T: FsBlockDevice + ?Sized>(&mut self, dev: &mut T) -> BlockResult<()> {
-        let Some(frame) = self.folios.least_recent() else {
-            return Ok(());
-        };
-        // A dirty victim must reach the device before its folio is dropped.
-        if self.dirty_frames.binary_search(&frame).is_ok() {
-            self.writeback_folio(dev, frame)?;
-        }
-        self.folios.remove(&frame);
-        Ok(())
-    }
-
-    fn clear_dirty_frame(&mut self, frame: u64) {
-        if let Ok(index) = self.dirty_frames.binary_search(&frame) {
-            self.dirty_frames.remove(index);
-        }
+    #[cfg(test)]
+    pub(super) fn allocated_frames(&self) -> usize {
+        self.budget.used()
     }
 }
 

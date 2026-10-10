@@ -64,10 +64,13 @@ pub fn handle_exception_sync(
             Ok(ArmVmExit::WaitForInterrupt)
         }
         Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
-            let elr = ctx.exception_pc();
-            let val = elr + exception_next_instruction_step(exit);
-            ctx.set_exception_pc(val);
-            handle_data_abort(ctx, exit)
+            // A data abort can end either in a device completion that resumes
+            // after the access or in a nested page fault that must retry the
+            // same instruction. The decoder therefore leaves the saved guest PC
+            // at the faulting instruction and reports the instruction length so
+            // the successful path can advance it from an owned completion.
+            let step = exception_next_instruction_step(exit);
+            handle_data_abort(ctx, exit, step)
         }
         Some(ESR_EL2::EC::Value::HVC64) => {
             // HVC records the preferred return address (the instruction after
@@ -142,7 +145,11 @@ fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     })
 }
 
-fn handle_data_abort(context_frame: &mut TrapFrame, exit: &Exit) -> ArmVcpuResult<ArmVmExit> {
+fn handle_data_abort(
+    context_frame: &mut TrapFrame,
+    exit: &Exit,
+    step: usize,
+) -> ArmVcpuResult<ArmVmExit> {
     let addr = exception_fault_addr(exit)?;
     let access_width = exception_data_abort_access_width(exit);
     let is_write = exception_data_abort_access_is_write(exit);
@@ -181,6 +188,7 @@ fn handle_data_abort(context_frame: &mut TrapFrame, exit: &Exit) -> ArmVcpuResul
             addr,
             width,
             data: context_frame.gpr(reg) as u64,
+            step,
         });
     }
     Ok(ArmVmExit::MmioRead {
@@ -189,6 +197,7 @@ fn handle_data_abort(context_frame: &mut TrapFrame, exit: &Exit) -> ArmVcpuResul
         reg,
         reg_width,
         signed_ext: false,
+        step,
     })
 }
 
@@ -263,7 +272,10 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
         return result;
     }
 
-    // We just forward the SMC call to the ATF directly.
+    // SCMI remains available for guest-owned peripheral clocks and regulators.
+    // CPU clock and OPP bindings are removed from the derived guest FDT, so a
+    // normal guest cpufreq driver has no host CPU control surface while device
+    // drivers can still use the shared firmware service they require.
     // The args are from lower EL, so it is safe to call the ATF.
     (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
         unsafe { super::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };

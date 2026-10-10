@@ -245,7 +245,7 @@ fn pmu_error(error: ax_cpu::pmu::PmuError) -> crate::StarryError {
 /// Owner-local register transaction; no callback may wait or enable IRQs.
 /// All callers below are bounded perf register operations on a reserved slot.
 pub(in crate::perf) fn on_pmu<R>(operation: impl FnOnce(&mut ax_cpu::pmu::Pmu) -> R) -> R {
-    let _guard = crate::sync::NoPreemptIrqSave::new();
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
     // SAFETY: the guard prevents migration, scheduling and IRQ reentry. Starry
     // is the PMU domain owner, and all event register access passes through
     // this function; the initializer has no remote or recursive access.
@@ -272,7 +272,7 @@ pub(in crate::perf) fn on_counter<R>(
 /// IRQ exclusion spans pause, reads and restoration; no session is borrowed
 /// while a callback opens its own session through `on_counter`.
 pub(in crate::perf) fn with_counters_paused<R>(operation: impl FnOnce() -> R) -> R {
-    let _guard = crate::sync::NoPreemptIrqSave::new();
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {

@@ -4,16 +4,16 @@ use std::{sync::Arc, vec::Vec};
 
 use axvm_types::NestedPagingConfig;
 
-use super::*;
+use super::{Aarch64Arch, Aarch64VgicRuntimeKey, Aarch64VmPlan, npt};
 use crate::{
     AxVmError, AxVmResult,
     arch::aarch64::policy::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig},
     ax_err,
-    config::*,
-    machine::*,
+    config::AxVMConfig,
+    machine::GuestTimerProfile,
     vm::{
-        prepare::{devices::*, vcpus::*, *},
-        *,
+        AxVM, AxVMResources,
+        prepare::{PreparedVm, devices::PreparedDevices, vcpus::PreparedVcpus},
     },
 };
 
@@ -26,12 +26,14 @@ impl Aarch64Arch {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels, &placements)
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+    pub(crate) fn init_vm(vm: &mut AxVM) -> AxVmResult {
+        let vm_id = vm.id();
+        let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
             let placements = resources.vcpu_placements(config);
@@ -42,31 +44,29 @@ impl Aarch64Arch {
             let host_irq_config = super::gic::host_irq_config()
                 .map_err(|error| AxVmError::interrupt("discover host IRQ CPU interface", error))?;
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            let mut vcpus = PreparedVcpus::create(vm_id, &placements, |placement| {
                 Ok(ArmVcpuCreateConfig {
                     mpidr_el1: placement.phys_cpu_id as _,
                     dtb_addr: dtb_addr.as_usize(),
                 })
             })?;
-            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let devices = PreparedDevices::build_planned(resources, ports)?;
             let vgic_runtime = devices
                 .devices()
                 .services()
                 .require::<Aarch64VgicRuntimeKey>()?;
-            for vcpu in &vcpus {
+            for vcpu in &mut vcpus {
                 let binding = vgic_runtime
                     .attach_vcpu(vcpu.id(), &timer_profile)
                     .map_err(|error| {
                         crate::AxVmError::interrupt("attach vCPU to virtual GIC", error)
                     })?;
-                vcpu.get_arch_vcpu().attach_vgic(
-                    vgic_runtime.core().clone(),
-                    binding,
-                    timer_config,
-                )?;
+                vcpu.with_backend(|backend| {
+                    backend.attach_vgic(vgic_runtime.native().clone(), binding, timer_config)
+                })?;
             }
 
-            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            resources.prepare_guest_address_space(vm_id, config, &[])?;
             vcpus.setup(resources, config, move |_config, _memory_regions| {
                 Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
             })?;

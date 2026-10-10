@@ -5,7 +5,7 @@ use core::{
     ptr::NonNull,
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use rlsf::Tlsf;
 
 use super::{AllocResult, AllocatorOps, UsageKind, Usages};
@@ -40,8 +40,8 @@ impl TlsfInfo {
 
 /// The global allocator used by ArceOS when TLSF is enabled.
 pub struct GlobalAllocator {
-    inner: SpinLock<TlsfInfo>,
-    usages: SpinLock<Usages>,
+    inner: RawSpinLock<TlsfInfo>,
+    usages: RawSpinLock<Usages>,
 }
 
 impl Default for GlobalAllocator {
@@ -54,8 +54,8 @@ impl GlobalAllocator {
     /// Creates an empty [`GlobalAllocator`].
     pub const fn new() -> Self {
         Self {
-            inner: SpinLock::new(TlsfInfo::new()),
-            usages: SpinLock::new(Usages::new()),
+            inner: RawSpinLock::new(TlsfInfo::new()),
+            usages: RawSpinLock::new(Usages::new()),
         }
     }
 

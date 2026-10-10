@@ -3,7 +3,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 use super::waiters::{AsyncWaiter, AsyncWaiters, CapacityWaiters};
 use crate::{
     BlockError,
-    os::{BlockNotification, runtime_ops, sync::IrqMutex},
+    os::{BlockNotification, runtime_ops, sync::RawSpinLock},
 };
 
 pub(super) enum SendError<T> {
@@ -12,13 +12,13 @@ pub(super) enum SendError<T> {
 }
 
 pub(super) struct BoundedChannel<T> {
-    state: IrqMutex<ChannelState<T>>,
+    state: RawSpinLock<ChannelState<T>>,
     capacity: usize,
     item_ready: Arc<dyn BlockNotification>,
     space_waiters: CapacityWaiters,
     space_async_waiters: AsyncWaiters,
     #[cfg(test)]
-    space_wait_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
+    space_wait_hook: RawSpinLock<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
 }
 
 struct ChannelState<T> {
@@ -39,7 +39,7 @@ impl<T> BoundedChannel<T> {
 
     fn new(capacity: usize, item_ready: Arc<dyn BlockNotification>) -> Self {
         Self {
-            state: IrqMutex::new(ChannelState {
+            state: RawSpinLock::new(ChannelState {
                 queue: VecDeque::with_capacity(capacity),
                 closed: false,
             }),
@@ -48,7 +48,7 @@ impl<T> BoundedChannel<T> {
             space_waiters: CapacityWaiters::new(),
             space_async_waiters: AsyncWaiters::new(),
             #[cfg(test)]
-            space_wait_hook: IrqMutex::new(None),
+            space_wait_hook: RawSpinLock::new(None),
         }
     }
 
@@ -62,9 +62,9 @@ impl<T> BoundedChannel<T> {
 
     fn enqueue_no_notify(&self, value: T, may_wait_for_lock: bool) -> Result<usize, SendError<T>> {
         let mut state = if may_wait_for_lock {
-            self.state.lock()
+            self.state.lock_irqsave()
         } else {
-            let Some(state) = self.state.try_lock() else {
+            let Some(state) = self.state.try_lock_irqsave() else {
                 return Err(SendError::Full(value));
             };
             state
@@ -92,7 +92,7 @@ impl<T> BoundedChannel<T> {
     pub(super) fn set_space_wait_hook(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .space_wait_hook
-            .lock()
+            .lock_irqsave()
             .replace(alloc::boxed::Box::new(hook));
         assert!(
             previous.is_none(),
@@ -102,7 +102,7 @@ impl<T> BoundedChannel<T> {
 
     #[cfg(test)]
     pub(super) fn run_space_wait_hook(&self) {
-        let hook = self.space_wait_hook.lock().take();
+        let hook = self.space_wait_hook.lock_irqsave().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -115,12 +115,12 @@ impl<T> BoundedChannel<T> {
 
     #[cfg(test)]
     pub(super) fn state_is_unlocked(&self) -> bool {
-        self.state.try_lock().is_some()
+        self.state.try_lock_irqsave().is_some()
     }
 
     #[cfg(test)]
     pub(super) fn with_state_lock_held<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _state = self.state.lock();
+        let _state = self.state.lock_irqsave();
         f()
     }
 
@@ -144,7 +144,7 @@ impl<T> BoundedChannel<T> {
             if self
                 .space_waiters
                 .wait_for(1, || {
-                    let state = self.state.lock();
+                    let state = self.state.lock_irqsave();
                     if state.closed {
                         self.capacity
                     } else {
@@ -173,12 +173,12 @@ impl<T> BoundedChannel<T> {
             let can_block = runtime_ops().is_ok_and(|ops| ops.can_block());
             let available = {
                 let mut state = if nowait || !can_block {
-                    let Some(state) = self.state.try_lock() else {
+                    let Some(state) = self.state.try_lock_irqsave() else {
                         return Err(SendError::Full(values));
                     };
                     state
                 } else {
-                    self.state.lock()
+                    self.state.lock_irqsave()
                 };
                 if state.closed {
                     return Err(SendError::Closed(values));
@@ -201,7 +201,7 @@ impl<T> BoundedChannel<T> {
             if self
                 .space_waiters
                 .wait_for(values.len(), || {
-                    let state = self.state.lock();
+                    let state = self.state.lock_irqsave();
                     if state.closed {
                         self.capacity
                     } else {
@@ -217,7 +217,7 @@ impl<T> BoundedChannel<T> {
 
     pub(super) fn try_recv(&self) -> Option<T> {
         let (value, available) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let value = state.queue.pop_front();
             let available = self.capacity - state.queue.len();
             (value, available)
@@ -234,7 +234,7 @@ impl<T> BoundedChannel<T> {
             return 0;
         }
         let (received, available) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let received = limit.min(state.queue.len());
             values.extend(state.queue.drain(..received));
             (received, self.capacity - state.queue.len())
@@ -250,7 +250,7 @@ impl<T> BoundedChannel<T> {
     pub(super) fn recv(&self) -> Option<T> {
         loop {
             let received = {
-                let mut state = self.state.lock();
+                let mut state = self.state.lock_irqsave();
                 if let Some(value) = state.queue.pop_front() {
                     Some((value, self.capacity - state.queue.len()))
                 } else {
@@ -271,7 +271,7 @@ impl<T> BoundedChannel<T> {
 
     pub(super) fn close(&self) {
         {
-            self.state.lock().closed = true;
+            self.state.lock_irqsave().closed = true;
         }
         self.item_ready.notify();
         self.space_waiters.notify_all();
@@ -284,7 +284,7 @@ impl<T> BoundedChannel<T> {
             !crate::os::sync::current_thread_holds_irq_mutex(),
             "channel state must be inspected without an outer runtime lock"
         );
-        self.state.lock().closed
+        self.state.lock_irqsave().closed
     }
 
     pub(super) fn is_closed_and_empty(&self) -> bool {
@@ -293,7 +293,7 @@ impl<T> BoundedChannel<T> {
             !crate::os::sync::current_thread_holds_irq_mutex(),
             "channel state must be inspected without an outer runtime lock"
         );
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         state.closed && state.queue.is_empty()
     }
 
@@ -304,7 +304,7 @@ impl<T> BoundedChannel<T> {
 
     #[cfg(test)]
     pub(super) fn queued_len(&self) -> usize {
-        self.state.lock().queue.len()
+        self.state.lock_irqsave().queue.len()
     }
 }
 
@@ -438,7 +438,7 @@ mod tests {
         crate::os::task::install_test_runtime_ops();
         let notification = Arc::new(WindowNotification::new());
         let channel = BoundedChannel::with_item_notification(1, notification).unwrap();
-        let owner = channel.state.lock();
+        let owner = channel.state.lock_irqsave();
 
         assert!(matches!(channel.send(1, true), Err(SendError::Full(1))));
         drop(owner);

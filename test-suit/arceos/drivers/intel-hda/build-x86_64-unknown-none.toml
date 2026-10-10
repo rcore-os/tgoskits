@@ -1,0 +1,5 @@
+features = ["ax-std"]
+freestanding = true
+log = "Info"
+max_cpu_num = 1
+to_bin = true

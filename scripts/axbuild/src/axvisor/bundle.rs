@@ -176,7 +176,7 @@ pub(super) fn attach_with_external_assets(
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, Stdio};
+    use std::collections::BTreeMap;
 
     use super::*;
 
@@ -210,20 +210,10 @@ mod tests {
         fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
         let output = directory.path().join("host.cpio");
         let mut archive = None;
-        attach(&[config.clone()], false, &output, &mut archive).unwrap();
-        let extracted = directory.path().join("extracted");
-        fs::create_dir(&extracted).unwrap();
-        assert!(
-            Command::new("cpio")
-                .args(["--extract", "--quiet"])
-                .current_dir(&extracted)
-                .stdin(Stdio::from(fs::File::open(&output).unwrap()))
-                .status()
-                .unwrap()
-                .success()
-        );
-        let contents = fs::read_to_string(
-            extracted.join(format!("guest/builtin/configs/vm-{}.toml", guest.base.id)),
+        attach(std::slice::from_ref(&config), false, &output, &mut archive).unwrap();
+        let entries = parse_newc_entries(&fs::read(&output).unwrap());
+        let contents = String::from_utf8(
+            entries[&format!("guest/builtin/configs/vm-{}.toml", guest.base.id)].clone(),
         )
         .unwrap();
         let packed = GuestConfig::from_toml(&contents).unwrap();
@@ -236,13 +226,10 @@ mod tests {
             .zip(packed.kernel.boot_image_paths())
         {
             assert!(path.starts_with("/guest/builtin/images/"));
-            assert_eq!(
-                fs::read(extracted.join(path.trim_start_matches('/'))).unwrap(),
-                field.as_bytes()
-            );
+            assert_eq!(entries[path.trim_start_matches('/')], field.as_bytes());
         }
         assert!(contents.contains("/guest/writable.img"));
-        assert!(!extracted.join("guest/writable.img").exists());
+        assert!(!entries.contains_key("guest/writable.img"));
         let prior = fs::read(&output).unwrap();
         fs::remove_file(directory.path().join("kernel_path")).unwrap();
         assert!(attach(&[config], false, &output, &mut None).is_err());
@@ -252,7 +239,7 @@ mod tests {
     #[test]
     fn board_package_keeps_missing_absolute_boot_assets_external() {
         let directory = tempfile::tempdir().unwrap();
-        let mut document = toml::Table::try_from(&GuestConfig::default()).unwrap();
+        let mut document = toml::Table::try_from(GuestConfig::default()).unwrap();
         document
             .get_mut("kernel")
             .unwrap()
@@ -268,32 +255,52 @@ mod tests {
         let mut archive = None;
 
         attach_with_external_assets(&[config], false, &output, &mut archive, true).unwrap();
-
-        let extracted = directory.path().join("extracted");
-        fs::create_dir(&extracted).unwrap();
-        assert!(
-            Command::new("cpio")
-                .args(["--extract", "--quiet"])
-                .current_dir(&extracted)
-                .stdin(Stdio::from(fs::File::open(&output).unwrap()))
-                .status()
-                .unwrap()
-                .success()
-        );
-        let contents = fs::read_to_string(extracted.join(format!(
-            "guest/builtin/configs/vm-{}.toml",
-            GuestConfig::default().base.id
-        )))
+        let entries = parse_newc_entries(&fs::read(&output).unwrap());
+        let contents = String::from_utf8(
+            entries[&format!(
+                "guest/builtin/configs/vm-{}.toml",
+                GuestConfig::default().base.id
+            )]
+                .clone(),
+        )
         .unwrap();
         let packed = GuestConfig::from_toml(&contents).unwrap();
         assert_eq!(packed.kernel.kernel_path, "/linux/board-kernel");
         assert!(
-            extracted
-                .join("guest/builtin/images")
-                .read_dir()
-                .unwrap()
-                .next()
-                .is_none()
+            entries
+                .keys()
+                .all(|path| !path.starts_with("guest/builtin/images/"))
         );
+    }
+
+    fn parse_newc_entries(archive: &[u8]) -> BTreeMap<String, Vec<u8>> {
+        let mut entries = BTreeMap::new();
+        let mut offset = 0usize;
+        loop {
+            let header = &archive[offset..offset + 110];
+            assert_eq!(&header[..6], b"070701");
+            let field = |index: usize| {
+                usize::from_str_radix(
+                    std::str::from_utf8(&header[6 + index * 8..14 + index * 8]).unwrap(),
+                    16,
+                )
+                .unwrap()
+            };
+            let size = field(6);
+            let name_size = field(11);
+            let name_start = offset + 110;
+            let name_end = name_start + name_size;
+            let name = std::str::from_utf8(&archive[name_start..name_end - 1])
+                .unwrap()
+                .to_string();
+            let data_start = (name_end + 3) & !3;
+            let data_end = data_start + size;
+            if name == "TRAILER!!!" {
+                break;
+            }
+            entries.insert(name, archive[data_start..data_end].to_vec());
+            offset = (data_end + 3) & !3;
+        }
+        entries
     }
 }

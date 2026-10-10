@@ -7,6 +7,10 @@ use axdevice_base::Resource;
 use axvm_types::HostDeviceAssignment;
 
 use super::super::*;
+use crate::{
+    ax_err,
+    layout::{GuestOwnedRegion, VmRegionKind, build_address_layout},
+};
 
 impl AxVMResources {
     pub(crate) fn prepare_guest_address_space(

@@ -130,7 +130,7 @@ fn queued_pi_boost_requests_preemption(current_priority: u8) -> bool {
 fn rt_spin_lock_remains_preemptible() {
     use ax_std::os::arceos::task::{
         sched::{CpuId, CpuSet},
-        sync::{SpinLock, WaitQueue},
+        sync::{RtSpinLock, WaitQueue},
         thread::ThreadState,
     };
     let current = ax_std::os::arceos::task::thread::current::current_thread_handle().unwrap();
@@ -156,14 +156,14 @@ fn rt_spin_lock_remains_preemptible() {
         || worker.state() == ThreadState::Blocked,
         "RT lock probe must park first",
     );
-    let lock = SpinLock::new(());
+    let lock = RtSpinLock::new(());
     {
         let _guard = lock.lock();
         assert!(matches!(
             ax_std::os::arceos::task::thread::current::validate_blocking_context(),
             Err(ax_std::os::arceos::task::thread::TaskError::UnsafeContext)
         ));
-        let nested = SpinLock::new(());
+        let nested = RtSpinLock::new(());
         drop(nested.lock());
         released.store(true, Ordering::Release);
         gate.notify_one();
@@ -182,7 +182,7 @@ fn rt_lock_preserves_outer_timeout() {
         api::time::ax_monotonic_time,
         task::{
             sched::{CpuId, CpuSet},
-            sync::SpinLock,
+            sync::RtSpinLock,
             thread::{
                 ThreadState,
                 current::{self, CurrentParkStart},
@@ -193,7 +193,7 @@ fn rt_lock_preserves_outer_timeout() {
     let parent = current::current_thread_handle().unwrap();
     let original = parent.affinity().unwrap();
     pin_current_to_cpu(0);
-    let lock = Arc::new(SpinLock::new(()));
+    let lock = Arc::new(RtSpinLock::new(()));
     let held = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let restored = Arc::new(AtomicBool::new(false));
@@ -286,11 +286,11 @@ fn cpu_mask(cpu: u32) -> ax_std::os::arceos::task::sched::CpuSet {
 
 fn reader_drain_uses_lock_wake() {
     use ax_std::os::arceos::task::{
-        sync::{RwSemaphore, SpinRwLock},
+        sync::{RtSpinRwLock, RwSemaphore},
         thread::ThreadState,
     };
     pin_current_to_cpu(2);
-    let lock = Arc::new(SpinRwLock::new(0));
+    let lock = Arc::new(RtSpinRwLock::new(0));
     let reader = lock.read();
     let writer_lock = Arc::clone(&lock);
     let writer = ax_std::os::arceos::thread::builder("rt-rw-drain".into())
@@ -501,7 +501,7 @@ fn semaphore_hard_irq_release() {
     use ax_std::os::arceos::{
         api::time::ax_monotonic_time,
         task::{
-            sync::{Semaphore, SpinLock},
+            sync::{RtSpinLock, Semaphore},
             time::{
                 MonotonicDeadline,
                 hard_timer::{
@@ -518,7 +518,7 @@ fn semaphore_hard_irq_release() {
         // capability. The callback only performs nonblocking context probes;
         // callback allocation reclamation belongs to the task timer service.
         HardKernelTimerCallback::new(std::boxed::Box::new(move |_| {
-            assert!(SpinLock::new(()).try_lock().is_none());
+            assert!(RtSpinLock::new(()).try_lock().is_none());
             assert!(
                 Mutex::new(()).try_lock().is_none(),
                 "sleeping mutex trylock must reject hard IRQ"

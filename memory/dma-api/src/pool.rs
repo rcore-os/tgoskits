@@ -6,7 +6,7 @@ use alloc::{
 use core::ops::{Deref, DerefMut};
 
 #[cfg(feature = "pool")]
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 
 use crate::ContiguousArray;
 #[cfg(feature = "pool")]
@@ -23,13 +23,13 @@ pub(crate) struct ContiguousBufferConfig {
 #[cfg(feature = "pool")]
 #[derive(Clone)]
 pub struct ContiguousBufferPool {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<RawSpinLock<Inner>>,
 }
 
 pub struct ContiguousBuffer {
     data: Option<ContiguousArray<u8>>,
     #[cfg(feature = "pool")]
-    pool: Weak<Mutex<Inner>>,
+    pool: Weak<RawSpinLock<Inner>>,
 }
 
 unsafe impl Send for ContiguousBuffer {}
@@ -98,7 +98,7 @@ impl ContiguousBufferPool {
         }
 
         ContiguousBufferPool {
-            inner: Arc::new(Mutex::new(Inner { dev, pool, config })),
+            inner: Arc::new(RawSpinLock::new(Inner { dev, pool, config })),
         }
     }
 

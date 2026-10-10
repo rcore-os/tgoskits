@@ -42,22 +42,13 @@ jobs:
 
       - name: Plan check matrix
         id: matrix
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RUN_CLIPPY_ALL: ${{ inputs.run_clippy_all || false }}
-        run: |
-          set -euo pipefail
-          args=(
-            --mode starry-apps
-            --repository "$GITHUB_REPOSITORY"
-            --repository-owner "$GITHUB_REPOSITORY_OWNER"
-            --event-name "$EVENT_NAME"
-            --output-file "$GITHUB_OUTPUT"
-          )
-          if [ "$RUN_CLIPPY_ALL" = "true" ]; then
-            args+=(--boolean-input run_clippy_all)
-          fi
-          python3 scripts/test/ci_plan.py "${args[@]}"
+        uses: ./.github/actions/ci-plan
+        with:
+          mode: starry-apps
+          repository: ${{ github.repository }}
+          repository-owner: ${{ github.repository_owner }}
+          event-name: ${{ github.event_name }}
+          boolean-inputs: ${{ inputs.run_clippy_all && 'run_clippy_all' || '' }}
 
   checks:
     name: Starry Apps
@@ -75,21 +66,18 @@ jobs:
     needs: [plan, checks]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision || github.sha }}
       - name: Report result
-        env:
-          REVISION: ${{ needs.plan.outputs.revision }}
-          PLAN_RESULT: ${{ needs.plan.result }}
-          CHECKS_RESULT: ${{ needs.checks.result }}
-        run: |
-          {
-            echo "## Starry Apps Nightly"
-            echo ""
-            echo "dev revision: ${REVISION}"
-            echo ""
-            echo "| Stage | Result |"
-            echo "| --- | --- |"
-            echo "| Plan | ${PLAN_RESULT} |"
-            echo "| Apps | ${CHECKS_RESULT} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$PLAN_RESULT" = success
-          test "$CHECKS_RESULT" = success
+        uses: ./.github/actions/ci-result
+        with:
+          title: Starry Apps Nightly
+          revision: ${{ needs.plan.outputs.revision }}
+          revision-label: dev revision
+          stages: |
+            Plan=${{ needs.plan.result }}
+            Apps=${{ needs.checks.result }}
+          required-stages: |
+            Plan
+            Apps

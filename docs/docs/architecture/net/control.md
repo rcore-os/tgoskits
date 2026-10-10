@@ -21,7 +21,7 @@ sidebar_label: "控制面"
 
 ## 1. 设计边界
 
-控制面是 `NetControl` 持有的只读状态层，通过 `ax_sync::SpinRwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机、路由和 socket payload 只由唯一 protocol executor 推进；IRQ、DMA 与硬件 queue 只由对应 owner CPU 的 queue executor 推进。
+控制面是 `NetControl` 持有的只读状态层，通过 `ax_sync::RawSpinRwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机、路由和 socket payload 只由唯一 protocol executor 推进；IRQ、DMA 与硬件 queue 只由对应 owner CPU 的 queue executor 推进。
 
 ### 1.1 无线控制事务
 
@@ -233,7 +233,7 @@ impl NetControl {
 
 ```rust
 // lib.rs, 简化示意
-let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+let routes: SharedRouteTable = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
 let mut router = Router::new(routes.clone());
 
 let lo_id = InterfaceId::LOOPBACK;

@@ -40,7 +40,7 @@ use crate::{
     StarryError, StarryResult,
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
-    sync::IrqMutex,
+    sync::RawSpinLock,
     task::future::IrqNotify,
 };
 
@@ -73,20 +73,20 @@ impl BpfPerfEventState {
 /// and emits an IRQ-safe worker notification.
 #[derive(Clone)]
 pub(super) struct BpfPerfOutput {
-    state: Arc<IrqMutex<BpfPerfEventState>>,
+    state: Arc<RawSpinLock<BpfPerfEventState>>,
     poll_notify: Arc<IrqNotify>,
 }
 
 /// Task-context readiness capability separated from mutable perf control.
 #[derive(Clone)]
 pub(super) struct BpfPerfPoll {
-    state: Arc<IrqMutex<BpfPerfEventState>>,
+    state: Arc<RawSpinLock<BpfPerfEventState>>,
     poll_ready: Arc<PollSet>,
 }
 
 impl Pollable for BpfPerfPoll {
     fn poll(&self) -> IoEvents {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         if state.is_mapped() && state.inner.readable() {
             IoEvents::IN
         } else {
@@ -118,7 +118,7 @@ impl Pollable for BpfPerfPoll {
 impl BpfPerfOutput {
     pub(super) fn write_event(&self, data: &[u8]) -> StarryResult<()> {
         let notify = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             if !state.is_mapped() {
                 return Ok(());
             }
@@ -156,7 +156,7 @@ impl BpfPerfOutput {
 /// access is gated on [`BpfPerfEventState::is_mapped`]), so a dangling pointer
 /// left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
-    state: Arc<IrqMutex<BpfPerfEventState>>,
+    state: Arc<RawSpinLock<BpfPerfEventState>>,
     poll: BpfPerfPoll,
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
@@ -175,7 +175,7 @@ impl BpfPerfEventWrapper {
         let poll_notify = Arc::new(IrqNotify::new());
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
-        let state = Arc::new(IrqMutex::new(BpfPerfEventState { inner, pages: None }));
+        let state = Arc::new(RawSpinLock::new(BpfPerfEventState { inner, pages: None }));
         Self {
             poll: BpfPerfPoll {
                 state: Arc::clone(&state),
@@ -273,7 +273,11 @@ impl PerfEventOps for BpfPerfEventWrapper {
     }
 
     fn enable(&mut self) -> StarryResult<()> {
-        self.state.lock().inner.enable().into_starry_result()?;
+        self.state
+            .lock_irqsave()
+            .inner
+            .enable()
+            .into_starry_result()?;
         #[cfg(target_arch = "aarch64")]
         if let Some(sideband) = &self.sideband {
             sideband.set_enabled(true);
@@ -286,7 +290,11 @@ impl PerfEventOps for BpfPerfEventWrapper {
         if let Some(sideband) = &self.sideband {
             sideband.set_enabled(false);
         }
-        self.state.lock().inner.disable().into_starry_result()?;
+        self.state
+            .lock_irqsave()
+            .inner
+            .disable()
+            .into_starry_result()?;
         Ok(())
     }
 
@@ -333,7 +341,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
     }
 
     fn device_mmap(&mut self, len: usize) -> StarryResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        if self.state.lock().is_mapped() {
+        if self.state.lock_irqsave().is_mapped() {
             // Linux allows only one live mmap per perf event fd; a second
             // mapping while the first is alive would orphan it. A stale
             // `Weak` from an abandoned or munmap'd previous attempt does not
@@ -357,7 +365,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
         let paddr = virt_to_phys(kvirt);
         let pages = Arc::new(pages);
 
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if state.is_mapped() {
             return Err(StarryError::ResourceBusy);
         }

@@ -42,6 +42,10 @@ TEST_SUITE_PATHS = (
     (Path("test-suit/arceos"), "arceos"),
     (Path("test-suit/starryos"), "starry"),
     (Path("test-suit/axvisor"), "axvisor"),
+    # AxVisor nightly cases migrated out of `test-suit/axvisor`; their paths
+    # are still a registered AxVisor suite and must route to the same checks
+    # instead of being ignored as ordinary `apps/**` files.
+    (Path("apps/axvisor"), "axvisor"),
     # Real board performance cases live outside `test-suit`, but their paths are
     # still a registered AxVisor suite: PR routing must select the same checks
     # instead of silently ignoring them as ordinary `apps/**` files.

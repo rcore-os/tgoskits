@@ -38,10 +38,10 @@ pub(crate) fn discover_qemu_cases(
 pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
     group: &str,
-    selected_case: Option<&str>,
-    board: Option<&str>,
+    selected_cases: &[String],
+    boards: &[String],
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
-    discovery::discover_board_test_groups(workspace_root, group, selected_case, board)
+    discovery::discover_board_test_groups(workspace_root, group, selected_cases, boards)
 }
 
 pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Result<()> {

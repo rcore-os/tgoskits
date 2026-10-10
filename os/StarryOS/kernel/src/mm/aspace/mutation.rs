@@ -7,7 +7,7 @@ use ax_memory_addr::{VirtAddr, VirtAddrRange};
 use heapless::Vec as InlineVec;
 
 use super::{AddressSpaceId, VmEpoch, objects::FrameLease};
-use crate::sync::{IrqMutex, try_push_irq_vec, try_reserve_irq_vec};
+use crate::sync::{RawSpinLock, try_push_irq_vec, try_reserve_irq_vec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationState {
@@ -131,7 +131,7 @@ struct QuarantinedFrame {
 /// this queue, making unsafe reuse impossible.
 #[derive(Debug, Default)]
 pub struct TlbQuarantine {
-    entries: IrqMutex<Vec<QuarantinedFrame>>,
+    entries: RawSpinLock<Vec<QuarantinedFrame>>,
 }
 
 impl TlbQuarantine {
@@ -177,17 +177,17 @@ impl TlbQuarantine {
     }
 
     pub fn pending(&self) -> usize {
-        self.entries.lock().len()
+        self.entries.lock_irqsave().len()
     }
 
     pub fn requests(&self) -> Result<Vec<TlbRequest>, QuarantineError> {
         let mut requests = Vec::new();
         loop {
-            let required = self.entries.lock().len();
+            let required = self.entries.lock_irqsave().len();
             requests
                 .try_reserve_exact(required)
                 .map_err(|_| QuarantineError::ResourceExhausted)?;
-            let entries = self.entries.lock();
+            let entries = self.entries.lock_irqsave();
             if entries.len() > requests.capacity() {
                 continue;
             }
@@ -198,7 +198,7 @@ impl TlbQuarantine {
 
     pub fn contains_request(&self, space_id: AddressSpaceId, epoch: VmEpoch) -> bool {
         self.entries
-            .lock()
+            .lock_irqsave()
             .iter()
             .any(|entry| entry.request.space_id == space_id && entry.request.epoch == epoch)
     }
@@ -212,7 +212,7 @@ impl TlbQuarantine {
             if released.len() == released.capacity() {
                 if !self
                     .entries
-                    .lock()
+                    .lock_irqsave()
                     .iter()
                     .any(|entry| entry.request.is_complete())
                 {
@@ -223,7 +223,7 @@ impl TlbQuarantine {
                     .map_err(|_| QuarantineError::ResourceExhausted)?;
             }
             let entry = {
-                let mut entries = self.entries.lock();
+                let mut entries = self.entries.lock_irqsave();
                 entries
                     .iter()
                     .position(|entry| entry.request.is_complete())
@@ -249,7 +249,7 @@ impl TlbQuarantine {
         cpu: usize,
     ) -> Result<Vec<FrameLease>, QuarantineError> {
         {
-            let mut entries = self.entries.lock();
+            let mut entries = self.entries.lock_irqsave();
             for entry in entries.iter_mut() {
                 if entry.request.space_id == space_id && entry.request.epoch == epoch {
                     let _ = entry.request.acknowledge(cpu);
@@ -380,16 +380,16 @@ pub struct MutationGate {
     #[cfg(test)]
     fail_next_commit_before_publish: core::sync::atomic::AtomicBool,
     #[cfg(test)]
-    last_retired_receipt: IrqMutex<Option<MutationReceipt>>,
+    last_retired_receipt: RawSpinLock<Option<MutationReceipt>>,
     /// Serializes the short epoch-CAS/publication section.  File I/O and page
     /// table work happen before entering this gate; the lock therefore cannot
     /// introduce a sleep-under-gate path while making the commit decision
     /// linearizable.
-    commit_lock: IrqMutex<()>,
+    commit_lock: RawSpinLock<()>,
     /// Published receipts whose remote TLB obligations are still outstanding.
     /// Keeping the receipt here is important: returning `TlbPending` must not
     /// drop the only record that ties detached frames to the shootdown.
-    pending: IrqMutex<Vec<MutationReceipt>>,
+    pending: RawSpinLock<Vec<MutationReceipt>>,
 }
 
 impl Default for MutationGate {
@@ -406,9 +406,9 @@ impl MutationGate {
             #[cfg(test)]
             fail_next_commit_before_publish: core::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
-            last_retired_receipt: IrqMutex::new(None),
-            commit_lock: IrqMutex::new(()),
-            pending: IrqMutex::new(Vec::new()),
+            last_retired_receipt: RawSpinLock::new(None),
+            commit_lock: RawSpinLock::new(()),
+            pending: RawSpinLock::new(Vec::new()),
         }
     }
 
@@ -436,7 +436,7 @@ impl MutationGate {
 
     #[cfg(test)]
     pub(crate) fn last_retired_receipt(&self) -> Option<MutationReceipt> {
-        self.last_retired_receipt.lock().clone()
+        self.last_retired_receipt.lock_irqsave().clone()
     }
 
     pub fn begin(&self, space_id: AddressSpaceId, targets: usize) -> PreparedMutation {
@@ -465,7 +465,7 @@ impl MutationGate {
         &self,
         mutation: &PreparedMutation,
     ) -> Result<(), MutationError> {
-        let commit_guard = self.commit_lock.lock();
+        let commit_guard = self.commit_lock.lock_irqsave();
         let pending_overlap = self.pending_overlap_request(mutation).is_some();
         drop(commit_guard);
         if pending_overlap {
@@ -486,7 +486,7 @@ impl MutationGate {
             return None;
         }
         self.pending
-            .lock()
+            .lock_irqsave()
             .iter()
             .find(|pending| {
                 pending
@@ -539,9 +539,9 @@ impl MutationGate {
                 try_reserve_irq_vec(&self.pending, 1)
                     .map_err(|_| MutationError::ResourceExhausted)?;
             }
-            let guard = self.commit_lock.lock();
+            let guard = self.commit_lock.lock_irqsave();
             let has_capacity = !needs_pending_slot || {
-                let pending = self.pending.lock();
+                let pending = self.pending.lock_irqsave();
                 pending.len() < pending.capacity()
             };
             if has_capacity {
@@ -585,28 +585,28 @@ impl MutationGate {
             let receipt = published.retire();
             #[cfg(test)]
             {
-                *self.last_retired_receipt.lock() = Some(receipt.clone());
+                *self.last_retired_receipt.lock_irqsave() = Some(receipt.clone());
             }
             return Ok(receipt);
         }
 
-        self.pending.lock().push(pending.into_receipt());
+        self.pending.lock_irqsave().push(pending.into_receipt());
         Err(MutationError::TlbPending)
     }
 
     /// Number of receipts waiting for remote TLB acknowledgement.
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().len()
+        self.pending.lock_irqsave().len()
     }
 
     pub fn pending_requests(&self) -> Result<Vec<TlbRequest>, MutationError> {
         let mut requests = Vec::new();
         loop {
-            let required = self.pending.lock().len();
+            let required = self.pending.lock_irqsave().len();
             requests
                 .try_reserve_exact(required)
                 .map_err(|_| MutationError::ResourceExhausted)?;
-            let pending = self.pending.lock();
+            let pending = self.pending.lock_irqsave();
             if pending.len() > requests.capacity() {
                 continue;
             }
@@ -620,7 +620,7 @@ impl MutationGate {
     /// hand the obligation to the architecture TLB service after publication.
     pub fn pending_request(&self, space_id: AddressSpaceId, epoch: VmEpoch) -> Option<TlbRequest> {
         self.pending
-            .lock()
+            .lock_irqsave()
             .iter()
             .find(|receipt| {
                 receipt.tlb_obligation.space_id == space_id && receipt.new_epoch == epoch
@@ -636,7 +636,7 @@ impl MutationGate {
         epoch: VmEpoch,
         cpu: usize,
     ) -> Result<Option<MutationReceipt>, MutationError> {
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock_irqsave();
         let Some(index) = pending.iter().position(|receipt| {
             receipt.tlb_obligation.space_id == space_id && receipt.new_epoch == epoch
         }) else {
@@ -657,7 +657,7 @@ impl MutationGate {
             .expect("a receipt emits one retirement event");
         #[cfg(test)]
         {
-            *self.last_retired_receipt.lock() = Some(receipt.clone());
+            *self.last_retired_receipt.lock_irqsave() = Some(receipt.clone());
         }
         Ok(Some(receipt))
     }

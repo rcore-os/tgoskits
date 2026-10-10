@@ -84,7 +84,7 @@ cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 
 ## 4. 目录布局与用例发现
 
-性能测例已由已合入的 PR2504 统一到 `benchmarks/` 下，AxVisor 板卡用例发现逻辑在 `test-suit/axvisor/<group>` 之外同时搜索 `benchmarks/axvisor`。本用例因此位于：
+性能测例已由已合入的 PR2504 统一到 `benchmarks/` 下。AxVisor 板卡用例发现逻辑除 `test-suit/axvisor/<group>` 与 `apps/axvisor/<group>` 外，还在 `normal` 组下搜索 `benchmarks/axvisor`；`benchmarks/axvisor` 承载真实板卡性能用例，仍留在 `benchmarks/` 而不迁移到 `test-suit` 或 `apps`。本用例因此位于：
 
 ```text
 benchmarks/axvisor/board-orangepi-5-plus/task-switch/
@@ -96,6 +96,6 @@ benchmarks/axvisor/board-orangepi-5-plus/task-switch/
 └── task-switch.toml                           # AxVisor 客户机描述
 ```
 
-`normal` 组除 `test-suit/axvisor/normal` 外还搜索 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 直接按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名 `orangepi-5-plus-task-switch` 选中本用例，无需额外的目录注册或用例路由。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
+`normal` 组同时搜索 `test-suit/axvisor/normal`、`apps/axvisor/normal` 与 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 直接按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名 `orangepi-5-plus-task-switch` 选中本用例，无需额外的目录注册或用例路由。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
 
 与 QEMU `scheduler-latency-bench` 的分工见 1.1：两者测量同类切换开销，本用例提供实体 RK3588 板卡上的 PMU/CNTVCT 计数与 GPIO 引脚证据，QEMU 用例提供宿主时钟下的快速回归，二者互补而不互为替代。

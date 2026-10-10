@@ -8,7 +8,7 @@ use axpoll_set::PollSet;
 use starry_signal::Signo;
 
 use super::{PidRoleLease, ProcessData, Tid, TidNumber, future};
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{Mutex, RawSpinLock};
 
 struct RetiredLeader {
     nice: i32,
@@ -23,7 +23,7 @@ pub(super) struct ProcessWaitState {
     exec_lock: Mutex<()>,
     exit_signal: Option<Signo>,
     wait_parent_tid: TidNumber,
-    retired_leader: IrqMutex<Option<RetiredLeader>>,
+    retired_leader: RawSpinLock<Option<RetiredLeader>>,
 }
 
 impl ProcessWaitState {
@@ -35,7 +35,7 @@ impl ProcessWaitState {
             exec_lock: Mutex::new(()),
             exit_signal,
             wait_parent_tid,
-            retired_leader: IrqMutex::new(None),
+            retired_leader: RawSpinLock::new(None),
         }
     }
 
@@ -83,7 +83,7 @@ impl ProcessData {
         let previous = self
             .wait
             .retired_leader
-            .lock()
+            .lock_irqsave()
             .replace(RetiredLeader { nice, tid_lease });
         assert!(previous.is_none(), "process retired its leader twice");
     }
@@ -92,7 +92,7 @@ impl ProcessData {
     pub(crate) fn retired_leader_transfer_ready(&self) -> bool {
         self.wait
             .retired_leader
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .is_some_and(|leader| leader.tid_lease.task_transfer_ready())
     }
@@ -101,7 +101,7 @@ impl ProcessData {
     pub fn retired_leader_nice(&self) -> Option<i32> {
         self.wait
             .retired_leader
-            .lock()
+            .lock_irqsave()
             .as_ref()
             .map(|leader| leader.nice)
     }
@@ -111,7 +111,7 @@ impl ProcessData {
         let leader = self
             .wait
             .retired_leader
-            .lock()
+            .lock_irqsave()
             .take()
             .expect("process lost its retired leader state");
         (leader.nice, leader.tid_lease)
@@ -122,7 +122,7 @@ impl ProcessData {
         let leader = self
             .wait
             .retired_leader
-            .lock()
+            .lock_irqsave()
             .take()
             .expect("process lost its retired leader state");
         assert!(

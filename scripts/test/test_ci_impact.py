@@ -192,43 +192,24 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.ignored_apps, ("apps/starry/demo/prebuild.sh",))
 
     def test_test_suite_path_is_preserved_for_exclusive_exact_routing(self) -> None:
-        impact = ci_impact.analyze_changed_paths(
-            self.workspace_root,
-            [Path("test-suit/starryos/qemu/system/qemu-aarch64.toml")],
-            self.metadata_by_arch,
-        )
+        for prefix, os_name in ci_impact.TEST_SUITE_PATHS:
+            with self.subTest(prefix=prefix, os_name=os_name):
+                path = prefix / "generated-suite/config.toml"
+                impact = ci_impact.analyze_changed_paths(
+                    self.workspace_root, [path], self.metadata_by_arch
+                )
 
-        self.assertFalse(impact.full)
-        self.assertTrue(impact.exclusive)
-        self.assertEqual(
-            impact.test_suite_paths,
-            ("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
-        )
-        self.assertEqual(impact.targets, ())
+                self.assertFalse(impact.full)
+                self.assertTrue(impact.exclusive)
+                self.assertEqual(impact.test_suite_paths, (path.as_posix(),))
+                self.assertEqual(impact.targets, ())
 
-    def test_benchmark_suite_path_routes_to_axvisor_instead_of_ignored_app(self) -> None:
-        path = Path(
-            "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/"
-            "performance/board-orangepi-5-plus-vcpu-perf.toml"
-        )
-
-        impact = ci_impact.analyze_changed_paths(
-            self.workspace_root,
-            [path],
-            self.metadata_by_arch,
-        )
-
-        self.assertFalse(impact.full)
-        self.assertEqual(impact.ignored_apps, ())
-        self.assertTrue(impact.exclusive)
-        self.assertEqual(impact.test_suite_paths, (path.as_posix(),))
-        self.assertEqual(impact.targets, ())
-
-    def test_benchmark_starry_path_routes_to_nightly_app_instead_of_ignored_app(
+    def test_migrated_axvisor_path_routes_to_axvisor_instead_of_ignored_app(
         self,
     ) -> None:
         path = Path(
-            "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml"
+            "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/"
+            "board-orangepi-5-plus-linux.toml"
         )
 
         impact = ci_impact.analyze_changed_paths(
@@ -244,7 +225,7 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.targets, ())
 
     def test_apps_starry_functional_path_stays_ignored(self) -> None:
-        path = Path("apps/starry/qemu/compile-sim-bench/qemu-x86_64.toml")
+        path = Path("apps/starry/generated-app/config.toml")
 
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
@@ -256,22 +237,21 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.ignored_apps, (path.as_posix(),))
         self.assertEqual(impact.test_suite_paths, ())
 
-    def test_ci_owned_virtio_blk_app_triggers_axvisor_aarch64(self) -> None:
+    def test_ci_owned_app_input_selects_its_registered_target(self) -> None:
+        prefix, selection = ci_impact.CI_OWNED_APP_INPUTS[0]
+        path = prefix / "generated-input/run.sh"
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
-            [Path("apps/arceos/virtio-blk-test/run.sh")],
+            [path],
             self.metadata_by_arch,
         )
 
         self.assertFalse(impact.full)
         self.assertNotIn(
-            "apps/arceos/virtio-blk-test/run.sh",
+            path.as_posix(),
             impact.ignored_apps,
         )
-        self.assertEqual(
-            impact.input_selections,
-            ("axvisor:qemu:aarch64",),
-        )
+        self.assertEqual(impact.input_selections, (selection,))
 
     def test_os_specific_config_without_arch_hint_selects_all_os_arches(self) -> None:
         impact = ci_impact.analyze_changed_paths(
@@ -332,7 +312,12 @@ class CiImpactTests(unittest.TestCase):
             metadata_failure.ignored_markdown,
             ("components/shared/README.md",),
         )
-        self.assertEqual(len(metadata_failure.targets), 12)
+        expected_targets = {
+            f"{os_name}:{arch}"
+            for os_name in ("arceos", "starry", "axvisor")
+            for arch in ci_impact.ARCH_TARGETS
+        }
+        self.assertEqual(set(metadata_failure.targets), expected_targets)
 
     def test_global_change_skips_unneeded_metadata_loading(self) -> None:
         with (
@@ -453,25 +438,23 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.ignored_markdown, ("README.md",))
         load_metadata.assert_not_called()
 
-    def test_unknown_and_global_paths_fall_back_to_full(self) -> None:
-        for changed_path in (
-            "unknown/input.bin",
-            "Cargo.toml",
-            ".cargo/config.toml",
-            "scripts/axbuild/src/lib.rs",
-            "scripts/test/ci_plan.py",
-            "xtask/src/main.rs",
-            ".github/ci/checks/starry.toml",
-        ):
+    def test_unknown_path_falls_back_to_full(self) -> None:
+        for changed_path in (Path("unknown/input.bin"),):
             with self.subTest(path=changed_path):
                 impact = ci_impact.analyze_changed_paths(
-                    self.workspace_root,
-                    [Path(changed_path)],
-                    self.metadata_by_arch,
+                    self.workspace_root, [changed_path], self.metadata_by_arch
                 )
-
                 self.assertTrue(impact.full)
                 self.assertTrue(impact.reason)
+
+    def test_global_path_falls_back_to_full(self) -> None:
+        prefix = sorted(ci_impact.FULL_PREFIXES, key=str)[0]
+        path = prefix / "generated-check.py"
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root, [path], self.metadata_by_arch
+        )
+        self.assertTrue(impact.full)
+        self.assertTrue(impact.reason)
 
 
 if __name__ == "__main__":

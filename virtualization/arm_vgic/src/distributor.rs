@@ -22,22 +22,6 @@ pub(crate) struct DistributorState {
     fixed_routes: Vec<bool>,
 }
 
-#[derive(Default)]
-pub(crate) struct DistributorWriteOutcome {
-    delivery_candidates: Vec<SpiId>,
-}
-
-impl DistributorWriteOutcome {
-    pub(crate) fn into_candidates(self) -> Vec<SpiId> {
-        self.delivery_candidates
-    }
-}
-
-#[derive(Default)]
-struct FlagWriteOutcome {
-    delivery_candidates: Vec<SpiId>,
-}
-
 impl DistributorState {
     pub(crate) fn new(spi_count: usize) -> VgicResult<Self> {
         let mut interrupts = Vec::with_capacity(spi_count);
@@ -113,9 +97,13 @@ impl DistributorState {
             .get_mut(index)
             .ok_or(VgicError::InvalidIntId { raw: spi.raw() })?;
         if *owned {
-            return Err(VgicError::ResourceConflict {
-                resource: "GICv3 SPI ownership",
-                detail: alloc::format!("SPI {} is already guest-owned", spi.raw()),
+            return Err(VgicError::NativeState {
+                operation: "claim GICv3 SPI",
+                vcpu: None,
+                intid: Some(IntId::Spi(spi)),
+                reason: "the SPI is already guest-owned",
+                kind: crate::StateErrorKind::ResourceBusy,
+                detail: crate::NativeStateDetail::None,
             });
         }
         *owned = true;
@@ -246,19 +234,20 @@ impl DistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
-    ) -> VgicResult<DistributorWriteOutcome> {
+        candidates: &mut Vec<SpiId>,
+    ) -> VgicResult<()> {
+        candidates.clear();
         validate_access(offset, width, config, "write")?;
         if component_id(offset, GicComponent::Distributor).is_some() {
             require_width(offset, width, AccessWidth::Dword, "write")?;
-            return Ok(DistributorWriteOutcome::default());
+            return Ok(());
         }
-        let mut outcome = DistributorWriteOutcome::default();
         match offset {
             GICD_CTLR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
                 self.enabled = value & (1 << 1) != 0;
                 if self.enabled {
-                    outcome.delivery_candidates.extend(
+                    candidates.extend(
                         self.interrupts
                             .iter()
                             .filter(|interrupt| interrupt.deliverable())
@@ -271,47 +260,54 @@ impl DistributorState {
             }
             _ if word_index(offset, GICD_ISENABLER, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                outcome.delivery_candidates = self
-                    .write_flags(offset, GICD_ISENABLER, value, config, |interrupt| {
-                        interrupt.set_enabled(true)
-                    })?
-                    .delivery_candidates;
+                self.write_flags(
+                    offset,
+                    GICD_ISENABLER,
+                    value,
+                    config,
+                    Some(candidates),
+                    |interrupt| interrupt.set_enabled(true),
+                )?;
             }
             _ if word_index(offset, GICD_ICENABLER, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_flags(offset, GICD_ICENABLER, value, config, |interrupt| {
+                self.write_flags(offset, GICD_ICENABLER, value, config, None, |interrupt| {
                     interrupt.set_enabled(false)
                 })?;
             }
             _ if word_index(offset, GICD_ISPENDR, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                let write = self.write_flags(offset, GICD_ISPENDR, value, config, |interrupt| {
-                    interrupt.set_pending(true)
-                })?;
-                outcome.delivery_candidates = write.delivery_candidates;
+                self.write_flags(
+                    offset,
+                    GICD_ISPENDR,
+                    value,
+                    config,
+                    Some(candidates),
+                    |interrupt| interrupt.set_pending(true),
+                )?;
             }
             _ if word_index(offset, GICD_ICPENDR, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_flags(offset, GICD_ICPENDR, value, config, |interrupt| {
+                self.write_flags(offset, GICD_ICPENDR, value, config, None, |interrupt| {
                     interrupt.set_pending(false)
                 })?;
             }
             _ if word_index(offset, GICD_ISACTIVER, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_flags(offset, GICD_ISACTIVER, value, config, |interrupt| {
+                self.write_flags(offset, GICD_ISACTIVER, value, config, None, |interrupt| {
                     interrupt.set_active(true)
                 })?;
             }
             _ if word_index(offset, GICD_ICACTIVER, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                let write = self.write_flags(
+                self.write_flags(
                     offset,
                     GICD_ICACTIVER,
                     value,
                     config,
+                    Some(candidates),
                     InterruptRecord::complete,
                 )?;
-                outcome.delivery_candidates = write.delivery_candidates;
             }
             _ if (GICD_IPRIORITYR..GICD_IPRIORITYR + 1020).contains(&offset) => {
                 self.write_priorities(offset, width, value, config)?;
@@ -326,19 +322,19 @@ impl DistributorState {
                 if raw >= 32 && raw < config.spi_limit() {
                     let spi = SpiId::new(raw)?;
                     if !self.guest_owns_spi(spi, config)? {
-                        return Ok(outcome);
+                        return Ok(());
                     }
                     if !self.fixed_routes[(spi.raw() - 32) as usize] {
                         self.set_route(spi, GicAffinity::from_mpidr(value))?;
                     }
                     if self.interrupt(spi)?.deliverable() {
-                        outcome.delivery_candidates.push(spi);
+                        candidates.push(spi);
                     }
                 }
             }
             _ => {}
         }
-        Ok(outcome)
+        Ok(())
     }
 
     fn read_flags(
@@ -369,10 +365,10 @@ impl DistributorState {
         canonical_base: u64,
         value: u64,
         config: &GicV3Config,
+        mut candidates: Option<&mut Vec<SpiId>>,
         mut update: impl FnMut(&mut InterruptRecord),
-    ) -> VgicResult<FlagWriteOutcome> {
+    ) -> VgicResult<()> {
         let index = ((offset - canonical_base) % 0x80) / 4;
-        let mut outcome = FlagWriteOutcome::default();
         for bit in 0..32u32 {
             if value & (1 << bit) == 0 {
                 continue;
@@ -384,12 +380,17 @@ impl DistributorState {
                 && let Ok(interrupt) = self.interrupt_mut(spi)
             {
                 update(interrupt);
-                if interrupt.deliverable() {
-                    outcome.delivery_candidates.push(spi);
+                // Only the flag writes that can make an interrupt newly
+                // deliverable report candidates, matching the pre-refactor
+                // per-register behaviour.
+                if interrupt.deliverable()
+                    && let Some(candidates) = candidates.as_mut()
+                {
+                    candidates.push(spi);
                 }
             }
         }
-        Ok(outcome)
+        Ok(())
     }
 
     fn read_priorities(
@@ -511,7 +512,7 @@ fn validate_access(
             operation,
             offset,
             width,
-            detail: "access is unaligned or outside the Distributor frame".into(),
+            reason: "access is unaligned or outside the Distributor frame",
         });
     }
     Ok(())
@@ -529,7 +530,7 @@ fn require_width(
             operation,
             offset,
             width: actual,
-            detail: alloc::format!("register requires {expected:?}"),
+            reason: crate::width_requirement(expected),
         });
     }
     Ok(())

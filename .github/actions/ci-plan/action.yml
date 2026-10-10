@@ -1,0 +1,126 @@
+name: Plan CI checks
+description: Run the manifest-driven CI planner with the repository's uv Python runtime.
+
+inputs:
+  mode:
+    description: Planner mode (main, starry-apps, axvisor-nightly, or benchmarks).
+    required: true
+  repository:
+    description: Full GitHub repository name.
+    required: true
+  repository-owner:
+    description: GitHub repository owner.
+    required: true
+  event-name:
+    description: GitHub event name.
+    required: true
+  head-repository:
+    description: Pull request head repository, when applicable.
+    required: false
+    default: ''
+  base-ref:
+    description: Pull request base branch, when applicable.
+    required: false
+    default: ''
+  since-ref:
+    description: Revision used for incremental impact analysis.
+    required: false
+    default: ''
+  boolean-inputs:
+    description: Newline or comma separated enabled boolean input names.
+    required: false
+    default: ''
+
+outputs:
+  static_matrix:
+    description: Static/preflight matrix JSON.
+    value: ${{ steps.plan.outputs.static_matrix }}
+  static_required:
+    description: Whether the static matrix is required.
+    value: ${{ steps.plan.outputs.static_required }}
+  workspace_matrix:
+    description: Workspace matrix JSON.
+    value: ${{ steps.plan.outputs.workspace_matrix }}
+  workspace_required:
+    description: Whether the workspace matrix is required.
+    value: ${{ steps.plan.outputs.workspace_required }}
+  arceos_matrix:
+    description: ArceOS matrix JSON.
+    value: ${{ steps.plan.outputs.arceos_matrix }}
+  arceos_required:
+    description: Whether the ArceOS matrix is required.
+    value: ${{ steps.plan.outputs.arceos_required }}
+  starry_matrix:
+    description: Starry matrix JSON.
+    value: ${{ steps.plan.outputs.starry_matrix }}
+  starry_required:
+    description: Whether the Starry matrix is required.
+    value: ${{ steps.plan.outputs.starry_required }}
+  axvisor_matrix:
+    description: AxVisor matrix JSON.
+    value: ${{ steps.plan.outputs.axvisor_matrix }}
+  axvisor_required:
+    description: Whether the AxVisor matrix is required.
+    value: ${{ steps.plan.outputs.axvisor_required }}
+  starry_apps_matrix:
+    description: Starry Apps matrix JSON.
+    value: ${{ steps.plan.outputs.starry_apps_matrix }}
+  prepare_matrix:
+    description: Benchmark preparation matrix JSON.
+    value: ${{ steps.plan.outputs.prepare_matrix }}
+  axvisor_performance_matrix:
+    description: AxVisor performance matrix JSON.
+    value: ${{ steps.plan.outputs.axvisor_performance_matrix }}
+  starry_performance_matrix:
+    description: Starry performance matrix JSON.
+    value: ${{ steps.plan.outputs.starry_performance_matrix }}
+  starry_board_performance_matrix:
+    description: Starry board performance matrix JSON.
+    value: ${{ steps.plan.outputs.starry_board_performance_matrix }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        python-version: '3.13'
+
+    - name: Run CI planner
+      id: plan
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        REPOSITORY: ${{ inputs.repository }}
+        REPOSITORY_OWNER: ${{ inputs.repository-owner }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        HEAD_REPOSITORY: ${{ inputs.head-repository }}
+        BASE_REF: ${{ inputs.base-ref }}
+        SINCE_REF: ${{ inputs.since-ref }}
+        BOOLEAN_INPUTS: ${{ inputs.boolean-inputs }}
+      run: |
+        set -euo pipefail
+        args=(
+          --mode "$MODE"
+          --repository "$REPOSITORY"
+          --repository-owner "$REPOSITORY_OWNER"
+          --event-name "$EVENT_NAME"
+          --output-file "$GITHUB_OUTPUT"
+        )
+        if [[ -n "$HEAD_REPOSITORY" ]]; then
+          args+=(--head-repository "$HEAD_REPOSITORY")
+        fi
+        if [[ -n "$BASE_REF" ]]; then
+          args+=(--base-ref "$BASE_REF")
+        fi
+        if [[ -n "$SINCE_REF" ]]; then
+          args+=(--since-ref "$SINCE_REF")
+        fi
+        while IFS= read -r boolean_input; do
+          [[ -z "$boolean_input" ]] && continue
+          args+=(--boolean-input "$boolean_input")
+        done < <(printf '%s\n' "$BOOLEAN_INPUTS" | tr ',' '\n')
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          args+=(--summary-file "$GITHUB_STEP_SUMMARY")
+        fi
+        uv run --python 3.13 --no-project python3 scripts/test/ci_plan.py "${args[@]}"

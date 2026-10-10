@@ -11,7 +11,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use log::{debug, info, warn};
 use rd_net::{
     DmaBuffer, FixedNetControl, IRxQueue, ITxQueue, NetDevice, NetDeviceInfo, NetDeviceParts,
@@ -506,7 +506,7 @@ impl core::fmt::Display for GmacError {
 }
 
 struct GmacNet {
-    inner: Arc<SpinLock<GmacState>>,
+    inner: Arc<RawSpinLock<GmacState>>,
     irq_state: Arc<GmacIrqState>,
     mac_address: [u8; 6],
 }
@@ -581,7 +581,7 @@ impl GmacNet {
         );
 
         Ok(Self {
-            inner: Arc::new(SpinLock::new(GmacState::new(regs, rings, buffers))),
+            inner: Arc::new(RawSpinLock::new(GmacState::new(regs, rings, buffers))),
             irq_state: Arc::new(GmacIrqState::new()),
             mac_address,
         })
@@ -671,7 +671,7 @@ impl GmacIrqState {
 }
 
 struct GmacIrqControl {
-    inner: Arc<SpinLock<GmacState>>,
+    inner: Arc<RawSpinLock<GmacState>>,
     irq_state: Arc<GmacIrqState>,
 }
 
@@ -839,7 +839,7 @@ impl GmacState {
 }
 
 struct GmacTxQueue {
-    inner: Arc<SpinLock<GmacState>>,
+    inner: Arc<RawSpinLock<GmacState>>,
 }
 
 impl ITxQueue for GmacTxQueue {
@@ -979,7 +979,7 @@ impl ITxQueue for GmacTxQueue {
 }
 
 struct GmacRxQueue {
-    inner: Arc<SpinLock<GmacState>>,
+    inner: Arc<RawSpinLock<GmacState>>,
 }
 
 impl IRxQueue for GmacRxQueue {

@@ -11,7 +11,7 @@ fn discovers_board_test_group_and_build_mapping() {
     let board_test_config =
         write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-    let groups = discover_board_test_groups(root.path(), None, None).unwrap();
+    let groups = discover_board_test_groups(root.path(), &[], None).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -34,7 +34,7 @@ fn filters_board_test_group_by_case() {
     write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
     write_board_test_config(root.path(), "vision-five2", "smoke", "vision-five2");
 
-    let groups = discover_board_test_groups(root.path(), Some("smoke"), None).unwrap();
+    let groups = discover_board_test_groups(root.path(), &["smoke".to_string()], None).unwrap();
 
     assert_eq!(groups.len(), 2);
     assert_eq!(
@@ -56,7 +56,7 @@ fn rejects_unknown_board_test_board() {
     );
     write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-    let err = discover_board_test_groups(root.path(), None, Some("unknown")).unwrap_err();
+    let err = discover_board_test_groups(root.path(), &[], Some("unknown")).unwrap_err();
 
     assert!(
         err.to_string()
@@ -70,7 +70,7 @@ fn rejects_missing_mapped_board_build_config() {
     let root = tempdir().unwrap();
     write_board_test_config(root.path(), "orangepi-5-plus", "smoke", "orangepi-5-plus");
 
-    let err = discover_board_test_groups(root.path(), None, None)
+    let err = discover_board_test_groups(root.path(), &[], None)
         .unwrap_err()
         .to_string();
 

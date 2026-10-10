@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-private-cache-backing C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-private-cache-backing src/main.c)
+target_compile_options(test-private-cache-backing PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-private-cache-backing RUNTIME DESTINATION usr/bin/starry-test-suit)

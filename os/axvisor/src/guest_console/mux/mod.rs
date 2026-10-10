@@ -7,14 +7,11 @@ use alloc::{
 };
 
 use anyhow::{Result, bail};
-use ax_std::os::arceos::{
-    modules::ax_runtime::RuntimeError,
-    sync::{NoPreemptMutex, NoPreemptMutexGuard},
-};
+use ax_std::os::arceos::modules::ax_runtime::RuntimeError;
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
 use core::ops::Bound::{Excluded, Unbounded};
 use log::warn;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use super::host::{submit_host_bytes, submit_host_transaction};
 
@@ -72,14 +69,13 @@ pub struct GuestConsoleMux {
 #[derive(Debug)]
 struct ConsoleCore {
     /// Task and vCPU callbacks use this lock; hard IRQ handlers never do.
-    /// No caller may enter a sleepable API while it is held.
-    state: NoPreemptMutex<ConsoleState>,
+    state: Mutex<ConsoleState>,
     /// Serializes host writes with backend replacement and invalidation.
     ///
     /// Code that needs both locks must acquire `output_lock` before `state`.
     /// The guest callback additionally acquires the fixed host transport before
-    /// `state`, so no physical output or sleepable lock is reachable here.
-    output_lock: NoPreemptMutex<()>,
+    /// `state`. These callbacks run after the vCPU backend is unloaded.
+    output_lock: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -155,12 +151,13 @@ impl GuestConsoleMux {
     fn new() -> Self {
         Self {
             core: Arc::new(ConsoleCore {
-                state: NoPreemptMutex::new(ConsoleState::default()),
-                output_lock: NoPreemptMutex::new(()),
+                state: Mutex::new(ConsoleState::default()),
+                output_lock: Mutex::new(()),
             }),
         }
     }
 
+    #[cfg(any(test, axtest))]
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         let generations = self.core.backend_generations();
         let running = running
@@ -557,12 +554,14 @@ impl GuestConsoleMux {
 }
 
 impl ConsoleCore {
-    fn lock_state(&self) -> NoPreemptMutexGuard<'_, ConsoleState> {
-        self.state.lock()
+    fn lock_state(&self) -> MutexGuard<'_, ConsoleState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn lock_output(&self) -> NoPreemptMutexGuard<'_, ()> {
-        self.output_lock.lock()
+    fn lock_output(&self) -> MutexGuard<'_, ()> {
+        self.output_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn backend_generations(&self) -> BTreeMap<VMId, BackendGeneration> {
@@ -858,7 +857,7 @@ fn take_retained_tx_retry_vms() -> Vec<VMId> {
 /// in its TX FIFO.
 fn notify_retained_tx_retries() {
     for vm_id in take_retained_tx_retry_vms() {
-        if let Err(error) = crate::manager::AxvmManager::notify_vm(vm_id) {
+        if let Err(error) = crate::manager::manager().notify_vm(vm_id) {
             warn!("failed to wake VM[{vm_id}] for retained console output: {error:#}");
         }
     }
@@ -894,7 +893,7 @@ pub fn serial_backend_factory(vm_id: VMId) -> Arc<dyn SerialBackendFactory> {
 pub fn route_host_byte(byte: u8) -> ConsoleInputEvent {
     let routed = GUEST_CONSOLE_MUX.route_host_byte(byte);
     if let Some(vm_id) = routed.wake_vm
-        && let Err(error) = crate::manager::AxvmManager::notify_vm(vm_id)
+        && let Err(error) = crate::manager::manager().notify_vm(vm_id)
     {
         warn!("failed to wake VM[{vm_id}] for console input: {error:#}");
     }
@@ -912,7 +911,7 @@ pub(crate) fn route_network_input(vm_id: VMId, bytes: &[u8]) -> bool {
         warn!("VM[{vm_id}] network console input queue overflowed; dropping bytes");
     }
     if !bytes.is_empty()
-        && let Err(error) = crate::manager::AxvmManager::notify_vm(vm_id)
+        && let Err(error) = crate::manager::manager().notify_vm(vm_id)
     {
         warn!("failed to wake VM[{vm_id}] for network console input: {error:#}");
     }
@@ -935,10 +934,10 @@ pub fn route_host_log(
 
 /// Opens a running VM interactively or replays a stopped VM's buffered output.
 pub fn attach(vm_id: VMId) -> Result<ConsoleAttachment> {
-    let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) else {
+    let Some(vm) = crate::manager::manager().get(vm_id) else {
         bail!("VM[{vm_id}] not found");
     };
-    match vm.status() {
+    match vm.snapshot().state {
         VmStatus::Running => {
             GUEST_CONSOLE_MUX.mark_running(vm_id);
             if !GUEST_CONSOLE_MUX.attach(vm_id) {
@@ -986,13 +985,22 @@ pub fn reconcile_vm_states() -> Option<VMId> {
     // Capture backend identity first so a stale VM-registry snapshot cannot
     // invalidate a newer backend created with the same VM ID.
     let generations = GUEST_CONSOLE_MUX.core.backend_generations();
-    let vm_states = crate::manager::AxvmManager::vm_list()
+    let vm_states = crate::manager::manager()
+        .list()
         .into_iter()
-        .map(|vm| (vm.id(), vm.status()))
+        .map(|vm| (vm.key().vm_id(), vm.snapshot().state))
         .collect::<Vec<_>>();
     let running = vm_states
         .iter()
-        .filter(|(_, status)| *status == VmStatus::Running)
+        // A lifecycle owner may briefly pause a running guest while it
+        // publishes a new translation root. Keep an attached console active
+        // across that transaction; only terminal states detach it.
+        .filter(|(_, status)| {
+            matches!(
+                status,
+                VmStatus::Running | VmStatus::Pausing | VmStatus::Paused
+            )
+        })
         .filter_map(|(vm_id, _)| {
             generations
                 .get(vm_id)

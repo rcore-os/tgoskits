@@ -4,9 +4,10 @@ use alloc::{
 };
 use core::fmt;
 
-use super::{GroupMembers, Process, RelationLock, Session, ensure_session_capacity};
+use super::{GroupMembers, Process, Session, ensure_session_capacity};
 use crate::{
     StarryResult,
+    sync::Mutex,
     task::{Pgid, PgidNumber, PidIdentity, PidRoleLease},
 };
 
@@ -16,7 +17,7 @@ pub struct ProcessGroup {
     identity: Weak<PidIdentity>,
     _role: PidRoleLease<Pgid>,
     pub(crate) session: Arc<Session>,
-    pub(crate) processes: RelationLock<GroupMembers>,
+    pub(crate) processes: Mutex<GroupMembers>,
 }
 
 impl ProcessGroup {
@@ -45,7 +46,7 @@ impl ProcessGroup {
                 identity: Arc::downgrade(&identity),
                 _role: role,
                 session: session.clone(),
-                processes: RelationLock::new(GroupMembers::with_capacity(1)),
+                processes: Mutex::new(GroupMembers::with_capacity(1)),
             });
             identity.bind_process_group(&group);
             let replaced = groups.insert_reserved(pgid.pid_number(), &group);

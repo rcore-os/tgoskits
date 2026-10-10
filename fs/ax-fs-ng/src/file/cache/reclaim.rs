@@ -20,13 +20,13 @@ impl Drop for ReclaimGuard {
 }
 
 struct CachedFileRegistry {
-    files: ax_sync::SpinRwLock<AllocVec<Arc<CachedFileShared>>>,
+    files: ax_sync::RawSpinRwLock<AllocVec<Arc<CachedFileShared>>>,
 }
 
 impl CachedFileRegistry {
     const fn new() -> Self {
         Self {
-            files: ax_sync::SpinRwLock::new(AllocVec::new()),
+            files: ax_sync::RawSpinRwLock::new(AllocVec::new()),
         }
     }
 

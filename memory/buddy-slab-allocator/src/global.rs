@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 
 use crate::{
     align_up,
@@ -32,11 +32,11 @@ pub fn __reset_global_allocator_singleton_for_tests() {
 
 /// Unified allocator: buddy page allocator + per-CPU slab caches.
 pub struct GlobalAllocator<const PAGE_SIZE: usize = 0x1000> {
-    buddy: SpinLock<BuddyAllocator<PAGE_SIZE>>,
+    buddy: RawSpinLock<BuddyAllocator<PAGE_SIZE>>,
     initialized: AtomicBool,
 }
 
-// SAFETY: All mutable state is behind SpinLock or AtomicBool.
+// SAFETY: All mutable state is behind RawSpinLock or AtomicBool.
 unsafe impl<const PAGE_SIZE: usize> Sync for GlobalAllocator<PAGE_SIZE> {}
 unsafe impl<const PAGE_SIZE: usize> Send for GlobalAllocator<PAGE_SIZE> {}
 
@@ -44,7 +44,7 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     /// Create an uninitialised global allocator.
     pub const fn new() -> Self {
         Self {
-            buddy: SpinLock::new(BuddyAllocator::new()),
+            buddy: RawSpinLock::new(BuddyAllocator::new()),
             initialized: AtomicBool::new(false),
         }
     }
@@ -58,7 +58,7 @@ impl<const PAGE_SIZE: usize> Default for GlobalAllocator<PAGE_SIZE> {
 
 impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     #[inline]
-    fn buddy(&self) -> RawSpinLockGuard<'_, BuddyAllocator<PAGE_SIZE>> {
+    fn buddy(&self) -> RawSpinLockUnpinnedGuard<'_, BuddyAllocator<PAGE_SIZE>> {
         // SAFETY: this allocator intentionally preserves the legacy raw-lock
         // contract. Its OS integration serializes entry against local
         // re-entry, while the lock word excludes concurrent CPUs.

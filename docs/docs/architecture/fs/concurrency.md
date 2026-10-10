@@ -17,9 +17,9 @@ sidebar_label: "锁与并发"
 
 | 类型 | 文件系统中的用途 | 约束 |
 | --- | --- | --- |
-| `axfs-ng-vfs::Mutex`（`ax_sync::SpinLock`） | 短时 dentry cache、mount local relation/flags | 不能等待 I/O、不能调用可能睡眠的文件系统实现 |
-| `ax-fs-ng::os::sync::IrqMutex` | provider registry、短时 runtime 状态、FS registry | IRQ-safe 短临界区，析构/回调移到 guard 外 |
-| `SleepMutex` | `FsContext`、ext4/FAT state、cached-file I/O/page state | 可等待任务通知或块完成；不能在 hard IRQ 获取 |
+| `axfs-ng-vfs::RawSpinLock`（`ax_sync::RawSpinLock`） | 短时 dentry cache、mount local relation/flags | 不能等待 I/O、不能调用可能睡眠的文件系统实现 |
+| `ax-fs-ng::os::sync::RawSpinLock` | provider registry、短时 runtime 状态、FS registry | IRQ-safe 短临界区，析构/回调移到 guard 外 |
+| `Mutex` | `FsContext`、ext4/FAT state、cached-file I/O/page state | 可等待任务通知或块完成；不能在 hard IRQ 获取 |
 | 原子 | length、generation、mount flags、runtime state/counter | 只发布明确事实，不替代复合事务锁 |
 | topology mutation guard | mount tree/propagation 事务 | 不在 guard 内 flush 或执行 node/filesystem callback |
 
@@ -33,14 +33,14 @@ VFS 的节点 trait 可以由磁盘文件系统实现，因此即使 VFS 自身�
 flowchart TB
     Topology["mount topology guard"]
     Mount["Mountpoint local locks\nlocation / children / relations"]
-    ContextReg["FS_REGISTRY IrqMutex"]
-    Context["FsContext SleepMutex"]
-    FsState["ext4/FAT SleepMutex"]
+    ContextReg["FS_REGISTRY RawSpinLock"]
+    Context["FsContext Mutex"]
+    FsState["ext4/FAT Mutex"]
     Io["CachedFile io_lock"]
     Page["page_cache lock"]
     Listener["evict_listeners lock"]
-    Reclaim["GLOBAL_CACHED_FILES SpinRwLock"]
-    Runtime["block runtime IrqMutex / atomics"]
+    Reclaim["GLOBAL_CACHED_FILES RawSpinRwLock"]
+    Runtime["block runtime RawSpinLock / atomics"]
 
     Topology --> Mount
     ContextReg -. snapshot .-> Context
@@ -92,7 +92,7 @@ mount callback 同样在 topology guard 外完成。测试用会重入 topology 
 
 ### 2.3 上下文登记
 
-`FS_REGISTRY` 保存 weak `FsContext`，受 `IrqMutex` 保护；`FsContext` 自身是 `SleepMutex`。固定顺序不是 `registry -> context` 嵌套，而是两阶段 snapshot：
+`FS_REGISTRY` 保存 weak `FsContext`，受 `RawSpinLock` 保护；`FsContext` 自身是 `Mutex`。固定顺序不是 `registry -> context` 嵌套，而是两阶段 snapshot：
 
 1. registry guard 下 prune weak 并 clone live `Arc`；
 2. 释放 registry guard；

@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
 use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
@@ -123,7 +123,7 @@ impl Pl011State {
 
 /// PL011 UART core with an external byte backend and virtual IRQ.
 pub struct Pl011 {
-    state: SpinLock<Pl011State>,
+    state: Mutex<Pl011State>,
     endpoint: SerialEndpoint,
 }
 
@@ -131,36 +131,46 @@ impl Pl011 {
     /// Creates a powered-on PL011 UART.
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
-            state: SpinLock::new(Pl011State::new()),
+            state: Mutex::new(Pl011State::new()),
             endpoint: SerialEndpoint::new(backend, irq, "signal PL011 IRQ"),
         }
     }
 
-    fn state(&self) -> RawSpinLockGuard<'_, Pl011State> {
-        // SAFETY: the virtual UART frontend serializes a vCPU's MMIO/poll
-        // entry and the raw lock excludes other vCPUs.
-        unsafe { self.state.lock_raw() }
+    /// Locks the register/FIFO state.
+    ///
+    /// The state is task-sleepable: a vCPU's MMIO/poll entry runs in ordinary
+    /// task context, and every backend/IRQ callback is invoked only after this
+    /// guard is dropped.
+    fn state(&self) -> MutexGuard<'_, Pl011State> {
+        self.state.lock()
     }
 
     fn drain_tx(&self) -> DeviceResult {
         let mut bytes = [0; TX_FIFO_CAPACITY];
-        let count = {
+        let (count, asserted) = {
             let mut state = self.state();
             if state.tx_drain_active {
-                return self.endpoint.set_irq_level(state.irq_asserted());
+                (0, state.irq_asserted())
+            } else if !state.transmit_enabled() {
+                // A disabled transmitter keeps its retained bytes in the FIFO
+                // and must not reach the backend until `UARTEN` and `TXE` are
+                // set again.
+                (0, state.irq_asserted())
+            } else {
+                let count = state.tx_fifo.copy_to(&mut bytes);
+                if count == 0 {
+                    (0, state.irq_asserted())
+                } else {
+                    state.tx_drain_active = true;
+                    (count, state.irq_asserted())
+                }
             }
-            // A disabled transmitter keeps its retained bytes in the FIFO and
-            // must not reach the backend until `UARTEN` and `TXE` are set again.
-            if !state.transmit_enabled() {
-                return self.endpoint.set_irq_level(state.irq_asserted());
-            }
-            let count = state.tx_fifo.copy_to(&mut bytes);
-            if count == 0 {
-                return self.endpoint.set_irq_level(state.irq_asserted());
-            }
-            state.tx_drain_active = true;
-            count
         };
+        // The register guard is released here: an idle drain publishes the IRQ
+        // level only after the sleepable state lock is dropped.
+        if count == 0 {
+            return self.endpoint.set_irq_level(asserted);
+        }
 
         let accepted = self.endpoint.try_write(&bytes[..count]);
         let asserted = {

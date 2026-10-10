@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use ::pcie::*;
 pub use ::pcie::{Endpoint, PciCapability, PciIntxRoute, PcieGeneric};
 use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use mmio_api::{MapError, MmioOp};
 use rdif_iommu::{Iommu, IommuDomain, StreamId};
 pub use rdif_pcie::{DriverGeneric, PciAddress, PciIommuMap, PciMem32, PciMem64, PcieController};
@@ -20,12 +20,12 @@ use crate::{
     register::{DriverRegister, ProbeKind},
 };
 
-static PCIE: OnceLock<Mutex<Vec<PcieEnumterator>>> = OnceLock::new();
-static BOUND_IOMMU_DOMAINS: OnceLock<Mutex<BTreeMap<PciAddress, Arc<dyn IommuDomain>>>> =
+static PCIE: OnceLock<RawSpinLock<Vec<PcieEnumterator>>> = OnceLock::new();
+static BOUND_IOMMU_DOMAINS: OnceLock<RawSpinLock<BTreeMap<PciAddress, Arc<dyn IommuDomain>>>> =
     OnceLock::new();
 
-fn bound_domains() -> &'static Mutex<BTreeMap<PciAddress, Arc<dyn IommuDomain>>> {
-    BOUND_IOMMU_DOMAINS.call_once(|| Mutex::new(BTreeMap::new()))
+fn bound_domains() -> &'static RawSpinLock<BTreeMap<PciAddress, Arc<dyn IommuDomain>>> {
+    BOUND_IOMMU_DOMAINS.call_once(|| RawSpinLock::new(BTreeMap::new()))
 }
 
 /// Return the domain bound before this endpoint's PCI probe callback ran.
@@ -47,7 +47,7 @@ pub fn new_driver_generic(
     )?))
 }
 
-fn pcie() -> &'static Mutex<Vec<PcieEnumterator>> {
+fn pcie() -> &'static RawSpinLock<Vec<PcieEnumterator>> {
     PCIE.call_once(|| {
         let ctrl_ls = get_list::<PcieController>();
         let mut vec = Vec::new();
@@ -57,7 +57,7 @@ fn pcie() -> &'static Mutex<Vec<PcieEnumterator>> {
                 probed: BTreeSet::new(),
             });
         }
-        Mutex::new(vec)
+        RawSpinLock::new(vec)
     })
 }
 pub(crate) fn probe_with(

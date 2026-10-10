@@ -258,7 +258,7 @@ fn run_cpu(cpu: usize, hardware_tag: u16) {
             .unwrap();
     }
     let root = table.root_paddr();
-    let owner = Arc::new(std::os::arceos::sync::IrqSafeMutex::new((
+    let owner = Arc::new(std::os::arceos::sync::RawSpinLock::new((
         table,
         code,
         stack,
@@ -319,7 +319,7 @@ fn run_cpu(cpu: usize, hardware_tag: u16) {
     assert!(ax_hal::cpu_num() > 1);
     super::pin_to((cpu + 1) % ax_hal::cpu_num());
     {
-        let mut backing = owner.lock();
+        let mut backing = owner.lock_irqsave();
         let replacement = ax_hal::mem::virt_to_phys(backing.4.start_vaddr().as_usize().into());
         // The sole user is parked on another CPU, whose active-mm lease must
         // remain a shootdown target even with its reserved lower root loaded.

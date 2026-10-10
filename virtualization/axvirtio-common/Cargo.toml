@@ -14,10 +14,13 @@ axdevice_base.workspace = true
 ax-memory-addr.workspace = true
 axaddrspace.workspace = true
 axvm-types.workspace = true
-ax-sync.workspace = true
+# The transport register/queue state is guarded by a task-sleepable
+# `ax_sync::Mutex` so a blocking backend can run under the queue lease without a
+# non-sleeping IRQ/preemption guard. That type is gated behind `ax-sync/sleep`.
+ax-sync = { workspace = true, features = ["sleep"] }
 log.workspace = true
 mbarrier = "0.1"
 
 [dev-dependencies]
-ax-runtime = { workspace = true, features = ["host-test"] }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+ax-crate-interface = { workspace = true }

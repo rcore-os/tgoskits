@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use axbacktrace::Backtrace;
 
 pub(crate) static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -34,7 +34,7 @@ pub(crate) struct GlobalState {
     pub generation: u64,
 }
 
-static STATE: SpinLock<GlobalState> = SpinLock::new(GlobalState {
+static STATE: RawSpinLock<GlobalState> = RawSpinLock::new(GlobalState {
     map: BTreeMap::new(),
     generation: 0,
 });

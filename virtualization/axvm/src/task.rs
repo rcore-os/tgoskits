@@ -1,113 +1,67 @@
-//! Host task extension data used by AxVM vCPU tasks.
+//! Scheduler attachment exposing only execution identity and lower signals.
 
-use std::{
-    boxed::Box,
-    ptr,
-    sync::{Arc, Weak},
-};
+use std::{ptr, sync::Weak};
 
 use crate::{
-    host::task::{
-        SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId,
-    },
-    vm::{AxVCpuRef, AxVMRef},
+    host::task::{SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
+    identity::VcpuInstance,
+    manager::ControlShared,
+    runtime::vcpus::VcpuEvent,
 };
 
-/// Task extended data for a vCPU host task.
-pub struct VCpuTask {
-    /// The VM. Stored weakly to avoid keeping a VM alive through its task.
-    pub vm: Weak<crate::AxVM>,
-    /// The virtual CPU.
-    pub vcpu: AxVCpuRef,
+#[derive(Clone)]
+pub(crate) struct VcpuTaskContext {
+    pub(crate) instance: VcpuInstance,
 }
 
-impl VCpuTask {
-    /// Create a new vCPU task extension.
-    pub fn new(vm: &AxVMRef, vcpu: AxVCpuRef) -> Self {
-        Self {
-            vm: Arc::downgrade(vm),
-            vcpu,
-        }
-    }
-
-    /// Get a strong reference to the VM.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the VM has already been dropped.
-    pub fn vm(&self) -> AxVMRef {
-        self.vm.upgrade().expect("VM has been dropped")
-    }
-
-    /// Transfers this vCPU attachment into the runtime scheduler extension.
-    pub(crate) fn into_thread_extension(self) -> ThreadExtension {
-        let data = Box::into_raw(Box::new(self)) as usize;
-        // SAFETY: `data` is one uniquely owned `Box<VCpuTask>`. The runtime
-        // invokes `drop_vcpu_task` exactly once after all scheduler callbacks
-        // and strong handles have retired.
-        unsafe { ThreadExtension::new(data, &VCPU_TASK_EXTENSION_OPS) }
-    }
+struct VcpuAttachment {
+    context: VcpuTaskContext,
+    exit: Weak<ControlShared>,
 }
 
-static VCPU_TASK_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: vcpu_task_switch_in,
-    on_switch_out: vcpu_task_switch_out,
-    on_exit: vcpu_task_exit,
-    on_deadline_overrun: vcpu_task_deadline_overrun,
-    drop: drop_vcpu_task,
+pub(crate) fn attach(context: VcpuTaskContext, exit: Weak<ControlShared>) -> ThreadExtension {
+    let data = Box::into_raw(Box::new(VcpuAttachment { context, exit })) as usize;
+    // SAFETY: one owned attachment is transferred to the scheduler. The
+    // callback table reads that exact allocation and drops it exactly once.
+    unsafe { ThreadExtension::new(data, &VCPU_TASK_OPS) }
+}
+
+pub(crate) fn current_task_context() -> Option<VcpuTaskContext> {
+    let task = crate::host::task::current_thread();
+    let extension = task.extension()?;
+    if !ptr::eq(extension.ops(), &VCPU_TASK_OPS) {
+        return None;
+    }
+    // SAFETY: callback-table identity proves the attachment's type. The strong
+    // task handle retains its allocation while the narrow context is cloned.
+    let attachment = unsafe { &*(extension.data() as *const VcpuAttachment) };
+    Some(attachment.context.clone())
+}
+
+static VCPU_TASK_OPS: ThreadExtensionOps = ThreadExtensionOps {
+    on_switch_in: switch_in,
+    on_switch_out: switch_out,
+    on_exit: exited,
+    on_deadline_overrun: deadline_overrun,
+    drop: drop_attachment,
 };
 
-unsafe extern "Rust" fn vcpu_task_switch_in(
-    _data: usize,
-    _thread: ThreadId,
-    _policy: SchedulePolicy,
-    _charged_runtime_ns: u64,
-) {
-}
+unsafe extern "Rust" fn switch_in(_: usize, _: ThreadId, _: SchedulePolicy, _: u64) {}
+unsafe extern "Rust" fn switch_out(_: usize, _: ThreadId, _: SwitchReason) {}
+unsafe extern "Rust" fn deadline_overrun(_: usize, _: ThreadId) {}
 
-unsafe extern "Rust" fn vcpu_task_switch_out(
-    _data: usize,
-    _thread: ThreadId,
-    _reason: SwitchReason,
-) {
-}
-
-unsafe extern "Rust" fn vcpu_task_exit(_data: usize, _thread: ThreadId) {}
-
-unsafe extern "Rust" fn vcpu_task_deadline_overrun(_data: usize, _thread: ThreadId) {}
-
-unsafe extern "Rust" fn drop_vcpu_task(data: usize) {
-    // SAFETY: `into_thread_extension` transferred exactly this box to the
-    // runtime, and the extension drop callback is its sole destructor.
-    drop(unsafe { Box::from_raw(data as *mut VCpuTask) });
-}
-
-/// Access a vCPU task extension from an ArceOS task.
-pub trait AsVCpuTask {
-    /// Return this task's vCPU extension if it has one.
-    fn try_as_vcpu_task(&self) -> Option<&VCpuTask>;
-
-    /// Return this task's vCPU extension.
-    fn as_vcpu_task(&self) -> &VCpuTask;
-}
-
-impl AsVCpuTask for ThreadHandle {
-    fn try_as_vcpu_task(&self) -> Option<&VCpuTask> {
-        let extension = self.extension()?;
-        if !ptr::eq(extension.ops(), &VCPU_TASK_EXTENSION_OPS) {
-            return None;
-        }
-        let data = extension.data();
-        if data == 0 || !data.is_multiple_of(core::mem::align_of::<VCpuTask>()) {
-            panic!("AxVM task extension contains an invalid data pointer");
-        }
-        // SAFETY: the callback-table identity and pointer layout were checked
-        // above. `self` is a strong scheduler handle, so the runtime cannot
-        // invoke the extension drop callback during the returned borrow.
-        Some(unsafe { &*(data as *const VCpuTask) })
+unsafe extern "Rust" fn exited(data: usize, _: ThreadId) {
+    // SAFETY: scheduler ordinary task-work invokes this with the transferred
+    // allocation alive, after the original execution stack is inactive.
+    let attachment = unsafe { &*(data as *const VcpuAttachment) };
+    if let Some(owner) = attachment.exit.upgrade() {
+        owner.post_event(VcpuEvent::Retired {
+            instance: attachment.context.instance,
+        });
     }
+}
 
-    fn as_vcpu_task(&self) -> &VCpuTask {
-        self.try_as_vcpu_task().expect("Not a VCpuTask")
-    }
+unsafe extern "Rust" fn drop_attachment(data: usize) {
+    // SAFETY: the scheduler is the sole destructor of this transferred box.
+    drop(unsafe { Box::from_raw(data as *mut VcpuAttachment) });
 }

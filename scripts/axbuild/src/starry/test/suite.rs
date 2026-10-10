@@ -8,17 +8,23 @@ pub(crate) fn finalize_qemu_case_run(report: &StarryQemuRunReport) -> anyhow::Re
 
 pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
-    selected_case: Option<&str>,
+    selected_cases: &[String],
     selected_board: Option<&str>,
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
     let test_suite_dir = require_test_suite_dir(workspace_root)?;
     let groups = collect_board_test_groups(workspace_root, &test_suite_dir)?;
-    board_test::filter_board_test_groups(groups, selected_case, selected_board, "Starry", || {
-        format!(
-            "no Starry board test groups found under {}",
-            test_suite_dir.display()
-        )
-    })
+    board_test::filter_board_test_groups_by_names(
+        groups,
+        selected_cases,
+        selected_board,
+        "Starry",
+        || {
+            format!(
+                "no Starry board test groups found under {}",
+                test_suite_dir.display()
+            )
+        },
+    )
 }
 
 pub(crate) fn require_test_suite_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {

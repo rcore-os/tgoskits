@@ -1,60 +1,48 @@
-//! Minimal spin mutex used by the OS-neutral x86 APIC device models.
+//! Tests of the x86 interrupt-state acquisition contract.
 
-use core::{
-    cell::UnsafeCell,
-    hint::spin_loop,
-    ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, Ordering},
-};
+#[cfg(test)]
+mod tests {
+    use ax_sync::{RawSpinLock, interface::CONTEXT_PREEMPT_IRQSAVE};
 
-pub(crate) struct SpinMutex<T> {
-    locked: AtomicBool,
-    value: UnsafeCell<T>,
-}
+    use crate::host_lock_provider::{
+        acquire_count, last_acquire_context, last_acquire_state, last_release_state, release_count,
+    };
 
-pub(crate) struct SpinMutexGuard<'a, T> {
-    lock: &'a SpinMutex<T>,
-}
+    #[test]
+    fn irqsave_guard_excludes_reentry_and_restores_its_context() {
+        let storage = RawSpinLock::new(0u32);
+        let acquires_before = acquire_count();
+        let releases_before = release_count();
 
-unsafe impl<T: Send> Send for SpinMutex<T> {}
-unsafe impl<T: Send> Sync for SpinMutex<T> {}
+        let mut guard = storage.lock_irqsave();
+        // The device-state wrapper must take the IRQ-save acquisition context,
+        // not a bare spin acquisition. The counters are thread-local, so this
+        // stays exact even when tests run in parallel.
+        assert_eq!(
+            last_acquire_context(),
+            CONTEXT_PREEMPT_IRQSAVE,
+            "x86 device state must be taken with local IRQs saved",
+        );
+        assert_eq!(acquire_count(), acquires_before + 1);
+        let acquire_state = last_acquire_state();
+        assert!(acquire_state.is_some());
 
-impl<T> SpinMutex<T> {
-    pub(crate) const fn new(value: T) -> Self {
-        Self {
-            locked: AtomicBool::new(false),
-            value: UnsafeCell::new(value),
-        }
-    }
+        // A held guard excludes a second acquisition of the same storage.
+        assert!(
+            storage.try_lock_irqsave().is_none(),
+            "a held guard must exclude a second acquisition",
+        );
 
-    pub(crate) fn lock(&self) -> SpinMutexGuard<'_, T> {
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
-        }
-        SpinMutexGuard { lock: self }
-    }
-}
+        assert_eq!(*guard, 0);
+        *guard = 7;
+        drop(guard);
 
-impl<T> Deref for SpinMutexGuard<'_, T> {
-    type Target = T;
+        // The guard hands its acquisition's opaque context back to the provider
+        // so the saved local-IRQ state is restored on release.
+        assert_eq!(release_count(), releases_before + 1);
+        assert_eq!(last_release_state(), acquire_state);
 
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.lock.value.get() }
-    }
-}
-
-impl<T> DerefMut for SpinMutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.lock.value.get() }
-    }
-}
-
-impl<T> Drop for SpinMutexGuard<'_, T> {
-    fn drop(&mut self) {
-        self.lock.locked.store(false, Ordering::Release);
+        // The protected value survives the guarded section and can be retaken.
+        assert_eq!(*storage.lock_irqsave(), 7);
     }
 }

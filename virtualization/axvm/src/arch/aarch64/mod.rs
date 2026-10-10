@@ -8,11 +8,27 @@ mod policy;
 
 use std::sync::Arc;
 
-use arm_vgic::{GicV3VcpuBinding, IntId, VgicCore};
+use arm_vgic::{GicV3Native, GicV3VcpuBinding, IntId};
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
-use super::*;
-use crate::{AxVmResult, arch::aarch64::policy::*, ax_err};
+use crate::{
+    arch::aarch64::policy::*,
+    architecture::{
+        ArchOps, HypercallExit, MmioReadExit, MmioWriteExit, handle_hypercall,
+        ops::{CpuOn, RegisterCompletion},
+        sysreg::{self, SysRegReadExit, SysRegWriteExit},
+    },
+    ax_err,
+    engine::{VcpuAction, WaitReason},
+    guest_memory::GuestMemoryPort,
+    runtime::{
+        QueuedVcpuInterrupt,
+        hvc::{GuestRequest, HyperCallAbi},
+    },
+    services::{RunServices, RunSignals, VcpuWait},
+    vm::{AxVM, AxVMResources},
+    *,
+};
 
 mod capabilities;
 pub(crate) mod fdt;
@@ -30,194 +46,405 @@ mod vtimer;
 
 use vgic::Aarch64VgicRuntimeKey;
 
-use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
-
 pub(crate) struct Aarch64Arch;
+
+/// Binds one run's guest-memory capability into the architecture hardware that
+/// needs scoped copies of guest-owned tables.
+///
+/// The control owner calls this after `AxVM::prepare` has built the device graph
+/// and after the run's `GuestMemoryPort` exists, but before
+/// [`ArchOps::prepare_entry`] extracts the hardware entry. The capability stays
+/// in the task-only ITS adapter inside the VGIC service. The vCPU backend
+/// retains only the native controller; the only operation consuming this capability is
+/// the task-context GITS MMIO write that drains the command queue with the
+/// backend unloaded; the IRQ-reachable controller callbacks never reach it.
+pub(crate) fn bind_task_memory(resources: &AxVMResources, memory: GuestMemoryPort) -> AxVmResult {
+    let devices = resources.devices()?;
+    let runtime = devices
+        .services()
+        .require::<Aarch64VgicRuntimeKey>()
+        .map_err(|error| crate::AxVmError::device("locate AArch64 VGIC runtime", error))?;
+    runtime.bind_task_memory(memory)
+}
+
+/// Owned register effect produced by one interpreted backend exit.
+///
+/// AArch64 has no architecture-specific completion register, so the concrete
+/// value wraps the shared `RegisterCompletion` and may additionally advance the
+/// saved guest PC. The advance is part of the completion, not the fault decoder,
+/// so a nested page fault can retry the unchanged instruction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Aarch64Completion {
+    /// Commit the wrapped register effect.
+    Register(RegisterCompletion),
+    /// Commit `register` and then advance the guest PC by `step` bytes past the
+    /// successfully emulated data-abort instruction.
+    RegisterThenAdvance {
+        register: RegisterCompletion,
+        step: usize,
+    },
+}
+
+impl Default for Aarch64Completion {
+    fn default() -> Self {
+        Self::Register(RegisterCompletion::None)
+    }
+}
+
+impl From<RegisterCompletion> for Aarch64Completion {
+    fn from(completion: RegisterCompletion) -> Self {
+        Self::Register(completion)
+    }
+}
+
+/// Owned AArch64 VM exit produced after the backend has been unloaded.
+///
+/// Portable device exits keep the shared owned records. Only the GIC
+/// CPU-interface read, which must be resolved while the backend is still
+/// loaded, captures a register effect directly.
+#[derive(Debug)]
+pub(crate) enum Aarch64Exit {
+    /// The guest issued an `HVC`/`SMC` hypercall.
+    Hypercall(HypercallExit),
+    /// The guest read guest physical memory that no stage-2 mapping covers.
+    ///
+    /// `step` is the faulting instruction length: a device completion resumes
+    /// after the access, while a nested-fault fallback leaves the PC unchanged.
+    MmioRead { access: MmioReadExit, step: usize },
+    /// The guest wrote guest physical memory that no stage-2 mapping covers.
+    ///
+    /// See [`Aarch64Exit::MmioRead`] for the `step` contract.
+    MmioWrite { access: MmioWriteExit, step: usize },
+    /// The guest read a trapped system register.
+    SysRegRead(SysRegReadExit),
+    /// The guest wrote a trapped system register.
+    SysRegWrite(SysRegWriteExit),
+    /// A GIC CPU-interface read captured while the backend was still loaded.
+    GprRead { register: usize, value: u64 },
+    /// The guest executed `WFI`/`WFE`.
+    WaitForInterrupt,
+    /// The vCPU handled the event internally.
+    Nothing,
+}
 
 impl ArchOps for Aarch64Arch {
     type VCpu = AxvmArmVcpu;
     type PerCpu = AxvmArmPerCpu;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
+    type Entry = ();
+    type Exit = Aarch64Exit;
+    type Completion = Aarch64Completion;
 
     fn has_hardware_support() -> bool {
         crate::arch::aarch64::policy::has_hardware_support()
     }
 
-    fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
-        vgic_runtime(vm)?.activate()
-    }
-
-    fn exit_runtime(vm: &crate::AxVM) -> AxVmResult {
-        vgic_runtime(vm)?.deactivate()
-    }
-
-    fn prepare_vcpu_run_slice(
-        _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    fn invalidate_translations(
+        _entry: &Self::Entry,
+        _old_root: axvm_types::NestedPagingConfig,
     ) -> AxVmResult {
-        vcpu.get_arch_vcpu().invalidate_virtual_timer_wait();
+        // The control owner unloads every vCPU and calls this once per physical
+        // CPU that could still cache the retired stage-2 root. The
+        // inner-shareable broadcast retires all guest stage-1/stage-2 entries in
+        // the shareable domain and waits for completion, so it does not depend
+        // on any vCPU still holding the old VTTBR/VTCR context.
+        //
+        // SAFETY: AxVM owns the stage-two tables at EL2 and serializes
+        // descriptor mutation. Every vCPU has already been unloaded, new guest
+        // access is closed, and the retired backing is retained until the new
+        // root is published.
+        unsafe { ax_cpu::virtualization::invalidate_guest_translations_inner_shareable() };
         Ok(())
     }
 
-    fn before_vcpu_run(
-        _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    fn prepare_entry(
+        resources: &AxVMResources,
+        signals: Arc<RunSignals>,
+    ) -> AxVmResult<Self::Entry> {
+        let devices = resources.devices()?;
+        let runtime = devices
+            .services()
+            .require::<Aarch64VgicRuntimeKey>()
+            .map_err(|error| crate::AxVmError::device("locate AArch64 VGIC runtime", error))?;
+        // Seal the run identity before any vCPU can run: a controller that is
+        // already bound to a different run refuses the new binding, so a stale
+        // port can never re-target a fresh runtime.
+        runtime.bind_run(&signals)?;
+        Ok(())
+    }
+
+    fn enter_runtime(vm: &mut AxVM, _signals: &Arc<RunSignals>) -> AxVmResult {
+        vgic_runtime(vm)?.activate()
+    }
+
+    fn exit_runtime(vm: &mut AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
+        let runtime = vgic_runtime(vm)?;
+        // Keep the run binding while deactivation is retryable. IRQ routes
+        // remain installed when teardown is rejected, and their wake target
+        // must stay valid until the physical bindings are retired.
+        runtime.deactivate()?;
+        // The binding is cleared only for the run that owns it; a retired run
+        // can never release or re-target the service used by a newer run.
+        runtime.unbind_run(signals.run_id())
+    }
+
+    fn prepare_vcpu(vcpu: &mut Self::VCpu, _entry: &Self::Entry) -> AxVmResult {
+        // Task-side preparation runs before CPU binding and IRQ masking, so it
+        // may discard any timer wait that a previous migration left armed.
+        let arch = vcpu;
+        let binding = arch
+            .timer_binding
+            .as_ref()
+            .ok_or(crate::AxVmError::Backend {
+                operation: "prepare architectural timer",
+                source: BackendError::InvalidState,
+            })?;
+        binding.disarm_wait().map_err(|source| {
+            crate::AxVmError::interrupt_controller("disarm architectural timer", source)
+        })?;
+        binding.prepare_run().map_err(|source| {
+            crate::AxVmError::interrupt_controller("retire architectural timer activation", source)
+        })
+    }
+
+    fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        // Guest registers remain owned and saved. Only host producers, line
+        // levels and the banked physical activation become quiescent here.
+        vcpu.timer_binding
+            .as_ref()
+            .ok_or(crate::AxVmError::Backend {
+                operation: "quiesce architectural timer",
+                source: BackendError::InvalidState,
+            })?
+            .reset()
+            .map_err(|source| {
+                crate::AxVmError::interrupt_controller("quiesce architectural timer", source)
+            })
+    }
+
+    fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        Self::suspend_vcpu(vcpu)
+    }
+
+    fn entry_cpu_is_ready(vcpu: &mut Self::VCpu) -> bool {
+        vcpu.timer_binding
+            .as_ref()
+            .is_none_or(|binding| binding.entry_cpu_is_ready())
+    }
+
+    fn before_guest(vcpu: &mut Self::VCpu, _vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
+        // Only canonical timer levels are published while the backend is
+        // loaded; host cancellation and remote completion ran before CPU pin.
+        vcpu.prepare_timer_entry()
+    }
+
+    fn complete(
+        vcpu: &mut Self::VCpu,
+        _entry: &Self::Entry,
+        completion: Self::Completion,
     ) -> AxVmResult {
-        vcpu.get_arch_vcpu().prepare_timer_entry()
+        let (register, advance) = match completion {
+            Aarch64Completion::Register(register) => (register, None),
+            Aarch64Completion::RegisterThenAdvance { register, step } => (register, Some(step)),
+        };
+        match register {
+            RegisterCompletion::None => {}
+            RegisterCompletion::Gpr { register, value } => vcpu.set_gpr(register, value),
+            RegisterCompletion::Return(value) => vcpu.set_return_value(value),
+        }
+        if let Some(step) = advance {
+            vcpu.advance_exception_pc(step);
+        }
+        Ok(())
     }
 
-    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
-        Self::exit_runtime(vm)
-    }
-
-    fn handle_vcpu_exit_unbound(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    fn capture_exit(
+        vcpu: &mut Self::VCpu,
+        _entry: &Self::Entry,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<VcpuExitAction> {
-        match exit {
-            ArmVmExit::Hypercall { nr, args } => super::handle_hypercall(
-                vm,
-                vcpu,
-                HypercallExit { nr, args },
-                crate::runtime::hvc::HyperCallAbi::AArch64,
-            ),
+    ) -> AxVmResult<Self::Exit> {
+        // This hook runs while the backend is still loaded on its owning CPU, so
+        // every GIC CPU-interface register effect and locally trapped system
+        // register is resolved here without a second backend bind.
+        Ok(match exit {
+            ArmVmExit::Hypercall { nr, args } => Aarch64Exit::Hypercall(HypercallExit { nr, args }),
             ArmVmExit::MmioRead {
                 addr,
                 width,
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
-                vm,
-                vcpu,
-                MmioReadExit {
+                step,
+            } => Aarch64Exit::MmioRead {
+                access: MmioReadExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
                     width: arm_access_width_to_ax(width),
                     reg,
                     reg_width: arm_access_width_to_ax(reg_width),
                     signed_ext,
                 },
-            ),
-            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
-                vm,
-                vcpu,
-                MmioWriteExit {
+                step,
+            },
+            ArmVmExit::MmioWrite {
+                addr,
+                width,
+                data,
+                step,
+            } => Aarch64Exit::MmioWrite {
+                access: MmioWriteExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
                     width: arm_access_width_to_ax(width),
                     data,
                 },
-            ),
-            ArmVmExit::SysRegRead { addr, reg } => sysreg::handle_read(
-                vm,
-                vcpu,
-                SysRegReadExit {
-                    addr: arm_sys_reg_addr_to_ax(addr),
-                    reg,
-                },
-            ),
-            ArmVmExit::SysRegWrite { addr, value } => sysreg::handle_write(
-                vm,
-                vcpu,
-                SysRegWriteExit {
-                    addr: arm_sys_reg_addr_to_ax(addr),
-                    value,
-                },
-            ),
+                step,
+            },
+            ArmVmExit::SysRegRead { addr, reg } => Aarch64Exit::SysRegRead(SysRegReadExit {
+                addr: arm_sys_reg_addr_to_ax(addr),
+                reg,
+            }),
+            ArmVmExit::SysRegWrite { addr, value } => Aarch64Exit::SysRegWrite(SysRegWriteExit {
+                addr: arm_sys_reg_addr_to_ax(addr),
+                value,
+            }),
             ArmVmExit::GicCpuInterfaceRead {
                 register,
                 destination,
             } => {
-                let value = vcpu.get_arch_vcpu().read_icc(register)?;
-                vcpu.set_gpr(destination, value as usize);
-                Ok(VcpuExitAction::Continue)
+                let value = vcpu.read_icc(register)?;
+                Aarch64Exit::GprRead {
+                    register: destination,
+                    value,
+                }
             }
             ArmVmExit::GicCpuInterfaceWrite { register, value } => {
-                vcpu.get_arch_vcpu().write_icc(register, value)?;
-                Ok(VcpuExitAction::Continue)
+                vcpu.write_icc(register, value)?;
+                Aarch64Exit::Nothing
             }
-            ArmVmExit::WaitForInterrupt => Ok(VcpuExitAction::Complete(VcpuRunAction {
-                waits_for_event: true,
-                stop_reason: None,
-                resets_vm: false,
-                exits_vcpu: false,
-            })),
             ArmVmExit::SendIPI { value } => {
-                vcpu.get_arch_vcpu().write_sgi1r(value)?;
-                Ok(VcpuExitAction::Continue)
+                vcpu.write_sgi1r(value)?;
+                Aarch64Exit::Nothing
             }
             ArmVmExit::DeactivateInterrupt { intid } => {
-                vcpu.get_arch_vcpu().deactivate(intid)?;
-                Ok(VcpuExitAction::Continue)
+                vcpu.deactivate(intid)?;
+                Aarch64Exit::Nothing
             }
-            ArmVmExit::Nothing => Ok(VcpuExitAction::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-                resets_vm: false,
-                exits_vcpu: false,
-            })),
+            ArmVmExit::WaitForInterrupt => Aarch64Exit::WaitForInterrupt,
+            ArmVmExit::Nothing => Aarch64Exit::Nothing,
+        })
+    }
+
+    fn handle_exit(
+        exit: Self::Exit,
+        vcpu_id: usize,
+        services: &RunServices,
+    ) -> AxVmResult<VcpuAction<Self::Completion, GuestRequest>> {
+        // The backend is already unloaded and host IRQs restored; only owned
+        // records reach this interpreter, so it may use sleepable runtime and
+        // device services without holding a hardware binding.
+        match exit {
+            Aarch64Exit::Hypercall(exit) => {
+                handle_hypercall::<Self>(services, vcpu_id, exit, HyperCallAbi::native())
+            }
+            Aarch64Exit::MmioRead { access, step } => {
+                match crate::architecture::exit::try_handle_mmio_read(services, vcpu_id, access)? {
+                    Some(completion) => Ok(VcpuAction::Reenter(
+                        Aarch64Completion::RegisterThenAdvance {
+                            register: completion,
+                            step,
+                        },
+                    )),
+                    // No device owns the address, so the original stage-2
+                    // translation fault must be satisfiable by the control owner
+                    // before the guest retries the very same instruction.
+                    None => Ok(VcpuAction::Control(GuestRequest::NestedFault {
+                        addr: access.addr,
+                        access_flags: MappingFlags::READ,
+                    })),
+                }
+            }
+            Aarch64Exit::MmioWrite { access, step } => {
+                if !crate::architecture::exit::try_handle_mmio_write(services, vcpu_id, access)? {
+                    return Ok(VcpuAction::Control(GuestRequest::NestedFault {
+                        addr: access.addr,
+                        access_flags: MappingFlags::WRITE,
+                    }));
+                }
+                Ok(VcpuAction::Reenter(
+                    Aarch64Completion::RegisterThenAdvance {
+                        register: RegisterCompletion::None,
+                        step,
+                    },
+                ))
+            }
+            Aarch64Exit::SysRegRead(exit) => sysreg::handle_read::<Self>(services, vcpu_id, exit),
+            Aarch64Exit::SysRegWrite(exit) => sysreg::handle_write::<Self>(services, vcpu_id, exit),
+            Aarch64Exit::GprRead { register, value } => Ok(VcpuAction::Reenter(
+                RegisterCompletion::Gpr {
+                    register,
+                    value: value as usize,
+                }
+                .into(),
+            )),
+            Aarch64Exit::WaitForInterrupt => {
+                Ok(VcpuAction::Wait(WaitReason { return_value: None }))
+            }
+            Aarch64Exit::Nothing => Ok(VcpuAction::Reenter(Aarch64Completion::default())),
         }
     }
 
-    fn wait_for_vcpu_event(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        runtime: &crate::vm::VmRuntimeHandle,
-    ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot(vcpu.run_state());
-        if !vm.running() {
-            return;
-        }
-        if wait_snapshot.take_pending_event(runtime) {
-            return;
-        }
-        match vcpu.get_arch_vcpu().has_pending_interrupt() {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(error) => {
-                warn!(
-                    "VM[{}] VCpu[{}] cannot query VGIC pending state before WFI wait: {error:?}",
-                    vm.id(),
-                    vcpu.id()
-                );
-                return;
-            }
-        }
-        let timer_wait = match vcpu.get_arch_vcpu().arm_timer_wait() {
-            Ok(timer_wait) => timer_wait,
-            Err(error) => {
-                warn!(
-                    "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: {error:?}",
-                    vm.id(),
-                    vcpu.id()
-                );
-                return;
-            }
-        };
-        match vcpu.get_arch_vcpu().has_pending_interrupt() {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(error) => {
-                warn!(
-                    "VM[{}] VCpu[{}] cannot recheck VGIC after arming timer: {error:?}",
-                    vm.id(),
-                    vcpu.id()
-                );
-                return;
-            }
-        }
+    fn inject_arch_interrupt(
+        _vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
+        _entry: &Self::Entry,
+        _interrupt: QueuedVcpuInterrupt,
+    ) -> AxVmResult {
+        // AArch64 delivers every queued interrupt through the VM-local VGIC;
+        // there is no separate architecture-only interrupt class.
+        Err(crate::AxVmError::Backend {
+            operation: "inject AArch64 architecture interrupt",
+            source: BackendError::Unsupported,
+        })
+    }
 
-        crate::vm::wait_for_vcpu_event_if_idle_with(
-            runtime,
-            &wait_snapshot,
-            || vm.running(),
-            || {
-                runtime.has_pending_interrupt(vcpu.id())
-                    || timer_wait
-                        .is_some_and(|token| vcpu.get_arch_vcpu().timer_wait_completed(token))
-            },
-            |condition| runtime.wait_until(condition),
-        );
+    fn wait_for_event(
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
+        _entry: &Self::Entry,
+        wait: &VcpuWait,
+    ) -> AxVmResult {
+        // The predicate uses only lower controller state and the pre-bound
+        // timer-wait completion token; it never queries the VM, its devices, or
+        // a sleepable lifecycle lock.
+        let arch: &AxvmArmVcpu = &*vcpu;
+        if arch.has_pending_interrupt()? {
+            return Ok(());
+        }
+        let timer_wait = arch.arm_timer_wait()?;
+        if arch.has_pending_interrupt()? {
+            return Ok(());
+        }
+        wait.wait_until(|| {
+            arch.has_pending_interrupt().unwrap_or(false)
+                || timer_wait.is_some_and(|token| arch.timer_wait_completed(token))
+        });
+        Ok(())
+    }
+}
+
+impl CpuOn for Aarch64Arch {
+    fn initialize_cpu_on(
+        vcpu: &mut Self::VCpu,
+        entry: axvm_types::GuestPhysAddr,
+        argument: usize,
+    ) -> AxVmResult {
+        // The control owner resolved the PSCI topology and reserved this target.
+        // The target owner installs the guest entry point and the handoff
+        // context in x0 before the first entry; bind/rollback stays in the
+        // common vCPU owner.
+        vcpu.set_entry(entry)
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("set PSCI CPU_ON entry", error))?;
+        vcpu.set_gpr(0, argument);
+        Ok(())
     }
 }
 
@@ -241,9 +468,23 @@ impl ax_cpu::virtualization::GuestHostTrap for HostGuestTrap {
     }
 }
 
+/// One owned AArch64 vCPU backend.
+///
+/// The value is moved between host CPUs only while no guest entry is in
+/// progress. It deliberately retains no CPU-banked GIC state: the per-vCPU VGIC
+/// CPU-interface registers are loaded from the controller and saved back inside
+/// the single `run` call, which executes under `AxVCpu`'s exclusive, CPU-pinned
+/// backend scope with local IRQs masked. Between entries the canonical
+/// pending/active/LR state stays in the controller, so `bind`/`unbind` are
+/// no-ops and there is exactly one live-bank window, owned by `run`.
+///
+/// This is what makes the required `Send` sound: the type holds no raw CPU-bank
+/// handle or self-referential pointer, and moving it cannot move a live bank
+/// because a live bank only ever exists inside the pinned `run` scope. No
+/// `unsafe impl Send`/`Sync` is added.
 pub(crate) struct AxvmArmVcpu {
     inner: ArmVcpu,
-    vgic: Option<Arc<VgicCore>>,
+    vgic: Option<GicV3Native>,
     vgic_binding: Option<GicV3VcpuBinding>,
     timer_binding: Option<Arc<vtimer::Aarch64TimerBinding>>,
 }
@@ -251,7 +492,7 @@ pub(crate) struct AxvmArmVcpu {
 impl AxvmArmVcpu {
     pub(crate) fn attach_vgic(
         &mut self,
-        vgic: Arc<VgicCore>,
+        vgic: GicV3Native,
         irq_binding: vgic::Aarch64VcpuIrqBinding,
         timer_config: crate::arch::aarch64::policy::ArmTimerVmConfig,
     ) -> AxVmResult {
@@ -274,7 +515,9 @@ impl AxvmArmVcpu {
             host_virtual_timer_intid,
             timer_config.frequency(),
         )
-        .map_err(|error| crate::AxVmError::interrupt("bind host virtual-timer PPI", error))?;
+        .map_err(|error| {
+            crate::AxVmError::interrupt_controller("bind host virtual-timer PPI", error)
+        })?;
         self.vgic = Some(vgic);
         self.vgic_binding = Some(binding);
         self.timer_binding = Some(timer_binding);
@@ -282,15 +525,24 @@ impl AxvmArmVcpu {
     }
 
     fn binding(&self) -> AxVmResult<&GicV3VcpuBinding> {
-        self.vgic_binding
-            .as_ref()
-            .ok_or_else(|| crate::AxVmError::resource_unavailable("VGIC vCPU binding", "missing"))
+        self.vgic_binding.as_ref().ok_or(crate::AxVmError::Backend {
+            operation: "locate VGIC vCPU binding",
+            source: BackendError::InvalidState,
+        })
+    }
+
+    /// Advances the saved guest PC past one emulated faulting instruction.
+    ///
+    /// Only the successful device completion calls this; a nested page fault
+    /// leaves the PC untouched so the guest retries the same instruction.
+    fn advance_exception_pc(&mut self, step: usize) {
+        self.inner.advance_exception_pc(step);
     }
 
     fn write_sgi1r(&self, value: u64) -> AxVmResult {
         self.binding()?
             .write_sgi1r(value)
-            .map_err(|error| crate::AxVmError::interrupt("write ICC_SGI1R_EL1", error))
+            .map_err(|error| crate::AxVmError::interrupt_controller("write ICC_SGI1R_EL1", error))
     }
 
     fn read_icc(&self, register: ArmGicCpuInterfaceRegister) -> AxVmResult<u64> {
@@ -300,7 +552,9 @@ impl AxvmArmVcpu {
             ArmGicCpuInterfaceRegister::PriorityMask => binding.read_icc_priority_mask(),
             ArmGicCpuInterfaceRegister::RunningPriority => binding.read_icc_running_priority(),
         };
-        result.map_err(|error| crate::AxVmError::interrupt("read virtual ICC register", error))
+        result.map_err(|error| {
+            crate::AxVmError::interrupt_controller("read virtual ICC register", error)
+        })
     }
 
     fn write_icc(&self, register: ArmGicCpuInterfaceRegister, value: u64) -> AxVmResult {
@@ -310,15 +564,18 @@ impl AxvmArmVcpu {
             ArmGicCpuInterfaceRegister::PriorityMask => binding.write_icc_priority_mask(value),
             ArmGicCpuInterfaceRegister::RunningPriority => Ok(()),
         };
-        result.map_err(|error| crate::AxVmError::interrupt("write virtual ICC register", error))
+        result.map_err(|error| {
+            crate::AxVmError::interrupt_controller("write virtual ICC register", error)
+        })
     }
 
     fn deactivate(&self, intid: u32) -> AxVmResult {
-        let intid = IntId::new(intid)
-            .map_err(|error| crate::AxVmError::interrupt("validate ICC_DIR_EL1 INTID", error))?;
-        self.binding()?
-            .deactivate_saved(intid)
-            .map_err(|error| crate::AxVmError::interrupt("deactivate virtual interrupt", error))
+        let intid = IntId::new(intid).map_err(|error| {
+            crate::AxVmError::interrupt_controller("validate ICC_DIR_EL1 INTID", error)
+        })?;
+        self.binding()?.deactivate_saved(intid).map_err(|error| {
+            crate::AxVmError::interrupt_controller("deactivate virtual interrupt", error)
+        })
     }
 
     fn synchronize_timer(&self) -> BackendResult {
@@ -343,7 +600,9 @@ impl AxvmArmVcpu {
                 crate::AxVmError::resource_unavailable("AArch64 timer binding", "missing")
             })?
             .arm_wait(snapshot)
-            .map_err(|error| crate::AxVmError::interrupt("arm architectural timer wait", error))
+            .map_err(|error| {
+                crate::AxVmError::interrupt_controller("arm architectural timer wait", error)
+            })
     }
 
     fn timer_wait_completed(&self, token: vtimer::Aarch64TimerWaitToken) -> bool {
@@ -352,28 +611,23 @@ impl AxvmArmVcpu {
             .is_some_and(|binding| binding.timer_wait_completed(token))
     }
 
-    fn invalidate_virtual_timer_wait(&self) {
-        if let Some(binding) = &self.timer_binding {
-            binding.invalidate_wait();
-        }
-    }
-
     fn prepare_timer_entry(&self) -> AxVmResult {
-        let binding = self.timer_binding.as_ref().ok_or_else(|| {
-            crate::AxVmError::resource_unavailable("AArch64 timer binding", "missing")
-        })?;
-        binding
-            .prepare_run()
-            .map_err(|error| crate::AxVmError::interrupt("prepare timer PPI route", error))?;
+        let binding = self
+            .timer_binding
+            .as_ref()
+            .ok_or(crate::AxVmError::Backend {
+                operation: "locate architectural timer binding",
+                source: BackendError::InvalidState,
+            })?;
         let snapshot = self.inner.timer_snapshot().map_err(|error| {
-            crate::AxVmError::vcpu(
+            crate::vcpu::map_vcpu_backend_error(
                 "snapshot AArch64 architectural timers before entry",
-                std::format!("{error:?}"),
+                arm_error_to_backend(error),
             )
         })?;
-        binding
-            .publish_for_entry(snapshot)
-            .map_err(|error| crate::AxVmError::interrupt("publish timer PPI before entry", error))
+        binding.publish_for_entry(snapshot).map_err(|error| {
+            crate::AxVmError::interrupt_controller("publish timer PPI before entry", error)
+        })
     }
 
     fn accept_host_timer_irq(&self, token: usize) -> bool {
@@ -383,9 +637,9 @@ impl AxvmArmVcpu {
     }
 
     fn has_pending_interrupt(&self) -> AxVmResult<bool> {
-        self.binding()?
-            .has_pending_interrupt()
-            .map_err(|error| crate::AxVmError::interrupt("query pending virtual interrupt", error))
+        self.binding()?.has_pending_interrupt().map_err(|error| {
+            crate::AxVmError::interrupt_controller("query pending virtual interrupt", error)
+        })
     }
 }
 
@@ -466,10 +720,15 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     }
 
     fn bind(&mut self) -> BackendResult {
+        // No CPU bank is retained between entries, so the architecture load
+        // boundary is the guest entry itself (`run`). See `AxvmArmVcpu` for why
+        // this keeps the required `Send` sound without `unsafe impl`.
         arm_result(self.inner.bind())
     }
 
     fn unbind(&mut self) -> BackendResult {
+        // Counterpart of `bind`; `run` has already saved the VGIC CPU-interface
+        // state under the same IRQ-masked, CPU-pinned scope.
         arm_result(self.inner.unbind())
     }
 
@@ -568,9 +827,18 @@ fn vgic_backend_result<T>(result: arm_vgic::VgicResult<T>) -> BackendResult<T> {
         arm_vgic::VgicError::ResourceConflict { .. } => BackendError::ResourceBusy,
         arm_vgic::VgicError::DeliveryQueueFull { .. } => BackendError::OutOfMemory,
         arm_vgic::VgicError::Unsupported { .. } => BackendError::Unsupported,
+        arm_vgic::VgicError::NativeState { kind, .. } => match kind {
+            arm_vgic::StateErrorKind::ResourceBusy => BackendError::ResourceBusy,
+            arm_vgic::StateErrorKind::Unsupported => BackendError::Unsupported,
+            arm_vgic::StateErrorKind::InvalidInput => BackendError::InvalidInput,
+            arm_vgic::StateErrorKind::NotFound | arm_vgic::StateErrorKind::InvalidState => {
+                BackendError::InvalidState
+            }
+        },
         arm_vgic::VgicError::ResourceNotFound { .. }
         | arm_vgic::VgicError::InvalidStateTransition { .. }
         | arm_vgic::VgicError::Backend { .. }
+        | arm_vgic::VgicError::HostService { .. }
         | arm_vgic::VgicError::GuestMemory { .. } => BackendError::InvalidState,
     })
 }

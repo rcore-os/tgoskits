@@ -7,6 +7,12 @@ use tempfile::tempdir;
 
 use super::*;
 
+/// Suite roots, mirroring the split used in production: regular functional
+/// cases under `test-suit/axvisor`, migrated nightly cases under
+/// `apps/axvisor`.
+const TEST_SUIT_ROOT: &str = "test-suit/axvisor";
+const MIGRATED_SUITE_ROOT: &str = "apps/axvisor";
+
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
     write_qemu_config_in_group(root, "normal", "default", case, arch, body)
 }
@@ -19,8 +25,20 @@ fn write_qemu_config_in_group(
     arch: &str,
     body: &str,
 ) -> PathBuf {
+    write_qemu_config_in_suite_root(root, TEST_SUIT_ROOT, group, build_group, case, arch, body)
+}
+
+fn write_qemu_config_in_suite_root(
+    root: &Path,
+    suite_root: &str,
+    group: &str,
+    build_group: &str,
+    case: &str,
+    arch: &str,
+    body: &str,
+) -> PathBuf {
     let dir = root
-        .join("test-suit/axvisor")
+        .join(suite_root)
         .join(group)
         .join(build_group)
         .join(case);
@@ -31,7 +49,17 @@ fn write_qemu_config_in_group(
 }
 
 fn write_qemu_build_config(root: &Path, group: &str, build_group: &str, target: &str) -> PathBuf {
-    let dir = root.join("test-suit/axvisor").join(group).join(build_group);
+    write_qemu_build_config_in_suite_root(root, TEST_SUIT_ROOT, group, build_group, target)
+}
+
+fn write_qemu_build_config_in_suite_root(
+    root: &Path,
+    suite_root: &str,
+    group: &str,
+    build_group: &str,
+    target: &str,
+) -> PathBuf {
+    let dir = root.join(suite_root).join(group).join(build_group);
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("build-{target}.toml"));
     fs::write(
@@ -43,8 +71,9 @@ fn write_qemu_build_config(root: &Path, group: &str, build_group: &str, target: 
 }
 
 fn write_board_build_config(root: &Path, build_group: &str) -> PathBuf {
-    write_qemu_build_config(
+    write_qemu_build_config_in_suite_root(
         root,
+        TEST_SUIT_ROOT,
         "normal",
         build_group,
         "aarch64-unknown-none-softfloat",
@@ -63,8 +92,20 @@ fn write_board_config_in_group(
     name: &str,
     body: &str,
 ) -> PathBuf {
+    write_board_config_in_suite_root(root, TEST_SUIT_ROOT, group, build_group, case, name, body)
+}
+
+fn write_board_config_in_suite_root(
+    root: &Path,
+    suite_root: &str,
+    group: &str,
+    build_group: &str,
+    case: &str,
+    name: &str,
+    body: &str,
+) -> PathBuf {
     let dir = root
-        .join("test-suit/axvisor")
+        .join(suite_root)
         .join(group)
         .join(build_group)
         .join(case);
@@ -378,7 +419,7 @@ fn returns_all_board_test_groups_when_no_filter_is_given() {
         "board_type = \"OrangePi-5-Plus\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(
         groups
@@ -400,7 +441,7 @@ fn board_case_uses_unique_nearest_build_config_without_target_assumption() {
     let board_test_config = case_dir.join("board-custom.toml");
     fs::write(&board_test_config, "board_type = \"Custom\"\n").unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -441,7 +482,7 @@ fn merges_benchmark_suite_root_into_board_discovery() {
     )
     .unwrap();
 
-    let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 2);
     let benchmark = groups
@@ -462,8 +503,8 @@ fn merges_benchmark_suite_root_into_board_discovery() {
     let selected = discover_board_test_groups(
         root.path(),
         "normal",
-        None,
-        Some("orangepi-5-plus-vcpu-perf"),
+        &[],
+        &["orangepi-5-plus-vcpu-perf".to_string()],
     )
     .unwrap();
     assert_eq!(selected.len(), 1);
@@ -481,7 +522,8 @@ fn filters_board_test_group_by_case() {
         "board_type = \"PhytiumPi\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", Some("smoke"), None).unwrap();
+    let groups =
+        discover_board_test_groups(root.path(), "normal", &["smoke".to_string()], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -514,7 +556,8 @@ fn filters_board_test_groups_by_board() {
     );
 
     let groups =
-        discover_board_test_groups(root.path(), "normal", None, Some("phytiumpi-linux")).unwrap();
+        discover_board_test_groups(root.path(), "normal", &[], &["phytiumpi-linux".to_string()])
+            .unwrap();
 
     assert_eq!(
         groups
@@ -574,7 +617,7 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         "board_type = \"OrangePi-5-Plus\"\n",
     );
 
-    let groups = discover_board_test_groups(root.path(), "normal", None, None).unwrap();
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
 
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].name, "smoke");
@@ -633,4 +676,371 @@ fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
         err.to_string()
             .contains("does not match preserved artifact count")
     );
+}
+
+#[test]
+fn merges_migrated_suite_root_into_qemu_discovery() {
+    let root = tempdir().unwrap();
+    let regular_build = write_qemu_build_config(
+        root.path(),
+        "normal",
+        "qemu",
+        "aarch64-unknown-none-softfloat",
+    );
+    let regular_config = write_qemu_config_in_group(
+        root.path(),
+        "normal",
+        "qemu",
+        "smoke",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
+    );
+    let migrated_build = write_qemu_build_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "aarch64-unknown-none-softfloat",
+    );
+    let migrated_config = write_qemu_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "gicv3-timer-stress",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"axvisor:/$\", shell_cmd = \"vm console 1\" \
+         }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
+    );
+
+    let cases = discover_qemu_cases(
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.case.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["smoke", "gicv3-timer-stress"]
+    );
+    let regular = cases
+        .iter()
+        .find(|case| case.case.name == "smoke")
+        .expect("functional case under test-suit must stay discoverable");
+    assert_eq!(regular.build_config_path, regular_build);
+    assert_eq!(regular.case.qemu_config_path, regular_config);
+    let migrated = cases
+        .iter()
+        .find(|case| case.case.name == "gicv3-timer-stress")
+        .expect("nightly case under apps must be discoverable");
+    assert_eq!(migrated.build_config_path, migrated_build);
+    assert_eq!(migrated.case.qemu_config_path, migrated_config);
+}
+
+#[test]
+fn selects_migrated_case_absent_from_test_suit() {
+    let root = tempdir().unwrap();
+    write_qemu_build_config(
+        root.path(),
+        "normal",
+        "qemu",
+        "aarch64-unknown-none-softfloat",
+    );
+    write_qemu_config_in_group(
+        root.path(),
+        "normal",
+        "qemu",
+        "smoke",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
+    );
+    write_qemu_build_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress-v2",
+        "aarch64-unknown-none-softfloat",
+    );
+    write_qemu_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress-v2",
+        "gicv2-timer-stress",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"axvisor:/$\", shell_cmd = \"vm console 1\" \
+         }]\nsuccess_regex = [\"AXVISOR_GICV2_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
+    );
+
+    let cases = discover_qemu_cases(
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("gicv2-timer-stress"),
+    )
+    .unwrap();
+
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].case.name, "gicv2-timer-stress");
+}
+
+#[test]
+fn rejects_group_absent_from_every_suite_root() {
+    let root = tempdir().unwrap();
+    write_qemu_build_config(
+        root.path(),
+        "normal",
+        "default",
+        "aarch64-unknown-none-softfloat",
+    );
+    fs::create_dir_all(root.path().join(MIGRATED_SUITE_ROOT).join("nightly")).unwrap();
+
+    let err = discover_qemu_cases(
+        root.path(),
+        "unknown",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        None,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("unsupported Axvisor test group `unknown`")
+    );
+    assert!(err.to_string().contains("nightly"));
+    assert!(err.to_string().contains("normal"));
+}
+
+#[test]
+fn merges_migrated_suite_root_into_board_discovery() {
+    let root = tempdir().unwrap();
+    let regular_build = write_board_build_config(root.path(), "default");
+    let regular_board = write_board_config(
+        root.path(),
+        "smoke",
+        "orangepi-5-plus-linux",
+        "board_type = \"OrangePi-5-Plus\"\n",
+    );
+
+    let migrated_wrapper = root
+        .path()
+        .join(MIGRATED_SUITE_ROOT)
+        .join("normal/board-orangepi-5-plus/robot-real-starry");
+    let migrated_case = migrated_wrapper.join("smoke");
+    fs::create_dir_all(&migrated_case).unwrap();
+    let migrated_build = migrated_wrapper.join("build-aarch64-unknown-none-softfloat.toml");
+    fs::write(
+        &migrated_build,
+        "target = \"aarch64-unknown-none-softfloat\"\n",
+    )
+    .unwrap();
+    let migrated_board = migrated_case.join("board-orangepi-5-plus-robot-real-starry.toml");
+    fs::write(&migrated_board, "board_type = \"OrangePi-5-Plus-robot\"\n").unwrap();
+
+    let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
+    let migrated = groups
+        .iter()
+        .find(|group| group.board_name == "orangepi-5-plus-robot-real-starry")
+        .expect("nightly board case under apps must be discoverable");
+    assert_eq!(migrated.name, "smoke");
+    assert_eq!(migrated.build_config, migrated_build);
+    assert_eq!(migrated.board_test_config_path, migrated_board);
+    let regular = groups
+        .iter()
+        .find(|group| group.board_name == "orangepi-5-plus-linux")
+        .expect("functional board case under test-suit must stay discoverable");
+    assert_eq!(regular.name, "smoke");
+    assert_eq!(regular.build_config, regular_build);
+    assert_eq!(regular.board_test_config_path, regular_board);
+
+    let selected = discover_board_test_groups(
+        root.path(),
+        "normal",
+        &[],
+        &["orangepi-5-plus-robot-real-starry".to_string()],
+    )
+    .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].name, "smoke");
+}
+
+#[test]
+fn merges_group_names_from_every_suite_root() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join(TEST_SUIT_ROOT).join("normal")).unwrap();
+    fs::create_dir_all(root.path().join(MIGRATED_SUITE_ROOT).join("nightly")).unwrap();
+
+    let groups = discovery::discover_test_group_names(root.path()).unwrap();
+
+    assert_eq!(groups, vec!["nightly".to_string(), "normal".to_string()]);
+}
+
+fn write_healthy_aarch64_qemu_case(root: &Path) {
+    write_qemu_build_config(root, "normal", "qemu", "aarch64-unknown-none-softfloat");
+    write_qemu_config_in_group(
+        root,
+        "normal",
+        "qemu",
+        "smoke",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
+    );
+}
+
+/// A suite root with an unexpected config error must not be hidden behind a
+/// sibling root that already produced cases, which would silently shrink the
+/// discovered coverage.
+#[test]
+fn unexpected_root_error_is_not_swallowed_by_a_healthy_root() {
+    let root = tempdir().unwrap();
+    write_healthy_aarch64_qemu_case(root.path());
+
+    // The migrated root ships a legacy `build-<arch>.toml` instead of the
+    // required `build-<target>.toml`, so scanning it is an unexpected config
+    // error rather than an empty selection.
+    let faulty_wrapper = root.path().join(MIGRATED_SUITE_ROOT).join("normal/legacy");
+    fs::create_dir_all(&faulty_wrapper).unwrap();
+    fs::write(
+        faulty_wrapper.join("build-aarch64.toml"),
+        "target = \"aarch64-unknown-none-softfloat\"\n",
+    )
+    .unwrap();
+
+    // The error propagates with and without a selection that the healthy root
+    // can satisfy.
+    for selected_case in [None, Some("smoke")] {
+        let err = discover_qemu_cases(
+            root.path(),
+            "normal",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            selected_case,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported legacy build config"),
+            "{err}"
+        );
+    }
+
+    // Dropping the faulty wrapper proves the error came from it and that the
+    // healthy root discovers its case on its own.
+    fs::remove_dir_all(&faulty_wrapper).unwrap();
+    let cases = discover_qemu_cases(
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| case.case.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["smoke"]
+    );
+}
+
+/// A selected case that no suite root provides still fails instead of quietly
+/// returning an empty set.
+#[test]
+fn selected_case_missing_from_every_suite_root_is_reported() {
+    let root = tempdir().unwrap();
+    write_healthy_aarch64_qemu_case(root.path());
+    write_qemu_build_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "aarch64-unknown-none-softfloat",
+    );
+    write_qemu_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "gicv3-timer-stress",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"axvisor:/$\", shell_cmd = \"vm console 1\" \
+         }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
+    );
+
+    let err = discover_qemu_cases(
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("ghost"),
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("unknown"), "{err}");
+    assert!(err.to_string().contains("ghost"), "{err}");
+}
+
+/// Listing merges the functional and nightly roots and tolerates the root that
+/// lacks the selected case.
+#[test]
+fn lists_qemu_cases_from_every_suite_root_and_tolerates_missing_selection() {
+    let root = tempdir().unwrap();
+    write_healthy_aarch64_qemu_case(root.path());
+    write_qemu_build_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "aarch64-unknown-none-softfloat",
+    );
+    write_qemu_config_in_suite_root(
+        root.path(),
+        MIGRATED_SUITE_ROOT,
+        "normal",
+        "qemu-timer-stress",
+        "gicv3-timer-stress",
+        "aarch64",
+        "shell_check_steps = [{ shell_prefix = \"axvisor:/$\", shell_cmd = \"vm console 1\" \
+         }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
+    );
+
+    let listed = discovery::list_all_qemu_cases(root.path(), "normal", None).unwrap();
+    assert_eq!(
+        listed,
+        vec!["smoke".to_string(), "gicv3-timer-stress".to_string()]
+    );
+
+    // The functional root lacks the nightly case; that per-root miss stays
+    // ignorable while the migrated root provides it.
+    let selected =
+        discovery::list_all_qemu_cases(root.path(), "normal", Some("gicv3-timer-stress")).unwrap();
+    assert_eq!(selected, vec!["gicv3-timer-stress".to_string()]);
+}
+
+/// Only a missing group or a missing selected case is ignorable per root; an
+/// unexpected error must surface so listing never hides part of the tree.
+#[test]
+fn list_qemu_case_error_classification_never_ignores_unexpected() {
+    use crate::test::qemu::ListQemuCasesErrorKind;
+
+    assert!(discovery::qemu_list_error_is_ignorable(
+        ListQemuCasesErrorKind::EmptyGroup
+    ));
+    assert!(discovery::qemu_list_error_is_ignorable(
+        ListQemuCasesErrorKind::UnknownSelectedCase
+    ));
+    assert!(!discovery::qemu_list_error_is_ignorable(
+        ListQemuCasesErrorKind::Unexpected
+    ));
 }

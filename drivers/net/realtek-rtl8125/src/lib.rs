@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, sync::Arc, vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use descriptor::{RING_END, RxDesc, TxDesc};
 use dma_api::DeviceDma;
 use log::info;
@@ -14,7 +14,7 @@ use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
 use rdif_eth::{
     NetControlEndpoint, NetDevice, NetDeviceInfo, NetDeviceParts, NetError, NetHardIrqEndpoint,
     NetHardIrqHandler, NetHardIrqResult, NetIrqSnapshot, NetIrqSourceId, NetPollGroupId,
-    NetPollGroupParts, NetPollIrqControl, NetQueueId, NetQueuePairParts, NetRearmResult,
+    NetPollGroupParts, NetPollIrqControl, NetQueueId, NetQueuePairParts, NetRearmResult, NetRxMode,
 };
 use registers::*;
 
@@ -57,9 +57,9 @@ const OCP_STD_PHY_BASE: u32 = 0xa400;
 pub(crate) struct RxFilter {
     regs: Regs,
     _mmio: Arc<Mmio>,
-    /// `true` accepts every physical unicast address; the host default is
-    /// `false` (accept only the device MAC plus multicast/broadcast).
-    accept_all_phys: Mutex<bool>,
+    /// Receive policy for this device instance.  The default accepts the
+    /// device MAC plus multicast/broadcast traffic.
+    mode: RawSpinLock<NetRxMode>,
 }
 
 impl RxFilter {
@@ -67,21 +67,24 @@ impl RxFilter {
         Arc::new(Self {
             regs,
             _mmio: mmio,
-            accept_all_phys: Mutex::new(false),
+            mode: RawSpinLock::new(NetRxMode::normal()),
         })
     }
 
     /// Programs the accept bits from the stored policy. Callers must hold the
     /// guard ([`Self::program_start`], [`Self::reprogram`], or
-    /// [`Self::set_accept_all_phys`]) so the sequence is serialized.
-    fn program_accept(&self, accept_all_phys: bool) {
+    /// [`Self::set_rx_mode`]) so the sequence is serialized.
+    fn program_accept(&self, mode: NetRxMode) {
         self.regs.set_multicast_filter_all();
-        self.regs.set_rx_accept_mode(accept_all_phys);
+        self.regs.set_rx_accept_all_unicast(matches!(
+            mode,
+            NetRxMode::AllUnicast | NetRxMode::Promiscuous
+        ));
     }
 
     /// Writes the plain default `RX_CONFIG` value under the guard.
     pub(crate) fn write_default(&self) {
-        let _guard = self.accept_all_phys.lock();
+        let _guard = self.mode.lock();
         self.regs.write_default_rx_config();
     }
 
@@ -89,16 +92,16 @@ impl RxFilter {
     /// accept filter as one guarded unit, so a concurrent policy update is not
     /// lost between the two writes.
     pub(crate) fn program_start(&self) {
-        let accept_all_phys = self.accept_all_phys.lock();
+        let mode = self.mode.lock();
         self.regs.write_default_rx_config_8125b();
-        self.program_accept(*accept_all_phys);
+        self.program_accept(*mode);
     }
 
     /// Reapplies the stored policy during an RX-overflow rearm, so the
     /// per-instance decision survives every hardware restart.
     pub(crate) fn reprogram(&self) {
-        let accept_all_phys = self.accept_all_phys.lock();
-        self.program_accept(*accept_all_phys);
+        let mode = self.mode.lock();
+        self.program_accept(*mode);
     }
 
     /// Records the policy and immediately applies it to hardware.
@@ -107,11 +110,15 @@ impl RxFilter {
     /// MACs before its uplink becomes reachable: the request does not only
     /// store a flag for the next rearm, it programs `RX_CONFIG` under the same
     /// guard the queue owners use.
-    pub(crate) fn set_accept_all_phys(&self, enabled: bool) {
-        let mut accept_all_phys = self.accept_all_phys.lock();
-        *accept_all_phys = enabled;
-        self.program_accept(enabled);
+    pub(crate) fn set_rx_mode(&self, mode: NetRxMode) -> core::result::Result<(), NetError> {
+        if matches!(mode, NetRxMode::Promiscuous) {
+            return Err(NetError::NotSupported);
+        }
+        let mut current = self.mode.lock();
+        *current = mode;
+        self.program_accept(mode);
         self.regs.commit();
+        Ok(())
     }
 }
 
@@ -201,7 +208,7 @@ impl Rtl8125 {
             mac: [0; 6],
             chip,
             phy_ocp_base: OCP_STD_PHY_BASE,
-            queue_start: Arc::new(Mutex::new(QueueStartState::default())),
+            queue_start: Arc::new(RawSpinLock::new(QueueStartState::default())),
             link_up: Arc::new(AtomicBool::new(false)),
         };
         dev.init()?;
@@ -413,9 +420,8 @@ impl NetControlEndpoint for Rtl8125NetControl {
         Ok(self.mac)
     }
 
-    fn set_rx_accept_all_phys(&mut self, enabled: bool) -> core::result::Result<(), NetError> {
-        self.filter.set_accept_all_phys(enabled);
-        Ok(())
+    fn set_rx_mode(&mut self, mode: NetRxMode) -> core::result::Result<(), NetError> {
+        self.filter.set_rx_mode(mode)
     }
 }
 
@@ -764,7 +770,7 @@ mod tests {
         // bit and leaves every other `RX_CONFIG` bit as it was. B keeps its
         // host-only filter even across its own start and rearm, which a
         // process-wide flag would flip.
-        filter_a.set_accept_all_phys(true);
+        filter_a.set_rx_mode(NetRxMode::all_unicast()).unwrap();
         let enabled_a = rx_config(regs_a);
         assert_eq!(enabled_a, host_only_a | ACCEPT_ALL_PHYS_BIT);
         filter_b.program_start();
@@ -780,7 +786,7 @@ mod tests {
         assert_eq!(rx_config(regs_b), host_only_b);
 
         // Disabling restores A's host-only filter and leaves B untouched.
-        filter_a.set_accept_all_phys(false);
+        filter_a.set_rx_mode(NetRxMode::normal()).unwrap();
         assert_eq!(rx_config(regs_a), host_only_a);
         filter_b.program_start();
         assert_eq!(rx_config(regs_b), host_only_b);

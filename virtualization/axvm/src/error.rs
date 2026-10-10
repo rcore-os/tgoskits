@@ -16,6 +16,37 @@ pub type AxVmResult<T = ()> = Result<T, AxVmError>;
 /// Errors reported by AxVM to a hypervisor application.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AxVmError {
+    /// Allocation-free hardware failure carried out of a CPU-bound scope.
+    #[error("virtualization operation {operation} failed: {source}")]
+    Backend {
+        operation: &'static str,
+        source: axvm_types::VmBackendError,
+    },
+    /// Carries native GIC facts out of a hardware binding without formatting.
+    #[cfg(target_arch = "aarch64")]
+    #[error("virtual interrupt operation {operation} failed: {source}")]
+    InterruptController {
+        operation: &'static str,
+        source: arm_vgic::VgicError,
+    },
+    /// A vCPU transition was rejected without formatting in a pinned scope.
+    #[error("invalid vCPU state: expected {expected:?}, observed {actual:?}")]
+    VcpuState {
+        expected: crate::VmVcpuState,
+        actual: crate::VmVcpuState,
+    },
+    /// The operation belongs to an execution period that has retired.
+    #[error("stale VM run {expected:?}; current run is {current:?}")]
+    StaleRun {
+        expected: crate::RunId,
+        current: Option<crate::RunId>,
+    },
+    /// The control endpoint no longer admits commands for this instance.
+    #[error("VM {vm:?} command entry is closed")]
+    EntryClosed { vm: crate::VmKey },
+    /// The command owner exited before publishing a final result.
+    #[error("VM operation {operation:?} was cancelled")]
+    OperationCancelled { operation: crate::OperationId },
     /// The VM configuration is internally inconsistent or malformed.
     #[error("invalid VM configuration: {detail}")]
     InvalidConfig { detail: String },
@@ -122,6 +153,14 @@ pub enum AxVmError {
 }
 
 impl AxVmError {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn interrupt_controller(
+        operation: &'static str,
+        source: arm_vgic::VgicError,
+    ) -> Self {
+        Self::InterruptController { operation, source }
+    }
+
     pub(crate) const fn invalid_transition(
         from: VmStatus,
         to: VmStatus,
@@ -232,7 +271,8 @@ impl AxVmError {
                 "guest address range",
                 format_args!("{operation} failed: {error}"),
             ),
-            AddrSpaceError::MappingState
+            AddrSpaceError::UnleasedBacking
+            | AddrSpaceError::MappingState
             | AddrSpaceError::NeedsRepair
             | AddrSpaceError::Unmapped { .. }
             | AddrSpaceError::InsufficientAccess { .. } => Self::memory(operation, error),
@@ -426,6 +466,12 @@ macro_rules! ax_err {
 
 pub(crate) use ax_err;
 pub(crate) use ax_err_type;
+
+impl From<crate::services::SignalError> for AxVmError {
+    fn from(error: crate::services::SignalError) -> Self {
+        Self::interrupt("runtime signal", error)
+    }
+}
 
 #[cfg(test)]
 mod tests {

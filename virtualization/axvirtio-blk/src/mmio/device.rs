@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec};
 
-use ax_sync::SpinLock;
+use ax_sync::Mutex;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
     AddressSpaceMemory, MmioReadOutcome, MmioWriteAction, VirtioDeviceID, VirtioMmioState,
@@ -42,7 +42,7 @@ pub struct VirtioMmioBlockDevice<B: BlockBackend, T: GuestMemoryAccessor + Clone
     /// Transport-independent block request processing.
     core: VirtioBlockRequestCore<B>,
     /// Deferred request head owned by this MMIO transport.
-    pending_head: SpinLock<Option<u16>>,
+    pending_head: Mutex<Option<u16>>,
     /// Guest memory accessor.
     accessor: Arc<T>,
 }
@@ -78,7 +78,7 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
         Ok(Self {
             state,
             core: VirtioBlockRequestCore::new(block_backend, block_config),
-            pending_head: SpinLock::new(None),
+            pending_head: Mutex::new(None),
             accessor,
         })
     }
@@ -96,6 +96,30 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
     /// Returns the current VirtIO MMIO interrupt status bits.
     pub fn interrupt_status(&self) -> u32 {
         self.state.interrupt_status()
+    }
+
+    /// Resets the transport and its backend to power-on state.
+    ///
+    /// This invalidates any deferred request head and forwards the reset to the
+    /// block backend, mirroring a guest write of zero to the device status.
+    pub fn reset_transport(&self) {
+        self.clear_pending_head();
+        self.core.reset();
+    }
+
+    /// Quiesces backend worker/DMA activity for a VM suspend.
+    pub fn suspend_backend(&self) -> VirtioResult<()> {
+        self.core.suspend_backend()
+    }
+
+    /// Re-opens a backend quiesced by [`suspend_backend`](Self::suspend_backend).
+    pub fn resume_backend(&self) -> VirtioResult<()> {
+        self.core.resume_backend()
+    }
+
+    /// Stops and joins backend worker activity.
+    pub fn stop_backend(&self) -> VirtioResult<()> {
+        self.core.stop_backend()
     }
 
     /// Set device status directly (bypasses validation; bring-up helper).
@@ -393,6 +417,9 @@ mod tests {
         entered: Arc<Barrier>,
         release: Arc<Barrier>,
         reset_calls: Arc<AtomicUsize>,
+        /// Set only after this backend has blocked inside its data path while
+        /// the transport queue lease was held.
+        blocked_under_lease: Arc<AtomicBool>,
     }
 
     impl BlockBackend for BlockingBackend {
@@ -406,6 +433,13 @@ mod tests {
         }
 
         fn write(&self, _sector: u64, _buffer: &[u8]) -> VirtioResult<usize> {
+            // The transport holds the queue lease across this call. Blocking
+            // here therefore proves the backend runs in a task-sleepable
+            // context: on a real kernel a non-sleeping IRQ/preemption guard
+            // held across this wait would be illegal. Plain host tests cannot
+            // reproduce the IRQ-disabled rejection, so the real-context proof
+            // is a root/board run item; this flag records the observed entry.
+            self.blocked_under_lease.store(true, Ordering::Release);
             self.entered.wait();
             self.release.wait();
             Err(VirtioError::WouldBlock)
@@ -773,10 +807,12 @@ mod tests {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         let reset_calls = Arc::new(AtomicUsize::new(0));
+        let blocked_under_lease = Arc::new(AtomicBool::new(false));
         let backend = BlockingBackend {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
             reset_calls: Arc::clone(&reset_calls),
+            blocked_under_lease: Arc::clone(&blocked_under_lease),
         };
         let device = Arc::new(
             VirtioMmioBlockDevice::new(
@@ -833,6 +869,11 @@ mod tests {
         wait_for_reset_status(&device);
         assert!(!reset_finished.load(Ordering::Acquire));
         assert_eq!(reset_calls.load(Ordering::Acquire), 0);
+        assert!(
+            blocked_under_lease.load(Ordering::Acquire),
+            "the backend must be blocked inside its data path while the queue lease is held, so \
+             reset has to wait for the complete access"
+        );
 
         release.wait();
         let (notify_event, memory) = notify.join().expect("queue notify should finish");

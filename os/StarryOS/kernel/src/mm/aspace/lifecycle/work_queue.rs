@@ -35,7 +35,7 @@ impl MmWorkQueue {
     /// A duplicate owner is returned for release outside the queue lock.
     pub(super) fn push(&mut self, inner: Arc<MmInner>) -> Result<(), Arc<MmInner>> {
         {
-            let mut link = inner.work_link.lock();
+            let mut link = inner.work_link.lock_irqsave();
             if link.queued {
                 drop(link);
                 return Err(inner);
@@ -44,7 +44,7 @@ impl MmWorkQueue {
             link.queued = true;
         }
         if let Some(tail) = &self.tail {
-            tail.work_link.lock().next = Some(inner.clone());
+            tail.work_link.lock_irqsave().next = Some(inner.clone());
         } else {
             self.head = Some(inner.clone());
         }
@@ -58,7 +58,7 @@ impl MmWorkQueue {
     pub(super) fn pop(&mut self) -> Option<Arc<MmInner>> {
         let inner = self.head.take()?;
         {
-            let mut link = inner.work_link.lock();
+            let mut link = inner.work_link.lock_irqsave();
             self.head = link.next.take();
             link.queued = false;
         }

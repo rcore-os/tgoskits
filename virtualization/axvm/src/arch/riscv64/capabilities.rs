@@ -5,10 +5,7 @@ use std::{format, vec::Vec};
 use super::Riscv64Arch;
 use crate::{
     AxVmResult,
-    architecture::{
-        Architecture, BootImagePlatform, GuestBootPlatform, MachinePlatform,
-        capabilities::default_vcpu_affinities,
-    },
+    architecture::{Architecture, BootImagePlatform, GuestBootPlatform, MachinePlatform},
     ax_err_type,
 };
 
@@ -17,25 +14,11 @@ impl Architecture for Riscv64Arch {}
 impl MachinePlatform for Riscv64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
         crate::machine::MachineArchitecture::Riscv64;
-
-    fn vcpu_affinities(
-        cpu_num: usize,
-        phys_cpu_ids: Option<&[usize]>,
-        phys_cpu_sets: Option<&[usize]>,
-    ) -> Vec<(usize, Option<usize>, usize)> {
-        let mut vcpus = default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets);
-        if phys_cpu_sets.is_none() {
-            for (_, mask, phys_id) in &mut vcpus {
-                *mask = Some(1 << *phys_id);
-            }
-        }
-        vcpus
-    }
 }
 
 impl BootImagePlatform for Riscv64Arch {
     fn load_guest_dtb(
-        loader: &crate::boot::images::ImageLoaderCore<'_>,
+        loader: &mut crate::boot::images::ImageLoaderCore<'_>,
         dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         let bytes = dtb.as_bytes();
@@ -44,7 +27,7 @@ impl BootImagePlatform for Riscv64Arch {
         crate::boot::fdt::core::create::update_fdt(
             source,
             bytes.len(),
-            loader.vm.clone(),
+            &mut *loader.vm,
             &loader.config,
         )
     }
@@ -88,13 +71,18 @@ pub(super) fn decode_plic_source(
 
 pub(super) fn patch_runtime_fdt(
     fdt_bytes: &[u8],
-    vm: &crate::AxVMRef,
+    vm: &crate::AxVM,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
-    let initrd = vm.with_config(|config| {
-        let ramdisk = config.image_config.ramdisk.as_ref()?;
-        Some((ramdisk.load_gpa.as_usize() as u64, ramdisk.size? as u64))
-    });
+    let initrd = vm
+        .config()
+        .image_config
+        .ramdisk
+        .as_ref()
+        .and_then(|ramdisk| {
+            let size = ramdisk.size?;
+            Some((ramdisk.load_gpa.as_usize() as u64, size as u64))
+        });
     let host_fdt = crate::boot::fdt::core::try_get_host_fdt()
         .map(fdt_edit::Fdt::from_bytes)
         .transpose()
@@ -104,9 +92,10 @@ pub(super) fn patch_runtime_fdt(
                 format!("Failed to parse host FDT while updating guest FDT: {err:#?}")
             )
         })?;
-    let machine_plic = vm
-        .with_config(|config| config.plic_profile().cloned())
-        .ok_or_else(|| crate::AxVmError::invalid_config("RISC-V machine profile has no PLIC"))?;
+    let machine_plic =
+        vm.config().plic_profile().cloned().ok_or_else(|| {
+            crate::AxVmError::invalid_config("RISC-V machine profile has no PLIC")
+        })?;
     let (serial_profile, serial_path, additional_serials, devices, plic_profile) = vm
         .with_planned_device_graph(|graph| {
             let serials = crate::machine::resolved_serial_devices(graph)?;
@@ -134,13 +123,14 @@ pub(super) fn patch_runtime_fdt(
                 plic_profile,
             ))
         })?;
-    let serial_identity = vm.with_config(|config| {
+    let serial_identity = {
+        let config = vm.config();
         config
             .serial_firmware_identity()
             .and_then(crate::machine::GuestSerialFirmwareIdentity::fdt)
             .filter(|identity| Some(&identity.node_path) == serial_path.as_ref())
             .cloned()
-    });
+    };
     let guest_fdt = crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
         crate::boot::fdt::core::create::GuestFdtRuntimePatch {
             fdt_bytes,

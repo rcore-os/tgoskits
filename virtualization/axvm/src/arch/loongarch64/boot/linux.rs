@@ -41,7 +41,7 @@ pub(super) const fn boot_args() -> [usize; 3] {
     ]
 }
 
-pub(super) fn load_boot_info(loader: &ImageLoaderCore<'_>) -> AxVmResult {
+pub(super) fn load_boot_info(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
     let cmdline = loader.config.kernel.cmdline.as_deref().unwrap_or("");
     if cmdline.len() >= COMMAND_LINE_SIZE {
         return Err(ax_err_type!(
@@ -85,7 +85,7 @@ pub(super) fn load_boot_info(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     );
     write_config_table(&mut boot_info, 1, DEVICE_TREE_GUID, FDT_BASE);
 
-    let regions = super::ram_regions(&loader.vm);
+    let regions = super::ram_regions(&*loader.vm);
     let map_size = regions
         .len()
         .checked_mul(EFI_MEMORY_DESCRIPTOR_SIZE)
@@ -118,7 +118,7 @@ pub(super) fn load_boot_info(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     load_vm_image_from_memory(
         &boot_info,
         GuestPhysAddr::from(BOOT_INFO_BASE),
-        loader.vm.clone(),
+        &mut *loader.vm,
     )
 }
 
@@ -136,20 +136,21 @@ fn write_u64_at(image: &mut [u8], offset: usize, value: u64) {
     image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(super) fn load_elf(image: &[u8], loader: &ImageLoaderCore<'_>) -> AxVmResult {
+pub(super) fn load_elf(image: &[u8], loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
     let image = ValidatedElf::parse(image)?;
     for segment in &image.segments {
-        super::fill_vm_region(segment.load_gpa, segment.memory_size, 0, loader.vm.clone())?;
+        super::fill_vm_region(segment.load_gpa, segment.memory_size, 0, &mut *loader.vm)?;
         load_vm_image_from_memory(
             &image.image[segment.file_range.clone()],
             segment.load_gpa,
-            loader.vm.clone(),
+            &mut *loader.vm,
         )?;
     }
-    loader.vm.with_config(|config| {
+    {
+        let config = loader.vm.config_mut();
         config.cpu_config.bsp_entry = image.entry;
         config.cpu_config.ap_entry = image.entry;
-    });
+    }
     Ok(())
 }
 

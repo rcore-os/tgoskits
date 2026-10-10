@@ -19,6 +19,8 @@
 
 #![no_std]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod backend;
 mod config;
@@ -26,6 +28,9 @@ mod constants;
 mod device;
 mod error;
 mod header;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod host_lock_provider;
 mod managed;
 pub mod switch;
 

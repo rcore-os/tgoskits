@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use ax_sync::{SpinLock as Mutex, SpinLockIrqSaveGuard as MutexGuard};
+use ax_sync::{Mutex, MutexGuard};
 use axaddrspace::GuestMemoryAccessor;
 use axvm_types::{AccessWidth, GuestPhysAddr};
 
@@ -39,9 +39,12 @@ pub enum MmioWriteAction {
 
 /// A ready queue and its negotiated feature snapshot, leased for processing.
 ///
-/// The queue lock remains held for this value's lifetime. This prevents reset
-/// and queue reconfiguration from replacing the selected queue while a device
-/// core processes it or updates transport-owned deferred state.
+/// The queue lock is a task-sleepable [`Mutex`] guard that remains held for
+/// this value's lifetime. This prevents reset and queue reconfiguration from
+/// replacing the selected queue while a device core processes it or updates
+/// transport-owned deferred state, and it lets a blocking backend run its
+/// `read`/`write`/`poll` paths in ordinary task context instead of under a
+/// non-sleeping IRQ/preemption guard.
 pub struct MmioQueueProcessingLease<'a, T: GuestMemoryAccessor + Clone> {
     queues: MutexGuard<'a, Vec<VirtioQueue<T>>>,
     queue_index: usize,
@@ -71,6 +74,11 @@ struct InterruptState {
 /// `device_id`, `vendor_id` and `device_features` are fixed at construction.
 /// Feature negotiation is validated here (`driver_features` must be a subset of
 /// `device_features` when the driver seals `FEATURES_OK`).
+///
+/// Every register and queue field is guarded by a task-sleepable [`Mutex`].
+/// MMIO accesses are driven from an ordinary task context, and the queue lease
+/// is held across a device core's (possibly blocking) `read`/`write`/`poll`
+/// calls, so no IRQ/preemption guard may be live on that path.
 pub struct VirtioMmioState<T: GuestMemoryAccessor + Clone> {
     base_ipa: GuestPhysAddr,
     length: usize,
@@ -83,7 +91,9 @@ pub struct VirtioMmioState<T: GuestMemoryAccessor + Clone> {
     device_features_sel: Mutex<u32>,
     driver_features_sel: Mutex<u32>,
     queue_sel: Mutex<u16>,
-    /// Serializes queue configuration register writes without blocking the data path.
+    /// Serializes queue configuration register writes without blocking the data
+    /// path. A task-sleepable mutex: MMIO register handling runs in task
+    /// context and must never be taken while a non-sleeping guard is live.
     queue_config_transaction: Mutex<()>,
     queues: Mutex<Vec<VirtioQueue<T>>>,
     interrupt_status: Mutex<InterruptState>,
@@ -127,12 +137,15 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
 
     /// Number of queues.
     pub fn num_queues(&self) -> usize {
-        self.queues.lock_irqsave().len()
+        self.queues.lock().len()
     }
 
-    /// Lock the queue vector for a device data path.
+    /// Locks the queue vector for a device data path.
+    ///
+    /// The returned guard is a task-sleepable mutex guard; callers must not
+    /// hold it across an interrupt context.
     pub fn queues_lock(&self) -> MutexGuard<'_, Vec<VirtioQueue<T>>> {
-        self.queues.lock_irqsave()
+        self.queues.lock()
     }
 
     /// Acquires a ready queue for one device-processing operation.
@@ -147,17 +160,17 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
         queue_index: u16,
     ) -> VirtioResult<Option<MmioQueueProcessingLease<'_, T>>> {
         let queue_config_guard = self.queue_config_transaction.lock();
-        let status = *self.status.lock_irqsave();
+        let status = *self.status.lock();
         let required = vc::VIRTIO_STATUS_FEATURES_OK | vc::VIRTIO_STATUS_DRIVER_OK;
         let stopped = vc::VIRTIO_STATUS_FAILED | vc::VIRTIO_STATUS_DEVICE_NEEDS_RESET;
         if status & required != required || status & stopped != 0 {
             return Ok(None);
         }
-        if !*self.features_sealed.lock_irqsave() {
+        if !*self.features_sealed.lock() {
             return Ok(None);
         }
-        let negotiated_features = *self.driver_features.lock_irqsave();
-        let queues = self.queues.lock_irqsave();
+        let negotiated_features = *self.driver_features.lock();
+        let queues = self.queues.lock();
         let queue = queues
             .get(queue_index as usize)
             .ok_or(VirtioError::InvalidQueue)?;
@@ -175,12 +188,12 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
 
     /// Whether the driver has set `DRIVER_OK`.
     pub fn is_driver_ok(&self) -> bool {
-        (*self.status.lock_irqsave() & vc::VIRTIO_STATUS_DRIVER_OK) != 0
+        (*self.status.lock() & vc::VIRTIO_STATUS_DRIVER_OK) != 0
     }
 
     /// Raw status register value.
     pub fn status(&self) -> u32 {
-        *self.status.lock_irqsave()
+        *self.status.lock()
     }
 
     /// Set the status register directly, bypassing validation.
@@ -188,13 +201,13 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     /// Intended only for device bring-up helpers that emulate the full driver
     /// sequence; normal status transitions must go through [`mmio_write`](Self::mmio_write).
     pub fn set_status(&self, status: u32) {
-        *self.status.lock_irqsave() = status;
+        *self.status.lock() = status;
     }
 
     /// The currently selected queue index, if it is in range.
     pub fn selected_queue_index(&self) -> Option<u16> {
-        let sel = *self.queue_sel.lock_irqsave();
-        if (sel as usize) < self.queues.lock_irqsave().len() {
+        let sel = *self.queue_sel.lock();
+        if (sel as usize) < self.queues.lock().len() {
             Some(sel)
         } else {
             None
@@ -203,7 +216,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
 
     /// Currently negotiated driver features.
     pub fn driver_features(&self) -> u64 {
-        *self.driver_features.lock_irqsave()
+        *self.driver_features.lock()
     }
 
     /// Advertised device features.
@@ -213,19 +226,19 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
 
     /// Current interrupt status bits.
     pub fn interrupt_status(&self) -> u32 {
-        self.interrupt_status.lock_irqsave().pending
+        self.interrupt_status.lock().pending
     }
 
     /// OR interrupt bits in (used-ring or config-change notification).
     pub fn set_interrupt(&self, bits: u32) {
-        let mut interrupt = self.interrupt_status.lock_irqsave();
+        let mut interrupt = self.interrupt_status.lock();
         interrupt.pending |= bits;
         interrupt.raised_after_read |= bits;
     }
 
     /// Increment the config-space generation (call after changing config).
     pub fn bump_config_generation(&self) {
-        let mut g = self.config_generation.lock_irqsave();
+        let mut g = self.config_generation.lock();
         *g = g.wrapping_add(1);
     }
 
@@ -233,14 +246,14 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     /// status, status and every queue. Device identity and features are kept.
     pub fn reset(&self) {
         let _queue_config_guard = self.queue_config_transaction.lock();
-        let mut features_sealed = self.features_sealed.lock_irqsave();
-        *self.driver_features.lock_irqsave() = 0;
-        *self.driver_features_sel.lock_irqsave() = 0;
-        *self.device_features_sel.lock_irqsave() = 0;
-        *self.queue_sel.lock_irqsave() = 0;
-        *self.interrupt_status.lock_irqsave() = InterruptState::default();
-        *self.status.lock_irqsave() = 0;
-        for q in self.queues.lock_irqsave().iter_mut() {
+        let mut features_sealed = self.features_sealed.lock();
+        *self.driver_features.lock() = 0;
+        *self.driver_features_sel.lock() = 0;
+        *self.device_features_sel.lock() = 0;
+        *self.queue_sel.lock() = 0;
+        *self.interrupt_status.lock() = InterruptState::default();
+        *self.status.lock() = 0;
+        for q in self.queues.lock().iter_mut() {
             q.reset();
         }
         *features_sealed = false;
@@ -267,47 +280,47 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             vc::VIRTIO_MMIO_DEVICE_ID => self.device_id,
             vc::VIRTIO_MMIO_VENDOR_ID => self.vendor_id,
             vc::VIRTIO_MMIO_DEVICE_FEATURES => {
-                let sel = *self.device_features_sel.lock_irqsave();
+                let sel = *self.device_features_sel.lock();
                 if sel >= 2 {
                     0
                 } else {
                     (self.device_features >> ((sel as u64) * 32)) as u32
                 }
             }
-            vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock_irqsave(),
+            vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock(),
             vc::VIRTIO_MMIO_DRIVER_FEATURES => {
-                let sel = *self.driver_features_sel.lock_irqsave();
+                let sel = *self.driver_features_sel.lock();
                 if sel >= 2 {
                     0
                 } else {
-                    (*self.driver_features.lock_irqsave() >> ((sel as u64) * 32)) as u32
+                    (*self.driver_features.lock() >> ((sel as u64) * 32)) as u32
                 }
             }
-            vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock_irqsave(),
-            vc::VIRTIO_MMIO_QUEUE_SEL => *self.queue_sel.lock_irqsave() as u32,
+            vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock(),
+            vc::VIRTIO_MMIO_QUEUE_SEL => *self.queue_sel.lock() as u32,
             vc::VIRTIO_MMIO_QUEUE_NUM_MAX => vc::DEFAULT_QUEUE_SIZE as u32,
             vc::VIRTIO_MMIO_QUEUE_NUM => {
-                let sel = *self.queue_sel.lock_irqsave();
+                let sel = *self.queue_sel.lock();
                 self.queues
-                    .lock_irqsave()
+                    .lock()
                     .get(sel as usize)
                     .map_or(0, |q| q.size as u32)
             }
             vc::VIRTIO_MMIO_QUEUE_READY => {
-                let sel = *self.queue_sel.lock_irqsave();
+                let sel = *self.queue_sel.lock();
                 self.queues
-                    .lock_irqsave()
+                    .lock()
                     .get(sel as usize)
                     .map_or(0, |q| if q.ready { 1 } else { 0 })
             }
             vc::VIRTIO_MMIO_INTERRUPT_STATUS => {
-                let mut interrupt = self.interrupt_status.lock_irqsave();
+                let mut interrupt = self.interrupt_status.lock();
                 let pending = interrupt.pending;
                 interrupt.raised_after_read = 0;
                 pending
             }
-            vc::VIRTIO_MMIO_STATUS => *self.status.lock_irqsave(),
-            vc::VIRTIO_MMIO_CONFIG_GENERATION => *self.config_generation.lock_irqsave(),
+            vc::VIRTIO_MMIO_STATUS => *self.status.lock(),
+            vc::VIRTIO_MMIO_CONFIG_GENERATION => *self.config_generation.lock(),
             _ => {
                 if offset >= vc::VIRTIO_MMIO_CONFIG_OFFSET {
                     return Ok(MmioReadOutcome::DeviceConfig {
@@ -376,41 +389,41 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             is_queue_config_register(offset).then(|| self.queue_config_transaction.lock());
 
         match offset {
-            vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock_irqsave() = val,
-            vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock_irqsave() = val,
+            vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock() = val,
+            vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock() = val,
             vc::VIRTIO_MMIO_DRIVER_FEATURES => {
-                let features_sealed = self.features_sealed.lock_irqsave();
-                let sel = *self.driver_features_sel.lock_irqsave() as u64;
+                let features_sealed = self.features_sealed.lock();
+                let sel = *self.driver_features_sel.lock() as u64;
                 if !*features_sealed && sel < 2 {
                     let mask: u64 = (val as u64) << (sel * 32);
                     let clear: u64 = !(((1u64) << 32) - 1).wrapping_shl((sel * 32) as u32);
-                    let mut f = self.driver_features.lock_irqsave();
+                    let mut f = self.driver_features.lock();
                     *f = (*f & clear) | mask;
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_SEL => {
                 let sel = val as u16;
-                if (sel as usize) < self.queues.lock_irqsave().len() {
-                    *self.queue_sel.lock_irqsave() = sel;
+                if (sel as usize) < self.queues.lock().len() {
+                    *self.queue_sel.lock() = sel;
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_NUM => {
-                let sel = *self.queue_sel.lock_irqsave();
-                if let Some(q) = self.queues.lock_irqsave().get_mut(sel as usize) {
+                let sel = *self.queue_sel.lock();
+                if let Some(q) = self.queues.lock().get_mut(sel as usize) {
                     let _ = q.set_size(val as u16);
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_READY => {
-                let sel = *self.queue_sel.lock_irqsave();
+                let sel = *self.queue_sel.lock();
                 if val == 0 {
-                    if let Some(queue) = self.queues.lock_irqsave().get_mut(sel as usize) {
+                    if let Some(queue) = self.queues.lock().get_mut(sel as usize) {
                         queue.cancel_ready_preparation();
                     }
                     return Ok(MmioWriteAction::None);
                 }
                 let mut candidate = self
                     .queues
-                    .lock_irqsave()
+                    .lock()
                     .get_mut(sel as usize)
                     .and_then(VirtioQueue::begin_ready_preparation);
                 let prepared = if let Some(queue) = candidate.as_mut() {
@@ -437,14 +450,14 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
                     false
                 };
                 if let Some(snapshot) = candidate.as_ref()
-                    && let Some(queue) = self.queues.lock_irqsave().get_mut(sel as usize)
+                    && let Some(queue) = self.queues.lock().get_mut(sel as usize)
                 {
                     queue.finish_ready_preparation(snapshot, prepared);
                 }
             }
             vc::VIRTIO_MMIO_QUEUE_NOTIFY => return Ok(MmioWriteAction::QueueNotified(val as u16)),
             vc::VIRTIO_MMIO_INTERRUPT_ACK => {
-                let mut interrupt = self.interrupt_status.lock_irqsave();
+                let mut interrupt = self.interrupt_status.lock();
                 let raised_after_read = interrupt.raised_after_read & val;
                 interrupt.pending &= !(val & !raised_after_read);
                 if raised_after_read != 0 {
@@ -470,7 +483,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             self.reset();
             return Ok(MmioWriteAction::Reset);
         }
-        let mut features_sealed = self.features_sealed.lock_irqsave();
+        let mut features_sealed = self.features_sealed.lock();
         let features_already_ok = *features_sealed;
         let mut new_status = if features_already_ok {
             val | vc::VIRTIO_STATUS_FEATURES_OK
@@ -478,26 +491,26 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
             val
         };
         if !features_already_ok && (new_status & vc::VIRTIO_STATUS_FEATURES_OK) != 0 {
-            let driver_feats = *self.driver_features.lock_irqsave();
+            let driver_feats = *self.driver_features.lock();
             if (driver_feats & !self.device_features) != 0 {
                 new_status &= !vc::VIRTIO_STATUS_FEATURES_OK;
                 new_status |= vc::VIRTIO_STATUS_FAILED;
             } else {
                 let event_idx_enabled = driver_feats & vc::VIRTIO_F_RING_EVENT_IDX != 0;
-                for queue in self.queues.lock_irqsave().iter_mut() {
+                for queue in self.queues.lock().iter_mut() {
                     queue.event_idx_enabled = event_idx_enabled;
                 }
                 *features_sealed = true;
             }
         }
-        *self.status.lock_irqsave() = new_status;
+        *self.status.lock() = new_status;
         Ok(MmioWriteAction::None)
     }
 
     /// Combine a 32-bit LOW/HIGH half into a queue address (overwrite semantics).
     fn write_queue_address(&self, reg: usize, val: u32) {
-        let sel = *self.queue_sel.lock_irqsave();
-        let mut queues = self.queues.lock_irqsave();
+        let sel = *self.queue_sel.lock();
+        let mut queues = self.queues.lock();
         let Some(q) = queues.get_mut(sel as usize) else {
             return;
         };
@@ -748,11 +761,7 @@ mod tests {
         const BASE: usize = 0x0a00_0000;
 
         let state = configured_state(0);
-        assert!(
-            state.queues.lock_irqsave()[0]
-                .begin_ready_preparation()
-                .is_some()
-        );
+        assert!(state.queues.lock()[0].begin_ready_preparation().is_some());
         let mut memory = PanicMemory;
         state
             .mmio_write_with_memory(
@@ -813,7 +822,7 @@ mod tests {
                 if attempted_for_callback.swap(true, Ordering::AcqRel) {
                     return;
                 }
-                let Some(mut queues) = state_for_callback.queues.try_lock_irqsave() else {
+                let Some(mut queues) = state_for_callback.queues.try_lock() else {
                     return;
                 };
                 queues[0]

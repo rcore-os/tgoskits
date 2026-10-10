@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::arch::x86_64::policy::types::{
-    X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86VmExit,
+    UNRESOLVED_NEXT_RIP, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86VmExit,
 };
 
 /// Byte register selected by a ModRM.reg field for byte MOV instructions.
@@ -161,6 +161,9 @@ pub(crate) fn mov_mmio_write_exit(
             addr,
             width,
             data: width.mask_value(data),
+            // The caller resolves and attaches the retirement `RIP` once the
+            // decoded instruction length is known.
+            next_rip: UNRESOLVED_NEXT_RIP,
         }),
         _ => None,
     }
@@ -410,6 +413,7 @@ mod tests {
                     addr: actual_addr,
                     width: actual_width,
                     data: actual_data,
+                    ..
                 } => {
                     assert_eq!(actual_addr, addr);
                     assert_eq!(actual_width, width);

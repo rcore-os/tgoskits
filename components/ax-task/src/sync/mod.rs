@@ -22,10 +22,10 @@ pub use semaphore::fail_next_semaphore_timer_registration;
 pub use semaphore::{Semaphore, SemaphoreError};
 mod spin;
 pub use local_lock::{LocalLock, LocalLockGuard};
-pub use rt_rwlock::{SpinRwLock, SpinRwLockReadGuard, SpinRwLockWriteGuard};
+pub use rt_rwlock::{RtSpinRwLock, RtSpinRwLockReadGuard, RtSpinRwLockWriteGuard};
 use rt_spin::RtCriticalGuard;
-pub use rt_spin::{SpinLock, SpinLockGuard};
-pub use rwsem::{RawRwSemaphore, RwSemaphore, RwSemaphoreReadGuard, RwSemaphoreWriteGuard};
+pub use rt_spin::{RtSpinLock, RtSpinLockGuard};
+pub use rwsem::{RwSemaphore, RwSemaphoreBackend, RwSemaphoreReadGuard, RwSemaphoreWriteGuard};
 #[cfg(feature = "lockdep")]
 pub use {
     self::lockdep::LockSubclass, self::lockdep::dump_lockdep_trace,
@@ -33,7 +33,7 @@ pub use {
 };
 
 pub use self::mutex::{
-    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexGuard, PiMutexLockInterrupted, RawMutex,
+    InterruptibleMutexExt, LockdepMutexExt, Mutex, MutexBackend, MutexGuard, PiMutexLockInterrupted,
 };
 #[cfg(not(feature = "lockdep"))]
 pub type LockSubclass = u32;
@@ -46,19 +46,17 @@ pub use self::context::{
     IrqReturnPreemptGuard, IrqSaveGuard, PreemptGuard, PreemptIrqSaveGuard, hardirq_enter,
     hardirq_exit,
 };
-pub use crate::sync::spin::{
-    RawIrqSaveMutex, RawSpinLock, RawSpinLockGuard, RawSpinLockIrqSaveGuard,
-    RawSpinLockUnpinnedGuard, RawSpinRwLock, RawSpinRwLockIrqSaveReadGuard,
-    RawSpinRwLockIrqSaveWriteGuard, RawSpinRwLockReadGuard, RawSpinRwLockUnpinnedReadGuard,
-    RawSpinRwLockUnpinnedWriteGuard, RawSpinRwLockWriteGuard,
-};
-
-/// A non-sleeping mutex whose guard saves and disables local IRQs.
-pub type IrqMutex<T> = lock_api::Mutex<RawIrqSaveMutex, T>;
-
-pub use crate::sync::wait_queue::{
-    WaitQueue, WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken,
-    wait_until_registered,
+pub use crate::sync::{
+    spin::{
+        RawSpinLock, RawSpinLockGuard, RawSpinLockIrqSaveBackend, RawSpinLockIrqSaveGuard,
+        RawSpinLockUnpinnedGuard, RawSpinRwLock, RawSpinRwLockIrqSaveReadGuard,
+        RawSpinRwLockIrqSaveWriteGuard, RawSpinRwLockReadGuard, RawSpinRwLockUnpinnedReadGuard,
+        RawSpinRwLockUnpinnedWriteGuard, RawSpinRwLockWriteGuard,
+    },
+    wait_queue::{
+        WaitQueue, WaitQueueRegistration, WaitQueueWakeOutcome, WaitQueueWakeToken,
+        wait_until_registered,
+    },
 };
 
 pub mod irq;

@@ -77,6 +77,21 @@ impl<B: BlockBackend> VirtioBlockRequestCore<B> {
         self.backend.reset();
     }
 
+    /// Quiesces backend worker/DMA activity for a VM suspend.
+    pub fn suspend_backend(&self) -> VirtioResult<()> {
+        self.backend.suspend()
+    }
+
+    /// Re-opens a backend quiesced by [`suspend_backend`](Self::suspend_backend).
+    pub fn resume_backend(&self) -> VirtioResult<()> {
+        self.backend.resume()
+    }
+
+    /// Stops and joins backend worker activity.
+    pub fn stop_backend(&self) -> VirtioResult<()> {
+        self.backend.stop()
+    }
+
     /// Services every request currently available on `queue`.
     ///
     /// A request that returns [`VirtioError::WouldBlock`] is returned to the

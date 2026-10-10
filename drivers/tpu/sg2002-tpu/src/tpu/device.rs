@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 
 use super::{
     TDMA_PHYS_BASE, TIU_PHYS_BASE,
@@ -59,7 +59,7 @@ pub struct Sg2002Tpu {
     /// TIU 寄存器基地址
     tiu_vaddr: *mut u8,
     /// 内部状态 (使用自旋锁保护)
-    inner: Mutex<TpuDeviceInner>,
+    inner: RawSpinLock<TpuDeviceInner>,
     /// 序列号计数器
     seq_counter: AtomicU32,
     /// TDMA 中断到达标志
@@ -106,7 +106,7 @@ impl Sg2002Tpu {
         Self {
             tdma_vaddr,
             tiu_vaddr,
-            inner: Mutex::new(TpuDeviceInner {
+            inner: RawSpinLock::new(TpuDeviceInner {
                 tdma: unsafe { TdmaRegs::new(tdma_vaddr) },
                 tiu: unsafe { TiuRegs::new(tiu_vaddr) },
                 state: TpuState::Uninitialized,

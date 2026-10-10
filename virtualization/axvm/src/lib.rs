@@ -15,7 +15,8 @@
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!
 //! This crate contains:
-//! - [`AxVM`]: The main structure representing a VM.
+//! - [`VmManager`]: VM instance creation and registry ownership.
+//! - [`VmHandle`]: lifecycle requests and immutable observations.
 
 #![cfg_attr(any(test, target_arch = "aarch64"), feature(once_cell_try))]
 
@@ -26,16 +27,22 @@ mod arch;
 mod architecture;
 pub mod boot;
 mod configured;
+mod control;
+mod engine;
 mod error;
+mod guest_memory;
 pub mod host;
+mod identity;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
 pub mod machine;
 mod manager;
 mod npt;
+mod operation;
 mod percpu;
 mod runtime;
+mod services;
 mod sync;
 mod task;
 mod vcpu;
@@ -44,33 +51,47 @@ mod vm;
 pub mod config;
 
 pub use ax_cpumask::CpuMask;
+pub use ax_std::os::arceos::task::sched::{RtPriority, SchedulePolicy};
 pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
-    VMId, VmVcpuState,
+    VMId, VmBackendError, VmVcpuState,
 };
 pub use configured::{
     ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
     ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, VirtioPciFunction,
-    install_physical_uplink, reserve_host_mac, switch_from_physical_rx, virtio_capabilities,
+    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, PhysicalUplinkError, VirtioPciFunction,
+    install_physical_uplink, physical_uplink_installed, reserve_host_mac, switch_from_physical_rx,
+    virtio_capabilities,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
+pub use guest_memory::{GuestMemoryPort, GuestRange, MappingLease, MemoryRevision, MemoryUpdate};
 pub(crate) use host::{
     paging::HostPagingHandler,
-    task::{ThreadHandle, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
+    task::{ThreadHandle, WaitQueueHandle as HostWaitQueueHandle},
 };
+pub use identity::{OperationId, RunId, VmKey};
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
-    AxvmRuntime, current_vcpu_id, current_vm_id, dispatch_current_vcpu_interrupt, get_vm_by_id,
-    get_vm_list, inject_current_vcpu_interrupt, kick_vm_vcpu, register_vm,
+    CpuObservation, DeviceObservation, MemoryObservation, VmConfigSnapshot, VmCreatePlan, VmHandle,
+    VmManager, VmSnapshot,
 };
-pub(crate) use task::{AsVCpuTask, VCpuTask};
-pub use vm::{
-    AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, RtPriority, SchedulePolicy,
-    VMMemoryRegion, VcpuSnapshot,
-};
+pub use operation::VmOperation;
+pub use runtime::queue::SignalError;
+pub use services::VcpuInterruptPort;
+pub(crate) use vm::AxVM;
+pub use vm::{FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot};
+
+/// Returns the guest identity currently loaded on this CPU.
+pub fn current_vm_id() -> Option<VMId> {
+    vcpu::with_current_execution(|current| current.map(|context| context.vm_id()))
+}
+
+/// Returns the virtual CPU currently loaded on this CPU.
+pub fn current_vcpu_id() -> Option<usize> {
+    vcpu::with_current_execution(|current| current.map(|context| context.vcpu_id()))
+}
 
 /// The architecture-independent per-CPU type.
 pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::current::ArchPerCpu>;

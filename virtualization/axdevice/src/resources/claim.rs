@@ -9,7 +9,7 @@ use alloc::{
 };
 use core::fmt;
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId};
 
 use super::{resolved::*, *};
@@ -34,10 +34,18 @@ struct ClaimRecord {
     state: ClaimState,
 }
 
-#[derive(Debug)]
 pub(super) struct ResourceClaimDomain {
     device_ids: BTreeSet<String>,
-    records: SpinLock<BTreeMap<ClaimKey, ClaimRecord>>,
+    records: Mutex<BTreeMap<ClaimKey, ClaimRecord>>,
+}
+
+impl fmt::Debug for ResourceClaimDomain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResourceClaimDomain")
+            .field("device_ids", &self.device_ids)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ResourceClaimDomain {
@@ -59,14 +67,16 @@ impl ResourceClaimDomain {
         }
         Arc::new(Self {
             device_ids: devices.keys().cloned().collect(),
-            records: SpinLock::new(records),
+            records: Mutex::new(records),
         })
     }
 
-    fn records(&self) -> RawSpinLockGuard<'_, BTreeMap<ClaimKey, ClaimRecord>> {
-        // SAFETY: claim state transitions are entered through the serialized
-        // VM resource planner and exclude local re-entry.
-        unsafe { self.records.lock_raw() }
+    /// Locks the claim table.
+    ///
+    /// Claim transitions run in the VM resource planner's task context, so the
+    /// table uses a task-sleepable mutex rather than a raw/noirq guard.
+    fn records(&self) -> MutexGuard<'_, BTreeMap<ClaimKey, ClaimRecord>> {
+        self.records.lock()
     }
 
     pub(super) fn issue_device(

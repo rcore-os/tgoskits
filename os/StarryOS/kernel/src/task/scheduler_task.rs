@@ -15,7 +15,7 @@ use ax_std::os::arceos::task as scheduler;
 use super::{PidIdentity, PidSnapshot, Thread};
 #[cfg(target_arch = "aarch64")]
 use super::{PidNamespaceId, TgidNumber, TidNumber};
-use crate::sync::{Mutex, NoPreemptIrqSave};
+use crate::sync::{Mutex, PreemptIrqSaveGuard};
 
 const TASK_COMM_LEN: usize = 16;
 
@@ -321,7 +321,7 @@ pub fn current_user_task() -> UserTaskRef {
 /// replacing or reaping the published extension until this view is dropped.
 pub(crate) struct UserTaskIrqView {
     extension_data: usize,
-    _irq_guard: NoPreemptIrqSave,
+    _irq_guard: PreemptIrqSaveGuard,
 }
 
 impl UserTaskIrqView {
@@ -391,7 +391,7 @@ impl UserTaskIrqView {
 /// Binding failures are counted in a fixed atomic diagnostic and fail closed;
 /// observers must use a neutral kernel identity when this returns `None`.
 pub(crate) fn try_current_user_irq_view() -> Option<UserTaskIrqView> {
-    let irq_guard = NoPreemptIrqSave::new();
+    let irq_guard = PreemptIrqSaveGuard::new();
     // SAFETY: the retained guard prevents migration and local IRQ reentry for
     // both the scoped read and the returned view's lifetime.
     let extension_data = match unsafe {

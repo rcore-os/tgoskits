@@ -20,14 +20,14 @@ use crate::sync::mutex::{
 
 /// Borrowed fixed storage for one external PI mutex.
 #[derive(Clone, Copy)]
-pub struct PiMutexStorage<'lock> {
+pub struct MutexStorage<'lock> {
     pub owner: &'lock AtomicU64,
     pub generation: &'lock AtomicU64,
     pub wait_state: &'lock AtomicU8,
     pub wait_words: &'lock UnsafeCell<[MaybeUninit<usize>; PI_MUTEX_WAIT_STORAGE_WORDS]>,
 }
 
-impl<'lock> PiMutexStorage<'lock> {
+impl<'lock> MutexStorage<'lock> {
     fn core(self) -> PiMutexCoreView<'lock> {
         PiMutexCoreView::from_parts(
             self.owner,
@@ -39,7 +39,7 @@ impl<'lock> PiMutexStorage<'lock> {
 }
 
 /// Exclusive fixed storage borrowed while an external PI mutex is destroyed.
-pub struct PiMutexStorageMut<'lock> {
+pub struct MutexStorageMut<'lock> {
     pub owner: &'lock mut AtomicU64,
     pub generation: &'lock mut AtomicU64,
     pub wait_state: &'lock mut AtomicU8,
@@ -48,7 +48,7 @@ pub struct PiMutexStorageMut<'lock> {
 
 /// One complete external PI-mutex acquisition request.
 pub struct MutexAcquireRequest<'lock> {
-    pub storage: PiMutexStorage<'lock>,
+    pub storage: MutexStorage<'lock>,
     pub next_waiter_sequence: &'lock AtomicU64,
     pub class: LockClass<'lock>,
     pub lock_addr: usize,
@@ -74,7 +74,7 @@ pub fn mutex_try_acquire(request: MutexAcquireRequest<'_>) -> bool {
 }
 
 /// Releases an external PI mutex and completes any scheduler-owned handoff.
-pub fn mutex_release(storage: PiMutexStorage<'_>, lock_addr: usize) {
+pub fn mutex_release(storage: MutexStorage<'_>, lock_addr: usize) {
     release_lockdep(lock_addr);
     unsafe {
         // SAFETY: the external raw-mutex guard proves current owns this lock
@@ -84,22 +84,22 @@ pub fn mutex_release(storage: PiMutexStorage<'_>, lock_addr: usize) {
 }
 
 /// Releases one deliberately leaked external PI-mutex guard.
-pub fn mutex_force_release(storage: PiMutexStorage<'_>, lock_addr: usize) {
+pub fn mutex_force_release(storage: MutexStorage<'_>, lock_addr: usize) {
     mutex_release(storage, lock_addr);
 }
 
 /// Returns whether the current task owns an external PI mutex.
-pub fn mutex_is_owned_by_current(storage: PiMutexStorage<'_>) -> bool {
+pub fn mutex_is_owned_by_current(storage: MutexStorage<'_>) -> bool {
     PiMutexAlgorithm::core_is_owned_by_current(storage.core())
 }
 
 /// Returns whether an external PI mutex has an owner or pending handoff.
-pub fn mutex_is_locked(storage: PiMutexStorage<'_>) -> bool {
+pub fn mutex_is_locked(storage: MutexStorage<'_>) -> bool {
     PiMutexAlgorithm::core_is_locked(storage.core())
 }
 
 /// Destroys scheduler-owned inline waiter state after the wrapper is unique.
-pub fn mutex_destroy(storage: PiMutexStorageMut<'_>) {
+pub fn mutex_destroy(storage: MutexStorageMut<'_>) {
     destroy_pi_mutex_storage(
         storage.owner,
         storage.generation,

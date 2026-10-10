@@ -141,7 +141,7 @@ target/x86_64-unknown-uefi/release/axloader-launcher.efi
 
 QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
 跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
-initramfs 和两者都有，并以目标内核输出的 `HOST_CMDLINE`、
+initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出的 `HOST_CMDLINE`、
 `HOST_INITRAMFS_PASSED` 为成功证据。测试先核对真实 UART 身份及上报参数，再验证 bound/direct 放行、错误绑定令牌拒绝，
 并覆盖 SHA-256、OTA 待试槽确认和
 回滚。服务端协议测试另见 ostool 的

@@ -8,7 +8,7 @@ use axfs_ng_vfs::{
 use slab::Slab;
 
 use super::DirMaker;
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 /// Returns a dummy filesystem statistics.
 pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
@@ -32,8 +32,8 @@ pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
 pub struct SimpleFs {
     name: String,
     fs_type: u32,
-    inodes: IrqMutex<Slab<()>>,
-    root: IrqMutex<Option<DirEntry>>,
+    inodes: RawSpinLock<Slab<()>>,
+    root: RawSpinLock<Option<DirEntry>>,
 }
 
 impl SimpleFs {
@@ -46,8 +46,8 @@ impl SimpleFs {
         let fs = Arc::new(Self {
             name,
             fs_type,
-            inodes: IrqMutex::new(Slab::new()),
-            root: IrqMutex::new(None),
+            inodes: RawSpinLock::new(Slab::new()),
+            root: RawSpinLock::new(None),
         });
         let root = root(fs.clone());
         fs.set_root(DirEntry::new_dir(
@@ -58,15 +58,15 @@ impl SimpleFs {
     }
 
     fn set_root(&self, root: DirEntry) {
-        *self.root.lock() = Some(root);
+        *self.root.lock_irqsave() = Some(root);
     }
 
     fn alloc_inode(&self) -> u64 {
-        self.inodes.lock().insert(()) as u64 + 1
+        self.inodes.lock_irqsave().insert(()) as u64 + 1
     }
 
     fn release_inode(&self, ino: u64) {
-        self.inodes.lock().remove(ino as usize - 1);
+        self.inodes.lock_irqsave().remove(ino as usize - 1);
     }
 }
 
@@ -76,7 +76,7 @@ impl FilesystemOps for SimpleFs {
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root.lock().clone().unwrap()
+        self.root.lock_irqsave().clone().unwrap()
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -88,10 +88,10 @@ impl FilesystemOps for SimpleFs {
 pub struct SimpleFsNode {
     fs: Arc<SimpleFs>,
     ino: u64,
-    // IrqMutex instead of Mutex: metadata may be read/updated on paths that
+    // RawSpinLock instead of Mutex: metadata may be read/updated on paths that
     // are already in atomic context (IRQs disabled), so a blocking mutex would
     // trigger a might_sleep() panic.
-    pub(crate) metadata: IrqMutex<Metadata>,
+    pub(crate) metadata: RawSpinLock<Metadata>,
 }
 
 impl SimpleFsNode {
@@ -117,7 +117,7 @@ impl SimpleFsNode {
         Self {
             fs,
             ino,
-            metadata: IrqMutex::new(metadata),
+            metadata: RawSpinLock::new(metadata),
         }
     }
 }
@@ -134,7 +134,7 @@ impl NodeOps for SimpleFsNode {
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        let mut metadata = self.metadata.lock().clone();
+        let mut metadata = self.metadata.lock_irqsave().clone();
         // A non-zero stored size is a fixed inode width recorded via
         // `SimpleFile::set_fixed_size` (e.g. mqueuefs `FILENT_SIZE` = 80, which
         // Linux `mqueue_get_inode` stamps regardless of the rendered status
@@ -150,7 +150,7 @@ impl NodeOps for SimpleFsNode {
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
-        let mut metadata = self.metadata.lock();
+        let mut metadata = self.metadata.lock_irqsave();
         if let Some(mode) = update.mode {
             metadata.mode = mode;
         }

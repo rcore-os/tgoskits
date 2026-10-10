@@ -1,39 +1,10 @@
-use std::{collections::BTreeMap, format, string::String, sync::OnceLock, vec::Vec};
+use std::{format, string::String, vec::Vec};
 
-use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal, sync::IrqSafeMutex as Mutex};
+use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal};
 use axvmconfig::GuestConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
 use crate::{config::*, *};
-
-static LOONGARCH_GUEST_IRQ_ROUTES: OnceLock<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
-    OnceLock::new();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LoongArchGuestIrqRoute {
-    pub physical_irq: usize,
-    pub guest_vector: usize,
-}
-
-pub fn init() {
-    let _ = LOONGARCH_GUEST_IRQ_ROUTES.set(Mutex::new(BTreeMap::new()));
-}
-
-pub fn store_guest_irq_routes(vm_id: usize, routes: Vec<LoongArchGuestIrqRoute>) {
-    let mut cache_lock = LOONGARCH_GUEST_IRQ_ROUTES
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock();
-    cache_lock.insert(vm_id, routes);
-}
-
-pub fn get_guest_irq_routes(vm_id: usize) -> Vec<LoongArchGuestIrqRoute> {
-    LOONGARCH_GUEST_IRQ_ROUTES
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .get(&vm_id)
-        .cloned()
-        .unwrap_or_default()
-}
 
 pub fn prepare_uefi_fdt_config(
     vm_config: &mut AxVMConfig,
@@ -58,11 +29,6 @@ pub fn prepare_direct_fdt_config(vm_config: &mut AxVMConfig, vm_create_config: &
     );
     vm_config.set_dtb_load_gpa(UEFI_FIRMWARE_FDT_BASE.into());
     vm_create_config.kernel.dtb_load_addr = Some(UEFI_FIRMWARE_FDT_BASE);
-}
-
-pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) -> AxVmResult {
-    store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config)?);
-    Ok(())
 }
 
 fn expand_root_passthrough(

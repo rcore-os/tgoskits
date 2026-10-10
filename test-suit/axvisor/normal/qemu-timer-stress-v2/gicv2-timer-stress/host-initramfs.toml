@@ -1,2 +1,0 @@
-vm_configs = ["test-suit/axvisor/normal/qemu-timer-stress/aarch64-linux-timer-stress-v2.toml"]
-busybox_initramfs = "tmp/axbuild/axvisor/qemu-timer-stress/initramfs-aarch64.cpio.gz"

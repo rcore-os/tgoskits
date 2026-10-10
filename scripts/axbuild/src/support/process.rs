@@ -48,13 +48,15 @@ fn is_text_file_busy(_error: &io::Error) -> bool {
     false
 }
 
-pub(crate) fn run_cargo_status(workspace_root: &Path, args: &[String]) -> Result<bool> {
-    let status = Command::new("cargo")
+pub(crate) fn run_cargo_output(
+    workspace_root: &Path,
+    args: &[String],
+) -> Result<std::process::Output> {
+    Command::new("cargo")
         .current_dir(workspace_root)
         .args(args)
-        .status()
-        .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))?;
-    Ok(status.success())
+        .output()
+        .with_context(|| format!("failed to spawn `cargo {}`", args.join(" ")))
 }
 
 pub(crate) fn run_cargo_status_with_env(

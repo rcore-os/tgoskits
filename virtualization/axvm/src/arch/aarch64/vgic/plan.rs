@@ -21,7 +21,7 @@ impl VgicConstructionPlan {
         let profile = config
             .gic_profile()
             .ok_or_else(|| AxVmError::invalid_config("AArch64 machine profile has no VGIC"))?;
-        let backend = gic::backend()
+        let backend = gic::backend(config.phys_cpu_ls.cpu_num())
             .map_err(|error| AxVmError::interrupt("create host GIC backend", error))?;
         let vgic_config = build_vgic_config(config, profile, backend.clone())?;
         let host_virtual_timer_intid = config

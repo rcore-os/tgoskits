@@ -7,7 +7,7 @@ use core::{alloc::Layout, ptr::NonNull};
 
 use arm_smmu_v3::{PhysicalMemory, PhysicalRegion, Smmu};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use log::info;
 use rdif_iommu::{
     DmaDomainId, Iommu, IommuController, IommuDomain, IommuError, IovaWindow, MapPermissions,
@@ -21,14 +21,14 @@ use rdrive::{
 struct SmmuMemory;
 
 static MEMORY: SmmuMemory = SmmuMemory;
-static CONTROLLER: SpinLock<Option<Arc<SmmuController>>> = SpinLock::new(None);
+static CONTROLLER: RawSpinLock<Option<Arc<SmmuController>>> = RawSpinLock::new(None);
 
 /// ArceOS owns serialization; the portable SMMU only accepts mutable access.
 /// Probe and DMA mapping run outside hard IRQs. SMMU transactions may allocate
 /// physical pages while holding this lock; the page allocator does not call
 /// back into the IOMMU.
 struct SmmuController {
-    hardware: Arc<SpinLock<Smmu>>,
+    hardware: Arc<RawSpinLock<Smmu>>,
 }
 
 impl IommuController for SmmuController {
@@ -45,7 +45,7 @@ impl IommuController for SmmuController {
 struct AttachedDomain {
     stream: StreamId,
     id: DmaDomainId,
-    hardware: Arc<SpinLock<Smmu>>,
+    hardware: Arc<RawSpinLock<Smmu>>,
 }
 
 impl IommuDomain for AttachedDomain {
@@ -153,7 +153,7 @@ fn probe_smmu_node(
     let smmu = unsafe { Smmu::new(mmio, &MEMORY) }
         .map_err(|err| OnProbeError::other(format!("Arm SMMUv3 initialization failed: {err:?}")))?;
     let controller = Arc::new(SmmuController {
-        hardware: Arc::new(SpinLock::new(smmu)),
+        hardware: Arc::new(RawSpinLock::new(smmu)),
     });
     platform.register(Iommu::new("arm-smmu-v3", controller.clone()));
     *CONTROLLER.lock() = Some(controller);

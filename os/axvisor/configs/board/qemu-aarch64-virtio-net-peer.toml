@@ -2,6 +2,8 @@ features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
-  "os/axvisor/configs/vms/qemu/aarch64/arceos-virtio-net-peer-vm1.toml",
-  "os/axvisor/configs/vms/qemu/aarch64/arceos-virtio-net-peer-vm2.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/virtio-net/arceos-virtio-net-peer-vm1.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/virtio-net/arceos-virtio-net-peer-vm2.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/virtio-net/arceos-virtio-net-peer-vm3.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/virtio-net/arceos-virtio-net-peer-vm4.toml",
 ]

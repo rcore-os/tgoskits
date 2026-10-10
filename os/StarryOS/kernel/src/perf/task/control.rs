@@ -5,7 +5,7 @@ pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<
     ptc.enabled.store(false, Ordering::Release);
     // Never retain the non-sleeping run-state lock across an owner-CPU worker
     // rendezvous. See `stop_requested_on_owner` for the temporary-lifetime trap.
-    let action = ptc.run_state.lock().begin_disable();
+    let action = ptc.run_state.lock_irqsave().begin_disable();
     let result = match action {
         PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => {
             ptc.finish_enabled_context(now_ns());
@@ -33,7 +33,7 @@ pub(crate) fn reset_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()
     }
     ptc.accumulated.store(0, Ordering::Release);
     ptc.sample_read_floor.store(0, Ordering::Release);
-    ptc.counting_extender.lock().reset();
+    ptc.counting_extender.lock_irqsave().reset();
     ptc.publish_rdpmc_inactive();
     if was_enabled && !ptc.resources_released() {
         ptc.set_enabled();

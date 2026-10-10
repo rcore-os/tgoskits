@@ -91,7 +91,7 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
     pub fn new_with_config(
         vm_id: usize,
         vcpu_id: usize,
-        config: X86VcpuCreateConfig,
+        config: X86VcpuCreateConfig<H::Runtime>,
         memory: VcpuControlMemory<M>,
         xstate: GuestXstate<M>,
     ) -> X86VcpuResult<Self> {
@@ -189,6 +189,15 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
         dispatch_vcpu!(self, set_gpr_rsp, width, value)
     }
 
+    /// Install the guest `RIP` a device-serviced access retires.
+    ///
+    /// # Errors
+    ///
+    /// Propagates backend state-write failures.
+    pub fn set_rip(&mut self, rip: u64) -> X86VcpuResult {
+        dispatch_vcpu!(self, set_rip, rip)
+    }
+
     /// Commits one string-I/O element after the VMM completed its memory and device access.
     ///
     /// # Errors
@@ -236,6 +245,35 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
     /// Handle a guest local-APIC end-of-interrupt notification.
     pub fn handle_eoi(&mut self) -> Option<u8> {
         dispatch_vcpu!(self, handle_eoi)
+    }
+
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend's host timer cancellation failure so the caller
+    /// retries instead of retiring a live registration.
+    pub fn suspend_timer(&mut self) -> X86VcpuResult {
+        dispatch_vcpu!(self, suspend_timer)
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend's host timer registration failure.
+    pub fn resume_timer(&mut self) -> X86VcpuResult {
+        dispatch_vcpu!(self, resume_timer)
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend's host timer cancellation failure so the caller
+    /// retries instead of retiring a live registration.
+    pub fn stop_timer(&mut self) -> X86VcpuResult {
+        dispatch_vcpu!(self, stop_timer)
     }
 
     /// Set the guest return register value.

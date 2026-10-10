@@ -20,7 +20,7 @@ use ax_hal::{
 };
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 
 #[cfg(feature = "copy")]
 pub use self::aspace::RootEntryShare;
@@ -33,7 +33,7 @@ pub use self::{
     },
 };
 
-static KERNEL_ASPACE: LazyInit<SpinLock<AddrSpace>> = LazyInit::new();
+static KERNEL_ASPACE: LazyInit<RawSpinLock<AddrSpace>> = LazyInit::new();
 
 fn reg_flag_to_map_flag(f: MemRegionFlags) -> MappingFlags {
     let mut ret = MappingFlags::empty();
@@ -120,7 +120,7 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
 }
 
 /// Returns the globally unique kernel address space.
-pub fn kernel_aspace() -> &'static SpinLock<AddrSpace> {
+pub fn kernel_aspace() -> &'static RawSpinLock<AddrSpace> {
     &KERNEL_ASPACE
 }
 
@@ -137,7 +137,7 @@ pub fn init_memory_management() {
 
     let kernel_aspace = new_kernel_aspace().expect("failed to initialize kernel address space");
     debug!("kernel address space init OK: {kernel_aspace:#x?}");
-    KERNEL_ASPACE.init_once(SpinLock::new(kernel_aspace));
+    KERNEL_ASPACE.init_once(RawSpinLock::new(kernel_aspace));
     unsafe {
         ax_hal::KernelMmu::write_kernel_page_table(kernel_page_table_root());
         ax_hal::KernelMmu::flush_tlb(None);

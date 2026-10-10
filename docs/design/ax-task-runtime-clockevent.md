@@ -385,7 +385,7 @@ hard-call 等各自的逻辑 pending 状态，不保留 scheduler 专用 claimed
 5. 释放前后的并发 request 分别由 generation recheck 或新的 false-to-true wake 捕获；
 6. 同步 egress flush 等待 completion generation，不持有协议锁忙等或反复 yield。
 
-`SERVICE`、socket set、设备协议对象属于纯任务上下文，使用 PiMutex；hard IRQ 只能通过
+`SERVICE`、socket set、设备协议对象属于纯任务上下文，使用 Mutex；hard IRQ 只能通过
 `IrqWaitCell`/sticky event 交接。VirtIO transport 的寄存器/virtqueue raw gate 仍是极窄、
 不可睡眠的硬件临界区，task 侧持 gate 时关闭本地 IRQ，IRQ 侧只执行有界 ACK/status 操作。
 
@@ -430,7 +430,7 @@ callback 只持有可失败升级的 VM identity，不能让 timer entry 延长�
 
 ### Starry
 
-Starry wall/POSIX timer 的 queue metadata 使用 PiMutex。producer 先修改队列并推进 epoch，再通知固定 worker。worker 在取 snapshot 前采样 epoch，使并发 registration 进入 wait predicate，而不是被当作旧 baseline 吸收。
+Starry wall/POSIX timer 的 queue metadata 使用 Mutex。producer 先修改队列并推进 epoch，再通知固定 worker。worker 在取 snapshot 前采样 epoch，使并发 registration 进入 wait predicate，而不是被当作旧 baseline 吸收。
 
 只有 IRQ-facing notification endpoint 使用原子和 generation-bearing wake。
 

@@ -22,4 +22,4 @@ pub use cache::{
 pub use cache::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 pub use handle::{File, FileBackend};
 pub use open::{FileFlags, OpenOptions, OpenResult};
-pub use page::PageCache;
+pub use page::{CachedPageBacking, CachedPageBytes, PageCache};

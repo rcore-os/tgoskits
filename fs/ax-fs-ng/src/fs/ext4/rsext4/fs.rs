@@ -22,7 +22,7 @@ use crate::{
     block_error_to_vfs_error,
     os::{
         BlockNotification, BlockThread, runtime_ops,
-        sync::{IrqMutex, SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+        sync::{Mutex, MutexGuard, RawSpinLock},
     },
 };
 
@@ -189,26 +189,26 @@ impl Drop for Ext4MountLease {
 
 struct MmpWorker {
     stopping: Arc<AtomicBool>,
-    notification: IrqMutex<Option<Arc<dyn BlockNotification>>>,
-    thread: IrqMutex<Option<Box<dyn BlockThread>>>,
+    notification: RawSpinLock<Option<Arc<dyn BlockNotification>>>,
+    thread: RawSpinLock<Option<Box<dyn BlockThread>>>,
 }
 
 impl MmpWorker {
     fn disabled() -> Self {
         Self {
             stopping: Arc::new(AtomicBool::new(false)),
-            notification: IrqMutex::new(None),
-            thread: IrqMutex::new(None),
+            notification: RawSpinLock::new(None),
+            thread: RawSpinLock::new(None),
         }
     }
 
     fn stop_and_join(&self) {
         self.stopping.store(true, Ordering::Release);
-        let notification = self.notification.lock().clone();
+        let notification = self.notification.lock_irqsave().clone();
         if let Some(notification) = notification {
             notification.notify();
         }
-        let thread = self.thread.lock().take();
+        let thread = self.thread.lock_irqsave().take();
         if let Some(thread) = thread {
             thread.join();
         }
@@ -308,7 +308,7 @@ impl Ext4Filesystem {
     }
 
     fn start_mmp_worker(&self) -> VfsResult<()> {
-        if self.mmp_worker.thread.lock().is_some() {
+        if self.mmp_worker.thread.lock_irqsave().is_some() {
             return Ok(());
         }
         let runtime = runtime_ops().map_err(block_error_to_vfs_error)?;
@@ -331,8 +331,8 @@ impl Ext4Filesystem {
             )
             .map_err(block_error_to_vfs_error)?;
 
-        *self.mmp_worker.notification.lock() = Some(notification);
-        *self.mmp_worker.thread.lock() = Some(thread);
+        *self.mmp_worker.notification.lock_irqsave() = Some(notification);
+        *self.mmp_worker.thread.lock_irqsave() = Some(thread);
         Ok(())
     }
 }
@@ -342,7 +342,7 @@ impl Drop for Ext4Filesystem {
         // The MMP worker may be dropping the final strong reference itself.
         // Stop and notify it, but never join the current worker from Drop.
         self.mmp_worker.stopping.store(true, Ordering::Release);
-        let notification = self.mmp_worker.notification.lock().clone();
+        let notification = self.mmp_worker.notification.lock_irqsave().clone();
         if let Some(notification) = notification {
             notification.notify();
         }
@@ -484,7 +484,6 @@ impl FilesystemOps for Ext4Filesystem {
 mod tests {
     use alloc::{sync::Arc, vec::Vec};
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex as StdMutex;
 
     use rsext4::{
         EXT4_SUPER_MAGIC, MkfsOptions, SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE, endian::DiskFormat,
@@ -498,7 +497,7 @@ mod tests {
     const TEST_SECTOR_BYTES: usize = 512;
 
     struct SharedMemoryDevice {
-        storage: Arc<StdMutex<Vec<u8>>>,
+        storage: Arc<std::sync::Mutex<Vec<u8>>>,
         read_only: bool,
         flushes: Arc<AtomicUsize>,
     }
@@ -575,8 +574,8 @@ mod tests {
         }
     }
 
-    fn formatted_test_storage() -> (Arc<StdMutex<Vec<u8>>>, Arc<AtomicUsize>) {
-        let storage = Arc::new(StdMutex::new(alloc::vec![0; TEST_DEVICE_BYTES]));
+    fn formatted_test_storage() -> (Arc<std::sync::Mutex<Vec<u8>>>, Arc<AtomicUsize>) {
+        let storage = Arc::new(std::sync::Mutex::new(alloc::vec![0; TEST_DEVICE_BYTES]));
         let flushes = Arc::new(AtomicUsize::new(0));
         let blocks = (TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64;
         let format_device = SharedMemoryDevice {

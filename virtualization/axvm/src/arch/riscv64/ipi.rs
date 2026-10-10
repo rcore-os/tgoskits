@@ -1,94 +1,29 @@
-//! RISC-V guest IPI routing through the VM runtime interrupt channel.
+//! SBI supervisor-software-interrupt routing over the fixed hart topology.
+//!
+//! Target resolution and delivery are separated so that resolution happens
+//! while the hardware backend is still loaded, and delivery happens unbound
+//! through the run-bound signal target.
 
 use std::vec::Vec;
 
-use super::{
-    AxvmRiscvVcpu,
-    policy::{RiscvIpiCompletion, RiscvIpiRequest},
-};
 use crate::{
-    AxVMRef, AxVmResult, InterruptTriggerMode,
-    architecture::VcpuExitAction,
-    irq::{
-        model::{PendingVcpuInterrupt, VirtualInterruptId},
-        sender::VmInterruptSender,
-    },
-    vm::AxVCpuRef,
+    InterruptTriggerMode,
+    irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
 };
 
-const SUPERVISOR_SOFTWARE_INTERRUPT_ID: VirtualInterruptId = VirtualInterruptId(1);
+/// `scause` cause number of the supervisor software interrupt.
+///
+/// The architecture injection path adds the interrupt bit when building the
+/// complete `scause` value.
+pub(crate) const SUPERVISOR_SOFTWARE_INTERRUPT_ID: VirtualInterruptId = VirtualInterruptId(1);
 
-pub(super) fn handle(
-    vm: &AxVMRef,
-    vcpu: &AxVCpuRef<AxvmRiscvVcpu>,
-    request: RiscvIpiRequest,
-) -> AxVmResult<VcpuExitAction> {
-    let sender = VmInterruptSender::new(vm);
-    let completion = match route_hart_mask(
-        request.hart_mask(),
-        request.hart_mask_base(),
-        || vm.vcpu_list().iter().map(|vcpu| vcpu.id()).collect(),
-        |hart_id| super::hsm::target_vcpu_id(vm, hart_id),
-        |target_vcpu_id, interrupt| sender.send(target_vcpu_id, interrupt),
-    ) {
-        Ok(()) => RiscvIpiCompletion::Success,
-        Err(error) => {
-            match &error {
-                IpiRouteError::InvalidTarget(source) => warn!(
-                    "VM[{}] VCpu[{}] rejected SBI IPI request {:?}: {:?}",
-                    vm.id(),
-                    vcpu.id(),
-                    request,
-                    source
-                ),
-                IpiRouteError::Delivery {
-                    target_vcpu_id,
-                    source,
-                } => warn!(
-                    "VM[{}] failed to deliver SBI IPI to VCpu[{}]: {:?}",
-                    vm.id(),
-                    target_vcpu_id,
-                    source
-                ),
-            }
-            error.completion()
-        }
-    };
-    vcpu.get_arch_vcpu().complete_ipi(request, completion);
-    Ok(VcpuExitAction::Continue)
-}
-
-fn route_hart_mask<E>(
-    hart_mask: usize,
-    hart_mask_base: usize,
-    all_vcpu_ids: impl FnOnce() -> Vec<usize>,
-    resolve_vcpu_id: impl FnMut(usize) -> Option<usize>,
-    publish: impl FnMut(usize, PendingVcpuInterrupt) -> Result<(), E>,
-) -> Result<(), IpiRouteError<E>> {
-    let targets = resolve_targets(hart_mask, hart_mask_base, all_vcpu_ids, resolve_vcpu_id)
-        .map_err(IpiRouteError::InvalidTarget)?;
-    deliver(&targets, publish)
-}
-
-fn deliver<E>(
-    targets: &[usize],
-    mut publish: impl FnMut(usize, PendingVcpuInterrupt) -> Result<(), E>,
-) -> Result<(), IpiRouteError<E>> {
-    let interrupt = PendingVcpuInterrupt {
-        id: SUPERVISOR_SOFTWARE_INTERRUPT_ID,
-        trigger: InterruptTriggerMode::LevelTriggered,
-    };
-
-    for &target_vcpu_id in targets {
-        publish(target_vcpu_id, interrupt).map_err(|source| IpiRouteError::Delivery {
-            target_vcpu_id,
-            source,
-        })?;
-    }
-    Ok(())
-}
-
-fn resolve_targets(
+/// Resolves one SBI hart mask into the target VM-local vCPU ids.
+///
+/// A `hart_mask_base` of [`usize::MAX`] selects every planned vCPU. Any hart
+/// that is absent from the fixed topology, any overflowing hart id, and any two
+/// mask bits that resolve to the same vCPU reject the complete request before a
+/// single target is published.
+pub(crate) fn resolve_targets(
     hart_mask: usize,
     hart_mask_base: usize,
     all_vcpu_ids: impl FnOnce() -> Vec<usize>,
@@ -116,30 +51,53 @@ fn resolve_targets(
     Ok(targets)
 }
 
-#[derive(Debug)]
-enum IpiRouteError<E> {
-    InvalidTarget(IpiTargetError),
-    Delivery { target_vcpu_id: usize, source: E },
-}
+/// Publishes the supervisor software interrupt to every resolved target.
+///
+/// `publish` runs for each target in mask order and must publish the pending
+/// state before it kicks. A failure keeps the already published prefix and is
+/// reported as an SBI failure.
+pub(crate) fn deliver<E>(
+    targets: &[usize],
+    mut publish: impl FnMut(usize, PendingVcpuInterrupt) -> Result<(), E>,
+) -> Result<(), IpiDeliveryError<E>> {
+    let interrupt = PendingVcpuInterrupt {
+        id: SUPERVISOR_SOFTWARE_INTERRUPT_ID,
+        trigger: InterruptTriggerMode::LevelTriggered,
+    };
 
-impl<E> IpiRouteError<E> {
-    const fn completion(&self) -> RiscvIpiCompletion {
-        match self {
-            Self::InvalidTarget(_) => RiscvIpiCompletion::InvalidParameter,
-            Self::Delivery { .. } => RiscvIpiCompletion::Failed,
-        }
+    for &target_vcpu_id in targets {
+        publish(target_vcpu_id, interrupt).map_err(|source| IpiDeliveryError {
+            target_vcpu_id,
+            source,
+        })?;
     }
+    Ok(())
 }
 
+/// Delivery failure of one already resolved SBI IPI request.
+#[derive(Debug)]
+pub(crate) struct IpiDeliveryError<E> {
+    /// The vCPU whose publication failed.
+    pub(crate) target_vcpu_id: usize,
+    /// The underlying wake failure.
+    pub(crate) source: E,
+}
+
+/// Topology rejection of one SBI hart mask.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IpiTargetError {
+pub(crate) enum IpiTargetError {
+    /// A hart id derived from the mask overflowed the address width.
     HartIdOverflow,
+    /// The guest selected a hart that the fixed topology does not contain.
     UnavailableHart(usize),
+    /// Two selected harts resolve to the same vCPU.
     DuplicateVcpu(usize),
 }
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
+    use std::vec::Vec;
+
     use ax_plat::irq::{IrqError, RiscvHvIrqIf};
 
     use super::*;
@@ -162,174 +120,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn selected_harts_publish_level_vssip_in_mask_order() {
-        let mut published = Vec::new();
-
-        route_hart_mask(
-            0b101,
-            4,
-            Vec::new,
-            |hart_id| match hart_id {
-                4 => Some(2),
-                6 => Some(0),
-                _ => None,
-            },
-            |target_vcpu_id, interrupt| {
-                published.push((target_vcpu_id, interrupt));
-                Ok::<_, ()>(())
-            },
-        )
-        .unwrap();
-
-        let expected_interrupt = PendingVcpuInterrupt {
+    fn interrupt() -> PendingVcpuInterrupt {
+        PendingVcpuInterrupt {
             id: SUPERVISOR_SOFTWARE_INTERRUPT_ID,
             trigger: InterruptTriggerMode::LevelTriggered,
-        };
-        assert_eq!(
-            published,
-            [(2, expected_interrupt), (0, expected_interrupt)]
-        );
+        }
     }
 
     #[test]
-    fn broadcast_publishes_to_every_available_vcpu() {
+    fn selected_harts_publish_level_vssip_in_mask_order() {
         let mut published = Vec::new();
+        let targets = resolve_targets(0b101, 4, Vec::new, |hart_id| match hart_id {
+            4 => Some(2),
+            6 => Some(0),
+            _ => None,
+        })
+        .unwrap();
 
-        route_hart_mask(
+        deliver(&targets, |target_vcpu_id, interrupt| {
+            published.push((target_vcpu_id, interrupt));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+        assert_eq!(published, [(2, interrupt()), (0, interrupt())]);
+    }
+
+    #[test]
+    fn broadcast_selects_every_available_vcpu() {
+        let targets = resolve_targets(
             0,
             usize::MAX,
             || std::vec![2, 0, 1],
             |_| panic!("broadcast must not resolve individual hart IDs"),
-            |target_vcpu_id, _interrupt| {
-                published.push(target_vcpu_id);
-                Ok::<_, ()>(())
-            },
         )
         .unwrap();
 
-        assert_eq!(published, [2, 0, 1]);
+        assert_eq!(targets, [2, 0, 1]);
     }
 
     #[test]
-    fn empty_mask_succeeds_without_resolution_or_publication() {
-        let mut published = Vec::new();
-
-        route_hart_mask(
+    fn empty_mask_resolves_no_target() {
+        let targets = resolve_targets(
             0,
             0,
             || panic!("ordinary empty mask must not enumerate all vCPUs"),
             |_| panic!("empty mask must not resolve a hart ID"),
-            |target_vcpu_id, _interrupt| {
-                published.push(target_vcpu_id);
-                Ok::<_, ()>(())
-            },
         )
         .unwrap();
 
-        assert!(published.is_empty());
+        assert!(targets.is_empty());
     }
 
     #[test]
     fn unavailable_hart_rejects_the_whole_request_before_publication() {
-        let mut published = Vec::new();
+        let error =
+            resolve_targets(0b11, 4, Vec::new, |hart_id| (hart_id == 4).then_some(2)).unwrap_err();
 
-        let error = route_hart_mask(
-            0b11,
-            4,
-            Vec::new,
-            |hart_id| (hart_id == 4).then_some(2),
-            |target_vcpu_id, _interrupt| {
-                published.push(target_vcpu_id);
-                Ok::<_, ()>(())
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            IpiRouteError::InvalidTarget(IpiTargetError::UnavailableHart(5))
-        ));
-        assert_eq!(error.completion(), RiscvIpiCompletion::InvalidParameter);
-        assert!(published.is_empty());
+        assert_eq!(error, IpiTargetError::UnavailableHart(5));
     }
 
     #[test]
-    fn overflowing_hart_id_rejects_the_whole_request_before_publication() {
-        let mut published = Vec::new();
+    fn overflowing_hart_id_rejects_the_whole_request() {
+        let error = resolve_targets(1 << 2, usize::MAX - 1, Vec::new, |_| Some(0)).unwrap_err();
 
-        let error = route_hart_mask(
-            1 << 2,
-            usize::MAX - 1,
-            Vec::new,
-            |_| Some(0),
-            |target_vcpu_id, _interrupt| {
-                published.push(target_vcpu_id);
-                Ok::<_, ()>(())
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            IpiRouteError::InvalidTarget(IpiTargetError::HartIdOverflow)
-        ));
-        assert_eq!(error.completion(), RiscvIpiCompletion::InvalidParameter);
-        assert!(published.is_empty());
+        assert_eq!(error, IpiTargetError::HartIdOverflow);
     }
 
     #[test]
-    fn duplicate_vcpu_mapping_rejects_the_whole_request_before_publication() {
-        let mut published = Vec::new();
+    fn duplicate_vcpu_mapping_rejects_the_whole_request() {
+        let error = resolve_targets(0b11, 4, Vec::new, |_| Some(2)).unwrap_err();
 
-        let error = route_hart_mask(
-            0b11,
-            4,
-            Vec::new,
-            |_| Some(2),
-            |target_vcpu_id, _interrupt| {
-                published.push(target_vcpu_id);
-                Ok::<_, ()>(())
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            IpiRouteError::InvalidTarget(IpiTargetError::DuplicateVcpu(2))
-        ));
-        assert_eq!(error.completion(), RiscvIpiCompletion::InvalidParameter);
-        assert!(published.is_empty());
+        assert_eq!(error, IpiTargetError::DuplicateVcpu(2));
     }
 
     #[test]
-    fn delivery_failure_reports_failed_and_keeps_the_published_prefix() {
+    fn delivery_failure_keeps_the_published_prefix_and_reports_the_target() {
         let mut published = Vec::new();
-
-        let error = route_hart_mask(
-            0b111,
-            0,
-            Vec::new,
-            |hart_id| Some(hart_id + 4),
-            |target_vcpu_id, _interrupt| {
-                published.push(target_vcpu_id);
-                if target_vcpu_id == 5 {
-                    Err("queue closed")
-                } else {
-                    Ok(())
-                }
-            },
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            IpiRouteError::Delivery {
-                target_vcpu_id: 5,
-                source: "queue closed",
+        let error = deliver(&[4, 5, 6], |target_vcpu_id, _interrupt| {
+            published.push(target_vcpu_id);
+            if target_vcpu_id == 5 {
+                Err("queue closed")
+            } else {
+                Ok(())
             }
-        ));
-        assert_eq!(error.completion(), RiscvIpiCompletion::Failed);
+        })
+        .unwrap_err();
+
+        assert_eq!(error.target_vcpu_id, 5);
+        assert_eq!(error.source, "queue closed");
         assert_eq!(published, [4, 5]);
     }
 }

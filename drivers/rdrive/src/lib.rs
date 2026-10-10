@@ -22,7 +22,7 @@ use core::ptr::NonNull;
 use ax_lazyinit::OnceLock;
 // The registry is not hard-IRQ safe, but it is also used by runtime discovery
 // paths that must not trigger task preemption hooks on lock release.
-use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 pub use fdt_edit::{Fdt, Phandle};
 use register::{DriverRegister, ProbeLevel, ProbePriority};
 
@@ -52,7 +52,7 @@ pub use rdrive_macros::*;
 
 use crate::{error::DriverError, probe::OnProbeError};
 
-static CONTAINER: OnceLock<Mutex<Manager>> = OnceLock::new();
+static CONTAINER: OnceLock<RawSpinLock<Manager>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub enum Platform {
@@ -74,11 +74,11 @@ pub enum PlatformSource {
 
 unsafe impl Send for PlatformSource {}
 
-pub(crate) fn container() -> &'static Mutex<Manager> {
+pub(crate) fn container() -> &'static RawSpinLock<Manager> {
     CONTAINER.get().expect("rdrive not init")
 }
 
-fn lock_container() -> RawSpinLockGuard<'static, Manager> {
+fn lock_container() -> RawSpinLockUnpinnedGuard<'static, Manager> {
     // SAFETY: registry operations run in serialized discovery/runtime paths
     // which preserve the legacy raw-lock exclusion contract.
     unsafe { container().lock_raw() }
@@ -119,7 +119,7 @@ pub fn init_sources(sources: &[PlatformSource]) -> Result<(), DriverError> {
     }
 
     let m = Manager::new()?;
-    CONTAINER.call_once(|| Mutex::new(m));
+    CONTAINER.call_once(|| RawSpinLock::new(m));
     Ok(())
 }
 

@@ -82,3 +82,13 @@ OrangePi 的 `pmu`、`pmu-user` 使用 `arceos-board` 注册，保持板卡 runn
 CPU QEMU/板卡配置使用最新 ostool 的 `[[shell_check_steps]]`，被动等待用例只在该步骤内声明 `success_regex`，不填写 shell 命令。`fail_regex`、`timeout`、启动参数保留在根配置。不得恢复已删除的根级 `success_regex` 或 `shell_init_cmd`；分组程序的执行协议沿用当前 axbuild。
 
 跨架构独立用例必须在 `package.metadata.docs.rs.targets` 声明实际检查目标。依赖 Rust 标准库的用例使用相应 `*-unknown-linux-musl`，`cargo xtask clippy` 将其解析到共享 musl PIE JSON 并构建标准库；freestanding 用例使用共享 bare target。用例选项 feature 必须包含程序必需的 `ax-std`，因为 feature 独立检查关闭默认 feature。不得通过空 main、架构伪实现或跳过测试包来绕过检查。
+
+## PCM 输出波形验收
+
+ArceOS Rust/generic 音频用例可在 QEMU 配置中声明 `[host_pcm_waveform] frames = <帧数>`。
+该夹具负责添加独占 `wav` 后端，ID 为 `pcm-capture`；设备参数引用此 ID，不自行填写 `-audiodev`。
+输出格式为 stereo S16LE、48 kHz，输入第 i 帧左声道为 `(i * 97) % 20001 - 10000`，右声道为其相反数。
+帧数限定在 1..=65536。运行器在 Cargo target 下创建每次运行独立的 WAV，成功或失败后自动删除，不能复用旧录音。
+客体 marker 通过后仍须检查全部预期样本连续匹配、前后仅静音；缺失、重复、改写、错误格式或截断使外层命令失败。
+QEMU 被 marker 停止时 WAV data 长度可能仍为零占位，校验器检查已写入文件的实际样本，而不将未完成的 header 当作零音频成功。
+这只能证明 QEMU 输出，不证明物理可听声音。

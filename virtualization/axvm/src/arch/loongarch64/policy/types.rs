@@ -2,11 +2,23 @@ use core::fmt::{Debug, Formatter, LowerHex, UpperHex};
 
 pub type LoongArchVcpuResult<T = ()> = Result<T, LoongArchVcpuError>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Errors reported by the OS-neutral LoongArch vCPU core.
+///
+/// Kept in the same `thiserror` form as the Arm and RISC-V cores so callers
+/// can fold it into [`crate::AxVmError::vcpu`] without a manual `Display`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum LoongArchVcpuError {
+    /// Caller supplied an invalid value for a LoongArch vCPU operation.
+    #[error("invalid LoongArch vCPU input")]
     InvalidInput,
+    /// The requested operation is not supported by this backend.
+    #[error("unsupported LoongArch vCPU operation")]
     Unsupported,
+    /// The vCPU state does not allow the requested operation.
+    #[error("invalid LoongArch vCPU state")]
     BadState,
+    /// The host timer could not be registered or cancelled.
+    #[error("LoongArch guest timer is unavailable")]
     TimerUnavailable,
 }
 
@@ -123,6 +135,39 @@ pub struct LoongArchNestedPagingConfig {
     pub levels: usize,
     pub gpa_bits: usize,
     pub mode: usize,
+}
+
+/// Host CPU-local operand state for one LVZ exit, resolved while pinned.
+///
+/// `capture_exit` runs while the vCPU is bound to one host CPU, but `finish_exit`
+/// interprets the exit later in plain task context, which may be a different
+/// CPU. Every native CPU-local side effect of the exit (`cpucfg` reads and the
+/// unhandled IOCSR passthrough reads and writes) is therefore resolved at
+/// capture time and carried here, so task-stage interpretation never reads or
+/// writes a foreign CPU's local CSR bank.
+///
+/// Only the operands the faulting instruction actually needs are captured, never
+/// the whole register file.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LoongArchPinnedHost {
+    /// This exit needs no pinned host CPU state: hypercall, translation fault,
+    /// CSR or timer access, or any other purely software emulation.
+    #[default]
+    None,
+    /// A `cpucfg` read resolved on the pinned CPU. `index` is the guest-selected
+    /// CPUCFG index and `value` is the fully resolved guest-visible word.
+    Cpucfg { index: usize, value: usize },
+    /// An IOCSR read resolved on the pinned CPU. `value` is the final load
+    /// result, taken either from the guest-owned IOCSR state or from the host
+    /// passthrough.
+    IocsrRead { addr: usize, value: usize },
+    /// An IOCSR write whose target is emulated by the guest-owned IOCSR model.
+    /// The task stage applies it and must not touch host CPU-local state.
+    IocsrWriteGuest,
+    /// An IOCSR write whose target is not guest-owned. The raw host passthrough
+    /// write was already issued on the pinned CPU, so the task stage must not
+    /// repeat it on whatever CPU it migrated to.
+    IocsrWritePassthrough { addr: usize },
 }
 
 impl LoongArchNestedPagingConfig {

@@ -25,8 +25,8 @@ struct NativeFilesystem {
 // or topology lock is held when entering this registry; its entries own neither
 // devices nor filesystems, so detached mounts retain their normal lifetimes.
 #[cfg(any(feature = "ext4", feature = "fat"))]
-static NATIVE_FILESYSTEMS: crate::os::sync::SleepMutex<alloc::vec::Vec<NativeFilesystem>> =
-    crate::os::sync::SleepMutex::new(alloc::vec::Vec::new());
+static NATIVE_FILESYSTEMS: crate::os::sync::Mutex<alloc::vec::Vec<NativeFilesystem>> =
+    crate::os::sync::Mutex::new(alloc::vec::Vec::new());
 
 #[cfg(feature = "ext4")]
 mod ext4;

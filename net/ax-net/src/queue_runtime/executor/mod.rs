@@ -1,7 +1,7 @@
 use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use rd_net::{
     DmaBuffer, NetError, NetOwnerStartupProgress, NetRearmResult, PreparedNetPollGroup,
     RxCompletion, TxChecksumCapabilities, TxSubmitOptions,
@@ -45,7 +45,7 @@ struct RxRecycleState {
 }
 
 pub(super) struct RxRecycler {
-    state: SpinLock<RxRecycleState>,
+    state: RawSpinLock<RxRecycleState>,
     shared: Arc<PollGroupState>,
 }
 
@@ -56,7 +56,7 @@ impl RxRecycler {
         capacity: usize,
     ) -> Self {
         Self {
-            state: SpinLock::new(RxRecycleState {
+            state: RawSpinLock::new(RxRecycleState {
                 producer,
                 overflow: Vec::with_capacity(capacity.max(QUEUE_BUDGET)),
             }),
@@ -185,7 +185,7 @@ pub(super) struct PendingProtocolTx {
 
 pub(super) struct QueueFramePort {
     pub(super) name: String,
-    pub(super) mac: Arc<SpinLock<[u8; 6]>>,
+    pub(super) mac: Arc<RawSpinLock<[u8; 6]>>,
     pub(super) groups: Vec<ProtocolGroupPort>,
     /// Device-level policy for handling a busy transmit queue.
     pub(super) tx_queue_discipline: TxQueueDiscipline,
@@ -859,7 +859,7 @@ pub(super) struct ExecutorControl {
     pub(super) startup_status: AtomicU8,
     pub(super) prune_status: AtomicU8,
     pub(super) publication_status: AtomicU8,
-    pub(super) startup_error: SpinLock<Option<NetError>>,
+    pub(super) startup_error: RawSpinLock<Option<NetError>>,
     pub(super) notify: Arc<QueueNotification>,
 }
 

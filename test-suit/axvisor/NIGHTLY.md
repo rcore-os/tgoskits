@@ -25,9 +25,17 @@ do not run at night, and performance measurements are not part of this
 workflow. Performance checks live in `.github/ci/checks/benchmarks.toml` and
 run through `.github/workflows/benchmarks.yml`. This is not a claim that every
 AxVisor feature or every test-suit directory has a corresponding nightly test.
-Add new functional scenarios to the existing test-suit and register them in
-`axvisor-nightly.toml`; do not duplicate their shell commands in the nightly
-workflow.
+
+Nightly-only case files live under `apps/axvisor/` with the same
+`<group>/<build-group>/<case>` layout as `test-suit/axvisor/`. QEMU and board
+case discovery scans both trees (`test-suit/axvisor` and `apps/axvisor`), and
+board discovery for the default `normal` group also scans the
+`benchmarks/axvisor` tree, so the manifest selects each case by
+`--board`/`--test-case` name and never embeds a tree path. Add a new nightly
+scenario by placing its directory under `apps/axvisor/<group>/...` and
+registering the matching `[[check]]` in `axvisor-nightly.toml`; ordinary
+functional scenarios stay under `test-suit/axvisor/`. Do not duplicate a
+scenario's shell commands in the nightly workflow.
 
 ## Default CI Versus Nightly
 
@@ -36,11 +44,21 @@ stress, OrangePi Linux PCI network ping and OrangePi virtio-net peer were split
 into `axvisor-nightly.toml`. The manifest file name is the only authority for
 automatic nightly semantics, so individual checks no longer declare
 `nightly_only`. Ordinary CI excludes the nightly manifest for PRs, pushes and
-manual runs, even if the change precisely selects its test-suit files; a PR
+manual runs, even if the change precisely selects the nightly case files; a PR
 changing only nightly test scenarios still receives static checks. The default
 OrangePi Linux check explicitly selects only the `smoke` case.
 
-To add another nightly scenario, register its own `[[check]]` in
+`apps/axvisor/**` is a registered AxVisor suite in the CI impact routing
+(`scripts/test/ci_impact.py`, `scripts/test/ci_suite.py` and
+`scripts/test/ci_plan.py`), so PRs touching the migrated nightly case files
+route to the AxVisor suite checks instead of being dropped as ordinary ignored
+`apps/**` changes; they follow the same routing as `test-suit/axvisor`. Because
+ordinary CI excludes the nightly manifest, a change confined to nightly case
+files schedules no nightly check, and the nightly workflow remains the only
+place `axvisor-nightly.toml` runs.
+
+To add another nightly scenario, place its case directory under
+`apps/axvisor/<group>/...` and register its own `[[check]]` in
 `axvisor-nightly.toml` with its command and suite registration. Do not mix
 nightly or performance commands into a default functional check. Performance
 measurements belong to the `group = "AxVisor"` checks in `benchmarks.toml` and

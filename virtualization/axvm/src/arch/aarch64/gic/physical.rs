@@ -15,8 +15,8 @@ use std::{
     vec::Vec,
 };
 
-use arm_vgic::{GicV3BackendError, PhysicalIrqId, VgicCore};
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use arm_vgic::{AssignedSpiConfig, GicV3BackendError, GicV3Native, PhysicalIrqId};
+use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice_base::HostIrqId;
 
 use super::{deactivate_host_irq, dispatch_acknowledged_host_irq, host_irq_intid};
@@ -29,32 +29,33 @@ static ASSIGNED_SPI_ROUTES: [AssignedSpiRouteSlot; GIC_INTID_COUNT] =
 /// Owns every fixed host-INTID route installed for one VM.
 pub(crate) struct AssignedSpiRoutes {
     bindings: Box<[Arc<AssignedSpiBinding>]>,
-    registrations: IrqSafeMutex<Vec<AssignedSpiRouteRegistration>>,
+    registrations: RawSpinLock<Vec<AssignedSpiRouteRegistration>>,
 }
 
 impl AssignedSpiRoutes {
-    pub(super) fn register(controller: &Arc<VgicCore>) -> Result<Arc<Self>, GicV3BackendError> {
-        let bindings = controller
-            .config()
-            .assigned_spis()
+    pub(super) fn register(
+        controller: &GicV3Native,
+        assigned_spis: &[AssignedSpiConfig],
+    ) -> Result<Arc<Self>, GicV3BackendError> {
+        let bindings = assigned_spis
             .iter()
             .map(|assigned| {
                 Arc::new(AssignedSpiBinding {
                     irq: assigned.host_irq(),
                     controller: controller.clone(),
                     accepting: AtomicBool::new(false),
-                    delivery: IrqSafeMutex::new(AssignedSpiDelivery::Idle),
+                    delivery: RawSpinLock::new(AssignedSpiDelivery::Idle),
                 })
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let routes = Arc::new(Self {
             bindings,
-            registrations: IrqSafeMutex::new(Vec::new()),
+            registrations: RawSpinLock::new(Vec::new()),
         });
 
         {
-            let mut registrations = routes.registrations.lock();
+            let mut registrations = routes.registrations.lock_irqsave();
             for binding in &routes.bindings {
                 match AssignedSpiRouteRegistration::install(binding) {
                     Ok(registration) => registrations.push(registration),
@@ -95,15 +96,15 @@ impl AssignedSpiRoutes {
 impl Drop for AssignedSpiRoutes {
     fn drop(&mut self) {
         self.quiesce();
-        self.registrations.lock().clear();
+        self.registrations.lock_irqsave().clear();
     }
 }
 
 struct AssignedSpiBinding {
     irq: HostIrqId,
-    controller: Arc<VgicCore>,
+    controller: GicV3Native,
     accepting: AtomicBool,
-    delivery: IrqSafeMutex<AssignedSpiDelivery>,
+    delivery: RawSpinLock<AssignedSpiDelivery>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,27 +116,62 @@ enum AssignedSpiDelivery {
 
 impl AssignedSpiBinding {
     /// Publishes one acknowledged activation without VM lookup or allocation.
+    ///
+    /// The ACK/DIR gate is held only across the canonical record step and, when
+    /// that record fails, the matching rollback. The pre-bound vCPU wake (which
+    /// publishes a deferred kick and may send an IPI) and every host-side failure
+    /// callback run after the gate is released, so a raw guard never covers an
+    /// external callback.
     fn publish_from_irq(&self, token: usize) -> bool {
-        let mut delivery = self.delivery.lock();
-        if !self.accepting.load(Ordering::Acquire) {
-            deactivate_host_irq(token);
-            return true;
-        }
+        let spi = arm_vgic::SpiId::new(self.irq.value() as u32)
+            .expect("assigned host IRQ is a validated SPI");
         // With a HW-backed LR, normal guest deactivation is performed by the
         // physical GIC and does not call the backend completion hook. A new
         // host acknowledgement is therefore the architectural proof that an
         // older `Active` marker has already retired and may be replaced.
-        // Keep local IRQs and preemption disabled until canonical forwarding
-        // and host activation ownership agree. Completion takes the same gate
-        // across DIR, so a level source cannot publish a new activation into
-        // the old completion window.
-        *delivery = AssignedSpiDelivery::Active;
-        if let Err(error) = self.controller.forward_physical_spi(self.irq) {
-            *delivery = AssignedSpiDelivery::Idle;
+        // Completion takes the same gate across DIR, so a level source cannot
+        // publish a new activation into the old completion window. The record
+        // and its rollback therefore share one gate acquisition: releasing the
+        // gate between them would let a concurrent DIR completion consume a
+        // half-published activation. Only the wake and the host callback below
+        // run outside the gate.
+        let (wake, failure, rejected) = {
+            let mut delivery = self.delivery.lock_irqsave();
+            if self.accepting.load(Ordering::Acquire) {
+                *delivery = AssignedSpiDelivery::Active;
+                match self.controller.acknowledge_physical_spi(spi) {
+                    Ok(wake) => (wake, None, false),
+                    Err(error) => {
+                        // Roll back while the gate is still held, so a
+                        // concurrent DIR completion cannot observe the
+                        // half-published activation.
+                        *delivery = AssignedSpiDelivery::Idle;
+                        (None, Some(error), false)
+                    }
+                }
+            } else {
+                (None, None, true)
+            }
+        };
+        // The gate is released: run every host-side callback and diagnostic here.
+        if rejected || failure.is_some() {
+            // Ownership already transferred, or the record rolled back: consume
+            // the rejected host token outside the gate.
             deactivate_host_irq(token);
-            drop(delivery);
+        }
+        if let Some(error) = failure {
             warn!(
                 "failed to forward assigned physical SPI {} into the VGIC: {error}",
+                self.irq.value()
+            );
+        }
+        // The canonical activation, when recorded, stays `Active` until its DIR
+        // completion, so a failed kick is reported without touching the gate.
+        if let Some(wake) = wake
+            && let Err(error) = wake.wake()
+        {
+            warn!(
+                "failed to kick the target vCPU for assigned physical SPI {}: {error}",
                 self.irq.value()
             );
         }
@@ -146,7 +182,7 @@ impl AssignedSpiBinding {
         &self,
         finish: impl FnOnce() -> Result<(), GicV3BackendError>,
     ) -> Result<bool, GicV3BackendError> {
-        let mut delivery = self.delivery.lock();
+        let mut delivery = self.delivery.lock_irqsave();
         if *delivery != AssignedSpiDelivery::Active {
             return Ok(false);
         }
@@ -164,7 +200,7 @@ impl AssignedSpiBinding {
     }
 
     fn wait_for_publication(&self) {
-        drop(self.delivery.lock());
+        drop(self.delivery.lock_irqsave());
     }
 }
 
@@ -205,9 +241,10 @@ impl AssignedSpiRouteRegistration {
     fn install(binding: &Arc<AssignedSpiBinding>) -> Result<Self, GicV3BackendError> {
         let intid = binding.irq.value();
         let Some(route) = ASSIGNED_SPI_ROUTES.get(intid) else {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::value(
                 "register assigned physical SPI route",
-                std::format!("host INTID {intid} is outside the assignable GIC range"),
+                "the host INTID is outside the assignable GIC range",
+                intid as u64,
             ));
         };
         let raw = Arc::into_raw(binding.clone()) as *mut AssignedSpiBinding;
@@ -219,9 +256,10 @@ impl AssignedSpiRouteRegistration {
             // SAFETY: the compare-exchange did not publish this strong
             // reference, so this call consumes exactly the reference above.
             drop(unsafe { Arc::from_raw(raw) });
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::value(
                 "register assigned physical SPI route",
-                std::format!("host INTID {intid} is already assigned to another VM"),
+                "the host INTID is already assigned to another VM",
+                intid as u64,
             ));
         }
         Ok(Self {

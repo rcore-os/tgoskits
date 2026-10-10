@@ -11,7 +11,7 @@ use core::{
 };
 
 use arm_gic_driver::v3::{Affinity, GITS_TRANSLATER_OFFSET, Its, ItsCommand, ItsTableType};
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 use irq_framework::{HwIrq, IrqError, IrqId};
 use rdif_msi::{
     Interface, Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiMessage, MsiProviderId, MsiRequest,
@@ -34,10 +34,10 @@ const MAX_DEVICE_ID_BITS: u8 = 16;
 const DEFAULT_COLLECTION_ID: u16 = 0;
 const INVALID_DEVICE_ID: u64 = u64::MAX;
 
-static LPI_OWNER: SpinLock<BTreeMap<u32, DeviceId>> = SpinLock::new(BTreeMap::new());
+static LPI_OWNER: RawSpinLock<BTreeMap<u32, DeviceId>> = RawSpinLock::new(BTreeMap::new());
 static PRIMARY_ITS: AtomicU64 = AtomicU64::new(INVALID_DEVICE_ID);
 
-fn lpi_owners() -> RawSpinLockGuard<'static, BTreeMap<u32, DeviceId>> {
+fn lpi_owners() -> RawSpinLockUnpinnedGuard<'static, BTreeMap<u32, DeviceId>> {
     // SAFETY: ITS management preserves the legacy raw-lock contract and is
     // serialized against same-CPU re-entry by the interrupt-controller path.
     unsafe { LPI_OWNER.lock_raw() }

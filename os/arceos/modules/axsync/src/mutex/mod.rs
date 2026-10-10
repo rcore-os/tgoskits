@@ -8,25 +8,25 @@ use core::{
     sync::atomic::AtomicU64,
 };
 
-use crate::interface::{LockMetadata, PiMutexStorage};
+use crate::interface::{LockMetadata, MutexStorage};
 
 /// A lockdep subclass identifier.
 pub type LockSubclass = u32;
 
-/// Raw ownership and opaque wait-queue storage for a [`Mutex`].
+/// Native ownership and opaque wait-queue storage backing a [`Mutex`].
 #[repr(C)]
-pub struct RawMutex {
-    storage: PiMutexStorage,
+pub struct MutexBackend {
+    storage: MutexStorage,
     next_waiter_sequence: AtomicU64,
     metadata: LockMetadata,
 }
 
-impl RawMutex {
+impl MutexBackend {
     /// Creates an unlocked raw mutex.
     #[track_caller]
     pub const fn new() -> Self {
         Self {
-            storage: PiMutexStorage::new(),
+            storage: MutexStorage::new(),
             next_waiter_sequence: AtomicU64::new(0),
             metadata: LockMetadata::new(),
         }
@@ -108,13 +108,13 @@ impl RawMutex {
     }
 }
 
-impl Default for RawMutex {
+impl Default for MutexBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for RawMutex {
+impl Drop for MutexBackend {
     fn drop(&mut self) {
         assert!(!self.is_locked(), "dropping a locked mutex");
         crate::interface::mutex_destroy(&mut self.storage);
@@ -123,7 +123,7 @@ impl Drop for RawMutex {
 
 /// A task-aware, non-poisoning, sleepable mutex.
 pub struct Mutex<T: ?Sized> {
-    raw: RawMutex,
+    raw: MutexBackend,
     data: UnsafeCell<T>,
 }
 
@@ -135,7 +135,7 @@ impl<T> Mutex<T> {
     #[track_caller]
     pub const fn new(value: T) -> Self {
         Self {
-            raw: RawMutex::new(),
+            raw: MutexBackend::new(),
             data: UnsafeCell::new(value),
         }
     }
@@ -191,7 +191,7 @@ impl<T: ?Sized> Mutex<T> {
     /// Callers must not invalidate a live guard or mutate ownership state
     /// without satisfying the raw mutex contract.
     #[doc(hidden)]
-    pub unsafe fn raw(&self) -> &RawMutex {
+    pub unsafe fn raw(&self) -> &MutexBackend {
         &self.raw
     }
 }

@@ -1,4 +1,6 @@
-features = []
+# Keep the Cargo identity aligned with the QEMU smoke case so both cases reuse
+# one AxVisor ELF while retaining independent runtime initramfs preparation.
+features = ["ax-driver/nvme"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = []

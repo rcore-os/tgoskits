@@ -283,22 +283,20 @@ pub struct VMBaseConfig {
     /// The number of virtual CPUs.
     pub cpu_num: usize,
     /// The physical CPU ids.
-    /// - if `None`, vcpu's physical id will be set as vcpu id.
-    /// - if set, each vcpu will be assigned to the specified physical CPU mask.
+    /// - if `phys_cpu_sets` is `Some`, these are the guest-visible vCPU ids.
+    /// - otherwise, these select host CPU identities and also become the guest IDs.
     ///
     /// Some ARM platforms will provide a specified cpu hw id in the device tree, which is
     /// read from `MPIDR_EL1` register (probably for clustering).
     pub phys_cpu_ids: Option<Vec<usize>>,
-    /// The mask of physical CPUs who can run this VM.
+    /// The final host affinity mask for each vCPU.
     ///
     /// - If `None`, vcpu will be scheduled on available physical CPUs randomly.
     /// - If set, each vcpu will be scheduled on the specified physical CPUs.
     ///
-    ///   For example, [0x0101, 0x0010] means:
-    ///   - vCpu0 can be scheduled at pCpu0 and pCpu2;
-    ///   - vCpu1 will only be scheduled at pCpu1;
-    ///
-    ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
+    ///   FDT-backed AArch64 and RISC-V paths require one mask per `phys_cpu_ids` entry;
+    ///   each mask must be non-zero, fit the host CPU width, and select one host CPU.
+    ///   Other scheduler paths may support masks selecting multiple physical CPUs.
     pub phys_cpu_sets: Option<Vec<usize>>,
 }
 

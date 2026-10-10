@@ -10,7 +10,7 @@ use crate::{
         Device, NodeOpsMux, SimpleDirOps, SimpleFs,
         dev::tty::{Ptmx, pty::PtyDriver},
     },
-    sync::IrqMutex,
+    sync::RawSpinLock,
 };
 
 /// Per-mount devpts configuration.
@@ -53,30 +53,30 @@ const PTY_SLOTS: usize = 16;
 
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
-    options: IrqMutex<DevPtsOptions>,
-    table: IrqMutex<FlattenObjects<Arc<Device>, PTY_SLOTS>>,
+    options: RawSpinLock<DevPtsOptions>,
+    table: RawSpinLock<FlattenObjects<Arc<Device>, PTY_SLOTS>>,
     /// Slaves that outlived their master: the node is gone, the index is not
     /// yet free.
-    hidden: IrqMutex<[bool; PTY_SLOTS]>,
+    hidden: RawSpinLock<[bool; PTY_SLOTS]>,
 }
 
 impl PtsInstance {
     pub(crate) fn new(options: DevPtsOptions) -> Arc<Self> {
         Arc::new(Self {
-            options: IrqMutex::new(options),
-            table: IrqMutex::new(FlattenObjects::new()),
-            hidden: IrqMutex::new([false; PTY_SLOTS]),
+            options: RawSpinLock::new(options),
+            table: RawSpinLock::new(FlattenObjects::new()),
+            hidden: RawSpinLock::new([false; PTY_SLOTS]),
         })
     }
 
     pub(crate) fn update_options(&self, options: DevPtsOptions) {
-        *self.options.lock() = options;
+        *self.options.lock_irqsave() = options;
     }
 
     /// Linux devpts_pty_kill() removes the node when the master closes, even
     /// while the slave is still open.
     pub(crate) fn hide_slave(&self, index: u32) {
-        if let Some(hidden) = self.hidden.lock().get_mut(index as usize) {
+        if let Some(hidden) = self.hidden.lock_irqsave().get_mut(index as usize) {
             *hidden = true;
         }
     }
@@ -84,8 +84,8 @@ impl PtsInstance {
     /// Frees the index once neither end of the pty is open.
     pub(crate) fn release_slave(&self, index: u32) {
         let removed = {
-            let mut table = self.table.lock();
-            if let Some(hidden) = self.hidden.lock().get_mut(index as usize) {
+            let mut table = self.table.lock_irqsave();
+            if let Some(hidden) = self.hidden.lock_irqsave().get_mut(index as usize) {
                 *hidden = false;
             }
             table.remove(index as usize)
@@ -94,7 +94,7 @@ impl PtsInstance {
     }
 
     pub(crate) fn add_slave(&self, fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> StarryResult<u32> {
-        let options = *self.options.lock();
+        let options = *self.options.lock_irqsave();
         let terminal = pty.terminal.clone();
         let device = Device::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty);
         device.update_metadata(MetadataUpdate {
@@ -103,7 +103,7 @@ impl PtsInstance {
             ..MetadataUpdate::default()
         })?;
 
-        let mut table = self.table.lock();
+        let mut table = self.table.lock_irqsave();
         let pty_number = table
             .add(device)
             .map_err(|_| StarryError::TooManyOpenFiles)? as u32;
@@ -116,7 +116,7 @@ impl PtsInstance {
     }
 
     fn ptmx(self: &Arc<Self>, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
-        let options = *self.options.lock();
+        let options = *self.options.lock_irqsave();
         let device = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
@@ -146,11 +146,11 @@ impl PtsDir {
 impl SimpleDirOps for PtsDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let mut names = Vec::from([Cow::Borrowed("ptmx")]);
-        let hidden = *self.instance.hidden.lock();
+        let hidden = *self.instance.hidden.lock_irqsave();
         names.extend(
             self.instance
                 .table
-                .lock()
+                .lock_irqsave()
                 .ids()
                 .filter(|&id| !hidden[id])
                 .map(|it| Cow::Owned(it.to_string())),
@@ -175,13 +175,20 @@ impl SimpleDirOps for PtsDir {
         let id = name
             .parse::<usize>()
             .map_err(|_| StarryError::InvalidData)?;
-        if self.instance.hidden.lock().get(id).copied().unwrap_or(false) {
+        if self
+            .instance
+            .hidden
+            .lock_irqsave()
+            .get(id)
+            .copied()
+            .unwrap_or(false)
+        {
             return Err(StarryError::NotFound.into());
         }
         let pty = self
             .instance
             .table
-            .lock()
+            .lock_irqsave()
             .get(id)
             .ok_or(StarryError::NotFound)?
             .clone();

@@ -16,7 +16,7 @@ struct MutableQueueInfoController {
 }
 
 struct MutableQueueInfoQueue {
-    info: Arc<StdMutex<QueueInfo>>,
+    info: Arc<std::sync::Mutex<QueueInfo>>,
 }
 
 struct ReadyPrefixController {
@@ -206,7 +206,7 @@ impl BlockController for SerializedOnlineSmpController {
 fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     configure_test_irq_registrar(Arc::clone(&log));
     let (online_entered_tx, online_entered_rx) = mpsc::channel();
     let (online_release_tx, online_release_rx) = mpsc::channel();
@@ -223,9 +223,9 @@ fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
         }),
     ))
     .unwrap();
-    assert_eq!(handle.inner.hctxs.lock().len(), 1);
-    assert_eq!(handle.inner.cpu_channels.lock().len(), 1);
-    let original_channel = Arc::clone(&handle.inner.cpu_channels.lock()[0].channel);
+    assert_eq!(handle.inner.hctxs.lock_irqsave().len(), 1);
+    assert_eq!(handle.inner.cpu_channels.lock_irqsave().len(), 1);
+    let original_channel = Arc::clone(&handle.inner.cpu_channels.lock_irqsave()[0].channel);
 
     let online_handle = Arc::clone(&handle);
     let online_thread = thread::spawn(move || online_handle.online_smp());
@@ -236,23 +236,26 @@ fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
         "even an idempotent queue target must reach the controller thread"
     );
     assert_eq!(
-        handle.inner.cpu_channels.lock().len(),
+        handle.inner.cpu_channels.lock_irqsave().len(),
         1,
         "the caller must not publish a CPU mapping while the controller update is pending"
     );
     assert!(Arc::ptr_eq(
         &original_channel,
-        &handle.inner.cpu_channels.lock()[0].channel,
+        &handle.inner.cpu_channels.lock_irqsave()[0].channel,
     ));
 
     online_release_tx.send(()).unwrap();
     assert_eq!(online_thread.join().unwrap(), Ok(()));
-    assert_eq!(handle.inner.cpu_channels.lock().len(), 1);
+    assert_eq!(handle.inner.cpu_channels.lock_irqsave().len(), 1);
     assert!(Arc::ptr_eq(
         &original_channel,
-        &handle.inner.cpu_channels.lock()[0].channel,
+        &handle.inner.cpu_channels.lock_irqsave()[0].channel,
     ));
-    assert_eq!(handle.inner.hctxs.lock()[0].submission_channel_count(), 1);
+    assert_eq!(
+        handle.inner.hctxs.lock_irqsave()[0].submission_channel_count(),
+        1
+    );
 
     for _ in 0..3 {
         online_release_tx.send(()).unwrap();
@@ -264,9 +267,12 @@ fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
         );
         assert!(Arc::ptr_eq(
             &original_channel,
-            &handle.inner.cpu_channels.lock()[0].channel,
+            &handle.inner.cpu_channels.lock_irqsave()[0].channel,
         ));
-        assert_eq!(handle.inner.hctxs.lock()[0].submission_channel_count(), 1);
+        assert_eq!(
+            handle.inner.hctxs.lock_irqsave()[0].submission_channel_count(),
+            1
+        );
     }
     assert_eq!(handle.shutdown(), 1);
 }
@@ -274,7 +280,7 @@ fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
 #[test]
 fn provisional_hctx_is_promoted_only_by_a_ready_update() {
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "ready-prefix",
         [],
@@ -290,7 +296,7 @@ fn provisional_hctx_is_promoted_only_by_a_ready_update() {
         handle
             .inner
             .lifecycle_gate
-            .lock()
+            .lock_irqsave()
             .submission_ready_hctx_count,
         1
     );
@@ -306,12 +312,12 @@ fn provisional_hctx_is_promoted_only_by_a_ready_update() {
             .install_update(&mut provisional, Arc::clone(&handle.inner.controller),),
         Ok(Vec::new())
     );
-    assert_eq!(handle.inner.hctxs.lock().len(), 2);
+    assert_eq!(handle.inner.hctxs.lock_irqsave().len(), 2);
     assert_eq!(
         handle
             .inner
             .lifecycle_gate
-            .lock()
+            .lock_irqsave()
             .submission_ready_hctx_count,
         1
     );
@@ -327,7 +333,7 @@ fn provisional_hctx_is_promoted_only_by_a_ready_update() {
         handle
             .inner
             .lifecycle_gate
-            .lock()
+            .lock_irqsave()
             .submission_ready_hctx_count,
         2
     );
@@ -337,7 +343,7 @@ fn provisional_hctx_is_promoted_only_by_a_ready_update() {
 fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     configure_test_irq_registrar(log);
     let initial_info = test_queue_info().device;
     let changed_info = DeviceInfo {
@@ -352,7 +358,7 @@ fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
         }],
         Box::new(DeviceInfoUpdateController {
             queue: Some(LifecycleQueue {
-                log: Arc::new(StdMutex::new(Vec::new())),
+                log: Arc::new(std::sync::Mutex::new(Vec::new())),
             }),
             changed_info,
         }),
@@ -447,7 +453,7 @@ fn starting_device_info_tracks_discovery_until_ready_freezes_it() {
 fn ready_hctx_rejects_changed_dma_coherency() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -455,7 +461,7 @@ fn ready_hctx_rejects_changed_dma_coherency() {
         .store(false, Ordering::Release);
     set_irq_registrar(&TEST_IRQ_REGISTRAR);
 
-    let queue_info = Arc::new(StdMutex::new(test_queue_info()));
+    let queue_info = Arc::new(std::sync::Mutex::new(test_queue_info()));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "queue-info-freeze",
         [BlockIrqSource {
@@ -492,7 +498,7 @@ fn runtime_admission_returns_request_with_mismatched_dma_coherency() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -516,7 +522,7 @@ fn runtime_admission_returns_request_with_mismatched_dma_coherency() {
         }],
         Box::new(MutableQueueInfoController {
             queue: Some(MutableQueueInfoQueue {
-                info: Arc::new(StdMutex::new(queue_info)),
+                info: Arc::new(std::sync::Mutex::new(queue_info)),
             }),
         }),
     ))
@@ -534,7 +540,7 @@ fn runtime_admission_returns_request_with_mismatched_dma_coherency() {
         Err(error) => error,
     };
     assert_eq!(error.error, BlkError::InvalidRequest);
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 0);
     let returned = error.into_request();
     assert!(returned.data.is_some());
     drop(crate::block::runtime::dma::complete_without_submit(

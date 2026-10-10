@@ -35,17 +35,17 @@ use super::epoll_topology::{
     EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
     prepare_nested_link, reserve_nested_link,
 };
+#[cfg(not(all(test, not(axtest))))]
+use crate::sync::Mutex;
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, get_file_like, signalfd::Signalfd},
-    sync::IrqMutex,
+    sync::RawSpinLock,
     task::{ProcessData, current_user_task, future::IrqNotify},
 };
-#[cfg(not(all(test, not(axtest))))]
-use crate::sync::Mutex;
 
 static EPOLL_NOTIFY: IrqNotify = IrqNotify::new();
-static EPOLL_NOTIFY_QUEUE: IrqMutex<()> = IrqMutex::new(());
+static EPOLL_NOTIFY_QUEUE: RawSpinLock<()> = RawSpinLock::new(());
 static EPOLL_NOTIFY_HEAD: AtomicPtr<EpollInner> = AtomicPtr::new(ptr::null_mut());
 static EPOLL_NOTIFY_STARTED: OnceLock<()> = OnceLock::new();
 /// Published once by the notification worker before it first enters its wait
@@ -66,16 +66,15 @@ pub(crate) fn start_epoll_notify_worker() {
                 loop {
                     EPOLL_NOTIFY.wait();
                     let mut current = {
-                        let _queue = EPOLL_NOTIFY_QUEUE.lock();
+                        let _queue = EPOLL_NOTIFY_QUEUE.lock_irqsave();
                         EPOLL_NOTIFY_HEAD.swap(ptr::null_mut(), Ordering::AcqRel)
                     };
                     while !current.is_null() {
                         let epoll = unsafe {
-                            // SAFETY: queue insertion transfers exactly one
-                            // strong reference through Arc::into_raw. The queue
-                            // lock gives this sole consumer exclusive ownership
-                            // of the detached list, so each node is
-                            // reconstructed exactly once.
+                            // SAFETY: queue insertion transfers exactly one strong
+                            // reference through Arc::into_raw. The queue lock gives
+                            // this sole consumer exclusive ownership of the detached
+                            // list, so each node is reconstructed exactly once.
                             Arc::from_raw(current)
                         };
                         let next = epoll.notify_next.swap(ptr::null_mut(), Ordering::Acquire);
@@ -252,7 +251,7 @@ struct EpollInterest {
     // A weak owner preserves same-process waiter refreshes without extending
     // the originating process lifetime.
     signalfd_registration_owner: Option<Weak<ProcessData>>,
-    mode: IrqMutex<TriggerMode>,
+    mode: RawSpinLock<TriggerMode>,
     exclusive: bool,
     in_ready_queue: AtomicBool,
     owner_repoll_pending: AtomicBool,
@@ -260,7 +259,7 @@ struct EpollInterest {
     registration_refresh: Mutex<()>,
     #[cfg(all(test, not(axtest)))]
     registration_refresh: std::sync::Mutex<()>,
-    registration: IrqMutex<Option<InterestRegistration>>,
+    registration: RawSpinLock<Option<InterestRegistration>>,
 }
 
 enum InterestRegistration {
@@ -283,7 +282,7 @@ impl EpollInterest {
             key,
             event,
             nested_link,
-            mode: IrqMutex::new(TriggerMode::from_flags(flags)),
+            mode: RawSpinLock::new(TriggerMode::from_flags(flags)),
             exclusive: flags.contains(EpollFlags::EXCLUSIVE),
             in_ready_queue: AtomicBool::new(false),
             owner_repoll_pending: AtomicBool::new(false),
@@ -291,7 +290,7 @@ impl EpollInterest {
             registration_refresh: Mutex::new(()),
             #[cfg(all(test, not(axtest)))]
             registration_refresh: std::sync::Mutex::new(()),
-            registration: IrqMutex::new(None),
+            registration: RawSpinLock::new(None),
         }
     }
 
@@ -302,12 +301,12 @@ impl EpollInterest {
 
     #[inline]
     fn is_enabled(&self) -> bool {
-        self.mode.lock().is_enabled()
+        self.mode.lock_irqsave().is_enabled()
     }
 
     #[inline]
     fn is_edge_triggered(&self) -> bool {
-        matches!(*self.mode.lock(), TriggerMode::Edge)
+        matches!(*self.mode.lock_irqsave(), TriggerMode::Edge)
     }
 
     #[inline]
@@ -336,7 +335,7 @@ impl EpollInterest {
             return ConsumeResult::NoEvent;
         }
 
-        let mut mode = self.mode.lock();
+        let mut mode = self.mode.lock_irqsave();
         let old_mode = *mode;
         let (should_notify, new_mode) = mode.should_notify();
         trace!(
@@ -363,7 +362,7 @@ impl EpollInterest {
     }
 
     fn restore_mode(&self, mode: TriggerMode) {
-        *self.mode.lock() = mode;
+        *self.mode.lock_irqsave() = mode;
     }
 
     fn can_refresh_waker_from_current_process(&self) -> bool {
@@ -392,7 +391,7 @@ impl EpollInterest {
     }
 
     fn registration_is_armed(&self) -> bool {
-        match &*self.registration.lock() {
+        match &*self.registration.lock_irqsave() {
             Some(InterestRegistration::Shared(registrar)) => registrar.is_armed(),
             Some(InterestRegistration::Exclusive(registrar)) => registrar.is_armed(),
             None => false,
@@ -400,7 +399,7 @@ impl EpollInterest {
     }
 
     fn replace_registration(&self, registration: Option<InterestRegistration>) {
-        let previous = core::mem::replace(&mut *self.registration.lock(), registration);
+        let previous = core::mem::replace(&mut *self.registration.lock_irqsave(), registration);
         if let Some(mut previous) = previous {
             previous.clear();
         }
@@ -448,9 +447,7 @@ impl RegistrationWakeState {
     }
 
     fn finish_register(&self) -> bool {
-        let previous = self
-            .0
-            .swap(REGISTRATION_WAKE_REGISTERED, Ordering::AcqRel);
+        let previous = self.0.swap(REGISTRATION_WAKE_REGISTERED, Ordering::AcqRel);
         debug_assert_ne!(previous, REGISTRATION_WAKE_REGISTERED);
         previous == REGISTRATION_WAKE_PENDING
     }
@@ -514,9 +511,9 @@ impl InterestWaker {
 }
 
 pub(super) struct EpollInner {
-    interests: IrqMutex<HashMap<EntryKey, Arc<EpollInterest>>>,
+    interests: RawSpinLock<HashMap<EntryKey, Arc<EpollInterest>>>,
     pub(super) topology: EpollTopology,
-    ready_queue: IrqMutex<VecDeque<Weak<EpollInterest>>>,
+    ready_queue: RawSpinLock<VecDeque<Weak<EpollInterest>>>,
     overflow_ready: AtomicBool,
     poll_ready: PollSet,
     pending_wakes: AtomicUsize,
@@ -527,9 +524,9 @@ pub(super) struct EpollInner {
 impl Default for EpollInner {
     fn default() -> Self {
         Self {
-            interests: IrqMutex::new(HashMap::new()),
+            interests: RawSpinLock::new(HashMap::new()),
             topology: EpollTopology::default(),
-            ready_queue: IrqMutex::new(VecDeque::new()),
+            ready_queue: RawSpinLock::new(VecDeque::new()),
             overflow_ready: AtomicBool::new(false),
             poll_ready: PollSet::new(),
             pending_wakes: AtomicUsize::new(0),
@@ -541,7 +538,7 @@ impl Default for EpollInner {
 
 impl EpollInner {
     pub(super) fn has_ready_events(&self) -> bool {
-        !self.ready_queue.lock().is_empty() || self.overflow_ready.load(Ordering::Acquire)
+        !self.ready_queue.lock_irqsave().is_empty() || self.overflow_ready.load(Ordering::Acquire)
     }
 
     pub(super) unsafe fn register_shared_poll_waiter(&self, sink: &mut dyn SharedRegistrationSink) {
@@ -600,7 +597,7 @@ impl EpollInner {
 
     /// Remove an interest while the global topology mutex is held.
     fn remove_interest_locked(&self, key: &EntryKey) -> Option<Arc<EpollInterest>> {
-        let interest = self.interests.lock().remove(key)?;
+        let interest = self.interests.lock_irqsave().remove(key)?;
         if let Some(link) = &interest.nested_link {
             detach_nested_link(self, link);
         }
@@ -613,7 +610,7 @@ impl EpollInner {
             let _topology = lock_epoll_topology();
             let should_remove = self
                 .interests
-                .lock()
+                .lock_irqsave()
                 .get(&candidate.key)
                 .is_some_and(|current| Arc::ptr_eq(current, candidate));
             should_remove
@@ -625,7 +622,7 @@ impl EpollInner {
 
     fn reserve_ready_capacity(&self, min_capacity: usize) -> StarryResult<()> {
         loop {
-            if self.ready_queue.lock().capacity() >= min_capacity {
+            if self.ready_queue.lock_irqsave().capacity() >= min_capacity {
                 return Ok(());
             }
 
@@ -634,7 +631,7 @@ impl EpollInner {
                 .try_reserve(min_capacity)
                 .map_err(|_| StarryError::NoMemory)?;
 
-            let mut queue = self.ready_queue.lock();
+            let mut queue = self.ready_queue.lock_irqsave();
             if queue.capacity() >= min_capacity {
                 return Ok(());
             }
@@ -651,7 +648,7 @@ impl EpollInner {
 
     fn enqueue_marked_ready_without_wake(&self, interest: &Arc<EpollInterest>) {
         let queued = {
-            let mut queue = self.ready_queue.lock();
+            let mut queue = self.ready_queue.lock_irqsave();
             if queue.len() < queue.capacity() {
                 queue.push_back(Arc::downgrade(interest));
                 true
@@ -696,7 +693,7 @@ impl EpollInner {
                 // The queue lock serializes publication with list detachment.
                 // The transferred Arc keeps this embedded link alive until the
                 // notification worker reconstructs and drops that reference.
-                let _queue = EPOLL_NOTIFY_QUEUE.lock();
+                let _queue = EPOLL_NOTIFY_QUEUE.lock_irqsave();
                 let head = EPOLL_NOTIFY_HEAD.load(Ordering::Relaxed);
                 self.notify_next.store(head, Ordering::Relaxed);
                 EPOLL_NOTIFY_HEAD.store(node, Ordering::Release);
@@ -717,7 +714,7 @@ impl EpollInner {
 
     fn publish_ready_interest(self: &Arc<Self>, interest: &Arc<EpollInterest>) {
         let published = {
-            let interests = self.interests.lock();
+            let interests = self.interests.lock_irqsave();
             let is_current = interests
                 .get(&interest.key)
                 .is_some_and(|current| Arc::ptr_eq(current, interest));
@@ -733,7 +730,7 @@ impl EpollInner {
 
     fn request_owner_repoll(self: &Arc<Self>, interest: &Arc<EpollInterest>) {
         let should_wake = {
-            let interests = self.interests.lock();
+            let interests = self.interests.lock_irqsave();
             interests
                 .get(&interest.key)
                 .is_some_and(|current| Arc::ptr_eq(current, interest))
@@ -746,17 +743,17 @@ impl EpollInner {
 
     fn remove_ready_entries_for(&self, target: &Weak<EpollInterest>) {
         self.ready_queue
-            .lock()
+            .lock_irqsave()
             .retain(|entry| entry.strong_count() != 0 && !Weak::ptr_eq(entry, target));
     }
 
     fn drain_ready_queue(&self) -> StarryResult<VecDeque<Weak<EpollInterest>>> {
         loop {
-            let len = self.ready_queue.lock().len();
+            let len = self.ready_queue.lock_irqsave().len();
             let mut txlist = VecDeque::new();
             txlist.try_reserve(len).map_err(|_| StarryError::NoMemory)?;
 
-            let mut queue = self.ready_queue.lock();
+            let mut queue = self.ready_queue.lock_irqsave();
             if queue.len() > txlist.capacity() {
                 continue;
             }
@@ -769,13 +766,13 @@ impl EpollInner {
 
     fn snapshot_interests(&self) -> StarryResult<Vec<Arc<EpollInterest>>> {
         loop {
-            let len = self.interests.lock().len();
+            let len = self.interests.lock_irqsave().len();
             let mut snapshot = Vec::new();
             snapshot
                 .try_reserve(len)
                 .map_err(|_| StarryError::NoMemory)?;
 
-            let interests = self.interests.lock();
+            let interests = self.interests.lock_irqsave();
             if interests.len() > snapshot.capacity() {
                 continue;
             }
@@ -901,7 +898,7 @@ impl Epoll {
         // callbacks run only after the global mutex is released.
         let topology = lock_epoll_topology();
         let target_capacity = {
-            let mut interests = self.inner.interests.lock();
+            let mut interests = self.inner.interests.lock_irqsave();
             if interests.contains_key(&key) {
                 return Err(StarryError::AlreadyExists);
             }
@@ -931,7 +928,7 @@ impl Epoll {
         ));
         self.inner
             .interests
-            .lock()
+            .lock_irqsave()
             .insert(key.clone(), Arc::clone(&interest));
         if let (Some(link), Some(target)) = (&nested_link, &nested_target) {
             commit_nested_link(&self.inner, target, link);
@@ -991,7 +988,7 @@ impl Epoll {
         let key = EntryKey::new(fd)?;
 
         let topology = lock_epoll_topology();
-        let mut guard = self.inner.interests.lock();
+        let mut guard = self.inner.interests.lock_irqsave();
         let old = guard.get_mut(&key).ok_or(StarryError::NotFound)?;
         // Linux forbids modifying an entry that was added as exclusive.
         if old.is_exclusive() {

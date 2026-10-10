@@ -29,6 +29,8 @@ pub(crate) fn project_cpus(
                 .is_some_and(|suffix| !suffix.contains('/'))
                 && super::create::need_cpu_node(phys_cpu_ids, host_fdt, id, path))
     })?;
+    let guest_cpu_execution_property =
+        super::selected_guest_fdt_policy().guest_cpu_execution_property;
     let paths = source.node_paths();
     for (id, path) in paths {
         if path == "/cpus" || path.starts_with("/cpus/cpu@") {
@@ -36,22 +38,7 @@ pub(crate) fn project_cpus(
             let removed = node
                 .properties()
                 .iter()
-                .filter(|property| {
-                    !matches!(
-                        property.name(),
-                        "#address-cells"
-                            | "#size-cells"
-                            | "device_type"
-                            | "compatible"
-                            | "reg"
-                            | "enable-method"
-                            | "phandle"
-                            | "linux,phandle"
-                            | "capacity-dmips-mhz"
-                            | "clock-frequency"
-                            | "status"
-                    )
-                })
+                .filter(|property| !guest_cpu_execution_property(property.name()))
                 .map(|property| std::string::String::from(property.name()))
                 .collect::<Vec<_>>();
             for name in removed {
@@ -60,12 +47,6 @@ pub(crate) fn project_cpus(
         }
     }
     let source_cpus = cpu_nodes(source.inner());
-    if source_cpus.len() != phys_cpu_ids.len() {
-        return Err(ax_err_type!(
-            InvalidData,
-            "selected CPU identities are missing from host firmware"
-        ));
-    }
     if let Some(cpus) = source.inner().get_by_path_id("/cpus") {
         for name in ["phandle", "linux,phandle"] {
             source

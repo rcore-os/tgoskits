@@ -1,48 +1,54 @@
-//! Shared system-register device exits used by AArch64 and x86_64 guests.
+//! System-register device access belongs to the unloaded task layer.
 
-use axdevice::DeviceManagerError;
-use axdevice_base::{BusKind, DeviceAccess, DeviceError, DeviceVcpuId};
-use axvm_types::{AccessWidth, SysRegAddr, VmArchVcpuOps};
+use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
+use axvm_types::{AccessWidth, SysRegAddr};
 
-use crate::{AxVmError, AxVmResult, architecture::VcpuExitAction};
+use super::ArchOps;
+#[cfg(target_arch = "aarch64")]
+use super::ops::RegisterCompletion;
+use crate::{
+    AxVmError, AxVmResult, engine::VcpuAction, runtime::hvc::GuestRequest, services::RunServices,
+};
 
+#[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SysRegReadExit {
     pub(crate) addr: SysRegAddr,
     pub(crate) reg: usize,
 }
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SysRegWriteExit {
     pub(crate) addr: SysRegAddr,
     pub(crate) value: u64,
 }
 
-pub(crate) fn handle_read<V: VmArchVcpuOps>(
-    vm: &crate::AxVM,
-    vcpu: &crate::vm::AxVCpuRef<V>,
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn handle_read<A: ArchOps>(
+    services: &RunServices,
+    vcpu_id: usize,
     exit: SysRegReadExit,
-) -> AxVmResult<VcpuExitAction> {
-    let access = sysreg_access(vcpu.id(), exit.addr);
-    let val = vm
-        .get_devices()?
-        .try_read(&access)
-        .map_err(|error| AxVmError::device("read guest system register", error))?
+) -> AxVmResult<VcpuAction<A::Completion, GuestRequest>> {
+    let value = services
+        .read_device(&sysreg_access(vcpu_id, exit.addr))?
         .ok_or_else(|| missing_sysreg_error("read", exit.addr))?;
-    vcpu.set_gpr(exit.reg, val as usize);
-    Ok(VcpuExitAction::Continue)
+    Ok(VcpuAction::Reenter(
+        RegisterCompletion::Gpr {
+            register: exit.reg,
+            value: value as usize,
+        }
+        .into(),
+    ))
 }
 
-pub(crate) fn handle_write<V: VmArchVcpuOps>(
-    vm: &crate::AxVM,
-    vcpu: &crate::vm::AxVCpuRef<V>,
+pub(crate) fn handle_write<A: ArchOps>(
+    services: &RunServices,
+    vcpu_id: usize,
     exit: SysRegWriteExit,
-) -> AxVmResult<VcpuExitAction> {
-    let access = sysreg_access(vcpu.id(), exit.addr);
-    if !vm.try_write_device(&access, exit.value)? {
+) -> AxVmResult<VcpuAction<A::Completion, GuestRequest>> {
+    if !services.write_device(&sysreg_access(vcpu_id, exit.addr), exit.value)? {
         return Err(missing_sysreg_error("write", exit.addr));
     }
-    Ok(VcpuExitAction::Continue)
+    Ok(VcpuAction::Reenter(A::Completion::default()))
 }
 
 fn sysreg_access(vcpu_id: usize, addr: SysRegAddr) -> DeviceAccess {
@@ -57,12 +63,12 @@ fn sysreg_access(vcpu_id: usize, addr: SysRegAddr) -> DeviceAccess {
 fn missing_sysreg_error(operation: &'static str, addr: SysRegAddr) -> AxVmError {
     AxVmError::device(
         "access guest system register",
-        DeviceManagerError::Access {
+        axdevice::DeviceManagerError::Access {
             operation,
             bus: BusKind::SysReg,
             addr: addr.addr() as u64,
             width: AccessWidth::Qword,
-            source: DeviceError::NotFound,
+            source: axdevice_base::DeviceError::NotFound,
         },
     )
 }

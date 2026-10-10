@@ -71,9 +71,10 @@ pub struct ArgsTestBoard {
         short = 'c',
         long = "test-case",
         value_name = "CASE",
-        help = "Run only one ArceOS board test case"
+        value_delimiter = ',',
+        help = "Run one or more ArceOS board test cases"
     )]
-    pub test_case: Option<String>,
+    pub test_case: Vec<String>,
 
     #[arg(
         long,
@@ -114,7 +115,24 @@ pub(super) fn reject_missing_qemu_target(args: &ArgsTestQemu) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::*;
+
+    #[derive(Parser)]
+    struct BoardCli {
+        #[command(flatten)]
+        board: ArgsTestBoard,
+    }
+
+    #[test]
+    fn board_case_selector_accepts_repeated_and_comma_separated_values() {
+        let cli =
+            BoardCli::try_parse_from(["test", "--test-case", "smoke,pmu", "--test-case", "ipi"])
+                .unwrap();
+
+        assert_eq!(cli.board.test_case, ["smoke", "pmu", "ipi"]);
+    }
 
     #[test]
     fn regular_qemu_run_still_requires_arch_or_target() {

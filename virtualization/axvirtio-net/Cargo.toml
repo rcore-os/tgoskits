@@ -17,9 +17,13 @@ axaddrspace.workspace = true
 axdevice_base.workspace = true
 axvm-types.workspace = true
 axvirtio-common.workspace = true
-ax-sync.workspace = true
+# Ordinary device/switch state uses the task-sleepable `ax_sync::Mutex`, which
+# is gated behind `ax-sync/sleep`; the native provider is supplied by the kernel
+# runtime and a host test provider by the packages' test support modules.
+ax-sync = { workspace = true, features = ["sleep"] }
 log.workspace = true
 
 [dev-dependencies]
 ax-memory-addr = { path = "../../memory/memory_addr" }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+ax-crate-interface = { workspace = true }

@@ -28,7 +28,7 @@ pub const RET_ERR_FAILED: usize = -1isize as _;
 /// Error for target operation not supported.
 pub const RET_ERR_NOT_SUPPORTED: usize = -2isize as _;
 
-/// Writes bytes to the console using SBI byte-wise API.
+/// Writes bytes to the console using the SBI DBCN buffer API.
 pub fn console_write<H: RiscvHostOps>(buf: &[u8]) -> SbiRet {
     let ptr = buf.as_ptr();
     sbi_rt::console_write(Physical::new(
@@ -38,7 +38,7 @@ pub fn console_write<H: RiscvHostOps>(buf: &[u8]) -> SbiRet {
     ))
 }
 
-/// Reads bytes from the console into a buffer using SBI byte-wise API.
+/// Reads bytes from the console into a buffer using the SBI DBCN buffer API.
 pub fn console_read<H: RiscvHostOps>(buf: &mut [u8]) -> SbiRet {
     let ptr = buf.as_mut_ptr();
     sbi_rt::console_read(Physical::new(
@@ -46,31 +46,4 @@ pub fn console_read<H: RiscvHostOps>(buf: &mut [u8]) -> SbiRet {
         H::virt_to_phys(RiscvHostVirtAddr::from(ptr)).as_usize(),
         0,
     ))
-}
-
-/// Writes a full string to console using SBI byte-wise API (no log prefix).
-#[inline(always)]
-#[allow(dead_code)]
-pub fn print_str<H: RiscvHostOps>(s: &str) {
-    console_write::<H>(s.as_bytes());
-}
-
-/// Writes a full string + newline to console (no log prefix).
-#[inline(always)]
-#[allow(dead_code)]
-pub fn println_str<H: RiscvHostOps>(s: &str) {
-    print_str::<H>(s);
-    sbi_rt::console_write_byte(b'\n');
-}
-
-/// Writes a byte to the console.
-#[inline(always)]
-pub fn print_byte(byte: u8) {
-    sbi_rt::console_write_byte(byte);
-}
-
-/// Joins two `usize` values into a `u64` value representing a guest physical address (GPA).
-#[inline(always)]
-pub fn join_u64(base_lo: usize, base_hi: usize) -> u64 {
-    ((base_hi as u64) << 32) | (base_lo as u64)
 }

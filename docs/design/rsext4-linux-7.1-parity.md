@@ -1762,7 +1762,7 @@ dev 的全局 dirty-sync 红项。
 把 mount owner 转为 unmounted。共享只读镜像的确定性红测先得到 flush 计数 `3 == 3` 而非预期
 `3 -> 4`，第二个红测证明 shutdown 后 `remount(options)` 仍错误成功。
 
-当前 RO/RW 两条路径都先取得同一个 `SleepMutex<Ext4State>`，再分别调用 owned core 的 typed
+当前 RO/RW 两条路径都先取得同一个 `Mutex<Ext4State>`，再分别调用 owned core 的 typed
 `sync()` / `unmount()`；adapter 不再复制 cache、journal 或 lifecycle 状态机。修复后同一测试观察到
 一次真实 flush，并由 `Busy(op=remount:unmounted)` 证明 owner 已终止。完整
 `FilesystemOps::is_readonly()` 也不再读取 mount-time 副本，而是在同一 mutex 下查询 core options；
@@ -1954,7 +1954,7 @@ filesystem write 被调度到能力较弱的 queue。
 第二个 runtime 回归把 4 个 512-byte block 交给 `max_blocks_per_request=1` 的 queue。旧统一写路径
 会给全部拆分 request 填 `RequestFlags::NONE`；当前 `write_blocks_with_flags()` 将同一 typed flag
 传到每个 transfer chunk，测例在 IRQ completion 前确定性观察到 4/4 FUA request。FUA write 不持
-hctx 的 `IrqMutex` 等待 I/O：capability 查询只在短临界区读取 immutable queue limits，释放后才进入
+hctx 的 `RawSpinLock` 等待 I/O：capability 查询只在短临界区读取 immutable queue limits，释放后才进入
 software channel admission 与 completion wait。flush 仍是独立 request 和设备级 barrier，供 core 的
 write-then-flush fallback 保序。
 

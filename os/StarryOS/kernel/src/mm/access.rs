@@ -324,7 +324,7 @@ fn user_range_probe_ready(range: UserAccessRange, intent: UserAccessIntent) -> b
     // IRQs guarantees no other `AT` runs on this CPU between our `AT` and the
     // `mrs` that reads the result. The range is capped, so the window is a
     // handful of instructions.
-    let _guard = crate::sync::NoPreemptIrqSave::new();
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
     let mut page = span.start;
     while page < span.end {
         // SAFETY: IRQs are disabled for the whole loop by the guard above, which

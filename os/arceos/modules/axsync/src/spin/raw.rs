@@ -4,17 +4,20 @@ use core::{cell::UnsafeCell, panic::Location, sync::atomic::AtomicBool};
 
 use crate::interface::{CONTEXT_PREEMPT_IRQSAVE, ContextState, LockMetadata};
 
-/// A raw mutex whose acquisition disables preemption and saves local IRQs.
+/// An IRQ-save spin-lock backend exposed as a [`lock_api::RawMutex`].
+///
+/// Acquisition disables preemption and saves local IRQs, mirroring
+/// [`RawSpinLock::lock_irqsave`](crate::RawSpinLock::lock_irqsave).
 #[repr(C)]
-pub struct RawIrqSaveMutex {
+pub struct RawSpinLockIrqSaveBackend {
     locked: AtomicBool,
     metadata: LockMetadata,
     context_state: UnsafeCell<Option<ContextState>>,
 }
 
-unsafe impl Sync for RawIrqSaveMutex {}
+unsafe impl Sync for RawSpinLockIrqSaveBackend {}
 
-impl RawIrqSaveMutex {
+impl RawSpinLockIrqSaveBackend {
     /// Creates a new unlocked raw mutex.
     #[track_caller]
     pub const fn new() -> Self {
@@ -30,13 +33,13 @@ impl RawIrqSaveMutex {
     }
 }
 
-impl Default for RawIrqSaveMutex {
+impl Default for RawSpinLockIrqSaveBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-unsafe impl lock_api::RawMutex for RawIrqSaveMutex {
+unsafe impl lock_api::RawMutex for RawSpinLockIrqSaveBackend {
     const INIT: Self = Self::new();
 
     type GuardMarker = lock_api::GuardNoSend;

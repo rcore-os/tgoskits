@@ -9,7 +9,7 @@ use core::{
 use ax_runtime::task::sched::{CpuId, CpuSet};
 
 use super::{hw_owner::Counter, target::PerfCpuId};
-use crate::sync::{IrqMutex, NoPreemptIrqSave, PreemptGuard};
+use crate::sync::{PreemptGuard, PreemptIrqSaveGuard, RawSpinLock};
 
 const SLICE: Duration = Duration::from_millis(2);
 
@@ -31,8 +31,8 @@ pub(super) struct SystemFlexCounter {
     accumulated: AtomicU64,
     time_enabled: AtomicU64,
     time_running: AtomicU64,
-    extender: Arc<IrqMutex<super::counting::CounterExtender>>,
-    active: IrqMutex<Option<ActiveSlice>>,
+    extender: Arc<RawSpinLock<super::counting::CounterExtender>>,
+    active: RawSpinLock<Option<ActiveSlice>>,
 }
 
 impl core::fmt::Debug for SystemFlexCounter {
@@ -63,8 +63,8 @@ impl SystemFlexCounter {
             accumulated: AtomicU64::new(0),
             time_enabled: AtomicU64::new(0),
             time_running: AtomicU64::new(0),
-            extender: Arc::new(IrqMutex::new(super::counting::CounterExtender::new())),
-            active: IrqMutex::new(None),
+            extender: Arc::new(RawSpinLock::new(super::counting::CounterExtender::new())),
+            active: RawSpinLock::new(None),
         });
         let worker_counter = Arc::clone(&counter);
         let mut affinity = CpuSet::empty(ax_runtime::hal::cpu_num());
@@ -79,8 +79,8 @@ impl SystemFlexCounter {
     fn run(self: Arc<Self>) {
         while !self.closed.load(Ordering::Acquire) {
             let armed = {
-                let _guard = NoPreemptIrqSave::new();
-                let mut active = self.active.lock();
+                let _guard = PreemptIrqSaveGuard::new();
+                let mut active = self.active.lock_irqsave();
                 if !self.enabled.load(Ordering::Acquire) || active.is_some() {
                     false
                 } else if let Some(slot) = super::percpu::alloc_current_programmable() {
@@ -88,7 +88,7 @@ impl SystemFlexCounter {
                     counter
                         .configure(Some(self.event), self.exclude_user, self.exclude_kernel)
                         .expect("validated flexible system PMU event");
-                    self.extender.lock().reset();
+                    self.extender.lock_irqsave().reset();
                     crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << slot));
                     if super::sampling::enable_local_pmu_irq().is_err() {
                         super::percpu::free_current_programmable(slot);
@@ -133,10 +133,10 @@ impl SystemFlexCounter {
     fn finish_slice_observed(
         &self,
         before_commit: impl FnOnce(),
-    ) -> Option<Arc<IrqMutex<super::counting::CounterExtender>>> {
-        let _guard = NoPreemptIrqSave::new();
+    ) -> Option<Arc<RawSpinLock<super::counting::CounterExtender>>> {
+        let _guard = PreemptIrqSaveGuard::new();
         // Publish None only after hardware quiescence, accounting and slot free.
-        let mut active_state = self.active.lock();
+        let mut active_state = self.active.lock_irqsave();
         let active = active_state.take()?;
         before_commit();
         let slot = active
@@ -171,8 +171,8 @@ impl SystemFlexCounter {
     }
 
     fn reset_on_owner(&self) {
-        let _guard = NoPreemptIrqSave::new();
-        let active = self.active.lock();
+        let _guard = PreemptIrqSaveGuard::new();
+        let active = self.active.lock_irqsave();
         if let Some(active) = active.as_ref() {
             active.counter.disable();
             active.counter.reset();
@@ -181,7 +181,7 @@ impl SystemFlexCounter {
             });
         }
         self.accumulated.store(0, Ordering::Release);
-        self.extender.lock().reset();
+        self.extender.lock_irqsave().reset();
         // Linux RESET preserves the enabled state and cumulative time. Keep
         // the current lease running even if a FIFO caller excludes the worker.
         if let Some(active) = active.as_ref() {
@@ -242,7 +242,7 @@ impl SystemFlexCounter {
             self.owner.as_usize(),
             ax_runtime::hal::percpu::this_cpu_id()
         );
-        let active = self.active.lock();
+        let active = self.active.lock_irqsave();
         let observed_at = now_ns();
         let mut enabled = self.time_enabled.load(Ordering::Acquire);
         let since = self.enabled_since.load(Ordering::Acquire);
@@ -265,7 +265,7 @@ impl SystemFlexCounter {
     }
 
     fn read_active_counter(&self, counter: Counter) -> u64 {
-        let mut extender = self.extender.lock();
+        let mut extender = self.extender.lock_irqsave();
         let slot = counter
             .programmable_index()
             .expect("flexible programmable slot");
@@ -288,7 +288,7 @@ enum ControlOperation {
 struct ControlRequest<'a> {
     counter: &'a SystemFlexCounter,
     operation: ControlOperation,
-    retired: Option<Arc<IrqMutex<super::counting::CounterExtender>>>,
+    retired: Option<Arc<RawSpinLock<super::counting::CounterExtender>>>,
     snapshot: Option<(u64, u64, u64)>,
 }
 
@@ -299,7 +299,7 @@ unsafe fn control_callback(arg: *mut ()) {
     // SAFETY: control_on_owner lends an initialized, aligned stack request and
     // does not access or destroy it until the synchronous callback completes.
     let request = unsafe { &mut *arg.cast::<ControlRequest<'_>>() };
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     let counter = request.counter;
     match request.operation {
         ControlOperation::Disable => {
@@ -337,15 +337,17 @@ mod tests {
             accumulated: AtomicU64::new(0),
             time_enabled: AtomicU64::new(0),
             time_running: AtomicU64::new(0),
-            extender: Arc::new(IrqMutex::new(super::super::counting::CounterExtender::new())),
-            active: IrqMutex::new(None),
+            extender: Arc::new(RawSpinLock::new(
+                super::super::counting::CounterExtender::new(),
+            )),
+            active: RawSpinLock::new(None),
         }
     }
 
     #[axtest::axtest]
     fn reset_clears_active_value_without_stopping_or_restarting_time() {
         let mut counter = test_counter();
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         counter.owner = PerfCpuId::new(ax_hal::percpu::this_cpu_id());
         super::super::percpu::ensure_current_cpu_initialized().unwrap();
         let slot = super::super::percpu::alloc_current_programmable().unwrap();
@@ -355,14 +357,14 @@ mod tests {
         hardware.configure(Some(0x11), false, true).unwrap();
         crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 12345));
         counter.accumulated.store(99, Ordering::Release);
-        counter.extender.lock().record_overflow();
+        counter.extender.lock_irqsave().record_overflow();
         counter.enabled.store(true, Ordering::Release);
         counter.time_enabled.store(17, Ordering::Release);
         counter.time_running.store(19, Ordering::Release);
         let registration =
             super::super::sampling::register_counting(slot, Arc::clone(&counter.extender)).unwrap();
         let started_at = now_ns();
-        *counter.active.lock() = Some(ActiveSlice {
+        *counter.active.lock_irqsave() = Some(ActiveSlice {
             counter: hardware,
             started_at,
             registration,
@@ -383,7 +385,7 @@ mod tests {
             "RESET must leave the hardware counter enabled"
         );
         assert_eq!(
-            counter.active.lock().as_ref().unwrap().started_at,
+            counter.active.lock_irqsave().as_ref().unwrap().started_at,
             started_at
         );
         assert_eq!(counter.time_enabled.load(Ordering::Acquire), 17);
@@ -394,14 +396,14 @@ mod tests {
     #[axtest::axtest]
     fn stop_is_not_published_before_hardware_commit() {
         let counter = test_counter();
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         super::super::percpu::ensure_current_cpu_initialized().unwrap();
         let slot = super::super::percpu::alloc_current_programmable().unwrap();
         let hardware = Counter::Programmable(slot);
         hardware.configure(Some(0x11), false, false).unwrap();
         let registration =
             super::super::sampling::register_counting(slot, Arc::clone(&counter.extender)).unwrap();
-        *counter.active.lock() = Some(ActiveSlice {
+        *counter.active.lock_irqsave() = Some(ActiveSlice {
             counter: hardware,
             started_at: now_ns(),
             registration,
@@ -424,7 +426,7 @@ mod tests {
             published_early.set(
                 counter
                     .active
-                    .try_lock()
+                    .try_lock_irqsave()
                     .is_some_and(|active| active.is_none()),
             );
         }));
@@ -432,7 +434,7 @@ mod tests {
             !published_early.get(),
             "disable must not observe stopped before the slice commits"
         );
-        assert!(counter.active.lock().is_none());
+        assert!(counter.active.lock_irqsave().is_none());
         assert!(
             counter.accumulated.load(Ordering::Acquire) >= 1u64 << 32,
             "stop must account the pending wrap before IRQ disable clears it"

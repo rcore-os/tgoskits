@@ -1,10 +1,12 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
-use alloc::{sync::Arc, task::Wake};
 #[cfg(all(test, not(axtest)))]
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::task::Waker;
+use alloc::{sync::Arc, task::Wake};
+use core::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::Waker,
+};
 
 use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable};
 #[cfg(all(test, not(axtest)))]
@@ -18,7 +20,7 @@ use axpoll_set::PollSet;
 use super::epoll::Epoll;
 #[cfg(all(test, not(axtest)))]
 use super::{FileLike, epoll::EpollFlags};
-use crate::{StarryError, sync::IrqMutex};
+use crate::{StarryError, sync::RawSpinLock};
 
 #[cfg(all(test, axtest))]
 static EPOLL_ADD_TEST_BARRIER_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -42,7 +44,7 @@ pub(super) fn epoll_add_test_barrier() {
 fn concurrent_reverse_add_is_serialized_for_test() -> bool {
     let left = Arc::new(Epoll::new());
     let right = Arc::new(Epoll::new());
-    let results = Arc::new(IrqMutex::new([None, None]));
+    let results = Arc::new(RawSpinLock::new([None, None]));
 
     EPOLL_ADD_TEST_BARRIER_ARRIVALS.store(0, Ordering::Release);
     EPOLL_ADD_TEST_BARRIER_ENABLED.store(true, Ordering::Release);
@@ -53,7 +55,7 @@ fn concurrent_reverse_add_is_serialized_for_test() -> bool {
         let results = Arc::clone(&results);
         crate::task::kernel_thread_builder("epoll-axtest-left".into())
             .spawn(move || {
-                results.lock()[0] = left.add_nested_for_test(1, right).err();
+                results.lock_irqsave()[0] = left.add_nested_for_test(1, right).err();
             })
             .expect("failed to spawn kernel thread")
     };
@@ -63,7 +65,7 @@ fn concurrent_reverse_add_is_serialized_for_test() -> bool {
         let results = Arc::clone(&results);
         crate::task::kernel_thread_builder("epoll-axtest-right".into())
             .spawn(move || {
-                results.lock()[1] = right.add_nested_for_test(2, left).err();
+                results.lock_irqsave()[1] = right.add_nested_for_test(2, left).err();
             })
             .expect("failed to spawn kernel thread")
     };
@@ -72,7 +74,7 @@ fn concurrent_reverse_add_is_serialized_for_test() -> bool {
     right_task.join().expect("failed to join kernel thread");
     EPOLL_ADD_TEST_BARRIER_ENABLED.store(false, Ordering::Release);
 
-    let results = results.lock();
+    let results = results.lock_irqsave();
     matches!(
         results.as_slice(),
         [None, Some(StarryError::FilesystemLoop)] | [Some(StarryError::FilesystemLoop), None]
@@ -248,7 +250,7 @@ impl Pollable for CallbackBoundaryFile {
 struct EpollWaiter {
     epoll: Arc<Epoll>,
     result_index: usize,
-    results: Arc<IrqMutex<[Option<u64>; 2]>>,
+    results: Arc<RawSpinLock<[Option<u64>; 2]>>,
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -260,7 +262,7 @@ impl EpollWaiter {
             Ok(())
         });
         if matches!(result, Ok(1)) {
-            self.results.lock()[self.result_index] = user_data;
+            self.results.lock_irqsave()[self.result_index] = user_data;
         }
     }
 }
@@ -289,7 +291,7 @@ impl PollRegistration for TestPollRegistration {
 #[cfg(all(test, not(axtest)))]
 struct WakeDuringRegisterSource {
     registrations: AtomicUsize,
-    wakers: IrqMutex<Vec<Waker>>,
+    wakers: RawSpinLock<Vec<Waker>>,
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -301,7 +303,7 @@ impl PollSource for WakeDuringRegisterSource {
         _mode: RegistrationMode,
     ) -> Option<Box<dyn PollRegistration>> {
         let previous = {
-            let mut wakers = self.wakers.lock();
+            let mut wakers = self.wakers.lock_irqsave();
             let previous = wakers.last().cloned();
             wakers.push(waker.clone());
             previous
@@ -330,7 +332,7 @@ impl WakeDuringRegisterFile {
             callback_reentered_file: AtomicBool::new(false),
             source: WakeDuringRegisterSource {
                 registrations: AtomicUsize::new(0),
-                wakers: IrqMutex::new(Vec::new()),
+                wakers: RawSpinLock::new(Vec::new()),
             },
         })
     }
@@ -383,7 +385,7 @@ fn wake_during_registration_is_deferred_for_test() -> bool {
     let waiter = Arc::new(EpollWaiter {
         epoll: epoll.clone(),
         result_index: 0,
-        results: Arc::new(IrqMutex::new([None, None])),
+        results: Arc::new(RawSpinLock::new([None, None])),
     });
     let waker = Waker::from(waiter);
     let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
@@ -398,7 +400,7 @@ fn level_aliases_are_both_delivered_for_test() -> bool {
     let epoll = Arc::new(Epoll::new());
     let target = ReadyFile::new();
     let target_file: Arc<dyn FileLike> = target.clone();
-    let results = Arc::new(IrqMutex::new([None, None]));
+    let results = Arc::new(RawSpinLock::new([None, None]));
 
     epoll
         .add_file_for_test(1, target_file.clone(), 0x11, EpollFlags::empty())
@@ -423,7 +425,7 @@ fn level_aliases_are_both_delivered_for_test() -> bool {
     target.make_ready();
     epoll.flush_ready_waiters_for_test();
     matches!(
-        results.lock().as_slice(),
+        results.lock_irqsave().as_slice(),
         [Some(0x11), Some(0x22)] | [Some(0x22), Some(0x11)]
     )
 }
@@ -448,9 +450,7 @@ fn exclusive_aliases_publish_only_one_interest_for_test() -> bool {
             user_data.push(event.data);
             Ok(())
         })
-        .is_ok_and(|count| {
-            count == 1 && matches!(user_data.as_slice(), [0x51] | [0x52])
-        })
+        .is_ok_and(|count| count == 1 && matches!(user_data.as_slice(), [0x51] | [0x52]))
 }
 
 #[cfg(all(test, not(axtest)))]

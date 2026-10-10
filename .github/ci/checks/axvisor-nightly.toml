@@ -7,12 +7,16 @@ default_runner = "qcs"
 # from `axvisor.toml` so the default main CI matrix never schedules them.
 # Every check in a `nightly` manifest is nightly-only by construction; do not
 # add a `nightly_only = true` field.
+#
+# The case files for these checks live under `apps/axvisor/`; commands select
+# them by `--board`/`--test-case` name, so no command embeds the path.
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
 runner = "board"
+cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
@@ -45,6 +49,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux PCI network ping"
 runner = "board"
+cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
@@ -57,31 +62,26 @@ board = "orangepi-5-plus-linux"
 cases = ["ping"]
 
 [[check]]
-id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
+id = "test-orangepi-5-plus-robot-real-suite"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
-name = "Board OrangePi 5 Plus robot USB · AxVisor StarryOS guest full robot control"
+name = "Board OrangePi 5 Plus robot USB · native, AxVisor StarryOS and Linux guests"
 runner = "board"
+cache_key = ""
 resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
-cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
-cargo xtask axvisor test board --board orangepi-5-plus-robot-real-starry
+cargo xtask starry test board --board orangepi-5-plus-robot-real
+cargo xtask axvisor test board \
+  --board orangepi-5-plus-robot-real-starry,orangepi-5-plus-robot-real-linux
 '''
+
+[[check.suite]]
+kind = "starry-board"
+board = "orangepi-5-plus-robot-real"
 
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-real-starry"
-
-[[check]]
-id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus robot USB · AxVisor Linux guest full robot control"
-runner = "board"
-resource_group = "orangepi-5-plus-robot"
-timeout_minutes = 90
-command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-robot-real-linux
-'''
 
 [[check.suite]]
 kind = "axvisor-board"

@@ -18,7 +18,7 @@ use crate::{
     StarryError,
     mm::UserPtr,
     pseudofs::DeviceOps,
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
     task::UserTaskRef,
 };
 
@@ -77,20 +77,20 @@ struct Attachment {
 }
 
 pub(super) struct TunFile {
-    attachment: IrqMutex<Option<Attachment>>,
+    attachment: RawSpinLock<Option<Attachment>>,
 }
 
 impl TunFile {
     pub(super) fn new() -> Self {
         Self {
-            attachment: IrqMutex::new(None),
+            attachment: RawSpinLock::new(None),
         }
     }
 
     fn attached(&self) -> VfsResult<Attachment> {
         // Linux answers EBADFD, which the VFS error set cannot express.
         self.attachment
-            .lock()
+            .lock_irqsave()
             .clone()
             .ok_or(VfsError::BadFileDescriptor)
     }
@@ -98,12 +98,12 @@ impl TunFile {
     fn set_iff(&self, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
         let mut ifr = UserPtr::<Ifreq>::from(arg).read(current)?;
         let _control = TUN_CONTROL.lock();
-        if self.attachment.lock().is_some() {
+        if self.attachment.lock_irqsave().is_some() {
             return Err(VfsError::AlreadyExists);
         }
         let attachment = attach(current, ifreq_name(&ifr)?, ifreq_flags(&ifr))?;
         set_ifreq_name(&mut ifr, attachment.shared.name());
-        *self.attachment.lock() = Some(attachment);
+        *self.attachment.lock_irqsave() = Some(attachment);
         // As in Linux, a fault while copying the name back keeps the attachment.
         UserPtr::<Ifreq>::from(arg).write(current, ifr)?;
         Ok(0)
@@ -185,7 +185,10 @@ fn attach(current: &UserTaskRef, name: &str, flags: u16) -> VfsResult<Attachment
 /// The name `__tun_chr_ioctl` sees after terminating it at `IFNAMSIZ - 1`.
 fn ifreq_name(ifr: &Ifreq) -> VfsResult<&str> {
     let name = &ifr.name[..IFNAMSIZ - 1];
-    let len = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+    let len = name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(name.len());
     core::str::from_utf8(&name[..len]).map_err(|_| VfsError::InvalidInput)
 }
 
@@ -201,9 +204,9 @@ fn set_ifreq_name(ifr: &mut Ifreq, name: &str) {
 /// `skb->protocol` of a routed frame, reported to readers in `tun_pi`.
 fn frame_protocol(kind: InterfaceKind, frame: &[u8]) -> u16 {
     match kind {
-        InterfaceKind::Tap => frame
-            .get(12..14)
-            .map_or(0, |ethertype| u16::from_be_bytes([ethertype[0], ethertype[1]])),
+        InterfaceKind::Tap => frame.get(12..14).map_or(0, |ethertype| {
+            u16::from_be_bytes([ethertype[0], ethertype[1]])
+        }),
         _ => match frame.first().map(|byte| byte >> 4) {
             Some(6) => ETH_P_IPV6,
             _ => ETH_P_IP,
@@ -262,7 +265,8 @@ impl DeviceOps for TunFile {
     fn ioctl(&self, current: &UserTaskRef, cmd: u32, arg: usize) -> VfsResult<usize> {
         match cmd {
             TUNGETFEATURES => {
-                UserPtr::<u32>::from(arg).write(current, u32::from(IFF_TUN | IFF_TAP | TUN_FEATURES))?;
+                UserPtr::<u32>::from(arg)
+                    .write(current, u32::from(IFF_TUN | IFF_TAP | TUN_FEATURES))?;
                 Ok(0)
             }
             TUNSETIFF => self.set_iff(current, arg),
@@ -295,7 +299,7 @@ impl DeviceOps for TunFile {
 
     fn close(&self, _exclusive: bool) {
         let _control = TUN_CONTROL.lock();
-        let Some(attachment) = self.attachment.lock().take() else {
+        let Some(attachment) = self.attachment.lock_irqsave().take() else {
             return;
         };
         let shared = attachment.shared;

@@ -6,8 +6,7 @@ use core::{
 
 use super::reclaim;
 use crate::os::{
-    BlockNotification, BlockRuntimeOps, BlockThread, monotonic_time, runtime_ops,
-    sync::SleepMutex as Mutex,
+    BlockNotification, BlockRuntimeOps, BlockThread, monotonic_time, runtime_ops, sync::Mutex,
 };
 
 const PERIODIC_WRITEBACK_INTERVAL: Duration = Duration::from_secs(30);

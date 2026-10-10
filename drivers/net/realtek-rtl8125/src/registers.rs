@@ -402,17 +402,17 @@ impl Regs {
         );
     }
 
-    /// Programs the accept filter. `accept_all_phys` additionally accepts every
-    /// physical unicast address, which a hypervisor bridging guest MACs through
-    /// this single NIC opts into; the host default stays "accept only my MAC".
-    pub fn set_rx_accept_mode(&self, accept_all_phys: bool) {
-        let all_phys = if accept_all_phys {
+    /// Programs the unicast accept filter while retaining broadcast and
+    /// multicast. The generic receive-mode control maps its all-unicast mode
+    /// to this register bit.
+    pub fn set_rx_accept_all_unicast(&self, enabled: bool) {
+        let all_unicast = if enabled {
             RX_CONFIG::ACCEPT_ALL_PHYS::SET
         } else {
             RX_CONFIG::ACCEPT_ALL_PHYS::CLEAR
         };
         self.regs().rx_config.modify(
-            all_phys
+            all_unicast
                 + RX_CONFIG::ACCEPT_MY_PHYS::SET
                 + RX_CONFIG::ACCEPT_MULTICAST::SET
                 + RX_CONFIG::ACCEPT_BROADCAST::SET,

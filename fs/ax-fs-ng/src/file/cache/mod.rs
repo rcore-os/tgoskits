@@ -1,7 +1,13 @@
+mod backing;
+mod fill;
+mod mapping;
+mod pages;
+mod read;
 mod readahead;
 #[cfg(feature = "vfs")]
 mod reclaim;
 mod resize;
+mod update;
 mod writeback;
 #[cfg(feature = "vfs")]
 mod writeback_worker;
@@ -17,20 +23,22 @@ use core::{
 
 use ax_io::prelude::*;
 use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
-use lru::LruCache;
+use pages::CachedPages;
 use readahead::ReadAheadState;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 #[cfg(feature = "vfs")]
 pub(crate) use writeback_worker::start_background_writeback;
 
-use super::page::PageCache;
+use super::page::{CachedPageBacking, PageCache};
 use crate::os::{
     memory::PAGE_SIZE,
-    sync::{SleepMutex as Mutex, SleepMutexGuard},
+    sync::{Mutex, MutexGuard},
 };
 
-const DISK_PAGE_CACHE_CAP: usize = 512;
+const MIN_DISK_PAGE_CACHE_PAGES: usize = 512;
+const MAX_DISK_PAGE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const DISK_PAGE_CACHE_CAP: usize = MIN_DISK_PAGE_CACHE_PAGES;
 const DIRTY_PAGE_BACKGROUND_WATERMARK: usize = DISK_PAGE_CACHE_CAP * 3 / 4;
 #[cfg(feature = "vfs")]
 const DIRTY_PAGE_HARD_WATERMARK: usize = DISK_PAGE_CACHE_CAP * 7 / 8;
@@ -223,18 +231,23 @@ pub trait CacheMappingEndpoint: Send + Sync {
 
 /// A transient, typed pin on one page-cache frame.
 ///
-/// The cache index remains the physical owner.  The pin only prevents reclaim
-/// or truncate from detaching that owner while a caller publishes a PTE; it
-/// never exposes mutable page data outside the cache lock.
+/// Prevents reclaim or truncate from detaching the indexed page during PTE
+/// publication. Its independently retained backing can outlive this transient
+/// pin without blocking subsequent mapping invalidation or cache eviction.
 pub struct CachedPagePin {
     shared: Arc<CachedFileShared>,
     page_number: u32,
     paddr: usize,
+    backing: CachedPageBacking,
 }
 
 impl CachedPagePin {
     pub const fn paddr(&self) -> usize {
         self.paddr
+    }
+
+    pub fn backing(&self) -> CachedPageBacking {
+        self.backing.clone()
     }
 }
 
@@ -251,6 +264,13 @@ impl Drop for CachedPagePin {
             );
             return;
         };
+        if !page.matches_backing(&self.backing) {
+            warn!(
+                "cached page identity changed before pin release for page {}",
+                self.page_number
+            );
+            return;
+        }
         if page.pins == 0 {
             warn!("cached page pin underflow for page {}", self.page_number);
             return;
@@ -269,7 +289,7 @@ impl Drop for CachedPagePin {
 /// publication barrier and retry instead.
 struct MappingUpdateGuard<'a> {
     shared: &'a CachedFileShared,
-    _layout: SleepMutexGuard<'a, ()>,
+    _layout: MutexGuard<'a, ()>,
 }
 
 #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -285,9 +305,12 @@ impl Drop for MappingUpdateGuard<'_> {
 
 struct CachedFileShared {
     identity: CachedFileIdentity,
-    page_cache: Mutex<LruCache<u32, PageCache>>,
+    page_cache: Mutex<CachedPages>,
+    pending_fills: fill::PendingFills,
+    updating: AtomicBool,
     mapping_layout_lock: Mutex<()>,
     io_lock: Mutex<()>,
+    writeback_lock: Mutex<()>,
     mapping_endpoint: Mutex<Option<Weak<dyn CacheMappingEndpoint>>>,
     backing: Option<FileNode>,
     len: AtomicU64,
@@ -309,11 +332,12 @@ impl CachedFileShared {
     pub fn new(len: u64, backing: FileNode) -> Self {
         Self {
             identity: CachedFileIdentity::allocate(),
-            page_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(DISK_PAGE_CACHE_CAP).unwrap(),
-            )),
+            page_cache: Mutex::new(CachedPages::new(Self::disk_reclaim_target(len))),
+            pending_fills: fill::PendingFills::new(),
+            updating: AtomicBool::new(false),
             mapping_layout_lock: Mutex::new(()),
             io_lock: Mutex::new(()),
+            writeback_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
             backing: Some(backing),
             len: AtomicU64::new(len),
@@ -332,9 +356,12 @@ impl CachedFileShared {
     pub fn new_unbounded(len: u64) -> Self {
         Self {
             identity: CachedFileIdentity::allocate(),
-            page_cache: Mutex::new(LruCache::unbounded()),
+            page_cache: Mutex::new(CachedPages::unbounded()),
+            pending_fills: fill::PendingFills::new(),
+            updating: AtomicBool::new(false),
             mapping_layout_lock: Mutex::new(()),
             io_lock: Mutex::new(()),
+            writeback_lock: Mutex::new(()),
             mapping_endpoint: Mutex::new(None),
             backing: None,
             len: AtomicU64::new(len),
@@ -361,7 +388,10 @@ impl CachedFileShared {
                 .len
                 .compare_exchange_weak(current, len, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => break,
+                Ok(_) => {
+                    self.update_disk_reclaim_target(len);
+                    break;
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -392,6 +422,41 @@ impl CachedFileShared {
 
     fn set_len(&self, len: u64) {
         self.len.store(len, Ordering::Release);
+        self.update_disk_reclaim_target(len);
+    }
+
+    fn disk_reclaim_target(len: u64) -> NonZeroUsize {
+        let pages = len
+            .min(MAX_DISK_PAGE_CACHE_BYTES)
+            .div_ceil(PAGE_SIZE as u64) as usize;
+        NonZeroUsize::new(pages.max(DISK_PAGE_CACHE_CAP))
+            .expect("the minimum file-cache retention is nonzero")
+    }
+
+    fn update_disk_reclaim_target(&self, len: u64) {
+        if self.backing.is_some() {
+            self.page_cache
+                .lock()
+                .set_reclaim_target(Self::disk_reclaim_target(len));
+        }
+    }
+
+    fn detach_clean_capacity_victim(&self, cache: &mut CachedPages) -> Option<PageCache> {
+        // Endpoint publication and page pinning remain excluded until the
+        // unmapped clean owner has been detached from the cache index.
+        let installed = self.mapping_endpoint.lock();
+        let can_evict = cache.len() >= cache.cap().get()
+            && !installed
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.strong_count() != 0)
+            && cache
+                .peek_lru()
+                .is_some_and(|(_, page)| !page.dirty && page.pins == 0);
+        if can_evict {
+            cache.pop_lru().map(|(_, page)| page)
+        } else {
+            None
+        }
     }
 
     fn backing(&self) -> VfsResult<&FileNode> {
@@ -865,7 +930,7 @@ impl CachedFile {
             // tail beyond the read length so a partial last page never exposes stale
             // physical memory past EOF — POSIX/Linux require those bytes to read as 0
             // (e.g. an mmap of a 100-byte file must see `[100, PAGE_SIZE)` as zero).
-            let read = file.read_at(page.data(), pn as u64 * PAGE_SIZE as u64)?;
+            let read = file.read_at(&mut page.data(), pn as u64 * PAGE_SIZE as u64)?;
             page.data()[read..].fill(0);
         }
         Ok(page)
@@ -895,130 +960,45 @@ impl CachedFile {
         }
 
         let mut prepared = self.prepare_cache_page(file, pn, read_backing)?;
-        let (result, retired) = loop {
+        let (result, retired) = {
             let mut cache = self.shared.page_cache.lock();
-            if cache.contains(&pn) {
-                let page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
+            if let Some(page) = cache.get_mut(&pn) {
                 let result = update.take().ok_or(VfsError::BadState)?(page, false);
-                break (result, Some(prepared));
+                (result, Some(prepared))
             } else {
-                // The endpoint publication lock is held across the capacity
-                // decision and the eviction it authorizes. Reading the proof
-                // once, or re-reading it after the LRU writeback, misses a
-                // mapping installed while that backing I/O was in flight, and
-                // the eviction it then authorizes detaches frames whose page
-                // tables were never retired.
-                let _publication = if cache.len() >= cache.cap().get() {
-                    let publication = self.shared.mapping_endpoint.lock();
-                    if publication
-                        .as_ref()
-                        .is_some_and(|owner| owner.strong_count() != 0)
-                    {
-                        drop(cache);
-                        drop(prepared);
-                        return Err(VfsError::ResourceBusy);
-                    }
-                    let Some((_, victim)) = cache.peek_lru() else {
-                        drop(cache);
-                        drop(prepared);
-                        return Err(VfsError::BadState);
-                    };
-                    if victim.pins != 0 {
-                        drop(cache);
-                        drop(prepared);
-                        return Err(VfsError::ResourceBusy);
-                    }
-                    if victim.dirty {
-                        drop(cache);
-                        drop(publication);
-                        self.shared.writeback_lru_for_capacity_locked()?;
-                        continue;
-                    }
-                    Some(publication)
-                } else {
-                    None
-                };
-
+                let retired = self.shared.detach_clean_capacity_victim(&mut cache);
                 let result = update.take().ok_or(VfsError::BadState)?(&mut prepared, true);
-                let retired = cache.push(pn, prepared).map(|(_, page)| page);
-                break (result, retired);
+                let replaced = cache.put(pn, prepared);
+                debug_assert!(replaced.is_none(), "cache insertion holds index exclusion");
+                (result, retired)
             }
         };
         drop(retired);
         Ok(result)
     }
 
-    /// Loads one bounded contiguous cache window beginning at `pn`.
-    ///
-    /// The caller holds `io_lock`, so page-cache writers cannot race the
-    /// backing read. The cache lock is deliberately released while the backing
-    /// filesystem blocks on IRQ-driven I/O.
-    fn populate_page_window(&self, file: &FileNode, pn: u32, window_pages: usize) -> VfsResult<()> {
-        if self.in_memory {
-            self.with_page_or_insert(file, pn, false, |_, _| {})?;
-            return Ok(());
-        }
+    fn ensure_page_locked(&self, file: &FileNode, pn: u32, read_backing: bool) -> VfsResult<()> {
+        self.with_page_or_insert(file, pn, read_backing, |_, _| {})
+    }
 
-        let file_len = self.shared.len();
-        let first_page = u64::from(pn);
-        let file_pages = file_len.div_ceil(PAGE_SIZE as u64);
-        if first_page >= file_pages {
-            return Err(VfsError::InvalidInput);
-        }
-
-        let max_pages = window_pages.max(1);
-        let candidate_end = first_page
-            .saturating_add(max_pages as u64)
-            .min(file_pages)
-            .min(u64::from(u32::MAX) + 1);
-        let run_pages = {
-            let guard = self.shared.page_cache.lock();
-            if guard.contains(&pn) {
-                return Ok(());
+    fn insert_prepared_page_locked(
+        &self,
+        _file: &FileNode,
+        pn: u32,
+        prepared: PageCache,
+    ) -> VfsResult<()> {
+        let retired = {
+            let mut cache = self.shared.page_cache.lock();
+            if cache.contains(&pn) {
+                Some(prepared)
+            } else {
+                let retired = self.shared.detach_clean_capacity_victim(&mut cache);
+                let replaced = cache.put(pn, prepared);
+                debug_assert!(replaced.is_none(), "cache insertion holds index exclusion");
+                retired
             }
-            let mut page = first_page;
-            while page < candidate_end {
-                let page_number = u32::try_from(page).map_err(|_| VfsError::InvalidInput)?;
-                if guard.contains(&page_number) {
-                    break;
-                }
-                page += 1;
-            }
-            usize::try_from(page - first_page).map_err(|_| VfsError::InvalidInput)?
         };
-        if run_pages == 0 {
-            return Ok(());
-        }
-
-        let run_len = run_pages
-            .checked_mul(PAGE_SIZE)
-            .ok_or(VfsError::InvalidInput)?;
-        let mut data = Vec::new();
-        data.try_reserve_exact(run_len)
-            .map_err(|_| VfsError::NoMemory)?;
-        data.resize(run_len, 0);
-        let file_offset = first_page
-            .checked_mul(PAGE_SIZE as u64)
-            .ok_or(VfsError::InvalidInput)?;
-        let readable = usize::try_from(file_len.saturating_sub(file_offset))
-            .unwrap_or(usize::MAX)
-            .min(run_len);
-        file.read_at(&mut data[..readable], file_offset)?;
-
-        for index in 0..run_pages {
-            let page_number = pn
-                .checked_add(u32::try_from(index).map_err(|_| VfsError::InvalidInput)?)
-                .ok_or(VfsError::InvalidInput)?;
-            if self.shared.page_cache.lock().contains(&page_number) {
-                continue;
-            }
-            let start = index * PAGE_SIZE;
-            self.with_page_or_insert(file, page_number, false, |page, installed| {
-                if installed {
-                    page.data().copy_from_slice(&data[start..start + PAGE_SIZE]);
-                }
-            })?;
-        }
+        drop(retired);
         Ok(())
     }
 
@@ -1061,7 +1041,7 @@ impl CachedFile {
         {
             return Err(VfsError::ResourceBusy);
         }
-        let _io = self.shared.io_lock.lock();
+        self.populate_page_window(self.inner.entry().as_file()?, pn, 1)?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1069,16 +1049,33 @@ impl CachedFile {
         {
             return Err(VfsError::ResourceBusy);
         }
-        self.populate_page_window(self.inner.entry().as_file()?, pn, 1)?;
         self.pin_cached_page(pn)
     }
 
     fn begin_mapping_update(&self) -> VfsResult<MappingUpdateGuard<'_>> {
+        self.begin_mapping_update_inner(true)
+    }
+
+    fn begin_mapping_reclaim(&self) -> VfsResult<MappingUpdateGuard<'_>> {
+        // Reclaim changes only cache ownership, not file contents. An active
+        // fill cannot cover an indexed candidate: admission stops before the
+        // first cached page, and the I/O lock serializes its publication with
+        // candidate detachment. Keep unrelated fills valid across eviction.
+        self.begin_mapping_update_inner(false)
+    }
+
+    fn begin_mapping_update_inner(
+        &self,
+        invalidate_fills: bool,
+    ) -> VfsResult<MappingUpdateGuard<'_>> {
         let layout = self.shared.mapping_layout_lock.lock();
         self.shared
             .mapping_update_in_progress
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| VfsError::ResourceBusy)?;
+        if invalidate_fills {
+            self.shared.pending_fills.invalidate();
+        }
         Ok(MappingUpdateGuard {
             shared: &self.shared,
             _layout: layout,
@@ -1100,6 +1097,7 @@ impl CachedFile {
             shared: self.shared.clone(),
             page_number: pn,
             paddr,
+            backing: page.backing(),
         })
     }
 
@@ -1114,81 +1112,40 @@ impl CachedFile {
             shared: self.shared.clone(),
             page_number: pn,
             paddr,
+            backing: page.backing(),
         }))
     }
 
-    /// Reads data from the file at `offset` into `dst`.
-    pub fn read_at(&self, mut dst: impl Write + IoBufMut, offset: u64) -> VfsResult<usize> {
-        let len = self.shared.len();
-        let end = offset.saturating_add(dst.remaining_mut() as u64).min(len);
-        if end <= offset {
-            return Ok(0);
-        }
-        let window_pages = if self.in_memory {
-            1
-        } else {
-            self.readahead.lock().plan(offset, end).window_pages
-        };
-
-        let file = self.inner.entry().as_file()?;
-        let mut scratch = PageCache::new()?;
-        let mut read = 0;
-        let mut current = offset;
-        while current < end {
-            let chunk_len = {
-                let _layout = self.shared.mapping_layout_lock.lock();
-                // A preceding user copy may have faulted or slept while a
-                // truncate committed. Resample EOF before each cache snapshot.
-                let visible_end = end.min(self.shared.len());
-                if current >= visible_end {
-                    break;
-                }
-                let pn = (current / PAGE_SIZE as u64) as u32;
-                let page_start = pn as u64 * PAGE_SIZE as u64;
-                let page_offset = (current - page_start) as usize;
-                let chunk_len =
-                    (visible_end - page_start).min(PAGE_SIZE as u64) as usize - page_offset;
-                let _io = self.shared.io_lock.lock();
-                self.populate_page_window(file, pn, window_pages)?;
-                let mut guard = self.shared.page_cache.lock();
-                let page = guard.get_mut(&pn).ok_or(VfsError::BadState)?;
-                scratch.data()[..chunk_len]
-                    .copy_from_slice(&page.data()[page_offset..page_offset + chunk_len]);
-                chunk_len
-            };
-
-            // `dst` may point at user memory. Copy after releasing cached-file
-            // locks so a user page fault can take AddrSpace without creating a
-            // cached-I/O -> AddrSpace lock order.
-            dst.write_all(&scratch.data()[..chunk_len])
-                .map_err(crate::io_error_to_vfs_error)?;
-            read += chunk_len;
-            current += chunk_len as u64;
-        }
-
-        Ok(read)
-    }
-
-    fn write_at_locked(&self, mut buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
+    fn write_at_locked(
+        &self,
+        mut buf: impl Read + IoBuf,
+        offset: u64,
+        update: &mut update::CacheUpdateGuard<'_>,
+    ) -> VfsResult<usize> {
         self.shared.ensure_writeback_owner_active()?;
         let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
         if end > old_len {
-            let next_epoch = self.shared.prepare_mapping_epoch()?;
-            if !old_len.is_multiple_of(PAGE_SIZE as u64) {
-                let page_number = (old_len / PAGE_SIZE as u64) as u32;
-                let page_start = u64::from(page_number) * PAGE_SIZE as u64;
-                self.zero_partial_page_locked(
-                    file,
-                    page_number,
-                    (old_len - page_start) as usize,
-                    (end - page_start).min(PAGE_SIZE as u64) as usize,
-                )?;
-            }
-            file.set_len(end)?;
-            self.shared.update_len_max(end);
-            self.shared.publish_mapping_epoch(next_epoch);
+            update.without_io(|| -> VfsResult<()> {
+                let _writeback = self.shared.writeback_lock.lock();
+                let _update = self.shared.lock_for_update();
+                let next_epoch = self.shared.prepare_mapping_epoch()?;
+                if !old_len.is_multiple_of(PAGE_SIZE as u64) {
+                    let page_number = (old_len / PAGE_SIZE as u64) as u32;
+                    let page_start = u64::from(page_number) * PAGE_SIZE as u64;
+                    self.zero_partial_page_locked(
+                        file,
+                        page_number,
+                        (old_len - page_start) as usize,
+                        (end - page_start).min(PAGE_SIZE as u64) as usize,
+                    )?;
+                }
+                file.set_len(end)?;
+                self.shared.update_len_max(end);
+                self.shared.publish_mapping_epoch(next_epoch);
+                Ok(())
+            })?;
         }
 
         let mut scratch = PageCache::new()?;
@@ -1216,7 +1173,7 @@ impl CachedFile {
                 }
             })?;
             if !self.in_memory {
-                self.shared.balance_dirty_pages_locked()?;
+                update.without_io(|| self.shared.balance_dirty_pages(end > old_len))?;
             }
 
             written += n;
@@ -1229,16 +1186,16 @@ impl CachedFile {
     /// Writes `buf` to the file at `offset`.
     pub fn write_at(&self, buf: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
         let _layout = self.shared.mapping_layout_lock.lock();
-        let _io = self.shared.io_lock.lock();
-        self.write_at_locked(buf, offset)
+        let mut update = self.shared.lock_for_update();
+        self.write_at_locked(buf, offset, &mut update)
     }
 
     /// Appends `buf` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, buf: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
         let _layout = self.shared.mapping_layout_lock.lock();
-        let _io = self.shared.io_lock.lock();
+        let mut update = self.shared.lock_for_update();
         let len = self.shared.len();
-        self.write_at_locked(buf, len)
+        self.write_at_locked(buf, len, &mut update)
             .map(|written| (written, len + written as u64))
     }
 

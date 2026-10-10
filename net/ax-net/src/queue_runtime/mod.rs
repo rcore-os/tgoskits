@@ -17,7 +17,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use ax_task::{sched::CpuSet, sync::WaitQueue};
 use irq_framework::IrqId;
 use rd_net::{
@@ -65,14 +65,14 @@ const STATUS_FAILED: u8 = 2;
 const STATUS_EMPTY: u8 = 3;
 
 struct WifiCommandCompletion {
-    result: SpinLock<Option<Result<(), NetError>>>,
+    result: RawSpinLock<Option<Result<(), NetError>>>,
     wait: WaitQueue,
 }
 
 impl WifiCommandCompletion {
     fn new() -> Self {
         Self {
-            result: SpinLock::new(None),
+            result: RawSpinLock::new(None),
             wait: WaitQueue::new(),
         }
     }
@@ -98,14 +98,14 @@ struct WifiControlRequest {
 }
 
 struct WifiControlQueue {
-    requests: SpinLock<VecDeque<WifiControlRequest>>,
+    requests: RawSpinLock<VecDeque<WifiControlRequest>>,
     stopped: AtomicBool,
 }
 
 impl WifiControlQueue {
     fn new() -> Self {
         Self {
-            requests: SpinLock::new(VecDeque::with_capacity(WIFI_CONTROL_QUEUE_CAPACITY)),
+            requests: RawSpinLock::new(VecDeque::with_capacity(WIFI_CONTROL_QUEUE_CAPACITY)),
             stopped: AtomicBool::new(false),
         }
     }
@@ -362,21 +362,17 @@ impl NetworkQueueRuntime {
         self.published_interfaces.get(published_order).copied()
     }
 
-    /// Enables or disables hardware acceptance of every physical unicast
-    /// address on the published interface `id`.
+    /// Applies a receive filtering mode to the published interface `id`.
     ///
     /// The request is routed to that interface's own control endpoint, so the
     /// capability and register window belong to the exact device bound to the
     /// interface: no probe-order or name lookup can flip the filter on another
     /// port. A driver without an address-filter control reports
-    /// [`NetError::NotSupported`]; the caller may then try another interface,
-    /// but a request that succeeds enables the filter on that exact interface,
-    /// so the caller must bridge through it and must not leave the filter on an
-    /// unrelated port.
-    pub fn set_interface_rx_accept_all_phys(
+    /// [`NetError::NotSupported`]; the caller may then try another interface.
+    pub fn set_interface_rx_mode(
         &mut self,
         id: InterfaceId,
-        enabled: bool,
+        mode: rd_net::NetRxMode,
     ) -> Result<(), NetError> {
         let published_order = self
             .published_interfaces
@@ -387,7 +383,7 @@ impl NetworkQueueRuntime {
             ._controls
             .get_mut(published_order)
             .ok_or(NetError::NotSupported)?;
-        control.set_rx_accept_all_phys(enabled)
+        control.set_rx_mode(mode)
     }
 
     /// Binds the interface of every published device, in published order.
@@ -620,7 +616,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 wifi_handles.push(handle);
             }
             controls.push(control);
-            let port_mac = Arc::new(SpinLock::new(info.mac_address));
+            let port_mac = Arc::new(RawSpinLock::new(info.mac_address));
             port_macs.push(Arc::clone(&port_mac));
             ports.push(QueueFramePort {
                 name: port_name,
@@ -647,7 +643,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 startup_status: AtomicU8::new(STATUS_PENDING),
                 prune_status: AtomicU8::new(STATUS_PENDING),
                 publication_status: AtomicU8::new(STATUS_PENDING),
-                startup_error: SpinLock::new(None),
+                startup_error: RawSpinLock::new(None),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
             let mut affinity = CpuSet::empty(topology_len);

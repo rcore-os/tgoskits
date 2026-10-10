@@ -9,6 +9,7 @@ use axdevice_base::{Device, DeviceAccess, DeviceContext, DeviceError, DeviceResu
 use axvirtio_common::pci::{InterruptTransition, InterruptTransitionIntent, VirtioDeviceCore};
 
 use super::{PCI_CFG_EFFECTS, VirtioPciFunction, config::decode_pci_cfg};
+use crate::sync::MutexExt;
 
 impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
     pub(super) fn apply_command_revision(
@@ -16,8 +17,12 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
         command: PciCommandState,
         allow_equal: bool,
     ) -> Option<InterruptTransitionIntent> {
+        // Capture the queue generation before taking the non-sleeping command
+        // revision guard. The transport's register state is a task-sleepable
+        // lock, so it must never be acquired while a spin guard is live.
+        let generation = self.transport.queue_generation();
         let transition = {
-            let mut last = self.command_revision.lock();
+            let mut last = self.command_revision.lock_unpoisoned();
             let revision = command.revision();
             if last.is_some_and(|previous| {
                 revision < previous || (!allow_equal && revision == previous)
@@ -26,7 +31,7 @@ impl<D: VirtioDeviceCore> VirtioPciFunction<D> {
             }
             let transition = self
                 .transport
-                .update_interrupt_disabled_logical(command.interrupt_disable());
+                .update_interrupt_disabled_logical_at(generation, command.interrupt_disable());
             *last = Some(revision);
             transition
         };
@@ -196,5 +201,17 @@ impl<D: VirtioDeviceCore> PciFunction for VirtioPciFunction<D> {
             .complete_interrupt_transition(InterruptTransition::Deassert, true);
         self.transport.complete_reset();
         Ok(())
+    }
+
+    fn suspend(&self) -> DeviceResult {
+        self.transport.core().suspend()
+    }
+
+    fn resume(&self) -> DeviceResult {
+        self.transport.core().resume()
+    }
+
+    fn stop(&self) -> DeviceResult {
+        self.transport.core().stop()
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -10,6 +11,13 @@ use crate::{
     context::resolve_axvisor_arch_and_target,
     test::{board as board_test, qemu as test_qemu, qemu::parse_test_target, suite as test_suite},
 };
+
+/// AxVisor cases are split across two suite trees: the regular
+/// `test-suit/axvisor` tree and the `apps/axvisor` tree that holds the nightly
+/// cases migrated out of `test-suit`. Discovery merges both so functional and
+/// nightly cases stay selectable through the same filters while keeping the
+/// directory split.
+const AXVISOR_MIGRATED_SUITE_ROOT: &str = "apps/axvisor";
 
 pub(crate) fn parse_target(
     arch: &Option<String>,
@@ -32,18 +40,99 @@ pub(crate) fn discover_qemu_cases(
     target: &str,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Vec<AxvisorQemuCase>> {
-    let test_suite_dir = test_suite_dir(workspace_root, group)?;
-    test_qemu::discover_qemu_cases(
-        &test_suite_dir,
-        arch,
-        target,
-        selected_case,
-        "Axvisor",
-        "qemu",
-    )?
-    .into_iter()
-    .map(load_qemu_case)
-    .collect()
+    let roots = group_dirs(workspace_root, group)?;
+    let mut cases = Vec::new();
+    let mut missing_selected_case = None;
+    for root in &roots {
+        match test_qemu::discover_qemu_cases_allow_empty(
+            root,
+            arch,
+            target,
+            selected_case,
+            "Axvisor",
+            "qemu",
+        ) {
+            Ok(found) => {
+                for case in found {
+                    cases.push(load_qemu_case(case)?);
+                }
+            }
+            Err(error) => {
+                // `allow_empty` already reports a root without cases for this
+                // arch/target as `Ok` when no case is selected, so an error here
+                // is a genuine config/scan failure that must propagate. With a
+                // selection the error may instead mean this root simply lacks
+                // the case, which a sibling root may still provide: re-scanning
+                // without a selection reproduces config/scan failures (they do
+                // not depend on the selection) and stays `Ok` for a root that
+                // only misses the case.
+                let missing_from_root = selected_case.is_some()
+                    && test_qemu::discover_qemu_cases_allow_empty(
+                        root, arch, target, None, "Axvisor", "qemu",
+                    )
+                    .is_ok();
+                if !missing_from_root {
+                    return Err(error);
+                }
+                missing_selected_case.get_or_insert(error);
+            }
+        }
+    }
+
+    // A root without the requested case reports an empty selection; surface the
+    // retained error only when no root contributed the case, so a case missing
+    // everywhere still fails instead of silently shrinking coverage.
+    if cases.is_empty()
+        && let Some(error) = missing_selected_case
+    {
+        return Err(error);
+    }
+    Ok(cases)
+}
+
+/// Merge the listed QEMU cases of every suite root for one group.
+///
+/// Missing-case errors are ignorable per root so the nightly cases under
+/// `apps/axvisor` and the functional cases under `test-suit/axvisor` can be
+/// listed together; unexpected errors still propagate.
+pub(super) fn list_all_qemu_cases_with_archs(
+    workspace_root: &Path,
+    group: &str,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<test_qemu::ListedQemuCase>> {
+    let roots = group_dirs(workspace_root, group)?;
+    let mut cases = Vec::new();
+    for root in &roots {
+        match test_qemu::discover_all_qemu_cases_with_archs(root, selected_case, "Axvisor", group) {
+            Ok(found) => cases.extend(found),
+            Err(error) if qemu_list_error_is_ignorable(error.kind()) => {}
+            Err(error) => return Err(anyhow::Error::new(error)),
+        }
+    }
+    Ok(cases)
+}
+
+/// Merge the bare case names of every suite root for one group.
+///
+/// A root that does not provide the group or the selected case is ignorable so
+/// the nightly cases under `apps/axvisor` and the functional cases under
+/// `test-suit/axvisor` list together; any other error surfaces instead of being
+/// dropped.
+pub(super) fn list_all_qemu_cases(
+    workspace_root: &Path,
+    group: &str,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let roots = group_dirs(workspace_root, group)?;
+    let mut cases = Vec::new();
+    for root in &roots {
+        match test_qemu::discover_all_qemu_cases(root, selected_case, "Axvisor", group) {
+            Ok(found) => cases.extend(found),
+            Err(error) if qemu_list_error_is_ignorable(error.kind()) => {}
+            Err(error) => return Err(anyhow::Error::new(error)),
+        }
+    }
+    Ok(cases)
 }
 
 fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<AxvisorQemuCase> {
@@ -74,8 +163,8 @@ fn load_qemu_case(case: test_qemu::DiscoveredQemuCase) -> anyhow::Result<Axvisor
 pub(crate) fn discover_board_test_groups(
     workspace_root: &Path,
     group: &str,
-    selected_case: Option<&str>,
-    board: Option<&str>,
+    selected_cases: &[String],
+    boards: &[String],
 ) -> anyhow::Result<Vec<BoardTestGroup>> {
     let roots = board_test_group_roots(workspace_root, group)?;
     let mut groups = Vec::new();
@@ -87,21 +176,27 @@ pub(crate) fn discover_board_test_groups(
         .map(|dir| dir.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    board_test::filter_board_test_groups(groups, selected_case, board, "axvisor", || {
-        format!("no Axvisor board test groups found under {searched}")
-    })
+    board_test::filter_board_test_groups_by_board_names(
+        groups,
+        selected_cases,
+        boards,
+        "axvisor",
+        || format!("no Axvisor board test groups found under {searched}"),
+    )
 }
 
-/// Suite roots that hold AxVisor board cases. Besides the regular
-/// `test-suit/axvisor/<group>` tree, real board performance cases live under the
-/// `benchmarks/axvisor` tree. The default `normal` group also searches that
-/// root, so performance cases remain selectable through the same
+/// Suite roots that hold AxVisor board cases. Discovery searches each suite
+/// tree (`test-suit/axvisor/<group>` and `apps/axvisor/<group>`), and for the
+/// default `normal` group also the `benchmarks/axvisor` tree that holds the
+/// real board performance cases. All three stay selectable through the same
 /// `--board`/`--test-case` filters.
 fn board_test_group_roots(workspace_root: &Path, group: &str) -> anyhow::Result<Vec<PathBuf>> {
     let mut roots = Vec::new();
-    let test_suit_dir = test_suite::group_dir(workspace_root, AXVISOR_TEST_SUITE_OS, group);
-    if test_suit_dir.is_dir() {
-        roots.push(test_suit_dir);
+    for suite_root in suite_roots(workspace_root) {
+        let group_dir = suite_root.join(group);
+        if group_dir.is_dir() {
+            roots.push(group_dir);
+        }
     }
     if group == AXVISOR_NORMAL_GROUP {
         let benchmark_suite_dir = benchmark_suite_root(workspace_root);
@@ -112,10 +207,18 @@ fn board_test_group_roots(workspace_root: &Path, group: &str) -> anyhow::Result<
     if roots.is_empty() {
         bail!(
             "unsupported Axvisor test group `{group}`. Supported groups are: {}",
-            test_suite::supported_group_names(workspace_root, AXVISOR_TEST_SUITE_OS)?
+            supported_group_names(workspace_root)?
         );
     }
     Ok(roots)
+}
+
+/// Suite trees that hold AxVisor cases, in lookup order.
+fn suite_roots(workspace_root: &Path) -> Vec<PathBuf> {
+    vec![
+        test_suite::suite_root(workspace_root, AXVISOR_TEST_SUITE_OS),
+        workspace_root.join(AXVISOR_MIGRATED_SUITE_ROOT),
+    ]
 }
 
 fn benchmark_suite_root(workspace_root: &Path) -> PathBuf {
@@ -148,12 +251,9 @@ pub(super) fn discover_uboot_test_group(
     guest: &str,
 ) -> anyhow::Result<BoardTestGroup> {
     let board_name = format!("{board}-{guest}");
-    let mut groups = discover_board_test_groups(
-        workspace_root,
-        AXVISOR_NORMAL_GROUP,
-        None,
-        Some(&board_name),
-    )?;
+    let selected_boards = vec![board_name];
+    let mut groups =
+        discover_board_test_groups(workspace_root, AXVISOR_NORMAL_GROUP, &[], &selected_boards)?;
 
     if groups.len() == 1 {
         return Ok(groups.remove(0));
@@ -194,16 +294,49 @@ pub(super) fn ensure_file_exists(path: &Path, label: &str) -> anyhow::Result<()>
     }
 }
 
-pub(super) fn test_suite_dir(workspace_root: &Path, group: &str) -> anyhow::Result<PathBuf> {
-    test_suite::require_group_dir(workspace_root, AXVISOR_TEST_SUITE_OS, "Axvisor", group)
+/// Existing group directories across every AxVisor suite root.
+///
+/// At least one root must provide the group; otherwise the group name is
+/// unsupported.
+pub(super) fn group_dirs(workspace_root: &Path, group: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let dirs = suite_roots(workspace_root)
+        .into_iter()
+        .map(|root| root.join(group))
+        .filter(|dir| dir.is_dir())
+        .collect::<Vec<_>>();
+    if dirs.is_empty() {
+        bail!(
+            "unsupported Axvisor test group `{group}`. Supported groups are: {}",
+            supported_group_names(workspace_root)?
+        );
+    }
+    Ok(dirs)
 }
 
-pub(super) fn test_suite_root(workspace_root: &Path) -> PathBuf {
-    test_suite::suite_root(workspace_root, AXVISOR_TEST_SUITE_OS)
+/// Human-readable list of the AxVisor suite roots for error messages.
+pub(super) fn suite_roots_label(workspace_root: &Path) -> String {
+    suite_roots(workspace_root)
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(super) fn discover_test_group_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
-    test_suite::discover_group_names(workspace_root, AXVISOR_TEST_SUITE_OS)
+    let mut groups = BTreeSet::new();
+    for root in suite_roots(workspace_root) {
+        groups.extend(test_suite::discover_group_names_in_root(&root)?);
+    }
+    Ok(groups.into_iter().collect())
+}
+
+pub(super) fn supported_group_names(workspace_root: &Path) -> anyhow::Result<String> {
+    let groups = discover_test_group_names(workspace_root)?;
+    Ok(if groups.is_empty() {
+        "<none>".to_string()
+    } else {
+        groups.join(", ")
+    })
 }
 
 pub(super) fn qemu_list_error_is_ignorable(kind: test_qemu::ListQemuCasesErrorKind) -> bool {

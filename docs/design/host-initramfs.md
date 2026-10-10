@@ -21,13 +21,14 @@
 | QEMU 直启 | 运行内核前 | AArch64/RISC-V 使用 QEMU `-initrd`、FDT `linux,initrd-start/end`；x86 使用 UEFI ESP 相邻文件，不向裸 ELF 传 Linux x86 boot protocol 参数 |
 | U-Boot FIT | `bootm` 前 | FIT ramdisk 节点和 `bootargs`；someboot 从 FDT 接收物理范围 |
 | UEFI 本地 | `ExitBootServices` 前 | 从启动卷读取 `EFI/BOOT/initramfs.cpio` 和 `cmdline.txt` |
-| axloader v5 HTTP 服务 | 调用方推送 kernel 后 | 调用方按清单向设备推送可选 initramfs；axloader 检查长度和 SHA-256，再以版本化 UEFI 配置表交接 |
+| axloader v5 HTTP 服务 | 调用方推送 kernel 后 | 调用方按清单向设备推送可选 initramfs；axloader 检查长度和 SHA-256，再以 Linux EFI `LoadFile2` 提供者交接 |
 
-UEFI 配置表由 `host-boot-abi::BootPayload` 定义。表自身使用
-`RUNTIME_SERVICES_DATA` pool，归档使用 `LOADER_DATA` 页。someboot 在退出
-Boot Services 前读取配置表或 ESP 文件并记录范围；退出后核对固件内存映射，
-把归档页从可分配内存中预留。配置表和 ESP 的 cmdline 不允许内部 NUL，
-避免内核按 C 字符串读取时静默截断。FDT 范围连同向外扩展的边界页都须处于 RAM，
+Linux EFI initrd 使用 `EFI_LOAD_FILE2_PROTOCOL` 和携带
+`5568e427-68fc-4f3d-ac74-ca555231cc68` 的 `MEDIA/VENDOR` 设备路径。someboot
+在退出 Boot Services 前查找提供者，先查询大小，再把归档复制到 `LOADER_DATA`
+页；找不到提供者时继续回退到 ESP 文件。退出后核对固件内存映射，把归档页从
+可分配内存中预留。ESP 的 cmdline 不允许内部 NUL，避免内核按 C 字符串读取时
+静默截断。FDT 范围连同向外扩展的边界页都须处于 RAM，
 并在初始化页分配器前预留。UEFI 启动以固件内存图为 RAM 来源，FDT 只补充保留区；
 LoongArch 的 UEFI 入口不再次清零已暂存的交接状态。
 `ax-runtime` 解包完成后只把确知归本次镜像所有的完整物理页提交给
@@ -49,9 +50,9 @@ initramfs = "${workspace}/test-suit/host-initramfs.cpio"
 两个字段可以分别省略；它们属于运行配置，不写入 `build-*.toml`。QEMU 直启
 使用 `-append` 和 `-initrd`，x86 UEFI 本地启动使用 ESP 的 `cmdline.txt` 和
 `initramfs.cpio`，U-Boot 使用 `bootargs` 和 FIT ramdisk。ostool v5 推送给
-axloader 时，cmdline 通过 EFI LoadOptions 传给 someboot，initramfs 仍使用
-`BootPayload` 配置表。someboot 的命令行优先级为 EFI LoadOptions、旧
-`BootPayload.cmdline`、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
+axloader 时，cmdline 通过 EFI LoadOptions 传给 someboot，initramfs 通过 Linux
+EFI `LoadFile2` 提供者传递。someboot 的命令行优先级为 EFI LoadOptions、ESP
+`cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 
 ## 3. 根与 PID 1
 

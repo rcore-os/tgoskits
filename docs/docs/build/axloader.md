@@ -77,7 +77,7 @@ sequenceDiagram
 | `DELETE /api/v1/boot/jobs/{id}` | 取消尚未执行的事务 |
 | `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，核对 `X-Serial-Binding`，回复 `202`，关闭网络对象后交接 |
 
-v6 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时才由 `payload::PreparedPayload` 安装 `BootPayload` 配置表。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
+v6 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时由 `payload::PreparedPayload` 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
 
 ### 2.3 OTA 事务
 
@@ -124,7 +124,7 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 3. release 构建启动器、装载器和真实 ArceOS UEFI ELF。
 4. 把启动器、A/B 槽和双状态记录写入真实 FAT 镜像。
 5. 用 `hostfwd` 调用客户机 TCP `2999`，先读取状态并完成 `bound/direct` continue，再覆盖直连启动、OTA、重启确认和回滚。
-6. 在四种可选载荷组合中观察启动后的内核输出。
+6. 在五种可选载荷组合中观察启动后的内核输出。
 
 该流程不会安装 systemd 服务，不会修改 runner、板卡配置或实体设备。宿主需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、`mcopy`、`mmd` 和 `python3`。
 
@@ -135,6 +135,7 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 - 基础场景输出 `Hello, world!`。
 - cmdline 场景输出精确的 `HOST_CMDLINE`。
 - initramfs 场景输出 `HOST_INITRAMFS_PASSED`。
+- initramfs 回退场景验证 ESP 上的 Linux EFI initrd provider。
 - OTA 场景跨 QEMU 启动验证坏摘要、短请求、未确认复位回滚、确认持久化和再次启动。
 
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
@@ -161,12 +162,12 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 
 ### 4.2 启动与恢复
 
-`ready_to_handoff` 后失败时检查 ELF 入口、EFI LoadOptions 和 `BootPayload` 配置表。OTA 复位循环则先读取两份状态记录的代次与校验和，再核对当前槽文件摘要。
+`ready_to_handoff` 后失败时检查 ELF 入口、EFI LoadOptions 和 Linux EFI initrd provider。OTA 复位循环则先读取两份状态记录的代次与校验和，再核对当前槽文件摘要。
 
 | 现象 | 优先检查 |
 | --- | --- |
 | cmdline 缺失 | 清单字段、`PreparedLoadOptions`、someboot 的 EFI image handle 与命令行优先级 |
-| initramfs 缺失 | 清单是否声明归档、上传状态、`BootPayload` 表是否在 ExitBootServices 前读取 |
+| initramfs 缺失 | 清单是否声明归档、上传状态、`LoadFile2` 提供者是否在 ExitBootServices 前读取 |
 | 待试槽重复回滚 | 升级 ID、`OtaSource`、运行摘要和确认请求是否匹配 |
 | 两份状态均无效 | 停止自动启动，使用备份的原装载器和外部介质恢复 |
 

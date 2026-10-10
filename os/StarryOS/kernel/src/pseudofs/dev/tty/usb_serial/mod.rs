@@ -19,7 +19,7 @@ use super::{
 use crate::{
     StarryError, StarryResult,
     pseudofs::usbfs::{self, UsbDeviceHandle},
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
 };
 
 pub type UsbSerialTtyDriver = Tty<UsbSerialReader, UsbSerialWriter>;
@@ -55,8 +55,8 @@ struct UsbSerialBackendState {
     session_closing: AtomicBool,
     rx_worker_started: AtomicBool,
     tx_worker_started: AtomicBool,
-    rx_queue: IrqMutex<VecDeque<u8>>,
-    tx_queue: IrqMutex<VecDeque<u8>>,
+    rx_queue: RawSpinLock<VecDeque<u8>>,
+    tx_queue: RawSpinLock<VecDeque<u8>>,
     dropped_rx: AtomicUsize,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
@@ -92,8 +92,8 @@ fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
         session_closing: AtomicBool::new(false),
         rx_worker_started: AtomicBool::new(false),
         tx_worker_started: AtomicBool::new(false),
-        rx_queue: IrqMutex::new(VecDeque::new()),
-        tx_queue: IrqMutex::new(VecDeque::new()),
+        rx_queue: RawSpinLock::new(VecDeque::new()),
+        tx_queue: RawSpinLock::new(VecDeque::new()),
         dropped_rx: AtomicUsize::new(0),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
@@ -221,7 +221,7 @@ impl UsbSerialBackendState {
     }
 
     fn push_tx_bytes(&self, buf: &[u8]) -> usize {
-        let mut queue = self.tx_queue.lock();
+        let mut queue = self.tx_queue.lock_irqsave();
         let space = USB_SERIAL_TX_QUEUE_CAP.saturating_sub(queue.len());
         let queued = buf.len().min(space);
         queue.extend(buf[..queued].iter().copied());
@@ -229,7 +229,7 @@ impl UsbSerialBackendState {
     }
 
     fn pop_tx_chunk(&self) -> Vec<u8> {
-        let mut queue = self.tx_queue.lock();
+        let mut queue = self.tx_queue.lock_irqsave();
         let len = queue.len().min(USB_SERIAL_TX_CHUNK);
         let mut chunk = Vec::with_capacity(len);
         for _ in 0..len {
@@ -241,14 +241,14 @@ impl UsbSerialBackendState {
     }
 
     fn requeue_tx_front(&self, bytes: &[u8]) {
-        let mut queue = self.tx_queue.lock();
+        let mut queue = self.tx_queue.lock_irqsave();
         for &byte in bytes.iter().rev() {
             queue.push_front(byte);
         }
     }
 
     fn clear_tx_queue(&self) {
-        self.tx_queue.lock().clear();
+        self.tx_queue.lock_irqsave().clear();
         unsafe { self.output_source.wake(IoEvents::OUT) };
     }
 
@@ -291,7 +291,7 @@ impl UsbSerialBackendState {
     }
 
     fn drain_rx(&self, buf: &mut [u8]) -> usize {
-        let mut queue = self.rx_queue.lock();
+        let mut queue = self.rx_queue.lock_irqsave();
         let count = buf.len().min(queue.len());
         for slot in buf.iter_mut().take(count) {
             *slot = queue
@@ -307,7 +307,7 @@ impl UsbSerialBackendState {
         }
         let mut dropped = 0usize;
         {
-            let mut queue = self.rx_queue.lock();
+            let mut queue = self.rx_queue.lock_irqsave();
             for &byte in bytes {
                 if queue.len() < USB_SERIAL_RX_QUEUE_CAP {
                     queue.push_back(byte);
@@ -364,7 +364,7 @@ impl UsbSerialBackendState {
 
         if dropped.is_some() {
             self.started.store(false, Ordering::Release);
-            self.rx_queue.lock().clear();
+            self.rx_queue.lock_irqsave().clear();
             self.clear_tx_queue();
             unsafe { self.input_source.wake(IoEvents::IN) };
         }
@@ -465,7 +465,7 @@ impl UsbSerialBackendState {
                     backend.tx_worker_started.store(false, Ordering::Release);
                     // Avoid a lost wakeup: if a producer queued more bytes after
                     // the queue was drained, take the worker flag again and loop.
-                    if backend.tx_queue.lock().is_empty()
+                    if backend.tx_queue.lock_irqsave().is_empty()
                         || backend
                             .tx_worker_started
                             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -488,7 +488,7 @@ impl TtyRead for UsbSerialReader {
     }
 
     fn discard_input(&mut self) -> StarryResult<()> {
-        self.backend.rx_queue.lock().clear();
+        self.backend.rx_queue.lock_irqsave().clear();
         Ok(())
     }
 }

@@ -5,7 +5,7 @@
 //! one allocation transaction so the two reservation classes cannot alias.
 
 use super::hw_owner::Counter;
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 struct HwAlloc {
     flexible: [u32; super::percpu::MAX_TRACKED_CPUS],
@@ -57,16 +57,16 @@ impl HwAlloc {
     }
 }
 
-static ALLOC: IrqMutex<HwAlloc> = IrqMutex::new(HwAlloc::new());
+static ALLOC: RawSpinLock<HwAlloc> = RawSpinLock::new(HwAlloc::new());
 
 pub(super) fn alloc_cycle_counter() -> Option<Counter> {
-    ALLOC.lock().alloc_cycle()
+    ALLOC.lock_irqsave().alloc_cycle()
 }
 
 /// Reserves only the native cycle counter on one CPU. If occupied, callers
 /// construct a flexible logical event instead of reserving a fixed 32-bit slot.
 pub(super) fn alloc_system_cycle(cpu: super::target::PerfCpuId) -> Option<Counter> {
-    ALLOC.lock().alloc_system(cpu.as_usize(), true, 0)
+    ALLOC.lock_irqsave().alloc_system(cpu.as_usize(), true, 0)
 }
 
 pub(super) fn free_counter(counter: Counter) {
@@ -75,7 +75,7 @@ pub(super) fn free_counter(counter: Counter) {
         Counter::Cycle,
         "only native cycles have task-fixed reservations"
     );
-    let mut allocator = ALLOC.lock();
+    let mut allocator = ALLOC.lock_irqsave();
     assert!(allocator.cycle_used, "task cycle reservation must be owned");
     allocator.cycle_used = false;
 }
@@ -94,7 +94,7 @@ pub(super) fn alloc_system(
         return Err(crate::StarryError::Unsupported);
     }
     ALLOC
-        .lock()
+        .lock_irqsave()
         .alloc_system(cpu, prefer_cycle, num_counters)
         .ok_or(crate::StarryError::ResourceBusy)
 }
@@ -103,7 +103,7 @@ pub(super) fn alloc_system(
 pub(super) fn free_system(cpu: super::target::PerfCpuId, counter: Counter) {
     match counter {
         Counter::Cycle => {
-            let mut allocator = ALLOC.lock();
+            let mut allocator = ALLOC.lock_irqsave();
             let used = &mut allocator.local_cycle_used[cpu.as_usize()];
             assert!(*used, "system cycle reservation must be owned");
             *used = false;
@@ -114,12 +114,12 @@ pub(super) fn free_system(cpu: super::target::PerfCpuId, counter: Counter) {
 
 /// Reserves a CPU-local programmable slot against other local owners.
 pub(super) fn alloc_flexible(cpu: usize, num_counters: usize) -> Option<usize> {
-    ALLOC.lock().alloc_flexible(cpu, num_counters)
+    ALLOC.lock_irqsave().alloc_flexible(cpu, num_counters)
 }
 
 /// Releases one scheduler-owned CPU-local slot.
 pub(super) fn free_flexible(cpu: usize, slot: usize) {
-    let mut allocator = ALLOC.lock();
+    let mut allocator = ALLOC.lock_irqsave();
     let used = allocator.flexible.get_mut(cpu).expect("validated perf CPU");
     assert!(slot < 32 && *used & (1 << slot) != 0);
     *used &= !(1 << slot);

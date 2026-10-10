@@ -10,6 +10,19 @@ use crate::IntId;
 /// Result returned by GICv3 domain operations.
 pub type VgicResult<T = ()> = Result<T, VgicError>;
 
+/// Static `Display` reason for one register width requirement.
+///
+/// Register validation runs on the raw-lock path, so a width mismatch reports
+/// a static reason instead of formatting the expected width.
+pub(crate) const fn width_requirement(expected: AccessWidth) -> &'static str {
+    match expected {
+        AccessWidth::Byte => "register requires an 8-bit access",
+        AccessWidth::Word => "register requires a 16-bit access",
+        AccessWidth::Dword => "register requires a 32-bit access",
+        AccessWidth::Qword => "register requires a 64-bit access",
+    }
+}
+
 /// GICv3 register block involved in an access.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegisterRegion {
@@ -21,6 +34,51 @@ pub enum RegisterRegion {
     Redistributor,
     /// Interrupt Translation Service register frame.
     Its,
+}
+
+/// Failure category preserved across native-state and task-service boundaries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StateErrorKind {
+    /// Another owner or an in-flight operation retains the resource.
+    ResourceBusy,
+    /// The required binding or CPU interface does not exist.
+    NotFound,
+    /// The requested operation is unavailable for this backing or mode.
+    Unsupported,
+    /// The operation violates the current delivery state.
+    InvalidState,
+    /// An index or required operand is invalid.
+    InvalidInput,
+}
+
+/// Additional allocation-free facts about a native-state failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeStateDetail {
+    /// The operation, vCPU, and interrupt identify the failure completely.
+    None,
+    /// List-register index involved in a failure.
+    ListRegister(usize),
+    /// Canonical and observed list-register backing disagree.
+    BackingMismatch {
+        /// Backing retained by canonical state.
+        owned: crate::ListRegisterBacking,
+        /// Backing observed during hardware save.
+        observed: crate::ListRegisterBacking,
+    },
+    /// A binding names a different guest interrupt.
+    InterruptMismatch {
+        /// Interrupt being delivered.
+        requested: IntId,
+        /// Interrupt owned by the binding.
+        owned: IntId,
+    },
+    /// A hardware delivery names a different host source.
+    HostMismatch {
+        /// Source retained by the binding.
+        owned: crate::PhysicalIrqId,
+        /// Source observed in the hardware record.
+        observed: crate::PhysicalIrqId,
+    },
 }
 
 /// Errors reported by the virtual GICv3 model.
@@ -47,7 +105,7 @@ pub enum VgicError {
         detail: String,
     },
     /// A register access has an invalid address, alignment, or width.
-    #[error("invalid {region:?} {operation} at offset {offset:#x} with width {width:?}: {detail}")]
+    #[error("invalid {region:?} {operation} at offset {offset:#x} with width {width:?}: {reason}")]
     InvalidAccess {
         /// Register block being accessed.
         region: RegisterRegion,
@@ -57,8 +115,8 @@ pub enum VgicError {
         offset: u64,
         /// Requested access width.
         width: AccessWidth,
-        /// Rejected alignment or register constraint.
-        detail: String,
+        /// Static rejection reason.
+        reason: &'static str,
     },
     /// A requested interrupt state transition is not architecturally valid.
     #[error("invalid state transition for {intid:?} during {operation}: {detail}")]
@@ -133,12 +191,42 @@ pub enum VgicError {
         detail: String,
     },
     /// A checked physical GIC/ITS or CPU-interface backend failed.
-    #[error("GICv3 backend operation {operation} failed: {detail}")]
+    #[error("GICv3 backend operation {operation} failed: {source}")]
     Backend {
         /// Backend operation.
         operation: &'static str,
-        /// Backend diagnostic.
+        /// Allocation-free backend failure.
+        source: crate::GicV3BackendError,
+    },
+    /// A task-context host service failed (never produced in a native scope).
+    #[error("GIC host service {operation} failed: {detail}")]
+    HostService {
+        /// Task-side host operation.
+        operation: &'static str,
+        /// Diagnostic formatted only after native contexts have retired.
         detail: String,
+    },
+    /// A native (raw-lock) GICv3 state operation failed without allocating.
+    ///
+    /// This variant carries only `Copy` facts, so it can be produced while the
+    /// canonical raw lock is held, including on a CPU-pinned path.
+    #[error(
+        "native GICv3 {kind:?} during {operation} for vCPU {vcpu:?} (intid {intid:?}): {reason} \
+         ({detail:?})"
+    )]
+    NativeState {
+        /// Operation that failed.
+        operation: &'static str,
+        /// vCPU whose state was involved.
+        vcpu: Option<usize>,
+        /// Interrupt involved, when the failure names one.
+        intid: Option<IntId>,
+        /// Static rejection reason.
+        reason: &'static str,
+        /// Semantic error category, independent of diagnostic wording.
+        kind: StateErrorKind,
+        /// Additional source and ownership facts, when needed.
+        detail: NativeStateDetail,
     },
 }
 
@@ -146,8 +234,23 @@ impl From<VgicError> for DeviceError {
     fn from(error: VgicError) -> Self {
         let detail = alloc::format!("{error}");
         match error {
+            VgicError::NativeState {
+                operation, kind, ..
+            } => match kind {
+                StateErrorKind::ResourceBusy => Self::ResourceBusy {
+                    operation,
+                    resource: detail,
+                },
+                StateErrorKind::Unsupported => Self::Unsupported { operation, detail },
+                StateErrorKind::NotFound | StateErrorKind::InvalidState => {
+                    Self::InvalidState { operation, detail }
+                }
+                StateErrorKind::InvalidInput => Self::InvalidInput { operation, detail },
+            },
             VgicError::Unsupported { operation, .. } => Self::Unsupported { operation, detail },
-            VgicError::Backend { operation, .. } => Self::Backend { operation, detail },
+            VgicError::Backend { operation, .. } | VgicError::HostService { operation, .. } => {
+                Self::Backend { operation, detail }
+            }
             VgicError::ResourceConflict { resource, .. } => Self::ResourceBusy {
                 operation: "access ARM VGIC",
                 resource: alloc::format!("{resource}: {detail}"),

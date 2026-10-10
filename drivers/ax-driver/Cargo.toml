@@ -20,6 +20,8 @@ iommu-dma-test = ["arm-smmu-v3"]
 
 block = ["dep:ax-sync", "dep:rdif-block"]
 net = ["dep:ax-sync", "dep:rd-net"]
+audio-playback = ["dep:rdif-audio"]
+intel-hda = ["audio-playback", "pci", "dep:intel-hda", "intel-hda/rdif"]
 display = ["dep:rdif-display", "dep:rdif-gpu"]
 gpu = ["display"]
 input = ["dep:rdif-input"]
@@ -43,11 +45,6 @@ nvme = ["block", "pci", "dep:nvme-driver"]
 fxmac = ["net", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
-# Opt-in: pull in the RTL8125 driver whose per-instance control endpoint lets a
-# hypervisor enable guest-MAC acceptance for the single host NIC. The filter
-# stays host-only until that control request arrives, so every other board
-# keeps the default RX behavior.
-net-l2-uplink = ["realtek-rtl8125"]
 aic8800-wifi = [
     "net",
     "dep:aic8800",
@@ -145,23 +142,30 @@ rockchip-soc = [
     "dep:rdif-reset",
     "dep:rockchip-soc",
 ]
-# RK3588 fixed-OPP-at-boot CPU DVFS (voltage-free rung): raises the CPU cluster
-# clocks via the SCMI seam at probe time. Board-only policy; keep it opt-in.
+# RK3588 CPU DVFS hardware driver and shared RDIF registration.
 rk3588-cpufreq = [
     "rockchip-soc",
     "dep:arm-scmi-rs",
+    "dep:ax-lazyinit",
+    "dep:rdif-cpufreq",
+    "dep:smccc",
 ]
+# Test-only additive thermal constraints; real TSADC faults and limits still win.
+rk3588-cpufreq-thermal-test = ["rk3588-cpufreq"]
 rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+rdif-audio = { workspace = true, optional = true }
+intel-hda = { workspace = true, optional = true }
 sg200x-pwm = { workspace = true, optional = true }
 cv181x-clock = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
 ahci-driver = { workspace = true, optional = true }
-anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
+smccc = { version = "0.2", optional = true }
+ax-lazyinit = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }
 ax-sync = { workspace = true, optional = true }
 axklib.workspace = true
@@ -184,6 +188,7 @@ phytium-mci-host = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
+rdif-cpufreq = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-gpu = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
@@ -223,6 +228,7 @@ virtio-drivers = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]

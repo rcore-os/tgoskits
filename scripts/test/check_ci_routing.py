@@ -15,26 +15,8 @@ REUSABLE_CHECK_MATRIX = (
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
-MIRRORED_BENCHMARK_PAYLOADS: dict[Path, tuple[str, ...]] = {
-    Path("qemu/compile-sim-bench"): (
-        "compile-sim-bench.c",
-        "compile-sim-bench-run.sh",
-        "prebuild.sh",
-        "linux-compile-sim-init.sh",
-        "build-x86_64-unknown-none.toml",
-    ),
-    Path("qemu/ltp-hackbench"): (
-        "ltp-hackbench.sh",
-        "affinity_exec.c",
-        "prebuild.sh",
-        "build-x86_64-unknown-none.toml",
-    ),
-    Path("qemu/ltp-netstress"): (
-        "ltp-netstress.sh",
-        "prebuild.sh",
-        "build-x86_64-unknown-none.toml",
-    ),
-}
+CI_PLAN_ACTION = WORKSPACE_ROOT / ".github/actions/ci-plan/action.yml"
+CI_RESULT_ACTION = WORKSPACE_ROOT / ".github/actions/ci-result/action.yml"
 
 
 def main() -> int:
@@ -52,6 +34,10 @@ def main() -> int:
         errors.append("missing workflow: .github/workflows/docs.yml")
     if not CI_PERF_PAGES_SCRIPT.is_file():
         errors.append("missing script: scripts/test/ci_perf_pages.py")
+    if not CI_PLAN_ACTION.is_file():
+        errors.append("missing action: .github/actions/ci-plan/action.yml")
+    if not CI_RESULT_ACTION.is_file():
+        errors.append("missing action: .github/actions/ci-result/action.yml")
     if PR_CLEANUP_WORKFLOW.exists():
         errors.append("stale-run cleanup must reuse the Plan CI runner")
     if LEGACY_BRANCH_WORKFLOW.exists():
@@ -59,7 +45,22 @@ def main() -> int:
     if errors:
         return report(errors)
 
+    for action_path, action_name in (
+        (CI_PLAN_ACTION, "ci-plan"),
+        (CI_RESULT_ACTION, "ci-result"),
+    ):
+        action = action_path.read_text(encoding="utf-8")
+        for fragment in (
+            "python-version: '3.13'",
+            "uv run --python 3.13 --no-project python3",
+        ):
+            if fragment not in action:
+                errors.append(
+                    f"{action_name} action must use uv Python 3.13: {fragment}"
+                )
+
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    ci_plan_action = CI_PLAN_ACTION.read_text(encoding="utf-8")
     benchmarks_workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")
     docs_workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
     reusable_check_matrix = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
@@ -123,33 +124,51 @@ def main() -> int:
         errors.append("runner planning must not use the pull request source owner")
 
     matrix_step = named_step_block(plan_ci, "Plan check matrices")
+    runner_trust_step = named_step_block(plan_ci, "Record runner trust")
     for fragment, message in (
         (
-            "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            "repository-owner: ${{ github.repository_owner }}",
+            "runner planning must receive the workflow repository owner",
+        ),
+        (
+            "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
             "runner planning must receive the pull request head repository",
         ),
         (
-            '--head-repository "$HEAD_REPOSITORY"',
-            "runner planning must distinguish fork pull requests",
+            "base-ref: ${{ github.base_ref }}",
+            "runner planning must receive the pull request base revision",
         ),
+        (
+            "since-ref: ${{ steps.since.outputs.since_ref }}",
+            "runner planning must receive the incremental base revision",
+        ),
+    ):
+        require_contains(errors, matrix_step, fragment, message)
+
+    for fragment, message, contract in (
         (
             "ACTOR: ${{ github.actor }}",
             "runner trust evidence must record the workflow actor",
+            runner_trust_step,
         ),
         (
             "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
             "runner trust evidence must record the tested head revision",
+            runner_trust_step,
         ),
         (
             'if [ "$EVENT_NAME" = "pull_request" ]',
             "runner trust evidence must evaluate pull requests explicitly",
+            runner_trust_step,
         ),
         (
             '[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]',
             "runner trust evidence must reject cross-repository heads",
+            runner_trust_step,
         ),
     ):
-        require_contains(errors, matrix_step, fragment, message)
+        if fragment not in contract:
+            errors.append(message)
 
     route_step = named_step_block(plan_ci, "Route duplicate events")
     if not route_step:
@@ -264,16 +283,28 @@ def main() -> int:
     for fragment, message in (
         (
             '--repository-owner "$REPOSITORY_OWNER"',
-            "runner planning must use the workflow repository owner",
+            "the ci-plan action must forward the workflow repository owner",
         ),
         (
-            '--since-ref "$SINCE_REF"',
-            "the planner must receive the incremental base revision",
+            'args+=(--head-repository "$HEAD_REPOSITORY")',
+            "the ci-plan action must forward the pull request head repository",
         ),
         (
-            '--summary-file "$GITHUB_STEP_SUMMARY"',
-            "the planner must publish its impact summary",
+            'args+=(--base-ref "$BASE_REF")',
+            "the ci-plan action must forward the pull request base revision",
         ),
+        (
+            'args+=(--since-ref "$SINCE_REF")',
+            "the ci-plan action must forward the incremental base revision",
+        ),
+        (
+            'args+=(--summary-file "$GITHUB_STEP_SUMMARY")',
+            "the ci-plan action must forward the impact summary path",
+        ),
+    ):
+        require_contains(errors, ci_plan_action, fragment, message)
+
+    for fragment, message in (
         (
             "needs.plan_ci.outputs.static_required == 'true'",
             "Preflight must follow the planner decision",
@@ -288,6 +319,7 @@ def main() -> int:
         ),
     ):
         require_contains(errors, ci_workflow, fragment, message)
+
 
     cancel_step = named_step_block(plan_ci, "Cancel older queued or running runs")
     if "steps.route.outputs.should_run" in cancel_step:
@@ -537,17 +569,33 @@ def main() -> int:
         "if: needs.axvisor_performance.result == 'success'",
         "AxVisor reports must only be downloaded from a successful matrix",
     )
-    for matrix_name, description in (
-        ("plan", "planning"),
-        ("axvisor_performance", "AxVisor performance"),
-        ("starry_performance", "Starry performance"),
-        ("starry_board_performance", "Starry board performance"),
-    ):
+    benchmark_job_ids = re.findall(
+        r"^  ([a-z0-9_-]+):$", benchmark_jobs, re.MULTILINE
+    )
+    performance_jobs = {
+        job_id
+        for job_id in benchmark_job_ids
+        if re.search(
+            r"matrix_json: \$\{\{ needs\.plan\.outputs\.[a-z0-9_-]*performance_matrix \}\}",
+            mapping_block(benchmark_jobs, job_id, 2),
+        )
+    }
+    expected_benchmark_jobs = {"plan", *performance_jobs}
+    if not performance_jobs:
+        errors.append("benchmark updates must have performance matrix producers")
+    update_needs = set(list_items_in_order(benchmark_updates, "needs", 4))
+    missing_needs = expected_benchmark_jobs - update_needs
+    if missing_needs:
+        errors.append(
+            "benchmark updates must depend on every performance producer: "
+            + ", ".join(sorted(missing_needs))
+        )
+    for matrix_name in sorted(expected_benchmark_jobs):
         require_contains(
             errors,
             benchmark_updates_condition,
             f"needs.{matrix_name}.result == 'success'",
-            f"benchmark updates must require successful {description}",
+            f"benchmark updates must require successful {matrix_name}",
         )
     for fragment, message in (
         (
@@ -557,18 +605,6 @@ def main() -> int:
         (
             "continue-on-error: true",
             "performance report downloads must tolerate missing artifacts",
-        ),
-        (
-            "needs.axvisor_performance.result == 'success'",
-            "AxVisor updates must require the performance matrix",
-        ),
-        (
-            "needs.starry_performance.result == 'success'",
-            "Starry updates must require the QEMU matrix",
-        ),
-        (
-            "needs.starry_board_performance.result == 'success'",
-            "Starry updates must require the board matrix",
         ),
         (
             "steps.updates.outputs.has_updates == 'true'",
@@ -794,24 +830,82 @@ def workspace_source_roots() -> set[str]:
 
 
 def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
+    """Check every shared Starry smoke/benchmark payload without a case list."""
+    smoke_root = workspace_root / "apps/starry"
+    benchmark_root = workspace_root / "benchmarks/starry"
     errors: list[str] = []
-    for case_dir, file_names in MIRRORED_BENCHMARK_PAYLOADS.items():
-        smoke_dir = workspace_root / "apps/starry" / case_dir
-        benchmark_dir = workspace_root / "benchmarks/starry" / case_dir
-        for file_name in file_names:
-            smoke_path = smoke_dir / file_name
-            benchmark_path = benchmark_dir / file_name
+    if not smoke_root.is_dir():
+        errors.append(
+            f"missing mirrored payload root: {smoke_root.relative_to(workspace_root)}"
+        )
+    if not benchmark_root.is_dir():
+        errors.append(
+            f"missing mirrored payload root: {benchmark_root.relative_to(workspace_root)}"
+        )
+    if errors:
+        return errors
+
+    def is_build_file(relative: Path) -> bool:
+        return relative.name.startswith("build-") and relative.suffix == ".toml"
+
+    def build_arch(relative: Path) -> str:
+        return relative.name.removeprefix("build-").split("-", 1)[0].removesuffix("gc")
+
+    def qemu_arches(directory: Path) -> set[str]:
+        arches = set()
+        for path in directory.rglob("qemu-*.toml"):
+            stem = path.stem.removeprefix("qemu-")
+            if stem.endswith("-benchmark"):
+                stem = stem.removesuffix("-benchmark")
+            arches.add(stem.split("-", 1)[0].removesuffix("gc"))
+        return arches
+
+    def is_variant_file(relative: Path) -> bool:
+        return (
+            relative.name == "README.md"
+            or relative.name.startswith("RESULTS-")
+            or (relative.name.startswith("qemu-") and relative.suffix == ".toml")
+            or is_build_file(relative)
+        )
+
+    smoke_dirs = {path.relative_to(smoke_root) for path in smoke_root.rglob("*") if path.is_dir()}
+    benchmark_dirs = {
+        path.relative_to(benchmark_root) for path in benchmark_root.rglob("*") if path.is_dir()
+    }
+    shared_dirs = sorted(smoke_dirs & benchmark_dirs, key=lambda path: len(path.parts), reverse=True)
+    leaf_shared_dirs: list[Path] = []
+    for shared_dir in shared_dirs:
+        if any(shared_dir in selected.parents for selected in leaf_shared_dirs):
+            continue
+        leaf_shared_dirs.append(shared_dir)
+
+    for shared_dir in leaf_shared_dirs:
+        smoke_dir = smoke_root / shared_dir
+        benchmark_dir = benchmark_root / shared_dir
+        smoke_files = {
+            path.relative_to(smoke_dir)
+            for path in smoke_dir.rglob("*")
+            if path.is_file() and not is_variant_file(path.relative_to(smoke_dir))
+        }
+        benchmark_files = {
+            path.relative_to(benchmark_dir)
+            for path in benchmark_dir.rglob("*")
+            if path.is_file() and not is_variant_file(path.relative_to(benchmark_dir))
+        }
+        for relative in sorted(smoke_files | benchmark_files):
+            smoke_path = smoke_dir / relative
+            benchmark_path = benchmark_dir / relative
             if not smoke_path.is_file():
                 errors.append(
                     "missing mirrored benchmark payload file: "
                     f"{smoke_path.relative_to(workspace_root).as_posix()}"
                 )
+                continue
             if not benchmark_path.is_file():
                 errors.append(
                     "missing mirrored benchmark payload file: "
                     f"{benchmark_path.relative_to(workspace_root).as_posix()}"
                 )
-            if not smoke_path.is_file() or not benchmark_path.is_file():
                 continue
             if smoke_path.read_bytes() != benchmark_path.read_bytes():
                 errors.append(
@@ -819,8 +913,42 @@ def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
                     f"{smoke_path.relative_to(workspace_root).as_posix()} and "
                     f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
                 )
+        smoke_build_files = {
+            path.relative_to(smoke_dir)
+            for path in smoke_dir.rglob("*")
+            if path.is_file() and is_build_file(path.relative_to(smoke_dir))
+        }
+        benchmark_build_files = {
+            path.relative_to(benchmark_dir)
+            for path in benchmark_dir.rglob("*")
+            if path.is_file() and is_build_file(path.relative_to(benchmark_dir))
+        }
+        shared_qemu_arches = qemu_arches(smoke_dir) & qemu_arches(benchmark_dir)
+        for relative in sorted(
+            smoke_build_files ^ benchmark_build_files,
+            key=lambda path: path.as_posix(),
+        ):
+            if build_arch(relative) not in shared_qemu_arches:
+                continue
+            present_path = (
+                smoke_dir / relative
+                if relative in smoke_build_files
+                else benchmark_dir / relative
+            )
+            errors.append(
+                "missing mirrored benchmark payload file: "
+                f"{present_path.relative_to(workspace_root).as_posix()}"
+            )
+        for relative in sorted(smoke_build_files & benchmark_build_files):
+            smoke_path = smoke_dir / relative
+            benchmark_path = benchmark_dir / relative
+            if smoke_path.read_bytes() != benchmark_path.read_bytes():
+                errors.append(
+                    "mirrored benchmark build files must remain byte-identical: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+                )
     return errors
-
 
 def mapping_block(text: str, key: str, indent: int) -> str:
     marker = f"{' ' * indent}{key}:"

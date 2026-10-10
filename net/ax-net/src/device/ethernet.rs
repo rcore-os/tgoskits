@@ -55,10 +55,10 @@ fn accepts_destination(
         || (accept_multicast && destination.is_multicast())
 }
 
-/// Returns the uplink runtime bound to `interface_name`, if any, so a second
+/// Returns the uplink runtime bound to `interface_id`, if any, so a second
 /// NIC cannot drain guest egress or feed the switch with foreign frames.
-fn uplink_for(interface_name: &str) -> Option<Arc<crate::uplink::UplinkRuntime>> {
-    crate::uplink::runtime().filter(|uplink| uplink.matches_device(interface_name))
+fn uplink_for(interface_id: InterfaceId) -> Option<Arc<crate::uplink::UplinkRuntime>> {
+    crate::uplink::runtime().filter(|uplink| uplink.matches_interface(interface_id))
 }
 
 /// Forwards a copy of one received physical frame to the L2 uplink sink before
@@ -80,6 +80,7 @@ struct PendingNeighbor {
 }
 
 pub struct EthernetDevice {
+    interface_id: InterfaceId,
     name: String,
     inner: Box<dyn EthernetFramePort>,
     neighbors: HashMap<IpAddress, Neighbor>,
@@ -130,7 +131,12 @@ impl EthernetDevice {
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
 
     /// Creates the protocol-side adapter for an IRQ-backed queue pipeline.
-    pub fn new(name: String, inner: Box<dyn EthernetFramePort>, ip: Option<Ipv4Cidr>) -> Self {
+    pub fn new(
+        interface_id: InterfaceId,
+        name: String,
+        inner: Box<dyn EthernetFramePort>,
+        ip: Option<Ipv4Cidr>,
+    ) -> Self {
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
             vec![
@@ -140,6 +146,7 @@ impl EthernetDevice {
             ],
         );
         Self {
+            interface_id,
             name,
             inner,
             neighbors: HashMap::new(),
@@ -158,14 +165,14 @@ impl EthernetDevice {
         }
     }
 
-    /// Moves queued guest frames onto the physical NIC TX path.
+    /// Moves queued guest frames onto the physical device TX path.
     ///
     /// Runs on the protocol executor, the only producer of this port's TX ring,
     /// so the fixed-CPU queue owner still performs the actual DMA submission.
     /// The pass is bounded so a flooding guest cannot starve host traffic
     /// within one poll.
     fn flush_uplink_egress(&mut self) {
-        let Some(uplink) = uplink_for(&self.name) else {
+        let Some(uplink) = uplink_for(self.interface_id) else {
             return;
         };
         let name = &self.name;
@@ -339,7 +346,7 @@ impl EthernetDevice {
         };
 
         // The uplink sees the frame before this host-only MAC filter drops it.
-        dispatch_uplink_ingress(uplink_for(&self.name).as_deref(), raw);
+        dispatch_uplink_ingress(uplink_for(self.interface_id).as_deref(), raw);
         if !accepts_destination(
             repr.dst_addr,
             self.hardware_address(),
@@ -650,7 +657,7 @@ impl Device for EthernetDevice {
     fn poll_owned_rx(&mut self, timestamp: Instant) -> DeviceRxPoll {
         self.flush_arp_replies();
         self.flush_uplink_egress();
-        let uplink = uplink_for(&self.name);
+        let uplink = uplink_for(self.interface_id);
         loop {
             let frame = match self.inner.receive_owned() {
                 Ok(Some(frame)) => frame,
@@ -717,7 +724,7 @@ impl Device for EthernetDevice {
     ) -> Option<usize> {
         self.flush_arp_replies();
         self.flush_uplink_egress();
-        let uplink = uplink_for(&self.name);
+        let uplink = uplink_for(self.interface_id);
         loop {
             let hardware_address = self.hardware_address();
             let accept_multicast = self.accept_multicast;
@@ -927,7 +934,7 @@ impl Device for EthernetDevice {
 mod ethernet_counter_tests {
     use alloc::{collections::VecDeque, sync::Arc};
 
-    use ax_sync::SpinLock;
+    use ax_sync::RawSpinLock;
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
     use super::*;
@@ -994,10 +1001,10 @@ mod ethernet_counter_tests {
 
     #[derive(Default)]
     struct TxProbe {
-        requests: SpinLock<Vec<(Vec<u8>, TxSubmitOptions)>>,
-        failure: SpinLock<Option<NetDeviceError>>,
-        rx_frames: SpinLock<VecDeque<Vec<u8>>>,
-        blocked: SpinLock<bool>,
+        requests: RawSpinLock<Vec<(Vec<u8>, TxSubmitOptions)>>,
+        failure: RawSpinLock<Option<NetDeviceError>>,
+        rx_frames: RawSpinLock<VecDeque<Vec<u8>>>,
+        blocked: RawSpinLock<bool>,
     }
 
     struct RecordingFramePort {
@@ -1072,7 +1079,12 @@ mod ethernet_counter_tests {
     }
 
     fn make_test_device(mock: MockEthernetDriver) -> EthernetDevice {
-        EthernetDevice::new("mock0".into(), Box::new(mock), Some(device_ip_cidr()))
+        EthernetDevice::new(
+            InterfaceId::new(2),
+            "mock0".into(),
+            Box::new(mock),
+            Some(device_ip_cidr()),
+        )
     }
 
     fn make_recording_device(
@@ -1084,7 +1096,12 @@ mod ethernet_counter_tests {
             checksum_capabilities,
         };
         (
-            EthernetDevice::new("recording0".into(), Box::new(port), Some(device_ip_cidr())),
+            EthernetDevice::new(
+                InterfaceId::new(2),
+                "recording0".into(),
+                Box::new(port),
+                Some(device_ip_cidr()),
+            ),
             probe,
         )
     }

@@ -5,6 +5,7 @@ pub mod memory;
 pub mod sync;
 pub mod task;
 pub mod time;
+pub(crate) mod waiters;
 
 pub use dma::{
     DmaDeviceResolver, dma_device, dma_op, has_dma_op, install_dma_device_resolver, install_dma_op,

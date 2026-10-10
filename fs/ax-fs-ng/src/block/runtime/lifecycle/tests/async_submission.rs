@@ -76,7 +76,7 @@ impl LifecycleLockCheckingWake {
         let unlocked = self
             .device
             .upgrade()
-            .is_some_and(|device| device.lifecycle_gate.try_lock().is_some());
+            .is_some_and(|device| device.lifecycle_gate.try_lock_irqsave().is_some());
         if !unlocked {
             self.lock_failures.fetch_add(1, Ordering::AcqRel);
         }
@@ -165,7 +165,7 @@ fn async_submission_handle() -> Arc<BlockDeviceHandle> {
         Vec::<BlockIrqSource>::new(),
         Box::new(AsyncSubmissionController {
             queue: Some(LifecycleQueue {
-                log: Arc::new(StdMutex::new(Vec::new())),
+                log: Arc::new(std::sync::Mutex::new(Vec::new())),
             }),
         }),
     ))
@@ -213,7 +213,7 @@ fn fill_channel_with_flush(channel: &BoundedChannel<Submission>) {
 fn async_submit_returns_owned_request_when_no_cpu_channel_is_available() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let cpu_channels = core::mem::take(&mut *handle.inner.cpu_channels.lock());
+    let cpu_channels = core::mem::take(&mut *handle.inner.cpu_channels.lock_irqsave());
     assert!(!cpu_channels.is_empty());
 
     let request = flush_request(RequestFlags::NONE);
@@ -228,7 +228,7 @@ fn async_submit_returns_owned_request_when_no_cpu_channel_is_available() {
     }
 
     drop(future);
-    *handle.inner.cpu_channels.lock() = cpu_channels;
+    *handle.inner.cpu_channels.lock_irqsave() = cpu_channels;
     assert_eq!(handle.shutdown(), 0);
 }
 
@@ -236,14 +236,14 @@ fn async_submit_returns_owned_request_when_no_cpu_channel_is_available() {
 fn data_admission_waits_on_flush_and_rolls_back_when_cancelled() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
 
     drop(future);
-    let gate = inner.lifecycle_gate.lock();
+    let gate = inner.lifecycle_gate.lock_irqsave();
     assert_eq!(gate.active_data, 0);
     assert!(gate.flush_active);
 }
@@ -252,14 +252,14 @@ fn data_admission_waits_on_flush_and_rolls_back_when_cancelled() {
 fn flush_admission_holds_and_rolls_back_while_draining_data() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().active_data = 1;
+    inner.lifecycle_gate.lock_irqsave().active_data = 1;
 
     let mut future = Box::pin(inner.acquire_flush_async(false));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert!(inner.lifecycle_gate.lock().flush_active);
+    assert!(inner.lifecycle_gate.lock_irqsave().flush_active);
 
     drop(future);
-    let gate = inner.lifecycle_gate.lock();
+    let gate = inner.lifecycle_gate.lock_irqsave();
     assert_eq!(gate.active_data, 1);
     assert!(!gate.flush_active);
 }
@@ -268,7 +268,7 @@ fn flush_admission_holds_and_rolls_back_while_draining_data() {
 fn flush_drain_notification_between_check_and_wait_is_observed() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().active_data = 1;
+    inner.lifecycle_gate.lock_irqsave().active_data = 1;
     let publisher = Arc::clone(&inner);
     inner.set_admission_wait_hook(move || {
         publisher.request_completed(RequestOp::Read, 1, Ok(()));
@@ -280,7 +280,7 @@ fn flush_drain_notification_between_check_and_wait_is_observed() {
         Poll::Pending => panic!("data-drain notification was lost before awaiting the listener"),
         Poll::Ready(Err(error)) => panic!("flush admission failed unexpectedly: {error:?}"),
     };
-    let gate = inner.lifecycle_gate.lock();
+    let gate = inner.lifecycle_gate.lock_irqsave();
     assert_eq!(gate.active_data, 0);
     assert!(gate.flush_active);
     drop(gate);
@@ -301,7 +301,7 @@ fn second_flush_cancel_and_nowait_preserve_gate_owner() {
     let mut waiting = Box::pin(inner.acquire_flush_async(false));
     assert!(matches!(poll_once(waiting.as_mut()), Poll::Pending));
     drop(waiting);
-    assert!(inner.lifecycle_gate.lock().flush_active);
+    assert!(inner.lifecycle_gate.lock_irqsave().flush_active);
 
     let mut nowait = Box::pin(inner.acquire_flush_async(true));
     assert!(matches!(
@@ -309,24 +309,24 @@ fn second_flush_cancel_and_nowait_preserve_gate_owner() {
         Poll::Ready(Err(BlkError::Retry))
     ));
     drop(nowait);
-    assert!(inner.lifecycle_gate.lock().flush_active);
+    assert!(inner.lifecycle_gate.lock_irqsave().flush_active);
 
     drop(owner);
-    assert!(!inner.lifecycle_gate.lock().flush_active);
+    assert!(!inner.lifecycle_gate.lock_irqsave().flush_active);
 }
 
 #[test]
 fn nowait_admission_returns_retry_without_pending() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     let mut future = Box::pin(inner.acquire_data_async(RequestOp::Write, 1, true));
     assert!(matches!(
         poll_once(future.as_mut()),
         Poll::Ready(Err(BlkError::Retry))
     ));
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
 }
 
 #[test]
@@ -334,14 +334,14 @@ fn ordinary_admission_future_remains_pending_in_nonblocking_context() {
     crate::os::task::install_test_runtime_ops();
     let _can_block = crate::os::task::test_can_block(false);
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
 
     drop(future);
-    assert!(inner.lifecycle_gate.lock().flush_active);
+    assert!(inner.lifecycle_gate.lock_irqsave().flush_active);
 }
 
 #[test]
@@ -355,7 +355,7 @@ fn admission_state_published_before_first_listener_check_is_observed() {
         Poll::Pending => panic!("admission should be available immediately"),
         Poll::Ready(Err(_)) => panic!("admission should succeed immediately"),
     };
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 1);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 1);
     drop(permit);
     drop(future);
 }
@@ -364,12 +364,12 @@ fn admission_state_published_before_first_listener_check_is_observed() {
 fn admission_notification_after_pending_poll_rechecks_the_gate() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
 
-    inner.lifecycle_gate.lock().flush_active = false;
+    inner.lifecycle_gate.lock_irqsave().flush_active = false;
     inner.admission_async_waiters.notify_all();
     let permit = match poll_once(future.as_mut()) {
         Poll::Ready(Ok(permit)) => permit,
@@ -431,13 +431,13 @@ fn permit_release_wakes_sync_and_async_admission_waiters() {
         Poll::Ready(Ok(permit)) => permit,
         _ => panic!("asynchronous admission waiter was not woken"),
     };
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 2);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 2);
 
     release_tx.send(()).unwrap();
     sync_waiter.join().unwrap();
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 1);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 1);
     drop(async_permit);
-    assert_eq!(inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
 }
 
 #[test]
@@ -477,7 +477,7 @@ fn admission_publisher_invokes_waker_after_releasing_gate_lock() {
 fn admission_notification_between_check_and_wait_is_observed() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().flush_active = true;
+    inner.lifecycle_gate.lock_irqsave().flush_active = true;
     let publisher = Arc::clone(&inner);
     inner.set_admission_wait_hook(move || {
         publisher.undo_submission_admission(RequestOp::Flush, 1);
@@ -489,7 +489,7 @@ fn admission_notification_between_check_and_wait_is_observed() {
         Poll::Pending => panic!("admission notification was lost before awaiting the listener"),
         Poll::Ready(Err(error)) => panic!("admission failed unexpectedly: {error:?}"),
     };
-    let gate = inner.lifecycle_gate.lock();
+    let gate = inner.lifecycle_gate.lock_irqsave();
     assert!(!gate.flush_active);
     assert_eq!(gate.active_data, 1);
     drop(gate);
@@ -514,7 +514,7 @@ fn flush_gate_notification_between_check_and_wait_is_observed() {
         Poll::Pending => panic!("flush gate notification was lost before awaiting the listener"),
         Poll::Ready(Err(error)) => panic!("flush admission failed unexpectedly: {error:?}"),
     };
-    assert!(inner.lifecycle_gate.lock().flush_active);
+    assert!(inner.lifecycle_gate.lock_irqsave().flush_active);
     drop(permit);
 }
 
@@ -522,10 +522,10 @@ fn flush_gate_notification_between_check_and_wait_is_observed() {
 fn channel_async_waiter_is_woken_after_capacity_is_released() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let channel = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&channel);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&channel),
     };
@@ -635,10 +635,10 @@ fn released_capacity_wakes_sync_and_async_channel_waiters() {
 fn async_submit_repoll_replaces_channel_capacity_waker() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
@@ -678,10 +678,10 @@ fn async_submit_repoll_replaces_channel_capacity_waker() {
 fn ordinary_channel_wait_remains_pending_in_nonblocking_context() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let channel = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&channel);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&channel),
     };
@@ -689,10 +689,10 @@ fn ordinary_channel_wait_remains_pending_in_nonblocking_context() {
     let can_block = crate::os::task::test_can_block(false);
     let mut future = Box::pin(handle.submit_owned_async(flush_request(RequestFlags::NONE)));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert!(handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     assert_eq!(channel.queued_len(), 1);
     drop(future);
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     drop(can_block);
     let _ = handle.shutdown();
 }
@@ -718,14 +718,14 @@ fn channel_close_wakes_every_async_capacity_waiter() {
 fn async_flush_nowait_rolls_back_gate_after_data_drain_rejection() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().active_data = 1;
+    inner.lifecycle_gate.lock_irqsave().active_data = 1;
 
     let mut future = Box::pin(inner.acquire_flush_async(true));
     assert!(matches!(
         poll_once(future.as_mut()),
         Poll::Ready(Err(BlkError::Retry))
     ));
-    let gate = inner.lifecycle_gate.lock();
+    let gate = inner.lifecycle_gate.lock_irqsave();
     assert_eq!(gate.active_data, 1);
     assert!(!gate.flush_active);
 }
@@ -734,7 +734,7 @@ fn async_flush_nowait_rolls_back_gate_after_data_drain_rejection() {
 fn async_admission_returns_io_after_teardown_begins() {
     crate::os::task::install_test_runtime_ops();
     let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock().phase = DevicePhase::Stopping;
+    inner.lifecycle_gate.lock_irqsave().phase = DevicePhase::Stopping;
 
     let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(
@@ -762,7 +762,7 @@ fn async_data_submit_waiting_on_flush_gate_returns_dma_when_device_fails() {
         poll_with_waker(future.as_mut(), &waker),
         Poll::Pending
     ));
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 0);
 
     handle.inner.mark_failed();
     assert_eq!(wake.count(), 1);
@@ -778,11 +778,11 @@ fn async_data_submit_waiting_on_flush_gate_returns_dma_when_device_fails() {
     drop(crate::block::runtime::dma::complete_without_submit(
         returned.data,
     ));
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 0);
 
     drop(future);
     drop(owner);
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     let _ = handle.shutdown();
 }
 
@@ -805,7 +805,7 @@ fn async_flush_submit_waiting_on_data_drain_rolls_back_when_device_fails() {
         Poll::Pending
     ));
     {
-        let gate = handle.inner.lifecycle_gate.lock();
+        let gate = handle.inner.lifecycle_gate.lock_irqsave();
         assert_eq!(gate.active_data, 1);
         assert!(gate.flush_active);
     }
@@ -820,14 +820,14 @@ fn async_flush_submit_waiting_on_data_drain_rolls_back_when_device_fails() {
     assert_eq!(error.error, BlkError::Io);
     assert_eq!(error.into_request().op, RequestOp::Flush);
     {
-        let gate = handle.inner.lifecycle_gate.lock();
+        let gate = handle.inner.lifecycle_gate.lock_irqsave();
         assert_eq!(gate.active_data, 1);
         assert!(!gate.flush_active);
     }
 
     drop(future);
     drop(owner);
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 0);
     let _ = handle.shutdown();
 }
 
@@ -835,19 +835,19 @@ fn async_flush_submit_waiting_on_data_drain_rolls_back_when_device_fails() {
 fn async_submit_waits_for_full_channel_and_rolls_back_on_cancel() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
 
     let mut future = Box::pin(handle.submit_owned_async(flush_request(RequestFlags::NONE)));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert!(handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     drop(future);
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     assert_eq!(replacement.queued_len(), 1);
     let _ = handle.shutdown();
 }
@@ -857,21 +857,21 @@ fn async_data_submit_waits_for_full_channel_and_rolls_back_on_cancel() {
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
 
     let mut future = Box::pin(handle.submit_owned_async(read_request(0, test_queue_info())));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 1);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 1);
     assert_eq!(replacement.queued_len(), 1);
 
     drop(future);
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 0);
     assert_eq!(replacement.queued_len(), 1);
     let _ = handle.shutdown();
 }
@@ -880,10 +880,10 @@ fn async_data_submit_waits_for_full_channel_and_rolls_back_on_cancel() {
 fn async_submit_full_channel_returns_retry_when_channel_retires() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
@@ -899,7 +899,7 @@ fn async_submit_full_channel_returns_retry_when_channel_retires() {
     };
     assert_eq!(error.error, BlkError::Retry);
     assert_eq!(error.into_request().op, RequestOp::Flush);
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     assert_eq!(replacement.queued_len(), 1);
     drop(future);
     let _ = handle.shutdown();
@@ -909,17 +909,17 @@ fn async_submit_full_channel_returns_retry_when_channel_retires() {
 fn async_submit_waiting_on_full_channel_returns_io_when_device_fails() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
 
     let mut future = Box::pin(handle.submit_owned_async(flush_request(RequestFlags::NONE)));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert!(handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(handle.inner.lifecycle_gate.lock_irqsave().flush_active);
 
     handle.inner.mark_failed();
     let error = match poll_once(future.as_mut()) {
@@ -929,7 +929,7 @@ fn async_submit_waiting_on_full_channel_returns_io_when_device_fails() {
     };
     assert_eq!(error.error, BlkError::Io);
     assert_eq!(error.into_request().op, RequestOp::Flush);
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     assert_eq!(replacement.queued_len(), 1);
 
     drop(future);
@@ -941,17 +941,17 @@ fn async_data_submit_waiting_on_full_channel_returns_dma_when_device_fails() {
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
 
     let mut future = Box::pin(handle.submit_owned_async(read_request(0, test_queue_info())));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 1);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 1);
 
     handle.inner.mark_failed();
     let error = match poll_once(future.as_mut()) {
@@ -966,7 +966,7 @@ fn async_data_submit_waiting_on_full_channel_returns_dma_when_device_fails() {
     drop(crate::block::runtime::dma::complete_without_submit(
         returned.data,
     ));
-    assert_eq!(handle.inner.lifecycle_gate.lock().active_data, 0);
+    assert_eq!(handle.inner.lifecycle_gate.lock_irqsave().active_data, 0);
     assert_eq!(replacement.queued_len(), 1);
 
     drop(future);
@@ -977,10 +977,10 @@ fn async_data_submit_waiting_on_full_channel_returns_dma_when_device_fails() {
 fn async_submit_nowait_returns_request_when_channel_is_full() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
     fill_channel_with_flush(&replacement);
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
@@ -993,7 +993,7 @@ fn async_submit_nowait_returns_request_when_channel_is_full() {
     };
     assert_eq!(error.error, BlkError::Retry);
     assert_eq!(error.into_request().op, RequestOp::Flush);
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     assert_eq!(replacement.queued_len(), 1);
     drop(future);
     let _ = handle.shutdown();
@@ -1003,9 +1003,9 @@ fn async_submit_nowait_returns_request_when_channel_is_full() {
 fn async_submit_nowait_never_waits_on_channel_owner() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
@@ -1055,7 +1055,7 @@ fn async_submit_nowait_never_waits_on_channel_owner() {
         result.expect("NOWAIT submission blocked on the channel owner"),
         Ok((BlkError::Retry, RequestOp::Flush))
     );
-    assert!(!handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(!handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     assert_eq!(replacement.queued_len(), 0);
     let _ = handle.shutdown();
 }
@@ -1064,9 +1064,9 @@ fn async_submit_nowait_never_waits_on_channel_owner() {
 fn dropping_async_completion_receiver_keeps_enqueued_submission() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
     let replacement = original.hctx.new_submission_channel().unwrap();
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: Arc::clone(&replacement),
     };
@@ -1078,10 +1078,10 @@ fn dropping_async_completion_receiver_keeps_enqueued_submission() {
         Poll::Pending => panic!("an empty test channel did not accept the flush"),
     };
     assert_eq!(replacement.queued_len(), 1);
-    assert!(handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(handle.inner.lifecycle_gate.lock_irqsave().flush_active);
     drop(subscription);
     assert_eq!(replacement.queued_len(), 1);
-    assert!(handle.inner.lifecycle_gate.lock().flush_active);
+    assert!(handle.inner.lifecycle_gate.lock_irqsave().flush_active);
 
     drop(future);
     let _ = handle.shutdown();
@@ -1091,19 +1091,19 @@ fn dropping_async_completion_receiver_keeps_enqueued_submission() {
 fn async_submit_keeps_sticky_channel_after_mapping_replacement() {
     crate::os::task::install_test_runtime_ops();
     let handle = async_submission_handle();
-    let original = handle.inner.cpu_channels.lock()[0].clone();
-    handle.inner.lifecycle_gate.lock().flush_active = true;
+    let original = handle.inner.cpu_channels.lock_irqsave()[0].clone();
+    handle.inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
     let mut future = Box::pin(handle.submit_owned_async(flush_request(RequestFlags::NONE)));
     assert!(matches!(poll_once(future.as_mut()), Poll::Pending));
 
     let replacement = original.hctx.add_submission_channel().unwrap();
-    handle.inner.cpu_channels.lock()[0] = CpuSubmissionChannel {
+    handle.inner.cpu_channels.lock_irqsave()[0] = CpuSubmissionChannel {
         hctx: Arc::clone(&original.hctx),
         channel: replacement,
     };
     original.channel.close();
-    handle.inner.lifecycle_gate.lock().flush_active = false;
+    handle.inner.lifecycle_gate.lock_irqsave().flush_active = false;
     handle.inner.admission_async_waiters.notify_all();
 
     match poll_once(future.as_mut()) {
@@ -1147,7 +1147,7 @@ fn async_reads_respect_single_hardware_inflight_slot_and_return_dma() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     configure_test_irq_registrar(log);
 
     let mut reported_info = batching_queue_info();
@@ -1177,7 +1177,7 @@ fn async_reads_respect_single_hardware_inflight_slot_and_return_dma() {
     ))
     .unwrap();
     let mut release_first = ReleaseOnDrop(Some(release_tx));
-    let submission_channel = Arc::clone(&handle.inner.cpu_channels.lock()[0].channel);
+    let submission_channel = Arc::clone(&handle.inner.cpu_channels.lock_irqsave()[0].channel);
 
     let mut first_submit = Box::pin(handle.submit_owned_async(read_request(0, reported_info)));
     let first_subscription = match poll_once(first_submit.as_mut()) {

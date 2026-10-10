@@ -22,7 +22,7 @@ use axdevice_base::InterruptTriggerMode;
 /// PLIC, and LoongArch.
 ///
 /// Will be constructed by architecture interrupt routers and consumed by
-/// [`VcpuIrqDispatcher`](crate::runtime::VcpuIrqDispatcher) when a virtual
+/// the run-bound signal endpoint when a virtual
 /// device raises an interrupt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct VirtualInterruptId(pub u32);
@@ -32,7 +32,7 @@ pub struct VirtualInterruptId(pub u32);
 /// Carries the trigger mode (edge/level) so that architecture injection paths
 /// and routers can preserve the semantics declared by the device.
 ///
-/// Will be enqueued into [`VcpuIrqDispatcher`](crate::runtime::VcpuIrqDispatcher)
+/// Will be enqueued into a run-bound fixed signal slot
 /// and later drained by the target vCPU run loop for injection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingVcpuInterrupt {

@@ -41,7 +41,7 @@ use crate::{
     pseudofs::{
         Device, DeviceOps, DirMapping, SimpleFs, dev::irq_service::complete_irq_service_cycle,
     },
-    sync::IrqMutex,
+    sync::RawSpinLock,
 };
 const KEY_CNT: usize = EventType::Key.bits_count();
 
@@ -129,7 +129,7 @@ struct InputAbsInfo {
 const ABS_MAX: usize = 0x40;
 
 pub struct EventDev {
-    inner: IrqMutex<Inner>,
+    inner: RawSpinLock<Inner>,
     waiters: PollSet,
     /// IRQ domain id the runtime resolved for the underlying driver.
     irq: Option<IrqId>,
@@ -190,7 +190,7 @@ impl EventDev {
 
         let irq = device.irq_id();
         Self {
-            inner: IrqMutex::new(Inner {
+            inner: RawSpinLock::new(Inner {
                 device,
                 read_ahead: VecDeque::with_capacity(READ_AHEAD_CAP),
                 key_state: Bitmap::new(),
@@ -228,7 +228,7 @@ impl EventDev {
             let ty = EventType::from_repr(ty).ok_or(VfsError::InvalidInput)?;
             let mut kernel_bits = vec![0; size];
             {
-                let mut inner = self.inner.lock();
+                let mut inner = self.inner.lock_irqsave();
                 match inner.device.get_event_bits(ty, &mut kernel_bits) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -262,7 +262,7 @@ impl EventDev {
                 self.irq_handle.call_once(|| handle);
                 // Keep shared IRQ callbacks from acknowledging queued input
                 // before the device's software and hardware gates are enabled.
-                let mut inner = self.inner.lock();
+                let mut inner = self.inner.lock_irqsave();
                 if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
                     warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
                     return;
@@ -274,7 +274,7 @@ impl EventDev {
             }
             Err(err) => {
                 warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
-                self.inner.lock().device.disable_irq();
+                self.inner.lock_irqsave().device.disable_irq();
             }
         }
     }
@@ -331,7 +331,7 @@ impl EventDev {
     }
 
     fn drain_irq_events(&self) {
-        let ready = self.inner.lock().drain_into_queue();
+        let ready = self.inner.lock_irqsave().drain_into_queue();
         if ready {
             unsafe { self.waiters.wake(IoEvents::IN) };
         }
@@ -339,11 +339,11 @@ impl EventDev {
 
     fn handle_irq(&self) -> ax_runtime::hal::irq::IrqReturn {
         // Use `lock()` rather than `try_lock()` so the virtio ISR is always
-        // acknowledged. `IrqMutex` guarantees the holder has local IRQs
+        // acknowledged. `RawSpinLock` guarantees the holder has local IRQs
         // disabled, so this IRQ can only fire on a different CPU. Without the
         // ack, a level-triggered shared IRQ line stays asserted and can starve
         // other devices on the same line.
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         let event = inner.device.handle_irq();
         drop(inner);
         if event.input_ready {
@@ -444,7 +444,7 @@ impl DeviceOps for EventDev {
             return Err(VfsError::InvalidInput);
         }
         let mut read = 0;
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock_irqsave();
         // Drain the driver queue once up front so a single read() syscall
         // can return as many buffered events as the user buffer holds.
         inner.drain_into_queue();
@@ -494,7 +494,7 @@ impl DeviceOps for EventDev {
                 Ok(0)
             }
             EVIOCGID => {
-                let device_id = self.inner.lock().device.device_id();
+                let device_id = self.inner.lock_irqsave().device.device_id();
                 let user = UserPtr::<InputDeviceId>::from(arg);
                 user.write_field(
                     current,
@@ -540,18 +540,23 @@ impl DeviceOps for EventDev {
                         match nr {
                             // EVIOCGNAME
                             0x06 => {
-                                let name = self.inner.lock().device.name().to_string();
+                                let name = self.inner.lock_irqsave().device.name().to_string();
                                 return return_str(current, arg, size, &name);
                             }
                             // EVIOCGPHYS
                             0x07 => {
-                                let location =
-                                    self.inner.lock().device.physical_location().to_string();
+                                let location = self
+                                    .inner
+                                    .lock_irqsave()
+                                    .device
+                                    .physical_location()
+                                    .to_string();
                                 return return_str(current, arg, size, &location);
                             }
                             // EVIOCGUNIQ
                             0x08 => {
-                                let unique_id = self.inner.lock().device.unique_id().to_string();
+                                let unique_id =
+                                    self.inner.lock_irqsave().device.unique_id().to_string();
                                 return return_str(current, arg, size, &unique_id);
                             }
                             // EVIOCGPROP — device property bitmap. libinput
@@ -565,7 +570,7 @@ impl DeviceOps for EventDev {
                             // EVIOCGKEY
                             0x18 => {
                                 let key_state = {
-                                    let inner = self.inner.lock();
+                                    let inner = self.inner.lock_irqsave();
                                     let bytes = inner.key_state.as_bytes();
                                     let mut key_state = Vec::with_capacity(bytes.len());
                                     key_state.extend_from_slice(bytes);
@@ -624,7 +629,7 @@ impl DeviceOps for EventDev {
                             if !self.axis_supported(axis) {
                                 return Err(VfsError::InvalidInput);
                             }
-                            let info = match self.inner.lock().device.get_abs_info(axis) {
+                            let info = match self.inner.lock_irqsave().device.get_abs_info(axis) {
                                 Ok(info) => info,
                                 Err(err) => return Err(input_error_to_vfs_error(err)),
                             };
@@ -654,7 +659,7 @@ impl DeviceOps for EventDev {
 impl Pollable for EventDev {
     fn poll(&self) -> IoEvents {
         let mut events = IoEvents::empty();
-        events.set(IoEvents::IN, self.inner.lock().has_event());
+        events.set(IoEvents::IN, self.inner.lock_irqsave().has_event());
         events
     }
 
@@ -663,7 +668,7 @@ impl Pollable for EventDev {
             return;
         }
         unsafe { sink.register_shared(&self.waiters, IoEvents::IN) };
-        if self.inner.lock().has_event() {
+        if self.inner.lock_irqsave().has_event() {
             unsafe { self.waiters.wake(IoEvents::IN) };
         }
     }
@@ -677,7 +682,7 @@ impl Pollable for EventDev {
             return;
         }
         unsafe { sink.register_exclusive(&self.waiters, IoEvents::IN) };
-        if self.inner.lock().has_event() {
+        if self.inner.lock_irqsave().has_event() {
             unsafe { self.waiters.wake(IoEvents::IN) };
         }
     }

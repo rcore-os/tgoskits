@@ -34,7 +34,7 @@ sidebar_label: "路径与上下文"
 - `root_dir: Location`；
 - `current_dir: Location`。
 
-`FS_CONTEXT` 是 scope-local `Arc<SleepMutex<FsContext>>`，首次访问从 `ROOT_FS_CONTEXT` clone 并登记 weak reference。clone 普通 `FsContext` 会共享 mount namespace；`unshare_mount_namespace()` 才克隆挂载树。`current_fs_context()` 只在 scope-local clone 期间固定 CPU，返回 `Arc` 后结束 pin，再由调用者取得可睡眠锁。
+`FS_CONTEXT` 是 scope-local `Arc<Mutex<FsContext>>`，首次访问从 `ROOT_FS_CONTEXT` clone 并登记 weak reference。clone 普通 `FsContext` 会共享 mount namespace；`unshare_mount_namespace()` 才克隆挂载树。`current_fs_context()` 只在 scope-local clone 期间固定 CPU，返回 `Arc` 后结束 pin，再由调用者取得可睡眠锁。
 
 `root_dir` 是该 context 的可见上界，不一定是 namespace mount tree 的物理根。chroot 或 pivot 后，`..` 到达 `root_dir` 时停住，这是阻止 parent traversal 逃逸的关键不变量。
 
@@ -133,4 +133,4 @@ parent component 同时受 `Location` 的 mount 语义和 `FsContext::root_dir` 
 
 `FsContext::pivot_root()` 先验证 `new_root` 与 `put_old`，调用 mount tree 的 `pivot_mount()`，再把当前 context 的 root/cwd 修正到新拓扑。`propagate_pivot_root()` 通过 `FS_REGISTRY` 查找共享旧 mount namespace 的 live context，并按 Linux `chroot_fs_refs()` 类似语义修正位置。
 
-registry 只在短暂 `IrqMutex` 内清理并 clone weak references；实际取得每个 `FsContext` 的 sleep mutex 在 registry guard 释放后进行。路径和 namespace 回归必须同时覆盖 symlink、mount root、chroot root、relative cwd 和 namespace clone；只对 `Path::normalize()` 做字符串测试不足以验证可见路径语义。
+registry 只在短暂 `RawSpinLock` 内清理并 clone weak references；实际取得每个 `FsContext` 的 sleep mutex 在 registry guard 释放后进行。路径和 namespace 回归必须同时覆盖 symlink、mount root、chroot root、relative cwd 和 namespace clone；只对 `Path::normalize()` 做字符串测试不足以验证可见路径语义。

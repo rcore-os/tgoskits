@@ -19,7 +19,7 @@
 )))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use axvm::{AxVmError, AxVmResult};
 use axvm::{boot::*, config::*, *};
 use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
@@ -41,18 +41,11 @@ pub fn init_guest_vms() -> Result<()> {
     Ok(())
 }
 
-pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
+pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
     let image_provider = AxvisorBootImageProvider;
     let vm_create_config =
         GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
-
-    #[cfg(all(any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )))]
-    let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
     if let Some(linux) = get_image_header(&vm_create_config, &image_provider) {
         debug!(
@@ -65,37 +58,45 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
-
     sync_axvm_config_from_crate_config(&mut vm_config, prepared_config);
-
     vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
-    // info!("after parse_vm_interrupt, crate VM[{}] with config: {:#?}", vm_config.id(), vm_config);
-    info!("Creating VM[{}] {:?}", vm_config.id(), vm_config.name());
+    Ok(VmCreatePlan {
+        config: vm_config,
+        boot: prepared_boot,
+        images: alloc::sync::Arc::new(image_provider),
+        vcpu_schedule_policy: {
+            #[cfg(feature = "bench-fifo-vcpu-policy")]
+            {
+                let priority = axvm::RtPriority::new(80)
+                    .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
+                axvm::SchedulePolicy::fifo(priority)
+            }
+            #[cfg(not(feature = "bench-fifo-vcpu-policy"))]
+            {
+                axvm::SchedulePolicy::default()
+            }
+        },
+    })
+}
 
-    // Create VM.
-    let vm =
-        create_guest_vm(vm_config).with_context(|| format!("create VM[{configured_vm_id}]"))?;
-    let vm_id = vm.id();
+pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
+    let plan = prepare_guest_vm(raw_cfg)?;
+    let vm_id = plan.config.id();
 
-    let memory_layout = vm
-        .prepare_memory_layout()
-        .with_context(|| format!("prepare memory layout for VM[{vm_id}]"))?;
-    let main_mem = memory_layout.main_memory().clone();
+    #[cfg(all(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )))]
+    let release_host_filesystem = vm_config_needs_host_filesystem_release(
+        &GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?,
+    );
 
-    // Load corresponding images for VM.
-    info!("VM[{}] created success, loading images...", vm.id());
-
-    prepared_boot
-        .load_images(main_mem, vm.clone(), &image_provider)
-        .with_context(|| format!("load boot images for VM[{vm_id}]"))?;
-
-    vm.prepare()
-        .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
-
-    if !axvm::register_vm(vm.clone()) {
-        bail!("register VM[{vm_id}]: a VM with this ID already exists");
-    }
+    crate::manager::manager()
+        .create_plan(plan)?
+        .wait()
+        .with_context(|| format!("create VM[{vm_id}]"))?;
 
     #[cfg(all(any(
         target_arch = "aarch64",
@@ -103,39 +104,10 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         target_arch = "loongarch64"
     )))]
     if release_host_filesystem {
-        axvm::host::register_block_passthrough_irq(&vm)
-            .context("register host block passthrough IRQ route")?;
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
 
     Ok(vm_id)
-}
-
-/// Fixed FIFO priority for the vCPU host tasks of the task-switch benchmark.
-///
-/// Only the dedicated Rust-Shyper task-switch board build enables
-/// `bench-fifo-vcpu-policy`; the value is well inside `RtPriority`'s `1..=99`
-/// range, so construction cannot fail for this constant.
-#[cfg(feature = "bench-fifo-vcpu-policy")]
-const BENCH_VCPU_FIFO_PRIORITY: u8 = 80;
-
-/// Creates a guest VM with the vCPU host-task scheduling policy of this build.
-///
-/// The default is AxVM's Fair policy. Only the benchmark build enables
-/// `bench-fifo-vcpu-policy` and selects an explicit FIFO policy at VM creation
-/// time, so every vCPU of the VM, including restart paths, shares one immutable
-/// policy.
-fn create_guest_vm(vm_config: AxVMConfig) -> AxVmResult<AxVMRef> {
-    #[cfg(feature = "bench-fifo-vcpu-policy")]
-    {
-        let priority = axvm::RtPriority::new(BENCH_VCPU_FIFO_PRIORITY)
-            .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
-        AxVM::new_with_vcpu_schedule_policy(vm_config, axvm::SchedulePolicy::fifo(priority))
-    }
-    #[cfg(not(feature = "bench-fifo-vcpu-policy"))]
-    {
-        AxVM::new(vm_config)
-    }
 }
 
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {

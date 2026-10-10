@@ -1,0 +1,74 @@
+args = [
+    "-nographic", "-snapshot", "-cpu", "cortex-a72",
+    "-machine", "virt,virtualization=on,gic-version=3",
+    "-smp", "4", "-m", "8g",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append", "root=/dev/nvme0n1 rw init=/bin/sh",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b", "(?i)unhandled page fault",
+    "ivc publish failed", "ivc subscribe failed",
+]
+timeout = 120
+to_bin = true
+uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 1"
+success_regex = ["VM\\[1\\] started successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ["Attached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "ivc notify irq enabled"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 2"
+success_regex = ["VM\\[2\\] started successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm resume 1"
+success_regex = ["VM\\[1\\] resumed successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+    "Attached VM\\[1\\] console",
+    "ivc ack seq=5 msg=ack from arceos subscriber",
+]
+
+[[shell_check_steps]]
+shell_prefix = "ivc ack seq=5 msg=ack from arceos subscriber"
+shell_cmd = "\u0018h"
+success_regex = [
+    "detached VM\\[1\\] console",
+    "VM\\[1\\] stopped; returning to the management shell",
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = [
+    "Attached VM\\[2\\] console",
+    "(?:ivc demo pass|ivc subscriber full-duplex demo complete)",
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 1"
+success_regex = ["VM\\[1\\] removed"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 2"
+success_regex = ["VM\\[2\\] removed"]

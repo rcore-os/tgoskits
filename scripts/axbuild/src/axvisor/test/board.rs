@@ -1,15 +1,32 @@
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::PathBuf,
+};
+
 use anyhow::Context;
-use ostool::{board::RunBoardOptions, run::uboot::UbootConfig};
+use ostool::{board::RunBoardOptions, build::config::Cargo, run::uboot::UbootConfig};
 
 use super::{
     AXVISOR_NORMAL_GROUP, BoardTestGroup, discover_board_test_groups,
-    discovery::{discover_test_group_names, discover_uboot_test_group, test_suite_root},
+    discovery::{discover_test_group_names, discover_uboot_test_group, suite_roots_label},
 };
 use crate::{
     axvisor::{ArgsTestBoard, ArgsTestUboot, Axvisor, build},
     context::{AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
     test::{board as board_test, qemu as test_qemu},
 };
+
+struct PreparedBoardBuild {
+    cargo: Cargo,
+    request: ResolvedAxvisorRequest,
+    elf_path: PathBuf,
+}
+
+struct PreparedBoardBuildGroup {
+    cargo: Cargo,
+    result: Result<PreparedBoardBuild, String>,
+}
 
 impl Axvisor {
     pub(super) async fn test_uboot(&mut self, args: ArgsTestUboot) -> anyhow::Result<()> {
@@ -80,8 +97,8 @@ impl Axvisor {
                     match discover_board_test_groups(
                         self.app.workspace_root(),
                         &group,
-                        args.test_case.as_deref(),
-                        args.board.as_deref(),
+                        &args.test_case,
+                        &args.board,
                     ) {
                         Ok(groups) if groups.is_empty() => None,
                         Ok(groups) => Some(Ok((group, board_test::labeled_board_cases(groups)))),
@@ -99,7 +116,7 @@ impl Axvisor {
             if groups.is_empty() {
                 anyhow::bail!(
                     "no Axvisor board test groups found under {}",
-                    test_suite_root(self.app.workspace_root()).display()
+                    suite_roots_label(self.app.workspace_root())
                 );
             }
             println!(
@@ -113,8 +130,8 @@ impl Axvisor {
         let groups = discover_board_test_groups(
             self.app.workspace_root(),
             test_group,
-            args.test_case.as_deref(),
-            args.board.as_deref(),
+            &args.test_case,
+            &args.board,
         )?;
         if args.list {
             let case_names = board_test::labeled_board_cases(groups);
@@ -126,6 +143,7 @@ impl Axvisor {
         }
 
         let mut run_state = board_test::BoardTestRunState::new("axvisor", groups.len());
+        let mut runnable = Vec::new();
         for (index, group) in groups.into_iter().enumerate() {
             let group_label = run_state.start_group(index, &group);
             let board_test_config = group.board_test_config_path.clone();
@@ -138,24 +156,156 @@ impl Axvisor {
                 continue;
             }
 
-            let result = async {
-                super::guest_build::prepare(&mut self.app, &board_test_config).await?;
+            runnable.push((group_label, group));
+        }
+
+        let mut build_groups = BTreeMap::<PathBuf, Vec<usize>>::new();
+        let mut resolved_build_configs = HashMap::<usize, PathBuf>::new();
+        let mut build_config_errors = HashMap::<usize, String>::new();
+        for (position, (_, group)) in runnable.iter().enumerate() {
+            match group.build_config.canonicalize() {
+                Ok(build_config) => {
+                    resolved_build_configs.insert(position, build_config.clone());
+                    build_groups.entry(build_config).or_default().push(position);
+                }
+                Err(error) => {
+                    build_config_errors.insert(
+                        position,
+                        format!(
+                            "failed to resolve Axvisor board build config `{}`: {error}",
+                            group.build_config.display()
+                        ),
+                    );
+                }
+            }
+        }
+
+        // Board test TOMLs only select runtime payloads and checks. Build each
+        // unique host kernel once and preserve its ELF before the next build.
+        let artifact_parent = self.app.target_dir().join("axbuild");
+        fs::create_dir_all(&artifact_parent).with_context(|| {
+            format!(
+                "failed to create Axvisor board artifact parent {}",
+                artifact_parent.display()
+            )
+        })?;
+        let artifact_directory = tempfile::Builder::new()
+            .prefix("axvisor-board-artifacts-")
+            .tempdir_in(&artifact_parent)
+            .context("failed to create temporary Axvisor board artifact directory")?;
+        let mut prepared_builds = Vec::<PreparedBoardBuildGroup>::new();
+        let mut config_to_build = HashMap::<PathBuf, usize>::new();
+        for (build_config, positions) in build_groups {
+            let group = &runnable[positions[0]].1;
+            let prepared = async {
                 let request = self.prepare_request(
-                    axvisor_board_test_build_args(&group),
+                    axvisor_board_test_build_args(group),
                     None,
                     None,
                     SnapshotPersistence::Discard,
                 )?;
-                let mut request = Self::board_test_request(request);
+                let request = Self::board_test_request(request);
+                self.app.set_debug_mode(request.debug)?;
                 let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
+                Ok::<_, anyhow::Error>((request, cargo))
+            }
+            .await;
+            let (request, cargo) = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let index = prepared_builds.len();
+                    prepared_builds.push(PreparedBoardBuildGroup {
+                        cargo: Default::default(),
+                        result: Err(format!("{error:#}")),
+                    });
+                    config_to_build.insert(build_config, index);
+                    continue;
+                }
+            };
+            if let Some(index) = prepared_builds
+                .iter()
+                .position(|existing| existing.result.is_ok() && existing.cargo == cargo)
+            {
+                config_to_build.insert(build_config, index);
+                continue;
+            }
+
+            let result_cargo = cargo.clone();
+            let result = async {
+                let output = self
+                    .app
+                    .build(cargo.clone(), request.build_info_path.clone())
+                    .await?;
+                let elf_path = test_qemu::preserve_build_artifact(
+                    output.elf_path(),
+                    artifact_directory.path(),
+                    prepared_builds.len(),
+                )?;
+                Ok::<_, anyhow::Error>(PreparedBoardBuild {
+                    cargo: result_cargo,
+                    request,
+                    elf_path,
+                })
+            }
+            .await;
+            let index = prepared_builds.len();
+            prepared_builds.push(PreparedBoardBuildGroup {
+                cargo: cargo.clone(),
+                result: result.map_err(|error| format!("{error:#}")),
+            });
+            config_to_build.insert(build_config, index);
+        }
+
+        for (position, (group_label, group)) in runnable.into_iter().enumerate() {
+            let board_test_config = group.board_test_config_path.clone();
+            let board_test_config_summary = board_test_config.display().to_string();
+            if let Some(error) = build_config_errors.get(&position) {
+                run_state.fail_group(group_label, anyhow::anyhow!("{error}"));
+                continue;
+            }
+            let Some(build_config) = resolved_build_configs.get(&position) else {
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!(
+                        "missing resolved build config for `{}`",
+                        group.build_config.display()
+                    ),
+                );
+                continue;
+            };
+            let Some(build_index) = config_to_build.get(build_config) else {
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!("missing prepared build for `{}`", build_config.display()),
+                );
+                continue;
+            };
+            let prepared = match &prepared_builds[*build_index].result {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    run_state.fail_group(
+                        group_label,
+                        anyhow::anyhow!("shared build failed for case: {error}"),
+                    );
+                    continue;
+                }
+            };
+
+            let result = async {
+                super::guest_build::prepare(&mut self.app, &board_test_config).await?;
+                let mut request = prepared.request.clone();
+                // Cargo identity is shared, but each board case keeps its own
+                // build metadata and guest resource selection.
+                request.build_info_path = group.build_config.clone();
                 let mut board_config = self
-                    .load_board_config(&cargo, Some(board_test_config.as_path()))
+                    .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
                 self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
                     .await?;
                 self.app
-                    .board(
-                        cargo,
+                    .board_prepared_elf(
+                        prepared.elf_path.clone(),
+                        prepared.cargo.to_bin,
                         request.build_info_path,
                         board_config,
                         RunBoardOptions {

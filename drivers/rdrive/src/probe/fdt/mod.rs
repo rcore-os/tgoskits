@@ -6,7 +6,7 @@ use alloc::{
 use core::ptr::NonNull;
 
 use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use fdt_edit::Node;
 pub use fdt_edit::{ClockRef, Fdt, InterruptRef, NodeId, NodeType, Phandle, RegInfo, Status};
 use rdif_pinctrl::{PinctrlDevice, PinctrlError};
@@ -1209,9 +1209,9 @@ pub struct System {
     fdt: Fdt,
     phandle_2_device_id: BTreeMap<Phandle, DeviceId>,
     node_2_device_id: BTreeMap<NodeId, DeviceId>,
-    populated_paths: Mutex<BTreeMap<String, DeviceId>>,
-    populated_nodes: Mutex<BTreeSet<NodeId>>,
-    child_owners: Mutex<BTreeMap<NodeId, DeviceId>>,
+    populated_paths: RawSpinLock<BTreeMap<String, DeviceId>>,
+    populated_nodes: RawSpinLock<BTreeSet<NodeId>>,
+    child_owners: RawSpinLock<BTreeMap<NodeId, DeviceId>>,
 }
 
 unsafe impl Send for System {}
@@ -1270,9 +1270,9 @@ impl System {
             fdt,
             phandle_2_device_id,
             node_2_device_id,
-            populated_paths: Mutex::new(BTreeMap::new()),
-            populated_nodes: Mutex::new(BTreeSet::new()),
-            child_owners: Mutex::new(BTreeMap::new()),
+            populated_paths: RawSpinLock::new(BTreeMap::new()),
+            populated_nodes: RawSpinLock::new(BTreeSet::new()),
+            child_owners: RawSpinLock::new(BTreeMap::new()),
         })
     }
 

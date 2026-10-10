@@ -18,9 +18,9 @@ pub(crate) use paging::PagingHandler;
 pub(crate) use traits::HostHardTimerAction;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use traits::HostTimerAction;
-#[cfg(not(target_arch = "riscv64"))]
-pub(crate) use traits::HostTimerCancelOutcome;
-pub(crate) use traits::{HostCpu, HostMemory, HostPlatform, HostTime, HostTimer};
+pub(crate) use traits::{
+    HostCpu, HostMemory, HostPlatform, HostTime, HostTimer, HostTimerCancelOutcome,
+};
 
 /// Physical host-CPU information required by an AxVM application.
 pub mod cpu {
@@ -38,21 +38,8 @@ pub mod cpu {
 }
 
 /// Shut down host filesystems before their devices are transferred to a guest.
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub fn shutdown_filesystems() -> crate::AxVmResult {
     arceos::shutdown_host_filesystems()
-}
-
-/// Register any host interrupt route required by the selected block-passthrough profile.
-#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-pub fn register_block_passthrough_irq(vm: &crate::AxVMRef) -> crate::AxVmResult {
-    arceos::register_qemu_block_passthrough_irq(vm)
-}
-
-/// Other architectures do not require a host block interrupt forwarding route.
-#[cfg(all(feature = "host-fs", not(target_arch = "x86_64")))]
-pub fn register_block_passthrough_irq(_vm: &crate::AxVMRef) -> crate::AxVmResult {
-    Ok(())
 }
 
 /// Detach any host block device selected for guest passthrough.

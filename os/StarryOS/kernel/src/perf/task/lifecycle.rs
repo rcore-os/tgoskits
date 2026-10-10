@@ -10,11 +10,11 @@ pub fn on_exec(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let _guard = crate::sync::NoPreemptIrqSave::new();
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
     perf_sched_out(thr);
     thr.perf_context().with_counters(|counters| {
         for ptc in counters.iter() {
-            if ptc.run_state.lock().is_stopping() {
+            if ptc.run_state.lock_irqsave().is_stopping() {
                 continue;
             }
             if ptc.enable_on_exec.swap(false, Ordering::AcqRel) {
@@ -54,7 +54,7 @@ pub(in crate::perf) fn sideband_target(
     if !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
-    let ring = ptc.output.lock().effective()?.0;
+    let ring = ptc.output.lock_irqsave().effective()?.0;
     let pid = visible_tgid(ptc, &thread.proc_data.identity())?;
     let tid = visible_tid(ptc, &thread.pid_identity())?;
     Some(SidebandTarget {
@@ -157,7 +157,7 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<()> {
     if ptc.resources_released() {
         return Ok(());
     }
-    let close_action = ptc.run_state.lock().begin_close();
+    let close_action = ptc.run_state.lock_irqsave().begin_close();
     let stop_result = match close_action {
         PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => Ok(()),
         PmuCloseAction::Stop(lease) => cpu_worker::stop_task_counter(Arc::clone(ptc), lease),

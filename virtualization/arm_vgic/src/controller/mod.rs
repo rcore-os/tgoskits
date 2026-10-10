@@ -1,27 +1,28 @@
 //! Per-VM GICv3 controller and its stable delivery API.
 
 mod binding;
+mod its_service;
 mod mmio;
 mod physical;
+mod slots;
 mod state;
 mod v2;
 
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
+use core::ops::Deref;
 
-use ax_sync::{SpinLock, SpinLockIrqSaveGuard};
-use axdevice_base::ItsId;
+use ax_sync::RawSpinLock;
+use axdevice_base::{InterruptControllerId, ItsId};
 pub use binding::GicV3VcpuBinding;
+use its_service::ItsService;
+use slots::{CanonicalMap, CanonicalSet};
+pub use state::PhysicalRecordFailure;
 
 use crate::{
     ArmVgicConfig, DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config,
     GicV3MmioRegion, GicV3SpiOwnership, GicVcpuId, GuestMemory, IntId, InterruptState, ItsDeviceId,
-    ItsState, LPI_INTID_MAX, PhysicalInterruptBinding, PhysicalMsiBinding, PpiId,
-    RedistributorState, SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
-    backend_result,
+    LPI_INTID_MAX, LpiId, PhysicalInterruptBinding, PhysicalMsiBinding, PpiId, RedistributorState,
+    SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult, backend_result,
 };
 
 /// Runtime wake capability associated with one attached vCPU.
@@ -30,50 +31,69 @@ pub trait GicV3VcpuWake: Send + Sync {
     fn wake(&self) -> VgicResult;
 }
 
-/// One VM-local GICv3 controller.
+/// Native delivery and CPU-interface port.
+///
+/// Holds only the canonical raw interrupt state, the checked backend, and the
+/// immutable configuration. It deliberately contains no guest-memory
+/// capability, task-side mutex, resolver map, or full controller. A hardware
+/// entry, CPU-interface binding, or wired IRQ sink that a hard IRQ can reach
+/// therefore cannot observe a sleepable lock transitively through this type.
+#[derive(Clone)]
+pub struct GicV3Native {
+    inner: Arc<ControllerInner>,
+}
+
+/// One VM-local GICv3 controller: the native port plus the task-side software
+/// ITS state.
+///
+/// Only the task-side device graph and control plane hold this value. Hardware
+/// facing holders (the architecture entry, CPU-interface bindings, wired IRQ
+/// sinks, and vCPU backends) retain a [`GicV3Native`] instead.
 #[derive(Clone)]
 pub struct GicV3Controller {
-    inner: Arc<ControllerInner>,
+    native: GicV3Native,
+    its: Arc<ItsService>,
+}
+
+impl Deref for GicV3Controller {
+    type Target = GicV3Native;
+
+    fn deref(&self) -> &GicV3Native {
+        &self.native
+    }
 }
 
 /// Version-neutral canonical VGIC controller used by architecture frontends.
 pub type VgicController = GicV3Controller;
 
-impl core::fmt::Debug for GicV3Controller {
+impl core::fmt::Debug for GicV3Native {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
-            .debug_struct("GicV3Controller")
+            .debug_struct("GicV3Native")
             .field("config", &self.inner.config)
             .finish_non_exhaustive()
     }
 }
 
+impl core::fmt::Debug for GicV3Controller {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("GicV3Controller")
+            .field("config", &self.native.inner.config)
+            .finish_non_exhaustive()
+    }
+}
+
 struct ControllerInner {
+    id: InterruptControllerId,
     config: ControllerConfig,
     gicv3_config: Option<GicV3Config>,
     backend: Arc<dyn GicV3Backend>,
-    guest_memory: Option<Arc<dyn GuestMemory>>,
     // Wired inputs and physical IRQ forwarding can enter from a hard IRQ
     // while the vCPU run path is folding LR state on the same CPU. Saving
     // local IRQ state before taking the canonical state lock prevents that
     // re-entry from spinning on a lock interrupted code already owns.
-    state: ControllerStateLock,
-}
-
-struct ControllerStateLock(SpinLock<ControllerState>);
-
-impl ControllerStateLock {
-    const fn new(state: ControllerState) -> Self {
-        Self(SpinLock::new(state))
-    }
-
-    fn lock(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
-        self.0.lock_irqsave()
-    }
-
-    fn lock_irqsave(&self) -> SpinLockIrqSaveGuard<'_, ControllerState> {
-        self.lock()
-    }
+    state: RawSpinLock<ControllerState>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,25 +199,88 @@ impl ControllerConfig {
 
 struct ControllerState {
     distributor: DistributorState,
-    redistributors: BTreeMap<GicVcpuId, RedistributorState>,
-    spi_backings: BTreeMap<SpiId, SpiBacking>,
-    physical_spi_acknowledged: BTreeMap<SpiId, bool>,
-    releasing_physical_spis: BTreeSet<SpiId>,
-    msi_backings: BTreeMap<(ItsId, ItsDeviceId, EventId), MsiBacking>,
-    vcpu_interfaces: BTreeMap<GicVcpuId, CpuInterfacePhase>,
-    its: BTreeMap<ItsId, ItsState>,
+    redistributors: CanonicalMap<GicVcpuId, RedistributorState>,
+    spi_backings: CanonicalMap<SpiId, SpiBacking>,
+    physical_spi_acknowledged: CanonicalMap<SpiId, bool>,
+    releasing_physical_spis: CanonicalSet<SpiId>,
+    msi_backings: CanonicalMap<(ItsId, ItsDeviceId, EventId), MsiBacking>,
+    cpu_interfaces: CpuInterfacePhases,
+    /// Preallocated sweep buffer for one CPU-interface refill.
+    ///
+    /// The refill must snapshot the owned SPIs before it can queue them,
+    /// because queueing needs `&mut self`. Reserving the capacity at controller
+    /// creation keeps that snapshot allocation-free, and taking the buffer by
+    /// value keeps the reserved capacity for the next refill.
+    acknowledged_scratch: Vec<SpiId>,
+}
+
+/// Fixed per-vCPU CPU-interface phases.
+///
+/// The array is sized once from immutable configuration, so folding a hardware
+/// load or save writes a slot instead of inserting or removing a map entry. The
+/// CPU-pinned, IRQ-masked load/save path therefore never allocates or frees
+/// while the canonical state lock is held.
+struct CpuInterfacePhases {
+    slots: Vec<CpuInterfacePhase>,
+}
+
+impl CpuInterfacePhases {
+    fn new(vcpu_count: usize) -> Self {
+        Self {
+            slots: alloc::vec![CpuInterfacePhase::Idle; vcpu_count],
+        }
+    }
+
+    /// Returns one vCPU's phase.
+    ///
+    /// An id without a Redistributor is `Idle`: `attach_vcpu` rejects ids at or
+    /// above the configured vCPU count, so the slots cover every attachable id.
+    fn phase(&self, vcpu: GicVcpuId) -> CpuInterfacePhase {
+        self.slots
+            .get(vcpu.raw())
+            .copied()
+            .unwrap_or(CpuInterfacePhase::Idle)
+    }
+
+    fn set(&mut self, vcpu: GicVcpuId, phase: CpuInterfacePhase) {
+        if let Some(slot) = self.slots.get_mut(vcpu.raw()) {
+            *slot = phase;
+        }
+    }
+
+    /// Whether any vCPU still owns a loaded or retiring CPU interface.
+    fn any_active(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|phase| *phase != CpuInterfacePhase::Idle)
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CpuInterfacePhase {
+    /// No CPU interface is loaded for this vCPU.
+    Idle,
     Loaded,
     // Hardware state is saved, but lock-free backing retirements still own it.
     Retiring,
 }
 
 impl ControllerState {
+    fn cpu_interface_phase(&self, vcpu: GicVcpuId) -> CpuInterfacePhase {
+        self.cpu_interfaces.phase(vcpu)
+    }
+
+    fn set_cpu_interface_phase(&mut self, vcpu: GicVcpuId, phase: CpuInterfacePhase) {
+        self.cpu_interfaces.set(vcpu, phase);
+    }
+
     fn cpu_interface_loaded(&self, vcpu: GicVcpuId) -> bool {
-        self.vcpu_interfaces.get(&vcpu) == Some(&CpuInterfacePhase::Loaded)
+        self.cpu_interface_phase(vcpu) == CpuInterfacePhase::Loaded
+    }
+
+    /// Whether any vCPU still owns a loaded or retiring CPU interface.
+    fn any_cpu_interface_active(&self) -> bool {
+        self.cpu_interfaces.any_active()
     }
 }
 
@@ -211,6 +294,42 @@ enum SpiBacking {
 enum MsiBacking {
     Software { reserved_lpi: Option<crate::LpiId> },
     Physical(PhysicalMsiBinding),
+}
+
+impl GicV3Native {
+    /// Builds the native port from already-validated immutable configuration.
+    fn new(
+        id: InterruptControllerId,
+        config: ControllerConfig,
+        gicv3_config: Option<GicV3Config>,
+        backend: Arc<dyn GicV3Backend>,
+    ) -> VgicResult<Self> {
+        let distributor = DistributorState::new(config.spi_count())?;
+        let cpu_interfaces = CpuInterfacePhases::new(config.vcpu_count());
+        let acknowledged_scratch = Vec::with_capacity(config.spi_count());
+        let redistributors = CanonicalMap::with_capacity(config.vcpu_count());
+        let spi_backings = CanonicalMap::with_capacity(config.spi_count());
+        let physical_spi_acknowledged = CanonicalMap::with_capacity(config.spi_count());
+        let releasing_physical_spis = CanonicalSet::with_capacity(config.spi_count());
+        Ok(Self {
+            inner: Arc::new(ControllerInner {
+                id,
+                config,
+                gicv3_config,
+                backend,
+                state: RawSpinLock::new(ControllerState {
+                    distributor,
+                    redistributors,
+                    spi_backings,
+                    physical_spi_acknowledged,
+                    releasing_physical_spis,
+                    msi_backings: CanonicalMap::with_capacity(0),
+                    cpu_interfaces,
+                    acknowledged_scratch,
+                }),
+            }),
+        })
+    }
 }
 
 impl GicV3Controller {
@@ -231,30 +350,10 @@ impl GicV3Controller {
             });
         }
         let common = ControllerConfig::from_gicv3(&config);
-        let distributor = DistributorState::new(common.spi_count())?;
-        let its = config
-            .its_instances()
-            .iter()
-            .map(|(id, _)| (*id, ItsState::new()))
-            .collect();
-        Ok(Self {
-            inner: Arc::new(ControllerInner {
-                config: common,
-                gicv3_config: Some(config),
-                backend,
-                guest_memory,
-                state: ControllerStateLock::new(ControllerState {
-                    distributor,
-                    redistributors: BTreeMap::new(),
-                    spi_backings: BTreeMap::new(),
-                    physical_spi_acknowledged: BTreeMap::new(),
-                    releasing_physical_spis: BTreeSet::new(),
-                    msi_backings: BTreeMap::new(),
-                    vcpu_interfaces: BTreeMap::new(),
-                    its,
-                }),
-            }),
-        })
+        let its = Arc::new(ItsService::new(guest_memory, common.its_instances()));
+        let native =
+            GicV3Native::new(InterruptControllerId::new(0), common, Some(config), backend)?;
+        Ok(Self { native, its })
     }
 
     pub(crate) fn new_from_arm_config(
@@ -268,34 +367,25 @@ impl GicV3Controller {
                 detail: "a guest-visible ITS requires a guest-memory capability".into(),
             });
         }
-        let distributor = DistributorState::new(common.spi_count())?;
-        let its = common
-            .its_instances()
-            .iter()
-            .map(|(id, _)| (*id, ItsState::new()))
-            .collect();
+        let its = Arc::new(ItsService::new(guest_memory, common.its_instances()));
         let gicv3_config = match config {
             ArmVgicConfig::V2(_) => None,
             ArmVgicConfig::V3(_) => Some(config.internal_gicv3_config()?),
         };
-        Ok(Self {
-            inner: Arc::new(ControllerInner {
-                config: common,
-                gicv3_config,
-                backend,
-                guest_memory,
-                state: ControllerStateLock::new(ControllerState {
-                    distributor,
-                    redistributors: BTreeMap::new(),
-                    spi_backings: BTreeMap::new(),
-                    physical_spi_acknowledged: BTreeMap::new(),
-                    releasing_physical_spis: BTreeSet::new(),
-                    msi_backings: BTreeMap::new(),
-                    vcpu_interfaces: BTreeMap::new(),
-                    its,
-                }),
-            }),
-        })
+        let native = GicV3Native::new(config.controller_id(), common, gicv3_config, backend)?;
+        Ok(Self { native, its })
+    }
+
+    /// Returns the native delivery port retained by hardware-facing holders.
+    pub fn native_port(&self) -> GicV3Native {
+        self.native.clone()
+    }
+}
+
+impl GicV3Native {
+    /// Returns the VM-local controller identifier.
+    pub fn id(&self) -> InterruptControllerId {
+        self.inner.id
     }
 
     /// Returns immutable validated configuration.
@@ -324,11 +414,22 @@ impl GicV3Controller {
                 operation: "attach GICv3 vCPU",
             });
         }
+        let redistributor = RedistributorState::new(
+            vcpu,
+            affinity,
+            self.inner.config.list_register_count(),
+            self.inner.config.spi_count(),
+            wake,
+        )?;
         let mut state = self.inner.state.lock_irqsave();
         if state.redistributors.contains_key(&vcpu) {
-            return Err(VgicError::ResourceConflict {
-                resource: "vCPU attachment",
-                detail: alloc::format!("vCPU {} is already attached", vcpu.raw()),
+            return Err(VgicError::NativeState {
+                operation: "attach GICv3 vCPU",
+                vcpu: Some(vcpu.raw()),
+                intid: None,
+                reason: "the vCPU is already attached",
+                kind: crate::StateErrorKind::ResourceBusy,
+                detail: crate::NativeStateDetail::None,
             });
         }
         if state
@@ -336,26 +437,119 @@ impl GicV3Controller {
             .values()
             .any(|redistributor| redistributor.affinity() == affinity)
         {
-            return Err(VgicError::ResourceConflict {
-                resource: "Redistributor affinity",
-                detail: alloc::format!("affinity {affinity:?} is already attached"),
+            return Err(VgicError::NativeState {
+                operation: "attach GICv3 vCPU",
+                vcpu: Some(vcpu.raw()),
+                intid: None,
+                reason: "the Redistributor affinity is already attached",
+                kind: crate::StateErrorKind::ResourceBusy,
+                detail: crate::NativeStateDetail::None,
             });
         }
-        state.redistributors.insert(
-            vcpu,
-            RedistributorState::new(
-                vcpu,
-                affinity,
-                self.inner.config.list_register_count(),
-                self.inner.config.spi_count(),
-                wake,
-            )?,
-        );
+        state.redistributors.insert(vcpu, redistributor);
         if let Err(error) = state.queue_pending_spis_for_vcpu(vcpu, &self.inner.config) {
-            state.redistributors.remove(&vcpu);
+            let retired = state.redistributors.remove(&vcpu);
+            drop(state);
+            drop(retired);
             return Err(error);
         }
         Ok(GicV3VcpuBinding::new(self.clone(), vcpu))
+    }
+
+    /// Applies one task-side MSI table transaction with a prepared spare slot.
+    /// Native callers only look up entries; growth and retired-buffer release
+    /// occur outside the raw guard, even when another configuration races us.
+    fn with_msi_backings<T>(
+        &self,
+        update: impl FnOnce(
+            &mut CanonicalMap<(ItsId, ItsDeviceId, EventId), MsiBacking>,
+        ) -> VgicResult<T>,
+    ) -> VgicResult<T> {
+        loop {
+            let required =
+                {
+                    let mut state = self.inner.state.lock_irqsave();
+                    if state.msi_backings.entries.len() < state.msi_backings.entries.capacity() {
+                        return update(&mut state.msi_backings);
+                    }
+                    state.msi_backings.entries.len().checked_add(1).ok_or(
+                        VgicError::NativeState {
+                            operation: "prepare MSI backing slot",
+                            vcpu: None,
+                            intid: None,
+                            reason: "the MSI namespace capacity is exhausted",
+                            kind: crate::StateErrorKind::ResourceBusy,
+                            detail: crate::NativeStateDetail::None,
+                        },
+                    )?
+                };
+            let capacity = required.checked_mul(2).unwrap_or(required);
+            let mut prepared = Vec::with_capacity(capacity);
+            let mut state = self.inner.state.lock_irqsave();
+            if state.msi_backings.entries.len() < state.msi_backings.entries.capacity() {
+                drop(state);
+                continue;
+            }
+            if state.msi_backings.entries.len() >= prepared.capacity() {
+                drop(state);
+                continue;
+            }
+            prepared.append(&mut state.msi_backings.entries);
+            core::mem::swap(&mut prepared, &mut state.msi_backings.entries);
+            drop(state);
+            drop(prepared);
+        }
+    }
+
+    /// Materializes LPI records for one vCPU without allocating under the raw
+    /// guard.
+    ///
+    /// Task context only. LPIs become deliverable only after this call, so the
+    /// native raw paths never grow the record or delivery storage. A detached
+    /// Redistributor is tolerated: the delivery path reports the detached
+    /// target once the guard is released.
+    pub(crate) fn ensure_lpi_records(&self, vcpu: GicVcpuId, lpis: &[LpiId]) {
+        if lpis.is_empty() {
+            return;
+        }
+        loop {
+            let (records, queue_capacity, missing) = {
+                let state = self.inner.state.lock_irqsave();
+                let Some(redistributor) = state.redistributors.get(&vcpu) else {
+                    return;
+                };
+                let missing = lpis
+                    .iter()
+                    .filter(|lpi| !redistributor.lpi_prepared(**lpi))
+                    .count();
+                (
+                    redistributor.lpi_record_count(),
+                    redistributor.delivery_queue_capacity(),
+                    missing,
+                )
+            };
+            if missing == 0 {
+                return;
+            }
+            let mut capacity =
+                RedistributorState::reserve_lpi_capacity(records, queue_capacity, missing);
+            let displaced = {
+                let mut state = self.inner.state.lock_irqsave();
+                let Some(redistributor) = state.redistributors.get_mut(&vcpu) else {
+                    return;
+                };
+                redistributor.try_install_lpis(&mut capacity, lpis)
+            };
+            match displaced {
+                Some(displaced) => {
+                    // Dropping the displaced buffers after the guard is what
+                    // keeps the in-guard install allocation- and free-free.
+                    drop(displaced);
+                    return;
+                }
+                None => continue,
+            }
+        }
     }
 
     /// Validates and records the trigger mode of one software SPI input.
@@ -365,12 +559,13 @@ impl GicV3Controller {
         match state.spi_backings.get(&spi).copied() {
             Some(SpiBacking::Software) => {}
             Some(SpiBacking::Physical(_)) => {
-                return Err(VgicError::ResourceConflict {
-                    resource: "GICv3 SPI backing",
-                    detail: alloc::format!(
-                        "SPI {} is already backed by a physical interrupt",
-                        spi.raw()
-                    ),
+                return Err(VgicError::NativeState {
+                    operation: "configure GICv3 SPI input",
+                    vcpu: None,
+                    intid: Some(IntId::Spi(spi)),
+                    reason: "the SPI is already backed by a physical interrupt",
+                    kind: crate::StateErrorKind::ResourceBusy,
+                    detail: crate::NativeStateDetail::None,
                 });
             }
             None => {
@@ -390,9 +585,9 @@ impl GicV3Controller {
             if !asserted {
                 let mut canceled = false;
                 let state = &mut *state;
-                let vcpu_interfaces = &state.vcpu_interfaces;
-                for (vcpu, redistributor) in &mut state.redistributors {
-                    let loaded = vcpu_interfaces.get(vcpu) == Some(&CpuInterfacePhase::Loaded);
+                let cpu_interfaces = &state.cpu_interfaces;
+                for (vcpu, redistributor) in state.redistributors.iter_mut() {
+                    let loaded = cpu_interfaces.phase(*vcpu) == CpuInterfacePhase::Loaded;
                     canceled |= redistributor.withdraw_pending_delivery(IntId::Spi(spi), loaded);
                 }
                 if canceled {
@@ -456,24 +651,28 @@ impl GicV3Controller {
 
     /// Sends an SGI using explicit architectural target semantics.
     pub fn send_sgi(&self, source: GicVcpuId, sgi: SgiId, targets: SgiTarget) -> VgicResult {
-        let target_ids = {
+        // Both buffers are bounded by the configured vCPU count and reserved
+        // before the raw guard, so the hard-IRQ SGI path never allocates while
+        // canonical state is held.
+        let vcpu_count = self.inner.config.vcpu_count();
+        let mut target_ids: Vec<GicVcpuId> = Vec::with_capacity(vcpu_count);
+        let mut wakes: Vec<Arc<dyn GicV3VcpuWake>> = Vec::with_capacity(vcpu_count);
+        {
             let state = self.inner.state.lock_irqsave();
-            state.resolve_sgi_targets(source, &targets)?.0
-        };
-        let wakes = {
+            state.resolve_sgi_targets_into(source, &targets, &mut target_ids)?;
+        }
+        {
             let mut state = self.inner.state.lock_irqsave();
-            let mut wakes = Vec::with_capacity(target_ids.len());
-            for target in target_ids {
+            for target in &target_ids {
                 state
-                    .redistributor_mut(target, "send SGI")?
+                    .redistributor_mut(*target, "send SGI")?
                     .pend_sgi(source, sgi);
-                if let Some(wake) = state.queue_local_if_deliverable(target, IntId::Sgi(sgi))? {
+                if let Some(wake) = state.queue_local_if_deliverable(*target, IntId::Sgi(sgi))? {
                     wakes.push(wake);
                 }
             }
-            wakes
-        };
-        for wake in wakes {
+        }
+        for wake in &wakes {
             wake.wake()?;
         }
         Ok(())
@@ -524,100 +723,42 @@ impl GicV3Controller {
             .iter()
             .any(|(configured, _)| *configured == its)
         {
-            return Err(VgicError::Unsupported {
+            return Err(VgicError::NativeState {
                 operation: "connect MSI input",
-                detail: alloc::format!("this controller has no ITS {its:?} capability"),
+                vcpu: None,
+                intid: None,
+                reason: "this controller has no ITS capability",
+                kind: crate::StateErrorKind::Unsupported,
+                detail: crate::NativeStateDetail::None,
             });
         }
-        let mut state = self.inner.state.lock_irqsave();
-        match state.msi_backings.get(&(its, device, event)).copied() {
-            Some(MsiBacking::Software {
-                reserved_lpi: existing,
-            }) if existing == reserved_lpi => Ok(()),
-            Some(MsiBacking::Software { .. }) => Err(VgicError::ResourceConflict {
-                resource: "GICv3 MSI backing",
-                detail: alloc::format!(
-                    "MSI event ({}, {}, {}) was opened with a different LPI reservation",
-                    its.value(),
-                    device.raw(),
-                    event.raw()
-                ),
-            }),
-            Some(MsiBacking::Physical(_)) => Err(VgicError::ResourceConflict {
-                resource: "GICv3 MSI backing",
-                detail: alloc::format!(
-                    "MSI event ({}, {}) is already backed by a physical translation",
-                    device.raw(),
-                    event.raw()
-                ),
-            }),
-            None => {
-                state
-                    .msi_backings
-                    .insert((its, device, event), MsiBacking::Software { reserved_lpi });
-                Ok(())
-            }
-        }
-    }
-
-    /// Signals an MSI through the per-VM ITS translation tables.
-    pub fn signal_msi(&self, device: ItsDeviceId, event: EventId) -> VgicResult {
-        self.signal_msi_for(ItsId::new(0), device, event)
-    }
-
-    /// Signals one MSI through a specific per-VM ITS.
-    pub fn signal_msi_for(&self, its: ItsId, device: ItsDeviceId, event: EventId) -> VgicResult {
-        let backing = {
-            let state = self.inner.state.lock_irqsave();
-            state.msi_backings.get(&(its, device, event)).copied()
-        };
-        match backing {
-            Some(MsiBacking::Physical(binding)) => {
-                return backend_result(self.inner.backend.signal_physical_msi(binding));
-            }
-            Some(MsiBacking::Software { .. }) => {}
-            None => {
-                return Err(VgicError::ResourceNotFound {
-                    resource: alloc::format!(
-                        "MSI input ({}, {}, {})",
-                        its.value(),
-                        device.raw(),
-                        event.raw()
-                    ),
-                    operation: "signal MSI",
-                });
-            }
-        }
-        let wake = {
-            let mut state = self.inner.state.lock_irqsave();
-            let (lpi, target) = state
-                .its
-                .get(&its)
-                .ok_or_else(|| VgicError::ResourceNotFound {
-                    resource: alloc::format!("ITS {}", its.value()),
-                    operation: "signal MSI",
-                })?
-                .translate(device, event)?;
-            if let Some(MsiBacking::Software {
-                reserved_lpi: Some(reserved),
-            }) = backing
-                && reserved != lpi
-            {
-                return Err(VgicError::ResourceConflict {
-                    resource: "planned LPI reservation",
-                    detail: alloc::format!(
-                        "ITS {} DeviceID {} EventID {} maps LPI {}, but LPI {} is reserved",
-                        its.value(),
-                        device.raw(),
-                        event.raw(),
-                        lpi.raw(),
-                        reserved.raw()
-                    ),
-                });
-            }
-            state.set_lpi_pending(target, lpi, true)?
-        };
-        wake_vcpu(wake)
+        self.with_msi_backings(
+            |backings| match backings.get(&(its, device, event)).copied() {
+                Some(MsiBacking::Software {
+                    reserved_lpi: existing,
+                }) if existing == reserved_lpi => Ok(()),
+                Some(MsiBacking::Software { .. }) => Err(VgicError::NativeState {
+                    operation: "connect MSI input",
+                    vcpu: None,
+                    intid: None,
+                    reason: "the MSI event was opened with a different LPI reservation",
+                    kind: crate::StateErrorKind::ResourceBusy,
+                    detail: crate::NativeStateDetail::None,
+                }),
+                Some(MsiBacking::Physical(_)) => Err(VgicError::NativeState {
+                    operation: "connect MSI input",
+                    vcpu: None,
+                    intid: None,
+                    reason: "the MSI event is already backed by a physical translation",
+                    kind: crate::StateErrorKind::ResourceBusy,
+                    detail: crate::NativeStateDetail::None,
+                }),
+                None => {
+                    backings.insert((its, device, event), MsiBacking::Software { reserved_lpi });
+                    Ok(())
+                }
+            },
+        )
     }
 
     /// Returns one interrupt's software lifecycle state.
@@ -650,6 +791,84 @@ impl GicV3Controller {
     }
 }
 
+impl GicV3Controller {
+    /// Signals an MSI through the per-VM ITS translation tables.
+    pub fn signal_msi(&self, device: ItsDeviceId, event: EventId) -> VgicResult {
+        self.signal_msi_for(ItsId::new(0), device, event)
+    }
+
+    /// Signals one MSI through a specific per-VM ITS.
+    ///
+    /// The ITS translation is resolved under the sleepable ITS mutex, outside
+    /// the native raw lock. Only the resulting short pending update re-enters
+    /// the native state, and the wake is published after every lock is
+    /// released.
+    pub fn signal_msi_for(&self, its: ItsId, device: ItsDeviceId, event: EventId) -> VgicResult {
+        let backing = {
+            let state = self.native.inner.state.lock_irqsave();
+            state.msi_backings.get(&(its, device, event)).copied()
+        };
+        match backing {
+            Some(MsiBacking::Physical(binding)) => {
+                return backend_result(self.native.inner.backend.signal_physical_msi(binding));
+            }
+            Some(MsiBacking::Software { .. }) => {}
+            None => {
+                return Err(VgicError::ResourceNotFound {
+                    resource: alloc::format!(
+                        "MSI input ({}, {}, {})",
+                        its.value(),
+                        device.raw(),
+                        event.raw()
+                    ),
+                    operation: "signal MSI",
+                });
+            }
+        }
+        let (lpi, target) = {
+            let states = self.its.states().lock();
+            states
+                .get(&its)
+                .ok_or_else(|| VgicError::ResourceNotFound {
+                    resource: alloc::format!("ITS {}", its.value()),
+                    operation: "signal MSI",
+                })?
+                .translate(device, event)?
+        };
+        if let Some(MsiBacking::Software {
+            reserved_lpi: Some(reserved),
+        }) = backing
+            && reserved != lpi
+        {
+            return Err(VgicError::ResourceConflict {
+                resource: "planned LPI reservation",
+                detail: alloc::format!(
+                    "ITS {} DeviceID {} EventID {} maps LPI {}, but LPI {} is reserved",
+                    its.value(),
+                    device.raw(),
+                    event.raw(),
+                    lpi.raw(),
+                    reserved.raw()
+                ),
+            });
+        }
+        // This path must not allocate: an MSI can be signalled from a hard IRQ.
+        // The target record is materialized in task context when the guest
+        // programs the ITS translation (`MAPTI`/`MOVI` emit
+        // `ItsAction::Prepare`), so `set_lpi_pending` only looks up existing
+        // records and reports `Unprepared` rather than growing storage here.
+        // The raw guard owns only the short pending update: a detached target
+        // is reported after the guard, so no error message is formatted while
+        // the canonical state is locked.
+        let delivery = {
+            let mut state = self.native.inner.state.lock_irqsave();
+            state.set_lpi_pending(target, lpi, true)
+        };
+        let wake = delivery.map_err(state::LpiDeliveryFailure::into_vgic_error)?;
+        wake_vcpu(wake)
+    }
+}
+
 impl ControllerState {
     fn require_software_spi(
         &self,
@@ -660,17 +879,22 @@ impl ControllerState {
         self.distributor.interrupt(spi)?;
         match self.spi_backings.get(&spi).copied() {
             Some(SpiBacking::Software) => Ok(()),
-            Some(SpiBacking::Physical(_)) => Err(VgicError::Unsupported {
+            Some(SpiBacking::Physical(_)) => Err(VgicError::NativeState {
                 operation,
-                detail: alloc::format!(
-                    "SPI {} is electrically driven by its physical backing",
-                    spi.raw()
-                ),
+                vcpu: None,
+                intid: Some(IntId::Spi(spi)),
+                reason: "the SPI is electrically driven by its physical backing",
+                kind: crate::StateErrorKind::Unsupported,
+                detail: crate::NativeStateDetail::None,
             }),
             None if config.spi_ownership() == GicV3SpiOwnership::AllGuestOwned => Ok(()),
-            None => Err(VgicError::Unsupported {
+            None => Err(VgicError::NativeState {
                 operation,
-                detail: alloc::format!("SPI {} is not owned by this VM", spi.raw()),
+                vcpu: None,
+                intid: Some(IntId::Spi(spi)),
+                reason: "the SPI is not owned by this VM",
+                kind: crate::StateErrorKind::InvalidState,
+                detail: crate::NativeStateDetail::None,
             }),
         }
     }
@@ -687,4 +911,38 @@ fn wake_vcpu(wake: Option<Arc<dyn GicV3VcpuWake>>) -> VgicResult {
         wake.wake()?;
     }
     Ok(())
+}
+
+impl GicV3Native {
+    /// Publishes a wired interrupt into canonical native state.
+    pub fn inject(
+        &self,
+        vcpu: usize,
+        intid: u32,
+        trigger: axvm_types::InterruptTriggerMode,
+    ) -> VgicResult {
+        match IntId::new(intid)? {
+            IntId::Sgi(sgi) => self.send_sgi(GicVcpuId::new(vcpu), sgi, crate::SgiTarget::SelfOnly),
+            IntId::Ppi(ppi) => match trigger {
+                axvm_types::InterruptTriggerMode::EdgeTriggered => {
+                    self.pulse_ppi(GicVcpuId::new(vcpu), ppi)
+                }
+                axvm_types::InterruptTriggerMode::LevelTriggered => {
+                    self.set_ppi_level(GicVcpuId::new(vcpu), ppi, true)
+                }
+            },
+            IntId::Spi(spi) => match trigger {
+                axvm_types::InterruptTriggerMode::EdgeTriggered => self.pulse_spi(spi),
+                axvm_types::InterruptTriggerMode::LevelTriggered => self.set_spi_level(spi, true),
+            },
+            IntId::Lpi(lpi) => Err(crate::VgicError::NativeState {
+                operation: "inject wired interrupt",
+                vcpu: Some(vcpu),
+                intid: Some(IntId::Lpi(lpi)),
+                reason: "LPIs must be delivered through an ITS endpoint",
+                kind: crate::StateErrorKind::Unsupported,
+                detail: crate::NativeStateDetail::None,
+            }),
+        }
+    }
 }

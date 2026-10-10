@@ -144,7 +144,7 @@ impl Mountpoint {
         }
     }
 
-    fn has_relation(relations: &Mutex<Vec<Weak<Self>>>, mountpoint: &Arc<Self>) -> bool {
+    fn has_relation(relations: &RawSpinLock<Vec<Weak<Self>>>, mountpoint: &Arc<Self>) -> bool {
         relations
             .lock()
             .iter()

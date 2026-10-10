@@ -7,7 +7,6 @@ ax-alloc
 ax-percpu
 irq-framework
 rdif-base
-rdif-def
 rdrive
 mmio-api
 axbacktrace
@@ -19,12 +18,13 @@ rdif-block
 aic8800
 rdif-eth
 ax-fs-ng
+axfs-ng-vfs
 ax-io
-axpoll
 rsext4
 ax-sched
 ax-linked-list-r4l
-ax-input
+ax-driver
+ax-runtime
 ax-log
 ax-net
 rd-net
@@ -43,16 +43,13 @@ sg200x-pwm
 some-serial
 virtio-gpu
 ax-arm-pl031
-host-boot-abi
 ranges-ext
-ax-riscv-plic
 x86-apic-driver
 ax-memory-set
 ax-cpumask
 ax-display
 ax-cgroup
 ax-timer-list
-aarch64_sysreg
 arm_vgic
 axdevice_base
 axaddrspace
@@ -61,6 +58,7 @@ x86_vlapic
 axhvc
 axvirtio-blk
 axvirtio-common
+axvirtio-net
 axvm
 axvmconfig
 riscv-h
@@ -72,4 +70,5 @@ starry-kernel
 starry-signal
 starry-vm
 axbuild
+intel-hda
 acpica-interpreter

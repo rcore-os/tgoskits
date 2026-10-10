@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{ptr::NonNull, string::String, vec::Vec};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use std::ptr::NonNull;
+use std::{string::String, vec::Vec};
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use ax_memory_addr::MemoryAddr;
 use axdevice_base::InterruptTrigger;
 use axvmconfig::GuestConfig;
@@ -27,9 +30,10 @@ use super::{
 pub(crate) use crate::boot::fdt::device::{
     ResolvedFdtDevice, ResolvedFdtInterrupt, ResolvedFdtProperty,
 };
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::{AxVM, GuestPhysAddr, boot::images::load_vm_image_from_memory};
 use crate::{
-    AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
-    boot::images::load_vm_image_from_memory,
+    AxVmResult, VMMemoryRegion, ax_err_type,
     machine::GuestSerialFdtInterrupt as FdtInterruptEncoding,
 };
 
@@ -62,9 +66,49 @@ pub(crate) fn create_guest_fdt(
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
     })?;
+    // A derived guest tree must not inherit the host CPU's DVFS controls. The
+    // CPU clock, OPP and regulator providers are physical host resources; the
+    // guest may still use the rest of the passthrough tree, but it must not be
+    // given bindings that make its cpufreq driver a second owner of those
+    // resources.
+    strip_cpu_power_dependencies(&mut guest_tree)?;
     prune_cpu_references(fdt, &mut guest_tree)?;
     super::disabled::apply(&mut guest_tree, crate_config)?;
+    // With vCPU over-subscription (more guest vCPUs than host physical CPUs)
+    // the host FDT does not carry a CPU node for every guest virtual CPU id,
+    // so clone the missing ones to keep the guest SMP bootstrap functional.
+    guest_tree.ensure_guest_cpu_nodes(fdt, phys_cpu_ids)?;
     Ok(guest_tree.finish())
+}
+
+fn strip_cpu_power_dependencies(guest: &mut FdtTree) -> AxVmResult {
+    const HOST_POWER_PROPERTIES: &[&str] = &[
+        "#cooling-cells",
+        "clock-names",
+        "clocks",
+        "cpu-supply",
+        "dynamic-power-coefficient",
+        "mem-supply",
+        "nvmem-cell-names",
+        "nvmem-cells",
+        "operating-points-v2",
+        "rockchip,pvtm-freq",
+        "rockchip,pvtm-low-len-sel",
+        "rockchip,pvtm-voltage-sel",
+    ];
+
+    for (node_id, path) in guest.node_paths() {
+        if !path.starts_with("/cpus/cpu@") || path["/cpus/cpu@".len()..].contains('/') {
+            continue;
+        }
+        let node = guest.inner_mut().node_mut(node_id).ok_or_else(|| {
+            ax_err_type!(InvalidData, "guest CPU node disappeared during filtering")
+        })?;
+        for name in HOST_POWER_PROPERTIES {
+            node.remove_property(name);
+        }
+    }
+    Ok(())
 }
 
 struct GeneratedNodePolicy<'a> {
@@ -199,18 +243,6 @@ pub(super) fn prune_cpu_references(source: &Fdt, guest: &mut FdtTree) -> AxVmRes
     Ok(())
 }
 
-#[cfg(test)]
-fn find_node_by_phandle(fdt: &Fdt, phandle: u32) -> Option<NodeId> {
-    fdt.iter_node_ids().find(|node_id| {
-        fdt.node(*node_id).is_some_and(|node| {
-            node.get_property("phandle")
-                .or_else(|| node.get_property("linux,phandle"))
-                .and_then(Property::get_u32)
-                == Some(phandle)
-        })
-    })
-}
-
 fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: &[String]) -> bool {
     passthrough_device_names.iter().any(|passthrough_path| {
         passthrough_path
@@ -298,29 +330,31 @@ fn initrd_range_from_image_config(
     Some((start, start.saturating_add(size)))
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn update_fdt(
     fdt_src: NonNull<u8>,
     dtb_size: usize,
-    vm: AxVMRef,
+    vm: &mut AxVM,
     crate_config: &GuestConfig,
 ) -> AxVmResult {
     let patch_runtime = super::selected_guest_fdt_policy().patch_runtime;
     // SAFETY: `fdt_src` originates from `GuestDtbImage::as_bytes`, and the
     // caller supplies the exact slice length while the image remains borrowed.
     let fdt_bytes = unsafe { std::slice::from_raw_parts(fdt_src.as_ptr(), dtb_size) };
-    let new_fdt_bytes = patch_runtime(fdt_bytes, &vm, crate_config)?;
+    let new_fdt_bytes = patch_runtime(fdt_bytes, &*vm, crate_config)?;
 
     load_patched_fdt(vm, new_fdt_bytes)
 }
 
-fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
-    let dest_addr = calculate_dtb_load_addr(vm.clone(), new_fdt_bytes.len())?;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+fn load_patched_fdt(vm: &mut AxVM, new_fdt_bytes: Vec<u8>) -> AxVmResult {
+    let dest_addr = calculate_dtb_load_addr(&mut *vm, new_fdt_bytes.len())?;
     debug!(
         "New FDT will be loaded at {:x}, size: 0x{:x}",
         dest_addr,
         new_fdt_bytes.len()
     );
-    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, vm.clone())?;
+    load_vm_image_from_memory(&new_fdt_bytes, dest_addr, &mut *vm)?;
     vm.set_guest_device_tree(dest_addr, new_fdt_bytes)
 }
 
@@ -568,7 +602,8 @@ fn fdt_interrupt_binding(
     }
 }
 
-pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) fn calculate_dtb_load_addr(vm: &mut AxVM, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
     const MB: usize = 1024 * 1024;
 
     let main_memory =
@@ -576,7 +611,8 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResul
             ax_err_type!(InvalidInput, "VM has no memory region for DTB placement")
         })?;
 
-    let dtb_addr = vm.with_config(|config| {
+    let dtb_addr = {
+        let config = vm.config_mut();
         let use_configured_dtb_addr =
             config.image_config.dtb_load_gpa.is_some() && !main_memory.is_identical();
 
@@ -596,14 +632,14 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResul
         };
         config.image_config.dtb_load_gpa = Some(dtb_addr);
         dtb_addr
-    });
+    };
 
     Ok(dtb_addr)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::BTreeMap, sync::Arc};
 
     use axdevice::*;
     use axdevice_base::{
@@ -618,7 +654,7 @@ mod tests {
             device::find_all_passthrough_devices,
             tree::{FdtTree, prop_string, sanitize_bootargs},
         },
-        find_node_by_phandle, initrd_range_from_image_config, u32_property,
+        initrd_range_from_image_config, u32_property,
     };
     use crate::{
         GuestPhysAddr,
@@ -910,13 +946,48 @@ mod tests {
         );
     }
 
+    fn runtime_controller_fixture() -> (
+        Vec<u8>,
+        Option<crate::machine::GuestGicProfile>,
+        Option<crate::machine::GuestPlicProfile>,
+    ) {
+        let machine = crate::machine::current_machine_profile(1);
+        let mut tree = FdtTree::new();
+        let (gic, plic, path, compatible, cells) = if let Some(mut plic) = machine.plic {
+            plic.node_phandle = Some(7);
+            let path = plic.node_path.clone();
+            (None, Some(plic), path, "riscv,plic0", 1)
+        } else {
+            let gic = gic_profile(7);
+            let path = gic.node_path.clone();
+            (Some(gic), None, path, "arm,gic-v3", 4)
+        };
+        let intc = tree.ensure_path(&path).unwrap();
+        tree.set_property(intc, prop_string("compatible", compatible))
+            .unwrap();
+        tree.set_property(intc, Property::new("interrupt-controller", std::vec![]))
+            .unwrap();
+        tree.set_property(intc, u32_property("#interrupt-cells", cells))
+            .unwrap();
+        (tree.finish(), gic, plic)
+    }
+
     #[test]
     fn runtime_patch_can_leave_missing_chosen_for_host_copy() {
-        let fdt = Fdt::new();
-        let dtb = fdt.encode().as_ref().to_vec();
+        let (dtb, gic, plic) = runtime_controller_fixture();
         let cfg = GuestConfig::default();
 
-        let serial = crate::machine::current_machine_profile(1).serial;
+        // A port UART has no FDT stdout node; isolate the chosen creation policy
+        // from the MMIO console's independent requirement to publish stdout.
+        let serial = crate::machine::GuestSerialProfile {
+            model: crate::machine::GuestSerialModel::Uart16550,
+            transport: crate::machine::GuestSerialTransport::Port {
+                base: 0x3f8,
+                length: 8,
+            },
+            irq: 4,
+            clock_hz: 1_843_200,
+        };
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
@@ -925,8 +996,8 @@ mod tests {
             serial_profile: serial,
             serial_identity: None,
             additional_serials: &[],
-            gic_profile: None,
-            plic_profile: None,
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: false,
@@ -936,7 +1007,6 @@ mod tests {
 
         assert!(reparsed.get_by_path_id("/chosen").is_none());
 
-        let serial = crate::machine::current_machine_profile(1).serial;
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
@@ -945,8 +1015,8 @@ mod tests {
             serial_profile: serial,
             serial_identity: None,
             additional_serials: &[],
-            gic_profile: None,
-            plic_profile: None,
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: true,
@@ -959,15 +1029,7 @@ mod tests {
 
     #[test]
     fn runtime_patch_adds_ivc_channel_node() {
-        let mut tree = FdtTree::new();
-        let intc = tree.ensure_path("/intc@8000000").unwrap();
-        tree.set_property(intc, prop_string("compatible", "arm,gic-v3"))
-            .unwrap();
-        tree.set_property(intc, Property::new("interrupt-controller", std::vec![]))
-            .unwrap();
-        tree.set_property(intc, u32_property("#interrupt-cells", 4))
-            .unwrap();
-        let dtb = tree.finish();
+        let (dtb, gic, plic) = runtime_controller_fixture();
         let cfg = GuestConfig::default();
         let devices = std::vec![super::ResolvedFdtDevice {
             id: "ivc0".into(),
@@ -986,7 +1048,6 @@ mod tests {
             ],
         }];
         let serial = crate::machine::current_machine_profile(1).serial;
-        let gic = gic_profile(7);
 
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
@@ -996,8 +1057,8 @@ mod tests {
             serial_profile: serial,
             serial_identity: None,
             additional_serials: &[],
-            gic_profile: Some(&gic),
-            plic_profile: None,
+            gic_profile: gic.as_ref(),
+            plic_profile: plic.as_ref(),
             timer_profile: None,
             initrd_start_size: None,
             create_chosen: false,
@@ -1027,7 +1088,11 @@ mod tests {
                 .unwrap()
                 .get_u32_iter()
                 .collect::<std::vec::Vec<_>>(),
-            [0, 28, 1, 0]
+            if plic.is_some() {
+                std::vec![60]
+            } else {
+                std::vec![0, 28, 1, 0]
+            }
         );
     }
 
@@ -1297,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn orangepi_5_plus_guest_fdt_keeps_cpu_power_dependencies_resolvable() {
+    fn orangepi_5_plus_guest_fdt_does_not_expose_host_cpu_power_controls() {
         let host = Fdt::from_bytes(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../os/axvisor/configs/board/orangepi-5-plus.dtb"
@@ -1326,17 +1391,116 @@ mod tests {
         find_all_passthrough_devices(&vm_cfg, &guest).unwrap();
         let cpu = guest.get_by_path("/cpus/cpu@0").unwrap().as_node();
 
-        assert!(cpu.get_property("#cooling-cells").is_some());
-        assert!(cpu.get_property("dynamic-power-coefficient").is_some());
-        for property_name in ["operating-points-v2", "cpu-supply"] {
-            let phandle = cpu
-                .get_property(property_name)
-                .and_then(Property::get_u32)
-                .unwrap();
+        for property_name in [
+            "#cooling-cells",
+            "clocks",
+            "cpu-supply",
+            "dynamic-power-coefficient",
+            "mem-supply",
+            "nvmem-cells",
+            "operating-points-v2",
+        ] {
             assert!(
-                find_node_by_phandle(&guest, phandle).is_some(),
-                "{property_name} references missing guest phandle {phandle:#x}"
+                cpu.get_property(property_name).is_none(),
+                "host CPU control property {property_name} leaked into guest FDT"
             );
         }
+    }
+
+    /// Builds a host FDT that advertises its CPUs with `phandle` and a
+    /// `/cpus/cpu-map` referencing them.
+    fn host_fdt_with_cpu_map_phandles() -> Fdt {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let cpus = fdt.add_node(root, Node::new("cpus"));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 1));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 0));
+        let cpu_map = fdt.add_node(cpus, Node::new("cpu-map"));
+
+        for (cluster_name, cpu_name, reg, phandle) in [
+            ("cluster0", "cpu@0", 0u64, 7u32),
+            ("cluster1", "cpu@100", 0x100, 8),
+        ] {
+            let cluster = fdt.add_node(cpu_map, Node::new(cluster_name));
+            let core = fdt.add_node(cluster, Node::new("core0"));
+            fdt.node_mut(core)
+                .unwrap()
+                .set_property(prop_u32("cpu", phandle));
+
+            let cpu = fdt.add_node(cpus, Node::new(cpu_name));
+            let node = fdt.node_mut(cpu).unwrap();
+            node.set_property(prop_string("device_type", "cpu"));
+            node.set_property(prop_string("enable-method", "psci"));
+            node.set_property(prop_u32("phandle", phandle));
+            fdt.view_typed_mut(cpu)
+                .unwrap()
+                .set_regs(&[RegInfo::new(reg, None)]);
+        }
+
+        fdt
+    }
+
+    fn phandle_owners(fdt: &Fdt) -> std::vec::Vec<(u32, std::string::String)> {
+        fdt.iter_node_ids()
+            .filter_map(|node_id| {
+                let node = fdt.node(node_id)?;
+                let phandle = node
+                    .get_property("phandle")
+                    .or_else(|| node.get_property("linux,phandle"))
+                    .and_then(Property::get_u32)?;
+                Some((phandle, fdt.path_of(node_id)))
+            })
+            .collect()
+    }
+
+    fn cpu_phandle(fdt: &Fdt, path: &str) -> u32 {
+        fdt.get_by_path(path)
+            .unwrap_or_else(|| panic!("{path} is missing"))
+            .as_node()
+            .get_property("phandle")
+            .and_then(Property::get_u32)
+            .unwrap_or_else(|| panic!("{path} has no phandle"))
+    }
+
+    #[test]
+    fn generated_fdt_over_subscription_keeps_cpu_phandles_unique_and_drops_host_cpu_map() {
+        let host = host_fdt_with_cpu_map_phandles();
+        let cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(std::vec![0, 1, 2]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dtb = super::create_guest_fdt(&host, &[], &cfg, &[]).unwrap();
+        let guest = Fdt::from_bytes(&dtb).unwrap();
+
+        // `cpu@1` and `cpu@2` have no host CPU node, so they are cloned from
+        // `cpu@0` and must not inherit its phandle.
+        let mut seen = BTreeMap::new();
+        for (phandle, path) in phandle_owners(&guest) {
+            let previous = seen.insert(phandle, path.clone());
+            assert!(
+                previous.is_none(),
+                "phandle {phandle:#x} is defined by both {previous:?} and {path}"
+            );
+        }
+        assert_eq!(cpu_phandle(&guest, "/cpus/cpu@0"), 7);
+        let first = cpu_phandle(&guest, "/cpus/cpu@1");
+        let second = cpu_phandle(&guest, "/cpus/cpu@2");
+        assert!(
+            first > 8 && second > 8,
+            "clones reused a host phandle: {first:#x} and {second:#x}"
+        );
+        assert_ne!(first, second);
+
+        // CPU projection drops the host-only `cpu-map`; guest startup
+        // enumerates the projected CPU nodes by their `reg` values instead.
+        assert!(guest.get_by_path_id("/cpus/cpu-map").is_none());
     }
 }

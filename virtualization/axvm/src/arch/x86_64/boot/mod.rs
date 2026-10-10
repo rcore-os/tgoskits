@@ -52,12 +52,12 @@ impl BootImagePlatform for X86_64Arch {
         crate::boot::images::fs::load_vm_image(
             &loader.config.kernel.kernel_path,
             loader.kernel_load_gpa,
-            loader.vm.clone(),
+            &mut *loader.vm,
             loader.provider,
         )?;
         load_boot_image_from_filesystem(loader)?;
-        if let Some(ramdisk_path) = &loader.config.kernel.ramdisk_path {
-            loader.load_ramdisk_from_filesystem(ramdisk_path)?;
+        if let Some(ramdisk_path) = loader.config.kernel.ramdisk_path.clone() {
+            loader.load_ramdisk_from_filesystem(&ramdisk_path)?;
         }
         Ok(())
     }
@@ -112,14 +112,14 @@ fn load_linux_from_filesystem(
     .map_err(linux_layout_error)?;
 
     load_linux_layout(loader, header, layout, kernel, firmware)?;
-    load_vm_image_from_memory(payload, loader.kernel_load_gpa, loader.vm.clone())?;
-    if let Some(path) = &loader.config.kernel.ramdisk_path {
-        loader.load_ramdisk_from_filesystem(path)?;
+    load_vm_image_from_memory(payload, loader.kernel_load_gpa, &mut *loader.vm)?;
+    if let Some(path) = loader.config.kernel.ramdisk_path.clone() {
+        loader.load_ramdisk_from_filesystem(&path)?;
     }
     Ok(())
 }
 
-fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxVmResult {
+fn load_boot_image_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
     if !loader.config.kernel.enable_bios {
         return Ok(());
     }
@@ -130,19 +130,14 @@ fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxVmResult {
         if should_patch_multiboot_info(&loader.config) {
             let bios = crate::boot::images::fs::read_full_image(path, loader.provider)?;
             validate_bios_patch_region(&bios)?;
-            load_vm_image_from_memory(&bios, load_gpa, loader.vm.clone())?;
+            load_vm_image_from_memory(&bios, load_gpa, &mut *loader.vm)?;
             load_multiboot_info(loader, &bios, load_gpa)
         } else {
-            crate::boot::images::fs::load_vm_image(
-                path,
-                load_gpa,
-                loader.vm.clone(),
-                loader.provider,
-            )
+            crate::boot::images::fs::load_vm_image(path, load_gpa, &mut *loader.vm, loader.provider)
         }
     } else if should_load_default_boot_image(loader) {
         let load_gpa = builtin_bios_load_gpa(loader.bios_load_gpa)?;
-        load_vm_image_from_memory(multiboot::DEFAULT_BIOS_IMAGE, load_gpa, loader.vm.clone())?;
+        load_vm_image_from_memory(multiboot::DEFAULT_BIOS_IMAGE, load_gpa, &mut *loader.vm)?;
         load_multiboot_info(loader, multiboot::DEFAULT_BIOS_IMAGE, load_gpa)
     } else {
         Ok(())
@@ -159,14 +154,13 @@ fn adjust_linux_dma_identity_layout(loader: &mut ImageLoaderCore<'_>) {
     if let Some(ramdisk_load_addr) = loader.config.kernel.ramdisk_load_addr {
         loader.ramdisk_load_gpa = Some(GuestPhysAddr::from(memory_base + ramdisk_load_addr));
     }
-    loader.vm.with_config(|config| {
-        config.image_config.kernel_load_gpa = loader.kernel_load_gpa;
-        if let Some(load_gpa) = loader.ramdisk_load_gpa
-            && let Some(ramdisk) = config.image_config.ramdisk.as_mut()
-        {
-            ramdisk.load_gpa = load_gpa;
-        }
-    });
+    let config = loader.vm.config_mut();
+    config.image_config.kernel_load_gpa = loader.kernel_load_gpa;
+    if let Some(load_gpa) = loader.ramdisk_load_gpa
+        && let Some(ramdisk) = config.image_config.ramdisk.as_mut()
+    {
+        ramdisk.load_gpa = load_gpa;
+    }
 }
 
 struct PreparedX86Firmware {
@@ -232,7 +226,7 @@ fn read_x86_fw_cfg_payload(loader: &ImageLoaderCore<'_>) -> AxVmResult<X86FwCfgP
 }
 
 fn prepare_x86_firmware(
-    loader: &ImageLoaderCore<'_>,
+    loader: &mut ImageLoaderCore<'_>,
     payload: X86FwCfgPayload,
 ) -> AxVmResult<PreparedX86Firmware> {
     let passthrough_intx_routes = x86_passthrough_intx_routes()?;
@@ -334,7 +328,7 @@ fn acpi_build_error(error: crate::boot::acpi::AcpiBuildError) -> AxVmError {
 }
 
 fn load_linux_layout(
-    loader: &ImageLoaderCore<'_>,
+    loader: &mut ImageLoaderCore<'_>,
     header: linux::X86LinuxHeader,
     layout: linux::X86LinuxLoadLayout,
     kernel: &[u8],
@@ -347,7 +341,7 @@ fn load_linux_layout(
     load_vm_image_from_memory(
         firmware.direct_acpi.bytes(),
         GuestPhysAddr::from(firmware.direct_acpi.load_gpa() as usize),
-        loader.vm.clone(),
+        &mut *loader.vm,
     )?;
     let boot_params = build_boot_params(loader, header, layout, kernel, firmware)?;
     let boot_stub = linux_boot::build_boot_image(&layout).map_err(|err| {
@@ -359,9 +353,9 @@ fn load_linux_layout(
     load_vm_image_from_memory(
         &boot_params,
         layout.boot_params.start.into(),
-        loader.vm.clone(),
+        &mut *loader.vm,
     )?;
-    load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), loader.vm.clone())?;
+    load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), &mut *loader.vm)?;
     load_vm_image_from_memory(
         &mptable::build(
             firmware.plan.apic_ids(),
@@ -370,13 +364,12 @@ fn load_linux_layout(
             firmware.plan.pci_intx_routes(),
         ),
         mptable::MP_TABLE_GPA.into(),
-        loader.vm.clone(),
+        &mut *loader.vm,
     )?;
     let entry = GuestPhysAddr::from(linux_boot::DEFAULT_LINUX_BOOT_LOAD_GPA);
-    loader.vm.with_config(|config| {
-        config.cpu_config.bsp_entry = entry;
-        config.cpu_config.ap_entry = entry;
-    });
+    let config = loader.vm.config_mut();
+    config.cpu_config.bsp_entry = entry;
+    config.cpu_config.ap_entry = entry;
     Ok(())
 }
 
@@ -434,7 +427,7 @@ fn build_boot_params(
 }
 
 fn load_multiboot_info(
-    loader: &ImageLoaderCore<'_>,
+    loader: &mut ImageLoaderCore<'_>,
     bios_image: &[u8],
     bios_load_gpa: GuestPhysAddr,
 ) -> AxVmResult {
@@ -458,12 +451,12 @@ fn load_multiboot_info(
     write_u64(&mut mmap, 12, mem_size);
     write_u32(&mut mmap, 20, 1);
     validate_bios_patch_region(bios_image)?;
-    load_vm_image_from_memory(&info, INFO_GPA.into(), loader.vm.clone())?;
-    load_vm_image_from_memory(&mmap, MMAP_GPA.into(), loader.vm.clone())?;
+    load_vm_image_from_memory(&info, INFO_GPA.into(), &mut *loader.vm)?;
+    load_vm_image_from_memory(&mmap, MMAP_GPA.into(), &mut *loader.vm)?;
     load_vm_image_from_memory(
         &(INFO_GPA as u32).to_le_bytes(),
         (bios_load_gpa.as_usize() + multiboot::AXVM_BIOS_EBX_IMM_OFFSET).into(),
-        loader.vm.clone(),
+        &mut *loader.vm,
     )
 }
 

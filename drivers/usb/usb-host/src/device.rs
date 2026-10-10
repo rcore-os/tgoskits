@@ -4,7 +4,7 @@ use core::{
     fmt::{Debug, Display},
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use usb_if::{
     descriptor::{
         ConfigurationDescriptor, DescriptorType, DeviceDescriptor, InterfaceDescriptor, LanguageId,
@@ -220,7 +220,7 @@ enum DeviceLifecycle {
 struct InterfaceRegistration {
     alternate: u8,
     endpoints: BTreeMap<u8, EndpointHandle>,
-    state: Arc<SpinLock<InterfaceSessionState>>,
+    state: Arc<RawSpinLock<InterfaceSessionState>>,
 }
 
 /// Owns the active alternate setting and endpoint capabilities for one USB interface.
@@ -228,7 +228,7 @@ pub struct InterfaceSession {
     interface: u8,
     alternate: u8,
     endpoints: BTreeMap<u8, EndpointHandle>,
-    state: Arc<SpinLock<InterfaceSessionState>>,
+    state: Arc<RawSpinLock<InterfaceSessionState>>,
 }
 
 impl InterfaceSession {
@@ -461,7 +461,7 @@ impl Device {
             }
             Err(err) => return Err(err),
         };
-        let state = Arc::new(SpinLock::new(InterfaceSessionState::Active));
+        let state = Arc::new(RawSpinLock::new(InterfaceSessionState::Active));
         self.claimed_interfaces.insert(
             interface,
             InterfaceRegistration {

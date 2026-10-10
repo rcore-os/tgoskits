@@ -22,8 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
-    path::PathBuf,
+    FilesystemOps, Metadata, MetadataUpdate, NodeType, RawSpinLock, RawSpinLockGuard, VfsError,
+    VfsResult, path::PathBuf,
 };
 
 bitflags! {
@@ -100,7 +100,7 @@ pub trait NodeOps: Send + Sync + 'static {
 
     /// Returns inode-owned state that survives eviction of directory entries.
     /// Memory filesystems use this for file contents shared by hard links.
-    fn inode_user_data(&self) -> Option<&Mutex<TypeMap>> {
+    fn inode_user_data(&self) -> Option<&RawSpinLock<TypeMap>> {
         None
     }
 }
@@ -223,7 +223,7 @@ struct Inner {
     node: Node,
     node_type: NodeType,
     reference: Reference,
-    user_data: Mutex<TypeMap>,
+    user_data: RawSpinLock<TypeMap>,
 }
 
 impl fmt::Debug for Inner {
@@ -279,7 +279,7 @@ impl DirEntry {
             node: Node::File(node),
             node_type,
             reference,
-            user_data: Mutex::new(TypeMap::default()),
+            user_data: RawSpinLock::new(TypeMap::default()),
         }))
     }
 
@@ -288,7 +288,7 @@ impl DirEntry {
             node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
             node_type: NodeType::Directory,
             reference,
-            user_data: Mutex::new(TypeMap::default()),
+            user_data: RawSpinLock::new(TypeMap::default()),
         }))
     }
 
@@ -415,7 +415,7 @@ impl DirEntry {
         }
     }
 
-    pub fn user_data(&self) -> MutexGuard<'_, TypeMap> {
+    pub fn user_data(&self) -> RawSpinLockGuard<'_, TypeMap> {
         match self.0.node.inode_user_data() {
             Some(state) => state.lock(),
             None => self.0.user_data.lock(),

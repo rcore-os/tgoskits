@@ -64,7 +64,7 @@ flowchart TB
 | `DirEntry` | `Arc<Inner>` | 节点实现与 `(parent, name)` 引用绑定；同一对象可被 `Location` 引用 |
 | `Mountpoint` | namespace-local `Arc` 树 | 保存挂载父位置、子挂载、传播关系和 mount flags；同一文件系统可有多个挂载实例 |
 | `Location` | `Mountpoint + DirEntry` | 同时表达“哪个节点”和“从哪个挂载树观察”；路径跨 mount 后必须更换 mountpoint |
-| `FsContext` | task-local `Arc<SleepMutex<_>>` | 保存 mount namespace、root 和 cwd；`..` 不越过 context root |
+| `FsContext` | task-local `Arc<Mutex<_>>` | 保存 mount namespace、root 和 cwd；`..` 不越过 context root |
 | `File` | 打开文件描述对象 | 保存访问 flags、共享游标和 `FileBackend`；Drop 只在需要时更新元数据 |
 | `CachedFileShared` | 同一 VFS 节点或 ext4 inode 共享 | 保存文件长度、页 LRU、I/O 串行化和 mmap listener；脏页写回前后用 generation 判定并发写入 |
 | `BlockDeviceHandle` | 已安装块运行时 | 持有 controller、hctx、CPU channel、IRQ 注册和完成等待者；最后引用释放时 shutdown |

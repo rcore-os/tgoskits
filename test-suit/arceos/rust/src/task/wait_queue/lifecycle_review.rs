@@ -142,8 +142,8 @@ fn reclaim_rejects_atomic_context() {
         .unwrap();
     handle.wait().unwrap();
     wait_for(|| handle.execution_reclaimed());
-    use ax_std::os::arceos::task::sync::{RawSpinLock, SpinLock};
-    let lock = SpinLock::new(());
+    use ax_std::os::arceos::task::sync::{RawSpinLock, RtSpinLock};
+    let lock = RtSpinLock::new(());
     let check = || {
         assert_eq!(
             system().reap_thread(handle.id()),

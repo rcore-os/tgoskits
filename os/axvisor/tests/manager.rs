@@ -1,11 +1,17 @@
-//! Minimal VM-manager surface required by the guest-console axtest harness.
+//! Minimal instance-owned VM-manager surface required by the guest-console
+//! axtest harness.
+//!
+//! The harness compiles the production guest-console mux, which reads only the
+//! application manager facade: it resolves a handle with `get`, walks `list`,
+//! and asks the manager to wake the device poller with `notify_vm`. This stub
+//! mirrors those three calls over mutable test state instead of a real VmManager.
 
 #![allow(
     dead_code,
     reason = "the production mux requires the complete manager surface at compile time"
 )]
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use std::sync::LazyLock;
 
 use anyhow::Result;
@@ -17,7 +23,13 @@ static NOTIFIED_VMS: LazyLock<Mutex<Vec<VMId>>> = LazyLock::new(|| Mutex::new(Ve
 static TEST_VM: LazyLock<Mutex<Option<TestVm>>> = LazyLock::new(|| Mutex::new(None));
 
 pub(crate) fn set_vm_status(vm_id: VMId, status: Option<VmStatus>) {
-    *TEST_VM.lock() = status.map(|status| TestVm { id: vm_id, status });
+    *TEST_VM.lock() = status.map(|state| TestVm {
+        key: TestKey { vm_id },
+        snapshot: TestSnapshot {
+            name: String::new(),
+            state,
+        },
+    });
 }
 
 /// Removes and returns every recorded `notify_vm` target.
@@ -29,35 +41,70 @@ pub(crate) fn take_notified_vms() -> Vec<VMId> {
     core::mem::take(&mut notified)
 }
 
+/// Instance identity stub mirroring `axvm::VmKey`.
+#[derive(Clone)]
+pub(crate) struct TestKey {
+    vm_id: VMId,
+}
+
+impl TestKey {
+    pub(crate) fn vm_id(&self) -> VMId {
+        self.vm_id
+    }
+}
+
+/// Immutable observation stub mirroring `axvm::VmSnapshot`.
+#[derive(Clone)]
+pub(crate) struct TestSnapshot {
+    #[allow(
+        dead_code,
+        reason = "the network console layout reads the configured name"
+    )]
+    pub(crate) name: String,
+    pub(crate) state: VmStatus,
+}
+
+/// Handle stub mirroring `axvm::VmHandle`.
 #[derive(Clone)]
 pub(crate) struct TestVm {
-    id: VMId,
-    status: VmStatus,
+    key: TestKey,
+    snapshot: TestSnapshot,
 }
 
 impl TestVm {
-    pub(crate) fn id(&self) -> VMId {
-        self.id
+    pub(crate) fn key(&self) -> TestKey {
+        self.key.clone()
     }
 
-    pub(crate) fn status(&self) -> VmStatus {
-        self.status
+    pub(crate) fn snapshot(&self) -> TestSnapshot {
+        self.snapshot.clone()
     }
 }
 
-pub(crate) struct AxvmManager;
+/// Manager stub mirroring the production application manager.
+pub(crate) struct TestManager;
 
-impl AxvmManager {
-    pub(crate) fn notify_vm(vm_id: VMId) -> Result<()> {
+impl TestManager {
+    pub(crate) fn notify_vm(&self, vm_id: VMId) -> Result<()> {
         NOTIFIED_VMS.lock().push(vm_id);
         Ok(())
     }
 
-    pub(crate) fn vm_by_id(vm_id: VMId) -> Option<TestVm> {
-        TEST_VM.lock().as_ref().filter(|vm| vm.id == vm_id).cloned()
+    pub(crate) fn get(&self, vm_id: VMId) -> Option<TestVm> {
+        TEST_VM
+            .lock()
+            .as_ref()
+            .filter(|vm| vm.key.vm_id == vm_id)
+            .cloned()
     }
 
-    pub(crate) fn vm_list() -> Vec<TestVm> {
+    pub(crate) fn list(&self) -> Vec<TestVm> {
         TEST_VM.lock().iter().cloned().collect()
     }
+}
+
+static TEST_MANAGER: TestManager = TestManager;
+
+pub(crate) fn manager() -> &'static TestManager {
+    &TEST_MANAGER
 }

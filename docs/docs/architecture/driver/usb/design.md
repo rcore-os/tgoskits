@@ -77,7 +77,7 @@ sequenceDiagram
 | `get_finished()` | 取出已发布结果 | 不能绕过已交付 waiter 的访问规则 |
 | `TWaiter::poll()` | 检查结果、登记 waker、再次检查 | 第二次检查用于覆盖登记期间到达的完成 |
 
-`Finished` 的原子槽不代表整个 xHCI 路径无锁。`host.rs` 的 `EventHandlerState` 使用 `SpinLock`，共享寄存器对象使用 `RwLock`，端点还拥有任务侧可变状态。
+`Finished` 的原子槽不代表整个 xHCI 路径无锁。`host.rs` 的 `EventHandlerState` 使用 `RawSpinLock`，共享寄存器对象使用 `RwLock`，端点还拥有任务侧可变状态。
 
 ### 3.2 事件环推进
 
