@@ -196,6 +196,10 @@ class PlannerContractTests(unittest.TestCase):
         )
         self.assertIn('test_log="$RUNNER_TEMP/ci-tests.log"', step)
         self.assertRegex(step, r"grep -Eq '\^Ran \[1-9\]\[0-9\]\* tests\? in '")
+        self.assertRegex(
+            step,
+            r"(?s)grep -Eq '\^Ran \[1-9\]\[0-9\]\* tests\? in '.*?\|\| \{.*?exit 1",
+        )
 
 
 class ConcurrencyRoutingTests(unittest.TestCase):
