@@ -12,7 +12,7 @@ use core::{
     convert::TryFrom,
     fmt,
     ops::Range,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use ax_lazyinit::OnceLock;
@@ -30,8 +30,15 @@ pub const AXBT_HEADER_LEN: usize = 32;
 pub const AXBT_RECORD_LEN: usize = 28;
 
 static SYMBOL_MAP: OnceLock<SymbolMap<'static>> = OnceLock::new();
-static SYMBOL_MAP_INSTALLING: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static SYMBOL_MAP_INSTALLING: AtomicBool = AtomicBool::new(false);
+
+const KERNEL_SYMBOL_MAGIC: [u8; 4] = *b"AXKS";
+const KERNEL_SYMBOL_VERSION: u16 = 1;
+const KERNEL_SYMBOL_HEADER_LEN: usize = 16;
+const KERNEL_SYMBOL_RECORD_LEN: usize = 16;
+static KERNEL_SYMBOL_MAP: OnceLock<KernelSymbolMap<'static>> = OnceLock::new();
+#[cfg(feature = "alloc")]
+static KERNEL_SYMBOL_MAP_INSTALLING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_arch = "x86_64")]
 const TARGET_ARCH: &str = "x86_64";
@@ -139,12 +146,83 @@ pub struct SymbolMap<'a> {
     strings_len: usize,
 }
 
+#[cfg(feature = "alloc")]
+#[derive(Clone, Copy)]
+struct SymbolMapLayout {
+    architecture: MapArchitecture,
+    build_id_offset: usize,
+    build_id_len: usize,
+    records_offset: usize,
+    record_count: usize,
+    strings_offset: usize,
+    strings_len: usize,
+    text_start: u64,
+    text_end: u64,
+}
+
 /// One function and optional source location from a [`SymbolMap`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Symbol<'a> {
     pub name: &'a str,
     pub file: Option<&'a str>,
     pub line: Option<u32>,
+}
+
+/// Symbol kinds emitted for Linux-compatible `/proc/kallsyms` consumers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum KernelSymbolKind {
+    TextGlobal     = b'T',
+    TextLocal      = b't',
+    DataGlobal     = b'D',
+    DataLocal      = b'd',
+    BssGlobal      = b'B',
+    BssLocal       = b'b',
+    ReadOnlyGlobal = b'R',
+    ReadOnlyLocal  = b'r',
+}
+
+impl KernelSymbolKind {
+    const fn from_raw(raw: u8) -> Option<Self> {
+        Some(match raw {
+            b'T' => Self::TextGlobal,
+            b't' => Self::TextLocal,
+            b'D' => Self::DataGlobal,
+            b'd' => Self::DataLocal,
+            b'B' => Self::BssGlobal,
+            b'b' => Self::BssLocal,
+            b'R' => Self::ReadOnlyGlobal,
+            b'r' => Self::ReadOnlyLocal,
+            _ => return None,
+        })
+    }
+
+    pub const fn as_char(self) -> char {
+        self as u8 as char
+    }
+}
+
+/// A validated, zero-copy kernel symbol table used by StarryOS procfs,
+/// kprobe, and kmod paths.  It is kept separate from the function interval
+/// table because data symbols do not have a meaningful instruction range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelSymbolMap<'a> {
+    bytes: &'a [u8],
+    architecture: MapArchitecture,
+    build_id_offset: usize,
+    build_id_len: usize,
+    records_offset: usize,
+    record_count: usize,
+    strings_offset: usize,
+    strings_len: usize,
+}
+
+/// One entry in a [`KernelSymbolMap`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelSymbol<'a> {
+    pub address: usize,
+    pub name: &'a str,
+    pub kind: KernelSymbolKind,
 }
 
 impl fmt::Display for Symbol<'_> {
@@ -355,6 +433,208 @@ impl<'a> SymbolMap<'a> {
         core::str::from_utf8(&bytes[..end]).map_err(|_| MapError::InvalidUtf8)?;
         Ok(())
     }
+
+    #[cfg(feature = "alloc")]
+    fn layout(&self) -> SymbolMapLayout {
+        SymbolMapLayout {
+            architecture: self.architecture,
+            build_id_offset: self.build_id_offset,
+            build_id_len: self.build_id_len,
+            records_offset: self.records_offset,
+            record_count: self.record_count,
+            strings_offset: self.strings_offset,
+            strings_len: self.strings_len,
+            text_start: self.text_start,
+            text_end: self.text_end,
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl SymbolMapLayout {
+    fn attach<'a>(self, bytes: &'a [u8]) -> SymbolMap<'a> {
+        SymbolMap {
+            bytes,
+            architecture: self.architecture,
+            build_id_offset: self.build_id_offset,
+            build_id_len: self.build_id_len,
+            records_offset: self.records_offset,
+            record_count: self.record_count,
+            strings_offset: self.strings_offset,
+            strings_len: self.strings_len,
+            text_start: self.text_start,
+            text_end: self.text_end,
+        }
+    }
+}
+
+impl<'a> KernelSymbolMap<'a> {
+    /// Parses and validates an AXKS kernel symbol map without allocating.
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, MapError> {
+        if bytes.len() < KERNEL_SYMBOL_HEADER_LEN {
+            return Err(MapError::TooShort);
+        }
+        if bytes[..4] != KERNEL_SYMBOL_MAGIC {
+            return Err(MapError::BadMagic);
+        }
+        let version = read_u16(bytes, 4).ok_or(MapError::TooShort)?;
+        if version != KERNEL_SYMBOL_VERSION {
+            return Err(MapError::UnsupportedVersion(version));
+        }
+        let architecture = MapArchitecture::from_raw(bytes[6])
+            .ok_or(MapError::UnsupportedArchitecture(bytes[6]))?;
+        let build_id_len = usize::from(bytes[7]);
+        if build_id_len == 0 {
+            return Err(MapError::InvalidBuildId);
+        }
+        let record_count = usize::try_from(read_u32(bytes, 8).ok_or(MapError::TooShort)?)
+            .map_err(|_| MapError::InvalidRecordCount)?;
+        let strings_len = usize::try_from(read_u32(bytes, 12).ok_or(MapError::TooShort)?)
+            .map_err(|_| MapError::InvalidRecordCount)?;
+        let records_offset = KERNEL_SYMBOL_HEADER_LEN
+            .checked_add(build_id_len)
+            .ok_or(MapError::InvalidRecordCount)?;
+        let strings_offset = records_offset
+            .checked_add(
+                record_count
+                    .checked_mul(KERNEL_SYMBOL_RECORD_LEN)
+                    .ok_or(MapError::InvalidRecordCount)?,
+            )
+            .ok_or(MapError::InvalidRecordCount)?;
+        let end = strings_offset
+            .checked_add(strings_len)
+            .ok_or(MapError::InvalidRecordCount)?;
+        if end != bytes.len() {
+            return Err(MapError::InvalidRecordCount);
+        }
+        let map = Self {
+            bytes,
+            architecture,
+            build_id_offset: KERNEL_SYMBOL_HEADER_LEN,
+            build_id_len,
+            records_offset,
+            record_count,
+            strings_offset,
+            strings_len,
+        };
+        let mut previous = 0;
+        for index in 0..record_count {
+            let record = map.raw_record(index).ok_or(MapError::InvalidRecordCount)?;
+            if index != 0 && record.address < previous {
+                return Err(MapError::RecordsNotSorted);
+            }
+            previous = record.address;
+            if KernelSymbolKind::from_raw(record.kind).is_none() {
+                return Err(MapError::InvalidRecordRange);
+            }
+            map.validate_string(record.name_offset)?;
+        }
+        Ok(map)
+    }
+
+    pub const fn architecture(&self) -> MapArchitecture {
+        self.architecture
+    }
+
+    pub fn build_id(&self) -> &'a [u8] {
+        &self.bytes[self.build_id_offset..self.build_id_offset + self.build_id_len]
+    }
+
+    pub const fn len(&self) -> usize {
+        self.record_count
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.record_count == 0
+    }
+
+    pub fn symbol_at(&self, index: usize) -> Option<KernelSymbol<'a>> {
+        let record = self.raw_record(index)?;
+        Some(KernelSymbol {
+            address: usize::try_from(record.address).ok()?,
+            name: self.string(record.name_offset)?,
+            kind: KernelSymbolKind::from_raw(record.kind)?,
+        })
+    }
+
+    #[cfg(feature = "alloc")]
+    fn layout(&self) -> KernelSymbolMapLayout {
+        KernelSymbolMapLayout {
+            architecture: self.architecture,
+            build_id_offset: self.build_id_offset,
+            build_id_len: self.build_id_len,
+            records_offset: self.records_offset,
+            record_count: self.record_count,
+            strings_offset: self.strings_offset,
+            strings_len: self.strings_len,
+        }
+    }
+
+    fn raw_record(&self, index: usize) -> Option<KernelRawRecord> {
+        if index >= self.record_count {
+            return None;
+        }
+        let offset = self
+            .records_offset
+            .checked_add(index.checked_mul(KERNEL_SYMBOL_RECORD_LEN)?)?;
+        Some(KernelRawRecord {
+            address: read_u64(self.bytes, offset)?,
+            name_offset: read_u32(self.bytes, offset.checked_add(8)?)?,
+            kind: *self.bytes.get(offset.checked_add(12)?)?,
+        })
+    }
+
+    fn string(&self, offset: u32) -> Option<&'a str> {
+        let offset = usize::try_from(offset).ok()?;
+        if offset >= self.strings_len {
+            return None;
+        }
+        let start = self.strings_offset.checked_add(offset)?;
+        let bytes = &self.bytes[start..self.strings_offset + self.strings_len];
+        let end = bytes.iter().position(|byte| *byte == 0)?;
+        core::str::from_utf8(&bytes[..end]).ok()
+    }
+
+    fn validate_string(&self, offset: u32) -> Result<(), MapError> {
+        self.string(offset)
+            .map(|_| ())
+            .ok_or(MapError::InvalidStringOffset)
+    }
+}
+
+#[cfg(feature = "alloc")]
+#[derive(Clone, Copy)]
+struct KernelSymbolMapLayout {
+    architecture: MapArchitecture,
+    build_id_offset: usize,
+    build_id_len: usize,
+    records_offset: usize,
+    record_count: usize,
+    strings_offset: usize,
+    strings_len: usize,
+}
+
+#[cfg(feature = "alloc")]
+impl KernelSymbolMapLayout {
+    fn attach<'a>(self, bytes: &'a [u8]) -> KernelSymbolMap<'a> {
+        KernelSymbolMap {
+            bytes,
+            architecture: self.architecture,
+            build_id_offset: self.build_id_offset,
+            build_id_len: self.build_id_len,
+            records_offset: self.records_offset,
+            record_count: self.record_count,
+            strings_offset: self.strings_offset,
+            strings_len: self.strings_len,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct KernelRawRecord {
+    address: u64,
+    name_offset: u32,
+    kind: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -408,18 +688,9 @@ pub fn install_symbol_map(bytes: &'static [u8]) -> Result<(), MapError> {
         return Err(MapError::ArchitectureMismatch);
     }
     validate_text_range(&parsed)?;
-    if SYMBOL_MAP.get().is_some()
-        || SYMBOL_MAP_INSTALLING.swap(true, core::sync::atomic::Ordering::AcqRel)
-    {
-        return Err(MapError::AlreadyInstalled);
-    }
+    reserve_install(&SYMBOL_MAP, &SYMBOL_MAP_INSTALLING)?;
     let _ = SYMBOL_MAP.call_once(|| parsed);
     Ok(())
-}
-
-/// Short alias for [`install_symbol_map`] used by boot-time map loaders.
-pub fn install_map(bytes: &'static [u8]) -> Result<(), MapError> {
-    install_symbol_map(bytes)
 }
 
 /// Validates and installs an owned map, retaining its bytes for the lifetime
@@ -427,18 +698,27 @@ pub fn install_map(bytes: &'static [u8]) -> Result<(), MapError> {
 /// boot: the caller transfers ownership of the copied map to this function.
 #[cfg(feature = "alloc")]
 pub fn install_symbol_map_owned(bytes: Box<[u8]>) -> Result<(), MapError> {
-    if SYMBOL_MAP.get().is_some()
-        || SYMBOL_MAP_INSTALLING.load(core::sync::atomic::Ordering::Acquire)
-    {
-        return Err(MapError::AlreadyInstalled);
-    }
-    let parsed = SymbolMap::parse(&bytes)?;
-    if parsed.architecture != MapArchitecture::current() {
-        return Err(MapError::ArchitectureMismatch);
-    }
-    validate_text_range(&parsed)?;
+    let layout = {
+        let parsed = SymbolMap::parse(&bytes)?;
+        if parsed.architecture != MapArchitecture::current() {
+            return Err(MapError::ArchitectureMismatch);
+        }
+        validate_text_range(&parsed)?;
+        parsed.layout()
+    };
+    reserve_install(&SYMBOL_MAP, &SYMBOL_MAP_INSTALLING)?;
     let bytes = Box::leak(bytes);
-    install_symbol_map(bytes)
+    let parsed = layout.attach(bytes);
+    let _ = SYMBOL_MAP.call_once(|| parsed);
+    Ok(())
+}
+
+fn reserve_install<T>(slot: &OnceLock<T>, installing: &AtomicBool) -> Result<(), MapError> {
+    if slot.get().is_some() || installing.swap(true, Ordering::AcqRel) {
+        Err(MapError::AlreadyInstalled)
+    } else {
+        Ok(())
+    }
 }
 
 /// Returns the installed target symbol map, if one was installed.
@@ -451,9 +731,26 @@ pub fn lookup_symbol(address: usize) -> Option<Symbol<'static>> {
     symbol_map()?.lookup(address)
 }
 
-/// Short alias for [`lookup_symbol`].
-pub fn lookup(address: usize) -> Option<Symbol<'static>> {
-    lookup_symbol(address)
+/// Installs the first valid, target-architecture AXKS kernel symbol map.
+#[cfg(feature = "alloc")]
+pub fn install_kernel_symbol_map_owned(bytes: Box<[u8]>) -> Result<(), MapError> {
+    let layout = {
+        let parsed = KernelSymbolMap::parse(&bytes)?;
+        if parsed.architecture != MapArchitecture::current() {
+            return Err(MapError::ArchitectureMismatch);
+        }
+        parsed.layout()
+    };
+    reserve_install(&KERNEL_SYMBOL_MAP, &KERNEL_SYMBOL_MAP_INSTALLING)?;
+    let bytes = Box::leak(bytes);
+    let parsed = layout.attach(bytes);
+    let _ = KERNEL_SYMBOL_MAP.call_once(|| parsed);
+    Ok(())
+}
+
+/// Returns the installed Linux-compatible kernel symbol map.
+pub fn kernel_symbol_map() -> Option<&'static KernelSymbolMap<'static>> {
+    KERNEL_SYMBOL_MAP.get()
 }
 
 fn fmt_symbol(f: &mut fmt::Formatter<'_>, frame: &Frame) -> fmt::Result {
@@ -1083,6 +1380,31 @@ mod axbt_map_tests {
             format!("{}", map.lookup(0x1000).unwrap()),
             "first at src/main.rs:12"
         );
+    }
+
+    #[test]
+    fn parses_kernel_symbol_types() {
+        let strings = b"text\0data\0";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"AXKS");
+        put_u16(&mut bytes, 1);
+        bytes.push(MapArchitecture::current() as u8);
+        bytes.push(2);
+        put_u32(&mut bytes, 2);
+        put_u32(&mut bytes, strings.len() as u32);
+        bytes.extend_from_slice(b"id");
+        put_u64(&mut bytes, 0x1000);
+        put_u32(&mut bytes, 0);
+        bytes.extend_from_slice(b"T\0\0\0");
+        put_u64(&mut bytes, 0x2000);
+        put_u32(&mut bytes, 5);
+        bytes.extend_from_slice(b"D\0\0\0");
+        bytes.extend_from_slice(strings);
+
+        let map = KernelSymbolMap::parse(&bytes).unwrap();
+        assert_eq!(map.symbol_at(0).unwrap().kind, KernelSymbolKind::TextGlobal);
+        assert_eq!(map.symbol_at(1).unwrap().name, "data");
+        assert_eq!(map.symbol_at(1).unwrap().kind.as_char(), 'D');
     }
 
     #[test]
