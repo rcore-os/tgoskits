@@ -53,7 +53,7 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
+AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
 '''
 
 [[check.suite]]

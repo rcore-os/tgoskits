@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
 };
 
@@ -18,7 +18,27 @@ pub(super) struct ResourceInputs {
     pub(super) busybox_initramfs: Option<String>,
     pub(super) ovmf_firmware: Option<String>,
 }
+/// ostool-server rejects session-file uploads above 64 MiB, and board FIT
+/// images also carry the host kernel. Once the payload approaches that
+/// budget, emit the appended guest bundle as one top-level gzip member: the
+/// Axvisor host initramfs unpacker inflates it, while nested gzip is not
+/// allowed, so the member itself is never already compressed.
+const SESSION_UPLOAD_COMPRESS_THRESHOLD: u64 = 48 * 1024 * 1024;
 
+/// Appends the packed guest bundle, gzip-compressed when the resulting
+/// payload would otherwise approach the board session upload limit.
+fn append_guest_bundle(output: &mut fs::File, bundle: &Path) -> std::io::Result<()> {
+    let bundle_size = fs::metadata(bundle)?.len();
+    let payload_size = output.stream_position()?.saturating_add(bundle_size);
+    if payload_size <= SESSION_UPLOAD_COMPRESS_THRESHOLD {
+        std::io::copy(&mut fs::File::open(bundle)?, output)?;
+        return Ok(());
+    }
+    let mut encoder = flate2::write::GzEncoder::new(&mut *output, flate2::Compression::default());
+    std::io::copy(&mut fs::File::open(bundle)?, &mut encoder)?;
+    encoder.finish()?;
+    Ok(())
+}
 pub(super) fn case_inputs(case_dir: &Path) -> anyhow::Result<ResourceInputs> {
     let manifest = case_dir.join("host-initramfs.toml");
     if !manifest.is_file() {
@@ -151,7 +171,7 @@ pub(super) fn attach_with_external_assets(
         output_file.write_all(&[0])?;
         size += 1;
     }
-    std::io::copy(&mut fs::File::open(archive.path())?, &mut output_file)?;
+    append_guest_bundle(output_file.as_file_mut(), archive.path())?;
     output_file.flush()?;
     output_file.persist(output).map_err(|error| error.error)?;
     // Keep the exact packaged configurations available to management clients
@@ -234,6 +254,43 @@ mod tests {
         fs::remove_file(directory.path().join("kernel_path")).unwrap();
         assert!(attach(&[config], false, &output, &mut None).is_err());
         assert_eq!(fs::read(&output).unwrap(), prior);
+    }
+
+    #[test]
+    fn oversized_guest_bundle_is_emitted_as_gzip_member() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut document = toml::Table::try_from(&GuestConfig::default()).unwrap();
+        let asset = directory.path().join("kernel_path");
+        fs::write(
+            &asset,
+            vec![0u8; SESSION_UPLOAD_COMPRESS_THRESHOLD as usize + 1],
+        )
+        .unwrap();
+        document
+            .get_mut("kernel")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "kernel_path".into(),
+                toml::Value::String("kernel_path".into()),
+            );
+        let config = directory.path().join("guest.toml");
+        fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
+        let output = directory.path().join("host.cpio");
+        let mut archive = None;
+
+        attach(&[config], false, &output, &mut archive).unwrap();
+
+        let payload = fs::read(&output).unwrap();
+        assert_eq!(&payload[..2], &[0x1f, 0x8b]);
+        assert!(payload.len() < SESSION_UPLOAD_COMPRESS_THRESHOLD as usize);
+        let mut inflated = Vec::new();
+        flate2::read::GzDecoder::new(payload.as_slice())
+            .read_to_end(&mut inflated)
+            .unwrap();
+        assert!(inflated.starts_with(b"070701"));
+        assert!(inflated.len() > SESSION_UPLOAD_COMPRESS_THRESHOLD as usize);
     }
 
     #[test]

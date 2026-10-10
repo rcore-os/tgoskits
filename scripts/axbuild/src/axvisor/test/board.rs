@@ -291,41 +291,57 @@ impl Axvisor {
                 }
             };
 
-            let result = async {
-                super::guest_build::prepare(&mut self.app, &board_test_config).await?;
-                let mut request = prepared.request.clone();
-                // Cargo identity is shared, but each board case keeps its own
-                // build metadata and guest resource selection.
-                request.build_info_path = group.build_config.clone();
-                let mut board_config = self
-                    .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
-                    .await?;
-                self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
-                    .await?;
-                self.app
-                    .board_prepared_elf(
-                        prepared.elf_path.clone(),
-                        prepared.cargo.to_bin,
-                        request.build_info_path,
-                        board_config,
-                        RunBoardOptions {
-                            board_type: args.board_type.clone(),
-                            server: args.server.clone(),
-                            port: args.port,
-                        },
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "axvisor board test failed for group `{}` (build_config={}, \
-                             board_test_config={})",
-                            group_label,
-                            group.build_config.display(),
-                            board_test_config_summary
+            let mut transport_retries = 0;
+            let result = loop {
+                let result = async {
+                    super::guest_build::prepare(&mut self.app, &board_test_config).await?;
+                    let mut request = prepared.request.clone();
+                    // Cargo identity is shared, but each board case keeps its own
+                    // build metadata and guest resource selection.
+                    request.build_info_path = group.build_config.clone();
+                    let mut board_config = self
+                        .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
+                        .await?;
+                    self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
+                        .await?;
+                    self.app
+                        .board_prepared_elf(
+                            prepared.elf_path.clone(),
+                            prepared.cargo.to_bin,
+                            request.build_info_path,
+                            board_config,
+                            RunBoardOptions {
+                                board_type: args.board_type.clone(),
+                                server: args.server.clone(),
+                                port: args.port,
+                            },
                         )
-                    })
-            }
-            .await;
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "axvisor board test failed for group `{}` (build_config={}, \
+                                 board_test_config={})",
+                                group_label,
+                                group.build_config.display(),
+                                board_test_config_summary
+                            )
+                        })
+                }
+                .await;
+                if transport_retries == 0
+                    && result
+                        .as_ref()
+                        .is_err_and(is_transient_board_server_transport_error)
+                {
+                    transport_retries += 1;
+                    println!(
+                        "retrying board group `{group_label}` once after a transient board-server \
+                         transport error"
+                    );
+                    continue;
+                }
+                break result;
+            };
 
             match result {
                 Ok(()) => run_state.pass_group(&group_label),
@@ -341,6 +357,16 @@ impl Axvisor {
         request.smp = None;
         request
     }
+}
+
+/// A board-server request that failed while being sent (connection reset,
+/// connect timeout, ...) is worth one retry with a fresh board session.
+fn is_transient_board_server_transport_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(|error| error.is_request() || error.is_connect() || error.is_timeout())
+    })
 }
 
 fn merge_board_test_uboot_config(
