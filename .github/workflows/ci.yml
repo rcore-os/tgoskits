@@ -312,8 +312,17 @@ jobs:
         run: |
           set -euo pipefail
           uv run --python 3.13 --no-project python3 scripts/test/check_ci_routing.py
-          uv run --python 3.13 --no-project python3 -m unittest discover \
-            -s scripts/test -p 'test_ci_*.py'
+          test_log="$RUNNER_TEMP/ci-tests.log"
+          if ! uv run --python 3.13 --no-project python3 -m unittest discover \
+            -s scripts/test -p 'test_ci_*.py' >"$test_log" 2>&1; then
+            cat "$test_log"
+            exit 1
+          fi
+          cat "$test_log"
+          grep -Eq '^Ran [1-9][0-9]* tests? in ' "$test_log" || {
+            echo "CI test discovery found no tests" >&2
+            exit 1
+          }
 
       - name: Resolve incremental base revision
         id: since
