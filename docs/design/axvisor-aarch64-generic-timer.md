@@ -261,3 +261,9 @@ Runtime vCPU 绑定和 FDT 安装校验并消费同一份 `GuestTimerProfile`；
 - RK3588/OrangePi-5-Plus 重复通过，防止破坏既有路径；
 - `ax-cpu`、`arm_vgic` 与 `axvm` 定向 clippy 无新增 warning；
 - 保留结构化 clockevent generation、timer promotion、vCPU entry/wake 诊断，删除无界或平台特判式临时日志。
+
+### Issue #2021 结论
+
+Issue #2021 报告的现象是 QEMU AArch64 GICv3/ITS 客户机偶发停在 Linux GIC 初始化阶段，最终耗尽 600 秒 case timeout。该现象对应旧实现中相互独立的 AxVM timer wheel、VM 通知和调度器 deadline：过期 callback 可能只留下 stale pending，或在 vCPU 等待窗口中丢失唤醒；GICv3/ITS 初始化只是最后可见的停滞位置，并非根因。当前实现已由 PR #1775 和 #2190 合并统一所有权，`Aarch64TimerBinding::arm_wait` 使用带 epoch 的 hard restartable timer，`VcpuTimerWaitGeneration` 在唤醒前发布完成代次，`wait_for_event` 通过 `ThreadWakeHandle` 重新检查 predicate，迁移时则按 owner CPU 和线程重新注册 timer。
+
+因此，在当前 `dev` 提交 `61e77f3bd` 上没有观察到 issue #2021 的原始故障。精确复现命令 `cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress` 通过，耗时 125.96 秒；随后使用相同 QEMU 参数、guest image 和 `vm console 1` 启动序列重复三次，三次均打印 `GICv3: 256 SPIs implemented`、ITS 初始化日志和 `AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED`，未出现初始化停滞。该结果支持关闭 issue，而不是增加 timeout、重试或 GICv3 特判。
