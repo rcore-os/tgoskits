@@ -190,13 +190,9 @@ rootfs 解包（`debugfs rdump`）的权限决策：Linux 上按有效 uid、完
 
 两条路径均保留 staging root 作为目标 sysroot。宿主 binutils 版本必须能够处理该 sysroot 的 ELF 特性；例如旧工具不识别 `.relr.dyn` 时，链接错误会向外传播，需要升级交叉工具链。`rootfs::runtime::sync_runtime_dependencies()` 按 `readelf`、`llvm-readelf`、`<gnu_tool_prefix>-readelf` 的顺序选择宿主 ELF 检查工具，继续使用已有的递归依赖同步逻辑。
 
-原生 binutils 只能替代构建工具，不能直接执行目标脚本。`prebuild.sh` 因此使用统一的
-目标环境入口：找到 qemu-user 时沿用 staging root 的 linux-user 路径；否则启动目标
-架构 `qemu-system-*` 和 rootfs 内 `/guest/linux/linux-qemu`，以只读快照根盘启动最小
-Linux，通过 9P 暴露 staging、case 与工作目录，并在客户机内执行原脚本。APK wrapper
-仍把包安装到 staging root，完成标记前执行 `sync`；失败、提前退出或十分钟超时都会
-使资产准备失败。该回退供 C、Grouped C、Rust 及复用这些构建器的板卡用例共同使用，
-不增加第二种脚本名称，也不跳过任何用例。
+原生 binutils 只能替代构建工具。`prebuild.sh` 找到 qemu-user 时沿用原路径；否则由
+目标 `qemu-system-*` 启动 `/guest/linux/linux-qemu`，通过 9P 挂载工作目录并执行同一脚本。
+失败、提前退出或超时都会使资产准备失败。
 
 ## 7. 资产准备与 rootfs 缓存
 
