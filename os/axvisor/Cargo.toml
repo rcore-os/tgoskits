@@ -56,7 +56,6 @@ axtest = []
 vpci-test-device = ["axvm/vpci-test-device"]
 sstc = ["axvm/sstc"]
 stack-protector = ["ax-std/stack-protector"]
-backtrace = ["ax-std/backtrace"]
 test-virq-delivery = []
 vcpu-perf-load = []
 # Benchmark-local FIFO policy for the vCPU host task. Only the dedicated
@@ -121,6 +120,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "hv",
   "tls",
   "std-compat",
+  "backtrace",
 ] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "paging", "smp"] }

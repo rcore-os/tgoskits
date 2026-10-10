@@ -66,6 +66,29 @@ fn patch_starry_cargo_config_injects_required_features_and_env() {
 }
 
 #[test]
+fn load_cargo_config_enables_target_symbolization_by_default() {
+    let mut request = request(
+        PathBuf::from("/tmp/.build.toml"),
+        "x86_64",
+        "x86_64-unknown-none",
+    );
+    request.build_info_override = Some(default_starry_build_info());
+
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
+    let flags = cargo
+        .args
+        .windows(2)
+        .find(|pair| pair[0] == "--config")
+        .map(|pair| pair[1].clone())
+        .or_else(|| cargo.env.get("CARGO_ENCODED_RUSTFLAGS").cloned())
+        .unwrap_or_default();
+
+    assert!(flags.contains("-Cdebuginfo=2"), "{flags}");
+    assert!(flags.contains("-Cstrip=none"), "{flags}");
+    assert!(flags.contains("-Cforce-frame-pointers=yes"), "{flags}");
+}
+
+#[test]
 fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
     let mut request = request(
         PathBuf::from("/tmp/.build.toml"),

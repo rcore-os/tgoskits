@@ -60,6 +60,7 @@ CLI `--smp` 覆盖配置或 Snapshot 中的 `max_cpu_num`。`FEATURES` 环境变
 - 准备 musl C 交叉编译环境、占位库和 linker wrapper；
 - 固定 package 为 `starryos`，并确保 Cargo 选择其 binary；
 - 写入 `AX_ARCH`、`AX_TARGET`，以及来自 BuildInfo 的 `AX_LOG`、`SMP`、`[env]`。
+- 默认追加 `-Cdebuginfo=2`、`-Cstrip=none` 和 `-Cforce-frame-pointers=yes`，保证每个 Starry ELF 都能生成带文件行号的 AXBT map；不需要在 Build Config 中设置 `BACKTRACE` 或 `DWARF`。
 
 共享基础配置的 `to_bin` 为 `false`。因此 `starry build` 的直接产物是 ELF；运行和部署阶段按 QEMU 或板卡配置决定是否转换。
 

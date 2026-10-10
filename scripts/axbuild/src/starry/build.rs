@@ -20,6 +20,12 @@ use crate::{
     support::process::ProcessExt,
 };
 
+const STARRY_SYMBOLIZATION_RUSTFLAGS: &[&str] = &[
+    "-Cdebuginfo=2",
+    "-Cstrip=none",
+    "-Cforce-frame-pointers=yes",
+];
+
 pub(crate) fn default_starry_build_info() -> StarryBuildInfo {
     // The package and board configuration own feature selection; a generated
     // default must remain an empty capability set.
@@ -106,6 +112,10 @@ pub(crate) fn load_cargo_config(
         BareKernelLinkMode::Pie,
     )?;
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
+    // Starry always ships target-side symbol maps. Keep the ELF information
+    // needed by the build-time AXBT generator and the frame-pointer walk
+    // independent of per-test environment variables.
+    crate::build::append_cargo_rustflags(&mut cargo, STARRY_SYMBOLIZATION_RUSTFLAGS);
     crate::build::append_cargo_rustflags(&mut cargo, &["-D", "warnings"]);
     Ok(cargo)
 }
