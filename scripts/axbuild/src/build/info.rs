@@ -357,23 +357,6 @@ fn append_rustflag_sequence(active_flags: &mut Vec<String>, flags: &[&str]) -> b
     true
 }
 
-/// Whether the build config enables target backtrace support (frame pointers / unwind).
-///
-/// This remains a build-pipeline predicate; runtime symbolization is performed by the target.
-#[allow(dead_code)]
-pub(crate) fn build_info_enables_backtrace(info: &BuildInfo) -> bool {
-    let dwarf = env_truthy(&info.env, "DWARF");
-    env_truthy(&info.env, "BACKTRACE") || dwarf
-}
-
-/// Read a per-target `build-*.toml` and check [`build_info_enables_backtrace`].
-#[allow(dead_code)]
-pub(crate) fn build_info_enables_backtrace_path(path: &Path) -> bool {
-    load_build_info::<BuildInfo>(path)
-        .ok()
-        .is_some_and(|info| build_info_enables_backtrace(&info))
-}
-
 pub(super) const TARGET_JSON_ROOT: &str = "scripts/targets";
 pub(super) const PIE_TARGET_DIR: &str = "pie";
 pub(crate) const ARCEOS_LINKER_SCRIPT: &str = "linker.x";

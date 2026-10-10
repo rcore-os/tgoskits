@@ -101,7 +101,7 @@ flowchart TD
 4. **资产准备**：`prepare_case_assets()` 进入共享的 `test/case/` 层（见 [测试基础设施](../test_infra#7-资产准备与-rootfs-缓存)），StarryOS 的 staging 钩子注入 DNS，guest 包环境钩子按 `STARRY_APK_REGION` 重写 APK 源。
 5. **rootfs 补丁**：`patch_rootfs()` 把 prepared rootfs 路径写入 QEMU `-drive`，模式为 `EnsureDiskBootNet`，写策略为 `RootfsWritePolicy::Discard`。
 6. **Host HTTP**：`start_qemu_case_host_http_server()` 按需启动。
-7. **目标侧 Backtrace**：Build Config 启用 `BACKTRACE`/`DWARF` 时，构建器把 AXBT map 放入 initramfs；测试直接匹配目标串口中的函数名和 `file:line`，只保留有限成功正则状态。
+7. **目标侧 Backtrace**：Build Config 启用 `BACKTRACE`/`DWARF` 时，构建器把 AXBT map 和 Starry 的 AXKS 符号表放入 initramfs；测试直接匹配目标串口中的函数名和 `file:line`，只保留有限成功正则状态。`ostool` 不支持把 host initramfs 交给非 UEFI 的 x86_64 直接启动路径，因此需要 map 的 x86_64 用例必须声明 `uefi = true`；其它 direct loader 由其架构启动协议接收 initramfs。未切换到 UEFI 的 direct x86_64 用例会保留地址级回溯并跳过 host initramfs 注入。
 
 ### 3.3 失败语义
 

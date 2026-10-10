@@ -87,6 +87,14 @@ pub(crate) fn append_target_backtrace_map(
     debug: bool,
     qemu: &mut QemuConfig,
 ) -> anyhow::Result<()> {
+    if target.starts_with("x86_64") && !qemu.uefi {
+        // ostool cannot hand a host initramfs to the direct x86_64 loader.
+        // UEFI cases and the aarch64/riscv64 direct loaders retain the normal
+        // initramfs contract; direct x86_64 cases must use a disk-visible map
+        // or switch to UEFI explicitly.
+        log::debug!("skip target symbol maps for direct x86_64 QEMU; host initramfs requires UEFI");
+        return Ok(());
+    }
     let profile = if debug { "debug" } else { "release" };
     let map = target_dir.join(target).join(profile).join("starryos.axbt");
     if !map.is_file() {
@@ -106,16 +114,29 @@ pub(crate) fn append_backtrace_map_to_initramfs(
     initramfs: &mut Option<String>,
     map: &Path,
 ) -> anyhow::Result<()> {
-    if !map.is_file() {
+    append_file_to_initramfs(initramfs, map, "symbols/kernel.axbt")?;
+    let kernel_symbols = map.with_extension("axks");
+    if kernel_symbols.is_file() {
+        append_file_to_initramfs(initramfs, &kernel_symbols, "symbols/kernel.axks")?;
+    }
+    Ok(())
+}
+
+fn append_file_to_initramfs(
+    initramfs: &mut Option<String>,
+    source: &Path,
+    guest_path: &str,
+) -> anyhow::Result<()> {
+    if !source.is_file() {
         return Ok(());
     }
     if initramfs.is_none() {
-        let stage = tempfile::tempdir_in(map.parent().context("AXBT map has no parent")?)?;
-        let destination = stage.path().join("symbols/kernel.axbt");
+        let stage = tempfile::tempdir_in(source.parent().context("map has no parent")?)?;
+        let destination = stage.path().join(guest_path.trim_start_matches('/'));
         fs::create_dir_all(destination.parent().expect("map has a parent"))?;
-        fs::copy(map, &destination)
-            .with_context(|| format!("failed to stage target backtrace map {}", map.display()))?;
-        let archive = map.with_extension("initramfs.cpio");
+        fs::copy(source, &destination)
+            .with_context(|| format!("failed to stage target symbol map {}", source.display()))?;
+        let archive = source.with_extension("initramfs.cpio");
         crate::image::pack_initramfs_dir(stage.path(), &archive)?;
         *initramfs = Some(archive.to_string_lossy().into_owned());
         return Ok(());
@@ -127,11 +148,11 @@ pub(crate) fn append_backtrace_map_to_initramfs(
             .parent()
             .context("host initramfs has no parent directory")?,
     )?;
-    let destination = stage.path().join("symbols/kernel.axbt");
+    let destination = stage.path().join(guest_path.trim_start_matches('/'));
     fs::create_dir_all(destination.parent().expect("map has a parent"))?;
-    fs::copy(map, &destination)
-        .with_context(|| format!("failed to stage target backtrace map {}", map.display()))?;
-    let map_archive = initramfs.with_extension("symbols.cpio");
+    fs::copy(source, &destination)
+        .with_context(|| format!("failed to stage target symbol map {}", source.display()))?;
+    let map_archive = initramfs.with_extension(format!("{}.cpio", guest_path.replace('/', "_")));
     crate::image::pack_initramfs_dir(stage.path(), &map_archive)?;
     let mut output = fs::OpenOptions::new().append(true).open(initramfs)?;
     let bytes = fs::read(&map_archive)?;

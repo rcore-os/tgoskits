@@ -35,6 +35,28 @@ pub(crate) fn preserve_build_artifact(
             destination.display()
         )
     })?;
+    let source_map = source.with_extension("axbt");
+    if source_map.is_file() {
+        let destination_map = destination.with_extension("axbt");
+        fs::copy(&source_map, &destination_map).with_context(|| {
+            format!(
+                "failed to preserve AXBT map {} at {}",
+                source_map.display(),
+                destination_map.display()
+            )
+        })?;
+    }
+    let source_kernel_symbols = source.with_extension("axks");
+    if source_kernel_symbols.is_file() {
+        let destination_kernel_symbols = destination.with_extension("axks");
+        fs::copy(&source_kernel_symbols, &destination_kernel_symbols).with_context(|| {
+            format!(
+                "failed to preserve AXKS map {} at {}",
+                source_kernel_symbols.display(),
+                destination_kernel_symbols.display()
+            )
+        })?;
+    }
     Ok(destination)
 }
 

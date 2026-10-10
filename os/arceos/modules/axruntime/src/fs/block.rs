@@ -350,6 +350,19 @@ pub(super) fn init(bootargs: Option<&str>) {
                 Err(error) => warn!("failed to read target backtrace map {path}: {error:?}"),
             }
         }
+        for path in ["/symbols/kernel.axks", "/boot/symbols/kernel.axks"] {
+            match context.read(path) {
+                Ok(bytes) => {
+                    match axbacktrace::install_kernel_symbol_map_owned(bytes.into_boxed_slice()) {
+                        Ok(()) => info!("installed kernel symbol map from {path}"),
+                        Err(error) => warn!("ignored kernel symbol map {path}: {error:?}"),
+                    }
+                    break;
+                }
+                Err(axfs_ng_vfs::VfsError::NotFound) => {}
+                Err(error) => warn!("failed to read kernel symbol map {path}: {error:?}"),
+            }
+        }
         fs
     });
     if let Some(range) = archive {

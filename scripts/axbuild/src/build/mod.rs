@@ -37,10 +37,9 @@ pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
-#[allow(unused_imports)]
 pub(crate) use info::{
-    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags,
-    build_info_enables_backtrace_path, env_truthy, toolchain_rustflags,
+    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags, env_truthy,
+    toolchain_rustflags,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]

@@ -66,7 +66,10 @@ the in-kernel AXBT symbol map.
 The Linux-facing `/proc/kallsyms` view is generated from that same provider.
 
 The kernel image itself must still be built by the normal Starry axbuild flow so
-the target AXBT map is packaged before testing positive module loading.
+the target AXBT map and its AXKS `/proc/kallsyms` sidecar are packaged before
+testing positive module loading. AXKS preserves T/t, D/d, B/b and R/r symbol
+types; when it is missing, the kernel logs a text-only fallback and data-symbol
+module references are expected to fail explicitly.
 
 ### LTO and exported Rust symbols
 
@@ -179,7 +182,8 @@ Minimum validation after implementation:
    ```
 
    The file must be an ET_REL relocatable ELF. Undefined symbols are expected,
-   because they are resolved by the kernel loader through the in-kernel AXBT provider.
+because they are resolved by the kernel loader through the in-kernel AXKS/AXBT
+provider. Name lookup uses an index built while the provider is initialized.
 
 4. Compare module undefined symbols against the kernel ELF before changing the
    module implementation:

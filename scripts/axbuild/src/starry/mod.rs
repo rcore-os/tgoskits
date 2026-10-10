@@ -543,10 +543,16 @@ impl Starry {
         mut qemu: ostool::run::qemu::QemuConfig,
     ) -> anyhow::Result<()> {
         let output = self.build_artifact(request, cargo.clone()).await?;
-        crate::test::qemu::append_backtrace_map(
-            &mut qemu,
-            &output.elf_path().with_extension("axbt"),
-        )?;
+        if request.target.starts_with("x86_64") && !qemu.uefi {
+            log::debug!(
+                "skip target symbol maps for direct x86_64 QEMU; host initramfs requires UEFI"
+            );
+        } else {
+            crate::test::qemu::append_backtrace_map(
+                &mut qemu,
+                &output.elf_path().with_extension("axbt"),
+            )?;
+        }
         self.app.run_qemu(&cargo, qemu).await
     }
 

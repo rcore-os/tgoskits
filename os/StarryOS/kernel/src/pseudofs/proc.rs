@@ -66,28 +66,29 @@ fn require_proc_task(task: &WeakUserTaskRef) -> VfsResult<UserTaskRef> {
 /// initramfs.  Keeping this adapter here preserves Linux-facing kallsyms,
 /// kprobe and kmod APIs without embedding a second ELF-derived table.
 pub struct KernelSymbols {
-    map: Option<&'static axbacktrace::SymbolMap<'static>>,
+    by_name: Vec<KernelEntry>,
+    by_address: Vec<usize>,
+}
+
+struct KernelEntry {
+    address: u64,
+    name: String,
+    kind: char,
 }
 
 impl KernelSymbols {
     pub fn lookup_name(&self, name: &str) -> Option<u64> {
-        let map = self.map?;
-        (0..map.len()).find_map(|index| {
-            let (start, _, symbol) = map.symbol_at(index)?;
-            (symbol.name == name).then_some(start as u64)
-        })
+        self.by_name
+            .binary_search_by(|entry| entry.name.as_str().cmp(name))
+            .ok()
+            .map(|index| self.by_name[index].address)
     }
 
     pub fn dump_all_symbols(&self) -> String {
         let mut output = String::new();
-        let Some(map) = self.map else {
-            return output;
-        };
-        for index in 0..map.len() {
-            let Some((start, _, symbol)) = map.symbol_at(index) else {
-                continue;
-            };
-            let _ = writeln!(output, "{start:016x} T {}", symbol.name);
+        for &index in &self.by_address {
+            let entry = &self.by_name[index];
+            let _ = writeln!(output, "{:016x} {} {}", entry.address, entry.kind, entry.name);
         }
         output
     }
@@ -98,13 +99,42 @@ pub static KALLSYMS: LazyInit<KernelSymbols> = LazyInit::new();
 static BOOT_ID: LazyInit<String> = LazyInit::new();
 
 fn read_kallsyms() -> KernelSymbols {
-    let map = axbacktrace::symbol_map();
-    if let Some(map) = map {
-        info!("Read target AXBT map, functions={}", map.len());
+    let mut entries = Vec::new();
+    if let Some(map) = axbacktrace::kernel_symbol_map() {
+        info!("Read target AXKS map, symbols={}", map.len());
+        for index in 0..map.len() {
+            if let Some(symbol) = map.symbol_at(index) {
+                entries.push(KernelEntry {
+                    address: symbol.address as u64,
+                    name: symbol.name.into(),
+                    kind: symbol.kind.as_char(),
+                });
+            }
+        }
+    } else if let Some(map) = axbacktrace::symbol_map() {
+        // Keep a useful text-only fallback for older bundles.  New bundles
+        // carry AXKS so data/BSS/rodata symbols retain their Linux type.
+        warn!("Target AXKS map is not installed; /proc/kallsyms is text-only");
+        info!("Read target AXBT map as kallsyms fallback, functions={}", map.len());
+        for index in 0..map.len() {
+            if let Some((start, _, symbol)) = map.symbol_at(index) {
+                entries.push(KernelEntry {
+                    address: start as u64,
+                    name: symbol.name.into(),
+                    kind: 'T',
+                });
+            }
+        }
     } else {
-        warn!("Target AXBT map is not installed; /proc/kallsyms is empty");
+        warn!("Target AXBT/AXKS map is not installed; /proc/kallsyms is empty");
     }
-    KernelSymbols { map }
+    entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    let mut by_address = (0..entries.len()).collect::<Vec<_>>();
+    by_address.sort_unstable_by_key(|&index| entries[index].address);
+    KernelSymbols {
+        by_name: entries,
+        by_address,
+    }
 }
 
 fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {

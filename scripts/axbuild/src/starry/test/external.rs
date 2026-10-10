@@ -77,7 +77,13 @@ impl Starry {
                 write_policy: RootfsWritePolicy::Discard,
             },
         )?;
-        qemu_test::append_backtrace_map(&mut qemu, &built_elf.with_extension("axbt"))?;
+        if request.target.starts_with("x86_64") && !qemu.uefi {
+            log::debug!(
+                "skip target symbol maps for direct x86_64 QEMU; host initramfs requires UEFI"
+            );
+        } else {
+            qemu_test::append_backtrace_map(&mut qemu, &built_elf.with_extension("axbt"))?;
+        }
         qemu_test::apply_timeout_scale(&mut qemu);
 
         let staging = if let Some(fixed) = &fixed_elf {

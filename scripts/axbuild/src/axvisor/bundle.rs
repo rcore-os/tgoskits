@@ -146,13 +146,17 @@ pub(super) fn attach_with_external_assets(
             if !destination.exists() {
                 fs::copy(&source, &destination)?;
             }
-            if let Some(symbols) = [source.with_extension("axbt")]
-                .into_iter()
-                .find(|candidate| candidate.is_file())
-            {
-                let symbol_destination = builtin.join("symbols").join(format!("{name}.axbt"));
-                if !symbol_destination.exists() {
-                    fs::copy(symbols, symbol_destination)?;
+            for (extension, bundle_extension) in [("axbt", "axbt"), ("axks", "axks")] {
+                if let Some(symbols) = [source.with_extension(extension)]
+                    .into_iter()
+                    .find(|candidate| candidate.is_file())
+                {
+                    let symbol_destination = builtin
+                        .join("symbols")
+                        .join(format!("{name}.{bundle_extension}"));
+                    if !symbol_destination.exists() {
+                        fs::copy(symbols, symbol_destination)?;
+                    }
                 }
             }
             kernel.insert(

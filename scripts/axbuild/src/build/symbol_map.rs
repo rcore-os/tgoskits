@@ -15,6 +15,10 @@ const MAGIC: &[u8; 4] = b"AXBT";
 const VERSION: u16 = 1;
 const HEADER_LEN: usize = 32;
 const RECORD_LEN: usize = 28;
+const KERNEL_SYMBOL_MAGIC: &[u8; 4] = b"AXKS";
+const KERNEL_SYMBOL_VERSION: u16 = 1;
+const KERNEL_SYMBOL_HEADER_LEN: usize = 16;
+const KERNEL_SYMBOL_RECORD_LEN: usize = 16;
 
 /// Generates an AXBT v1 map beside a final kernel ELF.
 pub(crate) fn generate_axbt_map(elf: &Path, output: &Path) -> anyhow::Result<()> {
@@ -24,8 +28,115 @@ pub(crate) fn generate_axbt_map(elf: &Path, output: &Path) -> anyhow::Result<()>
         fs::create_dir_all(parent)?;
     }
     fs::write(output, map).with_context(|| format!("failed to write {}", output.display()))?;
+    let kernel_symbols = generate_kernel_symbols_map(&bytes, elf)?;
+    let kernel_symbols_path = output.with_extension("axks");
+    fs::write(&kernel_symbols_path, kernel_symbols).with_context(|| {
+        format!(
+            "failed to write kernel symbol map {}",
+            kernel_symbols_path.display()
+        )
+    })?;
     println!("[axbuild] AXBT map: {}", output.display());
     Ok(())
+}
+
+fn generate_kernel_symbols_map(bytes: &[u8], elf_path: &Path) -> anyhow::Result<Vec<u8>> {
+    let file = object::File::parse(bytes)
+        .with_context(|| format!("failed to parse ELF {}", elf_path.display()))?;
+    let arch = architecture_tag(file.architecture())?;
+    let build_id = file
+        .build_id()
+        .ok()
+        .flatten()
+        .map_or_else(|| Sha256::digest(bytes).to_vec(), ToOwned::to_owned);
+    let mut symbols =
+        file.symbols()
+            .filter(|symbol| symbol.is_definition() && symbol.address() != 0)
+            .filter_map(|symbol| {
+                let name = symbol.name().ok()?.as_bytes().to_vec();
+                if name.is_empty() {
+                    return None;
+                }
+                let section_name = symbol
+                    .section_index()
+                    .and_then(|index| file.section_by_index(index).ok())
+                    .and_then(|section| section.name().ok())
+                    .unwrap_or("");
+                let type_char =
+                    match symbol.kind() {
+                        SymbolKind::Text => {
+                            if symbol.is_global() {
+                                b'T'
+                            } else {
+                                b't'
+                            }
+                        }
+                        SymbolKind::Data if section_name.starts_with(".bss") => {
+                            if symbol.is_global() { b'B' } else { b'b' }
+                        }
+                        SymbolKind::Data if section_name.starts_with(".rodata") => {
+                            if symbol.is_global() { b'R' } else { b'r' }
+                        }
+                        SymbolKind::Data => {
+                            if symbol.is_global() {
+                                b'D'
+                            } else {
+                                b'd'
+                            }
+                        }
+                        _ => return None,
+                    };
+                Some((symbol.address(), name, type_char))
+            })
+            .collect::<Vec<_>>();
+    symbols.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    symbols.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+    ensure!(
+        !symbols.is_empty(),
+        "ELF {} has no kallsyms-compatible symbols",
+        elf_path.display()
+    );
+    let mut strings = StringTable::default();
+    let mut records = Vec::with_capacity(symbols.len());
+    for (address, name, type_char) in symbols {
+        records.push((address, strings.push(&name)?, type_char));
+    }
+    ensure!(build_id.len() <= u8::MAX as usize, "build-id is too large");
+    ensure!(
+        strings.bytes.len() <= u32::MAX as usize,
+        "AXKS string table is too large"
+    );
+    ensure!(
+        records.len() <= u32::MAX as usize,
+        "AXKS record table is too large"
+    );
+
+    let mut output = Vec::with_capacity(
+        KERNEL_SYMBOL_HEADER_LEN
+            + build_id.len()
+            + records.len() * KERNEL_SYMBOL_RECORD_LEN
+            + strings.bytes.len(),
+    );
+    output.extend_from_slice(KERNEL_SYMBOL_MAGIC);
+    output.extend_from_slice(&KERNEL_SYMBOL_VERSION.to_le_bytes());
+    output.push(arch);
+    output.push(build_id.len() as u8);
+    output.extend_from_slice(&(records.len() as u32).to_le_bytes());
+    output.extend_from_slice(&(strings.bytes.len() as u32).to_le_bytes());
+    output.extend_from_slice(&build_id);
+    for (address, name, type_char) in records {
+        output.extend_from_slice(&address.to_le_bytes());
+        output.extend_from_slice(&name.to_le_bytes());
+        output.push(type_char);
+        output.extend_from_slice(&[0; 3]);
+    }
+    output.extend_from_slice(&strings.bytes);
+    Ok(output)
 }
 
 fn generate_axbt_map_bytes(bytes: &[u8], elf_path: &Path) -> anyhow::Result<Vec<u8>> {

@@ -39,8 +39,9 @@ LoongArch 的 UEFI 入口不再次清零已暂存的交接状态。
 UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
 
 最终 ELF 的 AXBT sidecar 由构建器作为 `/symbols/kernel.axbt` 追加到同一
-initramfs。`ax-runtime` 在回收归档页前复制并校验 map，之后 backtrace、Starry
-`/proc/kallsyms`、kprobe 和 kmod 都从这个 target-owned provider 读取；map 未就绪
+initramfs；StarryOS 还追加同次构建的 `/symbols/kernel.axks` 类型化符号表。
+`ax-runtime` 在回收归档页前复制并校验 map，之后 backtrace、Starry
+`/proc/kallsyms`、kprobe 和 kmod 都从这些 target-owned provider 读取；map 未就绪
 的早期故障只输出地址级帧。磁盘根准备阶段通过 `MigrationPlan` 把可选的 map、配置、
 kernel、DTB、firmware 和 initrd 迁移到相同路径，验证或发布失败时不提交
 `PreparedRoot`，因此旧根和旧资源包仍保持可用。
@@ -113,7 +114,7 @@ Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令
 
 ## 5. Axvisor 自带资源
 
-`axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs`、`/guest/builtin/images` 和可选的 `/guest/builtin/symbols`（与客户机启动镜像同名的 `.axbt` sidecar）。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
+`axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs`、`/guest/builtin/images` 和可选的 `/guest/builtin/symbols`（与客户机启动镜像同名的 `.axbt` 及可选 `.axks` sidecar）。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
 
 ### 5.1 安装发布
 

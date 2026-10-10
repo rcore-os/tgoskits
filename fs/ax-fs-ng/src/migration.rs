@@ -267,12 +267,14 @@ impl MigrationPlan {
         for entry in &self.entries {
             let stage = format_path(&entry.target, ".new");
             let backup = format_path(&entry.target, ".old");
+            let recovered_validator =
+                |context: &FsContext, path: &str| validate_entry_contents(entry, context, path);
             if let Err(error) = bundle::recover(
                 target,
                 &entry.target,
                 &stage,
                 &backup,
-                &validate_recovered_target,
+                &recovered_validator,
                 &bundle::flush,
             ) {
                 cleanup_staging(target, &pending, Some(&stage));
@@ -470,18 +472,6 @@ fn validate_entry_contents(
     Ok(())
 }
 
-fn validate_recovered_target(context: &FsContext, path: &str) -> VfsResult<()> {
-    let location = context.resolve_no_follow(path)?;
-    if matches!(
-        location.node_type(),
-        NodeType::RegularFile | NodeType::Directory
-    ) {
-        Ok(())
-    } else {
-        Err(VfsError::InvalidData)
-    }
-}
-
 /// Computes the FNV-1a hash used by [`MigrationEntry::with_expected_hash`].
 pub fn content_hash(context: &FsContext, path: &str) -> VfsResult<u64> {
     let file = File::open(context, path)?;
@@ -660,6 +650,33 @@ mod tests {
             assert_eq!(plan.execute(&source, &target), Err(VfsError::InvalidData));
             assert_eq!(target.read("/symbols/kernel.map").unwrap(), b"old");
             assert!(!crate::bundle::exists(&target, "/symbols/kernel.map.new").unwrap());
+        });
+    }
+
+    #[test]
+    fn recovery_revalidates_an_incomplete_published_package() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            let source = context();
+            let target = context();
+            crate::bundle::mkdir_parents(&target, "/pkg").unwrap();
+            crate::bundle::mkdir_parents(&target, "/pkg.old").unwrap();
+            target.write("/pkg/incomplete", b"bad").unwrap();
+            target.write("/pkg.old/required", b"old").unwrap();
+
+            let mut plan = MigrationPlan::new();
+            plan.add(
+                MigrationEntry::new(ResourceKind::Immutable, "/missing", "/pkg").with_validator(
+                    |context, path| {
+                        context
+                            .resolve_no_follow(format!("{path}/required"))
+                            .map(|_| ())
+                    },
+                ),
+            )
+            .unwrap();
+            assert_eq!(plan.execute(&source, &target).unwrap().skipped, 1);
+            assert_eq!(target.read("/pkg/required").unwrap(), b"old");
+            assert!(!crate::bundle::exists(&target, "/pkg.old").unwrap());
         });
     }
 }
