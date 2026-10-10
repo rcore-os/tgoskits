@@ -746,7 +746,12 @@ impl SocketOps for TcpSocket {
             unsafe { self.poll_rx_closed.wake(IoEvents::RDHUP | IoEvents::IN) };
         }
 
-        // stream
+        // A half-shutdown keeps the public socket connected. smoltcp's
+        // `close` drives the write side through FIN without changing the
+        // public state, so only a full shutdown may transition the public
+        // state and release the socket's binding. Keep the state guard for
+        // half-shutdowns as well so shutdown remains serialized with other
+        // connected-socket operations.
         if let Ok(guard) = self.state.lock(State::Connected) {
             if how.has_read() && how.has_write() {
                 guard.transit(State::Closed, || {
@@ -760,12 +765,17 @@ impl SocketOps for TcpSocket {
                     request_poll();
                     Ok(())
                 })?;
-            } else if how.has_write() {
-                self.with_smol_socket(|socket| {
-                    debug!("TCP socket {}: shutting down write side", self.handle);
-                    socket.close();
-                });
-                request_poll();
+            } else {
+                guard.transit(State::Connected, || {
+                    if how.has_write() {
+                        self.with_smol_socket(|socket| {
+                            debug!("TCP socket {}: shutting down write side", self.handle);
+                            socket.close();
+                        });
+                        request_poll();
+                    }
+                    Ok(())
+                })?;
             }
         }
 
@@ -1153,4 +1163,21 @@ fn tcp_port_available(port: u16) -> bool {
 
 fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_shutdown_keeps_connected_public_state() {
+        for how in [Shutdown::Read, Shutdown::Write] {
+            let socket = TcpSocket::new();
+            socket.state.set(State::Connected);
+
+            socket.shutdown(how).unwrap();
+
+            assert_eq!(socket.state.get(), State::Connected);
+        }
+    }
 }
