@@ -2569,6 +2569,17 @@ impl AddrSpace {
             .collect()
     }
 
+    /// The shared file VMAs intersecting `range`, for callers on the unmap,
+    /// replace and mprotect paths that would otherwise walk the whole map.
+    pub(crate) fn shared_file_vmas_in(&self, range: VirtAddrRange) -> Vec<SharedFileVmaRecord> {
+        let mut records = Vec::new();
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
+            records.extend(entry.shared_file_record());
+            true
+        });
+        records
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn mremap_move_from_source(
         &mut self,
@@ -3338,27 +3349,31 @@ impl AddrSpace {
         range: VirtAddrRange,
         require_full_coverage: bool,
     ) -> StarryResult<Vec<(VirtAddrRange, MappingOperation)>> {
+        // Sized from a first pass over the same VMAs, so the second cannot
+        // fail half way through on an allocation.
+        let mut count = 0;
+        self.vma_root.for_each_overlapping_entry(range, |_| {
+            count += 1;
+            true
+        });
         let mut fragments = Vec::new();
         fragments
-            .try_reserve(self.vma_root.len())
+            .try_reserve(count)
             .map_err(|_| StarryError::NoMemory)?;
         let mut covered = range.start;
-        for entry in self.vma_root.iter_entries() {
-            if entry.start() >= range.end {
-                break;
-            }
-            if entry.end() <= range.start {
-                continue;
-            }
+        let mut hole = false;
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
             let fragment =
                 VirtAddrRange::new(entry.start().max(range.start), entry.end().min(range.end));
             if require_full_coverage && fragment.start > covered {
-                return Err(StarryError::NoMemory);
+                hole = true;
+                return false;
             }
             covered = covered.max(fragment.end);
             fragments.push((fragment, entry.operation_clone()));
-        }
-        if require_full_coverage && covered < range.end {
+            true
+        });
+        if hole || (require_full_coverage && covered < range.end) {
             return Err(StarryError::NoMemory);
         }
         Ok(fragments)
