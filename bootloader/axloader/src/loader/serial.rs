@@ -27,6 +27,7 @@ pub struct SerialBeacon {
     frame: Vec<u8>,
     offset: usize,
     write_failed: bool,
+    startup_error: Option<String>,
     pub state: Rc<RefCell<LoaderSerialStatus>>,
 }
 impl SerialBeacon {
@@ -54,6 +55,7 @@ impl SerialBeacon {
         };
         let timer = timer().ok();
         let ready = handle.is_some() && timer.is_some();
+        let startup_error = error.clone();
         let frame = format!("\r\nAXLOADER-SERIAL/1 {serial_id}\r\n").into_bytes();
         Self {
             handle,
@@ -62,6 +64,7 @@ impl SerialBeacon {
             frame,
             offset: 0,
             write_failed: false,
+            startup_error,
             state: Rc::new(RefCell::new(LoaderSerialStatus {
                 serial_id,
                 ready,
@@ -107,7 +110,7 @@ impl SerialBeacon {
                 if self.write_failed {
                     let mut state = self.state.borrow_mut();
                     state.ready = true;
-                    state.error = None;
+                    state.error = self.startup_error.clone();
                     self.write_failed = false;
                 }
             }
