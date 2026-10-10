@@ -14,6 +14,7 @@ use crate::{
     },
     engine::{VcpuAction, WaitReason},
     host::*,
+    irq::model::{DeliveryToken, PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
     runtime::{
         QueuedVcpuInterrupt,
         hvc::{GuestRequest, HyperCallAbi},
@@ -209,33 +210,36 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult {
-        vcpu.0.set_run_port(entry.run.clone());
+        vcpu.backend.set_run_port(entry.run.clone());
         Ok(())
     }
 
     /// Quiesces the guest timer producer while preserving its logical deadline.
     fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
-        vcpu.0
-            .suspend_timer()
+        VcpuLocalTimer::suspend(vcpu)
             .map_err(|error| AxVmError::vcpu("suspend LoongArch timer", error))
     }
 
     /// Re-arms a suspended guest timer before guest admission reopens.
     fn resume_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
-        vcpu.0
-            .resume_timer()
+        VcpuLocalTimer::resume(vcpu)
             .map_err(|error| AxVmError::vcpu("resume LoongArch timer", error))
     }
 
     fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
-        vcpu.0
-            .quiet_timer()
+        VcpuLocalTimer::cancel(vcpu)
             .map_err(|error| AxVmError::vcpu("quiet LoongArch timer", error))
     }
 
     fn before_guest(vcpu: &mut Self::VCpu, _vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
-        vcpu.0.prepare_entry();
+        VcpuLocalInterrupts::prepare_entry(vcpu)
+            .map_err(|error| AxVmError::vcpu("prepare LoongArch local interrupt state", error))?;
         Ok(())
+    }
+
+    fn inject_vcpu_interrupt(vcpu: &mut Self::VCpu, interrupt: PendingVcpuInterrupt) -> AxVmResult {
+        VcpuLocalInterrupts::inject(vcpu, interrupt)
+            .map_err(|error| AxVmError::vcpu("inject LoongArch local interrupt", error))
     }
 
     fn complete(
@@ -308,7 +312,7 @@ impl ArchOps for LoongArch64Arch {
         };
         let backend = vcpu;
         let interpreted = backend
-            .0
+            .backend
             .process_exit(machine_exit, pinned)
             .map_err(|error| AxVmError::vcpu("interpret LVZ exit", error))?;
         let kind = interpret_loongarch_exit(backend, interpreted)?;
@@ -641,25 +645,28 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
     }
 }
 
-pub(crate) struct AxvmLoongArchVcpu(LoongArchVcpu<AxvmLoongArchHostOps>);
+pub(crate) struct AxvmLoongArchVcpu {
+    backend: LoongArchVcpu<AxvmLoongArchHostOps>,
+    vcpu_id: usize,
+}
 
 impl AxvmLoongArchVcpu {
     fn advance_guest_pc(&mut self) {
-        self.0.advance_guest_pc();
+        self.backend.advance_guest_pc();
     }
 
     fn inject_eiointc_interrupt(&mut self, vector: usize) -> AxVmResult {
-        loongarch_result(self.0.inject_eiointc_interrupt(vector))
+        loongarch_result(self.backend.inject_eiointc_interrupt(vector))
             .map_err(|error| AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error))
     }
 
     fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxVmResult {
-        loongarch_result(self.0.inject_external_interrupt(vector, physical_irq))
+        loongarch_result(self.backend.inject_external_interrupt(vector, physical_irq))
             .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))
     }
 
     fn has_enabled_pending_interrupt(&self) -> bool {
-        self.0.has_enabled_pending_interrupt()
+        self.backend.has_enabled_pending_interrupt()
     }
 
     fn decode_mmio_fault(
@@ -667,7 +674,7 @@ impl AxvmLoongArchVcpu {
         addr: LoongArchGuestPhysAddr,
         access_flags: LoongArchAccessFlags,
     ) -> Option<LoongArchVmExit> {
-        self.0.decode_mmio_fault(addr, access_flags)
+        self.backend.decode_mmio_fault(addr, access_flags)
     }
 
     /// Resolves the pinned host CPU-local operands of one raw LVZ exit.
@@ -677,7 +684,66 @@ impl AxvmLoongArchVcpu {
     /// local accesses: no timer registration, allocation, device service or
     /// sleeping lock is touched while the backend is bound.
     fn capture_pinned_host(&self, exit: &ax_cpu::virtualization::Exit) -> LoongArchPinnedHost {
-        self.0.capture_pinned_host(exit)
+        self.backend.capture_pinned_host(exit)
+    }
+}
+
+impl VcpuLocalInterrupts for AxvmLoongArchVcpu {
+    type Snapshot = bool;
+    type Completion = ();
+    type Error = LoongArchVcpuError;
+
+    fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
+        self.backend.prepare_entry();
+        Ok(self.backend.has_enabled_pending_interrupt())
+    }
+
+    fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error> {
+        self.backend.inject_interrupt(interrupt.id.0 as usize)
+    }
+
+    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error> {
+        if token.target.vcpu_id != self.vcpu_id
+            || token.sequence == 0
+            || token.source.controller != axdevice_base::InterruptControllerId::new(0)
+        {
+            return Err(LoongArchVcpuError::InvalidInput);
+        }
+        // PCH-PIC/EIOINTC acknowledge state is owned by the shared endpoint;
+        // CPUINTC has no separate guest EOI register in this backend.
+        Ok(())
+    }
+
+    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        let _ = self.backend.quiet_timer();
+    }
+}
+
+impl VcpuLocalTimer for AxvmLoongArchVcpu {
+    type Error = LoongArchVcpuError;
+
+    fn arm(&mut self, deadline: u64) -> Result<(), Self::Error> {
+        self.backend.arm_timer(deadline)
+    }
+
+    fn suspend(&mut self) -> Result<(), Self::Error> {
+        self.backend.suspend_timer()
+    }
+
+    fn resume(&mut self) -> Result<(), Self::Error> {
+        self.backend.resume_timer()
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        self.backend.quiet_timer()
+    }
+
+    fn consume_expiry(&mut self) -> bool {
+        self.backend.consume_timer_expiry()
     }
 }
 
@@ -687,42 +753,43 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
     type Exit = LoongArchVmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        loongarch_result(LoongArchVcpu::new(vm_id, vcpu_id, config)).map(Self)
+        loongarch_result(LoongArchVcpu::new(vm_id, vcpu_id, config))
+            .map(|backend| Self { backend, vcpu_id })
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
-        loongarch_result(self.0.set_entry(ax_guest_phys_addr_to_loong(entry)))
+        loongarch_result(self.backend.set_entry(ax_guest_phys_addr_to_loong(entry)))
     }
 
     fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         loongarch_result(
-            self.0
+            self.backend
                 .set_nested_page_table(ax_nested_paging_to_loong(config)),
         )
     }
 
     fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
-        loongarch_result(self.0.setup(config))
+        loongarch_result(self.backend.setup(config))
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
-        loongarch_result(self.0.run_machine())
+        loongarch_result(self.backend.run_machine())
     }
 
     fn bind(&mut self) -> BackendResult {
-        loongarch_result(self.0.bind())
+        loongarch_result(self.backend.bind())
     }
 
     fn unbind(&mut self) -> BackendResult {
-        loongarch_result(self.0.unbind())
+        loongarch_result(self.backend.unbind())
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
-        self.0.set_gpr(reg, val);
+        self.backend.set_gpr(reg, val);
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        loongarch_result(self.0.inject_interrupt(vector))
+        loongarch_result(self.backend.inject_interrupt(vector))
     }
 
     fn inject_interrupt_with_trigger(
@@ -734,13 +801,13 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
         // emitting a guest vector. The vCPU injection is mode-agnostic.
         match trigger {
             InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
-                loongarch_result(self.0.inject_interrupt(vector))
+                loongarch_result(self.backend.inject_interrupt(vector))
             }
         }
     }
 
     fn set_return_value(&mut self, val: usize) {
-        self.0.set_return_value(val);
+        self.backend.set_return_value(val);
     }
 }
 

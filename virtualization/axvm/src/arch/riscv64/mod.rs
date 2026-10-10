@@ -19,7 +19,7 @@ use crate::{
     architecture::ops::CpuOn,
     engine::{VcpuAction, WaitReason},
     host::*,
-    irq::model::PendingVcpuInterrupt,
+    irq::model::{DeliveryToken, PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
     runtime::{
         QueuedVcpuInterrupt,
         hvc::{GuestRequest, HyperCallAbi},
@@ -186,6 +186,12 @@ impl ArchOps for Riscv64Arch {
     /// inside the engine's loaded scope, so the controller-derived level is
     /// committed to this vCPU's saved CSR image and reflected into hardware.
     fn before_guest(vcpu: &mut Self::VCpu, vcpu_id: usize, entry: &Self::Entry) -> AxVmResult {
+        VcpuLocalInterrupts::prepare_entry(vcpu).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error(
+                "prepare RISC-V local interrupt state",
+                riscv_error_to_backend(error),
+            )
+        })?;
         let asserted = entry.plic.vcpu_has_deliverable_irq(vcpu_id)?;
         vcpu.sync_vseip_level(asserted)
             .map_err(|error| crate::vcpu::map_vcpu_backend_error("synchronize RISC-V VSEIP", error))
@@ -417,13 +423,39 @@ impl ArchOps for Riscv64Arch {
     /// rather than an architecture-neutral vector, so the injected cause carries
     /// the complete `scause` interrupt bit.
     fn inject_vcpu_interrupt(vcpu: &mut Self::VCpu, interrupt: PendingVcpuInterrupt) -> AxVmResult {
-        const SCAUSE_INTERRUPT_BIT: usize = 1 << (usize::BITS - 1);
+        VcpuLocalInterrupts::inject(vcpu, interrupt).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error(
+                "inject RISC-V vCPU interrupt",
+                riscv_error_to_backend(error),
+            )
+        })
+    }
 
-        let vector = SCAUSE_INTERRUPT_BIT | interrupt.id.0 as usize;
-        vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
-            .map_err(|error| {
-                crate::vcpu::map_vcpu_backend_error("inject RISC-V vCPU interrupt", error)
-            })
+    fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        VcpuLocalTimer::suspend(vcpu).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error(
+                "suspend RISC-V local timer",
+                riscv_error_to_backend(error),
+            )
+        })
+    }
+
+    fn resume_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        VcpuLocalTimer::resume(vcpu).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error(
+                "resume RISC-V local timer",
+                riscv_error_to_backend(error),
+            )
+        })
+    }
+
+    fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        VcpuLocalTimer::cancel(vcpu).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error(
+                "cancel RISC-V local timer",
+                riscv_error_to_backend(error),
+            )
+        })
     }
 
     fn inject_arch_interrupt(
@@ -505,34 +537,37 @@ impl RiscvHostOps for AxvmRiscvHostOps {
     }
 }
 
-pub(crate) struct AxvmRiscvVcpu(RiscvVcpu<AxvmRiscvHostOps>);
+pub(crate) struct AxvmRiscvVcpu {
+    backend: RiscvVcpu<AxvmRiscvHostOps>,
+    vcpu_id: usize,
+}
 
 impl AxvmRiscvVcpu {
     /// Interprets one captured hardware exit into a RISC-V policy exit.
     fn process_exit(&mut self, exit: ax_cpu::virtualization::Exit) -> RiscvVcpuResult<RiscvVmExit> {
-        self.0.process_exit(exit)
+        self.backend.process_exit(exit)
     }
 
     /// Initializes a hart started through the SBI HSM extension.
     fn initialize_cpu_on(&mut self, entry: GuestPhysAddr, context_id: usize) -> BackendResult {
         riscv_result(
-            self.0
+            self.backend
                 .initialize_cpu_on(ax_guest_phys_addr_to_riscv(entry), context_id),
         )
     }
 
     /// Synchronizes controller-derived VSEIP state on the loaded owner.
     fn sync_vseip_level(&mut self, asserted: bool) -> BackendResult {
-        riscv_result(self.0.sync_vseip_level(asserted))
+        riscv_result(self.backend.sync_vseip_level(asserted))
     }
 
     /// Completes a previously returned SBI IPI request with its original ABI.
     fn complete_ipi(&mut self, request: RiscvIpiRequest, completion: RiscvIpiCompletion) {
-        self.0.complete_ipi(request, completion);
+        self.backend.complete_ipi(request, completion);
     }
 
     fn forward_task_sbi(&mut self, call: RiscvSbiCall) -> RiscvVcpuResult<SbiRet> {
-        self.0.forward_task_sbi(call)
+        self.backend.forward_task_sbi(call)
     }
 
     /// Steps the saved guest instruction pointer by one retired emulation.
@@ -540,7 +575,67 @@ impl AxvmRiscvVcpu {
     /// Touches only the plain register image, so it is valid while the backend
     /// is unloaded: the engine commits completions after hardware retirement.
     fn advance_pc(&mut self, instr_len: usize) {
-        self.0.advance_pc(instr_len);
+        self.backend.advance_pc(instr_len);
+    }
+}
+
+impl VcpuLocalInterrupts for AxvmRiscvVcpu {
+    type Snapshot = usize;
+    type Completion = ();
+    type Error = RiscvVcpuError;
+
+    fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
+        Ok(self.backend.pending_interrupt_snapshot())
+    }
+
+    fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error> {
+        const SCAUSE_INTERRUPT_BIT: usize = 1 << (usize::BITS - 1);
+        self.backend
+            .inject_interrupt(SCAUSE_INTERRUPT_BIT | interrupt.id.0 as usize)
+    }
+
+    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error> {
+        if token.target.vcpu_id != self.vcpu_id
+            || token.sequence == 0
+            || token.source.controller != axdevice_base::InterruptControllerId::new(0)
+        {
+            return Err(RiscvVcpuError::InvalidInput);
+        }
+        // PLIC claim/complete is owned by the shared controller endpoint. The
+        // local IMSIC/VSEIP state has no independent guest EOI register here.
+        Ok(())
+    }
+
+    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.backend.reset_local_interrupts();
+    }
+}
+
+impl VcpuLocalTimer for AxvmRiscvVcpu {
+    type Error = RiscvVcpuError;
+
+    fn arm(&mut self, deadline: u64) -> Result<(), Self::Error> {
+        self.backend.program_guest_timer(deadline as usize)
+    }
+
+    fn suspend(&mut self) -> Result<(), Self::Error> {
+        self.backend.suspend_timer()
+    }
+
+    fn resume(&mut self) -> Result<(), Self::Error> {
+        self.backend.resume_timer()
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        self.backend.cancel_timer()
+    }
+
+    fn consume_expiry(&mut self) -> bool {
+        self.backend.consume_timer_expiry()
     }
 }
 
@@ -550,42 +645,43 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
     type Exit = ax_cpu::virtualization::Exit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        riscv_result(RiscvVcpu::new(vm_id, vcpu_id, config)).map(Self)
+        riscv_result(RiscvVcpu::new(vm_id, vcpu_id, config))
+            .map(|backend| Self { backend, vcpu_id })
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
-        riscv_result(self.0.set_entry(ax_guest_phys_addr_to_riscv(entry)))
+        riscv_result(self.backend.set_entry(ax_guest_phys_addr_to_riscv(entry)))
     }
 
     fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         riscv_result(
-            self.0
+            self.backend
                 .set_nested_page_table(ax_nested_paging_to_riscv(config)),
         )
     }
 
     fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
-        riscv_result(self.0.setup(config))
+        riscv_result(self.backend.setup(config))
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
-        riscv_result(self.0.run_machine())
+        riscv_result(self.backend.run_machine())
     }
 
     fn bind(&mut self) -> BackendResult {
-        riscv_result(self.0.bind())
+        riscv_result(self.backend.bind())
     }
 
     fn unbind(&mut self) -> BackendResult {
-        riscv_result(self.0.unbind())
+        riscv_result(self.backend.unbind())
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
-        self.0.set_gpr(reg, val);
+        self.backend.set_gpr(reg, val);
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        riscv_result(self.0.inject_interrupt(vector))
+        riscv_result(self.backend.inject_interrupt(vector))
     }
 
     fn inject_interrupt_with_trigger(
@@ -597,13 +693,13 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
         // virtual pending bit. The vCPU injection operation is mode-agnostic.
         match trigger {
             InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
-                riscv_result(self.0.inject_interrupt(vector))
+                riscv_result(self.backend.inject_interrupt(vector))
             }
         }
     }
 
     fn set_return_value(&mut self, val: usize) {
-        self.0.set_return_value(val);
+        self.backend.set_return_value(val);
     }
 }
 

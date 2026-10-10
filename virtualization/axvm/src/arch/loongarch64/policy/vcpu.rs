@@ -432,6 +432,17 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.guest_timer.resume(self.vm_id, self.vcpu_id)
     }
 
+    /// Arms the owner-local host timer at an absolute monotonic deadline.
+    pub(crate) fn arm_timer(&mut self, deadline_ns: u64) -> LoongArchVcpuResult {
+        self.guest_timer.arm(deadline_ns, self.vm_id, self.vcpu_id)
+    }
+
+    /// Consumes host timer expiry notifications after the callback has
+    /// published them into its fixed ingress counter.
+    pub(crate) fn consume_timer_expiry(&self) -> bool {
+        self.guest_timer.consume_expiry()
+    }
+
     fn init_hv(&mut self) {
         self.init_vm_context();
         init_guest_iocsr(&self.iocsr_state, self.vcpu_id);

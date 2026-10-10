@@ -64,6 +64,10 @@ pub(crate) struct RiscvVcpu<H: RiscvHostOps> {
     sbi: RISCVVCpuSbi,
     binding: Option<GuestBinding>,
     hart_id: usize,
+    /// The last guest comparator written through SBI/SSTC.  Keeping this in
+    /// the owner value lets pause/resume re-install the same deadline without
+    /// exposing the bound CSR state to a shared service.
+    timer_deadline: Option<usize>,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -133,6 +137,7 @@ impl<H: RiscvHostOps> Default for RiscvVcpu<H> {
             sbi: RISCVVCpuSbi::default(),
             binding: None,
             hart_id: 0,
+            timer_deadline: None,
             _host: PhantomData,
         }
     }
@@ -157,6 +162,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             sbi: RISCVVCpuSbi::default(),
             binding: None,
             hart_id: config.hart_id,
+            timer_deadline: None,
             _host: PhantomData,
         })
     }
@@ -294,6 +300,46 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.set_virtual_interrupt_pending(vector, true)
     }
 
+    /// Returns the pending bits from the owner-local virtual interrupt image.
+    pub(crate) fn pending_interrupt_snapshot(&self) -> usize {
+        self.regs.virtual_hs_csrs.hvip
+    }
+
+    /// Clears all local pending bits while the backend is unloaded.  A later
+    /// bind publishes the clean image through the normal entry protocol.
+    pub(crate) fn reset_local_interrupts(&mut self) {
+        self.regs.virtual_hs_csrs.hvip = 0;
+    }
+
+    /// Stops a guest timer producer while retaining its comparator deadline.
+    pub(crate) fn suspend_timer(&mut self) -> RiscvVcpuResult {
+        self.set_virtual_interrupt_pending(S_TIMER, false)
+    }
+
+    /// Reinstalls the retained comparator after a paused run.
+    pub(crate) fn resume_timer(&mut self) -> RiscvVcpuResult {
+        let Some(deadline) = self.timer_deadline else {
+            return Ok(());
+        };
+        self.program_guest_timer(deadline)
+    }
+
+    /// Permanently retires the guest timer and its pending bit.
+    pub(crate) fn cancel_timer(&mut self) -> RiscvVcpuResult {
+        self.timer_deadline = None;
+        self.set_virtual_interrupt_pending(S_TIMER, false)
+    }
+
+    /// Consumes one pending local timer notification.
+    pub(crate) fn consume_timer_expiry(&mut self) -> bool {
+        let bit = 1usize << GuestInterrupt::Timer as usize;
+        if self.regs.virtual_hs_csrs.hvip & bit == 0 {
+            return false;
+        }
+        let _ = self.set_virtual_interrupt_pending(S_TIMER, false);
+        true
+    }
+
     /// Synchronizes controller-derived VSEIP state on the loaded owner.
     ///
     /// The virtual PLIC remains the owner of pending and delivery state. The
@@ -347,18 +393,19 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 impl<H: RiscvHostOps> RiscvVcpu<H> {
     #[cfg(feature = "sstc")]
     #[inline]
-    fn program_guest_timer(&mut self, deadline: usize) -> RiscvVcpuResult {
+    pub(crate) fn program_guest_timer(&mut self, deadline: usize) -> RiscvVcpuResult {
         self.set_virtual_interrupt_pending(S_TIMER, false)?;
         self.binding
             .as_mut()
             .ok_or(RiscvVcpuError::BadState)?
             .set_timer_compare(&mut self.regs, deadline);
+        self.timer_deadline = Some(deadline);
         Ok(())
     }
 
     #[cfg(not(feature = "sstc"))]
     #[inline]
-    fn program_guest_timer(&mut self, _deadline: usize) -> RiscvVcpuResult {
+    pub(crate) fn program_guest_timer(&mut self, _deadline: usize) -> RiscvVcpuResult {
         Err(RiscvVcpuError::Unsupported)
     }
 

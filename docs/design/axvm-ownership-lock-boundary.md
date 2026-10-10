@@ -44,7 +44,7 @@ raw guard 只修改它拥有的短状态。唤醒、IPI、设备回调、join �
 
 | 硬件对象 | 唯一 owner | 允许的同步 | 跨层入口 |
 | --- | --- | --- | --- |
-| vCPU local interrupt/timer、VMX/SVM、GIC Redistributor/LR、IMSIC/CSR、CPUINTC | 对应 `VcpuTask` | 普通值、`&mut`、CPU-local 原语 | x86 `X86Vcpu` 已接入 `VcpuLocalInterrupts`/`VcpuLocalTimer`；其他架构沿用各自 vCPU owner 入口并逐步收敛到相同 trait |
+| vCPU local interrupt/timer、VMX/SVM、GIC Redistributor/LR、IMSIC/CSR、CPUINTC | 对应 `VcpuTask` | 普通值、`&mut`、CPU-local 原语 | 四架构 AxVM adapter 均通过 `VcpuLocalInterrupts`/`VcpuLocalTimer` 接入；架构 crate 内仍保留各自硬件 leaf |
 | GIC Distributor/ITS、PIC/IOAPIC/PIT、PLIC/APLIC、PCH-PIC/EIOINTC | VM `InterruptOwner` | owner mailbox；设备侧只使用睡眠服务 | `InterruptControllerEndpoint`、`SourceEvent` |
 | 物理 IRQ、host timer、设备完成回调 | 固定 ingress 槽 | 原子、固定槽、必要的极短 raw leaf | `IrqLine`/`RunSignals`，锁外 kick/wake |
 
