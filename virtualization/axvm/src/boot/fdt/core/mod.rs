@@ -8,11 +8,12 @@ use std::vec::Vec;
 use axvmconfig::{GuestConfig, VMBootProtocol};
 
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::boot::{BootImageProvider, fdt::GuestDtbImage};
 use crate::{
-    boot::{BootImageProvider, fdt::GuestDtbImage},
+    AxVmResult, ax_err_type,
+    config::AxVMConfig,
     machine::{GuestGicCpuRegion, GuestGicProfile, GuestSerialFdtInterrupt},
 };
-use crate::{AxVmResult, ax_err_type, config::AxVMConfig};
 
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) mod cpu;
