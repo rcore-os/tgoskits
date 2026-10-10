@@ -4167,6 +4167,8 @@ dependencies = [
 [[package]]
 name = "httpboot-protocol"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e763493125efcacde753b2728c1f9617123fd82d2b04da76a75d75a4f24e947a"
 dependencies = [
  "serde",
  "serde_json",

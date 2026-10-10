@@ -31,6 +31,11 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 | `PUT /api/v1/ota/image` | 定长上传 EFI，写入非活动槽后回复 `202` 并重启 |
 | `POST /api/v1/ota/confirm` | 用升级 ID 和来源确认当前待试槽 |
 
+v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的
+ostool-server 配套使用，板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。
+不需要串口隧道时仍须显式发送 `direct` continue；启动返回 `409 serial_binding_required`
+时，先检查服务端/loader 版本是否配套，再检查串口身份是否完成绑定。
+
 启动文件暂存内存，每个文件上限 256 MiB，EFI 上限 32 MiB，请求头上限
 4 KiB。只接受定长请求体，连接空闲 30 秒后取消，SHA-256 不符时不发布文件。
 上传时 `direct::Connection::wait()` 仍推进广播；同一时间只处理一个上传事务。
@@ -40,8 +45,9 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 
 `cmdline` 与 `initramfs` 相互独立且都可省略。axloader 把命令行编码成带 NUL
 结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
-命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。只有归档
-存在时才安装 `host-boot-abi::BootPayload` 配置表。EFI 入口异常返回时会恢复
+命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。归档存在时，
+axloader 注册 Linux EFI initrd 约定的 `EFI_LOAD_FILE2_PROTOCOL` 提供者和
+`MEDIA/VENDOR` 设备路径；EFI 入口异常返回时会恢复
 原 LoadOptions，并释放本次事务持有的命令行与归档。
 
 ### 1.2 启动流程

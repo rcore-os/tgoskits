@@ -86,7 +86,7 @@ ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中
 
 ## OrangePi-5-Plus Linux 网卡直通
 
-物理网卡用例位于 `test-suit/axvisor/normal/board-orangepi-5-plus/pci-network`。
+物理网卡用例位于 `apps/axvisor/normal/board-orangepi-5-plus/pci-network`。
 它从构建机 `${env:AXVISOR_GUEST_ASSETS}/boot/Image` 打包内核（已验证 Linux 6.1.99），
 并使用匹配客户机根文件系统中的 `r8125`
 模块；旧 `/guest/linux/orangepi-5-plus` 的 6.1.43 映像在相同设备树下出现 PCIe
@@ -229,6 +229,8 @@ cargo xtask starry board \
 
 ## LoongArch 经验
 
+- LoongArch QEMU virt 的 PCI I/O aperture 为 `0x1800_0000..0x1801_0000`，必须与 ECAM、memory aperture 一同由设备图封存并发布到 FDT／ACPI。仅支持 memory BAR 的 root 对未实现的 I/O 设备返回 open bus、忽略写；只有设备实际接管访问后才提交指令推进，不能跳过未处理的 MMIO fault。宿主物理 IRQ 使用 ACPI GSI，客户机 PCH-PIC 使用 input，两者通过 VM 资源计划中的不可变路由关联；全虚拟化设备不据固件默认 UART／PCI INTx 注册宿主物理来源。
+
 - Linux 客户机不经过 UEFI 固件、由虚拟机监控器直接装载时，仍需遵守 LoongArch Linux 的直接启动 ABI：`a0 = 1` 表示 EFI boot，`a1` 指向命令行，`a2` 指向最小 EFI system table；配置表至少提供 Linux EFI boot memory map 和设备树指针，没有初始内存文件系统时省略 initrd media 表与设备树的 `linux,initrd-*` 属性。这里的 EFI system table 是 Linux 启动参数，不表示执行了 UEFI 固件。`axvm::arch::loongarch64::boot::linux` 在客户机高端 RAM 起点 `0x8000_0000` 构造启动信息，避免与 FDT、内核和 initramfs 装载区间重叠；`a1`、`a2` 和 EFI 配置表内部指针必须使用搬移后的客户机物理地址，不能改用 UHI 的 `a0 = -2`、`a1 = fdt` 约定。
 - `cargo xtask starry perf --arch loongarch64` 必须消费用例的 `uefi` 和 `to_bin` 契约。当前动态内核是 UEFI PE 镜像，不能绕过 OVMF 直接传给 `-kernel`。`perf::qemu::prepare_boot_args` 使用共享 OVMF 缓存、独立 VARS 副本及 `EFI/BOOT/BOOTLOONGARCH64.EFI`；未进入内核且没有样本时先检查这条启动链路，再检查插件 ABI。x86_64 复用同一 ESP 准备逻辑，使用 `BOOTX64.EFI`。
 - LS2K1000 在块硬件上下文激活后重复输出 `failed to lock LS2K1000 LIOINTC when claiming LIOINTC IRQ`，表示硬中断与控制器锁次序反转，不是无害伪中断。按 AArch64 GIC 模式拆分：`rdif_intc` 控制器和配置寄存器归任务，独立 LIOINTC 处理器接口只含中断状态、域、父线路和原子启用状态。硬中断查找或锁住控制器会在被中断任务释放设备保护前因电平中断不断重入。
@@ -302,7 +304,7 @@ IE 来自 `GCSR_CRMD`。不能在整个客户机运行区间屏蔽宿主 timer�
 退出；已确认的宿主令牌必须在原 CPU、IRQ 仍屏蔽时处理或移交给控制器持有的路由。
 AArch64 的 `ArmRunExit::HostInterrupt` 只存在于后端内部，不能进入延后的 VM 工作；
 RISC-V 与 LoongArch 的未确认源由宿主 IRQ 入口处理；x86 VMX 的 acknowledged vector
-沿现有 IRQ-off dispatch 路径处理。公共 `VcpuExitAction` 不再提供任意架构延后工作，
+沿现有 IRQ-off dispatch 路径处理。任务侧 `VcpuAction` 只处理已经卸载的拥有值退出，
 x86 虚拟 EOI 在已卸载后端的 guest 退出处理阶段完成；可能阻塞的 hypercall 仍有独立
 生命周期。排查 Linux 客户机停在某条启动日志时，先检查宿主
 timer 是否 pending、是否仍允许打断 guest，再判断该日志对应的设备是否故障。
@@ -313,13 +315,21 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 `normal/smoke` 继续验证 Linux 启动、定时唤醒和块设备访问。
 
 Linux 已枚举 VirtIO 块设备却停在首次挂载时，还需检查延后队列是否在
-WFI 前提交。`axvm::runtime::vcpus::run_waits_for_event()` 由主 vCPU
-无条件推进设备轮询，再进入体系结构等待；次 vCPU 不执行 VM 级设备轮询。
-队列通知可能仅设置设备的 `queue_pending`，不能只检查运行时的
-`device_poll_requested`，否则没有提交给文件工作线程的请求也不会产生完成唤醒。
-`FileBackend.shared` 使用 `IrqSafeMutex`，因为调用者持有关闭中断的队列租约；
-存储 I/O 和通知在该锁之外执行。验证同时保留等待前轮询的顺序测试和真实
-Linux 挂载结果，偶然成功的重试不能证明已修复丢失进展。
+WFI 前提交。`axvm::runtime::vcpus::run` 在后端卸载后通过
+`RunServices::poll_devices` 推进设备，再进入体系结构等待；控制 owner
+指定的 poller 退出时，将轮询所有权移交其他在线 vCPU。
+队列通知先发布持久的 work 状态，再通过运行代次绑定的 `DeviceWorkPort`
+唤醒 poller。文件完成同样先发布结果；旧端口不能唤醒新的运行期。
+`FileBackend.shared` 使用可睡眠 `Mutex`；队列处理、文件 I/O 和完成解释
+都在任务上下文，通知和 worker join 在状态锁外执行。验证同时保留等待前
+轮询的行为测试和真实 Linux 挂载结果，重试成功不能证明已修复丢失进展。
+
+ARM 的 `prepare_vcpu` 在 CPU pin 前失效并 disarm 旧等待，退休物理
+定时器激活；硬件绑定内只发布 canonical 电平、保存定时器镜像以及执行
+本 CPU 的 ACK/DIR。绑定内禁止同步等待另一 CPU。RISC-V SBI 控制台和
+固件转发返回拥有值的 `RiscvSbiCall`，分别由卸载后的退出处理和
+`finish_exit` 执行；DBCn 使用受控客户机内存复制及规范允许的部分传输，
+不在硬件绑定内按客户机长度分配缓冲区。
 
 ## QEMU 调试模式
 
@@ -367,7 +377,7 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 LoongArch 动态平台按下列层级验证：
 
 ```bash
-cargo test -p axbuild --lib
+cargo xtask test --since <committed-base>
 cargo xtask ktest qemu --workspace --arch loongarch64
 cargo xtask arceos test qemu --arch loongarch64
 cargo xtask starry test qemu --arch loongarch64
@@ -412,12 +422,12 @@ x86 的启动异常由 `ax_cpu::boot::BootVectorTable` 和共享 GPR 保存片�
 
 LoongArch 和 RISC-V 的早期异常入口也归 CPU，someboot 仅实现 `BootTrapHandler` 的处理策略。LoongArch 启动与运行期使用同一四级 walker/refill；启动表安装和 DA/PG 转换分别通过 CPU boot 接口完成。RISC-V 的 T-Head 维护接收 `PhysicalCacheRange`，地址转换及 DMA 方向由平台决定，不能将虚拟地址直接交给物理 cache 指令。
 
-x86、RISC-V 和 LoongArch 的 AxVM 映射变更先关闭该 VM 的客户机进入通道，再请求在途客户机退出；尚未取得 quiescence 时不得持有 machine 锁或释放映射。后续每次 CPU 进入执行本核客体翻译失效。LoongArch 的客体域采用 `INVTLB_ALLGID`，不能将宿主 INVTLB 视为所有 guest ID 的失效证明。
+四架构的 AxVM 映射变更由控制 owner 准备新的页表根，关闭入场并逐 owner 确认卸载；设备和在途内存访问也静默后才安装新根。收齐可能缓存旧翻译的 pCPU 失效确认，发布新 revision 后才退休旧根和 backing。安装或失效失败保持入口关闭并保留新旧资源；SVM 依赖每次 VMRUN 必经 FlushAll 的逻辑退休契约。LoongArch 的客体域采用 `INVTLB_ALLGID`，不能将宿主 INVTLB 视为所有 guest ID 的失效证明。
 
 
 ## AArch64 宿主虚拟化初始化与致命异常
 
-`AxvmRuntime::new` 必须在每 CPU 的 `PreemptIrqSaveGuard` 之前完成 `prepare_host_virtualization`。`gic::host::HostGic` 同时发布已发现的 CPU interface 与已解析的 maintenance IRQ；失败不发布、不启用硬件。IRQ、VGIC save/load 和 maintenance enable/disable 仅通过 `OnceLock::get` 读取完成态，不执行 FDT 解析、rdrive 查找或等待初始化。不要在 `init_vm` 或线程创建入口添加预热：VM 创建晚于宿主虚拟化启用，预热不能表达此生命周期约束。
+`VmManager::new` 必须在每 CPU 的 `PreemptIrqSaveGuard` 之前完成 `prepare_host_virtualization`。`gic::host::HostGic` 同时发布已发现的 CPU interface 与已解析的 maintenance IRQ；失败不发布、不启用硬件。IRQ、VGIC save/load 和 maintenance enable/disable 仅通过 `OnceLock::get` 读取完成态，不执行 FDT 解析、rdrive 查找或等待初始化。不要在 `init_vm` 或线程创建入口添加预热：VM 创建晚于宿主虚拟化启用，预热不能表达此生命周期约束。
 
 对照 Linux `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `kvm_vgic_hyp_init`、`kvm_vgic_cpu_up` 和 `kvm_arch_enable_virtualization_cpu`：全局探测和 IRQ 解析先于每 CPU 硬件使能。AxVM 的 maintenance IRQ 仍沿现有退出路径折叠 VGIC 状态，本次不改变客户机 EOI/IRQ 退休协议。
 
