@@ -73,7 +73,7 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 | `ubuntu-axvisor-lvz` | 2 | 0 | 0 | 0 | ArceOS/AxVisor LoongArch QEMU 套件 |
 | `kvm-intel` | 3 | 0 | 0 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
 | `kvm-amd` | 1 | 0 | 0 | 0 | SVM smoke、direct/OVMF ACPI、PCI 枚举和 PCI block RW/RO |
-| `board` | 13 | 0 | 4 | 8 | 主 CI、AxVisor nightly 和性能清单中的板卡场景 |
+| `board` | 9 | 0 | 3 | 8 | 主 CI、AxVisor nightly 和性能清单中的板卡场景 |
 
 修改清单时应同步更新这张表。`qcs` 在普通外部 fork 上回退为托管环境，表中仍按声明的 profile 分类；它不表示外部 fork 可以使用组织的 QCS 机器。
 
