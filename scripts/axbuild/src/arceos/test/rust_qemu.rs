@@ -169,7 +169,7 @@ pub(super) async fn run_rust_qemu_case(
         arceos.app.target_dir(),
         &mut qemu,
     )?;
-    qemu_test::append_backtrace_map(&mut qemu, map_path)?;
+    qemu_test::append_backtrace_map(&mut qemu, map_path, &case.request.target)?;
     let serial_rx = if case.case.feature.as_deref() == Some("serial-rx") {
         Some(super::serial_rx::SerialRxFixture::start(&mut qemu).await?)
     } else {

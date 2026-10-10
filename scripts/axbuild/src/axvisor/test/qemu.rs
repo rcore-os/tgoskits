@@ -417,7 +417,11 @@ impl Axvisor {
         let (mut qemu, prepared_assets) = self
             .load_qemu_case_config(request, case, asset_config)
             .await?;
-        crate::test::qemu::append_backtrace_map(&mut qemu, &kernel.with_extension("axbt"))?;
+        crate::test::qemu::append_backtrace_map(
+            &mut qemu,
+            &kernel.with_extension("axbt"),
+            &request.target,
+        )?;
 
         // Optional host->guest TCP probe over QEMU user-mode networking. When
         // `[host_http_probe]` is configured, the host acts as a *client* that

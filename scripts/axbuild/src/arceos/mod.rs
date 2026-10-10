@@ -554,6 +554,7 @@ impl ArceOS {
         crate::test::qemu::append_backtrace_map(
             &mut qemu,
             &output.elf_path.with_extension("axbt"),
+            &request.target,
         )?;
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)

@@ -1,5 +1,5 @@
 target = "loongarch64-unknown-none-softfloat"
-env = { BACKTRACE = "y" }
+env = { BACKTRACE = "y", DWARF = "y" }
 log = "Warn"
 features = [
   "axplat-dyn/efi",

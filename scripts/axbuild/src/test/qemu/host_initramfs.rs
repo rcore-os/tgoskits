@@ -100,11 +100,19 @@ pub(crate) fn append_target_backtrace_map(
     if !map.is_file() {
         return Ok(());
     }
-    append_backtrace_map(qemu, &map)
+    append_backtrace_map(qemu, &map, target)
 }
 
 /// Appends an AXBT sidecar to an already prepared initramfs.
-pub(crate) fn append_backtrace_map(qemu: &mut QemuConfig, map: &Path) -> anyhow::Result<()> {
+pub(crate) fn append_backtrace_map(
+    qemu: &mut QemuConfig,
+    map: &Path,
+    target: &str,
+) -> anyhow::Result<()> {
+    if target.starts_with("x86_64") && !qemu.uefi {
+        log::debug!("skip target symbol maps for direct x86_64 QEMU; host initramfs requires UEFI");
+        return Ok(());
+    }
     append_backtrace_map_to_initramfs(&mut qemu.boot.initramfs, map)
 }
 

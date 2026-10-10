@@ -1,4 +1,4 @@
-env = { BACKTRACE = "y" }
+env = { BACKTRACE = "y", DWARF = "y" }
 features = [
   "ax-runtime/display",
   "ax-runtime/rtc",

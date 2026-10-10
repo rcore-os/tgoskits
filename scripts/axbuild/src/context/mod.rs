@@ -234,6 +234,7 @@ impl AppContext {
         crate::test::qemu::append_backtrace_map(
             &mut qemu,
             &output.elf_path().with_extension("axbt"),
+            &cargo.target,
         )?;
         let result = self.run_qemu(&cargo, qemu).await;
         if result.is_ok() {
