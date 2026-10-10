@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.8...rockchip-soc-v0.4.9) - 2026-10-10
+
+### Added
+
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+
+### Other
+
+- *(repo)* scope pre-PR validation to affected targets ([#2534](https://github.com/rcore-os/tgoskits/pull/2534))
+
 ## [0.4.8](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.7...rockchip-soc-v0.4.8) - 2026-09-21
 
 ### Added

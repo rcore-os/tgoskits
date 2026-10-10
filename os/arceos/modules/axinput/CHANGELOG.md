@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.7.0...ax-input-v0.7.1) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.11...ax-input-v0.7.0) - 2026-09-22
 
 ### Other

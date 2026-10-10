@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.5...axdevice-v0.8.6) - 2026-10-10
+
+### Added
+
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.4...axdevice-v0.8.5) - 2026-09-22
 
 ### Fixed

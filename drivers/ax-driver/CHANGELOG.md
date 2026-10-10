@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.18.1...ax-driver-v0.19.0) - 2026-10-10
+
+### Added
+
+- *(intel-hda)* integrate portable PCM playback and QEMU output validation ([#2563](https://github.com/rcore-os/tgoskits/pull/2563))
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+- *(axvisor)* support board guests and preserve firmware identities ([#2502](https://github.com/rcore-os/tgoskits/pull/2502))
+- *(virtio-gpu)* async fire-and-forget submission with real fences ([#2536](https://github.com/rcore-os/tgoskits/pull/2536))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(aic8800)* aggregate transmit writes and cache firmware credits ([#2547](https://github.com/rcore-os/tgoskits/pull/2547))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.18.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.18.0...ax-driver-v0.18.1) - 2026-09-22
 
 ### Added

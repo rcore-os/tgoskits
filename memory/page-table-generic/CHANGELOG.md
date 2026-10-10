@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.9.1...page-table-generic-v0.10.0) - 2026-10-10
+
+### Fixed
+
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+
+### Other
+
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/page-table-generic-v0.9.0...page-table-generic-v0.9.1) - 2026-09-21
 
 ### Fixed

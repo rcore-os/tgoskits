@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.9...axvmconfig-v0.9.0) - 2026-10-10
+
+### Fixed
+
+- *(axvm)* follow host console by default and fix OrangePi Nightly ([#2490](https://github.com/rcore-os/tgoskits/pull/2490))
+
+### Other
+
+- *(axvisor)* run 24 virtio-net peers across OrangePi cores ([#2498](https://github.com/rcore-os/tgoskits/pull/2498))
+- *(axvmconfig)* remove standalone tool binary ([#2581](https://github.com/rcore-os/tgoskits/pull/2581))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+
 ## [0.8.9](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.8...axvmconfig-v0.8.9) - 2026-09-18
 
 ### Other

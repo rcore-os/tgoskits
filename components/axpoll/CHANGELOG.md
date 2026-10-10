@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.7.0...axpoll-v0.7.1) - 2026-10-10
+
+### Other
+
+- *(starry-kernel)* keep an epoll interest registered while its lease is armed. ([#2433](https://github.com/rcore-os/tgoskits/pull/2433))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.6.0...axpoll-v0.7.0) - 2026-09-09
 
 ### Fixed

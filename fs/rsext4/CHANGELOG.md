@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.9.2...rsext4-v0.10.0) - 2026-10-10
+
+### Other
+
+- *(rsext4)* separate owned IO and journal commit phases ([#2525](https://github.com/rcore-os/tgoskits/pull/2525))
+
 ## [0.9.2](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.9.1...rsext4-v0.9.2) - 2026-09-21
 
 ### Other

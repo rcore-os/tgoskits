@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.2...axdevice_base-v0.7.3) - 2026-10-10
+
+### Other
+
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.1...axdevice_base-v0.7.2) - 2026-09-11
 
 ### Added

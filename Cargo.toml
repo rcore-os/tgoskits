@@ -1,6 +1,6 @@
 [workspace.package]
 edition = "2024"
-version = "0.5.16"
+version = "0.5.17"
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license = "Apache-2.0"
 repository = "https://github.com/rcore-os/tgoskits"
@@ -148,24 +148,24 @@ ax-sched = { path = "components/axsched", version = "0.5.11" }
 # propagate patch-only releases to dependent workspace crates.
 aarch64_sysreg = { version = "0.3", path = "virtualization/aarch64_sysreg" }
 arm-scmi-rs = { version = "0.1", path = "drivers/firmware/arm-scmi-rs" }
-arm_vgic = { version = "0.6", path = "virtualization/arm_vgic" }
+arm_vgic = { version = "0.7", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.9", path = "memory/ax-alloc", default-features = false }
 ax-api = { version = "0.8", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4", path = "drivers/rtc/arm_pl031" }
-cpu-local = { version = "0.4.3", path = "components/cpu-local" }
-ax-cpu = { version = "0.10.3", path = "components/axcpu" }
+cpu-local = { version = "0.4.4", path = "components/cpu-local" }
+ax-cpu = { version = "0.10.4", path = "components/axcpu" }
 ax-cpumask = { version = "0.4", path = "components/cpumask" }
 ax-crate-interface = { version = "0.5", path = "components/crate_interface" }
 ax-cgroup = { version = "0.3", path = "components/ax-cgroup" }
 ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
-ax-display = { version = "0.7", path = "os/arceos/modules/axdisplay" }
+ax-display = { version = "0.8", path = "os/arceos/modules/axdisplay" }
 ax-gpu = { version = "0.1", path = "os/arceos/modules/axgpu" }
-ax-driver = { version = "0.18", path = "drivers/ax-driver" }
+ax-driver = { version = "0.19", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
-virtio-gpu = { version = "0.1", path = "drivers/gpu/virtio-gpu" }
-ax-fs-ng = { version = "0.11", path = "fs/ax-fs-ng" }
-ax-hal = { version = "0.8.4", path = "os/arceos/modules/axhal" }
+virtio-gpu = { version = "0.2", path = "drivers/gpu/virtio-gpu" }
+ax-fs-ng = { version = "0.12", path = "fs/ax-fs-ng" }
+ax-hal = { version = "0.8.5", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }
 ax-input = { version = "0.7", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.7", path = "components/axio" }
@@ -179,37 +179,37 @@ ax-memory-set = { version = "0.8", path = "memory/memory_set" }
 axpanic = { version = "0.1", path = "components/axpanic" }
 axpoll-set = { version = "0.1", path = "components/axpoll-set" }
 ax-mm = { version = "0.8", path = "os/arceos/modules/axmm" }
-ax-net = { version = "0.13", path = "net/ax-net" }
+ax-net = { version = "0.14", path = "net/ax-net" }
 ax-percpu = { version = "0.4", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4", path = "components/percpu/percpu_macros" }
-ax-plat = { version = "0.15", path = "platforms/ax-plat" }
+ax-plat = { version = "0.16", path = "platforms/ax-plat" }
 ax-plat-macros = { version = "0.3", path = "platforms/ax-plat-macros" }
-ax-posix-api = { version = "0.6.8", path = "os/arceos/api/arceos_posix_api" }
+ax-posix-api = { version = "0.6.9", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4", path = "drivers/intc/riscv_plic" }
-ax-runtime = { version = "0.13.5", path = "os/arceos/modules/axruntime" }
-ax-std = { version = "0.7.5", path = "os/arceos/ulib/axstd", default-features = false }
-ax-sync = { version = "0.6", path = "os/arceos/modules/axsync" }
-ax-task = { version = "0.8", path = "components/ax-task" }
+ax-runtime = { version = "0.13.6", path = "os/arceos/modules/axruntime" }
+ax-std = { version = "0.8.0", path = "os/arceos/ulib/axstd", default-features = false }
+ax-sync = { version = "0.7", path = "os/arceos/modules/axsync" }
+ax-task = { version = "0.9", path = "components/ax-task" }
 ax-tracepoint = { version = "0.6", path = "components/ax-tracepoint" }
 axtest = { version = "0.5", path = "components/axtest/axtest" }
 axtest-macros = { version = "0.5", path = "components/axtest/axtest_macros" }
-axaddrspace = { version = "0.6", path = "virtualization/axaddrspace" }
-axbacktrace = { version = "0.4", path = "components/axbacktrace" }
-axbuild = { version = "0.9.1", path = "scripts/axbuild" }
+axaddrspace = { version = "0.7", path = "virtualization/axaddrspace" }
+axbacktrace = { version = "0.5", path = "components/axbacktrace" }
+axbuild = { version = "0.10.0", path = "scripts/axbuild" }
 axdevice = { version = "0.8", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.7", path = "virtualization/axdevice_base" }
 axfs-ng-vfs = { version = "0.8", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.5", path = "virtualization/axhvc" }
 axivc = { version = "0.1", path = "virtualization/axivc" }
 axklib = { version = "0.9", path = "components/axklib" }
-axplat-dyn = { version = "0.10.4", path = "platforms/axplat-dyn", default-features = false }
+axplat-dyn = { version = "0.10.5", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.7", path = "components/axpoll" }
 axvirtio-blk = { version = "0.4", path = "virtualization/axvirtio-blk" }
 axvirtio-common = { version = "0.2", path = "virtualization/axvirtio-common" }
 axvirtio-net = { version = "0.2", path = "virtualization/axvirtio-net" }
-axvm = { version = "0.8", path = "virtualization/axvm", default-features = false }
+axvm = { version = "0.9", path = "virtualization/axvm", default-features = false }
 axvm-types = { version = "0.7", path = "virtualization/axvm-types" }
-axvmconfig = { version = "0.8", path = "virtualization/axvmconfig", default-features = false }
+axvmconfig = { version = "0.9", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.2", path = "drivers/blk/ahci-driver" }
 
 define-simple-traits = { version = "0.3", path = "components/crate_interface/test_crates/define-simple-traits" }
@@ -261,14 +261,14 @@ realtek-rtl8125 = { version = "0.3", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.4", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.4", path = "drivers/tpu/sg2002-tpu" }
-rdrive = { version = "0.25", path = "drivers/rdrive" }
+rdrive = { version = "0.26", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4", path = "drivers/rdrive-macros" }
-rsext4 = { version = "0.9", path = "fs/rsext4" }
+rsext4 = { version = "0.10", path = "fs/rsext4" }
 scope-local = { version = "0.6", path = "components/scope-local" }
 sdmmc-host = { version = "0.1", path = "drivers/blk/sdmmc-host" }
-aic8800 = { version = "0.3", path = "drivers/net/aic8800" }
+aic8800 = { version = "0.4", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.12", path = "drivers/usb/usb-host" }
-usb-if = { version = "0.8", path = "drivers/usb/usb-if" }
+usb-if = { version = "0.9", path = "drivers/usb/usb-if" }
 uvc-if = { version = "0.1", path = "drivers/usb/uvc-if" }
 usb-serial = { version = "0.1", path = "drivers/usb/usb-serial" }
 ax-media = { version = "0.1", path = "drivers/media/ax-media" }
@@ -284,14 +284,14 @@ starry-kernel = { version = "0.12", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.10", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
 httpboot-protocol = { version = "0.5.0", default-features = false, features = ["alloc", "json"] }
-x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
-page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
-someboot = { version = "0.7.2", path = "platforms/someboot" }
+x86_vlapic = { version = "0.6", path = "virtualization/x86_vlapic" }
+page-table-generic = { version = "0.10", path = "memory/page-table-generic" }
+someboot = { version = "0.7.3", path = "platforms/someboot" }
 some-serial = { version = "0.7", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.3" }
 ranges-ext = { version = "0.6", path = "memory/ranges-ext" }
 somehal-macros = { path = "platforms/somehal-macros", version = "0.1" }
-somehal = { version = "0.11.3", path = "platforms/somehal" }
+somehal = { version = "0.11.4", path = "platforms/somehal" }
 
 # External crates
 acpi_tables = "0.2.1"
@@ -326,7 +326,7 @@ sha1 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 syn = "3.0.3"
 subtle = { version = "2.6.1", default-features = false }
 toml = { version = "1", default-features = false }
-dma-api = { version = "0.10", path = "memory/dma-api" }
+dma-api = { version = "0.11", path = "memory/dma-api" }
 mmio-api = { version = "0.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
