@@ -22,7 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, Metadata, MetadataUpdate, NodeType, RawSpinLock, RawSpinLockGuard, VfsError, VfsResult, path::PathBuf,
+    FilesystemOps, Metadata, MetadataUpdate, NodeType, RawSpinLock, RawSpinLockGuard, VfsError,
+    VfsResult, path::PathBuf,
 };
 
 bitflags! {

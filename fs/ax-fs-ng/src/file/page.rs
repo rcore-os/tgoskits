@@ -11,7 +11,7 @@ use axfs_ng_vfs::{VfsError, VfsResult};
 
 use crate::os::{
     memory::{FsPage, PAGE_SIZE},
-    sync::{SleepMutex, SleepMutexGuard},
+    sync::{Mutex, MutexGuard},
 };
 
 pub struct PageCache {
@@ -35,7 +35,7 @@ enum WritebackState {
 
 struct CachedPageFrame {
     page: Option<FsPage>,
-    bytes: SleepMutex<()>,
+    bytes: Mutex<()>,
 }
 
 /// Retains initialized physical storage independently of cache membership.
@@ -53,7 +53,7 @@ pub struct CachedPageBacking {
 /// I/O, or faultable user access. Unpublished loading pages may hold it for I/O.
 pub struct CachedPageBytes<'a> {
     frame: &'a CachedPageFrame,
-    _guard: SleepMutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
 }
 
 impl PageCache {
@@ -65,7 +65,7 @@ impl PageCache {
         Ok(Self {
             frame: Arc::new(CachedPageFrame {
                 page: Some(page),
-                bytes: SleepMutex::new(()),
+                bytes: Mutex::new(()),
             }),
             #[cfg(test)]
             dirty_drop_observer: None,
@@ -81,7 +81,7 @@ impl PageCache {
         Self {
             frame: Arc::new(CachedPageFrame {
                 page: None,
-                bytes: SleepMutex::new(()),
+                bytes: Mutex::new(()),
             }),
             dirty_drop_observer: None,
             pins: 0,

@@ -16,8 +16,6 @@ extern crate ax_runtime;
 #[macro_use]
 extern crate log;
 
-use alloc::sync::Arc;
-
 use axfs_ng_vfs::Location;
 pub use axfs_ng_vfs::{VfsError, VfsResult};
 

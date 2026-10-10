@@ -9,14 +9,14 @@ use core::{
 use axfs_ng_vfs::{VfsError, VfsResult};
 
 use super::super::CachedPages;
-use crate::os::{sync::SleepMutex, waiters::TaskWaiters};
+use crate::os::{sync::Mutex, waiters::TaskWaiters};
 
 // At most 16 windows of 32 pages: staging plus prepared pages use <= 4 MiB
 // per inode. A full admission queue waits on an owner, never spins.
 const MAX_PENDING_FILLS: usize = 16;
 
 pub(in super::super) struct PendingFills {
-    fills: SleepMutex<Vec<Arc<PendingFill>>>,
+    fills: Mutex<Vec<Arc<PendingFill>>>,
     capacity_waiters: TaskWaiters,
 }
 
@@ -31,7 +31,7 @@ pub(super) struct PendingFill {
     file_len: u64,
     valid: AtomicBool,
     complete: AtomicBool,
-    outcome: SleepMutex<Option<VfsResult<()>>>,
+    outcome: Mutex<Option<VfsResult<()>>>,
     waiters: TaskWaiters,
 }
 
@@ -44,7 +44,7 @@ pub(super) struct FillOwner<'a> {
 impl PendingFills {
     pub(in super::super) const fn new() -> Self {
         Self {
-            fills: SleepMutex::new(Vec::new()),
+            fills: Mutex::new(Vec::new()),
             capacity_waiters: TaskWaiters::new(),
         }
     }
@@ -85,7 +85,7 @@ impl PendingFills {
             file_len,
             valid: AtomicBool::new(true),
             complete: AtomicBool::new(false),
-            outcome: SleepMutex::new(None),
+            outcome: Mutex::new(None),
             waiters: TaskWaiters::new(),
         });
         fills.push(Arc::clone(&fill));

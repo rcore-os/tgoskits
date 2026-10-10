@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::folio::CacheFolio;
-use crate::os::{sync::SleepMutex, waiters::TaskWaiters};
+use crate::os::{sync::Mutex, waiters::TaskWaiters};
 
 pub(super) struct FrameBudget {
     used: AtomicUsize,
@@ -53,16 +53,16 @@ impl Drop for FramePermit {
 pub(super) struct FolioEntry {
     // Lock order: range stripes, then io, then data. Index exclusion is never
     // held while waiting for these locks or issuing device I/O.
-    pub(super) io: SleepMutex<()>,
-    pub(super) data: SleepMutex<CacheFolio>,
+    pub(super) io: Mutex<()>,
+    pub(super) data: Mutex<CacheFolio>,
     _permit: FramePermit,
 }
 
 impl FolioEntry {
     pub(super) fn new(data: CacheFolio, permit: FramePermit) -> Self {
         Self {
-            io: SleepMutex::new(()),
-            data: SleepMutex::new(data),
+            io: Mutex::new(()),
+            data: Mutex::new(data),
             _permit: permit,
         }
     }

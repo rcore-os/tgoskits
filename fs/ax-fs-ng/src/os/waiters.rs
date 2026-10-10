@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     BlockError, BlockResult,
-    os::{BlockNotification, runtime_ops, sync::IrqMutex},
+    os::{BlockNotification, runtime_ops, sync::RawSpinLock},
 };
 
 /// Task-context waiters whose wakeups must not be coalesced with each other.
@@ -11,21 +11,21 @@ use crate::{
 /// their state transition first and then wake the registered tasks. Registering
 /// before rechecking the predicate closes the transition-to-sleep race.
 pub(crate) struct TaskWaiters {
-    notifications: IrqMutex<Vec<Arc<dyn BlockNotification>>>,
+    notifications: RawSpinLock<Vec<Arc<dyn BlockNotification>>>,
     #[cfg(test)]
-    registration_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
+    registration_hook: RawSpinLock<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
-    waiting_hook: IrqMutex<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
+    waiting_hook: RawSpinLock<Option<alloc::boxed::Box<dyn FnOnce() + Send>>>,
 }
 
 impl TaskWaiters {
     pub(crate) const fn new() -> Self {
         Self {
-            notifications: IrqMutex::new(Vec::new()),
+            notifications: RawSpinLock::new(Vec::new()),
             #[cfg(test)]
-            registration_hook: IrqMutex::new(None),
+            registration_hook: RawSpinLock::new(None),
             #[cfg(test)]
-            waiting_hook: IrqMutex::new(None),
+            waiting_hook: RawSpinLock::new(None),
         }
     }
 
@@ -47,7 +47,7 @@ impl TaskWaiters {
 
         #[cfg(test)]
         {
-            let hook = self.registration_hook.lock().take();
+            let hook = self.registration_hook.lock_irqsave().take();
             if let Some(hook) = hook {
                 hook();
             }
@@ -55,7 +55,7 @@ impl TaskWaiters {
         if should_wait() {
             #[cfg(test)]
             {
-                let hook = self.waiting_hook.lock().take();
+                let hook = self.waiting_hook.lock_irqsave().take();
                 if let Some(hook) = hook {
                     hook();
                 }
@@ -73,7 +73,7 @@ impl TaskWaiters {
     ) -> BlockResult {
         let mut spare = Vec::new();
         loop {
-            let mut notifications = self.notifications.lock();
+            let mut notifications = self.notifications.lock_irqsave();
             if notifications.len() == notifications.capacity() {
                 let required = notifications
                     .len()
@@ -97,7 +97,7 @@ impl TaskWaiters {
     /// Wakes one registered task.
     pub(crate) fn notify_one(&self) {
         let notification = {
-            let mut notifications = self.notifications.lock();
+            let mut notifications = self.notifications.lock_irqsave();
             if notifications.is_empty() {
                 None
             } else {
@@ -117,7 +117,7 @@ impl TaskWaiters {
 
     fn wake_all(&self, notify: impl Fn(&dyn BlockNotification)) {
         let notifications = {
-            let mut notifications = self.notifications.lock();
+            let mut notifications = self.notifications.lock_irqsave();
             core::mem::take(&mut *notifications)
         };
         for notification in notifications {
@@ -126,7 +126,7 @@ impl TaskWaiters {
     }
 
     fn remove(&self, notification: &Arc<dyn BlockNotification>) {
-        let mut notifications = self.notifications.lock();
+        let mut notifications = self.notifications.lock_irqsave();
         if let Some(index) = notifications
             .iter()
             .position(|candidate| Arc::ptr_eq(candidate, notification))
@@ -139,7 +139,7 @@ impl TaskWaiters {
     pub(crate) fn set_registration_hook(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .registration_hook
-            .lock()
+            .lock_irqsave()
             .replace(alloc::boxed::Box::new(hook));
         assert!(
             previous.is_none(),
@@ -151,14 +151,14 @@ impl TaskWaiters {
     pub(crate) fn set_waiting_hook(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .waiting_hook
-            .lock()
+            .lock_irqsave()
             .replace(alloc::boxed::Box::new(hook));
         assert!(previous.is_none(), "waiter waiting hook already installed");
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.notifications.lock().len()
+        self.notifications.lock_irqsave().len()
     }
 }
 
@@ -173,7 +173,7 @@ mod tests {
         let waiters = TaskWaiters::new();
         let notification = runtime_ops().unwrap().notification();
         let result = waiters.register_with(&notification, |_, _| {
-            assert!(waiters.notifications.try_lock().is_some());
+            assert!(waiters.notifications.try_lock_irqsave().is_some());
             Err(BlockError::NoMemory)
         });
         assert_eq!(result, Err(BlockError::NoMemory));

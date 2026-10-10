@@ -758,7 +758,7 @@ impl CowBackend {
         if ZeroPage::owns(page) {
             return self
                 .pages
-                .lock()
+                .lock_irqsave()
                 .zero_page
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, page))
@@ -965,12 +965,12 @@ impl CowBackend {
     }
 
     fn prepare_zero_page(&self) -> StarryResult<Arc<PageObject>> {
-        if let Some(page) = self.pages.lock().zero_page.clone() {
+        if let Some(page) = self.pages.lock_irqsave().zero_page.clone() {
             return Ok(page);
         }
         let prepared = ZeroPage::object()?;
         let page = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages
                 .zero_page
                 .get_or_insert_with(|| prepared.clone())
@@ -4113,7 +4113,7 @@ mod tests {
             let prepared = backend.prepare_new_at_sized(base, PAGE_SIZE_4K, MappingFlags::READ);
             if end.is_none() && offset >= contents.len() as u64 {
                 assert!(matches!(prepared, Err(crate::StarryError::BadAddress)));
-                assert!(backend.pages.lock().pages.is_empty());
+                assert!(backend.pages.lock_irqsave().pages.is_empty());
                 continue;
             }
             let page = prepared.unwrap();
@@ -4135,7 +4135,7 @@ mod tests {
             };
             assert_eq!(actual, expected.as_slice());
             backend.discard_pending_page(&page);
-            assert!(backend.pages.lock().pages.is_empty());
+            assert!(backend.pages.lock_irqsave().pages.is_empty());
         }
     }
 

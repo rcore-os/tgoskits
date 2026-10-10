@@ -3,12 +3,12 @@
 use core::{io::BorrowedCursor, ops::Range, sync::atomic::Ordering};
 
 use super::CachedFileShared;
-use crate::os::sync::SleepMutexGuard;
+use crate::os::sync::MutexGuard;
 
 /// Keeps tentative content changes hidden until commit or rollback completes.
 pub(super) struct CacheUpdateGuard<'a> {
     shared: &'a CachedFileShared,
-    io: Option<SleepMutexGuard<'a, ()>>,
+    io: Option<MutexGuard<'a, ()>>,
 }
 
 impl CacheUpdateGuard<'_> {

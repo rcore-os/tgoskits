@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
     Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
-    MetadataUpdate, RawSpinLock, RawSpinLockGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
-    Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry,
-    XattrSetMode,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock,
+    RawSpinLockGuard, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
+    WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 

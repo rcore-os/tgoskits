@@ -2,20 +2,20 @@
 
 use crate::{
     BlockError, BlockResult,
-    os::{sync::IrqMutex, waiters::TaskWaiters},
+    os::{sync::RawSpinLock, waiters::TaskWaiters},
 };
 
 const STRIPES: usize = 64;
 
 pub(super) struct RangeLocks {
-    active: IrqMutex<u64>,
+    active: RawSpinLock<u64>,
     waiters: TaskWaiters,
 }
 
 impl RangeLocks {
     pub(super) fn new() -> Self {
         Self {
-            active: IrqMutex::new(0),
+            active: RawSpinLock::new(0),
             waiters: TaskWaiters::new(),
         }
     }
@@ -31,7 +31,7 @@ impl RangeLocks {
         };
         loop {
             {
-                let mut active = self.active.lock();
+                let mut active = self.active.lock_irqsave();
                 if *active & mask == 0 {
                     *active |= mask;
                     return Ok(RangeGuard { ranges: self, mask });
@@ -40,7 +40,7 @@ impl RangeLocks {
             // Reserve every stripe atomically: no partial reservation or
             // nested OS locks survive while waiting for overlapping I/O.
             self.waiters
-                .wait_while(|| *self.active.lock() & mask != 0)?;
+                .wait_while(|| *self.active.lock_irqsave() & mask != 0)?;
         }
     }
 }
@@ -52,7 +52,7 @@ pub(super) struct RangeGuard<'a> {
 
 impl Drop for RangeGuard<'_> {
     fn drop(&mut self) {
-        *self.ranges.active.lock() &= !self.mask;
+        *self.ranges.active.lock_irqsave() &= !self.mask;
         self.ranges.waiters.notify_all();
     }
 }
@@ -65,7 +65,7 @@ mod tests {
     fn reversed_range_does_not_reserve_stripes_or_wait() {
         let ranges = RangeLocks::new();
         assert!(matches!(ranges.lock(8, 7), Err(BlockError::InvalidRequest)));
-        assert_eq!(*ranges.active.lock(), 0);
+        assert_eq!(*ranges.active.lock_irqsave(), 0);
         assert_eq!(ranges.waiters.len(), 0);
     }
 
@@ -73,9 +73,9 @@ mod tests {
     fn a_wide_range_is_released_as_one_reservation() {
         let ranges = RangeLocks::new();
         let guard = ranges.lock(0, 128).unwrap();
-        assert_eq!(*ranges.active.lock(), u64::MAX);
+        assert_eq!(*ranges.active.lock_irqsave(), u64::MAX);
         drop(guard);
-        assert_eq!(*ranges.active.lock(), 0);
+        assert_eq!(*ranges.active.lock_irqsave(), 0);
         drop(ranges.lock(63, 64).unwrap());
     }
 

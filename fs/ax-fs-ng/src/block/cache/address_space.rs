@@ -14,7 +14,7 @@ use super::{
 use crate::{
     BlockError, BlockResult,
     block::FsBlockDevice,
-    os::{memory::PAGE_SIZE, sync::SleepMutex},
+    os::{memory::PAGE_SIZE, sync::Mutex},
 };
 
 /// Folios cached per device: 1024 frames of 4 KiB = 4 MiB with 512-byte
@@ -96,10 +96,10 @@ impl FolioGeometry {
 /// Shared cache index; entries remain pinned while their I/O runs unlocked.
 pub(crate) struct BlockAddressSpace {
     geometry: FolioGeometry,
-    folios: SleepMutex<FolioCache<Arc<FolioEntry>>>,
+    folios: Mutex<FolioCache<Arc<FolioEntry>>>,
     budget: Arc<FrameBudget>,
     // Serialize misses only. Hits and unrelated folio writeback bypass it.
-    insertion: SleepMutex<()>,
+    insertion: Mutex<()>,
     ranges: RangeLocks,
 }
 
@@ -112,9 +112,9 @@ impl BlockAddressSpace {
         let capacity = NonZeroUsize::new(capacity.max(1)).expect("capacity is clamped to >= 1");
         Self {
             geometry,
-            folios: SleepMutex::new(FolioCache::new(capacity)),
+            folios: Mutex::new(FolioCache::new(capacity)),
             budget: FrameBudget::new(capacity.get()),
-            insertion: SleepMutex::new(()),
+            insertion: Mutex::new(()),
             ranges: RangeLocks::new(),
         }
     }

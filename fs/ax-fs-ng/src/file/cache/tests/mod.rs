@@ -6,6 +6,7 @@ use core::{
 };
 #[cfg(feature = "vfs")]
 use std::sync::Barrier;
+use std::sync::Mutex as StdMutex;
 #[cfg(all(feature = "ext4", feature = "vfs"))]
 use std::sync::mpsc;
 

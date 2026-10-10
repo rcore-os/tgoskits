@@ -4,21 +4,21 @@ use alloc::vec::Vec;
 
 use axfs_ng_vfs::{Filesystem, VfsResult};
 
-use crate::os::sync::SleepMutex;
+use crate::os::sync::Mutex;
 
 // Registration and shutdown are task-context operations. The list lock is
 // never held across filesystem callbacks; the separate owner serializes
 // shutdown snapshots until failed owners have been restored to the list.
 struct MountRegistry {
-    filesystems: SleepMutex<Vec<Filesystem>>,
-    shutdown_owner: SleepMutex<()>,
+    filesystems: Mutex<Vec<Filesystem>>,
+    shutdown_owner: Mutex<()>,
 }
 
 impl MountRegistry {
     const fn new() -> Self {
         Self {
-            filesystems: SleepMutex::new(Vec::new()),
-            shutdown_owner: SleepMutex::new(()),
+            filesystems: Mutex::new(Vec::new()),
+            shutdown_owner: Mutex::new(()),
         }
     }
 }

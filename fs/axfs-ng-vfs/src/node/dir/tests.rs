@@ -110,10 +110,10 @@ enum CachePolicy {
 }
 
 struct ScriptedDirectory {
-    entries: Mutex<HashMap<String, DirEntry>>,
+    entries: RawSpinLock<HashMap<String, DirEntry>>,
     lookups: AtomicUsize,
-    lookup_error: Mutex<VfsError>,
-    after_lookup: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    lookup_error: RawSpinLock<VfsError>,
+    after_lookup: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
     fail_after_create: AtomicBool,
     policy: CachePolicy,
 }
@@ -121,10 +121,10 @@ struct ScriptedDirectory {
 impl Default for ScriptedDirectory {
     fn default() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: RawSpinLock::new(HashMap::new()),
             lookups: AtomicUsize::new(0),
-            lookup_error: Mutex::new(VfsError::NotFound),
-            after_lookup: Mutex::new(None),
+            lookup_error: RawSpinLock::new(VfsError::NotFound),
+            after_lookup: RawSpinLock::new(None),
             fail_after_create: AtomicBool::new(false),
             policy: CachePolicy::default(),
         }
