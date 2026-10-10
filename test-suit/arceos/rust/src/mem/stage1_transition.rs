@@ -165,9 +165,14 @@ pub fn run() -> crate::TestResult {
     // Keep the test mapping away from the first free kernel-area hole. With
     // paging enabled, runtime task stacks and their guard pages occupy that
     // low-address region and may leave an invalid remote TLB entry behind.
-    // A high, otherwise-unused hint keeps this mapping independent from those
-    // runtime-owned ranges while still exercising page-table replacement.
-    let mapping_hint = kernel_range.start + (kernel_size / 2 / PAGE_SIZE) * PAGE_SIZE;
+    // Zero-based kernel ranges may extend to `usize::MAX` even though the
+    // architecture only accepts canonical addresses, so use a fixed canonical
+    // hint there instead of the non-canonical midpoint.
+    let mapping_hint = if kernel_range.start.as_usize() == 0 {
+        VirtAddr::from_usize(1usize << 30)
+    } else {
+        kernel_range.start + (kernel_size / 2 / PAGE_SIZE) * PAGE_SIZE
+    };
     let flags = MappingFlags::READ | MappingFlags::WRITE;
     let original_frame = OwnedTestFrame::allocate();
     let replacement_frame = OwnedTestFrame::allocate();
