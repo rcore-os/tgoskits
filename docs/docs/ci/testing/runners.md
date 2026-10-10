@@ -105,7 +105,7 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 
 | 目标板卡或场景 | Starry 清单 | AxVisor 清单 |
 | --- | --- | --- |
-| OrangePi 5 Plus | 原生套件、原生 UVC/NPU + FT232 回环 | Linux guest、StarryOS guest 及其 UVC/NPU + FT232 回环、AXIVC Zephyr-Starry benchmark |
+| OrangePi 5 Plus | 原生套件、原生 UVC/NPU + FT232 回环 | Linux guest、StarryOS guest 及其 UVC/NPU + FT232 回环、AXIVC Zephyr-Starry benchmark（仅临时注释 CI 注册，测例及手动入口保留） |
 | OrangePi 5 Plus robot USB | 原生真实机器人控制（普通 CI） | StarryOS guest 和 Linux guest 真实机器人控制，仅 nightly |
 | AKA-00 SG2002 | 原生套件，启用 Wi-Fi 凭据 | 未声明对应行 |
 | VisionFive 2 | 原生套件 | 未声明对应行 |

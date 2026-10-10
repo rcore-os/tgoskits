@@ -59,7 +59,11 @@ KNOWN_OS_CONFIG_PATHS = (
     (Path("os/StarryOS/configs"), "starry"),
     (Path("os/axvisor/configs"), "axvisor"),
 )
-CI_OWNED_APP_INPUTS = ((Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),)
+CI_OWNED_APP_INPUTS = (
+    (Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),
+    (Path("apps/arceos/ivc_publisher"), "axvisor:qemu:aarch64"),
+    (Path("apps/arceos/ivc_subscriber"), "axvisor:qemu:aarch64"),
+)
 ARCH_PATH_ALIASES = {
     "aarch64": (
         "a1000",

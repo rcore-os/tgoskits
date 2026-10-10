@@ -197,15 +197,8 @@ impl Axvisor {
 
             let case_started = Instant::now();
             let result = async {
-                self.app
-                    .prepare_elf_artifact(
-                        case_artifact.build_artifact.to_path_buf(),
-                        case_artifact.to_bin,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!("failed to activate Axvisor qemu artifact for case `{case_name}`")
-                    })?;
+                // Build this case's source guests before staging its runtime assets.
+                super::guest_build::prepare(&mut self.app, &case.case.build_config_path).await?;
                 let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
                 let mut case_request = build_group.request.clone();
                 // Cargo identity is the compile boundary. The build TOML still
@@ -248,6 +241,16 @@ impl Axvisor {
                     self.app.target_dir(),
                 )
                 .await?;
+                // Guest builds replace the active runtime artifact; restore the host before QEMU.
+                self.app
+                    .prepare_elf_artifact(
+                        case_artifact.build_artifact.to_path_buf(),
+                        case_artifact.to_bin,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("failed to activate Axvisor qemu artifact for case `{case_name}`")
+                    })?;
                 let digest = sha2::Sha256::digest(std::fs::read(case_artifact.build_artifact)?);
                 println!("Axvisor kernel sha256={digest:x} case={case_name}");
                 self.run_qemu_case(

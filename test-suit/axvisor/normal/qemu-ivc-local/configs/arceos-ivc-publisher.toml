@@ -2,15 +2,15 @@
 #
 [base]
 # Guest vm id.
-id = 2
+id = 1
 # Guest vm name.
-name = "arceos-ivc-subscriber"
+name = "arceos-ivc-publisher"
 # Virtualization type.
 guest_type = "virtualized"
 # The number of virtual CPUs.
 cpu_num = 1
 # Guest vm physical cpu ids.
-phys_cpu_ids = [1]
+phys_cpu_ids = [0]
 
 #
 # Vm kernel configs
@@ -18,9 +18,8 @@ phys_cpu_ids = [1]
 [kernel]
 # The entry point of the kernel image.
 entry_point = 0x8020_0000
-# The file path of the kernel image.
-# Built from this workspace before staging guest assets.
-kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-ivc-subscriber.bin"
+# Built from this workspace before staging guest assets; never use the rootfs copy.
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-ivc-publisher.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The load address of the device tree blob (DTB).

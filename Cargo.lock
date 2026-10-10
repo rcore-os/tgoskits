@@ -1532,6 +1532,9 @@ dependencies = [
 [[package]]
 name = "axivc"
 version = "0.1.1"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "axklib"
@@ -8020,7 +8023,6 @@ dependencies = [
  "axbacktrace",
  "axfs-ng-vfs",
  "axhvc",
- "axivc",
  "axklib",
  "axplat-dyn",
  "axpoll",

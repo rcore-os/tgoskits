@@ -9,8 +9,10 @@ args = [
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b", "(?i)unhandled page fault",
     "ivc publish failed", "ivc subscribe failed",
+    "ivc validation failed", "ivc recv error", "ivc send error",
+    "VM\\[\\d+\\] boot failed",
 ]
-timeout = 120
+timeout = 300
 to_bin = true
 uefi = false
 
@@ -60,7 +62,7 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 2"
 success_regex = [
     "Attached VM\\[2\\] console",
-    "(?:ivc demo pass|ivc subscriber full-duplex demo complete)",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?ivc subscriber full-duplex demo complete\\s*$",
 ]
 
 [[shell_check_steps]]

@@ -1,0 +1,31 @@
+[base]
+id = 2
+name = "linux-ivc-subscriber"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_path = "${workspace}/target/axbuild/images/qemu-aarch64/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+cmdline = "console=ttyAMA0 root=/dev/vda rw init=/bin/sh -- -c \"mount -t devtmpfs devtmpfs /dev || true; insmod /root/axvisor.ko && /root/ivc-subscribe 1 0x49564301 5 && echo 'linux ivc subscriber finished' || echo 'linux ivc demo failed'; exec /bin/sh\""
+memory_regions = [
+    [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtblk0"
+model = "virtio-blk"
+# Supply the published rootfs unchanged as a file on the host disk.
+path = "/guest/ivc-rootfs.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

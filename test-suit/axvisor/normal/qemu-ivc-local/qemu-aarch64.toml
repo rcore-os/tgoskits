@@ -10,15 +10,12 @@ args = [
     "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
-    "-device",
-    "virtio-blk-device,drive=guestdisk",
-    "-drive",
-    "id=guestdisk,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
     "-append",
     "root=/dev/nvme0n1 rw init=/bin/sh",
     "-m",
     "8g",
 ]
+timeout = 300
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)kernel panic",
@@ -32,20 +29,26 @@ uefi = false
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
-shell_cmd = "vm console 1"
-
-[[shell_check_steps]]
-success_regex = [
-    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc ack seq=5 msg=ack from linux subscriber\\s*$",
-]
-
-[[shell_check_steps]]
-shell_prefix = "axvisor:/$"
-    shell_cmd = "vm console 2"
-
-[[shell_check_steps]]
+shell_cmd = "vm console 2"
 # Match only after the Linux guest validates every Message V1 exchange and
 # successfully tears down its endpoint and manager.
 success_regex = [
     "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 2\\] )?linux ivc demo pass\\s*$",
+]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[2\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm resume 1"
+success_regex = ["VM\\[1\\] resumed successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = [
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*(?:\\[VM 1\\] )?ivc ack seq=5 msg=ack from linux subscriber\\s*$",
 ]

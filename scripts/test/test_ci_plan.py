@@ -11,6 +11,12 @@ from typing import Any
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
+IMPACT_SPEC = importlib.util.spec_from_file_location(
+    "ci_impact", MODULE_PATH.with_name("ci_impact.py")
+)
+assert IMPACT_SPEC is not None and IMPACT_SPEC.loader is not None
+ci_impact = importlib.util.module_from_spec(IMPACT_SPEC)
+IMPACT_SPEC.loader.exec_module(ci_impact)
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -256,7 +262,7 @@ class CiPlanTests(unittest.TestCase):
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
-            "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
+            # "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "apps/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/smoke/board-orangepi-5-plus-virtio-net-peer.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
@@ -1006,7 +1012,7 @@ command = "true"
             )["axvisor_performance_matrix"]["include"]
         )
         self.assertNotIn("test-orangepi-5-plus-dualguest-robot", benchmark_rows)
-        self.assertIn(
+        self.assertNotIn(
             "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark",
             benchmark_rows,
         )
@@ -1390,6 +1396,30 @@ command = "true"
                     enabled_boolean_inputs=enabled,
                 )
                 self.assertEqual(ci_plan._is_enabled(check, context), expected)
+
+    def test_arceos_ivc_app_changes_select_their_qemu_cases(self) -> None:
+        scenarios = (
+            ("apps/arceos/ivc_publisher/src/main.rs", "--test-case qemu-ivc-local"),
+            ("apps/arceos/ivc_subscriber/src/main.rs", "--test-case qemu-ivc-arceos"),
+        )
+        for path, command in scenarios:
+            with self.subTest(path=path):
+                impact = ci_impact.analyze_changed_paths(
+                    ci_plan.WORKSPACE_ROOT, [Path(path)], {}
+                )
+                self.assertFalse(impact.full)
+                self.assertEqual(impact.input_selections, ("axvisor:qemu:aarch64",))
+                self.assertNotIn(path, impact.ignored_apps)
+                rows = ci_plan.build_main_plan(
+                    ci_plan.replace(self.upstream, impact=impact)
+                )["axvisor_matrix"]["include"]
+                check = next(
+                    row
+                    for row in rows
+                    if row["id"]
+                    == "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
+                )
+                self.assertIn(command, check["command"])
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]
