@@ -34,7 +34,7 @@ cargo xtask starry app board -t linux-perf -b OrangePi-5-Plus
 `.part` 会被删除并重试。临时目录遵循 `TMPDIR`，默认仍为 `/tmp`。
 `test-download.sh` 在隔离临时目录运行真实初始化脚本，只替换外部下载命令和等待，
 验证持续失败不会执行部分文件，以及第一次失败后能够重新下载成功；它不替代板卡验收。
-该回归同时由 Workspace CI 的 `Linux perf session download contract` 执行。
+该回归同时由 Workspace CI 的 `std tests` 检查执行。
 
 ```bash
 bash apps/starry/linux-perf/test-download.sh

@@ -65,7 +65,9 @@ flowchart LR
 
 ## 3. 验证与迁移
 
-`.github/ci/checks/workspace.toml` 的 `test-qperf` 在项目容器中构建本地插件和分析器。
+该回归不在持续集成中运行，需要在装有 QEMU 11.1.1 的项目容器中手动构建本地插件和分析器：
+`apps/qperf/prebuild.sh cargo build --release -p qperf -p qperf-analyzer --target-dir tools/qperf/target`，
+随后执行 `prebuild.py`、`qemu_load.py` 与 `qemu_sample.py`（见 `tools/qperf/tests/`）。
 不通过改动外部 harness kit 或放宽 QEMU 版本检查实现迁移。
 
 ### 3.1 回归责任
