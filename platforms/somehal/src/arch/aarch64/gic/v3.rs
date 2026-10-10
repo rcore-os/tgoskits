@@ -178,7 +178,7 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
 pub fn irq_set_trigger(irq: IrqId, trigger: Trigger) -> Result<(), crate::irq::IrqError> {
     super::trigger::dispatch_trigger_configuration(
         irq.hwirq.0,
-        Some(super::its::LPI_INTID_BASE as u32),
+        Some(super::its::LPI_INTID_BASE),
         |raw| {
             let intid = checked_private_intid(raw)?;
             current_cpu_interface().set_cfg(intid, trigger);
