@@ -63,10 +63,6 @@ impl CpuBootInfoV1 {
         self.hart_id
     }
 
-    pub(crate) const fn cpu_meta_paddr(self) -> usize {
-        self.cpu_meta_paddr
-    }
-
     const fn has_valid_header(self) -> bool {
         self.abi_magic == ABI_MAGIC
             && self.abi_version == ABI_VERSION

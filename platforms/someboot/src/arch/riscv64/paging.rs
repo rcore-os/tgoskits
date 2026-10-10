@@ -43,9 +43,13 @@ pub fn enable_mmu() -> ! {
 pub fn enable_mmu_secondary(cpu_boot_info_paddr: usize) -> ! {
     // SAFETY: `_secondary_entry` constructs this record in its reserved stack
     // slot before entering Rust, and the early identity mapping keeps the
-    // physical address readable across the SATP transition.
-    let boot_info = unsafe { super::boot::read_at(cpu_boot_info_paddr) };
-    let cpu_meta_paddr = boot_info.cpu_meta_paddr();
+    // physical address readable across the SATP transition. Read the scalar
+    // field directly because this function still runs with MMU disabled;
+    // calling the validated Rust record parser would access the virtual stack
+    // protector guard before the identity page table is installed.
+    let cpu_meta_paddr = unsafe {
+        core::ptr::read((cpu_boot_info_paddr + super::boot::CPU_META_PADDR_OFFSET) as *const usize)
+    };
     let meta = unsafe { &*(cpu_meta_paddr as *const PerCpuMeta) };
     let v_sp = meta.stack_top_virt - super::boot::STACK_SIZE;
     let v_entry = meta.entry_virt;
