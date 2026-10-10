@@ -820,6 +820,18 @@ async fn boot_smoke(
     }
     let binding = serde_json::json!({"serial_id": observed["serial"]["serial_id"], "binding_id": binding_id, "mode": if bound { "bound" } else { "direct" }});
     let continue_url = format!("http://127.0.0.1:{port}/api/v1/serial/continue");
+    let malformed = client
+        .post(&continue_url)
+        .header("X-Boot-Epoch", &epoch)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body("{")
+        .send()
+        .await?;
+    ensure!(
+        malformed.status() == reqwest::StatusCode::BAD_REQUEST,
+        "malformed serial binding was not rejected as bad request: {}",
+        malformed.status()
+    );
     for _ in 0..2 {
         let granted = client
             .post(&continue_url)

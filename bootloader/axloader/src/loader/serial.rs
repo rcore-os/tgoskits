@@ -26,6 +26,7 @@ pub struct SerialBeacon {
     force_parameters: bool,
     frame: Vec<u8>,
     offset: usize,
+    write_failed: bool,
     pub state: Rc<RefCell<LoaderSerialStatus>>,
 }
 impl SerialBeacon {
@@ -60,6 +61,7 @@ impl SerialBeacon {
             force_parameters,
             frame,
             offset: 0,
+            write_failed: false,
             state: Rc::new(RefCell::new(LoaderSerialStatus {
                 serial_id,
                 ready,
@@ -70,15 +72,20 @@ impl SerialBeacon {
         }
     }
     pub fn progress(&mut self) {
-        if !self.state.borrow().ready || self.state.borrow().binding.is_some() {
+        if self.state.borrow().binding.is_some() {
             self.offset = 0;
+            return;
+        }
+        if self.handle.is_none() || self.timer.is_none() {
             return;
         }
         let due = self
             .timer
             .as_ref()
             .is_some_and(|event| boot::check_event(event).is_ok());
-        if self.offset == 0 && !due {
+        // A failed write is retried on the next beacon tick. Successful partial
+        // writes continue immediately so the frame remains bounded and timely.
+        if (self.offset == 0 || self.write_failed) && !due {
             return;
         }
         let Some(handle) = self.handle else {
@@ -97,11 +104,18 @@ impl SerialBeacon {
                 if self.offset == self.frame.len() {
                     self.offset = 0;
                 }
+                if self.write_failed {
+                    let mut state = self.state.borrow_mut();
+                    state.ready = true;
+                    state.error = None;
+                    self.write_failed = false;
+                }
             }
             Err(error) => {
                 let mut state = self.state.borrow_mut();
                 state.ready = false;
                 state.error = Some(format!("UART write failed: {error:?}"));
+                self.write_failed = true;
             }
         }
     }

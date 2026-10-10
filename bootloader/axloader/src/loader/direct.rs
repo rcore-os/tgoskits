@@ -506,15 +506,14 @@ impl<'a> Connection<'a> {
                 return Ok(Action::None);
             };
             let body = self.read_body(length, initial)?;
-            let result = serde_json::from_slice::<httpboot_protocol::SerialBinding>(&body)
-                .map_err(|_| ())
-                .and_then(|binding| {
-                    boot_server
-                        .serial
-                        .borrow_mut()
-                        .grant(binding)
-                        .map_err(|_| ())
-                });
+            let binding = match serde_json::from_slice::<httpboot_protocol::SerialBinding>(&body) {
+                Ok(binding) => binding,
+                Err(_) => {
+                    self.reply("400 Bad Request", br#"{"error":"invalid_serial_binding"}"#)?;
+                    return Ok(Action::None);
+                }
+            };
+            let result = boot_server.serial.borrow_mut().grant(binding);
             let status =
                 serde_json::to_vec(&*boot_server.serial.borrow()).map_err(|_| Status::ABORTED)?;
             self.reply(
