@@ -64,7 +64,18 @@ impl Owner {
             ControlMessage::Interrupt(event) => {
                 let Some(run) = self.run.as_ref() else { return };
                 if let Err(error) = run.services.submit_interrupt(event) {
-                    self.record_failure(error);
+                    if matches!(
+                        error,
+                        AxVmError::StaleRun { .. } | AxVmError::EntryClosed { .. }
+                    ) {
+                        // A producer can finish publishing while this run is
+                        // closing. Its event is already outside the admission
+                        // window and cannot affect the successor run, so it is
+                        // an idempotent completion rather than a VM failure.
+                        log::debug!("ignoring stale controller event: {error}");
+                    } else {
+                        self.record_failure(error);
+                    }
                 }
             }
             ControlMessage::RunStop { run, reason } => {

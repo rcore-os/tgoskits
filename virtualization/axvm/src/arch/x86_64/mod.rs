@@ -5,7 +5,7 @@
 
 use std::{
     arch::asm,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, Weak,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -1068,6 +1068,10 @@ pub(super) struct X86DeliveryPort {
     /// Lower controller state read from hard-IRQ forwarding hooks. Fixed bounded
     /// storage, no allocation, wake, IPI or callback while guarded.
     forwarding: RawSpinLock<irq::X86IoApicForwardingState>,
+    /// Source identities retained for guest EOI completion. The key is the
+    /// vCPU/vector pair used by the local APIC exit; the queue preserves the
+    /// delivery order when several IOAPIC sources share one vector.
+    eoi_sources: Mutex<BTreeMap<(usize, u8), VecDeque<InterruptSourceId>>>,
     /// Monotonic delivery identity shared by the task-side EOI producer and
     /// controller owner. Saturation is retained rather than wrapping so a
     /// retired token can never alias a later delivery.
@@ -1087,6 +1091,7 @@ impl X86DeliveryPort {
             }),
             binding,
             forwarding: RawSpinLock::new(irq::X86IoApicForwardingState::new()),
+            eoi_sources: Mutex::new(BTreeMap::new()),
             delivery_sequence: AtomicU64::new(1),
         }
     }
@@ -1131,8 +1136,8 @@ impl X86DeliveryPort {
         interrupt: IoApicInterrupt,
         source: InterruptSourceId,
     ) -> AxVmResult {
-        signals
-            .publish(
+        let created = signals
+            .publish_with_status(
                 target_vcpu_id,
                 PendingVcpuInterrupt {
                     id: VirtualInterruptId(interrupt.vector.into()),
@@ -1145,6 +1150,9 @@ impl X86DeliveryPort {
                 },
             )
             .map_err(|error| AxVmError::interrupt("publish x86 interrupt", error))?;
+        if created {
+            self.remember_delivery(target_vcpu_id, interrupt.vector, source);
+        }
         signals
             .kick(target_vcpu_id)
             .map_err(|error| AxVmError::interrupt("kick x86 vCPU", error))
@@ -1160,6 +1168,28 @@ impl X86DeliveryPort {
 
     fn end_of_interrupt(&self, vector: u8) -> Option<x86_vlapic::IoApicEoi> {
         self.wired.ioapic.end_of_interrupt(vector)
+    }
+
+    fn end_of_interrupt_for_gsi(&self, gsi: usize) -> Option<x86_vlapic::IoApicEoi> {
+        self.wired.ioapic.end_of_interrupt_for_gsi(gsi)
+    }
+
+    fn remember_delivery(&self, vcpu_id: usize, vector: u8, source: InterruptSourceId) {
+        let mut sources = self.eoi_sources.lock_unpoisoned();
+        sources
+            .entry((vcpu_id, vector))
+            .or_default()
+            .push_back(source);
+    }
+
+    fn take_delivery_source(&self, vcpu_id: usize, vector: u8) -> Option<InterruptSourceId> {
+        let mut sources = self.eoi_sources.lock_unpoisoned();
+        let key = (vcpu_id, vector);
+        let source = sources.get_mut(&key).and_then(VecDeque::pop_front);
+        if sources.get(&key).is_some_and(VecDeque::is_empty) {
+            sources.remove(&key);
+        }
+        source
     }
 
     fn source_for_vector(&self, vector: u8) -> Option<InterruptSourceId> {
@@ -1214,8 +1244,9 @@ pub(crate) fn apply_interrupt_event(
         .services()
         .require::<X86InterruptDomainRuntimeKey>()
         .map_err(|error| AxVmError::device("resolve x86 interrupt owner", error))?;
+    // Preserve the concrete error class so the lifecycle owner can treat a
+    // stale completion or a guest-reprogrammed source as an idempotent no-op.
     InterruptControllerOwner::apply_source(owner.as_ref(), event)
-        .map_err(|error| AxVmError::interrupt("apply x86 interrupt event", error))
 }
 
 impl ServiceKey for X86InterruptDomainRuntimeKey {
@@ -1374,20 +1405,35 @@ impl InterruptControllerOwner for X86InterruptDomain {
     type Error = AxVmError;
 
     fn apply_source(&self, event: SourceEvent) -> AxVmResult {
+        let is_eoi = matches!(event, SourceEvent::Eoi { .. });
         let epoch = match event {
             SourceEvent::Pulse { epoch, .. }
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let signals = self
-            .port
-            .current_signals()
-            .ok_or_else(|| AxVmError::interrupt("submit x86 interrupt", "no active run"))?;
+        let Some(signals) = self.port.current_signals() else {
+            // A completion arriving while the run is being retired has no
+            // guest state left to update. Teardown owns host forwarding lease
+            // retirement, so treating this completion as already complete is
+            // the idempotent result.
+            return if is_eoi {
+                Ok(())
+            } else {
+                Err(AxVmError::interrupt(
+                    "submit x86 interrupt",
+                    "no active run",
+                ))
+            };
+        };
         if signals.epoch() != epoch {
-            return Err(AxVmError::StaleRun {
-                expected: epoch.run(),
-                current: Some(signals.run_id()),
-            });
+            return if is_eoi {
+                Ok(())
+            } else {
+                Err(AxVmError::StaleRun {
+                    expected: epoch.run(),
+                    current: Some(signals.run_id()),
+                })
+            };
         }
 
         let source = match event {
@@ -1425,31 +1471,26 @@ impl InterruptControllerOwner for X86InterruptDomain {
             }
             SourceEvent::Eoi { token, .. } => {
                 if token.target.run != epoch.run || !signals.is_current_instance(token.target) {
-                    return Err(AxVmError::invalid_input(
-                        "complete x86 interrupt",
-                        "delivery token belongs to another run or vCPU activation",
-                    ));
+                    // A late EOI from a retired activation is harmless. The
+                    // source ledger and forwarding teardown are run-bound, so
+                    // it must never fail the replacement run.
+                    return Ok(());
                 }
-                let vector = self.port.vector_for_gsi(gsi).ok_or_else(|| {
-                    AxVmError::invalid_input(
-                        "complete x86 interrupt",
-                        "GSI is masked or unconfigured",
-                    )
-                })?;
-                if let Some(completion) = self.port.end_of_interrupt(vector) {
-                    irq::rearm_forwarded_host_gsi_after_eoi(
-                        &self.port,
-                        completion.gsi,
-                        completion.pending,
-                    );
-                    if let Some(interrupt) = completion.pending {
-                        self.port.publish_interrupt(
-                            &signals,
-                            token.target.vcpu_id,
-                            interrupt,
-                            source,
-                        )?;
-                    }
+                let completion = self.port.end_of_interrupt_for_gsi(gsi);
+                irq::rearm_forwarded_host_gsi_after_eoi(
+                    &self.port,
+                    gsi,
+                    completion.as_ref().and_then(|eoi| eoi.pending),
+                );
+                if let Some(completion) = completion
+                    && let Some(interrupt) = completion.pending
+                {
+                    self.port.publish_interrupt(
+                        &signals,
+                        token.target.vcpu_id,
+                        interrupt,
+                        source,
+                    )?;
                 }
             }
         }

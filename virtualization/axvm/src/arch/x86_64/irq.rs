@@ -12,7 +12,9 @@ use crate::{
         AxvmX86Vcpu, X86DeliveryPort, X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
     },
-    irq::model::{DeliveryToken, InterruptControllerEndpoint, SourceEvent},
+    irq::model::{
+        DeliveryToken, InterruptControllerEndpoint, InterruptControllerOwner, SourceEvent,
+    },
     services::{RunServices, RunSignals},
     sync::MutexExt,
 };
@@ -600,31 +602,54 @@ pub fn inject_pending_ioapic_irq_after_eoi(services: &RunServices, vcpu_id: usiz
     let Some(signals) = domain.delivery_port().current_signals() else {
         return;
     };
-    let Some(source) = domain.delivery_port().source_for_vector(vector) else {
+    let port = domain.delivery_port();
+    let source = port.take_delivery_source(vcpu_id, vector).or_else(|| {
+        // LAPIC vectors that were injected before the source ledger was
+        // installed (or vectors from an emulated local source) retain the
+        // old best-effort lookup. IOAPIC deliveries always take the first
+        // branch, so a guest RTE rewrite cannot change their source.
+        let source = port.source_for_vector(vector);
+        if source.is_some() {
+            warn!("using current x86 IOAPIC route for untracked EOI vector {vector:#x}");
+        }
+        source
+    });
+    let Some(source) = source else {
         return;
     };
-    let Some(context) = crate::task::current_task_context() else {
-        warn!("dropping x86 EOI {vector:#x}: no owning vCPU task context");
+    let Some(instance) = signals.current_instance(vcpu_id) else {
+        // The run is already retiring this vCPU. Its host forwarding leases are
+        // retired by the lifecycle owner, so there is no live guest delivery
+        // to complete here.
+        warn!("ignoring x86 EOI {vector:#x}: vCPU {vcpu_id} is not active");
         return;
     };
-    if context.instance.vcpu_id != vcpu_id || context.instance.run != signals.run_id() {
+    if instance.run != signals.run_id() {
         warn!(
-            "dropping x86 EOI {vector:#x}: task instance {:?} does not match vCPU {vcpu_id}",
-            context.instance
+            "ignoring x86 EOI {vector:#x}: vCPU instance {:?} belongs to another run",
+            instance
         );
         return;
     }
-    let port = domain.delivery_port();
     let event = SourceEvent::Eoi {
         epoch: signals.epoch(),
         token: DeliveryToken {
             source,
-            target: context.instance,
+            target: instance,
             sequence: port.next_delivery_sequence(),
         },
     };
     if let Err(error) = InterruptControllerEndpoint::submit(domain.as_ref(), event) {
-        warn!("failed to queue x86 IOAPIC EOI for vector {vector:#x}: {error:?}");
+        // EOI is a completion edge, so a full/closed deferred queue must not
+        // silently leave remote-IRR or a forwarded host GSI latched. This path
+        // is task context after the vCPU backend has been unloaded; applying
+        // the same owner operation synchronously is the bounded recovery.
+        warn!(
+            "failed to queue x86 IOAPIC EOI for vector {vector:#x}: {error:?}; applying directly"
+        );
+        if let Err(error) = InterruptControllerOwner::apply_source(domain.as_ref(), event) {
+            warn!("failed to complete x86 IOAPIC EOI for vector {vector:#x}: {error:?}");
+        }
     }
 }
 
@@ -999,6 +1024,10 @@ mod tests {
         }
 
         fn end_of_interrupt(&self, _vector: u8) -> Option<x86_vlapic::IoApicEoi> {
+            None
+        }
+
+        fn end_of_interrupt_for_gsi(&self, _gsi: usize) -> Option<x86_vlapic::IoApicEoi> {
             None
         }
     }

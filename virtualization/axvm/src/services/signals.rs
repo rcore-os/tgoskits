@@ -48,17 +48,23 @@ const IRQ_CLOSED_BIT: usize = 1usize << (usize::BITS - 1);
 const IRQ_INFLIGHT_MASK: usize = !IRQ_CLOSED_BIT;
 const POLL_OWNER_NONE: usize = usize::MAX;
 const CONTROLLER_EVENT_CAPACITY: usize = 64;
+// EOI completion is a separate fixed ingress.  A run can retain one
+// acknowledged controller source for every source identity accepted by the
+// architecture-specific vCPU queue, while unrelated device pulses are being
+// drained.  Keeping this bound separate means a burst of ordinary events can
+// never consume the slots needed to retire an already delivered interrupt.
+const CONTROLLER_EOI_CAPACITY: usize = INTERRUPT_SOURCE_CAPACITY;
 
-struct ControllerEventQueue {
-    entries: [Option<SourceEvent>; CONTROLLER_EVENT_CAPACITY],
+struct ControllerEventQueue<const CAPACITY: usize> {
+    entries: [Option<SourceEvent>; CAPACITY],
     head: usize,
     len: usize,
 }
 
-impl ControllerEventQueue {
+impl<const CAPACITY: usize> ControllerEventQueue<CAPACITY> {
     const fn new() -> Self {
         Self {
-            entries: [None; CONTROLLER_EVENT_CAPACITY],
+            entries: [None; CAPACITY],
             head: 0,
             len: 0,
         }
@@ -104,7 +110,8 @@ pub(crate) struct RunSignals {
     irq_state: AtomicUsize,
     irq_pending: AtomicUsize,
     irq_notify: IrqNotification,
-    controller_events: RawSpinLock<ControllerEventQueue>,
+    controller_events: RawSpinLock<ControllerEventQueue<CONTROLLER_EVENT_CAPACITY>>,
+    controller_eoi_events: RawSpinLock<ControllerEventQueue<CONTROLLER_EOI_CAPACITY>>,
     control: OnceLock<Weak<ControlShared>>,
 }
 
@@ -148,6 +155,7 @@ impl RunSignals {
             irq_pending: AtomicUsize::new(0),
             irq_notify: IrqNotification::new(),
             controller_events: RawSpinLock::new(ControllerEventQueue::new()),
+            controller_eoi_events: RawSpinLock::new(ControllerEventQueue::new()),
             control: OnceLock::new(),
         }))
     }
@@ -167,7 +175,12 @@ impl RunSignals {
     /// worker drains it in task context and posts to the lifecycle owner.
     pub(crate) fn publish_controller_event(&self, event: SourceEvent) -> Result<(), SignalError> {
         let producer = IrqProducerGuard::new(self)?;
-        let result = self.controller_events.lock_irqsave().push(event);
+        let result = match event {
+            SourceEvent::Eoi { .. } => self.controller_eoi_events.lock_irqsave().push(event),
+            SourceEvent::Pulse { .. } | SourceEvent::Level { .. } => {
+                self.controller_events.lock_irqsave().push(event)
+            }
+        };
         drop(producer);
         if result.is_ok() {
             self.irq_notify.notify();
@@ -176,8 +189,9 @@ impl RunSignals {
     }
 
     pub(crate) fn drain_controller_events(&self) -> Vec<SourceEvent> {
-        let mut output = Vec::with_capacity(CONTROLLER_EVENT_CAPACITY);
+        let mut output = Vec::with_capacity(CONTROLLER_EVENT_CAPACITY + CONTROLLER_EOI_CAPACITY);
         self.controller_events.lock_irqsave().drain(&mut output);
+        self.controller_eoi_events.lock_irqsave().drain(&mut output);
         output
     }
 
@@ -246,6 +260,17 @@ impl RunSignals {
             .is_some_and(|slot| slot.is_registered(instance))
     }
 
+    /// Returns the activation currently registered for one vCPU.
+    ///
+    /// This is a task-side snapshot used to stamp a controller completion with
+    /// the exact target activation. It never exposes the wake target or any
+    /// upper-layer service.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn current_instance(&self, vcpu_id: usize) -> Option<VcpuInstance> {
+        self.slot(vcpu_id)
+            .and_then(crate::runtime::queue::VcpuSignalSlot::current_instance)
+    }
+
     /// Binds one vCPU activation to its fixed wake and entry target.
     ///
     /// Task-context only. A closed run rejects new registrations, and a slot
@@ -308,6 +333,20 @@ impl RunSignals {
         self.publish_queued(vcpu_id, interrupt.into())
     }
 
+    /// Publishes one source and reports whether it created a new queue entry.
+    ///
+    /// Controller owners use this result to retain one EOI source identity per
+    /// actual delivery. Coalesced duplicate sources must not create a second
+    /// completion token.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn publish_with_status(
+        &self,
+        vcpu_id: usize,
+        interrupt: PendingVcpuInterrupt,
+    ) -> Result<bool, SignalError> {
+        self.publish_queued_with_status(vcpu_id, interrupt.into())
+    }
+
     /// Publishes one concrete architecture interrupt source into the run queue.
     ///
     /// The queue belongs to the run and the vCPU identity, not to one activation,
@@ -328,11 +367,36 @@ impl RunSignals {
         vcpu_id: usize,
         interrupt: QueuedVcpuInterrupt,
     ) -> Result<(), SignalError> {
+        self.publish_queued_with_status(vcpu_id, interrupt)
+            .map(|_| ())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn publish_queued_with_status(
+        &self,
+        vcpu_id: usize,
+        interrupt: QueuedVcpuInterrupt,
+    ) -> Result<bool, SignalError> {
         let Some(slot) = self.slot(vcpu_id) else {
             return Err(SignalError::InvalidTarget);
         };
         let producer = IrqProducerGuard::new(self)?;
-        let result = slot.publish(interrupt).map(|_created| ());
+        let result = slot.publish(interrupt);
+        drop(producer);
+        result
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn publish_queued_with_status(
+        &self,
+        vcpu_id: usize,
+        interrupt: QueuedVcpuInterrupt,
+    ) -> Result<bool, SignalError> {
+        let Some(slot) = self.slot(vcpu_id) else {
+            return Err(SignalError::InvalidTarget);
+        };
+        let producer = IrqProducerGuard::new(self)?;
+        let result = slot.publish(interrupt);
         drop(producer);
         result
     }
@@ -682,11 +746,15 @@ impl Iterator for SetBits {
 mod tests {
     use std::sync::Arc;
 
+    use axdevice_base::InterruptControllerId;
+
     use super::*;
     use crate::{
         HostWaitQueueHandle, InterruptTriggerMode,
         identity::{RunId, VcpuInstance, VmKey},
-        irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
+        irq::model::{
+            DeliveryToken, InterruptSourceId, PendingVcpuInterrupt, SourceEvent, VirtualInterruptId,
+        },
         vcpu::VcpuSignals,
     };
 
@@ -709,6 +777,38 @@ mod tests {
             source: None,
         }
         .into()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn eoi_ingress_is_not_consumed_by_ordinary_controller_burst() {
+        let run = run_signals(1);
+        let source = InterruptSourceId::new(InterruptControllerId::new(0), 4, None);
+        for sequence in 0..CONTROLLER_EVENT_CAPACITY {
+            run.publish_controller_event(SourceEvent::Pulse {
+                epoch: run.epoch(),
+                source: InterruptSourceId::new(
+                    InterruptControllerId::new(0),
+                    sequence as u32,
+                    None,
+                ),
+            })
+            .expect("ordinary controller slot should accept its fixed capacity");
+        }
+
+        run.publish_controller_event(SourceEvent::Eoi {
+            epoch: run.epoch(),
+            token: DeliveryToken {
+                source,
+                target: instance(run.run_id(), 0, 1),
+                sequence: 1,
+            },
+        })
+        .expect("EOI has an independent fixed ingress");
+
+        let events = run.drain_controller_events();
+        assert_eq!(events.len(), CONTROLLER_EVENT_CAPACITY + 1);
+        assert!(matches!(events.last(), Some(SourceEvent::Eoi { .. })));
     }
 
     /// A parked/stopped execution must return to its owner; an admitted one with

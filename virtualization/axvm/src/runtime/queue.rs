@@ -431,6 +431,20 @@ impl VcpuSignalSlot {
             .is_some_and(|registration| registration.instance == instance)
     }
 
+    /// Returns the exact activation currently bound to this slot.
+    ///
+    /// This is used by task-side EOI completion when the caller does not have
+    /// to rely on a task extension being present. The returned identity is a
+    /// snapshot; the caller must still validate it at the owner boundary.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn current_instance(&self) -> Option<VcpuInstance> {
+        self.state
+            .lock_irqsave()
+            .registration
+            .as_ref()
+            .map(|registration| registration.instance)
+    }
+
     /// Publishes one source into this vCPU's run-owned queue.
     ///
     /// The queue and the pending flag belong to the run and the vCPU identity,
