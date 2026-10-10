@@ -279,7 +279,7 @@ impl Ext4Filesystem {
     /// Flush a finite set of cached files before sealing their metadata. Page
     /// writes can request journal progress, so they must run outside `gate`.
     pub(super) fn periodic_writeback(&self) -> VfsResult<()> {
-        let pages = crate::file::writeback_filesystem_pages(self);
+        let pages = crate::file::writeback_filesystem_pages_periodic(self);
 
         // A failed page write can still have completed a valid prefix. Commit
         // that prefix as well, while returning the original page error first.

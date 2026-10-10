@@ -111,7 +111,6 @@ fn mount_background(
     (filesystem, root)
 }
 
-#[cfg(feature = "vfs")]
 #[test]
 fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
     crate::os::memory::test_support::with_test_page_provider(true, |_| {

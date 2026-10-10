@@ -25,7 +25,6 @@ struct WritebackPage {
 #[cfg(any(feature = "vfs", feature = "ext4"))]
 enum WritebackProtection {
     Required,
-    #[cfg(feature = "vfs")]
     Opportunistic,
 }
 
@@ -135,7 +134,7 @@ impl CachedFileShared {
         self.writeback_registered_pages(Some(&selected), WritebackProtection::Opportunistic)
     }
 
-    #[cfg(feature = "vfs")]
+    #[cfg(any(feature = "vfs", feature = "ext4"))]
     pub(super) fn writeback_dirty_for_periodic(&self) -> VfsResult<()> {
         let _writeback = self.writeback_lock.lock();
         self.writeback_registered_pages(None, WritebackProtection::Opportunistic)
@@ -156,7 +155,6 @@ impl CachedFileShared {
         let mut round = WritebackPages::begin(self, requested)?;
         match protection {
             WritebackProtection::Required => round.protect()?,
-            #[cfg(feature = "vfs")]
             WritebackProtection::Opportunistic => round.protect_available()?,
         }
         #[cfg(feature = "vfs")]

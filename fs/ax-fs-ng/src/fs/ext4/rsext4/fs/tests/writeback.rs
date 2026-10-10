@@ -1,16 +1,31 @@
 //! Exercise the worker's real page-to-journal boundary without starting tasks.
 
-use core::cell::Cell;
+use core::{cell::Cell, sync::atomic::AtomicBool};
 
 use axfs_ng_vfs::{CachedWriteGuard, Location, Mountpoint, NodePermission, NodeType};
 
 use super::*;
-#[cfg(not(feature = "vfs"))]
-use crate::file::{CacheMappingEndpoint, CacheMappingEvent, CacheMappingResult};
-use crate::{file::CachedFile, os::memory::test_support::with_test_page_provider};
+use crate::{
+    file::{CacheMappingEndpoint, CacheMappingEvent, CacheMappingResult, CachedFile},
+    os::memory::test_support::with_test_page_provider,
+};
 
 std::thread_local! {
     static FAIL_NEXT_WRITE: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ContendedMapping(AtomicBool);
+
+impl CacheMappingEndpoint for ContendedMapping {
+    fn publish(&self, event: CacheMappingEvent) -> CacheMappingResult {
+        match event {
+            CacheMappingEvent::WritebackProtect(_) if self.0.load(Ordering::Acquire) => {
+                CacheMappingResult::Busy
+            }
+            CacheMappingEvent::WritebackProtect(_) => CacheMappingResult::Protected,
+            CacheMappingEvent::Evict(_) => CacheMappingResult::Retired,
+        }
+    }
 }
 
 struct WriteFaultGuard;
@@ -57,6 +72,15 @@ fn periodic_writeback_flushes_cached_overwrites_only_on_its_own_mount() {
         assert!(!first.lock().dirty);
         assert!(!second.lock().dirty);
 
+        let endpoint = Arc::new(ContendedMapping(AtomicBool::new(true)));
+        let endpoint_ref: Arc<dyn CacheMappingEndpoint> = endpoint.clone();
+        first_file.install_mapping_endpoint(&endpoint_ref).unwrap();
+        assert_eq!(first_file.sync(false), Err(VfsError::ResourceBusy));
+        assert_eq!(first.periodic_writeback(), Ok(()));
+        assert_backing_bytes(&first_file, b"start");
+        assert_eq!(first_file.dirty_pages_in_range(0, 1).unwrap(), [0]);
+
+        endpoint.0.store(false, Ordering::Release);
         first.periodic_writeback().unwrap();
 
         assert_backing_bytes(&first_file, b"first");

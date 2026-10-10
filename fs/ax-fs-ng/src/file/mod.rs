@@ -21,7 +21,9 @@ pub use cache::{
 #[cfg(feature = "vfs")]
 pub use cache::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 #[cfg(feature = "ext4")]
-pub(crate) use cache::{retire_filesystem_cache, writeback_filesystem_pages};
+pub(crate) use cache::{
+    retire_filesystem_cache, writeback_filesystem_pages, writeback_filesystem_pages_periodic,
+};
 pub use handle::{File, FileBackend};
 pub use open::{FileFlags, OpenOptions, OpenResult};
 pub use page::{CachedPageBacking, CachedPageBytes, PageCache};

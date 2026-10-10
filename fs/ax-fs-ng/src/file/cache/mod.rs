@@ -1363,9 +1363,27 @@ pub(crate) use tests::BusyDirtyCachedFile;
 /// Flushes this filesystem's buffered pages before the filesystem commits metadata.
 #[cfg(feature = "ext4")]
 pub(crate) fn writeback_filesystem_pages(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    writeback_filesystem_pages_with(
+        filesystem,
+        CachedFileShared::writeback_dirty_for_global_sync,
+    )
+}
+
+/// Leaves contended pages dirty for a later periodic pass. Explicit sync and
+/// unmount continue to require protection of every selected page.
+#[cfg(feature = "ext4")]
+pub(crate) fn writeback_filesystem_pages_periodic(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    writeback_filesystem_pages_with(filesystem, CachedFileShared::writeback_dirty_for_periodic)
+}
+
+#[cfg(feature = "ext4")]
+fn writeback_filesystem_pages_with(
+    filesystem: &dyn FilesystemOps,
+    writeback: fn(&CachedFileShared) -> VfsResult<()>,
+) -> VfsResult<()> {
     #[cfg(feature = "vfs")]
     {
-        reclaim::sync_filesystem_cached_files(filesystem)
+        reclaim::writeback_cached_files(Some(filesystem), writeback)
     }
     #[cfg(not(feature = "vfs"))]
     {
@@ -1377,7 +1395,7 @@ pub(crate) fn writeback_filesystem_pages(filesystem: &dyn FilesystemOps) -> VfsR
             .collect();
         let mut first_error = None;
         for file in files {
-            if let Err(error) = file.writeback_dirty_for_global_sync() {
+            if let Err(error) = writeback(&file) {
                 first_error.get_or_insert(error);
             }
         }
