@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.8.1...axfs-ng-vfs-v0.8.2) - 2026-10-10
+
+### Added
+
+- *(net)* implement TUN/TAP virtual network devices ([#1566](https://github.com/rcore-os/tgoskits/pull/1566))
+- *(media)* support UVC through V4L2 and usbfs ([#2219](https://github.com/rcore-os/tgoskits/pull/2219))
+
+### Other
+
+- *(ax-fs-ng)* move cache IO outside locks and share private file pages ([#2524](https://github.com/rcore-os/tgoskits/pull/2524))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.8.0...axfs-ng-vfs-v0.8.1) - 2026-09-22
 
 ### Added

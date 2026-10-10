@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.40](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.39...starryos-v0.5.40) - 2026-10-10
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+
 ## [0.5.39](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.38...starryos-v0.5.39) - 2026-09-22
 
 ### Other

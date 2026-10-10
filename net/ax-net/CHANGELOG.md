@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.13.6...ax-net-v0.14.0) - 2026-10-10
+
+### Added
+
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+- *(ax-net)* expose per-queue state and net:* tracepoint events ([#2559](https://github.com/rcore-os/tgoskits/pull/2559))
+- *(net)* implement TUN/TAP virtual network devices ([#1566](https://github.com/rcore-os/tgoskits/pull/1566))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.13.6](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.13.5...ax-net-v0.13.6) - 2026-09-22
 
 ### Other

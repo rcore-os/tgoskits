@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.3.3...aic8800-v0.4.0) - 2026-10-10
+
+### Other
+
+- *(aic8800)* aggregate transmit writes and cache firmware credits ([#2547](https://github.com/rcore-os/tgoskits/pull/2547))
+
 ## [0.3.3](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.3.2...aic8800-v0.3.3) - 2026-09-18
 
 ### Other

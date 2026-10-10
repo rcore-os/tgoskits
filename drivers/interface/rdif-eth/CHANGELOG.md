@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.6.0...rdif-eth-v0.6.1) - 2026-10-10
+
+### Added
+
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.5.0...rdif-eth-v0.6.0) - 2026-09-09
 
 ### Fixed

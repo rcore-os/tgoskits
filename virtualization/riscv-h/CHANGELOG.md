@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.11...riscv-h-v0.4.12) - 2026-10-10
+
+### Other
+
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.4.11](https://github.com/rcore-os/tgoskits/compare/riscv-h-v0.4.10...riscv-h-v0.4.11) - 2026-09-09
 
 ### Other

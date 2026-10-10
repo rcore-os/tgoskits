@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.1...axbuild-v0.10.0) - 2026-10-10
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(axloader)* automate serial binding for network boots ([#2585](https://github.com/rcore-os/tgoskits/pull/2585))
+- *(intel-hda)* integrate portable PCM playback and QEMU output validation ([#2563](https://github.com/rcore-os/tgoskits/pull/2563))
+- *(axloader)* adopt Linux EFI initrd protocol ([#2591](https://github.com/rcore-os/tgoskits/pull/2591))
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+- *(acpica-interpreter)* add caller-owned AML execution backend ([#2562](https://github.com/rcore-os/tgoskits/pull/2562))
+- *(axvisor)* support board guests and preserve firmware identities ([#2502](https://github.com/rcore-os/tgoskits/pull/2502))
+- *(axloader)* serve HTTP boot with A/B OTA recovery ([#2535](https://github.com/rcore-os/tgoskits/pull/2535))
+- *(virtio-gpu)* async fire-and-forget submission with real fences ([#2536](https://github.com/rcore-os/tgoskits/pull/2536))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(starry)* migrate network throughput tests to ostool HTTP ([#2529](https://github.com/rcore-os/tgoskits/pull/2529))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+- *(axbuild)* run one Starry LTP case in QEMU ([#2495](https://github.com/rcore-os/tgoskits/pull/2495))
+
+### Fixed
+
+- *(axvisor)* repair three broken nightly board cases ([#2597](https://github.com/rcore-os/tgoskits/pull/2597))
+- *(axbuild)* run prebuilds without qemu-user ([#2539](https://github.com/rcore-os/tgoskits/pull/2539))
+- *(nvme-driver)* decode namespace formats and enforce transfer limits ([#2565](https://github.com/rcore-os/tgoskits/pull/2565))
+- *(axbuild)* match Linux PCI ECAM resource name ([#2523](https://github.com/rcore-os/tgoskits/pull/2523))
+
+### Other
+
+- *(ci)* narrow incremental clippy selection ([#2603](https://github.com/rcore-os/tgoskits/pull/2603))
+- *(ci)* unify board builds and initramfs staging ([#2590](https://github.com/rcore-os/tgoskits/pull/2590))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* move nightly cases to apps/axvisor ([#2586](https://github.com/rcore-os/tgoskits/pull/2586))
+- *(ci)* reuse axbuild artifacts across test cases ([#2584](https://github.com/rcore-os/tgoskits/pull/2584))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- Unified performance test cases, showing the daily build performance change graph ([#2504](https://github.com/rcore-os/tgoskits/pull/2504))
+- *(gpu)* move all control-queue waits out of the device lock ([#2557](https://github.com/rcore-os/tgoskits/pull/2557))
+- *(sg2002)* drop the stale host initramfs claim from the device trees ([#2548](https://github.com/rcore-os/tgoskits/pull/2548))
+- *(axbuild)* retain functional tests and remove parameter cases ([#2496](https://github.com/rcore-os/tgoskits/pull/2496))
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.0...axbuild-v0.9.1) - 2026-09-22
 
 ### Added

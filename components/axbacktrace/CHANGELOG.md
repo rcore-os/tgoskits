@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.12...axbacktrace-v0.5.0) - 2026-10-10
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.11...axbacktrace-v0.4.12) - 2026-09-13
 
 ### Added

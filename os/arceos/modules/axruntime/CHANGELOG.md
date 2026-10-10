@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.6](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.5...ax-runtime-v0.13.6) - 2026-10-10
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+
+### Fixed
+
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+
+### Other
+
+- *(ax-fs-ng)* move cache IO outside locks and share private file pages ([#2524](https://github.com/rcore-os/tgoskits/pull/2524))
+- *(ci)* unify board builds and initramfs staging ([#2590](https://github.com/rcore-os/tgoskits/pull/2590))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.13.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.4...ax-runtime-v0.13.5) - 2026-09-22
 
 ### Fixed

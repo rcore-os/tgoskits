@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-display-v0.7.0...ax-display-v0.8.0) - 2026-10-10
+
+### Other
+
+- *(gpu)* move all control-queue waits out of the device lock ([#2557](https://github.com/rcore-os/tgoskits/pull/2557))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-display-v0.6.11...ax-display-v0.7.0) - 2026-09-22
 
 ### Added

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/someboot-v0.7.2...someboot-v0.7.3) - 2026-10-10
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(axloader)* adopt Linux EFI initrd protocol ([#2591](https://github.com/rcore-os/tgoskits/pull/2591))
+- *(axloader)* serve HTTP boot with A/B OTA recovery ([#2535](https://github.com/rcore-os/tgoskits/pull/2535))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+
+### Other
+
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/someboot-v0.7.1...someboot-v0.7.2) - 2026-09-22
 
 ### Other

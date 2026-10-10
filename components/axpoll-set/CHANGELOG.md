@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2](https://github.com/rcore-os/tgoskits/compare/axpoll-set-v0.1.1...axpoll-set-v0.1.2) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.1.1](https://github.com/rcore-os/tgoskits/compare/axpoll-set-v0.1.0...axpoll-set-v0.1.1) - 2026-09-09
 
 ### Fixed

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.2...axvisor-v0.9.0) - 2026-10-10
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+- *(axvisor)* support board guests and preserve firmware identities ([#2502](https://github.com/rcore-os/tgoskits/pull/2502))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* run 24 virtio-net peers across OrangePi cores ([#2498](https://github.com/rcore-os/tgoskits/pull/2498))
+- *(axvisor)* replace OrangePi 5 Plus task switch benchmark ([#2549](https://github.com/rcore-os/tgoskits/pull/2549))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.1...axvisor-v0.8.2) - 2026-09-22
 
 ### Fixed
