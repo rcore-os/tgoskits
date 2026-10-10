@@ -397,7 +397,7 @@ fn run_owner(
         crate::HostWaitQueueHandle::new(),
     );
     let mut task = VcpuTask::new(
-        OwnedVcpuEngine::<CurrentArch>::new(backend),
+        OwnedVcpuEngine::<CurrentArch>::new(Box::new(backend)),
         entry,
         ArchitectureExitHandler::<CurrentArch>::new(port.instance.vcpu_id),
         services,
@@ -490,7 +490,7 @@ fn run_owner(
                 control.post_event(VcpuEvent::Exited {
                     instance: port.instance,
                     outcome: VcpuExitOutcome::Fault(error),
-                    backend: Box::new(backend),
+                    backend,
                 });
                 return;
             }
@@ -627,6 +627,6 @@ fn run_owner(
     control.post_event(VcpuEvent::Exited {
         instance: port.instance,
         outcome,
-        backend: Box::new(backend),
+        backend,
     });
 }
