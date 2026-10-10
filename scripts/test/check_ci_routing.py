@@ -125,17 +125,27 @@ def main() -> int:
 
     matrix_step = named_step_block(plan_ci, "Plan check matrices")
     runner_trust_step = named_step_block(plan_ci, "Record runner trust")
-    for fragment, message, contract in (
+    for fragment, message in (
+        (
+            "repository-owner: ${{ github.repository_owner }}",
+            "runner planning must receive the workflow repository owner",
+        ),
         (
             "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
             "runner planning must receive the pull request head repository",
-            matrix_step,
         ),
         (
-            '--head-repository "$HEAD_REPOSITORY"',
-            "runner planning must distinguish fork pull requests",
-            matrix_step,
+            "base-ref: ${{ github.base_ref }}",
+            "runner planning must receive the pull request base revision",
         ),
+        (
+            "since-ref: ${{ steps.since.outputs.since_ref }}",
+            "runner planning must receive the incremental base revision",
+        ),
+    ):
+        require_contains(errors, matrix_step, fragment, message)
+
+    for fragment, message, contract in (
         (
             "ACTOR: ${{ github.actor }}",
             "runner trust evidence must record the workflow actor",
@@ -158,15 +168,7 @@ def main() -> int:
         ),
     ):
         if fragment not in contract:
-            legacy = {
-                "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}":
-                    "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
-                '--head-repository "$HEAD_REPOSITORY"':
-                    "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
-            }.get(fragment)
-            if legacy is None or legacy not in contract:
-                errors.append(message)
-
+            errors.append(message)
 
     route_step = named_step_block(plan_ci, "Route duplicate events")
     if not route_step:
@@ -278,28 +280,29 @@ def main() -> int:
                     "push events must remain canonical and must not be disabled by PR state"
                 )
 
-    for fragments, message in (
+    for fragment, message in (
         (
-            ('--repository-owner "$REPOSITORY_OWNER"',
-             "repository-owner: ${{ github.repository_owner }}"),
-            "runner planning must use the workflow repository owner",
+            '--repository-owner "$REPOSITORY_OWNER"',
+            "the ci-plan action must forward the workflow repository owner",
         ),
         (
-            ('--since-ref "$SINCE_REF"',
-             "since-ref: ${{ steps.since.outputs.since_ref }}"),
-            "the planner must receive the incremental base revision",
+            'args+=(--head-repository "$HEAD_REPOSITORY")',
+            "the ci-plan action must forward the pull request head repository",
         ),
         (
-            ('--summary-file "$GITHUB_STEP_SUMMARY"',
-             "GITHUB_STEP_SUMMARY"),
-            "the planner must publish its impact summary",
+            'args+=(--base-ref "$BASE_REF")',
+            "the ci-plan action must forward the pull request base revision",
+        ),
+        (
+            'args+=(--since-ref "$SINCE_REF")',
+            "the ci-plan action must forward the incremental base revision",
+        ),
+        (
+            'args+=(--summary-file "$GITHUB_STEP_SUMMARY")',
+            "the ci-plan action must forward the impact summary path",
         ),
     ):
-        if not any(
-            fragment in matrix_step or fragment in ci_plan_action
-            for fragment in fragments
-        ):
-            errors.append(message)
+        require_contains(errors, ci_plan_action, fragment, message)
 
     for fragment, message in (
         (
@@ -845,6 +848,18 @@ def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
     def is_build_file(relative: Path) -> bool:
         return relative.name.startswith("build-") and relative.suffix == ".toml"
 
+    def build_arch(relative: Path) -> str:
+        return relative.name.removeprefix("build-").split("-", 1)[0].removesuffix("gc")
+
+    def qemu_arches(directory: Path) -> set[str]:
+        arches = set()
+        for path in directory.rglob("qemu-*.toml"):
+            stem = path.stem.removeprefix("qemu-")
+            if stem.endswith("-benchmark"):
+                stem = stem.removesuffix("-benchmark")
+            arches.add(stem.split("-", 1)[0].removesuffix("gc"))
+        return arches
+
     def is_variant_file(relative: Path) -> bool:
         return (
             relative.name == "README.md"
@@ -908,6 +923,22 @@ def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
             for path in benchmark_dir.rglob("*")
             if path.is_file() and is_build_file(path.relative_to(benchmark_dir))
         }
+        shared_qemu_arches = qemu_arches(smoke_dir) & qemu_arches(benchmark_dir)
+        for relative in sorted(
+            smoke_build_files ^ benchmark_build_files,
+            key=lambda path: path.as_posix(),
+        ):
+            if build_arch(relative) not in shared_qemu_arches:
+                continue
+            present_path = (
+                smoke_dir / relative
+                if relative in smoke_build_files
+                else benchmark_dir / relative
+            )
+            errors.append(
+                "missing mirrored benchmark payload file: "
+                f"{present_path.relative_to(workspace_root).as_posix()}"
+            )
         for relative in sorted(smoke_build_files & benchmark_build_files):
             smoke_path = smoke_dir / relative
             benchmark_path = benchmark_dir / relative

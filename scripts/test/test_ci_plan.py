@@ -526,8 +526,16 @@ class CiPlanTests(unittest.TestCase):
             (case / "src").mkdir(parents=True)
             (case / "build-x86_64-unknown-none.toml").write_text("features = []\n")
             (case / "qemu-x86_64.toml").write_text("args = []\n")
+            second_case = root / "test-suit/arceos/drivers/packet-datagram"
+            (second_case / "src").mkdir(parents=True)
+            (second_case / "build-x86_64-unknown-none.toml").write_text(
+                "features = []\n"
+            )
+            (second_case / "qemu-x86_64.toml").write_text("args = []\n")
             source = "test-suit/arceos/drivers/packet-link/src/main.rs"
             (root / source).write_text("fn main() {}\n")
+            second_source = "test-suit/arceos/drivers/packet-datagram/src/main.rs"
+            (root / second_source).write_text("fn main() {}\n")
             registration = {"kind": "arceos-qemu", "arch": "x86_64", "group": "drivers"}
             checks = [{"id": "driver-suite", "name": "drivers", "suite": [registration]}]
 
@@ -537,7 +545,17 @@ class CiPlanTests(unittest.TestCase):
                     [{**registration, "group": []}], "synthetic"
                 )
             ci_plan.validate_suite_catalog(root, checks)
-            selection, = ci_plan.resolve_suite_selections(root, checks, [source])
+            selections = ci_plan.resolve_suite_selections(
+                root, checks, [source, second_source]
+            )
+            self.assertEqual(
+                {selection.source_path for selection in selections},
+                {source, second_source},
+            )
+            self.assertEqual(len({selection.row_id for selection in selections}), 2)
+            selection = next(
+                selection for selection in selections if selection.source_path == source
+            )
             self.assertEqual(selection.template_id, "driver-suite")
             self.assertEqual(
                 selection.command,
@@ -573,6 +591,36 @@ class CiPlanTests(unittest.TestCase):
             "cargo xtask arceos test qemu --arch x86_64 "
             "--test-group cpu --test-case guest-entry-vmx",
         )
+
+    def test_board_suite_changes_share_one_build_configuration_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            wrapper = root / "test-suit/starryos/board-demo"
+            (wrapper / "build-aarch64-unknown-none-softfloat.toml").parent.mkdir(
+                parents=True
+            )
+            (wrapper / "build-aarch64-unknown-none-softfloat.toml").write_text(
+                "features = []\n"
+            )
+            first = wrapper / "first/board-demo.toml"
+            second = wrapper / "second/board-demo.toml"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            first.write_text("board = 'demo'\n")
+            second.write_text("board = 'demo'\n")
+            registration = {"kind": "starry-board", "board": "demo"}
+            checks = [{"id": "board-suite", "name": "Board demo", "suite": [registration]}]
+            ci_plan.validate_suite_catalog(root, checks)
+
+            sources = [
+                first.relative_to(root).as_posix(),
+                second.relative_to(root).as_posix(),
+            ]
+            selections = ci_plan.resolve_suite_selections(root, checks, sources)
+
+            self.assertEqual(len(selections), 1)
+            self.assertEqual(selections[0].template_id, "board-suite")
+            self.assertIn("first,second", selections[0].command)
 
     def test_cpu_pmu_board_routes_to_its_actual_case(self) -> None:
         path = "test-suit/arceos/board-orangepi-5-plus/pmu/board-orangepi-5-plus.toml"
@@ -737,6 +785,47 @@ command = "true"
         )
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
+
+    def test_precise_board_input_does_not_select_same_os_qemu(self) -> None:
+        catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
+        board_check = next(
+            check
+            for check in catalog
+            if any(
+                registration["kind"].endswith("-board")
+                for registration in check.get("suite", ())
+            )
+        )
+        board_registration = next(
+            registration
+            for registration in board_check["suite"]
+            if registration["kind"].endswith("-board")
+        )
+        os_name = board_registration["kind"].partition("-")[0]
+        board = board_registration["board"]
+        qemu_ids = {
+            check["id"]
+            for check in catalog
+            if any(
+                registration["kind"] == f"{os_name}-qemu"
+                for registration in check.get("suite", ())
+            )
+        }
+        self.assertTrue(qemu_ids)
+
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="precise board input fixture",
+                changed_paths=(),
+                input_selections=(f"{os_name}:board:{board}",),
+            ),
+        )
+        rows = self.assert_unique_ids(main_test_rows(ci_plan.build_main_plan(context)))
+
+        self.assertIn(board_check["id"], rows)
+        self.assertTrue(qemu_ids.isdisjoint(rows))
 
     def test_dualguest_robot_board_is_not_scheduled(self) -> None:
         rows = self.assert_unique_ids(
@@ -1068,6 +1157,12 @@ command = "true"
             check["id"]: check
             for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
+        declared_groups = {
+            check["resource_group"]
+            for check in catalog.values()
+            if check.get("resource_group")
+        }
+        board_groups: dict[str, set[str]] = {}
         for row in (*main_rows, *nightly_rows, *benchmark_rows):
             check = catalog[row["id"]]
             boards = {
@@ -1077,12 +1172,41 @@ command = "true"
             }
             if boards:
                 self.assertIn("board", row["runs_on"])
+                for board in boards:
+                    board_groups.setdefault(board, set()).add(
+                        row["resource_group"]
+                    )
+                possible_groups = set.intersection(
+                    *(
+                        {
+                            group
+                            for group in declared_groups
+                            if board == group or board.startswith(f"{group}-")
+                        }
+                        for board in boards
+                    )
+                )
+                if possible_groups:
+                    self.assertTrue(
+                        row["resource_group"],
+                        f"board checks must declare a resource group: {boards}",
+                    )
+                    self.assertIn(row["resource_group"], possible_groups)
+                else:
+                    self.assertEqual(row["resource_group"], "")
                 self.assertEqual(
                     row["resource_group"], check.get("resource_group", "")
                 )
             else:
                 self.assertNotIn("board", row["runs_on"])
                 self.assertEqual(row["resource_group"], "")
+
+        for board, groups in board_groups.items():
+            self.assertLessEqual(
+                len(groups),
+                1,
+                f"one registered board must use one resource group: {board}",
+            )
 
     def test_event_and_boolean_input_select_checks_independently(self) -> None:
         check = {"events": ["schedule"], "enable_boolean_input": "run_optional"}

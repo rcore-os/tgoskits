@@ -63,11 +63,12 @@ class PerformanceUpdateCollectionTests(unittest.TestCase):
             reports = root / "reports"
             reports.mkdir()
             (reports / "broken.json").write_text("{", encoding="utf-8")
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "invalid performance report"):
                 ci_perf_updates.load_report_metrics(reports)
 
+            (reports / "broken.json").unlink()
             write_report(reports, "object.json", {"name": "bad"})
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "must contain a JSON array"):
                 ci_perf_updates.load_report_metrics(reports)
 
     def test_metric_shape_is_checked_before_upload(self) -> None:

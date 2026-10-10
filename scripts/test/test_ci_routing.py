@@ -66,6 +66,10 @@ class MirroredPayloadTests(unittest.TestCase):
             (benchmark / "build-x86_64-unknown-none.toml").write_text(
                 "features = []\n", encoding="utf-8"
             )
+            (smoke / "qemu-x86_64.toml").write_text("{}\n", encoding="utf-8")
+            (benchmark / "qemu-x86_64-benchmark.toml").write_text(
+                "{}\n", encoding="utf-8"
+            )
 
             self.assertEqual(check_mirrored_payload_consistency(root), [])
             (benchmark / "build-x86_64-unknown-none.toml").write_text(
@@ -74,6 +78,10 @@ class MirroredPayloadTests(unittest.TestCase):
             errors = check_mirrored_payload_consistency(root)
             self.assertEqual(len(errors), 1)
             self.assertIn("build-x86_64-unknown-none.toml", errors[0])
+            (benchmark / "build-x86_64-unknown-none.toml").unlink()
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("missing mirrored benchmark payload file", errors[0])
 
 
 class ReleasePrerequisiteTests(unittest.TestCase):
@@ -152,6 +160,42 @@ class RunnerTrustTests(unittest.TestCase):
         condition = mapping_block(job.replace("if: >-", "if:"), "if", 4)
         self.assertIn("github.event_name == 'push'", condition)
         self.assertNotIn("rcore-os", condition)
+
+
+class PlannerContractTests(unittest.TestCase):
+    def test_plan_inputs_are_bound_to_action_forwarding(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        plan_job = mapping_block(workflow, "plan_ci", 2)
+        matrix_step = named_step_block(plan_job, "Plan check matrices")
+        action = (WORKSPACE_ROOT / ".github/actions/ci-plan/action.yml").read_text(
+            encoding="utf-8"
+        )
+
+        for fragment in (
+            "repository-owner: ${{ github.repository_owner }}",
+            "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            "base-ref: ${{ github.base_ref }}",
+            "since-ref: ${{ steps.since.outputs.since_ref }}",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, matrix_step)
+        for fragment in (
+            '--repository-owner "$REPOSITORY_OWNER"',
+            'args+=(--head-repository "$HEAD_REPOSITORY")',
+            'args+=(--base-ref "$BASE_REF")',
+            'args+=(--since-ref "$SINCE_REF")',
+            'args+=(--summary-file "$GITHUB_STEP_SUMMARY")',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, action)
+
+    def test_ci_test_discovery_rejects_a_zero_test_run(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        step = named_step_block(
+            mapping_block(workflow, "plan_ci", 2), "Validate CI configuration"
+        )
+        self.assertIn('test_log="$RUNNER_TEMP/ci-tests.log"', step)
+        self.assertRegex(step, r"grep -Eq '\^Ran \[1-9\]\[0-9\]\* tests\? in '")
 
 
 class ConcurrencyRoutingTests(unittest.TestCase):
