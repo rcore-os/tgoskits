@@ -370,9 +370,8 @@ Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔�
 C、分组 C 和 Rust 资产通过 `write_cross_bin_wrappers()` 统一选择 binutils：优先使用
 qemu-user 执行 staging root 内的工具，否则使用宿主原生 `<gnu_tool_prefix>-<tool>`
 交叉工具。原生模式仍需要目标 sysroot；缺少任一所需工具会在构建前失败。
-`prebuild.sh` 仍由 `prepare_guest_prebuild_env()` 要求 qemu-user，不能因为缺少模拟器
-而跳过脚本或依赖其产物的测试。当前 `qemu/system` 有共享 prebuild，仍需要 qemu-user；
-完整套件应在具备该能力的 Linux 环境执行。
+`prebuild.sh` 始终在目标 Alpine 环境执行：优先使用 qemu-user，缺少时使用目标
+`qemu-system-*` 和 9P 挂载执行同一脚本；失败必须传播，不得跳过脚本或测试。
 
 ## QEMU TOML
 
@@ -453,7 +452,8 @@ set -eu
 apk add zlib-dev
 ```
 
-`prebuild.sh` 通过 qemu-user 在 staging rootfs 中执行。可用环境变量包括：
+`prebuild.sh` 在目标 Alpine 环境中执行；宿主无 qemu-user 时由 axbuild 使用对应的
+qemu-system 和 rootfs 内核。可用环境变量包括：
 
 - `STARRY_STAGING_ROOT`
 - `STARRY_CASE_DIR`

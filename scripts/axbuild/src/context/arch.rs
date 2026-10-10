@@ -17,11 +17,22 @@ pub(crate) struct CrossCompileSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinuxQemuSpec {
+    pub(crate) binary: &'static str,
+    pub(crate) machine: &'static str,
+    pub(crate) cpu: Option<&'static str>,
+    pub(crate) console: &'static str,
+    pub(crate) network_device: &'static str,
+    pub(crate) kernel_args: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ArchSpec {
     pub(crate) arch: &'static str,
     pub(crate) target: &'static str,
     pub(crate) default_rootfs_image: &'static str,
     pub(crate) cross_compile: CrossCompileSpec,
+    pub(crate) linux_qemu: LinuxQemuSpec,
 }
 
 const ARCH_SPECS: &[ArchSpec] = &[
@@ -38,6 +49,14 @@ const ARCH_SPECS: &[ArchSpec] = &[
             gnu_tool_prefix: "aarch64-linux-musl",
             qemu_user_binaries: &["qemu-aarch64-static", "qemu-aarch64"],
         },
+        linux_qemu: LinuxQemuSpec {
+            binary: "qemu-system-aarch64",
+            machine: "virt",
+            cpu: Some("cortex-a72"),
+            console: "ttyAMA0",
+            network_device: "virtio-net-pci",
+            kernel_args: &[],
+        },
     },
     ArchSpec {
         arch: "x86_64",
@@ -51,6 +70,14 @@ const ARCH_SPECS: &[ArchSpec] = &[
             guest_tool_dir: "usr/x86_64-alpine-linux-musl/bin",
             gnu_tool_prefix: "x86_64-linux-musl",
             qemu_user_binaries: &["qemu-x86_64-static", "qemu-x86_64"],
+        },
+        linux_qemu: LinuxQemuSpec {
+            binary: "qemu-system-x86_64",
+            machine: "q35",
+            cpu: None,
+            console: "ttyS0",
+            network_device: "virtio-net-pci",
+            kernel_args: &["nox2apic", "no_timer_check"],
         },
     },
     ArchSpec {
@@ -66,6 +93,14 @@ const ARCH_SPECS: &[ArchSpec] = &[
             gnu_tool_prefix: "riscv64-linux-musl",
             qemu_user_binaries: &["qemu-riscv64-static", "qemu-riscv64"],
         },
+        linux_qemu: LinuxQemuSpec {
+            binary: "qemu-system-riscv64",
+            machine: "virt",
+            cpu: None,
+            console: "ttyS0",
+            network_device: "virtio-net-pci",
+            kernel_args: &[],
+        },
     },
     ArchSpec {
         arch: "loongarch64",
@@ -79,6 +114,14 @@ const ARCH_SPECS: &[ArchSpec] = &[
             guest_tool_dir: "usr/loongarch64-alpine-linux-musl/bin",
             gnu_tool_prefix: "loongarch64-linux-musl",
             qemu_user_binaries: &["qemu-loongarch64-static", "qemu-loongarch64"],
+        },
+        linux_qemu: LinuxQemuSpec {
+            binary: "qemu-system-loongarch64",
+            machine: "virt",
+            cpu: Some("la464"),
+            console: "ttyS0",
+            network_device: "e1000e",
+            kernel_args: &["earlycon=uart8250,mmio,0x1fe001e0,115200"],
         },
     },
 ];
@@ -133,6 +176,12 @@ pub(crate) fn cross_compile_spec_for_arch_checked(arch: &str) -> anyhow::Result<
                  `{arch}`"
             )
         })
+}
+
+pub(crate) fn linux_qemu_spec_for_arch_checked(arch: &str) -> anyhow::Result<LinuxQemuSpec> {
+    arch_spec(arch).map(|spec| spec.linux_qemu).ok_or_else(|| {
+        anyhow!("unsupported architecture `{arch}`; expected: {SUPPORTED_ARCH_VALUES}")
+    })
 }
 
 pub(crate) fn resolve_starry_arch_and_target(

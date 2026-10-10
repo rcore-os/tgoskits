@@ -1,27 +1,19 @@
 use super::*;
 
-pub(super) fn prepare_guest_prebuild_env(
-    arch: &str,
+pub(super) fn prepare_guest_prebuild_env_with_runner(
     case: &TestQemuCase,
     layout: &case_assets::CaseAssetLayout,
+    qemu_runner: &Path,
     extra_script_envs: Vec<(String, String)>,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<GuestPrebuildEnv> {
-    let qemu_runner =
-        find_host_binary_candidates(qemu_user_binary_names(arch)?).with_context(|| {
-            format!(
-                "case `{}` requires qemu-user to run prebuild.sh; native cross binutils cannot \
-                 execute guest scripts",
-                case.display_name,
-            )
-        })?;
-    write_guest_command_wrappers(layout, &qemu_runner)?;
+    write_guest_command_wrappers(layout, qemu_runner)?;
 
     let mut script_envs = case_script_envs(case, layout, config);
     script_envs.extend(extra_script_envs);
 
     Ok(GuestPrebuildEnv {
-        qemu_runner,
+        qemu_runner: qemu_runner.to_path_buf(),
         script_envs,
     })
 }

@@ -80,7 +80,7 @@ flowchart TD
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 ```
 
-该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `test-task-switch-convert` 在持续集成中以同一命令运行它。板卡运行入口只接受 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 同时出现，纯算术测试通过并不代表板卡测量通过。
+该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口只接受 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 同时出现，纯算术测试通过并不代表板卡测量通过。
 
 ## 4. 目录布局与用例发现
 

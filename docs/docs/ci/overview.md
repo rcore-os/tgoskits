@@ -42,7 +42,7 @@ flowchart TD
 | ------------- | ----------------------------- | ------------------------------------------ |
 | `Plan CI`   | 工作流事件、Git 历史、CI 配置 | 来源限制、push/PR 去重、配置契约、影响分析 |
 | `Preflight` | `static.toml`               | 格式、软件包发布预检、增量同步检查         |
-| `Workspace` | `workspace.toml`            | Clippy、std 白名单测试、qperf 专项测试     |
+| `Workspace` | `workspace.toml`            | Clippy、std 白名单测试及同批附加回归       |
 | `ArceOS`    | `arceos.toml`、独立测试声明 | QEMU 套件、启动与 SMP 场景、相关内核测试   |
 | `Starry`    | `starry.toml`               | QEMU 套件、内核测试、已注册板卡测试        |
 | `AxVisor`   | `axvisor.toml`              | QEMU、KVM 虚拟化场景及已注册板卡测试       |
