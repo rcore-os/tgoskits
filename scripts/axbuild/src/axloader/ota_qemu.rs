@@ -759,16 +759,20 @@ async fn boot_smoke(
         .await?;
     let binding_id = "1234567890abcdef1234567890abcdef";
     let bound = scenario.name == "no-options";
+    let frame = if bound {
+        let id = observed["serial"]["serial_id"]
+            .as_str()
+            .context("missing UART ID")?;
+        format!("AXLOADER-SERIAL/1 {id}")
+    } else {
+        String::new()
+    };
     if bound {
         ensure!(
             observed["serial"]["ready"] == true,
             "firmware UART unavailable: {}",
             observed["serial"]
         );
-        let id = observed["serial"]["serial_id"]
-            .as_str()
-            .context("missing UART ID")?;
-        let frame = format!("AXLOADER-SERIAL/1 {id}");
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
@@ -807,6 +811,50 @@ async fn boot_smoke(
             granted.status().is_success(),
             "serial continue failed: {}",
             granted.text().await?
+        );
+    }
+    if bound {
+        let revoked = client
+            .delete(format!(
+                "http://127.0.0.1:{port}/api/v1/serial/bindings/{binding_id}"
+            ))
+            .header("X-Boot-Epoch", &epoch)
+            .send()
+            .await?;
+        ensure!(
+            revoked.status() == reqwest::StatusCode::OK,
+            "serial binding revoke failed: {}",
+            revoked.text().await?
+        );
+        let status_url = format!("http://127.0.0.1:{port}/api/v1/status");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let value: serde_json::Value = client
+                .get(&status_url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if value["serial"]["binding"].is_null() {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "serial binding was not revoked: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let regranted = client
+            .post(&continue_url)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&binding)
+            .send()
+            .await?;
+        ensure!(
+            regranted.status().is_success(),
+            "serial continue after revoke failed: {}",
+            regranted.text().await?
         );
     }
     let wrong = client

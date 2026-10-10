@@ -19,6 +19,8 @@ use uefi::{
     runtime::{self, VariableVendor},
 };
 
+use super::serial_path::console_matches;
+
 pub struct SerialBeacon {
     handle: Option<Handle>,
     timer: Option<Event>,
@@ -257,58 +259,4 @@ fn default_serial_parameters() -> SerialParameters {
         stop_bits: SerialStopBits::One,
         flow_control: SerialFlowControl::None,
     }
-}
-/// Match complete device-path nodes; UART attributes may use firmware defaults.
-fn console_matches(console: &[u8], serial: &[u8]) -> bool {
-    let Some(serial_nodes) = nodes(serial) else {
-        return false;
-    };
-    let Some(console_nodes) = nodes(console) else {
-        return false;
-    };
-    let prefix = serial_nodes
-        .into_iter()
-        .take_while(|n| n[0] != 0x7f)
-        .collect::<Vec<_>>();
-    if prefix.is_empty() {
-        return false;
-    }
-    let mut start = 0;
-    for (end, node) in console_nodes.iter().enumerate() {
-        if node[0] != 0x7f {
-            continue;
-        }
-        let instance = &console_nodes[start..end];
-        if instance.len() >= prefix.len()
-            && prefix.iter().zip(instance).all(|(a, b)| {
-                if a.len() != b.len() {
-                    false
-                } else if a[0] == 3 && a[1] == 14 {
-                    b[0] == 3 && b[1] == 14
-                } else {
-                    a == b
-                }
-            })
-            && instance[prefix.len()..]
-                .iter()
-                .all(|n| n[0] == 3 && n[1] == 10)
-        {
-            return true;
-        }
-        start = end + 1;
-    }
-    false
-}
-fn nodes(mut bytes: &[u8]) -> Option<Vec<&[u8]>> {
-    let mut result = Vec::new();
-    while !bytes.is_empty() {
-        let head = bytes.get(..4)?;
-        let size = u16::from_le_bytes([head[2], head[3]]) as usize;
-        if size < 4 {
-            return None;
-        }
-        result.push(bytes.get(..size)?);
-        bytes = bytes.get(size..)?;
-    }
-    Some(result)
 }

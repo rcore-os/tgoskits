@@ -515,13 +515,15 @@ impl<'a> Connection<'a> {
                         .grant(binding)
                         .map_err(|_| ())
                 });
+            let status =
+                serde_json::to_vec(&*boot_server.serial.borrow()).map_err(|_| Status::ABORTED)?;
             self.reply(
                 if result.is_ok() {
                     "200 OK"
                 } else {
                     "409 Conflict"
                 },
-                &serde_json::to_vec(&*boot_server.serial.borrow()).map_err(|_| Status::ABORTED)?,
+                &status,
             )?;
             return Ok(Action::None);
         }

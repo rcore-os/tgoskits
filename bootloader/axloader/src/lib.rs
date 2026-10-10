@@ -1,6 +1,5 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 
-#[cfg(target_os = "uefi")]
 extern crate alloc;
 
 #[cfg(any(windows, unix))]
@@ -9,6 +8,10 @@ pub mod elf_image;
 pub mod integrity;
 pub mod ota;
 pub mod smbios;
+
+#[cfg(test)]
+#[path = "loader/serial_path.rs"]
+mod serial_path;
 
 #[cfg(any(windows, unix))]
 pub use elf_image::{
