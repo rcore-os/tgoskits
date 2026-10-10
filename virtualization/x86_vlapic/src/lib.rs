@@ -61,14 +61,14 @@ pub struct EmulatedLocalApic<H: host::X86VlapicHostOps> {
 
 pub use self::{
     host::{X86VlapicHostOps, X86VlapicRuntimeOps},
-    pit::{EmulatedPit, PitCore, PitTimerPlan},
+    pit::EmulatedPit,
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
         X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerAction,
         X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     },
-    vioapic::{EmulatedIoApic, IoApicCore, IoApicEoi, IoApicInterrupt, IoApicOwner},
-    vpic::{EmulatedPic, PicCore, PicInterruptClaim, PicOwner},
+    vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
+    vpic::{EmulatedPic, PicInterruptClaim},
 };
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {

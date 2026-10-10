@@ -121,12 +121,8 @@ pub trait VcpuLocalInterrupts {
     fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error>;
     /// Injects one pending source into this vCPU's local state.
     fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error>;
-    /// Applies one guest EOI to the local state.
-    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error>;
     /// Saves local state after guest execution.
     fn save_exit(&mut self) -> Result<Self::Completion, Self::Error>;
-    /// Resets local state for a new run epoch.
-    fn reset(&mut self);
 }
 
 /// Owner-facing endpoint for one shared peripheral interrupt controller.
@@ -162,16 +158,12 @@ pub trait VcpuLocalTimer {
     /// Error returned by the architecture timer backend.
     type Error;
 
-    /// Arms the local timer at an architecture-defined deadline.
-    fn arm(&mut self, deadline: u64) -> Result<(), Self::Error>;
     /// Quiesces the timer while preserving guest-visible state.
     fn suspend(&mut self) -> Result<(), Self::Error>;
     /// Resumes a suspended timer.
     fn resume(&mut self) -> Result<(), Self::Error>;
     /// Cancels the timer and retires its host callback.
     fn cancel(&mut self) -> Result<(), Self::Error>;
-    /// Consumes one or more expiries published by the host ingress.
-    fn consume_expiry(&mut self) -> bool;
 }
 
 /// Fixed atomic ingress for one vCPU-owned host timer.
@@ -200,13 +192,17 @@ impl VcpuTimerIngress {
     }
 
     /// Opens a new timer activation and returns its generation.
-    pub fn arm(&self) -> u64 {
+    ///
+    /// Once the bounded generation space is exhausted, the ingress is closed
+    /// and the caller must retire the timer instead of reusing a generation
+    /// that an old callback could still carry.
+    pub fn arm(&self) -> Option<u64> {
         self.transition(true)
     }
 
     /// Closes the ingress and retires callbacks from the current generation.
-    pub fn close(&self) {
-        let _ = self.transition(false);
+    pub fn close(&self) -> bool {
+        self.transition(false).is_some()
     }
 
     /// Publishes one expiry from a host callback.
@@ -217,11 +213,15 @@ impl VcpuTimerIngress {
         let expected_generation = generation;
         loop {
             let current = self.state.load(Ordering::Acquire);
-            if current & Self::ACCEPTING == 0
-                || Self::generation(current) != expected_generation
-                || current & Self::PENDING_MASK == Self::PENDING_MASK
-            {
+            if current & Self::ACCEPTING == 0 || Self::generation(current) != expected_generation {
                 return false;
+            }
+            // A saturated counter still represents an accepted edge. The
+            // owner will consume the saturated batch before the next timer
+            // activation; treating saturation as a stale callback would stop
+            // a valid periodic timer permanently.
+            if current & Self::PENDING_MASK == Self::PENDING_MASK {
+                return true;
             }
             if self
                 .state
@@ -256,17 +256,40 @@ impl VcpuTimerIngress {
         }
     }
 
+    /// Consumes expiries from the currently published generation.
+    pub fn take_current_expiries(&self) -> u64 {
+        let generation = Self::generation(self.state.load(Ordering::Acquire));
+        self.take_expiries(generation)
+    }
+
     fn generation(state: u64) -> u64 {
         (state >> Self::GENERATION_SHIFT) & Self::GENERATION_MASK
     }
 
-    fn transition(&self, accepting: bool) -> u64 {
+    fn transition(&self, accepting: bool) -> Option<u64> {
         loop {
             let current = self.state.load(Ordering::Acquire);
-            let generation = Self::generation(current)
+            let Some(generation) = Self::generation(current)
                 .checked_add(1)
                 .filter(|next| *next <= Self::GENERATION_MASK)
-                .unwrap_or_else(|| panic!("vCPU timer generation exhausted"));
+            else {
+                // Do not reuse the last generation: an old callback carrying
+                // it must remain stale forever. Closing admission is the only
+                // safe recovery once the bounded identity space is exhausted.
+                if self
+                    .state
+                    .compare_exchange_weak(
+                        current,
+                        current & !Self::ACCEPTING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    return None;
+                }
+                continue;
+            };
             let next = (generation << Self::GENERATION_SHIFT)
                 | if accepting { Self::ACCEPTING } else { 0 };
             if self
@@ -274,7 +297,7 @@ impl VcpuTimerIngress {
                 .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                return generation;
+                return Some(generation);
             }
         }
     }
@@ -327,13 +350,13 @@ mod tests {
     #[test]
     fn timer_ingress_counts_edges_and_rejects_stale_callbacks() {
         let ingress = VcpuTimerIngress::new();
-        let old = ingress.arm();
+        let old = ingress.arm().expect("initial generation must be available");
         assert!(ingress.publish_expiry(old));
         assert!(ingress.publish_expiry(old));
         assert_eq!(ingress.take_expiries(old), 2);
 
         ingress.close();
-        let current = ingress.arm();
+        let current = ingress.arm().expect("second generation must be available");
         assert!(!ingress.publish_expiry(old));
         assert!(!ingress.publish_expiry(VcpuTimerIngress::GENERATION_MASK + 1));
         assert_eq!(
@@ -342,6 +365,38 @@ mod tests {
         );
         assert!(ingress.publish_expiry(current));
         assert_eq!(ingress.take_expiries(current), 1);
+    }
+
+    #[test]
+    fn timer_ingress_saturation_keeps_the_callback_live() {
+        let ingress = VcpuTimerIngress::new();
+        let generation = ingress.arm().expect("generation must be available");
+        ingress.state.store(
+            (generation << VcpuTimerIngress::GENERATION_SHIFT)
+                | VcpuTimerIngress::ACCEPTING
+                | VcpuTimerIngress::PENDING_MASK,
+            Ordering::Release,
+        );
+
+        assert!(ingress.publish_expiry(generation));
+        assert_eq!(
+            ingress.take_expiries(generation),
+            VcpuTimerIngress::PENDING_MASK
+        );
+    }
+
+    #[test]
+    fn timer_ingress_exhaustion_closes_without_panicking() {
+        let ingress = VcpuTimerIngress::new();
+        ingress.state.store(
+            (VcpuTimerIngress::GENERATION_MASK << VcpuTimerIngress::GENERATION_SHIFT)
+                | VcpuTimerIngress::ACCEPTING,
+            Ordering::Release,
+        );
+
+        assert_eq!(ingress.arm(), None);
+        assert!(!ingress.publish_expiry(VcpuTimerIngress::GENERATION_MASK));
+        assert_eq!(ingress.take_current_expiries(), 0);
     }
 
     #[test]

@@ -147,7 +147,6 @@ pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
     host_virtual_timer_intid: u32,
     frequency: u64,
     registered: AtomicBool,
-    pending_expiries: Arc<AtomicU64>,
     wait_state: Arc<Aarch64TimerWaitState>,
     scheduled: RawSpinLock<Option<ScheduledWaitTimer>>,
     host_activation: RawSpinLock<Option<HostTimerActivation>>,
@@ -172,7 +171,6 @@ impl Aarch64TimerBinding {
             host_virtual_timer_intid,
             frequency,
             registered: AtomicBool::new(false),
-            pending_expiries: Arc::new(AtomicU64::new(0)),
             wait_state: Arc::new(Aarch64TimerWaitState::new()),
             scheduled: RawSpinLock::new(None),
             host_activation: RawSpinLock::new(None),
@@ -290,7 +288,6 @@ impl Aarch64TimerBinding {
         let wait_token = self.wait_state.arm(deadline_counter, epoch);
         let frequency = self.frequency;
         let wait_state = Arc::clone(&self.wait_state);
-        let pending_expiries = Arc::clone(&self.pending_expiries);
         let wake = current_thread.wake_handle();
         let registration = unsafe {
             // SAFETY: the stable callback reads only the architectural counter
@@ -315,7 +312,6 @@ impl Aarch64TimerBinding {
                         return HostHardTimerAction::Rearm(Duration::from_nanos(deadline_ns));
                     }
                     if wait_state.publish_completion_for_epoch(epoch, wait_token) {
-                        pending_expiries.fetch_add(1, Ordering::Release);
                         let _result = wake.wake();
                     }
                     HostHardTimerAction::Disarm
@@ -344,12 +340,6 @@ impl Aarch64TimerBinding {
         token: Aarch64TimerWaitToken,
     ) -> bool {
         self.wait_state.is_completed(token)
-    }
-
-    /// Consumes expiries published by the hard timer callback. The callback
-    /// never enters VGIC or vCPU state; the vCPU owner drains this counter.
-    pub(in crate::arch::aarch64) fn consume_expiry(&self) -> bool {
-        self.pending_expiries.swap(0, Ordering::AcqRel) != 0
     }
 
     /// Invalidates the logical wait without calling a task-side host service.

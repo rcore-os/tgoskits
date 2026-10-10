@@ -2476,10 +2476,6 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             || self.vlapic.has_pending_timer_interrupt()
     }
 
-    pub fn take_pending_timer_interrupt(&mut self) -> Option<u8> {
-        self.vlapic.take_pending_timer_interrupt()
-    }
-
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.vlapic.handle_eoi()
     }

@@ -19,7 +19,7 @@ use crate::{
     architecture::ops::CpuOn,
     engine::{VcpuAction, WaitReason},
     host::*,
-    irq::model::{DeliveryToken, PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
+    irq::model::{PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
     runtime::{
         QueuedVcpuInterrupt,
         hvc::{GuestRequest, HyperCallAbi},
@@ -551,7 +551,6 @@ impl RiscvHostOps for AxvmRiscvHostOps {
 
 pub(crate) struct AxvmRiscvVcpu {
     backend: RiscvVcpu<AxvmRiscvHostOps>,
-    vcpu_id: usize,
 }
 
 impl AxvmRiscvVcpu {
@@ -606,33 +605,13 @@ impl VcpuLocalInterrupts for AxvmRiscvVcpu {
             .inject_interrupt(SCAUSE_INTERRUPT_BIT | interrupt.id.0 as usize)
     }
 
-    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error> {
-        if token.target.vcpu_id != self.vcpu_id
-            || token.sequence == 0
-            || token.source.controller != axdevice_base::InterruptControllerId::new(0)
-        {
-            return Err(RiscvVcpuError::InvalidInput);
-        }
-        // PLIC claim/complete is owned by the shared controller endpoint. The
-        // local IMSIC/VSEIP state has no independent guest EOI register here.
-        Ok(())
-    }
-
     fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
         Ok(())
-    }
-
-    fn reset(&mut self) {
-        self.backend.reset_local_interrupts();
     }
 }
 
 impl VcpuLocalTimer for AxvmRiscvVcpu {
     type Error = RiscvVcpuError;
-
-    fn arm(&mut self, deadline: u64) -> Result<(), Self::Error> {
-        self.backend.program_guest_timer(deadline as usize)
-    }
 
     fn suspend(&mut self) -> Result<(), Self::Error> {
         self.backend.suspend_timer()
@@ -645,10 +624,6 @@ impl VcpuLocalTimer for AxvmRiscvVcpu {
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.backend.cancel_timer()
     }
-
-    fn consume_expiry(&mut self) -> bool {
-        self.backend.consume_timer_expiry()
-    }
 }
 
 impl VmArchVcpuOps for AxvmRiscvVcpu {
@@ -657,8 +632,7 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
     type Exit = ax_cpu::virtualization::Exit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        riscv_result(RiscvVcpu::new(vm_id, vcpu_id, config))
-            .map(|backend| Self { backend, vcpu_id })
+        riscv_result(RiscvVcpu::new(vm_id, vcpu_id, config)).map(|backend| Self { backend })
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {

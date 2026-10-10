@@ -8,7 +8,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -1068,6 +1068,10 @@ pub(super) struct X86DeliveryPort {
     /// Lower controller state read from hard-IRQ forwarding hooks. Fixed bounded
     /// storage, no allocation, wake, IPI or callback while guarded.
     forwarding: RawSpinLock<irq::X86IoApicForwardingState>,
+    /// Monotonic delivery identity shared by the task-side EOI producer and
+    /// controller owner. Saturation is retained rather than wrapping so a
+    /// retired token can never alias a later delivery.
+    delivery_sequence: AtomicU64,
 }
 
 impl X86DeliveryPort {
@@ -1083,6 +1087,7 @@ impl X86DeliveryPort {
             }),
             binding,
             forwarding: RawSpinLock::new(irq::X86IoApicForwardingState::new()),
+            delivery_sequence: AtomicU64::new(1),
         }
     }
 
@@ -1155,6 +1160,20 @@ impl X86DeliveryPort {
 
     fn end_of_interrupt(&self, vector: u8) -> Option<x86_vlapic::IoApicEoi> {
         self.wired.ioapic.end_of_interrupt(vector)
+    }
+
+    fn source_for_vector(&self, vector: u8) -> Option<InterruptSourceId> {
+        (0..irq::IOAPIC_GSI_COUNT)
+            .find(|&gsi| self.vector_for_gsi(gsi) == Some(vector))
+            .map(|gsi| InterruptSourceId::new(InterruptControllerId::new(0), gsi as u32, None))
+    }
+
+    fn next_delivery_sequence(&self) -> u64 {
+        self.delivery_sequence
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(1))
+            })
+            .unwrap_or(u64::MAX)
     }
 }
 
@@ -1405,10 +1424,10 @@ impl InterruptControllerOwner for X86InterruptDomain {
                 }
             }
             SourceEvent::Eoi { token, .. } => {
-                if token.target.run != epoch.run {
+                if token.target.run != epoch.run || !signals.is_current_instance(token.target) {
                     return Err(AxVmError::invalid_input(
                         "complete x86 interrupt",
-                        "delivery token belongs to another run",
+                        "delivery token belongs to another run or vCPU activation",
                     ));
                 }
                 let vector = self.port.vector_for_gsi(gsi).ok_or_else(|| {
@@ -1417,15 +1436,20 @@ impl InterruptControllerOwner for X86InterruptDomain {
                         "GSI is masked or unconfigured",
                     )
                 })?;
-                if let Some(completion) = self.port.end_of_interrupt(vector)
-                    && let Some(interrupt) = completion.pending
-                {
-                    self.port.publish_interrupt(
-                        &signals,
-                        token.target.vcpu_id,
-                        interrupt,
-                        source,
-                    )?;
+                if let Some(completion) = self.port.end_of_interrupt(vector) {
+                    irq::rearm_forwarded_host_gsi_after_eoi(
+                        &self.port,
+                        completion.gsi,
+                        completion.pending,
+                    );
+                    if let Some(interrupt) = completion.pending {
+                        self.port.publish_interrupt(
+                            &signals,
+                            token.target.vcpu_id,
+                            interrupt,
+                            source,
+                        )?;
+                    }
                 }
             }
         }

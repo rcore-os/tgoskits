@@ -305,12 +305,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.regs.virtual_hs_csrs.hvip
     }
 
-    /// Clears all local pending bits while the backend is unloaded.  A later
-    /// bind publishes the clean image through the normal entry protocol.
-    pub(crate) fn reset_local_interrupts(&mut self) {
-        self.regs.virtual_hs_csrs.hvip = 0;
-    }
-
     /// Stops a guest timer producer while retaining its comparator deadline.
     pub(crate) fn suspend_timer(&mut self) -> RiscvVcpuResult {
         self.set_virtual_interrupt_pending(S_TIMER, false)
@@ -328,16 +322,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     pub(crate) fn cancel_timer(&mut self) -> RiscvVcpuResult {
         self.timer_deadline = None;
         self.set_virtual_interrupt_pending(S_TIMER, false)
-    }
-
-    /// Consumes one pending local timer notification.
-    pub(crate) fn consume_timer_expiry(&mut self) -> bool {
-        let bit = 1usize << GuestInterrupt::Timer as usize;
-        if self.regs.virtual_hs_csrs.hvip & bit == 0 {
-            return false;
-        }
-        let _ = self.set_virtual_interrupt_pending(S_TIMER, false);
-        true
     }
 
     /// Synchronizes controller-derived VSEIP state on the loaded owner.

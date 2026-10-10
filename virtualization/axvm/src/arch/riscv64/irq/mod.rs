@@ -96,6 +96,8 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 pub(crate) struct RiscvPlicRuntime {
     vplic: Arc<VPlicGlobal>,
     sink: Arc<RiscvPlicWiredSink>,
+    /// Task-side registration table. Hard IRQ paths use the fixed physical
+    /// ingress and never acquire this sleepable mutex.
     inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
     kick: Arc<RunKickBinding>,
     physical: Arc<physical::PhysicalIrqBridge>,

@@ -14,7 +14,7 @@ use crate::{
     },
     engine::{VcpuAction, WaitReason},
     host::*,
-    irq::model::{DeliveryToken, PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
+    irq::model::{PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
     runtime::{
         QueuedVcpuInterrupt,
         hvc::{GuestRequest, HyperCallAbi},
@@ -659,7 +659,6 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
 
 pub(crate) struct AxvmLoongArchVcpu {
     backend: LoongArchVcpu<AxvmLoongArchHostOps>,
-    vcpu_id: usize,
 }
 
 impl AxvmLoongArchVcpu {
@@ -714,33 +713,13 @@ impl VcpuLocalInterrupts for AxvmLoongArchVcpu {
         self.backend.inject_interrupt(interrupt.id.0 as usize)
     }
 
-    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error> {
-        if token.target.vcpu_id != self.vcpu_id
-            || token.sequence == 0
-            || token.source.controller != axdevice_base::InterruptControllerId::new(0)
-        {
-            return Err(LoongArchVcpuError::InvalidInput);
-        }
-        // PCH-PIC/EIOINTC acknowledge state is owned by the shared endpoint;
-        // CPUINTC has no separate guest EOI register in this backend.
-        Ok(())
-    }
-
     fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
         Ok(())
-    }
-
-    fn reset(&mut self) {
-        let _ = self.backend.quiet_timer();
     }
 }
 
 impl VcpuLocalTimer for AxvmLoongArchVcpu {
     type Error = LoongArchVcpuError;
-
-    fn arm(&mut self, deadline: u64) -> Result<(), Self::Error> {
-        self.backend.arm_timer(deadline)
-    }
 
     fn suspend(&mut self) -> Result<(), Self::Error> {
         self.backend.suspend_timer()
@@ -753,10 +732,6 @@ impl VcpuLocalTimer for AxvmLoongArchVcpu {
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.backend.quiet_timer()
     }
-
-    fn consume_expiry(&mut self) -> bool {
-        self.backend.consume_timer_expiry()
-    }
 }
 
 impl VmArchVcpuOps for AxvmLoongArchVcpu {
@@ -765,8 +740,7 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
     type Exit = LoongArchVmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        loongarch_result(LoongArchVcpu::new(vm_id, vcpu_id, config))
-            .map(|backend| Self { backend, vcpu_id })
+        loongarch_result(LoongArchVcpu::new(vm_id, vcpu_id, config)).map(|backend| Self { backend })
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {

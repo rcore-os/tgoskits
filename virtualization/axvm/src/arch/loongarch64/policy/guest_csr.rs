@@ -80,7 +80,6 @@ pub(crate) struct GuestTimerRegistration<H: LoongArchHostOps> {
     deadline_ns: Option<u64>,
     next_generation: u64,
     active_generation: Arc<AtomicU64>,
-    pending_expiries: Arc<AtomicU64>,
     run: Option<super::super::irq::LoongArchRunPort>,
 }
 
@@ -95,10 +94,6 @@ impl<H: LoongArchHostOps> fmt::Debug for GuestTimerRegistration<H> {
                 "active_generation",
                 &self.active_generation.load(Ordering::Relaxed),
             )
-            .field(
-                "pending_expiries",
-                &self.pending_expiries.load(Ordering::Relaxed),
-            )
             .field("run_bound", &self.run.is_some())
             .finish()
     }
@@ -111,7 +106,6 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
             deadline_ns: None,
             next_generation: 0,
             active_generation: Arc::new(AtomicU64::new(0)),
-            pending_expiries: Arc::new(AtomicU64::new(0)),
             run: None,
         }
     }
@@ -171,13 +165,6 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
         self.arm(deadline_ns, vm_id, vcpu_id)
     }
 
-    /// Consumes host expiries published by the timer callback. The callback
-    /// only increments this fixed counter; guest and VM state stays owned by
-    /// the vCPU task until this method is called.
-    pub(crate) fn consume_expiry(&self) -> bool {
-        self.pending_expiries.swap(0, Ordering::AcqRel) != 0
-    }
-
     /// Invalidates the live generation and retires the host registration.
     ///
     /// The generation is invalidated first so a callback that has not claimed it
@@ -230,7 +217,6 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
         let generation = self.next_generation()?;
         self.active_generation.store(generation, Ordering::Release);
         let active_generation = Arc::clone(&self.active_generation);
-        let pending_expiries = Arc::clone(&self.pending_expiries);
         // Capture the exact run capability now, so a timer that outlives its run
         // publishes into that closed run and is rejected instead of resolving a
         // newer run.
@@ -241,7 +227,6 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
                 if !claim_guest_timer_generation(&active_generation, generation) {
                     return;
                 }
-                pending_expiries.fetch_add(1, Ordering::Release);
                 let Some(run) = run.as_ref() else {
                     log::trace!(
                         "LoongArch guest timer for VM[{vm_id}] VCpu[{vcpu_id}] fired without a \

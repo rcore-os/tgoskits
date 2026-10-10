@@ -21,7 +21,7 @@ use crate::{
     ax_err,
     engine::{VcpuAction, WaitReason},
     guest_memory::GuestMemoryPort,
-    irq::model::{DeliveryToken, PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
+    irq::model::{PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
     runtime::{
         QueuedVcpuInterrupt,
         hvc::{GuestRequest, HyperCallAbi},
@@ -510,7 +510,6 @@ impl ax_cpu::virtualization::GuestHostTrap for HostGuestTrap {
 /// `unsafe impl Send`/`Sync` is added.
 pub(crate) struct AxvmArmVcpu {
     inner: ArmVcpu,
-    vcpu_id: usize,
     vgic: Option<GicV3Native>,
     vgic_binding: Option<GicV3VcpuBinding>,
     timer_binding: Option<Arc<vtimer::Aarch64TimerBinding>>,
@@ -682,7 +681,6 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(|inner| Self {
             inner,
-            vcpu_id,
             vgic: None,
             vgic_binding: None,
             timer_binding: None,
@@ -795,24 +793,15 @@ impl VcpuLocalInterrupts for AxvmArmVcpu {
     fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
         self.prepare_timer_entry()
             .map_err(|_| BackendError::InvalidState)?;
-        self.has_pending_interrupt()
-            .map_err(|_| BackendError::InvalidState)
+        // The pending query is an advisory snapshot used by the wait path.
+        // A vCPU without a currently attached VGIC bank must still be able to
+        // reach the architecture entry protocol; the binding is required only
+        // when an interrupt is actually injected or the bank is loaded.
+        Ok(self.has_pending_interrupt().unwrap_or(false))
     }
 
     fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error> {
         self.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
-    }
-
-    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error> {
-        if token.target.vcpu_id != self.vcpu_id
-            || token.sequence == 0
-            || token.source.controller != axdevice_base::InterruptControllerId::new(0)
-        {
-            return Err(BackendError::InvalidInput);
-        }
-        self.deactivate(token.source.source)
-            .map_err(|_| BackendError::InvalidState)
-            .map(|_| ())
     }
 
     fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
@@ -822,24 +811,10 @@ impl VcpuLocalInterrupts for AxvmArmVcpu {
             .ok_or(BackendError::InvalidState)?;
         vgic_backend_result(binding.save()).map(|_| ())
     }
-
-    fn reset(&mut self) {
-        if let Some(binding) = &self.timer_binding {
-            let _ = binding.reset();
-        }
-    }
 }
 
 impl VcpuLocalTimer for AxvmArmVcpu {
     type Error = BackendError;
-
-    fn arm(&mut self, _deadline: u64) -> Result<(), Self::Error> {
-        self.timer_binding
-            .as_ref()
-            .ok_or(BackendError::InvalidState)?
-            .prepare_run()
-            .map_err(|_| BackendError::InvalidState)
-    }
 
     fn suspend(&mut self) -> Result<(), Self::Error> {
         self.timer_binding
@@ -859,12 +834,6 @@ impl VcpuLocalTimer for AxvmArmVcpu {
 
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.suspend()
-    }
-
-    fn consume_expiry(&mut self) -> bool {
-        self.timer_binding
-            .as_ref()
-            .is_some_and(|binding| binding.consume_expiry())
     }
 }
 

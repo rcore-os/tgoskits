@@ -304,7 +304,10 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
     ) -> X86VlapicResult<Self::TimerHandle> {
         let signals = self.bound_signals()?;
         let wake = self.clone();
-        let generation = self.timer_ingress.arm();
+        let generation = self
+            .timer_ingress
+            .arm()
+            .ok_or(X86VlapicError::TimerUnavailable)?;
         default_host()
             .register_restartable_timer(
                 std::time::Duration::from_nanos(deadline_nanos),
@@ -332,7 +335,10 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
     ) -> X86VlapicResult<Self::TimerHandle> {
         let signals = self.bound_signals()?;
         let wake = self.clone();
-        let generation = self.timer_ingress.arm();
+        let generation = self
+            .timer_ingress
+            .arm()
+            .ok_or(X86VlapicError::TimerUnavailable)?;
         unsafe {
             // SAFETY: the vLAPIC callback publishes only atomics in its device
             // owner. This wrapper then uses the run-bound signal target; it
@@ -375,6 +381,10 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
         // reclaimed) must yield so that work can run. This never spins, and it
         // is always called outside every raw/task lock the callback needs.
         crate::host::task::yield_now();
+    }
+
+    fn consume_timer_expiries(&self) -> u64 {
+        self.timer_ingress.take_current_expiries()
     }
 }
 

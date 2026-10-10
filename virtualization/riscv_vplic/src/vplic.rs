@@ -133,11 +133,20 @@ impl VPlicGlobal {
     }
 
     /// Runs a read-only query against the owner state.
+    ///
+    /// This is a task-context operation. Callers must use the vPLIC owner or
+    /// its task-side facade; hard IRQ ingress publishes fixed atomic state and
+    /// is drained by a worker before entering this method. Do not call it while
+    /// holding a raw hardware guard, from a timer callback, or from a drop path.
     pub(crate) fn with_state<R>(&self, query: impl FnOnce(&VplicState) -> R) -> R {
         query(&self.state.lock())
     }
 
     /// Runs one complete owner transaction against the mutable state.
+    ///
+    /// The mutex is intentionally sleepable and may allocate in the supplied
+    /// transaction. Keep this boundary in task context and publish any wake or
+    /// IPI only after the transaction has returned and the lock is released.
     pub(crate) fn with_state_mut<R>(&self, update: impl FnOnce(&mut VplicState) -> R) -> R {
         let mut state = self.state.lock();
         let result = update(&mut state);

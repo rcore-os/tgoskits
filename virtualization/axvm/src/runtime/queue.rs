@@ -422,6 +422,15 @@ impl VcpuSignalSlot {
             })
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn is_registered(&self, instance: VcpuInstance) -> bool {
+        self.state
+            .lock_irqsave()
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.instance == instance)
+    }
+
     /// Publishes one source into this vCPU's run-owned queue.
     ///
     /// The queue and the pending flag belong to the run and the vCPU identity,
@@ -470,7 +479,7 @@ impl VcpuSignalSlot {
     }
 
     #[cfg(test)]
-    pub(crate) fn is_registered(&self) -> bool {
+    pub(crate) fn has_registration(&self) -> bool {
         self.state.lock_irqsave().registration.is_some()
     }
 }
@@ -691,7 +700,7 @@ mod tests {
     #[test]
     fn inactive_slot_retains_sources_until_a_matching_activation_drains() {
         let slot = VcpuSignalSlot::new();
-        assert!(!slot.is_registered());
+        assert!(!slot.has_registration());
         assert!(!slot.has_pending());
 
         // The run still owns an acknowledged controller source even though this

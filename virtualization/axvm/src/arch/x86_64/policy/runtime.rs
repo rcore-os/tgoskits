@@ -9,7 +9,7 @@ use raw_cpuid::CpuId;
 
 use crate::{
     arch::x86_64::policy::{svm::*, vmx::*, *},
-    irq::model::{DeliveryToken, PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
+    irq::model::{PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
 };
 
 const UNSELECTED: u8 = 0;
@@ -59,7 +59,6 @@ struct X86VirtualizationCapabilities {
 /// Runtime-dispatched x86 virtual CPU.
 pub struct X86Vcpu<H: X86HostOps, M: ControlMemory> {
     inner: X86VcpuInner<H, M>,
-    vcpu_id: usize,
 }
 
 enum X86VcpuInner<H: X86HostOps, M: ControlMemory> {
@@ -103,13 +102,11 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
             (X86VirtualizationBackend::Vmx, VcpuControlMemory::Vmx(memory)) => {
                 VmxVcpu::new_with_config(vm_id, vcpu_id, config, memory, xstate).map(|inner| Self {
                     inner: X86VcpuInner::Vmx(inner),
-                    vcpu_id,
                 })
             }
             (X86VirtualizationBackend::Svm, VcpuControlMemory::Svm(memory)) => {
                 SvmVcpu::new_with_config(vm_id, vcpu_id, config, memory, xstate).map(|inner| Self {
                     inner: X86VcpuInner::Svm(inner),
-                    vcpu_id,
                 })
             }
             _ => Err(X86VcpuError::InvalidInput),
@@ -248,11 +245,6 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
         }
     }
 
-    /// Consumes one local APIC timer vector from the owner-local backend.
-    pub fn take_pending_timer_interrupt(&mut self) -> Option<u8> {
-        dispatch_vcpu!(self, take_pending_timer_interrupt)
-    }
-
     /// Handle a guest local-APIC end-of-interrupt notification.
     pub fn handle_eoi(&mut self) -> Option<u8> {
         dispatch_vcpu!(self, handle_eoi)
@@ -318,16 +310,6 @@ impl<H: X86HostOps, M: ControlMemory> VcpuLocalInterrupts for X86Vcpu<H, M> {
         )
     }
 
-    fn handle_eoi(&mut self, token: DeliveryToken) -> Result<Self::Completion, Self::Error> {
-        if token.target.vcpu_id != self.vcpu_id
-            || token.sequence == 0
-            || token.source.controller != axdevice_base::InterruptControllerId::new(0)
-        {
-            return Err(X86VcpuError::InvalidInput);
-        }
-        Ok(self.handle_eoi())
-    }
-
     fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
         // VMX/SVM capture the local APIC EOI and pending timer vector while
         // decoding the owned exit record. There is no second shared state to
@@ -335,23 +317,10 @@ impl<H: X86HostOps, M: ControlMemory> VcpuLocalInterrupts for X86Vcpu<H, M> {
         // the backend has already completed the operation.
         Ok(None)
     }
-
-    fn reset(&mut self) {
-        let _ = self.stop_timer();
-    }
 }
 
 impl<H: X86HostOps, M: ControlMemory> VcpuLocalTimer for X86Vcpu<H, M> {
     type Error = X86VcpuError;
-
-    fn arm(&mut self, _deadline: u64) -> Result<(), Self::Error> {
-        // The x86 local APIC timer is armed by guest writes to its initial
-        // count register. This method is the owner-side acknowledgement that
-        // the already programmed timer may resume; the deadline is carried by
-        // the vLAPIC register state and therefore is intentionally not
-        // reinterpreted here.
-        self.resume_timer()
-    }
 
     fn suspend(&mut self) -> Result<(), Self::Error> {
         self.suspend_timer()
@@ -363,10 +332,6 @@ impl<H: X86HostOps, M: ControlMemory> VcpuLocalTimer for X86Vcpu<H, M> {
 
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.stop_timer()
-    }
-
-    fn consume_expiry(&mut self) -> bool {
-        self.take_pending_timer_interrupt().is_some()
     }
 }
 

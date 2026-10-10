@@ -235,6 +235,17 @@ impl RunSignals {
         self.vcpu_bit(vcpu_id).is_some()
     }
 
+    /// Returns whether an exact vCPU activation is still registered.
+    ///
+    /// Controller owners use this check when completing a delivery token. The
+    /// slot lock is a leaf synchronization boundary; no VM or device service is
+    /// reached while it is held.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn is_current_instance(&self, instance: VcpuInstance) -> bool {
+        self.slot(instance.vcpu_id)
+            .is_some_and(|slot| slot.is_registered(instance))
+    }
+
     /// Binds one vCPU activation to its fixed wake and entry target.
     ///
     /// Task-context only. A closed run rejects new registrations, and a slot

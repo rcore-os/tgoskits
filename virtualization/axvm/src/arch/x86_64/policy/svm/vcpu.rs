@@ -2193,10 +2193,6 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             || self.vlapic.has_pending_timer_interrupt()
     }
 
-    pub fn take_pending_timer_interrupt(&mut self) -> Option<u8> {
-        self.vlapic.take_pending_timer_interrupt()
-    }
-
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.handle_local_apic_eoi()
     }
