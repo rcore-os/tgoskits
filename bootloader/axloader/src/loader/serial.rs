@@ -103,7 +103,10 @@ impl SerialBeacon {
         });
         match write_chunk(handle, &self.frame[self.offset..end], parameters) {
             Ok(size) => {
-                self.offset += size;
+                // A timeout reports firmware-written bytes; treat that count as
+                // a hint bounded by the bytes requested for this chunk.
+                let remaining = self.frame.len().saturating_sub(self.offset);
+                self.offset += size.min(remaining);
                 if self.offset == self.frame.len() {
                     self.offset = 0;
                 }
