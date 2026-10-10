@@ -334,15 +334,23 @@ impl TcpSocket {
         events
     }
 
-    fn poll_stream(&self) -> IoEvents {
+    fn poll_stream(&self, state: State) -> IoEvents {
+        // An unconnected socket is TCP_CLOSE with nothing shut down, which
+        // Linux tcp_poll() reports as writable and hung up.
+        if state == State::Idle {
+            return IoEvents::OUT | IoEvents::HUP;
+        }
+        let rx_closed = self.rx_closed.load(Ordering::Acquire);
         let mut events = IoEvents::empty();
         self.with_smol_socket(|socket| {
-            events.set(
-                IoEvents::IN,
-                !self.rx_closed.load(Ordering::Acquire)
-                    && (!socket.may_recv() || socket.can_recv()),
-            );
-            events.set(IoEvents::OUT, !socket.may_send() || socket.can_send());
+            // A receive shutdown, ours or the peer's FIN, reads as end of
+            // file: readable and RDHUP. HUP takes both directions shut.
+            let receive_shut = rx_closed || !socket.may_recv();
+            let send_shut = !socket.may_send();
+            events.set(IoEvents::IN, receive_shut || socket.can_recv());
+            events.set(IoEvents::RDHUP, receive_shut);
+            events.set(IoEvents::HUP, receive_shut && send_shut);
+            events.set(IoEvents::OUT, send_shut || socket.can_send());
         });
         events
     }
@@ -643,9 +651,6 @@ impl SocketOps for TcpSocket {
         mut dst: impl Write + IoBufMut,
         options: &mut RecvOptions<'_>,
     ) -> NetResult<usize> {
-        if self.rx_closed.load(Ordering::Acquire) {
-            return Err(NetError::NotConnected);
-        }
         if self.state.get() == State::Closed {
             return Err(NetError::NotConnected);
         }
@@ -687,7 +692,9 @@ impl SocketOps for TcpSocket {
                     }
                     Ok(total)
                 }
-            } else if !socket.may_recv() {
+            } else if self.rx_closed.load(Ordering::Acquire) || !socket.may_recv() {
+                // After shutdown(SHUT_RD) Linux drains what is queued and then
+                // reports end of file instead of failing the read.
                 Ok(0)
             } else {
                 Err(NetError::WouldBlock)
@@ -791,11 +798,13 @@ impl Pollable for TcpSocket {
         request_poll();
         let mut events = match self.state.get() {
             State::Connecting => self.poll_connect(),
-            State::Connected | State::Idle | State::Closed => self.poll_stream(),
+            state @ (State::Connected | State::Idle | State::Closed) => self.poll_stream(state),
             State::Listening => self.poll_listener(),
             State::Busy => IoEvents::empty(),
         };
-        events.set(IoEvents::RDHUP, self.rx_closed.load(Ordering::Acquire));
+        if self.rx_closed.load(Ordering::Acquire) {
+            events |= IoEvents::RDHUP;
+        }
         events
     }
 
