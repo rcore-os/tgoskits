@@ -2816,9 +2816,9 @@ impl AddrSpace {
         publications
             .try_reserve(owners.len())
             .map_err(|_| StarryError::NoMemory)?;
-        let mut seen = Vec::new();
-        seen.try_reserve(owners.len())
-            .map_err(|_| StarryError::NoMemory)?;
+        if !addresses_are_distinct(owners.iter().map(|owner| owner.va))? {
+            return Err(StarryError::BadState);
+        }
         let mut mapping_delta = MappingDelta::default();
         let mut resident_delta = ResidentDelta::default();
 
@@ -2827,10 +2827,6 @@ impl AddrSpace {
         // complete inverse operation.
         for owner in owners {
             let publication = self.prepare_slot_publication(operation, range, owner)?;
-            if seen.contains(&publication.key) {
-                return Err(StarryError::BadState);
-            }
-            seen.push(publication.key);
             mapping_delta.attached = mapping_delta
                 .attached
                 .checked_add(publication.mapping_delta.attached)
@@ -6964,6 +6960,36 @@ impl AddrSpace {
     }
 }
 
+/// Whether no address repeats among the owners one materialization publishes.
+///
+/// Publication used to test each owner against every earlier one, so populating
+/// or forking n pages paid n^2/2 comparisons under the address-space lock; at
+/// 64 MiB that was half of what fork cost. Backends append owners while walking
+/// their range upward, which one ascending pass confirms. Any other order is
+/// still judged exactly, by sorting a copy, so the verdict never depends on the
+/// order a backend happens to use.
+fn addresses_are_distinct<I>(addresses: I) -> StarryResult<bool>
+where
+    I: Iterator<Item = VirtAddr> + Clone,
+{
+    let mut previous = None;
+    let ascending = addresses.clone().all(|address| {
+        let increasing = previous.is_none_or(|previous| previous < address);
+        previous = Some(address);
+        increasing
+    });
+    if ascending {
+        return Ok(true);
+    }
+    let mut sorted = Vec::new();
+    sorted
+        .try_reserve_exact(addresses.size_hint().0)
+        .map_err(|_| StarryError::NoMemory)?;
+    sorted.extend(addresses);
+    sorted.sort_unstable();
+    Ok(sorted.windows(2).all(|pair| pair[0] != pair[1]))
+}
+
 #[cfg(all(test, not(axtest)))]
 fn page_fault_completion_updates_only_success_for_test() -> bool {
     use core::cell::Cell;
@@ -7035,6 +7061,24 @@ mod tests {
         AddressSpaceId, MutationError, MutationGate, TlbRange, VmEpoch,
         prepare_mapping_publication_mutation,
     };
+
+    #[cfg(all(test, not(axtest)))]
+    #[test]
+    fn owner_addresses_are_checked_for_repeats_in_any_order() {
+        let distinct = |pages: &[usize]| {
+            super::addresses_are_distinct(
+                pages.iter().map(|&page| VirtAddr::from(page * PAGE_SIZE_4K)),
+            )
+                .unwrap()
+        };
+        assert!(distinct(&[]));
+        assert!(distinct(&[7]));
+        assert!(distinct(&[1, 2, 3, 512]));
+        assert!(!distinct(&[1, 2, 2, 3]));
+        assert!(distinct(&[3, 1, 2]));
+        assert!(!distinct(&[3, 1, 3]));
+        assert!(!distinct(&[5, 9, 4, 5]));
+    }
 
     #[cfg(all(test, not(axtest)))]
     #[test]
