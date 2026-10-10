@@ -613,6 +613,46 @@ mod no_xdev {
     }
 }
 
+mod chroot_root {
+    use super::*;
+
+    /// A context chrooted at `/a`, whose root location has a real parent in
+    /// the Location graph (the filesystem root).
+    fn chrooted_at_a() -> (FsContext, Location, Location) {
+        let root = axfs_ng_vfs::Mountpoint::new_root(&Filesystem::new(Arc::new(TestFs)));
+        let fs_root = root.root_location();
+        let a = fs_root.lookup_no_follow("a").expect("a exists");
+        let context = FsContext::new(a.clone());
+        (context, a, fs_root)
+    }
+
+    #[test]
+    fn dot_dot_clamps_at_the_process_root_without_in_root() {
+        let (context, a, fs_root) = chrooted_at_a();
+        // `..` under RESOLVE_NO_SYMLINKS must clamp at the chroot root like
+        // the plain walk; escaping above it would hand out a handle to the
+        // directory outside the jail.
+        let constraints = ResolveConstraints::new().no_symlinks();
+        let resolved = resolve(&context, "..", &constraints).unwrap();
+        assert!(resolved.ptr_eq(&a));
+        assert!(!resolved.ptr_eq(&fs_root));
+    }
+
+    #[test]
+    fn repeated_dot_dot_stays_inside_the_jail() {
+        let (context, a, fs_root) = chrooted_at_a();
+        let constraints = ResolveConstraints::new().no_xdev();
+        // Both `..` components clamp at the jail root; the walk never reaches
+        // the filesystem root above it.
+        assert!(resolve(&context, "../..", &constraints).unwrap().ptr_eq(&a));
+        assert!(
+            !resolve(&context, "../..", &constraints)
+                .unwrap()
+                .ptr_eq(&fs_root)
+        );
+    }
+}
+
 mod no_symlinks {
     use super::*;
 

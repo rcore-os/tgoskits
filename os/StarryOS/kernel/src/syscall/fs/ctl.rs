@@ -872,6 +872,18 @@ pub fn sys_fchownat(
         }
     }
 
+    // `-1` means "leave this field unchanged" (Linux chown_common): keep the
+    // request per-field so anonymous-inode metadata commits only the fields
+    // the caller actually named. Substituting from the stat snapshot here
+    // would let a concurrent partial update overwrite the preserved field.
+    let requested_owner = if uid == -1 && gid == -1 {
+        None
+    } else {
+        Some((
+            (uid != -1).then_some(uid as u32),
+            (gid != -1).then_some(gid as u32),
+        ))
+    };
     let uid = if uid == -1 { owner_uid } else { uid as _ };
     let gid = if gid == -1 { owner_gid } else { gid as _ };
     if let (Some(loc), Some(meta)) = (&loc, &meta) {
@@ -899,9 +911,10 @@ pub fn sys_fchownat(
     } else if let Some(file_like) = &anon {
         // Mirror `chown_common()` for an anonymous inode: the implementation
         // clears SUID/SGID on the *current* mode with one atomic
-        // read-modify-write while setting the owner, so a concurrent `fchmod`
-        // cannot be undone by a stale mode read.
-        file_like.set_inode_metadata(None, Some((uid, gid)))?;
+        // read-modify-write while committing the named owner fields only, so
+        // a concurrent `fchmod` cannot be undone by a stale mode read and a
+        // concurrent partial `fchown` cannot overwrite a preserved field.
+        file_like.set_inode_metadata(None, requested_owner)?;
     }
     Ok(0)
 }

@@ -952,18 +952,24 @@ impl FsContext {
                     if constraints.is_beneath() && *depth == 0 {
                         return Err(VfsError::CrossesDevices);
                     }
-                    // `..` from a mount root crosses back into the mount's
-                    // attach point, which is a device crossing for
-                    // RESOLVE_NO_XDEV.
-                    if constraints.is_no_xdev()
-                        && dir.is_root_of_mount()
-                        && dir.mountpoint().location().is_some()
-                    {
-                        return Err(VfsError::CrossesDevices);
-                    }
-                    dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
-                    if constraints.is_beneath() {
-                        *depth -= 1;
+                    // RESOLVE_* restrictions never relax the process root: a
+                    // chrooted caller's `..` clamps at the context root
+                    // exactly like the plain walk, so a constrained open
+                    // cannot obtain a handle above the chroot boundary.
+                    if !dir.ptr_eq(&self.root_dir) {
+                        // `..` from a mount root crosses back into the
+                        // mount's attach point, which is a device crossing
+                        // for RESOLVE_NO_XDEV.
+                        if constraints.is_no_xdev()
+                            && dir.is_root_of_mount()
+                            && dir.mountpoint().location().is_some()
+                        {
+                            return Err(VfsError::CrossesDevices);
+                        }
+                        dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
+                        if constraints.is_beneath() {
+                            *depth -= 1;
+                        }
                     }
                 }
                 Component::Normal(name) => {
