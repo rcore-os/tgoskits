@@ -679,32 +679,41 @@ mod tests {
         let runtime = runtime();
         let input = ControllerInputId::new(10);
 
-        let first = runtime
-            .wired_input(input, InterruptTriggerMode::LevelTriggered)
-            .unwrap();
-        let second = runtime
-            .wired_input(input, InterruptTriggerMode::LevelTriggered)
-            .unwrap();
+        let first = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            input,
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap();
+        let second = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            input,
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap();
 
         assert_eq!(first.input(), second.input());
         assert!(
-            runtime
-                .wired_input(input, InterruptTriggerMode::EdgeTriggered)
-                .is_err()
+            InterruptControllerEndpoint::wired_input(
+                &*runtime,
+                input,
+                InterruptTriggerMode::EdgeTriggered,
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn level_transition_updates_controller_state_without_a_bound_run() {
         let runtime = runtime();
-        let line = runtime
-            .wired_input(
-                ControllerInputId::new(10),
-                InterruptTriggerMode::LevelTriggered,
-            )
-            .unwrap()
-            .connect()
-            .unwrap();
+        let line = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            ControllerInputId::new(10),
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
 
         // The controller is the sole owner of line and pending state. A wake
         // with no bound run must not turn a device transition into an error.
