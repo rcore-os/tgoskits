@@ -11,8 +11,8 @@ pub use crate::{
     sync::wait_queue::{sleep, sleep_until},
     thread::{
         current::park::{
-            CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
-            begin_current_park, begin_current_park_with_preempt_guard,
+            CurrentParkDisposition, CurrentParkPublication, CurrentParkResume, CurrentParkStart,
+            PreparedCurrentPark, begin_current_park, begin_current_park_with_preempt_guard,
         },
         execution::exit_current,
     },
