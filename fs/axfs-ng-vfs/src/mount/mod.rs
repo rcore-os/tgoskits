@@ -1031,6 +1031,31 @@ impl Location {
             .contains_key(&self.entry.key())
     }
 
+    /// Returns the topmost location when mounts are stacked on this dentry.
+    ///
+    /// Plain resolution already follows over-mounts at every named component,
+    /// but a location reached through `.`/`..`/`/` does not descend them.
+    /// `umount2(2)` uses this to operate on the top mount at the target,
+    /// matching Linux resolution for the `pivot_root(".", ".")` idiom where
+    /// the old root is stacked on the new root at "/".
+    pub fn mount_top(&self) -> Self {
+        let mut current = self.clone();
+        loop {
+            let key = current.entry.key();
+            let Some(child) = current.mountpoint.children.lock().get(&key).cloned() else {
+                break;
+            };
+            current = child.effective_mountpoint().root_location();
+        }
+        current
+    }
+
+    /// Returns whether this location is a procfs-style magic link; see
+    /// [`NodeFlags::MAGIC_LINK`].
+    pub fn is_magic_link(&self) -> bool {
+        self.flags().contains(NodeFlags::MAGIC_LINK)
+    }
+
     /// Follows mounts stacked directly over this location.
     pub fn resolve_mountpoint(self) -> Self {
         let Some(mountpoint) = self

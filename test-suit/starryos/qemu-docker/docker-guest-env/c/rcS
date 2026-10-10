@@ -1,0 +1,14 @@
+#!/bin/sh
+# Case-local replacement for the image's /etc/init.d/rcS.
+#
+# The kernel mounts proc, sysfs and its device devfs before init, and its
+# /dev/ptmx device node belongs to the kernel devfs /dev/pts registry. The
+# image's rcS mounts a separate devpts instance over /dev/pts, which shadows
+# that registry: a pty allocated through /dev/ptmx then cannot be found at
+# /dev/pts/<n> (the same split Linux avoids by making /dev/ptmx a symlink to
+# pts/ptmx inside the mounted devpts). Keep /dev/pts on the kernel devfs and
+# only repair what init needs.
+hostname starry
+mkdir -p /dev/pts
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

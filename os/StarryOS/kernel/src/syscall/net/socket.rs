@@ -130,7 +130,8 @@ pub fn sys_socket(
             return Err(StarryError::from(Errno::EAFNOSUPPORT));
         }
     };
-    let socket = Socket::new(socket, ip_domain);
+    let cred = current.as_thread().cred();
+    let socket = Socket::new(socket, ip_domain, cred.fsuid, cred.fsgid);
 
     if raw_ty & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
@@ -257,7 +258,9 @@ pub fn sys_accept4(
 
     let cloexec = flags & O_CLOEXEC != 0;
     let listener = Socket::from_fd(fd)?;
-    let socket = Socket::new(listener.accept_user(current)?, listener.ip_domain());
+    let accepted = listener.accept_user(current)?;
+    let cred = current.as_thread().cred();
+    let socket = Socket::new(accepted, listener.ip_domain(), cred.fsuid, cred.fsgid);
     if flags & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
     }
@@ -343,8 +346,9 @@ pub fn sys_socketpair(
                     return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
                 }
             };
-            let sock1 = Socket::new(sock1.into(), AF_UNIX);
-            let sock2 = Socket::new(sock2.into(), AF_UNIX);
+            let cred = current.as_thread().cred();
+            let sock1 = Socket::new(sock1.into(), AF_UNIX, cred.fsuid, cred.fsgid);
+            let sock2 = Socket::new(sock2.into(), AF_UNIX, cred.fsuid, cred.fsgid);
 
             if raw_ty & O_NONBLOCK != 0 {
                 sock1.set_nonblocking(true)?;
