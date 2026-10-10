@@ -12,7 +12,7 @@ pub use crate::{
     thread::{
         current::park::{
             CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
-            begin_current_park,
+            begin_current_park, begin_current_park_with_preempt_guard,
         },
         execution::exit_current,
     },

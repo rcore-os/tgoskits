@@ -193,6 +193,22 @@ pub fn begin_current_park() -> Result<CurrentParkStart, TaskError> {
     begin_current_park_with_permit(&permit)
 }
 
+/// Begins a scheduler-owned park while retaining preemption exclusion for the
+/// caller's domain-waiter publication.
+///
+/// The blocking-context check must run before the returned guard is acquired:
+/// preparing a park itself is a scheduler entry and therefore rejects an
+/// already guarded task context. The caller must keep the returned guard alive
+/// until its domain waiter has been linked or the prepared park has been
+/// cancelled.
+pub fn begin_current_park_with_preempt_guard()
+-> Result<(CurrentParkStart, crate::sync::PreemptGuard), TaskError> {
+    let permit = acquire_blocking_permit()?;
+    let preempt = crate::sync::PreemptGuard::new();
+    let start = begin_current_park_with_permit(&permit)?;
+    Ok((start, preempt))
+}
+
 pub(crate) fn begin_current_park_with_permit(
     _permit: &BlockingPermit,
 ) -> Result<CurrentParkStart, TaskError> {

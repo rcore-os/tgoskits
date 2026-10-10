@@ -420,8 +420,20 @@ impl WaitQueue {
                 return Ok(false);
             }
             let task = task();
+            inner
+                .queue
+                .try_reserve(1)
+                .map_err(|_| FutexAccessError::Operation(crate::Errno::ENOMEM))?;
+            // Keep scheduler park preparation and domain-waiter publication
+            // in one non-preemptible transaction. Linux holds the futex
+            // hash-bucket lock across TASK_INTERRUPTIBLE publication and
+            // futex_queue(), so a same-CPU producer cannot run between those
+            // two steps and observe an incomplete waiter.
+            let (park_start, _preempt) =
+                scheduler::thread::current::begin_current_park_with_preempt_guard()
+                .map_err(map_park_error)?;
             let park =
-                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
+                match park_start {
                     CurrentParkStart::Notified => {
                         let deadline_expired = deadline
                             .is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
@@ -959,8 +971,19 @@ impl ResolvedFutex<'_> {
             if !condition()? {
                 return Ok(false);
             }
+            waiters
+                .try_reserve(1)
+                .map_err(|_| FutexAccessError::Operation(crate::Errno::ENOMEM))?;
+            // Linux keeps the futex hash-bucket lock across TASK_INTERRUPTIBLE
+            // publication and futex_queue(). Keep the equivalent Starry
+            // scheduler and domain-queue publication non-preemptible so a
+            // same-CPU producer cannot observe the task as parked before its
+            // waiter is authoritative.
+            let (park_start, _preempt) =
+                scheduler::thread::current::begin_current_park_with_preempt_guard()
+                .map_err(map_park_error)?;
             let park =
-                match scheduler::thread::current::begin_current_park().map_err(map_park_error)? {
+                match park_start {
                     CurrentParkStart::Notified => {
                         let deadline_expired =
                             deadline.is_some_and(|deadline| deadline.lag().is_some());
