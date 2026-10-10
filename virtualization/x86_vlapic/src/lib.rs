@@ -61,7 +61,7 @@ pub struct EmulatedLocalApic<H: host::X86VlapicHostOps> {
 
 pub use self::{
     host::{X86VlapicHostOps, X86VlapicRuntimeOps},
-    pit::EmulatedPit,
+    pit::{EmulatedPit, PitCore, PitTimerPlan},
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
         X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerAction,

@@ -257,6 +257,24 @@ struct PitState {
     speaker_control: u8,
 }
 
+/// Owner-local 8254 register file.
+///
+/// The core contains no synchronization or host timer handle.  A shared
+/// interrupt owner applies register transactions through `&mut self` and
+/// then schedules the returned timer plan after the transaction completes.
+pub struct PitCore {
+    state: PitState,
+}
+
+/// Host timer operation requested by a [`PitCore`] register write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PitTimerPlan {
+    /// Absolute host deadline for the first IRQ0 edge.
+    pub deadline_ns: u64,
+    /// Period for a rate/square-wave channel, or `None` for one-shot modes.
+    pub period_ns: Option<u64>,
+}
+
 impl PitState {
     const fn new() -> Self {
         Self {
@@ -264,6 +282,148 @@ impl PitState {
             channel2: PitChannel::new(),
             speaker_control: 0,
         }
+    }
+}
+
+fn write_command(state: &mut PitState, command: u8, now_ns: u64) {
+    let channel = (command >> 6) & 0b11;
+    if channel == 0b11 {
+        write_read_back_command(state, command, now_ns);
+        return;
+    }
+
+    let access_mode = AccessMode::from_command(command);
+    let mode = PitMode::from_command(command);
+    let Some(pit_channel) = (match channel {
+        0 => Some(&mut state.channel0),
+        2 => Some(&mut state.channel2),
+        _ => None,
+    }) else {
+        debug!("x86 PIT command for unsupported channel {channel}: {command:#x}");
+        return;
+    };
+
+    if access_mode == AccessMode::LatchCount {
+        pit_channel.latch_count(now_ns);
+        return;
+    }
+
+    pit_channel.access_mode = access_mode;
+    pit_channel.mode = mode;
+    pit_channel.write_low_latched = None;
+    pit_channel.read_high_next = false;
+    pit_channel.latched_count = None;
+    pit_channel.latched_status = None;
+    pit_channel.null_count = true;
+}
+
+fn write_read_back_command(state: &mut PitState, command: u8, now_ns: u64) {
+    let latch_count = command & (1 << 5) == 0;
+    let latch_status = command & (1 << 4) == 0;
+    let selected = command & 0b1110;
+
+    if selected & (1 << 1) != 0 {
+        if latch_count {
+            state.channel0.latch_count(now_ns);
+        }
+        if latch_status {
+            state.channel0.latch_status(now_ns);
+        }
+    }
+    if selected & (1 << 3) != 0 {
+        if latch_count {
+            state.channel2.latch_count(now_ns);
+        }
+        if latch_status {
+            state.channel2.latch_status(now_ns);
+        }
+    }
+}
+
+impl PitCore {
+    /// Creates a reset-compatible register file.
+    pub const fn new() -> Self {
+        Self {
+            state: PitState::new(),
+        }
+    }
+
+    /// Handles one PIT read without taking a lock or touching host timers.
+    pub fn handle_read(
+        &mut self,
+        port: X86Port,
+        width: X86AccessWidth,
+        now_ns: u64,
+    ) -> X86VlapicResult<usize> {
+        if width != X86AccessWidth::Byte {
+            return Err(X86VlapicError::Unsupported);
+        }
+        let value = match port.number() {
+            PIT_CHANNEL0 => self.state.channel0.read_count(now_ns),
+            PIT_CHANNEL2 => self.state.channel2.read_count(now_ns),
+            PIT_COMMAND => 0,
+            PIT_SPEAKER_CONTROL => {
+                let output = self.state.channel2.output_high(now_ns) as u8;
+                (self.state.speaker_control & !0x20) | (output << 5)
+            }
+            _ => return Err(X86VlapicError::Unsupported),
+        };
+        Ok(value as usize)
+    }
+
+    /// Handles one PIT write and returns a host timer plan when channel 0 was
+    /// fully reprogrammed.
+    pub fn handle_write(
+        &mut self,
+        port: X86Port,
+        width: X86AccessWidth,
+        val: usize,
+        now_ns: u64,
+    ) -> X86VlapicResult<Option<PitTimerPlan>> {
+        if width != X86AccessWidth::Byte {
+            return Err(X86VlapicError::Unsupported);
+        }
+        let timer_plan = match port.number() {
+            PIT_CHANNEL0 if self.state.channel0.write_count(val as u8, now_ns) => {
+                let channel = &self.state.channel0;
+                let repeat_ns = channel
+                    .mode
+                    .is_periodic_irq()
+                    .then_some(channel.period_ns)
+                    .flatten()
+                    .map(limit_periodic_timer_period_ns);
+                Some(PitTimerPlan {
+                    deadline_ns: channel.next_deadline_ns,
+                    period_ns: repeat_ns,
+                })
+            }
+            PIT_CHANNEL0 => None,
+            PIT_CHANNEL2 => {
+                self.state.channel2.write_count(val as u8, now_ns);
+                None
+            }
+            PIT_COMMAND => {
+                write_command(&mut self.state, val as u8, now_ns);
+                None
+            }
+            PIT_SPEAKER_CONTROL => {
+                self.state.speaker_control = val as u8;
+                None
+            }
+            _ => return Err(X86VlapicError::Unsupported),
+        };
+        Ok(timer_plan)
+    }
+
+    /// Resets the guest-visible register file.
+    pub fn reset(&mut self) {
+        self.state = PitState::new();
+    }
+}
+
+impl Default for PitCore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -276,7 +436,7 @@ impl PitState {
 /// The hard-timer callback never takes this mutex; it only owns the short
 /// IRQ-safe arm state inside [`TimerRegistration`].
 struct PitService<R: X86VlapicRuntimeOps> {
-    state: PitState,
+    core: PitCore,
     timer: PitIrqTimer<R>,
     /// Set while a VM suspend quiesced a live arm that still owes a resume.
     suspended: bool,
@@ -321,7 +481,7 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
     ) -> Self {
         Self {
             service: Mutex::new(PitService {
-                state: PitState::new(),
+                core: PitCore::new(),
                 timer: PitIrqTimer::new(runtime),
                 suspended: false,
             }),
@@ -340,67 +500,6 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
 impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<H: X86VlapicHostOps> EmulatedPit<H> {
-    fn channel_mut(state: &mut PitState, channel: u8) -> Option<&mut PitChannel> {
-        match channel {
-            0 => Some(&mut state.channel0),
-            2 => Some(&mut state.channel2),
-            _ => None,
-        }
-    }
-
-    fn write_command(state: &mut PitState, command: u8, now_ns: u64) {
-        let channel = (command >> 6) & 0b11;
-        if channel == 0b11 {
-            Self::write_read_back_command(state, command, now_ns);
-            return;
-        }
-
-        let access_mode = AccessMode::from_command(command);
-        let mode = PitMode::from_command(command);
-        let Some(pit_channel) = Self::channel_mut(state, channel) else {
-            debug!("x86 PIT command for unsupported channel {channel}: {command:#x}");
-            return;
-        };
-
-        if access_mode == AccessMode::LatchCount {
-            pit_channel.latch_count(now_ns);
-            return;
-        }
-
-        pit_channel.access_mode = access_mode;
-        pit_channel.mode = mode;
-        pit_channel.write_low_latched = None;
-        pit_channel.read_high_next = false;
-        pit_channel.latched_count = None;
-        pit_channel.latched_status = None;
-        pit_channel.null_count = true;
-    }
-
-    fn write_read_back_command(state: &mut PitState, command: u8, now_ns: u64) {
-        let latch_count = command & (1 << 5) == 0;
-        let latch_status = command & (1 << 4) == 0;
-        let selected = command & 0b1110;
-
-        if selected & (1 << 1) != 0 {
-            if latch_count {
-                state.channel0.latch_count(now_ns);
-            }
-            if latch_status {
-                state.channel0.latch_status(now_ns);
-            }
-        }
-        if selected & (1 << 3) != 0 {
-            if latch_count {
-                state.channel2.latch_count(now_ns);
-            }
-            if latch_status {
-                state.channel2.latch_status(now_ns);
-            }
-        }
     }
 }
 
@@ -489,18 +588,7 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
 
         let now_ns = host::current_time_nanos::<H>();
         let mut service = self.service.lock();
-        let state = &mut service.state;
-        let value = match port.number() {
-            PIT_CHANNEL0 => state.channel0.read_count(now_ns),
-            PIT_CHANNEL2 => state.channel2.read_count(now_ns),
-            PIT_COMMAND => 0,
-            PIT_SPEAKER_CONTROL => {
-                let output = state.channel2.output_high(now_ns) as u8;
-                (state.speaker_control & !0x20) | (output << 5)
-            }
-            _ => return Err(X86VlapicError::Unsupported),
-        };
-        Ok(value as usize)
+        service.core.handle_read(port, width, now_ns)
     }
 
     /// Handles a PIT port write.
@@ -521,36 +609,8 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         // previous arm through `TimerRegistration`'s short IRQ-safe state and
         // never takes this mutex.
         let mut service = self.service.lock();
-        let irq0_schedule = match port.number() {
-            PIT_CHANNEL0 if service.state.channel0.write_count(val as u8, now_ns) => {
-                let period_ns = service.state.channel0.period_ns;
-                let repeat_ns = service
-                    .state
-                    .channel0
-                    .mode
-                    .is_periodic_irq()
-                    .then_some(period_ns)
-                    .flatten()
-                    .map(limit_periodic_timer_period_ns);
-                Some((service.state.channel0.next_deadline_ns, repeat_ns))
-            }
-            PIT_CHANNEL0 => None,
-            PIT_CHANNEL2 => {
-                service.state.channel2.write_count(val as u8, now_ns);
-                None
-            }
-            PIT_COMMAND => {
-                Self::write_command(&mut service.state, val as u8, now_ns);
-                None
-            }
-            PIT_SPEAKER_CONTROL => {
-                service.state.speaker_control = val as u8;
-                None
-            }
-            _ => return Err(X86VlapicError::Unsupported),
-        };
-        if let Some((deadline_ns, period_ns)) = irq0_schedule {
-            service.timer.schedule(deadline_ns, period_ns)?;
+        if let Some(plan) = service.core.handle_write(port, width, val, now_ns)? {
+            service.timer.schedule(plan.deadline_ns, plan.period_ns)?;
         }
         Ok(())
     }
@@ -589,7 +649,7 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
             service.suspended = false;
             return Ok(());
         }
-        let Some(period_ns) = service.state.channel0.period_ns else {
+        let Some(period_ns) = service.core.state.channel0.period_ns else {
             service.suspended = false;
             return Ok(());
         };
@@ -599,6 +659,7 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
             return Ok(());
         }
         let repeat_ns = service
+            .core
             .state
             .channel0
             .mode
@@ -618,7 +679,7 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         let mut service = self.service.lock();
         service.timer.cancel()?;
         service.timer.deadline_ns.store(0, Ordering::Release);
-        service.state = PitState::new();
+        service.core.reset();
         service.suspended = false;
         Ok(())
     }
