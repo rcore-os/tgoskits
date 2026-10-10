@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/virtio-gpu-v0.1.0...virtio-gpu-v0.2.0) - 2026-10-10
+
+### Added
+
+- *(virtio-gpu)* async fire-and-forget submission with real fences ([#2536](https://github.com/rcore-os/tgoskits/pull/2536))
+
+### Other
+
+- *(gpu)* move all control-queue waits out of the device lock ([#2557](https://github.com/rcore-os/tgoskits/pull/2557))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ### Added
 
 - Linux-style asynchronous control-queue submission (new `ctrl` module,

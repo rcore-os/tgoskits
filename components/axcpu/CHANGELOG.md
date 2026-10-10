@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.3...ax-cpu-v0.10.4) - 2026-10-10
+
+### Added
+
+- *(starry-kernel,ax-cpu)* keep a faulty eBPF probe from crashing the kernel ([#2558](https://github.com/rcore-os/tgoskits/pull/2558))
+
+### Other
+
+- *(ax-fs-ng)* move cache IO outside locks and share private file pages ([#2524](https://github.com/rcore-os/tgoskits/pull/2524))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.10.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.10.2...ax-cpu-v0.10.3) - 2026-09-22
 
 ### Other

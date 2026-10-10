@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.8.4...ax-mm-v0.8.5) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.8.3...ax-mm-v0.8.4) - 2026-09-22
 
 ### Other

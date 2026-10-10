@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.4...ax-task-v0.9.0) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(ax-task)* inline rq-owned yield dispatch ([#2582](https://github.com/rcore-os/tgoskits/pull/2582))
+- *(axvm)* reduce GICv3 virtual CPU interface switch overhead ([#2503](https://github.com/rcore-os/tgoskits/pull/2503))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.3...ax-task-v0.8.4) - 2026-09-22
 
 ### Other

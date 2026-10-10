@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.11...arm-scmi-rs-v0.1.12) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.1.11](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.10...arm-scmi-rs-v0.1.11) - 2026-09-09
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/rdif-pcie-v0.3.1...rdif-pcie-v0.3.2) - 2026-10-10
+
+### Added
+
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/rdif-pcie-v0.3.0...rdif-pcie-v0.3.1) - 2026-09-09
 
 ### Other

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.10.2...dma-api-v0.11.0) - 2026-10-10
+
+### Added
+
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/dma-api-v0.10.1...dma-api-v0.10.2) - 2026-09-09
 
 ### Other

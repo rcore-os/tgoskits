@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.5...axvm-v0.9.0) - 2026-10-10
+
+### Added
+
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+- *(starry-kernel,ax-cpu)* keep a faulty eBPF probe from crashing the kernel ([#2558](https://github.com/rcore-os/tgoskits/pull/2558))
+- *(axvisor)* support board guests and preserve firmware identities ([#2502](https://github.com/rcore-os/tgoskits/pull/2502))
+- *(axloader)* serve HTTP boot with A/B OTA recovery ([#2535](https://github.com/rcore-os/tgoskits/pull/2535))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+
+### Fixed
+
+- *(axvm)* [**breaking**] destroy VM resources outside the machine lock ([#2467](https://github.com/rcore-os/tgoskits/pull/2467))
+- *(axvm)* preserve legacy PIC interrupt delivery ([#2518](https://github.com/rcore-os/tgoskits/pull/2518))
+- *(axvirtio-blk)* honor negotiated request limits ([#2510](https://github.com/rcore-os/tgoskits/pull/2510))
+- *(axvm)* follow host console by default and fix OrangePi Nightly ([#2490](https://github.com/rcore-os/tgoskits/pull/2490))
+
+### Other
+
+- *(ci)* unify board builds and initramfs staging ([#2590](https://github.com/rcore-os/tgoskits/pull/2590))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* run 24 virtio-net peers across OrangePi cores ([#2498](https://github.com/rcore-os/tgoskits/pull/2498))
+- *(axvisor)* replace OrangePi 5 Plus task switch benchmark ([#2549](https://github.com/rcore-os/tgoskits/pull/2549))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(axvm)* reduce GICv3 virtual CPU interface switch overhead ([#2503](https://github.com/rcore-os/tgoskits/pull/2503))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axvm-v0.8.4...axvm-v0.8.5) - 2026-09-22
 
 ### Other

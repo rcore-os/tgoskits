@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.5.2...riscv_vplic-v0.5.3) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.5.1...riscv_vplic-v0.5.2) - 2026-09-09
 
 ### Fixed

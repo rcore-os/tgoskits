@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-tracepoint-v0.6.1...ax-tracepoint-v0.6.2) - 2026-10-10
+
+### Added
+
+- *(ax-net)* expose per-queue state and net:* tracepoint events ([#2559](https://github.com/rcore-os/tgoskits/pull/2559))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-tracepoint-v0.6.0...ax-tracepoint-v0.6.1) - 2026-09-09
 
 ### Fixed

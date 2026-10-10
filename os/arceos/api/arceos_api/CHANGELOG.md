@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.8.6...ax-api-v0.8.7) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.8.5...ax-api-v0.8.6) - 2026-09-22
 
 ### Other

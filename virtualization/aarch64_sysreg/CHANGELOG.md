@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10](https://github.com/rcore-os/tgoskits/compare/aarch64_sysreg-v0.3.9...aarch64_sysreg-v0.3.10) - 2026-10-10
+
+### Other
+
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.3.9](https://github.com/rcore-os/tgoskits/compare/aarch64_sysreg-v0.3.8...aarch64_sysreg-v0.3.9) - 2026-08-09
 
 ### Other

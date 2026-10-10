@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.15.0...ax-plat-v0.16.0) - 2026-10-10
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.15.0](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.14.0...ax-plat-v0.15.0) - 2026-09-13
 
 ### Other

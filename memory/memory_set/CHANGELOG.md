@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/ax-memory-set-v0.8.0...ax-memory-set-v0.8.1) - 2026-10-10
+
+### Other
+
+- *(memory-set)* index free gaps for VMA placement ([#2520](https://github.com/rcore-os/tgoskits/pull/2520))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/ax-memory-set-v0.7.0...ax-memory-set-v0.8.0) - 2026-09-09
 
 ### Added

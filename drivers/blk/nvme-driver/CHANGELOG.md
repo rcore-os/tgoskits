@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.8.2...nvme-driver-v0.8.3) - 2026-10-10
+
+### Fixed
+
+- *(nvme-driver)* decode namespace formats and enforce transfer limits ([#2565](https://github.com/rcore-os/tgoskits/pull/2565))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.8.1...nvme-driver-v0.8.2) - 2026-09-09
 
 ### Other

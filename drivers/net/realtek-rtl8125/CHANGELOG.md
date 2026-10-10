@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.3.3...realtek-rtl8125-v0.3.4) - 2026-10-10
+
+### Added
+
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.3.3](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.3.2...realtek-rtl8125-v0.3.3) - 2026-09-09
 
 ### Other

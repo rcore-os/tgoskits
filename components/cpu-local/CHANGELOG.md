@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/rcore-os/tgoskits/compare/cpu-local-v0.4.3...cpu-local-v0.4.4) - 2026-10-10
+
+### Other
+
+- updated the following local packages: ax-cpu
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/cpu-local-v0.4.2...cpu-local-v0.4.3) - 2026-09-22
 
 ### Other

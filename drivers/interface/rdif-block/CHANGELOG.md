@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.13.2...rdif-block-v0.13.3) - 2026-10-10
+
+### Other
+
+- *(starry)* extend async block runtime performance coverage ([#2515](https://github.com/rcore-os/tgoskits/pull/2515))
+
 ## [0.13.2](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.13.1...rdif-block-v0.13.2) - 2026-09-18
 
 ### Other
