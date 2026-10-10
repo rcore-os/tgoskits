@@ -6,5 +6,5 @@ log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
     "test-suit/axvisor/qemu/aarch64/ivc-local/configs/arceos-ivc-publisher.toml",
-    "test-suit/axvisor/qemu/aarch64/ivc/guests/linux/guest.toml",
+    "test-suit/axvisor/qemu/aarch64/ivc-local/configs/linux-ivc-subscriber.toml",
 ]

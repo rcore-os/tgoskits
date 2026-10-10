@@ -6,7 +6,7 @@ id = 1
 # Guest vm name.
 name = "arceos-ivc-publisher"
 # Virtualization type.
-vm_type = 1
+guest_type = "virtualized"
 # The number of virtual CPUs.
 cpu_num = 1
 # Guest vm physical cpu ids.
@@ -18,9 +18,7 @@ phys_cpu_ids = [0]
 [kernel]
 # The entry point of the kernel image.
 entry_point = 0x8020_0000
-# The location of image: "memory" | "fs".
-image_location = "memory"
-# Built from this workspace before the host; never use the rootfs copy.
+# Built from this workspace before staging guest assets; never use the rootfs copy.
 kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-ivc-publisher.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
@@ -30,7 +28,7 @@ dtb_load_addr = 0x8000_0000
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
 memory_regions = [
-  [0x8000_0000, 0x4000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # Owned System RAM 256M MAP_ALLOC
 ]
 
 #
