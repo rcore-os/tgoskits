@@ -113,7 +113,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 `bug-getcwd-syscall-return` 替换为 [getcwd01.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/getcwd/getcwd01.c), [getcwd02.c](https://github.com/linux-test-project/ltp/blob/3a64d78f58bdceba93ed321e91215fb969a047ed/testcases/kernel/syscalls/getcwd/getcwd02.c)。承接行为：raw getcwd坏地址EFAULT、零/短缓冲ERANGE、NULL短缓冲的ERANGE优先；libc getcwd返回当前路径。
 
-未承接：raw成功返回strlen(path)+1的精确数值；固定/tmp返回路径及长度恰好为strlen(/tmp)的NULL短缓冲输入。本项是部分替代，原程序及专属 CMake 清理。
+LTP 未承接：raw 成功返回 strlen(path)+1 的精确数值；固定 /tmp 返回路径及长度恰好为 strlen(/tmp) 的 NULL 短缓冲输入；chroot 后相对进程 root 的路径。后续在 `qemu/system/test-proc-root-cwd` 中直接验证 chroot 后的 raw getcwd 路径、含终止零字节的返回长度，以及当前目录位于进程 root 外时的 `(unreachable)` 前缀。本项仍是部分替代，原程序及专属 CMake 清理。
 
 四架构03-candidates-<arch>.log实际通过；getcwd01=5 TPASS,getcwd02=3 TPASS；未修改内核或上游测试；最终累计集合另验。提交主题为 `test(starry): migrate getcwd buffer regression to LTP`。
 
@@ -166,7 +166,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 | close / x86_64:3；其他三架构:57 | [Linux v7.1 filp_flush](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1456) | 关闭同 inode FD 释放当前所有者记录锁，保留其他进程的锁 | sys_close → close_file_like → release_locks_on_close → release_inode_posix_locks | 正确 | fcntl15 的 dup/open/fork 三种组合，四架构验证通过 |
 | flock / x86_64:73；其他三架构:32 | [Linux v7.1 flock](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/locks.c#L2214) | OFD 间共享/排他冲突、非阻塞 EWOULDBLOCK、阻塞信号中断 EINTR | sys_flock → flock_op → try_flock_once → FLOCK_LOCKS 及 inode 等待队列 | 正确 | flock02/04/06/07，四架构验证通过 |
 | futex / x86_64:202；其他三架构:98 | [Linux v7.1 do_futex](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/futex/syscalls.c#L112) | 私有 WAIT 返回0，WAKE 的计数为1 | sys_futex → FutexContext::resolve → wait_nofault_until/wake，进程私有键及桶队列 | 正确 | 复用 futex_wait03，四架构验证通过 |
-| getcwd / x86_64:79；其他三架构:17 | [Linux v7.1 getcwd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/d_path.c#L413) | 缓冲区过短先 ERANGE，足够长但地址无效 EFAULT；返回当前路径 | sys_getcwd → current_fs_context 当前目录 → absolute_path → vm_write_slice | 正确 | getcwd01/02，四架构验证通过；不证明 raw 成功长度 |
+| getcwd / x86_64:79；其他三架构:17 | [Linux v7.1 getcwd](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/d_path.c#L413) | 缓冲区过短先 ERANGE，足够长但地址无效 EFAULT；返回相对进程 root 的当前路径，root 外加 `(unreachable)` 前缀 | sys_getcwd → current_fs_context 的 current_dir.path_from(root_dir)，root 外由 absolute_path 补前缀 → vm_write_slice | 正确 | getcwd01/02 四架构通过缓冲区分支；`qemu/system/test-proc-root-cwd` 补充 chroot 与 root 外路径及 raw 成功长度 |
 
 ## 5. 全量续迁
 
