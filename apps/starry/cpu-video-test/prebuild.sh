@@ -196,6 +196,18 @@ populate_overlay() {
     echo "prebuild: overlay populated for $arch ($(du -sh "$overlay_dir/usr/lib" | cut -f1) libs)"
 }
 
+# Stage the target-ABI compatibility the host musl-cross toolchain needs. Called after populate_overlay
+# so the overlay tree already exists.
+stage_target_abi_compat() {
+    if [[ "$arch" == "loongarch64" ]]; then
+        # The musl-cross toolchain uses the generic LoongArch lp64d interpreter
+        # path, while Alpine names the same loader after its architecture port.
+        mkdir -p "$overlay_dir/lib64"
+        ln -sf /lib/ld-musl-loongarch64.so.1 \
+            "$overlay_dir/lib64/ld-musl-loongarch-lp64d.so.1"
+    fi
+}
+
 resolve_cc
 ensure_host_tools
 grow_rootfs
@@ -203,4 +215,5 @@ extract_base_rootfs
 apk_provision
 compile_carpets
 populate_overlay
+stage_target_abi_compat
 echo "prebuild: cpu-video-test overlay ready for $arch"

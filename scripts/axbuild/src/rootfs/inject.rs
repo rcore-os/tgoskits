@@ -795,9 +795,10 @@ fn debugfs_argument(argument: &str) -> anyhow::Result<String> {
 
 /// Executes a generated `debugfs` script against a writable rootfs image.
 ///
-/// Stderr lines that only report that a directory already exists are suppressed
-/// because `mkdir /usr/bin` is harmless when the directory is already present.
-/// All other stderr output is forwarded so genuine errors remain visible.
+/// Stderr lines that only report harmless overlay replay conditions are
+/// suppressed: `mkdir` may find an existing directory, and the `rm` emitted
+/// before writing an overlay file may find no previous file to remove. All
+/// other stderr output is forwarded so genuine errors remain visible.
 fn run_debugfs_script(
     rootfs_img: &Path,
     commands: &[String],
@@ -809,6 +810,23 @@ fn run_debugfs_script(
         commands,
         context_message,
     )
+}
+
+fn is_ignorable_debugfs_stderr_line(line: &str) -> bool {
+    line.contains("File exists")
+        || line.contains("already exists")
+        || line.contains("File not found by ext2_lookup while trying to resolve filename")
+}
+
+fn forward_debugfs_stderr(reader: impl BufRead, mut output: impl Write) -> io::Result<()> {
+    for line in reader.lines() {
+        let line = line?;
+        if is_ignorable_debugfs_stderr_line(&line) {
+            continue;
+        }
+        writeln!(output, "{line}")?;
+    }
+    Ok(())
 }
 
 fn run_debugfs_script_with_command(
@@ -838,17 +856,7 @@ fn run_debugfs_script_with_command(
         .take()
         .context("failed to open debugfs stderr")?;
     let filter_handle = thread::spawn(move || {
-        let reader = BufReader::new(stderr_handle);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if line.contains("File exists") || line.contains("already exists") {
-                continue;
-            }
-            eprintln!("{line}");
-        }
+        let _ = forward_debugfs_stderr(BufReader::new(stderr_handle), io::stderr());
     });
 
     {
@@ -1028,6 +1036,63 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg(target_os = "linux")]
     #[cfg(target_os = "linux")]
+    #[test]
+    fn debugfs_script_discards_normal_stdout_and_receives_all_commands() {
+        use std::fs::OpenOptions;
+
+        let root = executable_helper_tempdir();
+        let debugfs = root.path().join("debugfs");
+        let received_commands = root.path().join("received-commands");
+        write_executable(
+            &debugfs,
+            &format!(
+                "#!/bin/sh\ntest \"$#\" = 2 && test \"$1\" = -w && test \"$2\" = rootfs.img || \
+                 exit 90\ntest \"$(readlink /proc/$$/fd/1)\" = /dev/null || exit 91\ncat > '{}'
+",
+                received_commands.display()
+            ),
+        );
+
+        // Model a writable descriptor inherited by a concurrent child before exec.
+        // It keeps this exact inode busy, even after the publishing rename.
+        let _inherited_writer = OpenOptions::new().write(true).open(&debugfs).unwrap();
+
+        // Execute the installed shell, which reads the fixture as data. Direct
+        // execution can return ETXTBSY while another test's child holds a writer
+        // inherited during publication, even when our own writer is closed.
+        let mut debugfs_command = Command::new("/bin/sh");
+        debugfs_command.arg(&debugfs);
+        run_debugfs_script_with_command(
+            debugfs_command,
+            Path::new("rootfs.img"),
+            &["rm /usr/bin/app".into(), "write app /usr/bin/app".into()],
+            "failed to inject test overlay",
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(received_commands).unwrap(),
+            "rm /usr/bin/app\nwrite app /usr/bin/app\nquit\n"
+        );
+    }
+
+    #[test]
+    fn debugfs_stderr_filter_suppresses_ignorable_errors_and_forwards_others() {
+        let stderr = concat!(
+            "mkdir: File exists while trying to resolve filename\n",
+            "mkdir: /usr/bin: already exists\n",
+            "rm: File not found by ext2_lookup while trying to resolve filename\n",
+            "write: Permission denied while trying to resolve filename\n",
+        );
+        let mut forwarded = Vec::new();
+
+        forward_debugfs_stderr(stderr.as_bytes(), &mut forwarded).unwrap();
+
+        assert_eq!(
+            String::from_utf8(forwarded).unwrap(),
+            "write: Permission denied while trying to resolve filename\n"
+        );
+    }
     #[cfg(unix)]
     fn executable_helper_tempdir() -> tempfile::TempDir {
         let test_binary = env::current_exe().expect("test binary path must be available");

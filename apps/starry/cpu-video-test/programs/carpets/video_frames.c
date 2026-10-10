@@ -1,12 +1,14 @@
 /* video_frames - frame-exact decode carpet (cell 1).
  *
- * Two legs, both deterministic and pixel-exact:
+ * Two legs, both deterministic and pixel-domain:
  *
  *   A. Bad Apple binary-frame leg (references $ASSET_DIR, honest-skips if absent).
  *      Bad Apple is a ~1-bit black/white silhouette animation: a decoded frame is essentially binary,
  *      so it is deterministically comparable pixel-exact. For each of the 16 golden frames we:
  *        - decode the PNG to raw rgb24, assert sha256(rgb24) == golden (byte-exact whole frame),
- *        - assert the 8x8-bicubic-gray signature == golden luma8x8_hex (the exact golden recipe),
+ *        - assert the 8x8-bicubic-gray signature stays within a documented bounded
+ *          tolerance of golden luma8x8_hex, since swscale's bicubic/gray kernels can
+ *          round differently across architectures and FFmpeg builds,
  *        - threshold each pixel to B/W (Rec.601 luma >= 128) and assert the white-pixel ratio ==
  *          the golden ratio within a tight epsilon (the binary silhouette descriptor).
  *      The golden sha/luma/ratio table is embedded so this leg is self-checking against the staged
@@ -30,6 +32,41 @@
 
 #define BA_W 1920
 #define BA_H 1080
+
+/* FFmpeg's 8x8 bicubic+gray signature is an implementation detail of swscale's
+ * SIMD and generic kernels. The host golden is byte-exact for the build that
+ * produced it, but those kernels can round the same frame differently on other
+ * architectures and FFmpeg builds. The exact rgb24 SHA above remains the
+ * byte-exact frame check; this bound keeps the scale+gray path meaningful without
+ * making the test depend on one filter implementation. A wrong frame, geometry,
+ * or gross filter regression still fails both bounds. */
+#define LUMA8X8_MAX_ABS_DIFF  32
+#define LUMA8X8_MEAN_ABS_DIFF 8.0
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Compare a 64-byte 8x8 gray signature with its 128-character golden hex string.
+ * Every tile must stay within LUMA8X8_MAX_ABS_DIFF gray levels of the golden, and
+ * the mean absolute deviation must stay within LUMA8X8_MEAN_ABS_DIFF. */
+static int luma8x8_close_to_hex(const unsigned char *got, const char *golden_hex) {
+    if (strlen(golden_hex) != 128) return 0;
+    double sum = 0.0;
+    for (int i = 0; i < 64; i++) {
+        int hi = hex_nibble(golden_hex[i * 2]);
+        int lo = hex_nibble(golden_hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return 0;
+        int d = (int)got[i] - ((hi << 4) | lo);
+        if (d < 0) d = -d;
+        if (d > LUMA8X8_MAX_ABS_DIFF) return 0;
+        sum += d;
+    }
+    return sum / 64.0 <= LUMA8X8_MEAN_ABS_DIFF;
+}
 
 static const char *asset_dir(void) {
     const char *d = getenv("ASSET_DIR");
@@ -100,13 +137,12 @@ static int badapple_leg(gate *g, const char *AD) {
         gate_check(g, sha256_file(rgb, h) == 0 && strcmp(h, BA[i].sha) == 0,
                    "badapple: rgb24 frame sha != golden");
 
-        /* 8x8 bicubic-gray signature byte-exact (golden luma8x8_hex) */
+        /* 8x8 bicubic-gray signature vs golden within a bounded cross-architecture
+         * tolerance (see luma8x8_close_to_hex). */
         if (ffmpeg_luma8x8(png, -1, gray) != 0) { gate_check(g, 0, "luma8x8 decode"); continue; }
         unsigned char *lb = NULL; long ln = read_file_bytes(gray, &lb);
-        char lhex[129] = {0};
-        if (ln == 64) hex_encode(lb, 64, lhex);
-        gate_check(g, ln == 64 && strcmp(lhex, BA[i].luma) == 0,
-                   "badapple: 8x8 luma signature != golden");
+        gate_check(g, ln == 64 && luma8x8_close_to_hex(lb, BA[i].luma),
+                   "badapple: 8x8 luma signature outside golden tolerance");
         free(lb);
 
         /* binary white-ratio: threshold rgb24 -> luma>=128, fraction white == golden within eps */

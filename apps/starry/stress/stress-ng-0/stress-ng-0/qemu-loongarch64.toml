@@ -16,7 +16,7 @@ args = [
   "user,id=net0",
 ]
 to_bin = true
-uefi = false
+uefi = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^STRESS_NG_TEST_FAILED\\s*$"]
 timeout = 120
 

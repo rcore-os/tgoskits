@@ -14,8 +14,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = "/usr/bin/codex-offline-smoke.sh", success_regex = ["(?m)^STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED\\s*$"] }]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",

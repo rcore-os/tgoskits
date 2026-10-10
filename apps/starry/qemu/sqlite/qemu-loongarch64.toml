@@ -15,7 +15,7 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
+uefi = true
 to_bin = true
 test_commands = [
     "/usr/bin/app-sqlite",

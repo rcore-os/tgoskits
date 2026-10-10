@@ -21,7 +21,7 @@ args = [
     "-netdev",
     "user,id=net1,net=10.0.3.0/24,dhcpstart=10.0.3.15",
 ]
-uefi = false
+uefi = true
 to_bin = true
 shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = "/usr/bin/dual-net-tests.sh", success_regex = ["(?m)^DUAL_NET_TEST_PASSED\\s*$"] }]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^DUAL_NET_TEST_FAILED:"]

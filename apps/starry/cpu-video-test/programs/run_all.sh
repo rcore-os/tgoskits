@@ -14,8 +14,9 @@
 #                      floors + flat-region structure. Fully synthetic source, no asset needed.
 #   video_meta       - CFR timing: frame count == round(dur*fps), resolution / pix_fmt / SAR / fps
 #                      exact, PTS strictly monotonic + evenly spaced dt == 1/fps.
-#   video_realassets - decode the real transcodes + assert codec/geometry/firstframe-sha/t2-sha vs
-#                      golden; honest-skip when $ASSET_DIR absent (the synthetic legs always gate).
+#   video_realassets - decode the real transcodes + assert codec/geometry/firstframe-sha and
+#                      bounded t2 content alignment + cross-codec pixel bounds against the
+#                      on-target ffv1 lossless frame; honest-skip when $ASSET_DIR is absent.
 set -u
 BIN=/opt/cpu-video-test
 export PATH="/usr/bin:/usr/local/bin:$PATH"
