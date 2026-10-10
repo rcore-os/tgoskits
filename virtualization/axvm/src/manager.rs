@@ -744,6 +744,8 @@ pub(crate) enum ControlMessage {
     Command(Command),
     /// An internal execution event posted by a vCPU task or device worker.
     Event(VcpuEvent),
+    /// A shared interrupt-controller event drained from the run's fixed ingress.
+    Interrupt(crate::irq::model::SourceEvent),
     RunStop {
         run: RunId,
         reason: StopReason,
@@ -1081,6 +1083,20 @@ impl ControlShared {
         self.mailbox_ready.notify_one();
     }
 
+    /// Posts one controller event after the fixed run ingress has been drained.
+    ///
+    /// The producer-side ingress never allocates or takes this mailbox mutex;
+    /// only the task-side signal worker calls this method.
+    pub(crate) fn post_interrupt(&self, event: crate::irq::model::SourceEvent) {
+        let mut mailbox = self.mailbox.lock_unpoisoned();
+        if mailbox.closed {
+            return;
+        }
+        mailbox.queue.push_back(ControlMessage::Interrupt(event));
+        drop(mailbox);
+        self.mailbox_ready.notify_one();
+    }
+
     pub(crate) fn request_run_stop(&self, run: RunId, reason: StopReason) -> AxVmResult {
         let mut mailbox = self.mailbox.lock_unpoisoned();
         if mailbox.closed {
@@ -1137,7 +1153,9 @@ impl ControlShared {
                 ControlMessage::Command(command) => {
                     command.reject(AxVmError::EntryClosed { vm: self.key });
                 }
-                ControlMessage::Event(_) | ControlMessage::RunStop { .. } => {}
+                ControlMessage::Event(_)
+                | ControlMessage::Interrupt(_)
+                | ControlMessage::RunStop { .. } => {}
                 ControlMessage::Guest { completion, .. } => {
                     completion.reject(AxVmError::EntryClosed { vm: self.key });
                 }

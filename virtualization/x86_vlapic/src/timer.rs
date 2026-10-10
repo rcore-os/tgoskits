@@ -223,7 +223,9 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
     /// Coalesces accumulated timer expirations into one local-APIC edge.
     pub(crate) fn take_pending_interrupt(&self) -> Option<u8> {
         let vector = self.pending_interrupt_vector()?;
-        (self.shared.pending.swap(0, Ordering::AcqRel) != 0).then_some(vector)
+        let ingress_pending = self.runtime.consume_timer_expiries();
+        let local_pending = self.shared.pending.swap(0, Ordering::AcqRel);
+        (local_pending != 0 || ingress_pending != 0).then_some(vector)
     }
 
     /// Restart the timer. Will not start the timer if it is not started.

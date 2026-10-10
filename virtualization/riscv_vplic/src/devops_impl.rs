@@ -11,12 +11,12 @@ use bitmaps::Bitmap;
 use crate::{
     VplicError, VplicResult,
     consts::*,
-    vplic::{VPlicGlobal, VplicCompletion},
+    vplic::{VPlicGlobal, VplicCompletion, VplicState},
 };
 
 const PLIC_PENDING_WORDS: usize = PLIC_NUM_SOURCES / 32;
 
-impl VPlicGlobal {
+impl VplicState {
     fn validate_irq_id(irq_id: usize) -> VplicResult {
         if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
             return Err(VplicError::InvalidSource {
@@ -30,16 +30,15 @@ impl VPlicGlobal {
     fn validate_assigned_irq(&self, irq_id: usize) -> VplicResult {
         Self::validate_irq_id(irq_id)?;
 
-        let assigned_irqs = self.assigned_irqs.lock_irqsave();
-        if !assigned_irqs.is_empty() && !assigned_irqs.get(irq_id) {
+        if !self.assigned_irqs.is_empty() && !self.assigned_irqs.get(irq_id) {
             return Err(VplicError::SourceNotAssigned { source_id: irq_id });
         }
         Ok(())
     }
 
-    fn update_pending_irq(&self, irq_id: usize, pending: bool) -> VplicResult {
+    fn update_pending_irq(&mut self, irq_id: usize, pending: bool) -> VplicResult {
         self.validate_assigned_irq(irq_id)?;
-        self.pending_irqs.lock_irqsave().set(irq_id, pending);
+        self.pending_irqs.set(irq_id, pending);
         Ok(())
     }
 
@@ -48,12 +47,12 @@ impl VPlicGlobal {
     /// Source ID 0 and IDs outside the PLIC source range are rejected. An
     /// empty assignment bitmap preserves the existing unrestricted behavior;
     /// once assignments are populated, only assigned sources are accepted.
-    pub fn set_pending(&self, irq_id: usize) -> VplicResult {
+    fn set_pending(&mut self, irq_id: usize) -> VplicResult {
         self.update_pending_irq(irq_id, true)
     }
 
     /// Clears the pending state of one interrupt source.
-    pub fn clear_pending(&self, irq_id: usize) -> VplicResult {
+    fn clear_pending(&mut self, irq_id: usize) -> VplicResult {
         self.update_pending_irq(irq_id, false)
     }
 
@@ -62,44 +61,39 @@ impl VPlicGlobal {
     /// Returns `true` when a low-to-high transition needs initial delivery.
     /// The asserted state remains controller-owned so completion can repend
     /// the source until the device lowers the line.
-    pub fn set_irq_line_level(&self, irq_id: usize, asserted: bool) -> VplicResult<bool> {
+    fn set_irq_line_level(&mut self, irq_id: usize, asserted: bool) -> VplicResult<bool> {
         self.validate_assigned_irq(irq_id)?;
-        let newly_asserted = {
-            let mut asserted_irqs = self.line_asserted_irqs.lock_irqsave();
-            let was_asserted = asserted_irqs.get(irq_id);
-            asserted_irqs.set(irq_id, asserted);
-            asserted && !was_asserted
-        };
-        self.pending_irqs.lock_irqsave().set(irq_id, asserted);
+        let was_asserted = self.line_asserted_irqs.get(irq_id);
+        self.line_asserted_irqs.set(irq_id, asserted);
+        let newly_asserted = asserted && !was_asserted;
+        self.pending_irqs.set(irq_id, asserted);
         Ok(newly_asserted)
     }
 
     /// Returns whether one interrupt source is pending.
-    pub fn is_pending(&self, irq_id: usize) -> VplicResult<bool> {
+    fn is_pending(&self, irq_id: usize) -> VplicResult<bool> {
         self.validate_assigned_irq(irq_id)?;
-        Ok(self.pending_irqs.lock_irqsave().get(irq_id))
+        Ok(self.pending_irqs.get(irq_id))
     }
 
     /// Reads the priority programmed by this guest.
     fn irq_priority(&self, irq_id: usize) -> VplicResult<u32> {
-        Ok(self.registers.lock_irqsave().priorities[irq_id])
+        Ok(self.registers.priorities[irq_id])
     }
 
     /// Reads the priority threshold configured for a PLIC context.
     fn context_threshold(&self, context_id: usize) -> VplicResult<u32> {
-        Ok(self.registers.lock_irqsave().thresholds[context_id])
+        Ok(self.registers.thresholds[context_id])
     }
 
     /// Reads one enable register word for a PLIC context.
     fn context_enable_mask(&self, context_id: usize, reg_index: usize) -> VplicResult<u32> {
-        Ok(self.registers.lock_irqsave().enable_masks[context_id][reg_index])
+        Ok(self.registers.enable_masks[context_id][reg_index])
     }
 
     /// Returns pending interrupts that are not currently in service.
     fn pending_inactive_irqs(&self) -> Bitmap<{ PLIC_NUM_SOURCES }> {
-        let pending_irqs = self.pending_irqs.lock_irqsave();
-        let active_irqs = self.active_irqs.lock_irqsave();
-        let mut candidates = *pending_irqs & !*active_irqs;
+        let mut candidates = self.pending_irqs & !self.active_irqs;
         // IRQ 0 is reserved by the PLIC specification and must never be claimed.
         candidates.set(0, false);
         candidates
@@ -142,7 +136,7 @@ impl VPlicGlobal {
     }
 
     /// Returns the next IRQ that should assert VSEIP for this context.
-    fn next_deliverable_irq(&self, context_id: usize) -> VplicResult<Option<usize>> {
+    pub(crate) fn next_deliverable_irq(&self, context_id: usize) -> VplicResult<Option<usize>> {
         let threshold = self.context_threshold(context_id)?;
         let candidate_irqs = self.pending_inactive_irqs();
         if let Some((irq_id, priority)) =
@@ -154,24 +148,8 @@ impl VPlicGlobal {
         Ok(None)
     }
 
-    /// Returns whether one guest context currently has a deliverable source.
-    ///
-    /// The vPLIC owns pending, active, enable, priority, threshold, and level
-    /// state. Architecture glue consumes this derived value when binding a
-    /// vCPU and programs VSEIP there; the controller never writes a physical
-    /// CPU's CSR on behalf of a different guest context.
-    pub fn context_has_deliverable_irq(&self, context_id: usize) -> VplicResult<bool> {
-        if context_id >= self.contexts_num {
-            return Err(VplicError::InvalidContext {
-                context: context_id,
-                contexts: self.contexts_num,
-            });
-        }
-        Ok(self.next_deliverable_irq(context_id)?.is_some())
-    }
-
     /// Claims the next enabled pending IRQ and moves it to the active set.
-    fn claim_next_irq(&self, context_id: usize) -> VplicResult<Option<usize>> {
+    fn claim_next_irq(&mut self, context_id: usize) -> VplicResult<Option<usize>> {
         loop {
             let candidate_irqs = self.pending_inactive_irqs();
             let Some((irq_id, _priority)) =
@@ -180,18 +158,75 @@ impl VPlicGlobal {
                 return Ok(None);
             };
 
-            let mut pending_irqs = self.pending_irqs.lock_irqsave();
-            let mut active_irqs = self.active_irqs.lock_irqsave();
-            if !pending_irqs.get(irq_id) || active_irqs.get(irq_id) {
+            if !self.pending_irqs.get(irq_id) || self.active_irqs.get(irq_id) {
                 continue;
             }
 
             // Claim moves the IRQ from pending to active until the guest
             // writes it back to the complete register.
-            pending_irqs.set(irq_id, false);
-            active_irqs.set(irq_id, true);
+            self.pending_irqs.set(irq_id, false);
+            self.active_irqs.set(irq_id, true);
             return Ok(Some(irq_id));
         }
+    }
+
+    /// Completes one active source and re-pends an asserted level source.
+    fn complete_source(&mut self, irq_id: usize) -> VplicResult<bool> {
+        self.validate_assigned_irq(irq_id)?;
+        if !self.active_irqs.get(irq_id) {
+            return Ok(false);
+        }
+        self.active_irqs.set(irq_id, false);
+        if self.line_asserted_irqs.get(irq_id) {
+            self.pending_irqs.set(irq_id, true);
+        }
+        Ok(true)
+    }
+}
+
+impl VPlicGlobal {
+    /// Marks one interrupt source as pending through one owner transaction.
+    pub fn set_pending(&self, irq_id: usize) -> VplicResult {
+        self.with_state_mut(|state| state.set_pending(irq_id))
+    }
+
+    /// Clears one pending interrupt source through one owner transaction.
+    pub fn clear_pending(&self, irq_id: usize) -> VplicResult {
+        self.with_state_mut(|state| state.clear_pending(irq_id))
+    }
+
+    /// Updates one level-triggered input without splitting line and pending
+    /// updates across independent locks.
+    pub fn set_irq_line_level(&self, irq_id: usize, asserted: bool) -> VplicResult<bool> {
+        self.with_state_mut(|state| state.set_irq_line_level(irq_id, asserted))
+    }
+
+    /// Completes one source through the controller owner transaction.
+    ///
+    /// The active bit is cleared before a still-asserted level is re-pended,
+    /// so the next delivery observes one complete, atomic state transition.
+    pub fn complete_source(&self, irq_id: usize) -> VplicResult<bool> {
+        self.with_state_mut(|state| state.complete_source(irq_id))
+    }
+
+    /// Returns whether one source is pending.
+    pub fn is_pending(&self, irq_id: usize) -> VplicResult<bool> {
+        self.with_state(|state| state.is_pending(irq_id))
+    }
+
+    /// Returns whether one context has a deliverable interrupt.
+    pub fn context_has_deliverable_irq(&self, context_id: usize) -> VplicResult<bool> {
+        if context_id >= self.contexts_num {
+            return Err(VplicError::InvalidContext {
+                context: context_id,
+                contexts: self.contexts_num,
+            });
+        }
+        self.with_state(|state| {
+            state
+                .next_deliverable_irq(context_id)
+                .map(|irq| irq.is_some())
+        })
     }
 }
 
@@ -222,11 +257,12 @@ impl VPlicGlobal {
                 });
             }
             let reg = addr - self.addr;
+            let mut state = self.state.lock();
             // info!("vPlicGlobal read reg {reg:#x} width {width:?}");
             match reg {
                 // priority
                 PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
-                    Ok(self.registers.lock_irqsave().priorities[reg / 4] as usize)
+                    Ok(state.registers.priorities[reg / 4] as usize)
                 }
                 // pending
                 PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
@@ -237,10 +273,9 @@ impl VPlicGlobal {
                     let bit_index_start = reg_index * 32;
                     let mut val: u32 = 0;
                     let mut bit_mask: u32 = 1;
-                    let pending_irqs = self.pending_irqs.lock_irqsave();
                     for i in 0..32 {
                         let irq_id = bit_index_start + i as usize;
-                        if irq_id != 0 && pending_irqs.get(irq_id) {
+                        if irq_id != 0 && state.pending_irqs.get(irq_id) {
                             val |= bit_mask;
                         }
                         bit_mask <<= 1;
@@ -257,7 +292,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    Ok(self.registers.lock_irqsave().enable_masks[context_id][reg_index] as usize)
+                    Ok(state.registers.enable_masks[context_id][reg_index] as usize)
                 }
                 // threshold
                 offset
@@ -272,7 +307,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    Ok(self.registers.lock_irqsave().thresholds[context_id] as usize)
+                    Ok(state.registers.thresholds[context_id] as usize)
                 }
                 // claim/complete
                 offset
@@ -291,7 +326,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    let Some(irq_id) = self.claim_next_irq(context_id)? else {
+                    let Some(irq_id) = state.claim_next_irq(context_id)? else {
                         return Ok(0);
                     };
                     Ok(irq_id)
@@ -302,6 +337,7 @@ impl VPlicGlobal {
                 }),
             }
         })();
+        self.with_state(|state| self.refresh_deliverable(state));
         Ok(result?)
     }
 
@@ -345,11 +381,12 @@ impl VPlicGlobal {
                 });
             }
             let reg = addr - self.addr;
+            let mut state = self.state.lock();
             // info!("vPlicGlobal write reg {reg:#x} width {width:?} val {val:#x}");
             match reg {
                 // priority
                 PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
-                    self.registers.lock_irqsave().priorities[reg / 4] = val as u32;
+                    state.registers.priorities[reg / 4] = val as u32;
                     Ok(None)
                 }
                 // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
@@ -365,7 +402,7 @@ impl VPlicGlobal {
                         if (val & bit_mask) != 0 {
                             let irq_id = reg_index * 32 + i;
                             if irq_id != 0 {
-                                self.update_pending_irq(irq_id, true)?;
+                                state.update_pending_irq(irq_id, true)?;
                             }
                         }
                         bit_mask <<= 1;
@@ -382,7 +419,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    self.registers.lock_irqsave().enable_masks[context_id][reg_index] = val as u32;
+                    state.registers.enable_masks[context_id][reg_index] = val as u32;
                     Ok(None)
                 }
                 // threshold
@@ -398,7 +435,7 @@ impl VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    self.registers.lock_irqsave().thresholds[context_id] = val as u32;
+                    state.registers.thresholds[context_id] = val as u32;
                     Ok(None)
                 }
                 // claim/complete
@@ -424,23 +461,17 @@ impl VPlicGlobal {
                     if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
                         return Ok(None);
                     }
-                    let asserted_irqs = self.line_asserted_irqs.lock_irqsave();
-                    let mut active_irqs = self.active_irqs.lock_irqsave();
-                    if !active_irqs.get(irq_id) {
-                        drop(active_irqs);
-                        drop(asserted_irqs);
+                    if !state.active_irqs.get(irq_id) {
                         return Ok(None);
                     }
 
                     // Completion belongs to the virtual controller. An
                     // optional host transaction is reported only after this
                     // canonical transition and every controller lock release.
-                    active_irqs.set(irq_id, false);
-                    drop(active_irqs);
-                    if asserted_irqs.get(irq_id) {
-                        self.pending_irqs.lock_irqsave().set(irq_id, true);
+                    state.active_irqs.set(irq_id, false);
+                    if state.line_asserted_irqs.get(irq_id) {
+                        state.pending_irqs.set(irq_id, true);
                     }
-                    drop(asserted_irqs);
                     Ok(Some(VplicCompletion::new(irq_id)))
                 }
                 _ => Err(VplicError::UnsupportedRegister {
@@ -449,6 +480,7 @@ impl VPlicGlobal {
                 }),
             }
         })();
+        self.with_state(|state| self.refresh_deliverable(state));
         Ok(result?)
     }
 }
@@ -504,13 +536,11 @@ mod tests {
     fn pending_inactive_irqs_excludes_reserved_irq_zero() {
         let vplic = VPlicGlobal::new(GuestPhysAddr::from(0x0c00_0000), Some(0x400000), 2).unwrap();
 
-        {
-            let mut pending_irqs = vplic.pending_irqs.lock_irqsave();
-            pending_irqs.set(0, true);
-            pending_irqs.set(1, true);
-        }
-
-        let candidates = vplic.pending_inactive_irqs();
+        vplic.with_state_mut(|state| {
+            state.pending_irqs.set(0, true);
+            state.pending_irqs.set(1, true);
+        });
+        let candidates = vplic.with_state(|state| state.pending_inactive_irqs());
 
         assert!(!candidates.get(0));
         assert!(candidates.get(1));

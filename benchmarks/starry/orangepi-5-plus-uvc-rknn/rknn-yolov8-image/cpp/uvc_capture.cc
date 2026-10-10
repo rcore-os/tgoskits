@@ -1,9 +1,13 @@
 #include "uvc_capture.h"
 
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <linux/videodev2.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <algorithm>
 
@@ -32,6 +36,41 @@ static bool load_symbol(void *lib, const char *name, void **out)
 
 #define LOAD_UVC_SYMBOL(api, field, symbol) \
     load_symbol((api)->lib, symbol, reinterpret_cast<void **>(&((api)->field)))
+
+// The camera uses V4L2_CID_EXPOSURE_AUTO_PRIORITY to decide whether exposure
+// may lengthen a frame beyond the requested stream interval.  Linux camera
+// drivers expose this as `exposure_dynamic_framerate`; leaving it enabled on
+// this sensor turns a negotiated 30 fps stream into a measured 10 fps stream.
+// Apply the control through the kernel UAPI before libuvc starts the stream so
+// the USB stream and the V4L2 control path share one source of truth.  Some
+// libuvc-only deployments have no video node; in that case the UVC default is
+// retained and the caller can still use the direct USB path.
+static bool disable_dynamic_framerate(const char *log_prefix)
+{
+    const char *paths[] = {"/dev/video0", "/dev/video1", NULL};
+    bool found = false;
+    for (int i = 0; paths[i] != NULL; ++i) {
+        int fd = open(paths[i], O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        found = true;
+        struct v4l2_control control = {};
+        control.id = V4L2_CID_EXPOSURE_AUTO_PRIORITY;
+        control.value = 0;
+        if (ioctl(fd, VIDIOC_S_CTRL, &control) == 0) {
+            printf("%s: exposure_dynamic_framerate=0 via %s\n", log_prefix, paths[i]);
+            close(fd);
+            return true;
+        }
+        printf("%s: failed to disable exposure_dynamic_framerate via %s\n", log_prefix, paths[i]);
+        close(fd);
+    }
+    if (!found) {
+        printf("%s: no V4L2 video node; keeping UVC camera defaults\n", log_prefix);
+    }
+    return false;
+}
 
 bool load_uvc_api(UvcApi *api)
 {
@@ -313,6 +352,11 @@ bool start_uvc_capture(UvcCaptureSession *session, const UvcCaptureOptions *opti
         stop_uvc_capture(session);
         return false;
     }
+
+    // Set the camera's exposure policy before libuvc claims the video
+    // interfaces.  The V4L2 node and libuvc otherwise contend for the same
+    // interface and the control request is rejected as busy.
+    (void)disable_dynamic_framerate(log_prefix);
 
     ret = session->api.open(session->dev, &session->devh);
     if (ret < 0) {

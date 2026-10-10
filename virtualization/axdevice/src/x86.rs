@@ -40,6 +40,13 @@ pub trait X86IoApicDeviceOps: Send + Sync {
 
     /// Broadcast a local APIC EOI to the IOAPIC.
     fn end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi>;
+
+    /// Completes an EOI for the source GSI captured at delivery time.
+    ///
+    /// The redirection entry may have been reprogrammed before the guest EOI
+    /// exit is handled, so completion must not rediscover the source from the
+    /// current guest vector.
+    fn end_of_interrupt_for_gsi(&self, gsi: usize) -> Option<IoApicEoi>;
 }
 
 /// Type-specific legacy PIC capability used by the x86 timer path.
@@ -215,6 +222,10 @@ impl X86IoApicDeviceOps for X86IoApicDevice {
 
     fn end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi> {
         self.inner.end_of_interrupt(vector)
+    }
+
+    fn end_of_interrupt_for_gsi(&self, gsi: usize) -> Option<IoApicEoi> {
+        self.inner.end_of_interrupt_for_gsi(gsi)
     }
 }
 

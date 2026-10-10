@@ -63,6 +63,7 @@ pub(crate) fn deliver<E>(
     let interrupt = PendingVcpuInterrupt {
         id: SUPERVISOR_SOFTWARE_INTERRUPT_ID,
         trigger: InterruptTriggerMode::LevelTriggered,
+        source: None,
     };
 
     for &target_vcpu_id in targets {
@@ -124,6 +125,7 @@ mod tests {
         PendingVcpuInterrupt {
             id: SUPERVISOR_SOFTWARE_INTERRUPT_ID,
             trigger: InterruptTriggerMode::LevelTriggered,
+            source: None,
         }
     }
 

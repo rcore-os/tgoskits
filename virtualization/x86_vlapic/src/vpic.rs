@@ -117,12 +117,17 @@ fn highest_priority(bits: u8) -> Option<u8> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct PicState {
+/// Mutable 8259 model owned by the interrupt-controller task.
+///
+/// This type deliberately has no synchronization primitive.  A single owner
+/// must apply a guest register write, source pulse, claim and EOI as one
+/// transaction through `&mut self`.
+pub struct PicCore {
     master: PicChip,
     slave: PicChip,
 }
 
-impl PicState {
+impl PicCore {
     const fn new() -> Self {
         Self {
             master: PicChip::new(0x08),
@@ -217,14 +222,14 @@ impl PicInterruptClaim {
 
 /// Guest-owned pair of legacy 8259-compatible interrupt controllers.
 pub struct EmulatedPic {
-    state: RawSpinLock<PicState>,
+    state: RawSpinLock<PicCore>,
 }
 
 impl EmulatedPic {
     /// Creates the reset-compatible master and slave PIC state.
     pub const fn new() -> Self {
         Self {
-            state: RawSpinLock::new(PicState::new()),
+            state: RawSpinLock::new(PicCore::new()),
         }
     }
 

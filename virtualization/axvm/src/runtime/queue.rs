@@ -144,7 +144,11 @@ impl QueuedVcpuInterrupt {
     /// same vector: a physical IRQ and an emulated source can coexist.
     fn has_same_source(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Virtual(left), Self::Virtual(right)) => left.id == right.id,
+            (Self::Virtual(left), Self::Virtual(right)) => match (left.source, right.source) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => left.id == right.id,
+                _ => false,
+            },
             #[cfg(target_arch = "x86_64")]
             (Self::LegacyPic { vector: left }, Self::LegacyPic { vector: right }) => left == right,
             #[cfg(target_arch = "loongarch64")]
@@ -418,6 +422,29 @@ impl VcpuSignalSlot {
             })
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn is_registered(&self, instance: VcpuInstance) -> bool {
+        self.state
+            .lock_irqsave()
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.instance == instance)
+    }
+
+    /// Returns the exact activation currently bound to this slot.
+    ///
+    /// This is used by task-side EOI completion when the caller does not have
+    /// to rely on a task extension being present. The returned identity is a
+    /// snapshot; the caller must still validate it at the owner boundary.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn current_instance(&self) -> Option<VcpuInstance> {
+        self.state
+            .lock_irqsave()
+            .registration
+            .as_ref()
+            .map(|registration| registration.instance)
+    }
+
     /// Publishes one source into this vCPU's run-owned queue.
     ///
     /// The queue and the pending flag belong to the run and the vCPU identity,
@@ -466,7 +493,7 @@ impl VcpuSignalSlot {
     }
 
     #[cfg(test)]
-    pub(crate) fn is_registered(&self) -> bool {
+    pub(crate) fn has_registration(&self) -> bool {
         self.state.lock_irqsave().registration.is_some()
     }
 }
@@ -480,6 +507,7 @@ mod tests {
         PendingVcpuInterrupt {
             id: VirtualInterruptId(id),
             trigger: InterruptTriggerMode::EdgeTriggered,
+            source: None,
         }
         .into()
     }
@@ -488,6 +516,7 @@ mod tests {
         PendingVcpuInterrupt {
             id: VirtualInterruptId(id),
             trigger: InterruptTriggerMode::LevelTriggered,
+            source: None,
         }
         .into()
     }
@@ -685,7 +714,7 @@ mod tests {
     #[test]
     fn inactive_slot_retains_sources_until_a_matching_activation_drains() {
         let slot = VcpuSignalSlot::new();
-        assert!(!slot.is_registered());
+        assert!(!slot.has_registration());
         assert!(!slot.has_pending());
 
         // The run still owns an acknowledged controller source even though this

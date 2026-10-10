@@ -21,6 +21,7 @@ use crate::{
     ax_err,
     engine::{VcpuAction, WaitReason},
     guest_memory::GuestMemoryPort,
+    irq::model::{PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
     runtime::{
         QueuedVcpuInterrupt,
         hvc::{GuestRequest, HyperCallAbi},
@@ -47,6 +48,18 @@ mod vtimer;
 use vgic::Aarch64VgicRuntimeKey;
 
 pub(crate) struct Aarch64Arch;
+
+pub(crate) fn apply_interrupt_event(
+    devices: &Arc<axdevice::DeviceRuntime>,
+    event: crate::irq::model::SourceEvent,
+) -> AxVmResult {
+    let owner = devices
+        .services()
+        .require::<Aarch64VgicRuntimeKey>()
+        .map_err(|error| AxVmError::device("resolve AArch64 interrupt owner", error))?;
+    crate::irq::model::InterruptControllerOwner::apply_source(owner.as_ref(), event)
+        .map_err(|error| AxVmError::interrupt("apply AArch64 interrupt event", error))
+}
 
 /// Binds one run's guest-memory capability into the architecture hardware that
 /// needs scoped copies of guest-owned tables.
@@ -210,16 +223,17 @@ impl ArchOps for Aarch64Arch {
     fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
         // Guest registers remain owned and saved. Only host producers, line
         // levels and the banked physical activation become quiescent here.
-        vcpu.timer_binding
-            .as_ref()
-            .ok_or(crate::AxVmError::Backend {
-                operation: "quiesce architectural timer",
-                source: BackendError::InvalidState,
-            })?
-            .reset()
-            .map_err(|source| {
-                crate::AxVmError::interrupt_controller("quiesce architectural timer", source)
-            })
+        VcpuLocalTimer::suspend(vcpu).map_err(|source| crate::AxVmError::Backend {
+            operation: "quiesce architectural timer",
+            source,
+        })
+    }
+
+    fn resume_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        VcpuLocalTimer::resume(vcpu).map_err(|source| crate::AxVmError::Backend {
+            operation: "resume architectural timer",
+            source,
+        })
     }
 
     fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
@@ -235,7 +249,19 @@ impl ArchOps for Aarch64Arch {
     fn before_guest(vcpu: &mut Self::VCpu, _vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
         // Only canonical timer levels are published while the backend is
         // loaded; host cancellation and remote completion ran before CPU pin.
-        vcpu.prepare_timer_entry()
+        VcpuLocalInterrupts::prepare_entry(vcpu)
+            .map(|_| ())
+            .map_err(|source| crate::AxVmError::Backend {
+                operation: "prepare AArch64 local interrupt state",
+                source,
+            })
+    }
+
+    fn inject_vcpu_interrupt(vcpu: &mut Self::VCpu, interrupt: PendingVcpuInterrupt) -> AxVmResult {
+        VcpuLocalInterrupts::inject(vcpu, interrupt).map_err(|source| crate::AxVmError::Backend {
+            operation: "inject AArch64 local interrupt",
+            source,
+        })
     }
 
     fn complete(
@@ -685,7 +711,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
         vgic_backend_result(binding.load())?;
         let run_result = arm_result(self.inner.run(&host_irq_guard));
         let timer_result = self.synchronize_timer();
-        let save_result = vgic_backend_result(binding.save());
+        let save_result = VcpuLocalInterrupts::save_exit(self);
         // IRQ tokens are CPU-local resources, not durable guest exits. Resolve
         // them even when timer/VGIC saving fails, while the original IRQ mask
         // and CPU binding are still held.
@@ -756,6 +782,58 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn set_return_value(&mut self, val: usize) {
         self.inner.set_return_value(val);
+    }
+}
+
+impl VcpuLocalInterrupts for AxvmArmVcpu {
+    type Snapshot = bool;
+    type Completion = ();
+    type Error = BackendError;
+
+    fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
+        self.prepare_timer_entry()
+            .map_err(|_| BackendError::InvalidState)?;
+        // The pending query is an advisory snapshot used by the wait path.
+        // A vCPU without a currently attached VGIC bank must still be able to
+        // reach the architecture entry protocol; the binding is required only
+        // when an interrupt is actually injected or the bank is loaded.
+        Ok(self.has_pending_interrupt().unwrap_or(false))
+    }
+
+    fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error> {
+        self.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+    }
+
+    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+        let binding = self
+            .vgic_binding
+            .as_ref()
+            .ok_or(BackendError::InvalidState)?;
+        vgic_backend_result(binding.save()).map(|_| ())
+    }
+}
+
+impl VcpuLocalTimer for AxvmArmVcpu {
+    type Error = BackendError;
+
+    fn suspend(&mut self) -> Result<(), Self::Error> {
+        self.timer_binding
+            .as_ref()
+            .ok_or(BackendError::InvalidState)?
+            .reset()
+            .map_err(|_| BackendError::InvalidState)
+    }
+
+    fn resume(&mut self) -> Result<(), Self::Error> {
+        self.timer_binding
+            .as_ref()
+            .ok_or(BackendError::InvalidState)?
+            .prepare_run()
+            .map_err(|_| BackendError::InvalidState)
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        self.suspend()
     }
 }
 

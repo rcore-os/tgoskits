@@ -1201,7 +1201,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             if injection.reinjected || self.allow_external_interrupt() {
                 self.set_interrupt_window(false);
                 if injection.needs_apic_accept() {
-                    let vlapic = &self.vlapic;
+                    let vlapic = &mut self.vlapic;
                     prepare_external_interrupt_injection(
                         &mut self
                             .cpu

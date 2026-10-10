@@ -25,6 +25,21 @@ pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
 
+/// Dispatches one queued shared-controller event on the architecture's
+/// lifecycle owner.  Keeping the key selection here avoids exposing private
+/// architecture modules to the generic service layer.
+pub(crate) fn apply_interrupt_event(
+    devices: &std::sync::Arc<axdevice::DeviceRuntime>,
+    event: crate::irq::model::SourceEvent,
+) -> crate::AxVmResult {
+    cfg_select! {
+        target_arch = "x86_64" => target::apply_interrupt_event(devices, event),
+        target_arch = "aarch64" => target::apply_interrupt_event(devices, event),
+        target_arch = "riscv64" => target::apply_interrupt_event(devices, event),
+        target_arch = "loongarch64" => target::apply_interrupt_event(devices, event),
+    }
+}
+
 pub(crate) fn boot_vcpu_ids(count: usize) -> std::ops::Range<usize> {
     cfg_select! {
         any(target_arch = "aarch64", target_arch = "riscv64") => 0..count.min(1),

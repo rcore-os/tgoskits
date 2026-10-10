@@ -208,7 +208,7 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
     }
 
     /// Registers the host callback for one absolute monotonic deadline.
-    fn arm(
+    pub(crate) fn arm(
         &mut self,
         deadline_ns: u64,
         vm_id: LoongArchVmId,

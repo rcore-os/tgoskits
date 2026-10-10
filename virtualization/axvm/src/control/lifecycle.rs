@@ -27,6 +27,9 @@ impl Owner {
         ports: Arc<DevicePorts>,
     ) -> AxVmResult {
         self.preparing_ports = Some(ports.clone());
+        // Hard-IRQ/controller producers publish only into this run's fixed
+        // ingress; the signal worker forwards the events to this owner task.
+        signals.bind_control(Arc::downgrade(&self.shared));
         self.vm.replace_access_ports(ports.access_ports());
         self.vm.clear_boot_payload();
         let memory = self.vm.prepare_memory_layout()?;

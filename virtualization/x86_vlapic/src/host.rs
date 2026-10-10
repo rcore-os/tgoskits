@@ -68,6 +68,14 @@ pub trait X86VlapicRuntimeOps: Send + Sync + 'static {
     /// busy-wait, and it must not require any lock the callback acquires.
     fn wait_timer_progress(&self);
 
+    /// Consumes host-timer ingress edges observed by the owning vCPU task.
+    ///
+    /// Implementations without a separate ingress may return zero; the
+    /// vLAPIC's owner-local pending state remains authoritative for them.
+    fn consume_timer_expiries(&self) -> u64 {
+        0
+    }
+
     /// Cancels a timer returned by this port and waits for its completion.
     ///
     /// Returns only once the callback has left the host timer queue and its

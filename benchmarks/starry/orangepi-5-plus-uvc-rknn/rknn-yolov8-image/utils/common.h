@@ -1,6 +1,8 @@
 #ifndef _RKNN_MODEL_ZOO_COMMON_H_
 #define _RKNN_MODEL_ZOO_COMMON_H_
 
+#include <stdint.h>
+
 /**
  * @brief Image pixel format
  *
@@ -26,6 +28,8 @@ typedef struct {
     unsigned char* virt_addr;
     int size;
     int fd;
+    /* Optional physical address for a device-owned DMA buffer. */
+    uint64_t phys_addr;
 } image_buffer_t;
 
 /**

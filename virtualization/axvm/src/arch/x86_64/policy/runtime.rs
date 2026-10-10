@@ -7,7 +7,10 @@ use core::{
 
 use raw_cpuid::CpuId;
 
-use crate::arch::x86_64::policy::{svm::*, vmx::*, *};
+use crate::{
+    arch::x86_64::policy::{svm::*, vmx::*, *},
+    irq::model::{PendingVcpuInterrupt, VcpuLocalInterrupts, VcpuLocalTimer},
+};
 
 const UNSELECTED: u8 = 0;
 const VMX: u8 = 1;
@@ -279,6 +282,56 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
     /// Set the guest return register value.
     pub fn set_return_value(&mut self, value: usize) {
         dispatch_vcpu!(self, set_return_value, value)
+    }
+}
+
+impl<H: X86HostOps, M: ControlMemory> VcpuLocalInterrupts for X86Vcpu<H, M> {
+    type Snapshot = bool;
+    type Completion = Option<u8>;
+    type Error = X86VcpuError;
+
+    fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
+        Ok(self.has_pending_event())
+    }
+
+    fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error> {
+        if interrupt
+            .source
+            .is_some_and(|source| source.controller != axdevice_base::InterruptControllerId::new(0))
+        {
+            return Err(X86VcpuError::InvalidInput);
+        }
+        self.inject_interrupt_with_trigger(
+            interrupt.id.0 as usize,
+            matches!(
+                interrupt.trigger,
+                axvm_types::InterruptTriggerMode::LevelTriggered
+            ),
+        )
+    }
+
+    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+        // VMX/SVM capture the local APIC EOI and pending timer vector while
+        // decoding the owned exit record. There is no second shared state to
+        // save at this boundary; returning an empty completion records that
+        // the backend has already completed the operation.
+        Ok(None)
+    }
+}
+
+impl<H: X86HostOps, M: ControlMemory> VcpuLocalTimer for X86Vcpu<H, M> {
+    type Error = X86VcpuError;
+
+    fn suspend(&mut self) -> Result<(), Self::Error> {
+        self.suspend_timer()
+    }
+
+    fn resume(&mut self) -> Result<(), Self::Error> {
+        self.resume_timer()
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        self.stop_timer()
     }
 }
 

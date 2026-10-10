@@ -14,9 +14,18 @@
 
 //! RISC-V virtual PLIC interrupt backend.
 
-use std::{collections::BTreeMap, sync::Arc, vec::Vec};
+use std::{
+    boxed::Box,
+    collections::BTreeMap,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
+    vec::Vec,
+};
 
 use ax_std::os::arceos::sync::RawSpinLock;
+use ax_sync::Mutex;
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{GuestPhysAddr, InterruptTriggerMode};
@@ -24,6 +33,10 @@ use riscv_vplic::*;
 
 use crate::{
     AxVmError, AxVmResult, ax_err, ax_err_type,
+    irq::model::{
+        InterruptControllerEndpoint, InterruptControllerOwner, InterruptSourceId, RunEpoch,
+        SourceEvent,
+    },
     services::{RunSignals, SignalError},
 };
 
@@ -59,14 +72,6 @@ impl RunKickBinding {
         self.signals.lock_irqsave().as_ref().cloned()
     }
 
-    /// Wakes one vCPU from hard-IRQ context after controller state is visible.
-    fn kick_from_irq(&self, vcpu_id: usize) -> Result<(), SignalError> {
-        match self.current() {
-            Some(signals) => signals.kick_from_irq(vcpu_id),
-            None => Err(SignalError::Closed),
-        }
-    }
-
     /// Wakes one vCPU from task context after controller state is visible.
     fn kick(&self, vcpu_id: usize) -> Result<(), SignalError> {
         match self.current() {
@@ -86,6 +91,79 @@ impl ServiceKey for RiscvPlicRuntimeKey {
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
+/// Fixed ingress used while the shared controller has no active run owner.
+///
+/// Wired callbacks may run in hard-IRQ context during the stop/activate window,
+/// so they cannot take the vPLIC's sleepable state mutex. Edge entries use
+/// counters rather than a boolean to preserve every source publication until a
+/// task owner drains them; level entries retain the final line state together
+/// with a dirty bit.
+struct RiscvPlicIngress {
+    edge_counts: Box<[AtomicU32]>,
+    level_state: Box<[AtomicBool]>,
+    level_dirty: Box<[AtomicBool]>,
+}
+
+impl RiscvPlicIngress {
+    fn new() -> Self {
+        let mut edge_counts = Vec::with_capacity(PLIC_NUM_SOURCES);
+        let mut level_state = Vec::with_capacity(PLIC_NUM_SOURCES);
+        let mut level_dirty = Vec::with_capacity(PLIC_NUM_SOURCES);
+        for _ in 0..PLIC_NUM_SOURCES {
+            edge_counts.push(AtomicU32::new(0));
+            level_state.push(AtomicBool::new(false));
+            level_dirty.push(AtomicBool::new(false));
+        }
+        Self {
+            edge_counts: edge_counts.into_boxed_slice(),
+            level_state: level_state.into_boxed_slice(),
+            level_dirty: level_dirty.into_boxed_slice(),
+        }
+    }
+
+    fn record_edge(&self, source: usize) -> bool {
+        let Some(counter) = self.edge_counts.get(source) else {
+            return false;
+        };
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_add(1) else {
+                return false;
+            };
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn record_level(&self, source: usize, asserted: bool) -> bool {
+        let (Some(state), Some(dirty)) =
+            (self.level_state.get(source), self.level_dirty.get(source))
+        else {
+            return false;
+        };
+        state.store(asserted, Ordering::Release);
+        dirty.store(true, Ordering::Release);
+        true
+    }
+
+    fn drain(&self) -> Vec<(usize, u32, Option<bool>)> {
+        let mut changes = Vec::new();
+        for source in 1..self.edge_counts.len() {
+            let edges = self.edge_counts[source].swap(0, Ordering::AcqRel);
+            let level = self.level_dirty[source]
+                .swap(false, Ordering::AcqRel)
+                .then(|| self.level_state[source].load(Ordering::Acquire));
+            if edges != 0 || level.is_some() {
+                changes.push((source, edges, level));
+            }
+        }
+        changes
+    }
+}
+
 /// VM-owned RISC-V interrupt-controller runtime.
 ///
 /// `VPlicGlobal` is the sole owner of pending, active, enable, priority,
@@ -94,8 +172,11 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 /// run-bound target captured at activation.
 pub(crate) struct RiscvPlicRuntime {
     vplic: Arc<VPlicGlobal>,
+    ingress: Arc<RiscvPlicIngress>,
     sink: Arc<RiscvPlicWiredSink>,
-    inputs: RawSpinLock<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    /// Task-side registration table. Hard IRQ paths use the fixed physical
+    /// ingress and never acquire this sleepable mutex.
+    inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
     kick: Arc<RunKickBinding>,
     physical: Arc<physical::PhysicalIrqBridge>,
     vcpu_count: usize,
@@ -123,11 +204,7 @@ impl RiscvPlicRuntime {
             );
         }
         let kick = Arc::new(RunKickBinding::new());
-        let sink = Arc::new(RiscvPlicWiredSink {
-            vplic: vplic.clone(),
-            kick: kick.clone(),
-            vcpu_count,
-        });
+        let ingress = Arc::new(RiscvPlicIngress::new());
         let physical = physical::PhysicalIrqBridge::new(
             vm_id,
             vplic.clone(),
@@ -136,10 +213,14 @@ impl RiscvPlicRuntime {
             physical_irqs,
             physical_target_cpu,
         )?;
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|runtime| Self {
             vplic,
-            sink,
-            inputs: RawSpinLock::new(BTreeMap::new()),
+            ingress: ingress.clone(),
+            sink: Arc::new(RiscvPlicWiredSink {
+                runtime: runtime.clone(),
+                ingress: ingress.clone(),
+            }),
+            inputs: Mutex::new(BTreeMap::new()),
             kick,
             physical,
             vcpu_count,
@@ -152,9 +233,37 @@ impl RiscvPlicRuntime {
     /// controller publication can never observe a stale run.
     pub(crate) fn activate(self: &Arc<Self>, signals: Arc<RunSignals>) -> AxVmResult {
         self.kick.bind(signals);
+        if let Err(error) = self.drain_deferred_ingress() {
+            self.kick.clear();
+            return Err(error);
+        }
         if let Err(error) = self.physical.start() {
             self.kick.clear();
             return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Applies callbacks received before this run had an owner.
+    fn drain_deferred_ingress(&self) -> AxVmResult {
+        for (source, edges, level) in self.ingress.drain() {
+            if edges != 0 {
+                self.vplic.set_pending(source).map_err(|error| {
+                    AxVmError::interrupt("drain RISC-V vPLIC edge ingress", error)
+                })?;
+            }
+            if let Some(asserted) = level {
+                self.vplic
+                    .set_irq_line_level(source, asserted)
+                    .map_err(|error| {
+                        AxVmError::interrupt("drain RISC-V vPLIC level ingress", error)
+                    })?;
+            }
+        }
+        for vcpu_id in 0..self.vcpu_count {
+            if let Err(error) = self.kick.kick(vcpu_id) {
+                trace!("RISC-V vPLIC deferred ingress could not wake vCPU {vcpu_id}: {error:?}");
+            }
         }
         Ok(())
     }
@@ -178,6 +287,37 @@ impl RiscvPlicRuntime {
             vplic: Arc::clone(&self.vplic),
             vcpu_count: self.vcpu_count,
         }
+    }
+
+    fn current_epoch(&self) -> AxVmResult<RunEpoch> {
+        self.kick
+            .current()
+            .map(|signals| signals.epoch())
+            .ok_or_else(|| AxVmError::interrupt("submit RISC-V vPLIC event", "no active run"))
+    }
+
+    fn validate_source(&self, source: InterruptSourceId) -> AxVmResult<usize> {
+        let controller = <Self as VirtualInterruptController>::id(self);
+        if source.controller != controller {
+            return ax_err!(
+                InvalidInput,
+                std::format!(
+                    "RISC-V vPLIC event targets controller {:?}, expected {:?}",
+                    source.controller,
+                    controller
+                )
+            );
+        }
+        let source_id = usize::try_from(source.source).map_err(|_| {
+            AxVmError::invalid_input("submit RISC-V vPLIC event", "source does not fit usize")
+        })?;
+        if source_id == 0 || source_id >= PLIC_NUM_SOURCES {
+            return ax_err!(
+                InvalidInput,
+                std::format!("RISC-V vPLIC source {source_id} is outside 1..{PLIC_NUM_SOURCES}")
+            );
+        }
+        Ok(source_id)
     }
 }
 
@@ -217,7 +357,7 @@ impl VplicDeliveryPort {
             .and_then(|context| context.checked_add(1))
             .ok_or_else(|| ax_err_type!(InvalidInput, "RISC-V vPLIC context ID overflow"))?;
         self.vplic
-            .context_has_deliverable_irq(context_id)
+            .context_deliverable(context_id)
             .map_err(|error| AxVmError::interrupt("derive RISC-V VSEIP state", error))
     }
 }
@@ -243,7 +383,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
         if source == 0 || source >= PLIC_NUM_SOURCES {
             return Err(IrqError::InvalidInput {
                 endpoint: InterruptEndpoint::Wired {
-                    controller: self.id(),
+                    controller: <Self as VirtualInterruptController>::id(self),
                     input,
                 },
                 operation: "open RISC-V vPLIC input",
@@ -253,12 +393,12 @@ impl VirtualInterruptController for RiscvPlicRuntime {
             });
         }
 
-        let mut inputs = self.inputs.lock_irqsave();
+        let mut inputs = self.inputs.lock();
         if let Some((registered_trigger, registered)) = inputs.get(&source) {
             if *registered_trigger != trigger {
                 return Err(IrqError::InvalidInput {
                     endpoint: InterruptEndpoint::Wired {
-                        controller: self.id(),
+                        controller: <Self as VirtualInterruptController>::id(self),
                         input,
                     },
                     operation: "open RISC-V vPLIC input",
@@ -271,16 +411,120 @@ impl VirtualInterruptController for RiscvPlicRuntime {
         }
 
         let sink: Arc<dyn WiredIrqSink> = self.sink.clone();
-        let registered = WiredIrqInput::new(self.id(), input, trigger, sink);
+        let registered = WiredIrqInput::new(
+            <Self as VirtualInterruptController>::id(self),
+            input,
+            trigger,
+            sink,
+        );
         inputs.insert(source, (trigger, registered.clone()));
         Ok(registered)
     }
 }
 
+impl InterruptControllerEndpoint for RiscvPlicRuntime {
+    type Error = AxVmError;
+
+    fn id(&self) -> InterruptControllerId {
+        <Self as VirtualInterruptController>::id(self)
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        <Self as VirtualInterruptController>::wired_input(self, input, trigger)
+    }
+
+    fn submit(&self, event: SourceEvent) -> AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let current = self.current_epoch()?;
+        if epoch != current {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(current.run()),
+            });
+        }
+        self.kick
+            .current()
+            .ok_or_else(|| AxVmError::interrupt("submit RISC-V interrupt", "no active run"))?
+            .publish_controller_event(event)
+            .map_err(|error| AxVmError::interrupt("queue RISC-V interrupt event", error))
+    }
+}
+
+impl InterruptControllerOwner for RiscvPlicRuntime {
+    type Error = AxVmError;
+
+    fn apply_source(&self, event: SourceEvent) -> AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let current = self.current_epoch()?;
+        if epoch != current {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(current.run()),
+            });
+        }
+
+        match event {
+            SourceEvent::Pulse { source, .. } => {
+                let source_id = self.validate_source(source)?;
+                self.vplic
+                    .set_pending(source_id)
+                    .map_err(|error| AxVmError::interrupt("pulse RISC-V vPLIC input", error))?;
+            }
+            SourceEvent::Level {
+                source, asserted, ..
+            } => {
+                let source_id = self.validate_source(source)?;
+                self.vplic
+                    .set_irq_line_level(source_id, asserted)
+                    .map_err(|error| AxVmError::interrupt("set RISC-V vPLIC line level", error))?;
+            }
+            SourceEvent::Eoi { token, .. } => {
+                if token.target.run != epoch.run {
+                    return Err(AxVmError::invalid_input(
+                        "complete RISC-V vPLIC source",
+                        "delivery token belongs to a different VM run",
+                    ));
+                }
+                if token.target.vcpu_id >= self.vcpu_count {
+                    return Err(AxVmError::invalid_input(
+                        "complete RISC-V vPLIC source",
+                        "delivery token targets an unknown vCPU",
+                    ));
+                }
+                let source_id = self.validate_source(token.source)?;
+                self.vplic
+                    .complete_source(source_id)
+                    .map_err(|error| AxVmError::interrupt("complete RISC-V vPLIC source", error))?;
+            }
+        }
+
+        // Canonical PLIC state is published before waking any vCPU. The wake
+        // path only carries the target identity and never acquires the PLIC
+        // mutex from an IRQ/raw guard.
+        for vcpu_id in 0..self.vcpu_count {
+            if let Err(error) = self.kick.kick(vcpu_id) {
+                trace!("RISC-V vPLIC event could not wake vCPU {vcpu_id}: {error:?}");
+            }
+        }
+        Ok(())
+    }
+}
+
 struct RiscvPlicWiredSink {
-    vplic: Arc<VPlicGlobal>,
-    kick: Arc<RunKickBinding>,
-    vcpu_count: usize,
+    runtime: Weak<RiscvPlicRuntime>,
+    ingress: Arc<RiscvPlicIngress>,
 }
 
 impl RiscvPlicWiredSink {
@@ -302,36 +546,72 @@ impl RiscvPlicWiredSink {
             detail: std::format!("{error}"),
         }
     }
-
-    fn publish_vcpu_kicks(&self, input: ControllerInputId) -> IrqResult {
-        for vcpu_id in 0..self.vcpu_count {
-            // The controller state is already published. A missing run-bound
-            // target only means no execution is active to wake, which is not a
-            // device failure.
-            if let Err(error) = self.kick.kick_from_irq(vcpu_id) {
-                trace!(
-                    "RISC-V vPLIC input {} could not wake vCPU {vcpu_id}: {error:?}",
-                    input.value()
-                );
-            }
-        }
-        Ok(())
-    }
 }
 
 impl WiredIrqSink for RiscvPlicWiredSink {
     fn set_level(&self, input: ControllerInputId, asserted: bool) -> IrqResult {
-        self.vplic
-            .set_irq_line_level(input.value(), asserted)
-            .map_err(|error| Self::backend_error(input, "set RISC-V vPLIC line level", error))?;
-        self.publish_vcpu_kicks(input)
+        let runtime = self.runtime.upgrade().ok_or_else(|| {
+            Self::backend_error(input, "set RISC-V vPLIC line level", "controller is closed")
+        })?;
+        if let Some(epoch) = runtime.kick.current().map(|signals| signals.epoch()) {
+            InterruptControllerEndpoint::submit(
+                runtime.as_ref(),
+                SourceEvent::Level {
+                    epoch,
+                    source: InterruptSourceId::new(
+                        <RiscvPlicRuntime as VirtualInterruptController>::id(runtime.as_ref()),
+                        input.value() as u32,
+                        None,
+                    ),
+                    asserted,
+                },
+            )
+            .map_err(|error| Self::backend_error(input, "set RISC-V vPLIC line level", error))
+        } else {
+            // Wiring may be prepared before the first run. The callback can
+            // still be a hard-IRQ callback, so retain the line in the fixed
+            // ingress and let the next task owner apply it.
+            if self.ingress.record_level(input.value(), asserted) {
+                Ok(())
+            } else {
+                Err(Self::backend_error(
+                    input,
+                    "set RISC-V vPLIC line level",
+                    "fixed ingress is full",
+                ))
+            }
+        }
     }
 
     fn pulse(&self, input: ControllerInputId) -> IrqResult {
-        self.vplic
-            .set_pending(input.value())
-            .map_err(|error| Self::backend_error(input, "pulse RISC-V vPLIC input", error))?;
-        self.publish_vcpu_kicks(input)
+        let runtime = self.runtime.upgrade().ok_or_else(|| {
+            Self::backend_error(input, "pulse RISC-V vPLIC input", "controller is closed")
+        })?;
+        if let Some(epoch) = runtime.kick.current().map(|signals| signals.epoch()) {
+            InterruptControllerEndpoint::submit(
+                runtime.as_ref(),
+                SourceEvent::Pulse {
+                    epoch,
+                    source: InterruptSourceId::new(
+                        <RiscvPlicRuntime as VirtualInterruptController>::id(runtime.as_ref()),
+                        input.value() as u32,
+                        None,
+                    ),
+                },
+            )
+            .map_err(|error| Self::backend_error(input, "pulse RISC-V vPLIC input", error))
+        } else {
+            // Preserve the edge without taking the task-only vPLIC mutex.
+            if self.ingress.record_edge(input.value()) {
+                Ok(())
+            } else {
+                Err(Self::backend_error(
+                    input,
+                    "pulse RISC-V vPLIC input",
+                    "fixed ingress is full",
+                ))
+            }
+        }
     }
 }
 
@@ -465,7 +745,10 @@ impl DeviceModel for RiscvPlicFactory {
         let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
             .with_service::<RiscvPlicRuntimeKey>(runtime.clone())?;
         bundle.push(DeviceRegistration::InterruptController(
-            ControllerRegistration::new(runtime.id(), controller),
+            ControllerRegistration::new(
+                <RiscvPlicRuntime as VirtualInterruptController>::id(&runtime),
+                controller,
+            ),
         ));
         Ok(bundle)
     }
@@ -545,39 +828,71 @@ mod tests {
         let runtime = runtime();
         let input = ControllerInputId::new(10);
 
-        let first = runtime
-            .wired_input(input, InterruptTriggerMode::LevelTriggered)
-            .unwrap();
-        let second = runtime
-            .wired_input(input, InterruptTriggerMode::LevelTriggered)
-            .unwrap();
+        let first = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            input,
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap();
+        let second = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            input,
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap();
 
         assert_eq!(first.input(), second.input());
         assert!(
-            runtime
-                .wired_input(input, InterruptTriggerMode::EdgeTriggered)
-                .is_err()
+            InterruptControllerEndpoint::wired_input(
+                &*runtime,
+                input,
+                InterruptTriggerMode::EdgeTriggered,
+            )
+            .is_err()
         );
     }
 
     #[test]
-    fn level_transition_updates_controller_state_without_a_bound_run() {
+    fn level_transition_is_deferred_without_a_bound_run() {
         let runtime = runtime();
-        let line = runtime
-            .wired_input(
-                ControllerInputId::new(10),
-                InterruptTriggerMode::LevelTriggered,
-            )
-            .unwrap()
-            .connect()
-            .unwrap();
+        let line = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            ControllerInputId::new(10),
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
 
-        // The controller is the sole owner of line and pending state. A wake
-        // with no bound run must not turn a device transition into an error.
+        // A callback without a bound run must not take the task-only state
+        // mutex. The next task owner drains the fixed ingress instead.
         line.assert().unwrap();
+        assert!(!runtime.vplic.is_pending(10).unwrap());
+        runtime.drain_deferred_ingress().unwrap();
         assert!(runtime.vplic.is_pending(10).unwrap());
 
         line.deassert().unwrap();
+        runtime.drain_deferred_ingress().unwrap();
         assert!(!runtime.vplic.is_pending(10).unwrap());
+    }
+
+    #[test]
+    fn edge_pulses_are_counted_in_the_pre_run_ingress() {
+        let runtime = runtime();
+        let line = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            ControllerInputId::new(10),
+            InterruptTriggerMode::EdgeTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
+
+        line.pulse().unwrap();
+        line.pulse().unwrap();
+        assert_eq!(runtime.ingress.edge_counts[10].load(Ordering::Acquire), 2);
+        runtime.drain_deferred_ingress().unwrap();
+        assert_eq!(runtime.ingress.edge_counts[10].load(Ordering::Acquire), 0);
+        assert!(runtime.vplic.is_pending(10).unwrap());
     }
 }

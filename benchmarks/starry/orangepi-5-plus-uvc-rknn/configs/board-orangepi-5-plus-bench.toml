@@ -1,4 +1,5 @@
 board_type = "OrangePi-5-Plus"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?m)^uvc-fps: error: .*$",
@@ -14,10 +15,15 @@ fail_regex = [
 ]
 timeout = 240
 
+# Use the interactive Starry shell required by the board runner. Without an
+# explicit init, the board's Linux rootfs init starts systemd and freezes
+# before the benchmark command can be delivered.
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
 shell_cmd = '''
-echo UVC_RKNN_BENCH_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_bench --validate-list validation/images.txt --expected validation/expected.txt --min-confidence 25 --core-mask all --profile && ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 --report-interval-sec 5 --min-confidence 25 --core-mask all --profile && echo UVC_RKNN_BENCH_DONE
+echo UVC_RKNN_BENCH_BEGIN && cd /rknn_yolov8_image && export LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-} && ./rknn_yolov8_bench --validate-list validation/images.txt --expected validation/expected.txt --min-confidence 25 --core-mask all --profile && ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 --report-interval-sec 5 --min-confidence 25 --core-mask all --profile && echo UVC_RKNN_BENCH_DONE
 '''
 success_regex = [
   "(?m)^UVC_RKNN_VALIDATE_PASS images=3$",

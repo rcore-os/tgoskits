@@ -1998,6 +1998,10 @@ mod tests {
         fn end_of_interrupt(&self, _vector: u8) -> Option<x86_vlapic::IoApicEoi> {
             None
         }
+
+        fn end_of_interrupt_for_gsi(&self, _gsi: usize) -> Option<x86_vlapic::IoApicEoi> {
+            None
+        }
     }
 
     impl Device for AccessAwareDevice {

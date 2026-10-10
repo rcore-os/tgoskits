@@ -12,6 +12,9 @@ use crate::{
         AxvmX86Vcpu, X86DeliveryPort, X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
     },
+    irq::model::{
+        DeliveryToken, InterruptControllerEndpoint, InterruptControllerOwner, SourceEvent,
+    },
     services::{RunServices, RunSignals},
     sync::MutexExt,
 };
@@ -590,57 +593,63 @@ pub fn drain_pending_wired_irqs(
 pub fn inject_pending_ioapic_irq_after_eoi(services: &RunServices, vcpu_id: usize, vector: u8) {
     let devices = services.devices();
     let interrupt_services = devices.services();
-    let Some(eoi) = interrupt_services
-        .require::<X86InterruptDomainKey>()
+    let Some(domain) = interrupt_services
+        .require::<X86InterruptDomainRuntimeKey>()
         .ok()
-        .and_then(|ioapic| ioapic.end_of_interrupt(vector))
     else {
         return;
     };
-    let pending = eoi.pending;
-    if should_rearm_forwarded_host_gsi_after_eoi(pending)
-        && let Some(domain) = interrupt_services
-            .require::<X86InterruptDomainRuntimeKey>()
-            .ok()
-    {
-        unmask_forwarded_host_gsi(&domain.delivery_port(), eoi.gsi);
-    }
-
-    let Some(irq) = pending else {
+    let Some(signals) = domain.delivery_port().current_signals() else {
         return;
     };
-
-    trace!(
-        "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
-        irq.vector
-    );
-    let trigger = if irq.level_triggered {
-        InterruptTriggerMode::LevelTriggered
-    } else {
-        InterruptTriggerMode::EdgeTriggered
+    let port = domain.delivery_port();
+    let source = port.take_delivery_source(vcpu_id, vector).or_else(|| {
+        // LAPIC vectors that were injected before the source ledger was
+        // installed (or vectors from an emulated local source) retain the
+        // old best-effort lookup. IOAPIC deliveries always take the first
+        // branch, so a guest RTE rewrite cannot change their source.
+        let source = port.source_for_vector(vector);
+        if source.is_some() {
+            warn!("using current x86 IOAPIC route for untracked EOI vector {vector:#x}");
+        }
+        source
+    });
+    let Some(source) = source else {
+        return;
     };
-    publish_virtual(services.signals(), vcpu_id, irq.vector, trigger);
-}
-
-/// Publishes one virtual interrupt to a target vCPU and wakes its owner.
-fn publish_virtual(
-    signals: &Arc<crate::services::RunSignals>,
-    target_vcpu_id: usize,
-    vector: u8,
-    trigger: InterruptTriggerMode,
-) {
-    use crate::irq::model::{PendingVcpuInterrupt, VirtualInterruptId};
-
-    let interrupt = PendingVcpuInterrupt {
-        id: VirtualInterruptId(vector.into()),
-        trigger,
+    let Some(instance) = signals.current_instance(vcpu_id) else {
+        // The run is already retiring this vCPU. Its host forwarding leases are
+        // retired by the lifecycle owner, so there is no live guest delivery
+        // to complete here.
+        warn!("ignoring x86 EOI {vector:#x}: vCPU {vcpu_id} is not active");
+        return;
     };
-    if let Err(error) = signals.publish(target_vcpu_id, interrupt) {
-        warn!("failed to publish x86 virtual interrupt {vector:#x}: {error:?}");
+    if instance.run != signals.run_id() {
+        warn!(
+            "ignoring x86 EOI {vector:#x}: vCPU instance {:?} belongs to another run",
+            instance
+        );
         return;
     }
-    if let Err(error) = signals.kick(target_vcpu_id) {
-        warn!("failed to kick x86 vCPU {target_vcpu_id} for vector {vector:#x}: {error:?}");
+    let event = SourceEvent::Eoi {
+        epoch: signals.epoch(),
+        token: DeliveryToken {
+            source,
+            target: instance,
+            sequence: port.next_delivery_sequence(),
+        },
+    };
+    if let Err(error) = InterruptControllerEndpoint::submit(domain.as_ref(), event) {
+        // EOI is a completion edge, so a full/closed deferred queue must not
+        // silently leave remote-IRR or a forwarded host GSI latched. This path
+        // is task context after the vCPU backend has been unloaded; applying
+        // the same owner operation synchronously is the bounded recovery.
+        warn!(
+            "failed to queue x86 IOAPIC EOI for vector {vector:#x}: {error:?}; applying directly"
+        );
+        if let Err(error) = InterruptControllerOwner::apply_source(domain.as_ref(), event) {
+            warn!("failed to complete x86 IOAPIC EOI for vector {vector:#x}: {error:?}");
+        }
     }
 }
 
@@ -675,6 +684,16 @@ pub fn publish_pic_interrupt_after_write(services: &RunServices, vcpu_id: usize)
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
     !pending.is_some_and(|irq| irq.level_triggered)
+}
+
+pub(super) fn rearm_forwarded_host_gsi_after_eoi(
+    port: &X86DeliveryPort,
+    gsi: usize,
+    pending: Option<x86_vlapic::IoApicInterrupt>,
+) {
+    if should_rearm_forwarded_host_gsi_after_eoi(pending) {
+        unmask_forwarded_host_gsi(port, gsi);
+    }
 }
 
 pub fn drain_pending_ioapic_irqs(
@@ -1005,6 +1024,10 @@ mod tests {
         }
 
         fn end_of_interrupt(&self, _vector: u8) -> Option<x86_vlapic::IoApicEoi> {
+            None
+        }
+
+        fn end_of_interrupt_for_gsi(&self, _gsi: usize) -> Option<x86_vlapic::IoApicEoi> {
             None
         }
     }

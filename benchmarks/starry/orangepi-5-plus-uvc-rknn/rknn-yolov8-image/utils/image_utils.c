@@ -1,8 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <stdint.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "im2d.h"
 #include "drmrga.h"
@@ -583,6 +588,145 @@ static int get_rga_fmt(image_format_t fmt) {
     }
 }
 
+/*
+ * RGA2 is MMU-off.  A malloc buffer is only a process virtual address and
+ * cannot be imported safely by the kernel RGA endpoint.  Use the dma-heap
+ * contract already shared by the Starry JPEG/NPU paths for the short-lived
+ * source and destination staging buffers.  The CPU copies are bounded by one
+ * camera frame and one model input; the resize and colorspace work remains on
+ * RGA instead of the 640x640 scalar loop.
+ */
+struct dma_heap_allocation_data {
+    uint64_t len;
+    uint32_t fd;
+    uint32_t fd_flags;
+    uint64_t heap_flags;
+};
+
+#define DMA_HEAP_IOCTL_ALLOC _IOWR('H', 0, struct dma_heap_allocation_data)
+
+static int alloc_dma_staging(size_t size, void **mapped, int *buffer_fd)
+{
+    const char *heaps[] = {"/dev/dma_heap/system", "/dev/dma_heap/cma", NULL};
+    if (mapped == NULL || buffer_fd == NULL || size == 0) {
+        return -1;
+    }
+    *mapped = NULL;
+    *buffer_fd = -1;
+    for (size_t i = 0; heaps[i] != NULL; ++i) {
+        int heap_fd = open(heaps[i], O_RDWR | O_CLOEXEC);
+        if (heap_fd < 0) {
+            continue;
+        }
+        struct dma_heap_allocation_data request = {
+            .len = (uint64_t)size,
+            .fd = 0,
+            .fd_flags = (uint32_t)(O_RDWR | O_CLOEXEC),
+            .heap_flags = 0,
+        };
+        if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &request) < 0 || request.fd == 0) {
+            close(heap_fd);
+            continue;
+        }
+        close(heap_fd);
+        void *mapping = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, (int)request.fd, 0);
+        if (mapping == MAP_FAILED) {
+            close((int)request.fd);
+            continue;
+        }
+        *mapped = mapping;
+        *buffer_fd = (int)request.fd;
+        return 0;
+    }
+    return -1;
+}
+
+static void free_dma_staging(void *mapped, size_t size, int buffer_fd)
+{
+    if (mapped != NULL && size != 0) {
+        munmap(mapped, size);
+    }
+    if (buffer_fd >= 0) {
+        close(buffer_fd);
+    }
+}
+
+typedef struct {
+    void *mapped;
+    int fd;
+    size_t size;
+} dma_staging_buffer_t;
+
+/*
+ * convert_image is called by the single inference owner in the benchmark.  Keep the
+ * dma-buf mappings in that owner thread so every frame only pays the bounded CPU copy;
+ * opening the heap, allocating a dma-buf, and mapping it are setup work, not a frame
+ * operation.  A thread-local cache also avoids putting a sleep mutex in the image/RGA
+ * path or sharing an fd between independent capture owners.
+ */
+static _Thread_local dma_staging_buffer_t dma_src_cache = {NULL, -1, 0};
+static _Thread_local dma_staging_buffer_t dma_dst_cache = {NULL, -1, 0};
+
+typedef struct {
+    void *identity;
+    int fd;
+    uint32_t width;
+    uint32_t height;
+    int format;
+    rga_buffer_handle_t handle;
+} rga_import_cache_t;
+
+static _Thread_local rga_import_cache_t rga_src_cache = {NULL, -1, 0, 0, 0, 0};
+static _Thread_local rga_import_cache_t rga_dst_cache = {NULL, -1, 0, 0, 0, 0};
+
+static int ensure_dma_staging(size_t size, dma_staging_buffer_t *buffer)
+{
+    if (buffer == NULL || size == 0) {
+        return -1;
+    }
+    if (buffer->mapped != NULL && buffer->fd >= 0 && buffer->size >= size) {
+        return 0;
+    }
+
+    void *mapped = NULL;
+    int fd = -1;
+    if (alloc_dma_staging(size, &mapped, &fd) != 0) {
+        return -1;
+    }
+
+    free_dma_staging(buffer->mapped, buffer->size, buffer->fd);
+    buffer->mapped = mapped;
+    buffer->fd = fd;
+    buffer->size = size;
+    return 0;
+}
+
+static rga_buffer_handle_t import_staging_handle(
+    rga_import_cache_t *cache,
+    void *identity,
+    int fd,
+    const im_handle_param_t *param)
+{
+    if (cache == NULL || param == NULL || fd < 0) {
+        return 0;
+    }
+    if (cache->handle > 0 && cache->identity == identity && cache->fd == fd &&
+        cache->width == param->width && cache->height == param->height &&
+        cache->format == (int)param->format) {
+        return cache->handle;
+    }
+    if (cache->handle > 0) {
+        releasebuffer_handle(cache->handle);
+    }
+    rga_buffer_handle_t handle = importbuffer_fd(fd, (im_handle_param_t *)param);
+    if (handle <= 0) {
+        *cache = (rga_import_cache_t){NULL, -1, 0, 0, 0, 0};
+        return 0;
+    }
+    *cache = (rga_import_cache_t){identity, fd, param->width, param->height, (int)param->format, handle};
+    return handle;
+}
+
 int get_image_size(image_buffer_t* image)
 {
     if (image == NULL) {
@@ -612,15 +756,41 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
     int srcHeight = src_img->height;
     void *src = src_img->virt_addr;
     int src_fd = src_img->fd;
-    void *src_phy = NULL;
+    void *src_phy = src_img->phys_addr != 0 ? (void *)(uintptr_t)src_img->phys_addr : NULL;
     int srcFmt = get_rga_fmt(src_img->format);
 
     int dstWidth = dst_img->width;
     int dstHeight = dst_img->height;
     void *dst = dst_img->virt_addr;
     int dst_fd = dst_img->fd;
-    void *dst_phy = NULL;
+    void *dst_phy = dst_img->phys_addr != 0 ? (void *)(uintptr_t)dst_img->phys_addr : NULL;
     int dstFmt = get_rga_fmt(dst_img->format);
+
+    void *staged_src = NULL;
+    void *staged_dst = NULL;
+    size_t staged_dst_size = 0;
+
+    if (src_fd <= 0 && src_phy == NULL) {
+        size_t src_size = src_img->size > 0 ? (size_t)src_img->size : (size_t)get_image_size(src_img);
+        if (src == NULL || ensure_dma_staging(src_size, &dma_src_cache) != 0) {
+            printf("RGA source dma staging allocation failed\n");
+            return -1;
+        }
+        memcpy(dma_src_cache.mapped, src, src_size);
+        staged_src = dma_src_cache.mapped;
+        src = staged_src;
+        src_fd = dma_src_cache.fd;
+    }
+    if (dst_fd <= 0 && dst_phy == NULL) {
+        staged_dst_size = dst_img->size > 0 ? (size_t)dst_img->size : (size_t)get_image_size(dst_img);
+        if (dst == NULL || ensure_dma_staging(staged_dst_size, &dma_dst_cache) != 0) {
+            printf("RGA destination dma staging allocation failed\n");
+            return -1;
+        }
+        staged_dst = dma_dst_cache.mapped;
+        dst = staged_dst;
+        dst_fd = dma_dst_cache.fd;
+    }
 
     int rotate = 0;
 
@@ -693,7 +863,7 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
         if (src_phy != NULL) {
             rga_handle_src = importbuffer_physicaladdr((uint64_t)src_phy, &in_param);
         } else if (src_fd > 0) {
-            rga_handle_src = importbuffer_fd(src_fd, &in_param);
+            rga_handle_src = import_staging_handle(&rga_src_cache, src, src_fd, &in_param);
         } else {
             rga_handle_src = importbuffer_virtualaddr(src, &in_param);
         }
@@ -717,7 +887,7 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
         if (dst_phy != NULL) {
             rga_handle_dst = importbuffer_physicaladdr((uint64_t)dst_phy, &dst_param);
         } else if (dst_fd > 0) {
-            rga_handle_dst = importbuffer_fd(dst_fd, &dst_param);
+            rga_handle_dst = import_staging_handle(&rga_dst_cache, dst, dst_fd, &dst_param);
         } else {
             rga_handle_dst = importbuffer_virtualaddr(dst, &dst_param);
         }
@@ -765,12 +935,16 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
     }
 
 err:
-    if (rga_handle_src > 0) {
+    if (rga_handle_src > 0 && rga_handle_src != rga_src_cache.handle) {
         releasebuffer_handle(rga_handle_src);
     }
 
-    if (rga_handle_dst > 0) {
+    if (rga_handle_dst > 0 && rga_handle_dst != rga_dst_cache.handle) {
         releasebuffer_handle(rga_handle_dst);
+    }
+
+    if (ret == 0 && staged_dst != NULL && dst_img->virt_addr != NULL) {
+        memcpy(dst_img->virt_addr, staged_dst, staged_dst_size);
     }
 
     // printf("finish\n");

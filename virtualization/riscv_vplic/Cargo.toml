@@ -14,7 +14,7 @@ license = "Apache-2.0"
 default = []
 
 [dependencies]
-ax-sync.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 bitmaps = { version = "3.2", default-features = false }
