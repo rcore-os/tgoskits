@@ -40,8 +40,22 @@ echo "$RUNC_SHA256  $STAGING/usr/bin/runc" | sha256sum -c -
 
 # The verify step runs on the host-side guest sh: exec the aarch64 ELF
 # through qemu explicitly (direct execve of a foreign-arch binary does not
-# go through binfmt here). In the real guest runc runs natively.
-qemu-aarch64 -L "$STAGING" "$STAGING/usr/bin/runc" --version || {
+# go through binfmt here). In the real guest runc runs natively. Use the
+# same candidate order as the axbuild qemu-user selection
+# (`qemu-aarch64-static`, then `qemu-aarch64`) so a host that only installs
+# the static variant keeps preparing this case.
+QEMU_AARCH64=
+for candidate in qemu-aarch64-static qemu-aarch64; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        QEMU_AARCH64="$candidate"
+        break
+    fi
+done
+[ -n "$QEMU_AARCH64" ] || {
+    echo "prebuild: neither qemu-aarch64-static nor qemu-aarch64 is on PATH" >&2
+    exit 1
+}
+"$QEMU_AARCH64" -L "$STAGING" "$STAGING/usr/bin/runc" --version || {
     echo "prebuild: downloaded runc is not executable" >&2
     exit 1
 }
