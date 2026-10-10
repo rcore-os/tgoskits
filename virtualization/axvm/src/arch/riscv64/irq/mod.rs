@@ -15,8 +15,12 @@
 //! RISC-V virtual PLIC interrupt backend.
 
 use std::{
+    boxed::Box,
     collections::BTreeMap,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     vec::Vec,
 };
 
@@ -87,6 +91,79 @@ impl ServiceKey for RiscvPlicRuntimeKey {
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
+/// Fixed ingress used while the shared controller has no active run owner.
+///
+/// Wired callbacks may run in hard-IRQ context during the stop/activate window,
+/// so they cannot take the vPLIC's sleepable state mutex. Edge entries use
+/// counters rather than a boolean to preserve every source publication until a
+/// task owner drains them; level entries retain the final line state together
+/// with a dirty bit.
+struct RiscvPlicIngress {
+    edge_counts: Box<[AtomicU32]>,
+    level_state: Box<[AtomicBool]>,
+    level_dirty: Box<[AtomicBool]>,
+}
+
+impl RiscvPlicIngress {
+    fn new() -> Self {
+        let mut edge_counts = Vec::with_capacity(PLIC_NUM_SOURCES);
+        let mut level_state = Vec::with_capacity(PLIC_NUM_SOURCES);
+        let mut level_dirty = Vec::with_capacity(PLIC_NUM_SOURCES);
+        for _ in 0..PLIC_NUM_SOURCES {
+            edge_counts.push(AtomicU32::new(0));
+            level_state.push(AtomicBool::new(false));
+            level_dirty.push(AtomicBool::new(false));
+        }
+        Self {
+            edge_counts: edge_counts.into_boxed_slice(),
+            level_state: level_state.into_boxed_slice(),
+            level_dirty: level_dirty.into_boxed_slice(),
+        }
+    }
+
+    fn record_edge(&self, source: usize) -> bool {
+        let Some(counter) = self.edge_counts.get(source) else {
+            return false;
+        };
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_add(1) else {
+                return false;
+            };
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn record_level(&self, source: usize, asserted: bool) -> bool {
+        let (Some(state), Some(dirty)) =
+            (self.level_state.get(source), self.level_dirty.get(source))
+        else {
+            return false;
+        };
+        state.store(asserted, Ordering::Release);
+        dirty.store(true, Ordering::Release);
+        true
+    }
+
+    fn drain(&self) -> Vec<(usize, u32, Option<bool>)> {
+        let mut changes = Vec::new();
+        for source in 1..self.edge_counts.len() {
+            let edges = self.edge_counts[source].swap(0, Ordering::AcqRel);
+            let level = self.level_dirty[source]
+                .swap(false, Ordering::AcqRel)
+                .then(|| self.level_state[source].load(Ordering::Acquire));
+            if edges != 0 || level.is_some() {
+                changes.push((source, edges, level));
+            }
+        }
+        changes
+    }
+}
+
 /// VM-owned RISC-V interrupt-controller runtime.
 ///
 /// `VPlicGlobal` is the sole owner of pending, active, enable, priority,
@@ -95,6 +172,7 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 /// run-bound target captured at activation.
 pub(crate) struct RiscvPlicRuntime {
     vplic: Arc<VPlicGlobal>,
+    ingress: Arc<RiscvPlicIngress>,
     sink: Arc<RiscvPlicWiredSink>,
     /// Task-side registration table. Hard IRQ paths use the fixed physical
     /// ingress and never acquire this sleepable mutex.
@@ -126,6 +204,7 @@ impl RiscvPlicRuntime {
             );
         }
         let kick = Arc::new(RunKickBinding::new());
+        let ingress = Arc::new(RiscvPlicIngress::new());
         let physical = physical::PhysicalIrqBridge::new(
             vm_id,
             vplic.clone(),
@@ -136,8 +215,10 @@ impl RiscvPlicRuntime {
         )?;
         Ok(Arc::new_cyclic(|runtime| Self {
             vplic,
+            ingress: ingress.clone(),
             sink: Arc::new(RiscvPlicWiredSink {
                 runtime: runtime.clone(),
+                ingress: ingress.clone(),
             }),
             inputs: Mutex::new(BTreeMap::new()),
             kick,
@@ -152,9 +233,37 @@ impl RiscvPlicRuntime {
     /// controller publication can never observe a stale run.
     pub(crate) fn activate(self: &Arc<Self>, signals: Arc<RunSignals>) -> AxVmResult {
         self.kick.bind(signals);
+        if let Err(error) = self.drain_deferred_ingress() {
+            self.kick.clear();
+            return Err(error);
+        }
         if let Err(error) = self.physical.start() {
             self.kick.clear();
             return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Applies callbacks received before this run had an owner.
+    fn drain_deferred_ingress(&self) -> AxVmResult {
+        for (source, edges, level) in self.ingress.drain() {
+            if edges != 0 {
+                self.vplic.set_pending(source).map_err(|error| {
+                    AxVmError::interrupt("drain RISC-V vPLIC edge ingress", error)
+                })?;
+            }
+            if let Some(asserted) = level {
+                self.vplic
+                    .set_irq_line_level(source, asserted)
+                    .map_err(|error| {
+                        AxVmError::interrupt("drain RISC-V vPLIC level ingress", error)
+                    })?;
+            }
+        }
+        for vcpu_id in 0..self.vcpu_count {
+            if let Err(error) = self.kick.kick(vcpu_id) {
+                trace!("RISC-V vPLIC deferred ingress could not wake vCPU {vcpu_id}: {error:?}");
+            }
         }
         Ok(())
     }
@@ -415,6 +524,7 @@ impl InterruptControllerOwner for RiscvPlicRuntime {
 
 struct RiscvPlicWiredSink {
     runtime: Weak<RiscvPlicRuntime>,
+    ingress: Arc<RiscvPlicIngress>,
 }
 
 impl RiscvPlicWiredSink {
@@ -458,14 +568,18 @@ impl WiredIrqSink for RiscvPlicWiredSink {
             )
             .map_err(|error| Self::backend_error(input, "set RISC-V vPLIC line level", error))
         } else {
-            // Wiring may be prepared before the first run. There is no epoch
-            // to attach in that state, so publish only the canonical owner
-            // state and defer wake-up until activation.
-            runtime
-                .vplic
-                .set_irq_line_level(input.value(), asserted)
-                .map(|_| ())
-                .map_err(|error| Self::backend_error(input, "set RISC-V vPLIC line level", error))
+            // Wiring may be prepared before the first run. The callback can
+            // still be a hard-IRQ callback, so retain the line in the fixed
+            // ingress and let the next task owner apply it.
+            if self.ingress.record_level(input.value(), asserted) {
+                Ok(())
+            } else {
+                Err(Self::backend_error(
+                    input,
+                    "set RISC-V vPLIC line level",
+                    "fixed ingress is full",
+                ))
+            }
         }
     }
 
@@ -487,10 +601,16 @@ impl WiredIrqSink for RiscvPlicWiredSink {
             )
             .map_err(|error| Self::backend_error(input, "pulse RISC-V vPLIC input", error))
         } else {
-            runtime
-                .vplic
-                .set_pending(input.value())
-                .map_err(|error| Self::backend_error(input, "pulse RISC-V vPLIC input", error))
+            // Preserve the edge without taking the task-only vPLIC mutex.
+            if self.ingress.record_edge(input.value()) {
+                Ok(())
+            } else {
+                Err(Self::backend_error(
+                    input,
+                    "pulse RISC-V vPLIC input",
+                    "fixed ingress is full",
+                ))
+            }
         }
     }
 }
@@ -733,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn level_transition_updates_controller_state_without_a_bound_run() {
+    fn level_transition_is_deferred_without_a_bound_run() {
         let runtime = runtime();
         let line = InterruptControllerEndpoint::wired_input(
             &*runtime,
@@ -744,12 +864,35 @@ mod tests {
         .connect()
         .unwrap();
 
-        // The controller is the sole owner of line and pending state. A wake
-        // with no bound run must not turn a device transition into an error.
+        // A callback without a bound run must not take the task-only state
+        // mutex. The next task owner drains the fixed ingress instead.
         line.assert().unwrap();
+        assert!(!runtime.vplic.is_pending(10).unwrap());
+        runtime.drain_deferred_ingress().unwrap();
         assert!(runtime.vplic.is_pending(10).unwrap());
 
         line.deassert().unwrap();
+        runtime.drain_deferred_ingress().unwrap();
         assert!(!runtime.vplic.is_pending(10).unwrap());
+    }
+
+    #[test]
+    fn edge_pulses_are_counted_in_the_pre_run_ingress() {
+        let runtime = runtime();
+        let line = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            ControllerInputId::new(10),
+            InterruptTriggerMode::EdgeTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
+
+        line.pulse().unwrap();
+        line.pulse().unwrap();
+        assert_eq!(runtime.ingress.edge_counts[10].load(Ordering::Acquire), 2);
+        runtime.drain_deferred_ingress().unwrap();
+        assert_eq!(runtime.ingress.edge_counts[10].load(Ordering::Acquire), 0);
+        assert!(runtime.vplic.is_pending(10).unwrap());
     }
 }
