@@ -22,24 +22,22 @@ pub(crate) fn load_cargo_config(
         );
     }
     let to_bin = config.to_bin;
+    let mut build_info = config.build_info;
+    build::ensure_package_mmu_feature(&mut build_info, &request.package, metadata)?;
     let mut cargo = if config.freestanding {
-        config
-            .build_info
-            .into_prepared_no_std_cargo_config_with_metadata(
-                &request.package,
-                &request.target,
-                metadata,
-                build::BareKernelLinkMode::Pie,
-            )?
+        build_info.into_prepared_no_std_cargo_config_with_metadata(
+            &request.package,
+            &request.target,
+            metadata,
+            build::BareKernelLinkMode::Pie,
+        )?
     } else {
-        config
-            .build_info
-            .into_prepared_std_cargo_config_with_metadata(
-                &request.package,
-                &request.target,
-                metadata,
-                &axbuild_dir,
-            )?
+        build_info.into_prepared_std_cargo_config_with_metadata(
+            &request.package,
+            &request.target,
+            metadata,
+            &axbuild_dir,
+        )?
     };
     cargo.to_bin |= to_bin;
     Ok(cargo)
@@ -54,6 +52,7 @@ pub(crate) fn load_c_app_cargo_config(
     let config = load_build_config_with_makefile_features(request, &makefile_features)?;
     let to_bin = config.to_bin;
     let mut build_info = config.build_info;
+    build::ensure_package_mmu_feature(&mut build_info, &request.package, metadata)?;
     build_info.validated_max_cpu_num()?;
     build_info.resolve_c_app_features()?;
     let mut cargo = build_info.into_prepared_no_std_cargo_config_with_metadata(

@@ -165,7 +165,7 @@ pub struct PteConfig {
 | secondary 尚未 ready | shootdown 只作用于已 ready CPU，未 ready CPU 被跳过 | secondary 在装载 kernel root 前不运行 runtime address space |
 | secondary 调用 `mark_current_cpu_ready()` 之后 | Release 发布 ready，后续 shootdown 同步通知该 CPU | secondary 在发布 ready 前先装载 kernel root 并执行全量本地失效 |
 
-ready 状态用 Release 发布、Acquire 读取。已 ready CPU 的处理器间中断错误是不可恢复的一致性故障；尚未 ready 或已下线 CPU 返回 `CpuOffline` 时可以跳过。内核任务栈 guard 页的 shootdown（`stack-guard-page + smp + ipi`）使用同一套机制并带确认计数与超时 panic，见[栈管理](./stacks.md)。AArch64 与其他架构一样通过该软件边界选择目标 CPU；`axcpu` 不再用 `*is` TLBI 绕过 active mask。
+ready 状态用 Release 发布、Acquire 读取。已 ready CPU 的处理器间中断错误是不可恢复的一致性故障；尚未 ready 或已下线 CPU 返回 `CpuOffline` 时可以跳过。`paging` 启用的内核任务栈 guard 页 shootdown 使用同一套机制并带确认计数与超时 panic；多核构建仍必须通过 `smp` 提供 `wake-ipi`/`ax-hal/ipi`，单核只执行本地刷新，见[栈管理](./stacks.md)。AArch64 与其他架构一样通过该软件边界选择目标 CPU；`axcpu` 不再用 `*is` TLBI 绕过 active mask。
 
 ## 5. AArch64 内存属性
 

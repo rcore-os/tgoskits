@@ -18,7 +18,6 @@ fn runtime_page_fault_handler(
     addr: ax_memory_addr::VirtAddr,
     flags: ax_hal::trap::PageFaultFlags,
 ) -> bool {
-    #[cfg(feature = "stack-guard-page")]
     if crate::diagnostics::diagnose_current_stack_guard_page_fault(addr) {
         return false;
     }

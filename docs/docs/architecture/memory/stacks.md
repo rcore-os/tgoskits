@@ -104,7 +104,7 @@ CPU0 在 allocator、完整页表和 per-CPU 映射可用之前就需要栈。�
 
 ### 4.1 普通分配
 
-未启用 `stack-guard-page` 和 `vmap-task-stack` 时，`allocate_heap_stack()` 使用请求的 usable size 与 alignment 构造 `Layout`，再经 `ax_alloc::global_allocator()` 分配。ArceOS 传入 16 字节 alignment；默认 256 KiB 请求走 Buddy 大对象路径。
+未启用 `paging` 和 `vmap-task-stack` 时，`allocate_heap_stack()` 使用请求的 usable size 与 alignment 构造 `Layout`，再经 `ax_alloc::global_allocator()` 分配。ArceOS 传入 16 字节 alignment；默认 256 KiB 请求走 Buddy 大对象路径。
 
 | 操作 | 实现 | 失败语义 |
 | --- | --- | --- |
@@ -112,11 +112,11 @@ CPU0 在 allocator、完整页表和 per-CPU 映射可用之前就需要栈。�
 | publication | `Box<RuntimeStack>` 转为唯一 non-zero `StackHandle` | handle 必须只转交和销毁一次 |
 | release | `global_allocator().dealloc(ptr, layout)` | 必须使用原 size/align |
 
-plain stack 没有页级溢出隔离。需要越界后立即 fault 的配置应启用 guard page。
+plain stack 没有页级溢出隔离；需要越界后立即 fault 时，应选择 `paging`，它会自动提供 guard page。
 
 ### 4.2 保护页分配
 
-启用 `stack-guard-page` 或 `vmap-task-stack` 后，`allocate_virtual_stack()` 构造 `KernelVirtualAllocationLayout`。usable 和 guard 大小按请求对齐向上取整，`with_alignment()` 校验对齐约束。`KernelVirtualAllocation::allocate()` 从 kernel address space 的空洞预留整个区间，guard 范围始终没有 PTE，也没有对应物理页。
+启用 `paging` 或 `vmap-task-stack` 后，`allocate_virtual_stack()` 构造 `KernelVirtualAllocationLayout`。在 `paging` 路径中 `guard_size` 自动为一页；usable 和 guard 大小按请求对齐向上取整，`with_alignment()` 校验对齐约束。`KernelVirtualAllocation::allocate()` 从 kernel address space 的空洞预留整个区间，guard 范围始终没有 PTE，也没有对应物理页。
 
 backing 的 `Vec`、`Arc` 和 data frame 在 kernel address-space 锁外准备；每个 PTE 通过 `plan_map_page()` 获取计划，在锁外准备 page-table deposit，再加锁重验并安装。并发改变目录会返回 stale deposit，失败的未发布页表页在锁外释放。任何部分安装失败均由已经创建的 token 把整段 reservation 标成 `Retiring`。
 
@@ -163,7 +163,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 runtime `StackHandle`。
 
 ### 6.2 保护边界
 
-用户访问权限由 Stage-1 页表项和 Starry 虚拟内存区域 flags 共同决定。kernel stack guard feature 只保护 `axruntime` 分配的内核栈，不会自动给所有 Starry 用户 stack 增加 guard 虚拟内存区域。
+用户访问权限由 Stage-1 页表项和 Starry 虚拟内存区域 flags 共同决定。内核栈 guard 机制只保护 `axruntime` 分配的内核栈，不会自动给所有 Starry 用户 stack 增加 guard 虚拟内存区域。
 
 | 边界 | 负责组件 | 故障处理 |
 | --- | --- | --- |
@@ -242,7 +242,7 @@ CPU3 0x8100_6000..0x8100_8000, stack top=0x8100_8000
 
 ### 8.2 保护页任务栈
 
-启用 `stack-guard-page` 后，256 KiB usable stack 加一个 4 KiB guard 预留 260 KiB 连续虚拟地址。backing 只分配 64 个独立物理页，不再将 65 页连续申请向上提升为 128 页 Buddy block。
+启用 `paging` 后，256 KiB usable stack 加一个 4 KiB guard 预留 260 KiB 连续虚拟地址。backing 只分配 64 个独立物理页，不再将 65 页连续申请向上提升为 128 页 Buddy block。
 
 ```mermaid
 flowchart LR

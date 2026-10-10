@@ -13,7 +13,7 @@ sidebar_label: "Task Stack Guard Page"
 
 ### 1.1 虚拟栈布局
 
-启用 `stack-guard-page` 时，`allocate_virtual_stack()` 预留 guard 和 usable 范围。启用 `vmap-task-stack` 也会使用虚拟 backing，但是否包含 guard 由 `StackRequest::guard_size` 决定。两者都关闭时使用原有 heap 路径。
+启用 `paging` 时，`allocate_runtime_stack()` 将 `StackRequest::guard_size` 设为一页，`allocate_virtual_stack()` 预留 guard 和 usable 范围。`vmap-task-stack` 仍是显式虚拟 backing 能力，但不再控制是否启用保护页；没有 `paging` 时才使用原有 heap 路径。
 
 ```mermaid
 flowchart LR
@@ -54,7 +54,7 @@ token 的普通 `Drop` 只发布退休状态。显式 `release()` 或 `retry_ker
 
 | 栈类型 | 保护页 |
 | --- | --- |
-| runtime 分配的动态栈 | 启用 guard 配置时覆盖 |
+| runtime 分配的动态栈 | 启用 `paging` 时覆盖 |
 | someboot 的 boot/main/secondary 栈 | 不覆盖 |
 | 独立 IRQ、overflow 或 double-fault 栈 | 需要独立生命周期设计 |
 | Starry 用户栈 | 由用户 VMA 权限与缺页策略管理 |
@@ -87,10 +87,10 @@ cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case task-st
 
 ### 3.2 系统配置
 
-Starry 必须启用自己的 feature，才能同时打开内核 fault 诊断与底层 runtime 的 guard 分配。
+Starry 的 `paging` 由 `starryos`、`starry-kernel` 和 axbuild 构建入口统一传递；不再设置单独的栈保护 feature。默认 Starry 构建已经包含 guard 分配、fault 诊断和编译器栈保护。
 
 ```bash
-FEATURES=starry-kernel/stack-guard-page cargo xtask starry test qemu --arch x86_64 -c qemu/system
+cargo xtask starry test qemu --arch x86_64 -c qemu/system
 ```
 
 普通系统套件与专项 fatal-fault 用例证明不同边界：前者检查启用配置后的系统行为，后者检查 guard 命中和诊断传播。四架构的验证结果应分别记录，不能由单架构通过推断全部可用。

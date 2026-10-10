@@ -1,5 +1,107 @@
 use super::*;
-use crate::build::info::toolchain_rustflags;
+use crate::build::info::{
+    BuildInfo, ensure_package_mmu_feature, features_enable_mmu, package_enables_mmu,
+    toolchain_rustflags, toolchain_rustflags_for_features,
+};
+
+#[test]
+fn paging_capability_enables_stack_protector_rustflag() {
+    let env = HashMap::new();
+    for feature in [
+        "paging",
+        "ax-std/paging",
+        "ax-runtime/paging",
+        "ax-hal/paging",
+        "ax-std/uspace",
+        "ax-runtime/uspace",
+        "ax-hal/uspace",
+        "ax-std/hv",
+        "ax-hal/hv",
+        "ax-libc/paging",
+        "axlibc/paging",
+    ] {
+        assert!(features_enable_mmu(&[feature.to_string()]), "{feature}");
+        assert_eq!(
+            toolchain_rustflags_for_features(&env, &[feature.to_string()])
+                .iter()
+                .filter(|flag| flag.as_str() == "-Zstack-protector=strong")
+                .count(),
+            1,
+            "{feature} must add one compiler stack-protector flag"
+        );
+    }
+}
+
+#[test]
+fn non_paging_build_does_not_enable_stack_protector_rustflag() {
+    let features = ["smp".to_string()];
+    let flags = toolchain_rustflags_for_features(&HashMap::new(), &features);
+
+    assert!(!features_enable_mmu(&features));
+    assert!(!flags.iter().any(|flag| flag == "-Zstack-protector=strong"));
+}
+
+#[test]
+fn duplicate_mmu_capabilities_add_only_one_stack_protector_rustflag() {
+    let features = vec![
+        "paging".to_string(),
+        "ax-std/paging".to_string(),
+        "ax-runtime/paging".to_string(),
+    ];
+    let flags = toolchain_rustflags_for_features(&HashMap::new(), &features);
+
+    assert_eq!(
+        flags
+            .iter()
+            .filter(|flag| flag.as_str() == "-Zstack-protector=strong")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn package_metadata_resolves_mmu_capability_through_defaults_and_aliases() {
+    let metadata = repo_metadata();
+
+    for package in ["arceos-helloworld", "starryos", "axvisor"] {
+        assert!(
+            package_enables_mmu(package, &metadata, &[]).unwrap(),
+            "{package} must resolve a paging-enabled dependency"
+        );
+    }
+    assert!(package_enables_mmu("ax-runtime", &metadata, &["paging".into()]).unwrap());
+    assert!(package_enables_mmu("ax-libc", &metadata, &["paging".into()]).unwrap());
+    assert!(!package_enables_mmu("ax-runtime", &metadata, &[]).unwrap());
+}
+
+#[test]
+fn package_mmu_injection_uses_a_feature_declared_by_the_target_package() {
+    let metadata = repo_metadata();
+
+    let mut libc = BuildInfo {
+        features: vec!["fs".to_string()],
+        ..BuildInfo::default()
+    };
+    ensure_package_mmu_feature(&mut libc, "ax-libc", &metadata).unwrap();
+    assert_eq!(libc.features, vec!["fs".to_string(), "paging".to_string()]);
+
+    let mut app = BuildInfo::default();
+    ensure_package_mmu_feature(&mut app, "arceos-helloworld", &metadata).unwrap();
+    assert_eq!(app.features, vec!["ax-std/paging".to_string()]);
+}
+
+#[test]
+fn axlibc_paging_alias_is_normalized_before_cargo_feature_resolution() {
+    let metadata = repo_metadata();
+    let mut app = BuildInfo {
+        features: vec!["axlibc/paging".to_string()],
+        ..BuildInfo::default()
+    };
+
+    ensure_package_mmu_feature(&mut app, "arceos-helloworld", &metadata).unwrap();
+
+    assert_eq!(app.features, vec!["ax-std/paging".to_string()]);
+}
 
 #[test]
 fn toolchain_rustflags_preserves_debug_and_backtrace_env() {

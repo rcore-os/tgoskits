@@ -784,7 +784,6 @@ static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepare_user_memory;
 
 pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-    #[cfg(feature = "stack-guard-page")]
     if ax_runtime::diagnostics::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
     }

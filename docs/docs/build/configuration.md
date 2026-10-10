@@ -155,7 +155,9 @@ Build Config 中 `[env]` 的以下键会补充 Rust 工具链选项：
 | --- | --- |
 | `DWARF=y/yes/1/true/on` | `-Cdebuginfo=2 -Cstrip=none -Cforce-frame-pointers=yes` |
 | `BACKTRACE=y/yes/1/true/on` | `-Cforce-frame-pointers=yes` |
-| feature 含 `stack-protector` | `-Zstack-protector=strong` |
+| 规范化 feature 含 `paging`、`ax-std/paging`、`ax-runtime/paging`、`ax-hal/paging`、`ax-libc/paging`，或会转发 `paging` 的 `uspace`/`hv` | `-Zstack-protector=strong` |
+
+`ax-runtime/uspace`、`ax-std/uspace` 和 `ax-std/hv` 若启用底层 `ax-hal` 的 MMU，均传递本地 `paging`；因此直接选择这些 MMU 能力也会获得动态任务栈保护和同一 compiler rustflag。`paging` 不隐式增加 `ipi`，多核仍由 `smp -> wake-ipi` 提供远端 TLB 刷新。
 
 ## 4. 产物与启动
 

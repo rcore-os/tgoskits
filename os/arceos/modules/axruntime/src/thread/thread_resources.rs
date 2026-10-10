@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn create_idle_resources() -> ThreadResources {
-    let guard_size = if cfg!(feature = "stack-guard-page") {
+    let guard_size = if cfg!(feature = "paging") {
         PAGE_SIZE
     } else {
         0

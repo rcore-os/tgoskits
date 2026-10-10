@@ -12,6 +12,14 @@ fn workspace() -> WorkspaceContext {
     WorkspaceContext::discover(None).unwrap()
 }
 
+#[test]
+fn default_starry_build_info_enables_paging_stack_hardening() {
+    assert_eq!(
+        default_starry_build_info().features,
+        vec!["ax-std/paging".to_string()]
+    );
+}
+
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
     ResolvedStarryRequest {
         package: STARRY_PACKAGE.to_string(),

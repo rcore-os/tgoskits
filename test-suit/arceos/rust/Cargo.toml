@@ -37,7 +37,7 @@ task-rt-policy = ["task-runtime", "ax-std/alloc"]
 task-scheduler-irq-window = ["task-runtime", "ax-std/ipi", "ax-std/qperf-metrics"]
 task-sleep = ["task-runtime"]
 task-smp-online = ["task-runtime", "ax-std/ipi"]
-task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
+task-stack-guard-page = ["task-runtime", "ax-std/paging"]
 task-mutex = ["task-runtime", "ax-std/alloc"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 # Owns the Unix namespace provider; run separately from the filesystem suite.

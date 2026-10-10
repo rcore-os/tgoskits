@@ -34,11 +34,9 @@ rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
 # Enable userspace support without kernel TLS, including when `tls` is enabled.
 # User-space TLS remains available through the userspace context APIs.
-uspace = ["ax-hal/uspace"]
+uspace = ["paging", "ax-hal/uspace"]
 lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "paging"]
 vmap-task-stack = ["ipi", "paging"]
-stack-protector = []
 # Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-hal/tls"]
 

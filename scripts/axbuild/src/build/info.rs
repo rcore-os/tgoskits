@@ -28,13 +28,134 @@ pub(crate) fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> 
     flags
 }
 
-pub(super) fn features_enable_stack_protector(features: &[String]) -> bool {
+pub(crate) fn features_enable_mmu(features: &[String]) -> bool {
     features.iter().any(|feature| {
         matches!(
             feature.as_str(),
-            "stack-protector" | "ax-std/stack-protector" | "starry-kernel/stack-protector"
+            "paging"
+                | "ax-std/paging"
+                | "ax-runtime/paging"
+                | "ax-hal/paging"
+                | "ax-std/uspace"
+                | "ax-runtime/uspace"
+                | "ax-hal/uspace"
+                | "ax-std/hv"
+                | "ax-hal/hv"
+                | "ax-libc/paging"
+                // Keep the historical directory spelling recognizable in generated
+                // BuildInfo, but do not pass it through as a Cargo dependency feature.
+                | "axlibc/paging"
         )
     })
+}
+
+fn feature_value_enables_mmu(value: &str) -> bool {
+    let value = value
+        .strip_prefix("ax-std/")
+        .or_else(|| value.strip_prefix("ax-runtime/"))
+        .or_else(|| value.strip_prefix("ax-hal/"))
+        .or_else(|| value.strip_prefix("ax-libc/"))
+        .or_else(|| value.strip_prefix("axlibc/"))
+        .unwrap_or(value);
+    matches!(
+        value,
+        "paging"
+            | "arceos"
+            | "uspace"
+            | "fs"
+            | "ext4fs"
+            | "fatfs"
+            | "net"
+            | "vsock"
+            | "display"
+            | "input"
+            | "deferred-rootfs"
+            | "starry-init"
+            | "hv"
+    )
+}
+
+/// Returns whether Cargo's default and requested package features select an MMU-backed
+/// ArceOS dependency. This closes the gap between Cargo's feature resolver and the
+/// explicit `BuildInfo.features` list used to construct rustflags.
+pub(crate) fn package_enables_mmu(
+    package: &str,
+    metadata: &Metadata,
+    requested_features: &[String],
+) -> anyhow::Result<bool> {
+    let package = workspace_package(metadata, package)?;
+    if package.dependencies.iter().any(|dependency| {
+        matches!(
+            dependency.name.as_str(),
+            "ax-std" | "ax-runtime" | "ax-hal" | "ax-libc" | "axlibc"
+        ) && dependency
+            .features
+            .iter()
+            .any(|feature| feature_value_enables_mmu(&format!("{}/{}", dependency.name, feature)))
+    }) {
+        return Ok(true);
+    }
+
+    let mut pending = vec!["default".to_string()];
+    pending.extend(
+        requested_features
+            .iter()
+            .filter(|feature| package.features.contains_key(feature.as_str()))
+            .cloned(),
+    );
+    let mut visited = HashSet::new();
+    while let Some(feature) = pending.pop() {
+        if !visited.insert(feature.clone()) {
+            continue;
+        }
+        let Some(values) = package.features.get(&feature) else {
+            continue;
+        };
+        for value in values {
+            if feature_value_enables_mmu(value) {
+                return Ok(true);
+            }
+            if package.features.contains_key(value) {
+                pending.push(value.clone());
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn ensure_package_mmu_feature(
+    build_info: &mut BuildInfo,
+    package: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<()> {
+    build_info.normalize_mmu_feature_aliases(package, metadata)?;
+    if package_enables_mmu(package, metadata, &build_info.features)?
+        && !features_enable_mmu(&build_info.features)
+        && let Some(feature) = package_mmu_feature_marker(package, metadata)?
+    {
+        build_info.features.push(feature);
+    }
+    Ok(())
+}
+
+fn package_mmu_feature_marker(
+    package: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<Option<String>> {
+    let package = workspace_package(metadata, package)?;
+    if package.features.contains_key("paging") {
+        return Ok(Some("paging".to_string()));
+    }
+    for dependency in ["ax-std", "ax-runtime", "ax-hal", "ax-libc", "axlibc"] {
+        if package
+            .dependencies
+            .iter()
+            .any(|candidate| candidate.name == dependency)
+        {
+            return Ok(Some(format!("{dependency}/paging")));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn toolchain_rustflags_for_features(
@@ -42,7 +163,7 @@ pub(crate) fn toolchain_rustflags_for_features(
     features: &[String],
 ) -> Vec<String> {
     let mut flags = toolchain_rustflags(env);
-    if features_enable_stack_protector(features) {
+    if features_enable_mmu(features) {
         flags.push("-Zstack-protector=strong".to_string());
     }
     flags
@@ -504,6 +625,7 @@ impl BuildInfo {
         metadata: &Metadata,
         axbuild_dir: &Path,
     ) -> anyhow::Result<Cargo> {
+        self.normalize_mmu_feature_aliases(package, metadata)?;
         self.validated_max_cpu_num()?;
         self.validate_features()?;
         self.resolve_std_features();
@@ -569,6 +691,7 @@ impl BuildInfo {
         metadata: &Metadata,
         link_mode: BareKernelLinkMode,
     ) -> anyhow::Result<Cargo> {
+        self.normalize_mmu_feature_aliases(package, metadata)?;
         self.validated_max_cpu_num()?;
         self.validate_features()?;
         self.reject_freestanding_std_compat()?;
@@ -628,6 +751,33 @@ impl BuildInfo {
         self.features.dedup();
     }
 
+    fn normalize_mmu_feature_aliases(
+        &mut self,
+        package: &str,
+        metadata: &Metadata,
+    ) -> anyhow::Result<()> {
+        if !self
+            .features
+            .iter()
+            .any(|feature| feature == "axlibc/paging")
+        {
+            return Ok(());
+        }
+
+        let marker = package_mmu_feature_marker(package, metadata)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "feature `axlibc/paging` cannot be normalized for package `{package}`; use a \
+                 package with a paging capability"
+            )
+        })?;
+        for feature in &mut self.features {
+            if feature == "axlibc/paging" {
+                *feature = marker.clone();
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve_c_app_features(&mut self) -> anyhow::Result<()> {
         self.validate_features()?;
         // `max_cpu_num` is an explicit C build setting; expose the matching ax-std
@@ -671,6 +821,12 @@ impl BuildInfo {
             bail!(
                 "feature `{feature}` is no longer supported; dynamic platform selection is \
                  automatic, remove the feature from the selected configuration"
+            );
+        }
+        if is_removed_stack_hardening_feature(feature) {
+            bail!(
+                "feature `{feature}` was removed; enable the canonical `paging` capability \
+                 (`ax-std/paging` for system builds) instead"
             );
         }
         Ok(())

@@ -107,9 +107,9 @@ task stack canary 用来发现任务栈溢出或栈底被破坏。
 
 启用 `stack canary` 后，任务栈底会写入固定 magic 值。每次任务切换时，调度器检查上一个任务的 canary 是否仍完整；如果 magic 被覆盖，说明栈可能已经越界或被破坏，系统会 panic 并打印任务名、栈范围和期望 magic。
 
-`ax-task` 的基础多任务实现会启用 `stack canary`。`stack-guard-page` 是额外的硬件页表保护机制：动态任务栈创建时会在栈底保留一页 guard page，并在栈向下越界触达该页时触发 page fault 诊断。
+`ax-task` 的基础多任务实现会启用 `stack canary`。启用运行时 `paging` 能力后，`axruntime::thread::resources::allocate_runtime_stack()` 会为动态任务栈保留一页未映射的 guard page，并在栈向下越界触达该页时触发 page fault 诊断。`paging` 是运行时 MMU 能力；平台启动层的 `somehal/mmu` 只负责底层启动实现，不是 axbuild 的公共能力名称。
 
-`stack-guard-page` 当前是 opt-in hardening feature，默认构建和普通回归测试不会启用。ArceOS Rust 应用通常通过 `ax-std/stack-guard-page` 手动启用；StarryOS 应通过 `starry-kernel/stack-guard-page` 启用，以同时打开 Starry fault handler 中的 guard page 诊断路径和底层 `ax-runtime/stack-guard-page`。项目 xtask/axbuild 流程可使用 `FEATURES=...` 注入这些 feature。
+`stack-guard-page` 和 `stack-protector` 已从 `ax-runtime`、`ax-std`、`ax-libc`、`starry-kernel`、Starry 与 AxVisor 的 feature 图中删除。ArceOS、Starry 和 AxVisor 的构建入口统一注入或转发 `paging`，因此 MMU 构建默认获得 guard page 和编译器栈保护；旧名称会在 axbuild 配置校验阶段报迁移错误。
 
 canary 覆盖范围包括：
 
@@ -130,15 +130,24 @@ Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任�
 后者可以发现尚未一路覆盖到任务栈底的函数局部栈溢出，是当前机制尚未覆盖
 的方向。
 
-项目后续可参照 Linux 分阶段增强栈帧级保护。第一阶段优先实现跨架构的
-全局 guard 方案：通过 opt-in hardening 开关在构建系统中注入
-`-Z stack-protector=strong`，并在内核运行时提供 `__stack_chk_guard`
-和 `__stack_chk_fail()`。当前 nightly 对项目使用的
+`axruntime` 在 `paging` 构建中提供 `__stack_chk_guard` 和
+`__stack_chk_fail()`。`scripts/axbuild/src/build/info.rs::features_enable_mmu()`
+识别 `paging`、`ax-std/paging`、`ax-runtime/paging`、`ax-hal/paging` 和
+`ax-libc/paging`，以及会转发 `paging` 的 `uspace`/`hv` 能力等规范化入口，并为构建追加
+`-Zstack-protector=strong`。普通 Cargo 直构不会自行推导该 rustflag，应使用
+`cargo xtask` 或 axbuild 入口。`axlibc/paging` 只作为 axbuild 的历史输入兼容
+标记，不能直接传给 Cargo。
+
+没有 `paging` 的构建仍使用普通堆栈，也不会提供编译器栈保护。guard page 的
+保护边界只覆盖运行时管理的动态任务栈，不改变 boot stack、独立异常栈或
+Starry 用户栈的边界；编译器 stack protector 则保护被插桩函数的栈帧，并依赖
+运行时提供的 `__stack_chk_*` 符号。
+
+当前 nightly 对项目使用的
 `x86_64-unknown-none`、`riscv64gc-unknown-none-elf`、
 `aarch64-unknown-none-softfloat`、`loongarch64-unknown-none-softfloat`
 四个目标都接受 `-Z stack-protector=strong`，生成对象也统一依赖
-`__stack_chk_guard` / `__stack_chk_fail`，因此全局 guard 方案可以作为
-四架构共同的最小闭环。第二阶段再评估 Linux 风格 per-task 或 per-cpu
+`__stack_chk_guard` / `__stack_chk_fail`，因此该方案覆盖四架构共同的最小闭环。第二阶段再评估 Linux 风格 per-task 或 per-cpu
 guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
 系统寄存器约定逐步设计；loongarch64 在 Linux 6.12 中也主要体现为全局
 `__stack_chk_guard` 路径，建议放在全局方案稳定后再单独评估。
@@ -164,7 +173,7 @@ guard：x86_64、riscv64、aarch64 可结合各自 percpu / thread pointer /
 
 - 在更多边界点触发检查，例如任务退出、panic 前诊断或长时间运行的 idle 路径。
 - 持续完善动态任务栈 guard page 的 SMP shootdown、跨架构 QEMU 回归和 fault 诊断。
-- 增加 opt-in 的编译器栈帧级 stack protector，先采用四架构通用的
+- 持续扩大并验证编译器栈帧级 stack protector 的覆盖，先采用四架构通用的
   全局 `__stack_chk_guard` / `__stack_chk_fail` 方案，再评估 per-task
   或 per-cpu guard。
 - 后续在 `axmm` 上补 kernel vmap allocator，把 guard page 从额外物理页演进为仅占虚拟地址空间的空洞。

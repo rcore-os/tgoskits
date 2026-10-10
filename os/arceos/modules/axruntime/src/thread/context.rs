@@ -28,7 +28,7 @@ use super::{
 
 /// Reports whether a kernel page fault hit the current runtime stack guard.
 pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) -> bool {
-    #[cfg(feature = "stack-guard-page")]
+    #[cfg(feature = "paging")]
     {
         // SAFETY: trap execution cannot migrate before returning through its
         // architecture epilogue.
@@ -67,7 +67,7 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
             })
         }
     }
-    #[cfg(not(feature = "stack-guard-page"))]
+    #[cfg(not(feature = "paging"))]
     {
         let _ = fault;
         false

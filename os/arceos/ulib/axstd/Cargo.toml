@@ -45,10 +45,10 @@ fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
 # User space support
 # Enable userspace support without kernel TLS, including when `tls` is enabled.
 # User-space TLS remains available through the userspace context APIs.
-uspace = ["ax-runtime/uspace"]
+uspace = ["paging", "ax-runtime/uspace"]
 
 # Hypervisor support
-hv = ["ax-hal/hv", "fp-simd"]
+hv = ["paging", "ax-hal/hv", "fp-simd"]
 
 # Inter-processor interrupts
 ipi = ["ax-api/ipi", "ax-runtime/ipi"]
@@ -67,8 +67,6 @@ lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
 task-ext = []
 tracepoint-hooks = []
-stack-guard-page = ["ax-runtime/stack-guard-page"]
-stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = [

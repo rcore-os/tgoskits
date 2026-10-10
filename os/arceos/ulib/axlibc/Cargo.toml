@@ -34,7 +34,6 @@ tls = ["alloc", "ax-runtime/tls"]
 
 # Scheduler diagnostics
 lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
-stack-protector = ["ax-runtime/stack-protector"]
 
 # File system
 fs = ["ax-posix-api/fs", "ax-runtime/fs", "fd"]
