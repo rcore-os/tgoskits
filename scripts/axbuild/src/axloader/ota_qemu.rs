@@ -627,7 +627,7 @@ async fn boot_smoke(
     let kernel = scenario.kernel;
     let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
     let epoch = epoch(client, port).await?;
-    let boot_id = format!("qemu-v5-{}", scenario.name);
+    let boot_id = format!("qemu-v6-{}", scenario.name);
     let mut manifest = serde_json::json!({
         "boot_id": boot_id,
         "arch": "x86_64",
@@ -814,6 +814,11 @@ async fn boot_smoke(
         );
     }
     if bound {
+        let frames_before_revoke = fs::read_to_string(root.join("ota-qemu.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.trim_end_matches('\r') == frame)
+            .count();
         let revoked = client
             .delete(format!(
                 "http://127.0.0.1:{port}/api/v1/serial/bindings/{binding_id}"
@@ -842,6 +847,22 @@ async fn boot_smoke(
             ensure!(
                 Instant::now() < deadline,
                 "serial binding was not revoked: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let frames = fs::read_to_string(root.join("ota-qemu.log"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.trim_end_matches('\r') == frame)
+                .count();
+            if frames > frames_before_revoke {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "UART identity frame did not resume after revoke"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

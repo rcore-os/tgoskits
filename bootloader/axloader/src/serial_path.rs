@@ -1,5 +1,11 @@
 use alloc::vec::Vec;
 
+// UEFI 2.10, device path type/subtype assignments used for UART matching.
+const DEVICE_PATH_END_TYPE: u8 = 0x7f;
+const MESSAGING_DEVICE_PATH_TYPE: u8 = 0x03;
+const UART_DEVICE_PATH_SUBTYPE: u8 = 0x0e;
+const VENDOR_DEVICE_PATH_SUBTYPE: u8 = 0x0a;
+
 /// Match complete device-path nodes; UART attributes may use firmware defaults.
 pub fn console_matches(console: &[u8], serial: &[u8]) -> bool {
     let Some(serial_nodes) = nodes(serial) else {
@@ -10,14 +16,14 @@ pub fn console_matches(console: &[u8], serial: &[u8]) -> bool {
     };
     let prefix = serial_nodes
         .into_iter()
-        .take_while(|n| n[0] != 0x7f)
+        .take_while(|n| n[0] != DEVICE_PATH_END_TYPE)
         .collect::<Vec<_>>();
     if prefix.is_empty() {
         return false;
     }
     let mut start = 0;
     for (end, node) in console_nodes.iter().enumerate() {
-        if node[0] != 0x7f {
+        if node[0] != DEVICE_PATH_END_TYPE {
             continue;
         }
         let instance = &console_nodes[start..end];
@@ -25,15 +31,15 @@ pub fn console_matches(console: &[u8], serial: &[u8]) -> bool {
             && prefix.iter().zip(instance).all(|(a, b)| {
                 if a.len() != b.len() {
                     false
-                } else if a[0] == 3 && a[1] == 14 {
-                    b[0] == 3 && b[1] == 14
+                } else if a[0] == MESSAGING_DEVICE_PATH_TYPE && a[1] == UART_DEVICE_PATH_SUBTYPE {
+                    b[0] == MESSAGING_DEVICE_PATH_TYPE && b[1] == UART_DEVICE_PATH_SUBTYPE
                 } else {
                     a == b
                 }
             })
             && instance[prefix.len()..]
                 .iter()
-                .all(|n| n[0] == 3 && n[1] == 10)
+                .all(|n| n[0] == MESSAGING_DEVICE_PATH_TYPE && n[1] == VENDOR_DEVICE_PATH_SUBTYPE)
         {
             return true;
         }
@@ -42,7 +48,7 @@ pub fn console_matches(console: &[u8], serial: &[u8]) -> bool {
     false
 }
 
-pub fn nodes(mut bytes: &[u8]) -> Option<Vec<&[u8]>> {
+fn nodes(mut bytes: &[u8]) -> Option<Vec<&[u8]>> {
     let mut result = Vec::new();
     while !bytes.is_empty() {
         let head = bytes.get(..4)?;
