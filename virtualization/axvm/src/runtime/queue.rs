@@ -144,7 +144,11 @@ impl QueuedVcpuInterrupt {
     /// same vector: a physical IRQ and an emulated source can coexist.
     fn has_same_source(self, other: Self) -> bool {
         match (self, other) {
-            (Self::Virtual(left), Self::Virtual(right)) => left.id == right.id,
+            (Self::Virtual(left), Self::Virtual(right)) => match (left.source, right.source) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => left.id == right.id,
+                _ => false,
+            },
             #[cfg(target_arch = "x86_64")]
             (Self::LegacyPic { vector: left }, Self::LegacyPic { vector: right }) => left == right,
             #[cfg(target_arch = "loongarch64")]
@@ -480,6 +484,7 @@ mod tests {
         PendingVcpuInterrupt {
             id: VirtualInterruptId(id),
             trigger: InterruptTriggerMode::EdgeTriggered,
+            source: None,
         }
         .into()
     }
@@ -488,6 +493,7 @@ mod tests {
         PendingVcpuInterrupt {
             id: VirtualInterruptId(id),
             trigger: InterruptTriggerMode::LevelTriggered,
+            source: None,
         }
         .into()
     }

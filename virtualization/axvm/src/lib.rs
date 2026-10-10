@@ -71,7 +71,11 @@ pub(crate) use host::{
     paging::HostPagingHandler,
     task::{ThreadHandle, WaitQueueHandle as HostWaitQueueHandle},
 };
-pub use identity::{OperationId, RunId, VmKey};
+pub use identity::{OperationId, RunId, VcpuInstance, VmKey};
+pub use irq::model::{
+    DeliveryToken, InterruptControllerEndpoint, InterruptSourceId, RunEpoch, SourceEvent,
+    VcpuLocalInterrupts, VcpuLocalTimer, VcpuTimerIngress,
+};
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     CpuObservation, DeviceObservation, MemoryObservation, VmConfigSnapshot, VmCreatePlan, VmHandle,

@@ -1,6 +1,6 @@
 # AxVM 所有权与锁边界
 
-本文记录由 `5284316aeaac` 方案迁移到最新 `dev` 基线 `b0d6736a5eba` 实施的公共契约。该重构允许破坏 Rust 源码接口，保留 TOML、设备资源规划和 guest ABI。实现期间以本文件中的后置条件验收，构建通过不代表生命周期或硬件协议已经得到运行证明。
+本文记录由 `5284316aeaac` 方案迁移到最新 `dev` 基线 `cc6739725018ea0b71888d0f7f232ca63952294a` 实施的公共契约。该重构允许破坏 Rust 源码接口，保留 TOML、设备资源规划和 guest ABI。实现期间以本文件中的后置条件验收，构建通过不代表生命周期或硬件协议已经得到运行证明。
 
 ## 1. 架构与所有权
 
@@ -35,6 +35,20 @@ flowchart TB
 普通 raw 获取禁抢占，`*_irqsave` 同时保存 IRQ 状态；显式 raw 获取承担其上下文契约。RT 锁没有不改变 IRQ 状态的 `*_irqsave` 兼容拼写。无数据后端使用 `MutexBackend`、`RwSemaphoreBackend`、`RawSpinLockIrqSaveBackend`；外部 `lock_api` trait 保持原契约。所有同义 mutex 别名删除。
 
 raw guard 只修改它拥有的短状态。唤醒、IPI、设备回调、join 和可能阻塞的析构在 guard 外执行。注册表和 mailbox 锁外执行 VM 操作。等待队列谓词只读取本 vCPU 的 request、pending 和准入状态。
+
+### 1.3 CPU-local 与共享外设中断
+
+中断控制器的边界按硬件归属划分。每个 vCPU owner 直接持有自己的本地中断状态、EOI/ACK 状态、架构运行后端和 guest timer；它们只通过 `&mut` 访问，不从另一个 vCPU 或 VM 服务取得 getter。host timer callback 只更新 `VcpuTimerIngress` 的原子计数和代次，随后在 raw guard 外唤醒对应 vCPU。
+
+外设中断控制器属于 VM 的共享控制面。GIC Distributor/SPI/ITS、x86 PIC/IOAPIC/PIT、RISC-V PLIC/APLIC 和 LoongArch PCH-PIC/EIOINTC 的完整 pending、active、priority、route 与 level 状态由一个 owner 串行处理。设备和硬 IRQ 只持有 `WiredIrqInput`/`IrqLine` 或运行期 endpoint，通过 `SourceEvent` 提交事件；它们不取得控制器 core，也不查询当前 VM。
+
+| 硬件对象 | 唯一 owner | 允许的同步 | 跨层入口 |
+| --- | --- | --- | --- |
+| vCPU local interrupt/timer、VMX/SVM、GIC Redistributor/LR、IMSIC/CSR、CPUINTC | 对应 `VcpuTask` | 普通值、`&mut`、CPU-local 原语 | `VcpuLocalInterrupts`、`VcpuLocalTimer` 的具体实现 |
+| GIC Distributor/ITS、PIC/IOAPIC/PIT、PLIC/APLIC、PCH-PIC/EIOINTC | VM `InterruptOwner` | owner mailbox；设备侧只使用睡眠服务 | `InterruptControllerEndpoint`、`SourceEvent` |
+| 物理 IRQ、host timer、设备完成回调 | 固定 ingress 槽 | 原子、固定槽、必要的极短 raw leaf | `IrqLine`/`RunSignals`，锁外 kick/wake |
+
+发布顺序固定为“更新 canonical source 状态 → Release/显式屏障 → 锁外 kick/wake”。edge 事件使用计数或固定事件槽，不能用一个 `AtomicBool` 合并多个 pulse；level 事件保存每个连接源的 asserted 与 generation，再计算线路聚合状态。`RunEpoch`、`InterruptSourceId`、`DeliveryToken` 必须随 EOI、level redelivery 和 teardown 传递，旧运行的 endpoint 在 ingress 入口拒绝。
 
 ## 2. 管理与完成协议
 

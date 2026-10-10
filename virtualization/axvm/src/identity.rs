@@ -79,9 +79,9 @@ pub(crate) fn next_generation(counter: &mut u64, resource: &'static str) -> AxVm
     Ok(next)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct VcpuInstance {
-    pub(crate) run: RunId,
-    pub(crate) vcpu_id: usize,
-    pub(crate) activation: u64,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct VcpuInstance {
+    pub run: RunId,
+    pub vcpu_id: usize,
+    pub activation: u64,
 }

@@ -4,8 +4,7 @@ use alloc::{string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::{
-    ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptSourceId,
-    InterruptTrigger,
+    ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTrigger, LineSourceId,
 };
 
 /// Errors reported while connecting or signaling interrupt endpoints.
@@ -114,7 +113,7 @@ impl WiredIrqInput {
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
-            .map(InterruptSourceId::new)
+            .map(LineSourceId::new)
             .map_err(|_| IrqError::InvalidInput {
                 endpoint: self.endpoint(),
                 operation: "connect interrupt source",
@@ -229,7 +228,7 @@ pub struct IrqLine(Arc<IrqLineInner>);
 
 struct IrqLineInner {
     input: WiredIrqInput,
-    source: InterruptSourceId,
+    source: LineSourceId,
     asserted: AtomicBool,
     level_transition: AtomicBool,
 }
@@ -277,7 +276,7 @@ impl IrqLine {
     }
 
     /// Returns this connection's source identifier.
-    pub fn source(&self) -> InterruptSourceId {
+    pub fn source(&self) -> LineSourceId {
         self.0.source
     }
 

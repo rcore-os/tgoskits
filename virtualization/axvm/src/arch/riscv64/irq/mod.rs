@@ -17,6 +17,7 @@
 use std::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_std::os::arceos::sync::RawSpinLock;
+use ax_sync::Mutex;
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{GuestPhysAddr, InterruptTriggerMode};
@@ -95,7 +96,7 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 pub(crate) struct RiscvPlicRuntime {
     vplic: Arc<VPlicGlobal>,
     sink: Arc<RiscvPlicWiredSink>,
-    inputs: RawSpinLock<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
     kick: Arc<RunKickBinding>,
     physical: Arc<physical::PhysicalIrqBridge>,
     vcpu_count: usize,
@@ -139,7 +140,7 @@ impl RiscvPlicRuntime {
         Ok(Arc::new(Self {
             vplic,
             sink,
-            inputs: RawSpinLock::new(BTreeMap::new()),
+            inputs: Mutex::new(BTreeMap::new()),
             kick,
             physical,
             vcpu_count,
@@ -253,7 +254,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
             });
         }
 
-        let mut inputs = self.inputs.lock_irqsave();
+        let mut inputs = self.inputs.lock();
         if let Some((registered_trigger, registered)) = inputs.get(&source) {
             if *registered_trigger != trigger {
                 return Err(IrqError::InvalidInput {

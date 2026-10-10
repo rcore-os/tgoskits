@@ -173,6 +173,7 @@ impl AxvmX86VlapicRuntime {
                 PendingVcpuInterrupt {
                     id: VirtualInterruptId(vector.into()),
                     trigger,
+                    source: None,
                 },
             )
             .map_err(signal_error)?;

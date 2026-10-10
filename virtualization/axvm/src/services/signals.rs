@@ -34,7 +34,7 @@ use crate::{
     AxVmResult, HostWaitQueueHandle, ax_err,
     host::task::{IrqNotification, ThreadWakeHandle},
     identity::{RunId, VcpuInstance},
-    irq::model::PendingVcpuInterrupt,
+    irq::model::{PendingVcpuInterrupt, RunEpoch},
     runtime::{
         kick::kick_target,
         queue::{INTERRUPT_SOURCE_CAPACITY, QueuedVcpuInterrupt, SlotUpdate, VcpuSignalSlot},
@@ -55,7 +55,7 @@ const POLL_OWNER_NONE: usize = usize::MAX;
 /// sources still pending for an inactive vCPU. Because a closed object rejects
 /// every new publication, a stale run can never inject into its successor.
 pub(crate) struct RunSignals {
-    run: RunId,
+    epoch: RunEpoch,
     vcpu_count: usize,
     slots: Box<[VcpuSignalSlot]>,
     registration_lock: RawSpinLock<()>,
@@ -96,7 +96,7 @@ impl RunSignals {
         }
 
         Ok(Arc::new(Self {
-            run,
+            epoch: RunEpoch::new(run),
             vcpu_count,
             slots: slots.into_boxed_slice(),
             registration_lock: RawSpinLock::new(()),
@@ -110,7 +110,7 @@ impl RunSignals {
     }
 
     pub(crate) const fn run_id(&self) -> RunId {
-        self.run
+        self.epoch.run()
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -139,7 +139,7 @@ impl RunSignals {
     /// [`SignalError::InvalidSource`]; an id outside this run's bitmap is an
     /// [`SignalError::InvalidTarget`].
     fn validate_instance(&self, instance: VcpuInstance) -> Result<usize, SignalError> {
-        if instance.run != self.run {
+        if instance.run != self.epoch.run() {
             return Err(SignalError::InvalidSource);
         }
         self.vcpu_bit(instance.vcpu_id)
@@ -556,7 +556,7 @@ impl RunSignals {
             if let Err(error) = self.kick(vcpu_id) {
                 trace!(
                     "run {:?} deferred IRQ kick for vCPU {vcpu_id} was not delivered: {error:?}",
-                    self.run
+                    self.epoch.run()
                 );
             }
         }
@@ -610,6 +610,7 @@ mod tests {
         PendingVcpuInterrupt {
             id: VirtualInterruptId(id),
             trigger: InterruptTriggerMode::EdgeTriggered,
+            source: None,
         }
         .into()
     }

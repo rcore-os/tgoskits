@@ -126,6 +126,7 @@ impl LoongArchRunPort {
         Ok(PendingVcpuInterrupt {
             id: VirtualInterruptId(id),
             trigger: InterruptTriggerMode::EdgeTriggered,
+            source: None,
         })
     }
 }

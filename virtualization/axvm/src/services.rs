@@ -83,6 +83,7 @@ impl VcpuInterruptPort {
             crate::irq::model::PendingVcpuInterrupt {
                 id: crate::irq::model::VirtualInterruptId(self.vector),
                 trigger: crate::InterruptTriggerMode::EdgeTriggered,
+                source: None,
             },
         )?;
         match self.signals.kick_from_irq(self.vcpu_id) {

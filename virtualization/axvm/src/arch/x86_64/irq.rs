@@ -634,6 +634,7 @@ fn publish_virtual(
     let interrupt = PendingVcpuInterrupt {
         id: VirtualInterruptId(vector.into()),
         trigger,
+        source: None,
     };
     if let Err(error) = signals.publish(target_vcpu_id, interrupt) {
         warn!("failed to publish x86 virtual interrupt {vector:#x}: {error:?}");

@@ -102,11 +102,15 @@ pub enum InterruptSharing {
 }
 
 /// Identifies one device connection to a controller input.
+///
+/// This is deliberately called a line source. It is local to the wired-line
+/// adapter and must not be confused with a VM interrupt source that carries
+/// controller, physical, and run-epoch identity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct InterruptSourceId(u64);
+pub struct LineSourceId(u64);
 
-impl InterruptSourceId {
+impl LineSourceId {
     pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }

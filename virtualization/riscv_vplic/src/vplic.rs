@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 use core::option::Option;
 
-use ax_sync::RawSpinLock;
+use ax_sync::Mutex;
 use axdevice_base::Resource;
 use axvm_types::GuestPhysAddr;
 use bitmaps::Bitmap;
@@ -33,10 +33,11 @@ impl VplicCompletion {
     }
 }
 
-/// Virtual PLIC global controller.
+/// Virtual PLIC global controller facade.
 ///
-/// Manages the state of a virtual PLIC device including interrupt assignment,
-/// pending interrupts, and active interrupts for guest VMs.
+/// The facade is the task-facing `Send + Sync` device handle. Complete PLIC
+/// state lives in [`VplicState`] and is changed by one owner transaction under
+/// a sleepable mutex; no raw lock is embedded in the controller model.
 pub struct VPlicGlobal {
     /// The address of the VPlicGlobal in the guest physical address space.
     pub addr: GuestPhysAddr,
@@ -46,29 +47,34 @@ pub struct VPlicGlobal {
     pub(crate) resources: [Resource; 1],
     /// Num of contexts.
     pub contexts_num: usize,
-    /// IRQs assigned to this VPlicGlobal.
-    pub assigned_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
-    /// Pending IRQs for this VPlicGlobal.
-    pub pending_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
-    /// Active IRQs for this VPlicGlobal.
-    pub active_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
-    /// Level-triggered inputs that remain electrically asserted.
-    ///
-    /// This is controller-owned state: completing a claimed source re-pends
-    /// it until the device lowers the line.
-    pub(crate) line_asserted_irqs: RawSpinLock<Bitmap<{ PLIC_NUM_SOURCES }>>,
-    /// Guest-programmable PLIC registers owned by this virtual controller.
-    ///
-    /// They must not alias host PLIC registers: guest configuration and
-    /// claim/complete accesses belong to the VM, not the host interrupt domain.
-    pub(crate) registers: RawSpinLock<VPlicRegisters>,
+    /// Mutable state owned by the vPLIC controller task.
+    pub(crate) state: Mutex<VplicState>,
+}
+
+/// Complete guest-visible PLIC state owned by one controller task.
+///
+/// This type deliberately has no synchronization primitive. Keeping pending,
+/// active, level and guest register state in one value makes claim/complete a
+/// single transaction and prevents cross-lock observations of half a state
+/// transition. The `VPlicGlobal` facade provides the shared task boundary.
+pub struct VplicState {
+    /// Sources assigned to this virtual controller.
+    pub assigned_irqs: Bitmap<{ PLIC_NUM_SOURCES }>,
+    /// Pending sources waiting to be claimed.
+    pub pending_irqs: Bitmap<{ PLIC_NUM_SOURCES }>,
+    /// Sources currently claimed by the guest.
+    pub active_irqs: Bitmap<{ PLIC_NUM_SOURCES }>,
+    /// Level-triggered sources that remain electrically asserted.
+    pub line_asserted_irqs: Bitmap<{ PLIC_NUM_SOURCES }>,
+    /// Guest-programmable priorities, enables and thresholds.
+    pub registers: VPlicRegisters,
 }
 
 /// Guest-visible PLIC priority, enable, and threshold registers.
 pub(crate) struct VPlicRegisters {
-    pub(crate) priorities: [u32; PLIC_NUM_SOURCES],
-    pub(crate) enable_masks: Vec<[u32; PLIC_NUM_SOURCES / 32]>,
-    pub(crate) thresholds: Vec<u32>,
+    pub priorities: [u32; PLIC_NUM_SOURCES],
+    pub enable_masks: Vec<[u32; PLIC_NUM_SOURCES / 32]>,
+    pub thresholds: Vec<u32>,
 }
 
 impl VPlicGlobal {
@@ -107,17 +113,29 @@ impl VPlicGlobal {
                 base: addr.as_usize() as u64,
                 size: size as u64,
             }],
-            assigned_irqs: RawSpinLock::new(Bitmap::new()),
-            pending_irqs: RawSpinLock::new(Bitmap::new()),
-            active_irqs: RawSpinLock::new(Bitmap::new()),
-            line_asserted_irqs: RawSpinLock::new(Bitmap::new()),
             contexts_num,
-            registers: RawSpinLock::new(VPlicRegisters {
-                priorities: [0; PLIC_NUM_SOURCES],
-                enable_masks: alloc::vec![[0; PLIC_NUM_SOURCES / 32]; contexts_num],
-                thresholds: alloc::vec![0; contexts_num],
+            state: Mutex::new(VplicState {
+                assigned_irqs: Bitmap::new(),
+                pending_irqs: Bitmap::new(),
+                active_irqs: Bitmap::new(),
+                line_asserted_irqs: Bitmap::new(),
+                registers: VPlicRegisters {
+                    priorities: [0; PLIC_NUM_SOURCES],
+                    enable_masks: alloc::vec![[0; PLIC_NUM_SOURCES / 32]; contexts_num],
+                    thresholds: alloc::vec![0; contexts_num],
+                },
             }),
         })
+    }
+
+    /// Runs a read-only query against the owner state.
+    pub(crate) fn with_state<R>(&self, query: impl FnOnce(&VplicState) -> R) -> R {
+        query(&self.state.lock())
+    }
+
+    /// Runs one complete owner transaction against the mutable state.
+    pub(crate) fn with_state_mut<R>(&self, update: impl FnOnce(&mut VplicState) -> R) -> R {
+        update(&mut self.state.lock())
     }
 
     // pub fn assign_irq(&self, irq: u32, cpu_phys_id: usize, target_cpu_affinity: (u8, u8, u8, u8)) {
