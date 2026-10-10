@@ -31,6 +31,26 @@ pub(super) fn is_removed_dynamic_platform_feature(feature: &str) -> bool {
     )
 }
 
+pub(super) fn is_removed_stack_hardening_feature(feature: &str) -> bool {
+    matches!(
+        feature,
+        "stack-guard-page"
+            | "stack-protector"
+            | "ax-std/stack-guard-page"
+            | "ax-std/stack-protector"
+            | "ax-runtime/stack-guard-page"
+            | "ax-runtime/stack-protector"
+            | "ax-hal/stack-guard-page"
+            | "ax-hal/stack-protector"
+            | "ax-libc/stack-guard-page"
+            | "ax-libc/stack-protector"
+            | "axlibc/stack-guard-page"
+            | "axlibc/stack-protector"
+            | "starry-kernel/stack-guard-page"
+            | "starry-kernel/stack-protector"
+    )
+}
+
 pub(super) fn is_axstd_std_check_feature(feature: &str) -> bool {
     matches!(feature, "ax-std")
         || feature.starts_with("ax-hal/")
@@ -65,8 +85,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "tracepoint-hooks"
             | "sched-rr"
             | "sched-cfs"
-            | "stack-guard-page"
-            | "stack-protector"
             | "fs"
             | "ext4fs"
             | "fatfs"

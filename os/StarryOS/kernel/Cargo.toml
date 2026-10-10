@@ -49,8 +49,6 @@ sg2002-cvi-usb-camera = [
     "dep:sg200x-jpu",
 ]
 uvc = ["dep:ax-media", "dep:media-uvc"]
-stack-guard-page = ["ax-runtime/stack-guard-page"]
-stack-protector = ["ax-runtime/stack-protector"]
 axtest = ["ax-runtime/fault-injection", "dep:axtest"]
 axtest-coverage = ["dep:axtest", "axtest/coverage"]
 
@@ -79,6 +77,7 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
+    "paging",
     "vmap-task-stack",
     "input",
     "ipi",
@@ -89,6 +88,7 @@ ax-std = { workspace = true, default-features = false, features = [
     "fd",
     "task-ext",
     "tracepoint-hooks",
+    "paging",
     "smp",
 ] }
 rockchip-rga = { workspace = true, optional = true }

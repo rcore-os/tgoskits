@@ -54,6 +54,14 @@ fn to_cargo_config(
 ) -> anyhow::Result<Cargo> {
     config.target = request.target.clone();
     crate::build::apply_makefile_features(&mut config.build_info, makefile_features)?;
+    if !config
+        .build_info
+        .features
+        .iter()
+        .any(|feature| feature == "ax-std/paging")
+    {
+        config.build_info.features.push("ax-std/paging".to_string());
+    }
     let known_platforms = platform_feature_names(workspace.metadata());
     reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
     let mut cargo = config

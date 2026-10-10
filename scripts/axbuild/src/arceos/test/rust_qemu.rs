@@ -79,6 +79,14 @@ pub(super) async fn prepare_rust_qemu_cases(
         let mut cargo = build::load_cargo_config(&request, arceos.app.workspace_context())?;
         if let Some(feature) = case.feature.as_deref() {
             add_cargo_feature(&mut cargo, feature);
+            let case_enables_mmu = crate::build::package_enables_mmu(
+                &request.package,
+                arceos.app.workspace_context().metadata(),
+                &[feature.to_string()],
+            )?;
+            if case_enables_mmu || crate::build::features_enable_mmu(&cargo.features) {
+                crate::build::append_cargo_rustflags(&mut cargo, &["-Zstack-protector=strong"]);
+            }
         }
         let mut qemu = arceos
             .load_qemu_config(&request, &cargo)

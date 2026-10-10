@@ -60,11 +60,14 @@ pub(crate) struct ExecutionEntry<A: crate::architecture::ArchOps> {
 
 /// The only generic hardware entry and exit implementation.
 pub(crate) struct OwnedVcpuEngine<A: crate::architecture::ArchOps> {
-    vcpu: crate::vcpu::AxVCpu<A::VCpu>,
+    // The task stack is page-table backed. Keep the architecture backend in
+    // allocator-owned memory so architecture entry code can safely construct
+    // its direct-map alias while a guest root is installed.
+    vcpu: Box<crate::vcpu::AxVCpu<A::VCpu>>,
 }
 
 impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
-    pub(crate) fn new(vcpu: crate::vcpu::AxVCpu<A::VCpu>) -> Self {
+    pub(crate) fn new(vcpu: Box<crate::vcpu::AxVCpu<A::VCpu>>) -> Self {
         Self { vcpu }
     }
 
@@ -72,7 +75,7 @@ impl<A: crate::architecture::ArchOps> OwnedVcpuEngine<A> {
         &mut self.vcpu
     }
 
-    pub(crate) fn into_backend(mut self) -> (crate::vcpu::AxVCpu<A::VCpu>, AxVmResult) {
+    pub(crate) fn into_backend(mut self) -> (Box<crate::vcpu::AxVCpu<A::VCpu>>, AxVmResult) {
         let result = self
             .vcpu
             .with_backend(A::quiet_vcpu)

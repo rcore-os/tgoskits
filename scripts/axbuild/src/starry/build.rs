@@ -22,11 +22,14 @@ use crate::{
     support::process::ProcessExt,
 };
 
+const STARRY_MMU_FEATURE: &str = "ax-std/paging";
+
 pub(crate) fn default_starry_build_info() -> StarryBuildInfo {
-    // The package and board configuration own feature selection; a generated
-    // default must remain an empty capability set.
+    // Starry always runs with a host MMU. Keep the canonical dependency feature
+    // in generated defaults so direct BuildInfo consumers also receive the
+    // compiler stack-protector rustflag.
     StarryBuildInfo {
-        features: Vec::new(),
+        features: vec![STARRY_MMU_FEATURE.to_string()],
         ..StarryBuildInfo::default()
     }
 }
@@ -86,8 +89,22 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
 
     crate::build::apply_makefile_features(&mut build_info, &makefile_features)?;
 
+    for feature in &mut build_info.features {
+        if feature == "paging" {
+            *feature = STARRY_MMU_FEATURE.to_string();
+        }
+    }
+
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
+    }
+
+    if !build_info
+        .features
+        .iter()
+        .any(|feature| feature == STARRY_MMU_FEATURE)
+    {
+        build_info.features.push(STARRY_MMU_FEATURE.to_string());
     }
 
     Ok(build_info)

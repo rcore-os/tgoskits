@@ -8,7 +8,7 @@ use super::*;
 pub fn builder(name: String) -> ThreadBuilder {
     ThreadBuilder::new(name)
         .stack_size(default_task_stack_size())
-        .guard_size(if cfg!(feature = "stack-guard-page") {
+        .guard_size(if cfg!(feature = "paging") {
             PAGE_SIZE
         } else {
             0

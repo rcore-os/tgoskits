@@ -32,7 +32,6 @@ k230 = [
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
 jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
 rga = ["ax-driver/rga", "starry-kernel/rga"]
-stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 
 [[bin]]
 name = "starryos"
@@ -52,11 +51,12 @@ ax-std = { workspace = true, default-features = false, features = [
   "fd",
   "ext-ld",
   "fs",
+  "paging",
 ] }
 ax-driver.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-hal = { workspace = true, features = ["smp"] }
-ax-runtime = { workspace = true, features = ["ext-ld", "smp", "starry-init"] }
+ax-runtime = { workspace = true, features = ["ext-ld", "paging", "smp", "starry-init"] }
 axplat-dyn = { workspace = true, features = ["smp"] }
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
