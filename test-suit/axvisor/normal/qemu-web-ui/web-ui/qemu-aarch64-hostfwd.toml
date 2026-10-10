@@ -1,0 +1,30 @@
+# Manual-run QEMU config for the `qemu-web-ui` case: same machine and guest as
+# `qemu-aarch64.toml`, plus host port forwarding so the dashboard is reachable
+# from the host at http://localhost:8080/ (the hypervisor always listens on
+# 0.0.0.0:8080). No `[host_http_probe]`: this one is for looking at the UI, not
+# for the automated verdict.
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "2",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/nvme0n1 rw init=/bin/sh",
+  "-m",
+  "4g",
+  "-netdev",
+  "user,id=net0,hostfwd=tcp::8080-:8080",
+  "-device",
+  "virtio-net-pci,netdev=net0",
+]
+fail_regex = []
+success_regex = []
+to_bin = true
+uefi = false

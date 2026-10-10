@@ -36,6 +36,8 @@ RUN apt-get update \
         make \
         meson \
         ninja-build \
+        nodejs \
+        npm \
         pkg-config \
         python3 \
         python3-venv \

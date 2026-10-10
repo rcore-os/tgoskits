@@ -31,7 +31,7 @@
   <rect class="consumer" x="490" y="108" width="300" height="48" rx="10"/>
   <text class="text" x="552" y="138">StarryOS Linux ABI</text>
   <rect class="consumer" x="910" y="108" width="300" height="48" rx="10"/>
-  <text class="text" x="951" y="138">Axvisor http-axum（间接）</text>
+  <text class="text" x="951" y="138">Axvisor web（间接）</text>
 
   <rect class="layer" x="30" y="202" width="1220" height="116" rx="18"/>
   <text class="layer-title" x="50" y="231">公共边界</text>

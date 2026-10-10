@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 680" role="img" aria-labelledby="title desc">
   <title id="title">ArceOS、StarryOS 与 Axvisor 的网络集成边界</title>
-  <desc id="desc">ArceOS 运行时负责设备初始化，StarryOS 通过系统调用和 Linux ABI 使用 ax-net，Axvisor 仅在 http-axum feature 下经 ax-std net 间接使用 SocketOps。</desc>
+  <desc id="desc">ArceOS 运行时负责设备初始化，StarryOS 通过系统调用和 Linux ABI 使用 ax-net，Axvisor 仅在 web feature 下经 ax-std net 间接使用 SocketOps。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
     <style>
@@ -35,7 +35,7 @@
   <rect class="panel" x="860" y="70" width="350" height="520" rx="18"/>
   <text class="heading" x="885" y="102">Axvisor（间接）</text>
   <rect class="os" x="905" y="135" width="260" height="66" rx="11"/>
-  <text class="text" x="961" y="162">http-axum feature</text><text class="small" x="958" y="184">管理面 HTTP 服务</text>
+  <text class="text" x="961" y="162">web feature</text><text class="small" x="958" y="184">管理面 HTTP 服务</text>
   <rect class="adapter" x="905" y="240" width="260" height="80" rx="11"/>
   <text class="text" x="992" y="270">ax-std/net</text><text class="small" x="942" y="295">标准库式 socket wrapper</text>
   <rect class="api" x="905" y="360" width="260" height="116" rx="11"/>

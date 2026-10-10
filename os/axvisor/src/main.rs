@@ -31,15 +31,12 @@ use ax_std as _;
 
 mod banner;
 mod config;
+#[cfg(feature = "web")]
+mod control;
 mod guest_console;
-#[cfg(any(feature = "browser-console", feature = "http-axum"))]
-mod http;
+mod guest_images;
 mod manager;
 mod net_uplink;
-#[cfg(feature = "browser-console")]
-mod network_console;
-#[cfg(feature = "browser-console")]
-mod network_status;
 #[cfg(feature = "vcpu-perf-load")]
 mod perf_load;
 mod shell;
@@ -54,12 +51,19 @@ mod virq_regression;
 /// 1. Configure the sole runtime host-console owner.
 /// 2. Print the startup banner through its output worker.
 /// 3. Check and enable hardware virtualization on every CPU.
-/// 4. Build the default guest VMs.
-/// 5. Spawn the management plane first — the configured HTTP and network
-///    console services so they are live before any guest boots — then the VM
-///    lifecycle waiter and the physical-console shell.
+/// 4. Build the default guest VMs, then report the pool of configs the
+///    management plane may start on demand.
+/// 5. Spawn the management plane first — the configured HTTP service and the
+///    registry watcher that feeds the browser UI — so they are live before any
+///    guest boots, then the VM lifecycle waiter and the physical-console shell.
 ///
 fn main() {
+    // The boot instant is recorded before anything else so the control plane's
+    // uptime counts from the kernel entry point rather than from the first
+    // request that happens to ask for it.
+    #[cfg(feature = "web")]
+    control::domain::host::mark_boot();
+
     guest_console::configure_host_console()
         .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
 
@@ -82,41 +86,35 @@ fn main() {
     #[cfg(feature = "vcpu-perf-load")]
     let _performance_load = perf_load::start();
 
-    // The browser-console registry snapshots the successfully initialized
-    // default VM set exactly once. Initialize it before HTTP so the browser's
-    // `/api/consoles` endpoint cannot observe a partially configured layout.
-    #[cfg(feature = "browser-console")]
-    network_console::start()
-        .unwrap_or_else(|error| panic!("failed to initialize browser consoles: {error:#}"));
+    // The pool reports what it found under the guest tree: a config there
+    // becomes a VM only when the shell or the control plane asks for it.
+    #[cfg(feature = "web")]
+    control::domain::pool::log_startup_state();
+
+    // The registry watcher behind `/ws/events` is started before HTTP so the
+    // first subscriber cannot miss a change.
+    #[cfg(feature = "web")]
+    control::domain::events::start();
 
     // The optional HTTP server accepts connections in a loop and needs its
-    // own task so neither the shell nor the VMM blocks it. The console registry
-    // is already complete when this task is enqueued, but the server's bind
+    // own task so neither the shell nor the VMM blocks it. The server's bind
     // still races guest task scheduling because spawning only enqueues work.
-    #[cfg(feature = "browser-console")]
+    #[cfg(feature = "web")]
     std::thread::Builder::new()
         .name("axvisor-http".into())
         .spawn(|| {
-            if let Err(error) = http::serve() {
+            if let Err(error) = control::serve() {
                 let message = format!(
                     "\r\nAxvisor web console unavailable:\r\n  bind = {}\r\n  error = {error:#}\r\n",
-                    http::bind_addr()
+                    control::bind_addr()
                 );
                 guest_console::submit_host_bytes(message.as_bytes());
             }
         })
         .unwrap_or_else(|error| panic!("failed to start Axvisor HTTP server: {error}"));
 
-    #[cfg(all(feature = "http-axum", not(feature = "browser-console")))]
-    std::thread::Builder::new()
-        .name("axvisor-http".into())
-        .spawn(|| {
-            http::serve().unwrap_or_else(|error| panic!("Axvisor HTTP server failed: {error:#}"));
-        })
-        .unwrap_or_else(|error| panic!("failed to start Axvisor HTTP server: {error}"));
-
-    #[cfg(feature = "browser-console")]
-    network_status::start();
+    #[cfg(feature = "web")]
+    control::network_status::start();
 
     // With `no-auto-start` the default VMs are only created (staying in
     // `Ready`) and the management plane boots them on demand, so nothing is

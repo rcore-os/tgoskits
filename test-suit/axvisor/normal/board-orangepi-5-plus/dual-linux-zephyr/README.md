@@ -61,8 +61,8 @@ Linux 客户机使用 `linux-smp1-sd.toml`，其根设备是 `/dev/mmcblk1p2`。
 
 ### 2.1 启用开关
 
-网络 Shell 需要 PCIe、RTL8125、`browser-console` 和监听地址同时存在，当前构建
-配置已按下列方式启用。只启用 `browser-console` 而没有 PCIe 与 RTL8125 驱动时，
+网络 Shell 需要 PCIe、RTL8125、统一的 `web` 和监听地址同时存在，当前构建
+配置已按下列方式启用。只启用 `web` 而没有 PCIe 与 RTL8125 驱动时，
 Axvisor 没有可用的实体管理网卡；只启用网卡驱动则不会发布网页服务。
 
 ```toml
@@ -71,14 +71,14 @@ features = [
   "ax-driver/realtek-rtl8125",
   "ax-driver/rockchip-sdhci",
   "ax-driver/rockchip-dwmmc",
-  "browser-console",
+  "web",
 ]
 
 [env]
 AXVM_HTTP_BIND = "0.0.0.0:8080"
 ```
 
-`browser-console` 发布 Axvisor、Linux 和 Zephyr 三个独立 WebSocket 字节流。服务没有 TLS 和认证，只能监听可信管理网络；不应把端口 `8080` 暴露到公共网络。
+统一的 `web` 功能发布 Axvisor、Linux 和 Zephyr 三个独立 WebSocket 字节流。服务没有 TLS 和认证，只能监听可信管理网络；不应把端口 `8080` 暴露到公共网络。
 
 ### 2.2 宿主资源隔离
 

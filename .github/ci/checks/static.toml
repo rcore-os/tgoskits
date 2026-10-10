@@ -14,6 +14,14 @@ python3 scripts/test/check_kernel_tls_modes.py
 '''
 
 [[check]]
+id = "check-axvisor-control-layers"
+name = "Axvisor control plane layering"
+runner = "qcs"
+command = '''
+python3 scripts/test/check_axvisor_control_layers.py
+'''
+
+[[check]]
 id = "run-sync-lint"
 name = "Synchronization lint"
 fetch_depth = "full"

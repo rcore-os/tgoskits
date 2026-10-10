@@ -1,0 +1,42 @@
+# QEMU launch for the three-guest browser-console case.
+# `-smp 4` hosts the three single-vCPU guests plus the hypervisor; `-m 4g`
+# fits three 256M MAP_ALLOC guest regions, the hypervisor and the page cache for
+# the root filesystem it reads the guest kernels from. The user-net device +
+# hostfwd forwards host TCP 8080 into the guest so the host browser can open the
+# web console at http://localhost:8080/.
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    # The hypervisor reads its own root filesystem from this NVMe disk: that is
+    # where the three ArceOS guest kernels live. The guests get no disk of their
+    # own -- they are read from this filesystem and never write to it.
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh",
+    "-m",
+    "4g",
+    "-netdev",
+    "user,id=net0,hostfwd=tcp::8080-:8080",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-monitor",
+    "unix:/tmp/qemu-mon.sock,server,nowait",
+    "-gdb",
+    "tcp::1234",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+]
+success_regex = []
+timeout = 1800
+to_bin = true
+uefi = false

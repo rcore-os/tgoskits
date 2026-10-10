@@ -178,17 +178,12 @@ fn vm_create(cmd: &ParsedCommand) {
         println!("Creating VM from config: {}", config_path);
 
         match read_to_string(config_path) {
-            Ok(raw_cfg) => match crate::manager::manager().create_vm_from_toml(&raw_cfg) {
-                Ok(operation) => match operation.wait() {
-                    Ok(vm) => println!(
-                        "✓ Successfully created VM[{}] from config: {}",
-                        vm.vm_id(),
-                        config_path
-                    ),
-                    Err(error) => {
-                        println!("✗ Failed to create VM from {config_path}: {error:#}");
-                    }
-                },
+            Ok(raw_cfg) => match crate::manager::manager().create_vm_from_toml_and_wait(&raw_cfg) {
+                Ok(vm) => println!(
+                    "✓ Successfully created VM[{}] from config: {}",
+                    vm.vm_id(),
+                    config_path
+                ),
                 Err(error) => {
                     println!("✗ Failed to create VM from {config_path}: {error:#}");
                 }
@@ -201,7 +196,7 @@ fn vm_create(cmd: &ParsedCommand) {
 
     // Check the actual number of VMs created
     let final_vm_count = crate::manager::manager().list().len();
-    let created_count = final_vm_count - initial_vm_count;
+    let created_count = final_vm_count.saturating_sub(initial_vm_count);
 
     if created_count > 0 {
         println!("Successfully created {} VM(s)", created_count);
@@ -590,8 +585,6 @@ fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
             println!("✗ Failed to remove VM[{vm_id}] from list: {err:#}");
         }
     }
-
-    println!("✓ VM[{}] deletion completed", vm_id);
 }
 
 fn vm_console(cmd: &ParsedCommand) {

@@ -1,7 +1,10 @@
-# Minimal browser-console build. No VM image or filesystem is required: the
-# host-side probe validates Axvisor's own console lane and the embedded page,
-# while axtest covers startup layouts containing one to three guests.
-features = ["browser-console"]
+# Minimal web build: the terminal gateway alone, with no embedded dashboard
+# (`web-ui`) and no VM image or filesystem. The host-side probe validates
+# Axvisor's own console lane and that this build deliberately owns no page
+# (`/` and `/assets/*` stay 404), while axtest covers how a guest takes and
+# releases a console lane. The API, file and host routes remain part of the
+# unified `web` feature even though this fixture has no guest VM.
+features = ["web"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = []

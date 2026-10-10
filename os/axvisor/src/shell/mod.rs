@@ -15,10 +15,10 @@
 use std::io::prelude::*;
 use std::string::{String, ToString};
 
-#[cfg(feature = "browser-console")]
+#[cfg(feature = "web")]
 use core::cell::Cell;
 
-#[cfg(feature = "browser-console")]
+#[cfg(feature = "web")]
 std::thread_local! {
     static NETWORK_OUTPUT_SELECTED: Cell<bool> = const { Cell::new(false) };
 }
@@ -49,9 +49,9 @@ fn submit_shell_line(args: core::fmt::Arguments<'_>) {
 }
 
 pub(crate) fn submit_shell_bytes(bytes: &[u8]) {
-    #[cfg(feature = "browser-console")]
+    #[cfg(feature = "web")]
     if NETWORK_OUTPUT_SELECTED.with(Cell::get) {
-        crate::network_console::submit_management_output(bytes);
+        crate::control::network_console::submit_management_output(bytes);
         return;
     }
     crate::guest_console::submit_host_bytes(bytes);
@@ -116,7 +116,7 @@ fn print_console_shortcuts() {
 ///
 /// Returns `false` for `exit` and `quit`, which disconnect only that network
 /// client instead of shutting down the hypervisor.
-#[cfg(feature = "browser-console")]
+#[cfg(feature = "web")]
 pub(crate) fn run_network_command(input: &str) -> bool {
     let command = input.trim();
     if matches!(command, "exit" | "quit") {
@@ -133,7 +133,7 @@ pub(crate) fn run_network_command(input: &str) -> bool {
     true
 }
 
-#[cfg(feature = "browser-console")]
+#[cfg(feature = "web")]
 pub(crate) fn network_prompt() -> String {
     prompt_string()
 }

@@ -53,6 +53,21 @@ impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · HTTP control-plane + browser console + ArceOS IVC"
 timeout_minutes = 30
 command = '''
+echo "==> axvisor web UI typecheck, unit tests, and bundle"
+(
+  cd os/axvisor/web-ui
+  if ! command -v npm >/dev/null 2>&1; then
+    test "$(id -u)" = 0
+    apt-get update
+    apt-get install -y --no-install-recommends nodejs npm
+    rm -rf /var/lib/apt/lists/*
+  fi
+  node --version
+  npm --version
+  npm ci
+  npm test
+  npm run build
+)
 echo "==> axvisor aarch64 HTTP control-plane (incl. pause/resume)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 echo "==> axvisor aarch64 browser console"

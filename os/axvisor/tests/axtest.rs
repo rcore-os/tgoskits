@@ -11,6 +11,10 @@
 
 extern crate alloc;
 
+// The production pool module under test reports through the host log.
+#[macro_use]
+extern crate log;
+
 use ax_hal as _;
 use ax_std as _;
 use axvisor as _;
@@ -21,17 +25,35 @@ use axvm as _;
 // These modules stay reachable from the production binary build; the harness
 // compiles them only for their in-file axtest suites.
 #[allow(dead_code)]
-#[path = "../src/network_console/delivery.rs"]
+#[path = "../src/control/network_console/delivery.rs"]
 mod browser_console_delivery;
 #[allow(dead_code)]
-#[path = "../src/network_console/layout.rs"]
+#[path = "../src/control/network_console/layout.rs"]
 mod browser_console_layout;
+#[allow(dead_code)]
+#[path = "../src/control/domain/files.rs"]
+mod files;
 mod guest_console_harness;
+#[allow(dead_code)]
+#[path = "../src/guest_images.rs"]
+mod guest_images;
 #[allow(dead_code)]
 #[path = "../src/guest_console/terminal.rs"]
 mod host_terminal;
 mod manager;
 mod network_console;
+mod control {
+    pub(crate) use crate::network_console;
+}
+#[path = "../src/control/domain/pool.rs"]
+mod pool;
+#[path = "../src/sync.rs"]
+mod sync;
+// The pool suites clean their fixtures through the production filesystem
+// helpers, so the harness compiles that module for its in-file suite too.
+#[allow(dead_code)]
+#[path = "../src/shell_fs.rs"]
+mod shell_fs;
 
 // These cases exercise the mux-to-network boundary through the stub above and
 // therefore must live beside the harness assembly instead of `mux/tests.rs`
@@ -60,11 +82,61 @@ mod tests {
     use axvisor::builtin::{install_builtin, selected_configs};
 
     #[test]
-    fn diskless_boot_keeps_memory_root_with_inherited_root_parameter() {
-        ax_assert!(
-            ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
-                .is_none_or(|devices| devices.is_empty())
+    fn placed_file_can_be_reopened_idempotently() {
+        let directory = "/tmp/file-transfer-reopen";
+        let id = "placed-reopen";
+        let _ = std::fs::remove_dir_all(directory);
+        std::fs::create_dir_all(directory).unwrap();
+
+        crate::files::open(id, directory, 4).unwrap();
+        match crate::files::send(id, 0, Some(5), b"data") {
+            Err(crate::files::FileError::Conflict { offset, .. }) => ax_assert_eq!(offset, 0),
+            _ => panic!("a range with a different declared total was accepted"),
+        }
+        crate::files::send(id, 0, None, b"data").unwrap();
+        let placed = crate::files::place(id, "kernel").unwrap();
+        ax_assert_eq!(
+            placed.path.as_deref(),
+            Some("/tmp/file-transfer-reopen/kernel")
         );
+
+        let reopened = crate::files::open(id, directory, 4).unwrap();
+        ax_assert_eq!(reopened.state, "placed");
+        ax_assert_eq!(reopened.written, 4);
+        ax_assert_eq!(reopened.path.as_deref(), placed.path.as_deref());
+        ax_assert_eq!(
+            std::fs::read_to_string(placed.path.unwrap()).unwrap(),
+            "data"
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn oversized_staging_file_cannot_be_marked_uploaded() {
+        let directory = "/tmp/file-transfer-oversized";
+        let id = "oversized-staging";
+        let _ = std::fs::remove_dir_all(directory);
+        std::fs::create_dir_all(format!("{directory}/.files")).unwrap();
+        std::fs::write(format!("{directory}/.files/{id}"), b"12345").unwrap();
+
+        match crate::files::open(id, directory, 4) {
+            Err(crate::files::FileError::Conflict { offset, .. }) => ax_assert_eq!(offset, 5),
+            _ => panic!("a staging file larger than its declaration was accepted"),
+        }
+        crate::files::drop(id).unwrap();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn diskless_boot_keeps_memory_root_with_inherited_root_parameter() {
+        // The shared QEMU axtest image exposes an NVMe device. This scenario
+        // is meaningful only on the diskless target where the runtime has no
+        // block device to prepare, so leave it for that target's harness.
+        if ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
+            .is_some_and(|devices| !devices.is_empty())
+        {
+            return axtest::AxTestResult::Ok;
+        }
         // The bundled kernel exists, but the board DTB is outside the archive.
         // Its absence must affect that VM at load time, not host preparation.
         std::fs::create_dir_all("/guest/builtin/configs").unwrap();
@@ -214,6 +286,9 @@ mod tests {
         ax_assert!(target.resolve("/guest/builtin/images/obsolete").is_err());
     }
 
+    use crate::shell_fs::{RemoveOptions, remove_path};
+    use ax_std::fs;
+
     fn remove_guest_console(vm_id: usize) {
         use crate::guest_console_harness::mux;
 
@@ -226,8 +301,6 @@ mod tests {
         use crate::{guest_console_harness::mux, network_console};
 
         network_console::reset();
-        network_console::set_guest_connected(1);
-        network_console::set_guest_connected(2);
         let backend_1 = mux::serial_backend_factory(1).create();
         let backend_2 = mux::serial_backend_factory(2).create();
         mux::mark_running(1);
@@ -244,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_output_skips_network_path_without_a_browser_session() {
+    fn guest_output_is_retained_without_a_browser_session() {
         use crate::{guest_console_harness::mux, network_console};
 
         network_console::reset();
@@ -253,7 +326,10 @@ mod tests {
 
         backend.write(b"physical console only\n");
 
-        ax_assert!(network_console::take_guest_output(1).is_empty());
+        ax_assert_eq!(
+            network_console::take_guest_output(1),
+            b"physical console only\n"
+        );
         remove_guest_console(1);
     }
 
@@ -262,7 +338,6 @@ mod tests {
         use crate::{guest_console_harness::mux, network_console};
 
         network_console::reset();
-        network_console::set_guest_connected(1);
         let backend = mux::serial_backend_factory(1).create();
         mux::mark_running(1);
 
@@ -277,7 +352,6 @@ mod tests {
         use crate::{guest_console_harness::mux, network_console};
 
         network_console::reset();
-        network_console::set_guest_connected(2);
         let backend = mux::serial_backend_factory(2).create();
         mux::mark_running(2);
 
@@ -294,7 +368,6 @@ mod tests {
         use crate::{guest_console_harness, network_console};
 
         network_console::reset();
-        network_console::set_guest_connected(1);
         let backend = guest_console_harness::mux::serial_backend_factory(1).create();
         guest_console_harness::mux::mark_running(1);
 
@@ -325,7 +398,6 @@ mod tests {
         mux::mark_running(2);
         ax_assert_eq!(backend_2.try_write(b"vm2\n"), 4);
 
-        network_console::set_guest_connected(1);
         let backend_1 = mux::serial_backend_factory(1).create();
         mux::mark_running(1);
         ax_assert_eq!(backend_1.try_write(b"retained by uart"), 0);
@@ -475,5 +547,559 @@ mod tests {
         remove_guest_console(4);
         remove_guest_console(5);
         host::reset_output();
+    }
+
+    #[test]
+    fn browser_delivery_coalesces_ordered_dispatcher_batches() {
+        use crate::browser_console_delivery::DeliveryFrame;
+
+        let mut delivery = DeliveryFrame::with_capacity(16);
+
+        delivery.append(b"starry ", 0);
+        delivery.append(b"continues", 0);
+
+        ax_assert_eq!(delivery.into_bytes(), b"starry continues");
+    }
+
+    #[test]
+    fn browser_delivery_reports_source_queue_overflow_before_preserved_bytes() {
+        use crate::browser_console_delivery::DeliveryFrame;
+
+        let mut delivery = DeliveryFrame::with_capacity(96);
+
+        delivery.append(b"preserved", 11);
+
+        let output = delivery.into_bytes();
+        ax_assert!(
+            output.starts_with(b"\r\n[Axvisor browser console dropped 11 queued bytes]\r\n")
+        );
+        ax_assert!(output.ends_with(b"preserved"));
+    }
+
+    #[test]
+    fn browser_delivery_queue_preserves_old_output_and_reports_new_overflow() {
+        use crate::browser_console_delivery::DeliveryQueue;
+
+        let mut delivery = DeliveryQueue::<8>::new();
+        delivery.enqueue(b"old");
+        delivery.enqueue(b"overflow");
+
+        let mut output = [0; 8];
+        let (len, dropped_bytes) = delivery.dequeue(&mut output);
+        ax_assert_eq!(&output[..len], b"old");
+        ax_assert_eq!(dropped_bytes, 8);
+    }
+
+    #[test]
+    fn browser_delivery_waits_for_notification_without_timer_polling() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use std::{sync::Arc, thread, time::Duration};
+
+        use {
+            ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWaitCell,
+            ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWorkerWaiter,
+            ax_std::os::arceos::modules::ax_runtime::task::thread::current::current_thread_handle,
+        };
+
+        let signal = Arc::new(IrqWaitCell::new());
+        let waiting = Arc::new(AtomicBool::new(false));
+        let woke = Arc::new(AtomicBool::new(false));
+        let worker_signal = Arc::clone(&signal);
+        let worker_waiting = Arc::clone(&waiting);
+        let worker_woke = Arc::clone(&woke);
+        let worker = thread::spawn(move || {
+            let current =
+                current_thread_handle().expect("delivery waiter must bind to its runtime worker");
+            let waiter = IrqWorkerWaiter::new(current.wake_handle());
+            worker_waiting.store(true, Ordering::Release);
+            waiter
+                .wait(&worker_signal)
+                .expect("delivery waiter must accept one notification cell");
+            worker_woke.store(true, Ordering::Release);
+        });
+
+        while !waiting.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        thread::sleep(Duration::from_millis(30));
+        ax_assert!(!woke.load(Ordering::Acquire));
+
+        let _result = signal.notify();
+        worker
+            .join()
+            .expect("delivery waiter must exit after notify");
+        ax_assert!(woke.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn host_terminal_converts_only_bare_lf_across_batches() {
+        use crate::host_terminal::TerminalNewlineNormalizer;
+
+        let mut normalizer = TerminalNewlineNormalizer::new();
+        let mut output = Vec::new();
+        normalizer
+            .write(b"banner\nline\r", |bytes| {
+                output.extend_from_slice(bytes);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        normalizer
+            .write(b"\nnext\n", |bytes| {
+                output.extend_from_slice(bytes);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        ax_assert_eq!(output, b"banner\r\nline\r\nnext\r\n");
+    }
+
+    #[test]
+    fn console_layout_allocates_guest_lanes_in_order_and_frees_them() {
+        use crate::browser_console_layout::{LaneAllocation, Layout, MAX_GUEST_CONSOLES};
+
+        let mut layout = Layout::new();
+        // The outcome tells the caller whether it may give a lane back later: a
+        // lane reported as reused belongs to a VM that already existed, so a
+        // creation that is rejected afterwards must not release it.
+        ax_assert_eq!(
+            layout
+                .allocate(2, "zephyr")
+                .expect("a free lane must accept a guest"),
+            LaneAllocation::Allocated,
+        );
+        layout
+            .allocate(1, "")
+            .expect("a free lane must accept a guest");
+
+        let endpoints = layout.endpoints();
+        ax_assert_eq!(endpoints.len(), 3);
+        ax_assert_eq!(endpoints[0].route, "axvisor");
+        ax_assert_eq!(endpoints[0].vm_id, None);
+        ax_assert_eq!(endpoints[1].vm_id, Some(2));
+        ax_assert_eq!(endpoints[1].display_name, "zephyr");
+        ax_assert_eq!(endpoints[1].lane.index(), 1);
+        ax_assert_eq!(endpoints[2].vm_id, Some(1));
+        ax_assert_eq!(endpoints[2].display_name, "VM 1");
+        ax_assert_eq!(endpoints[2].route, "vm-1");
+
+        // Re-registering a VM keeps its lane, and only a free slot is reused.
+        ax_assert_eq!(
+            layout
+                .allocate(2, "zephyr")
+                .expect("re-registering a VM is idempotent"),
+            LaneAllocation::Reused,
+        );
+        ax_assert_eq!(layout.endpoints().len(), 3);
+        ax_assert_eq!(layout.guest(2).map(|guest| guest.lane.index()), Some(1));
+        ax_assert_eq!(layout.release(2).map(|guest| guest.lane.index()), Some(1));
+        ax_assert_eq!(
+            layout
+                .allocate(3, "linux")
+                .expect("the freed lane must be reusable"),
+            LaneAllocation::Allocated,
+        );
+        ax_assert_eq!(layout.guest(3).map(|guest| guest.lane.index()), Some(1));
+        ax_assert_eq!(layout.release(3).map(|guest| guest.lane.index()), Some(1));
+        ax_assert_eq!(layout.release(3).map(|guest| guest.lane.index()), None);
+
+        // A full table rejects the next guest instead of dropping an existing
+        // one, and does not disturb the lanes already handed out.
+        for vm_id in 0..MAX_GUEST_CONSOLES {
+            layout
+                .allocate(vm_id, "guest")
+                .expect("guest within the lane limit must be accepted");
+        }
+        ax_assert!(layout.allocate(MAX_GUEST_CONSOLES, "guest").is_err());
+        ax_assert_eq!(layout.endpoints().len(), MAX_GUEST_CONSOLES + 1);
+        ax_assert_eq!(layout.guest(0).map(|guest| guest.lane.index()), Some(1));
+        ax_assert_eq!(
+            layout
+                .guest(MAX_GUEST_CONSOLES - 1)
+                .map(|guest| guest.lane.index()),
+            Some(MAX_GUEST_CONSOLES)
+        );
+    }
+
+    fn reset_test_dir(path: &str) {
+        let _ = remove_path(
+            path,
+            RemoveOptions {
+                recursive: true,
+                force: true,
+                ..RemoveOptions::default()
+            },
+        );
+        fs::create_dir(path).expect("create test directory");
+    }
+
+    #[test]
+    fn vm_pool_scan_lists_only_configs_that_can_become_a_vm() {
+        use crate::pool::scan_dir;
+
+        let root = "/tmp/axvisor-vm-pool-scan";
+        reset_test_dir(root);
+        let kernel = format!("{root}/kernel.bin");
+        fs::write(&kernel, b"guest kernel").expect("write kernel image fixture");
+
+        let entry_toml = |id: usize, name: &str| {
+            format!(
+                "[base]\nid = {id}\nname = \"{name}\"\n\n[kernel]\nkernel_path = \"{kernel}\"\n"
+            )
+        };
+        fs::write(&format!("{root}/named.toml"), entry_toml(7, "named"))
+            .expect("write filesystem entry");
+        // Only the `.toml` suffix makes a file a pool candidate.
+        fs::write(&format!("{root}/notes.txt"), b"[base]\nid = 9\n").expect("write note");
+        fs::write(&format!("{root}/empty.toml"), b"").expect("write empty file");
+        fs::write(&format!("{root}/broken.toml"), b"base = { id = 1,").expect("write broken file");
+        fs::write(&format!("{root}/binary.toml"), [0xff, 0xfe, 0xfd]).expect("write binary file");
+        let absent = format!("{root}/absent.bin");
+        fs::write(
+            &format!("{root}/missing.toml"),
+            format!("[base]\nid = 8\nname = \"missing\"\n\n[kernel]\nkernel_path = \"{absent}\"\n"),
+        )
+        .expect("write missing-image entry");
+
+        let pool = scan_dir(root);
+
+        ax_assert_eq!(pool.directory(), root);
+        let mut ids: alloc::vec::Vec<usize> =
+            pool.entries().iter().map(|entry| entry.id()).collect();
+        ids.sort();
+        ax_assert_eq!(ids, [7]);
+        let named = pool
+            .entries()
+            .iter()
+            .find(|entry| entry.id() == 7)
+            .expect("the filesystem entry must be listed");
+        ax_assert!(named.path().ends_with("named.toml"));
+        ax_assert!(named.toml().contains("id = 7"));
+
+        let mut reported: alloc::vec::Vec<_> = pool
+            .issues()
+            .iter()
+            .map(|issue| format!("{} {}", issue.kind().as_str(), issue.path()))
+            .collect();
+        reported.sort();
+        let mut expected = [
+            format!("empty {root}/empty.toml"),
+            format!("invalid-toml {root}/broken.toml"),
+            format!("missing-image {root}/missing.toml"),
+            format!("unreadable {root}/binary.toml"),
+        ];
+        expected.sort();
+        ax_assert_eq!(reported, expected);
+        // The reported reason names the file that is missing, not just the
+        // config that asked for it.
+        let missing = pool
+            .issues()
+            .iter()
+            .find(|issue| issue.path().ends_with("missing.toml"))
+            .expect("the missing image must be reported");
+        ax_assert!(format!("{missing}").contains(absent.as_str()));
+
+        // Two configs claiming one id: the first one listed wins and the other
+        // is reported, whichever the filesystem enumerates first.
+        let dupes = format!("{root}/dupes");
+        fs::create_dir(&dupes).expect("create duplicate fixture directory");
+        fs::write(&format!("{dupes}/a.toml"), entry_toml(5, "a")).expect("write a.toml");
+        fs::write(&format!("{dupes}/b.toml"), entry_toml(5, "b")).expect("write b.toml");
+        let dupe_pool = scan_dir(&dupes);
+        ax_assert_eq!(dupe_pool.entries().len(), 1);
+        ax_assert_eq!(dupe_pool.issues().len(), 1);
+        ax_assert_eq!(dupe_pool.issues()[0].kind().as_str(), "duplicate-id");
+        ax_assert_eq!(dupe_pool.entries()[0].id(), 5);
+        ax_assert!(dupe_pool.entries()[0].path() != dupe_pool.issues()[0].path());
+
+        // A directory that is not there yields no entries and one reason.
+        let absent_dir = "/tmp/axvisor-vm-pool-absent";
+        let _ = remove_path(
+            absent_dir,
+            RemoveOptions {
+                recursive: true,
+                force: true,
+                ..RemoveOptions::default()
+            },
+        );
+        let absent_pool = scan_dir(absent_dir);
+        ax_assert_eq!(absent_pool.entries().len(), 0);
+        ax_assert_eq!(absent_pool.issues().len(), 1);
+        ax_assert_eq!(
+            absent_pool.issues()[0].kind().as_str(),
+            "directory-unavailable"
+        );
+
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove pool fixture");
+    }
+
+    #[test]
+    fn vm_pool_scan_walks_subdirectories_and_ignores_documents_that_are_no_config() {
+        use crate::pool::{MAX_SCAN_DEPTH, browse, scan_dir, scan_dirs, sources};
+
+        let root = "/tmp/axvisor-vm-pool-walk";
+        reset_test_dir(root);
+        let kernel = format!("{root}/kernel.bin");
+        fs::write(&kernel, b"guest kernel").expect("write kernel image fixture");
+        let entry_toml = |id: usize, name: &str| {
+            format!(
+                "[base]\nid = {id}\nname = \"{name}\"\n\n[kernel]\nkernel_path = \"{kernel}\"\n"
+            )
+        };
+
+        // The guest filesystem cannot create directories recursively, so each
+        // level of a fixture tree is created on its own.
+        let nested = format!("{root}/a/b");
+        fs::create_dir(&format!("{root}/a")).expect("create fixture directory a");
+        fs::create_dir(&nested).expect("create fixture directory b");
+        fs::write(&format!("{nested}/deep.toml"), entry_toml(11, "deep"))
+            .expect("write nested entry");
+        // A `.toml` that is no guest config. The scan walks a whole filesystem
+        // and meets other tools' documents there; reporting them as broken
+        // configs would bury the files that really are broken.
+        fs::write(
+            &format!("{nested}/manifest.toml"),
+            b"[workspace]\nmembers = [\"crates/a\"]\n",
+        )
+        .expect("write unrelated document");
+        // A config attempt that does not parse is reported wherever it sits:
+        // that is the difference the unrelated document must not blur.
+        fs::write(&format!("{nested}/damaged.toml"), b"[base]\nid = 12,\n")
+            .expect("write damaged entry");
+        let staging = format!("{root}/.files");
+        fs::create_dir(&staging).expect("create private staging directory");
+        fs::write(&format!("{staging}/staged.toml"), entry_toml(14, "staged"))
+            .expect("write staged config fixture");
+
+        let pool = scan_dir(root);
+        let ids: alloc::vec::Vec<usize> = pool.entries().iter().map(|entry| entry.id()).collect();
+        ax_assert_eq!(ids, [11]);
+        // `Entry.source` is the folder the file is in, not the folder the scan
+        // started from, so a nested config is traceable to where it lives.
+        ax_assert_eq!(pool.entries()[0].source(), nested.as_str());
+        let reported: alloc::vec::Vec<_> = pool
+            .issues()
+            .iter()
+            .map(|issue| format!("{} {}", issue.kind().as_str(), issue.path()))
+            .collect();
+        ax_assert_eq!(reported, [format!("invalid-toml {nested}/damaged.toml")]);
+        ax_assert!(
+            pool.entries()
+                .iter()
+                .all(|entry| !entry.path().contains("/.files/"))
+        );
+        let hidden = browse(&staging);
+        ax_assert!(hidden.files().is_empty());
+        ax_assert_eq!(hidden.entries().len(), 0);
+        ax_assert_eq!(hidden.issues().len(), 1);
+
+        // The guest tree is a source as well, read last so the narrower ones
+        // keep precedence; a file reached through two sources is one candidate
+        // rather than a duplicate of itself.
+        ax_assert_eq!(sources().last(), Some(&"/guest".to_string()));
+        let overlap = scan_dirs(&[nested.clone(), root.to_string()]);
+        let ids: alloc::vec::Vec<usize> =
+            overlap.entries().iter().map(|entry| entry.id()).collect();
+        ax_assert_eq!(ids, [11]);
+        ax_assert!(
+            overlap
+                .issues()
+                .iter()
+                .all(|issue| issue.kind().as_str() != "duplicate-id")
+        );
+
+        // The walk stops at the depth cap instead of following a pathological
+        // tree for as long as it takes to read it.
+        let mut too_deep = root.to_string();
+        for level in 0..=MAX_SCAN_DEPTH {
+            too_deep = format!("{too_deep}/level{level}");
+            fs::create_dir(&too_deep).expect("create deep fixture directory");
+        }
+        fs::write(&format!("{too_deep}/buried.toml"), entry_toml(13, "buried"))
+            .expect("write buried entry");
+        let capped = scan_dir(root);
+        let ids: alloc::vec::Vec<usize> = capped.entries().iter().map(|entry| entry.id()).collect();
+        ax_assert_eq!(ids, [11]);
+
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove walk fixture");
+    }
+
+    #[test]
+    fn vm_pool_reads_several_directories_in_precedence_order() {
+        use crate::pool::{browse, scan_dirs, sources};
+
+        // The directory a new config is written to comes first, so a config the
+        // operator saves there shadows a same-id config found elsewhere.
+        ax_assert_eq!(sources().first(), Some(&"/guest".to_string()));
+
+        let root = "/tmp/axvisor-vm-pool-multi";
+        reset_test_dir(root);
+        let kernel = format!("{root}/kernel.bin");
+        fs::write(&kernel, b"guest kernel").expect("write kernel image fixture");
+        let entry_toml = |id: usize, name: &str| {
+            format!(
+                "[base]\nid = {id}\nname = \"{name}\"\n\n[kernel]\nkernel_path = \"{kernel}\"\n"
+            )
+        };
+
+        let first = format!("{root}/first");
+        let second = format!("{root}/second");
+        fs::create_dir(&first).expect("create first fixture directory");
+        fs::create_dir(&second).expect("create second fixture directory");
+        fs::write(&format!("{first}/only.toml"), entry_toml(1, "only-first"))
+            .expect("write first-only entry");
+        fs::write(
+            &format!("{second}/other.toml"),
+            entry_toml(2, "only-second"),
+        )
+        .expect("write second-only entry");
+        fs::write(&format!("{first}/shadow.toml"), entry_toml(3, "from-first"))
+            .expect("write shadowing entry");
+        fs::write(
+            &format!("{second}/shadow.toml"),
+            entry_toml(3, "from-second"),
+        )
+        .expect("write shadowed entry");
+
+        let pool = scan_dirs(&[first.clone(), second.clone()]);
+
+        ax_assert_eq!(pool.directory(), first.as_str());
+        ax_assert_eq!(pool.sources(), [first.clone(), second.clone()].as_slice());
+        let mut names: alloc::vec::Vec<&str> =
+            pool.entries().iter().map(|entry| entry.name()).collect();
+        names.sort();
+        ax_assert_eq!(names, ["from-first", "only-first", "only-second"]);
+        // Every entry says which folder it came from, which is what makes a
+        // duplicate id traceable to two files.
+        let from_second = pool
+            .entries()
+            .iter()
+            .find(|entry| entry.name() == "only-second")
+            .expect("the second directory must contribute entries");
+        ax_assert_eq!(from_second.source(), second.as_str());
+        let shadow = pool
+            .issues()
+            .iter()
+            .find(|issue| issue.path().ends_with("second/shadow.toml"))
+            .expect("the shadowed file must be reported");
+        ax_assert_eq!(shadow.kind().as_str(), "duplicate-id");
+
+        // Browsing walks one directory: folders are listed as folders to enter
+        // rather than as unreadable files, and only `.toml` files are entries.
+        fs::write(&format!("{first}/notes.txt"), b"not a config").expect("write note");
+        let folder = browse(&first);
+        ax_assert_eq!(folder.path(), first.as_str());
+        ax_assert_eq!(folder.parent(), Some(root));
+        ax_assert!(folder.directories().is_empty());
+        ax_assert_eq!(folder.entries().len(), 2);
+        ax_assert!(folder.issues().is_empty());
+
+        let nested = browse(root);
+        let mut subdirectories: alloc::vec::Vec<&str> = nested
+            .directories()
+            .iter()
+            .map(|directory| directory.name())
+            .collect();
+        subdirectories.sort();
+        ax_assert_eq!(subdirectories, ["first", "second"]);
+        // `kernel.bin` is neither a directory nor a `.toml`, so it is not
+        // reported as a problem: browsing must not turn a normal file into noise.
+        ax_assert!(nested.issues().is_empty());
+        // It is still a file, though: a folder view lists what is there, and the
+        // length is what the filesystem knows about it.
+        let listed: alloc::vec::Vec<(&str, usize)> = nested
+            .files()
+            .iter()
+            .map(|file| (file.name(), file.size()))
+            .collect();
+        ax_assert_eq!(listed, [("kernel.bin", 12)]);
+
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove multi-directory fixture");
+    }
+
+    #[test]
+    fn vm_pool_save_only_writes_validated_configs_inside_the_directory() {
+        use crate::pool::{SaveError, save_in, scan_dir};
+
+        let root = "/tmp/axvisor-vm-pool-save";
+        reset_test_dir(root);
+        let kernel = format!("{root}/kernel.bin");
+        fs::write(&kernel, b"guest kernel").expect("write kernel image fixture");
+        let valid =
+            format!("[base]\nid = 4\nname = \"saved\"\n\n[kernel]\nkernel_path = \"{kernel}\"\n");
+
+        // A name that could escape the directory is refused before any write,
+        // so a request cannot place a file anywhere it likes.
+        for name in [
+            "",
+            "  ",
+            "guest",
+            "guest.toml.bak",
+            "../escape.toml",
+            ".hidden.toml",
+        ] {
+            ax_assert!(matches!(
+                save_in(root, name, &valid),
+                Err(SaveError::InvalidName(_))
+            ));
+        }
+        ax_assert!(fs::metadata(&format!("{root}/../escape.toml")).is_err());
+
+        // Text that is not a guest config is refused too: the pool only ever
+        // holds files that can become a VM.
+        ax_assert!(matches!(
+            save_in(root, "broken.toml", "base = { id = 1,"),
+            Err(SaveError::InvalidToml(_))
+        ));
+        ax_assert!(fs::metadata(&format!("{root}/broken.toml")).is_err());
+
+        // The happy path is observable: the file lands where it was asked to
+        // and the next scan lists it as a candidate.
+        let path = save_in(root, "saved.toml", &valid).expect("save a valid config");
+        ax_assert_eq!(path, format!("{root}/saved.toml"));
+        ax_assert_eq!(
+            fs::read_to_string(&path).expect("read the saved config"),
+            valid
+        );
+        let pool = scan_dir(root);
+        ax_assert_eq!(pool.entries().len(), 1);
+        ax_assert_eq!(pool.entries()[0].id(), 4);
+        ax_assert_eq!(pool.entries()[0].name(), "saved");
+
+        // A save never replaces an existing candidate behind an operator's
+        // back; choose a new name or remove the old file explicitly.
+        ax_assert!(matches!(
+            save_in(root, "saved.toml", &valid),
+            Err(SaveError::Exists(_))
+        ));
+
+        remove_path(
+            root,
+            RemoveOptions {
+                recursive: true,
+                ..RemoveOptions::default()
+            },
+        )
+        .expect("remove save fixture");
     }
 }

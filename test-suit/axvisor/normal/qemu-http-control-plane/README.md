@@ -19,7 +19,7 @@ guest 内核 panic 时直接失败。
 
 默认 VM（id=1，`http-control-plane/vm-memory.toml`，构建期内嵌 `memory` 镜像）
 被 `no-auto-start` 保持在 `Ready`。探针在一轮启动内驱动完整契约：list/detail、
-鉴权与错误映射（401/400/404/409）、启动、暂停/恢复循环、停止、从 `Stopped`
+错误映射（400/404/409）、启动、暂停/恢复循环、停止、从 `Stopped`
 重新启动、销毁后按同一内嵌镜像重建并再次运行，最后清理。
 
 判定不依赖脚本里的固定睡眠，而是轮询 `GET /api/vms/{id}` 上的两个 VM 级观测：
@@ -34,10 +34,9 @@ guest 内核 panic 时直接失败。
 
 ## 生命周期口径
 
-- `create`、`start`、`resume`、`delete` 等待操作**完成**再响应。
-- `pause`、`stop` 在操作被**接受**后立即响应（`"async": true`）；`Paused`/
-  `Stopped` 快照只在参与者与设备/端口真正安静（pause）或整轮拆除完成
-  （stop）之后才出现，探针轮询终态而非相信“已接受”。
+- `create`、`start`、`pause`、`resume`、`stop`、`delete` 都等待操作**完成**再响应，
+  返回体中的 `"async"` 为 `false`；探针仍轮询终态，以观察参与者与设备/端口的真实
+  停止和暂停进展。
 - 重复 `pause`（`Paused`）、重复 `resume`（`Running`）、重复 `stop`
   （`Stopped`）都是幂等的 200；`start` **不是**幂等的，对 `Running` 再次
   `start` 仍返回 409。

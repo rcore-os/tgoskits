@@ -81,7 +81,7 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 
 `qcs` 承担较通用的构建与运行工作，但不是“所有测试的默认机器”。`arceos.toml`、`workspace.toml`、`axvisor.toml` 和 `benchmarks.toml` 使用它作为文件默认值，单项仍可以覆盖；全局默认其实是 `ubuntu-base`。
 
-ArceOS 的四个架构聚合检查使用 QCS。AxVisor 的两个 AArch64 检查分别覆盖 smoke/virtio-blk/axtest/timer stress 和 panic/HTTP 控制面/浏览器控制台/IVC，另一个 RISC-V 检查覆盖 smoke、IPI 与 panic 模式。`static.toml` 只有 formatting/publish 使用 QCS，sync-lint 走托管 base 环境。
+ArceOS 的四个架构聚合检查使用 QCS。AxVisor 的两个 AArch64 检查分别覆盖 smoke/virtio-blk/axtest/timer stress 和 panic/HTTP 控制面/浏览器控制台/IVC，另一个 RISC-V 检查覆盖 smoke、IPI 与 panic 模式。`static.toml` 中 formatting/publish 预检与 Axvisor 控制面分层检查使用 QCS，sync-lint 走托管 base 环境。
 
 Starry 的四个架构 QEMU 套件使用托管 base 环境，并在各自行中追加内核测试；不能因为它们运行内核就推断必须申请自托管 runner。
 

@@ -42,6 +42,10 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+# The dashboard bundle is a checked-in release asset: Cargo embeds it when the
+# `web-ui` feature is enabled, including for registry packages.
+!web-ui/dist/
+!web-ui/dist/**
 downloads/
 eggs/
 .eggs/

@@ -1,0 +1,47 @@
+# QEMU launch for the HTTP control-plane-over-VM-pool case.
+#
+# `-m 8g` carries the hypervisor, the ext4 rootfs the guest kernels are read
+# from, and three 256M `MAP_ALLOC` guest regions (each guest maps its RAM to
+# hypervisor-allocated host pages, so all three can share the guest physical
+# base their kernels are linked at). `-smp 4` gives the management console CPU 0
+# and one pinned CPU per guest.
+args = [
+    "-nographic",
+    "-snapshot",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+]
+# The host-side probe is the verdict and terminates QEMU through QMP.
+timeout = 600
+to_bin = true
+uefi = false
+
+# The probe asset (`http_probe.py`, next to this file) drives the pool contract
+# over real TCP via hostfwd: pool listing, start-on-demand per entry, multi-guest
+# coexistence, close (delete) and restart from the same entry.
+#
+# `request_timeout_secs = 60`: the management API runs on a single-threaded
+# runtime and a start creates the guest synchronously (reads the kernel image
+# from the ext4 rootfs, builds the VM, starts its vCPUs), so a start can take
+# seconds and block the other requests behind it. The 5s default is too tight
+# for that; the probe also verifies a lost start response by state instead of
+# failing on the transport.
+[host_http_probe]
+request_timeout_secs = 60

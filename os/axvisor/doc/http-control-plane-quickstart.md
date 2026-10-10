@@ -5,8 +5,7 @@ AxVisor 内置一个基于 axum 的管理控制平面：它在虚拟机监控器
 创建、启动、暂停、恢复、停止和销毁 VM，而不必进入串口控制台。
 
 - 监听地址来自构建期环境变量 `AXVM_HTTP_BIND`，缺省为 `127.0.0.1:8080`。
-- 修改状态的请求需要 `Authorization: Bearer <token>`；token 来自构建期
-  `[env] AXVM_HTTP_TOKEN`。只读 GET 无需鉴权。
+- 第一版控制平面不启用鉴权；默认只监听 `127.0.0.1:8080`，需要远程访问时由部署环境保护监听端口。
 - 常与 QEMU user-mode 网络配合：构建配置追加 hostfwd，宿主经转发端口访问
   guest 内的服务器。
 
@@ -24,11 +23,10 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 
 用例构建配置
 `test-suit/axvisor/normal/qemu-http-control-plane/build-aarch64-unknown-none-softfloat.toml`
-打开 `http-axum` 与 `no-auto-start`，把默认 VM 留在 `Ready`，并设置：
+打开 `web` 与 `no-auto-start`，把默认 VM 留在 `Ready`，并设置：
 
 ```toml
 [env]
-AXVM_HTTP_TOKEN = "axvisor-http-test-token"
 AXVM_HTTP_BIND = "0.0.0.0:8080"
 ```
 
@@ -45,9 +43,9 @@ virtio-net-pci，并在转发端口可达后执行 `http-control-plane/http_prob
 | POST | `/api/vms/create` | 从 TOML 创建并注册 | 200 `{"id": n}` |
 | DELETE | `/api/vms/{id}` | 销毁并注销 | 204 |
 | POST | `/api/vms/{id}/start` | 启动（等待完成） | 200 |
-| POST | `/api/vms/{id}/pause` | 请求暂停（接受即返回） | 200 |
+| POST | `/api/vms/{id}/pause` | 暂停（等待完成） | 200 |
 | POST | `/api/vms/{id}/resume` | 恢复（等待完成） | 200 |
-| POST | `/api/vms/{id}/stop` | 请求停止（接受即返回） | 200 |
+| POST | `/api/vms/{id}/stop` | 停止（等待完成） | 200 |
 
 详情响应字段：`id`、`name`、`status`、`cpu_num`、`memory_mb`、
 `vcpu_states`、`guest_entry_count`、`guest_park_count`。列表（摘要）不含
@@ -61,10 +59,8 @@ vCPU 与计数器字段。
   创建完成表示资源已准备；启动／恢复完成表示 vCPU owner 已初始化／恢复、
   准入已打开且已唤醒；销毁完成表示资源与实例已释放。首个真实 guest 执行进展
   另行轮询 `guest_entry_count`，不由启动／恢复的 200 同步保证。
-- `pause`、`stop`：handler 在操作被**接受**后立即响应（`"async": true`）。
-  `Paused`/`Stopped` 状态只有在 owner 真正让所有参与者 park、让设备/端口
-  安静（pause），或完成整轮拆除（stop）之后才出现。调用方应轮询详情取得
-  终态，不要把“已接受”的响应当作“已完成”。
+- `pause`、`stop` 与其他生命周期动作一样等待 owner 完成，响应中的 `async` 为
+  `false`；调用方仍可轮询详情观察运行计数器。
 
 ### 幂等与状态转换
 
@@ -81,7 +77,6 @@ vCPU 与计数器字段。
 | 状态码 | 含义 |
 | --- | --- |
 | 400 | 请求体非法：缺少 `toml` 字段，或 TOML 无法解析 |
-| 401 | 修改状态请求缺少或携带错误的 Bearer token |
 | 404 | `{id}` 非数字或未知 VM |
 | 409 | 非法状态转换、重复注册、陈旧 run、入口已关闭等冲突 |
 | 503 | 宿主资源暂不可用（内存、vCPU、设备，或操作被取消） |
@@ -101,19 +96,17 @@ vCPU 与计数器字段。
 
 ## 限制与注意
 
-- `pause`/`stop` 是请求语义：终态快照相对响应是滞后的，取决于各参与者的
-  拆除进度。
+- `pause`/`stop` 会等待生命周期 owner 完成；计数器仍需通过详情接口观察。
 - 计数器是 VM 级聚合，不能证明每个 vCPU、设备或定时器都已静默。
 - `Paused` 在 vCPU 卸载、任务定时器 producer 与设备后台执行静默后发布。
   已发布的 pending 与逻辑定时器截止时间保留，恢复后继续消费；宿主单调时间照常前进。
 - 直通设备缺少 DMA 静默能力时，相关资源更新与回收返回错误并保留 backing。
-- `create` 只能实现构建期内嵌镜像（`image_location = "memory"`）且
-  `base.id` 匹配的配置；镜像未内嵌时创建失败。
+- `create` 接受当前 `GuestConfig` 的文件路径；创建前会检查内核、ramdisk、DTB
+  和虚拟块设备 backing 文件是否已经存在。
 - 观测通过轮询 `GET /api/vms/{id}` 完成；不要用固定睡眠代替事件轮询。
 
 ## 参见
 
 - 用例与探针：`test-suit/axvisor/normal/qemu-http-control-plane/`
-- HTTP handler：`os/axvisor/src/http/vm.rs`、`os/axvisor/src/http/server.rs`、
-  `os/axvisor/src/http/auth.rs`
+- HTTP handler：`os/axvisor/src/control/transport/api/vm.rs`、`os/axvisor/src/control/transport/server.rs`
 - owner 生命周期：`virtualization/axvm/src/control/`

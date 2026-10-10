@@ -546,7 +546,7 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
     }
 }
 
-#[cfg(any(feature = "browser-console", test, axtest))]
+#[cfg(any(feature = "web", test, axtest))]
 impl GuestConsoleMux {
     fn route_network_input(&self, vm_id: VMId, bytes: &[u8]) -> Option<bool> {
         self.core.route_network_input(vm_id, bytes)
@@ -792,7 +792,7 @@ impl ConsoleCore {
         true
     }
 
-    #[cfg(any(feature = "browser-console", test, axtest))]
+    #[cfg(any(feature = "web", test, axtest))]
     fn route_network_input(&self, vm_id: VMId, bytes: &[u8]) -> Option<bool> {
         let mut state = self.lock_state();
         if !state.running.contains(&vm_id)
@@ -816,9 +816,12 @@ impl SerialBackend for GuestSerialBackend {
         let accepted = self
             .core
             .write_guest_output(self.vm_id, self.generation, bytes);
-        #[cfg(any(feature = "browser-console", all(test, axtest)))]
-        if accepted != 0 && crate::network_console::guest_output_connected(self.vm_id) {
-            crate::network_console::submit_guest_output(self.vm_id, &bytes[..accepted]);
+        #[cfg(any(feature = "web", all(test, axtest)))]
+        if accepted != 0 {
+            // Submitted with no connection attached too: the network hub's
+            // per-lane queue retains these bytes so a browser that attaches
+            // later replays the console history it missed.
+            crate::control::network_console::submit_guest_output(self.vm_id, &bytes[..accepted]);
         }
         accepted
     }
@@ -902,7 +905,7 @@ pub fn route_host_byte(byte: u8) -> ConsoleInputEvent {
 
 /// Routes bytes from a VM-specific network endpoint without changing the
 /// physical console foreground.
-#[cfg(feature = "browser-console")]
+#[cfg(feature = "web")]
 pub(crate) fn route_network_input(vm_id: VMId, bytes: &[u8]) -> bool {
     let Some(overflowed) = GUEST_CONSOLE_MUX.route_network_input(vm_id, bytes) else {
         return false;

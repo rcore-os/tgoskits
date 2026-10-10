@@ -1,0 +1,25 @@
+# Three-guest browser-console build for the axum management HTTP + web console.
+# Enables unified `web` (NOT `no-auto-start`, so the three default VMs are
+# actually booted and appear as three guest console panes in the web UI).
+# The filesystem-backed kernel paths plus `ax-driver/nvme` make the guests possible: all three kernels
+# are read from the hypervisor's own filesystem on the QEMU NVMe disk instead of
+# being embedded in the hypervisor binary, so a case that wants different guests
+# only has to place files. CI runs `cargo xtask image pull` before the build to
+# provision that disk image.
+features = [
+    "web",
+    "ax-driver/nvme",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+# The same three guests the non-intlog case registers: one layout, two
+# hypervisor builds, so the guest configs live once in the shared library.
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/aarch64/arceos-fs-guest1.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/arceos-fs-guest2.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/arceos-fs-guest3.toml",
+]
+
+[env]
+# The web console binds all interfaces so the host browser can reach it.
+AXVM_HTTP_BIND = "0.0.0.0:8080"

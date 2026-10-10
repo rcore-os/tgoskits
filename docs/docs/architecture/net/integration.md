@@ -5,7 +5,7 @@ sidebar_label: "系统集成"
 
 # 系统集成
 
-`ax-net` 是 ArceOS 和 StarryOS 直接使用的网络栈实现。Axvisor 只有在启用 `http-axum` 等依赖 `ax-std/net` 的管理服务功能时，才经 ArceOS 间接使用它。`ax-net` 统一维护接口、地址、路由、DNS、ARP、网卡统计、socket 状态和协议栈 poll 机制；上层系统只负责平台设备接入和 ABI 转换。
+`ax-net` 是 ArceOS 和 StarryOS 直接使用的网络栈实现。Axvisor 只有在启用 `web` 等依赖 `ax-std/net` 的管理服务功能时，才经 ArceOS 间接使用它。`ax-net` 统一维护接口、地址、路由、DNS、ARP、网卡统计、socket 状态和协议栈 poll 机制；上层系统只负责平台设备接入和 ABI 转换。
 
 核心源码：
 
@@ -261,7 +261,7 @@ StarryOS 的 rtnetlink 与 procfs 都应从 `ax-net` 的接口、路由、ARP �
 
 ## 5. Axvisor 接入
 
-当前 `os/axvisor/Cargo.toml` 没有直接依赖 `ax-net`；`http-axum` feature 通过 `ax-std/net` 启用 ArceOS socket API，用于管理 HTTP 服务。Axvisor 本身没有单独构造 `NetworkConfig`、选择 VM 服务面 route 或直接调用 `bind_device()` 的集成代码。因此网络状态仍由承载 Axvisor 的 ArceOS runtime 初始化，不能把“Axvisor 管理面/服务面策略”描述成已实现能力。
+当前 `os/axvisor/Cargo.toml` 没有直接依赖 `ax-net`；`web` feature 通过 `ax-std/net` 启用 ArceOS socket API，用于管理 HTTP 服务。Axvisor 本身没有单独构造 `NetworkConfig`、选择 VM 服务面 route 或直接调用 `bind_device()` 的集成代码。因此网络状态仍由承载 Axvisor 的 ArceOS runtime 初始化，不能把“Axvisor 管理面/服务面策略”描述成已实现能力。
 
 ## 6. 集成约束
 

@@ -8,7 +8,7 @@ pub(crate) use host::{
     configure_host_console, read_host_byte, read_host_log, submit_host_bytes, take_host_log_drops,
     wait_for_host_event,
 };
-#[cfg(feature = "browser-console")]
+#[cfg(feature = "web")]
 pub(crate) use mux::route_network_input;
 pub(crate) use mux::{
     ConsoleAttachment, ConsoleInputEvent, activate, attach, attached_vm, backend_identity,

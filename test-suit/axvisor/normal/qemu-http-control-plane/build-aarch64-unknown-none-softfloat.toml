@@ -4,7 +4,7 @@
 # Boot files are packaged into the host initramfs, installed on the NVMe root,
 # and reused by the HTTP delete/recreate/start resource lifecycle regression.
 features = [
-    "http-axum",
+    "web",
     "ax-driver/nvme",
     "no-auto-start",
 ]
@@ -12,11 +12,7 @@ log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/vm-memory.toml"]
 
-# Control-plane auth + bind. The mutating routes require
-# `Authorization: Bearer <token>`; the typed probe sends this same token
-# (`[host_http_probe] token`), and hostfwd reachability requires binding all
-# interfaces. The BusyBox initramfs is generated from the managed rootfs into
-# the path the fixture's `ramdisk_path` points at.
+# Control-plane bind. The control plane has no authentication, so no token is
+# configured; hostfwd reachability requires binding all interfaces.
 [env]
-AXVM_HTTP_TOKEN = "axvisor-http-test-token"
 AXVM_HTTP_BIND = "0.0.0.0:8080"
