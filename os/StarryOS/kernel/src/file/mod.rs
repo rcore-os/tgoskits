@@ -261,14 +261,18 @@ pub trait FileLike: Pollable + DowncastSync {
     /// Updates mode bits and/or owner for a file-like whose backing object is
     /// an in-kernel inode rather than a filesystem location (an anonymous pipe
     /// or socket). `mode` carries the permission bits only; implementations
-    /// keep their own file-type bits.
+    /// keep their own file-type bits. `mode == None` marks a `fchown`-style
+    /// call, whose `chown_common()` contract clears privileged mode bits even
+    /// when no owner field is named; `owner` names the fields to commit —
+    /// `None` inside the tuple leaves that field unchanged — so a partial
+    /// update never overwrites a concurrent update of the other field.
     ///
     /// File kinds that cannot persist the change must return an error so
     /// `fchmod`/`fchown` do not report success they did not honor.
     fn set_inode_metadata(
         &self,
         _mode: Option<u32>,
-        _owner: Option<(u32, u32)>,
+        _owner: Option<(Option<u32>, Option<u32>)>,
     ) -> StarryResult<()> {
         Err(StarryError::OperationNotSupported)
     }
