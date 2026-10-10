@@ -30,6 +30,7 @@ k230 = [
 ]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
+uvc = ["starry-kernel/uvc"]
 jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
 rga = ["ax-driver/rga", "starry-kernel/rga"]
 stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]

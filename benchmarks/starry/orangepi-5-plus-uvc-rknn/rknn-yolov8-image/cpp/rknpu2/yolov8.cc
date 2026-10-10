@@ -136,6 +136,42 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
         dump_tensor_attr(&(input_attrs[i]));
     }
 
+    /*
+     * Prefer a persistent RKNN input buffer when the runtime exposes the
+     * zero-copy memory API.  The image owner can then give the buffer's
+     * physical address directly to RGA and avoid copying the 640x640 RGB
+     * frame through rknn_inputs_set. Older runtimes may not implement this
+     * API, so setup failure is a capability miss and falls back to the
+     * ordinary input path below.
+     */
+    app_ctx->input_zero_copy = false;
+    app_ctx->input_native_attrs = NULL;
+    app_ctx->input_mems[0] = NULL;
+    app_ctx->input_native_attrs = (rknn_tensor_attr *)calloc(io_num.n_input, sizeof(rknn_tensor_attr));
+    if (app_ctx->input_native_attrs != NULL) {
+        bool native_attrs_ready = true;
+        for (int i = 0; i < io_num.n_input; i++) {
+            app_ctx->input_native_attrs[i].index = i;
+            ret = rknn_query(ctx, RKNN_QUERY_NATIVE_INPUT_ATTR, &app_ctx->input_native_attrs[i],
+                             sizeof(rknn_tensor_attr));
+            if (ret != RKNN_SUCC) {
+                native_attrs_ready = false;
+                break;
+            }
+        }
+        if (native_attrs_ready && io_num.n_input == 1) {
+            app_ctx->input_native_attrs[0].type = RKNN_TENSOR_UINT8;
+            app_ctx->input_mems[0] = rknn_create_mem(ctx, app_ctx->input_native_attrs[0].size_with_stride);
+            if (app_ctx->input_mems[0] != NULL &&
+                rknn_set_io_mem(ctx, app_ctx->input_mems[0], &app_ctx->input_native_attrs[0]) == RKNN_SUCC) {
+                app_ctx->input_zero_copy = true;
+            } else if (app_ctx->input_mems[0] != NULL) {
+                rknn_destroy_mem(ctx, app_ctx->input_mems[0]);
+                app_ctx->input_mems[0] = NULL;
+            }
+        }
+    }
+
     // Get Model Output Info
     printf("output tensors:\n");
     rknn_tensor_attr output_attrs[io_num.n_output];
@@ -204,10 +240,28 @@ int release_yolov8_model(rknn_app_context_t *app_ctx)
         free(app_ctx->output_attrs);
         app_ctx->output_attrs = NULL;
     }
+    if (app_ctx->input_mems[0] != NULL && app_ctx->rknn_ctx != 0)
+    {
+        int destroy_mem_ret = rknn_destroy_mem(app_ctx->rknn_ctx, app_ctx->input_mems[0]);
+        app_ctx->input_mems[0] = NULL;
+        if (destroy_mem_ret != RKNN_SUCC)
+        {
+            ret = destroy_mem_ret;
+        }
+    }
+    if (app_ctx->input_native_attrs != NULL)
+    {
+        free(app_ctx->input_native_attrs);
+        app_ctx->input_native_attrs = NULL;
+    }
     if (app_ctx->rknn_ctx != 0)
     {
-        ret = rknn_destroy(app_ctx->rknn_ctx);
+        int destroy_ctx_ret = rknn_destroy(app_ctx->rknn_ctx);
         app_ctx->rknn_ctx = 0;
+        if (ret == RKNN_SUCC)
+        {
+            ret = destroy_ctx_ret;
+        }
     }
     return ret;
 }
@@ -234,6 +288,7 @@ int inference_yolov8_model_with_thresholds_profile(rknn_app_context_t *app_ctx, 
     rknn_output outputs[app_ctx->io_num.n_output];
     int bg_color = 114;
     bool outputs_acquired = false;
+    bool owns_dst_buffer = false;
     bool dump_stats = false;
     const double total_start = monotonic_ms();
 
@@ -260,12 +315,25 @@ int inference_yolov8_model_with_thresholds_profile(rknn_app_context_t *app_ctx, 
     dst_img.height = app_ctx->model_height;
     dst_img.format = IMAGE_FORMAT_RGB888;
     dst_img.size = get_image_size(&dst_img);
-    dst_img.virt_addr = (unsigned char *)malloc(dst_img.size);
+    if (app_ctx->input_zero_copy && app_ctx->input_mems[0] != NULL) {
+        /*
+         * RKNN owns this mapping, but its fd is not guaranteed to be a
+         * dma-heap fd accepted by librga. Leave fd unset here; image_utils
+         * uses the RKNN physical address when available and falls back to its
+         * validated dma-heap staging path otherwise.
+         */
+        dst_img.fd = 0;
+        dst_img.virt_addr = (unsigned char *)app_ctx->input_mems[0]->virt_addr;
+        dst_img.phys_addr = app_ctx->input_mems[0]->phys_addr;
+    } else {
+        dst_img.virt_addr = (unsigned char *)malloc(dst_img.size);
+        owns_dst_buffer = true;
+    }
     if (profile != NULL)
     {
         profile->malloc_ms = monotonic_ms() - stage_start;
     }
-    if (dst_img.virt_addr == NULL)
+    if (dst_img.virt_addr == NULL && dst_img.fd <= 0)
     {
         printf("malloc buffer size:%d fail!\n", dst_img.size);
         if (profile != NULL)
@@ -298,26 +366,30 @@ int inference_yolov8_model_with_thresholds_profile(rknn_app_context_t *app_ctx, 
                letter_box.resize_width,
                letter_box.resize_height,
                letter_box.scale);
-        dump_bytes_stats("RKNN_INPUT_STATS", 0, dst_img.virt_addr, dst_img.size);
+        if (dst_img.virt_addr != NULL) {
+            dump_bytes_stats("RKNN_INPUT_STATS", 0, dst_img.virt_addr, dst_img.size);
+        }
     }
 
-    // Set Input Data
-    inputs[0].index = 0;
-    inputs[0].type = RKNN_TENSOR_UINT8;
-    inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].size = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel;
-    inputs[0].buf = dst_img.virt_addr;
+    if (!app_ctx->input_zero_copy) {
+        // Set Input Data for runtimes without the persistent input-memory API.
+        inputs[0].index = 0;
+        inputs[0].type = RKNN_TENSOR_UINT8;
+        inputs[0].fmt = RKNN_TENSOR_NHWC;
+        inputs[0].size = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel;
+        inputs[0].buf = dst_img.virt_addr;
 
-    stage_start = monotonic_ms();
-    ret = rknn_inputs_set(app_ctx->rknn_ctx, app_ctx->io_num.n_input, inputs);
-    if (profile != NULL)
-    {
-        profile->inputs_set_ms = monotonic_ms() - stage_start;
-    }
-    if (ret < 0)
-    {
-        printf("rknn_input_set fail! ret=%d\n", ret);
-        goto out;
+        stage_start = monotonic_ms();
+        ret = rknn_inputs_set(app_ctx->rknn_ctx, app_ctx->io_num.n_input, inputs);
+        if (profile != NULL)
+        {
+            profile->inputs_set_ms = monotonic_ms() - stage_start;
+        }
+        if (ret < 0)
+        {
+            printf("rknn_input_set fail! ret=%d\n", ret);
+            goto out;
+        }
     }
 
     // Run
@@ -406,7 +478,7 @@ out:
             profile->outputs_release_ms = monotonic_ms() - stage_start;
         }
     }
-    if (dst_img.virt_addr != NULL)
+    if (owns_dst_buffer && dst_img.virt_addr != NULL)
     {
         free(dst_img.virt_addr);
     }

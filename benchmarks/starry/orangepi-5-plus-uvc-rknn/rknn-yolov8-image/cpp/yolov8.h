@@ -43,6 +43,17 @@ typedef struct {
     rknn_tensor_attr* input_native_attrs;
     rknn_tensor_attr* output_native_attrs;
 #endif
+    /*
+     * The single inference owner may bind an RKNN input DMA buffer once and
+     * let the image pipeline write into it directly.  Keep this available in
+     * the common path so zero-copy input does not require a second model
+     * implementation; `input_zero_copy` selects the negotiated capability.
+     */
+#if !defined(RV1106_1103) && !defined(ZERO_COPY)
+    rknn_tensor_mem* input_mems[1];
+    rknn_tensor_attr* input_native_attrs;
+#endif
+    bool input_zero_copy;
     int model_channel;
     int model_width;
     int model_height;

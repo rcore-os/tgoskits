@@ -513,11 +513,10 @@ fn csc_for(src: PixelFormat, dst: PixelFormat, _yuv2rgb_mode: u8) -> Option<CscS
 /// Parse a librga `rga_req` into the supported op shape. Rejects rotation, blend/ROP,
 /// and unrecognised render modes.
 pub fn parse(req: &RgaReq) -> Result<ParsedRgaReq> {
-    // Reject only ACTUAL rotation. librga always populates the rotation matrix with
-    // the identity (sina=0, cosa=0x10000 == cos 0° in 16.16 fixed point) for a
-    // non-rotated blit, so `cosa != 0` is NOT a rotation — gating on it rejected
-    // every librga blit. The engine only applies the matrix when rotate_mode != 0.
-    if req.rotate_mode != 0 {
+    // Reject only actual rotation. Older librga encodes no rotation as 0 while newer
+    // IM2D releases set RGA_MODE_ROTATE_0 (bit 0), so both values describe the same
+    // identity transform. The engine only applies the matrix for the other modes.
+    if req.rotate_mode > 1 {
         return Err(RgaError::Unsupported);
     }
     if req.alpha_rop_flag != 0 {

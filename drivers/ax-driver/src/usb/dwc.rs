@@ -98,7 +98,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
     let dma = usb_device_dma(crate::binding_resolver::dma_coherency_from_fdt(info));
     match prop_str(info.node.as_node(), "dr_mode") {
-        Some("host") => {}
+        // Starry does not expose a USB gadget/role-switch backend. On boards
+        // where firmware describes the physically host-facing port as OTG,
+        // keep the controller in its host role so usbfs can enumerate devices.
+        Some("host" | "otg") => {}
         Some(mode) => {
             debug!("skip DWC3 node {} because dr_mode={mode}", info.node.name());
             return Err(OnProbeError::NotMatch);
