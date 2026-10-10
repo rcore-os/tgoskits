@@ -43,18 +43,28 @@ impl SimpleFs {
         fs_type: u32,
         root: impl FnOnce(Arc<Self>) -> DirMaker,
     ) -> Filesystem {
+        Self::try_new_with(name, fs_type, |fs| Ok(root(fs)))
+            .expect("simple filesystem root construction failed")
+    }
+
+    /// Creates a new simple filesystem and propagates root construction errors.
+    pub fn try_new_with(
+        name: String,
+        fs_type: u32,
+        root: impl FnOnce(Arc<Self>) -> VfsResult<DirMaker>,
+    ) -> VfsResult<Filesystem> {
         let fs = Arc::new(Self {
             name,
             fs_type,
             inodes: RawSpinLock::new(Slab::new()),
             root: RawSpinLock::new(None),
         });
-        let root = root(fs.clone());
+        let root = root(fs.clone())?;
         fs.set_root(DirEntry::new_dir(
             |this| DirNode::new(root(this)),
             Reference::root(),
         ));
-        Filesystem::new(fs)
+        Ok(Filesystem::new(fs))
     }
 
     fn set_root(&self, root: DirEntry) {
@@ -177,5 +187,28 @@ impl NodeOps for SimpleFsNode {
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use axfs_ng_vfs::VfsError;
+
+    use super::*;
+
+    #[test]
+    fn failed_root_construction_does_not_publish_root() {
+        let mut captured = None;
+        let result = SimpleFs::try_new_with("broken".into(), 0, |fs| {
+            captured = Some(fs);
+            Err(VfsError::InvalidInput)
+        });
+
+        assert!(matches!(result, Err(VfsError::InvalidInput)));
+        assert!(captured
+            .unwrap()
+            .root
+            .lock_irqsave()
+            .is_none());
     }
 }

@@ -4,17 +4,16 @@ mod tun;
 
 use alloc::sync::Arc;
 
-use axfs_ng_vfs::{DeviceId, NodeType};
+use axfs_ng_vfs::{DeviceId, NodeType, VfsResult};
 
 use self::tun::TunFile;
-use crate::pseudofs::{Device, DirMapping, SimpleFs};
+use crate::pseudofs::{CachePolicy, Device, NodeRegistry, SimpleFs};
 
 /// Linux `TUN_MINOR` on the misc major.
 const TUN_DEVICE_ID: DeviceId = DeviceId::new(10, 200);
 
-pub(super) fn net_dir(fs: Arc<SimpleFs>) -> DirMapping {
-    let mut dir = DirMapping::new();
-    dir.add_dynamic("tun", move || {
+pub(super) fn register_nodes(registry: &mut NodeRegistry, fs: Arc<SimpleFs>) -> VfsResult<()> {
+    registry.dynamic_node("net/tun", CachePolicy::PerLookup, move || {
         Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
@@ -22,9 +21,5 @@ pub(super) fn net_dir(fs: Arc<SimpleFs>) -> DirMapping {
             Arc::new(TunFile::new()),
         )
         .into()
-    });
-    // `tun_chr_open` gives every open its own file; a cached node would share
-    // one attachment between unrelated opens.
-    dir.set_cacheable(false);
-    dir
+    })
 }

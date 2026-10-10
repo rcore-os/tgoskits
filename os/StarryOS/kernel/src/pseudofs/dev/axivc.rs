@@ -27,7 +27,7 @@ use bytemuck::{AnyBitPattern, NoUninit};
 
 use crate::{
     mm::{VmMutPtr, VmPtr},
-    pseudofs::{Device, DeviceMmap, DeviceOps, DirMapping, SimpleFs},
+    pseudofs::{Device, DeviceMmap, DeviceOps, NodeRegistry, SimpleFs},
     sync::Mutex,
     task::future::IrqNotify,
 };
@@ -608,10 +608,10 @@ struct ChannelState {
     closing: bool,
 }
 
-pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
+pub(super) fn register_devices(root: &mut NodeRegistry, fs: Arc<SimpleFs>) -> VfsResult<()> {
     let registry = Arc::new(AxivcRegistry::new(MAX_CHANNELS));
     registry.register_notify_irq();
-    root.add(
+    root.node(
         "axivc",
         Device::new(
             fs.clone(),
@@ -621,10 +621,10 @@ pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
                 registry: registry.clone(),
             }),
         ),
-    );
+    )?;
 
     for index in 0..MAX_CHANNELS {
-        root.add(
+        root.node(
             format!("axivc_publisher_{index}"),
             Device::new(
                 fs.clone(),
@@ -636,8 +636,8 @@ pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
                     index,
                 }),
             ),
-        );
-        root.add(
+        )?;
+        root.node(
             format!("axivc_subscriber_{index}"),
             Device::new(
                 fs.clone(),
@@ -649,8 +649,9 @@ pub(super) fn register_devices(root: &mut DirMapping, fs: Arc<SimpleFs>) {
                     index,
                 }),
             ),
-        );
+        )?;
     }
+    Ok(())
 }
 
 struct AxivcManager {
