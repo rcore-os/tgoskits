@@ -6,7 +6,6 @@ use core::{
 };
 #[cfg(feature = "vfs")]
 use std::sync::Barrier;
-use std::sync::Mutex as StdMutex;
 #[cfg(all(feature = "ext4", feature = "vfs"))]
 use std::sync::mpsc;
 
@@ -88,10 +87,10 @@ struct CacheTestFileState {
 type WriteObserver = Arc<dyn Fn(bool) + Send + Sync>;
 
 struct CacheTestFile {
-    state: StdMutex<CacheTestFileState>,
-    read_observer: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    state: std::sync::Mutex<CacheTestFileState>,
+    read_observer: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(feature = "vfs")]
-    write_observer: StdMutex<Option<WriteObserver>>,
+    write_observer: std::sync::Mutex<Option<WriteObserver>>,
     fail_next_set_len: AtomicBool,
     fail_next_write: AtomicBool,
     fail_next_range_operation: AtomicBool,
@@ -106,14 +105,14 @@ impl CacheTestFile {
     fn new_on(physical_data: Vec<u8>, filesystem: &'static CacheTestFilesystem) -> Self {
         let logical_len = physical_data.len();
         Self {
-            state: StdMutex::new(CacheTestFileState {
+            state: std::sync::Mutex::new(CacheTestFileState {
                 logical_len,
                 physical_data,
                 write_lengths: Vec::new(),
             }),
-            read_observer: StdMutex::new(None),
+            read_observer: std::sync::Mutex::new(None),
             #[cfg(feature = "vfs")]
-            write_observer: StdMutex::new(None),
+            write_observer: std::sync::Mutex::new(None),
             fail_next_set_len: AtomicBool::new(false),
             fail_next_write: AtomicBool::new(false),
             fail_next_range_operation: AtomicBool::new(false),
@@ -1267,7 +1266,7 @@ fn capacity_writeback_revalidates_a_mapping_installed_during_the_writeback() {
         // Mapping the file while the capacity writeback owns the backing store
         // must reach the retry: the LRU page belongs to a mapped file now, so
         // evicting it would detach frames that page tables still own.
-        let mapped = Arc::new(StdMutex::new(None));
+        let mapped = Arc::new(std::sync::Mutex::new(None));
         let installed = mapped.clone();
         let shared = cached.shared.clone();
         backing.set_write_observer(Some(Arc::new(move |finished| {

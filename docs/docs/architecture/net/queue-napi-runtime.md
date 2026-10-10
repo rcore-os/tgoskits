@@ -629,7 +629,7 @@ Loom 或等价穷举模型覆盖：
 - SG2002 Wi-Fi STA/AP、异步空闲 RX、EAPOL、ping、iperf，并记录 controller IRQ CPU 与 group poll CPU。
 - 可用时执行 RTL8125、FXMAC、Loongson 实机 smoke。
 
-测试态统计至少包含 IRQ、schedule、MISSED、poll batch、budget exhaustion、spurious、deferred probe、rearm race、owner/IRQ/poll CPU 和 remote wake。
+队列统计至少包含 IRQ、schedule、MISSED、poll batch、budget exhaustion、spurious、deferred probe、rearm race、last IRQ/poll CPU、remote wake 和 RX 丢弃累计；owner CPU 属于随 group 固定的身份，不在计数内。它经 `net_queue_snapshots()` 按 poll group 读出（身份为发现序索引、group ID、接口与 owner CPU），并由 `/sys/kernel/debug/net_queue` 渲染成诊断视图而非 ABI；计数逐字段读出，不构成同一时刻的一致视图。
 
 ## 17. 实施与验证状态
 

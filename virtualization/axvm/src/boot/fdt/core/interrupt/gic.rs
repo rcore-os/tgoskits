@@ -1,6 +1,6 @@
 //! ARM GIC firmware parsing and guest register installation.
 
-use fdt_edit::{Fdt, NodeId, Property};
+use fdt_edit::{Fdt, Property};
 use fdt_raw::RegInfo;
 
 use super::{
@@ -12,7 +12,7 @@ use crate::{machine::*, *};
 
 const DEFAULT_REDISTRIBUTOR_STRIDE: usize = 0x2_0000;
 
-/// Reads the host GIC register windows and firmware identity.
+/// Reads GIC register windows and identity from host or explicit guest firmware.
 pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>> {
     let Some((controller, compatible)) = fdt.iter_node_ids().find_map(|node_id| {
         let node = fdt.node(node_id)?;
@@ -204,16 +204,26 @@ pub(super) fn install_registers(tree: &mut FdtTree, profile: &GuestGicProfile) -
             ));
         }
     }
-    let controller = (!profile.node_path.is_empty())
-        .then(|| tree.inner().get_by_path_id(&profile.node_path))
-        .flatten()
-        .or_else(|| find(tree))
-        .ok_or_else(|| {
-            ax_err_type!(
-                InvalidData,
-                "guest FDT has no GIC interrupt-controller node"
-            )
-        })?;
+    let controller = phandle::controller_node(
+        tree,
+        |node| {
+            node.get_property("interrupt-controller").is_some()
+                && node.compatibles().any(is_supported)
+        },
+        "GIC",
+    )?;
+    let interrupt_cells = tree
+        .inner()
+        .node(controller)
+        .and_then(|node| node.get_property("#interrupt-cells"))
+        .and_then(Property::get_u32)
+        .unwrap_or(3);
+    if !matches!(interrupt_cells, 3 | 4) {
+        return Err(ax_err_type!(
+            InvalidData,
+            std::format!("guest GIC uses unsupported {interrupt_cells}-cell interrupt specifiers")
+        ));
+    }
     let mut registers = std::vec![RegInfo::new(
         profile.distributor.base as u64,
         Some(profile.distributor.length as u64),
@@ -236,7 +246,7 @@ pub(super) fn install_registers(tree: &mut FdtTree, profile: &GuestGicProfile) -
         .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC node is missing"))?
         .set_regs(&registers);
     tree.set_property(controller, prop_string("compatible", &profile.compatible))?;
-    tree.set_property(controller, prop_u32("#interrupt-cells", 3))?;
+    tree.set_property(controller, prop_u32("#interrupt-cells", interrupt_cells))?;
     match &profile.cpu_region {
         GuestGicCpuRegion::Redistributors(redistributors) => {
             tree.set_property(
@@ -267,17 +277,12 @@ pub(super) fn install_registers(tree: &mut FdtTree, profile: &GuestGicProfile) -
             node.remove_property("#redistributor-regions");
         }
     }
-    if let Some(phandle) = profile.node_phandle {
-        phandle::install(tree, controller, phandle, "GIC")?;
-    }
+    phandle::install(tree, controller, profile.node_phandle)?;
     its::install_registers(tree, &profile.its)
 }
 
-fn find(tree: &FdtTree) -> Option<NodeId> {
-    find_in_fdt(tree.inner())
-}
-
-fn find_in_fdt(fdt: &Fdt) -> Option<NodeId> {
+#[cfg(any(target_arch = "aarch64", test))]
+fn find_in_fdt(fdt: &Fdt) -> Option<fdt_edit::NodeId> {
     fdt.iter_node_ids().find(|node_id| {
         fdt.node(*node_id).is_some_and(|node| {
             node.get_property("interrupt-controller").is_some()
@@ -286,7 +291,7 @@ fn find_in_fdt(fdt: &Fdt) -> Option<NodeId> {
     })
 }
 
-fn is_supported(compatible: &str) -> bool {
+pub(super) fn is_supported(compatible: &str) -> bool {
     matches!(
         compatible,
         "arm,gic-v3" | "arm,cortex-a15-gic" | "arm,gic-400"

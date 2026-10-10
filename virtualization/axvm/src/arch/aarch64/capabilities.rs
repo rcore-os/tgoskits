@@ -28,7 +28,7 @@ impl BootImagePlatform for Aarch64Arch {
     }
 
     fn load_guest_dtb(
-        loader: &crate::boot::images::ImageLoaderCore<'_>,
+        loader: &mut crate::boot::images::ImageLoaderCore<'_>,
         dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         let bytes = dtb.as_bytes();
@@ -37,7 +37,7 @@ impl BootImagePlatform for Aarch64Arch {
         crate::boot::fdt::core::create::update_fdt(
             source,
             bytes.len(),
-            loader.vm.clone(),
+            &mut *loader.vm,
             &loader.config,
         )
     }
@@ -87,12 +87,11 @@ pub(super) fn decode_gic_spi(
 
 pub(super) fn patch_runtime_fdt(
     fdt_bytes: &[u8],
-    vm: &crate::AxVMRef,
+    vm: &crate::AxVM,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<std::vec::Vec<u8>> {
-    let initrd = vm.with_config(|config| {
-        super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
-    });
+    let initrd =
+        super::fdt::initrd_start_size_from_image_config(vm.config().image_config.ramdisk.as_ref());
     let (serial_profile, serial_identity, additional_serials, devices, gic_profile, timer_profile) =
         vm.with_architecture_plan(|plan| {
             Ok((

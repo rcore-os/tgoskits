@@ -54,11 +54,56 @@ struct Translation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ItsAction {
+    /// Materialize the target's LPI record before it can be delivered.
+    ///
+    /// The software ITS learns `(target, lpi)` from an architectural
+    /// translation command, which is always decoded in task context. Emitting
+    /// this effect lets the controller reserve the record storage here instead
+    /// of allocating on a later, possibly hard-IRQ, MSI signal.
+    Prepare { target: GicVcpuId, lpi: LpiId },
     SetPending {
         target: GicVcpuId,
         lpi: LpiId,
         pending: bool,
     },
+}
+
+/// Delivery effects decoded from one bounded software-ITS command drain.
+///
+/// A drain may consume part of the command queue and then fail: the guest
+/// command copy can fault, or one decoded command can be rejected. Every
+/// delivery effect decoded from a command that was already consumed is retained
+/// here, so the controller applies it before the failure reaches the guest, and
+/// the failing command stays at CREADR for a later retry.
+#[must_use = "a partially consumed command queue still owns decoded delivery effects"]
+pub(crate) struct ItsCommandProgress {
+    actions: Vec<ItsAction>,
+    failure: Option<VgicError>,
+}
+
+impl ItsCommandProgress {
+    /// Wraps the actions of a drain that consumed every pending command.
+    pub(crate) fn complete(actions: Vec<ItsAction>) -> Self {
+        Self {
+            actions,
+            failure: None,
+        }
+    }
+
+    /// Wraps the actions of a drain that consumed part of the queue.
+    fn partial(actions: Vec<ItsAction>, failure: VgicError) -> Self {
+        Self {
+            actions,
+            failure: Some(failure),
+        }
+    }
+
+    /// Splits the drained effects from the deferred failure, if any.
+    ///
+    /// The caller applies `actions` before reporting `failure` to the guest.
+    pub(crate) fn into_parts(self) -> (Vec<ItsAction>, Option<VgicError>) {
+        (self.actions, self.failure)
+    }
 }
 
 pub(crate) struct ItsState {
@@ -172,9 +217,9 @@ impl ItsState {
         budget: usize,
         lpi_limit: u32,
         processor_targets: &[GicVcpuId],
-    ) -> VgicResult<Vec<ItsAction>> {
+    ) -> VgicResult<ItsCommandProgress> {
         if !self.enabled {
-            return Ok(Vec::new());
+            return Ok(ItsCommandProgress::complete(Vec::new()));
         }
         if self.cbaser == 0 {
             return Err(VgicError::InvalidItsCommand {
@@ -197,24 +242,34 @@ impl ItsState {
         while self.creadr != self.cwriter {
             let offset = self.creadr;
             let mut bytes = [0u8; COMMAND_SIZE as usize];
-            memory
-                .read(base + offset, &mut bytes)
-                .map_err(|error| VgicError::GuestMemory {
-                    operation: "read command",
-                    address: base + offset,
-                    length: bytes.len(),
-                    detail: alloc::format!("{error}"),
-                })?;
-            self.execute(
+            // A copy or decode failure ends the drain, but every command already
+            // consumed above keeps both its CREADR progress and its decoded
+            // delivery effects. The failing command stays at CREADR, so a
+            // later write retries it instead of skipping it.
+            if let Err(failure) =
+                memory
+                    .read(base + offset, &mut bytes)
+                    .map_err(|error| VgicError::GuestMemory {
+                        operation: "read command",
+                        address: base + offset,
+                        length: bytes.len(),
+                        detail: alloc::format!("{error}"),
+                    })
+            {
+                return Ok(ItsCommandProgress::partial(actions, failure));
+            }
+            if let Err(failure) = self.execute(
                 decode_words(&bytes),
                 offset,
                 lpi_limit,
                 processor_targets,
                 &mut actions,
-            )?;
+            ) {
+                return Ok(ItsCommandProgress::partial(actions, failure));
+            }
             self.creadr = (self.creadr + COMMAND_SIZE) % size;
         }
-        Ok(actions)
+        Ok(ItsCommandProgress::complete(actions))
     }
 
     pub(crate) fn translate(

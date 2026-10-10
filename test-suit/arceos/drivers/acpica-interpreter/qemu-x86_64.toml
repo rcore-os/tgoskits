@@ -1,0 +1,8 @@
+args = ["-machine", "q35", "-m", "512M", "-smp", "1", "-display", "none", "-serial", "mon:stdio"]
+timeout = 60
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ACPICA_TEST_FAIL"]
+
+[[shell_check_steps]]
+success_regex = ["ACPICA_QEMU_INTEGRATION_OK"]

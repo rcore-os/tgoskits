@@ -16,6 +16,6 @@ use mailbox::MailboxState;
 pub use model::*;
 use model::{IoPurpose, PendingIo};
 use owner::ActiveTx;
-pub use owner::AicDevice;
+pub use owner::{AicDevice, TxAggregation};
 use request::*;
 use startup::StartupState;

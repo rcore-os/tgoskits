@@ -1,0 +1,16 @@
+cmdline = "root=/dev/sda rdinit=/init nosmp nr_cpus=1 keep_bootcon earlyprintk=serial initcall_debug oops=panic memmap=exactmap HOST_ENV=ready -- from-dashes"
+args = [
+  "-machine", "virt",
+  "-cpu", "cortex-a53",
+  "-m", "512M",
+  "-smp", "1",
+  "-nographic",
+  "-serial", "mon:stdio",
+]
+uefi = false
+to_bin = true
+fail_regex = ["STARRY_INITRAMFS_FAILED", "ARCEOS_PANIC_EMERGENCY"]
+timeout = 45
+
+[[shell_check_steps]]
+success_regex = ["STARRY_INITRAMFS_PASSED"]

@@ -20,7 +20,7 @@ use starry_signal::SignalInfo;
 use super::{Terminal, termios::Termios2};
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
     task::{future::block_on, send_signal_to_process_group},
 };
 
@@ -331,7 +331,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
 struct EchoQueue<W> {
     writer: W,
-    queue: IrqMutex<VecDeque<u8>>,
+    queue: RawSpinLock<VecDeque<u8>>,
     wake_source: Arc<PollSet>,
     dropped: AtomicUsize,
 }
@@ -340,7 +340,7 @@ impl<W: TtyWrite> EchoQueue<W> {
     fn new(writer: W, wake_source: Arc<PollSet>) -> Arc<Self> {
         Arc::new(Self {
             writer,
-            queue: IrqMutex::new(VecDeque::new()),
+            queue: RawSpinLock::new(VecDeque::new()),
             wake_source,
             dropped: AtomicUsize::new(0),
         })
@@ -352,7 +352,7 @@ impl<W: TtyWrite> EchoQueue<W> {
         }
 
         let queued = {
-            let mut queue = self.queue.lock();
+            let mut queue = self.queue.lock_irqsave();
             let space = ECHO_QUEUE_CAP.saturating_sub(queue.len());
             let queued = bytes.len().min(space);
             queue.extend(bytes[..queued].iter().copied());
@@ -378,7 +378,7 @@ impl<W: TtyWrite> EchoQueue<W> {
     }
 
     fn discard_pending(&self) {
-        self.queue.lock().clear();
+        self.queue.lock_irqsave().clear();
         self.dropped.store(0, Ordering::Release);
     }
 
@@ -386,7 +386,7 @@ impl<W: TtyWrite> EchoQueue<W> {
         let mut progressed = false;
         loop {
             let chunk = {
-                let queue = self.queue.lock();
+                let queue = self.queue.lock_irqsave();
                 if queue.is_empty() {
                     break;
                 }
@@ -402,7 +402,7 @@ impl<W: TtyWrite> EchoQueue<W> {
                 break;
             }
             {
-                let mut queue = self.queue.lock();
+                let mut queue = self.queue.lock_irqsave();
                 for _ in 0..written {
                     if queue.pop_front().is_none() {
                         break;
@@ -602,7 +602,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         if writer_closed {
             return true;
         }
-        let term = self.terminal.termios.lock().clone();
+        let term = self.terminal.termios.lock_irqsave().clone();
         if term.canonical() {
             return self.eof_ready.load(Ordering::Acquire) || !self.buf_rx.is_empty();
         }
@@ -641,7 +641,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             };
         }
 
-        let term = self.terminal.termios.lock().clone();
+        let term = self.terminal.termios.lock_irqsave().clone();
         let vmin = if term.canonical() {
             1
         } else {
@@ -1050,12 +1050,12 @@ mod tests {
         echo.write_now(b"abcdef");
 
         assert_eq!(bytes.load(Ordering::Relaxed), 2);
-        assert_eq!(echo.queue.lock().len(), 4);
+        assert_eq!(echo.queue.lock_irqsave().len(), 4);
 
         budget.store(4, Ordering::Release);
         assert!(echo.drain_available());
         assert_eq!(bytes.load(Ordering::Relaxed), 6);
-        assert!(echo.queue.lock().is_empty());
+        assert!(echo.queue.lock_irqsave().is_empty());
         assert!(calls.load(Ordering::Relaxed) >= 2);
     }
 

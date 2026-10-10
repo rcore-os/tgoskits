@@ -230,7 +230,7 @@ where
         vaddr: VirtAddr,
         config: PteConfigOf<T>,
         level: usize,
-    ) -> PagingResult<usize> {
+    ) -> PagingResult<(usize, bool)> {
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
         if entry.unused() {
@@ -239,8 +239,20 @@ where
         let is_dir = level > 1;
         let is_huge = entry.huge(is_dir);
         if is_huge || level == 1 {
-            self.as_slice_mut()[index] = T::P::new_page(entry.paddr(is_dir), config, is_huge);
-            return Ok(Self::level_size(level));
+            let page_size = Self::level_size(level);
+            let replacement = T::P::new_page(entry.paddr(is_dir), config, is_huge);
+            let requires_bbm = entry.requires_break_before_make(&replacement, is_dir);
+            if requires_bbm {
+                T::prepare_break_before_make()?;
+                self.as_slice_mut()[index].clear();
+                if let Err(error) = T::flush_before_make(vaddr, page_size) {
+                    self.as_slice_mut()[index] = entry;
+                    T::publish_new_mapping(vaddr);
+                    return Err(error);
+                }
+            }
+            self.as_slice_mut()[index] = replacement;
+            return Ok((page_size, requires_bbm));
         }
         if !entry.present() {
             return Err(PagingError::not_mapped());
@@ -329,14 +341,26 @@ where
                         .ok_or_else(|| PagingError::address_overflow("huge split frame"))?;
                     *child_entry = T::P::new_page(child_paddr, block_config, child_is_huge);
                 }
+            } else {
+                // A restored deposit can retain leaves from an aborted split.
+                // Empty means that none of those descriptors may be published.
+                for child_entry in reserved.as_slice_mut() {
+                    child_entry.clear();
+                }
             }
 
-            // The caller serializes the page-table structure. Clearing before
-            // the local invalidation prevents a walker from observing both the
-            // old block descriptor and the new table descriptor.
+            // The caller serializes the page-table structure. Invalidate the
+            // old block throughout the metadata's break-before-make domain
+            // before a walker can observe the new table descriptor.
+            T::prepare_break_before_make()?;
             self.as_slice_mut()[index].clear();
-            T::flush(Some(vaddr));
+            if let Err(error) = T::flush_before_make(vaddr, Self::level_size(level)) {
+                self.as_slice_mut()[index] = entry;
+                T::publish_new_mapping(vaddr);
+                return Err(error);
+            }
             self.as_slice_mut()[index] = T::P::new_table(reserved.paddr);
+            T::publish_new_mapping(vaddr);
             return Ok((block_paddr, block_config, Self::level_size(level)));
         }
         if level == 1 || !entry.present() {
@@ -373,9 +397,15 @@ where
             }
 
             let child = Self::from_paddr(child_table_paddr, self.allocator.clone());
+            T::prepare_break_before_make()?;
             self.as_slice_mut()[index].clear();
-            T::flush(Some(block_vaddr));
+            if let Err(error) = T::flush_before_make(block_vaddr, block_size) {
+                self.as_slice_mut()[index] = entry;
+                T::publish_new_mapping(block_vaddr);
+                return Err(error);
+            }
             self.as_slice_mut()[index] = T::P::new_page(block_paddr, block_config, true);
+            T::publish_new_mapping(block_vaddr);
             return Ok(child);
         }
 
@@ -399,7 +429,7 @@ where
         paddr: PhysAddr,
         config: PteConfigOf<T>,
         level: usize,
-    ) -> PagingResult<usize> {
+    ) -> PagingResult<(usize, bool)> {
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
         if entry.unused() {
@@ -410,8 +440,22 @@ where
         if is_huge || level == 1 {
             let page_size = Self::level_size(level);
             let aligned_paddr = PhysAddr::from_usize(paddr.as_usize() & !(page_size - 1));
-            self.as_slice_mut()[index] = T::P::new_page(aligned_paddr, config, is_huge);
-            return Ok(page_size);
+            let replacement = T::P::new_page(aligned_paddr, config, is_huge);
+            let requires_bbm = entry.requires_break_before_make(&replacement, is_dir);
+            if requires_bbm {
+                T::prepare_break_before_make()?;
+                // Construct before breaking the old mapping: no fallible step
+                // may strand an absent leaf. Its table remains attached, and
+                // the caller retains both physical owners across completion.
+                self.as_slice_mut()[index].clear();
+                if let Err(error) = T::flush_before_make(vaddr, page_size) {
+                    self.as_slice_mut()[index] = entry;
+                    T::publish_new_mapping(vaddr);
+                    return Err(error);
+                }
+            }
+            self.as_slice_mut()[index] = replacement;
+            return Ok((page_size, requires_bbm));
         }
         if !entry.present() {
             return Err(PagingError::not_mapped());
@@ -626,36 +670,27 @@ where
         ))
     }
 
-    pub(crate) fn take_occupied_leaf_deferred(
-        &mut self,
-        vaddr: VirtAddr,
-        level: usize,
-        deferred: &mut crate::DeferredPageTableFrames<A>,
-    ) -> PagingResult<(T::P, usize)> {
+    /// Clears one occupied leaf while retaining every intermediate table.
+    ///
+    /// A caller without a remote shootdown receipt may invalidate the leaf,
+    /// but must not detach and free a table that hardware could still walk.
+    pub(crate) fn clear_occupied_leaf(&mut self, vaddr: VirtAddr, level: usize) -> PagingResult {
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
         if entry.unused() {
             return Err(PagingError::not_mapped());
         }
-
-        if entry.huge(level > 1) || level == 1 {
+        if level == 1 || entry.huge(true) {
             self.as_slice_mut()[index].clear();
-            return Ok((entry, level));
+            return Ok(());
         }
         if !entry.present() {
             return Err(PagingError::hierarchy_error(
                 "Non-present intermediate entry is not a leaf",
             ));
         }
-
-        let child_paddr = entry.paddr(true);
-        let mut child = Self::from_paddr(child_paddr, self.allocator.clone());
-        let removed = child.take_occupied_leaf_deferred(vaddr, level - 1, &mut *deferred)?;
-        if child.as_slice().iter().all(PageTableEntry::unused) {
-            self.as_slice_mut()[index].clear();
-            deferred.push(child_paddr);
-        }
-        Ok(removed)
+        let mut child = Self::from_paddr(entry.paddr(true), self.allocator.clone());
+        child.clear_occupied_leaf(vaddr, level - 1)
     }
 
     /// 递归释放指定的单个页表项

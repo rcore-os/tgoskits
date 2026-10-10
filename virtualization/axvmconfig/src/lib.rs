@@ -32,6 +32,18 @@ pub use axvm_types::{
 
 mod error;
 
+/// Stable location of boot assets installed from the host initramfs.
+pub const BUILTIN_GUEST_DIR: &str = "/guest/builtin";
+
+/// TOML fields containing boot files, excluding writable guest disks.
+pub const BOOT_IMAGE_PATH_FIELDS: [&str; 5] = [
+    "kernel_path",
+    "dtb_path",
+    "bios_path",
+    "uefi_firmware_path",
+    "ramdisk_path",
+];
+
 pub use error::*;
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
@@ -271,22 +283,20 @@ pub struct VMBaseConfig {
     /// The number of virtual CPUs.
     pub cpu_num: usize,
     /// The physical CPU ids.
-    /// - if `None`, vcpu's physical id will be set as vcpu id.
-    /// - if set, each vcpu will be assigned to the specified physical CPU mask.
+    /// - if `phys_cpu_sets` is `Some`, these are the guest-visible vCPU ids.
+    /// - otherwise, these select host CPU identities and also become the guest IDs.
     ///
     /// Some ARM platforms will provide a specified cpu hw id in the device tree, which is
     /// read from `MPIDR_EL1` register (probably for clustering).
     pub phys_cpu_ids: Option<Vec<usize>>,
-    /// The mask of physical CPUs who can run this VM.
+    /// The final host affinity mask for each vCPU.
     ///
     /// - If `None`, vcpu will be scheduled on available physical CPUs randomly.
     /// - If set, each vcpu will be scheduled on the specified physical CPUs.
     ///
-    ///   For example, [0x0101, 0x0010] means:
-    ///   - vCpu0 can be scheduled at pCpu0 and pCpu2;
-    ///   - vCpu1 will only be scheduled at pCpu1;
-    ///
-    ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
+    ///   FDT-backed AArch64 and RISC-V paths require one mask per `phys_cpu_ids` entry;
+    ///   each mask must be non-zero, fit the host CPU width, and select one host CPU.
+    ///   Other scheduler paths may support masks selecting multiple physical CPUs.
     pub phys_cpu_sets: Option<Vec<usize>>,
 }
 
@@ -329,8 +339,6 @@ pub struct VMKernelConfig {
     pub ramdisk_path: Option<String>,
     /// The load address of the ramdisk image, `None` if not used.
     pub ramdisk_load_addr: Option<usize>,
-    /// The location of the image, default is 'fs'.
-    pub image_location: Option<String>,
     /// The command line of the kernel.
     pub cmdline: Option<String>,
     /// Memory Information
@@ -346,6 +354,19 @@ pub struct VMKernelConfig {
 }
 
 impl VMKernelConfig {
+    /// Returns every configured boot file, including firmware and guest initrd.
+    pub fn boot_image_paths(&self) -> impl Iterator<Item = &str> {
+        [
+            Some(self.kernel_path.as_str()),
+            self.dtb_path.as_deref(),
+            self.bios_path.as_deref(),
+            self.uefi_firmware_path.as_deref(),
+            self.ramdisk_path.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// Returns the effective boot protocol.
     pub fn effective_boot_protocol(&self) -> VMBootProtocol {
         self.boot_protocol.unwrap_or({
@@ -453,7 +474,6 @@ const BUILD_TARGET_ARCH: &str = "unknown";
 /// guests start with all guest-assignable physical devices and then remove the
 /// devices listed in [`GuestDevices::disabled`].
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(clap::ValueEnum))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuestType {

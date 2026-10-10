@@ -251,7 +251,8 @@ impl Nvme {
         let state = mem::replace(&mut self.init_state, NvmeInitState::Failed);
         match state {
             NvmeInitState::IdentifyController(pending) => {
-                let controller = parse_identify(pending);
+                let controller = parse_identify(pending)
+                    .ok_or(Error::Unknown("invalid NVMe Identify Controller data"))?;
                 self.sqes = u32::from(controller.sqes_min);
                 self.cqes = u32::from(controller.cqes_min);
                 self.num_ns = controller.number_of_namespaces as usize;
@@ -330,9 +331,9 @@ impl Nvme {
                     .ok_or(Error::Unknown("active NVMe namespace disappeared"))?;
                 let namespace = Namespace {
                     id: namespace_id,
-                    lba_size: namespace.lba_size as usize,
-                    lba_count: namespace.namespace_size as usize,
-                    metadata_size: namespace.metadata_size as usize,
+                    lba_size: namespace.lba_size,
+                    lba_count: namespace.namespace_size,
+                    metadata_size: usize::from(namespace.metadata_size),
                 };
                 self.namespace = Some(namespace);
                 self.init_state = NvmeInitState::Ready;
@@ -540,8 +541,9 @@ fn controller_max_transfer_bytes(minimum_page_size: usize, mdts: u8) -> Option<u
         None
     } else {
         Some(
-            minimum_page_size
+            1usize
                 .checked_shl(u32::from(mdts))
+                .and_then(|scale| minimum_page_size.checked_mul(scale))
                 .unwrap_or(usize::MAX),
         )
     }
@@ -551,7 +553,7 @@ fn controller_max_transfer_bytes(minimum_page_size: usize, mdts: u8) -> Option<u
 pub struct Namespace {
     pub id: u32,
     pub lba_size: usize,
-    pub lba_count: usize,
+    pub lba_count: u64,
     pub metadata_size: usize,
 }
 
@@ -591,5 +593,8 @@ mod tests {
             controller_max_transfer_bytes(64 * 1024, 1),
             Some(128 * 1024)
         );
+        for mdts in [(usize::BITS - 12) as u8, u8::MAX] {
+            assert_eq!(controller_max_transfer_bytes(4096, mdts), Some(usize::MAX));
+        }
     }
 }

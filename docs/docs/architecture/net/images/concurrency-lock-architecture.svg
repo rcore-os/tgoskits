@@ -44,7 +44,7 @@
   <rect class="device" x="960" y="165" width="285" height="92" rx="12"/>
   <text class="text" x="1010" y="197">DeviceHandle Mutex</text><text class="small" x="993" y="223">单次 recv/send 的设备状态</text>
   <rect class="device" x="960" y="320" width="285" height="92" rx="12"/>
-  <text class="text" x="1016" y="352">driver SpinLock</text><text class="small" x="992" y="378">worker 使用 lock_irqsave()</text>
+  <text class="text" x="1016" y="352">driver RawSpinLock</text><text class="small" x="992" y="378">worker 使用 lock_irqsave()</text>
   <rect class="irq" x="960" y="505" width="285" height="92" rx="12"/>
   <text class="text" x="1008" y="537">detached IRQ handler</text><text class="small" x="989" y="563">不经过 DeviceHandle 普通锁</text>
 

@@ -2,7 +2,7 @@
 
 use core::mem::size_of;
 
-use ax_sync::SpinLock;
+use ax_sync::Mutex;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
 use axvirtio_common::{
     GuestMemory, NoGuestMemoryAccessor, VirtioDeviceID, VirtioQueue,
@@ -26,7 +26,7 @@ const DEVICE_CONFIG_SIZE: usize = 16;
 /// policy and translates queue notifications to the common VirtIO contract.
 pub struct VirtioBlockPciAdapter<B: BlockBackend> {
     core: VirtioBlockRequestCore<B>,
-    pending_head: SpinLock<Option<u16>>,
+    pending_head: Mutex<Option<u16>>,
 }
 
 impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
@@ -34,7 +34,7 @@ impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
     pub const fn new(backend: B, config: VirtioBlockConfig) -> Self {
         Self {
             core: VirtioBlockRequestCore::new(backend, config),
-            pending_head: SpinLock::new(None),
+            pending_head: Mutex::new(None),
         }
     }
 
@@ -141,6 +141,24 @@ impl<B: BlockBackend> VirtioDeviceCore for VirtioBlockPciAdapter<B> {
         self.pending_head.lock().take();
         self.core.reset();
         Ok(())
+    }
+
+    fn suspend(&self) -> DeviceResult {
+        self.core
+            .suspend_backend()
+            .map_err(|error| map_virtio_error(error, "suspend VirtIO PCI block backend"))
+    }
+
+    fn resume(&self) -> DeviceResult {
+        self.core
+            .resume_backend()
+            .map_err(|error| map_virtio_error(error, "resume VirtIO PCI block backend"))
+    }
+
+    fn stop(&self) -> DeviceResult {
+        self.core
+            .stop_backend()
+            .map_err(|error| map_virtio_error(error, "stop VirtIO PCI block backend"))
     }
 
     fn requires_deferred_processing(&self) -> bool {

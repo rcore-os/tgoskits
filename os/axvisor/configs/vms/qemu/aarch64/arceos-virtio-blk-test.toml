@@ -4,11 +4,11 @@ name = "arceos-virtio-blk-test"
 guest_type = "virtualized"
 cpu_num = 1
 phys_cpu_ids = [1]
-phys_cpu_sets = [1]
+# `phys_cpu_ids` keeps guest ID 1; bit 1 keeps it on host pCPU 1.
+phys_cpu_sets = [2]
 
 [kernel]
 entry_point = 0x8020_0000
-image_location = "memory"
 kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtio-blk-test.bin"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000

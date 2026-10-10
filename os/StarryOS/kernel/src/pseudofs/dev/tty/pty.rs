@@ -15,7 +15,7 @@ use super::{
         ldisc::{ProcessMode, TtyConfig, TtyRead, TtyWrite},
     },
 };
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 const PTY_BUF_SIZE: usize = 4096;
 
@@ -23,7 +23,7 @@ pub type PtyDriver = Tty<PtyReader, PtyWriter>;
 
 type Buffer = Arc<HeapRb<u8>>;
 
-type SharedConsumer = Arc<IrqMutex<Cons<Buffer>>>;
+type SharedConsumer = Arc<RawSpinLock<Cons<Buffer>>>;
 
 /// What the devpts instance must do once one end of a pty has closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +118,7 @@ impl PtyLinkState {
 /// Both ends of one pty account for their opens and closes here, so the index
 /// cannot be released while an open of either end is in flight.
 pub(crate) struct PtyLink {
-    state: IrqMutex<PtyLinkState>,
+    state: RawSpinLock<PtyLinkState>,
     /// Set while an end has no descriptor open; its peer reads that as
     /// EOF/POLLHUP. Only ever written under `state`, together with the count.
     master_closed: Arc<AtomicBool>,
@@ -130,7 +130,7 @@ impl Drop for PtyLink {
     /// of them, so this is the first point at which nothing can open the pty
     /// again: a creation whose master never opened gives its index back here.
     fn drop(&mut self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let action = state.abandon_creation();
         let Some((instance, index)) = state.slot.clone() else {
             return;
@@ -152,7 +152,7 @@ impl Drop for PtyLink {
 impl PtyLink {
     fn new(master_closed: Arc<AtomicBool>, slave_closed: Arc<AtomicBool>) -> Self {
         Self {
-            state: IrqMutex::new(PtyLinkState::creating()),
+            state: RawSpinLock::new(PtyLinkState::creating()),
             master_closed,
             slave_closed,
         }
@@ -167,20 +167,20 @@ impl PtyLink {
     }
 
     pub(crate) fn bind(&self, instance: &Arc<PtsInstance>, index: u32) {
-        self.state.lock().slot = Some((Arc::downgrade(instance), index));
+        self.state.lock_irqsave().slot = Some((Arc::downgrade(instance), index));
     }
 
     /// Linux pty_open() clears TTY_OTHER_CLOSED on the peer, so an end that
     /// opens again stops reading as hung up from the other side.
     fn opening(&self, master: bool) -> crate::StarryResult<()> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         state.open(master)?;
         self.end_closed(master).store(false, Ordering::Release);
         Ok(())
     }
 
     fn closing(&self, master: bool) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let action = state.close(master);
         if state.opens(master) == 0 {
             self.end_closed(master).store(true, Ordering::Release);
@@ -193,7 +193,7 @@ impl PtyLink {
         if matches!(action, SlotAction::Keep) {
             return;
         }
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let Some((instance, index)) = state.slot.clone() else {
             return;
         };
@@ -238,7 +238,7 @@ impl TtyRead for PtyReader {
 
 #[derive(Clone)]
 pub struct PtyWriter(
-    Arc<IrqMutex<Prod<Buffer>>>,
+    Arc<RawSpinLock<Prod<Buffer>>>,
     SharedConsumer,
     Arc<PollSet>,
     Arc<PtyLink>,
@@ -254,7 +254,7 @@ impl PtyWriter {
         master: bool,
     ) -> Self {
         Self(
-            Arc::new(IrqMutex::new(Prod::new(buffer))),
+            Arc::new(RawSpinLock::new(Prod::new(buffer))),
             consumer,
             poll_rx,
             link,
@@ -317,8 +317,8 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>, Arc<PtyLink>
     // descriptor closes; the peer reader observes it as POLLHUP / EOF.
     let master_closed = Arc::new(AtomicBool::new(false));
     let slave_closed = Arc::new(AtomicBool::new(false));
-    let master_to_slave_consumer = Arc::new(IrqMutex::new(Cons::new(master_to_slave.clone())));
-    let slave_to_master_consumer = Arc::new(IrqMutex::new(Cons::new(slave_to_master.clone())));
+    let master_to_slave_consumer = Arc::new(RawSpinLock::new(Cons::new(master_to_slave.clone())));
+    let slave_to_master_consumer = Arc::new(RawSpinLock::new(Cons::new(slave_to_master.clone())));
 
     let terminal = Arc::new(Terminal::default());
     let link = Arc::new(PtyLink::new(master_closed.clone(), slave_closed.clone()));
@@ -432,7 +432,10 @@ mod tests {
     }
 
     fn link() -> PtyLink {
-        PtyLink::new(Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)))
+        PtyLink::new(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        )
     }
 
     #[test]

@@ -25,9 +25,13 @@ pub trait LoongArchHostOps {
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> LoongArchVcpuResult<Self::TimerHandle>;
 
-    /// Cancel a guest timer callback.
+    /// Cancel a guest timer callback and wait for its retirement.
+    ///
+    /// Task context only, on the timer's vCPU owner. The underlying hard-IRQ
+    /// host cancellation is not a completion barrier: it may report that the
+    /// callback is still executing or its payload is still being reclaimed, so
+    /// this port must not return until the stable registration is fully retired.
+    /// A returned error means the registration is still live and must be
+    /// retried rather than dropped.
     fn cancel_timer(handle: Self::TimerHandle) -> LoongArchVcpuResult;
-
-    /// Queue an interrupt for a vCPU.
-    fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize);
 }

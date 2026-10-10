@@ -94,6 +94,20 @@ impl FwCfgPayloadSlot {
     pub fn get(&self) -> Option<FwCfgPayloadConfig> {
         self.payload.lock().clone()
     }
+
+    /// Removes the installed payload so a later run can install a fresh one.
+    ///
+    /// The owner must call this only after every device built from the previous
+    /// payload has fully quiesced; otherwise a live fw_cfg transport would
+    /// observe a cleared boot payload. The removed configuration is returned so
+    /// the caller drops it outside the slot mutex, never while the slot is
+    /// locked. [`set`](Self::set) keeps rejecting a second live payload.
+    pub fn clear(&self) -> Option<FwCfgPayloadConfig> {
+        // `lock()` yields a temporary guard dropped at the end of this
+        // statement, so the removed payload is handed to the caller with the
+        // slot already unlocked.
+        self.payload.lock().take()
+    }
 }
 
 impl Default for FwCfgPayloadSlot {

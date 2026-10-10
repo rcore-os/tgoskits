@@ -5,7 +5,7 @@ use rdif_block::{
     IrqQueueMask, SharedHardIrqHandler,
 };
 
-use crate::os::{BlockIrqOutcome, BlockNotification, sync::IrqMutex};
+use crate::os::{BlockIrqOutcome, BlockNotification, sync::RawSpinLock};
 
 /// Preallocated hard-IRQ action owning exactly one boxed device handler.
 pub struct BlockIrqAction {
@@ -33,7 +33,7 @@ pub(super) struct IrqTarget {
 }
 
 pub(super) struct IrqEventLatch {
-    pending: IrqMutex<LatchedIrqEvent>,
+    pending: RawSpinLock<LatchedIrqEvent>,
 }
 
 pub(super) struct ControllerIrqTarget {
@@ -42,7 +42,7 @@ pub(super) struct ControllerIrqTarget {
 }
 
 pub(super) struct ControllerIrqLatch {
-    pending: IrqMutex<LatchedControllerIrq>,
+    pending: RawSpinLock<LatchedControllerIrq>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,7 +257,7 @@ impl ControllerIrqTarget {
 impl ControllerIrqLatch {
     pub(super) const fn new(source_id: usize) -> Self {
         Self {
-            pending: IrqMutex::new(LatchedControllerIrq {
+            pending: RawSpinLock::new(LatchedControllerIrq {
                 needs_rearm: false,
                 control: ControlEvent::new(source_id, 0),
             }),
@@ -265,7 +265,7 @@ impl ControllerIrqLatch {
     }
 
     fn publish(&self, needs_rearm: bool, control_bits: u64) {
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock_irqsave();
         pending.needs_rearm |= needs_rearm;
         pending.control = ControlEvent::new(
             pending.control.source_id(),
@@ -274,7 +274,7 @@ impl ControllerIrqLatch {
     }
 
     pub(super) fn take(&self) -> LatchedControllerIrq {
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock_irqsave();
         let event = *pending;
         pending.needs_rearm = false;
         pending.control = ControlEvent::new(event.control.source_id(), 0);
@@ -299,7 +299,7 @@ impl IrqTarget {
 impl IrqEventLatch {
     pub(super) const fn new(source_id: usize) -> Self {
         Self {
-            pending: IrqMutex::new(LatchedIrqEvent {
+            pending: RawSpinLock::new(LatchedIrqEvent {
                 queue_ready: false,
                 needs_rearm: false,
                 control: ControlEvent::new(source_id, 0),
@@ -310,7 +310,7 @@ impl IrqEventLatch {
     fn publish(&self, queue_ready: bool, needs_rearm: bool, control_bits: u64) {
         // Drain, control and rearm belong to one event. Separate atomics let a
         // consumer take rearm from a new IRQ after taking an empty queue flag.
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock_irqsave();
         pending.queue_ready |= queue_ready;
         pending.needs_rearm |= needs_rearm;
         pending.control = ControlEvent::new(
@@ -321,7 +321,7 @@ impl IrqEventLatch {
 
     pub(super) fn take(&self) -> LatchedIrqEvent {
         let event = {
-            let mut pending = self.pending.lock();
+            let mut pending = self.pending.lock_irqsave();
             let event = *pending;
             pending.queue_ready = false;
             pending.needs_rearm = false;

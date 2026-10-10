@@ -80,7 +80,7 @@ Public API 是上层 OS 模块进入 `ax-net` 的边界，主要定义在 `lib.r
 | API 类别 | 代表接口 | 架构作用 |
 | --- | --- | --- |
 | 初始化 | `NetworkRuntimeBuilder::build()`、`init_network()`、`init_vsock()` | 原子建立 fixed-CPU queue runtime、唯一 protocol executor、`Service`/`Router`/`NetControl`；vsock 独立初始化 |
-| 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()`、`net_dev_stats()` | 从控制面或设备层返回只读快照 |
+| 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()`、`net_dev_stats()`、`net_queue_snapshots()` | 从控制面或设备层返回只读快照 |
 | 运行期地址 | `set_interface_ipv4()`、`remove_interface_ipv4()` | 静态配置或精确删除单个接口 IPv4，并同步 connected route；不配置 gateway |
 | DNS | `dns_servers()`、`dns_query()`、`dns_query_timeout()` | 读取 DNS registry，并通过临时 smoltcp DNS socket 查询 |
 | Socket facade | `TcpSocket`、`UdpSocket`、`RawSocket`、`UnixSocket`、`VsockSocket` | 为 syscall/POSIX 层提供统一 socket backend |
@@ -188,6 +188,8 @@ sequenceDiagram
 ```
 
 这个模型避免多个线程同时推进协议栈，也保证 TCP 重传、keepalive、DHCP 和设备收包不会依赖某个应用线程继续运行。新 request 与 completion 竞争时，worker 在清除 scheduled 后再次比较 generation，确保至少再执行一轮。
+
+worker 连续轮询受预算约束（轮询次数与经过时间两个上限，先到者生效）：预算耗尽时它投递延迟唤醒、释放 CPU 所有权并重置预算，让同 CPU 上的设备所有者能继续运行。这次让出是协议执行器可见的调度转移，经窄观察端口报成 `net:proto_yield`（字段与判读口径见[网络事件](events.md)）。
 
 ![调用者、协议核心与设备线程的所有权边界](images/runtime-ownership.svg)
 

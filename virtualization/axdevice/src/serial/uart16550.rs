@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
 use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
@@ -116,7 +116,7 @@ impl Uart16550State {
 
 /// 16550-compatible UART core with an external byte backend and virtual IRQ.
 pub struct Uart16550 {
-    state: SpinLock<Uart16550State>,
+    state: Mutex<Uart16550State>,
     endpoint: SerialEndpoint,
 }
 
@@ -124,15 +124,18 @@ impl Uart16550 {
     /// Creates a powered-on 16550 UART.
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
-            state: SpinLock::new(Uart16550State::new()),
+            state: Mutex::new(Uart16550State::new()),
             endpoint: SerialEndpoint::new(backend, irq, "signal 16550 IRQ"),
         }
     }
 
-    fn state(&self) -> RawSpinLockGuard<'_, Uart16550State> {
-        // SAFETY: the virtual UART frontend serializes a vCPU's MMIO/poll
-        // entry and the raw lock excludes other vCPUs.
-        unsafe { self.state.lock_raw() }
+    /// Locks the register/FIFO state.
+    ///
+    /// The state is task-sleepable: a vCPU's MMIO/poll entry runs in ordinary
+    /// task context, and every backend/IRQ callback is invoked only after this
+    /// guard is dropped.
+    fn state(&self) -> MutexGuard<'_, Uart16550State> {
+        self.state.lock()
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.

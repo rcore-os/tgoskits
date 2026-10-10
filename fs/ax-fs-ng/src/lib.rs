@@ -14,17 +14,21 @@ extern crate ax_runtime;
 #[macro_use]
 extern crate log;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use axfs_ng_vfs::{Filesystem, Location};
 pub use axfs_ng_vfs::{VfsError, VfsResult};
 
 pub mod api;
 pub mod block;
+pub mod bootargs;
+pub mod bundle;
 mod error;
 pub mod file;
 pub mod fops;
 mod fs;
+pub mod initramfs;
+pub use fs::memory::MemoryFs;
 mod fs_core;
 mod highlevel;
 pub mod os;
@@ -36,11 +40,11 @@ pub(crate) use error::block_error_to_vfs_error;
 pub use error::{BlockError, BlockResult};
 pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
 
-static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
-    os::sync::IrqMutex::new(Vec::new());
+static MOUNTED_FILESYSTEMS: os::sync::RawSpinLock<Vec<Filesystem>> =
+    os::sync::RawSpinLock::new(Vec::new());
 
 fn register_mounted_filesystem(fs: Filesystem) {
-    MOUNTED_FILESYSTEMS.lock().push(fs);
+    MOUNTED_FILESYSTEMS.lock_irqsave().push(fs);
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -71,51 +75,20 @@ pub enum FilesystemKind {
     Fat,
 }
 
-/// Initializes the filesystem subsystem from a runtime-selected block region.
-pub(crate) fn init_filesystem(
-    dev: Arc<BlockDeviceHandle>,
-    region: BlockRegion,
-    description: &str,
-    source: &str,
-) -> Location {
-    info!("Initialize filesystem subsystem...");
-    info!("  selected root device: {}", description);
-
-    let fs = fs::new_from_handle(dev, region).unwrap_or_else(|err| {
-        panic!(
-            "failed to initialize filesystem on {}: {err:?}",
-            description
-        )
-    });
-    finish_filesystem_init(fs, source)
-}
-
-pub(crate) fn init_detected_filesystem(
-    dev: Arc<BlockDeviceHandle>,
-    region: BlockRegion,
-    kind: FilesystemKind,
-    description: &str,
-    source: &str,
-) -> Location {
-    info!("Initialize filesystem subsystem...");
-    info!("  selected root device: {}", description);
-
-    let fs = fs::new_from_handle_with_kind(dev, region, kind).unwrap_or_else(|err| {
-        panic!(
-            "failed to initialize filesystem on {}: {err:?}",
-            description
-        )
-    });
-    finish_filesystem_init(fs, source)
-}
-
 fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location {
     info!("  filesystem type: {:?}", fs.name());
 
-    let mp = axfs_ng_vfs::Mountpoint::new_root_with_source(&fs, source);
+    // Keep an immutable namespace anchor; the actual root mount can then be
+    // pivoted and detached without invalidating the namespace itself.
+    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs");
+    anchor.set_readonly(true);
+    let mp = anchor
+        .root_location()
+        .mount_with_source(&fs, source)
+        .expect("initial filesystem mount");
     let root = mp.root_location();
     register_mounted_filesystem(fs);
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
+    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()).into_shared());
     root
 }
 
@@ -127,7 +100,7 @@ pub fn shutdown_filesystems() -> axfs_ng_vfs::VfsResult {
 
 /// Shuts down the registered filesystems in reverse mount order.
 fn shutdown_registered_filesystems() -> axfs_ng_vfs::VfsResult {
-    let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock());
+    let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock_irqsave());
     let mut first_error = None;
     for fs in filesystems.into_iter().rev() {
         if let Err(error) = fs.shutdown() {
@@ -140,25 +113,28 @@ fn shutdown_registered_filesystems() -> axfs_ng_vfs::VfsResult {
 pub(crate) fn detect_filesystem(
     dev: &mut dyn crate::block::FsBlockDevice,
     region: BlockRegion,
-) -> Option<FilesystemKind> {
+) -> BlockResult<Option<FilesystemKind>> {
     #[cfg(not(any(feature = "ext4", feature = "fat")))]
     let _ = (&mut *dev, region);
 
     #[cfg(feature = "ext4")]
-    if region_has_ext4(dev, region) {
-        return Some(FilesystemKind::Ext4);
+    if region_has_ext4(dev, region)? {
+        return Ok(Some(FilesystemKind::Ext4));
     }
 
     #[cfg(feature = "fat")]
-    if region_has_fat(dev, region) {
-        return Some(FilesystemKind::Fat);
+    if region_has_fat(dev, region)? {
+        return Ok(Some(FilesystemKind::Fat));
     }
 
-    None
+    Ok(None)
 }
 
 #[cfg(feature = "ext4")]
-fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_ext4(
+    dev: &mut dyn crate::block::FsBlockDevice,
+    region: BlockRegion,
+) -> BlockResult<bool> {
     const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
     const EXT4_MAGIC_OFFSET: usize = 0x38;
     const EXT4_MAGIC: u16 = 0xEF53;
@@ -171,28 +147,29 @@ fn region_has_ext4(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegio
 }
 
 #[cfg(feature = "fat")]
-fn region_has_fat(dev: &mut dyn crate::block::FsBlockDevice, region: BlockRegion) -> bool {
+fn region_has_fat(
+    dev: &mut dyn crate::block::FsBlockDevice,
+    region: BlockRegion,
+) -> BlockResult<bool> {
     const FAT16_MAGIC: &[u8; 5] = b"FAT16";
     const FAT32_MAGIC: &[u8; 5] = b"FAT32";
     let start_lba = region.start_lba;
     let visible_blocks = region.num_blocks();
     if visible_blocks == 0 {
-        return false;
+        return Ok(false);
     }
 
     let block_size = dev.block_size();
     if block_size < 512 {
-        return false;
+        return Ok(false);
     }
 
     let mut buf = alloc::vec![0u8; block_size];
-    if dev.read_block(start_lba, &mut buf).is_err() {
-        return false;
-    }
+    dev.read_block(start_lba, &mut buf)?;
 
-    buf.get(510..512) == Some([0x55, 0xAA].as_slice())
+    Ok(buf.get(510..512) == Some([0x55, 0xAA].as_slice())
         && (buf.get(54..59) == Some(FAT16_MAGIC.as_slice())
-            || buf.get(82..87) == Some(FAT32_MAGIC.as_slice()))
+            || buf.get(82..87) == Some(FAT32_MAGIC.as_slice())))
 }
 
 #[cfg(feature = "ext4")]
@@ -201,10 +178,10 @@ fn region_has_magic_u16(
     region: BlockRegion,
     byte_offset: usize,
     magic: u16,
-) -> bool {
+) -> BlockResult<bool> {
     let block_size = dev.block_size();
     if block_size == 0 {
-        return false;
+        return Ok(false);
     }
 
     let start_lba = region.start_lba;
@@ -212,24 +189,22 @@ fn region_has_magic_u16(
     let block_index = byte_offset / block_size;
     let within_block = byte_offset % block_size;
     if visible_blocks == 0 || within_block + 2 > block_size {
-        return false;
+        return Ok(false);
     }
 
     let Some(block_index_u64) = u64::try_from(block_index).ok() else {
-        return false;
+        return Ok(false);
     };
     let Some(end_lba) = start_lba.checked_add(visible_blocks) else {
-        return false;
+        return Ok(false);
     };
     let block_id = match start_lba.checked_add(block_index_u64) {
         Some(block_id) if block_id < end_lba => block_id,
-        _ => return false,
+        _ => return Ok(false),
     };
 
     let mut buf = alloc::vec![0u8; block_size];
-    if dev.read_block(block_id, &mut buf).is_err() {
-        return false;
-    }
+    dev.read_block(block_id, &mut buf)?;
 
-    u16::from_le_bytes([buf[within_block], buf[within_block + 1]]) == magic
+    Ok(u16::from_le_bytes([buf[within_block], buf[within_block + 1]]) == magic)
 }

@@ -178,6 +178,15 @@ unsafe extern "C" fn loongarch64_trap_handler(raw: *mut RawTrapFrame) {
             trace!("ignored LoongArch interrupt whose source was already deasserted");
         }
         trap => {
+            // An address fault that is not a page fault reaches this arm: the
+            // CPU reports an address it cannot name as a memory access address
+            // error rather than through the page-fault vector. A registered
+            // nofault site is recovered here; any other kernel fault still
+            // reaches the panic below.
+            #[cfg(feature = "exception-table")]
+            if tf.raw.0.fixup_nofault_exception() {
+                return;
+            }
             let snapshot = tf.snapshot();
             let bt = crate::trap::diagnostics::BacktraceDisplay(snapshot.backtrace_registers());
             panic!(

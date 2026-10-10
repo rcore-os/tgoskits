@@ -22,6 +22,7 @@ mod boot;
 mod config;
 mod discovery;
 mod grouping;
+mod host_initramfs;
 mod summary;
 mod target;
 mod tree;
@@ -41,7 +42,8 @@ pub(crate) use discovery::{
 };
 #[cfg(test)]
 pub(crate) use grouping::group_cases_by_build_config;
-pub(crate) use grouping::prepare_case_build_groups;
+pub(crate) use grouping::{prepare_case_build_groups, preserve_build_artifact};
+pub(crate) use host_initramfs::{host_initramfs_without_rootfs_drive, prepare_host_initramfs};
 pub(crate) use summary::QemuTestSummary;
 pub(crate) use target::parse_test_target;
 pub(crate) use tree::{render_case_tree, render_labeled_case_forest, render_qemu_case_forest};

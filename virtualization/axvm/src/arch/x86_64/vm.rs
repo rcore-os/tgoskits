@@ -38,7 +38,7 @@ impl X86_64Arch {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = nested_paging::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(page_table, device_plan, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
                 4 => 48,
@@ -50,15 +50,31 @@ impl X86_64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+    pub(crate) fn init_vm(vm: &mut AxVM) -> AxVmResult {
+        let vm_id = vm.id();
+        let ports = vm.device_access_ports();
         vm.prepare_resources_with(|resources, config| {
             let placements = resources.vcpu_placements(config);
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
-            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let devices = PreparedDevices::build_planned(resources, ports)?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), config, &ARCH_OWNED_REGIONS)?;
+            // Every vCPU-owned x86 interrupt device (vLAPIC, PIT) shares the
+            // run-scoped port owned by the IOAPIC interrupt domain, so timers and
+            // IPIs resolve a pre-bound run binding instead of a global VM lookup.
+            let binding = devices
+                .devices()
+                .services()
+                .require::<X86InterruptDomainRuntimeKey>()?
+                .run_binding();
+            let mut vcpus = PreparedVcpus::create(vm_id, &placements, |placement| {
+                Ok(X86VcpuCreateConfig::new(AxvmX86VlapicRuntime::new(
+                    vm_id,
+                    placement.id,
+                    std::sync::Arc::clone(&binding),
+                )))
+            })?;
+            resources.prepare_guest_address_space(vm_id, config, &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
             let intercepted_mmio = resources.resolved_mmio_intercepts()?;
@@ -99,6 +115,10 @@ fn plan_devices(
 ) -> AxVmResult<X86VmPlan> {
     let low_memory_size = super::cmos::guest_low_memory_size(config)?;
     let controller_id = DeviceNodeId::new("ioapic")?;
+    // One run binding is shared by the IOAPIC interrupt domain, the PIT and
+    // every vCPU-owned interrupt device, so each device resolves this run's
+    // signal target instead of looking up a VM identity by number.
+    let interrupt_binding = std::sync::Arc::new(super::X86RunBinding::new());
     let mut nodes = std::vec![
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("amd-fch-mmio")?,
@@ -106,7 +126,12 @@ fn plan_devices(
         ),
         DeviceNodeSpec::virtual_device(
             controller_id.clone(),
-            super::ioapic_model(config.id(), 0xfec0_0000, 0x1000),
+            super::ioapic_model(
+                config.id(),
+                0xfec0_0000,
+                0x1000,
+                std::sync::Arc::clone(&interrupt_binding),
+            ),
         )
         .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("IOAPIC".into())),
         DeviceNodeSpec::virtual_device(
@@ -118,7 +143,10 @@ fn plan_devices(
             )),
         )
         .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("\\_SB.FWCF".into())),
-        DeviceNodeSpec::virtual_device(DeviceNodeId::new("pit")?, super::pit_model(config.id()),),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("pit")?,
+            super::pit_model(config.id(), std::sync::Arc::clone(&interrupt_binding)),
+        ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("pic")?,
             std::sync::Arc::new(super::pic::X86PicModel),

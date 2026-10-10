@@ -39,7 +39,7 @@ use core::{
 };
 
 use ax_io::prelude::*;
-use ax_sync::{SpinLock as Mutex, SpinRwLock as RwLock};
+use ax_sync::{RawSpinLock, RawSpinRwLock};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 pub use smoltcp::wire::{IpProtocol, IpVersion};
@@ -101,15 +101,15 @@ pub struct RawSocket {
     /// Linux-visible raw or ping-datagram behavior.
     mode: RawSocketMode,
     /// Optional local address filter.
-    local_addr: RwLock<Option<IpAddress>>,
+    local_addr: RawSpinRwLock<Option<IpAddress>>,
     /// Optional connected peer filter.
-    peer_addr: RwLock<Option<IpAddress>>,
+    peer_addr: RawSpinRwLock<Option<IpAddress>>,
     /// Locally generated loopback packet waiting to be received.
-    loopback_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    loopback_rx: RawSpinLock<Option<(IpAddress, vec::Vec<u8>)>>,
     /// Non-peer packet held after filtering without corrupting wire format.
-    deferred_rx: Mutex<Option<(IpAddress, vec::Vec<u8>)>>,
+    deferred_rx: RawSpinLock<Option<(IpAddress, vec::Vec<u8>)>>,
     /// Optional outgoing TTL/hop-limit override.
-    ttl: RwLock<Option<u8>>,
+    ttl: RawSpinRwLock<Option<u8>>,
     /// Whether recvmsg should report the IPv4 hop limit as ancillary data.
     recv_ttl: AtomicBool,
     /// Public read-half closed state.
@@ -153,11 +153,11 @@ impl RawSocket {
             )),
             ip_version,
             mode,
-            local_addr: RwLock::new(None),
-            peer_addr: RwLock::new(None),
-            loopback_rx: Mutex::new(None),
-            deferred_rx: Mutex::new(None),
-            ttl: RwLock::new(None),
+            local_addr: RawSpinRwLock::new(None),
+            peer_addr: RawSpinRwLock::new(None),
+            loopback_rx: RawSpinLock::new(None),
+            deferred_rx: RawSpinLock::new(None),
+            ttl: RawSpinRwLock::new(None),
             recv_ttl: AtomicBool::new(false),
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),

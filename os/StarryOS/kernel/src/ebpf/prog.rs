@@ -10,8 +10,9 @@ use kbpf_basic::{preprocessor::EbpfPreProcessor, prog::BpfProgMeta};
 
 use crate::{
     StarryError, StarryResult,
-    ebpf::{KernelRawMutex, map::BpfMap, transform::EbpfKernelAuxiliary},
+    ebpf::{map::BpfMap, transform::EbpfKernelAuxiliary},
     file::FileLike,
+    sync::RawSpinLockIrqSaveBackend,
 };
 
 /// File-like handle for a loaded BPF program. Owns the (preprocessed) byte
@@ -98,9 +99,18 @@ impl FileLike for BpfProg {
 /// Verifier + preprocessor entry point. Loads a `BpfProgMeta` produced by
 /// `BpfProgMeta::try_from_bpf_attr` and yields a ready-to-attach
 /// [`BpfProg`].
+///
+/// Rejection is reported as `EINVAL` with the reason logged, the way the
+/// program-load path reports every other verifier failure.
 pub fn load_prog(meta: &mut BpfProgMeta) -> kbpf_basic::BpfResult<BpfProg> {
     let insns = meta.take_insns().ok_or(kbpf_basic::BpfError::EINVAL)?;
-    let preprocessor = EbpfPreProcessor::preprocess::<EbpfKernelAuxiliary, KernelRawMutex>(insns)?;
+    // The preprocessor assumes a well-formed stream and panics on some that are
+    // not, so the structural decision is taken here, ahead of it.
+    if let Err(rejection) = crate::ebpf::verify::check_structure(&insns) {
+        error!("bpf prog rejected: {rejection:?}");
+        return Err(kbpf_basic::BpfError::EINVAL);
+    }
+    let preprocessor = EbpfPreProcessor::preprocess::<EbpfKernelAuxiliary, RawSpinLockIrqSaveBackend>(insns)?;
     Ok(BpfProg::new(
         BpfProgMeta {
             prog_flags: meta.prog_flags,

@@ -21,6 +21,9 @@ pub type AddrSpaceResult<T = ()> = Result<T, AddrSpaceError>;
 /// Failures reported while managing or accessing a guest address space.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AddrSpaceError {
+    /// Copying an allocation mapping would lose its frame ownership.
+    #[error("translation snapshot requires explicitly leased backing")]
+    UnleasedBacking,
     /// A guest address range lies outside the configured address space.
     #[error(
         "guest address range [{start:#x}, +{size:#x}) is outside [{space_start:#x}, \

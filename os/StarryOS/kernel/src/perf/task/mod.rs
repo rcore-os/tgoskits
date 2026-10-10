@@ -93,7 +93,7 @@ use super::{
     target::PerfCpuId,
 };
 use crate::{
-    sync::IrqMutex,
+    sync::RawSpinLock,
     task::{PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber, future::IrqNotify},
 };
 

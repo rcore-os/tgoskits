@@ -241,6 +241,13 @@ impl PageTableEntry for PteImpl {
         self.to_config(is_dir).paddr
     }
 
+    fn requires_break_before_make(&self, replacement: &Self, is_dir: bool) -> bool {
+        self.paddr(is_dir) != replacement.paddr(is_dir)
+            || (self.present()
+                && replacement.present()
+                && self.to_config(is_dir).mem_attr != replacement.to_config(is_dir).mem_attr)
+    }
+
     fn config(&self, is_dir: bool) -> Self::PteConfig {
         self.to_config(is_dir)
     }

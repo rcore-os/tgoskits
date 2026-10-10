@@ -1,0 +1,6 @@
+freestanding = true
+features = ["ax-std"]
+log = "Info"
+max_cpu_num = 1
+package = "arceos-test-acpica-interpreter"
+target = "x86_64-unknown-none"

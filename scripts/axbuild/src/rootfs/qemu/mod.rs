@@ -8,7 +8,7 @@ mod args;
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
-use args::{DeviceArg, DriveArg};
+use args::{DeviceArg, DriveArg, QemuOptions};
 use clap::ValueEnum;
 use ostool::run::qemu::QemuConfig;
 use serde::Deserialize;
@@ -63,6 +63,72 @@ pub(crate) enum RootfsPatchMode {
     EnsureDiskBootNet,
 }
 
+/// A host initramfs avoids the managed rootfs when no host root drive is wired.
+/// Named drives other than `disk0` may belong to guests or data volumes.
+pub(crate) fn host_initramfs_without_rootfs_drive(qemu: &QemuConfig) -> bool {
+    qemu.boot.initramfs.is_some() && !has_host_rootfs_wiring(&qemu.args)
+}
+
+pub(crate) fn has_host_rootfs_wiring(arguments: &[String]) -> bool {
+    let disk_id = DEFAULT_ROOTFS_WIRING.disk_id;
+    let host_drive = |value: &str| {
+        let drive = DriveArg::parse(value);
+        drive.id() == Some(disk_id) || (drive.id().is_none() && drive.is_file_backed_block_drive())
+    };
+    drive_argument_indices(arguments).any(|index| host_drive(&arguments[index]))
+        || device_argument_indices(arguments)
+            .any(|index| DeviceArg::parse(&arguments[index]).drive() == Some(disk_id))
+        || has_host_blockdev_wiring(arguments)
+        || arguments.iter().any(|argument| {
+            argument.strip_prefix("-drive=").is_some_and(host_drive)
+                || argument
+                    .strip_prefix("-device=")
+                    .is_some_and(|value| DeviceArg::parse(value).drive() == Some(disk_id))
+        })
+        || has_direct_drive_alias(arguments)
+}
+
+fn has_direct_drive_alias(arguments: &[String]) -> bool {
+    const OPTIONS: &[&str] = &["-hda", "-hdb", "-hdc", "-hdd", "-sd", "-cdrom"];
+    arguments.iter().any(|argument| {
+        OPTIONS.iter().any(|option| {
+            argument == option
+                || argument
+                    .strip_prefix(option)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+    })
+}
+
+fn has_host_blockdev_wiring(arguments: &[String]) -> bool {
+    let disk_id = DEFAULT_ROOTFS_WIRING.disk_id;
+    arguments
+        .windows(2)
+        .any(|pair| pair[0] == "-blockdev" && blockdev_is_host_root(&pair[1], disk_id))
+        || arguments.iter().any(|argument| {
+            argument
+                .strip_prefix("-blockdev=")
+                .is_some_and(|value| blockdev_is_host_root(value, disk_id))
+        })
+}
+
+fn blockdev_is_host_root(value: &str, disk_id: &str) -> bool {
+    if value.trim_start().starts_with('{') {
+        return serde_json::from_str::<serde_json::Value>(value)
+            .ok()
+            .and_then(|blockdev| {
+                blockdev
+                    .get("node-name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| name == disk_id)
+            })
+            .unwrap_or(true);
+    }
+    QemuOptions::parse(value)
+        .value("node-name")
+        .is_none_or(|name| name == disk_id)
+}
+
 /// Controls whether writes to the selected rootfs survive QEMU exit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -86,7 +152,13 @@ pub(crate) fn patch_rootfs(
     rootfs_path: &Path,
     options: RootfsPatchOptions,
 ) -> anyhow::Result<()> {
-    let mut arguments = qemu.args.clone();
+    if has_host_blockdev_wiring(&qemu.args) {
+        bail!("QEMU host rootfs -blockdev cannot be patched; use -drive id=disk0");
+    }
+    if has_direct_drive_alias(&qemu.args) {
+        bail!("QEMU direct drive alias cannot be patched; use -drive id=disk0");
+    }
+    let mut arguments = normalize_inline_options(&qemu.args);
     if options.write_policy == RootfsWritePolicy::Persist
         && arguments.iter().any(|argument| argument == "-snapshot")
     {
@@ -123,12 +195,17 @@ pub(crate) fn patch_rootfs(
 /// Returns all file-backed block image paths referenced by `-drive` arguments.
 pub(crate) fn drive_file_paths(qemu: &QemuConfig) -> Vec<PathBuf> {
     qemu.args
-        .windows(2)
-        .filter_map(|arguments| {
-            (arguments[0] == "-drive")
-                .then(|| DriveArg::parse(&arguments[1]))
-                .filter(DriveArg::is_file_backed_block_drive)
-                .and_then(|drive| drive.file().map(PathBuf::from))
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            let value = argument.strip_prefix("-drive=").or_else(|| {
+                (index > 0 && qemu.args[index - 1] == "-drive").then_some(argument.as_str())
+            })?;
+            let drive = DriveArg::parse(value);
+            drive
+                .is_file_backed_block_drive()
+                .then(|| drive.file().map(PathBuf::from))
+                .flatten()
         })
         .collect()
 }
@@ -141,24 +218,44 @@ pub(crate) fn rewrite_drive_file_paths<F>(
 where
     F: FnMut(&Path) -> anyhow::Result<Option<PathBuf>>,
 {
-    let mut index = 0;
-    while index + 1 < qemu.args.len() {
-        if qemu.args[index] != "-drive" {
-            index += 1;
+    for index in 0..qemu.args.len() {
+        let inline = qemu.args[index].starts_with("-drive=");
+        let value = if inline {
+            qemu.args[index].strip_prefix("-drive=").unwrap()
+        } else if index > 0 && qemu.args[index - 1] == "-drive" {
+            qemu.args[index].as_str()
+        } else {
             continue;
-        }
-
-        let mut drive = DriveArg::parse(&qemu.args[index + 1]);
+        };
+        let mut drive = DriveArg::parse(value);
         if drive.is_file_backed_block_drive()
             && let Some(file) = drive.file()
             && let Some(new_path) = rewrite(Path::new(file))?
         {
             drive.set_file(&new_path);
-            qemu.args[index + 1] = drive.render();
+            qemu.args[index] = if inline {
+                format!("-drive={}", drive.render())
+            } else {
+                drive.render()
+            };
         }
-        index += 2;
     }
     Ok(())
+}
+
+fn normalize_inline_options(arguments: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(arguments.len());
+    for argument in arguments {
+        if let Some((option, value)) = argument.split_once('=')
+            && matches!(option, "-drive" | "-device" | "-netdev")
+        {
+            normalized.push(option.to_owned());
+            normalized.push(value.to_owned());
+        } else {
+            normalized.push(argument.clone());
+        }
+    }
+    normalized
 }
 
 /// Replaces an existing `disk0` drive argument or inserts one next to the
@@ -201,7 +298,25 @@ fn replace_drive_arg(arguments: &mut Vec<String>, rootfs_path: &Path) -> Vec<usi
         arguments.insert(insert_position + 1, wiring.drive_arg(rootfs_path).render());
         return vec![insert_position + 1];
     }
-    Vec::new()
+    if drive_argument_indices(arguments)
+        .any(|index| DriveArg::parse(&arguments[index]).id() == Some(wiring.disk_id))
+    {
+        return Vec::new();
+    }
+
+    let anonymous = drive_argument_indices(arguments)
+        .filter(|&index| {
+            let drive = DriveArg::parse(&arguments[index]);
+            drive.id().is_none() && drive.is_file_backed_block_drive()
+        })
+        .collect::<Vec<_>>();
+    let [index] = anonymous.as_slice() else {
+        return Vec::new();
+    };
+    let mut drive = DriveArg::parse(&arguments[*index]);
+    drive.set_file(rootfs_path);
+    arguments[*index] = drive.render();
+    vec![*index]
 }
 
 /// Ensures a QEMU config contains the standard block device, drive, and user

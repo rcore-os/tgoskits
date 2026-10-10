@@ -1,0 +1,91 @@
+schema_version = 3
+phase = "nightly"
+group = "AxVisor"
+default_runner = "qcs"
+
+# AxVisor checks that only run on the nightly schedule. They are kept apart
+# from `axvisor.toml` so the default main CI matrix never schedules them.
+# Every check in a `nightly` manifest is nightly-only by construction; do not
+# add a `nightly_only = true` field.
+#
+# The case files for these checks live under `apps/axvisor/`; commands select
+# them by `--board`/`--test-case` name, so no command embeds the path.
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
+runner = "board"
+resource_group = "orangepi-5-plus"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-virtio-net-peer"
+
+[[check]]
+id = "test-axvisor-aarch64-qemu-timer-stress"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
+timeout_minutes = 30
+command = '''
+echo "==> axvisor aarch64 gicv2 timer stress"
+cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+echo "==> axvisor aarch64 gicv3 timer stress"
+cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["gicv2-timer-stress", "gicv3-timer-stress"]
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · Linux PCI network ping"
+runner = "board"
+resource_group = "orangepi-5-plus"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-linux"
+cases = ["ping"]
+
+[[check]]
+id = "test-orangepi-5-plus-robot-real-axvisor-starryos-guest"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus robot USB · AxVisor StarryOS guest full robot control"
+runner = "board"
+resource_group = "orangepi-5-plus-robot"
+timeout_minutes = 90
+command = '''
+cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml --smp 1
+cargo xtask axvisor test board --board orangepi-5-plus-robot-real-starry
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-real-starry"
+
+[[check]]
+id = "test-orangepi-5-plus-robot-real-axvisor-linux-guest"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus robot USB · AxVisor Linux guest full robot control"
+runner = "board"
+resource_group = "orangepi-5-plus-robot"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-robot-real-linux
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-real-linux"

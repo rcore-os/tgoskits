@@ -6,7 +6,10 @@ pub use ax_cpu::paging::MappingFlags;
 pub use ax_cpu::{PhysAddr, VirtAddr};
 core::cfg_select! {
     all(target_arch = "aarch64", feature = "hv") => {
-        pub use ax_cpu::paging::El2PagingMeta as ArchPagingMeta;
+        type CpuPagingMeta = ax_cpu::paging::El2PagingMeta;
+    }
+    target_arch = "aarch64" => {
+        type CpuPagingMeta = ax_cpu::paging::ArchPagingMeta;
     }
     _ => {
         pub use ax_cpu::paging::ArchPagingMeta;
@@ -18,6 +21,74 @@ pub use page_table_generic::{
 };
 
 use crate::mem::{phys_to_virt, virt_to_phys};
+
+/// Runtime stage-one metadata with a platform-owned AArch64 pre-make domain.
+///
+/// Ordinary invalidation remains local. The pre-make hardware transaction
+/// covers only CPUs in the platform's Inner Shareable domain and does not
+/// acknowledge owner retirement; that still requires runtime shootdown.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct ArchPagingMeta;
+
+#[cfg(target_arch = "aarch64")]
+impl TableMeta for ArchPagingMeta {
+    type P = <CpuPagingMeta as TableMeta>::P;
+
+    const PAGE_SIZE: usize = CpuPagingMeta::PAGE_SIZE;
+    const LEVEL_BITS: &'static [usize] = CpuPagingMeta::LEVEL_BITS;
+    const MAX_BLOCK_LEVEL: usize = CpuPagingMeta::MAX_BLOCK_LEVEL;
+    const STRICT_ADDRESS_WIDTH: bool = CpuPagingMeta::STRICT_ADDRESS_WIDTH;
+
+    fn canonicalize_vaddr(vaddr: VirtAddr) -> VirtAddr {
+        CpuPagingMeta::canonicalize_vaddr(vaddr)
+    }
+
+    fn flush(vaddr: Option<VirtAddr>) {
+        CpuPagingMeta::flush(vaddr);
+    }
+
+    fn flush_batch(vaddrs: &[VirtAddr]) {
+        CpuPagingMeta::flush_batch(vaddrs);
+    }
+
+    fn flush_leaf_batch(vaddrs: &[VirtAddr]) {
+        CpuPagingMeta::flush_leaf_batch(vaddrs);
+    }
+
+    fn prepare_break_before_make() -> PagingResult {
+        match ax_plat::mem::stage_one_tlb_domain() {
+            ax_plat::mem::StageOneTlbDomain::InnerShareable => Ok(()),
+            ax_plat::mem::StageOneTlbDomain::Unavailable => {
+                Err(PagingError::BreakBeforeMakeDomainUnavailable)
+            }
+        }
+    }
+
+    fn flush_before_make(vaddr: VirtAddr, page_size: usize) -> PagingResult {
+        match ax_plat::mem::stage_one_tlb_domain() {
+            ax_plat::mem::StageOneTlbDomain::InnerShareable => {
+                let address = (page_size == Self::PAGE_SIZE).then_some(vaddr);
+                #[cfg(feature = "hv")]
+                ax_cpu::mmu::El2::flush_tlb_inner_shareable(address);
+                #[cfg(not(feature = "hv"))]
+                ax_cpu::mmu::El1::flush_tlb_inner_shareable(address);
+                Ok(())
+            }
+            ax_plat::mem::StageOneTlbDomain::Unavailable => {
+                Err(PagingError::BreakBeforeMakeDomainUnavailable)
+            }
+        }
+    }
+
+    fn complete_replaced_leaf(vaddr: VirtAddr) {
+        CpuPagingMeta::complete_replaced_leaf(vaddr);
+    }
+
+    fn publish_new_mapping(vaddr: VirtAddr) {
+        CpuPagingMeta::publish_new_mapping(vaddr);
+    }
+}
 
 /// Page-table frame allocator backed by the global kernel allocator.
 #[derive(Clone, Copy)]

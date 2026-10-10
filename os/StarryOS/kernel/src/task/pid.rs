@@ -22,7 +22,7 @@ use axpoll_set::PollSet;
 use super::{
     Cred, Process, ProcessCpuTime, ProcessData, ProcessGroup, Session, UserTaskRef, WeakUserTaskRef,
 };
-use crate::{StarryError, StarryResult, sync::IrqMutex};
+use crate::{StarryError, StarryResult, sync::RawSpinLock};
 
 static NEXT_IDENTITY_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
@@ -31,7 +31,7 @@ static NEXT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 static PUBLISHED_MEMBERS_SNAPSHOT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Serializes reservation publication, identity removal, and shutdown.
-static PUBLICATION_GATE: IrqMutex<()> = IrqMutex::new(());
+static PUBLICATION_GATE: RawSpinLock<()> = RawSpinLock::new(());
 
 /// A non-zero userspace PID number in one namespace.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -224,7 +224,7 @@ pub struct PidNamespace {
     id: PidNamespaceId,
     level: u32,
     parent: Option<PidNamespaceRef>,
-    state: IrqMutex<PidNamespaceState>,
+    state: RawSpinLock<PidNamespaceState>,
     task_exit_event: PollSet,
 }
 
@@ -247,7 +247,7 @@ impl PidNamespace {
             id: PidNamespaceId::allocate(),
             level,
             parent,
-            state: IrqMutex::new(PidNamespaceState {
+            state: RawSpinLock::new(PidNamespaceState {
                 lifecycle,
                 init_identity: None,
                 reserved_init: None,
@@ -272,11 +272,11 @@ impl PidNamespace {
     }
 
     pub fn lifecycle(&self) -> PidNamespaceLifecycle {
-        self.state.lock().lifecycle
+        self.state.lock_irqsave().lifecycle
     }
 
     pub fn init_identity(&self) -> Option<PidIdentityId> {
-        self.state.lock().init_identity
+        self.state.lock_irqsave().init_identity
     }
 
     /// Reports whether the namespace still holds the identity's number slot,
@@ -286,12 +286,15 @@ impl PidNamespace {
     /// `free_pid()`).
     #[cfg(any(test, axtest))]
     pub(crate) fn retains_identity_slot_for_test(&self, identity_id: PidIdentityId) -> bool {
-        self.state.lock().by_identity.contains_key(&identity_id)
+        self.state
+            .lock_irqsave()
+            .by_identity
+            .contains_key(&identity_id)
     }
 
     pub fn lookup(&self, number: PidNumber) -> Option<Arc<PidIdentity>> {
-        let _publication = PUBLICATION_GATE.lock();
-        let state = self.state.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
+        let state = self.state.lock_irqsave();
         let slot = state.by_number.get(&number)?;
         (slot.state == PidSlotState::Published)
             .then(|| slot.identity.clone())
@@ -301,8 +304,8 @@ impl PidNamespace {
 
     /// Resolve one stable generation without reinterpreting a reusable number.
     pub fn lookup_identity(&self, identity_id: PidIdentityId) -> Option<Arc<PidIdentity>> {
-        let _publication = PUBLICATION_GATE.lock();
-        let state = self.state.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
+        let state = self.state.lock_irqsave();
         let number = *state.by_identity.get(&identity_id)?;
         let slot = state.by_number.get(&number)?;
         (slot.identity_id == identity_id && slot.state == PidSlotState::Published)
@@ -317,7 +320,7 @@ impl PidNamespace {
         kind: PidReservationKind,
         namespace_init: bool,
     ) -> StarryResult<PidNumber> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if state.by_identity.contains_key(&identity_id) {
             return Err(StarryError::AlreadyExists);
         }
@@ -361,7 +364,7 @@ impl PidNamespace {
     }
 
     fn validate_publish(&self, identity_id: PidIdentityId, number: PidNumber) -> StarryResult<()> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         if matches!(
             state.lifecycle,
             PidNamespaceLifecycle::ShuttingDown | PidNamespaceLifecycle::Dead
@@ -376,7 +379,7 @@ impl PidNamespace {
     }
 
     fn publish(&self, identity: &Arc<PidIdentity>, number: PidNumber) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let slot = state
             .by_number
             .get_mut(&number)
@@ -393,7 +396,7 @@ impl PidNamespace {
     }
 
     fn rollback(&self, identity_id: PidIdentityId, number: PidNumber) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let matches = state.by_number.get(&number).is_some_and(|slot| {
             slot.identity_id == identity_id && slot.state == PidSlotState::Reserved
         });
@@ -412,7 +415,7 @@ impl PidNamespace {
     }
 
     fn remove(&self, identity_id: PidIdentityId, number: PidNumber) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if state.lifecycle == PidNamespaceLifecycle::Dead && !state.by_number.contains_key(&number)
         {
             return;
@@ -441,8 +444,8 @@ impl PidNamespace {
         init: PidIdentityId,
         executor: PidIdentityId,
     ) -> Option<PidNamespaceShutdown<'_>> {
-        let _publication = PUBLICATION_GATE.lock();
-        let mut state = self.state.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
+        let mut state = self.state.lock_irqsave();
         if state.lifecycle != PidNamespaceLifecycle::Active
             || state.init_identity != Some(init)
             || !state.by_identity.contains_key(&executor)
@@ -460,9 +463,9 @@ impl PidNamespace {
     pub fn published_members(&self) -> Vec<Arc<PidIdentity>> {
         #[cfg(axtest)]
         PUBLISHED_MEMBERS_SNAPSHOT_CALLS.fetch_add(1, Ordering::Relaxed);
-        let _publication = PUBLICATION_GATE.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
         self.state
-            .lock()
+            .lock_irqsave()
             .by_number
             .values()
             .filter(|slot| slot.state == PidSlotState::Published)
@@ -481,8 +484,8 @@ impl PidNamespace {
     }
 
     fn finish_shutdown(&self, init: PidIdentityId) {
-        let _publication = PUBLICATION_GATE.lock();
-        let mut state = self.state.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
+        let mut state = self.state.lock_irqsave();
         assert_eq!(state.lifecycle, PidNamespaceLifecycle::ShuttingDown);
         assert_eq!(state.init_identity, Some(init));
         state.by_number.clear();
@@ -578,13 +581,13 @@ impl PidReservation {
     pub fn reserve(target: &PidNamespaceRef, kind: PidReservationKind) -> StarryResult<Self> {
         let identity_id = PidIdentityId::allocate();
         let lineage = pid_namespace_lineage(target);
-        let _publication = PUBLICATION_GATE.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
         let mut bindings = Vec::new();
         bindings
             .try_reserve_exact(lineage.len())
             .map_err(|_| StarryError::NoMemory)?;
         for namespace in lineage {
-            let state = namespace.state.lock();
+            let state = namespace.state.lock_irqsave();
             let namespace_init = Arc::ptr_eq(&namespace, target)
                 && (state.lifecycle == PidNamespaceLifecycle::AwaitingInit
                     || (namespace.level == 0
@@ -614,7 +617,7 @@ impl PidReservation {
             bindings: identity_bindings,
             thread_pidfd_event: Arc::new(PollSet::new()),
             ptrace_tracees_registered: AtomicBool::new(false),
-            state: IrqMutex::new(PidIdentityState {
+            state: RawSpinLock::new(PidIdentityState {
                 publication: PidIdentityPublication::Reserved,
                 runtime: RuntimeTaskLink::Reserved,
                 exit_path_pending: false,
@@ -652,14 +655,14 @@ impl PidReservation {
     }
 
     pub fn publish(mut self) -> StarryResult<Arc<PidIdentity>> {
-        let _publication = PUBLICATION_GATE.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
         for (namespace, number) in &self.bindings {
             namespace.validate_publish(self.identity_id, *number)?;
         }
         for (namespace, number) in &self.bindings {
             namespace.publish(&self.identity, *number);
         }
-        self.identity.state.lock().publication = PidIdentityPublication::Published;
+        self.identity.state.lock_irqsave().publication = PidIdentityPublication::Published;
         self.published = true;
         Ok(self.identity.clone())
     }
@@ -670,7 +673,7 @@ impl Drop for PidReservation {
         if self.published {
             return;
         }
-        let _publication = PUBLICATION_GATE.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
         for (namespace, number) in self.bindings.iter().rev() {
             assert!(namespace.rollback(self.identity_id, *number));
         }
@@ -760,12 +763,12 @@ pub struct PidIdentity {
     /// been published before this release store, allowing ordinary wait and
     /// exit paths to avoid a global PID snapshot entirely.
     ptrace_tracees_registered: AtomicBool,
-    state: IrqMutex<PidIdentityState>,
+    state: RawSpinLock<PidIdentityState>,
 }
 
 impl PidIdentity {
     fn is_lookup_visible(&self) -> bool {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         state.publication == PidIdentityPublication::Published
             && (matches!(state.runtime, RuntimeTaskLink::Live(_))
                 || state.exit_path_pending
@@ -843,7 +846,7 @@ impl PidIdentity {
     }
 
     pub fn attach_task(&self, task: &UserTaskRef) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert_eq!(state.publication, PidIdentityPublication::Published);
         assert!(matches!(state.runtime, RuntimeTaskLink::Reserved));
         assert!(state.thread_pidfd.is_some());
@@ -856,7 +859,7 @@ impl PidIdentity {
         process_identity: &Arc<PidIdentity>,
         exit: Arc<AtomicBool>,
     ) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(state.thread_pidfd.is_none());
         state.thread_pidfd = Some(ThreadPidfdBinding {
             process_identity: Arc::downgrade(process_identity),
@@ -866,7 +869,7 @@ impl PidIdentity {
 
     pub(crate) fn thread_pidfd_process_identity(&self) -> StarryResult<Arc<PidIdentity>> {
         self.state
-            .lock()
+            .lock_irqsave()
             .thread_pidfd
             .as_ref()
             .and_then(|binding| binding.process_identity.upgrade())
@@ -875,7 +878,7 @@ impl PidIdentity {
 
     pub(crate) fn thread_pidfd_exited(&self) -> bool {
         self.state
-            .lock()
+            .lock_irqsave()
             .thread_pidfd
             .as_ref()
             .is_none_or(|binding| binding.exit.load(Ordering::Acquire))
@@ -888,7 +891,7 @@ impl PidIdentity {
     /// the process is still live: a remaining sibling may `exec` and inherit
     /// this identity. This is Linux's `delay_group_leader()` rule.
     pub(crate) fn thread_pidfd_poll_events(&self) -> IoEvents {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         let exited = state
             .thread_pidfd
             .as_ref()
@@ -929,7 +932,7 @@ impl PidIdentity {
     }
 
     pub fn live_task(&self) -> Option<UserTaskRef> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         let RuntimeTaskLink::Live(task) = &state.runtime else {
             return None;
         };
@@ -947,13 +950,13 @@ impl PidIdentity {
     /// their runtime link but still have zombie publication, parent
     /// notification, and relation close ahead of them.
     pub(crate) fn has_unexited_task(&self) -> bool {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         !matches!(state.runtime, RuntimeTaskLink::Exited) || state.exit_path_pending
     }
 
     pub fn mark_task_exited(self: &Arc<Self>) -> ExitPathLease {
         {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             state.runtime = RuntimeTaskLink::Exited;
             // The runtime link detaches here, but the PID slot stays published
             // until the exit path completes: Linux frees a task's PID only in
@@ -979,7 +982,7 @@ impl PidIdentity {
     /// same point Linux frees the PID.
     fn complete_exit_path(&self) {
         let (pending, should_detach) = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let pending = core::mem::replace(&mut state.exit_path_pending, false);
             (
                 pending,
@@ -1019,7 +1022,7 @@ impl PidIdentity {
         task: impl FnOnce() -> WeakUserTaskRef,
         thread_pidfd: Option<ThreadPidfdBinding>,
     ) -> bool {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert_eq!(state.publication, PidIdentityPublication::Published);
         if !Self::task_transfer_ready(&state) {
             return false;
@@ -1036,7 +1039,7 @@ impl PidIdentity {
     }
 
     fn is_task_transfer_ready(&self) -> bool {
-        Self::task_transfer_ready(&self.state.lock())
+        Self::task_transfer_ready(&self.state.lock_irqsave())
     }
 
     /// Attaches the process lifecycle to the leader identity exactly once.
@@ -1046,7 +1049,7 @@ impl PidIdentity {
         exit_event: Arc<PollSet>,
         process_data: Weak<ProcessData>,
     ) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(self.has_role_locked::<Tgid>(&state));
         assert!(state.process.is_none());
         assert!(matches!(state.process_lifecycle, ProcessLifecycle::None));
@@ -1056,7 +1059,7 @@ impl PidIdentity {
     }
 
     pub(super) fn bind_process_group(&self, group: &Arc<ProcessGroup>) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(self.has_role_locked::<Pgid>(&state));
         if let Some(existing) = state.process_group.upgrade() {
             assert!(Arc::ptr_eq(&existing, group));
@@ -1066,7 +1069,7 @@ impl PidIdentity {
     }
 
     pub(super) fn bind_session(&self, session: &Arc<Session>) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(self.has_role_locked::<Sid>(&state));
         if let Some(existing) = state.session.upgrade() {
             assert!(Arc::ptr_eq(&existing, session));
@@ -1076,23 +1079,23 @@ impl PidIdentity {
     }
 
     pub(crate) fn process_group(&self) -> Option<Arc<ProcessGroup>> {
-        self.state.lock().process_group.upgrade()
+        self.state.lock_irqsave().process_group.upgrade()
     }
 
     pub(crate) fn session(&self) -> Option<Arc<Session>> {
-        self.state.lock().session.upgrade()
+        self.state.lock_irqsave().session.upgrade()
     }
 
     pub(crate) fn process(&self) -> Arc<Process> {
         self.state
-            .lock()
+            .lock_irqsave()
             .process
             .clone()
             .expect("TGID identity has no process topology")
     }
 
     pub(crate) fn live_data(&self) -> Option<Arc<ProcessData>> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         if state.publication != PidIdentityPublication::Published {
             return None;
         }
@@ -1104,27 +1107,27 @@ impl PidIdentity {
 
     pub(crate) fn is_zombie(&self) -> bool {
         matches!(
-            self.state.lock().process_lifecycle,
+            self.state.lock_irqsave().process_lifecycle,
             ProcessLifecycle::Zombie(_)
         )
     }
 
     pub(crate) fn is_exited(&self) -> bool {
         matches!(
-            self.state.lock().process_lifecycle,
+            self.state.lock_irqsave().process_lifecycle,
             ProcessLifecycle::Zombie(_) | ProcessLifecycle::Reaping | ProcessLifecycle::Reaped
         )
     }
 
     pub(crate) fn is_reaped(&self) -> bool {
         matches!(
-            self.state.lock().process_lifecycle,
+            self.state.lock_irqsave().process_lifecycle,
             ProcessLifecycle::Reaping | ProcessLifecycle::Reaped
         )
     }
 
     pub(crate) fn public_process(&self) -> StarryResult<Arc<Process>> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         if state.publication == PidIdentityPublication::Published
             && state.process_lifecycle.is_publicly_resolvable()
         {
@@ -1135,7 +1138,7 @@ impl PidIdentity {
     }
 
     pub(crate) fn process_poll_events(&self) -> IoEvents {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         match &state.process_lifecycle {
             ProcessLifecycle::None | ProcessLifecycle::Live(_) => IoEvents::empty(),
             ProcessLifecycle::Zombie(_) => IoEvents::IN | IoEvents::RDNORM,
@@ -1147,7 +1150,7 @@ impl PidIdentity {
 
     pub(crate) fn process_exit_event(&self) -> Arc<PollSet> {
         self.state
-            .lock()
+            .lock_irqsave()
             .process_exit_event
             .clone()
             .expect("TGID identity has no process exit event")
@@ -1155,7 +1158,7 @@ impl PidIdentity {
 
     pub(crate) fn matches_process(&self, process: &Process) -> bool {
         self.state
-            .lock()
+            .lock_irqsave()
             .process
             .as_deref()
             .is_some_and(|registered| core::ptr::eq(registered, process))
@@ -1167,7 +1170,7 @@ impl PidIdentity {
         zombie: ZombieSnapshot,
     ) -> Result<(), ZombieSnapshot> {
         {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let matches = matches!(
                 &state.process_lifecycle,
                 ProcessLifecycle::Live(process_data)
@@ -1191,7 +1194,7 @@ impl PidIdentity {
         if !self.matches_process(expected) {
             return None;
         }
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let ProcessLifecycle::Zombie(zombie) =
             core::mem::replace(&mut state.process_lifecycle, ProcessLifecycle::Reaping)
         else {
@@ -1202,7 +1205,7 @@ impl PidIdentity {
 
     pub(crate) fn finish_reap(&self) {
         let process = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             assert!(matches!(state.process_lifecycle, ProcessLifecycle::Reaping));
             state.process_lifecycle = ProcessLifecycle::Reaped;
             state.process.take()
@@ -1215,7 +1218,7 @@ impl PidIdentity {
     }
 
     pub(crate) fn zombie_snapshot<R>(&self, f: impl FnOnce(&ZombieSnapshot) -> R) -> Option<R> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         let ProcessLifecycle::Zombie(zombie) = &state.process_lifecycle else {
             return None;
         };
@@ -1229,7 +1232,7 @@ impl PidIdentity {
         exit_event: Arc<PollSet>,
         zombie: ZombieSnapshot,
     ) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         assert!(matches!(state.process_lifecycle, ProcessLifecycle::None));
         state.process = Some(process);
         state.process_exit_event = Some(exit_event);
@@ -1237,7 +1240,7 @@ impl PidIdentity {
     }
 
     pub fn acquire_role<R: PidRole>(self: &Arc<Self>) -> StarryResult<PidRoleLease<R>> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if state.publication == PidIdentityPublication::Detached {
             return Err(StarryError::BadState);
         }
@@ -1252,7 +1255,7 @@ impl PidIdentity {
     }
 
     pub fn has_role<R: PidRole>(&self) -> bool {
-        self.has_role_locked::<R>(&self.state.lock())
+        self.has_role_locked::<R>(&self.state.lock_irqsave())
     }
 
     fn has_role_locked<R: PidRole>(&self, state: &PidIdentityState) -> bool {
@@ -1273,7 +1276,7 @@ impl PidIdentity {
 
     fn release_role<R: PidRole>(&self) {
         let should_detach = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             assert_ne!(state.roles & R::BIT, 0, "PID role released twice");
             state.roles &= !R::BIT;
             // While an exit path is still pending, the PID slot stays
@@ -1289,9 +1292,9 @@ impl PidIdentity {
     }
 
     fn detach(&self) {
-        let _publication = PUBLICATION_GATE.lock();
+        let _publication = PUBLICATION_GATE.lock_irqsave();
         {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             if state.publication == PidIdentityPublication::Detached {
                 return;
             }
@@ -1312,9 +1315,9 @@ impl PidIdentity {
     /// scheduler/task exit then performs the ordinary ordered release.
     pub(crate) fn abort_failed_task_publication(&self) {
         let retired = {
-            let _publication = PUBLICATION_GATE.lock();
+            let _publication = PUBLICATION_GATE.lock_irqsave();
             let (published, retired) = {
-                let mut state = self.state.lock();
+                let mut state = self.state.lock_irqsave();
                 if state.publication == PidIdentityPublication::Detached {
                     return;
                 }
@@ -1850,7 +1853,7 @@ fn exit_path_completion_precedes_task_transfer_for_test() -> bool {
     );
     exit_path.complete();
     let transfer_allowed_after_completion =
-        PidIdentity::task_transfer_ready(&identity.state.lock());
+        PidIdentity::task_transfer_ready(&identity.state.lock_irqsave());
     tid.release();
 
     transfer_rejected_while_pending && transfer_allowed_after_completion
@@ -2023,7 +2026,7 @@ mod tests {
         assert!(root.lookup_identity(old_identity_id).is_none());
 
         // Model allocator wrap without exhausting the full PID number space.
-        root.state.lock().next_number = number.get();
+        root.state.lock_irqsave().next_number = number.get();
         let replacement = PidReservation::reserve(&root, PidReservationKind::Thread)
             .unwrap()
             .publish()
@@ -2045,7 +2048,7 @@ mod tests {
         let (root, identity, tid, tgid) = root_process();
         let number = identity.root_number();
         {
-            let mut state = identity.state.lock();
+            let mut state = identity.state.lock_irqsave();
             state.runtime = RuntimeTaskLink::Exited;
             state.process_lifecycle = ProcessLifecycle::Live(Weak::new());
         }
@@ -2054,7 +2057,7 @@ mod tests {
                 .is_some_and(|found| Arc::ptr_eq(&found, &identity))
         );
 
-        identity.state.lock().process_lifecycle = ProcessLifecycle::Reaped;
+        identity.state.lock_irqsave().process_lifecycle = ProcessLifecycle::Reaped;
         assert!(root.lookup(number).is_none());
         tid.release();
         tgid.release();

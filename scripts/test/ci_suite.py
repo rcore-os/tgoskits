@@ -13,15 +13,29 @@ SUPPORTED_SUITE_KINDS = {
     "arceos-board",
     "starry-qemu",
     "starry-board",
+    "starry-app-qemu",
+    "starry-app-board",
     "axvisor-qemu",
     "axvisor-board",
 }
 SUITE_FIELDS = {"kind", "arch", "board", "cases", "group"}
+ARCEOS_GENERIC_QEMU_GROUPS = {"cpu", "drivers"}
 SUITE_ROOTS = {
     "arceos": Path("test-suit/arceos"),
     "starry": Path("test-suit/starryos"),
     "axvisor": Path("test-suit/axvisor"),
 }
+EXTRA_SUITE_ROOTS = {
+    # AxVisor nightly cases were migrated out of `test-suit/axvisor` into
+    # `apps/axvisor`; both trees (plus the benchmark tree) are registered
+    # AxVisor suites and must be discovered together.
+    "axvisor": (Path("benchmarks/axvisor"), Path("apps/axvisor")),
+}
+# Starry board/QEMU nightly measurements live under `benchmarks/starry` and are
+# selected through `cargo xtask starry app ...`, so they need their own suite
+# kind instead of the `starry test` runtime discovery.
+STARRY_APP_SUITE_ROOT = Path("benchmarks/starry")
+STARRY_APP_SUITE_KINDS = frozenset({"starry-app-qemu", "starry-app-board"})
 
 
 class SuiteRouteError(ValueError):
@@ -35,6 +49,9 @@ class SuiteSelection:
     leaf_name: str
     command: str
     source_path: str
+    batch_key: tuple[str, str | None, Path] | None = None
+    batch_cases: tuple[str, ...] = ()
+    batch_command: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +73,7 @@ def resolve_suite_selections(
 ) -> list[SuiteSelection]:
     registrations = _suite_registrations(checks)
     selections: dict[tuple[str, str, str], SuiteSelection] = {}
+    batches: dict[tuple[str, tuple[str, str | None, Path]], tuple[SuiteSelection, list[str]]] = {}
     check_order = {check["id"]: index for index, check in enumerate(checks)}
 
     for rendered_path in sorted(set(changed_paths)):
@@ -70,8 +88,33 @@ def resolve_suite_selections(
                 f"test suite path `{rendered_path}` is not registered in CI"
             )
         for selection in path_selections:
+            if selection.batch_key is not None:
+                key = (selection.template_id, selection.batch_key)
+                if key not in batches:
+                    batches[key] = (selection, list(selection.batch_cases))
+                else:
+                    _, cases = batches[key]
+                    for case in selection.batch_cases:
+                        if case not in cases:
+                            cases.append(case)
+                continue
             key = (selection.template_id, selection.leaf_name, selection.command)
             selections.setdefault(key, selection)
+
+    for selection, cases in batches.values():
+        case_list = ",".join(cases)
+        platform, _, _ = selection.leaf_name.partition(" · ")
+        assert selection.batch_command is not None
+        command = selection.batch_command.format(cases=case_list)
+        leaf_name = f"{platform} · {case_list}"
+        row_id = _slugify(f"suite-{selection.template_id}-{case_list}")
+        selections[(selection.template_id, leaf_name, command)] = SuiteSelection(
+            template_id=selection.template_id,
+            row_id=row_id,
+            leaf_name=leaf_name,
+            command=command,
+            source_path=selection.source_path,
+        )
 
     return sorted(
         selections.values(),
@@ -88,27 +131,28 @@ def validate_suite_catalog(
     checks: Sequence[dict[str, Any]],
 ) -> None:
     registrations = _suite_registrations(checks)
+    _validate_starry_app_registrations(workspace_root, registrations)
     discovered = {
         "arceos": [case for case in _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos") if case.kind == "arceos-board"],
         "starry": _discover_runtime_cases(
             workspace_root / SUITE_ROOTS["starry"],
             "starry",
         ),
-        "axvisor": _discover_runtime_cases(
-            workspace_root / SUITE_ROOTS["axvisor"],
-            "axvisor",
-        ),
+        "axvisor": _discover_os_runtime_cases(workspace_root, "axvisor"),
     }
     for check, registration in registrations:
         kind = registration["kind"]
+        if kind in STARRY_APP_SUITE_KINDS:
+            continue
         if kind == "arceos-qemu":
             arch = registration["arch"]
-            if registration.get("group") == "cpu":
-                cases = _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"] / "cpu", "arceos")
+            group = registration.get("group")
+            if group in ARCEOS_GENERIC_QEMU_GROUPS:
+                cases = _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"] / group, "arceos")
                 present = {case.case for case in cases if case.arch == arch}
                 required = set(registration.get("cases", present))
                 if not required or required - present:
-                    raise SuiteRouteError(f"check '{check['id']}' registers missing CPU cases: {sorted(required - present)}")
+                    raise SuiteRouteError(f"check '{check['id']}' registers missing {group} cases: {sorted(required - present)}")
                 continue
             runtime = (
                 workspace_root / SUITE_ROOTS["arceos"] / "rust" / f"qemu-{arch}.toml"
@@ -170,7 +214,9 @@ def check_matches_input(check: dict[str, Any], selection: str) -> bool:
     registrations = check.get("suite", ())
     if remainder == "all":
         return any(
-            _kind_os(registration["kind"]) == os_name for registration in registrations
+            _kind_os(registration["kind"]) == os_name
+            and registration["kind"] not in STARRY_APP_SUITE_KINDS
+            for registration in registrations
         )
 
     platform, separator, value = remainder.partition(":")
@@ -178,7 +224,7 @@ def check_matches_input(check: dict[str, Any], selection: str) -> bool:
         return False
     for registration in registrations:
         kind = registration["kind"]
-        if _kind_os(kind) != os_name:
+        if kind in STARRY_APP_SUITE_KINDS or _kind_os(kind) != os_name:
             continue
         if (
             platform == "qemu"
@@ -204,29 +250,55 @@ def _selections_for_path(
 ) -> list[SuiteSelection]:
     if _is_prefix(path, SUITE_ROOTS["arceos"]):
         relative = path.relative_to(SUITE_ROOTS["arceos"])
-        if relative.parts and relative.parts[0] == "cpu":
-            root = workspace_root / SUITE_ROOTS["arceos"] / "cpu"
+        if relative.parts and relative.parts[0] in ARCEOS_GENERIC_QEMU_GROUPS:
+            group = relative.parts[0]
+            root = workspace_root / SUITE_ROOTS["arceos"] / group
             cases = _discover_runtime_cases(root, "arceos")
             return _runtime_selections(registrations, path,
-                _matching_runtime_cases(cases, workspace_root / path), suite_group="cpu")
+                _matching_runtime_cases(cases, workspace_root / path), suite_group=group)
         if relative.parts and relative.parts[0].startswith("board-"):
             return _discovered_selections(workspace_root, registrations, path, "arceos")
         return _arceos_selections(registrations, path)
-    if _is_prefix(path, SUITE_ROOTS["starry"]):
-        return _discovered_selections(
-            workspace_root,
-            registrations,
-            path,
-            "starry",
-        )
-    if _is_prefix(path, SUITE_ROOTS["axvisor"]):
-        return _discovered_selections(
-            workspace_root,
-            registrations,
-            path,
-            "axvisor",
-        )
+    if _is_prefix(path, STARRY_APP_SUITE_ROOT):
+        return _starry_app_selections(registrations, path)
+    for os_name in ("starry", "axvisor"):
+        if any(_is_prefix(path, root) for root in _suite_roots(os_name)):
+            return _discovered_selections(
+                workspace_root,
+                registrations,
+                path,
+                os_name,
+            )
     return []
+
+
+def _starry_app_selections(
+    registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
+    path: Path,
+) -> list[SuiteSelection]:
+    """Route a `benchmarks/starry` change to its registered nightly check.
+
+    Starry benchmark cases run through `cargo xtask starry app ...`, so the
+    registration names the case directory relative to `benchmarks/starry`
+    and the owning check contributes its own command unchanged.
+    """
+    selections = []
+    for check, registration in registrations:
+        if registration["kind"] not in STARRY_APP_SUITE_KINDS:
+            continue
+        for case in registration.get("cases", ()):
+            if not _is_prefix(path, STARRY_APP_SUITE_ROOT / case):
+                continue
+            selections.append(
+                SuiteSelection(
+                    template_id=check["id"],
+                    row_id=_slugify(f"suite-{check['id']}-{case}"),
+                    leaf_name=f"benchmark/{case}",
+                    command=check["command"].strip(),
+                    source_path=path.as_posix(),
+                )
+            )
+    return selections
 
 
 def _arceos_selections(
@@ -313,10 +385,9 @@ def _discovered_selections(
     path: Path,
     os_name: str,
 ) -> list[SuiteSelection]:
-    root = SUITE_ROOTS[os_name]
-    absolute_root = workspace_root / root
     absolute_path = workspace_root / path
-    cases = _discover_runtime_cases(absolute_root, os_name)
+    absolute_root = workspace_root / _owning_suite_root(path, os_name)
+    cases = _discover_os_runtime_cases(workspace_root, os_name)
 
     grouped = _starry_grouped_subcase(absolute_root, absolute_path, cases)
     if grouped is not None:
@@ -332,6 +403,26 @@ def _discovered_selections(
     return _runtime_selections(registrations, path, matching_cases)
 
 
+def _owning_suite_root(path: Path, os_name: str) -> Path:
+    for root in _suite_roots(os_name):
+        if _is_prefix(path, root):
+            return root
+    return SUITE_ROOTS[os_name]
+
+
+def _suite_roots(os_name: str) -> tuple[Path, ...]:
+    return (SUITE_ROOTS[os_name], *EXTRA_SUITE_ROOTS.get(os_name, ()))
+
+
+def _discover_os_runtime_cases(
+    workspace_root: Path, os_name: str
+) -> list[_RuntimeCase]:
+    cases: list[_RuntimeCase] = []
+    for root in _suite_roots(os_name):
+        cases.extend(_discover_runtime_cases(workspace_root / root, os_name))
+    return cases
+
+
 def _runtime_selections(
     registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
     path: Path,
@@ -341,6 +432,9 @@ def _runtime_selections(
     suite_group: str | None = None,
 ) -> list[SuiteSelection]:
     selections = []
+    board_batches: dict[
+        tuple[str, str | None, Path], list[tuple[str, _RuntimeCase, dict[str, Any]]]
+    ] = {}
     for runtime_case in cases:
         selector = selector_override or runtime_case.case
         template = _registered_template(
@@ -352,6 +446,11 @@ def _runtime_selections(
             group=suite_group,
         )
         if template is None:
+            continue
+
+        if runtime_case.kind == "starry-board":
+            key = (template["id"], runtime_case.board, runtime_case.build_config)
+            board_batches.setdefault(key, []).append((selector, runtime_case, template))
             continue
 
         if runtime_case.kind == "arceos-qemu":
@@ -390,6 +489,33 @@ def _runtime_selections(
                 )
 
         selections.append(_selection(template, platform, selector, command, path))
+
+    for batch in board_batches.values():
+        selectors = [selector for selector, _, _ in batch]
+        runtime_case = batch[0][1]
+        template = batch[0][2]
+        selector_list = ",".join(selectors)
+        platform = _platform_label(template)
+        command = (
+            f"cargo xtask starry test board --test-case {selector_list} "
+            f"--board {runtime_case.board}"
+        )
+        batch_command = (
+            f"cargo xtask starry test board --test-case {{cases}} "
+            f"--board {runtime_case.board}"
+        )
+        selections.append(
+            _selection(
+                template,
+                platform,
+                selector_list,
+                command,
+                path,
+                batch_key=(template["id"], runtime_case.board, runtime_case.build_config),
+                batch_cases=tuple(selectors),
+                batch_command=batch_command,
+            )
+        )
     return selections
 
 
@@ -599,12 +725,37 @@ def _suite_registrations(
     ]
 
 
+def _validate_starry_app_registrations(
+    workspace_root: Path,
+    registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
+) -> None:
+    for check, registration in registrations:
+        if registration["kind"] not in STARRY_APP_SUITE_KINDS:
+            continue
+        cases = registration.get("cases")
+        if not cases:
+            raise SuiteRouteError(
+                f"check '{check['id']}' starry app registration must declare cases"
+            )
+        for case in cases:
+            case_dir = workspace_root / STARRY_APP_SUITE_ROOT / case
+            if not case_dir.is_dir():
+                raise SuiteRouteError(
+                    f"check '{check['id']}' registers missing Starry app case "
+                    f"`{case}` under {STARRY_APP_SUITE_ROOT}"
+                )
+
+
 def _selection(
     template: dict[str, Any],
     platform: str,
     case: str,
     command: str,
     path: Path,
+    *,
+    batch_key: tuple[str, str | None, Path] | None = None,
+    batch_cases: tuple[str, ...] = (),
+    batch_command: str | None = None,
 ) -> SuiteSelection:
     row_id = _slugify(f"suite-{template['id']}-{case}")
     return SuiteSelection(
@@ -613,6 +764,9 @@ def _selection(
         leaf_name=f"{platform} · {case}",
         command=command,
         source_path=path.as_posix(),
+        batch_key=batch_key,
+        batch_cases=batch_cases,
+        batch_command=batch_command,
     )
 
 

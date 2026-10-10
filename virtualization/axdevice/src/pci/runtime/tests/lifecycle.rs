@@ -31,11 +31,7 @@ fn withdrawal_operation_reports_busy_lifecycle_without_spinning() {
 
     drop(lease);
     assert_eq!(
-        binding
-            .lifecycle
-            .lock_irqsave()
-            .pending_withdrawals
-            .as_slice(),
+        binding.lifecycle.lock().pending_withdrawals.as_slice(),
         &[DeviceId::new(5)]
     );
     reset.finish_reset().unwrap();
@@ -60,13 +56,13 @@ fn reset_reclaims_lease_dropped_during_completion_handoff() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -106,18 +102,12 @@ fn reset_reclaims_lease_dropped_during_completion_handoff() {
 
     assert!(reset_thread.join().unwrap().is_ok());
     drop_thread.join().unwrap();
-    assert!(
-        binding
-            .lifecycle
-            .lock_irqsave()
-            .pending_withdrawals
-            .is_empty()
-    );
+    assert!(binding.lifecycle.lock().pending_withdrawals.is_empty());
     assert!(
         !binding
             .router
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .contains_key(&DeviceId::new(13))
     );
@@ -348,7 +338,7 @@ fn full_reset_failure_after_admission_barrier_stays_fail_closed() {
         Err(DeviceManagerError::Device(DeviceError::Backend { .. }))
     ));
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::ResetFailed
     );
     assert!(matches!(
@@ -362,7 +352,7 @@ fn full_reset_failure_after_admission_barrier_stays_fail_closed() {
     let current = binding
         .router
         .state
-        .lock_irqsave()
+        .lock()
         .endpoints
         .get(&DeviceId::new(27))
         .unwrap()
@@ -379,10 +369,7 @@ fn full_reset_failure_after_admission_barrier_stays_fail_closed() {
         .begin_stop_operation()
         .finish_stop()
         .expect("teardown remains available from ResetFailed");
-    assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
-        BindingLifecycleState::Dead
-    );
+    assert_eq!(binding.lifecycle.lock().state, BindingLifecycleState::Dead);
 }
 
 #[test]
@@ -417,13 +404,13 @@ fn full_lifecycle_reset_resets_endpoint_before_reopening_admission() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: Some(line),
         supports_effects: false,
         pending: false,
@@ -450,7 +437,7 @@ fn full_lifecycle_reset_resets_endpoint_before_reopening_admission() {
     let token = binding
         .router
         .state
-        .lock_irqsave()
+        .lock()
         .endpoints
         .get(&DeviceId::new(7))
         .unwrap()
@@ -493,13 +480,13 @@ fn full_lifecycle_reset_failure_keeps_endpoint_admission_closed() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(1),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(1),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: Some(line),
         supports_effects: false,
         pending: false,
@@ -522,13 +509,13 @@ fn full_lifecycle_reset_failure_keeps_endpoint_admission_closed() {
     assert_eq!(*recording.withdrawals.lock_irqsave(), 1);
     assert!(!sink.asserted.load(Ordering::Relaxed));
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::ResetFailed
     );
     let token = binding
         .router
         .state
-        .lock_irqsave()
+        .lock()
         .endpoints
         .get(&DeviceId::new(7))
         .unwrap()
@@ -574,13 +561,13 @@ fn reset_irq_cleanup_failure_stays_closed_until_teardown_retries_withdrawal() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(1),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(1),
         irq_line: Some(line),
         supports_effects: false,
         pending: false,
@@ -600,14 +587,14 @@ fn reset_irq_cleanup_failure_stays_closed_until_teardown_retries_withdrawal() {
         Err(DeviceManagerError::Device(DeviceError::Backend { .. }))
     ));
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::ResetFailed
     );
     assert!(
         !binding
             .router
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .get(&DeviceId::new(12))
             .unwrap()
@@ -793,13 +780,13 @@ fn reset_completion_cannot_open_a_second_reset_epoch() {
     release.wait();
     assert!(first.join().unwrap().is_ok());
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::Running
     );
     let token = binding
         .router
         .state
-        .lock_irqsave()
+        .lock()
         .endpoints
         .get(&DeviceId::new(17))
         .unwrap()
@@ -860,15 +847,12 @@ fn stop_request_supersedes_reset_before_admission_publication() {
         Err(DeviceManagerError::InvalidState { .. })
     ));
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::Stopping
     );
 
     binding.begin_stop_operation().finish_stop().unwrap();
-    assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
-        BindingLifecycleState::Dead
-    );
+    assert_eq!(binding.lifecycle.lock().state, BindingLifecycleState::Dead);
 }
 
 #[test]
@@ -910,15 +894,12 @@ fn stop_successor_claims_a_withdrawal_queued_after_reset_completion() {
     drop(lease);
 
     binding.begin_stop_operation().finish_stop().unwrap();
-    assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
-        BindingLifecycleState::Dead
-    );
+    assert_eq!(binding.lifecycle.lock().state, BindingLifecycleState::Dead);
     assert!(
         !binding
             .router
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .contains_key(&DeviceId::new(25))
     );
@@ -955,7 +936,7 @@ fn binding_completion_drains_a_concurrent_lease_drop() {
         .unwrap();
     let dropped_grant = dropped.token.grant(false);
 
-    let dropped_lease = Arc::new(SpinLock::new(Some(dropped)));
+    let dropped_lease = Arc::new(RawSpinLock::new(Some(dropped)));
     binding.set_completion_closing_hook({
         let dropped_lease = Arc::clone(&dropped_lease);
         Arc::new(move || {
@@ -965,24 +946,18 @@ fn binding_completion_drains_a_concurrent_lease_drop() {
     let operation = binding.begin_binding_operation().unwrap();
     operation.finish_restore().unwrap();
 
-    assert!(
-        binding
-            .lifecycle
-            .lock_irqsave()
-            .pending_withdrawals
-            .is_empty()
-    );
+    assert!(binding.lifecycle.lock().pending_withdrawals.is_empty());
     assert!(
         !binding
             .router
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .contains_key(&DeviceId::new(18))
     );
     assert!(!dropped_grant.admission_is_open());
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::Running
     );
     let _ = first_id;
@@ -1029,7 +1004,7 @@ fn withdrawal_completion_drains_a_last_window_lease_drop() {
         .unwrap();
     let second_grant = second.token.grant(false);
 
-    let second_lease = Arc::new(SpinLock::new(Some(second)));
+    let second_lease = Arc::new(RawSpinLock::new(Some(second)));
     binding.set_completion_closing_hook({
         let second_lease = Arc::clone(&second_lease);
         Arc::new(move || {
@@ -1040,18 +1015,12 @@ fn withdrawal_completion_drains_a_last_window_lease_drop() {
     binding.withdraw_endpoint(DeviceId::new(19)).unwrap();
     operation.finish_restore().unwrap();
 
-    assert!(
-        binding
-            .lifecycle
-            .lock_irqsave()
-            .pending_withdrawals
-            .is_empty()
-    );
+    assert!(binding.lifecycle.lock().pending_withdrawals.is_empty());
     assert!(
         !binding
             .router
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .contains_key(&DeviceId::new(19))
     );
@@ -1059,13 +1028,13 @@ fn withdrawal_completion_drains_a_last_window_lease_drop() {
         !binding
             .router
             .state
-            .lock_irqsave()
+            .lock()
             .endpoints
             .contains_key(&DeviceId::new(20))
     );
     assert!(!second_grant.admission_is_open());
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::Running
     );
     drop(first);
@@ -1170,13 +1139,13 @@ fn late_withdrawal_failure_does_not_rollback_published_reset() {
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&root),
         bdf: topology.function(&function_id).unwrap().bdf(),
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -1190,7 +1159,7 @@ fn late_withdrawal_failure_does_not_rollback_published_reset() {
             &mut grants,
         )
         .unwrap();
-    let lease = Arc::new(SpinLock::new(Some(lease)));
+    let lease = Arc::new(RawSpinLock::new(Some(lease)));
     binding.set_admission_open_hook({
         let lease = Arc::clone(&lease);
         let recording = Arc::clone(&recording);
@@ -1202,7 +1171,7 @@ fn late_withdrawal_failure_does_not_rollback_published_reset() {
 
     assert!(binding.reset_lifecycle().is_ok());
     assert_eq!(
-        binding.lifecycle.lock_irqsave().state,
+        binding.lifecycle.lock().state,
         BindingLifecycleState::Running
     );
     assert!(root.resolve_bar(0xc000_0000, AccessWidth::Byte).is_none());
@@ -1246,13 +1215,13 @@ fn old_lease_retracts_the_current_root_route_after_epoch_replacement() {
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&root),
         bdf,
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,

@@ -1,7 +1,7 @@
 use alloc::{collections::btree_set::BTreeSet, vec::Vec};
 
 use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 
 use crate::{
     Descriptor, PlatformDevice,
@@ -26,13 +26,13 @@ pub(crate) fn try_probe_register(
 }
 
 struct System {
-    probed_names: Mutex<BTreeSet<&'static str>>,
+    probed_names: RawSpinLock<BTreeSet<&'static str>>,
 }
 
 impl System {
     fn new() -> Self {
         Self {
-            probed_names: Mutex::new(BTreeSet::new()),
+            probed_names: RawSpinLock::new(BTreeSet::new()),
         }
     }
 

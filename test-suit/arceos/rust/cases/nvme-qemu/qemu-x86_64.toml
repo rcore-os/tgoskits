@@ -1,0 +1,26 @@
+args = [
+    "-machine", "q35",
+    "-m", "512M",
+    "-accel", "tcg,thread=single",
+    "-device", "nvme,drive=disk0,serial=tgoskits-nvme,logical_block_size=4096,physical_block_size=4096,mdts=4,max_ioqpairs=4,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/arceos/rust/disk.img",
+    "-display", "none",
+    "-serial", "mon:stdio",
+]
+
+timeout = 120
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ARCEOS_TEST_FAIL"]
+
+[[shell_check_steps]]
+success_regex = ["NVMe block device registered at [^\\n]* with [1-9][0-9]* MSI-X vectors"]
+
+[[shell_check_steps]]
+success_regex = ["NVME_DEVICE_IO read_ios=[1-9][0-9]* read_sectors=[1-9][0-9]* write_ios=[1-9][0-9]* write_sectors=[1-9][0-9]*"]
+
+[[shell_check_steps]]
+success_regex = ["NVME_QEMU_OK lba=4096 mdts=4"]
+
+[[shell_check_steps]]
+success_regex = ["ArceOS test suite run OK!"]

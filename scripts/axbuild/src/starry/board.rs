@@ -221,4 +221,35 @@ log = "Warn"
             default_board_for_target(root.path(), "aarch64-unknown-none-softfloat").unwrap();
         assert_eq!(board.unwrap().name, "qemu-aarch64");
     }
+
+    /// A device tree that declares the host initramfs range boots the kernel
+    /// into unpacking whatever occupies that memory, and no board flow in this
+    /// tree loads an archive there. The claim belongs to the flows that do,
+    /// and they declare it themselves.
+    #[test]
+    fn board_device_trees_do_not_claim_a_host_initramfs() {
+        let workspace = crate::context::WorkspaceContext::discover(None).unwrap();
+        let directory = board_dir(workspace.root()).unwrap();
+        let mut checked = 0;
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension() != Some(OsStr::new("dtb")) {
+                continue;
+            }
+            let bytes = fs::read(&path).unwrap();
+            let fdt = fdt_edit::Fdt::from_bytes(&bytes).unwrap();
+            let Some(chosen) = fdt.get_by_path("/chosen") else {
+                continue;
+            };
+            for property in ["linux,initrd-start", "linux,initrd-end"] {
+                assert!(
+                    chosen.as_node().get_property(property).is_none(),
+                    "{} declares {property}",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 0, "no board device tree was checked");
+    }
 }

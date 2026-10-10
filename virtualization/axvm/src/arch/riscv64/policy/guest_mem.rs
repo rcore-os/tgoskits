@@ -1,4 +1,3 @@
-use ax_cpu::virtualization::Exception;
 // Copyright 2025 The Axvisor Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +11,7 @@ use ax_cpu::virtualization::Exception;
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use ax_cpu::virtualization::{self as cpu, GuestPrivilege};
+use ax_cpu::virtualization::{self as cpu, Exception, GuestPrivilege};
 
 use crate::arch::riscv64::policy::types::{RiscvGuestPhysAddr, RiscvGuestVirtAddr};
 
@@ -98,18 +97,6 @@ pub(crate) fn copy_from_guest_va(
             },
         )
     }
-}
-
-pub(crate) fn copy_from_guest(dst: &mut [u8], gpa: RiscvGuestPhysAddr) -> usize {
-    // SAFETY: AxVM holds this vCPU's hardware binding and guest memory ownership
-    // through the SBI copy; buffers are VMM-owned allocations outside guest RAM.
-    unsafe { cpu::copy_from_guest_physical(dst, gpa.as_usize().into()) }
-}
-
-pub(crate) fn copy_to_guest(src: &[u8], gpa: RiscvGuestPhysAddr) -> usize {
-    // SAFETY: AxVM holds this vCPU's hardware binding and guest memory ownership
-    // through the SBI copy; buffers are VMM-owned allocations outside guest RAM.
-    unsafe { cpu::copy_to_guest_physical(src, gpa.as_usize().into()) }
 }
 
 pub(crate) fn fetch_guest_instruction(

@@ -5,24 +5,26 @@ sidebar_label: "运行"
 
 # Axvisor 运行
 
-Axvisor 的 QEMU 流程把 host 启动配置、hypervisor 构建配置、VM 描述和 rootfs 选择分开处理。`axvisor/rootfs.rs` 只补 rootfs drive 和检查 `to_bin`/UEFI 契约；它不会根据架构擅自注入 CPU、firmware 或 guest 启动参数。
+Axvisor 的 QEMU 流程把 host 启动配置、hypervisor 构建配置、VM 描述和 rootfs 选择分开处理。`axvisor/rootfs.rs` 识别并改写已接入的宿主根盘，检查 `to_bin`/UEFI 契约；它不会根据架构擅自注入 CPU、firmware 或 guest 启动参数。
 
 ## 1. QEMU 启动
 
-Axvisor QEMU 运行先解析 VM 镜像路径，再用同一组配置选择 rootfs，随后读取 host 启动
-TOML 并检查产物格式；VM 配置只提供 guest 语义。下图对应 `axvisor/rootfs.rs::qemu()`
-的主要步骤。
+`axvisor/rootfs.rs::qemu()` 读取宿主 QEMU 配置，准备所需磁盘和客户机镜像，再用 `bundle::attach()` 生成宿主归档。内核初始化文件系统后，`builtin::prepare_root()` 在加载 VM 前完成可选安装及切根。
 
 ```mermaid
 flowchart TD
-    A["axvisor qemu"] --> B["解析 Build Config / --vmconfigs"]
-    B --> C["展开 VM 镜像路径变量"]
-    C --> D["从解析后配置选择并确保 rootfs"]
-    D --> E["加载 --qemu-config 或 configs/qemu/qemu-<arch>.toml"]
-    E --> F["替换或插入 rootfs -drive"]
-    F --> G["检查 UEFI + to_bin"]
-    G --> H["ostool cargo_run"]
+    A[解包宿主 initramfs] --> B{显式 root=}
+    B -->|无| G[读取当前内存根配置和镜像]
+    B -->|有| C[准备磁盘根]
+    C --> D[安装自带资源整包]
+    D --> E[提交切根并脱离旧根]
+    E --> G
+    C -->|失败| F[报错停止启动]
+    D -->|失败| F
+    G --> H[准备设备并启动 VM]
 ```
+
+没有块设备驱动或磁盘根时，可以省略 `root=`，直接从 initramfs 运行客户机。显式 `root=` 无法满足时报告错误，不启动 VM。
 
 默认 QEMU 模板位于：
 
@@ -40,7 +42,11 @@ QEMU rootfs 路径的选择顺序为：
 2. 第一个 VM config 中 `[kernel].kernel_path` 同目录的现有 `rootfs.img`；
 3. 当前 arch 的 managed `rootfs-<arch>-alpine.img`。
 
-显式 rootfs 或 managed rootfs 会在启动前确保可用；若 VM 配置已有 kernel sibling `rootfs.img`，它被视为用例/guest 自己管理的镜像，axbuild 不额外下载默认 rootfs。最终路径由 `patch_qemu_rootfs_path()` 放入 QEMU drive；若模板漏掉 `-drive`，补丁会插入一个 `disk0` raw drive。
+只在 QEMU 已有可识别的宿主根盘接线时准备或改写根盘，不为纯 initramfs 场景自动接入磁盘。`disk0` 或唯一匿名文件后端可作为宿主盘；其他明确命名的 guest/data drive 保持原值。显式 `root=` 缺少宿主盘接线会在运行前报错。
+
+磁盘根上的自带资源目录固定为 `/guest/builtin`。源目录存在时整包替换；空包清空旧资源，源目录缺失时保留已安装版本。Ext4 使用 `EXCHANGE` 发布；FAT 使用备份与失败回滚，不保证断电原子性。安装失败时不切根、不启动客户机。可写客户机磁盘不参与替换。
+
+`/guest/vm_default` 中有效非空配置优先；空目录或目录缺失时使用 `/guest/builtin/configs`，无效用户配置明确报错。HTTP 或命令行重建 VM 可直接引用安装后的启动镜像路径。
 
 ### 1.2 启动产物
 
@@ -52,7 +58,7 @@ QEMU rootfs 路径的选择顺序为：
 
 仓库的 Axvisor x86_64 和 loongarch64 默认 QEMU 配置均将 UEFI 和 BIN 选择写在 TOML 中。
 guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 与
-`uefi_firmware_path`）；axbuild 只在构建前展开受支持的路径变量，不改变 guest 固件 ABI。
+`uefi_firmware_path`）；axbuild 只在打包时展开受支持的路径变量，不改变 guest 固件 ABI。
 
 ### 1.3 LVZ QEMU
 
@@ -71,7 +77,7 @@ guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 
 
 ## 3. 板卡启动
 
-`axvisor board` 通过 ostool-server 运行；显式 `--board-config` 优先，否则 axbuild 解析当前 Cargo 配置对应的 board run config。它复用 Build Config 的 VM 列表和环境变量。
+`axvisor board` 通过 ostool-server 运行；显式 `--board-config` 优先，否则 axbuild 解析当前 Cargo 配置对应的 board run config。它复用 Build Config 的 VM 列表，并将生成的宿主归档加入启动配置；FIT ramdisk、UEFI 和 HTTP Boot 使用现有交接协议。构建机可取得的镜像放入自带包，板卡 rootfs 已有的绝对资源路径可保留并在切根后加载。
 
 ## 4. 命令示例
 

@@ -1,0 +1,29 @@
+board_type = "OrangePi-5-Plus"
+# The board Linux rootfs must contain the Zephyr IVC payload and Starry
+# userspace benchmark from tgosimages IMAGES/orangepi/ivc. The Starry
+# kernel is packaged from the current checkout into the host initramfs.
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "AXIVC Starry benchmark peer ready failed",
+  "AXIVC Starry benchmark send failed",
+  "AXIVC Starry benchmark recv failed",
+  "AXIVC Zephyr-Starry benchmark publish failed",
+  "AXIVC Zephyr-Starry benchmark ready send failed",
+  "AXIVC Zephyr-Starry benchmark failed",
+]
+timeout = 300
+
+# Attach to VM 1 and start the benchmark from its Starry shell, so the
+# benchmark runs as a child of the persistent init shell instead of as init.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/ivc-starry-bench"
+success_regex = [
+  "(?m)^(?:\\[VM 1\\] )?AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$",
+]

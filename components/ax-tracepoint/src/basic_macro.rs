@@ -285,7 +285,15 @@ macro_rules! define_event_trace{
                 unsafe { $crate::CommonTracePointMeta::new(&[<__ $name>], print_func) }
             };
 
-            #[allow(non_snake_case)]
+            // This generated function takes one parameter per field on top of
+            // its two fixed ones, so its arity is the event's field list plus
+            // two.  It is the first of the generated functions to cross the
+            // argument-count lint's threshold, and an event author cannot
+            // restructure it; the exemption belongs to the macro.  A wider
+            // event that pushes `encode_<name>_record` (one fixed parameter)
+            // or `trace_<name>` (none) over the threshold needs its exemption
+            // added here as well.
+            #[allow(non_snake_case, clippy::too_many_arguments)]
             fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(tp_compiled_expr: Option<&$crate::tp_lexer::Compiled>, _data:& (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* )
             {
                 let ($([<__ $assign _value>],)*) = ($($value,)*);

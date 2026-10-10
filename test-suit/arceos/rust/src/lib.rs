@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "virtio-block-lifecycle", feature(used_with_arg))]
+
 #[cfg(feature = "cpu-capacity")]
 mod cpu_capacity;
 
@@ -6,6 +8,9 @@ use ax_std as _;
 
 #[cfg(feature = "serial-rx")]
 pub mod serial_rx;
+
+#[cfg(feature = "virtio-block-lifecycle")]
+mod virtio_block_lifecycle;
 
 pub type TestResult = Result<(), &'static str>;
 
@@ -61,6 +66,8 @@ pub mod mem;
     feature = "ax-std"
 ))]
 pub mod net;
+#[cfg(all(feature = "nvme-qemu", feature = "ax-std", target_arch = "x86_64"))]
+pub mod nvme;
 #[cfg(all(
     feature = "ax-std",
     any(
@@ -125,7 +132,14 @@ test_runner!(
     run_exception_page_fault,
     exception::page_fault::run
 );
+test_runner!(
+    "virtio-block-lifecycle",
+    run_virtio_block_lifecycle,
+    virtio_block_lifecycle::run
+);
 test_runner!("fs-basic", run_fs_basic, fs::basic::run);
+#[cfg(target_arch = "x86_64")]
+test_runner!("nvme-qemu", run_nvme_qemu, nvme::run);
 test_runner!("iommu-dma", run_iommu_dma, iommu_dma::run);
 test_runner!("futex-errno-order", run_futex_errno_order, futex::run);
 test_runner!(
@@ -214,6 +228,12 @@ test_runner!("task-yield", run_task_yield, task::yield_now::run);
 test_runner!("serial-rx", run_serial_rx, serial_rx::run);
 
 const SELECTED_TESTS: &[TestCase] = &[
+    #[cfg(feature = "virtio-block-lifecycle")]
+    TestCase::new(
+        "virtio-block-lifecycle",
+        "confirmed reset and DMA ownership",
+        run_virtio_block_lifecycle,
+    ),
     #[cfg(feature = "cpu-capacity")]
     TestCase::new(
         "cpu-capacity",
@@ -256,6 +276,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "fs-basic")]
     TestCase::new("fs-basic", "bounded filesystem operations", run_fs_basic),
+    #[cfg(all(feature = "nvme-qemu", target_arch = "x86_64"))]
+    TestCase::new(
+        "nvme-qemu",
+        "QEMU NVMe 4 KiB LBA I/O with cold-cache readback",
+        run_nvme_qemu,
+    ),
     #[cfg(feature = "iommu-dma")]
     TestCase::new(
         "iommu-dma",

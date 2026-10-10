@@ -5,11 +5,11 @@ slug: /build/ci
 ---
 # 自动化验证
 
-TGOSKits 的项目自动化包括主 CI、定时应用验证、容器发布、文档构建部署和软件包发布。各工作流分别声明事件、权限、执行资源和产物，不组成一条隐含的串行流水线。文档按此分为两组：主 CI 与定时应用验证归入“测试”，容器、文档和软件包发布归入“发布”。
+TGOSKits 的项目自动化包括主 CI、Starry 应用验证、AxVisor nightly、性能基准、容器发布、文档构建部署和软件包发布。各工作流分别声明事件、权限、执行资源和产物，不组成一条隐含的串行流水线。文档按此分为两组：主 CI 与三条定时验证归入“测试”，容器、文档和软件包发布归入“发布”。
 
 ## 1. 测试
 
-测试组包含主 CI 与定时应用验证两条工作流。主 CI 将仓库事件转成检查矩阵，再通过 `cargo xtask` 执行静态检查、宿主测试、QEMU 测试和实体板卡测试：`.github/workflows/ci.yml` 负责事件路由和阶段依赖，`scripts/test/ci_plan.py` 决定检查范围，`reusable-check-matrix.yml` 执行每一行。主 CI 成功不代表镜像、站点或软件包已经发布。
+测试组包含主 CI 与 Starry Apps、AxVisor Nightly、Benchmarks 三条独立日常入口。主 CI 将仓库事件转成检查矩阵，再通过 `cargo xtask` 执行静态检查、宿主测试、QEMU 测试和实体板卡测试：`.github/workflows/ci.yml` 负责事件路由和阶段依赖，`scripts/test/ci_plan.py` 决定检查范围，`reusable-check-matrix.yml` 执行每一行。主 CI 成功不代表镜像、站点或软件包已经发布。
 
 ### 1.1 主 CI 阶段关系
 
@@ -51,7 +51,13 @@ flowchart TD
 
 ### 1.3 定时应用验证
 
-`starry-apps.yml` 为 Starry 应用提供独立于主 CI 的定时和手动验证。定时入口按 UTC 每日 18:00 运行四架构应用 smoke 和 NixOS 场景，手动入口可追加完整 Clippy。工作流读取 `.github/ci/checks/starry-apps.toml`，由 `scripts/test/ci_plan.py` 的 `build_starry_apps_plan()` 规划，再交给 `reusable-check-matrix.yml` 执行；它不使用主 CI 的 PR 变更范围或 push/PR 去重结果。应用检查的结果不能替代主 CI 的系统套件或板卡测试，详见[应用验证](testing/applications.md)。
+`starry-apps.yml` 为 Starry 应用提供独立于主 CI 的定时和手动验证。定时入口按 UTC 每日 18:00 运行四架构应用 smoke 和 NixOS 场景，手动入口可追加完整 Clippy。工作流只读取 `.github/ci/checks/starry-apps.toml`，由 `scripts/test/ci_plan.py` 的 `build_starry_apps_plan()` 规划，再交给 `reusable-check-matrix.yml` 执行；它不使用主 CI 的 PR 变更范围或 push/PR 去重结果，也不再承担性能矩阵。应用检查的结果不能替代主 CI 的系统套件或板卡测试，详见[应用验证](testing/applications.md)。
+
+### 1.4 定时 nightly 与性能验证
+
+`axvisor-nightly.yml` 按 UTC 每日 19:20 运行 `axvisor-nightly.toml` 中的非性能 AxVisor 场景，由 `build_axvisor_nightly_plan()` 规划。`benchmarks.yml` 按 UTC 每日 21:40 运行统一 `benchmarks.toml` 中的全部性能 check，由 `build_benchmarks_plan()` 规划：`AxVisor` 组进入 `axvisor_performance_matrix`，`Starry Apps` 组按运行环境进入 QEMU 的 `starry_performance_matrix` 和 `max_parallel: 1` 的 `starry_board_performance_matrix`。
+
+三条日常入口不建立相互等待的 `needs` 门禁。AxVisor Nightly 只产生功能结果；Benchmarks 汇总两组性能报告，把本次 `axvisor` 与 `starry` 增量作为短生命周期 artifact 交给 docs workflow。docs 的 `Prepare performance dashboard` 步骤只准备环境变量并调用 `scripts/test/ci_perf_pages.py`，由脚本优先合并线上 Pages 历史，只在 Pages 双 404 时一次性只读旧分支完成 bootstrap；bootstrap 不完整时阻止部署，之后 Pages 始终是唯一持久历史。性能检查的名称、运行命令和维护边界详见[基准验证](testing/benchmarks.md)。
 
 ## 2. 发布
 
@@ -97,7 +103,9 @@ Python 文件均位于 `scripts/test/`。任务工具和各 OS 的适配层决�
 | 工作流                    | 职责                                                               | 与主 CI 的关系                                 |
 | ------------------------- | ------------------------------------------------------------------ | ---------------------------------------------- |
 | `container-publish.yml` | [容器发布](publishing/containers.md)：构建 base 和 AxVisor LVZ 镜像并推送 GHCR | 提供部分矩阵需要的环境，不是主 CI 的依赖 job   |
-| `starry-apps.yml`       | [应用验证](testing/applications.md)：定时或手动运行应用矩阵                 | 使用同一矩阵执行器，维护独立检查清单           |
+| `starry-apps.yml`       | [应用验证](testing/applications.md)：定时或手动运行 Starry 应用矩阵         | 使用同一矩阵执行器，维护独立检查清单           |
+| `axvisor-nightly.yml`   | AxVisor 非性能 nightly：运行 `axvisor-nightly.toml` 的功能场景              | 只复用矩阵执行器，不等待主 CI 成功             |
+| `benchmarks.yml`        | [基准验证](testing/benchmarks.md)：运行统一性能清单并桥接本次历史增量          | 只复用矩阵执行器，不等待主 CI 成功             |
 | `docs.yml`              | [文档发布](publishing/documentation.md)：构建 Docusaurus 并部署 Pages          | 构建成功后才部署，独立于 Rust、QEMU 和板卡检查 |
 | `release-plz.yml`       | [软件包发布](publishing/releases.md)：发布软件包、创建或更新发布 PR            | 主仓专用，没有等待主 CI 成功的工作流依赖       |
 

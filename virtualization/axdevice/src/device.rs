@@ -37,12 +37,24 @@ pub trait StopAccessPort: Send + Sync {
     fn request_vm_stop(&self, device_id: DeviceId, reason: &str) -> DeviceManagerResult;
 }
 
+/// Runtime backend that wakes a VM so a device's deferred work is polled.
+///
+/// A device worker uses this after publishing its completion level state; the
+/// port only schedules a pollable pass on the owning runtime and never moves
+/// guest memory or device state through itself. The `device_id` identifies the
+/// device whose work became ready.
+pub trait WorkAccessPort: Send + Sync {
+    /// Requests that the owning runtime polls deferred work for `device_id`.
+    fn notify_work(&self, device_id: DeviceId) -> DeviceManagerResult;
+}
+
 /// VM runtime capabilities injected into one sealed [`DeviceRuntime`].
 #[derive(Clone, Default)]
 pub struct RuntimeAccessPorts {
     timer: Option<Arc<dyn TimerAccessPort>>,
     wake: Option<Arc<dyn WakeAccessPort>>,
     stop: Option<Arc<dyn StopAccessPort>>,
+    work: Option<Arc<dyn WorkAccessPort>>,
 }
 
 impl RuntimeAccessPorts {
@@ -52,6 +64,7 @@ impl RuntimeAccessPorts {
             timer: None,
             wake: None,
             stop: None,
+            work: None,
         }
     }
 
@@ -71,6 +84,17 @@ impl RuntimeAccessPorts {
     pub fn with_stop(mut self, stop: Arc<dyn StopAccessPort>) -> Self {
         self.stop = Some(stop);
         self
+    }
+
+    /// Adds a deferred-work notification port.
+    pub fn with_work(mut self, work: Arc<dyn WorkAccessPort>) -> Self {
+        self.work = Some(work);
+        self
+    }
+
+    /// Returns the deferred-work notification port, if one is attached.
+    pub fn work(&self) -> Option<Arc<dyn WorkAccessPort>> {
+        self.work.clone()
     }
 }
 
@@ -489,6 +513,15 @@ impl DeviceRuntime {
 
     pub(crate) fn attach_access_ports(&mut self, access_ports: RuntimeAccessPorts) {
         self.access_ports = access_ports;
+    }
+
+    /// Returns the runtime's deferred-work notification port, if attached.
+    ///
+    /// The builder copies this into each graph-node build context so a device
+    /// model can bind its worker to the owning run without the static
+    /// instantiation context carrying any run identity.
+    pub(crate) fn work_port(&self) -> Option<Arc<dyn WorkAccessPort>> {
+        self.access_ports.work()
     }
 
     pub(crate) const fn interrupt_registry(&self) -> &crate::interrupt::InterruptRegistry {
@@ -1187,6 +1220,11 @@ impl DeviceRuntime {
     }
 
     /// Resets lifecycle-capable devices in registration order.
+    ///
+    /// A reset is expected to succeed for every device that was sealed into
+    /// this runtime; a failure is reported to the caller rather than masked.
+    /// Reset is best-effort terminated on the first error because a partially
+    /// reset topology cannot be reopened safely.
     pub fn reset_lifecycle_devices(&self) -> DeviceManagerResult {
         for lifecycle in &self.lifecycle_devices {
             lifecycle.reset()?;
@@ -1195,19 +1233,102 @@ impl DeviceRuntime {
     }
 
     /// Suspends lifecycle-capable devices in reverse registration order.
+    ///
+    /// Devices are suspended from the leaf-most contribution backwards so a
+    /// dependent device observes its dependencies still running. If a device
+    /// cannot quiesce, every device already suspended in this pass is resumed
+    /// in the opposite order before the error is returned.
     pub fn suspend_lifecycle_devices(&self) -> DeviceManagerResult {
+        let mut suspended: Vec<&Arc<dyn DeviceLifecycle>> = Vec::new();
         for lifecycle in self.lifecycle_devices.iter().rev() {
-            lifecycle.suspend()?;
+            match lifecycle.suspend() {
+                Ok(()) => suspended.push(lifecycle),
+                Err(suspend_error) => {
+                    let mut rollback_error = None;
+                    for resumed in suspended.iter().rev() {
+                        if let Err(rollback) = resumed.resume() {
+                            warn!("lifecycle suspend rollback could not resume device: {rollback}");
+                            if rollback_error.is_none() {
+                                rollback_error = Some(rollback);
+                            }
+                        }
+                    }
+                    // A failed compensation leaves devices in an unknown,
+                    // possibly still-suspended state; report it explicitly
+                    // instead of pretending the lifecycle is running.
+                    return Err(match rollback_error {
+                        Some(rollback_error) => DeviceManagerError::InvalidState {
+                            operation: "roll back device suspend",
+                            detail: alloc::format!(
+                                "device suspend failed with {suspend_error}; compensating resume \
+                                 failed with {rollback_error}, so the device lifecycle is not \
+                                 running"
+                            ),
+                        },
+                        None => suspend_error,
+                    });
+                }
+            }
         }
         Ok(())
     }
 
     /// Resumes lifecycle-capable devices in registration order.
+    ///
+    /// Devices are resumed from the root-most contribution forwards so a
+    /// dependent device always resumes after the dependency it needs. If a
+    /// device cannot resume, every device already resumed in this pass is
+    /// suspended again in the opposite order before the error is returned.
     pub fn resume_lifecycle_devices(&self) -> DeviceManagerResult {
+        let mut resumed: Vec<&Arc<dyn DeviceLifecycle>> = Vec::new();
         for lifecycle in &self.lifecycle_devices {
-            lifecycle.resume()?;
+            match lifecycle.resume() {
+                Ok(()) => resumed.push(lifecycle),
+                Err(resume_error) => {
+                    let mut rollback_error = None;
+                    for suspended in resumed.iter().rev() {
+                        if let Err(rollback) = suspended.suspend() {
+                            warn!("lifecycle resume rollback could not suspend device: {rollback}");
+                            if rollback_error.is_none() {
+                                rollback_error = Some(rollback);
+                            }
+                        }
+                    }
+                    // A failed compensation may leave devices resumed while the
+                    // runtime is not running; report it explicitly.
+                    return Err(match rollback_error {
+                        Some(rollback_error) => DeviceManagerError::InvalidState {
+                            operation: "roll back device resume",
+                            detail: alloc::format!(
+                                "device resume failed with {resume_error}; compensating suspend \
+                                 failed with {rollback_error}, so the device lifecycle state is \
+                                 not the entry state"
+                            ),
+                        },
+                        None => resume_error,
+                    });
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Stops lifecycle-capable devices in reverse registration order.
+    ///
+    /// Stop is terminal: it closes the runtime's device set and joins every
+    /// device worker. Every device is still asked to stop even when one device
+    /// reports a failure, so the first error is returned only after the whole
+    /// set has been given a chance to release its workers.
+    pub fn stop_lifecycle_devices(&self) -> DeviceManagerResult {
+        let mut first_error = None;
+        for lifecycle in self.lifecycle_devices.iter().rev() {
+            if let Err(error) = lifecycle.stop()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     // ─── Hot-path dispatch ──────────────────────────────────────────
@@ -2056,6 +2177,48 @@ mod tests {
         reset_calls: AtomicUsize,
         suspend_calls: AtomicUsize,
         resume_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+    }
+
+    struct FailingSuspendLifecycle {
+        suspend_calls: AtomicUsize,
+        resume_calls: AtomicUsize,
+        fail: bool,
+        resume_fails: bool,
+    }
+
+    impl DeviceLifecycle for FailingSuspendLifecycle {
+        fn reset(&self) -> DeviceManagerResult {
+            Ok(())
+        }
+
+        fn suspend(&self) -> DeviceManagerResult {
+            self.suspend_calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail {
+                Err(DeviceManagerError::InvalidState {
+                    operation: "suspend test lifecycle",
+                    detail: "injected suspend failure".into(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn resume(&self) -> DeviceManagerResult {
+            self.resume_calls.fetch_add(1, Ordering::Relaxed);
+            if self.resume_fails {
+                Err(DeviceManagerError::InvalidState {
+                    operation: "resume test lifecycle",
+                    detail: "injected resume failure".into(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn stop(&self) -> DeviceManagerResult {
+            Ok(())
+        }
     }
 
     impl DeviceLifecycle for CountingLifecycle {
@@ -2071,6 +2234,11 @@ mod tests {
 
         fn resume(&self) -> DeviceManagerResult {
             self.resume_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn stop(&self) -> DeviceManagerResult {
+            self.stop_calls.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -2701,6 +2869,7 @@ mod tests {
             reset_calls: AtomicUsize::new(0),
             suspend_calls: AtomicUsize::new(0),
             resume_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
         });
         let bundle = DeviceBundle::new().with_lifecycle(lifecycle.clone());
         let mut devices = DeviceRuntime::empty();
@@ -2709,9 +2878,81 @@ mod tests {
         devices.reset_lifecycle_devices().unwrap();
         devices.suspend_lifecycle_devices().unwrap();
         devices.resume_lifecycle_devices().unwrap();
+        devices.stop_lifecycle_devices().unwrap();
 
         assert_eq!(lifecycle.reset_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.suspend_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.resume_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(lifecycle.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn suspend_failure_rolls_back_devices_already_suspended() {
+        let healthy = Arc::new(FailingSuspendLifecycle {
+            suspend_calls: AtomicUsize::new(0),
+            resume_calls: AtomicUsize::new(0),
+            fail: false,
+            resume_fails: false,
+        });
+        let broken = Arc::new(FailingSuspendLifecycle {
+            suspend_calls: AtomicUsize::new(0),
+            resume_calls: AtomicUsize::new(0),
+            fail: true,
+            resume_fails: false,
+        });
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register_bundle(
+                DeviceBundle::new()
+                    .with_lifecycle(broken.clone())
+                    .with_lifecycle(healthy.clone()),
+            )
+            .unwrap();
+
+        // Suspend runs in reverse registration order, so the healthy device is
+        // suspended before the broken one fails and must be resumed again.
+        assert!(devices.suspend_lifecycle_devices().is_err());
+        assert_eq!(healthy.suspend_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(healthy.resume_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(broken.suspend_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(broken.resume_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn suspend_rollback_failure_is_reported_not_masked() {
+        let healthy = Arc::new(FailingSuspendLifecycle {
+            suspend_calls: AtomicUsize::new(0),
+            resume_calls: AtomicUsize::new(0),
+            fail: false,
+            resume_fails: true,
+        });
+        let broken = Arc::new(FailingSuspendLifecycle {
+            suspend_calls: AtomicUsize::new(0),
+            resume_calls: AtomicUsize::new(0),
+            fail: true,
+            resume_fails: false,
+        });
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register_bundle(
+                DeviceBundle::new()
+                    .with_lifecycle(broken.clone())
+                    .with_lifecycle(healthy.clone()),
+            )
+            .unwrap();
+
+        // The healthy device is suspended first, then the broken device fails
+        // and the compensating resume also fails. The error must describe the
+        // failed compensation instead of pretending the lifecycle is running.
+        let error = devices.suspend_lifecycle_devices().unwrap_err();
+        assert!(matches!(
+            error,
+            DeviceManagerError::InvalidState { operation, .. }
+                if operation == "roll back device suspend"
+        ));
+        assert_eq!(healthy.suspend_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(healthy.resume_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(broken.suspend_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(broken.resume_calls.load(Ordering::Relaxed), 0);
     }
 }

@@ -119,6 +119,17 @@ pub enum CpuSharedMemoryModel {
     Unsupported,
 }
 
+/// Domain covered by AArch64 stage-one TLB maintenance for shared tables.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StageOneTlbDomain {
+    /// All CPUs that can walk a shared EL1 or EL2 stage-one table are in one
+    /// Inner Shareable domain and receive architected `TLBI ...IS` operations.
+    InnerShareable,
+    /// The platform has not established a domain that permits shared-table
+    /// break-before-make without waiting for remote software acknowledgments.
+    Unavailable,
+}
+
 bitflags::bitflags! {
     /// The flags of a physical memory region.
     #[derive(Clone, Copy)]
@@ -244,6 +255,13 @@ pub trait MemIf {
     /// generic runtime. [`CpuSharedMemoryModel::Unsupported`] restricts the
     /// runtime to a single CPU; it does not request queue-local cache flushing.
     fn cpu_shared_memory_model() -> CpuSharedMemoryModel;
+
+    /// Returns the domain reached by synchronous AArch64 stage-one TLB
+    /// maintenance for tables shared by CPUs admitted to the runtime.
+    ///
+    /// The platform must establish this before the first runtime page-table
+    /// replacement and keep it true for every CPU it subsequently starts.
+    fn stage_one_tlb_domain() -> StageOneTlbDomain;
 
     /// Returns all physical memory (RAM) ranges on the platform.
     ///

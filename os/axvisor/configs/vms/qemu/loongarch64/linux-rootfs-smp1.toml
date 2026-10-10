@@ -18,10 +18,8 @@ phys_cpu_ids = [0]
 [kernel]
 # UEFI guest starts from firmware; Linux is provided to firmware through fw_cfg.
 entry_point = 0x1c00_0000
-# The location of image: "memory" | "fs".
-image_location = "fs"
 # The file path of the kernel image.
-kernel_path = "/guest/linux/linux-qemu"
+kernel_path = "${workspace}/target/axbuild/images/qemu-loongarch64/linux/linux-qemu"
 # Fallback load address for non-firmware boot paths.
 kernel_load_addr = 0x0020_0000
 # Boot Linux through guest UEFI/ACPI, matching the LoongArch QEMU virt platform.

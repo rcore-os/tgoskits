@@ -25,15 +25,13 @@ fn virgl_capabilities() -> VfsResult<rdif_gpu::GpuCapabilities> {
     ax_gpu::capabilities().ok_or(VfsError::NotFound)
 }
 
-fn wait_completion(completion: rdif_gpu::Completion) -> VfsResult<()> {
-    loop {
-        let status = ax_gpu::with_gpu(|device| device.completion_status(completion))
-            .map_err(map_gpu_err)?
-            .map_err(map_gpu_err)?;
-        if status == rdif_gpu::CompletionStatus::Complete {
-            return Ok(());
-        }
-        crate::task::yield_now();
+/// The submit fence a completion token carries, or 0 when the driver
+/// completed synchronously and there is nothing to observe. `last_fence = 0`
+/// means "no outstanding fence" everywhere it is stored.
+fn completion_fence(completion: rdif_gpu::Completion) -> u64 {
+    match completion {
+        rdif_gpu::Completion::Pending(fence) => fence.get(),
+        rdif_gpu::Completion::Complete => 0,
     }
 }
 
@@ -372,7 +370,7 @@ impl Card0 {
         let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
             Ok(id) => id,
             Err(error) => {
-                let _ = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(device_handle));
+                let _ = release_gpu_buffer_and_drain(device_handle);
                 return Err(error);
             }
         };
@@ -480,8 +478,14 @@ impl Card0 {
     /// **Critical**: There is NO ctx_id field. The context is implicitly
     /// bound to the file descriptor.
     ///
+    /// The submit is fire-and-forget (Linux `virtio_gpu_cmd_submit`): the
+    /// ioctl enqueues the batch, delivers it with one boundary notify and
+    /// returns the fence id — it does not wait for the host. An out-fence
+    /// (`FENCE_FD_OUT`) is a real fence: the sync_file starts unsignaled and
+    /// flips when the host completed the batch.
+    ///
     /// Returns `StarryResult` rather than `VfsResult`: the `FENCE_FD_OUT`
-    /// descriptor pre-reservation can fail with `EMFILE`, which the `VfsError`
+    /// descriptor creation can fail with `EMFILE`, which the `VfsError`
     /// domain cannot represent.
     pub(super) fn handle_virtgpu_execbuffer(
         &self,
@@ -531,34 +535,36 @@ impl Card0 {
 
         // `FENCE_FD_IN` imports an existing fence fd. Only a sync_file created
         // by this driver carries one; a foreign object under that fd number is
-        // -EINVAL, matching Linux `sync_file_get_fence()` returning NULL.
+        // -EINVAL, matching Linux `sync_file_get_fence()` returning NULL. The
+        // downcast is the validation — no wait follows, because mainline
+        // `virtgpu_submit.c` `virtio_gpu_do_fence_wait()` skips the CPU wait
+        // for an in-fence from the same fence context: the dependency is
+        // already ordered by the control queue's strict FIFO (the batch that
+        // produced the fence was enqueued before this one and the host
+        // applies commands in queue order), and only a foreign context would
+        // need `dma_fence_wait(in_fence, true)`. Every sync_file this kernel
+        // exports is backed by this device's `submit_3d` fence, so every
+        // import here is same-context.
         if fence_in {
             if eb.fence_fd < 0 {
                 return Err(StarryError::InvalidInput);
             }
             let file =
                 crate::file::get_file_like(eb.fence_fd).map_err(|_| VfsError::InvalidInput)?;
-            let fence = file
-                .downcast_arc::<SyncFile>()
+            file.downcast_arc::<SyncFile>()
                 .map_err(|_| VfsError::InvalidInput)?;
-            // Every out-fence produced by this driver is already signaled by
-            // the time its fd is visible, so the dependency is satisfied. An
-            // unsignaled fence cannot be produced here; treat it as an invalid
-            // import rather than parking the submit.
-            if !fence.is_signaled() {
-                return Err(StarryError::InvalidInput);
-            }
         }
 
-        // `FENCE_FD_OUT` reserves the descriptor *before* any side effect: an
-        // fd shortage must fail the ioctl (with EMFILE) without having created
-        // a context or queued GPU work. The reservation is released
-        // automatically if a later step fails.
-        let out_fence = if fence_out {
-            let sync_file = Arc::new(SyncFile::new());
+        // Linux reserves the out-fence fd (`get_unused_fd_flags`) before the
+        // submit, so an fd shortage fails with EMFILE while the device has
+        // seen nothing of this batch. The fence id only exists after the
+        // submit, so the file is created as a placeholder here and bound to
+        // the submit's fence below, before the fd is installed.
+        let out_fd = if fence_out {
+            let sync_file = Arc::new(SyncFile::new(0));
             let created: Arc<dyn FileLike> = sync_file.clone();
             let prepared = prepare_file_like(move || Ok(created), true)?;
-            Some((prepared, sync_file))
+            Some((sync_file, prepared))
         } else {
             None
         };
@@ -595,24 +601,50 @@ impl Card0 {
         }
 
         let completion = with_virgl(|virgl| virgl.submit(ctx_id, &cmd_buf))?;
-        wait_completion(completion)?;
+        let fence_id = completion_fence(completion);
+        if let Some((sync_file, _)) = &out_fd {
+            sync_file.bind_fence_id(fence_id);
+        }
         for resource in resources {
-            resource.last_fence.store(0, Ordering::Release);
+            resource.last_fence.store(fence_id, Ordering::Release);
         }
 
-        // The submit completed synchronously: its host fence response was
-        // already consumed, so an out-fence is signaled here and the fd only
-        // becomes visible after this point. `fence_fd` is written back only
-        // for `FENCE_FD_OUT`; an IN-only request keeps its input fd.
-        if let Some((prepared, sync_file)) = out_fence {
-            sync_file.mark_signaled();
-            eb.fence_fd = prepared.fd();
-            ptr.vm_write(current, eb)
-                .map_err(|_| VfsError::BadAddress)?;
+        // Linux: `VIRTGPU_EXECBUF_FENCE_FD_OUT` wraps the submit fence in a
+        // sync_file and returns the fd (`virtgpu_execbuffer_ioctl`). The fence
+        // starts unsignaled — the submit is fire-and-forget — and signals when
+        // the host pops the fenced command, which the fence refresher and the
+        // poll/wait refresh paths observe. A synchronous completion has no
+        // fence to observe (`fence_id == 0`); its sync_file signals on the
+        // first level check.
+        if let Some((sync_file, _)) = &out_fd
+            && fence_id != 0
+        {
+            sync_file.register();
+        }
+        // `fence_fd` is written back only for `FENCE_FD_OUT`; an IN-only
+        // request keeps its input fd untouched (Linux only updates the field
+        // when it created an out-fence).
+        eb.fence_fd =
+            writeback_fence_fd(eb.fence_fd, out_fd.as_ref().map(|(_, p)| p.fd()));
+        ptr.vm_write(current, eb)
+            .map_err(|_| VfsError::BadAddress)?;
+        if let Some((_, prepared)) = out_fd {
             prepared.install();
-        } else {
-            ptr.vm_write(current, eb)
-                .map_err(|_| VfsError::BadAddress)?;
+        }
+
+        // EXECBUFFER is a fire-and-forget transaction (optional ctx_attach +
+        // submit); one boundary notify delivers it — Linux
+        // `virtio_gpu_notify()` at the ioctl end.
+        with_virgl(|virgl| {
+            virgl.ctrl_notify();
+            Ok(())
+        })?;
+
+        // The out-fence (when FENCE_FD_OUT) completes tens of µs from now;
+        // kick the refresher into burst pumping so the fence signals within
+        // one host round-trip instead of waiting for the next active tick.
+        if fence_out && fence_id != 0 {
+            kick_refresher();
         }
 
         Ok(0)
@@ -646,7 +678,11 @@ impl Card0 {
             .ok_or(VfsError::NotFound)?;
         file.attach_resource(&resource)?;
 
-        let completion = with_virgl(|virgl| virgl.transfer_to_host(rdif_gpu::Transfer3d {
+        // Intentionally unobserved completion: TRANSFER_TO_HOST writes
+        // guest data that was already in memory before the submit, so the
+        // direction is fire-and-forget (Linux does not fence it either);
+        // the completion token carries no release proof to observe.
+        let _ = with_virgl(|virgl| virgl.transfer_to_host(rdif_gpu::Transfer3d {
             context: ctx_id,
             resource: resource.device_handle,
             box_: rdif_gpu::TransferBox {
@@ -662,7 +698,13 @@ impl Card0 {
             stride: t.stride,
             layer_stride: t.layer_stride,
         }))?;
-        wait_completion(completion)?;
+        // Fire-and-forget (Linux does not fence this direction): the transfer
+        // is ordered behind everything already submitted and ahead of every
+        // later fence; deliver it at the ioctl boundary.
+        with_virgl(|virgl| {
+            virgl.ctrl_notify();
+            Ok(())
+        })?;
 
         Ok(0)
     }
@@ -693,6 +735,17 @@ impl Card0 {
             .ok_or(VfsError::NotFound)?;
         file.attach_resource(&resource)?;
 
+        // The read-back completion proof sits outside the device layer now:
+        // the transfer is submitted fire-and-forget with a fence like Linux
+        // `virtio_gpu_transfer_from_host_ioctl()`, and the ioctl still
+        // returns only after the host applied the data — but the fence wait
+        // sleeps without the control lock, so the completion pump keeps
+        // running while we block. Waiting the transfer's own fence (not a
+        // whole-queue drain) also means concurrent producers cannot starve
+        // the readback. Linux relies on dma_resv deferred destruction for
+        // memory safety instead; our unref/backing release has no dma_resv
+        // equivalent, so the fence observation remains the proof that the
+        // host no longer touches the guest memory.
         let completion = with_virgl(|virgl| virgl.transfer_from_host(rdif_gpu::Transfer3d {
             context: ctx_id,
             resource: resource.device_handle,
@@ -709,7 +762,21 @@ impl Card0 {
             stride: t.stride,
             layer_stride: t.layer_stride,
         }))?;
-        wait_completion(completion)?;
+        wait_completion_outside_lock(completion).map_err(map_gpu_err)?;
+        // Only now — after the host write completed — make the bytes
+        // CPU-visible. The sync used to run inside the device layer's inline
+        // drain; running it before observing the fence would race the host
+        // write it exists to order against. A host-side resource (a blob
+        // created with guest_blob == false) has no CPU-visible bytes at
+        // all: Linux `virtio_gpu_transfer_from_host_ioctl()` submits,
+        // returns 0 and syncs nothing for it, and so do we.
+        if let Some(backing) =
+            ax_gpu::with_gpu(|device| device.buffer_backing(resource.device_handle))
+                .and_then(core::convert::identity)
+                .map_err(map_gpu_err)?
+        {
+            backing.sync_for_cpu(0..backing.len()).map_err(map_gpu_err)?;
+        }
 
         Ok(0)
     }
@@ -718,8 +785,12 @@ impl Card0 {
     ///
     /// Linux: `virtgpu_wait_ioctl()` in `virtgpu_ioctl.c`
     ///
-    /// We implement this as a synchronous wait (the resource is always
-    /// "ready" since we process commands synchronously).
+    /// Submits are fire-and-forget, so WAIT honestly waits for the last fence
+    /// that referenced this GEM (Linux `virtio_gpu_wait_ioctl` →
+    /// `dma_resv_wait_timeout`); expiry and the NOWAIT probe both report
+    /// `-EBUSY` while the host is still working, so callers can simply retry.
+    /// Handles never submitted (dumb buffers, created-but-idle GEMs) have no
+    /// fence and report idle.
     pub(super) fn handle_virtgpu_wait(
         &self,
         file: &Card0File,
@@ -744,9 +815,37 @@ impl Card0 {
         if !has_dumb && resource.is_none() {
             return Err(VfsError::NotFound);
         }
-        // Every driver submission waits for its virtqueue completion, so a
-        // returned ioctl has already completed the last fence for this GEM.
-        let _last_fence = resource.map(|resource| resource.last_fence.load(Ordering::Acquire));
+        if let Some(resource) = &resource {
+            let last_fence = resource.last_fence.load(Ordering::Acquire);
+            if last_fence != 0 {
+                if w.flags & VIRTGPU_WAIT_NOWAIT != 0 {
+                    let done = with_virgl(|virgl| virgl.fence_completed(last_fence))?;
+                    if !done {
+                        return Err(VfsError::ResourceBusy);
+                    }
+                } else {
+                    // Linux `virtio_gpu_wait_ioctl()` waits up to 15 * HZ and
+                    // reports -EBUSY when the fence is still pending — the
+                    // same errno as the NOWAIT probe — so callers treat the
+                    // expiry as "busy, retry" instead of a hard failure. Map
+                    // the bounded-wait timeout onto that errno. The bound
+                    // itself is the driver's 5s stall-recovery window; Linux
+                    // simply trusts the host and has no shorter bound. The
+                    // wait sleeps OUTSIDE the device control lock (the old
+                    // in-driver wait spun under it), so the completion pump
+                    // keeps running while the caller blocks here.
+                    ax_gpu::virgl_wait_fence(last_fence, ax_gpu::GPU_WAIT_TIMEOUT)
+                        .map_err(map_gpu_err)
+                        .map_err(|err| {
+                            if matches!(err, VfsError::TimedOut) {
+                                VfsError::ResourceBusy
+                            } else {
+                                err
+                            }
+                        })?;
+                }
+            }
+        }
         Ok(0)
     }
 
@@ -877,7 +976,7 @@ impl Card0 {
         let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
             Ok(id) => id,
             Err(error) => {
-                let _ = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(device_handle));
+                let _ = release_gpu_buffer_and_drain(device_handle);
                 return Err(error);
             }
         };

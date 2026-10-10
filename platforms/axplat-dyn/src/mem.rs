@@ -1,13 +1,14 @@
 use ax_lazyinit::OnceLock;
 use ax_plat::mem::{
     CpuSharedMemoryModel, DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr,
-    RawRange, VirtAddr, VirtAddrRange, VirtualAddressSpaceError, VirtualAddressSpaceLayout,
+    RawRange, StageOneTlbDomain, VirtAddr, VirtAddrRange, VirtualAddressSpaceError,
+    VirtualAddressSpaceLayout,
 };
 use heapless::Vec;
 use someboot::ArchTrait;
 use somehal::mem::MemoryType;
 
-static FREE_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
+static RAM_LIST: OnceLock<Vec<RawRange, 33>> = OnceLock::new();
 static RESERVED_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
 static MMIO_LIST: OnceLock<Vec<RawRange, 16>> = OnceLock::new();
 static VIRTUAL_ADDRESS_SPACE: OnceLock<
@@ -98,13 +99,33 @@ impl MemIf for MemIfImpl {
         }
     }
 
+    fn stage_one_tlb_domain() -> StageOneTlbDomain {
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Linux-compatible AArch64 SMP boot requires all CPUs that may run
+            // the kernel to receive maintenance in one coherent domain. Ports
+            // must also place shared stage-one users in one Inner Shareable domain.
+            StageOneTlbDomain::InnerShareable
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            StageOneTlbDomain::Unavailable
+        }
+    }
+
     fn phys_ram_ranges() -> &'static [RawRange] {
-        FREE_LIST.call_once(|| {
+        RAM_LIST.call_once(|| {
             let mut list = Vec::new();
             for r in somehal::mem::memory_map() {
                 if matches!(r.memory_type, MemoryType::Free) {
                     list.push((r.physical_start, r.size_in_bytes)).unwrap();
                 }
+            }
+            if let Some(archive) = somehal::initramfs_range().filter(|range| range.reclaimable) {
+                // The archive is RAM, but the reserved list still excludes it
+                // from the boot allocator until unpacking has finished.
+                push_non_overlapping(&mut list, (archive.start, archive.end - archive.start));
             }
             list
         })

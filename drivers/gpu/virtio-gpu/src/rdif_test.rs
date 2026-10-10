@@ -1,4 +1,12 @@
 //! Protocol-backed tests for the RDIF display transaction boundary.
+//!
+//! The control queue runs in the Linux fire-and-forget model (see the `ctrl`
+//! module): the fake host below processes the *whole* accumulated batch when
+//! the driver's boundary notify kicks it, mirroring one host drain of the
+//! delivered avail ring. Device-side rejections of fire-and-forget commands
+//! are log-only, so the ambiguity these tests inject is a stalled host: a
+//! teardown drain that cannot be confirmed must reset the device before the
+//! caller releases backing.
 
 extern crate std;
 
@@ -9,17 +17,16 @@ use core::{
     num::NonZeroUsize,
     ops::Range,
     ptr::NonNull,
-    sync::atomic::{AtomicU16, Ordering},
+    sync::atomic::{AtomicU16, AtomicU64, Ordering},
 };
 use std::sync::{Mutex, Weak};
 
 use rdif_display::{
-    DisplayController, DisplayError, DisplayEvent, DisplayState, Framebuffer, OutputId,
-    ScanoutBuffer,
+    DisplayController, DisplayEvent, DisplayState, Framebuffer, OutputId, ScanoutBuffer,
 };
 use rdif_gpu::{
-    Backing, BufferDescriptor, DmaAddr, DmaDomainId, DmaSegment, GpuDevice, GpuError, PixelFormat,
-    Resource3d, VirglOps,
+    Backing, BufferDescriptor, Completion, ContextHandle, DmaAddr, DmaDomainId, DmaSegment,
+    GpuDevice, GpuError, PixelFormat, Resource3d, VirglOps,
 };
 use virtio_drivers::{
     BufferDirection, Hal, PAGE_SIZE, PhysAddr, Result as VirtIoResult,
@@ -34,7 +41,22 @@ use crate::{
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 32;
-const QUEUE_SIZE: usize = 16;
+/// Control-queue depth negotiated with the fake device; must match the
+/// driver's `CTRL_QUEUE_SIZE`.
+const QUEUE_SIZE: usize = 64;
+
+/// Clock that never advances: the bounded waits' deadlines are never reached,
+/// so a host that processes on every kick behaves like an unbounded one.
+fn frozen_clock() -> u64 {
+    0
+}
+
+/// Monotonic clock advancing one second per read, for deterministic timeout
+/// tests: the 5 s wait deadline is crossed after six reads.
+fn ticking_clock() -> u64 {
+    static NOW: AtomicU64 = AtomicU64::new(0);
+    NOW.fetch_add(1_000_000_000, Ordering::Relaxed)
+}
 
 struct TestHal;
 
@@ -130,17 +152,15 @@ struct Host {
     output_width: u32,
     events_read: u32,
     interrupt_status: InterruptStatus,
-    fail_create: bool,
-    fail_create_with_invalid_response: bool,
-    reject_unref: bool,
+    /// One-shot: the next `GET_DISPLAY_INFO` reply is rejected with
+    /// `ERR_UNSPEC` (a synchronous command, so the rejection is observable).
     fail_display_info: bool,
-    fail_set_scanout: bool,
-    omit_set_scanout_fence: bool,
-    fail_flush: bool,
-    fail_detach: bool,
-    fail_ctx_detach: bool,
-    omit_ctx_destroy_fence: bool,
-    unfenced_commands: Vec<u32>,
+    /// One-shot: the next synchronous reply omits the fence echo, so the
+    /// response cannot be attributed to the request that caused it.
+    strip_sync_fence: bool,
+    /// While set, the host never processes delivered commands: every drain
+    /// times out, which is the async model's ambiguity trigger.
+    stall: bool,
 }
 
 impl Host {
@@ -155,45 +175,11 @@ impl Host {
     fn reply(&mut self, request: &[u8]) -> Vec<u8> {
         let command = word(request, 0);
         self.commands.push(command);
-        if word(request, 4) & 1 == 0 {
-            self.unfenced_commands.push(command);
-        }
         if command == Command::RESOURCE_CREATE_2D.0 {
             self.created_formats.push(word(request, 28));
-            if self.fail_create_with_invalid_response {
-                self.fail_create_with_invalid_response = false;
-                self.reject_unref = true;
-                return self.response(request, 0xdead, 24); // Ambiguous response after CREATE.
-            }
-            if self.fail_create {
-                self.fail_create = false;
-                self.reject_unref = true;
-                return self.response(request, 0x1201, 24); // ERR_OUT_OF_MEMORY
-            }
-        }
-        if command == Command::RESOURCE_UNREF.0 && self.reject_unref {
-            return self.response(request, 0x1203, 24); // ERR_INVALID_RESOURCE_ID
         }
         if command == Command::GET_DISPLAY_INFO.0 && self.fail_display_info {
             self.fail_display_info = false;
-            return self.response(request, 0x1200, 24); // ERR_UNSPEC
-        }
-        let failed = if command == Command::SET_SCANOUT.0 && self.fail_set_scanout {
-            self.fail_set_scanout = false;
-            true
-        } else if command == Command::RESOURCE_FLUSH.0 && self.fail_flush {
-            self.fail_flush = false;
-            true
-        } else if command == Command::RESOURCE_DETACH_BACKING.0 && self.fail_detach {
-            self.fail_detach = false;
-            true
-        } else if command == Command::CTX_DETACH_RESOURCE.0 && self.fail_ctx_detach {
-            self.fail_ctx_detach = false;
-            true
-        } else {
-            false
-        };
-        if failed {
             return self.response(request, 0x1200, 24); // ERR_UNSPEC
         }
         if command == Command::GET_DISPLAY_INFO.0 {
@@ -205,74 +191,75 @@ impl Host {
             set_word(&mut reply, 24 + 8, self.output_width.max(WIDTH));
             set_word(&mut reply, 24 + 12, HEIGHT);
             set_word(&mut reply, 24 + 16, 1);
+            if self.strip_sync_fence {
+                self.strip_sync_fence = false;
+                set_word(&mut reply, 4, 0);
+            }
             return reply;
         }
         if command == Command::SET_SCANOUT.0 {
             self.scanout = word(request, 44);
         }
-        let mut reply = self.response(request, Command::OK_NODATA.0, 24);
-        if command == Command::CTX_DESTROY.0 && self.omit_ctx_destroy_fence {
-            self.omit_ctx_destroy_fence = false;
-            set_word(&mut reply, 4, 0);
-        }
-        if command == Command::SET_SCANOUT.0 && self.omit_set_scanout_fence {
-            self.omit_set_scanout_fence = false;
-            set_word(&mut reply, 4, 0);
-        }
-        reply
+        self.response(request, 0x1100 /* OK_NODATA */, 24)
     }
 
     fn process_queue(&mut self) {
+        if self.stall {
+            return;
+        }
         let queue = self.queue;
         assert_ne!(queue.descriptors, 0);
+        // The driver's boundary notify delivers a whole batch; drain every
+        // available entry, like one host main-loop pass over the avail ring.
         // SAFETY: queue_set supplies three live, aligned VirtQueue allocations.
-        // notify is synchronous; the driver cannot revoke or mutate its chain
-        // until this method publishes a used element below.
+        // notify is synchronous; the driver cannot revoke or mutate its chains
+        // until this method publishes their used elements below.
         unsafe {
-            let available_index = &*(queue.available.wrapping_add(2) as *const AtomicU16);
-            let used_index = &*(queue.used.wrapping_add(2) as *const AtomicU16);
-            let slot = (used_index.load(Ordering::Acquire) as usize) % QUEUE_SIZE;
-            assert_ne!(
-                available_index.load(Ordering::Acquire),
-                used_index.load(Ordering::Acquire)
-            );
-            let head = (queue.available.wrapping_add(4 + 2 * slot) as *const u16).read();
-            let mut index = head;
-            let mut request = Vec::new();
-            let mut response_pointer = None;
             loop {
-                let descriptor = queue.descriptors.wrapping_add(index as usize * 16);
-                let address = (descriptor as *const u64).read();
-                let length = (descriptor.wrapping_add(8) as *const u32).read() as usize;
-                let flags = (descriptor.wrapping_add(12) as *const u16).read();
-                let next = (descriptor.wrapping_add(14) as *const u16).read();
-                assert_eq!(
-                    flags & 4,
-                    0,
-                    "test queue does not negotiate indirect descriptors"
-                );
-                if flags & 2 != 0 {
-                    assert!(response_pointer.is_none());
-                    response_pointer = Some((address as *mut u8, length));
-                } else {
-                    request.extend_from_slice(core::slice::from_raw_parts(
-                        address as *const u8,
-                        length,
-                    ));
+                let available_index = &*(queue.available.wrapping_add(2) as *const AtomicU16);
+                let used_index = &*(queue.used.wrapping_add(2) as *const AtomicU16);
+                if available_index.load(Ordering::Acquire) == used_index.load(Ordering::Acquire) {
+                    return;
                 }
-                if flags & 1 == 0 {
-                    break;
+                let slot = (used_index.load(Ordering::Acquire) as usize) % QUEUE_SIZE;
+                let head = (queue.available.wrapping_add(4 + 2 * slot) as *const u16).read();
+                let mut index = head;
+                let mut request = Vec::new();
+                let mut response_pointer = None;
+                loop {
+                    let descriptor = queue.descriptors.wrapping_add(index as usize * 16);
+                    let address = (descriptor as *const u64).read();
+                    let length = (descriptor.wrapping_add(8) as *const u32).read() as usize;
+                    let flags = (descriptor.wrapping_add(12) as *const u16).read();
+                    let next = (descriptor.wrapping_add(14) as *const u16).read();
+                    assert_eq!(
+                        flags & 4,
+                        0,
+                        "test queue does not negotiate indirect descriptors"
+                    );
+                    if flags & 2 != 0 {
+                        assert!(response_pointer.is_none());
+                        response_pointer = Some((address as *mut u8, length));
+                    } else {
+                        request.extend_from_slice(core::slice::from_raw_parts(
+                            address as *const u8,
+                            length,
+                        ));
+                    }
+                    if flags & 1 == 0 {
+                        break;
+                    }
+                    index = next;
                 }
-                index = next;
+                let response = self.reply(&request);
+                let (pointer, capacity) = response_pointer.expect("response descriptor");
+                assert!(response.len() <= capacity);
+                core::ptr::copy_nonoverlapping(response.as_ptr(), pointer, response.len());
+                let used_entry = queue.used.wrapping_add(4 + 8 * slot);
+                (used_entry as *mut u32).write(u32::from(head));
+                (used_entry.wrapping_add(4) as *mut u32).write(response.len() as u32);
+                used_index.store(used_index.load(Ordering::Relaxed) + 1, Ordering::Release);
             }
-            let response = self.reply(&request);
-            let (pointer, capacity) = response_pointer.expect("response descriptor");
-            assert!(response.len() <= capacity);
-            core::ptr::copy_nonoverlapping(response.as_ptr(), pointer, response.len());
-            let used_entry = queue.used.wrapping_add(4 + 8 * slot);
-            (used_entry as *mut u32).write(u32::from(head));
-            (used_entry.wrapping_add(4) as *mut u32).write(response.len() as u32);
-            used_index.store(used_index.load(Ordering::Relaxed) + 1, Ordering::Release);
         }
     }
 }
@@ -370,10 +357,39 @@ impl Transport for TestTransport {
     }
 }
 
+fn make_device(
+    host: &Arc<Mutex<Host>>,
+    clock: fn() -> u64,
+) -> VirtIoGpuDevice<TestHal, TestTransport> {
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(host)), clock).unwrap();
+    VirtIoGpuDevice::new(
+        raw,
+        DmaDomainId::Direct,
+        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
+        None,
+    )
+    .unwrap()
+}
+
+fn resource_3d(format: u32) -> Resource3d {
+    Resource3d {
+        target: 2,
+        format,
+        bind: 0,
+        width: WIDTH,
+        height: HEIGHT,
+        depth: 1,
+        array_size: 1,
+        last_level: 0,
+        samples: 0,
+        flags: 0,
+    }
+}
+
 #[test]
 fn normal_drop_confirms_reset_before_releasing_queue() {
     let host = Arc::new(Mutex::new(Host::default()));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host)), frozen_clock).unwrap();
     assert_ne!(host.lock().unwrap().queue.descriptors, 0);
     drop(raw);
     let host = host.lock().unwrap();
@@ -381,100 +397,85 @@ fn normal_drop_confirms_reset_before_releasing_queue() {
     assert_eq!(host.queue.descriptors, 0);
 }
 
+/// D2 hardening of the synchronous path: a reply whose fence echo does not
+/// match the request cannot be attributed to that request, so the device is
+/// reset (stopping all DMA) instead of trusting the response.
 #[test]
-fn context_close_releases_attachments_after_detach_rejection() {
+fn sync_response_with_wrong_fence_resets_the_device() {
     let host = Arc::new(Mutex::new(Host {
-        device_features: 1,
+        strip_sync_fence: true,
         ..Host::default()
     }));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
+    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host)), frozen_clock).unwrap();
+    // The first output read issues the stripped-fence `GET_DISPLAY_INFO`.
+    let result = VirtIoGpuDevice::<TestHal, TestTransport>::new(
         raw,
         DmaDomainId::Direct,
         VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
         None,
-    )
-    .unwrap();
-    let backing = TestBacking::new();
-    let weak = Arc::downgrade(&backing);
-    let resource = device
-        .create_resource_3d(
-            Resource3d {
-                target: 2,
-                format: 2,
-                bind: 0,
-                width: WIDTH,
-                height: HEIGHT,
-                depth: 1,
-                array_size: 1,
-                last_level: 0,
-                samples: 0,
-                flags: 0,
-            },
-            Some(backing.clone()),
-        )
-        .unwrap();
-    drop(backing);
-    let context = device.create_context("close", 0).unwrap();
-    device.attach_resource(context, resource).unwrap();
-
-    host.lock().unwrap().fail_ctx_detach = true;
-    assert_eq!(device.detach_resource(context, resource), Err(GpuError::Io));
-    device.destroy_context(context).unwrap();
-    device.release_buffer(resource).unwrap();
-    assert!(weak.upgrade().is_none());
-    let (destroyed, unreferenced, unfenced) = {
-        let host = host.lock().unwrap();
-        (
-            host.commands.contains(&Command::CTX_DESTROY.0),
-            host.commands.contains(&Command::RESOURCE_UNREF.0),
-            host.unfenced_commands.clone(),
-        )
-    };
-    assert!(destroyed);
-    assert!(unreferenced);
-    assert!(unfenced.is_empty(), "unfenced commands: {unfenced:?}");
+    );
+    assert!(
+        result.is_err(),
+        "an unattributable reply must fail construction"
+    );
+    let host = host.lock().unwrap();
+    assert!(host.status.is_empty());
+    assert!(host.reset_readback);
+    assert_eq!(host.queue.descriptors, 0);
 }
 
 #[test]
-fn failed_context_destroy_resets_before_releasing_backing() {
+fn context_close_releases_attachments_after_drain() {
     let host = Arc::new(Mutex::new(Host {
         device_features: 1,
         ..Host::default()
     }));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
-        raw,
-        DmaDomainId::Direct,
-        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
-        None,
-    )
-    .unwrap();
+    let mut device = make_device(&host, frozen_clock);
     let backing = TestBacking::new();
     let weak = Arc::downgrade(&backing);
     let resource = device
-        .create_resource_3d(
-            Resource3d {
-                target: 2,
-                format: 2,
-                bind: 0,
-                width: WIDTH,
-                height: HEIGHT,
-                depth: 1,
-                array_size: 1,
-                last_level: 0,
-                samples: 0,
-                flags: 0,
-            },
-            Some(backing.clone()),
-        )
+        .create_resource_3d(resource_3d(2), Some(backing.clone()))
         .unwrap();
     drop(backing);
     let context = device.create_context("close", 0).unwrap();
     device.attach_resource(context, resource).unwrap();
-    device.detach_resource(context, resource).unwrap();
 
-    host.lock().unwrap().omit_ctx_destroy_fence = true;
+    device.destroy_context(context).unwrap();
+    device.release_buffer(resource).unwrap();
+    assert!(weak.upgrade().is_none());
+    let (detached, destroyed, unreferenced) = {
+        let host = host.lock().unwrap();
+        (
+            host.commands.contains(&Command::CTX_DETACH_RESOURCE.0),
+            host.commands.contains(&Command::CTX_DESTROY.0),
+            host.commands.contains(&Command::RESOURCE_UNREF.0),
+        )
+    };
+    assert!(detached);
+    assert!(destroyed);
+    assert!(unreferenced);
+}
+
+/// The async model's ambiguity trigger: a teardown drain the stalled host
+/// never confirms must reset the device (stopping all DMA) before the
+/// caller releases the attached backing.
+#[test]
+fn unconfirmed_context_destroy_resets_before_releasing_backing() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1,
+        ..Host::default()
+    }));
+    let mut device = make_device(&host, ticking_clock);
+    let backing = TestBacking::new();
+    let weak = Arc::downgrade(&backing);
+    let resource = device
+        .create_resource_3d(resource_3d(2), Some(backing.clone()))
+        .unwrap();
+    drop(backing);
+    let context = device.create_context("close", 0).unwrap();
+    device.attach_resource(context, resource).unwrap();
+
+    host.lock().unwrap().stall = true;
     assert_eq!(device.destroy_context(context), Err(GpuError::DeviceLost));
     assert!(weak.upgrade().is_none());
     let host = host.lock().unwrap();
@@ -483,16 +484,9 @@ fn failed_context_destroy_resets_before_releasing_backing() {
 }
 
 #[test]
-fn resource_creation_preserves_format_and_survives_host_rejection() {
+fn resource_creation_passes_the_format_through() {
     let host = Arc::new(Mutex::new(Host::default()));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
-        raw,
-        DmaDomainId::Direct,
-        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
-        None,
-    )
-    .unwrap();
+    let mut device = make_device(&host, frozen_clock);
     let descriptor = |format| BufferDescriptor::Image2d {
         width: WIDTH,
         height: HEIGHT,
@@ -500,61 +494,23 @@ fn resource_creation_preserves_format_and_survives_host_rejection() {
         format,
     };
 
-    host.lock().unwrap().fail_create = true;
-    let rejected_backing = TestBacking::new();
-    let rejected_weak = Arc::downgrade(&rejected_backing);
-    assert_eq!(
-        device.create_buffer(descriptor(PixelFormat::Xrgb8888), rejected_backing.clone()),
-        Err(GpuError::OutOfMemory),
-    );
-    drop(rejected_backing);
-    assert!(rejected_weak.upgrade().is_none());
-    {
-        let host = host.lock().unwrap();
-        assert!(
-            !host.status.is_empty(),
-            "host rejection must not reset the GPU"
-        );
-        assert!(!host.commands.contains(&Command::RESOURCE_UNREF.0));
-    }
-
-    host.lock().unwrap().fail_create_with_invalid_response = true;
-    let ambiguous_backing = TestBacking::new();
-    let ambiguous_weak = Arc::downgrade(&ambiguous_backing);
-    assert_eq!(
-        device.create_buffer(descriptor(PixelFormat::Xrgb8888), ambiguous_backing.clone()),
-        Err(GpuError::Io),
-    );
-    drop(ambiguous_backing);
-    assert!(ambiguous_weak.upgrade().is_none());
-    {
-        let host = host.lock().unwrap();
-        assert!(
-            !host.status.is_empty(),
-            "a confirmed missing resource cannot hold DMA"
-        );
-        assert!(host.commands.contains(&Command::RESOURCE_UNREF.0));
-    }
-
     let argb = device
         .create_buffer(descriptor(PixelFormat::Argb8888), TestBacking::new())
         .unwrap();
-    assert_eq!(host.lock().unwrap().created_formats, [2, 2, 1]);
-    host.lock().unwrap().reject_unref = false;
+    let xrgb = device
+        .create_buffer(descriptor(PixelFormat::Xrgb8888), TestBacking::new())
+        .unwrap();
     device.release_buffer(argb).unwrap();
+    device.release_buffer(xrgb).unwrap();
+    // The device-side formats arrive in ring order: B8G8R8A8 (1) for ARGB8888,
+    // B8G8R8X8 (2) for XRGB8888.
+    assert_eq!(host.lock().unwrap().created_formats, [1, 2]);
 }
 
 #[test]
 fn display_change_remains_pending_after_output_query_fails() {
     let host = Arc::new(Mutex::new(Host::default()));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
-        raw,
-        DmaDomainId::Direct,
-        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
-        None,
-    )
-    .unwrap();
+    let mut device = make_device(&host, frozen_clock);
     {
         let mut host = host.lock().unwrap();
         host.output_width = WIDTH + 1;
@@ -591,40 +547,21 @@ fn scanout_rejects_a_3d_resource_with_an_incompatible_format() {
         device_features: 1, // VIRTIO_GPU_F_VIRGL
         ..Host::default()
     }));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
-        raw,
-        DmaDomainId::Direct,
-        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
-        None,
-    )
-    .unwrap();
+    let mut device = make_device(&host, frozen_clock);
     let mode = device
         .output(OutputId::new(0))
         .unwrap()
         .preferred_mode
         .unwrap();
-    let resource = |format| Resource3d {
-        target: 2,
-        format,
-        bind: 0,
-        width: WIDTH,
-        height: HEIGHT,
-        depth: 1,
-        array_size: 1,
-        last_level: 0,
-        samples: 0,
-        flags: 0,
-    };
-    let argb = device.create_resource_3d(resource(1), None).unwrap();
+    let argb = device.create_resource_3d(resource_3d(1), None).unwrap();
     assert!(device.check(&scanout_state(argb, mode)).is_err());
-    let xrgb = device.create_resource_3d(resource(2), None).unwrap();
+    let xrgb = device.create_resource_3d(resource_3d(2), None).unwrap();
     device.check(&scanout_state(xrgb, mode)).unwrap();
     let wider = device
         .create_resource_3d(
             Resource3d {
                 width: WIDTH + 1,
-                ..resource(2)
+                ..resource_3d(2)
             },
             None,
         )
@@ -661,16 +598,9 @@ fn current_handle(device: &impl DisplayController) -> rdif_gpu::BufferHandle {
 }
 
 #[test]
-fn test_only_and_failed_commits_keep_scanout_and_backing() {
+fn test_only_and_release_keep_scanout_and_backing() {
     let host = Arc::new(Mutex::new(Host::default()));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
-        raw,
-        DmaDomainId::Direct,
-        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
-        None,
-    )
-    .unwrap();
+    let mut device = make_device(&host, frozen_clock);
     let descriptor = BufferDescriptor::Image2d {
         width: WIDTH,
         height: HEIGHT,
@@ -708,19 +638,13 @@ fn test_only_and_failed_commits_keep_scanout_and_backing() {
     device.check(&next_state).unwrap(); // TEST_ONLY
     assert_eq!(host.lock().unwrap().commands.len(), command_count);
 
-    host.lock().unwrap().fail_set_scanout = true;
-    assert!(device.commit(&next_state).is_err());
-    assert_eq!(current_handle(&device), old);
-    assert_eq!(host.lock().unwrap().scanout, old_id);
-    assert!(old_weak.upgrade().is_some());
+    // A scanout binding keeps its buffer busy.
     assert_eq!(device.release_buffer(old), Err(GpuError::Busy));
-
-    host.lock().unwrap().fail_flush = true;
-    assert!(device.commit(&next_state).is_err());
-    assert_eq!(current_handle(&device), old);
-    assert_eq!(host.lock().unwrap().scanout, old_id);
     assert!(old_weak.upgrade().is_some());
-    assert!(new_weak.upgrade().is_some());
+
+    device.commit(&next_state).unwrap();
+    assert_eq!(current_handle(&device), new);
+    assert_ne!(host.lock().unwrap().scanout, old_id);
 
     device
         .commit(&DisplayState {
@@ -734,65 +658,143 @@ fn test_only_and_failed_commits_keep_scanout_and_backing() {
     device.release_buffer(new).unwrap();
     assert!(old_weak.upgrade().is_none());
     assert!(new_weak.upgrade().is_none());
-
-    let failing_backing = TestBacking::new();
-    let failing_weak = Arc::downgrade(&failing_backing);
-    let failing = device
-        .create_buffer(descriptor, failing_backing.clone())
-        .unwrap();
-    drop(failing_backing);
-    host.lock().unwrap().fail_detach = true;
-    assert_eq!(device.release_buffer(failing), Err(GpuError::DeviceLost));
-    assert!(host.lock().unwrap().status.is_empty());
-    assert_eq!(host.lock().unwrap().queue.descriptors, 0);
-    assert!(failing_weak.upgrade().is_none());
 }
 
+/// The buffer-release drain moved to the caller: with the host stalled the
+/// release still submits and succeeds instead of timing out and resetting
+/// the device — the OS layer waits for the drain outside the device lock.
 #[test]
-fn unconfirmed_scanout_completion_resets_before_backing_release() {
+fn stalled_release_submits_without_resetting_the_device() {
     let host = Arc::new(Mutex::new(Host::default()));
-    let raw = VirtIoGpu::<TestHal, _>::new(TestTransport(Arc::clone(&host))).unwrap();
-    let mut device = VirtIoGpuDevice::new(
-        raw,
-        DmaDomainId::Direct,
-        VirtIoGpuDevice::<TestHal, TestTransport>::virtual_identity(),
-        None,
-    )
-    .unwrap();
+    let mut device = make_device(&host, ticking_clock);
     let descriptor = BufferDescriptor::Image2d {
         width: WIDTH,
         height: HEIGHT,
         stride: WIDTH * 4,
         format: PixelFormat::Xrgb8888,
     };
-    let old_backing = TestBacking::new();
-    let old_weak = Arc::downgrade(&old_backing);
-    let old = device
-        .create_buffer(descriptor, old_backing.clone())
-        .unwrap();
-    drop(old_backing);
-    let new_backing = TestBacking::new();
-    let new_weak = Arc::downgrade(&new_backing);
-    let new = device
-        .create_buffer(descriptor, new_backing.clone())
-        .unwrap();
-    drop(new_backing);
-    let mode = device
-        .output(OutputId::new(0))
-        .unwrap()
-        .preferred_mode
-        .unwrap();
-    device.commit(&scanout_state(old, mode)).unwrap();
+    let backing = TestBacking::new();
+    let weak = Arc::downgrade(&backing);
+    let buffer = device.create_buffer(descriptor, backing.clone()).unwrap();
+    drop(backing);
 
-    host.lock().unwrap().omit_set_scanout_fence = true;
+    host.lock().unwrap().stall = true;
+    // The old contract reset the device here when the inline drain timed
+    // out; the submission is fire-and-forget with a fence now, so a stalled
+    // host no longer wedges or resets on release.
+    let completion = device.release_buffer(buffer).unwrap();
+    let Completion::Pending(fence) = completion else {
+        panic!("a stalled release must report a pending fence, got {completion:?}")
+    };
+
+    // The completion proof is the caller's fence wait now: the fence has
+    // not fired under the stall, and the query succeeding proves the device
+    // was NOT reset — a lost device fails every operation fast with
+    // DeviceLost.
+    assert!(!device.fence_completed(fence.get()).unwrap());
+    assert!(weak.upgrade().is_none());
+}
+
+/// Async submit semantics: `submit` returns a pending fence token, and the
+/// completion becomes observable through `completion_status` itself — the
+/// query delivers the accumulated batch and pumps, with no service path,
+/// IRQ worker or polling loop in between.
+///
+/// Regression (registration-rollback release): the query used to be a pure
+/// level read, so the exclusive rollback wait before `MAIN_GPU` is
+/// published — where no service path exists — could never observe its own
+/// fenced UNREF complete and always burned its whole budget.
+#[test]
+fn completion_status_delivers_and_pumps_before_reporting() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1,
+        ..Host::default()
+    }));
+    let mut device = make_device(&host, frozen_clock);
+    let context = device.create_context("submit", 0).unwrap();
+    device.ctrl_notify();
+
+    let completion = device.submit(context, &[0u8; 8]).unwrap();
+    let Completion::Pending(fence) = completion else {
+        panic!("submit must return a pending fence, got {completion:?}")
+    };
+    // The first query observes the completion by itself: delivery and the
+    // completion pump happen inside it.
     assert_eq!(
-        device.commit(&scanout_state(new, mode)),
-        Err(DisplayError::DeviceLost)
+        device.completion_status(completion).unwrap(),
+        rdif_gpu::CompletionStatus::Complete
     );
-    let host = host.lock().unwrap();
-    assert!(host.status.is_empty());
-    assert!(host.reset_readback);
-    drop(host);
-    assert!(old_weak.upgrade().is_none());
-    assert!(new_weak.upgrade().is_none());
+    assert!(device.fence_completed(fence.get()).unwrap());
+
+    // A second submit waits on its own fence, which forces delivery.
+    let second = device.submit(context, &[0u8; 8]).unwrap();
+    device
+        .wait_fence(match second {
+            Completion::Pending(fence) => fence.get(),
+            Completion::Complete => panic!("submit must return a pending fence"),
+        })
+        .unwrap();
+    assert_eq!(
+        device.completion_status(second).unwrap(),
+        rdif_gpu::CompletionStatus::Complete
+    );
+}
+
+/// D3 reset×async: after the device was reset, every operation — including
+/// the fence query the sync_file refresher drives — fails fast with
+/// `DeviceLost` instead of touching the unregistered queue.
+#[test]
+fn lost_device_fails_every_operation_fast() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1,
+        ..Host::default()
+    }));
+    let mut device = make_device(&host, ticking_clock);
+    let context = device.create_context("lost", 0).unwrap();
+    device.ctrl_notify();
+    let completion = device.submit(context, &[0u8; 8]).unwrap();
+
+    // Lose the device through an unconfirmable teardown drain.
+    host.lock().unwrap().stall = true;
+    let other = device.create_context("other", 0).unwrap();
+    assert_eq!(device.destroy_context(other), Err(GpuError::DeviceLost));
+
+    let Completion::Pending(fence) = completion else {
+        panic!("submit must return a pending fence")
+    };
+    assert_eq!(
+        device.create_buffer(
+            BufferDescriptor::Image2d {
+                width: WIDTH,
+                height: HEIGHT,
+                stride: WIDTH * 4,
+                format: PixelFormat::Xrgb8888,
+            },
+            TestBacking::new(),
+        ),
+        Err(GpuError::DeviceLost)
+    );
+    assert_eq!(device.submit(context, &[0u8; 8]), Err(GpuError::DeviceLost));
+    assert_eq!(device.wait_fence(fence.get()), Err(GpuError::DeviceLost));
+    assert_eq!(
+        device.fence_completed(fence.get()),
+        Err(GpuError::DeviceLost)
+    );
+    assert_eq!(device.service_pending(), Err(GpuError::DeviceLost));
+}
+
+/// A context handle from a lost-and-forgotten table is rejected, not reused.
+#[test]
+fn stale_context_handle_is_rejected() {
+    let host = Arc::new(Mutex::new(Host {
+        device_features: 1,
+        ..Host::default()
+    }));
+    let mut device = make_device(&host, frozen_clock);
+    let context: ContextHandle = device.create_context("stale", 0).unwrap();
+    device.destroy_context(context).unwrap();
+    assert_eq!(
+        device.submit(context, &[0u8; 8]),
+        Err(GpuError::InvalidHandle)
+    );
 }

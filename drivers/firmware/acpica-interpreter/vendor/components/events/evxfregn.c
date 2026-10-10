@@ -1,0 +1,339 @@
+/******************************************************************************
+ *
+ * Module Name: evxfregn - External Interfaces, ACPI Operation Regions and
+ *                         Address Spaces.
+ *
+ *****************************************************************************/
+
+/******************************************************************************
+ *
+ * Copyright (c) 1999 - 2026, Intel Corp.
+ * SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-only
+ *
+ *****************************************************************************/
+
+#define EXPORT_ACPI_INTERFACES
+
+#include "acpi.h"
+#include "accommon.h"
+#include "acnamesp.h"
+#include "acevents.h"
+
+#define _COMPONENT          ACPI_EVENTS
+        ACPI_MODULE_NAME    ("evxfregn")
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiInstallAddressSpaceHandlerInternal
+ *
+ * PARAMETERS:  Device          - Handle for the device
+ *              SpaceId         - The address space ID
+ *              Handler         - Address of the handler
+ *              Setup           - Address of the setup function
+ *              Context         - Value passed to the handler on each access
+ *              Run_Reg         - Run _REG methods for this address space?
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Install a handler for all OpRegions of a given SpaceId.
+ *
+ * NOTE: This function should only be called after AcpiEnableSubsystem has
+ * been called. This is because any _REG methods associated with the Space ID
+ * are executed here, and these methods can only be safely executed after
+ * the default handlers have been installed and the hardware has been
+ * initialized (via AcpiEnableSubsystem.)
+ * To avoid this problem pass FALSE for Run_Reg and later on call
+ * AcpiExecuteRegMethods() to execute _REG.
+ *
+ ******************************************************************************/
+
+static ACPI_STATUS
+AcpiInstallAddressSpaceHandlerInternal (
+    ACPI_HANDLE             Device,
+    ACPI_ADR_SPACE_TYPE     SpaceId,
+    ACPI_ADR_SPACE_HANDLER  Handler,
+    ACPI_ADR_SPACE_SETUP    Setup,
+    void                    *Context,
+    BOOLEAN                 Run_Reg)
+{
+    ACPI_NAMESPACE_NODE     *Node;
+    ACPI_STATUS             Status;
+
+
+    ACPI_FUNCTION_TRACE (AcpiInstallAddressSpaceHandler);
+
+
+    /* Parameter validation */
+
+    if (!Device)
+    {
+        return_ACPI_STATUS (AE_BAD_PARAMETER);
+    }
+
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        return_ACPI_STATUS (Status);
+    }
+
+    /* Convert and validate the device handle */
+
+    Node = AcpiNsValidateHandle (Device);
+    if (!Node)
+    {
+        Status = AE_BAD_PARAMETER;
+        goto UnlockAndExit;
+    }
+
+    /* Install the handler for all Regions for this Space ID */
+
+    Status = AcpiEvInstallSpaceHandler (
+        Node, SpaceId, Handler, Setup, Context);
+    if (ACPI_FAILURE (Status))
+    {
+        goto UnlockAndExit;
+    }
+
+    /* Run all _REG methods for this address space */
+
+    if (Run_Reg)
+    {
+        AcpiEvExecuteRegMethods (Node, SpaceId, ACPI_REG_CONNECT);
+    }
+
+UnlockAndExit:
+    (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    return_ACPI_STATUS (Status);
+}
+
+ACPI_STATUS
+AcpiInstallAddressSpaceHandler (
+    ACPI_HANDLE             Device,
+    ACPI_ADR_SPACE_TYPE     SpaceId,
+    ACPI_ADR_SPACE_HANDLER  Handler,
+    ACPI_ADR_SPACE_SETUP    Setup,
+    void                    *Context)
+{
+    return AcpiInstallAddressSpaceHandlerInternal (Device, SpaceId, Handler, Setup, Context, TRUE);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiInstallAddressSpaceHandler)
+
+ACPI_STATUS
+AcpiInstallAddressSpaceHandlerNo_Reg (
+    ACPI_HANDLE             Device,
+    ACPI_ADR_SPACE_TYPE     SpaceId,
+    ACPI_ADR_SPACE_HANDLER  Handler,
+    ACPI_ADR_SPACE_SETUP    Setup,
+    void                    *Context)
+{
+    return AcpiInstallAddressSpaceHandlerInternal (Device, SpaceId, Handler, Setup, Context, FALSE);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiInstallAddressSpaceHandlerNo_Reg)
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiRemoveAddressSpaceHandler
+ *
+ * PARAMETERS:  Device          - Handle for the device
+ *              SpaceId         - The address space ID
+ *              Handler         - Address of the handler
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Remove a previously installed handler.
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AcpiRemoveAddressSpaceHandler (
+    ACPI_HANDLE             Device,
+    ACPI_ADR_SPACE_TYPE     SpaceId,
+    ACPI_ADR_SPACE_HANDLER  Handler)
+{
+    ACPI_OPERAND_OBJECT     *ObjDesc;
+    ACPI_OPERAND_OBJECT     *HandlerObj;
+    ACPI_OPERAND_OBJECT     *RegionObj;
+    ACPI_OPERAND_OBJECT     **LastObjPtr;
+    ACPI_NAMESPACE_NODE     *Node;
+    ACPI_STATUS             Status;
+
+
+    ACPI_FUNCTION_TRACE (AcpiRemoveAddressSpaceHandler);
+
+
+    /* Parameter validation */
+
+    if (!Device)
+    {
+        return_ACPI_STATUS (AE_BAD_PARAMETER);
+    }
+
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        return_ACPI_STATUS (Status);
+    }
+
+    /* Convert and validate the device handle */
+
+    Node = AcpiNsValidateHandle (Device);
+    if (!Node ||
+        ((Node->Type != ACPI_TYPE_DEVICE)    &&
+         (Node->Type != ACPI_TYPE_PROCESSOR) &&
+         (Node->Type != ACPI_TYPE_THERMAL)   &&
+         (Node != AcpiGbl_RootNode)))
+    {
+        Status = AE_BAD_PARAMETER;
+        goto UnlockAndExit;
+    }
+
+    /* Make sure the internal object exists */
+
+    ObjDesc = AcpiNsGetAttachedObject (Node);
+    if (!ObjDesc)
+    {
+        Status = AE_NOT_EXIST;
+        goto UnlockAndExit;
+    }
+
+    /* Find the address handler the user requested */
+
+    HandlerObj = ObjDesc->CommonNotify.Handler;
+    LastObjPtr = &ObjDesc->CommonNotify.Handler;
+    while (HandlerObj)
+    {
+        /* We have a handler, see if user requested this one */
+
+        if (HandlerObj->AddressSpace.SpaceId == SpaceId)
+        {
+            /* Handler must be the same as the installed handler */
+
+            if (HandlerObj->AddressSpace.Handler != Handler)
+            {
+                Status = AE_BAD_PARAMETER;
+                goto UnlockAndExit;
+            }
+
+            /* Matched SpaceId, first dereference this in the Regions */
+
+            ACPI_DEBUG_PRINT ((ACPI_DB_OPREGION,
+                "Removing address handler %p(%p) for region %s "
+                "on Device %p(%p)\n",
+                HandlerObj, Handler, AcpiUtGetRegionName (SpaceId),
+                Node, ObjDesc));
+
+            RegionObj = HandlerObj->AddressSpace.RegionList;
+
+            /* Walk the handler's region list */
+
+            while (RegionObj)
+            {
+                /*
+                 * First disassociate the handler from the region.
+                 *
+                 * NOTE: this doesn't mean that the region goes away
+                 * The region is just inaccessible as indicated to
+                 * the _REG method
+                 */
+                AcpiEvDetachRegion (RegionObj, TRUE);
+
+                /*
+                 * Walk the list: Just grab the head because the
+                 * DetachRegion removed the previous head.
+                 */
+                RegionObj = HandlerObj->AddressSpace.RegionList;
+            }
+
+            /* Remove this Handler object from the list */
+
+            *LastObjPtr = HandlerObj->AddressSpace.Next;
+
+            /* Now we can delete the handler object */
+
+            AcpiUtRemoveReference (HandlerObj);
+            goto UnlockAndExit;
+        }
+
+        /* Walk the linked list of handlers */
+
+        LastObjPtr = &HandlerObj->AddressSpace.Next;
+        HandlerObj = HandlerObj->AddressSpace.Next;
+    }
+
+    /* The handler does not exist */
+
+    ACPI_DEBUG_PRINT ((ACPI_DB_OPREGION,
+        "Unable to remove address handler %p for %s(%X), DevNode %p, obj %p\n",
+        Handler, AcpiUtGetRegionName (SpaceId), SpaceId, Node, ObjDesc));
+
+    Status = AE_NOT_EXIST;
+
+UnlockAndExit:
+    (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    return_ACPI_STATUS (Status);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiRemoveAddressSpaceHandler)
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiExecuteRegMethods
+ *
+ * PARAMETERS:  Device          - Handle for the device
+ *              SpaceId         - The address space ID
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Execute _REG for all OpRegions of a given SpaceId.
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AcpiExecuteRegMethods (
+    ACPI_HANDLE             Device,
+    ACPI_ADR_SPACE_TYPE     SpaceId)
+{
+    ACPI_NAMESPACE_NODE     *Node;
+    ACPI_STATUS             Status;
+
+
+    ACPI_FUNCTION_TRACE (AcpiExecuteRegMethods);
+
+
+    /* Parameter validation */
+
+    if (!Device)
+    {
+        return_ACPI_STATUS (AE_BAD_PARAMETER);
+    }
+
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        return_ACPI_STATUS (Status);
+    }
+
+    /* Convert and validate the device handle */
+
+    Node = AcpiNsValidateHandle (Device);
+    if (Node)
+    {
+        /* Run all _REG methods for this address space */
+
+        AcpiEvExecuteRegMethods (Node, SpaceId, ACPI_REG_CONNECT);
+    }
+    else
+    {
+        Status = AE_BAD_PARAMETER;
+    }
+
+    (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    return_ACPI_STATUS (Status);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiExecuteRegMethods)

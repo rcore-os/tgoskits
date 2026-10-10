@@ -7,21 +7,37 @@ from pathlib import Path
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_MANIFEST = WORKSPACE_ROOT / "Cargo.toml"
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
+DOCS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/docs.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
+CI_PERF_PAGES_SCRIPT = WORKSPACE_ROOT / "scripts/test/ci_perf_pages.py"
+CI_PLAN_ACTION = WORKSPACE_ROOT / ".github/actions/ci-plan/action.yml"
+CI_RESULT_ACTION = WORKSPACE_ROOT / ".github/actions/ci-result/action.yml"
 
 
 def main() -> int:
     errors: list[str] = []
+    errors.extend(check_mirrored_payload_consistency(WORKSPACE_ROOT))
     if not CI_WORKFLOW.is_file():
         errors.append("missing workflow: .github/workflows/ci.yml")
     if not REUSABLE_CHECK_MATRIX.is_file():
         errors.append(
             "missing workflow: .github/workflows/reusable-check-matrix.yml"
         )
+    if not BENCHMARKS_WORKFLOW.is_file():
+        errors.append("missing workflow: .github/workflows/benchmarks.yml")
+    if not DOCS_WORKFLOW.is_file():
+        errors.append("missing workflow: .github/workflows/docs.yml")
+    if not CI_PERF_PAGES_SCRIPT.is_file():
+        errors.append("missing script: scripts/test/ci_perf_pages.py")
+    if not CI_PLAN_ACTION.is_file():
+        errors.append("missing action: .github/actions/ci-plan/action.yml")
+    if not CI_RESULT_ACTION.is_file():
+        errors.append("missing action: .github/actions/ci-result/action.yml")
     if PR_CLEANUP_WORKFLOW.exists():
         errors.append("stale-run cleanup must reuse the Plan CI runner")
     if LEGACY_BRANCH_WORKFLOW.exists():
@@ -29,7 +45,24 @@ def main() -> int:
     if errors:
         return report(errors)
 
+    for action_path, action_name in (
+        (CI_PLAN_ACTION, "ci-plan"),
+        (CI_RESULT_ACTION, "ci-result"),
+    ):
+        action = action_path.read_text(encoding="utf-8")
+        for fragment in (
+            "python-version: '3.13'",
+            "uv run --python 3.13 --no-project python3",
+        ):
+            if fragment not in action:
+                errors.append(
+                    f"{action_name} action must use uv Python 3.13: {fragment}"
+                )
+
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    ci_plan_action = CI_PLAN_ACTION.read_text(encoding="utf-8")
+    benchmarks_workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")
+    docs_workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
     reusable_check_matrix = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
     ci_triggers = mapping_block(ci_workflow, "on", 0)
     ci_push = mapping_block(ci_triggers, "push", 2)
@@ -76,37 +109,64 @@ def main() -> int:
         errors.append(
             "pull_request paths omit workspace roots: " + ", ".join(missing_roots)
         )
+    for workflow_path in (
+        ".github/workflows/starry-apps.yml",
+        ".github/workflows/axvisor-nightly.yml",
+        ".github/workflows/benchmarks.yml",
+        ".github/workflows/docs.yml",
+    ):
+        if workflow_path not in pull_request_paths:
+            errors.append(
+                f"pull_request paths must include {workflow_path} so workflow-only "
+                "changes run CI routing validation"
+            )
     if "PR_HEAD_REPOSITORY_OWNER" in ci_workflow:
         errors.append("runner planning must not use the pull request source owner")
 
     matrix_step = named_step_block(plan_ci, "Plan check matrices")
-    for fragment, message in (
+    runner_trust_step = named_step_block(plan_ci, "Record runner trust")
+    for fragment, message, contract in (
         (
-            "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
             "runner planning must receive the pull request head repository",
+            matrix_step,
         ),
         (
             '--head-repository "$HEAD_REPOSITORY"',
             "runner planning must distinguish fork pull requests",
+            matrix_step,
         ),
         (
             "ACTOR: ${{ github.actor }}",
             "runner trust evidence must record the workflow actor",
+            runner_trust_step,
         ),
         (
             "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}",
             "runner trust evidence must record the tested head revision",
+            runner_trust_step,
         ),
         (
             'if [ "$EVENT_NAME" = "pull_request" ]',
             "runner trust evidence must evaluate pull requests explicitly",
+            runner_trust_step,
         ),
         (
             '[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]',
             "runner trust evidence must reject cross-repository heads",
+            runner_trust_step,
         ),
     ):
-        require_contains(errors, matrix_step, fragment, message)
+        if fragment not in contract:
+            legacy = {
+                "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}":
+                    "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+                '--head-repository "$HEAD_REPOSITORY"':
+                    "head-repository: ${{ github.event.pull_request.head.repo.full_name || '' }}",
+            }.get(fragment)
+            if legacy is None or legacy not in contract:
+                errors.append(message)
+
 
     route_step = named_step_block(plan_ci, "Route duplicate events")
     if not route_step:
@@ -175,7 +235,7 @@ def main() -> int:
                 "push run recheck must return its current lifecycle state",
             ),
             (
-                "queued|in_progress|waiting|requested)",
+                "queued|pending|in_progress|waiting|requested)",
                 "only known unfinished push states may suppress pull request CI",
             ),
             (
@@ -218,19 +278,30 @@ def main() -> int:
                     "push events must remain canonical and must not be disabled by PR state"
                 )
 
-    for fragment, message in (
+    for fragments, message in (
         (
-            '--repository-owner "$REPOSITORY_OWNER"',
+            ('--repository-owner "$REPOSITORY_OWNER"',
+             "repository-owner: ${{ github.repository_owner }}"),
             "runner planning must use the workflow repository owner",
         ),
         (
-            '--since-ref "$SINCE_REF"',
+            ('--since-ref "$SINCE_REF"',
+             "since-ref: ${{ steps.since.outputs.since_ref }}"),
             "the planner must receive the incremental base revision",
         ),
         (
-            '--summary-file "$GITHUB_STEP_SUMMARY"',
+            ('--summary-file "$GITHUB_STEP_SUMMARY"',
+             "GITHUB_STEP_SUMMARY"),
             "the planner must publish its impact summary",
         ),
+    ):
+        if not any(
+            fragment in matrix_step or fragment in ci_plan_action
+            for fragment in fragments
+        ):
+            errors.append(message)
+
+    for fragment, message in (
         (
             "needs.plan_ci.outputs.static_required == 'true'",
             "Preflight must follow the planner decision",
@@ -245,6 +316,7 @@ def main() -> int:
         ),
     ):
         require_contains(errors, ci_workflow, fragment, message)
+
 
     cancel_step = named_step_block(plan_ci, "Cancel older queued or running runs")
     if "steps.route.outputs.should_run" in cancel_step:
@@ -454,6 +526,295 @@ def main() -> int:
     ):
         require_contains(errors, reusable_run, fragment, message)
 
+    if "perf-data" in benchmarks_workflow:
+        errors.append("benchmark history updates must not use the legacy branch")
+    if (
+        "perf-history-axvisor" in benchmarks_workflow
+        or "perf-history-starry" in benchmarks_workflow
+    ):
+        errors.append("benchmark history must use one Pages update bridge")
+    for fragment, message in (
+        ("git push", "benchmarks must not push a legacy history branch"),
+        ("push --force", "benchmarks must not force-push a legacy history branch"),
+        ("git commit-tree", "benchmarks must not build legacy history commits"),
+        ("git mktree", "benchmarks must not build legacy history trees"),
+    ):
+        if fragment in benchmarks_workflow:
+            errors.append(message)
+
+    benchmark_jobs = mapping_block(benchmarks_workflow, "jobs", 0)
+    benchmark_updates = mapping_block(benchmark_jobs, "benchmark-updates", 2)
+    benchmark_updates_condition = mapping_block(
+        benchmark_updates.replace("if: >-", "if:"),
+        "if",
+        4,
+    )
+    benchmark_permissions = mapping_block(benchmark_updates, "permissions", 4)
+    axvisor_download = named_step_block(
+        benchmark_updates,
+        "Download AxVisor performance reports",
+    )
+    require_contains(
+        errors,
+        benchmark_permissions,
+        "actions: write",
+        "benchmark updates must dispatch the Pages workflow",
+    )
+    require_contains(
+        errors,
+        axvisor_download,
+        "if: needs.axvisor_performance.result == 'success'",
+        "AxVisor reports must only be downloaded from a successful matrix",
+    )
+    benchmark_job_ids = re.findall(
+        r"^  ([a-z0-9_-]+):$", benchmark_jobs, re.MULTILINE
+    )
+    performance_jobs = {
+        job_id
+        for job_id in benchmark_job_ids
+        if re.search(
+            r"matrix_json: \$\{\{ needs\.plan\.outputs\.[a-z0-9_-]*performance_matrix \}\}",
+            mapping_block(benchmark_jobs, job_id, 2),
+        )
+    }
+    expected_benchmark_jobs = {"plan", *performance_jobs}
+    if not performance_jobs:
+        errors.append("benchmark updates must have performance matrix producers")
+    update_needs = set(list_items_in_order(benchmark_updates, "needs", 4))
+    missing_needs = expected_benchmark_jobs - update_needs
+    if missing_needs:
+        errors.append(
+            "benchmark updates must depend on every performance producer: "
+            + ", ".join(sorted(missing_needs))
+        )
+    for matrix_name in sorted(expected_benchmark_jobs):
+        require_contains(
+            errors,
+            benchmark_updates_condition,
+            f"needs.{matrix_name}.result == 'success'",
+            f"benchmark updates must require successful {matrix_name}",
+        )
+    for fragment, message in (
+        (
+            "needs.plan.result == 'success'",
+            "benchmark updates must wait for the tested revision",
+        ),
+        (
+            "continue-on-error: true",
+            "performance report downloads must tolerate missing artifacts",
+        ),
+        (
+            "steps.updates.outputs.has_updates == 'true'",
+            "docs must not be dispatched without benchmark updates",
+        ),
+        (
+            "name: benchmark-updates",
+            "benchmark updates must be handed off as an artifact",
+        ),
+        (
+            "path: ${{ runner.temp }}/benchmark-updates/*.json",
+            "the bridge artifact must contain only this run's increments",
+        ),
+        (
+            "retention-days: 30",
+            "the benchmark bridge artifact must cover a docs recovery window",
+        ),
+        (
+            "gh workflow run docs.yml --ref dev",
+            "benchmark updates must dispatch the Pages workflow",
+        ),
+        (
+            '-f benchmark_run_id="${BENCHMARK_RUN_ID}"',
+            "docs must receive the benchmark run ID",
+        ),
+        (
+            '-f benchmark_revision="${BENCHMARK_REVISION}"',
+            "docs must receive the benchmark revision",
+        ),
+        (
+            '-f benchmark_date="${BENCHMARK_DATE}"',
+            "docs must receive the benchmark date",
+        ),
+        (
+            "INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}",
+            "AxVisor report collection must have an inclusion gate",
+        ),
+        (
+            'if [ "${INCLUDE_AXVISOR}" = "true" ]; then',
+            "AxVisor reports must only be collected from an included source",
+        ),
+    ):
+        require_contains(errors, benchmark_updates, fragment, message)
+
+    docs_permissions = mapping_block(docs_workflow, "permissions", 0)
+    for fragment, message in (
+        (
+            "actions: read",
+            "docs must read benchmark artifacts from the benchmark run",
+        ),
+        ("contents: read", "docs must keep read-only repository access"),
+        ("pages: write", "docs must remain the Pages publisher"),
+        ("id-token: write", "docs must keep the Pages deployment identity"),
+    ):
+        require_contains(errors, docs_permissions, fragment, message)
+
+    docs_triggers = mapping_block(docs_workflow, "on", 0)
+    docs_dispatch = mapping_block(docs_triggers, "workflow_dispatch", 2)
+    for input_name in (
+        "benchmark_run_id",
+        "benchmark_revision",
+        "benchmark_date",
+    ):
+        require_contains(
+            errors,
+            docs_dispatch,
+            f"{input_name}:",
+            f"docs dispatch must accept {input_name}",
+        )
+
+    docs_concurrency = mapping_block(docs_workflow, "concurrency", 0)
+    require_contains(
+        errors,
+        docs_concurrency,
+        "group: docs-pages",
+        "docs deployments must share one Pages queue",
+    )
+    require_contains(
+        errors,
+        docs_concurrency,
+        "queue: max",
+        "docs deployments must preserve queued Pages work",
+    )
+    if "cancel-in-progress" in docs_concurrency:
+        errors.append("docs deployments must not cancel queued Pages work")
+
+    docs_jobs = mapping_block(docs_workflow, "jobs", 0)
+    docs_build = mapping_block(docs_jobs, "build", 2)
+    docs_setup = named_step_block(docs_build, "Set up Pages")
+    require_contains(
+        errors,
+        docs_setup,
+        "id: pages",
+        "docs must expose the Pages base URL to the dashboard step",
+    )
+    docs_download = named_step_block(docs_build, "Download benchmark updates")
+    for fragment, message in (
+        (
+            "github.event_name == 'workflow_dispatch'",
+            "benchmark updates must only be downloaded for dispatched docs runs",
+        ),
+        (
+            "inputs.benchmark_run_id != ''",
+            "benchmark updates must identify the benchmark run",
+        ),
+        (
+            "name: benchmark-updates",
+            "docs must download the benchmark bridge artifact",
+        ),
+        (
+            "run-id: ${{ inputs.benchmark_run_id }}",
+            "docs must download the benchmark artifact from its source run",
+        ),
+        (
+            "github-token: ${{ github.token }}",
+            "cross-run artifact downloads need the workflow token",
+        ),
+    ):
+        require_contains(errors, docs_download, fragment, message)
+
+    docs_dashboard = named_step_block(docs_build, "Prepare performance dashboard")
+    for fragment, message in (
+        (
+            "PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}",
+            "docs must forward the deployed benchmark base URL to the script",
+        ),
+        (
+            "BENCHMARK_UPDATES: ${{ runner.temp }}/benchmark-updates",
+            "docs must forward the benchmark updates directory",
+        ),
+        (
+            "python3 scripts/test/ci_perf_pages.py",
+            "docs must delegate dashboard preparation to the script",
+        ),
+        (
+            '--base-url "${PAGES_BASE_URL}"',
+            "docs must pass the deployed benchmark base URL",
+        ),
+        (
+            "--output-dir docs/build",
+            "docs must pass the Pages output directory",
+        ),
+        (
+            '--updates-dir "${BENCHMARK_UPDATES}"',
+            "docs must pass the benchmark updates directory",
+        ),
+        (
+            '--benchmark-run-id "${BENCHMARK_RUN_ID}"',
+            "docs must pass the benchmark run ID",
+        ),
+        (
+            '--benchmark-revision "${BENCHMARK_REVISION}"',
+            "docs must pass the benchmark revision",
+        ),
+        (
+            '--benchmark-date "${BENCHMARK_DATE}"',
+            "docs must pass the benchmark date",
+        ),
+    ):
+        require_contains(errors, docs_dashboard, fragment, message)
+    for fragment, message in (
+        ("curl ", "dashboard fetch logic must live in ci_perf_pages.py"),
+        (
+            "--header 'Cache-Control: no-cache'",
+            "published benchmark reads must live in ci_perf_pages.py",
+        ),
+        (
+            "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "the cache buster must live in ci_perf_pages.py",
+        ),
+        (
+            "git fetch --depth=1 origin perf-data",
+            "legacy bootstrap must live in ci_perf_pages.py",
+        ),
+        (
+            "git show FETCH_HEAD:history.json",
+            "legacy bootstrap must live in ci_perf_pages.py",
+        ),
+        (
+            "::error::Failed to fetch",
+            "benchmark fetch failures must live in ci_perf_pages.py",
+        ),
+        (
+            "::error::Benchmark updates require published or legacy dashboard data",
+            "the history seed check must live in ci_perf_pages.py",
+        ),
+        (
+            "::error::Unexpected published dashboard state",
+            "the published state check must live in ci_perf_pages.py",
+        ),
+    ):
+        if fragment in docs_dashboard:
+            errors.append(message)
+    if "perf-data" in docs_workflow:
+        errors.append(
+            "the frozen legacy branch bootstrap must live in ci_perf_pages.py"
+        )
+    for fragment, message in (
+        ("git push", "docs must not push a legacy history branch"),
+        ("push --force", "docs must not force-push a legacy history branch"),
+        ("git commit-tree", "docs must not build legacy history commits"),
+        ("git mktree", "docs must not build legacy history trees"),
+    ):
+        if fragment in docs_workflow:
+            errors.append(message)
+    docs_deploy = mapping_block(docs_jobs, "deploy", 2)
+    require_contains(
+        errors,
+        docs_deploy,
+        "uses: actions/deploy-pages@v5",
+        "docs must keep the existing Pages deploy job",
+    )
+
     return report(errors)
 
 
@@ -464,6 +825,99 @@ def workspace_source_roots() -> set[str]:
     package_paths.extend(re.findall(r'\bpath\s*=\s*"([^"]+)"', manifest))
     return {Path(package_path).parts[0] for package_path in package_paths}
 
+
+def check_mirrored_payload_consistency(workspace_root: Path) -> list[str]:
+    """Check every shared Starry smoke/benchmark payload without a case list."""
+    smoke_root = workspace_root / "apps/starry"
+    benchmark_root = workspace_root / "benchmarks/starry"
+    errors: list[str] = []
+    if not smoke_root.is_dir():
+        errors.append(
+            f"missing mirrored payload root: {smoke_root.relative_to(workspace_root)}"
+        )
+    if not benchmark_root.is_dir():
+        errors.append(
+            f"missing mirrored payload root: {benchmark_root.relative_to(workspace_root)}"
+        )
+    if errors:
+        return errors
+
+    def is_build_file(relative: Path) -> bool:
+        return relative.name.startswith("build-") and relative.suffix == ".toml"
+
+    def is_variant_file(relative: Path) -> bool:
+        return (
+            relative.name == "README.md"
+            or relative.name.startswith("RESULTS-")
+            or (relative.name.startswith("qemu-") and relative.suffix == ".toml")
+            or is_build_file(relative)
+        )
+
+    smoke_dirs = {path.relative_to(smoke_root) for path in smoke_root.rglob("*") if path.is_dir()}
+    benchmark_dirs = {
+        path.relative_to(benchmark_root) for path in benchmark_root.rglob("*") if path.is_dir()
+    }
+    shared_dirs = sorted(smoke_dirs & benchmark_dirs, key=lambda path: len(path.parts), reverse=True)
+    leaf_shared_dirs: list[Path] = []
+    for shared_dir in shared_dirs:
+        if any(shared_dir in selected.parents for selected in leaf_shared_dirs):
+            continue
+        leaf_shared_dirs.append(shared_dir)
+
+    for shared_dir in leaf_shared_dirs:
+        smoke_dir = smoke_root / shared_dir
+        benchmark_dir = benchmark_root / shared_dir
+        smoke_files = {
+            path.relative_to(smoke_dir)
+            for path in smoke_dir.rglob("*")
+            if path.is_file() and not is_variant_file(path.relative_to(smoke_dir))
+        }
+        benchmark_files = {
+            path.relative_to(benchmark_dir)
+            for path in benchmark_dir.rglob("*")
+            if path.is_file() and not is_variant_file(path.relative_to(benchmark_dir))
+        }
+        for relative in sorted(smoke_files | benchmark_files):
+            smoke_path = smoke_dir / relative
+            benchmark_path = benchmark_dir / relative
+            if not smoke_path.is_file():
+                errors.append(
+                    "missing mirrored benchmark payload file: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()}"
+                )
+                continue
+            if not benchmark_path.is_file():
+                errors.append(
+                    "missing mirrored benchmark payload file: "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()}"
+                )
+                continue
+            if smoke_path.read_bytes() != benchmark_path.read_bytes():
+                errors.append(
+                    "mirrored benchmark payload files must remain byte-identical: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+                )
+        smoke_build_files = {
+            path.relative_to(smoke_dir)
+            for path in smoke_dir.rglob("*")
+            if path.is_file() and is_build_file(path.relative_to(smoke_dir))
+        }
+        benchmark_build_files = {
+            path.relative_to(benchmark_dir)
+            for path in benchmark_dir.rglob("*")
+            if path.is_file() and is_build_file(path.relative_to(benchmark_dir))
+        }
+        for relative in sorted(smoke_build_files & benchmark_build_files):
+            smoke_path = smoke_dir / relative
+            benchmark_path = benchmark_dir / relative
+            if smoke_path.read_bytes() != benchmark_path.read_bytes():
+                errors.append(
+                    "mirrored benchmark build files must remain byte-identical: "
+                    f"{smoke_path.relative_to(workspace_root).as_posix()} and "
+                    f"{benchmark_path.relative_to(workspace_root).as_posix()} differ"
+                )
+    return errors
 
 def mapping_block(text: str, key: str, indent: int) -> str:
     marker = f"{' ' * indent}{key}:"

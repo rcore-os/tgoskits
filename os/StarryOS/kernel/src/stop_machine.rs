@@ -13,7 +13,7 @@ use ax_runtime::{
     },
 };
 
-use crate::sync::{IrqMutex, Mutex, NoPreemptIrqSave, PreemptGuard};
+use crate::sync::{Mutex, PreemptGuard, PreemptIrqSaveGuard, RawSpinLock};
 
 static STOP_MACHINE_LOCK: Mutex<()> = Mutex::new(());
 static CPU_STOPPERS: LazyInit<Vec<Arc<CpuStopper>>> = LazyInit::new();
@@ -47,20 +47,20 @@ impl StopMachineState {
 }
 
 struct CpuStopper {
-    command: IrqMutex<Option<Arc<StopMachineState>>>,
+    command: RawSpinLock<Option<Arc<StopMachineState>>>,
     ready: WaitQueue,
 }
 
 impl CpuStopper {
     const fn new() -> Self {
         Self {
-            command: IrqMutex::new(None),
+            command: RawSpinLock::new(None),
             ready: WaitQueue::new(),
         }
     }
 
     fn submit(&self, state: Arc<StopMachineState>) {
-        let replaced = self.command.lock().replace(state);
+        let replaced = self.command.lock_irqsave().replace(state);
         assert!(
             replaced.is_none(),
             "CPU stopper accepted overlapping commands"
@@ -70,10 +70,11 @@ impl CpuStopper {
 
     fn run(&self) -> ! {
         loop {
-            self.ready.wait_until(|| self.command.lock().is_some());
+            self.ready
+                .wait_until(|| self.command.lock_irqsave().is_some());
             let state = self
                 .command
-                .lock()
+                .lock_irqsave()
                 .take()
                 .expect("notified CPU stopper lost its command");
             park_remote_cpu(&state);
@@ -90,7 +91,7 @@ fn park_remote_cpu(state: &StopMachineState) {
         spin_loop();
     }
 
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     state.parked.fetch_add(1, Ordering::Release);
     while state.stage.load(Ordering::Acquire) == STAGE_DISABLE_IRQ {
         spin_loop();
@@ -138,7 +139,7 @@ where
     let total_cpus = cpu_num();
 
     if total_cpus <= 1 {
-        let _local_stop = NoPreemptIrqSave::new();
+        let _local_stop = PreemptIrqSaveGuard::new();
         let result = action();
         per_cpu_sync();
         return result;
@@ -174,7 +175,7 @@ where
     }
 
     {
-        let _local_stop = NoPreemptIrqSave::new();
+        let _local_stop = PreemptIrqSaveGuard::new();
         state.stage.store(STAGE_DISABLE_IRQ, Ordering::Release);
         while state.parked.load(Ordering::Acquire) != remote_cpu_count {
             spin_loop();

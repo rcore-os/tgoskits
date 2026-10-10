@@ -3,10 +3,10 @@
 mod guest_memory;
 mod plan;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arm_vgic::*;
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::*;
 use axdevice_base::{MessageInterruptController, VirtualInterruptController};
 pub(super) use plan::VgicConstructionPlan;
@@ -15,7 +15,10 @@ use super::{
     gic::{self, AssignedSpiRoutes},
     vtimer,
 };
-use crate::{irq::deferred::*, machine::*, *};
+use crate::{
+    AxVmResult, RunId, guest_memory::GuestMemoryPort, machine::*, services::RunSignals,
+    sync::MutexExt, *,
+};
 
 /// vCPU-local VGIC resources derived from the machine timer profile.
 pub(crate) struct Aarch64VcpuIrqBinding {
@@ -45,11 +48,27 @@ enum RuntimePhase {
 
 /// VM-owned control-plane state that is deliberately separate from IRQ state.
 pub(crate) struct Aarch64VgicRuntime {
+    vm_id: VMId,
     core: Arc<VgicCore>,
+    /// Native delivery/CPU-interface port. Hardware-facing holders (the run
+    /// entry, vCPU backends, and the fixed host-IRQ route slots) keep this
+    /// instead of the full `VgicCore`, so they never transitively retain the
+    /// sleepable software-ITS state.
+    native: GicV3Native,
     backend: Arc<gic::AxvmVgicBackend>,
-    kick: Arc<DeferredVcpuKick>,
+    /// Task-only software-ITS guest-memory adapter. It stays out of the hardware
+    /// entry so the sleepable guest-memory capability is reachable only from the
+    /// run's task-context GITS write path.
+    its_memory: Option<Arc<guest_memory::AxvmGuestMemory>>,
     host_virtual_timer_intid: u32,
-    phase: IrqSafeMutex<RuntimePhase>,
+    /// Lifecycle transitions run on the control owner and may take sleepable
+    /// host locks, so the transition phase uses an ordinary task-context mutex.
+    phase: Mutex<RuntimePhase>,
+    /// Run-bound kick target published before any vCPU can run. It is read from
+    /// the VGIC host-IRQ wake path, so the value uses a raw lock and the guard
+    /// is released before the deferred kick is published. The wake callback
+    /// shares only this raw slot, never the full runtime.
+    run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
 }
 
 impl Aarch64VgicRuntime {
@@ -57,19 +76,83 @@ impl Aarch64VgicRuntime {
         vm_id: usize,
         core: Arc<VgicCore>,
         backend: Arc<gic::AxvmVgicBackend>,
+        its_memory: Option<Arc<guest_memory::AxvmGuestMemory>>,
         host_virtual_timer_intid: u32,
     ) -> Arc<Self> {
+        let native = core.controller().native_port();
         Arc::new(Self {
+            vm_id,
             core,
+            native,
             backend,
-            kick: DeferredVcpuKick::new(vm_id),
+            its_memory,
             host_virtual_timer_intid,
-            phase: IrqSafeMutex::new(RuntimePhase::Inactive),
+            phase: Mutex::new(RuntimePhase::Inactive),
+            run: Arc::new(RawSpinLock::new(None)),
         })
     }
 
     pub(crate) fn core(&self) -> &Arc<VgicCore> {
         &self.core
+    }
+
+    pub(crate) fn native(&self) -> &GicV3Native {
+        &self.native
+    }
+
+    /// Binds the run's guest-memory capability into the task-only ITS adapter.
+    ///
+    /// Task-context only and exactly once per run. A VM without an ITS has no
+    /// adapter, so the capability is simply unused.
+    pub(crate) fn bind_task_memory(&self, memory: GuestMemoryPort) -> AxVmResult {
+        match &self.its_memory {
+            Some(adapter) => adapter.bind(memory),
+            None => Ok(()),
+        }
+    }
+
+    /// Seals this runtime to exactly one execution period.
+    ///
+    /// The binding records the run identity, so a stale port or a retired run
+    /// can never re-target the controller of a newer run.
+    pub(crate) fn bind_run(&self, signals: &Arc<RunSignals>) -> AxVmResult {
+        let conflict = {
+            let mut bound = self.run.lock_irqsave();
+            match bound.as_ref() {
+                Some(existing) if existing.run_id() == signals.run_id() => false,
+                Some(_) => true,
+                None => {
+                    *bound = Some(signals.clone());
+                    false
+                }
+            }
+        };
+        if conflict {
+            // The raw guard is released before the error allocates a message.
+            return Err(AxVmError::resource_conflict(
+                "bind AArch64 VGIC run",
+                "the runtime is already bound to another execution period",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Clears the binding only when `run` still owns it.
+    pub(crate) fn unbind_run(&self, run: RunId) -> AxVmResult {
+        // The retired target is dropped after the raw guard is released.
+        let removed = {
+            let mut bound = self.run.lock_irqsave();
+            if bound
+                .as_ref()
+                .is_some_and(|signals| signals.run_id() == run)
+            {
+                bound.take()
+            } else {
+                None
+            }
+        };
+        drop(removed);
+        Ok(())
     }
 
     pub(crate) fn attach_vcpu(
@@ -80,7 +163,8 @@ impl Aarch64VgicRuntime {
         let gic = self.core.attach_vcpu(
             vcpu_id,
             Arc::new(Aarch64VcpuWake {
-                kick: self.kick.clone(),
+                run: Arc::clone(&self.run),
+                vm_id: self.vm_id,
                 vcpu_id,
             }),
         )?;
@@ -105,7 +189,7 @@ impl Aarch64VgicRuntime {
     /// Claims host sources and publishes their fixed hard-IRQ routes.
     pub(crate) fn activate(&self) -> AxVmResult {
         {
-            let mut phase = self.phase.lock();
+            let mut phase = self.phase.lock_unpoisoned();
             match &*phase {
                 RuntimePhase::Inactive => *phase = RuntimePhase::Activating,
                 RuntimePhase::Active(_) => return Ok(()),
@@ -119,63 +203,43 @@ impl Aarch64VgicRuntime {
         }
 
         if let Err(error) = vtimer::ensure_host_timer_ppi(self.host_virtual_timer_intid) {
-            *self.phase.lock() = RuntimePhase::Inactive;
+            *self.phase.lock_unpoisoned() = RuntimePhase::Inactive;
             return Err(error);
         }
 
-        if let Err(error) = self.kick.start() {
-            *self.phase.lock() = RuntimePhase::Inactive;
-            return Err(error);
-        }
         if let Err(error) = self.core.bind_assigned_spis() {
             let primary = AxVmError::interrupt("bind assigned physical SPIs", error);
-            let rollback = self.kick.stop();
-            *self.phase.lock() = RuntimePhase::Inactive;
-            return match rollback {
-                Ok(()) => Err(primary),
-                Err(rollback) => Err(AxVmError::lifecycle_rollback(
-                    "activate AArch64 VGIC runtime",
-                    primary,
-                    rollback,
-                )),
-            };
+            *self.phase.lock_unpoisoned() = RuntimePhase::Inactive;
+            return Err(primary);
         }
 
-        let routes = match gic::register_assigned_spi_routes(&self.core) {
+        let routes = match gic::register_assigned_spi_routes(
+            &self.native,
+            self.core.config().assigned_spis(),
+        ) {
             Ok(routes) => routes,
             Err(error) => {
                 let primary = AxVmError::interrupt("register assigned physical SPI routes", error);
                 let unbind = self.core.unbind_assigned_spis();
-                let stop = self.kick.stop();
-                *self.phase.lock() = RuntimePhase::Inactive;
-                return match (unbind, stop) {
-                    (Ok(()), Ok(())) => Err(primary),
-                    (Err(rollback), Ok(())) => Err(AxVmError::lifecycle_rollback(
+                *self.phase.lock_unpoisoned() = RuntimePhase::Inactive;
+                return match unbind {
+                    Ok(()) => Err(primary),
+                    Err(rollback) => Err(AxVmError::lifecycle_rollback(
                         "activate AArch64 VGIC runtime",
                         primary,
                         rollback,
-                    )),
-                    (Ok(()), Err(rollback)) => Err(AxVmError::lifecycle_rollback(
-                        "activate AArch64 VGIC runtime",
-                        primary,
-                        rollback,
-                    )),
-                    (Err(unbind), Err(stop)) => Err(AxVmError::lifecycle_rollback(
-                        "activate AArch64 VGIC runtime",
-                        primary,
-                        std::format_args!("{unbind}; {stop}"),
                     )),
                 };
             }
         };
-        *self.phase.lock() = RuntimePhase::Active(routes);
+        *self.phase.lock_unpoisoned() = RuntimePhase::Active(routes);
         Ok(())
     }
 
     /// Removes routes only after every physical delivery is quiescent.
     pub(crate) fn deactivate(&self) -> AxVmResult {
         let routes = {
-            let mut phase = self.phase.lock();
+            let mut phase = self.phase.lock_unpoisoned();
             match std::mem::replace(&mut *phase, RuntimePhase::Deactivating) {
                 RuntimePhase::Inactive => {
                     *phase = RuntimePhase::Inactive;
@@ -195,7 +259,7 @@ impl Aarch64VgicRuntime {
         routes.quiesce();
         if let Err(error) = self.core.teardown_assigned_spis() {
             routes.resume();
-            *self.phase.lock() = RuntimePhase::Active(routes);
+            *self.phase.lock_unpoisoned() = RuntimePhase::Active(routes);
             return Err(AxVmError::interrupt(
                 "tear down assigned physical SPIs",
                 error,
@@ -203,11 +267,10 @@ impl Aarch64VgicRuntime {
         }
 
         // Dropping the route handles removes the static hard-IRQ lookup before
-        // the task-context kick worker is stopped.
+        // the run binding is released by the control owner.
         drop(routes);
-        let stop = self.kick.stop();
-        *self.phase.lock() = RuntimePhase::Inactive;
-        stop
+        *self.phase.lock_unpoisoned() = RuntimePhase::Inactive;
+        Ok(())
     }
 }
 
@@ -225,17 +288,18 @@ impl Drop for Aarch64VgicRuntime {
 }
 
 struct Aarch64VcpuWake {
-    kick: Arc<DeferredVcpuKick>,
+    run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
+    vm_id: VMId,
     vcpu_id: usize,
 }
 
 impl GicV3VcpuWake for Aarch64VcpuWake {
     fn wake(&self) -> VgicResult {
-        if crate::vcpu::with_current_vcpu::<crate::arch::current::ArchVCpu, _>(|current| {
-            current.is_some_and(|vcpu| {
-                vcpu.vm_id() == self.kick.vm_id()
-                    && vcpu.id() == self.vcpu_id
-                    && vcpu.entry_loop_is_active()
+        if crate::vcpu::with_current_execution(|current| {
+            current.is_some_and(|execution| {
+                execution.vm_id() == self.vm_id
+                    && execution.vcpu_id() == self.vcpu_id
+                    && execution.entry_loop_is_active()
             })
         }) {
             // Canonical VGIC state was published before this callback. The
@@ -246,13 +310,34 @@ impl GicV3VcpuWake for Aarch64VcpuWake {
             // Nonlocal and control-plane callbacks retain the deferred path.
             return Ok(());
         }
-        self.kick
-            .publish_from_irq(self.vcpu_id)
-            .map_err(|error| VgicError::Backend {
-                operation: "publish deferred AArch64 vCPU kick",
-                detail: std::format!("{error}"),
-            })
+        publish_irq_kick(&self.run, self.vcpu_id)
     }
+}
+
+/// Publishes one deferred vCPU kick from a hard-IRQ or device callback.
+///
+/// The raw guard is released before the deferred worker is notified.
+fn publish_irq_kick(run: &RawSpinLock<Option<Arc<RunSignals>>>, vcpu_id: usize) -> VgicResult {
+    let signals = run.lock_irqsave().clone();
+    let Some(signals) = signals else {
+        return Err(VgicError::Backend {
+            operation: "kick AArch64 vCPU from IRQ",
+            source: arm_vgic::GicV3BackendError::new(
+                "kick AArch64 vCPU from IRQ",
+                "the VGIC runtime is not bound to a run",
+            ),
+        });
+    };
+    signals
+        .kick_from_irq(vcpu_id)
+        .map_err(|_| VgicError::Backend {
+            operation: "kick AArch64 vCPU from IRQ",
+            source: arm_vgic::GicV3BackendError::value(
+                "kick AArch64 vCPU from IRQ",
+                "the bound signal target rejected publication",
+                vcpu_id as u64,
+            ),
+        })
 }
 
 struct Aarch64VgicFactory {
@@ -351,16 +436,25 @@ fn create_runtime(
     plan: &Arc<VgicConstructionPlan>,
 ) -> AxVmResult<Arc<Aarch64VgicRuntime>> {
     let backend = plan.backend();
-    let guest_memory = matches!(
+    let its_memory = matches!(
         plan.config(),
         ArmVgicConfig::V3(config) if !config.its().is_empty()
     )
-    .then(|| Arc::new(guest_memory::AxvmGuestMemory::new(vm_id)) as Arc<dyn arm_vgic::GuestMemory>);
+    .then(|| Arc::new(guest_memory::AxvmGuestMemory::new()));
+    let guest_memory: Option<Arc<dyn arm_vgic::GuestMemory>> = its_memory
+        .clone()
+        .map(|memory| memory as Arc<dyn arm_vgic::GuestMemory>);
     let core = Arc::new(
         VgicCore::new_with_guest_memory(plan.config().clone(), backend.clone(), guest_memory)
             .map_err(|error| AxVmError::interrupt("create AArch64 virtual GIC", error))?,
     );
-    let runtime = Aarch64VgicRuntime::new(vm_id, core, backend, plan.host_virtual_timer_intid());
+    let runtime = Aarch64VgicRuntime::new(
+        vm_id,
+        core,
+        backend,
+        its_memory,
+        plan.host_virtual_timer_intid(),
+    );
 
     Ok(runtime)
 }

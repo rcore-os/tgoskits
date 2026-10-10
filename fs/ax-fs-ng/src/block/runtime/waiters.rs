@@ -12,7 +12,7 @@ use atomic_waker::AtomicWaker;
 
 use crate::{
     BlockResult,
-    os::{BlockNotification, runtime_ops, sync::IrqMutex},
+    os::{BlockNotification, runtime_ops, sync::RawSpinLock},
 };
 
 struct AsyncWaiterState {
@@ -21,7 +21,7 @@ struct AsyncWaiterState {
 }
 
 struct AsyncWaiterInner {
-    waiters: IrqMutex<Vec<Arc<AsyncWaiterState>>>,
+    waiters: RawSpinLock<Vec<Arc<AsyncWaiterState>>>,
 }
 
 /// A lock-safe asynchronous waiter registry.
@@ -39,7 +39,7 @@ impl AsyncWaiters {
     pub(super) fn new() -> Self {
         Self {
             inner: Arc::new(AsyncWaiterInner {
-                waiters: IrqMutex::new(Vec::new()),
+                waiters: RawSpinLock::new(Vec::new()),
             }),
         }
     }
@@ -49,7 +49,7 @@ impl AsyncWaiters {
             notified: core::sync::atomic::AtomicBool::new(false),
             waker: AtomicWaker::new(),
         });
-        self.inner.waiters.lock().push(Arc::clone(&state));
+        self.inner.waiters.lock_irqsave().push(Arc::clone(&state));
         AsyncWaiter {
             inner: Arc::clone(&self.inner),
             state,
@@ -57,7 +57,7 @@ impl AsyncWaiters {
     }
 
     pub(super) fn notify_all(&self) {
-        let waiters = core::mem::take(&mut *self.inner.waiters.lock());
+        let waiters = core::mem::take(&mut *self.inner.waiters.lock_irqsave());
         for waiter in waiters {
             waiter.notified.store(true, Ordering::Release);
             waiter.waker.wake();
@@ -67,7 +67,7 @@ impl AsyncWaiters {
 
 impl AsyncWaiter {
     fn remove(&self) {
-        let mut waiters = self.inner.waiters.lock();
+        let mut waiters = self.inner.waiters.lock_irqsave();
         if let Some(index) = waiters
             .iter()
             .position(|waiter| Arc::ptr_eq(waiter, &self.state))
@@ -105,17 +105,17 @@ impl Drop for AsyncWaiter {
 /// their state transition first and then wake the registered tasks. Registering
 /// before rechecking the predicate closes the transition-to-sleep race.
 pub(super) struct TaskWaiters {
-    notifications: IrqMutex<Vec<Arc<dyn BlockNotification>>>,
+    notifications: RawSpinLock<Vec<Arc<dyn BlockNotification>>>,
     #[cfg(test)]
-    registration_hook: IrqMutex<Option<Box<dyn FnOnce() + Send>>>,
+    registration_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl TaskWaiters {
     pub(super) const fn new() -> Self {
         Self {
-            notifications: IrqMutex::new(Vec::new()),
+            notifications: RawSpinLock::new(Vec::new()),
             #[cfg(test)]
-            registration_hook: IrqMutex::new(None),
+            registration_hook: RawSpinLock::new(None),
         }
     }
 
@@ -125,7 +125,9 @@ impl TaskWaiters {
     /// state whose publisher calls [`notify_all`](Self::notify_all).
     pub(super) fn wait_while(&self, should_wait: impl FnOnce() -> bool) -> BlockResult {
         let notification = runtime_ops()?.notification();
-        self.notifications.lock().push(Arc::clone(&notification));
+        self.notifications
+            .lock_irqsave()
+            .push(Arc::clone(&notification));
         #[cfg(test)]
         self.run_registration_hook();
 
@@ -139,7 +141,7 @@ impl TaskWaiters {
     /// Wakes one registered task.
     pub(super) fn notify_one(&self) {
         let notification = {
-            let mut notifications = self.notifications.lock();
+            let mut notifications = self.notifications.lock_irqsave();
             if notifications.is_empty() {
                 None
             } else {
@@ -153,14 +155,14 @@ impl TaskWaiters {
 
     /// Wakes every task registered before the associated state publication.
     pub(super) fn notify_all(&self) {
-        let notifications = core::mem::take(&mut *self.notifications.lock());
+        let notifications = core::mem::take(&mut *self.notifications.lock_irqsave());
         for notification in notifications {
             notification.notify();
         }
     }
 
     fn remove(&self, notification: &Arc<dyn BlockNotification>) {
-        let mut notifications = self.notifications.lock();
+        let mut notifications = self.notifications.lock_irqsave();
         if let Some(index) = notifications
             .iter()
             .position(|candidate| Arc::ptr_eq(candidate, notification))
@@ -171,14 +173,14 @@ impl TaskWaiters {
 
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        self.notifications.lock().len()
+        self.notifications.lock_irqsave().len()
     }
 
     #[cfg(test)]
     pub(super) fn set_registration_hook(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .registration_hook
-            .lock()
+            .lock_irqsave()
             .replace(alloc::boxed::Box::new(hook));
         assert!(
             previous.is_none(),
@@ -188,7 +190,7 @@ impl TaskWaiters {
 
     #[cfg(test)]
     fn run_registration_hook(&self) {
-        let hook = self.registration_hook.lock().take();
+        let hook = self.registration_hook.lock_irqsave().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -206,19 +208,19 @@ struct CapacityWaiter {
 /// whose requests can fit in the newly available capacity. A producer that
 /// still cannot fit hands unused capacity to smaller waiters before sleeping.
 pub(super) struct CapacityWaiters {
-    waiters: IrqMutex<Vec<CapacityWaiter>>,
+    waiters: RawSpinLock<Vec<CapacityWaiter>>,
     count: AtomicUsize,
     #[cfg(test)]
-    registration_hook: IrqMutex<Option<Box<dyn FnOnce() + Send>>>,
+    registration_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CapacityWaiters {
     pub(super) const fn new() -> Self {
         Self {
-            waiters: IrqMutex::new(Vec::new()),
+            waiters: RawSpinLock::new(Vec::new()),
             count: AtomicUsize::new(0),
             #[cfg(test)]
-            registration_hook: IrqMutex::new(None),
+            registration_hook: RawSpinLock::new(None),
         }
     }
 
@@ -229,7 +231,7 @@ impl CapacityWaiters {
     ) -> BlockResult {
         let notification = runtime_ops()?.notification();
         {
-            let mut waiters = self.waiters.lock();
+            let mut waiters = self.waiters.lock_irqsave();
             waiters.push(CapacityWaiter {
                 required,
                 notification: Arc::clone(&notification),
@@ -257,7 +259,7 @@ impl CapacityWaiters {
         }
 
         let notifications = {
-            let mut waiters = self.waiters.lock();
+            let mut waiters = self.waiters.lock_irqsave();
             let mut notifications = Vec::new();
             let mut index = 0;
             while index < waiters.len() && available != 0 {
@@ -278,7 +280,7 @@ impl CapacityWaiters {
     }
 
     pub(super) fn notify_all(&self) {
-        let waiters = core::mem::take(&mut *self.waiters.lock());
+        let waiters = core::mem::take(&mut *self.waiters.lock_irqsave());
         self.count.store(0, Ordering::Release);
         for waiter in waiters {
             waiter.notification.notify();
@@ -286,7 +288,7 @@ impl CapacityWaiters {
     }
 
     fn remove(&self, notification: &Arc<dyn BlockNotification>) {
-        let mut waiters = self.waiters.lock();
+        let mut waiters = self.waiters.lock_irqsave();
         if let Some(index) = waiters
             .iter()
             .position(|waiter| Arc::ptr_eq(&waiter.notification, notification))
@@ -305,7 +307,7 @@ impl CapacityWaiters {
     pub(super) fn set_registration_hook(&self, hook: impl FnOnce() + Send + 'static) {
         let previous = self
             .registration_hook
-            .lock()
+            .lock_irqsave()
             .replace(alloc::boxed::Box::new(hook));
         assert!(
             previous.is_none(),
@@ -315,7 +317,7 @@ impl CapacityWaiters {
 
     #[cfg(test)]
     fn run_registration_hook(&self) {
-        let hook = self.registration_hook.lock().take();
+        let hook = self.registration_hook.lock_irqsave().take();
         if let Some(hook) = hook {
             hook();
         }

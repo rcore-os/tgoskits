@@ -7,7 +7,7 @@ mod topology;
 
 pub use group::ProcessGroup;
 pub(crate) use relations::{
-    ChildRelations, GroupMembers, GroupMoveScope, ProcessRelationTxn, RelationLock, SessionGroups,
+    ChildRelations, GroupMembers, GroupMoveScope, ProcessRelationTxn, SessionGroups,
     ensure_session_capacity,
 };
 pub use session::Session;

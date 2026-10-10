@@ -417,7 +417,7 @@ pub fn sys_msgget(
     let cred = thread.cred();
     let current_uid = cred.euid;
     let current_gid = cred.egid;
-    let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let ns_id = proc_data.nsproxy.lock_irqsave().ipc_ns.lock_irqsave().ns_id;
 
     let mut msg_manager = MSG_MANAGER.lock();
 
@@ -513,7 +513,7 @@ pub fn sys_msgsnd(
 
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
-        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock_irqsave().ns_id;
         msg_manager
             .get_queue_by_msqid(msqid, ns_id)
             .ok_or(StarryError::from(Errno::EINVAL))? // EINVAL - queue does not exist
@@ -623,7 +623,7 @@ pub fn sys_msgrcv(
     // Get the message queue
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
-        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock_irqsave().ns_id;
         msg_manager
             .get_queue_by_msqid(msqid, ns_id)
             .ok_or(StarryError::from(Errno::EINVAL))? // EINVAL
@@ -753,7 +753,13 @@ pub fn sys_msgctl(
     let current_uid = cred.euid;
     let current_gid = cred.egid;
     let is_privileged = current_uid == 0; // root user check
-    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let ns_id = thread
+        .proc_data
+        .nsproxy
+        .lock_irqsave()
+        .ipc_ns
+        .lock_irqsave()
+        .ns_id;
     let pid_observer = thread.active_pid_namespace().id();
 
     // Validate command code

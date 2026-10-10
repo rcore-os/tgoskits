@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 
 use crate::{
     align_up,
@@ -32,11 +32,11 @@ pub fn __reset_global_allocator_singleton_for_tests() {
 
 /// Unified allocator: buddy page allocator + per-CPU slab caches.
 pub struct GlobalAllocator<const PAGE_SIZE: usize = 0x1000> {
-    buddy: SpinLock<BuddyAllocator<PAGE_SIZE>>,
+    buddy: RawSpinLock<BuddyAllocator<PAGE_SIZE>>,
     initialized: AtomicBool,
 }
 
-// SAFETY: All mutable state is behind SpinLock or AtomicBool.
+// SAFETY: All mutable state is behind RawSpinLock or AtomicBool.
 unsafe impl<const PAGE_SIZE: usize> Sync for GlobalAllocator<PAGE_SIZE> {}
 unsafe impl<const PAGE_SIZE: usize> Send for GlobalAllocator<PAGE_SIZE> {}
 
@@ -44,7 +44,7 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     /// Create an uninitialised global allocator.
     pub const fn new() -> Self {
         Self {
-            buddy: SpinLock::new(BuddyAllocator::new()),
+            buddy: RawSpinLock::new(BuddyAllocator::new()),
             initialized: AtomicBool::new(false),
         }
     }
@@ -58,7 +58,7 @@ impl<const PAGE_SIZE: usize> Default for GlobalAllocator<PAGE_SIZE> {
 
 impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     #[inline]
-    fn buddy(&self) -> RawSpinLockGuard<'_, BuddyAllocator<PAGE_SIZE>> {
+    fn buddy(&self) -> RawSpinLockUnpinnedGuard<'_, BuddyAllocator<PAGE_SIZE>> {
         // SAFETY: this allocator intentionally preserves the legacy raw-lock
         // contract. Its OS integration serializes entry against local
         // re-entry, while the lock word excludes concurrent CPUs.
@@ -137,26 +137,50 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
     /// - `region` must be writable and remain valid for the lifetime of this allocator.
     /// - The region must not overlap any already managed region.
     pub unsafe fn add_region(&self, region: &mut [u8]) -> AllocResult {
-        unsafe {
-            if !self.initialized.load(Ordering::Acquire) {
-                return Err(AllocError::NotInitialized);
-            }
-            let region_start = region.as_mut_ptr() as usize;
-            let region_size = region.len();
-            let Some(layout) = BuddySection::compute_region_layout_with_heap_align::<PAGE_SIZE>(
+        unsafe { self.add_region_with_heap_align(region, REGION_GRANULE) }.map(|_| ())
+    }
+
+    /// Adds a region using page alignment and returns allocator-visible bytes.
+    /// The section header and page metadata consume space within `region`.
+    /// Returns zero if the region cannot hold even one managed page.
+    ///
+    /// # Safety
+    /// - `region` must be writable and remain valid for the lifetime of this allocator.
+    /// - The region must not overlap any already managed region.
+    pub unsafe fn add_compact_region(&self, region: &mut [u8]) -> AllocResult<usize> {
+        unsafe { self.add_region_with_heap_align(region, PAGE_SIZE) }
+    }
+
+    /// # Safety
+    /// `region` must remain writable and disjoint from managed regions for the
+    /// allocator lifetime.
+    unsafe fn add_region_with_heap_align(
+        &self,
+        region: &mut [u8],
+        heap_align: usize,
+    ) -> AllocResult<usize> {
+        if !self.initialized.load(Ordering::Acquire) {
+            return Err(AllocError::NotInitialized);
+        }
+        let region_start = region.as_mut_ptr() as usize;
+        let region_size = region.len();
+        let Some(layout) = BuddySection::compute_region_layout_with_heap_align::<PAGE_SIZE>(
+            region_start,
+            region_size,
+            heap_align,
+        ) else {
+            log::info!(
+                "GlobalAllocator: skip region {:#x}+{:#x}, no allocator-visible memory after {} \
+                 alignment",
                 region_start,
                 region_size,
-                REGION_GRANULE,
-            ) else {
-                log::info!(
-                    "GlobalAllocator: skip region {:#x}+{:#x}, no allocator-visible memory after \
-                     {} alignment",
-                    region_start,
-                    region_size,
-                    REGION_GRANULE,
-                );
-                return Ok(());
-            };
+                heap_align,
+            );
+            return Ok(0);
+        };
+        // SAFETY: the caller provides a disjoint, lifetime-stable writable
+        // region, and the computed metadata and heap spans are contained in it.
+        unsafe {
             self.buddy().add_region_raw(SectionInitSpec {
                 region_start,
                 region_size,
@@ -167,8 +191,9 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
                 ),
                 heap_start: layout.managed_heap_start,
                 heap_size: layout.managed_heap_size,
-            })
+            })?;
         }
+        Ok(layout.managed_heap_size)
     }
 
     /// Number of managed sections.

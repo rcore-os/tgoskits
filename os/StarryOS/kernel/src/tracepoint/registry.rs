@@ -9,7 +9,7 @@ use ax_tracepoint::{ExtTracePoint, TracePoint};
 
 use super::KernelTraceAux;
 use crate::{
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
     task::future::IrqNotify,
 };
 
@@ -22,7 +22,7 @@ struct TracepointSnapshotState {
 }
 
 struct KernelExtTracePointState {
-    snapshot: IrqMutex<TracepointSnapshotState>,
+    snapshot: RawSpinLock<TracepointSnapshotState>,
     readers: [AtomicUsize; 2],
     update: Mutex<()>,
     reclaimer: &'static TracepointReclaimer,
@@ -82,7 +82,7 @@ impl KernelExtTracePoint {
     ) -> Self {
         Self {
             state: Arc::new(KernelExtTracePointState {
-                snapshot: IrqMutex::new(TracepointSnapshotState {
+                snapshot: RawSpinLock::new(TracepointSnapshotState {
                     current: Arc::new(tracepoint),
                     epoch: 0,
                 }),
@@ -94,7 +94,7 @@ impl KernelExtTracePoint {
     }
 
     fn acquire_snapshot(&self) -> TracepointSnapshotLease<'_> {
-        let snapshot = self.state.snapshot.lock();
+        let snapshot = self.state.snapshot.lock_irqsave();
         let readers = &self.state.readers[snapshot.epoch % self.state.readers.len()];
         readers.fetch_add(1, Ordering::AcqRel);
         let current = Arc::clone(&snapshot.current);
@@ -119,7 +119,7 @@ impl KernelExtTracePoint {
             .expect("tracepoint updates require a preemptible task context");
         let _update = self.state.update.lock();
         let current = {
-            let snapshot = self.state.snapshot.lock();
+            let snapshot = self.state.snapshot.lock_irqsave();
             Arc::clone(&snapshot.current)
         };
         let tracepoint = current.trace_point();
@@ -131,9 +131,9 @@ impl KernelExtTracePoint {
         let (retired, retired_epoch) = {
             if was_enabled && !is_enabled {
                 tracepoint.set_callback_gate(false);
-                super::sched::publish_runtime_gate(tracepoint, false);
+                super::gate::publish(tracepoint, false);
             }
-            let mut snapshot = self.state.snapshot.lock();
+            let mut snapshot = self.state.snapshot.lock_irqsave();
             let retired_epoch = snapshot.epoch % self.state.readers.len();
             let retired = replace(&mut snapshot.current, next);
             snapshot.epoch = snapshot.epoch.wrapping_add(1);
@@ -141,7 +141,7 @@ impl KernelExtTracePoint {
         };
         if !was_enabled && is_enabled {
             tracepoint.set_callback_gate(true);
-            super::sched::publish_runtime_gate(tracepoint, true);
+            super::gate::publish(tracepoint, true);
         }
         drop(current);
 

@@ -18,8 +18,8 @@ use super::{
         get_guest_interrupt_status, get_guest_pc, is_host_tlb_refill,
     },
     types::{
-        LoongArchAccessFlags, LoongArchGuestPhysAddr, LoongArchVcpuId, LoongArchVcpuResult,
-        LoongArchVmExit, LoongArchVmId,
+        LoongArchAccessFlags, LoongArchGuestPhysAddr, LoongArchPinnedHost, LoongArchVcpuError,
+        LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId,
     },
 };
 
@@ -27,29 +27,70 @@ static NESTED_FAULT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static SYNC_EXIT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static TARGET_GSPR_LOGS: AtomicUsize = AtomicUsize::new(0);
 
+const OPCODE_CPUCFG: usize = 0b0000000000000000011011;
+const OPCODE_CPUCFG_LEN: usize = 22;
+const OPCODE_CACOP: usize = 0b0000011000;
+const OPCODE_CACOP_LEN: usize = 10;
+const OPCODE_IDLE: usize = 0b0_0000_1100_1001_0001;
+const OPCODE_IDLE_LEN: usize = 17;
+const OPCODE_CSRX: usize = 0b00000100;
+const OPCODE_CSRX_LEN: usize = 8;
+const OPCODE_IOCSR: usize = 0b0000011001;
+const OPCODE_IOCSR_LEN: usize = 10;
+
+/// The software-emulated GSPR instruction classes.
+///
+/// Decoded by [`classify_gspr`], which both the pinned capture stage and the
+/// task-stage emulator run, so the pinned host-state snapshot always matches the
+/// operand the emulator consumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GsprOp {
+    Cpucfg,
+    Cacop,
+    Idle,
+    Csrx,
+    Iocsr { ty: usize, addr: usize },
+}
+
+/// Classifies the faulting software-emulated GSPR instruction.
+///
+/// Reads only the durable guest context, so it is valid both while pinned and in
+/// task context.
+pub(super) fn classify_gspr(ctx: &LoongArchContextFrame) -> Option<GsprOp> {
+    let ins = get_badi(ctx) as u32 as usize;
+    let matches = |opcode: usize, len: usize| -> bool {
+        let shift = 32 - len;
+        ((ins >> shift) & ((1usize << len) - 1)) == opcode
+    };
+    if matches(OPCODE_CPUCFG, OPCODE_CPUCFG_LEN) {
+        Some(GsprOp::Cpucfg)
+    } else if matches(OPCODE_CACOP, OPCODE_CACOP_LEN) {
+        Some(GsprOp::Cacop)
+    } else if matches(OPCODE_IDLE, OPCODE_IDLE_LEN) {
+        Some(GsprOp::Idle)
+    } else if matches(OPCODE_CSRX, OPCODE_CSRX_LEN) {
+        Some(GsprOp::Csrx)
+    } else if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
+        let ty = extract_field(ins, 10, 3);
+        let rj = extract_field(ins, 5, 5);
+        Some(GsprOp::Iocsr {
+            ty,
+            addr: ctx.x[rj],
+        })
+    } else {
+        None
+    }
+}
+
 fn emulate_gspr<H: LoongArchHostOps>(
     state: &LoongArchIocsrState,
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
+    pinned: LoongArchPinnedHost,
 ) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ins = get_badi(ctx) as u32 as usize;
-    const OPCODE_CPUCFG: usize = 0b0000000000000000011011;
-    const OPCODE_CPUCFG_LEN: usize = 22;
-    const OPCODE_CACOP: usize = 0b0000011000;
-    const OPCODE_CACOP_LEN: usize = 10;
-    const OPCODE_IDLE: usize = 0b0_0000_1100_1001_0001;
-    const OPCODE_IDLE_LEN: usize = 17;
-    const OPCODE_CSRX: usize = 0b00000100;
-    const OPCODE_CSRX_LEN: usize = 8;
-    const OPCODE_IOCSR: usize = 0b0000011001;
-    const OPCODE_IOCSR_LEN: usize = 10;
-
-    let matches = |opcode: usize, len: usize| -> bool {
-        let shift = 32 - len;
-        ((ins >> shift) & ((1usize << len) - 1)) == opcode
-    };
     let pc = get_guest_pc(ctx);
     if (0x9000_0000_0159_0000..0x9000_0000_015a_0000).contains(&pc)
         && TARGET_GSPR_LOGS.fetch_add(1, Ordering::Relaxed) < 64
@@ -73,27 +114,26 @@ fn emulate_gspr<H: LoongArchHostOps>(
         );
     }
 
-    if matches(OPCODE_CPUCFG, OPCODE_CPUCFG_LEN) {
-        return Ok(emulate_cpucfg(ctx, ins));
+    match classify_gspr(ctx) {
+        Some(GsprOp::Cpucfg) => {
+            let LoongArchPinnedHost::Cpucfg { index, value } = pinned else {
+                return Err(LoongArchVcpuError::BadState);
+            };
+            if index != ctx.x[extract_field(ins, 5, 5)] {
+                return Err(LoongArchVcpuError::BadState);
+            }
+            Ok(emulate_cpucfg(ctx, ins, value))
+        }
+        Some(GsprOp::Cacop) => Ok(emulate_cacop(ctx, ins)),
+        Some(GsprOp::Idle) => Ok(emulate_idle(ctx, ins)),
+        Some(GsprOp::Csrx) => emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer),
+        Some(GsprOp::Iocsr { .. }) => emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id, pinned),
+        None => panic!(
+            "Unhandled LoongArch GSPR instruction: pc={:#x}, badi={:#x}",
+            get_guest_pc(ctx),
+            ins
+        ),
     }
-    if matches(OPCODE_CACOP, OPCODE_CACOP_LEN) {
-        return Ok(emulate_cacop(ctx, ins));
-    }
-    if matches(OPCODE_IDLE, OPCODE_IDLE_LEN) {
-        return Ok(emulate_idle(ctx, ins));
-    }
-    if matches(OPCODE_CSRX, OPCODE_CSRX_LEN) {
-        return emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer);
-    }
-    if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
-        return Ok(emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id));
-    }
-
-    panic!(
-        "Unhandled LoongArch GSPR instruction: pc={:#x}, badi={:#x}",
-        get_guest_pc(ctx),
-        ins
-    );
 }
 
 pub(crate) fn handle_exception_sync<H: LoongArchHostOps>(
@@ -102,6 +142,7 @@ pub(crate) fn handle_exception_sync<H: LoongArchHostOps>(
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
     guest_timer: &mut GuestTimerRegistration<H>,
+    pinned: LoongArchPinnedHost,
 ) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ecode = get_exception_code(ctx);
     let esubcode = get_exception_subcode(ctx);
@@ -183,7 +224,7 @@ pub(crate) fn handle_exception_sync<H: LoongArchHostOps>(
             advance_guest_pc(ctx);
             Ok(LoongArchVmExit::Hypercall { nr, args })
         }
-        ECODE_GSPR => emulate_gspr::<H>(iocsr_state, ctx, vm_id, vcpu_id, guest_timer),
+        ECODE_GSPR => emulate_gspr::<H>(iocsr_state, ctx, vm_id, vcpu_id, guest_timer, pinned),
         ECODE_PIL | ECODE_PIS | ECODE_PIF | ECODE_PME | ECODE_PNR | ECODE_PNX | ECODE_PPI => {
             let badv = get_badv(ctx);
             if should_inject_guest_virtual_fault(ctx, badv, false) {

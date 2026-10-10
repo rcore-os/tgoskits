@@ -8,7 +8,7 @@ AArch64 裸机构建通过 `CargoBuildTarget.rustflags` 调整短复制的内联
 
 ### 1.1 内联代价
 
-[LLVM 23 的 AArch64 实现](https://github.com/llvm/llvm-project/blob/release/23.x/llvm/lib/Target/AArch64/AArch64ISelLowering.cpp#L1256) 在严格对齐模式下把 `MaxStoresPerMemcpy` 设为 4，其他模式下设为 16。即使源与目标已经满足标量访问对齐，较大的聚合值也可能因为这个代价上限被转换为函数调用。
+[LLVM 23 的 AArch64 实现](https://github.com/llvm/llvm-project/blob/release/23.x/llvm/lib/Target/AArch64/AArch64ISelLowering.cpp) 在严格对齐模式下把 `MaxStoresPerMemcpy` 设为 4，其他模式下设为 16。即使源与目标已经满足标量访问对齐，较大的聚合值也可能因为这个代价上限被转换为函数调用。
 
 [`bare_build_target_for()`](../../scripts/axbuild/src/build/bare_build.rs) 为工作区 AArch64 裸机目标提供 `-Cllvm-args=--max-store-memcpy=16`。参数的单位是内联存储操作数，不是字节数；实际访问宽度仍由 LLVM 的合法化规则与已知对齐决定。该选项还覆盖 LLVM 的对应体积优化上限，因此修改它时也要检查代码体积与缓存代价。
 

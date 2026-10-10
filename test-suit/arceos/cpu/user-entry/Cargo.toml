@@ -14,4 +14,4 @@ ax-cpu = { workspace = true, features = ["uspace", "pmu"] }
 ax-std = { workspace = true, optional = true, default-features = false, features = ["alloc", "paging", "uspace", "ipi", "smp"] }
 
 [package.metadata.docs.rs]
-targets = ["aarch64-unknown-none-softfloat"]
+targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

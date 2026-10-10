@@ -53,7 +53,9 @@ GPT header、entry size/count 和 entry-array 范围必须完全位于设备内�
 - `/dev/mmcblkXpN`；
 - 裸 disk path（不带 partition）。
 
-设备 path 被解析成发现顺序中的 `disk_index` 和 zero-based `partition_index`。`PARTUUID` 比较不区分大小写，`PARTLABEL` 按原字符串精确匹配。已经成功解析的 selector 找不到候选时启动失败；无法识别的 `root=` 语法当前会得到空 `RootSpec`，随后进入默认选择策略。
+设备 path 被解析成发现顺序中的 `disk_index` 和 zero-based `partition_index`。
+`PARTUUID` 比较不区分大小写，`PARTLABEL` 按原字符串精确匹配。进入磁盘根
+初始化后，显式 `root=` 无法解析或找不到候选时启动失败，不会猜测默认磁盘。
 
 ### 1.4 默认策略
 
@@ -132,7 +134,7 @@ FAT adapter 使用 `starry-fatfs`：
 - `FatFileNode`/`FatDirNode` 实现 VFS trait；
 - DOS 时间与 Unix `Duration` 在 `util.rs` 转换并裁剪到 FAT 可表示范围。
 
-共享 FAT 状态使用 `SleepMutex`，根 entry 仅用短暂 `IrqMutex<Option<_>>` 发布。FAT inode number 是本次 mount 的内存身份，不是稳定 on-disk inode；不能把它当跨重启标识。
+共享 FAT 状态使用 `Mutex`，根 entry 仅用短暂 `RawSpinLock<Option<_>>` 发布。FAT inode number 是本次 mount 的内存身份，不是稳定 on-disk inode；不能把它当跨重启标识。
 
 ## 4. 组合边界
 

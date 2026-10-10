@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ax_sync::SpinLock;
+use ax_sync::Mutex;
 use axdevice_base::*;
 
 use crate::{ConfigOffset, PciBdf, PciRootBinding, PciSegment, all_ones, read_bytes};
@@ -21,7 +21,7 @@ struct ConfigWindow {
 
 /// CF8/CFC frontend that only decodes x86 port accesses.
 pub struct X86PciConfigFrontend {
-    address: SpinLock<u32>,
+    address: Mutex<u32>,
     binding: Arc<PciRootBinding>,
     resources: Box<[Resource]>,
 }
@@ -34,7 +34,7 @@ impl X86PciConfigFrontend {
     /// Creates a frontend for one generic PCI root.
     pub fn new(binding: Arc<PciRootBinding>) -> Self {
         Self {
-            address: SpinLock::new(0),
+            address: Mutex::new(0),
             binding,
             resources: alloc::vec![Resource::PortRange {
                 base: Self::PORT_BASE,
@@ -73,7 +73,7 @@ impl X86PciConfigFrontend {
         data_offset: usize,
         size: usize,
     ) -> Result<Option<(PciBdf, ConfigOffset)>, DeviceError> {
-        let address = *self.address.lock_irqsave();
+        let address = *self.address.lock();
         if address & CONFIG_ADDRESS_ENABLE == 0 {
             return Ok(None);
         }
@@ -204,11 +204,7 @@ impl Device for X86PciConfigFrontend {
                     addr: access.address(),
                 });
             }
-            return Ok(read_bytes(
-                &self.address.lock_irqsave().to_le_bytes(),
-                offset,
-                size,
-            ));
+            return Ok(read_bytes(&self.address.lock().to_le_bytes(), offset, size));
         }
         if (CONFIG_DATA_PORT..CONFIG_DATA_PORT + 4).contains(&port) {
             let offset = usize::from(port - CONFIG_DATA_PORT);
@@ -245,7 +241,7 @@ impl Device for X86PciConfigFrontend {
                     addr: access.address(),
                 });
             }
-            let mut address = self.address.lock_irqsave();
+            let mut address = self.address.lock();
             let mut bytes = address.to_le_bytes();
             write_bytes(&mut bytes, offset, size, value);
             *address = u32::from_le_bytes(bytes);

@@ -4,15 +4,16 @@ use alloc::{
 };
 
 use super::{Process, ProcessGroup};
-use crate::{sync::LockdepMutexExt, task::PidNumber};
+use crate::{
+    sync::{LockdepMutexExt, Mutex},
+    task::PidNumber,
+};
 
 type Pid = PidNumber;
 
 // Relationship transactions run in task context and may block behind another
 // task holding several ordered relationship locks, so they use one PI-backed
-// lock path in every Starry build.
-pub(crate) type RelationLock<T> = crate::sync::Mutex<T>;
-
+// sleep lock path in every Starry build.
 // Relationship writers use one order:
 // process group binding -> parent child sets (ascending PID) -> child parent
 // binding -> process-group member sets (ascending PGID). Session membership is
@@ -227,7 +228,7 @@ impl SessionGroups {
     }
 }
 
-pub(crate) fn ensure_child_capacity(lock: &RelationLock<ChildRelations>, additional: usize) {
+pub(crate) fn ensure_child_capacity(lock: &Mutex<ChildRelations>, additional: usize) {
     ensure_capacity(
         lock,
         additional,
@@ -237,7 +238,7 @@ pub(crate) fn ensure_child_capacity(lock: &RelationLock<ChildRelations>, additio
     );
 }
 
-pub(crate) fn ensure_member_capacity(lock: &RelationLock<GroupMembers>, additional: usize) {
+pub(crate) fn ensure_member_capacity(lock: &Mutex<GroupMembers>, additional: usize) {
     ensure_capacity(
         lock,
         additional,
@@ -247,7 +248,7 @@ pub(crate) fn ensure_member_capacity(lock: &RelationLock<GroupMembers>, addition
     );
 }
 
-pub(crate) fn ensure_session_capacity(lock: &RelationLock<SessionGroups>, additional: usize) {
+pub(crate) fn ensure_session_capacity(lock: &Mutex<SessionGroups>, additional: usize) {
     ensure_capacity(
         lock,
         additional,
@@ -258,7 +259,7 @@ pub(crate) fn ensure_session_capacity(lock: &RelationLock<SessionGroups>, additi
 }
 
 fn ensure_capacity<T, V>(
-    lock: &RelationLock<T>,
+    lock: &Mutex<T>,
     additional: usize,
     len: impl Fn(&T) -> usize,
     has_capacity_for: impl Fn(&T, usize) -> bool,

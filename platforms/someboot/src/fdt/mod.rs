@@ -84,6 +84,9 @@ pub(crate) fn fdt() -> Option<&'static fdt_edit::Fdt> {
 }
 
 pub fn set_cmdline() -> Option<()> {
+    if crate::cmdline::has_handoff_cmdline() {
+        return Some(());
+    }
     let fdt = fdt_base()?;
     let chosen = fdt.chosen()?;
     let cmdline = chosen.bootargs()?;

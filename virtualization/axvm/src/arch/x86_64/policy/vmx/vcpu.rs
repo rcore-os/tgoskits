@@ -34,6 +34,7 @@ use crate::arch::x86_64::policy::{
         needs_interrupt_window, queue_pending_event, select_pending_event,
     },
     port_io::*,
+    types::UNRESOLVED_NEXT_RIP,
     *,
 };
 
@@ -140,6 +141,7 @@ pub struct VmxVcpu<H: X86HostOps, M: ControlMemory> {
     entry: Option<X86GuestPhysAddr>,
     /// The EPT root address.
     nested_page_table_root: Option<X86HostPhysAddr>,
+    translation_root_dirty: bool,
     /// Resolved device MMIO ranges decoded as emulated MMIO exits.
     intercepted_mmio: Vec<X86InterceptedMmioRange>,
     // /// Whether this VCPU is a host VCpu. Used in type 1.5 hypervisor.
@@ -167,6 +169,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         vcpu_id: usize,
         memory: ax_cpu::virtualization::VmxControlMemory<M>,
         xstate: GuestXstate<M>,
+        config: X86VcpuCreateConfig<H::Runtime>,
     ) -> X86VcpuResult<Self> {
         // SAFETY: this backend is constructed by the initialized ring-0 VMX
         // host, before binding any of these newly allocated control leases.
@@ -179,13 +182,14 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
             cpu,
             entry: None,
             nested_page_table_root: None,
+            translation_root_dirty: true,
             intercepted_mmio: Vec::new(),
             setup_ready: false,
             configured: false,
             pending_events: VecDeque::with_capacity(8),
             injecting_event: None,
             reinjection_event: None,
-            vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
+            vlapic: EmulatedLocalApic::<H>::new(config.runtime, vm_id, vcpu_id),
             guest_memory_regions: Vec::new(),
         };
         info!(
@@ -221,13 +225,22 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                     true,
                 )?;
                 self.configured = true;
+            } else if self.translation_root_dirty {
+                vmcs::set_ept_pointer(
+                    self.cpu.vmx_controls_mut().expect("VMX policy CPU"),
+                    self.nested_page_table_root.ok_or(X86VcpuError::BadState)?,
+                )?;
             }
+            self.translation_root_dirty = false;
             Ok(())
         })();
         if result.is_err() {
             // SAFETY: initialization has not entered a guest and still owns
-            // the IRQ-excluded CPU. Failed retirement retains every lease.
-            let _ = unsafe { self.cpu.unbind() };
+            // the IRQ-excluded CPU. A failed retirement cannot return the
+            // still-current VMCS to a different owner or release the CPU pin.
+            if unsafe { self.cpu.unbind() }.is_err() {
+                std::process::abort();
+            }
         }
         result
     }
@@ -342,6 +355,60 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         let rip = controls.read(VmcsGuestNW::RIP)?;
         controls.write(VmcsGuestNW::RIP, rip + usize::from(instr_len))?;
         Ok(())
+    }
+
+    /// Install an absolute guest `RIP`.
+    ///
+    /// Used when a device-serviced PIO/MMIO access retires on the next bound
+    /// entry; the value was computed while the instruction was still current.
+    pub fn set_rip(&mut self, rip: u64) -> X86VcpuResult {
+        let address = usize::try_from(rip).map_err(|_| X86VcpuError::InvalidData)?;
+        self.cpu
+            .vmx_controls_mut()
+            .expect("VMX policy CPU")
+            .write(VmcsGuestNW::RIP, address)?;
+        Ok(())
+    }
+
+    /// Retirement `RIP` for a decoded access of `instruction_len` bytes.
+    fn next_rip_after(&self, instruction_len: u8) -> X86VcpuResult<u64> {
+        let rip = self
+            .cpu
+            .vmx_controls()
+            .expect("VMX policy CPU")
+            .read(VmcsGuestNW::RIP)?;
+        Ok((rip as u64).wrapping_add(u64::from(instruction_len)))
+    }
+
+    /// Retires one decoded port-I/O or MMIO access.
+    ///
+    /// The in-core APIC fast paths already performed the access (and answer
+    /// [`X86VmExit::Nothing`]); they advance `RIP` here because no device
+    /// completion exists. Every device-serviced exit instead carries the
+    /// retirement `RIP` so the task layer installs it only after the device
+    /// service succeeded, which keeps the nested-fault retry at the same PC.
+    fn retire_decoded_access(
+        &mut self,
+        exit: X86VmExit,
+        instruction_len: u8,
+    ) -> X86VcpuResult<X86VmExit> {
+        match exit {
+            X86VmExit::Nothing => {
+                self.advance_rip(instruction_len)?;
+                Ok(X86VmExit::Nothing)
+            }
+            X86VmExit::InterruptEnd { vector } => {
+                // The local-APIC EOI write was fully emulated in-core, so it
+                // retires immediately while still carrying the vector the task
+                // layer needs for IOAPIC EOI propagation.
+                self.advance_rip(instruction_len)?;
+                Ok(X86VmExit::InterruptEnd { vector })
+            }
+            exit => {
+                let next_rip = self.next_rip_after(instruction_len)?;
+                Ok(exit.with_next_rip(next_rip))
+            }
+        }
     }
 
     fn queue_event(&mut self, event: PendingEvent) {
@@ -1362,6 +1429,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                     reg_width: X86AccessWidth::Byte,
                     signed_ext: false,
                     byte_reg: Some(byte_reg),
+                    next_rip: UNRESOLVED_NEXT_RIP,
                 };
                 Some((exit, (end.as_usize() - start.as_usize()) as u8))
             }
@@ -1376,6 +1444,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                     reg_width: width,
                     signed_ext: false,
                     byte_reg: None,
+                    next_rip: UNRESOLVED_NEXT_RIP,
                 };
                 Some((exit, (end.as_usize() - start.as_usize()) as u8))
             }
@@ -1453,6 +1522,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                         reg_width: X86AccessWidth::Dword,
                         signed_ext: false,
                         byte_reg: None,
+                        next_rip: UNRESOLVED_NEXT_RIP,
                     }
                 };
                 Some((exit, (end.as_usize() - start.as_usize()) as u8))
@@ -1589,7 +1659,12 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         width: X86AccessWidth,
     ) -> Option<X86VmExit> {
         if !local_apic {
-            return Some(X86VmExit::MmioWrite { addr, width, data });
+            return Some(X86VmExit::MmioWrite {
+                addr,
+                width,
+                data,
+                next_rip: UNRESOLVED_NEXT_RIP,
+            });
         }
 
         let offset = addr.as_usize() - X86_LOCAL_APIC_GPA;
@@ -2007,11 +2082,11 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
     pub fn new_with_config(
         vm_id: usize,
         vcpu_id: usize,
-        _config: X86VcpuCreateConfig,
+        config: X86VcpuCreateConfig<H::Runtime>,
         memory: ax_cpu::virtualization::VmxControlMemory<M>,
         xstate: GuestXstate<M>,
     ) -> X86VcpuResult<Self> {
-        Self::new(vm_id, vcpu_id, memory, xstate)
+        Self::new(vm_id, vcpu_id, memory, xstate, config)
     }
 
     pub fn set_entry(&mut self, entry: X86GuestPhysAddr) -> X86VcpuResult {
@@ -2020,6 +2095,9 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
     }
 
     pub fn set_nested_page_table(&mut self, config: X86NestedPagingConfig) -> X86VcpuResult {
+        if self.nested_page_table_root != Some(config.root_paddr) {
+            self.translation_root_dirty = true;
+        }
         self.nested_page_table_root = Some(config.root_paddr);
         Ok(())
     }
@@ -2041,14 +2119,21 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         let port = X86Port::new(io_info.port);
 
         if !io_info.is_string {
-            self.advance_rip(instruction_len)?;
+            // The device service has not run yet, so the owned record carries
+            // the retirement `RIP` instead of mutating it here.
+            let next_rip = self.next_rip_after(instruction_len)?;
             return Ok(if io_info.is_in {
-                X86VmExit::PortIoRead { port, width }
+                X86VmExit::PortIoRead {
+                    port,
+                    width,
+                    next_rip,
+                }
             } else {
                 X86VmExit::PortIoWrite {
                     port,
                     width,
                     data: self.regs().rax.get_bits(width.bits_range()),
+                    next_rip,
                 }
             });
         }
@@ -2261,8 +2346,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                                 write,
                             )
                         {
-                            self.advance_rip(instruction_len)?;
-                            mmio_exit
+                            self.retire_decoded_access(mmio_exit, instruction_len)?
                         } else {
                             X86VmExit::NestedPageFault {
                                 addr: info.fault_guest_paddr,
@@ -2275,10 +2359,16 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                         if (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr) {
                             self.handle_apic_msr_access(false, msr)?
                         } else {
-                            // `reg` is unused here.
-                            X86VmExit::MsrRead {
-                                addr: X86MsrAddr::new(msr as _),
-                            }
+                            // The device service has not run yet, so the owned
+                            // record carries the retirement `RIP` instead of
+                            // advancing it here. `reg` is unused for MSRs.
+                            self.retire_decoded_access(
+                                X86VmExit::MsrRead {
+                                    addr: X86MsrAddr::new(msr as _),
+                                    next_rip: UNRESOLVED_NEXT_RIP,
+                                },
+                                exit_info.exit_instruction_length as u8,
+                            )?
                         }
                     }
                     VmxExitReason::MsrWrite => {
@@ -2288,10 +2378,14 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                         } else {
                             let value = (self.regs().rax & 0xffff_ffff)
                                 | ((self.regs().rdx & 0xffff_ffff) << 32);
-                            X86VmExit::MsrWrite {
-                                addr: X86MsrAddr::new(msr as _),
-                                value,
-                            }
+                            self.retire_decoded_access(
+                                X86VmExit::MsrWrite {
+                                    addr: X86MsrAddr::new(msr as _),
+                                    value,
+                                    next_rip: UNRESOLVED_NEXT_RIP,
+                                },
+                                exit_info.exit_instruction_length as u8,
+                            )?
                         }
                     }
                     _ => {
@@ -2384,6 +2478,21 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
 
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.vlapic.handle_eoi()
+    }
+
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    pub fn suspend_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.suspend_timer().map_err(Into::into)
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    pub fn resume_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.resume_timer().map_err(Into::into)
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    pub fn stop_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.stop_timer().map_err(Into::into)
     }
 
     pub fn set_return_value(&mut self, val: usize) {

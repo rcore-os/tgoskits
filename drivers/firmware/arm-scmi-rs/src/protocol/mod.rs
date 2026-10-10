@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use mbarrier::smp_mb;
 
 use crate::{Data, Transport, err::ScmiError};
@@ -164,7 +164,7 @@ pub enum ScmiStdProtocol {
 }
 
 static TRANSFER_ID_COUNTER: AtomicI32 = AtomicI32::new(0);
-static TOKEN_ALLOCATOR: Mutex<TokenTable> = Mutex::new(TokenTable::new());
+static TOKEN_ALLOCATOR: RawSpinLock<TokenTable> = RawSpinLock::new(TokenTable::new());
 
 const fn genmask(high: u32, low: u32) -> u32 {
     if high >= 32 || low >= 32 || high < low {

@@ -18,35 +18,36 @@ use super::{
     target::PerfCpuId,
     task::{self, PerTaskCounter},
 };
-use crate::sync::{IrqMutex, NoPreemptIrqSave};
+use crate::sync::{PreemptIrqSaveGuard, RawSpinLock};
 
 const COMMAND_CAPACITY: usize = 64;
 
 static CPU_WORKERS: LazyInit<Vec<Arc<PerfCpuWorker>>> = LazyInit::new();
 
 struct PerfCompletion<T> {
-    result: IrqMutex<Option<crate::StarryResult<T>>>,
+    result: RawSpinLock<Option<crate::StarryResult<T>>>,
     waiters: WaitQueue,
 }
 
 impl<T> PerfCompletion<T> {
     const fn new() -> Self {
         Self {
-            result: IrqMutex::new(None),
+            result: RawSpinLock::new(None),
             waiters: WaitQueue::new(),
         }
     }
 
     fn finish(&self, result: crate::StarryResult<T>) {
-        let old = self.result.lock().replace(result);
+        let old = self.result.lock_irqsave().replace(result);
         assert!(old.is_none(), "perf CPU command completed twice");
         self.waiters.notify_all();
     }
 
     fn wait(&self) -> crate::StarryResult<T> {
-        self.waiters.wait_until(|| self.result.lock().is_some());
+        self.waiters
+            .wait_until(|| self.result.lock_irqsave().is_some());
         self.result
-            .lock()
+            .lock_irqsave()
             .take()
             .expect("completed perf CPU command lost its result")
     }
@@ -174,7 +175,7 @@ impl PerfCpuCommand {
 fn with_local_pmu_exclusion<T>(
     operation: impl FnOnce() -> crate::StarryResult<T>,
 ) -> crate::StarryResult<T> {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     operation()
 }
 
@@ -182,7 +183,7 @@ fn try_local<T>(
     owner: PerfCpuId,
     operation: impl FnOnce() -> crate::StarryResult<T>,
 ) -> Option<crate::StarryResult<T>> {
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     if owner.as_usize() != ax_runtime::hal::percpu::this_cpu_id() {
         return None;
     }
@@ -190,7 +191,7 @@ fn try_local<T>(
 }
 
 struct PerfCpuWorker {
-    queue: IrqMutex<VecDeque<PerfCpuCommand>>,
+    queue: RawSpinLock<VecDeque<PerfCpuCommand>>,
     ready: WaitQueue,
     space: WaitQueue,
 }
@@ -198,7 +199,7 @@ struct PerfCpuWorker {
 impl PerfCpuWorker {
     fn new() -> Self {
         Self {
-            queue: IrqMutex::new(VecDeque::with_capacity(COMMAND_CAPACITY)),
+            queue: RawSpinLock::new(VecDeque::with_capacity(COMMAND_CAPACITY)),
             ready: WaitQueue::new(),
             space: WaitQueue::new(),
         }
@@ -208,22 +209,23 @@ impl PerfCpuWorker {
         let mut command = Some(command);
         loop {
             {
-                let mut queue = self.queue.lock();
+                let mut queue = self.queue.lock_irqsave();
                 if queue.len() < COMMAND_CAPACITY {
                     queue.push_back(command.take().expect("perf command submitted once"));
                     break;
                 }
             }
             self.space
-                .wait_until(|| self.queue.lock().len() < COMMAND_CAPACITY);
+                .wait_until(|| self.queue.lock_irqsave().len() < COMMAND_CAPACITY);
         }
         self.ready.notify_one();
     }
 
     fn run(&self) -> ! {
         loop {
-            self.ready.wait_until(|| !self.queue.lock().is_empty());
-            while let Some(command) = self.queue.lock().pop_front() {
+            self.ready
+                .wait_until(|| !self.queue.lock_irqsave().is_empty());
+            while let Some(command) = self.queue.lock_irqsave().pop_front() {
                 self.space.notify_one();
                 command.execute();
             }

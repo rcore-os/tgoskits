@@ -39,7 +39,7 @@ Starry 用户内存访问和 page fault slow path。核心调度入口通过
 
 - `ax_sync::Mutex::lock` 会调用 `might_sleep()`。
 - `ax_sync::Mutex::try_lock` 不调用 `might_sleep()`；它是单次 CAS，不会阻塞，语义接近 Linux `mutex_trylock`。
-- `SpinNoIrq` / `SpinNoPreempt` / `SpinRaw` / `SpinRwLock` 自身不睡眠，但持有这些锁时进入睡眠路径应被发现。
+- `SpinNoIrq` / `SpinNoPreempt` / `SpinRaw` / `RawSpinRwLock` 自身不睡眠，但持有这些锁时进入睡眠路径应被发现。
 - async future 本身不直接阻塞；ArceOS 由 `ax_runtime::task::block_on()` 接入
   核心 `LocalExecutor`，StarryOS 的 signal interruption 包装保留在
   `os/StarryOS/kernel/src/task/future.rs`。
@@ -106,12 +106,12 @@ held lock。这个信息可以用于增强 `might_sleep()` 诊断和判定。
 - `ax-sync` 的 spin / spin-rwlock 记录为 `sleep_forbidden=true`。
 - `ax-sync::Mutex` 记录为 `sleep_forbidden=false`，避免把 sleepable mutex 本身误标成 non-sleep lock。
 - `might_sleep()` 在 `lockdep` feature 下 panic 时会打印当前 held-lock snapshot。
-- 当前完成的是诊断增强；raw `SpinLock` / `SpinRwLock` 持锁睡眠的直接判定仍留给第二阶段 `non_sleep_lock_depth` 或等价状态。
+- 当前完成的是诊断增强；raw `RawSpinLock` / `RawSpinRwLock` 持锁睡眠的直接判定仍留给第二阶段 `non_sleep_lock_depth` 或等价状态。
 
 需要重点覆盖的锁：
 
-- `SpinLock::{lock, lock_irqsave, lock_raw}`
-- `SpinRwLock` 的 read/write 三种获取模式
+- `RawSpinLock::{lock, lock_irqsave, lock_raw}`
+- `RawSpinRwLock` 的 read/write 三种获取模式
 - 后续可能新增的项目内 non-sleep rwlock
 
 建议方向：
@@ -127,7 +127,7 @@ held lock。这个信息可以用于增强 `might_sleep()` 诊断和判定。
 - 第二阶段再增加可选的轻量 `non_sleep_lock_depth` 或等价状态，由 `ax-kspin`
   acquire/release 通过 capability 边界通知 task runtime。
 - 第二阶段应通过 feature 控制，避免无条件增加所有 spin lock 快路径成本。
-- 不把 `SpinRwLock` read guard 直接机械塞进 lockdep dependency stack 来解决睡眠检查。读写锁依赖检查和“持锁禁止睡眠”是相关但不同的语义，应共享诊断信息而不是强行共用同一个判定模型。
+- 不把 `RawSpinRwLock` read guard 直接机械塞进 lockdep dependency stack 来解决睡眠检查。读写锁依赖检查和“持锁禁止睡眠”是相关但不同的语义，应共享诊断信息而不是强行共用同一个判定模型。
 
 讨论点：
 
@@ -140,7 +140,7 @@ held lock。这个信息可以用于增强 `might_sleep()` 诊断和判定。
 - 持有 non-sleep lock 后调用 `might_sleep()` 能报告问题。
 - 报告能指出至少一个持有锁的 acquire 位置。
 - 不改变正常锁快路径的默认开销，或开销可通过 feature 控制。
-- 已新增 host 单测覆盖持 `SpinLock` 时 `might_sleep()` 输出 held-lock stack。
+- 已新增 host 单测覆盖持 `RawSpinLock` 时 `might_sleep()` 输出 held-lock stack。
 
 ## MS-3：改进 panic 诊断
 
@@ -331,8 +331,8 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 - IRQ handler 内调用 `ax_task::sleep()` 或 `WaitQueue::wait()` 应触发。
 - preempt disabled 后调用睡眠入口应触发，覆盖现有基础路径。
-- 持 IRQ-save `SpinLock` 后调用 `ax_sync::Mutex::lock()` 应触发，覆盖 IRQ/preempt 路径。
-- `lockdep` feature 下持 raw `SpinLock` / `SpinRwLock` 后调用睡眠入口应触发，覆盖 MS-2 的 held non-sleep lock 判定。
+- 持 IRQ-save `RawSpinLock` 后调用 `ax_sync::Mutex::lock()` 应触发，覆盖 IRQ/preempt 路径。
+- `lockdep` feature 下持 raw `RawSpinLock` / `RawSpinRwLock` 后调用睡眠入口应触发，覆盖 MS-2 的 held non-sleep lock 判定。
 - `ax_sync::Mutex::try_lock()` 在原子上下文中不应触发，防止把 non-blocking fast path 误判为 sleepable 操作。
 
 讨论点：
@@ -368,7 +368,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 rg -n "might_sleep|might_fault|might_alloc|cant_sleep|non_block" \
   --glob '*.rs' --glob '!target/**'
 
-rg -n "SpinLock|SpinRwLock|lock_irqsave\(|lock_raw\(" \
+rg -n "RawSpinLock|RawSpinRwLock|lock_irqsave\(|lock_raw\(" \
   os components drivers net memory virtualization --glob '*.rs'
 
 rg -n "access_user_memory|handle_page_fault|vm_read|vm_write|IoDst::write" \

@@ -26,10 +26,10 @@ and validation.
 
 The semantics follow Linux v6.12 at commit
 `adc218676eef25575469234709c2d87185ca223a`, especially
-[`cgroup-v2.rst`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/Documentation/admin-guide/cgroup-v2.rst#L2251-L2285),
-[`pids_try_charge()` and rollback](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L166-L209),
+[`cgroup-v2.rst`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/Documentation/admin-guide/cgroup-v2.rst),
+[`pids_try_charge()` and rollback](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c),
 and
-[`pids_event()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L243-L271):
+[`pids_event()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c):
 
 - pids tracks tasks (kernel TIDs), not only process leaders;
 - `pids.current` includes the cgroup's descendants;
@@ -128,7 +128,7 @@ existing entry points:
 
 | Syscall | Impact and compatibility basis |
 | --- | --- |
-| `clone` | `CloneArgs::do_clone` reserves one pids charge before publishing the TID and returns `EAGAIN` on a hierarchical limit, matching [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html) and Linux [`pids_can_fork()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L273-L284). A `CLONE_PARENT_SETTID` pointer is written only after the reservation succeeds, so a rejected clone has no parent-TID side effect. |
+| `clone` | `CloneArgs::do_clone` reserves one pids charge before publishing the TID and returns `EAGAIN` on a hierarchical limit, matching [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html) and Linux [`pids_can_fork()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c). A `CLONE_PARENT_SETTID` pointer is written only after the reservation succeeds, so a rejected clone has no parent-TID side effect. |
 | `clone3` | Uses the same `CloneArgs::do_clone` path after existing ABI validation. Ordinary clones inherit through the owner-aware path. With `CLONE_INTO_CGROUP`, the process child is reserved and charged directly in the requested target; its `ProcessData.cgroup`, cgroup-namespace root, committed task ledger, and pids charge all derive from that same selected cgroup. `CLONE_INTO_CGROUP | CLONE_THREAD` and a flag/target mismatch return `EINVAL`. A target limit failure returns `EAGAIN` without publishing a child or writing `CLONE_PARENT_SETTID`. |
 | `fork` | The architecture wrapper uses the clone path with `SIGCHLD`; the pids rejection is therefore `EAGAIN`, matching [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html). |
 | `vfork` | The architecture wrapper uses the clone path with `CLONE_VFORK | CLONE_VM`; the pids reservation is established before PID and task publication, then committed before scheduler activation and before the parent waits, matching [`vfork(2)`](https://man7.org/linux/man-pages/man2/vfork.2.html). |

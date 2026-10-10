@@ -32,6 +32,12 @@ pub enum PagingError {
     StaleHugeSplit { vaddr: VirtAddr },
     #[error("Page-table map deposit is stale for virtual address {vaddr:#x}")]
     StaleMapDeposit { vaddr: VirtAddr },
+    #[error("Break-before-make requires a confirmed translation domain")]
+    BreakBeforeMakeDomainUnavailable,
+    #[error("Break-before-make translation shootdown failed")]
+    BreakBeforeMakeShootdownFailed,
+    #[error("Restored huge-split table requires remote TLB confirmation")]
+    UnconfirmedHugeSplitRetirement,
 }
 
 impl PagingError {
@@ -101,6 +107,15 @@ impl core::fmt::Debug for PagingError {
             }
             Self::StaleMapDeposit { vaddr } => {
                 write!(f, "StaleMapDeposit: vaddr={:#x}", vaddr.as_usize())
+            }
+            Self::BreakBeforeMakeDomainUnavailable => {
+                write!(f, "BreakBeforeMakeDomainUnavailable")
+            }
+            Self::BreakBeforeMakeShootdownFailed => {
+                write!(f, "BreakBeforeMakeShootdownFailed")
+            }
+            Self::UnconfirmedHugeSplitRetirement => {
+                write!(f, "UnconfirmedHugeSplitRetirement")
             }
         }
     }

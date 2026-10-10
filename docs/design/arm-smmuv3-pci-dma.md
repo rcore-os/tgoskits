@@ -18,7 +18,7 @@ NVMe 在 SMMU 域中完成实际读写，`DeviceDma::info()` 表示 `Translated`
 
 SMMUv3 驱动持有 CMDQ、EVTQ、Stream Table、ASID、Context Descriptor 与 Stage 1 页表。PCI 适配层解析 FDT 并为每个 RID 取得 StreamID，绑定后保存该设备独立的 `AttachedDomain`。`dma-api` 的设备后端持有域的共享引用及 IOVA 分配记录，DMA 资源的销毁必须先解除翻译并同步 TLB，再交还 IOVA 和物理页。
 
-可移植 `Smmu` 只通过 `&mut self` 执行绑定、映射、失效同步和 EVTQ 排空，不实现内部自旋锁或共享域对象。ArceOS 的 PCI 适配层用 `ax-sync::SpinLock` 串行化这些事务，并实现 `rdif-iommu` 的共享控制器和域接口；`AttachedDomain` 保存 StreamID 与绑定时取得的域标识。当前 EVTQ 只在任务上下文排空，没有硬中断调用该锁。锁持有期间不调用上层回调；SMMU 启用后控制内存不能在没有设备停止协议时释放，因此驱动保留其控制内存至启动周期结束。
+可移植 `Smmu` 只通过 `&mut self` 执行绑定、映射、失效同步和 EVTQ 排空，不实现内部自旋锁或共享域对象。ArceOS 的 PCI 适配层用 `ax-sync::RawSpinLock` 串行化这些事务，并实现 `rdif-iommu` 的共享控制器和域接口；`AttachedDomain` 保存 StreamID 与绑定时取得的域标识。当前 EVTQ 只在任务上下文排空，没有硬中断调用该锁。锁持有期间不调用上层回调；SMMU 启用后控制内存不能在没有设备停止协议时释放，因此驱动保留其控制内存至启动周期结束。
 
 ### 2.1 正常数据路径
 
@@ -64,4 +64,4 @@ Stage 1 的页表 AP 位无法表达仅写权限，因此 doorbell 请求 `WRITE
 
 ### 4.2 性能与回滚
 
-每次映射和解除映射增加 IOVA 分配、页表操作及 SMMU 命令同步，首轮以正确性优先。ArceOS 适配层目前在持有 `SpinLock<Smmu>` 时分配页表、轮询 `CMD_SYNC`；物理页分配器不回调 IOMMU，SMMU 没有使用这把锁的硬中断路径。该临界区会延长关抢占时间，批量失效及更合适的 OS 串行化策略需要后续在相同 QEMU 配置下测量 NVMe 吞吐与延迟。回滚时关闭 QEMU `iommu=smmuv3` 配置并回到 Direct DMA 路径；不存在持久格式迁移。运行中不热切换域，必须重启客体，避免旧 IOVA 与设备队列继续活动。
+每次映射和解除映射增加 IOVA 分配、页表操作及 SMMU 命令同步，首轮以正确性优先。ArceOS 适配层目前在持有 `RawSpinLock<Smmu>` 时分配页表、轮询 `CMD_SYNC`；物理页分配器不回调 IOMMU，SMMU 没有使用这把锁的硬中断路径。该临界区会延长关抢占时间，批量失效及更合适的 OS 串行化策略需要后续在相同 QEMU 配置下测量 NVMe 吞吐与延迟。回滚时关闭 QEMU `iommu=smmuv3` 配置并回到 Direct DMA 路径；不存在持久格式迁移。运行中不热切换域，必须重启客体，避免旧 IOVA 与设备队列继续活动。

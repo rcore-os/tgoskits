@@ -17,7 +17,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::address_space::{BlockAddressSpace, FolioGeometry};
-use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::Mutex};
 
 /// The shared per-device cache tree and its global-writeback endpoint.
 ///
@@ -31,8 +31,8 @@ pub(crate) struct BlockCacheShared {
     consumers: AtomicUsize,
     // Allocator reclaim may retain this data without retaining the device
     // endpoint, whose final drop can wait for IO or scheduler work.
-    state: Arc<SleepMutex<BlockAddressSpace>>,
-    endpoint: SleepMutex<Box<dyn FsBlockDevice>>,
+    state: Arc<Mutex<BlockAddressSpace>>,
+    endpoint: Mutex<Box<dyn FsBlockDevice>>,
 }
 
 impl BlockCacheShared {
@@ -44,8 +44,8 @@ impl BlockCacheShared {
         Self {
             device_key,
             consumers: AtomicUsize::new(0),
-            state: Arc::new(SleepMutex::new(BlockAddressSpace::new(geometry))),
-            endpoint: SleepMutex::new(endpoint),
+            state: Arc::new(Mutex::new(BlockAddressSpace::new(geometry))),
+            endpoint: Mutex::new(endpoint),
         }
     }
 
@@ -93,7 +93,7 @@ impl BlockCacheShared {
     /// Publishes a data-only capability for allocator reclaim. Its last
     /// release frees cache storage without running a device destructor.
     #[cfg(feature = "vfs")]
-    pub(super) fn reclaim_state(&self) -> alloc::sync::Weak<SleepMutex<BlockAddressSpace>> {
+    pub(super) fn reclaim_state(&self) -> alloc::sync::Weak<Mutex<BlockAddressSpace>> {
         Arc::downgrade(&self.state)
     }
 }

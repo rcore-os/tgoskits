@@ -296,6 +296,11 @@ static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
 static TASK_OPS: RuntimeTaskOps = RuntimeTaskOps;
 static IRQ_REGISTRAR: RuntimeBlockIrqRegistrar = RuntimeBlockIrqRegistrar;
 
+#[cfg(has_builtin_initramfs)]
+const BUILTIN_INITRAMFS: &[u8] = include_bytes!(env!("AX_BUILTIN_INITRAMFS"));
+#[cfg(not(has_builtin_initramfs))]
+const BUILTIN_INITRAMFS: &[u8] = &[];
+
 pub(super) fn init(bootargs: Option<&str>) {
     ONLINE_BLOCK_CPUS.store(1, Ordering::Release);
     ax_fs_ng::os::install_dma_device_resolver(ax_driver::dma_device_for_info);
@@ -307,11 +312,72 @@ pub(super) fn init(bootargs: Option<&str>) {
         irq_registrar(),
         None,
     );
-    ax_fs_ng::root::init_root_from_rdif_sources(
+    let archive = ax_hal::boot::take_initramfs_range();
+    let memory = (archive.is_some() || !BUILTIN_INITRAMFS.is_empty()).then(|| {
+        let external = archive.map(|range| {
+            let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(range.start));
+            // SAFETY: someboot validates this FDT range against RAM and reserves
+            // it before the allocator is initialized. It stays reserved until
+            // unpack returns and contains exactly end - start readable bytes.
+            unsafe {
+                core::slice::from_raw_parts(
+                    address.as_usize() as *const u8,
+                    range.end - range.start,
+                )
+            }
+        });
+        let (fs, report) =
+            ax_fs_ng::initramfs::unpack_sources(&[BUILTIN_INITRAMFS, external.unwrap_or(&[])])
+                .unwrap_or_else(|error| panic!("host initramfs unpack failed: {error:?}"));
+        info!("host initramfs unpacked: {report:?}");
+        fs
+    });
+    if let Some(range) = archive {
+        release_archive_pages(range);
+    }
+    #[cfg(feature = "starry-init")]
+    let early_init = Some(
+        ax_fs_ng::bootargs::tokens(bootargs.unwrap_or(""))
+            .into_iter()
+            .take_while(|arg| arg != "--")
+            .filter_map(|arg| arg.strip_prefix("rdinit=").map(String::from))
+            .last()
+            .unwrap_or_else(|| "/init".into()),
+    );
+    #[cfg(not(feature = "starry-init"))]
+    let early_init: Option<String> = None;
+    let kind = ax_fs_ng::root::init_root_from_rdif_sources_with_policy(
         take_rdif_block_devices(),
         take_rdif_block_groups(),
         bootargs,
+        memory,
+        early_init.as_deref(),
+        cfg!(feature = "deferred-rootfs"),
     );
+    info!("host root selected: {kind:?}");
+}
+
+fn release_archive_pages(range: ax_hal::boot::InitramfsRange) {
+    if !range.reclaimable {
+        return;
+    }
+    const PAGE_SIZE: usize = ax_fs_ng::os::memory::PAGE_SIZE;
+    // Only pages wholly contained in the archive are returned. The boundary
+    // pages can contain firmware data outside the initramfs allocation.
+    let start = range.start.saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let end = range.end & !(PAGE_SIZE - 1);
+    if start < end {
+        let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(start));
+        // SAFETY: the boot memory map excludes these complete archive-owned
+        // pages from every allocator region, and the direct map remains valid.
+        let managed =
+            unsafe { ax_alloc::global_add_memory_compact(address.as_usize(), end - start) }
+                .expect("failed to reclaim host initramfs pages");
+        info!(
+            "host initramfs reclaimed {managed} of {} complete archive bytes",
+            end - start
+        );
+    }
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]

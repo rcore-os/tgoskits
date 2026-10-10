@@ -1,8 +1,10 @@
-use core::{mem, ptr::NonNull};
+use alloc::vec::Vec;
+use core::{mem, ptr, ptr::NonNull};
 
 use uefi::{
     Status, boot,
     mem::memory_map::{MemoryMap, MemoryType},
+    proto::loaded_image::LoadedImage,
 };
 
 const UEFI_PAGE_SIZE: u64 = 4096;
@@ -14,7 +16,94 @@ const OSTOOL_BOOT_INFO_MAX_RAM_REGIONS: usize = 32;
 pub enum JumpError {
     EntryAddressTooLarge,
     BootInfoAllocateFailed,
+    LoadOptionsAllocateFailed,
     SystemTableUnavailable,
+    InvalidLoadOptions,
+    LoadedImageProtocol(Status),
+}
+
+#[derive(Debug)]
+pub struct PreparedLoadOptions {
+    words: Option<Vec<u16>>,
+}
+
+impl PreparedLoadOptions {
+    pub fn new(cmdline: Option<&str>) -> Result<Self, JumpError> {
+        let words = cmdline
+            .filter(|cmdline| !cmdline.is_empty())
+            .map(|cmdline| {
+                if !httpboot_protocol::valid_host_cmdline(cmdline) {
+                    return Err(JumpError::InvalidLoadOptions);
+                }
+                let mut words = Vec::new();
+                words
+                    .try_reserve_exact(cmdline.len() + 1)
+                    .map_err(|_| JumpError::LoadOptionsAllocateFailed)?;
+                words.extend(cmdline.bytes().map(u16::from));
+                words.push(0);
+                Ok(words)
+            })
+            .transpose()?;
+        Ok(Self { words })
+    }
+}
+
+struct InstalledLoadOptions {
+    words: Option<Vec<u16>>,
+    previous_ptr: *const u8,
+    previous_size: u32,
+}
+
+impl InstalledLoadOptions {
+    fn install(prepared: PreparedLoadOptions) -> Result<Self, JumpError> {
+        let mut image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())
+            .map_err(|error| JumpError::LoadedImageProtocol(error.status()))?;
+        let (previous_ptr, previous_size) = image
+            .load_options_as_bytes()
+            .map(|bytes| {
+                (
+                    bytes.as_ptr(),
+                    u32::try_from(bytes.len()).expect("UEFI load options size is u32"),
+                )
+            })
+            .unwrap_or((ptr::null(), 0));
+        let (options, size) = prepared.words.as_ref().map_or((ptr::null(), 0), |words| {
+            (
+                words.as_ptr().cast::<u8>(),
+                u32::try_from(words.len() * size_of::<u16>())
+                    .expect("validated command line fits UEFI LoadOptionsSize"),
+            )
+        });
+        // SAFETY: `prepared.words` moves into the returned guard, so the
+        // aligned UCS-2 buffer remains allocated until the EFI entry returns.
+        // A missing command line deliberately installs a null, zero-size value.
+        unsafe { image.set_load_options(options, size) };
+        drop(image);
+        Ok(Self {
+            words: prepared.words,
+            previous_ptr,
+            previous_size,
+        })
+    }
+
+    fn restore(mut self) -> Result<(), JumpError> {
+        let mut image = match boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle()) {
+            Ok(image) => image,
+            Err(error) => {
+                // The image handle still points at this buffer. Keep it alive
+                // rather than leave firmware with a dangling LoadOptions pointer.
+                if let Some(words) = self.words.take() {
+                    mem::forget(words);
+                }
+                return Err(JumpError::LoadedImageProtocol(error.status()));
+            }
+        };
+        // SAFETY: the previous pointer and size were copied from this same
+        // LoadedImage protocol before replacement. Its original owner remains
+        // responsible for that allocation throughout the child invocation.
+        unsafe { image.set_load_options(self.previous_ptr, self.previous_size) };
+        Ok(())
+    }
 }
 
 #[repr(C)]
@@ -73,23 +162,29 @@ pub fn exit_boot_services_and_jump(entry_point: u64) -> Result<(), JumpError> {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn jump_to_uefi_entry(entry_point: u64) -> Result<(), JumpError> {
+pub fn jump_to_uefi_entry(
+    entry_point: u64,
+    load_options: PreparedLoadOptions,
+) -> Result<(), JumpError> {
     let entry_point = usize::try_from(entry_point).map_err(|_| JumpError::EntryAddressTooLarge)?;
     let system_table = uefi::table::system_table_raw().ok_or(JumpError::SystemTableUnavailable)?;
-    // This handoff intentionally reuses axloader's image handle. It is only
-    // suitable for loaded entries that use the UEFI system table but do not
-    // query LoadedImage or other image-handle-specific protocols.
-    unsafe {
+    let installed = InstalledLoadOptions::install(load_options)?;
+    let result = unsafe {
         call_uefi_entry_point(
             entry_point,
             boot::image_handle(),
             system_table.as_ptr().cast(),
         )
-    }
+    };
+    installed.restore()?;
+    result
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn jump_to_uefi_entry(_entry_point: u64) -> Result<(), JumpError> {
+pub fn jump_to_uefi_entry(
+    _entry_point: u64,
+    _load_options: PreparedLoadOptions,
+) -> Result<(), JumpError> {
     Err(JumpError::SystemTableUnavailable)
 }
 
@@ -138,4 +233,40 @@ unsafe fn call_uefi_entry_point(
     let status = entry(image_handle, system_table);
     crate::logln!("uefi_entry_returned: {status:?}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::{JumpError, PreparedLoadOptions};
+
+    #[test]
+    fn prepares_optional_nul_terminated_ucs2_load_options() {
+        assert!(PreparedLoadOptions::new(None).unwrap().words.is_none());
+        assert_eq!(
+            PreparedLoadOptions::new(Some("console=ttyS0"))
+                .unwrap()
+                .words
+                .unwrap(),
+            "console=ttyS0"
+                .bytes()
+                .map(u16::from)
+                .chain([0])
+                .collect::<Vec<_>>()
+        );
+        assert!(PreparedLoadOptions::new(Some("")).unwrap().words.is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_load_options_before_installing_protocol_pointer() {
+        assert_eq!(
+            PreparedLoadOptions::new(Some("console=ttyS0\nreset")).unwrap_err(),
+            JumpError::InvalidLoadOptions
+        );
+        assert_eq!(
+            PreparedLoadOptions::new(Some(&"x".repeat(4096))).unwrap_err(),
+            JumpError::InvalidLoadOptions
+        );
+    }
 }

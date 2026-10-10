@@ -1,21 +1,28 @@
 //! Architecture-neutral guest device-tree preparation.
 
-use std::{format, vec::Vec};
+use std::format;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use std::vec::Vec;
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 use axvmconfig::{GuestConfig, VMBootProtocol};
 
-use crate::{
-    AxVmResult, ax_err, ax_err_type,
-    boot::{BootImageProvider, fdt::GuestDtbImage},
-    config::AxVMConfig,
-};
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+use crate::boot::{BootImageProvider, fdt::GuestDtbImage};
+use crate::{AxVmResult, ax_err_type, config::AxVMConfig};
 
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) mod cpu;
 pub(crate) mod create;
 mod device;
+mod disabled;
+mod import;
 pub(crate) mod interrupt;
 mod parser;
 mod policy;
 mod print;
+mod references;
+mod reserved;
 pub(crate) mod serial;
 pub(crate) mod timer;
 pub(crate) mod tree;
@@ -23,11 +30,11 @@ pub(crate) mod tree;
 #[cfg(test)]
 mod tree_tests;
 
-#[cfg(test)]
-pub use create::update_fdt;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub use parser::*;
 pub use policy::{DecodedInterrupt, GuestFdtPolicy};
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 pub fn prepare_dtb_guest(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut GuestConfig,
@@ -111,6 +118,7 @@ pub(crate) fn selected_guest_fdt_policy() -> GuestFdtPolicy {
     super::guest_fdt_policy()
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn skip_guest_dtb(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {
     info!(
         "VM[{}] uses UEFI boot protocol, skipping guest DTB handling",
@@ -120,6 +128,7 @@ fn skip_guest_dtb(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig
     vm_create_config.kernel.dtb_load_addr = None;
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn build_guest_dtb(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut GuestConfig,
@@ -127,6 +136,7 @@ fn build_guest_dtb(
     host_fdt_bytes: Option<&'static [u8]>,
 ) -> AxVmResult<Option<GuestDtbImage>> {
     let provided_dtb = get_developer_provided_dtb(vm_config, vm_create_config, provider)?;
+    select_guest_machine_resources(vm_config, provided_dtb.as_deref())?;
 
     match (host_fdt_bytes, provided_dtb) {
         (Some(host_bytes), Some(provided)) => {
@@ -166,11 +176,52 @@ fn build_guest_dtb(
     }
 }
 
+// Explicit guest firmware owns virtualized GIC and UART resources. Resolve
+// them before reserving MMIO ranges and constructing the immutable device plan.
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+fn select_guest_machine_resources(
+    vm_config: &mut AxVMConfig,
+    provided_dtb: Option<&[u8]>,
+) -> AxVmResult {
+    if let Some(current) = vm_config.gic_profile() {
+        let gic = interrupt::select_guest_gic(
+            current,
+            provided_dtb,
+            vm_config.uses_passthrough_address_space(),
+        )?;
+        vm_config.replace_machine_gic(gic)?;
+    }
+    let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
+    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+        && let Some(serial) = serial::select_guest_serial(
+            vm_config.serial_profile(),
+            provided_dtb,
+            vm_config.uses_passthrough_address_space(),
+            interrupt_encoding,
+        )?
+    {
+        info!(
+            "VM[{}] virtual UART follows explicit guest firmware: {:?}",
+            vm_config.id(),
+            serial.profile
+        );
+        vm_config.replace_machine_serial(
+            serial.profile,
+            Some(crate::machine::GuestSerialFirmwareIdentity::Fdt(
+                serial.identity,
+            )),
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn parse_host_fdt(host_fdt_bytes: &'static [u8]) -> AxVmResult<fdt_edit::Fdt> {
     fdt_edit::Fdt::from_bytes(host_fdt_bytes)
         .map_err(|err| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {err:#?}")))
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn enrich_guest_config(
     vm_config: &mut AxVMConfig,
     vm_create_config: &mut GuestConfig,
@@ -188,6 +239,7 @@ fn enrich_guest_config(
     parse_passthrough_devices_address(vm_config, vm_create_config, dtb)
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {
     error!(
         "VM[{}] DTB not found in memory, skipping...",
@@ -213,33 +265,18 @@ fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mu
     vm_create_config.kernel.dtb_load_addr = None;
 }
 
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 fn get_developer_provided_dtb(
-    vm_config: &AxVMConfig,
-    crate_config: &GuestConfig,
+    _vm_config: &AxVMConfig,
+    config: &GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<Vec<u8>>> {
-    match crate_config.kernel.image_location.as_deref() {
-        Some("memory") => Ok(provider
-            .static_vm_images()
-            .iter()
-            .find(|image| image.id == vm_config.id())
-            .and_then(|images| images.dtb)
-            .map(|dtb| {
-                info!("DTB file in memory, size: 0x{:x}", dtb.len());
-                dtb.to_vec()
-            })),
-        #[cfg(any(feature = "fs", feature = "host-fs"))]
-        Some("fs") => crate_config
-            .kernel
-            .dtb_path
-            .as_deref()
-            .map(|path| crate::boot::images::fs::read_full_image(path, provider))
-            .transpose(),
-        _ => ax_err!(
-            InvalidInput,
-            "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
-        ),
-    }
+    config
+        .kernel
+        .dtb_path
+        .as_deref()
+        .map(|path| provider.read_file(path))
+        .transpose()
 }
 
 #[cfg(test)]

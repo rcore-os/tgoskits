@@ -68,12 +68,12 @@ impl DeviceArg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct QemuOptions {
+pub(super) struct QemuOptions {
     fields: Vec<String>,
 }
 
 impl QemuOptions {
-    fn parse(value: &str) -> Self {
+    pub(super) fn parse(value: &str) -> Self {
         let mut fields = Vec::new();
         let mut field = String::new();
         let mut chars = value.chars().peekable();
@@ -95,7 +95,7 @@ impl QemuOptions {
         Self { fields }
     }
 
-    fn value(&self, key: &str) -> Option<&str> {
+    pub(super) fn value(&self, key: &str) -> Option<&str> {
         self.fields.iter().find_map(|field| {
             let (field_key, value) = field.split_once('=')?;
             (field_key == key).then_some(value)

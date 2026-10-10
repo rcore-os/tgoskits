@@ -13,7 +13,6 @@ pub(crate) mod overlay;
 pub(crate) mod proc;
 mod proc_mountinfo;
 mod sysfs;
-mod tmp;
 pub(crate) mod usbfs;
 
 use alloc::{boxed::Box, sync::Arc};
@@ -23,7 +22,7 @@ use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{
     DirNodeOps, FileNodeOps, Filesystem, MutationCredentials, NodePermission, WeakDirEntry,
 };
-pub use tmp::MemoryFs;
+pub use ax_fs_ng::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
 use crate::StarryResult;
@@ -61,14 +60,14 @@ impl<T: FileNodeOps> From<Arc<T>> for NodeOpsMux {
 
 const DIR_PERMISSION: NodePermission = NodePermission::from_bits_truncate(0o755);
 
-static SHM_TMPFS: LazyInit<Arc<tmp::MemoryFs>> = LazyInit::new();
-static TMP_TMPFS: LazyInit<Arc<tmp::MemoryFs>> = LazyInit::new();
+static SHM_TMPFS: LazyInit<Arc<MemoryFs>> = LazyInit::new();
+static TMP_TMPFS: LazyInit<Arc<MemoryFs>> = LazyInit::new();
 
-pub fn shm_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
+pub fn shm_tmpfs() -> Option<Arc<MemoryFs>> {
     SHM_TMPFS.get().map(Arc::clone)
 }
 
-pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
+pub fn tmp_tmpfs() -> Option<Arc<MemoryFs>> {
     TMP_TMPFS.get().map(Arc::clone)
 }
 
@@ -90,16 +89,17 @@ pub fn mount_all() -> StarryResult<()> {
     let fs_context = current_fs_context();
     let fs = fs_context.lock();
     let usbfs = usbfs::new_usbfs()?;
-    mount_at(&fs, "/dev", dev::new_devfs())?;
+    let root_mount_device = fs.root_dir().mountpoint().device();
+    mount_at(&fs, "/dev", dev::new_devfs(root_mount_device))?;
     if let Some(dev_usbfs) = usbfs {
         mount_at(&fs, "/dev/bus/usb", dev_usbfs)?;
     }
 
-    let (shm_fs, shm_handle) = tmp::MemoryFs::new_with_handle();
+    let (shm_fs, shm_handle) = MemoryFs::new_with_handle();
     mount_at(&fs, "/dev/shm", shm_fs)?;
     SHM_TMPFS.init_once(shm_handle);
 
-    let (tmp_fs, tmp_handle) = tmp::MemoryFs::new_with_handle();
+    let (tmp_fs, tmp_handle) = MemoryFs::new_with_handle();
     mount_at(&fs, "/tmp", tmp_fs)?;
     TMP_TMPFS.init_once(tmp_handle);
 

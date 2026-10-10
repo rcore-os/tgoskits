@@ -2,21 +2,78 @@
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from scripts.test.check_ci_routing import mapping_block, named_step_block
-
-
+from scripts.test.check_ci_routing import (
+    check_mirrored_payload_consistency,
+    list_items_in_order,
+    mapping_block,
+    named_step_block,
+)
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+STARRY_APPS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/starry-apps.yml"
+AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
+BENCHMARKS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/benchmarks.yml"
+DOCS_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/docs.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
 PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
+AXVISOR_NIGHTLY_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/axvisor-nightly.yml"
+
+
+class MirroredPayloadTests(unittest.TestCase):
+    def test_current_shared_payloads_are_consistent(self) -> None:
+        self.assertEqual(check_mirrored_payload_consistency(WORKSPACE_ROOT), [])
+
+    def test_shared_payload_discovery_does_not_need_case_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            smoke = root / "apps/starry/generated-case"
+            benchmark = root / "benchmarks/starry/generated-case"
+            smoke.mkdir(parents=True)
+            benchmark.mkdir(parents=True)
+            (smoke / "payload.sh").write_text("same\n", encoding="utf-8")
+            (benchmark / "payload.sh").write_text("same\n", encoding="utf-8")
+            self.assertEqual(check_mirrored_payload_consistency(root), [])
+            (benchmark / "payload.sh").write_text("changed\n", encoding="utf-8")
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("generated-case/payload.sh", errors[0])
+
+            (smoke / "payload.sh").unlink()
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("missing mirrored benchmark payload file", errors[0])
+
+    def test_shared_build_configuration_must_remain_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            smoke = root / "apps/starry/generated-case"
+            benchmark = root / "benchmarks/starry/generated-case"
+            smoke.mkdir(parents=True)
+            benchmark.mkdir(parents=True)
+            (smoke / "build-x86_64-unknown-none.toml").write_text(
+                "features = []\n", encoding="utf-8"
+            )
+            (benchmark / "build-x86_64-unknown-none.toml").write_text(
+                "features = []\n", encoding="utf-8"
+            )
+
+            self.assertEqual(check_mirrored_payload_consistency(root), [])
+            (benchmark / "build-x86_64-unknown-none.toml").write_text(
+                "features = ['changed']\n", encoding="utf-8"
+            )
+            errors = check_mirrored_payload_consistency(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("build-x86_64-unknown-none.toml", errors[0])
 
 
 class ReleasePrerequisiteTests(unittest.TestCase):
@@ -113,6 +170,146 @@ class ConcurrencyRoutingTests(unittest.TestCase):
         )
         self.assertIn("queue: max", concurrency)
 
+    def test_board_jobs_only_share_groups_on_protected_or_manual_runs(self) -> None:
+        workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
+        job = mapping_block(mapping_block(workflow, "jobs", 0), "run", 2)
+        concurrency = mapping_block(job, "concurrency", 4)
+        match = re.search(
+            r"group:\s*(?:>-\s*)?ci-resource-\${{(.*?)}}", concurrency, re.S
+        )
+        self.assertIsNotNone(match)
+        expression = " ".join(match.group(1).split())
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+
+        def group(
+            event: str,
+            ref: str,
+            run_id: int,
+            resource: str = "board",
+            check_id: str = "check",
+        ) -> str:
+            # GitHub's &&/|| and format() use the same truthy short-circuit
+            # behavior as Python's and/or and str.format for this expression.
+            context = {
+                "github": SimpleNamespace(event_name=event, ref=ref, run_id=run_id),
+                "matrix": SimpleNamespace(id=check_id, resource_group=resource),
+                "format": lambda template, *args: template.format(*args),
+            }
+            return "ci-resource-" + eval(expression, {"__builtins__": {}}, context)
+
+        for event, ref in (
+            ("push", "refs/heads/dev"),
+            ("push", "refs/heads/main"),
+            ("schedule", "refs/heads/dev"),
+            ("workflow_dispatch", "refs/heads/topic"),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(group(event, ref, 1), "ci-resource-board")
+                self.assertEqual(group(event, ref, 2), "ci-resource-board")
+
+        for event, ref in (
+            ("push", "refs/heads/topic"),
+            ("pull_request", "refs/pull/123/merge"),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(group(event, ref, 1), "ci-resource-run-1-check")
+                self.assertEqual(group(event, ref, 2), "ci-resource-run-2-check")
+                self.assertEqual(
+                    group(event, ref, 1, check_id="other"), "ci-resource-run-1-other"
+                )
+
+        self.assertEqual(
+            group("push", "refs/heads/dev", 1, ""), "ci-resource-run-1-check"
+        )
+        self.assertIn("queue: max", concurrency)
+        self.assertIn("cancel-in-progress: false", concurrency)
+
+
+class AxvisorNightlyWorkflowTests(unittest.TestCase):
+    def test_manual_dispatch_uses_the_selected_revision(self) -> None:
+        workflow = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+        plan = mapping_block(workflow, "plan", 2)
+        concurrency = mapping_block(workflow, "concurrency", 0)
+
+        self.assertNotIn("ref: dev", plan)
+        self.assertIn("- name: Pin triggering revision", plan)
+        self.assertIn('echo "sha=$(git rev-parse HEAD)"', plan)
+        self.assertIn("axvisor-nightly-${{ github.ref }}", concurrency)
+        self.assertIn("revision-label: tested revision", workflow)
+        # Performance history moved to the benchmarks workflow, which pins the
+        # dev revision; a nightly dispatch from any branch must stay a pure
+        # check run and never publish history.
+        self.assertNotIn("perf-history", workflow)
+
+
+class NightlyResultPropagationTests(unittest.TestCase):
+    def _result_scripts(self) -> dict[str, str]:
+        # Verify each caller's with: mapping, then execute the actual shell body
+        # from the composite action so its inputs and failure propagation stay
+        # coupled to the implementation under test.
+        action = (
+            WORKSPACE_ROOT / ".github/actions/ci-result/action.yml"
+        ).read_text(encoding="utf-8")
+        action_step = named_step_block(action, "Render result")
+        run_lines = action_step.splitlines()
+        run_index = next(
+            index for index, line in enumerate(run_lines) if line.strip() == "run: |"
+        )
+        action_script = textwrap.dedent("\n".join(run_lines[run_index + 1 :]))
+        scripts = {}
+        expected = (
+            (
+                "starry-apps",
+                STARRY_APPS_WORKFLOW,
+                ("Plan=${{ needs.plan.result }}", "Apps=${{ needs.checks.result }}"),
+                ("Plan", "Apps"),
+            ),
+            (
+                "axvisor-nightly",
+                AXVISOR_NIGHTLY_WORKFLOW,
+                ("Plan=${{ needs.plan.result }}", "Checks=${{ needs.checks.result }}"),
+                ("Plan", "Checks"),
+            ),
+        )
+        for label, workflow_path, stages, required in expected:
+            workflow = workflow_path.read_text(encoding="utf-8")
+            result_step = named_step_block(workflow, "Report result")
+            self.assertIn("uses: ./.github/actions/ci-result", result_step)
+            inputs = mapping_block(result_step, "with", 8)
+            for stage in stages:
+                self.assertIn(stage, inputs)
+            for required_stage in required:
+                self.assertIn(f"            {required_stage}", inputs)
+            scripts[label] = (
+                f"export STAGES=\"$(printf 'Plan=%s\\n{required[1]}=%s' "
+                '"$PLAN_RESULT" "$CHECKS_RESULT")"\n'
+                f"export REQUIRED_STAGES=\"$(printf 'Plan\\n{required[1]}')\"\n"
+                + action_script
+            )
+        return scripts
+
+    def test_result_jobs_propagate_a_failed_plan(self) -> None:
+        for label, script in self._result_scripts().items():
+            with self.subTest(workflow=label):
+                completed = run_result_summary_step(
+                    script, PLAN_RESULT="failure"
+                )
+                self.assertNotEqual(completed.returncode, 0)
+
+    def test_result_jobs_propagate_failed_checks(self) -> None:
+        for label, script in self._result_scripts().items():
+            with self.subTest(workflow=label):
+                completed = run_result_summary_step(
+                    script, CHECKS_RESULT="failure"
+                )
+                self.assertNotEqual(completed.returncode, 0)
+
+    def test_result_jobs_succeed_when_every_stage_passes(self) -> None:
+        for label, script in self._result_scripts().items():
+            with self.subTest(workflow=label):
+                completed = run_result_summary_step(script)
+                self.assertEqual(completed.returncode, 0)
+
 
 class MatrixParallelismTests(unittest.TestCase):
     def test_self_hosted_matrix_waits_for_preflight_then_runs_in_parallel(
@@ -140,6 +337,219 @@ class MatrixParallelismTests(unittest.TestCase):
             reusable_workflow,
             r"(?ms)^      max_parallel:\n.*?^        default: (?:[2-9]|[1-9][0-9]+)$",
         )
+
+
+class ScheduledWorkflowOwnershipTests(unittest.TestCase):
+    def test_ci_pull_request_paths_cover_daily_workflows(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        triggers = mapping_block(workflow, "on", 0)
+        pull_request = mapping_block(triggers, "pull_request", 2)
+        paths = list_items_in_order(pull_request, "paths", 4)
+
+        for workflow_path in (
+            ".github/workflows/starry-apps.yml",
+            ".github/workflows/axvisor-nightly.yml",
+            ".github/workflows/benchmarks.yml",
+            ".github/workflows/docs.yml",
+        ):
+            self.assertIn(workflow_path, paths)
+
+    def test_benchmarks_workflow_owns_every_performance_matrix(self) -> None:
+        workflow = BENCHMARKS_WORKFLOW.read_text(encoding="utf-8")
+        triggers = mapping_block(workflow, "on", 0)
+        schedule = mapping_block(triggers, "schedule", 2)
+        jobs = mapping_block(workflow, "jobs", 0)
+        plan = mapping_block(jobs, "plan", 2)
+        plan_step = named_step_block(plan, "Plan benchmark matrices")
+
+        self.assertIn('cron: "40 21 * * *"', schedule)
+        self.assertIn("workflow_dispatch:", triggers)
+        self.assertIn("mode: benchmarks", plan_step)
+        # The owner of the performance history always measures the dev branch,
+        # so a manual dispatch elsewhere cannot publish non-dev history.
+        self.assertIn("ref: dev", plan)
+        matrix_names = sorted(set(re.findall(r"steps\.matrix\.outputs\.([a-z0-9_]+)", plan)))
+        self.assertTrue(matrix_names)
+        for matrix_name in matrix_names:
+            with self.subTest(matrix_name=matrix_name):
+                job_id = next(
+                    job_id
+                    for job_id in re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
+                    if f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}" in mapping_block(jobs, job_id, 2)
+                )
+                job = mapping_block(jobs, job_id, 2)
+                self.assertIn("uses: ./.github/workflows/reusable-check-matrix.yml", job)
+
+        board_jobs = [
+            mapping_block(jobs, job_id, 2)
+            for job_id in re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
+            if "board" in job_id
+        ]
+        self.assertTrue(any("max_parallel: 1" in job for job in board_jobs))
+
+        self.assertNotIn("perf-data", workflow)
+        self.assertNotIn("perf-history-axvisor", workflow)
+        self.assertNotIn("perf-history-starry", workflow)
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("push --force", workflow)
+        self.assertNotIn("git commit-tree", workflow)
+        self.assertNotIn("git mktree", workflow)
+
+        benchmark_updates = mapping_block(jobs, "benchmark-updates", 2)
+        self.assertTrue(benchmark_updates)
+        benchmark_updates_condition = mapping_block(
+            benchmark_updates.replace("if: >-", "if:"),
+            "if",
+            4,
+        )
+        self.assertIn("axvisor-nightly-performance-*", benchmark_updates)
+        self.assertIn("continue-on-error: true", benchmark_updates)
+        self.assertIn("starry-apps-nightly-performance-*", benchmark_updates)
+        benchmark_job_ids = re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
+        performance_jobs = {
+            job_id
+            for job_id in benchmark_job_ids
+            if re.search(
+                r"matrix_json: \$\{\{ needs\.plan\.outputs\.[a-z0-9_-]*performance_matrix \}\}",
+                mapping_block(jobs, job_id, 2),
+            )
+        }
+        expected_jobs = {"plan", *performance_jobs}
+        self.assertTrue(performance_jobs)
+        update_needs = set(list_items_in_order(benchmark_updates, "needs", 4))
+        self.assertTrue(expected_jobs <= update_needs)
+        for job_id in sorted(expected_jobs):
+            with self.subTest(job_id=job_id):
+                self.assertIn(f"needs.{job_id}.result == 'success'", benchmark_updates_condition)
+        self.assertIn(
+            "INCLUDE_AXVISOR: ${{ needs.axvisor_performance.result == 'success' }}",
+            benchmark_updates,
+        )
+        axvisor_download = named_step_block(
+            benchmark_updates,
+            "Download AxVisor performance reports",
+        )
+        self.assertIn(
+            "if: needs.axvisor_performance.result == 'success'",
+            axvisor_download,
+        )
+        self.assertIn(
+            'if [ "${INCLUDE_AXVISOR}" = "true" ]; then',
+            benchmark_updates,
+        )
+        self.assertIn("name: benchmark-updates", benchmark_updates)
+        self.assertIn("retention-days: 30", benchmark_updates)
+        self.assertIn(
+            "steps.updates.outputs.has_updates == 'true'",
+            benchmark_updates,
+        )
+        self.assertIn("gh workflow run docs.yml --ref dev", benchmark_updates)
+        for dispatch_input in (
+            "benchmark_run_id",
+            "benchmark_revision",
+            "benchmark_date",
+        ):
+            self.assertIn(f"-f {dispatch_input}=", benchmark_updates)
+
+    def test_docs_workflow_is_the_only_published_benchmark_writer(self) -> None:
+        workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("push --force", workflow)
+
+        triggers = mapping_block(workflow, "on", 0)
+        dispatch = mapping_block(triggers, "workflow_dispatch", 2)
+        for input_name in (
+            "benchmark_run_id",
+            "benchmark_revision",
+            "benchmark_date",
+        ):
+            self.assertIn(f"{input_name}:", dispatch)
+
+        permissions = mapping_block(workflow, "permissions", 0)
+        self.assertIn("actions: read", permissions)
+        self.assertIn("contents: read", permissions)
+        self.assertIn("pages: write", permissions)
+        self.assertIn("id-token: write", permissions)
+
+        concurrency = mapping_block(workflow, "concurrency", 0)
+        self.assertIn("group: docs-pages", concurrency)
+        self.assertIn("queue: max", concurrency)
+        self.assertNotIn("cancel-in-progress", concurrency)
+
+        jobs = mapping_block(workflow, "jobs", 0)
+        build = mapping_block(jobs, "build", 2)
+        pages = named_step_block(build, "Set up Pages")
+        self.assertIn("id: pages", pages)
+        self.assertIn("uses: actions/configure-pages@v6", pages)
+
+        download = named_step_block(build, "Download benchmark updates")
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch'",
+            download,
+        )
+        self.assertIn("inputs.benchmark_run_id != ''", download)
+        self.assertIn("name: benchmark-updates", download)
+        self.assertIn("run-id: ${{ inputs.benchmark_run_id }}", download)
+        self.assertIn("github-token: ${{ github.token }}", download)
+
+        prepare = named_step_block(build, "Prepare performance dashboard")
+        for fragment in (
+            "PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}",
+            "BENCHMARK_UPDATES: ${{ runner.temp }}/benchmark-updates",
+            "python3 scripts/test/ci_perf_pages.py",
+            '--base-url "${PAGES_BASE_URL}"',
+            "--output-dir docs/build",
+            '--updates-dir "${BENCHMARK_UPDATES}"',
+            '--benchmark-run-id "${BENCHMARK_RUN_ID}"',
+            '--benchmark-revision "${BENCHMARK_REVISION}"',
+            '--benchmark-date "${BENCHMARK_DATE}"',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, prepare)
+        # The fetch, cache-buster, legacy bootstrap and merge branches moved
+        # into ci_perf_pages.py, so the workflow step must not keep them.
+        for fragment in (
+            "curl ",
+            "--header 'Cache-Control: no-cache'",
+            "cache_buster=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+            "git fetch --depth=1 origin perf-data",
+            "git show FETCH_HEAD:history.json",
+            "git show FETCH_HEAD:index.html",
+            "::error::Failed to fetch",
+            "::error::Unexpected published dashboard state",
+            "docs/build/benchmark/index.html",
+            "docs/build/benchmark/history.json",
+        ):
+            with self.subTest(removed_fragment=fragment):
+                self.assertNotIn(fragment, prepare)
+        self.assertNotIn("perf-data", workflow)
+        self.assertLess(
+            build.index("- name: Set up Pages"),
+            build.index("- name: Prepare performance dashboard"),
+        )
+        self.assertLess(
+            build.index("- name: Prepare performance dashboard"),
+            build.index("- name: Upload Pages artifact"),
+        )
+
+        deploy = mapping_block(jobs, "deploy", 2)
+        self.assertIn("name: github-pages", deploy)
+        self.assertIn("uses: actions/deploy-pages@v5", deploy)
+
+    def test_daily_workflows_do_not_own_benchmark_execution(self) -> None:
+        starry_apps = STARRY_APPS_WORKFLOW.read_text(encoding="utf-8")
+        axvisor_nightly = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("mode: starry-apps", starry_apps)
+        self.assertIn("mode: axvisor-nightly", axvisor_nightly)
+        for workflow in (starry_apps, axvisor_nightly):
+            self.assertNotIn("benchmarks.toml", workflow)
+            self.assertNotIn("performance_matrix", workflow)
+            self.assertNotIn("axvisor-nightly-performance", workflow)
+            self.assertNotIn("starry-apps-nightly-performance", workflow)
+            self.assertNotIn("--source axvisor", workflow)
+            self.assertNotIn("--source starry", workflow)
+            self.assertNotIn("perf-data-publish", workflow)
 
 
 class WifiSecretRoutingTests(unittest.TestCase):
@@ -204,8 +614,8 @@ class DuplicateEventRoutingTests(unittest.TestCase):
             any("actions/runs/101/jobs" in call for call in result.gh_calls)
         )
 
-    def test_waiting_and_requested_pushes_suppress_pull_request(self) -> None:
-        for status in ("waiting", "requested"):
+    def test_pending_waiting_and_requested_pushes_suppress_pull_request(self) -> None:
+        for status in ("pending", "waiting", "requested"):
             with self.subTest(status=status):
                 result = run_route(
                     event_name="pull_request",
@@ -639,13 +1049,53 @@ def cancelled_runs(result: RouteResult) -> set[int]:
 
 
 def workflow_step_script(step_name: str) -> str:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    return workflow_step_script_in(
+        CI_WORKFLOW.read_text(encoding="utf-8"), step_name
+    )
+
+
+def workflow_step_script_in(workflow: str, step_name: str) -> str:
     step = named_step_block(workflow, step_name)
     lines = step.splitlines()
     run_index = next(
         index for index, line in enumerate(lines) if line.strip() == "run: |"
     )
     return textwrap.dedent("\n".join(lines[run_index + 1 :]))
+
+
+def run_result_summary_step(
+    script: str, **env_overrides: str
+) -> subprocess.CompletedProcess:
+    """Execute a workflow's result-summary step against a temporary summary.
+
+    The step only reads stage results from the environment and appends to
+    ``GITHUB_STEP_SUMMARY``, so a local bash run reproduces the workflow's exit
+    status without touching any external state.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        summary = Path(temp_dir_name) / "summary"
+        env = os.environ.copy()
+        env.update(
+            {
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "TITLE": "fixture",
+                "REVISION_LABEL": "tested revision",
+                "PLAN_RESULT": "success",
+                "CHECKS_RESULT": "success",
+                "REVISION": "fixture",
+            }
+        )
+        env.update(env_overrides)
+        # GitHub runs `run:` steps with `bash -e`, so a failing `test` aborts
+        # the step even though the script does not set errexit itself.
+        return subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=WORKSPACE_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
 
 FAKE_GH = r'''#!/usr/bin/env python3

@@ -28,10 +28,11 @@ const KRETPROBE_MAX_ACTIVE: u32 = 10;
 use crate::{
     file::FileLike,
     kprobe::{
-        KernelKprobe, KernelKretprobe, KernelRawMutex, KprobeAuxiliary, UprobeTargetLease,
-        register_kprobe, register_kretprobe, unregister_kprobe, unregister_kretprobe,
+        KernelKprobe, KernelKretprobe, KprobeAuxiliary, UprobeTargetLease, register_kprobe,
+        register_kretprobe, unregister_kprobe, unregister_kretprobe,
     },
     perf::{PerfEventOps, bpf::OwnedEbpfVm},
+    sync::RawSpinLockIrqSaveBackend,
     uprobe::{KernelUprobe, unregister_uprobe},
 };
 
@@ -204,11 +205,11 @@ fn perf_probe_arg_to_kprobe_builder(
 
 fn perf_probe_arg_to_kretprobe_builder(
     args: &PerfProbeArgs,
-) -> StarryResult<KretprobeBuilder<KernelRawMutex>> {
+) -> StarryResult<KretprobeBuilder<RawSpinLockIrqSaveBackend>> {
     let symbol = &args.name;
     let addr = lookup_symbol_addr(symbol)?;
     Ok(
-        KretprobeBuilder::<KernelRawMutex>::new(KRETPROBE_MAX_ACTIVE)
+        KretprobeBuilder::<RawSpinLockIrqSaveBackend>::new(KRETPROBE_MAX_ACTIVE)
             .with_symbol(symbol.clone())
             .with_symbol_addr(addr),
     )
@@ -220,11 +221,11 @@ pub fn perf_event_open_kprobe(args: PerfProbeArgs) -> StarryResult<ProbePerfEven
     let probe = match args.config {
         PerfProbeConfig::Raw(PROBE_CONFIG_ENTRY) => {
             let builder = perf_probe_arg_to_kprobe_builder(&args)?;
-            ProbeTy::Kprobe(register_kprobe(builder))
+            ProbeTy::Kprobe(register_kprobe(builder)?)
         }
         PerfProbeConfig::Raw(PROBE_CONFIG_RETURN) => {
             let builder = perf_probe_arg_to_kretprobe_builder(&args)?;
-            ProbeTy::Kretprobe(register_kretprobe(builder))
+            ProbeTy::Kretprobe(register_kretprobe(builder)?)
         }
         _ => return Err(StarryError::InvalidInput),
     };

@@ -14,9 +14,7 @@ lto = "fat"
 [workspace]
 resolver = "3"
 members = [
-    "apps/starry/orangepi-5-plus-uvc/rust",
-    "test-suit/axvisor/normal/board-orangepi-5-plus/task-switch-overhead/guest",
-
+    "benchmarks/starry/orangepi-5-plus-uvc/rust",
     "bootloader/axloader",
 
     "components/axtest/axtest",
@@ -24,6 +22,7 @@ members = [
     "components/cpu-local",
     "components/ax-cgroup",
     "components/ax-lazyinit",
+    "components/host-boot-abi",
     "components/ax-task",
     "components/axbacktrace",
     "components/axcpu",
@@ -116,6 +115,7 @@ members = [
     "scripts/axbuild",
     "test-suit/arceos/loongarch/unaligned-fixup",
     "test-suit/arceos/cpu/pmu",
+    "test-suit/arceos/cpu/cpufreq",
     "test-suit/arceos/cpu/user-entry",
     "test-suit/arceos/cpu/paging",
     "test-suit/arceos/cpu/hypervisor-probe",
@@ -125,8 +125,9 @@ members = [
     "test-suit/arceos/cpu/trap-entry",
     "test-suit/arceos/axtest/sg2002-usb-msc",
     "test-suit/arceos/rust",
+    "test-suit/arceos/drivers/acpica-interpreter",
     "apps/arceos/*",
-    "test-suit/axvisor/normal/board-orangepi-5-plus/vcpu-perf/guest",
+    "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/guest",
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",
@@ -139,6 +140,7 @@ exclude = [
 ]
 
 [workspace.dependencies]
+cc = "1"
 ax-sched = { path = "components/axsched", version = "0.5.11" }
 # Local workspace crates
 # Keep local dependency requirements at major.minor precision so release-plz does not
@@ -221,11 +223,13 @@ x86-apic-driver = { version = "0.2", path = "drivers/intc/x86-apic-driver" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
 riscv_vplic = { version = "0.5", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.8", path = "drivers/blk/nvme-driver" }
+acpica-interpreter = { version = "0.1", path = "drivers/firmware/acpica-interpreter" }
 pcie = { version = "0.7", path = "drivers/pci/pcie" }
 rd-net = { version = "0.3", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.9", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.13", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5", path = "drivers/interface/rdif-clk" }
+rdif-cpufreq = { version = "0.1", path = "drivers/interface/rdif-cpufreq" }
 rdif-def = { version = "0.4", path = "drivers/interface/rdif-def" }
 rdif-display = { version = "0.5", path = "drivers/interface/rdif-display" }
 rdif-gpu = { version = "0.1", path = "drivers/interface/rdif-gpu" }
@@ -276,7 +280,8 @@ smoltcp = { version = "0.13.1", default-features = false }
 starry-kernel = { version = "0.12", path = "os/StarryOS/kernel" }
 starry-signal = { version = "0.10", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.6", path = "os/StarryOS/vm" }
-httpboot-protocol = { version = "0.2.0", default-features = false, features = ["alloc", "json"] }
+httpboot-protocol = { version = "0.4.0", default-features = false, features = ["alloc", "json"] }
+host-boot-abi = { version = "0.1.0", path = "components/host-boot-abi" }
 x86_vlapic = { version = "0.5", path = "virtualization/x86_vlapic" }
 page-table-generic = { version = "0.9", path = "memory/page-table-generic" }
 someboot = { version = "0.7.2", path = "platforms/someboot" }
@@ -326,7 +331,8 @@ lock_api = { version = "0.4", default-features = false }
 spinning_top = { version = "0.3", default-features = false }
 log = "0.4"
 loom = "0.7.2"
-ostool = { version = "0.30.0" }
+# FIT ramdisks need a load property for Rockchip U-Boot (drivercraft/ostool#207).
+ostool = "0.30.3"
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"

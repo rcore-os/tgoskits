@@ -13,15 +13,21 @@ use super::{
     irq::AicHardIrq,
     startup::{AicOwnerStartup, AicPollIrqControl},
 };
-use crate::rdif::{
-    device::{MacAddressState, OwnerChannels, WifiChannels, queues::queue_parts, shared_irq_latch},
-    error::AicRdifError,
-    owner::AicOwner,
+use crate::{
+    TxAggregation,
+    rdif::{
+        device::{
+            MacAddressState, OwnerChannels, WifiChannels, queues::queue_parts, shared_irq_latch,
+        },
+        error::AicRdifError,
+        owner::AicOwner,
+    },
 };
 
 const GROUP_ID: NetPollGroupId = NetPollGroupId::new(0);
 const DEFAULT_QUEUE_SIZE: usize = 32;
 const DEFAULT_FRAME_SIZE: usize = 2048;
+const DEFAULT_TX_AGGREGATION_PACKETS: usize = 4;
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -36,6 +42,11 @@ pub struct AicRdifOptions {
     pub queue_size: usize,
     /// Maximum Ethernet frame size accepted by the adapter.
     pub frame_size: usize,
+    /// Frames and bytes one transmit write may carry.  A write is one CMD53,
+    /// and the firmware treats it as a stream of frames, so batching trades
+    /// per-transaction cost against the delay a burst adds to receive work
+    /// sharing the same bus.
+    pub tx_aggregation: TxAggregation,
     /// SoC reset-settle interval observed before the first card command.
     pub startup_delay: Duration,
     /// End-to-end deadline covering card enumeration, firmware, and FDRV startup.
@@ -52,6 +63,10 @@ impl AicRdifOptions {
             startup_transaction: None,
             queue_size: DEFAULT_QUEUE_SIZE,
             frame_size: DEFAULT_FRAME_SIZE,
+            tx_aggregation: TxAggregation::new(
+                DEFAULT_TX_AGGREGATION_PACKETS,
+                TxAggregation::DEFAULT_BYTES,
+            ),
             startup_delay: Duration::ZERO,
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             control_timeout: DEFAULT_CONTROL_TIMEOUT,
@@ -104,6 +119,9 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicRdifDevice<H> {
         {
             return Err(AicRdifError::QueueUnavailable);
         }
+        if !options.tx_aggregation.is_valid() {
+            return Err(AicRdifError::InvalidTxAggregation);
+        }
         let dma_mask = host
             .device_dma()
             .map_err(|_| AicRdifError::DmaUnavailable)?
@@ -150,6 +168,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> NetDevice for AicRdifDevice<H> 
             wifi_channels,
             Arc::clone(&irq_latch),
             Arc::clone(&mac),
+            options.tx_aggregation,
         );
         let OwnerChannels {
             sender: owner_sender,

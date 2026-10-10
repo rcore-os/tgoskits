@@ -212,6 +212,19 @@ impl<R: Stage1Regime> PageTableEntry for Stage1Pte<R> {
         PhysAddr::from_usize((self.0 & Self::PHYS_ADDR_MASK) as usize)
     }
 
+    fn requires_break_before_make(&self, replacement: &Self, _is_dir: bool) -> bool {
+        let old = self.flags();
+        let new = replacement.flags();
+        let changed = old.bits() ^ new.bits();
+        let unsafe_attributes = DescriptorFlags::ATTR_INDEX_MASK
+            | DescriptorFlags::SH_INNER.bits()
+            | DescriptorFlags::NON_GLOBAL.bits();
+        self.paddr(false) != replacement.paddr(false)
+            || (old.contains(DescriptorFlags::VALID)
+                && new.contains(DescriptorFlags::VALID)
+                && changed & unsafe_attributes != 0)
+    }
+
     fn config(&self, _is_dir: bool) -> Self::PteConfig {
         let attr = self.flags();
         if !attr.contains(DescriptorFlags::VALID) {

@@ -1,7 +1,6 @@
 #![allow(unused)]
 
 use alloc::vec::Vec;
-use core::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 
 use log::debug;
 
@@ -89,41 +88,42 @@ impl Identify for IdentifyNamespaceDataStructure {
     type Output = Option<NamespaceDataStructure>;
 
     fn parse(&self, data: &[u8]) -> Self::Output {
-        let raw = unsafe { &*slice_from_raw_parts(data.as_ptr() as *const u32, data.len() / 4) };
-        unsafe {
-            if raw[0] == 0 {
-                return None;
-            }
-            let number_of_lba_formats = data.as_ptr().add(25).read_volatile();
-            let formatted_lba_size_field = data.as_ptr().add(26).read_volatile();
-            let has_metadata = (formatted_lba_size_field >> 4) & 1 == 1;
-
-            let lba_fmt_list = data.as_ptr().add(128) as *const LBAFormatDataStructure;
-
-            let lba_size_idx = (formatted_lba_size_field & 0b1111) as usize;
-
-            let lba_fmt = if lba_size_idx > 0 {
-                lba_fmt_list.add(lba_size_idx).read_volatile()
-            } else {
-                LBAFormatDataStructure {
-                    metadata_size: 0,
-                    lba_data_size: 9,
-                    other: 0,
-                }
-            };
-
-            Some(NamespaceDataStructure {
-                namespace_size: raw[0],
-                namespcae_capacity: raw[1],
-                namespace_nused: raw[2],
-                lba_size: 2u32.pow(lba_fmt.lba_data_size as u32),
-                metadata_size: if has_metadata {
-                    data[27] as _
-                } else {
-                    lba_fmt.metadata_size as _
-                },
-            })
+        let namespace_size = u64::from_le_bytes(data.get(0..8)?.try_into().ok()?);
+        if namespace_size == 0 {
+            return None;
         }
+
+        let namespace_capacity = u64::from_le_bytes(data.get(8..16)?.try_into().ok()?);
+        let namespace_nused = u64::from_le_bytes(data.get(16..24)?.try_into().ok()?);
+        let max_lba_format_index = *data.get(25)?;
+        if usize::from(max_lba_format_index) >= 64 {
+            return None;
+        }
+
+        let formatted_lba_size_field = *data.get(26)?;
+        // FLBAS bits 6:5 hold the upper two bits of the 6-bit LBAF index.
+        let lba_size_idx = usize::from(formatted_lba_size_field & 0x0f)
+            | usize::from((formatted_lba_size_field & 0x60) >> 1);
+        if lba_size_idx > usize::from(max_lba_format_index) {
+            return None;
+        }
+
+        let lba_format_offset = 128 + lba_size_idx * 4;
+        let lba_format = data.get(lba_format_offset..lba_format_offset + 4)?;
+        let metadata_size = u16::from_le_bytes(lba_format[0..2].try_into().ok()?);
+        let lba_data_size = lba_format[2];
+        if lba_data_size < 9 {
+            return None;
+        }
+        let lba_size = 1usize.checked_shl(u32::from(lba_data_size))?;
+
+        Some(NamespaceDataStructure {
+            namespace_size,
+            namespcae_capacity: namespace_capacity,
+            namespace_nused,
+            lba_size,
+            metadata_size,
+        })
     }
 
     fn command_set_mut(&mut self) -> &mut CommandSet {
@@ -150,13 +150,12 @@ impl Identify for IdentifyActiveNamespaceList {
     fn parse(&self, data: &[u8]) -> Self::Output {
         let mut id_list = Vec::new();
 
-        let raw = unsafe { &*slice_from_raw_parts(data.as_ptr() as *const u32, data.len() / 4) };
-
-        for id in raw {
-            if *id == 0 {
+        for bytes in data.as_chunks::<4>().0 {
+            let id = u32::from_le_bytes(*bytes);
+            if id == 0 {
                 break;
             }
-            id_list.push(*id);
+            id_list.push(id);
         }
 
         id_list
@@ -169,25 +168,11 @@ impl Identify for IdentifyActiveNamespaceList {
 
 #[derive(Debug, Clone)]
 pub struct NamespaceDataStructure {
-    pub namespace_size: u32,
-    pub namespcae_capacity: u32,
-    pub namespace_nused: u32,
-    pub lba_size: u32,
-    pub metadata_size: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct LBAFormatDataStructure {
-    metadata_size: u16,
-    lba_data_size: u8,
-    other: u8,
-}
-
-impl LBAFormatDataStructure {
-    fn relative_performance(&self) -> bool {
-        self.other & 1 > 0
-    }
+    pub namespace_size: u64,
+    pub namespcae_capacity: u64,
+    pub namespace_nused: u64,
+    pub lba_size: usize,
+    pub metadata_size: u16,
 }
 
 pub struct IdentifyController {
@@ -204,46 +189,27 @@ impl IdentifyController {
 impl Identify for IdentifyController {
     const CNS: u32 = 0x01;
 
-    type Output = ControllerInfo;
+    type Output = Option<ControllerInfo>;
 
     fn parse(&self, data: &[u8]) -> Self::Output {
-        let raw = unsafe {
-            let ptr = data.as_ptr();
-            (ptr as *const ControllerData).read_volatile()
-        };
-
-        ControllerInfo {
-            vendor_id: raw.vendor_id,
-            product_id: raw.product_id,
-            mdts: raw.mdts,
-            sqes_max: raw.sqes >> 4,
-            sqes_min: raw.sqes & 0b1111,
-            cqes_max: raw.cqes >> 4,
-            cqes_min: raw.cqes & 0b1111,
-            max_cmd: raw.max_cmd,
-            number_of_namespaces: raw.number_of_namespaces,
-        }
+        let sqes = *data.get(512)?;
+        let cqes = *data.get(513)?;
+        Some(ControllerInfo {
+            vendor_id: u16::from_le_bytes(data.get(0..2)?.try_into().ok()?),
+            product_id: u16::from_le_bytes(data.get(2..4)?.try_into().ok()?),
+            mdts: *data.get(77)?,
+            sqes_max: sqes >> 4,
+            sqes_min: sqes & 0x0f,
+            cqes_max: cqes >> 4,
+            cqes_min: cqes & 0x0f,
+            max_cmd: u16::from_le_bytes(data.get(514..516)?.try_into().ok()?),
+            number_of_namespaces: u32::from_le_bytes(data.get(516..520)?.try_into().ok()?),
+        })
     }
 
     fn command_set_mut(&mut self) -> &mut CommandSet {
         &mut self.command_set
     }
-}
-
-#[repr(C)]
-pub struct ControllerData {
-    pub vendor_id: u16,
-    pub product_id: u16,
-    pub serial_number: [u8; 20],
-    pub model_number: [u8; 40],
-    pub firmware_revision: [u8; 8],
-    pub rsv_before_mdts: [u8; 5],
-    pub mdts: u8,
-    pub rsv: [u8; 512 - 8 - 40 - 20 - 2 - 2 - 5 - 1],
-    pub sqes: u8,
-    pub cqes: u8,
-    pub max_cmd: u16,
-    pub number_of_namespaces: u32,
 }
 
 #[derive(Debug)]
@@ -261,17 +227,101 @@ pub struct ControllerInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::{Identify, IdentifyController};
+    use super::{
+        Identify, IdentifyActiveNamespaceList, IdentifyController, IdentifyNamespaceDataStructure,
+    };
+
+    #[repr(align(8))]
+    struct IdentifyData([u8; 4096]);
+
+    impl IdentifyData {
+        fn namespace(nsze: u64, nlbaf: u8, flbas: u8, metadata_capabilities: u8) -> Self {
+            let mut data = Self([0; 4096]);
+            data.0[0..8].copy_from_slice(&nsze.to_le_bytes());
+            data.0[8..16].copy_from_slice(&nsze.to_le_bytes());
+            data.0[16..24].copy_from_slice(&nsze.to_le_bytes());
+            data.0[25] = nlbaf;
+            data.0[26] = flbas;
+            data.0[27] = metadata_capabilities;
+            data
+        }
+
+        fn set_lba_format(&mut self, index: usize, metadata_size: u16, data_size: u8) {
+            let offset = 128 + index * 4;
+            self.0[offset..offset + 2].copy_from_slice(&metadata_size.to_le_bytes());
+            self.0[offset + 2] = data_size;
+        }
+
+        fn parse(&self) -> Option<super::NamespaceDataStructure> {
+            IdentifyNamespaceDataStructure::new(1).parse(&self.0)
+        }
+    }
+
+    #[test]
+    fn identify_namespace_uses_selected_lba_format_zero() {
+        let mut data = IdentifyData::namespace(1, 0, 0x10, 1);
+        data.set_lba_format(0, 16, 12);
+
+        let namespace = data.parse().unwrap();
+
+        assert_eq!(namespace.lba_size, 4096);
+        assert_eq!(namespace.metadata_size, 16);
+    }
+
+    #[test]
+    fn identify_namespace_preserves_64_bit_capacity() {
+        let mut data = IdentifyData::namespace(1_u64 << 32, 1, 1, 0);
+        data.set_lba_format(1, 0, 9);
+
+        let namespace = data.parse().unwrap();
+
+        assert_eq!(namespace.namespace_size, 1_u64 << 32);
+        assert_eq!(namespace.namespcae_capacity, 1_u64 << 32);
+        assert_eq!(namespace.namespace_nused, 1_u64 << 32);
+    }
+
+    #[test]
+    fn identify_namespace_uses_extended_lba_format_index() {
+        let mut data = IdentifyData::namespace(1, 63, 0x7f, 1);
+        data.set_lba_format(0, 0, 9);
+        data.set_lba_format(63, 8, 12);
+
+        let namespace = data.parse().unwrap();
+
+        assert_eq!(namespace.lba_size, 4096);
+        assert_eq!(namespace.metadata_size, 8);
+    }
+
+    #[test]
+    fn identify_namespace_rejects_lba_format_outside_supported_range() {
+        let mut data = IdentifyData::namespace(1, 0, 0x20, 0);
+        data.set_lba_format(16, 0, 9);
+
+        assert!(data.parse().is_none());
+    }
+
+    #[test]
+    fn identify_namespace_rejects_unsupported_or_unrepresentable_lba_data_sizes() {
+        for lba_data_size in [0, 8, usize::BITS as u8] {
+            let mut data = IdentifyData::namespace(1, 0, 0, 0);
+            data.set_lba_format(0, 0, lba_data_size);
+
+            assert!(data.parse().is_none());
+        }
+    }
 
     #[test]
     fn identify_controller_reads_mdts_from_spec_offset() {
-        let mut data = [0_u8; 4096];
+        #[repr(align(4))]
+        struct AlignedBuffer([u8; 4097]);
+        let mut storage = AlignedBuffer([0; 4097]);
+        let data = &mut storage.0[1..];
         data[77] = 7;
         data[512] = 0x66;
         data[513] = 0x44;
         data[516..520].copy_from_slice(&3_u32.to_le_bytes());
 
-        let info = IdentifyController::new().parse(&data);
+        let info = IdentifyController::new().parse(data).unwrap();
 
         assert_eq!(info.mdts, 7);
         assert_eq!(info.sqes_min, 6);
@@ -279,5 +329,17 @@ mod tests {
         assert_eq!(info.cqes_min, 4);
         assert_eq!(info.cqes_max, 4);
         assert_eq!(info.number_of_namespaces, 3);
+        assert!(IdentifyController::new().parse(&data[..519]).is_none());
+        assert!(IdentifyController::new().parse(&[]).is_none());
+    }
+
+    #[test]
+    fn active_namespace_list_decodes_unaligned_bytes_and_stops_at_zero() {
+        #[repr(align(4))]
+        struct AlignedBuffer([u8; 17]);
+        let mut storage = AlignedBuffer([0; 17]);
+        let data = &mut storage.0[1..];
+        data.copy_from_slice(&[1, 0, 0, 0, 0x34, 0x12, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(IdentifyActiveNamespaceList::new().parse(data), [1, 0x1234]);
     }
 }

@@ -1,0 +1,39 @@
+# AxVisor + Linux real robot control check (AxVisor Nightly only).
+#
+# The Linux guest runs the USB robot application from the fixed directory
+# /home/orangepi/robot-ci/aka-rk3588. The launcher uses the USB camera
+# 0ac8:0346 and the Feetech USB controller 1a86:55d3 through FEETECH_DEV=auto;
+# it never opens SoC UART6 /dev/ttyS6. The guest kernel and shared root are
+# selected in linux-smp1-emmc.toml. The guest user needs the CI password to
+# reach the camera and USB device nodes, so the command uses the same sudo -S
+# convention as the Linux virtual check.
+board_type = "OrangePi-5-Plus-robot"
+timeout = 900
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  'Failed to initialize guest VM',
+  'VFS: Cannot open root device',
+  'Waiting for root device',
+  'Waiting for root file system',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  '(?m)^\[ROBOT_CI\] RESULT=FAIL .*$',
+  '(?m)^\[ROBOT_CI\] HARNESS=FAIL .*$',
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588'
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+# Fixed by this test configuration; change this argument to revise the FPS gate.
+shell_cmd = 'cd "$d" && printf "%s\n" orangepi | sudo -S env FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0'
+# Only the final launcher verdict counts. A non-zero exit fails the step
+# directly, without an echo-based fallback marker.
+success_regex = ['(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12](?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']

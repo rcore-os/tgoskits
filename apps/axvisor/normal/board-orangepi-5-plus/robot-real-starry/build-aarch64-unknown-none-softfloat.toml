@@ -1,0 +1,8 @@
+features = [
+  "ax-driver/rk3588-cpufreq",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+]
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/guest.toml"]

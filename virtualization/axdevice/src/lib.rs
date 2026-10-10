@@ -24,8 +24,6 @@
 
 extern crate alloc;
 #[cfg(test)]
-extern crate ax_runtime as _;
-#[cfg(test)]
 extern crate std;
 #[macro_use]
 extern crate log;
@@ -36,6 +34,9 @@ mod device;
 mod error;
 mod fw_cfg;
 mod graph;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod host_lock_provider;
 mod interrupt;
 mod model;
 mod pci;
@@ -58,6 +59,7 @@ pub use build_context::{DeviceBuildContext, MsiEndpointRange};
 pub use builder::DeviceRuntimeBuilder;
 pub use device::{
     DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
+    WorkAccessPort,
 };
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use fw_cfg::{

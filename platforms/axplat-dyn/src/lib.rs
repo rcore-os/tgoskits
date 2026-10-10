@@ -21,7 +21,10 @@ mod mem;
 mod platform;
 mod power;
 
-pub use boot::{boot_entropy, boot_stack_bounds, bootargs};
+pub use boot::{
+    InitramfsRange, boot_entropy, boot_stack_bounds, bootargs, initramfs_range,
+    take_initramfs_range,
+};
 pub use generic_timer::try_init_epoch_offset;
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()

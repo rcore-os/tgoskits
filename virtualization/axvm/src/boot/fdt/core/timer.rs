@@ -22,10 +22,13 @@ const TIMER_COMPATIBLE: &str = "arm,armv8-timer";
 /// compatibility check also catches malformed or legacy architectural timer
 /// nodes that do not follow that naming convention.
 pub(crate) fn is_machine_timer_node(node: &Node) -> bool {
-    node.name().split('@').next() == Some("timer")
-        || node
-            .compatibles()
-            .any(|compatible| matches!(compatible, "arm,armv8-timer" | "arm,armv7-timer"))
+    node.name().split('@').next() == Some("timer") || is_architectural_timer_node(node)
+}
+
+/// Identifies the required architectural timer independently of its node name.
+pub(super) fn is_architectural_timer_node(node: &Node) -> bool {
+    node.compatibles()
+        .any(|compatible| matches!(compatible, "arm,armv8-timer" | "arm,armv7-timer"))
 }
 
 /// Reads the host architectural timer's complete interrupt identity.
@@ -151,6 +154,39 @@ pub(crate) fn install_machine_timer(
         .validated_intids()
         .map_err(|error| ax_err_type!(InvalidData, error))?;
 
+    // Resolve the controller before allocating any replacement node identity.
+    let interrupt_parent = interrupt_controller_phandle(tree, GuestSerialFdtInterrupt::GicSpi)?;
+    let interrupt_cells = tree.interrupt_cells(interrupt_parent)?;
+    if !matches!(interrupt_cells, 3 | 4) {
+        return Err(ax_err_type!(
+            InvalidData,
+            std::format!(
+                "architectural timer interrupt controller uses unsupported {interrupt_cells}-cell \
+                 specifiers"
+            )
+        ));
+    }
+    let mut existing_timers = tree.inner().iter_node_ids().filter(|id| {
+        tree.inner()
+            .node(*id)
+            .is_some_and(is_architectural_timer_node)
+    });
+    let existing = existing_timers.next();
+    if existing_timers.next().is_some() {
+        return Err(ax_err_type!(
+            InvalidData,
+            "guest FDT has ambiguous architectural timers"
+        ));
+    }
+    let path = if let Some(existing) = existing {
+        tree.inner().path_of(existing)
+    } else if profile.node_path.is_empty() {
+        String::from("/timer")
+    } else {
+        profile.node_path.clone()
+    };
+    let node_phandle = tree.replacement_phandle(&path, profile.node_phandle)?;
+
     let timer_paths = tree
         .inner()
         .iter_node_ids()
@@ -163,11 +199,6 @@ pub(crate) fn install_machine_timer(
         tree.inner_mut().remove_by_path(&path);
     }
 
-    let path = if profile.node_path.is_empty() {
-        String::from("/timer")
-    } else {
-        profile.node_path.clone()
-    };
     let (parent_path, node_name) = path.rsplit_once('/').ok_or_else(|| {
         ax_err_type!(
             InvalidData,
@@ -187,30 +218,22 @@ pub(crate) fn install_machine_timer(
     };
     let timer = tree.add_node(parent, Node::new(node_name));
     tree.set_property(timer, prop_string("compatible", TIMER_COMPATIBLE))?;
-    let interrupt_parent = match profile.interrupt_parent {
-        Some(parent) => parent,
-        None => interrupt_controller_phandle(tree, GuestSerialFdtInterrupt::GicSpi)?,
-    };
     tree.set_property(timer, prop_u32("interrupt-parent", interrupt_parent))?;
     let flattened = profile
         .interrupt_specifiers
         .iter()
-        .flatten()
-        .copied()
+        .flat_map(|specifier| {
+            specifier
+                .iter()
+                .copied()
+                .chain((interrupt_cells == 4).then_some(0))
+        })
         .collect::<Vec<_>>();
     tree.set_property(timer, prop_u32_list("interrupts", &flattened))?;
     if let Some(frequency) = profile.clock_frequency_hz {
         tree.set_property(timer, prop_u32("clock-frequency", frequency))?;
     }
-    if let Some(phandle) = profile.node_phandle {
-        if let Some(existing) = tree.inner().get_by_phandle(phandle.into())
-            && existing.id() != timer
-        {
-            return Err(ax_err_type!(
-                InvalidData,
-                std::format!("architectural timer phandle {phandle:#x} is already in use")
-            ));
-        }
+    if let Some(phandle) = node_phandle {
         tree.set_property(timer, prop_u32("phandle", phandle))?;
         tree.set_property(timer, prop_u32("linux,phandle", phandle))?;
     }
@@ -375,15 +398,28 @@ mod tests {
             &[1, 13, 0xf04, 1, 14, 0xf04, 1, 11, 0xf04, 1, 10, 0xf04],
             None,
         );
-        let profile = host_timer_profile(&fdt).unwrap().unwrap();
+        let mut profile = host_timer_profile(&fdt).unwrap().unwrap();
+        profile.node_phandle = Some(11);
         let mut tree = FdtTree::from_fdt(fdt);
         let timer = tree.inner().get_by_path_id("/timer").unwrap();
         tree.set_property(timer, Property::new("arm,no-tick-in-suspend", vec![]))
             .unwrap();
 
+        // Replacing the GIC must also rebind consumers from host firmware.
+        let controller = tree.inner().get_by_path_id("/intc").unwrap();
+        tree.set_property(controller, prop_u32("phandle", 11))
+            .unwrap();
+        tree.set_property(controller, prop_u32("linux,phandle", 11))
+            .unwrap();
+        tree.set_property(controller, prop_u32("#interrupt-cells", 4))
+            .unwrap();
         install_machine_timer(&mut tree, Some(&profile)).unwrap();
 
         let timer = tree.inner().get_by_path("/timer").unwrap();
+        assert_ne!(
+            timer.as_node().get_property("phandle").unwrap().get_u32(),
+            Some(11)
+        );
         assert_eq!(
             timer
                 .as_node()
@@ -394,8 +430,7 @@ mod tests {
             profile
                 .interrupt_specifiers
                 .iter()
-                .flatten()
-                .copied()
+                .flat_map(|specifier| specifier.iter().copied().chain([0]))
                 .collect::<Vec<_>>()
         );
         assert!(
@@ -410,7 +445,7 @@ mod tests {
                 .as_node()
                 .get_property("interrupt-parent")
                 .and_then(Property::get_u32),
-            Some(7)
+            Some(11)
         );
         assert_eq!(
             timer.as_node().compatibles().collect::<Vec<_>>(),
@@ -419,7 +454,27 @@ mod tests {
     }
 
     #[test]
-    fn installed_timer_removes_firmware_platform_timer_nodes() {
+    fn timer_replacement_preserves_guest_identity_at_a_different_path() {
+        let host = host_timer_fdt(&[1, 13, 4, 1, 14, 4, 1, 11, 4, 1, 10, 4], None);
+        let mut profile = host_timer_profile(&host).unwrap().unwrap();
+        profile.node_path = "/host-timer".into();
+        profile.node_phandle = Some(7);
+        let mut tree = FdtTree::from_fdt(host);
+        let timer = tree.inner().get_by_path_id("/timer").unwrap();
+        tree.set_property(timer, prop_u32("phandle", 21)).unwrap();
+        let consumer = tree.ensure_path("/consumer").unwrap();
+        tree.set_property(consumer, prop_u32("timer", 21)).unwrap();
+
+        install_machine_timer(&mut tree, Some(&profile)).unwrap();
+
+        let bytes = tree.finish();
+        let fdt = Fdt::from_bytes(&bytes).unwrap();
+        assert_eq!(fdt.get_by_phandle(21.into()).unwrap().path(), "/timer");
+        assert!(fdt.get_by_path_id("/host-timer").is_none());
+    }
+
+    #[test]
+    fn platform_timers_can_be_disabled_before_machine_timer_installation() {
         let mut fdt = host_timer_fdt(
             &[1, 13, 0xf04, 1, 14, 0xf04, 1, 11, 0xf04, 1, 10, 0xf04],
             None,
@@ -429,6 +484,23 @@ mod tests {
         fdt.node_mut(platform_timer)
             .unwrap()
             .set_property(prop_string("compatible", "vendor,soc-timer"));
+        let mut config = axvmconfig::GuestConfig::default();
+        config.devices.disabled.push(axvmconfig::PhysicalDeviceRef {
+            path: "/timer@10002000".into(),
+        });
+        let provided =
+            super::super::parser::update_provided_fdt(fdt.encode().as_ref(), None, &config)
+                .unwrap();
+        let provided = Fdt::from_bytes(&provided).unwrap();
+        assert!(provided.get_by_path_id("/timer@10002000").is_none());
+        assert!(provided.get_by_path_id("/timer").is_some());
+        config.devices.disabled.push(axvmconfig::PhysicalDeviceRef {
+            path: "/timer".into(),
+        });
+        assert!(
+            super::super::parser::update_provided_fdt(fdt.encode().as_ref(), None, &config,)
+                .is_err()
+        );
         let mut tree = FdtTree::from_fdt(fdt);
 
         install_machine_timer(&mut tree, Some(&profile)).unwrap();

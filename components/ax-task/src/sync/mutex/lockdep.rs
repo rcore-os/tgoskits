@@ -3,7 +3,7 @@ use core::panic::Location;
 use crate::sync::{
     lockdep as common,
     lockdep::{HeldLockSnapshot, LockSubclass, LockdepMapView, PreparedAcquire},
-    mutex::RawMutex,
+    mutex::MutexBackend,
 };
 
 fn current_held_locks() -> HeldLockSnapshot {
@@ -27,7 +27,11 @@ pub(in crate::sync) struct LockdepAcquireRequest<'lock> {
 impl LockdepAcquire {
     #[inline(always)]
     #[track_caller]
-    pub(crate) fn prepare_nested(lock: &RawMutex, is_try: bool, subclass: LockSubclass) -> Self {
+    pub(crate) fn prepare_nested(
+        lock: &MutexBackend,
+        is_try: bool,
+        subclass: LockSubclass,
+    ) -> Self {
         let addr = lock as *const _ as *const () as usize;
         Self::prepare_view(LockdepAcquireRequest {
             map: lock.lockdep.view(),
@@ -66,7 +70,7 @@ impl LockdepAcquire {
 }
 
 #[inline(always)]
-pub(crate) fn release(lock: &RawMutex) {
+pub(crate) fn release(lock: &MutexBackend) {
     let addr = lock as *const _ as *const () as usize;
     release_external(addr);
 }

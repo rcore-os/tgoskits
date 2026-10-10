@@ -889,8 +889,7 @@ fn push_link_message(out: &mut Vec<u8>, seq: u32, pid: u32, link: &LinkInfo) {
     push_attr(&mut body, IFLA_TXQLEN, &link.qlen.to_ne_bytes());
     push_attr(&mut body, IFLA_OPERSTATE, &[link.operstate]);
 
-    push_nl_header(out, RTM_NEWLINK, NLM_F_MULTI, seq, pid, body.len());
-    out.extend_from_slice(&body);
+    push_nl_message(out, RTM_NEWLINK, NLM_F_MULTI, seq, pid, &body);
 }
 
 fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
@@ -912,8 +911,7 @@ fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
         push_attr(&mut body, IFA_BROADCAST, &broadcast);
     }
 
-    push_nl_header(out, RTM_NEWADDR, NLM_F_MULTI, seq, pid, body.len());
-    out.extend_from_slice(&body);
+    push_nl_message(out, RTM_NEWADDR, NLM_F_MULTI, seq, pid, &body);
 }
 
 fn push_default_route_message(out: &mut Vec<u8>, seq: u32, pid: u32, route: &ax_net::RouteInfo) {
@@ -947,8 +945,7 @@ fn push_default_route_message(out: &mut Vec<u8>, seq: u32, pid: u32, route: &ax_
     push_attr(&mut body, RTA_PRIORITY, &route.metric.to_ne_bytes());
     push_attr(&mut body, RTA_PREFSRC, &source.octets());
 
-    push_nl_header(out, RTM_NEWROUTE, NLM_F_MULTI, seq, pid, body.len());
-    out.extend_from_slice(&body);
+    push_nl_message(out, RTM_NEWROUTE, NLM_F_MULTI, seq, pid, &body);
 }
 
 fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
@@ -976,8 +973,7 @@ fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
     );
 
     let flags = if multi { NLM_F_MULTI } else { 0 };
-    push_nl_header(out, GENL_ID_CTRL, flags, seq, pid, payload.len());
-    out.extend_from_slice(&payload);
+    push_nl_message(out, GENL_ID_CTRL, flags, seq, pid, &payload);
 }
 
 /// Emit a `NLMSG_ERROR` whose payload echoes the entire original
@@ -990,10 +986,10 @@ fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
 fn push_nlmsg_error(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, error: i32) {
     let header = unsafe { request_bytes.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
     let req_len = (header.len as usize).min(request_bytes.len());
-    let payload_len = size_of::<i32>() + req_len;
-    push_nl_header(out, NLMSG_ERROR, 0, header.seq, pid, payload_len);
-    out.extend_from_slice(&error.to_ne_bytes());
-    out.extend_from_slice(&request_bytes[..req_len]);
+    let mut payload = Vec::with_capacity(size_of::<i32>() + req_len);
+    payload.extend_from_slice(&error.to_ne_bytes());
+    payload.extend_from_slice(&request_bytes[..req_len]);
+    push_nl_message(out, NLMSG_ERROR, 0, header.seq, pid, &payload);
 }
 
 fn push_nlmsg_error_from_ax(out: &mut Vec<u8>, request_bytes: &[u8], pid: u32, err: StarryError) {
@@ -1213,8 +1209,23 @@ fn parse_genl_family_name(mut buf: &[u8]) -> Option<alloc::string::String> {
 }
 
 fn push_done_message(out: &mut Vec<u8>, seq: u32, pid: u32) {
-    push_nl_header(out, NLMSG_DONE, NLM_F_MULTI, seq, pid, size_of::<i32>());
-    out.extend_from_slice(&0i32.to_ne_bytes());
+    push_nl_message(out, NLMSG_DONE, NLM_F_MULTI, seq, pid, &0i32.to_ne_bytes());
+}
+
+/// Append one netlink message followed by the padding that ends it.
+///
+/// `nlmsg_len` carries the unpadded size, but the datagram itself has to reach
+/// the next `NLMSG_ALIGNTO` boundary. Readers advance with `NLMSG_NEXT`, which
+/// subtracts the *aligned* length from a byte count that `NLMSG_OK` validates
+/// against the *unaligned* one; a message that ends mid-word therefore drives
+/// that count below zero, and every reader holding it in an unsigned variable
+/// then walks past the end of its receive buffer. Linux reserves the same
+/// padding in `__nlmsg_put()` (include/linux/netlink.h), where `skb_put` takes
+/// `NLMSG_ALIGN(size)` while the header stores the unaligned `size`.
+fn push_nl_message(out: &mut Vec<u8>, ty: u16, flags: u16, seq: u32, pid: u32, payload: &[u8]) {
+    push_nl_header(out, ty, flags, seq, pid, payload.len());
+    out.extend_from_slice(payload);
+    pad_to_align4(out);
 }
 
 fn push_nl_header(out: &mut Vec<u8>, ty: u16, flags: u16, seq: u32, pid: u32, payload_len: usize) {

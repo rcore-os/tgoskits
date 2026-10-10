@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{
     string::String,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -16,12 +16,13 @@ use {
     ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWaitCell,
     ax_std::os::arceos::modules::ax_runtime::task::sync::irq::IrqWorkerWaiter,
     ax_std::os::arceos::modules::ax_runtime::task::thread::current::current_thread_handle,
-    ax_std::os::arceos::sync::NoPreemptMutex,
 };
 
 mod layout;
 
 mod delivery;
+
+use crate::sync::MutexExt;
 
 use delivery::{DeliveryFrame, DeliveryQueue};
 use layout::{ConsoleLane, Endpoint, plan_endpoints};
@@ -44,14 +45,14 @@ struct NetworkOutputHub {
 }
 
 struct NetworkOutputLane {
-    queue: NoPreemptMutex<HostOutputQueue<OUTPUT_QUEUE_CAPACITY>>,
+    queue: Mutex<HostOutputQueue<OUTPUT_QUEUE_CAPACITY>>,
     connected: AtomicBool,
     session: AtomicUsize,
     ready: IrqWaitCell,
 }
 
 struct BrowserOutputDelivery {
-    queue: NoPreemptMutex<DeliveryQueue<OUTPUT_DELIVERY_QUEUE_CAPACITY>>,
+    queue: Mutex<DeliveryQueue<OUTPUT_DELIVERY_QUEUE_CAPACITY>>,
     closed: AtomicBool,
     ready: IrqWaitCell,
 }
@@ -101,7 +102,7 @@ impl NetworkOutputHub {
 impl NetworkOutputLane {
     const fn new() -> Self {
         Self {
-            queue: NoPreemptMutex::new(HostOutputQueue::new()),
+            queue: Mutex::new(HostOutputQueue::new()),
             connected: AtomicBool::new(false),
             session: AtomicUsize::new(0),
             ready: IrqWaitCell::new(),
@@ -113,7 +114,7 @@ impl NetworkOutputLane {
             return;
         }
         let submitted = {
-            let mut queue = self.queue.lock();
+            let mut queue = self.queue.lock_unpoisoned();
             if !self.connected.load(Ordering::Acquire) {
                 false
             } else {
@@ -127,7 +128,7 @@ impl NetworkOutputLane {
     }
 
     fn begin_session(&self) -> Option<usize> {
-        let mut queue = self.queue.lock();
+        let mut queue = self.queue.lock_unpoisoned();
         self.connected
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
@@ -136,7 +137,7 @@ impl NetworkOutputLane {
     }
 
     fn end_session(&self, session: usize) {
-        let mut queue = self.queue.lock();
+        let mut queue = self.queue.lock_unpoisoned();
         if self.session.load(Ordering::Acquire) == session {
             self.connected.store(false, Ordering::Release);
             *queue = HostOutputQueue::new();
@@ -146,7 +147,7 @@ impl NetworkOutputLane {
     }
 
     fn take_batch(&self, session: usize) -> Option<NetworkOutputBatch> {
-        let mut queue = self.queue.lock();
+        let mut queue = self.queue.lock_unpoisoned();
         if !self.connected.load(Ordering::Acquire)
             || self.session.load(Ordering::Acquire) != session
         {
@@ -182,7 +183,7 @@ impl NetworkOutputLane {
 impl BrowserOutputDelivery {
     const fn new() -> Self {
         Self {
-            queue: NoPreemptMutex::new(DeliveryQueue::new()),
+            queue: Mutex::new(DeliveryQueue::new()),
             closed: AtomicBool::new(false),
             ready: IrqWaitCell::new(),
         }
@@ -193,7 +194,7 @@ impl BrowserOutputDelivery {
             return;
         }
         let submitted = {
-            let mut queue = self.queue.lock();
+            let mut queue = self.queue.lock_unpoisoned();
             if self.closed.load(Ordering::Acquire) {
                 false
             } else {
@@ -214,7 +215,7 @@ impl BrowserOutputDelivery {
     fn receive(&self, waiter: &IrqWorkerWaiter) -> Result<Option<Vec<u8>>> {
         loop {
             let mut bytes = [0; OUTPUT_DELIVERY_BATCH_CAPACITY];
-            let (len, dropped_bytes) = self.queue.lock().dequeue(&mut bytes);
+            let (len, dropped_bytes) = self.queue.lock_unpoisoned().dequeue(&mut bytes);
             if len != 0 || dropped_bytes != 0 {
                 let mut frame = DeliveryFrame::with_capacity(len + 96);
                 frame.append(&bytes[..len], dropped_bytes);
@@ -278,9 +279,10 @@ pub(crate) fn start() -> Result<()> {
 }
 
 fn build_startup_endpoints() -> Vec<Endpoint> {
-    let guests = crate::manager::AxvmManager::vm_list()
+    let guests = crate::manager::manager()
+        .list()
         .into_iter()
-        .map(|vm| (vm.id(), vm.name()))
+        .map(|vm| (vm.key().vm_id(), vm.snapshot().name))
         .collect();
     plan_endpoints(guests)
 }

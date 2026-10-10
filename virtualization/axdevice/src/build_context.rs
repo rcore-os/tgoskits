@@ -2,7 +2,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::{HostIrqId, IrqLine, MsiEndpoint};
+use axdevice_base::{DeviceId, HostIrqId, IrqLine, MsiEndpoint};
 
 use crate::{interrupt::*, *};
 
@@ -10,6 +10,11 @@ use crate::{interrupt::*, *};
 pub struct DeviceBuildContext<'a> {
     resources: PlannedBuildResources<'a>,
     pci_host_topology: Option<&'a Arc<ResolvedPciTopology>>,
+    /// Run-scoped deferred-work notification port copied from the runtime.
+    work_port: Option<Arc<dyn WorkAccessPort>>,
+    /// Identity that the first device of this build will receive at
+    /// registration; workers use it to scope their completion signal.
+    work_device_id: DeviceId,
 }
 
 struct PlannedBuildResources<'a> {
@@ -98,12 +103,37 @@ impl<'a> DeviceBuildContext<'a> {
     ) -> Self {
         Self {
             pci_host_topology,
+            work_port: None,
+            work_device_id: DeviceId::new(0),
             resources: PlannedBuildResources {
                 interrupts,
                 claims,
                 retained: PlannedBundleResources::new(),
             },
         }
+    }
+
+    /// Injects the run-scoped work port and the device identity that the
+    /// first device of this build will be registered under.
+    pub(crate) fn with_work_port(
+        mut self,
+        work_port: Option<Arc<dyn WorkAccessPort>>,
+        work_device_id: DeviceId,
+    ) -> Self {
+        self.work_port = work_port;
+        self.work_device_id = work_device_id;
+        self
+    }
+
+    /// Returns the run-scoped deferred-work notification port, if attached.
+    pub fn work_port(&self) -> Option<Arc<dyn WorkAccessPort>> {
+        self.work_port.clone()
+    }
+
+    /// Returns the identity the first device of this build will receive; a
+    /// device worker scopes its completion notification with it.
+    pub const fn work_device_id(&self) -> DeviceId {
+        self.work_device_id
     }
 
     pub(crate) fn finish(self, mut bundle: DeviceBundle) -> DeviceManagerResult<DeviceBundle> {

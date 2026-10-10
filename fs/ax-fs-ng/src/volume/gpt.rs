@@ -2,7 +2,7 @@ use alloc::{format, string::String, vec::Vec};
 
 use super::{
     BlockReader, BlockRegion, BlockVolume, DiskId, Error, PartitionId, PartitionLabel,
-    PartitionTableKind, PartitionUuid, Result, mbr,
+    PartitionTableKind, PartitionUuid, Result, VolumeScan, mbr,
 };
 
 const GPT_HEADER_BLOCK: u64 = 1;
@@ -18,7 +18,7 @@ const CORE_ENTRY_SIZE: usize = 128;
 pub(crate) fn scan_gpt<R: BlockReader>(
     reader: &mut R,
     disk_id: DiskId,
-) -> Result<Option<Vec<BlockVolume>>> {
+) -> Result<Option<VolumeScan>> {
     let Some(sector0) = mbr::read_sector0(reader)? else {
         return Ok(None);
     };
@@ -40,10 +40,20 @@ pub(crate) fn scan_gpt<R: BlockReader>(
         .ok_or(Error::InvalidPartitionTable)?;
     let entry_blocks = u64::try_from(entry_bytes.div_ceil(block_size))
         .map_err(|_| Error::InvalidPartitionTable)?;
-    if layout
+    let primary_entries_end = layout
         .entries_start_lba
         .checked_add(entry_blocks)
-        .is_none_or(|end| end > reader.num_blocks())
+        .ok_or(Error::InvalidPartitionTable)?;
+    let backup_entries_start = layout
+        .backup_lba
+        .checked_sub(entry_blocks)
+        .ok_or(Error::InvalidPartitionTable)?;
+    if primary_entries_end > reader.num_blocks()
+        || layout.entries_start_lba < GPT_HEADER_BLOCK + 1
+        || primary_entries_end > layout.first_usable_lba
+        || layout.backup_lba != reader.num_blocks() - 1
+        || backup_entries_start <= layout.last_usable_lba
+        || backup_entries_start >= layout.backup_lba
     {
         return Err(Error::InvalidPartitionTable);
     }
@@ -78,7 +88,18 @@ pub(crate) fn scan_gpt<R: BlockReader>(
         });
     }
 
-    Ok(Some(volumes))
+    // Everything before the first usable LBA is GPT structure (protective
+    // MBR, primary header, primary entries) and everything after the last
+    // usable LBA holds the backup entries and backup header; the usable
+    // range itself is reserved for partition data.
+    let primary_metadata = BlockRegion::new(0, layout.first_usable_lba.max(GPT_HEADER_BLOCK + 1));
+    let backup_start = layout.last_usable_lba + 1;
+    let backup_metadata = BlockRegion::new(backup_start, reader.num_blocks() - backup_start);
+
+    Ok(Some(VolumeScan {
+        volumes,
+        table_metadata: Vec::from([primary_metadata, backup_metadata]),
+    }))
 }
 
 fn read_entry<R: BlockReader>(reader: &mut R, layout: &GptLayout, index: usize) -> Result<Vec<u8>> {
@@ -105,6 +126,7 @@ fn read_entry<R: BlockReader>(reader: &mut R, layout: &GptLayout, index: usize) 
 struct GptLayout {
     first_usable_lba: u64,
     last_usable_lba: u64,
+    backup_lba: u64,
     entries_start_lba: u64,
     entry_count: usize,
     entry_size: usize,
@@ -143,6 +165,7 @@ fn parse_header(header: &[u8], disk_blocks: u64) -> Result<GptLayout> {
     Ok(GptLayout {
         first_usable_lba,
         last_usable_lba,
+        backup_lba,
         entries_start_lba,
         entry_count,
         entry_size,

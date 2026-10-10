@@ -121,7 +121,7 @@ use crate::{
     file::{FileLike, Kstat, add_file_like, get_file_like},
     mm::VmBytesMut,
     pseudofs::DeviceMmap,
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
 };
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,
@@ -1133,12 +1133,12 @@ pub fn perf_event_open(
 /// Map fd → weak<PerfEvent> so `bpf_perf_event_output` can locate the
 /// target ringbuf without owning a strong reference (the user side owns
 /// it via the fd).
-static PERF_FILE: LazyInit<IrqMutex<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
+static PERF_FILE: LazyInit<RawSpinLock<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
     LazyInit::new();
 
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
-    PERF_FILE.init_once(IrqMutex::new(HashMap::new()));
+    PERF_FILE.init_once(RawSpinLock::new(HashMap::new()));
     sw::initialize();
     #[cfg(target_arch = "aarch64")]
     {
@@ -1157,7 +1157,7 @@ pub fn perf_event_output(
     data: &[u8],
 ) -> StarryResult<()> {
     let table = PERF_FILE.get().ok_or(StarryError::NotFound)?;
-    let mut map = table.lock();
+    let mut map = table.lock_irqsave();
     let weak = map.get(&fd).ok_or(StarryError::NotFound)?;
     let Some(file) = weak.upgrade() else {
         map.remove(&fd);

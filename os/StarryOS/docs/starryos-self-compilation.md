@@ -571,11 +571,11 @@ interruption，从而闭合“状态变化发生在第一次检查与注册之�
 
 ### Bug #6: POSIX shell 重定向失败导致 init 进程退出
 
-- StarryOS 的 `init.sh` 使用 `: > /run/udev/data/c226:0` 创建设备初始化标记文件
+- 当时的 StarryOS 内置 `init.sh` 使用 `: > /run/udev/data/c226:0` 创建设备初始化标记文件；该启动脚本现已移除
 - POSIX shell 规范：非交互式 shell 中，重定向失败会导致 shell 退出
 - rsext4 无法读取 host 侧创建的目录 → `mkdir /run/udev/data` 失败 → `: >` 重定向失败 → init 进程退出 → QEMU 终止
 - `2>/dev/null` 无法阻止此行为——重定向失败是致命的，不等 `|| true` 执行
-- **修复**: 将 `: > file` 替换为 `touch file 2>/dev/null || true`（`touch` 是命令，不会导致 shell 退出）
+- **当时的修复**: 将 `: > file` 替换为 `touch file 2>/dev/null || true`（`touch` 是命令，不会导致 shell 退出）；当前启动使用外部 initramfs 或磁盘根中的 PID 1，不再执行该脚本
 
 ### Bug #7: SMP 并发导致 `SpinNoPreempt` mutex 死锁（阻塞写入）
 
@@ -623,7 +623,7 @@ interruption，从而闭合“状态变化发生在第一次检查与注册之�
 
 **已验证的里程碑**：
 - ✅ Debian Trixie rootfs 制备（minbase, metadata_csum 禁用, 清华源）
-- ✅ 内核启动（PCI BAR iomap 修复, init.sh touch 修复）
+- ✅ 当时的内核启动（PCI BAR iomap 修复、旧 init.sh touch 修复；当前启动链路须重新验证）
 - ✅ Workspace 过滤 + 全量 cargo deps 缓存（383 crates, 97MB）
 - ✅ rustc nightly-2026-04-27 安装（1.97.0-nightly）
 - ✅ SMP=1 简单 `cat >` 测试

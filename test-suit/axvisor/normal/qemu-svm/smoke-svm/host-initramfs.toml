@@ -1,0 +1,1 @@
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-virtio-blk.toml", "os/axvisor/configs/vms/qemu/x86_64/linux-virtio-blk-vm2.toml"]

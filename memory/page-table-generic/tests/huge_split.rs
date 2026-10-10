@@ -146,6 +146,7 @@ fn split_not_present_2m_block_preserves_the_data_frame() {
 enum Op {
     Alloc,
     Flush,
+    Publish,
     Dealloc(usize),
 }
 
@@ -162,10 +163,12 @@ impl TableMeta for RecordingMeta {
     const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
     const MAX_BLOCK_LEVEL: usize = 3;
 
-    fn flush(vaddr: Option<VirtAddr>) {
-        if vaddr.is_some() {
-            OPS.lock().unwrap().push(Op::Flush);
-        }
+    fn flush(_vaddr: Option<VirtAddr>) {
+        OPS.lock().unwrap().push(Op::Flush);
+    }
+
+    fn publish_new_mapping(_vaddr: VirtAddr) {
+        OPS.lock().unwrap().push(Op::Publish);
     }
 }
 
@@ -225,6 +228,10 @@ fn split_emits_one_flush_and_frees_nothing() {
         ops.iter().filter(|o| matches!(o, Op::Flush)).count(),
         1,
         "exactly one break-before-make flush (clear -> flush -> install): {ops:?}"
+    );
+    assert!(
+        ops.ends_with(&[Op::Flush, Op::Publish]),
+        "the new table must be published after invalidating the old block: {ops:?}"
     );
 }
 
@@ -635,7 +642,8 @@ fn aborting_a_partial_split_restores_the_huge_leaf_without_allocating() {
     pt.protect_page(va + PG, PteConfig::default()).unwrap();
     OPS.lock().unwrap().clear();
 
-    let restored_deposit = pt.restore_huge_split(installed).unwrap();
+    let mut restored_deposit = pt.restore_huge_split(installed).unwrap();
+    assert!(restored_deposit.requires_tlb_confirmation());
 
     let (restored_paddr, restored_config, restored_size) = pt
         .peek_huge_block(va)
@@ -659,10 +667,33 @@ fn aborting_a_partial_split_restores_the_huge_leaf_without_allocating() {
         1,
         "rollback uses one break-before-make invalidation: {ops:?}"
     );
+    assert_eq!(
+        ops,
+        [Op::Flush, Op::Publish],
+        "rollback must publish the restored block after invalidation"
+    );
 
-    // The withdrawn table remains bound to the restored leaf and can be
-    // consumed by a later retry without an allocation in apply.
+    // An empty retry must discard leaves left by the aborted inherited split.
+    // The withdrawn table remains bound to the restored leaf, so the retry
+    // still needs no allocation in apply.
+    let (error, deposit) = pt
+        .try_split_huge_page_with(restored_deposit)
+        .unwrap_err()
+        .into_parts();
+    assert_eq!(error, PagingError::UnconfirmedHugeSplitRetirement);
+    restored_deposit = deposit;
+    // SAFETY: this test table has no hardware users; the withdrawn child frame
+    // cannot be referenced by a remote page walker.
+    unsafe { restored_deposit.confirm_tlb_retirement() };
     OPS.lock().unwrap().clear();
+    let empty = pt
+        .split_huge_block_to_empty_table(restored_deposit)
+        .unwrap();
+    assert!(matches!(pt.query(va), Err(PagingError::NotMapped)));
+    assert!(matches!(pt.query(va + PG), Err(PagingError::NotMapped)));
+    let mut restored_deposit = pt.restore_huge_split(empty).unwrap();
+    // SAFETY: the test owns the only page-table view and has no hardware users.
+    unsafe { restored_deposit.confirm_tlb_retirement() };
     pt.split_huge_page_with(restored_deposit).unwrap();
     assert_eq!(
         OPS.lock()

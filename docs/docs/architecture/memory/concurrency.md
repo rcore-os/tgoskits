@@ -33,13 +33,13 @@ sidebar_label: "锁与并发"
 | 锁或原子 | 源码 | 保护对象 | 关键约束 |
 | --- | --- | --- | --- |
 | 无锁 `static mut`（`RAM_START/RAM_END/RAM_CURRENT`） | `someboot/src/mem/ram.rs` | early bump 状态 | 仅引导处理器、单核 early boot 阶段调用；不承担运行时 IRQ 安全 |
-| `SpinLock<BuddyAllocator>`（ax_sync，经 `lock_irqsave()` 访问） | `buddy-slab-allocator/src/global.rs` | 全部 Buddy section、free lists 和 page metadata | 临界区内不调用上层策略或回收 |
-| `SpinLock<SlabAllocator>`（ax_sync） | `buddy-slab-allocator/src/slab/mod.rs` | 当前 CPU 的 Slab cache | 通过 `ax_percpu::with_cpu_pin` 获取 CPU-local 指针 |
+| `RawSpinLock<BuddyAllocator>`（ax_sync，经 `lock_irqsave()` 访问） | `buddy-slab-allocator/src/global.rs` | 全部 Buddy section、free lists 和 page metadata | 临界区内不调用上层策略或回收 |
+| `RawSpinLock<SlabAllocator>`（ax_sync） | `buddy-slab-allocator/src/slab/mod.rs` | 当前 CPU 的 Slab cache | 通过 `ax_percpu::with_cpu_pin` 获取 CPU-local 指针 |
 | remote-free atomics | `buddy-slab-allocator/src/slab/page.rs` | 跨 CPU 归还的 object 链 | 释放者只发布节点，owner CPU drain |
-| `SpinLock<Usages>` | `ax-alloc/src/buddy_slab.rs` | `UsageKind` 字节计数 | 统计锁不发布资源，释放正确性由 allocator 锁和 owner 协议保证 |
-| `SpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
+| `RawSpinLock<Usages>` | `ax-alloc/src/buddy_slab.rs` | `UsageKind` 字节计数 | 统计锁不发布资源，释放正确性由 allocator 锁和 owner 协议保证 |
+| `RawSpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
 | `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个 MM 的短期 mutation serialization | 生命周期由 `MmHandle`/`MmPin`/`ActivationLease` 表达；锁不代表 CPU root 已失活 |
-| `Mutex<Machine<...>>`（`IrqSafeMutex` 别名） | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
+| VM 控制任务拥有值，发布与访问状态使用 `std::sync::Mutex` | `axvm/src/control/mod.rs`、`guest_memory.rs` | 生命周期资源、翻译根更新和访问租约 | 在任务上下文准备新根；全部 owner 静默、访问结束和翻译失效确认后才退休旧资源 |
 | `PageObject::mapping_graph` | Starry `kernel/src/mm/aspace/objects.rs` | `MappingSlot`、rmap 与 mapping reference 的同一次变更 | 不在 graph lock 内发布 VMA、发 TLB IPI 或执行文件 I/O |
 | `ResidentWatermark` | `os/StarryOS/kernel/src/mm/aspace/accounting.rs` | 已发布 `MappingSlot` 派生出的历史 RSS 峰值 | 不保存当前 RSS 或按 VA charge map |
 | `AtomicU64/AtomicI64` | Starry kernel mm stat/accounting | VSS、commit 与历史统计 | 当前 RSS 从 slot graph 派生；当前 `/proc/meminfo` 的 `Committed_AS` 固定展示 0 |
@@ -81,7 +81,7 @@ sequenceDiagram
 
 ### 3.1 Buddy 临界区
 
-`GlobalAllocator::buddy` 是 `ax_sync::SpinLock<BuddyAllocator>`，通过 `lock_irqsave()` 访问（取锁同时关闭本地中断）。section 链、free list、`PageMeta`、拆分和合并都只在该锁内修改。region 初始化也持有同一锁，因此初始化期间不能并发分配。
+`GlobalAllocator::buddy` 是 `ax_sync::RawSpinLock<BuddyAllocator>`，通过 `lock_irqsave()` 访问（取锁同时关闭本地中断）。section 链、free list、`PageMeta`、拆分和合并都只在该锁内修改。region 初始化也持有同一锁，因此初始化期间不能并发分配。
 
 ```text
 alloc_pages
@@ -100,7 +100,7 @@ alloc_pages
 
 ### 3.2 每 CPU Slab 与禁止抢占
 
-字节分配在 `ax-alloc/src/buddy_slab.rs` 中通过 `ax_percpu::with_cpu_pin` 获取当前 CPU 的 Slab 指针，并由 per-CPU Slab 内部 `SpinLock` 串行化本 CPU cache。具体 allocation 代码只在[运行时页与堆分配器](./runtime-allocator.md#33-页所有权)展示；本章只定义并发条件：CPU-local 指针的获取和使用必须处在有效 pinning/IRQ-safe allocator 调用边界内，避免任务持有 CPU-local 指针时迁移。
+字节分配在 `ax-alloc/src/buddy_slab.rs` 中通过 `ax_percpu::with_cpu_pin` 获取当前 CPU 的 Slab 指针，并由 per-CPU Slab 内部 `RawSpinLock` 串行化本 CPU cache。具体 allocation 代码只在[运行时页与堆分配器](./runtime-allocator.md#33-页所有权)展示；本章只定义并发条件：CPU-local 指针的获取和使用必须处在有效 pinning/IRQ-safe allocator 调用边界内，避免任务持有 CPU-local 指针时迁移。
 
 锁顺序是“固定当前 CPU → 本 CPU Slab → 必要时短时 Buddy”。Buddy 实现不反向获取某个 CPU 的 Slab 锁；这样避免 `Buddy → Slab` 与 `Slab → Buddy` 形成环。
 
@@ -126,7 +126,7 @@ sequenceDiagram
 
 ### 3.4 统计原子
 
-`ax-alloc` 的用途统计由 `SpinLock<Usages>` 无条件保护：每次成功分配/释放都在 allocator 内部锁之外短暂持有统计锁更新对应 `UsageKind` bucket，没有独立 feature 开关，也没有 per-bucket 原子。计数不决定页是否可访问、不发布 owner，也不参与释放正确性，所以无需用其建立线程间 happens-before。资源发布由锁、remote-free 原子和上层所有权协议承担。
+`ax-alloc` 的用途统计由 `RawSpinLock<Usages>` 无条件保护：每次成功分配/释放都在 allocator 内部锁之外短暂持有统计锁更新对应 `UsageKind` bucket，没有独立 feature 开关，也没有 per-bucket 原子。计数不决定页是否可访问、不发布 owner，也不参与释放正确性，所以无需用其建立线程间 happens-before。资源发布由锁、remote-free 原子和上层所有权协议承担。
 
 ## 4. 页表与地址空间
 
@@ -138,12 +138,12 @@ sequenceDiagram
 
 | 消费者 | 外层 owner | 操作期间的要求 |
 | --- | --- | --- |
-| ArceOS kernel | `SpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
+| ArceOS kernel | `RawSpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
 | ArceOS user address space | 由进程/调用链持有可变访问 | 不允许另一个线程并发修改同一实例 |
 | StarryOS process | `MmHandle`、`MmPin`、`ActivationLease` 与内部 `Mutex<AddrSpace>` | user owner、kernel pin、CPU root 存活分别计数；修改经 receipt 提交 |
-| Axvisor guest | `Mutex<Machine<AxVMResources, ...>>`（`IrqSafeMutex`） | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
+| Axvisor guest | 控制 owner、`MappingLease`、`GuestMemoryPort` | 内存事务串行化；复制与 DMA 固定 revision，停止前关闭准入并收齐静默确认 |
 
-`ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
+`ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的翻译退休和访问租约见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
 
 ### 4.2 地址转换缓存失效
 
@@ -220,7 +220,7 @@ allocate/map
 
 ```text
 process/task owner
-  -> address-space Mutex or irq-save SpinLock
+  -> address-space Mutex or irq-save RawSpinLock
     -> PTE stripe or backend-local state
       -> PageObject mapping graph / page-table structure cursor
         -> ax-alloc per-CPU Slab or Buddy lock

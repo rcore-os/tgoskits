@@ -1,10 +1,15 @@
 //! Native ArceOS lock facade and `ax-sync` bridge provider.
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+use core::sync::atomic::AtomicU64;
 use core::{
     panic::Location,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicUsize},
 };
 
 use ax_task::runtime::{cpu::LocalIrqState, task_runtime};
+
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+mod host_mutex;
 
 fn context_preempt_enter() -> usize {
     crate::guard::enter_lock_preempt().map_or(0, cpu_local::PreemptionToken::into_raw)
@@ -265,21 +270,24 @@ impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {
         ax_task::runtime::sync::rwlock_force_read_decrement(state, lock_addr, context);
     }
 }
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 struct RuntimeMutexOps;
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 fn into_task_pi_storage(
-    storage: &ax_sync::interface::PiMutexStorage,
-) -> ax_task::runtime::sync::PiMutexStorage<'_> {
-    ax_task::runtime::sync::PiMutexStorage {
+    storage: &ax_sync::interface::MutexStorage,
+) -> ax_task::runtime::sync::MutexStorage<'_> {
+    ax_task::runtime::sync::MutexStorage {
         owner: storage.owner_word(),
         generation: storage.generation(),
         wait_state: storage.wait_state(),
         wait_words: storage.wait_storage(),
     }
 }
+#[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 #[ax_crate_interface::impl_interface]
 impl ax_sync::interface::MutexOps for RuntimeMutexOps {
     fn acquire(
-        storage: &ax_sync::interface::PiMutexStorage,
+        storage: &ax_sync::interface::MutexStorage,
         next_waiter_sequence: &AtomicU64,
         metadata: &ax_sync::interface::LockMetadata,
         lock_addr: usize,
@@ -300,7 +308,7 @@ impl ax_sync::interface::MutexOps for RuntimeMutexOps {
     }
 
     fn try_acquire(
-        storage: &ax_sync::interface::PiMutexStorage,
+        storage: &ax_sync::interface::MutexStorage,
         next_waiter_sequence: &AtomicU64,
         metadata: &ax_sync::interface::LockMetadata,
         lock_addr: usize,
@@ -320,25 +328,25 @@ impl ax_sync::interface::MutexOps for RuntimeMutexOps {
         })
     }
 
-    fn release(storage: &ax_sync::interface::PiMutexStorage, lock_addr: usize) {
+    fn release(storage: &ax_sync::interface::MutexStorage, lock_addr: usize) {
         ax_task::runtime::sync::mutex_release(into_task_pi_storage(storage), lock_addr);
     }
 
-    fn force_release(storage: &ax_sync::interface::PiMutexStorage, lock_addr: usize) {
+    fn force_release(storage: &ax_sync::interface::MutexStorage, lock_addr: usize) {
         ax_task::runtime::sync::mutex_force_release(into_task_pi_storage(storage), lock_addr);
     }
 
-    fn is_owned_by_current(storage: &ax_sync::interface::PiMutexStorage) -> bool {
+    fn is_owned_by_current(storage: &ax_sync::interface::MutexStorage) -> bool {
         ax_task::runtime::sync::mutex_is_owned_by_current(into_task_pi_storage(storage))
     }
 
-    fn is_locked(storage: &ax_sync::interface::PiMutexStorage) -> bool {
+    fn is_locked(storage: &ax_sync::interface::MutexStorage) -> bool {
         ax_task::runtime::sync::mutex_is_locked(into_task_pi_storage(storage))
     }
 
-    fn destroy(storage: &mut ax_sync::interface::PiMutexStorage) {
+    fn destroy(storage: &mut ax_sync::interface::MutexStorage) {
         let parts = storage.parts_mut();
-        ax_task::runtime::sync::mutex_destroy(ax_task::runtime::sync::PiMutexStorageMut {
+        ax_task::runtime::sync::mutex_destroy(ax_task::runtime::sync::MutexStorageMut {
             owner: parts.owner_word,
             generation: parts.generation,
             wait_state: parts.wait_state,

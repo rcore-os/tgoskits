@@ -6,6 +6,7 @@ mod def;
 pub mod frame;
 mod map;
 mod table;
+mod unmap;
 mod walk;
 
 pub use def::*;
@@ -79,6 +80,79 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
 
     /// 刷新TLB
     fn flush(vaddr: Option<VirtAddr>);
+
+    /// Completes invalidation for changed mapping/table descriptors in this
+    /// metadata implementation's flush domain.
+    ///
+    /// Implementors supply the descriptor-publication and completion barriers
+    /// required by their architecture. The default preserves the scope of
+    /// `flush(Some(address))`; a local flush does not confirm remote CPUs.
+    /// Immediate table-frame reclamation therefore requires exclusive hardware
+    /// use of the table or an implementation covering every active user. Shared
+    /// stage-1 tables must use deferred reclamation and an external shootdown.
+    fn flush_batch(vaddrs: &[VirtAddr]) {
+        for &vaddr in vaddrs {
+            Self::flush(Some(vaddr));
+        }
+    }
+
+    /// Completes invalidation after changes confined to leaf descriptors.
+    ///
+    /// No parent entry may have been linked or detached in this batch. The
+    /// default retains the invalidation scope of [`Self::flush_batch`].
+    fn flush_leaf_batch(vaddrs: &[VirtAddr]) {
+        Self::flush_batch(vaddrs);
+    }
+
+    /// Completes invalidation after clearing an old descriptor and before
+    /// installing its replacement.
+    ///
+    /// The implementation must satisfy its architecture's pre-make ordering
+    /// in the required flush domain before this call returns. On failure the
+    /// caller restores the original descriptor and does not install a new one.
+    /// The default preserves the metadata's local flush domain. Reclaiming the
+    /// old physical owner still requires separate shootdown confirmation.
+    fn flush_before_make(vaddr: VirtAddr, page_size: usize) -> PagingResult {
+        if page_size > Self::PAGE_SIZE {
+            Self::flush(None);
+        } else {
+            Self::flush_leaf_batch(core::slice::from_ref(&vaddr));
+        }
+        Ok(())
+    }
+
+    /// Checks that the required pre-make invalidation domain is available.
+    ///
+    /// This runs before clearing the old descriptor, so an unsupported
+    /// platform can return an error without changing the mapping. Once it
+    /// succeeds, [`Self::flush_before_make`] still must return success before
+    /// the replacement becomes valid.
+    fn prepare_break_before_make() -> PagingResult {
+        Ok(())
+    }
+
+    /// Completes publication of a replacement leaf after break-before-make.
+    ///
+    /// The old leaf must already have been cleared and invalidated through
+    /// [`Self::flush_before_make`] before the new descriptor was written.
+    /// Architectures that can cache a translation fault still need to
+    /// invalidate that cached result after the write.
+    fn complete_replaced_leaf(vaddr: VirtAddr) {
+        Self::flush_leaf_batch(core::slice::from_ref(&vaddr));
+    }
+
+    /// Completes publication of a newly installed descriptor.
+    ///
+    /// The caller has excluded concurrent software mutation. For a replacement,
+    /// [`Self::flush_before_make`] has completed the required pre-make ordering;
+    /// this hook then publishes the new descriptor. Architectures that can
+    /// retain an invalid translation must also invalidate it after the write.
+    /// This does not confirm remote revocation or permit owner reclamation;
+    /// those still require the caller's shootdown. The default retains the
+    /// metadata's batch invalidation scope.
+    fn publish_new_mapping(vaddr: VirtAddr) {
+        Self::flush_batch(core::slice::from_ref(&vaddr));
+    }
 }
 
 pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
@@ -96,6 +170,16 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
     /// `is_dir` lets formats with level-dependent layouts decode the address
     /// without exposing those layout rules to the generic walker.
     fn paddr(&self, is_dir: bool) -> PhysAddr;
+
+    /// Whether replacing this leaf needs the old descriptor cleared and
+    /// invalidated before the new descriptor is installed.
+    ///
+    /// Physical replacement requires this ordering by default. A descriptor
+    /// format may also require it for changes to memory type, shareability,
+    /// or translation scope even when the physical address stays the same.
+    fn requires_break_before_make(&self, replacement: &Self, is_dir: bool) -> bool {
+        self.paddr(is_dir) != replacement.paddr(is_dir)
+    }
 
     /// Decodes the owner-defined leaf configuration.
     fn config(&self, is_dir: bool) -> Self::PteConfig;

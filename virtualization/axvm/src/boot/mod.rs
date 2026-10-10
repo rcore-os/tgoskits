@@ -1,6 +1,5 @@
 //! Guest boot image and platform planning.
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 use crate::ax_err_type;
 
 pub mod fdt;
@@ -20,31 +19,13 @@ pub fn init_guest_boot_resources() {
     crate::arch::current::init_guest_boot_resources();
 }
 
-/// Build-time image bytes supplied by the hypervisor application.
-#[derive(Clone, Copy, Debug)]
-pub struct StaticVmImage {
-    pub id: usize,
-    pub kernel: &'static [u8],
-    pub bios: Option<&'static [u8]>,
-    pub ramdisk: Option<&'static [u8]>,
-    pub dtb: Option<&'static [u8]>,
-}
-
-/// Application-owned source for guest image bytes and host files.
+/// Application-owned access to guest boot files.
 ///
 /// AxVM owns architecture boot planning, while Axvisor or another monitor owns
 /// where bytes come from.
 pub trait BootImageProvider {
-    fn static_vm_images(&self) -> &'static [StaticVmImage];
-
-    fn static_firmware_images(&self) -> &'static [StaticVmImage] {
-        &[]
-    }
-
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn read_file(&self, file_name: &str) -> crate::AxVmResult<std::vec::Vec<u8>>;
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn read_file_exact(
         &self,
         file_name: &str,
@@ -60,9 +41,30 @@ pub trait BootImageProvider {
         Ok(buffer[..read_size].to_vec())
     }
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn file_size(&self, file_name: &str) -> crate::AxVmResult<usize> {
         self.read_file(file_name).map(|buffer| buffer.len())
+    }
+
+    /// Reads a bounded byte range from a host file.
+    ///
+    /// The default implementation adapts the whole-file `read_file` hook so
+    /// existing providers keep working, but providers that can serve a real
+    /// range should override this to avoid reading the entire image per chunk.
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    fn read_file_range(
+        &self,
+        file_name: &str,
+        offset: usize,
+        read_size: usize,
+    ) -> crate::AxVmResult<std::vec::Vec<u8>> {
+        let buffer = self.read_file(file_name)?;
+        let end = offset
+            .checked_add(read_size)
+            .ok_or_else(|| ax_err_type!(InvalidData, "requested file range overflows"))?;
+        buffer
+            .get(offset..end)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| ax_err_type!(InvalidData, "requested file range exceeds file size"))
     }
 }
 #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64", test))]

@@ -1,5 +1,4 @@
 features = [
-  "legacy-board-init",
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",

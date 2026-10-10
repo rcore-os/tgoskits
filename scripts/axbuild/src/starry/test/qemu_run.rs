@@ -161,13 +161,12 @@ impl Starry {
                 println!("[{completed}/{total}] starry qemu {case_name}");
 
                 let case_started = Instant::now();
+                let case_request = Self::request_for_qemu_case_build_config(
+                    &build_group.request,
+                    &case.build_config_path,
+                );
                 match self
-                    .run_qemu_case(
-                        &build_group.request,
-                        &build_group.cargo,
-                        case,
-                        &asset_config,
-                    )
+                    .run_qemu_case(&case_request, &build_group.cargo, case, &asset_config)
                     .await
                     .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
                 {
@@ -230,6 +229,13 @@ impl Starry {
                     starry_case.case.display_name
                 )
             })?;
+            qemu_test::prepare_host_initramfs(
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                &starry_case.case.case_dir,
+                &request.arch,
+                &mut qemu,
+            )?;
             let timing_stage = timing::TimingStage::new(
                 "starry-qemu",
                 [
@@ -248,12 +254,14 @@ impl Starry {
                 &qemu,
                 default_rootfs_path,
             )?;
-            rootfs_paths.insert(rootfs_path.clone());
-            rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
-                self.app.workspace_root(),
-                self.app.target_dir(),
-                &qemu,
-            )?);
+            if !qemu_test::host_initramfs_without_rootfs_drive(&qemu) {
+                rootfs_paths.insert(rootfs_path.clone());
+                rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
+                    &qemu,
+                )?);
+            }
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
                 format!(
@@ -524,14 +532,16 @@ impl Starry {
                 ("phase", "patch-rootfs".to_string()),
             ],
         );
-        rootfs::patch_rootfs(
-            &mut qemu,
-            &prepared_assets.rootfs_path,
-            rootfs::RootfsPatchOptions {
-                mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
-                write_policy: rootfs::RootfsWritePolicy::Discard,
-            },
-        )?;
+        if !qemu_test::host_initramfs_without_rootfs_drive(&qemu) {
+            rootfs::patch_rootfs(
+                &mut qemu,
+                &prepared_assets.rootfs_path,
+                rootfs::RootfsPatchOptions {
+                    mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+                    write_policy: rootfs::RootfsWritePolicy::Discard,
+                },
+            )?;
+        }
         timing_stage.finish();
         let timing_stage = timing::TimingStage::new(
             "qemu-case",

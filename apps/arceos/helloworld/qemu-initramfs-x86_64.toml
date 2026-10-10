@@ -1,0 +1,15 @@
+cmdline = "host_initramfs=builtin"
+args = [
+  "-nographic",
+  "-m", "256M",
+]
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 90
+
+[[shell_check_steps]]
+success_regex = ["HOST_CMDLINE: host_initramfs=builtin"]
+
+[[shell_check_steps]]
+success_regex = ["HOST_INITRAMFS_PASSED"]

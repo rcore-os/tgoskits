@@ -2,21 +2,22 @@ use core::marker::PhantomData;
 
 use super::{
     LoongArchContextFrame,
-    exception::handle_exception_sync,
-    guest_csr::GuestTimerRegistration,
+    exception::{GsprOp, classify_gspr, handle_exception_sync},
+    guest_csr::{GuestTimerRegistration, guest_cpucfg_value},
     host::LoongArchHostOps,
     iocsr::{
-        LoongArchIocsrStateRef, init_guest_iocsr, inject_enabled_pending_interrupt,
-        inject_guest_eiointc_vector,
+        LoongArchIocsrStateRef, guest_owns_iocsr_write, host_iocsr_write, init_guest_iocsr,
+        inject_enabled_pending_interrupt, inject_guest_eiointc_vector, resolve_iocsr_read,
     },
     registers::{INT_HWI0, INT_IPI},
-    trap::TrapKind,
+    trap::{ECODE_GSPR, TrapKind, extract_field, get_badi, get_exception_code, is_host_tlb_refill},
     types::{
         LoongArchAccessFlags, LoongArchGuestPhysAddr, LoongArchHostVirtAddr,
-        LoongArchNestedPagingConfig, LoongArchVcpuError, LoongArchVcpuId, LoongArchVcpuResult,
-        LoongArchVmExit, LoongArchVmId,
+        LoongArchNestedPagingConfig, LoongArchPinnedHost, LoongArchVcpuError, LoongArchVcpuId,
+        LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId,
     },
 };
+use crate::arch::loongarch64::irq::LoongArchRunPort;
 
 const GUEST_RESET_CRMD_DIRECT: usize = 1 << 3;
 const GUEST_BOOT_PRMD: usize = 1 << 2;
@@ -47,7 +48,7 @@ pub struct LoongArchVCpuSetupConfig {
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct LoongArchVcpu<H: LoongArchHostOps> {
+pub(crate) struct LoongArchVcpu<H: LoongArchHostOps> {
     machine: ax_cpu::virtualization::Vcpu,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
@@ -58,8 +59,21 @@ pub struct LoongArchVcpu<H: LoongArchHostOps> {
     _host: PhantomData<fn() -> H>,
 }
 
+// SAFETY: `LoongArchVcpu` is a crate-private policy wrapper. Its only `!Send`
+// field is `ax_cpu::virtualization::Vcpu`, whose `PhantomData<*mut ()>` marker
+// exists solely to forbid moving an *active* LVZ binding between CPUs. AxVM
+// never moves a bound backend: the only safe bind/unbind callers are this
+// crate's `VmArchVcpuOps` adapter and `AxVCpu::BackendBinding`, and
+// `AxVCpu::with_exclusive_scope` runs them inside one `PreemptGuard` + CPU pin,
+// unloading with `BackendBinding::finish` or aborting in its `Drop` before that
+// pin is released. The value therefore crosses threads only while unbound, and
+// no safe caller can transfer it while bound. Every other field is plain `Send`
+// state once the associated host timer handle is `Send`; the shared
+// `Arc<LoongArchIocsrState>` provides its own independent `Send + Sync`.
+unsafe impl<H: LoongArchHostOps> Send for LoongArchVcpu<H> where H::TimerHandle: Send {}
+
 impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
-    pub fn new(
+    pub(crate) fn new(
         vm_id: LoongArchVmId,
         vcpu_id: LoongArchVcpuId,
         config: LoongArchVCpuCreateConfig,
@@ -97,13 +111,13 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         })
     }
 
-    pub fn set_entry(&mut self, entry: LoongArchGuestPhysAddr) -> LoongArchVcpuResult {
+    pub(crate) fn set_entry(&mut self, entry: LoongArchGuestPhysAddr) -> LoongArchVcpuResult {
         self.machine.context.sepc = entry.as_usize();
         self.machine.context.gcsr_era = entry.as_usize();
         Ok(())
     }
 
-    pub fn set_nested_page_table(
+    pub(crate) fn set_nested_page_table(
         &mut self,
         config: LoongArchNestedPagingConfig,
     ) -> LoongArchVcpuResult {
@@ -112,7 +126,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             .map_err(|_| LoongArchVcpuError::InvalidInput)
     }
 
-    pub fn setup(&mut self, config: LoongArchVCpuSetupConfig) -> LoongArchVcpuResult {
+    pub(crate) fn setup(&mut self, config: LoongArchVCpuSetupConfig) -> LoongArchVcpuResult {
         if !config.firmware_boot && config.boot_args != [0; 3] {
             self.machine.context.set_argument(config.boot_args[0]);
             self.machine.context.set_a1(config.boot_args[1]);
@@ -125,7 +139,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         Ok(())
     }
 
-    pub fn prepare_entry(&mut self) {
+    pub(crate) fn prepare_entry(&mut self) {
         if inject_enabled_pending_interrupt(
             &self.iocsr_state,
             &mut self.machine.context,
@@ -150,7 +164,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         };
     }
 
-    pub fn run_machine(&mut self) -> LoongArchVcpuResult<LoongArchVmExit> {
+    pub(crate) fn run_machine(&mut self) -> LoongArchVcpuResult<LoongArchVmExit> {
         let guest_id = self
             .vm_id
             .checked_add(1)
@@ -170,18 +184,76 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         Ok(LoongArchVmExit::Machine(exit))
     }
 
-    pub fn process_exit(
+    pub(crate) fn process_exit(
         &mut self,
         exit: ax_cpu::virtualization::Exit,
+        pinned: LoongArchPinnedHost,
     ) -> LoongArchVcpuResult<LoongArchVmExit> {
         self.last_badi = exit.instruction;
-        self.vmexit_handler(match exit.kind {
-            ax_cpu::virtualization::ExitKind::Synchronous => TrapKind::Synchronous,
-            ax_cpu::virtualization::ExitKind::Irq => TrapKind::Irq,
-        })
+        self.vmexit_handler(
+            match exit.kind {
+                ax_cpu::virtualization::ExitKind::Synchronous => TrapKind::Synchronous,
+                ax_cpu::virtualization::ExitKind::Irq => TrapKind::Irq,
+            },
+            pinned,
+        )
     }
 
-    pub fn bind(&mut self) -> LoongArchVcpuResult {
+    /// Resolves the host CPU-local operands of one LVZ exit while it is pinned.
+    ///
+    /// `finish_exit` interprets the exit later in plain task context, which may
+    /// run on a different host CPU, so every pinned-only side effect of the
+    /// faulting instruction is taken here: CPUCFG and IOCSR passthrough reads,
+    /// and the raw IOCSR passthrough write. Only the operands that instruction
+    /// needs are captured, never the whole register file, and only bounded local
+    /// accesses happen: no timer, allocation, device service or sleeping lock is
+    /// touched while the backend is bound.
+    pub(crate) fn capture_pinned_host(
+        &self,
+        exit: &ax_cpu::virtualization::Exit,
+    ) -> LoongArchPinnedHost {
+        if !matches!(exit.kind, ax_cpu::virtualization::ExitKind::Synchronous) {
+            return LoongArchPinnedHost::None;
+        }
+        let ctx = &self.machine.context;
+        // Only a software GSPR emulation touches host-local CPUCFG or IOCSR
+        // state. Translation refills, hypercalls and page faults are described
+        // entirely by the durable guest context.
+        if is_host_tlb_refill(ctx) || get_exception_code(ctx) != ECODE_GSPR {
+            return LoongArchPinnedHost::None;
+        }
+        let ins = get_badi(ctx) as u32 as usize;
+        match classify_gspr(ctx) {
+            Some(GsprOp::Cpucfg) => {
+                let rj = extract_field(ins, 5, 5);
+                let index = ctx.x[rj];
+                LoongArchPinnedHost::Cpucfg {
+                    index,
+                    value: guest_cpucfg_value(index),
+                }
+            }
+            Some(GsprOp::Iocsr { ty, addr }) if ty <= 3 => LoongArchPinnedHost::IocsrRead {
+                addr,
+                value: resolve_iocsr_read(&self.iocsr_state, self.vm_id, self.vcpu_id, ty, addr),
+            },
+            Some(GsprOp::Iocsr { ty, addr }) => {
+                if guest_owns_iocsr_write(addr) {
+                    // Guest-owned emulation stays on the task side; it only
+                    // touches program-owned IOCSR state.
+                    LoongArchPinnedHost::IocsrWriteGuest
+                } else {
+                    // Raw host passthrough: the only native CPU-local write of
+                    // the exit, so it must run before the backend is unloaded.
+                    let rd = extract_field(ins, 0, 5);
+                    host_iocsr_write(ty, addr, ctx.x[rd]);
+                    LoongArchPinnedHost::IocsrWritePassthrough { addr }
+                }
+            }
+            _ => LoongArchPinnedHost::None,
+        }
+    }
+
+    pub(crate) fn bind(&mut self) -> LoongArchVcpuResult {
         let addresses = ax_cpu::virtualization::entry_addresses().map(|address| {
             ax_cpu::VirtAddr::from_usize(
                 0x9000_0000_0000_0000
@@ -200,23 +272,37 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         }
     }
 
-    pub fn unbind(&mut self) -> LoongArchVcpuResult {
+    pub(crate) fn unbind(&mut self) -> LoongArchVcpuResult {
         // SAFETY: AxVM runs unbind on the pinned owner after guest execution ends.
         unsafe { self.machine.unbind() }.map_err(|_| LoongArchVcpuError::BadState)
     }
 
-    pub fn set_gpr(&mut self, idx: usize, val: usize) {
+    pub(crate) fn set_gpr(&mut self, idx: usize, val: usize) {
         self.machine.context.set_gpr(idx, val);
     }
 
-    pub fn decode_mmio_fault(
+    /// Advances the guest PC past one fully emulated instruction.
+    pub(crate) fn advance_guest_pc(&mut self) {
+        self.machine.context.advance_guest_pc();
+    }
+
+    /// Binds the run-bound publication capability into every lower callback
+    /// carrier owned by this backend.
+    ///
+    /// Task context, called once per run before the vCPU can enter the guest.
+    pub(crate) fn set_run_port(&mut self, port: LoongArchRunPort) {
+        self.guest_timer.set_run_port(port.clone());
+        self.iocsr_state.set_run_port(port);
+    }
+
+    pub(crate) fn decode_mmio_fault(
         &mut self,
         fault_addr: LoongArchGuestPhysAddr,
         access_flags: LoongArchAccessFlags,
     ) -> Option<LoongArchVmExit> {
         let gcsr_badi = self.machine.context.gcsr_badi;
         let exit = super::mmio::decode_mmio_fault(
-            &mut self.machine.context,
+            &self.machine.context,
             self.last_badi,
             fault_addr,
             access_flags,
@@ -226,7 +312,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 None
             } else {
                 super::mmio::decode_mmio_fault(
-                    &mut self.machine.context,
+                    &self.machine.context,
                     gcsr_badi,
                     fault_addr,
                     access_flags,
@@ -255,7 +341,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         exit
     }
 
-    pub fn inject_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
+    pub(crate) fn inject_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
         if vector <= INT_IPI {
             self.machine.context.gcsr_estat |= 1usize << vector;
         } else if let Some(hwi) =
@@ -268,11 +354,11 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         Ok(())
     }
 
-    pub fn set_return_value(&mut self, val: usize) {
+    pub(crate) fn set_return_value(&mut self, val: usize) {
         self.machine.context.set_a0(val);
     }
 
-    pub fn inject_external_interrupt(
+    pub(crate) fn inject_external_interrupt(
         &mut self,
         vector: usize,
         physical_irq: usize,
@@ -295,7 +381,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.inject_interrupt(vector)
     }
 
-    pub fn inject_eiointc_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
+    pub(crate) fn inject_eiointc_interrupt(&mut self, vector: usize) -> LoongArchVcpuResult {
         if let Some(hwi) =
             inject_guest_eiointc_vector(&self.iocsr_state, self.vm_id, self.vcpu_id, vector)
         {
@@ -306,13 +392,44 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         Ok(())
     }
 
-    pub fn has_enabled_pending_interrupt(&self) -> bool {
+    pub(crate) fn has_enabled_pending_interrupt(&self) -> bool {
         self.machine.context.gcsr_eentry != 0
             && self.machine.context.gcsr_crmd & CSR_CRMD_IE != 0
             && self.machine.context.gcsr_estat
                 & self.machine.context.gcsr_ectl
                 & LOCAL_INTERRUPT_MASK
                 != 0
+    }
+
+    /// Cancels the outstanding guest timer in task context.
+    ///
+    /// This is the explicit shutdown step: it must run on the task-phase owner,
+    /// outside any hardware binding, before the backend is retired. A failed
+    /// cancellation keeps the host registration owned by this backend (see
+    /// `GuestTimerRegistration::cancel`) so the owner can retry from the stop
+    /// path instead of losing the handle.
+    pub(crate) fn quiet_timer(&mut self) -> LoongArchVcpuResult {
+        self.guest_timer.cancel()
+    }
+
+    /// Quiesces the guest timer producer while preserving its logical deadline.
+    ///
+    /// The task-phase owner calls this before parking the vCPU: the host
+    /// callback is retired with a completion barrier and its already-published
+    /// pending interrupts stay queued, but no guest register or memory is
+    /// written. A failed retirement keeps the handle so the owner can retry.
+    pub(crate) fn suspend_timer(&mut self) -> LoongArchVcpuResult {
+        self.guest_timer.suspend()
+    }
+
+    /// Re-arms a suspended guest timer at its preserved absolute deadline.
+    ///
+    /// The task-phase owner calls this before reopening guest admission. A
+    /// deadline that elapsed while suspended is re-armed already due, and a
+    /// timer that already fired is left alone because its pending interrupt is
+    /// still queued.
+    pub(crate) fn resume_timer(&mut self) -> LoongArchVcpuResult {
+        self.guest_timer.resume(self.vm_id, self.vcpu_id)
     }
 
     fn init_hv(&mut self) {
@@ -360,7 +477,11 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         self.machine.context.gcsr_tlbrera = 0;
     }
 
-    fn vmexit_handler(&mut self, exit_reason: TrapKind) -> LoongArchVcpuResult<LoongArchVmExit> {
+    fn vmexit_handler(
+        &mut self,
+        exit_reason: TrapKind,
+        pinned: LoongArchPinnedHost,
+    ) -> LoongArchVcpuResult<LoongArchVmExit> {
         match exit_reason {
             TrapKind::Synchronous => handle_exception_sync::<H>(
                 &self.iocsr_state,
@@ -368,6 +489,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 self.vm_id,
                 self.vcpu_id,
                 &mut self.guest_timer,
+                pinned,
             ),
             // The normal host IRQ entry consumes live pending sources when
             // the shared entry guard restores IRQs. Never replay saved ESTAT.
@@ -379,8 +501,12 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
 impl<H: LoongArchHostOps> Drop for LoongArchVcpu<H> {
     fn drop(&mut self) {
         if let Err(error) = self.guest_timer.cancel() {
-            log::warn!(
-                "failed to cancel LoongArch guest timer while dropping VM[{}] VCpu[{}]: {error:?}",
+            // Reaching this with a live registration means the task-phase owner
+            // never ran `quiet_timer`, and a `Drop` cannot retry. Report the
+            // abandoned host timer instead of silently discarding its handle.
+            log::error!(
+                "abandoning LoongArch guest timer registration while dropping VM[{}] VCpu[{}]; \
+                 the task-phase owner must run quiet_timer before retiring the vCPU: {error:?}",
                 self.vm_id,
                 self.vcpu_id
             );

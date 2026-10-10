@@ -1,0 +1,251 @@
+/*******************************************************************************
+ *
+ * Module Name: nsxfobj - Public interfaces to the ACPI subsystem
+ *                         ACPI Object oriented interfaces
+ *
+ ******************************************************************************/
+
+/******************************************************************************
+ *
+ * Copyright (c) 1999 - 2026, Intel Corp.
+ * SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-only
+ *
+ *****************************************************************************/
+
+#define EXPORT_ACPI_INTERFACES
+
+#include "acpi.h"
+#include "accommon.h"
+#include "acnamesp.h"
+
+
+#define _COMPONENT          ACPI_NAMESPACE
+        ACPI_MODULE_NAME    ("nsxfobj")
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiGetType
+ *
+ * PARAMETERS:  Handle          - Handle of object whose type is desired
+ *              RetType         - Where the type will be placed
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: This routine returns the type associated with a particular
+ *              handle
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AcpiGetType (
+    ACPI_HANDLE             Handle,
+    ACPI_OBJECT_TYPE        *RetType)
+{
+    ACPI_NAMESPACE_NODE     *Node;
+    ACPI_STATUS             Status;
+
+
+    /* Parameter Validation */
+
+    if (!RetType)
+    {
+        return (AE_BAD_PARAMETER);
+    }
+
+    /* Special case for the predefined Root Node (return type ANY) */
+
+    if (Handle == ACPI_ROOT_OBJECT)
+    {
+        *RetType = ACPI_TYPE_ANY;
+        return (AE_OK);
+    }
+
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        return (Status);
+    }
+
+    /* Convert and validate the handle */
+
+    Node = AcpiNsValidateHandle (Handle);
+    if (!Node)
+    {
+        (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+        return (AE_BAD_PARAMETER);
+    }
+
+    *RetType = Node->Type;
+
+    Status = AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    return (Status);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiGetType)
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiGetParent
+ *
+ * PARAMETERS:  Handle          - Handle of object whose parent is desired
+ *              RetHandle       - Where the parent handle will be placed
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Returns a handle to the parent of the object represented by
+ *              Handle.
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AcpiGetParent (
+    ACPI_HANDLE             Handle,
+    ACPI_HANDLE             *RetHandle)
+{
+    ACPI_NAMESPACE_NODE     *Node;
+    ACPI_NAMESPACE_NODE     *ParentNode;
+    ACPI_STATUS             Status;
+
+
+    if (!RetHandle)
+    {
+        return (AE_BAD_PARAMETER);
+    }
+
+    /* Special case for the predefined Root Node (no parent) */
+
+    if (Handle == ACPI_ROOT_OBJECT)
+    {
+        return (AE_NULL_ENTRY);
+    }
+
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        return (Status);
+    }
+
+    /* Convert and validate the handle */
+
+    Node = AcpiNsValidateHandle (Handle);
+    if (!Node)
+    {
+        Status = AE_BAD_PARAMETER;
+        goto UnlockAndExit;
+    }
+
+    /* Get the parent entry */
+
+    ParentNode = Node->Parent;
+    *RetHandle = ACPI_CAST_PTR (ACPI_HANDLE, ParentNode);
+
+    /* Return exception if parent is null */
+
+    if (!ParentNode)
+    {
+        Status = AE_NULL_ENTRY;
+    }
+
+
+UnlockAndExit:
+
+    (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    return (Status);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiGetParent)
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiGetNextObject
+ *
+ * PARAMETERS:  Type            - Type of object to be searched for
+ *              Parent          - Parent object whose children we are getting
+ *              LastChild       - Previous child that was found.
+ *                                The NEXT child will be returned
+ *              RetHandle       - Where handle to the next object is placed
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Return the next peer object within the namespace. If Handle is
+ *              valid, Scope is ignored. Otherwise, the first object within
+ *              Scope is returned.
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AcpiGetNextObject (
+    ACPI_OBJECT_TYPE        Type,
+    ACPI_HANDLE             Parent,
+    ACPI_HANDLE             Child,
+    ACPI_HANDLE             *RetHandle)
+{
+    ACPI_STATUS             Status;
+    ACPI_NAMESPACE_NODE     *Node;
+    ACPI_NAMESPACE_NODE     *ParentNode = NULL;
+    ACPI_NAMESPACE_NODE     *ChildNode = NULL;
+
+
+    /* Parameter validation */
+
+    if (Type > ACPI_TYPE_EXTERNAL_MAX)
+    {
+        return (AE_BAD_PARAMETER);
+    }
+
+    Status = AcpiUtAcquireMutex (ACPI_MTX_NAMESPACE);
+    if (ACPI_FAILURE (Status))
+    {
+        return (Status);
+    }
+
+    /* If null handle, use the parent */
+
+    if (!Child)
+    {
+        /* Start search at the beginning of the specified scope */
+
+        ParentNode = AcpiNsValidateHandle (Parent);
+        if (!ParentNode)
+        {
+            Status = AE_BAD_PARAMETER;
+            goto UnlockAndExit;
+        }
+    }
+    else
+    {
+        /* Non-null handle, ignore the parent */
+        /* Convert and validate the handle */
+
+        ChildNode = AcpiNsValidateHandle (Child);
+        if (!ChildNode)
+        {
+            Status = AE_BAD_PARAMETER;
+            goto UnlockAndExit;
+        }
+    }
+
+    /* Internal function does the real work */
+
+    Node = AcpiNsGetNextNodeTyped (Type, ParentNode, ChildNode);
+    if (!Node)
+    {
+        Status = AE_NOT_FOUND;
+        goto UnlockAndExit;
+    }
+
+    if (RetHandle)
+    {
+        *RetHandle = ACPI_CAST_PTR (ACPI_HANDLE, Node);
+    }
+
+
+UnlockAndExit:
+
+    (void) AcpiUtReleaseMutex (ACPI_MTX_NAMESPACE);
+    return (Status);
+}
+
+ACPI_EXPORT_SYMBOL (AcpiGetNextObject)

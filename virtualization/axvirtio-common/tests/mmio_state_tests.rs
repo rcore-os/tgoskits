@@ -1,6 +1,6 @@
 //! Shared MMIO transport state tests (plan section 13.2).
 
-extern crate ax_runtime as _;
+mod common;
 
 use std::sync::Arc;
 

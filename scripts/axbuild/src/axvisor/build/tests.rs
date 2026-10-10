@@ -39,7 +39,7 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
 }
 
 #[test]
-fn load_cargo_config_injects_vmconfigs() {
+fn guest_resources_do_not_change_cargo_build_identity() {
     let root = tempdir().unwrap();
     let config_path = root.path().join(".build.toml");
     let vmconfigs = vec![root.path().join("a.toml"), root.path().join("b.toml")];
@@ -49,7 +49,7 @@ fn load_cargo_config_injects_vmconfigs() {
     fs::write(
         &config_path,
         r#"
-features = ["fs"]
+features = []
 log = "Info"
 "#,
     )
@@ -86,15 +86,16 @@ log = "Info"
         cargo.env.get("AX_TARGET").map(String::as_str),
         Some("aarch64-unknown-none-softfloat")
     );
-    assert_eq!(
-        cargo.env.get("AXVISOR_VM_CONFIGS").map(String::as_str),
-        Some(
-            std::env::join_paths(&vmconfigs)
-                .unwrap()
-                .to_string_lossy()
-                .as_ref()
-        )
+    let mut alternate = request(
+        root.path().join(".build.toml"),
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
     );
+    alternate.vmconfigs = vec![root.path().join("missing-resource.toml")];
+    let other = load_cargo_config(&alternate, &workspace()).unwrap();
+    assert_eq!(cargo.env, other.env);
+    assert_eq!(cargo.features, other.features);
+    assert_eq!(cargo.args, other.args);
     assert_eq!(
         cargo
             .args
@@ -143,7 +144,7 @@ fn load_cargo_config_uses_board_defaults_when_default_file_is_missing() {
         "qemu-x86_64",
         r#"
 target = "x86_64-unknown-none"
-features = ["fs"]
+features = []
 log = "Info"
 vm_configs = []
 "#,
@@ -171,7 +172,7 @@ vm_configs = []
         fs::read_to_string(&path).unwrap(),
         fs::read_to_string(board_path).unwrap()
     );
-    assert!(cargo.features.contains(&"fs".to_string()));
+    assert!(!cargo.features.contains(&"fs".to_string()));
     assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));

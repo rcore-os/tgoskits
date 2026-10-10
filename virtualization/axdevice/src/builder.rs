@@ -1,5 +1,7 @@
 //! Unsealed runtime construction controlled by each architecture.
 
+use axdevice_base::DeviceId;
+
 use crate::*;
 
 /// Builds one `DeviceRuntime` without prescribing architecture device order.
@@ -31,11 +33,14 @@ impl DeviceRuntimeBuilder {
         };
         let bundle = {
             let claims = plan.claim_device(node.id().as_str())?;
+            let device_id = DeviceId::new(self.runtime.device_count() as u32);
+            let work_port = self.runtime.work_port();
             let mut context = DeviceBuildContext::planned(
                 self.runtime.interrupt_registry(),
                 claims,
                 node.pci_host_topology(),
-            );
+            )
+            .with_work_port(work_port, device_id);
             let bundle = model.build(&mut context)?;
             context.finish(bundle)?
         };

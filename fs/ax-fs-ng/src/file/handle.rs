@@ -18,9 +18,7 @@ use super::{
 /// Bounds the kernel copy of one write to a packet node.
 const MAX_PACKET_RECORD: usize = 1 << 17;
 
-use crate::{
-    fs_core::FsContext, io_error_to_vfs_error, os::sync::SleepMutex as Mutex, vfs_error_to_io_error,
-};
+use crate::{fs_core::FsContext, io_error_to_vfs_error, os::sync::Mutex, vfs_error_to_io_error};
 
 /// Low-level interface for file operations.
 #[derive(Clone)]

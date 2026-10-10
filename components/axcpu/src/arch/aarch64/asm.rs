@@ -177,6 +177,22 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     super::mmu::El1::flush_tlb(vaddr);
 }
 
+/// Completes descriptor publication for a previously absent mapping.
+///
+/// Previous valid translations must already have been invalidated in the
+/// caller's flush domain. Translation-fault results are not cached in AArch64
+/// TLBs; only publication and local context synchronization are required here.
+/// Shared tables still need runtime shootdown before revocation or retirement.
+#[inline]
+pub fn publish_new_mapping() {
+    // SAFETY: runtime executes at its configured privileged EL. The store
+    // barrier completes prior table writes; ISB synchronizes subsequent local
+    // accesses with the new translation without broadcasting a TLBI.
+    unsafe {
+        asm!("dsb ishst; isb", options(nostack, preserves_flags));
+    }
+}
+
 /// Makes a page-table entry installed by the local page-fault handler visible
 /// before retrying the faulting instruction.
 ///
@@ -258,6 +274,9 @@ pub fn enable_fp() {
 
 #[cfg(feature = "uspace")]
 core::arch::global_asm!(include_str!("user_copy.S"), include_str!("user_atomic.S"),);
+
+#[cfg(feature = "exception-table")]
+core::arch::global_asm!(include_str!("kernel_copy.S"));
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {

@@ -75,6 +75,10 @@ impl MemIf for DummyMem {
         CpuSharedMemoryModel::Coherent
     }
 
+    fn stage_one_tlb_domain() -> ax_plat::mem::StageOneTlbDomain {
+        ax_plat::mem::StageOneTlbDomain::Unavailable
+    }
+
     fn phys_ram_ranges() -> &'static [RawRange] {
         &[]
     }

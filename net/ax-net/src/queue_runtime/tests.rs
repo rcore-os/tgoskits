@@ -7,8 +7,8 @@ use std::{
 
 use irq_framework::{HwIrq, IrqDomainId};
 use rd_net::{
-    DmaBuffer, NetControlEndpoint, NetDeviceInfo, PreparedNetDevice, RxCompletion,
-    TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol, WifiOperation,
+    DmaBuffer, NetControlEndpoint, NetDeviceInfo, NetPollGroupId, NetRxMode, PreparedNetDevice,
+    RxCompletion, TxNetworkProtocol, TxNotify, TxSubmitOptions, TxTransportProtocol, WifiOperation,
     WifiTransaction, Wpa2Pmk,
     dma_api::{
         DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
@@ -175,7 +175,7 @@ pub(super) fn tx_test_port(
     (
         QueueFramePort {
             name: String::from("test0"),
-            mac: Arc::new(SpinLock::new([0; 6])),
+            mac: Arc::new(RawSpinLock::new([0; 6])),
             groups: vec![group],
             tx_queue_discipline,
             pending_tx: VecDeque::new(),
@@ -300,6 +300,7 @@ fn absent_ports_preserve_discovery_order_for_interface_configuration() {
             wifi_handles: Vec::new(),
             initial_wifi_policies: Vec::new(),
             device_index_map,
+            published_interfaces: Vec::new(),
             protocol_owner_cpu: 0,
         };
         let surviving_orders = (0..3)
@@ -388,7 +389,7 @@ fn device_qdisc_limits_and_backlogs_are_isolated() {
 
 struct RecordingRegistration {
     id: usize,
-    order: Arc<StdMutex<Vec<usize>>>,
+    order: Arc<std::sync::Mutex<Vec<usize>>>,
 }
 
 impl PinnedNetIrqRegistration for RecordingRegistration {
@@ -455,7 +456,7 @@ fn spsc_ring_is_bounded_and_preserves_move_order() {
 
 #[test]
 fn failed_initialization_unwinds_irq_leases_in_reverse_order() {
-    let order = Arc::new(StdMutex::new(Vec::new()));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let registrations = (0..3)
         .map(|id| {
             Box::new(RecordingRegistration {
@@ -471,7 +472,7 @@ fn failed_initialization_unwinds_irq_leases_in_reverse_order() {
 
 #[test]
 fn absent_startup_group_synchronizes_only_its_irq_registration() {
-    let order = Arc::new(StdMutex::new(Vec::new()));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let started = Arc::new(group_state(STATE_IDLE));
     let absent = Arc::new(group_state(STATE_DISABLED));
     absent.mark_startup_absent();
@@ -503,7 +504,7 @@ fn absent_startup_group_synchronizes_only_its_irq_registration() {
 #[test]
 fn absent_irq_sync_failure_rejects_publication_and_releases_other_registrations() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let order = Arc::new(StdMutex::new(Vec::new()));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let absent = Arc::new(group_state(STATE_DISABLED));
     absent.mark_startup_absent();
     let registrations = vec![
@@ -807,9 +808,21 @@ fn direct_tx_fills_dma_and_preserves_submission_options() {
 }
 
 fn group_state(initial: u8) -> PollGroupState {
-    let state = PollGroupState::new(0, Arc::new(QueueNotification::new()));
+    group_state_with_identity(initial, test_identity(0))
+}
+
+fn group_state_with_identity(initial: u8, identity: NetQueueIdentity) -> PollGroupState {
+    let state = PollGroupState::new(identity, Arc::new(QueueNotification::new()));
     state.state.store(initial, Ordering::Release);
     state
+}
+
+fn test_identity(owner_cpu: usize) -> NetQueueIdentity {
+    NetQueueIdentity {
+        discovery_order: 0,
+        group_id: NetPollGroupId::new(0),
+        owner_cpu,
+    }
 }
 
 fn apply_model_operation(state: &PollGroupState, operation: ModelOperation) {
@@ -856,7 +869,7 @@ fn independent_sources_can_use_different_cpus() {
 #[test]
 fn missed_event_survives_poll_completion() {
     let notify = Arc::new(QueueNotification::new());
-    let state = PollGroupState::new(0, notify);
+    let state = PollGroupState::new(test_identity(0), notify);
     state.activate(false);
     state.schedule_task();
     state.state.store(STATE_POLLING, Ordering::Release);
@@ -945,9 +958,16 @@ fn hardware_retry_rearms_instead_of_immediately_rescheduling() {
         hardware_retry_outcome(0),
         GroupPollOutcome::Idle(0)
     ));
-    assert!(waits_for_hardware_event(&NetError::Retry));
-    assert!(waits_for_hardware_event(&NetError::LinkDown));
-    assert!(!waits_for_hardware_event(&NetError::NotSupported));
+    // The admission check and the reported reason come from one classifier.
+    assert_eq!(
+        backpressure_reason(&NetError::Retry),
+        Some(QueueBackpressureReason::Retry)
+    );
+    assert_eq!(
+        backpressure_reason(&NetError::LinkDown),
+        Some(QueueBackpressureReason::LinkDown)
+    );
+    assert_eq!(backpressure_reason(&NetError::NotSupported), None);
     assert!(matches!(
         rx_refill_retry_outcome(0, 0),
         GroupPollOutcome::Idle(0)
@@ -984,6 +1004,98 @@ fn secure_startup_transaction_receives_runtime_owned_entropy() {
 }
 
 #[test]
+fn rx_drop_total_keeps_counting_after_the_device_layer_drains_the_increment() {
+    let state = group_state(STATE_IDLE);
+
+    state.record_rx_drop();
+    state.record_rx_drop();
+
+    // The device layer takes the increment once, folds it into the interface
+    // counter, and finds nothing left to take.
+    assert_eq!(state.take_pending_rx_drops(), 2);
+    assert_eq!(state.take_pending_rx_drops(), 0);
+
+    // The queue keeps reporting every drop it observed.
+    assert_eq!(state.stats.snapshot().rx_drops, 2);
+}
+
+#[test]
+fn queue_snapshots_pair_group_identity_with_its_published_interface() {
+    use crate::config::InterfaceId;
+
+    // Device 0 was skipped at startup, so the surviving devices keep their
+    // discovery order while being published as the first two interfaces.
+    let dropped = group_state_with_identity(
+        STATE_IDLE,
+        NetQueueIdentity {
+            discovery_order: 1,
+            group_id: NetPollGroupId::new(3),
+            owner_cpu: 1,
+        },
+    );
+    dropped.record_rx_drop();
+    let second_queue = group_state_with_identity(
+        STATE_IDLE,
+        NetQueueIdentity {
+            discovery_order: 1,
+            group_id: NetPollGroupId::new(4),
+            owner_cpu: 2,
+        },
+    );
+    let other_device = group_state_with_identity(
+        STATE_IDLE,
+        NetQueueIdentity {
+            discovery_order: 2,
+            group_id: NetPollGroupId::new(0),
+            owner_cpu: 3,
+        },
+    );
+    let mut runtime = NetworkQueueRuntime {
+        registrations: Vec::new(),
+        executors: Vec::new(),
+        group_states: vec![
+            Arc::new(dropped),
+            Arc::new(second_queue),
+            Arc::new(other_device),
+        ],
+        _controls: Vec::new(),
+        wifi_handles: Vec::new(),
+        initial_wifi_policies: Vec::new(),
+        device_index_map: vec![None, Some(0), Some(1)],
+        published_interfaces: Vec::new(),
+        protocol_owner_cpu: 0,
+    };
+
+    // Until `init_network` binds the published interfaces, a group has no
+    // interface to name but keeps its full identity.
+    let unbound = runtime.queue_snapshots();
+    assert_eq!(unbound.len(), 3);
+    assert!(unbound.iter().all(|snapshot| snapshot.interface.is_none()));
+    assert_eq!(unbound[0].identity.group_id, NetPollGroupId::new(3));
+
+    runtime.bind_published_interfaces(vec![InterfaceId::new(2), InterfaceId::new(3)]);
+
+    // Both queues of one device report that device's published interface and
+    // keep their own group id, owner CPU and counters; the interface lookup
+    // goes through the discovery-order map rather than the raw index.
+    let snapshots = runtime.queue_snapshots();
+    assert_eq!(snapshots[0].identity.discovery_order, 1);
+    assert_eq!(snapshots[0].interface, Some(InterfaceId::new(2)));
+    assert_eq!(snapshots[0].identity.group_id, NetPollGroupId::new(3));
+    assert_eq!(snapshots[0].identity.owner_cpu, 1);
+    assert_eq!(snapshots[0].stats.rx_drops, 1);
+    assert_eq!(snapshots[1].identity.discovery_order, 1);
+    assert_eq!(snapshots[1].interface, Some(InterfaceId::new(2)));
+    assert_eq!(snapshots[1].identity.group_id, NetPollGroupId::new(4));
+    assert_eq!(snapshots[1].identity.owner_cpu, 2);
+    assert_eq!(snapshots[1].stats.rx_drops, 0);
+    assert_eq!(snapshots[2].identity.discovery_order, 2);
+    assert_eq!(snapshots[2].interface, Some(InterfaceId::new(3)));
+    assert_eq!(snapshots[2].identity.group_id, NetPollGroupId::new(0));
+    assert_eq!(snapshots[2].identity.owner_cpu, 3);
+}
+
+#[test]
 fn open_startup_transaction_does_not_consume_secure_entropy() {
     let transaction = prepare_startup_transaction(
         WifiTransaction::connect_open("ssid"),
@@ -994,4 +1106,123 @@ fn open_startup_transaction_does_not_consume_secure_entropy() {
     .unwrap();
 
     assert!(!transaction.needs_connect_entropy());
+}
+
+/// Control endpoint that records every address-filter request it receives.
+struct RecordingFilterControl {
+    calls: Arc<StdMutex<Vec<NetRxMode>>>,
+}
+
+impl RecordingFilterControl {
+    fn new() -> (Self, Arc<StdMutex<Vec<NetRxMode>>>) {
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        (
+            Self {
+                calls: Arc::clone(&calls),
+            },
+            calls,
+        )
+    }
+}
+
+impl NetControlEndpoint for RecordingFilterControl {
+    fn mac_address(&mut self) -> Result<[u8; 6], NetError> {
+        Ok([0; 6])
+    }
+
+    fn set_rx_mode(&mut self, mode: NetRxMode) -> Result<(), NetError> {
+        self.calls.lock().unwrap().push(mode);
+        Ok(())
+    }
+}
+
+/// Builds a runtime already in the post-prune state `NetworkRuntimeBuilder`
+/// produces: `_controls` holds only the published devices and
+/// `published_interfaces` is bound in the same order.
+fn filter_routing_runtime(
+    controls: Vec<Box<dyn NetControlEndpoint>>,
+    device_index_map: Vec<Option<usize>>,
+    published_interfaces: Vec<InterfaceId>,
+) -> NetworkQueueRuntime {
+    let mut runtime = NetworkQueueRuntime {
+        registrations: Vec::new(),
+        executors: Vec::new(),
+        group_states: Vec::new(),
+        _controls: controls,
+        wifi_handles: Vec::new(),
+        initial_wifi_policies: Vec::new(),
+        device_index_map,
+        published_interfaces: Vec::new(),
+        protocol_owner_cpu: 0,
+    };
+    runtime.bind_published_interfaces(published_interfaces);
+    runtime
+}
+
+#[test]
+fn filter_request_reaches_the_control_published_after_an_intermediate_prune() {
+    let (control0, calls0) = RecordingFilterControl::new();
+    let (control2, calls2) = RecordingFilterControl::new();
+    // Discovery orders 0 and 2 survive; discovery order 1 was pruned, so the
+    // published controls are [0, 2]. The interface ids are deliberately not
+    // contiguous, which any id-arithmetic routing would misroute.
+    let published0: Box<dyn NetControlEndpoint> = Box::new(control0);
+    let published2: Box<dyn NetControlEndpoint> = Box::new(control2);
+    let controls: Vec<Box<dyn NetControlEndpoint>> = vec![published0, published2];
+    let mut runtime = filter_routing_runtime(
+        controls,
+        vec![Some(0), None, Some(1)],
+        vec![InterfaceId::new(2), InterfaceId::new(5)],
+    );
+
+    runtime
+        .set_interface_rx_mode(InterfaceId::new(5), NetRxMode::all_unicast())
+        .unwrap();
+    assert_eq!(*calls2.lock().unwrap(), vec![NetRxMode::AllUnicast]);
+    assert!(calls0.lock().unwrap().is_empty());
+
+    runtime
+        .set_interface_rx_mode(InterfaceId::new(2), NetRxMode::normal())
+        .unwrap();
+    assert_eq!(*calls0.lock().unwrap(), vec![NetRxMode::Normal]);
+    assert_eq!(*calls2.lock().unwrap(), vec![NetRxMode::AllUnicast]);
+
+    // The pruned id and an unknown id must not reach any published control.
+    assert!(matches!(
+        runtime.set_interface_rx_mode(InterfaceId::new(3), NetRxMode::all_unicast()),
+        Err(NetError::NotSupported)
+    ));
+    assert!(matches!(
+        runtime.set_interface_rx_mode(InterfaceId::new(99), NetRxMode::all_unicast()),
+        Err(NetError::NotSupported)
+    ));
+    assert_eq!(*calls0.lock().unwrap(), vec![NetRxMode::Normal]);
+    assert_eq!(*calls2.lock().unwrap(), vec![NetRxMode::AllUnicast]);
+}
+
+#[test]
+fn unsupported_filter_control_is_reported_without_touching_other_devices() {
+    use rd_net::FixedNetControl;
+
+    let (control0, calls0) = RecordingFilterControl::new();
+    // `FixedNetControl` keeps the trait default, so it reports `NotSupported`.
+    let supported: Box<dyn NetControlEndpoint> = Box::new(control0);
+    let unsupported: Box<dyn NetControlEndpoint> = Box::new(FixedNetControl::new([0; 6]));
+    let controls: Vec<Box<dyn NetControlEndpoint>> = vec![supported, unsupported];
+    let mut runtime = filter_routing_runtime(
+        controls,
+        vec![Some(0), Some(1)],
+        vec![InterfaceId::new(7), InterfaceId::new(9)],
+    );
+
+    assert!(matches!(
+        runtime.set_interface_rx_mode(InterfaceId::new(9), NetRxMode::all_unicast()),
+        Err(NetError::NotSupported)
+    ));
+    assert!(calls0.lock().unwrap().is_empty());
+
+    runtime
+        .set_interface_rx_mode(InterfaceId::new(7), NetRxMode::all_unicast())
+        .unwrap();
+    assert_eq!(*calls0.lock().unwrap(), vec![NetRxMode::AllUnicast]);
 }

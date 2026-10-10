@@ -606,6 +606,7 @@ fn slab_reuses_freed_objects_same_size_class() {
 
 #[test]
 fn global_init_with_unaligned_region_preserves_large_alloc_alignment() {
+    let _ctx;
     const ALIGN_2M: usize = 2 * 1024 * 1024;
 
     let mut region = irregular_region(12 * ALIGN_2M, 0x1234, PAGE_SIZE / 3, ALIGN_2M);
@@ -613,7 +614,7 @@ fn global_init_with_unaligned_region_preserves_large_alloc_alignment() {
     let region_len = region.len();
     let region_slice = unsafe { region.subslice(0x1234, region_len - 0x1234 - PAGE_SIZE / 3) };
 
-    let _ctx = init_global_slice(&allocator, region_slice, 1);
+    _ctx = init_global_slice(&allocator, region_slice, 1);
 
     let layout = Layout::from_size_align(ALIGN_2M, ALIGN_2M).unwrap();
     let ptr = allocator.alloc(layout).unwrap();
@@ -623,11 +624,12 @@ fn global_init_with_unaligned_region_preserves_large_alloc_alignment() {
 
 #[test]
 fn global_add_region_with_unaligned_slice_preserves_large_alloc_alignment() {
+    let _ctx;
     const ALIGN_2M: usize = 2 * 1024 * 1024;
 
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let mut first = HostRegion::new(12 * ALIGN_2M, ALIGN_2M);
-    let _ctx = init_global_allocator(&allocator, &mut first, 1);
+    _ctx = init_global_allocator(&allocator, &mut first, 1);
 
     let mut second = irregular_region(12 * ALIGN_2M, 0x1234, PAGE_SIZE / 3, ALIGN_2M);
     let second_len = second.len();
@@ -642,9 +644,10 @@ fn global_add_region_with_unaligned_slice_preserves_large_alloc_alignment() {
 
 #[test]
 fn global_add_region_unaligned_does_not_break_small_alloc() {
+    let _ctx;
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let mut first = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE);
-    let _ctx = init_global_allocator(&allocator, &mut first, 1);
+    _ctx = init_global_allocator(&allocator, &mut first, 1);
 
     let mut second = irregular_region(
         buddy_region_size(TEST_HEAP_SIZE),
@@ -722,10 +725,11 @@ fn global_failed_init_rolls_back_singleton() {
 
 #[test]
 fn global_page_alloc() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let region_addr = region.addr();
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
+    _ctx = init_global(&allocator, &mut region, 1);
 
     let section = primary_section(&allocator);
     let managed_start = section.start;
@@ -740,9 +744,10 @@ fn global_page_alloc() {
 
 #[test]
 fn global_cross_cpu_free() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 2);
+    _ctx = init_global(&allocator, &mut region, 2);
 
     // Allocate on CPU 0
     set_current_cpu(0);
@@ -766,9 +771,10 @@ fn global_cross_cpu_free() {
 
 #[test]
 fn global_cross_cpu_free_drains_remote_queue() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 2);
+    _ctx = init_global(&allocator, &mut region, 2);
 
     set_current_cpu(0);
     let layout = Layout::from_size_align(64, 8).unwrap();
@@ -817,9 +823,10 @@ fn global_cross_cpu_free_drains_remote_queue() {
 
 #[test]
 fn global_cross_cpu_free_multiple_rounds_same_slab() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 2);
+    _ctx = init_global(&allocator, &mut region, 2);
 
     let layout = Layout::from_size_align(64, 8).unwrap();
 
@@ -875,9 +882,10 @@ fn global_cross_cpu_free_multiple_rounds_same_slab() {
 
 #[test]
 fn global_full_slab_remote_then_local_free_reuses_without_list_cycle() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 2);
+    _ctx = init_global(&allocator, &mut region, 2);
 
     let layout = Layout::from_size_align(64, 8).unwrap();
 
@@ -942,11 +950,12 @@ fn global_full_slab_remote_then_local_free_reuses_without_list_cycle() {
 
 #[test]
 fn global_small_object_churn_then_large_alloc() {
+    let _ctx;
     const REGION_SIZE: usize = 8 * 1024 * 1024;
 
     let mut region = HostRegion::new(REGION_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
+    _ctx = init_global(&allocator, &mut region, 1);
 
     let small_layout = Layout::from_size_align(2048, 8).unwrap();
     let warmup = allocator.alloc(small_layout).unwrap();
@@ -970,9 +979,10 @@ fn global_small_object_churn_then_large_alloc() {
 
 #[test]
 fn global_cross_cpu_free_all_objects_recovers_backend_pages() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 2);
+    _ctx = init_global(&allocator, &mut region, 2);
 
     let layout = Layout::from_size_align(64, 8).unwrap();
     set_current_cpu(0);
@@ -1014,11 +1024,12 @@ fn global_cross_cpu_free_all_objects_recovers_backend_pages() {
 
 #[test]
 fn global_lowmem_fragmentation_recovery() {
+    let _ctx;
     const REGION_SIZE: usize = 8 * 1024 * 1024;
 
     let mut region = HostRegion::new(REGION_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global_allocator(&allocator, &mut region, 1);
+    _ctx = init_global_allocator(&allocator, &mut region, 1);
 
     let mut addrs = Vec::new();
     while let Ok(addr) = allocator.alloc_pages_lowmem(1, PAGE_SIZE) {
@@ -1041,9 +1052,10 @@ fn global_lowmem_fragmentation_recovery() {
 
 #[test]
 fn global_lowmem_pages() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global_allocator(&allocator, &mut region, 1);
+    _ctx = init_global_allocator(&allocator, &mut region, 1);
 
     let addr = allocator.alloc_pages_lowmem(1, PAGE_SIZE).unwrap();
     assert!(addr >= primary_section(&allocator).start);
@@ -1052,12 +1064,13 @@ fn global_lowmem_pages() {
 
 #[test]
 fn global_unaligned_region_start() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE + PAGE_SIZE, PAGE_SIZE * 4);
     let region_start = region.addr() + 1;
     let region_size = TEST_HEAP_SIZE;
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
     let unaligned_region = unsafe { region.subslice(1, region_size) };
-    let _ctx = init_global_slice(&allocator, unaligned_region, 1);
+    _ctx = init_global_slice(&allocator, unaligned_region, 1);
 
     let section = primary_section(&allocator);
     let managed_start = section.start;
@@ -1085,10 +1098,11 @@ fn global_rejects_region_without_one_managed_page() {
 
 #[test]
 fn global_add_region_after_init_expands_capacity() {
+    let _ctx;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(8 * 1024 * 1024, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut first, 1);
+    _ctx = init_global(&allocator, &mut first, 1);
 
     let before = count_free_pages(&allocator);
     unsafe { allocator.add_region(second.as_mut_slice()).unwrap() };
@@ -1099,11 +1113,34 @@ fn global_add_region_after_init_expands_capacity() {
 }
 
 #[test]
+fn global_add_compact_region_reclaims_small_unaligned_region() {
+    let _ctx;
+    const ALIGN_2M: usize = 2 * 1024 * 1024;
+    let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
+    let mut second = HostRegion::new(ALIGN_2M + PAGE_SIZE, ALIGN_2M);
+    let mut tiny = HostRegion::new(PAGE_SIZE, PAGE_SIZE);
+    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
+    _ctx = init_global(&allocator, &mut first, 1);
+
+    let before = allocator.managed_bytes();
+    let unaligned = unsafe { second.subslice(PAGE_SIZE, ALIGN_2M / 2) };
+    let managed = unsafe { allocator.add_compact_region(unaligned).unwrap() };
+    assert!(managed > 0 && managed < ALIGN_2M / 2);
+    assert_eq!(allocator.managed_bytes(), before + managed);
+    assert_eq!(allocator.managed_section_count(), 2);
+
+    let skipped = unsafe { allocator.add_compact_region(tiny.as_mut_slice()).unwrap() };
+    assert_eq!(skipped, 0);
+    assert_eq!(allocator.managed_section_count(), 2);
+}
+
+#[test]
 fn global_add_region_supports_discontiguous_regions() {
+    let _ctx;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(8 * 1024 * 1024, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut first, 1);
+    _ctx = init_global(&allocator, &mut first, 1);
 
     while allocator.alloc_pages(1, PAGE_SIZE).is_ok() {}
     unsafe { allocator.add_region(second.as_mut_slice()).unwrap() };
@@ -1115,10 +1152,11 @@ fn global_add_region_supports_discontiguous_regions() {
 
 #[test]
 fn global_large_alloc_can_come_from_added_region() {
+    let _ctx;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(8 * 1024 * 1024, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut first, 1);
+    _ctx = init_global(&allocator, &mut first, 1);
 
     while allocator.alloc_pages(1, PAGE_SIZE).is_ok() {}
     unsafe { allocator.add_region(second.as_mut_slice()).unwrap() };
@@ -1133,10 +1171,11 @@ fn global_large_alloc_can_come_from_added_region() {
 
 #[test]
 fn global_managed_section_queries_report_all_sections() {
+    let _ctx;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(8 * 1024 * 1024, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut first, 1);
+    _ctx = init_global(&allocator, &mut first, 1);
     unsafe { allocator.add_region(second.as_mut_slice()).unwrap() };
 
     assert_eq!(allocator.managed_section_count(), 2);
@@ -1148,9 +1187,10 @@ fn global_managed_section_queries_report_all_sections() {
 
 #[test]
 fn global_add_region_overlap_rejected() {
+    let _ctx;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut first, 1);
+    _ctx = init_global(&allocator, &mut first, 1);
 
     let overlap = unsafe { first.subslice(1, first.len() - 1) };
     let err = unsafe { allocator.add_region(overlap) }.unwrap_err();
@@ -1159,10 +1199,11 @@ fn global_add_region_overlap_rejected() {
 
 #[test]
 fn global_managed_bytes_matches_all_sections() {
+    let _ctx;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(8 * 1024 * 1024, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut first, 1);
+    _ctx = init_global(&allocator, &mut first, 1);
     unsafe { allocator.add_region(second.as_mut_slice()).unwrap() };
 
     let expected = (0..allocator.managed_section_count())
@@ -1173,9 +1214,10 @@ fn global_managed_bytes_matches_all_sections() {
 
 #[test]
 fn global_allocated_bytes_changes_with_large_alloc() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
+    _ctx = init_global(&allocator, &mut region, 1);
 
     assert_eq!(allocator.allocated_bytes(), 0);
 
@@ -1189,9 +1231,10 @@ fn global_allocated_bytes_changes_with_large_alloc() {
 
 #[test]
 fn global_allocated_bytes_reflects_slab_pages() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
+    _ctx = init_global(&allocator, &mut region, 1);
 
     assert_eq!(allocator.allocated_bytes(), 0);
 
@@ -1204,9 +1247,10 @@ fn global_allocated_bytes_reflects_slab_pages() {
 
 #[test]
 fn global_allocated_bytes_not_zero_until_cached_empty_slab_released() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 4);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_global(&allocator, &mut region, 1);
+    _ctx = init_global(&allocator, &mut region, 1);
 
     let layout = Layout::from_size_align(64, 8).unwrap();
     let ptr = allocator.alloc(layout).unwrap();

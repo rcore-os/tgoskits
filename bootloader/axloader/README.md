@@ -1,46 +1,68 @@
 # axloader
 
-`axloader` is the UEFI loader used by AxVisor HTTP-boot boards. Its control
-plane uses firmware-provided network protocols; serial is reserved for loader
-diagnostics and for the target system after handoff.
+## 1. 网络控制
 
-The loader does not implement a network adapter driver and does not read UEFI
-`ConIn` or open `SerialIo`. It selects one physical UEFI controller that
-provides all of these protocols:
+### 1.1 设备接口
 
-- `EFI_SIMPLE_NETWORK_PROTOCOL` for the permanent and current Ethernet MAC;
-- `EFI_IP4_CONFIG2_PROTOCOL` for IPv4 configuration;
-- `EFI_UDP4_SERVICE_BINDING_PROTOCOL` for server discovery;
-- `EFI_HTTP_SERVICE_BINDING_PROTOCOL` for JSON control and image download.
+axloader 在同一网卡使用 UEFI SNP、IP4、UDP4 与 TCP4，向 UDP `2998` 广播自身
+MAC、架构、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接口。它不再
+发现 ostool-server、轮询任务或通过 HTTP 下载镜像；串口只输出诊断，并在交接后
+供目标系统使用。`network::NetworkInterface::select()` 选择网卡，
+`network::Announcer` 广播，`direct::Listener` 接受请求。调用方可以直接按设备 IP
+操作，ostool-server 也调用同一组接口。
 
-Keeping those services in one interface bundle prevents discovery on one NIC
-and HTTP transfer on another. Diagnostic text uses firmware `ConOut` only.
+每次启动创建新的 `boot_epoch`。所有修改请求均需 `X-Boot-Epoch` 与
+`GET /api/v1/status` 返回值一致；错误代次返回 `409`。当前协议为 v5，旧版
+v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
+`boot_server::BootServer` 和 `axloader::ota::OtaController` 共享监听器：
 
-## Network boot protocol
+| 接口 | 作用 |
+| --- | --- |
+| `GET /api/v1/status` | 读取启动代次、MAC、硬件、启动事务与 OTA 状态 |
+| `POST /api/v1/boot/jobs` | 提交启动 ID、x86_64 ELF64、内核和可选归档的长度、SHA-256、命令行；入口固定为 `__x86_64_efi_pe_entry` |
+| `GET /api/v1/boot/jobs/{id}` | 查询已接收文件及阶段 |
+| `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核，要求匹配 `X-Image-Sha256` |
+| `PUT /api/v1/boot/jobs/{id}/initramfs` | 定长上传可选归档，要求匹配摘要 |
+| `POST /api/v1/boot/jobs/{id}/start` | 装载、回复 `202`，关闭固件网络后交接 |
+| `DELETE /api/v1/boot/jobs/{id}` | 取消尚未启动的事务 |
+| `GET /api/v1/ota/status` | 读取 ESP 稳定槽和待试槽状态 |
+| `PUT /api/v1/ota/image` | 定长上传 EFI，写入非活动槽后回复 `202` 并重启 |
+| `POST /api/v1/ota/confirm` | 用升级 ID 和来源确认当前待试槽 |
 
-The incompatible `httpboot-protocol` 0.2 flow is:
+启动文件暂存内存，每个文件上限 256 MiB，EFI 上限 32 MiB，请求头上限
+4 KiB。只接受定长请求体，连接空闲 30 秒后取消，SHA-256 不符时不发布文件。
+上传时 `direct::Connection::wait()` 仍推进广播；同一时间只处理一个上传事务。
+`BootServer::create()` 允许同 ID、同清单重试，其他并发事务返回冲突。只有
+文件核对和 `elf_loader::load_elf()`、`payload::prepare_uploaded()` 成功后，
+才回复 `ready_to_handoff`、释放 TCP/UDP 对象并进入内核。
 
-1. Configure IPv4 on the selected UEFI network controller.
-2. Broadcast a JSON discovery probe to UDP port `2998`. The probe contains the
-   protocol version, permanent/current MAC, architecture, and loader version.
-3. Accept one server offer. Offers from different server instances are
-   ambiguous and cause discovery to retry.
-4. Read SMBIOS Type 1 identity and `POST /api/v1/loaders/poll` every two
-   seconds while the device is unbound or bound and idle.
-5. On a `boot` response, report progress to
-   `POST /api/v1/loaders/status`, download the ELF, and verify both its declared
-   length and SHA-256 digest.
-6. Report `ready_to_handoff`, destroy UDP/HTTP/IP objects, call
-   `ExitBootServices`, and enter the image.
+`cmdline` 与 `initramfs` 相互独立且都可省略。axloader 把命令行编码成带 NUL
+结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
+命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。只有归档
+存在时才安装 `host-boot-abi::BootPayload` 配置表。EFI 入口异常返回时会恢复
+原 LoadOptions，并释放本次事务持有的命令行与归档。
 
-Every loader restart performs discovery again and gets a fresh
-`registration_id`. The server binds the device by its persistent MAC and may
-reissue the active Session's same `boot_id`. A failed `boot_id` is not retried
-until the server publishes a new command.
+### 1.2 启动流程
 
-Discovery retries forever with a 1, 2, 4, 8, then 10 second capped backoff. An
-unbound or idle loader remains available for configuration and future
-Sessions; it never falls back to serial control.
+调用方无需提供 ostool-server 地址。宿主可查询设备 IP，直接提交启动事务；
+ostool-server 在实验网收到广播后先 GET 状态，再依据板卡 MAC 和 Session 决定是否上传。
+
+```mermaid
+sequenceDiagram
+    participant C as 直连工具或 ostool-server
+    participant L as axloader
+    L-->>C: UDP 2998 单向广播（可选）
+    C->>L: GET /api/v1/status
+    C->>L: POST /api/v1/boot/jobs（X-Boot-Epoch）
+    C->>L: PUT kernel；可选 PUT initramfs
+    C->>L: POST /api/v1/boot/jobs/{id}/start
+    L-->>C: 202 ready_to_handoff
+    L->>L: 关闭网络对象，执行内核交接
+```
+
+同一 Session 设备复位后得到新启动代次，服务端可以按旧 `boot_id` 重新推送。
+待试 EFI 槽必须先收到对应来源的确认，才接受启动事务。TCP4 被动监听不可用
+时仅显示诊断；完全切换后的网络启动需要固件提供该协议。
 
 ## Hardware identity
 
@@ -59,9 +81,9 @@ and rejects tables larger than 1 MiB.
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 
 The current loader accepts little-endian x86_64 ELF64 images. `PT_LOAD`
-segments must have page-aligned physical addresses. If `httpboot_entry` is
-requested, the loader resolves that symbol; otherwise it uses the ELF header
-entry. The maximum download is 256 MiB.
+segments must have page-aligned physical addresses. Protocol v5 requires the
+`__x86_64_efi_pe_entry` symbol and rejects `httpboot_entry`, an ELF header entry,
+or a `BootInfo` fallback. The maximum uploaded kernel is 256 MiB.
 
 ## Build and test
 
@@ -78,59 +100,93 @@ The output is:
 
 ```text
 target/x86_64-unknown-uefi/release/axloader.efi
+target/x86_64-unknown-uefi/release/axloader-launcher.efi
 ```
 
-The QEMU test uses OVMF, q35, a virtio network device, real UDP discovery and
-HTTP control/download. The serial stream is observed for diagnostics and is
-never used to inject a command. Success requires all of the following:
+QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
+跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
+initramfs 和两者都有，并以目标内核输出的 `HOST_CMDLINE`、
+`HOST_INITRAMFS_PASSED` 为成功证据。测试还覆盖 SHA-256、OTA 待试槽确认和
+回滚。服务端协议测试另见 ostool 的
+`docs/axloader-network-control.md`。
 
-- discovery and HTTP polling completed;
-- `/kernel.elf` was requested;
-- the declared SHA-256 was verified;
-- `ready_to_handoff` reached the control server;
-- `elf_loaded:` appeared in diagnostics.
+## x86_64 OTA 布局与状态
+
+安装后，ESP 中的 `EFI/BOOT/BOOTX64.EFI` 是独立构建的
+`axloader-launcher.efi`；`EFI/AXLOADER/A.EFI`、`B.EFI` 是可升级装载器。
+全新安装时 A、B 初始使用同一份新装载器，A 为稳定槽且没有待试升级；迁移安装时
+A 保存旧装载器，B 使用新装载器。`STATE0.BIN` 与 `STATE1.BIN` 分别存放 256 字节
+`State::encode()` 记录。记录包含代次、稳定槽、待试槽、两槽 SHA-256、
+升级 ID、来源、试运行标志、上次结果和记录校验和。`OtaDisk::load()` 只选择
+校验通过且代次较新的记录，`OtaDisk::commit()` 只写另一份，Flush 后读回
+核对。FAT 不是事务性文件系统；两份记录都不可用时启动器停止并显示诊断。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stable: A 稳定、B 空闲
+    Stable --> Staged: 分块写非活动槽，核对长度/摘要/PE/LoadImage
+    Staged --> Trial: 启动器先持久标记 attempted
+    Trial --> Stable: 匹配 ID 与来源的确认持久提交
+    Trial --> RolledBack: 启动失败或未确认便复位
+    RolledBack --> Stable: 校验原稳定槽后启动
+```
+
+`launcher::launch()` 从同一 ESP 的完整设备路径调用 `LoadImage`／`StartImage`；
+只信任状态记录中对应的文件摘要。待试槽在接收服务端确认指令或直连方确认前
+不会接收内核启动命令。待试装载器宕机或断电，下一次启动先回滚。旧稳定槽
+也无法核对时，必须使用外部介质修复；回滚会清除未确认槽的可信摘要，
+防止它在稳定槽随后损坏时被提升为稳定槽。普通升级只写非活动槽；32 MiB 是
+镜像上限。
+
+`loader::direct::Listener` 同时处理上述启动和升级路由。直连上传不依赖
+ostool-server；上传方在重启后先核对运行摘要与升级 ID，再用当前启动代次
+确认。服务端指派传入 `X-Update-Source: server` 和 `X-Update-Id`，只在再次
+发现匹配升级 ID 与运行摘要的待试槽后发送同来源确认。直连任务无法由服务端
+误确认；确认状态写入并 Flush 成功后才接收内核启动事务。
+
+仅在可信隔离实验网使用：SHA-256 检查传输一致性，不认证上传者或服务器，
+MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执行同一验签策略并
+验证拒绝路径，再允许回滚；旧槽可能恢复旧的内核认证缺口。
 
 ## Install to removable media
 
-The helper builds the loader, mounts an EFI partition, installs the removable
-media filename, verifies the copy, syncs, and unmounts:
+脚本支持全新安装和旧布局迁移。全新安装适用于已经格式化但没有可用
+`BOOTX64.EFI` 的 x86_64 可写 FAT ESP，不需要旧装载器：
+
+```bash
+./bootloader/axloader/scripts/build-install-efi.sh \
+  --fresh --device /dev/sdb1
+```
+
+全新安装会把新装载器复制到 A、B，生成稳定状态记录，再写入 launcher。
+如果 ESP 原先有 `BOOTX64.EFI`，脚本会把它保存为
+`EFI/AXLOADER/BOOTX64.PREVIOUS.EFI`，但不会把它作为回滚槽使用。首次启动不需要
+确认；后续 OTA 从非活动槽开始试运行。首次替换 launcher 仍有断电窗口，必须保留
+外部恢复介质。
+
+迁移已有系统时，保留旧版 `BOOTX64.EFI` 并省略 `--fresh`：
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh
 ./bootloader/axloader/scripts/build-install-efi.sh --device /dev/sdb1
 ```
 
-By default it finds the `OSTOOLBOOT` filesystem and installs
-`EFI/BOOT/BOOTX64.EFI`.
+默认按 `OSTOOLBOOT` 查找分区。脚本会构建并校验两个 PE 映像、检查空闲空间、
+写入 A/B 和双状态记录、同步并逐项核对，最后替换 `BOOTX64.EFI`。迁移模式还会
+把旧文件保存为 `EFI/AXLOADER/BOOTX64.ORIGINAL.EFI`，B 首次作为直连待试槽，
+安装命令打印升级 ID，上传方须在首次启动后核对摘要并调用确认接口。两种模式都
+会拒绝已有 `EFI/AXLOADER` 文件的 ESP，避免覆盖未知状态；请先离线恢复或清理。
+
+`cargo xtask axloader test qemu --target x86_64-unknown-uefi` 使用同一块真实
+FAT 映像跨多次启动，检查 `hostfwd` 上的直连、错误摘要、短请求、待试复位、
+持久确认及旧槽恢复。宿主需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、
+`mcopy`、`mmd` 和 `python3`。完整的本地服务端联调以隔离配置和 loopback
+管理端口运行，不安装 systemd 服务，也不修改 runner。
 
 ## Troubleshooting
 
-`network_select_error`
-
-No single UEFI controller exposes SNP, IPv4 configuration, UDP4 service
-binding, and HTTP service binding. Check that the firmware contains the driver
-for the configured NIC.
-
-`discovery_error: Timeout`
-
-The loader did not receive a valid UDP offer. Check VLAN/bridge broadcast
-forwarding, server UDP port `2998`, DHCP, and that exactly one server instance
-is visible.
-
-`control_boot_error`
-
-The poll or status exchange failed. Check the offered HTTP base URL and the
-server's `loader_network.public_base_url` as seen from the UEFI client. JSON
-POST requests carry explicit `Content-Type: application/json` and
-`Content-Length` headers because an HTTP/1.1 server must not infer a request
-body from bytes following an unframed header block.
-
-`elf_load_error: Download(SizeMismatch)` or `Sha256Mismatch`
-
-The downloaded bytes differ from the active boot manifest. Upload a new
-kernel, which creates a new `boot_id`; the failed command is intentionally not
-retried.
-
-When debugging handoff, remember that `ready_to_handoff` is the last reliable
-network state. No UEFI network object may remain live across
-`ExitBootServices`.
+`loader_tcp4_unavailable` 表示同一网卡没有 SNP/IP4/UDP4/TCP4 协议束；
+`loader_tcp4_listen_failed` 表示固件未能在端口 `2999` 创建被动 TCP4 实例。
+`loader_broadcast_error` 仅影响自动发现；有设备 IP 的直连调用仍可用。
+返回 `409 stale_boot_epoch` 时重新 GET 状态，使用新的启动代次发起请求。
+`ready_to_handoff` 后出现交接错误，应核对 ELF/归档入口和 UEFI 退出路径。

@@ -44,6 +44,44 @@ const PHYS_MASK: u64 = (1 << 48) - 1;
 
 static NEXT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
 
+// The SMMU reads page tables and queues as a DMA master. A Rust atomic fence
+// alone does not provide the Arm DMA ordering used for their publication.
+#[inline]
+fn dma_wmb() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: The barrier only orders preceding DMA-memory writes before
+    // subsequent writes; it does not access memory or change Rust-visible state.
+    unsafe {
+        core::arch::asm!("dmb oshst", options(nostack, preserves_flags));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    fence(Ordering::Release);
+}
+
+#[inline]
+fn dma_mb() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: The barrier orders queue reads before the consumer index is
+    // published to the SMMU; it does not access memory.
+    unsafe {
+        core::arch::asm!("dmb osh", options(nostack, preserves_flags));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    fence(Ordering::SeqCst);
+}
+
+#[inline]
+fn page_table_wmb() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: The barrier completes preceding page-table stores before the
+    // newly mapped IOVA can be used; it does not access memory.
+    unsafe {
+        core::arch::asm!("dsb st", options(nostack, preserves_flags));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    fence(Ordering::Release);
+}
+
 #[derive(Clone, Copy)]
 struct Mmio(NonNull<u8>);
 
@@ -113,9 +151,9 @@ impl StreamTable {
                     }
                     let physical = region.physical();
                     entry.insert(region);
-                    fence(Ordering::SeqCst);
+                    dma_wmb();
                     l1.write_u64(l1_index as usize, physical | (STREAM_SPLIT as u64 + 1));
-                    fence(Ordering::SeqCst);
+                    dma_wmb();
                 }
                 let region = l2.get(&l1_index).ok_or(IommuError::OutOfMemory)?;
                 Ok((
@@ -160,7 +198,7 @@ impl DomainState {
                 let child = allocate(memory, PAGE_SIZE, PAGE_SIZE, self.physical_limit)?;
                 let physical = child.physical();
                 self.tables.insert(physical, child);
-                fence(Ordering::SeqCst);
+                dma_wmb();
                 self.table(table)?.write_u64(index, physical | 3);
                 table = physical;
             } else if entry & 3 == 3 {
@@ -436,7 +474,7 @@ impl Hardware {
                 let index = (self.cmd_prod & ((1 << self.cmdq_bits) - 1)) as usize * 2;
                 self.cmdq.write_u64(index, words[0]);
                 self.cmdq.write_u64(index + 1, words[1]);
-                fence(Ordering::SeqCst);
+                dma_wmb();
                 self.cmd_prod = (self.cmd_prod + 1) & mask;
                 self.mmio.write32(CMDQ_PROD, self.cmd_prod);
                 return Ok(());
@@ -539,10 +577,11 @@ impl Hardware {
                 },
             );
             // Publish CD before STE, and publish the STE's valid/config word last.
-            fence(Ordering::SeqCst);
+            dma_wmb();
             ste_region.write_u64(ste_word_index + 1, 2 | (1 << 2) | (1 << 4) | (3 << 6));
+            dma_wmb();
             ste_region.write_u64(ste_word_index, 1 | (5 << 1) | cd_physical);
-            fence(Ordering::SeqCst);
+            dma_wmb();
         }
         command_and_sync(self, [3 | (u64::from(stream.0) << 32), 1])?;
         command_and_sync(self, [5 | (u64::from(stream.0) << 32), 1])?;
@@ -644,7 +683,9 @@ impl Hardware {
                 }
             }
         }
-        fence(Ordering::SeqCst);
+        // A new valid mapping needs store completion, not a TLBI. No page-table
+        // page is freed or replaced while the domain is attached.
+        page_table_wmb();
         if let Some(error) = failure {
             let asid = domain.asid;
             for index in 0..mapped {
@@ -653,7 +694,7 @@ impl Hardware {
                     domain.table(table)?.write_u64(slot, 0);
                 }
             }
-            fence(Ordering::SeqCst);
+            dma_wmb();
             // Even rollback requires sync: a transient translation may be cached.
             if mapped != 0 {
                 self.command_and_sync([0x11 | (u64::from(asid) << 48), 0])?;
@@ -695,7 +736,7 @@ impl Hardware {
             domain.table(table)?.write_u64(slot, 0);
         }
         let asid = domain.asid;
-        fence(Ordering::SeqCst);
+        dma_wmb();
         self.command_and_sync([0x11 | (u64::from(asid) << 48), 0])
     }
 
@@ -735,7 +776,7 @@ impl Hardware {
             self.fault_count = self.fault_count.saturating_add(1);
             self.evt_cons = (self.evt_cons + 1) & mask;
         }
-        fence(Ordering::SeqCst);
+        dma_mb();
         self.mmio.write32(0x10000 + EVTQ_CONS, self.evt_cons);
         Ok(faults)
     }

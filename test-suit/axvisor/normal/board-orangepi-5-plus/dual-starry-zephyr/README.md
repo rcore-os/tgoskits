@@ -27,7 +27,7 @@
 
 ## 构建客户机镜像
 
-StarryOS 由当前 TGOSKits checkout 构建并嵌入 AxVisor，确保 CI 使用本次源码生成的
+StarryOS 由当前 TGOSKits checkout 构建并打入 AxVisor 宿主 initramfs，确保 CI 使用本次源码生成的
 客户机。单 vCPU 配置保留原有核心分配，日志级别为 Warn，避免逐帧内核日志进入性能测量。
 
 ```bash
@@ -51,10 +51,11 @@ Zephyr 继续使用 TGOSImages 的标准构建入口：
 ```
 
 该入口使用 TGOSImages 管理的 Zephyr、补丁和工具链，并调用 AKA 控制应用及 IVC SDK。
-部署 `IMAGES/orangepi/zephyr/orangepi-robot-control-sdk` 及同名 `.dtb` 到板卡
-`/guest/zephyr/`，并与感知程序、模型、脚本和机器人标定保持匹配。记录各仓库版本和
-未提交补丁；已有 checkout 不会被构建脚本自动更新或清理。部署后完成 `sync`。
-板卡测试上传 AxVisor 及内嵌 StarryOS，Zephyr 和用户态资产仍需预先安装。
+设置 `AXVISOR_GUEST_ASSETS` 指向构建机上的资产目录，将
+`IMAGES/orangepi/zephyr/orangepi-robot-control-sdk` 及同名 `.dtb` 放入该目录的
+`zephyr/`。Axvisor 将其打入宿主 initramfs；它们须与感知程序、模型、脚本和机器人标定保持匹配。记录各仓库版本和
+未提交补丁；已有 checkout 不会被构建脚本自动更新或清理。客户机启动镜像与 Axvisor 一起通过宿主 initramfs 上传；
+用户态资产仍需预先安装到客户机根文件系统，并完成 `sync`。
 
 ## 构建与启动 AxVisor
 
@@ -142,7 +143,7 @@ NPU 调用错误、IVC 发送失败或丢帧、执行器读写/反馈错误都�
 地面行驶、长期稳定性或硬件急停。
 
 本 SD 场景使用板卡类型 `OrangePi-5-Plus-DualGuest-robot`，与 Linux + Zephyr 场景顺序
-共用同一块板。CI 从当前 checkout 构建 StarryOS 并嵌入 AxVisor，确保源码修改得到测试。
+共用同一块板。CI 从当前 checkout 构建 StarryOS 并打入 AxVisor 宿主 initramfs，确保源码修改得到测试。
 感知程序、Zephyr 镜像和 CI 脚本须配套更新。board 入口以 `shell_check_steps`
 逐步注入短命令。
 
@@ -154,7 +155,7 @@ UART6 或内存布局，但迁移时必须：
 1. 创建 eMMC 专用 board type 和 board 配置，不与 SD CI 共用板卡池。
 2. 根据 U-Boot 和 AxVisor 中的实际枚举结果，删除 SD 专用的显式
    `setenv bootargs`，或将它改为 eMMC 宿主根分区。
-3. 将 Zephyr 镜像、用户态运行包和机器人标定部署到 eMMC 根文件系统，
+3. 在构建机准备 Zephyr 启动镜像，将用户态运行包和机器人标定部署到 eMMC 根文件系统，
    完成 `sync` 后再冷启动。
 4. 保留 `starry-smp1.toml` 中的 UART6、PCIe PHY、USB0 控制器和 Combo PHY 排除项。
 5. 重新验证根分区、摄像头、NPU、IVC、UART6、网络 Shell 和完整

@@ -175,7 +175,9 @@ register_bitfields! {u32,
         INTER_FRAME_GAP OFFSET(24) NUMBITS(2) [],
         DMA_BURST OFFSET(8) NUMBITS(3) []
     ],
-    RX_CONFIG [
+    // Crate-visible so host tests can assert the ACCEPT_ALL_PHYS contract
+    // directly instead of hard-coding register bits.
+    pub(crate) RX_CONFIG [
         FETCH_DFLT OFFSET(27) NUMBITS(4) [],
         PAUSE_SLOT_ON OFFSET(11) NUMBITS(1) [],
         DMA_BURST OFFSET(8) NUMBITS(3) [],
@@ -400,9 +402,17 @@ impl Regs {
         );
     }
 
-    pub fn set_rx_accept_mode(&self) {
-        self.regs().rx_config.modify(
+    /// Programs the unicast accept filter while retaining broadcast and
+    /// multicast. The generic receive-mode control maps its all-unicast mode
+    /// to this register bit.
+    pub fn set_rx_accept_all_unicast(&self, enabled: bool) {
+        let all_unicast = if enabled {
+            RX_CONFIG::ACCEPT_ALL_PHYS::SET
+        } else {
             RX_CONFIG::ACCEPT_ALL_PHYS::CLEAR
+        };
+        self.regs().rx_config.modify(
+            all_unicast
                 + RX_CONFIG::ACCEPT_MY_PHYS::SET
                 + RX_CONFIG::ACCEPT_MULTICAST::SET
                 + RX_CONFIG::ACCEPT_BROADCAST::SET,

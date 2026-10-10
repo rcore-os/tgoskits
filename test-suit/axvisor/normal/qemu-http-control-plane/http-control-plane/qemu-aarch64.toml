@@ -6,10 +6,11 @@ args = [
   "virt,virtualization=on,gic-version=3",
   "-smp",
   "2",
-  # The memory-backed guest boots its embedded kernel + BusyBox initramfs; the
-  # initramfs is the guest rootfs (`rdinit=/init`), so no NVMe disk is needed.
   "-append",
-  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7",
+  "root=/dev/nvme0n1 rw",
+  "-snapshot",
+  "-device", "nvme,drive=disk0,serial=tgoskits",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
   # `-m 1g`: the guest uses a 256M MAP_ALLOC region, and the hypervisor plus
   # that region must both fit in QEMU's total RAM (same sizing as the previous
   # HTTP control case).
@@ -37,3 +38,4 @@ uefi = false
 
 [host_http_probe]
 token = "axvisor-http-test-token"
+request_timeout_secs = 15

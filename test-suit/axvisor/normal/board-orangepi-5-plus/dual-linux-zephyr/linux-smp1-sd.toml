@@ -7,11 +7,10 @@ phys_cpu_ids = [0x00]
 
 [kernel]
 entry_point = 0x2_4008_0000
-image_location = "fs"
 kernel_load_addr = 0x2_4008_0000
-kernel_path = "/guest/linux/orangepi-5-plus-6.1.99-axivc"
+kernel_path = "${env:AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus-6.1.99-axivc"
 cmdline = "root=/dev/mmcblk1p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M clk_ignore_unused pd_ignore_unused"
-ramdisk_path = "/guest/linux/initramfs.cpio"
+ramdisk_path = "${env:AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio"
 ramdisk_load_addr = 0xc000_0000
 
 memory_regions = [

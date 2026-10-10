@@ -160,7 +160,7 @@ Active -> Quiescing -> Reconfiguring -> Active
 - command scheduler、IRQ completion sink 和 transfer producer 分离。
 - `Ring` cursor、event ring segment table、DCBAA 和 scratchpad DMA 字段均为私有。
 - `Ring`、`EventRing`、`DeviceContextList`、`Xhci` 不再无条件实现 `unsafe Send/Sync`。
-- event ring 和 event-side registers 由 `EventHandlerState` 的单一 `SpinLock` 串行化；不再通过 `UnsafeCell` 从 `&self` 制造多个 `&mut`。
+- event ring 和 event-side registers 由 `EventHandlerState` 的单一 `RawSpinLock` 串行化；不再通过 `UnsafeCell` 从 `&self` 制造多个 `&mut`。
 
 ## EHCI
 

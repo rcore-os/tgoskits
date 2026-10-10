@@ -146,6 +146,17 @@ unsafe extern "C" fn x86_trap_handler(raw: *mut RawTrapFrame) {
         BREAKPOINT_VECTOR => handle_breakpoint(&mut tf),
         DEBUG_VECTOR => handle_debug(&mut tf),
         GENERAL_PROTECTION_FAULT_VECTOR => {
+            // A non-canonical address faults as #GP rather than #PF, so a
+            // guarded kernel copy that is handed one reports the failure from
+            // here rather than from the page-fault path.
+            #[cfg(feature = "exception-table")]
+            {
+                let mut updated = tf.snapshot();
+                if updated.fixup_nofault_exception() {
+                    tf.apply_registers(&updated);
+                    return;
+                }
+            }
             let snapshot = tf.snapshot();
             let bt = crate::trap::diagnostics::BacktraceDisplay(snapshot.backtrace_registers());
             panic!(

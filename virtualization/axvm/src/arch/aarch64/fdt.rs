@@ -4,7 +4,7 @@ use std::vec::Vec;
 
 use fdt_edit::Fdt;
 
-use crate::{AxVmResult, ax_err_type, boot::fdt::core};
+use crate::{AxVmResult, boot::fdt::core};
 
 pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
     core::interrupt::host_gic_maintenance_intid(fdt)
@@ -17,6 +17,7 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
         decode_interrupt: super::capabilities::decode_gic_spi,
         resolve_cpu_index: super::capabilities::resolve_cpu_index,
         host_cpu_count: super::capabilities::host_cpu_count,
+        guest_cpu_execution_property: core::tree::is_guest_cpu_execution_property,
     }
 }
 
@@ -40,43 +41,89 @@ pub(super) fn update_cpu_node(
     host_fdt: Option<&Fdt>,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
-    let Some(host_fdt) = host_fdt else {
+    let Some(host) = host_fdt else {
         return Ok(fdt.encode().as_ref().to_vec());
     };
-
+    let bytes = core::cpu::project_cpus(fdt, host, crate_config)?;
+    let mut tree = core::tree::FdtTree::from_bytes(&bytes)?;
     let phys_cpu_ids = crate_config
         .base
         .phys_cpu_ids
         .as_deref()
-        .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
-    let mut tree = core::tree::FdtTree::from_fdt(fdt.clone());
-    tree.inner_mut().remove_by_path("/cpus");
+        .ok_or_else(|| crate::ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
+    // Explicit affinity configurations may expose guest CPU ids that have no
+    // host CPU node. Complete those nodes after projecting the host identities.
+    tree.ensure_guest_cpu_nodes(host, phys_cpu_ids)?;
+    Ok(tree.finish())
+}
 
-    if let Some(host_cpus_id) = host_fdt.get_by_path_id("/cpus") {
-        let cpus_id =
-            tree.copy_subtree_from(host_fdt, host_cpus_id, tree.inner().root_id(), true)?;
-        let cpu_paths = tree
-            .node_paths()
-            .into_iter()
-            .filter_map(|(id, path)| {
-                (path.starts_with("/cpus/cpu@")
-                    && !core::create::need_cpu_node(phys_cpu_ids, tree.inner(), id, &path))
-                .then_some(path)
-            })
-            .collect::<Vec<_>>();
-        for path in cpu_paths {
-            tree.inner_mut().remove_by_path(&path);
-        }
-        if let Some(cpus) = tree.inner_mut().node_mut(cpus_id) {
-            for property in [
-                "riscv,cbop-block-size",
-                "riscv,cboz-block-size",
-                "riscv,cbom-block-size",
-            ] {
-                cpus.remove_property(property);
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use fdt_edit::{Node, Property};
+    use fdt_raw::RegInfo;
+
+    use super::*;
+
+    fn phandle_property(name: &str, value: u32) -> Property {
+        let mut property = Property::new(name, Vec::new());
+        property.set_u32_ls(&[value]);
+        property
     }
 
-    Ok(tree.finish())
+    #[test]
+    fn provided_guest_dtb_projects_cpu_nodes_without_host_cpu_map() {
+        let mut host = Fdt::new();
+        let cpus = host.add_node(host.root_id(), Node::new("cpus"));
+        for (name, id, phandle) in [("cpu@0", 0, 7), ("cpu@1", 1, 8)] {
+            let cpu = host.add_node(cpus, Node::new(name));
+            let node = host.node_mut(cpu).unwrap();
+            node.set_property(phandle_property("phandle", phandle));
+            if id == 0 {
+                node.set_property(phandle_property("operating-points-v2", 0x51));
+                node.set_property(phandle_property("cpu-idle-states", 0x52));
+                node.set_property(phandle_property("cpu-supply", 0x53));
+                node.set_property(phandle_property("next-level-cache", 0x54));
+            }
+            host.view_typed_mut(cpu)
+                .unwrap()
+                .set_regs(&[RegInfo::new(id, None)]);
+        }
+
+        let cpu_map = host.add_node(cpus, Node::new("cpu-map"));
+        let cluster = host.add_node(cpu_map, Node::new("cluster0"));
+        for (name, phandle) in [("core0", 7), ("core1", 8)] {
+            let core = host.add_node(cluster, Node::new(name));
+            host.node_mut(core)
+                .unwrap()
+                .set_property(phandle_property("cpu", phandle));
+        }
+
+        let mut config = axvmconfig::GuestConfig::default();
+        config.base.phys_cpu_ids = Some(std::vec![0, 2]);
+        let guest =
+            Fdt::from_bytes(&update_cpu_node(&Fdt::new(), Some(&host), &config).unwrap()).unwrap();
+
+        assert!(guest.get_by_path("/cpus/cpu@0").is_some());
+        assert!(guest.get_by_path("/cpus/cpu@2").is_some());
+        assert!(guest.get_by_path("/cpus/cpu@1").is_none());
+        for property in [
+            "operating-points-v2",
+            "cpu-idle-states",
+            "cpu-supply",
+            "next-level-cache",
+        ] {
+            assert!(
+                guest
+                    .get_by_path("/cpus/cpu@2")
+                    .unwrap()
+                    .as_node()
+                    .get_property(property)
+                    .is_none(),
+                "provided-DTB clone inherited host-only property {property}"
+            );
+        }
+        // CPU projection intentionally drops the host-only `cpu-map`; guest
+        // startup enumerates the projected CPU nodes by `reg` instead.
+        assert!(guest.get_by_path_id("/cpus/cpu-map").is_none());
+    }
 }

@@ -17,6 +17,7 @@
 4. rawtp: 通过raw tracepoint hook内核的sys_clone函数，打印调用参数。程序会在后台运行，因此你可以使用 `ls` / `uname` 等命令来触发sys_clone系统调用。
 5. upb: 通过uprobe hook用户态的函数，打印调用参数。
 6. upb2: 通过uprobe hook用户态的libc库函数(mkdir)，打印调用参数。
+7. net_queue_poll: 通过 tracepoint 附着 `net:queue_poll_round`，读取每个队列轮询完成记录；只验证附着链路，事件语义由网络栈自身定义。
 
 ## 支持状态
 
@@ -28,6 +29,7 @@
 | rawtp         | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | upb           | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | upb2          | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| net_queue_poll| :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | profile       | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | sched_trace   | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 

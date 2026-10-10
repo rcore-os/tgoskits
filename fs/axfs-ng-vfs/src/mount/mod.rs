@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
     Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
-    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
-    Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult, WeakDirEntry,
-    XattrSetMode,
+    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock,
+    RawSpinLockGuard, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
+    WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -49,18 +49,18 @@ static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 // context in which a PI mutex could sleep. Keep that test boundary on the
 // existing non-sleeping VFS lock instead of installing a fake task runtime.
 #[cfg(test)]
-struct MountTopologyMutex<T> {
-    inner: Mutex<T>,
+struct TopologyTransactionGate<T> {
+    inner: RawSpinLock<T>,
 }
 
 #[cfg(test)]
 struct MountTopologyGuard<'a, T> {
-    inner: Option<MutexGuard<'a, T>>,
+    inner: Option<RawSpinLockGuard<'a, T>>,
 }
 
 #[cfg(test)]
 std::thread_local! {
-    /// Tracks ownership by the current host-test thread. `SpinLock::is_locked`
+    /// Tracks ownership by the current host-test thread. `RawSpinLock::is_locked`
     /// is process-wide and therefore cannot distinguish a callback made by
     /// this owner from an unrelated parallel test holding the topology lock.
     static MOUNT_TOPOLOGY_OWNED_BY_CURRENT: core::cell::Cell<bool> =
@@ -68,10 +68,10 @@ std::thread_local! {
 }
 
 #[cfg(test)]
-impl<T> MountTopologyMutex<T> {
+impl<T> TopologyTransactionGate<T> {
     const fn new(value: T) -> Self {
         Self {
-            inner: Mutex::new(value),
+            inner: RawSpinLock::new(value),
         }
     }
 
@@ -100,12 +100,12 @@ impl<T> Drop for MountTopologyGuard<'_, T> {
     }
 }
 
+#[cfg(test)]
+static MOUNT_TOPOLOGY_MUTATION: TopologyTransactionGate<()> = TopologyTransactionGate::new(());
 #[cfg(all(not(test), feature = "host-test"))]
-type MountTopologyMutex<T> = Mutex<T>;
+static MOUNT_TOPOLOGY_MUTATION: RawSpinLock<()> = RawSpinLock::new(());
 #[cfg(all(not(test), not(feature = "host-test")))]
-type MountTopologyMutex<T> = ax_sync::Mutex<T>;
-
-static MOUNT_TOPOLOGY_MUTATION: MountTopologyMutex<()> = MountTopologyMutex::new(());
+static MOUNT_TOPOLOGY_MUTATION: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
 
 struct SyntheticMountDir {
     parent: DirEntry,
@@ -280,9 +280,9 @@ pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
     root: DirEntry,
     /// Location in the parent mountpoint. `None` for the global root mount.
-    location: Mutex<Option<Location>>,
+    location: RawSpinLock<Option<Location>>,
     /// Children of the mountpoint in this namespace-local mount tree.
-    children: Mutex<HashMap<ReferenceKey, Arc<Self>>>,
+    children: RawSpinLock<HashMap<ReferenceKey, Arc<Self>>>,
     /// Device ID (filesystem superblock device — used for major:minor in mountinfo).
     device: u64,
     /// Source name supplied when this mount was created (Linux `mnt_devname`).
@@ -297,7 +297,7 @@ pub struct Mountpoint {
     /// Read-only flag for this mountpoint.
     readonly: AtomicBool,
     filesystem_state: Arc<FilesystemMountState>,
-    active_uses: Mutex<MountUseState>,
+    active_uses: RawSpinLock<MountUseState>,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
     /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
@@ -306,16 +306,16 @@ pub struct Mountpoint {
     /// Expire mark for umount2(MNT_EXPIRE).
     expired: AtomicBool,
     /// Mount propagation type.
-    propagation: Mutex<PropagationType>,
+    propagation: RawSpinLock<PropagationType>,
     /// Other shared peers in the same propagation group.
-    peers: Mutex<Vec<Weak<Self>>>,
+    peers: RawSpinLock<Vec<Weak<Self>>>,
     /// Slave mounts that receive propagation events from this shared mount.
-    slaves: Mutex<Vec<Weak<Self>>>,
+    slaves: RawSpinLock<Vec<Weak<Self>>>,
     /// Shared masters that this slave receives propagation events from.
-    masters: Mutex<Vec<Weak<Self>>>,
+    masters: RawSpinLock<Vec<Weak<Self>>>,
     /// Resource ownership tied to the active mount rather than the cached
     /// lifetime of this mountpoint object.
-    lifetime_guard: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
+    lifetime_guard: RawSpinLock<Option<Arc<dyn Any + Send + Sync>>>,
     // Declared last: dentries retire before the filesystem drains its caches.
     _filesystem_lease: Option<Arc<dyn FilesystemMountLease>>,
 }
@@ -360,22 +360,22 @@ impl Mountpoint {
         let filesystem_lease = root.filesystem().mount_lease();
         Arc::new(Self {
             root,
-            location: Mutex::new(location_in_parent),
-            children: Mutex::new(HashMap::default()),
+            location: RawSpinLock::new(location_in_parent),
+            children: RawSpinLock::new(HashMap::default()),
             device,
             source,
             mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             peer_group_id: AtomicU64::new(0),
             readonly: AtomicBool::new(false),
             filesystem_state,
-            active_uses: Mutex::new(MountUseState::default()),
+            active_uses: RawSpinLock::new(MountUseState::default()),
             mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
-            propagation: Mutex::new(PropagationType::Private),
-            peers: Mutex::default(),
-            slaves: Mutex::default(),
-            masters: Mutex::default(),
-            lifetime_guard: Mutex::new(None),
+            propagation: RawSpinLock::new(PropagationType::Private),
+            peers: RawSpinLock::default(),
+            slaves: RawSpinLock::default(),
+            masters: RawSpinLock::default(),
+            lifetime_guard: RawSpinLock::new(None),
             _filesystem_lease: filesystem_lease,
         })
     }
@@ -390,10 +390,26 @@ impl Mountpoint {
         location_in_parent: Option<Location>,
         source: &str,
     ) -> Arc<Self> {
+        Self::new_with_device_source(
+            fs,
+            location_in_parent,
+            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source,
+        )
+    }
+
+    /// Creates a mountpoint with an explicitly selected filesystem device
+    /// number. The mount identifier remains independently allocated.
+    pub fn new_with_device_source(
+        fs: &Filesystem,
+        location_in_parent: Option<Location>,
+        device: u64,
+        source: &str,
+    ) -> Arc<Self> {
         let result = Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
-            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            device,
             source.to_owned(),
             fs.mount_state.clone(),
         );
@@ -408,6 +424,12 @@ impl Mountpoint {
     /// Creates the root mountpoint with the source name exposed through mount metadata.
     pub fn new_root_with_source(fs: &Filesystem, source: &str) -> Arc<Self> {
         Self::new_with_source(fs, None, source)
+    }
+
+    /// Creates a root mountpoint with an explicitly selected filesystem
+    /// device number.
+    pub fn new_root_with_device_source(fs: &Filesystem, device: u64, source: &str) -> Arc<Self> {
+        Self::new_with_device_source(fs, None, device, source)
     }
 
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
@@ -550,13 +572,12 @@ impl Mountpoint {
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let new_root = new_root_mp.root_location();
-        // put_old must be strictly below the new root in the resolved mount
-        // tree. This rejects both sibling locations and new_root itself.
-        if !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
-            || put_old.ptr_eq(&new_root)
+        if Arc::ptr_eq(self, new_root_mp)
+            || !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
             || !put_old.is_descendant_of(&new_root)
+            || !new_root.is_descendant_of(&self.root_location())
         {
             return Err(VfsError::InvalidInput);
         }
@@ -566,34 +587,46 @@ impl Mountpoint {
             return Err(VfsError::ResourceBusy);
         }
 
-        // 1. Detach new_root from old root's children and clear the old mount
-        //    slot (where new_root was attached in the old root).
-        let (removed_child, old_location) = {
-            let mut new_root_loc = new_root_mp.location.lock();
-            let removed_child = new_root_loc.as_ref().and_then(|old_loc| {
-                old_loc
-                    .mountpoint
-                    .children
-                    .lock()
-                    .remove(&old_loc.entry.key())
-            });
-            // new_root becomes the global root.
-            let old_location = new_root_loc.take();
-            (removed_child, old_location)
-        };
-        drop(removed_child);
-        drop(old_location);
-
-        // 2. Attach old root at put_old under new_root.
+        let new_parent = new_root_mp.location().ok_or(VfsError::InvalidInput)?;
+        let old_parent = self.location();
+        if put_old.mountpoint().is_shared()
+            || new_parent.mountpoint().is_shared()
+            || old_parent
+                .as_ref()
+                .is_some_and(|parent| parent.mountpoint().is_shared())
         {
-            new_root_mp
+            return Err(VfsError::InvalidInput);
+        }
+        let removed_new = new_parent
+            .mountpoint
+            .children
+            .lock()
+            .remove(&new_parent.entry.key());
+        let removed_old = old_parent.as_ref().and_then(|parent| {
+            parent
+                .mountpoint
                 .children
                 .lock()
-                .insert(put_old.entry.key(), self.clone());
-            *self.location.lock() = Some(put_old.clone());
+                .remove(&parent.entry.key())
+        });
+        if let Some(parent) = &old_parent {
+            parent
+                .mountpoint
+                .children
+                .lock()
+                .insert(parent.entry.key(), new_root_mp.clone());
         }
-
+        let previous_new = core::mem::replace(&mut *new_root_mp.location.lock(), old_parent);
+        let previous_old = self.location.lock().replace(put_old.clone());
+        new_root_mp
+            .children
+            .lock()
+            .insert(put_old.entry.key(), self.clone());
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        drop(topology);
+        // Final mount leases can clear caches and release pages; never run
+        // those destructors while serializing topology mutations.
+        drop((removed_new, removed_old, previous_new, previous_old));
         Ok(())
     }
 
@@ -661,14 +694,15 @@ impl Mountpoint {
     /// Walk the mount tree rooted at `self`, collecting `(mount_id, parent_id,
     /// mountpoint)` tuples in DFS order.
     ///
-    /// `mount_id` is the mount's [`device()`](Self::device) (unique per mount,
-    /// assigned incrementally from `DEVICE_COUNTER` — the root mount is 1).
+    /// `mount_id` is the mount's independent identifier. `device()` is the
+    /// filesystem device number and may be shared by bind mounts or selected
+    /// explicitly for a physical root.
     /// `parent_id` for the root mount is itself (Linux convention:
     /// `mount_id == parent_id` for the root mount); for non-root mounts it is
-    /// the parent mount's `device()`.
+    /// the parent mount's `mount_id()`.
     ///
     /// Lock safety: children are collected into a `Vec` by cloning the `Arc`s
-    /// outside the lock before recursion, so no `Mutex` guard is held during
+    /// outside the lock before recursion, so no `RawSpinLock` guard is held during
     /// the recursive call.
     pub fn walk_tree(self: &Arc<Self>) -> Vec<(u64, u64, Arc<Mountpoint>)> {
         let mut result = Vec::new();
@@ -842,7 +876,7 @@ impl Location {
 
     pub fn flags(&self) -> NodeFlags;
 
-    pub fn user_data(&self) -> MutexGuard<'_, TypeMap>;
+    pub fn user_data(&self) -> RawSpinLockGuard<'_, TypeMap>;
 
     pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;
 
@@ -898,7 +932,7 @@ impl Location {
     /// Returns the entry name.
     ///
     /// For mount roots the name is derived from the parent location (where this
-    /// mount was attached). Because `location` lives behind a `Mutex`, the
+    /// mount was attached). Because `location` lives behind a `RawSpinLock`, the
     /// mount-root case returns an owned `Cow::Owned`; the common non-root case
     /// returns a borrowed `Cow::Borrowed`.
     pub fn name(&self) -> Cow<'_, str> {
@@ -961,6 +995,19 @@ impl Location {
         Arc::ptr_eq(&self.mountpoint, &other.mountpoint) && self.entry.ptr_eq(&other.entry)
     }
 
+    /// Returns the visible absolute path within a process root.
+    pub fn path_from(&self, root: &Self) -> VfsResult<PathBuf> {
+        let mut components = Vec::new();
+        let mut current = self.clone();
+        while !current.ptr_eq(root) {
+            components.push(current.name().into_owned());
+            current = current.parent().ok_or(VfsError::InvalidInput)?;
+        }
+        Ok(iter::once("/")
+            .chain(components.iter().map(String::as_str).rev())
+            .collect())
+    }
+
     /// Returns whether this resolved location is equal to or below `ancestor`.
     ///
     /// The walk follows [`Self::parent`], which crosses from a mount root into
@@ -984,8 +1031,8 @@ impl Location {
             .contains_key(&self.entry.key())
     }
 
-    /// See [`Mountpoint::effective_mountpoint`].
-    fn resolve_mountpoint(self) -> Self {
+    /// Follows mounts stacked directly over this location.
+    pub fn resolve_mountpoint(self) -> Self {
         let Some(mountpoint) = self
             .mountpoint
             .children
@@ -1213,11 +1260,22 @@ impl Location {
 
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
+        self.mount_with_device_source(fs, DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed), source)
+    }
+
+    /// Mounts a filesystem with an explicitly selected device number and
+    /// source name. Bind mounts keep the source mount's device number.
+    pub fn mount_with_device_source(
+        &self,
+        fs: &Filesystem,
+        device: u64,
+        source: &str,
+    ) -> VfsResult<Arc<Mountpoint>> {
         // Filesystem callbacks may acquire sleepable locks. Prepare the
         // unpublished mount before entering the non-preemptible topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
-        let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
+        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source);
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;

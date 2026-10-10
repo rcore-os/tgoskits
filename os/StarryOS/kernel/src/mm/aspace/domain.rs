@@ -10,7 +10,7 @@
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use heapless::Vec as InlineVec;
 
-use crate::sync::{IrqMutex, IrqMutexGuard};
+use crate::sync::{RawSpinLock, RawSpinLockIrqSaveGuard};
 
 /// Number of fixed PTE stripes.  A power of two keeps the index operation
 /// cheap while making the lock order deterministic across architectures.
@@ -18,15 +18,15 @@ pub const PTE_STRIPE_COUNT: usize = 64;
 
 /// Lock set for PTE updates and page-table structure updates.
 pub struct PageTableDomain {
-    stripes: [IrqMutex<()>; PTE_STRIPE_COUNT],
-    structure: IrqMutex<()>,
+    stripes: [RawSpinLock<()>; PTE_STRIPE_COUNT],
+    structure: RawSpinLock<()>,
 }
 
 impl PageTableDomain {
     pub fn new() -> Self {
         Self {
-            stripes: core::array::from_fn(|_| IrqMutex::new(())),
-            structure: IrqMutex::new(()),
+            stripes: core::array::from_fn(|_| RawSpinLock::new(())),
+            structure: RawSpinLock::new(()),
         }
     }
 
@@ -91,9 +91,9 @@ impl PageTableDomain {
             }
         }
         indices.sort_unstable();
-        let mut guards = InlineVec::<IrqMutexGuard<'_, ()>, PTE_STRIPE_COUNT>::new();
+        let mut guards = InlineVec::<RawSpinLockIrqSaveGuard<'_, ()>, PTE_STRIPE_COUNT>::new();
         for index in &indices {
-            if guards.push(self.stripes[*index].lock()).is_err() {
+            if guards.push(self.stripes[*index].lock_irqsave()).is_err() {
                 unreachable!("one guard is acquired per distinct PTE stripe");
             }
         }
@@ -107,7 +107,7 @@ impl PageTableDomain {
     /// table nodes are attached or detached.
     pub fn lock_structure(&self) -> StructureCursor<'_> {
         StructureCursor {
-            _guard: self.structure.lock(),
+            _guard: self.structure.lock_irqsave(),
         }
     }
 }
@@ -121,7 +121,7 @@ impl Default for PageTableDomain {
 /// Proof that all PTE stripes for a range are held in lock-order.
 pub struct PteStripeCursor<'a> {
     indices: InlineVec<usize, PTE_STRIPE_COUNT>,
-    _guards: InlineVec<IrqMutexGuard<'a, ()>, PTE_STRIPE_COUNT>,
+    _guards: InlineVec<RawSpinLockIrqSaveGuard<'a, ()>, PTE_STRIPE_COUNT>,
 }
 
 impl Drop for PteStripeCursor<'_> {
@@ -143,7 +143,7 @@ impl PteStripeCursor<'_> {
 
 /// Capability for page-table intermediate-node operations.
 pub struct StructureCursor<'a> {
-    _guard: IrqMutexGuard<'a, ()>,
+    _guard: RawSpinLockIrqSaveGuard<'a, ()>,
 }
 
 #[cfg(all(test, not(axtest)))]

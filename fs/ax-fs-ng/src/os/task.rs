@@ -4,7 +4,7 @@ use core::{
     time::Duration,
 };
 
-use ax_sync::SpinRwLock as RwLock;
+use ax_sync::RawSpinRwLock;
 
 use crate::{BlockError, BlockResult};
 
@@ -60,7 +60,7 @@ pub trait BlockRuntimeOps: Send + Sync {
     ) -> BlockResult<Box<dyn BlockThread>>;
 }
 
-static RUNTIME_OPS: RwLock<Option<&'static dyn BlockRuntimeOps>> = RwLock::new(None);
+static RUNTIME_OPS: RawSpinRwLock<Option<&'static dyn BlockRuntimeOps>> = RawSpinRwLock::new(None);
 static RUNTIME_READY: AtomicBool = AtomicBool::new(false);
 
 /// Installs the runtime task capability implementation.

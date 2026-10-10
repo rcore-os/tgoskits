@@ -94,14 +94,14 @@ exec、任务退出、normal schedule 和 CPU offline 使用同一 active-mm 状
 ### 3.1 AArch64 lazy 进入与保留 ASID 恢复
 
 AArch64 在用户线程暂时切到内核线程时走 `enter_lazy_kernel_address_space()`（
-[address_space.rs:566-592](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L566-L592)）。
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）。
 当本 CPU 仍有 active mm 且当前安装的是非零 tag 时，它把整个 `TTBR0_EL1` 写成 0，也就是低半 root 归零并
 同时把 ASID 切换到预留 ASID 0，并且**不做 TLBI**；`write_user_page_table()`（
-[asm.rs:150-160](../../components/axcpu/src/arch/aarch64/asm.rs#L150-L160)）的文档也明确它不失效 TLB。
+[asm.rs](../../components/axcpu/src/arch/aarch64/asm.rs)）的文档也明确它不失效 TLB。
 这一状态同时保留 active-mm lease 和 active CPU bit，并要求调用者处于 IRQ 排除区间，三者共同构成它安全的
 前提。若当前已是 root 0、tag 0，函数直接返回；对于 FullFlush（tag 0）或没有 active mm 的 CPU，函数改走
 `install_hardware_root(0, DifferentAddressSpace)`，由
-[address_space.rs:546-562](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L546-L562)
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)
 在非 x86 后端执行全量 `flush_tlb(None)`。
 
 下表对照 lazy 进入的两条路径，说明它们在硬件动作与失效范围上的差别，同 mm 恢复的省略前提见本节下段。
@@ -112,19 +112,19 @@ AArch64 在用户线程暂时切到内核线程时走 `enter_lazy_kernel_address
 | user → kernel，tag 为 0 或无 active mm | 安装 replacement root 0 | 全量 `flush_tlb(None)` |
 
 同 mm 从保留根恢复由 `install_mm_identity()`（
-[address_space.rs:410-456](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L410-L456)）
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）
 判定：仅当 `transition == SameAddressSpace`、`current_root == 0`、`installed.hardware_tag() != 0` 且该 tag
-小于 `address_space_tag_capacity()` 时才允许省略 TLBI（同文件 `:416-419`）。命中后顺序固定为
+小于 `address_space_tag_capacity()` 时才允许省略 TLBI。命中后顺序固定为
 `synchronize_page_table_writes()`（`dsb ishst`）→ `El1::write_user_address_space()`（写回 `TTBR0_EL1`）
-→ `instruction_sync()`（`isb`）（同文件 `:435-439`），不再发 TLBI。省略的书面前提是：保留的 activation
+→ `instruction_sync()`（`isb`），不再发 TLBI。省略的书面前提是：保留的 activation
 属于同一逻辑 mm，lazy 进入时安装的是保留 ASID 0，所有用户叶子为非全局，此后本 CPU 未运行过其它用户 mm，
-且 active 目标位持续发布以接收同步 shootdown（同文件 `:428-434`）。lease 只固定逻辑 mm 身份，不预留数值
+且 active 目标位持续发布以接收同步 shootdown。lease 只固定逻辑 mm 身份，不预留数值
 ASID，因此“持有 lease”本身不能让跨 mm 安装跳过失效。
 
 ### 3.2 跨 mm 失效、FullFlush 与混合模式 ASID 0 卫生
 
 安装新用户身份统一进入 `install_user_address_space()`（
-[asm.rs:48-63](../../components/axcpu/src/arch/aarch64/asm.rs#L48-L63)）：tag 非零且小于
+[asm.rs](../../components/axcpu/src/arch/aarch64/asm.rs)）：tag 非零且小于
 `address_space_tag_capacity()` 时先 `flush_tlb_asid(tag)`（`tlbi aside1is`）再写带 tag 的 `TTBR0_EL1`，
 否则写裸 root 后执行全量 `flush_tlb(None)`。在前句那条合法 tagged 安装（tag 非零且小于
 `address_space_tag_capacity()`）上，且为不同逻辑 mm 的切换时，安装前总是先失效 incoming ASID，因此不同
@@ -132,14 +132,14 @@ ASID，因此“持有 lease”本身不能让跨 mm 安装跳过失效。
 [reuse.rs](../../test-suit/arceos/cpu/user-entry/src/aarch64/reuse.rs) 覆盖的场景（两个 mm 都用 tag 1）。
 
 `hardware_root_install_required()`（
-[address_space.rs:537-543](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L537-L543)）
-在 root 不同或 transition 为 `DifferentAddressSpace` 时要求安装，而 `same_logical_address_space()`（同文件
-`:647`）只比较共享 tracker 的对象身份；因此“不同 mm、root 数值相同”仍按不同身份安装并失效 incoming tag。
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）
+在 root 不同或 transition 为 `DifferentAddressSpace` 时要求安装，而同文件的
+`same_logical_address_space()` 只比较共享 tracker 的对象身份；因此“不同 mm、root 数值相同”仍按不同身份安装并失效 incoming tag。
 tag 非零但达到或超过 ASID 容量时，`install_user_address_space()` 落入与 FullFlush 相同的全量失效分支，
 未 tagged 的安装同样全量失效，这两条回退不依赖调用点记忆。
 
 混合模式分支位于 `install_mm_identity()` 的 else 路径（
-[address_space.rs:442-453](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L442-L453)）：
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）：
 当 `current_root != 0`、当前读取到的 `TTBR0_EL1` tag 为 0、而将安装的 tag 非零时，在安装前补一次
 `flush_tlb(None)`。原因是一次直接的 FullFlush→tagged 切换会把旧的非全局 ASID 0 翻译留在本 CPU，只失效
 incoming tag 不足以清除它们；之后本 CPU 进入“保留 root + ASID 0”的 lazy 状态时，这些旧翻译会与保留
@@ -149,9 +149,9 @@ ASID 0 共用同一缓存域。
 而在于该 mm 离开本 CPU 时是否已被正确清理，使之后以保留 ASID 0 运行的根不再命中它的旧翻译；执行 AT/EL1
 探测本身也不破坏不变量，只有当保留根允许访问未清理的旧翻译，或无有效身份就进入用户态时才会出问题。
 AArch64 用户叶子在 `leaf_attr()`（
-[stage1.rs:148-166](../../components/axcpu/src/arch/aarch64/paging/stage1.rs#L148-L166)）中带 `NON_GLOBAL`，
+[stage1.rs](../../components/axcpu/src/arch/aarch64/paging/stage1.rs)）中带 `NON_GLOBAL`，
 因此 tagged 翻译不会与保留 ASID 0 混用；跨 CPU 页表写入仍由 `synchronize_page_table_writes()`（`dsb ishst`，
-[asm.rs:162-170](../../components/axcpu/src/arch/aarch64/asm.rs#L162-L170)）先发布，再进入同步 shootdown，
+[asm.rs](../../components/axcpu/src/arch/aarch64/asm.rs)）先发布，再进入同步 shootdown，
 这条顺序不因省去本地 TLBI 而改变。
 
 上述省略 TLBI 的静态前提一旦被破坏，就不能再套用省 TLBI 的论证，必须重新验证映射生命周期、IRQ 排除和
@@ -206,12 +206,23 @@ PTE 的 frame 必须进入 gather。
 
 数据 frame 之外，中间页表 frame 也属于同一回收屏障。清除最后一个 leaf 后，远端 CPU 可能仍
 持有旧 translation 或 page-walk cache；因此不能在 IPI ACK 前释放变空的下级页表。generic 层的
-`unmap_page_deferred()` 只负责清 leaf 并返回 move-only `DeferredPageTableFrames`，不执行 shootdown；
-ax-mm/Starry gather 接管 token，确认后才调用 `reclaim()`。token 未确认即 Drop 时只记录诊断并泄漏，
-禁止把超时降级为 table-page UAF。generic 原有 `unmap_page()`/range unmap 继续按其调用域完成本地
-flush 并即时回收空中间表，供 Axvisor stage-2 和单 owner 页表使用；不能把 stage-1 的远端确认策略
-反向强加给这些调用方，导致反复 map/unmap 时页表帧累积到 root teardown。所有 published stage-1
-调用点必须显式选择 deferred API，不能依赖 generic 层的本地 flush 推断远端 CPU 已经失效。
+`unmap_page_deferred()` 复用 `unmap_range_deferred()` 的范围遍历，清除 leaf 并返回 move-only
+`DeferredPageTableFrames`，不执行 shootdown；ax-mm/Starry gather 接管 token，确认后才调用
+`reclaim()`。token 未确认即 Drop 时只记录诊断并泄漏，禁止把超时降级为 table-page UAF。
+普通 `unmap_page()` 只完成调用域内的 leaf flush，并保留空中间表供后续复用或 root 安全销毁，
+不会在远端 walker 仍可能访问时立即释放子表。`virtualization/axvm/src/npt.rs` 的
+`LeveledPageTable::unmap()` 当前调用此单页入口，因此同一个 VM 在不同 2 MiB 区域反复映射、
+解映射 4 KiB 页时，每个曾使用的区域最多可保留一个空的末级表，祖先表也会保留到 root 销毁；
+这不是脱离 root 的泄漏，但页表帧占用可能随曾访问的稀疏地址范围增长。需要通过 Axvisor 的
+`PagingHandler::alloc_frame()`/`dealloc_frame()` 观察这类负载的页表帧余额与 VM 析构后的回落，
+不能只观察当前仍映射的页数。
+
+generic 的范围入口 `unmap()`/`unmap_with_config()` 仍按调用域失效并即时回收空中间表；
+`LeveledPageTable::unmap_region()` 调用该入口。只有调用方已独占相应硬件 walker 的使用权，
+或已完成覆盖它们的失效确认，才能依赖这种即时回收。Axvisor 若要为单页高 churn 路径恢复
+即时回收，应先把这一前提落实为可检查的调用契约和对应测试，再选择范围入口或专用 API；
+不能把 stage-1 的远端确认策略反向强加给所有调用方。所有 published stage-1 调用点必须
+显式选择 deferred API，不能依赖 generic 层的本地 flush 推断远端 CPU 已经失效。
 尚未发布的多页 map 失败前缀仍可由 generic rollback 立即回收，因为没有 CPU 或 hardware walker
 能够观察该临时层级。
 
@@ -245,9 +256,52 @@ DMA coherent alias 的 release 是例外：它的调用者会在 unmap 返回成
 返回；未确认的远端仍由 quarantine 阻止 frame/VA 回收和复用。
 
 shootdown 确认之前还必须存在独立的“页表写入已发布”边。AArch64 发起 CPU 在任何本地 TLBI 或
-远端 IPI 前执行 `dsb ishst`；每个目标 CPU 只执行本地
-`dsb nshst → TLBI → dsb nsh → isb`。`ax-cpu` 因而不使用 `vaae1is/vae2is` 隐式广播，CPU mask、
-online 状态和确认统一由 ax-hal/runtime 软件 shootdown 事务拥有。若只在远端回调中执行 DSB，
+远端 IPI 前执行 `dsb ishst`；每个目标 CPU 的常规失效只执行本地
+`dsb nshst → TLBI → dsb nsh → isb`。`ArchPagingMeta::flush_batch` 和
+`El2PagingMeta::flush_batch` 保持本核语义，CPU mask、online 状态、失效确认和资源回收仍由
+ax-hal/runtime 软件 shootdown 事务拥有。break-before-make 的预写入硬件事务由
+`ax_hal::paging::ArchPagingMeta` 实施；`ax_cpu::paging::{ArchPagingMeta, El2PagingMeta}`
+只保留本地失效，`ax_cpu::mmu::{El1, El2}` 提供底层 TLBI 指令原语：
+`Frame::remap_recursive` 更换物理页，以及 huge leaf 与子表互换时，必须先清除旧描述符，再由
+`TableMeta::flush_before_make` 在平台声明的失效域完成同步，最后才能写入新描述符；
+`TableMeta::publish_new_mapping` 再完成新项的可见性屏障。AArch64 EL1/EL2
+对单页分别使用 `vaae1is`/`vae2is`，对覆盖多个翻译的 huge 变更使用全域失效；这些同步 TLBI
+按 `dsb ishst → TLBI ...IS → dsb ish → isb` 完成。后一个 `dsb ish` 等待同一
+Inner Shareable 域内目标 PE 的 TLBI 完成，因此在该域内为写入新描述符提供
+break-before-make 完成边界；它不是按 CPU 返回的运行时回执。该广播范围与指令序列见
+[Arm 内存管理指南](https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/Learn%20the%20Architecture/LearnTheArchitecture-MemoryManagement-101811_0100_00_en.pdf)，
+`DSB ISH` 的 TLBI 完成语义见
+[Arm ARM 已知问题说明](https://documentation-service.arm.com/static/69aac74fe79f9a1d642aa91f)。所有可能同时使用这张
+stage-1 页表的 PE 必须属于同一域，平台配置不能仅凭 `TCR_EL1.SH0/SH1` 或
+`TCR_EL2.SH0` 设为 Inner 就推断这一点。如果平台不能保证同域，必须在写入新项前
+另行完成覆盖所有使用者的失效，例如两阶段软件 shootdown 或平台专用的更宽域操作。
+`ax-plat::mem::StageOneTlbDomain` 将这一硬件前提交给平台实现声明；
+`ax-hal` 在每次清旧描述符之前检查域，不从 FDT 根兼容串推断，也不设置跨页表实例的
+全局开关。动态 AArch64 平台按 Linux 兼容的 SMP 启动契约声明
+`InnerShareable`，不以 FDT 根兼容串或单个构建配置决定能否执行 BBM。
+[Linux AArch64 启动协议](https://docs.kernel.org/arch/arm64/booting.html)要求所有将由
+内核启动的 CPU 在入内核前属于同一 coherency domain，并能接收维护操作；
+[Linux v7.1 的 TLB 实现](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/include/asm/tlbflush.h)
+使用 `DSB ISHST → TLBI ...IS → DSB ISH` 覆盖共享页表的处理器。本平台实现采用
+相同的硬件前提，保留原有多核启动能力。动态 AArch64 平台不会将多核构建静默降为单核。
+若固件或 interconnect 不满足这一启动契约，该平台不能按当前配置安全运行多核页表替换。
+`someboot` 的 AArch64 EL1/EL2 启动后端已在各自的 `flush_tlb(Some(_))` 中使用
+Inner Shareable TLBI；`ax_cpu::mmu::{El1, El2}::configure_stage1` 也把页表遍历配置为
+Inner Shareable。这些源码只表明软件采用该启动契约，不能单凭寄存器设置证明硬件域的覆盖范围。
+Linux 的启动前提与 TLBI 实现共同说明所采用的软件契约，但不能单凭寄存器设置或协议文本
+证明每块实体板卡的固件和 interconnect 实际满足该契约。当前 QEMU 回归覆盖跨核替换；
+RK3588 Orange Pi 5 Plus、PhytiumPi、Rock 4D、ROC-RK3568-PC 与 ACPI 启动仍需实体回归。
+为检查平台判定不再依赖 FDT 根兼容串，在 QEMU virt 512 MiB、4 CPU 的自动生成 FDT 中，
+仅将根节点 `compatible` 从 `linux,dummy-virt` 改成未列名的
+`tgoskits,unlisted-virt`，保留设备节点与 QEMU 配置；运行期
+`mm-transition-safety` 的跨核权限转换、两核 COW 和 refault 均通过，输出
+`STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mm-transition-safety`。
+这一回归只证明动态 AArch64 QEMU 构建在未知根兼容串下不触发
+`prepare_break_before_make()` 的缺页失败；
+QEMU 的同域行为不能代替上述实体平台的 interconnect 与固件验证。
+该硬件完成边界不提供目标 CPU 的 online 状态、逐目标失败报告或 owner 回收许可；
+frame/VA/backend/page-cache owner 的释放仍依赖 ax-hal/runtime 的目标确认、失败
+quarantine 和最终 shootdown。若只在远端回调中执行 DSB，
 它不能排序发起 CPU 先前清除 parent PTE 的写入：远端可能在 ACK 后仍走旧 table 层级，而 gather
 随即回收并复用中间页表 frame，形成 page-walk use-after-free。CI run `33142588973` 中随后出现的
 AArch64 `IrqWaitCell::wake_registration` 无关对象损坏与这一缺口的下游表现一致；同配置 ELF 将
@@ -327,7 +381,7 @@ memfd 计数。
 
 CPU offline 的 runtime hook 处于 IRQ-off、scheduler lock 持有阶段。所有可能失败的 kernel gather
 重试必须先完成；之后才以不可失败 commit 安装安全 root、撤 active bit。这里不能获取 Starry
-`PiMutex` 或析构可能睡眠的 file/backend owner。因而 Starry per-mm quarantine 在 CPU bit 撤销后
+`Mutex` 或析构可能睡眠的 file/backend owner。因而 Starry per-mm quarantine 在 CPU bit 撤销后
 变为可重试，但资源释放仍由
 下一次 task-context mutation 或 teardown 执行。这是有意的上下文边界，不把可睡眠回收塞进
 offline guard。
@@ -336,19 +390,20 @@ offline guard。
 
 本地 Linux v7.1 的关键顺序如下：
 
-- `kernel/sched/core.c:5325-5375`：`context_switch()` 对 kernel thread 借用 previous
+- `kernel/sched/core.c`：`context_switch()` 对 kernel thread 借用 previous
   `active_mm`，user task 在切换 mm 前执行 membarrier 相关顺序；
-- `kernel/fork.c:672-740`：`cleanup_lazy_tlbs()` / `__mmdrop()` 在释放 mm 前先把 lazy CPU
+- `kernel/fork.c`：`cleanup_lazy_tlbs()` / `__mmdrop()` 在释放 mm 前先把 lazy CPU
   切离；
-- `kernel/cpu.c:908-920`、`kernel/sched/core.c:8342-8357`：CPU offline 先切到
+- `kernel/cpu.c`、`kernel/sched/core.c`：CPU offline 先切到
   `init_mm`，再 drop 旧 active_mm；
-- `arch/x86/mm/tlb.c:909-965`：以 `LOADED_MM_SWITCHING` 和 CPU mask 包住 CR3/
+- `arch/x86/mm/tlb.c`：`switch_mm_irqs_off()` 以 `LOADED_MM_SWITCHING` 和 CPU mask 包住 CR3/
   `loaded_mm` 切换；
-- `arch/x86/mm/tlb.c:1276-1355`：mm 切换采用保守 flush，`freed_tables` 要求所有 CPU
-  参与；
-- `arch/x86/mm/tlb.c:1428-1463`：generation 发布和同步确认形成回收屏障；
-- `mm/mmu_gather.c:427-555`：页表/TLB flush 完成后才执行批量 free。
-- `arch/arm64/include/asm/tlbflush.h:593-644`：range TLBI 先执行 `dsb(ishst)` 发布页表写入，
+- `arch/x86/mm/tlb.c`：`should_flush_tlb()` 对正在切换 mm 的 CPU 采用保守 flush；
+  `native_flush_tlb_multi()` 在 `freed_tables` 为真时要求目标 CPU mask 中的所有 CPU 参与，包括 lazy CPU；
+- `arch/x86/mm/tlb.c`：`flush_tlb_mm_range()` 发布 generation，`flush_tlb_func()` 更新本地 generation，
+  `native_flush_tlb_multi()` 等待目标 CPU 的回调完成，形成回收屏障；
+- `mm/mmu_gather.c`：页表/TLB flush 完成后才执行批量 free。
+- `arch/arm64/include/asm/tlbflush.h`：range TLBI 先执行 `dsb(ishst)` 发布页表写入，
   再发出 TLBI 并以同步屏障收尾。
 
 TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语义顺序，再用 Rust ownership、
@@ -382,8 +437,9 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
 
 - ax-mm：shootdown 失败时 frame 不 reclaim，重试确认后才 reclaim；partial populate rollback 中
   已发布 frame 同样 deferred；DMA alias 的 confirmed unmap 失败必须阻止原物理页回到 allocator；
-  page-table-generic 的 red/green 回归证明普通 leaf/range unmap 和未发布 map rollback 不积累空表，
-  同时 deferred leaf 删除在确认前不释放变空的中间页表；AArch64 源级合同固定发起 CPU 的
+  page-table-generic 的 red/green 回归证明普通 range unmap 和未发布 map rollback 不积累空表，
+  普通单页 unmap 保留空子表供后续复用或 root 销毁，deferred leaf 删除在确认前也不释放
+  变空的中间页表；AArch64 源级合同固定发起 CPU 的
   `dsb ishst` 早于任何
   目标失效，并固定本地 `dsb nshst → TLBI → dsb nsh → isb` 顺序，ax-hal 模型同时证明即使发起
   CPU 不在 active mask 中，写入发布仍早于第一条远端 IPI；
@@ -426,7 +482,7 @@ ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部�
 ### 9.1 FullFlush 到 tagged 混合模式的静态登记
 
 当前实现的 `install_mm_identity()` 在混合分支（
-[address_space.rs:442-453](../../os/arceos/modules/axruntime/src/thread/address_space.rs#L442-L453)）
+[address_space.rs](../../os/arceos/modules/axruntime/src/thread/address_space.rs)）
 安装非零 tag 前补一次 `flush_tlb(None)`，**该 ASID 0 防护仅有静态分析支撑**：现有 QEMU 套件没有能让
 “删除该行”确定性失败的用例。预期触发序列是：(1) 以 FullFlush 身份（tag 0）安装 mm A，并让 EL0 访问其
 `DATA`，在 ASID 0 下留下翻译；(2) 不经过中间清理，直接切到 tagged mm B；(3) 让 B 阻塞，使本 CPU 进入
@@ -451,7 +507,7 @@ ArceOS、StarryOS、Axvisor × x86_64、aarch64、riscv64、loongarch64 全部�
 完整归档，只有日志与元数据，因此复现能力受限。
 
 该序列在已核验的归档模型上无法构造稳定红绿：归档的 QEMU v11.1.1 `target/arm/helper.c` 中
-`vmsa_ttbr_write()`（2812-2822 行）在 64 位 TTBR 写入使 16 位 ASID 字段变化时执行整 TLB `tlb_flush`，
+`vmsa_ttbr_write()` 在 64 位 TTBR 写入使 16 位 ASID 字段变化时执行整 TLB `tlb_flush`，
 而混合序列的 0→1 和随后进入 lazy 的 1→0 都会触发，从而抹掉本应残留的 ASID 0 翻译。这里参考固定版本
 官方源码 [qemu v11.1.1 的 target/arm/helper.c](https://raw.githubusercontent.com/qemu/qemu/v11.1.1/target/arm/helper.c)，归档副本 sha256 为
 `5f20c7fc533d89e42277956c10d6951d90192049a9b6aef321b7a92f303427b6`；这不代表已核验当前安装的 QEMU

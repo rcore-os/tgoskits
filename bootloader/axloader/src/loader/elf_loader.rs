@@ -8,8 +8,6 @@ use uefi::{
     mem::memory_map::MemoryType,
 };
 
-use crate::http::{self, KernelLoadError};
-
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const ELF_CLASS_64: u8 = 2;
 const ELF_DATA_LSB: u8 = 1;
@@ -17,10 +15,10 @@ const ELF_VERSION_CURRENT: u8 = 1;
 const ELF_MACHINE_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const UEFI_PAGE_SIZE: u64 = 4096;
+pub const EFI_ENTRY_SYMBOL: &str = "__x86_64_efi_pe_entry";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfLoadError {
-    Download(KernelLoadError),
     TooSmall,
     BadMagic,
     UnsupportedClass,
@@ -45,13 +43,6 @@ pub struct LoadedElf {
     pub load_addr: u64,
     pub load_end: u64,
     pub page_count: usize,
-    pub handoff: EntryHandoff,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryHandoff {
-    BootInfo,
-    Uefi,
 }
 
 #[repr(C)]
@@ -95,22 +86,10 @@ struct LoadSegment {
     memsz: u64,
 }
 
-pub fn download_and_load(
-    nic_handle: uefi::Handle,
-    url: &str,
-    expected_size: u64,
-    expected_sha256: &str,
+pub(super) fn load_elf(
+    image: &[u8],
     entry_symbol: Option<&str>,
 ) -> Result<LoadedElf, ElfLoadError> {
-    let image = http::download_sized_body(nic_handle, url, expected_size)
-        .map_err(ElfLoadError::Download)?;
-    if !axloader::integrity::sha256_matches(&image, expected_sha256) {
-        return Err(ElfLoadError::HashMismatch);
-    }
-    load_elf(&image, entry_symbol)
-}
-
-fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLoadError> {
     let header = read_struct::<Elf64Header>(image, 0).ok_or(ElfLoadError::TooSmall)?;
     validate_header(&header)?;
     let segments = load_segments(image, &header)?;
@@ -140,6 +119,12 @@ fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLo
     .ok_or(ElfLoadError::SegmentAddressOverflow)?;
     let page_count = usize::try_from((load_end - load_addr) / UEFI_PAGE_SIZE)
         .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
+    if entry_symbol != Some(EFI_ENTRY_SYMBOL) {
+        return Err(ElfLoadError::UnsupportedEntrySymbol);
+    }
+    let entry = find_symbol(image, &header, EFI_ENTRY_SYMBOL)
+        .and_then(|symbol| virtual_to_physical(symbol, &segments))
+        .ok_or(ElfLoadError::EntryNotInLoadSegment)?;
     let (target, actual_load_addr) = allocate_load_region(load_addr, page_count)?;
 
     if let Err(err) = copy_segments(image, &segments, load_addr, target) {
@@ -149,42 +134,26 @@ fn load_elf(image: &[u8], entry_symbol: Option<&str>) -> Result<LoadedElf, ElfLo
         return Err(err);
     }
 
-    let (entry, handoff) = match entry_symbol {
-        Some("httpboot_entry") => {
-            if let Some(entry) = find_symbol(image, &header, "httpboot_entry")
-                .and_then(|symbol| virtual_to_physical(symbol, &segments))
-            {
-                (entry, EntryHandoff::BootInfo)
-            } else if let Some(entry) = find_symbol(image, &header, "__x86_64_efi_pe_entry")
-                .and_then(|symbol| virtual_to_physical(symbol, &segments))
-            {
-                (entry, EntryHandoff::Uefi)
-            } else {
-                (
-                    virtual_to_physical(header.e_entry, &segments)
-                        .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
-                    EntryHandoff::Uefi,
-                )
-            }
+    let location = biased_addr(entry, load_addr, actual_load_addr).and_then(|entry| {
+        actual_load_addr
+            .checked_add(page_count as u64 * UEFI_PAGE_SIZE)
+            .map(|end| (entry, end))
+            .ok_or(ElfLoadError::SegmentAddressOverflow)
+    });
+    let (entry, actual_load_end) = match location {
+        Ok(location) => location,
+        Err(error) => {
+            // SAFETY: handoff has not started and the allocated ELF region is unique.
+            unsafe { boot::free_pages(target, page_count) }.expect("failed to free ELF pages");
+            return Err(error);
         }
-        Some(_) => return Err(ElfLoadError::UnsupportedEntrySymbol),
-        None => (
-            virtual_to_physical(header.e_entry, &segments)
-                .ok_or(ElfLoadError::EntryNotInLoadSegment)?,
-            EntryHandoff::BootInfo,
-        ),
     };
-    let entry = biased_addr(entry, load_addr, actual_load_addr)?;
-    let actual_load_end = actual_load_addr
-        .checked_add(page_count as u64 * UEFI_PAGE_SIZE)
-        .ok_or(ElfLoadError::SegmentAddressOverflow)?;
 
     Ok(LoadedElf {
         entry_point: entry,
         load_addr: actual_load_addr,
         load_end: actual_load_end,
         page_count,
-        handoff,
     })
 }
 

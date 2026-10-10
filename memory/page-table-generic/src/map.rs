@@ -35,6 +35,10 @@ pub struct MapRecursiveConfig<C> {
 pub struct UnmapConfig {
     pub start_vaddr: VirtAddr,
     pub size: usize,
+    /// Invalidate each removed leaf immediately. When false, the caller must
+    /// invalidate remaining stale leaf translations before reusing their pages.
+    /// Detached child tables always require completed invalidation before free,
+    /// independent of this flag.
     pub flush: bool,
 }
 
@@ -44,6 +48,7 @@ pub struct UnmapRecursiveConfig {
     pub start_vaddr: VirtAddr,
     pub end_vaddr: VirtAddr,
     pub level: usize,
+    /// Defers only leaf invalidation; detached-table retirement still flushes.
     pub flush: bool,
     pub(crate) retained_root_entries: Option<(usize, usize)>,
 }
@@ -90,7 +95,7 @@ where
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
                 if !pte_ref.unused() {
-                    return Err(PagingError::mapping_conflict(vaddr, paddr));
+                    return Err(PagingError::mapping_conflict(vaddr, pte_ref.paddr(true)));
                 }
                 *pte_ref = T::P::new_page(paddr, config.pte_template, true);
 
@@ -122,7 +127,7 @@ where
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
                 if !pte_ref.unused() {
-                    return Err(PagingError::mapping_conflict(vaddr, paddr));
+                    return Err(PagingError::mapping_conflict(vaddr, pte_ref.paddr(false)));
                 }
 
                 *pte_ref = T::P::new_page(paddr, config.pte_template, false);
@@ -331,6 +336,10 @@ where
                     // 子页表完全为空，可以回收
                     // 清除指向子页表的PTE
                     pte_ref.clear();
+                    // Descriptor unlink must become visible and invalidated
+                    // within the metadata flush domain before allocator reuse,
+                    // even when leaf flushes are deferred.
+                    T::flush_batch(core::slice::from_ref(&vaddr));
                     allocator.dealloc_frame(child_paddr);
                 } else {
                     can_reclaim = false;

@@ -86,6 +86,9 @@ pub enum AicRdifError {
     /// A bounded ownership queue is full or disconnected.
     #[error("bounded AIC ownership queue is unavailable")]
     QueueUnavailable,
+    /// The adapter options contain an invalid TX aggregation policy.
+    #[error("AIC TX aggregation limits must both be non-zero")]
+    InvalidTxAggregation,
     /// The adapter was advanced after terminal shutdown.
     #[error("AIC adapter is stopped")]
     Stopped,
@@ -97,7 +100,7 @@ impl From<AicRdifError> for rdif_eth::NetError {
             AicRdifError::Protocol(ProtocolError::NoIoFunctions) => Self::DeviceNotPresent,
             AicRdifError::QueueUnavailable => Self::Retry,
             AicRdifError::Stopped => Self::Stopped,
-            AicRdifError::DmaUnavailable => Self::InvalidParts,
+            AicRdifError::DmaUnavailable | AicRdifError::InvalidTxAggregation => Self::InvalidParts,
             other => Self::Other(alloc::boxed::Box::new(other)),
         }
     }

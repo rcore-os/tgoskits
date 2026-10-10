@@ -42,13 +42,13 @@ fn failed_irq_withdrawal_survives_root_binding_destruction() {
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&binding.root),
         bdf,
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -114,13 +114,13 @@ fn failed_owner_irq_withdrawal_is_retryable() {
     let recording = Arc::new(RecordingFunction {
         root: Arc::clone(&binding.root),
         bdf,
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(1),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(1),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -135,9 +135,19 @@ fn failed_owner_irq_withdrawal_is_retryable() {
         )
         .unwrap();
 
-    drop(lease);
+    assert!(matches!(
+        binding.stop_lifecycle(),
+        Err(DeviceManagerError::Device(DeviceError::Backend { .. }))
+    ));
     assert_eq!(*recording.withdrawals.lock_irqsave(), 0);
-    assert!(binding.retry_irq_withdrawals().is_ok());
+    // A subsequent stop must retire the retained IRQ owner, even though its
+    // route has already been withdrawn. An empty route table is not proof
+    // that the previous stop completed.
+    binding.stop_lifecycle().unwrap();
+    assert_eq!(*recording.withdrawals.lock_irqsave(), 1);
+    assert_eq!(binding.lifecycle.lock().state, BindingLifecycleState::Dead);
+    drop(lease);
+    binding.stop_lifecycle().unwrap();
     assert_eq!(*recording.withdrawals.lock_irqsave(), 1);
 }
 
@@ -168,13 +178,13 @@ fn binding_initially_synchronizes_the_current_command_state() {
     let recording = Arc::new(RecordingFunction {
         root,
         bdf,
-        reads: SpinLock::new(Vec::new()),
-        writes: SpinLock::new(Vec::new()),
-        commands: SpinLock::new(Vec::new()),
-        resets: SpinLock::new(Vec::new()),
-        reset_failures: SpinLock::new(0),
-        withdrawals: SpinLock::new(0),
-        withdraw_failures: SpinLock::new(0),
+        reads: RawSpinLock::new(Vec::new()),
+        writes: RawSpinLock::new(Vec::new()),
+        commands: RawSpinLock::new(Vec::new()),
+        resets: RawSpinLock::new(Vec::new()),
+        reset_failures: RawSpinLock::new(0),
+        withdrawals: RawSpinLock::new(0),
+        withdraw_failures: RawSpinLock::new(0),
         irq_line: None,
         supports_effects: false,
         pending: false,
@@ -224,7 +234,7 @@ fn binding_rolls_back_route_and_grant_when_initial_sync_fails() {
         Err(DeviceManagerError::Device(DeviceError::Unsupported { .. }))
     ));
     assert!(grants.is_empty());
-    assert!(binding.router.state.lock_irqsave().endpoints.is_empty());
+    assert!(binding.router.state.lock().endpoints.is_empty());
 }
 
 #[test]

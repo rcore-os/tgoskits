@@ -25,7 +25,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     file::File,
-    os::sync::{IrqMutex, SleepMutex as Mutex},
+    os::sync::{Mutex, RawSpinLock},
 };
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
@@ -34,7 +34,7 @@ type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
 pub const SYMLINKS_MAX: usize = 40;
 
 /// Global root filesystem context, initialized once during [`init_filesystems`](crate::init_filesystems).
-pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
+pub static ROOT_FS_CONTEXT: OnceLock<Arc<Mutex<FsContext>>> = OnceLock::new();
 
 /// Registry of all live `FsContext` instances (weak references).
 ///
@@ -43,16 +43,19 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// [`FsContext::propagate_pivot_root`] to iterate over every task's
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
+static FS_REGISTRY: RawSpinLock<Vec<Weak<Mutex<FsContext>>>> = RawSpinLock::new(Vec::new());
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Register an `FsContext` in the global [`FS_REGISTRY`].
 fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
-    let mut registry = FS_REGISTRY.lock();
+    let mut registry = FS_REGISTRY.lock_irqsave();
     // Prune dead weak references so the registry does not grow unboundedly
     // in long-running scenarios where pivot_root is never invoked.
-    registry.retain(|weak| weak.upgrade().is_some());
+    // Do not temporarily acquire and release a strong reference here. If this
+    // is the last reference, dropping it may tear down filesystem state and
+    // acquire a sleepable lock while the raw registry lock is held.
+    registry.retain(|weak| weak.strong_count() != 0);
     registry.push(Arc::downgrade(ctx));
 }
 
@@ -61,8 +64,10 @@ fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
 #[cfg(feature = "vfs")]
 pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
     let refs: Vec<Arc<Mutex<FsContext>>> = {
-        let mut registry = FS_REGISTRY.lock();
-        registry.retain(|weak| weak.upgrade().is_some());
+        let mut registry = FS_REGISTRY.lock_irqsave();
+        // Keep cleanup allocation-free and avoid dropping the last context
+        // while the raw registry lock is held.
+        registry.retain(|weak| weak.strong_count() != 0);
         registry.iter().filter_map(|weak| weak.upgrade()).collect()
     };
     for ctx_arc in refs {
@@ -137,6 +142,7 @@ scope_local::scope_local! {
         ROOT_FS_CONTEXT
             .get()
             .expect("Root FS context not initialized")
+            .lock()
             .clone()
             .into_shared()
     );
@@ -196,7 +202,11 @@ impl FsContext {
     pub fn new(root_dir: Location) -> Self {
         #[cfg(feature = "vfs")]
         {
-            let mnt_ns = Arc::new(MountNamespace::new(root_dir.mountpoint().clone()));
+            let mut anchor = root_dir.mountpoint().clone();
+            while let Some(parent) = anchor.location() {
+                anchor = parent.mountpoint().clone();
+            }
+            let mnt_ns = Arc::new(MountNamespace::new(anchor));
             Self::new_in_namespace(mnt_ns, root_dir)
         }
         #[cfg(not(feature = "vfs"))]
@@ -290,7 +300,7 @@ impl FsContext {
             .as_ref()
             .map(Location::absolute_path)
             .transpose()?;
-        let new_root_loc = new_ns.root_mount().root_location();
+        let new_root_loc = new_ns.root_mount().root_location().resolve_mountpoint();
         let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
         let root_dir = resolver.resolve(root_path)?;
         let current_dir = resolver.resolve(current_path)?;
@@ -1466,8 +1476,10 @@ impl FsContext {
         // 1. Collect strong references while holding the registry lock, then
         //    release it so we never nest two PI mutex guards.
         let refs: Vec<Arc<Mutex<FsContext>>> = {
-            let mut registry = FS_REGISTRY.lock();
-            registry.retain(|weak| weak.upgrade().is_some());
+            let mut registry = FS_REGISTRY.lock_irqsave();
+            // Keep cleanup allocation-free and avoid dropping the last context
+            // while the raw registry lock is held.
+            registry.retain(|weak| weak.strong_count() != 0);
             registry.iter().filter_map(|weak| weak.upgrade()).collect()
         };
 

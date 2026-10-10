@@ -110,14 +110,17 @@ download_pid=
 [ "$upload_bytes" -gt 0 ] && [ "$download_bytes" -gt 0 ] || fail
 [ "$upload_progressed" = 1 ] && [ "$download_progressed" = 1 ] || fail
 source_bytes=$(sed -n 's/^BYTES=\([0-9][0-9]*\)$/\1/p' "$work_dir/upload.log")
+source_elapsed=$(sed -n 's/^ELAPSED_MS=\([0-9][0-9]*\)$/\1/p' "$work_dir/upload.log")
 client_download_bytes=$(cat "$work_dir/download.bytes")
 [ -n "$source_bytes" ] && [ "$source_bytes" = "$upload_bytes" ] || fail
+# The source clock starts before curl connects; server upload elapsed excludes that startup.
+[ -n "$source_elapsed" ] && [ "$source_elapsed" -ge "$((duration * 1000))" ] || fail
 [ -n "$client_download_bytes" ] && [ "$client_download_bytes" = "$download_bytes" ] || fail
 upload_elapsed=$(direction_elapsed upload)
 download_elapsed=$(direction_elapsed download)
 [ -n "$upload_elapsed" ] && [ -n "$download_elapsed" ] || fail
-[ "$upload_elapsed" -ge "$(((duration - 1) * 1000))" ] || fail
 [ "$download_elapsed" -ge "$(((duration - 1) * 1000))" ] || fail
+printf 'source result: bytes=%s elapsed_ms=%s\n' "$source_bytes" "$source_elapsed"
 printf 'upload result: %s\n' "$(cat "$work_dir/upload.json")"
 printf 'final result: %s\n' "$record"
 printf '%s_PASSED\n' "$marker"

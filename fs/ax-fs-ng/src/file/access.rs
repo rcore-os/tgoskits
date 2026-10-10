@@ -2,7 +2,7 @@ use alloc::collections::BTreeMap;
 
 use axfs_ng_vfs::{FilesystemOps, Location, VfsError, VfsResult};
 
-use crate::os::sync::SleepMutex;
+use crate::os::sync::Mutex;
 
 /// Prevents execution while a regular file is open for writing.
 ///
@@ -52,7 +52,7 @@ struct AccessCount {
 // The registry only stores counts. No filesystem callback or Location drop runs
 // under its mutex. Each lease pins the filesystem and inode, so pointer/inode
 // reuse cannot alias a live key; hard links and bind mounts share the same key.
-static ACCESS: SleepMutex<BTreeMap<(usize, u64), AccessCount>> = SleepMutex::new(BTreeMap::new());
+static ACCESS: Mutex<BTreeMap<(usize, u64), AccessCount>> = Mutex::new(BTreeMap::new());
 
 struct AccessLease {
     _location: Location,

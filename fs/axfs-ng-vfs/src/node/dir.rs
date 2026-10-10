@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 
 use super::{DirEntry, FileExtentMap, FileExtentTarget};
 use crate::{
-    Mountpoint, Mutex, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    Mountpoint, NodeOps, NodePermission, NodeType, RawSpinLock, VfsError, VfsResult,
     path::{DOT, DOTDOT, verify_entry_name},
 };
 
@@ -319,9 +319,9 @@ impl Default for OpenOptions {
 
 pub struct DirNode {
     ops: Arc<dyn DirNodeOps>,
-    cache: Mutex<DirChildren>,
+    cache: RawSpinLock<DirChildren>,
     cache_generation: AtomicU64,
-    pub(crate) mountpoint: Mutex<Option<Arc<Mountpoint>>>,
+    pub(crate) mountpoint: RawSpinLock<Option<Arc<Mountpoint>>>,
 }
 
 impl Deref for DirNode {
@@ -342,9 +342,9 @@ impl DirNode {
     pub fn new(ops: Arc<dyn DirNodeOps>) -> Self {
         Self {
             ops,
-            cache: Mutex::new(DirChildren::default()),
+            cache: RawSpinLock::new(DirChildren::default()),
             cache_generation: AtomicU64::new(0),
-            mountpoint: Mutex::new(None),
+            mountpoint: RawSpinLock::new(None),
         }
     }
 

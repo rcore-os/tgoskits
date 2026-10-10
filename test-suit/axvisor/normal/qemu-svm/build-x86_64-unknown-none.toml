@@ -1,0 +1,5 @@
+target = "x86_64-unknown-none"
+features = ["ax-driver/nvme", "vpci-test-device"]
+log = "Info"
+max_cpu_num = 3
+vm_configs = []

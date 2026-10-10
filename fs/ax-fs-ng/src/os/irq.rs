@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_sync::SpinRwLock as RwLock;
+use ax_sync::RawSpinRwLock;
 use irq_framework::IrqId;
 
 use crate::{BlockError, BlockResult, block::runtime::BlockIrqAction};
@@ -43,7 +43,8 @@ pub trait BlockIrqRegistrar: Send + Sync {
     ) -> BlockResult<Box<dyn BlockIrqRegistration>>;
 }
 
-static IRQ_REGISTRAR: RwLock<Option<&'static dyn BlockIrqRegistrar>> = RwLock::new(None);
+static IRQ_REGISTRAR: RawSpinRwLock<Option<&'static dyn BlockIrqRegistrar>> =
+    RawSpinRwLock::new(None);
 static IRQ_READY: AtomicBool = AtomicBool::new(false);
 
 /// Installs the runtime IRQ registrar.

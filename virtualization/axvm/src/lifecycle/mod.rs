@@ -1,7 +1,5 @@
-//! VM lifecycle state machine.
+//! Lifecycle states published by the VM control owner.
 
-pub mod machine;
 pub mod status;
 
-pub(crate) use machine::Machine;
 pub use status::{StopReason, VmStatus};

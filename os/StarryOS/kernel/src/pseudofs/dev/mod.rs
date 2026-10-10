@@ -52,7 +52,7 @@ mod video_allocator;
 #[cfg(feature = "uvc")]
 mod video_dir;
 
-use alloc::{format, sync::Arc};
+use alloc::{format, string::ToString, sync::Arc};
 use core::{
     any::Any,
     sync::atomic::{AtomicU64, Ordering},
@@ -114,8 +114,10 @@ pub(super) fn request_shared_disabled(
     ax_runtime::hal::irq::request_irq(irq, request).map(IrqRegistration::new)
 }
 
-pub(crate) fn new_devfs() -> Filesystem {
-    SimpleFs::new_with("devfs".into(), 0x01021994, builder)
+pub(crate) fn new_devfs(root_mount_device: u64) -> Filesystem {
+    SimpleFs::new_with("devfs".into(), 0x01021994, move |fs| {
+        builder(fs, root_mount_device)
+    })
 }
 
 pub(crate) fn new_devptsfs(mount: tty::DevPtsMount) -> Filesystem {
@@ -167,6 +169,27 @@ impl DeviceOps for Null {
 /// read/write return `EIO` rather than silently succeeding, so the node never
 /// masquerades as a working disk for `dd`/`blkid`/`fsck`.
 struct RootBlk;
+
+/// Mountable physical block device. Raw device I/O is not implemented here.
+pub(crate) struct PhysicalBlock(pub ax_fs_ng::root::BlockDeviceNode);
+
+impl DeviceOps for PhysicalBlock {
+    fn len(&self) -> VfsResult<u64> {
+        Ok(self.0.region.num_blocks() * self.0.handle.device_info().logical_block_size as u64)
+    }
+
+    fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::Io)
+    }
+
+    fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+        Err(VfsError::Io)
+    }
+
+    fn as_any(&self) -> &dyn Any { self }
+
+    fn flags(&self) -> NodeFlags { NodeFlags::NON_CACHEABLE }
+}
 
 impl DeviceOps for RootBlk {
     fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
@@ -428,7 +451,7 @@ impl DeviceOps for CpuDmaLatency {
     }
 }
 
-fn builder(fs: Arc<SimpleFs>) -> DirMaker {
+fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     let mut root = DirMapping::new();
     let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
 
@@ -488,17 +511,27 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // Root block device node. Its rdev must equal the root filesystem's st_dev
     // so that tools resolving the root device by scanning /dev (e.g. busybox
     // `rdev`, which stats "/" then looks for a block node with a matching
-    // st_rdev) can find it. The root mount is the first mount, so its
-    // `DEVICE_COUNTER` id is 1 (== `DeviceId::new(0, 1).0`).
+    // `st_rdev`) can find it. Disk roots use their Linux device number; a
+    // memory root keeps the synthetic mount device assigned by the VFS.
+    let block_nodes = ax_fs_ng::root::block_device_nodes()
+        .unwrap_or_else(|error| panic!("failed to discover block device nodes: {error:?}"));
+    let root_name = ax_fs_ng::root::root_block_identity().name;
+    if !block_nodes.iter().any(|node| node.path.strip_prefix("/dev/") == Some(root_name)) {
     root.add(
         ax_fs_ng::root::root_block_identity().name,
         Device::new(
             fs.clone(),
             NodeType::BlockDevice,
-            DeviceId::new(0, 1),
+            DeviceId(root_mount_device),
             Arc::new(RootBlk),
         ),
     );
+    }
+    for node in block_nodes {
+        let name = node.path.strip_prefix("/dev/").expect("device path").to_string();
+        let device = node.device;
+        root.add(name, Device::new(fs.clone(), NodeType::BlockDevice, device, Arc::new(PhysicalBlock(node))));
+    }
     if ax_display::has_display() {
         root.add(
             "fb0",

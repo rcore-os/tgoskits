@@ -15,9 +15,22 @@ use crate::{
 };
 
 const TARGETED_FLUSH_LIMIT: usize = 32;
-const MAX_DEFERRED_PAGE_TABLE_LEVELS: usize = 8;
+pub(crate) const MAX_DEFERRED_PAGE_TABLE_LEVELS: usize = 8;
 
-/// Intermediate page-table frames detached by one leaf removal.
+/// An occupied mapping snapshot, including a non-present leaf.
+#[derive(Debug)]
+struct MappedLeaf<C> {
+    /// Base virtual address of the complete leaf mapping.
+    vaddr: VirtAddr,
+    /// Base physical address retained by the mapping.
+    paddr: PhysAddr,
+    /// Size represented by this leaf's page-table level.
+    size: usize,
+    /// Opaque architecture-owned configuration.
+    config: C,
+}
+
+/// A bounded batch of detached intermediate page-table frames.
 ///
 /// The frames remain allocated until the stage-1 owner confirms that every
 /// CPU which could walk the old hierarchy has completed a TLB invalidation.
@@ -39,7 +52,7 @@ impl<A: FrameAllocator> core::fmt::Debug for DeferredPageTableFrames<A> {
 }
 
 impl<A: FrameAllocator> DeferredPageTableFrames<A> {
-    fn new(allocator: A) -> Self {
+    pub(crate) fn new(allocator: A) -> Self {
         Self {
             allocator,
             frames: heapless::Vec::new(),
@@ -49,7 +62,15 @@ impl<A: FrameAllocator> DeferredPageTableFrames<A> {
     pub(crate) fn push(&mut self, frame: PhysAddr) {
         self.frames
             .push(frame)
-            .expect("one leaf cannot detach more page tables than the hierarchy depth");
+            .expect("deferred page-table batch capacity must be reserved before detach");
+    }
+
+    pub(crate) fn is_full(&self) -> bool {
+        self.frames.is_full()
+    }
+
+    pub(crate) fn allocator_clone(&self) -> A {
+        self.allocator.clone()
     }
 
     /// Returns whether this removal detached no intermediate table frames.
@@ -100,6 +121,7 @@ enum RegionPageSelection {
 /// during prepare.
 struct ReservedTable<T: TableMeta, A: FrameAllocator> {
     frame: Option<Frame<T, A>>,
+    retired: bool,
 }
 
 /// A detached, fully initialized page-table suffix.
@@ -245,6 +267,22 @@ impl<T: TableMeta, A: FrameAllocator> core::fmt::Debug for HugeSplitApplyError<T
 }
 
 impl<T: TableMeta, A: FrameAllocator> HugeSplitDeposit<T, A> {
+    /// Whether this child table was withdrawn from a live page-table tree.
+    pub const fn requires_tlb_confirmation(&self) -> bool {
+        self.table.retired
+    }
+
+    /// Permits reuse or release of a withdrawn table after remote completion.
+    ///
+    /// # Safety
+    ///
+    /// Every CPU that could walk the old child descriptor must have completed
+    /// a TLB invalidation covering `block_vaddr..block_vaddr + block_size`, or
+    /// have switched away from the root with an equivalent quiescence proof.
+    pub unsafe fn confirm_tlb_retirement(&mut self) {
+        self.table.retired = false;
+    }
+
     pub const fn block_vaddr(&self) -> VirtAddr {
         self.block_vaddr
     }
@@ -336,13 +374,18 @@ impl<T: TableMeta, A: FrameAllocator> ReservedTable<T, A> {
 
     fn disarm(&mut self) {
         self.frame = None;
+        self.retired = false;
     }
 }
 
 impl<T: TableMeta, A: FrameAllocator> Drop for ReservedTable<T, A> {
     fn drop(&mut self) {
         if let Some(frame) = self.frame.take() {
-            frame.allocator.dealloc_frame(frame.paddr);
+            if self.retired {
+                log::error!("leaking unconfirmed restored huge-split table");
+            } else {
+                frame.allocator.dealloc_frame(frame.paddr);
+            }
         }
     }
 }
@@ -1233,23 +1276,46 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Unmaps one page and returns its physical address, flags, and page size.
+    ///
+    /// Descriptor publication and invalidation complete in the metadata's
+    /// flush domain before returning. Empty child tables remain linked for
+    /// reuse or root teardown, so this call never frees a frame that a remote
+    /// hardware walker might still reference. The caller keeps the mapped
+    /// physical owner alive until all hardware users have invalidated it.
     pub fn unmap_page(
         &mut self,
         vaddr: VirtAddr,
     ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
-        let (pte, level) = self
-            .root
-            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
-        let page_size = Frame::<T, A>::level_size(level);
-        let is_dir = level > 1;
-        let paddr = pte.paddr(is_dir);
-        let config = pte.config(is_dir);
-        self.unmap_with_config(&UnmapConfig {
-            start_vaddr: vaddr.align_down(page_size),
-            size: page_size,
-            flush: true,
-        })?;
-        Ok((paddr, config, page_size))
+        let leaf = self.query_occupied_leaf(vaddr)?;
+        let end = leaf
+            .vaddr
+            .as_usize()
+            .checked_add(leaf.size)
+            .ok_or_else(|| PagingError::address_overflow("unmap_page"))?;
+        let range = leaf.vaddr..end.into();
+        self.validate_owned_unmap_range(&range)?;
+        self.root
+            .clear_occupied_leaf(leaf.vaddr, Frame::<T, A>::PT_LEVEL)?;
+        T::flush_leaf_batch(core::slice::from_ref(&leaf.vaddr));
+        Ok((leaf.paddr, leaf.config, leaf.size))
+    }
+
+    pub(crate) fn retained_root_entry_range(&self) -> Option<(usize, usize)> {
+        self.retained_root_entries
+            .map(|span| (span.start, span.end))
+    }
+
+    pub(crate) fn validate_owned_unmap_range(&self, range: &Range<VirtAddr>) -> PagingResult {
+        let size = range
+            .end
+            .as_usize()
+            .checked_sub(range.start.as_usize())
+            .ok_or_else(|| PagingError::invalid_range("Unmap range is reversed"))?;
+        if size == 0 {
+            return Ok(());
+        }
+        self.validate_unmap_params(range.start, size)?;
+        self.validate_address_width(range.start, size, "unmap_owned")
     }
 
     /// Unmaps one occupied leaf without reclaiming detached intermediate
@@ -1262,20 +1328,20 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         &mut self,
         vaddr: VirtAddr,
     ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize, DeferredPageTableFrames<A>)> {
-        if Frame::<T, A>::PT_LEVEL > MAX_DEFERRED_PAGE_TABLE_LEVELS {
-            return Err(PagingError::hierarchy_error(
-                "Page-table depth exceeds deferred reclaim capacity",
-            ));
-        }
-        let mut deferred = DeferredPageTableFrames::new(self.root.allocator.clone());
-        let (pte, level) =
-            self.root
-                .take_occupied_leaf_deferred(vaddr, Frame::<T, A>::PT_LEVEL, &mut deferred)?;
-        let page_size = Frame::<T, A>::level_size(level);
-        let is_dir = level > 1;
-        let paddr = pte.paddr(is_dir);
-        let config = pte.config(is_dir);
-        Ok((paddr, config, page_size, deferred))
+        let leaf = self.query_occupied_leaf(vaddr)?;
+        let end = leaf
+            .vaddr
+            .as_usize()
+            .checked_add(leaf.size)
+            .ok_or_else(|| PagingError::address_overflow("unmap_page_deferred"))?;
+        let mut deferred = None;
+        let removed =
+            self.unmap_range_deferred(leaf.vaddr..VirtAddr::from_usize(end), |batch| {
+                deferred = Some(batch);
+            })?;
+        debug_assert_eq!(removed, 1);
+        let tables = deferred.expect("an occupied leaf emits one deferred batch");
+        Ok((leaf.paddr, leaf.config, leaf.size, tables))
     }
 
     /// Returns the huge block covering `vaddr` without changing the table.
@@ -1730,6 +1796,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         let block_vaddr = vaddr.align_down(block_size);
         let table = ReservedTable {
             frame: Some(Frame::<T, A>::new(self.root.allocator.clone())?),
+            retired: false,
         };
         Ok(HugeSplitDeposit {
             table,
@@ -1745,6 +1812,9 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     where
         PteConfigOf<T>: PartialEq,
     {
+        if deposit.table.retired {
+            return Err(PagingError::UnconfirmedHugeSplitRetirement);
+        }
         let current = self.peek_huge_block(deposit.block_vaddr);
         if self.root_paddr() != deposit.root_paddr
             || !current.is_some_and(|(paddr, config, size)| {
@@ -1838,8 +1908,10 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     /// its receipt and returns ownership of the withdrawn child table.
     ///
     /// No allocation occurs.  The returned deposit is bound to the restored
-    /// block and can either be retained for a retry or dropped to release the
-    /// now-unpublished page-table frame.  This is the inverse of
+    /// block, but cannot be reused or dropped to release the formerly live
+    /// page-table frame until a remote TLB receipt confirms its retirement.
+    /// Dropping an unconfirmed deposit deliberately leaks that frame. This is
+    /// the inverse of
     /// [`Self::split_huge_page_with`] used by unpublished transaction aborts.
     pub fn restore_huge_split(
         &mut self,
@@ -1857,7 +1929,10 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             Frame::<T, A>::PT_LEVEL,
         )?;
         Ok(HugeSplitDeposit {
-            table: ReservedTable { frame: Some(frame) },
+            table: ReservedTable {
+                frame: Some(frame),
+                retired: true,
+            },
             root_paddr: installed.root_paddr,
             block_vaddr: installed.block_vaddr,
             block_paddr: installed.block_paddr,
@@ -1879,11 +1954,18 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Changes one existing mapping's flags and returns its page size.
+    /// Descriptor publication and invalidation complete in the metadata's
+    /// flush domain. A shared table needs external shootdown before the caller
+    /// may rely on access being revoked for every hardware user.
     pub fn protect_page(&mut self, vaddr: VirtAddr, config: PteConfigOf<T>) -> PagingResult<usize> {
-        let page_size = self
-            .root
-            .protect_recursive(vaddr, config, Frame::<T, A>::PT_LEVEL)?;
-        T::flush(Some(vaddr));
+        let (page_size, requires_bbm) =
+            self.root
+                .protect_recursive(vaddr, config, Frame::<T, A>::PT_LEVEL)?;
+        if requires_bbm {
+            T::complete_replaced_leaf(vaddr);
+        } else {
+            T::flush_leaf_batch(&[vaddr]);
+        }
         Ok(page_size)
     }
 
@@ -1940,16 +2022,25 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Remaps one existing mapping and returns its page size.
+    ///
+    /// Changed physical backing is invalidated before publishing the replacement.
+    /// The caller must retain both physical owners until this operation completes
+    /// in the metadata's flush domain. A shared table needs external shootdown
+    /// before the old owner can be reclaimed or globally revoked.
     pub fn remap_page(
         &mut self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
         config: PteConfigOf<T>,
     ) -> PagingResult<usize> {
-        let page_size = self
-            .root
-            .remap_recursive(vaddr, paddr, config, Frame::<T, A>::PT_LEVEL)?;
-        T::flush(Some(vaddr));
+        let (page_size, replaced) =
+            self.root
+                .remap_recursive(vaddr, paddr, config, Frame::<T, A>::PT_LEVEL)?;
+        if replaced {
+            T::complete_replaced_leaf(vaddr);
+        } else {
+            T::flush_leaf_batch(&[vaddr]);
+        }
         Ok(page_size)
     }
 
@@ -1977,20 +2068,31 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         self.root.find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)
     }
 
+    /// Queries descriptor ownership, including a non-present leaf.
+    ///
+    /// Unlike [`Self::query`], this returns the base addresses of the complete
+    /// leaf and does not require hardware-valid translation. The result is
+    /// metadata, not an access permission or a physical-memory lifetime pin.
+    /// Callers must exclude table mutation while relying on this snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PagingError::NotMapped`] for an unused entry or subtree and
+    /// a hierarchy error for a malformed intermediate descriptor.
+    fn query_occupied_leaf(&self, vaddr: VirtAddr) -> PagingResult<MappedLeaf<PteConfigOf<T>>> {
+        let (pte, level) = self.query_occupied(vaddr)?;
+        let size = Frame::<T, A>::level_size(level);
+        Ok(MappedLeaf {
+            vaddr: vaddr.align_down(size),
+            paddr: pte.paddr(level > 1),
+            size,
+            config: pte.config(level > 1),
+        })
+    }
+
     /// 映射虚拟地址范围到物理地址范围
     pub fn map(&mut self, config: &MapConfig<PteConfigOf<T>>) -> PagingResult {
-        // 验证输入参数
-        self.validate_map_config(config)?;
-
-        // 检查大小溢出
-        if config.vaddr.as_usize().checked_add(config.size).is_none()
-            || config.paddr.as_usize().checked_add(config.size).is_none()
-        {
-            return Err(PagingError::address_overflow(
-                "Virtual or physical address overflow",
-            ));
-        }
-        self.validate_address_width(config.vaddr, config.size, "map")?;
+        self.validate_mapping(config.vaddr, config.paddr, config.size)?;
 
         let end_vaddr = config
             .vaddr
@@ -2054,7 +2156,11 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         Ok(())
     }
 
-    /// 使用配置对象取消映射
+    /// Removes mappings with configurable immediate leaf invalidation.
+    ///
+    /// `flush: false` does not suppress the completed invalidation required
+    /// before recycling detached child tables. The caller must still invalidate
+    /// stale leaf translations before releasing their physical pages.
     pub fn unmap_with_config(&mut self, config: &UnmapConfig) -> PagingResult<()> {
         self.validate_unmap_params(config.start_vaddr, config.size)?;
 
@@ -2161,26 +2267,36 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         (level != 0 && level <= T::LEVEL_BITS.len()).then(|| Frame::<T, A>::level_size(level))
     }
 
-    /// 验证映射配置的有效性
-    fn validate_map_config(&self, config: &MapConfig<PteConfigOf<T>>) -> PagingResult {
-        if config.size == 0 {
+    pub(crate) fn validate_mapping(
+        &self,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        size: usize,
+    ) -> PagingResult {
+        if size == 0 {
             return Err(PagingError::invalid_size("Size cannot be zero"));
         }
 
-        // 检查虚拟地址和物理地址是否页对齐
-        if !config.vaddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
+        if !vaddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
             return Err(PagingError::alignment_error(
                 "Virtual address not page aligned",
             ));
         }
 
-        if !config.paddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
+        if !paddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
             return Err(PagingError::alignment_error(
                 "Physical address not page aligned",
             ));
         }
 
-        Ok(())
+        if vaddr.as_usize().checked_add(size).is_none()
+            || paddr.as_usize().checked_add(size).is_none()
+        {
+            return Err(PagingError::address_overflow(
+                "Virtual or physical address overflow",
+            ));
+        }
+        self.validate_address_width(vaddr, size, "map")
     }
 
     fn validate_address_width(

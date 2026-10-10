@@ -1,5 +1,5 @@
 features = [
-    "fs",
+
     "ax-driver/phytium-mci",
 ]
 log = "Info"

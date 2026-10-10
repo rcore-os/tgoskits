@@ -1,0 +1,23 @@
+[package]
+name = "acpica-interpreter"
+version = "0.1.0"
+edition.workspace = true
+repository.workspace = true
+license = "Apache-2.0 AND BSD-3-Clause"
+description = "Freestanding ACPICA interpreter with a caller-provided OS services backend"
+keywords = ["acpi", "aml", "firmware", "no_std"]
+categories = ["no-std", "embedded", "hardware-support"]
+build = "build.rs"
+
+[build-dependencies]
+cc.workspace = true
+
+[features]
+host-test = []
+
+[package.metadata.clippy]
+configurations = [{ name = "x86_64-none", target = "x86_64-unknown-none" }]
+
+[[test]]
+name = "synthetic_aml"
+required-features = ["host-test"]

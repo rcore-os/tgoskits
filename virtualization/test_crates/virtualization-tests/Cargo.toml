@@ -12,7 +12,7 @@ repository.workspace = true
 ax-plat = { path = "../../../platforms/ax-plat" }
 axdevice = { path = "../../axdevice" }
 axdevice_base = { path = "../../axdevice_base" }
-axvm = { path = "../../axvm" }
+axvm = { path = "../../axvm", features = ["host-test"] }
 axvm-types = { path = "../../axvm-types" }
 axvmconfig = { path = "../../axvmconfig" }
 irq-framework = { path = "../../../components/irq-framework" }

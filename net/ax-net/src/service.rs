@@ -64,7 +64,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
-use ax_sync::SpinRwLock as RwLock;
+use ax_sync::RawSpinRwLock;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
     phy::ChecksumCapabilities,
@@ -106,7 +106,7 @@ struct ControlState {
 }
 
 pub struct NetControl {
-    state: RwLock<ControlState>,
+    state: RawSpinRwLock<ControlState>,
     pub(crate) routes: SharedRouteTable,
     dhcp_bootstrap: DhcpBootstrap,
     /// Interface indices are not reused while the system runs.
@@ -151,7 +151,7 @@ impl NetControl {
             .unwrap_or(InterfaceId::LOOPBACK.get())
             + 1;
         Self {
-            state: RwLock::new(ControlState { interfaces, dns }),
+            state: RawSpinRwLock::new(ControlState { interfaces, dns }),
             routes,
             dhcp_bootstrap: DhcpBootstrap::new(),
             next_interface_id: AtomicU32::new(next_interface_id),
@@ -672,7 +672,7 @@ impl Service {
             }
             InterfaceKind::Tap => {
                 let mac = tap_mac(id);
-                let (device, shared) = create_tap(name.clone(), mac);
+                let (device, shared) = create_tap(id, name.clone(), mac);
                 let flags = InterfaceFlags::BROADCAST | InterfaceFlags::MULTICAST;
                 (Box::new(device), shared, Some(EthernetAddress(mac)), flags)
             }
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn dhcp_configured_is_true_once_any_interface_has_address() {
-        let routes = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(routes.clone());
         let dev0 = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
         let dev1 = router.add_device(InterfaceId::new(3), Box::new(LoopbackDevice::new()));
@@ -1357,7 +1357,7 @@ mod tests {
 
     #[test]
     fn dhcp_retry_deadline_drives_protocol_executor_until_bound() {
-        let routes = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
         let mut router = Router::new(routes.clone());
         let dev = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
         let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
@@ -1379,7 +1379,7 @@ mod tests {
 
     #[test]
     fn interface_address_table_handles_loopback_and_two_ethernet_addresses() {
-        let routes = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+        let routes = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
         let router = Router::new(routes.clone());
         let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
         let mut service = Service::new(router, control);

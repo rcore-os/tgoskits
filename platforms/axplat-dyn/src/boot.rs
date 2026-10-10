@@ -76,6 +76,17 @@ pub fn bootargs() -> Option<&'static str> {
     somehal::bootargs()
 }
 
+pub use somehal::InitramfsRange;
+
+pub fn initramfs_range() -> Option<InitramfsRange> {
+    somehal::initramfs_range()
+}
+
+/// Claims the host archive exactly once, after allocator reservations are installed.
+pub fn take_initramfs_range() -> Option<InitramfsRange> {
+    somehal::take_initramfs_range()
+}
+
 pub fn boot_entropy() -> Option<[u8; 32]> {
     somehal::boot_entropy()
 }

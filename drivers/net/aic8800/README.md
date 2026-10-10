@@ -64,6 +64,6 @@ src/
   wpa2.rs
 ```
 
-无需 QEMU 的私有状态机测试放在对应源文件末尾；`tests/std.rs` 只通过公开
-API 验证 crate 契约。真实 SDIO/Wi-Fi、FDT 和硬中断链路必须使用 axtest
-或 SG2002 实板验证。
+无需 QEMU 的私有状态机测试放在对应源文件末尾，多个模块共用的 host 测试夹具放在
+`src/rdif_test_support.rs`；`tests/std.rs` 只通过公开 API 验证 crate 契约。真实
+SDIO/Wi-Fi、FDT 和硬中断链路必须使用 axtest 或 SG2002 实板验证。

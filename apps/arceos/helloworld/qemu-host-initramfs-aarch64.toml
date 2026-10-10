@@ -1,0 +1,20 @@
+initramfs = "${workspace}/target/axbuild/host-initramfs/host-test.cpio"
+cmdline = "host_initramfs=external"
+args = [
+  "-machine", "virt",
+  "-cpu", "cortex-a72",
+  "-m", "256M",
+  "-smp", "1",
+  "-nographic",
+  "-serial", "mon:stdio",
+]
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 60
+
+[[shell_check_steps]]
+success_regex = ["HOST_CMDLINE: host_initramfs=external"]
+
+[[shell_check_steps]]
+success_regex = ["HOST_INITRAMFS_PASSED"]

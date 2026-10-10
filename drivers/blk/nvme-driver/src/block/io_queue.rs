@@ -434,7 +434,7 @@ impl<'a> PrpPageAccumulator<'a> {
     }
 }
 
-fn limits(
+pub(super) fn limits(
     dma: dma_api::DmaDeviceInfo,
     page_size: usize,
     controller_max_transfer_bytes: Option<usize>,
@@ -443,16 +443,14 @@ fn limits(
 ) -> QueueLimits {
     let lba_size = namespace.lba_size.max(1);
     let prp_entries = page_size / core::mem::size_of::<u64>();
-    let prp_capacity_bytes = page_size.saturating_mul(prp_entries + 1);
-    let max_bytes = controller_max_transfer_bytes
-        .map_or(prp_capacity_bytes, |max_transfer| {
-            prp_capacity_bytes.min(max_transfer)
-        })
-        .max(lba_size);
+    let prp_capacity_bytes =
+        page_size.saturating_mul(prp_entries.saturating_mul(MAX_PRP_LIST_PAGES));
+    let max_bytes = controller_max_transfer_bytes.map_or(prp_capacity_bytes, |max_transfer| {
+        prp_capacity_bytes.min(max_transfer)
+    });
     let max_blocks = max_bytes
         .checked_div(lba_size)
-        .unwrap_or(1)
-        .max(1)
+        .unwrap_or_default()
         .min(u16::MAX as usize + 1) as u32;
     let max_bytes = (max_blocks as usize).saturating_mul(lba_size);
     let current = dma.constraints();
@@ -482,9 +480,12 @@ mod tests {
     use alloc::vec::Vec;
 
     use dma_api::CoherentArray;
-    use rdif_block::{BlkError, CompletedRequest, CompletionSink};
+    use rdif_block::{
+        BlkError, CompletedRequest, CompletionSink, DeviceInfo, OwnedRequest, RequestFlags,
+        RequestOp, validate_owned_request_shape,
+    };
 
-    use super::{NvmeQueueState, PrpPageAccumulator, RequestSlot, limits};
+    use super::{MAX_PRP_LIST_PAGES, NvmeQueueState, PrpPageAccumulator, RequestSlot, limits};
     use crate::{Namespace, queue::NvmeCompletion};
 
     #[derive(Default)]
@@ -569,6 +570,77 @@ mod tests {
         assert_eq!(limits.max_segments, 1);
         assert_eq!(limits.max_submit_batch, 8);
         assert!(limits.supports_flush);
+    }
+
+    #[test]
+    fn request_limits_respect_controller_and_prp_capacities() {
+        let namespace = Namespace {
+            id: 1,
+            lba_size: 16 * 1024,
+            lba_count: 1024,
+            metadata_size: 0,
+        };
+        let controller_limits = limits(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+            4096,
+            Some(8 * 1024),
+            namespace,
+            8,
+        );
+        let request = OwnedRequest {
+            op: RequestOp::Read,
+            lba: 0,
+            block_count: 1,
+            data: None,
+            flags: RequestFlags::NONE,
+        };
+
+        assert_eq!(controller_limits.max_blocks_per_request, 0);
+        assert_eq!(
+            validate_owned_request_shape(
+                DeviceInfo::new(namespace.lba_count, namespace.lba_size),
+                controller_limits,
+                &request,
+            ),
+            Err(BlkError::InvalidBlockIndex(0))
+        );
+
+        let namespace = Namespace {
+            id: 1,
+            lba_size: 512,
+            lba_count: 1024 * 1024,
+            metadata_size: 0,
+        };
+        let page_size = 4096;
+        let prp_limits = limits(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+            page_size,
+            None,
+            namespace,
+            8,
+        );
+        let max_request_bytes = prp_limits.max_blocks_per_request as usize * namespace.lba_size;
+        let list_entries = page_size / core::mem::size_of::<u64>();
+        let page_count = {
+            let mut pages = Vec::new();
+            let mut accumulator = PrpPageAccumulator::new(&mut pages);
+            assert_eq!(
+                accumulator.push_segment(0x1e00, max_request_bytes, page_size),
+                Ok(())
+            );
+            accumulator.into_pages().len()
+        };
+
+        assert!(page_count - 1 <= list_entries * MAX_PRP_LIST_PAGES);
+        assert!(max_request_bytes <= page_size * list_entries * MAX_PRP_LIST_PAGES);
     }
 
     #[test]

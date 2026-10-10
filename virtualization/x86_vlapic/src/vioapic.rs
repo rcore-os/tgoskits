@@ -1,6 +1,7 @@
+use ax_sync::RawSpinLock;
+
 use crate::{
     X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86VlapicError, X86VlapicResult,
-    lock::SpinMutex as Mutex,
 };
 
 const IOAPIC_BASE: usize = 0xfec0_0000;
@@ -122,7 +123,7 @@ pub struct IoApicEoi {
 pub struct EmulatedIoApic {
     base: X86GuestPhysAddr,
     size: usize,
-    state: Mutex<IoApicState>,
+    state: RawSpinLock<IoApicState>,
 }
 
 impl EmulatedIoApic {
@@ -131,7 +132,7 @@ impl EmulatedIoApic {
         Self {
             base,
             size: size.unwrap_or(IOAPIC_SIZE),
-            state: Mutex::new(IoApicState::new()),
+            state: RawSpinLock::new(IoApicState::new()),
         }
     }
 
@@ -142,7 +143,7 @@ impl EmulatedIoApic {
 
     /// Return the guest interrupt vector programmed for a GSI.
     pub fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         let entry = *state.redirection_table.get(gsi)?;
         if entry & REDIRECTION_ENTRY_MASKED != 0 {
             return None;
@@ -163,7 +164,7 @@ impl EmulatedIoApic {
 
     /// Assert an IO APIC input line and return the interrupt to inject.
     pub fn assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         state.interrupt_for_entry(gsi)
     }
 
@@ -172,7 +173,7 @@ impl EmulatedIoApic {
     /// Level-triggered inputs remain asserted across guest EOI. Deasserting a
     /// line before EOI cancels any deferred redelivery.
     pub fn set_gsi_level(&self, gsi: usize, asserted: bool) -> Option<IoApicInterrupt> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let input = state.input_level.get_mut(gsi)?;
         let was_asserted = core::mem::replace(input, asserted);
         if !asserted {
@@ -191,7 +192,7 @@ impl EmulatedIoApic {
 
     /// Process an EOI broadcast from the local APIC.
     pub fn end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         state.end_of_interrupt(vector)
     }
 
@@ -284,7 +285,7 @@ impl EmulatedIoApic {
         }
 
         let offset = self.offset(addr);
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         match offset {
             IOREGSEL => Ok(state.selector as usize),
             IOWIN => Ok(Self::read_selected_register(&state)? as usize),
@@ -307,7 +308,7 @@ impl EmulatedIoApic {
         }
 
         let offset = self.offset(addr);
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         match offset {
             IOREGSEL => {
                 state.selector = val as u32;
@@ -371,7 +372,7 @@ mod tests {
     fn asserted_level_is_redelivered_after_eoi_until_lowered() {
         let ioapic = EmulatedIoApic::default();
         {
-            let mut state = ioapic.state.lock();
+            let mut state = ioapic.state.lock_irqsave();
             program_level_gsi(&mut state, 4, 0x34);
         }
 

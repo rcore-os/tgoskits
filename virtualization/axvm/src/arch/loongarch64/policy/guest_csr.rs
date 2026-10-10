@@ -73,8 +73,14 @@ static GUEST_TIMER_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct GuestTimerRegistration<H: LoongArchHostOps> {
     handle: Option<H::TimerHandle>,
+    /// Absolute host monotonic deadline of the current logical guest timer.
+    ///
+    /// Retained across `suspend` so `resume` re-arms the same instant; cleared
+    /// by `cancel`/`quiet_timer` and when the timer already fired.
+    deadline_ns: Option<u64>,
     next_generation: u64,
     active_generation: Arc<AtomicU64>,
+    run: Option<super::super::irq::LoongArchRunPort>,
 }
 
 impl<H: LoongArchHostOps> fmt::Debug for GuestTimerRegistration<H> {
@@ -82,11 +88,13 @@ impl<H: LoongArchHostOps> fmt::Debug for GuestTimerRegistration<H> {
         formatter
             .debug_struct("GuestTimerRegistration")
             .field("armed", &self.handle.is_some())
+            .field("deadline_ns", &self.deadline_ns)
             .field("next_generation", &self.next_generation)
             .field(
                 "active_generation",
                 &self.active_generation.load(Ordering::Relaxed),
             )
+            .field("run_bound", &self.run.is_some())
             .finish()
     }
 }
@@ -95,9 +103,17 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
     pub(crate) fn new() -> Self {
         Self {
             handle: None,
+            deadline_ns: None,
             next_generation: 0,
             active_generation: Arc::new(AtomicU64::new(0)),
+            run: None,
         }
+    }
+
+    /// Binds the exact run-bound publication capability for this execution
+    /// period. Task context, before the guest timer can be armed.
+    pub(crate) fn set_run_port(&mut self, port: super::super::irq::LoongArchRunPort) {
+        self.run = Some(port);
     }
 
     fn next_generation(&mut self) -> LoongArchVcpuResult<u64> {
@@ -108,26 +124,141 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
         Ok(self.next_generation)
     }
 
+    /// Permanently cancels the outstanding host registration and logical timer.
+    ///
+    /// Task context only, on the vCPU owner: the architecture cancel port waits
+    /// for callback execution and payload reclamation before returning. A failed
+    /// retirement keeps the stable handle so the owner can retry from the stop
+    /// path instead of leaking a live producer.
     pub(crate) fn cancel(&mut self) -> LoongArchVcpuResult {
-        let active = self.active_generation.swap(0, Ordering::AcqRel);
-        let Some(handle) = self.handle else {
+        self.retire(false)
+    }
+
+    /// Quiesces the host timer producer while preserving the logical deadline.
+    ///
+    /// Used by `suspend_vcpu`. Already-published pending interrupts live in the
+    /// run queue and are deliberately left untouched, and no guest register is
+    /// written: the owner task only stops the host producer.
+    pub(crate) fn suspend(&mut self) -> LoongArchVcpuResult {
+        self.retire(true)
+    }
+
+    /// Re-arms a suspended host timer at its preserved absolute deadline.
+    ///
+    /// A deadline that already elapsed is passed through unchanged: the host
+    /// treats an already-due monotonic deadline as immediately executable, so an
+    /// interrupt that came due while the vCPU was suspended is delivered on
+    /// resume instead of being lost. A timer that already fired is not
+    /// re-armed, because its pending interrupt is already published in the run
+    /// queue.
+    pub(crate) fn resume(
+        &mut self,
+        vm_id: LoongArchVmId,
+        vcpu_id: LoongArchVcpuId,
+    ) -> LoongArchVcpuResult {
+        let Some(deadline_ns) = self.deadline_ns else {
             return Ok(());
         };
-        // A callback that already claimed this generation owns its completion
-        // and has made the handle stale. Otherwise invalidate before
-        // cancelling so a claimed-but-not-run callback cannot publish an
-        // obsolete guest interrupt.
-        if active == 0 {
-            self.handle = None;
+        if self.handle.is_some() {
             return Ok(());
         }
+        self.arm(deadline_ns, vm_id, vcpu_id)
+    }
+
+    /// Invalidates the live generation and retires the host registration.
+    ///
+    /// The generation is invalidated first so a callback that has not claimed it
+    /// yet cannot publish an obsolete guest interrupt. A callback that did claim
+    /// it may still be executing, and a non-blocking host cancellation is not a
+    /// completion barrier, so the stable registration is always retired through
+    /// the architecture cancel port before its handle is released.
+    ///
+    /// `keep_deadline` keeps the logical deadline for a later `resume`; it is
+    /// dropped for good when the timer already fired (its interrupt is already
+    /// queued) or when the caller is cancelling permanently.
+    fn retire(&mut self, keep_deadline: bool) -> LoongArchVcpuResult {
+        let Some(handle) = self.handle else {
+            // Nothing is armed. A suspended timer keeps its deadline so it can
+            // still be resumed; a permanent retirement clears it so a later
+            // `resume` stays a no-op.
+            if !keep_deadline {
+                self.deadline_ns = None;
+            }
+            self.active_generation.store(0, Ordering::Release);
+            return Ok(());
+        };
+        // A live registration exists. Invalidate the generation before retiring
+        // it so a callback that has not claimed it yet cannot publish an
+        // obsolete guest interrupt. A generation that was already 0 means the
+        // callback claimed it and its interrupt is already queued.
+        let active = self.active_generation.swap(0, Ordering::AcqRel);
+        let already_fired = active == 0;
         if let Err(error) = H::cancel_timer(handle) {
-            // Cancellation did not consume the registration. Restore both
-            // pieces of logical ownership so callers and Drop can retry.
+            // The producer is not quiet yet, so the logical timer must stay
+            // coherent for the owner's retry: restore the generation and keep the
+            // stable handle and deadline untouched.
             self.active_generation.store(active, Ordering::Release);
             return Err(error);
         }
         self.handle = None;
+        if !keep_deadline || already_fired {
+            self.deadline_ns = None;
+        }
+        Ok(())
+    }
+
+    /// Registers the host callback for one absolute monotonic deadline.
+    fn arm(
+        &mut self,
+        deadline_ns: u64,
+        vm_id: LoongArchVmId,
+        vcpu_id: LoongArchVcpuId,
+    ) -> LoongArchVcpuResult {
+        let generation = self.next_generation()?;
+        self.active_generation.store(generation, Ordering::Release);
+        let active_generation = Arc::clone(&self.active_generation);
+        // Capture the exact run capability now, so a timer that outlives its run
+        // publishes into that closed run and is rejected instead of resolving a
+        // newer run.
+        let run = self.run.clone();
+        let registration = H::register_timer(
+            Duration::from_nanos(deadline_ns),
+            Box::new(move |_| {
+                if !claim_guest_timer_generation(&active_generation, generation) {
+                    return;
+                }
+                let Some(run) = run.as_ref() else {
+                    log::trace!(
+                        "LoongArch guest timer for VM[{vm_id}] VCpu[{vcpu_id}] fired without a \
+                         bound run"
+                    );
+                    return;
+                };
+                match super::super::irq::LoongArchRunPort::virtual_interrupt(INT_TIMER) {
+                    Ok(interrupt) => {
+                        if let Err(error) = run.publish_virtual_irq(vcpu_id, interrupt) {
+                            log::trace!(
+                                "LoongArch guest timer interrupt for VM[{vm_id}] VCpu[{vcpu_id}] \
+                                 was not delivered: {error:?}"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        log::trace!("LoongArch guest timer vector is invalid: {error:?}");
+                    }
+                }
+            }),
+        );
+        let handle = registration.inspect_err(|_| {
+            let _ = self.active_generation.compare_exchange(
+                generation,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        })?;
+        self.handle = Some(handle);
+        self.deadline_ns = Some(deadline_ns);
         Ok(())
     }
 }
@@ -202,19 +333,27 @@ pub(crate) fn inject_guest_tlb_refill(ctx: &mut LoongArchContextFrame, badv: usi
     ctx.sepc = ctx.gcsr_tlbrentry;
 }
 
-pub(crate) fn emulate_cpucfg(ctx: &mut LoongArchContextFrame, ins: usize) -> LoongArchVmExit {
-    let rd = extract_field(ins, 0, 5);
-    let rj = extract_field(ins, 5, 5);
-    let cpucfg_idx = ctx.x[rj];
-    let mut value = if cpucfg_idx > 20 {
-        0
-    } else {
-        host_cpucfg(cpucfg_idx)
-    };
-    if cpucfg_idx == 2 {
+/// Resolves the guest-visible `cpucfg` word for one index on the pinned CPU.
+///
+/// This is the only caller of the CPU-local CPUCFG read, and it runs from the
+/// pinned capture stage. The task-stage emulator consumes the resolved value
+/// through the exit snapshot instead of re-reading CPUCFG on a migrated CPU.
+pub(super) fn guest_cpucfg_value(index: usize) -> usize {
+    let mut value = if index > 20 { 0 } else { host_cpucfg(index) };
+    if index == 2 {
         value &= !CPUCFG2_CRYPTO;
     }
-    ctx.set_gpr(rd, value);
+    value
+}
+
+/// Retires a `cpucfg` read with the value resolved while the backend was pinned.
+pub(crate) fn emulate_cpucfg(
+    ctx: &mut LoongArchContextFrame,
+    ins: usize,
+    pinned_value: usize,
+) -> LoongArchVmExit {
+    let rd = extract_field(ins, 0, 5);
+    ctx.set_gpr(rd, pinned_value);
     advance_guest_pc(ctx);
     LoongArchVmExit::Nothing
 }
@@ -430,29 +569,7 @@ fn register_guest_timer<H: LoongArchHostOps>(
             deadline_ns
         );
     }
-    let generation = guest_timer.next_generation()?;
-    guest_timer
-        .active_generation
-        .store(generation, Ordering::Release);
-    let active_generation = Arc::clone(&guest_timer.active_generation);
-    let registration = H::register_timer(
-        Duration::from_nanos(deadline_ns),
-        Box::new(move |_| {
-            if claim_guest_timer_generation(&active_generation, generation) {
-                H::inject_interrupt(vm_id, vcpu_id, INT_TIMER);
-            }
-        }),
-    );
-    let handle = registration.inspect_err(|_| {
-        let _ = guest_timer.active_generation.compare_exchange(
-            generation,
-            0,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-    })?;
-    guest_timer.handle = Some(handle);
-    Ok(())
+    guest_timer.arm(deadline_ns, vm_id, vcpu_id)
 }
 
 fn write_guest_timer_csr<H: LoongArchHostOps>(
@@ -585,18 +702,27 @@ pub(crate) fn emulate_idle(ctx: &mut LoongArchContextFrame, ins: usize) -> Loong
 
 #[cfg(test)]
 mod tests {
-    use core::{sync::atomic::AtomicUsize, time::Duration};
+    use core::{
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+        time::Duration,
+    };
     use std::boxed::Box;
 
-    use super::super::{LoongArchHostPhysAddr, LoongArchHostVirtAddr, *};
+    use super::{
+        super::{LoongArchHostPhysAddr, LoongArchHostVirtAddr, types::LoongArchVcpuError},
+        GuestTimerRegistration, LoongArchContextFrame, LoongArchHostOps, LoongArchVcpuResult,
+        claim_guest_timer_generation, guest_tcfg_enable_mask, register_guest_timer,
+    };
 
-    static CANCELS: AtomicUsize = AtomicUsize::new(0);
-    static FAIL_ONCE_CANCELS: AtomicUsize = AtomicUsize::new(0);
-    static CANCEL_FAILURES: AtomicUsize = AtomicUsize::new(0);
+    const NOW_NS: u64 = 1_000;
+    const INIT_TICKS: u64 = 400;
+    const ARMED_DEADLINE_NS: u64 = NOW_NS + INIT_TICKS;
 
+    /// Deterministic host timer with no shared mutable state.
+    ///
+    /// Each recording host below is a distinct type, so parallel tests never
+    /// observe each other's timer state.
     struct TestHost;
-
-    struct FailOnceCancelHost;
 
     impl LoongArchHostOps for TestHost {
         type TimerHandle = u64;
@@ -606,7 +732,7 @@ mod tests {
         }
 
         fn current_time_nanos() -> u64 {
-            0
+            NOW_NS
         }
 
         fn ticks_to_nanos(ticks: u64) -> u64 {
@@ -621,12 +747,46 @@ mod tests {
         }
 
         fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
-            CANCELS.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
-
-        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
     }
+
+    /// Host whose cancellation always fails, so a test can tell whether the
+    /// cancel port was invoked at all.
+    struct FailingCancelHost;
+
+    impl LoongArchHostOps for FailingCancelHost {
+        type TimerHandle = u64;
+
+        fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
+            LoongArchHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            NOW_NS
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ticks
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> LoongArchVcpuResult<Self::TimerHandle> {
+            Ok(1)
+        }
+
+        fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
+            Err(LoongArchVcpuError::TimerUnavailable)
+        }
+    }
+
+    /// Host whose next `CANCEL_FAILURES` cancellations fail, then succeed.
+    struct FailOnceCancelHost;
+
+    static CANCEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static CANCEL_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
     impl LoongArchHostOps for FailOnceCancelHost {
         type TimerHandle = u64;
@@ -636,7 +796,7 @@ mod tests {
         }
 
         fn current_time_nanos() -> u64 {
-            0
+            NOW_NS
         }
 
         fn ticks_to_nanos(ticks: u64) -> u64 {
@@ -651,19 +811,65 @@ mod tests {
         }
 
         fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
-            FAIL_ONCE_CANCELS.fetch_add(1, Ordering::Relaxed);
+            CANCEL_CALLS.fetch_add(1, Ordering::Relaxed);
             if CANCEL_FAILURES
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |failures| {
                     failures.checked_sub(1)
                 })
                 .is_ok()
             {
-                return Err(super::super::types::LoongArchVcpuError::TimerUnavailable);
+                return Err(LoongArchVcpuError::TimerUnavailable);
             }
             Ok(())
         }
+    }
 
-        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
+    /// Host with a test-controlled monotonic clock, for the already-elapsed
+    /// deadline case.
+    struct AdvancingClockHost;
+
+    static HOST_NOW_NS: AtomicU64 = AtomicU64::new(0);
+
+    impl LoongArchHostOps for AdvancingClockHost {
+        type TimerHandle = u64;
+
+        fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
+            LoongArchHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            HOST_NOW_NS.load(Ordering::Relaxed)
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ticks
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> LoongArchVcpuResult<Self::TimerHandle> {
+            Ok(1)
+        }
+
+        fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
+            Ok(())
+        }
+    }
+
+    /// Encodes an enabled guest timer that expires after `init_ticks` ticks.
+    fn enabled_tcfg(init_ticks: u64) -> usize {
+        (((init_ticks >> 2) as usize) << 2) | guest_tcfg_enable_mask()
+    }
+
+    /// Arms the guest timer through the real CSR path, so the deadline math of
+    /// `register_guest_timer` is exercised as well.
+    fn arm_guest_timer<H: LoongArchHostOps>(
+        ctx: &mut LoongArchContextFrame,
+        timer: &mut GuestTimerRegistration<H>,
+    ) -> LoongArchVcpuResult {
+        ctx.gcsr_tcfg = enabled_tcfg(INIT_TICKS);
+        register_guest_timer::<H>(ctx, 1, 0, timer)
     }
 
     #[test]
@@ -691,40 +897,138 @@ mod tests {
     }
 
     #[test]
-    fn completed_generation_does_not_cancel_a_stale_host_handle() {
-        CANCELS.store(0, Ordering::Relaxed);
-        let mut timer = GuestTimerRegistration::<TestHost>::new();
+    fn claimed_generation_still_retires_the_host_registration() {
+        let mut timer = GuestTimerRegistration::<FailingCancelHost>::new();
         let generation = timer.next_generation().unwrap();
         timer.active_generation.store(generation, Ordering::Release);
         timer.handle = Some(1);
+        // The host callback claims the generation. A non-blocking host
+        // cancellation is not a barrier, so the callback may still be executing.
         assert!(claim_guest_timer_generation(
             &timer.active_generation,
             generation
         ));
 
-        timer.cancel().unwrap();
-        assert_eq!(CANCELS.load(Ordering::Relaxed), 0);
+        // The generation is already consumed, yet the stable registration must
+        // still be retired through the cancel port, so the always-failing host
+        // reports failure and the handle is retained for a retry.
+        assert_eq!(timer.cancel(), Err(LoongArchVcpuError::TimerUnavailable));
+        assert_eq!(timer.handle, Some(1));
     }
 
     #[test]
     fn failed_cancel_preserves_registration_for_retry() {
-        FAIL_ONCE_CANCELS.store(0, Ordering::Relaxed);
+        CANCEL_CALLS.store(0, Ordering::Relaxed);
         CANCEL_FAILURES.store(1, Ordering::Relaxed);
         let mut timer = GuestTimerRegistration::<FailOnceCancelHost>::new();
         let generation = timer.next_generation().unwrap();
         timer.active_generation.store(generation, Ordering::Release);
         timer.handle = Some(1);
 
-        assert_eq!(
-            timer.cancel(),
-            Err(super::super::types::LoongArchVcpuError::TimerUnavailable)
-        );
+        assert_eq!(timer.cancel(), Err(LoongArchVcpuError::TimerUnavailable));
+        // The registration is still live, so the owner must retry with the same
+        // stable handle instead of dropping it.
         assert_eq!(timer.handle, Some(1));
+        // The logical timer stays coherent until the retry: the generation is
+        // restored, so a callback that fires before then is still its own.
         assert_eq!(timer.active_generation.load(Ordering::Acquire), generation);
-        assert_eq!(FAIL_ONCE_CANCELS.load(Ordering::Relaxed), 1);
+        assert_eq!(CANCEL_CALLS.load(Ordering::Relaxed), 1);
 
         timer.cancel().unwrap();
         assert_eq!(timer.handle, None);
-        assert_eq!(FAIL_ONCE_CANCELS.load(Ordering::Relaxed), 2);
+        assert_eq!(CANCEL_CALLS.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn suspend_preserves_logical_deadline_and_resume_rearms_same_instant() {
+        let mut ctx = LoongArchContextFrame::default();
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        arm_guest_timer(&mut ctx, &mut timer).unwrap();
+
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+        assert!(timer.handle.is_some());
+
+        timer.suspend().unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+
+        // Re-arming restores the live handle at the identical absolute deadline.
+        timer.resume(1, 0).unwrap();
+        assert!(timer.handle.is_some());
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+    }
+
+    #[test]
+    fn repeated_suspend_keeps_the_preserved_deadline() {
+        let mut ctx = LoongArchContextFrame::default();
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        arm_guest_timer(&mut ctx, &mut timer).unwrap();
+
+        timer.suspend().unwrap();
+        timer.suspend().unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+
+        timer.resume(1, 0).unwrap();
+        assert!(timer.handle.is_some());
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+    }
+
+    #[test]
+    fn resume_rearms_an_already_elapsed_deadline_as_already_due() {
+        HOST_NOW_NS.store(NOW_NS, Ordering::Relaxed);
+        let mut ctx = LoongArchContextFrame::default();
+        let mut timer = GuestTimerRegistration::<AdvancingClockHost>::new();
+        arm_guest_timer(&mut ctx, &mut timer).unwrap();
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+        timer.suspend().unwrap();
+
+        // Time passes while the vCPU is suspended, past the preserved deadline.
+        HOST_NOW_NS.store(ARMED_DEADLINE_NS + 1, Ordering::Relaxed);
+        timer.resume(1, 0).unwrap();
+
+        // The same absolute deadline is re-armed; it is already in the past, so
+        // the host runs it immediately instead of losing the interrupt.
+        assert_eq!(timer.deadline_ns, Some(ARMED_DEADLINE_NS));
+        assert!(timer.deadline_ns.unwrap() <= HOST_NOW_NS.load(Ordering::Relaxed));
+        assert!(timer.handle.is_some());
+    }
+
+    #[test]
+    fn suspend_after_the_timer_fired_does_not_rearm_on_resume() {
+        let mut ctx = LoongArchContextFrame::default();
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        arm_guest_timer(&mut ctx, &mut timer).unwrap();
+
+        // Simulate the host callback firing and publishing its pending interrupt.
+        let generation = timer.active_generation.load(Ordering::Acquire);
+        assert!(claim_guest_timer_generation(
+            &timer.active_generation,
+            generation
+        ));
+
+        timer.suspend().unwrap();
+        // The interrupt is already queued, so there is nothing left to resume.
+        assert_eq!(timer.deadline_ns, None);
+        assert_eq!(timer.handle, None);
+
+        timer.resume(1, 0).unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(timer.deadline_ns, None);
+    }
+
+    #[test]
+    fn quiet_permanently_retires_the_logical_timer() {
+        let mut ctx = LoongArchContextFrame::default();
+        let mut timer = GuestTimerRegistration::<TestHost>::new();
+        arm_guest_timer(&mut ctx, &mut timer).unwrap();
+
+        timer.cancel().unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(timer.deadline_ns, None);
+
+        timer.resume(1, 0).unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(timer.deadline_ns, None);
     }
 }

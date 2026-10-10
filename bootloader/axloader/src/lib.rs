@@ -1,11 +1,13 @@
 #![cfg_attr(not(any(windows, unix)), no_std)]
 
+#[cfg(target_os = "uefi")]
+extern crate alloc;
+
 #[cfg(any(windows, unix))]
 pub mod elf_image;
 
-pub mod boot_offer;
 pub mod integrity;
-pub mod network_policy;
+pub mod ota;
 pub mod smbios;
 
 #[cfg(any(windows, unix))]

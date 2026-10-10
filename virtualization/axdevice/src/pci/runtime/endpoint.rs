@@ -494,4 +494,32 @@ pub trait PciFunction: Device {
     fn withdraw_irq(&self, _permit: &mut EndpointIrqTransitionPermit) -> DeviceResult {
         Ok(())
     }
+
+    /// Quiesces endpoint-owned worker and DMA activity for a VM suspend.
+    ///
+    /// The root binding invokes this from its `DeviceLifecycle::suspend` after
+    /// route admissions have been closed and drained. A successful return must
+    /// guarantee that the endpoint performs no further asynchronous work until
+    /// [`resume`](Self::resume) re-opens it. The default is suitable for
+    /// endpoints without deferrable work.
+    fn suspend(&self) -> DeviceResult {
+        Ok(())
+    }
+
+    /// Re-opens endpoint-owned worker and DMA activity after a suspend.
+    ///
+    /// The default is the inverse of the default [`suspend`](Self::suspend).
+    fn resume(&self) -> DeviceResult {
+        Ok(())
+    }
+
+    /// Stops and joins endpoint-owned worker activity during root teardown.
+    ///
+    /// The root binding invokes this from its stopped lifecycle after routes
+    /// and admissions have been drained. After a successful return no endpoint
+    /// worker continues and the endpoint accepts no further work. A failure is
+    /// reported rather than masked so the root teardown can surface it.
+    fn stop(&self) -> DeviceResult {
+        Ok(())
+    }
 }

@@ -92,17 +92,17 @@ impl UnmountPlan {
         Ok(())
     }
 
-    fn commit_locked(&self) -> Result<(), UnmountCommitError> {
+    fn commit_locked(&self) -> Result<Vec<Arc<dyn Any + Send + Sync>>, UnmountCommitError> {
         self.revalidate_locked()?;
         self.detach_targets_locked()
     }
 
-    fn commit_current_locked(&self) -> Result<(), UnmountCommitError> {
+    fn commit_current_locked(&self) -> Result<Vec<Arc<dyn Any + Send + Sync>>, UnmountCommitError> {
         self.revalidate_targets_locked()?;
         self.detach_targets_locked()
     }
 
-    fn detach_targets_locked(&self) -> Result<(), UnmountCommitError> {
+    fn detach_targets_locked(&self) -> Result<Vec<Arc<dyn Any + Send + Sync>>, UnmountCommitError> {
         for target in &self.targets {
             Mountpoint::detach_from_parent_locked(&target.mountpoint)
                 .map_err(|_| UnmountCommitError::TopologyChanged)?;
@@ -110,21 +110,24 @@ impl UnmountPlan {
                 target.mountpoint.active_uses.lock().normally_unmounted = true;
             }
         }
+        let mut retired = Vec::new();
         for target in &self.targets {
             target.mountpoint.leave_propagation_relations_locked();
-            let lifetime_guard = {
-                let mut guard = target.mountpoint.lifetime_guard.lock();
-                guard.take()
-            };
-            drop(lifetime_guard);
+            if let Some(guard) = target.mountpoint.lifetime_guard.lock().take() {
+                retired.push(guard);
+            }
         }
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        Ok(retired)
     }
 
     pub fn commit(self) -> Result<(), UnmountCommitError> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.commit_locked()
+        let retired = {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            self.commit_locked()?
+        };
+        drop(retired);
+        Ok(())
     }
 }
 
@@ -139,17 +142,21 @@ impl Mountpoint {
         if plan.kind != UnmountKind::Normal {
             return Err(VfsError::InvalidInput);
         }
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        plan.revalidate_targets_locked()?;
-        if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
-            let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
-            // A changed propagation set has not passed the caller's busy
-            // checks and cannot join (or leave) this admitted transaction.
-            if !current_plan.has_same_targets(&plan) {
-                return Err(UnmountCommitError::TopologyChanged.into());
+        let retired = {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            plan.revalidate_targets_locked()?;
+            if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
+                let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
+                // A changed propagation set has not passed the caller's busy
+                // checks and cannot join (or leave) this admitted transaction.
+                if !current_plan.has_same_targets(&plan) {
+                    return Err(UnmountCommitError::TopologyChanged.into());
+                }
             }
-        }
-        plan.detach_targets_locked().map_err(VfsError::from)
+            plan.detach_targets_locked().map_err(VfsError::from)?
+        };
+        drop(retired);
+        Ok(())
     }
 
     pub fn plan_unmount(self: &Arc<Self>, kind: UnmountKind) -> VfsResult<UnmountPlan> {
@@ -256,11 +263,13 @@ impl Mountpoint {
         // Keep detached targets alive until after topology exclusion ends:
         // their final filesystem lease can flush and destroy cached inodes.
         let plan;
+        let retired;
         {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
             plan = self.plan_unmount_locked(UnmountKind::Detach)?;
-            plan.commit_current_locked()?;
+            retired = plan.commit_current_locked()?;
         }
+        drop(retired);
         Ok(())
     }
 

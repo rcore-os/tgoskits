@@ -12,11 +12,12 @@ use super::{
             VmaDescriptor, allocate_mapping_id,
         },
     },
-    FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingOperation, PreparedPteOwner,
-    MappingMutationContext, ProviderPublication, PteMaterialization, RssKind, SharedFutexIdentity,
-    alloc_frame, divide_page, occupied_leaf_ranges, pages_in, rollback_live_mapped_pages,
+    FaultMaterialization, FaultPteSnapshot, MappingExecution, MappingMutationContext,
+    MappingOperation, PreparedPteOwner, ProviderPublication, PteMaterialization, RssKind,
+    SharedFutexIdentity, alloc_frame, divide_page, occupied_leaf_ranges, pages_in,
+    rollback_live_mapped_pages,
 };
-use crate::{StarryResult, sync::IrqMutex};
+use crate::{StarryResult, sync::RawSpinLock};
 
 mod page_index;
 use page_index::{SharedPageIndex, SharedPagePath};
@@ -67,7 +68,7 @@ pub struct SharedMemoryObject {
     /// slots start empty and are populated by faults; imported slots are
     /// present from construction. The object, rather than any VMA, is the
     /// serialization and ownership point shared by all address spaces.
-    pages: IrqMutex<SharedPageIndex>,
+    pages: RawSpinLock<SharedPageIndex>,
     page_count: usize,
     page_size: usize,
     mapping_id: MappingId,
@@ -86,7 +87,7 @@ impl SharedMemoryObject {
         }
         let num_pages = divide_page(size, page_size);
         Ok(Self {
-            pages: IrqMutex::new(SharedPageIndex::new(num_pages)),
+            pages: RawSpinLock::new(SharedPageIndex::new(num_pages)),
             page_count: num_pages,
             page_size,
             mapping_id: allocate_mapping_id(),
@@ -122,7 +123,7 @@ impl SharedMemoryObject {
             }
         }
         Ok(Self {
-            pages: IrqMutex::new(pages),
+            pages: RawSpinLock::new(pages),
             page_count,
             page_size,
             mapping_id: allocate_mapping_id(),
@@ -151,7 +152,7 @@ impl SharedMemoryObject {
         if index >= self.page_count {
             return None;
         }
-        self.pages.lock().get(index).cloned()
+        self.pages.lock_irqsave().get(index).cloned()
     }
 
     fn publish_fault_candidate(
@@ -164,9 +165,13 @@ impl SharedMemoryObject {
         }
         let mut candidate = candidate;
         loop {
-            let missing = self.pages.lock().missing_level(index);
+            let missing = self.pages.lock_irqsave().missing_level(index);
             let mut path = SharedPagePath::prepare(index, missing)?;
-            let outcome = { self.pages.lock().insert(index, candidate, &mut path) };
+            let outcome = {
+                self.pages
+                    .lock_irqsave()
+                    .insert(index, candidate, &mut path)
+            };
             // A racing producer may have installed part of this path. Any
             // unused nodes, and the losing frame below, leave IRQ exclusion
             // before reaching their allocator destructors.
@@ -221,8 +226,10 @@ fn shared_fault_defers_loser_drop_for_test() -> bool {
 
     impl Drop for LockProbe {
         fn drop(&mut self) {
-            self.dropped_after_unlock
-                .store(self.object.pages.try_lock().is_some(), Ordering::Release);
+            self.dropped_after_unlock.store(
+                self.object.pages.try_lock_irqsave().is_some(),
+                Ordering::Release,
+            );
         }
     }
 

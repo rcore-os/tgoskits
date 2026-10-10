@@ -7,7 +7,7 @@ use core::{
     task::Context,
 };
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 use dma_api::{ContiguousArray, DmaDirection};
 use futures::task::AtomicWaker;
 use mbarrier::mb;
@@ -44,7 +44,7 @@ struct Dwc2PeriodicScheduleInner {
     data: ContiguousArray<u8>,
     dma_addr: u32,
     enabled: AtomicBool,
-    gate: Mutex<()>,
+    gate: RawSpinLock<()>,
 }
 
 impl Dwc2PeriodicSchedule {
@@ -59,7 +59,7 @@ impl Dwc2PeriodicSchedule {
                 data,
                 dma_addr,
                 enabled: AtomicBool::new(false),
-                gate: Mutex::new(()),
+                gate: RawSpinLock::new(()),
             }),
         })
     }
@@ -179,7 +179,7 @@ impl Dwc2ChannelCompletionSlot {
 pub(crate) struct Dwc2ChannelCompletions {
     slots: Arc<Vec<Dwc2ChannelCompletionSlot>>,
     connected: Arc<AtomicBool>,
-    lifecycle_gate: Arc<Mutex<()>>,
+    lifecycle_gate: Arc<RawSpinLock<()>>,
 }
 
 impl Dwc2ChannelCompletions {
@@ -191,7 +191,7 @@ impl Dwc2ChannelCompletions {
                     .collect(),
             ),
             connected: Arc::new(AtomicBool::new(true)),
-            lifecycle_gate: Arc::new(Mutex::new(())),
+            lifecycle_gate: Arc::new(RawSpinLock::new(())),
         }
     }
 
@@ -280,7 +280,7 @@ pub(crate) struct HostChannelPool {
     pub(crate) channel_count: u8,
     pub(crate) completions: Dwc2ChannelCompletions,
     pub(crate) periodic: Arc<Dwc2PeriodicSchedule>,
-    channel_gates: Arc<Vec<Arc<Mutex<()>>>>,
+    channel_gates: Arc<Vec<Arc<RawSpinLock<()>>>>,
 }
 
 impl HostChannelPool {
@@ -290,7 +290,7 @@ impl HostChannelPool {
         periodic: Arc<Dwc2PeriodicSchedule>,
     ) -> Self {
         let channel_gates = (0..usize::from(channel_count.max(1)))
-            .map(|_| Arc::new(Mutex::new(())))
+            .map(|_| Arc::new(RawSpinLock::new(())))
             .collect();
 
         Self {
@@ -331,7 +331,7 @@ impl HostChannelPool {
 
 pub(crate) struct ChannelLease {
     pub(crate) channel: u8,
-    pub(crate) gate: Arc<Mutex<()>>,
+    pub(crate) gate: Arc<RawSpinLock<()>>,
     pub(crate) completions: Dwc2ChannelCompletions,
     pub(crate) hardware_active: AtomicBool,
     pub(crate) released: bool,

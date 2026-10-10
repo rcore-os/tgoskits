@@ -1,3 +1,5 @@
+# Select the test shell on existing board images without replacing their init files.
+cmdline = 'root=/dev/mmcblk0p3 rootfstype=ext4 rootwait rw console=ttyS0,1500000n8 earlycon=uart8250,mmio32,0x2ad40000 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 board_type = "Rock-4D"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",

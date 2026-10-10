@@ -148,20 +148,9 @@ sequenceDiagram
 
 ## 启动流程
 
-StarryOS 的启动分为两个阶段：启动包（`starryos`）仅负责准备命令行参数和环境变量，随后将控制权交给内核入口（`starry_kernel::entry::init`）。真正的宏内核初始化——挂载伪文件系统、创建 init 进程、加载 ELF、绑定 TTY——全部发生在 `kernel/src/entry.rs` 中。
+StarryOS 的启动分为两个阶段：`ax-runtime` 完成宿主归档解包和根选择；启动包（`starryos`）解析 `rdinit=`、`init=`、`--`、参数与环境变量，随后调用 `starry_kernel::entry::init_candidates()`。伪文件系统挂载、PID 1 创建及 ELF 加载发生在 `kernel/src/entry.rs` 中。内存根与磁盘根的选择见 [`host-initramfs.md`](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/host-initramfs.md)。
 
-`os/StarryOS/starryos/src/main.rs` 的职责很轻——它把命令行与环境准备好后，就把控制权交给 `starry_kernel::entry::init()`：
-
-```rust
-pub const CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];
-
-#[unsafe(no_mangle)]
-fn main() {
-    let args = CMDLINE.iter().copied().map(str::to_owned).collect::<Vec<_>>();
-    let envs = [];
-    starry_kernel::entry::init(&args, &envs);
-}
-```
+`os/StarryOS/starryos/src/main.rs` 不再编入 shell 启动脚本。默认候选路径按 Linux 顺序为 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`；早期 `/init` 或 `rdinit=` 可用时先尝试它。
 
 真正的宏内核初始化发生在 `kernel/src/entry.rs` 中：
 

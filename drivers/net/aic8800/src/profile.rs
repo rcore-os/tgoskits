@@ -1,6 +1,6 @@
 //! Validated chip-specific transport and register profiles.
 
-use crate::{common::ChipVariant, registers::RegisterMap};
+use crate::{common::ChipVariant, lmac::MeConfigProfile, registers::RegisterMap};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransportHeader {
@@ -42,6 +42,8 @@ pub(crate) struct ChipProfile {
     mailbox_flow: MailboxFlowPolicy,
     firmware: FirmwareProfile,
     functions: &'static [u8],
+    /// Capabilities the firmware ME configuration declares for this chip.
+    me_config: MeConfigProfile,
 }
 
 impl ChipProfile {
@@ -88,6 +90,10 @@ impl ChipProfile {
         self.mailbox_flow
     }
 
+    pub(crate) const fn me_config(&self) -> MeConfigProfile {
+        self.me_config
+    }
+
     pub(crate) const fn function(&self, index: usize) -> Option<u8> {
         if index < self.functions.len() {
             Some(self.functions[index])
@@ -110,6 +116,7 @@ static AIC8800DC_PROFILE: ChipProfile = ChipProfile {
     mailbox_flow: MailboxFlowPolicy::Direct,
     firmware: FirmwareProfile::Aic8800Dc,
     functions: DC_FUNCTIONS,
+    me_config: MeConfigProfile::Conservative,
 };
 
 static AIC8800D80_PROFILE: ChipProfile = ChipProfile {
@@ -122,6 +129,7 @@ static AIC8800D80_PROFILE: ChipProfile = ChipProfile {
     mailbox_flow: MailboxFlowPolicy::CreditGated,
     firmware: FirmwareProfile::Aic8800D80,
     functions: D80_FUNCTIONS,
+    me_config: MeConfigProfile::D80Ht40SgiVhtHe,
 };
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ GIC pending 位允许合并重复边沿。因此测试只保留一个未应答�
 
 ## 2. 构建环境
 
-`run.py` 从 ELF 读取入口与 `virq_mailbox` 地址，生成输出目录内的 VM/build 配置。guest 二进制通过 `image_location = "memory"` 在构建时嵌入 Axvisor，不需要把 guest 写入 rootfs，也不使用 `debugfs` 或 Linux 宿主机内的文件复制。当前 `xtask` 可能自动准备其默认受管 rootfs，但本场景不挂载磁盘、不从该镜像加载 guest。
+`run.py` 从 ELF 读取入口与 `virq_mailbox` 地址，生成输出目录内的 VM/build 配置。guest 二进制由 axbuild 放入宿主 initramfs 的 `/guest/builtin/images`，配置同步生成到 `/guest/builtin/configs`；内核不依赖测例镜像。本场景没有宿主根盘和 `root=`，直接从 initramfs 加载客户机，不切根。
 
 ### 2.1 工具准备
 

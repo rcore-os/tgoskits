@@ -422,7 +422,7 @@ fn replaces_host_serial_nodes_and_console_aliases() {
 }
 
 #[test]
-fn installs_pl011_with_host_irq_phandle_and_stdout_identity() {
+fn installs_pl011_with_guest_irq_parent_and_host_stdout_identity() {
     let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@fe600000");
     let root = tree.inner().root_id();
     let host_serial = tree.add_node(root, Node::new("serial@feb50000"));
@@ -464,75 +464,120 @@ fn installs_pl011_with_host_irq_phandle_and_stdout_identity() {
         .unwrap();
     assert_eq!(resolved.profile.model, GuestSerialModel::Pl011);
 
-    let mut tree = FdtTree::from_bytes(&host_dtb).unwrap();
-    install_mmio_serial(
-        &mut tree,
-        resolved.profile,
-        GuestSerialFdtInterrupt::GicSpi,
-        Some(fdt_identity(&resolved)),
-        true,
-    )
-    .unwrap();
-    let fdt = Fdt::from_bytes(&tree.finish()).unwrap();
-    let serial = fdt.get_by_path("/serial@feb50000").unwrap();
+    for guest_phandle in [Some(19), None] {
+        let mut tree = FdtTree::from_bytes(&host_dtb).unwrap();
+        // The explicit guest firmware uses a different controller identity.
+        let controller = tree
+            .inner()
+            .get_by_path_id("/interrupt-controller@fe600000")
+            .unwrap();
+        tree.set_property(controller, prop_u32("phandle", 0x2d1))
+            .unwrap();
+        tree.set_property(controller, prop_u32("linux,phandle", 0x2d1))
+            .unwrap();
+        let uart = tree.inner().get_by_path_id("/serial@feb50000").unwrap();
+        tree.inner_mut()
+            .node_mut(uart)
+            .unwrap()
+            .remove_property("phandle");
+        if let Some(phandle) = guest_phandle {
+            tree.set_property(uart, prop_u32("phandle", phandle))
+                .unwrap();
+            let chosen = tree.ensure_path("/chosen").unwrap();
+            tree.set_property(chosen, prop_u32("zephyr,console", phandle))
+                .unwrap();
+        }
+        install_mmio_serial(
+            &mut tree,
+            resolved.profile,
+            GuestSerialFdtInterrupt::GicSpi,
+            Some(fdt_identity(&resolved)),
+            true,
+        )
+        .unwrap();
+        let fdt = Fdt::from_bytes(&tree.finish()).unwrap();
+        let serial = fdt.get_by_path("/serial@feb50000").unwrap();
 
-    assert!(
-        serial
+        let phandle = serial
             .as_node()
-            .compatibles()
-            .any(|value| value == "arm,pl011")
-    );
-    assert!(serial.as_node().get_property("reg-shift").is_none());
-    assert!(serial.as_node().get_property("reg-io-width").is_none());
-    assert_eq!(serial.regs()[0].address, 0xfeb5_0000);
-    assert_eq!(serial.regs()[0].size, Some(0x1000));
-    assert_eq!(
-        serial.as_node().get_property("phandle").unwrap().get_u32(),
-        Some(0x2d1)
-    );
-    assert_eq!(
-        serial
-            .as_node()
-            .get_property("linux,phandle")
+            .get_property("phandle")
             .unwrap()
-            .get_u32(),
-        Some(0x2d1)
-    );
-    assert_eq!(
-        serial
-            .as_node()
-            .get_property("interrupt-parent")
-            .unwrap()
-            .get_u32(),
-        Some(7)
-    );
-    assert_eq!(
-        serial
-            .as_node()
-            .get_property("interrupts")
-            .unwrap()
-            .get_u32_iter()
-            .collect::<Vec<_>>(),
-        [0, 0x14d, 4]
-    );
-    assert_eq!(
-        fdt.get_by_path("/aliases")
-            .unwrap()
-            .as_node()
-            .get_property("serial2")
-            .unwrap()
-            .as_str(),
-        Some("/serial@feb50000")
-    );
-    assert_eq!(
-        fdt.get_by_path("/chosen")
-            .unwrap()
-            .as_node()
-            .get_property("stdout-path")
-            .unwrap()
-            .as_str(),
-        Some("serial2:1500000")
-    );
+            .get_u32()
+            .unwrap();
+        assert_ne!(phandle, 0x2d1, "UART must not reuse the guest GIC phandle");
+        if let Some(expected) = guest_phandle {
+            assert_eq!(phandle, expected);
+            assert_eq!(
+                fdt.get_by_path("/chosen")
+                    .unwrap()
+                    .as_node()
+                    .get_property("zephyr,console")
+                    .unwrap()
+                    .get_u32(),
+                Some(phandle)
+            );
+        }
+        assert_eq!(
+            fdt.get_by_phandle(phandle.into()).unwrap().id(),
+            serial.id()
+        );
+        assert!(
+            serial
+                .as_node()
+                .compatibles()
+                .any(|value| value == "arm,pl011")
+        );
+        assert!(serial.as_node().get_property("reg-shift").is_none());
+        assert!(serial.as_node().get_property("reg-io-width").is_none());
+        assert_eq!(serial.regs()[0].address, 0xfeb5_0000);
+        assert_eq!(serial.regs()[0].size, Some(0x1000));
+        assert_eq!(
+            serial
+                .as_node()
+                .get_property("linux,phandle")
+                .unwrap()
+                .get_u32(),
+            serial
+                .as_node()
+                .get_property("phandle")
+                .and_then(Property::get_u32)
+        );
+        assert_eq!(
+            serial
+                .as_node()
+                .get_property("interrupt-parent")
+                .unwrap()
+                .get_u32(),
+            Some(0x2d1)
+        );
+        assert_eq!(
+            serial
+                .as_node()
+                .get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            [0, 0x14d, 4]
+        );
+        assert_eq!(
+            fdt.get_by_path("/aliases")
+                .unwrap()
+                .as_node()
+                .get_property("serial2")
+                .unwrap()
+                .as_str(),
+            Some("/serial@feb50000")
+        );
+        assert_eq!(
+            fdt.get_by_path("/chosen")
+                .unwrap()
+                .as_node()
+                .get_property("stdout-path")
+                .unwrap()
+                .as_str(),
+            Some("serial2:1500000")
+        );
+    }
 }
 
 #[test]
@@ -751,6 +796,267 @@ fn resolves_earlycon_uart_when_stdout_path_is_missing() {
 }
 
 #[test]
+fn explicit_guest_uart_owns_virtual_irq_and_firmware_identity() {
+    let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@fe600000");
+    let root = tree.inner().root_id();
+    let controller = tree
+        .inner()
+        .get_by_path_id("/interrupt-controller@fe600000")
+        .unwrap();
+    tree.set_property(controller, prop_u32("#interrupt-cells", 4))
+        .unwrap();
+    let serial = tree.add_node(root, Node::new("serial@feb50000"));
+    tree.set_property(
+        serial,
+        prop_string_list("compatible", &["rockchip,rk3588-uart", "ns16550"]),
+    )
+    .unwrap();
+    tree.inner_mut()
+        .view_typed_mut(serial)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfeb5_0000, Some(0x100))]);
+    tree.set_property(serial, prop_u32("reg-shift", 2)).unwrap();
+    tree.set_property(serial, prop_u32_list("interrupts", &[0, 0x14d, 2, 0xa0]))
+        .unwrap();
+    tree.set_property(serial, prop_u32("phandle", 0x2d1))
+        .unwrap();
+    let chosen = tree.ensure_path("/chosen").unwrap();
+    tree.set_property(chosen, prop_u32("zephyr,console", 0x2d1))
+        .unwrap();
+    let bytes = tree.finish();
+    let fallback = GuestSerialProfile {
+        model: GuestSerialModel::Pl011,
+        transport: GuestSerialTransport::Mmio {
+            base: 0x0900_0000,
+            length: 0x1000,
+            register_shift: 0,
+            register_width: AccessWidth::Dword,
+        },
+        irq: 33,
+        clock_hz: 24_000_000,
+    };
+
+    let selected = select_guest_serial(
+        fallback,
+        Some(&bytes),
+        false,
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(selected.profile.irq, 0x14d + 32);
+    assert_eq!(selected.identity.node_path, "/serial@feb50000");
+    assert_eq!(selected.identity.node_phandle, Some(0x2d1));
+    assert_eq!(selected.identity.interrupt_parent, 7);
+    assert_eq!(selected.identity.interrupt_specifier, [0, 0x14d, 2, 0xa0]);
+
+    let mut final_tree = FdtTree::from_bytes(&bytes).unwrap();
+    let gic = crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 1)
+        .gic
+        .unwrap();
+    super::super::interrupt::install_machine_interrupt_controller(
+        &mut final_tree,
+        1,
+        Some(&gic),
+        None,
+    )
+    .unwrap();
+    install_mmio_serial(
+        &mut final_tree,
+        selected.profile,
+        GuestSerialFdtInterrupt::GicSpi,
+        Some(&selected.identity),
+        true,
+    )
+    .unwrap();
+    let final_fdt = Fdt::from_bytes(&final_tree.finish()).unwrap();
+    let final_controller = final_fdt
+        .get_by_path("/interrupt-controller@fe600000")
+        .unwrap();
+    assert_eq!(
+        final_controller
+            .as_node()
+            .get_property("#interrupt-cells")
+            .unwrap()
+            .get_u32(),
+        Some(4)
+    );
+    let final_serial = final_fdt.get_by_path("/serial@feb50000").unwrap();
+    assert_eq!(
+        final_serial
+            .as_node()
+            .get_property("interrupts")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [0, 0x14d, 4, 0xa0]
+    );
+    assert_eq!(
+        final_fdt
+            .get_by_path("/chosen")
+            .unwrap()
+            .as_node()
+            .get_property("zephyr,console")
+            .unwrap()
+            .get_u32(),
+        Some(0x2d1)
+    );
+
+    assert!(
+        select_guest_serial(
+            fallback,
+            Some(&bytes),
+            true,
+            GuestSerialFdtInterrupt::GicSpi,
+        )
+        .unwrap()
+        .is_none()
+    );
+
+    let mut linux_tree = FdtTree::from_bytes(&bytes).unwrap();
+    let linux_controller = linux_tree
+        .inner()
+        .get_by_path_id("/interrupt-controller@fe600000")
+        .unwrap();
+    linux_tree
+        .set_property(linux_controller, prop_u32("#interrupt-cells", 3))
+        .unwrap();
+    let linux_serial = linux_tree
+        .inner()
+        .get_by_path_id("/serial@feb50000")
+        .unwrap();
+    linux_tree
+        .set_property(linux_serial, prop_u32_list("interrupts", &[0, 0x14d, 2]))
+        .unwrap();
+    let linux_chosen = linux_tree.ensure_path("/chosen").unwrap();
+    linux_tree
+        .inner_mut()
+        .node_mut(linux_chosen)
+        .unwrap()
+        .remove_property("zephyr,console");
+    linux_tree
+        .set_property(linux_chosen, prop_string("stdout-path", "/serial@feb50000"))
+        .unwrap();
+    let linux_bytes = linux_tree.finish();
+    let linux_selected = select_guest_serial(
+        fallback,
+        Some(&linux_bytes),
+        false,
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(linux_selected.identity.interrupt_specifier, [0, 0x14d, 2]);
+
+    let mut linux_final_tree = FdtTree::from_bytes(&linux_bytes).unwrap();
+    install_mmio_serial(
+        &mut linux_final_tree,
+        linux_selected.profile,
+        GuestSerialFdtInterrupt::GicSpi,
+        Some(&linux_selected.identity),
+        true,
+    )
+    .unwrap();
+    let linux_final_bytes = linux_final_tree.finish();
+    let linux_final_fdt = Fdt::from_bytes(&linux_final_bytes).unwrap();
+    assert_eq!(
+        linux_final_fdt
+            .get_by_path("/serial@feb50000")
+            .unwrap()
+            .as_node()
+            .get_property("interrupts")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [0, 0x14d, 4]
+    );
+
+    let mut indirect_tree = FdtTree::from_bytes(&bytes).unwrap();
+    let root = indirect_tree.inner().root_id();
+    let secondary = indirect_tree.add_node(root, Node::new("interrupt-controller@f000000"));
+    indirect_tree
+        .set_property(secondary, prop_string("compatible", "arm,gic-v3"))
+        .unwrap();
+    indirect_tree
+        .set_property(secondary, Property::new("interrupt-controller", vec![]))
+        .unwrap();
+    indirect_tree
+        .set_property(secondary, prop_u32("#interrupt-cells", 4))
+        .unwrap();
+    indirect_tree
+        .set_property(secondary, prop_u32("phandle", 0x44))
+        .unwrap();
+    let indirect_serial = indirect_tree
+        .inner()
+        .get_by_path_id("/serial@feb50000")
+        .unwrap();
+    indirect_tree
+        .set_property(indirect_serial, prop_u32("interrupt-parent", 0x44))
+        .unwrap();
+    let indirect_bytes = indirect_tree.finish();
+    let error = select_guest_serial(
+        fallback,
+        Some(&indirect_bytes),
+        false,
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("not directly connected to the selected GIC")
+    );
+}
+
+#[test]
+fn explicit_guest_without_console_selection_keeps_machine_uart() {
+    let mut tree = tree_with_controller("arm,gic-v3", "interrupt-controller@8000000");
+    let controller = tree
+        .inner()
+        .get_by_path_id("/interrupt-controller@8000000")
+        .unwrap();
+    tree.set_property(controller, prop_u32("#interrupt-cells", 4))
+        .unwrap();
+    let bytes = tree.finish();
+    let fallback =
+        crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 1).serial;
+
+    assert!(
+        select_guest_serial(
+            fallback,
+            Some(&bytes),
+            false,
+            GuestSerialFdtInterrupt::GicSpi,
+        )
+        .unwrap()
+        .is_none()
+    );
+
+    let mut final_tree = FdtTree::from_bytes(&bytes).unwrap();
+    install_mmio_serial(
+        &mut final_tree,
+        fallback,
+        GuestSerialFdtInterrupt::GicSpi,
+        None,
+        true,
+    )
+    .unwrap();
+    let final_fdt = Fdt::from_bytes(&final_tree.finish()).unwrap();
+    assert_eq!(
+        final_fdt
+            .get_by_path("/pl011@9000000")
+            .unwrap()
+            .as_node()
+            .get_property("interrupts")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [0, 1, 4, 0]
+    );
+}
+
+#[test]
 fn rejects_truncated_host_serial_clock_specifier() {
     let mut tree = FdtTree::new();
     let root = tree.inner().root_id();
@@ -773,7 +1079,8 @@ fn rejects_truncated_host_serial_clock_specifier() {
     let bytes = tree.finish();
     let fdt = Fdt::from_bytes(&bytes).unwrap();
     let serial = fdt.get_by_path("/serial@fe660000").unwrap();
-    let error = serial_clock_references(&fdt, serial.as_node(), "/serial@fe660000").unwrap_err();
+    let error =
+        serial_clock_references(&fdt, serial.as_node(), "/serial@fe660000", "host").unwrap_err();
 
     assert!(matches!(error, crate::AxVmError::InvalidConfig { .. }));
     assert!(error.to_string().contains("truncated clock specifier"));

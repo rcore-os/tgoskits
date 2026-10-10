@@ -84,7 +84,7 @@ sequenceDiagram
 
 `os/arceos/modules/axinput/src/rdif.rs` 只转换事件与能力查询，不保存接收策略。Starry 的 `os/StarryOS/kernel/src/pseudofs/dev/event.rs` 按所有者与通知分层推进输入：IRQ 在 `EventDev::handle_irq()` 中确认设备事件并发布 `irq_notify`，任务侧 `run_irq_service()` 收到通知后调用 `drain_irq_events()`，把事件写入 `read_ahead`，再通过 `PollSet` 唤醒读者。Starry 不使用按读者兴趣选择接收的周期 polling，也不按 waiter 数量或 IRQ stale 时间决定是否排水；IRQ notification 主动驱动任务侧 drain，而 `read()` 与 readiness 路径仍会同步排水当前驱动队列。`PollSet` 只负责把已有可读状态通知给等待者，不应被解释为周期设备接收的开关。
 
-Linux 对照为固定提交 [`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`](https://github.com/torvalds/linux/commit/8cd9520d35a6c38db6567e97dd93b1f11f185dc6)（v7.1），它提供的是 owner/notification 职责依据：[`virtinput_recv_events()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/virtio/virtio_input.c#L36-L57) 只从 virtqueue 取事件并交给输入核心，回调无条件上报，不查询 evdev 的 waiter 或 client；[`evdev_pass_values()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/input/evdev.c#L244-L286) 先把事件写入该 client 的队列，只有完整报告（`EV_SYN`/`SYN_REPORT`）到达后才 `wake_up_interruptible_poll()` 唤醒等待集合。也就是说，等待集合是已有可读状态的通知目标，不是设备是否接收事件的开关。
+Linux 对照为固定提交 [`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`](https://github.com/torvalds/linux/commit/8cd9520d35a6c38db6567e97dd93b1f11f185dc6)（v7.1），它提供的是 owner/notification 职责依据：[`virtinput_recv_events()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/virtio/virtio_input.c) 只从 virtqueue 取事件并交给输入核心，回调无条件上报，不查询 evdev 的 waiter 或 client；[`evdev_pass_values()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/input/evdev.c) 先把事件写入该 client 的队列，只有完整报告（`EV_SYN`/`SYN_REPORT`）到达后才 `wake_up_interruptible_poll()` 唤醒等待集合。也就是说，等待集合是已有可读状态的通知目标，不是设备是否接收事件的开关。
 
 这里只对齐 owner 与 notification 的职责分层，不宣称 Starry 当前实现与 Linux 完全等价：Starry 走单一 `read_ahead`，`read`/readiness 会同步排水，报告边界与 per-open `evdev_client` queue 语义并不相同；per-client 队列、`SYN_DROPPED` 与 open 生命周期等差异属于后续工作，不在本次代码范围内。
 
@@ -98,7 +98,7 @@ USB 主机运行时把拓扑、请求和硬件事件分开。`drivers/usb/usb-ho
 
 `xhci/ring.rs` 的 `SendRing::enqueue_transfer_td()` 先让首 TRB 不可见，填写其余描述符并清理完成槽，屏障后发布首 TRB 的 cycle。一个请求可以使用多条 TRB，future 不等于每条 TRB 创建一个任务。
 
-`queue.rs` 的 `Finished` 按总线地址预登记槽；`TWaiter::poll()` 先检查结果、注册 waker、再检查结果，覆盖登记期间到达的完成。原子槽的存在不意味着整个路径无锁，`EventHandlerState` 使用 `SpinLock`。
+`queue.rs` 的 `Finished` 按总线地址预登记槽；`TWaiter::poll()` 先检查结果、注册 waker、再检查结果，覆盖登记期间到达的完成。原子槽的存在不意味着整个路径无锁，`EventHandlerState` 使用 `RawSpinLock`。
 
 ### 4.2 完成与拓扑推进
 
@@ -191,7 +191,7 @@ sequenceDiagram
 
 ### 7.1 工作状态
 
-网络 `NetworkQueueRuntime::stats()` 保存 owner、IRQ 和 poll CPU，以及 remote wake、missed、budget、deferred、rearm 等计数。回归位置包括 `queue_runtime/tests.rs`、`executor/queue_tests.rs` 及 `rd-net` 测试。块运行时有自己的 metrics、completion 和 waiter 状态，USB 使用命令码、完成地址及端点状态。
+网络 `NetworkQueueRuntime::queue_snapshots()` 按 poll group 返回设备发现序索引、group ID、接口与 owner CPU，以及 IRQ、poll CPU、remote wake、missed、budget、deferred、rearm、RX 丢弃等计数。回归位置包括 `queue_runtime/tests.rs`、`executor/queue_tests.rs` 及 `rd-net` 测试。块运行时有自己的 metrics、completion 和 waiter 状态，USB 使用命令码、完成地址及端点状态。
 
 这些源码位置说明观测对象与测试覆盖，不证明当前目标运行已经通过。停止与隔离条件由[生命周期](lifecycle.md)定义。
 

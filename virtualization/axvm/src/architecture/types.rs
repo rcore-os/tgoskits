@@ -1,40 +1,6 @@
-//! Architecture-neutral vCPU contexts and normalized runtime actions.
+//! Owned architecture-neutral device exit records.
 
 use axvm_types::{AccessWidth, GuestPhysAddr};
-
-use crate::StopReason;
-
-/// Scheduler effects selected after an architecture-local vCPU exit.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct VcpuRunAction {
-    pub(crate) waits_for_event: bool,
-    pub(crate) stop_reason: Option<StopReason>,
-    pub(crate) resets_vm: bool,
-    pub(crate) exits_vcpu: bool,
-}
-
-/// Outcome of one architecture-neutral vCPU run attempt.
-pub(crate) enum VcpuRunOutcome {
-    /// Hardware guest entry completed and produced a scheduler action.
-    Entered(VcpuRunAction),
-    /// A concurrent request canceled entry after architecture state was
-    /// loaded. The outer task loop must observe device and lifecycle state
-    /// before trying again.
-    EntryCanceled,
-}
-
-/// Result of interpreting a durable guest exit after unloading the CPU backend.
-#[derive(Debug)]
-pub(crate) enum VcpuExitAction {
-    /// A request canceled hardware entry after architecture state was loaded.
-    EntryCanceled,
-    /// The exit was handled completely; re-enter the guest in the current run slice.
-    Continue,
-    /// The run slice is complete and can return this scheduler action after unbind.
-    Complete(VcpuRunAction),
-    /// Finish a potentially blocking hypercall after unbinding the vCPU.
-    DeferHypercall(crate::runtime::hvc::DeferredHyperCall),
-}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MmioReadExit {

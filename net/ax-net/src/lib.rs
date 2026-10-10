@@ -26,6 +26,7 @@
 //!
 //! - `service`: owns the smoltcp interface and control plane.
 //! - `poll_runtime`: owns generation-based protocol scheduling.
+//! - `observe`: owns the narrow observation ports the events are reported on.
 //! - `queue_runtime`: owns IRQ affinity domains and queue executors.
 //! - `router`: aggregates protocol ports, route lookup, and loopback.
 //! - `socket`, `tcp`, `udp`, `raw`: POSIX-like IP socket surface.
@@ -51,6 +52,7 @@ mod error;
 mod general;
 mod ip_tos;
 mod listen_table;
+mod observe;
 /// Socket option types and the [`Configurable`](options::Configurable) trait.
 pub mod options;
 mod orphan;
@@ -70,6 +72,8 @@ pub mod tcp;
 pub mod udp;
 /// Unix domain socket implementation.
 pub mod unix;
+/// Physical NIC layer-2 uplink bridge for hypervisor guest NICs.
+pub mod uplink;
 /// Vsock socket implementation.
 #[cfg(feature = "vsock")]
 pub mod vsock;
@@ -91,7 +95,9 @@ use axpoll_set::PollSet;
 pub use error::{NetError, NetResult};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
-pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk};
+pub use rd_net::{
+    NetPollGroupId, NetRxMode, WifiLinkPolicy, WifiOperation, WifiTransaction, Wpa2Pmk,
+};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -117,10 +123,22 @@ pub use self::{
         ArpEntry, EthernetFramePort, EthernetFramePortList, NetDeviceError, NetDeviceResult,
         TunShared,
     },
+    observe::{
+        ProtoYieldObserver, ProtoYieldReason, ProtoYieldReport, install_proto_yield_observer,
+        publish_proto_yield_gate,
+    },
     queue_runtime::{
-        NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime, NetworkRuntimeBuilder,
-        NetworkRuntimeError, PinnedNetIrqAction, PinnedNetIrqError, PinnedNetIrqOutcome,
-        PinnedNetIrqRegistrar, PinnedNetIrqRegistration, ResolvedNetIrqSource, TxQueueDiscipline,
+        NetQueueIdentity, NetQueueSnapshot, NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime,
+        NetworkRuntimeBuilder, NetworkRuntimeError, PinnedNetIrqAction, PinnedNetIrqError,
+        PinnedNetIrqOutcome, PinnedNetIrqRegistrar, PinnedNetIrqRegistration,
+        QueueBackpressureObserver, QueueBackpressureReason, QueueBackpressureReport,
+        QueueBackpressureStage, QueuePollObserver, QueuePollOutcome, QueuePollReport,
+        QueueRearmObserver, QueueRearmOutcome, QueueRearmReport, ResolvedNetIrqSource,
+        RxPublishObserver, RxPublishReport, TxQueueDiscipline, TxSubmitObserver, TxSubmitReport,
+        install_queue_backpressure_observer, install_queue_poll_observer,
+        install_queue_rearm_observer, install_rx_publish_observer, install_tx_submit_observer,
+        publish_queue_backpressure_gate, publish_queue_poll_gate, publish_queue_rearm_gate,
+        publish_rx_publish_gate, publish_tx_submit_gate,
     },
     readiness::poll_socket_io,
     router::NetDevStats,
@@ -381,7 +399,7 @@ mod wifi_entropy_tests {
 ///
 /// Panics if called more than once, or if the configuration contains invalid values.
 pub fn init_network(
-    queue_runtime: NetworkQueueRuntime,
+    mut queue_runtime: NetworkQueueRuntime,
     mut frame_ports: EthernetFramePortList,
     config: NetworkConfig,
 ) {
@@ -393,7 +411,7 @@ pub fn init_network(
 
     validate_config(&config);
 
-    let routes: SharedRouteTable = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+    let routes: SharedRouteTable = Arc::new(ax_sync::RawSpinRwLock::new(RouteTable::new()));
     let mut router = Router::new(routes.clone());
     let mut interfaces = Vec::new();
     let mut dns = Vec::new();
@@ -409,6 +427,7 @@ pub fn init_network(
     let mut eth_ips = Vec::new();
     let mut wifi_dhcp_servers = Vec::new();
     let mut wifi_interfaces = Vec::new();
+    let mut published_interfaces = Vec::with_capacity(frame_ports.len());
 
     for (order, dev) in frame_ports.drain(..).enumerate() {
         info!("  use NIC {}: {:?}", order, dev.device_name());
@@ -428,6 +447,7 @@ pub fn init_network(
             panic!("interface name conflict: {}", name);
         }
         let id = InterfaceId::new((order as u32) + 2);
+        published_interfaces.push(id);
         let metric = cfg.map_or(100, |cfg| cfg.metric);
         let wifi_policy = queue_runtime.initial_wifi_policy(order);
         let static_ip = cfg.and_then(|cfg| cfg.static_ip.as_ref());
@@ -443,7 +463,10 @@ pub fn init_network(
             (!cfg.gateway.is_unspecified()).then(|| Ipv4Address::from(cfg.gateway.octets()))
         });
         let dhcp_enabled = cfg.map_or(wifi_policy.is_none(), |cfg| cfg.dhcp);
-        let eth_dev = router.add_device(id, Box::new(EthernetDevice::new(name.clone(), dev, ipv4)));
+        let eth_dev = router.add_device(
+            id,
+            Box::new(EthernetDevice::new(id, name.clone(), dev, ipv4)),
+        );
 
         if let Some(handle) = queue_runtime.wifi_handle(order) {
             info!(
@@ -544,6 +567,7 @@ pub fn init_network(
     }
     let dhcp_enabled = service.dhcp_enabled();
     let protocol_owner_cpu = queue_runtime.protocol_owner_cpu();
+    queue_runtime.bind_published_interfaces(published_interfaces);
     NET_CONTROL.call_once(|| control);
     SERVICE.call_once(|| Mutex::new(service));
     WIFI_INTERFACES.call_once(|| wifi_interfaces);
@@ -706,7 +730,14 @@ pub fn init_vsock(
 fn poll_protocol_until_idle(budget: &mut ProtocolPollBudget) {
     loop {
         let more = get_service().poll(&mut SOCKET_SET.inner.lock());
-        if budget.consume(ax_hal::time::monotonic_time_nanos()) {
+        if let Some(reason) = budget.consume(ax_hal::time::monotonic_time_nanos()) {
+            // The protocol executor runs on the protocol owner CPU, and the
+            // executor thread is pinned there, so the current CPU is its owner.
+            observe::report_proto_yield(observe::ProtoYieldReport {
+                owner_cpu: ax_hal::percpu::this_cpu_id(),
+                reason,
+                work_pending: more,
+            });
             // Device owners share this CPU with the protocol executor. Deliver
             // readiness and release CPU ownership with all network locks dropped.
             drain_deferred_poll_wakes();
@@ -783,6 +814,22 @@ pub fn net_dev_stats() -> Vec<NetDevStats> {
     get_service().net_dev_stats()
 }
 
+/// Returns one snapshot per surviving poll group.
+///
+/// Each snapshot carries the group's immutable identity, the interface its
+/// device is published as, and the group's counters; the counters are read
+/// field by field, so they are independent samples rather than one instant.
+/// Identify a group by its identity rather than by position in the list.
+///
+/// The list is empty while the network runtime is not published (no network
+/// configuration, or initialization that has not finished), so an empty list
+/// means "nothing to report", not "no queues exist".
+pub fn net_queue_snapshots() -> Vec<NetQueueSnapshot> {
+    QUEUE_RUNTIME
+        .get()
+        .map_or_else(Vec::new, |runtime| runtime.lock().queue_snapshots())
+}
+
 /// Returns a snapshot of all configured network interfaces.
 pub fn interfaces() -> Vec<InterfaceInfo> {
     get_control().interfaces()
@@ -796,6 +843,21 @@ pub fn interface_by_name(name: &str) -> Option<InterfaceInfo> {
 /// Looks up an interface snapshot by stable interface id.
 pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo> {
     get_control().interface_by_id(id)
+}
+
+/// Applies a receive filtering mode to the interface `id`.
+///
+/// The request is routed to the published device's own control endpoint, so
+/// the capability and register window belong to that exact instance instead
+/// of a name- or address-based guess. A driver without the requested mode
+/// reports [`NetError::OperationNotSupported`], allowing a caller to try a
+/// different interface.
+pub fn set_interface_rx_mode(id: InterfaceId, mode: NetRxMode) -> NetResult {
+    let runtime = QUEUE_RUNTIME.get().ok_or(NetError::NoSuchDevice)?;
+    runtime
+        .lock()
+        .set_interface_rx_mode(id, mode)
+        .map_err(map_driver_net_error)
 }
 
 /// Returns the IPv4 configuration for an interface by name.

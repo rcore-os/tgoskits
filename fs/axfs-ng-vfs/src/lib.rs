@@ -91,5 +91,4 @@ pub enum VfsError {
 
 pub type VfsResult<T = ()> = Result<T, VfsError>;
 
-pub type Mutex<T> = ax_sync::SpinLock<T>;
-pub type MutexGuard<'a, T> = ax_sync::SpinLockGuard<'a, T>;
+pub use ax_sync::{RawSpinLock, RawSpinLockGuard};

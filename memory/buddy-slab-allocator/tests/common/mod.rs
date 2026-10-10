@@ -13,8 +13,7 @@ use std::{
 
 use ax_sync::interface::{AcquireResult, ContextState, LockMetadata};
 use buddy_slab_allocator::{
-    __reset_global_allocator_singleton_for_tests, GlobalAllocator, PerCpuSlab, SlabPoolTrait,
-    interface::BuddySlabIf,
+    AllocError, GlobalAllocator, PerCpuSlab, SlabPoolTrait, interface::BuddySlabIf,
 };
 use rand::{SeedableRng, rngs::StdRng};
 
@@ -78,6 +77,7 @@ fn lowmem_map(vaddr: usize) -> usize {
     vaddr & 0x0FFF_FFFF
 }
 
+/// Declare before test allocators so their Drop runs while the lock is held.
 pub struct GlobalTestContext {
     _guard: MutexGuard<'static, ()>,
 }
@@ -93,7 +93,18 @@ fn global_test_lock() -> &'static Mutex<()> {
 
 impl Drop for GlobalTestContext {
     fn drop(&mut self) {
-        __reset_global_allocator_singleton_for_tests();
+        if !std::thread::panicking() {
+            let probe = GlobalAllocator::<TEST_PAGE_SIZE>::new();
+            // SAFETY: the empty region is a valid writable slice; init must
+            // reject it without retaining memory. AlreadyInitialized means a
+            // test allocator is still live when its serialization lock exits.
+            let result = unsafe { probe.init(&mut []) };
+            assert_eq!(
+                result,
+                Err(AllocError::InvalidParam),
+                "test allocator must drop before releasing the global test lock",
+            );
+        }
     }
 }
 

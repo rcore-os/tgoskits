@@ -107,7 +107,7 @@ bitflags! ConsoleIrqEvent: u32 {
 }
 ```
 
-并提供全局 `CONSOLE_LOCK: SpinLock<()>`；写日志时通过 `lock_irqsave()` 获取。该模块还提供 `write_text_bytes`、`__simple_print`，以及导出宏 `console_print!` / `console_println!` 供内核早期日志使用。
+并提供全局 `CONSOLE_LOCK: RawSpinLock<()>`；写日志时通过 `lock_irqsave()` 获取。该模块还提供 `write_text_bytes`、`__simple_print`，以及导出宏 `console_print!` / `console_println!` 供内核早期日志使用。
 
 ## `def_plat_interface` 宏展开
 

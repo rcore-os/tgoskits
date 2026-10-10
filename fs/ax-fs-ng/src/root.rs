@@ -4,7 +4,9 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
+use core::sync::atomic::{AtomicU8, Ordering};
 
+#[cfg(axtest)]
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{Location, NodePermission, NodeType, VfsError};
 
@@ -14,7 +16,7 @@ use crate::{
         FsBlockDevice, boxed_native_handle_block_device,
         runtime::{BlockRuntime, RdifBlockDevice, RdifBlockGroup},
     },
-    detect_filesystem, fs, init_detected_filesystem, init_filesystem,
+    detect_filesystem, fs,
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
         PartitionTableKind as VolumeTableKind, scan_volumes,
@@ -22,7 +24,33 @@ use crate::{
 };
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
-static ROOT_BLOCK_IDENTITY: OnceLock<RootBlockIdentity> = OnceLock::new();
+static ROOT_BLOCK_IDENTITY: crate::os::sync::RawSpinLock<Option<RootBlockIdentity>> =
+    crate::os::sync::RawSpinLock::new(None);
+static ROOT_KIND: AtomicU8 = AtomicU8::new(0);
+#[cfg(axtest)]
+static ROOT_BLOCK_HANDLE: OnceLock<usize> = OnceLock::new();
+#[cfg(axtest)]
+static ROOT_BLOCK_REGION: OnceLock<BlockRegion> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_SCRATCH_REGION: OnceLock<Option<Result<BlockRegion, String>>> = OnceLock::new();
+#[cfg(axtest)]
+static AXTEST_DISK_PROTECTED_REGIONS: OnceLock<Vec<(usize, Option<Vec<BlockRegion>>)>> =
+    OnceLock::new();
+
+/// Root selected before publishing the first task's filesystem context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootKind {
+    Memory,
+    Block,
+}
+
+pub fn root_kind() -> Option<RootKind> {
+    match ROOT_KIND.load(Ordering::Acquire) {
+        1 => Some(RootKind::Memory),
+        2 => Some(RootKind::Block),
+        _ => None,
+    }
+}
 
 /// Linux-facing identity of the selected physical root block device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,10 +68,7 @@ const DEFAULT_ROOT_BLOCK_IDENTITY: RootBlockIdentity = RootBlockIdentity {
 
 /// Returns the identity selected while mounting the root filesystem.
 pub fn root_block_identity() -> RootBlockIdentity {
-    ROOT_BLOCK_IDENTITY
-        .get()
-        .copied()
-        .unwrap_or(DEFAULT_ROOT_BLOCK_IDENTITY)
+    (*ROOT_BLOCK_IDENTITY.lock_irqsave()).unwrap_or(DEFAULT_ROOT_BLOCK_IDENTITY)
 }
 
 /// Root filesystem selector parsed from boot arguments.
@@ -62,7 +87,7 @@ impl RootSpec {
             return Self::default();
         };
 
-        Self::parse(root)
+        Self::parse(&root)
     }
 
     pub fn parse(root: &str) -> Self {
@@ -185,56 +210,357 @@ impl RootCandidate {
     }
 }
 
-pub fn init_root(
+/// A disk root and its additional partition mounts prepared without changing the active root.
+/// Dropping it leaves the current root and its namespace untouched.
+pub struct PreparedRoot {
+    filesystem: axfs_ng_vfs::Filesystem,
+    context: crate::highlevel::FsContext,
+    source: String,
+    selected: DiscoveredDisk,
+    #[cfg(axtest)]
+    selected_partition: Option<usize>,
+}
+
+impl PreparedRoot {
+    /// Provides file access for installing boot resources before publication.
+    pub fn context(&self) -> &crate::highlevel::FsContext {
+        &self.context
+    }
+
+    /// Publishes this filesystem and detaches the previous root.
+    /// Existing open locations continue to own the detached filesystem.
+    pub fn commit(self) -> axfs_ng_vfs::VfsResult<()> {
+        let context = crate::highlevel::ROOT_FS_CONTEXT
+            .get()
+            .ok_or(VfsError::InvalidInput)?
+            .clone();
+        let old_root;
+        let new_root;
+        #[cfg(feature = "vfs")]
+        let namespace;
+        {
+            let mut context_guard = context.lock();
+            old_root = context_guard.root_dir().clone();
+            let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
+            // Preserve the complete tree that resource installation validated,
+            // including mounts on other partitions and their open filesystem owners.
+            let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
+            new_root = mount.root_location();
+            #[cfg(feature = "vfs")]
+            {
+                namespace = context_guard.mount_namespace().clone();
+            }
+            if let Err(error) = context_guard.pivot_root(new_root.clone(), new_root.clone()) {
+                new_root.detach_mount()?;
+                return Err(error);
+            }
+        }
+        crate::highlevel::FsContext::propagate_pivot_root(
+            #[cfg(feature = "vfs")]
+            &namespace,
+            &old_root,
+            &new_root,
+        );
+        old_root.detach_mount()?;
+        crate::register_mounted_filesystem(self.filesystem.clone());
+        *ROOT_BLOCK_IDENTITY.lock_irqsave() = Some(block_identity(
+            self.selected.handle.device_info(),
+            self.selected.disk_index,
+        ));
+        ROOT_KIND.store(2, Ordering::Release);
+        #[cfg(axtest)]
+        {
+            ROOT_BLOCK_HANDLE.call_once(|| Arc::as_ptr(&self.selected.handle) as usize);
+            ROOT_BLOCK_REGION.call_once(|| {
+                self.selected_partition
+                    .and_then(|index| {
+                        self.selected
+                            .partitions
+                            .iter()
+                            .find(|partition| partition.info.index == index)
+                    })
+                    .map_or_else(
+                        || {
+                            BlockRegion::from_num_blocks(
+                                self.selected.handle.device_info().num_blocks,
+                            )
+                        },
+                        |partition| partition.info.region,
+                    )
+            });
+        }
+        info!("host root switched to {}; old root detached", self.source);
+        Ok(())
+    }
+}
+
+/// Prepares a disk root using already registered block devices.
+pub fn prepare_block_root(bootargs: Option<&str>) -> axfs_ng_vfs::VfsResult<PreparedRoot> {
+    let devices = BlockRuntime::installed_devices().ok_or(VfsError::NoSuchDevice)?;
+    prepare_root(devices.iter().cloned(), bootargs)
+}
+
+/// A physical disk or partition that can be exposed by an OS device filesystem.
+pub struct BlockDeviceNode {
+    pub path: String,
+    pub device: axfs_ng_vfs::DeviceId,
+    pub handle: Arc<BlockDeviceHandle>,
+    pub region: BlockRegion,
+}
+
+/// Discovers device nodes using the same naming and partition scan as root selection.
+pub fn block_device_nodes() -> axfs_ng_vfs::VfsResult<Vec<BlockDeviceNode>> {
+    let Some(devices) = BlockRuntime::installed_devices() else {
+        return Ok(Vec::new());
+    };
+    let disks =
+        collect_disks(devices.iter().cloned()).map_err(crate::error::block_error_to_vfs_error)?;
+    let mut nodes = Vec::new();
+    for disk in disks {
+        let identity = block_identity(disk.handle.device_info(), disk.disk_index);
+        nodes.push(BlockDeviceNode {
+            path: default_root_source(disk.handle.device_info(), disk.disk_index, None),
+            device: axfs_ng_vfs::DeviceId::new(identity.major, identity.minor),
+            region: BlockRegion::from_num_blocks(disk.handle.device_info().num_blocks),
+            handle: disk.handle.clone(),
+        });
+        for partition in disk.partitions {
+            nodes.push(BlockDeviceNode {
+                path: default_root_source(
+                    disk.handle.device_info(),
+                    disk.disk_index,
+                    Some(partition.info.index),
+                ),
+                device: axfs_ng_vfs::DeviceId::new(
+                    identity.major,
+                    identity.minor + partition.info.index as u32 + 1,
+                ),
+                handle: disk.handle.clone(),
+                region: partition.info.region,
+            });
+        }
+    }
+    Ok(nodes)
+}
+
+fn prepare_root(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
     bootargs: Option<&str>,
-) {
+) -> axfs_ng_vfs::VfsResult<PreparedRoot> {
     let root_spec = RootSpec::parse_bootargs(bootargs);
-    let mut disks = collect_disks(block_devs)
-        .unwrap_or_else(|error| panic!("failed to initialize block cache: {error:?}"));
+    if bootargs.and_then(root_value).is_some() && !root_spec.has_explicit_selector() {
+        return Err(VfsError::InvalidInput);
+    }
+    let mut disks = collect_disks(block_devs).map_err(crate::error::block_error_to_vfs_error)?;
     let candidates = collect_root_candidates(&disks);
-    let (selected_disk_index, selected_partition) = select_root_candidate(&candidates, &root_spec)
-        .unwrap_or_else(|| panic!("failed to determine root device from available block devices"));
+    let (selected_disk_index, selected_partition) =
+        select_root_candidate(&candidates, &root_spec).ok_or(VfsError::NoSuchDevice)?;
     let selected_disk_pos = disks
         .iter()
         .position(|disk| disk.disk_index == selected_disk_index)
-        .unwrap_or_else(|| panic!("selected root disk disappeared during initialization"));
+        .ok_or(VfsError::NoSuchDevice)?;
     let selected = disks.swap_remove(selected_disk_pos);
-    ROOT_BLOCK_IDENTITY
-        .call_once(|| block_identity(selected.handle.device_info(), selected.disk_index));
-    let selected_partition_info = selected_partition.and_then(|part_index| {
-        selected
-            .partitions
-            .iter()
-            .find(|partition| partition.info.index == part_index)
+    let partition = selected_partition
+        .and_then(|index| selected.partitions.iter().find(|p| p.info.index == index));
+    info!(
+        "preparing disk root: {}",
+        describe_selection(selected.disk_index, partition)
+    );
+    let source = bootargs.and_then(root_value).unwrap_or_else(|| {
+        default_root_source(
+            selected.handle.device_info(),
+            selected.disk_index,
+            selected_partition,
+        )
     });
-    let description = describe_selection(selected.disk_index, selected_partition_info);
-    let default_source = default_root_source(
-        selected.handle.device_info(),
-        selected.disk_index,
-        selected_partition,
-    );
-    let source = bootargs
-        .and_then(root_value)
-        .unwrap_or(default_source.as_str());
-    let region = selected_partition_info.map_or_else(
+    let region = partition.map_or_else(
         || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
-        |part| part.info.region,
+        |p| p.info.region,
     );
-
-    let root = if let Some(kind) = selected_filesystem_kind(
+    let filesystem = match selected_filesystem_kind(
         selected.raw_filesystem,
         &selected.partitions,
         selected_partition,
     ) {
-        init_detected_filesystem(selected.handle.clone(), region, kind, &description, source)
-    } else {
-        init_filesystem(selected.handle.clone(), region, &description, source)
+        Some(kind) => fs::new_from_handle_with_kind(selected.handle.clone(), region, kind)?,
+        None => fs::new_from_handle(selected.handle.clone(), region)?,
     };
-    mount_additional_partitions(&root, &selected, selected_partition);
-    for disk in &disks {
-        mount_additional_partitions(&root, disk, None);
+    let identity = block_identity(selected.handle.device_info(), selected.disk_index);
+    let minor = partition.map_or(identity.minor, |partition| {
+        identity
+            .minor
+            .saturating_add(partition.info.index as u32 + 1)
+    });
+    let root_device = axfs_ng_vfs::DeviceId::new(identity.major, minor).0;
+    let context = crate::highlevel::FsContext::new(
+        axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
+            .root_location(),
+    );
+    if bootargs
+        .and_then(|args| {
+            crate::bootargs::tokens(args)
+                .into_iter()
+                .take_while(|word| word != "--")
+                .filter(|word| matches!(word.as_str(), "ro" | "rw"))
+                .last()
+        })
+        .as_deref()
+        == Some("ro")
+    {
+        context.root_dir().mountpoint().set_readonly(true);
     }
+    mount_additional_partitions(context.root_dir(), &selected, selected_partition);
+    for disk in &disks {
+        mount_additional_partitions(context.root_dir(), disk, None);
+    }
+    Ok(PreparedRoot {
+        filesystem,
+        context,
+        source,
+        selected,
+        #[cfg(axtest)]
+        selected_partition,
+    })
+}
+
+pub fn init_root(
+    block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
+    bootargs: Option<&str>,
+) {
+    #[cfg(axtest)]
+    AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
+    crate::finish_filesystem_init(crate::MemoryFs::new_ramfs(), "rootfs");
+    ROOT_KIND.store(1, Ordering::Release);
+    prepare_root(block_devs, bootargs)
+        .and_then(PreparedRoot::commit)
+        .unwrap_or_else(|error| panic!("failed to mount disk root: {error:?}"));
+}
+
+/// Installs an archive root and optionally switches to a disk before app startup.
+pub fn init_root_with_memory(
+    block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
+    bootargs: Option<&str>,
+    memory: Option<axfs_ng_vfs::Filesystem>,
+    early_init: Option<&str>,
+) -> RootKind {
+    init_root_with_policy(block_devs, bootargs, memory, early_init, false)
+}
+
+fn init_root_with_policy(
+    block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
+    bootargs: Option<&str>,
+    memory: Option<axfs_ng_vfs::Filesystem>,
+    early_init: Option<&str>,
+    defer: bool,
+) -> RootKind {
+    #[cfg(axtest)]
+    AXTEST_SCRATCH_REGION.call_once(|| parse_axtest_scratch_region(bootargs));
+    let devices: Vec<_> = block_devs.into_iter().collect();
+    let use_memory = defer
+        || memory
+            .as_ref()
+            .is_some_and(|fs| should_use_memory_root(fs, bootargs, early_init))
+        || (devices.is_empty() && bootargs.and_then(root_value).is_none());
+    crate::finish_filesystem_init(memory.unwrap_or_else(crate::MemoryFs::new_ramfs), "rootfs");
+    ROOT_KIND.store(1, Ordering::Release);
+    if use_memory {
+        return RootKind::Memory;
+    }
+    prepare_root(devices, bootargs)
+        .and_then(PreparedRoot::commit)
+        .unwrap_or_else(|error| panic!("failed to mount disk root: {error:?}"));
+    RootKind::Block
+}
+
+fn should_use_memory_root(
+    memory: &axfs_ng_vfs::Filesystem,
+    bootargs: Option<&str>,
+    early_init: Option<&str>,
+) -> bool {
+    match early_init {
+        Some(path) => memory_init_accessible(memory, path),
+        None => root_value(bootargs.unwrap_or("")).is_none(),
+    }
+}
+
+fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool {
+    if !path.starts_with('/') {
+        return false;
+    }
+    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
+    let context = crate::highlevel::FsContext::new(root);
+    context.resolve(path).is_ok()
+}
+
+/// Returns whether a block handle is the device selected for the root
+/// filesystem. This identity prevents destructive axtests from touching the
+/// mounted root device.
+#[cfg(axtest)]
+pub fn axtest_is_root_device(handle: &BlockDeviceHandle) -> bool {
+    ROOT_BLOCK_HANDLE
+        .get()
+        .is_some_and(|root| *root == handle as *const BlockDeviceHandle as usize)
+}
+
+/// Returns the filesystem region selected as root for the given block device.
+#[cfg(axtest)]
+pub fn axtest_root_region(handle: &BlockDeviceHandle) -> Option<BlockRegion> {
+    if !axtest_is_root_device(handle) {
+        return None;
+    }
+    Some(
+        *ROOT_BLOCK_REGION
+            .get()
+            .expect("root block region must be published before axtests run"),
+    )
+}
+
+/// Returns the command-line scratch region requested by the destructive tests.
+#[cfg(axtest)]
+pub fn axtest_scratch_region_request() -> Option<&'static Result<BlockRegion, String>> {
+    AXTEST_SCRATCH_REGION
+        .get()
+        .and_then(|requested| requested.as_ref())
+}
+
+/// Returns regions that destructive axtests must not overwrite on `handle`.
+/// An unknown layout is represented by `None` and disqualifies the device.
+#[cfg(axtest)]
+pub fn axtest_disk_protected_regions(handle: &BlockDeviceHandle) -> Option<&'static [BlockRegion]> {
+    let ptr = handle as *const BlockDeviceHandle as usize;
+    AXTEST_DISK_PROTECTED_REGIONS
+        .get()?
+        .iter()
+        .find(|(entry_ptr, _)| *entry_ptr == ptr)
+        .and_then(|(_, regions)| regions.as_deref())
+}
+
+#[cfg(any(axtest, test))]
+fn parse_axtest_scratch_region(bootargs: Option<&str>) -> Option<Result<BlockRegion, String>> {
+    let value = bootargs?
+        .split_ascii_whitespace()
+        .find_map(|arg| arg.strip_prefix("axtest.block_scratch="))?;
+    let Some((start_lba, block_count)) = value.split_once(':') else {
+        return Some(Err(format!(
+            "axtest.block_scratch expects <start_lba>:<blocks>, got {value:?}"
+        )));
+    };
+    let Ok(start_lba) = start_lba.parse::<u64>() else {
+        return Some(Err(format!(
+            "axtest.block_scratch start_lba {start_lba:?} is not an integer"
+        )));
+    };
+    let Ok(block_count) = block_count.parse::<u64>() else {
+        return Some(Err(format!(
+            "axtest.block_scratch blocks {block_count:?} is not an integer"
+        )));
+    };
+    if block_count == 0 {
+        return Some(Err(
+            "axtest.block_scratch blocks must be nonzero".to_string()
+        ));
+    }
+    Some(Ok(BlockRegion::new(start_lba, block_count)))
 }
 
 const SD_NAMES: [&str; 26] = [
@@ -300,10 +626,48 @@ pub fn init_root_from_rdif_sources(
     init_root(runtime.devices().iter().cloned(), bootargs);
 }
 
+pub fn init_root_from_rdif_sources_with_memory(
+    block_devs: impl IntoIterator<Item = RdifBlockDevice>,
+    block_groups: impl IntoIterator<Item = RdifBlockGroup>,
+    bootargs: Option<&str>,
+    memory: Option<axfs_ng_vfs::Filesystem>,
+    early_init: Option<&str>,
+) -> RootKind {
+    init_root_from_rdif_sources_with_policy(
+        block_devs,
+        block_groups,
+        bootargs,
+        memory,
+        early_init,
+        false,
+    )
+}
+
+/// Registers devices while preserving the archive root until the caller commits it.
+pub fn init_root_from_rdif_sources_with_policy(
+    block_devs: impl IntoIterator<Item = RdifBlockDevice>,
+    block_groups: impl IntoIterator<Item = RdifBlockGroup>,
+    bootargs: Option<&str>,
+    memory: Option<axfs_ng_vfs::Filesystem>,
+    early_init: Option<&str>,
+    defer: bool,
+) -> RootKind {
+    let runtime = BlockRuntime::install_from_rdif_sources(block_devs, block_groups);
+    init_root_with_policy(
+        runtime.devices().iter().cloned(),
+        bootargs,
+        memory,
+        early_init,
+        defer,
+    )
+}
+
 fn collect_disks(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
 ) -> crate::BlockResult<Vec<DiscoveredDisk>> {
     let mut disks = Vec::new();
+    #[cfg(axtest)]
+    let mut axtest_disk_regions: Vec<(usize, Option<Vec<BlockRegion>>)> = Vec::new();
 
     for (disk_index, dev) in block_devs.into_iter().enumerate() {
         let handle = dev.clone();
@@ -311,9 +675,20 @@ fn collect_disks(
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
-            Ok(volumes) => {
-                let (raw_filesystem, partitions) = collect_partitions(&mut *dev, volumes);
+            Ok(scan) => {
+                let (raw_filesystem, _raw_filesystem_region, _filesystem_probe_unknown, partitions) =
+                    collect_partitions(&mut *dev, scan.volumes);
                 log_disk(disk_index, &device_name, &partitions);
+                #[cfg(axtest)]
+                {
+                    let protected = axtest_protected_regions(
+                        &partitions,
+                        _raw_filesystem_region,
+                        _filesystem_probe_unknown,
+                        &scan.table_metadata,
+                    );
+                    axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, protected));
+                }
                 disks.push(DiscoveredDisk {
                     disk_index,
                     handle,
@@ -326,9 +701,14 @@ fn collect_disks(
                     "  failed to scan partitions on block device {} ({}): {err:?}",
                     disk_index, device_name
                 );
+                #[cfg(axtest)]
+                axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, None));
             }
         }
     }
+
+    #[cfg(axtest)]
+    AXTEST_DISK_PROTECTED_REGIONS.call_once(|| axtest_disk_regions);
 
     Ok(disks)
 }
@@ -336,20 +716,54 @@ fn collect_disks(
 fn collect_partitions(
     dev: &mut dyn FsBlockDevice,
     volumes: Vec<BlockVolume>,
-) -> (Option<FilesystemKind>, Vec<DetectedPartition>) {
+) -> (
+    Option<FilesystemKind>,
+    Option<BlockRegion>,
+    bool,
+    Vec<DetectedPartition>,
+) {
     let mut partitions = Vec::new();
     let mut raw_filesystem = None;
+    let mut raw_filesystem_region = None;
+    let mut filesystem_probe_unknown = false;
     for volume in volumes {
         if volume.table_kind == VolumeTableKind::Raw {
             let region = region_from_volume(&volume);
-            let raw_fs = detect_filesystem(dev, region);
-            info!("    raw device fs={:?}", raw_fs);
-            raw_filesystem = raw_fs;
+            match detect_filesystem(dev, region) {
+                Ok(raw_fs) => {
+                    info!("    raw device fs={:?}", raw_fs);
+                    if raw_fs.is_some() {
+                        raw_filesystem_region = Some(region);
+                    }
+                    raw_filesystem = raw_fs;
+                }
+                Err(error) => {
+                    warn!(
+                        "    raw device filesystem probe failed at lba {}..{}: {error:?}",
+                        region.start_lba, region.end_lba,
+                    );
+                    raw_filesystem = None;
+                    raw_filesystem_region = None;
+                    filesystem_probe_unknown = true;
+                }
+            }
             continue;
         }
 
         let info = partition_info_from_volume(&volume);
-        let filesystem = detect_filesystem(dev, info.region);
+        let filesystem = match detect_filesystem(dev, info.region) {
+            Ok(filesystem) => filesystem,
+            Err(error) => {
+                warn!(
+                    "    filesystem probe failed for partition {} at lba {}..{}: {error:?}",
+                    info.index + 1,
+                    info.region.start_lba,
+                    info.region.end_lba,
+                );
+                filesystem_probe_unknown = true;
+                None
+            }
+        };
         info!(
             "    partition {} name={:?} fs={:?} lba {}..{}",
             info.index + 1,
@@ -361,7 +775,12 @@ fn collect_partitions(
         partitions.push(DetectedPartition { info, filesystem });
     }
 
-    (raw_filesystem, partitions)
+    (
+        raw_filesystem,
+        raw_filesystem_region,
+        filesystem_probe_unknown,
+        partitions,
+    )
 }
 
 fn log_disk(disk_index: usize, device_name: &str, partitions: &[DetectedPartition]) {
@@ -380,6 +799,32 @@ fn log_disk(disk_index: usize, device_name: &str, partitions: &[DetectedPartitio
             disk_index, device_name
         );
     }
+}
+
+#[cfg(any(axtest, all(test, feature = "ext4")))]
+fn axtest_protected_regions(
+    partitions: &[DetectedPartition],
+    raw_filesystem_region: Option<BlockRegion>,
+    filesystem_probe_unknown: bool,
+    table_metadata: &[crate::volume::BlockRegion],
+) -> Option<Vec<BlockRegion>> {
+    if filesystem_probe_unknown {
+        return None;
+    }
+
+    let mut protected = partitions
+        .iter()
+        .map(|partition| partition.info.region)
+        .collect::<Vec<_>>();
+    if let Some(region) = raw_filesystem_region {
+        protected.push(region);
+    }
+    protected.extend(
+        table_metadata
+            .iter()
+            .map(|region| BlockRegion::new(region.start_block, region.num_blocks)),
+    );
+    Some(protected)
 }
 
 fn partition_info_from_volume(volume: &BlockVolume) -> PartitionInfo {
@@ -437,8 +882,8 @@ fn select_root_candidate(
     candidates: &[RootCandidate],
     spec: &RootSpec,
 ) -> Option<(usize, Option<usize>)> {
-    if let Some(index) = select_explicit_root(candidates, spec) {
-        return Some(index);
+    if spec.has_explicit_selector() {
+        return select_explicit_root(candidates, spec);
     }
 
     select_default_root(candidates)
@@ -495,7 +940,7 @@ fn select_explicit_root(
     }
 
     if spec.has_explicit_selector() {
-        panic!("configured root device was not found in discovered block devices");
+        warn!("configured root device was not found in discovered block devices");
     }
 
     None
@@ -741,11 +1186,16 @@ const fn filesystem_name(fs: FilesystemKind) -> &'static str {
     }
 }
 
-fn root_value(bootargs: &str) -> Option<&str> {
-    bootargs.split_ascii_whitespace().find_map(|arg| {
-        arg.strip_prefix("root=")
-            .and_then(|root| (!root.is_empty()).then_some(root))
-    })
+fn root_value(bootargs: &str) -> Option<String> {
+    crate::bootargs::tokens(bootargs)
+        .into_iter()
+        .take_while(|arg| arg != "--")
+        .filter_map(|arg| {
+            arg.strip_prefix("root=")
+                .filter(|root| !root.is_empty())
+                .map(String::from)
+        })
+        .last()
 }
 
 fn parse_sd_like(root: &str, prefix: &str) -> Option<(usize, Option<usize>)> {
@@ -810,6 +1260,14 @@ pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_requested_root_returns_an_error_without_publishing() {
+        assert!(matches!(
+            super::prepare_root(core::iter::empty(), Some("root=/dev/sda")),
+            Err(axfs_ng_vfs::VfsError::NoSuchDevice)
+        ));
+    }
+
     use core::{any::Any, time::Duration};
 
     use axfs_ng_vfs::{
@@ -822,8 +1280,42 @@ mod tests {
     use super::*;
     use crate::{BlockError, BlockResult, shutdown_registered_filesystems};
 
+    #[test]
+    fn initramfs_selection_follows_pid1_and_explicit_root_rules() {
+        crate::os::memory::test_support::with_test_page_provider(true, |_| {
+            let fs = crate::MemoryFs::new_ramfs();
+            let context = crate::highlevel::FsContext::new(
+                axfs_ng_vfs::Mountpoint::new_root(&fs).root_location(),
+            );
+            context
+                .create_node(
+                    "/init",
+                    NodeType::RegularFile,
+                    NodePermission::from_bits_truncate(0o644),
+                    0,
+                    0,
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+
+            assert!(should_use_memory_root(
+                &fs,
+                Some("root=/dev/sda"),
+                Some("/init")
+            ));
+            assert!(!should_use_memory_root(&fs, None, Some("/missing")));
+            assert!(should_use_memory_root(&fs, None, None));
+            assert!(!should_use_memory_root(&fs, Some("root=/dev/sda"), None));
+            assert_eq!(
+                root_value("root=/dev/sda root=PARTUUID=abcd -- root=/ignored"),
+                Some(String::from("PARTUUID=abcd"))
+            );
+        });
+    }
+
     struct FlakyMetadataDevice {
         remaining_failures: usize,
+        raw_probe_failures: usize,
         data: Vec<u8>,
     }
 
@@ -1128,8 +1620,22 @@ mod tests {
             data[511] = 0xaa;
             Self {
                 remaining_failures,
+                raw_probe_failures: 0,
                 data,
             }
+        }
+
+        #[cfg(feature = "ext4")]
+        fn with_raw_ext4_magic(mut self) -> Self {
+            let magic_offset = 2 * 512 + 0x38;
+            self.data[magic_offset..magic_offset + 2].copy_from_slice(&0xEF53_u16.to_le_bytes());
+            self
+        }
+
+        #[cfg(feature = "ext4")]
+        fn fail_next_raw_filesystem_probe(mut self) -> Self {
+            self.raw_probe_failures = 1;
+            self
         }
     }
 
@@ -1169,6 +1675,10 @@ mod tests {
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult {
             if self.remaining_failures > 0 {
                 self.remaining_failures -= 1;
+                return Err(BlockError::Io);
+            }
+            if block_id == 2 && self.raw_probe_failures > 0 {
+                self.raw_probe_failures -= 1;
                 return Err(BlockError::Io);
             }
 
@@ -1246,11 +1756,70 @@ mod tests {
     fn volume_reader_retries_transient_metadata_read_errors() {
         let mut dev = FlakyMetadataDevice::new(1);
         let mut reader = VolumeReader::new(&mut dev);
-        let volumes = scan_volumes(&mut reader, DiskId(0)).unwrap();
+        let scan = scan_volumes(&mut reader, DiskId(0)).unwrap();
 
-        assert_eq!(volumes.len(), 1);
-        assert_eq!(volumes[0].table_kind, VolumeTableKind::Raw);
+        assert_eq!(scan.volumes.len(), 1);
+        assert_eq!(scan.volumes[0].table_kind, VolumeTableKind::Raw);
+        assert_eq!(
+            scan.table_metadata,
+            vec![crate::volume::BlockRegion::new(0, 1)]
+        );
         assert_eq!(dev.remaining_failures, 0);
+    }
+
+    #[cfg(feature = "ext4")]
+    #[test]
+    fn raw_filesystem_protection_uses_the_production_scan_and_probe_chain() {
+        let mut dev = FlakyMetadataDevice::new(0).with_raw_ext4_magic();
+        let mut reader = VolumeReader::new(&mut dev);
+        let scan = scan_volumes(&mut reader, DiskId(0)).unwrap();
+        drop(reader);
+
+        let (raw_filesystem, raw_filesystem_region, raw_probe_unknown, partitions) =
+            collect_partitions(&mut dev, scan.volumes);
+        let protected = axtest_protected_regions(
+            &partitions,
+            raw_filesystem_region,
+            raw_probe_unknown,
+            &scan.table_metadata,
+        );
+
+        assert_eq!(raw_filesystem, Some(FilesystemKind::Ext4));
+        assert_eq!(raw_filesystem_region, Some(BlockRegion::new(0, 16)));
+        assert!(!raw_probe_unknown);
+        assert_eq!(
+            protected,
+            Some(vec![BlockRegion::new(0, 16), BlockRegion::new(0, 1)])
+        );
+    }
+
+    #[cfg(feature = "ext4")]
+    #[test]
+    fn raw_filesystem_probe_failure_remains_unknown_after_device_recovery() {
+        let mut dev = FlakyMetadataDevice::new(0)
+            .with_raw_ext4_magic()
+            .fail_next_raw_filesystem_probe();
+        let mut reader = VolumeReader::new(&mut dev);
+        let scan = scan_volumes(&mut reader, DiskId(0)).unwrap();
+        drop(reader);
+
+        let (raw_filesystem, raw_filesystem_region, raw_probe_unknown, partitions) =
+            collect_partitions(&mut dev, scan.volumes);
+        let protected = axtest_protected_regions(
+            &partitions,
+            raw_filesystem_region,
+            raw_probe_unknown,
+            &scan.table_metadata,
+        );
+
+        assert_eq!(raw_filesystem, None);
+        assert_eq!(raw_filesystem_region, None);
+        assert!(raw_probe_unknown);
+        assert_eq!(protected, None);
+        assert_eq!(
+            detect_filesystem(&mut dev, BlockRegion::new(0, 16)),
+            Ok(Some(FilesystemKind::Ext4))
+        );
     }
 
     #[test]
@@ -1261,6 +1830,43 @@ mod tests {
 
         assert_eq!(err, VolumeError::Reader);
         assert_eq!(dev.remaining_failures, 0);
+    }
+
+    #[test]
+    fn missing_scratch_declaration_falls_back_to_the_marker_disk() {
+        assert!(parse_axtest_scratch_region(None).is_none());
+        assert!(parse_axtest_scratch_region(Some("root=/dev/mmcblk0p1 quiet")).is_none());
+    }
+
+    #[test]
+    fn malformed_scratch_declarations_are_reported_not_folded_into_fallback() {
+        for (declaration, expected_fragment) in [
+            ("axtest.block_scratch=2099200", "expects"),
+            ("axtest.block_scratch=abc:256", "start_lba"),
+            ("axtest.block_scratch=2099200:xyz", "blocks"),
+            ("axtest.block_scratch=2099200:0", "nonzero"),
+        ] {
+            let requested = parse_axtest_scratch_region(Some(declaration))
+                .expect("a present declaration must not collapse to the fallback path");
+            let error = requested
+                .as_ref()
+                .expect_err("malformed declarations must be errors");
+            assert!(
+                error.contains(expected_fragment),
+                "declaration {declaration:?} produced unrelated error {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_scratch_declaration_resolves_to_a_half_open_region() {
+        let region =
+            parse_axtest_scratch_region(Some("console=ttyS0 axtest.block_scratch=2099200:256"))
+                .expect("declaration present")
+                .expect("well-formed declaration");
+        assert_eq!(region.start_lba, 2_099_200);
+        assert_eq!(region.end_lba, 2_099_456);
+        assert_eq!(region.num_blocks(), 256);
     }
 
     #[test]
@@ -1326,7 +1932,7 @@ mod tests {
 
     impl Drop for MountedRegistryGuard {
         fn drop(&mut self) {
-            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock());
+            core::mem::take(&mut *crate::MOUNTED_FILESYSTEMS.lock_irqsave());
         }
     }
 

@@ -19,10 +19,15 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (mount_id, parent_id, mp) in entries {
         let root_loc = mp.root_location();
-
-        let mount_point = root_loc
+        // Like Linux seq_path_root() / SEQ_SKIP, omit mounts outside the
+        // process root instead of misreporting their mountpoint as "/".
+        let Ok(mount_point) = root_loc.path_from(fs_context.root_dir()) else {
+            continue;
+        };
+        let mount_root = root_loc
+            .entry()
             .absolute_path()
-            .map(|p| p.to_string())
+            .map(|path| path.to_string())
             .unwrap_or_else(|_| "/".into());
 
         let fstype = root_loc.filesystem().name();
@@ -53,7 +58,7 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
 
         let _ = writeln!(
             &mut buf,
-            "{mount_id} {parent_id} {}:{} / {mount_point} {options}{optional_fields} - {fstype} \
+            "{mount_id} {parent_id} {}:{} {mount_root} {mount_point} {options}{optional_fields} - {fstype} \
              {source} {super_options}",
             dev.major(),
             dev.minor(),
@@ -67,11 +72,11 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
     let mut buf = String::new();
     for (_, _, mp) in entries {
         let root_loc = mp.root_location();
-
-        let mount_point = root_loc
-            .absolute_path()
-            .map(|p| p.to_string())
-            .unwrap_or_else(|_| "/".into());
+        // Like Linux seq_path_root() / SEQ_SKIP, omit mounts outside the
+        // process root instead of misreporting their mountpoint as "/".
+        let Ok(mount_point) = root_loc.path_from(fs_context.root_dir()) else {
+            continue;
+        };
 
         let fstype = root_loc.filesystem().name();
         let source = mp.source();

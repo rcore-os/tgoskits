@@ -87,15 +87,31 @@ pub(super) async fn qemu(
 ) -> anyhow::Result<()> {
     starry.app.set_debug_mode(request.debug)?;
     let cargo = build::load_cargo_config(&request, starry.app.workspace_context())?;
-    ensure_qemu_rootfs_ready(
-        &request,
-        starry.app.workspace_root(),
-        starry.app.target_dir(),
-        None,
-    )
-    .await?;
-    let qemu = load_patched_qemu_config(starry, &request, &cargo, None, true, write_policy).await?;
+    let mut qemu =
+        load_patched_qemu_config(starry, &request, &cargo, None, false, write_policy).await?;
+    if !diskless_explicit_qemu(&qemu, request.qemu_config.is_some()) {
+        ensure_qemu_rootfs_ready(
+            &request,
+            starry.app.workspace_root(),
+            starry.app.target_dir(),
+            None,
+        )
+        .await?;
+        patch_qemu_rootfs(
+            &mut qemu,
+            &request,
+            starry.app.workspace_root(),
+            starry.app.target_dir(),
+            None,
+            rootfs_patch_mode(&cargo),
+            write_policy,
+        )?;
+    }
     starry.run_qemu_artifact(&request, cargo, qemu).await
+}
+
+fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool) -> bool {
+    explicit_config && crate::rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
 }
 
 pub(super) async fn load_patched_qemu_config(
@@ -350,6 +366,18 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn explicit_diskless_qemu_skips_disk_preparation() {
+        let mut qemu = QemuConfig::default();
+        assert!(!diskless_explicit_qemu(&qemu, true));
+        assert!(!diskless_explicit_qemu(&qemu, false));
+        qemu.boot.initramfs = Some("host.cpio".into());
+        assert!(diskless_explicit_qemu(&qemu, true));
+        qemu.args
+            .extend(["-drive".into(), "file=rootfs.img".into()]);
+        assert!(!diskless_explicit_qemu(&qemu, true));
+    }
 
     fn managed_rootfs_path(root: &Path, image_name: &str) -> PathBuf {
         root.join(".tgos-images").join(image_name)

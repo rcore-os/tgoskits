@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::Mutex;
 use axdevice_base::*;
 
 const INDEX_PORT: u16 = 0x70;
@@ -89,7 +89,7 @@ impl Device for X86CmosDevice {
 
     fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
         validate_access(access)?;
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         match access.address() {
             addr if addr == u64::from(INDEX_PORT) => Ok(u64::from(state.index)),
             addr if addr == u64::from(DATA_PORT) => {
@@ -111,7 +111,7 @@ impl Device for X86CmosDevice {
         _context: &mut dyn DeviceContext,
     ) -> DeviceResult {
         validate_access(access)?;
-        let mut state = self.state.lock_irqsave();
+        let mut state = self.state.lock();
         match access.address() {
             addr if addr == u64::from(INDEX_PORT) => {
                 state.index = value as u8 & 0x7f;

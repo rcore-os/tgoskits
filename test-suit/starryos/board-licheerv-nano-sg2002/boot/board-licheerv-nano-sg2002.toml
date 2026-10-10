@@ -1,3 +1,5 @@
+# Select the test shell on existing board images without replacing their init files.
+cmdline = 'root=/dev/mmcblk0p2 rootwait rw console=ttyS0,115200 earlycon=sbi riscv.fwsz=0x80000 release loglevel=0 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 board_type = "LicheeRV-Nano-SG2002"
 dtb_file = "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb"
 kernel_load_addr = "0x80200000"

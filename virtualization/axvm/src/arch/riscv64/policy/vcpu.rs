@@ -24,7 +24,7 @@ use riscv_decode::{
     types::{IType, SType},
 };
 use rustsbi::{Forward, RustSBI, SbiRet};
-use sbi_spec::{hsm, legacy, pmu, rfnc, spi, srst};
+use sbi_spec::{hsm, legacy, rfnc, spi, srst};
 
 use crate::arch::riscv64::policy::{
     EID_HVC, RiscvVcpuCreateConfig,
@@ -34,7 +34,7 @@ use crate::arch::riscv64::policy::{
     sbi_console::*,
     types::{
         RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvGuestVirtAddr, RiscvIpiAbi,
-        RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig, RiscvVcpuError,
+        RiscvIpiCompletion, RiscvIpiRequest, RiscvNestedPagingConfig, RiscvSbiCall, RiscvVcpuError,
         RiscvVcpuResult, RiscvVmExit,
     },
     vpmu::VirtualPmu,
@@ -54,13 +54,43 @@ fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
 }
 
-/// A virtual CPU within a guest
-pub struct RiscvVcpu<H: RiscvHostOps> {
+/// A virtual CPU within a guest.
+///
+/// The value is confined to the architecture adapter; it is not part of any
+/// crate-public API. Its block-local hardware binding is installed and retired
+/// only through the crate-private [`Self::bind`]/[`Self::unbind`] pair.
+pub(crate) struct RiscvVcpu<H: RiscvHostOps> {
     regs: Vcpu,
     sbi: RISCVVCpuSbi,
     binding: Option<GuestBinding>,
+    hart_id: usize,
     _host: PhantomData<fn() -> H>,
 }
+
+// `GuestBinding` is intentionally `!Send`: it owns the saved host VS/HS CSR
+// banks of one hart and must be released on that same hart. That capability is
+// the only non-`Send` payload of this otherwise plain value.
+//
+// SAFETY: the type is crate-private and its binding API is crate-private, so no
+// downstream crate can name it. Within this crate a `GuestBinding` is installed
+// only by [`RiscvVcpu::bind`], whose sole caller is
+// `AxVCpu::with_backend_bound_current_cpu` through `BackendBinding::bind`
+// (`virtualization/axvm/src/vcpu.rs`). That scope holds the vCPU exclusively by
+// `&mut`, pins the host CPU, keeps the binding loaded until
+// `BackendBinding::finish`/`Drop` calls [`RiscvVcpu::unbind`] on the same hart,
+// and aborts the process if that retirement fails. The unique `&mut` borrow
+// means the value cannot be moved across the load/run/unload window, and
+// [`RiscvVcpu::bind`] rejects a second load, so the field carries a binding only
+// while the value is pinned. Moving the value between execution contexts
+// (construction, `Default`, and after `unbind`) always happens with an empty
+// binding. Every other field (`regs`, `sbi`, `hart_id`, and the `fn() -> H`
+// phantom) is `Send` and owns no hart-local hardware capability. Making the
+// whole crate trusted is why this `unsafe impl` is sound even though safe crate
+// code could, in principle, invoke `VmArchVcpuOps::bind` through the
+// `AxvmRiscvVcpu` wrapper; that is a private capability the engine never
+// exposes, and the review in the migration notes records this as the single
+// residual obligation on the engine.
+unsafe impl<H: RiscvHostOps> Send for RiscvVcpu<H> {}
 
 #[derive(RustSBI)]
 struct RISCVVCpuSbi {
@@ -102,6 +132,7 @@ impl<H: RiscvHostOps> Default for RiscvVcpu<H> {
             regs: Vcpu::default(),
             sbi: RISCVVCpuSbi::default(),
             binding: None,
+            hart_id: 0,
             _host: PhantomData,
         }
     }
@@ -125,6 +156,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             regs,
             sbi: RISCVVCpuSbi::default(),
             binding: None,
+            hart_id: config.hart_id,
             _host: PhantomData,
         })
     }
@@ -138,6 +170,22 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     /// Sets the guest entry point.
     pub fn set_entry(&mut self, entry: RiscvGuestPhysAddr) -> RiscvVcpuResult {
         self.regs.guest_regs.sepc = entry.as_usize();
+        Ok(())
+    }
+
+    /// Initializes a hart started through the SBI HSM extension.
+    ///
+    /// The caller owns the target backend. `a0` carries the guest-visible hart
+    /// ID and `a1` carries the opaque guest context, matching the SBI calling
+    /// convention used by HSM.
+    pub fn initialize_cpu_on(
+        &mut self,
+        entry: RiscvGuestPhysAddr,
+        context_id: usize,
+    ) -> RiscvVcpuResult {
+        self.set_entry(entry)?;
+        self.set_gpr_from_gpr_index(GprIndex::A0, self.hart_id);
+        self.set_gpr_from_gpr_index(GprIndex::A1, context_id);
         Ok(())
     }
 
@@ -166,7 +214,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Runs only the machine transaction; SBI and device interpretation follow later.
-    pub fn run_machine(&mut self) -> RiscvVcpuResult<ax_cpu::virtualization::Exit> {
+    pub(crate) fn run_machine(&mut self) -> RiscvVcpuResult<ax_cpu::virtualization::Exit> {
         if self.binding.is_none() {
             return Err(RiscvVcpuError::BadState);
         }
@@ -182,7 +230,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Interprets the captured exit outside the final machine IRQ window.
-    pub fn process_exit(
+    pub(crate) fn process_exit(
         &mut self,
         exit: ax_cpu::virtualization::Exit,
     ) -> RiscvVcpuResult<RiscvVmExit> {
@@ -194,7 +242,12 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Binds the vCPU to the current physical CPU.
-    pub fn bind(&mut self) -> RiscvVcpuResult {
+    ///
+    /// Crate-private on purpose: the only caller is the CPU-pinned
+    /// `BackendBinding` scope, which owns the value by `&mut` and retires the
+    /// binding with [`Self::unbind`] before releasing the host CPU. No other
+    /// module may install a live binding and then move the value.
+    pub(crate) fn bind(&mut self) -> RiscvVcpuResult {
         if self.binding.is_some() {
             return Err(RiscvVcpuError::BadState);
         }
@@ -206,7 +259,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     }
 
     /// Saves the guest bank and restores the original host bank.
-    pub fn unbind(&mut self) -> RiscvVcpuResult {
+    pub(crate) fn unbind(&mut self) -> RiscvVcpuResult {
         let binding = self.binding.take().ok_or(RiscvVcpuError::BadState)?;
         self.sbi.pmu.backend_unbind();
         // SAFETY: the caller retains the same current-CPU scope and excludes
@@ -241,17 +294,19 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.set_virtual_interrupt_pending(vector, true)
     }
 
-    /// Sets the controller-derived VSEIP line level for this vCPU.
+    /// Synchronizes controller-derived VSEIP state on the loaded owner.
     ///
-    /// The virtual PLIC remains the owner of pending and delivery state. This
-    /// method always updates the vCPU-owned saved CSR image and reflects the
-    /// line into hardware only while the vCPU is loaded on the current CPU.
-    pub fn set_vseip_level(&mut self, asserted: bool) {
+    /// The virtual PLIC remains the owner of pending and delivery state. The
+    /// caller must be the target vCPU owner and must have loaded the backend on
+    /// the prebound host hart; remote register writes are not permitted.
+    pub fn sync_vseip_level(&mut self, asserted: bool) -> RiscvVcpuResult {
+        // Reject an unbound owner before touching the register image, so the
+        // error path leaves no partial controller-derived state behind.
+        let binding = self.binding.as_mut().ok_or(RiscvVcpuError::BadState)?;
         self.regs
             .set_interrupt_pending(GuestInterrupt::External, asserted);
-        if let Some(binding) = &mut self.binding {
-            binding.sync_interrupt(&self.regs, GuestInterrupt::External);
-        }
+        binding.sync_interrupt(&self.regs, GuestInterrupt::External);
+        Ok(())
     }
 
     /// Sets the guest return value register.
@@ -286,21 +341,6 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             binding.sync_interrupt(&self.regs, interrupt);
         }
         Ok(())
-    }
-}
-
-impl<H: RiscvHostOps> RiscvVcpu<H> {
-    /// Attempts to decode the current guest-page-fault trap as an MMIO access.
-    pub fn decode_mmio_fault(
-        &mut self,
-        _fault_addr: RiscvGuestPhysAddr,
-        access_flags: RiscvAccessFlags,
-    ) -> Option<RiscvVmExit> {
-        let writing = access_flags.contains(RiscvAccessFlags::WRITE);
-        match self.handle_guest_page_fault(writing).ok()? {
-            exit @ (RiscvVmExit::MmioRead { .. } | RiscvVmExit::MmioWrite { .. }) => Some(exit),
-            _ => None,
-        }
     }
 }
 
@@ -420,13 +460,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 let extension_id = a[7];
                 let function_id = a[6];
 
-                trace!(
-                    "sbi_call: eid {:#x} ('{}') fid {:#x} param {:?}",
-                    extension_id,
-                    std::string::String::from_utf8_lossy(&(extension_id as u32).to_be_bytes()),
-                    function_id,
-                    param
-                );
+                trace!("sbi_call: eid {extension_id:#x} fid {function_id:#x} param {param:?}");
                 match extension_id {
                     // Compatibility with Legacy Extensions.
                     legacy::LEGACY_SET_TIMER..=legacy::LEGACY_SHUTDOWN => match extension_id {
@@ -437,12 +471,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
-                        legacy::LEGACY_CONSOLE_PUTCHAR => {
-                            sbi_call_legacy_1(legacy::LEGACY_CONSOLE_PUTCHAR, param[0]);
-                        }
-                        legacy::LEGACY_CONSOLE_GETCHAR => {
-                            let c = sbi_call_legacy_0(legacy::LEGACY_CONSOLE_GETCHAR);
-                            self.set_gpr_from_gpr_index(GprIndex::A0, c);
+                        legacy::LEGACY_CONSOLE_PUTCHAR | legacy::LEGACY_CONSOLE_GETCHAR => {
+                            return Ok(self.task_sbi_call(extension_id, function_id, param));
                         }
                         legacy::LEGACY_SEND_IPI => {
                             return self.handle_legacy_send_ipi(param[0], |guest_va, bytes| {
@@ -508,14 +538,22 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             });
                         }
                         hsm::HART_STOP => {
-                            return Ok(RiscvVmExit::CpuDown { state: 0 });
+                            return Ok(RiscvVmExit::CpuDown);
                         }
                         hsm::HART_SUSPEND => {
-                            // These parameters are reserved for a future suspend-state model.
-                            let _suspend_type = a[0];
-                            let _resume_addr = a[1];
-                            let _opaque = a[2];
-                            return Ok(RiscvVmExit::Halt);
+                            match a[0] {
+                                value if value == hsm::suspend_type::RETENTIVE as usize => {
+                                    // Retentive suspend preserves register state and resumes
+                                    // after this ecall; the task owner commits SBI_SUCCESS.
+                                    self.advance_pc(4);
+                                    return Ok(RiscvVmExit::SbiStandby);
+                                }
+                                value if value == hsm::suspend_type::NON_RETENTIVE as usize => {
+                                    self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                                }
+                                _ => self.sbi_return(SbiRet::invalid_param().error, 0),
+                            }
+                            return Ok(RiscvVmExit::Nothing);
                         }
                         _ => {
                             self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
@@ -537,75 +575,11 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             ],
                         });
                     }
-                    // Debug Console Extension
-                    EID_DBCN => match function_id {
-                        // Write from memory region to debug console.
-                        FID_CONSOLE_WRITE => {
-                            let num_bytes = param[0];
-                            let gpa = join_u64(param[1], param[2]);
-
-                            if num_bytes == 0 {
-                                self.sbi_return(RET_SUCCESS, 0);
-                                return Ok(RiscvVmExit::Nothing);
-                            }
-
-                            let mut buf = std::vec![0u8; num_bytes];
-                            let copied = guest_mem::copy_from_guest(
-                                &mut buf,
-                                RiscvGuestPhysAddr::from(gpa as usize),
-                            );
-
-                            if copied == buf.len() {
-                                let ret = console_write::<H>(&buf);
-                                self.sbi_return(ret.error, ret.value);
-                            } else {
-                                self.sbi_return(RET_ERR_FAILED, 0);
-                            }
-
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                        // Read to memory region from debug console.
-                        FID_CONSOLE_READ => {
-                            let num_bytes = param[0];
-                            let gpa = join_u64(param[1], param[2]);
-
-                            if num_bytes == 0 {
-                                self.sbi_return(RET_SUCCESS, 0);
-                                return Ok(RiscvVmExit::Nothing);
-                            }
-
-                            let mut buf = std::vec![0u8; num_bytes];
-                            let ret = console_read::<H>(&mut buf);
-
-                            if ret.is_ok() && ret.value <= buf.len() {
-                                let copied = guest_mem::copy_to_guest(
-                                    &buf[..ret.value],
-                                    RiscvGuestPhysAddr::from(gpa as usize),
-                                );
-                                if copied == ret.value {
-                                    self.sbi_return(RET_SUCCESS, ret.value);
-                                } else {
-                                    self.sbi_return(RET_ERR_FAILED, 0);
-                                }
-                            } else {
-                                self.sbi_return(ret.error, ret.value);
-                            }
-
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                        // Write a single byte to debug console.
-                        FID_CONSOLE_WRITE_BYTE => {
-                            let byte = (param[0] & 0xff) as u8;
-                            print_byte(byte);
-                            self.sbi_return(RET_SUCCESS, 0);
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                        // Unknown FID.
-                        _ => {
-                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
-                            return Ok(RiscvVmExit::Nothing);
-                        }
-                    },
+                    // Guest memory and console firmware may block. Capture only
+                    // ABI values while pinned; the task-side handler owns the copy.
+                    EID_DBCN => {
+                        return Ok(self.task_sbi_call(extension_id, function_id, param));
+                    }
                     srst::EID_SRST => match function_id {
                         srst::SYSTEM_RESET => {
                             let reset_type = param[0];
@@ -622,45 +596,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             return Ok(RiscvVmExit::Nothing);
                         }
                     },
-                    pmu::EID_PMU => {
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
-                    }
-                    rfnc::EID_RFNC => {
-                        match function_id {
-                            rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
-                            rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
-                            rfnc::REMOTE_SFENCE_VMA_ASID => {
-                                self.sbi.pmu.record_sfence_vma_asid_sent();
-                            }
-                            rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
-                            rfnc::REMOTE_HFENCE_GVMA_VMID => {
-                                self.sbi.pmu.record_hfence_gvma_vmid_sent();
-                            }
-                            rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
-                            rfnc::REMOTE_HFENCE_VVMA_ASID => {
-                                self.sbi.pmu.record_hfence_vvma_asid_sent();
-                            }
-                            _ => {}
-                        }
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
-                    }
-                    // By default, forward the SBI call to the RustSBI implementation.
-                    // See [`RISCVVCpuSbi`].
                     _ => {
-                        let ret = self.sbi.handle_ecall(extension_id, function_id, param);
-                        if ret.is_err() {
-                            warn!(
-                                "forward ecall eid {:#x} fid {:#x} param {:#x?} err {:#x} value \
-                                 {:#x}",
-                                extension_id, function_id, param, ret.error, ret.value
-                            );
-                        }
-                        self.set_gpr_from_gpr_index(GprIndex::A0, ret.error);
-                        self.set_gpr_from_gpr_index(GprIndex::A1, ret.value);
+                        return Ok(self.task_sbi_call(extension_id, function_id, param));
                     }
                 };
 
@@ -702,6 +639,42 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Err(RiscvVcpuError::Unsupported)
             }
         }
+    }
+
+    fn task_sbi_call(
+        &mut self,
+        extension: usize,
+        function: usize,
+        arguments: [usize; 6],
+    ) -> RiscvVmExit {
+        self.advance_pc(4);
+        RiscvVmExit::SbiCall(RiscvSbiCall {
+            extension,
+            function,
+            arguments,
+        })
+    }
+
+    /// Forwards firmware and virtual PMU requests after CPU binding retirement.
+    pub(crate) fn forward_task_sbi(&mut self, call: RiscvSbiCall) -> RiscvVcpuResult<SbiRet> {
+        if self.binding.is_some() {
+            return Err(RiscvVcpuError::BadState);
+        }
+        if call.extension == rfnc::EID_RFNC {
+            match call.function {
+                rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
+                rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
+                rfnc::REMOTE_SFENCE_VMA_ASID => self.sbi.pmu.record_sfence_vma_asid_sent(),
+                rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
+                rfnc::REMOTE_HFENCE_GVMA_VMID => self.sbi.pmu.record_hfence_gvma_vmid_sent(),
+                rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
+                rfnc::REMOTE_HFENCE_VVMA_ASID => self.sbi.pmu.record_hfence_vvma_asid_sent(),
+                _ => {}
+            }
+        }
+        Ok(self
+            .sbi
+            .handle_ecall(call.extension, call.function, call.arguments))
     }
 
     #[inline]
@@ -1007,9 +980,10 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             }
         };
 
-        // WARN: This is a temporary place to add the instruction length to the guest's sepc.
-        self.advance_pc(instr_len);
-
+        // The instruction pointer is not advanced here. The captured length is
+        // retired by the vCPU owner only after the task-layer device access
+        // succeeds, so a faulted or unconsumed access leaves the retry state
+        // intact.
         Ok(match op {
             Read {
                 i,
@@ -1023,6 +997,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                     reg: i.rd() as _,
                     reg_width: RiscvAccessWidth::Qword,
                     signed_ext,
+                    advance: instr_len,
                 }
             }
             Write { s, width } => {
@@ -1035,36 +1010,11 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                     addr: fault_addr,
                     width,
                     data: value as _,
+                    advance: instr_len,
                 }
             }
         })
     }
-}
-
-#[inline(always)]
-fn sbi_call_legacy_0(eid: usize) -> usize {
-    let error;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") eid,
-            lateout("a0") error,
-        );
-    }
-    error
-}
-
-#[inline(always)]
-fn sbi_call_legacy_1(eid: usize, arg0: usize) -> usize {
-    let error;
-    unsafe {
-        core::arch::asm!(
-            "ecall",
-            in("a7") eid,
-            inlateout("a0") arg0 => error,
-        );
-    }
-    error
 }
 
 #[cfg(test)]
@@ -1079,6 +1029,56 @@ mod tests {
         fn virt_to_phys(_vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
             RiscvHostPhysAddr::from_usize(0)
         }
+    }
+
+    #[test]
+    fn retentive_suspend_retires_the_ecall_and_rejects_unsupported_states() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        vcpu.regs.trap_csrs.scause = 10;
+        vcpu.regs.guest_regs.sepc = 0x8020_0000;
+        vcpu.set_gpr_from_gpr_index(GprIndex::A7, hsm::EID_HSM);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A6, hsm::HART_SUSPEND);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A0, hsm::suspend_type::RETENTIVE as usize);
+        assert!(matches!(
+            vcpu.vmexit_handler().unwrap(),
+            RiscvVmExit::SbiStandby
+        ));
+        assert_eq!(vcpu.regs.guest_regs.sepc, 0x8020_0004);
+
+        for (kind, expected) in [
+            (
+                hsm::suspend_type::NON_RETENTIVE as usize,
+                SbiRet::not_supported(),
+            ),
+            (1, SbiRet::invalid_param()),
+        ] {
+            vcpu.set_gpr_from_gpr_index(GprIndex::A0, kind);
+            assert!(matches!(
+                vcpu.vmexit_handler().unwrap(),
+                RiscvVmExit::Nothing
+            ));
+            assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
+            assert_eq!(vcpu.get_gpr(GprIndex::A1), expected.value);
+        }
+        assert_eq!(vcpu.regs.guest_regs.sepc, 0x8020_000c);
+    }
+
+    #[test]
+    fn console_decode_returns_owned_abi_values_without_firmware_access() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        vcpu.regs.trap_csrs.scause = 10;
+        vcpu.regs.guest_regs.sepc = 0x8020_0000;
+        vcpu.set_gpr_from_gpr_index(GprIndex::A7, EID_DBCN);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A6, FID_CONSOLE_WRITE);
+        // A zero-sized write also goes through the durable boundary; the old
+        // inline implementation returned Nothing and cannot satisfy this test.
+        vcpu.set_gpr_from_gpr_index(GprIndex::A0, 0);
+        vcpu.set_gpr_from_gpr_index(GprIndex::A1, 0x9000_0000);
+        let RiscvVmExit::SbiCall(call) = vcpu.vmexit_handler().unwrap() else {
+            panic!("console work must be interpreted after hardware unloading");
+        };
+        assert_eq!(call.arguments[..3], [0, 0x9000_0000, 0]);
+        assert_eq!(vcpu.regs.guest_regs.sepc, 0x8020_0004);
     }
 
     #[test]

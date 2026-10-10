@@ -1,0 +1,240 @@
+/******************************************************************************
+ *
+ * Module Name: dbhistry - debugger HISTORY command
+ *
+ *****************************************************************************/
+
+/******************************************************************************
+ *
+ * Copyright (c) 1999 - 2026, Intel Corp.
+ * SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-only
+ *
+ *****************************************************************************/
+
+#include "acpi.h"
+#include "accommon.h"
+#include "acdebug.h"
+
+
+#define _COMPONENT          ACPI_CA_DEBUGGER
+        ACPI_MODULE_NAME    ("dbhistry")
+
+
+#define HI_NO_HISTORY       0
+#define HI_RECORD_HISTORY   1
+#define HISTORY_SIZE        40
+
+
+typedef struct HistoryInfo
+{
+    char                    *Command;
+    UINT32                  CmdNum;
+
+} HISTORY_INFO;
+
+
+static HISTORY_INFO         AcpiGbl_HistoryBuffer[HISTORY_SIZE];
+static UINT16               AcpiGbl_LoHistory = 0;
+static UINT16               AcpiGbl_NumHistory = 0;
+static UINT16               AcpiGbl_NextHistoryIndex = 0;
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiDbAddToHistory
+ *
+ * PARAMETERS:  CommandLine     - Command to add
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Add a command line to the history buffer.
+ *
+ ******************************************************************************/
+
+void
+AcpiDbAddToHistory (
+    char                    *CommandLine)
+{
+    UINT16                  CmdLen;
+    UINT16                  BufferLen;
+
+    /* Put command into the next available slot */
+
+    CmdLen = (UINT16) strlen (CommandLine);
+    if (!CmdLen)
+    {
+        return;
+    }
+
+    if (AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].Command != NULL)
+    {
+        BufferLen = (UINT16) strlen (
+            AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].Command);
+
+        if (CmdLen > BufferLen)
+        {
+            AcpiOsFree (AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].
+                Command);
+            AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].Command =
+                AcpiOsAllocate (CmdLen + 1);
+        }
+    }
+    else
+    {
+        AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].Command =
+            AcpiOsAllocate (CmdLen + 1);
+    }
+
+    strcpy (AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].Command,
+        CommandLine);
+
+    AcpiGbl_HistoryBuffer[AcpiGbl_NextHistoryIndex].CmdNum =
+        AcpiGbl_NextCmdNum;
+
+    /* Adjust indexes */
+
+    if ((AcpiGbl_NumHistory == HISTORY_SIZE) &&
+        (AcpiGbl_NextHistoryIndex == AcpiGbl_LoHistory))
+    {
+        AcpiGbl_LoHistory++;
+        if (AcpiGbl_LoHistory >= HISTORY_SIZE)
+        {
+            AcpiGbl_LoHistory = 0;
+        }
+    }
+
+    AcpiGbl_NextHistoryIndex++;
+    if (AcpiGbl_NextHistoryIndex >= HISTORY_SIZE)
+    {
+        AcpiGbl_NextHistoryIndex = 0;
+    }
+
+    AcpiGbl_NextCmdNum++;
+    if (AcpiGbl_NumHistory < HISTORY_SIZE)
+    {
+        AcpiGbl_NumHistory++;
+    }
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiDbDisplayHistory
+ *
+ * PARAMETERS:  None
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Display the contents of the history buffer
+ *
+ ******************************************************************************/
+
+void
+AcpiDbDisplayHistory (
+    void)
+{
+    UINT32                  i;
+    UINT16                  HistoryIndex;
+
+
+    HistoryIndex = AcpiGbl_LoHistory;
+
+    /* Dump entire history buffer */
+
+    for (i = 0; i < AcpiGbl_NumHistory; i++)
+    {
+        if (AcpiGbl_HistoryBuffer[HistoryIndex].Command)
+        {
+            AcpiOsPrintf ("%3u  %s\n",
+                AcpiGbl_HistoryBuffer[HistoryIndex].CmdNum,
+                AcpiGbl_HistoryBuffer[HistoryIndex].Command);
+        }
+
+        HistoryIndex++;
+        if (HistoryIndex >= HISTORY_SIZE)
+        {
+            HistoryIndex = 0;
+        }
+    }
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiDbGetFromHistory
+ *
+ * PARAMETERS:  CommandNumArg           - String containing the number of the
+ *                                        command to be retrieved
+ *
+ * RETURN:      Pointer to the retrieved command. Null on error.
+ *
+ * DESCRIPTION: Get a command from the history buffer
+ *
+ ******************************************************************************/
+
+char *
+AcpiDbGetFromHistory (
+    char                    *CommandNumArg)
+{
+    UINT32                  CmdNum;
+
+
+    if (CommandNumArg == NULL)
+    {
+        CmdNum = AcpiGbl_NextCmdNum - 1;
+    }
+
+    else
+    {
+        CmdNum = strtoul (CommandNumArg, NULL, 0);
+    }
+
+    return (AcpiDbGetHistoryByIndex (CmdNum));
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiDbGetHistoryByIndex
+ *
+ * PARAMETERS:  CmdNum              - Index of the desired history entry.
+ *                                    Values are 0...(AcpiGbl_NextCmdNum - 1)
+ *
+ * RETURN:      Pointer to the retrieved command. Null on error.
+ *
+ * DESCRIPTION: Get a command from the history buffer
+ *
+ ******************************************************************************/
+
+char *
+AcpiDbGetHistoryByIndex (
+    UINT32                  CmdNum)
+{
+    UINT32                  i;
+    UINT16                  HistoryIndex;
+
+
+    /* Search history buffer */
+
+    HistoryIndex = AcpiGbl_LoHistory;
+    for (i = 0; i < AcpiGbl_NumHistory; i++)
+    {
+        if (AcpiGbl_HistoryBuffer[HistoryIndex].CmdNum == CmdNum)
+        {
+            /* Found the command, return it */
+
+            return (AcpiGbl_HistoryBuffer[HistoryIndex].Command);
+        }
+
+        /* History buffer is circular */
+
+        HistoryIndex++;
+        if (HistoryIndex >= HISTORY_SIZE)
+        {
+            HistoryIndex = 0;
+        }
+    }
+
+    AcpiOsPrintf ("Invalid history number: %u\n", HistoryIndex);
+    return (NULL);
+}

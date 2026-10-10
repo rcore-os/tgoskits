@@ -11,7 +11,7 @@
 
 - `ax-sync` 是 OS 无关组件唯一的公共锁 facade；生产锁算法、PI 状态和 lockdep
   由 `ax-task::sync` 单一拥有；
-- `SpinLock` 和 `SpinRwLock` 由获取方法区分 preempt、IRQ-save 和 raw 上下文；
+- `RawSpinLock` 和 `RawSpinRwLock` 由获取方法区分 preempt、IRQ-save 和 raw 上下文；
 - `Mutex` 固定为可睡眠 PI mutex，不会按 feature 退化为 spin lock；
 - `ax-kspin`、`ax-kernel-guard`、`ax-lockdep` 以及第一方 crates.io `spin` 依赖已删除；
 - no-std 一次性初始化使用 `ax-lazyinit`，std 组件使用 `std::sync`；

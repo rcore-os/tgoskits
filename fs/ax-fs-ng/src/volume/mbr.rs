@@ -2,7 +2,7 @@ use alloc::{collections::BTreeSet, format, vec::Vec};
 
 use super::{
     BlockReader, BlockRegion, BlockVolume, DiskId, Error, PartitionId, PartitionTableKind,
-    PartitionUuid, Result,
+    PartitionUuid, Result, VolumeScan,
 };
 
 pub(crate) const MBR_SIGNATURE_OFFSET: usize = 510;
@@ -17,7 +17,7 @@ const FIRST_LOGICAL_PARTITION_ID: u32 = 5;
 pub(crate) fn scan_mbr<R: BlockReader>(
     reader: &mut R,
     disk_id: DiskId,
-) -> Result<Option<Vec<BlockVolume>>> {
+) -> Result<Option<VolumeScan>> {
     let Some(mbr) = read_sector0(reader)? else {
         return Ok(None);
     };
@@ -26,6 +26,9 @@ pub(crate) fn scan_mbr<R: BlockReader>(
     }
 
     let mut volumes = Vec::new();
+    // The MBR sector itself plus every EBR of the extended chain carry table
+    // metadata that raw writes must never touch.
+    let mut table_metadata = Vec::from([BlockRegion::new(0, 1)]);
     let disk_signature = le_u32(&mbr[DISK_SIGNATURE_OFFSET..DISK_SIGNATURE_OFFSET + 4]);
     let mut extended_root = None;
     for index in 0..PARTITION_ENTRY_COUNT {
@@ -60,10 +63,24 @@ pub(crate) fn scan_mbr<R: BlockReader>(
     }
 
     if let Some(extended) = extended_root {
-        scan_ebr_chain(reader, disk_id, disk_signature, extended, &mut volumes)?;
+        scan_ebr_chain(
+            reader,
+            disk_id,
+            disk_signature,
+            extended,
+            &mut volumes,
+            &mut table_metadata,
+        )?;
     }
 
-    Ok((!volumes.is_empty()).then_some(volumes))
+    // Keep the table metadata even when the table contains no data volumes.
+    // Falling back to a raw-disk scan here would erase the MBR/EBR
+    // protection record and let a destructive scratch probe overwrite an
+    // otherwise valid empty extended-partition chain.
+    Ok(Some(VolumeScan {
+        volumes,
+        table_metadata,
+    }))
 }
 
 pub(crate) fn has_protective_mbr(mbr: &[u8]) -> bool {
@@ -110,6 +127,7 @@ fn scan_ebr_chain<R: BlockReader>(
     disk_signature: u32,
     extended: BlockRegion,
     volumes: &mut Vec<BlockVolume>,
+    table_metadata: &mut Vec<BlockRegion>,
 ) -> Result<()> {
     let mut next_ebr = extended.start_block;
     let mut partition_id = FIRST_LOGICAL_PARTITION_ID;
@@ -128,6 +146,7 @@ fn scan_ebr_chain<R: BlockReader>(
         let Some(ebr) = read_sector(reader, next_ebr)? else {
             return Err(Error::InvalidPartitionTable);
         };
+        table_metadata.push(BlockRegion::new(next_ebr, 1));
         let data_entry = entry_at(&ebr, 0);
         let data_type = data_entry[4];
         let data_start = le_u32(&data_entry[8..12]) as u64;

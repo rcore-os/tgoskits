@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build axloader, install it as EFI/BOOT/BOOTX64.EFI on a USB EFI partition,
-# verify the copied file hash, and unmount the partition.
+# Install or migrate an x86_64 ESP to the A/B axloader layout.
 #
 # Default target:
 #   package: axloader
@@ -12,6 +11,7 @@
 # Examples:
 #   ./bootloader/axloader/scripts/build-install-efi.sh
 #   ./bootloader/axloader/scripts/build-install-efi.sh --device /dev/sdb1
+#   ./bootloader/axloader/scripts/build-install-efi.sh --fresh --device /dev/sdb1
 #   ./bootloader/axloader/scripts/build-install-efi.sh --no-clean --keep-mounted
 
 set -euo pipefail
@@ -29,8 +29,10 @@ DEVICE=""
 MOUNT_POINT="/tmp/ostool-efi"
 CLEAN=1
 KEEP_MOUNTED=0
+FRESH=0
 CARGO_BIN="${CARGO:-}"
 MOUNTED_BY_SCRIPT=0
+STAGING=""
 
 info() { printf "[%s] %s\n" "$SCRIPT_NAME" "$*"; }
 die() { printf "[%s] ERROR: %s\n" "$SCRIPT_NAME" "$*" >&2; exit 1; }
@@ -40,6 +42,7 @@ usage() {
 Usage: $SCRIPT_NAME [OPTIONS]
 
 Options:
+  --fresh             Install a new A/B layout without an existing BOOTX64.EFI.
   --device PATH       EFI partition to mount, for example /dev/sdb1.
   --label LABEL       Find EFI partition by filesystem label. Default: $USB_LABEL.
   --mount-point DIR   Temporary mount point. Default: $MOUNT_POINT.
@@ -54,6 +57,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --fresh)
+            FRESH=1
+            shift
+            ;;
         --device)
             DEVICE="${2:-}"
             [[ -n "$DEVICE" ]] || die "--device requires a path"
@@ -134,6 +141,7 @@ else
 fi
 
 cleanup() {
+    if [[ -n "$STAGING" ]]; then rm -rf -- "$STAGING"; fi
     if [[ "$MOUNTED_BY_SCRIPT" -eq 1 && "$KEEP_MOUNTED" -eq 0 ]]; then
         info "Unmounting $MOUNT_POINT"
         "${SUDO[@]}" umount "$MOUNT_POINT"
@@ -142,21 +150,20 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$REPO_ROOT"
+[[ "$TARGET" == "x86_64-unknown-uefi" && "$EFI_OUTPUT" == "BOOTX64.EFI" ]] || die "A/B migration currently supports only x86_64-unknown-uefi and BOOTX64.EFI"
 
 if [[ "$CLEAN" -eq 1 ]]; then
     info "Cleaning $PACKAGE for $TARGET"
     "$CARGO_BIN" clean -p "$PACKAGE" --target "$TARGET"
 fi
 
-info "Building $PACKAGE for $TARGET"
-"$CARGO_BIN" build \
-    -p "$PACKAGE" \
-    --target "$TARGET" \
-    --bin "$BIN" \
-    --release
+info "Building the loader and immutable launcher for $TARGET"
+"$CARGO_BIN" xtask axloader build --target "$TARGET"
 
 LOADER="$REPO_ROOT/target/$TARGET/release/$BIN.efi"
 [[ -f "$LOADER" ]] || die "built loader not found: $LOADER"
+LAUNCHER="$REPO_ROOT/target/$TARGET/release/axloader-launcher.efi"
+[[ -f "$LAUNCHER" ]] || die "built launcher not found: $LAUNCHER"
 
 info "Mounting $DEVICE at $MOUNT_POINT"
 "${SUDO[@]}" mkdir -p "$MOUNT_POINT"
@@ -170,19 +177,108 @@ fi
 
 EFI_DIR="$MOUNT_POINT/EFI/BOOT"
 TARGET_LOADER="$EFI_DIR/$EFI_OUTPUT"
-
-info "Installing $LOADER to $TARGET_LOADER"
+SLOTS="$MOUNT_POINT/EFI/AXLOADER"
+[[ "$(findmnt -n -o FSTYPE "$MOUNT_POINT")" == "vfat" ]] || die "EFI partition must be a writable FAT filesystem"
+[[ -w "$MOUNT_POINT" ]] || [[ "${#SUDO[@]}" -gt 0 ]] || die "ESP is not writable"
 "${SUDO[@]}" mkdir -p "$EFI_DIR"
-"${SUDO[@]}" cp "$LOADER" "$TARGET_LOADER"
+if [[ -d "$SLOTS" ]] && [[ -n "$(find "$SLOTS" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    die "ESP already contains files under EFI/AXLOADER; recover it offline before reinstalling"
+fi
+if [[ "$FRESH" -eq 0 ]]; then
+    [[ -f "$TARGET_LOADER" ]] || die "existing BOOTX64.EFI required for migration; use --fresh for a new ESP"
+fi
+
+STAGING="$(mktemp -d)"
+if [[ "$FRESH" -eq 1 ]]; then
+    cp -- "$LOADER" "$STAGING/A.EFI"
+    cp -- "$LOADER" "$STAGING/B.EFI"
+    python3 "$SCRIPT_DIR/init-ota-state.py" \
+        --fresh-image "$STAGING/A.EFI" \
+        --output "$STAGING"
+    if [[ -f "$TARGET_LOADER" ]]; then
+        cp -- "$TARGET_LOADER" "$STAGING/BOOTX64.PREVIOUS.EFI"
+    fi
+else
+    cp -- "$TARGET_LOADER" "$STAGING/A.EFI"
+    cp -- "$LOADER" "$STAGING/B.EFI"
+    python3 "$SCRIPT_DIR/init-ota-state.py" \
+        --stable "$STAGING/A.EFI" \
+        --trial "$STAGING/B.EFI" \
+        --output "$STAGING"
+fi
+cp -- "$LAUNCHER" "$STAGING/BOOTX64.EFI"
+for image in "$STAGING/A.EFI" "$STAGING/B.EFI" "$STAGING/BOOTX64.EFI"; do
+    python3 - "$image" <<'PY'
+import pathlib, sys
+b = pathlib.Path(sys.argv[1]).read_bytes()
+assert b[:2] == b'MZ' and len(b) >= 128, 'missing DOS header'
+p = int.from_bytes(b[0x3c:0x40], 'little')
+assert p + 94 <= len(b) and b[p:p+4] == b'PE\0\0', 'missing PE signature'
+assert b[p+4:p+6] == b'\x64\x86', 'not an x86_64 EFI image'
+assert b[p+24:p+26] == b'\x0b\x02' and b[p+92:p+94] == b'\x0a\x00', 'not an EFI application'
+PY
+done
+required="$((
+    $(stat -c %s "$STAGING/A.EFI")
+    + $(stat -c %s "$STAGING/B.EFI")
+    + $(stat -c %s "$STAGING/BOOTX64.EFI")
+    + $(stat -c %s "$STAGING/STATE0.BIN")
+    + $(stat -c %s "$STAGING/STATE1.BIN")
+    + 4194304
+))"
+if [[ "$FRESH" -eq 0 ]]; then
+    required="$((required + $(stat -c %s "$STAGING/A.EFI")))"
+elif [[ -f "$STAGING/BOOTX64.PREVIOUS.EFI" ]]; then
+    required="$((required + $(stat -c %s "$STAGING/BOOTX64.PREVIOUS.EFI")))"
+fi
+available="$(df -B1 --output=avail "$MOUNT_POINT" | tail -1 | tr -d ' ')"
+(( available > required )) || die "insufficient ESP space: need at least $required bytes available"
+
+if [[ "$FRESH" -eq 1 ]]; then
+    info "Preparing a fresh A/B layout"
+else
+    info "Preserving the old BOOTX64.EFI and preparing both slots"
+fi
+"${SUDO[@]}" mkdir -p "$SLOTS"
+if [[ "$FRESH" -eq 1 ]]; then
+    if [[ -f "$STAGING/BOOTX64.PREVIOUS.EFI" ]]; then
+        "${SUDO[@]}" cp -- "$STAGING/BOOTX64.PREVIOUS.EFI" "$SLOTS/BOOTX64.PREVIOUS.EFI"
+    fi
+else
+    "${SUDO[@]}" cp -- "$STAGING/A.EFI" "$SLOTS/BOOTX64.ORIGINAL.EFI"
+fi
+"${SUDO[@]}" cp -- "$STAGING/A.EFI" "$SLOTS/A.EFI"
+"${SUDO[@]}" cp -- "$STAGING/B.EFI" "$SLOTS/B.EFI"
+"${SUDO[@]}" cp -- "$STAGING/STATE0.BIN" "$SLOTS/STATE0.BIN"
+"${SUDO[@]}" cp -- "$STAGING/STATE1.BIN" "$SLOTS/STATE1.BIN"
+"${SUDO[@]}" cp -- "$STAGING/BOOTX64.EFI" "$EFI_DIR/BOOTX64.NEW.EFI"
+"${SUDO[@]}" sync
+for name in A.EFI B.EFI STATE0.BIN STATE1.BIN; do
+    [[ "$(sha256sum "$STAGING/$name" | awk '{print $1}')" == "$(sha256sum "$SLOTS/$name" | awk '{print $1}')" ]] || die "staged $name verification failed"
+done
+if [[ "$FRESH" -eq 0 ]]; then
+    [[ "$(sha256sum "$STAGING/A.EFI" | awk '{print $1}')" == "$(sha256sum "$SLOTS/BOOTX64.ORIGINAL.EFI" | awk '{print $1}')" ]] || die "legacy loader backup verification failed"
+fi
+if [[ "$FRESH" -eq 1 && -f "$STAGING/BOOTX64.PREVIOUS.EFI" ]]; then
+    [[ "$(sha256sum "$STAGING/BOOTX64.PREVIOUS.EFI" | awk '{print $1}')" == "$(sha256sum "$SLOTS/BOOTX64.PREVIOUS.EFI" | awk '{print $1}')" ]] || die "previous loader backup verification failed"
+fi
+[[ "$(sha256sum "$STAGING/BOOTX64.EFI" | awk '{print $1}')" == "$(sha256sum "$EFI_DIR/BOOTX64.NEW.EFI" | awk '{print $1}')" ]] || die "launcher staging verification failed"
+
+info "Replacing BOOTX64.EFI (power loss here requires recovery media)"
+"${SUDO[@]}" cp -- "$EFI_DIR/BOOTX64.NEW.EFI" "$TARGET_LOADER"
 
 info "Syncing USB writes"
 "${SUDO[@]}" sync
 
 info "Verifying SHA-256"
-source_hash="$(sha256sum "$LOADER" | awk '{print $1}')"
+source_hash="$(sha256sum "$STAGING/BOOTX64.EFI" | awk '{print $1}')"
 target_hash="$(sha256sum "$TARGET_LOADER" | awk '{print $1}')"
-printf "source: %s  %s\n" "$source_hash" "$LOADER"
+printf "source: %s  %s\n" "$source_hash" "$LAUNCHER"
 printf "target: %s  %s\n" "$target_hash" "$TARGET_LOADER"
 [[ "$source_hash" == "$target_hash" ]] || die "hash mismatch after copy"
 
-info "Installed $EFI_OUTPUT successfully"
+if [[ "$FRESH" -eq 1 ]]; then
+    info "Installed a fresh stable A/B layout; no first trial confirmation is required"
+else
+    info "Installed launcher with B as a direct-confirmation trial; first update ID printed above"
+fi

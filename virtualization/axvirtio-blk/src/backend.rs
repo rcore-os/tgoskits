@@ -23,6 +23,33 @@ pub trait BlockBackend: Send + Sync {
         self.cancel_pending_request();
     }
 
+    /// Quiesces the backend so that, once this returns `Ok(())`, no worker or
+    /// DMA activity remains and no new request starts until
+    /// [`resume`](Self::resume) is called.
+    ///
+    /// Backends that own asynchronous workers must drain any queued and
+    /// in-flight request before returning, while retaining the completion so a
+    /// resumed transport can still consume it. Synchronous backends have no
+    /// work to quiesce and keep the default.
+    fn suspend(&self) -> VirtioResult<()> {
+        Ok(())
+    }
+
+    /// Re-opens a backend quiesced by [`suspend`](Self::suspend).
+    fn resume(&self) -> VirtioResult<()> {
+        Ok(())
+    }
+
+    /// Stops the backend permanently, joining every worker before returning
+    /// `Ok(())`.
+    ///
+    /// After a successful stop no submission is accepted. A failure must not
+    /// be reported as success: the backend retains ownership of its worker and
+    /// backing storage and returns a typed error.
+    fn stop(&self) -> VirtioResult<()> {
+        Ok(())
+    }
+
     /// Returns whether queue processing must be deferred to a pollable runtime
     /// context because backend operations can block.
     fn requires_deferred_processing(&self) -> bool {

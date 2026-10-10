@@ -22,6 +22,7 @@ use crate::arch::x86_64::policy::{
         needs_interrupt_window, queue_pending_event, select_pending_event,
     },
     port_io::*,
+    types::UNRESOLVED_NEXT_RIP,
     *,
 };
 
@@ -150,6 +151,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         vcpu_id: usize,
         memory: ax_cpu::virtualization::SvmControlMemory<M>,
         xstate: GuestXstate<M>,
+        config: X86VcpuCreateConfig<H::Runtime>,
     ) -> X86VcpuResult<Self> {
         // SAFETY: AxVM constructs inactive leases on an initialized ring-0 CPU.
         let mut cpu =
@@ -166,7 +168,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             injecting_event: None,
             reinjection_event: None,
             guest_gif: true,
-            vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
+            vlapic: EmulatedLocalApic::<H>::new(config.runtime, vm_id, vcpu_id),
         };
         info!(
             "[HV] created SvmVcpu(vmcb: {:#x})",
@@ -474,7 +476,11 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         Ok(())
     }
 
-    fn set_rip(&mut self, rip: u64) {
+    /// Install an absolute guest `RIP`.
+    ///
+    /// Used when a device-serviced PIO/MMIO access retires on the next bound
+    /// entry; the value was computed while the instruction was still current.
+    pub fn set_rip(&mut self, rip: u64) -> X86VcpuResult {
         self.cpu
             .svm_controls_mut()
             .expect("SVM policy CPU")
@@ -482,6 +488,55 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
             .state
             .rip
             .set(rip);
+        Ok(())
+    }
+
+    /// Retirement `RIP` for a decoded access of `instruction_len` bytes.
+    ///
+    /// Mirrors [`Self::advance_rip`]'s preference for the hardware next-RIP
+    /// when the backend published one, but resolves the value while the exit
+    /// is still current so the owned record no longer depends on later VMCB
+    /// state.
+    fn next_rip_after(&self, instruction_len: u8) -> u64 {
+        let vmcb = self.cpu.svm_controls().expect("SVM policy CPU").image();
+        let rip = vmcb.state.rip.get();
+        let hardware_next_rip = vmcb.control.next_rip.get();
+        if hardware_next_rip > rip {
+            hardware_next_rip
+        } else {
+            rip.wrapping_add(u64::from(instruction_len))
+        }
+    }
+
+    /// Retires one decoded port-I/O or MMIO access.
+    ///
+    /// The in-core APIC fast paths already performed the access (and answer
+    /// [`X86VmExit::Nothing`]); they advance `RIP` here because no device
+    /// completion exists. Every device-serviced exit instead carries the
+    /// retirement `RIP` so the task layer installs it only after the device
+    /// service succeeded, which keeps the nested-fault retry at the same PC.
+    fn retire_decoded_access(
+        &mut self,
+        exit: X86VmExit,
+        instruction_len: u8,
+    ) -> X86VcpuResult<X86VmExit> {
+        match exit {
+            X86VmExit::Nothing => {
+                self.advance_rip(instruction_len)?;
+                Ok(X86VmExit::Nothing)
+            }
+            X86VmExit::InterruptEnd { vector } => {
+                // The local-APIC EOI write was fully emulated in-core, so it
+                // retires immediately while still carrying the vector the task
+                // layer needs for IOAPIC EOI propagation.
+                self.advance_rip(instruction_len)?;
+                Ok(X86VmExit::InterruptEnd { vector })
+            }
+            exit => {
+                let next_rip = self.next_rip_after(instruction_len);
+                Ok(exit.with_next_rip(next_rip))
+            }
+        }
     }
 
     pub fn set_cr(&mut self, cr_idx: usize, val: u64) -> X86VcpuResult {
@@ -936,24 +991,28 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
     fn handle_port_io_exit(&mut self, exit_info: &SvmExitInfo) -> X86VcpuResult<X86VmExit> {
         let io = self.svm_io_exit_info(exit_info)?;
         if !io.is_string {
-            self.set_rip(exit_info.exit_info_2);
+            // The device service has not run yet, so the owned record carries
+            // the retirement `RIP` instead of mutating it here.
+            let next_rip = exit_info.exit_info_2;
             return Ok(if io.is_in {
                 X86VmExit::PortIoRead {
                     port: io.port,
                     width: io.width,
+                    next_rip,
                 }
             } else {
                 X86VmExit::PortIoWrite {
                     port: io.port,
                     width: io.width,
                     data: self.regs().rax.get_bits(io.width.bits_range()),
+                    next_rip,
                 }
             });
         }
 
         let address_size = io.address_size.ok_or(X86VcpuError::InvalidData)?;
         if io.is_repeat && address_size.low(self.regs().rcx) == 0 {
-            self.set_rip(exit_info.exit_info_2);
+            self.set_rip(exit_info.exit_info_2)?;
             return Ok(X86VmExit::Nothing);
         }
         let direction = if io.is_in {
@@ -1036,7 +1095,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
     /// Commits one successfully emulated string-I/O element.
     pub fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> X86VcpuResult {
         if exit.instruction_complete() {
-            self.set_rip(exit.next_rip());
+            self.set_rip(exit.next_rip())?;
         }
         let regs = self.regs_mut();
         match exit.direction() {
@@ -1369,6 +1428,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                     reg_width: X86AccessWidth::Byte,
                     signed_ext: false,
                     byte_reg: Some(byte_reg),
+                    next_rip: UNRESOLVED_NEXT_RIP,
                 };
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
             }
@@ -1384,6 +1444,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                     reg_width: width,
                     signed_ext: false,
                     byte_reg: None,
+                    next_rip: UNRESOLVED_NEXT_RIP,
                 };
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
             }
@@ -1461,6 +1522,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                         reg_width: X86AccessWidth::Dword,
                         signed_ext: false,
                         byte_reg: None,
+                        next_rip: UNRESOLVED_NEXT_RIP,
                     }
                 };
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
@@ -1597,7 +1659,12 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
         width: X86AccessWidth,
     ) -> X86VcpuResult<X86VmExit> {
         if !local_apic {
-            return Ok(X86VmExit::MmioWrite { addr, width, data });
+            return Ok(X86VmExit::MmioWrite {
+                addr,
+                width,
+                data,
+                next_rip: UNRESOLVED_NEXT_RIP,
+            });
         }
 
         let offset = addr.as_usize() - X86_LOCAL_APIC_GPA;
@@ -1914,11 +1981,11 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
     pub fn new_with_config(
         vm_id: usize,
         vcpu_id: usize,
-        _config: X86VcpuCreateConfig,
+        config: X86VcpuCreateConfig<H::Runtime>,
         memory: ax_cpu::virtualization::SvmControlMemory<M>,
         xstate: GuestXstate<M>,
     ) -> X86VcpuResult<Self> {
-        Self::create(vm_id, vcpu_id, memory, xstate)
+        Self::create(vm_id, vcpu_id, memory, xstate, config)
     }
 
     pub fn set_entry(&mut self, entry: X86GuestPhysAddr) -> X86VcpuResult {
@@ -1928,6 +1995,14 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
 
     pub fn set_nested_page_table(&mut self, config: X86NestedPagingConfig) -> X86VcpuResult {
         self.npt_root = Some(config.root_paddr);
+        self.cpu
+            .svm_controls_mut()
+            .expect("SVM policy CPU")
+            .image_mut()
+            .control
+            .nested_cr3
+            .set(config.root_paddr.as_usize() as u64);
+        self.flush_guest_tlb();
         Ok(())
     }
 
@@ -1983,18 +2058,29 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                     let msr = self.regs().rcx as u32;
                     if (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr) {
                         self.handle_apic_msr_access(&exit_info, msr)?
-                    } else {
-                        self.advance_rip(2)?;
-                        if exit_info.exit_info_1 == 0 {
+                    } else if exit_info.exit_info_1 == 0 {
+                        // Device-serviced MSR reads keep the retirement `RIP`
+                        // in the owned record; the task layer installs it only
+                        // after the device service succeeded.
+                        let addr = X86MsrAddr::new(self.regs().rcx as _);
+                        self.retire_decoded_access(
                             X86VmExit::MsrRead {
-                                addr: X86MsrAddr::new(self.regs().rcx as _),
-                            }
-                        } else {
+                                addr,
+                                next_rip: UNRESOLVED_NEXT_RIP,
+                            },
+                            2,
+                        )?
+                    } else {
+                        let addr = X86MsrAddr::new(self.regs().rcx as _);
+                        let value = self.read_edx_eax();
+                        self.retire_decoded_access(
                             X86VmExit::MsrWrite {
-                                addr: X86MsrAddr::new(self.regs().rcx as _),
-                                value: self.read_edx_eax(),
-                            }
-                        }
+                                addr,
+                                value,
+                                next_rip: UNRESOLVED_NEXT_RIP,
+                            },
+                            2,
+                        )?
                     }
                 }
                 SvmExitCode::Npf => {
@@ -2005,8 +2091,7 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
                         && let Some((mmio_exit, instr_len)) =
                             self.decode_npt_mmio_access(&exit_info, info.fault_guest_paddr, write)?
                     {
-                        self.advance_rip(instr_len)?;
-                        mmio_exit
+                        self.retire_decoded_access(mmio_exit, instr_len)?
                     } else {
                         X86VmExit::NestedPageFault {
                             addr: info.fault_guest_paddr,
@@ -2110,6 +2195,21 @@ impl<H: X86HostOps, M: ControlMemory> SvmVcpu<H, M> {
 
     pub fn handle_eoi(&mut self) -> Option<u8> {
         self.handle_local_apic_eoi()
+    }
+
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    pub fn suspend_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.suspend_timer().map_err(Into::into)
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    pub fn resume_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.resume_timer().map_err(Into::into)
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    pub fn stop_timer(&mut self) -> X86VcpuResult {
+        self.vlapic.stop_timer().map_err(Into::into)
     }
 
     pub fn set_return_value(&mut self, val: usize) {

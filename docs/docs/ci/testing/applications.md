@@ -5,11 +5,11 @@ sidebar_label: "应用验证"
 
 # 应用验证
 
-`.github/workflows/starry-apps.yml` 为 Starry 应用提供独立于主 CI 的定时和手动验证。工作流使用 `ci_plan.py` 的 `starry-apps` 模式读取专用检查清单，再调用共享矩阵执行器；它不使用主 CI 的 PR 变更范围或 push/PR 去重结果。
+`.github/workflows/starry-apps.yml` 为 Starry 应用提供独立于主 CI 的定时和手动验证。工作流使用 `ci_plan.py` 的 `starry-apps` 模式只读取专用检查清单，再调用共享矩阵执行器；它不使用主 CI 的 PR 变更范围或 push/PR 去重结果，也不执行共享 `benchmarks.toml` 中的性能 check。
 
 ## 1. 事件与选择
 
-应用工作流只有 `schedule` 和 `workflow_dispatch` 两种入口。其检查集合由 `.github/ci/checks/starry-apps.toml` 和布尔输入共同决定。
+应用工作流只有 `schedule` 和 `workflow_dispatch` 两种入口。smoke 集合由 `.github/ci/checks/starry-apps.toml` 和布尔输入共同决定；性能 check 由独立的 [基准验证](benchmarks.md) 工作流承担，不在本工作流中规划。
 
 ### 1.1 定时运行
 
@@ -25,7 +25,7 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 
 ## 2. 检查内容
 
-`starry-apps.toml` 使用 `phase=starry_apps`。它没有主 CI 的 `static` 和 `test` 阶段划分，所有选中项进入同一个矩阵。
+`starry-apps.toml` 使用 `phase=starry_apps`，只提供 smoke、NixOS 和 Clippy 行，没有主 CI 的 `static` 和 `test` 阶段划分。共享的 `benchmarks.toml` 使用 `phase=benchmark`，由基准工作流通过 `build_benchmarks_plan()` 读取。
 
 ### 2.1 应用 smoke
 
@@ -39,6 +39,8 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 | LoongArch | `cargo xtask starry app qemu --all --arch loongarch64` | `ubuntu-base` |
 
 这些行设置 `apk_region=us` 和 `container_preflight=qemu-user`。应用检查的结果不能替代主 CI 的系统套件、板卡测试或软件包发布结果。
+
+smoke 矩阵只来自 `starry-apps.toml`；`build_starry_apps_plan()` 返回 `starry_apps_matrix`，其中只有应用 smoke、NixOS 和可选 Clippy 行。性能 QEMU 与板卡矩阵已经迁移到 [基准验证](benchmarks.md)，因此应用工作流不再准备 `tg-xtask` artifact，也不会因为性能用例失败而影响应用 smoke 的调度边界。
 
 ### 2.2 NixOS 与 Clippy
 

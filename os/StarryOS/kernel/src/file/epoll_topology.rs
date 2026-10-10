@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::epoll::EpollInner;
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, RawSpinLock, RawSpinLockGuard},
+    sync::{RawSpinLock, RawSpinLockGuard},
 };
 
 const MAX_NESTED_EPOLL_EDGES: usize = 4;
@@ -25,8 +25,8 @@ pub(super) struct EpollTopologyLink {
 
 #[derive(Default)]
 pub(super) struct EpollTopology {
-    parents: IrqMutex<Vec<EpollTopologyLink>>,
-    children: IrqMutex<Vec<EpollTopologyLink>>,
+    parents: RawSpinLock<Vec<EpollTopologyLink>>,
+    children: RawSpinLock<Vec<EpollTopologyLink>>,
 }
 
 #[derive(Clone, Copy)]
@@ -80,13 +80,13 @@ pub(super) fn reserve_nested_link(
     source
         .topology
         .children
-        .lock()
+        .lock_irqsave()
         .try_reserve(1)
         .map_err(|_| StarryError::NoMemory)?;
     target
         .topology
         .parents
-        .lock()
+        .lock_irqsave()
         .try_reserve(1)
         .map_err(|_| StarryError::NoMemory)?;
     Ok(())
@@ -98,11 +98,15 @@ pub(super) fn commit_nested_link(
     target: &Arc<EpollInner>,
     link: &EpollTopologyLink,
 ) {
-    source.topology.children.lock().push(link.clone());
-    target.topology.parents.lock().push(EpollTopologyLink {
-        id: link.id,
-        node: Arc::downgrade(source),
-    });
+    source.topology.children.lock_irqsave().push(link.clone());
+    target
+        .topology
+        .parents
+        .lock_irqsave()
+        .push(EpollTopologyLink {
+            id: link.id,
+            node: Arc::downgrade(source),
+        });
 }
 
 /// Remove both directions while the caller holds the topology mutex.
@@ -110,13 +114,13 @@ pub(super) fn detach_nested_link(source: &EpollInner, link: &EpollTopologyLink) 
     source
         .topology
         .children
-        .lock()
+        .lock_irqsave()
         .retain(|child| child.id != link.id);
     if let Some(child) = link.node.upgrade() {
         child
             .topology
             .parents
-            .lock()
+            .lock_irqsave()
             .retain(|parent| parent.id != link.id);
     }
 }
@@ -179,13 +183,13 @@ impl EpollTopology {
         };
 
         loop {
-            let len = links.lock().len();
+            let len = links.lock_irqsave().len();
             let mut snapshot = Vec::new();
             snapshot
                 .try_reserve(len)
                 .map_err(|_| StarryError::NoMemory)?;
 
-            let mut links = links.lock();
+            let mut links = links.lock_irqsave();
             links.retain(|link| link.node.strong_count() != 0);
             if links.len() > snapshot.capacity() {
                 continue;

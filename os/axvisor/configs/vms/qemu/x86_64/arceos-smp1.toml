@@ -18,8 +18,6 @@ phys_cpu_sets = [1]
 [kernel]
 # The entry point of the BIOS image.
 entry_point = 0x8000
-# The location of image: "memory" | "fs".
-image_location = "fs"
 # The file path of the kernel image.
 kernel_path = "/path/arceos-helloworld-x86_64.bin"
 # The load address of the kernel image.

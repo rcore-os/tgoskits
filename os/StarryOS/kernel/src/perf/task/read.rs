@@ -6,7 +6,11 @@ use super::*;
 /// currently running. For `perf stat -- cmd` the child has already exited by the
 /// time the parent reads, so `running == false` and `accumulated` is final.
 pub(crate) fn read_counter(ptc: &Arc<PerTaskCounter>) -> crate::StarryResult<(u64, u64, u64)> {
-    let owner = ptc.run_state.lock().running().map(PmuRunLease::owner);
+    let owner = ptc
+        .run_state
+        .lock_irqsave()
+        .running()
+        .map(PmuRunLease::owner);
     if let Some(owner) = owner {
         cpu_worker::read_task_counter(Arc::clone(ptc), owner)
     } else {
@@ -23,7 +27,7 @@ pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<(u
         .load(Ordering::Acquire)
         .saturating_add(ptc.live_enabled_time(now));
     let mut time_running = ptc.time_running_ns.load(Ordering::Acquire);
-    let run_state = ptc.run_state.lock();
+    let run_state = ptc.run_state.lock_irqsave();
     if let Some(lease) = run_state.running()
         && lease.owner().as_usize() == ax_hal::percpu::this_cpu_id()
     {

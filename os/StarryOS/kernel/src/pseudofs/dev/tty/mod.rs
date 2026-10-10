@@ -37,7 +37,7 @@ use crate::{
     StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
-    sync::{IrqMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
     task::{PgidNumber, PidView, Process, current_user_task, send_signal_to_process_group},
 };
 
@@ -88,7 +88,7 @@ pub struct Tty<R, W> {
     termios_update: Mutex<()>,
     is_ptm: bool,
     open_count: AtomicUsize,
-    binding: IrqMutex<Option<Weak<dyn Any + Send + Sync>>>,
+    binding: RawSpinLock<Option<Weak<dyn Any + Send + Sync>>>,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -104,7 +104,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             termios_update: Mutex::new(()),
             is_ptm,
             open_count: AtomicUsize::new(0),
-            binding: IrqMutex::new(None),
+            binding: RawSpinLock::new(None),
         })
     }
 }
@@ -129,7 +129,7 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
                 tty: self.clone(),
                 location,
             });
-            *self.binding.lock() = Some(Arc::downgrade(&binding));
+            *self.binding.lock_irqsave() = Some(Arc::downgrade(&binding));
             Ok::<_, StarryError>(binding)
         })? {
             return Err(StarryError::ResourceBusy);
@@ -252,11 +252,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             use linux_raw_sys::ioctl::*;
             match cmd {
                 TCGETS => {
-                    let termios = *self.terminal.termios.lock().as_ref().deref();
+                    let termios = *self.terminal.termios.lock_irqsave().as_ref().deref();
                     (arg as *mut Termios).vm_write(current, termios)?;
                 }
                 TCGETS2 => {
-                    let termios = *self.terminal.termios.lock().as_ref();
+                    let termios = *self.terminal.termios.lock_irqsave().as_ref();
                     (arg as *mut Termios2).vm_write(current, termios)?;
                 }
                 TCSETS | TCSETSF | TCSETSW => {
@@ -309,13 +309,13 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     self.terminal.job_control.set_foreground(&pg)?;
                 }
                 TIOCGWINSZ => {
-                    let window_size = *self.terminal.window_size.lock();
+                    let window_size = *self.terminal.window_size.lock_irqsave();
                     (arg as *mut WindowSize).vm_write(current, window_size)?;
                 }
                 TIOCSWINSZ => {
                     let window_size = (arg as *const WindowSize).vm_read(current)?;
                     let old = {
-                        let mut guard = self.terminal.window_size.lock();
+                        let mut guard = self.terminal.window_size.lock_irqsave();
                         let old = *guard;
                         *guard = window_size;
                         old
@@ -367,7 +367,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
                     let binding = self
                         .binding
-                        .lock()
+                        .lock_irqsave()
                         .as_ref()
                         .and_then(Weak::upgrade)
                         .unwrap_or(this);
@@ -379,7 +379,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .session()
                         .unset_terminal(&binding)
                     {
-                        *self.binding.lock() = None;
+                        *self.binding.lock_irqsave() = None;
                         self.terminal.job_control.clear_session(&session);
                         // TODO: If the process was session leader, send SIGHUP and
                         // SIGCONT to the foreground process group and all processes
@@ -418,7 +418,7 @@ fn apply_termios_update<W: TtyWrite>(
 ) -> StarryResult<()> {
     let old = terminal.load_termios();
     writer.update_termios(old.as_ref(), termios.as_ref(), drain, &mut || {
-        *terminal.termios.lock() = termios.clone();
+        *terminal.termios.lock_irqsave() = termios.clone();
     })
 }
 
@@ -580,5 +580,4 @@ mod tests {
         );
         assert_eq!(terminal.load_termios().baudrate(), old_baudrate);
     }
-
 }

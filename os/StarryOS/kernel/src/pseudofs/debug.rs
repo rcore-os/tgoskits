@@ -1,8 +1,6 @@
 use alloc::sync::Arc;
 
-#[cfg(any(feature = "qperf-metrics", feature = "uaccess-lock-regression"))]
-use super::SimpleFile;
-use super::{DirMaker, DirMapping, SimpleDir, SimpleFs};
+use super::{DirMaker, DirMapping, SimpleDir, SimpleFile, SimpleFs};
 
 const DEBUGFS_MAGIC: u32 = 0x64626720;
 
@@ -16,6 +14,10 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     let tracing = crate::tracepoint::init_tracing_dir(fs.clone());
     root.add("tracing", tracing);
+    root.add(
+        "net_queue",
+        SimpleFile::new_regular(fs.clone(), || Ok(render_net_queue())),
+    );
     #[cfg(feature = "uaccess-lock-regression")]
     root.add(
         "uaccess_lock_regression",
@@ -48,7 +50,101 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
         "scheduler_metrics",
         SimpleFile::new_regular(fs.clone(), || Ok(render_scheduler_metrics())),
     );
+    #[cfg(feature = "qperf-metrics")]
+    root.add(
+        "file_lock_metrics",
+        SimpleFile::new_regular(fs.clone(), || Ok(crate::syscall::render_file_lock_metrics())),
+    );
     SimpleDir::new_maker(fs, Arc::new(root))
+}
+
+/// Column order shared by the `net_queue` header and every record.
+const NET_QUEUE_COLUMNS: [&str; 16] = [
+    "discovery_order",
+    "group",
+    "interface",
+    "owner_cpu",
+    "irq",
+    "schedule",
+    "missed",
+    "poll_batches",
+    "budget_exhaustion",
+    "spurious",
+    "probe_deferred",
+    "rearm_race",
+    "last_irq_cpu",
+    "last_poll_cpu",
+    "irq_to_poll_remote_wake",
+    "rx_drops",
+];
+
+/// Renders `/sys/kernel/debug/net_queue`: one header line and one line per poll
+/// group, each with the group's stable identity followed by its counters.
+///
+/// The first column is the device's discovery order, which is not the published
+/// interface order shown by the `interface` column.  A field that has no value
+/// yet (interface not bound, CPU never recorded) reads as `-`, and a body with
+/// nothing but the header means the runtime has not been published.  This is a
+/// diagnostic view, not a stable ABI.
+fn render_net_queue() -> alloc::string::String {
+    render_queue_snapshots(&ax_net::net_queue_snapshots(), |interface| {
+        ax_net::interface_by_id(interface).map(|info| info.name)
+    })
+}
+
+fn render_queue_snapshots(
+    snapshots: &[ax_net::NetQueueSnapshot],
+    resolve_interface: impl Fn(ax_net::InterfaceId) -> Option<alloc::string::String>,
+) -> alloc::string::String {
+    use core::fmt::Write;
+
+    let mut output = alloc::string::String::from("#");
+    for column in NET_QUEUE_COLUMNS {
+        output.push(' ');
+        output.push_str(column);
+    }
+    output.push('\n');
+
+    for snapshot in snapshots {
+        let identity = snapshot.identity;
+        let stats = snapshot.stats;
+        let interface = snapshot
+            .interface
+            .and_then(&resolve_interface)
+            .unwrap_or_else(|| alloc::string::String::from("-"));
+        write!(
+            output,
+            "{} {} {} {} {} {} {} {} {} {} {} {} ",
+            identity.discovery_order,
+            identity.group_id.get(),
+            interface,
+            identity.owner_cpu,
+            stats.irq,
+            stats.schedule,
+            stats.missed,
+            stats.poll_batches,
+            stats.budget_exhaustion,
+            stats.spurious,
+            stats.probe_deferred,
+            stats.rearm_race,
+        )
+        .expect("write to String cannot fail");
+        render_optional_cpu(&mut output, stats.last_irq_cpu);
+        output.push(' ');
+        render_optional_cpu(&mut output, stats.last_poll_cpu);
+        writeln!(output, " {} {}", stats.irq_to_poll_remote_wake, stats.rx_drops)
+            .expect("write to String cannot fail");
+    }
+    output
+}
+
+fn render_optional_cpu(output: &mut alloc::string::String, cpu: Option<usize>) {
+    use core::fmt::Write;
+
+    match cpu {
+        Some(cpu) => write!(output, "{cpu}").expect("write to String cannot fail"),
+        None => output.push('-'),
+    }
 }
 
 #[cfg(feature = "qperf-metrics")]
@@ -1223,5 +1319,106 @@ mod tests {
                 "context_switches_migrated",
             ]
         );
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod net_queue_tests {
+    use alloc::{string::String, vec::Vec};
+
+    use ax_net::{InterfaceId, NetPollGroupId, NetQueueIdentity, NetQueueSnapshot, NetQueueStats};
+
+    use super::render_queue_snapshots;
+
+    fn counters() -> NetQueueStats {
+        NetQueueStats {
+            irq: 1,
+            schedule: 2,
+            missed: 3,
+            poll_batches: 4,
+            budget_exhaustion: 5,
+            spurious: 6,
+            probe_deferred: 7,
+            rearm_race: 8,
+            last_irq_cpu: Some(9),
+            last_poll_cpu: Some(10),
+            irq_to_poll_remote_wake: 11,
+            rx_drops: 12,
+        }
+    }
+
+    fn snapshot(interface: Option<InterfaceId>, stats: NetQueueStats) -> NetQueueSnapshot {
+        NetQueueSnapshot {
+            identity: NetQueueIdentity {
+                discovery_order: 100,
+                group_id: NetPollGroupId::new(101),
+                owner_cpu: 102,
+            },
+            interface,
+            stats,
+        }
+    }
+
+    #[test]
+    fn net_queue_columns_match_the_header_and_every_counter_keeps_its_column() {
+        let rendered = render_queue_snapshots(
+            &[snapshot(Some(InterfaceId::new(2)), counters())],
+            |interface| (interface == InterfaceId::new(2)).then(|| String::from("eth0")),
+        );
+
+        let mut lines = rendered.lines();
+        let header = lines.next().expect("header line");
+        // Spelled out instead of comparing against NET_QUEUE_COLUMNS, so that
+        // renaming or reordering a label in that constant fails here too.
+        assert_eq!(
+            header
+                .trim_start_matches('#')
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            [
+                "discovery_order",
+                "group",
+                "interface",
+                "owner_cpu",
+                "irq",
+                "schedule",
+                "missed",
+                "poll_batches",
+                "budget_exhaustion",
+                "spurious",
+                "probe_deferred",
+                "rearm_race",
+                "last_irq_cpu",
+                "last_poll_cpu",
+                "irq_to_poll_remote_wake",
+                "rx_drops",
+            ]
+        );
+
+        let record = lines.next().expect("record line");
+        assert!(lines.next().is_none(), "one line per snapshot");
+        // Every column carries a distinct value, so swapping two counters or
+        // replacing an identity column with a constant fails here.
+        assert_eq!(
+            record.split_whitespace().collect::<Vec<_>>(),
+            [
+                "100", "101", "eth0", "102", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                "11", "12",
+            ]
+        );
+    }
+
+    #[test]
+    fn net_queue_renders_missing_values_as_dashes() {
+        let mut stats = counters();
+        stats.last_irq_cpu = None;
+        stats.last_poll_cpu = None;
+        let rendered = render_queue_snapshots(&[snapshot(None, stats)], |_| None);
+
+        let record = rendered.lines().nth(1).expect("record line");
+        let fields = record.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields[2], "-", "unbound interface");
+        assert_eq!(fields[12], "-", "no IRQ CPU recorded");
+        assert_eq!(fields[13], "-", "no poll CPU recorded");
     }
 }

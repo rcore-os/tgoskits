@@ -1,10 +1,12 @@
-# Starry apps skipped by default app discovery.
-apps/starry/orangepi-5-plus-uvc
-apps/starry/orangepi-5-plus-uvc-rknn
+# Starry apps skipped by default app discovery. Nightly benchmark apps live
+# under `benchmarks/starry` and carry their own ignore list in
+# `benchmarks/.ignore`.
 apps/starry/llama-cpp
 apps/starry/deepseek-tui
 apps/starry/doom
 apps/starry/gdb-smoke
+apps/starry/qemu/ltp-hackbench
+apps/starry/qemu/ltp-netstress
 apps/starry/mariadb
 apps/starry/postgresql
 apps/starry/musl-dynamic-smoke
@@ -19,6 +21,7 @@ apps/starry/wayland
 apps/starry/resource-monitor
 apps/starry/claw-code-regression
 apps/starry/aka00-tennis-yolo
+apps/starry/sg2002-voice-commands
 apps/starry/ebpf/kret
 apps/starry/ebpf/mytrace
 apps/starry/ebpf/rawtp
@@ -48,8 +51,3 @@ apps/starry/python-net
 apps/starry/qt-calc
 apps/starry/virgl-test
 apps/starry/openssh
-apps/starry/qemu/ltp-hackbench
-apps/starry/qemu/ltp-netstress
-
-# Benchmarks run only when explicitly selected.
-apps/starry/sysbench

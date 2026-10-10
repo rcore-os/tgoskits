@@ -33,7 +33,7 @@ use super::{
 use crate::{
     Errno, StarryError, StarryResult,
     mm::{VmMutPtr, vm_load, vm_write_slice},
-    sync::{IrqMutex, Mutex as BlockingMutex, Mutex},
+    sync::{Mutex, RawSpinLock},
     task::future::IrqNotify,
 };
 
@@ -115,8 +115,8 @@ fn check_control_access(
 }
 
 pub(crate) struct LiveDeviceState {
-    device: BlockingMutex<Device>,
-    interfaces: BlockingMutex<BTreeMap<u8, LiveInterfaceSession>>,
+    device: Mutex<Device>,
+    interfaces: Mutex<BTreeMap<u8, LiveInterfaceSession>>,
 }
 
 pub(super) struct IsoTransferResult {
@@ -274,7 +274,7 @@ fn wait_control(
 }
 
 pub(super) struct UsbFsManager {
-    state: IrqMutex<UsbFsState>,
+    state: RawSpinLock<UsbFsState>,
     open_lock: Mutex<()>,
     usb_activity: UsbActivity,
     irq_notify: IrqNotify,
@@ -305,7 +305,7 @@ pub(super) struct UsbDeviceLease {
 
 impl UsbDeviceLease {
     fn ensure_current(&self) -> StarryResult<()> {
-        let state = self.manager.state.lock();
+        let state = self.manager.state.lock_irqsave();
         if state
             .devices
             .get(&self.stable_id)
@@ -490,7 +490,7 @@ impl UsbFsManager {
         }
 
         Self {
-            state: IrqMutex::new(UsbFsState {
+            state: RawSpinLock::new(UsbFsState {
                 hosts,
                 devices,
                 refresh_cursor: HostRefreshCursor::default(),
@@ -529,14 +529,14 @@ impl UsbFsManager {
 
     pub(super) fn has_hosts(&self) -> bool {
         self.state
-            .lock()
+            .lock_irqsave()
             .hosts
             .iter()
             .any(|host| host.refresh.is_enabled())
     }
 
     fn fold_pending_topology_events(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         for host in &mut state.hosts {
             if irq::take_dirty_for_device(host.device_id) {
                 host.refresh.mark_dirty();
@@ -545,7 +545,7 @@ impl UsbFsManager {
     }
 
     fn take_refresh_candidate(&self) -> Option<(RDriveDeviceId, u8)> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let UsbFsState {
             hosts,
             devices,
@@ -566,7 +566,7 @@ impl UsbFsManager {
     }
 
     fn defer_host_refresh(&self, device_id: RDriveDeviceId) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if let Some(host) = state
             .hosts
             .iter_mut()
@@ -578,7 +578,7 @@ impl UsbFsManager {
 
     fn finish_host_refresh(&self, device_id: RDriveDeviceId) {
         let dirty_after_probe = irq::take_dirty_for_device(device_id);
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let Some(host) = state
             .hosts
             .iter_mut()
@@ -593,7 +593,7 @@ impl UsbFsManager {
     }
 
     fn disable_missing_host(&self, device_id: RDriveDeviceId) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if let Some(host) = state
             .hosts
             .iter_mut()
@@ -623,7 +623,7 @@ impl UsbFsManager {
     }
 
     fn has_runnable_refresh(&self) -> bool {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         state.hosts.iter().any(|host| {
             host.refresh.is_queued()
                 && !state
@@ -635,7 +635,7 @@ impl UsbFsManager {
 
     fn queue_host_refresh(&self, device_id: RDriveDeviceId) {
         {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let Some(host) = state
                 .hosts
                 .iter_mut()
@@ -653,7 +653,7 @@ impl UsbFsManager {
         // it starts are covered by that probe rather than scheduling a second
         // pass.
         irq::take_dirty_for_device(device_id);
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if let Some(host) = state
             .hosts
             .iter_mut()
@@ -665,7 +665,7 @@ impl UsbFsManager {
 
     fn finish_initial_probe(&self, device_id: RDriveDeviceId) {
         let dirty_during_probe = irq::take_dirty_for_device(device_id);
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         if let Some(host) = state
             .hosts
             .iter_mut()
@@ -745,7 +745,7 @@ impl UsbFsManager {
     }
 
     pub(super) fn bus_numbers(&self) -> Vec<u8> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         state
             .hosts
             .iter()
@@ -755,7 +755,7 @@ impl UsbFsManager {
     }
 
     pub(super) fn device_numbers(&self, bus_num: u8) -> Vec<u8> {
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         state
             .devices
             .values()
@@ -774,12 +774,16 @@ impl UsbFsManager {
         bus_num: u8,
         device_num: u8,
     ) -> Option<(UsbDeviceSnapshot, u64)> {
-        self.state.lock().devices.values().find_map(|record| {
-            (record.present
-                && record.snapshot.bus_num == bus_num
-                && record.snapshot.device_num == device_num)
-                .then(|| (record.snapshot.clone(), record.generation))
-        })
+        self.state
+            .lock_irqsave()
+            .devices
+            .values()
+            .find_map(|record| {
+                (record.present
+                    && record.snapshot.bus_num == bus_num
+                    && record.snapshot.device_num == device_num)
+                    .then(|| (record.snapshot.clone(), record.generation))
+            })
     }
 
     pub(super) fn kernel_driver_name(
@@ -789,14 +793,19 @@ impl UsbFsManager {
         generation: u64,
         interface: u8,
     ) -> Option<&'static str> {
-        let live = self.state.lock().devices.values().find_map(|record| {
-            (record.present
-                && record.snapshot.bus_num == bus_num
-                && record.snapshot.device_num == device_num
-                && record.generation == generation)
-                .then(|| record.live_device.clone())
-                .flatten()
-        });
+        let live = self
+            .state
+            .lock_irqsave()
+            .devices
+            .values()
+            .find_map(|record| {
+                (record.present
+                    && record.snapshot.bus_num == bus_num
+                    && record.snapshot.device_num == device_num
+                    && record.generation == generation)
+                    .then(|| record.live_device.clone())
+                    .flatten()
+            });
         live.and_then(|device| {
             device
                 .interfaces
@@ -815,7 +824,7 @@ impl UsbFsManager {
     ) -> StarryResult<UsbDeviceLease> {
         let _open_guard = self.open_lock.lock();
         let stable_id = {
-            let state = self.state.lock();
+            let state = self.state.lock_irqsave();
             state
                 .devices
                 .iter()
@@ -835,7 +844,7 @@ impl UsbFsManager {
 
         self.ensure_live_device(stable_id)?;
 
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let record = state
             .devices
             .get_mut(&stable_id)
@@ -949,7 +958,7 @@ impl UsbFsManager {
             connected: devices,
             disconnected,
         } = changes;
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         let Some(host_index) = state
             .hosts
             .iter()
@@ -1042,7 +1051,7 @@ impl UsbFsManager {
         }
 
         let action = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let record = state
                 .devices
                 .get_mut(&stable_id)
@@ -1079,7 +1088,7 @@ impl UsbFsManager {
                 let mut live_device = match self.open_device(host_device_id, &info) {
                     Ok(device) => device,
                     Err(err) => {
-                        let mut state = self.state.lock();
+                        let mut state = self.state.lock_irqsave();
                         if let Some(record) = state.devices.get_mut(&stable_id)
                             && record.present
                             && record.generation == generation
@@ -1091,7 +1100,7 @@ impl UsbFsManager {
                         return Err(err);
                     }
                 };
-                let mut state = self.state.lock();
+                let mut state = self.state.lock_irqsave();
                 let record = state
                     .devices
                     .get_mut(&stable_id)
@@ -1102,8 +1111,8 @@ impl UsbFsManager {
                     return Err(crate::StarryError::NoSuchDevice);
                 }
                 record.live_device = Some(Arc::new(LiveDeviceState {
-                    device: BlockingMutex::new(live_device),
-                    interfaces: BlockingMutex::new(BTreeMap::new()),
+                    device: Mutex::new(live_device),
+                    interfaces: Mutex::new(BTreeMap::new()),
                 }));
                 Ok(())
             }
@@ -1143,7 +1152,7 @@ impl UsbFsManager {
 
     fn snapshot_by_id(&self, stable_id: UsbStableId) -> crate::StarryResult<UsbDeviceSnapshot> {
         self.state
-            .lock()
+            .lock_irqsave()
             .devices
             .get(&stable_id)
             .map(|record| record.snapshot.clone())
@@ -1152,7 +1161,7 @@ impl UsbFsManager {
 
     fn live_device_by_id(&self, stable_id: UsbStableId) -> StarryResult<Arc<LiveDeviceState>> {
         self.state
-            .lock()
+            .lock_irqsave()
             .devices
             .get(&stable_id)
             .and_then(|record| record.live_device.as_ref().cloned())
@@ -1188,10 +1197,16 @@ impl UsbFsManager {
         let interfaces = live_device.interfaces.lock();
         check_control_access(&interfaces, session_id, &setup)?;
         match direction_from_raw(b_request_type) {
-            Direction::In => wait_control(live_device.clone(), TransferRequest::control_in(setup, data))
-                .map(|completion| completion.actual_length),
-            Direction::Out => wait_control(live_device.clone(), TransferRequest::control_out(setup, data))
-                .map(|completion| completion.actual_length),
+            Direction::In => wait_control(
+                live_device.clone(),
+                TransferRequest::control_in(setup, data),
+            )
+            .map(|completion| completion.actual_length),
+            Direction::Out => wait_control(
+                live_device.clone(),
+                TransferRequest::control_out(setup, data),
+            )
+            .map(|completion| completion.actual_length),
         }
     }
 
@@ -1473,13 +1488,18 @@ impl UsbFsManager {
     fn release_device(&self, stable_id: UsbStableId, session_id: u64, generation: u64) {
         let should_notify_refresh = {
             let _open_guard = self.open_lock.lock();
-            let live_device = self.state.lock().devices.get(&stable_id).and_then(|record| {
-                if record.generation == generation {
-                    record.live_device.clone()
-                } else {
-                    None
-                }
-            });
+            let live_device =
+                self.state
+                    .lock_irqsave()
+                    .devices
+                    .get(&stable_id)
+                    .and_then(|record| {
+                        if record.generation == generation {
+                            record.live_device.clone()
+                        } else {
+                            None
+                        }
+                    });
             if let Some(live_device) = live_device {
                 let mut interfaces = live_device.interfaces.lock();
                 let owned = interfaces
@@ -1498,12 +1518,15 @@ impl UsbFsManager {
                         if released {
                             interfaces.remove(&interface);
                         } else {
-                            warn!("usbfs: could not release interface {interface} for session {session_id}");
+                            warn!(
+                                "usbfs: could not release interface {interface} for session \
+                                 {session_id}"
+                            );
                         }
                     }
                 }
             }
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_irqsave();
             let Some(record) = state.devices.get_mut(&stable_id) else {
                 return;
             };
@@ -1693,7 +1716,7 @@ pub(super) struct UsbHostInitReport {
 
 pub(super) fn initialize_hosts(manager: &UsbFsManager) -> UsbHostInitReport {
     let hosts = {
-        let state = manager.state.lock();
+        let state = manager.state.lock_irqsave();
         state
             .hosts
             .iter()
@@ -1797,7 +1820,7 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> UsbHostInitReport {
     }
 
     if !failed_device_ids.is_empty() {
-        let mut state = manager.state.lock();
+        let mut state = manager.state.lock_irqsave();
         state
             .hosts
             .retain(|host| !failed_device_ids.contains(&host.device_id));

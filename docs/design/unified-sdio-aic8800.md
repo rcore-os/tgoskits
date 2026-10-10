@@ -76,6 +76,25 @@ masked window 内已经 latch 的状态，并把状态发布到 hard IRQ 使用�
 拥有型 `PreparedDma`，完成或 abort 后才恢复 `CompletedDma`。RDIF
 `DmaBuffer` 只通过有界 SPSC 转移，提交失败原样归还 token。
 
+发送方向一笔 CMD53 可以携带多帧。固件把写内容当作帧流遍历：逐帧按
+`4 + align4(声明长度)` 步进，读到长度为 0 即结束；因此每帧只按发送对齐补齐，
+整笔写只在末尾补到 SDIO block。`ethernet_tx_frame()` 返回编码后的帧和它在流内的长度，
+`ActiveTx::append_frame()` 用这个长度把后续帧接在流尾，`ActiveTx::wire_bytes()` 只为
+整笔写添加尾部补齐。帧长放不进 SDIO 头的 12-bit 长度字段时编码直接失败，不从已编码
+字节里重新解析长度。
+
+一笔写的帧数和字节上限由 `TxAggregation` 承载：`packets` 是帧数上限，`bytes` 是每次
+追加前检查的软目标，因此一笔写最多越界一帧，它不是发送环容量硬上限。最近一次
+flow-control 读数还会按固件可用 packet buffer 数量收窄帧数上限。写按当前已排队帧
+立即成形，不人为等待后续帧。
+
+`AicOwner::submit_one_tx()` 按 `TxAggregation` 从 RDIF 环交出有界批次；核心再以
+flow-control credit 收窄帧数。写完成时，单帧写发出 `TransmitComplete`，多帧写发出一个
+`TransmitAggregateComplete` 携带本次所有 token，`OwnerOutputs` 逐个归还缓冲区；完成环
+满时保留待完成 token 并让 owner 继续处理。事件队列已满时 token 先暂存，随后逐个发布，
+此时不再保持聚合事件形态。批次入队未被核心接受、取消或停机时，尚未提交的帧和 token
+也按各自唯一所有者路径回收。
+
 协议侧 `QueueFramePort` 拥有设备级 `TxQueueDiscipline`。当前 `axruntime` 为 AIC 和
 其它生产网卡显式选择 `Fifo { max_frames: 64 }`：短暂耗尽 TX token 时按顺序保留帧，
 queue completion 触发下一轮 protocol poll 后继续 flush，达到设备自己的上限才返回
@@ -97,7 +116,7 @@ signal-enable 字段始终通过单次 32-bit MMIO 访问；不能拆成两次
 16-bit 交易，否则 DWC MSHC 集成可能丢失 command completion 而在卡识别阶段
 超时。
 
-## 启动、等待和回滚
+## 启动、等待和发送流控
 
 固定硬件拓扑采用板级绑定、owner 延后确认的启动方式。板级 feature 和设备树
 选择 AIC 平台适配，`AicRdifDevice` 持有准备好的 host；平台登记的 `wlan0` 是
@@ -166,6 +185,16 @@ Function 1/2 安装 handler 再写两条 `intr_config_reg = 0x07`，而 RX handl
 `sdio_claim_host()`，但保留同样的“已建立 IRQ consumer 后才允许设备 IRQ 驱动
 FIFO drain”语义；固件 settle 的 timer 不能冒充这个 consumer-ready 状态。
 
+发送方向另有一档等待：flow-control 读数高于命令保留量、但低于按 `TxAggregation`
+算出的批次阈值时，数据面最多按 `DATA_TX_CREDIT_WAIT_BUDGET` 次、每次
+`DATA_TX_CREDIT_WAIT` 等待后重读，超过预算就用当前 credit 发出，避免薄池造成无限等待。
+它只作用于仍有排队帧、且当前写尚未越过字节目标的用户写；生命周期帧和单帧策略直接使用
+可用 credit。RX scan 不因这项等待而延迟。
+
+发送写完成后，`IoPurpose::TransmitData` 的完成分支通过 `continue_transmit_pipeline()`
+尝试排出下一笔；`IoState::chain_used` 将每次 owner 推进限制为最多一次续接，因而
+mailbox、接收扫描和 credit 处理仍能获得执行机会。`discard_pending_transmit()` 在取消
+或停机时丢弃尚未提交的 continuation，活动写和聚合中的 token 由统一回收路径归还。
 卡初始化完成后，owner 以 Function 1 effective identity 选择唯一 `ChipProfile`，再
 构造 `AicDevice`。FDT 和 `AicRdifOptions` 不携带芯片型号，不允许板级配置与 CIS
 形成两个身份源。完整 `(VID,DID)` 必须匹配支持表；DC 的 Function 1 无 MANFID 时
@@ -324,7 +353,11 @@ probe 显式失败，不回退到写死物理地址。
 通用 SD/MMC 属性 `bus-width`、`min-frequency`、`max-frequency`、`no-1-8-v`、
 `cd-gpios` 与 clock/reset/power-domain 由 rdrive 统一解析。AIC 附加策略使用
 `dma-address-bits`、`post-power-on-delay-ms`、`aic,startup-timeout-ms`、
-`aic,control-timeout-ms`、`aic,queue-size` 和 `aic,max-frame-size`。可选启动 AP
+`aic,control-timeout-ms`、`aic,queue-size`、`aic,max-frame-size`、
+`aic,tx-aggregation` 和 `aic,tx-aggregate-bytes`。两者分别给出每笔写的帧数上限和
+追加前的软字节目标；解析只覆盖显式写出的属性，未写出的属性保留 adapter 默认值，
+显式写出的零值被拒绝。LicheeRV Nano 板级 DTB 当前选择 32 帧和 49152 字节；这是该板
+的策略值，核心和 adapter 仍保留较小的通用默认值。可选启动 AP
 必须显式配置 `aic,startup-mode = "access-point"` 及 `aic,ap-ssid`、
 `aic,ap-channel`、`aic,ap-ipv4`、`aic,ap-prefix-length`；未配置时只注册
 `wlan0`。AKA 的 station 产品策略来自上述编译期环境变量；若同时配置 FDT 启动
@@ -365,6 +398,11 @@ hash 不符或 profile 文件不完整均在构建时失败。Cargo package 继�
 源文件末尾，`tests/` 只调用公开 API。必须启动 ArceOS/QEMU 的路径使用
 axtest。FDT、真实 IRQ、CIS、固件、持续收发和吞吐最终以
 `AKA-00-SG2002` 实板结果为准，QEMU 不能替代。
+
+有两项依赖厂商固件的假设无法由 host 测试证明：一是写内容按帧流遍历（逐帧步进、
+零长度结束），二是每个写入 packet 消耗一个固件 packet buffer。host 测试只能证明
+驱动自身的编码与计数自洽，不能证明固件采用同一规则；真实 SDIO 中止后的 DMA 回收
+同样只有实板能证明。
 
 参考资料：
 

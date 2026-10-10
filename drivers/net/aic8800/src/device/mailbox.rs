@@ -222,16 +222,16 @@ impl AicDevice {
                 payload_length: 0,
             })?;
         let result_length = result.len();
-        let completion = if self.lifecycle.state == AicState::Starting {
-            let result_length = result.len();
-            let result_header = result[..result.len().min(8)].to_vec();
-            self.complete_startup_mailbox(result).inspect_err(|error| {
-                self.log_startup_confirmation_error(result_length, &result_header, error);
-            })
+        let startup = self.lifecycle.state == AicState::Starting;
+        // Only the startup diagnosis reads the response bytes back, so the
+        // copy is taken on that path alone.
+        let startup_header = startup.then(|| result[..result_length.min(8)].to_vec());
+        let completion = if startup {
+            self.complete_startup_mailbox(result)
         } else {
             self.complete_control_mailbox(result)
         };
-        completion.map_err(|error| {
+        let completion = completion.map_err(|error| {
             if error == AicError::MalformedResponse {
                 AicError::MalformedMailboxResponse {
                     request: mailbox.request,
@@ -241,7 +241,13 @@ impl AicDevice {
             } else {
                 error
             }
-        })
+        });
+        if let Some(header) = startup_header.as_deref()
+            && let Err(error) = &completion
+        {
+            self.log_startup_confirmation_error(result_length, header, error);
+        }
+        completion
     }
 
     fn complete_control_mailbox(&mut self, result: Vec<u8>) -> Result<(), AicError> {

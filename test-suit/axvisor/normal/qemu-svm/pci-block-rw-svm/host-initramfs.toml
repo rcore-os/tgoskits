@@ -1,0 +1,2 @@
+vm_configs = ["test-suit/axvisor/normal/qemu-pci-block-rw/x86-linux-pci-block-rw.toml"]
+busybox_initramfs = "tmp/axbuild/axvisor/qemu-pci-block-rw/initramfs-x86_64.cpio.gz"

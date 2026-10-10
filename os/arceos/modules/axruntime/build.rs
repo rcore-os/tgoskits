@@ -19,6 +19,20 @@ const DEFAULT_SCHEDULER_TICK_MS: u64 = 10;
 const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 
 fn main() -> Result<()> {
+    println!("cargo::rustc-check-cfg=cfg(has_builtin_initramfs)");
+    println!("cargo:rerun-if-env-changed=AX_BUILTIN_INITRAMFS");
+    if let Some(path) = env::var_os("AX_BUILTIN_INITRAMFS") {
+        let path = PathBuf::from(path).canonicalize()?;
+        if !path.is_file() || fs::metadata(&path)?.len() == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "built-in initramfs must be a nonempty regular file",
+            ));
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        println!("cargo::rustc-env=AX_BUILTIN_INITRAMFS={}", path.display());
+        println!("cargo::rustc-cfg=has_builtin_initramfs");
+    }
     let kernel_tls = std::env::var_os("CARGO_FEATURE_TLS").is_some()
         && std::env::var_os("CARGO_FEATURE_USPACE").is_none();
     println!("cargo::rustc-check-cfg=cfg(kernel_tls)");

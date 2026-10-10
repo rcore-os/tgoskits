@@ -255,6 +255,7 @@ StarryOS 的 rtnetlink 与 procfs 都应从 `ax-net` 的接口、路由、ARP �
 | `RTM_DELADDR` | `ax_net::remove_interface_ipv4()` | 仅 AF_INET；IP/prefix 必须精确匹配，内部 `NotFound` 映射为 `EADDRNOTAVAIL` |
 | `/proc/net/arp` | `ax_net::arp_entries()` | device 字段使用真实接口名 |
 | `/proc/net/dev` | `ax_net::net_dev_stats()` | 输出 bytes/packets/errors/dropped；fifo/frame/compressed/multicast/colls/carrier 等硬件专属列固定为 0 |
+| `/sys/kernel/debug/net_queue` | `ax_net::net_queue_snapshots()` | 每个 poll group 一行，身份为发现序索引、group ID、接口名与 owner CPU；接口名经 `interface_by_id()` 解析，缺值（未绑定接口、CPU 未记录）显示 `-`，运行时未发布时只输出表头 |
 
 这些路径复用同一控制面和统计状态，不创建独立接口或 ARP 缓存。地址变更会删除该接口 DHCP 状态并同步 connected route；删除后不会自动重启 DHCP。
 

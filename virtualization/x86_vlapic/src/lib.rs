@@ -23,6 +23,9 @@ extern crate log;
 
 mod consts;
 pub mod host;
+#[cfg(test)]
+mod host_lock_provider;
+#[cfg(test)]
 mod lock;
 mod pit;
 mod regs;
@@ -54,7 +57,7 @@ pub struct EmulatedLocalApic<H: host::X86VlapicHostOps> {
 }
 
 pub use self::{
-    host::X86VlapicHostOps,
+    host::{X86VlapicHostOps, X86VlapicRuntimeOps},
     pit::EmulatedPit,
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
@@ -67,9 +70,9 @@ pub use self::{
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
     /// Create a new `EmulatedLocalApic`.
-    pub fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+    pub fn new(runtime: H::Runtime, vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
         EmulatedLocalApic {
-            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(vm_id, vcpu_id)),
+            vlapic_regs: UnsafeCell::new(VirtualApicRegs::new(runtime, vm_id, vcpu_id)),
             _host: PhantomData,
         }
     }
@@ -145,6 +148,22 @@ impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {
     /// Coalesces expired local APIC timer periods into one pending vector.
     pub fn take_pending_timer_interrupt(&self) -> Option<u8> {
         self.get_vlapic_regs().take_pending_timer_interrupt()
+    }
+
+    /// Quiesces the local APIC timer for a task-side VM suspend while retaining
+    /// the guest registers, canonical deadline and pending edge.
+    pub fn suspend_timer(&self) -> X86VlapicResult {
+        self.get_mut_vlapic_regs().suspend_timer()
+    }
+
+    /// Reinstalls the local APIC timer quiesced by [`Self::suspend_timer`].
+    pub fn resume_timer(&self) -> X86VlapicResult {
+        self.get_mut_vlapic_regs().resume_timer()
+    }
+
+    /// Cancels the local APIC timer and retires its guest-visible state.
+    pub fn stop_timer(&self) -> X86VlapicResult {
+        self.get_mut_vlapic_regs().stop_timer()
     }
 
     /// Process a guest EOI and return the vector that needs an IO APIC EOI broadcast.

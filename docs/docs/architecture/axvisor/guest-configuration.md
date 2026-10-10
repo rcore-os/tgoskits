@@ -17,19 +17,19 @@ sidebar_label: "客户机配置"
 | --- | --- | --- | --- |
 | `virtualization/axvmconfig/src/lib.rs` | `GuestConfig`、`VMBaseConfig`、`VMKernelConfig`、`GuestDevices`、`VirtualDeviceRequest` | 定义持久化 schema，完成 Serde 解析、boot/device 校验和兼容字段读取 | 配置读取 |
 | `virtualization/axvmconfig/src/error.rs` | `AxVmConfigError` | 区分 TOML 形状错误、启动组合错误和设备选择错误 | 配置读取与校验 |
-| `os/axvisor/src/config.rs:183` | `build_axvm_config` | 把配置字段转换为 AxVM 参数，注入应用拥有的串口后端，并在默认 catalog 上注册 `virtio-blk`、`virtio-net` | 应用层转换 |
-| `virtualization/axvm/src/config.rs:115` | `AxVMConfigParams`、`AxVMConfig` | 承接 CPU、镜像、地址空间策略、内存、物理设备 selector、虚拟设备请求和 catalog | VM 创建前 |
-| `virtualization/axvm/src/boot/prepared.rs:45` | `prepare_guest_boot`、`PreparedGuestBoot` | 按架构处理 DTB、固件和启动资源，返回准备后的 `GuestConfig` 与客户机 DTB | boot prepare |
-| `os/axvisor/src/config.rs:132-134` | `sync_axvm_config_from_crate_config`、`set_boot_policy` | 把准备阶段新增的内存区域同步到 draft `AxVMConfig`，并设置 boot policy | 应用层同步 |
-| `virtualization/axvm/src/configured.rs:184` | `ConfiguredDeviceCatalog`、`instantiate_node` | 按 model 查找构造器，把 `VirtualDeviceRequest` 的 model/options 转成 `DeviceNodeSpec` | device prepare |
-| `virtualization/axvm/src/configured/append.rs:13` | `append_configured_devices` | 合并默认串口请求和用户请求，逐项调用 catalog，加入待规划设备图 | device prepare |
-| `scripts/axbuild/src/axvisor/mod.rs:320` | `jkconfig::run::<GuestConfig>` | 通过 `schemars::JsonSchema` 生成 menuconfig 所需 schema 并编辑 TOML | 构建工具运行期 |
+| `os/axvisor/src/config.rs` | `build_axvm_config` | 把配置字段转换为 AxVM 参数，注入应用拥有的串口后端，并在默认 catalog 上注册 `virtio-blk`、`virtio-net` | 应用层转换 |
+| `virtualization/axvm/src/config.rs` | `AxVMConfigParams`、`AxVMConfig` | 承接 CPU、镜像、地址空间策略、内存、物理设备 selector、虚拟设备请求和 catalog | VM 创建前 |
+| `virtualization/axvm/src/boot/prepared.rs` | `prepare_guest_boot`、`PreparedGuestBoot` | 按架构处理 DTB、固件和启动资源，返回准备后的 `GuestConfig` 与客户机 DTB | boot prepare |
+| `os/axvisor/src/config.rs` | `sync_axvm_config_from_crate_config`、`set_boot_policy` | 把准备阶段新增的内存区域同步到 draft `AxVMConfig`，并设置 boot policy | 应用层同步 |
+| `virtualization/axvm/src/configured.rs` | `ConfiguredDeviceCatalog`、`instantiate_node` | 按 model 查找构造器，把 `VirtualDeviceRequest` 的 model/options 转成 `DeviceNodeSpec` | device prepare |
+| `virtualization/axvm/src/configured/append.rs` | `append_configured_devices` | 合并默认串口请求和用户请求，逐项调用 catalog，加入待规划设备图 | device prepare |
+| `scripts/axbuild/src/axvisor/mod.rs` | `jkconfig::run::<GuestConfig>` | 通过 `schemars::JsonSchema` 生成 menuconfig 所需 schema 并编辑 TOML | 构建工具运行期 |
 
 `axvmconfig` 不依赖具体 Machine，也不分配硬件资源。`ConfiguredDeviceCatalog` 是请求进入设备图的转换点；catalog 的内置 model 和应用扩展项不是持久化 schema 的枚举。
 
 ## 2. 从 TOML 到设备图
 
-`GuestConfig::from_toml()` 的顺序固定在 `axvmconfig/src/lib.rs:691`：先调用 `toml::from_str`，再执行 `validate_boot_config()` 和 `GuestDevices::validate()`，最后记录用户提供的 `memory_regions` 数量。这个计数不序列化，用于 boot prepare 区分用户内存和准备阶段追加的区域。
+`GuestConfig::from_toml()` 的顺序固定在 `axvmconfig/src/lib.rs`：先调用 `toml::from_str`，再执行 `validate_boot_config()` 和 `GuestDevices::validate()`，最后记录用户提供的 `memory_regions` 数量。这个计数不序列化，用于 boot prepare 区分用户内存和准备阶段追加的区域。
 
 ```mermaid
 flowchart LR
@@ -62,7 +62,7 @@ flowchart LR
 - `entry_point`、镜像加载地址、CPU 参数和 `memory_regions` 写入 `AxVMConfigParams`。
 - `devices.virtual` 原样保留为请求，catalog 由 AxVM 内置注册项与 Axvisor 的 `virtio-blk`、`virtio-net` 注册项组成。
 - 若 `guest_type = "passthrough"`、用户没有填写 `devices.passthrough`，且 Machine 提供 `default_passthrough_device_path`，`build_axvm_config()` 会注入一个内部 selector。当前 AArch64、RISC-V 和 LoongArch Machine 使用 `/` 作为发现根；x86_64 不注入。
-- `prepare_guest_boot()` 可以根据 host 固件和架构启动方式补充 DTB 或保留内存，返回持有准备后 `GuestConfig` 与客户机 DTB 的 `PreparedGuestBoot`。随后应用层在 `os/axvisor/src/config.rs:132-134` 调用 `sync_axvm_config_from_crate_config()`，把新增 `memory_regions` 写回 draft `AxVMConfig`，再设置 boot policy。设备 prepare 在这之后才把请求实例化为图节点。
+- `prepare_guest_boot()` 可以根据 host 固件和架构启动方式补充 DTB 或保留内存，返回持有准备后 `GuestConfig` 与客户机 DTB 的 `PreparedGuestBoot`。随后应用层在 `os/axvisor/src/config.rs` 调用 `sync_axvm_config_from_crate_config()`，把新增 `memory_regions` 写回 draft `AxVMConfig`，再设置 boot policy。设备 prepare 在这之后才把请求实例化为图节点。
 
 Machine 负责选择固定串口、中断控制器与地址池，规划器负责解析图节点的资源。配置层只保留用户请求。相关算法见 [Machine 与资源规划架构](./machine-profile.md)。
 
@@ -80,10 +80,10 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `name` | 字符串 | 空字符串 | VM 名称 |
 | `guest_type` | `"virtualized"` 或 `"passthrough"` | `"virtualized"` | 决定地址空间的初始策略，见 3.4 节 |
 | `cpu_num` | 非负整数 | `0` | vCPU 数量 |
-| `phys_cpu_ids` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 对客户机暴露的物理 CPU ID；未覆盖的位置保留 vCPU ID，多余项忽略 |
-| `phys_cpu_sets` | 整数数组或省略 | `None` | 按数组位置覆盖各 vCPU 的宿主 pCPU affinity 位图；未覆盖的位置保持无显式 affinity，多余项忽略 |
+| `phys_cpu_ids` | 整数数组或省略 | `None` | 配置 `phys_cpu_sets` 时表示各 vCPU 对客户机暴露的 ID；未配置时同时作为宿主 FDT CPU selector 与客户机 ID |
+| `phys_cpu_sets` | 整数数组或省略 | `None` | 按数组位置给出各 vCPU 的最终宿主 pCPU affinity 位图；在 FDT-backed AArch64/RISC-V 路径中必须与 `phys_cpu_ids` 等长且每项只选择一个宿主 pCPU |
 
-`phys_cpu_ids` 和 `phys_cpu_sets` 是 CPU selector，不是设备资源。当前 `PhysCpuList::new()` 不校验数组长度；`phys_cpu_ids` 长度与 `cpu_num` 不同时只记录日志，`default_vcpu_affinities()` 仍按已有位置应用，缺项使用默认值，多余项忽略。配置方不能依赖长度或拓扑不匹配一定在 prepare 阶段被拒绝，应主动保证数组长度与 `cpu_num` 一致，并使用目标平台存在的 CPU ID 和 affinity 位。
+`phys_cpu_ids` 和 `phys_cpu_sets` 是 CPU selector，不是设备资源。当显式提供 `phys_cpu_sets` 时，FDT-backed AArch64/RISC-V 的 boot prepare 要求同时提供等长的 `phys_cpu_ids`；每个 mask 必须非零、落在宿主 CPU 位宽内并且只包含一个 bit，否则返回 `InvalidInput`。此模式下 `phys_cpu_ids` 只表达客户机可见的 vCPU ID，不要求该 ID 出现在宿主 FDT；缺失的 CPU 节点由 `FdtTree::ensure_guest_cpu_nodes()` 克隆并写入客户机 `reg`。未提供 `phys_cpu_sets` 时，`phys_cpu_ids` 仍按宿主 FDT CPU 节点解析并转换为单核 affinity。`PhysCpuList` 对 `cpu_num` 与数组长度的通用日志和缺省行为保持不变，配置方仍应主动保证 vCPU 数量与数组一致。
 
 默认 `console0` 模拟宿主调试串口的型号、地址、中断和固件身份：AArch64/RISC-V 从宿主 FDT 中选定的控制台读取，x86/LoongArch 从 ACPI SPCR 读取。没有选定串口时使用 machine profile 的固定资源；已经选定但描述无效时直接报错。镜像需要固定串口地址时，可在 `[[devices.virtual]]` 的串口 model 下指定 `address`。例如 Orange Pi 5 Plus 上使用 QEMU PL011 地址的 Linux 客户机配置 `model = "pl011-mmio"` 和 `address = 0x09000000`；此时串口地址优先于宿主，中断自动分配，固件描述使用最终资源。
 
@@ -94,7 +94,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | 字段 | TOML 类型 | 缺省值 | 含义与当前约束 |
 | --- | --- | --- | --- |
 | `entry_point` | 非负整数 | `0` | BSP 和 AP 的初始入口 GPA |
-| `kernel_path` | 字符串 | 空字符串 | 内核镜像路径；`fs` 模式按文件路径读取，`memory` 模式由 image provider 按 VM ID 选择内置镜像，不使用此路径定位 |
+| `kernel_path` | 字符串 | 空字符串 | 内核镜像文件路径；打包输入为构建机路径，运行配置由 axbuild 重写为 `/guest/builtin/images/...` |
 | `kernel_load_addr` | 非负整数 | `0` | 内核加载 GPA；部分架构启动流程会按镜像格式进一步调整 |
 | `enable_bios` | 布尔值 | `false` | 旧启动开关；必须与 `boot_protocol` 一致 |
 | `boot_protocol` | `"direct"`、`"multiboot"`、`"uefi"` 或省略 | 省略 | 省略时由 `enable_bios` 推导，见 3.3 节 |
@@ -105,7 +105,6 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `dtb_load_addr` | 非负整数或省略 | `None` | DTB 加载 GPA；prepare 可能依据内存布局重新计算 |
 | `ramdisk_path` | 字符串或省略 | `None` | initramfs/ramdisk 镜像路径 |
 | `ramdisk_load_addr` | 非负整数或省略 | `None` | ramdisk 加载 GPA |
-| `image_location` | `"memory"` 或 `"fs"` | `None` | 镜像来源；`fs` 需要相应文件系统 feature。其他值或省略值会在 boot image prepare/load 阶段失败 |
 | `cmdline` | 字符串或省略 | `None` | 客户机内核命令行；x86 Linux direct boot 要求提供 |
 | `memory_regions` | 四元数组列表 | 空列表 | 客户机内存描述，格式为 `[gpa, size, flags, map_type]` |
 
@@ -123,7 +122,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 
 ### 3.3 启动协议矩阵
 
-`BOOT_PROTOCOL_MATRIX` 定义在 `axvmconfig/src/lib.rs:218-240`。`validate_boot_config()` 先检查 `enable_bios` 与协议是否冲突，再按编译目标检查架构和固件输入。
+`BOOT_PROTOCOL_MATRIX` 定义在 `axvmconfig/src/lib.rs`。`validate_boot_config()` 先检查 `enable_bios` 与协议是否冲突，再按编译目标检查架构和固件输入。
 
 | 有效协议 | `enable_bios` | 支持架构 | 固件要求 |
 | --- | --- | --- | --- |
@@ -203,7 +202,6 @@ phys_cpu_sets = [1]
 entry_point = 0x4008_0000
 kernel_path = "/guest/linux/Image"
 kernel_load_addr = 0x4008_0000
-image_location = "fs"
 cmdline = "console=ttyAMA0"
 memory_regions = [
   [0x4000_0000, 0x4000_0000, 0x7, 0],
@@ -247,14 +245,14 @@ model = "ivc-channel"
 | path 不是绝对具体路径，或同一路径同时出现在 `passthrough` 与 `disabled` | device validation | `InvalidPhysicalDevicePath`、`ConflictingPhysicalDeviceSelection` | 使用 host DT 中的完整节点路径；从两张列表中移除冲突项 |
 | 两个虚拟设备使用相同 `id` | device validation | `DuplicateVirtualDeviceId` | ID 是 VM 内稳定图节点标识，必须唯一 |
 | options 出现框架资源键 | device validation | `ForbiddenVirtualDeviceResourceOption` | 只检查 3.5 节列出的精确键；删除地址/IRQ/MSI/LPI 输入，让规划器分配 |
-| `image_location` 缺失、值不支持，`fs` feature 不可用，镜像路径或内存布局无效 | boot prepare/load | `prepare_guest_boot`、`prepare_memory_layout` 或 `load_images` 返回的 `AxVmError` | 确认来源是 `memory`/`fs`、构建 feature、镜像 ID/路径、加载地址和至少一段有效内存 |
 | model 名格式合法但未注册 | device prepare 的请求转换 | `ConfiguredDeviceError::UnknownVirtualDeviceModel`，随后映射成 `AxVmError::InvalidConfig` | 核对 model 拼写，并确认 AxVM/Axvisor catalog 装配点确实注册了该 model |
 | model 私有 option 类型错误或出现 model 不接受的键 | device prepare 的请求转换 | `ConfiguredDeviceError::InvalidOptions` | 对照该 model 的强类型 options；通用 JSON Schema 不校验这部分 |
 | model 已找到，但缺少架构能力或构造条件 | device prepare | `ConfiguredDeviceError::Instantiation` 或后续图/资源错误 | 先看设备名和 model，再查 Machine 能力及资源计划；细节见运行时和模拟设备文档 |
+| 镜像路径或内存布局无效 | boot prepare/load | `prepare_guest_boot`、`prepare_memory_layout` 或 `load_images` 返回的 `AxVmError` | 检查当前根中的文件路径、加载地址和至少一段有效内存 |
 
 应用层 `build_axvm_config()` 当前返回 `AxVMConfig` 而不是 `Result`，所以它没有独立的可恢复错误枚举。它之后的 boot prepare、`AxVM::new`、memory prepare、image load 和 `vm.prepare()` 都由 `init_guest_vm()` 添加 `VM[id]` context。日志中若已经出现 `prepare devices and vCPUs`，问题就不在 TOML Serde 阶段。
 
-CPU selector 长度不一致不在表中作为失败项，因为当前路径不保证拒绝：`phys_cpu_ids` 可能只产生一条日志，缺项继续使用默认值，多余项被忽略；`phys_cpu_sets` 同样按已有位置应用。排错时应直接对照 `cpu_num` 检查两个数组，而不是等待某个固定错误类型。
+CPU selector 与 `cpu_num` 的通用长度不一致仍不在表中作为统一失败项：`PhysCpuList` 可能只产生一条日志，缺项继续使用默认值，多余项被忽略；排错时应直接对照 `cpu_num` 检查数组。例外是 FDT-backed AArch64/RISC-V 的显式 affinity 路径：`phys_cpu_ids` 与 `phys_cpu_sets` 不等长、mask 越界、为零或包含多个 bit 时，boot prepare 会以 `InvalidInput` 失败，因为这些值会直接决定客户机 CPU 投影和宿主调度亲和性。
 
 ## 6. 测试覆盖
 

@@ -1,0 +1,15 @@
+args = [
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-cpu", "cortex-a72",
+  "-m", "512M",
+  "-smp", "1",
+  "-nographic",
+  "-serial", "mon:stdio",
+]
+uefi = false
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 90
+
+[[shell_check_steps]]
+success_regex = ["host root selected: Memory"]

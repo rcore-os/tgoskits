@@ -52,3 +52,6 @@ pub use self::{
     timerfd::*,
     xattr::*,
 };
+
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use lock::render_file_lock_metrics;

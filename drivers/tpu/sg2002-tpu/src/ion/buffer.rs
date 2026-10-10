@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use ax_sync::SpinLock as Mutex;
+use ax_sync::RawSpinLock;
 
 use super::{
     error::{IonError, IonResult},
@@ -12,7 +12,7 @@ use super::{
 /// Ion 缓冲区管理器
 pub struct IonBufferManager {
     /// 已分配的缓冲区映射
-    buffers: Mutex<BTreeMap<IonHandle, Arc<IonBuffer>>>,
+    buffers: RawSpinLock<BTreeMap<IonHandle, Arc<IonBuffer>>>,
 }
 
 impl Default for IonBufferManager {
@@ -25,7 +25,7 @@ impl IonBufferManager {
     /// 创建新的缓冲区管理器
     pub fn new() -> Self {
         Self {
-            buffers: Mutex::new(BTreeMap::new()),
+            buffers: RawSpinLock::new(BTreeMap::new()),
         }
     }
 

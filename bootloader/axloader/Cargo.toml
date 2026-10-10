@@ -11,6 +11,10 @@ version = "0.1.0"
 name = "axloader"
 path = "src/main.rs"
 
+[[bin]]
+name = "axloader-launcher"
+path = "src/launcher.rs"
+
 [dependencies]
 httpboot-protocol = { workspace = true }
 sha2 = { version = "0.10", default-features = false }
@@ -20,6 +24,7 @@ anyhow = { workspace = true }
 object = "0.38"
 
 [target.'cfg(target_os = "uefi")'.dependencies]
+host-boot-abi.workspace = true
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }

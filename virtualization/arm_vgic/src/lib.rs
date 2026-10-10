@@ -23,6 +23,9 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 mod arm_config;
 mod backend;
 mod config;
@@ -38,18 +41,23 @@ mod redistributor;
 mod register;
 mod types;
 
+#[cfg(test)]
+#[path = "../tests/support/mod.rs"]
+mod test_support;
+
 pub use core::*;
 
 pub use arm_config::*;
 pub use backend::*;
 pub use config::*;
 pub use controller::*;
+pub(crate) use cpu_interface::ListRegisterFailure;
 pub use cpu_interface::*;
 pub use devices::VgicDeviceSet;
 pub(crate) use distributor::DistributorState;
 pub use error::*;
 pub(crate) use interrupt::InterruptRecord;
 pub use its::{GuestMemory, GuestMemoryError};
-pub(crate) use its::{ItsAction, ItsState};
-pub(crate) use redistributor::{QueuedDelivery, RedistributorState};
+pub(crate) use its::{ItsAction, ItsCommandProgress, ItsState};
+pub(crate) use redistributor::{QueuedDelivery, RedistributorState, RefillFailure};
 pub use types::*;

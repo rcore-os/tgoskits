@@ -1,4 +1,4 @@
-use std::{vec, vec::Vec};
+use std::{collections::BTreeMap, string::String, vec, vec::Vec};
 
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::{MemoryReservation, RegInfo};
@@ -10,7 +10,6 @@ fn prop_u32(name: &str, value: u32) -> Property {
     prop.set_u32_ls(&[value]);
     prop
 }
-
 fn prop_str(name: &str, value: &str) -> Property {
     let mut prop = Property::new(name, vec![]);
     prop.set_string(value);
@@ -100,7 +99,6 @@ fn tree_patches_chosen_bootargs_and_initrd() {
         Some(0xa000_1234)
     );
 }
-
 #[test]
 fn tree_removes_stale_initrd_when_no_ramdisk_is_present() {
     let mut tree = FdtTree::from_bytes(&sample_dtb()).unwrap();
@@ -146,6 +144,30 @@ fn host_fdt_pointer_rejects_null() {
 }
 
 #[test]
+fn phandle_validation_rejects_reserved_and_conflicting_values() {
+    let mut tree = FdtTree::new();
+    let root = tree.inner().root_id();
+    let reserved = tree.add_node(root, Node::new("reserved"));
+    tree.set_property(reserved, prop_u32("phandle", u32::MAX))
+        .unwrap();
+    assert!(tree.allocate_phandle().is_err());
+
+    tree.set_property(reserved, prop_u32("phandle", 1)).unwrap();
+    tree.set_property(reserved, prop_u32("linux,phandle", 2))
+        .unwrap();
+    assert!(tree.allocate_phandle().is_err());
+    tree.set_property(reserved, prop_u32("linux,phandle", 1))
+        .unwrap();
+    let duplicate = tree.ensure_path("/duplicate").unwrap();
+    tree.set_property(duplicate, prop_u32("phandle", 1))
+        .unwrap();
+    assert!(tree.validate_phandles().is_err());
+    tree.set_property(duplicate, Property::new("phandle", vec![0; 8]))
+        .unwrap();
+    assert!(tree.validate_phandles().is_err());
+}
+
+#[test]
 fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
     let mut source = Fdt::new();
     let source_root = source.root_id();
@@ -185,6 +207,34 @@ fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
     assert_eq!(
         copied_uart.get_property("status").unwrap().as_str(),
         Some("okay")
+    );
+}
+
+#[test]
+fn tree_import_accepts_absent_next_level_cache_reference() {
+    let mut source = Fdt::new();
+    let root = source.root_id();
+    let cpus = source.add_node(root, Node::new("cpus"));
+    let cpu = source.add_node(cpus, Node::new("cpu@1"));
+    source
+        .node_mut(cpu)
+        .unwrap()
+        .set_property(prop_u32("next-level-cache", 0));
+
+    let mut dest = FdtTree::new();
+    dest.copy_subtree_from(&source, cpus, dest.inner().root_id(), true)
+        .unwrap();
+
+    let bytes = dest.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    assert_eq!(
+        reparsed
+            .get_by_path("/cpus/cpu@1")
+            .unwrap()
+            .as_node()
+            .get_property("next-level-cache")
+            .and_then(Property::get_u32),
+        Some(0)
     );
 }
 
@@ -315,5 +365,292 @@ fn clone_filtered_preserves_guest_cpu_power_management_props_on_rk3588() {
     assert_eq!(
         cpu_node.get_property("cpu-supply").unwrap().get_u32(),
         Some(5)
+    );
+}
+
+#[test]
+fn subtree_import_rebinds_source_references_without_touching_guest_numbers() {
+    let mut source = FdtTree::new();
+    let bus = source.ensure_path("/imported").unwrap();
+    let provider = source.ensure_path("/imported/clock").unwrap();
+    source
+        .set_property(provider, prop_u32("phandle", 1))
+        .unwrap();
+    source
+        .set_property(provider, prop_u32("#clock-cells", 1))
+        .unwrap();
+    let consumer = source.ensure_path("/imported/device").unwrap();
+    let mut clocks = Property::new("clocks", vec![]);
+    clocks.set_u32_ls(&[1, 1]);
+    source.set_property(consumer, clocks.clone()).unwrap();
+    for name in ["#iommu-cells", "#interrupt-cells"] {
+        source.set_property(provider, prop_u32(name, 1)).unwrap();
+    }
+    source
+        .set_property(provider, prop_u32("#address-cells", 0))
+        .unwrap();
+    source
+        .set_property(consumer, prop_u32("#address-cells", 0))
+        .unwrap();
+    source
+        .set_property(consumer, prop_u32("#interrupt-cells", 1))
+        .unwrap();
+    for (name, cells) in [
+        ("iommus", &[1, 1][..]),
+        ("interrupts-extended", &[1, 1][..]),
+        ("interrupt-map", &[1, 1, 1][..]),
+        ("msi-map", &[1, 1, 1, 1][..]),
+    ] {
+        let mut property = Property::new(name, vec![]);
+        property.set_u32_ls(cells);
+        source.set_property(consumer, property).unwrap();
+    }
+
+    let mut guest = FdtTree::new();
+    let existing = guest.ensure_path("/existing").unwrap();
+    guest
+        .set_property(existing, prop_u32("phandle", 1))
+        .unwrap();
+    guest.set_property(existing, clocks).unwrap();
+    // A high occupied handle must not hide free values below it.
+    let last = guest.ensure_path("/last").unwrap();
+    guest
+        .set_property(last, prop_u32("phandle", u32::MAX - 1))
+        .unwrap();
+
+    guest
+        .copy_subtree_from(source.inner(), bus, guest.inner().root_id(), false)
+        .unwrap();
+
+    let bytes = guest.finish();
+    let fdt = Fdt::from_bytes(&bytes).unwrap();
+    let imported = fdt.get_by_path("/imported/clock").unwrap();
+    let handle = imported
+        .as_node()
+        .get_property("phandle")
+        .unwrap()
+        .get_u32()
+        .unwrap();
+    assert!(handle > 1 && handle < u32::MAX - 1);
+    let reference = fdt.get_by_path("/imported/device").unwrap();
+    assert_eq!(
+        reference
+            .as_node()
+            .get_property("clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [handle, 1]
+    );
+    assert_eq!(
+        fdt.get_by_path("/existing")
+            .unwrap()
+            .as_node()
+            .get_property("clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [1, 1]
+    );
+    for (name, expected) in [
+        ("iommus", vec![handle, 1]),
+        ("interrupts-extended", vec![handle, 1]),
+        ("interrupt-map", vec![1, handle, 1]),
+        ("msi-map", vec![1, handle, 1, 1]),
+    ] {
+        assert_eq!(
+            reference
+                .as_node()
+                .get_property(name)
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            expected,
+            "{name}"
+        );
+    }
+    assert_eq!(source.node_phandle(provider).unwrap(), Some(1));
+}
+
+#[test]
+fn subtree_import_rejects_unbound_dependencies_without_changing_destination() {
+    let mut source = FdtTree::new();
+    let provider = source.ensure_path("/clock").unwrap();
+    source
+        .set_property(provider, prop_u32("phandle", 7))
+        .unwrap();
+    source
+        .set_property(provider, prop_u32("#clock-cells", 0))
+        .unwrap();
+    let device = source.ensure_path("/device").unwrap();
+    source.set_property(device, prop_u32("clocks", 7)).unwrap();
+    let mut guest = FdtTree::new();
+    let unrelated = guest.ensure_path("/unrelated").unwrap();
+    guest
+        .set_property(unrelated, prop_u32("phandle", 7))
+        .unwrap();
+    let before = guest.inner().encode().as_ref().to_vec();
+    let error = guest
+        .copy_subtree_from(source.inner(), device, guest.inner().root_id(), false)
+        .unwrap_err();
+    assert!(error.to_string().contains("outside the imported subtree"));
+    assert_eq!(guest.inner().encode().as_ref(), before);
+}
+
+/// Builds a host FDT whose CPU nodes carry phandles.
+fn host_fdt_with_cpu_phandles() -> Fdt {
+    let mut fdt = Fdt::new();
+    let root = fdt.root_id();
+    let cpus = fdt.add_node(root, Node::new("cpus"));
+    fdt.node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#address-cells", 1));
+    fdt.node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#size-cells", 0));
+
+    for (name, reg, phandle) in [("cpu@0", 0u64, 0x20u32), ("cpu@100", 0x100, 0x40)] {
+        let cpu = fdt.add_node(cpus, Node::new(name));
+        let node = fdt.node_mut(cpu).unwrap();
+        node.set_property(prop_str("device_type", "cpu"));
+        node.set_property(prop_str("enable-method", "psci"));
+        node.set_property(prop_u32("mpidr-affinity", reg as u32));
+        node.set_property(prop_u32("phandle", phandle));
+        node.set_property(prop_u32("linux,phandle", phandle));
+        if reg == 0 {
+            node.set_property(prop_u32("operating-points-v2", 0x51));
+            node.set_property(prop_u32("cpu-idle-states", 0x52));
+            node.set_property(prop_u32("cpu-supply", 0x53));
+            node.set_property(prop_u32("next-level-cache", 0x54));
+            node.set_property(prop_str("riscv,isa", "rv64imafdc"));
+            node.set_property(prop_str("mmu-type", "riscv,sv39"));
+        }
+        fdt.view_typed_mut(cpu)
+            .unwrap()
+            .set_regs(&[RegInfo::new(reg, None)]);
+    }
+
+    fdt
+}
+
+fn phandle_owners(fdt: &Fdt) -> Vec<(u32, String)> {
+    fdt.iter_node_ids()
+        .filter_map(|node_id| {
+            let node = fdt.node(node_id)?;
+            let phandle = node
+                .get_property("phandle")
+                .or_else(|| node.get_property("linux,phandle"))
+                .and_then(Property::get_u32)?;
+            Some((phandle, fdt.path_of(node_id)))
+        })
+        .collect()
+}
+
+fn phandle_of(fdt: &Fdt, path: &str) -> u32 {
+    fdt.get_by_path(path)
+        .unwrap_or_else(|| panic!("{path} is missing"))
+        .as_node()
+        .get_property("phandle")
+        .and_then(Property::get_u32)
+        .unwrap_or_else(|| panic!("{path} has no phandle"))
+}
+
+#[test]
+fn tree_clones_missing_guest_cpu_nodes_with_fresh_phandles() {
+    let host = host_fdt_with_cpu_phandles();
+    // `cpu@100` is not requested, so the guest keeps `cpu@0` only and `cpu@1`,
+    // `cpu@2` are over-subscribed ids without a host CPU node.
+    let mut guest = FdtTree::clone_filtered(&host, |_, path, _| path != "/cpus/cpu@100").unwrap();
+
+    guest.ensure_guest_cpu_nodes(&host, &[0, 1, 2]).unwrap();
+    let bytes = guest.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+
+    // The kept host CPU keeps its identity, while every clone is allocated above
+    // every host phandle, so no phandle names two nodes.
+    assert_eq!(phandle_of(&reparsed, "/cpus/cpu@0"), 0x20);
+    let first = phandle_of(&reparsed, "/cpus/cpu@1");
+    let second = phandle_of(&reparsed, "/cpus/cpu@2");
+    assert!(
+        first > 0x40 && second > 0x40,
+        "clones reused a host phandle: {first:#x} and {second:#x}"
+    );
+    assert_ne!(first, second);
+
+    // A cloned node must describe its own guest-visible MPIDR, not the
+    // template CPU's identity used for the PSCI secondary boot target.
+    for id in [1, 2] {
+        let cpu = reparsed.get_by_path(&format!("/cpus/cpu@{id:x}")).unwrap();
+        assert_eq!(cpu.regs()[0].address, id);
+        assert_eq!(
+            cpu.as_node()
+                .get_property("mpidr-affinity")
+                .and_then(Property::get_u32),
+            Some(id as u32)
+        );
+        for property in [
+            "operating-points-v2",
+            "cpu-idle-states",
+            "cpu-supply",
+            "next-level-cache",
+        ] {
+            assert!(
+                cpu.as_node().get_property(property).is_none(),
+                "cloned CPU inherited host-only property {property}"
+            );
+        }
+        for property in ["riscv,isa", "mmu-type"] {
+            assert_eq!(
+                cpu.as_node().get_property(property).is_some(),
+                cfg!(target_arch = "riscv64"),
+                "RISC-V execution property policy mismatch for {property}"
+            );
+        }
+    }
+
+    let mut seen = BTreeMap::new();
+    for (phandle, path) in phandle_owners(&reparsed) {
+        let previous = seen.insert(phandle, path.clone());
+        assert!(
+            previous.is_none(),
+            "phandle {phandle:#x} is defined by both {previous:?} and {path}"
+        );
+    }
+
+    // The legacy spelling mirrors the fresh value, not the template value.
+    assert_eq!(
+        reparsed
+            .get_by_path("/cpus/cpu@1")
+            .unwrap()
+            .as_node()
+            .get_property("linux,phandle")
+            .unwrap()
+            .get_u32(),
+        Some(first)
+    );
+
+    // The highest legal host handle leaves no room above it. Clones must
+    // reuse lower unoccupied handles instead of assigning the reserved value.
+    let mut host = host_fdt_with_cpu_phandles();
+    let cpu = host.get_by_path_id("/cpus/cpu@100").unwrap();
+    host.node_mut(cpu)
+        .unwrap()
+        .set_property(prop_u32("phandle", u32::MAX - 1));
+    host.node_mut(cpu)
+        .unwrap()
+        .set_property(prop_u32("linux,phandle", u32::MAX - 1));
+    let mut guest = FdtTree::clone_filtered(&host, |_, path, _| path != "/cpus/cpu@100").unwrap();
+    guest.ensure_guest_cpu_nodes(&host, &[0, 1, 2]).unwrap();
+    let guest = Fdt::from_bytes(&guest.finish()).unwrap();
+    let handles = phandle_owners(&guest);
+    assert!(
+        handles
+            .iter()
+            .all(|(handle, _)| *handle != 0 && *handle != u32::MAX)
+    );
+    assert_eq!(handles.len(), 3);
+    assert_ne!(
+        phandle_of(&guest, "/cpus/cpu@1"),
+        phandle_of(&guest, "/cpus/cpu@2")
     );
 }

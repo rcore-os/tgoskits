@@ -165,3 +165,68 @@ impl<H: crate::host::PagingHandler + 'static> NestedPageTableOps for NestedPageT
 /// EPT/NPT context; host INVLPG/CR3 cannot invalidate either nested format.
 /// Initial construction and destruction occur while this VM cannot run.
 pub(super) fn flush_nested_page_table(_vaddr: Option<ptg::VirtAddr>) {}
+
+/// Retires cached translations for a retired nested-paging root on this CPU.
+///
+/// The control owner unloads every vCPU and drives this on each physical CPU
+/// that may have cached a translation under `old_root`, so a recycled root can
+/// never be served from a stale cached translation.
+///
+/// Intel retirement is immediate: `INVEPT` with the retired EPTP invalidates
+/// exactly this CPU's EPT-derived translations. AMD has no host instruction
+/// that invalidates only NPT translations, so its retirement is deferred to a
+/// guaranteed flush on the next guest entry; see the NPT arm below.
+pub(crate) fn invalidate_translations(
+    old_root: axvm_types::NestedPagingConfig,
+) -> crate::AxVmResult {
+    match crate::arch::x86_64::policy::selected_nested_paging_format().map_err(|error| {
+        crate::vcpu::map_vcpu_backend_error(
+            "select x86 nested paging format",
+            super::super::x86_error_to_backend(error),
+        )
+    })? {
+        crate::arch::x86_64::policy::X86NestedPagingFormat::Ept => {
+            // SAFETY: the control owner unloaded every vCPU and pinned this CPU,
+            // which independently derived translations from the retired EPTP.
+            let pointer = unsafe {
+                ax_cpu::virtualization::EptPointer::for_current_cpu(
+                    PhysAddr::from_usize(old_root.root_paddr.as_usize()),
+                    false,
+                )
+            }
+            .map_err(|error| crate::AxVmError::vcpu("encode retired x86 EPT root", error))?;
+            // SAFETY: the retired EPTP stays a valid operand for the duration of
+            // this instruction and the CPU owns the VMX-enabled interval.
+            unsafe { pointer.invalidate() }.map_err(|error| {
+                crate::AxVmError::vcpu("invalidate retired x86 EPT translations", error)
+            })
+        }
+        crate::arch::x86_64::policy::X86NestedPagingFormat::Npt => {
+            // AMD provides no host-side instruction that invalidates only NPT
+            // (nested) translations. `INVLPGA` covers guest-virtual mappings, and
+            // a host `INVLPG`/`CR3` reload flushes only the host page tables, not
+            // the nested TLB. The architectural mechanism is the guest VMCB
+            // `TLB_CONTROL` field, which the CPU consumes on the next `VMRUN`.
+            //
+            // Retirement is therefore deferred to that entry and is *enforced*,
+            // not merely assumed, by axcpu's SVM entry path: `Vcpu::run`
+            // (`components/axcpu/src/arch/x86_64/virtualization/vcpu.rs`)
+            // unconditionally writes `VmcbTlbControl::FlushAll` and clears
+            // `clean_bits` before *every* `VMRUN`. `FlushAll` is AMD's
+            // `TLB_CONTROL_FLUSH_ALL_ASID`: it invalidates the entire local TLB,
+            // including every ASID-tagged entry and every nested (NPT) entry
+            // derived from the retired root. Every physical CPU that can run this
+            // VM performs that flush before its first guest entry after this
+            // rendezvous, so no CPU can keep serving a recycled root from a stale
+            // translation.
+            //
+            // This mirrors Linux KVM, which expresses every SVM TLB flush through
+            // `vmcb->control.tlb_ctl` (`svm_flush_tlb_*` in
+            // `arch/x86/kvm/svm/svm.c`) because, as KVM notes, "SVM doesn't
+            // provide a way to flush only NPT TLB entries". A host
+            // `CR3`/`INVLPG` flush here would be a no-op for guest translations
+            // and is deliberately not used.
+            Ok(())
+        }
+    }
+}

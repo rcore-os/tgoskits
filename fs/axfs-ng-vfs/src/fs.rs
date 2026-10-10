@@ -98,8 +98,37 @@ pub struct Filesystem {
     pub(crate) mount_state: Arc<FilesystemMountState>,
 }
 
+/// A registry entry that does not extend a filesystem's lifetime.
+#[derive(Clone)]
+pub struct WeakFilesystem {
+    ops: alloc::sync::Weak<dyn FilesystemOps>,
+    mount_state: alloc::sync::Weak<FilesystemMountState>,
+}
+
+impl WeakFilesystem {
+    /// Reports whether both filesystem owners are still present.
+    pub fn is_alive(&self) -> bool {
+        self.ops.strong_count() != 0 && self.mount_state.strong_count() != 0
+    }
+
+    /// Retains the instance only while a mount, file, or explicit owner is live.
+    pub fn upgrade(&self) -> Option<Filesystem> {
+        Some(Filesystem {
+            ops: self.ops.upgrade()?,
+            mount_state: self.mount_state.upgrade()?,
+        })
+    }
+}
+
 #[inherit_methods(from = "self.ops")]
 impl Filesystem {
+    /// Creates a non-owning entry for shutdown and diagnostics registries.
+    pub fn downgrade(&self) -> WeakFilesystem {
+        WeakFilesystem {
+            ops: Arc::downgrade(&self.ops),
+            mount_state: Arc::downgrade(&self.mount_state),
+        }
+    }
     pub fn name(&self) -> &str;
 
     pub fn root_dir(&self) -> DirEntry;

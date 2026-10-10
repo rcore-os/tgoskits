@@ -28,6 +28,10 @@ pub fn cmdline() -> Option<&'static str> {
     Some(unsafe { core::str::from_utf8_unchecked(&CMDLINE[..len]) })
 }
 
+pub(crate) fn has_handoff_cmdline() -> bool {
+    CMDLINE[0] != 0
+}
+
 pub fn var(key: &str) -> Option<&'static str> {
     let cmdline = cmdline()?;
 

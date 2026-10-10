@@ -13,9 +13,12 @@ use arm_vgic::{
 };
 use axvm_types::AccessWidth;
 
+mod support;
+
 const GICD_CTLR: u64 = 0x0000;
 const GICD_TYPER: u64 = 0x0004;
 const GICD_ISENABLER: u64 = 0x0100;
+const GICD_ICPENDR: u64 = 0x0280;
 const GICD_IPRIORITYR: u64 = 0x0400;
 const GICD_IROUTER: u64 = 0x6000;
 const GIC_PIDR2: u64 = 0xffe8;
@@ -198,6 +201,109 @@ fn rerouting_a_pending_spi_removes_the_old_redistributor_delivery() {
     vcpu1.load().unwrap();
 
     assert!(backend.loaded_intids(0).is_empty());
+    assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
+}
+
+#[test]
+fn rerouting_a_loaded_level_spi_does_not_requeue_it_on_the_old_vcpu() {
+    let (controller, backend) = controller(2, 1);
+    let vcpu0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let vcpu1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
+    let spi = SpiId::new(32).unwrap();
+
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+    controller.set_spi_level(spi, true).unwrap();
+    vcpu0.load().unwrap();
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            1,
+        )
+        .unwrap();
+    backend.complete_all(0);
+    vcpu0.save().unwrap();
+
+    vcpu0.load().unwrap();
+    vcpu1.load().unwrap();
+    assert!(
+        backend.loaded_intids(0).is_empty(),
+        "completion after a route change must not restore the old vCPU delivery"
+    );
+    assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
+}
+
+#[test]
+fn deactivating_a_level_spi_with_no_routed_vcpu_preserves_pending_delivery() {
+    let (controller, backend) = controller(2, 1);
+    let vcpu0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let vcpu1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
+    let spi = SpiId::new(32).unwrap();
+
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+    controller.set_spi_level(spi, true).unwrap();
+    vcpu0.load().unwrap();
+    backend.activate_all(0);
+    vcpu0.save().unwrap();
+
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            2,
+        )
+        .unwrap();
+    vcpu0.deactivate_saved(IntId::Spi(spi)).unwrap();
+    assert_eq!(
+        controller.interrupt_state(None, IntId::Spi(spi)).unwrap(),
+        InterruptState::Pending
+    );
+
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            1,
+        )
+        .unwrap();
+    vcpu0.load().unwrap();
+    vcpu1.load().unwrap();
+    assert!(backend.loaded_intids(0).is_empty());
+    assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
+}
+
+#[test]
+fn attaching_the_routed_vcpu_delivers_a_parked_level_spi() {
+    let (controller, backend) = controller(2, 1);
+    let vcpu0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(32).unwrap();
+
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+    controller.set_spi_level(spi, true).unwrap();
+    vcpu0.load().unwrap();
+    backend.activate_all(0);
+    vcpu0.save().unwrap();
+
+    controller
+        .write_distributor(
+            GICD_IROUTER + u64::from(spi.raw()) * 8,
+            AccessWidth::Qword,
+            1,
+        )
+        .unwrap();
+    vcpu0.deactivate_saved(IntId::Spi(spi)).unwrap();
+
+    let vcpu1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
+    vcpu1.load().unwrap();
     assert_eq!(backend.loaded_intids(1), vec![IntId::Spi(spi)]);
 }
 
@@ -387,6 +493,29 @@ fn deasserting_a_pending_ppi_withdraws_the_saved_lr_before_wfi_wait() {
 }
 
 #[test]
+fn clearing_a_loaded_sgi_pending_waits_for_hardware_save() {
+    let (controller, backend) = controller(1, 1);
+    let vcpu = GicVcpuId::new(0);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let sgi = SgiId::new(3).unwrap();
+
+    controller.send_sgi(vcpu, sgi, SgiTarget::SelfOnly).unwrap();
+    binding.load().unwrap();
+    controller
+        .write_redistributor(
+            vcpu,
+            GICR_SGI_BASE + GICD_ICPENDR,
+            AccessWidth::Dword,
+            1 << sgi.raw(),
+        )
+        .unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(backend.loaded_intids(0).is_empty());
+    binding.save().unwrap();
+}
+
+#[test]
 fn deasserting_a_pending_spi_withdraws_the_saved_lr_before_wfi_wait() {
     let (controller, backend) = controller(1, 2);
     let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
@@ -420,6 +549,54 @@ fn deasserting_a_pending_spi_withdraws_the_saved_lr_before_wfi_wait() {
         binding.has_pending_interrupt().unwrap(),
         "a later level assertion must still create a fresh delivery"
     );
+}
+
+#[test]
+fn deasserting_a_loaded_spi_reconciles_hardware_before_the_next_entry() {
+    let (controller, backend) = controller(1, 1);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(32).unwrap();
+    enable_spi(&controller, spi);
+    controller
+        .configure_spi_input(spi, TriggerMode::Level)
+        .unwrap();
+
+    controller.set_spi_level(spi, true).unwrap();
+    binding.load().unwrap();
+    controller.set_spi_level(spi, false).unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(
+        backend.loaded_intids(0).is_empty(),
+        "a lowered loaded SPI must not be replayed on the next entry"
+    );
+    binding.save().unwrap();
+
+    controller.set_spi_level(spi, true).unwrap();
+    binding.load().unwrap();
+    backend.activate_all(0);
+    controller.set_spi_level(spi, false).unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert_eq!(
+        backend.loaded_states(0),
+        vec![InterruptState::Active],
+        "an accepted SPI must retain its active identity for guest deactivation"
+    );
+    backend.complete_all(0);
+    binding.save().unwrap();
+
+    controller.set_spi_level(spi, true).unwrap();
+    binding.load().unwrap();
+    let controller_during_save = controller.clone();
+    backend.set_save_hook(move || controller_during_save.set_spi_level(spi, false).unwrap());
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(
+        backend.loaded_intids(0).is_empty(),
+        "withdrawal after the save snapshot must still be reconciled"
+    );
+    binding.save().unwrap();
 }
 
 #[test]
@@ -922,11 +1099,16 @@ struct TestBackend {
     interfaces: Mutex<BTreeMap<GicVcpuId, CpuInterfaceState>>,
     retired: Mutex<Vec<(GicVcpuId, IntId)>>,
     fail_next_load: AtomicBool,
+    save_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl TestBackend {
     fn fail_next_load(&self) {
         self.fail_next_load.store(true, Ordering::Release);
+    }
+
+    fn set_save_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.save_hook.lock().unwrap() = Some(Box::new(hook));
     }
 
     fn loaded_hcr(&self, raw_vcpu: usize) -> u64 {
@@ -1061,8 +1243,18 @@ impl GicV3Backend for TestBackend {
         vcpu: GicVcpuId,
         state: &mut CpuInterfaceState,
     ) -> Result<(), GicV3BackendError> {
+        if let Some(hook) = self.save_hook.lock().unwrap().take() {
+            hook();
+        }
         if let Some(current) = self.interfaces.lock().unwrap().get(&vcpu) {
-            *state = current.clone();
+            state.set_hcr(current.hcr());
+            state.set_vmcr(current.vmcr());
+            for (index, value) in current.apr().iter().copied().enumerate() {
+                assert!(state.set_apr(index, value));
+            }
+            state
+                .list_registers_mut()
+                .copy_from_slice(current.list_registers());
         }
         Ok(())
     }

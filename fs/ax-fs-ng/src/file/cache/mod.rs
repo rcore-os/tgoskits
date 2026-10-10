@@ -27,7 +27,7 @@ pub(crate) use writeback_worker::start_background_writeback;
 use super::page::PageCache;
 use crate::os::{
     memory::PAGE_SIZE,
-    sync::{SleepMutex as Mutex, SleepMutexGuard},
+    sync::{Mutex, MutexGuard},
 };
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
@@ -269,7 +269,7 @@ impl Drop for CachedPagePin {
 /// publication barrier and retry instead.
 struct MappingUpdateGuard<'a> {
     shared: &'a CachedFileShared,
-    _layout: SleepMutexGuard<'a, ()>,
+    _layout: MutexGuard<'a, ()>,
 }
 
 #[cfg(all(test, feature = "ext4", feature = "vfs"))]

@@ -5,7 +5,7 @@ components.
 
 ## Primitives
 
-- `SpinLock<T>` and `SpinRwLock<T>` select execution-context policy at each
+- `RawSpinLock<T>` and `RawSpinRwLock<T>` select execution-context policy at each
   acquisition: ordinary methods disable preemption, `*_irqsave` methods also
   save and disable local interrupts, and `unsafe *_raw` methods leave context
   management to the caller.

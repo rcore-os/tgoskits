@@ -11,10 +11,6 @@ impl MachinePlatform for LoongArch64Arch {
 }
 
 impl GuestBootPlatform for LoongArch64Arch {
-    fn init_guest_boot_resources() {
-        super::boot::init();
-    }
-
     fn prepare_guest_boot(
         vm_config: &mut crate::config::AxVMConfig,
         vm_create_config: &mut axvmconfig::GuestConfig,

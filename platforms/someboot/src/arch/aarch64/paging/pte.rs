@@ -72,6 +72,10 @@ impl PageTableEntry for Entry {
         self.0.paddr(is_dir)
     }
 
+    fn requires_break_before_make(&self, replacement: &Self, is_dir: bool) -> bool {
+        self.0.requires_break_before_make(&replacement.0, is_dir)
+    }
+
     fn config(&self, _is_dir: bool) -> Self::PteConfig {
         let flags = self.0.flags();
         let lower = flags.contains(DescriptorFlags::AP_EL0);

@@ -103,7 +103,7 @@ test-suit/starryos/
       drm-test-drm-perbuf-dumb/
         CMakeLists.txt
         src/
-      evdev-test-evdev-event-primary/
+      evdev-test-evdev-minor/
         CMakeLists.txt
         src/
       usb-audio-iso/
@@ -256,7 +256,7 @@ scripts/test/ltp-syscalls/generate-common.sh \
 这次接管的边界有意收缩：PR #1775 新增或修改过可执行 C 源码的 Starry cases 从发现
 流程中整项移除，由最终共同集中的官方 LTP 结果承担回归；原 C cases 中 LTP 没有表达的
 自定义断言不再保留，也不再宣称仍被覆盖。ArceOS C 测试仍由 ArceOS 自己的测试入口维护。
-性能基准 `apps/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
+性能基准 `benchmarks/starry/wakeup-latency-bench` 作为独立 Starry app 保留，供后续调优使用。
 
 逐项 syscall 迁移以 `scripts/test/ltp-syscalls/migration.csv` 为账本。按当前工作约定，
 候选 LTP 出错时保留原测试，记录候选、失败架构、错误输出和证据路径后暂缓，先处理
@@ -330,6 +330,13 @@ cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-
 `starry-autorun` 服务执行，终端由 BusyBox init 重新拉起；测试命令结束不再等同于
 根 PID 1 退出。`qemu/pid1`、`qemu/pid1-exit`、`qemu/pid1-exit-thread` 和 `qemu/pid1-fault` 安装专用
 `/sbin/init`，验证根 PID 1 的信号、回收语义、两种退出入口与同步缺页；`qemu/openrc` 验证服务管理和终端重新拉起。
+
+`qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback` 与 `qemu/host-initramfs-switch-root` 在 case 目录放置
+`host-initramfs.toml`，其中 `source` 指向工作区内的归档目录；可选的
+`init_source` 指向 AArch64 `/init` 的 C 源码，同目录须有 `entry-aarch64.S`。
+axbuild 在运行前用 clang/lld 编译 `/init`、构建 `newc` 归档，再交给 QEMU。
+运行配置不要再写固定 `initramfs` 路径。内存根用例不接磁盘，磁盘回退用例
+显式配置主 rootfs drive；两者分别检查 `/init` 优先和无 `/init` 时的 `root=`。
 
 `python3 scripts/test/starry_openrc_boot.py --arch <arch> --output <目录>` 另外在私有镜像副本上
 通过 `cargo xtask starry qemu` 连续启动两次，检查服务注册持久化、正常关机及重启的 QMP
@@ -637,6 +644,7 @@ App 的 `board-<name>.toml` 默认复用
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
 cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-config board-orangepi-5-plus.toml
+cargo xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
 ```
 
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
@@ -645,6 +653,13 @@ cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-co
 `wifi-network-smoke` 在取得 DHCP 地址后执行同样的双向传输。AKA 板端只有
 `wget` 时，测试会从本次 session 下载包含 `curl` 及其 musl 依赖的归档，再运行
 `upload-source` 和双向传输；无需预装 iperf 或 curl。
+
+nightly 性能用例在 `benchmarks/starry/iperf3` 提供完整 TCP 吞吐测试，直接通过
+上面的 `-t benchmark/iperf3` 命令启动板测；ostool server 持续提供 iperf3
+服务，board 配置步骤内的 `shell_cmd` 通过活动 session 的 `${boardServerIp}` 和
+`${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程追加
+到该步骤中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
+启动脚本。
 
 `board-common/network-test` 的 `upload-source.c` 以 128 KiB 固定块生成零数据，
 按单调时钟运行指定时长，不落盘；CMake 将其编译并把脚本安装到每次运行的 session
@@ -741,3 +756,5 @@ cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-smoke --arch riscv64
 - `fail_regex` 保持精确，避免匹配正常输出如 `failed: 0`。
 - 不要在同一个工作区并行运行多个 `cargo xtask starry test qemu`，rootfs 和生成配置可能互相影响。
 - heavy app 不应放回 `test-suit/starryos`；迁出到 `apps/starry` 后加入 `apps/.ignore`，需要时用显式 `-t` 运行。
+
+`qemu/host-initramfs-switch-root` 的早期 `/init` 直接挂载 NVMe Ext4、移动 `/dev`、执行 `pivot_root(".", ".")` 和 `umount2(MNT_DETACH)`，读取磁盘根版本文件后再 exec 磁盘 `/sbin/init`；各步骤失败打印 errno 并令测试失败。

@@ -33,6 +33,30 @@ pub struct AddrSpace<Npt: NestedPageTableOps> {
 }
 
 impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
+    /// Copies linear mappings for construction of a separate translation root.
+    ///
+    /// Allocation backends own frames through the old address space. Copying
+    /// their physical addresses cannot preserve backing ownership.
+    pub fn linear_mappings(&self) -> AddrSpaceResult<Vec<LinearMapping>> {
+        self.areas
+            .iter()
+            .map(|area| {
+                let Backend::Linear { pa_to_va_delta } = area.backend() else {
+                    return Err(AddrSpaceError::UnleasedBacking);
+                };
+                let physical = area.start().as_usize() as i128 - *pa_to_va_delta;
+                let physical =
+                    usize::try_from(physical).map_err(|_| AddrSpaceError::InvalidMapping)?;
+                Ok(LinearMapping {
+                    guest: area.start(),
+                    host: PhysAddr::from(physical),
+                    size: area.size(),
+                    flags: area.flags(),
+                })
+            })
+            .collect()
+    }
+
     /// Returns the address space base.
     pub const fn base(&self) -> GuestPhysAddr {
         self.va_range.start
@@ -256,6 +280,19 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
             None
         }
     }
+}
+
+/// An owned mapping description. Its caller retains the backing ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinearMapping {
+    /// Guest physical start.
+    pub guest: GuestPhysAddr,
+    /// Host physical start.
+    pub host: PhysAddr,
+    /// Mapping length in bytes.
+    pub size: usize,
+    /// Permissions and memory attributes.
+    pub flags: MappingFlags,
 }
 
 fn validate_range(

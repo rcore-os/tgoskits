@@ -1,6 +1,6 @@
 <h1 align="center">axvmconfig</h1>
 
-<p align="center">A simple VM configuration tool for ArceOS-Hypervisor</p>
+<p align="center">A VM configuration library for ArceOS-Hypervisor</p>
 
 <div align="center">
 
@@ -15,7 +15,7 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`axvmconfig` provides A simple VM configuration tool for ArceOS-Hypervisor. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`axvmconfig` provides VM configuration types and validation for ArceOS-Hypervisor. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
 
 ## Quick Start
 

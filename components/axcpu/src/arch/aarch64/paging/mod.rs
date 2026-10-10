@@ -7,7 +7,9 @@ pub(crate) use stage1::{ADDRESS_BITS, LEVEL_BITS, MAX_BLOCK_LEVEL, PAGE_SIZE};
 pub use stage1::{DescriptorFlags, El1Pte, El2Pte, Pte, Stage1Pte, Stage1Regime};
 pub use stage2::Stage2Pte;
 
-/// Four-level, 4-KiB non-VHE EL2 stage-one table geometry.
+/// Four-level, 4-KiB non-VHE EL2 stage-one table geometry with local TLB scope.
+///
+/// Shared runtime tables use the platform-checked metadata in `ax-hal`.
 #[derive(Clone, Copy)]
 pub struct El2PagingMeta;
 

@@ -39,7 +39,7 @@ fn orphan_retry_merges_concurrent_transfers_without_dropping_owners() {
         withdrawals: AtomicUsize::new(0),
     });
     ORPHANED_IRQ_WITHDRAWALS
-        .lock_irqsave()
+        .lock()
         .push(pending_withdrawal(1, first.clone()));
 
     let retry = std::thread::spawn(PciRootBinding::retry_orphaned_irq_withdrawals);
@@ -52,7 +52,7 @@ fn orphan_retry_merges_concurrent_transfers_without_dropping_owners() {
         release: AtomicBool::new(true),
         withdrawals: AtomicUsize::new(0),
     });
-    let incoming = SpinLock::new(vec![pending_withdrawal(2, second.clone())]);
+    let incoming = ax_sync::Mutex::new(vec![pending_withdrawal(2, second.clone())]);
     transfer_pending_irq_withdrawals(&incoming);
     first.release.store(true, Ordering::Release);
     retry.join().unwrap().unwrap();

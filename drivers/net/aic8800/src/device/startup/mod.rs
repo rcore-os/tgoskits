@@ -309,7 +309,7 @@ impl AicDevice {
                 self.begin_lmac_mailbox(
                     ME_CONFIG_REQ,
                     TASK_ME,
-                    &me_config_payload(),
+                    &me_config_payload(self.profile.me_config()),
                     ME_CONFIG_CFM,
                     now,
                 );
@@ -460,6 +460,56 @@ impl From<DebugConfirmationError> for AicError {
 mod tests {
     use super::*;
     use crate::common::ChipVariant;
+
+    #[test]
+    fn startup_me_config_request_uses_chip_specific_capability_profile() {
+        for (chip, expected_capability_info, expected_bandwidth, expected_vht_he) in [
+            (ChipVariant::Aic8800DC, 1u16, 2u8, (0u8, 0u8)),
+            (ChipVariant::Aic8800D80, 0x0863, 2u8, (1u8, 1u8)),
+        ] {
+            let mut device = AicDevice::new(chip).unwrap();
+            device.lifecycle.state = AicState::Starting;
+            device.lifecycle.startup = Some(StartupState {
+                stage: StartupStage::ConfigureMac,
+                revision: Some(3),
+                dc: None,
+            });
+
+            let now = MonotonicTime::from_nanos(0);
+            let mut action = device.drive_startup(now);
+            if chip == ChipVariant::Aic8800D80 {
+                let AicAction::SubmitSdio(flow) = action else {
+                    panic!("expected D80 ME_CONFIG flow-credit read");
+                };
+                action = device.advance(AicInput {
+                    now,
+                    event: Some(AicInputEvent::Sdio(SdioCompletion {
+                        request_id: flow.id,
+                        result: Ok(SdioResponse::Byte(128)),
+                    })),
+                });
+            }
+            let AicAction::SubmitSdio(request) = action else {
+                panic!("expected ME_CONFIG mailbox write");
+            };
+            let SdioRequestKind::Write { bytes, .. } = request.kind else {
+                panic!("expected an SDIO FIFO write");
+            };
+            let lmac_header_offset = 4 + 4;
+            let payload_offset = lmac_header_offset + 8;
+            assert_eq!(
+                &bytes[lmac_header_offset..lmac_header_offset + 2],
+                &ME_CONFIG_REQ.to_le_bytes()
+            );
+            assert_eq!(
+                &bytes[payload_offset..payload_offset + 2],
+                &expected_capability_info.to_le_bytes()
+            );
+            assert_eq!(bytes[payload_offset + 102], expected_bandwidth);
+            assert_eq!(bytes[payload_offset + 104], expected_vht_he.0);
+            assert_eq!(bytes[payload_offset + 105], expected_vht_he.1);
+        }
+    }
 
     #[test]
     fn startup_refuses_to_publish_an_all_zero_mac_address() {

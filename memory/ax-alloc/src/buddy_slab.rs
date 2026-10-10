@@ -6,7 +6,7 @@ use core::{
     slice,
 };
 
-use ax_sync::SpinLock;
+use ax_sync::RawSpinLock;
 use buddy_slab_allocator::{
     GlobalAllocator as InnerAllocator, RemoteFreeHint, SizeClass, SlabAllocResult, SlabAllocator,
     SlabDeallocResult, SlabPoolTrait, SlabTrait, interface::BuddySlabIf,
@@ -33,7 +33,7 @@ static SLAB_POOL: SlabPool = SlabPool;
 
 struct PercpuSlab<const PAGE_SIZE: usize = 0x1000> {
     cpu_id: Option<u16>,
-    inner: SpinLock<SlabAllocator<PAGE_SIZE>>,
+    inner: RawSpinLock<SlabAllocator<PAGE_SIZE>>,
     remote_hint: RemoteFreeHint,
 }
 
@@ -41,7 +41,7 @@ impl<const PAGE_SIZE: usize> PercpuSlab<PAGE_SIZE> {
     const fn new_uninit() -> Self {
         Self {
             cpu_id: None,
-            inner: SpinLock::new(SlabAllocator::new()),
+            inner: RawSpinLock::new(SlabAllocator::new()),
             remote_hint: RemoteFreeHint::new(),
         }
     }
@@ -140,8 +140,8 @@ impl BuddySlabIf for BuddySlabIfImpl {
 
 /// The global allocator used by ArceOS when `buddy-slab` is enabled.
 pub struct GlobalAllocator {
-    inner: SpinLock<InnerAllocator<PAGE_SIZE>>,
-    usages: SpinLock<Usages>,
+    inner: RawSpinLock<InnerAllocator<PAGE_SIZE>>,
+    usages: RawSpinLock<Usages>,
 }
 
 impl Default for GlobalAllocator {
@@ -154,8 +154,8 @@ impl GlobalAllocator {
     /// Creates an empty [`GlobalAllocator`].
     pub const fn new() -> Self {
         Self {
-            inner: SpinLock::new(InnerAllocator::<PAGE_SIZE>::new()),
-            usages: SpinLock::new(Usages::new()),
+            inner: RawSpinLock::new(InnerAllocator::<PAGE_SIZE>::new()),
+            usages: RawSpinLock::new(Usages::new()),
         }
     }
 
@@ -182,6 +182,18 @@ impl GlobalAllocator {
         );
         let region = unsafe { slice::from_raw_parts_mut(start_vaddr as *mut u8, size) };
         unsafe { self.inner.lock_irqsave().add_region(region) }.map_err(Into::into)
+    }
+
+    /// Adds a small region with page-aligned heap storage and reports usable bytes.
+    ///
+    /// # Safety
+    /// The address range must be writable, uniquely owned, and remain mapped
+    /// for the allocator lifetime. It must not overlap managed memory.
+    pub unsafe fn add_compact_memory(&self, start_vaddr: usize, size: usize) -> AllocResult<usize> {
+        // SAFETY: the caller owns this entire mapped region for the allocator lifetime.
+        let region = unsafe { slice::from_raw_parts_mut(start_vaddr as *mut u8, size) };
+        // SAFETY: the region is disjoint from all existing allocator regions.
+        unsafe { self.inner.lock_irqsave().add_compact_region(region) }.map_err(Into::into)
     }
 
     /// Allocate arbitrary number of bytes. Returns the left bound of the
@@ -416,6 +428,15 @@ pub fn global_add_memory(start_vaddr: usize, size: usize) -> AllocResult {
         start_vaddr + size
     );
     GLOBAL_ALLOCATOR.add_memory(start_vaddr, size)
+}
+
+/// Adds page-aligned reclaimable memory and reports allocator-visible bytes.
+///
+/// # Safety
+/// The address range must be writable, uniquely owned, and remain mapped for
+/// the allocator lifetime. It must not overlap managed memory.
+pub unsafe fn global_add_memory_compact(start_vaddr: usize, size: usize) -> AllocResult<usize> {
+    unsafe { GLOBAL_ALLOCATOR.add_compact_memory(start_vaddr, size) }
 }
 
 unsafe impl GlobalAlloc for GlobalAllocator {

@@ -56,3 +56,15 @@ cargo xtask starry test qemu --arch x86_64 -c nvme-rootfs-apk-curl
 ```
 
 The same case is defined for `aarch64`, `riscv64`, and `loongarch64`.
+
+For the focused x86_64 QEMU test, `nvme-qemu` uses Q35/SMP4 with 4 KiB LBAs,
+MDTS=4 (64 KiB), and MSI-X. It writes a 256 KiB offset-specific pattern,
+flushes and reclaims clean caches, then verifies a cold readback against both
+the data and device I/O counters:
+
+```shell
+cargo xtask arceos test qemu --test-group rust --test-case nvme-qemu --target x86_64-unknown-none
+```
+
+This validates the configured QEMU path only; it does not establish behavior
+on physical NVMe devices or untested namespace sizes.

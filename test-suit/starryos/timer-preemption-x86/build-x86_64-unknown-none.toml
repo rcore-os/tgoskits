@@ -1,6 +1,9 @@
 target = "x86_64-unknown-none"
 log = "Warn"
 features = [
+  "ax-runtime/display",
+  "ax-driver/ahci",
+  "ax-driver/intel-net",
   "ax-driver/nvme",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
@@ -8,4 +11,4 @@ features = [
   "ax-driver/virtio-socket",
   "ax-driver/xhci-pci",
 ]
-max_cpu_num = 1
+max_cpu_num = 4

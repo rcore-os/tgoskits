@@ -27,6 +27,8 @@ pub mod paging;
 
 #[cfg(feature = "exception-table")]
 mod exception_table;
+#[cfg(feature = "exception-table")]
+pub mod kernel_access;
 #[cfg(feature = "uspace")]
 mod user_access;
 #[cfg(feature = "uspace")]

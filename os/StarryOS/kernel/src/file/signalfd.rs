@@ -12,7 +12,7 @@ use zerocopy::{Immutable, IntoBytes};
 use crate::{
     StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
-    sync::IrqMutex,
+    sync::RawSpinLock,
     task::{
         current_user_task,
         future::{block_on_user, poll_io},
@@ -81,7 +81,7 @@ impl SignalfdSiginfo {
 pub struct Signalfd {
     // SignalSet is a single Copy bitset, so a short project-visible spin lock
     // is enough for now. Revisit this when a lockdep-aware project RwLock exists.
-    mask: IrqMutex<SignalSet>,
+    mask: RawSpinLock<SignalSet>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
 }
@@ -89,7 +89,7 @@ pub struct Signalfd {
 impl Signalfd {
     pub fn new(mask: SignalSet) -> Arc<Self> {
         Arc::new(Self {
-            mask: IrqMutex::new(mask),
+            mask: RawSpinLock::new(mask),
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
         })
@@ -97,14 +97,14 @@ impl Signalfd {
 
     pub fn update_mask(&self, mask: SignalSet) {
         {
-            *self.mask.lock() = mask;
+            *self.mask.lock_irqsave() = mask;
         }
         // The signal mask update is visible before waking readers.
         unsafe { self.poll_rx.wake(IoEvents::IN) };
     }
 
     fn mask(&self) -> SignalSet {
-        *self.mask.lock()
+        *self.mask.lock_irqsave()
     }
 
     /// Check if there are any pending signals matching the mask

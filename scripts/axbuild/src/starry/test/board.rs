@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use ostool::board::{BoardRunRequest, RunBoardOptions};
@@ -9,10 +12,19 @@ use super::{
     discover_board_test_groups,
 };
 use crate::{
-    context::{SnapshotPersistence, StarryCliArgs, arch_for_target_checked, board_run_request},
+    context::{
+        ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
+        board_run_request,
+    },
     starry::{Starry, board, build},
     test::{board as board_test, qemu as qemu_test},
 };
+
+struct PreparedBoardBuild {
+    cargo: ostool::build::config::Cargo,
+    request: ResolvedStarryRequest,
+    elf_path: PathBuf,
+}
 
 pub(crate) fn collect_board_test_groups(
     _workspace_root: &Path,
@@ -46,7 +58,7 @@ impl Starry {
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
         let groups = discover_board_test_groups(
             self.app.workspace_root(),
-            args.test_case.as_deref(),
+            &args.test_case,
             args.board.as_deref(),
         )?;
         if args.list {
@@ -59,6 +71,7 @@ impl Starry {
         }
 
         let mut run_state = board_test::BoardTestRunState::new("starry", groups.len());
+        let mut runnable = Vec::new();
         for (index, group) in groups.into_iter().enumerate() {
             let group_label = run_state.start_group(index, &group);
             let board_test_config = group.board_test_config_path.clone();
@@ -76,16 +89,91 @@ impl Starry {
                 continue;
             }
 
+            runnable.push((index, group_label, group));
+        }
+
+        let mut build_groups = BTreeMap::<PathBuf, Vec<usize>>::new();
+        for (position, (_, _, group)) in runnable.iter().enumerate() {
+            let build_config = group.build_config_path.canonicalize().with_context(|| {
+                format!(
+                    "failed to resolve Starry board build config `{}`",
+                    group.build_config_path.display()
+                )
+            })?;
+            build_groups.entry(build_config).or_default().push(position);
+        }
+
+        // Board TOMLs only select runtime checks and session files. Build each
+        // unique kernel configuration once, preserving its ELF before another
+        // configuration can overwrite Cargo's common artifact path.
+        let artifact_parent = self.app.target_dir().join("axbuild");
+        std::fs::create_dir_all(&artifact_parent).with_context(|| {
+            format!(
+                "failed to create Starry board artifact parent {}",
+                artifact_parent.display()
+            )
+        })?;
+        let artifact_directory = tempfile::Builder::new()
+            .prefix("starry-board-artifacts-")
+            .tempdir_in(&artifact_parent)
+            .context("failed to create temporary Starry board artifact directory")?;
+        let mut prepared_builds = HashMap::<PathBuf, Result<PreparedBoardBuild, String>>::new();
+        for (build_config, positions) in build_groups {
             let result = async {
+                let group = &runnable[positions[0]].2;
                 let request = self.prepare_request(
-                    Self::test_board_build_args(&group),
+                    Self::test_board_build_args(group),
                     None,
                     None,
                     SnapshotPersistence::Discard,
                 )?;
                 let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
+                let output = self.build_artifact(&request, cargo.clone()).await?;
+                let elf_path = qemu_test::preserve_build_artifact(
+                    output.elf_path(),
+                    artifact_directory.path(),
+                    positions[0],
+                )?;
+                Ok::<_, anyhow::Error>(PreparedBoardBuild {
+                    cargo,
+                    request,
+                    elf_path,
+                })
+            }
+            .await;
+            prepared_builds.insert(build_config, result.map_err(|error| format!("{error:#}")));
+        }
+
+        for (_, group_label, group) in runnable {
+            let board_test_config = group.board_test_config_path.clone();
+            let board_test_config_summary = board_test_config.display().to_string();
+            let build_config = group.build_config_path.canonicalize().with_context(|| {
+                format!(
+                    "failed to resolve Starry board build config `{}`",
+                    group.build_config_path.display()
+                )
+            })?;
+            let Some(build_result) = prepared_builds.get(&build_config) else {
+                run_state.fail_group(
+                    group_label,
+                    anyhow::anyhow!("missing prepared build for `{}`", build_config.display()),
+                );
+                continue;
+            };
+            let prepared = match build_result {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    run_state.fail_group(
+                        group_label,
+                        anyhow::anyhow!("shared build failed for case: {error}"),
+                    );
+                    continue;
+                }
+            };
+
+            let result = async {
                 let (mut board_config, board_config_path) = self
-                    .load_board_config(&cargo, Some(board_test_config.as_path()))
+                    .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
                 let _boot_entropy =
                     crate::starry::boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
@@ -111,7 +199,6 @@ impl Starry {
                     declared_session_files: &board_config.session_files,
                 })
                 .await?;
-                let output = self.build_artifact(&request, cargo.clone()).await?;
                 let board_request = match session_assets {
                     Some(assets) => {
                         println!(
@@ -125,9 +212,9 @@ impl Starry {
                 };
                 self.app
                     .board_prepared_elf_with_request(
-                        output.elf_path().to_path_buf(),
-                        cargo.to_bin,
-                        request.build_info_path.clone(),
+                        prepared.elf_path.clone(),
+                        prepared.cargo.to_bin,
+                        prepared.request.build_info_path.clone(),
                         board_request,
                     )
                     .await

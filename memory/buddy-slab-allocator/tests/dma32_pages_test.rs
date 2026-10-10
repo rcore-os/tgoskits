@@ -19,9 +19,10 @@ fn init_allocator(
 
 #[test]
 fn test_lowmem_basic() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_allocator(&allocator, &mut region);
+    _ctx = init_allocator(&allocator, &mut region);
     let section = allocator.managed_section(0).unwrap();
     let managed_start = section.start;
     let managed_end = managed_start + section.size;
@@ -40,9 +41,10 @@ fn test_lowmem_basic() {
 
 #[test]
 fn test_lowmem_aligned() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE * 2);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_allocator(&allocator, &mut region);
+    _ctx = init_allocator(&allocator, &mut region);
 
     let addr = allocator.alloc_pages_lowmem(1, 2 * PAGE_SIZE).unwrap();
     assert_eq!(addr % (2 * PAGE_SIZE), 0);
@@ -51,9 +53,10 @@ fn test_lowmem_aligned() {
 
 #[test]
 fn test_lowmem_vs_normal() {
+    let _ctx;
     let mut region = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_allocator(&allocator, &mut region);
+    _ctx = init_allocator(&allocator, &mut region);
 
     let addr_low = allocator.alloc_pages_lowmem(1, PAGE_SIZE).unwrap();
     let addr_normal = allocator.alloc_pages(1, PAGE_SIZE).unwrap();
@@ -67,12 +70,13 @@ fn test_lowmem_vs_normal() {
 
 #[test]
 fn global_add_region_unaligned_lowmem_alignment() {
+    let _ctx;
     const ALIGN_2M: usize = 2 * 1024 * 1024;
 
     let mut first = HostRegion::new(TEST_HEAP_SIZE, PAGE_SIZE);
     let mut second = HostRegion::new(8 * ALIGN_2M + 0x1234 + PAGE_SIZE, ALIGN_2M);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
-    let _ctx = init_allocator(&allocator, &mut first);
+    _ctx = init_allocator(&allocator, &mut first);
 
     let second_len = second.len();
     let second_slice = unsafe { second.subslice(0x1234, second_len - 0x1234 - PAGE_SIZE / 3) };

@@ -28,35 +28,56 @@ jobs:
     name: Plan Starry Apps
     runs-on: ubuntu-latest
     outputs:
+      revision: ${{ steps.revision.outputs.sha }}
       matrix: ${{ steps.matrix.outputs.starry_apps_matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: dev
+
+      - name: Pin dev revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Plan check matrix
         id: matrix
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RUN_CLIPPY_ALL: ${{ inputs.run_clippy_all || false }}
-        run: |
-          set -euo pipefail
-          args=(
-            --mode starry-apps
-            --repository "$GITHUB_REPOSITORY"
-            --repository-owner "$GITHUB_REPOSITORY_OWNER"
-            --event-name "$EVENT_NAME"
-            --output-file "$GITHUB_OUTPUT"
-          )
-          if [ "$RUN_CLIPPY_ALL" = "true" ]; then
-            args+=(--boolean-input run_clippy_all)
-          fi
-          python3 scripts/test/ci_plan.py "${args[@]}"
+        uses: ./.github/actions/ci-plan
+        with:
+          mode: starry-apps
+          repository: ${{ github.repository }}
+          repository-owner: ${{ github.repository_owner }}
+          event-name: ${{ github.event_name }}
+          boolean-inputs: ${{ inputs.run_clippy_all && 'run_clippy_all' || '' }}
 
   checks:
     name: Starry Apps
-    needs: plan
+    needs: [plan]
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
+      checkout_ref: ${{ needs.plan.outputs.revision }}
       matrix_json: ${{ needs.plan.outputs.matrix }}
       fail_fast: false
       save_cache: ${{ github.event_name == 'schedule' }}
+
+  result:
+    name: Nightly Result
+    if: always()
+    needs: [plan, checks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.revision || github.sha }}
+      - name: Report result
+        uses: ./.github/actions/ci-result
+        with:
+          title: Starry Apps Nightly
+          revision: ${{ needs.plan.outputs.revision }}
+          revision-label: dev revision
+          stages: |
+            Plan=${{ needs.plan.result }}
+            Apps=${{ needs.checks.result }}
+          required-stages: |
+            Plan
+            Apps

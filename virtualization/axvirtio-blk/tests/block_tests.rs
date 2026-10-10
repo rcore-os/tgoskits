@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 
-extern crate ax_runtime as _;
+mod common;
 
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};

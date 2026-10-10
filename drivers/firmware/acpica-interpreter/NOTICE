@@ -1,0 +1,7 @@
+ACPICA 20260930 is vendored under BSD-3-Clause in vendor/. Its upstream
+copyright and SPDX headers are retained. See LICENSE.BSD-3-Clause.
+
+The Rust operating-system services layer, TGOSKits platform configuration,
+and C FFI bridge are original Apache-2.0 adaptations. The operating system
+integration supplies the Backend implementation; this crate contains no
+TGOSKits kernel or board services.

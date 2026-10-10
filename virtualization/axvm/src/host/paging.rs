@@ -76,3 +76,103 @@ impl PagingHandler for HostPagingHandler {
 pub(crate) fn virt_to_phys(vaddr: VirtAddr) -> PhysAddr {
     default_host().virt_to_phys(vaddr)
 }
+
+/// Real host RAM allocation for page-ownership component tests.
+/// Addresses use the host's linear address conversion for backing validation;
+/// this provider makes no claim about native page tables or cache maintenance.
+#[cfg(test)]
+pub(crate) mod test_frames {
+    use std::{
+        alloc::{Layout, alloc, dealloc},
+        collections::BTreeMap,
+        sync::{
+            Mutex, OnceLock,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use super::{PAGE_SIZE_4K, PagingHandler, PhysAddr, VirtAddr};
+
+    static NEXT_ALLOCATION: AtomicUsize = AtomicUsize::new(1);
+    static ALLOCATIONS: OnceLock<Mutex<BTreeMap<usize, (Layout, usize)>>> = OnceLock::new();
+
+    fn allocations() -> &'static Mutex<BTreeMap<usize, (Layout, usize)>> {
+        ALLOCATIONS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    }
+
+    pub(crate) struct TestFrames;
+
+    impl TestFrames {
+        pub(crate) fn identity(address: PhysAddr) -> usize {
+            allocations().lock().unwrap()[&address.as_usize()].1
+        }
+
+        pub(crate) fn is_live(address: PhysAddr, identity: usize) -> bool {
+            allocations()
+                .lock()
+                .unwrap()
+                .get(&address.as_usize())
+                .is_some_and(|(_, current)| *current == identity)
+        }
+    }
+
+    impl PagingHandler for TestFrames {
+        fn alloc_frame() -> Option<PhysAddr> {
+            Self::alloc_frames(1, PAGE_SIZE_4K)
+        }
+
+        fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
+            let size = num.checked_mul(PAGE_SIZE_4K)?;
+            if size == 0 {
+                return None;
+            }
+            let layout = Layout::from_size_align(size, align).ok()?;
+            // SAFETY: layout is valid and nonzero; ownership is retained in the
+            // registry until the matching deallocation by ContiguousFrameOwner.
+            let pointer = unsafe { alloc(layout) };
+            if pointer.is_null() {
+                return None;
+            }
+            // SAFETY: the new allocation is exclusive and valid for size bytes.
+            unsafe {
+                pointer.write_bytes(0xa5, size);
+            }
+            let address = super::virt_to_phys(VirtAddr::from_usize(pointer as usize));
+            allocations().lock().unwrap().insert(
+                address.as_usize(),
+                (
+                    layout,
+                    NEXT_ALLOCATION
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |identity| {
+                            identity.checked_add(1)
+                        })
+                        .expect("test allocation identities exhausted"),
+                ),
+            );
+            Some(address)
+        }
+
+        fn dealloc_frame(address: PhysAddr) {
+            Self::dealloc_frames(address, 1);
+        }
+
+        fn dealloc_frames(address: PhysAddr, num: usize) {
+            let (layout, _) = allocations()
+                .lock()
+                .unwrap()
+                .remove(&address.as_usize())
+                .expect("test frame allocation must be retired exactly once");
+            assert_eq!(layout.size(), num * PAGE_SIZE_4K);
+            // SAFETY: the exact live allocation and its original layout were
+            // removed by its unique backing owner after all leases ended.
+            unsafe {
+                dealloc(Self::phys_to_virt(address).as_mut_ptr(), layout);
+            }
+        }
+
+        fn phys_to_virt(address: PhysAddr) -> VirtAddr {
+            super::HostPagingHandler::phys_to_virt(address)
+        }
+        fn clean_dcache_range(_address: PhysAddr, _size: usize) {}
+    }
+}

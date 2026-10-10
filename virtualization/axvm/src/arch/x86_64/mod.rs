@@ -5,18 +5,16 @@
 
 use std::{
     arch::asm,
-    boxed::Box,
     collections::BTreeMap,
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 
 use ax_std::os::arceos::{
     guard::IrqSaveGuard,
-    sync::{IrqSafeMutex, IrqSafeMutexGuard},
+    sync::{RawSpinLock, RawSpinLockIrqSaveGuard},
 };
 use axdevice::*;
 use axdevice_base::*;
@@ -32,13 +30,12 @@ pub(crate) mod policy;
 
 use super::*;
 use crate::{
-    AsVCpuTask,
+    architecture::{HypercallExit, MmioReadExit, MmioWriteExit, ops::RegisterCompletion},
+    engine::{VcpuAction, WaitReason},
     host::*,
-    irq::{
-        deferred::*,
-        model::{PendingVcpuInterrupt, VirtualInterruptId},
-    },
-    vcpu::*,
+    runtime::{QueuedVcpuInterrupt, hvc::GuestRequest},
+    services::{RunServices, RunSignals, SignalError, VcpuWait},
+    sync::MutexExt,
 };
 
 mod acpi_pm_timer;
@@ -53,123 +50,110 @@ mod pci_config;
 mod pic;
 pub(crate) mod port;
 mod resource_pools;
+mod runtime_port;
 mod vm;
 use exit::*;
+use runtime_port::{AxvmX86VlapicRuntime, X86RunBinding, X86TimerHandle};
 pub(crate) use vm::X86VmPlan;
 
-use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
+use crate::architecture::sysreg::{self, SysRegWriteExit};
 
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) struct X86_64Arch;
 
-impl ArchOps for X86_64Arch {
-    type VCpu = AxvmX86Vcpu;
-    type PerCpu = AxvmX86PerCpu;
-    type NestedPageTable = nested_paging::NestedPageTable<crate::HostPagingHandler>;
+/// Owned x86 VM exit produced after the backend binding is released.
+///
+/// Every value needed by the task-context interpreter is captured while the
+/// backend is still loaded; the interpreter itself never touches a hardware
+/// register.
+#[derive(Debug)]
+pub(crate) enum X86Exit {
+    Hypercall {
+        nr: u64,
+        args: [u64; 6],
+    },
+    PortIoRead {
+        exit: IoReadExit,
+        next_rip: u64,
+    },
+    PortIoWrite {
+        exit: IoWriteExit,
+        next_rip: u64,
+    },
+    PortIoString(X86PortIoStringExit),
+    MmioRead {
+        exit: MmioReadExit,
+        next_rip: u64,
+    },
+    MmioReadByte {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        reg: X86ByteRegister,
+        next_rip: u64,
+    },
+    MmioReadWord {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        reg: usize,
+        next_rip: u64,
+    },
+    MmioReadRsp {
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        rsp_width: X86AccessWidth,
+        next_rip: u64,
+    },
+    MmioWrite {
+        exit: MmioWriteExit,
+        next_rip: u64,
+    },
+    MsrRead {
+        addr: SysRegAddr,
+        next_rip: u64,
+    },
+    MsrWrite {
+        exit: SysRegWriteExit,
+        next_rip: u64,
+    },
+    NestedPageFault(NestedPageFaultExit),
+    PreemptionTimer,
+    InterruptEnd(Option<u8>),
+    Halt,
+    SystemDown,
+    FailEntry(usize),
+    Nothing,
+}
 
-    fn has_hardware_support() -> bool {
-        crate::arch::x86_64::policy::initialize_hardware_support().is_ok()
-    }
-
-    fn inject_arch_interrupt(
-        vm_id: usize,
-        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
-        interrupt: crate::runtime::QueuedVcpuInterrupt,
-    ) {
-        let crate::runtime::QueuedVcpuInterrupt::LegacyPic { vector } = interrupt else {
-            unreachable!("virtual interrupts are consumed by the common injection path")
-        };
-        if let Err(error) = vcpu.get_arch_vcpu().inject_legacy_pic_interrupt(vector) {
-            warn!(
-                "VM[{vm_id}] VCpu[{}] failed to inject legacy PIC vector {vector:#x}: {error:?}",
-                vcpu.id()
-            );
-        }
-    }
-
-    fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
-        irq::start_deferred_irq_delivery(vm)
-    }
-
-    fn exit_runtime(vm: &crate::AxVM) -> AxVmResult {
-        irq::stop_deferred_irq_delivery(vm)
-    }
-
-    fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        irq::enable_ioapic_irq_forwarding(vm, vcpu);
-    }
-
-    fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) -> AxVmResult {
-        irq::drain_pending_wired_irqs(vm, vcpu);
-        irq::drain_pending_ioapic_irqs(vm, vcpu);
-        irq::activate_ready_ioapic_forwarding_routes(vm);
-        Ok(())
-    }
-
-    fn complete_pending_vcpu_exit(
-        _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-    ) -> AxVmResult {
-        vcpu.get_arch_vcpu().complete_pending_port_io_string()
-    }
-
-    fn wait_for_vcpu_event(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        runtime: &crate::vm::VmRuntimeHandle,
-    ) {
-        let wait_snapshot = runtime.vcpu_event_wait_snapshot(vcpu.run_state());
-        crate::vm::wait_for_vcpu_event_if_idle(
-            runtime,
-            &wait_snapshot,
-            || vm.running(),
-            || runtime.has_pending_interrupt(vcpu.id()) || vcpu.get_arch_vcpu().has_pending_event(),
-            |condition| runtime.wait_until(condition),
-        );
-    }
-
-    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
-        irq::disable_ioapic_irq_forwarding_for_vm(vm);
-        Self::exit_runtime(vm)
-    }
-
-    fn handle_vcpu_exit_unbound(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        exit: <Self::VCpu as VmArchVcpuOps>::Exit,
-    ) -> AxVmResult<VcpuExitAction> {
-        trace!(
-            "VM[{}] VCpu[{}] x86 exit={exit:?}, guest={:?}",
-            vm.id(),
-            vcpu.id(),
-            vcpu.get_arch_vcpu().0
-        );
+impl X86Exit {
+    fn capture(exit: <AxvmX86Vcpu as VmArchVcpuOps>::Exit) -> Self {
         match exit {
-            X86VmExit::Hypercall { nr, args } => super::handle_hypercall(
-                vm,
-                vcpu,
-                HypercallExit { nr, args },
-                crate::runtime::hvc::HyperCallAbi::Generic,
-            ),
-            X86VmExit::PortIoRead { port, width } => exit::handle_io_read(
-                vm,
-                vcpu,
-                IoReadExit {
+            X86VmExit::Hypercall { nr, args } => Self::Hypercall { nr, args },
+            X86VmExit::PortIoRead {
+                port,
+                width,
+                next_rip,
+            } => Self::PortIoRead {
+                exit: IoReadExit {
                     port: x86_port_to_ax(port),
                     width: x86_access_width_to_ax(width),
                 },
-            ),
-            X86VmExit::PortIoWrite { port, width, data } => exit::handle_io_write(
-                vm,
-                vcpu,
-                IoWriteExit {
+                next_rip,
+            },
+            X86VmExit::PortIoWrite {
+                port,
+                width,
+                data,
+                next_rip,
+            } => Self::PortIoWrite {
+                exit: IoWriteExit {
                     port: x86_port_to_ax(port),
                     width: x86_access_width_to_ax(width),
                     data,
                 },
-            ),
-            X86VmExit::PortIoString(exit) => exit::handle_io_string(vm, vcpu, exit),
+                next_rip,
+            },
+            X86VmExit::PortIoString(exit) => Self::PortIoString(exit),
             X86VmExit::MmioRead {
                 addr,
                 width,
@@ -177,174 +161,503 @@ impl ArchOps for X86_64Arch {
                 reg_width,
                 signed_ext,
                 byte_reg,
+                next_rip,
             } => {
-                let ax_addr = x86_guest_phys_addr_to_ax(addr);
-                let ax_width = x86_access_width_to_ax(width);
-                if let Some(byte_reg) = byte_reg {
-                    let raw =
-                        crate::architecture::exit::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
-                    let value = (raw & crate::vm::width_mask(ax_width)) as u8;
-                    vcpu.get_arch_vcpu().set_gpr_byte(byte_reg, value);
-                    Ok(VcpuExitAction::Continue)
-                } else if reg == 4 {
-                    let raw =
-                        crate::architecture::exit::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
-                    let value = raw & crate::vm::width_mask(ax_width);
-                    vcpu.get_arch_vcpu().set_gpr_rsp(width, value as u64);
-                    Ok(VcpuExitAction::Continue)
-                } else if ax_width == AccessWidth::Word {
-                    let raw =
-                        crate::architecture::exit::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
-                    let value = (raw & crate::vm::width_mask(ax_width)) as u16;
-                    vcpu.get_arch_vcpu().set_gpr_word(reg, value);
-                    Ok(VcpuExitAction::Continue)
-                } else {
-                    super::handle_mmio_read(
-                        vm,
-                        vcpu,
-                        MmioReadExit {
-                            addr: ax_addr,
-                            width: ax_width,
+                let addr = x86_guest_phys_addr_to_ax(addr);
+                let operand_width = width;
+                let width = x86_access_width_to_ax(width);
+                match byte_reg {
+                    Some(reg) => Self::MmioReadByte {
+                        addr,
+                        width,
+                        reg,
+                        next_rip,
+                    },
+                    None if reg == 4 => Self::MmioReadRsp {
+                        addr,
+                        width,
+                        rsp_width: operand_width,
+                        next_rip,
+                    },
+                    None if width == AccessWidth::Word => Self::MmioReadWord {
+                        addr,
+                        width,
+                        reg,
+                        next_rip,
+                    },
+                    None => Self::MmioRead {
+                        exit: MmioReadExit {
+                            addr,
+                            width,
                             reg,
                             reg_width: x86_access_width_to_ax(reg_width),
                             signed_ext,
                         },
-                    )
+                        next_rip,
+                    },
                 }
             }
-            X86VmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
-                vm,
-                vcpu,
-                MmioWriteExit {
+            X86VmExit::MmioWrite {
+                addr,
+                width,
+                data,
+                next_rip,
+            } => Self::MmioWrite {
+                exit: MmioWriteExit {
                     addr: x86_guest_phys_addr_to_ax(addr),
                     width: x86_access_width_to_ax(width),
                     data,
                 },
-            ),
-            X86VmExit::MsrRead { addr } => sysreg::handle_read(
-                vm,
-                vcpu,
-                SysRegReadExit {
-                    addr: x86_msr_addr_to_ax(addr),
-                    reg: 0,
-                },
-            ),
-            X86VmExit::MsrWrite { addr, value } => sysreg::handle_write(
-                vm,
-                vcpu,
-                SysRegWriteExit {
+                next_rip,
+            },
+            X86VmExit::MsrRead { addr, next_rip } => Self::MsrRead {
+                addr: x86_msr_addr_to_ax(addr),
+                next_rip,
+            },
+            X86VmExit::MsrWrite {
+                addr,
+                value,
+                next_rip,
+            } => Self::MsrWrite {
+                exit: SysRegWriteExit {
                     addr: x86_msr_addr_to_ax(addr),
                     value,
                 },
-            ),
-            X86VmExit::NestedPageFault { addr, access_flags } => handle_x86_nested_page_fault(
-                vm,
-                NestedPageFaultExit {
+                next_rip,
+            },
+            X86VmExit::NestedPageFault { addr, access_flags } => {
+                Self::NestedPageFault(NestedPageFaultExit {
                     addr: x86_guest_phys_addr_to_ax(addr),
                     access_flags: x86_access_flags_to_ax(access_flags),
-                },
-            ),
-            X86VmExit::PreemptionTimer => Ok(VcpuExitAction::Complete(VcpuRunAction::default())),
-            X86VmExit::InterruptEnd { vector } => {
-                if let Some(vector) = vector {
-                    irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
-                }
-                Ok(VcpuExitAction::Complete(VcpuRunAction::default()))
+                })
             }
-            X86VmExit::Halt => {
-                debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(VcpuExitAction::Complete(x86_halt_action()))
-            }
-            X86VmExit::SystemDown => {
-                warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(VcpuExitAction::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: Some(StopReason::SystemDown),
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
-            }
+            X86VmExit::PreemptionTimer => Self::PreemptionTimer,
+            X86VmExit::InterruptEnd { vector } => Self::InterruptEnd(vector),
+            X86VmExit::Halt => Self::Halt,
+            X86VmExit::SystemDown => Self::SystemDown,
             X86VmExit::FailEntry {
                 hardware_entry_failure_reason,
-            } => {
-                warn!(
-                    "VM[{}] VCpu[{}] run failed with exit code {hardware_entry_failure_reason}",
-                    vm.id(),
-                    vcpu.id()
-                );
-                Ok(VcpuExitAction::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
+            } => Self::FailEntry(hardware_entry_failure_reason),
+            X86VmExit::Nothing => Self::Nothing,
+        }
+    }
+
+    /// Interprets one owned x86 exit in task context with sleepable services.
+    fn handle(
+        self,
+        vcpu_id: usize,
+        services: &RunServices,
+    ) -> AxVmResult<VcpuAction<X86Completion, GuestRequest>> {
+        match self {
+            Self::Hypercall { nr, args } => {
+                crate::architecture::exit::handle_hypercall::<X86_64Arch>(
+                    services,
+                    vcpu_id,
+                    HypercallExit { nr, args },
+                    crate::runtime::hvc::HyperCallAbi::native(),
+                )
             }
-            X86VmExit::Nothing => Ok(VcpuExitAction::Continue),
+            Self::PortIoRead { exit, next_rip } => Ok(retire_action(
+                exit::handle_io_read(services, vcpu_id, exit)?,
+                next_rip,
+            )),
+            Self::PortIoWrite { exit, next_rip } => Ok(retire_action(
+                exit::handle_io_write(services, vcpu_id, exit)?,
+                next_rip,
+            )),
+            Self::PortIoString(exit) => exit::handle_io_string(services, vcpu_id, exit),
+            Self::MmioRead { exit, next_rip } => Ok(retire_action(
+                crate::architecture::exit::handle_mmio_read::<X86_64Arch>(services, vcpu_id, exit)?,
+                next_rip,
+            )),
+            Self::MmioWrite { exit, next_rip } => Ok(retire_action(
+                crate::architecture::exit::handle_mmio_write::<X86_64Arch>(
+                    services, vcpu_id, exit,
+                )?,
+                next_rip,
+            )),
+            Self::MmioReadByte {
+                addr,
+                width,
+                reg,
+                next_rip,
+            } => {
+                let raw =
+                    crate::architecture::exit::read_mmio_value(services, vcpu_id, addr, width)?;
+                let value = (raw & crate::vm::width_mask(width)) as u8;
+                Ok(VcpuAction::Reenter(
+                    X86Completion::ByteGpr {
+                        register: reg,
+                        value,
+                    }
+                    .retire(next_rip),
+                ))
+            }
+            Self::MmioReadWord {
+                addr,
+                width,
+                reg,
+                next_rip,
+            } => {
+                let raw =
+                    crate::architecture::exit::read_mmio_value(services, vcpu_id, addr, width)?;
+                let value = (raw & crate::vm::width_mask(width)) as u16;
+                Ok(VcpuAction::Reenter(
+                    X86Completion::WordGpr {
+                        register: reg,
+                        value,
+                    }
+                    .retire(next_rip),
+                ))
+            }
+            Self::MmioReadRsp {
+                addr,
+                width,
+                rsp_width,
+                next_rip,
+            } => {
+                let raw =
+                    crate::architecture::exit::read_mmio_value(services, vcpu_id, addr, width)?;
+                let value = raw & crate::vm::width_mask(width);
+                Ok(VcpuAction::Reenter(
+                    X86Completion::Rsp {
+                        width: rsp_width,
+                        value: value as u64,
+                    }
+                    .retire(next_rip),
+                ))
+            }
+            Self::MsrRead { addr, next_rip } => {
+                // `RDMSR` must land in `EDX:EAX`, so this reads the raw 64-bit
+                // value from the device service and builds the x86-specific
+                // completion instead of the generic single-register one.
+                let value = read_msr_value(services, vcpu_id, addr)?;
+                Ok(VcpuAction::Reenter(
+                    X86Completion::MsrRead { value }.retire(next_rip),
+                ))
+            }
+            Self::MsrWrite { exit, next_rip } => Ok(retire_action(
+                sysreg::handle_write::<X86_64Arch>(services, vcpu_id, exit)?,
+                next_rip,
+            )),
+            Self::NestedPageFault(exit) => Ok(VcpuAction::Control(GuestRequest::NestedFault {
+                addr: exit.addr,
+                access_flags: exit.access_flags,
+            })),
+            Self::PreemptionTimer => Ok(VcpuAction::Reenter(X86Completion::default())),
+            Self::InterruptEnd(vector) => {
+                if let Some(vector) = vector {
+                    irq::inject_pending_ioapic_irq_after_eoi(services, vcpu_id, vector);
+                }
+                Ok(VcpuAction::Reenter(X86Completion::default()))
+            }
+            Self::Halt => Ok(VcpuAction::Wait(WaitReason { return_value: None })),
+            Self::SystemDown => Ok(VcpuAction::Stop(StopReason::SystemDown)),
+            Self::FailEntry(reason) => {
+                warn!("x86 vCPU[{vcpu_id}] guest entry failed: {reason:#x}");
+                Ok(VcpuAction::Reenter(X86Completion::default()))
+            }
+            Self::Nothing => Ok(VcpuAction::Reenter(X86Completion::default())),
         }
     }
 }
 
-fn x86_halt_action() -> VcpuRunAction {
-    VcpuRunAction {
-        waits_for_event: true,
-        stop_reason: None,
-        resets_vm: false,
-        exits_vcpu: false,
+/// Attaches the decoded retirement `RIP` to a device-serviced reentry.
+///
+/// The x86 device handlers always answer `Reenter`; the RIP is installed by
+/// [`X86Completion::commit`] on the next bound entry, never while the device
+/// access is unresolved.
+fn retire_action(
+    action: VcpuAction<X86Completion, GuestRequest>,
+    next_rip: u64,
+) -> VcpuAction<X86Completion, GuestRequest> {
+    match action {
+        VcpuAction::Reenter(completion) => VcpuAction::Reenter(completion.retire(next_rip)),
+        other => other,
     }
 }
 
-pub(crate) fn publish_pic_interrupt_after_write(vm: &AxVM, vcpu_id: X86VcpuId) -> AxVmResult {
-    let devices = vm.get_devices()?;
-    let Ok(pic) = devices.services().require::<X86PicServiceKey>() else {
-        return Ok(());
-    };
-    let Some(claim) = pic.claim_pending_interrupt() else {
-        return Ok(());
-    };
-    dispatch_pic_claim(pic.as_ref(), claim, |vector| {
-        dispatch_legacy_pic_interrupt(vm, vcpu_id, vector)
-    })
+/// Reads one guest MSR through the run-bound device service in task context.
+///
+/// The shared system-register path returns a single general-purpose register,
+/// but `RDMSR` needs the full 64-bit value so the x86 completion can split it
+/// into `EDX:EAX`.
+fn read_msr_value(services: &RunServices, vcpu_id: usize, addr: SysRegAddr) -> AxVmResult<u64> {
+    services
+        .read_device(&DeviceAccess::new(
+            DeviceVcpuId::new(vcpu_id),
+            BusKind::SysReg,
+            addr.addr() as u64,
+            AccessWidth::Qword,
+        ))?
+        .ok_or_else(|| missing_msr_error("read", addr))
 }
 
-fn dispatch_pic_claim<E>(
-    pic: &dyn X86PicDeviceOps,
-    claim: PicInterruptClaim,
-    dispatch: impl FnOnce(u8) -> Result<(), E>,
-) -> Result<(), E> {
-    let vector = claim.vector();
-    dispatch(vector).inspect_err(|_| pic.restore_interrupt(claim))
-}
-
-fn dispatch_x86_interrupt(
-    vm: &AxVM,
-    vcpu_id: X86VcpuId,
-    vector: u8,
-    trigger: InterruptTriggerMode,
-) -> AxVmResult {
-    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
-        return ax_err!(BadState, "VM does not accept virtual interrupts");
-    }
-    vm.runtime_handle()?.dispatch_vcpu_interrupt(
-        vcpu_id,
-        PendingVcpuInterrupt {
-            id: VirtualInterruptId(vector.into()),
-            trigger,
+fn missing_msr_error(operation: &'static str, addr: SysRegAddr) -> crate::AxVmError {
+    crate::AxVmError::device(
+        "access guest system register",
+        axdevice::DeviceManagerError::Access {
+            operation,
+            bus: BusKind::SysReg,
+            addr: addr.addr() as u64,
+            width: AccessWidth::Qword,
+            source: axdevice_base::DeviceError::NotFound,
         },
     )
 }
 
-fn dispatch_legacy_pic_interrupt(vm: &AxVM, vcpu_id: X86VcpuId, vector: u8) -> AxVmResult {
-    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
-        return ax_err!(BadState, "VM does not accept virtual interrupts");
+/// Owned register/port effect committed on the next bound guest entry.
+pub(crate) enum X86Completion {
+    Register(RegisterCompletion),
+    /// A device-serviced access whose guest `RIP` must be retired only after the
+    /// device service succeeded. `inner` carries the register/port effect that
+    /// is committed first, then the decoded retirement `RIP` is installed.
+    Retire {
+        next_rip: u64,
+        inner: Box<X86Completion>,
+    },
+    ByteGpr {
+        register: X86ByteRegister,
+        value: u8,
+    },
+    WordGpr {
+        register: usize,
+        value: u16,
+    },
+    Rsp {
+        width: X86AccessWidth,
+        value: u64,
+    },
+    /// A device-serviced MSR read committed on the next bound guest entry.
+    ///
+    /// `RDMSR` returns the 64-bit value in `EDX:EAX`, so the low half is
+    /// zero-extended into `EAX` and the high half into `EDX`. Neither register
+    /// may keep stale upper bits, which a single 64-bit `RAX` write cannot
+    /// express.
+    MsrRead {
+        value: u64,
+    },
+    PortIoString(X86PortIoStringExit),
+}
+
+impl Default for X86Completion {
+    fn default() -> Self {
+        Self::Register(RegisterCompletion::None)
     }
-    vm.runtime_handle()?
-        .dispatch_legacy_pic_interrupt(vcpu_id, vector)
+}
+
+impl From<RegisterCompletion> for X86Completion {
+    fn from(completion: RegisterCompletion) -> Self {
+        Self::Register(completion)
+    }
+}
+
+impl X86Completion {
+    /// Wraps `self` so its retirement `RIP` is installed after it commits.
+    fn retire(self, next_rip: u64) -> Self {
+        Self::Retire {
+            next_rip,
+            inner: Box::new(self),
+        }
+    }
+
+    fn commit(self, vcpu: &mut AxvmX86Vcpu) -> AxVmResult {
+        match self {
+            Self::Register(RegisterCompletion::None) => Ok(()),
+            Self::Register(RegisterCompletion::Gpr { register, value }) => {
+                vcpu.set_gpr(register, value);
+                Ok(())
+            }
+            Self::Register(RegisterCompletion::Return(value)) => {
+                vcpu.set_return_value(value);
+                Ok(())
+            }
+            Self::Retire { next_rip, inner } => {
+                inner.commit(vcpu)?;
+                vcpu.set_rip(next_rip).map_err(|error| {
+                    crate::vcpu::map_vcpu_backend_error("retire x86 guest RIP", error)
+                })
+            }
+            Self::ByteGpr { register, value } => {
+                vcpu.set_gpr_byte(register, value);
+                Ok(())
+            }
+            Self::WordGpr { register, value } => {
+                vcpu.set_gpr_word(register, value);
+                Ok(())
+            }
+            Self::Rsp { width, value } => {
+                vcpu.set_gpr_rsp(width, value);
+                Ok(())
+            }
+            Self::MsrRead { value } => {
+                vcpu.set_gpr(0, (value & 0xffff_ffff) as usize);
+                vcpu.set_gpr(2, (value >> 32) as usize);
+                Ok(())
+            }
+            Self::PortIoString(exit) => vcpu.complete_port_io_string(exit).map_err(|error| {
+                crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error)
+            }),
+        }
+    }
+}
+
+/// Run-bound x86 interrupt capabilities retained for one execution period.
+///
+/// The entry keeps only the lower [`X86DeliveryPort`]; per-entry injection and
+/// the task-side registration maps stay in the device runtime, so the entry
+/// never reaches the VM registry or a sleeping lock.
+pub(crate) struct X86Entry {
+    port: Option<Arc<X86DeliveryPort>>,
+}
+
+impl X86Entry {
+    fn prepare(resources: &crate::vm::AxVMResources, signals: Arc<RunSignals>) -> AxVmResult<Self> {
+        let devices = resources.devices()?;
+        let services = devices.services();
+        let port = services
+            .require::<X86InterruptDomainRuntimeKey>()
+            .ok()
+            .map(|domain| domain.delivery_port());
+        if let Some(port) = &port {
+            let pic = services.require::<X86PicServiceKey>().ok();
+            let ioapic = services.require::<X86InterruptDomainKey>().ok();
+            port.run_binding().bind(signals, pic, ioapic);
+        }
+        Ok(Self { port })
+    }
+
+    fn prepare_vcpu(&self, _vcpu: &mut AxvmX86Vcpu) -> AxVmResult {
+        Ok(())
+    }
+
+    fn before_guest(&self, vcpu_id: usize, vcpu: &mut AxvmX86Vcpu) -> AxVmResult {
+        irq::drain_pending_wired_irqs(self.port.as_deref(), vcpu_id, vcpu);
+        irq::drain_pending_ioapic_irqs(self.port.as_deref(), vcpu_id, vcpu);
+        irq::activate_ready_ioapic_forwarding_routes(self.port.as_deref());
+        Ok(())
+    }
+
+    fn invalidate_translations(&self, old_root: NestedPagingConfig) -> AxVmResult {
+        nested_paging::invalidate_translations(old_root)
+    }
+}
+
+impl ArchOps for X86_64Arch {
+    type VCpu = AxvmX86Vcpu;
+    type PerCpu = AxvmX86PerCpu;
+    type NestedPageTable = nested_paging::NestedPageTable<crate::HostPagingHandler>;
+    type Entry = X86Entry;
+    type Exit = X86Exit;
+    type Completion = X86Completion;
+
+    fn has_hardware_support() -> bool {
+        crate::arch::x86_64::policy::initialize_hardware_support().is_ok()
+    }
+
+    fn invalidate_translations(entry: &Self::Entry, old_root: NestedPagingConfig) -> AxVmResult {
+        entry.invalidate_translations(old_root)
+    }
+
+    fn prepare_entry(
+        resources: &crate::vm::AxVMResources,
+        signals: Arc<RunSignals>,
+    ) -> AxVmResult<Self::Entry> {
+        X86Entry::prepare(resources, signals)
+    }
+
+    fn enter_runtime(vm: &mut crate::AxVM, signals: &Arc<RunSignals>) -> AxVmResult {
+        irq::enter_runtime(vm, signals)
+    }
+
+    fn exit_runtime(vm: &mut crate::AxVM, _signals: &Arc<RunSignals>) -> AxVmResult {
+        irq::exit_runtime(vm)
+    }
+
+    fn prepare_vcpu(vcpu: &mut Self::VCpu, entry: &Self::Entry) -> AxVmResult {
+        entry.prepare_vcpu(vcpu)
+    }
+
+    /// Quiesces the per-vCPU LAPIC timer before a task-side pause is ACKed.
+    fn suspend_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.suspend_timer()
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("suspend x86 vCPU timer", error))
+    }
+
+    /// Reinstalls the per-vCPU LAPIC timer before reopening the guest entry.
+    fn resume_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.resume_timer()
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("resume x86 vCPU timer", error))
+    }
+
+    /// Stops the per-vCPU LAPIC producer before a backend is released or reaped.
+    fn quiet_vcpu(vcpu: &mut Self::VCpu) -> AxVmResult {
+        vcpu.stop_timer()
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("quiesce x86 vCPU timer", error))
+    }
+
+    fn before_guest(vcpu: &mut Self::VCpu, vcpu_id: usize, entry: &Self::Entry) -> AxVmResult {
+        entry.before_guest(vcpu_id, vcpu)
+    }
+
+    fn complete(
+        vcpu: &mut Self::VCpu,
+        _entry: &Self::Entry,
+        completion: Self::Completion,
+    ) -> AxVmResult {
+        completion.commit(vcpu)
+    }
+
+    fn capture_exit(
+        _vcpu: &mut Self::VCpu,
+        _entry: &Self::Entry,
+        exit: <Self::VCpu as VmArchVcpuOps>::Exit,
+    ) -> AxVmResult<Self::Exit> {
+        Ok(X86Exit::capture(exit))
+    }
+
+    fn handle_exit(
+        exit: Self::Exit,
+        vcpu_id: usize,
+        services: &RunServices,
+    ) -> AxVmResult<VcpuAction<Self::Completion, GuestRequest>> {
+        exit.handle(vcpu_id, services)
+    }
+
+    fn inject_arch_interrupt(
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
+        _entry: &Self::Entry,
+        interrupt: crate::runtime::QueuedVcpuInterrupt,
+    ) -> AxVmResult {
+        let QueuedVcpuInterrupt::LegacyPic { vector } = interrupt else {
+            unreachable!("x86 architecture interrupt sources are legacy PIC ExtINT vectors");
+        };
+        vcpu.inject_legacy_pic_interrupt(vector).map_err(|error| {
+            crate::vcpu::map_vcpu_backend_error("inject x86 legacy PIC interrupt", error)
+        })
+    }
+
+    fn wait_for_event(
+        vcpu: &mut Self::VCpu,
+        _vcpu_id: usize,
+        _entry: &Self::Entry,
+        wait: &VcpuWait,
+    ) -> AxVmResult {
+        // `wait_until` takes an `Fn` predicate, so the backend is borrowed once
+        // here and the closure only performs this vCPU's own lower-state read.
+        // It never mutates the backend, queries the VM, or takes a sleep lock.
+        let backend: &AxvmX86Vcpu = vcpu;
+        wait.wait_until(|| backend.has_pending_event());
+        Ok(())
+    }
 }
 
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
-    type TimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::TimerHandle;
+    type TimerHandle = X86TimerHandle;
+    type Runtime = AxvmX86VlapicRuntime;
 
     fn alloc_frame() -> Option<x86_vlapic::X86HostPhysAddr> {
         default_host()
@@ -370,137 +683,11 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos()
     }
 
-    fn register_timer(
-        deadline_nanos: u64,
-        mut callback: X86TimerCallback,
-    ) -> X86VlapicResult<Self::TimerHandle> {
-        default_host()
-            .register_restartable_timer(
-                Duration::from_nanos(deadline_nanos),
-                Box::new(move |now| match callback(now.as_nanos() as u64) {
-                    X86TimerAction::Complete => HostTimerAction::Complete,
-                    X86TimerAction::Rearm(deadline) => {
-                        HostTimerAction::Rearm(Duration::from_nanos(deadline))
-                    }
-                }),
-            )
-            .map_err(|_| X86VlapicError::TimerUnavailable)
-    }
-
-    unsafe fn register_hard_timer(
-        deadline_nanos: u64,
-        mut callback: X86TimerCallback,
-    ) -> X86VlapicResult<Self::TimerHandle> {
-        let bound_identity =
-            with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())));
-        // Local APIC exits are completed after the backend binding is released.
-        // The scheduler task remains the authoritative vCPU identity in that phase.
-        let task_identity = || {
-            let current = crate::host::task::current_thread();
-            let task = current.try_as_vcpu_task()?;
-            Some((task.vcpu.vm_id(), task.vcpu.id()))
-        };
-        let (vm_id, vcpu_id) = bound_identity
-            .or_else(task_identity)
-            .ok_or(X86VlapicError::TimerUnavailable)?;
-        let (deferred_kick, vcpu_kick) = manager::with_vm(vm_id, |vm| {
-            let deferred = irq::vcpu_kick_for_vm(vm)?;
-            let runtime = vm.runtime_handle().ok()?;
-            let kick = runtime.vcpu_kick_handle(vcpu_id).ok()?;
-            Some((deferred, kick))
-        })
-        .flatten()
-        .ok_or(X86VlapicError::TimerUnavailable)?;
-        let timer_cpu = crate::host::task::current_cpu_id();
-        unsafe {
-            // SAFETY: x86_vlapic proves that its callback touches only atomic
-            // pending/deadline state and IRQ-safe registration locks. The
-            // owning vCPU kick capability and deferred remote-exit publisher
-            // are pre-bound in task context and explicitly safe to invoke
-            // from hard IRQ. A local host timer IRQ already exits the guest;
-            // only a vCPU still running on another CPU is handed to the
-            // task-context worker after the IRQ transaction releases its
-            // scheduler baton.
-            default_host().register_hard_restartable_timer(
-                Duration::from_nanos(deadline_nanos),
-                Box::new(move |now| {
-                    let action = callback(now.as_nanos() as u64);
-                    if vcpu_kick.kick_from_hard_irq(timer_cpu) == crate::runtime::HardIrqKick::Defer
-                    {
-                        let _ = deferred_kick.publish_from_irq(vcpu_id);
-                    }
-                    match action {
-                        X86TimerAction::Complete => HostHardTimerAction::Complete,
-                        X86TimerAction::Rearm(deadline) => {
-                            HostHardTimerAction::Rearm(Duration::from_nanos(deadline))
-                        }
-                    }
-                }),
-            )
-        }
-        .map(Into::into)
-        .map_err(|_| X86VlapicError::TimerUnavailable)
-    }
-
-    fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
-        default_host()
-            .cancel_timer(handle)
-            .map(|_| ())
-            .map_err(|_| X86VlapicError::TimerUnavailable)
-    }
-
-    fn current_vm_id() -> X86VmId {
-        with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| {
-            vcpu.expect("current x86 vCPU is not set").vm_id()
-        })
-    }
-
-    fn current_vm_vcpu_num() -> usize {
-        let vm_id = Self::current_vm_id();
-        manager::with_vm(vm_id, |vm| vm.vcpu_num()).unwrap_or(0)
-    }
-
-    fn current_vm_active_vcpus() -> usize {
-        manager::active_vcpu_mask(Self::current_vm_id()).unwrap_or(0)
-    }
-
-    fn active_vcpus(vm_id: X86VmId) -> Option<usize> {
-        manager::active_vcpu_mask(vm_id)
-    }
-
-    fn inject_interrupt(
-        vm_id: X86VmId,
-        vcpu_id: X86VcpuId,
-        vector: X86InterruptVector,
-    ) -> X86VlapicResult {
-        manager::inject_interrupt(vm_id, vcpu_id, vector as usize).map_err(ax_error_to_vlapic)
-    }
-
-    fn inject_pit_irq(vm_id: X86VmId, vcpu_id: X86VcpuId) -> X86VlapicResult {
-        manager::with_vm(vm_id, |vm| {
-            let devices = vm.get_devices().map_err(ax_error_to_vlapic)?;
-            let pic = devices.services().require::<X86PicServiceKey>().ok();
-            let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
-            let ioapic_interrupts = [
-                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(0)),
-                ioapic.as_ref().and_then(|ioapic| ioapic.assert_gsi(2)),
-            ];
-
-            route_pit_claims(
-                || pic.as_ref().and_then(|pic| pic.claim_irq(0)),
-                PicInterruptClaim::vector,
-                |claim| {
-                    pic.as_ref()
-                        .expect("a PIC claim must retain its originating controller")
-                        .restore_interrupt(claim)
-                },
-                ioapic_interrupts,
-                |vector, trigger, source| {
-                    dispatch_pit_interrupt(vm, vcpu_id, vector, trigger, source)
-                },
-            )
-        })
-        .unwrap_or(Err(X86VlapicError::BadState))
+    fn unbound_runtime(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self::Runtime {
+        // Host-side adapters that are not attached to a guest run receive an
+        // inactive port. Real vCPU-owned vLAPICs are created by the run owner
+        // with the run-shared binding instead of this constructor.
+        AxvmX86VlapicRuntime::new(vm_id, vcpu_id, Arc::new(X86RunBinding::new()))
     }
 }
 
@@ -536,6 +723,7 @@ fn route_pit_claim<C>(
     )
 }
 
+#[cfg(test)]
 fn route_pit_claims<C>(
     claim_pic: impl FnOnce() -> Option<C>,
     pic_vector: impl FnOnce(&C) -> u8,
@@ -578,38 +766,13 @@ fn route_pit_claims<C>(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 enum PitInterruptSource {
     LegacyPic,
     IoApic,
 }
 
-fn dispatch_pit_interrupt(
-    vm: &AxVM,
-    vcpu_id: X86VcpuId,
-    vector: u8,
-    trigger: InterruptTriggerMode,
-    source: PitInterruptSource,
-) -> X86VlapicResult {
-    let result = match source {
-        PitInterruptSource::LegacyPic => dispatch_legacy_pic_interrupt(vm, vcpu_id, vector),
-        PitInterruptSource::IoApic => dispatch_x86_interrupt(vm, vcpu_id, vector, trigger),
-    };
-    result.map_err(ax_error_to_vlapic)
-}
-
 impl X86HostOps for AxvmX86HostOps {
-    fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
-        let vm_id = with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
-            .ok_or(X86VcpuError::BadState)?;
-        let mut byte = [0u8; 1];
-        let result = manager::with_vm(vm_id, |vm| {
-            vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte)
-        })
-        .ok_or(X86VcpuError::BadState)?;
-        result.map_err(|_| X86VcpuError::BadState)?;
-        Ok(byte[0])
-    }
-
     fn nanos_to_ticks(nanos: u64) -> u64 {
         ax_std::os::arceos::modules::ax_hal::time::nanos_to_ticks(nanos)
     }
@@ -627,67 +790,56 @@ impl X86HostOps for AxvmX86HostOps {
     }
 }
 
-#[derive(Debug)]
-struct PendingCompletion<T>(Option<T>);
+/// AxVM-owned x86 vCPU backend.
+///
+/// The wrapper owns exactly one VMX or SVM backend and the vCPU's run-bound
+/// interrupt port. Durable string-I/O progress is carried by an owned
+/// [`X86Completion`] rather than stored on the backend.
+pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps, control_memory::ControlPages>);
 
-impl<T> Default for PendingCompletion<T> {
-    fn default() -> Self {
-        Self(None)
-    }
-}
-
-impl<T> PendingCompletion<T> {
-    fn stage(&mut self, completion: T) -> Result<(), T> {
-        if self.0.is_some() {
-            return Err(completion);
-        }
-        self.0 = Some(completion);
-        Ok(())
-    }
-
-    fn take(&mut self) -> Option<T> {
-        self.0.take()
-    }
-
-    fn restore(&mut self, completion: T) {
-        debug_assert!(self.0.is_none());
-        self.0 = Some(completion);
-    }
-}
-
-pub(crate) struct AxvmX86Vcpu(
-    X86Vcpu<AxvmX86HostOps, control_memory::ControlPages>,
-    PendingCompletion<X86PortIoStringExit>,
-);
+// SAFETY: this private adapter transfers exclusively owned, stable ControlPages
+// between the VM control task and one vCPU owner. Every CPU-local VMCS/VMCB
+// binding is enclosed by AxVCpu::with_backend_bound_current_cpu, which unloads
+// before releasing its pin and aborts if retirement fails. No bound adapter is
+// published or transferred; reap_participants joins the old owner before reuse.
+// Software registers and xstate/control leases are owned values; shared IRQ and
+// timer ports contain only synchronized run state. This does not make the
+// underlying CPU-bound Vmcs or this mutable adapter shareable through Sync.
+unsafe impl Send for AxvmX86Vcpu {}
 
 impl AxvmX86Vcpu {
-    fn stage_port_io_string_completion(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
-        self.1.stage(exit).map_err(|_| {
-            AxVmError::invalid_state(
-                "stage x86 string I/O completion",
-                "a previous string I/O completion is still pending",
-            )
-        })
-    }
-
-    fn complete_pending_port_io_string(&mut self) -> AxVmResult {
-        let Some(exit) = self.1.take() else {
-            return Ok(());
-        };
-        let result = x86_result(self.0.complete_port_io_string(exit))
-            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error));
-        if result.is_err() {
-            self.1.restore(exit);
-        }
-        result
-    }
-
     fn has_pending_event(&self) -> bool {
         self.0.has_pending_event()
     }
 
+    /// Commits one string-I/O element after the task layer completed its
+    /// memory and device access.
+    fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> BackendResult {
+        x86_result(self.0.complete_port_io_string(exit))
+    }
+
+    /// Installs the guest `RIP` a device-serviced access retires.
+    fn set_rip(&mut self, rip: u64) -> BackendResult {
+        x86_result(self.0.set_rip(rip))
+    }
+
     pub(crate) fn inject_legacy_pic_interrupt(&mut self, vector: u8) -> BackendResult {
         x86_result(self.0.inject_legacy_pic_interrupt(vector))
+    }
+
+    /// Quiesces this vCPU's local-APIC timer for a task-side VM suspend.
+    fn suspend_timer(&mut self) -> BackendResult {
+        x86_result(self.0.suspend_timer())
+    }
+
+    /// Reinstalls this vCPU's local-APIC timer after a suspend.
+    fn resume_timer(&mut self) -> BackendResult {
+        x86_result(self.0.resume_timer())
+    }
+
+    /// Cancels this vCPU's local-APIC timer and retires its state.
+    fn stop_timer(&mut self) -> BackendResult {
+        x86_result(self.0.stop_timer())
     }
 
     fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
@@ -704,7 +856,7 @@ impl AxvmX86Vcpu {
 }
 
 impl VmArchVcpuOps for AxvmX86Vcpu {
-    type CreateConfig = X86VcpuCreateConfig;
+    type CreateConfig = X86VcpuCreateConfig<AxvmX86VlapicRuntime>;
     type SetupConfig = X86VcpuSetupConfig;
     type Exit = X86VmExit;
 
@@ -739,7 +891,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
         x86_result(X86Vcpu::new_with_config(
             vm_id, vcpu_id, config, memory, xstate,
         ))
-        .map(|vcpu| Self(vcpu, PendingCompletion::default()))
+        .map(Self)
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -855,11 +1007,17 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
 }
 
 /// Provides the canonical x86 interrupt-controller device model.
-pub(crate) fn ioapic_model(vm_id: usize, base: usize, length: usize) -> Arc<dyn DeviceModel> {
+pub(crate) fn ioapic_model(
+    vm_id: usize,
+    base: usize,
+    length: usize,
+    binding: Arc<X86RunBinding>,
+) -> Arc<dyn DeviceModel> {
     Arc::new(X86IoApicModel {
         vm_id,
         base,
         length,
+        binding,
     })
 }
 
@@ -867,14 +1025,16 @@ pub(crate) fn unassigned_mmio_model(base: usize, length: usize) -> Arc<dyn Devic
     Arc::new(X86UnassignedMmioModel { base, length })
 }
 
-pub(crate) fn pit_model(vm_id: usize) -> Arc<dyn DeviceModel> {
-    Arc::new(X86PitModel { vm_id })
+pub(crate) fn pit_model(vm_id: usize, binding: Arc<X86RunBinding>) -> Arc<dyn DeviceModel> {
+    Arc::new(X86PitModel { vm_id, binding })
 }
 
 struct X86IoApicModel {
     vm_id: usize,
     base: usize,
     length: usize,
+    /// Run binding shared with every vCPU-owned interrupt device of this VM.
+    binding: Arc<X86RunBinding>,
 }
 
 struct X86UnassignedMmioModel {
@@ -882,23 +1042,94 @@ struct X86UnassignedMmioModel {
     length: usize,
 }
 
-/// Adapts the IOAPIC device capability to the x86 interrupt-runtime boundary.
+/// Lower run-bound interrupt delivery port.
 ///
-/// Guest-visible IOAPIC operations are exposed through the public interrupt
-/// domain service, while host IRQ forwarding state stays in this concrete
-/// VM-owned domain.
-pub(super) struct X86InterruptDomain {
+/// Owns only the PIC/IOAPIC projection, the bounded host-forwarding state and
+/// the run signal/IPI binding. It is the only x86 interrupt state a prepared
+/// [`X86Entry`] retains, so no loaded path can reach the task-side registration
+/// maps or their sleeping-capable mutexes.
+pub(super) struct X86DeliveryPort {
+    vm_id: usize,
+    /// Shared port that every vCPU-owned x86 interrupt device binds at entry.
+    binding: Arc<X86RunBinding>,
     wired: Arc<X86WiredState>,
-    inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
-    forwarding: IrqSafeMutex<irq::X86IoApicForwardingState>,
-    forwarding_hooks: IrqSafeMutex<std::vec::Vec<host_irq::IrqHandle>>,
+    /// Lower controller state read from hard-IRQ forwarding hooks. Fixed bounded
+    /// storage, no allocation, wake, IPI or callback while guarded.
+    forwarding: RawSpinLock<irq::X86IoApicForwardingState>,
+}
+
+impl X86DeliveryPort {
+    fn new(vm_id: usize, ioapic: Arc<dyn X86IoApicDeviceOps>, binding: Arc<X86RunBinding>) -> Self {
+        Self {
+            vm_id,
+            wired: Arc::new(X86WiredState {
+                ioapic,
+                pending: AtomicUsize::new(0),
+                pending_level: AtomicUsize::new(0),
+                binding: Arc::clone(&binding),
+            }),
+            binding,
+            forwarding: RawSpinLock::new(irq::X86IoApicForwardingState::new()),
+        }
+    }
+
+    /// Lower forwarding state; interrupts are saved so a hard-IRQ hook can
+    /// never observe (or deadlock against) a task-context holder.
+    fn forwarding(&self) -> RawSpinLockIrqSaveGuard<'_, irq::X86IoApicForwardingState> {
+        self.forwarding.lock_irqsave()
+    }
+
+    fn take_pending_wired_gsis(&self) -> (usize, usize) {
+        let pending = self.wired.pending.swap(0, Ordering::AcqRel);
+        let pending_level = self
+            .wired
+            .pending_level
+            .fetch_and(!pending, Ordering::AcqRel);
+        (pending, pending_level & pending)
+    }
+
+    /// VM identity fixed when this run-scoped port was created.
+    pub(super) fn vm_id(&self) -> usize {
+        self.vm_id
+    }
+
+    /// Shared port that every vCPU-owned x86 interrupt device binds at entry.
+    pub(super) fn run_binding(&self) -> Arc<X86RunBinding> {
+        Arc::clone(&self.binding)
+    }
+
+    fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
+        self.wired.ioapic.vector_for_gsi(gsi)
+    }
+
+    fn assert_gsi(&self, gsi: usize) -> Option<x86_vlapic::IoApicInterrupt> {
+        self.wired.ioapic.assert_gsi(gsi)
+    }
+
+    fn end_of_interrupt(&self, vector: u8) -> Option<x86_vlapic::IoApicEoi> {
+        self.wired.ioapic.end_of_interrupt(vector)
+    }
+}
+
+/// Task-side x86 interrupt domain.
+///
+/// Keeps the registration maps and host IRQ hook list, which are only ever
+/// touched by the owning task, next to the lower [`X86DeliveryPort`] the entry
+/// and hard-IRQ hooks actually use.
+pub(super) struct X86InterruptDomain {
+    port: Arc<X86DeliveryPort>,
+    /// Task-only input resolver: registered guest GSI inputs never change in
+    /// hard IRQ, so this is a genuine sleeping-capable `std::sync::Mutex`.
+    inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    /// Task-only lease list for host IRQ hooks.
+    forwarding_hooks: Mutex<std::vec::Vec<host_irq::IrqHandle>>,
 }
 
 struct X86WiredState {
     ioapic: Arc<dyn X86IoApicDeviceOps>,
     pending: AtomicUsize,
     pending_level: AtomicUsize,
-    kick: Arc<DeferredVcpuKick>,
+    binding: Arc<X86RunBinding>,
 }
 
 /// Private key for the concrete VM-owned x86 forwarding domain.
@@ -916,49 +1147,25 @@ impl ServiceKey for X86InterruptDomainRuntimeKey {
 }
 
 impl X86InterruptDomain {
-    fn inputs(
-        &self,
-    ) -> IrqSafeMutexGuard<'_, BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>> {
-        self.inputs.lock()
+    fn inputs(&self) -> MutexGuard<'_, BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>> {
+        self.inputs.lock_unpoisoned()
     }
 
-    fn forwarding(&self) -> IrqSafeMutexGuard<'_, irq::X86IoApicForwardingState> {
-        self.forwarding.lock()
+    fn forwarding_hooks(&self) -> MutexGuard<'_, std::vec::Vec<host_irq::IrqHandle>> {
+        self.forwarding_hooks.lock_unpoisoned()
     }
 
-    fn forwarding_hooks(&self) -> IrqSafeMutexGuard<'_, std::vec::Vec<host_irq::IrqHandle>> {
-        self.forwarding_hooks.lock()
-    }
-
-    fn new(vm_id: usize, ioapic: Arc<dyn X86IoApicDeviceOps>) -> Self {
+    fn new(vm_id: usize, ioapic: Arc<dyn X86IoApicDeviceOps>, binding: Arc<X86RunBinding>) -> Self {
         Self {
-            wired: Arc::new(X86WiredState {
-                ioapic,
-                pending: AtomicUsize::new(0),
-                pending_level: AtomicUsize::new(0),
-                kick: DeferredVcpuKick::new(vm_id),
-            }),
-            inputs: IrqSafeMutex::new(BTreeMap::new()),
-            forwarding: IrqSafeMutex::new(irq::X86IoApicForwardingState::new()),
-            forwarding_hooks: IrqSafeMutex::new(std::vec::Vec::new()),
+            port: Arc::new(X86DeliveryPort::new(vm_id, ioapic, binding)),
+            inputs: Mutex::new(BTreeMap::new()),
+            forwarding_hooks: Mutex::new(std::vec::Vec::new()),
         }
     }
 
-    fn start_kick_worker(&self) -> AxVmResult {
-        self.wired.kick.start()
-    }
-
-    fn stop_kick_worker(&self) -> AxVmResult {
-        self.wired.kick.stop()
-    }
-
-    fn take_pending_wired_gsis(&self) -> (usize, usize) {
-        let pending = self.wired.pending.swap(0, Ordering::AcqRel);
-        let pending_level = self
-            .wired
-            .pending_level
-            .fetch_and(!pending, Ordering::AcqRel);
-        (pending, pending_level & pending)
+    /// Lower port retained by prepared entries and hard-IRQ forwarding hooks.
+    pub(super) fn delivery_port(&self) -> Arc<X86DeliveryPort> {
+        Arc::clone(&self.port)
     }
 
     pub(super) fn add_forwarding_hook(&self, hook: host_irq::IrqHandle) {
@@ -969,22 +1176,28 @@ impl X86InterruptDomain {
         std::mem::take(&mut *self.forwarding_hooks())
     }
 
-    fn vcpu_kick(&self) -> Arc<DeferredVcpuKick> {
-        Arc::clone(&self.wired.kick)
+    /// VM identity fixed when this run-scoped domain was created.
+    pub(super) fn vm_id(&self) -> usize {
+        self.port.vm_id()
+    }
+
+    /// Shared port that every vCPU-owned x86 interrupt device binds at entry.
+    pub(super) fn run_binding(&self) -> Arc<X86RunBinding> {
+        self.port.run_binding()
     }
 }
 
 impl X86InterruptDomainOps for X86InterruptDomain {
     fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
-        self.wired.ioapic.vector_for_gsi(gsi)
+        self.port.vector_for_gsi(gsi)
     }
 
     fn assert_gsi(&self, gsi: usize) -> Option<x86_vlapic::IoApicInterrupt> {
-        self.wired.ioapic.assert_gsi(gsi)
+        self.port.assert_gsi(gsi)
     }
 
     fn end_of_interrupt(&self, vector: u8) -> Option<x86_vlapic::IoApicEoi> {
-        self.wired.ioapic.end_of_interrupt(vector)
+        self.port.end_of_interrupt(vector)
     }
 }
 
@@ -1025,7 +1238,7 @@ impl VirtualInterruptController for X86InterruptDomain {
             }
             return Ok(registered.clone());
         }
-        let sink: Arc<dyn WiredIrqSink> = self.wired.clone();
+        let sink: Arc<dyn WiredIrqSink> = self.port.wired.clone();
         let registered = WiredIrqInput::new(self.id(), input, trigger, sink);
         inputs.insert(gsi, (trigger, registered.clone()));
         Ok(registered)
@@ -1033,6 +1246,14 @@ impl VirtualInterruptController for X86InterruptDomain {
 }
 
 impl X86WiredState {
+    /// Wakes the boot vCPU after publishing one wired GSI edge.
+    ///
+    /// The GSI bit is already canonical above, so a target that is not yet
+    /// registered is not a failure: it drains this bit at its first entry.
+    fn wake_boot_vcpu_from_irq(&self) {
+        let _ = self.binding.kick_from_irq(0);
+    }
+
     fn publish(
         &self,
         input: ControllerInputId,
@@ -1043,16 +1264,17 @@ impl X86WiredState {
             self.pending_level.fetch_or(bit, Ordering::Release);
         }
         self.pending.fetch_or(bit, Ordering::Release);
-        self.kick
-            .publish_from_irq(0)
-            .map_err(|error| IrqError::Backend {
+        match self.binding.kick_from_irq(0) {
+            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            Err(error) => Err(IrqError::Backend {
                 endpoint: InterruptEndpoint::Wired {
                     controller: InterruptControllerId::new(0),
                     input,
                 },
                 operation: "publish x86 IOAPIC vCPU kick",
                 detail: std::format!("{error}"),
-            })
+            }),
+        }
     }
 }
 
@@ -1097,7 +1319,11 @@ impl DeviceModel for X86IoApicModel {
             Some(length),
         ));
         let service: Arc<dyn X86IoApicDeviceOps> = ioapic.clone();
-        let runtime = Arc::new(X86InterruptDomain::new(self.vm_id, service.clone()));
+        let runtime = Arc::new(X86InterruptDomain::new(
+            self.vm_id,
+            service.clone(),
+            Arc::clone(&self.binding),
+        ));
         let domain: Arc<dyn X86InterruptDomainOps> = runtime.clone();
         let controller: Arc<dyn VirtualInterruptController> = runtime.clone();
         let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(ioapic))
@@ -1136,6 +1362,8 @@ impl DeviceModel for X86UnassignedMmioModel {
 
 struct X86PitModel {
     vm_id: usize,
+    /// Run binding shared with the IOAPIC interrupt domain and every vCPU.
+    binding: Arc<X86RunBinding>,
 }
 
 impl DeviceModel for X86PitModel {
@@ -1185,12 +1413,24 @@ impl DeviceModel for X86PitModel {
                 detail: "planned port ranges differ from the PIT hardware model".into(),
             });
         }
-        let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new_for_vcpu(
-            self.vm_id, 0,
-        ));
-        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            pit,
-        )))
+        // The PIT programs IRQ0 from the guest, so its port must already be
+        // bound to this run's signal target: a timer that fires must retain the
+        // original run binding instead of looking up a VM identity.
+        let runtime = AxvmX86VlapicRuntime::new(self.vm_id, 0, Arc::clone(&self.binding));
+        let pit = Arc::new(
+            axdevice::X86PitDevice::<AxvmX86HostOps>::new_for_vcpu_with_runtime(
+                runtime, self.vm_id, 0,
+            ),
+        );
+        // The PIT IRQ0 host timer is a task-side producer, so it registers the
+        // same device as its lifecycle owner: pause quiesces it before the
+        // pause is ACKed and resume reinstalls it before guest entry reopens.
+        let device: Arc<dyn Device> = pit.clone();
+        let lifecycle: Arc<dyn DeviceLifecycle> = pit;
+        Ok(
+            DeviceBundle::from_registration(DeviceRegistration::Device(device))
+                .with_lifecycle(lifecycle),
+        )
     }
 }
 
@@ -1261,28 +1501,6 @@ pub(crate) fn x86_requires_apic_access_page() -> AxVmResult<bool> {
         .map_err(|error| AxVmError::vcpu("check x86 APIC access page", error))
 }
 
-fn handle_x86_nested_page_fault(
-    vm: &crate::AxVMRef,
-    exit: NestedPageFaultExit,
-) -> AxVmResult<VcpuExitAction> {
-    if vm.handle_nested_page_fault(exit.addr, exit.access_flags) {
-        Ok(VcpuExitAction::Continue)
-    } else {
-        warn!(
-            "VM[{}] unhandled x86 nested page fault at {:#x}, access={:?}",
-            vm.id(),
-            exit.addr.as_usize(),
-            exit.access_flags
-        );
-        Ok(VcpuExitAction::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        }))
-    }
-}
-
 fn x86_result<T>(result: X86VcpuResult<T>) -> BackendResult<T> {
     result.map_err(x86_error_to_backend)
 }
@@ -1297,10 +1515,6 @@ fn x86_error_to_backend(err: X86VcpuError) -> BackendError {
         X86VcpuError::ResourceBusy => BackendError::ResourceBusy,
         X86VcpuError::TimerUnavailable => BackendError::InvalidState,
     }
-}
-
-fn ax_error_to_vlapic(_err: crate::AxVmError) -> X86VlapicError {
-    X86VlapicError::BadState
 }
 
 fn ax_guest_phys_addr_to_x86(addr: GuestPhysAddr) -> X86GuestPhysAddr {
@@ -1381,11 +1595,6 @@ mod tests {
     use core::cell::Cell;
 
     use super::*;
-
-    #[test]
-    fn x86_halt_waits_until_an_interrupt_or_lifecycle_event() {
-        assert!(x86_halt_action().waits_for_event);
-    }
 
     #[test]
     fn pit_fans_out_gsi_zero_to_pic_and_ioapic() {
@@ -1535,15 +1744,5 @@ mod tests {
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
         ));
-    }
-
-    #[test]
-    fn pending_completion_rejects_replacement_without_losing_the_owner() {
-        let mut pending = PendingCompletion::default();
-
-        assert_eq!(pending.stage(11), Ok(()));
-        assert_eq!(pending.stage(22), Err(22));
-        assert_eq!(pending.take(), Some(11));
-        assert_eq!(pending.take(), None);
     }
 }

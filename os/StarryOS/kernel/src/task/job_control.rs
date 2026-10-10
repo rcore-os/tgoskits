@@ -7,7 +7,7 @@ use axpoll_set::PollSet;
 use starry_signal::Signo;
 
 use super::{ProcessData, TidNumber};
-use crate::sync::IrqMutex;
+use crate::sync::RawSpinLock;
 
 /// A pending job-control status change for `waitpid`.
 #[derive(Clone, Copy)]
@@ -30,14 +30,14 @@ struct JobControl {
 }
 
 pub(super) struct ProcessJobControl {
-    state: IrqMutex<JobControl>,
+    state: RawSpinLock<JobControl>,
     continue_event: Arc<PollSet>,
 }
 
 impl ProcessJobControl {
     pub(super) fn new() -> Self {
         Self {
-            state: IrqMutex::new(JobControl::default()),
+            state: RawSpinLock::new(JobControl::default()),
             continue_event: Arc::default(),
         }
     }
@@ -45,7 +45,7 @@ impl ProcessJobControl {
 
 impl ProcessData {
     pub fn is_job_stopped(&self) -> bool {
-        self.job_control.state.lock().stopped.is_some()
+        self.job_control.state.lock_irqsave().stopped.is_some()
     }
 
     pub fn set_job_stopped(
@@ -54,7 +54,7 @@ impl ProcessData {
         continue_gen_snapshot: u64,
         waiter_tid: TidNumber,
     ) -> bool {
-        let mut state = self.job_control.state.lock();
+        let mut state = self.job_control.state.lock_irqsave();
         if state.continue_generation != continue_gen_snapshot {
             return false;
         }
@@ -66,16 +66,16 @@ impl ProcessData {
 
     /// Returns whether `tid` is the thread physically parked for this stop.
     pub fn is_job_stop_waiter(&self, tid: TidNumber) -> bool {
-        let state = self.job_control.state.lock();
+        let state = self.job_control.state.lock_irqsave();
         state.stopped.is_some() && state.waiter_tid == Some(tid)
     }
 
     pub fn continue_generation(&self) -> u64 {
-        self.job_control.state.lock().continue_generation
+        self.job_control.state.lock_irqsave().continue_generation
     }
 
     pub fn set_job_continued(&self) -> bool {
-        let mut state = self.job_control.state.lock();
+        let mut state = self.job_control.state.lock_irqsave();
         state.continue_generation = state.continue_generation.wrapping_add(1);
         let was_stopped = state.stopped.take().is_some();
         state.waiter_tid = None;
@@ -89,7 +89,7 @@ impl ProcessData {
     }
 
     pub fn clear_job_stop_for_kill(&self) {
-        let mut state = self.job_control.state.lock();
+        let mut state = self.job_control.state.lock_irqsave();
         let was_stopped = state.stopped.take().is_some();
         state.waiter_tid = None;
         drop(state);
@@ -116,7 +116,7 @@ impl ProcessData {
         want_stopped: bool,
         want_continued: bool,
     ) -> Option<JobStatus> {
-        let state = self.job_control.state.lock();
+        let state = self.job_control.state.lock_irqsave();
         match state.status {
             Some(status @ JobStatus::Stopped(_)) if want_stopped => Some(status),
             Some(status @ JobStatus::Continued) if want_continued => Some(status),
@@ -129,7 +129,7 @@ impl ProcessData {
         want_stopped: bool,
         want_continued: bool,
     ) -> Option<JobStatus> {
-        let mut state = self.job_control.state.lock();
+        let mut state = self.job_control.state.lock_irqsave();
         match state.status {
             Some(JobStatus::Stopped(_)) if want_stopped => state.status.take(),
             Some(JobStatus::Continued) if want_continued => state.status.take(),

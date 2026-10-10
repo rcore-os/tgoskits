@@ -13,7 +13,6 @@ use std::{
 
 use anyhow::{Context, bail, ensure};
 use flate2::{Compression, write::GzEncoder};
-use ostool::build::config::Cargo;
 use tempfile::NamedTempFile;
 
 use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::read_binary_file};
@@ -654,20 +653,51 @@ fn init_script() -> Vec<u8> {
 
 pub(super) async fn prepare_configured_busybox_initramfs(
     request: &ResolvedAxvisorRequest,
-    cargo: &Cargo,
+    inputs: &crate::axvisor::bundle::ResourceInputs,
     workspace_root: &Path,
     target_dir: &Path,
 ) -> anyhow::Result<()> {
-    if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
+    if let Some(configured_output) = inputs.busybox_initramfs.as_deref() {
         let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
+        // Diskless AxVisor cases still derive their guest initramfs from the
+        // managed rootfs. Prepare it here as well as in the host-root path so
+        // a fresh runner cannot silently read a stale or missing image.
+        rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
         let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, target_dir, None)?;
-        prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
+        if let Err(first_error) =
+            prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)
+        {
+            // A managed image may have been left partially extracted by an
+            // interrupted runner. Rebuild only that owned path; never remove
+            // an explicit user supplied rootfs.
+            let managed_path =
+                rootfs::managed_rootfs_path(request, workspace_root, target_dir, None)?;
+            if managed_path.as_deref() != Some(rootfs_path.as_path()) {
+                return Err(first_error);
+            }
+            fs::remove_file(&rootfs_path).with_context(|| {
+                format!(
+                    "failed to remove invalid managed rootfs {} after initramfs preparation failed",
+                    rootfs_path.display()
+                )
+            })?;
+            rootfs::ensure_qemu_assets_ready(request, workspace_root, target_dir, None).await?;
+            prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch).with_context(
+                || {
+                    format!(
+                        "managed rootfs {} remained invalid after re-extraction (initial error: \
+                         {first_error:#})",
+                        rootfs_path.display()
+                    )
+                },
+            )?;
+        }
         println!(
             "prepared Axvisor QEMU test initramfs: {}",
             output_path.display()
         );
     }
-    if let Some(configured_output) = cargo.env.get(OVMF_OUTPUT_ENV) {
+    if let Some(configured_output) = inputs.ovmf_firmware.as_deref() {
         ensure!(
             request.arch == "x86_64",
             "{OVMF_OUTPUT_ENV} is only valid for x86_64 Axvisor tests"
@@ -734,12 +764,18 @@ fn prepare_busybox_initramfs(
 }
 
 fn required_rootfs_file(rootfs_path: &Path, guest_path: &str) -> anyhow::Result<Vec<u8>> {
-    read_binary_file(rootfs_path, guest_path)?.with_context(|| {
+    let contents = read_binary_file(rootfs_path, guest_path)?.with_context(|| {
         format!(
             "managed rootfs {} does not contain required file {guest_path}",
             rootfs_path.display()
         )
-    })
+    })?;
+    ensure!(
+        !contents.is_empty(),
+        "managed rootfs {} contains an empty required file {guest_path}",
+        rootfs_path.display()
+    );
+    Ok(contents)
 }
 
 fn musl_loader_path(arch: &str) -> anyhow::Result<&'static str> {

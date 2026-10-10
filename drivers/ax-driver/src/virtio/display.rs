@@ -113,7 +113,10 @@ fn register_transport_prepared<T: Transport + Send + 'static>(
         DmaConstraints::new(u64::MAX),
     ));
     let (transport, irq_endpoint) = SharedGpuTransport::new(transport);
-    let raw = VirtIoGpu::<VirtIoHalImpl, _>::new(transport)
+    // The monotonic clock bounds the driver's blocking waits (`wait_fence`,
+    // teardown drains), so a stalled host unwedges the holder of the GPU lock
+    // with a typed timeout instead of spinning forever.
+    let raw = VirtIoGpu::<VirtIoHalImpl, _>::new(transport, axklib::time::monotonic_nanos)
         .map_err(|error| OnProbeError::other(format!("virtio-gpu init: {error:?}")))?;
     let mut identity = VirtIoGpuDevice::<VirtIoHalImpl, SharedGpuTransport<T>>::virtual_identity();
     identity.bus = bus;

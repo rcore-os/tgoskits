@@ -41,12 +41,13 @@ struct aio_sigset_arg {
 static void test_aio_read_completion_after_fd_close(void)
 {
     static char buffer[8];
-    const char expected[8] = "aio-data";
+    static const char expected[] = "aio-data";
+    const size_t expected_len = sizeof(expected) - 1;
     int fd = (int)syscall(SYS_memfd_create, "aio-read-owner", 0);
     CHECK(fd >= 0, "create AIO read source");
     if (fd < 0)
         return;
-    CHECK_RET(write(fd, expected, sizeof(expected)), sizeof(expected),
+    CHECK_RET(write(fd, expected, expected_len), (ssize_t)expected_len,
               "initialize AIO read source");
     aio_context_t ctx = 0;
     CHECK_RET(syscall(SYS_io_setup, 4, &ctx), 0, "create read completion context");

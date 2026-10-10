@@ -14,7 +14,7 @@ use sdmmc_protocol::{
 use super::{ActiveOperation, OperationCompletion, output::OwnerOutputs};
 use crate::{
     AicAction, AicDevice, AicError, AicEvent, AicInput, AicInputEvent, AicState, ChipVariant,
-    MonotonicTime, SdioCompletion, SdioFailure,
+    MonotonicTime, SdioCompletion, SdioFailure, TxAggregation,
     profile::ChipProfile,
     rdif::{
         device::{IrqLatch, MacAddressState, QueueOwnerPorts, WifiChannels},
@@ -78,6 +78,8 @@ pub(crate) struct AicOwner<H: CompletionIrqRearmHost + 'static> {
     mac: Arc<MacAddressState>,
     started: bool,
     card_irq_wait: CardIrqWait,
+    /// Frames and bytes one transmit write may carry.
+    tx_aggregation: TxAggregation,
 }
 
 impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
@@ -88,6 +90,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         wifi: WifiChannels,
         irq_latch: Arc<IrqLatch>,
         mac: Arc<MacAddressState>,
+        tx_aggregation: TxAggregation,
     ) -> (
         Self,
         crate::rdif::device::WifiRequestSender,
@@ -109,6 +112,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
             mac,
             started: false,
             card_irq_wait: CardIrqWait::Masked,
+            tx_aggregation,
         };
         (owner, wifi.requests_tx, wifi.progress_rx)
     }
@@ -385,7 +389,10 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
                     return Ok(Some(OwnerProgress::Ready));
                 }
                 AicAction::Event(event) => {
-                    let transmit_completed = matches!(event, AicEvent::TransmitComplete(_));
+                    let transmit_completed = matches!(
+                        event,
+                        AicEvent::TransmitComplete(_) | AicEvent::TransmitAggregateComplete(_)
+                    );
                     let output_blocked = self.outputs.consume_event(event)?;
                     return Ok(self
                         .card_irq_wait
@@ -420,6 +427,7 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         let variant = detect_sdio_card_variant(info, function)?;
         log::info!("[wifi] detected supported AIC SDIO variant {variant:?}");
         let mut device = AicDevice::new(variant)?;
+        device.set_tx_aggregation(self.tx_aggregation)?;
         device.start(MonotonicTime::from_nanos(now_nanos))?;
         self.device = Some(device);
         self.started = true;
@@ -430,12 +438,16 @@ impl<H: CompletionIrqRearmHost + Send + 'static> AicOwner<H> {
         if self.device()?.state() != AicState::Ready {
             return Ok(None);
         }
-        let Some((token, frame)) = self.outputs.take_tx_frame() else {
+        // Hand over a bounded burst so one CMD53 can carry several packets.
+        // The core bounds the burst again by the cached credit.
+        let limit = self.device()?.tx_aggregation().packets;
+        let batch = self.outputs.take_tx_batch(limit);
+        if batch.is_empty() {
             return Ok(None);
-        };
+        }
         Ok(Some(self.device_mut()?.advance(AicInput {
             now: MonotonicTime::from_nanos(now_nanos),
-            event: Some(AicInputEvent::Tx { token, frame }),
+            event: Some(AicInputEvent::TxBatch(batch)),
         })))
     }
 

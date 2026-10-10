@@ -12,8 +12,21 @@ license = "Apache-2.0"
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-none"]
 
+[features]
+default = []
+host-test = ["ax-sync/host-test"]
+
 [dependencies]
 log = "0.4.19"
 paste = "1.0.15"
 tock-registers = "0.10.0"
 bit = "0.1.1"
+# The PIT keeps its task-side host-timer registration behind a sleepable
+# `ax_sync::Mutex`: registering or cancelling a host timer may allocate or wait,
+# so task serialization must not use a non-sleeping raw lock. The hard-timer
+# callback itself only touches the registration's short IRQ-safe arm state.
+ax-sync = { workspace = true, features = ["sleep"] }
+
+[dev-dependencies]
+ax-crate-interface = { workspace = true }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

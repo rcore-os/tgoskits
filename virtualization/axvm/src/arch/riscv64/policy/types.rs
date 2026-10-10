@@ -1,5 +1,7 @@
 //! OS-neutral value types exposed by the RISC-V vCPU core.
 
+use crate::architecture::ops::RegisterCompletion;
+
 /// RISC-V vCPU result type.
 pub type RiscvVcpuResult<T = ()> = Result<T, RiscvVcpuError>;
 
@@ -233,11 +235,17 @@ impl RiscvNestedPagingConfig {
     }
 }
 
+/// Owned SBI ABI values captured before backend retirement.
+#[derive(Clone, Copy, Debug)]
+pub struct RiscvSbiCall {
+    pub extension: usize,
+    pub function: usize,
+    pub arguments: [usize; 6],
+}
+
 /// VM exits returned by the RISC-V vCPU core.
 #[derive(Debug)]
 pub enum RiscvVmExit {
-    /// Durable CPU exit awaiting architecture-local policy interpretation.
-    Machine(ax_cpu::virtualization::Exit),
     /// Guest issued a hypercall.
     Hypercall {
         /// Hypercall number.
@@ -257,6 +265,8 @@ pub enum RiscvVmExit {
         reg_width: RiscvAccessWidth,
         /// Whether the read result should be sign-extended.
         signed_ext: bool,
+        /// Length in bytes of the emulated load instruction.
+        advance: usize,
     },
     /// Guest MMIO write.
     MmioWrite {
@@ -266,6 +276,8 @@ pub enum RiscvVmExit {
         width: RiscvAccessWidth,
         /// Written value.
         data: u64,
+        /// Length in bytes of the emulated store instruction.
+        advance: usize,
     },
     /// Guest-stage page fault that was not decoded as MMIO.
     NestedPageFault {
@@ -277,6 +289,8 @@ pub enum RiscvVmExit {
 
     /// Guest requested supervisor software interrupts for other harts.
     SendIpi(RiscvIpiRequest),
+    /// SBI work interpreted only after unloading the hardware backend.
+    SbiCall(RiscvSbiCall),
     /// Guest requested another CPU to start.
     CpuUp {
         /// Target vCPU or hart ID.
@@ -287,14 +301,140 @@ pub enum RiscvVmExit {
         arg: u64,
     },
     /// Guest requested this CPU to stop.
-    CpuDown {
-        /// Guest CPU state value.
-        state: u64,
-    },
-    /// Guest halted.
-    Halt,
+    CpuDown,
+    /// Retentive SBI hart suspend returns an ABI success after wake.
+    SbiStandby,
     /// Guest requested system shutdown.
     SystemDown,
     /// No host-visible action is needed.
     Nothing,
+}
+
+/// An exit record owned by one RISC-V vCPU task after hardware unloading.
+///
+/// Unlike [`RiscvVmExit`], routing-dependent fields are resolved while the
+/// topology and hardware backend are still owned by the exiting task. The
+/// unbound handler therefore never queries the complete VM.
+#[derive(Debug)]
+pub enum RiscvExit {
+    /// Guest issued a hypercall.
+    Hypercall { nr: u64, args: [u64; 6] },
+    /// Guest MMIO read.
+    MmioRead {
+        addr: RiscvGuestPhysAddr,
+        width: RiscvAccessWidth,
+        reg: usize,
+        reg_width: RiscvAccessWidth,
+        signed_ext: bool,
+        /// Instruction length retired only after the device access succeeds.
+        advance: usize,
+    },
+    /// Guest MMIO write.
+    MmioWrite {
+        addr: RiscvGuestPhysAddr,
+        width: RiscvAccessWidth,
+        data: u64,
+        /// Instruction length retired only after the device access succeeds.
+        advance: usize,
+        touches_vplic: bool,
+    },
+    /// Guest-stage page fault that was not decoded as an MMIO access.
+    NestedPageFault {
+        addr: RiscvGuestPhysAddr,
+        access_flags: RiscvAccessFlags,
+    },
+    /// Guest requested software interrupts on a pre-resolved hart set.
+    SendIpi {
+        request: RiscvIpiRequest,
+        /// `None` means topology validation rejected the complete request.
+        targets: Option<std::boxed::Box<[usize]>>,
+    },
+    /// Guest requested another hart to start.
+    CpuOn {
+        /// `None` means the guest hart is absent from the fixed topology.
+        target_vcpu_id: Option<usize>,
+        entry_point: RiscvGuestPhysAddr,
+        context_id: usize,
+    },
+    /// Guest requested this hart to stop.
+    CpuOff,
+    /// An SBI console request whose guest memory is accessed in task context.
+    SbiCall(RiscvSbiCall),
+    /// Task-side forwarding produced an owned ABI result.
+    SbiResult { error: usize, value: usize },
+    /// Retentive SBI hart suspend completes its ABI before parking.
+    SbiStandby,
+    /// Guest requested system shutdown.
+    SystemDown,
+    /// Re-enter the guest without a register completion.
+    Nothing,
+}
+
+/// Register effects committed by the vCPU owner before the next guest entry.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RiscvCompletion {
+    /// No register state changes.
+    #[default]
+    None,
+    /// Writes one general-purpose register.
+    Gpr { register: usize, value: usize },
+    /// Retires one completed emulation.
+    ///
+    /// An emulated load writes its destination register when present; an
+    /// emulated store only steps the instruction pointer. The instruction
+    /// pointer moves solely here, so a faulted or unconsumed access keeps the
+    /// original retry state.
+    Retire {
+        register: Option<usize>,
+        value: usize,
+        advance: usize,
+    },
+    /// Writes the two SBI result registers (`a0` and `a1`).
+    ///
+    /// `RegisterCompletion::Return` carries only `a0`; RISC-V maps it to an
+    /// SBI result whose value register is zero so HSM retains its ABI.
+    SbiRet { error: usize, value: usize },
+    /// Completes a previously returned SBI IPI request with its original ABI.
+    Ipi {
+        request: RiscvIpiRequest,
+        completion: RiscvIpiCompletion,
+    },
+}
+
+impl RiscvCompletion {
+    /// Attaches the emulated instruction length to a register-only completion.
+    ///
+    /// A portable MMIO completion carries the destination register and its
+    /// captured width; this turns it into a durable retirement that also steps
+    /// the guest instruction pointer by `advance` bytes.
+    pub(crate) fn retire(self, advance: usize) -> Self {
+        match self {
+            Self::None => Self::Retire {
+                register: None,
+                value: 0,
+                advance,
+            },
+            Self::Gpr { register, value } => Self::Retire {
+                register: Some(register),
+                value,
+                advance,
+            },
+            other => other,
+        }
+    }
+}
+
+impl From<RegisterCompletion> for RiscvCompletion {
+    /// Maps a portable register effect onto the RISC-V ABI.
+    ///
+    /// [`RegisterCompletion::Return`] carries only `a0`. The HSM extension
+    /// returns its error in `a0` and zero in `a1`, so the portable return maps
+    /// to an SBI result whose value register is zero.
+    fn from(completion: RegisterCompletion) -> Self {
+        match completion {
+            RegisterCompletion::None => Self::None,
+            RegisterCompletion::Gpr { register, value } => Self::Gpr { register, value },
+            RegisterCompletion::Return(error) => Self::SbiRet { error, value: 0 },
+        }
+    }
 }

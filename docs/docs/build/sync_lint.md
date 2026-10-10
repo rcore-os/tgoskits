@@ -117,7 +117,7 @@ struct Analyzer<'a> {
 
 **场景 1：等待闭包**（`check_wait_closure`）
 
-当 `Analyzer` 遇到已知等待函数/方法（如 `spin::SpinLock::wait_while`）的闭包参数时，检查闭包体内是否存在 Relaxed load：
+当 `Analyzer` 遇到已知等待函数/方法（如 `wait_while`）的闭包参数时，检查闭包体内是否存在 Relaxed load：
 
 ```rust
 // 会触发 WaitCondition

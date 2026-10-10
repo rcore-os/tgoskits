@@ -1,3 +1,5 @@
+# Select the test shell on existing board images without replacing their init files.
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 board_type = "OrangePi-5-Plus"
 timeout = 300
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_EXEC_CACHE_FAILED(?: errno=[0-9]+)?\s*$', '(?i)segmentation fault']

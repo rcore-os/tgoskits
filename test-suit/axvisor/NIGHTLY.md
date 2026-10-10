@@ -2,10 +2,11 @@
 
 The `AxVisor Nightly` workflow runs the registered AxVisor CI checks daily at
 19:20 UTC (03:20 Beijing time). It also supports `workflow_dispatch`: trigger it
-from the GitHub Actions page ("AxVisor Nightly" → "Run workflow", choose `dev`)
-or with `gh workflow run axvisor-nightly.yml --ref dev`. Both triggers test
-`dev`; the planner resolves its commit once and every build and test checks out
-that same SHA.
+from the GitHub Actions page ("AxVisor Nightly" → "Run workflow", choose the
+branch to test) or with `gh workflow run axvisor-nightly.yml --ref <branch>`.
+The planner resolves the triggering commit once and every build and test checks
+out that same SHA. Scheduled runs use the repository default branch; a manual
+run uses the selected branch.
 
 The workflow must be merged into the repository's default branch before the
 scheduled run is available. Execution is limited to `rcore-os/tgoskits`, whose
@@ -13,79 +14,83 @@ self-hosted runners provide the required virtualization hosts and boards.
 
 ## Coverage
 
-The source of truth is `.github/ci/checks/axvisor.toml`. Nightly runs every
-enabled check in that catalog without changed-file filtering, including:
+The source of truth is `.github/ci/checks/axvisor-nightly.toml`. Nightly runs
+every enabled check in that manifest without changed-file filtering, including:
 
-- AArch64 QEMU boot, timer stress, kernel tests, IVC, control plane and console.
-- RISC-V QEMU boot and IPI cross-tests.
-- LoongArch QEMU using the existing LVZ runner environment.
-- Intel VMX and AMD SVM boot, ACPI and PCI tests.
-- Registered board checks, including OrangePi Linux/Starry guests and the
-  Zephyr-Starry IVC benchmark.
+- AArch64 GICv2/GICv3 timer stress and the OrangePi Linux PCI network ping.
+- The OrangePi virtio-net peer scenario.
 
-This is full coverage of the registered CI checks, not a claim that every
+Only that manifest feeds the nightly matrix; the default `axvisor.toml` checks
+do not run at night, and performance measurements are not part of this
+workflow. Performance checks live in `.github/ci/checks/benchmarks.toml` and
+run through `.github/workflows/benchmarks.yml`. This is not a claim that every
 AxVisor feature or every test-suit directory has a corresponding nightly test.
-Add new scenarios to the existing test-suit and register them in the catalog;
-do not duplicate their shell commands in the nightly workflow.
+
+Nightly-only case files live under `apps/axvisor/` with the same
+`<group>/<build-group>/<case>` layout as `test-suit/axvisor/`. QEMU and board
+case discovery scans both trees (`test-suit/axvisor` and `apps/axvisor`), and
+board discovery for the default `normal` group also scans the
+`benchmarks/axvisor` tree, so the manifest selects each case by
+`--board`/`--test-case` name and never embeds a tree path. Add a new nightly
+scenario by placing its directory under `apps/axvisor/<group>/...` and
+registering the matching `[[check]]` in `axvisor-nightly.toml`; ordinary
+functional scenarios stay under `test-suit/axvisor/`. Do not duplicate a
+scenario's shell commands in the nightly workflow.
 
 ## Default CI Versus Nightly
 
-Default CI runs the functional checks. The GICv2/GICv3 timer stress and
-OrangePi Zephyr-Starry IVC benchmark, single ArceOS guest performance and
-Linux PCI network ping tests are separate checks marked
-`nightly_only = true` in `axvisor.toml`. Nightly includes both functional and
-nightly-only checks. Ordinary CI excludes nightly-only checks for PRs, pushes
-and manual runs, even if the change precisely selects their test-suit files.
-A PR changing only nightly test scenarios still receives static checks.
-The default OrangePi Linux check explicitly selects only the `smoke` case.
+Default CI runs the functional `axvisor.toml` checks. The GICv2/GICv3 timer
+stress, OrangePi Linux PCI network ping and OrangePi virtio-net peer were split
+into `axvisor-nightly.toml`. The manifest file name is the only authority for
+automatic nightly semantics, so individual checks no longer declare
+`nightly_only`. Ordinary CI excludes the nightly manifest for PRs, pushes and
+manual runs, even if the change precisely selects the nightly case files; a PR
+changing only nightly test scenarios still receives static checks. The default
+OrangePi Linux check explicitly selects only the `smoke` case.
 
-To add another nightly-only scenario, register its own `[[check]]` with
-`nightly_only = true`, its command and suite registration. Do not mix its
-commands into a default functional check. The nightly workflow's manual
+`apps/axvisor/**` is a registered AxVisor suite in the CI impact routing
+(`scripts/test/ci_impact.py`, `scripts/test/ci_suite.py` and
+`scripts/test/ci_plan.py`), so PRs touching the migrated nightly case files
+route to the AxVisor suite checks instead of being dropped as ordinary ignored
+`apps/**` changes; they follow the same routing as `test-suit/axvisor`. Because
+ordinary CI excludes the nightly manifest, a change confined to nightly case
+files schedules no nightly check, and the nightly workflow remains the only
+place `axvisor-nightly.toml` runs.
+
+To add another nightly scenario, place its case directory under
+`apps/axvisor/<group>/...` and register its own `[[check]]` in
+`axvisor-nightly.toml` with its command and suite registration. Do not mix
+nightly or performance commands into a default functional check. Performance
+measurements belong to the `group = "AxVisor"` checks in `benchmarks.toml` and
+are executed by the separate benchmarks workflow. The nightly workflow's manual
 trigger runs the full nightly set; local xtask commands can still run any
 individual scenario directly.
 
 ## Execution And Results
 
-A preparation job builds and uploads `tg-xtask` for artifact-consuming checks.
-Tests reuse `reusable-check-matrix.yml` and the existing runner profiles.
-Matrix fail-fast is disabled. The final job reports the tested SHA and stage
-results in the GitHub job summary, and fails if any required stage did not
-succeed. Detailed output remains in each matrix job's Actions log.
+Tests reuse `reusable-check-matrix.yml` and the existing runner profiles. The
+nightly workflow does not prepare a `tg-xtask` artifact; each row runs its
+declared `cargo xtask` command directly. Matrix fail-fast is disabled. The final
+job reports the tested SHA and plan/check results in the GitHub job summary, and
+fails if either stage did not succeed. Detailed output remains in each matrix
+job's Actions log.
 
-Checks marked `performance_report = true` (currently the OrangePi vCPU
-throughput and AXIVC Zephyr-Starry benchmark board tests) additionally get
-their result lines extracted into the job summary and the workflow summary:
-the runner captures the command log, `scripts/test/ci_perf_report.py` renders
-`VCPU_PERF_RESULT` and `AXVISOR_IVC_BENCH_RESULT=` lines as a Markdown table,
-each matrix job appends its table to its own summary, and the final job
-merges the uploaded per-check report artifacts under a "Performance Results"
-section (retained 30 days). Reports render only when the check succeeds; a
-failed run still exposes its numbers through the matrix job log.
-
-A final `Performance History` job also collects the per-check benchmark JSON,
-appends it to the `perf-data` branch, and renders a Chart.js dashboard
-(`scripts/test/ci_perf_dashboard.py`). Each test case gets its own chart (vCPU
-throughput, IVC send, IVC receive), the x-axis is the nightly date, lines are
-unfilled, and charts show the most recent 7 nightly entries while
-`history.json` keeps all of them. The job then dispatches `docs.yml`, which
-merges `perf-data` into `docs/build/axvisor-perf` before publishing Pages, so
-the dashboard appears next to the documentation at
-`<docs-site>/axvisor-perf/`. `docs.yml` also rebuilds nightly as a fallback.
-The job never touches the Pages deployment itself and writes history only in
-`rcore-os/tgoskits`.
+Performance reports are produced by `.github/workflows/benchmarks.yml`. Its
+`benchmark-updates` job hands this run's AxVisor and Starry increments to the
+docs workflow as a short-lived artifact, and the docs Pages deployment merges
+them with the published benchmark history. If both Pages files are initially
+missing, docs performs a one-time read-only bootstrap from the frozen legacy
+`perf-data` branch and blocks deployment unless both legacy files are readable;
+after that publication, Pages is the only persistent history source.
+See the [CI performance
+benchmarks](../../docs/docs/ci/testing/benchmarks.md) for report prefixes,
+dashboard sources and history publishing. This page only covers AxVisor's
+functional nightly.
 
 Nightly runs do not cancel one another. Board availability, reservation and
 reset remain the responsibility of the existing board test service, shared
 with PR CI. Scheduling after Starry Apps reduces overlap but does not provide
 cross-workflow board exclusion by itself.
-
-Existing image/rootfs requirements still apply. In particular, the OrangePi
-IVC test requires the matching tgosimages Zephyr image and Starry userspace
-benchmark in the board Linux rootfs. Its Starry kernel is embedded from the
-current checkout by the board check after `cargo xtask starry build`; the
-preinstalled `/guest/starry` kernel is not used. This first version does not add
-automated rootfs provisioning, regression thresholds or extra log artifacts.
 
 ## Local Planning
 
@@ -95,6 +100,9 @@ Generate the exact nightly matrix without starting QEMU or reserving boards:
 python3 scripts/test/ci_plan.py --mode axvisor-nightly \
   --repository rcore-os/tgoskits --repository-owner rcore-os \
   --event-name schedule
+python3 scripts/test/ci_plan.py --mode benchmarks \
+  --repository rcore-os/tgoskits --repository-owner rcore-os \
+  --event-name schedule
 python3 -m unittest discover -s scripts/test -p 'test_ci*.py'
 ```
 
@@ -102,5 +110,5 @@ Existing commands remain available for local test execution, for example:
 
 ```sh
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
-cargo xtask axvisor test board --board orangepi-5-plus-ivc-benchmark
+cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
 ```

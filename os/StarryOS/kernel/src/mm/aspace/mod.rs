@@ -24,7 +24,7 @@ use crate::{
     StarryError, StarryResult,
     config::USER_HEAP_BASE,
     mm::{ProcessVmStat, ProcessVmStatSnapshot, UserVirtualAddressLayout},
-    sync::{IrqMutex, LockdepMutexExt, Mutex, try_reserve_irq_vec},
+    sync::{LockdepMutexExt, Mutex, RawSpinLock, try_reserve_irq_vec},
 };
 
 #[cfg(test)]
@@ -786,7 +786,7 @@ pub struct AddrSpace {
     /// only after the matching epoch's active-CPU shootdown completes.  An
     /// uncommitted mutation that entered NeedsRepair deliberately leaves its
     /// batch here, preventing teardown from fabricating a successful retire.
-    retired_mapping_batches: IrqMutex<Vec<RetiredMappingBatch>>,
+    retired_mapping_batches: RawSpinLock<Vec<RetiredMappingBatch>>,
 }
 
 impl AddrSpace {
@@ -1313,9 +1313,25 @@ impl AddrSpace {
                 _ => StarryError::BadState,
             })?;
 
-        let deposit = old_slot
+        let mut deposit = old_slot
             .take_huge_split_deposit()
             .ok_or(StarryError::BadState)?;
+        if deposit.requires_tlb_confirmation() {
+            if ax_runtime::hal::cache::flush_tlb_range_all_cpus(
+                block_range.start,
+                block_range.size(),
+            )
+            .is_err()
+            {
+                if old_slot.restore_huge_split_deposit(deposit).is_err() {
+                    self.mutation_gate.mark_needs_repair();
+                }
+                return Err(StarryError::BadState);
+            }
+            // SAFETY: the all-ready-CPU shootdown completed before taking the
+            // IRQ-saving PTE stripe. CPUs joining later flush on publication.
+            unsafe { deposit.confirm_tlb_retirement() };
+        }
         let mutation_gate = &self.mutation_gate;
         let pte_domain = &self.pte_domain;
         let pt = &mut self.pt;
@@ -1605,7 +1621,7 @@ impl AddrSpace {
             tlb_quarantine: TlbQuarantine::default(),
             tlb_targets: Arc::new(AtomicUsize::new(0)),
             mapping_slots: BTreeMap::new(),
-            retired_mapping_batches: IrqMutex::new(Vec::new()),
+            retired_mapping_batches: RawSpinLock::new(Vec::new()),
         })
     }
 
@@ -1961,7 +1977,7 @@ impl AddrSpace {
         // Capacity was reserved by `prepare_retired_mapping_owners` before
         // any PTE changed, so this publication cannot allocate or fail.
         self.retired_mapping_batches
-            .lock()
+            .lock_irqsave()
             .push(RetiredMappingBatch { epoch, owners });
     }
 
@@ -1979,7 +1995,7 @@ impl AddrSpace {
     fn release_retired_mapping_owners(&self, epoch: VmEpoch) {
         loop {
             let batch = {
-                let mut batches = self.retired_mapping_batches.lock();
+                let mut batches = self.retired_mapping_batches.lock_irqsave();
                 batches
                     .iter()
                     .position(|batch| batch.epoch == epoch)
@@ -2004,13 +2020,13 @@ impl AddrSpace {
     }
 
     fn pending_retired_mapping_batches(&self) -> usize {
-        self.retired_mapping_batches.lock().len()
+        self.retired_mapping_batches.lock_irqsave().len()
     }
 
     #[cfg(test)]
     fn pending_retired_page_table_reclaims(&self) -> usize {
         self.retired_mapping_batches
-            .lock()
+            .lock_irqsave()
             .iter()
             .map(|batch| batch.owners.page_tables.len())
             .sum()
@@ -2272,9 +2288,7 @@ impl AddrSpace {
         match self.restore_mapping_preimage_ranges(ranges, preimage) {
             Ok(()) => {
                 if let Some(epoch) = parked_epoch
-                    && self
-                        .confirm_restored_mapping_owners(epoch, ranges)
-                        .is_err()
+                    && self.confirm_restored_mapping_owners(epoch, ranges).is_err()
                 {
                     self.mutation_gate.mark_needs_repair();
                     return Err(StarryError::BadState);
@@ -2327,9 +2341,7 @@ impl AddrSpace {
             && self.rollback_applied_huge_splits(splits)
         {
             if let Some(epoch) = parked_epoch
-                && self
-                    .confirm_restored_mapping_owners(epoch, ranges)
-                    .is_err()
+                && self.confirm_restored_mapping_owners(epoch, ranges).is_err()
             {
                 self.mutation_gate.mark_needs_repair();
                 return Err(StarryError::BadState);
@@ -3362,13 +3374,11 @@ impl AddrSpace {
         let Ok(mut context) = MappingMutationContext::for_rollback(leaves.len()) else {
             return false;
         };
-        let detached = leaves
-            .into_iter()
-            .all(|leaf| {
-                operation
-                    .unmap_range(leaf, &mut context, &mut self.pt)
-                    .is_ok()
-            });
+        let detached = leaves.into_iter().all(|leaf| {
+            operation
+                .unmap_range(leaf, &mut context, &mut self.pt)
+                .is_ok()
+        });
         if !context.pte_changed() {
             return detached;
         }
@@ -3522,13 +3532,8 @@ impl AddrSpace {
             replace,
         )?;
         self.validate_memlock_successor(&successor, memlock_limit)?;
-        let materialization = self.apply_mapping_pages_unpublished(
-            range,
-            permissions,
-            operation,
-            replace,
-            context,
-        )?;
+        let materialization =
+            self.apply_mapping_pages_unpublished(range, permissions, operation, replace, context)?;
         self.vma_root = Arc::new(successor);
         Ok(materialization)
     }
@@ -4320,9 +4325,7 @@ impl AddrSpace {
         };
 
         for (range, backend) in frags {
-            if let Err(error) =
-                backend.unmap_range(range, &mut page_table_reclaims, &mut self.pt)
-            {
+            if let Err(error) = backend.unmap_range(range, &mut page_table_reclaims, &mut self.pt) {
                 self.park_retired_mapping_owners(retire_epoch, retired_owners);
                 self.park_page_table_reclaims(retire_epoch, page_table_reclaims);
                 return self.abort_unpublished_split_mapping_mutation(
@@ -4634,20 +4637,14 @@ impl AddrSpace {
             Err(error) => {
                 return self
                     .abort_unpublished_huge_splits(splits, error)
-                .map(|()| AddressSpaceMutationOutcome::Complete);
+                    .map(|()| AddressSpaceMutationOutcome::Complete);
             }
         };
         let mut page_table_reclaims = match self.prepare_page_table_reclaims(&[range]) {
             Ok(reclaims) => reclaims,
             Err(error) => {
                 return self
-                    .abort_unpublished_split_mapping_mutation(
-                        range,
-                        preimage,
-                        None,
-                        splits,
-                        error,
-                    )
+                    .abort_unpublished_split_mapping_mutation(range, preimage, None, splits, error)
                     .map(|()| AddressSpaceMutationOutcome::Complete);
             }
         };
@@ -5755,6 +5752,10 @@ impl AddrSpace {
         }
         let slots = core::mem::take(&mut self.mapping_slots);
         for slot in slots.into_values() {
+            // SAFETY: the retired root has no hardware users, or this loader
+            // image was never installed; the check above excludes pending
+            // shootdowns and retained page-table owners.
+            unsafe { slot.confirm_quiescent_huge_split_deposit() };
             slot.detach();
         }
         self.resident_watermark.reset();
@@ -6924,7 +6925,7 @@ impl Drop for AddrSpace {
             // channel and therefore leaks conservatively.
             self.pt.leak();
             if has_retired_batches {
-                let batches = core::mem::take(&mut *self.retired_mapping_batches.lock());
+                let batches = core::mem::take(&mut *self.retired_mapping_batches.lock_irqsave());
                 for batch in batches {
                     core::mem::forget(batch);
                 }
@@ -7153,10 +7154,20 @@ mod tests {
         ));
         assert_eq!(aspace.pending_retired_page_table_reclaims(), 1);
 
-        assert!(aspace.acknowledge_tlb(aspace.id, epoch, 0).unwrap().is_empty());
+        assert!(
+            aspace
+                .acknowledge_tlb(aspace.id, epoch, 0)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(aspace.pending_retired_page_table_reclaims(), 1);
 
-        assert!(aspace.acknowledge_tlb(aspace.id, epoch, 1).unwrap().is_empty());
+        assert!(
+            aspace
+                .acknowledge_tlb(aspace.id, epoch, 1)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(aspace.pending_retired_page_table_reclaims(), 0);
     }
 }

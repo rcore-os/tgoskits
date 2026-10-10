@@ -60,7 +60,10 @@ use crate::arch::current::paging::{
     PAGE_SIZE as ARCH_PAGE_SIZE,
 };
 
-/// Page-table metadata for the active target architecture.
+/// Local-domain page-table metadata for the active target architecture.
+///
+/// A shared AArch64 stage-one table uses the runtime metadata in `ax-hal`,
+/// which validates its platform domain before break-before-make.
 #[derive(Clone, Copy)]
 pub struct ArchPagingMeta;
 
@@ -85,5 +88,62 @@ impl TableMeta for ArchPagingMeta {
 
     fn flush(vaddr: Option<VirtAddr>) {
         crate::asm::flush_tlb(vaddr);
+    }
+
+    fn flush_batch(vaddrs: &[VirtAddr]) {
+        #[cfg(target_arch = "riscv64")]
+        if !vaddrs.is_empty() {
+            // A batch may unlink a non-leaf PTE. SFENCE.VMA with a virtual
+            // address only orders leaf PTE changes on RISC-V.
+            Self::flush(None);
+        }
+        // Remote stage-1 shootdown and its completion receipt belong to the
+        // runtime, not to architecture metadata's local flush operation.
+        #[cfg(not(target_arch = "riscv64"))]
+        for &vaddr in vaddrs {
+            Self::flush(Some(vaddr));
+        }
+    }
+
+    fn flush_leaf_batch(vaddrs: &[VirtAddr]) {
+        #[cfg(target_arch = "riscv64")]
+        for &vaddr in vaddrs {
+            Self::flush(Some(vaddr));
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        Self::flush_batch(vaddrs);
+    }
+
+    fn flush_before_make(vaddr: VirtAddr, page_size: usize) -> page_table_generic::PagingResult {
+        if page_size > Self::PAGE_SIZE {
+            Self::flush(None);
+        } else {
+            Self::flush_leaf_batch(core::slice::from_ref(&vaddr));
+        }
+        Ok(())
+    }
+
+    fn complete_replaced_leaf(vaddr: VirtAddr) {
+        #[cfg(target_arch = "aarch64")]
+        Self::publish_new_mapping(vaddr);
+        #[cfg(not(target_arch = "aarch64"))]
+        Self::flush_leaf_batch(core::slice::from_ref(&vaddr));
+    }
+
+    fn publish_new_mapping(vaddr: VirtAddr) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = vaddr;
+            crate::asm::publish_new_mapping();
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            let _ = vaddr;
+            // An absent install can publish a complete new branch through a
+            // formerly invalid non-leaf PTE, which requires rs1=x0.
+            Self::flush(None);
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+        Self::flush_batch(core::slice::from_ref(&vaddr));
     }
 }

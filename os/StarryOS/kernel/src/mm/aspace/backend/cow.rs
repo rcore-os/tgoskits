@@ -33,7 +33,7 @@ use super::{
     ProviderPublication, PteMaterialization, RssKind, alloc_frame, collect_occupied_leaves,
     occupied_leaf_ranges, pages_in, rollback_live_mapped_pages, validate_occupied_leaf_range,
 };
-use crate::{StarryError, StarryResult, sync::IrqMutex};
+use crate::{StarryError, StarryResult, sync::RawSpinLock};
 
 /// Non-owning lookup state scoped to one logical anonymous mapping source.
 ///
@@ -47,14 +47,14 @@ enum CowPageIndexOwner {
 }
 
 pub(super) struct CowRollbackOwner {
-    pages: Arc<IrqMutex<CowPageIndex>>,
+    pages: Arc<RawSpinLock<CowPageIndex>>,
     page: Arc<PageObject>,
 }
 
 impl CowRollbackOwner {
     pub(super) fn complete(self) -> StarryResult {
         let retired = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages.discard_pending(&self.page)?
         };
         drop(retired);
@@ -173,7 +173,9 @@ impl CowPageIndexReservation {
 
 impl CowPageIndex {
     const fn new() -> Self {
-        Self { pages: VecDeque::new() }
+        Self {
+            pages: VecDeque::new(),
+        }
     }
 
     /// Returns the allocation size needed by the next insert. This method only
@@ -252,7 +254,9 @@ impl CowPageIndex {
         let mut index = 0;
         while index < reservation.replacement.len() {
             if reservation.replacement[index].is_live() {
-                let entry = reservation.replacement.swap_remove_back(index)
+                let entry = reservation
+                    .replacement
+                    .swap_remove_back(index)
                     .expect("compaction index is in bounds");
                 self.pages.push_back(entry);
             } else {
@@ -590,7 +594,7 @@ pub struct CowBackend {
     mapping_id: MappingId,
     /// Logical-source-local physical lookup. Published entries are weak; each
     /// installed MappingSlot is the only strong mapping owner.
-    pages: Arc<IrqMutex<CowPageIndex>>,
+    pages: Arc<RawSpinLock<CowPageIndex>>,
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
@@ -616,12 +620,12 @@ impl CowBackend {
     }
 
     pub(crate) fn page_object_for_frame(&self, paddr: PhysAddr) -> Option<Arc<PageObject>> {
-        self.pages.lock().get(paddr)
+        self.pages.lock_irqsave().get(paddr)
     }
 
     pub(crate) fn publish_page_object(&self, page: &Arc<PageObject>) -> StarryResult {
         let displaced = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages.publish(page)?
         };
         drop(displaced);
@@ -631,12 +635,12 @@ impl CowBackend {
     pub(crate) fn restore_page_identity(&self, page: &Arc<PageObject>) -> StarryResult {
         loop {
             let capacity = {
-                let pages = self.pages.lock();
+                let pages = self.pages.lock_irqsave();
                 pages.ensure_published_reservation_capacity(page)?
             };
             let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
             let result = {
-                let mut pages = self.pages.lock();
+                let mut pages = self.pages.lock_irqsave();
                 pages.ensure_published_reserved(page, &mut reservation)
             };
             // A missing identity may replace storage and expired Weak owners;
@@ -769,7 +773,7 @@ impl CowBackend {
 
     fn discard_pending_index_entry(&self, page: &Arc<PageObject>) -> StarryResult {
         let retired = {
-            let mut pages = self.pages.lock();
+            let mut pages = self.pages.lock_irqsave();
             pages.discard_pending(page)?
         };
         drop(retired);
@@ -779,12 +783,12 @@ impl CowBackend {
     fn insert_pending_page(&self, page: &Arc<PageObject>) -> StarryResult {
         loop {
             let capacity = {
-                let pages = self.pages.lock();
+                let pages = self.pages.lock_irqsave();
                 pages.insert_reservation_capacity(page)?
             };
             let mut reservation = CowPageIndexReservation::try_with_capacity(capacity)?;
             let result = {
-                let mut pages = self.pages.lock();
+                let mut pages = self.pages.lock_irqsave();
                 pages.insert_pending_reserved(page, &mut reservation)
             };
             // This owns both replaced storage and expired Weak entries.
@@ -933,9 +937,10 @@ impl CowBackend {
     ) {
         let complete = rollback_live_mapped_pages(
             pt,
-            pages.iter().rev().map(|(vaddr, page)| {
-                (*vaddr, page.frame().paddr(), self.page_size)
-            }),
+            pages
+                .iter()
+                .rev()
+                .map(|(vaddr, page)| (*vaddr, page.frame().paddr(), self.page_size)),
             range,
             context,
         );
@@ -976,12 +981,7 @@ impl CowBackend {
                 let page = match self.alloc_new_at(addr, flags, access_flags, pt) {
                     Ok(page) => page,
                     Err(error) => {
-                        self.rollback_new_pages(
-                            &mut mapped,
-                            rollback_range,
-                            rollback_context,
-                            pt,
-                        );
+                        self.rollback_new_pages(&mut mapped, rollback_range, rollback_context, pt);
                         return Err(error);
                     }
                 };
@@ -1009,12 +1009,7 @@ impl CowBackend {
                 let page = match self.alloc_new_at(addr, flags, access_flags, pt) {
                     Ok(page) => page,
                     Err(error) => {
-                        self.rollback_new_pages(
-                            &mut mapped,
-                            rollback_range,
-                            rollback_context,
-                            pt,
-                        );
+                        self.rollback_new_pages(&mut mapped, rollback_range, rollback_context, pt);
                         return Err(error);
                     }
                 };
@@ -1065,22 +1060,12 @@ impl CowBackend {
             let frame = page.frame().paddr();
             let Some(chunk_start) = k.checked_mul(ps) else {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(
-                    &mut mapped_pages,
-                    rollback_range,
-                    rollback_context,
-                    pt,
-                );
+                self.rollback_new_pages(&mut mapped_pages, rollback_range, rollback_context, pt);
                 return Err(StarryError::InvalidInput);
             };
             let Some(chunk_end) = chunk_start.checked_add(ps) else {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(
-                    &mut mapped_pages,
-                    rollback_range,
-                    rollback_context,
-                    pt,
-                );
+                self.rollback_new_pages(&mut mapped_pages, rollback_range, rollback_context, pt);
                 return Err(StarryError::InvalidInput);
             };
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
@@ -1089,12 +1074,7 @@ impl CowBackend {
             page.prepare_executable_mapping(frame, self.page_size, pte_flags);
             if let Err(err) = pt.map_page(addr, frame, self.page_size, pte_flags) {
                 self.discard_pending_page(&page);
-                self.rollback_new_pages(
-                    &mut mapped_pages,
-                    rollback_range,
-                    rollback_context,
-                    pt,
-                );
+                self.rollback_new_pages(&mut mapped_pages, rollback_range, rollback_context, pt);
                 return Err(err.into());
             }
             materialization.push(PreparedPteOwner::installed(
@@ -1229,9 +1209,8 @@ impl CowBackend {
                 .filter(|page| page.mapping_refs() == 0)
                 .map(|page| self.rollback_owner(page))
         };
-        let (frame, _flags, page_size, deferred) = pt
-            .unmap_page_deferred(addr)
-            .map_err(StarryError::from)?;
+        let (frame, _flags, page_size, deferred) =
+            pt.unmap_page_deferred(addr).map_err(StarryError::from)?;
         context.record_unmap(deferred);
         if let Some(owner) = rollback_owner {
             context.defer_cow_cleanup(owner);
@@ -1801,7 +1780,7 @@ impl MappingOperation {
             start: start.align_down_4k(),
             page_size: size,
             mapping_id: allocate_mapping_id(),
-            pages: Arc::new(IrqMutex::new(CowPageIndex::new())),
+            pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
             file: Some((file, start, file_start, file_end)),
             name: None,
             shared,
@@ -1813,7 +1792,7 @@ impl MappingOperation {
             start: start.align_down_4k(),
             page_size: size,
             mapping_id: allocate_mapping_id(),
-            pages: Arc::new(IrqMutex::new(CowPageIndex::new())),
+            pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
             file: None,
             name: Some(name.to_string()),
             shared: false,
@@ -1856,7 +1835,7 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         start,
         page_size: PAGE_SIZE_4K,
         mapping_id: allocate_mapping_id(),
-        pages: Arc::new(IrqMutex::new(CowPageIndex::new())),
+        pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
         file: None,
         name: Some("[cow-clone-rollback-test]".to_string()),
         shared: false,
@@ -3571,16 +3550,28 @@ mod tests {
             Err(CowPageIndexInsertError::StaleReservation)
         ));
         assert!(index.get(next.frame().paddr()).is_none());
-        assert!(Arc::ptr_eq(&index.get(first.frame().paddr()).unwrap(), &first));
+        assert!(Arc::ptr_eq(
+            &index.get(first.frame().paddr()).unwrap(),
+            &first
+        ));
         drop(reservation);
         index.insert_pending_for_test(&next).unwrap();
-        assert!(Arc::ptr_eq(&index.get(next.frame().paddr()).unwrap(), &next));
+        assert!(Arc::ptr_eq(
+            &index.get(next.frame().paddr()).unwrap(),
+            &next
+        ));
 
         // Alternate descending and ascending addresses through repeated
         // growth. Lookups and rollback must retain each owner's identity
         // regardless of which end the sorted storage moves.
         let owners: alloc::vec::Vec<_> = (0..64)
-            .map(|number| make_page(if number % 2 == 0 { 200 - number } else { 200 + number }))
+            .map(|number| {
+                make_page(if number % 2 == 0 {
+                    200 - number
+                } else {
+                    200 + number
+                })
+            })
             .collect();
         for page in &owners {
             index.insert_pending_for_test(page).unwrap();

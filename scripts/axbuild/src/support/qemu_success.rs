@@ -469,8 +469,7 @@ mod tests {
                  toml"
             ),
             include_str!(
-                "../../../../test-suit/axvisor/normal/qemu-acpi-ovmf/ovmf-acpi/qemu-x86_64-svm.\
-                 toml"
+                "../../../../test-suit/axvisor/normal/qemu-svm/ovmf-acpi-svm/qemu-x86_64.toml"
             ),
         ] {
             let config: toml::Value = toml::from_str(config).unwrap();

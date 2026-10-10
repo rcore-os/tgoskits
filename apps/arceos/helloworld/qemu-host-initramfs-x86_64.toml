@@ -1,0 +1,20 @@
+initramfs = "${workspace}/target/axbuild/host-initramfs/host-test.cpio"
+cmdline = "host_initramfs=uefi"
+args = [
+  "-machine", "q35",
+  "-cpu", "max",
+  "-m", "256M",
+  "-smp", "1",
+  "-nographic",
+  "-serial", "mon:stdio",
+]
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 90
+
+[[shell_check_steps]]
+success_regex = ["HOST_CMDLINE: host_initramfs=uefi"]
+
+[[shell_check_steps]]
+success_regex = ["HOST_INITRAMFS_PASSED"]

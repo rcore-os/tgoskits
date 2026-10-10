@@ -2,129 +2,144 @@
 
 extern crate alloc;
 
-#[cfg(not(feature = "fs"))]
-use alloc::vec::Vec;
-#[cfg(feature = "fs")]
 use alloc::{string::String, vec, vec::Vec};
 
-#[cfg(feature = "fs")]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
-use axvm::{AxVMRef, AxvmRuntime, VMId};
+#[cfg(not(feature = "no-auto-start"))]
+use axvm::VmStatus;
+use axvm::{StopReason, VMId, VmHandle, VmManager, VmOperation};
+use std::sync::{Arc, OnceLock};
 
-/// AxVM top-level manager.
-///
-/// This type belongs to the hypervisor application layer. It owns the policy
-/// for loading default VM configs, starting/stopping VMs, and serving shell
-/// commands. The lower `axvm` crate only supplies VM/runtime primitives.
+/// Application policy and its instance-owned VM registry.
 pub struct AxvmManager {
-    runtime: AxvmRuntime,
+    runtime: VmManager,
+}
+
+static APPLICATION_MANAGER: OnceLock<Arc<AxvmManager>> = OnceLock::new();
+
+/// Returns the manager installed by the application before starting services.
+pub fn manager() -> &'static AxvmManager {
+    APPLICATION_MANAGER
+        .get()
+        .expect("application installs its manager before starting services")
 }
 
 impl AxvmManager {
-    /// Initialize the AxVM runtime services.
-    pub fn new() -> Result<Self> {
-        Ok(Self {
-            runtime: AxvmRuntime::new().context("initialize AxVM runtime")?,
-        })
+    pub fn new() -> Result<Arc<Self>> {
+        let manager = Arc::new(Self {
+            runtime: VmManager::new().context("initialize AxVM runtime")?,
+        });
+        APPLICATION_MANAGER
+            .set(manager.clone())
+            .map_err(|_| anyhow::anyhow!("application manager is already installed"))?;
+        Ok(manager)
     }
 
-    /// Load and initialize the default VM set.
-    pub fn init_default_vms(&self) {
-        crate::config::init_guest_vms();
-        self.runtime.init_vms();
+    pub fn init_default_vms(&self) -> Result<()> {
+        crate::config::init_guest_vms()?;
         self.release_host_filesystem_for_guest_passthrough();
+        Ok(())
     }
 
-    /// Start the default VM set without blocking the management console.
-    #[cfg_attr(
-        feature = "no-auto-start",
-        expect(
-            dead_code,
-            reason = "only the auto-start boot path launches the default VMs"
-        )
-    )]
+    #[cfg(not(feature = "no-auto-start"))]
     pub fn launch_default_vms(&self) -> Vec<VMId> {
-        self.runtime.launch_default_vms()
+        let mut started = Vec::new();
+        for vm in self.runtime.list() {
+            match vm.start().and_then(VmOperation::wait) {
+                Ok(_) => started.push(vm.key().vm_id()),
+                Err(error) => error!("VM[{}] failed to start: {error}", vm.key().vm_id()),
+            }
+        }
+        started
     }
 
-    /// Wait until every running VM has stopped.
-    #[cfg_attr(
-        feature = "no-auto-start",
-        expect(
-            dead_code,
-            reason = "only the auto-start boot path waits for default-VM completion"
-        )
-    )]
-    pub fn wait_for_default_vms() {
-        AxvmRuntime::wait_for_all_vms();
+    #[cfg(not(feature = "no-auto-start"))]
+    pub fn wait_for_default_vms(&self) {
+        while self.runtime.list().iter().any(|vm| {
+            matches!(
+                vm.snapshot().state,
+                VmStatus::Running | VmStatus::Pausing | VmStatus::Paused | VmStatus::Stopping
+            )
+        }) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
-    /// Create one VM from a TOML config string.
-    #[cfg(any(feature = "fs", feature = "http-axum"))]
-    pub fn create_vm_from_toml(raw_cfg: &str) -> Result<VMId> {
-        crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")
+    pub fn create_vm_from_toml(&self, raw_cfg: &str) -> Result<VmOperation<VmHandle>> {
+        let plan = crate::config::prepare_guest_vm(raw_cfg)?;
+        self.create_plan(plan)
     }
 
-    /// Start a VM by ID.
-    #[cfg(any(feature = "fs", feature = "http-axum"))]
-    pub fn start_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))
+    pub fn create_plan(&self, plan: axvm::VmCreatePlan) -> Result<VmOperation<VmHandle>> {
+        self.runtime
+            .create(plan)
+            .context("create VM from prepared configuration")
     }
 
-    /// Stop a VM by ID.
-    pub fn stop_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::stop_vm(vm_id).with_context(|| format!("stop VM[{vm_id}]"))
+    pub fn get(&self, vm_id: VMId) -> Option<VmHandle> {
+        self.runtime.get(vm_id)
     }
 
-    /// Pause a VM by ID.
-    #[cfg(feature = "http-axum")]
-    pub fn pause_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::pause_vm(vm_id).with_context(|| format!("pause VM[{vm_id}]"))
+    pub fn list(&self) -> Vec<VmHandle> {
+        self.runtime.list()
     }
 
-    /// Resume a VM by ID.
-    pub fn resume_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::resume_vm(vm_id).with_context(|| format!("resume VM[{vm_id}]"))
+    pub fn stop_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?
+            .stop(StopReason::Forced)?
+            .wait()
+            .context("stop VM")
     }
 
-    /// Reset a VM by ID.
-    pub fn reset_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))
+    pub fn start_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?
+            .start()?
+            .wait()
+            .map(|_run| ())
+            .context("start VM")
     }
 
-    /// Wake the primary vCPU so it can consume newly queued console input.
-    pub fn notify_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::notify_vm(vm_id).with_context(|| format!("notify VM[{vm_id}]"))
+    pub fn pause_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?.pause()?.wait().context("pause VM")
     }
 
-    /// Remove a VM by ID.
-    pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
-        AxvmRuntime::remove_vm(vm_id)
+    pub fn resume_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?
+            .resume()?
+            .wait()
+            .context("resume VM")
     }
 
-    /// Run a closure with a VM by ID.
-    pub fn with_vm<T>(vm_id: VMId, f: impl FnOnce(AxVMRef) -> T) -> Option<T> {
-        AxvmRuntime::with_vm(vm_id, f)
+    pub fn reset_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?
+            .reset()?
+            .wait()
+            .map(|_| ())
+            .context("reset VM")
     }
 
-    /// Return the current VM list snapshot.
-    pub fn vm_list() -> Vec<AxVMRef> {
-        axvm::get_vm_list()
+    pub fn destroy_vm(&self, vm_id: VMId) -> Result<()> {
+        let vm = self.require_vm(vm_id)?;
+        vm.destroy()?.wait().context("destroy VM")?;
+        vm.join_control_task().context("join VM control task")
     }
 
-    /// Return one VM by ID.
-    pub fn vm_by_id(vm_id: VMId) -> Option<AxVMRef> {
-        axvm::get_vm_by_id(vm_id)
+    pub fn notify_vm(&self, vm_id: VMId) -> Result<()> {
+        self.require_vm(vm_id)?
+            .notify_devices()
+            .context("notify VM devices")
     }
 
-    #[cfg(all(
-        feature = "fs",
-        any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "loongarch64"
-        )
+    pub fn require_vm(&self, vm_id: VMId) -> Result<VmHandle> {
+        self.get(vm_id)
+            .ok_or_else(|| axvm::AxVmError::VmNotFound { vm_id }.into())
+    }
+
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
     ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
@@ -138,18 +153,14 @@ impl AxvmManager {
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 
-    #[cfg(not(all(
-        feature = "fs",
-        any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "loongarch64"
-        )
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
     )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.
-    #[cfg(feature = "fs")]
     pub fn filesystem_vm_configs(config_dir: &str) -> Vec<String> {
         let mut configs = Vec::new();
 
@@ -212,13 +223,11 @@ impl AxvmManager {
         configs
     }
 
-    #[cfg(feature = "fs")]
     fn open_file(file_name: &str) -> Result<ax_std::fs::File> {
         ax_std::fs::File::open(file_name)
             .map_err(|error| anyhow!("open guest image file `{file_name}`: {error}"))
     }
 
-    #[cfg(feature = "fs")]
     pub fn file_size(file_name: &str) -> Result<usize> {
         Self::open_file(file_name)?
             .metadata()
@@ -226,7 +235,6 @@ impl AxvmManager {
             .map(|metadata| metadata.size() as usize)
     }
 
-    #[cfg(feature = "fs")]
     pub fn read_file_exact(file_name: &str, read_size: usize) -> Result<Vec<u8>> {
         use ax_std::io::Read;
 
@@ -238,7 +246,6 @@ impl AxvmManager {
         Ok(buffer)
     }
 
-    #[cfg(feature = "fs")]
     pub fn read_file(file_name: &str) -> Result<Vec<u8>> {
         let size = Self::file_size(file_name)?;
         Self::read_file_exact(file_name, size)

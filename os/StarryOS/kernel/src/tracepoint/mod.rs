@@ -1,5 +1,7 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
+pub(crate) mod gate;
+mod net;
 mod registry;
 mod sched;
 mod sched_filter;
@@ -739,6 +741,9 @@ pub fn tracepoint_init() -> StarryResult<()> {
     // The hook becomes visible only after every infrastructure identity is
     // published, so their first schedule-in cannot enter the deferred ring.
     sched::install();
+    // The network runtime is already running, so the queue port reports only
+    // the rounds that complete after this installation.
+    net::install();
     Ok(())
 }
 

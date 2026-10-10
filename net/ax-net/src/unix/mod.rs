@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
-use ax_sync::{Mutex, SpinLock};
+use ax_sync::{Mutex, RawSpinLock};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use enum_dispatch::enum_dispatch;
@@ -146,17 +146,17 @@ impl Pollable for Transport {
 #[derive(Default)]
 pub struct BindSlot {
     /// Stream listener bound at this address.
-    stream: SpinLock<Option<stream::Bind>>,
+    stream: RawSpinLock<Option<stream::Bind>>,
     /// Datagram endpoint bound at this address.
-    dgram: SpinLock<Option<dgram::Bind>>,
+    dgram: RawSpinLock<Option<dgram::Bind>>,
     /// Seqpacket listener bound at this address. Seqpacket is connection
     /// oriented (like stream) but preserves message boundaries (like dgram),
     /// so it carries its own connection-request queue.
-    seqpacket: SpinLock<Option<dgram::SeqBind>>,
+    seqpacket: RawSpinLock<Option<dgram::SeqBind>>,
 }
 
-static ABSTRACT_BINDS: LazyLock<SpinLock<HashMap<Arc<[u8]>, BindSlot>>> =
-    LazyLock::new(|| SpinLock::new(HashMap::new()));
+static ABSTRACT_BINDS: LazyLock<RawSpinLock<HashMap<Arc<[u8]>, BindSlot>>> =
+    LazyLock::new(|| RawSpinLock::new(HashMap::new()));
 
 /// Resolves an existing bind slot and runs `f` with it.
 pub(crate) fn with_slot<R>(

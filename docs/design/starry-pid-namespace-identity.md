@@ -26,13 +26,13 @@ pidfd、异步通知以及 PID namespace init 退出因而可能各自释放或�
 - `fs/exec.c::de_thread()` 保持进程 leader 身份，并把运行执行流切换到该身份。
 - Unix `SCM_CREDENTIALS` 在 skb 中强持有 `struct pid`，接收时经 `pid_vnr()` 按当前
   namespace 投影；`SO_PEERCRED` 同样保存稳定 `struct pid` 而不是创建时的裸 PID。参见
-  [`scm_cookie`/`scm_set_cred`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/net/scm.h#L44-L80)、
-  [`unix_scm_to_skb`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1987-L2006) 和
-  [`cred_to_ucred`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/sock.c#L1704-L1714)。
+  [`scm_cookie`/`scm_set_cred`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/net/scm.h)、
+  [`unix_scm_to_skb`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) 和
+  [`cred_to_ucred`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/sock.c)。
 - SysV `IPC_SET` 只更新 owner UID/GID 与低 9 位权限，不能从用户 buffer 覆盖 creator、
   size、PID、attach count 等只读统计字段。参见
-  [`ipc_update_perm`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/util.c#L679-L697) 和
-  [`shmctl_down`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c#L995-L1034)。
+  [`ipc_update_perm`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/util.c) 和
+  [`shmctl_down`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c)。
 
 Starry 保留这些核心不变量，但不在本次实现完整 user/net/ipc namespace 隔离、全部权限
 模型或未实现 syscall。
@@ -223,12 +223,12 @@ trace pipe、perf record 与 eBPF helper 的非 syscall 文件 ABI 在前文分�
 | `getpid` | 符合 | [`getpid(2)`](https://man7.org/linux/man-pages/man2/getpid.2.html) | 返回调用者 active view 中的 TGID。 |
 | `getppid` | 符合 | [`getpid(2)`](https://man7.org/linux/man-pages/man2/getpid.2.html) | parent snapshot 按调用者 active view 投影，不从可复用数字反查。 |
 | `gettid` | 符合 | [`gettid(2)`](https://man7.org/linux/man-pages/man2/gettid.2.html) | 返回调用线程 identity 在 active view 中的 TID。 |
-| `clone` | 符合（本次修复后） | [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html)、[Linux `copy_process`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1876-L1889) | PID 链、pidfd 与 parent TID copyout 按提交边界发布；失败完整回滚。 |
-| `clone3` | 符合（本次修复后） | [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html)、[Linux `copy_process`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c#L1876-L1889) | 与 `clone` 共享同一 typed transaction，flags 与输出沿原 ABI 解码。 |
+| `clone` | 符合（本次修复后） | [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html)、[Linux `copy_process`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | PID 链、pidfd 与 parent TID copyout 按提交边界发布；失败完整回滚。 |
+| `clone3` | 符合（本次修复后） | [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html)、[Linux `copy_process`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/fork.c) | 与 `clone` 共享同一 typed transaction，flags 与输出沿原 ABI 解码。 |
 | `fork` | 符合 | [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html) | 复用 clone transaction；child identity 在返回给 parent 前完成发布。 |
 | `vfork` | 符合 | [`vfork(2)`](https://man7.org/linux/man-pages/man2/vfork.2.html) | 复用 clone transaction，同时保留既有 VM/parent wait 语义。 |
-| `execve` | 符合 | [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html)、[Linux `de_thread`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L1101-L1260) | non-leader exec 接管 leader identity，TGID/process pidfd 不变。 |
-| `execveat` | 符合 | [`execveat(2)`](https://man7.org/linux/man-pages/man2/execveat.2.html)、[Linux `de_thread`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L1101-L1260) | 与 `execve` 共享不可失败 identity transfer 提交。 |
+| `execve` | 符合 | [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html)、[Linux `de_thread`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | non-leader exec 接管 leader identity，TGID/process pidfd 不变。 |
+| `execveat` | 符合 | [`execveat(2)`](https://man7.org/linux/man-pages/man2/execveat.2.html)、[Linux `de_thread`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | 与 `execve` 共享不可失败 identity transfer 提交。 |
 | `wait4` | 符合 | [`wait(2)`](https://man7.org/linux/man-pages/man2/wait.2.html) | typed PID/PGID selector 与唯一 reap ownership 保留 zombie 到消费完成。 |
 | `waitpid` | 符合 | [`wait(2)`](https://man7.org/linux/man-pages/man2/wait.2.html) | 正数、零、负 PGID 和任意 child 分支各自解析，不混用角色。 |
 | `waitid` | 符合 | [`waitid(2)`](https://man7.org/linux/man-pages/man2/waitid.2.html) | `P_PID`/`P_PGID`/`P_PIDFD` 与 `WNOWAIT` 保持稳定 generation。 |
@@ -273,20 +273,20 @@ trace pipe、perf record 与 eBPF helper 的非 syscall 文件 ABI 在前文分�
 | `shmget` | 符合（本次修复后） | [`shmget(2)`](https://man7.org/linux/man-pages/man2/shmget.2.html) | 创建者 snapshot 与 last-operator 状态分离，lookup 不伪造一次 shmop。 |
 | `shmat` | 符合 | [`shmat(2)`](https://man7.org/linux/man-pages/man2/shmat.2.html) | attach 完成后才捕获 last-operator snapshot 并更新 attach count。 |
 | `shmdt` | 符合 | [`shmdt(2)`](https://man7.org/linux/man-pages/man2/shmdt.2.html) | detach 按稳定 process generation 归属映射并更新 last operator。 |
-| `shmctl` | 符合（本次修复后） | [`shmctl(2)`](https://man7.org/linux/man-pages/man2/shmctl.2.html)、[Linux `shmctl_down`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c#L995-L1034) | PID 字段按 observer view 投影；`IPC_SET` 仅更新 UID/GID/权限并保留只读统计。 |
+| `shmctl` | 符合（本次修复后） | [`shmctl(2)`](https://man7.org/linux/man-pages/man2/shmctl.2.html)、[Linux `shmctl_down`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/shm.c) | PID 字段按 observer view 投影；`IPC_SET` 仅更新 UID/GID/权限并保留只读统计。 |
 | `bind` | 符合 | [`bind(2)`](https://man7.org/linux/man-pages/man2/bind.2.html)、[`netlink(7)`](https://man7.org/linux/man-pages/man7/netlink.7.html) | Netlink 自动 port ID 使用调用者 TGID 数值，但仍是独立 port-ID domain。 |
 | `socket` | 符合（本次修复后） | [`socket(2)`](https://man7.org/linux/man-pages/man2/socket.2.html)、[`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html) | Unix socket 创建时保存稳定 process generation 与数值 fallback。 |
-| `socketpair` | 符合（本次修复后） | [`socketpair(2)`](https://man7.org/linux/man-pages/man2/socketpair.2.html)、[Linux `unix_socketpair`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1808-L1836) | 两端 peer credential 强持有同一创建者 generation。 |
-| `connect` | 符合（本次修复后） | [`connect(2)`](https://man7.org/linux/man-pages/man2/connect.2.html)、[Linux Unix connect credentials](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1628-L1777) | stream/seqpacket connection 交换稳定 client/listener identity。 |
-| `listen` | 符合（本次修复后） | [`listen(2)`](https://man7.org/linux/man-pages/man2/listen.2.html)、[Linux `unix_listen`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L809-L839) | listener peer credential 捕获 generation，后续 connect clone 该引用。 |
+| `socketpair` | 符合（本次修复后） | [`socketpair(2)`](https://man7.org/linux/man-pages/man2/socketpair.2.html)、[Linux `unix_socketpair`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) | 两端 peer credential 强持有同一创建者 generation。 |
+| `connect` | 符合（本次修复后） | [`connect(2)`](https://man7.org/linux/man-pages/man2/connect.2.html)、[Linux Unix connect credentials](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) | stream/seqpacket connection 交换稳定 client/listener identity。 |
+| `listen` | 符合（本次修复后） | [`listen(2)`](https://man7.org/linux/man-pages/man2/listen.2.html)、[Linux `unix_listen`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) | listener peer credential 捕获 generation，后续 connect clone 该引用。 |
 | `accept` | 符合（本次修复后） | [`accept(2)`](https://man7.org/linux/man-pages/man2/accept.2.html) | accepted socket 保留连接方稳定 credential。 |
 | `accept4` | 符合（本次修复后） | [`accept4(2)`](https://man7.org/linux/man-pages/man2/accept.2.html) | 与 `accept` 共享 peer identity 语义，同时保留 flags。 |
-| `sendto` | 符合（本次修复后） | [`sendto(2)`](https://man7.org/linux/man-pages/man2/send.2.html)、[Linux Unix SCM enqueue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1987-L2006) | 发送时捕获调用进程 generation，消息排队后不依赖裸 PID。 |
-| `sendmsg` | 符合（本次修复后） | [`sendmsg(2)`](https://man7.org/linux/man-pages/man2/sendmsg.2.html)、[Linux Unix SCM enqueue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1987-L2006) | 自动凭据与显式 payload 经过同一稳定 credential 边界。 |
-| `write` | 符合（本次修复后） | [`write(2)`](https://man7.org/linux/man-pages/man2/write.2.html)、[Linux Unix SCM enqueue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1987-L2006) | Unix datagram write 路径同样附加发送者 generation。 |
-| `recvmsg` | 符合（本次修复后） | [`recvmsg(2)`](https://man7.org/linux/man-pages/man2/recvmsg.2.html)、[`scm_set_cred`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/net/scm.h#L69-L80) | `SCM_CREDENTIALS` 在写回时按接收者 active view 投影。 |
+| `sendto` | 符合（本次修复后） | [`sendto(2)`](https://man7.org/linux/man-pages/man2/send.2.html)、[Linux Unix SCM enqueue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) | 发送时捕获调用进程 generation，消息排队后不依赖裸 PID。 |
+| `sendmsg` | 符合（本次修复后） | [`sendmsg(2)`](https://man7.org/linux/man-pages/man2/sendmsg.2.html)、[Linux Unix SCM enqueue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) | 自动凭据与显式 payload 经过同一稳定 credential 边界。 |
+| `write` | 符合（本次修复后） | [`write(2)`](https://man7.org/linux/man-pages/man2/write.2.html)、[Linux Unix SCM enqueue](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c) | Unix datagram write 路径同样附加发送者 generation。 |
+| `recvmsg` | 符合（本次修复后） | [`recvmsg(2)`](https://man7.org/linux/man-pages/man2/recvmsg.2.html)、[`scm_set_cred`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/net/scm.h) | `SCM_CREDENTIALS` 在写回时按接收者 active view 投影。 |
 | `setsockopt` | 符合 | [`setsockopt(2)`](https://man7.org/linux/man-pages/man2/setsockopt.2.html)、[`unix(7)`](https://man7.org/linux/man-pages/man7/unix.7.html) | `SO_PASSCRED` 只控制接收方是否要求凭据，不固化 PID view。 |
-| `getsockopt` | 符合（本次修复后） | [`getsockopt(2)`](https://man7.org/linux/man-pages/man2/getsockopt.2.html)、[Linux `SO_PEERCRED`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/sock.c#L1903-L1915) | `SO_PEERCRED` 保存稳定 pid，并在查询者 namespace 中经 `pid_vnr` 投影。 |
+| `getsockopt` | 符合（本次修复后） | [`getsockopt(2)`](https://man7.org/linux/man-pages/man2/getsockopt.2.html)、[Linux `SO_PEERCRED`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/sock.c) | `SO_PEERCRED` 保存稳定 pid，并在查询者 namespace 中经 `pid_vnr` 投影。 |
 | `io_setup` | 符合 | [`io_setup(2)`](https://man7.org/linux/man-pages/man2/io_setup.2.html) | AIO context owner 使用不可复用 `PidIdentityId`，不改变 context ID ABI。 |
 | `io_destroy` | 符合 | [`io_destroy(2)`](https://man7.org/linux/man-pages/man2/io_destroy.2.html) | context ownership 按创建者 generation 核对，避免 PID 复用后误认领。 |
 | `io_submit` | 符合 | [`io_submit(2)`](https://man7.org/linux/man-pages/man2/io_submit.2.html) | submit 只进入当前 generation 所属 context。 |
@@ -304,9 +304,9 @@ trace pipe、perf record 与 eBPF helper 的非 syscall 文件 ABI 在前文分�
 | `dup3` | 符合（本次修复后） | [`dup3(2)`](https://man7.org/linux/man-pages/man2/dup.2.html) | 与 `dup2` 使用相同 reservation 冲突判断并保留 flags。 |
 | `fcntl` | 符合（本次修复后） | [`fcntl(2)`](https://man7.org/linux/man-pages/man2/fcntl.2.html)、[`dup2(2)`](https://man7.org/linux/man-pages/man2/dup.2.html) | file-lock owner 使用 generation；clone 隐藏 fd reservation 不可查，定向覆盖返回 `EBUSY`。 |
 | `flock` | 符合 | [`flock(2)`](https://man7.org/linux/man-pages/man2/flock.2.html) | process-scoped lock owner 不再由可复用数字标识。 |
-| `poll` | 符合 | [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)、[Linux `pidfd_poll`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pidfs.c#L304-L321) | pidfd zombie/reap readiness 来自稳定 identity lifecycle。 |
-| `ppoll` | 符合 | [`ppoll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)、[Linux `pidfd_poll`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pidfs.c#L304-L321) | 与 `poll` 使用同一 pidfd event source。 |
-| `epoll_wait` | 符合 | [`epoll_wait(2)`](https://man7.org/linux/man-pages/man2/epoll_wait.2.html)、[Linux `pidfd_poll`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pidfs.c#L304-L321) | pidfd exit/reap wakeup 不依赖 namespace 数字仍可解析。 |
+| `poll` | 符合 | [`poll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)、[Linux `pidfd_poll`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pidfs.c) | pidfd zombie/reap readiness 来自稳定 identity lifecycle。 |
+| `ppoll` | 符合 | [`ppoll(2)`](https://man7.org/linux/man-pages/man2/poll.2.html)、[Linux `pidfd_poll`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pidfs.c) | 与 `poll` 使用同一 pidfd event source。 |
+| `epoll_wait` | 符合 | [`epoll_wait(2)`](https://man7.org/linux/man-pages/man2/epoll_wait.2.html)、[Linux `pidfd_poll`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pidfs.c) | pidfd exit/reap wakeup 不依赖 namespace 数字仍可解析。 |
 | `bpf` | 符合 | [`bpf(2)`](https://man7.org/linux/man-pages/man2/bpf.2.html)、[`bpf-helpers(7)`](https://man7.org/linux/man-pages/man7/bpf-helpers.7.html) | current PID/TGID helper 从 Starry identity 投影，不泄漏 ax-task `TaskId`。 |
 
 ## PR #1775 开发历程回溯
@@ -447,7 +447,7 @@ EL0 直读与 `read(perf_fd)`。
 继续回看 PR #1775 的开发链后，`e747f9d72`（`fix(starry-perf): publish dynamic rdpmc
 metadata`）与本分支新进入的 per-task counting 路径直接重叠。Linux
 [`perf_event_open(2)`](https://man7.org/linux/man-pages/man2/perf_event_open.2.html) 与固定提交
-[`dac3e89a2c90c2feeb471e1f22a2512ad424b792`](https://github.com/torvalds/linux/blob/dac3e89a2c90c2feeb471e1f22a2512ad424b792/kernel/events/core.c#L6825-L6865)
+[`dac3e89a2c90c2feeb471e1f22a2512ad424b792`](https://github.com/torvalds/linux/blob/dac3e89a2c90c2feeb471e1f22a2512ad424b792/kernel/events/core.c)
 中的 `perf_event_update_userpage()` 在每个调度片边界用 sequence、`index` 和 `offset` 发布
 `count = offset + rdpmc(index - 1)`；inactive 时必须把 `index` 清零并把完整计数保留在
 `offset`。本分支旧页始终固定为 `index=1, offset=0, lock=0`，CI 中 `rdpmc` 与

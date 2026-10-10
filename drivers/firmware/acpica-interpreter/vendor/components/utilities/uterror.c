@@ -1,0 +1,372 @@
+/*******************************************************************************
+ *
+ * Module Name: uterror - Various internal error/warning output functions
+ *
+ ******************************************************************************/
+
+/******************************************************************************
+ *
+ * Copyright (c) 1999 - 2026, Intel Corp.
+ * SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-only
+ *
+ *****************************************************************************/
+
+#include "acpi.h"
+#include "accommon.h"
+#include "acnamesp.h"
+
+
+#define _COMPONENT          ACPI_UTILITIES
+        ACPI_MODULE_NAME    ("uterror")
+
+
+/*
+ * This module contains internal error functions that may
+ * be configured out.
+ */
+#if !defined (ACPI_NO_ERROR_MESSAGES)
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtPredefinedWarning
+ *
+ * PARAMETERS:  ModuleName      - Caller's module name (for error output)
+ *              LineNumber      - Caller's line number (for error output)
+ *              Pathname        - Full pathname to the node
+ *              NodeFlags       - From Namespace node for the method/object
+ *              Format          - Printf format string + additional args
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Warnings for the predefined validation module. Messages are
+ *              only emitted the first time a problem with a particular
+ *              method/object is detected. This prevents a flood of error
+ *              messages for methods that are repeatedly evaluated.
+ *
+ ******************************************************************************/
+
+void ACPI_INTERNAL_VAR_XFACE
+AcpiUtPredefinedWarning (
+    const char              *ModuleName,
+    UINT32                  LineNumber,
+    char                    *Pathname,
+    UINT16                  NodeFlags,
+    const char              *Format,
+    ...)
+{
+    va_list                 ArgList;
+
+
+    /*
+     * Warning messages for this method/object will be disabled after the
+     * first time a validation fails or an object is successfully repaired.
+     */
+    if (NodeFlags & ANOBJ_EVALUATED)
+    {
+        return;
+    }
+
+    AcpiOsPrintf (ACPI_MSG_WARNING "%s: ", Pathname);
+
+    va_start (ArgList, Format);
+    AcpiOsVprintf (Format, ArgList);
+    ACPI_MSG_SUFFIX;
+    va_end (ArgList);
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtPredefinedInfo
+ *
+ * PARAMETERS:  ModuleName      - Caller's module name (for error output)
+ *              LineNumber      - Caller's line number (for error output)
+ *              Pathname        - Full pathname to the node
+ *              NodeFlags       - From Namespace node for the method/object
+ *              Format          - Printf format string + additional args
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Info messages for the predefined validation module. Messages
+ *              are only emitted the first time a problem with a particular
+ *              method/object is detected. This prevents a flood of
+ *              messages for methods that are repeatedly evaluated.
+ *
+ ******************************************************************************/
+
+void ACPI_INTERNAL_VAR_XFACE
+AcpiUtPredefinedInfo (
+    const char              *ModuleName,
+    UINT32                  LineNumber,
+    char                    *Pathname,
+    UINT16                  NodeFlags,
+    const char              *Format,
+    ...)
+{
+    va_list                 ArgList;
+
+
+    /*
+     * Warning messages for this method/object will be disabled after the
+     * first time a validation fails or an object is successfully repaired.
+     */
+    if (NodeFlags & ANOBJ_EVALUATED)
+    {
+        return;
+    }
+
+    AcpiOsPrintf (ACPI_MSG_INFO "%s: ", Pathname);
+
+    va_start (ArgList, Format);
+    AcpiOsVprintf (Format, ArgList);
+    ACPI_MSG_SUFFIX;
+    va_end (ArgList);
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtPredefinedBiosError
+ *
+ * PARAMETERS:  ModuleName      - Caller's module name (for error output)
+ *              LineNumber      - Caller's line number (for error output)
+ *              Pathname        - Full pathname to the node
+ *              NodeFlags       - From Namespace node for the method/object
+ *              Format          - Printf format string + additional args
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: BIOS error message for predefined names. Messages
+ *              are only emitted the first time a problem with a particular
+ *              method/object is detected. This prevents a flood of
+ *              messages for methods that are repeatedly evaluated.
+ *
+ ******************************************************************************/
+
+void ACPI_INTERNAL_VAR_XFACE
+AcpiUtPredefinedBiosError (
+    const char              *ModuleName,
+    UINT32                  LineNumber,
+    char                    *Pathname,
+    UINT16                  NodeFlags,
+    const char              *Format,
+    ...)
+{
+    va_list                 ArgList;
+
+
+    /*
+     * Warning messages for this method/object will be disabled after the
+     * first time a validation fails or an object is successfully repaired.
+     */
+    if (NodeFlags & ANOBJ_EVALUATED)
+    {
+        return;
+    }
+
+    AcpiOsPrintf (ACPI_MSG_BIOS_ERROR "%s: ", Pathname);
+
+    va_start (ArgList, Format);
+    AcpiOsVprintf (Format, ArgList);
+    ACPI_MSG_SUFFIX;
+    va_end (ArgList);
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtPrefixedNamespaceError
+ *
+ * PARAMETERS:  ModuleName          - Caller's module name (for error output)
+ *              LineNumber          - Caller's line number (for error output)
+ *              PrefixScope         - Scope/Path that prefixes the internal path
+ *              InternalPath        - Name or path of the namespace node
+ *              LookupStatus        - Exception code from NS lookup
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Print error message with the full pathname constructed this way:
+ *
+ *                  PrefixScopeNodeFullPath.ExternalizedInternalPath
+ *
+ * NOTE:        10/2017: Treat the major NsLookup errors as firmware errors
+ *
+ ******************************************************************************/
+
+void
+AcpiUtPrefixedNamespaceError (
+    const char              *ModuleName,
+    UINT32                  LineNumber,
+    ACPI_GENERIC_STATE      *PrefixScope,
+    const char              *InternalPath,
+    ACPI_STATUS             LookupStatus)
+{
+    char                    *FullPath;
+    const char              *Message;
+
+
+    /*
+     * Main cases:
+     * 1) Object creation, object must not already exist
+     * 2) Object lookup, object must exist
+     */
+    switch (LookupStatus)
+    {
+    case AE_ALREADY_EXISTS:
+
+        AcpiOsPrintf (ACPI_MSG_BIOS_ERROR);
+        Message = "Failure creating named object";
+        break;
+
+    case AE_NOT_FOUND:
+
+        AcpiOsPrintf (ACPI_MSG_BIOS_ERROR);
+        Message = "Could not resolve symbol";
+        break;
+
+    default:
+
+        AcpiOsPrintf (ACPI_MSG_ERROR);
+        Message = "Failure resolving symbol";
+        break;
+    }
+
+    /* Concatenate the prefix path and the internal path */
+
+    FullPath = AcpiNsBuildPrefixedPathname (PrefixScope, InternalPath);
+
+    AcpiOsPrintf ("%s [%s], %s", Message,
+        FullPath ? FullPath : "Could not get pathname",
+        AcpiFormatException (LookupStatus));
+
+    if (FullPath)
+    {
+        ACPI_FREE (FullPath);
+    }
+
+    ACPI_MSG_SUFFIX;
+}
+
+
+#ifdef __OBSOLETE_FUNCTION
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtNamespaceError
+ *
+ * PARAMETERS:  ModuleName          - Caller's module name (for error output)
+ *              LineNumber          - Caller's line number (for error output)
+ *              InternalName        - Name or path of the namespace node
+ *              LookupStatus        - Exception code from NS lookup
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Print error message with the full pathname for the NS node.
+ *
+ ******************************************************************************/
+
+void
+AcpiUtNamespaceError (
+    const char              *ModuleName,
+    UINT32                  LineNumber,
+    const char              *InternalName,
+    ACPI_STATUS             LookupStatus)
+{
+    ACPI_STATUS             Status;
+    UINT32                  BadName;
+    char                    *Name = NULL;
+
+
+    ACPI_MSG_REDIRECT_BEGIN;
+    AcpiOsPrintf (ACPI_MSG_ERROR);
+
+    if (LookupStatus == AE_BAD_CHARACTER)
+    {
+        /* There is a non-ascii character in the name */
+
+        ACPI_MOVE_32_TO_32 (&BadName, ACPI_CAST_PTR (UINT32, InternalName));
+        AcpiOsPrintf ("[0x%.8X] (NON-ASCII)", BadName);
+    }
+    else
+    {
+        /* Convert path to external format */
+
+        Status = AcpiNsExternalizeName (
+            ACPI_UINT32_MAX, InternalName, NULL, &Name);
+
+        /* Print target name */
+
+        if (ACPI_SUCCESS (Status))
+        {
+            AcpiOsPrintf ("[%s]", Name);
+        }
+        else
+        {
+            AcpiOsPrintf ("[COULD NOT EXTERNALIZE NAME]");
+        }
+
+        if (Name)
+        {
+            ACPI_FREE (Name);
+        }
+    }
+
+    AcpiOsPrintf (" Namespace lookup failure, %s",
+        AcpiFormatException (LookupStatus));
+
+    ACPI_MSG_SUFFIX;
+    ACPI_MSG_REDIRECT_END;
+}
+#endif
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtMethodError
+ *
+ * PARAMETERS:  ModuleName          - Caller's module name (for error output)
+ *              LineNumber          - Caller's line number (for error output)
+ *              Message             - Error message to use on failure
+ *              PrefixNode          - Prefix relative to the path
+ *              Path                - Path to the node (optional)
+ *              MethodStatus        - Execution status
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Print error message with the full pathname for the method.
+ *
+ ******************************************************************************/
+
+void
+AcpiUtMethodError (
+    const char              *ModuleName,
+    UINT32                  LineNumber,
+    const char              *Message,
+    ACPI_NAMESPACE_NODE     *PrefixNode,
+    const char              *Path,
+    ACPI_STATUS             MethodStatus)
+{
+    ACPI_STATUS             Status;
+    ACPI_NAMESPACE_NODE     *Node = PrefixNode;
+
+
+    ACPI_MSG_REDIRECT_BEGIN;
+    AcpiOsPrintf (ACPI_MSG_ERROR);
+
+    if (Path)
+    {
+        Status = AcpiNsGetNode (PrefixNode, Path,
+            ACPI_NS_NO_UPSEARCH, &Node);
+        if (ACPI_FAILURE (Status))
+        {
+            AcpiOsPrintf ("[Could not get node by pathname]");
+        }
+    }
+
+    AcpiNsPrintNodePathname (Node, Message);
+    AcpiOsPrintf (" due to previous error (%s)",
+        AcpiFormatException (MethodStatus));
+
+    ACPI_MSG_SUFFIX;
+    ACPI_MSG_REDIRECT_END;
+}
+
+#endif /* ACPI_NO_ERROR_MESSAGES */

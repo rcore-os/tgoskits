@@ -25,29 +25,17 @@
 //!
 //! # Lifecycle semantics and known limits
 //!
-//! The pause/resume routes are backed by the axvm lifecycle state machine,
-//! which accepts only `Running → Paused` (pause) and `Paused → Running`
-//! (resume). Callers must not assume stronger guarantees than the runtime
-//! provides:
+//! Management commands use the single lifecycle owner and `VmOperation`.
+//! `pause` and `stop` await acceptance; their terminal snapshots are published
+//! after participant and device quiescence. `start` and `resume` await owner
+//! initialization/restoration, open admission and wake; real guest progress
+//! remains observable through the detail endpoint's live run counters.
 //!
-//! - `pause` is fire-and-forget: the status flips to `Paused` synchronously,
-//!   but running vCPUs park only at their next run-loop iteration. There is no
-//!   synchronous pause-quiesce wait and **no completion-confirmation API** — a
-//!   `Paused` status only means the pause request was accepted, not that the
-//!   execution surface has gone quiet (see `virtualization/axvm/docs/
-//!   lifecycle.md`). To *observe* a vCPU actually parking (not a full
-//!   quiescence guarantee), poll the VM detail: `guest_park_count` advances
-//!   only when a vCPU has genuinely parked in the suspend wait, and
-//!   `guest_entry_count` advances only after the guest has actually re-entered
-//!   (on first start and on every wake from suspend). Both are **VM-level
-//!   monotonic aggregate** counters shared by every vCPU task of the VM — they
-//!   prove that *at least one* vCPU made progress, not that every vCPU, device,
-//!   or timer has quiesced (see the device/timer limits below).
-//! - Pause does not save or mask guest timer state. Host time keeps flowing
-//!   while the guest is suspended, so on resume the guest observes a time
-//!   jump; long pauses drift time-sensitive guests.
-//! - Device suspension covers only devices registered with lifecycle
-//!   semantics; other devices are not quiesced while paused.
+//! Counters aggregate execution and park progress across the current run. They
+//! do not replace per-participant confirmations or prove device/DMA quiescence.
+//! Host monotonic time continues during pause; saved guest timer deadlines may
+//! already have expired when the vCPU resumes. A passthrough device without a
+//! supported DMA quiescence contract cannot complete the affected teardown.
 
 #[cfg(feature = "browser-console")]
 use core::sync::atomic::{AtomicBool, Ordering};

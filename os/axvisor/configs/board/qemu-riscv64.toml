@@ -1,6 +1,6 @@
 features = [
     "ax-driver/nvme",
-    "fs",
+
     "sstc",
     # Capturing a backtrace is an expensive runtime operation.
     # Enable "backtrace" and [env] BACKTRACE = "y" below to

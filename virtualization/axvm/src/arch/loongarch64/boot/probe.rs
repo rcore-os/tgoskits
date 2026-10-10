@@ -15,7 +15,6 @@ pub struct GuestPlatformBuilder {
     pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
     firmware_devices: Option<FirmwareDevices>,
-    irq_routes: Vec<GuestIrqRoute>,
 }
 
 pub(crate) fn apply_host_serial(config: &mut crate::config::AxVMConfig) -> crate::AxVmResult {
@@ -43,12 +42,6 @@ pub(crate) fn apply_host_serial(config: &mut crate::config::AxVMConfig) -> crate
     config.replace_machine_serial(snapshot.profile, Some(snapshot.identity))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GuestIrqRoute {
-    pub physical_irq: usize,
-    pub guest_vector: usize,
-}
-
 impl GuestPlatformBuilder {
     pub fn new(ram_regions: Vec<MemoryRegion>, fw_cfg: Option<MmioRegion>) -> Self {
         Self {
@@ -58,7 +51,6 @@ impl GuestPlatformBuilder {
             pci: None,
             interrupt: None,
             firmware_devices: None,
-            irq_routes: Vec::new(),
         }
     }
 
@@ -83,11 +75,6 @@ impl GuestPlatformBuilder {
         let pci = self.pci.unwrap_or(defaults.pci);
         let interrupt = self.interrupt.unwrap_or(defaults.interrupt);
 
-        let irq_routes = if self.irq_routes.is_empty() {
-            guest_irq_routes(&interrupt, &Some(serial), &Some(pci))
-        } else {
-            self.irq_routes
-        };
         GuestPlatform {
             ram_regions: self.ram_regions,
             serial,
@@ -95,7 +82,6 @@ impl GuestPlatformBuilder {
             interrupt,
             fw_cfg: self.fw_cfg.unwrap_or(defaults.fw_cfg),
             firmware_devices: self.firmware_devices.unwrap_or(defaults.firmware_devices),
-            irq_routes,
             configured_fdt_devices: Vec::new(),
             configured_acpi_devices: Vec::new(),
         }
@@ -111,7 +97,6 @@ impl GuestPlatformBuilder {
         if let Some(firmware_devices) = resources.firmware_devices {
             self.firmware_devices = Some(firmware_devices);
         }
-        self.irq_routes = resources.irq_routes;
     }
 }
 
@@ -119,7 +104,6 @@ struct HostResources {
     pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
     firmware_devices: Option<FirmwareDevices>,
-    irq_routes: Vec<GuestIrqRoute>,
 }
 
 fn host_acpi_resources(
@@ -163,7 +147,6 @@ fn host_acpi_resources(
         pci,
         interrupt,
         firmware_devices,
-        irq_routes: Vec::new(),
     })
 }
 
@@ -208,28 +191,6 @@ fn find_rtc(acpi: &ax_driver::probe::acpi::System) -> Option<IrqMmioDevice> {
 
 fn defaults_rtc_irq() -> u32 {
     6
-}
-
-fn guest_irq_routes(
-    interrupt: &InterruptTopology,
-    serial: &Option<SerialDevice>,
-    pci: &Option<PciHost>,
-) -> Vec<GuestIrqRoute> {
-    let defaults = QemuVirtDefaults::new();
-    let serial = serial.unwrap_or(defaults.serial);
-    let pci = pci.unwrap_or(defaults.pci);
-
-    let mut routes = Vec::from([GuestIrqRoute {
-        physical_irq: serial.irq as usize,
-        guest_vector: serial.irq as usize,
-    }]);
-    routes.extend((0..4).map(|idx| GuestIrqRoute {
-        physical_irq: pci.intx_base as usize + idx,
-        guest_vector: pci.intx_base as usize + idx,
-    }));
-
-    let _ = interrupt;
-    routes
 }
 
 struct QemuVirtDefaults {

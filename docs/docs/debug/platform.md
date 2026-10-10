@@ -131,19 +131,19 @@ sidebar_label: "平台实现"
 
 | 配置 | 断点策略 | 典型命中位置 |
 |------|---------|-------------|
-| ArceOS Main | 单个软件断点 + `continue` | `apps/arceos/helloworld/src/main.rs:8` |
-| ArceOS Boot | 多个符号/行号断点（不自动 continue） | `ax_plat::call_main`、`axruntime/src/lib.rs:141`、`main.rs:8` |
-| Axvisor Main | 单个软件断点 + `continue` | `os/axvisor/src/main.rs:42` |
-| Axvisor Boot | 多个行号断点（不自动 continue） | `platforms/axplat-dyn/src/boot.rs:8`、`axvisor/src/main.rs:42` |
-| StarryOS Main | **单个硬件断点** + `continue` | `os/StarryOS/starryos/src/main.rs:12` |
-| StarryOS Boot | 混合符号/行号断点（不自动 continue） | `ax_plat::call_main`、`axruntime/src/lib.rs:141`、`starry_kernel::entry::init`、`starryos/src/main.rs:12` |
+| ArceOS Main | 单个软件断点 + `continue` | `apps/arceos/helloworld/src/main.rs` |
+| ArceOS Boot | 多个符号/行号断点（不自动 continue） | `ax_plat::call_main`、`os/arceos/modules/axruntime/src/lib.rs`、`apps/arceos/helloworld/src/main.rs` |
+| Axvisor Main | 单个软件断点 + `continue` | `os/axvisor/src/main.rs` |
+| Axvisor Boot | 多个行号断点（不自动 continue） | `platforms/axplat-dyn/src/boot.rs`、`os/axvisor/src/main.rs` |
+| StarryOS Main | **单个硬件断点** + `continue` | `os/StarryOS/starryos/src/main.rs` |
+| StarryOS Boot | 混合符号/行号断点（不自动 continue） | `ax_plat::call_main`、`os/arceos/modules/axruntime/src/lib.rs`、`starry_kernel::entry::init`、`os/StarryOS/starryos/src/main.rs` |
 
 #### StarryOS 硬件断点
 
-StarryOS Main 配置使用 `--hardware true`：
+StarryOS Main 配置使用 `--hardware true`，具体文件和断点行以 `launch.json` 中的对应配置为准：
 
 ```json
-"breakpoint set --hardware true --file ... --line 12"
+"breakpoint set --hardware true --file ... --line <line>"
 ```
 
 这是因为 StarryOS 在早期引导阶段可能运行在内存权限受限的页面布局上，软件断点（通过写入 `0xCC` / `0xE7FFFFFF` trap 指令实现）不一定能成功写入目标代码页。硬件断点使用 CPU 的调试寄存器（DR0-DR3 on x86, HWBP on AArch64），不需要修改代码内存，因此在任何内存布局下都能可靠命中。ArceOS 和 Axvisor 当前未启用硬件断点——它们的引导阶段内存布局允许软件断点正常工作。

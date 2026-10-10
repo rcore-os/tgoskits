@@ -10,10 +10,10 @@ use ax_alloc::tracking::{allocations_in, current_generation, disable_tracking, e
 use axbacktrace::Backtrace;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 
-use crate::{mm::clear_elf_cache, pseudofs::DeviceOps, sync::IrqMutex, task::tasks};
+use crate::{mm::clear_elf_cache, pseudofs::DeviceOps, sync::RawSpinLock, task::tasks};
 
 static STAMPED_GENERATION: AtomicU64 = AtomicU64::new(0);
-static SAMPLE_ALLOCATION: IrqMutex<Option<Vec<u8>>> = IrqMutex::new(None);
+static SAMPLE_ALLOCATION: RawSpinLock<Option<Vec<u8>>> = RawSpinLock::new(None);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct AllocationBacktrace(Backtrace);
@@ -75,7 +75,7 @@ fn run_memory_analysis() {
 fn record_sample_allocation() {
     let mut sample = Vec::with_capacity(4096);
     sample.resize(4096, 0xa5);
-    *SAMPLE_ALLOCATION.lock() = Some(sample);
+    *SAMPLE_ALLOCATION.lock_irqsave() = Some(sample);
     ax_println!("Memory allocation sample recorded");
 }
 
@@ -99,12 +99,12 @@ fn starry_memtrack_sample_hard_mid() -> Vec<u8> {
 #[inline(never)]
 fn record_hard_sample_allocation() {
     let sample = starry_memtrack_sample_hard_mid();
-    *SAMPLE_ALLOCATION.lock() = Some(sample);
+    *SAMPLE_ALLOCATION.lock_irqsave() = Some(sample);
     ax_println!("Hard memory allocation sample recorded");
 }
 
 fn clear_sample_allocation() {
-    SAMPLE_ALLOCATION.lock().take();
+    SAMPLE_ALLOCATION.lock_irqsave().take();
 }
 
 #[unsafe(no_mangle)]

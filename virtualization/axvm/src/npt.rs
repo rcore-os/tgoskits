@@ -424,6 +424,9 @@ pub(crate) fn map_error(err: ptg::PagingError) -> MappingError {
         | ptg::PagingError::HierarchyError { .. }
         | ptg::PagingError::StaleHugeSplit { .. }
         | ptg::PagingError::StaleMapDeposit { .. }
+        | ptg::PagingError::BreakBeforeMakeDomainUnavailable
+        | ptg::PagingError::BreakBeforeMakeShootdownFailed
+        | ptg::PagingError::UnconfirmedHugeSplitRetirement
         | ptg::PagingError::NotMapped => MappingError::BadState,
     }
 }

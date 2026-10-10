@@ -83,13 +83,20 @@ pub unsafe extern "C" fn kernel_entry(
 ",
 
 "
+	# UEFI PE loading already zeroed .bss, including the staged payload.
+	li.d		$t2, 1
+	bne		$a0, $t2, 1f
+	bne		$a1, $zero, 1f
+	beq		$a2, $zero, 1f
+	b		2f
+1:
 	la.pcrel	$t0, __bss_start		# clear .bss
 	la.pcrel	$t1, __bss_stop
-1:
+3:
 	bgeu		$t0, $t1, 2f
 	st.d		$zero, $t0, 0
 	addi.d		$t0, $t0, {LONGSIZE}
-	b		1b
+	b		3b
 2:
 ",
 

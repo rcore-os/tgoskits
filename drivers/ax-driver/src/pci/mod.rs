@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 #[cfg(feature = "arm-smmu-v3")]
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
+use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
 #[cfg(any(
     feature = "arm-smmu-v3",
     feature = "ahci",
@@ -73,7 +73,7 @@ const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]
 const MAX_TAKEN_ENDPOINT_CONFIGS: usize = 16;
 
-fn raw_lock<T>(lock: &Mutex<T>) -> RawSpinLockGuard<'_, T> {
+fn raw_lock<T>(lock: &RawSpinLock<T>) -> RawSpinLockUnpinnedGuard<'_, T> {
     // SAFETY: PCI discovery/configuration excludes same-CPU re-entry around
     // each transaction; the raw lock serializes concurrent CPUs.
     unsafe { lock.lock_raw() }
@@ -107,8 +107,8 @@ pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> Result<DeviceDma, OnPr
 }
 
 #[cfg(feature = "arm-smmu-v3")]
-static IOMMU_DMA: Mutex<BTreeMap<PciAddress, Arc<iommu_dma::IommuDma>>> =
-    Mutex::new(BTreeMap::new());
+static IOMMU_DMA: RawSpinLock<BTreeMap<PciAddress, Arc<iommu_dma::IommuDma>>> =
+    RawSpinLock::new(BTreeMap::new());
 
 #[cfg(feature = "arm-smmu-v3")]
 fn iommu_backend(address: PciAddress) -> Result<Arc<iommu_dma::IommuDma>, OnProbeError> {
@@ -347,11 +347,12 @@ impl LegacyIrqRoute {
     }
 }
 
-static LEGACY_IRQ_ROUTES: Mutex<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
-    Mutex::new(ArrayVec::new());
+static LEGACY_IRQ_ROUTES: RawSpinLock<ArrayVec<LegacyIrqRoute, MAX_PCIE_LEGACY_IRQS>> =
+    RawSpinLock::new(ArrayVec::new());
 #[cfg(virtio_dev)]
-static TAKEN_ENDPOINT_CONFIGS: Mutex<ArrayVec<TakenEndpointConfig, MAX_TAKEN_ENDPOINT_CONFIGS>> =
-    Mutex::new(ArrayVec::new());
+static TAKEN_ENDPOINT_CONFIGS: RawSpinLock<
+    ArrayVec<TakenEndpointConfig, MAX_TAKEN_ENDPOINT_CONFIGS>,
+> = RawSpinLock::new(ArrayVec::new());
 
 pub const DEVICE_NAME: &str = "pci-ecam";
 
@@ -363,6 +364,7 @@ enum DynamicPciIrqSource {
 
 pub const fn has_pci_endpoint_drivers() -> bool {
     cfg!(any(
+        feature = "ahci",
         feature = "intel-net",
         feature = "realtek-rtl8125",
         feature = "nvme",
@@ -1362,7 +1364,7 @@ struct TakenEndpointConfig {
 #[cfg(virtio_dev)]
 struct EndpointConfigAccess {
     bdf: DeviceFunction,
-    endpoint: Arc<Mutex<Endpoint>>,
+    endpoint: Arc<RawSpinLock<Endpoint>>,
 }
 
 #[cfg(virtio_dev)]
@@ -1370,7 +1372,7 @@ impl EndpointConfigAccess {
     fn new(bdf: DeviceFunction, endpoint: Endpoint) -> Self {
         Self {
             bdf,
-            endpoint: Arc::new(Mutex::new(endpoint)),
+            endpoint: Arc::new(RawSpinLock::new(endpoint)),
         }
     }
 

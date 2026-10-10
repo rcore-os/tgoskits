@@ -299,7 +299,7 @@ fn test_unmap_reclaim_logic() {
 }
 
 #[test]
-fn generic_leaf_unmap_reclaims_empty_intermediate_tables() {
+fn generic_leaf_unmap_retains_empty_intermediate_tables_for_reuse() {
     let allocator = TrackedFram4k::new();
     let mut page_table = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
     let vaddr = VirtAddr::from_usize(0x1000_0000);
@@ -316,8 +316,16 @@ fn generic_leaf_unmap_reclaims_empty_intermediate_tables() {
 
     page_table.unmap_page(vaddr).unwrap();
 
-    assert_eq!(allocator.allocated_count(), 1);
-    assert!(allocator.allocated_count() < allocated_before_unmap);
+    assert_eq!(allocator.allocated_count(), allocated_before_unmap);
+    page_table
+        .map_page(
+            vaddr,
+            PhysAddr::from_usize(0x3000_0000),
+            0x1000,
+            PteImpl::user_mode_config(),
+        )
+        .unwrap();
+    assert_eq!(allocator.allocated_count(), allocated_before_unmap);
     drop(page_table);
     assert_eq!(allocator.allocated_count(), 0);
 }

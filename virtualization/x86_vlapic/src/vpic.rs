@@ -1,4 +1,6 @@
-use crate::{lock::SpinMutex as Mutex, *};
+use ax_sync::RawSpinLock;
+
+use crate::*;
 
 const MASTER_COMMAND: u16 = 0x20;
 const MASTER_DATA: u16 = 0x21;
@@ -215,14 +217,14 @@ impl PicInterruptClaim {
 
 /// Guest-owned pair of legacy 8259-compatible interrupt controllers.
 pub struct EmulatedPic {
-    state: Mutex<PicState>,
+    state: RawSpinLock<PicState>,
 }
 
 impl EmulatedPic {
     /// Creates the reset-compatible master and slave PIC state.
     pub const fn new() -> Self {
         Self {
-            state: Mutex::new(PicState::new()),
+            state: RawSpinLock::new(PicState::new()),
         }
     }
 
@@ -249,17 +251,17 @@ impl EmulatedPic {
 
     /// Latches one legacy IRQ edge and claims an immediately deliverable interrupt.
     pub fn claim_irq(&self, irq: u8) -> Option<PicInterruptClaim> {
-        self.state.lock().claim_irq(irq)
+        self.state.lock_irqsave().claim_irq(irq)
     }
 
     /// Claims a request that became deliverable after a guest PIC state change.
     pub fn claim_pending_interrupt(&self) -> Option<PicInterruptClaim> {
-        self.state.lock().claim_pending_interrupt()
+        self.state.lock_irqsave().claim_pending_interrupt()
     }
 
     /// Restores a claimed interrupt after publication to the vCPU failed.
     pub fn restore_interrupt(&self, claim: PicInterruptClaim) {
-        self.state.lock().restore_interrupt(claim);
+        self.state.lock_irqsave().restore_interrupt(claim);
     }
 
     /// Handles one byte-wide PIC port read.
@@ -267,7 +269,7 @@ impl EmulatedPic {
         if width != X86AccessWidth::Byte {
             return Err(X86VlapicError::Unsupported);
         }
-        let state = self.state.lock();
+        let state = self.state.lock_irqsave();
         let value = match port.number() {
             MASTER_COMMAND => state.master.read_command(),
             MASTER_DATA => state.master.mask,
@@ -288,7 +290,7 @@ impl EmulatedPic {
         if width != X86AccessWidth::Byte {
             return Err(X86VlapicError::Unsupported);
         }
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_irqsave();
         match port.number() {
             MASTER_COMMAND => state.master.command(value as u8),
             MASTER_DATA => state.master.data(value as u8),

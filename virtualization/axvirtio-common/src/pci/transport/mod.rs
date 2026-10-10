@@ -8,7 +8,7 @@
 
 use alloc::{format, sync::Arc};
 
-use ax_sync::SpinLock;
+use ax_sync::Mutex;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
 
 use crate::{
@@ -153,6 +153,28 @@ pub trait VirtioDeviceCore: Send + Sync {
     fn reset(&self) -> DeviceResult {
         Ok(())
     }
+
+    /// Quiesces device-specific worker and DMA activity for a VM suspend.
+    ///
+    /// A successful return must guarantee that no asynchronous device work
+    /// continues until [`resume`](Self::resume) re-opens the device. The
+    /// default is suitable for devices whose queue processing is synchronous.
+    fn suspend(&self) -> DeviceResult {
+        Ok(())
+    }
+
+    /// Re-opens device-specific activity after a suspend.
+    fn resume(&self) -> DeviceResult {
+        Ok(())
+    }
+
+    /// Stops and joins device-specific worker activity.
+    ///
+    /// After a successful stop no queue notification is accepted. A failure
+    /// must be reported as an error rather than silent success.
+    fn stop(&self) -> DeviceResult {
+        Ok(())
+    }
 }
 
 /// Side effect produced by a common-config write.
@@ -176,16 +198,22 @@ pub enum VirtioPciWriteOutcome {
 }
 
 /// Common VirtIO PCI transport state machine.
+///
+/// The transport register/queue state is guarded by a task-sleepable
+/// [`Mutex`]. Queue processing owns its queue outside the state lock, so the
+/// lock is never held across a device core or guest-memory callback; the
+/// remaining critical sections are short register/queue updates driven from
+/// ordinary task context.
 pub struct VirtioPciTransport<D: VirtioDeviceCore> {
     core: D,
-    state: SpinLock<TransportState>,
+    state: Mutex<TransportState>,
     interrupts: Arc<VirtioPciInterruptCoordinator>,
     activity: Arc<QueueActivity>,
     device_config_size: u32,
     #[cfg(test)]
-    notify_admission_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    notify_admission_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
-    reset_before_core_hook: SpinLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    reset_before_core_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
@@ -212,14 +240,14 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
         }
         Ok(Self {
             device_config_size: core.device_config_size(),
-            state: SpinLock::new(TransportState::new(queue_num_max, queue_size_max)),
+            state: Mutex::new(TransportState::new(queue_num_max, queue_size_max)),
             interrupts: Arc::new(VirtioPciInterruptCoordinator::new()),
             activity: Arc::new(QueueActivity::new()),
             core,
             #[cfg(test)]
-            notify_admission_hook: SpinLock::new(None),
+            notify_admission_hook: Mutex::new(None),
             #[cfg(test)]
-            reset_before_core_hook: SpinLock::new(None),
+            reset_before_core_hook: Mutex::new(None),
         })
     }
 
@@ -318,7 +346,20 @@ impl<D: VirtioDeviceCore> VirtioPciTransport<D> {
         // Capture the queue generation before changing the coordinator.  If a
         // reset wins before activity admission, this intent must be rejected
         // rather than acquiring a permit from the reopened generation.
-        let generation = self.queue_generation();
+        self.update_interrupt_disabled_logical_at(self.queue_generation(), disabled)
+    }
+
+    /// Records the logical Command.INTx Disable state for a previously captured
+    /// queue generation.
+    ///
+    /// Endpoint adapters capture [`queue_generation`](Self::queue_generation)
+    /// before acquiring any non-sleeping guard and then call this method, so the
+    /// sleepable transport state lock is never nested under a spin guard.
+    pub fn update_interrupt_disabled_logical_at(
+        &self,
+        generation: VirtioQueueGeneration,
+        disabled: bool,
+    ) -> InterruptTransitionIntent {
         let transition = self.interrupts.set_disabled(disabled);
         InterruptTransitionIntent::new(transition, generation)
     }

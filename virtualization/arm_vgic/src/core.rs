@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, sync::Arc};
 
-use ax_sync::{RawSpinLockGuard, SpinLock};
+use ax_sync::Mutex;
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTrigger, IrqError,
     IrqResult, ItsId, LpiId as EndpointLpiId, MessageInterruptController, MessageInterruptSink,
@@ -12,16 +12,16 @@ use axdevice_base::{
 use axvm_types::AccessWidth;
 
 use crate::{
-    ArmVgicConfig, EventId, GicV3Backend, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, GuestMemory,
-    HostGicVersion, IntId, ItsDeviceId, LpiId, PhysicalIrqId, SpiId, TriggerMode, VgicController,
-    VgicError, VgicResult,
+    ArmVgicConfig, EventId, GicV3Backend, GicV3Native, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId,
+    GuestMemory, HostGicVersion, ItsDeviceId, LpiId, PhysicalIrqId, SpiId, TriggerMode,
+    VgicController, VgicError, VgicResult,
 };
 
 /// The single canonical virtual interrupt-controller state owner for one VM.
 pub struct VgicCore {
     config: ArmVgicConfig,
     controller: VgicController,
-    inputs: SpinLock<BTreeMap<ControllerInputId, WiredIrqInput>>,
+    inputs: Mutex<BTreeMap<ControllerInputId, WiredIrqInput>>,
     sink: Arc<VgicWiredSink>,
     message_sink: Arc<VgicMessageSink>,
 }
@@ -41,10 +41,11 @@ impl VgicCore {
         validate_backend_capabilities(&config, backend.capabilities())?;
         let id = config.controller_id();
         let controller = VgicController::new_from_arm_config(&config, backend, guest_memory)?;
+        let native = controller.native_port();
         Ok(Self {
             config,
             sink: Arc::new(VgicWiredSink {
-                controller: controller.clone(),
+                controller: native,
                 id,
             }),
             message_sink: Arc::new(VgicMessageSink {
@@ -52,14 +53,14 @@ impl VgicCore {
                 id,
             }),
             controller,
-            inputs: SpinLock::new(BTreeMap::new()),
+            inputs: Mutex::new(BTreeMap::new()),
         })
     }
 
-    fn inputs(&self) -> RawSpinLockGuard<'_, BTreeMap<ControllerInputId, WiredIrqInput>> {
-        // SAFETY: input opening is serialized by the VM device graph and
-        // excludes same-vCPU re-entry.
-        unsafe { self.inputs.lock_raw() }
+    fn inputs(&self) -> ax_sync::MutexGuard<'_, BTreeMap<ControllerInputId, WiredIrqInput>> {
+        // Input resolution is device-graph task work, so the resolver uses a
+        // sleepable mutex and never runs under a native raw lock.
+        self.inputs.lock()
     }
 
     /// Returns the immutable configuration used for construction and firmware.
@@ -211,29 +212,7 @@ impl VgicCore {
 
     /// Injects one private or shared interrupt through canonical state.
     pub fn inject(&self, vcpu: usize, intid: u32, trigger: InterruptTrigger) -> VgicResult {
-        match IntId::new(intid)? {
-            IntId::Sgi(sgi) => {
-                self.controller
-                    .send_sgi(GicVcpuId::new(vcpu), sgi, crate::SgiTarget::SelfOnly)
-            }
-            IntId::Ppi(ppi) => match trigger {
-                InterruptTrigger::EdgeTriggered => {
-                    self.controller.pulse_ppi(GicVcpuId::new(vcpu), ppi)
-                }
-                InterruptTrigger::LevelTriggered => {
-                    self.controller
-                        .set_ppi_level(GicVcpuId::new(vcpu), ppi, true)
-                }
-            },
-            IntId::Spi(spi) => match trigger {
-                InterruptTrigger::EdgeTriggered => self.controller.pulse_spi(spi),
-                InterruptTrigger::LevelTriggered => self.controller.set_spi_level(spi, true),
-            },
-            IntId::Lpi(_) => Err(crate::VgicError::Unsupported {
-                operation: "inject wired interrupt",
-                detail: "LPIs must be delivered through an ITS endpoint".into(),
-            }),
-        }
+        self.controller.native_port().inject(vcpu, intid, trigger)
     }
 
     fn open_input(
@@ -377,7 +356,7 @@ impl MessageInterruptController for VgicCore {
 }
 
 struct VgicWiredSink {
-    controller: VgicController,
+    controller: GicV3Native,
     id: InterruptControllerId,
 }
 

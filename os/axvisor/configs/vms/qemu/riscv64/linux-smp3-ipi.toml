@@ -11,8 +11,7 @@ phys_cpu_sets = [1, 2, 4]
 [kernel]
 cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw"
 entry_point = 0x9020_0000
-image_location = "fs"
-kernel_path = "/guest/linux/linux-qemu"
+kernel_path = "${workspace}/target/axbuild/images/qemu-riscv64/linux/linux-qemu"
 kernel_load_addr = 0x9020_0000
 dtb_load_addr = 0x9300_0000
 

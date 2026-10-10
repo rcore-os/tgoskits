@@ -1,0 +1,25 @@
+# Native StarryOS runs the real robot control flow on the single-client USB
+# robot board. The launcher uses the USB camera 0ac8:0346 and the Feetech USB
+# controller 1a86:55d3 through FEETECH_DEV=auto; it never opens the arm serial port.
+# Select the test shell on existing board images without replacing their init files.
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+board_type = "OrangePi-5-Plus-robot"
+timeout = 900
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  '(?m)^\[ROBOT_CI\] RESULT=FAIL .*$',
+  '(?m)^\[ROBOT_CI\] HARNESS=FAIL .*$',
+]
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588'
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+# Fixed by this test configuration; change this argument to revise the FPS gate.
+shell_cmd = 'cd "$d" && FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0'
+success_regex = ['(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12][ \t\r]*$']

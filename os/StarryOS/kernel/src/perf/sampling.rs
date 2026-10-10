@@ -29,7 +29,7 @@
 //! registry per CPU (index = programmable counter index). Each [`SampleSlot`]
 //! owns strong output and notification references rather than borrowing raw
 //! callback storage. `register` / `unregister` mutate the current CPU's registry
-//! under a local-IRQ-off critical section ([`NoPreemptIrqSave`]) so removal is
+//! under a local-IRQ-off critical section ([`PreemptIrqSaveGuard`]) so removal is
 //! also the local hard-IRQ grace period.
 
 use alloc::sync::Arc;
@@ -46,7 +46,7 @@ use super::{
     target::PerfCpuId,
 };
 use crate::{
-    sync::{IrqMutex, NoPreemptIrqSave},
+    sync::{PreemptIrqSaveGuard, RawSpinLock},
     task::{PidNamespaceId, TgidNumber, TidNumber, future::IrqNotify, try_current_user_irq_view},
 };
 
@@ -62,7 +62,7 @@ const MAX_COUNTER: usize = 30;
 /// Owner-CPU callers hold their PMU lease; the IRQ-safe lock serializes live
 /// reads with overflow service. No registry lookup is needed by group callbacks.
 #[derive(Debug)]
-pub(crate) struct SamplingCount(IrqMutex<SamplingCountState>);
+pub(crate) struct SamplingCount(RawSpinLock<SamplingCountState>);
 
 #[derive(Debug, Default)]
 struct SamplingCountState {
@@ -91,33 +91,33 @@ impl SamplingCountState {
 
 impl SamplingCount {
     pub(crate) fn new() -> Self {
-        Self(IrqMutex::new(SamplingCountState::default()))
+        Self(RawSpinLock::new(SamplingCountState::default()))
     }
 
     /// Clears the observable count without discarding Linux period_left.
     pub(crate) fn reset_value(&self) {
-        self.0.lock().total = 0;
+        self.0.lock_irqsave().total = 0;
     }
 
     fn period_or(&self, initial: u32) -> u32 {
-        let period = self.0.lock().period;
+        let period = self.0.lock_irqsave().period;
         if period == 0 { initial } else { period }
     }
 
     pub(crate) fn value(&self) -> u64 {
-        self.0.lock().total
+        self.0.lock_irqsave().total
     }
 
     /// Accounts the current raw value, including a wrap from the preload.
     pub(crate) fn update(&self, index: usize) -> u64 {
-        let mut state = self.0.lock();
+        let mut state = self.0.lock_irqsave();
         let raw = crate::perf::hw_owner::on_counter(index, |pmu, id| pmu.read(id)) as u32;
         state.update(raw)
     }
 
     /// Reloads a stopped counter without charging the preload as events.
     pub(crate) fn preload(&self, index: usize, period: u32) {
-        let mut state = self.0.lock();
+        let mut state = self.0.lock_irqsave();
         if state.period == 0 {
             state.period = period;
             state.remaining = i64::from(period);
@@ -126,12 +126,12 @@ impl SamplingCount {
     }
 
     fn period_complete(&self) -> bool {
-        self.0.lock().remaining <= 0
+        self.0.lock_irqsave().remaining <= 0
     }
 
     /// Reloads a hardware chunk, retaining progress and interrupt overshoot.
     fn rearm(&self, index: usize, period: u32) {
-        let mut state = self.0.lock();
+        let mut state = self.0.lock_irqsave();
         state.period = period;
         if state.remaining <= 0 {
             let period = i64::from(period);
@@ -472,7 +472,7 @@ static REGISTRY: SamplingRegistry<SampleSlot> = SamplingRegistry::new();
 
 /// Per-CPU wrap state for non-sampling programmable counters.
 #[ax_percpu::def_percpu]
-static COUNTING_REGISTRY: SamplingRegistry<Arc<IrqMutex<CounterExtender>>> =
+static COUNTING_REGISTRY: SamplingRegistry<Arc<RawSpinLock<CounterExtender>>> =
     SamplingRegistry::new();
 
 /// Globally unique registry generation. Counter slots may be reused, but an old
@@ -492,7 +492,7 @@ static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBo
 ///
 /// The caller must prevent migration, local IRQ re-entry, and remote mutation
 /// for the complete callback. Process-context callers use
-/// [`NoPreemptIrqSave`]; the overflow handler already runs with local IRQs
+/// [`PreemptIrqSaveGuard`]; the overflow handler already runs with local IRQs
 /// masked on the CPU that owns the registry.
 unsafe fn with_registry_mut<R>(
     operation: impl for<'value> FnOnce(&'value mut SamplingRegistry<SampleSlot>) -> R,
@@ -510,7 +510,7 @@ unsafe fn with_registry_mut<R>(
 
 unsafe fn with_counting_registry_mut<R>(
     operation: impl for<'value> FnOnce(
-        &'value mut SamplingRegistry<Arc<IrqMutex<CounterExtender>>>,
+        &'value mut SamplingRegistry<Arc<RawSpinLock<CounterExtender>>>,
     ) -> R,
 ) -> R {
     unsafe {
@@ -526,7 +526,7 @@ unsafe fn with_counting_registry_mut<R>(
 /// Registers `slot` for programmable counter `n` on the current CPU.
 ///
 /// Runs on the event's owner CPU. The mutation is performed under
-/// [`NoPreemptIrqSave`] so the overflow handler — which reads the same per-CPU
+/// [`PreemptIrqSaveGuard`] so the overflow handler — which reads the same per-CPU
 /// array — can never observe a half-written entry.
 pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, RegisterError> {
     if n > MAX_COUNTER {
@@ -538,7 +538,7 @@ pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, Regist
             generation.checked_add(1)
         })
         .expect("PMU sampling registration generation exhausted");
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: the guard prevents migration and local IRQ reentry.
     unsafe { with_registry_mut(|registry| registry.register(n, generation, slot)) }?;
     Ok(SampleRegistration::new(owner, n, generation))
@@ -547,7 +547,7 @@ pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, Regist
 /// Registers one counting event's wrap state on the current owner CPU.
 pub(super) fn register_counting(
     n: usize,
-    state: Arc<IrqMutex<CounterExtender>>,
+    state: Arc<RawSpinLock<CounterExtender>>,
 ) -> Result<SampleRegistration, RegisterError> {
     if n > MAX_COUNTER {
         return Err(RegisterError::InvalidCounter);
@@ -558,7 +558,7 @@ pub(super) fn register_counting(
             generation.checked_add(1)
         })
         .expect("PMU counting registration generation exhausted");
-    let _guard = NoPreemptIrqSave::new();
+    let _guard = PreemptIrqSaveGuard::new();
     unsafe { with_counting_registry_mut(|registry| registry.register(n, generation, state)) }?;
     Ok(SampleRegistration::new(owner, n, generation))
 }
@@ -575,12 +575,12 @@ pub(super) fn unregister_counting(
 /// The caller must retain the returned reference until task-context cleanup.
 pub(super) fn detach_counting(
     registration: SampleRegistration,
-) -> Result<Arc<IrqMutex<CounterExtender>>, SamplingUnregisterError> {
+) -> Result<Arc<RawSpinLock<CounterExtender>>, SamplingUnregisterError> {
     if registration.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
         return Err(SamplingUnregisterError::WrongCpu);
     }
     let removed = {
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         unsafe {
             with_counting_registry_mut(|registry| {
                 registry.unregister(registration.counter(), registration.generation())
@@ -609,7 +609,7 @@ pub fn unregister(registration: SampleRegistration) -> Result<(), SamplingUnregi
         return Err(SamplingUnregisterError::WrongCpu);
     }
     let removed = {
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         // SAFETY: the guard prevents migration and local IRQ reentry.
         unsafe {
             with_registry_mut(|registry| {
@@ -640,7 +640,7 @@ pub fn replace_output(
         return Err(SamplingUnregisterError::WrongCpu);
     }
     let old = {
-        let _guard = NoPreemptIrqSave::new();
+        let _guard = PreemptIrqSaveGuard::new();
         // SAFETY: the guard prevents migration and local IRQ reentry.
         unsafe {
             with_registry_mut(|registry| {
@@ -877,7 +877,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
                 if ovf & (1 << n) != 0
                     && let Some(state) = registry.get_mut(n)
                 {
-                    state.lock().record_overflow();
+                    state.lock_irqsave().record_overflow();
                 }
             }
         })
@@ -1231,7 +1231,7 @@ mod tests {
     #[axtest::axtest]
     fn maximum_period_preload_leaves_irq_latency_headroom() {
         let count = super::SamplingCount::new();
-        let _guard = crate::sync::NoPreemptIrqSave::new();
+        let _guard = crate::sync::PreemptIrqSaveGuard::new();
         super::super::percpu::ensure_current_cpu_initialized().unwrap();
         let slot = super::super::percpu::alloc_current_programmable().unwrap();
         crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.disable(id));

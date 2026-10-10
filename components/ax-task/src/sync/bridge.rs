@@ -17,7 +17,7 @@ pub use self::{
     },
     lockdep::{LockClass, dump_lockdep_trace, set_lockdep_trace_enabled},
     mutex::{
-        MutexAcquireRequest, PiMutexStorage, PiMutexStorageMut, mutex_acquire, mutex_destroy,
+        MutexAcquireRequest, MutexStorage, MutexStorageMut, mutex_acquire, mutex_destroy,
         mutex_force_release, mutex_is_locked, mutex_is_owned_by_current, mutex_release,
         mutex_try_acquire,
     },

@@ -1,10 +1,8 @@
 //! Checked RD and SGI frame register access.
 
-use alloc::vec::Vec;
-
 use axvm_types::AccessWidth;
 
-use super::RedistributorState;
+use super::{QueuedDelivery, RedistributorState, stage_delivery};
 use crate::{
     IntId, InterruptRecord, Priority, RegisterRegion, TriggerMode, VgicError, VgicResult,
     controller::ControllerConfig as GicV3Config,
@@ -32,8 +30,9 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
-    ) -> VgicResult<Vec<IntId>> {
-        self.write_sgi_frame(offset, width, value, config)
+        cpu_interface_loaded: bool,
+    ) -> VgicResult<bool> {
+        self.write_sgi_frame(offset, width, value, config, cpu_interface_loaded)
     }
 
     pub(crate) fn read(
@@ -55,12 +54,19 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
-    ) -> VgicResult<Vec<IntId>> {
+        cpu_interface_loaded: bool,
+    ) -> VgicResult<bool> {
         validate_access(offset, width, config, "write")?;
         if offset < GICR_SGI_BASE {
             return self.write_rd_frame(offset, width, value, config);
         }
-        self.write_sgi_frame(offset - GICR_SGI_BASE, width, value, config)
+        self.write_sgi_frame(
+            offset - GICR_SGI_BASE,
+            width,
+            value,
+            config,
+            cpu_interface_loaded,
+        )
     }
 
     fn read_rd_frame(
@@ -111,23 +117,35 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
-    ) -> VgicResult<Vec<IntId>> {
+    ) -> VgicResult<bool> {
         if component_id(offset, GicComponent::Redistributor).is_some() {
             require_width(offset, width, AccessWidth::Dword, "write")?;
-            return Ok(Vec::new());
+            return Ok(false);
         }
-        let mut candidates = Vec::new();
+        let mut staged = false;
         match offset {
             GICR_CTLR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
                 if !config.exposes_guest_lpis() {
-                    return Ok(candidates);
+                    return Ok(false);
                 }
                 self.lpis_enabled = value & 1 != 0;
-                for interrupt in self.lpis.values_mut() {
+                for interrupt in self.lpis.iter_mut() {
                     interrupt.set_enabled(self.lpis_enabled);
+                }
+                // Stage each newly deliverable LPI directly into the
+                // preallocated queue; the field-disjoint core keeps this
+                // allocation-free while the records are still borrowed.
+                for interrupt in self.lpis.iter() {
                     if interrupt.deliverable() {
-                        candidates.push(interrupt.intid());
+                        stage_delivery(
+                            &mut self.queued_deliveries,
+                            &mut self.cpu_interface,
+                            self.vcpu,
+                            self.physical_delivery_reserve,
+                            QueuedDelivery::software(interrupt.intid(), TriggerMode::Edge),
+                        )?;
+                        staged = true;
                     }
                 }
             }
@@ -148,7 +166,7 @@ impl RedistributorState {
             }
             _ => {}
         }
-        Ok(candidates)
+        Ok(staged)
     }
 
     fn read_sgi_frame(
@@ -189,34 +207,59 @@ impl RedistributorState {
         width: AccessWidth,
         value: u64,
         config: &GicV3Config,
-    ) -> VgicResult<Vec<IntId>> {
+        cpu_interface_loaded: bool,
+    ) -> VgicResult<bool> {
         let owned = u64::from(config.guest_private_interrupt_mask());
-        let mut candidates = Vec::new();
+        let mut staged = false;
         match offset {
             GICD_IGROUPR => require_width(offset, width, AccessWidth::Dword, "write")?,
             GICD_ISENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value & owned, PrivateFlag::Enable)?;
+                staged = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::Enable,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ICENABLER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value & owned, PrivateFlag::Disable)?;
+                self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::Disable,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ISPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value & owned, PrivateFlag::SetPending)?;
+                staged = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::SetPending,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ICPENDR => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value & owned, PrivateFlag::ClearPending)?;
+                self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::ClearPending,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ISACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                self.write_private_flags(value & owned, PrivateFlag::SetActive)?;
+                staged = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::SetActive,
+                    cpu_interface_loaded,
+                )?;
             }
             GICD_ICACTIVER => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                candidates = self.write_private_flags(value & owned, PrivateFlag::Complete)?;
+                staged = self.write_private_flags(
+                    value & owned,
+                    PrivateFlag::Complete,
+                    cpu_interface_loaded,
+                )?;
             }
             _ if (GICD_IPRIORITYR..GICD_IPRIORITYR + 32).contains(&offset) => {
                 self.write_priorities(offset, width, value, config)?;
@@ -227,7 +270,7 @@ impl RedistributorState {
             }
             _ => {}
         }
-        Ok(candidates)
+        Ok(staged)
     }
 
     fn typer(&self, config: &GicV3Config) -> u64 {
@@ -255,23 +298,33 @@ impl RedistributorState {
         &mut self,
         value: u64,
         operation: PrivateFlag,
-    ) -> VgicResult<Vec<IntId>> {
-        let mut candidates = Vec::new();
+        cpu_interface_loaded: bool,
+    ) -> VgicResult<bool> {
+        let mut staged = false;
         for bit in 0..32usize {
             if value & (1 << bit) == 0 {
                 continue;
             }
             let intid = IntId::new(bit as u32)?;
             operation.apply(&mut self.private_interrupts[bit]);
-            if matches!(operation, PrivateFlag::ClearPending) && self.clear_pending_delivery(intid)
+            if matches!(operation, PrivateFlag::ClearPending)
+                && self.withdraw_pending_delivery(intid, cpu_interface_loaded)
             {
                 self.private_interrupts[bit].cancel_inflight();
             }
             if self.private_interrupts[bit].deliverable() {
-                candidates.push(intid);
+                let trigger = self.private_interrupts[bit].trigger();
+                stage_delivery(
+                    &mut self.queued_deliveries,
+                    &mut self.cpu_interface,
+                    self.vcpu,
+                    self.physical_delivery_reserve,
+                    QueuedDelivery::software(intid, trigger),
+                )?;
+                staged = true;
             }
         }
-        Ok(candidates)
+        Ok(staged)
     }
 
     fn read_priorities(
@@ -390,7 +443,7 @@ fn validate_access(
             operation,
             offset,
             width,
-            detail: "access is unaligned or outside the Redistributor frame".into(),
+            reason: "access is unaligned or outside the Redistributor frame",
         });
     }
     Ok(())
@@ -407,7 +460,7 @@ fn validate_priority_access(
             operation,
             offset: GICR_SGI_BASE + offset,
             width,
-            detail: "priority access crosses the private interrupt array".into(),
+            reason: "priority access crosses the private interrupt array",
         });
     }
     Ok(())
@@ -425,7 +478,7 @@ fn require_width(
             operation,
             offset,
             width: actual,
-            detail: alloc::format!("register requires {expected:?}"),
+            reason: crate::width_requirement(expected),
         });
     }
     Ok(())

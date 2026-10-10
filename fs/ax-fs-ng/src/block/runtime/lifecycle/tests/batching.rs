@@ -5,7 +5,7 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -59,7 +59,7 @@ fn read_blocks_queues_the_next_bounded_window_before_waiting() {
     while handle
         .inner
         .cpu_channels
-        .lock()
+        .lock_irqsave()
         .iter()
         .map(|channel| channel.channel.queued_len())
         .sum::<usize>()
@@ -111,7 +111,7 @@ fn fua_write_marks_every_split_request() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -181,7 +181,7 @@ fn write_blocks_drains_submitted_windows_before_returning_error() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
-    let log = Arc::new(StdMutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
     *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
     TEST_IRQ_REGISTRAR
@@ -225,7 +225,7 @@ fn write_blocks_drains_submitted_windows_before_returning_error() {
     while handle
         .inner
         .cpu_channels
-        .lock()
+        .lock_irqsave()
         .iter()
         .map(|channel| channel.channel.queued_len())
         .sum::<usize>()

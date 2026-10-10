@@ -7,6 +7,11 @@ some x86_64 QEMU demos provide their own `cargo xtask starry qemu` commands.
 Cases are intentionally separate from `test-suit/starryos`: apps are
 operator-facing workflows, while the test suit remains CI-oriented coverage.
 
+Nightly performance applications live under `benchmarks/starry` and are
+selected as `-t benchmark/<case>`. They stay out of `cargo xtask starry app
+qemu --all`; the equally named QEMU smoke cases that remain in this directory
+keep their original names.
+
 ## Case Layout
 
 ```text
@@ -30,7 +35,7 @@ apps/starry/<case>/
 Example:
 
 ```bash
-cargo xtask starry app board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t benchmark/orangepi-5-plus-uvc
 ```
 
 ## Network throughput
@@ -44,6 +49,19 @@ cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-co
 ```
 
 See `network-throughput/README.md` for the fixed T01--T07 profile.
+
+## iperf3
+
+The `iperf3` board app moved to `benchmarks/starry/iperf3` as a nightly
+performance case. It provides a repeatable Orange Pi 5 Plus TCP performance
+matrix; the board session supplies the address of the persistent iperf3 server,
+and the app prints three samples plus a median for each scenario:
+
+```bash
+cargo xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
+```
+
+See `../../benchmarks/starry/iperf3/README.md` for the fixed T01--T07 profile.
 
 ## AArch64 Linux perf
 
@@ -240,21 +258,22 @@ nginx test entry in tgoskits workflows.
 
 ## Orange Pi 5 Plus UVC
 
-The `orangepi-5-plus-uvc` case needs `/usr/bin/uvc-fps` to be installed in the
-board rootfs before StarryOS is booted. The usual preparation flow is:
+The `orangepi-5-plus-uvc` case moved to `benchmarks/starry/orangepi-5-plus-uvc`
+as a nightly performance case. It needs `/usr/bin/uvc-fps` to be installed in
+the board rootfs before StarryOS is booted. The usual preparation flow is:
 
 1. reserve the board with `cargo board connect --board-type OrangePi-5-Plus`
    and leave that serial session open;
 2. boot into the board Linux shell and read the board IP from the login banner
    or `ip -br addr`;
-3. use SSH from the host to copy `apps/starry/orangepi-5-plus-uvc/uvc-fps/`
+3. use SSH from the host to copy `benchmarks/starry/orangepi-5-plus-uvc/uvc-fps/`
    into the board Linux system;
 4. build and install `uvc-fps` on the board Linux rootfs;
 5. close the `cargo board connect` session, then boot StarryOS with:
 
 ```bash
-cargo xtask starry app board -t orangepi-5-plus-uvc
+cargo xtask starry app board -t benchmark/orangepi-5-plus-uvc
 ```
 
-See `orangepi-5-plus-uvc/README.md` for the complete copy, build, install, and
-test commands.
+See `../../benchmarks/starry/orangepi-5-plus-uvc/README.md` for the complete copy,
+build, install, and test commands.

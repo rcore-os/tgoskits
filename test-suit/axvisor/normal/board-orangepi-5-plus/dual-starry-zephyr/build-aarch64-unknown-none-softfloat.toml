@@ -4,7 +4,7 @@ features = [
   "ax-driver/rockchip-sdhci",
   "ax-driver/rockchip-dwmmc",
   "browser-console",
-  "fs",
+
 ]
 log = "Error"
 target = "aarch64-unknown-none-softfloat"

@@ -2,7 +2,7 @@
 
 ## 1. 启动架构
 
-Starry 的 Alpine 用户态采用 BusyBox init 作为根 PID 1，由 OpenRC 管理服务，职责划分遵循 [OpenRC 0.63 用户指南](https://github.com/OpenRC/openrc/blob/0.63/user-guide.md)。`DEFAULT_CMDLINE` 选择 `/sbin/init`，启动前检查 init、OpenRC、inittab、runlevel 链接和终端脚本，缺少文件时报告路径及恢复入口；`init_command_from_bootargs()` 保留 `init=` 与 `initarg=` 覆盖，NixOS 继续使用 `/init`。此改动涉及进程生命周期，合入前需要领域审查；本文件不代表已取得审查认可。
+Starry 的 Alpine 用户态采用 BusyBox init 作为根 PID 1，由 OpenRC 管理服务，职责划分遵循 [OpenRC 0.63 用户指南](https://github.com/OpenRC/openrc/blob/0.63/user-guide.md)。启动路径现按本地 Linux v7.1 的 `init/main.c` 选择：可执行的 `rdinit=` 或 `/init` 优先使用内存根，否则根据 `root=` 使用磁盘根，再尝试 `init=` 和默认 init 路径。旧 `DEFAULT_CMDLINE`、`initarg=` 和编译期 shell 脚本已删除；参见 [`host-initramfs.md`](../../../docs/design/host-initramfs.md)。
 
 仅保留非 PID 1 的服务示例不能满足默认启动与关机要求。采用 Alpine 已有 BusyBox init/OpenRC 分工，复用镜像与进程边界，避免引入第二种 init 实现或 OpenRC 专用内核接口。
 
@@ -63,7 +63,17 @@ Starry 的默认根文件系统复用 `ImageConfig` 所选的 [`tgosimages` 默�
 
 ### 1.4 板卡现有根文件系统
 
-QEMU 使用的受管理镜像由 `openrc::prepare()` 注入 Starry 启动资产；实体板卡及 AxVisor 的 Starry guest 使用既有持久根文件系统，不经过这条镜像注入路径。未迁移的板端镜像缺少 `/sbin/openrc` 等文件，直接启动默认 `/sbin/init` 会在 `default_command()` 的启动检查中报错。对应板卡构建配置因此显式启用 `starryos/legacy-board-init`，复用编入内核的旧 shell 启动脚本；该功能不改动板卡磁盘，也不放宽根 PID 1 的退出和信号规则。QEMU 构建配置不启用此功能，仍由 BusyBox init 和 OpenRC 启动。板端持久根文件系统完成 OpenRC 包与配置迁移并验证启动、终端和关机后，才能移除相应构建配置中的功能开关。
+QEMU 使用的受管理镜像仍由 `openrc::prepare()` 注入 OpenRC 启动资产；实体板卡及 Axvisor 的 Starry guest 使用既有持久根文件系统，不经过这条镜像准备路径。`legacy-board-init` 已删除，旧板端镜像不再保证兼容。板端需提供可执行的 `/init`/`rdinit=`，或包含 `/sbin/init` 的可挂载磁盘根；无设备可测的板端启动结果仍待验证。
+
+等待交互 shell 的板卡测试通过 `BoardRunConfig.boot.cmdline` 明确选择 `init=/bin/sh`，并在 `--` 后传递 shell 参数；Axvisor 的 Starry guest 使用 `VMKernelConfig.cmdline` 写入客户机设备树的 `/chosen/bootargs`。这些配置保留各板卡的 `root=` 选择，设置测试提示符和 `/root` 工作目录，不要求磁盘上的 systemd 或通用 BusyBox inittab 能启动 Starry。未配置 `cmdline` 的普通启动仍按 `starryos::init_options()` 选择原有 init 路径。测试 shell 使用已有 console FD，不提供完整的终端作业控制，也不能作为 OpenRC 生命周期验证的替代。
+
+板卡运行配置中的 `cmdline` 会完整替换固件参数，必须同时保留实际根分区、串口选择和早期控制台；此处对应 OrangePi 5 Plus。`cmdline` 属于运行 TOML，不加入 `build-*.toml`。
+
+```toml
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+```
+
+提示符由 shell 展开 `$USER` 和 `$HOSTNAME` 后生成，不能直接在 cmdline 中写完整的 `shell_prefix`。内核可能先打印 cmdline；如果其中出现完整提示符，ostool 的串口步骤会提前发送命令，导致命令在运行时控制台接管前丢失。
 
 ## 2. 进程契约
 
@@ -180,4 +190,4 @@ x86_64 的独立 QEMU 日志保留以下失败，正向用例和负向用例都�
 
 2026 年 9 月 23 日变基至 `dev` 的 `ee5a638e0e` 后，Starry 不再覆盖镜像注册表和版本，直接使用主线默认的 v0.0.14。旧 PR CI 的 QEMU aarch64/riscv64 用例在打开 `${workspace}/tmp/axbuild/rootfs/rootfs-<arch>-busybox.img` 时失败；主线现将镜像解压至 `target/axbuild/rootfs`，因此新增的 QEMU 配置全部与现有 system 配置对齐。以 `TGOS_IMAGE_EXTRACT_DIR="$PWD/target/axbuild/rootfs"` 强制使用新目录后，两架构 `qemu/openrc` 各通过 1/1，原始日志为 `/tmp/starry-openrc-rebase-<arch>-clean-rootfs.log`。
 
-旧 PR CI 的板卡测试使用既有持久镜像，日志显示缺少 `/sbin/openrc`；本次显式选择 `legacy-board-init`，保留这些镜像的原 shell 启动方式。OrangePi 5 Plus 构建通过；实际板卡启动与 AxVisor guest 结果以重新运行的自托管 CI 为准。该兼容开关只服务于尚未迁移的板卡构建，根 PID 1 异常退出仍按致命错误处理。变基后的三软件包 `cargo xtask clippy --package axbuild --package starryos --package starry-kernel` 为 84/84；`cargo xtask test --since origin/dev` 实选三软件包并全部通过，其中 `axbuild` 为 765/765。原始日志分别为 `/tmp/starry-openrc-rebase-clippy.log` 和 `/tmp/starry-openrc-rebase-std-tests.log`。
+旧 PR CI 曾通过 `legacy-board-init` 运行尚未迁移的板端镜像；这段验证记录只适用于当时的提交，不代表当前 initramfs 链路或实体板卡已经通过。当前版本不再保留该兼容开关，板端需重新验证镜像内容、根选择、终端与关机。

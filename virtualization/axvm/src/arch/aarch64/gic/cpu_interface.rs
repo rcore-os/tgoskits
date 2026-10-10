@@ -1,23 +1,23 @@
 //! Checked GICH/ICH register save and restore.
 
 use arm_gic_driver::v3::{
-    ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2,
-    ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
-    ich_lr_el2_set, ich_lr_el2_write,
+    ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_ELRSR_EL2, ICH_HCR_EL2,
+    ICH_LR_EL2, ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
+    ich_lr_el2_set,
 };
 use arm_vgic::{
     CpuInterfaceState, GicV3BackendError, GicVcpuId, HostGicVersion, IntId, InterruptState,
     ListRegisterBacking, ListRegisterState, PhysicalIrqId, Priority, VgicBackendCapabilities,
 };
 use ax_cpu::virtualization::HostIrqConfig;
-use ax_std::os::arceos::sync::IrqSafeMutex;
+use ax_std::os::arceos::sync::RawSpinLock;
 
 const V2_SGI_TOKEN: usize = 1usize << (usize::BITS as usize - 1);
 const V2_SGI_SOURCE_SHIFT: usize = 24;
 
 pub(super) enum HostCpuInterface {
     V2 {
-        hypervisor: IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
+        hypervisor: RawSpinLock<arm_gic_driver::v2::HypervisorInterface>,
         trap: arm_gic_driver::v2::TrapOp,
         capabilities: VgicBackendCapabilities,
         irq_config: HostIrqConfig,
@@ -25,6 +25,8 @@ pub(super) enum HostCpuInterface {
     V3 {
         capabilities: VgicBackendCapabilities,
         irq_config: HostIrqConfig,
+        apr_count: usize,
+        tdir_supported: bool,
     },
 }
 
@@ -76,7 +78,7 @@ pub(super) fn discover() -> Result<HostCpuInterface, GicV3BackendError> {
                 false,
             );
             return Ok(HostCpuInterface::V2 {
-                hypervisor: IrqSafeMutex::new(interface),
+                hypervisor: RawSpinLock::new(interface),
                 trap: gic.cpu_interface().trap_operations(),
                 capabilities,
                 irq_config,
@@ -91,6 +93,8 @@ pub(super) fn discover() -> Result<HostCpuInterface, GicV3BackendError> {
                     false,
                 ),
                 irq_config: HostIrqConfig::gicv3(),
+                apr_count: hardware_v3_apr_count()?,
+                tdir_supported: ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0,
             });
         }
         Err(GicV3BackendError::new(
@@ -108,6 +112,48 @@ pub(super) fn host_irq_config() -> Result<HostIrqConfig, GicV3BackendError> {
     host_cpu_interface().map(HostCpuInterface::irq_config)
 }
 
+/// Establishes the per-CPU empty-LR invariant before any guest can run here.
+pub(super) fn initialize_current_cpu() -> Result<(), GicV3BackendError> {
+    if let HostCpuInterface::V3 {
+        capabilities,
+        apr_count,
+        tdir_supported,
+        ..
+    } = host_cpu_interface()?
+    {
+        let actual_lr_count = hardware_v3_list_register_count();
+        let actual_apr_count = hardware_v3_apr_count()?;
+        let actual_priority_bits = (ICH_VTR_EL2.read(ICH_VTR_EL2::PRIBITS) + 1) as u8;
+        let actual_tdir = ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0;
+        if actual_lr_count != capabilities.list_register_count() {
+            return Err(GicV3BackendError::new(
+                "initialize GICv3 CPU interface",
+                "the CPU list-register count differs from the backend baseline",
+            ));
+        }
+        if actual_apr_count != *apr_count {
+            return Err(GicV3BackendError::new(
+                "initialize GICv3 CPU interface",
+                "the CPU active-priority register count differs from the backend baseline",
+            ));
+        }
+        if actual_priority_bits != capabilities.priority_bits() {
+            return Err(GicV3BackendError::new(
+                "initialize GICv3 CPU interface",
+                "the CPU priority-bit width differs from the backend baseline",
+            ));
+        }
+        if actual_tdir != *tdir_supported {
+            return Err(GicV3BackendError::new(
+                "initialize GICv3 CPU interface",
+                "the CPU DIR-trap support differs from the backend baseline",
+            ));
+        }
+        clear_v3_cpu_interface(actual_lr_count);
+    }
+    Ok(())
+}
+
 pub(super) fn load(
     capabilities: VgicBackendCapabilities,
     vcpu: GicVcpuId,
@@ -117,7 +163,17 @@ pub(super) fn load(
     let host = checked_host_cpu_interface(capabilities, "load virtual CPU interface")?;
     match host {
         HostCpuInterface::V2 { hypervisor, .. } => load_v2(hypervisor, state),
-        HostCpuInterface::V3 { .. } => load_v3(state),
+        HostCpuInterface::V3 {
+            capabilities,
+            apr_count,
+            tdir_supported,
+            ..
+        } => load_v3(
+            state,
+            capabilities.list_register_count(),
+            *apr_count,
+            *tdir_supported,
+        ),
     }
 }
 
@@ -130,7 +186,11 @@ pub(super) fn save(
     let host = checked_host_cpu_interface(capabilities, "save virtual CPU interface")?;
     match host {
         HostCpuInterface::V2 { hypervisor, .. } => save_v2(hypervisor, state),
-        HostCpuInterface::V3 { .. } => save_v3(state),
+        HostCpuInterface::V3 {
+            capabilities,
+            apr_count,
+            ..
+        } => save_v3(state, capabilities.list_register_count(), *apr_count),
     }
 }
 
@@ -143,20 +203,17 @@ fn checked_host_cpu_interface(
     if discovered != capabilities {
         return Err(GicV3BackendError::new(
             operation,
-            std::format!(
-                "cached host capabilities {discovered:?} do not match backend capabilities \
-                 {capabilities:?}"
-            ),
+            "the cached host capabilities do not match the backend capabilities",
         ));
     }
     Ok(host)
 }
 
 fn load_v2(
-    hypervisor: &IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
+    hypervisor: &RawSpinLock<arm_gic_driver::v2::HypervisorInterface>,
     state: &CpuInterfaceState,
 ) -> Result<(), GicV3BackendError> {
-    let interface = hypervisor.lock();
+    let interface = hypervisor.lock_irqsave();
     require_lr_count(
         state.list_registers().len(),
         interface.get_list_register_count().min(16),
@@ -181,10 +238,10 @@ fn load_v2(
 }
 
 fn save_v2(
-    hypervisor: &IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
+    hypervisor: &RawSpinLock<arm_gic_driver::v2::HypervisorInterface>,
     state: &mut CpuInterfaceState,
 ) -> Result<(), GicV3BackendError> {
-    let interface = hypervisor.lock();
+    let interface = hypervisor.lock_irqsave();
     require_lr_count(
         state.list_registers().len(),
         interface.get_list_register_count().min(16),
@@ -196,9 +253,10 @@ fn save_v2(
     let _ = state.set_apr(0, interface.apr_raw() as u64);
     for (index, slot) in state.list_registers_mut().iter_mut().enumerate() {
         let raw = interface.list_register_raw(index).ok_or_else(|| {
-            GicV3BackendError::new(
+            GicV3BackendError::value(
                 "save GICv2 list register",
-                std::format!("GICH_LR{index} is not implemented"),
+                "the GICH list register is not implemented",
+                index as u64,
             )
         })?;
         *slot = decode_v2_list_register(index, raw, *slot)?;
@@ -259,9 +317,10 @@ pub(super) fn deactivate_host_irq(token: usize) -> Result<(), GicV3BackendError>
     match host_cpu_interface()? {
         HostCpuInterface::V2 { trap, .. } => {
             let intid = arm_gic_driver::checked_intid(raw, 1020).map_err(|_| {
-                GicV3BackendError::new(
+                GicV3BackendError::value(
                     "deactivate acknowledged host IRQ",
-                    std::format!("INTID {raw} is outside the GICv2 interrupt range"),
+                    "the host INTID is outside the GICv2 interrupt range",
+                    raw as u64,
                 )
             })?;
             let ack = if token & V2_SGI_TOKEN != 0 {
@@ -280,9 +339,10 @@ pub(super) fn deactivate_host_irq(token: usize) -> Result<(), GicV3BackendError>
             // so MSI/MSI-X actions dispatched while a vCPU is running can be
             // deactivated after their leaf handler completes.
             let intid = arm_gic_driver::checked_intid(raw, 1 << 24).map_err(|_| {
-                GicV3BackendError::new(
+                GicV3BackendError::value(
                     "deactivate acknowledged host IRQ",
-                    std::format!("INTID {raw} is outside the GICv3 interrupt range"),
+                    "the host INTID is outside the GICv3 interrupt range",
+                    raw as u64,
                 )
             })?;
             arm_gic_driver::v3::dir(intid);
@@ -327,15 +387,17 @@ fn encode_v2_list_register(entry: ListRegisterState) -> Result<u32, GicV3Backend
         }
         ListRegisterBacking::Physical(physical) => {
             let physical = u32::try_from(physical.raw()).map_err(|_| {
-                GicV3BackendError::new(
+                GicV3BackendError::value(
                     "encode GICv2 list register",
-                    std::format!("physical IRQ {} does not fit GICH_LR", physical.raw()),
+                    "the physical IRQ does not fit GICH_LR",
+                    physical.raw(),
                 )
             })?;
             if physical >= 1024 {
-                return Err(GicV3BackendError::new(
+                return Err(GicV3BackendError::value(
                     "encode GICv2 list register",
-                    std::format!("physical IRQ {physical} exceeds the 10-bit GICH_LR field"),
+                    "the physical IRQ exceeds the 10-bit GICH_LR field",
+                    u64::from(physical),
                 ));
             }
             raw |= (physical << 10) | (1 << 31);
@@ -378,66 +440,116 @@ fn decode_v2_list_register(
     )))
 }
 
-fn load_v3(state: &CpuInterfaceState) -> Result<(), GicV3BackendError> {
+fn load_v3(
+    state: &CpuInterfaceState,
+    lr_count: usize,
+    apr_count: usize,
+    tdir_supported: bool,
+) -> Result<(), GicV3BackendError> {
     require_lr_count(
         state.list_registers().len(),
-        hardware_v3_list_register_count(),
+        lr_count,
         "load GICv3 CPU interface",
     )?;
-    let apr_count = hardware_v3_apr_count()?;
     if state.apr()[apr_count..].iter().any(|value| *value != 0) {
-        return Err(GicV3BackendError::new(
+        return Err(GicV3BackendError::value(
             "load GICv3 active priorities",
-            std::format!("saved state uses APR{apr_count} or above"),
+            "saved state uses an active-priority register the hardware does not implement",
+            apr_count as u64,
         ));
+    }
+
+    // Validate all guest-owned LR identities before changing the live CPU
+    // interface. A bad PINTID must not leave a partially restored context.
+    let used_lrs = state.used_list_registers();
+    // ICH_VTR_EL2 permits at most 16 LRs; require_lr_count checked the state length.
+    let mut encoded_lrs = [0u64; 16];
+    for (index, entry) in state.list_registers()[..used_lrs].iter().enumerate() {
+        if let Some(entry) = entry {
+            encoded_lrs[index] = encode_v3_list_register(*entry)?;
+        }
     }
 
     ICH_HCR_EL2.set(0);
     instruction_sync_barrier();
     ICH_VMCR_EL2.set(state.vmcr());
     write_v3_apr(state.apr(), apr_count);
-    for index in 0..hardware_v3_list_register_count() {
-        match state.list_registers().get(index).copied().flatten() {
-            Some(entry) => write_v3_list_register(index, entry)?,
-            None => ich_lr_el2_set(index, LocalRegisterCopy::new(0)),
-        }
+    for (index, raw) in encoded_lrs[..used_lrs].iter().enumerate() {
+        ich_lr_el2_set(index, LocalRegisterCopy::new(*raw));
     }
     data_sync_barrier();
-    ICH_HCR_EL2.set(hardware_v3_hcr_for_load(state.hcr()));
+    ICH_HCR_EL2.set(hardware_v3_hcr_for_load(state.hcr(), tdir_supported));
     instruction_sync_barrier();
     Ok(())
 }
 
-fn save_v3(state: &mut CpuInterfaceState) -> Result<(), GicV3BackendError> {
-    require_lr_count(
+fn save_v3(
+    state: &mut CpuInterfaceState,
+    lr_count: usize,
+    apr_count: usize,
+) -> Result<(), GicV3BackendError> {
+    if let Err(error) = require_lr_count(
         state.list_registers().len(),
-        hardware_v3_list_register_count(),
+        lr_count,
         "save GICv3 CPU interface",
-    )?;
-    let apr_count = hardware_v3_apr_count()?;
+    ) {
+        clear_v3_cpu_interface(lr_count);
+        return Err(error);
+    }
+    let used_lrs = state.used_list_registers();
     data_sync_barrier();
     instruction_sync_barrier();
+    let live_lrs = live_v3_list_registers(lr_count);
     let result = (|| {
         state.set_hcr(saved_v3_hcr(ICH_HCR_EL2.get(), state.hcr()));
         state.set_vmcr(ICH_VMCR_EL2.get());
         for (index, value) in read_v3_apr(apr_count).into_iter().enumerate() {
             if !state.set_apr(index, value) {
-                return Err(GicV3BackendError::new(
+                return Err(GicV3BackendError::value(
                     "save GICv3 active priorities",
-                    std::format!("APR index {index} is outside saved state"),
+                    "the active-priority register index is outside saved state",
+                    index as u64,
                 ));
             }
         }
-        for (index, slot) in state.list_registers_mut().iter_mut().enumerate() {
-            *slot = read_v3_list_register(index, *slot)?;
+        for (index, slot) in state.list_registers_mut()[..used_lrs]
+            .iter_mut()
+            .enumerate()
+        {
+            *slot = if live_lrs & (1 << index) != 0 {
+                if slot.is_none() {
+                    return Err(GicV3BackendError::value(
+                        "save GICv3 CPU interface",
+                        "a list register became live without a saved delivery",
+                        index as u64,
+                    ));
+                }
+                read_v3_list_register(index, *slot)?
+            } else {
+                None
+            };
         }
         Ok(())
     })();
-    for index in 0..hardware_v3_list_register_count() {
+    for index in 0..used_lrs {
         ich_lr_el2_set(index, LocalRegisterCopy::new(0));
+    }
+    let used_mask = ((1u32 << used_lrs) - 1) as u16;
+    let unexpected_lrs = live_lrs & !used_mask;
+    for index in used_lrs..lr_count {
+        if unexpected_lrs & (1 << index) != 0 {
+            ich_lr_el2_set(index, LocalRegisterCopy::new(0));
+        }
     }
     ICH_HCR_EL2.set(0);
     instruction_sync_barrier();
+    if unexpected_lrs != 0 {
+        return Err(GicV3BackendError::value(
+            "save GICv3 CPU interface",
+            "hardware has live list registers outside the saved span",
+            u64::from(unexpected_lrs),
+        ));
+    }
     result
 }
 
@@ -445,21 +557,36 @@ fn hardware_v3_list_register_count() -> usize {
     (ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1).min(16)
 }
 
+fn clear_v3_cpu_interface(lr_count: usize) {
+    ICH_HCR_EL2.set(0);
+    instruction_sync_barrier();
+    for index in 0..lr_count {
+        ich_lr_el2_set(index, LocalRegisterCopy::new(0));
+    }
+    instruction_sync_barrier();
+}
+
+fn live_v3_list_registers(count: usize) -> u16 {
+    let implemented = (1u32 << count) - 1;
+    (!(ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS) as u32) & implemented) as u16
+}
+
 fn hardware_v3_apr_count() -> Result<usize, GicV3BackendError> {
     match ICH_VTR_EL2.read(ICH_VTR_EL2::PREBITS) as usize + 1 {
         5 => Ok(1),
         6 => Ok(2),
         7 => Ok(4),
-        count => Err(GicV3BackendError::new(
+        count => Err(GicV3BackendError::value(
             "inspect GICv3 active-priority registers",
-            std::format!("unsupported preemption-bit count {count}"),
+            "the preemption-bit count is not supported",
+            count as u64,
         )),
     }
 }
 
-fn hardware_v3_hcr_for_load(saved: u64) -> u64 {
+fn hardware_v3_hcr_for_load(saved: u64, tdir_supported: bool) -> u64 {
     let adapter_traps = ICH_HCR_EL2::TC::SET.value | ICH_HCR_EL2::TDIR::SET.value;
-    let deactivation_trap = if ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0 {
+    let deactivation_trap = if tdir_supported {
         ICH_HCR_EL2::TDIR::SET.value
     } else {
         ICH_HCR_EL2::TC::SET.value
@@ -496,7 +623,7 @@ fn read_v3_apr(count: usize) -> [u64; 4] {
     apr
 }
 
-fn write_v3_list_register(index: usize, entry: ListRegisterState) -> Result<(), GicV3BackendError> {
+fn encode_v3_list_register(entry: ListRegisterState) -> Result<u64, GicV3BackendError> {
     let state = match entry.state() {
         InterruptState::Inactive => ICH_LR_EL2::STATE::Invalid,
         InterruptState::Pending => ICH_LR_EL2::STATE::Pending,
@@ -512,15 +639,15 @@ fn write_v3_list_register(index: usize, entry: ListRegisterState) -> Result<(), 
     }
     if let ListRegisterBacking::Physical(physical) = entry.backing() {
         let pintid = u16::try_from(physical.raw()).map_err(|_| {
-            GicV3BackendError::new(
+            GicV3BackendError::value(
                 "encode GICv3 list register",
-                std::format!("physical IRQ {} does not fit PINTID", physical.raw()),
+                "the physical IRQ does not fit PINTID",
+                physical.raw(),
             )
         })?;
         fields = fields + ICH_LR_EL2::HW::SET + ICH_LR_EL2::PINTID.val(u64::from(pintid));
     }
-    ich_lr_el2_write(index, fields);
-    Ok(())
+    Ok(fields.value)
 }
 
 fn read_v3_list_register(
@@ -534,9 +661,10 @@ fn read_v3_list_register(
         2 => InterruptState::Active,
         3 => InterruptState::ActivePending,
         value => {
-            return Err(GicV3BackendError::new(
+            return Err(GicV3BackendError::value(
                 "decode GICv3 list register",
-                std::format!("LR{index} has invalid state {value}"),
+                "the list register has an invalid state",
+                value,
             ));
         }
     };
@@ -562,24 +690,29 @@ fn read_v3_list_register(
     )))
 }
 
-fn decode_intid(index: usize, raw: u32, version: &'static str) -> Result<IntId, GicV3BackendError> {
-    IntId::new(raw).map_err(|error| {
-        GicV3BackendError::new(
+fn decode_intid(
+    _index: usize,
+    raw: u32,
+    _version: &'static str,
+) -> Result<IntId, GicV3BackendError> {
+    IntId::new(raw).map_err(|_| {
+        GicV3BackendError::value(
             "decode virtual list register",
-            std::format!("{version} LR{index} contains invalid INTID {raw}: {error}"),
+            "the list register contains an invalid INTID",
+            u64::from(raw),
         )
     })
 }
 
 fn require_software_backing(
-    index: usize,
+    _index: usize,
     previous: Option<ListRegisterState>,
-    version: &'static str,
+    _version: &'static str,
 ) -> Result<(), GicV3BackendError> {
     if previous.is_some_and(|entry| matches!(entry.backing(), ListRegisterBacking::Physical(_))) {
         Err(GicV3BackendError::new(
             "decode virtual list register",
-            std::format!("{version} LR{index} lost its physical backing"),
+            "the list register lost its physical backing",
         ))
     } else {
         Ok(())
@@ -587,27 +720,24 @@ fn require_software_backing(
 }
 
 fn validate_physical_backing(
-    index: usize,
+    _index: usize,
     previous: Option<ListRegisterState>,
     intid: IntId,
     physical: PhysicalIrqId,
-    version: &'static str,
+    _version: &'static str,
 ) -> Result<(), GicV3BackendError> {
     let previous = previous.ok_or_else(|| {
         GicV3BackendError::new(
             "decode virtual list register",
-            std::format!("{version} LR{index} acquired unexpected physical backing"),
+            "the list register acquired an unexpected physical backing",
         )
     })?;
     if previous.intid() != intid || previous.backing() != ListRegisterBacking::Physical(physical) {
-        return Err(GicV3BackendError::new(
+        return Err(GicV3BackendError::mismatch(
             "decode virtual list register",
-            std::format!(
-                "{version} LR{index} changed physical identity from {:?}/{:?} to \
-                 {intid:?}/{physical:?}",
-                previous.intid(),
-                previous.backing()
-            ),
+            "the list register changed its physical identity",
+            u64::from(previous.intid().raw()),
+            u64::from(intid.raw()),
         ));
     }
     Ok(())
@@ -621,9 +751,11 @@ fn require_lr_count(
     if saved <= available {
         Ok(())
     } else {
-        Err(GicV3BackendError::new(
+        Err(GicV3BackendError::mismatch(
             operation,
-            std::format!("saved state has {saved} LRs, hardware exposes {available}"),
+            "saved state has more list registers than the hardware exposes",
+            available as u64,
+            saved as u64,
         ))
     }
 }
@@ -631,9 +763,11 @@ fn require_lr_count(
 fn require_current_vcpu(vcpu: GicVcpuId, operation: &'static str) -> Result<(), GicV3BackendError> {
     match crate::current_vcpu_id() {
         Some(current) if current == vcpu.raw() => Ok(()),
-        Some(current) => Err(GicV3BackendError::new(
+        Some(current) => Err(GicV3BackendError::mismatch(
             operation,
-            std::format!("requested vCPU {}, current vCPU is {current}", vcpu.raw()),
+            "the requested vCPU is not current on this host CPU",
+            vcpu.raw() as u64,
+            current as u64,
         )),
         None => Err(GicV3BackendError::new(
             operation,

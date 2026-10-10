@@ -1,8 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, Ordering},
+};
 
 use arm_vgic::{
-    EventId, GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership,
-    GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, GuestMemory, GuestMemoryError, IntId, ItsDeviceId,
+    CpuInterfaceState, EventId, GicAffinity, GicV3Backend, GicV3BackendError, GicV3Config,
+    GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuBinding, GicV3VcpuWake,
+    GicVcpuId, GuestMemory, GuestMemoryError, IntId, InterruptState, ItsDeviceId,
     SoftwareGicV3Backend, VgicError, VgicResult,
 };
 use axdevice_base::ItsId;
@@ -17,6 +21,36 @@ const GITS_PIDR0: u64 = 0xffe0;
 const GITS_PIDR2: u64 = 0xffe8;
 const COMMAND_SIZE: u64 = 32;
 const QUEUE_SIZE: usize = 0x1000;
+
+mod support;
+
+#[test]
+fn clearing_a_loaded_lpi_preserves_its_lr_until_hardware_is_saved() {
+    let backend = Arc::new(TrackingBackend::default());
+    let (controller, binding, memory) = controller_with_its_backend(1, 32, backend.clone());
+    enable_lpis(&controller, 0);
+    initialize_its(&controller, &memory);
+
+    memory.write_command(0, mapd(7, 8));
+    memory.write_command(0x20, mapc(3, 0));
+    memory.write_command(0x40, mapti(7, 5, 8192, 3));
+    memory.write_command(0x60, command(0x03, 7, 5, 0, 0));
+    controller
+        .write_its(GITS_CWRITER, AccessWidth::Qword, 0x80)
+        .unwrap();
+
+    binding.load().unwrap();
+    assert_eq!(backend.loaded_intids(), vec![IntId::new(8192).unwrap()]);
+
+    memory.write_command(0x80, command(0x04, 7, 5, 0, 0));
+    controller
+        .write_its(GITS_CWRITER, AccessWidth::Qword, 0xa0)
+        .unwrap();
+    binding.save().unwrap();
+    binding.load().unwrap();
+    assert!(backend.loaded_intids().is_empty());
+    binding.save().unwrap();
+}
 
 #[test]
 fn two_its_instances_keep_device_event_namespaces_isolated() {
@@ -168,6 +202,81 @@ fn command_budget_rejects_unbounded_guest_work() {
     );
 }
 
+/// The software ITS copies the guest command queue and reads whatever native
+/// controller state the embedder needs while a command word is being copied.
+///
+/// That state is guarded by the native raw state lock. If command processing
+/// still ran under that raw lock, the native read performed from inside
+/// [`GuestMemory::read`] on a helper task would block until the bounded wait
+/// fails the test. A passing run therefore proves the guest copy happens with
+/// the native state lock released.
+#[test]
+fn guest_memory_read_reenters_native_controller_state() {
+    let memory = Arc::new(ReentrantGuestMemory::new(0x4200_0000, QUEUE_SIZE));
+    let config = GicV3Config::new(
+        GicV3SpiOwnership::AllGuestOwned,
+        GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+        GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap(),
+        0x2_0000,
+        1,
+    )
+    .unwrap()
+    .with_spi_count(32)
+    .unwrap()
+    .with_its(GicV3MmioRegion::new(0x0808_0000, 0x2_0000).unwrap())
+    .unwrap()
+    .with_its_command_budget(32)
+    .unwrap();
+    let controller = Arc::new(
+        GicV3Controller::new_with_guest_memory(
+            config,
+            Arc::new(SoftwareGicV3Backend),
+            Some(memory.clone()),
+        )
+        .unwrap(),
+    );
+    let _binding = controller
+        .attach_vcpu(
+            GicVcpuId::new(0),
+            GicAffinity::new(0, 0, 0, 0),
+            Arc::new(NoopWake),
+        )
+        .unwrap();
+
+    // The probe is installed only after the vCPU exists so the re-entrant read
+    // observes a fully attached native controller.
+    memory.install_probe(Arc::downgrade(&controller), GicVcpuId::new(0));
+
+    enable_lpis(&controller, 0);
+    controller
+        .write_its(GITS_CBASER, AccessWidth::Qword, memory.base())
+        .unwrap();
+    memory.write_command(0x00, mapd(7, 8));
+    memory.write_command(0x20, mapc(3, 0));
+    memory.write_command(0x40, mapti(7, 5, 8192, 3));
+    memory.write_command(0x60, command(0x03, 7, 5, 0, 0));
+    controller
+        .write_its(GITS_CTLR, AccessWidth::Dword, 1)
+        .unwrap();
+    controller
+        .write_its(GITS_CWRITER, AccessWidth::Qword, 0x80)
+        .unwrap();
+
+    assert!(
+        memory.probe_completed(),
+        "the guest-memory copy never re-entered the native controller state"
+    );
+    // The re-entrant read is only a probe: the INT command decoded while the
+    // helper read native state still reached the Redistributor.
+    assert_eq!(
+        controller
+            .interrupt_state(Some(GicVcpuId::new(0)), IntId::new(8192).unwrap())
+            .unwrap(),
+        InterruptState::Pending,
+        "the INT command decoded during a re-entrant guest copy did not take effect"
+    );
+}
+
 #[test]
 fn disabled_its_records_the_writer_and_consumes_it_when_enabled() {
     let (controller, _, memory) = controller_with_its(1, 32);
@@ -201,6 +310,53 @@ fn disabled_its_records_the_writer_and_consumes_it_when_enabled() {
             .read_its(GITS_CREADR, AccessWidth::Qword)
             .unwrap(),
         COMMAND_SIZE
+    );
+}
+
+/// A drain that consumes part of the command queue and then rejects a command
+/// keeps both its CREADR progress and the delivery effects it already decoded.
+///
+/// The consumed INT command has already moved CREADR past itself, so dropping
+/// its decoded LPI effect would lose the interrupt permanently: no later write
+/// replays that command.
+#[test]
+fn consumed_commands_keep_their_delivery_effects_when_a_later_command_fails() {
+    let (controller, _binding, memory) = controller_with_its(1, 32);
+    let vcpu = GicVcpuId::new(0);
+    enable_lpis(&controller, 0);
+    initialize_its(&controller, &memory);
+
+    memory.write_command(0x00, mapd(7, 8));
+    memory.write_command(0x20, mapc(3, 0));
+    memory.write_command(0x40, mapti(7, 5, 8192, 3));
+    memory.write_command(0x60, command(0x03, 7, 5, 0, 0));
+    // Processor 4 has no attached Redistributor, so this command is rejected
+    // only after the INT command above was already consumed.
+    memory.write_command(0x80, mapc(4, 4));
+
+    assert!(matches!(
+        controller.write_its(GITS_CWRITER, AccessWidth::Qword, 0xa0),
+        Err(VgicError::InvalidItsCommand {
+            opcode: 0x09,
+            offset: 0x80,
+            ..
+        })
+    ));
+    // The four accepted commands advanced CREADR; the rejected one stays for a
+    // later retry.
+    assert_eq!(
+        controller
+            .read_its(GITS_CREADR, AccessWidth::Qword)
+            .unwrap(),
+        0x80
+    );
+    // The LPI decoded from the consumed INT command survived the failure.
+    assert_eq!(
+        controller
+            .interrupt_state(Some(vcpu), IntId::new(8192).unwrap())
+            .unwrap(),
+        InterruptState::Pending,
+        "a consumed INT command lost its decoded LPI delivery effect"
     );
 }
 
@@ -379,6 +535,14 @@ fn controller_with_its(
     vcpu_count: usize,
     budget: usize,
 ) -> (GicV3Controller, GicV3VcpuBinding, Arc<TestGuestMemory>) {
+    controller_with_its_backend(vcpu_count, budget, Arc::new(SoftwareGicV3Backend))
+}
+
+fn controller_with_its_backend(
+    vcpu_count: usize,
+    budget: usize,
+    backend: Arc<dyn GicV3Backend>,
+) -> (GicV3Controller, GicV3VcpuBinding, Arc<TestGuestMemory>) {
     let memory = Arc::new(TestGuestMemory::new(0x4000_0000, QUEUE_SIZE));
     let config = GicV3Config::new(
         GicV3SpiOwnership::AllGuestOwned,
@@ -394,12 +558,8 @@ fn controller_with_its(
     .unwrap()
     .with_its_command_budget(budget)
     .unwrap();
-    let controller = GicV3Controller::new_with_guest_memory(
-        config,
-        Arc::new(SoftwareGicV3Backend),
-        Some(memory.clone()),
-    )
-    .unwrap();
+    let controller =
+        GicV3Controller::new_with_guest_memory(config, backend, Some(memory.clone())).unwrap();
     let binding = controller
         .attach_vcpu(
             GicVcpuId::new(0),
@@ -465,6 +625,66 @@ impl GicV3VcpuWake for NoopWake {
     }
 }
 
+#[derive(Default)]
+struct TrackingBackend {
+    loaded: Mutex<Option<CpuInterfaceState>>,
+}
+
+impl TrackingBackend {
+    fn loaded_intids(&self) -> Vec<IntId> {
+        self.loaded
+            .lock()
+            .unwrap()
+            .as_ref()
+            .into_iter()
+            .flat_map(CpuInterfaceState::list_registers)
+            .flatten()
+            .map(|entry| entry.intid())
+            .collect()
+    }
+}
+
+impl GicV3Backend for TrackingBackend {
+    fn load_cpu_interface(
+        &self,
+        _vcpu: GicVcpuId,
+        state: &CpuInterfaceState,
+    ) -> Result<(), GicV3BackendError> {
+        *self.loaded.lock().unwrap() = Some(state.clone());
+        Ok(())
+    }
+
+    fn save_cpu_interface(
+        &self,
+        _vcpu: GicVcpuId,
+        state: &mut CpuInterfaceState,
+    ) -> Result<(), GicV3BackendError> {
+        let mut loaded = self.loaded.lock().unwrap();
+        let hardware = loaded
+            .as_mut()
+            .expect("the vCPU must be loaded before save");
+        for (index, (expected, actual)) in state
+            .list_registers()
+            .iter()
+            .zip(hardware.list_registers())
+            .enumerate()
+        {
+            if expected.is_none() && actual.is_some() {
+                return Err(GicV3BackendError::value(
+                    "save CPU interface",
+                    "a list register became live without a saved delivery",
+                    index as u64,
+                ));
+            }
+        }
+        state
+            .list_registers_mut()
+            .copy_from_slice(hardware.list_registers());
+        hardware.list_registers_mut().fill(None);
+        Ok(())
+    }
+}
+
 struct TestGuestMemory {
     base: u64,
     bytes: Mutex<Vec<u8>>,
@@ -504,6 +724,99 @@ impl GuestMemory for TestGuestMemory {
                 GuestMemoryError::new("read", format!("address {address:#x} is outside guest RAM"))
             })?;
         destination.copy_from_slice(source);
+        Ok(())
+    }
+}
+
+/// Guest memory that re-enters the native controller while the ITS copies a
+/// command word.
+struct ReentrantGuestMemory {
+    base: u64,
+    bytes: Mutex<Vec<u8>>,
+    probe: Mutex<Option<ReentrantProbe>>,
+    probe_completed: AtomicBool,
+}
+
+struct ReentrantProbe {
+    controller: Weak<GicV3Controller>,
+    vcpu: GicVcpuId,
+}
+
+impl ReentrantGuestMemory {
+    fn new(base: u64, size: usize) -> Self {
+        Self {
+            base,
+            bytes: Mutex::new(vec![0; size]),
+            probe: Mutex::new(None),
+            probe_completed: AtomicBool::new(false),
+        }
+    }
+
+    const fn base(&self) -> u64 {
+        self.base
+    }
+
+    fn install_probe(&self, controller: Weak<GicV3Controller>, vcpu: GicVcpuId) {
+        *self.probe.lock().unwrap() = Some(ReentrantProbe { controller, vcpu });
+    }
+
+    fn probe_completed(&self) -> bool {
+        self.probe_completed.load(Ordering::Acquire)
+    }
+
+    fn write_command(&self, offset: u64, words: [u64; 4]) {
+        let mut bytes = self.bytes.lock().unwrap();
+        let start = offset as usize;
+        for (index, word) in words.into_iter().enumerate() {
+            let word_start = start + index * 8;
+            bytes[word_start..word_start + 8].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+}
+
+impl GuestMemory for ReentrantGuestMemory {
+    fn read(&self, address: u64, destination: &mut [u8]) -> Result<(), GuestMemoryError> {
+        let offset = address.checked_sub(self.base).ok_or_else(|| {
+            GuestMemoryError::new("read", format!("address {address:#x} is below guest RAM"))
+        })? as usize;
+        {
+            let bytes = self.bytes.lock().unwrap();
+            let source = bytes
+                .get(offset..offset + destination.len())
+                .ok_or_else(|| {
+                    GuestMemoryError::new(
+                        "read",
+                        format!("address {address:#x} is outside guest RAM"),
+                    )
+                })?;
+            destination.copy_from_slice(source);
+        }
+        if let Some(probe) = self.probe.lock().unwrap().as_ref() {
+            // The native controller state is read from a helper task while this
+            // guest copy holds the sleepable ITS state. If the native raw state
+            // lock were still held across the copy, the read would block until
+            // the timeout below fails the test.
+            let controller = probe.controller.clone();
+            let vcpu = probe.vcpu;
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = controller
+                    .upgrade()
+                    .ok_or_else(|| "the tested controller was dropped".to_string())
+                    .and_then(|controller| {
+                        controller
+                            .has_pending_interrupt(vcpu)
+                            .map(|_| ())
+                            .map_err(|error| format!("{error}"))
+                    });
+                let _ = sender.send(result);
+            });
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("native controller state must be reachable during a guest copy")
+                .expect("reading native controller state during a guest copy failed");
+            self.probe_completed.store(true, Ordering::Release);
+        }
         Ok(())
     }
 }

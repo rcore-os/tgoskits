@@ -76,7 +76,7 @@ VSOCK 路径有三层锁嵌套，是所有 VirtIO 设备中锁竞争最严重的
 #### 3.1.1 全局设备锁
 
 ```rust
-// net/ax-net/src/device/vsock.rs:15
+// net/ax-net/src/device/vsock.rs
 static VSOCK_DEVICE: Mutex<Option<AxVsockDevice>> = Mutex::new(None);
 static PENDING_EVENTS: Mutex<VecDeque<VsockDriverEvent>> = Mutex::new(VecDeque::new());
 ```
@@ -86,7 +86,7 @@ static PENDING_EVENTS: Mutex<VecDeque<VsockDriverEvent>> = Mutex::new(VecDeque::
 #### 3.1.2 全局连接管理器锁
 
 ```rust
-// net/ax-net/src/vsock/connection_manager.rs:536
+// net/ax-net/src/vsock/connection_manager.rs
 pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> = ...;
 ```
 
@@ -106,7 +106,7 @@ connect:          state → VSOCK_CONN_MANAGER → self.connection → per-conne
 ### 3.2 Net — TX/RX 共享锁
 
 ```rust
-// platforms/axplat-dyn/src/drivers/net/mod.rs:51-61
+// platforms/axplat-dyn/src/drivers/net/mod.rs
 struct NetState {
     tx_queue: rd_net::TxQueue,
     rx_queue: rd_net::RxQueue,
@@ -122,7 +122,7 @@ pub struct Net {
 ### 3.3 Block — 同步阻塞持锁
 
 ```rust
-// platforms/axplat-dyn/src/drivers/blk/mod.rs:16-19
+// platforms/axplat-dyn/src/drivers/blk/mod.rs
 pub struct Block {
     queue: Mutex<CmdQueue>,
 }
@@ -134,13 +134,13 @@ pub struct Block {
 
 | 锁 | 位置 | 作用域 | 竞争风险 | qperf 可检测 |
 |---|------|-------|---------|------------|
-| `VSOCK_DEVICE` | `device/vsock.rs:15` | 全局，序列化所有 vsock 操作 | **极高** | 热点集中在 send/recv 函数 |
-| `VSOCK_CONN_MANAGER` | `connection_manager.rs:536` | 全局，序列化连接表 + 事件处理 | **极高** | 热点集中在事件处理函数 |
-| `PENDING_EVENTS` | `device/vsock.rs:16` | 全局，缓冲 RX 事件 | 中等 | 在 poll 路径中出现 |
-| per-connection `Mutex` | `connection_manager.rs:271` | 每连接，序列化状态 + 环形缓冲区 | 中等 | 多连接时热点分散 |
-| `Net.state` | `net/mod.rs:61` | 每设备，TX+RX 共享 | **高** | 全双工时热点集中 |
-| `Block.queue` | `blk/mod.rs:18` | 每设备，同步阻塞 | 中等 | 块 I/O 密集时 |
-| PCI `Endpoint` | `net/virtio_pci.rs:84` | 每端点，配置空间访问 | 低 | 仅 probe/init 阶段 |
+| `VSOCK_DEVICE` | `device/vsock.rs` | 全局，序列化所有 vsock 操作 | **极高** | 热点集中在 send/recv 函数 |
+| `VSOCK_CONN_MANAGER` | `connection_manager.rs` | 全局，序列化连接表 + 事件处理 | **极高** | 热点集中在事件处理函数 |
+| `PENDING_EVENTS` | `device/vsock.rs` | 全局，缓冲 RX 事件 | 中等 | 在 poll 路径中出现 |
+| per-connection `Mutex` | `connection_manager.rs` | 每连接，序列化状态 + 环形缓冲区 | 中等 | 多连接时热点分散 |
+| `Net.state` | `net/mod.rs` | 每设备，TX+RX 共享 | **高** | 全双工时热点集中 |
+| `Block.queue` | `blk/mod.rs` | 每设备，同步阻塞 | 中等 | 块 I/O 密集时 |
+| PCI `Endpoint` | `net/virtio_pci.rs` | 每端点，配置空间访问 | 低 | 仅 probe/init 阶段 |
 
 ## 4. 使用 qperf 进行 VirtIO 热点分析
 

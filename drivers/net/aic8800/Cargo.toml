@@ -31,6 +31,14 @@ required-features = ["host-test"]
 ureq = "3"
 sha2 = "0.10"
 
+[dev-dependencies]
+dma-api = { workspace = true, features = ["pool"] }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+# Path-only test support is stripped from published packages, avoiding a cycle
+# through the runtime's driver dependencies.
+ax-runtime = { path = "../../../os/arceos/modules/axruntime", features = ["host-test"] }
+
 [dependencies]
 aes-kw.workspace = true
 dma-api = { workspace = true, optional = true }

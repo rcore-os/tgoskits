@@ -1,0 +1,5 @@
+x iǎo ch ē q ián j ìn @forward
+x iǎo ch ē h òu t uì @backward
+x iǎo ch ē z uǒ zh uǎn @left
+x iǎo ch ē y òu zh uǎn @right
+t íng zh ǐ @stop

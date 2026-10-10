@@ -1,14 +1,15 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::{boxed::Box, sync::Arc};
 
+use ax_std::os::arceos::sync::RawSpinLock;
+
 use super::{
     LoongArchContextFrame,
     guest_csr::inject_guest_interrupt_at,
     host::LoongArchHostOps,
     host_cpu::{
-        host_eiointc_has_pending, host_iocsr_read_b, host_iocsr_read_d, host_iocsr_read_h,
-        host_iocsr_read_w, host_iocsr_write_b, host_iocsr_write_d, host_iocsr_write_h,
-        host_iocsr_write_w,
+        host_iocsr_read_b, host_iocsr_read_d, host_iocsr_read_h, host_iocsr_read_w,
+        host_iocsr_write_b, host_iocsr_write_d, host_iocsr_write_h, host_iocsr_write_w,
     },
     registers::{
         extioi_cpu_encode_enabled, extioi_features_value, iocsr_mbuf_send_box, iocsr_mbuf_send_buf,
@@ -19,8 +20,12 @@ use super::{
         HWI_MASK, INT_HWI0, INT_HWI7, INT_IPI, IPI_BIT, LOCAL_INTERRUPT_MASK, advance_guest_pc,
         decode_interrupt_vector, extract_field, get_guest_pc,
     },
-    types::{LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId},
+    types::{
+        LoongArchPinnedHost, LoongArchVcpuError, LoongArchVcpuId, LoongArchVcpuResult,
+        LoongArchVmExit, LoongArchVmId,
+    },
 };
+use crate::arch::loongarch64::irq::LoongArchRunPort;
 
 pub(crate) const EIOINTC_ISR_BASE: usize = 0x1800;
 pub(crate) const EIOINTC_ISR_REG_COUNT: usize = 4;
@@ -69,6 +74,7 @@ pub type LoongArchIocsrStateRef = Arc<LoongArchIocsrState>;
 #[derive(Debug)]
 pub struct LoongArchIocsrState {
     vcpus: Box<[LoongArchVcpuIocsrState]>,
+    run: RawSpinLock<Option<LoongArchRunPort>>,
 }
 
 impl LoongArchIocsrState {
@@ -79,7 +85,19 @@ impl LoongArchIocsrState {
         }
         Ok(Arc::new(Self {
             vcpus: vcpus.into_boxed_slice(),
+            run: RawSpinLock::new(None),
         }))
+    }
+
+    /// Binds the exact run-bound publication capability for this execution
+    /// period. Task context, before any guest entry is admitted.
+    pub(crate) fn set_run_port(&self, port: LoongArchRunPort) {
+        *self.run.lock_irqsave() = Some(port);
+    }
+
+    /// Clones the bound run capability without holding the guard across a wake.
+    fn run_port(&self) -> Option<LoongArchRunPort> {
+        self.run.lock_irqsave().as_ref().cloned()
     }
 
     fn vcpu(&self, vcpu_id: LoongArchVcpuId) -> Option<&LoongArchVcpuIocsrState> {
@@ -360,6 +378,74 @@ fn iocsr_access_len_from_ty(ty: usize) -> usize {
     }
 }
 
+/// Reads the host CPU's IOCSR passthrough for one access width.
+///
+/// Only the read types (`0`..=`3`) reach the passthrough. This is CPU-local
+/// state, so callers must hold the pinned backend.
+fn host_iocsr_read(ty: usize, addr: usize) -> usize {
+    match ty {
+        0 => host_iocsr_read_b(addr),
+        1 => host_iocsr_read_h(addr),
+        2 => host_iocsr_read_w(addr),
+        3 => host_iocsr_read_d(addr),
+        _ => 0,
+    }
+}
+
+/// Resolves one guest IOCSR read to its final load value.
+///
+/// Guest-owned registers come from the program-owned IOCSR state; every other
+/// address falls back to the host passthrough. The result is CPU-local, so the
+/// pinned capture stage calls this once and the task-stage emulator consumes the
+/// stored value instead of re-reading the host IOCSR.
+pub(super) fn resolve_iocsr_read(
+    state: &LoongArchIocsrState,
+    vm_id: LoongArchVmId,
+    vcpu_id: LoongArchVcpuId,
+    ty: usize,
+    addr: usize,
+) -> usize {
+    let len = iocsr_access_len_from_ty(ty);
+    read_guest_iocsr(state, vm_id, vcpu_id, addr, len).unwrap_or_else(|| host_iocsr_read(ty, addr))
+}
+
+/// Whether the guest IOCSR model owns the given write target.
+///
+/// The pinned capture stage and the task-stage emulator share this predicate, so
+/// the host-passthrough decision cannot drift: a write goes to the raw host
+/// IOCSR bank only when this returns `false`. Every EIOINTC ISR register is
+/// guest-owned, which is why the historical host-EIOINTC-pending completion
+/// check has no reachable host path.
+pub(super) fn guest_owns_iocsr_write(addr: usize) -> bool {
+    matches!(
+        addr,
+        LOONGARCH_IOCSR_IPI_STATUS
+            | LOONGARCH_IOCSR_IPI_EN
+            | LOONGARCH_IOCSR_IPI_SET
+            | LOONGARCH_IOCSR_IPI_CLEAR
+            | LOONGARCH_IOCSR_IPI_SEND
+            | LOONGARCH_IOCSR_MBUF_SEND
+            | LOONGARCH_IOCSR_ANY_SEND
+            | EXTIOI_VIRT_CONFIG
+    ) || (LOONGARCH_IOCSR_MAIL_BUF0..=LOONGARCH_IOCSR_MAIL_BUF3).contains(&addr)
+        || (EIOINTC_GUEST_OWNED_BASE..EIOINTC_GUEST_OWNED_END).contains(&addr)
+}
+
+/// Issues the raw host IOCSR passthrough write for one access width.
+///
+/// Only the write types (`4`..=`7`) reach the passthrough, and only for
+/// non-guest-owned targets. This is CPU-local state, so callers must hold the
+/// pinned backend.
+pub(super) fn host_iocsr_write(ty: usize, addr: usize, value: usize) {
+    match ty {
+        4 => host_iocsr_write_b(addr, value),
+        5 => host_iocsr_write_h(addr, value),
+        6 => host_iocsr_write_w(addr, value),
+        7 => host_iocsr_write_d(addr, value),
+        _ => {}
+    }
+}
+
 pub(crate) fn inject_guest_eiointc_vector(
     state: &LoongArchIocsrState,
     vm_id: LoongArchVmId,
@@ -463,6 +549,12 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
     len: usize,
     value: usize,
 ) -> Option<LoongArchVmExit> {
+    // Single source of truth for the guest-owning decision. The pinned capture
+    // stage uses the same predicate to decide whether the raw host write is
+    // required, so the two stages cannot classify a target differently.
+    if !guest_owns_iocsr_write(addr) {
+        return None;
+    }
     let vcpu = state.vcpu(vcpu_id)?;
     match addr {
         LOONGARCH_IOCSR_IPI_STATUS => Some(LoongArchVmExit::Nothing),
@@ -491,8 +583,27 @@ fn write_guest_iocsr<H: LoongArchHostOps>(
                     .fetch_or(1usize << action, Ordering::AcqRel);
                 if target_cpu == vcpu_id {
                     ctx.gcsr_estat |= IPI_BIT;
+                } else if let Some(run) = state.run_port() {
+                    // The exact run is resolved from the pre-bound capability, so
+                    // an IPI from a retired run can never reach a newer one.
+                    match LoongArchRunPort::virtual_interrupt(INT_IPI) {
+                        Ok(interrupt) => {
+                            if let Err(error) = run.publish_virtual_irq(target_cpu, interrupt) {
+                                log::trace!(
+                                    "LoongArch guest IOCSR IPI for VM[{vm_id}] VCpu[{target_cpu}] \
+                                     was not delivered: {error:?}"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            log::trace!("LoongArch guest IOCSR IPI vector is invalid: {error:?}");
+                        }
+                    }
                 } else {
-                    H::inject_interrupt(vm_id, target_cpu, INT_IPI);
+                    log::trace!(
+                        "LoongArch guest IOCSR IPI for VM[{vm_id}] VCpu[{target_cpu}] ignored: no \
+                         bound run"
+                    );
                 }
             } else {
                 log::debug!(
@@ -662,7 +773,8 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
     ins: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-) -> LoongArchVmExit {
+    pinned: LoongArchPinnedHost,
+) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ty = extract_field(ins, 10, 3);
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
@@ -714,29 +826,25 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
 
     match ty {
         0 => {
-            let value = read_guest_iocsr(state, vm_id, vcpu_id, rj_value, len)
-                .unwrap_or_else(|| host_iocsr_read_b(rj_value));
+            let value = pinned_iocsr_read(pinned, rj_value)?;
             log_iocsr(ctx, "read.b", value);
             target_log(ctx, "read.b", value);
             ctx.set_gpr(rd, (value as i8) as isize as usize);
         }
         1 => {
-            let value = read_guest_iocsr(state, vm_id, vcpu_id, rj_value, len)
-                .unwrap_or_else(|| host_iocsr_read_h(rj_value));
+            let value = pinned_iocsr_read(pinned, rj_value)?;
             log_iocsr(ctx, "read.h", value);
             target_log(ctx, "read.h", value);
             ctx.set_gpr(rd, (value as i16) as isize as usize);
         }
         2 => {
-            let value = read_guest_iocsr(state, vm_id, vcpu_id, rj_value, len)
-                .unwrap_or_else(|| host_iocsr_read_w(rj_value));
+            let value = pinned_iocsr_read(pinned, rj_value)?;
             log_iocsr(ctx, "read.w", value);
             target_log(ctx, "read.w", value);
             ctx.set_gpr(rd, (value as i32) as isize as usize);
         }
         3 => {
-            let value = read_guest_iocsr(state, vm_id, vcpu_id, rj_value, len)
-                .unwrap_or_else(|| host_iocsr_read_d(rj_value));
+            let value = pinned_iocsr_read(pinned, rj_value)?;
             log_iocsr(ctx, "read.d", value);
             target_log(ctx, "read.d", value);
             ctx.set_gpr(rd, value);
@@ -752,11 +860,11 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
                 ctx.x[rd] as u8 as usize,
             ) {
                 advance_guest_pc(ctx);
-                return reason;
-            } else {
-                log_iocsr(ctx, "write.b", ctx.x[rd] as u8 as usize);
-                host_iocsr_write_b(rj_value, ctx.x[rd]);
+                return Ok(reason);
             }
+            // Not guest-owned: the raw host write already ran on the pinned CPU.
+            pinned_require_passthrough(pinned, rj_value)?;
+            log_iocsr(ctx, "write.b", ctx.x[rd] as u8 as usize);
         }
         5 => {
             if let Some(reason) = write_guest_iocsr::<H>(
@@ -769,11 +877,11 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
                 ctx.x[rd] as u16 as usize,
             ) {
                 advance_guest_pc(ctx);
-                return reason;
-            } else {
-                log_iocsr(ctx, "write.h", ctx.x[rd] as u16 as usize);
-                host_iocsr_write_h(rj_value, ctx.x[rd]);
+                return Ok(reason);
             }
+            // Not guest-owned: the raw host write already ran on the pinned CPU.
+            pinned_require_passthrough(pinned, rj_value)?;
+            log_iocsr(ctx, "write.h", ctx.x[rd] as u16 as usize);
         }
         6 => {
             if let Some(reason) = write_guest_iocsr::<H>(
@@ -786,32 +894,60 @@ pub(crate) fn emulate_iocsr<H: LoongArchHostOps>(
                 ctx.x[rd] as u32 as usize,
             ) {
                 advance_guest_pc(ctx);
-                return reason;
-            } else {
-                log_iocsr(ctx, "write.w", ctx.x[rd] as u32 as usize);
-                host_iocsr_write_w(rj_value, ctx.x[rd]);
+                return Ok(reason);
             }
+            // Not guest-owned: the raw host write already ran on the pinned CPU.
+            pinned_require_passthrough(pinned, rj_value)?;
+            log_iocsr(ctx, "write.w", ctx.x[rd] as u32 as usize);
         }
         7 => {
             if let Some(reason) =
                 write_guest_iocsr::<H>(state, ctx, vm_id, vcpu_id, rj_value, len, ctx.x[rd])
             {
                 advance_guest_pc(ctx);
-                return reason;
-            } else {
-                let is_eiointc_complete = is_eiointc_isr_addr(rj_value);
-                log_iocsr(ctx, "write.d", ctx.x[rd]);
-                host_iocsr_write_d(rj_value, ctx.x[rd]);
-                if is_eiointc_complete && !host_eiointc_has_pending() {
-                    ctx.gcsr_estat &= !HWI_MASK;
-                }
+                return Ok(reason);
             }
+            // Not guest-owned: the raw host write already ran on the pinned CPU.
+            //
+            // The historical host-EIOINTC-pending ESTAT clear is gone rather
+            // than re-guessed: every EIOINTC ISR register is guest-owned, so
+            // the arm above always claims those writes and recomputes the guest
+            // ESTAT from guest-owned ISR state. Polling the physical EIOINTC
+            // from task context would read whatever CPU this task migrated to.
+            pinned_require_passthrough(pinned, rj_value)?;
+            log_iocsr(ctx, "write.d", ctx.x[rd]);
         }
         _ => panic!("invalid LoongArch IOCSR opcode type: {ty}"),
     }
 
     advance_guest_pc(ctx);
-    LoongArchVmExit::Nothing
+    Ok(LoongArchVmExit::Nothing)
+}
+
+/// Consumes the pinned IOCSR load value captured for this exact access.
+///
+/// A missing or mismatched snapshot is an internal error: interpreting with a
+/// live host read here would substitute whatever CPU the task migrated to.
+fn pinned_iocsr_read(pinned: LoongArchPinnedHost, addr: usize) -> LoongArchVcpuResult<usize> {
+    match pinned {
+        LoongArchPinnedHost::IocsrRead {
+            addr: captured,
+            value,
+        } if captured == addr => Ok(value),
+        _ => Err(LoongArchVcpuError::BadState),
+    }
+}
+
+/// Confirms the pinned stage already applied this raw host IOCSR write.
+///
+/// A missing or mismatched snapshot is an internal error: repeating the write
+/// here would target whatever CPU the task migrated to, and skipping it would
+/// silently drop the guest store.
+fn pinned_require_passthrough(pinned: LoongArchPinnedHost, addr: usize) -> LoongArchVcpuResult<()> {
+    match pinned {
+        LoongArchPinnedHost::IocsrWritePassthrough { addr: captured } if captured == addr => Ok(()),
+        _ => Err(LoongArchVcpuError::BadState),
+    }
 }
 
 fn log_eiointc_trace(
