@@ -792,7 +792,9 @@ mod tests {
     fn parse_rejects_rotation() {
         let req = RgaReq {
             render_mode: RENDER_BITBLT,
-            rotate_mode: 1,
+            // Modern librga uses bit 0 for the identity transform. Values
+            // above it describe an actual rotation and remain unsupported.
+            rotate_mode: 2,
             src: img(0x2, 64, 64, 64, 0x1000),
             dst: img(0x2, 64, 64, 64, 0x2000),
             ..Default::default()
