@@ -497,27 +497,6 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn owner_core_returns_timer_plan_without_host_registration() {
-        let mut core = PitCore::new();
-        core.handle_write(X86Port::new(PIT_COMMAND), X86AccessWidth::Byte, 0x34, 1_000)
-            .unwrap();
-        core.handle_write(X86Port::new(PIT_CHANNEL0), X86AccessWidth::Byte, 0, 1_000)
-            .unwrap();
-        let plan = core
-            .handle_write(X86Port::new(PIT_CHANNEL0), X86AccessWidth::Byte, 0, 1_000)
-            .unwrap()
-            .expect("low/high reload should produce an IRQ0 timer plan");
-
-        assert!(plan.deadline_ns > 1_000);
-        assert!(plan.period_ns.is_some());
-    }
-}
-
 impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
     fn default() -> Self {
         Self::new()
@@ -703,5 +682,26 @@ impl<H: X86VlapicHostOps> EmulatedPit<H> {
         service.core.reset();
         service.suspended = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_core_returns_timer_plan_without_host_registration() {
+        let mut core = PitCore::new();
+        core.handle_write(X86Port::new(PIT_COMMAND), X86AccessWidth::Byte, 0x34, 1_000)
+            .unwrap();
+        core.handle_write(X86Port::new(PIT_CHANNEL0), X86AccessWidth::Byte, 0, 1_000)
+            .unwrap();
+        let plan = core
+            .handle_write(X86Port::new(PIT_CHANNEL0), X86AccessWidth::Byte, 0, 1_000)
+            .unwrap()
+            .expect("low/high reload should produce an IRQ0 timer plan");
+
+        assert!(plan.deadline_ns > 1_000);
+        assert!(plan.period_ns.is_some());
     }
 }
