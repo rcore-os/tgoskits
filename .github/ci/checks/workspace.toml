@@ -15,13 +15,20 @@ cargo xtask clippy --since "$SINCE_REF"
 [[check]]
 id = "test-with-std"
 name = "std tests"
+# command and pull_request_command are identical after the first line, which
+# only differs by the incremental `--since` entry point. Change trailing
+# commands in both fields together.
 command = '''
 cargo xtask test
 bash apps/starry/linux-perf/test-download.sh
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
+cargo test -p qperf --test reg
+python3 tools/qperf/tests/prebuild.py
 '''
 pull_request_command = '''
 cargo xtask test --since "$SINCE_REF"
 bash apps/starry/linux-perf/test-download.sh
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
+cargo test -p qperf --test reg
+python3 tools/qperf/tests/prebuild.py
 '''

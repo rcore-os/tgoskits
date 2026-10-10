@@ -65,9 +65,20 @@ flowchart LR
 
 ## 3. 验证与迁移
 
-该回归不在持续集成中运行，需要在装有 QEMU 11.1.1 的项目容器中手动构建本地插件和分析器：
-`apps/qperf/prebuild.sh cargo build --release -p qperf -p qperf-analyzer --target-dir tools/qperf/target`，
-随后执行 `prebuild.py`、`qemu_load.py` 与 `qemu_sample.py`（见 `tools/qperf/tests/`）。
+与 QEMU 版本无关的确定性回归仍在持续集成中执行：主 CI 的 `std tests` 检查
+（`.github/ci/checks/workspace.toml`）运行 `cargo test -p qperf --test reg` 与
+`python3 tools/qperf/tests/prebuild.py`。插件构建、真实加载与采样回归严格绑定
+QEMU 11.1.1，不在持续集成中运行，需要在项目容器中按下述序列手动复现；宿主还需要
+`cc` 与用户态 `qemu-x86_64`（`qemu_sample.py` 编译并在 QEMU 下运行 `workload.c`）：
+
+```bash
+apps/qperf/prebuild.sh cargo build --release -p qperf -p qperf-analyzer --target-dir tools/qperf/target
+apps/qperf/prebuild.sh cargo test -p qperf --test reg
+python3 tools/qperf/tests/prebuild.py
+python3 tools/qperf/tests/qemu_load.py tools/qperf/target/release/libqperf.so
+python3 tools/qperf/tests/qemu_sample.py tools/qperf/target/release/libqperf.so tools/qperf/target/release/qperf-analyzer
+```
+
 不通过改动外部 harness kit 或放宽 QEMU 版本检查实现迁移。
 
 ### 3.1 回归责任
