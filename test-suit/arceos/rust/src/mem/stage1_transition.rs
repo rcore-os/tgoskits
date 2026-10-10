@@ -157,17 +157,22 @@ pub fn run() -> crate::TestResult {
     let kernel_range = virtual_address_space()
         .expect("platform virtual-address layout must be initialized")
         .kernel();
-    let kernel_base = kernel_range.start;
     let kernel_size = kernel_range.size();
     assert!(
         kernel_size >= 4 * PAGE_SIZE,
         "kernel stage-1 window is too small for the transition test"
     );
+    // Keep the test mapping away from the first free kernel-area hole. With
+    // paging enabled, runtime task stacks and their guard pages occupy that
+    // low-address region and may leave an invalid remote TLB entry behind.
+    // A high, otherwise-unused hint keeps this mapping independent from those
+    // runtime-owned ranges while still exercising page-table replacement.
+    let mapping_hint = kernel_range.start + (kernel_size / 2 / PAGE_SIZE) * PAGE_SIZE;
     let flags = MappingFlags::READ | MappingFlags::WRITE;
     let original_frame = OwnedTestFrame::allocate();
     let replacement_frame = OwnedTestFrame::allocate();
     assert_ne!(original_frame.paddr(), replacement_frame.paddr());
-    let mapping = map_kernel_pages(kernel_base, &[original_frame.paddr()], flags)
+    let mapping = map_kernel_pages(mapping_hint, &[original_frame.paddr()], flags)
         .expect("failed to map the original test frame");
     let mapping_ptr = mapping.as_mut_ptr();
     // SAFETY: `mapping` owns a populated writable page until the controller
