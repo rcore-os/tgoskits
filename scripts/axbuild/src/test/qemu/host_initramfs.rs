@@ -163,6 +163,13 @@ fn append_file_to_initramfs(
     let map_archive = initramfs.with_extension(format!("{}.cpio", guest_path.replace('/', "_")));
     crate::image::pack_initramfs_dir(stage.path(), &map_archive)?;
     let mut output = fs::OpenOptions::new().append(true).open(initramfs)?;
+    // Axvisor may have appended a gzip member for a large guest bundle. The
+    // compressed member need not end on a newc alignment boundary, while the
+    // next raw archive must start at one.
+    let padding = (4 - output.metadata()?.len() % 4) % 4;
+    if padding != 0 {
+        std::io::Write::write_all(&mut output, &vec![0; padding as usize])?;
+    }
     let bytes = fs::read(&map_archive)?;
     std::io::Write::write_all(&mut output, &bytes)?;
     output.sync_all()?;
@@ -214,6 +221,33 @@ fn build_test_init(entry_source: &Path, init_source: &Path, output: &Path) -> an
 
 pub(crate) fn host_initramfs_without_rootfs_drive(qemu: &QemuConfig) -> bool {
     crate::rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn appending_map_aligns_after_compressed_bundle_member() {
+        let root = tempdir().unwrap();
+        let initramfs = root.path().join("host.cpio");
+        fs::write(&initramfs, b"gzip-member").unwrap();
+        let map = root.path().join("kernel.axbt");
+        fs::write(&map, b"AXBT").unwrap();
+        let mut archive = Some(initramfs.to_string_lossy().into_owned());
+
+        append_backtrace_map_to_initramfs(&mut archive, &map).unwrap();
+
+        let bytes = fs::read(archive.unwrap()).unwrap();
+        let map_offset = bytes
+            .windows(6)
+            .position(|window| window == b"070701")
+            .unwrap();
+        assert_eq!(map_offset % 4, 0);
+        assert_eq!(&bytes["gzip-member".len()..map_offset], b"\0");
+    }
 }
 
 fn copy_fixture(source: &Path, destination: &Path) -> anyhow::Result<()> {
