@@ -7,7 +7,6 @@ ax-alloc
 ax-percpu
 irq-framework
 rdif-base
-rdif-def
 rdrive
 mmio-api
 axbacktrace
@@ -20,13 +19,11 @@ aic8800
 rdif-eth
 ax-fs-ng
 ax-io
-axpoll
 rsext4
 ax-sched
 ax-linked-list-r4l
 ax-driver
 ax-runtime
-ax-input
 ax-log
 ax-net
 rd-net
@@ -47,14 +44,12 @@ virtio-gpu
 ax-arm-pl031
 host-boot-abi
 ranges-ext
-ax-riscv-plic
 x86-apic-driver
 ax-memory-set
 ax-cpumask
 ax-display
 ax-cgroup
 ax-timer-list
-aarch64_sysreg
 arm_vgic
 axdevice_base
 axaddrspace
