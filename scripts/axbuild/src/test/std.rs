@@ -79,6 +79,11 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         features: &["host-test", "vfs", "fat", "ext4"],
     },
     PackageFeatureProfile {
+        name: "host-test+ext4",
+        no_default_features: false,
+        features: &["host-test", "ext4"],
+    },
+    PackageFeatureProfile {
         name: "host-test",
         no_default_features: false,
         features: &["host-test"],

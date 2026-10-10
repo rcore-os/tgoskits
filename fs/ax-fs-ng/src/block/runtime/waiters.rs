@@ -115,6 +115,8 @@ pub(super) struct CapacityWaiters {
     count: AtomicUsize,
     #[cfg(test)]
     registration_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    detach_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CapacityWaiters {
@@ -124,6 +126,8 @@ impl CapacityWaiters {
             count: AtomicUsize::new(0),
             #[cfg(test)]
             registration_hook: RawSpinLock::new(None),
+            #[cfg(test)]
+            detach_hook: RawSpinLock::new(None),
         }
     }
 
@@ -157,7 +161,7 @@ impl CapacityWaiters {
     }
 
     pub(super) fn notify_available(&self, mut available: usize) {
-        if available == 0 || self.count.load(Ordering::Acquire) == 0 {
+        if available == 0 {
             return;
         }
 
@@ -183,8 +187,14 @@ impl CapacityWaiters {
     }
 
     pub(super) fn notify_all(&self) {
-        let waiters = core::mem::take(&mut *self.waiters.lock_irqsave());
-        self.count.store(0, Ordering::Release);
+        let waiters = {
+            let mut waiters = self.waiters.lock_irqsave();
+            let detached = core::mem::take(&mut *waiters);
+            self.count.store(0, Ordering::Release);
+            detached
+        };
+        #[cfg(test)]
+        self.run_detach_hook();
         for waiter in waiters {
             waiter.notification.notify();
         }
@@ -225,6 +235,20 @@ impl CapacityWaiters {
             hook();
         }
     }
+
+    #[cfg(test)]
+    fn set_detach_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self.detach_hook.lock_irqsave().replace(Box::new(hook));
+        assert!(previous.is_none(), "detach hook already installed");
+    }
+
+    #[cfg(test)]
+    fn run_detach_hook(&self) {
+        let hook = self.detach_hook.lock_irqsave().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +261,75 @@ mod tests {
     use std::{sync::mpsc, task::Wake, time::Duration};
 
     use super::*;
+
+    struct CountingNotification {
+        wakes: AtomicUsize,
+    }
+
+    impl BlockNotification for CountingNotification {
+        fn notify(&self) {
+            self.wakes.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wait(&self) {
+            unreachable!("the notification is never waited on in this test");
+        }
+
+        fn wait_timeout(&self, _: Duration) -> bool {
+            unreachable!("the notification is never waited on in this test");
+        }
+    }
+
+    #[test]
+    fn available_capacity_notifies_registered_waiter_when_count_is_stale() {
+        let registry = CapacityWaiters::new();
+        let notification = Arc::new(CountingNotification {
+            wakes: AtomicUsize::new(0),
+        });
+        registry.waiters.lock_irqsave().push(CapacityWaiter {
+            required: 1,
+            notification: notification.clone(),
+        });
+
+        // A count load may still observe zero after registration has stored
+        // one, so the notification path must inspect the locked queue.
+        registry.count.store(0, Ordering::Relaxed);
+        registry.notify_available(1);
+        assert_eq!(notification.wakes.load(Ordering::Relaxed), 1);
+        assert!(registry.waiters.lock_irqsave().is_empty());
+    }
+
+    #[test]
+    fn capacity_waiter_registered_after_detach_remains_visible() {
+        let registry = Arc::new(CapacityWaiters::new());
+        let first = Arc::new(CountingNotification {
+            wakes: AtomicUsize::new(0),
+        });
+        registry.waiters.lock_irqsave().push(CapacityWaiter {
+            required: 1,
+            notification: first.clone(),
+        });
+        registry.count.store(1, Ordering::Release);
+
+        let second = Arc::new(CountingNotification {
+            wakes: AtomicUsize::new(0),
+        });
+        let publisher = Arc::clone(&registry);
+        let second_notification = Arc::clone(&second);
+        registry.set_detach_hook(move || {
+            let mut waiters = publisher.waiters.lock_irqsave();
+            waiters.push(CapacityWaiter {
+                required: 1,
+                notification: second_notification,
+            });
+            publisher.count.store(waiters.len(), Ordering::Release);
+        });
+
+        registry.notify_all();
+        assert_eq!(first.wakes.load(Ordering::Relaxed), 1);
+        registry.notify_available(1);
+        assert_eq!(second.wakes.load(Ordering::Relaxed), 1);
+    }
 
     struct ReentrantWake {
         waiters: Arc<AsyncWaiters>,

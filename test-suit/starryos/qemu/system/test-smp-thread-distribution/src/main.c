@@ -12,19 +12,29 @@
 enum { WORKERS = 2, LOAD_WORKERS = 4 };
 
 struct observation {
-    atomic_int ready;
     unsigned cpu;
     int error;
 };
 
 static atomic_int release_workers;
+/* The parent blocks until each new worker has sampled its entry CPU. A
+ * sched_yield polling loop can compete with the worker it is waiting for. */
+static pthread_barrier_t ready_barrier;
+
+static int rendezvous_ready(void)
+{
+    int status = pthread_barrier_wait(&ready_barrier);
+    return status == PTHREAD_BARRIER_SERIAL_THREAD ? 0 : status;
+}
 
 static void *worker(void *argument)
 {
     struct observation *result = argument;
     if (syscall(SYS_getcpu, &result->cpu, NULL, NULL) != 0)
         result->error = errno;
-    atomic_store_explicit(&result->ready, 1, memory_order_release);
+    int error = rendezvous_ready();
+    if (error != 0 && result->error == 0)
+        result->error = error;
 
     /* Keep earlier workers runnable while subsequent workers are admitted.
      * Observe each worker's entry once instead of sampling its later migration.
@@ -51,7 +61,9 @@ static void *pinned_load(void *argument)
         else if (current != result->cpu)
             result->error = EINVAL;
     }
-    atomic_store_explicit(&result->ready, 1, memory_order_release);
+    int error = rendezvous_ready();
+    if (error != 0 && result->error == 0)
+        result->error = error;
     while (!atomic_load_explicit(&release_workers, memory_order_acquire)) {
         atomic_signal_fence(memory_order_seq_cst);
     }
@@ -78,6 +90,11 @@ int main(void)
         perror("FAIL: restrict test to two allowed CPUs");
         return 1;
     }
+    int barrier_error = pthread_barrier_init(&ready_barrier, NULL, 2);
+    if (barrier_error != 0) {
+        printf("FAIL: initialize ready barrier: %s\n", strerror(barrier_error));
+        return 1;
+    }
 
     pthread_t threads[WORKERS];
     struct observation results[WORKERS] = {0};
@@ -94,8 +111,12 @@ int main(void)
             break;
         }
         created++;
-        while (!atomic_load_explicit(&results[index].ready, memory_order_acquire))
-            syscall(SYS_sched_yield);
+        error = rendezvous_ready();
+        if (error != 0) {
+            printf("FAIL: worker ready barrier: %s\n", strerror(error));
+            failed = 1;
+            break;
+        }
 
         if (index == 0) {
             if (results[0].error != 0 || results[0].cpu >= CPU_SETSIZE
@@ -114,8 +135,12 @@ int main(void)
                     break;
                 }
                 load_created++;
-                while (!atomic_load_explicit(&load[extra].ready, memory_order_acquire))
-                    syscall(SYS_sched_yield);
+                error = rendezvous_ready();
+                if (error != 0) {
+                    printf("FAIL: load ready barrier: %s\n", strerror(error));
+                    failed = 1;
+                    break;
+                }
                 if (load[extra].error != 0) {
                     printf("FAIL: pin load to CPU %u: %s\n",
                            load[extra].cpu, strerror(load[extra].error));
@@ -150,6 +175,11 @@ int main(void)
                    index, error, load[index].error);
             failed = 1;
         }
+    }
+    barrier_error = pthread_barrier_destroy(&ready_barrier);
+    if (barrier_error != 0) {
+        printf("FAIL: destroy ready barrier: %s\n", strerror(barrier_error));
+        failed = 1;
     }
     if (syscall(SYS_sched_setaffinity, 0, sizeof(original), &original) != 0) {
         perror("FAIL: restore affinity");

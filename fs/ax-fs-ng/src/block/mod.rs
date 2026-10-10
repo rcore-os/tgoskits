@@ -9,6 +9,9 @@ pub mod runtime;
 #[cfg(all(feature = "ext4", feature = "vfs"))]
 pub(crate) mod file_image;
 
+#[cfg(all(test, feature = "ext4"))]
+mod region_tests;
+
 #[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) mod cache;
 
@@ -65,6 +68,11 @@ pub(crate) trait FsBlockDevice: Send {
         false
     }
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult;
+    /// Independent endpoint for the same device and coherent cache domain.
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Err(BlockError::Unsupported)
+    }
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult;
     #[cfg(feature = "ext4")]
@@ -76,6 +84,10 @@ pub(crate) trait FsBlockDevice: Send {
 }
 
 impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        (**self).fork_io()
+    }
     fn name(&self) -> &str {
         (**self).name()
     }
@@ -150,6 +162,11 @@ impl<T: FsBlockDevice> RegionBlockDevice<T> {
         Self { inner, region }
     }
 
+    #[cfg(feature = "ext4")]
+    pub(crate) fn fork_region(&self) -> BlockResult<RegionBlockDevice<Box<dyn FsBlockDevice>>> {
+        Ok(RegionBlockDevice::new(self.inner.fork_io()?, self.region))
+    }
+
     fn check_io_bounds(&self, block_id: u64, buf_len: usize) -> BlockResult {
         let block_size = self.inner.block_size();
         if block_size == 0 || !buf_len.is_multiple_of(block_size) {
@@ -170,6 +187,10 @@ impl<T: FsBlockDevice> RegionBlockDevice<T> {
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
 impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Ok(Box::new(self.fork_region()?))
+    }
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -241,6 +262,10 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
 }
 
 impl FsBlockDevice for NativeHandleBlockDevice {
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        Ok(Box::new(Self::new(Arc::clone(&self.handle))))
+    }
     fn name(&self) -> &str {
         self.handle.name()
     }

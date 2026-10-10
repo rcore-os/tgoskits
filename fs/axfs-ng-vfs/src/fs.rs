@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use inherit_methods_macro::inherit_methods;
 
-use crate::{DirEntry, VfsResult};
+use crate::{CachedWriteAdmission, DirEntry, VfsResult};
 
 pub struct StatFs {
     pub fs_type: u32,
@@ -42,6 +42,12 @@ pub trait FilesystemOps: Send + Sync {
     /// Retains mount ownership separately from cached inode references.
     /// Bind mounts and namespace copies retain the same filesystem lease.
     fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+        None
+    }
+
+    /// Returns the optional boundary used to drain buffered writes and mmap
+    /// dirtying before shutdown. Internal writeback uses a separate boundary.
+    fn cached_write_admission(&self) -> Option<&dyn CachedWriteAdmission> {
         None
     }
 

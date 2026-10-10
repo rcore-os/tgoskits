@@ -589,6 +589,7 @@ impl CachedFile {
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let file = self.inner.entry().as_file()?;
         loop {
             let observed_len = self.shared.len();

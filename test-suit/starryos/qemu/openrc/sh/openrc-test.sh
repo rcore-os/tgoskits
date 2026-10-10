@@ -50,7 +50,18 @@ kill -0 "$new_pid"
 stage=service-stop
 rc-service openrc-test-daemon stop
 if rc-service openrc-test-daemon status; then exit 1; fi
-if kill -0 "$new_pid" 2>/dev/null; then exit 1; fi
+# OpenRC may report the service stopped before init has reaped its process.
+# Wait for that specific condition, but still fail if the old PID persists.
+attempt=0
+while kill -0 "$new_pid" 2>/dev/null; do
+    if [ "$attempt" -ge 10 ]; then
+        printf 'daemon PID %s still exists after stop\n' "$new_pid"
+        if [ -r "/proc/$new_pid/stat" ]; then cat "/proc/$new_pid/stat"; fi
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
 stage=dependency-failure
 if rc-service openrc-test-dependent start; then exit 1; fi
 [ ! -e /run/openrc-test-unexpected ]
