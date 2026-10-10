@@ -56,7 +56,15 @@ build_native() {
     cp testcases/network/netstress/netstress "$build_dir/netstress"
 }
 
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+docker_usable=false
+if command -v docker >/dev/null 2>&1; then
+    # Keep the probe in an explicit conditional: some runner Docker shims
+    # terminate the shell when the daemon socket is absent despite `set -e`.
+    if docker info >/dev/null 2>&1; then
+        docker_usable=true
+    fi
+fi
+if [[ "$docker_usable" == true ]]; then
     build_with_docker
 else
     echo "==> docker unavailable, building netstress with the host toolchain"

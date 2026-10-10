@@ -15,7 +15,7 @@ use super::types::{
     TestQemuCase,
 };
 
-const CMAKE_TOOLCHAIN_TEMPLATE_PATH: &str = "scripts/axbuild/src/test/cmake-toolchain.cmake.in";
+const CMAKE_TOOLCHAIN_TEMPLATE: &[u8] = include_bytes!("../cmake-toolchain.cmake.in");
 
 pub(super) fn case_asset_cache_key(
     arch: &str,
@@ -79,13 +79,12 @@ fn case_asset_cache_key_with_lookup(
     }
     // C and grouped-C pipelines use the CMake toolchain template. Keep it out
     // of unrelated pipeline keys while invalidating every compiled C image.
-    // Resolve from the runtime workspace root: the prebuilt tg-xtask binary is
-    // built once and may execute from a different checkout path.
     if matches!(pipeline, CasePipeline::C | CasePipeline::Grouped) {
-        hash_file(
-            &mut hasher,
-            &crate::context::workspace_root_path()?.join(CMAKE_TOOLCHAIN_TEMPLATE_PATH),
-        )?;
+        // The xtask binary can be built in one checkout and run from another
+        // (the CI artifact workflow does exactly that).  Hash the template
+        // embedded at build time instead of reopening the build checkout's
+        // absolute path at runtime.
+        hash_bytes(&mut hasher, CMAKE_TOOLCHAIN_TEMPLATE);
     }
     if pipeline == CasePipeline::Python {
         hash_token(&mut hasher, PYTHON_PIPELINE_CACHE_VERSION);
@@ -223,6 +222,10 @@ fn hash_file(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
         hasher.update(&buf[..read]);
     }
     Ok(())
+}
+
+fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update(bytes);
 }
 
 fn hash_token(hasher: &mut Sha256, value: &str) {

@@ -1568,11 +1568,15 @@ command = "true"
 
         benchmark = "/usr/bin/ivc-starry-bench"
         cmdline = vm_config["kernel"]["cmdline"]
-        # The board route waits for the default Starry init shell prompt, and
-        # StarryOS panics when init exits, so the VM must keep that shell as
-        # init and run the benchmark as its child.
+        # Avoid the rootfs systemd init: it cannot finish booting without
+        # kernel uevent netlink on this board.  Keep an interactive /bin/sh as
+        # PID 1 and run the benchmark from the guest shell as its child.
         self.assertNotIn(benchmark, cmdline)
-        self.assertNotIn("init=", cmdline)
+        self.assertIn("init=/bin/sh", cmdline)
+        self.assertIn(
+            '-- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"',
+            cmdline,
+        )
 
         steps = board_config["shell_check_steps"]
         attach_indices = [

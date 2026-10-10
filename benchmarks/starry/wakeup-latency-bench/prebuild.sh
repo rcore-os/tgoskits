@@ -59,3 +59,12 @@ install -Dm0755 \
 install -Dm0755 \
     "$app_dir/wakeup-latency-bench.sh" \
     "$overlay_dir/usr/bin/wakeup-latency-bench.sh"
+
+# The minimal Alpine image used by this benchmark does not provide an init
+# candidate that StarryOS can execute.  Supply a tiny PID 1 so the shell check
+# can reach the installed benchmark runner.
+cat >"$overlay_dir/init" <<'EOF'
+#!/bin/sh
+exec /bin/sh
+EOF
+chmod 0755 "$overlay_dir/init"
