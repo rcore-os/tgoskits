@@ -4,6 +4,7 @@ use alloc::{
     collections::btree_map::BTreeMap,
     string::String,
     sync::Arc,
+    vec::Vec,
 };
 use core::any::Any;
 
@@ -11,12 +12,83 @@ use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
     Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions,
     VfsError, VfsResult, WeakDirEntry,
-    path::{DOT, DOTDOT},
+    path::{DOT, DOTDOT, MAX_NAME_LEN},
 };
 use inherit_methods_macro::inherit_methods;
 
 use super::{DirMaker, NodeOpsMux, SimpleFs, SimpleFsNode};
 use crate::pseudofs::NodeOpsMuxTy;
+
+/// Describes whether a registered directory entry may be retained by the VFS
+/// dentry cache.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CachePolicy {
+    /// The entry has stable identity and may be shared between lookups.
+    Shared,
+    /// The entry is recreated for every lookup and must not be cached.
+    PerLookup,
+}
+
+/// A validated path relative to one pseudofs root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodePath {
+    components: Vec<String>,
+}
+
+impl NodePath {
+    /// Parses a path relative to a filesystem root.
+    pub fn new(path: &str) -> VfsResult<Self> {
+        if path.is_empty() || path.starts_with('/') || path.ends_with('/') {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let mut components = Vec::new();
+        for component in path.split('/') {
+            if component.is_empty() || component == DOT || component == DOTDOT {
+                return Err(VfsError::InvalidInput);
+            }
+            if component.contains('\0') {
+                return Err(VfsError::InvalidInput);
+            }
+            if component.len() > MAX_NAME_LEN {
+                return Err(VfsError::NameTooLong);
+            }
+            components.push(component.to_owned());
+        }
+        Ok(Self { components })
+    }
+}
+
+impl TryFrom<&str> for NodePath {
+    type Error = VfsError;
+
+    fn try_from(path: &str) -> Result<Self, Self::Error> {
+        Self::new(path)
+    }
+}
+
+impl TryFrom<String> for NodePath {
+    type Error = VfsError;
+
+    fn try_from(path: String) -> Result<Self, Self::Error> {
+        Self::new(&path)
+    }
+}
+
+/// Registers one or more nodes in a [`NodeRegistry`].
+pub trait FsNodeRegistration {
+    /// Adds this node or node group to the supplied build-time registry.
+    fn register(&self, registry: &mut NodeRegistry) -> VfsResult<()>;
+}
+
+impl<F> FsNodeRegistration for F
+where
+    F: Fn(&mut NodeRegistry) -> VfsResult<()>,
+{
+    fn register(&self, registry: &mut NodeRegistry) -> VfsResult<()> {
+        self(registry)
+    }
+}
 
 /// Operations for a simple directory.
 pub trait SimpleDirOps: Send + Sync + 'static {
@@ -54,7 +126,7 @@ impl SimpleDirOps for DirMapping {
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         self.map
             .get(name)
-            .map(|ty| match ty {
+            .map(|entry| match &entry.ops {
                 NodeOpsMuxTy::Static(ops) => ops.clone(),
                 NodeOpsMuxTy::Dynamic(maker) => maker(),
             })
@@ -64,12 +136,25 @@ impl SimpleDirOps for DirMapping {
     fn is_cacheable(&self) -> bool {
         self.cacheable
     }
+
+    fn is_cacheable_child(&self, name: &str) -> bool {
+        self.cacheable
+            && self
+                .map
+                .get(name)
+                .is_none_or(|entry| entry.cache_policy == CachePolicy::Shared)
+    }
 }
 
 /// A mapping of directory names to entries.
 pub struct DirMapping {
-    map: BTreeMap<String, NodeOpsMuxTy>,
+    map: BTreeMap<String, DirMappingEntry>,
     cacheable: bool,
+}
+
+struct DirMappingEntry {
+    ops: NodeOpsMuxTy,
+    cache_policy: CachePolicy,
 }
 
 impl DirMapping {
@@ -88,8 +173,13 @@ impl DirMapping {
 
     /// Add a new entry to the directory mapping.
     pub fn add(&mut self, name: impl Into<String>, ops: impl Into<NodeOpsMux>) {
-        self.map
-            .insert(name.into(), NodeOpsMuxTy::Static(ops.into()));
+        self.map.insert(
+            name.into(),
+            DirMappingEntry {
+                ops: NodeOpsMuxTy::Static(ops.into()),
+                cache_policy: CachePolicy::Shared,
+            },
+        );
     }
 
     /// Add a new entry to the directory mapping, created on demand.
@@ -98,8 +188,22 @@ impl DirMapping {
         name: impl Into<String>,
         maker: impl Fn() -> NodeOpsMux + Send + Sync + 'static,
     ) {
-        self.map
-            .insert(name.into(), NodeOpsMuxTy::Dynamic(Box::new(maker)));
+        self.add_dynamic_with_cache_policy(name, maker, CachePolicy::Shared);
+    }
+
+    fn add_dynamic_with_cache_policy(
+        &mut self,
+        name: impl Into<String>,
+        maker: impl Fn() -> NodeOpsMux + Send + Sync + 'static,
+        cache_policy: CachePolicy,
+    ) {
+        self.map.insert(
+            name.into(),
+            DirMappingEntry {
+                ops: NodeOpsMuxTy::Dynamic(Box::new(maker)),
+                cache_policy,
+            },
+        );
     }
 }
 
@@ -107,6 +211,187 @@ impl Default for DirMapping {
     fn default() -> Self {
         Self::new()
     }
+}
+
+enum RegistrationEntry {
+    Node(NodeOpsMux),
+    Dynamic {
+        maker: Box<dyn Fn() -> NodeOpsMux + Send + Sync>,
+        cache_policy: CachePolicy,
+    },
+    Directory(RegistrationDir),
+    OpaqueDirectory(DirMaker),
+}
+
+#[derive(Default)]
+struct RegistrationDir {
+    entries: BTreeMap<String, RegistrationEntry>,
+}
+
+/// Build-time registry for entries rooted at one [`SimpleFs`].
+pub struct NodeRegistry {
+    root: RegistrationDir,
+}
+
+impl NodeRegistry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self {
+            root: RegistrationDir::default(),
+        }
+    }
+
+    /// Registers a stable node at a relative path.
+    pub fn node<P>(&mut self, path: P, ops: impl Into<NodeOpsMux>) -> VfsResult<()>
+    where
+        P: TryInto<NodePath, Error = VfsError>,
+    {
+        self.insert(path.try_into()?, RegistrationEntry::Node(ops.into()))
+    }
+
+    /// Registers a node factory with an explicit cache policy.
+    pub fn dynamic_node<P>(
+        &mut self,
+        path: P,
+        cache_policy: CachePolicy,
+        maker: impl Fn() -> NodeOpsMux + Send + Sync + 'static,
+    ) -> VfsResult<()>
+    where
+        P: TryInto<NodePath, Error = VfsError>,
+    {
+        self.insert(
+            path.try_into()?,
+            RegistrationEntry::Dynamic {
+                maker: Box::new(maker),
+                cache_policy,
+            },
+        )
+    }
+
+    /// Registers a directory provider whose children are resolved by the
+    /// supplied directory operations.
+    pub fn directory<P>(&mut self, path: P, maker: DirMaker) -> VfsResult<()>
+    where
+        P: TryInto<NodePath, Error = VfsError>,
+    {
+        self.insert(path.try_into()?, RegistrationEntry::OpaqueDirectory(maker))
+    }
+
+    /// Reserves a stable, empty directory for a later mount.
+    pub fn reserve_mountpoint<P>(&mut self, path: P) -> VfsResult<()>
+    where
+        P: TryInto<NodePath, Error = VfsError>,
+    {
+        let path = path.try_into()?;
+        let (name, parents) = split_path(&path)?;
+        Self::validate_parent(&self.root, parents)?;
+        let parent = Self::parent_dir_mut(&mut self.root, parents)?;
+        if parent.entries.contains_key(name) {
+            return Err(VfsError::AlreadyExists);
+        }
+        parent.entries.insert(
+            name.to_owned(),
+            RegistrationEntry::Directory(RegistrationDir::default()),
+        );
+        Ok(())
+    }
+
+    /// Registers a node or node group implemented by a provider.
+    pub fn register<T: FsNodeRegistration>(&mut self, item: &T) -> VfsResult<()> {
+        item.register(self)
+    }
+
+    /// Materializes the registry into a directory mapping.
+    pub(crate) fn finish_mapping(self, fs: Arc<SimpleFs>) -> VfsResult<DirMapping> {
+        Self::build_mapping(self.root, fs)
+    }
+
+    /// Materializes the registry into the existing [`DirMaker`] interface.
+    // This convenience entry point is intentionally retained for builders that
+    // do not need to compose a dynamic root provider.
+    #[cfg_attr(feature = "uvc", allow(dead_code))]
+    pub fn finish(self, fs: Arc<SimpleFs>) -> VfsResult<DirMaker> {
+        let root = self.finish_mapping(fs.clone())?;
+        Ok(SimpleDir::new_maker(fs, Arc::new(root)))
+    }
+
+    fn insert(&mut self, path: NodePath, entry: RegistrationEntry) -> VfsResult<()> {
+        let (name, parents) = split_path(&path)?;
+        Self::validate_parent(&self.root, parents)?;
+        let parent = Self::parent_dir_mut(&mut self.root, parents)?;
+        if parent.entries.contains_key(name) {
+            return Err(VfsError::AlreadyExists);
+        }
+        parent.entries.insert(name.to_owned(), entry);
+        Ok(())
+    }
+
+    fn validate_parent(dir: &RegistrationDir, components: &[String]) -> VfsResult<()> {
+        let Some((component, rest)) = components.split_first() else {
+            return Ok(());
+        };
+        match dir.entries.get(component) {
+            None => Ok(()),
+            Some(RegistrationEntry::Directory(child)) => Self::validate_parent(child, rest),
+            Some(_) => Err(VfsError::NotADirectory),
+        }
+    }
+
+    fn parent_dir_mut<'a>(
+        dir: &'a mut RegistrationDir,
+        components: &[String],
+    ) -> VfsResult<&'a mut RegistrationDir> {
+        let Some((component, rest)) = components.split_first() else {
+            return Ok(dir);
+        };
+        if !dir.entries.contains_key(component) {
+            dir.entries.insert(
+                component.clone(),
+                RegistrationEntry::Directory(RegistrationDir::default()),
+            );
+        }
+        match dir.entries.get_mut(component) {
+            Some(RegistrationEntry::Directory(child)) => Self::parent_dir_mut(child, rest),
+            Some(_) => Err(VfsError::NotADirectory),
+            None => unreachable!("registration parent was inserted above"),
+        }
+    }
+
+    fn build_mapping(dir: RegistrationDir, fs: Arc<SimpleFs>) -> VfsResult<DirMapping> {
+        let mut mapping = DirMapping::new();
+        for (name, entry) in dir.entries {
+            match entry {
+                RegistrationEntry::Node(ops) => mapping.add(name, ops),
+                RegistrationEntry::Dynamic {
+                    maker,
+                    cache_policy,
+                } => mapping.add_dynamic_with_cache_policy(name, maker, cache_policy),
+                RegistrationEntry::Directory(child) => {
+                    let child = Self::build_mapping(child, fs.clone())?;
+                    mapping.add(
+                        name,
+                        SimpleDir::new_maker(fs.clone(), Arc::new(child)),
+                    );
+                }
+                RegistrationEntry::OpaqueDirectory(maker) => mapping.add(name, maker),
+            }
+        }
+        Ok(mapping)
+    }
+}
+
+impl Default for NodeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn split_path(path: &NodePath) -> VfsResult<(&str, &[String])> {
+    let (name, parents) = path
+        .components
+        .split_last()
+        .ok_or(VfsError::InvalidInput)?;
+    Ok((name.as_str(), parents))
 }
 
 /// Directory created by [`SimpleDirOps::chain`].
@@ -273,5 +558,107 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         _options: RenameOptions,
     ) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
+    }
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    fn opaque_directory() -> RegistrationEntry {
+        let maker: DirMaker = Arc::new(|_| panic!("test directory must not be opened"));
+        RegistrationEntry::OpaqueDirectory(maker)
+    }
+
+    #[test]
+    fn node_path_rejects_non_relative_or_non_normal_components() {
+        assert!(NodePath::new("dev/null").is_ok());
+        for path in ["", "/dev/null", "dev/", "dev//null", "dev/./null", "dev/../null"] {
+            assert_eq!(NodePath::new(path), Err(VfsError::InvalidInput), "{path:?}");
+        }
+        assert_eq!(NodePath::new("dev/\0null"), Err(VfsError::InvalidInput));
+        assert_eq!(NodePath::new(&"x".repeat(MAX_NAME_LEN + 1)), Err(VfsError::NameTooLong));
+    }
+
+    #[test]
+    fn registry_creates_parents_and_rejects_conflicts() {
+        let mut registry = NodeRegistry::new();
+        registry.reserve_mountpoint("bus/usb").unwrap();
+        assert!(matches!(registry.root.entries.get("bus"), Some(RegistrationEntry::Directory(_))));
+        assert_eq!(registry.reserve_mountpoint("bus/usb"), Err(VfsError::AlreadyExists));
+        assert_eq!(
+            registry.insert(NodePath::new("bus/usb").unwrap(), opaque_directory()),
+            Err(VfsError::AlreadyExists)
+        );
+        registry
+            .insert(NodePath::new("bus/usb/host0").unwrap(), opaque_directory())
+            .unwrap();
+
+        let mut opaque_parent = NodeRegistry::new();
+        opaque_parent
+            .insert(NodePath::new("dev").unwrap(), opaque_directory())
+            .unwrap();
+        assert_eq!(
+            opaque_parent.insert(NodePath::new("dev/null").unwrap(), opaque_directory()),
+            Err(VfsError::NotADirectory)
+        );
+    }
+
+    #[test]
+    fn invalid_registration_does_not_mutate_tree() {
+        let mut registry = NodeRegistry::new();
+        assert_eq!(
+            registry.reserve_mountpoint("bad//path"),
+            Err(VfsError::InvalidInput)
+        );
+        assert!(registry.root.entries.is_empty());
+    }
+
+    #[test]
+    fn dynamic_cache_policy_is_explicit() {
+        let mut mapping = DirMapping::new();
+        mapping.add_dynamic_with_cache_policy(
+            "tun",
+            || NodeOpsMux::Dir(Arc::new(|_| panic!("test node must not be opened"))),
+            CachePolicy::PerLookup,
+        );
+        assert!(!mapping.is_cacheable_child("tun"));
+
+        mapping.add_dynamic_with_cache_policy(
+            "stable",
+            || NodeOpsMux::Dir(Arc::new(|_| panic!("test node must not be opened"))),
+            CachePolicy::Shared,
+        );
+        assert!(mapping.is_cacheable_child("stable"));
+    }
+
+    #[test]
+    fn registry_materializes_static_aliases_for_lookup_and_listing() {
+        let maker: DirMaker = Arc::new(|_| panic!("test directory must not be opened"));
+        let mut registry = NodeRegistry::new();
+        registry.directory("primary", maker.clone()).unwrap();
+        registry.directory("alias", maker.clone()).unwrap();
+
+        let mut fs_ref = None;
+        let _filesystem = SimpleFs::try_new_with("test".into(), 0, |fs| {
+            fs_ref = Some(fs.clone());
+            Ok(SimpleDir::new_maker(fs, Arc::new(DirMapping::new())))
+        })
+        .unwrap();
+        let mapping = registry.finish_mapping(fs_ref.unwrap()).unwrap();
+
+        let names: Vec<_> = mapping
+            .child_names()
+            .map(|name| name.into_owned())
+            .collect();
+        assert_eq!(names, ["alias", "primary"]);
+        let NodeOpsMux::Dir(primary) = mapping.lookup_child("primary").unwrap() else {
+            panic!("registered directory is not a directory");
+        };
+        assert!(Arc::ptr_eq(&primary, &maker));
+        let NodeOpsMux::Dir(alias) = mapping.lookup_child("alias").unwrap() else {
+            panic!("registered alias is not a directory");
+        };
+        assert!(Arc::ptr_eq(&alias, &maker));
     }
 }
