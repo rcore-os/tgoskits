@@ -117,12 +117,17 @@ fn highest_priority(bits: u8) -> Option<u8> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct PicState {
+/// Mutable 8259 model owned by the interrupt-controller task.
+///
+/// This type deliberately has no synchronization primitive.  A single owner
+/// must apply a guest register write, source pulse, claim and EOI as one
+/// transaction through `&mut self`.
+pub struct PicCore {
     master: PicChip,
     slave: PicChip,
 }
 
-impl PicState {
+impl PicCore {
     const fn new() -> Self {
         Self {
             master: PicChip::new(0x08),
@@ -217,14 +222,89 @@ impl PicInterruptClaim {
 
 /// Guest-owned pair of legacy 8259-compatible interrupt controllers.
 pub struct EmulatedPic {
-    state: RawSpinLock<PicState>,
+    state: RawSpinLock<PicCore>,
+}
+
+/// Lock-free legacy PIC owner facade.
+///
+/// AxVM's shared interrupt owner can keep this value directly and call the
+/// methods below from its task context.  [`EmulatedPic`] remains as the
+/// compatibility adapter for callers that still need a `Send + Sync` device
+/// endpoint; it is not used by the core state machine.
+pub struct PicOwner {
+    state: PicCore,
+}
+
+impl PicOwner {
+    /// Creates a reset-compatible owner-local PIC model.
+    pub const fn new() -> Self {
+        Self {
+            state: PicCore::new(),
+        }
+    }
+
+    /// Latches a legacy source and claims a deliverable interrupt.
+    pub fn claim_irq(&mut self, irq: u8) -> Option<PicInterruptClaim> {
+        self.state.claim_irq(irq)
+    }
+
+    /// Claims a request made deliverable by a guest state change.
+    pub fn claim_pending_interrupt(&mut self) -> Option<PicInterruptClaim> {
+        self.state.claim_pending_interrupt()
+    }
+
+    /// Restores a claim when the destination vCPU rejected publication.
+    pub fn restore_interrupt(&mut self, claim: PicInterruptClaim) {
+        self.state.restore_interrupt(claim)
+    }
+
+    /// Handles one PIC register read in owner context.
+    pub fn handle_read(&self, port: X86Port, width: X86AccessWidth) -> X86VlapicResult<usize> {
+        if width != X86AccessWidth::Byte {
+            return Err(X86VlapicError::Unsupported);
+        }
+        let value = match port.number() {
+            MASTER_COMMAND => self.state.master.read_command(),
+            MASTER_DATA => self.state.master.mask,
+            SLAVE_COMMAND => self.state.slave.read_command(),
+            SLAVE_DATA => self.state.slave.mask,
+            _ => return Err(X86VlapicError::Unsupported),
+        };
+        Ok(value as usize)
+    }
+
+    /// Handles one PIC register write in owner context.
+    pub fn handle_write(
+        &mut self,
+        port: X86Port,
+        width: X86AccessWidth,
+        value: usize,
+    ) -> X86VlapicResult {
+        if width != X86AccessWidth::Byte {
+            return Err(X86VlapicError::Unsupported);
+        }
+        match port.number() {
+            MASTER_COMMAND => self.state.master.command(value as u8),
+            MASTER_DATA => self.state.master.data(value as u8),
+            SLAVE_COMMAND => self.state.slave.command(value as u8),
+            SLAVE_DATA => self.state.slave.data(value as u8),
+            _ => return Err(X86VlapicError::Unsupported),
+        }
+        Ok(())
+    }
+}
+
+impl Default for PicOwner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EmulatedPic {
     /// Creates the reset-compatible master and slave PIC state.
     pub const fn new() -> Self {
         Self {
-            state: RawSpinLock::new(PicState::new()),
+            state: RawSpinLock::new(PicCore::new()),
         }
     }
 
@@ -333,5 +413,22 @@ mod tests {
         assert_eq!(claim.vector(), 0x68);
         pic.restore_interrupt(claim);
         assert_eq!(pic.next_interrupt(), Some(0x68));
+    }
+
+    #[test]
+    fn owner_keeps_pic_transaction_lock_free() {
+        let mut pic = PicOwner::new();
+        write_owner(&mut pic, MASTER_COMMAND, 0x11);
+        write_owner(&mut pic, MASTER_DATA, 0x68);
+        write_owner(&mut pic, MASTER_DATA, 0x04);
+        write_owner(&mut pic, MASTER_DATA, 0x01);
+        write_owner(&mut pic, MASTER_DATA, 0xfe);
+
+        assert_eq!(pic.claim_irq(0).map(|claim| claim.vector()), Some(0x68));
+    }
+
+    fn write_owner(pic: &mut PicOwner, port: u16, value: u8) {
+        pic.handle_write(X86Port::new(port), X86AccessWidth::Byte, value as usize)
+            .unwrap();
     }
 }

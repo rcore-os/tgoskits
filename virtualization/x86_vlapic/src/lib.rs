@@ -67,8 +67,8 @@ pub use self::{
         X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerAction,
         X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     },
-    vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
-    vpic::{EmulatedPic, PicInterruptClaim},
+    vioapic::{EmulatedIoApic, IoApicCore, IoApicEoi, IoApicInterrupt, IoApicOwner},
+    vpic::{EmulatedPic, PicCore, PicInterruptClaim, PicOwner},
 };
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {

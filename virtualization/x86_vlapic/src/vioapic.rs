@@ -25,14 +25,18 @@ const REDIRECTION_ENTRY_REMOTE_IRR: u64 = 1 << 14;
 const REDIRECTION_ENTRY_DELIVERY_MODE_MASK: u64 = 0b111 << 8;
 
 #[derive(Debug)]
-struct IoApicState {
+/// Mutable IO APIC model owned by the interrupt-controller task.
+///
+/// All redirection, remote-IRR and level bookkeeping is updated through
+/// `&mut self` so a source event and its EOI completion cannot interleave.
+pub struct IoApicCore {
     selector: u32,
     redirection_table: [u64; REDIRECTION_ENTRY_COUNT],
     pending_level: [bool; REDIRECTION_ENTRY_COUNT],
     input_level: [bool; REDIRECTION_ENTRY_COUNT],
 }
 
-impl IoApicState {
+impl IoApicCore {
     const fn new() -> Self {
         Self {
             selector: 0,
@@ -123,7 +127,127 @@ pub struct IoApicEoi {
 pub struct EmulatedIoApic {
     base: X86GuestPhysAddr,
     size: usize,
-    state: RawSpinLock<IoApicState>,
+    state: RawSpinLock<IoApicCore>,
+}
+
+/// Lock-free IO APIC owner facade.
+///
+/// AxVM's shared interrupt owner can store this value directly and perform
+/// MMIO, source routing and EOI in one task-owned transaction.  The existing
+/// [`EmulatedIoApic`] type remains a synchronized endpoint for compatibility
+/// with older device registration code.
+pub struct IoApicOwner {
+    base: X86GuestPhysAddr,
+    size: usize,
+    state: IoApicCore,
+}
+
+impl IoApicOwner {
+    /// Creates an owner-local IO APIC model.
+    pub fn new(base: X86GuestPhysAddr, size: Option<usize>) -> Self {
+        Self {
+            base,
+            size: size.unwrap_or(IOAPIC_SIZE),
+            state: IoApicCore::new(),
+        }
+    }
+
+    /// Creates an owner-local IO APIC at the PC-compatible default address.
+    pub fn new_default() -> Self {
+        Self::new(X86GuestPhysAddr::from_usize(IOAPIC_BASE), Some(IOAPIC_SIZE))
+    }
+
+    /// Returns the programmed vector for a GSI.
+    pub fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
+        let entry = *self.state.redirection_table.get(gsi)?;
+        if entry & REDIRECTION_ENTRY_MASKED != 0
+            || entry & REDIRECTION_ENTRY_DELIVERY_MODE_MASK != 0
+        {
+            return None;
+        }
+        let vector = (entry & 0xff) as u8;
+        (vector >= 16).then_some(vector)
+    }
+
+    /// Routes an edge-triggered source.
+    pub fn assert_gsi(&mut self, gsi: usize) -> Option<IoApicInterrupt> {
+        self.state.interrupt_for_entry(gsi)
+    }
+
+    /// Updates a level source and returns a newly routable interrupt.
+    pub fn set_gsi_level(&mut self, gsi: usize, asserted: bool) -> Option<IoApicInterrupt> {
+        let input = self.state.input_level.get_mut(gsi)?;
+        let was_asserted = core::mem::replace(input, asserted);
+        if !asserted {
+            self.state.pending_level[gsi] = false;
+            return None;
+        }
+        if was_asserted {
+            if self.state.redirection_table[gsi] & REDIRECTION_ENTRY_REMOTE_IRR != 0 {
+                self.state.pending_level[gsi] = true;
+                return None;
+            }
+            return self.state.interrupt_for_entry(gsi);
+        }
+        self.state.interrupt_for_entry(gsi)
+    }
+
+    /// Completes a guest EOI and returns deferred level delivery.
+    pub fn end_of_interrupt(&mut self, vector: u8) -> Option<IoApicEoi> {
+        self.state.end_of_interrupt(vector)
+    }
+
+    /// Returns the IO APIC MMIO range.
+    pub fn address_range(&self) -> X86GuestPhysAddrRange {
+        X86GuestPhysAddrRange::new(
+            self.base,
+            X86GuestPhysAddr::from_usize(self.base.as_usize() + self.size),
+        )
+    }
+
+    /// Handles an IO APIC MMIO read in owner context.
+    pub fn handle_read(
+        &self,
+        addr: X86GuestPhysAddr,
+        width: X86AccessWidth,
+    ) -> X86VlapicResult<usize> {
+        if !matches!(width, X86AccessWidth::Dword | X86AccessWidth::Qword) {
+            return Err(X86VlapicError::Unsupported);
+        }
+        let offset = addr.as_usize().saturating_sub(self.base.as_usize());
+        match offset {
+            IOREGSEL => Ok(self.state.selector as usize),
+            IOWIN => Ok(EmulatedIoApic::read_selected_register(&self.state)? as usize),
+            _ => Ok(0),
+        }
+    }
+
+    /// Handles an IO APIC MMIO write in owner context.
+    pub fn handle_write(
+        &mut self,
+        addr: X86GuestPhysAddr,
+        width: X86AccessWidth,
+        val: usize,
+    ) -> X86VlapicResult {
+        if !matches!(width, X86AccessWidth::Dword | X86AccessWidth::Qword) {
+            return Err(X86VlapicError::Unsupported);
+        }
+        let offset = addr.as_usize().saturating_sub(self.base.as_usize());
+        match offset {
+            IOREGSEL => {
+                self.state.selector = val as u32;
+                Ok(())
+            }
+            IOWIN => EmulatedIoApic::write_selected_register(&mut self.state, val as u32),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Default for IoApicOwner {
+    fn default() -> Self {
+        Self::new_default()
+    }
 }
 
 impl EmulatedIoApic {
@@ -132,7 +256,7 @@ impl EmulatedIoApic {
         Self {
             base,
             size: size.unwrap_or(IOAPIC_SIZE),
-            state: RawSpinLock::new(IoApicState::new()),
+            state: RawSpinLock::new(IoApicCore::new()),
         }
     }
 
@@ -200,7 +324,7 @@ impl EmulatedIoApic {
         addr.as_usize() - self.base.as_usize()
     }
 
-    fn read_selected_register(state: &IoApicState) -> X86VlapicResult<u32> {
+    fn read_selected_register(state: &IoApicCore) -> X86VlapicResult<u32> {
         match state.selector {
             IOAPIC_ID => Ok(IOAPIC_ID_VALUE),
             IOAPIC_VER => Ok(IOAPIC_VERSION_VALUE),
@@ -224,7 +348,7 @@ impl EmulatedIoApic {
         }
     }
 
-    fn write_selected_register(state: &mut IoApicState, value: u32) -> X86VlapicResult {
+    fn write_selected_register(state: &mut IoApicCore, value: u32) -> X86VlapicResult {
         match state.selector {
             IOAPIC_ID | IOAPIC_VER | IOAPIC_ARB => Ok(()),
             reg @ IOREDTBL_BASE..=0x3f => {
@@ -327,15 +451,15 @@ impl EmulatedIoApic {
 mod tests {
     use super::*;
 
-    fn write_iowin(state: &mut IoApicState, value: u32) {
+    fn write_iowin(state: &mut IoApicCore, value: u32) {
         EmulatedIoApic::write_selected_register(state, value).unwrap();
     }
 
-    fn select(state: &mut IoApicState, reg: u32) {
+    fn select(state: &mut IoApicCore, reg: u32) {
         state.selector = reg;
     }
 
-    fn program_level_gsi(state: &mut IoApicState, gsi: usize, vector: u8) {
+    fn program_level_gsi(state: &mut IoApicCore, gsi: usize, vector: u8) {
         select(state, IOREDTBL_BASE + (gsi as u32) * 2);
         write_iowin(state, REDIRECTION_ENTRY_TRIGGER_MODE as u32 | vector as u32);
         select(state, IOREDTBL_BASE + (gsi as u32) * 2 + 1);
@@ -344,7 +468,7 @@ mod tests {
 
     #[test]
     fn eoi_reports_gsi_and_deferred_level_interrupt() {
-        let mut state = IoApicState::new();
+        let mut state = IoApicCore::new();
         program_level_gsi(&mut state, 18, 0x51);
 
         assert_eq!(
@@ -395,6 +519,27 @@ mod tests {
         assert_eq!(
             ioapic.end_of_interrupt(0x34).and_then(|eoi| eoi.pending),
             None
+        );
+    }
+
+    #[test]
+    fn owner_keeps_level_transaction_lock_free() {
+        let mut ioapic = IoApicOwner::default();
+        program_level_gsi(&mut ioapic.state, 4, 0x34);
+
+        assert_eq!(
+            ioapic.set_gsi_level(4, true),
+            Some(IoApicInterrupt {
+                vector: 0x34,
+                level_triggered: true,
+            })
+        );
+        assert_eq!(
+            ioapic.end_of_interrupt(0x34).and_then(|eoi| eoi.pending),
+            Some(IoApicInterrupt {
+                vector: 0x34,
+                level_triggered: true,
+            })
         );
     }
 }
