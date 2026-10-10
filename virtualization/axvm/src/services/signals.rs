@@ -22,7 +22,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     vec::Vec,
@@ -34,7 +34,8 @@ use crate::{
     AxVmResult, HostWaitQueueHandle, ax_err,
     host::task::{IrqNotification, ThreadWakeHandle},
     identity::{RunId, VcpuInstance},
-    irq::model::{PendingVcpuInterrupt, RunEpoch},
+    irq::model::{PendingVcpuInterrupt, RunEpoch, SourceEvent},
+    manager::ControlShared,
     runtime::{
         kick::kick_target,
         queue::{INTERRUPT_SOURCE_CAPACITY, QueuedVcpuInterrupt, SlotUpdate, VcpuSignalSlot},
@@ -46,6 +47,44 @@ pub(crate) use crate::{irq::deferred::RunSignalWorker, runtime::queue::SignalErr
 const IRQ_CLOSED_BIT: usize = 1usize << (usize::BITS - 1);
 const IRQ_INFLIGHT_MASK: usize = !IRQ_CLOSED_BIT;
 const POLL_OWNER_NONE: usize = usize::MAX;
+const CONTROLLER_EVENT_CAPACITY: usize = 64;
+
+struct ControllerEventQueue {
+    entries: [Option<SourceEvent>; CONTROLLER_EVENT_CAPACITY],
+    head: usize,
+    len: usize,
+}
+
+impl ControllerEventQueue {
+    const fn new() -> Self {
+        Self {
+            entries: [None; CONTROLLER_EVENT_CAPACITY],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, event: SourceEvent) -> Result<(), SignalError> {
+        if self.len == self.entries.len() {
+            return Err(SignalError::Capacity);
+        }
+        let index = (self.head + self.len) % self.entries.len();
+        self.entries[index] = Some(event);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn drain(&mut self, output: &mut Vec<SourceEvent>) {
+        while self.len != 0 {
+            let event = self.entries[self.head]
+                .take()
+                .expect("controller event queue slot must be occupied");
+            self.head = (self.head + 1) % self.entries.len();
+            self.len -= 1;
+            output.push(event);
+        }
+    }
+}
 
 /// Per-run, per-vCPU interrupt and work signal state.
 ///
@@ -65,6 +104,8 @@ pub(crate) struct RunSignals {
     irq_state: AtomicUsize,
     irq_pending: AtomicUsize,
     irq_notify: IrqNotification,
+    controller_events: RawSpinLock<ControllerEventQueue>,
+    control: OnceLock<Weak<ControlShared>>,
 }
 
 /// Guards one hard-IRQ publisher against interrupt quiescence.
@@ -106,7 +147,47 @@ impl RunSignals {
             irq_state: AtomicUsize::new(0),
             irq_pending: AtomicUsize::new(0),
             irq_notify: IrqNotification::new(),
+            controller_events: RawSpinLock::new(ControllerEventQueue::new()),
+            control: OnceLock::new(),
         }))
+    }
+
+    /// Binds this run to its lifecycle owner before guest entry is admitted.
+    pub(crate) fn bind_control(&self, control: Weak<ControlShared>) {
+        let _ = self.control.set(control);
+    }
+
+    fn control(&self) -> Option<Arc<ControlShared>> {
+        self.control.get().and_then(Weak::upgrade)
+    }
+
+    /// Publishes a shared-controller event from a device or hard-IRQ context.
+    ///
+    /// The fixed slot is the only state touched by the producer. The signal
+    /// worker drains it in task context and posts to the lifecycle owner.
+    pub(crate) fn publish_controller_event(&self, event: SourceEvent) -> Result<(), SignalError> {
+        let producer = IrqProducerGuard::new(self)?;
+        let result = self.controller_events.lock_irqsave().push(event);
+        drop(producer);
+        if result.is_ok() {
+            self.irq_notify.notify();
+        }
+        result
+    }
+
+    pub(crate) fn drain_controller_events(&self) -> Vec<SourceEvent> {
+        let mut output = Vec::with_capacity(CONTROLLER_EVENT_CAPACITY);
+        self.controller_events.lock_irqsave().drain(&mut output);
+        output
+    }
+
+    pub(crate) fn post_controller_events(&self) {
+        let Some(control) = self.control() else {
+            return;
+        };
+        for event in self.drain_controller_events() {
+            control.post_interrupt(event);
+        }
     }
 
     pub(crate) const fn run_id(&self) -> RunId {

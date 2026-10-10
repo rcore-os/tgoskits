@@ -147,6 +147,16 @@ pub trait InterruptControllerEndpoint: Send + Sync {
     fn submit(&self, event: SourceEvent) -> Result<(), Self::Error>;
 }
 
+/// Task-owner side of a shared interrupt controller.
+///
+/// `submit` is the producer-facing ingress. `apply_source` is reachable only
+/// from the lifecycle owner after the fixed ingress has been drained.
+pub trait InterruptControllerOwner: Send + Sync {
+    type Error;
+
+    fn apply_source(&self, event: SourceEvent) -> Result<(), Self::Error>;
+}
+
 /// Owner-only interface for a CPU-local guest timer.
 pub trait VcpuLocalTimer {
     /// Error returned by the architecture timer backend.

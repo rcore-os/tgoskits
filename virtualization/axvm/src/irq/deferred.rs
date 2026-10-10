@@ -89,6 +89,7 @@ fn run_worker(signals: Arc<RunSignals>, stopping: Arc<AtomicBool>) {
         if stopping.load(Ordering::Acquire) {
             break;
         }
+        signals.post_controller_events();
         signals.kick_pending_for_worker();
     }
 }

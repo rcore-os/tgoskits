@@ -49,6 +49,18 @@ use vgic::Aarch64VgicRuntimeKey;
 
 pub(crate) struct Aarch64Arch;
 
+pub(crate) fn apply_interrupt_event(
+    devices: &Arc<axdevice::DeviceRuntime>,
+    event: crate::irq::model::SourceEvent,
+) -> AxVmResult {
+    let owner = devices
+        .services()
+        .require::<Aarch64VgicRuntimeKey>()
+        .map_err(|error| AxVmError::device("resolve AArch64 interrupt owner", error))?;
+    crate::irq::model::InterruptControllerOwner::apply_source(owner.as_ref(), event)
+        .map_err(|error| AxVmError::interrupt("apply AArch64 interrupt event", error))
+}
+
 /// Binds one run's guest-memory capability into the architecture hardware that
 /// needs scoped copies of guest-owned tables.
 ///

@@ -28,8 +28,8 @@ use axvm_types::InterruptTriggerMode;
 use crate::{
     AxVmResult, RunId, ax_err,
     irq::model::{
-        InterruptControllerEndpoint, InterruptSourceId, PendingVcpuInterrupt, SourceEvent,
-        VirtualInterruptId,
+        InterruptControllerEndpoint, InterruptControllerOwner, InterruptSourceId,
+        PendingVcpuInterrupt, SourceEvent, VirtualInterruptId,
     },
     runtime::QueuedVcpuInterrupt,
     services::{RunSignals, SignalError},
@@ -309,6 +309,30 @@ impl InterruptControllerEndpoint for LoongArchPchPicRuntime {
     }
 
     fn submit(&self, event: SourceEvent) -> crate::AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let port = self.run.current().ok_or_else(|| {
+            crate::AxVmError::interrupt("submit LoongArch interrupt", "no active run")
+        })?;
+        if port.signals.epoch() != epoch {
+            return Err(crate::AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(port.signals.run_id()),
+            });
+        }
+        port.signals
+            .publish_controller_event(event)
+            .map_err(|error| crate::AxVmError::interrupt("queue LoongArch interrupt event", error))
+    }
+}
+
+impl InterruptControllerOwner for LoongArchPchPicRuntime {
+    type Error = crate::AxVmError;
+
+    fn apply_source(&self, event: SourceEvent) -> crate::AxVmResult {
         let epoch = match event {
             SourceEvent::Pulse { epoch, .. }
             | SourceEvent::Level { epoch, .. }

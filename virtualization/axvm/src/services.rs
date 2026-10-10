@@ -18,6 +18,7 @@ use crate::{
     AxVmError, AxVmResult, RunId, StopReason,
     guest_memory::GuestMemoryPort,
     host::{HostTime, HostTimer, default_host},
+    irq::model::SourceEvent,
     manager::ControlShared,
     sync::MutexExt,
 };
@@ -148,6 +149,13 @@ impl RunServices {
             .with_access(|memory| self.devices.try_write(access, value, Some(memory)))
             .map_err(|error| AxVmError::device("acquire guest device memory", error))?
             .map_err(|error| AxVmError::device("write guest device", error))
+    }
+
+    /// Applies one run-bound shared-controller event on the lifecycle owner.
+    /// Producers only publish into the fixed ingress; this dispatch point is
+    /// reached from the owner task after the vCPU and IRQ layers are quiescent.
+    pub(crate) fn submit_interrupt(&self, event: SourceEvent) -> AxVmResult {
+        crate::arch::current::apply_interrupt_event(&self.devices, event)
     }
 
     /// The designated poller always polls before WFI, including local queue work

@@ -3,14 +3,17 @@
 mod guest_memory;
 mod plan;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Weak},
+};
 
 use arm_vgic::*;
 use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::*;
 use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptTriggerMode, IrqResult,
-    MessageInterruptController, VirtualInterruptController, WiredIrqInput,
+    ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTriggerMode, IrqError,
+    IrqResult, MessageInterruptController, VirtualInterruptController, WiredIrqInput, WiredIrqSink,
 };
 pub(super) use plan::VgicConstructionPlan;
 
@@ -21,7 +24,9 @@ use super::{
 use crate::{
     AxVmResult, RunId,
     guest_memory::GuestMemoryPort,
-    irq::model::{InterruptControllerEndpoint, SourceEvent},
+    irq::model::{
+        InterruptControllerEndpoint, InterruptControllerOwner, InterruptSourceId, SourceEvent,
+    },
     machine::*,
     services::RunSignals,
     sync::MutexExt,
@@ -77,6 +82,8 @@ pub(crate) struct Aarch64VgicRuntime {
     /// is released before the deferred kick is published. The wake callback
     /// shares only this raw slot, never the full runtime.
     run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
+    inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    wired_sink: Arc<Aarch64VgicWiredSink>,
 }
 
 impl Aarch64VgicRuntime {
@@ -88,7 +95,7 @@ impl Aarch64VgicRuntime {
         host_virtual_timer_intid: u32,
     ) -> Arc<Self> {
         let native = core.controller().native_port();
-        Arc::new(Self {
+        Arc::new_cyclic(|runtime| Self {
             vm_id,
             core,
             native,
@@ -97,6 +104,10 @@ impl Aarch64VgicRuntime {
             host_virtual_timer_intid,
             phase: Mutex::new(RuntimePhase::Inactive),
             run: Arc::new(RawSpinLock::new(None)),
+            inputs: Mutex::new(BTreeMap::new()),
+            wired_sink: Arc::new(Aarch64VgicWiredSink {
+                runtime: runtime.clone(),
+            }),
         })
     }
 
@@ -303,10 +314,207 @@ impl InterruptControllerEndpoint for Aarch64VgicRuntime {
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
     ) -> IrqResult<WiredIrqInput> {
-        self.core.wired_input(input, trigger)
+        let spi = u32::try_from(input.value())
+            .ok()
+            .and_then(|value| SpiId::new(value).ok())
+            .ok_or_else(|| IrqError::InvalidInput {
+                endpoint: InterruptEndpoint::Wired {
+                    controller: <Self as InterruptControllerEndpoint>::id(self),
+                    input,
+                },
+                operation: "open AArch64 VGIC input",
+                detail: "the input is outside the VGIC SPI range".into(),
+            })?;
+
+        if let Some((actual, existing)) = self.inputs.lock_unpoisoned().get(&input.value()) {
+            if *actual != trigger {
+                return Err(IrqError::InvalidTriggerMode {
+                    endpoint: InterruptEndpoint::Wired {
+                        controller: <Self as InterruptControllerEndpoint>::id(self),
+                        input,
+                    },
+                    operation: "open AArch64 VGIC input",
+                    expected: *actual,
+                    actual: trigger,
+                });
+            }
+            return Ok(existing.clone());
+        }
+
+        let trigger_mode = match trigger {
+            InterruptTriggerMode::EdgeTriggered => TriggerMode::Edge,
+            InterruptTriggerMode::LevelTriggered => TriggerMode::Level,
+        };
+        self.core
+            .controller()
+            .configure_spi_input(spi, trigger_mode)
+            .map_err(|error| IrqError::Backend {
+                endpoint: InterruptEndpoint::Wired {
+                    controller: <Self as InterruptControllerEndpoint>::id(self),
+                    input,
+                },
+                operation: "configure AArch64 VGIC input",
+                detail: error.to_string(),
+            })?;
+
+        let wired = WiredIrqInput::new(
+            <Self as InterruptControllerEndpoint>::id(self),
+            input,
+            trigger,
+            self.wired_sink.clone(),
+        );
+        let mut inputs = self.inputs.lock_unpoisoned();
+        if let Some((actual, existing)) = inputs.get(&input.value()) {
+            if *actual != trigger {
+                return Err(IrqError::InvalidTriggerMode {
+                    endpoint: InterruptEndpoint::Wired {
+                        controller: <Self as InterruptControllerEndpoint>::id(self),
+                        input,
+                    },
+                    operation: "open AArch64 VGIC input",
+                    expected: *actual,
+                    actual: trigger,
+                });
+            }
+            return Ok(existing.clone());
+        }
+        inputs.insert(input.value(), (trigger, wired.clone()));
+        Ok(wired)
     }
 
     fn submit(&self, event: SourceEvent) -> AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let signals = self
+            .run
+            .lock_irqsave()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| AxVmError::interrupt("submit AArch64 interrupt", "no active run"))?;
+        if signals.epoch() != epoch {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(signals.run_id()),
+            });
+        }
+        signals
+            .publish_controller_event(event)
+            .map_err(|error| AxVmError::interrupt("queue AArch64 interrupt event", error))
+    }
+}
+
+struct Aarch64VgicWiredSink {
+    runtime: Weak<Aarch64VgicRuntime>,
+}
+
+impl Aarch64VgicWiredSink {
+    fn endpoint(runtime: &Aarch64VgicRuntime, input: ControllerInputId) -> InterruptEndpoint {
+        InterruptEndpoint::Wired {
+            controller: <Aarch64VgicRuntime as InterruptControllerEndpoint>::id(runtime),
+            input,
+        }
+    }
+
+    fn submit(
+        &self,
+        input: ControllerInputId,
+        event: SourceEvent,
+        operation: &'static str,
+    ) -> IrqResult {
+        let runtime = self.runtime.upgrade().ok_or_else(|| IrqError::Backend {
+            endpoint: InterruptEndpoint::Wired {
+                controller: InterruptControllerId::new(0),
+                input,
+            },
+            operation,
+            detail: "AArch64 VGIC runtime is closed".into(),
+        })?;
+        InterruptControllerEndpoint::submit(runtime.as_ref(), event).map_err(|error| {
+            IrqError::Backend {
+                endpoint: Self::endpoint(runtime.as_ref(), input),
+                operation,
+                detail: error.to_string(),
+            }
+        })
+    }
+}
+
+impl WiredIrqSink for Aarch64VgicWiredSink {
+    fn set_level(&self, input: ControllerInputId, asserted: bool) -> IrqResult {
+        let runtime = self.runtime.upgrade().ok_or_else(|| IrqError::Backend {
+            endpoint: InterruptEndpoint::Wired {
+                controller: InterruptControllerId::new(0),
+                input,
+            },
+            operation: "submit AArch64 VGIC line level",
+            detail: "AArch64 VGIC runtime is closed".into(),
+        })?;
+        let signals = runtime
+            .run
+            .lock_irqsave()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| IrqError::Backend {
+                endpoint: Self::endpoint(runtime.as_ref(), input),
+                operation: "submit AArch64 VGIC line level",
+                detail: "AArch64 VGIC has no active run".into(),
+            })?;
+        self.submit(
+            input,
+            SourceEvent::Level {
+                epoch: signals.epoch(),
+                source: InterruptSourceId::new(
+                    <Aarch64VgicRuntime as InterruptControllerEndpoint>::id(runtime.as_ref()),
+                    input.value() as u32,
+                    None,
+                ),
+                asserted,
+            },
+            "submit AArch64 VGIC line level",
+        )
+    }
+
+    fn pulse(&self, input: ControllerInputId) -> IrqResult {
+        let runtime = self.runtime.upgrade().ok_or_else(|| IrqError::Backend {
+            endpoint: InterruptEndpoint::Wired {
+                controller: InterruptControllerId::new(0),
+                input,
+            },
+            operation: "submit AArch64 VGIC line pulse",
+            detail: "AArch64 VGIC runtime is closed".into(),
+        })?;
+        let signals = runtime
+            .run
+            .lock_irqsave()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| IrqError::Backend {
+                endpoint: Self::endpoint(runtime.as_ref(), input),
+                operation: "submit AArch64 VGIC line pulse",
+                detail: "AArch64 VGIC has no active run".into(),
+            })?;
+        self.submit(
+            input,
+            SourceEvent::Pulse {
+                epoch: signals.epoch(),
+                source: InterruptSourceId::new(
+                    <Aarch64VgicRuntime as InterruptControllerEndpoint>::id(runtime.as_ref()),
+                    input.value() as u32,
+                    None,
+                ),
+            },
+            "submit AArch64 VGIC line pulse",
+        )
+    }
+}
+
+impl InterruptControllerOwner for Aarch64VgicRuntime {
+    type Error = AxVmError;
+
+    fn apply_source(&self, event: SourceEvent) -> AxVmResult {
         let epoch = match event {
             SourceEvent::Pulse { epoch, .. }
             | SourceEvent::Level { epoch, .. }

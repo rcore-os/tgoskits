@@ -61,6 +61,12 @@ impl Owner {
     pub(super) fn internal(&mut self, message: ControlMessage) {
         match message {
             ControlMessage::Event(event) => self.event(event),
+            ControlMessage::Interrupt(event) => {
+                let Some(run) = self.run.as_ref() else { return };
+                if let Err(error) = run.services.submit_interrupt(event) {
+                    self.record_failure(error);
+                }
+            }
             ControlMessage::RunStop { run, reason } => {
                 if self.run.as_ref().is_some_and(|current| current.id == run) {
                     self.guest_stop = Some(run);

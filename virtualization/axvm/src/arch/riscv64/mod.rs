@@ -42,6 +42,18 @@ pub(crate) use vm::RiscvVmPlan;
 
 pub(crate) struct Riscv64Arch;
 
+pub(crate) fn apply_interrupt_event(
+    devices: &Arc<axdevice::DeviceRuntime>,
+    event: crate::irq::model::SourceEvent,
+) -> AxVmResult {
+    let owner = devices
+        .services()
+        .require::<irq::RiscvPlicRuntimeKey>()
+        .map_err(|error| AxVmError::device("resolve RISC-V interrupt owner", error))?;
+    crate::irq::model::InterruptControllerOwner::apply_source(owner.as_ref(), event)
+        .map_err(|error| AxVmError::interrupt("apply RISC-V interrupt event", error))
+}
+
 /// Per-runtime entry payload for the RISC-V architecture.
 ///
 /// It retains only the fixed guest-hart topology and a narrow VM-local vPLIC

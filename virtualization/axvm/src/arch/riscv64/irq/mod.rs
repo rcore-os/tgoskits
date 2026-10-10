@@ -29,7 +29,10 @@ use riscv_vplic::*;
 
 use crate::{
     AxVmError, AxVmResult, ax_err, ax_err_type,
-    irq::model::{InterruptControllerEndpoint, InterruptSourceId, RunEpoch, SourceEvent},
+    irq::model::{
+        InterruptControllerEndpoint, InterruptControllerOwner, InterruptSourceId, RunEpoch,
+        SourceEvent,
+    },
     services::{RunSignals, SignalError},
 };
 
@@ -324,6 +327,30 @@ impl InterruptControllerEndpoint for RiscvPlicRuntime {
     }
 
     fn submit(&self, event: SourceEvent) -> AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let current = self.current_epoch()?;
+        if epoch != current {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(current.run()),
+            });
+        }
+        self.kick
+            .current()
+            .ok_or_else(|| AxVmError::interrupt("submit RISC-V interrupt", "no active run"))?
+            .publish_controller_event(event)
+            .map_err(|error| AxVmError::interrupt("queue RISC-V interrupt event", error))
+    }
+}
+
+impl InterruptControllerOwner for RiscvPlicRuntime {
+    type Error = AxVmError;
+
+    fn apply_source(&self, event: SourceEvent) -> AxVmResult {
         let epoch = match event {
             SourceEvent::Pulse { epoch, .. }
             | SourceEvent::Level { epoch, .. }

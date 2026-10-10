@@ -34,6 +34,18 @@ pub(crate) use vm::LoongArchVmPlan;
 
 pub(crate) struct LoongArch64Arch;
 
+pub(crate) fn apply_interrupt_event(
+    devices: &Arc<axdevice::DeviceRuntime>,
+    event: crate::irq::model::SourceEvent,
+) -> AxVmResult {
+    let owner = devices
+        .services()
+        .require::<irq::LoongArchPchPicRuntimeKey>()
+        .map_err(|error| AxVmError::device("resolve LoongArch interrupt owner", error))?;
+    crate::irq::model::InterruptControllerOwner::apply_source(owner.as_ref(), event)
+        .map_err(|error| AxVmError::interrupt("apply LoongArch interrupt event", error))
+}
+
 /// Run-bound native controller state prepared by the control owner.
 ///
 /// The entry holds narrow, immutable per-run values only: the guest-visible

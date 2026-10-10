@@ -34,8 +34,8 @@ use crate::{
     engine::{VcpuAction, WaitReason},
     host::*,
     irq::model::{
-        InterruptControllerEndpoint, InterruptSourceId, PendingVcpuInterrupt, SourceEvent,
-        VcpuLocalInterrupts, VcpuLocalTimer, VirtualInterruptId,
+        InterruptControllerEndpoint, InterruptControllerOwner, InterruptSourceId,
+        PendingVcpuInterrupt, SourceEvent, VcpuLocalInterrupts, VcpuLocalTimer, VirtualInterruptId,
     },
     runtime::{QueuedVcpuInterrupt, hvc::GuestRequest},
     services::{RunServices, RunSignals, SignalError, VcpuWait},
@@ -1163,7 +1163,7 @@ impl X86DeliveryPort {
 /// Keeps the registration maps and host IRQ hook list, which are only ever
 /// touched by the owning task, next to the lower [`X86DeliveryPort`] the entry
 /// and hard-IRQ hooks actually use.
-pub(super) struct X86InterruptDomain {
+pub(crate) struct X86InterruptDomain {
     port: Arc<X86DeliveryPort>,
     /// Task-only input resolver: registered guest GSI inputs never change in
     /// hard IRQ, so this is a genuine sleeping-capable `std::sync::Mutex`.
@@ -1185,7 +1185,19 @@ struct X86WiredState {
 /// The public `X86InterruptDomainKey` exposes only injection operations. This
 /// key is intentionally architecture-private because hook ownership and
 /// teardown are runtime implementation details.
-pub(super) struct X86InterruptDomainRuntimeKey;
+pub(crate) struct X86InterruptDomainRuntimeKey;
+
+pub(crate) fn apply_interrupt_event(
+    devices: &Arc<axdevice::DeviceRuntime>,
+    event: SourceEvent,
+) -> AxVmResult {
+    let owner = devices
+        .services()
+        .require::<X86InterruptDomainRuntimeKey>()
+        .map_err(|error| AxVmError::device("resolve x86 interrupt owner", error))?;
+    InterruptControllerOwner::apply_source(owner.as_ref(), event)
+        .map_err(|error| AxVmError::interrupt("apply x86 interrupt event", error))
+}
 
 impl ServiceKey for X86InterruptDomainRuntimeKey {
     type Service = X86InterruptDomain;
@@ -1318,6 +1330,31 @@ impl InterruptControllerEndpoint for X86InterruptDomain {
     }
 
     fn submit(&self, event: SourceEvent) -> AxVmResult {
+        let epoch = match event {
+            SourceEvent::Pulse { epoch, .. }
+            | SourceEvent::Level { epoch, .. }
+            | SourceEvent::Eoi { epoch, .. } => epoch,
+        };
+        let signals = self
+            .port
+            .current_signals()
+            .ok_or_else(|| AxVmError::interrupt("submit x86 interrupt", "no active run"))?;
+        if signals.epoch() != epoch {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(signals.run_id()),
+            });
+        }
+        signals
+            .publish_controller_event(event)
+            .map_err(|error| AxVmError::interrupt("queue x86 interrupt event", error))
+    }
+}
+
+impl InterruptControllerOwner for X86InterruptDomain {
+    type Error = AxVmError;
+
+    fn apply_source(&self, event: SourceEvent) -> AxVmResult {
         let epoch = match event {
             SourceEvent::Pulse { epoch, .. }
             | SourceEvent::Level { epoch, .. }
