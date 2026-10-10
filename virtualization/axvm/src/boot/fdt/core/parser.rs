@@ -308,7 +308,7 @@ fn protect_machine_owned_firmware_devices(
         .iter()
         .map(|device| device.path.as_str())
         .collect::<Vec<_>>();
-    let console_paths = super::serial::host_owned_serial_paths(fdt);
+    let console_paths = super::serial::host_owned_serial_paths(fdt)?;
     if let Some(selected) = crate_cfg.devices.passthrough.iter().find(|selected| {
         console_paths
             .iter()
@@ -318,7 +318,7 @@ fn protect_machine_owned_firmware_devices(
             path: selected.path.clone(),
         });
     }
-    let mut host_owned_paths = super::serial::physical_serial_paths(fdt);
+    let mut host_owned_paths = super::serial::physical_serial_paths(fdt)?;
     host_owned_paths.retain(|path| {
         console_paths.contains(path)
             || !selected_paths
@@ -724,7 +724,7 @@ pub fn parse_vm_interrupt(
         .into_iter()
         .collect::<BTreeSet<_>>();
     let excluded_paths = excluded_device_paths(vm_cfg, crate_cfg);
-    let host_owned_serial_paths = super::serial::host_owned_serial_paths(&fdt);
+    let host_owned_serial_paths = super::serial::host_owned_serial_paths(&fdt)?;
     let mut passthrough_interrupts = Vec::new();
 
     for node_id in fdt.iter_node_ids() {

@@ -8,9 +8,9 @@ phys_cpu_ids = [0x00]
 [kernel]
 entry_point = 0x2_4008_0000
 kernel_load_addr = 0x2_4008_0000
-kernel_path = "${env:AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus-6.1.99-axivc"
+kernel_path = "/guest/linux/orangepi-5-plus-6.1.99-axivc"
 cmdline = "root=/dev/mmcblk1p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M clk_ignore_unused pd_ignore_unused"
-ramdisk_path = "${env:AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio"
+ramdisk_path = "/guest/linux/initramfs.cpio"
 ramdisk_load_addr = 0xc000_0000
 
 memory_regions = [
@@ -36,6 +36,24 @@ disabled = [
   # available through /usbdrd3_1.
   { path = "/usbdrd3_0" },
   { path = "/phy@fed80000" },
+  # The FUSB302 connector's remote-endpoint refers to the disabled USB0 PHY
+  # above, which AxVisor keeps for the host; the guest must not parse it.
+  { path = "/i2c@fec80000/fusb302@22" },
+  # The guest does not use this DisplayPort node, so keep it out to avoid its
+  # references to the AxVisor-owned /phy@fed80000/dp-port.
+  { path = "/dp@fde50000" },
+  # The guest does not use the VOP display pipeline, so keep it out to avoid
+  # its references to the AxVisor-owned DisplayPort provider above.
+  { path = "/vop@fdd90000" },
+  # The guest does not use this HDMI output node, so keep it out to avoid its
+  # references to the AxVisor-owned VOP provider above.
+  { path = "/hdmi@fdea0000" },
+  # The guest does not use this HDMI output node, so keep it out to avoid its
+  # references to the AxVisor-owned VOP provider above.
+  { path = "/hdmi@fde80000" },
+  # The guest does not use the host IOMMU, so keep it out to avoid the
+  # passthrough sharing an AxVisor-owned interrupt source.
+  { path = "/iommu@fdd97e00" },
 ]
 
 [[devices.virtual]]

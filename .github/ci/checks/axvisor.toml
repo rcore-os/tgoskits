@@ -255,3 +255,24 @@ cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-linux"
+
+# The dual-guest board route `orangepi-5-plus-dualguest-robot` is declared by
+# both test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr and
+# .../dual-starry-zephyr, so this single check runs the Linux+Zephyr and the
+# StarryOS+Zephyr robot variants sequentially. The runner releases and
+# reacquires the physical board for each case.
+[[check]]
+id = "test-orangepi-5-plus-dualguest-robot"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus DualGuest robot · Linux/StarryOS + Zephyr"
+runner = "board"
+resource_group = "orangepi-5-plus-robot-uart6"
+timeout_minutes = 30
+command = '''
+cargo xtask starry build --config test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr/starry-guest-build.toml --smp 1
+cargo xtask axvisor test board --board orangepi-5-plus-dualguest-robot
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-dualguest-robot"

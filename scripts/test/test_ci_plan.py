@@ -11,6 +11,11 @@ from typing import Any
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
+
+# Imported after the suite directory is on sys.path so both the direct script
+# entry point and `python3 -m unittest scripts.test.test_ci_plan` can import it.
+from ci_suite import SUITE_ROOTS
+
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -28,6 +33,18 @@ def main_test_rows(plan: dict) -> list[dict]:
         for prefix in MAIN_TEST_PREFIXES
         for row in plan[f"{prefix}_matrix"]["include"]
     ]
+
+
+def board_type_by_board_name() -> dict[str, str]:
+    """Map every CI board name to the board_type declared by its config."""
+    board_types: dict[str, str] = {}
+    for suite_root in SUITE_ROOTS.values():
+        for config in (ci_plan.WORKSPACE_ROOT / suite_root).rglob("board-*.toml"):
+            name = config.stem.removeprefix("board-")
+            if name in board_types:
+                continue
+            board_types[name] = tomllib.loads(config.read_text()).get("board_type", "")
+    return board_types
 
 
 class CiPlanTests(unittest.TestCase):
@@ -738,11 +755,49 @@ command = "true"
         self.assertEqual(plan["arceos_matrix"]["include"], [])
         self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
-    def test_dualguest_robot_board_is_not_scheduled(self) -> None:
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
+    def test_dualguest_robot_board_runs_both_guest_variants(self) -> None:
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("os/axvisor/src/lib.rs",),
+                targets=("axvisor:aarch64",),
+            ),
         )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", rows)
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(context)["axvisor_matrix"]["include"]
+        )
+        dualguest = rows["test-orangepi-5-plus-dualguest-robot"]
+
+        self.assertEqual(dualguest["resource_group"], "orangepi-5-plus-robot-uart6")
+
+        self.assertEqual(
+            dualguest["command"],
+            "cargo xtask starry build --config "
+            "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr/"
+            "starry-guest-build.toml --smp 1\n"
+            "cargo xtask axvisor test board "
+            "--board orangepi-5-plus-dualguest-robot",
+        )
+
+        # Both existing robot variants declare that board route, so the one
+        # command above runs the Linux+Zephyr and the StarryOS+Zephyr cases.
+        root = MODULE_PATH.parents[2]
+        for variant in ("dual-linux-zephyr", "dual-starry-zephyr"):
+            path = (
+                root
+                / "test-suit/axvisor/normal/board-orangepi-5-plus"
+                / variant
+                / "board-orangepi-5-plus-dualguest-robot.toml"
+            )
+            with self.subTest(variant=variant):
+                self.assertTrue(path.is_file())
+                self.assertEqual(
+                    tomllib.loads(path.read_text())["board_type"],
+                    "OrangePi-5-Plus-Robot-UART6",
+                )
+
         nightly_rows = self.assert_unique_ids(
             ci_plan.build_axvisor_nightly_plan(
                 ci_plan.replace(self.upstream, event_name="schedule")
@@ -779,7 +834,7 @@ command = "true"
             with self.subTest(config=path):
                 config = tomllib.loads(path.read_text())
                 self.assertEqual(
-                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
+                    config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:
@@ -953,6 +1008,53 @@ command = "true"
         )
         self.assertIn("root=/dev/mmcblk1p2", linux_kernel["cmdline"])
 
+    def test_dualguest_starry_guest_uses_explicit_test_init(self) -> None:
+        root = MODULE_PATH.parents[2]
+        directory = (
+            root
+            / "test-suit/axvisor/normal/board-orangepi-5-plus"
+            / "dual-starry-zephyr"
+        )
+        config = tomllib.loads((directory / "starry-smp1.toml").read_text())
+        cmdline = config["kernel"]["cmdline"]
+        tokens = cmdline.split()
+
+        self.assertIn("init=/bin/sh", tokens)
+        for token in (
+            "root=/dev/mmcblk0p2",
+            "rw",
+            "console=ttyS2,1500000",
+            "earlycon=uart8250,mmio32,0xfeb50000",
+            "rootwait",
+            "rootfstype=ext4",
+            "cpuidle.off=1",
+            "rodata=off",
+            "cma=128M",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, tokens)
+
+        starry_prompt = "root@starry:"
+        self.assertIn(f'PS1="{starry_prompt}# "', cmdline)
+        self.assertIn(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            tokens,
+        )
+        for env in ("HOME=/root", "USER=root", "HOSTNAME=starry", "TERM=linux"):
+            with self.subTest(env=env):
+                self.assertIn(env, tokens)
+
+        board = tomllib.loads(
+            (directory / "board-orangepi-5-plus-dualguest-robot.toml").read_text()
+        )
+        prompt_steps = [
+            step
+            for step in board["shell_check_steps"]
+            if step.get("shell_prefix", "").startswith(starry_prompt)
+        ]
+        self.assertTrue(prompt_steps)
+        self.assertTrue(all(step.get("shell_cmd") for step in prompt_steps))
+
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
     ) -> None:
@@ -1068,18 +1170,24 @@ command = "true"
             check["id"]: check
             for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
         }
+        board_types = board_type_by_board_name()
         for row in (*main_rows, *nightly_rows, *benchmark_rows):
             check = catalog[row["id"]]
-            boards = {
+            boards = [
                 registration["board"]
                 for registration in check.get("suite", ())
                 if "board" in registration
-            }
+            ]
+            declared_types = [board_types.get(board, "").lower() for board in boards]
             if boards:
                 self.assertIn("board", row["runs_on"])
                 self.assertEqual(
                     row["resource_group"], check.get("resource_group", "")
                 )
+                if any("uart6" in board_type for board_type in declared_types):
+                    self.assertEqual(row["resource_group"], "orangepi-5-plus-robot-uart6")
+                elif any("robot" in board_type for board_type in declared_types):
+                    self.assertEqual(row["resource_group"], "orangepi-5-plus-robot")
             else:
                 self.assertNotIn("board", row["runs_on"])
                 self.assertEqual(row["resource_group"], "")
