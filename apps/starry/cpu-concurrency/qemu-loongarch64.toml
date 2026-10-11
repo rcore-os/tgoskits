@@ -1,6 +1,6 @@
 # LoongArch dynamic (axplat-dyn) platform: build-loongarch64*.toml carries ax-driver/serial and
 # does not opt out of dynamic mode, since the retired static LoongArch path has no serial console
-# binding. uefi=false / to_bin=true is the dynamic platform's raw-binary boot path.
+# binding. The dynamic PIC image uses the LoongArch UEFI handoff for relocation.
 args = [
     "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "1024M", "-smp", "1",
     "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",

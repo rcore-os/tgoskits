@@ -1,8 +1,7 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
-use core::{
-    ffi::{c_char, c_void},
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::ffi::{c_char, c_void};
+#[cfg(feature = "ext4")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
@@ -832,10 +831,10 @@ impl LoopMountLease {
 
     /// Releases the loop mount holder exactly once.
     ///
-    /// A normal unmount drops the mount's lifetime guard as soon as it detaches
-    /// the mountpoint, but the filesystem may keep its cache owners alive past
-    /// that point after an I/O error. Both paths share this lease, so whichever
-    /// drops first releases the holder and the other becomes a no-op.
+    /// The filesystem owns the holder for its complete lifetime, including
+    /// lazy detach and open files. Keeping this lease with the filesystem
+    /// prevents a second mount from reusing the backing store before dirty
+    /// data held by the detached filesystem has been written back.
     fn release(&self) {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
@@ -884,8 +883,10 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         if !readonly && physical.0.handle.device_info().read_only {
             return Err(StarryError::ReadOnlyFilesystem);
         }
-        let fs =
-            ax_fs_ng::vfs::new_filesystem_from_handle(physical.0.handle.clone(), physical.0.region)?;
+        let fs = ax_fs_ng::vfs::new_filesystem_from_handle(
+            physical.0.handle.clone(),
+            physical.0.region,
+        )?;
         if fs.name() != "ext4" {
             return Err(StarryError::NoSuchDevice);
         }
@@ -911,18 +912,13 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     }
     // The filesystem owns the lease, including across lazy detach and open files.
     // No filesystem-context lock is held during superblock or backing-file I/O.
-    let fs =
-        new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease.clone())?;
+    let fs = new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)?;
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
-    // A normal unmount drops this guard while it detaches the mountpoint, so
-    // the loop holder is released immediately even when the filesystem keeps
-    // its caches alive after a flush error. The filesystem-held lease then only
-    // covers lazy detach and an unexpected final release.
-    mount.set_lifetime_guard(Arc::new(lease));
     // Let BLKFLSBUF flush this filesystem's dirty cache through the loop
-    // device. The reference is weak so the mount still owns the filesystem.
+    // device. The reference is weak so the device does not keep the mount or
+    // filesystem alive after an unmount.
     loop_device.set_mount_flush_target(Arc::downgrade(&mount));
     Ok(())
 }

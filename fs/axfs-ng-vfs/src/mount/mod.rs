@@ -1367,6 +1367,10 @@ impl Location {
         {
             return Err(VfsError::InvalidInput);
         }
+        // The unmount was admitted before callbacks ran. Preserve that
+        // decision even when filesystem writeback fails: the mount must be
+        // detached so its lifetime resources can be released, while the
+        // callback error is returned to userspace afterwards.
         let flush = self.filesystem().flush();
         self.mountpoint.commit_normal_after_flush(plan)?;
         self.finish_unmount();
