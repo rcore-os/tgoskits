@@ -4,8 +4,8 @@ use std::sync::{Arc, OnceLock};
 
 use ax_std::os::arceos::sync::RawSpinLock;
 use x86_vlapic::{
-    IoApicInterrupt, X86InterruptVector, X86TimerAction, X86TimerCallback, X86VcpuId,
-    X86VlapicError, X86VlapicResult, X86VlapicRuntimeOps, X86VmId,
+    X86InterruptVector, X86TimerAction, X86TimerCallback, X86VcpuId, X86VlapicError,
+    X86VlapicResult, X86VlapicRuntimeOps, X86VmId,
 };
 
 use crate::{
@@ -391,6 +391,3 @@ impl X86VlapicRuntimeOps for AxvmX86VlapicRuntime {
 fn signal_error(_error: crate::services::SignalError) -> X86VlapicError {
     X86VlapicError::BadState
 }
-
-#[allow(dead_code)]
-fn retain_ioapic_type(_interrupt: IoApicInterrupt) {}

@@ -71,6 +71,10 @@ unsafe fn idle_wake_callback(_argument: *mut ()) {
         target_cpu,
         "idle-wake IPI callback ran on the wrong CPU"
     );
+    assert!(
+        IDLE_IPI_ARMED.load(Ordering::Acquire),
+        "idle-wake callback must observe the published handshake"
+    );
     IDLE_IPI_ACKNOWLEDGED.store(true, Ordering::Release);
 }
 
@@ -100,11 +104,18 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
         );
         IDLE_TARGET_MASKED.store(true, Ordering::Release);
 
-        while !IDLE_IPI_ARMED.load(Ordering::Acquire) {
-            core::hint::spin_loop();
+        while !IDLE_IPI_ACKNOWLEDGED.load(Ordering::Acquire) {
+            // The target is deliberately IRQ-masked. A pure spin here can
+            // monopolize single-thread TCG and prevent the sender vCPU from
+            // publishing the IPI that releases this wait. WFI keeps the
+            // interrupt-masked boundary while allowing the emulator to run
+            // another vCPU.
+            ax_cpu::interrupt::wait_for_irqs_disabled();
+            if !IDLE_IPI_ACKNOWLEDGED.load(Ordering::Acquire) {
+                ax_cpu::interrupt::disable_irqs();
+            }
         }
 
-        ax_cpu::interrupt::wait_for_irqs_disabled();
         set_idle_test_timer_irq_enabled(true);
         assert!(
             ax_cpu::interrupt::irqs_enabled(),
@@ -117,12 +128,13 @@ fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
         while !IDLE_TARGET_MASKED.load(Ordering::Acquire) {
             thread::yield_now();
         }
-        ax_ipi::notify_cpu(CpuId(target_cpu)).expect("idle-wake IPI notification failed");
         IDLE_IPI_ARMED.store(true, Ordering::Release);
+        ax_ipi::notify_cpu(CpuId(target_cpu)).expect("idle-wake IPI notification failed");
         // SAFETY: the callback uses only static atomics and performs bounded
-        // hard-IRQ work. The preceding notification makes the physical edge
-        // pending before the target enters its final wait, and `call_on_cpu`
-        // verifies that the target claims that edge and drains logical work.
+        // hard-IRQ work. The handshake is published before the physical
+        // notification, and the target's masked wait handles either ordering
+        // between the notification and entering WFI. `call_on_cpu` verifies
+        // that the target claims that edge and drains logical work.
         unsafe {
             ax_ipi::call_on_cpu(CpuId(target_cpu), idle_wake_callback, core::ptr::null_mut())
         }

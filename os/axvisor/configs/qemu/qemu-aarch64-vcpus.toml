@@ -14,10 +14,7 @@ fail_regex = [
   "VM4_VIRTIO_NET_FAIL",
   "(?i)panic",
 ]
-# The deliberately oversubscribed setup can take more than five minutes to
-# start VM4 on a loaded runner. Keep enough time for the guest handshakes while
-# leaving room for the remaining steps in the CI command.
-timeout = 540
+timeout = 360
 to_bin = true
 uefi = false
 
