@@ -91,7 +91,8 @@ impl ServiceKey for RiscvPlicRuntimeKey {
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
-/// Fixed ingress used while the shared controller has no active run owner.
+/// Fixed source-state ingress used while the shared controller cannot accept
+/// a run-bound event.
 ///
 /// Wired callbacks may run in hard-IRQ context during the stop/activate window,
 /// so they cannot take the vPLIC's sleepable state mutex. Both edge and level
