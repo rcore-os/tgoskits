@@ -28,7 +28,7 @@ TGOSKits 的 `TaskSystem::take_cpu_offline` 仍要求调用方事先完成普通
 
 ### 2.2 待处理与回滚
 
-`NotReady` 表示下线仍在进行：发布租约未释放时保留 `Inactive`；关闭投递后发现待调度工作时，`resume_owner_drain` 从 `Draining` 回到 `Inactive`。调用者必须释放 IRQ 和 owner 借用，让正常调度路径处理工作，再继续同一次下线。期间 placement 始终关闭。
+`NotReady` 表示下线仍在进行：发布租约未释放时保留 `Inactive`；关闭投递后发现待调度工作时，`resume_owner_drain` 从 `Draining` 回到 `Inactive`。定时器 worker、idle-pull、idle polling 和切换交接等 owner 管理状态也属于这一类，必须由目标 CPU 再经过一次所有者安全点后复查。调用者必须释放 IRQ 和 owner 借用，让正常调度路径处理工作，再继续同一次下线。期间 placement 始终关闭。
 
 其他错误由同一返回路径恢复 `Online`。成功则提交 `Offline`。运行时的 `probe_idle_cpu_round_trip` 直接处理这一真实返回值，`IdleOfflineRejection` 只提供诊断，不再决定是否继续排空。
 

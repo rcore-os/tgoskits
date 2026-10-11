@@ -64,6 +64,20 @@ impl CpuLocal {
                 .is_some_and(|worker| run_queue.queued_thread(worker).is_some())
     }
 
+    /// Returns whether owner-managed state still needs one more idle pass.
+    ///
+    /// A CPU can be otherwise empty while an idle-balance claim, the polling
+    /// boundary, or a switch handoff is still being retired. Those states are
+    /// progress conditions: the owner must keep the CPU in `Inactive` and
+    /// service them before the final offline check. Permanent runnable-task or
+    /// deadline ownership is checked separately by `is_quiescent_for_offline`.
+    pub(crate) fn owner_work_pending_for_offline(&self) -> bool {
+        self.ktimer_owner_work_pending_for_offline()
+            || !self.remote.idle_pull_is_quiescent()
+            || self.remote.is_idle_polling()
+            || self.dispatch.switch_handoff.is_some()
+    }
+
     /// Publishes a sticky reschedule request from task or IRQ context.
     pub(crate) fn request_reschedule(&self, kind: RescheduleKind) {
         self.remote.request_reschedule(kind);

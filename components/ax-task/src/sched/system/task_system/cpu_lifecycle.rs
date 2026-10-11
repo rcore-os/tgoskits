@@ -260,7 +260,7 @@ impl TaskSystem {
                 );
                 if cpu.needs_reschedule()
                     || cpu.has_remote_work()
-                    || cpu.ktimer_owner_work_pending_for_offline()
+                    || cpu.owner_work_pending_for_offline()
                 {
                     Err(TaskError::NotReady)
                 } else {

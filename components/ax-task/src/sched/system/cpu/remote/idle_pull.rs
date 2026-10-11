@@ -235,7 +235,7 @@ impl CpuRemote {
             })
     }
 
-    pub(super) fn idle_pull_is_quiescent(&self) -> bool {
+    pub(crate) fn idle_pull_is_quiescent(&self) -> bool {
         self.idle_pull.state.load(Ordering::Acquire)
             & (IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK)
             == IDLE_PULL_IDLE
