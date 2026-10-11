@@ -84,7 +84,6 @@ impl InterruptSourceId {
 pub struct DeliveryToken {
     pub source: InterruptSourceId,
     pub target: VcpuInstance,
-    pub sequence: u64,
 }
 
 /// A source event submitted by a device, host IRQ, or guest EOI path.
@@ -319,8 +318,8 @@ pub struct VirtualInterruptId(pub u32);
 /// Carries the trigger mode (edge/level) so that architecture injection paths
 /// and routers can preserve the semantics declared by the device.
 ///
-/// Will be enqueued into a run-bound fixed signal slot
-/// and later drained by the target vCPU run loop for injection.
+/// Will be enqueued into a run-bound signal slot and later drained by the
+/// target vCPU run loop for injection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingVcpuInterrupt {
     pub id: VirtualInterruptId,
@@ -409,11 +408,7 @@ mod tests {
             vcpu_id: 0,
             activation: 3,
         };
-        let token = DeliveryToken {
-            source,
-            target,
-            sequence: 9,
-        };
+        let token = DeliveryToken { source, target };
         let event = SourceEvent::Eoi { epoch, token };
         assert!(matches!(
             event,

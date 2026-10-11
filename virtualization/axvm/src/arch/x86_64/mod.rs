@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, Weak,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -351,7 +351,7 @@ impl X86Exit {
             Self::PreemptionTimer => Ok(VcpuAction::Reenter(X86Completion::default())),
             Self::InterruptEnd(vector) => {
                 if let Some(vector) = vector {
-                    irq::inject_pending_ioapic_irq_after_eoi(services, vcpu_id, vector);
+                    irq::inject_pending_ioapic_irq_after_eoi(services, vcpu_id, vector)?;
                 }
                 Ok(VcpuAction::Reenter(X86Completion::default()))
             }
@@ -1072,10 +1072,6 @@ pub(super) struct X86DeliveryPort {
     /// vCPU/vector pair used by the local APIC exit; the queue preserves the
     /// delivery order when several IOAPIC sources share one vector.
     eoi_sources: Mutex<BTreeMap<(usize, u8), VecDeque<InterruptSourceId>>>,
-    /// Monotonic delivery identity shared by the task-side EOI producer and
-    /// controller owner. Saturation is retained rather than wrapping so a
-    /// retired token can never alias a later delivery.
-    delivery_sequence: AtomicU64,
 }
 
 impl X86DeliveryPort {
@@ -1092,7 +1088,6 @@ impl X86DeliveryPort {
             binding,
             forwarding: RawSpinLock::new(irq::X86IoApicForwardingState::new()),
             eoi_sources: Mutex::new(BTreeMap::new()),
-            delivery_sequence: AtomicU64::new(1),
         }
     }
 
@@ -1188,20 +1183,6 @@ impl X86DeliveryPort {
             sources.remove(&key);
         }
         source
-    }
-
-    fn source_for_vector(&self, vector: u8) -> Option<InterruptSourceId> {
-        (0..irq::IOAPIC_GSI_COUNT)
-            .find(|&gsi| self.vector_for_gsi(gsi) == Some(vector))
-            .map(|gsi| InterruptSourceId::new(InterruptControllerId::new(0), gsi as u32, None))
-    }
-
-    fn next_delivery_sequence(&self) -> u64 {
-        self.delivery_sequence
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(1))
-            })
-            .unwrap_or(u64::MAX)
     }
 }
 
@@ -1383,10 +1364,10 @@ impl InterruptControllerEndpoint for X86InterruptDomain {
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let signals = self
-            .port
-            .current_signals()
-            .ok_or_else(|| AxVmError::interrupt("submit x86 interrupt", "no active run"))?;
+        let signals = self.port.current_signals().ok_or(AxVmError::StaleRun {
+            expected: epoch.run(),
+            current: None,
+        })?;
         if signals.epoch() != epoch {
             return Err(AxVmError::StaleRun {
                 expected: epoch.run(),
@@ -1403,35 +1384,22 @@ impl InterruptControllerOwner for X86InterruptDomain {
     type Error = AxVmError;
 
     fn apply_source(&self, event: SourceEvent) -> AxVmResult {
-        let is_eoi = matches!(event, SourceEvent::Eoi { .. });
         let epoch = match event {
             SourceEvent::Pulse { epoch, .. }
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
         let Some(signals) = self.port.current_signals() else {
-            // A completion arriving while the run is being retired has no
-            // guest state left to update. Teardown owns host forwarding lease
-            // retirement, so treating this completion as already complete is
-            // the idempotent result.
-            return if is_eoi {
-                Ok(())
-            } else {
-                Err(AxVmError::interrupt(
-                    "submit x86 interrupt",
-                    "no active run",
-                ))
-            };
+            // The event carries the retired run epoch. Once the binding is
+            // cleared, teardown owns every remaining controller source and a
+            // late event cannot affect a successor run.
+            return Ok(());
         };
         if signals.epoch() != epoch {
-            return if is_eoi {
-                Ok(())
-            } else {
-                Err(AxVmError::StaleRun {
-                    expected: epoch.run(),
-                    current: Some(signals.run_id()),
-                })
-            };
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: Some(signals.run_id()),
+            });
         }
 
         let source = match event {

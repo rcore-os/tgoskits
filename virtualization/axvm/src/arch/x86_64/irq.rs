@@ -12,10 +12,8 @@ use crate::{
         AxvmX86Vcpu, X86DeliveryPort, X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
     },
-    irq::model::{
-        DeliveryToken, InterruptControllerEndpoint, InterruptControllerOwner, SourceEvent,
-    },
-    services::{RunServices, RunSignals},
+    irq::model::{DeliveryToken, SourceEvent},
+    services::{RunServices, RunSignals, SignalError},
     sync::MutexExt,
 };
 
@@ -588,68 +586,57 @@ pub fn drain_pending_wired_irqs(
 /// Publishes the IOAPIC's next pending delivery after one guest EOI.
 ///
 /// This runs in the EOI vCPU's task after the backend is unloaded, so the next
-/// delivery is published into the run's fixed signal target rather than written
+/// delivery is published into the run's lifecycle mailbox rather than written
 /// into a hardware register.
-pub fn inject_pending_ioapic_irq_after_eoi(services: &RunServices, vcpu_id: usize, vector: u8) {
+pub fn inject_pending_ioapic_irq_after_eoi(
+    services: &RunServices,
+    vcpu_id: usize,
+    vector: u8,
+) -> AxVmResult {
     let devices = services.devices();
     let interrupt_services = devices.services();
     let Some(domain) = interrupt_services
         .require::<X86InterruptDomainRuntimeKey>()
         .ok()
     else {
-        return;
+        return Ok(());
     };
     let Some(signals) = domain.delivery_port().current_signals() else {
-        return;
+        return Ok(());
     };
     let port = domain.delivery_port();
-    let source = port.take_delivery_source(vcpu_id, vector).or_else(|| {
-        // LAPIC vectors that were injected before the source ledger was
-        // installed (or vectors from an emulated local source) retain the
-        // old best-effort lookup. IOAPIC deliveries always take the first
-        // branch, so a guest RTE rewrite cannot change their source.
-        let source = port.source_for_vector(vector);
-        if source.is_some() {
-            warn!("using current x86 IOAPIC route for untracked EOI vector {vector:#x}");
-        }
-        source
-    });
+    let source = port.take_delivery_source(vcpu_id, vector);
     let Some(source) = source else {
-        return;
+        // Local LAPIC sources do not own an IOAPIC remote-IRR state. An EOI
+        // without a recorded IOAPIC delivery therefore has no controller
+        // completion to publish; guessing the current route would be unsafe
+        // after a guest redirection-table rewrite.
+        return Ok(());
     };
     let Some(instance) = signals.current_instance(vcpu_id) else {
         // The run is already retiring this vCPU. Its host forwarding leases are
         // retired by the lifecycle owner, so there is no live guest delivery
         // to complete here.
         warn!("ignoring x86 EOI {vector:#x}: vCPU {vcpu_id} is not active");
-        return;
+        return Ok(());
     };
     if instance.run != signals.run_id() {
         warn!(
             "ignoring x86 EOI {vector:#x}: vCPU instance {:?} belongs to another run",
             instance
         );
-        return;
+        return Ok(());
     }
     let event = SourceEvent::Eoi {
         epoch: signals.epoch(),
         token: DeliveryToken {
             source,
             target: instance,
-            sequence: port.next_delivery_sequence(),
         },
     };
-    if let Err(error) = InterruptControllerEndpoint::submit(domain.as_ref(), event) {
-        // EOI is a completion edge, so a full/closed deferred queue must not
-        // silently leave remote-IRR or a forwarded host GSI latched. This path
-        // is task context after the vCPU backend has been unloaded; applying
-        // the same owner operation synchronously is the bounded recovery.
-        warn!(
-            "failed to queue x86 IOAPIC EOI for vector {vector:#x}: {error:?}; applying directly"
-        );
-        if let Err(error) = InterruptControllerOwner::apply_source(domain.as_ref(), event) {
-            warn!("failed to complete x86 IOAPIC EOI for vector {vector:#x}: {error:?}");
-        }
+    match signals.post_controller_event_task(event) {
+        Ok(()) | Err(SignalError::Closed) => Ok(()),
+        Err(error) => Err(crate::AxVmError::interrupt("post x86 IOAPIC EOI", error)),
     }
 }
 

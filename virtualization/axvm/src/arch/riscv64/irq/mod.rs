@@ -292,11 +292,8 @@ impl RiscvPlicRuntime {
         }
     }
 
-    fn current_epoch(&self) -> AxVmResult<RunEpoch> {
-        self.kick
-            .current()
-            .map(|signals| signals.epoch())
-            .ok_or_else(|| AxVmError::interrupt("submit RISC-V vPLIC event", "no active run"))
+    fn current_epoch(&self) -> Option<RunEpoch> {
+        self.kick.current().map(|signals| signals.epoch())
     }
 
     fn validate_source(&self, source: InterruptSourceId) -> AxVmResult<usize> {
@@ -446,7 +443,12 @@ impl InterruptControllerEndpoint for RiscvPlicRuntime {
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let current = self.current_epoch()?;
+        let Some(current) = self.current_epoch() else {
+            return Err(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: None,
+            });
+        };
         if epoch != current {
             return Err(AxVmError::StaleRun {
                 expected: epoch.run(),
@@ -470,7 +472,12 @@ impl InterruptControllerOwner for RiscvPlicRuntime {
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let current = self.current_epoch()?;
+        let Some(current) = self.current_epoch() else {
+            // The run binding is cleared before late controller mailbox
+            // events are necessarily consumed. Their epoch is retired and
+            // cannot affect a successor run.
+            return Ok(());
+        };
         if epoch != current {
             return Err(AxVmError::StaleRun {
                 expected: epoch.run(),

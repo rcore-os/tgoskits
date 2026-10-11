@@ -48,12 +48,6 @@ const IRQ_CLOSED_BIT: usize = 1usize << (usize::BITS - 1);
 const IRQ_INFLIGHT_MASK: usize = !IRQ_CLOSED_BIT;
 const POLL_OWNER_NONE: usize = usize::MAX;
 const CONTROLLER_EVENT_CAPACITY: usize = 64;
-// EOI completion is a separate fixed ingress.  A run can retain one
-// acknowledged controller source for every source identity accepted by the
-// architecture-specific vCPU queue, while unrelated device pulses are being
-// drained.  Keeping this bound separate means a burst of ordinary events can
-// never consume the slots needed to retire an already delivered interrupt.
-const CONTROLLER_EOI_CAPACITY: usize = INTERRUPT_SOURCE_CAPACITY;
 
 struct ControllerEventQueue<const CAPACITY: usize> {
     entries: [Option<SourceEvent>; CAPACITY],
@@ -71,6 +65,46 @@ impl<const CAPACITY: usize> ControllerEventQueue<CAPACITY> {
     }
 
     fn push(&mut self, event: SourceEvent) -> Result<(), SignalError> {
+        for offset in 0..self.len {
+            let index = (self.head + offset) % self.entries.len();
+            let Some(queued) = &mut self.entries[index] else {
+                continue;
+            };
+            match (queued, event) {
+                // A controller pending bit represents an edge source once,
+                // even when the producer raises it repeatedly before the
+                // owner drains the ingress.  This is the same state model as
+                // Linux's per-descriptor pending bit, rather than a capacity
+                // workaround for an event counter.
+                (
+                    SourceEvent::Pulse {
+                        epoch: queued_epoch,
+                        source: queued_source,
+                    },
+                    SourceEvent::Pulse { epoch, source },
+                ) if *queued_epoch == epoch && *queued_source == source => return Ok(()),
+                // A level-triggered line is a state, not a count.  Preserve
+                // the first FIFO position and publish only the latest
+                // electrical state for this run/source pair.
+                (
+                    SourceEvent::Level {
+                        epoch: queued_epoch,
+                        source: queued_source,
+                        asserted: queued_asserted,
+                    },
+                    SourceEvent::Level {
+                        epoch,
+                        source,
+                        asserted,
+                    },
+                ) if *queued_epoch == epoch && *queued_source == source => {
+                    *queued_asserted = asserted;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         if self.len == self.entries.len() {
             return Err(SignalError::Capacity);
         }
@@ -111,7 +145,6 @@ pub(crate) struct RunSignals {
     irq_pending: AtomicUsize,
     irq_notify: IrqNotification,
     controller_events: RawSpinLock<ControllerEventQueue<CONTROLLER_EVENT_CAPACITY>>,
-    controller_eoi_events: RawSpinLock<ControllerEventQueue<CONTROLLER_EOI_CAPACITY>>,
     control: OnceLock<Weak<ControlShared>>,
 }
 
@@ -155,7 +188,6 @@ impl RunSignals {
             irq_pending: AtomicUsize::new(0),
             irq_notify: IrqNotification::new(),
             controller_events: RawSpinLock::new(ControllerEventQueue::new()),
-            controller_eoi_events: RawSpinLock::new(ControllerEventQueue::new()),
             control: OnceLock::new(),
         }))
     }
@@ -171,15 +203,21 @@ impl RunSignals {
 
     /// Publishes a shared-controller event from a device or hard-IRQ context.
     ///
-    /// The fixed slot is the only state touched by the producer. The signal
-    /// worker drains it in task context and posts to the lifecycle owner.
+    /// The bounded ingress stores pending source state: repeated edge raises
+    /// share one pending entry and level raises update that entry's latest
+    /// state. The signal worker drains it in task context and posts to the
+    /// lifecycle owner.
     pub(crate) fn publish_controller_event(&self, event: SourceEvent) -> Result<(), SignalError> {
         let producer = IrqProducerGuard::new(self)?;
         let result = match event {
-            SourceEvent::Eoi { .. } => self.controller_eoi_events.lock_irqsave().push(event),
             SourceEvent::Pulse { .. } | SourceEvent::Level { .. } => {
                 self.controller_events.lock_irqsave().push(event)
             }
+            // EOI is produced by a vCPU task after guest execution.  It must
+            // use [`Self::post_controller_event_task`] so completion cannot
+            // be rejected by the hard-IRQ ingress while the owner is draining
+            // another controller source.
+            SourceEvent::Eoi { .. } => Err(SignalError::InvalidSource),
         };
         drop(producer);
         if result.is_ok() {
@@ -189,10 +227,25 @@ impl RunSignals {
     }
 
     pub(crate) fn drain_controller_events(&self) -> Vec<SourceEvent> {
-        let mut output = Vec::with_capacity(CONTROLLER_EVENT_CAPACITY + CONTROLLER_EOI_CAPACITY);
+        let mut output = Vec::with_capacity(CONTROLLER_EVENT_CAPACITY);
         self.controller_events.lock_irqsave().drain(&mut output);
-        self.controller_eoi_events.lock_irqsave().drain(&mut output);
         output
+    }
+
+    /// Posts one task-context controller completion directly to the lifecycle
+    /// mailbox.  Guest EOI is already outside hardware execution, so it does
+    /// not belong in the allocation-free hard-IRQ ingress.  A closed owner is
+    /// a normal run-retirement window and returns [`SignalError::Closed`].
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn post_controller_event_task(&self, event: SourceEvent) -> Result<(), SignalError> {
+        let Some(control) = self.control() else {
+            return Err(SignalError::Closed);
+        };
+        if control.post_interrupt(event) {
+            Ok(())
+        } else {
+            Err(SignalError::Closed)
+        }
     }
 
     pub(crate) fn post_controller_events(&self) {
@@ -752,9 +805,7 @@ mod tests {
     use crate::{
         HostWaitQueueHandle, InterruptTriggerMode,
         identity::{RunId, VcpuInstance, VmKey},
-        irq::model::{
-            DeliveryToken, InterruptSourceId, PendingVcpuInterrupt, SourceEvent, VirtualInterruptId,
-        },
+        irq::model::{InterruptSourceId, PendingVcpuInterrupt, SourceEvent, VirtualInterruptId},
         vcpu::VcpuSignals,
     };
 
@@ -779,36 +830,94 @@ mod tests {
         .into()
     }
 
-    #[cfg(target_arch = "x86_64")]
     #[test]
-    fn eoi_ingress_is_not_consumed_by_ordinary_controller_burst() {
+    fn duplicate_pulses_share_one_controller_pending_slot() {
         let run = run_signals(1);
         let source = InterruptSourceId::new(InterruptControllerId::new(0), 4, None);
-        for sequence in 0..CONTROLLER_EVENT_CAPACITY {
+        for _ in 0..CONTROLLER_EVENT_CAPACITY * 4 {
             run.publish_controller_event(SourceEvent::Pulse {
+                epoch: run.epoch(),
+                source,
+            })
+            .expect("repeated edge state must not consume another queue slot");
+        }
+        assert_eq!(
+            run.drain_controller_events(),
+            vec![SourceEvent::Pulse {
+                epoch: run.epoch(),
+                source,
+            }]
+        );
+    }
+
+    #[test]
+    fn task_controller_event_does_not_use_hard_irq_ingress() {
+        let run = run_signals(1);
+        assert_eq!(
+            run.publish_controller_event(SourceEvent::Eoi {
+                epoch: run.epoch(),
+                token: crate::irq::model::DeliveryToken {
+                    source: InterruptSourceId::new(InterruptControllerId::new(0), 4, None),
+                    target: instance(run.run_id(), 0, 1),
+                },
+            }),
+            Err(SignalError::InvalidSource)
+        );
+    }
+
+    #[test]
+    fn level_ingress_coalesces_latest_state_for_one_source() {
+        let run = run_signals(1);
+        let source = InterruptSourceId::new(InterruptControllerId::new(0), 4, None);
+
+        for asserted in [true, false, true]
+            .into_iter()
+            .cycle()
+            .take(CONTROLLER_EVENT_CAPACITY * 4)
+        {
+            run.publish_controller_event(SourceEvent::Level {
+                epoch: run.epoch(),
+                source,
+                asserted,
+            })
+            .expect("repeated level state must not consume another queue slot");
+        }
+        let events = run.drain_controller_events();
+
+        assert_eq!(
+            events,
+            vec![SourceEvent::Level {
+                epoch: run.epoch(),
+                source,
+                asserted: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn level_ingress_keeps_capacity_bound_for_distinct_sources() {
+        let run = run_signals(1);
+        for source in 0..CONTROLLER_EVENT_CAPACITY {
+            run.publish_controller_event(SourceEvent::Level {
+                epoch: run.epoch(),
+                source: InterruptSourceId::new(InterruptControllerId::new(0), source as u32, None),
+                asserted: true,
+            })
+            .expect("distinct level sources should fill the fixed queue");
+        }
+
+        assert_eq!(
+            run.publish_controller_event(SourceEvent::Level {
                 epoch: run.epoch(),
                 source: InterruptSourceId::new(
                     InterruptControllerId::new(0),
-                    sequence as u32,
+                    CONTROLLER_EVENT_CAPACITY as u32,
                     None,
                 ),
-            })
-            .expect("ordinary controller slot should accept its fixed capacity");
-        }
-
-        run.publish_controller_event(SourceEvent::Eoi {
-            epoch: run.epoch(),
-            token: DeliveryToken {
-                source,
-                target: instance(run.run_id(), 0, 1),
-                sequence: 1,
-            },
-        })
-        .expect("EOI has an independent fixed ingress");
-
-        let events = run.drain_controller_events();
-        assert_eq!(events.len(), CONTROLLER_EVENT_CAPACITY + 1);
-        assert!(matches!(events.last(), Some(SourceEvent::Eoi { .. })));
+                asserted: true,
+            }),
+            Err(SignalError::Capacity)
+        );
     }
 
     /// A parked/stopped execution must return to its owner; an admitted one with

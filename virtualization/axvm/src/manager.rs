@@ -1083,18 +1083,20 @@ impl ControlShared {
         self.mailbox_ready.notify_one();
     }
 
-    /// Posts one controller event after the fixed run ingress has been drained.
+    /// Posts one controller event to the lifecycle mailbox.
     ///
-    /// The producer-side ingress never allocates or takes this mailbox mutex;
-    /// only the task-side signal worker calls this method.
-    pub(crate) fn post_interrupt(&self, event: crate::irq::model::SourceEvent) {
+    /// The hard-IRQ producer-side ingress never allocates or takes this
+    /// mailbox mutex. Task-side workers and guest completion paths call this
+    /// method after their source state has been recorded.
+    pub(crate) fn post_interrupt(&self, event: crate::irq::model::SourceEvent) -> bool {
         let mut mailbox = self.mailbox.lock_unpoisoned();
         if mailbox.closed {
-            return;
+            return false;
         }
         mailbox.queue.push_back(ControlMessage::Interrupt(event));
         drop(mailbox);
         self.mailbox_ready.notify_one();
+        true
     }
 
     pub(crate) fn request_run_stop(&self, run: RunId, reason: StopReason) -> AxVmResult {

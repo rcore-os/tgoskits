@@ -314,9 +314,12 @@ impl InterruptControllerEndpoint for LoongArchPchPicRuntime {
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let port = self.run.current().ok_or_else(|| {
-            crate::AxVmError::interrupt("submit LoongArch interrupt", "no active run")
-        })?;
+        let Some(port) = self.run.current() else {
+            return Err(crate::AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: None,
+            });
+        };
         if port.signals.epoch() != epoch {
             return Err(crate::AxVmError::StaleRun {
                 expected: epoch.run(),
@@ -338,9 +341,12 @@ impl InterruptControllerOwner for LoongArchPchPicRuntime {
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let port = self.run.current().ok_or_else(|| {
-            crate::AxVmError::interrupt("submit LoongArch interrupt", "no active run")
-        })?;
+        let Some(port) = self.run.current() else {
+            // Teardown clears the exact run port before late mailbox events
+            // are necessarily consumed. A retired event cannot reach a new
+            // run and is therefore already complete.
+            return Ok(());
+        };
         if port.signals.epoch() != epoch {
             return Err(crate::AxVmError::StaleRun {
                 expected: epoch.run(),

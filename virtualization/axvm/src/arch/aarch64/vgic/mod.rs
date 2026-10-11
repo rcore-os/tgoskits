@@ -393,7 +393,10 @@ impl InterruptControllerEndpoint for Aarch64VgicRuntime {
             .lock_irqsave()
             .as_ref()
             .cloned()
-            .ok_or_else(|| AxVmError::interrupt("submit AArch64 interrupt", "no active run"))?;
+            .ok_or(AxVmError::StaleRun {
+                expected: epoch.run(),
+                current: None,
+            })?;
         if signals.epoch() != epoch {
             return Err(AxVmError::StaleRun {
                 expected: epoch.run(),
@@ -520,12 +523,12 @@ impl InterruptControllerOwner for Aarch64VgicRuntime {
             | SourceEvent::Level { epoch, .. }
             | SourceEvent::Eoi { epoch, .. } => epoch,
         };
-        let signals = self
-            .run
-            .lock_irqsave()
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| AxVmError::interrupt("submit AArch64 interrupt", "no active run"))?;
+        let Some(signals) = self.run.lock_irqsave().as_ref().cloned() else {
+            // Teardown clears the run binding before late mailbox events are
+            // necessarily consumed. Their epoch is retired and cannot target
+            // a successor run, so dropping them is the owner-level result.
+            return Ok(());
+        };
         if signals.epoch() != epoch {
             return Err(AxVmError::StaleRun {
                 expected: epoch.run(),
