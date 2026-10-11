@@ -13,7 +13,7 @@ use ax_std::os::arceos::{
     },
     modules::ax_hal::percpu::this_cpu_id,
     task::{
-        sched::{CpuId, CpuSet, SchedulePolicy},
+        sched::{CpuId, CpuSet, RtPriority, SchedulePolicy},
         thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
     },
 };
@@ -130,20 +130,30 @@ pub fn run() -> crate::TestResult {
     SLEEPER_CPU.store(usize::MAX, Ordering::Release);
 
     pin_current_to_cpu(waker_cpu);
-    let controller = thread::spawn(move || {
-        pin_current_to_cpu(controller_cpu);
-        wait_for_probe(&STALL_ENTERED, "sleeper did not enter switch-out probe");
-        wait_for_probe(&WAKER_STARTED, "remote waker did not start");
+    let controller = ax_std::os::arceos::thread::builder("remote-wake-controller".into())
+        // The controller is a bounded probe for a switch-out callback that
+        // deliberately occupies another CPU. Keep it schedulable even when
+        // the full suite leaves service workers runnable.
+        .policy(SchedulePolicy::fifo(
+            RtPriority::new(99).expect("probe priority must be valid"),
+        ))
+        .affinity(single_cpu_affinity(cpu_num, controller_cpu))
+        .spawn(move || {
+            pin_current_to_cpu(controller_cpu);
+            wait_for_probe(&STALL_ENTERED, "sleeper did not enter switch-out probe");
+            wait_for_probe(&WAKER_STARTED, "remote waker did not start");
 
-        let started = Instant::now();
-        while !WAKE_RETURNED.load(Ordering::Acquire) && started.elapsed() < SWITCH_OUT_PROBE_WINDOW
-        {
-            core::hint::spin_loop();
-        }
-        WAKE_RETURNED_BEFORE_ON_CPU_CLEAR
-            .store(WAKE_RETURNED.load(Ordering::Acquire), Ordering::Release);
-        STALL_RELEASED.store(true, Ordering::Release);
-    });
+            let started = Instant::now();
+            while !WAKE_RETURNED.load(Ordering::Acquire)
+                && started.elapsed() < SWITCH_OUT_PROBE_WINDOW
+            {
+                core::hint::spin_loop();
+            }
+            WAKE_RETURNED_BEFORE_ON_CPU_CLEAR
+                .store(WAKE_RETURNED.load(Ordering::Acquire), Ordering::Release);
+            STALL_RELEASED.store(true, Ordering::Release);
+        })
+        .expect("failed to spawn remote wake controller");
 
     // SAFETY: the inert extension owns no data, its one-shot switch callback
     // performs only a fixed upper-bounded atomic probe, and its drop callback
