@@ -1,3 +1,5 @@
+mod common;
+
 use axdevice_base::AccessWidth;
 use axvm_types::GuestPhysAddr;
 use riscv_vplic::{

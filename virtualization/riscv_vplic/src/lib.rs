@@ -23,6 +23,10 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod host_lock_provider;
+
 mod consts;
 mod devops_impl;
 mod error;

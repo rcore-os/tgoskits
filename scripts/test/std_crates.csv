@@ -61,6 +61,7 @@ axvirtio-common
 axvirtio-net
 axvm
 axvmconfig
+riscv_vplic
 riscv-h
 virtualization-tests
 ax-media

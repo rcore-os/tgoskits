@@ -787,7 +787,6 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
 impl VcpuLocalInterrupts for AxvmArmVcpu {
     type Snapshot = bool;
-    type Completion = ();
     type Error = BackendError;
 
     fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
@@ -810,7 +809,7 @@ impl VcpuLocalInterrupts for AxvmArmVcpu {
         self.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
     }
 
-    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+    fn save_exit(&mut self) -> Result<(), Self::Error> {
         let binding = self
             .vgic_binding
             .as_ref()

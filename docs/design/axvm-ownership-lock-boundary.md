@@ -38,17 +38,17 @@ raw guard 只修改它拥有的短状态。唤醒、IPI、设备回调、join �
 
 ### 1.3 CPU-local 与共享外设中断
 
-中断控制器的边界按硬件归属划分。每个 vCPU owner 直接持有自己的本地中断状态、EOI/ACK 状态、架构运行后端和 guest timer；它们只通过 `&mut` 访问，不从另一个 vCPU 或 VM 服务取得 getter。host timer callback 只更新 `VcpuTimerIngress` 的原子计数和代次，随后在 raw guard 外唤醒对应 vCPU。
+中断控制器的边界按硬件归属划分。每个 vCPU owner 直接持有自己的本地中断状态、架构运行后端和 guest timer；需要 EOI/ACK 的本地状态仍由对应架构在 `&mut` 边界内保存，不从另一个 vCPU 或 VM 服务取得 getter。`DeliveryToken`/`SourceEvent::Eoi` 的生产目前只存在于 x86 路径，其他架构保留 owner 侧的通用校验入口但没有对应的生产者。host timer callback 只更新 `VcpuTimerIngress` 的原子计数和代次，随后在 raw guard 外唤醒对应 vCPU。
 
-外设中断控制器属于 VM 的共享控制面。GIC Distributor/SPI/ITS、x86 PIC/IOAPIC/PIT、RISC-V PLIC/APLIC 和 LoongArch PCH-PIC/EIOINTC 的完整 pending、active、priority、route 与 level 状态由一个 owner 串行处理。设备和硬 IRQ 只持有 `WiredIrqInput`/`IrqLine` 或运行期 endpoint，通过 `SourceEvent` 提交事件；它们不取得控制器 core，也不查询当前 VM。当前四个架构的 AxVM runtime 都提供 `InterruptControllerEndpoint` 适配：AArch64 将事件交给 VGIC SPI owner，x86 以 GSI 作为 source 身份交给 IOAPIC owner，RISC-V 交给 vPLIC owner，LoongArch 交给 PCH-PIC owner；已有设备图仍通过兼容的 `VirtualInterruptController` 注册入口获取 wired input。
+外设中断控制器属于 VM 的共享控制面。GIC Distributor/SPI/ITS、x86 PIC/IOAPIC/PIT、RISC-V PLIC/APLIC 和 LoongArch PCH-PIC/EIOINTC 的完整 pending、active、priority、route 与 level 状态由一个 owner 串行处理。设备和硬 IRQ 只持有 `WiredIrqInput`/`IrqLine` 或运行期 endpoint，通过 `SourceEvent` 提交事件；它们不取得控制器 core，也不查询当前 VM。当前四个架构的 AxVM runtime 都提供 `InterruptControllerEndpoint` 适配：AArch64 将事件交给 VGIC SPI owner，x86 以 GSI 作为 source 身份交给 IOAPIC owner，RISC-V 交给 vPLIC owner，LoongArch 交给 PCH-PIC owner；已有设备图仍通过兼容的 `VirtualInterruptController` 注册入口获取 wired input。RISC-V wired input 在首次运行前使用固定源状态槽，并在 owner 激活或处理事件时排空；运行结束且物理输入静默后清空该槽。AArch64 wired input 要求已有运行绑定，未激活时返回 `Backend`，不承诺跨运行保存输入。
 
 | 硬件对象 | 唯一 owner | 允许的同步 | 跨层入口 |
 | --- | --- | --- | --- |
 | vCPU local interrupt/timer、VMX/SVM、GIC Redistributor/LR、IMSIC/CSR、CPUINTC | 对应 `VcpuTask` | 普通值、`&mut`、CPU-local 原语 | 四架构 AxVM adapter 均通过 `VcpuLocalInterrupts`/`VcpuLocalTimer` 接入；架构 crate 内仍保留各自硬件 leaf |
-| GIC Distributor/ITS、PIC/IOAPIC/PIT、PLIC/APLIC、PCH-PIC/EIOINTC | VM `InterruptOwner` | owner mailbox；设备侧只使用睡眠服务 | `InterruptControllerEndpoint`、`SourceEvent` |
+| GIC Distributor/ITS、PIC/IOAPIC/PIT、PLIC/APLIC、PCH-PIC/EIOINTC | VM `InterruptOwner` | owner mailbox；RISC-V 另有固定源状态槽，设备侧只使用睡眠服务 | `InterruptControllerEndpoint`、`SourceEvent` |
 | 物理 IRQ、host timer、设备完成回调 | 固定 ingress 槽 | 原子、固定槽、必要的极短 raw leaf | `IrqLine`/`RunSignals`，锁外 kick/wake |
 
-发布顺序固定为“更新 canonical source 状态 → Release/显式屏障 → 锁外 kick/wake”。edge 事件使用计数或固定事件槽，不能用一个 `AtomicBool` 合并多个 pulse；level 事件保存每个连接源的 asserted 与 generation，再计算线路聚合状态。`RunEpoch`、`InterruptSourceId`、`DeliveryToken` 必须随 EOI、level redelivery 和 teardown 传递，旧运行的 endpoint 在 ingress 入口拒绝。
+发布顺序固定为“更新 canonical source 状态 → Release/显式屏障 → 锁外 kick/wake”。edge 事件按控制器语义使用计数或固定事件槽；RISC-V PLIC 的每源 pending 位允许重复 pulse 合并为一个待处理源，不把有限队列伪装成无限计数器。level 事件保存每个连接源的 asserted 与 generation，再计算线路聚合状态。`RunEpoch`、`InterruptSourceId`、`DeliveryToken` 必须随实际支持的 EOI、level redelivery 和 teardown 传递，旧运行的 endpoint 在 ingress 入口拒绝。
 
 ## 2. 管理与完成协议
 

@@ -141,6 +141,18 @@ impl RiscvPlicIngress {
         true
     }
 
+    fn clear(&self) {
+        for pending in &*self.edge_pending {
+            pending.store(false, Ordering::Release);
+        }
+        for dirty in &*self.level_dirty {
+            dirty.store(false, Ordering::Release);
+        }
+        for state in &*self.level_state {
+            state.store(false, Ordering::Release);
+        }
+    }
+
     fn drain(&self) -> Vec<(usize, bool, Option<bool>)> {
         let mut changes = Vec::new();
         for source in 1..self.edge_pending.len() {
@@ -175,6 +187,10 @@ pub(crate) struct RiscvPlicRuntime {
     kick: Arc<RunKickBinding>,
     physical: Arc<physical::PhysicalIrqBridge>,
     vcpu_count: usize,
+    /// True only while the physical bridge is admitted to publish this run.
+    run_active: AtomicBool,
+    /// Distinguishes initial pre-run wiring from callbacks after a retired run.
+    has_activated: AtomicBool,
 }
 
 impl RiscvPlicRuntime {
@@ -219,6 +235,8 @@ impl RiscvPlicRuntime {
             kick,
             physical,
             vcpu_count,
+            run_active: AtomicBool::new(false),
+            has_activated: AtomicBool::new(false),
         }))
     }
 
@@ -232,16 +250,29 @@ impl RiscvPlicRuntime {
             self.kick.clear();
             return Err(error);
         }
+        self.run_active.store(true, Ordering::Release);
         if let Err(error) = self.physical.start() {
+            self.run_active.store(false, Ordering::Release);
+            self.ingress.clear();
             self.kick.clear();
             return Err(error);
         }
+        self.has_activated.store(true, Ordering::Release);
         Ok(())
     }
 
-    /// Applies callbacks received before this run had an owner.
+    /// Applies fixed source state at activation and after owner events.
+    ///
+    /// The ingress is only touched from task context here. A full controller
+    /// mailbox already contains the other sources, so an owner event provides a
+    /// deterministic drain point without growing the mailbox or blocking an
+    /// IRQ callback on the vPLIC mutex.
     fn drain_deferred_ingress(&self) -> AxVmResult {
-        for (source, edge_pending, level) in self.ingress.drain() {
+        let changes = self.ingress.drain();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        for (source, edge_pending, level) in changes {
             if edge_pending {
                 self.vplic.set_pending(source).map_err(|error| {
                     AxVmError::interrupt("drain RISC-V vPLIC edge ingress", error)
@@ -265,9 +296,14 @@ impl RiscvPlicRuntime {
 
     pub(crate) fn deactivate(&self) -> AxVmResult {
         let physical = self.physical.stop();
-        // Physical input is quiesced before the wake target is retired, so no
-        // publication can observe a cleared binding.
-        self.kick.clear();
+        if physical.is_ok() {
+            // Physical input is quiesced before the run binding and fixed
+            // source state are retired. A callback after this point belongs to
+            // no run and must not be replayed by the next activation.
+            self.run_active.store(false, Ordering::Release);
+            self.ingress.clear();
+            self.kick.clear();
+        }
         physical
     }
 
@@ -372,6 +408,8 @@ impl VplicDeliveryPort {
 impl Drop for RiscvPlicRuntime {
     fn drop(&mut self) {
         let _ = self.physical.stop();
+        self.run_active.store(false, Ordering::Release);
+        self.ingress.clear();
         self.kick.clear();
     }
 }
@@ -531,6 +569,12 @@ impl InterruptControllerOwner for RiscvPlicRuntime {
             }
         }
 
+        // A source that arrived while the mailbox was full is coalesced in the
+        // fixed ingress. Drain it after the accepted event has been applied;
+        // the queue cannot contain the same source when it reported capacity,
+        // so this preserves per-source ordering without allocating a counter.
+        self.drain_deferred_ingress()?;
+
         // Canonical PLIC state is published before waking any vCPU. The wake
         // path only carries the target identity and never acquires the PLIC
         // mutex from an IRQ/raw guard.
@@ -604,6 +648,14 @@ impl WiredIrqSink for RiscvPlicWiredSink {
             Self::backend_error(input, "set RISC-V vPLIC line level", "controller is closed")
         })?;
         let Some(epoch) = runtime.current_epoch() else {
+            if runtime.has_activated.load(Ordering::Acquire)
+                && !runtime.run_active.load(Ordering::Acquire)
+            {
+                // The physical bridge has already been quiesced. This callback
+                // belongs to the retired run and is intentionally discarded;
+                // retaining it would allow a successor run to inherit it.
+                return Ok(());
+            }
             return self.defer_level(input, asserted, "set RISC-V vPLIC line level");
         };
         let event = SourceEvent::Level {
@@ -617,8 +669,14 @@ impl WiredIrqSink for RiscvPlicWiredSink {
         };
         match runtime.publish_source_event(event) {
             Ok(()) => Ok(()),
-            Err(SignalError::Closed | SignalError::Capacity | SignalError::StaleInstance) => {
+            Err(SignalError::Capacity) => {
                 self.defer_level(input, asserted, "set RISC-V vPLIC line level")
+            }
+            Err(SignalError::Closed | SignalError::StaleInstance) => {
+                // The run binding changed or closed after the epoch snapshot.
+                // This callback belongs to the retired run; retaining it in a
+                // run-independent slot would let it cross the epoch boundary.
+                Ok(())
             }
             Err(error) => Err(Self::backend_error(
                 input,
@@ -633,6 +691,14 @@ impl WiredIrqSink for RiscvPlicWiredSink {
             Self::backend_error(input, "pulse RISC-V vPLIC input", "controller is closed")
         })?;
         let Some(epoch) = runtime.current_epoch() else {
+            if runtime.has_activated.load(Ordering::Acquire)
+                && !runtime.run_active.load(Ordering::Acquire)
+            {
+                // The physical bridge has already been quiesced. This callback
+                // belongs to the retired run and is intentionally discarded;
+                // retaining it would allow a successor run to inherit it.
+                return Ok(());
+            }
             return self.defer_edge(input, "pulse RISC-V vPLIC input");
         };
         let event = SourceEvent::Pulse {
@@ -645,8 +711,12 @@ impl WiredIrqSink for RiscvPlicWiredSink {
         };
         match runtime.publish_source_event(event) {
             Ok(()) => Ok(()),
-            Err(SignalError::Closed | SignalError::Capacity | SignalError::StaleInstance) => {
-                self.defer_edge(input, "pulse RISC-V vPLIC input")
+            Err(SignalError::Capacity) => self.defer_edge(input, "pulse RISC-V vPLIC input"),
+            Err(SignalError::Closed | SignalError::StaleInstance) => {
+                // The run binding changed or closed after the epoch snapshot.
+                // This callback belongs to the retired run; retaining it in a
+                // run-independent slot would let it cross the epoch boundary.
+                Ok(())
             }
             Err(error) => Err(Self::backend_error(
                 input,
@@ -963,8 +1033,33 @@ mod tests {
 
         line.pulse().unwrap();
         assert!(runtime.ingress.edge_pending[100].load(Ordering::Acquire));
+        InterruptControllerOwner::apply_source(
+            &*runtime,
+            SourceEvent::Pulse {
+                epoch: signals.epoch(),
+                source: InterruptSourceId::new(InterruptControllerId::new(0), 200, None),
+            },
+        )
+        .unwrap();
         runtime.kick.clear();
-        runtime.drain_deferred_ingress().unwrap();
+        assert!(!runtime.ingress.edge_pending[100].load(Ordering::Acquire));
         assert!(runtime.vplic.is_pending(100).unwrap());
+    }
+
+    #[test]
+    fn retired_run_drops_new_wired_input() {
+        let runtime = runtime();
+        runtime.has_activated.store(true, Ordering::Release);
+        let line = InterruptControllerEndpoint::wired_input(
+            &*runtime,
+            ControllerInputId::new(10),
+            InterruptTriggerMode::EdgeTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
+
+        line.pulse().unwrap();
+        assert!(!runtime.ingress.edge_pending[10].load(Ordering::Acquire));
     }
 }

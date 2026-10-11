@@ -592,7 +592,6 @@ impl AxvmRiscvVcpu {
 
 impl VcpuLocalInterrupts for AxvmRiscvVcpu {
     type Snapshot = usize;
-    type Completion = ();
     type Error = RiscvVcpuError;
 
     fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
@@ -605,7 +604,7 @@ impl VcpuLocalInterrupts for AxvmRiscvVcpu {
             .inject_interrupt(SCAUSE_INTERRUPT_BIT | interrupt.id.0 as usize)
     }
 
-    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+    fn save_exit(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
 }

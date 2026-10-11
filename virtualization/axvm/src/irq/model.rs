@@ -111,8 +111,6 @@ pub enum SourceEvent {
 pub trait VcpuLocalInterrupts {
     /// Snapshot loaded by the architecture entry path.
     type Snapshot;
-    /// Completion captured after the hardware state is saved.
-    type Completion;
     /// Error returned by the architecture backend.
     type Error;
 
@@ -121,7 +119,7 @@ pub trait VcpuLocalInterrupts {
     /// Injects one pending source into this vCPU's local state.
     fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error>;
     /// Saves local state after guest execution.
-    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error>;
+    fn save_exit(&mut self) -> Result<(), Self::Error>;
 }
 
 /// Owner-facing endpoint for one shared peripheral interrupt controller.
@@ -345,11 +343,6 @@ impl Default for VcpuTimerIngress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::VmKey;
-
-    fn run() -> RunId {
-        RunId::new(VmKey::new(1, 1), 1)
-    }
 
     #[test]
     fn timer_ingress_counts_edges_and_rejects_stale_callbacks() {
@@ -401,24 +394,5 @@ mod tests {
         assert_eq!(ingress.arm(), None);
         assert!(!ingress.publish_expiry(VcpuTimerIngress::GENERATION_MASK));
         assert_eq!(ingress.take_current_expiries(), 0);
-    }
-
-    #[test]
-    fn source_event_keeps_epoch_and_physical_identity() {
-        let epoch = RunEpoch::new(run());
-        let source =
-            InterruptSourceId::new(InterruptControllerId::new(2), 32, Some(HostIrqId::new(47)));
-        let target = VcpuInstance {
-            run: epoch.run,
-            vcpu_id: 0,
-            activation: 3,
-        };
-        let token = DeliveryToken { source, target };
-        let event = SourceEvent::Eoi { epoch, token };
-        assert!(matches!(
-            event,
-            SourceEvent::Eoi { epoch: actual, token: actual_token }
-                if actual == epoch && actual_token == token
-        ));
     }
 }

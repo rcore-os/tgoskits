@@ -513,9 +513,11 @@ fn csc_for(src: PixelFormat, dst: PixelFormat, _yuv2rgb_mode: u8) -> Option<CscS
 /// Parse a librga `rga_req` into the supported op shape. Rejects rotation, blend/ROP,
 /// and unrecognised render modes.
 pub fn parse(req: &RgaReq) -> Result<ParsedRgaReq> {
-    // Reject only actual rotation. Older librga encodes no rotation as 0 while newer
-    // IM2D releases set RGA_MODE_ROTATE_0 (bit 0), so both values describe the same
-    // identity transform. The engine only applies the matrix for the other modes.
+    // Reject only actual rotation. The bundled librga headers are API
+    // 1.10.0_[2], and im2d_type.h defines bit 0 as IM_HAL_TRANSFORM_ROT_90;
+    // there is no RGA_MODE_ROTATE_0 symbol. The supported MultiRGA v1.3.1
+    // ioctl ABI reports rotate_mode=1 for identity on the target board, while
+    // older callers use 0. The engine applies the matrix only to other modes.
     if req.rotate_mode > 1 {
         return Err(RgaError::Unsupported);
     }

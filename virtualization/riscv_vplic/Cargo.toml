@@ -21,6 +21,7 @@ bitmaps = { version = "3.2", default-features = false }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+ax-crate-interface = { workspace = true }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [package.metadata.docs.rs]

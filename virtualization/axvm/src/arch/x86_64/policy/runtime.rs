@@ -287,7 +287,6 @@ impl<H: X86HostOps, M: ControlMemory> X86Vcpu<H, M> {
 
 impl<H: X86HostOps, M: ControlMemory> VcpuLocalInterrupts for X86Vcpu<H, M> {
     type Snapshot = bool;
-    type Completion = Option<u8>;
     type Error = X86VcpuError;
 
     fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
@@ -310,12 +309,11 @@ impl<H: X86HostOps, M: ControlMemory> VcpuLocalInterrupts for X86Vcpu<H, M> {
         )
     }
 
-    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+    fn save_exit(&mut self) -> Result<(), Self::Error> {
         // VMX/SVM capture the local APIC EOI and pending timer vector while
-        // decoding the owned exit record. There is no second shared state to
-        // save at this boundary; returning an empty completion records that
-        // the backend has already completed the operation.
-        Ok(None)
+        // decoding the owned exit record. There is no additional shared state
+        // to save at this boundary.
+        Ok(())
     }
 }
 

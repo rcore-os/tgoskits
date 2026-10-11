@@ -701,7 +701,6 @@ impl AxvmLoongArchVcpu {
 
 impl VcpuLocalInterrupts for AxvmLoongArchVcpu {
     type Snapshot = bool;
-    type Completion = ();
     type Error = LoongArchVcpuError;
 
     fn prepare_entry(&mut self) -> Result<Self::Snapshot, Self::Error> {
@@ -713,7 +712,7 @@ impl VcpuLocalInterrupts for AxvmLoongArchVcpu {
         self.backend.inject_interrupt(interrupt.id.0 as usize)
     }
 
-    fn save_exit(&mut self) -> Result<Self::Completion, Self::Error> {
+    fn save_exit(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
 }
