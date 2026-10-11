@@ -422,20 +422,31 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         self.assertIn('cron: "40 21 * * *"', schedule)
         self.assertIn("workflow_dispatch:", triggers)
         self.assertIn("mode: benchmarks", plan_step)
-        # The owner of the performance history always measures the dev branch,
-        # so a manual dispatch elsewhere cannot publish non-dev history.
-        self.assertIn("ref: dev", plan)
-        matrix_names = sorted(set(re.findall(r"steps\.matrix\.outputs\.([a-z0-9_]+)", plan)))
+        # Scheduled runs measure the latest dev, while a manual dispatch
+        # measures the dispatched commit.
+        self.assertIn(
+            "ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}",
+            plan,
+        )
+        matrix_names = sorted(
+            set(re.findall(r"steps\.matrix\.outputs\.([a-z0-9_]+)", plan))
+        )
         self.assertTrue(matrix_names)
         for matrix_name in matrix_names:
             with self.subTest(matrix_name=matrix_name):
                 job_id = next(
                     job_id
                     for job_id in re.findall(r"^  ([a-z0-9_-]+):$", jobs, re.M)
-                    if f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}" in mapping_block(jobs, job_id, 2)
+                    if f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}"
+                    in mapping_block(jobs, job_id, 2)
                 )
                 job = mapping_block(jobs, job_id, 2)
+                self.assertTrue(job)
                 self.assertIn("uses: ./.github/workflows/reusable-check-matrix.yml", job)
+                self.assertIn(
+                    f"matrix_json: ${{{{ needs.plan.outputs.{matrix_name} }}}}",
+                    job,
+                )
 
         board_jobs = [
             mapping_block(jobs, job_id, 2)
