@@ -138,7 +138,12 @@ pub trait InterruptControllerEndpoint: Send + Sync {
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
     ) -> IrqResult<WiredIrqInput>;
-    /// Submits an event through the fixed owner mailbox/ingress.
+    /// Submits a `Pulse` or `Level` event through the fixed owner ingress.
+    ///
+    /// `SourceEvent::Eoi` is a task-context completion owned by the lifecycle
+    /// path. It must be applied through [`InterruptControllerOwner::apply_source`]
+    /// after the vCPU has captured its [`DeliveryToken`]; it is deliberately
+    /// rejected by the allocation-free producer ingress.
     fn submit(&self, event: SourceEvent) -> Result<(), Self::Error>;
 }
 
