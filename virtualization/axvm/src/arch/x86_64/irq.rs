@@ -656,6 +656,9 @@ pub fn publish_pic_interrupt_after_write(services: &RunServices, vcpu_id: usize)
         crate::runtime::QueuedVcpuInterrupt::LegacyPic { vector },
     ) {
         pic.restore_interrupt(claim);
+        if matches!(error, SignalError::Closed) {
+            return Ok(());
+        }
         return Err(crate::AxVmError::interrupt(
             "publish legacy PIC interrupt",
             std::format!("{error:?}"),

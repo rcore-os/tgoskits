@@ -1131,20 +1131,26 @@ impl X86DeliveryPort {
         interrupt: IoApicInterrupt,
         source: InterruptSourceId,
     ) -> AxVmResult {
-        let created = signals
-            .publish_with_status(
-                target_vcpu_id,
-                PendingVcpuInterrupt {
-                    id: VirtualInterruptId(interrupt.vector.into()),
-                    trigger: if interrupt.level_triggered {
-                        InterruptTriggerMode::LevelTriggered
-                    } else {
-                        InterruptTriggerMode::EdgeTriggered
-                    },
-                    source: Some(source),
+        let created = match signals.publish_with_status(
+            target_vcpu_id,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(interrupt.vector.into()),
+                trigger: if interrupt.level_triggered {
+                    InterruptTriggerMode::LevelTriggered
+                } else {
+                    InterruptTriggerMode::EdgeTriggered
                 },
-            )
-            .map_err(|error| AxVmError::interrupt("publish x86 interrupt", error))?;
+                source: Some(source),
+            },
+        ) {
+            Ok(created) => created,
+            // The lifecycle owner closes admission before draining the
+            // mailbox. A source already accepted by that run cannot reach a
+            // successor, so a late publication is an idempotent retirement
+            // result rather than a VM failure.
+            Err(SignalError::Closed) => return Ok(()),
+            Err(error) => return Err(AxVmError::interrupt("publish x86 interrupt", error)),
+        };
         if created {
             self.remember_delivery(target_vcpu_id, interrupt.vector, source);
         }
@@ -1374,9 +1380,10 @@ impl InterruptControllerEndpoint for X86InterruptDomain {
                 current: Some(signals.run_id()),
             });
         }
-        signals
-            .publish_controller_event(event)
-            .map_err(|error| AxVmError::interrupt("queue x86 interrupt event", error))
+        match signals.publish_controller_event(event) {
+            Ok(()) | Err(SignalError::Closed) => Ok(()),
+            Err(error) => Err(AxVmError::interrupt("queue x86 interrupt event", error)),
+        }
     }
 }
 
@@ -1471,7 +1478,7 @@ impl InterruptControllerOwner for X86InterruptDomain {
 /// publication from being observed are returned to the control owner.
 fn kick_published_interrupt(signals: &RunSignals, target_vcpu_id: usize) -> AxVmResult {
     match signals.kick(target_vcpu_id) {
-        Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+        Ok(()) | Err(SignalError::InactiveTarget | SignalError::Closed) => Ok(()),
         Err(error) => Err(AxVmError::interrupt("kick x86 vCPU", error)),
     }
 }
@@ -1496,7 +1503,7 @@ impl X86WiredState {
         }
         self.pending.fetch_or(bit, Ordering::Release);
         match self.binding.kick_from_irq(0) {
-            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            Ok(()) | Err(SignalError::InactiveTarget | SignalError::Closed) => Ok(()),
             Err(error) => Err(IrqError::Backend {
                 endpoint: InterruptEndpoint::Wired {
                     controller: InterruptControllerId::new(0),
@@ -1876,8 +1883,40 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 mod tests {
     use core::cell::Cell;
 
+    use axdevice::X86IoApicDeviceOps;
+
     use super::*;
     use crate::identity::{RunId, VmKey};
+
+    struct ClosedRunIoApic;
+
+    impl X86IoApicDeviceOps for ClosedRunIoApic {
+        fn vector_for_gsi(&self, _gsi: usize) -> Option<u8> {
+            Some(0x40)
+        }
+
+        fn assert_gsi(&self, _gsi: usize) -> Option<IoApicInterrupt> {
+            Some(IoApicInterrupt {
+                vector: 0x40,
+                level_triggered: false,
+            })
+        }
+
+        fn set_gsi_level(&self, _gsi: usize, _asserted: bool) -> Option<IoApicInterrupt> {
+            Some(IoApicInterrupt {
+                vector: 0x40,
+                level_triggered: true,
+            })
+        }
+
+        fn end_of_interrupt(&self, _vector: u8) -> Option<IoApicEoi> {
+            None
+        }
+
+        fn end_of_interrupt_for_gsi(&self, _gsi: usize) -> Option<IoApicEoi> {
+            None
+        }
+    }
 
     #[test]
     fn pit_fans_out_gsi_zero_to_pic_and_ioapic() {
@@ -2027,6 +2066,35 @@ mod tests {
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
         ));
+    }
+
+    #[test]
+    fn closed_run_discards_late_controller_events_without_failure() {
+        let run = RunSignals::new(RunId::new(VmKey::new(1, 1), 1), 1).expect("valid run signals");
+        let binding = Arc::new(X86RunBinding::new());
+        let ioapic: Arc<dyn X86IoApicDeviceOps> = Arc::new(ClosedRunIoApic);
+        binding.bind(Arc::clone(&run), None, None);
+        let domain = X86InterruptDomain::new(1, ioapic, Arc::clone(&binding));
+        let source = InterruptSourceId::new(InterruptControllerId::new(0), 4, None);
+
+        run.close_interrupts();
+        for event in [
+            SourceEvent::Pulse {
+                epoch: run.epoch(),
+                source,
+            },
+            SourceEvent::Level {
+                epoch: run.epoch(),
+                source,
+                asserted: true,
+            },
+        ] {
+            assert_eq!(
+                InterruptControllerOwner::apply_source(&domain, event),
+                Ok(())
+            );
+        }
+        assert!(!run.has_pending(0));
     }
 
     #[test]

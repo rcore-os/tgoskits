@@ -173,18 +173,21 @@ impl AxvmX86VlapicRuntime {
         vector: X86InterruptVector,
         trigger: InterruptTriggerMode,
     ) -> X86VlapicResult {
-        signals
-            .publish(
-                target_vcpu_id,
-                PendingVcpuInterrupt {
-                    id: VirtualInterruptId(vector.into()),
-                    trigger,
-                    source: None,
-                },
-            )
-            .map_err(signal_error)?;
-        signals.kick(target_vcpu_id).map_err(signal_error)?;
-        Ok(())
+        match signals.publish(
+            target_vcpu_id,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(vector.into()),
+                trigger,
+                source: None,
+            },
+        ) {
+            Ok(()) | Err(SignalError::Closed) => {}
+            Err(error) => return Err(signal_error(error)),
+        }
+        match signals.kick(target_vcpu_id) {
+            Ok(()) | Err(SignalError::InactiveTarget | SignalError::Closed) => Ok(()),
+            Err(error) => Err(signal_error(error)),
+        }
     }
 
     fn publish_legacy_pic(
@@ -193,22 +196,32 @@ impl AxvmX86VlapicRuntime {
         target_vcpu_id: X86VcpuId,
         vector: u8,
     ) -> X86VlapicResult {
-        signals
-            .publish_queued(
-                target_vcpu_id,
-                crate::runtime::QueuedVcpuInterrupt::LegacyPic { vector },
-            )
-            .map_err(signal_error)?;
-        signals.kick(target_vcpu_id).map_err(signal_error)?;
-        Ok(())
+        match signals.publish_queued(
+            target_vcpu_id,
+            crate::runtime::QueuedVcpuInterrupt::LegacyPic { vector },
+        ) {
+            Ok(()) | Err(SignalError::Closed) => {}
+            Err(error) => return Err(signal_error(error)),
+        }
+        match signals.kick(target_vcpu_id) {
+            Ok(()) | Err(SignalError::InactiveTarget | SignalError::Closed) => Ok(()),
+            Err(error) => Err(signal_error(error)),
+        }
     }
 
     fn wake_after_timer(&self, signals: &Arc<RunSignals>, from_irq: bool) -> X86VlapicResult {
-        signals.notify_work().map_err(signal_error)?;
-        if from_irq {
-            signals.kick_from_irq(self.vcpu_id).map_err(signal_error)
+        match signals.notify_work() {
+            Ok(()) | Err(SignalError::Closed) => {}
+            Err(error) => return Err(signal_error(error)),
+        }
+        let result = if from_irq {
+            signals.kick_from_irq(self.vcpu_id)
         } else {
-            signals.kick(self.vcpu_id).map_err(signal_error)
+            signals.kick(self.vcpu_id)
+        };
+        match result {
+            Ok(()) | Err(SignalError::InactiveTarget | SignalError::Closed) => Ok(()),
+            Err(error) => Err(signal_error(error)),
         }
     }
 

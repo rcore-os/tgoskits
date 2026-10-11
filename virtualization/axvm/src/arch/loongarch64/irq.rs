@@ -78,8 +78,7 @@ impl LoongArchRunPort {
         vcpu_id: usize,
         interrupt: PendingVcpuInterrupt,
     ) -> Result<(), SignalError> {
-        self.signals.publish_queued(vcpu_id, interrupt.into())?;
-        self.wake_recorded(vcpu_id)
+        self.publish_queued(vcpu_id, interrupt.into())
     }
 
     /// Publishes one queued source from hard-IRQ context.
@@ -88,8 +87,7 @@ impl LoongArchRunPort {
         vcpu_id: usize,
         interrupt: QueuedVcpuInterrupt,
     ) -> Result<(), SignalError> {
-        self.signals.publish_queued(vcpu_id, interrupt)?;
-        self.wake_recorded(vcpu_id)
+        self.publish_queued(vcpu_id, interrupt)
     }
 
     /// Publishes one EIOINTC output vector produced by guest MMIO handling.
@@ -98,22 +96,36 @@ impl LoongArchRunPort {
         vcpu_id: usize,
         vector: usize,
     ) -> Result<(), SignalError> {
-        self.signals
-            .publish_queued(vcpu_id, QueuedVcpuInterrupt::External { vector })?;
-        self.wake_recorded(vcpu_id)
+        self.publish_queued(vcpu_id, QueuedVcpuInterrupt::External { vector })
+    }
+
+    fn publish_queued(
+        &self,
+        vcpu_id: usize,
+        interrupt: QueuedVcpuInterrupt,
+    ) -> Result<(), SignalError> {
+        match self.signals.publish_queued(vcpu_id, interrupt) {
+            // Closing admission retires this run. A late callback cannot
+            // reach a successor and therefore completes without a delivery
+            // error; all other publication errors remain visible.
+            Ok(()) => self.wake_recorded(vcpu_id),
+            Err(SignalError::Closed) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Completes a publication whose source is already in the run's fixed queue.
     ///
     /// [`RunSignals::publish_queued`] is the only step that records the source:
-    /// when it rejects the publication nothing is pending and no later owner
-    /// entry can observe it, so its error is reported to the caller instead of
-    /// being presented as delivery. Once it returns, the queue owns the record;
-    /// a target activation that retired before this wake leaves the source
-    /// pending for its successor, so a skipped wake is not a delivery failure.
+    /// a closed run has already retired its admission window, so a late
+    /// publication is complete without a wake. Other rejected publications
+    /// leave no pending source and remain errors. Once publication returns, the
+    /// queue owns the record; a target activation that retired before this wake
+    /// leaves the source pending for its successor, so a skipped wake is not a
+    /// delivery failure.
     fn wake_recorded(&self, vcpu_id: usize) -> Result<(), SignalError> {
         match self.signals.kick_from_irq(vcpu_id) {
-            Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+            Ok(()) | Err(SignalError::InactiveTarget | SignalError::Closed) => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -326,9 +338,13 @@ impl InterruptControllerEndpoint for LoongArchPchPicRuntime {
                 current: Some(port.signals.run_id()),
             });
         }
-        port.signals
-            .publish_controller_event(event)
-            .map_err(|error| crate::AxVmError::interrupt("queue LoongArch interrupt event", error))
+        match port.signals.publish_controller_event(event) {
+            Ok(()) | Err(SignalError::Closed) => Ok(()),
+            Err(error) => Err(crate::AxVmError::interrupt(
+                "queue LoongArch interrupt event",
+                error,
+            )),
+        }
     }
 }
 
@@ -378,20 +394,30 @@ impl InterruptControllerOwner for LoongArchPchPicRuntime {
         match event {
             SourceEvent::Pulse { .. } => {
                 if let Some(vector) = self.pic.set_irq_level(input, true) {
-                    port.publish_external(EXTERNAL_TARGET_VCPU, vector)
-                        .map_err(|error| {
-                            crate::AxVmError::interrupt("publish LoongArch interrupt", error)
-                        })?;
+                    match port.publish_external(EXTERNAL_TARGET_VCPU, vector) {
+                        Ok(()) | Err(SignalError::Closed) => {}
+                        Err(error) => {
+                            return Err(crate::AxVmError::interrupt(
+                                "publish LoongArch interrupt",
+                                error,
+                            ));
+                        }
+                    }
                 }
                 self.pic.set_irq_level(input, false);
             }
             SourceEvent::Level { asserted, .. } => {
                 let vector = self.pic.set_irq_level(input, asserted);
                 if asserted && let Some(vector) = vector {
-                    port.publish_external(EXTERNAL_TARGET_VCPU, vector)
-                        .map_err(|error| {
-                            crate::AxVmError::interrupt("publish LoongArch level interrupt", error)
-                        })?;
+                    match port.publish_external(EXTERNAL_TARGET_VCPU, vector) {
+                        Ok(()) | Err(SignalError::Closed) => {}
+                        Err(error) => {
+                            return Err(crate::AxVmError::interrupt(
+                                "publish LoongArch level interrupt",
+                                error,
+                            ));
+                        }
+                    }
                 }
             }
             SourceEvent::Eoi { token, .. } => {

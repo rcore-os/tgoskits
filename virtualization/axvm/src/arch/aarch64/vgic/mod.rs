@@ -28,7 +28,7 @@ use crate::{
         InterruptControllerEndpoint, InterruptControllerOwner, InterruptSourceId, SourceEvent,
     },
     machine::*,
-    services::RunSignals,
+    services::{RunSignals, SignalError},
     sync::MutexExt,
     *,
 };
@@ -403,9 +403,10 @@ impl InterruptControllerEndpoint for Aarch64VgicRuntime {
                 current: Some(signals.run_id()),
             });
         }
-        signals
-            .publish_controller_event(event)
-            .map_err(|error| AxVmError::interrupt("queue AArch64 interrupt event", error))
+        match signals.publish_controller_event(event) {
+            Ok(()) | Err(SignalError::Closed) => Ok(()),
+            Err(error) => Err(AxVmError::interrupt("queue AArch64 interrupt event", error)),
+        }
     }
 }
 
@@ -626,16 +627,17 @@ fn publish_irq_kick(run: &RawSpinLock<Option<Arc<RunSignals>>>, vcpu_id: usize) 
             ),
         });
     };
-    signals
-        .kick_from_irq(vcpu_id)
-        .map_err(|_| VgicError::Backend {
+    match signals.kick_from_irq(vcpu_id) {
+        Ok(()) | Err(SignalError::Closed) => Ok(()),
+        Err(_) => Err(VgicError::Backend {
             operation: "kick AArch64 vCPU from IRQ",
             source: arm_vgic::GicV3BackendError::value(
                 "kick AArch64 vCPU from IRQ",
                 "the bound signal target rejected publication",
                 vcpu_id as u64,
             ),
-        })
+        }),
+    }
 }
 
 struct Aarch64VgicFactory {

@@ -462,11 +462,15 @@ impl InterruptControllerEndpoint for RiscvPlicRuntime {
                 current: Some(current.run()),
             });
         }
-        self.kick
+        match self
+            .kick
             .current()
             .ok_or_else(|| AxVmError::interrupt("submit RISC-V interrupt", "no active run"))?
             .publish_controller_event(event)
-            .map_err(|error| AxVmError::interrupt("queue RISC-V interrupt event", error))
+        {
+            Ok(()) | Err(SignalError::Closed) => Ok(()),
+            Err(error) => Err(AxVmError::interrupt("queue RISC-V interrupt event", error)),
+        }
     }
 }
 
