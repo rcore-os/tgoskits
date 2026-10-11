@@ -27,10 +27,10 @@ Supported arch values:
   x86_64, aarch64, riscv64, loongarch64
 
 Demos:
-  demo1  ArceOS raw backtrace without host symbolize.
-  demo2  ArceOS raw backtrace with automatic host symbolize.
-  demo3  ArceOS DWARF-enabled raw backtrace with automatic host symbolize.
-  demo4  StarryOS /dev/memtrack allocation backtrace with host symbolize.
+  demo1  ArceOS target-side backtrace with an AXBT map.
+  demo2  Compatibility alias for the ArceOS target-side map demo.
+  demo3  Compatibility alias for the ArceOS target-side map demo.
+  demo4  StarryOS /dev/memtrack target-side backtrace.
   starry-rootfs  Prepare the StarryOS rootfs used by demo4.
   all    Prepare StarryOS rootfs, then run demo1 through demo4 for one arch.
   all-arch  Run the full workflow for all supported arch values.
@@ -49,27 +49,6 @@ require_supported_arch() {
   echo "unsupported arch: ${arch}" >&2
   echo "supported arch values: ${ARCHES[*]}" >&2
   exit 2
-}
-
-target_triple_for_arch() {
-  case "${1}" in
-    x86_64)
-      echo "x86_64-unknown-none"
-      ;;
-    aarch64)
-      echo "aarch64-unknown-none-softfloat"
-      ;;
-    riscv64)
-      echo "riscv64gc-unknown-none-elf"
-      ;;
-    loongarch64)
-      echo "loongarch64-unknown-none-softfloat"
-      ;;
-    *)
-      echo "unsupported arch: ${1}" >&2
-      exit 2
-      ;;
-  esac
 }
 
 run_for_all_arches() {
@@ -95,8 +74,7 @@ run_demo1() {
   cargo xtask arceos test qemu \
     --arch "${arch}" \
     --test-group rust \
-    --test-case backtrace \
-    --no-symbolize
+    --test-case debug-backtrace
 }
 
 run_demo2() {
@@ -106,7 +84,7 @@ run_demo2() {
   cargo xtask arceos test qemu \
     --arch "${arch}" \
     --test-group rust \
-    --test-case backtrace
+    --test-case debug-backtrace
 }
 
 run_demo3() {
@@ -116,66 +94,17 @@ run_demo3() {
   cargo xtask arceos test qemu \
     --arch "${arch}" \
     --test-group rust \
-    --test-case backtrace-raw-normal
+    --test-case debug-backtrace
 }
 
 run_demo4() {
   local arch="${1:-${DEFAULT_ARCH}}"
   require_supported_arch "${arch}"
 
-  local target
-  target="$(target_triple_for_arch "${arch}")"
-
-  local log
-  log="$(mktemp "${TMPDIR:-/tmp}/tgoskits-starry-memtrack-${arch}.XXXXXX.log")"
-
-  set +e
   cargo xtask starry app qemu \
     -t qemu/memtrack-backtrace \
     --arch "${arch}" \
-    --qemu-config "qemu-${arch}.toml" \
-    2>&1 | tee "${log}"
-  local status="${PIPESTATUS[0]}"
-  set -e
-
-  if [[ "${status}" -ne 0 ]]; then
-    echo "demo4 qemu failed; raw log kept at ${log}" >&2
-    return "${status}"
-  fi
-
-  if grep -q '^=== host backtrace symbolize ===$' "${log}"; then
-    echo "demo4 host symbolize already emitted by runner; raw log kept at ${log}" >&2
-    return 0
-  fi
-
-  if ! grep -Eq '^BACKTRACE_BEGIN([[:space:]]|$)' "${log}"; then
-    echo "demo4 found no BACKTRACE_BEGIN blocks; raw log kept at ${log}" >&2
-    return 1
-  fi
-
-  local symbolized
-  symbolized="$(mktemp "${TMPDIR:-/tmp}/tgoskits-starry-memtrack-${arch}.symbolized.XXXXXX.log")"
-
-  if ! cargo xtask backtrace symbolize \
-    --elf "target/${target}/release/starryos" \
-    --log "${log}" \
-    --kind alloc \
-    --adjust-ip false > "${symbolized}"; then
-    echo "demo4 host symbolize failed; raw log kept at ${log}" >&2
-    echo "demo4 partial symbolized output kept at ${symbolized}" >&2
-    return 1
-  fi
-
-  if ! grep -Eq '^BACKTRACE_BLOCK[[:space:]].*kind=alloc([[:space:]]|$)' "${symbolized}"; then
-    echo "demo4 host symbolize produced no alloc blocks; raw log kept at ${log}" >&2
-    echo "demo4 symbolized output kept at ${symbolized}" >&2
-    return 1
-  fi
-
-  printf '\n=== host backtrace symbolize ===\n'
-  cat "${symbolized}"
-  rm -f "${symbolized}"
-  echo "demo4 raw log: ${log}" >&2
+    --qemu-config "qemu-${arch}.toml"
 }
 
 run_all_one_arch() {

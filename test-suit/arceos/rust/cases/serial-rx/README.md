@@ -24,7 +24,7 @@
 
 ```bash
 cargo xtask arceos test qemu --test-group rust --test-case serial-rx --arch aarch64 --list
-cargo xtask arceos test qemu --test-group rust --test-case serial-rx --arch aarch64 --keep-qemu-log
+cargo xtask arceos test qemu --test-group rust --test-case serial-rx --arch aarch64
 ```
 
 ### 2.2 缺陷敏感度

@@ -3,12 +3,12 @@ mod assets;
 mod board;
 mod board_assets;
 mod external;
+mod host_http;
 mod nixos;
 mod qemu_discovery;
 mod qemu_profiles;
 mod qemu_run;
 mod suite;
-mod symbolize;
 mod types;
 
 #[cfg(test)]
@@ -20,6 +20,7 @@ pub(crate) use board::collect_board_test_groups;
 pub(in crate::starry) use board_assets::{
     BoardSessionAssetRequest, PreparedBoardSessionAssets, prepare_board_session_assets,
 };
+pub(crate) use host_http::start_qemu_case_host_http_server;
 pub(crate) use nixos::{run as run_nixos, supported_cases};
 pub(crate) use qemu_discovery::{
     direct_starry_qemu_case_exists, discover_qemu_cases, parse_starry_qemu_case_selection,
@@ -28,9 +29,6 @@ pub(crate) use qemu_discovery::{
 pub(crate) use suite::{
     discover_all_qemu_cases_with_archs, discover_board_test_groups, finalize_qemu_case_run,
     require_test_suite_dir,
-};
-pub(crate) use symbolize::{
-    ensure_host_symbolize_output_matches, start_qemu_case_host_http_server,
 };
 pub(crate) use types::{
     PreparedStarryQemuCase, StarryBoardTestGroup, StarryQemuCase, StarryQemuCaseOutcome,

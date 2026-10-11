@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::{ffi::c_void, ptr, time::Duration};
 
 use httpboot_protocol::{
@@ -98,13 +97,13 @@ impl NetworkInterface {
 /// The beacon only advertises a device endpoint; it never waits for a server.
 pub struct Announcer {
     address: Ipv4Address,
-    payload: Vec<u8>,
+    announcement: LoaderAnnouncement,
     udp: Udp4Client,
 }
 
 impl Announcer {
     pub fn new(interface: NetworkInterface, boot_epoch: &str) -> Result<Self, NetworkError> {
-        let payload = serde_json::to_vec(&LoaderAnnouncement {
+        let announcement = LoaderAnnouncement {
             protocol_version: DEVICE_PROTOCOL_VERSION,
             mac_address: interface.mac_address,
             current_mac_address: interface.current_mac_address,
@@ -112,23 +111,31 @@ impl Announcer {
             loader_version: env!("CARGO_PKG_VERSION").into(),
             boot_epoch: boot_epoch.into(),
             http_port: 2999,
-        })
-        .map_err(|_| NetworkError::MalformedResponse)?;
-        if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
-            return Err(NetworkError::MalformedResponse);
-        }
+            serial_id: None,
+            serial_ready: false,
+        };
         Ok(Self {
             address: interface.broadcast_address,
-            payload,
+            announcement,
             udp: Udp4Client::new(interface.handle)?,
         })
     }
 
-    pub fn broadcast(&mut self) -> Result<(), NetworkError> {
+    pub fn broadcast(
+        &mut self,
+        serial: &httpboot_protocol::LoaderSerialStatus,
+    ) -> Result<(), NetworkError> {
+        self.announcement.serial_id = Some(serial.serial_id.clone());
+        self.announcement.serial_ready = serial.ready;
+        let payload =
+            serde_json::to_vec(&self.announcement).map_err(|_| NetworkError::MalformedResponse)?;
+        if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
+            return Err(NetworkError::MalformedResponse);
+        }
         self.udp.transmit(
             self.address,
             httpboot_protocol::DISCOVERY_PORT,
-            &self.payload,
+            &payload,
             &mut || (),
         )
     }
@@ -339,7 +346,12 @@ impl Udp4Client {
         // EFI_UDP4_PROTOCOL.Cancel completes the token by signaling its event.
         // Do not let the stack-backed token or packet buffers go out of scope
         // until firmware has stopped referencing them.
-        while token.status == Status::NOT_READY {
+        while {
+            // SAFETY: token is live and aligned until Cancel completes. Firmware
+            // updates status while polling; reload it before releasing buffers.
+            unsafe { core::ptr::read_volatile(&token.status) }
+        } == Status::NOT_READY
+        {
             self.protocol_mut().poll();
             boot::stall(UDP_POLL_STALL);
         }

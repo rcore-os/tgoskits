@@ -33,13 +33,5 @@ pub(super) async fn test_generic_qemu(
     );
     let prepared = prepare_rust_qemu_cases(arceos, target, cases).await?;
 
-    run_prepared_qemu_groups(
-        arceos,
-        group,
-        &group_label,
-        &prepared,
-        options.symbolize_after,
-        options.keep_qemu_log,
-    )
-    .await
+    run_prepared_qemu_groups(arceos, group, &group_label, &prepared).await
 }

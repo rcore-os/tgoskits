@@ -26,6 +26,8 @@ mod future_incompat;
 mod info;
 mod platform;
 mod std_build;
+pub(crate) mod symbol_map;
+pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
 pub(crate) use config_file::{
@@ -38,8 +40,8 @@ pub(crate) use future_incompat::{
 };
 pub(crate) use info::{
     ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags,
-    build_info_enables_backtrace_path, ensure_package_mmu_feature, env_truthy, features_enable_mmu,
-    package_enables_mmu, toolchain_rustflags,
+    ensure_package_mmu_feature, env_truthy, features_enable_mmu, package_enables_mmu,
+    toolchain_rustflags,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]

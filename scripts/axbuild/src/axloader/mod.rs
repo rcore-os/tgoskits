@@ -40,7 +40,7 @@ pub struct ArgsTestQemu {
     #[arg(long, default_value = DEFAULT_UEFI_TARGET)]
     pub target: String,
 
-    /// Start directly with an assigned v5 OTA on the persistent FAT disk.
+    /// Start directly with an assigned v6 OTA on the persistent FAT disk.
     #[arg(long)]
     pub server_only: bool,
 }

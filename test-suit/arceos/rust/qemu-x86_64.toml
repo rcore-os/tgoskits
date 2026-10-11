@@ -1,7 +1,7 @@
 args = [
     "-m",
-    # The aggregate test image carries embedded DWARF and needs enough
-    # pre-ExitBootServices memory for both the EFI source and loaded image.
+    # The aggregate test image carries its AXBT map in initramfs and needs
+    # enough pre-ExitBootServices memory for both the EFI source and image.
     "512M",
     "-smp",
     "4",

@@ -26,7 +26,7 @@ default = ["dynamic_debug"]
 dev-log = []
 ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
-memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
+memtrack = ["ax-alloc/tracking"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
 # Exposes a debugfs-only synchronization hook used by the real userspace QEMU
 # regression for faultable user copies. Production builds must not enable it.
@@ -102,7 +102,7 @@ media-uvc = { workspace = true, optional = true }
 ax-sync = { workspace = true, features = ["sleep"] }
 anyhow.workspace = true
 
-axbacktrace = { workspace = true }
+axbacktrace = { workspace = true, features = ["alloc"] }
 ax-cgroup = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 rdif-block = { workspace = true }
@@ -171,7 +171,6 @@ sg200x-jpu = { workspace = true, optional = true }
 # must come from the same version as sg200x-bsp's ReadWrite types.
 tock-registers = { version = "0.10", optional = true }
 ax-tracepoint.workspace = true
-ksym = "0.6"
 kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 

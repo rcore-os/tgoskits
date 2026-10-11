@@ -30,7 +30,7 @@ sidebar_label: "矩阵执行"
 
 | 分组 | 代表性执行链路 |
 | --- | --- |
-| Workspace | 增量 Clippy；std 白名单测试；qperf 的构建、ABI 和采样检查 |
+| Workspace | 增量 Clippy；std 白名单测试；同一行追加 Linux perf 下载契约、task-switch 换算和 qperf 描述符/入口回归 |
 | ArceOS | 各架构 `arceos test qemu`；部分行先验证启动、SMP 或追加 task-ipi 场景 |
 | Starry | `starry test qemu` 后追加 `ktest qemu -p starry-kernel`；独立板卡行运行 `starry test board` |
 | AxVisor | 按清单运行 QEMU、Intel VMX、AMD SVM 和具体板卡场景；一行可包含多个启动变体 |

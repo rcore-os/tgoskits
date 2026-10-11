@@ -22,7 +22,6 @@ build_std_features="compiler-builtins-mem"
 features="${FEATURES:-ax-driver/nvme,ax-driver/virtio-net,smp}"
 cargo_verbose="${CARGO_VERBOSE:-0}"
 artifact_to_bin="${ARTIFACT_TO_BIN:-1}"
-kallsyms_reserved="${STARRY_KALLSYMS_RESERVED:-16M}"
 
 finish_guest() {
     rc="$1"
@@ -34,109 +33,6 @@ finish_guest() {
         halt -f 2>/dev/null || halt 2>/dev/null || true
     fi
     exit "$rc"
-}
-
-find_first_executable() {
-    for candidate do
-        if [ -x "$candidate" ]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
-
-ensure_tool_wrapper() {
-    wrapper_dir="$1"
-    rust_tool="$2"
-    llvm_tool="$3"
-
-    if command -v "$rust_tool" >/dev/null 2>&1 && "$rust_tool" --version >/dev/null 2>&1; then
-        return
-    fi
-
-    llvm_path="$(find_first_executable \
-        "/usr/bin/${llvm_tool}" \
-        "/usr/lib/llvm22/bin/${llvm_tool}" \
-        "/usr/lib/llvm21/bin/${llvm_tool}" \
-        "/usr/lib/llvm20/bin/${llvm_tool}" \
-        "/usr/lib/llvm/bin/${llvm_tool}" || true)"
-    if [ -z "$llvm_path" ]; then
-        echo "===${marker}-KALLSYMS-TOOL-MISSING tool=${rust_tool} fallback=${llvm_tool}==="
-        finish_guest 2
-    fi
-
-    cat >"${wrapper_dir}/${rust_tool}" <<EOF
-#!/bin/sh
-exec "${llvm_path}" "\$@"
-EOF
-    chmod +x "${wrapper_dir}/${rust_tool}"
-}
-
-ensure_gen_ksym() {
-    install_root="$1"
-
-    if command -v gen_ksym >/dev/null 2>&1; then
-        return
-    fi
-
-    ksym_manifest=""
-    for candidate in /root/.cargo/registry/src/*/ksym-0.6.0/Cargo.toml; do
-        if [ -f "$candidate" ]; then
-            ksym_manifest="$candidate"
-            break
-        fi
-    done
-    if [ -z "$ksym_manifest" ]; then
-        echo "===${marker}-KALLSYMS-TOOL-MISSING tool=gen_ksym crate=ksym-0.6.0==="
-        finish_guest 2
-    fi
-
-    echo "===${marker}-KALLSYMS-GEN-KSYM-BUILD manifest=${ksym_manifest}==="
-    RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= "$cargo_bin" install \
-        --offline \
-        --locked \
-        --path "$(dirname "$ksym_manifest")" \
-        --root "$install_root" \
-        --bin gen_ksym
-}
-
-ensure_kallsyms_tools() {
-    tools_root="/tmp/starryos-selfbuild-tools"
-    wrapper_dir="${tools_root}/wrappers"
-    install_root="${tools_root}/cargo-install"
-    mkdir -p "$wrapper_dir" "$install_root"
-
-    export PATH="${install_root}/bin:${wrapper_dir}:${PATH}"
-    ensure_tool_wrapper "$wrapper_dir" rust-nm llvm-nm
-    ensure_tool_wrapper "$wrapper_dir" rust-objdump llvm-objdump
-    ensure_tool_wrapper "$wrapper_dir" rust-objcopy llvm-objcopy
-    ensure_gen_ksym "$install_root"
-
-    echo "===${marker}-KALLSYMS-TOOLS-READY==="
-}
-
-run_starry_kallsyms() {
-    artifact="$1"
-
-    kallsyms_script="apps/starry/macos-selfbuild/starry-kallsyms.sh"
-    if [ ! -f "$kallsyms_script" ]; then
-        echo "===${marker}-KALLSYMS-SCRIPT-MISSING==="
-        finish_guest 2
-    fi
-
-    ensure_kallsyms_tools
-    echo "===${marker}-KALLSYMS-BEGIN elf=${artifact}==="
-    set +e
-    KERNEL_ELF="$artifact" AXBUILD_STARRY_KALLSYMS_AUTO_INSTALL=0 \
-        sh "$kallsyms_script"
-    kallsyms_rc="$?"
-    set -e
-    if [ "$kallsyms_rc" != "0" ]; then
-        echo "===${marker}-KALLSYMS-FAIL rc=${kallsyms_rc}==="
-        finish_guest "$kallsyms_rc"
-    fi
-    echo "===${marker}-KALLSYMS-END elf=${artifact}==="
 }
 
 echo "===${marker}-BEGIN jobs=${jobs} source_tmpfs=${source_tmpfs}==="
@@ -199,7 +95,6 @@ export CARGO_TARGET_DIR="$target_dir"
 export AX_ARCH="${AX_ARCH:-aarch64}"
 export AX_TARGET="${AX_TARGET:-$build_target}"
 export AX_LOG="${AX_LOG:-warn}"
-export STARRY_KALLSYMS_RESERVED="$kallsyms_reserved"
 
 if [ -z "${LIBCLANG_PATH:-}" ]; then
     for candidate in /usr/lib /usr/lib/llvm*/lib; do
@@ -269,26 +164,6 @@ fi
 
 configure_host_rustflags
 
-patch_starry_kallsyms_reserve() {
-    linker="os/StarryOS/starryos/linker.ld"
-
-    [ -f "$linker" ] || return
-
-    case "$kallsyms_reserved" in
-        *[!0-9KkMmGg]*)
-            echo "===${marker}-KALLSYMS-RESERVE-ERROR value=${kallsyms_reserved}==="
-            finish_guest 2
-            ;;
-    esac
-
-    if grep -q '\. += 8M; /\* reserve space for kallsyms' "$linker"; then
-        sed -i "s/\\. += 8M; \\/\\* reserve space for kallsyms, can be recycled \\*\\//. += ${kallsyms_reserved}; \\/\\* reserve space for kallsyms, patched by macOS self-build \\*\\//" "$linker"
-        echo "===${marker}-KALLSYMS-RESERVE-PATCH value=${kallsyms_reserved} file=${linker}==="
-    fi
-}
-
-patch_starry_kallsyms_reserve
-
 rustflags="${LINK_RUSTFLAGS:-}"
 if [ -n "${EXTRA_RUSTFLAGS:-}" ]; then
     rustflags="${rustflags} ${EXTRA_RUSTFLAGS}"
@@ -317,7 +192,6 @@ echo "build_std=${build_std}"
 echo "build_std_features=${build_std_features}"
 echo "features=${features}"
 echo "artifact_to_bin=${artifact_to_bin}"
-echo "starry_kallsyms_reserved=${STARRY_KALLSYMS_RESERVED}"
 echo "cargo_verbose=${cargo_verbose}"
 echo "source_dir=${source_dir}"
 echo "target_dir=${target_dir}"
@@ -393,7 +267,17 @@ if [ "$rc" = "0" ]; then
         finish_guest 2
     fi
 
-    run_starry_kallsyms "$artifact"
+    map="${artifact%.*}.axbt"
+    echo "===${marker}-AXBT-MAP-BEGIN elf=${artifact} path=${map} ==="
+    if ! "$cargo_bin" xtask axbt --elf "$artifact" --output "$map"; then
+        echo "===${marker}-AXBT-MAP-FAIL path=${map} ==="
+        finish_guest 2
+    fi
+    if [ ! -s "$map" ]; then
+        echo "===${marker}-AXBT-MAP-MISSING path=${map} ==="
+        finish_guest 2
+    fi
+    echo "===${marker}-AXBT-MAP-END path=${map} ==="
     bytes="$(wc -c <"$artifact" 2>/dev/null || echo unknown)"
     echo "===${marker}-ARTIFACT path=${artifact} bytes=${bytes}==="
     mkdir -p "$artifact_dir"

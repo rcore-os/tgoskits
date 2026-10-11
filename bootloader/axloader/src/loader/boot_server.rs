@@ -2,8 +2,8 @@
 
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
-use core::ptr::NonNull;
+use alloc::{rc::Rc, string::String, vec::Vec};
+use core::{cell::RefCell, ptr::NonNull};
 
 use httpboot_protocol::{
     BootArch, DeviceBootImage, DeviceBootJob, DeviceBootStatus, ImageFormat, LoaderHardwareInfo,
@@ -26,6 +26,7 @@ pub struct BootServer {
     current_mac_address: MacAddress,
     hardware: LoaderHardwareInfo,
     job: Option<Job>,
+    pub serial: Rc<RefCell<httpboot_protocol::LoaderSerialStatus>>,
 }
 
 struct Job {
@@ -47,6 +48,7 @@ impl BootServer {
         mac_address: MacAddress,
         current_mac_address: MacAddress,
         hardware: LoaderHardwareInfo,
+        serial: Rc<RefCell<httpboot_protocol::LoaderSerialStatus>>,
     ) -> Self {
         Self {
             epoch,
@@ -54,6 +56,7 @@ impl BootServer {
             current_mac_address,
             hardware,
             job: None,
+            serial,
         }
     }
 
@@ -172,7 +175,14 @@ impl BootServer {
         Ok(())
     }
 
-    pub fn prepare(&mut self, id: &str) -> Result<BootExecution, &'static str> {
+    pub fn prepare(
+        &mut self,
+        id: &str,
+        binding: Option<&str>,
+    ) -> Result<BootExecution, &'static str> {
+        if !binding.is_some_and(|id| self.serial.borrow().permits_start(id)) {
+            return Err("serial_binding_required");
+        }
         let job = self.job.as_ref().ok_or("unknown_boot_job")?;
         if job.manifest.boot_id != id {
             return Err("unknown_boot_job");

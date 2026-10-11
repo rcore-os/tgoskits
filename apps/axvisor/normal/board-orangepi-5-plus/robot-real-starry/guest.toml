@@ -14,6 +14,11 @@ entry_point = 0x4008_0000
 kernel_load_addr = 0x4008_0000
 kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
 dtb_load_addr = 0x4000_0000
+# Without an explicit cmdline the guest inherits the board's stale Armbian
+# /chosen bootargs and starts systemd as PID 1, which StarryOS cannot bring up.
+# Boot straight into the fixed CI shell instead, like the native robot-flow
+# board config and the robot-starry virtual case.
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 
 # Keep a fixed 256 MiB region below 4 GiB for the kernel and DMA32 devices,
 # while allowing ordinary allocations to use the 2 GiB high-memory region.

@@ -49,7 +49,8 @@ module!(
 ```
 
 Use `extern "C"` declarations for kernel shim symbols that are resolved
-through StarryOS kallsyms at load time.
+through the StarryOS AXBT map provider at load time. `/proc/kallsyms` exposes
+the same symbols for Linux-compatible tooling.
 
 ## Required Dependencies
 
@@ -104,7 +105,7 @@ module's package features are then applied on top of that context.
 Release LTO must remain disabled for kernels that load Rust kmods. With LTO,
 the final kernel link can inline, internalize, rename, or remove Rust symbols
 that are not needed by the kernel's own closed-world call graph. A module that
-later references the original symbol name will then fail kallsyms resolution at
+later references the original symbol name will then fail AXBT resolution at
 `insmod` time.
 
 This repository currently sets:
@@ -153,8 +154,8 @@ If a module fails to load with an unknown symbol, compare the module's
 undefined symbols with the kernel ELF:
 
 ```sh
-rust-nm -u target/<target>/release/<module>.ko
-rust-nm -n target/<target>/release/starryos
+nm -u target/<target>/release/<module>.ko
+nm -n target/<target>/release/starryos
 ```
 
 The unresolved module symbol must exist in the kernel ELF with the exact same

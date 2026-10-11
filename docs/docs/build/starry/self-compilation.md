@@ -30,7 +30,7 @@ QEMU 通过 user-mode networking 联网。来宾 runner 会：
 1. 用 `apk` 安装构建依赖、`libudev-zero-dev`、git 和 curl；
 2. 将预处理的 `nightly-2026-09-04-x86_64-unknown-linux-musl` Rust toolchain 解包到 rootfs，
    并在 MemoryFs 中安装 rustup；
-3. 在线安装固定版本的 `cargo-binutils 0.4.0` 和 `ksym 0.6.0`；
+3. 使用构建器生成最终 ELF 旁的 AXBT map，不再安装内核符号注入工具；
 4. 将源码解包到 `/tmp`，但把 canonical `target/` 链接到持久化的
    `/opt/starry-selfhost-target`，使用两个 Cargo jobs 编译 musl-host `tg-xtask`，然后执行
    `tg-xtask starry build -c apps/starry/selfhost/build-x86_64-unknown-none.toml --arch x86_64`；

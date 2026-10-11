@@ -96,7 +96,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "usb"
             | "rtc"
             | "backtrace"
-            | "dwarf"
             | "ext-ld"
             | "wake-ipi"
             | "std-compat"

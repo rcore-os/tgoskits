@@ -44,8 +44,8 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask sync-lint` | 可疑 `Relaxed` 原子序检查 | [Sync Lint](./sync_lint) |
 | **辅助工具** | | |
 | `cargo xtask board` | 远程板卡管理（ls/connect/config） | [板卡管理](./board) |
-| `cargo xtask backtrace` | host 端 backtrace 符号化 | [Backtrace 符号化](./backtrace) |
 | `cargo xtask image` | TGOS rootfs/guest 镜像管理 | [镜像管理](./image) |
+| `cargo xtask axbt` | 从最终 ELF 生成 target 侧 AXBT map | [回溯 map](./backtrace) |
 | `cargo xtask ovmf` | 获取经校验的 OVMF CODE/VARS 路径 | 本节 |
 | `cargo xtask axloader` | UEFI bootloader 构建与 HTTP smoke 测试 | [Axloader](./axloader) |
 | `cargo xtask agent-review-bench` | 历史拉取请求快照的离线评审基准 | [评审基准](./agent-review-bench) |
@@ -131,27 +131,16 @@ cargo xtask sync-lint --since origin/dev  # 增量（CI 使用）
 
 详见 [板卡管理](./board)。
 
-### 4.2 回溯符号化
+### 4.2 回溯 map
 
-从日志中提取并符号化 `BACKTRACE_BEGIN/BT/BACKTRACE_END` 块。
-
-```bash
-cargo xtask backtrace symbolize --elf <PATH> [--log <PATH>] [--kind <KIND>] [--adjust-ip <BOOL>] [--ip-bias <I64>]
-```
-
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--elf <PATH>` | 必填 | 用于符号化的 ELF（必须保留 debug info） |
-| `--log <PATH>` | stdin | 输入日志路径，省略则读 stdin |
-| `--kind <KIND>` | 自动 | 仅符号化匹配的块 kind |
-| `--adjust-ip <BOOL>` | `true` | 符号化前 `ip -= 1`（call-site 调整） |
-| `--ip-bias <I64>` | `0` | 符号化前对 `ip` 施加有符号偏移（地址 slide） |
+构建流程会自动为最终 ELF 生成 AXBT map。需要单独生成时运行：
 
 ```bash
-cargo xtask backtrace symbolize --elf target/x86_64/debug/arceos-httpserver --log qemu.log
+cargo xtask axbt --elf target/<target>/<profile>/kernel
 ```
 
-详见 [Backtrace 符号化](./backtrace)。
+map 随 initramfs/bundle 进入目标机，由 `axbacktrace` 在目标侧解析；宿主机不再
+读取回溯日志或运行 `addr2line`。详见 [回溯 map](./backtrace)。
 
 ### 4.3 镜像管理
 
@@ -244,7 +233,6 @@ cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 100
 
 | 子命令 | 用法 |
 |--------|------|
-| `test qemu` | `[--arch \| -t/--target \| --list] [-g/--test-group <G>] [-c/--test-case <C>] [--no-symbolize] [--keep-qemu-log]`（三选一） |
 | `test board` | `[-c/--test-case <C>] [--board <B>] [-b/--board-type <T>] [--server <H>] [--port <P>] [--list]` |
 
 ArceOS Build Config 通过 `features`、`log`、`max_cpu_num` 与 `[env]` 描述构建能力；`BuildInfo::validate_features()` 验证输入，构建命令输出 ELF，QEMU TOML 的 `to_bin` 决定运行阶段是否准备 BIN。

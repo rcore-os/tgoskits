@@ -95,7 +95,7 @@ runtime = "arceos" # starry | axvisor | board
 - 追加 `--cfg axtest --check-cfg cfg(axtest)`；
 - `--coverage` 时设置 `AXTEST_COVERAGE=y` 并配置覆盖率捕获。
 
-平台、虚拟化和应用 feature 由所选 Build Config 与 test target 的 `required-features` 共同确定。runner 不会按 arch 改写 `uefi`、`to_bin`、CPU、设备或 rootfs 契约。StarryOS target 构建完成后执行 `postprocess_starry_artifact()`，生成 kallsyms 并按 ITS 配置处理启动镜像。
+平台、虚拟化和应用 feature 由所选 Build Config 与 test target 的 `required-features` 共同确定。runner 不会按 arch 改写 `uefi`、`to_bin`、CPU、设备或 rootfs 契约。StarryOS target 构建完成后生成 AXBT map 并按 ITS 配置处理启动镜像。
 
 ## 5. QEMU 验证
 

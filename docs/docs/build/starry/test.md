@@ -64,7 +64,7 @@ flowchart TD
     C --> D["prepare_request + qemu_test_request<br/>清空 smp，准备默认 board"]
     D --> E["prepare_case_build_groups<br/>按 build config 路径分组"]
     E --> F["逐 build group"]
-    F --> G["build_artifact<br/>编译内核 ELF + kallsyms"]
+    F --> G["build_artifact<br/>编译内核 ELF + AXBT map"]
     G --> H["prepare_qemu_cases<br/>加载 QEMU config + 解析 rootfs 路径"]
     H --> I["ensure_qemu_case_rootfs_paths<br/>确保所有 rootfs 已下载"]
     I --> J["逐 case：run_qemu_case"]
@@ -86,7 +86,7 @@ flowchart TD
 | 用例发现 | `qemu_discovery.rs::discover_qemu_cases()` | 递归扫描 `test-suit/starryos/`，通过 `nearest_build_wrapper()` 关联每个用例到最近的 `build-*.toml` |
 | 默认 board | `board::default_board_for_target()` | 从 `os/StarryOS/configs/board/` 查找 target 匹配的 `qemu-*` board，缺失时报错 |
 | 构建分组 | `qemu_test::prepare_case_build_groups()` | 先按 `build_config_path` 发现，再按 Cargo 编译身份合并；每组共享 `(request, cargo)` |
-| 内核编译 | `build_artifact()` | 调用共享 Cargo 装配 + `postprocess_starry_artifact()`（kallsyms + 可选 uImage） |
+| 内核编译 | `build_artifact()` | 调用共享 Cargo 装配 + `postprocess_starry_artifact()`，生成 AXBT map 并按需处理 uImage |
 | QEMU config | `read_qemu_config_from_path_for_cargo()` | 从用例的 `qemu-<arch>.toml` 加载，替换 managed rootfs 路径 |
 | rootfs 准备 | `ensure_qemu_case_rootfs_paths()` | 区分 default rootfs（`ensure_rootfs_in_tmp_dir`）和 managed rootfs（`ensure_optional_managed_rootfs`） |
 | grouped 校验 | `validate_grouped_qemu_commands()` / `normalize_qemu_test_commands()` | 禁止同时声明 `shell_check_steps` 与 `test_commands`，并拒绝空命令 |
@@ -101,7 +101,7 @@ flowchart TD
 4. **资产准备**：`prepare_case_assets()` 进入共享的 `test/case/` 层（见 [测试基础设施](../test_infra#7-资产准备与-rootfs-缓存)），StarryOS 的 staging 钩子注入 DNS，guest 包环境钩子按 `STARRY_APK_REGION` 重写 APK 源。
 5. **rootfs 补丁**：`patch_rootfs()` 把 prepared rootfs 路径写入 QEMU `-drive`，模式为 `EnsureDiskBootNet`，写策略为 `RootfsWritePolicy::Discard`。
 6. **Host HTTP**：`start_qemu_case_host_http_server()` 按需启动。
-7. **Backtrace capture**：Build Config 启用 `BACKTRACE`/`DWARF` 时，流式捕获 backtrace 块并可选符号化。
+7. **目标侧 Backtrace**：Starry 构建默认保留帧指针和 DWARF 信息，构建器把 AXBT map 和 Starry 的 AXKS 符号表放入 initramfs；测试直接匹配目标串口中的函数名和 `file:line`，不再通过 `BACKTRACE`/`DWARF` 环境变量切换能力。`ostool` 不支持把 host initramfs 交给非 UEFI 的 x86_64 直接启动路径，因此需要 map 的 x86_64 用例必须声明 `uefi = true`；其它 direct loader 由其架构启动协议接收 initramfs。未切换到 UEFI 的 direct x86_64 用例会保留地址级回溯并跳过 host initramfs 注入。
 
 ### 3.3 失败语义
 

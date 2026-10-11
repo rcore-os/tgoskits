@@ -21,7 +21,9 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
-shell_prefix = "HOSTNAME=starry"
+# Wait for the guest shell prompt itself: the cmdline echo also contains
+# HOSTNAME=starry and would fire this step while the kernel is still booting.
+shell_prefix = "root@starry:~#"
 shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588'
 
 [[shell_check_steps]]

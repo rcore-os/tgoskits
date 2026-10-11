@@ -8,8 +8,10 @@ phys_cpu_ids = [0]
 [kernel]
 entry_point = 0x2_4008_0000
 kernel_load_addr = 0x2_4008_0000
-# Use the board's Linux 6.1.99 image and matching rootfs modules.
-kernel_path = "${env:AXVISOR_GUEST_ASSETS}/boot/Image"
+# Use the board-staged Linux 6.1.99 image and matching initramfs from the
+# shared /guest assets; the older /guest/linux/orangepi-5-plus (6.1.43) image
+# hits PCIe link-training failures on this device tree.
+kernel_path = "${env:AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus-6.1.99"
 dtb_load_addr = 0x2_4000_0000
 ramdisk_path = "${env:AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio"
 ramdisk_load_addr = 0xc000_0000
@@ -23,12 +25,18 @@ memory_regions = [
 ]
 
 [devices]
-# Preserve UART numbering and complete GPIO/SCMI provider subtrees.
-# The firmware dependency walker does not follow Rockchip-specific GRF references.
+# PCI host bridges only reach the guest when listed explicitly; an implicit
+# root passthrough drops all PCI nodes. The dependency walker additionally
+# requires every referenced clock/DMA/PHY/power-domain provider to be
+# assigned, so the whitelist carries the CRU, the SPI DMA engine and the
+# shared GRF syscons next to the device subtrees themselves.
 passthrough = [
     { path = "/aliases" },
     { path = "/clocks" },
+    { path = "/clock-controller@fd7c0000" },
+    { path = "/dma-controller@fea30000" },
     { path = "/firmware" },
+    { path = "/power-management@fd8d8000" },
     { path = "/pinctrl" },
     { path = "/syscon@fd5f0000" },
     { path = "/syscon@fd5b0000" },
@@ -41,5 +49,7 @@ passthrough = [
     { path = "/i2c@fd880000" },
     { path = "/pcie@fe180000" },
     { path = "/pcie@fe190000" },
+    { path = "/phy@fee00000" },
+    { path = "/phy@fee20000" },
 ]
 disabled = []

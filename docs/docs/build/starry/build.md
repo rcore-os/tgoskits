@@ -5,11 +5,11 @@ sidebar_label: "构建"
 
 # StarryOS 构建
 
-`cargo xtask starry build` 构建固定 package `starryos`。执行链位于 `starry/mod.rs` 和 `starry/build.rs`：先解析共享请求并加载 board-derived Build Config，再生成 std-aware Cargo 配置，最后在 ELF 构建成功后写入 kallsyms，并按需生成 uImage。
+`cargo xtask starry build` 构建固定 package `starryos`。执行链位于 `starry/mod.rs` 和 `starry/build.rs`：先解析共享请求并加载 board-derived Build Config，再生成 std-aware Cargo 配置，最后在 ELF 构建成功后生成同名 AXBT map，并按需生成 uImage。
 
 ## 1. 构建流程
 
-Starry 构建在共享 Cargo 装配后追加符号表和可选镜像处理；图中的后处理阶段解释了它与普通 `cargo build` 的差异。
+Starry 构建在共享 Cargo 装配后生成 AXBT sidecar 和可选镜像；图中的后处理阶段解释了它与普通 `cargo build` 的差异。
 
 ```mermaid
 flowchart TD
@@ -19,7 +19,7 @@ flowchart TD
     D --> E["BuildInfo → std PIE Cargo"]
     E --> F["AppContext::build"]
     F --> G["ELF"]
-    G --> H["generate_kallsyms"]
+    G --> H["generate_axbt_map"]
     H --> I{"同名 .its 存在？"}
     I -->|是| J["mkimage 生成 uImage"]
     I -->|否| K["完成"]
@@ -60,6 +60,7 @@ CLI `--smp` 覆盖配置或 Snapshot 中的 `max_cpu_num`。`FEATURES` 环境变
 - 准备 musl C 交叉编译环境、占位库和 linker wrapper；
 - 固定 package 为 `starryos`，并确保 Cargo 选择其 binary；
 - 写入 `AX_ARCH`、`AX_TARGET`，以及来自 BuildInfo 的 `AX_LOG`、`SMP`、`[env]`。
+- 默认追加 `-Cdebuginfo=2`、`-Cstrip=none` 和 `-Cforce-frame-pointers=yes`，保证每个 Starry ELF 都能生成带文件行号的 AXBT map；不需要在 Build Config 中设置 `BACKTRACE` 或 `DWARF`。
 
 共享基础配置的 `to_bin` 为 `false`。因此 `starry build` 的直接产物是 ELF；运行和部署阶段按 QEMU 或板卡配置决定是否转换。
 
@@ -67,17 +68,11 @@ CLI `--smp` 覆盖配置或 Snapshot 中的 `max_cpu_num`。`FEATURES` 环境变
 
 Starry 在 ELF 构建成功后按固定顺序处理内核符号和可选的启动镜像；这些步骤不会改变请求解析或 Cargo feature 选择。
 
-### 2.1 符号表处理
+### 2.1 AXBT 回溯 map
 
-`build_starry_artifact()` 每次成功构建后调用 `postprocess_starry_artifact()`：
+共享 `axbuild` 构建流程在最终 Starry ELF 旁生成同名 `.axbt` sidecar。生成器在构建机读取 ELF/DWARF，写入函数区间、build-id、文件名和行号；运行时只读取 AXBT，不再修改 ELF 或保留专用符号 section。使用 host-initramfs 的 QEMU 测试会把 sidecar 追加到 `/symbols/kernel.axbt`，由目标内核复制并校验后安装。
 
-1. `rust-nm -n <elf>` 只保留文本和静态数据等可用符号；
-2. 将符号流交给 `gen_ksym`；
-3. 查询 ELF 中 `.kallsyms` 的预留大小；
-4. 生成内容超限时失败，否则零填充到该大小；
-5. 使用 `rust-objcopy --update-section .kallsyms=<temp>` 原地更新 ELF。
-
-这要求构建产物中保留链接脚本预留的 `.kallsyms` section。若遇到“generated kallsyms exceed section”错误，应清理陈旧 ELF 并重新构建，或恢复链接脚本的预留容量。
+若构建产物缺少 `.axbt`，应重新运行 `cargo xtask starry build` 并检查生成日志；map 缺失时目标仍可输出地址级回溯，但 `/proc/kallsyms` 不会提供符号。
 
 ### 2.2 镜像生成
 

@@ -347,8 +347,7 @@ async fn run_qemu_unit(
     patch_x86_64_uefi_kernel_loader(&mut qemu, &unit.arch, output.elf_path()).await?;
     apply_ktest_timeout(&mut qemu, unit.runtime, args.coverage);
     apply_axtest_qemu_markers(&mut qemu);
-    app.run_qemu_with_axtest_coverage(&cargo, qemu, None)
-        .await?;
+    app.run_qemu_with_axtest_coverage(&cargo, qemu).await?;
     if let Some(out_fmt) = args.out_fmt {
         generate_ktest_coverage_report(out_fmt, app.workspace_root(), &cargo, output.elf_path())?;
     }

@@ -540,10 +540,15 @@ impl Starry {
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: Cargo,
-        qemu: ostool::run::qemu::QemuConfig,
+        mut qemu: ostool::run::qemu::QemuConfig,
     ) -> anyhow::Result<()> {
-        self.build_artifact(request, cargo.clone()).await?;
-        self.app.run_qemu(&cargo, qemu, None).await
+        let output = self.build_artifact(request, cargo.clone()).await?;
+        crate::test::qemu::append_backtrace_map(
+            &mut qemu,
+            &output.elf_path().with_extension("axbt"),
+            &request.target,
+        )?;
+        self.app.run_qemu(&cargo, qemu).await
     }
 
     pub(super) async fn run_uboot_artifact(
@@ -552,11 +557,15 @@ impl Starry {
         cargo: Cargo,
         uboot: Option<ostool::run::uboot::UbootConfig>,
     ) -> anyhow::Result<()> {
-        let uboot = match uboot {
+        let mut uboot = match uboot {
             Some(uboot) => uboot,
             None => self.app.ensure_uboot_config_for_cargo(&cargo).await?,
         };
-        self.build_artifact(request, cargo).await?;
+        let output = self.build_artifact(request, cargo).await?;
+        crate::test::qemu::append_backtrace_map_to_initramfs(
+            &mut uboot.boot.initramfs,
+            &output.elf_path().with_extension("axbt"),
+        )?;
         self.app.run_prepared_uboot(uboot).await
     }
 
@@ -571,6 +580,10 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let _boot_entropy = boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
         let output = self.build_artifact(request, cargo.clone()).await?;
+        crate::test::qemu::append_backtrace_map_to_initramfs(
+            &mut board_config.boot.initramfs,
+            &output.elf_path().with_extension("axbt"),
+        )?;
         let board_request = match session_assets {
             Some(assets) => {
                 println!(

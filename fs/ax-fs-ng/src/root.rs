@@ -17,6 +17,7 @@ use crate::{
         runtime::{BlockRuntime, RdifBlockDevice, RdifBlockGroup},
     },
     detect_filesystem, fs,
+    migration::{MigrationPlan, MigrationReport},
     volume::{
         BlockReader, BlockVolume, DiskId, Error as VolumeError,
         PartitionTableKind as VolumeTableKind, scan_volumes,
@@ -225,6 +226,15 @@ impl PreparedRoot {
     /// Provides file access for installing boot resources before publication.
     pub fn context(&self) -> &crate::highlevel::FsContext {
         &self.context
+    }
+
+    /// Migrates an explicit resource plan into this root before publication.
+    pub fn migrate(
+        &self,
+        source: &crate::highlevel::FsContext,
+        plan: &MigrationPlan,
+    ) -> axfs_ng_vfs::VfsResult<MigrationReport> {
+        plan.execute(source, &self.context)
     }
 
     /// Publishes this filesystem and detaches the previous root.
@@ -468,8 +478,25 @@ fn init_root_with_policy(
     if use_memory {
         return RootKind::Memory;
     }
-    prepare_root(devices, bootargs)
-        .and_then(PreparedRoot::commit)
+    let source = crate::highlevel::ROOT_FS_CONTEXT
+        .get()
+        .map(|context| context.lock().clone());
+    let prepared = prepare_root(devices, bootargs)
+        .unwrap_or_else(|error| panic!("failed to prepare disk root: {error:?}"));
+    if let Some(source) = source
+        && !prepared.context().root_dir().is_readonly()
+    {
+        let plan = MigrationPlan::boot_resources()
+            .unwrap_or_else(|error| panic!("failed to create boot migration plan: {error:?}"));
+        prepared
+            .migrate(&source, &plan)
+            .unwrap_or_else(|error| panic!("failed to migrate boot resources: {error:?}"));
+        drop(source);
+    } else if prepared.context().root_dir().is_readonly() {
+        warn!("disk root is read-only; skipping immutable boot resource migration");
+    }
+    prepared
+        .commit()
         .unwrap_or_else(|error| panic!("failed to mount disk root: {error:?}"));
     RootKind::Block
 }
@@ -493,8 +520,33 @@ fn should_use_memory_root(
 ) -> bool {
     match early_init {
         Some(path) => memory_init_accessible(memory, path),
-        None => root_value(bootargs.unwrap_or("")).is_none(),
+        None => {
+            root_value(bootargs.unwrap_or("")).is_none() && !memory_contains_only_kernel_map(memory)
+        }
     }
+}
+
+/// A diagnostic-only archive must not change the default block-root choice.
+///
+/// AXBT maps are carried in the host initramfs even for applications whose
+/// normal root is a block device.  Treating that sidecar as a complete memory
+/// root would hide the device and make writeback tests exercise the wrong
+/// filesystem.  A real initramfs remains the memory root when it contains
+/// any startup or userspace entry.
+fn memory_contains_only_kernel_map(memory: &axfs_ng_vfs::Filesystem) -> bool {
+    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
+    let context = crate::highlevel::FsContext::new(root);
+    let has_map = context.resolve("/symbols/kernel.axbt").is_ok()
+        || context.resolve("/boot/symbols/kernel.axbt").is_ok();
+    if !has_map {
+        return false;
+    }
+    let Ok(entries) = context.read_dir("/") else {
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .all(|entry| matches!(entry.name.as_str(), "." | ".." | "symbols" | "boot"))
 }
 
 fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool {
@@ -1326,6 +1378,33 @@ mod tests {
             assert!(!should_use_memory_root(&fs, None, Some("/missing")));
             assert!(should_use_memory_root(&fs, None, None));
             assert!(!should_use_memory_root(&fs, Some("root=/dev/sda"), None));
+
+            let map_fs = crate::MemoryFs::new_ramfs();
+            let map_context = crate::highlevel::FsContext::new(
+                axfs_ng_vfs::Mountpoint::new_root(&map_fs).root_location(),
+            );
+            map_context
+                .create_node(
+                    "/symbols",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o755),
+                    0,
+                    0,
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+            map_context
+                .create_node(
+                    "/symbols/kernel.axbt",
+                    NodeType::RegularFile,
+                    NodePermission::from_bits_truncate(0o644),
+                    0,
+                    0,
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+            assert!(map_context.resolve("/symbols/kernel.axbt").is_ok());
+            assert!(!should_use_memory_root(&map_fs, None, None));
             assert_eq!(
                 root_value("root=/dev/sda root=PARTUUID=abcd -- root=/ignored"),
                 Some(String::from("PARTUUID=abcd"))

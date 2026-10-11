@@ -94,7 +94,7 @@ scripts/axbuild/src/
 | 系统 | 构建单元 | 默认架构 | 专属配置 | 运行资产 |
 | --- | --- | --- | --- | --- |
 | ArceOS | 一个 workspace app；也支持 `app-c` | aarch64 | `package`、可选 `app-c` | 默认 QEMU 使用新建 FAT32 镜像 |
-| StarryOS | `starryos` 内核 | riscv64 | board target、可选 `.its` | managed Alpine rootfs、kallsyms、可选 uImage |
+| StarryOS | `starryos` 内核 | riscv64 | board target、可选 `.its` | managed Alpine rootfs、AXBT map、可选 uImage |
 | Axvisor | `axvisor` + 一个或多个 VM config | aarch64 | `vm_configs`、x86 `vmx`/`svm` | managed/VM 推导 rootfs、guest 镜像和 firmware |
 
 三者共享 `build/qemu/uboot/board/defconfig/config ls/test` 基础命令契约；StarryOS额外提供 `app`、`perf`、`kmod`、`rootfs`，Axvisor 额外提供 `test uboot`。

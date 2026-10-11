@@ -102,10 +102,6 @@ pub(crate) async fn prepare_qemu_app_case(
             .as_ref()
             .map(|fields| fields.test_case.grouped_command_selection)
             .unwrap_or_default(),
-        host_symbolize_success_regex: fields
-            .as_ref()
-            .map(|fields| fields.test_case.host_symbolize_success_regex.clone())
-            .unwrap_or_default(),
         host_http_server: fields
             .as_ref()
             .and_then(|fields| fields.test_case.host_http_server.clone()),
@@ -127,7 +123,6 @@ pub(crate) fn app_qemu_test_case(
         qemu_config_path,
         test_commands: case.test_commands.clone(),
         grouped_command_selection: case.grouped_command_selection,
-        host_symbolize_success_regex: case.host_symbolize_success_regex.clone(),
         host_http_server: case.host_http_server.clone(),
         subcases: case.subcases.clone(),
         grouped_subcase_filter: None,

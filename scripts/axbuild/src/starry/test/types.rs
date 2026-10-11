@@ -68,6 +68,7 @@ pub(crate) struct PreparedStarryQemuCase {
     pub(crate) build_config_path: PathBuf,
     pub(crate) rootfs_path: PathBuf,
     pub(crate) requirements: StarryQemuCaseRequirements,
+    pub(crate) diskless_host_initramfs: bool,
 }
 
 impl qemu_test::BuildConfigRef for PreparedStarryQemuCase {

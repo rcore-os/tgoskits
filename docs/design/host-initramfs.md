@@ -38,6 +38,14 @@ LoongArch 的 UEFI 入口不再次清零已暂存的交接状态。
 可回收归档在平台物理 RAM 范围中可见，但启动时仍由保留区遮罩，解包前不会进入分配器。
 UEFI 与 FDT 同时提供镜像时，优先使用 UEFI 交接。
 
+最终 ELF 的 AXBT sidecar 由构建器作为 `/symbols/kernel.axbt` 追加到同一
+initramfs；StarryOS 还追加同次构建的 `/symbols/kernel.axks` 类型化符号表。
+`ax-runtime` 在回收归档页前复制并校验 map，之后 backtrace、Starry
+`/proc/kallsyms`、kprobe 和 kmod 都从这些 target-owned provider 读取；map 未就绪
+的早期故障只输出地址级帧。磁盘根准备阶段通过 `MigrationPlan` 把可选的 map、配置、
+kernel、DTB、firmware 和 initrd 迁移到相同路径，验证或发布失败时不提交
+`PreparedRoot`，因此旧根和旧资源包仍保持可用。
+
 运行配置统一复用 ostool 的 `BootPayloadConfig`。`.qemu.toml` 和
 `.board.toml` 都在顶层填写两个可选字段，路径继续支持 `${workspace}`、
 `${package}` 等变量：
@@ -106,7 +114,7 @@ Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令
 
 ## 5. Axvisor 自带资源
 
-`axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs` 和 `/guest/builtin/images`。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
+`axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs`、`/guest/builtin/images` 和可选的 `/guest/builtin/symbols`（与客户机启动镜像同名的 `.axbt` 及可选 `.axks` sidecar）。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
 
 ### 5.1 安装发布
 
@@ -114,7 +122,7 @@ Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令
 
 源目录缺失时保留已安装版本，空包清空旧资源。只读目标、空间不足或安装失败时保持原根并停止 VM 启动。`selected_configs()` 优先有效非空 `/guest/vm_default`；空目录或缺失才回退到自带配置，无效用户配置明确报错。
 
-没有显式磁盘根或没有宿主块设备时，`prepare_root()` 保留 initramfs 根，`validate_builtin()` 只校验包内配置及 `/guest/builtin/images/**` 的文件类型、存在性和非空长度。外部绝对路径仍须是合法配置路径，但在此阶段不解析；对应 VM 加载时才报告外部资源缺失。磁盘根安装由 `install_builtin()` 在准备好的目标根上同时校验包内与外部资源，失败仍保留原根及旧包。 本次调整只限定根准备的校验范围；默认 VM 配置实际加载失败时，`init_guest_vms()` 仍按既有策略停止默认 VM 集初始化，不承诺逐 VM 容错。
+没有显式磁盘根或没有宿主块设备时，`prepare_root()` 保留 initramfs 根，`validate_builtin()` 只校验包内配置、`images/**` 和 `symbols/**` 的文件类型；镜像仍要求存在且非空。外部绝对路径仍须是合法配置路径，但在此阶段不解析；对应 VM 加载时才报告外部资源缺失。磁盘根安装由 `install_builtin()` 在准备好的目标根上同时校验包内与外部资源，失败仍保留原根及旧包。 本次调整只限定根准备的校验范围；默认 VM 配置实际加载失败时，`init_guest_vms()` 仍按既有策略停止默认 VM 集初始化，不承诺逐 VM 容错。
 
 ### 5.2 资源生命周期
 

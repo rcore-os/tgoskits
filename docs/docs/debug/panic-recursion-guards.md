@@ -145,7 +145,7 @@ Linux 用 `oops_in_progress` 这样的全局状态来表达：
 
 - 栈遍历
 - frame pointer / return address 读取
-- 启用 DWARF 时的后续符号化
+- map 就绪后的目标侧符号化
 - 动态内存分配
 
 因此，backtrace 不应在 panic 路径里被无限重试。更保守的策略是：

@@ -112,21 +112,10 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
         return Ok(());
     }
 
-    let symbolize_after = !args.no_symbolize;
-    let keep_qemu_log = args.keep_qemu_log || crate::backtrace::keep_qemu_log_from_env();
     for flow in groups {
         match flow {
             QemuTestFlow::Rust => {
-                test_rust_qemu(
-                    arceos,
-                    &arch,
-                    &target,
-                    selected_case,
-                    allow_rust_case_miss,
-                    symbolize_after,
-                    keep_qemu_log,
-                )
-                .await?
+                test_rust_qemu(arceos, &arch, &target, selected_case, allow_rust_case_miss).await?
             }
             QemuTestFlow::C => test_c_qemu(arceos, &target, args.test_case.as_deref()).await?,
             QemuTestFlow::Generic(ref group) => {
@@ -137,8 +126,6 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                     group,
                     GenericQemuRunOptions {
                         selected_case,
-                        symbolize_after,
-                        keep_qemu_log,
                         allow_empty: args.test_group.is_none(),
                     },
                 )
@@ -154,8 +141,6 @@ pub(super) async fn run_prepared_qemu_groups(
     build_subject: &str,
     group_label: &str,
     prepared: &[PreparedArceosRustQemuCase],
-    symbolize_after: bool,
-    keep_qemu_log: bool,
 ) -> anyhow::Result<()> {
     let total = prepared.len();
     let build_groups = group_arceos_qemu_cases_by_build_identity(prepared);
@@ -163,7 +148,7 @@ pub(super) async fn run_prepared_qemu_groups(
     let mut summary = qemu_test::QemuTestSummary::default();
     let mut completed = 0;
     for build_group in &build_groups {
-        arceos
+        let build_output = arceos
             .app
             .build(
                 build_group.cargo.clone(),
@@ -183,13 +168,14 @@ pub(super) async fn run_prepared_qemu_groups(
                     build_group.build_config_path.display()
                 )
             })?;
+        let map_path = build_output.elf_path().with_extension("axbt");
 
         for case in &build_group.cases {
             completed += 1;
             let case_name = &case.case.case.name;
             println!("[{completed}/{total}] {group_label} qemu {case_name}");
             let case_started = Instant::now();
-            let result = run_rust_qemu_case(arceos, case, symbolize_after, keep_qemu_log)
+            let result = run_rust_qemu_case(arceos, case, &map_path)
                 .await
                 .with_context(|| format!("{group_label} qemu test failed for case `{case_name}`"));
             let duration = case_started.elapsed();
@@ -302,7 +288,6 @@ mod tests {
                     qemu_config_path: PathBuf::from(format!("/tmp/{name}/qemu-x86_64.toml")),
                     test_commands: Vec::new(),
                     grouped_command_selection: Default::default(),
-                    host_symbolize_success_regex: Vec::new(),
                     host_http_server: None,
                     subcases: Vec::new(),
                     grouped_subcase_filter: None,
@@ -340,7 +325,6 @@ mod tests {
                 test: None,
             },
             qemu: QemuConfig::default(),
-            host_symbolize_success_regex: Vec::new(),
         }
     }
 }

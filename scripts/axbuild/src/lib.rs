@@ -7,9 +7,9 @@ use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry
 
 mod agent_review_bench;
 pub mod arceos;
+mod axbt;
 pub mod axloader;
 pub mod axvisor;
-mod backtrace;
 mod board;
 mod build;
 mod clippy;
@@ -58,6 +58,8 @@ enum Commands {
         #[command(subcommand)]
         command: agent_review_bench::Command,
     },
+    /// Generate a target-side AXBT map from a final ELF
+    Axbt(axbt::AxbtArgs),
     /// Run std tests for the configured workspace package whitelist
     Test(test::std::StdTestArgs),
     /// Run statically linked workspace crate tests through qemu-user
@@ -72,11 +74,6 @@ enum Commands {
     Board {
         #[command(subcommand)]
         command: board::Command,
-    },
-    /// Backtrace host-side helpers
-    Backtrace {
-        #[command(subcommand)]
-        command: backtrace::Command,
     },
     /// TGOS image management
     Image(image::ImageArgs),
@@ -124,13 +121,13 @@ where
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
+        Commands::Axbt(args) => axbt::run(args),
         Commands::Test(args) => test::std::run_std_test_command(&args),
         Commands::CrossTest(args) => test::cross::run(args),
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::Board { command } => board::execute(command).await,
-        Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
         Commands::Ovmf(args) => support::ovmf::execute(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,

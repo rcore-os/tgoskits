@@ -11,9 +11,9 @@
 //!
 //! Package-name imports adapted to tgoskits (`axhal` → `ax_runtime::hal`,
 //! `axalloc` → `ax_alloc`, `axmm` → `ax_mm`, `kspin` → `ax_sync`) per
-//! `crate-fork-audit.md §6`. KALLSYMS lookup goes through the in-kernel
-//! `.kallsyms` blob (`crate::pseudofs::proc::KALLSYMS`), the same table
-//! `perf::kprobe` resolves names against.
+//! `crate-fork-audit.md §6`. KALLSYMS lookup goes through the target AXBT
+//! map (`crate::pseudofs::proc::KALLSYMS`), the same table `perf::kprobe`
+//! resolves names against.
 
 mod kprint;
 mod kshim;
@@ -216,7 +216,7 @@ impl KernelModuleHelper for KmodHelper {
         if name.is_empty() {
             return None;
         }
-        // Resolve against the real in-kernel `.kallsyms` blob (the same table
+        // Resolve against the target map (the same table
         // `/proc/kallsyms` is built from), matching `perf::kprobe`'s lookup.
         match crate::pseudofs::proc::KALLSYMS
             .get()

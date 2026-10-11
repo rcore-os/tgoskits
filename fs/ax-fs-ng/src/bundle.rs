@@ -64,7 +64,7 @@ fn install_with_flush(
     result
 }
 
-fn exists(context: &FsContext, path: &str) -> VfsResult<bool> {
+pub(crate) fn exists(context: &FsContext, path: &str) -> VfsResult<bool> {
     match context.resolve_no_follow(path) {
         Ok(_) => Ok(true),
         Err(VfsError::NotFound) => Ok(false),
@@ -72,17 +72,22 @@ fn exists(context: &FsContext, path: &str) -> VfsResult<bool> {
     }
 }
 
-fn flush(context: &FsContext) -> VfsResult<()> {
+pub(crate) fn flush(context: &FsContext) -> VfsResult<()> {
     #[cfg(feature = "vfs")]
     crate::file::sync_filesystem_cached_files(context.root_dir().filesystem())?;
     context.root_dir().filesystem().flush()
 }
 
-fn rename(context: &FsContext, from: &str, to: &str, options: RenameOptions) -> VfsResult<()> {
+pub(crate) fn rename(
+    context: &FsContext,
+    from: &str,
+    to: &str,
+    options: RenameOptions,
+) -> VfsResult<()> {
     context.rename_with_options(from, to, options, &MutationCredentials::root())
 }
 
-fn recover(
+pub(crate) fn recover(
     target: &FsContext,
     path: &str,
     stage: &str,
@@ -153,7 +158,7 @@ fn publish(
     Ok(())
 }
 
-fn mkdir_parents(context: &FsContext, path: &str) -> VfsResult<()> {
+pub(crate) fn mkdir_parents(context: &FsContext, path: &str) -> VfsResult<()> {
     let mut current = alloc::string::String::new();
     for component in path.split('/').filter(|part| !part.is_empty()) {
         current.push('/');
@@ -173,7 +178,10 @@ fn mkdir_parents(context: &FsContext, path: &str) -> VfsResult<()> {
     Ok(())
 }
 
-fn child_names(context: &FsContext, path: &str) -> VfsResult<Vec<alloc::string::String>> {
+pub(crate) fn child_names(
+    context: &FsContext,
+    path: &str,
+) -> VfsResult<Vec<alloc::string::String>> {
     context
         .read_dir(path)?
         .filter_map(|entry| match entry {
@@ -184,7 +192,12 @@ fn child_names(context: &FsContext, path: &str) -> VfsResult<Vec<alloc::string::
         .collect()
 }
 
-fn copy_tree(source: &FsContext, from: &str, target: &FsContext, to: &str) -> VfsResult<()> {
+pub(crate) fn copy_tree(
+    source: &FsContext,
+    from: &str,
+    target: &FsContext,
+    to: &str,
+) -> VfsResult<()> {
     let node = source.resolve_no_follow(from)?;
     match node.node_type() {
         NodeType::Directory => {
@@ -232,7 +245,7 @@ fn copy_tree(source: &FsContext, from: &str, target: &FsContext, to: &str) -> Vf
     }
 }
 
-fn remove_tree(context: &FsContext, path: &str) -> VfsResult<()> {
+pub(crate) fn remove_tree(context: &FsContext, path: &str) -> VfsResult<()> {
     if !exists(context, path)? {
         return Ok(());
     }

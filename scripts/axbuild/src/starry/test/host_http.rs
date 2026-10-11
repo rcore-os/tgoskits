@@ -1,7 +1,5 @@
 use std::{fs, io::Read, path::Path};
 
-use anyhow::{Context, bail};
-
 use crate::test::{case, case::TestQemuCase, host_http::HostHttpServerGuard};
 
 pub(crate) fn start_qemu_case_host_http_server(
@@ -87,28 +85,4 @@ fn file_references_host_http_server(path: &Path, config: &case::HostHttpServerCo
         || content.contains(&format!("http://{}:{port}", config.bind))
         || content.contains(&format!("http://localhost:{port}"))
         || content.contains(&format!("http://127.0.0.1:{port}"))
-}
-
-pub(crate) fn ensure_host_symbolize_output_matches(
-    case_name: &str,
-    outcome: crate::backtrace::SymbolizeAfterQemuOutcome,
-    output: Option<&str>,
-    regexes: &[String],
-) -> anyhow::Result<()> {
-    if outcome != crate::backtrace::SymbolizeAfterQemuOutcome::Symbolized {
-        bail!("host backtrace symbolize did not run for Starry qemu case `{case_name}`");
-    }
-    let output =
-        output.ok_or_else(|| anyhow::anyhow!("host backtrace symbolize produced no output"))?;
-    for pattern in regexes {
-        let regex = regex::Regex::new(pattern)
-            .with_context(|| format!("invalid host_symbolize_success_regex `{pattern}`"))?;
-        if !regex.is_match(output) {
-            bail!(
-                "host backtrace symbolize output for Starry qemu case `{case_name}` did not match \
-                 `{pattern}`"
-            );
-        }
-    }
-    Ok(())
 }

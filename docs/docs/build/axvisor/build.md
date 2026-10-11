@@ -35,7 +35,7 @@ CLI 的 `--vmconfig <PATH>` 可重复，`--vmconfigs` 为兼容别名；非空 C
 
 ### 2.2 归档发布
 
-`bundle::attach()` 校验镜像非空，将启动镜像放入 `/guest/builtin/images`，生成路径已重写的 `/guest/builtin/configs`。内容哈希用于共享同一镜像；配置在内存根和磁盘根中使用相同路径。已有宿主归档保留，通过串接 newc 添加客户机资源；打包失败保留之前的输出。
+`bundle::attach()` 校验镜像非空，将启动镜像放入 `/guest/builtin/images`，生成路径已重写的 `/guest/builtin/configs`；若镜像旁有同名 `.axbt` sidecar，则同步放入 `/guest/builtin/symbols`。内容哈希用于共享同一镜像；配置在内存根和磁盘根中使用相同路径。已有宿主归档保留，通过串接 newc 添加客户机资源；打包失败保留之前的输出。
 
 构建命令也生成宿主归档。QEMU 用例会分别输出内核和归档的 SHA-256，便于核对复用的内核及实际资源。
 

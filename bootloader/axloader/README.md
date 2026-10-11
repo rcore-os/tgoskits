@@ -6,28 +6,35 @@
 
 axloader 在同一网卡使用 UEFI SNP、IP4、UDP4 与 TCP4，向 UDP `2998` 广播自身
 MAC、架构、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接口。它不再
-发现 ostool-server、轮询任务或通过 HTTP 下载镜像；串口只输出诊断，并在交接后
+发现 ostool-server、轮询任务或通过 HTTP 下载镜像；串口在启动前输出本次身份帧和诊断，并在交接后
 供目标系统使用。`network::NetworkInterface::select()` 选择网卡，
 `network::Announcer` 广播，`direct::Listener` 接受请求。调用方可以直接按设备 IP
 操作，ostool-server 也调用同一组接口。
 
 每次启动创建新的 `boot_epoch`。所有修改请求均需 `X-Boot-Epoch` 与
-`GET /api/v1/status` 返回值一致；错误代次返回 `409`。当前协议为 v5，旧版
+`GET /api/v1/status` 返回值一致；错误代次返回 `409`。当前协议为 v6，旧版
 v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 `boot_server::BootServer` 和 `axloader::ota::OtaController` 共享监听器：
 
 | 接口 | 作用 |
 | --- | --- |
-| `GET /api/v1/status` | 读取启动代次、MAC、硬件、启动事务与 OTA 状态 |
+| `GET /api/v1/status` | 读取启动代次、MAC、实际 UART 参数、绑定/错误、硬件、启动事务与 OTA 状态 |
+| `POST /api/v1/serial/continue` | 当前 epoch、serial_id、binding_id、bound/direct；相同请求幂等 |
+| `DELETE /api/v1/serial/bindings/{binding_id}` | 撤销当前匹配令牌，恢复身份帧 |
 | `POST /api/v1/boot/jobs` | 提交启动 ID、x86_64 ELF64、内核和可选归档的长度、SHA-256、命令行；入口固定为 `__x86_64_efi_pe_entry` |
 | `GET /api/v1/boot/jobs/{id}` | 查询已接收文件及阶段 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核，要求匹配 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 定长上传可选归档，要求匹配摘要 |
-| `POST /api/v1/boot/jobs/{id}/start` | 装载、回复 `202`，关闭固件网络后交接 |
+| `POST /api/v1/boot/jobs/{id}/start` | 核对 `X-Serial-Binding` 后装载、回复 `202`，释放 UART 和固件网络后交接 |
 | `DELETE /api/v1/boot/jobs/{id}` | 取消尚未启动的事务 |
 | `GET /api/v1/ota/status` | 读取 ESP 稳定槽和待试槽状态 |
 | `PUT /api/v1/ota/image` | 定长上传 EFI，写入非活动槽后回复 `202` 并重启 |
 | `POST /api/v1/ota/confirm` | 用升级 ID 和来源确认当前待试槽 |
+
+v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的
+ostool-server 配套使用，板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。
+不需要串口隧道时仍须显式发送 `direct` continue；启动返回 `409 serial_binding_required`
+时，先检查服务端/loader 版本是否配套，再检查串口身份是否完成绑定。
 
 启动文件暂存内存，每个文件上限 256 MiB，EFI 上限 32 MiB，请求头上限
 4 KiB。只接受定长请求体，连接空闲 30 秒后取消，SHA-256 不符时不发布文件。
@@ -54,9 +61,11 @@ sequenceDiagram
     participant L as axloader
     L-->>C: UDP 2998 单向广播（可选）
     C->>L: GET /api/v1/status
+    C->>L: 确认实际串口身份，或显式 direct continue
+    C->>L: POST /api/v1/serial/continue（epoch、serial_id、binding_id）
     C->>L: POST /api/v1/boot/jobs（X-Boot-Epoch）
     C->>L: PUT kernel；可选 PUT initramfs
-    C->>L: POST /api/v1/boot/jobs/{id}/start
+    C->>L: POST /api/v1/boot/jobs/{id}/start（X-Serial-Binding）
     L-->>C: 202 ready_to_handoff
     L->>L: 关闭网络对象，执行内核交接
 ```
@@ -64,6 +73,38 @@ sequenceDiagram
 同一 Session 设备复位后得到新启动代次，服务端可以按旧 `boot_id` 重新推送。
 待试 EFI 槽必须先收到对应来源的确认，才接受启动事务。TCP4 被动监听不可用
 时仅显示诊断；完全切换后的网络启动需要固件提供该协议。
+
+## 2. 自动串口
+
+`loader::serial::SerialBeacon` 从固件 `ConOut` 设备路径匹配唯一 UART，读取 `Serial::io_mode()`
+的生效波特率、数据位、校验、停止位和硬件流控。无法读取某个参数时使用 UEFI 常见的
+115200/8N1、无硬件流控，并在 HTTP 状态保留诊断；无法唯一选择 UART 或没有可用协议时仍
+明确报告自动绑定不可用。身份帧会先应用有效参数写出，再恢复固件原设置。不以 USB SN 或
+SMBIOS serial 作为启动身份。
+
+### 2.1 本次身份与门禁
+
+每次启动的 `serial_id` 是独立 128 位 ID；优先 UEFI RNG，缺失时将平台单调计数、
+固件时间和 MAC 哈希为 ID，不能仅靠秒级时间和栈地址区分快速复位。
+`SerialBeacon::progress()` 每 250 ms 启动 ASCII 身份帧发送，以最多 4 字节的部分写入推进。
+`BootServer` 状态与 UDP 公告关联同一 serial_id 和 epoch；网络确认后停止身份帧。
+
+```text
+\r\nAXLOADER-SERIAL/1 <32位小写十六进制 serial_id>\r\n
+```
+
+`bound` 对应宿主 UART 身份匹配；`direct` 由不需要隧道的客户端显式放行，不能显示为串口已绑定。
+启动需当前 epoch 和绑定令牌；上传、查询、OTA 不受 UART 门禁影响。撤销当前令牌后恢复发送。
+设备重启后任何旧 ID 和绑定均无效。
+
+### 2.2 固件借用与退出
+
+现有 console driver 保持连接。每次参数读取或写入使用短期非独占 `GetProtocol` guard，
+在 `TPL_CALLBACK` 阻止竞争回调，先关闭 guard 再恢复 TPL；没有协议引用跨越网络轮询。
+写入暂用 5 ms 超时并恢复原属性，无事件回调保留 Rust 上下文。
+`efi_main` 在 OTA reset 和内核交接前显式析构 TCP/UDP 对象与 beacon 计时器。
+约束依据 [UEFI Boot Services](https://uefi.org/specs/UEFI/2.10/07_Services_Boot_Services.html)
+和 [Serial IO](https://uefi.org/specs/UEFI/2.11/12_Protocols_Console_Support.html#efi-serial-io-protocol-write)。
 
 ## Hardware identity
 
@@ -82,7 +123,7 @@ and rejects tables larger than 1 MiB.
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 
 The current loader accepts little-endian x86_64 ELF64 images. `PT_LOAD`
-segments must have page-aligned physical addresses. Protocol v5 requires the
+segments must have page-aligned physical addresses. Protocol v6 requires the
 `__x86_64_efi_pe_entry` symbol and rejects `httpboot_entry`, an ELF header entry,
 or a `BootInfo` fallback. The maximum uploaded kernel is 256 MiB.
 
@@ -107,7 +148,8 @@ target/x86_64-unknown-uefi/release/axloader-launcher.efi
 QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
 跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
 initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出的 `HOST_CMDLINE`、
-`HOST_INITRAMFS_PASSED` 为成功证据。测试还覆盖 SHA-256、OTA 待试槽确认和
+`HOST_INITRAMFS_PASSED` 为成功证据。测试先核对真实 UART 身份及上报参数，再验证 bound/direct 放行、错误绑定令牌拒绝，
+并覆盖 SHA-256、OTA 待试槽确认和
 回滚。服务端协议测试另见 ostool 的
 `docs/axloader-network-control.md`。
 

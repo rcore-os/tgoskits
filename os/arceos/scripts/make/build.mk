@@ -57,12 +57,7 @@ endif
 $(OUT_DIR):
 	$(call run_cmd,mkdir,-p $@)
 
-_dwarf: $(OUT_ELF)
-ifeq ($(DWARF), y)
-	$(call run_cmd,./scripts/make/dwarf.sh,$(OUT_ELF) $(OBJCOPY))
-endif
-
-$(OUT_BIN): _cargo_build $(OUT_ELF) _dwarf
+$(OUT_BIN): _cargo_build $(OUT_ELF)
 	$(call run_cmd,$(OBJCOPY),$(OUT_ELF) --strip-all -O binary $@)
 	@if [ ! -s $(OUT_BIN) ]; then \
 		echo 'Empty kernel image "$(notdir $(FINAL_IMG))" is built, please check your build configuration'; \
@@ -83,4 +78,4 @@ $(OUT_UIMG): $(OUT_BIN)
 		-a $(KERNEL_LOAD_PADDR) \
 		-d $(OUT_BIN) $@)
 
-.PHONY: _cargo_build _dwarf
+.PHONY: _cargo_build

@@ -53,7 +53,7 @@ vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]
 CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则使用 Build Config 中的列表。
 相对 VM config 路径相对于 workspace 根解析；其中五个 `[kernel]` 镜像路径字段支持 Ostool
 变量，并按原 VM config 目录解析相对路径。解析后的配置用于生成宿主 initramfs 的 `/guest/builtin/configs` 和
-`/guest/builtin/images`，与 Cargo 构建请求分离。Axvisor 统一按文件路径加载启动资源。
+`/guest/builtin/images`；镜像旁的 `.axbt` sidecar 放入 `/guest/builtin/symbols`，与 Cargo 构建请求分离。Axvisor 统一按文件路径加载启动资源。
 
 ## 3. 虚拟化后端
 

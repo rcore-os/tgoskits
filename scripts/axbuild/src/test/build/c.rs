@@ -123,10 +123,17 @@ pub(crate) fn prepare_c_case_overlay_sync(
             ],
         );
         let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
-        let prebuild_env =
-            prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
-        let mut command = build_prebuild_command(case, &prebuild_script, layout, &prebuild_env)?;
-        let result = command.exec().context("failed to run case prebuild.sh");
+        let result = run_guest_prebuild(GuestPrebuildRequest {
+            arch,
+            case,
+            case_rootfs,
+            script: &prebuild_script,
+            work_dir: &source_dir,
+            layout,
+            extra_envs: &extra_script_envs,
+            config,
+        })
+        .context("failed to run case prebuild.sh");
         timing_stage.finish();
         result?;
     }

@@ -225,8 +225,18 @@ fn load_efi_payload() {
             "invalid UEFI host archive size"
         );
         let pages = size.div_ceil(crate::consts::PAGE_SIZE);
-        let address = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
-            .expect("failed to allocate UEFI host archive");
+        let image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())
+            .expect("failed to inspect the loaded UEFI image");
+        let (image_base, _) = image.info();
+        let max_address = (image_base as usize)
+            .checked_sub(1)
+            .expect("loaded UEFI image has no lower address for host archive");
+        let address = boot::allocate_pages(
+            AllocateType::MaxAddress(max_address as _),
+            MemoryType::LOADER_DATA,
+            pages,
+        )
+        .expect("failed to allocate UEFI host archive below the loaded image");
         // SAFETY: allocate_pages returned at least `size` writable bytes.
         let bytes = unsafe { core::slice::from_raw_parts_mut(address.as_ptr(), size) };
         read_exact_file(&mut file, bytes);

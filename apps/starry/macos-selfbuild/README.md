@@ -29,8 +29,8 @@ as these stages:
 | `full_self_build.sh` | Full entrypoint | Prepares host tools, runs the existing Starry app QEMU runner, and extracts guest-built artifacts from the rootfs after the runner succeeds. This is normally the only script to run directly. |
 | `prebuild.sh` | Host-side app-runner prebuild | Runs on the host OS from the app runner. It receives `STARRY_ROOTFS` and `STARRY_OVERLAY_DIR`, resizes the selected rootfs, assembles the overlay, copies the toolchain overlay, archives the current checkout, copies offline Cargo registry cache, and writes the guest runner plus source metadata. It does not inject the overlay or launch QEMU. |
 | `prepare_toolchain_overlay.sh` | Internal/debug script | Downloads and prepares guest Rust/Cargo, Rust source, LLVM/libclang, musl C tools, and Cargo cache. Its output is a filesystem tree, not a rootfs image, and it is invoked by `prebuild.sh` by default. |
-| `prepare_host_tools.sh` | Internal/debug script | Prepares AArch64 musl compiler wrappers plus tools such as `rust-nm` and `rust-objdump` for the macOS host seed-kernel build. |
-| `guest-selfbuild.sh` | Guest-side script | Runs inside the StarryOS guest to unpack source, write Cargo config, run Cargo, refresh kallsyms, and copy guest-built kernel artifacts. |
+| `prepare_host_tools.sh` | Internal/debug script | Prepares AArch64 musl compiler wrappers and `rust-objcopy` for producing the bootable BIN; axbuild generates the AXBT map. |
+| `guest-selfbuild.sh` | Guest-side script | Runs inside the StarryOS guest to unpack source, write Cargo config, run Cargo, verify the AXBT sidecar map, and copy guest-built kernel artifacts. |
 
 The rootfs is selected by axbuild image storage; this app does not maintain a
 separate rootfs copy. In a clean default run, the path is:
@@ -67,8 +67,7 @@ brew install qemu e2fsprogs zig llvm
 
 Here `qemu` provides the HVF VM, `e2fsprogs` provides `e2fsck`, `debugfs`, and
 `resize2fs`, `zig` is used to generate AArch64 musl compiler wrappers, and
-`llvm` is used as a fallback provider for tools such as `rust-nm` and
-`rust-objdump`.
+`llvm` is used as a fallback provider for `rust-objcopy` for producing the bootable BIN; axbuild generates AXBT maps.
 
 ## Full Reproduction
 
@@ -138,7 +137,7 @@ Observed self-build output timing:
 The PASS marker elapsed time is `1460s` (`24m 20s`). It starts immediately
 before the guest runs `cargo build` and ends after that Cargo command returns.
 It includes guest Cargo build time, build scripts, build-std, and linking. It
-does not include QEMU boot time, post-Cargo kallsyms/artifact copying, or
+does not include QEMU boot time, post-Cargo AXBT validation and artifact copying, or
 host-side extraction.
 
 Step 2: Boot the self-built kernel with QEMU

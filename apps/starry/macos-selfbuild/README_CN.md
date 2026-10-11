@@ -27,8 +27,8 @@ Apple M3。流程复用现有 Starry app runner：host 侧构建 AArch64 StarryO
 | `full_self_build.sh` | 完整入口 | 准备 host 工具，调用现有 Starry app QEMU runner，并在 runner 成功后从 rootfs 提取 guest-built 产物。通常只需要运行这个脚本。 |
 | `prebuild.sh` | host 侧 app runner prebuild | 由 app runner 在 host OS 上执行；接收 `STARRY_ROOTFS` 和 `STARRY_OVERLAY_DIR`，扩容选中的 rootfs，组装待注入 overlay：复制工具链 overlay、打包当前源码、复制离线 Cargo registry cache、写入 guest runner 和源码 metadata。它不负责注入 overlay，也不启动 QEMU。 |
 | `prepare_toolchain_overlay.sh` | 内部/调试脚本 | 下载并准备 guest 里的 Rust/Cargo、Rust 源码、LLVM/libclang、musl C 工具链和 Cargo cache。输出是目录树，不是 rootfs 镜像；默认由 `prebuild.sh` 调用。 |
-| `prepare_host_tools.sh` | 内部/调试脚本 | 准备 macOS host 上构建种子内核所需的 AArch64 musl 编译器 wrapper、`rust-nm`、`rust-objdump` 等工具。 |
-| `guest-selfbuild.sh` | guest 内脚本 | 在 StarryOS guest 中解包源码、写 Cargo 配置、执行 Cargo 构建、刷新 kallsyms，并复制 guest-built 内核产物。 |
+| `prepare_host_tools.sh` | 内部/调试脚本 | 准备 macOS host 上构建种子内核所需的 AArch64 musl 编译器 wrapper及 `rust-objcopy` 工具。 |
+| `guest-selfbuild.sh` | guest 内脚本 | 在 StarryOS guest 中解包源码、写 Cargo 配置、执行 Cargo 构建、校验 AXBT sidecar map，并复制 guest-built 内核产物。 |
 
 rootfs 由 axbuild image storage 选择；这个 app 不维护单独的 rootfs 副本。
 干净默认运行时，路径是：
@@ -63,7 +63,7 @@ brew install qemu e2fsprogs zig llvm
 
 其中，`qemu` 用于 HVF 启动，`e2fsprogs` 提供 `e2fsck`、`debugfs` 和
 `resize2fs`，`zig` 用于生成 AArch64 musl 编译器 wrapper，`llvm` 用作
-`rust-nm`、`rust-objdump` 等工具的 fallback。
+`rust-objcopy` 用于生成启动用 BIN；AXBT map 由 axbuild 生成。
 
 ## 完整复现
 
@@ -130,7 +130,7 @@ apps/starry/macos-selfbuild/full_self_build.sh
 
 PASS marker 的 elapsed 为 `1460s`，即 `24m 20s`。它从 guest 即将执行
 `cargo build` 前开始，到 Cargo 命令返回后结束；它包括 guest 内 Cargo 构建、
-build script、build-std 和链接时间，不包括 QEMU 启动、kallsyms 刷新后的
+build script、build-std 和链接时间，不包括 QEMU 启动、AXBT map 校验后的
 产物复制和 host 侧提取。
 
 第二步：使用 qemu 启动自举编译产物
