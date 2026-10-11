@@ -256,32 +256,14 @@ pub(crate) fn package_enables_mmu_with_defaults(
     )
 }
 
-pub(crate) fn ensure_package_mmu_feature(
-    build_info: &mut BuildInfo,
+/// Returns whether the selected package feature graph enables the MMU provider.
+pub(crate) fn package_mmu_enabled(
     package: &str,
     metadata: &Metadata,
-) -> anyhow::Result<()> {
-    ensure_package_mmu_feature_with_defaults(build_info, package, metadata, true)
-}
-
-pub(crate) fn ensure_package_mmu_feature_with_defaults(
-    build_info: &mut BuildInfo,
-    package: &str,
-    metadata: &Metadata,
+    features: &[String],
     include_default_features: bool,
-) -> anyhow::Result<()> {
-    build_info.normalize_mmu_feature_aliases(package, metadata)?;
-    if package_enables_mmu_with_defaults(
-        package,
-        metadata,
-        &build_info.features,
-        include_default_features,
-    )? && !features_enable_mmu(&build_info.features)
-        && let Some(feature) = package_mmu_feature_marker(package, metadata)?
-    {
-        build_info.features.push(feature);
-    }
-    Ok(())
+) -> anyhow::Result<bool> {
+    package_enables_mmu_with_defaults(package, metadata, features, include_default_features)
 }
 
 fn package_mmu_feature_marker(
@@ -304,12 +286,12 @@ fn package_mmu_feature_marker(
     Ok(None)
 }
 
-pub(crate) fn toolchain_rustflags_for_features(
+pub(crate) fn toolchain_rustflags_for_mmu(
     env: &HashMap<String, String>,
-    features: &[String],
+    mmu_enabled: bool,
 ) -> Vec<String> {
     let mut flags = toolchain_rustflags(env);
-    if features_enable_mmu(features) {
+    if mmu_enabled {
         flags.push("-Zstack-protector=strong".to_string());
     }
     flags
@@ -750,13 +732,32 @@ impl BuildInfo {
     }
 
     pub(crate) fn into_prepared_base_cargo_config_with_metadata(
-        mut self,
+        self,
         package: &str,
         target: &str,
         metadata: &Metadata,
         axbuild_dir: &Path,
     ) -> anyhow::Result<Cargo> {
+        self.into_prepared_base_cargo_config_with_metadata_and_defaults(
+            package,
+            target,
+            metadata,
+            axbuild_dir,
+            true,
+        )
+    }
+
+    pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
+        mut self,
+        package: &str,
+        target: &str,
+        metadata: &Metadata,
+        axbuild_dir: &Path,
+        include_default_features: bool,
+    ) -> anyhow::Result<Cargo> {
         self.normalize_mmu_feature_aliases(package, metadata)?;
+        let mmu_enabled =
+            package_mmu_enabled(package, metadata, &self.features, include_default_features)?;
         self.validated_max_cpu_num()?;
         self.validate_features()?;
         self.resolve_std_features();
@@ -794,7 +795,7 @@ impl BuildInfo {
             .display()
             .to_string(),
         );
-        let rustflags = toolchain_rustflags_for_features(&cargo.env, &cargo.features);
+        let rustflags = toolchain_rustflags_for_mmu(&cargo.env, mmu_enabled);
         cargo.extra_config = Some(
             std_cargo_config_path(axbuild_dir, &std_target.target_name, &wrapper, &rustflags)?
                 .display()
@@ -814,21 +815,53 @@ impl BuildInfo {
         self.into_prepared_base_cargo_config_with_metadata(package, target, metadata, axbuild_dir)
     }
 
+    pub(crate) fn into_prepared_std_cargo_config_with_metadata_and_defaults(
+        self,
+        package: &str,
+        target: &str,
+        metadata: &Metadata,
+        axbuild_dir: &Path,
+        include_default_features: bool,
+    ) -> anyhow::Result<Cargo> {
+        self.into_prepared_base_cargo_config_with_metadata_and_defaults(
+            package,
+            target,
+            metadata,
+            axbuild_dir,
+            include_default_features,
+        )
+    }
+
     /// Builds a freestanding kernel against only `core` and `alloc`.
     pub(crate) fn into_prepared_no_std_cargo_config_with_metadata(
-        mut self,
+        self,
         package: &str,
         target: &str,
         metadata: &Metadata,
         link_mode: BareKernelLinkMode,
     ) -> anyhow::Result<Cargo> {
+        self.into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+            package, target, metadata, link_mode, true,
+        )
+    }
+
+    pub(crate) fn into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+        mut self,
+        package: &str,
+        target: &str,
+        metadata: &Metadata,
+        link_mode: BareKernelLinkMode,
+        include_default_features: bool,
+    ) -> anyhow::Result<Cargo> {
         self.normalize_mmu_feature_aliases(package, metadata)?;
+        let mmu_enabled =
+            package_mmu_enabled(package, metadata, &self.features, include_default_features)?;
         self.validated_max_cpu_num()?;
         self.validate_features()?;
         self.reject_freestanding_std_compat()?;
         self.enable_package_smp_feature(package, metadata)?;
 
-        let mut rustflags = toolchain_rustflags_for_features(&self.env, &self.features);
+        let mut rustflags = toolchain_rustflags_for_mmu(&self.env, mmu_enabled);
         rustflags.extend(link_mode.rustflags(target));
         let bare_target = freestanding_build_target_for(target);
         let args = Self::build_cargo_args(target, &rustflags);

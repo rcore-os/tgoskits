@@ -1,8 +1,7 @@
 use super::*;
 use crate::build::info::{
-    BuildInfo, ensure_package_mmu_feature, ensure_package_mmu_feature_with_defaults,
-    features_enable_mmu, package_enables_mmu, package_enables_mmu_with_defaults,
-    toolchain_rustflags, toolchain_rustflags_for_features,
+    BuildInfo, features_enable_mmu, package_enables_mmu, package_enables_mmu_with_defaults,
+    package_mmu_enabled, toolchain_rustflags, toolchain_rustflags_for_mmu,
 };
 
 #[test]
@@ -20,7 +19,7 @@ fn paging_capability_enables_stack_protector_rustflag() {
     ] {
         assert!(features_enable_mmu(&[feature.to_string()]), "{feature}");
         assert_eq!(
-            toolchain_rustflags_for_features(&env, &[feature.to_string()])
+            toolchain_rustflags_for_mmu(&env, features_enable_mmu(&[feature.to_string()]))
                 .iter()
                 .filter(|flag| flag.as_str() == "-Zstack-protector=strong")
                 .count(),
@@ -37,7 +36,7 @@ fn hal_only_mmu_features_do_not_enable_stack_protector_rustflag() {
         let features = [feature.to_string()];
         assert!(!features_enable_mmu(&features), "{feature}");
         assert!(
-            !toolchain_rustflags_for_features(&env, &features)
+            !toolchain_rustflags_for_mmu(&env, features_enable_mmu(&features))
                 .iter()
                 .any(|flag| flag == "-Zstack-protector=strong")
         );
@@ -47,7 +46,7 @@ fn hal_only_mmu_features_do_not_enable_stack_protector_rustflag() {
 #[test]
 fn non_paging_build_does_not_enable_stack_protector_rustflag() {
     let features = ["smp".to_string()];
-    let flags = toolchain_rustflags_for_features(&HashMap::new(), &features);
+    let flags = toolchain_rustflags_for_mmu(&HashMap::new(), features_enable_mmu(&features));
 
     assert!(!features_enable_mmu(&features));
     assert!(!flags.iter().any(|flag| flag == "-Zstack-protector=strong"));
@@ -55,12 +54,7 @@ fn non_paging_build_does_not_enable_stack_protector_rustflag() {
 
 #[test]
 fn duplicate_mmu_capabilities_add_only_one_stack_protector_rustflag() {
-    let features = vec![
-        "paging".to_string(),
-        "ax-std/paging".to_string(),
-        "ax-runtime/paging".to_string(),
-    ];
-    let flags = toolchain_rustflags_for_features(&HashMap::new(), &features);
+    let flags = toolchain_rustflags_for_mmu(&HashMap::new(), true);
 
     assert_eq!(
         flags
@@ -94,42 +88,68 @@ fn package_metadata_resolves_mmu_capability_through_defaults_and_aliases() {
 }
 
 #[test]
-fn package_mmu_injection_uses_a_feature_declared_by_the_target_package() {
+fn package_mmu_detection_does_not_mutate_feature_selection() {
     let metadata = repo_metadata();
 
-    let mut libc = BuildInfo {
+    let libc = BuildInfo {
         features: vec!["fs".to_string()],
         ..BuildInfo::default()
     };
-    ensure_package_mmu_feature(&mut libc, "ax-libc", &metadata).unwrap();
-    assert_eq!(libc.features, vec!["fs".to_string(), "paging".to_string()]);
+    assert!(package_mmu_enabled("ax-libc", &metadata, &libc.features, true).unwrap());
+    assert_eq!(libc.features, vec!["fs".to_string()]);
 
-    let mut app = BuildInfo::default();
-    ensure_package_mmu_feature(&mut app, "arceos-helloworld", &metadata).unwrap();
-    assert_eq!(app.features, vec!["ax-std/paging".to_string()]);
+    let app = BuildInfo::default();
+    assert!(package_mmu_enabled("arceos-helloworld", &metadata, &app.features, true).unwrap());
+    assert!(app.features.is_empty());
 
-    let mut minimal_app = BuildInfo::default();
-    ensure_package_mmu_feature_with_defaults(
-        &mut minimal_app,
-        "arceos-helloworld",
-        &metadata,
-        false,
-    )
-    .unwrap();
-    assert!(minimal_app.features.is_empty());
+    assert!(!package_mmu_enabled("arceos-helloworld", &metadata, &app.features, false,).unwrap());
+}
+
+#[test]
+fn package_mmu_rustflags_follow_metadata_without_injecting_features() {
+    let metadata = repo_metadata();
+    let cargo = BuildInfo::default()
+        .into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+            "arceos-helloworld",
+            "x86_64-unknown-none",
+            &metadata,
+            BareKernelLinkMode::Default,
+            true,
+        )
+        .unwrap();
+    assert!(cargo.features.is_empty());
+    assert!(cargo.args.join("\n").contains("-Zstack-protector=strong"));
+
+    let cargo = BuildInfo::default()
+        .into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+            "arceos-helloworld",
+            "x86_64-unknown-none",
+            &metadata,
+            BareKernelLinkMode::Default,
+            false,
+        )
+        .unwrap();
+    assert!(!cargo.args.join("\n").contains("-Zstack-protector=strong"));
 }
 
 #[test]
 fn axlibc_paging_alias_is_normalized_before_cargo_feature_resolution() {
     let metadata = repo_metadata();
-    let mut app = BuildInfo {
+    let app = BuildInfo {
         features: vec!["axlibc/paging".to_string()],
         ..BuildInfo::default()
     };
 
-    ensure_package_mmu_feature(&mut app, "arceos-helloworld", &metadata).unwrap();
+    let cargo = app
+        .into_prepared_no_std_cargo_config_with_metadata(
+            "arceos-helloworld",
+            "x86_64-unknown-none",
+            &metadata,
+            BareKernelLinkMode::Default,
+        )
+        .unwrap();
 
-    assert_eq!(app.features, vec!["ax-std/paging".to_string()]);
+    assert_eq!(cargo.features, vec!["ax-std/paging".to_string()]);
 }
 
 #[test]

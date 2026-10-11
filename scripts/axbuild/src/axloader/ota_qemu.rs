@@ -16,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    build::{BuildInfo, ensure_package_mmu_feature},
+    build::BuildInfo,
     context::{AppContext, WorkspaceContext},
     support::ovmf::OvmfFirmware,
 };
@@ -160,7 +160,6 @@ async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<Boot
     let build = |feature: &str| {
         let mut info = BuildInfo::default().with_features([feature]);
         info.max_cpu_num = Some(1);
-        ensure_package_mmu_feature(&mut info, "arceos-helloworld", workspace.metadata())?;
         info.into_prepared_std_cargo_config_with_metadata(
             "arceos-helloworld",
             "x86_64-unknown-none",
