@@ -103,7 +103,7 @@ log = "Info"
             .find_map(|window| (window[0] == "--bin").then_some(window[1].as_str())),
         Some("axvisor")
     );
-    assert!(cargo.features.contains(&"ax-std/paging".to_string()));
+    assert!(cargo.features.is_empty());
     let extra_config = cargo.extra_config.as_ref().expect("std cargo config");
     assert!(
         fs::read_to_string(extra_config)

@@ -13,11 +13,8 @@ fn workspace() -> WorkspaceContext {
 }
 
 #[test]
-fn default_starry_build_info_enables_paging_stack_hardening() {
-    assert_eq!(
-        default_starry_build_info().features,
-        vec!["ax-std/paging".to_string()]
-    );
+fn default_starry_build_info_keeps_feature_selection_explicit() {
+    assert!(default_starry_build_info().features.is_empty());
 }
 
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
@@ -35,7 +32,7 @@ fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
 }
 
 #[test]
-fn patch_starry_cargo_config_injects_required_features_and_env() {
+fn patch_starry_cargo_config_sets_environment() {
     let request = request(
         PathBuf::from("/tmp/.build.toml"),
         "aarch64",

@@ -109,7 +109,7 @@ task stack canary 用来发现任务栈溢出或栈底被破坏。
 
 `ax-task` 的基础多任务实现会启用 `stack canary`。启用运行时 `paging` 能力后，`axruntime::thread::resources::allocate_runtime_stack()` 会为动态任务栈保留一页未映射的 guard page，并在栈向下越界触达该页时触发 page fault 诊断。`paging` 是运行时 MMU 能力；平台启动层的 `somehal/mmu` 只负责底层启动实现，不是 axbuild 的公共能力名称。
 
-`stack-guard-page` 和 `stack-protector` 已从 `ax-runtime`、`ax-std`、`ax-libc`、`starry-kernel`、Starry 与 AxVisor 的 feature 图中删除。ArceOS、Starry 和 AxVisor 的构建入口统一注入或转发 `paging`，因此 MMU 构建默认获得 guard page 和编译器栈保护；旧名称会在 axbuild 配置校验阶段报迁移错误。
+`stack-guard-page` 和 `stack-protector` 已从 `ax-runtime`、`ax-std`、`ax-libc`、`starry-kernel`、Starry 与 AxVisor 的 feature 图中删除。ArceOS、Starry 和 AxVisor 的软件包清单声明或转发 `paging`；axbuild 根据最终 Cargo 特性图生成编译器栈保护标志，不改写调用方的 feature 列表。旧名称会在 axbuild 配置校验阶段报迁移错误。
 
 canary 覆盖范围包括：
 
@@ -131,12 +131,12 @@ Linux 的栈保护包含两层不同机制。`STACK_END_MAGIC` 用于检查任�
 的方向。
 
 `axruntime` 在 `paging` 构建中提供 `__stack_chk_guard` 和
-`__stack_chk_fail()`。`scripts/axbuild/src/build/info.rs::features_enable_mmu()`
-识别 `paging`、`ax-std/paging`、`ax-runtime/paging`、`ax-hal/paging` 和
-`ax-libc/paging`，以及会转发 `paging` 的 `uspace`/`hv` 能力等规范化入口，并为构建追加
-`-Zstack-protector=strong`。普通 Cargo 直构不会自行推导该 rustflag，应使用
-`cargo xtask` 或 axbuild 入口。`axlibc/paging` 只作为 axbuild 的历史输入兼容
-标记，不能直接传给 Cargo。
+`__stack_chk_fail()`。`scripts/axbuild/src/build/info.rs::package_mmu_enabled()`
+通过 `package_enables_mmu()` 按工作区 Cargo 特性图判断目标软件包是否最终可达
+`ax-runtime/paging`，可达时只追加一次 `-Zstack-protector=strong`。普通 Cargo
+直构不会自行推导该 rustflag，应使用 `cargo xtask` 或 axbuild 入口。`axlibc/paging`
+只作为 axbuild 的历史输入兼容标记，在生成 Cargo 参数前归一化为目标软件包的
+`paging` 能力，不能直接传给 Cargo。
 
 没有 `paging` 的构建仍使用普通堆栈，也不会提供编译器栈保护。guard page 的
 保护边界只覆盖运行时管理的动态任务栈，不改变 boot stack、独立异常栈或

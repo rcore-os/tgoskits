@@ -28,13 +28,7 @@ const STARRY_SYMBOLIZATION_RUSTFLAGS: &[&str] = &[
 ];
 
 pub(crate) fn default_starry_build_info() -> StarryBuildInfo {
-    // Starry always runs with a host MMU. Keep the canonical dependency feature
-    // in generated defaults so direct BuildInfo consumers also receive the
-    // compiler stack-protector rustflag.
-    StarryBuildInfo {
-        features: vec![STARRY_MMU_FEATURE.to_string()],
-        ..StarryBuildInfo::default()
-    }
+    StarryBuildInfo::default()
 }
 
 pub(crate) fn resolve_build_info_path(
@@ -100,14 +94,6 @@ pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result
 
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
-    }
-
-    if !build_info
-        .features
-        .iter()
-        .any(|feature| feature == STARRY_MMU_FEATURE)
-    {
-        build_info.features.push(STARRY_MMU_FEATURE.to_string());
     }
 
     Ok(build_info)

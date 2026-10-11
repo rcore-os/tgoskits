@@ -218,13 +218,7 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
             .features
             .contains(&"starry-kernel/plat-dyn".to_string())
     );
-    assert_eq!(
-        cargo.features,
-        vec![
-            "ax-driver/virtio-net".to_string(),
-            "ax-std/paging".to_string()
-        ]
-    );
+    assert_eq!(cargo.features, vec!["ax-driver/virtio-net".to_string()]);
     assert_eq!(
         cargo.target,
         "scripts/targets/bare/aarch64-unknown-none-softfloat.json"
