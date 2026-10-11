@@ -543,6 +543,15 @@ impl RunSignals {
         self.irq_state.fetch_or(IRQ_CLOSED_BIT, Ordering::Release);
     }
 
+    /// Returns whether this run has stopped admitting interrupt producers.
+    ///
+    /// The lifecycle owner uses this boundary before dispatching a controller
+    /// event already waiting in its mailbox. A paused run keeps admission open
+    /// at this layer, while a stopping or failed run retires every old event.
+    pub(crate) fn interrupts_closed(&self) -> bool {
+        self.irq_state.load(Ordering::Acquire) & IRQ_CLOSED_BIT != 0
+    }
+
     /// Returns true only after closing is visible and all IRQ publishers left.
     pub(crate) fn interrupts_quiet(&self) -> bool {
         let state = self.irq_state.load(Ordering::Acquire);

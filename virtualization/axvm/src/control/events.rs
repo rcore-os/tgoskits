@@ -63,6 +63,13 @@ impl Owner {
             ControlMessage::Event(event) => self.event(event),
             ControlMessage::Interrupt(event) => {
                 let Some(run) = self.run.as_ref() else { return };
+                if run.signals.interrupts_closed() {
+                    // Closing the run retires every controller event that was
+                    // still in flight. It cannot affect a successor and must
+                    // not be routed through an already-unbound architecture.
+                    log::debug!("ignoring controller event after run closure");
+                    return;
+                }
                 if let Err(error) = run.services.submit_interrupt(event) {
                     if matches!(
                         error,
