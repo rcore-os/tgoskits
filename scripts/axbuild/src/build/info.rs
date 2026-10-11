@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use anyhow::bail;
 
 use super::*;
@@ -35,12 +37,9 @@ pub(crate) fn features_enable_mmu(features: &[String]) -> bool {
             "paging"
                 | "ax-std/paging"
                 | "ax-runtime/paging"
-                | "ax-hal/paging"
                 | "ax-std/uspace"
                 | "ax-runtime/uspace"
-                | "ax-hal/uspace"
                 | "ax-std/hv"
-                | "ax-hal/hv"
                 | "ax-libc/paging"
                 // Keep the historical directory spelling recognizable in generated
                 // BuildInfo, but do not pass it through as a Cargo dependency feature.
@@ -49,30 +48,187 @@ pub(crate) fn features_enable_mmu(features: &[String]) -> bool {
     })
 }
 
-fn feature_value_enables_mmu(value: &str) -> bool {
-    let value = value
-        .strip_prefix("ax-std/")
-        .or_else(|| value.strip_prefix("ax-runtime/"))
-        .or_else(|| value.strip_prefix("ax-hal/"))
-        .or_else(|| value.strip_prefix("ax-libc/"))
-        .or_else(|| value.strip_prefix("axlibc/"))
-        .unwrap_or(value);
-    matches!(
-        value,
-        "paging"
-            | "arceos"
-            | "uspace"
-            | "fs"
-            | "ext4fs"
-            | "fatfs"
-            | "net"
-            | "vsock"
-            | "display"
-            | "input"
-            | "deferred-rootfs"
-            | "starry-init"
-            | "hv"
-    )
+enum FeatureResolutionEvent {
+    ActivatePackage {
+        package: String,
+        include_default: bool,
+        features: Vec<String>,
+    },
+    EnableDependency {
+        owner: String,
+        dependency: String,
+        feature: Option<String>,
+    },
+    EnableFeature {
+        package: String,
+        feature: String,
+    },
+}
+
+fn dependency_for<'a>(package: &'a Package, name: &str) -> Option<&'a cargo_metadata::Dependency> {
+    package.dependencies.iter().find(|dependency| {
+        dependency.name == name
+            || dependency.rename.as_deref() == Some(name)
+            || (name == "axlibc" && dependency.name == "ax-libc")
+    })
+}
+
+fn dependency_package_name(
+    metadata: &Metadata,
+    dependency: &cargo_metadata::Dependency,
+) -> Option<String> {
+    let candidates = [
+        dependency.name.as_str(),
+        dependency.rename.as_deref().unwrap_or(""),
+    ];
+    candidates.into_iter().find_map(|candidate| {
+        metadata
+            .packages
+            .iter()
+            .find(|package| {
+                metadata.workspace_members.contains(&package.id) && package.name == candidate
+            })
+            .map(|package| package.name.to_string())
+    })
+}
+
+fn feature_resolution_has_mmu(
+    package: &str,
+    metadata: &Metadata,
+    requested_features: &[String],
+    include_default_features: bool,
+) -> anyhow::Result<bool> {
+    let mut events = VecDeque::from([FeatureResolutionEvent::ActivatePackage {
+        package: package.to_string(),
+        include_default: include_default_features,
+        features: requested_features.to_vec(),
+    }]);
+    let mut activated_packages = HashSet::new();
+    let mut activated_dependencies = HashSet::new();
+    let mut visited_features = HashSet::new();
+
+    while let Some(event) = events.pop_front() {
+        match event {
+            FeatureResolutionEvent::ActivatePackage {
+                package,
+                include_default,
+                features,
+            } => {
+                let package_info = workspace_package(metadata, &package)?;
+                if activated_packages.insert(package.clone()) {
+                    if include_default && package_info.features.contains_key("default") {
+                        events.push_back(FeatureResolutionEvent::EnableFeature {
+                            package: package.clone(),
+                            feature: "default".to_string(),
+                        });
+                    }
+                    for dependency in package_info
+                        .dependencies
+                        .iter()
+                        .filter(|dependency| !dependency.optional)
+                    {
+                        events.push_back(FeatureResolutionEvent::EnableDependency {
+                            owner: package.clone(),
+                            dependency: dependency.name.clone(),
+                            feature: None,
+                        });
+                    }
+                }
+                for feature in features {
+                    if package_info.features.contains_key(&feature) {
+                        events.push_back(FeatureResolutionEvent::EnableFeature {
+                            package: package.clone(),
+                            feature,
+                        });
+                    } else if let Some((dependency, feature)) = feature.split_once('/') {
+                        events.push_back(FeatureResolutionEvent::EnableDependency {
+                            owner: package.clone(),
+                            dependency: dependency.to_string(),
+                            feature: Some(feature.to_string()),
+                        });
+                    } else if dependency_for(package_info, &feature).is_some() {
+                        events.push_back(FeatureResolutionEvent::EnableDependency {
+                            owner: package.clone(),
+                            dependency: feature,
+                            feature: None,
+                        });
+                    }
+                }
+            }
+            FeatureResolutionEvent::EnableDependency {
+                owner,
+                dependency,
+                feature,
+            } => {
+                let owner_info = workspace_package(metadata, &owner)?;
+                let optional_feature = dependency.ends_with('?');
+                let dependency_name = dependency.trim_end_matches('?');
+                let Some(dependency_info) = dependency_for(owner_info, dependency_name) else {
+                    continue;
+                };
+                let dependency_key = (owner.clone(), dependency_name.to_string());
+                if optional_feature && !activated_dependencies.contains(&dependency_key) {
+                    continue;
+                }
+                let Some(dependency_package) = dependency_package_name(metadata, dependency_info)
+                else {
+                    continue;
+                };
+                if activated_dependencies.insert(dependency_key) {
+                    events.push_back(FeatureResolutionEvent::ActivatePackage {
+                        package: dependency_package.clone(),
+                        include_default: dependency_info.uses_default_features,
+                        features: dependency_info.features.clone(),
+                    });
+                }
+                if let Some(feature) = feature {
+                    events.push_back(FeatureResolutionEvent::EnableFeature {
+                        package: dependency_package,
+                        feature,
+                    });
+                }
+            }
+            FeatureResolutionEvent::EnableFeature { package, feature } => {
+                if !visited_features.insert((package.clone(), feature.clone())) {
+                    continue;
+                }
+                if package == "ax-runtime" && feature == "paging" {
+                    return Ok(true);
+                }
+                let package_info = workspace_package(metadata, &package)?;
+                let Some(values) = package_info.features.get(&feature) else {
+                    continue;
+                };
+                for value in values {
+                    if let Some(dependency) = value.strip_prefix("dep:") {
+                        events.push_back(FeatureResolutionEvent::EnableDependency {
+                            owner: package.clone(),
+                            dependency: dependency.to_string(),
+                            feature: None,
+                        });
+                    } else if let Some((dependency, feature)) = value.split_once('/') {
+                        events.push_back(FeatureResolutionEvent::EnableDependency {
+                            owner: package.clone(),
+                            dependency: dependency.to_string(),
+                            feature: Some(feature.to_string()),
+                        });
+                    } else if package_info.features.contains_key(value) {
+                        events.push_back(FeatureResolutionEvent::EnableFeature {
+                            package: package.clone(),
+                            feature: value.clone(),
+                        });
+                    } else if dependency_for(package_info, value).is_some() {
+                        events.push_back(FeatureResolutionEvent::EnableDependency {
+                            owner: package.clone(),
+                            dependency: value.clone(),
+                            feature: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Returns whether Cargo's default and requested package features select an MMU-backed
@@ -83,44 +239,7 @@ pub(crate) fn package_enables_mmu(
     metadata: &Metadata,
     requested_features: &[String],
 ) -> anyhow::Result<bool> {
-    let package = workspace_package(metadata, package)?;
-    if package.dependencies.iter().any(|dependency| {
-        matches!(
-            dependency.name.as_str(),
-            "ax-std" | "ax-runtime" | "ax-hal" | "ax-libc" | "axlibc"
-        ) && dependency
-            .features
-            .iter()
-            .any(|feature| feature_value_enables_mmu(&format!("{}/{}", dependency.name, feature)))
-    }) {
-        return Ok(true);
-    }
-
-    let mut pending = vec!["default".to_string()];
-    pending.extend(
-        requested_features
-            .iter()
-            .filter(|feature| package.features.contains_key(feature.as_str()))
-            .cloned(),
-    );
-    let mut visited = HashSet::new();
-    while let Some(feature) = pending.pop() {
-        if !visited.insert(feature.clone()) {
-            continue;
-        }
-        let Some(values) = package.features.get(&feature) else {
-            continue;
-        };
-        for value in values {
-            if feature_value_enables_mmu(value) {
-                return Ok(true);
-            }
-            if package.features.contains_key(value) {
-                pending.push(value.clone());
-            }
-        }
-    }
-    Ok(false)
+    feature_resolution_has_mmu(package, metadata, requested_features, true)
 }
 
 pub(crate) fn ensure_package_mmu_feature(

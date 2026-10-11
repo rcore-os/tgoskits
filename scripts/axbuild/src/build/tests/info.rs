@@ -11,12 +11,9 @@ fn paging_capability_enables_stack_protector_rustflag() {
         "paging",
         "ax-std/paging",
         "ax-runtime/paging",
-        "ax-hal/paging",
         "ax-std/uspace",
         "ax-runtime/uspace",
-        "ax-hal/uspace",
         "ax-std/hv",
-        "ax-hal/hv",
         "ax-libc/paging",
         "axlibc/paging",
     ] {
@@ -28,6 +25,20 @@ fn paging_capability_enables_stack_protector_rustflag() {
                 .count(),
             1,
             "{feature} must add one compiler stack-protector flag"
+        );
+    }
+}
+
+#[test]
+fn hal_only_mmu_features_do_not_enable_stack_protector_rustflag() {
+    let env = HashMap::new();
+    for feature in ["ax-hal/paging", "ax-hal/uspace", "ax-hal/hv"] {
+        let features = [feature.to_string()];
+        assert!(!features_enable_mmu(&features), "{feature}");
+        assert!(
+            !toolchain_rustflags_for_features(&env, &features)
+                .iter()
+                .any(|flag| flag == "-Zstack-protector=strong")
         );
     }
 }
@@ -71,6 +82,9 @@ fn package_metadata_resolves_mmu_capability_through_defaults_and_aliases() {
     }
     assert!(package_enables_mmu("ax-runtime", &metadata, &["paging".into()]).unwrap());
     assert!(package_enables_mmu("ax-libc", &metadata, &["paging".into()]).unwrap());
+    assert!(package_enables_mmu("ax-std", &metadata, &["dns".into()]).unwrap());
+    assert!(package_enables_mmu("ax-runtime", &metadata, &["vmap-task-stack".into()]).unwrap());
+    assert!(!package_enables_mmu("ax-hal", &metadata, &["uspace".into()]).unwrap());
     assert!(!package_enables_mmu("ax-runtime", &metadata, &[]).unwrap());
 }
 

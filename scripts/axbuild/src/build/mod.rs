@@ -27,7 +27,6 @@ mod info;
 mod platform;
 mod std_build;
 pub(crate) mod symbol_map;
-pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
 pub(crate) use config_file::{
