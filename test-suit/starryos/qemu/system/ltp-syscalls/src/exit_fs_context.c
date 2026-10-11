@@ -111,12 +111,14 @@ static int check_loop_mount_lifetime(void)
     char image[] = "/tmp/ltp-loop-image.XXXXXX";
     char target[] = "/tmp/ltp-loop-mount.XXXXXX";
     char alias[] = "/tmp/ltp-loop-alias.XXXXXX";
+    char other[] = "/tmp/ltp-loop-other.XXXXXX";
     char path[128];
     int image_fd = -1, loop_fd = -1, held_fd = -1, path_fd = -1;
     int bound = 0, mounted = 0, alias_mounted = 0, result = 1;
     struct loop_info64 info = {0};
     image_fd = mkstemp(image);
-    if (image_fd < 0 || ftruncate(image_fd, 64 * 1024 * 1024) || !mkdtemp(target) || !mkdtemp(alias))
+    if (image_fd < 0 || ftruncate(image_fd, 64 * 1024 * 1024) ||
+        !mkdtemp(target) || !mkdtemp(alias) || !mkdtemp(other))
         goto cleanup;
     loop_fd = open("/dev/loop0", O_RDWR | O_CLOEXEC);
     if (loop_fd < 0)
@@ -159,11 +161,13 @@ static int check_loop_mount_lifetime(void)
     held_fd = open(path, O_CREAT | O_RDWR, 0600);
     if (held_fd < 0 || pwrite(held_fd, "before", 6, 0) != 6 || fsync(held_fd))
         goto cleanup;
-    if (ioctl(loop_fd, LOOP_CLR_FD) ||
-        ioctl(loop_fd, LOOP_GET_STATUS64, &info))
+    if (ioctl(loop_fd, LOOP_CLR_FD) != -1 || errno != EBUSY) {
+        fprintf(stderr, "mounted loop allowed LOOP_CLR_FD\n");
         goto cleanup;
-    if (ioctl(loop_fd, LOOP_SET_FD, image_fd) != -1 || errno != EBUSY) {
-        fprintf(stderr, "mounted loop allowed rebinding after CLR_FD\n");
+    }
+    if (ioctl(loop_fd, LOOP_GET_STATUS64, &info) ||
+        mount("/dev/loop0", other, "ext4", 0, NULL) != -1 || errno != EBUSY) {
+        fprintf(stderr, "mounted loop allowed a second mount\n");
         goto cleanup;
     }
     close(loop_fd);
@@ -252,6 +256,7 @@ cleanup:
     unlink(image);
     rmdir(target);
     rmdir(alias);
+    rmdir(other);
     return result;
 }
 

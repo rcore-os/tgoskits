@@ -493,7 +493,7 @@ chk(rc == 0 or ("rror" in out or "offline" in out.lower() or "not" in out.lower(
 # ============================================================================
 # 13. conda notices / doctor  --  behavior beyond --help (2 spawns)
 # ============================================================================
-rc, out = run(["notices"])
+rc, out = run(["--offline", "notices"])
 chk("Traceback" not in out and rc == 0, "conda notices offline exit 0, no traceback")
 
 # A bare `conda doctor` scans every installed package's file manifest against
