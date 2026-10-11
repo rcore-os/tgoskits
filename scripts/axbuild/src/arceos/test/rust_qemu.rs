@@ -71,7 +71,7 @@ pub(super) async fn prepare_rust_qemu_cases(
                 arceos.app.workspace_context().metadata(),
                 &[feature.to_string()],
             )?;
-            if case_enables_mmu || crate::build::features_enable_mmu(&cargo.features) {
+            if case_enables_mmu {
                 crate::build::append_cargo_rustflags(&mut cargo, &["-Zstack-protector=strong"]);
             }
         }

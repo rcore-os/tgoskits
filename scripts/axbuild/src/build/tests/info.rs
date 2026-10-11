@@ -1,56 +1,8 @@
 use super::*;
 use crate::build::info::{
-    BuildInfo, features_enable_mmu, package_enables_mmu, package_enables_mmu_with_defaults,
-    package_mmu_enabled, toolchain_rustflags, toolchain_rustflags_for_mmu,
+    BuildInfo, package_enables_mmu, package_enables_mmu_with_defaults, package_mmu_enabled,
+    toolchain_rustflags, toolchain_rustflags_for_mmu,
 };
-
-#[test]
-fn paging_capability_enables_stack_protector_rustflag() {
-    let env = HashMap::new();
-    for feature in [
-        "paging",
-        "ax-std/paging",
-        "ax-runtime/paging",
-        "ax-std/uspace",
-        "ax-runtime/uspace",
-        "ax-std/hv",
-        "ax-libc/paging",
-        "axlibc/paging",
-    ] {
-        assert!(features_enable_mmu(&[feature.to_string()]), "{feature}");
-        assert_eq!(
-            toolchain_rustflags_for_mmu(&env, features_enable_mmu(&[feature.to_string()]))
-                .iter()
-                .filter(|flag| flag.as_str() == "-Zstack-protector=strong")
-                .count(),
-            1,
-            "{feature} must add one compiler stack-protector flag"
-        );
-    }
-}
-
-#[test]
-fn hal_only_mmu_features_do_not_enable_stack_protector_rustflag() {
-    let env = HashMap::new();
-    for feature in ["ax-hal/paging", "ax-hal/uspace", "ax-hal/hv"] {
-        let features = [feature.to_string()];
-        assert!(!features_enable_mmu(&features), "{feature}");
-        assert!(
-            !toolchain_rustflags_for_mmu(&env, features_enable_mmu(&features))
-                .iter()
-                .any(|flag| flag == "-Zstack-protector=strong")
-        );
-    }
-}
-
-#[test]
-fn non_paging_build_does_not_enable_stack_protector_rustflag() {
-    let features = ["smp".to_string()];
-    let flags = toolchain_rustflags_for_mmu(&HashMap::new(), features_enable_mmu(&features));
-
-    assert!(!features_enable_mmu(&features));
-    assert!(!flags.iter().any(|flag| flag == "-Zstack-protector=strong"));
-}
 
 #[test]
 fn duplicate_mmu_capabilities_add_only_one_stack_protector_rustflag() {

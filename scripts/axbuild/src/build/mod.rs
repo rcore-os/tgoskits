@@ -39,7 +39,7 @@ pub(crate) use future_incompat::{
 };
 pub(crate) use info::{
     ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags, env_truthy,
-    features_enable_mmu, package_enables_mmu, toolchain_rustflags,
+    package_enables_mmu, toolchain_rustflags,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]

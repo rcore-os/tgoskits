@@ -30,24 +30,6 @@ pub(crate) fn toolchain_rustflags(env: &HashMap<String, String>) -> Vec<String> 
     flags
 }
 
-pub(crate) fn features_enable_mmu(features: &[String]) -> bool {
-    features.iter().any(|feature| {
-        matches!(
-            feature.as_str(),
-            "paging"
-                | "ax-std/paging"
-                | "ax-runtime/paging"
-                | "ax-std/uspace"
-                | "ax-runtime/uspace"
-                | "ax-std/hv"
-                | "ax-libc/paging"
-                // Keep the historical directory spelling recognizable in generated
-                // BuildInfo, but do not pass it through as a Cargo dependency feature.
-                | "axlibc/paging"
-        )
-    })
-}
-
 enum FeatureResolutionEvent {
     ActivatePackage {
         package: String,
