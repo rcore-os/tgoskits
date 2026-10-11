@@ -11,6 +11,14 @@ pub(crate) fn load_cargo_config(
     request: &ResolvedBuildRequest,
     workspace: &WorkspaceContext,
 ) -> anyhow::Result<Cargo> {
+    load_cargo_config_with_default_features(request, workspace, true)
+}
+
+pub(crate) fn load_cargo_config_with_default_features(
+    request: &ResolvedBuildRequest,
+    workspace: &WorkspaceContext,
+    include_default_features: bool,
+) -> anyhow::Result<Cargo> {
     let metadata = workspace.metadata();
     let axbuild_dir = workspace.axbuild_artifact_dir();
     let makefile_features = build::makefile_features_from_env();
@@ -23,7 +31,12 @@ pub(crate) fn load_cargo_config(
     }
     let to_bin = config.to_bin;
     let mut build_info = config.build_info;
-    build::ensure_package_mmu_feature(&mut build_info, &request.package, metadata)?;
+    build::ensure_package_mmu_feature_with_defaults(
+        &mut build_info,
+        &request.package,
+        metadata,
+        include_default_features,
+    )?;
     let mut cargo = if config.freestanding {
         build_info.into_prepared_no_std_cargo_config_with_metadata(
             &request.package,

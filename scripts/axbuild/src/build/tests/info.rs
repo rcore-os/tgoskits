@@ -1,6 +1,7 @@
 use super::*;
 use crate::build::info::{
-    BuildInfo, ensure_package_mmu_feature, features_enable_mmu, package_enables_mmu,
+    BuildInfo, ensure_package_mmu_feature, ensure_package_mmu_feature_with_defaults,
+    features_enable_mmu, package_enables_mmu, package_enables_mmu_with_defaults,
     toolchain_rustflags, toolchain_rustflags_for_features,
 };
 
@@ -86,6 +87,10 @@ fn package_metadata_resolves_mmu_capability_through_defaults_and_aliases() {
     assert!(package_enables_mmu("ax-runtime", &metadata, &["vmap-task-stack".into()]).unwrap());
     assert!(!package_enables_mmu("ax-hal", &metadata, &["uspace".into()]).unwrap());
     assert!(!package_enables_mmu("ax-runtime", &metadata, &[]).unwrap());
+    assert!(package_enables_mmu_with_defaults("arceos-helloworld", &metadata, &[], true,).unwrap());
+    assert!(
+        !package_enables_mmu_with_defaults("arceos-helloworld", &metadata, &[], false,).unwrap()
+    );
 }
 
 #[test]
@@ -102,6 +107,16 @@ fn package_mmu_injection_uses_a_feature_declared_by_the_target_package() {
     let mut app = BuildInfo::default();
     ensure_package_mmu_feature(&mut app, "arceos-helloworld", &metadata).unwrap();
     assert_eq!(app.features, vec!["ax-std/paging".to_string()]);
+
+    let mut minimal_app = BuildInfo::default();
+    ensure_package_mmu_feature_with_defaults(
+        &mut minimal_app,
+        "arceos-helloworld",
+        &metadata,
+        false,
+    )
+    .unwrap();
+    assert!(minimal_app.features.is_empty());
 }
 
 #[test]

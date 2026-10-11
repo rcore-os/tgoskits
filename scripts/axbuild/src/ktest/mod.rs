@@ -297,6 +297,7 @@ async fn run_qemu_unit(
         &unit.arch,
         &unit.target,
         &build_config,
+        args.no_default_features,
     )?;
     prepare_ktest_cargo(&mut cargo, target, unit.runtime, args.coverage);
     apply_qemu_cargo_options(&mut cargo, args);
@@ -506,6 +507,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
         arch,
         &triple,
         &build_config,
+        false,
     )?;
     prepare_ktest_cargo(&mut cargo, target, runtime, false);
 
@@ -1022,11 +1024,16 @@ fn load_runtime_cargo(
     arch: &str,
     target: &str,
     build_config: &Path,
+    no_default_features: bool,
 ) -> anyhow::Result<Cargo> {
     match runtime {
         KtestRuntime::Arceos | KtestRuntime::Board => {
             let request = arceos_request(package, arch, target, build_config);
-            arceos::build::load_cargo_config(&request, workspace)
+            arceos::build::load_cargo_config_with_default_features(
+                &request,
+                workspace,
+                !no_default_features,
+            )
         }
         KtestRuntime::Starry => {
             let request = starry_request(package, arch, target, build_config);

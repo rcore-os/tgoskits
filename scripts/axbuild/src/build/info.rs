@@ -239,7 +239,21 @@ pub(crate) fn package_enables_mmu(
     metadata: &Metadata,
     requested_features: &[String],
 ) -> anyhow::Result<bool> {
-    feature_resolution_has_mmu(package, metadata, requested_features, true)
+    package_enables_mmu_with_defaults(package, metadata, requested_features, true)
+}
+
+pub(crate) fn package_enables_mmu_with_defaults(
+    package: &str,
+    metadata: &Metadata,
+    requested_features: &[String],
+    include_default_features: bool,
+) -> anyhow::Result<bool> {
+    feature_resolution_has_mmu(
+        package,
+        metadata,
+        requested_features,
+        include_default_features,
+    )
 }
 
 pub(crate) fn ensure_package_mmu_feature(
@@ -247,9 +261,22 @@ pub(crate) fn ensure_package_mmu_feature(
     package: &str,
     metadata: &Metadata,
 ) -> anyhow::Result<()> {
+    ensure_package_mmu_feature_with_defaults(build_info, package, metadata, true)
+}
+
+pub(crate) fn ensure_package_mmu_feature_with_defaults(
+    build_info: &mut BuildInfo,
+    package: &str,
+    metadata: &Metadata,
+    include_default_features: bool,
+) -> anyhow::Result<()> {
     build_info.normalize_mmu_feature_aliases(package, metadata)?;
-    if package_enables_mmu(package, metadata, &build_info.features)?
-        && !features_enable_mmu(&build_info.features)
+    if package_enables_mmu_with_defaults(
+        package,
+        metadata,
+        &build_info.features,
+        include_default_features,
+    )? && !features_enable_mmu(&build_info.features)
         && let Some(feature) = package_mmu_feature_marker(package, metadata)?
     {
         build_info.features.push(feature);
