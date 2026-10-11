@@ -4,7 +4,7 @@ cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32
 board_type = "OrangePi-5-Plus"
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
-  '(?m)^ORANGEPI_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^ORANGEPI_BLOCK_RW_BENCH_SESSION_FAILED\s*$',
   '(?m)^block-rw-bench: error: .*$',
   '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
   '(?i)(block-rw-bench|sh): .*not found',
@@ -22,5 +22,5 @@ export BLOCK_RW_BENCH_SUCCESS_MARKER='ORANGEPI_BLOCK_RW_BENCH_PASSED'
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'
 """
 success_regex = [
-  '(?m)^ORANGEPI_BLOCK_RW_BENCH_PASSED$',
+  '(?m)^ORANGEPI_BLOCK_RW_BENCH_PASSED\s*$',
 ]

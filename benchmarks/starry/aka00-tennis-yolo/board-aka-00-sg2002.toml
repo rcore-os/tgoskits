@@ -3,6 +3,7 @@ dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
 kernel_load_addr = "0x80200000"
 fit_load_addr = "0x82200000"
 bootm_addr = "0x82200000"
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS0,115200 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 fail_regex = [
   "(?m)^AKARS_TENNIS_VALIDATE_FAIL .*$",
   "(?i)\\bpanic(?:ked)?\\b",
@@ -20,6 +21,6 @@ shell_cmd = '''
 cd /akars_tennis && ./run.sh
 '''
 success_regex = [
-  "(?m)^AKARS_TENNIS_VALIDATE_PASS images=3$",
-  "(?m)^STARRY_AKA00_TENNIS_DETECT_OK$",
+  "(?m)^AKARS_TENNIS_VALIDATE_PASS images=3\\s*$",
+  "(?m)^STARRY_AKA00_TENNIS_DETECT_OK\\s*$",
 ]

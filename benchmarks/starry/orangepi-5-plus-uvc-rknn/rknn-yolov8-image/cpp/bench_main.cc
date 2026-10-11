@@ -69,6 +69,18 @@ static void signal_handler(int)
     g_running = 0;
 }
 
+// librknnrt kills the process with a raw signal when it cannot map the NPU
+// target the kernel driver reports. Publish an explicit failure verdict from
+// that signal so the board session ends immediately instead of staying alive
+// until the runner timeout, and never look like a benchmark pass.
+static void fatal_signal_handler(int)
+{
+    static const char failed[] = "\nUVC_RKNN_BENCH_FAILED reason=runtime-crash\n";
+    ssize_t written = write(STDOUT_FILENO, failed, sizeof(failed) - 1);
+    (void)written;
+    _exit(1);
+}
+
 static double monotonic_sec()
 {
     struct timespec ts;
@@ -616,6 +628,10 @@ int main(int argc, char **argv)
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGSEGV, fatal_signal_handler);
+    signal(SIGBUS, fatal_signal_handler);
+    signal(SIGABRT, fatal_signal_handler);
+    signal(SIGFPE, fatal_signal_handler);
 
     printf("YOLOv8 UVC RKNN Benchmark\n");
     printf("=========================\n");

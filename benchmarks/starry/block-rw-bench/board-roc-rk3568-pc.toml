@@ -1,7 +1,7 @@
 board_type = "ROC-RK3568-PC"
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
-  '(?m)^RK3568_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^RK3568_BLOCK_RW_BENCH_SESSION_FAILED\s*$',
   '(?m)^block-rw-bench: error: .*$',
   '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
   '(?i)(block-rw-bench|sh): .*not found',
@@ -19,5 +19,5 @@ export BLOCK_RW_BENCH_SUCCESS_MARKER='RK3568_BLOCK_RW_BENCH_PASSED'
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'
 """
 success_regex = [
-  '(?m)^RK3568_BLOCK_RW_BENCH_PASSED$',
+  '(?m)^RK3568_BLOCK_RW_BENCH_PASSED\s*$',
 ]

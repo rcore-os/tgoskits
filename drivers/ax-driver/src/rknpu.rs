@@ -1,12 +1,12 @@
 use alloc::{format, sync::Arc, vec::Vec};
 use core::any::Any;
 
-use log::info;
+use log::{info, warn};
 use rdrive::{
     DriverGeneric,
     probe::{
         OnProbeError,
-        fdt::{FdtInfo, ResetLine},
+        fdt::{FdtInfo, ResetLine, ResourcePrepareConfig},
     },
     register::ProbeFdt,
 };
@@ -22,6 +22,8 @@ use crate::mmio::iomap;
 const RK3588_NPU_CLOCK_NAME: &str = "clk_npu";
 // Highest RK3588 NPU OPP that needs no more than the firmware-provided 750 mV.
 const RK3588_NPU_FIXED_RATE_HZ: u64 = 800_000_000;
+const RK3588_NPU_SUPPLY: &str = "rknpu-supply";
+const RK3588_NPU_MEM_SUPPLY: &str = "mem-supply";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
@@ -129,6 +131,7 @@ impl DriverGeneric for RknpuDevice {
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, plat_dev) = probe.into_parts();
+    prepare_resources(&info)?;
     configure_fixed_clock(&info)?;
     let regs = info.node.regs();
 
@@ -172,10 +175,34 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
+/// Powers the NPU on before the first register access.
+///
+/// The OrangePi-5-Plus node declares three NPU power domains, eight clocks, six CRU
+/// resets, and the `rknpu-supply`/`mem-supply` rails. `clk_npu` is the NPU root clock
+/// owned by the SoC firmware through SCMI, so builds without an SCMI clock driver
+/// still prepare every resource the OS owns instead of failing the probe.
+fn prepare_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    info.prepare_resources(
+        ResourcePrepareConfig::default()
+            .with_assigned_clocks()
+            .with_power_domains()
+            .with_optional_clock_providers()
+            .with_supply(RK3588_NPU_SUPPLY)
+            .with_supply(RK3588_NPU_MEM_SUPPLY),
+    )?;
+    Ok(())
+}
+
 fn configure_fixed_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
-    let clock = info
-        .find_clock_line_by_name(RK3588_NPU_CLOCK_NAME)?
-        .ok_or_else(|| OnProbeError::other("RK3588 NPU clk_npu is unavailable"))?;
+    // The firmware-owned SCMI clock cannot be retuned without its driver, so keep the
+    // rate the firmware set before handoff instead of failing the whole probe.
+    let Some(clock) = info.find_optional_clock_line_by_name(RK3588_NPU_CLOCK_NAME)? else {
+        warn!(
+            "RK3588 NPU {RK3588_NPU_CLOCK_NAME} has no rdrive clock provider; keeping the rate \
+             configured before handoff"
+        );
+        return Ok(());
+    };
     clock.set_rate(RK3588_NPU_FIXED_RATE_HZ)?;
     let actual_rate = clock.rate()?;
     if actual_rate != RK3588_NPU_FIXED_RATE_HZ {

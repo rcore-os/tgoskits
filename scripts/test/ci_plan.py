@@ -111,6 +111,7 @@ CHECK_FIELDS = {
     "xtask_bin_artifact_name",
     "container_preflight",
     "node_version",
+    "requires_mkimage",
     "events",
     "enable_boolean_input",
     "impact_targets",
@@ -123,6 +124,7 @@ BOOLEAN_CHECK_FIELDS = {
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
     "wifi_secrets",
+    "requires_mkimage",
 }
 
 
@@ -883,6 +885,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "allow_fork_pull_request": check.get("allow_fork_pull_request", False),
         "container_image": container_image,
         "container_preflight": preflight,
+        "requires_mkimage": check.get("requires_mkimage", False),
         "command": command.strip(),
         "cache_key": check.get("cache_key", ""),
         "node_version": check.get("node_version", ""),

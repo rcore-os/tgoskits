@@ -177,6 +177,45 @@ class CiPlanTests(unittest.TestCase):
             self.assertTrue(check["nightly_only"])
             self.assertFalse(check.get("performance_report", False))
 
+    def test_requires_mkimage_reaches_the_board_matrix_row(self):
+        checks = ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
+        aka_check = next(
+            check
+            for check in checks
+            if check["id"] == "starry-performance-tennis-yolo-aka-00-sg2002"
+        )
+        self.assertTrue(aka_check["requires_mkimage"])
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
+        )
+
+        plan = ci_plan.build_benchmarks_plan(context)
+
+        rows = plan["starry_board_performance_matrix"]["include"]
+        aka_row = next(row for row in rows if row["id"] == aka_check["id"])
+        self.assertTrue(aka_row["requires_mkimage"])
+        self.assertTrue(
+            all(
+                row["requires_mkimage"] is False
+                for row in rows
+                if row["id"] != aka_check["id"]
+            )
+        )
+
+    def test_check_manifest_rejects_non_boolean_requires_mkimage(self):
+        with self.assertRaisesRegex(ci_plan.PlanError, "requires_mkimage"):
+            ci_plan._validate_check(
+                {
+                    "id": "board-check",
+                    "name": "Board check",
+                    "command": "true",
+                    "requires_mkimage": "true",
+                },
+                "fixture:1",
+            )
+
     def test_check_manifests_do_not_declare_removed_booleans(self):
         for manifest in sorted(ci_plan.CHECKS_ROOT.rglob("*.toml")):
             with self.subTest(manifest=manifest.name):

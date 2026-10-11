@@ -169,10 +169,11 @@ profile 只描述调度条件，实际任务还依赖工具链、模拟器、存
 | `container_preflight=qemu-user` | Git、工作目录及四架构用户态 QEMU | 系统模拟器和任务自身的其他依赖 |
 | `container_preflight=full` | 上述检查，加四架构 musl 编译器 | 任务需要的固件、rootfs、特殊模拟器和资产 |
 | `container_preflight=none` | 不执行容器预检步骤 | 由该任务的命令负责准备或校验 |
+| `requires_mkimage=true` | `mkimage` 存在，或在 Debian/Ubuntu 宿主安装 `u-boot-tools` | u-boot-tools 版本、uImage 在板卡侧的加载条件 |
 
 自托管行禁止非空 `cache_key`。不能为了套用托管缓存策略而开启 `rust-cache`，也不能把容器或缺少 fork secrets 当作保护宿主机器的充分隔离措施。缓存、artifact 和凭据传递详见[矩阵执行](execution.md)。
 
-`board` runner 还要为构建带 companion `.its` 的目标（如 `aka-00-sg2002` 的 RISC-V uImage）安装 `u-boot-tools`，否则 Starry 构建在 uImage 打包阶段失败；预检不覆盖该依赖，部署新 board runner 时须手动核实。
+构建带 companion `.its` 的目标（如 `aka-00-sg2002` 的 RISC-V uImage）需要 `mkimage`，否则 Starry 构建在 uImage 打包阶段直接报错，而不会跳过打包。声明 `requires_mkimage=true` 的 check 由此预检负责该依赖：已提供 `mkimage` 的宿主直接复用，否则只在可确认的 Debian 或 Ubuntu 宿主上安装 `u-boot-tools`，其他宿主在预检阶段明确失败。
 
 ### 3.2 调度上限
 

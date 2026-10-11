@@ -99,6 +99,7 @@ pub struct ResourcePrepareConfig {
     enable_clocks: bool,
     deassert_resets: bool,
     enable_power_domains: bool,
+    optional_clock_providers: bool,
     supply_names: Vec<String>,
     clock_rates: Vec<String>,
 }
@@ -110,6 +111,7 @@ impl Default for ResourcePrepareConfig {
             enable_clocks: true,
             deassert_resets: true,
             enable_power_domains: false,
+            optional_clock_providers: false,
             supply_names: Vec::from([String::from("vmmc-supply"), String::from("vqmmc-supply")]),
             clock_rates: Vec::new(),
         }
@@ -144,6 +146,19 @@ impl ResourcePrepareConfig {
 
     pub fn with_power_domains(mut self) -> Self {
         self.enable_power_domains = true;
+        self
+    }
+
+    /// Prepares the clocks that rdrive can drive instead of failing when the node
+    /// declares a clock whose provider has no rdrive clock interface.
+    ///
+    /// Firmware-owned clocks, such as the RK3588 SCMI clock protocol, appear in the
+    /// device tree but only have an rdrive provider in builds that include the
+    /// matching firmware driver. A node that declares one next to rdrive-drivable
+    /// clocks can still enable every clock the OS owns. The skipped clocks are
+    /// reported as warnings.
+    pub fn with_optional_clock_providers(mut self) -> Self {
+        self.optional_clock_providers = true;
         self
     }
 
@@ -445,7 +460,39 @@ impl ClockLine {
             .collect()
     }
 
+    /// Resolves the declared clocks that an rdrive clock provider backs.
+    ///
+    /// Clocks whose provider is populated but has no rdrive clock interface are
+    /// dropped with a warning instead of failing the whole resource preparation.
+    fn from_refs_optional(node_name: &str, refs: Vec<ClockRef>) -> Result<Vec<Self>, OnProbeError> {
+        let mut lines = Vec::with_capacity(refs.len());
+        for clock in refs.into_iter().filter(|clock| clock.cells > 0) {
+            match Self::from_ref_optional(node_name, &clock)? {
+                Some(line) => lines.push(line),
+                None => warn!(
+                    "[{node_name}] clock {} has no rdrive clock provider; skipping it",
+                    clock_label(&clock)
+                ),
+            }
+        }
+        Ok(lines)
+    }
+
     fn from_ref(node_name: &str, clock: &ClockRef) -> Result<Self, OnProbeError> {
+        Self::from_ref_optional(node_name, clock)?.ok_or_else(|| {
+            OnProbeError::other(format!(
+                "[{node_name}] clock provider {:?} has no rdif-clk interface",
+                clock.phandle
+            ))
+        })
+    }
+
+    /// Resolves one declared clock reference.
+    ///
+    /// Returns `Ok(None)` when the provider node is populated but no registered
+    /// device exposes an rdrive clock interface for it, which is how firmware-owned
+    /// clocks look to rdrive when their driver is absent from the build.
+    fn from_ref_optional(node_name: &str, clock: &ClockRef) -> Result<Option<Self>, OnProbeError> {
         if clock.cells != 1 {
             return Err(OnProbeError::other(format!(
                 "[{node_name}] clock {} uses {} cells, only one-cell clock selectors are supported",
@@ -467,19 +514,19 @@ impl ClockLine {
                     clock.phandle
                 ))
             })?;
-        let device = crate::get::<rdif_clk::Clk>(provider_id).map_err(|err| {
-            OnProbeError::other(format!(
+        match crate::get::<rdif_clk::Clk>(provider_id) {
+            Ok(device) => Ok(Some(Self {
+                node_name: node_name.to_string(),
+                name: clock.name.clone(),
+                device,
+                id: rdif_clk::ClockId::from(selector as usize),
+            })),
+            Err(crate::GetDeviceError::TypeNotMatch | crate::GetDeviceError::NotFound) => Ok(None),
+            Err(err) => Err(OnProbeError::other(format!(
                 "[{node_name}] clock provider {:?} has no rdif-clk interface: {err}",
                 clock.phandle
-            ))
-        })?;
-
-        Ok(Self {
-            node_name: node_name.to_string(),
-            name: clock.name.clone(),
-            device,
-            id: rdif_clk::ClockId::from(selector as usize),
-        })
+            ))),
+        }
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -780,6 +827,11 @@ pub fn clock_lines(node: NodeType<'_>) -> Result<Vec<ClockLine>, OnProbeError> {
     ClockLine::from_refs(node.name(), refs)
 }
 
+fn optional_clock_lines(node: NodeType<'_>) -> Result<Vec<ClockLine>, OnProbeError> {
+    let refs = clock_refs(node)?;
+    ClockLine::from_refs_optional(node.name(), refs)
+}
+
 pub fn power_domain_lines(node: NodeType<'_>) -> Result<Vec<PowerDomainLine>, OnProbeError> {
     let refs = power_domain_refs(node)?;
     PowerDomainLine::from_refs(node.name(), refs)
@@ -905,7 +957,12 @@ impl<'a> FdtInfo<'a> {
             }
         }
         if config.enable_clocks {
-            for clock in self.clock_lines()? {
+            let clocks = if config.optional_clock_providers {
+                optional_clock_lines(self.node)?
+            } else {
+                self.clock_lines()?
+            };
+            for clock in clocks {
                 clock.enable()?;
             }
         }
@@ -917,7 +974,12 @@ impl<'a> FdtInfo<'a> {
 
         let mut report = ResourcePrepareReport::default();
         for name in config.clock_rates {
-            let Some(clock) = self.find_clock_line_by_name(&name)? else {
+            let clock = if config.optional_clock_providers {
+                self.find_optional_clock_line_by_name(&name)?
+            } else {
+                self.find_clock_line_by_name(&name)?
+            };
+            let Some(clock) = clock else {
                 continue;
             };
             report.insert_clock_rate(name, clock.rate()?);
@@ -949,6 +1011,31 @@ impl<'a> FdtInfo<'a> {
             return Ok(None);
         }
         self.clock_line(&clock).map(Some)
+    }
+
+    /// Resolves a named clock line when an rdrive clock provider backs it.
+    ///
+    /// Unlike [`Self::find_clock_line_by_name`], a declared clock whose provider has
+    /// no rdrive clock interface yields `Ok(None)` instead of an error. Firmware-owned
+    /// clocks, such as the RK3588 SCMI clock protocol, are only drivable in builds
+    /// that include the matching firmware driver, so a driver that only wants to
+    /// adjust a rate when the OS owns the clock can use this instead of failing its
+    /// probe.
+    pub fn find_optional_clock_line_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<ClockLine>, OnProbeError> {
+        let Some(clock) = self
+            .clocks()?
+            .into_iter()
+            .find(|clock| clock.name.as_deref() == Some(name))
+        else {
+            return Ok(None);
+        };
+        if clock.cells == 0 {
+            return Ok(None);
+        }
+        ClockLine::from_ref_optional(self.node.name(), &clock)
     }
 
     pub fn resets(&self) -> Result<Vec<ResetRef>, OnProbeError> {

@@ -31,6 +31,7 @@ manifest 使用 `schema_version = 3`，声明 `phase`、`group` 和非空 `check
 | `xtask_bin_artifact_name` | 默认 `tg-xtask-bin`，消费者必须匹配 producer |
 | `container_preflight` | `none`、`qemu-user` 或 `full`，省略时按环境推导 |
 | `node_version` | 默认空；非空时（如 `24`）矩阵在执行命令前用官方 `actions/setup-node` 安装该 Node 版本，供命令内 npm 使用 |
+| `requires_mkimage` | 布尔值，默认 `false`；为 `true` 时预检必须让 `mkimage` 可用 |
 | `events`、`enable_boolean_input` | 满足声明事件或启用布尔输入时选中，用于定时/手动检查 |
 | `required_base_branch` | 仅匹配指向指定 base 的 PR |
 | `wifi_secrets`、`apk_region` | Wi-Fi 凭据开关和 APK 区域环境值 |

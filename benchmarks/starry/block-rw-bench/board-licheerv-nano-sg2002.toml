@@ -5,7 +5,7 @@ fit_load_addr = "0x82200000"
 bootm_addr = "0x82200000"
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
-  '(?m)^SG2002_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^SG2002_BLOCK_RW_BENCH_SESSION_FAILED\s*$',
   '(?m)^block-rw-bench: error: .*$',
   '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
   '(?i)(block-rw-bench|sh): .*not found',
@@ -23,5 +23,5 @@ export BLOCK_RW_BENCH_SUCCESS_MARKER='SG2002_BLOCK_RW_BENCH_PASSED'
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'
 """
 success_regex = [
-  '(?m)^SG2002_BLOCK_RW_BENCH_PASSED$',
+  '(?m)^SG2002_BLOCK_RW_BENCH_PASSED\s*$',
 ]

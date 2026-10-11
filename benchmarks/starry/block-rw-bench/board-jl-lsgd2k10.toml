@@ -1,7 +1,7 @@
 board_type = "JL-LSGD2K10"
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
-  '(?m)^JL_LSGD2K10_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^JL_LSGD2K10_BLOCK_RW_BENCH_SESSION_FAILED\s*$',
   '(?m)^block-rw-bench: error: .*$',
   '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
   '(?i)(block-rw-bench|sh): .*not found',
@@ -20,5 +20,5 @@ export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='4194304'
 export BLOCK_RW_BENCH_STAGED_PROGRAM='/home/loongson/block-rw-bench'
 """
 success_regex = [
-  '(?m)^JL_LSGD2K10_BLOCK_RW_BENCH_PASSED$',
+  '(?m)^JL_LSGD2K10_BLOCK_RW_BENCH_PASSED\s*$',
 ]

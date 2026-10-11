@@ -75,6 +75,13 @@ if [ "$helper_ready" = "1" ] &&
   fi
 fi
 
-if [ "$helper_passed" != "1" ]; then
+# End the board session on one explicit verdict line, on both paths. The
+# success marker is only repeated after the helper exited zero and its own log
+# held that exact marker line, so the wrapper never turns a failed run into a
+# pass. The verdict is carried by the marker, not by the exit status.
+if [ "$helper_passed" = "1" ]; then
+  sync
+  printf '\n%s\n' "$BLOCK_RW_BENCH_SUCCESS_MARKER"
+else
   printf '\n%s\n' "${marker}_FAILED"
 fi
