@@ -48,6 +48,10 @@ pub struct VPlicGlobal {
     /// Num of contexts.
     pub contexts_num: usize,
     /// Mutable state owned by the vPLIC controller task.
+    ///
+    /// The mutex is sleepable. Every access must stay in task context and
+    /// outside raw hardware guards, interrupt callbacks, scheduler paths, and
+    /// drop paths; hard-IRQ producers use the adapter's fixed atomic ingress.
     pub(crate) state: Mutex<VplicState>,
     /// Published VSEIP eligibility for each context. Entry code reads this
     /// snapshot without taking the controller's sleepable state lock.

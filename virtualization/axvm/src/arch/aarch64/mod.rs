@@ -797,7 +797,13 @@ impl VcpuLocalInterrupts for AxvmArmVcpu {
         // A vCPU without a currently attached VGIC bank must still be able to
         // reach the architecture entry protocol; the binding is required only
         // when an interrupt is actually injected or the bank is loaded.
-        Ok(self.has_pending_interrupt().unwrap_or(false))
+        Ok(match self.has_pending_interrupt() {
+            Ok(pending) => pending,
+            Err(error) => {
+                trace!("AArch64 pending interrupt snapshot unavailable: {error:?}");
+                false
+            }
+        })
     }
 
     fn inject(&mut self, interrupt: PendingVcpuInterrupt) -> Result<(), Self::Error> {

@@ -169,7 +169,10 @@ impl RiscvPlicIngress {
 /// `VPlicGlobal` is the sole owner of pending, active, enable, priority,
 /// threshold, and level state. A wake carries only the identity of a vCPU that
 /// must rederive its VSEIP from that state and is published through the
-/// run-bound target captured at activation.
+/// run-bound target captured at activation. `apply_source` and the vPLIC MMIO
+/// adapter are task-context operations because they may take the sleepable
+/// vPLIC state mutex; wired and physical IRQ callbacks use `RiscvPlicIngress`
+/// until the owner task drains them.
 pub(crate) struct RiscvPlicRuntime {
     vplic: Arc<VPlicGlobal>,
     ingress: Arc<RiscvPlicIngress>,

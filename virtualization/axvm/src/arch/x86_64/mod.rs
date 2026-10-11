@@ -1153,9 +1153,7 @@ impl X86DeliveryPort {
         if created {
             self.remember_delivery(target_vcpu_id, interrupt.vector, source);
         }
-        signals
-            .kick(target_vcpu_id)
-            .map_err(|error| AxVmError::interrupt("kick x86 vCPU", error))
+        kick_published_interrupt(signals, target_vcpu_id)
     }
 
     fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
@@ -1495,6 +1493,18 @@ impl InterruptControllerOwner for X86InterruptDomain {
             }
         }
         Ok(())
+    }
+}
+
+/// Wakes a vCPU after its interrupt has become canonical in the run queue.
+///
+/// An inactive target is a normal lifecycle window: the queue retains the
+/// source and the next activation drains it. Only failures that prevent the
+/// publication from being observed are returned to the control owner.
+fn kick_published_interrupt(signals: &RunSignals, target_vcpu_id: usize) -> AxVmResult {
+    match signals.kick(target_vcpu_id) {
+        Ok(()) | Err(SignalError::InactiveTarget) => Ok(()),
+        Err(error) => Err(AxVmError::interrupt("kick x86 vCPU", error)),
     }
 }
 
@@ -1899,6 +1909,7 @@ mod tests {
     use core::cell::Cell;
 
     use super::*;
+    use crate::identity::{RunId, VmKey};
 
     #[test]
     fn pit_fans_out_gsi_zero_to_pic_and_ioapic() {
@@ -2048,5 +2059,25 @@ mod tests {
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
         ));
+    }
+
+    #[test]
+    fn inactive_target_keeps_published_interrupt_pending() {
+        let run = RunSignals::new(RunId::new(VmKey::new(1, 1), 1), 1).expect("valid run signals");
+        let source = InterruptSourceId::new(InterruptControllerId::new(0), 4, None);
+        let created = run
+            .publish_with_status(
+                0,
+                PendingVcpuInterrupt {
+                    id: VirtualInterruptId(0x40),
+                    trigger: InterruptTriggerMode::LevelTriggered,
+                    source: Some(source),
+                },
+            )
+            .expect("publication should succeed before activation");
+
+        assert!(created);
+        assert_eq!(kick_published_interrupt(&run, 0), Ok(()));
+        assert!(run.has_pending(0));
     }
 }
