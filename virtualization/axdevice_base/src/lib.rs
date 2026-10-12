@@ -95,8 +95,6 @@
 // Rust version of Axvisor.
 #![allow(stable_features)]
 #![feature(trait_upcasting)]
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 #![warn(missing_docs)]
 
 extern crate alloc;
