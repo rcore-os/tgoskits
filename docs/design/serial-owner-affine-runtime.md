@@ -23,6 +23,27 @@ RT priority。RX SPSC、TTY 有界 `RawSpinLock` 队列、控制队列和 `Fixed
 TX ingress，并使日志背压不再占用 TTY 容量。扩大调度器或通用通信抽象不能直接修复
 寄存器所有权问题。
 
+## Issue #2061 回归记录
+
+2026-08-15 的 LoongArch64 CI 曾在 `qemu/system` 通过后启动独立的
+`tty-console-input-burst`，只输出 `Boot at ...`，随后 300 秒内既没有 shell prompt
+也没有测试标记；同一提交重试后成功。失败发生在 early console 向 Starry TTY/runtime
+交接和用户态启动之间，不能用放宽成功匹配或增加超时解释。
+
+根因是旧串口路径没有把 UART 寄存器访问、early console handoff、IRQ 接收和维护线程
+收敛到同一个所有权协议。LoongArch64 的 SMP/UEFI 启动时序偶尔让交接后的 RX/TX 工作
+停在未完成的状态，内核仍能打印 `Boot at`，但用户态无法取得可用的 TTY。随后合入的
+owner-affine runtime 使用 `UartRegisterGate`、固定 owner CPU 的 worker、事务化
+`Early -> Preparing -> Runtime/FailedClosed` handoff，以及有界 RX/TX rearm，消除了这条
+竞争路径；对应实现位于 `os/arceos/modules/axruntime/src/serial/` 和
+`os/StarryOS/kernel/src/pseudofs/dev/tty/serial.rs`。
+
+`tty-console-input-burst` 仍保持独立 shell-injection 回归，每个架构配置显式声明
+`rootfs_write_policy = "discard"`。这样它即使紧跟 `qemu/system` 执行，也不会复用前一
+次 guest 的 `/run`、OpenRC 或 TTY 状态。LoongArch64 的真实 QEMU 运行必须看到
+`root@starry:` 后执行脚本，并完成 128 项检查和 `STARRY_TTY_INPUT_BURST_PASSED`；任何
+启动停滞仍会在 300 秒后失败。
+
 `ax-runtime` 对外只提供两类控制台语义：`emergency_console` 是同步、不可睡眠的阻塞直达
 输出，`console` 是普通任务上下文的可睡眠输入输出。后者供 ArceOS、StarryOS 和 Axvisor
 复用，不引入第二个 active-console 状态，也不承载 TTY ABI：原始 RX 错误、字节输出和完整

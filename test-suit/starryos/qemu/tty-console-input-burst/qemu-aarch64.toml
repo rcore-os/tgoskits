@@ -42,3 +42,5 @@ fail_regex = [
     "(?m)^STARRY_TTY_INPUT_BURST_FAILED",
 ]
 timeout = 300
+# This case often runs after qemu/system; never carry guest state between runs.
+rootfs_write_policy = "discard"
