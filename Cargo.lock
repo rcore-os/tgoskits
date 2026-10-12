@@ -1492,8 +1492,6 @@ version = "0.7.2"
 dependencies = [
  "ax-memory-addr",
  "axvm-types",
- "log",
- "serde",
  "thiserror 2.0.21",
 ]
 
@@ -1743,7 +1741,7 @@ dependencies = [
  "serde_json",
  "shlex 2.0.1",
  "tokio",
- "toml 1.1.6+spec-1.1.0",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
