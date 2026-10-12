@@ -49,6 +49,20 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     unsafe { current_needs_reschedule_pinned() }
 }
 
+/// Re-arms owner scheduler work from the current CPU for the ArceOS axtest
+/// transport contract.
+///
+/// This invokes the same owner-side bounded-drain rearm used by the scheduler;
+/// it exists only in axtest builds so a runtime can verify the local path when
+/// physical scheduler IPI delivery is unavailable.
+#[cfg(feature = "axtest-hooks")]
+pub fn rearm_scheduler_work_for_axtest() -> Result<(), TaskError> {
+    let _pin = PreemptScope::enter();
+    let remote = current_cpu_remote().ok_or(TaskError::NotInitialized)?;
+    remote.defer_scheduler_work();
+    Ok(())
+}
+
 /// Observes only the immediate preemption bit in real-runtime regression tests.
 /// Owner maintenance and lazy preemption remain separate scheduler requests.
 #[cfg(feature = "fault-injection")]

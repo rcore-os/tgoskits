@@ -139,6 +139,12 @@ fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str
             qemu.fail_regex = vec!["stack guard page was not hit".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
+        Some("task-scheduler-local-rearm") => {
+            // This regression deliberately runs a single online CPU so the
+            // scheduler transport is unavailable without introducing remote
+            // wake traffic unrelated to the owner-local rearm contract.
+            qemu_test::apply_smp_qemu_arg(qemu, Some(1));
+        }
         _ => {}
     }
 }

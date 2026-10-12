@@ -127,6 +127,19 @@ pub const CPU_CAPACITY: usize = 1;
 
 pub use bootstrap::rust_main;
 
+#[cfg(feature = "no-ipi")]
+pub mod test_support {
+    /// Disables scheduler IPI delivery after runtime boot for the owner-local
+    /// scheduler rearm contract test.
+    pub fn disable_scheduler_ipi_for_axtest() {
+        crate::thread::runtime_impl::disable_scheduler_ipi_for_axtest();
+    }
+
+    pub fn enable_scheduler_ipi_for_axtest() {
+        crate::thread::runtime_impl::enable_scheduler_ipi_for_axtest();
+    }
+}
+
 #[cfg(feature = "smp")]
 pub use self::mp::rust_main_secondary;
 

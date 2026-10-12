@@ -31,6 +31,13 @@ task-executor = ["task-runtime"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
 task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc"]
 task-pi-mutex = ["task-runtime", "dep:ax-task", "ax-task/fault-injection"]
+task-scheduler-local-rearm = [
+    "task-runtime",
+    "dep:ax-runtime",
+    "dep:ax-task",
+    "ax-task/axtest-hooks",
+    "ax-runtime/no-ipi",
+]
 task-preempt-guard = ["task-runtime"]
 task-priority = ["task-runtime", "ax-std/alloc"]
 task-rt-policy = ["task-runtime", "ax-std/alloc"]

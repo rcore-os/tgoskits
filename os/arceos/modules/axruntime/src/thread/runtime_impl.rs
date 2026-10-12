@@ -6,6 +6,18 @@ use super::*;
 
 static SCHED_SWITCH_TRACE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static SCHED_SWITCH_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "no-ipi")]
+static SCHEDULER_IPI_DISABLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "no-ipi")]
+pub(crate) fn disable_scheduler_ipi_for_axtest() {
+    SCHEDULER_IPI_DISABLED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "no-ipi")]
+pub(crate) fn enable_scheduler_ipi_for_axtest() {
+    SCHEDULER_IPI_DISABLED.store(false, Ordering::Release);
+}
 
 unsafe fn membarrier_ipi_memory_barrier(_arg: *mut ()) {
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -362,6 +374,10 @@ impl_task_runtime! {
         fn notify_scheduler_cpu(cpu: RuntimeCpuId) -> RuntimeStatus {
             #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
             {
+                #[cfg(feature = "no-ipi")]
+                if SCHEDULER_IPI_DISABLED.load(Ordering::Acquire) {
+                    return RuntimeStatus::Unsupported;
+                }
                 let cpu_id = cpu.as_u32() as usize;
                 if cpu_id >= ax_hal::cpu_num() {
                     return RuntimeStatus::InvalidArgument;
