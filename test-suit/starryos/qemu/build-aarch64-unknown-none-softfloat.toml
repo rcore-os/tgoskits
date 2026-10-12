@@ -8,6 +8,8 @@ features = [
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
   "ax-driver/xhci-pci",
+  "rga",
+  "ax-runtime/tls",
 ]
 max_cpu_num = 4
 log = "Warn"

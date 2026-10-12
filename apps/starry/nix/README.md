@@ -153,7 +153,6 @@ and prints its own `<NAME>_PASSED` marker.
 | `test-mount-bind` | `mount --bind` and `--rbind` semantics | `TEST_MOUNT_BIND_PASSED` |
 | `test-mount-propagation` | Shared peer group unmount propagation | `TEST_MOUNT_PROPAGATION_PASSED` |
 | `test-pivot-root` | resolved-location `pivot_root(".", "old")` and old-root detach | `TEST_PIVOT_ROOT_PASSED` |
-| `test-pivot-root-namespace` | private mount-namespace pivot does not change the parent namespace | `TEST_PIVOT_ROOT_NAMESPACE_PASSED` |
 | `test-cgroup-ns` | `unshare`/`clone`/`setns` for `CLONE_NEWCGROUP` + `/proc/self/ns/cgroup` | `TEST_CGROUP_NS_PASSED` |
 | `test-max-ns-entries` | All seven `/proc/sys/user/max_*_namespaces` files | `TEST_MAX_NS_ENTRIES_PASSED` |
 | `test-proc-environ` | `/proc/<pid>/environ` NUL-separated envp | `TEST_PROC_ENVIRON_PASSED` |
