@@ -1,0 +1,21 @@
+# x86_64 web control-plane compile guard.
+#
+# The x86_64 std target disables every vector ISA (the kernel never saves XMM
+# state in host task switches), and the axum dependency tree (httparse, sha1)
+# assumes baseline SSE2 unless steered off its SIMD paths — axbuild disables
+# httparse's and Cargo feature unification forces sha1's software path for
+# exactly this target. This file keeps that combination compiling in CI.
+#
+# Not a test case: no qemu-*.toml in a case directory points here, so the QEMU
+# suite never boots it; it only exists for the build check that guards the
+# x86_64 `web` feature.
+features = [
+    "web",
+    "no-auto-start",
+]
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = []
+
+[env]
+AXVM_HTTP_BIND = "0.0.0.0:8080"

@@ -146,6 +146,16 @@ arch = "aarch64"
 cases = ["web-ui", "web-ui-diskless"]
 
 [[check]]
+id = "test-axvisor-x86-64-web-build"
+impact_targets = ["axvisor:x86_64"]
+name = "Build x86_64 · Web control plane (no-vector target)"
+timeout_minutes = 45
+command = '''
+echo "==> axvisor x86_64 web control-plane compile (no npm involved)"
+cargo axvisor build -c test-suit/axvisor/normal/qemu-web-ui/build-x86_64-unknown-none.toml
+'''
+
+[[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · HTTP control-plane + browser console + ArceOS IVC"
