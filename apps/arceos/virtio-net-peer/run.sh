@@ -48,6 +48,25 @@ local_ip_of_vm() {
     esac
 }
 
+# Per-VM client connect start delay (`AXVIRTIO_CONNECT_START_DELAY_MS`). The
+# QEMU shell boots the chain tail first and waits for each READY before starting
+# the next guest (VM4, then VM3, then VM2, then VM1), so every client's next-hop
+# server is already running when the client starts; a modest delay is enough to
+# let the neighbours finish configuring their addresses. VM4 is the tail of the
+# chain and its peer 10.0.2.19 is intentionally absent, so a modest delay would
+# make it flood the virtual switch with ARP pending frames for an address nobody
+# owns; park it far beyond the test window (600000 ms) so it never connects.
+connect_start_delay_of_vm() {
+    case "$1" in
+        vm1 | vm2 | vm3) echo "10000" ;;
+        vm4) echo "600000" ;;
+        *)
+            echo "no AXVIRTIO_CONNECT_START_DELAY_MS mapping for guest '$1'" >&2
+            return 1
+            ;;
+    esac
+}
+
 build_guest() {
     local vm="$1"
     local tag="${vm^^}"
@@ -55,6 +74,8 @@ build_guest() {
     local output="target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer-${vm}.bin"
     local local_ip
     local_ip="$(local_ip_of_vm "$vm")"
+    local connect_start_delay
+    connect_start_delay="$(connect_start_delay_of_vm "$vm")"
     local smp_args=()
     # VM1 in --vcpus mode boots guest IDs 0 and 2 on the same host pCPU;
     # the other images stay single-core, including the default QEMU mode.
@@ -68,10 +89,11 @@ build_guest() {
     # `AXVIRTIO_HEARTBEAT_PERIOD_MS` (default 4000),
     # `AXVIRTIO_HEARTBEAT_PASS_AFTER` (default 3),
     # `AXVIRTIO_CONNECT_TIMEOUT_MS` (default 4000) and
-    # `AXVIRTIO_CONNECT_START_DELAY_MS` (default 10000) can be exported to
-    # override the tuning.
+    # `AXVIRTIO_CONNECT_START_DELAY_MS` (default 10000, but per-VM here) can be
+    # exported to override the tuning.
     AXVIRTIO_VM_TAG="$tag" \
     AXVIRTIO_LOCAL_IP="$local_ip" \
+    AXVIRTIO_CONNECT_START_DELAY_MS="$connect_start_delay" \
         cargo xtask arceos build -p arceos-virtio-net-peer -c "$config" "${smp_args[@]}"
     "$objcopy" --strip-all -O binary \
         target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer \
