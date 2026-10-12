@@ -43,7 +43,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 | `Starry Apps` | `starry_performance_matrix` | QCS 自托管 profile | `starry-apps-nightly-performance` |
 | `Starry Apps` | `starry_board_performance_matrix` | 板卡 profile | `starry-apps-nightly-performance` |
 
-Starry 板卡矩阵在 `benchmarks.yml` 中设置 `max_parallel: 1`，避免同一入口同时占用多个实体板卡；这只是矩阵内的并行上限，不是板卡行串行的唯一机制。运行在同一块 OrangePi 5 Plus 上的基准板卡行（三条 AxVisor 性能行与四条 Starry 板卡行）都在清单里声明 `resource_group = "orangepi-5-plus"`，复用矩阵据此把受保护的 `schedule` 与 `workflow_dispatch` 运行放进共享的 `ci-resource-orangepi-5-plus` concurrency group，使它们与其它工作流中同样使用该资源组的 OrangePi 检查串行，避免跨工作流同时占用同一块实体板卡。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
+Starry 板卡矩阵不设置额外的 `max_parallel` 限制，每个矩阵项使用独立的 concurrency group。`resource_group` 继续记录板卡资源类型，但不再把同组矩阵项合并到同一个 GitHub 锁中；拥有多个相同标签的空闲板卡时，runner 池可以同时分发同组任务。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
 
 AxVisor 板卡性能用例位于 `benchmarks/axvisor`；`board_test_group_roots()` 将该目录纳入默认 `normal` 组，因此 `--board` 和 `--test-case` 仍通过原入口选择用例。`vm_configs` 是宿主 initramfs 的打包输入，客户机启动资源由 `prepare_guest_payload()` 放到 `/guest/builtin`，不再嵌入宿主内核。无宿主块设备的 VCPU 用例直接保留内存根。
 

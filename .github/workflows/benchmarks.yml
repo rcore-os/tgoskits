@@ -98,7 +98,6 @@ jobs:
       checkout_ref: ${{ needs.plan.outputs.revision }}
       matrix_json: ${{ needs.plan.outputs.starry_board_performance_matrix }}
       fail_fast: false
-      max_parallel: 1
       save_cache: ${{ github.event_name == 'schedule' }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
