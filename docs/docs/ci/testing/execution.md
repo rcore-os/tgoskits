@@ -33,16 +33,16 @@ sidebar_label: "矩阵执行"
 | --- | --- |
 | Workspace | 增量 Clippy；std 白名单测试；同一行追加 Linux perf 下载契约、task-switch 换算和 qperf 描述符/入口回归 |
 | ArceOS | 各架构 `arceos test qemu`；部分行先验证启动、SMP 或追加 task-ipi 场景 |
-| Starry | RISC-V、LoongArch 和 x86_64 行在 `starry test qemu` 后追加 `ktest qemu -p starry-kernel`；AArch64 行只运行普通 `starry test qemu`；独立板卡行运行 `starry test board` |
+| Starry | 四个架构行都在 `starry test qemu` 后追加 `ktest qemu -p starry-kernel`；AArch64 的 ktest 显式复用含 RGA 与 kernel-TLS 的普通 QEMU build 配置；独立板卡行运行 `starry test board` |
 | AxVisor | 按清单运行 QEMU、Intel VMX、AMD SVM 和具体板卡场景；一行可包含多个启动变体 |
 
 完整命令以 `.github/ci/checks/*.toml` 的 `command` 为准。ArceOS、Starry 和 AxVisor 的集成测试不能用一次宿主 `cargo test` 替代，Workspace 的 std 测试也不证明内核启动或硬件行为。
 
 AArch64 的普通 Starry QEMU wrapper 复用包含 `rga` 和 `ax-runtime/tls` 的 kernel build
-identity。该行有意省略 `starry-kernel` 默认无 RGA 配置下的独立 `axtest_kernel`；约 228
-个内核 axtest 注册项因此不在这条 CI lane 执行，普通 QEMU 的 native C/LTP 结果不承接这些
-内核断言，也不能将其计为等价覆盖。需要验证这组内核测例时，仍可显式运行
-`cargo xtask ktest qemu -p starry-kernel --arch aarch64`。
+identity。该行随后使用同一份 `test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml`
+运行独立的 `starry-kernel` `axtest_kernel`，因此保留约 228 个内核 axtest 注册项的失败
+信号，同时不会重新引入默认无 RGA 的 kernel 构建。普通 QEMU 的 native C/LTP 结果与
+内核 axtest 各自承担不同运行时断言。
 
 ### 1.3 并行与失败范围
 

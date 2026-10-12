@@ -31,6 +31,8 @@ apk_region = "us"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch aarch64
+target/debug/tg-xtask ktest qemu -p starry-kernel --arch aarch64 \
+  --config test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml
 '''
 
 [[check.suite]]
