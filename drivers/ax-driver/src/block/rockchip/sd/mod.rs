@@ -128,6 +128,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     let mut host = unsafe { DwMmc::new(mmio_base) };
     host.set_card_detect(CardDetect::ControllerActiveLow);
+    if !host.card_present() {
+        info!(
+            "rockchip-dwmmc: skip controller={} because no removable card is present",
+            info.node.path()
+        );
+        return Ok(());
+    }
     let clock_setup = dwmmc_clock_setup(info)?;
     if let Some(setup) = clock_setup {
         info!(

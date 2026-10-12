@@ -147,6 +147,7 @@ fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
     let mut driver = SdMmcCard::new(MockHost::with_results(std::vec![
         Ok(Response::R3(OcrResponse::from_raw(0x00FF_8000))),
         Ok(ok_r1()),
+        Ok(ocr_ready_mmc_sector()),
     ]));
     let scratch = SdMmcInitScratch::new(test_device_dma()).unwrap();
     let mut request = SdMmcInitRequest::new(CardInitPreference::SdFirst, scratch);
@@ -162,6 +163,12 @@ fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
         advance_init_once(&mut driver, &mut request).unwrap(),
         OperationProgress::Pending
     ));
+    for _ in 0..4 {
+        assert!(matches!(
+            advance_init_once(&mut driver, &mut request).unwrap(),
+            OperationProgress::Pending
+        ));
+    }
     assert_eq!(
         driver
             .host()
@@ -169,7 +176,16 @@ fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
             .iter()
             .map(|cmd| cmd.index)
             .collect::<Vec<_>>(),
-        std::vec![41, 1]
+        std::vec![41, 0, 1]
+    );
+    assert_eq!(
+        driver
+            .host()
+            .bus_ops
+            .iter()
+            .filter(|op| matches!(op, sdmmc_host::BusOp::ResetAll))
+            .count(),
+        1
     );
 }
 

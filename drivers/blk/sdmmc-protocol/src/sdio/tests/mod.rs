@@ -39,6 +39,7 @@ struct MockHost {
     replies: Vec<Result<Response, Error>>,
     commands: Vec<Command>,
     events: Vec<MockEvent>,
+    bus_ops: Vec<sdmmc_host::BusOp>,
     bus_width: Option<BusWidth>,
     data_requests: Vec<(sdmmc_host::DataDirection, u32, u32)>,
     next_read_payload: Option<Vec<u8>>,
@@ -97,6 +98,7 @@ impl MockHost {
             replies: replies.into_iter().map(Ok).collect(),
             commands: Vec::new(),
             events: Vec::new(),
+            bus_ops: Vec::new(),
             bus_width: None,
             data_requests: Vec::new(),
             next_read_payload: None,
@@ -124,6 +126,7 @@ impl MockHost {
             replies,
             commands: Vec::new(),
             events: Vec::new(),
+            bus_ops: Vec::new(),
             bus_width: None,
             data_requests: Vec::new(),
             next_read_payload: None,
@@ -302,6 +305,7 @@ impl sdmmc_host::SdMmcHost for MockHost {
         &mut self,
         op: sdmmc_host::BusOp,
     ) -> Result<Self::BusRequest, sdmmc_host::Error> {
+        self.bus_ops.push(op);
         match op {
             sdmmc_host::BusOp::SetBusWidth(width) => {
                 if self.reject_bit8 && matches!(width, BusWidth::Bit8) {
