@@ -12,7 +12,6 @@
 # could point those elsewhere, and this demo needs neither.
 features = [
     "web-ui",
-    "web",
     "ax-driver/nvme",
     "no-auto-start",
 ]

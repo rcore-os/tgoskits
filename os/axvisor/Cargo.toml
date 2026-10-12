@@ -21,10 +21,9 @@ include = [
     "xtask/src/**",
     "README.md",
     "LICENSE*",
-    # The `web-ui` feature embeds `web-ui/dist`, which is produced with the
-    # frontend toolchain. Keep the generated bundle in the crate package so a
-    # registry consumer can enable the feature without rebuilding the workspace;
-    # the AxVisor CI check rebuilds it and rejects a stale checked-in bundle.
+    # The dashboard sources ship with the crate so a registry consumer can
+    # build the frontend by hand; the kernel binary itself never embeds the
+    # bundle. `axbuild` packs the built `dist` tree into the host initramfs.
     "web-ui/**",
     "!web-ui/node_modules/**",
     "!web-ui/design/**",
@@ -78,10 +77,10 @@ web = [
   "dep:serde_json",
   "dep:tokio",
 ]
-# React dashboard served from the same listener. The bundle is compiled into
-# the binary (`web-ui/dist`, embedded by `build.rs`) and served from memory, so
-# enabling this needs no rootfs and cargo never invokes npm — the dist tree must
-# have been produced by hand (`cd web-ui && npm ci && npm run build`).
+# React dashboard served from the same listener. `axbuild` builds the frontend
+# with npm into the target tree and packs it into the host initramfs under
+# `/guest/builtin/web-ui`; the server reads it from there on the initramfs
+# memory root, or from the disk root the built-in package is installed onto.
 # The dashboard owns `/` and `/assets/*`; the JSON API and the terminal sockets
 # keep their own paths.
 web-ui = ["web"]

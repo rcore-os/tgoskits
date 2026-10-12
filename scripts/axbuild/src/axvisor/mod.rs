@@ -16,6 +16,7 @@ mod bundle;
 pub mod config;
 pub mod rootfs;
 pub mod test;
+mod web_ui;
 
 /// Axvisor host-side commands
 #[derive(Subcommand)]
@@ -288,7 +289,7 @@ impl Axvisor {
             .await?;
         // Board-only handoffs may resolve guest images to paths published by
         // the board root filesystem (for example `/linux/...`).
-        self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
+        self.prepare_guest_payload(&mut request, &mut board_config.boot, &cargo, true)
             .await?;
         self.app
             .board(
@@ -405,11 +406,12 @@ impl Axvisor {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         self.app
-            .build(cargo, request.build_info_path.clone())
+            .build(cargo.clone(), request.build_info_path.clone())
             .await?;
         self.prepare_guest_payload(
             &mut request,
             &mut ostool::BootPayloadConfig::default(),
+            &cargo,
             false,
         )
         .await
@@ -425,7 +427,7 @@ impl Axvisor {
             Some(config) => config,
             None => self.app.ensure_uboot_config_for_cargo(&cargo).await?,
         };
-        self.prepare_guest_payload(&mut request, &mut uboot.boot, true)
+        self.prepare_guest_payload(&mut request, &mut uboot.boot, &cargo, true)
             .await?;
         self.app
             .uboot(cargo, request.build_info_path, Some(uboot))
@@ -436,6 +438,7 @@ impl Axvisor {
         &mut self,
         request: &mut ResolvedAxvisorRequest,
         boot: &mut ostool::BootPayloadConfig,
+        cargo: &Cargo,
         allow_external_assets: bool,
     ) -> anyhow::Result<()> {
         request.vmconfigs = build::load_vmconfigs(request, self.app.workspace_context())?;
@@ -445,6 +448,8 @@ impl Axvisor {
             self.app.target_dir(),
         )
         .await?;
+        let web_ui_dist =
+            web_ui::build_dist(&cargo.features, &request.axvisor_dir, self.app.target_dir())?;
         let output = self
             .app
             .target_dir()
@@ -453,6 +458,7 @@ impl Axvisor {
         bundle::attach_with_external_assets(
             &request.vmconfigs,
             false,
+            web_ui_dist.as_deref(),
             &output,
             &mut boot.initramfs,
             allow_external_assets,

@@ -85,9 +85,15 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
         .target_dir()
         .join("axbuild/axvisor/host-initramfs")
         .join(format!("{}.cpio", request.arch));
+    let web_ui_dist = super::web_ui::build_dist(
+        &cargo.features,
+        &request.axvisor_dir,
+        axvisor.app.target_dir(),
+    )?;
     super::bundle::attach(
         &request.vmconfigs,
         false,
+        web_ui_dist.as_deref(),
         &bundle_path,
         &mut qemu.boot.initramfs,
     )?;

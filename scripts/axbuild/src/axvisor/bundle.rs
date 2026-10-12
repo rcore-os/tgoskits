@@ -50,13 +50,25 @@ pub(super) fn case_inputs(case_dir: &Path) -> anyhow::Result<ResourceInputs> {
 
 /// Appends a newc bundle to an existing archive, using Linux's archive stream
 /// semantics. No boot payload address or kernel compilation state is changed.
+///
+/// `web_ui_dist` is the dashboard `dist` tree built by [`super::web_ui`] (or
+/// `None` when the build carries no UI) and is packed into the builtin package
+/// next to the guest assets.
 pub(super) fn attach(
     vmconfigs: &[PathBuf],
     empty_package: bool,
+    web_ui_dist: Option<&Path>,
     output: &Path,
     initramfs: &mut Option<String>,
 ) -> anyhow::Result<()> {
-    attach_with_external_assets(vmconfigs, empty_package, output, initramfs, false)
+    attach_with_external_assets(
+        vmconfigs,
+        empty_package,
+        web_ui_dist,
+        output,
+        initramfs,
+        false,
+    )
 }
 
 /// Attach board guest configurations while preserving image paths that are
@@ -69,11 +81,12 @@ pub(super) fn attach(
 pub(super) fn attach_with_external_assets(
     vmconfigs: &[PathBuf],
     empty_package: bool,
+    web_ui_dist: Option<&Path>,
     output: &Path,
     initramfs: &mut Option<String>,
     allow_external_assets: bool,
 ) -> anyhow::Result<()> {
-    if vmconfigs.is_empty() && !empty_package {
+    if vmconfigs.is_empty() && web_ui_dist.is_none() && !empty_package {
         return Ok(());
     }
     fs::create_dir_all(output.parent().context("bundle output has no parent")?)?;
@@ -84,6 +97,9 @@ pub(super) fn attach_with_external_assets(
     fs::create_dir_all(builtin.join("configs"))?;
     fs::create_dir_all(builtin.join("images"))?;
     fs::create_dir_all(builtin.join("symbols"))?;
+    if let Some(dist) = web_ui_dist {
+        copy_tree(dist, &builtin.join("web-ui"))?;
+    }
     let mut ids = BTreeSet::new();
     for config in vmconfigs {
         let raw = fs::read_to_string(config)
@@ -208,6 +224,30 @@ pub(super) fn attach_with_external_assets(
     Ok(())
 }
 
+/// Copies a built asset tree into the bundle staging area.
+fn copy_tree(source: &Path, target: &Path) -> anyhow::Result<()> {
+    for entry in walkdir::WalkDir::new(source).min_depth(1) {
+        let entry = entry?;
+        let relative = entry.path().strip_prefix(source)?;
+        ensure!(
+            !relative.is_absolute()
+                && !relative
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir)),
+            "invalid dashboard asset path: {}",
+            relative.display()
+        );
+        let destination = target.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&destination)?;
+        } else {
+            fs::create_dir_all(destination.parent().context("asset has no parent")?)?;
+            fs::copy(entry.path(), &destination)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -244,7 +284,14 @@ mod tests {
         fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
         let output = directory.path().join("host.cpio");
         let mut archive = None;
-        attach(std::slice::from_ref(&config), false, &output, &mut archive).unwrap();
+        attach(
+            std::slice::from_ref(&config),
+            false,
+            None,
+            &output,
+            &mut archive,
+        )
+        .unwrap();
         let entries = parse_newc_entries(&fs::read(&output).unwrap());
         let contents = String::from_utf8(
             entries[&format!("guest/builtin/configs/vm-{}.toml", guest.base.id)].clone(),
@@ -266,7 +313,7 @@ mod tests {
         assert!(!entries.contains_key("guest/writable.img"));
         let prior = fs::read(&output).unwrap();
         fs::remove_file(directory.path().join("kernel_path")).unwrap();
-        assert!(attach(&[config], false, &output, &mut None).is_err());
+        assert!(attach(&[config], false, None, &output, &mut None).is_err());
         assert_eq!(fs::read(&output).unwrap(), prior);
     }
 
@@ -294,7 +341,7 @@ mod tests {
         let output = directory.path().join("host.cpio");
         let mut archive = None;
 
-        attach(&[config], false, &output, &mut archive).unwrap();
+        attach(&[config], false, None, &output, &mut archive).unwrap();
 
         let payload = fs::read(&output).unwrap();
         assert_eq!(&payload[..2], &[0x1f, 0x8b]);
@@ -325,7 +372,7 @@ mod tests {
         let output = directory.path().join("host.cpio");
         let mut archive = None;
 
-        attach_with_external_assets(&[config], false, &output, &mut archive, true).unwrap();
+        attach_with_external_assets(&[config], false, None, &output, &mut archive, true).unwrap();
         let entries = parse_newc_entries(&fs::read(&output).unwrap());
         let contents = String::from_utf8(
             entries[&format!(
@@ -342,6 +389,38 @@ mod tests {
                 .keys()
                 .all(|path| !path.starts_with("guest/builtin/images/"))
         );
+    }
+
+    #[test]
+    fn web_ui_only_package_is_bundled_without_guest_configs() {
+        let directory = tempfile::tempdir().unwrap();
+        let dist = directory.path().join("dist");
+        fs::create_dir_all(dist.join("assets")).unwrap();
+        fs::write(dist.join("index.html"), b"shell").unwrap();
+        fs::write(dist.join("assets/index-abc123.js"), b"bundle").unwrap();
+        let output = directory.path().join("host.cpio");
+        let mut archive = None;
+
+        attach(&[], false, Some(&dist), &output, &mut archive).unwrap();
+
+        let entries = parse_newc_entries(&fs::read(&output).unwrap());
+        assert_eq!(entries["guest/builtin/web-ui/index.html"], b"shell");
+        assert_eq!(
+            entries["guest/builtin/web-ui/assets/index-abc123.js"],
+            b"bundle"
+        );
+        assert_eq!(
+            archive.as_deref(),
+            Some(output.as_os_str().to_str().unwrap())
+        );
+
+        // Without guests and without a dashboard the bundle is a no-op, so a
+        // stock build never ships an empty archive.
+        let mut untouched = None;
+        let empty = directory.path().join("empty.cpio");
+        attach(&[], false, None, &empty, &mut untouched).unwrap();
+        assert!(untouched.is_none());
+        assert!(!empty.exists());
     }
 
     fn parse_newc_entries(archive: &[u8]) -> BTreeMap<String, Vec<u8>> {

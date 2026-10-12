@@ -69,7 +69,7 @@ impl Axvisor {
         let mut board_config = self
             .load_board_config(&cargo, Some(board_test_config.as_path()))
             .await?;
-        self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
+        self.prepare_guest_payload(&mut request, &mut board_config.boot, &cargo, true)
             .await?;
         let uboot = Some(merge_board_test_uboot_config(base_uboot, board_config));
         self.app
@@ -302,8 +302,13 @@ impl Axvisor {
                     let mut board_config = self
                         .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                         .await?;
-                    self.prepare_guest_payload(&mut request, &mut board_config.boot, true)
-                        .await?;
+                    self.prepare_guest_payload(
+                        &mut request,
+                        &mut board_config.boot,
+                        &prepared.cargo,
+                        true,
+                    )
+                    .await?;
                     self.app
                         .board_prepared_elf(
                             prepared.elf_path.clone(),

@@ -24,8 +24,9 @@ args = [
 # Dashboard verification via the case's host-side probe asset. `[host_http_probe]`
 # makes the runner append hostfwd netdev + virtio-net-pci device and execute the
 # probe asset (`http_probe.py`, next to this file) over real TCP. The asset
-# asserts the dashboard served from the embedded bundle (shell, hashed assets,
-# CSP/cache headers, no SPA catch-all, and the endpoints the bundle calls), the
+# asserts the dashboard served from the installed disk root (shell, hashed
+# assets, CSP/cache headers, no SPA catch-all, and the endpoints the bundle
+# calls), the
 # terminal lanes and their two sockets, and then drives the default VM
 # (id 1, `linux-virtio-blk-fs.toml`, kept `Ready` by `no-auto-start`) through start,
 # close and recreate while watching the event channel; it quits QEMU over QMP and
