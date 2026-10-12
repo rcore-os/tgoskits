@@ -46,7 +46,7 @@ test-suit/axvisor/
 
 ### 3.1 QEMU 测试
 
-最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM。执行链位于 `axvisor/test/qemu.rs::test_qemu()`，采用**两阶段**策略：先编译所有 build group，再运行所有 QEMU 用例。
+最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM。执行链位于 `axvisor/test/qemu.rs::test_qemu()`，采用**两阶段**策略：先编译所有 build group，再运行所有 QEMU 用例。`vm_configs` 只构建 `/guest/builtin` catalog；每个需要开机客户机的 QEMU case 都必须在 host `cmdline`/`-append` 中显式写入 `axvisor.vm_start=<id>[,<id>...]`，没有 selector 的 case 应验证零启动或通过 shell/HTTP 按需启动。
 
 ```mermaid
 flowchart TD
@@ -76,12 +76,12 @@ flowchart TD
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
 | 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/` 与 `apps/axvisor/<group>/`，默认 group 为 `normal` |
-| VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表 |
+| VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表；只产生 builtin catalog |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
-单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 直接保留目标串口输出，由目标侧 AXBT map 完成回溯符号化。
+单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 直接保留目标串口输出，由目标侧 AXBT map 完成回溯符号化。宿主 selector 属于 QEMU/板卡 cmdline，不要写入 guest VM TOML 的 `[kernel].cmdline`。
 
 ### 3.2 U-Boot 测试
 

@@ -16,39 +16,26 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 
-#[cfg(all(any(
-    target_arch = "aarch64",
-    target_arch = "x86_64",
-    target_arch = "loongarch64"
-)))]
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use anyhow::{Context, Result, bail};
 use axvm::{AxVmError, AxVmResult};
 use axvm::{boot::*, config::*, *};
 use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
-#[cfg(all(any(
-    target_arch = "aarch64",
-    target_arch = "x86_64",
-    target_arch = "loongarch64"
-)))]
-static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
-
-pub fn init_guest_vms() -> Result<()> {
+pub fn load_builtin_catalog() -> Result<axvisor::builtin::BuiltinCatalog> {
     init_guest_boot_resources();
     let context = ax_fs_ng::current_fs_context();
-    let configs = axvisor::builtin::selected_configs(&context.lock())?;
-    for raw in configs {
-        init_guest_vm(&raw)?;
-    }
-    Ok(())
+    axvisor::builtin::load_catalog(&context.lock())
+}
+
+pub(crate) struct PreparedGuestVm {
+    pub plan: VmCreatePlan,
+    pub release_host_filesystem: bool,
 }
 
 pub(crate) fn prepare_guest_vm(
     raw_cfg: &str,
     backend: Arc<dyn axvm::GuestCpuFreqBackend>,
-) -> Result<VmCreatePlan> {
+) -> Result<PreparedGuestVm> {
     let image_provider = AxvisorBootImageProvider;
     let mut vm_create_config =
         GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
@@ -68,29 +55,33 @@ pub(crate) fn prepare_guest_vm(
 
     let mut vm_config = build_axvm_config(&vm_create_config)?;
     validate_guest_cpufreq_placement(&vm_config, backend.as_ref())?;
+    let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
     sync_axvm_config_from_crate_config(&mut vm_config, prepared_config);
     vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
-    Ok(VmCreatePlan {
-        config: vm_config,
-        boot: prepared_boot,
-        images: alloc::sync::Arc::new(image_provider),
-        vcpu_schedule_policy: {
-            #[cfg(feature = "bench-fifo-vcpu-policy")]
-            {
-                let priority = axvm::RtPriority::new(80)
-                    .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
-                axvm::SchedulePolicy::fifo(priority)
-            }
-            #[cfg(not(feature = "bench-fifo-vcpu-policy"))]
-            {
-                axvm::SchedulePolicy::default()
-            }
+    Ok(PreparedGuestVm {
+        plan: VmCreatePlan {
+            config: vm_config,
+            boot: prepared_boot,
+            images: alloc::sync::Arc::new(image_provider),
+            vcpu_schedule_policy: {
+                #[cfg(feature = "bench-fifo-vcpu-policy")]
+                {
+                    let priority = axvm::RtPriority::new(80)
+                        .expect("benchmark vCPU FIFO priority must be a valid real-time priority");
+                    axvm::SchedulePolicy::fifo(priority)
+                }
+                #[cfg(not(feature = "bench-fifo-vcpu-policy"))]
+                {
+                    axvm::SchedulePolicy::default()
+                }
+            },
+            cpu_freq_backend: Some(backend),
         },
-        cpu_freq_backend: Some(backend),
+        release_host_filesystem,
     })
 }
 
@@ -161,40 +152,6 @@ fn validate_guest_cpufreq_placement(
     Ok(())
 }
 
-pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
-    let vm_id = GuestConfig::from_toml(raw_cfg)
-        .context("parse VM TOML configuration")?
-        .base
-        .id;
-
-    crate::manager::manager()
-        .create_vm_from_toml_and_wait(raw_cfg)
-        .with_context(|| format!("create VM[{vm_id}]"))?;
-
-    #[cfg(all(any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )))]
-    {
-        let config = GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
-        let legacy_release = vm_config_needs_host_filesystem_release(&config);
-        let snapshot = crate::manager::manager().require_vm(vm_id)?.snapshot();
-        let release_host_filesystem =
-            if ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block) {
-                axvm::host::storage::guest_uses_host_block_controller(&snapshot.description)
-                    .unwrap_or(legacy_release)
-            } else {
-                legacy_release
-            };
-        if release_host_filesystem {
-            HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
-        }
-    }
-
-    Ok(vm_id)
-}
-
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> Result<AxVMConfig> {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
@@ -255,30 +212,37 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestCon
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
-#[cfg(all(any(
-    target_arch = "aarch64",
-    target_arch = "x86_64",
-    target_arch = "loongarch64"
-)))]
 fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
-    (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
-        && config.base.guest_type == GuestType::Passthrough)
-        || !config.devices.passthrough.is_empty()
-}
-
-#[cfg(all(any(
-    target_arch = "aarch64",
-    target_arch = "x86_64",
-    target_arch = "loongarch64"
-)))]
-pub fn host_filesystem_release_required() -> bool {
-    HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    ))]
+    {
+        return (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
+            && config.base.guest_type == GuestType::Passthrough)
+            || !config.devices.passthrough.is_empty();
+    }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )))]
+    {
+        let _ = config;
+        false
+    }
 }
 
 struct AxvisorBootImageProvider;
 
 impl BootImageProvider for AxvisorBootImageProvider {
     fn read_file(&self, file_name: &str) -> AxVmResult<alloc::vec::Vec<u8>> {
+        if let Some(bytes) = axvisor::builtin::read_boot_asset(file_name)
+            .map_err(|error| boot_file_error("read retained builtin asset", file_name, error))?
+        {
+            return Ok(bytes);
+        }
         crate::manager::AxvmManager::read_file(file_name)
             .map_err(|error| boot_file_error("read guest image file", file_name, error))
     }
@@ -288,11 +252,21 @@ impl BootImageProvider for AxvisorBootImageProvider {
         file_name: &str,
         read_size: usize,
     ) -> AxVmResult<alloc::vec::Vec<u8>> {
+        if let Some(bytes) = axvisor::builtin::read_boot_asset_exact(file_name, read_size)
+            .map_err(|error| boot_file_error("read retained builtin asset", file_name, error))?
+        {
+            return Ok(bytes);
+        }
         crate::manager::AxvmManager::read_file_exact(file_name, read_size)
             .map_err(|error| boot_file_error("read guest image file", file_name, error))
     }
 
     fn file_size(&self, file_name: &str) -> AxVmResult<usize> {
+        if let Some(size) = axvisor::builtin::boot_asset_size(file_name)
+            .map_err(|error| boot_file_error("inspect retained builtin asset", file_name, error))?
+        {
+            return Ok(size);
+        }
         crate::manager::AxvmManager::file_size(file_name)
             .map_err(|error| boot_file_error("inspect guest image file", file_name, error))
     }

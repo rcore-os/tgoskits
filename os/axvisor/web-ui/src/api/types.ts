@@ -331,6 +331,9 @@ export interface PoolInfo {
   directory: string
   /** Every directory the pool reads, in precedence order. */
   sources: string[]
+  /** Immutable configurations packaged under `/guest/builtin`. */
+  builtin: PoolEntry[]
+  /** Configurations discovered dynamically below the pool sources. */
   entries: PoolEntry[]
   issues: PoolIssue[]
 }

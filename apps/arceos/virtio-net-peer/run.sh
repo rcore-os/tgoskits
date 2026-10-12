@@ -50,13 +50,13 @@ local_ip_of_vm() {
 
 # Default for the client connect start delay (`AXVIRTIO_CONNECT_START_DELAY_MS`).
 # The two QEMU scenarios sequence guests differently:
-#   * default mode: the QEMU config attaches consoles head first
-#     (VM1 -> VM2 -> VM3 -> VM4) while AxVisor auto-starts every guest before the
-#     shell is available, so those steps only choose which console is attached
-#     and foregrounded; attaching neither starts a guest nor changes boot order.
-#   * `--vcpus` mode: the QEMU config enables `no-auto-start` and issues explicit
-#     `vm start` commands, so it genuinely controls the guest start and attach
-#     order (tail first: VM4, then VM3, then VM2, then VM1).
+#   * default mode: the host cmdline selects every guest in the QEMU config
+#     before the shell is available, so those steps only choose which console is
+#     attached and foregrounded; attaching neither starts a guest nor changes
+#     boot order.
+#   * `--vcpus` mode: the host cmdline selects guests in explicit tail-first
+#     order (VM4, then VM3, then VM2, then VM1), so it controls guest start and
+#     attach order without a build-time startup feature.
 # In both modes the delay gives the just-attached guest time to finish its
 # network setup before its client dials the next hop.
 # VM4 is the tail of the chain and its peer 10.0.2.19 is intentionally absent.

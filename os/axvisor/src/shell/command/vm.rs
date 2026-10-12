@@ -222,8 +222,8 @@ fn vm_start(cmd: &ParsedCommand) {
     }
 
     if args.is_empty() {
-        // start all VMs
-        info!("VMM starting, booting all VMs...");
+        // Start every VM that is already registered; an empty registry stays empty.
+        info!("VMM starting, booting all registered VMs...");
         let mut started_count = 0;
 
         for vm in crate::manager::manager().list() {
@@ -269,17 +269,58 @@ fn vm_start(cmd: &ParsedCommand) {
 
 /// Start a single VM and block until its start postcondition holds.
 fn start_single_vm(vm_id: usize) -> anyhow::Result<()> {
-    let Some(vm) = crate::manager::manager().get(vm_id) else {
-        anyhow::bail!("VM[{vm_id}] not found");
-    };
+    let manager = crate::manager::manager();
+    let vm = manager
+        .ensure_vm(vm_id)
+        .with_context(|| format!("look up VM[{vm_id}] in builtin catalog and VM pool"))?;
 
     // Validate state transition using helper function
     can_start_vm(vm.snapshot().state).map_err(anyhow::Error::msg)?;
-    crate::manager::manager()
+    manager
         .start_vm(vm_id)
         .with_context(|| format!("boot VM[{vm_id}]"))?;
-    crate::guest_console::mark_running(vm_id);
     Ok(())
+}
+
+fn vm_pool(_cmd: &ParsedCommand) {
+    let manager = crate::manager::manager();
+    let pool = crate::vm_pool::scan_with_builtin(manager.builtin_catalog());
+    println!("VM pool directory: {}", pool.directory());
+    for issue in pool.issues() {
+        println!("✗ {issue}");
+    }
+    if pool.entries().is_empty() {
+        println!("No config in the pool can be started.");
+    }
+    for entry in pool.entries() {
+        let state = manager
+            .get(entry.id())
+            .map(|vm| vm.snapshot().state.as_str())
+            .unwrap_or("not-created");
+        println!(
+            "{}\t{}\t{}\t{}",
+            entry.id(),
+            entry.name(),
+            state,
+            entry.path()
+        );
+    }
+    if !manager.builtin_catalog().is_empty() {
+        println!("Builtin VM catalog:");
+        for entry in manager.builtin_catalog().entries() {
+            let state = manager
+                .get(entry.id())
+                .map(|vm| vm.snapshot().state.as_str())
+                .unwrap_or("not-created");
+            println!(
+                "builtin\t{}\t{}\t{}\t{}",
+                entry.id(),
+                entry.name(),
+                state,
+                entry.path()
+            );
+        }
+    }
 }
 
 fn start_vm_by_id(vm_id: usize, attach_console: bool) {
@@ -362,7 +403,6 @@ fn stop_vm_by_id(vm_id: usize, force: bool) {
 
     match crate::manager::manager().stop_vm(vm_id) {
         Ok(()) => {
-            crate::guest_console::mark_stopped(vm_id);
             println!("✓ VM[{}] stopped successfully", vm_id);
         }
         Err(err) => {
@@ -394,7 +434,6 @@ fn reset_vm_by_id(vm_id: usize) {
     println!("Resetting VM[{}]...", vm_id);
     match crate::manager::manager().reset_vm(vm_id) {
         Ok(()) => {
-            crate::guest_console::mark_running(vm_id);
             println!("✓ VM[{}] reset and started successfully", vm_id);
         }
         Err(err) => println!("✗ VM[{vm_id}] reset failed: {err:#}"),
@@ -491,7 +530,6 @@ fn resume_vm_by_id(vm_id: usize) {
 
     match crate::manager::manager().resume_vm(vm_id) {
         Ok(()) => {
-            crate::guest_console::mark_running(vm_id);
             log::info!("VM[{vm_id}] resumed");
             println!("✓ VM[{}] resumed successfully", vm_id);
         }
@@ -564,15 +602,8 @@ fn vm_delete(cmd: &ParsedCommand) {
 }
 
 fn delete_vm_by_id(vm_id: usize, keep_data: bool) {
-    // Capture the console backend identity before destroying so a later VM that
-    // reuses the identifier cannot inherit this instance's console state.
-    let console_backend = crate::guest_console::backend_identity(vm_id);
     match crate::manager::manager().destroy_vm(vm_id) {
         Ok(()) => {
-            if let Some(identity) = console_backend {
-                crate::guest_console::remove_if_backend(identity);
-            }
-            crate::guest_console::mark_stopped(vm_id);
             println!("✓ VM[{}] removed from VM list", vm_id);
 
             if keep_data {
@@ -1138,6 +1169,10 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         )
         .with_option(OptionDef::new("format", "Output format (table, json)").with_long("format"));
 
+    let pool_cmd = CommandNode::new("Show builtin and dynamic VM candidates")
+        .with_handler(vm_pool)
+        .with_usage("vm pool");
+
     let show_cmd = CommandNode::new("Show detailed VM information")
         .with_handler(vm_show)
         .with_usage("vm show [OPTIONS] <VM_ID>")
@@ -1180,6 +1215,7 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         .add_subcommand("reset", reset_cmd)
         .add_subcommand("delete", delete_cmd)
         .add_subcommand("list", list_cmd)
+        .add_subcommand("pool", pool_cmd)
         .add_subcommand("show", show_cmd);
 
     tree.insert("vm".to_string(), vm_node);

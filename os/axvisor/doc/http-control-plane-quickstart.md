@@ -23,7 +23,9 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 
 用例构建配置
 `test-suit/axvisor/normal/qemu-http-control-plane/build-aarch64-unknown-none-softfloat.toml`
-打开 `web` 与 `no-auto-start`，把默认 VM 留在 `Ready`，并设置：
+打开 `web`，并通过 `vm_configs` 把 guest 资源打包到 `/guest/builtin`。启动时
+不创建任何 VM；探针通过 `POST /api/vms/1/start` 按 builtin ID 延迟创建并启动。
+需要开机启动时，把 `axvisor.vm_start=1,2` 放入宿主 QEMU/板卡 cmdline。
 
 ```toml
 [env]
@@ -39,6 +41,7 @@ virtio-net-pci，并在转发端口可达后执行 `http-control-plane/http_prob
 | 方法 | 路径 | 语义 | 成功码 |
 | --- | --- | --- | --- |
 | GET | `/api/vms` | 列出所有 VM 摘要 | 200 |
+| GET | `/api/vms/pool` | 列出动态 pool 与只读 builtin catalog | 200 |
 | GET | `/api/vms/{id}` | 单个 VM 详情 | 200 |
 | POST | `/api/vms/create` | 从 TOML 创建并注册 | 200 `{"id": n}` |
 | DELETE | `/api/vms/{id}` | 销毁并注销 | 204 |
@@ -68,7 +71,10 @@ vCPU 与计数器字段。
 - `resume` 在 `Running` 上重复调用返回 200（幂等空操作）。
 - `stop` 在 `Stopped` 上重复调用返回 200，不会复活任何运行资源。
 - `start` **不是**幂等操作：对已经在 `Running` 的 VM 再次 `start` 返回 409。
-- `Ready`（尚未启动）拒绝 `pause`/`resume`（409）。
+- 启动前 builtin 只存在于 catalog，不会出现在 `/api/vms`；第一次
+  `POST /api/vms/{id}/start` 会按 builtin ID 创建并启动。
+- 显式 `POST /api/vms/create` 仍可把动态 pool 配置创建为 `Ready`；该状态拒绝
+  `pause`/`resume`（409）。
 - 从 `Stopped` 重新 `start` 是受支持的状态转换：返回 200，且新 run 必须
   真正进入 guest（见下方的运行计数器）。
 

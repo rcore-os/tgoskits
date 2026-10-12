@@ -1,4 +1,5 @@
-# The full browser control plane over the VM pool: no default guest, the pool
+# The full browser control plane over the VM pool: no builtin guest is selected,
+# and the pool
 # directory is provisioned by the `sh/` asset pipeline, and the host-side probe
 # drives start/close cycles through the control API only. The point of the case
 # is that a client can learn what the pool offers, start, close and restart

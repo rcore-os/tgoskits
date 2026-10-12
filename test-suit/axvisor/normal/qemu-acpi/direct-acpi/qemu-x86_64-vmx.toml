@@ -27,6 +27,7 @@ fail_regex = [
 ]
 to_bin = true
 uefi = true
+cmdline = "axvisor.vm_start=1"
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"

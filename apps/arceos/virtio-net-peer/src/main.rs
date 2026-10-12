@@ -62,9 +62,10 @@ const CONNECT_TIMEOUT_MS: &str = match option_env!("AXVIRTIO_CONNECT_TIMEOUT_MS"
 };
 /// Grace period before the client's first connect attempt (compile-time
 /// override). `run.sh` is the source of the per-guest value and of how the two
-/// QEMU scenarios start guests: the default scenario auto-starts them, while
-/// `--vcpus` enables `no-auto-start` and starts them with `vm start`. The delay
-/// lets the guest finish its own network setup before it dials the next hop.
+/// QEMU scenarios start guests: the default scenario selects all guests before
+/// the shell is available, while `--vcpus` selects guests in tail-first order
+/// through the host cmdline. The delay lets the guest finish its own network
+/// setup before it dials the next hop.
 /// Failed ARP retries are paced by `connect_retry_backoff`.
 const CONNECT_START_DELAY_MS: &str = match option_env!("AXVIRTIO_CONNECT_START_DELAY_MS") {
     Some(value) => value,

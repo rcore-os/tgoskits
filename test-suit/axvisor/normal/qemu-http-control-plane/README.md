@@ -17,8 +17,9 @@ guest 内核 panic 时直接失败。
 
 ## 用例做了什么
 
-默认 VM（id=1，`http-control-plane/vm-memory.toml`，构建期内嵌 `memory` 镜像）
-被 `no-auto-start` 保持在 `Ready`。探针在一轮启动内驱动完整契约：list/detail、
+构建期通过 `vm_configs` 打包的 builtin VM（id=1，
+`http-control-plane/vm-memory.toml`，内嵌 `memory` 镜像）启动时不会创建。
+探针先确认注册表为空，再通过 HTTP start 按需创建该 VM，并在一轮启动内驱动完整契约：list/detail、
 错误映射（400/404/409）、启动、暂停/恢复循环、停止、从 `Stopped`
 重新启动、销毁后按同一内嵌镜像重建并再次运行，最后清理。
 

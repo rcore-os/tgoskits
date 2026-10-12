@@ -309,6 +309,7 @@ impl Axvisor {
                         true,
                     )
                     .await?;
+                    board_config = merge_selector_into_board_bootargs(board_config);
                     self.app
                         .board_prepared_elf(
                             prepared.elf_path.clone(),
@@ -374,17 +375,82 @@ fn is_transient_board_server_transport_error(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Returns whether a board test command line only selects AxVisor guests.
+///
+/// Board cases use this short form to select guests while retaining the base
+/// U-Boot command line, which carries the host root and console parameters.
+fn is_axvisor_startup_selector(cmdline: &str) -> bool {
+    let mut has_selector = false;
+    for token in cmdline.split_whitespace() {
+        if token.strip_prefix("axvisor.vm_start=").is_some() {
+            has_selector = true;
+        } else {
+            return false;
+        }
+    }
+    has_selector
+}
+
+fn merge_board_test_cmdline(
+    base_cmdline: Option<&str>,
+    test_cmdline: Option<String>,
+) -> Option<String> {
+    let test_cmdline = test_cmdline?;
+    if !is_axvisor_startup_selector(&test_cmdline) {
+        return Some(test_cmdline);
+    }
+    match base_cmdline {
+        Some(base_cmdline) if !base_cmdline.trim().is_empty() => {
+            Some(format!("{base_cmdline} {test_cmdline}"))
+        }
+        _ => Some(test_cmdline),
+    }
+}
+
+/// Preserve the board's U-Boot bootargs when a board case only selects guests.
+///
+/// `BoardRunConfig` is sent to the remote board service as a complete config,
+/// so setting `boot.cmdline` to the selector would replace the board preset's
+/// root and console arguments. Appending through U-Boot keeps that preset as
+/// the single source of host boot arguments while still passing the selector
+/// to AxVisor.
+fn merge_selector_into_board_bootargs(
+    mut board_config: ostool::board::config::BoardRunConfig,
+) -> ostool::board::config::BoardRunConfig {
+    if is_httpboot_board(&board_config.board_type) {
+        // HTTP Boot sends `boot.cmdline` directly to AxLoader; there is no
+        // U-Boot environment whose bootargs can be extended.
+        return board_config;
+    }
+    let Some(cmdline) = board_config.boot.cmdline.take() else {
+        return board_config;
+    };
+    if !is_axvisor_startup_selector(&cmdline) {
+        board_config.boot.cmdline = Some(cmdline);
+        return board_config;
+    }
+
+    let mut uboot_cmd = board_config.uboot_cmd.take().unwrap_or_default();
+    uboot_cmd.push(format!(r#"setenv bootargs "${{bootargs}} {cmdline}""#));
+    board_config.uboot_cmd = Some(uboot_cmd);
+    board_config
+}
+
+fn is_httpboot_board(board_type: &str) -> bool {
+    matches!(board_type, "Asus-nuc15-x86_64-vmx")
+}
+
 fn merge_board_test_uboot_config(
     base: Option<UbootConfig>,
     board_test: ostool::board::config::BoardRunConfig,
 ) -> UbootConfig {
     let mut uboot = base.unwrap_or_default();
+    let base_cmdline = uboot.boot.cmdline.clone();
+    let base_uboot_cmd = uboot.uboot_cmd.clone();
     let test_uboot = UbootConfig::from_board_run_config(&board_test);
+    let test_cmdline = test_uboot.boot.cmdline.clone();
     if test_uboot.boot.initramfs.is_some() {
         uboot.boot.initramfs = test_uboot.boot.initramfs;
-    }
-    if test_uboot.boot.cmdline.is_some() {
-        uboot.boot.cmdline = test_uboot.boot.cmdline;
     }
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
@@ -403,6 +469,21 @@ fn merge_board_test_uboot_config(
     uboot.shell_check_steps = test_uboot.shell_check_steps;
     if test_uboot.timeout.is_some() {
         uboot.timeout = test_uboot.timeout;
+    }
+    if let Some(test_cmdline) = test_cmdline {
+        if is_axvisor_startup_selector(&test_cmdline) && base_cmdline.is_none() {
+            uboot.boot.cmdline = None;
+            let mut uboot_cmd = uboot
+                .uboot_cmd
+                .take()
+                .or(base_uboot_cmd)
+                .unwrap_or_default();
+            uboot_cmd.push(format!(r#"setenv bootargs "${{bootargs}} {test_cmdline}""#));
+            uboot.uboot_cmd = Some(uboot_cmd);
+        } else {
+            uboot.boot.cmdline =
+                merge_board_test_cmdline(base_cmdline.as_deref(), Some(test_cmdline));
+        }
     }
     uboot
 }
@@ -484,5 +565,121 @@ mod tests {
         assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));
+    }
+
+    #[test]
+    fn selector_only_board_cmdline_keeps_base_host_bootargs() {
+        let base = UbootConfig {
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("console=ttyS0 root=/dev/mmcblk0p2 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let board_test = ostool::board::config::BoardRunConfig {
+            board_type: "board".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("axvisor.vm_start=1".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_board_test_uboot_config(Some(base), board_test);
+
+        assert_eq!(
+            merged.boot.cmdline.as_deref(),
+            Some("console=ttyS0 root=/dev/mmcblk0p2 rw axvisor.vm_start=1")
+        );
+    }
+
+    #[test]
+    fn complete_board_cmdline_still_replaces_base_host_bootargs() {
+        let base = UbootConfig {
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("root=/dev/mmcblk0p2 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let board_test = ostool::board::config::BoardRunConfig {
+            board_type: "board".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("console=ttyS0 root=/dev/nvme0n1 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_board_test_uboot_config(Some(base), board_test);
+
+        assert_eq!(
+            merged.boot.cmdline.as_deref(),
+            Some("console=ttyS0 root=/dev/nvme0n1 rw")
+        );
+    }
+
+    #[test]
+    fn selector_without_local_bootargs_appends_to_uboot_bootargs() {
+        let base = UbootConfig::default();
+        let board_test = ostool::board::config::BoardRunConfig {
+            board_type: "board".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("axvisor.vm_start=1,2".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_board_test_uboot_config(Some(base), board_test);
+
+        assert_eq!(merged.boot.cmdline, None);
+        assert_eq!(
+            merged.uboot_cmd,
+            Some(vec![
+                r#"setenv bootargs "${bootargs} axvisor.vm_start=1,2""#.to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn selector_only_board_config_preserves_board_bootargs() {
+        let board_config = ostool::board::config::BoardRunConfig {
+            board_type: "board".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("axvisor.vm_start=1".to_string()),
+                ..Default::default()
+            },
+            uboot_cmd: Some(vec!["setenv foo bar".to_string()]),
+            ..Default::default()
+        };
+
+        let merged = merge_selector_into_board_bootargs(board_config);
+
+        assert_eq!(merged.boot.cmdline, None);
+        assert_eq!(
+            merged.uboot_cmd,
+            Some(vec![
+                "setenv foo bar".to_string(),
+                r#"setenv bootargs "${bootargs} axvisor.vm_start=1""#.to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn selector_only_httpboot_board_keeps_upload_cmdline() {
+        let board_config = ostool::board::config::BoardRunConfig {
+            board_type: "Asus-nuc15-x86_64-vmx".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("axvisor.vm_start=1".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_selector_into_board_bootargs(board_config);
+
+        assert_eq!(merged.boot.cmdline.as_deref(), Some("axvisor.vm_start=1"));
+        assert_eq!(merged.uboot_cmd, None);
     }
 }

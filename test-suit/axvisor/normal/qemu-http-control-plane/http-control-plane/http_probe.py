@@ -3,7 +3,7 @@
 
 Case asset for the `http-control-plane` test case
 (`test-suit/axvisor/normal/qemu-http-control-plane/`). It owns the *test
-content* — the concrete requests, the default guest's fixture (which now
+content* — the concrete requests, the builtin guest's fixture (which now
 lives in the shared config library), and the
 assertions — and can evolve independently of the axbuild runner.
 
@@ -34,8 +34,8 @@ error mapping and the pause/resume cycles, the Stopped→start
 restart, and the destroy-then-recreate resource re-acquire regression —
 mirroring `os/axvisor/doc/http-control-plane-quickstart.md`:
 
-    GET    /api/vms            -> 200            (list; id=1 present)
-    GET    /api/vms/1          -> 200 ready      (detail; id/name/cpu_num/vcpu_states/guest_entry_count)
+    GET    /api/vms            -> 200 []         (startup registry is empty)
+    GET    /api/vms/1          -> 404            (builtin is indexed, not created)
     GET    /api/vms/not-an-id  -> 404            (non-numeric id)
     GET    /api/vms/999        -> 404            (unknown VM)
     DELETE /api/vms/999        -> 404            (unknown VM; no auth header required)
@@ -49,12 +49,10 @@ mirroring `os/axvisor/doc/http-control-plane-quickstart.md`:
     POST   /api/vms/999/stop   -> 404            (unknown VM)
     POST   /api/vms/999/pause  -> 404            (unknown VM)
     POST   /api/vms/999/resume -> 404            (unknown VM)
-    POST   /api/vms/create     -> 409            (id=1 already registered)
-    POST   /api/vms/1/pause    -> 409            (pause from Ready)
-    POST   /api/vms/1/resume   -> 409            (resume from Ready)
-    POST   /api/vms/1/start    -> 200 -> running (async=false; start awaits completion)
+    POST   /api/vms/1/start    -> 200 -> running (lazy builtin create + start)
     POST   /api/vms/1/start    -> 409            (already running; start is not idempotent)
     POST   /api/vms/1/resume   -> 200 -> running (already running; idempotent, async=false)
+    POST   /api/vms/create     -> 409            (id=1 already registered)
     POST   /api/vms/1/pause    -> 200 -> paused  (async=false; waits for quiescence)
     POST   /api/vms/1/pause    -> 200 -> paused  (already paused; idempotent, no new park)
     POST   /api/vms/1/resume   -> 200 -> running (async=false; genuine wake)
@@ -795,13 +793,6 @@ def check_frozen_counters(label, body, entries, parks):
         )
 
 
-def list_has_vm(body, vm_id):
-    """Whether a `GET /api/vms` body lists a VM with the given id."""
-    return isinstance(body, list) and any(
-        isinstance(item, dict) and item.get("id") == vm_id for item in body
-    )
-
-
 def poll_ready():
     """Poll `GET /api/vms` until it returns 200 or the connect deadline passes.
 
@@ -906,34 +897,17 @@ def main():
     if not any(console.get("route") == "axvisor" for console in body):
         raise AssertionError("management console is missing: %r" % body)
 
-    # 2. List: the default VM (id 1) is registered and `Ready`.
+    # 2. Startup is lazy: build-time `vm_configs` are indexed as builtin
+    # candidates, but no VM is registered until a caller asks for one.
     status, body = request("GET", "/api/vms")
     check("GET /api/vms", status, 200)
-    if not list_has_vm(body, 1):
-        raise AssertionError("GET /api/vms did not list the default VM id=1")
+    if body != []:
+        raise AssertionError("GET /api/vms was not empty before lazy start: %r" % (body,))
 
-    # 3. Detail of the default VM: identity, shape, and ready status.
-    status, body = request("GET", "/api/vms/1")
-    check("GET /api/vms/1", status, 200)
-    check_vm_status("GET /api/vms/1", body, "ready")
-    if body.get("id") != 1:
-        raise AssertionError("GET /api/vms/1 did not report id=1")
-    if body.get("name") != "linux-http-control-plane":
-        raise AssertionError("GET /api/vms/1 did not report the fixture name")
-    if body.get("cpu_num") != 1:
-        raise AssertionError("GET /api/vms/1 did not report cpu_num=1")
-    if not isinstance(body.get("vcpu_states"), list) or not body["vcpu_states"]:
-        raise AssertionError("GET /api/vms/1 reported an empty vcpu_states array")
-    # The re-execution and pause-park evidence fields must be present on the
-    # Ready VM too (counts 0 until the first guest entry / first pause).
-    if not isinstance(body.get("guest_entry_count"), int):
-        raise AssertionError(
-            "GET /api/vms/1 reported no integer guest_entry_count: %r" % (body,)
-        )
-    if not isinstance(body.get("guest_park_count"), int):
-        raise AssertionError(
-            "GET /api/vms/1 reported no integer guest_park_count: %r" % (body,)
-        )
+    # 3. The builtin candidate is not a runtime VM until the start request
+    # creates it.
+    status, _ = request("GET", "/api/vms/1")
+    check("GET /api/vms/1 (before lazy start)", status, 404)
 
     # 4-5. Error path: non-numeric and unknown ids are 404.
     status, _ = request("GET", "/api/vms/not-an-id")
@@ -964,25 +938,41 @@ def main():
     status, _ = request("POST", "/api/vms/999/resume")
     check("POST /api/vms/999/resume", status, 404)
 
-    # 13. Duplicate create while id=1 is registered conflicts.
-    status, _ = request("POST", "/api/vms/create", body=create_body)
-    check("POST /api/vms/create (duplicate id=1)", status, 409)
-
-    # 14-15. Pause/resume are only valid from Running/Paused respectively; a
-    #        `Ready` (not started) VM rejects both with 409.
-    status, _ = request("POST", "/api/vms/1/pause")
-    check("POST /api/vms/1/pause (from Ready)", status, 409)
-    status, _ = request("POST", "/api/vms/1/resume")
-    check("POST /api/vms/1/resume (from Ready)", status, 409)
-
-    # 21. Start the default VM: `start` awaits completion (`async=false`), then
-    #     poll the detail into `running`.
+    # 13. `start` resolves the builtin candidate, creates it, and starts it in
+    # one lifecycle request. Detail now exposes the same identity and shape as
+    # an explicitly created VM.
     status, body = request(
         "POST", "/api/vms/1/start", timeout=COMPLETION_TIMEOUT
     )
-    check("POST /api/vms/1/start", status, 200)
-    check_action("POST /api/vms/1/start", body, True, False)
+    check("POST /api/vms/1/start (lazy builtin)", status, 200)
+    check_action("POST /api/vms/1/start (lazy builtin)", body, True, False)
     poll_vm_status(1, "running")
+    status, body = request("GET", "/api/vms/1")
+    check("GET /api/vms/1", status, 200)
+    check_vm_status("GET /api/vms/1", body, "running")
+    if body.get("id") != 1:
+        raise AssertionError("GET /api/vms/1 did not report id=1")
+    if body.get("name") != "linux-http-control-plane":
+        raise AssertionError("GET /api/vms/1 did not report the fixture name")
+    if body.get("cpu_num") != 1:
+        raise AssertionError("GET /api/vms/1 did not report cpu_num=1")
+    if not isinstance(body.get("vcpu_states"), list) or not body["vcpu_states"]:
+        raise AssertionError("GET /api/vms/1 reported an empty vcpu_states array")
+    # The re-execution and pause-park evidence fields are present immediately
+    # after lazy creation (before the first guest entry / first pause).
+    if not isinstance(body.get("guest_entry_count"), int):
+        raise AssertionError(
+            "GET /api/vms/1 reported no integer guest_entry_count: %r" % (body,)
+        )
+    if not isinstance(body.get("guest_park_count"), int):
+        raise AssertionError(
+            "GET /api/vms/1 reported no integer guest_park_count: %r" % (body,)
+        )
+
+    # 14. Duplicate create while id=1 is registered conflicts.
+    status, _ = request("POST", "/api/vms/create", body=create_body)
+    check("POST /api/vms/create (duplicate id=1)", status, 409)
+
     # The guest must have actually entered: the vCPU run loop increments
     # `guest_entry_count` on its first guest entry, independent of the status.
     poll_guest_entries(1, 1)
@@ -993,7 +983,7 @@ def main():
     # frozen value, so a status-only resume fails the assertion.
     parks = guest_park_count(body)
 
-    # 22. Re-starting an already-running VM conflicts: `start` is not an
+    # 15. Re-starting an already-running VM conflicts: `start` is not an
     #     idempotent target transition.
     status, _ = request("POST", "/api/vms/1/start")
     check("POST /api/vms/1/start (already running)", status, 409)

@@ -50,7 +50,7 @@ use axfs_ng_vfs::{MutationCredentials, RenameOptions, VfsError};
 
 use crate::sync::MutexExt;
 
-use super::pool;
+use crate::vm_pool as pool;
 
 /// The largest chunk a client may send in one request.
 ///

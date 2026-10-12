@@ -5,6 +5,7 @@
 # camera 0ac8:0346 and the Feetech USB controller 1a86:55d3 through
 # FEETECH_DEV=auto; it never opens the arm serial port.
 board_type = "OrangePi-5-Plus-robot"
+cmdline = "root=/dev/mmcblk1p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',

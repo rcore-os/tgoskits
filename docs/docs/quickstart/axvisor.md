@@ -6,7 +6,7 @@ title: "Axvisor 快速上手"
 
 # Axvisor 快速上手
 
-Axvisor 通过板卡配置确定目标架构、平台特性和默认 VM 配置。`cargo axvisor config ls` 列出配置名称，`cargo axvisor defconfig BOARD_NAME` 写入默认构建配置，后续 `cargo axvisor qemu` 沿用该配置。
+Axvisor 通过板卡配置确定目标架构和平台特性。Build TOML 的 `vm_configs` 只把客户机资源打包到 `/guest/builtin` 并建立启动索引；宿主启动参数 `axvisor.vm_start=<id>[,<id>...]` 决定开机创建哪些客户机，缺少该参数时保持零个 VM。`cargo axvisor config ls` 列出配置名称，`cargo axvisor defconfig BOARD_NAME` 写入默认构建配置，后续 `cargo axvisor qemu` 沿用该配置。
 
 ```mermaid
 flowchart LR
@@ -20,7 +20,7 @@ flowchart LR
 
 ## 1. QEMU
 
-四种架构使用相同的三步流程：查看配置、选择 QEMU 板卡配置、构建并启动。配置文件定义 target、Axvisor feature 和 VM 配置列表。
+四种架构使用相同的三步流程：查看配置、选择 QEMU 板卡配置、构建并启动。配置文件定义 target、Axvisor feature 和 builtin VM 资源列表；需要开机客户机时，应在 QEMU 宿主 `-append` 或等效 `cmdline` 中加入 selector。客户机 TOML 的 `[kernel].cmdline` 只传给客户机内核。
 
 ### 1.1 AArch64
 

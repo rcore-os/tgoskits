@@ -13,6 +13,8 @@ sidebar_label: "客户机配置"
 
 客户机 TOML 从读取到变成设备图要经过四个阶段：`axvmconfig` 负责解析和校验，Axvisor 应用层完成参数转换，boot prepare 补齐启动资源，device prepare 把虚拟设备请求实例化为图节点。下表列出各阶段的代码位置与职责；修改配置行为时应先确定改动属于哪个阶段，再定位对应的模块。
 
+构建配置的 `vm_configs` 生成 `/guest/builtin/configs` 的 builtin catalog。宿主启动时只索引配置，不分配 VM；`axvisor.vm_start=<id>[,<id>...]` 是宿主 cmdline 中的创建与启动选择器。没有 selector 时注册表为空，其余 builtin 或 `/guest` 动态池配置由 Web/shell 按 ID 延迟创建。
+
 | 位置 | 主要类型或入口 | 职责 | 运行阶段 |
 | --- | --- | --- | --- |
 | `virtualization/axvmconfig/src/lib.rs` | `GuestConfig`、`VMBaseConfig`、`VMKernelConfig`、`GuestDevices`、`VirtualDeviceRequest` | 定义持久化 schema，完成 Serde 解析、boot/device 校验和兼容字段读取 | 配置读取 |
@@ -105,7 +107,7 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `dtb_load_addr` | 非负整数或省略 | `None` | DTB 加载 GPA；prepare 可能依据内存布局重新计算 |
 | `ramdisk_path` | 字符串或省略 | `None` | initramfs/ramdisk 镜像路径 |
 | `ramdisk_load_addr` | 非负整数或省略 | `None` | ramdisk 加载 GPA |
-| `cmdline` | 字符串或省略 | `None` | 客户机内核命令行；x86 Linux direct boot 要求提供 |
+| `cmdline` | 字符串或省略 | `None` | 客户机内核命令行；x86 Linux direct boot 要求提供，不承载宿主 `axvisor.vm_start` 选择器 |
 | `memory_regions` | 四元数组列表 | 空列表 | 客户机内存描述，格式为 `[gpa, size, flags, map_type]` |
 
 `configured_memory_region_count` 是 `VMKernelConfig` 的运行时辅助字段，带有 `#[serde(skip)]`，不属于 TOML schema。至少一段可用内存、2 MiB 布局对齐、镜像落点等检查发生在 memory/boot prepare；因此 TOML 能解析不代表镜像和内存布局一定可执行。
@@ -250,7 +252,7 @@ model = "ivc-channel"
 | model 已找到，但缺少架构能力或构造条件 | device prepare | `ConfiguredDeviceError::Instantiation` 或后续图/资源错误 | 先看设备名和 model，再查 Machine 能力及资源计划；细节见运行时和模拟设备文档 |
 | 镜像路径或内存布局无效 | boot prepare/load | `prepare_guest_boot`、`prepare_memory_layout` 或 `load_images` 返回的 `AxVmError` | 检查当前根中的文件路径、加载地址和至少一段有效内存 |
 
-应用层 `build_axvm_config()` 当前返回 `AxVMConfig` 而不是 `Result`，所以它没有独立的可恢复错误枚举。它之后的 boot prepare、`AxVM::new`、memory prepare、image load 和 `vm.prepare()` 都由 `init_guest_vm()` 添加 `VM[id]` context。日志中若已经出现 `prepare devices and vCPUs`，问题就不在 TOML Serde 阶段。
+应用层 `build_axvm_config()` 当前返回 `AxVMConfig` 而不是 `Result`，所以它没有独立的可恢复错误枚举。builtin catalog 只在 `load_builtin_catalog()` 阶段索引和校验 TOML；之后的 boot prepare、`AxVM::new`、memory prepare、image load 和 `vm.prepare()` 都在 `ensure_vm(id)` 或宿主 selector 的创建事务中添加 `VM[id]` context。日志中若已经出现 `prepare devices and vCPUs`，问题就不在 TOML Serde 阶段。
 
 CPU selector 与 `cpu_num` 的通用长度不一致仍不在表中作为统一失败项：`PhysCpuList` 可能只产生一条日志，缺项继续使用默认值，多余项被忽略；排错时应直接对照 `cpu_num` 检查数组。例外是 FDT-backed AArch64/RISC-V 的显式 affinity 路径：`phys_cpu_ids` 与 `phys_cpu_sets` 不等长、mask 越界、为零或包含多个 bit 时，boot prepare 会以 `InvalidInput` 失败，因为这些值会直接决定客户机 CPU 投影和宿主调度亲和性。
 

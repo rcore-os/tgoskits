@@ -4,8 +4,9 @@
 //! The panel keeps three facts apart, because the control plane does too:
 //!
 //! - the **registry** (`GET /api/vms`) is what is running or ready right now,
-//! - the **pool** (`GET /api/vms/pool`) is a directory of configs that become
-//!   VMs on demand, and a pool entry is *not* a VM until it is started,
+//! - the **builtin catalog** (`GET /api/vms/pool`'s `builtin` field) is an immutable
+//!   index of packaged configs, while the dynamic **pool** (`entries`) is a
+//!   directory of configs that become VMs on demand,
 //! - the **detail** (`GET /api/vms/{id}`) carries the counters that prove an
 //!   action took effect, so every mutation is followed by a settle poll after the
 //!   HTTP response confirms the owner transition.
@@ -112,7 +113,9 @@ export default function VmsPanel({
   const suggestedId = useMemo(() => {
     let max = 0
     for (const vm of registry) if (vm.id > max) max = vm.id
-    if (pool !== null) for (const entry of pool.entries) if (entry.id > max) max = entry.id
+    if (pool !== null) {
+      for (const entry of [...pool.builtin, ...pool.entries]) if (entry.id > max) max = entry.id
+    }
     return max + 1
   }, [registry, pool])
 
@@ -477,11 +480,9 @@ export default function VmsPanel({
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <div>
-            <CardTitle>候选配置</CardTitle>
+            <CardTitle>内置客户机与动态候选</CardTitle>
             <CardDescription>
-              整棵客户机树（默认 `/guest` 之下递归，启动目录也在内，`AXVISOR_VM_DIRS` 可以再加目录）
-              里每一份能变成客户机的配置都列在这里。条目只是候选，`start` 时才真正创建；
-              不能用的文件会在下面说明原因。
+              内置客户机随系统提供，动态候选来自已配置的目录。点击「启动」后创建客户机。
             </CardDescription>
           </div>
           {pool && (
@@ -511,32 +512,62 @@ export default function VmsPanel({
                 新建配置写入：
                 <span className="ml-1 font-mono text-xs">{pool.directory}</span>
               </p>
-              <ul className="flex flex-col gap-2">
-                {pool.entries.map((entry) => (
-                  <li key={`${entry.id}-${entry.path}`} className="rounded border p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span>
-                        VM[{entry.id}] <span className="font-mono text-xs">{entry.name}</span>
-                      </span>
-                      <span className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
-                        <Button
-                          size="sm"
-                          disabled={busy !== null}
-                          onClick={() => void start(entry.id)}
-                        >
-                          启动
-                        </Button>
-                      </span>
-                    </div>
-                  </li>
-                ))}
-                {pool.entries.length === 0 && (
-                  <li className="text-muted-foreground">
-                    写入目录里还没有可启动的配置，用「粘贴配置创建」里的「存为候选配置」放一份进去。
-                  </li>
-                )}
-              </ul>
+              <section className="flex flex-col gap-2">
+                <h3 className="font-medium">内置客户机（只读）</h3>
+                <ul className="flex flex-col gap-2">
+                  {pool.builtin.map((entry) => (
+                    <li key={`builtin-${entry.id}-${entry.path}`} className="rounded border p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>
+                          VM[{entry.id}] <span className="font-mono text-xs">{entry.name}</span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
+                          <Button
+                            size="sm"
+                            disabled={busy !== null}
+                            onClick={() => void start(entry.id)}
+                          >
+                            启动
+                          </Button>
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                  {pool.builtin.length === 0 && (
+                    <li className="text-muted-foreground">这个构建没有 builtin 客户机配置。</li>
+                  )}
+                </ul>
+              </section>
+              <section className="flex flex-col gap-2">
+                <h3 className="font-medium">动态池</h3>
+                <ul className="flex flex-col gap-2">
+                  {pool.entries.map((entry) => (
+                    <li key={`${entry.id}-${entry.path}`} className="rounded border p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>
+                          VM[{entry.id}] <span className="font-mono text-xs">{entry.name}</span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
+                          <Button
+                            size="sm"
+                            disabled={busy !== null}
+                            onClick={() => void start(entry.id)}
+                          >
+                            启动
+                          </Button>
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                  {pool.entries.length === 0 && (
+                    <li className="text-muted-foreground">
+                      写入目录里还没有可启动的配置，用「粘贴配置创建」里的「存为候选配置」放一份进去。
+                    </li>
+                  )}
+                </ul>
+              </section>
               <ul className="flex flex-col gap-1">
                 {pool.issues.map((issue) => (
                   <li key={`${issue.kind}-${issue.path}`} className="text-xs text-warn">

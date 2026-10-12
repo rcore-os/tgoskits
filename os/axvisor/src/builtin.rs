@@ -1,7 +1,15 @@
 //! Axvisor policy for archive-owned guest configuration and boot assets.
 
-use alloc::{collections::BTreeSet, format, rc::Rc, string::String, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    format,
+    rc::Rc,
+    string::String,
+    sync::Arc,
+    vec::Vec,
+};
 use core::cell::RefCell;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
@@ -20,6 +28,182 @@ use axvmconfig::{BUILTIN_GUEST_DIR, GuestConfig};
 /// root (initramfs memory root or installed disk root) is active.
 pub const BUILTIN_WEB_UI_DIR: &str = "/guest/builtin/web-ui";
 
+/// The initramfs namespace remains available after a disk root is committed so
+/// builtin boot assets can still be read by a later lazy-start request. The
+/// context is deliberately *not* created with [`FsContext::into_shared`]:
+/// shared contexts are registered in `FS_REGISTRY`, and root switching would
+/// then rewrite their root through `propagate_pivot_root`. Keeping this context
+/// out of that registry leaves it anchored at the detached initramfs mount;
+/// the mount owns an immutable memory filesystem and is independent of the
+/// block filesystem released for passthrough.
+static RETAINED_BOOT_CONTEXT: OnceLock<Arc<ax_fs_ng::os::sync::Mutex<FsContext>>> = OnceLock::new();
+
+pub fn retain_boot_context(context: &FsContext) -> Result<()> {
+    let mut retained = FsContext::new(context.root_dir().clone());
+    // A copied `FsContext` still points into the active mount namespace. Clone
+    // that namespace before the root switch so detaching the old root cannot
+    // invalidate this archive owner. Keep the resulting context out of the
+    // global registry: it must not receive the pivot-root propagation update.
+    retained
+        .unshare_mount_namespace()
+        .context("isolate retained initramfs mount namespace")?;
+    let retained = Arc::new(ax_fs_ng::os::sync::Mutex::new(retained));
+    RETAINED_BOOT_CONTEXT.get_or_init(|| retained);
+    Ok(())
+}
+
+fn read_retained_builtin_asset(path: &str) -> Option<Result<Vec<u8>>> {
+    if !is_builtin_path(path) {
+        return None;
+    }
+    let context = RETAINED_BOOT_CONTEXT.get()?;
+    match context.lock().read(path) {
+        Ok(bytes) => Some(Ok(bytes)),
+        // A disk root may already contain a previously installed builtin
+        // package when this boot's archive has no package. Let the normal
+        // active-root provider serve that asset instead of turning the
+        // retained archive's absence into a hard error.
+        Err(VfsError::NotFound) => None,
+        Err(error) => Some(Err(anyhow!(
+            "read retained builtin asset `{path}`: {error}"
+        ))),
+    }
+}
+
+fn read_retained_builtin_asset_exact(path: &str, read_size: usize) -> Option<Result<Vec<u8>>> {
+    if !is_builtin_path(path) {
+        return None;
+    }
+    let context = RETAINED_BOOT_CONTEXT.get()?;
+    let context = context.lock();
+    let file = match ax_fs_ng::file::File::open(&context, path) {
+        Ok(file) => file,
+        Err(VfsError::NotFound) => return None,
+        Err(error) => {
+            return Some(Err(anyhow!(
+                "open retained builtin asset `{path}`: {error}"
+            )));
+        }
+    };
+    let mut bytes = alloc::vec![0; read_size];
+    match file.read_at(bytes.as_mut_slice(), 0) {
+        Ok(count) if count == read_size => Some(Ok(bytes)),
+        Ok(count) => Some(Err(anyhow!(
+            "requested {read_size} bytes from retained builtin asset `{path}`, got {count}"
+        ))),
+        Err(error) => Some(Err(anyhow!(
+            "read retained builtin asset `{path}`: {error}"
+        ))),
+    }
+}
+
+pub fn read_boot_asset(path: &str) -> Result<Option<Vec<u8>>> {
+    match read_retained_builtin_asset(path) {
+        Some(result) => result.map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn read_boot_asset_exact(path: &str, read_size: usize) -> Result<Option<Vec<u8>>> {
+    match read_retained_builtin_asset_exact(path, read_size) {
+        Some(result) => result.map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn boot_asset_size(path: &str) -> Result<Option<usize>> {
+    if !is_builtin_path(path) {
+        return Ok(None);
+    }
+    let Some(context) = RETAINED_BOOT_CONTEXT.get() else {
+        return Ok(None);
+    };
+    let context = context.lock();
+    match context.metadata(path) {
+        Ok(metadata) => usize::try_from(metadata.size)
+            .map(Some)
+            .map_err(|_| anyhow!("retained builtin asset `{path}` is too large")),
+        Err(VfsError::NotFound) => Ok(None),
+        Err(error) => Err(anyhow!("inspect retained builtin asset `{path}`: {error}")),
+    }
+}
+
+pub fn boot_asset_exists(path: &str) -> bool {
+    if !is_builtin_path(path) {
+        return false;
+    }
+    RETAINED_BOOT_CONTEXT.get().is_some_and(|context| {
+        context
+            .lock()
+            .resolve(path)
+            .is_ok_and(|asset| asset.check_is_file().is_ok())
+    })
+}
+
+/// Returns whether a path is the builtin package root or one of its children.
+pub fn is_builtin_path(path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path == BUILTIN_GUEST_DIR
+        || path
+            .strip_prefix(BUILTIN_GUEST_DIR)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+/// One validated guest configuration shipped in the immutable builtin package.
+///
+/// Keeping the raw TOML in the catalog lets the runtime defer the expensive
+/// AxVM preparation and resource allocation until a caller actually selects
+/// the guest. The catalog itself only owns configuration text and metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltinGuest {
+    id: usize,
+    name: String,
+    path: String,
+    raw: String,
+}
+
+impl BuiltinGuest {
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn toml(&self) -> &str {
+        &self.raw
+    }
+}
+
+/// Immutable index of the guest configurations packaged under `/guest/builtin`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuiltinCatalog {
+    entries: BTreeMap<usize, BuiltinGuest>,
+}
+
+impl BuiltinCatalog {
+    pub fn get(&self, id: usize) -> Option<&BuiltinGuest> {
+        self.entries.get(&id)
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = &BuiltinGuest> {
+        self.entries.values()
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.entries.keys().copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Installs archive assets before an explicitly requested disk root is committed.
 #[cfg(any(target_os = "none", target_env = "musl"))]
 pub fn prepare_root() -> Result<()> {
@@ -28,11 +212,13 @@ pub fn prepare_root() -> Result<()> {
         .into_iter()
         .take_while(|arg| arg != "--")
         .any(|arg| arg.starts_with("root="));
-    let source = current_fs_context().lock().clone();
+    let source_handle = current_fs_context();
+    let source = source_handle.lock().clone();
     let has_block_devices = ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
         .is_some_and(|devices| !devices.is_empty());
     if !has_root || !has_block_devices {
         log::info!("Axvisor uses initramfs root; disk root unavailable or not requested");
+        retain_boot_context(&source)?;
         validate_builtin(&source, BUILTIN_GUEST_DIR)?;
         return Ok(());
     }
@@ -42,6 +228,7 @@ pub fn prepare_root() -> Result<()> {
         bail!("Axvisor disk root is read-only; keeping the initramfs root");
     }
     install_builtin(&source, prepared.context())?;
+    retain_boot_context(&source)?;
     // Release the copied archive context before committing; the runtime's root
     // and task contexts are replaced by commit and are then the last old owners.
     drop(source);
@@ -84,6 +271,13 @@ pub fn install_builtin(source: &FsContext, target: &FsContext) -> Result<bool> {
 }
 
 fn config_files(context: &FsContext, directory: &str) -> Result<Vec<String>> {
+    Ok(config_files_with_paths(context, directory)?
+        .into_iter()
+        .map(|(_, content)| content)
+        .collect())
+}
+
+fn config_files_with_paths(context: &FsContext, directory: &str) -> Result<Vec<(String, String)>> {
     let entries = match context.read_dir(directory) {
         Ok(entries) => entries,
         Err(VfsError::NotFound) => return Ok(Vec::new()),
@@ -114,9 +308,31 @@ fn config_files(context: &FsContext, directory: &str) -> Result<Vec<String>> {
             if !ids.insert(config.base.id) {
                 bail!("duplicate VM ID {} in {directory}", config.base.id);
             }
-            Ok(content)
+            Ok((path, content))
         })
         .collect()
+}
+
+/// Loads and validates the builtin catalog without creating any VM.
+pub fn load_catalog(context: &FsContext) -> Result<BuiltinCatalog> {
+    let directory = format!("{BUILTIN_GUEST_DIR}/configs");
+    let entries = config_files_with_paths(context, &directory)
+        .context("load built-in guest configuration")?;
+    let mut catalog = BuiltinCatalog::default();
+    for (path, raw) in entries {
+        let config =
+            GuestConfig::from_toml(&raw).with_context(|| format!("invalid guest config {path}"))?;
+        let guest = BuiltinGuest {
+            id: config.base.id,
+            name: config.base.name,
+            path,
+            raw,
+        };
+        if catalog.entries.insert(guest.id, guest).is_some() {
+            unreachable!("config_files_with_paths rejects duplicate builtin IDs");
+        }
+    }
+    Ok(catalog)
 }
 
 /// Validates archive-owned assets while preserving their final absolute paths.
@@ -135,25 +351,22 @@ fn validate_builtin_assets(
         Err(VfsError::NotFound) => return Ok(()),
         Err(error) => return Err(error).context("read built-in guest package"),
     };
-    let mut has_guest_assets = false;
+    let mut nonempty = false;
     for entry in entries {
         let entry = entry?;
         match entry.name.as_str() {
             "." | ".." => {}
             "configs" | "images" | "symbols" => {
-                has_guest_assets = true;
+                nonempty = true;
                 context
                     .resolve(format!("{staged}/{}", entry.name))?
                     .check_is_dir()?;
             }
-            "web-ui" => {
-                validate_web_ui(context, staged)?;
-            }
+            "web-ui" => validate_web_ui(context, staged)?,
             _ => bail!("unexpected entry in built-in guest package: {}", entry.name),
         }
     }
-    if !has_guest_assets {
-        // A package may carry only the dashboard when no guest is bundled.
+    if !nonempty {
         return Ok(());
     }
     context
@@ -195,9 +408,7 @@ fn validate_builtin_assets(
     Ok(())
 }
 
-/// Validates the bundled dashboard tree: the app shell must be a non-empty
-/// file, so a truncated or hand-assembled package fails before publication
-/// instead of serving a UI whose navigation immediately 404s.
+/// Validates the bundled dashboard tree before publication.
 fn validate_web_ui(context: &FsContext, staged: &str) -> Result<()> {
     let directory = format!("{staged}/web-ui");
     context
@@ -208,20 +419,9 @@ fn validate_web_ui(context: &FsContext, staged: &str) -> Result<()> {
     shell
         .check_is_file()
         .with_context(|| format!("check built-in dashboard shell {BUILTIN_WEB_UI_DIR}"))?;
-    if shell.len()? == 0 {
-        bail!("built-in dashboard shell {BUILTIN_WEB_UI_DIR}/index.html is empty");
-    }
+    ensure!(
+        shell.len()? > 0,
+        "built-in dashboard shell {BUILTIN_WEB_UI_DIR}/index.html is empty"
+    );
     Ok(())
-}
-
-/// Uses a valid nonempty user configuration set before the installed defaults.
-/// Invalid user configuration is an error and never triggers a fallback.
-pub fn selected_configs(context: &FsContext) -> Result<Vec<String>> {
-    let user =
-        config_files(context, "/guest/vm_default").context("load user guest configuration")?;
-    if !user.is_empty() {
-        return Ok(user);
-    }
-    config_files(context, &format!("{BUILTIN_GUEST_DIR}/configs"))
-        .context("load built-in guest configuration")
 }

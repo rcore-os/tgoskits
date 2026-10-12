@@ -1,6 +1,6 @@
-# The `qemu-http-control-plane` case's default guest: the fs-read machine
+# The `qemu-http-control-plane` case's builtin guest: the fs-read machine
 # model with the memory, pinning and PCI exclusions that case's management
-# network needs, kept `Ready` by `no-auto-start`.
+# network needs. The HTTP probe creates and starts it lazily through the API.
 #
 # The guest kernel and the guest root filesystem are files in the hypervisor's
 # own filesystem (a filesystem-backed `kernel_path`), so nothing about this guest is baked
@@ -8,7 +8,7 @@
 # kernel and the `virtio-blk` device below is where the guest roots from.
 #
 # `id = 1`: the typed probe's `POST /api/vms/create` body is this file verbatim,
-# so the id it recreates is the one the build configured as the default VM.
+# so the id it recreates is the one the build indexed in the builtin catalog.
 # `phys_cpu_ids = [1]` keeps the vCPU on Core 1 while the management console runs
 # on Core 0 — the exact configuration that makes a resume wake (parked vCPU on a
 # pinned non-primary CPU) observable.

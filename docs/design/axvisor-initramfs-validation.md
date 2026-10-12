@@ -12,9 +12,9 @@
 
 ### 1.2 自带资源发布
 
-`axbuild::axvisor::bundle` 将 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd 放入 `/guest/builtin/images`，生成的配置始终引用最终路径。客户机可写磁盘路径维持原配置。`vm_configs` 和 `--vmconfig` 仅作为归档输入，Axvisor 删除 `fs` feature、`image_location`、静态配置回退及客户机二进制嵌入。
+`axbuild::axvisor::bundle` 将 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd 放入 `/guest/builtin/images`，生成的配置始终引用最终路径。客户机可写磁盘路径维持原配置。Build TOML 的 `vm_configs` 和 `--vmconfig` 仅作为 builtin catalog 的归档输入，Axvisor 删除 `fs` feature、`image_location`、静态配置回退及客户机二进制嵌入。
 
-`ax_fs_ng::bundle::install_directory()` 完成整包暂存、完整性校验、刷盘和发布。Ext4 使用目录 `EXCHANGE`；FAT 等后端使用备份、发布及失败回滚。目录替换删除旧包独有文件；缺失源目录保留旧包，空包清空旧资源。FAT 路径不保证断电原子性。`selected_configs()` 优先有效非空用户配置集，用户配置无效时报告错误。
+`ax_fs_ng::bundle::install_directory()` 完成整包暂存、完整性校验、刷盘和发布。Ext4 使用目录 `EXCHANGE`；FAT 等后端使用备份、发布及失败回滚。目录替换删除旧包独有文件；缺失源目录保留旧包，空包清空旧资源。FAT 路径不保证断电原子性。Axvisor 启动时只校验并索引 `/guest/builtin/configs`，不预先分配客户机；宿主 `axvisor.vm_start=<id>[,<id>...]` 选择按序创建和启动的 VM，`/guest` 动态池由 HTTP/shell 按需使用。
 
 ## 2. 项目检查
 

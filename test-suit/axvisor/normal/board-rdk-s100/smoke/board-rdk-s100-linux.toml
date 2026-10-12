@@ -1,4 +1,5 @@
 board_type = "RDK-S100"
+cmdline = "console=ttyS0,921600n8 earlycon=uart8250,mmio32,0x394B0000 root=/dev/mmcblk0p17 rw rootfstype=ext4 rootwait axvisor.vm_start=2"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

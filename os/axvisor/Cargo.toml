@@ -85,9 +85,6 @@ web = [
 # The dashboard owns `/` and `/assets/*`; the JSON API and the terminal sockets
 # keep their own paths.
 web-ui = ["web"]
-# Do not auto-boot the default VMs at startup; the HTTP control plane starts
-# and stops them on demand (VMs are created and stay in `Ready`).
-no-auto-start = []
 [dependencies]
 anyhow.workspace = true
 axvmconfig = { workspace = true, default-features = false }

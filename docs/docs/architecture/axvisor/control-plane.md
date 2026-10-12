@@ -19,7 +19,7 @@ sidebar_label: "控制面"
 | :-- | :-- | :-- |
 | 声明 | `control/capability/` | 路由表与清单描述符，路径字面量的唯一出现处 |
 | 传输 | `control/transport/` | Axum 服务、WebSocket 升级、各资源的请求处理函数 |
-| 领域 | `control/domain/` | 配置池扫描、文件暂存、登记表差分 |
+| 领域 | `control/domain/` | 配置池扫描、文件暂存、登记表差分；配置池通过应用层 `vm_pool` 共用 |
 | 前端托管 | `control/web/` | 从 builtin 包路径 `/guest/builtin/web-ui` 直服仪表盘静态资源 |
 
 前端源码 `web-ui/` 位于这四层之外。它不进内核二进制：axbuild 在构建配置启用 `web-ui` 时用 npm 在 target 目录暂存区生成 `dist/`，并把它打进宿主 initramfs 的 builtin 包；内核运行时从活动根（无盘时的 initramfs 内存根，或安装后的磁盘根）读取。装配根 `control/mod.rs` 的 `serve()` 把声明层产出的路由表当**数据**交给传输层，因此传输层不需要引用声明层，路径也只在声明层出现一次。
@@ -30,7 +30,7 @@ sidebar_label: "控制面"
 
 | feature | 打开后新增 |
 | :-- | :-- |
-| `web` | `vms`、`files`、`host`、`console`、`shell` 面板，HTTP API、WebSocket 网关、事件流与配置池 |
+| `web` | `vms`、`files`、`host`、`console`、`shell` 面板，HTTP API、WebSocket 网关、事件流与配置池接口 |
 | `web-ui` | 仪表盘 `/` 与 `/assets/*`（由 initramfs builtin 包提供），隐含依赖 `web` |
 
 
@@ -96,13 +96,13 @@ flowchart TB
     TRA -.->|"禁止依赖声明层"| CAP
 ```
 
-`transport` 直接调用 `manager` 与 `axvm`，这不违反门禁：规则只写了四条允许边和两条禁止边，从没有规定传输层只能依赖领域层。控制面里的 `domain` 指的是「控制面新增的领域」—— 配置池、文件暂存、登记表差分，而「客户机是什么、这个状态下能否启动」属于 `axvm` 的状态机与 `manager` 的编排，它的家不在控制面内。这条边界由 `scripts/test/check_axvisor_control_layers.py` 作为静态门禁常驻 CI，它同时扫描 Rust 侧的路径字面量和前端的引导路径常量。
+`transport` 直接调用 `manager` 与 `axvm`，这不违反门禁：规则只写了四条允许边和两条禁止边，从没有规定传输层只能依赖领域层。控制面里的 `domain` 指的是文件暂存和登记表差分；配置候选扫描位于不受 `web` 条件编译约束的 `vm_pool.rs`，由 shell 和 HTTP 共用。「客户机是什么、这个状态下能否启动」属于 `axvm` 的状态机与 `manager` 的编排，它的家不在控制面内。这条边界由 `scripts/test/check_axvisor_control_layers.py` 作为静态门禁常驻 CI，它同时扫描 Rust 侧的路径字面量和前端的引导路径常量。
 
 ### 3.2 控制面新增的领域
 
-`domain` 的三个模块各自围绕一个控制面新引入的概念，它们的共同点是都不产生 HTTP 概念。`pool.rs` 负责扫描客户机配置来源并回报诊断问题，`files.rs` 维护分片传输的会话与暂存目录，`events.rs` 计算登记表的差量。
+`domain` 的两个模块各自围绕一个控制面引入的概念，它们的共同点是都不产生 HTTP 概念。`files.rs` 维护分片传输的会话与暂存目录，`events.rs` 计算登记表的差量。`vm_pool.rs` 属于 Axvisor 应用层，负责扫描动态客户机配置来源并回报诊断问题。
 
-三个模块对外部世界的依赖只有身份与配置级别的两种：配置池使用 `axvmconfig::GuestConfig` 表达候选配置，事件差分使用 `axvm::VMId` 作为键。领域层知道客户机的身份，但不碰它的生命周期 —— 生命周期动作的处理函数在传输层，通过 `manager()` 取得 `VmManager` 并翻译 `axvm` 的错误。
+配置池使用 `axvmconfig::GuestConfig` 表达候选配置，事件差分使用 `axvm::VMId` 作为键。扫描与领域模块知道客户机的身份，但不碰它的生命周期。生命周期动作由应用层 manager 编排；HTTP 的 start 与 shell `vm start <id>` 都调用 `ensure_vm(id)`，先返回已注册 VM，再查 builtin catalog，最后查动态 pool。
 
 ### 3.3 错误映射
 
@@ -122,11 +122,13 @@ flowchart TB
 
 ## 4. 客户机配置池
 
-配置池把「有哪些客户机可以启动」从编译期常量变成文件系统上的事实。内核启动时不再内嵌一份客户机清单，而是扫描配置目录，把找到的候选、读不懂的文件和缺少依赖的条目一起呈现给操作者。
+客户机候选分成只读 builtin catalog 和动态配置池。Build TOML 的 `vm_configs` 生成 initramfs `/guest/builtin` 资源；宿主启动时只校验并索引 `/guest/builtin/configs`，缺少 `axvisor.vm_start` 时没有已创建 VM。动态池来自 `/guest` 及显式配置的来源，把找到的候选、读不懂的文件和缺少依赖的条目一起呈现给操作者。
+
+`GET /api/vms/pool` 的 `builtin` 字段单独返回内置配置，`entries` 和 `issues` 只表示动态池。界面分别展示两者；builtin ID 保留给内置资源，动态配置不能覆盖同 ID。`POST /api/vms/{id}/start` 按 ID 创建并启动候选，删除后仍可以从原候选再次创建。
 
 ### 4.1 来源与扫描限制
 
-扫描来源在编译期确定：`AXVISOR_VM_POOL` 优先，其次是 `AXVISOR_VM_DIRS` 的每一项，最后是默认根目录 `DEFAULT_VM_ROOT`。目录递归但有三条限制：深度上限由 `MAX_SCAN_DEPTH` 决定，不跟随符号链接，同一个客户机标识在多个来源出现时按 `IssueKind::DuplicateId` 记录并保留首个。
+扫描来源在编译期确定：新配置写入的目录（`AXVISOR_VM_POOL` 或默认根目录）优先，其次是 `AXVISOR_VM_DIRS` 的每一项，最后是默认根目录 `DEFAULT_VM_ROOT`，重复来源只扫描一次。默认根目录为 `/guest`，递归时排除 `/guest/builtin`；`/guest/vm_default` 作为普通动态目录扫描。目录还有三条限制：深度上限由 `MAX_SCAN_DEPTH` 决定，不跟随符号链接，同一个客户机标识在多个来源出现时按重复 ID 问题记录并保留首个。与 builtin ID 冲突时报告保留 ID，builtin 优先。
 
 只有顶层含 `base` 或 `kernel` 字段的 TOML 才被当成客户机配置，其余文件静默跳过。这个判定刻意保守 —— 池目录里通常还放着内核镜像、根文件系统和其他配置片段，把任何 TOML 都当候选会产生大量误报。
 

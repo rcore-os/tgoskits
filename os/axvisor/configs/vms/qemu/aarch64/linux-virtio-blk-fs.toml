@@ -1,6 +1,6 @@
 # A Linux guest whose kernel and root disk are read from the guest
 # filesystem (a filesystem-backed `kernel_path`): the machine model the `qemu-web-ui`
-# case registers as its default, kept `Ready` by `no-auto-start`.
+# case packages as its builtin catalog entry. The HTTP probe creates it lazily.
 #
 # Everything this guest needs is read from the Axvisor host filesystem, which is
 # why the case enables the unified `web` control plane with filesystem-backed guests:

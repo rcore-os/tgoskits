@@ -3,6 +3,7 @@
 # never opens the arm serial port. The guest kernel and shared eMMC root are
 # selected in linux-smp1-emmc.toml.
 board_type = "OrangePi-5-Plus"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',

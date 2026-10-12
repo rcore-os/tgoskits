@@ -16,4 +16,4 @@
 pub mod events;
 pub mod files;
 pub mod host;
-pub mod pool;
+pub(crate) use crate::vm_pool as pool;

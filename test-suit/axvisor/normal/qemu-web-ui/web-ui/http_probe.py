@@ -13,9 +13,9 @@ the QEMU hostfwd port is reachable, then treats the exit code as the verdict:
 management API running *inside* AxVisor through QEMU user-mode networking
 hostfwd. Nothing in the hypervisor knows a test is running.
 
-This build is `web-ui` + unified `web` with `no-auto-start`, so the
-dashboard, the terminal gateway and the VM registry are all live at once and
-the default guest stays `Ready` until the probe starts it. The probe covers the
+This build is `web-ui` + unified `web`; the dashboard and terminal gateway are
+live while the VM registry starts empty. The probe starts the builtin guest by
+ID through HTTP, so creation and start are both lazy. The probe covers the
 contract a browser depends on, not a browser:
 
     GET    /                      -> 200   (dashboard shell; CSP + no-cache + nosniff)
@@ -28,8 +28,8 @@ contract a browser depends on, not a browser:
     GET    /assets/no-such.js     -> 404   (asset table is exact)
     <bundle>                      -> holds every endpoint the UI calls
     GET    /api/manifest          -> 200   (vms + files + host + console + shell panels)
-    GET    /api/consoles          -> 200   (management lane + the default VM's lane,
-                                            each with a boolean `attached`)
+    GET    /api/consoles          -> 200   (management lane initially; the guest
+                                            lane appears after lazy start)
     GET    /ws/axvisor            -> 101   (management shell: help output)
     GET    /ws/vm-1               -> 101   (guest lane greeting)
     GET    /ws/events             -> 101   (snapshot, then created/removed frames)
@@ -98,8 +98,8 @@ GUEST_INPUT_REJECTED = b"is not running; input was dropped"
 GUEST_ISOLATION_COMMAND = b"echo $((222*222))\r"
 GUEST_ISOLATION_RESULT = b"49284"
 
-# The default guest (`linux-virtio-blk-fs.toml` in the shared config library),
-# kept `Ready` by `no-auto-start`.
+# The builtin guest (`linux-virtio-blk-fs.toml` in the shared config library),
+# indexed at build time and created on the first HTTP start request.
 DEFAULT_VM_ID = 1
 # The one path the bundle has to carry: `GET /api/manifest` is the bootstrap, and
 # it cannot come from the manifest itself. Every other path the dashboard calls
@@ -370,6 +370,18 @@ def expect_event(websocket, expected_type, vm_id, deadline, label):
         if frame.get("type") == expected_type and frame.get("id") == vm_id:
             print("  web-ui probe: %s -> %r" % (label, frame))
             return frame
+
+
+def expect_started_event(websocket, vm_id, deadline):
+    """Accept either diff shape when lazy create and start overlap one poll."""
+    while True:
+        frame = receive_text(websocket, deadline)
+        if frame.get("id") != vm_id or frame.get("type") not in ("created", "status"):
+            continue
+        if frame.get("status") not in ("running", "ready"):
+            continue
+        print("  web-ui probe: start event frame -> %r" % (frame,))
+        return frame
 
 
 def receive_until_prompt(websocket, timeout=REQUEST_TIMEOUT):
@@ -710,42 +722,33 @@ def check_manifest():
 
 
 def check_terminals():
-    """The lanes the dashboard renders, plus the two sockets behind them."""
-    routes = console_routes("GET /api/consoles (default VM ready)")
-    if sorted(routes) != ["axvisor", "vm-1"]:
-        raise AssertionError("a Ready guest has no lane? consoles were %r" % (routes,))
-    # The guest lane is named after the configured VM, not after its id: the
-    # dashboard shows this string, so it has to come from the registry.
-    check("guest lane name", routes["vm-1"], "linux-web-ui")
-    # Nothing has attached yet, so no lane may claim to be taken.
-    check("idle guest lane", lane_attached("GET /api/consoles (idle lanes)", "vm-1"), False)
+    """The management lane exists before any builtin VM is created."""
+    routes = console_routes("GET /api/consoles (empty VM registry)")
+    if sorted(routes) != ["axvisor"]:
+        raise AssertionError("startup exposed a guest lane before lazy start: %r" % (routes,))
 
     shell = expect_upgrade("/ws/axvisor", 101)
     receive_until(shell, b"Welcome to AxVisor Browser Shell!")
     # A held lane is the one fact a refused browser cannot see for itself.
     check("held management lane", lane_attached("GET /api/consoles (shell held)", "axvisor"), True)
     # A real command, not just a greeting: the web shell drives the same
-    # interpreter as the board console, and its table must show the same VM the
-    # REST list reports.
+    # interpreter as the board console. The VM list is empty until the later
+    # lazy start request.
     shell.send_binary(b"vm list\r")
     output = receive_until_prompt(shell)
-    for marker in (b"VM ID", b"linux-web-ui"):
+    for marker in (b"No virtual machines found.",):
         if marker not in output:
             raise AssertionError("`vm list` output is missing %r: %r" % (marker, output))
     print("  web-ui probe: /ws/axvisor -> interactive management shell")
 
-    guest = expect_upgrade("/ws/vm-1", 101)
-    receive_until(guest, b"browser console attached to VM 1")
-    print("  web-ui probe: /ws/vm-1 -> guest console greeting")
-
-    # The lanes are exclusive: the dashboard also opens one socket per lane, so a
-    # second subscriber has to be refused rather than silently sharing the input.
+    # The management lane is exclusive: the dashboard also opens one socket,
+    # so a second subscriber has to be refused rather than silently sharing the
+    # input.
     duplicate = expect_upgrade("/ws/axvisor", 409)
     duplicate.close()
     print("  web-ui probe: duplicate /ws/axvisor -> 409")
 
     shell.close()
-    guest.close()
     # The management lane must be reusable once its subscriber is gone, otherwise
     # the dashboard could only ever be opened once per boot.
     deadline = time.monotonic() + POLL_DEADLINE
@@ -763,41 +766,17 @@ def check_terminals():
 
 def check_lifecycle(events):
     """Drive the registry the dashboard renders, watching the event channel."""
-    # Attach before the guest starts: a console lane is live as soon as the VM
-    # exists, and the input check below needs the lane to be watching while the
-    # fixture guest boots and reaches its shell.
-    guest = expect_upgrade("/ws/vm-1", 101)
-    receive_until(guest, b"browser console attached to VM 1")
-    check(
-        "guest lane held",
-        lane_attached("GET /api/consoles (guest lane held)", "vm-1"),
-        True,
-    )
-
-    # The lane is open but the guest is still `Ready`: bytes typed now have no
-    # running guest to read them, and the browser has to be told that instead of
-    # seeing its keystrokes vanish.
-    guest.send_binary(b"x")
-    receive_output_until(
-        guest,
-        GUEST_INPUT_REJECTED,
-        time.monotonic() + REQUEST_TIMEOUT * 3,
-        "input rejected while the guest is stopped",
-    )
-
+    # The registry is empty at boot. A start request resolves the builtin
+    # catalog, creates VM[1], and starts it in one operation.
     status, body = request("POST", "/api/vms/%d/start" % DEFAULT_VM_ID)
-    expect_status("POST /api/vms/1/start", status, 200)
+    expect_status("POST /api/vms/1/start (lazy builtin)", status, 200)
     if body.get("ok") is not True:
         raise AssertionError("start returned %r" % (body,))
 
     # The completed start response does not by itself prove vCPU progress: the
     # counter proves that the guest actually entered, while the event frame is
     # an eager update and the shell's HTTP registry refresh remains authoritative.
-    frame = expect_event(
-        events, "status", DEFAULT_VM_ID, time.monotonic() + EVENT_TIMEOUT, "start event frame"
-    )
-    if frame.get("status") not in ("running", "ready"):
-        raise AssertionError("start event reported %r" % (frame,))
+    expect_started_event(events, DEFAULT_VM_ID, time.monotonic() + EVENT_TIMEOUT)
 
     deadline = time.monotonic() + POLL_DEADLINE
     while True:
@@ -811,6 +790,20 @@ def check_lifecycle(events):
         if time.monotonic() >= deadline:
             raise AssertionError("VM[1] never entered the guest: %r" % (detail,))
         time.sleep(POLL_INTERVAL)
+
+    # Attach after lazy creation. The route did not exist in the initial
+    # console list, and now appears with the configured guest name.
+    routes = console_routes("GET /api/consoles (builtin guest created)")
+    if sorted(routes) != ["axvisor", "vm-1"]:
+        raise AssertionError("lazy start did not publish the guest lane: %r" % (routes,))
+    check("guest lane name", routes["vm-1"], "linux-web-ui")
+    guest = expect_upgrade("/ws/vm-1", 101)
+    receive_until(guest, b"browser console attached to VM 1")
+    check(
+        "guest lane held",
+        lane_attached("GET /api/consoles (guest lane held)", "vm-1"),
+        True,
+    )
 
     # vCPU affinity is a *bitmask* (`Option<usize>` on the AxVisor side) and the
     # fixture pins vCPU 0 to Core 1 (`phys_cpu_ids = [1]`), so the detail has to
@@ -864,9 +857,8 @@ def check_lifecycle(events):
     print("  web-ui probe: management and guest lanes carry separate streams")
 
     # `stop` settles the guest but keeps it registered, so its console lane stays
-    # in place and input is still routed -- and still rejected. This is also the
-    # second proof of the rejection notice: it has to be re-armed by the
-    # successful input above, or the browser would hear nothing this time.
+    # in place and input is still routed -- and still rejected. This proves the
+    # rejection notice is re-armed after a successful guest session.
     status, body = request("POST", "/api/vms/%d/stop" % DEFAULT_VM_ID)
     expect_status("POST /api/vms/1/stop", status, 200)
     deadline = time.monotonic() + POLL_DEADLINE
@@ -906,15 +898,18 @@ def check_lifecycle(events):
 
 
 def check_recreate(events):
-    """Recreate the default guest from the pool candidate the UI can see."""
+    """Recreate the builtin guest from the read-only builtin catalog."""
     # The build rewrites managed image paths when it packages the guest. Read
     # the resulting candidate from the control plane instead of sending the
     # source fixture's `${workspace}` path back to the hypervisor.
     status, pool = request("GET", "/api/vms/pool")
     expect_status("GET /api/vms/pool (recreate source)", status, 200)
-    candidates = [entry for entry in pool.get("entries", []) if entry.get("id") == DEFAULT_VM_ID]
+    builtin = pool.get("builtin")
+    if not isinstance(builtin, list):
+        raise AssertionError("pool response did not expose builtin catalog: %r" % (pool,))
+    candidates = [entry for entry in builtin if entry.get("id") == DEFAULT_VM_ID]
     if len(candidates) != 1:
-        raise AssertionError("pool did not expose exactly one VM[1] candidate: %r" % candidates)
+        raise AssertionError("builtin catalog did not expose exactly one VM[1] candidate: %r" % candidates)
     vm_config = candidates[0].get("toml")
     if not isinstance(vm_config, str) or not vm_config:
         raise AssertionError("pool candidate did not contain TOML: %r" % candidates[0])
@@ -945,7 +940,7 @@ def main():
     if snapshot.get("type") != "snapshot":
         raise AssertionError("first event frame was %r, expected a snapshot" % (snapshot,))
     listed = {vm.get("id"): vm.get("status") for vm in snapshot.get("vms", [])}
-    check("event snapshot", listed, {DEFAULT_VM_ID: "ready"})
+    check("event snapshot (empty startup registry)", listed, {})
 
     check_terminals()
     check_lifecycle(events)

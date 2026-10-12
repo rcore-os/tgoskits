@@ -35,7 +35,7 @@ record queue；提交阶段只做 admission 并把记录入队，不触碰物理
 
 ## 2. 初始化与宿主输入 ownership
 
-`main.rs` 在打印 Axvisor banner、发布普通启动日志和启动默认 VM 的 vCPU task 之前调用
+`main.rs` 在打印 Axvisor banner、发布普通启动日志和创建宿主 selector 选中的 VM 的 vCPU task 之前调用
 `configure_host_console()`。该函数从
 `ax-runtime::console` 取得唯一的 `TaskConsoleInput`、`TaskConsoleOutput` 和可选的
 `ConsoleLogSubscription`。配置过程由可睡眠的一次性锁串行化；只有 output worker 创建成功
@@ -89,7 +89,7 @@ backlog，返回管理 shell 后再回放。底层 64 条 record 队列对宿主
 | `Ctrl+X Ctrl+X` | 前台不变 | 向当前 VM 发送一个 `Ctrl+X`；在 shell 中返回一个 `ShellByte(Ctrl+X)` |
 | `Ctrl+X` 后跟其他字节 | 前台不变 | 向当前 VM 原序发送两个字节；在 shell 中返回 `ShellSequence` |
 
-`running` 是按 VM ID 排序的 `BTreeSet`。默认启动不会选择前台 VM；快捷键切换以当前 `attached` 为锚，没有当前前台时以 `last_attached` 为锚，并在集合首尾环绕。两者都不存在时，`[` 从最大 ID 开始、`]` 从最小 ID 开始。集合为空则返回 `NoRunningGuest`，由 shell 打印诊断并重绘当前命令行。
+`running` 是按 VM ID 排序的 `BTreeSet`。宿主 selector 启动不会选择前台 VM；快捷键切换以当前 `attached` 为锚，没有当前前台时以 `last_attached` 为锚，并在集合首尾环绕。两者都不存在时，`[` 从最大 ID 开始、`]` 从最小 ID 开始。集合为空则返回 `NoRunningGuest`，由 shell 打印诊断并重绘当前命令行。
 
 ### 3.1 有界输入与唤醒
 
@@ -171,7 +171,8 @@ factory 返回的 `Arc<dyn SerialBackend>` 被 `SerialDeviceModel` 持有；mode
 
 | Axvisor 路径 | manager 操作成功后的 mux 调用 | generation / 输出 / foreground 结果 |
 | --- | --- | --- |
-| 默认自动启动 | `launch_default_vms()`；shell 循环随后按实际状态对账 | 不选择 foreground；每台 VM 的输出保留在自己的有界 ring 中，等待显式附着 |
+| 宿主 selector 启动 | `start_selected_vms()`；按 `axvisor.vm_start` 顺序创建、启动并登记 | 不选择 foreground；每台选中的 VM 输出保留在自己的有界 ring 中，等待显式附着 |
+| 无 selector | 只建立 builtin catalog，不创建 VM | console 只保留管理通道；Web/shell 后续按需创建并登记 |
 | `vm start` | `mark_running(vm_id)` | 保留现有 generation；加入 running，不自动改变 foreground |
 | `vm start --console` | start 的 `mark_running`，再 `attach()`、打印提示、`activate()` | 切到目标并进入 Interactive，回放其 ring |
 | `vm console` | `attach()` 根据状态选择交互附着或停止后回放 | Running 时切 foreground；Stopped 时 drain ring 后留在 shell |
@@ -292,9 +293,9 @@ active admission/stable identity 语义一致。
 
 ### 6.2 缓存启动输出
 
-`GuestOutputMux` 默认处于 `Interactive { foreground: None }`：无论当前有一台还是多台 running VM，客户机 TX 都只写入各自的 ring，不写宿主终端。Axvisor 的默认启动路径不自动附着客户机，也不进入 `BootMultiplex`。因此管理 shell 和宿主日志始终可见，而 Linux/ArceOS 等客户机的启动输出要到 `vm console <VM_ID>` 成功后才回放。
+`GuestOutputMux` 默认处于 `Interactive { foreground: None }`：无论当前有一台还是多台 running VM，客户机 TX 都只写入各自的 ring，不写宿主终端。Axvisor 的宿主 selector/按需启动路径不自动附着客户机，也不进入 `BootMultiplex`。因此管理 shell 和宿主日志始终可见，而 Linux/ArceOS 等客户机的启动输出要到 `vm console <VM_ID>` 成功后才回放。
 
-`BootMultiplex` 仍是仲裁器可显式选择的完整行输出模式，但不属于 Axvisor 默认启动流程。它只在调用方明确要求时同时观察多个 VM：只有一个 running VM 时，pending 字节立即输出且不加前缀；多个 VM running 时，mux 等某个 VM 的 pending 中出现 `\n`，再一次取出一条完整逻辑行并加一个 `[VM n] ` 前缀；同一行被多次 backend write 分片时仍只加一次前缀。未结束片段留在该 VM 的 ring，不与另一 VM 的行拼接。
+`BootMultiplex` 仍是仲裁器可显式选择的完整行输出模式，但不属于 Axvisor 的宿主 selector/按需启动流程。它只在调用方明确要求时同时观察多个 VM：只有一个 running VM 时，pending 字节立即输出且不加前缀；多个 VM running 时，mux 等某个 VM 的 pending 中出现 `\n`，再一次取出一条完整逻辑行并加一个 `[VM n] ` 前缀；同一行被多次 backend write 分片时仍只加一次前缀。未结束片段留在该 VM 的 ring，不与另一 VM 的行拼接。
 
 ### 6.3 `Interactive`
 
@@ -415,7 +416,7 @@ disabled = [
 | 宿主日志插入正在编辑的命令 | 是否取得唯一日志订阅；记录是否经 `route_host_log()`；drop 摘要是否增长 | shell 模式必须清行、输出完整记录并重画；guest 前台模式必须缓存而非直写 |
 | `vm console` 报错 | VM ID 是否存在；Running VM 是否可附着；Stopped VM 是否仍有 console state | attach 不接受 Ready、Paused、Stopping；删除或从未建立 backend 的 VM 没有可回放 ring |
 | 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；vCPU0 是否持续产生可处理的 VM-exit | 4096 字节尾部丢弃并按 drain 周期报告一次；kick 会定向唤醒或退出 vCPU0 |
-| 网页终端没有回显，但客户机输出照常到达 | 该通道的 VM 是否在运行（`GET /api/vms` 的状态是否为 `running`）；该 VM 是否经过 `mark_running()` 登记：`vm start`、HTTP start/resume/reset 与 auto-start 都必须登记 | mux 只把输入交给 running 集合中的 VM；未登记时输入被丢弃，且输入链路会向该通道回一行说明丢弃原因；客户机输出不受 running 限制，所以现象是“看得到、打不进” |
+| 网页终端没有回显，但客户机输出照常到达 | 该通道的 VM 是否在运行（`GET /api/vms` 的状态是否为 `running`）；该 VM 是否经过 `mark_running()` 登记：宿主 selector、`vm start`、HTTP start/resume/reset 都必须登记 | mux 只把输入交给 running 集合中的 VM；未登记时输入被丢弃，且输入链路会向该通道回一行说明丢弃原因；客户机输出不受 running 限制，所以现象是“看得到、打不进” |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
 | stop 后仍看到 guest output | 记录是 stop 前已进入 ordered record queue 的，还是 stop 后新的提交 | stop 清 active generation 并拒绝新的 input/output submission，但保留 identity，已排队记录仍可 replay；replacement/remove 才让旧 identity 失效，旧 backend 的新提交与 replay 都被拒绝 |
 | guest 输出停止或丢字 | PL011 retained TX FIFO 是否积压、`FR.TXFE/BUSY` 电平、ordered record queue 是否持续返回 `WouldBlock`、`notify_vm` warning、host transport 是否报告 drop 摘要 | record queue 满时 `try_write()` 返回 0 并记 `retained_tx`，PL011 在下一次 poll 重试；容量被消费后 pop 路径锁外 `notify_vm()` 发布该 poll，被唤醒的是被阻塞 VM 而不是被消费记录的 owner；只有 runtime 实际丢弃的记录或 direct host transport 溢出才报告摘要 |

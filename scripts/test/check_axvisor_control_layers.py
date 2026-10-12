@@ -104,11 +104,9 @@ RETIRED_PATHS = (
         CRATE_SOURCES,
         (
             "crate::http",
-            "crate::vm_pool",
             "crate::vm_events",
             "crate::web",
             "src/http/",
-            "src/vm_pool.rs",
             "src/vm_events.rs",
             "src/web/",
         ),
