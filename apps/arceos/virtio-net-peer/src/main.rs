@@ -59,11 +59,12 @@ const CONNECT_TIMEOUT_MS: &str = match option_env!("AXVIRTIO_CONNECT_TIMEOUT_MS"
     None => "4000",
 };
 /// Grace period before the client's first connect attempt (compile-time
-/// override). The `--vcpus` QEMU shell boots the chain tail first and waits for
-/// each guest's READY marker before starting the previous guest, so the client's
-/// next hop is already listening; the delay still gives the just-started guest
-/// time to finish its network setup. Failed ARP retries are paced by
-/// `connect_retry_backoff`.
+/// override). AxVisor auto-starts every guest, so the `--vcpus` QEMU shell steps
+/// only attach consoles tail first (VM4, then VM3, then VM2, then VM1) and replay
+/// their output; attaching neither starts a guest nor changes boot order. The
+/// delay gives the just-attached guest time to finish its network setup, and the
+/// attach order keeps VM1 foregrounded during its handshake. Failed ARP retries
+/// are paced by `connect_retry_backoff`.
 const CONNECT_START_DELAY_MS: &str = match option_env!("AXVIRTIO_CONNECT_START_DELAY_MS") {
     Some(value) => value,
     None => "10000",
@@ -219,9 +220,10 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
     let mut failed_sessions = 0u64;
     let mut pass_reported = false;
 
-    // Let the neighbours finish booting and configuring their addresses before
-    // the first attempt, so the chain connects instead of poisoning the ARP
-    // cache with failed resolutions.
+    // The guests are already auto-started, so this grace period only lets the
+    // neighbouring guests finish initialization and configure their network
+    // addresses before the first attempt; the chain then connects instead of
+    // poisoning the ARP cache with failed resolutions.
     thread::sleep(connect_start_delay());
 
     loop {

@@ -48,14 +48,16 @@ local_ip_of_vm() {
     esac
 }
 
-# Per-VM client connect start delay (`AXVIRTIO_CONNECT_START_DELAY_MS`). The
-# QEMU shell boots the chain tail first and waits for each READY before starting
-# the next guest (VM4, then VM3, then VM2, then VM1), so every client's next-hop
-# server is already running when the client starts; a modest delay is enough to
-# let the neighbours finish configuring their addresses. VM4 is the tail of the
-# chain and its peer 10.0.2.19 is intentionally absent, so a modest delay would
-# make it flood the virtual switch with ARP pending frames for an address nobody
-# owns; park it far beyond the test window (600000 ms) so it never connects.
+# Per-VM client connect start delay (`AXVIRTIO_CONNECT_START_DELAY_MS`). AxVisor
+# auto-starts every guest before the QEMU shell is available, so the shell steps
+# only control console attach/foreground consumption and replay order (the chain
+# is attached tail first, VM4, then VM3, then VM2, then VM1); attaching never
+# starts a guest or changes boot order. The delay still gives the just-attached
+# guest time to finish its network setup before its client dials the next hop.
+# VM4 is the tail of the chain and its peer 10.0.2.19 is intentionally absent, so
+# a modest delay would make it flood the virtual switch with ARP pending frames
+# for an address nobody owns; park it far beyond the test window (600000 ms) so
+# it never attempts a connection within the window.
 connect_start_delay_of_vm() {
     case "$1" in
         vm1 | vm2 | vm3) echo "10000" ;;
