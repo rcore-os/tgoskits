@@ -569,7 +569,7 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 | `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `address`、`clock_hz`、`backend` |
 | `ivc-channel` | IVC aperture allocator service + wired notify endpoint service | options 为空且拒绝未知字段 |
 | `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；PCI transport 当前只接受同步 ramdisk | `transport`、`capacity`/`capacity_sectors`、`backend`、`path`、`read_only`、`filesystem`（file 后端必填 `ext4`） |
-| `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac` |
+| `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac`（可选） |
 
 串口的 `address` 是 model 专有整数选项，仅固定该串口的 MMIO/PIO 基址，范围与冲突由设备图校验；不开放通用设备裸地址。`console0` 默认采用宿主选定串口或 machine profile 固定资源；配置 `address` 后 IRQ 自动分配，不沿用宿主节点身份。额外串口省略 `address` 时仍从自动池分配。串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
 
@@ -582,6 +582,8 @@ virtio-blk/net 的 model、transport、DMA 接线、IRQ 和 backend glue 都由 
 virtio-blk 省略 `backend` 时默认使用 `file`。文件后端必须显式配置 `filesystem = "ext4"`，目前不接受其他值，也不提供文件系统类型默认值。`path` 是 Axvisor 宿主文件系统中的镜像路径，省略时使用 `/tmp/<设备 id>.img`。文件必须已存在、非空且长度按 512 字节对齐；超级块校验失败会终止设备实例化，不会自动创建文件或格式化。仅使用 `backend = "ramdisk"` 时无需镜像文件，且禁止配置 `path` 和 `filesystem`。
 
 迁移旧 file 配置（包括省略 `backend` 的配置）时，补上 `filesystem = "ext4"`，并在启动前将已有 ext4 镜像放入宿主文件系统。文件后端省略容量时采用文件实际长度；显式 `capacity` 或 `capacity_sectors` 必须与实际长度一致，两者不能同时填写。原来依赖自动创建或调整文件长度的配置需要先在宿主侧准备镜像、核对容量；本实现不执行扩缩容。`ramdisk` 的默认容量仍为 2 MiB。文件后端基础校验与客户机挂载时的文件系统检查是两个阶段，不保证整个 ext4 镜像没有损坏。
+
+virtio-net 的 `guest_mac` 可省略。配置该选项时必须是六元组整数数组，长度、u8 范围、非零、单播以及“不得等于宿主接口 MAC”的校验与设备和之前完全一致，显式地址原样使用，不会被自动逻辑覆盖。省略时在设备 runtime build 阶段自动分配一个本地管理、单播、非零的 MAC，例如 `02:41:58:xx:xx:xx`；候选按固定前缀顺序扫描，跳过所有 `HOST_MACS` 与当前活动 guest 已占用的地址，并在同一把 MAC 占用锁内完成“检查 + 预留”，因此两个并发 build 不会拿到相同地址，地址空间耗尽会明确报错而不是重复分配。自动分配结果同时写入交换机端点、`VirtioNetConfig`、占用登记表和日志。该地址在设备整个生命周期内稳定，设备销毁时随 RAII 释放并可被后续虚拟机复用；重启后重新分配，不保证与上次相同。显式地址也走同一条原子预留流程，与活动 guest 冲突时以 `DuplicateMac` 语义失败，不会在端口注册后静默写入占用表；端口注册或后续构造失败都会通过 RAII 释放预留，避免地址泄漏。
 
 ### 8.2 `fw_cfg`
 
