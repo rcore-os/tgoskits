@@ -1,1 +1,1 @@
-echo UVC_RKNN_STREAM_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_stream --infer-every 3 --log-every 1 --min-confidence 25 --http-port 8080 --http-fps 8 --publish-width 0 --publish-height 0 --jpeg-quality 75
+echo UVC_RKNN_STREAM_BEGIN && cd /rknn_yolov8_image && ./rknn_yolov8_stream --width 160 --height 120 --fps 10 --infer-every 3 --log-every 1 --min-confidence 25 --http-port 8080 --http-fps 8 --publish-width 0 --publish-height 0 --jpeg-quality 75

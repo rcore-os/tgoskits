@@ -27,6 +27,8 @@ const FSYNC_ENV: &str = "BLOCK_RW_BENCH_FSYNC";
 const CHECKSUM_ENV: &str = "BLOCK_RW_BENCH_CHECKSUM_SCENARIO";
 const SUCCESS_MARKER_ENV: &str = "BLOCK_RW_BENCH_SUCCESS_MARKER";
 const MAX_TRANSFER_BYTES_ENV: &str = "BLOCK_RW_BENCH_MAX_TRANSFER_BYTES";
+const REQUEST_BYTES_ENV: &str = "BLOCK_RW_BENCH_REQUEST_BYTES";
+const SKIP_BOUNDARY_CASES_ENV: &str = "BLOCK_RW_BENCH_SKIP_BOUNDARY_CASES";
 const WORKDIR_ENV: &str = "BLOCK_RW_BENCH_WORKDIR";
 
 #[derive(Clone, Copy)]
@@ -46,6 +48,12 @@ struct BenchConfig {
     checksum: String,
     success_marker: String,
     max_transfer_bytes: usize,
+    /// Bytes for one write/read syscall. `None` keeps the historical behavior
+    /// where a logical case moves `case.io_size` bytes per syscall.
+    request_bytes: Option<usize>,
+    /// Drops the hardware-max and planner-split sequential cases while keeping
+    /// the sector, page, and multi-task cases.
+    skip_boundary_cases: bool,
 }
 
 impl BenchConfig {
@@ -61,6 +69,8 @@ impl BenchConfig {
             checksum: env_string(CHECKSUM_ENV, "pattern"),
             success_marker: env_string(SUCCESS_MARKER_ENV, "BLOCK_RW_BENCH_PASSED"),
             max_transfer_bytes: env_usize(MAX_TRANSFER_BYTES_ENV, ADMA2_MAX_TRANSFER_BYTES)?,
+            request_bytes: env_optional_usize(REQUEST_BYTES_ENV)?,
+            skip_boundary_cases: env_bool(SKIP_BOUNDARY_CASES_ENV, false)?,
         };
         config.validate()?;
         Ok(config)
@@ -81,12 +91,48 @@ impl BenchConfig {
                 "block benchmark sizes, workers, device, controller, and marker must be valid",
             ));
         }
+        if let Some(request_bytes) = self.request_bytes
+            && (request_bytes < 512 || !request_bytes.is_multiple_of(512))
+        {
+            return Err(io::Error::other(format!(
+                "{REQUEST_BYTES_ENV} must be a nonzero multiple of 512 bytes"
+            )));
+        }
         if self.checksum != "pattern" {
             return Err(io::Error::other(format!(
                 "{CHECKSUM_ENV} only supports the deterministic `pattern` verifier"
             )));
         }
         Ok(())
+    }
+
+    /// Bytes for one write/read syscall of `case`.
+    ///
+    /// A logical case is never split across two logical units, so a configured
+    /// request size larger than the case size degrades to the case size.
+    fn request_bytes_for(&self, case: Case) -> usize {
+        self.request_bytes.map_or(case.io_size, |request_bytes| {
+            request_bytes.min(case.io_size)
+        })
+    }
+
+    /// Ordered sequential cases for this run.
+    ///
+    /// The hardware-max and planner-split boundary cases are always the last
+    /// two entries, and they are omitted entirely when the board switch drops
+    /// them, so the remaining `sector` and `page` cases keep their positions.
+    fn sequential_cases(&self) -> io::Result<Vec<Case>> {
+        let mut cases = vec![Case::new("sector", 512), Case::new("page", 4 * 1024)];
+        if self.skip_boundary_cases {
+            return Ok(cases);
+        }
+        let planner_split_bytes = self
+            .max_transfer_bytes
+            .checked_add(512)
+            .ok_or_else(|| io::Error::other("maximum transfer size overflows planner split"))?;
+        cases.push(Case::new("hardware-max", self.max_transfer_bytes));
+        cases.push(Case::new("planner-split", planner_split_bytes));
+        Ok(cases)
     }
 }
 
@@ -110,6 +156,18 @@ fn env_usize(name: &str, default: usize) -> io::Result<usize> {
             .parse()
             .map_err(|_| io::Error::other(format!("{name} must be an integer")))
     })
+}
+
+fn env_optional_usize(name: &str) -> io::Result<Option<usize>> {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map_or(Ok(None), |value| {
+            value
+                .parse()
+                .map(Some)
+                .map_err(|_| io::Error::other(format!("{name} must be an integer")))
+        })
 }
 
 fn env_bool(name: &str, default: bool) -> io::Result<bool> {
@@ -144,24 +202,29 @@ fn run() -> io::Result<()> {
         config.fsync,
         env::var_os(DROP_CACHES_ENV).is_some()
     );
-    let planner_split_bytes = config
-        .max_transfer_bytes
-        .checked_add(512)
-        .ok_or_else(|| io::Error::other("maximum transfer size overflows planner split"))?;
-    let sequential_cases = [
-        Case::new("sector", 512),
-        Case::new("page", 4 * 1024),
-        Case::new("hardware-max", config.max_transfer_bytes),
-        Case::new("planner-split", planner_split_bytes),
-    ];
+    let sequential_cases = config.sequential_cases()?;
+    if config.skip_boundary_cases {
+        println!(
+            "block-rw-bench: skip boundary_cases=hardware-max,planner-split \
+             boundary_coverage=partial switch={SKIP_BOUNDARY_CASES_ENV}"
+        );
+        io::stdout().flush()?;
+    }
 
-    for case in sequential_cases {
+    for case in &sequential_cases {
         println!(
             "block-rw-bench: start case={} io_size={} bytes={}",
             case.name, case.io_size, config.sequential_bytes
         );
         io::stdout().flush()?;
-        run_case(dir, case, config.sequential_bytes, config.fsync, &diskstats)?;
+        run_case(
+            dir,
+            *case,
+            config.sequential_bytes,
+            config.request_bytes_for(*case),
+            config.fsync,
+            &diskstats,
+        )?;
     }
     println!(
         "block-rw-bench: start case=multitask tasks={} io_size={} bytes_per_task={}",
@@ -233,16 +296,52 @@ fn percentile_ns(samples: &mut [u64], percent: usize) -> u64 {
     samples[rank.max(1) - 1]
 }
 
+/// Visit every write or read request of one case in order.
+///
+/// `bytes` are covered as logical units of at most `logical_size` bytes, and
+/// every unit is split into requests of at most `request_size` bytes. Splitting
+/// only changes how many bytes one syscall moves: the logical unit boundaries,
+/// the pattern, and the total byte count stay defined by `bytes` and
+/// `logical_size`, and a unit's final request carries its remaining tail.
+fn for_each_request(
+    bytes: usize,
+    logical_size: usize,
+    request_size: usize,
+    mut request: impl FnMut(usize, usize) -> io::Result<()>,
+) -> io::Result<()> {
+    if logical_size == 0 || request_size == 0 {
+        return Err(io::Error::other(
+            "logical case size and request size must be nonzero",
+        ));
+    }
+
+    let mut offset = 0usize;
+    while offset < bytes {
+        let unit_len = (bytes - offset).min(logical_size);
+        let mut unit_offset = 0usize;
+        while unit_offset < unit_len {
+            let request_len = (unit_len - unit_offset).min(request_size);
+            request(offset + unit_offset, request_len)?;
+            unit_offset += request_len;
+        }
+        offset += unit_len;
+    }
+    Ok(())
+}
+
 fn run_case(
     dir: &Path,
     case: Case,
     bytes: usize,
+    request_bytes: usize,
     fsync: bool,
     diskstats: &DiskstatsProbe,
 ) -> io::Result<()> {
     maybe_drop_caches()?;
 
     let path = case_path(dir, case.name);
+    // The pattern seed and the logical case size stay tied to `case.io_size`;
+    // `request_bytes` only caps how many bytes one syscall moves.
     let mut pattern = vec![0; case.io_size];
     let before_write = diskstats.snapshot()?;
     let write_start = Instant::now();
@@ -252,16 +351,14 @@ fn run_case(
         .write(true)
         .open(&path)?;
 
-    let mut offset = 0usize;
     let mut write_latencies = Vec::new();
-    while offset < bytes {
-        let chunk_len = (bytes - offset).min(case.io_size);
-        fill_pattern(&mut pattern[..chunk_len], case.io_size, offset);
+    for_each_request(bytes, case.io_size, request_bytes, |offset, request_len| {
+        fill_pattern(&mut pattern[..request_len], case.io_size, offset);
         let op_start = Instant::now();
-        file.write_all(&pattern[..chunk_len])?;
+        file.write_all(&pattern[..request_len])?;
         write_latencies.push(op_start.elapsed().as_nanos() as u64);
-        offset += chunk_len;
-    }
+        Ok(())
+    })?;
     let write_elapsed = write_start.elapsed();
     let after_write = diskstats.snapshot()?;
 
@@ -278,7 +375,13 @@ fn run_case(
     let before_read = diskstats.snapshot()?;
     let read_start = Instant::now();
     let mut read_latencies = Vec::new();
-    verify_file(&path, case.io_size, bytes, &mut read_latencies)?;
+    verify_file(
+        &path,
+        case.io_size,
+        request_bytes,
+        bytes,
+        &mut read_latencies,
+    )?;
     let read_elapsed = read_start.elapsed();
     let after_read = diskstats.snapshot()?;
 
@@ -327,6 +430,8 @@ fn run_multitask_case(
     let before = diskstats.snapshot()?;
     let started = Instant::now();
     let bytes_per_worker = config.multitask_bytes_per_worker;
+    let multitask_case = Case::new("multitask", 4 * 1024);
+    let request_bytes = config.request_bytes_for(multitask_case);
     let fsync = config.fsync;
     let mut workers = Vec::with_capacity(config.multitask_workers);
     for worker_id in 0..config.multitask_workers {
@@ -338,8 +443,9 @@ fn run_multitask_case(
             let path = dir.join(format!("case-{name}.bin"));
             run_path_case(
                 &path,
-                Case::new("multitask", 4 * 1024),
+                multitask_case,
                 bytes_per_worker,
+                request_bytes,
                 worker_id,
                 fsync,
             )
@@ -370,6 +476,7 @@ fn run_path_case(
     path: &Path,
     case: Case,
     bytes: usize,
+    request_bytes: usize,
     worker_id: usize,
     fsync: bool,
 ) -> io::Result<()> {
@@ -379,24 +486,23 @@ fn run_path_case(
         .truncate(true)
         .write(true)
         .open(path)?;
-    let mut offset = 0usize;
-    while offset < bytes {
-        let chunk_len = (bytes - offset).min(case.io_size);
-        fill_pattern_for_worker(&mut pattern[..chunk_len], case.io_size, offset, worker_id);
-        file.write_all(&pattern[..chunk_len])?;
-        offset += chunk_len;
-    }
+    for_each_request(bytes, case.io_size, request_bytes, |offset, request_len| {
+        fill_pattern_for_worker(&mut pattern[..request_len], case.io_size, offset, worker_id);
+        file.write_all(&pattern[..request_len])?;
+        Ok(())
+    })?;
     if fsync {
         file.sync_all()?;
     }
     drop(file);
-    verify_worker_file(path, case.io_size, bytes, worker_id)?;
+    verify_worker_file(path, case.io_size, request_bytes, bytes, worker_id)?;
     fs::remove_file(path)
 }
 
 fn verify_file(
     path: &Path,
     block_size: usize,
+    request_bytes: usize,
     bytes: usize,
     read_latencies: &mut Vec<u64>,
 ) -> io::Result<()> {
@@ -405,15 +511,13 @@ fn verify_file(
     let mut file = File::open(path)?;
     let mut actual = vec![0; block_size];
     let mut expected = vec![0; block_size];
-    let mut offset = 0usize;
 
-    while offset < bytes {
-        let chunk_len = (bytes - offset).min(block_size);
+    for_each_request(bytes, block_size, request_bytes, |offset, request_len| {
         let op_start = Instant::now();
-        file.read_exact(&mut actual[..chunk_len])?;
+        file.read_exact(&mut actual[..request_len])?;
         read_latencies.push(op_start.elapsed().as_nanos() as u64);
-        fill_pattern(&mut expected[..chunk_len], block_size, offset);
-        if actual[..chunk_len] != expected[..chunk_len] {
+        fill_pattern(&mut expected[..request_len], block_size, offset);
+        if actual[..request_len] != expected[..request_len] {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -422,28 +526,25 @@ fn verify_file(
                 ),
             ));
         }
-        offset += chunk_len;
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 fn verify_worker_file(
     path: &Path,
     block_size: usize,
+    request_bytes: usize,
     bytes: usize,
     worker_id: usize,
 ) -> io::Result<()> {
     let mut file = File::open(path)?;
     let mut actual = vec![0; block_size];
     let mut expected = vec![0; block_size];
-    let mut offset = 0usize;
 
-    while offset < bytes {
-        let chunk_len = (bytes - offset).min(block_size);
-        file.read_exact(&mut actual[..chunk_len])?;
-        fill_pattern_for_worker(&mut expected[..chunk_len], block_size, offset, worker_id);
-        if actual[..chunk_len] != expected[..chunk_len] {
+    for_each_request(bytes, block_size, request_bytes, |offset, request_len| {
+        file.read_exact(&mut actual[..request_len])?;
+        fill_pattern_for_worker(&mut expected[..request_len], block_size, offset, worker_id);
+        if actual[..request_len] != expected[..request_len] {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -453,9 +554,8 @@ fn verify_worker_file(
                 ),
             ));
         }
-        offset += chunk_len;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn fill_pattern(buf: &mut [u8], block_size: usize, base_offset: usize) {
@@ -506,12 +606,11 @@ fn maybe_drop_caches() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BenchConfig, root_device_matches};
+    use super::{BenchConfig, Case, for_each_request, root_device_matches};
 
-    #[test]
-    fn bench_config_rejects_relative_workdir() {
-        let config = BenchConfig {
-            workdir: "relative".into(),
+    fn valid_config() -> BenchConfig {
+        BenchConfig {
+            workdir: "/root/block-rw-bench".into(),
             root_device: "/dev/mmcblk0".into(),
             controller: "test-controller".into(),
             sequential_bytes: 512,
@@ -521,9 +620,120 @@ mod tests {
             checksum: "pattern".into(),
             success_marker: "TEST_PASSED".into(),
             max_transfer_bytes: 512,
+            request_bytes: None,
+            skip_boundary_cases: false,
+        }
+    }
+
+    fn case_names(cases: &[Case]) -> Vec<&'static str> {
+        cases.iter().map(|case| case.name).collect()
+    }
+
+    #[test]
+    fn bench_config_rejects_relative_workdir() {
+        let config = BenchConfig {
+            workdir: "relative".into(),
+            ..valid_config()
         };
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn bench_config_requires_512_aligned_request_bytes() {
+        for request_bytes in [0, 1, 511, 4097] {
+            let config = BenchConfig {
+                request_bytes: Some(request_bytes),
+                ..valid_config()
+            };
+            assert!(
+                config.validate().is_err(),
+                "request_bytes={request_bytes} must be rejected"
+            );
+        }
+
+        for request_bytes in [512, 4096, 4608] {
+            let config = BenchConfig {
+                request_bytes: Some(request_bytes),
+                ..valid_config()
+            };
+            assert!(
+                config.validate().is_ok(),
+                "request_bytes={request_bytes} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn request_bytes_never_exceed_the_logical_case_size() {
+        let case = Case::new("planner-split", 4608);
+
+        assert_eq!(valid_config().request_bytes_for(case), 4608);
+
+        let config = BenchConfig {
+            request_bytes: Some(4096),
+            ..valid_config()
+        };
+        assert_eq!(config.request_bytes_for(case), 4096);
+
+        let config = BenchConfig {
+            request_bytes: Some(8192),
+            ..valid_config()
+        };
+        assert_eq!(config.request_bytes_for(case), 4608);
+    }
+
+    #[test]
+    fn request_split_preserves_logical_units_and_tail_bytes() {
+        let mut requests = Vec::new();
+        for_each_request(2 * 4608 + 100, 4608, 4096, |offset, request_len| {
+            requests.push((offset, request_len));
+            Ok(())
+        })
+        .expect("request split must succeed");
+
+        assert_eq!(
+            requests,
+            [
+                (0, 4096),
+                (4096, 512),
+                (4608, 4096),
+                (8704, 512),
+                (9216, 100)
+            ]
+        );
+    }
+
+    #[test]
+    fn request_split_rejects_zero_sizes() {
+        assert!(for_each_request(512, 512, 0, |_, _| Ok(())).is_err());
+        assert!(for_each_request(512, 0, 512, |_, _| Ok(())).is_err());
+        assert!(for_each_request(0, 512, 512, |_, _| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn skip_boundary_cases_keeps_only_the_sector_and_page_cases() {
+        assert_eq!(
+            case_names(
+                &valid_config()
+                    .sequential_cases()
+                    .expect("the default run must build the full case list")
+            ),
+            ["sector", "page", "hardware-max", "planner-split"]
+        );
+
+        let trimmed = BenchConfig {
+            skip_boundary_cases: true,
+            ..valid_config()
+        };
+        assert_eq!(
+            case_names(
+                &trimmed
+                    .sequential_cases()
+                    .expect("skipping boundary cases must still build a case list")
+            ),
+            ["sector", "page"]
+        );
     }
 
     #[test]

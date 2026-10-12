@@ -41,6 +41,7 @@ BLOCK_RW_BENCH_ROOT_DEVICE="$root_device" \
 BLOCK_RW_BENCH_CONTROLLER='<Linux controller name>' \
 BLOCK_RW_BENCH_SUCCESS_MARKER='<BOARD>_LINUX_BLOCK_RW_BENCH_PASSED' \
 BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='<same limit as board TOML>' \
+BLOCK_RW_BENCH_REQUEST_BYTES='<optional per-syscall limit>' \
 BLOCK_RW_BENCH_WORKDIR=/root/block-rw-bench-linux \
   /tmp/block-rw-bench
 install -D -m 0755 /tmp/block-rw-bench /usr/local/libexec/block-rw-bench
@@ -69,20 +70,36 @@ marker. Axbuild injects that prelude before the shared `init.sh`;
 the guest does not guess a board from `/proc/device-tree`. The helper verifies
 that `/` is mounted from `BLOCK_RW_BENCH_ROOT_DEVICE` and reports
 `BLOCK_RW_BENCH_CONTROLLER`. It then runs 512-byte, 4-KiB, hardware
-maximum-transfer, forced planner-split, and multi-task
-concurrent cases. Every case writes files under `/root/block-rw-bench/`, calls
-`sync_all`, reads the data back, and verifies a deterministic pattern. Only a
-fully successful run prints the unique marker in `BLOCK_RW_BENCH_SUCCESS_MARKER` (default `BLOCK_RW_BENCH_PASSED`). Sizes, worker count, fsync, and checksum scenario are configurable with `BLOCK_RW_BENCH_SEQUENTIAL_BYTES`, `BLOCK_RW_BENCH_MULTITASK_BYTES_PER_WORKER`, `BLOCK_RW_BENCH_MULTITASK_WORKERS`, `BLOCK_RW_BENCH_FSYNC`, and `BLOCK_RW_BENCH_CHECKSUM_SCENARIO`.
+maximum-transfer, forced planner-split, and multi-task concurrent cases. Setting
+`BLOCK_RW_BENCH_SKIP_BOUNDARY_CASES` to true keeps the sector, page, and
+multi-task cases but drops the hardware-max and planner-split boundary cases;
+the helper then logs `boundary_coverage=partial`, so a skipped run must not be
+read as a full boundary pass. Every case writes files under
+`/root/block-rw-bench/`, optionally calls `sync_all` when fsync is enabled,
+reads the data back, and verifies a deterministic pattern. Only a fully
+successful run prints the unique marker in `BLOCK_RW_BENCH_SUCCESS_MARKER`
+(default `BLOCK_RW_BENCH_PASSED`). Sizes, worker count, fsync, boundary-case
+skipping, and checksum scenario are configurable with
+`BLOCK_RW_BENCH_SEQUENTIAL_BYTES`, `BLOCK_RW_BENCH_MULTITASK_BYTES_PER_WORKER`,
+`BLOCK_RW_BENCH_MULTITASK_WORKERS`, `BLOCK_RW_BENCH_FSYNC`,
+`BLOCK_RW_BENCH_SKIP_BOUNDARY_CASES`, and `BLOCK_RW_BENCH_CHECKSUM_SCENARIO`.
 
 Linux/Starry comparisons must use the same helper hash, root medium, sequential
-and worker byte counts, fsync setting, checksum scenario, and maximum-transfer
-value. Record CPU count, mount source, controller/driver, helper SHA-256, and
-all per-case output; do not compare measurements gathered from different
-workloads.
+and worker byte counts, fsync setting, checksum scenario, maximum-transfer
+value, and boundary-case switch. Record CPU count, mount source,
+controller/driver, helper SHA-256, and all per-case output; do not compare
+measurements gathered from different workloads.
 
-`BLOCK_RW_BENCH_MAX_TRANSFER_BYTES` must be a nonzero 512-byte multiple. The
-only supported checksum scenario is `pattern`; unknown values fail instead of
-silently running a different workload.
+`BLOCK_RW_BENCH_MAX_TRANSFER_BYTES` and the optional
+`BLOCK_RW_BENCH_REQUEST_BYTES` must be nonzero 512-byte multiples. The latter
+caps each read/write syscall while preserving the logical case size, which is
+useful for controllers that reject large requests.
+`BLOCK_RW_BENCH_SKIP_BOUNDARY_CASES` accepts `1`/`true`/`yes` or
+`0`/`false`/`no`, defaults to `false`, and is meant for boards whose device
+cannot survive the full sequential boundary set; `board-orangepi-5-plus.toml`
+enables it for the OrangePi Starry eMMC. The only supported checksum
+scenario is `pattern`; unknown values fail instead of silently running a
+different workload.
 
 Each sequential case transfers 8 MiB. The eight concurrent workers transfer
 2 MiB each; these sizes keep the depth-one hardware queue validation bounded

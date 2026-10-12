@@ -110,15 +110,16 @@ jobs:
           fi
 
       # Some Starry board builds pack a uImage from a companion `.its` file.
-      # Those checks set `requires_mkimage` so a missing `mkimage` fails here
-      # with an actionable message instead of stopping the build mid-way.
-      # Silent skipping of the uImage step is never an option.
+      # Those checks set `requires_mkimage`; FIT conversion also needs `dtc`.
+      # Check both tools here so a missing host dependency fails before the
+      # board build with an actionable message.
       - name: Preflight mkimage
         if: matrix.requires_mkimage
         run: |
           set -euo pipefail
-          if command -v mkimage >/dev/null 2>&1; then
+          if command -v mkimage >/dev/null 2>&1 && command -v dtc >/dev/null 2>&1; then
             echo "mkimage: $(command -v mkimage)"
+            echo "dtc: $(command -v dtc)"
             exit 0
           fi
 
@@ -128,22 +129,23 @@ jobs:
           fi
           if ! command -v apt-get >/dev/null 2>&1 ||
             ! printf '%s' "${distro_ids}" | grep -Eqi '(^| )(debian|ubuntu)( |$)'; then
-            echo "::error::mkimage (u-boot-tools) is required by this check but is missing, and this runner does not look like a Debian or Ubuntu host" >&2
-            echo "install u-boot-tools on the runner or move this check to a runner that provides mkimage" >&2
+            echo "::error::mkimage (u-boot-tools) and dtc (device-tree-compiler) are required by this check, but this runner does not look like a Debian or Ubuntu host" >&2
+            echo "install u-boot-tools and device-tree-compiler on the runner or move this check to a runner that provides both tools" >&2
             exit 1
           fi
 
           apt_get=(apt-get)
           if [ "$(id -u)" != "0" ]; then
             if ! command -v sudo >/dev/null 2>&1; then
-              echo "::error::mkimage is missing and sudo is unavailable to install u-boot-tools" >&2
+              echo "::error::mkimage or dtc is missing and sudo is unavailable to install u-boot-tools and device-tree-compiler" >&2
               exit 1
             fi
             apt_get=(sudo apt-get)
           fi
           "${apt_get[@]}" update
-          DEBIAN_FRONTEND=noninteractive "${apt_get[@]}" install -y --no-install-recommends u-boot-tools
+          DEBIAN_FRONTEND=noninteractive "${apt_get[@]}" install -y --no-install-recommends u-boot-tools device-tree-compiler
           command -v mkimage
+          command -v dtc
 
       - name: Preflight container
         if: matrix.container_preflight != 'none'
