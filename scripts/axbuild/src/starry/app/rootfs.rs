@@ -91,13 +91,23 @@ async fn prepare_default_qemu_app_rootfs(
     };
     if app.prebuild_path.is_none() {
         if let Some(configured) = configured_rootfs {
-            crate::image::storage::ensure_optional_managed_rootfs(
-                workspace_root,
-                target_dir,
-                arch,
-                Some(configured),
-            )
-            .await?;
+            if is_default_managed_rootfs(arch, configured) {
+                // A QEMU config that spells out the default managed Alpine image
+                // still needs the Starry OpenRC preparation. Without it the image
+                // keeps Alpine's own `/etc/inittab` gettys, which loop on the
+                // missing /dev/tty1..tty6 consoles.
+                rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target).await?;
+            } else {
+                // Custom images keep their own boot setup; only existence and the
+                // APK region are ensured.
+                crate::image::storage::ensure_optional_managed_rootfs(
+                    workspace_root,
+                    target_dir,
+                    arch,
+                    Some(configured),
+                )
+                .await?;
+            }
             rootfs::ensure_apk_region_in_rootfs(configured)?;
             return Ok(PreparedAppRootfs::borrowed(configured.to_path_buf()));
         }
@@ -136,6 +146,16 @@ async fn prepare_default_qemu_app_rootfs(
     })();
     prepare_result?;
     Ok(run.finish())
+}
+
+/// Returns whether a configured rootfs is the default managed image of `arch`.
+///
+/// Managed rootfs paths are resolved into the image storage directory by file
+/// name, so the default image name identifies the image prepared by
+/// [`rootfs::ensure_rootfs_in_tmp_dir`].
+fn is_default_managed_rootfs(arch: &str, configured_rootfs: &Path) -> bool {
+    configured_rootfs.file_name().and_then(|name| name.to_str())
+        == crate::image::storage::default_rootfs_image(arch)
 }
 
 fn create_default_app_rootfs_run(
@@ -236,6 +256,23 @@ fn reset_dir(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_default_managed_image_uses_the_starry_rootfs_path() {
+        let managed_dir = Path::new("/workspace/target/axbuild/rootfs");
+        assert!(is_default_managed_rootfs(
+            "x86_64",
+            &managed_dir.join("rootfs-x86_64-alpine.img")
+        ));
+        assert!(!is_default_managed_rootfs(
+            "x86_64",
+            &managed_dir.join("rootfs-x86_64-dropbear.img")
+        ));
+        assert!(!is_default_managed_rootfs(
+            "unknown-arch",
+            &managed_dir.join("rootfs-x86_64-alpine.img")
+        ));
+    }
 
     #[test]
     fn default_prebuild_runs_use_fresh_rootfs_copies() {

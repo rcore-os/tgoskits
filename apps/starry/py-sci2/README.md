@@ -46,19 +46,26 @@ Statsmodels 地毯的 Logit 混淆表优先真调 `pred_table()`；conda-forge �
 `np.histogram2d` 内部用坏的 `np.ravel_multi_index` 拒绝这个 2x2 直方图（x86_64 同版本正常），此时地毯从
 同一已拟合模型的 `endog`/`predict` 构造完全相同的 2x2 表继续断言形状与对角线，其他异常照常失败。
 
-## conda 彩蛋 - conda 命令面全 `--help` / `-h` 地毯
+## conda 彩蛋 - conda 命令行面地毯
 
-`CondaCliCarpet.py` 以 conda 自己的子命令树为 ground truth，逐条覆盖 conda 的整个命令面：
-`clean / compare / config / create / info / init / install / list / notices / package / remove / rename /
-run / search / update / env / export / doctor / repoquery / activate / deactivate` 每一个的 `--help` **与**
-`-h` 都必须打印其 `usage: conda <sub>` 横幅并退出 0。顶层帮助按 `conda help` → `conda --help` →
-`conda -h` 的顺序取第一个退出 0 且带 usage 横幅的等价入口：x86_64 QEMU 上 `conda --help` 作为首个构建
-完整 argparse/插件树的 spawn 要冷导入全部插件入口（含 libmamba 求解器），先跑一个廉价的顶层帮助拼写把这条
-路径预热，后续规范拼写就在同一个未放宽的 300 秒上限内完成，断言仍落在真实输出的退出码与 usage/核心子命令上。
-再加上信息类命令返回真实、结构良好的输出（`--version` 解析成 N.N.N、`info` / `info --json` 报版本与平台、
-`list` / `list numba` 列已装包、`config --show` / `--show-sources` / `--describe`、`env list`、
-`run --help`、`doctor --help`）。共 173 条断言，证明在 StarryOS 上跑起来的 conda 是一个功能完整、
-可自省的包管理器 - 而不仅仅是能 import 的 Python 库。
+`CondaCliCarpet.py` 以 conda 自己的子命令树为 ground truth，但按代表性抽样而不是逐条枚举。顶层帮助仍按
+`conda help` → `conda --help` → `conda -h` 的顺序取第一个退出 0 且带 usage 横幅的等价入口，并断言核心
+子命令 `install` / `create` / `list` 出现在列表中。子命令帮助只抽查 `info` / `config` / `install` /
+`env` / `run` / `search` / `package` / `repoquery`，让每个代表一种不同的 CLI 形态（信息转储、配置键、
+求解变更、环境管理、命令执行、索引查询、包归属查询、插件查询），并逐个断言 `usage: conda <sub>` 横幅、
+退出 0，以及 `--freeze-installed` / `--no-capture-output` / `--which` 这类只有该命令才有的关键字。未被抽查
+的子命令由后续真实功能与错误路径检查覆盖：`create` / `remove` 走 solve 的 `--dry-run --offline --json`，
+`clean` 走 `--all --dry-run --json`，`env` / `run` / `compare` / `search` / `notices` / `doctor` /
+`package` / `repoquery` 各自真调一次，`conda frobnicate` 与未知参数这类 argparse 错误路径也单独验证退出码。
+信息类命令的断言全部保留：`--version` 解析成 N.N.N、`info --json` 报版本与平台、`list --json` 与正则
+过滤列出已装包、`config --show --json` 逐键核对并做 `--set` / `--get` / `--remove-key` 往返、
+`env export` / `env list --json`、`install` / `create` / `clean` 的机器可读 JSON，证明在 StarryOS 上
+跑起来的 conda 是一个功能完整、可自省的包管理器 - 而不仅仅是能 import 的 Python 库。
+
+抽样是因为在目标架构上每条 conda 调用都要付一次沉重的 Python 启动代价。脚本因此在当前解释器就是 conda
+解释器时直接调用 `conda.cli.main.main(*args)`（`main_subshell` 每次重建 context 与日志配置），用重定向
+捕获 stdout/stderr，只在无法导入该入口时退回子进程调用；顶层帮助的等价拼写探测也复用同一个入口。因此每条
+命令仍然是独立一次调用、独立检查返回值与输出，只是不再重复付出启动开销。
 
 ## glibc-on-StarryOS 机制
 
