@@ -7,5 +7,6 @@ features = [
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
+  "ax-runtime/tls",
 ]
 max_cpu_num = 4
