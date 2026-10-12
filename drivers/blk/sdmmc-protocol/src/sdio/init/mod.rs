@@ -286,6 +286,9 @@ impl<H: SdMmcIrqHost + 'static> SdMmcInitRequest<H> {
             | SdMmcInitState::PostIdentificationClockDelay
             | SdMmcInitState::SubmitCmd0
             | SdMmcInitState::SubmitAcmd41Retry
+            | SdMmcInitState::BeginMmcFallback
+            | SdMmcInitState::PollMmcFallbackReset
+            | SdMmcInitState::MmcFallbackCmd0
             | SdMmcInitState::SubmitMmcReadyRetry
             | SdMmcInitState::PollSdHostBusWidth
             | SdMmcInitState::FinishCardSetup

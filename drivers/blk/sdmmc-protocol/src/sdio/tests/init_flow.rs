@@ -190,6 +190,29 @@ fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
 }
 
 #[test]
+fn mmc_fallback_register_states_are_runnable_without_a_new_irq() {
+    let host = MockHost::new(Vec::new());
+    let driver = SdMmcCard::new(host);
+    let scratch = SdMmcInitScratch::new(test_device_dma()).unwrap();
+    let mut request = SdMmcInitRequest::new(CardInitPreference::SdFirst, scratch);
+
+    for state in [
+        SdMmcInitState::BeginMmcFallback,
+        SdMmcInitState::PollMmcFallbackReset,
+        SdMmcInitState::MmcFallbackCmd0,
+    ] {
+        request.state = state;
+        assert_eq!(
+            driver.init_wait_kind(&request),
+            SdMmcInitWait::Register,
+            "{state:?} must be advanced by the register retry path"
+        );
+    }
+    request.state = SdMmcInitState::PollMmcFallbackCmd0;
+    assert_eq!(driver.init_wait_kind(&request), SdMmcInitWait::Irq);
+}
+
+#[test]
 fn poll_init_request_sd_only_does_not_fallback_to_cmd1_after_acmd41_timeout() {
     let mut driver = SdMmcCard::new(MockHost::with_results(std::vec![Ok(Response::R3(
         OcrResponse::from_raw(0x00FF_8000),
