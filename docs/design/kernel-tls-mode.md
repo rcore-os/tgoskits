@@ -33,6 +33,6 @@ RISC-V 用户态模式在内核使用 `tp` 保存当前执行上下文，并令 
 
 ### 2.2 回归与发布
 
-`scripts/test/check_kernel_tls_modes.py` 编译真实 `cpu-local` 及其 `ax-cpu` 依赖，检查向 CPU 层的 feature 传播和两个底层包的 rustc cfg，并在同一构建目录切换四种组合。QEMU 验证独立保留 ArceOS 多任务 TLS、Starry 用户态 clone/TLS 和 Axvisor 宿主 TLS 路径，不能用宿主配置检查替代。
+`scripts/test/check_kernel_tls_modes.py` 编译真实 `cpu-local` 及其 `ax-cpu` 依赖，检查向 CPU 层的 feature 传播和两个底层包的 rustc cfg，并在同一构建目录切换四种组合。当前 Starry QEMU 的普通 `qemu`/`qemu-e1000` wrapper 统一使用 kernel-TLS profile，`test-clone-tls` 的真实运行证据属于该 profile；旧的无 kernel-TLS userspace-TLS 全套 QEMU lane 未在这组 CI 矩阵运行。该脚本只验证 cfg 传播，不能替代另一 profile 的 QEMU runtime 验证；ArceOS 多任务 TLS 和 Axvisor 宿主 TLS 仍由各自入口负责。
 
 旧注册表基线仍含互斥报错。先发布能够接受双开的新版本，再验证真实注册表基线并恢复相关 semver 检查。回滚通过撤销模式改动和依赖版本更新完成；已采用双开的调用方需要同时恢复为单独 `uspace`。合入前应由启动与调度领域审查人核对寄存器所有权及真实运行证据。

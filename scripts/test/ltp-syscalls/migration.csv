@@ -179,7 +179,7 @@ test-suit/starryos/qemu/system/drm-test-drm-modeset,test-drm-modeset,待审计,,
 test-suit/starryos/qemu/system/drm-test-drm-version,test-drm-version,待审计,,,,,
 test-suit/starryos/qemu/system/evdev-test-evdev-minor,test-evdev-minor,待审计,,,,,
 test-suit/starryos/qemu/system/evdev-test-evdev-prop-bits,test-evdev-prop-bits,待审计,,,,,
-test-suit/starryos/qemu/system/getdents64-bounded-buffer,test-getdents64-bounded-buffer,合并后清理,,test-getdents64-buffer-abi 保留目录读取哨兵和 EBADF 检查,旧用例没有独立剩余断言,源码逐项对照确认新用例额外覆盖高位 count EINVAL,test(starry): consolidate duplicate system probes
+test-suit/starryos/qemu/system/getdents64-bounded-buffer,test-getdents64-bounded-buffer,合并后清理,,test-getdents64-buffer-abi 保留目录读取哨兵和 EBADF 检查,旧用例没有独立剩余断言,源码逐项对照确认新用例额外覆盖高位 count EINVAL,ci(starry): consolidate qemu tests around shared kernel
 test-suit/starryos/qemu/system/ltp-syscalls,待核实安装程序,待审计,,,,,
 test-suit/starryos/qemu/system/mm-transition-safety,mm-transition-safety,待审计,,,,,
 test-suit/starryos/qemu/system/mqueue-fd-read-status,test-mqueue-fd-read-status,待审计,,,,,
@@ -418,7 +418,7 @@ test-suit/starryos/qemu/system/test-personality-abi-width,test-personality-abi-w
 test-suit/starryos/qemu/system/test-pidfd-poll-exit,test-pidfd-poll-exit,待审计,,,,,
 test-suit/starryos/qemu/system/test-pipe-poll-close,test-pipe-poll-close,待审计,,,,,
 test-suit/starryos/qemu/system/test-pivot-root,test-pivot-root,待审计,,,,,
-test-suit/starryos/qemu/system/test-pivot-root-namespace,test-pivot-root-namespace,合并后清理,,test-pivot-root 保留私有 mount namespace 隔离和父 namespace 可见性,旧用例没有独立剩余断言,源码逐项对照确认新用例额外覆盖普通目录 EINVAL mountinfo 和旧根 detach,test(starry): consolidate duplicate system probes
+test-suit/starryos/qemu/system/test-pivot-root-namespace,test-pivot-root-namespace,合并后清理,,test-pivot-root 保留私有 mount namespace 隔离和父 namespace 可见性,旧用例没有独立剩余断言,源码逐项对照确认新用例额外覆盖普通目录 EINVAL mountinfo 和旧根 detach,ci(starry): consolidate qemu tests around shared kernel
 test-suit/starryos/qemu/system/test-proc-environ,test-proc-environ,待审计,,,,,
 test-suit/starryos/qemu/system/test-proc-root-cwd,test-proc-root-cwd,待审计,,,,,
 test-suit/starryos/qemu/system/test-proc-status-groups,test_proc_status_groups,待审计,,,,,

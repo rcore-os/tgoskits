@@ -83,7 +83,10 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 
 ArceOS 的四个架构聚合检查使用 QCS。AxVisor 的两个 AArch64 检查分别覆盖 smoke/virtio-blk/axtest/timer stress 和 panic/HTTP 控制面/浏览器控制台/IVC，另一个 RISC-V 检查覆盖 smoke、IPI 与 panic 模式。`static.toml` 中 formatting/publish 预检与 Axvisor 控制面分层检查使用 QCS，sync-lint 走托管 base 环境。
 
-Starry 的四个架构 QEMU 套件使用托管 base 环境，并在各自行中追加内核测试；不能因为它们运行内核就推断必须申请自托管 runner。
+Starry 的四个架构 QEMU 套件使用托管 base 环境。RISC-V、LoongArch 和 x86_64 行在普通
+QEMU 套件后追加 `starry-kernel` 的 `ktest`；AArch64 行有意省略默认无 RGA kernel
+配置下的独立 `axtest_kernel`，不把普通 QEMU 的 C/LTP 结果当作替代覆盖。不能因为它们
+运行内核就推断必须申请自托管 runner。
 
 Benchmarks 清单中的六个 Starry QEMU 性能 check 显式选择 `qcs`，直接使用自托管 host 环境，不设置 `container_preflight`；Starry 板卡性能 check 继续使用 `board` profile。
 
