@@ -44,6 +44,62 @@ use std::{
 
 use axvm_types::VMId;
 
+/// Host-owned adapter for run-scoped guest CPU-frequency hints.
+///
+/// The adapter is deliberately expressed in normalized performance units and
+/// domain ordinals. It must merge requests without doing a synchronous
+/// hardware transition from the guest MMIO path; the host cpufreq worker owns
+/// OPP, thermal, DSU and regulator constraints.
+pub trait GuestCpuFreqBackend: Send + Sync {
+    /// Binds one run generation before any guest MMIO access is admitted.
+    fn bind(&self, _vm_id: VMId, _run_generation: u64) {}
+
+    /// Returns the current safe OPP set as normalized guest performance values.
+    ///
+    /// The table is materialized while a VM is prepared, after the host has
+    /// applied thermal and board-specific limits. A backend that cannot prove
+    /// a safe table must return an error instead of inventing frequencies.
+    fn performance_table(&self, _domain: u32) -> Result<Vec<u32>, &'static str> {
+        Err("host CPU frequency performance table is unavailable")
+    }
+
+    /// Verifies that every host CPU selected for the guest belongs to the
+    /// requested hardware domain. A backend must reject an ambiguous domain
+    /// mapping instead of relying on a platform-specific CPU-number table.
+    fn validate_placement(&self, _domain: u32, _host_cpus: &[usize]) -> Result<(), &'static str> {
+        Err("host CPU frequency domain placement is unavailable")
+    }
+
+    /// Publishes one vCPU hint for an exact VM execution generation.
+    fn set_hint(
+        &self,
+        vm_id: VMId,
+        run_generation: u64,
+        vcpu_id: usize,
+        domain: u32,
+        performance: u32,
+    ) -> Result<(), &'static str>;
+
+    /// Returns the last host-confirmed normalized value for this request.
+    fn current_performance(
+        &self,
+        vm_id: VMId,
+        run_generation: u64,
+        vcpu_id: usize,
+        domain: u32,
+    ) -> Result<u32, &'static str>;
+
+    /// Removes every hint belonging to one exact execution generation.
+    fn clear(&self, vm_id: VMId, run_generation: u64);
+
+    /// Temporarily removes a paused run from host aggregation while retaining
+    /// its desired values for a subsequent resume.
+    fn suspend(&self, vm_id: VMId, run_generation: u64);
+
+    /// Re-enables a paused run's retained requests.
+    fn resume(&self, vm_id: VMId, run_generation: u64);
+}
+
 use crate::{
     AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, OperationId, RunId, StopReason,
     ThreadHandle, VmKey, VmOperation, VmStatus,
@@ -82,6 +138,8 @@ pub struct VmCreatePlan {
     pub images: Arc<dyn BootImageProvider + Send + Sync>,
     /// Immutable host scheduling policy applied to every vCPU owner task.
     pub vcpu_schedule_policy: crate::SchedulePolicy,
+    /// Host adapter for the optional `qemu,virtual-cpufreq` device.
+    pub cpu_freq_backend: Option<Arc<dyn GuestCpuFreqBackend>>,
 }
 
 /// Owned observation of the static VM configuration.

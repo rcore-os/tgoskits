@@ -4,6 +4,9 @@ name = "zephyr"
 guest_type = "virtualized"
 cpu_num = 1
 phys_cpu_ids = [0x200]
+# Keep the controller on RK3588 A55 CPU2 while Linux uses A76 CPU4 in the
+# dual Linux + Zephyr robot profile.
+phys_cpu_sets = [0x4]
 
 [kernel]
 entry_point = 0x4000_100c

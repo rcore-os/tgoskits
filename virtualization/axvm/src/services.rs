@@ -9,17 +9,17 @@ use std::{
 };
 
 use axdevice::{
-    DeviceManagerError, DeviceManagerResult, DeviceRuntime, RuntimeAccessPorts, StopAccessPort,
-    TimerAccessPort, WakeAccessPort, WorkAccessPort,
+    DeviceManagerError, DeviceManagerResult, DeviceRuntime, GuestCpuFreqPort, RuntimeAccessPorts,
+    StopAccessPort, TimerAccessPort, WakeAccessPort, WorkAccessPort,
 };
-use axdevice_base::{DeviceAccess, DeviceId};
+use axdevice_base::{DeviceAccess, DeviceId, DeviceVcpuId};
 
 use crate::{
     AxVmError, AxVmResult, RunId, StopReason,
     guest_memory::GuestMemoryPort,
     host::{HostTime, HostTimer, default_host},
     irq::model::SourceEvent,
-    manager::ControlShared,
+    manager::{ControlShared, GuestCpuFreqBackend},
     sync::MutexExt,
 };
 
@@ -393,15 +393,26 @@ pub(crate) struct DevicePorts {
     control: Weak<ControlShared>,
     signals: Arc<RunSignals>,
     timers: Arc<DeviceTimers>,
+    cpu_freq: Option<Arc<dyn GuestCpuFreqBackend>>,
 }
 
 impl DevicePorts {
-    pub(crate) fn new(signals: Arc<RunSignals>, control: Weak<ControlShared>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(
+        signals: Arc<RunSignals>,
+        control: Weak<ControlShared>,
+        cpu_freq: Option<Arc<dyn GuestCpuFreqBackend>>,
+    ) -> Arc<Self> {
+        let run = signals.run_id();
+        let ports = Arc::new(Self {
             timers: DeviceTimers::new(signals.clone()),
             signals,
             control,
-        })
+            cpu_freq,
+        });
+        if let Some(backend) = &ports.cpu_freq {
+            backend.bind(run.vm().vm_id(), run.generation());
+        }
+        ports
     }
 
     pub(crate) fn access_ports(self: &Arc<Self>) -> RuntimeAccessPorts {
@@ -410,18 +421,93 @@ impl DevicePorts {
             .with_wake(self.clone())
             .with_stop(self.clone())
             .with_work(self.clone())
+            .with_cpufreq(self.clone())
     }
 
     pub(crate) fn close(&self) {
+        self.clear_cpu_freq_hints();
         self.signals.close_interrupts();
     }
 
+    /// Remove this run's host CPU-frequency hints without closing device
+    /// signals. Stop uses this before teardown so a failed cleanup cannot
+    /// leave a retired run affecting a later VM generation.
+    pub(crate) fn clear_cpu_freq_hints(&self) {
+        let run = self.signals.run_id();
+        if let Some(backend) = &self.cpu_freq {
+            backend.clear(run.vm().vm_id(), run.generation());
+        }
+    }
+
     pub(crate) fn suspend(&self) -> AxVmResult {
-        self.timers.suspend()
+        // Publish the host-side exclusion even when a timer worker reports a
+        // suspend failure. A partially quiesced VM must never keep raising its
+        // CPU-frequency floor while lifecycle rollback is in progress.
+        let timer_result = self.timers.suspend();
+        if let Some(backend) = &self.cpu_freq {
+            let run = self.signals.run_id();
+            backend.suspend(run.vm().vm_id(), run.generation());
+        }
+        timer_result
     }
 
     pub(crate) fn resume(&self) -> AxVmResult {
-        self.timers.resume()
+        self.timers.resume()?;
+        if let Some(backend) = &self.cpu_freq {
+            let run = self.signals.run_id();
+            backend.resume(run.vm().vm_id(), run.generation());
+        }
+        Ok(())
+    }
+}
+
+impl GuestCpuFreqPort for DevicePorts {
+    fn set_performance(
+        &self,
+        _device: DeviceId,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+        performance: u32,
+    ) -> DeviceManagerResult {
+        let backend = self.cpu_freq.as_ref().ok_or_else(|| {
+            port_error(
+                "set guest CPU frequency hint",
+                "no host CPU frequency backend",
+            )
+        })?;
+        let run = self.signals.run_id();
+        backend
+            .set_hint(
+                run.vm().vm_id(),
+                run.generation(),
+                vcpu_id.as_usize(),
+                domain,
+                performance,
+            )
+            .map_err(|error| port_error("set guest CPU frequency hint", error))
+    }
+
+    fn current_performance(
+        &self,
+        _device: DeviceId,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+    ) -> DeviceManagerResult<u32> {
+        let backend = self.cpu_freq.as_ref().ok_or_else(|| {
+            port_error(
+                "read guest CPU frequency performance",
+                "no host CPU frequency backend",
+            )
+        })?;
+        let run = self.signals.run_id();
+        backend
+            .current_performance(
+                run.vm().vm_id(),
+                run.generation(),
+                vcpu_id.as_usize(),
+                domain,
+            )
+            .map_err(|error| port_error("read guest CPU frequency performance", error))
     }
 }
 

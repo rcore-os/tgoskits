@@ -157,6 +157,7 @@ struct Owner {
     guest_stop: Option<RunId>,
     preparing_ports: Option<Arc<DevicePorts>>,
     ivc_bindings: Vec<crate::runtime::ivc::IvcBinding>,
+    cpu_freq_backend: Option<Arc<dyn crate::GuestCpuFreqBackend>>,
 }
 
 pub(crate) fn run(
@@ -176,10 +177,18 @@ pub(crate) fn run(
             return;
         }
     };
-    let ports = DevicePorts::new(signals.clone(), Arc::downgrade(&shared));
+    let ports = DevicePorts::new(
+        signals.clone(),
+        Arc::downgrade(&shared),
+        plan.cpu_freq_backend.clone(),
+    );
     let vm = match AxVM::new(plan.config, ports.access_ports()) {
         Ok(vm) => vm,
         Err(error) => {
+            // The port bound this first run generation before AxVM accepted
+            // the topology. Drop that binding on construction failure so a
+            // never-published run cannot retain host CPU-frequency state.
+            ports.close();
             creation.finish(Err(error.clone()));
             shared.close_for_destroy(&exit);
             exit.record_creation_failure(error);
@@ -203,6 +212,7 @@ pub(crate) fn run(
         guest_stop: None,
         preparing_ports: Some(ports.clone()),
         ivc_bindings: Vec::new(),
+        cpu_freq_backend: plan.cpu_freq_backend,
     };
     match owner.prepare_run(first_run, signals, ports) {
         Ok(()) => {
@@ -398,6 +408,7 @@ impl Owner {
         if let Some(run) = &mut self.run {
             // Confirmation waits observe this failure as well as snapshots.
             // A failed reaper may have no remaining task to emit another event.
+            run.ports.clear_cpu_freq_hints();
             run.failure.get_or_insert(error);
             run.admission.store(false, Ordering::Release);
             run.signals.close_interrupts();
@@ -410,6 +421,10 @@ impl Owner {
                     );
                 }
             }
+        } else if let Some(ports) = &self.preparing_ports {
+            // Preparation may have bound a run generation before publishing a
+            // RunState. Clear that capability on a failed construction too.
+            ports.clear_cpu_freq_hints();
         }
         self.shared.publish_run_services(None);
     }

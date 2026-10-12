@@ -20,6 +20,7 @@ pub struct AxvmManager {
     /// reclamation. A lane must not be reused between the runtime operation
     /// finishing and the old owner releasing it.
     lifecycle: Mutex<()>,
+    cpu_freq_backend: Arc<dyn axvm::GuestCpuFreqBackend>,
 }
 
 static APPLICATION_MANAGER: OnceLock<Arc<AxvmManager>> = OnceLock::new();
@@ -36,6 +37,7 @@ impl AxvmManager {
         let manager = Arc::new(Self {
             runtime: VmManager::new().context("initialize AxVM runtime")?,
             lifecycle: Mutex::new(()),
+            cpu_freq_backend: Arc::new(crate::guest_cpufreq::GuestCpuFreqService::new()),
         });
         APPLICATION_MANAGER
             .set(manager.clone())
@@ -79,7 +81,7 @@ impl AxvmManager {
     }
 
     fn create_vm_from_toml_locked(&self, raw_cfg: &str) -> Result<VmOperation<VmHandle>> {
-        let plan = crate::config::prepare_guest_vm(raw_cfg)?;
+        let plan = crate::config::prepare_guest_vm(raw_cfg, self.cpu_freq_backend.clone())?;
         self.create_plan_locked(plan)
     }
 

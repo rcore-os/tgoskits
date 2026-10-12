@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate alloc;
+
+use alloc::{string::String, sync::Arc};
+
 #[cfg(all(any(
     target_arch = "aarch64",
     target_arch = "x86_64",
@@ -41,10 +45,14 @@ pub fn init_guest_vms() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
+pub(crate) fn prepare_guest_vm(
+    raw_cfg: &str,
+    backend: Arc<dyn axvm::GuestCpuFreqBackend>,
+) -> Result<VmCreatePlan> {
     let image_provider = AxvisorBootImageProvider;
-    let vm_create_config =
+    let mut vm_create_config =
         GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+    materialize_guest_cpufreq_tables(&mut vm_create_config, backend.as_ref())?;
     let configured_vm_id = vm_create_config.base.id;
 
     if let Some(path) = crate::guest_images::missing_guest_image(&vm_create_config) {
@@ -59,6 +67,7 @@ pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
     }
 
     let mut vm_config = build_axvm_config(&vm_create_config)?;
+    validate_guest_cpufreq_placement(&vm_config, backend.as_ref())?;
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
@@ -81,7 +90,105 @@ pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
                 axvm::SchedulePolicy::default()
             }
         },
+        cpu_freq_backend: Some(backend),
     })
+}
+
+fn materialize_guest_cpufreq_tables(
+    config: &mut GuestConfig,
+    backend: &dyn axvm::GuestCpuFreqBackend,
+) -> Result<()> {
+    for request in config
+        .devices
+        .virtual_devices
+        .iter_mut()
+        .filter(|request| request.model == "virtual-cpufreq")
+    {
+        let domain = request
+            .options
+            .get("domain")
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "virtual-cpufreq device {} requires a non-negative domain",
+                    request.id
+                )
+            })?;
+        let table = backend
+            .performance_table(domain)
+            .map_err(|error| anyhow::anyhow!("materialize virtual-cpufreq OPP table: {error}"))?;
+        if table.is_empty()
+            || table.len() > 64
+            || table.iter().any(|value| *value == 0 || *value > 1024)
+            || table.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            bail!("host returned an invalid virtual-cpufreq performance table for domain {domain}");
+        }
+        request.options.insert(
+            String::from("performance_table"),
+            toml::Value::Array(
+                table
+                    .into_iter()
+                    .map(|value| toml::Value::Integer(i64::from(value)))
+                    .collect(),
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn validate_guest_cpufreq_placement(
+    vm_config: &AxVMConfig,
+    backend: &dyn axvm::GuestCpuFreqBackend,
+) -> Result<()> {
+    let requests = vm_config
+        .virtual_device_requests()
+        .iter()
+        .filter(|request| request.model == "virtual-cpufreq")
+        .collect::<Vec<_>>();
+    if requests.is_empty() {
+        return Ok(());
+    }
+    if requests.len() != 1 {
+        bail!(
+            "virtual-cpufreq permits exactly one device per VM, found {}",
+            requests.len()
+        );
+    }
+    let request = requests[0];
+    let domain = request
+        .options
+        .get("domain")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| anyhow::anyhow!("virtual-cpufreq requires a non-negative domain"))?;
+    let vcpu_count = request
+        .options
+        .get("vcpu_count")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1);
+    let placements = vm_config.phys_cpu_ls().get_vcpu_affinities_pcpu_ids();
+    if vcpu_count != placements.len() || vcpu_count != vm_config.phys_cpu_ls().cpu_num() {
+        bail!("virtual-cpufreq vcpu_count={vcpu_count} must cover every configured vCPU");
+    }
+    let mut host_cpus = Vec::with_capacity(placements.len());
+    for (vcpu, affinity, _) in placements {
+        let mask = affinity.ok_or_else(|| {
+            anyhow::anyhow!(
+                "virtual-cpufreq requires an explicit single-CPU affinity for vCPU {vcpu}"
+            )
+        })?;
+        if mask == 0 || !mask.is_power_of_two() {
+            bail!("virtual-cpufreq vCPU {vcpu} affinity {mask:#x} crosses CPU frequency domains");
+        }
+        host_cpus.push(mask.trailing_zeros() as usize);
+    }
+    backend
+        .validate_placement(domain, &host_cpus)
+        .map_err(|error| anyhow::anyhow!("validate virtual-cpufreq host placement: {error}"))?;
+    Ok(())
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {

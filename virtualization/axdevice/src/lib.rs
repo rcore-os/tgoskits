@@ -58,8 +58,8 @@ pub use axvm_types::GuestPhysAddr;
 pub use build_context::{DeviceBuildContext, MsiEndpointRange};
 pub use builder::DeviceRuntimeBuilder;
 pub use device::{
-    DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
-    WorkAccessPort,
+    DeviceRuntime, GuestCpuFreqPort, RuntimeAccessPorts, StopAccessPort, TimerAccessPort,
+    WakeAccessPort, WorkAccessPort,
 };
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use fw_cfg::{

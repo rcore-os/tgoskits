@@ -4,7 +4,7 @@
 //! owns the only policy worker: it samples scheduler load, refreshes hardware
 //! limits, and serializes all driver access from kernel callers.
 
-use alloc::{collections::VecDeque, string::String, sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -86,13 +86,29 @@ struct DomainState {
     last_fixed_adjustment: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestHint {
+    vm_id: usize,
+    run_generation: u64,
+    vcpu_id: usize,
+    domain: usize,
+    performance: u32,
+    effective: u32,
+    suspended: bool,
+}
+
 struct CpuBusy {
     cpu: usize,
     last_ns: u64,
 }
 
 static STARTED: AtomicBool = AtomicBool::new(false);
+static DOMAIN_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 static REQUESTS: Mutex<VecDeque<Request>> = Mutex::new(VecDeque::new());
+static GUEST_HINTS: Mutex<Vec<GuestHint>> = Mutex::new(Vec::new());
+static GUEST_RUNS: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
+static GUEST_DOMAIN_ERRORS: Mutex<Vec<(usize, FrequencyError)>> = Mutex::new(Vec::new());
+static GUEST_DOMAIN_EFFECTIVE: Mutex<Vec<Option<u32>>> = Mutex::new(Vec::new());
 static WAKE: WaitQueue = WaitQueue::new();
 
 fn with_device<T>(
@@ -159,6 +175,170 @@ pub fn set_fixed_frequency(domain: DomainId, frequency_hz: u64) -> Result<(), Fr
     submit(|completion| Request::SetFixed(domain, frequency_hz, completion))
 }
 
+/// Returns the number of host frequency domains known to the policy worker.
+pub fn domain_count() -> Option<usize> {
+    let count = DOMAIN_COUNT.load(Ordering::Acquire);
+    (count != 0).then_some(count)
+}
+
+/// Seeds the last confirmed normalized value observed while a VM's OPP table
+/// is materialized. This lets a guest read `cur_perf` during cpufreq policy
+/// discovery, before its first `SET_PERF` write, without inventing a value.
+pub fn seed_guest_domain_performance(
+    domain: usize,
+    performance: u32,
+) -> Result<(), FrequencyError> {
+    if !STARTED.load(Ordering::Acquire) {
+        return Err(FrequencyError::NotReady);
+    }
+    let mut effective = GUEST_DOMAIN_EFFECTIVE.lock();
+    let Some(value) = effective.get_mut(domain) else {
+        return Err(FrequencyError::InvalidDomain);
+    };
+    *value = Some(performance.clamp(1, 1024));
+    drop(effective);
+    // A newly materialized VM has just obtained a coherent host snapshot. Do
+    // not let a retired run's previous transition error poison this exact
+    // domain forever; later worker failures are recorded again by
+    // `apply_policies` and remain fail-closed for the guest.
+    clear_guest_domain_error(domain);
+    Ok(())
+}
+
+/// Marks one VM execution generation as eligible to publish/read hints.
+pub fn bind_guest_run(vm_id: usize, run_generation: u64) {
+    let mut runs = GUEST_RUNS.lock();
+    if !runs.iter().any(|(bound_vm, bound_generation)| {
+        *bound_vm == vm_id && *bound_generation == run_generation
+    }) {
+        runs.push((vm_id, run_generation));
+    }
+}
+
+/// Publishes or replaces one normalized guest hint without waiting for a
+/// hardware transition. The policy worker applies the maximum hint per host
+/// domain after refreshing thermal and board-specific OPP limits.
+pub fn publish_guest_hint(
+    vm_id: usize,
+    run_generation: u64,
+    vcpu_id: usize,
+    domain: usize,
+    performance: u32,
+) -> Result<(), FrequencyError> {
+    if !STARTED.load(Ordering::Acquire) {
+        return Err(FrequencyError::NotReady);
+    }
+    if domain >= DOMAIN_COUNT.load(Ordering::Acquire) {
+        return Err(FrequencyError::InvalidDomain);
+    }
+    if !GUEST_RUNS
+        .lock()
+        .iter()
+        .any(|(bound_vm, bound_generation)| {
+            *bound_vm == vm_id && *bound_generation == run_generation
+        })
+    {
+        return Err(FrequencyError::NotReady);
+    }
+    let mut hints = GUEST_HINTS.lock();
+    if let Some(existing) = hints.iter_mut().find(|hint| {
+        hint.vm_id == vm_id
+            && hint.run_generation == run_generation
+            && hint.vcpu_id == vcpu_id
+            && hint.domain == domain
+    }) {
+        existing.performance = performance.clamp(1, 1024);
+    } else {
+        hints.push(GuestHint {
+            vm_id,
+            run_generation,
+            vcpu_id,
+            domain,
+            performance: performance.clamp(1, 1024),
+            effective: 0,
+            suspended: false,
+        });
+    }
+    drop(hints);
+    WAKE.notify_one();
+    Ok(())
+}
+
+/// Removes all hints for one exact VM execution generation.
+pub fn clear_guest_hints(vm_id: usize, run_generation: u64) {
+    GUEST_HINTS
+        .lock()
+        .retain(|hint| hint.vm_id != vm_id || hint.run_generation != run_generation);
+    GUEST_RUNS.lock().retain(|(bound_vm, bound_generation)| {
+        *bound_vm != vm_id || *bound_generation != run_generation
+    });
+    WAKE.notify_one();
+}
+
+/// Temporarily excludes one run from aggregation while retaining its desired
+/// values for resume.
+pub fn suspend_guest_hints(vm_id: usize, run_generation: u64) {
+    for hint in GUEST_HINTS
+        .lock()
+        .iter_mut()
+        .filter(|hint| hint.vm_id == vm_id && hint.run_generation == run_generation)
+    {
+        hint.suspended = true;
+        hint.effective = 0;
+    }
+    WAKE.notify_one();
+}
+
+/// Re-enables one run's retained guest hints.
+pub fn resume_guest_hints(vm_id: usize, run_generation: u64) {
+    for hint in GUEST_HINTS
+        .lock()
+        .iter_mut()
+        .filter(|hint| hint.vm_id == vm_id && hint.run_generation == run_generation)
+    {
+        hint.suspended = false;
+    }
+    WAKE.notify_one();
+}
+
+/// Returns the latest host-confirmed normalized value for one exact guest vCPU.
+///
+/// A failed hardware read-back or policy transition is returned to the guest
+/// device instead of reusing a stale value.
+pub fn guest_hint_performance(
+    vm_id: usize,
+    run_generation: u64,
+    vcpu_id: usize,
+    domain: usize,
+) -> Result<Option<u32>, FrequencyError> {
+    if !GUEST_RUNS
+        .lock()
+        .iter()
+        .any(|(bound_vm, bound_generation)| {
+            *bound_vm == vm_id && *bound_generation == run_generation
+        })
+    {
+        return Err(FrequencyError::NotReady);
+    }
+    if let Some((_, error)) = GUEST_DOMAIN_ERRORS
+        .lock()
+        .iter()
+        .find(|(failed_domain, _)| *failed_domain == domain)
+    {
+        return Err(*error);
+    }
+    let effective = GUEST_DOMAIN_EFFECTIVE.lock().get(domain).copied().flatten();
+    if effective.is_none() {
+        return Err(FrequencyError::NotReady);
+    }
+    // A current-performance read is useful during Linux policy probing, before
+    // the first SET_PERF write creates a per-run hint. The domain value is
+    // shared by all vCPUs, while the exact run registration above prevents a
+    // stale device from observing a later generation.
+    let _ = vcpu_id;
+    Ok(effective)
+}
+
 fn parse_governor(bootargs: Option<&str>) -> Governor {
     let value = bootargs.and_then(|args| {
         args.split_whitespace()
@@ -221,7 +401,7 @@ fn handle_request(
                     state.last_fixed_adjustment = None;
                 }
                 if governor == Governor::Performance {
-                    apply_policies(device, states, &[], true)
+                    apply_policies(device, states, &[], true, &[])
                 } else {
                     Ok(())
                 }
@@ -249,8 +429,23 @@ fn eligible_opps(
     domain: DomainId,
 ) -> Result<Vec<OperatingPoint>, FrequencyError> {
     let limits = driver.limits(domain)?;
-    let mut opps = driver.available_opps(domain)?;
+    let mut opps = all_available_opps(driver, domain)?;
     opps.retain(|opp| (limits.min_hz..=limits.max_hz).contains(&opp.frequency_hz));
+    if opps.is_empty() {
+        return Err(FrequencyError::OppUnavailable);
+    }
+    Ok(opps)
+}
+
+/// Returns the complete board OPP table before dynamic thermal or
+/// dependent-domain limits are applied. Guest performance values use this
+/// stable scale so a later thermal ceiling produces a lower `cur_perf` value
+/// instead of renormalizing the reduced table back to 1024.
+fn all_available_opps(
+    driver: &mut rdif_cpufreq::CpuFreq,
+    domain: DomainId,
+) -> Result<Vec<OperatingPoint>, FrequencyError> {
+    let mut opps = driver.available_opps(domain)?;
     opps.sort_unstable_by_key(|opp| opp.frequency_hz);
     opps.dedup_by_key(|opp| opp.frequency_hz);
     if opps.is_empty() {
@@ -297,10 +492,13 @@ struct PolicyDecision {
 fn target_frequency(
     driver: &mut rdif_cpufreq::CpuFreq,
     state: &DomainState,
+    domain_index: usize,
     samples: &[(usize, u64)],
     priming: bool,
+    guest_hints: &[GuestHint],
 ) -> Result<PolicyDecision, FrequencyError> {
     let domain = state.info.id;
+    let reference_opps = all_available_opps(driver, domain)?;
     let opps = eligible_opps(driver, domain)?;
     let current = driver.current_opp(domain)?.frequency_hz;
     let target = match state.policy {
@@ -321,6 +519,12 @@ fn target_frequency(
             next_ondemand_frequency(&percents, current, &opps, priming)
         }
     };
+    let guest_floor = guest_floor_with_reference(guest_hints, domain_index, &opps, &reference_opps);
+    let target = match (target, guest_floor) {
+        (Some(policy), Some(guest)) => Some(policy.max(guest)),
+        (None, Some(guest)) => Some(guest),
+        (policy, None) => policy,
+    };
     let fixed_adjustment = match (state.policy, target) {
         (Policy::Fixed(requested), Some(applied)) if applied != requested => {
             Some((requested, applied))
@@ -333,23 +537,100 @@ fn target_frequency(
     })
 }
 
+fn normalized_performance(frequency_hz: u64, opps: &[OperatingPoint]) -> u32 {
+    if opps.len() <= 1 {
+        return 1024;
+    }
+    let index = opps
+        .iter()
+        .rposition(|opp| opp.frequency_hz <= frequency_hz)
+        .unwrap_or(0);
+    1 + ((index * 1023) / (opps.len() - 1)) as u32
+}
+
+fn guest_floor_with_reference(
+    hints: &[GuestHint],
+    domain: usize,
+    opps: &[OperatingPoint],
+    reference_opps: &[OperatingPoint],
+) -> Option<u64> {
+    if opps.is_empty() || reference_opps.is_empty() {
+        return None;
+    }
+    hints
+        .iter()
+        .filter(|hint| hint.domain == domain && !hint.suspended)
+        .map(|hint| {
+            let index = (hint.performance as usize * (reference_opps.len() - 1)) / 1024;
+            let requested = reference_opps[index].frequency_hz;
+            opps.iter()
+                .find(|opp| opp.frequency_hz >= requested)
+                .or_else(|| opps.last())
+                .expect("eligible OPPs are non-empty")
+                .frequency_hz
+        })
+        .max()
+}
+
+fn publish_effective_performance(
+    domain: usize,
+    frequency_hz: u64,
+    reference_opps: &[OperatingPoint],
+) {
+    let effective = normalized_performance(frequency_hz, reference_opps);
+    if let Some(value) = GUEST_DOMAIN_EFFECTIVE.lock().get_mut(domain) {
+        *value = Some(effective);
+    }
+    for hint in GUEST_HINTS
+        .lock()
+        .iter_mut()
+        .filter(|hint| hint.domain == domain && !hint.suspended)
+    {
+        hint.effective = effective;
+    }
+}
+
+fn record_guest_domain_error(domain: usize, error: FrequencyError) {
+    let mut errors = GUEST_DOMAIN_ERRORS.lock();
+    if let Some((_, existing)) = errors
+        .iter_mut()
+        .find(|(failed_domain, _)| *failed_domain == domain)
+    {
+        *existing = error;
+    } else {
+        errors.push((domain, error));
+    }
+}
+
+fn clear_guest_domain_error(domain: usize) {
+    GUEST_DOMAIN_ERRORS
+        .lock()
+        .retain(|(failed_domain, _)| *failed_domain != domain);
+}
+
 fn apply_policies(
     device: &Device,
     states: &mut [DomainState],
     samples: &[(usize, u64)],
     priming: bool,
+    guest_hints: &[GuestHint],
 ) -> Result<(), FrequencyError> {
     let mut first_error = None;
-    for state in states {
+    for (domain_index, state) in states.iter_mut().enumerate() {
         let result = with_device(device, |driver| {
-            let decision = target_frequency(driver, state, samples, priming)?;
+            let decision =
+                target_frequency(driver, state, domain_index, samples, priming, guest_hints)?;
             if let Some(target) = decision.target {
                 driver.set_frequency(state.info.id, target)?;
             }
-            Ok(decision.fixed_adjustment)
+            let current = driver.current_opp(state.info.id)?.frequency_hz;
+            let reference_opps = all_available_opps(driver, state.info.id)?;
+            Ok((decision.fixed_adjustment, current, reference_opps))
         });
         match result {
-            Ok(adjustment) => {
+            Ok((adjustment, current, reference_opps)) => {
+                clear_guest_domain_error(domain_index);
+                publish_effective_performance(domain_index, current, &reference_opps);
                 if let Some((requested, applied)) = adjustment {
                     if state.last_fixed_adjustment != Some(applied) {
                         let limit = if applied > requested {
@@ -370,6 +651,7 @@ fn apply_policies(
                 state.last_error = None;
             }
             Err(error) => {
+                record_guest_domain_error(domain_index, error);
                 if state.last_error != Some(error) && error != FrequencyError::NotReady {
                     warn!(
                         "cpufreq: domain {:?} policy update failed: {error}",
@@ -449,6 +731,9 @@ fn run_worker(device: Device, infos: Vec<DomainInfo>, initial: Governor) {
         match refresh {
             Ok(()) => last_refresh_error = None,
             Err(error) => {
+                for domain in 0..states.len() {
+                    record_guest_domain_error(domain, error);
+                }
                 if last_refresh_error != Some(error) {
                     warn!("cpufreq: hardware limit refresh failed: {error}");
                 }
@@ -461,8 +746,9 @@ fn run_worker(device: Device, infos: Vec<DomainInfo>, initial: Governor) {
             handle_request(request, &device, &mut states, refresh);
         }
         let (samples, priming) = sample_load(&mut busy, &mut last_poll_ns);
+        let guest_hints = GUEST_HINTS.lock().clone();
         if refresh.is_ok() {
-            let _ = apply_policies(&device, &mut states, &samples, priming);
+            let _ = apply_policies(&device, &mut states, &samples, priming, &guest_hints);
         }
         WAKE.wait_timeout_until(POLL_PERIOD, || !REQUESTS.lock().is_empty());
     }
@@ -488,6 +774,8 @@ pub(crate) fn start_from_host_bootargs(bootargs: Option<&str>) {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
+    DOMAIN_COUNT.store(infos.len(), Ordering::Release);
+    *GUEST_DOMAIN_EFFECTIVE.lock() = vec![None; infos.len()];
     let governor = parse_governor(bootargs);
     info!(
         "cpufreq: starting shared {governor:?} governor for {} domains",
@@ -506,7 +794,8 @@ pub(crate) fn start_from_host_bootargs(bootargs: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Governor, OperatingPoint, busy_percent, fixed_target, next_ondemand_frequency,
+        Governor, GuestHint, OperatingPoint, busy_percent, fixed_target,
+        guest_floor_with_reference, next_ondemand_frequency, normalized_performance,
         observe_window, parse_governor,
     };
 
@@ -567,6 +856,104 @@ mod tests {
         assert_eq!(
             next_ondemand_frequency(&[], 816_000_000, &opps, false),
             None
+        );
+    }
+
+    #[test]
+    fn guest_performance_is_normalized_against_safe_opps() {
+        let opps = [408, 816, 1200].map(|mhz| OperatingPoint {
+            frequency_hz: mhz * 1_000_000,
+            voltage_uv: None,
+        });
+        assert_eq!(normalized_performance(408_000_000, &opps), 1);
+        assert_eq!(normalized_performance(816_000_000, &opps), 512);
+        assert_eq!(normalized_performance(1_200_000_000, &opps), 1024);
+        assert_eq!(normalized_performance(500_000_000, &opps), 1);
+    }
+
+    #[test]
+    fn guest_floor_aggregates_maximum_and_ignores_suspended_runs() {
+        let opps = [408, 816, 1200].map(|mhz| OperatingPoint {
+            frequency_hz: mhz * 1_000_000,
+            voltage_uv: None,
+        });
+        let hints = [
+            GuestHint {
+                vm_id: 1,
+                run_generation: 3,
+                vcpu_id: 0,
+                domain: 1,
+                performance: 256,
+                effective: 0,
+                suspended: false,
+            },
+            GuestHint {
+                vm_id: 2,
+                run_generation: 7,
+                vcpu_id: 0,
+                domain: 1,
+                performance: 1024,
+                effective: 0,
+                suspended: true,
+            },
+            GuestHint {
+                vm_id: 3,
+                run_generation: 9,
+                vcpu_id: 0,
+                domain: 1,
+                performance: 512,
+                effective: 0,
+                suspended: false,
+            },
+        ];
+        assert_eq!(
+            guest_floor_with_reference(&hints, 1, &opps, &opps),
+            Some(816_000_000)
+        );
+        assert_eq!(
+            guest_floor_with_reference(
+                &[GuestHint {
+                    vm_id: 4,
+                    run_generation: 1,
+                    vcpu_id: 0,
+                    domain: 1,
+                    performance: 1,
+                    effective: 0,
+                    suspended: false,
+                }],
+                1,
+                &opps,
+                &opps,
+            ),
+            Some(408_000_000)
+        );
+        assert_eq!(guest_floor_with_reference(&hints, 0, &opps, &opps), None);
+    }
+
+    #[test]
+    fn thermal_ceiling_preserves_reference_scale_for_guest_readback() {
+        let reference = [408, 816, 1200].map(|mhz| OperatingPoint {
+            frequency_hz: mhz * 1_000_000,
+            voltage_uv: None,
+        });
+        let limited = &reference[..2];
+        assert_eq!(normalized_performance(816_000_000, &reference), 512);
+        assert_eq!(
+            guest_floor_with_reference(
+                &[GuestHint {
+                    vm_id: 1,
+                    run_generation: 1,
+                    vcpu_id: 0,
+                    domain: 0,
+                    performance: 512,
+                    effective: 0,
+                    suspended: false,
+                }],
+                0,
+                limited,
+                &reference,
+            ),
+            Some(816_000_000)
         );
     }
 

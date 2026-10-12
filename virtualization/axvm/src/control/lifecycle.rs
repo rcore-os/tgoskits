@@ -95,7 +95,11 @@ impl Owner {
             let generation = next_generation(&mut self.run_generation, "VM run")?;
             let id = RunId::new(self.shared.key(), generation);
             let signals = RunSignals::new(id, self.vm.config().phys_cpu_ls.cpu_num())?;
-            let ports = DevicePorts::new(signals.clone(), Arc::downgrade(&self.shared));
+            let ports = DevicePorts::new(
+                signals.clone(),
+                Arc::downgrade(&self.shared),
+                self.cpu_freq_backend.clone(),
+            );
             if let Err(error) = self.prepare_run(id, signals, ports) {
                 self.record_failure(error.clone());
                 return Err(error);
@@ -260,6 +264,14 @@ impl Owner {
             self.state = VmStatus::Stopped;
             return Ok(());
         }
+        // Stop admission before teardown and clear the exact run generation
+        // immediately. If a later teardown step fails, this retired run must
+        // still be unable to influence host CPU-frequency policy.
+        self.run
+            .as_ref()
+            .expect("stopping run")
+            .ports
+            .clear_cpu_freq_hints();
         self.state = VmStatus::Stopping;
         self.publish();
         let run = self.run.as_mut().expect("stopping run");
@@ -332,6 +344,7 @@ impl Owner {
         self.shared.publish_run_services(None);
         // Device routes, decode views and workers are now quiet. New starts
         // prepare fresh controllers and fresh ports for another RunId.
+        self.run.as_ref().expect("close stopped run").ports.close();
         self.run = None;
         self.state = VmStatus::Stopped;
         Ok(())

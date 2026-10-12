@@ -8,7 +8,7 @@
 
 ### 1.1 客户机职责
 
-两个客户机通过同名 `robot-ivc` 虚拟设备建立通道，通道身份和大小由 IVC 模型统一管理。客户机名称来自各自 TOML 的 `base.name`，也用于网页窗格标题。
+两个客户机通过同名 `robot-ivc` 虚拟设备建立通道，通道身份和大小由 IVC 模型统一管理。客户机名称来自各自 TOML 的 `base.name`，也用于网页窗格标题。机器人 profile 将 Linux 固定到 A76 big0 CPU4（`phys_cpu_ids=[0x400]`、`phys_cpu_sets=[0x10]`），Zephyr 固定到 A55 CPU2（`phys_cpu_ids=[0x200]`、`phys_cpu_sets=[0x4]`）。
 
 | 客户机 | 主要职责 | 关键设备 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@
 | Zephyr | 接收感知结果、控制底盘和机械臂 | UART6 `/serial@feb90000`、`robot-ivc` |
 | Axvisor | VM 管理、物理串口、可选网页控制台 | RTL8125、宿主 PCIe 路径 |
 
-Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末尾的通用清理关闭其他系统仍在使用的资源。这两个参数不能阻止已绑定驱动主动复位设备或关闭时钟，因此不能代替第 2 节的设备所有权隔离。
+Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末尾的通用清理关闭其他系统仍在使用的资源；CPU OPP 仍由 Axvisor/`ax-runtime` 所有。这两个 Linux 参数不能阻止已绑定驱动主动复位设备或关闭时钟，因此不能代替第 2 节的设备所有权隔离。
 
 ### 1.2 客户机镜像
 

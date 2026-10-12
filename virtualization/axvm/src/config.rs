@@ -226,6 +226,16 @@ impl AxVMConfig {
         &mut self.phys_cpu_ls
     }
 
+    /// Returns the immutable vCPU placement configuration.
+    pub fn phys_cpu_ls(&self) -> &PhysCpuList {
+        &self.phys_cpu_ls
+    }
+
+    /// Returns the configured virtual-device requests before graph expansion.
+    pub fn virtual_device_requests(&self) -> &[VirtualDeviceRequest] {
+        &self.virtual_device_requests
+    }
+
     /// Returns the list of excluded devices.
     pub fn excluded_devices(&self) -> &[Vec<String>] {
         &self.excluded_devices
@@ -426,10 +436,6 @@ impl AxVMConfig {
     /// Returns the factory that creates a backend for each virtual UART graph.
     pub fn serial_backend_factory(&self) -> Arc<dyn SerialBackendFactory> {
         self.serial_backend_factory.clone()
-    }
-
-    pub(crate) fn virtual_device_requests(&self) -> &[VirtualDeviceRequest] {
-        &self.virtual_device_requests
     }
 
     pub(crate) fn virtual_device_catalog(&self) -> &crate::ConfiguredDeviceCatalog {

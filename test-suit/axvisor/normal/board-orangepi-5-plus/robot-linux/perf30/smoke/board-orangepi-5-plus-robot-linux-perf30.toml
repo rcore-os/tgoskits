@@ -1,0 +1,131 @@
+# Dedicated high-performance profile for the real Linux UVC + RKNN workload.
+# `cmdline` is the AxVisor host U-Boot bootargs supplied by BoardRunConfig; it
+# is intentionally separate from the guest kernel cmdline in the VM TOML.
+board_type = "OrangePi-5-Plus"
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1 cpufreq.default_governor=performance'
+timeout = 900
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  'Failed to initialize guest VM',
+  'VFS: Cannot open root device',
+  'Waiting for root device',
+  'Waiting for root file system',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  '(?m)^\[AXVISOR_PERF_PROFILE\] RESULT=FAIL .*$',
+  '(?m)^\[AXVISOR_PERF_PROFILE\] RKNN_BENCH_ASSETS=FAIL .*$\n?',
+  '(?m)^\[VISION_USB_CI\] RESULT=FAIL .*$'
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual'
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+# Set only Linux-visible NPU/DMC devfreq policies.  NPU is required for this
+# workload; DMC is recorded when the BSP exposes it.  The current OrangePi
+# firmware reports DMC as unsupported, so its absence remains visible without
+# turning a measured 30 FPS host-performance profile into a false pass.
+shell_cmd = '''printf "%s\n" orangepi | sudo -S sh -c '
+set -eu
+trap '\''printf "[AXVISOR_PERF_PROFILE] RESULT=%s reason=devfreq\\n" FAIL'\'' EXIT
+npu=0
+dmc=0
+for dir in /sys/class/devfreq/*; do
+  [ -d "$dir" ] || continue
+  name=$(cat "$dir/name" 2>/dev/null || basename "$dir")
+  name_lc=$(printf "%s" "$name" | tr "[:upper:]" "[:lower:]")
+  case "$name_lc" in
+    *rknpu*|*npu*) class=npu; npu=$((npu + 1)) ;;
+    *dmc*) class=dmc; dmc=$((dmc + 1)) ;;
+    *) continue ;;
+  esac
+  grep -qw performance "$dir/available_governors"
+  printf performance > "$dir/governor"
+  [ "$(cat "$dir/governor")" = performance ]
+  printf "[AXVISOR_PERF_PROFILE] node=%s class=%s governor=%s cur=%s max=%s\n" \
+    "$name" "$class" "$(cat "$dir/governor")" \
+    "$(cat "$dir/cur_freq" 2>/dev/null || printf unknown)" \
+    "$(cat "$dir/max_freq" 2>/dev/null || printf unknown)"
+done
+[ "$npu" -gt 0 ]
+driver=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_driver 2>/dev/null || true)
+governor=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null || true)
+if [ -n "$driver" ]; then
+  if [ "$driver" != virt-cpufreq ]; then
+    result_marker="[AXVISOR_PERF_PROFILE] RESULT="
+    reason_marker="CPUFREQ_GUEST_DRIVER_UNEXPECTED"
+    printf "%sFAIL reason=%s driver=%s\\n" "$result_marker" "$reason_marker" "$driver"
+    exit 1
+  fi
+  printf "[AXVISOR_PERF_PROFILE] guest_cpufreq driver=%s governor=%s\n" "$driver" "$governor"
+  [ "$governor" = performance ]
+else
+  printf "[AXVISOR_PERF_PROFILE] CPUFREQ_VIRT_UNAVAILABLE_HOST_PERF\n"
+fi
+trap - EXIT
+if [ "$dmc" -eq 0 ]; then
+  printf "[AXVISOR_PERF_PROFILE] DMC_DEVFREQ_UNAVAILABLE_FIRMWARE\n"
+fi
+printf "[AXVISOR_PERF_PROFILE] RESULT=PASS npu=%s dmc=%s\n" "$npu" "$dmc"
+'
+'''
+success_regex = ['(?m)^\[AXVISOR_PERF_PROFILE\] RESULT=PASS npu=[1-9][0-9]* dmc=[0-9]+\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+# The profile marker and the vision producer are separate steps: ostool treats
+# success patterns as alternatives, so combining them would allow the profile
+# marker to complete the step before the FPS producer finished.
+shell_cmd = 'cd "$d" && printf "%s\n" orangepi | sudo -S env FTDI_TRANSPORT=tty ./run_vision_usb_ci_once.sh 29.5'
+success_regex = ['(?m)^\[VISION_USB_CI\] RESULT=PASS attempts=1(?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+# The benchmark image is provisioned separately from the AxVisor VM assets.
+# Fail before the 60-second run if its executable, runtime or model is absent.
+shell_cmd = '''sh -c '
+set -eu
+root=/rknn_yolov8_image
+marker="[AXVISOR_PERF_PROFILE] RKNN_BENCH_ASSETS="
+if ! command -v sha256sum >/dev/null 2>&1; then
+  printf "%sFAIL reason=sha256sum\\n" "$marker"
+  exit 1
+fi
+for path in \
+  "$root/rknn_yolov8_bench" \
+  "$root/lib/librknnrt.so" \
+  "$root/lib/librga.so" \
+  "$root/model/yolov8.rknn" \
+  "$root/model/coco_80_labels_list.txt"; do
+  if [ ! -r "$path" ] || { [ "$path" = "$root/rknn_yolov8_bench" ] && [ ! -x "$path" ]; }; then
+    printf "%sFAIL path=%s\\n" "$marker" "$path"
+    exit 1
+  fi
+done
+sha256sum \
+  "$root/rknn_yolov8_bench" \
+  "$root/lib/librknnrt.so" \
+  "$root/lib/librga.so" \
+  "$root/model/yolov8.rknn" \
+  "$root/model/coco_80_labels_list.txt"
+printf "[AXVISOR_PERF_PROFILE] RKNN_BENCH_ASSETS=PASS root=%s\\n" "$root"
+'
+'''
+success_regex = ['(?m)^\[AXVISOR_PERF_PROFILE\] RKNN_BENCH_ASSETS=PASS root=/rknn_yolov8_image\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+# Keep the long benchmark as a separate board step.  Its single success
+# expression includes every required field because the runner treats multiple
+# success expressions as alternatives.
+shell_cmd = '''cd /rknn_yolov8_image && printf "%s\n" orangepi | sudo -S env LD_LIBRARY_PATH=/rknn_yolov8_image/lib:/usr/local/lib:/usr/lib/aarch64-linux-gnu FTDI_TRANSPORT=tty \
+  ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 \
+  --report-interval-sec 5 --min-confidence 25 --core-mask all --profile'''
+success_regex = ['(?m)^UVC_RKNN_BENCH_RESULT .*capture_fps=(?:29\.(?:[5-9][0-9]*)|3[0-9]*(?:\.[0-9]+)?) .*inferences=[1-9][0-9]* .*decode_errors=0 .*inference_errors=0 .*$']
