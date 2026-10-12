@@ -220,10 +220,10 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
     let mut failed_sessions = 0u64;
     let mut pass_reported = false;
 
-    // The guests are already auto-started, so this grace period only lets the
-    // neighbouring guests finish initialization and configure their network
-    // addresses before the first attempt; the chain then connects instead of
-    // poisoning the ARP cache with failed resolutions.
+    // The grace period gives the peer, when one is already started, time to
+    // finish its initialization and configure its network address before the
+    // first TCP connect attempt; the chain then connects instead of poisoning
+    // the ARP cache with failed resolutions.
     thread::sleep(connect_start_delay());
 
     loop {

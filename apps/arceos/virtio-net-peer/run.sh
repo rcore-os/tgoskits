@@ -48,12 +48,17 @@ local_ip_of_vm() {
     esac
 }
 
-# Per-VM client connect start delay (`AXVIRTIO_CONNECT_START_DELAY_MS`). AxVisor
-# auto-starts every guest before the QEMU shell is available, so the shell steps
-# only control console attach/foreground consumption and replay order (the chain
-# is attached tail first, VM4, then VM3, then VM2, then VM1); attaching never
-# starts a guest or changes boot order. The delay still gives the just-attached
-# guest time to finish its network setup before its client dials the next hop.
+# Default for the client connect start delay (`AXVIRTIO_CONNECT_START_DELAY_MS`).
+# The two QEMU scenarios sequence guests differently:
+#   * default mode: the QEMU config attaches consoles head first
+#     (VM1 -> VM2 -> VM3 -> VM4) while AxVisor auto-starts every guest before the
+#     shell is available, so those steps only choose which console is attached
+#     and foregrounded; attaching neither starts a guest nor changes boot order.
+#   * `--vcpus` mode: the QEMU config enables `no-auto-start` and issues explicit
+#     `vm start` commands, so it genuinely controls the guest start and attach
+#     order (tail first: VM4, then VM3, then VM2, then VM1).
+# In both modes the delay gives the just-attached guest time to finish its
+# network setup before its client dials the next hop.
 # VM4 is the tail of the chain and its peer 10.0.2.19 is intentionally absent, so
 # a modest delay would make it flood the virtual switch with ARP pending frames
 # for an address nobody owns; park it far beyond the test window (600000 ms) so
@@ -91,11 +96,13 @@ build_guest() {
     # `AXVIRTIO_HEARTBEAT_PERIOD_MS` (default 4000),
     # `AXVIRTIO_HEARTBEAT_PASS_AFTER` (default 3),
     # `AXVIRTIO_CONNECT_TIMEOUT_MS` (default 4000) and
-    # `AXVIRTIO_CONNECT_START_DELAY_MS` (default 10000, but per-VM here) can be
-    # exported to override the tuning.
+    # `AXVIRTIO_CONNECT_START_DELAY_MS` (per-VM here: 10000 for VM1..VM3 and
+    # 600000 for VM4) can be exported to override the tuning; a non-empty
+    # exported `AXVIRTIO_CONNECT_START_DELAY_MS` replaces the per-VM default for
+    # every guest.
     AXVIRTIO_VM_TAG="$tag" \
     AXVIRTIO_LOCAL_IP="$local_ip" \
-    AXVIRTIO_CONNECT_START_DELAY_MS="$connect_start_delay" \
+    AXVIRTIO_CONNECT_START_DELAY_MS="${AXVIRTIO_CONNECT_START_DELAY_MS:-$connect_start_delay}" \
         cargo xtask arceos build -p arceos-virtio-net-peer -c "$config" "${smp_args[@]}"
     "$objcopy" --strip-all -O binary \
         target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer \

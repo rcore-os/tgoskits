@@ -1,4 +1,6 @@
-features = []
+# `no-auto-start` keeps every guest in `Ready` so the QEMU shell steps own the
+# explicit `vm start` order used by the vCPUs scenario.
+features = ["no-auto-start"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
