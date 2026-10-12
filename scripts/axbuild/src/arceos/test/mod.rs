@@ -77,7 +77,6 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-mutex",
     "task-parallel",
     "task-pi-mutex",
-    "task-scheduler-local-rearm",
     "task-preempt-guard",
     "task-priority",
     "task-rt-policy",

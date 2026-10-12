@@ -12,6 +12,24 @@ const REQUEST_PARK_PREEMPT_LAZY_DEFERRED: u64 = 1 << 5;
 const DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT: u32 = 0x4453_574f;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchedulerWorkRearm {
+    Local,
+    Doorbell,
+}
+
+fn scheduler_work_rearm(
+    owner: CpuId,
+    current: RuntimeCpuId,
+    local_published: bool,
+) -> SchedulerWorkRearm {
+    if current.as_u32() == owner.as_u32() && local_published {
+        SchedulerWorkRearm::Local
+    } else {
+        SchedulerWorkRearm::Doorbell
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SchedulerRequestDelivery {
     /// The owner is in the idle polling protocol and will observe the sticky
     /// work bit before committing to sleep.
@@ -430,17 +448,15 @@ impl CpuRemote {
         self.scheduler_request
             .request
             .fetch_or(REQUEST_OWNER_WORK, Ordering::Release);
-        // SAFETY: `IrqScope` pins the current CPU until this method returns;
-        // the owner identity and local publication therefore describe one
-        // scheduler owner transaction.
         let current = unsafe { task_runtime::current_cpu_id() };
-        if current.as_u32() == self.owner.as_u32() {
-            // The owner-side drain returns into the same IRQ/preemption
-            // transaction, whose final safe-point recheck consumes the
-            // sticky owner-work bit even when this nested publication cannot
-            // itself claim the scheduler baton.
-            let _self_serviced = task_runtime::publish_local_scheduler_work();
+        let local_published = if current.as_u32() == self.owner.as_u32() {
+            task_runtime::publish_local_scheduler_work()
         } else {
+            false
+        };
+        if scheduler_work_rearm(self.owner, current, local_published)
+            == SchedulerWorkRearm::Doorbell
+        {
             self.ring_scheduler_doorbell();
         }
     }
@@ -583,6 +599,26 @@ impl CpuRemote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_rearm_uses_local_scheduler_publication() {
+        assert_eq!(
+            scheduler_work_rearm(CpuId::new(1), RuntimeCpuId::new(1), true),
+            SchedulerWorkRearm::Local,
+        );
+    }
+
+    #[test]
+    fn remote_or_unpublished_rearm_requires_a_doorbell() {
+        assert_eq!(
+            scheduler_work_rearm(CpuId::new(1), RuntimeCpuId::new(1), false),
+            SchedulerWorkRearm::Doorbell,
+        );
+        assert_eq!(
+            scheduler_work_rearm(CpuId::new(1), RuntimeCpuId::new(0), true),
+            SchedulerWorkRearm::Doorbell,
+        );
+    }
 
     #[test]
     fn ordinary_request_folds_a_later_lazy_request() {
